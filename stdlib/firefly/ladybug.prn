@@ -1,0 +1,47 @@
+;; stdlib/firefly/ladybug.prn — depends on firefly. Design: STDLIB.md
+;; "firefly/gomega" section (renamed here; see header note below). Real
+;; matcher-chain shape (Expect(x).To(Equal(y))), not a flat assert-eq-
+;; only surface -- Gomega's own real value is exactly this composable
+;; matcher design.
+;;
+;; Renamed from firefly/gomega -- founder, real-time: "can we pleasae
+;; give a beetel name to our bdd framework not gomega" / "goddamnit" --
+;; "gomega" broke the beetle-naming convention firefly and scarab
+;; established (fireflies and scarab beetles are real beetles; Gomega is
+;; just Go's own library name, not a beetle at all). Ladybugs/ladybirds
+;; are real beetles (family Coccinellidae) -- also a direct pun: a
+;; *ladybug*-family matcher library is the thing that finds *bugs*.
+;; firefly/gomega.prn is kept as a back-compat alias, unchanged in its
+;; own exported surface -- founder: "dont delete the existing api" /
+;; "as an alias i guess" -- this file is the new, real home going
+;; forward -- founder: "the new version will move under the new name in
+;; the stdlib".
+
+(module firefly/ladybug)
+(import firefly)
+(export expect to equal be-true be-nil)
+
+(defstruct Expectation
+  (actual : &Any)
+  (t      : &mut T))
+
+(defn expect [(actual : &Any) (!t : &mut T)]
+  : Expectation
+  {:actual actual :t !t})
+
+(defn to [(exp : &Expectation) (matcher : (Fn [&Any] Bool))]
+  : Unit
+  (when (not (matcher (get-field exp :actual)))
+    (firefly/errorf (get-field exp :t) "expectation failed")))
+
+(defn equal [(expected : &Any)]
+  : (Fn [&Any] Bool)
+  (fn [actual] (deep-eq? actual expected)))
+
+(defn be-true []
+  : (Fn [&Any] Bool)
+  (fn [actual] (= actual true)))
+
+(defn be-nil []
+  : (Fn [&Any] Bool)
+  (fn [actual] (is-none? actual)))

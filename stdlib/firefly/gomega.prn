@@ -1,33 +1,44 @@
-;; stdlib/firefly/gomega.prn — depends on firefly. Design: STDLIB.md
-;; "firefly/gomega" section. Real matcher-chain shape (Expect(x).To
-;; (Equal(y))), not a flat assert-eq-only surface -- Gomega's own real
-;; value is exactly this composable matcher design.
+;; stdlib/firefly/gomega.prn — BACK-COMPAT ALIAS. The real, maintained
+;; implementation now lives at stdlib/firefly/ladybug.prn -- founder,
+;; real-time: "can we pleasae give a beetel name to our bdd framework
+;; not gomega" -- "gomega" broke the beetle-naming convention firefly
+;; and scarab established. This file is kept, with its own exported
+;; surface unchanged, purely so existing `(import firefly/gomega)` call
+;; sites don't break -- founder: "dont delete the existing api". New
+;; code (including PARENA's own stdlib, e.g. scarab.prn) should import
+;; firefly/ladybug directly -- founder: "the new version will move
+;; under the new name in the stdlib".
+;;
+;; Honest caveat carried over from firefly/ladybug.prn: VS0 has no real
+;; module-linking system yet (grepped src/*.c for module/import/export
+;; handling -- zero hits; each .prn file only ever type-checks/compiles
+;; standalone today), so this alias's own cross-file delegation to
+;; firefly/ladybug below is real, intentional source, but not yet
+;; something the compiler can actually verify end to end -- same as
+;; firefly/ladybug.prn itself, this file is additionally still blocked
+;; on the pre-existing &Any/reference-type gap (STDLIB.md gap #5).
 
 (module firefly/gomega)
 (import firefly)
+(import firefly/ladybug)
 (export expect to equal be-true be-nil)
-
-(defstruct Expectation
-  (actual : &Any)
-  (t      : &mut T))
 
 (defn expect [(actual : &Any) (!t : &mut T)]
   : Expectation
-  {:actual actual :t !t})
+  (firefly/ladybug/expect actual !t))
 
 (defn to [(exp : &Expectation) (matcher : (Fn [&Any] Bool))]
   : Unit
-  (when (not (matcher (get-field exp :actual)))
-    (firefly/errorf (get-field exp :t) "expectation failed")))
+  (firefly/ladybug/to exp matcher))
 
 (defn equal [(expected : &Any)]
   : (Fn [&Any] Bool)
-  (fn [actual] (deep-eq? actual expected)))
+  (firefly/ladybug/equal expected))
 
 (defn be-true []
   : (Fn [&Any] Bool)
-  (fn [actual] (= actual true)))
+  (firefly/ladybug/be-true))
 
 (defn be-nil []
   : (Fn [&Any] Bool)
-  (fn [actual] (is-none? actual)))
+  (firefly/ladybug/be-nil))

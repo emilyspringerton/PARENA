@@ -1,4 +1,4 @@
-;; stdlib/scarab.prn — depends on firefly, firefly/gomega. Design:
+;; stdlib/scarab.prn — depends on firefly, firefly/ladybug. Design:
 ;; STDLIB.md "scarab" section. Real Ginkgo shape: Describe/Context/It
 ;; nesting, BeforeEach/AfterEach hooks, plus the runner itself. Named
 ;; by the founder: scarab beetles' own real mythological cycle/renewal
@@ -15,7 +15,7 @@
 
 (module scarab)
 (import firefly)
-(import firefly/gomega)
+(import firefly/ladybug)
 (import vec)
 (export describe context it before-each after-each run-suite)
 
