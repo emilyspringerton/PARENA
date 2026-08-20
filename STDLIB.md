@@ -173,6 +173,49 @@ library via the FFI block NORTHSTAR.md's own core idioms already show (`#target 
 ...)}`), rather than hand-writing a naive triple-nested-loop matmul and calling it done — flagged
 as a real follow-up decision, not resolved by this design pass.
 
+### `dataframe` — the pandas equivalent, depends on `array` + `string`
+
+Founder: "and pandas build pandas into the standard library." The one real thing that makes
+pandas a different tool from numpy, not just numpy-with-more-functions: **heterogeneous, labeled,
+tabular data** — a `DataFrame` column can be numbers or strings, columns have names, rows aren't
+just an unlabeled index. That's the actual design constraint this package has to satisfy, not the
+several hundred methods pandas' own `DataFrame` class accumulated over a decade.
+
+```clojure
+(defenum Column
+  (NumericCol (data : NDArray @ Region))
+  (StringCol  (data : (Vec String) @ Region)))
+
+(defstruct DataFrame
+  (columns : (Vec Column) @ Region)
+  (column-names : (Vec String) @ Region)
+  (row-count : I32))
+
+(defn read-csv [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result DataFrame IoError) @ Region)
+(defn column [(df : &DataFrame) (name : String @ :region/scratch)]
+  : (Result (&Column) ColumnNotFoundError))
+(defn select [(df : &DataFrame) (names : (Vec String) @ :region/scratch) (dest : Arena @ Region)]
+  : (Result DataFrame ColumnNotFoundError) @ Region)
+(defn filter [(df : &DataFrame) (pred : (Fn [I32] Bool)) (dest : Arena @ Region)]
+  : DataFrame @ Region)
+(defn group-by [(df : &DataFrame) (name : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec DataFrame) ColumnNotFoundError) @ Region)
+```
+
+Deliberately **not** included: `merge`/`join` (real, needed eventually, but a genuinely bigger
+design question — pandas' own join semantics are notoriously subtle around index alignment and
+NaN handling — left for whoever actually needs cross-DataFrame joins to ground against a real use
+case), pivot tables, and time-series-specific indexing (pandas' `DatetimeIndex` machinery is close
+to its own subsystem, not a `dataframe`-package afterthought). `read-csv` is included because it's
+the one I/O path every real pandas program starts from — without it this package can't even be
+exercised by a real `.prn` program, the same "would be write-only without it" reasoning `buffer`'s
+own `get-data` used above.
+
+**Same honest limitation as `array`/`linalg`/`stats`**: a real fast CSV parser and a real
+columnar-scan `filter`/`group-by` implementation are both genuine engineering, not specified by
+the signatures above — flagged, not resolved here.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - **Collections beyond `Vec`/`Map` literals** — `[...]`/`{...}` are core syntax (NORTHSTAR
