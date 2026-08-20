@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 標準函式庫大量擴充:regex 全引擎家族、grep/sed/awk、vec/map、net tcp/udp/http、內建 sdl2、editor/*、otp (Erlang 風格 + scheduler)、media (audio/codec/stream)、sql 建構區塊、gpt2 移植數值套件全數轉為真實 .prn 原始碼(parena parse 驗證通過);NORTHSTAR 加入創辦人使命宣言;PITVIPER 修復 WSL 誤判 bug (sess-20260820-0649-a3f19d93)
 - STDLIB.md: multi-engine regex family (regex/syntax, regex/nfa linear-guarantee, regex/pcre full backtracking, regex/posix, regex/glob) plus grep/sed/awk built on top; new expr + io/read-line dependencies; explicit batteries-included scope note (sess-20260820-0649-a3f19d93)
 - Migrated to Bazel as primary build system (bazelisk installed, MODULE.bazel/BUILD.bazel/.bazelrc with a real --config=asan, CI updated, verified green). Extended stdlib design: dataframe (pandas-equivalent), nn/tokenizer/sort + io/read-floats (grounded in porting the real gpt2-alpine-c source). (sess-20260820-0649-a3f19d93)
 
