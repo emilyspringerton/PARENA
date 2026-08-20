@@ -58,6 +58,16 @@ jobs:
           gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -c \
             -o "$(pwd)/dist_valid_only.o" "$(pwd)/dist_valid_only.c"
 
+      - name: Install Valgrind (CI runner, not the interactive dev sandbox -- apt is normal here)
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Domain 4 — memory verification (runs the real emitted program under ASan+UBSan and
+          Valgrind; also confirms a deliberately-broken fixture actually gets caught)
+        run: |
+          set -euo pipefail
+          make build
+          make test-domain4
+
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,
       # GoblinFoxDragon, BRAWLPIT, SHANKPIT) uploads its built binary via
