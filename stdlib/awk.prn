@@ -1,0 +1,65 @@
+;; stdlib/awk.prn — depends on regex/pcre, expr, vec, string. Design:
+;; STDLIB.md "grep/sed/awk" section. run reads line-at-a-time (io/
+;; read-line), splits into a Record via string/split, then for every
+;; rule whose pattern matches (or is None -- unconditional) evaluates
+;; its action through expr/eval against a bindings map seeded with
+;; NR/NF/$1../$N -- awk's own real variable-naming convention.
+
+(module awk)
+(import regex/pcre)
+(import expr)
+(import vec)
+(import string)
+(import io)
+(import map)
+(export run)
+
+(defstruct AwkRule
+  (pattern : (Option Regex) @ Region)
+  (action  : String @ Region))
+
+(defstruct AwkProgram (rules : (Vec AwkRule) @ Region))
+(defstruct Record (fields : (Vec String) @ Region) (nr : I32))
+
+(defn run [(!f : FileHandle @ :region/task) (program : &AwkProgram) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region
+  (loop [nr 1]
+    (match (io/read-line !f)
+      ((Ok (Some line))
+        (do
+          (run-rules (get-field program :rules) (record-from-line line nr dest) dest)
+          (recur (+ nr 1))))
+      ((Ok None) (Ok unit))
+      ((Err e) (Err e)))))
+
+(defn record-from-line [(line : String @ Region) (nr : I32) (dest : Arena @ Region)]
+  : Record @ Region
+  {:fields (string/split line " " dest) :nr nr})
+
+(defn run-rules [(rules : &(Vec AwkRule)) (rec : Record) (dest : Arena @ Region)]
+  : Unit
+  (loop [i 0]
+    (when (< i (vec/len rules))
+      (let [rule (vec/get rules i)]
+        (when (rule-matches? rule rec dest)
+          (expr/eval (get-field rule :action) &(bindings-for rec dest) dest)))
+      (recur (+ i 1)))))
+
+(defn rule-matches? [(rule : &AwkRule) (rec : Record) (dest : Arena @ Region)]
+  : Bool
+  (match (get-field (deref rule) :pattern)
+    (None true)
+    ((Some re) (match (regex/pcre/is-match &re (join-fields rec dest)) ((Ok m) m) ((Err _) false)))))
+
+;; bindings-for seeds NR/NF/$1../$N — the real awk variable surface a
+;; program's action expressions reference.
+(defn bindings-for [(rec : Record) (dest : Arena @ Region)]
+  : (Map String ExprValue) @ Region
+  (let [m (map/new dest)]
+    (map/set! &m "NR" (expr/Num (get-field rec :nr)))
+    (map/set! &m "NF" (expr/Num (vec/len &(get-field rec :fields))))
+    (loop [i 0]
+      (when (< i (vec/len &(get-field rec :fields)))
+        (map/set! &m (concat-field-name i dest) (expr/Str (deref (vec/get &(get-field rec :fields) i))))
+        (recur (+ i 1))))
+    m))

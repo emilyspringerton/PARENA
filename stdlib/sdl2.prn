@@ -1,0 +1,81 @@
+;; stdlib/sdl2.prn — built-in, no import needed anywhere else in this tree
+;; (founder: "SDL2 is built in"). Design: STDLIB.md "sdl2" section. Every
+;; call below is a real, grepped SDL2 call from BRAWLPIT/SHANKPIT/
+;; REDGARDEN/PITVIPER/GoblinFoxDragon, function names mirroring the real
+;; SDL2 C API translated to kebab-case ("same APIs"), thin #target
+;; inline-c wrappers -- not a redesigned windowing API.
+
+(module sdl2)
+(export init quit create-window destroy-window poll-event get-keyboard-state
+        get-mouse-state set-relative-mouse-mode get-ticks delay
+        get-clipboard-text set-cursor open-audio-device queue-audio)
+
+(defn init []
+  : (Result Unit Sdl2Error)
+  #target
+  {:c (inline-c "SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) == 0 ? OK : ERR")})
+
+(defn quit []
+  : Unit
+  #target
+  {:c (inline-c "SDL_Quit();")})
+
+(defn create-window [(title : String @ :region/scratch) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result Window Sdl2Error) @ Region
+  #target
+  {:c (inline-c "SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_SHOWN)")})
+
+(defn destroy-window [(!w : Window)]
+  : Unit
+  #target
+  {:c (inline-c "SDL_DestroyWindow(w.handle);")})
+
+(defn poll-event []
+  : (Option Event)
+  #target
+  {:c (inline-c "sdl_poll_event_to_option()")})   ; wraps SDL_PollEvent's own int return
+
+(defn get-keyboard-state []
+  : &(Vec Bool)
+  #target
+  {:c (inline-c "SDL_GetKeyboardState(NULL)")})
+
+(defn get-mouse-state []
+  : (I32 I32 I32)
+  #target
+  {:c (inline-c "sdl_mouse_state_tuple()")})   ; wraps SDL_GetMouseState(&x, &y) + button mask
+
+(defn set-relative-mouse-mode [(on : Bool)]
+  : Unit
+  #target
+  {:c (inline-c "SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);")})
+
+(defn get-ticks []
+  : I32
+  #target
+  {:c (inline-c "(int32_t)SDL_GetTicks()")})
+
+(defn delay [(ms : I32)]
+  : Unit
+  #target
+  {:c (inline-c "SDL_Delay((Uint32)ms);")})
+
+(defn get-clipboard-text [(dest : Arena @ Region)]
+  : (Result String Sdl2Error) @ Region
+  #target
+  {:c (inline-c "sdl_clipboard_text_into(dest)")})
+
+(defn set-cursor [(cursor : SystemCursor)]
+  : Unit
+  #target
+  {:c (inline-c "SDL_SetCursor(SDL_CreateSystemCursor(cursor_to_sdl(cursor)));")})
+
+(defn open-audio-device [(dest : Arena @ Region)]
+  : (Result AudioDevice Sdl2Error) @ Region
+  #target
+  {:c (inline-c "sdl_open_default_audio_device(dest)")})
+
+(defn queue-audio [(!dev : &AudioDevice) (samples : &NDArray)]
+  : (Result Unit Sdl2Error)
+  #target
+  {:c (inline-c "SDL_QueueAudio(dev->id, samples->data, samples->shape[0] * sizeof(float)) == 0 ? OK : ERR")})

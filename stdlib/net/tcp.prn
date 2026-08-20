@@ -1,0 +1,33 @@
+;; stdlib/net/tcp.prn — depends on string. Design: STDLIB.md "net/tcp"
+;; section. Connection-oriented; thin FFI over real BSD sockets, the same
+;; primitive REDGARDEN/SHANKPIT's own UDP servers sit on top of, just the
+;; TCP half of it.
+
+(module net/tcp)
+(import string)
+(export listen accept connect read write)
+
+(defn listen [(port : I32) (dest : Arena @ Region)]
+  : (Result TcpListener NetError) @ Region
+  #target
+  {:c (inline-c "tcp_listen(port, dest)")})
+
+(defn accept [(!l : &TcpListener) (dest : Arena @ Region)]
+  : (Result TcpStream NetError) @ Region
+  #target
+  {:c (inline-c "tcp_accept(l, dest)")})
+
+(defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result TcpStream NetError) @ Region
+  #target
+  {:c (inline-c "tcp_connect(host, port, dest)")})
+
+(defn read [(!s : &mut TcpStream) (dest : Arena @ Region)]
+  : (Result String NetError) @ Region
+  #target
+  {:c (inline-c "tcp_read(s, dest)")})
+
+(defn write [(!s : &mut TcpStream) (data : String @ Region)]
+  : (Result I32 NetError)
+  #target
+  {:c (inline-c "tcp_write(s, data)")})

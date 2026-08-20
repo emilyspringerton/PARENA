@@ -1,0 +1,31 @@
+;; stdlib/sed.prn — depends on regex/pcre, io, string. Design: STDLIB.md
+;; "grep/sed/awk" section. substitute streams via io/read-line (the new
+;; dependency this thread added specifically because sed needed it), one
+;; s/pattern/replacement/ pass per line via regex/pcre's own replace.
+
+(module sed)
+(import regex/pcre)
+(import io)
+(import string)
+(export substitute)
+
+(defn substitute [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
+                   (replacement : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result String IoError) @ Region
+  (let [budget {:max-steps 100000}]
+    (match (regex/pcre/compile pattern budget dest)
+      ((Ok re) (stream-substitute !f re replacement dest))
+      ((Err e) (Err (IoError "bad pattern"))))))
+
+(defn stream-substitute [(!f : FileHandle @ :region/task) (re : &Regex)
+                          (replacement : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result String IoError) @ Region
+  (let [out (alloc dest String 0)]
+    (loop []
+      (match (io/read-line !f)
+        ((Ok (Some line))
+          (do
+            (string/concat out (regex/pcre/replace re line replacement dest) dest)
+            (recur)))
+        ((Ok None) (Ok out))
+        ((Err e) (Err e))))))

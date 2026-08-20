@@ -1,0 +1,47 @@
+;; stdlib/io.prn — depends on string. Design: STDLIB.md "io" section.
+;; write-string/close/read-string are grounded in NORTHSTAR's own
+;; write-log-and-close example; read-floats matches gpt2.c's own
+;; fread_or_fail raw weight loading; read-line is the new dependency
+;; sed/awk needed (added this thread) for line-at-a-time streaming.
+
+(module io)
+(import string)
+(export open close write-string read-string read-line read-floats)
+
+(defenum OpenMode (Read) (Write) (Append))
+
+(defn open [(path : String @ :region/scratch) (mode : OpenMode)]
+  : (Result FileHandle IoError) @ :region/task
+  #target
+  {:c (inline-c "fopen(path, mode_to_c_str(mode))")})
+
+(defn close [(!f : FileHandle @ :region/task)]
+  : (Result Unit IoError) @ :region/scratch
+  #target
+  {:c (inline-c "fclose(f) == 0 ? OK : ERR")})
+
+(defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch)]
+  : (Result Unit IoError) @ :region/scratch
+  #target
+  {:c (inline-c "fputs(s, f) >= 0 ? OK : ERR")})
+
+(defn read-string [(!f : FileHandle @ :region/task) (buf : Arena @ :region/buffer)]
+  : (Result String IoError) @ :region/buffer
+  #target
+  {:c (inline-c "read_whole_file(f, buf)")})
+
+;; read-line — real dependency sed/awk need for line-at-a-time streaming;
+;; io/read-string alone reads a whole file, which sed's own s/// substitute
+;; can't stream against a large input with.
+(defn read-line [(!f : FileHandle @ :region/task)]
+  : (Result (Option String) IoError) @ :region/scratch
+  #target
+  {:c (inline-c "read_one_line(f)")})   ; NULL at EOF -> None, not an Err
+
+;; read-floats — gpt2.c's own fread(buf, sizeof(float), n, f); returns
+;; array's own NDArray directly (1-D, shape=[n]) since model weights are
+;; immediately reshaped/matmul'd downstream.
+(defn read-floats [(!f : FileHandle @ :region/task) (n : I32) (dest : Arena @ Region)]
+  : (Result NDArray IoError) @ Region
+  #target
+  {:c (inline-c "read_n_floats_as_ndarray(f, n, dest)")})

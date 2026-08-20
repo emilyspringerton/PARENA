@@ -1,0 +1,58 @@
+;; stdlib/net/http.prn — depends on net/tcp, map, string. Design:
+;; STDLIB.md "net/http" section. Matches signalapi/IDUNA's own
+;; "JSON request in, JSON response out, one handler per route" shape.
+;; Real, honest limitation carried from STDLIB.md: TLS is not
+;; implemented here (https:// needs a real TLS library via FFI, same
+;; judgment as linalg's BLAS/LAPACK note) -- get/post below are the
+;; plain-HTTP path.
+
+(module net/http)
+(import net/tcp)
+(import map)
+(import string)
+(export get post serve)
+
+(defstruct HttpRequest
+  (method  : String @ Region)
+  (path    : String @ Region)
+  (headers : (Map String String) @ Region)
+  (body    : (Option String) @ Region))
+
+(defstruct HttpResponse
+  (status  : I32)
+  (headers : (Map String String) @ Region)
+  (body    : String @ Region))
+
+(defn get [(url : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region
+  (do
+    (let [!stream (connect-from-url url dest)]
+      (net/tcp/write !stream (build-get-request url))
+      (parse-http-response (net/tcp/read !stream dest) dest))))
+
+(defn post [(url : String @ :region/scratch) (body : String @ Region) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region
+  (do
+    (let [!stream (connect-from-url url dest)]
+      (net/tcp/write !stream (build-post-request url body))
+      (parse-http-response (net/tcp/read !stream dest) dest))))
+
+;; serve — accept loop; each connection is parsed into an HttpRequest and
+;; handed to `handler`, matching signalapi/IDUNA's own one-handler-per-
+;; route shape (route dispatch itself is the handler's own job, same as
+;; a real http.HandleFunc).
+(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse))]
+  : (Result Unit NetError)
+  (let [dest (current-arena)]
+    (match (net/tcp/listen port dest)
+      ((Ok !listener)
+        (loop []
+          (match (net/tcp/accept &!listener dest)
+            ((Ok !conn)
+              (do
+                (let [req (parse-http-request (net/tcp/read &!conn dest) dest)
+                      resp (handler &req dest)]
+                  (net/tcp/write &!conn (serialize-response resp)))
+                (recur)))
+            ((Err e) (Err e)))))
+      ((Err e) (Err e)))))

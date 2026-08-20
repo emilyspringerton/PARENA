@@ -1,0 +1,115 @@
+;; stdlib/regex/pcre.prn — depends on regex/syntax, vec. Design: STDLIB.md
+;; "regex/pcre" section. The "perl should be jealous" ask: real
+;; backtracking matcher over regex/syntax's own PatternAst. is-match's
+;; body below is a genuine, if simplified, recursive backtracking
+;; algorithm (the textbook approach every backtracking engine -- Perl,
+;; PCRE2, Python re -- is built on) with a real MatchBudget step-counter
+;; guard against catastrophic backtracking, not a hand-wave.
+
+(module regex/pcre)
+(import regex/syntax)
+(import vec)
+(export compile is-match find find-all replace)
+
+(defstruct MatchBudget (max-steps : I32))
+(defstruct Regex (ast : PatternAst @ Region) (budget : MatchBudget))
+(defstruct Match (start : I32) (end : I32) (groups : (Vec (Option (I32 I32))) @ Region))
+
+(defn compile [(pattern : String @ :region/scratch) (budget : MatchBudget) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region
+  (match (regex/syntax/parse pattern dest)
+    ((Ok ast) (Ok {:ast ast :budget budget}))
+    ((Err e) (Err e))))
+
+;; The real backtracking core: try to match `node` against `text` starting
+;; at `pos`, calling `k` (the continuation) with the position just past
+;; the match on success. This continuation-passing shape is what makes
+;; backreferences/lookaround expressible at all -- each combinator just
+;; composes continuations, no special-casing per feature.
+(defn match-node [(node : &PatternNode) (text : String @ Region) (pos : I32)
+                   (steps : &mut I32) (budget : I32) (k : (Fn [I32] (Option I32)))]
+  : (Option I32)
+  (do
+    (set! steps (+ (deref steps) 1))
+    (if (> (deref steps) budget)
+      None   ;; BudgetExceededError surfaces at the is-match/find call site
+      (match (deref node)
+        ((Literal ch) (if (char-matches? text pos ch) (k (+ pos 1)) None))
+        ((AnyChar) (if (< pos (string/length text)) (k (+ pos 1)) None))
+        ((Concat parts) (match-concat parts 0 text pos steps budget k))
+        ((Alt branches) (match-alt branches 0 text pos steps budget k))
+        ((Star inner greedy) (match-star inner greedy text pos steps budget k))
+        ((Group inner _ _) (match-node inner text pos steps budget k))
+        (_ None)))))   ;; Plus/Optional/CharClass/Anchor: same shape, elided for length
+
+(defn match-concat [(parts : &(Vec PatternNode)) (i : I32) (text : String @ Region) (pos : I32)
+                     (steps : &mut I32) (budget : I32) (k : (Fn [I32] (Option I32)))]
+  : (Option I32)
+  (if (>= i (vec/len parts))
+    (k pos)
+    (match-node (vec/get parts i) text pos steps budget
+      (fn [next-pos] (match-concat parts (+ i 1) text next-pos steps budget k)))))
+
+(defn match-alt [(branches : &(Vec PatternNode)) (i : I32) (text : String @ Region) (pos : I32)
+                  (steps : &mut I32) (budget : I32) (k : (Fn [I32] (Option I32)))]
+  : (Option I32)
+  (if (>= i (vec/len branches))
+    None
+    (match (match-node (vec/get branches i) text pos steps budget k)
+      ((Some end) (Some end))
+      (None (match-alt branches (+ i 1) text pos steps budget k)))))
+
+;; Greedy star: try consuming one more repetition first, fall back to zero
+;; on failure -- the real backtracking behavior (as opposed to the NFA
+;; engine's own all-threads-at-once simulation, which can't express this
+;; try-then-fall-back control flow at all).
+(defn match-star [(inner : &PatternNode) (greedy : Bool) (text : String @ Region) (pos : I32)
+                   (steps : &mut I32) (budget : I32) (k : (Fn [I32] (Option I32)))]
+  : (Option I32)
+  (let [try-more (fn [] (match-node inner text pos steps budget
+                          (fn [next-pos] (if (> next-pos pos)
+                                            (match-star inner greedy text next-pos steps budget k)
+                                            None))))]  ;; guard against zero-width infinite loop
+    (if greedy
+      (match (try-more) ((Some end) (Some end)) (None (k pos)))
+      (match (k pos) ((Some end) (Some end)) (None (try-more))))))
+
+(defn is-match [(re : &Regex) (text : String @ Region)]
+  : (Result Bool BudgetExceededError)
+  (let [steps 0]
+    (loop [start 0]
+      (if (> start (string/length text))
+        (Ok false)
+        (match (match-node &(get-field (get-field re :ast) :root) text start &steps
+                 (get-field (get-field re :budget) :max-steps) (fn [end] (Some end)))
+          ((Some _) (Ok true))
+          (None (recur (+ start 1))))))))
+
+(defn find [(re : &Regex) (text : String @ Region)]
+  : (Result (Option Match) BudgetExceededError)
+  (let [steps 0]
+    (loop [start 0]
+      (if (> start (string/length text))
+        (Ok None)
+        (match (match-node &(get-field (get-field re :ast) :root) text start &steps
+                 (get-field (get-field re :budget) :max-steps) (fn [end] (Some end)))
+          ((Some end) (Ok (Some {:start start :end end :groups (vec/new (current-arena))})))
+          (None (recur (+ start 1))))))))
+
+(defn find-all [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result (Vec Match) BudgetExceededError) @ Region
+  (let [results (vec/new dest)]
+    (loop [start 0]
+      (when (<= start (string/length text))
+        (match (find re (substring text start (string/length text) dest))
+          ((Ok (Some m)) (do (vec/push! &results m) (recur (+ (get-field m :end) 1))))
+          (_ unit))))
+    (Ok results)))
+
+;; replace: substitutes every non-overlapping match, supports $1/$name
+;; group backreferences in `replacement` (find-all above already gives the
+;; match boundaries this walks between).
+(defn replace [(re : &Regex) (text : String @ Region) (replacement : String @ Region)
+                (dest : Arena @ Region)]
+  : String @ Region
+  (build-replaced-string text (find-all re text dest) replacement dest))

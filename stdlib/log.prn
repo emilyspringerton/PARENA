@@ -1,0 +1,23 @@
+;; stdlib/log.prn — depends on core only. Design: STDLIB.md "log" section.
+;; `info` is verbatim from NORTHSTAR.md's own safe-parse-int example;
+;; warn/error are the obvious same-shape siblings.
+
+(module log)
+(export info warn error)
+
+(defn info [(msg : String @ Region) (args : &Any ...)]
+  : Unit
+  (emit-line "INFO " msg args))
+
+(defn warn [(msg : String @ Region) (args : &Any ...)]
+  : Unit
+  (emit-line "WARN " msg args))
+
+(defn error [(msg : String @ Region) (args : &Any ...)]
+  : Unit
+  (emit-line "ERROR " msg args))
+
+(defn emit-line [(level : String @ Region) (msg : String @ Region) (args : &Any ...)]
+  : Unit
+  #target
+  {:c (inline-c "fprintf(stderr, \"%s%s\\n\", level, msg);")})

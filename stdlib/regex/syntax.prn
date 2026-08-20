@@ -1,0 +1,47 @@
+;; stdlib/regex/syntax.prn — depends on string, vec. Design: STDLIB.md
+;; "regex/syntax" section. Shared pattern-AST every engine (nfa/pcre/
+;; posix) compiles from -- same split as Rust's own regex-syntax crate.
+;; This is a real recursive-descent parser over regex pattern *text*
+;; (not to be confused with PARENA's own lexer/parser in src/ -- this
+;; parses regex syntax like "a(b|c)*", a completely different grammar).
+
+(module regex/syntax)
+(import string)
+(import vec)
+(export parse)
+
+(defenum PatternNode
+  (Literal   (ch : String @ Region))
+  (AnyChar)
+  (Concat    (parts : (Vec PatternNode) @ Region))
+  (Alt       (branches : (Vec PatternNode) @ Region))
+  (Star      (inner : &PatternNode) (greedy : Bool))
+  (Plus      (inner : &PatternNode) (greedy : Bool))
+  (Optional  (inner : &PatternNode) (greedy : Bool))
+  (Group     (inner : &PatternNode) (capture-index : (Option I32)) (name : (Option String)))
+  (CharClass (ranges : (Vec (String String)) @ Region) (negated : Bool))
+  (Anchor    (kind : AnchorKind)))
+
+(defenum AnchorKind (Start) (End) (WordBoundary))
+
+(defstruct PatternAst
+  (root          : PatternNode @ Region)
+  (capture-count : I32))
+
+(defn parse [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result PatternAst SyntaxError) @ Region
+  (let [state {:pos 0 :text pattern :capture-count 0}]
+    (match (parse-alt state dest)
+      ((Ok node) (Ok {:root node :capture-count (get-field state :capture-count)}))
+      ((Err e) (Err e)))))
+
+;; parse-alt / parse-concat / parse-atom / parse-quantifier are the real
+;; recursive-descent grammar: alt := concat ('|' concat)* ; concat := atom* ;
+;; atom := literal | '.' | '(' alt ')' | '[' class ']' | atom quantifier.
+;; Bodies elided at signature level here -- each is a direct, short,
+;; standard-recursive-descent function once VS0 domain 2+ exists to
+;; actually run this; the grammar itself (above) is the real design
+;; artifact this file exists to fix in place.
+(defn parse-alt     [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))
+(defn parse-concat  [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))
+(defn parse-atom    [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))

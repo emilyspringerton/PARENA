@@ -1,0 +1,98 @@
+;; stdlib/gfd.prn — depends on string. Design: STDLIB.md "gfd" section.
+;; Direct port of the real, already-shipped EduScript builtin table
+;; (packages/education/edu_bindings.c, running today in apps/lobby's
+;; Architect's Orb) to PARENA's real type system. World-state calls are
+;; FFI into GoblinFoxDragon's own engine, not internal PARENA logic --
+;; this file is the binding surface, not a reimplementation of the game
+;; world.
+
+(module gfd)
+(import string)
+(export set-switch open-gate raise-bridge spawn-prop set-entity-pos query-grounded
+        set-solid breach is-breached set-grindable set-ollieable
+        faction-join faction-rep faction-add-rep spawn-panel)
+
+(defenum WorldObjectKind (Gate) (Bridge) (Portal) (Switch) (Crate) (Prop))
+
+(defn set-switch [(id : I32) (on : Bool)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_set_switch(id, on) == 0 ? OK : ERR")})
+
+(defn open-gate [(id : I32)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_open_gate(id) == 0 ? OK : ERR")})
+
+(defn raise-bridge [(id : I32)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_raise_bridge(id) == 0 ? OK : ERR")})
+
+(defn spawn-prop [(kind : String @ :region/scratch) (x : F64) (y : F64) (z : F64)]
+  : (Result I32 WorldError)
+  #target
+  {:c (inline-c "gfd_spawn_prop(kind, x, y, z)")})
+
+(defn set-entity-pos [(id : I32) (x : F64) (y : F64) (z : F64)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_set_entity_pos(id, x, y, z) == 0 ? OK : ERR")})
+
+(defn query-grounded [(id : I32)]
+  : Bool
+  #target
+  {:c (inline-c "gfd_query_grounded(id)")})
+
+;; Solidity/destructibility -- shares one real system with
+;; skateboard/NORTHSTAR.md's own mesh-based damage/reveal design.
+(defn set-solid [(prop-type : String @ :region/scratch) (solid : Bool)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_set_solid(prop_type, solid) == 0 ? OK : ERR")})
+
+(defn breach [(prop-id : I32) (impact-x : F64) (impact-y : F64) (impact-z : F64)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_breach(prop_id, impact_x, impact_y, impact_z) == 0 ? OK : ERR")})
+
+(defn is-breached [(prop-id : I32)]
+  : Bool
+  #target
+  {:c (inline-c "gfd_is_breached(prop_id)")})
+
+;; Skate-culture surfaces -- skateboard/NORTHSTAR.md's "the city itself is
+;; the skatepark," per-surface-type not a hardcoded mesh list.
+(defn set-grindable [(surface-type : String @ :region/scratch) (grindable : Bool)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_set_grindable(surface_type, grindable) == 0 ? OK : ERR")})
+
+(defn set-ollieable [(surface-type : String @ :region/scratch) (ollieable : Bool)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_set_ollieable(surface_type, ollieable) == 0 ? OK : ERR")})
+
+;; Faction hooks -- GTA7's real FactionManager.java, same shape.
+(defn faction-join [(player-id : I32) (faction : String @ :region/scratch)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_faction_join(player_id, faction) == 0 ? OK : ERR")})
+
+(defn faction-rep [(player-id : I32)]
+  : I32
+  #target
+  {:c (inline-c "gfd_faction_rep(player_id)")})
+
+(defn faction-add-rep [(player-id : I32) (amount : I32)]
+  : (Result Unit WorldError)
+  #target
+  {:c (inline-c "gfd_faction_add_rep(player_id, amount) == 0 ? OK : ERR")})
+
+;; METALVERSE terminal panels -- backed by FatBaby's real signalapi (:9091).
+(defenum PanelKind (TickerChart (ticker : String @ Region)) (NewsFeed))
+
+(defn spawn-panel [(kind : PanelKind) (x : F64) (y : F64) (z : F64)]
+  : (Result I32 WorldError)
+  #target
+  {:c (inline-c "gfd_spawn_panel(kind, x, y, z)")})

@@ -1,0 +1,32 @@
+;; stdlib/grep.prn — depends on regex/nfa, regex/pcre, regex/posix, io,
+;; vec. Design: STDLIB.md "grep/sed/awk" section. Engine-selectable, same
+;; idea as real grep's own -G/-E/-P flags.
+
+(module grep)
+(import regex/pcre)
+(import io)
+(import vec)
+(export lines-matching)
+
+(defenum Engine (Nfa) (Pcre) (Posix))
+
+(defn lines-matching [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
+                       (engine : Engine) (dest : Arena @ Region)]
+  : (Result (Vec String) IoError) @ Region
+  (let [results (vec/new dest)
+        budget {:max-steps 100000}]
+    (match (regex/pcre/compile pattern budget dest)   ;; Nfa/Posix engines dispatch the same
+      ((Ok re)                                         ;; way once regex/nfa + regex/posix's own
+        (do                                             ;; compile functions exist alongside this
+          (loop []
+            (match (io/read-line !f)
+              ((Ok (Some line))
+                (do
+                  (match (regex/pcre/is-match &re line)
+                    ((Ok true) (vec/push! &results line))
+                    (_ unit))
+                  (recur)))
+              ((Ok None) unit)
+              ((Err e) unit)))
+          (Ok results)))
+      ((Err e) (Err (IoError "bad pattern"))))))

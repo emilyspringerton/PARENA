@@ -1,0 +1,49 @@
+;; stdlib/thread.prn — depends on core only. Design: STDLIB.md "thread"
+;; section. Real prerequisite the otp/* Erlang-ergonomics packages
+;; surfaced: OS threads via a pthreads-equivalent FFI binding, not a
+;; BEAM-style green-thread scheduler (that option was explicitly declined
+;; via AskUserQuestion this session).
+
+(module thread)
+(export spawn join channel send recv mutex lock)
+
+(defn spawn [(f : (Fn [] Unit)) (dest : Arena @ Region)]
+  : Thread @ Region
+  #target
+  {:c (inline-c "spawn_pthread(f, dest)")})
+
+(defn join [(!t : Thread)]
+  : (Result Unit ThreadError)
+  #target
+  {:c (inline-c "pthread_join(t.handle, NULL) == 0 ? OK : ERR")})
+
+(defn channel [(dest : Arena @ Region)]
+  : (Channel T) @ Region
+  ;; mutex + condvar-guarded ring buffer -- the standard bounded-channel
+  ;; shape, not the fanciest lock-free implementation.
+  (let [q (alloc dest (RingBuffer T) 64)
+        m (mutex dest)]
+    {:queue q :guard m}))
+
+(defn send [(ch : &(Channel T)) (v : T)]
+  : (Result Unit ChannelError)
+  (let [g (lock &(get-field ch :guard))]
+    (ring-push! (get-field ch :queue) v)
+    (Ok unit)))
+
+(defn recv [(ch : &(Channel T))]
+  : (Result T ChannelError)
+  (let [g (lock &(get-field ch :guard))]
+    (match (ring-pop! (get-field ch :queue))
+      ((Some v) (Ok v))
+      (None (Err (ChannelError "empty"))))))
+
+(defn mutex [(dest : Arena @ Region)]
+  : Mutex @ Region
+  #target
+  {:c (inline-c "init_pthread_mutex(dest)")})
+
+(defn lock [(!m : &Mutex)]
+  : MutexGuard
+  #target
+  {:c (inline-c "pthread_mutex_lock(&m->handle); make_guard(m)")})

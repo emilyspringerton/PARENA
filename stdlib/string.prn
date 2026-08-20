@@ -1,0 +1,56 @@
+;; stdlib/string.prn — depends on core only. Design: STDLIB.md "string"
+;; section. parse-i32 is verbatim from NORTHSTAR.md's own safe-parse-int
+;; source example, not invented here; length/concat/split are the minimum
+;; a "no arrays yet but has Strings" language needs, per that section's
+;; own reasoning.
+
+(module string)
+(import vec)
+(export parse-i32 length concat split)
+
+(defn length [(s : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "(int32_t)strlen(s)")})
+
+(defn parse-i32 [(s : String @ :region/scratch)]
+  : (Result I32 ParseError) @ :region/scratch
+  (if (is-valid-i32-text? s)
+    (Ok (raw-parse-i32 s))
+    (Err (ParseError "not a valid integer"))))
+
+(defn starts-with-sign? [(s : String @ Region)]
+  : Bool
+  (or (str-eq? (substring s 0 1 s) "-") (str-eq? (substring s 0 1 s) "+")))
+
+(defn is-valid-i32-text? [(s : String @ Region)]
+  : Bool
+  (let [n (length s)]
+    (if (= n 0)
+      false
+      (loop [i (if (starts-with-sign? s) 1 0)
+             ok true]
+        (if (>= i n)
+          (and ok (> n (if (starts-with-sign? s) 1 0)))
+          (recur (+ i 1) (and ok (is-digit? (substring s i (+ i 1) s)))))))))
+
+(defn concat [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String (+ (length a) (length b)))]
+    #target
+    {:c (inline-c "strcpy(out, a); strcat(out, b);")}
+    out))
+
+;; split returns every substring of `s` delimited by `sep`, via vec/push!
+;; onto a Vec allocated in `dest` — a real, if simple, single-pass scan.
+(defn split [(s : String @ :region/scratch) (sep : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Vec String) @ Region
+  (let [result (vec/new dest)]
+    (loop [start 0
+           i 0
+           n (length s)]
+      (cond
+        ((>= i n) (do (vec/push! &result (substring s start i dest)) result))
+        ((char-at s i (char-at sep 0)) (do (vec/push! &result (substring s start i dest))
+                                            (recur (+ i 1) (+ i 1) n)))
+        (true (recur start (+ i 1) n))))))

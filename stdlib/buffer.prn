@@ -1,0 +1,20 @@
+;; stdlib/buffer.prn — depends on core only. Design: STDLIB.md "buffer"
+;; section. set-data is verbatim from VS0's own test.prn (both the valid
+;; and deliberately-invalid example call it); get-data is the obvious
+;; read-side counterpart.
+
+(module buffer)
+(export set-data get-data)
+
+(defn set-data [(!buf : Arena @ :region/buffer) (data : String @ Region)]
+  : (Result Unit RegionError) @ :region/buffer
+  ;; The actual escape check (Region(data) >= :region/buffer) is a region-
+  ;; analyzer responsibility (VS0 domain 2, not built yet) -- this body is
+  ;; the storage write only, matching test.prn's own valid-call shape.
+  (do
+    (raw-buffer-write! !buf data)
+    (Ok unit)))
+
+(defn get-data [(buf : Arena @ :region/buffer)]
+  : (Option String) @ :region/buffer
+  (raw-buffer-read buf))

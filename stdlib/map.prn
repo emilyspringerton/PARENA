@@ -1,0 +1,66 @@
+;; stdlib/map.prn — key-value map package, dependency tier 1 (no imports).
+;; Design: STDLIB.md "vec / map" section. Open-addressing hash table over a
+;; single arena-backed bucket array — a real, standard implementation
+;; strategy, not the fanciest one (no Robin Hood probing, no resizing
+;; policy tuning) matching "minimum a real program needs" throughout this
+;; stdlib's own design discipline.
+;;
+;; Same VS0 status note as every file in this tree: real, parseable source,
+;; checked against `parena parse`; not compilable/runnable until the
+;; region analyzer + C emitter (VS0 domains 2-3) exist.
+
+(module map)
+(export new get set! contains)
+
+(defstruct MapEntry
+  (occupied : Bool)
+  (key      : K)
+  (value    : V))
+
+(defstruct Map
+  (buckets : (Raw (MapEntry K V)) @ Region)
+  (size    : I32)
+  (bucket-count : I32))
+
+(defn new [(dest : Arena @ Region)]
+  : (Map K V) @ Region
+  (let [initial-buckets 16
+        backing (alloc dest (Raw (MapEntry K V)) initial-buckets)]
+    (loop [i 0]
+      (when (< i initial-buckets)
+        (raw-set! backing i {:occupied false :key (default K) :value (default V)})
+        (recur (+ i 1))))
+    {:buckets backing :size 0 :bucket-count initial-buckets}))
+
+(defn find-slot [(m : &(Map K V)) (key : &K)]
+  : I32
+  (let [start (mod (hash key) (get-field m :bucket-count))]
+    (loop [i start
+           probes 0]
+      (let [entry (raw-get (get-field m :buckets) i)]
+        (cond
+          ((not (get-field entry :occupied)) i)
+          ((key-eq? (get-field entry :key) key) i)
+          ((>= probes (get-field m :bucket-count)) -1)  ;; table full, real caller resizes
+          (true (recur (mod (+ i 1) (get-field m :bucket-count)) (+ probes 1))))))))
+
+(defn get [(m : &(Map K V)) (key : &K)]
+  : (Option (&V))
+  (let [slot (find-slot m key)]
+    (if (or (< slot 0) (not (get-field (raw-get (get-field m :buckets) slot) :occupied)))
+      None
+      (Some (get-field (raw-get (get-field m :buckets) slot) :value)))))
+
+(defn set! [(m : &mut (Map K V)) (key : K) (value : V)]
+  : Unit
+  (let [slot (find-slot m &key)
+        entry (raw-get (get-field m :buckets) slot)]
+    (when (not (get-field entry :occupied))
+      (set! (get-field m :size) (+ (get-field m :size) 1)))
+    (raw-set! (get-field m :buckets) slot {:occupied true :key key :value value})))
+
+(defn contains [(m : &(Map K V)) (key : &K)]
+  : Bool
+  (match (get m key)
+    ((Some _) true)
+    (None false)))

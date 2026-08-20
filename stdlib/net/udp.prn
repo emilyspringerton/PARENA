@@ -1,0 +1,25 @@
+;; stdlib/net/udp.prn — depends on string. Design: STDLIB.md "net/udp"
+;; section. Connectionless -- matches SHANKPIT's own :6969 server and
+;; REDGARDEN/GoblinFoxDragon's arena_server real sendto/recvfrom shape
+;; directly, not a redesigned socket API.
+
+(module net/udp)
+(import string)
+(export bind send-to recv-from)
+
+(defn bind [(port : I32) (dest : Arena @ Region)]
+  : (Result UdpSocket NetError) @ Region
+  #target
+  {:c (inline-c "udp_bind(port, dest)")})
+
+(defn send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region)]
+  : (Result I32 NetError)
+  #target
+  {:c (inline-c "sendto(sock->fd, data, strlen(data), 0, (struct sockaddr*)&addr, sizeof(addr))")})
+
+;; recv-from blocks; a real server owns its own poll loop around this,
+;; same as arena_server's own real recvfrom loop.
+(defn recv-from [(!sock : &UdpSocket) (dest : Arena @ Region)]
+  : (Result (String SocketAddr) NetError) @ Region
+  #target
+  {:c (inline-c "udp_recv_from(sock, dest)")})

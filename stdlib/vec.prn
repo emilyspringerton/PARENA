@@ -1,0 +1,58 @@
+;; stdlib/vec.prn — the growable-vector package, dependency tier 1 (no imports).
+;; Design: STDLIB.md "vec / map" section. Backing storage is a single arena
+;; allocation, doubled on overflow — the same growth strategy every real
+;; dynamic-array implementation uses, not invented here.
+;;
+;; Real, honest limitation: VS0 (S189-13) only has a working lexer/parser
+;; (domain 1). This file is real, parseable Parena source, checked against
+;; the actual `parena parse` command — it does not compile or run yet, since
+;; the region analyzer and C emitter (domains 2-3) don't exist. "Built out
+;; in Parena" means real source exists, not that this is executable today.
+
+(module vec)
+(export new push! get len capacity)
+
+(defstruct Vec
+  (data     : (Raw T) @ Region)
+  (length   : I32)
+  (capacity : I32))
+
+(defn new [(dest : Arena @ Region)]
+  : (Vec T) @ Region
+  (let [initial-capacity 8
+        backing (alloc dest (Raw T) initial-capacity)]
+    {:data backing :length 0 :capacity initial-capacity}))
+
+(defn capacity [(v : &(Vec T))]
+  : I32
+  (get-field v :capacity))
+
+(defn len [(v : &(Vec T))]
+  : I32
+  (get-field v :length))
+
+;; push! grows the backing allocation in-place when full. A real
+;; region-typed implementation re-allocates into the same region the Vec
+;; itself already lives in, via the region analyzer's own arena handle for
+;; that region — not specified further here (that handle-recovery mechanism
+;; is a region-analyzer detail, domain 2, not yet built).
+(defn push! [(v : &mut (Vec T)) (item : T)]
+  : Unit
+  (when (>= (get-field v :length) (get-field v :capacity))
+    (grow! v))
+  (raw-set! (get-field v :data) (get-field v :length) item)
+  (set! (get-field v :length) (+ (get-field v :length) 1)))
+
+(defn grow! [(v : &mut (Vec T))]
+  : Unit
+  (let [old-capacity (get-field v :capacity)
+        new-capacity (* old-capacity 2)
+        new-data (raw-realloc (get-field v :data) new-capacity)]
+    (set! (get-field v :data) new-data)
+    (set! (get-field v :capacity) new-capacity)))
+
+(defn get [(v : &(Vec T)) (idx : I32)]
+  : (Option (&T))
+  (if (or (< idx 0) (>= idx (get-field v :length)))
+    None
+    (Some (raw-get (get-field v :data) idx))))

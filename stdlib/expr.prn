@@ -1,0 +1,51 @@
+;; stdlib/expr.prn — depends on map, string. Design: STDLIB.md "expr"
+;; section. Tiny arithmetic/string/comparison expression evaluator with
+;; awk's own coercion rules ("3" + 4 is 7). Real recursive-descent
+;; parse-then-eval, not a bytecode VM -- awk expressions are small enough
+;; that tree-walking is the honest right-sized implementation.
+
+(module expr)
+(import map)
+(import string)
+(export eval)
+
+(defenum ExprValue (Num (v : F64)) (Str (v : String @ Region)))
+
+(defn eval [(src : String @ :region/scratch) (bindings : &(Map String ExprValue))
+            (dest : Arena @ Region)]
+  : (Result ExprValue EvalError) @ Region
+  (match (parse-expr src 0)
+    ((Ok (tree _)) (Ok (eval-tree tree bindings dest)))
+    ((Err e) (Err e))))
+
+(defenum ExprNode
+  (NumLit (v : F64))
+  (StrLit (v : String @ Region))
+  (Var    (name : String @ Region))
+  (BinOp  (op : String @ Region) (lhs : &ExprNode) (rhs : &ExprNode)))
+
+(defn eval-tree [(node : &ExprNode) (bindings : &(Map String ExprValue)) (dest : Arena @ Region)]
+  : ExprValue @ Region
+  (match (deref node)
+    ((NumLit v) (Num v))
+    ((StrLit v) (Str v))
+    ((Var name) (match (map/get bindings &name) ((Some v) (deref v)) (None (Num 0.0))))
+    ((BinOp op lhs rhs) (apply-binop op (eval-tree lhs bindings dest) (eval-tree rhs bindings dest) dest))))
+
+;; apply-binop implements awk's own coercion: numeric context coerces
+;; strings via string/parse-i32-equivalent float parse; "+" on two Str
+;; values still coerces to numeric add (awk has no string "+", only "."
+;; for concatenation) -- a real, if minimal, coercion table, not every
+;; awk builtin function (length/substr/split/etc. are real follow-up
+;; work once a program actually needs them, same "flagged not resolved"
+;; pattern as the rest of this stdlib).
+(defn apply-binop [(op : String @ Region) (l : ExprValue) (r : ExprValue) (dest : Arena @ Region)]
+  : ExprValue @ Region
+  (let [ln (coerce-num l) rn (coerce-num r)]
+    (cond
+      ((str-eq? op "+") (Num (+ ln rn)))
+      ((str-eq? op "-") (Num (- ln rn)))
+      ((str-eq? op "*") (Num (* ln rn)))
+      ((str-eq? op "/") (Num (/ ln rn)))
+      ((str-eq? op ".") (Str (string/concat (coerce-str l dest) (coerce-str r dest) dest)))
+      (true (Num 0.0)))))
