@@ -1,0 +1,6 @@
+;; examples/multifile_b.prn — companion to multifile_a.prn. Real, minimal
+;; cross-file use of T (defined in multifile_a.prn, not this file) --
+;; only compiles when both files are built together as one unit.
+
+(defn use-t [(t : T)] : I32
+  (get-field t :value))

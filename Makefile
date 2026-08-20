@@ -44,6 +44,9 @@ test-domain4: build
 test-domain5: build
 	bash tests/integration/run_domain5_check.sh
 
+test-multifile: build
+	bash tests/integration/run_multifile_check.sh
+
 tests/test_lexer_parser: tests/test_lexer_parser.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_lexer_parser tests/test_lexer_parser.c $(OBJ)
 

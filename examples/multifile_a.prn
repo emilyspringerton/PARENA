@@ -1,0 +1,9 @@
+;; examples/multifile_a.prn — real, minimal cross-file example for VS0's
+;; new multi-file `parena build a.prn b.prn -o out.c` support (2026-08-20).
+;; Defines T, used by multifile_b.prn's own `use-t` -- the same real
+;; shape ("a type defined in one file, used by a function in another")
+;; that kept blocking firefly/ladybug.prn and scarab.prn against
+;; firefly.prn when compiled standalone.
+
+(defstruct T
+  (value : I32))
