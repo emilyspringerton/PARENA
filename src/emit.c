@@ -1135,12 +1135,24 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
     if (type_node->type == NODE_SYMBOL) {
         if (is_symbol(type_node, "Unit")) return "void";
         if (is_symbol(type_node, "I32")) return "int";
+        /* Bool -> real C int, the same "real C bool-as-int" convention
+         * emit_binop's own comparison/boolean operators already report
+         * (see that function's own header comment) -- not a fresh
+         * choice invented here, matching what this compiler already
+         * does with truthiness everywhere else. C99's own <stdbool.h>
+         * `bool`/`true`/`false` would be the more idiomatic choice, but
+         * would require a new #include this emitter doesn't otherwise
+         * need and a new true/false literal in the lexer/emit_expr
+         * neither exist yet -- real, honest, deliberately deferred, not
+         * silently half-done. */
+        if (is_symbol(type_node, "Bool")) return "int";
+        if (is_symbol(type_node, "F64")) return "double";
         if (is_symbol(type_node, "String")) return "char *";
         if (find_enum_by_name(type_node->text)) return type_node->text;
         if (find_struct_by_name(type_node->text)) return type_node->text;
         return fail(arena, out_error,
                     "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
-                    "understands Unit/I32/String/a registered defenum/defstruct name so far)",
+                    "understands Unit/I32/Bool/F64/String/a registered defenum/defstruct name so far)",
                     type_node->text ? type_node->text : "?", type_node->line);
     }
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
@@ -1321,20 +1333,26 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL &&
-                   (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "String"))) {
-            /* A plain, non-region-annotated `I32`/`String` parameter -- the
-             * real shape stdlib/editor's own mod-surface files actually use
-             * for things like a gutter line number or an x/y pixel
-             * coordinate (editor/ui.prn's set-gutter-marker/show-popup),
-             * where there's genuinely no arena/region involved at all.
-             * Bound as a plain C value, not an `Arena *` -- real, narrower
-             * scope than the `Arena @ :region/x` path above, not a general
-             * type system (a param typed `Arena @ Region` with a bare,
-             * non-keyword region variable, or any other custom named type
-             * like `DiagnosticSeverity`, still falls through to the honest
-             * failure below -- VS0 has no generic region parameters or
-             * user-defined enums yet). */
-            const char *c_type = is_symbol(param->children[2], "I32") ? "int" : "char *";
+                   (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
+                    is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String"))) {
+            /* A plain, non-region-annotated `I32`/`Bool`/`F64`/`String`
+             * parameter -- the real shape stdlib/editor's own mod-surface
+             * files actually use for things like a gutter line number or
+             * an x/y pixel coordinate (editor/ui.prn's set-gutter-marker/
+             * show-popup), or gfd.prn's own `on : Bool` / `x : F64`
+             * world-position parameters, where there's genuinely no
+             * arena/region involved at all. Bound as a plain C value, not
+             * an `Arena *` -- real, narrower scope than the `Arena @
+             * :region/x` path above, not a general type system (a param
+             * typed `Arena @ Region` with a bare, non-keyword region
+             * variable, or any other custom named type like
+             * `DiagnosticSeverity`, still falls through to the honest
+             * failure below). */
+            const char *c_type = resolve_declared_type(arena, param->children[2], out_error);
+            if (!c_type) {
+                sb_free(&param_list);
+                return 0;
+            }
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&

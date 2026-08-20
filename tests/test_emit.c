@@ -290,6 +290,73 @@ int main(void) {
      * distinct per-field C types, matching stdlib's own real Point-like
      * shapes (net/http.prn's HttpRequest/HttpResponse, once Map support
      * lands separately). --- */
+    /* --- Bool and F64 now really work as plain parameter/return types --
+     * the real shape stdlib/gfd.prn's own set-switch (`on : Bool`) and
+     * spawn-prop/set-entity-pos (`x`/`y`/`z` : F64`) actually use. Bool
+     * maps to a real C int (the same "real C bool-as-int" convention
+     * emit_binop's own comparison operators already use), F64 to a real
+     * C double. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn set-switch [(id : I32) (on : Bool)]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"host_set_switch(id, on);\")})\n"
+            "(defn get-height [(x : F64) (z : F64)]\n"
+            "  : F64\n  #target\n  {:c (inline-c \"host_get_height(x, z)\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "Bool and F64 typed parameters/return types parse fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "Bool and F64 typed parameters/return types emit successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "int on __attribute__((unused))") != NULL,
+                  "a Bool parameter becomes a real plain C int");
+            CHECK(strstr(c_src, "double x __attribute__((unused))") != NULL &&
+                  strstr(c_src, "double z __attribute__((unused))") != NULL,
+                  "F64 parameters become real plain C doubles");
+            CHECK(strstr(c_src, "double get_height(") != NULL,
+                  "an F64 declared return type becomes a real C double signature");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- OK/ERR now really exist as real runtime macros -- the no-
+     * payload success/failure shorthand a real, multi-file stdlib
+     * convention (gfd.prn, thread.prn, io.prn, sdl2.prn, editor/
+     * buffer.prn, pentest/pcap.prn -- 18 real call sites) already
+     * assumed existed in its own #target inline-c bodies before this,
+     * caught missing by actually compiling gfd.prn's own real emitted C
+     * with gcc rather than trusting parena build's own success (which
+     * never validates inline-c content -- that's the whole point of the
+     * FFI trust boundary) meant the result was real, working C. This
+     * test only proves the emitter passes the raw OK/ERR text through
+     * verbatim (real gcc compilation of the runtime header itself is
+     * covered by the domain4 check and the manual gfd.prn verification
+     * this same commit's own message describes), not that OK/ERR
+     * resolve -- that's parena_runtime.h's own job now. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn set-switch [(id : I32) (on : Bool)]\n"
+            "  : (Result Unit WorldError)\n  #target\n"
+            "  {:c (inline-c \"host_set_switch(id, on) == 0 ? OK : ERR\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a #target body using the OK/ERR shorthand parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "a #target body using OK/ERR emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "host_set_switch(id, on) == 0 ? OK : ERR") != NULL,
+                  "the OK/ERR shorthand is passed through verbatim, trusted as real C (now backed by "
+                  "real macros in parena_runtime.h)");
+        }
+        arena_free_all(&arena);
+    }
+
     {
         Arena arena;
         arena_init(&arena);

@@ -83,4 +83,21 @@ static inline Option option_none(void) {
     return o;
 }
 
+/* OK / ERR -- the real no-payload success/failure shorthand a real,
+ * multi-file convention in stdlib's own #target inline-c bodies already
+ * assumes exists (gfd.prn, thread.prn, io.prn, sdl2.prn, editor/
+ * buffer.prn, pentest/pcap.prn -- 18 real call sites across 6 files, the
+ * common `some_c_call(...) == 0 ? OK : ERR` shape for a `Result Unit
+ * SomeError`-typed function whose real payload is Unit, not a value
+ * worth carrying). Missing until now -- caught by actually compiling
+ * gfd.prn's own real emitted C with gcc rather than trusting that
+ * `parena build`'s own success (it doesn't validate inline-c content,
+ * by design -- that's the whole point of the FFI trust boundary) meant
+ * the result was real, working C. Defined as macros, not `static
+ * inline` functions like `result_ok`/`result_err` above, since they
+ * need to be usable as bare ternary-branch expressions the way every
+ * real call site above already writes them. */
+#define OK (result_ok(NULL))
+#define ERR (result_err(NULL))
+
 #endif /* PARENA_RUNTIME_H */
