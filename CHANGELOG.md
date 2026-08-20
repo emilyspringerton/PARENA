@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 新增 STDLIB.md 缺口盤點文件:mapbuilder/tools.prn + world.prn 真實測試後找出的 8 個 VS0 編譯器缺口(多欄位 defenum payload、map 字面量 struct 建構、命名空間化 variant 建構、Vec 操作、參考型別、tuple 型別、set!、F64),規劃性質,尚未實作 (sess-20260820-0649-a3f19d93)
 - 泛用 Arena @ Region 支援(參數+回傳型別)+ 新增 pentest stdlib(nmap/Wireshark/sqlmap+Nikto/Aircrack-ng/John the Ripper+Hashcat/Metasploit FFI 綁定,5/6 檔案完整編譯成功);CI 綠燈 (commit d5456d1) (sess-20260820-0649-a3f19d93)
 - 新增 defenum:真正的使用者自訂 tagged union(重用 Result/Option 的 {tag; void *value;} 形狀),讓 stdlib/editor/events.prn 完整編譯成功;CI 綠燈 (commit 4830d02) (sess-20260820-0649-a3f19d93)
 - editor_plugin.prn 進 examples/,新增真正的 Bazel target(genrule 產生 C + cc_library 真的編譯驗證,DoD 同一套旗標);CI 綠燈 (commit 90a8cfa) (sess-20260820-0649-a3f19d93)
