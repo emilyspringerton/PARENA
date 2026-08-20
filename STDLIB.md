@@ -83,6 +83,8 @@ binding, not a language primitive).
 39. `firefly` — depends on `vec`, `string` (no other stdlib deps — the base testing library)
 40. `firefly/gomega` — depends on `firefly` only
 41. `scarab` — depends on `firefly`, `firefly/gomega`
+42. `compress/lz4` — depends on `string` only (FFI-bound)
+43. `pitviper/protocol` — depends on `net/tcp`, `string`, `vec`, `compress/lz4`
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1255,6 +1257,72 @@ tree that `run-suite` later walks — real, non-trivial runtime bookkeeping (Gin
 implementation does this with global mutable state + reflection-adjacent tricks), not specified in
 depth here; the signatures are real, the registration mechanism's own implementation is flagged as
 real follow-up work once VS0 can run enough Parena to build it against.
+
+### `pitviper/protocol` / `compress/lz4` — the custom remote-IDE protocol, resolved scope
+
+Founder: "basically i am extending my IDE which is actually this VPS" → "i am using pitviper to
+bring the affordances in a more gui way when we dont need to live in ssh necessarily" → "but if i
+can just pop open a gui nerd tree style thing for the current directory" → "and then it opens
+pitviper native vim on the local windows computer" → "and then it uses git to push the changes up
+to the server if we need to make custom edits" → separately, AskUserQuestion confirmed a **custom
+PITVIPER server** over adopting an existing remote-graphics protocol (Sixel/iTerm2 images), plus
+"all the packet hacks we can" / "lz4ify the fuck out of everything." Real, stated motivation for
+why this is worth building at all, not a speculative nice-to-have: "previously if i wanted to make
+file changes i would go on github" — the whole point is replacing a slow, disconnected GitHub-web-
+UI round-trip with a fast, local-editor loop directly against the VPS's own live state. Founder's
+own framing, live: "we are building crisper feedback loops with pitviper." The full real workflow,
+now concrete enough to design a real protocol against, not speculative:
+
+1. GUI popout (client-side, PITVIPER's own SDL2 rendering) requests a directory listing from a
+   small **server-side daemon** running on the VPS.
+2. Selecting a file fetches its real content over `ssh` (already designed above), opens it in
+   PITVIPER's own native, PARENA-authored vim-like editor — **locally, on the Windows machine**,
+   not rendered remotely. This is a real, deliberate architecture choice, not a detail: the "GUI
+   popout" protocol is for *browsing* (directory trees, panels), editing itself stays a real local
+   editor with real local responsiveness, the same reason VS Code's own Remote-SSH mode syncs file
+   content locally rather than streaming a remote text-editing UI.
+3. Edits happen locally; round-tripping back to the server is real, existing `git push` — not a
+   new PARENA-native git library, invoked as a real subprocess through `shell`/`pty` above. Scoped
+   deliberately narrow: reusing what already works (git) rather than reimplementing it.
+
+```clojure
+; pitviper/protocol — depends on net/tcp, string, vec
+(defenum Request
+  (ListDir (path : String @ Region))
+  (FetchFile (path : String @ Region)))   ; the actual bytes travel over ssh/exec, not this channel
+
+(defenum DirEntry (File (name : String @ Region)) (Dir (name : String @ Region)))
+(defenum Response
+  (DirListing (entries : (Vec DirEntry) @ Region))
+  (Error      (msg : String @ Region)))
+
+(defn serve   [(port : I32) (root : String @ :region/scratch)] : (Result Unit NetError))   ; the real "PITVIPER server" daemon
+(defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result ProtocolSession NetError) @ Region)
+(defn request [(!sess : &mut ProtocolSession) (req : Request) (dest : Arena @ Region)]
+  : (Result Response NetError) @ Region)
+```
+
+**`compress/lz4`** — depends on `string` only, FFI-bound to the real, tiny, widely-embedded LZ4
+reference implementation (same FFI-bind judgment as `ssh`/`crypto`/`media/codec` above — LZ4 is
+picked specifically, not zstd/gzip, because the founder's own ask was about keeping a live,
+interactive protocol *fast*, and LZ4's real, well-known niche is exactly "favor compression/
+decompression speed over ratio" for latency-sensitive links, not archival size):
+
+```clojure
+(defn compress   [(data : String @ Region) (dest : Arena @ Region)] : String @ Region)
+(defn decompress [(data : String @ Region) (original-size : I32) (dest : Arena @ Region)]
+  : (Result String CompressError) @ Region)
+```
+
+`pitviper/protocol/request`'s own real wire format would run every `Response` through
+`compress/lz4`'s `compress` before sending, `decompress` on receipt — real, direct application of
+"lz4ify the fuck out of everything," not a separate unused package.
+
+**Real, honest limitation**: this designs the protocol's real message shapes and the real
+compression choice; the server daemon's own file-system-watching/live-update behavior (does the
+GUI tree refresh automatically on remote changes, or only on demand?) is real, unresolved product
+design, not answered here — same "flagged, not resolved" pattern as everywhere else in this doc.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
