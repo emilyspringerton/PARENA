@@ -62,6 +62,34 @@ binding, not a language primitive).
 20. `editor/plugin`, `editor/buffer`, `editor/events` — depend on `string`, `vec`
 21. `editor/ui` — depends on `editor/events`, and *may* depend on `sdl2` once a shell is chosen
     (NORTHSTAR's own editor-shell question is still open — not resolved by this re-sort)
+22. `thread` — depends on `core` only (FFI to real OS threads, same tier reasoning as `net/tcp`)
+23. `otp/gen-server` — depends on `thread`, `map`
+24. `otp/supervisor` — depends on `otp/gen-server`
+25. `otp/ets` — depends on `thread`, `map`
+26. `media/audio` — depends on `sdl2`, `media/codec`
+27. `media/codec` — depends on `string` only (FFI-bound; the real codec library is the dependency,
+    not another PARENA package)
+28. `media/stream` — depends on `net/tcp`, `media/codec`, `vec`
+
+**Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
+this is *build/attention* priority, dependency-respecting but not identical to it, since a
+low-numbered dependency tier isn't automatically high-value on its own):
+
+1. **Foundational, blocks everything** — `vec`, `map`, `string`, `io`, `log`, `buffer` (nothing
+   else in this document is usable without these).
+2. **Directly blocks the two live product asks** (GFD web/mod-surface, already-shipping; MIXFORGE/
+   streaming, newly stated intent) — `sdl2`, `thread`, `net/tcp`+`net/udp`, `regex/pcre` (`awk`/
+   `sed`/`grep` all need it), `gfd`.
+3. **Second-order product-blocking** — `media/audio`, `media/codec`, `media/stream`, `net/http`,
+   `expr`, `awk`/`sed`/`grep` themselves, `otp/gen-server`+`otp/supervisor`+`otp/ets` (concurrency
+   ergonomics for whatever server process ends up running `media/stream`'s multi-destination
+   fan-out).
+4. **Real but not currently blocking a stated product** — `array`/`linalg`/`stats`/`dataframe`/
+   `nn`/`tokenizer`/`sort` (the gpt2-alpine-c-port + numpy/pandas-equivalent work, real and
+   grounded, but no live thread this session asked to build something on top of them yet),
+   `regex/syntax`+`regex/nfa`+`regex/posix`+`regex/glob` (regex/pcre alone unblocks `awk`/`sed`/
+   `grep`; the other three engines are completeness, not a live blocker), `editor/*` (blocked on
+   NORTHSTAR's own still-undecided shell question, not on this stdlib).
 
 Real, honest limitation restated once here rather than per-package below: VS0 only has a working
 *parser* (domain 1) — no region analyzer or C emitter yet (S189-13, domains 2-5 not started). Every
@@ -752,6 +780,97 @@ shell-specific work that can't be honestly designed until the shell itself is ch
 (defn show-diagnostic [(line : I32) (severity : DiagnosticSeverity) (msg : String @ Region)])
 (defn set-status-bar [(text : String @ Region)])
 (defn show-popup [(text : String @ Region) (x : I32) (y : I32)])
+```
+
+### `thread` — real prerequisite this pass surfaced, not previously listed anywhere
+
+Founder asked for OTP-ergonomics stdlib packages (below), which exposed a real gap: NORTHSTAR
+specifies zero concurrency primitives — no `spawn`, no channel, no mutex, nothing. Even
+"ergonomics only, no BEAM scheduler" (the founder's own resolved answer) still needs *some* real
+substrate under it. `thread` is that substrate: OS threads via a pthreads-equivalent FFI binding
+(same "call into a real, proven primitive" judgment as `linalg`'s BLAS/LAPACK note), not a
+green-thread scheduler — a real, honest, buildable minimum, not a BEAM reimplementation.
+
+```clojure
+(defn spawn  [(f : (Fn [] Unit)) (dest : Arena @ Region)] : Thread @ Region)
+(defn join   [(!t : Thread)] : (Result Unit ThreadError))
+(defn channel [(dest : Arena @ Region)] : (Channel T) @ Region)
+(defn send   [(ch : &(Channel T)) (v : T)] : (Result Unit ChannelError))
+(defn recv   [(ch : &(Channel T))] : (Result T ChannelError))
+(defn mutex  [(dest : Arena @ Region)] : Mutex @ Region)
+(defn lock   [(!m : &Mutex)] : MutexGuard)
+```
+
+### `otp/gen-server` / `otp/supervisor` / `otp/ets` — Erlang-stdlib ergonomics, resolved scope
+
+Founder: "ensure that the full erlang stdlib is included" → AskUserQuestion resolved **"OTP
+ergonomics only"** — real Erlang/OTP idioms (callback-module servers, supervision-tree restart
+policies, an in-memory keyed table) implemented on top of `thread`/`map` above, not on a BEAM-
+style preemptively-scheduled process runtime PARENA doesn't have and this pass explicitly declined
+to design (that would be its own NORTHSTAR-scale effort — the AskUserQuestion's own second option,
+not the one chosen).
+
+```clojure
+; otp/gen-server — callback-module pattern: init/handle-call/handle-cast, one thread per server
+(defstruct GenServer (state : &mut S) (inbox : (Channel Message)) (!worker : Thread))
+(defn start [(init : (Fn [] S)) (handle-call : (Fn [S Message] S)) (dest : Arena @ Region)]
+  : GenServer @ Region)
+(defn call [(!gs : &GenServer) (msg : Message)] : (Result Reply GenServerError))
+(defn cast [(!gs : &GenServer) (msg : Message)] : (Result Unit GenServerError))
+
+; otp/supervisor — restart policy on child GenServer crash, real "let it crash" ergonomics
+(defenum RestartPolicy (OneForOne) (OneForAll) (RestForOne))
+(defn start-link [(children : (Vec GenServer) @ Region) (policy : RestartPolicy)
+                   (dest : Arena @ Region)]
+  : Supervisor @ Region)
+
+; otp/ets — in-memory keyed table, mutex-guarded map/table (real ETS is a BEAM-native primitive;
+; here it's honestly just a thread-safe map/table, named for the ergonomics it mirrors)
+(defn new    [(dest : Arena @ Region)] : (EtsTable K V) @ Region)
+(defn insert [(t : &(EtsTable K V)) (key : K) (value : V)] : Unit)
+(defn lookup [(t : &(EtsTable K V)) (key : &K)] : (Option (&V)))
+```
+
+### `media/audio` / `media/codec` / `media/stream` — FFI-bound, resolved scope
+
+Founder: "and full audio apis" → "we are going to build djsoftware in PARENA too" → "MIXFORGE"
+(searched the whole monorepo for a prior spec per the founder's own "i dunno if we have the docs
+for that... its a very old thread" — confirmed genuinely nothing exists, MIXFORGE is new, not
+recovered) → "and full audio and video streaming codex" → "we are going to build media servers in
+this too" → AskUserQuestion resolved **"FFI-bind real libs"** — same judgment as `linalg`'s
+BLAS/LAPACK note, now applied explicitly to codecs rather than assumed. Video codecs (H.264/AV1-
+class) and full media-server engineering are each real, independent, FFmpeg/Icecast-scale efforts
+— this section designs the PARENA-facing call surface only; the actual encode/decode/mux work
+happens inside whatever real C library gets bound (most plausibly `libavcodec`/`libavformat` for
+codec, a real audio backend for `audio`), not reimplemented natively.
+
+```clojure
+; media/audio — the real, grepped `sdl2` audio calls, promoted to their own package since
+; DJ-software mixing is a genuinely separate concern from windowing/input
+(defn open-device [(dest : Arena @ Region)] : (Result AudioDevice AudioError) @ Region)
+(defn load [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result AudioClip AudioError) @ Region)     ; via media/codec below for compressed formats
+(defn play [(!dev : &AudioDevice) (clip : &AudioClip) (gain : F64)] : (Result Unit AudioError))
+(defn mix [(clips : &(Vec (AudioClip F64))) (dest : Arena @ Region)]
+  : AudioClip @ Region)   ; (AudioClip, per-clip gain) pairs — the real MIXFORGE crossfade primitive
+
+; media/codec — thin FFI wrapper, function names mirror the real bound library, same "same APIs"
+; judgment already applied to sdl2 above
+(defn decode [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result MediaFrame CodecError) @ Region)
+(defn encode [(frame : &MediaFrame) (format : CodecFormat) (dest : Arena @ Region)]
+  : (Result String CodecError) @ Region)
+
+; media/stream — the real, stated reason this is native and not a third-party SaaS: "dual stream
+; to multiple services... building our own solution for that for overhead and security reasons" —
+; owning the relay avoids per-destination proxy overhead and keeps stream keys/credentials off a
+; third-party relay
+(defn connect-destination [(url : String @ :region/scratch) (key : String @ :region/scratch)
+                            (dest : Arena @ Region)]
+  : (Result StreamDest NetError) @ Region)   ; built on net/tcp below
+(defn publish [(frame : &MediaFrame) (destinations : &(Vec StreamDest))]
+  : (Result Unit StreamError))               ; fan-out to every connected destination at once
+```
 ```
 
 ## Explicitly not designed yet — real gaps, not silently filled
