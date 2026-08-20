@@ -1,4 +1,5 @@
 ## 2026-08-20
+- LONGMA(streaming CSV chunker,github.com/emilyspringerton/longma)功能真正移植進 PARENA:新增 stdlib/csv.prn,並在 longma fork 本身建立完整 Bazel+PARENA 交叉 repo 建置(MODULE.bazel git_override 釘死 commit、BUILD.bazel genrule+cc_library、CI workflow),本地驗證 bazel clean 後重新建置零警告全過;遠端 CI 因 GitHub API rate limit 待後續確認,誠實記錄 (sess-20260820-0649-a3f19d93)
 - resolve_declared_type 支援 Bool/F64,修好 parena_runtime.h 缺少的 OK/ERR 巨集(6 個 stdlib 檔案、18 個真實呼叫點依賴這個),gfd.prn(METALVERSE)整個檔案現在完整編譯成功並用真正 gcc 驗證零警告;CI 綠燈 (commit c9fc3b5) (sess-20260820-0649-a3f19d93)
 - VS0 domain 5(CLI Runner)完成 + 自動化驗證,全部 5 個 DoD domain 收尾;新增 tests/integration/run_domain5_check.sh 接進 CI;修好一個過程中自己引入的 CI YAML 冒號解析 bug;CI 綠燈 (commit 54d1ae7,修復 c308f20) (sess-20260820-0649-a3f19d93)
 - 新增 STDLIB.md 缺口盤點文件:mapbuilder/tools.prn + world.prn 真實測試後找出的 8 個 VS0 編譯器缺口(多欄位 defenum payload、map 字面量 struct 建構、命名空間化 variant 建構、Vec 操作、參考型別、tuple 型別、set!、F64),規劃性質,尚未實作 (sess-20260820-0649-a3f19d93)
