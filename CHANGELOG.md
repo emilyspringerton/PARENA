@@ -1,4 +1,5 @@
 ## 2026-08-20
+- C emitter 加入算術/比較/if/一般函式呼叫,朝自我託管邁進一步。CI 已確認綠燈(run 32384381363) (sess-20260820-0649-a3f19d93)
 - pitviper/tiling(真實 i3wm 互動模型)stdlib 設計 (sess-20260820-0649-a3f19d93)
 - pentest/* 六個套件(Kali 對應工具集)、idvault + pitviper/expand(刻意淺層設計)、依賴關係圖完整重新整理(57 個套件) (sess-20260820-0649-a3f19d93)
 - 六個新 stdlib 套件設計:media/tts(F5-TTS sidecar)、pitviper/quicklook(macOS Quick Look 互動模型)、net/vpn+packetradio+mesh(WireGuard/AX.25+APRS/Meshtastic)、cli+config(Cobra/Viper 對應,自我託管的真實第一目標) (sess-20260820-0649-a3f19d93)
