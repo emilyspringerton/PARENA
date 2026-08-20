@@ -286,6 +286,73 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- defstruct now really works: a real, plain record type with
+     * distinct per-field C types, matching stdlib's own real Point-like
+     * shapes (net/http.prn's HttpRequest/HttpResponse, once Map support
+     * lands separately). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn origin [] : Point (Point 0 0))\n"
+            "(defn get-x [(p : Point)] : I32 (get-field p :x))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defstruct with I32 fields, construction, and get-field parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "defstruct + construction + get-field emit successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "typedef struct {") != NULL, "defstruct emits a real C struct typedef");
+            CHECK(strstr(c_src, "int x;") != NULL && strstr(c_src, "int y;") != NULL,
+                  "each field gets its own real, distinct C type, not a shared void *");
+            CHECK(strstr(c_src, "static inline Point Point_new(int x, int y)") != NULL,
+                  "a real, callable positional constructor is emitted");
+            CHECK(strstr(c_src, "return Point_new(0, 0);") != NULL,
+                  "a (Point 0 0) construction call emits as a real Point_new(0, 0) call");
+            CHECK(strstr(c_src, "Point p __attribute__((unused))") != NULL,
+                  "a parameter typed as a registered defstruct becomes a real plain C value of that type");
+            CHECK(strstr(c_src, "return (p).x;") != NULL,
+                  "(get-field p :x) emits as a real, direct C field access");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: constructing a defstruct with the wrong
+     * number of arguments, or accessing a field it doesn't have, is
+     * reported, not silently zero-filled or miscompiled. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn bad [] : Point (Point 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a construction call with too few arguments parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "a defstruct construction with the wrong argument count fails honestly");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn bad [(p : Point)] : I32 (get-field p :z))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "get-field on a nonexistent field parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "get-field naming a field the struct doesn't have fails honestly");
+        arena_free_all(&arena);
+    }
+
     /* --- a generic, bare-symbol region parameter (`Arena @ Region`, not
      * a literal `:region/x` keyword) is now recognized as a real
      * region-scoped Arena parameter -- the shape stdlib/cache.prn's own

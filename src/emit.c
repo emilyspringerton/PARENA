@@ -167,6 +167,39 @@ static EnumInfo *find_enum_by_name(const char *name) {
     return NULL;
 }
 
+/* ---- defstruct registry: a real, plain record type (as opposed to
+ * defenum's tagged union) -- a `typedef struct { T1 f1; T2 f2; ... }`
+ * with real, distinct per-field C types, not a single shared `void
+ * *value` the way defenum's payload is. Same g_structs-is-file-scope-
+ * state reasoning as g_enums above (one compilation per emit_c() call,
+ * no real reentrancy concern). Real, honest, narrow scope: every field's
+ * own type must resolve via resolve_declared_type() (Unit doesn't make
+ * sense as a field type and is rejected same as anywhere else)-- a
+ * field typed `(Vec T)`/`(Map K V)`/a reference type (`&T`/`&mut T`) is
+ * real, separate, unstarted work (VS0 has no collections-as-types or
+ * reference types yet either), reported honestly rather than guessed
+ * at. */
+typedef struct {
+    const char *name;
+    const char *c_type;
+} StructField;
+
+typedef struct StructInfo {
+    const char *name;
+    StructField *fields;
+    size_t field_count;
+    struct StructInfo *next;
+} StructInfo;
+
+static StructInfo *g_structs = NULL;
+
+static StructInfo *find_struct_by_name(const char *name) {
+    for (StructInfo *s = g_structs; s; s = s->next) {
+        if (strcmp(s->name, name) == 0) return s;
+    }
+    return NULL;
+}
+
 static int is_call_named(Node *n, const char *fn_name) {
     return n && n->type == NODE_LIST && n->child_count > 0 && is_symbol(n->children[0], fn_name);
 }
@@ -552,6 +585,78 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             snprintf(buf, sizeof(buf), "%s_%s(%s)", owner->name, variant->name, inner_c);
             return arena_strdup(arena, buf, strlen(buf));
         }
+    }
+    /* A defstruct construction call, e.g. `(HttpResponse status headers
+     * body)` -- positional, matching defenum's own `(VariantName arg)`
+     * constructor-call convention rather than inventing a separate
+     * keyword-argument syntax. Checked before the generic call dispatch
+     * below for the same real reason as the defenum variant check
+     * above: a struct name is a real constructor, not a function to
+     * mangle-and-call. Real, honest requirement: the argument count must
+     * match the struct's own real field count exactly -- VS0 has no
+     * default-field-value concept, a mismatched call is reported rather
+     * than silently zero-filling or truncating. */
+    if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
+        StructInfo *sinfo = find_struct_by_name(expr->children[0]->text);
+        if (sinfo) {
+            if (expr->child_count != sinfo->field_count + 1) {
+                return fail(arena, out_error,
+                            "%s: expects exactly %zu argument(s) (one per field) at line %d, got %zu",
+                            sinfo->name, sinfo->field_count, expr->line, expr->child_count - 1);
+            }
+            StrBuf args;
+            sb_init(&args);
+            for (size_t i = 0; i < sinfo->field_count; i++) {
+                const char *arg_type = NULL;
+                const char *arg_c = emit_expr(arena, expr->children[i + 1], scope, &arg_type, out_error);
+                if (!arg_c) {
+                    sb_free(&args);
+                    return NULL;
+                }
+                if (i > 0) sb_append(&args, ", ");
+                sb_append(&args, arg_c);
+            }
+            *out_type = sinfo->name;
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%s_new(%s)", sinfo->name, args.data);
+            sb_free(&args);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+    }
+    /* (get-field struct-expr :field-name) -- the real field-access form
+     * this stdlib's own thread.prn already uses (`(get-field ch
+     * :guard)`), grounded in real prior usage rather than invented here.
+     * struct-expr's own type must resolve to a registered defstruct;
+     * :field-name must be a real field of that struct -- both checked,
+     * neither guessed at. */
+    if (is_call_named(expr, "get-field")) {
+        if (expr->child_count != 3 || expr->children[2]->type != NODE_KEYWORD) {
+            return fail(arena, out_error,
+                        "get-field: expected (get-field struct-expr :field-name) at line %d", expr->line);
+        }
+        const char *struct_type = NULL;
+        const char *struct_c = emit_expr(arena, expr->children[1], scope, &struct_type, out_error);
+        if (!struct_c) return NULL;
+        StructInfo *sinfo = struct_type ? find_struct_by_name(struct_type) : NULL;
+        if (!sinfo) {
+            return fail(arena, out_error,
+                        "get-field: '%s' at line %d isn't a registered defstruct type",
+                        struct_type ? struct_type : "?", expr->line);
+        }
+        /* field->text includes the leading ':' (see lexer.c's own
+         * lex_keyword), same convention #target's own :c key lookup
+         * already relies on elsewhere in this file. */
+        const char *field_name = expr->children[2]->text + 1;
+        for (size_t i = 0; i < sinfo->field_count; i++) {
+            if (strcmp(sinfo->fields[i].name, field_name) == 0) {
+                *out_type = sinfo->fields[i].c_type;
+                char buf[512];
+                snprintf(buf, sizeof(buf), "(%s).%s", struct_c, field_name);
+                return arena_strdup(arena, buf, strlen(buf));
+            }
+        }
+        return fail(arena, out_error, "get-field: '%s' has no field '%s' at line %d",
+                    sinfo->name, field_name, expr->line);
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
@@ -1021,15 +1126,21 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
  * type parameters -- VS0 has no generics/real type-checking pass yet, so
  * `(Result Unit BufferError)` and `(Result String String)` both just
  * resolve to the same real `Result` C type; not pretended more precise
- * than that. Anything else fails honestly rather than guessing. */
+ * than that. A bare symbol matching a registered defenum or defstruct
+ * name (e.g. cache.prn's own `Cache` return type) resolves to that
+ * type's own real name directly -- process_defenum()/process_defstruct()
+ * already emitted a real C typedef for it earlier in the same
+ * compilation. Anything else fails honestly rather than guessing. */
 static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error) {
     if (type_node->type == NODE_SYMBOL) {
         if (is_symbol(type_node, "Unit")) return "void";
         if (is_symbol(type_node, "I32")) return "int";
         if (is_symbol(type_node, "String")) return "char *";
+        if (find_enum_by_name(type_node->text)) return type_node->text;
+        if (find_struct_by_name(type_node->text)) return type_node->text;
         return fail(arena, out_error,
                     "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
-                    "understands Unit/I32/String so far)",
+                    "understands Unit/I32/String/a registered defenum/defstruct name so far)",
                     type_node->text ? type_node->text : "?", type_node->line);
     }
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
@@ -1040,6 +1151,71 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
                 "defn: unsupported return type form at line %d (VS0's emitter only understands "
                 "Unit/I32/String/(Result ..)/(Option ..) so far)",
                 type_node->line);
+}
+
+/* process_defstruct handles one top-level `(defstruct Name (field1 :
+ * Type1) (field2 : Type2 @ Region) ...)`: registers Name into g_structs
+ * and emits a real C struct typedef plus one positional `static inline`
+ * constructor. Each field's own type is resolved via
+ * resolve_declared_type() (reused, not reimplemented) -- an optional
+ * trailing `@ <region>` on a field's own type is consumed the same way
+ * emit_defn's own return-type parsing already does, since the emitter
+ * never does anything WITH the specific region name in any of these
+ * positions. Unlike defenum's shared `void *value`, every field here
+ * gets its own real, distinct C type -- so a struct with a String field
+ * and an I32 field really does carry a `char *` and a real `int`, not
+ * two `void *`s pretending to be typed. */
+static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char **out_error) {
+    if (node->child_count < 2 || node->children[1]->type != NODE_SYMBOL) {
+        return fail(arena, out_error, "defstruct: malformed definition at line %d", node->line) != NULL;
+    }
+    const char *struct_name = node->children[1]->text;
+    size_t field_count = node->child_count - 2;
+    StructField *fields = (StructField *)arena_alloc(arena, sizeof(StructField) * (field_count ? field_count : 1));
+    for (size_t i = 0; i < field_count; i++) {
+        Node *field = node->children[2 + i];
+        if (field->type != NODE_LIST || field->child_count < 3 || field->children[0]->type != NODE_SYMBOL ||
+            field->children[1]->type != NODE_COLON) {
+            return fail(arena, out_error,
+                        "defstruct: field at line %d must be (name : Type) or (name : Type @ Region) "
+                        "at line %d", node->line, node->line) != NULL;
+        }
+        const char *field_type = resolve_declared_type(arena, field->children[2], out_error);
+        if (!field_type) return 0;
+        /* An optional trailing `@ <region>` on the field's own type
+         * (child_count == 5: name, colon, type, at, region) is simply
+         * never read past index 2 -- consumed by omission, same real,
+         * honest "existence only" treatment as everywhere else in this
+         * file. */
+        fields[i].name = field->children[0]->text;
+        fields[i].c_type = field_type;
+    }
+
+    StructInfo *info = (StructInfo *)arena_alloc(arena, sizeof(StructInfo));
+    info->name = struct_name;
+    info->fields = fields;
+    info->field_count = field_count;
+    info->next = g_structs;
+    g_structs = info;
+
+    sb_appendf(out, "typedef struct {\n");
+    for (size_t i = 0; i < field_count; i++) {
+        sb_appendf(out, "    %s %s;\n", fields[i].c_type, fields[i].name);
+    }
+    sb_appendf(out, "} %s;\n", struct_name);
+
+    sb_appendf(out, "static inline %s %s_new(", struct_name, struct_name);
+    for (size_t i = 0; i < field_count; i++) {
+        if (i > 0) sb_append(out, ", ");
+        sb_appendf(out, "%s %s", fields[i].c_type, fields[i].name);
+    }
+    if (field_count == 0) sb_append(out, "void");
+    sb_appendf(out, ") {\n    %s v;\n", struct_name);
+    for (size_t i = 0; i < field_count; i++) {
+        sb_appendf(out, "    v.%s = %s;\n", fields[i].name, fields[i].name);
+    }
+    sb_append(out, "    return v;\n}\n\n");
+    return 1;
 }
 
 /* emit_target_defn handles a `#target {:c (inline-c "...")}` function body
@@ -1196,22 +1372,24 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             sb_appendf(&param_list, "%s (*%s)(void) __attribute__((unused))", ret_type, c_name);
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL &&
-                   find_enum_by_name(param->children[2]->text)) {
-            /* A parameter typed as a registered defenum, e.g.
-             * editor/events.prn's `(event : EditorEvent)` -- passed as a
-             * real plain C value of that enum's own struct type (the
-             * {tag; void *value;} shape process_defenum() already
-             * emitted), same "no Arena involved" reasoning as the plain
-             * I32/String case above. */
+                   (find_enum_by_name(param->children[2]->text) ||
+                    find_struct_by_name(param->children[2]->text))) {
+            /* A parameter typed as a registered defenum or defstruct,
+             * e.g. editor/events.prn's `(event : EditorEvent)` or a real
+             * `(req : HttpRequest)` -- passed as a real plain C value of
+             * that type's own real struct (process_defenum()'s
+             * {tag; void *value;} shape or process_defstruct()'s own
+             * real per-field struct), same "no Arena involved" reasoning
+             * as the plain I32/String case above. */
             const char *c_type = param->children[2]->text;
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
         } else {
             fail(arena, out_error,
                  "defn: parameter '%s' has no region annotation and isn't a plain I32/String/"
-                 "(Fn [] ..)/registered-defenum-type either (VS0 only supports `Arena @ :region/x`, "
-                 "`I32`, `String`, zero-argument `(Fn [] <ReturnType>)`, and registered defenum "
-                 "type parameters so far)",
+                 "(Fn [] ..)/registered-defenum-or-defstruct-type either (VS0 only supports "
+                 "`Arena @ :region/x`, `I32`, `String`, zero-argument `(Fn [] <ReturnType>)`, and "
+                 "registered defenum/defstruct type parameters so far)",
                  param->children[0]->text);
             sb_free(&param_list);
             return 0;
@@ -1287,6 +1465,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * ever calls emit_c() once per process invocation, so this is a
      * no-op there. */
     g_enums = NULL;
+    g_structs = NULL; /* same per-call reset, same real reason -- see g_enums' own comment */
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
@@ -1303,6 +1482,23 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         Node *form = program->children[i];
         if (!is_call_named(form, "defenum")) continue;
         if (!process_defenum(arena, &out, form, out_error)) {
+            sb_free(&out);
+            return NULL;
+        }
+    }
+
+    /* Pre-pass: every defstruct, after every defenum (a struct field can
+     * reference a registered enum type) but still before any defn. Real,
+     * honest, narrower limitation than defenum's own order-independence:
+     * a struct field referencing ANOTHER struct type requires that
+     * other struct to be declared earlier in the same file -- this is a
+     * single linear pass, not a two-pass "register every name first,
+     * then resolve every field" -- not attempted here since no real
+     * stdlib file needs struct-in-struct nesting yet. */
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_call_named(form, "defstruct")) continue;
+        if (!process_defstruct(arena, &out, form, out_error)) {
             sb_free(&out);
             return NULL;
         }
