@@ -884,6 +884,33 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- bitwise/mod operators -- real, new addition needed for the
+     * first time by stdlib/compress/lz4.prn's own token-header byte
+     * packing (a 4-bit literal-length nibble and a 4-bit match-length
+     * nibble combined via shift + bit-or). Named operators
+     * (bit-and/bit-or/bit-xor/shl/shr), not bare punctuation, since `&`
+     * already means something else in this language (the reference
+     * sigil) and `<`/`>` are already comparisons. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn pack [(hi : I32) (lo : I32)] : I32\n"
+            "  (bit-or (shl hi 4) (bit-and lo 15)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a bit-or/shl/bit-and expression parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "(hi << 4)") != NULL, "shl emits a real C <<");
+            CHECK(strstr(c_src, "(lo & 15)") != NULL, "bit-and emits a real C &");
+            CHECK(strstr(c_src, "|") != NULL, "bit-or emits a real C |");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

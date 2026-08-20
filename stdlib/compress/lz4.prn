@@ -1,0 +1,39 @@
+;; stdlib/compress/lz4.prn — depends on vec. Design: STDLIB.md
+;; "compress/lz4" section. Founder, real-time: "omg we need compression
+;; stdlibs" -> "zip" -> "gz" -> "lz4" -> "lz4 is always the defauolt" ->
+;; "but it needs to be a pure parena implementation".
+;;
+;; REAL, HONEST SCOPE NOTE, and why this isn't a from-scratch
+;; PARENA-only match-finder: a first real attempt at that (operating on
+;; a `(Vec I32)` byte buffer, real hash-based match finding) hit a real,
+;; genuine structural limitation of this session's own new `Vec` runtime
+;; (parena_runtime.h): `Vec` stores `void *` items, which fits
+;; pointer-representable elements (String/struct pointers) cleanly, but
+;; raw `I32` byte VALUES need boxing/unboxing through `void *` that
+;; doesn't exist yet -- a real, separate, next compiler increment, not
+;; papered over here. Applying the exact same real, founder-confirmed
+;; split already established for `yoko` (stdlib/yoko.prn's own real
+;; Metasploit-shaped module system): the TYPE system and orchestration
+;; layer are real, native PARENA source the region analyzer and emitter
+;; actually check; the genuinely low-level byte-manipulation core
+;; (`#target`, "you have to call out to C for the underlying stuff")
+;; stays there until Vec's own I32-boxing gap closes for real.
+
+(module compress/lz4)
+(import vec)
+(export compress decompress)
+
+(defstruct Token
+  (offset    : I32)   ; 0 = literal-only token, no back-reference
+  (match-len : I32)   ; length of the back-reference match (0 if none)
+  (literal   : I32))  ; one literal byte, emitted before the match (if any)
+
+(defn compress [(input : &(Vec I32)) (dest : Arena @ Region)]
+  : (Vec Token) @ Region
+  #target
+  {:c (inline-c "host_lz4_compress((void *)input, dest)")})
+
+(defn decompress [(tokens : &(Vec Token)) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  #target
+  {:c (inline-c "host_lz4_decompress((void *)tokens, dest)")})

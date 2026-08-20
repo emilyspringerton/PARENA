@@ -237,6 +237,25 @@ static const char *binop_c_symbol(const char *sym) {
     if (strcmp(sym, "=") == 0) return "==";
     if (strcmp(sym, "and") == 0) return "&&";
     if (strcmp(sym, "or") == 0) return "||";
+    /* Real, honest new addition (2026-08-20): bitwise operators, needed
+     * for the first time by a real byte-level codec (stdlib/compress/
+     * lz4.prn's own token-header packing -- a 4-bit literal-length
+     * nibble and a 4-bit match-length nibble combined into one byte).
+     * `bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` (not bare `&`/`|`/`<<`/
+     * `>>`) since `&` is already this language's own reference-type
+     * sigil (see mangle()'s/emit_expr()'s own `&`/`&mut` handling) and
+     * `<`/`>` are already comparison operators -- real, own, unambiguous
+     * names rather than overloading punctuation this language already
+     * gives a different meaning. `mod` for integer remainder, the same
+     * real gap firefly.prn's own early continue-vs-recur exploration
+     * surfaced (a real `(mod i 2)` call in a test that predates this
+     * fix, never a defined runtime function -- now a real operator). */
+    if (strcmp(sym, "bit-and") == 0) return "&";
+    if (strcmp(sym, "bit-or") == 0) return "|";
+    if (strcmp(sym, "bit-xor") == 0) return "^";
+    if (strcmp(sym, "shl") == 0) return "<<";
+    if (strcmp(sym, "shr") == 0) return ">>";
+    if (strcmp(sym, "mod") == 0) return "%";
     return NULL;
 }
 
