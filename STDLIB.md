@@ -1703,6 +1703,47 @@ Metasploit's own RPC API) — the actual FFI/subprocess-parsing glue code for ea
 implementation work, not written here; these are the real call signatures a PARENA program would
 use once that glue exists.
 
+#### `pentest/exploit/native` — a real, PARENA-native module/payload framework, not an FFI wrapper
+
+Founder, real-time: "instead of calling out to c for all of the pentest tools" → "like we need
+metasploit in PARENA" → "not calling out to it" → "its fint to get it to compile for now" → "but
+we really need thhe actaul toools" → (clarified) "some of the underlying stuff" → "sure" → "call
+out to c" → "you have to" → "we need to write in parena so we can compile in parena". Distinct
+from `pentest/exploit` above (which stays exactly as designed — a real, useful FFI binding to
+Metasploit's own mature module database, not being replaced): this is a real, native module/
+payload TYPE SYSTEM and orchestration layer, grounded in Metasploit's own actual architecture
+(a module has a target, a rank, options, a `check` and an `exploit` step; a payload has a
+platform/arch and generates raw bytes; a successful exploit produces a session) — with only the
+genuine low-level boundary (raw socket delivery, actual shellcode bytes) going through `#target`,
+the same real "PARENA orchestrates, `#target` touches the actual wire" split every other FFI-
+adjacent package in this document already uses (`gfd.prn`, `csv.prn`, `pentest/scan.prn`, etc.).
+
+```clojure
+(defenum Rank (Excellent) (Great) (Good) (Normal) (Average) (Low) (Manual))
+(defenum Platform (Linux) (Windows) (MacOS) (Generic))
+
+(defstruct Target       (name : String @ Region) (platform : Platform))
+(defstruct ModuleOption (key : String @ Region) (value : String @ Region))
+(defstruct Payload      (name : String @ Region) (platform : Platform) (bytes : (Vec I32) @ Region))
+(defstruct ExploitModule (name : String @ Region) (rank : Rank) (target : Target)
+                          (options : (Vec ModuleOption) @ Region))
+(defstruct Session      (id : I32) (target : Target) (active : Bool))
+
+(defn check            [(m : &ExploitModule)] : Bool)   ; real check-before-fire, #target at the wire
+(defn generate-payload [(name : String @ :region/scratch) (platform : Platform) (dest : Arena @ Region)]
+  : Payload @ Region)                                    ; real shellcode gen is #target, real host work
+(defn exploit          [(m : &ExploitModule) (p : &Payload) (dest : Arena @ Region)]
+  : Session @ Region)                                    ; real delivery is #target, real host work
+```
+
+`stdlib/pentest/exploit/native.prn` implements exactly this shape, real, `parena build`-verified
+(compiles today) — `check`/`generate-payload`/`exploit`'s own bodies are `#target` stubs (the
+"you have to call out to C for the underlying stuff" part, explicitly OK'd), while `ExploitModule`/
+`Payload`/`Session`/`Rank`/`Platform` and everything that composes them are real, native PARENA
+types the region analyzer and emitter actually check. Real, honest scope: the `#target` bodies are
+stubs today (no real shellcode generation or wire delivery implemented) — the ask was explicitly
+"fine to get it to compile for now," not a claim that this fires real exploits yet.
+
 ### `idvault` / `pitviper/expand` — real, deliberately deferred, not designed deep
 
 Founder: "and vault integration for password management" → checked directly, confirmed real: IDUNA
