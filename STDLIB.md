@@ -89,6 +89,7 @@ binding, not a language primitive).
 45. `staticanalysis` — depends on `string`, `vec` (FFI-bound)
 46. `git` — depends on `shell`, `pty`, `vec` (wraps the real `git` CLI, not a from-scratch object model)
 47. `media/tts` — depends on `sdl2`, `array` (F5-TTS sidecar client; the sidecar process itself is separate, unstarted work)
+48. `pitviper/quicklook` — depends on `pitviper/protocol`, `mapbuilder/tools`, `media/codec`, `media/audio`
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1434,6 +1435,46 @@ program like this), so PITVIPER's own near-term TTS integration — if wanted be
 further — would need to be real Go code talking to the same sidecar, not this `.prn` design,
 mirroring how every other "dogfood PARENA into PITVIPER" package in this document is currently
 signatures-and-intent, not something actually running inside PITVIPER today.
+
+### `pitviper/quicklook` — real, concrete interaction model, macOS Quick Look as the named precedent
+
+Founder, real and concrete, not exploratory: "when we have the nerd tree we will have hotkeys and
+or buttons or some kind of affordance to let us either edit or view - ok edit is double click into
+the vim like editor - view is like SPOTLIGHT on the mac - clicking on or using jk to select a file
+and then hitting space downlads the file and displays it just like spotlight" → "start with
+markdown" → "but we will do images" → "videos" → "audio" → "all built on PARENA." Real macOS
+precedent named directly (Quick Look, triggered by Space in Finder/Spotlight) — not a redesigned
+interaction model, a real, already-proven one applied here. Depends on `pitviper/protocol` (the
+`FetchFile` request already designed) and `mapbuilder/tools`'s own real `pixel-to-cell`/selection
+plumbing for the j/k-and-click file-tree navigation itself.
+
+```clojure
+(defenum PreviewKind (Markdown) (Image) (Video) (Audio) (Unsupported))
+
+(defn detect-kind  [(path : String @ :region/scratch)] : PreviewKind)   ; real, by extension -- .md/.png/.mp4/.wav etc.
+(defn open-preview  [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit PreviewError) @ Region)   ; fetches via pitviper/protocol, dispatches by PreviewKind
+(defn open-editor    [(path : String @ :region/scratch)] : (Result Unit PreviewError))   ; double-click, real vim-like editor open
+```
+
+Sequenced exactly as asked, each a real, separate rendering technology, not incremental variations
+of the same one:
+
+- **Markdown (first)** — real text layout (headings/lists/code blocks/emphasis), rendered via
+  `sdl2`'s own text path, no image/video decode needed — the real reason it's the honest starting
+  point, not just "easiest."
+- **Image** — a real, separate technology: decode via `media/codec` (already designed, FFI-bound),
+  render the decoded frame as an `sdl2` texture.
+- **Video** — depends on `media/codec`'s own frame-by-frame decode plus real playback timing (not
+  just one decoded frame) — genuinely the most involved of the four, real follow-up work once
+  image preview is real and working.
+- **Audio** — plays through `media/audio`'s own `play` (already designed above), no new decode
+  path beyond what `media/codec` already covers.
+
+Real, honest limitation, same pattern as the rest of this document: this designs the real,
+requested interaction model and the real dispatch surface; the actual Markdown-layout algorithm,
+image/video decoder integration depth, and playback-timing code are each genuinely separate
+implementation work, not resolved by this pass.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
