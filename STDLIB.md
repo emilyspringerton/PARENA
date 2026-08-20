@@ -375,6 +375,167 @@ not), how a `gfd` binding layer actually loads/sandboxes untrusted mod scripts i
 `gfd` should be one flat package or split further once real usage exists to ground that call —
 matching every other "don't split packages speculatively" decision already made in this document.
 
+### `regex/*` + `grep`/`sed`/`awk` — pattern matching and the classic Unix text tools built on it
+
+Founder: "also ensure we have like elite elite elite level regex in the stdlib" → "maybe we
+implement all the different regex types" → "as different packages" → "like perl should be
+jealous" → "sed awk grep" → "in the stdlib" → "and beyond" → "and add dependencies you need for
+all these asks as std libs themselves." Unlike every stdlib section above, there's no internal
+repo call site to ground this against — no code in this monorepo does real regex matching today.
+The grounding here is real prior art in how production regex engines are actually built, not
+internal call sites: **"all the different regex types" is a real, well-known engineering
+distinction**, not marketing — a backtracking engine (Perl/PCRE) and a guaranteed-linear-time
+engine (RE2/Go's `regexp`) solve different problems and neither one subsumes the other, so "elite
+elite elite" means shipping *both*, honestly, as separate packages, not one package pretending to
+be both.
+
+**`regex/syntax`** — the dependency every engine below needs: parses pattern *text* into a shared
+AST once, so `regex/nfa` and `regex/pcre` don't each hand-roll their own parser for the ~90% of
+syntax (literals, `.`, `*`/`+`/`?`, `[...]` classes, `\d`/`\w`/`\s`, alternation, groups) that's
+identical between them — real precedent: Rust's own `regex` crate splits exactly this way
+(`regex-syntax` parses once, `regex-automata`/backtracking backends consume the same AST). This is
+the "dependency you need for these asks as its own std lib" pattern applied to regex itself, one
+level down.
+
+```clojure
+(defn parse [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result PatternAst SyntaxError) @ Region)
+```
+
+**`regex/nfa`** — Thompson-construction NFA compiled to a Pike's-VM bytecode, run breadth-first
+over all live threads at once (Russ Cox, "Regular Expression Matching Can Be Simple And Fast" —
+the same technique RE2 and Go's `regexp` package ship in production). **Guaranteed** `O(len(text)
+* len(pattern))` worst case — no catastrophic backtracking, ever, by construction, because there
+is no backtracking. The trade-off, stated plainly and not glossed over: this rules out
+backreferences and lookaround, which are fundamentally backtracking features (the NFA has no
+notion of "what did group 1 already capture" or "what comes before this position" while running
+all threads in lockstep) — this is the *safe default* engine, not the full-featured one.
+
+```clojure
+(defn compile   [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region)
+(defn is-match  [(re : &Regex) (text : String @ Region)] : Bool)
+(defn find      [(re : &Regex) (text : String @ Region)] : (Option Match))
+(defn find-all  [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
+  : (Vec Match) @ Region)
+
+(defstruct Match
+  (start  : I32)
+  (end    : I32)
+  (groups : (Vec (Option (I32 I32))) @ Region))
+```
+
+**`regex/pcre`** — the "Perl should be jealous" ask, literally: a real backtracking VM with the
+full Perl/PCRE2 feature set the NFA engine above structurally cannot support — named captures
+(`(?<name>...)`), backreferences (`\1`, `\k<name>`), lookahead/lookbehind (`(?=...)`/`(?!...)`/
+`(?<=...)`/`(?<!...)`), atomic groups (`(?>...)`), possessive quantifiers (`*+`/`++`/`?+`), and
+non-greedy quantifiers (`*?`/`+?`). Honest limitation stated up front, not discovered later:
+backtracking engines are worst-case exponential (classic ReDoS: `(a+)+b` against a long non-
+matching string) — real engines don't pretend otherwise, they cap it. PCRE2 itself ships a
+match-limit/depth-limit safety valve for exactly this reason; `compile` below takes the same kind
+of budget rather than shipping an engine that can hang a process on attacker-controlled input.
+
+```clojure
+(defn compile  [(pattern : String @ :region/scratch) (budget : MatchBudget) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region)
+(defn is-match [(re : &Regex) (text : String @ Region)] : (Result Bool BudgetExceededError))
+(defn find     [(re : &Regex) (text : String @ Region)] : (Result (Option Match) BudgetExceededError))
+(defn find-all [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result (Vec Match) BudgetExceededError) @ Region)
+(defn replace  [(re : &Regex) (text : String @ Region) (replacement : String @ Region) (dest : Arena @ Region)]
+  : String @ Region)   ; replacement supports $1/$name backreferences into captured groups
+```
+
+**`regex/posix`** — BRE/ERE compatibility, kept as its own package because POSIX match semantics
+are a genuinely different rule, not a syntax dialect switch: POSIX mandates **leftmost-longest**
+matching (the overall match is the longest one starting at the earliest position, full stop),
+where Perl/PCRE and the NFA engine above are both **leftmost-first** (first alternative that
+matches wins, `a|ab` against `"ab"` matches `"a"`). Conflating these under one `compile` flag
+would silently change match results depending on flag state — a real correctness hazard, hence a
+separate package.
+
+```clojure
+(defenum PosixFlavor (BRE) (ERE))
+(defn compile [(pattern : String @ :region/scratch) (flavor : PosixFlavor) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region)
+```
+
+**`regex/glob`** — shell-style glob (`*`, `?`, `[...]`, `{a,b}` brace expansion), deliberately
+*not* built on `regex/syntax` — glob is a different, much smaller grammar (no alternation-via-`|`,
+no quantifiers, no capture groups) and translating it through a full regex AST would be more
+machinery than the problem needs, same "don't over-generalize" judgment `sort`'s `Vec`-generic
+design used above.
+
+```clojure
+(defn matches [(pattern : String @ :region/scratch) (path : String @ Region)] : Bool)
+```
+
+**`grep`/`sed`/`awk`** — the actual Unix tools, each thin and built directly on the packages
+above rather than reimplementing matching logic:
+
+```clojure
+(defenum Engine (Nfa) (Pcre) (Posix))   ; real grep itself has -G/-E/-P engine-select flags — same idea
+
+(defn lines-matching [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
+                       (engine : Engine) (dest : Arena @ Region)]
+  : (Result (Vec String) IoError) @ Region)
+```
+
+`sed`'s one real primitive, `s/pattern/replacement/flags` substitution over a stream, needs
+line-at-a-time reading that today's `io` package doesn't have (`read-string` above reads the
+whole file) — extending `io` with `read-line`/`lines` is exactly the "add dependencies you need
+for these asks as std libs themselves" instruction, so it's added to `io` (not a new package,
+since it's a natural extension of an existing one, not a new domain):
+
+```clojure
+; io extension, added alongside read-string/read-floats above:
+(defn read-line [(!f : FileHandle @ :region/task)] : (Result (Option String) IoError) @ :region/scratch)
+```
+
+```clojure
+(defn substitute [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
+                   (replacement : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result String IoError) @ Region)   ; built on io/read-line + regex/pcre's own replace
+```
+
+`awk` is the one that needs a real new dependency, stated honestly rather than hidden inside the
+`awk` package itself: field-splitting a record and evaluating a pattern-action program both need
+a small typed expression evaluator with awk's own string/number coercion rules (`"3" + 4` is `7`)
+— that's a real, separate, reusable capability, not `awk`-specific machinery, so it's its own
+package:
+
+```clojure
+; expr — new dependency: a tiny arithmetic/string/comparison expression evaluator
+(defenum ExprValue (Num (v : F64)) (Str (v : String @ Region)))
+(defn eval [(src : String @ :region/scratch) (bindings : &Map) (dest : Arena @ Region)]
+  : (Result ExprValue EvalError) @ Region)
+```
+
+```clojure
+(defstruct Record (fields : (Vec String) @ Region) (nr : I32))
+
+(defn run [(!f : FileHandle @ :region/task) (program : AwkProgram) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region)   ; program: (pattern via regex/pcre, action via expr) pairs
+```
+
+**"and beyond"** — named but deliberately not designed here, same "flagged, not resolved" pattern
+this whole document already uses for `merge`/`join` and `net`: `tr` (character transliteration —
+would share `regex/syntax`'s own `[...]` class-parsing code, not the matching engine) and `diff`
+(needs an LCS/Myers-diff algorithm that's real, separate work unrelated to regex at all) are the
+natural next two, left for whoever actually needs them to ground the design against a real use
+case rather than speculating on `run`/`substitute`'s own signature shape sight-unseen.
+
+**Standing note on scope, not just for this section**: founder, live, after this section —
+"like this is going to be pretty heavy batteries included." Correct read, stated explicitly so
+it's a decision and not a drift: this document opened with Go's stdlib (small, narrow, `io`/`os`/
+`strings`/`fmt`-shaped) as the reference point, and this section is a real, acknowledged move past
+that toward Python's "batteries included" end of the spectrum (a full engine-choice regex family
+plus the classic Unix text tools on top, not just a `regexp`-equivalent). Not walked back — the
+same "small, single-purpose, composable packages" discipline still applies *within* each package
+(`regex/nfa` doesn't grow PCRE features, `awk` doesn't grow a `merge`/`join`), it's the *count* of
+packages that's allowed to be large, same as CPython's own stdlib being simultaneously huge and
+made of individually small modules.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - **Collections beyond `Vec`/`Map` literals** — `[...]`/`{...}` are core syntax (NORTHSTAR
