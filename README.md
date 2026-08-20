@@ -41,9 +41,14 @@ only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`, `rege
 `editor/plugin`, `editor/buffer`, `editor/events`, `editor/ui`, `ringo`, `world`,
 `mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`, `crypto/ed25519`,
 `gfd/browser`, `pentest/{scan,pcap,webapp,wireless,crack,exploit}` (5 of 6 compile clean; `pcap`
-blocked on a reference-typed parameter), `firefly`, `firefly/ladybug` (renamed from
-`firefly/gomega` — see the Testing section below), `firefly/gomega` (kept as a back-compat alias),
-`scarab`. Every other package in the tables below is designed in `STDLIB.md` but has no `.prn`
+blocked on a reference-typed parameter), `yoko` (a real, native Metasploit-shaped module/payload
+type system — `#target` at the genuine low-level boundary), `firefly` (**compiles completely,
+verified with real `gcc -Wall -Wextra -pedantic -Werror`**, not just `parena build`'s own exit
+code — the first of the ladybug testing framework's own files to reach this bar), `firefly/ladybug`
+(renamed from `firefly/gomega` — see the Testing section below; still blocked on the pre-existing
+no-module-linking gap when compiled standalone), `firefly/gomega` (kept as a back-compat alias,
+same blocker), `scarab` (still blocked on its own multi-field `defenum` payload gap). Every other
+package in the tables below is designed in `STDLIB.md` but has no `.prn`
 file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`, `container/*` —
 LXC/cgroups/Docker, designed for the Moltbook/OpenClaw hardening + Emily OS threads, blocked on the
 shared file-I/O gap before real `.prn` source is worth writing).
