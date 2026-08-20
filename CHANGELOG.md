@@ -1,4 +1,5 @@
 ## 2026-08-20
+- C emitter 加入 loop/recur(真正的迴圈,含真實同時賦值語意),朝自我託管邁進一步。本地 Makefile+Bazel+ASan/UBSan+domain4 全數驗證通過;CI 確認因 GitHub API rate limit 暫時無法查詢,誠實標註待確認 (sess-20260820-0649-a3f19d93)
 - C emitter 加入算術/比較/if/一般函式呼叫,朝自我託管邁進一步。CI 已確認綠燈(run 32384381363) (sess-20260820-0649-a3f19d93)
 - pitviper/tiling(真實 i3wm 互動模型)stdlib 設計 (sess-20260820-0649-a3f19d93)
 - pentest/* 六個套件(Kali 對應工具集)、idvault + pitviper/expand(刻意淺層設計)、依賴關係圖完整重新整理(57 個套件) (sess-20260820-0649-a3f19d93)
