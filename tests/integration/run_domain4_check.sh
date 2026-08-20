@@ -49,8 +49,17 @@ echo "PASS: the deliberately-broken fixture's real use-after-free was caught by 
 if command -v valgrind >/dev/null 2>&1; then
     echo
     echo "== domain 4, check 3: Valgrind (0 bytes leaked), the DoD's own literal tool =="
+    # Real, separate, non-instrumented build -- ASan and Valgrind are
+    # fundamentally incompatible (ASan's own shadow-memory/redzone runtime
+    # conflicts with Valgrind's own memory-shadowing), so this can't reuse
+    # check 1's $WORKDIR/valid_only.o, which was compiled with
+    # -fsanitize=address,undefined. A first version of this script tried
+    # to reuse it and that's exactly what broke real CI here -- fixed by
+    # building a real, clean object file for this check specifically.
+    gcc -std=c99 -Wall -Wextra -pedantic -g -I runtime \
+        -c -o "$WORKDIR/valid_only_plain.o" "$WORKDIR/valid_only.c"
     gcc -std=c99 -g -I runtime -o "$WORKDIR/driver_plain" \
-        tests/integration/driver_valid_only.c "$WORKDIR/valid_only.o" runtime/parena_runtime.c
+        tests/integration/driver_valid_only.c "$WORKDIR/valid_only_plain.o" runtime/parena_runtime.c
     valgrind --leak-check=full --error-exitcode=1 "$WORKDIR/driver_plain"
     echo "PASS: clean under Valgrind"
 else
