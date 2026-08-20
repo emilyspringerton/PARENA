@@ -1703,7 +1703,7 @@ Metasploit's own RPC API) — the actual FFI/subprocess-parsing glue code for ea
 implementation work, not written here; these are the real call signatures a PARENA program would
 use once that glue exists.
 
-#### `pentest/exploit/native` — a real, PARENA-native module/payload framework, not an FFI wrapper
+#### `yoko` — a real, PARENA-native module/payload framework, not an FFI wrapper (renamed from pentest/exploit/native)
 
 Founder, real-time: "instead of calling out to c for all of the pentest tools" → "like we need
 metasploit in PARENA" → "not calling out to it" → "its fint to get it to compile for now" → "but
@@ -1736,7 +1736,7 @@ adjacent package in this document already uses (`gfd.prn`, `csv.prn`, `pentest/s
   : Session @ Region)                                    ; real delivery is #target, real host work
 ```
 
-`stdlib/pentest/exploit/native.prn` implements exactly this shape, real, `parena build`-verified
+`stdlib/yoko.prn` implements exactly this shape, real, `parena build`-verified
 (compiles today) — `check`/`generate-payload`/`exploit`'s own bodies are `#target` stubs (the
 "you have to call out to C for the underlying stuff" part, explicitly OK'd), while `ExploitModule`/
 `Payload`/`Session`/`Rank`/`Platform` and everything that composes them are real, native PARENA

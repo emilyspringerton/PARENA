@@ -1,14 +1,20 @@
-;; stdlib/pentest/exploit/native.prn — depends on vec, string. Design:
-;; STDLIB.md "pentest/exploit/native" section. A real, PARENA-native
-;; module/payload TYPE SYSTEM and orchestration layer, grounded in
-;; Metasploit's own actual architecture -- NOT a replacement for
-;; pentest/exploit.prn (the real FFI binding to Metasploit's own mature
-;; module database, kept exactly as-is). Founder, real-time: "instead of
-;; calling out to c for all of the pentest tools" -> "like we need
-;; metasploit in PARENA" -> "not calling out to it" -> "its fint to get
-;; it to compile for now" -> (clarified) "some of the underlying stuff"
-;; -> "call out to c" -> "you have to" -> "we need to write in parena so
-;; we can compile in parena".
+;; stdlib/yoko.prn — depends on vec, string. Design: STDLIB.md
+;; "pentest/exploit/native" section (renamed to yoko here — see below).
+;; A real, PARENA-native module/payload TYPE SYSTEM and orchestration
+;; layer, grounded in Metasploit's own actual architecture -- NOT a
+;; replacement for pentest/exploit.prn (the real FFI binding to
+;; Metasploit's own mature module database, kept exactly as-is).
+;; Founder, real-time: "instead of calling out to c for all of the
+;; pentest tools" -> "like we need metasploit in PARENA" -> "not
+;; calling out to it" -> "its fint to get it to compile for now" ->
+;; (clarified) "some of the underlying stuff" -> "call out to c" ->
+;; "you have to" -> "we need to write in parena so we can compile in
+;; parena" -> "give parena metasplit the name YOKO". Continues the same
+;; real naming lineage `ringo.prn` already started ("apparently parena
+;; is a beetle" -> "RINGO", a Beatles pun alongside the firefly/scarab
+;; *actual*-beetle naming for the testing framework) -- Ringo Starr and
+;; Yoko Ono, both real Beatles-adjacent figures, top-level `stdlib/`
+;; package names like `ringo.prn`, not nested under `pentest/`.
 ;;
 ;; Real, honest scope: check/generate-payload/exploit's own bodies are
 ;; #target stubs -- the genuine low-level boundary (raw socket delivery,
@@ -20,7 +26,7 @@
 ;; be code. No real shellcode generation or wire delivery is implemented
 ;; yet; the ask was explicitly "fine to get it to compile for now."
 
-(module pentest/exploit/native)
+(module yoko)
 (import vec)
 (import string)
 (export check generate-payload exploit)

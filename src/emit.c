@@ -565,6 +565,22 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = "Option";
         return "option_none()";
     }
+    /* true/false -- real literal values, same "Bool -> C int" convention
+     * resolve_declared_type()'s own Bool handling already documents
+     * (that comment's own "a new true/false literal in the lexer/
+     * emit_expr neither exist yet" gap, closed here: literal
+     * recognition only, not a real C99 <stdbool.h>/bool type -- that
+     * fuller feature is still real, separate, deliberately deferred
+     * scope, same as it was before). Found blocking firefly.prn's own
+     * real `(set! (get-field !t :failed) true)`. */
+    if (is_symbol(expr, "true")) {
+        *out_type = "int";
+        return "1";
+    }
+    if (is_symbol(expr, "false")) {
+        *out_type = "int";
+        return "0";
+    }
     /* A bare, zero-payload user defenum variant (e.g. `OnSave`) -- same
      * "checked before generic symbol lookup" treatment as `None` above,
      * since it's a real value constructor, not a local variable
@@ -1415,10 +1431,67 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
          * type-checking pass yet); maps to the real runtime Vec struct
          * (parena_runtime.h), a void*-item dynamic array. */
         if (is_symbol(type_node->children[0], "Vec")) return "Vec";
+        /* (Fn [ArgType...] RetType) -- a real, typed, possibly
+         * non-zero-argument callback type, e.g. firefly.prn's own
+         * TestCase.run field (`(Fn [&mut T] Unit)`) and firefly/
+         * ladybug.prn's matcher type (`(Fn [&Any] Bool)`). Generalizes
+         * emit_defn's own older, narrower "only zero-argument (Fn []
+         * <ReturnType>) parameters" special case (kept as-is for that
+         * one call site, not removed) -- this path is reachable from
+         * ANY type position resolve_declared_type() itself covers
+         * (struct fields, return types), not just parameters. Each
+         * argument slot handles the same three real shapes a param
+         * itself does: a plain resolvable symbol, a single-token
+         * `&Type`, or a two-token `&mut Type` pair (consuming two vec
+         * elements, not one) -- recursing into resolve_declared_type()
+         * itself for anything not needing the two-token special case,
+         * so a nested `(Fn [(Fn [] Unit)] Unit)` just works too. */
+        if (is_symbol(type_node->children[0], "Fn") && type_node->child_count == 3 &&
+            type_node->children[1]->type == NODE_VEC) {
+            Node *arg_vec = type_node->children[1];
+            const char *ret_type = resolve_declared_type(arena, type_node->children[2], out_error);
+            if (!ret_type) return NULL;
+            StrBuf args;
+            sb_init(&args);
+            int first = 1;
+            for (size_t i = 0; i < arg_vec->child_count; i++) {
+                const char *arg_c_type;
+                if (arg_vec->children[i]->type == NODE_SYMBOL &&
+                    is_symbol(arg_vec->children[i], "&mut") && i + 1 < arg_vec->child_count &&
+                    arg_vec->children[i + 1]->type == NODE_SYMBOL) {
+                    const char *base = resolve_base_type_name(arg_vec->children[i + 1]);
+                    if (!base && strcmp(arg_vec->children[i + 1]->text, "Any") == 0) base = "void";
+                    if (!base) {
+                        sb_free(&args);
+                        return fail(arena, out_error,
+                                    "Fn type: unsupported reference target type '%s' at line %d",
+                                    arg_vec->children[i + 1]->text, arg_vec->children[i + 1]->line);
+                    }
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "%s *", base);
+                    arg_c_type = arena_strdup(arena, buf, strlen(buf));
+                    i++;
+                } else {
+                    arg_c_type = resolve_declared_type(arena, arg_vec->children[i], out_error);
+                    if (!arg_c_type) {
+                        sb_free(&args);
+                        return NULL;
+                    }
+                }
+                if (!first) sb_append(&args, ", ");
+                first = 0;
+                sb_append(&args, arg_c_type);
+            }
+            if (first) sb_append(&args, "void");
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s (*)(%s)", ret_type, args.data);
+            sb_free(&args);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
     }
     return fail(arena, out_error,
                 "defn: unsupported return type form at line %d (VS0's emitter only understands "
-                "Unit/I32/String/(Result ..)/(Option ..) so far)",
+                "Unit/I32/String/(Result ..)/(Option ..)/(Vec ..)/(Fn [..] ..) so far)",
                 type_node->line);
 }
 
@@ -1668,6 +1741,40 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s (*%s)(void) __attribute__((unused))", ret_type, c_name);
+        } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+                   is_call_named(param->children[2], "Fn") && param->children[2]->child_count == 3 &&
+                   param->children[2]->children[1]->type == NODE_VEC &&
+                   param->children[2]->children[1]->child_count > 0) {
+            /* A `(Fn [ArgType...] RetType)` NON-zero-argument, typed
+             * callback parameter -- scarab.prn's own real `(body : (Fn
+             * [&mut T] Unit))` (it's own spec-body callback). Real,
+             * general case the zero-arg branch above's own header
+             * comment named as unstarted -- resolve_declared_type()
+             * itself now understands the full `(Fn [..] ..)` shape
+             * (added alongside this), so this branch just delegates to
+             * it rather than re-deriving the function-pointer C shape a
+             * second time; the only extra work here is splicing the
+             * parameter's own name into the "RetType (*)(ArgTypes)"
+             * string's empty `(*)` slot, since C's own declaration
+             * syntax puts a function pointer's name *inside* the
+             * parens, not after the whole type the way every other
+             * parameter shape in this loop works. */
+            const char *c_type = resolve_declared_type(arena, param->children[2], out_error);
+            if (!c_type) {
+                sb_free(&param_list);
+                return 0;
+            }
+            const char *paren_star = strstr(c_type, "(*)");
+            if (!paren_star) {
+                fail(arena, out_error, "defn: internal error resolving Fn-typed parameter '%s' at line %d",
+                     param->children[0]->text, param->line);
+                sb_free(&param_list);
+                return 0;
+            }
+            size_t prefix_len = (size_t)(paren_star - c_type);
+            sb_appendf(&param_list, "%.*s(*%s)%s __attribute__((unused))",
+                       (int)prefix_len, c_type, c_name, paren_star + 3);
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL &&
                    (find_enum_by_name(param->children[2]->text) ||
