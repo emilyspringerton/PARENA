@@ -29,7 +29,7 @@ filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `so
 `regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
 `regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`, `editor/plugin`, `editor/buffer`, `editor/events`,
 `editor/ui`, `ringo`, `world`, `mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`,
-`crypto/ed25519`, `gfd/browser`. Every other package in the tables below is designed in `STDLIB.md`
+`crypto/ed25519`, `gfd/browser`, `firefly`, `firefly/gomega`, `scarab`. Every other package in the tables below is designed in `STDLIB.md`
 but has no `.prn` file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`).
 
 ## Standard library — full planned API surface
@@ -116,6 +116,17 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | Package | Purpose |
 |---|---|
 | `ringo` | The matplotlib equivalent — `figure`/`plot`/`scatter`/`bar`/`hist`/`show`/`save`, plots `array`'s `NDArray` onto an `sdl2` window. Named by the founder: "apparently parena is a beetle" -> "RINGO" |
+
+### Testing
+
+| Package | Purpose |
+|---|---|
+| `firefly` | The base testing library — Go `testing.T`-shaped (`errorf`/`fatalf`/`skip`/`run-tests`). Beetle-named: fireflies are real beetles (Lampyridae) |
+| `firefly/gomega` | The matcher-chain library — `expect(x).to(equal(y))`, real Gomega shape |
+| `scarab` | BDD + test runner, the real Ginkgo shape — `describe`/`context`/`it`/`before-each`/`after-each`/`run-suite`. Beetle-named for the real scarab cycle/renewal association |
+
+`stdlib/tests/` holds real `.prn` test files written *using* `firefly`, dogfooding it against the
+stdlib itself — `vec_test.prn`, `map_test.prn`, `world_test.prn` so far.
 
 ### World/map building
 

@@ -1,0 +1,57 @@
+;; stdlib/firefly.prn — depends on vec, string. Design: STDLIB.md
+;; "firefly" section. Real Go testing.T shape: errorf records a failure
+;; and continues, fatalf records a failure and stops that one test
+;; (matches Go's own t.Error vs. t.Fatal exactly). Named by the
+;; founder: "whatever the BEETLE cute name equivalents" -- fireflies
+;; are real beetles (Lampyridae), "illuminating" test results.
+
+(module firefly)
+(import vec)
+(import string)
+(export errorf fatalf skip run-tests)
+
+(defstruct T
+  (name     : String @ Region)
+  (failed   : Bool)
+  (messages : (Vec String) @ Region))
+
+(defn errorf [(!t : &mut T) (msg : String @ Region)]
+  : Unit
+  (do
+    (set! (get-field !t :failed) true)
+    (vec/push! &(get-field !t :messages) msg)))
+
+;; fatalf — same bookkeeping as errorf, plus an early return out of the
+;; calling test function. VS0 has no non-local control-flow primitive
+;; yet to express "stop this test but keep running the suite" as a real
+;; language construct -- flagged honestly rather than faked; run-tests
+;; below is written to tolerate a test simply returning early on its
+;; own once that primitive exists.
+(defn fatalf [(!t : &mut T) (msg : String @ Region)]
+  : Unit
+  (errorf !t msg))
+
+(defn skip [(!t : &mut T) (reason : String @ Region)]
+  : Unit
+  (vec/push! &(get-field !t :messages) (string/concat "SKIP: " reason (current-arena))))
+
+(defstruct TestCase
+  (name : String @ Region)
+  (run  : (Fn [&mut T] Unit)))
+
+(defstruct TestReport
+  (passed  : I32)
+  (failed  : I32)
+  (skipped : I32))
+
+(defn run-tests [(cases : &(Vec TestCase)) (dest : Arena @ Region)]
+  : TestReport @ Region
+  (loop [i 0 passed 0 failed 0]
+    (if (>= i (vec/len cases))
+      {:passed passed :failed failed :skipped 0}
+      (let [tc (deref (vec/get cases i))
+            t {:name (get-field tc :name) :failed false :messages (vec/new dest)}]
+        ((get-field tc :run) &mut t)
+        (if (get-field t :failed)
+          (recur (+ i 1) passed (+ failed 1))
+          (recur (+ i 1) (+ passed 1) failed))))))

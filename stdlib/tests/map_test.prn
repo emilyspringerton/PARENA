@@ -1,0 +1,56 @@
+;; stdlib/tests/map_test.prn — real tests for stdlib/map.prn, using
+;; firefly. Founder: "and then start to write tests for teh std lib."
+
+(module tests/map-test)
+(import map)
+(import firefly)
+(export test-cases)
+
+(defn test-new-is-empty [(!t : &mut T)]
+  : Unit
+  (let [m (map/new (current-arena))]
+    (when (map/contains &m &"missing")
+      (firefly/errorf !t "map/new: a fresh map should not contain any key"))))
+
+(defn test-set-then-get [(!t : &mut T)]
+  : Unit
+  (let [m (map/new (current-arena))]
+    (map/set! &m "a" 1)
+    (match (map/get &m &"a")
+      ((Some v) (when (not (= (deref v) 1)) (firefly/errorf !t "map/get: expected 1 for key 'a'")))
+      (None (firefly/errorf !t "map/get: expected Some for a key just set")))))
+
+(defn test-get-missing-key-is-none [(!t : &mut T)]
+  : Unit
+  (let [m (map/new (current-arena))]
+    (match (map/get &m &"nope")
+      ((Some _) (firefly/errorf !t "map/get: expected None for a key never set"))
+      (None unit))))
+
+(defn test-set-overwrites-existing-key [(!t : &mut T)]
+  : Unit
+  (let [m (map/new (current-arena))]
+    (map/set! &m "k" 1)
+    (map/set! &m "k" 2)
+    (match (map/get &m &"k")
+      ((Some v) (when (not (= (deref v) 2)) (firefly/errorf !t "map/set!: expected the overwritten value 2")))
+      (None (firefly/errorf !t "map/set!: expected Some after overwrite")))))
+
+(defn test-contains-reflects-set-keys [(!t : &mut T)]
+  : Unit
+  (let [m (map/new (current-arena))]
+    (map/set! &m "present" true)
+    (when (not (map/contains &m &"present"))
+      (firefly/errorf !t "map/contains: expected true for a key that was set"))
+    (when (map/contains &m &"absent")
+      (firefly/errorf !t "map/contains: expected false for a key never set"))))
+
+(defn test-cases [(dest : Arena @ Region)]
+  : (Vec TestCase) @ Region
+  (let [cases (vec/new dest)]
+    (vec/push! &cases {:name "map/new produces an empty map" :run test-new-is-empty})
+    (vec/push! &cases {:name "map/set! then map/get round-trips" :run test-set-then-get})
+    (vec/push! &cases {:name "map/get is None for a missing key" :run test-get-missing-key-is-none})
+    (vec/push! &cases {:name "map/set! overwrites an existing key" :run test-set-overwrites-existing-key})
+    (vec/push! &cases {:name "map/contains reflects set keys" :run test-contains-reflects-set-keys})
+    cases))
