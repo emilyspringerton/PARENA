@@ -140,24 +140,34 @@ static int is_symbol(Node *n, const char *text) {
 /* ---- defenum registry: a real, user-defined tagged union, generalizing
  * the same {tag; void *value;} shape Result/Option already use (see
  * parena_runtime.h's own header comment on that real, honest single-
- * payload-field limitation -- restated here, not solved differently for
- * user enums). Real, narrow scope: each variant carries at most one
- * payload field (every real defenum in this stdlib's own .prn files --
- * editor/events.prn's EditorEvent, gfd.prn's PanelKind, etc. -- fits this
- * shape; a variant with two or more payload fields is separate, real,
- * unstarted work, same honest boundary as everywhere else in this file).
- *
- * g_enums is file-scope state, not threaded through every emit_* function
- * signature -- a deliberate, scoped simplification: `parena build`
- * processes exactly one file per process invocation (see main.c), so
- * there's no real reentrancy concern here, and threading a new parameter
- * through emit_expr/emit_match/emit_body/emit_defn/emit_loop/emit_if/
- * emit_binop/emit_call/emit_with_arena/emit_let (ten-plus call sites)
- * would be a lot of mechanical churn for a property that's genuinely
- * global to one compilation. */
+ * payload-field limitation). Real, extended scope (2026-08-20, while
+ * getting scarab.prn's own real `SuiteNode` -- `Group`'s two real,
+ * typed fields, `name` and `children` -- to compile): a variant now
+ * carries any real number of typed payload fields, not just zero/one.
+ * Zero/one-field variants keep the EXACT existing `{tag; void *value;}`
+ * runtime shape unchanged (real, deliberate zero-regression-risk
+ * choice -- every already-compiling defenum in this stdlib, editor/
+ * events.prn's EditorEvent, gfd.prn's PanelKind, etc., stays exactly as
+ * it was). Two-or-more-field variants get a real, distinct, additional
+ * shape: a companion `EnumName_VariantName_Payload` struct (fields
+ * stored by real, distinct C types, same "no shared void*" discipline
+ * defstruct's own fields already use) allocated into an explicit
+ * `Arena *dest` the constructor now takes as its own first parameter,
+ * with a pointer to it stored in the SAME `void *value` field zero/
+ * one-field variants already use -- `match`'s own existing "cast
+ * value to the payload type" pattern (see emit_match's own code) works
+ * unchanged either way, it just casts to a *Payload struct pointer
+ * type for these instead of a scalar/single-field type. */
+typedef struct {
+    const char *name;   /* original source spelling */
+    const char *c_name;  /* mangled */
+    const char *c_type;
+} EnumField;
+
 typedef struct {
     const char *name;
-    int has_payload;
+    EnumField *fields;
+    size_t field_count;
     int tag_value;
 } EnumVariant;
 
@@ -390,6 +400,13 @@ static int has_region_marker(Node *n) {
     return 0;
 }
 
+/* Forward declaration -- resolve_declared_type() is defined much later
+ * in this file (its own real, narrow scope grew organically over this
+ * session), but process_defenum() now needs it too (2026-08-20, for
+ * real multi-field payload types), same as several other functions
+ * defined between here and there already do. */
+static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error);
+
 static char *fail(Arena *arena, const char **out_error, const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -419,16 +436,44 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
     EnumVariant *variants = (EnumVariant *)arena_alloc(arena, sizeof(EnumVariant) * variant_count);
     for (size_t i = 0; i < variant_count; i++) {
         Node *variant = node->children[2 + i];
-        if (variant->type != NODE_LIST || variant->child_count < 1 || variant->child_count > 2 ||
-            variant->children[0]->type != NODE_SYMBOL) {
+        if (variant->type != NODE_LIST || variant->child_count < 1 || variant->children[0]->type != NODE_SYMBOL) {
             return fail(arena, out_error,
-                        "defenum: variant at line %d must be (Name) or (Name (field : Type)) -- "
-                        "VS0's emitter only supports at most one payload field per variant so far",
+                        "defenum: variant at line %d must be (Name) or (Name (field : Type) ...)",
                         node->line) != NULL;
         }
         variants[i].name = variant->children[0]->text;
-        variants[i].has_payload = (variant->child_count == 2);
         variants[i].tag_value = (int)i;
+        size_t field_count = variant->child_count - 1;
+        variants[i].field_count = field_count;
+        variants[i].fields = (EnumField *)arena_alloc(arena, sizeof(EnumField) * (field_count ? field_count : 1));
+        for (size_t f = 0; f < field_count; f++) {
+            Node *field = variant->children[1 + f];
+            /* Real, honest scope kept identical to the pre-existing
+             * single-field case: a field's own declared type is only
+             * actually RESOLVED (via resolve_declared_type()) for
+             * multi-field (2+) variants, which need real, distinct C
+             * types to build a real companion payload struct. A
+             * single-field variant keeps the exact pre-existing
+             * behavior -- its one field is still just a generic
+             * `void *`, never type-checked -- zero behavior change,
+             * zero regression risk to every already-compiling
+             * single-payload defenum in this stdlib. */
+            if (field->type != NODE_LIST || field->child_count < 3 || field->children[0]->type != NODE_SYMBOL ||
+                field->children[1]->type != NODE_COLON) {
+                return fail(arena, out_error,
+                            "defenum: field at line %d must be (name : Type) or (name : Type @ Region)",
+                            variant->line) != NULL;
+            }
+            variants[i].fields[f].name = field->children[0]->text;
+            variants[i].fields[f].c_name = mangle(arena, field->children[0]->text);
+            if (field_count >= 2) {
+                const char *field_type = resolve_declared_type(arena, field->children[2], out_error);
+                if (!field_type) return 0;
+                variants[i].fields[f].c_type = field_type;
+            } else {
+                variants[i].fields[f].c_type = "void *"; /* unused for the single-field path below */
+            }
+        }
     }
 
     EnumInfo *info = (EnumInfo *)arena_alloc(arena, sizeof(EnumInfo));
@@ -452,7 +497,34 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
     sb_appendf(out, "} %s_Tag;\n", enum_name);
     sb_appendf(out, "typedef struct { %s_Tag tag; void *value; } %s;\n", enum_name, enum_name);
     for (size_t i = 0; i < variant_count; i++) {
-        if (variants[i].has_payload) {
+        if (variants[i].field_count >= 2) {
+            /* Real, new multi-field-payload shape: a companion struct,
+             * real distinct field types (same "no shared void*"
+             * discipline defstruct's own fields already use), and a
+             * constructor taking an explicit `Arena *dest` (its own
+             * first parameter) to allocate it into -- boxed the same
+             * real way a Vec's own backing storage is, not a claim of
+             * some new allocation-free mechanism. */
+            sb_appendf(out, "typedef struct {\n");
+            for (size_t f = 0; f < variants[i].field_count; f++) {
+                sb_append(out, "    ");
+                sb_append_decl(out, variants[i].fields[f].c_type, variants[i].fields[f].c_name);
+                sb_append(out, ";\n");
+            }
+            sb_appendf(out, "} %s_%s_Payload;\n", enum_name, variants[i].name);
+            sb_appendf(out, "static inline %s %s_%s(Arena *dest", enum_name, enum_name, variants[i].name);
+            for (size_t f = 0; f < variants[i].field_count; f++) {
+                sb_append(out, ", ");
+                sb_append_decl(out, variants[i].fields[f].c_type, variants[i].fields[f].c_name);
+            }
+            sb_appendf(out, ") {\n    %s_%s_Payload *p = (%s_%s_Payload *)arena_alloc(dest, sizeof(%s_%s_Payload));\n",
+                       enum_name, variants[i].name, enum_name, variants[i].name, enum_name, variants[i].name);
+            for (size_t f = 0; f < variants[i].field_count; f++) {
+                sb_appendf(out, "    p->%s = %s;\n", variants[i].fields[f].c_name, variants[i].fields[f].c_name);
+            }
+            sb_appendf(out, "    %s v; v.tag = %s_TAG_%s; v.value = p; return v;\n}\n",
+                       enum_name, enum_name, variants[i].name);
+        } else if (variants[i].field_count == 1) {
             sb_appendf(out,
                        "static inline %s %s_%s(void *value) { %s v; v.tag = %s_TAG_%s; v.value = value; "
                        "return v; }\n",
@@ -767,7 +839,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     if (expr->type == NODE_SYMBOL) {
         EnumVariant *variant = NULL;
         EnumInfo *owner = find_enum_variant(expr->text, &variant);
-        if (owner && !variant->has_payload) {
+        if (owner && variant->field_count == 0) {
             *out_type = owner->name;
             char buf[128];
             snprintf(buf, sizeof(buf), "%s_%s()", owner->name, variant->name);
@@ -856,7 +928,40 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         EnumVariant *variant = NULL;
         EnumInfo *owner = find_enum_variant(expr->children[0]->text, &variant);
-        if (owner && variant->has_payload) {
+        if (owner && variant->field_count >= 2) {
+            /* Real, new multi-field-payload construction call, e.g.
+             * `(Group dest name children)` -- the bare (non-namespaced)
+             * variant-call convention. The constructor's own real first
+             * parameter is the destination Arena (see process_defenum()'s
+             * own comment on why the companion payload struct needs one)
+             * -- real field-value arguments follow, one per declared
+             * field, no pointer-type requirement (each field keeps its
+             * own real, distinct C type from resolve_declared_type(),
+             * unlike the single-field path's own generic void*). */
+            if (expr->child_count != variant->field_count + 2) {
+                return fail(arena, out_error,
+                            "%s: expects a destination arena plus %zu field value(s) at line %d, got %zu",
+                            expr->children[0]->text, variant->field_count, expr->line, expr->child_count - 1);
+            }
+            StrBuf args;
+            sb_init(&args);
+            for (size_t i = 1; i < expr->child_count; i++) {
+                const char *arg_type = NULL;
+                const char *arg_c = emit_expr(arena, expr->children[i], scope, &arg_type, out_error);
+                if (!arg_c) {
+                    sb_free(&args);
+                    return NULL;
+                }
+                if (i > 1) sb_append(&args, ", ");
+                sb_append(&args, arg_c);
+            }
+            *out_type = owner->name;
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%s_%s(%s)", owner->name, variant->name, args.data);
+            sb_free(&args);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+        if (owner && variant->field_count == 1) {
             if (expr->child_count != 2) {
                 return fail(arena, out_error, "%s: expects exactly one argument at line %d",
                             expr->children[0]->text, expr->line);

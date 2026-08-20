@@ -1138,6 +1138,63 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- multi-field defenum variant payloads -- scarab.prn's own real
+     * `SuiteNode` (`Group`'s two real, typed fields, `name` and
+     * `children`), previously capped at exactly one payload field.
+     * Zero/one-field variants keep their exact pre-existing shape
+     * (regression-checked below); two-or-more-field variants get a
+     * real companion payload struct + a constructor taking an explicit
+     * destination Arena as its own first parameter. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum SuiteNode\n"
+            "  (Group (name : String @ Region) (children : I32))\n"
+            "  (Spec  (name : String @ Region))\n"
+            "  (Empty))\n"
+            "(defn f [(dest : Arena @ Region) (n : String @ Region)] : SuiteNode\n"
+            "  (Group dest n 5))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defenum with zero/one/two-field variants parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "typedef struct {\n    char * name;\n    int children;\n} SuiteNode_Group_Payload;") != NULL,
+                  "the two-field variant gets a real companion payload struct with real, distinct field types");
+            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Group(Arena *dest, char * name, int children) {") != NULL,
+                  "its own constructor takes an explicit destination Arena as its first parameter, "
+                  "then the real, typed field values");
+            CHECK(strstr(c_src, "arena_alloc(dest, sizeof(SuiteNode_Group_Payload))") != NULL,
+                  "it allocates the companion payload struct into that arena");
+            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Spec(void *value)") != NULL,
+                  "the one-field variant keeps its exact pre-existing generic void* shape, unchanged");
+            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Empty(void)") != NULL,
+                  "the zero-field variant keeps its exact pre-existing shape too, unchanged");
+            CHECK(strstr(c_src, "return SuiteNode_Group(dest, n, 5);") != NULL,
+                  "a real call site passes the destination arena plus each field value positionally");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum E (V (a : I32) (b : I32)))\n"
+            "(defn f [(dest : Arena @ Region)] : E\n"
+            "  (V dest 1))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a multi-field variant call with the wrong argument count parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "a multi-field variant call missing a required field value fails honestly");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
