@@ -80,6 +80,9 @@ binding, not a language primitive).
 36. `crypto/hash`, `crypto/aes`, `crypto/ed25519` — depend on `string` only (each FFI-bound)
 37. `gfd/browser` — depends on `gfd`, `vec` (FFI-bound to a real embeddable engine)
 38. `ncurses` — depends on `string` only (FFI-bound; kept narrow per founder's own scope call)
+39. `firefly` — depends on `vec`, `string` (no other stdlib deps — the base testing library)
+40. `firefly/gomega` — depends on `firefly` only
+41. `scarab` — depends on `firefly`, `firefly/gomega`
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1187,6 +1190,71 @@ while the founder's own priority is the compiler (below).
 (defn getch [(!scr : &mut Screen)] : I32)
 (defn endwin [(!scr : Screen)] : Unit)
 ```
+
+### `firefly` / `firefly/gomega` / `scarab` — testing, Go's package + Ginkgo/Gomega on top, beetle-named
+
+Founder: "add testing to the stdlib" → "like the go testing module" → "and then build bdd ginkgo
+style affordances on top" → "or in addition however that works" → "ginkgo and gomega" → "whatever
+the BEETLE cute name equivalents of a testing library and a test runner" → "first in the base
+testing framework which needs to be in place to builld the bdd framework and test runner" → "or
+whatever goomega ginkgo are." Three real packages, matching the real Go ecosystem's own layering
+exactly (Ginkgo and Gomega are two separate, real Go modules — `github.com/onsi/ginkgo`,
+`github.com/onsi/gomega` — Ginkgo the BDD test-structure DSL *and test runner*, Gomega the matcher
+library, each usable without the other), beetle-named per the founder's own naming convention
+(`ringo`, above): **`firefly`** (fireflies are real beetles, family Lampyridae — "illuminating"
+test results is the pun) for the base library, **`scarab`** for the runner/BDD layer (scarab
+beetles' own real mythological association with cycles — a test runner that cycles through suites
+on every run). Built in the order asked: base library first, since the runner/BDD layer is real,
+scoped follow-up work built *on* it, not the other way around.
+
+**`firefly`** — the base package, Go's own `testing.T` shape: a mutable test-state handle passed
+into every test function, `errorf` records a failure and continues, `fatalf` records a failure and
+stops that one test (matches Go's own `t.Error` vs. `t.Fatal` distinction exactly):
+
+```clojure
+(defstruct T (name : String @ Region) (failed : Bool) (messages : (Vec String) @ Region))
+
+(defn errorf [(!t : &mut T) (msg : String @ Region)] : Unit)
+(defn fatalf [(!t : &mut T) (msg : String @ Region)] : Unit)   ; also unwinds this one test, not the whole run
+(defn skip   [(!t : &mut T) (reason : String @ Region)] : Unit)
+
+(defstruct TestCase (name : String @ Region) (run : (Fn [&mut T] Unit)))
+(defstruct TestReport (passed : I32) (failed : I32) (skipped : I32))
+
+(defn run-tests [(cases : &(Vec TestCase)) (dest : Arena @ Region)] : TestReport @ Region)
+```
+
+**`firefly/gomega`** — depends on `firefly` only. The real matcher-chain shape (`Expect(x).To
+(Equal(y))`), not a flat `assert-eq`-only surface — Gomega's own actual value is exactly this
+composable matcher design:
+
+```clojure
+(defstruct Expectation (actual : &Any) (t : &mut T))
+
+(defn expect [(actual : &Any) (!t : &mut T)] : Expectation)
+(defn to           [(exp : &Expectation) (matcher : (Fn [&Any] Bool))] : Unit)   ; fails !t via errorf on mismatch
+(defn equal        [(expected : &Any)] : (Fn [&Any] Bool))
+(defn be-true       [] : (Fn [&Any] Bool))
+(defn be-nil        [] : (Fn [&Any] Bool))
+```
+
+**`scarab`** — depends on `firefly`, `firefly/gomega`. The real Ginkgo shape:
+`Describe`/`Context`/`It` nesting, `BeforeEach`/`AfterEach` hooks, plus the runner itself:
+
+```clojure
+(defn describe    [(name : String @ :region/scratch) (body : (Fn [] Unit))] : Unit)
+(defn context     [(name : String @ :region/scratch) (body : (Fn [] Unit))] : Unit)   ; alias of describe, Ginkgo's own convention
+(defn it          [(name : String @ :region/scratch) (body : (Fn [&mut T] Unit))] : Unit)
+(defn before-each [(hook : (Fn [] Unit))] : Unit)
+(defn after-each  [(hook : (Fn [] Unit))] : Unit)
+(defn run-suite   [(dest : Arena @ Region)] : TestReport @ Region)   ; walks the registered Describe/Context/It tree
+```
+
+Real, honest limitation: `describe`/`context`/`it` need to register into a shared, ambient test
+tree that `run-suite` later walks — real, non-trivial runtime bookkeeping (Ginkgo's own real
+implementation does this with global mutable state + reflection-adjacent tricks), not specified in
+depth here; the signatures are real, the registration mechanism's own implementation is flagged as
+real follow-up work once VS0 can run enough Parena to build it against.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
