@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 多欄位 defenum variant payload——scarab.prn 的 SuiteNode 真的能過這關了，往前推進到跟另外兩個 ladybug 檔案一樣的同一個既有模組連結缺口 (sess-20260820-0649-a3f19d93)
 - 里程碑:firefly.prn(ladybug BDD 框架的地基)真的通過真正 gcc -Wall -Wextra -pedantic -Werror 編譯——這一輪額外抓到並修好五個真實 bug(呼叫一等函式值、defstruct 的 Fn 欄位語法接錯位置、emit_call 對已知函式回傳型別的猜測蓋掉了正確答案、deref 少轉型導致對 void* 直接解參考、sb_appendf 固定 1024 bytes 緩衝區默默截斷過長的函式本體),外加補上 g_vec_elem_hints(Vec 元素型別追蹤)跟真正的 string_concat runtime 實作 (sess-20260820-0649-a3f19d93)
 - map-literal struct construction(STDLIB.md 缺口 #2)+ let/do 在 loop tail position 的真實結構性 bug 修復,firefly.prn 的 run-tests 又推進一步,現在卡在更深的 Vec 元素型別遺失問題(deref (vec/get ...) 拿不到真正的 TestCase 型別,只剩 void) (sess-20260820-0649-a3f19d93)
 - STDLIB.md 新增 fp 套件設計(Ramda 對等的 FP toolkit:map/filter/reduce/compose/pipe/prop/pluck/predicate combinators),搭在這次新落地的 (Vec T) 之上;auto-currying 誠實標記為尚未開始(需要真正的 closure 表示法) (sess-20260820-0649-a3f19d93)
