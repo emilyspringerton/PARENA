@@ -1,0 +1,57 @@
+# examples/BUILD.bazel — VS0 domain 3's own end-to-end acceptance
+# examples, built AND compiled as real Bazel targets (founder, real-time:
+# "right into effing PARENA in examples" + "built with bazel" + "of
+# course") rather than only reachable via the raw `bazel run //src:parena
+# -- build ...` + separate gcc invocation ci.yml's own shell steps use.
+# Each genrule runs the real `parena` binary against a real .prn source
+# file to produce real C99; each cc_library then compiles that generated
+# C under the exact same -std=c99 -Wall -Wextra -pedantic -Werror bar
+# ci.yml already holds it to (zero warnings, not just "parses"). A
+# cc_library only compiles, it doesn't link -- exactly the DoD's own
+# domain 3 acceptance bar, not "produces a runnable binary" (editor_plugin
+# calls real host-side symbols like editor_register_command that don't
+# exist anywhere yet -- see editor_plugin.prn's own header comment).
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+genrule(
+    name = "valid_only_c",
+    srcs = ["valid_only.prn"],
+    outs = ["valid_only.c"],
+    cmd = "$(location //src:parena) build $(location valid_only.prn) -o $@",
+    tools = ["//src:parena"],
+)
+
+cc_library(
+    name = "valid_only_compiled",
+    srcs = [":valid_only_c"],
+    deps = ["//runtime:parena_runtime"],
+    copts = ["-std=c99", "-Wall", "-Wextra", "-pedantic", "-Werror"],
+)
+
+genrule(
+    name = "editor_plugin_c",
+    srcs = ["editor_plugin.prn"],
+    outs = ["editor_plugin.c"],
+    cmd = "$(location //src:parena) build $(location editor_plugin.prn) -o $@",
+    tools = ["//src:parena"],
+)
+
+cc_library(
+    name = "editor_plugin_compiled",
+    # editor_plugin.prn's own #target/inline-c bodies call real host-side
+    # symbols (editor_register_command, editor_get_config_option) that
+    # don't exist anywhere yet -- genuinely unstarted work, not a bug.
+    # -include forces the honest extern declarations in
+    # editor_plugin_host_stubs.h before compiling the genrule's own
+    # generated C, so this still holds to the DoD's real "compiles with
+    # zero warnings" bar instead of quietly loosening
+    # -Werror=implicit-function-declaration to let it slide.
+    srcs = [":editor_plugin_c"],
+    copts = [
+        "-std=c99", "-Wall", "-Wextra", "-pedantic", "-Werror",
+        "-include", "examples/editor_plugin_host_stubs.h",
+    ],
+    additional_compiler_inputs = ["editor_plugin_host_stubs.h"],
+    deps = ["//runtime:parena_runtime"],
+)

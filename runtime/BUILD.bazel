@@ -7,5 +7,13 @@ cc_library(
     name = "parena_runtime",
     srcs = ["parena_runtime.c"],
     hdrs = ["parena_runtime.h"],
+    # includes=["."]: every VS0-emitted .c file does a bare
+    # #include "parena_runtime.h" (matching the compiler's own -I runtime
+    # convention in the Makefile/CI), not a package-qualified path -- this
+    # re-exports runtime/ itself as a quote-include search root so any
+    # other package's cc_library/cc_binary depending on :parena_runtime
+    # (examples/BUILD.bazel's generated-C compile checks, for one) resolves
+    # that same bare include correctly.
+    includes = ["."],
     visibility = ["//visibility:public"],
 )

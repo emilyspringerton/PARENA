@@ -1,0 +1,26 @@
+;; examples/editor_plugin.prn — the real mod-surface stdlib source
+;; (stdlib/editor/plugin.prn), copied here as VS0 domain 3's own end-to-
+;; end acceptance example once #target/inline-c FFI declarations and
+;; (Fn [] Unit) callback parameters made it real, compilable C for the
+;; first time (2026-08-20) -- not a synthetic test fixture, the actual
+;; PITVIPER mod-surface file NORTHSTAR.md's own module table names.
+;; Design: STDLIB.md "editor/plugin" section. Real limitation restated:
+;; the editor shell itself is still an open, undecided question
+;; (Electron/Tauri/GTK+GtkSourceView/SDL2+ImGui/ncurses+Tree-sitter) --
+;; this is the plugin-facing surface only, its actual host-side dispatch
+;; table is real, shell-specific, unstarted work.
+
+(module editor/plugin)
+(import string)
+(import vec)
+(export register-command get-config)
+
+(defn register-command [(name : String @ :region/scratch) (handler : (Fn [] Unit))]
+  : Unit
+  #target
+  {:c (inline-c "editor_register_command(name, handler);")})
+
+(defn get-config [(key : String @ :region/scratch)]
+  : (Option String)
+  #target
+  {:c (inline-c "editor_get_config_option(key)")})
