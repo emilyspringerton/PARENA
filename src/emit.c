@@ -558,6 +558,40 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = "double"; /* VS0 has no int-vs-float distinction yet -- a real, honest simplification */
         return expr->text;
     }
+    /* A real, foundational gap found and fixed here (2026-08-20, while
+     * getting firefly.prn to compile): string literals used as a plain
+     * expression (e.g. `(string/concat "SKIP: " reason)`) had NO
+     * handling anywhere in emit_expr() at all -- only NODE_NUMBER had a
+     * literal path; the lexer's own lex_string() already unescapes `\n`/
+     * `\t`/`\"`/`\\` into real raw bytes (a real embedded newline byte,
+     * not the two characters `\` and `n`), so this has to re-escape
+     * before emitting a real C string literal, not just wrap expr->text
+     * in quotes -- doing that naively would emit invalid/broken C for
+     * any string containing a real quote, backslash, or newline byte. */
+    if (expr->type == NODE_STRING) {
+        StrBuf sb;
+        sb_init(&sb);
+        sb_append(&sb, "\"");
+        for (size_t i = 0; i < expr->text_len; i++) {
+            unsigned char c = (unsigned char)expr->text[i];
+            if (c == '"' || c == '\\') {
+                char esc[3] = {'\\', (char)c, '\0'};
+                sb_append(&sb, esc);
+            } else if (c == '\n') {
+                sb_append(&sb, "\\n");
+            } else if (c == '\t') {
+                sb_append(&sb, "\\t");
+            } else {
+                char one[2] = {(char)c, '\0'};
+                sb_append(&sb, one);
+            }
+        }
+        sb_append(&sb, "\"");
+        *out_type = "char *";
+        const char *result = arena_strdup(arena, sb.data, strlen(sb.data));
+        sb_free(&sb);
+        return result;
+    }
     /* None -- the one real Result/Option constructor with no payload,
      * checked before the generic symbol-lookup path since it's a real
      * core-language value, not a local variable reference. */
@@ -1825,6 +1859,33 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             }
             char c_type_buf[128];
             snprintf(c_type_buf, sizeof(c_type_buf), "%s *", base_type);
+            const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else if (param->child_count == 4 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL && is_symbol(param->children[2], "&") &&
+                   (param->children[3]->type == NODE_LIST || param->children[3]->type == NODE_SYMBOL)) {
+            /* `&(ComplexType)` -- the bare `&` symbol immediately
+             * followed by a parenthesized type (no space, e.g.
+             * firefly.prn's own `(cases : &(Vec TestCase))`) lexes/
+             * parses as two SIBLING nodes here too, the same real
+             * two-node shape the expression-level `&(expr)` form
+             * already has (see emit_call()'s own argument-loop handling
+             * for that parallel case) -- distinct from the single-token
+             * `&Type` symbol form resolve_declared_type() handles
+             * directly, since a complex type like `(Vec TestCase)`
+             * can't be glued onto the `&` as one lexer token the way
+             * `&Any` can. Delegates to resolve_declared_type() for the
+             * inner type (covers (Vec ..)/(Result ..)/(Option ..)/
+             * registered names/plain symbols alike) and wraps the
+             * result in a pointer. */
+            const char *inner_type = resolve_declared_type(arena, param->children[3], out_error);
+            if (!inner_type) {
+                sb_free(&param_list);
+                return 0;
+            }
+            char c_type_buf[128];
+            snprintf(c_type_buf, sizeof(c_type_buf), "%s *", inner_type);
             const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);

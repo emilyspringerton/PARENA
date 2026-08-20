@@ -815,6 +815,75 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- string literals as plain expressions -- a real, foundational
+     * gap found while getting firefly.prn's own `(string/concat "SKIP: "
+     * reason)` to compile: emit_expr() had NO handling for NODE_STRING
+     * at all before this. Real C-escaping matters here: the lexer's own
+     * lex_string() already unescapes `\n`/`\"`/`\\` into raw bytes, so a
+     * literal containing a real quote/backslash/newline byte has to be
+     * re-escaped, not just wrapped in quotes verbatim. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : String \"hello\")";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a plain string literal expression parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "a string literal emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "return \"hello\";") != NULL,
+                  "it emits as a real C string literal");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        /* Real embedded quote and backslash bytes (not the two-character
+         * escape sequences) -- lex_string() already unescaped these by
+         * the time emit_expr() sees them. */
+        const char *src = "(defn f [] : String \"say \\\"hi\\\" \\\\ bye\")";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a string literal with an embedded quote and backslash parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "\"say \\\"hi\\\" \\\\ bye\"") != NULL,
+                  "the embedded quote and backslash are re-escaped into real, valid C, not left raw");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `&(ComplexType)` -- a bare `&` symbol immediately followed by a
+     * parenthesized type (the real firefly.prn shape: `(cases :
+     * &(Vec TestCase))`) parses as two sibling nodes, same as the
+     * expression-level `&(expr)` form, and needs its own param-loop
+     * branch distinct from the single-token `&Type`/two-token `&mut
+     * Type` paths already covered. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (value : I32))\n"
+            "(defn count [(items : &(Vec Item))] : I32\n"
+            "  (vec/len items))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a &(Vec T) parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "&(Vec T) as a parameter type emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Vec * items") != NULL,
+                  "it becomes a real Vec * (Vec T's own erasure, wrapped in the reference's own pointer)");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

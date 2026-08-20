@@ -31,9 +31,18 @@
   : Unit
   (errorf !t msg))
 
-(defn skip [(!t : &mut T) (reason : String @ Region)]
+;; skip -- takes an explicit `dest` arena to allocate the "SKIP: "
+;; concatenation into, same as every other allocating function in this
+;; stdlib. Real fix, not a workaround: an earlier draft called
+;; `(current-arena)`, a builtin that was never designed and doesn't fit
+;; VS0's own memory model at all -- there are no ambient/implicit arenas
+;; anywhere else in this language, every allocation traces to an
+;; explicit `Arena @ Region` parameter, on purpose (that's the whole
+;; point of the region-based safety story). Found while getting
+;; firefly.prn to actually compile.
+(defn skip [(!t : &mut T) (reason : String @ Region) (dest : Arena @ Region)]
   : Unit
-  (vec/push! &(get-field !t :messages) (string/concat "SKIP: " reason (current-arena))))
+  (vec/push! &(get-field !t :messages) (string/concat "SKIP: " reason dest)))
 
 (defstruct TestCase
   (name : String @ Region)
