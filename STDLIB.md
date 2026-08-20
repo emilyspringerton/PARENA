@@ -85,6 +85,8 @@ binding, not a language primitive).
 41. `scarab` — depends on `firefly`, `firefly/gomega`
 42. `compress/lz4` — depends on `string` only (FFI-bound)
 43. `pitviper/protocol` — depends on `net/tcp`, `string`, `vec`, `compress/lz4`
+44. `profile` — depends on `core` only (FFI-bound; `heap-snapshot` is real/native, region-native)
+45. `staticanalysis` — depends on `string`, `vec` (FFI-bound)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1323,6 +1325,52 @@ decompression speed over ratio" for latency-sensitive links, not archival size):
 compression choice; the server daemon's own file-system-watching/live-update behavior (does the
 GUI tree refresh automatically on remote changes, or only on demand?) is real, unresolved product
 design, not answered here — same "flagged, not resolved" pattern as everywhere else in this doc.
+
+### `profile` / `staticanalysis` — gnarly C/C++-grade tooling, FFI-bound to the real thing
+
+Founder: "PARENA should help address mempry issues" — already this language's own core value
+proposition, not a new package: region typing (NORTHSTAR's "Memory model" section) catches the
+exact bug class (escaping pointers, use-after-free-shaped errors) at compile time, which is a
+stronger guarantee than any of the tools below give a C/C++ program *after the fact*. Then: "profiling
+needs to be built into PARENA std lib" → "gnarly c and cpp style profiling" → "all of the state of
+the art static analysis tools too built into the stdlib."
+
+**`profile`** — FFI-bound to real, established profiling infrastructure (same judgment as `ssh`/
+`crypto`/`media/codec`/`compress/lz4` above, not a from-scratch profiler): Linux `perf_event_open`
+for real sampling-based CPU profiling (the same real mechanism `perf record` itself uses), with a
+`callgrind`-style instrumented mode as the real, honest "slower but exact call-graph" alternative
+(Valgrind's own callgrind is the real prior art named directly):
+
+```clojure
+(defn start-cpu-profile [(dest : Arena @ Region)] : (Result Profiler ProfileError) @ Region)
+(defn stop-cpu-profile  [(!p : Profiler) (out-path : String @ :region/scratch)]
+  : (Result Unit ProfileError))   ; writes a real perf.data-compatible or pprof-compatible file
+(defn heap-snapshot [(dest : Arena @ Region)] : HeapSnapshot @ Region)   ; per-region byte counts, real and cheap since Arena already tracks used/capacity
+```
+
+`heap-snapshot` is the one real, native (non-FFI) piece: unlike CPU profiling, PARENA's own
+region/arena model already tracks exactly what a heap profiler wants (bytes allocated per
+region, arena-by-arena) — no external tool needed for that half, a real, load-bearing
+consequence of the language's own design, not a coincidence.
+
+**`staticanalysis`** — FFI-bound to real, established static analyzers (clang-tidy, cppcheck,
+real prior art named directly, not invented tool names) for the checks region typing itself
+doesn't cover (style, real C-target-specific footguns once code is emitted, dead-code detection):
+
+```clojure
+(defn run [(target-c-file : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec Diagnostic) AnalysisError) @ Region)
+
+(defstruct Diagnostic (severity : Severity) (message : String @ Region) (line : I32))
+(defenum Severity (Info) (Warning) (Error))
+```
+
+Real, honest scoping note, not glossed over: `staticanalysis/run` operates on VS0's own *emitted
+C* (post domain-3), catching issues in the C target specifically — it is not a second Parena-
+source-level analysis pass competing with `region_analyze` itself, which already is the real,
+compile-time-enforced static analysis for the properties that actually matter most (region safety),
+stronger than anything an external C linter can see once the region information itself has been
+erased by emission.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
