@@ -78,6 +78,7 @@ binding, not a language primitive).
 34. `shell` — depends on `pty`, `string`
 35. `ssh` — depends on `string`
 36. `crypto/hash`, `crypto/aes`, `crypto/ed25519` — depend on `string` only (each FFI-bound)
+37. `gfd/browser` — depends on `gfd`, `vec` (FFI-bound to a real embeddable engine)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -476,6 +477,34 @@ ticker chart or news feed, backed by FatBaby's real, already-live `signalapi` on
 (defenum PanelKind (TickerChart (ticker : String @ Region)) (NewsFeed))
 (defn spawn-panel [(kind : PanelKind) (x : F64) (y : F64) (z : F64)] : (Result I32 WorldError))
 ```
+
+**`gfd/browser` — a real modern web browser panel, FFI-bound to a real embeddable engine**:
+founder: "so we are going to build a plugin to GGD that introduces a web browser so add any
+primatives needed to build a modern web browser" → resolved via AskUserQuestion to "FFI-bind a
+real embeddable engine." A modern browser (HTML/CSS parsing, layout, a JS engine, networking,
+sandboxing) is Chromium/WebKit-scale — genuinely one of the most complex software artifacts that
+exists, so this section designs the PARENA-facing call surface over a real, existing embeddable
+engine (most plausibly Chromium Embedded Framework, the standard real choice for rendering live
+web content to an off-screen texture inside a native/game app — Ultralight or WebKitGTK are
+lighter real alternatives), not a native HTML/CSS/JS implementation:
+
+```clojure
+(defn create-webview [(url : String @ :region/scratch) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result WebView BrowserError) @ Region)
+(defn navigate       [(!wv : &mut WebView) (url : String @ :region/scratch)] : (Result Unit BrowserError))
+(defn render-to-texture [(!wv : &mut WebView)] : &(Vec U8))   ; raw RGBA framebuffer, feeds spawn-panel's own world-anchored panel
+(defn inject-js       [(!wv : &mut WebView) (script : String @ Region)] : (Result JsValue BrowserError))
+(defn handle-input     [(!wv : &mut WebView) (event : Event)] : Unit)   ; mouse/keyboard forwarded from sdl2/poll-event
+(defn destroy-webview [(!wv : WebView)] : Unit)
+```
+
+**Real security consideration, stated plainly rather than glossed over**: this renders arbitrary
+web content (real HTML/CSS/JS execution) inside a live, multiplayer community server
+(EINHORN_SURVIVAL/GTA7's own real player base) — a genuinely different risk profile from every
+other `gfd` binding above, which only ever touch pre-defined world-object types. Real engines
+(CEF included) run their renderer in a separate, sandboxed process for exactly this reason; the
+GFD-side question of which URLs a `create-webview` call is even allowed to load (open web vs. an
+allowlist) is real, unresolved policy work, not a PARENA-stdlib question this section answers.
 
 **Explicitly not resolved by this planning pass** — same open questions `MOD_SURFACE_NORTHSTAR.md`
 §6 itself lists, not silently answered here: whether EduScript's arrays/functions gap needs

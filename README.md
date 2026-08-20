@@ -29,8 +29,8 @@ filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `so
 `regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
 `regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`, `editor/plugin`, `editor/buffer`, `editor/events`,
 `editor/ui`, `ringo`, `world`, `mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`,
-`crypto/ed25519`. Every other package in the tables below is designed in `STDLIB.md` but has no
-`.prn` file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`).
+`crypto/ed25519`, `gfd/browser`. Every other package in the tables below is designed in `STDLIB.md`
+but has no `.prn` file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`).
 
 ## Standard library — full planned API surface
 
@@ -156,6 +156,7 @@ step, not yet started: PITVIPER's own Go-side plugin API.
 | Package | Purpose |
 |---|---|
 | `gfd` | World-object/solidity/skate-surface/faction/METALVERSE-panel bindings for GoblinFoxDragon's `apps2/battlegrounds_gui`, matching the real, already-shipped EduScript builtin table |
+| `gfd/browser` | A real, modern web browser panel — FFI-bound to a real embeddable engine (CEF-class), not a native HTML/CSS/JS implementation. Real, unresolved security note: which URLs it can load is GFD-side policy, not answered here |
 
 ## Related
 

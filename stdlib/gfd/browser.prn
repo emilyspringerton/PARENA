@@ -1,0 +1,50 @@
+;; stdlib/gfd/browser.prn — depends on gfd, vec. Design: STDLIB.md
+;; "gfd/browser" section. FFI-bound to a real embeddable engine
+;; (Chromium Embedded Framework or a lighter real alternative like
+;; Ultralight/WebKitGTK), not a from-scratch HTML/CSS/JS engine.
+;;
+;; Real security note carried from STDLIB.md, not silently dropped:
+;; this renders real, arbitrary web content inside a live multiplayer
+;; community server -- a different risk profile from every other gfd
+;; binding, which only ever touch pre-defined world-object types.
+;; Which URLs create-webview is even allowed to load is real, unsolved
+;; GFD-side policy, not answered by this file.
+
+(module gfd/browser)
+(import vec)
+(export create-webview navigate render-to-texture inject-js handle-input destroy-webview)
+
+(defn create-webview [(url : String @ :region/scratch) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result WebView BrowserError) @ Region
+  #target
+  {:c (inline-c "cef_create_offscreen_browser(url, w, h, dest)")})
+
+(defn navigate [(!wv : &mut WebView) (url : String @ :region/scratch)]
+  : (Result Unit BrowserError)
+  #target
+  {:c (inline-c "cef_browser_load_url(wv, url)")})
+
+;; render-to-texture — raw RGBA framebuffer, fed into gfd's own
+;; spawn-panel as a world-anchored panel texture.
+(defn render-to-texture [(!wv : &mut WebView)]
+  : &(Vec U8)
+  #target
+  {:c (inline-c "cef_browser_get_texture_buffer(wv)")})
+
+(defn inject-js [(!wv : &mut WebView) (script : String @ Region) (dest : Arena @ Region)]
+  : (Result JsValue BrowserError) @ Region
+  #target
+  {:c (inline-c "cef_browser_execute_js(wv, script, dest)")})
+
+;; handle-input — mouse/keyboard forwarded from sdl2/poll-event, same
+;; input-forwarding shape editor/events already establishes for the
+;; vim editor.
+(defn handle-input [(!wv : &mut WebView) (event : Event)]
+  : Unit
+  #target
+  {:c (inline-c "cef_browser_send_input(wv, event);")})
+
+(defn destroy-webview [(!wv : WebView)]
+  : Unit
+  #target
+  {:c (inline-c "cef_browser_close(wv);")})

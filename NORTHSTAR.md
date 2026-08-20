@@ -258,6 +258,14 @@ enough of the stdlib (still undesigned — see "Standard library" above) is real
 parser/analyzer/emitter in Parena. Not scoped further than that here — a real VS1/VS2-class
 milestone, sequenced after VS0 is actually done, not attempted now.
 
+**JIT compilation — a real, much further-out idea, not scoped**: founder, real-time: "we can do
+some fancy stuff like v8 with our compiler i bet to make it groovy." A genuinely real compiler-
+architecture direction (V8's own JIT — parse, run once in a fast baseline interpreter, profile,
+recompile hot functions with an optimizing tier) — but one that presupposes VS0's own domains 2-5
+(region analyzer, C emitter, full build pipeline) exist first, since a JIT is itself a compiler
+backend sitting where the C emitter sits today, several stages beyond where VS0 currently is
+(domain 1 of 5). Flagged as a real idea worth remembering, not designed or sequenced here.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression
