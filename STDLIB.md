@@ -1711,6 +1711,73 @@ parameters above are real VS0 gaps too (collections-as-parameters, and callback 
 non-`Unit` return) — not glossed over, this doc's own job is to describe the target shape even
 where the compiler doesn't reach it yet.
 
+## VS0 compiler gaps blocking `mapbuilder/tools.prn` + `world.prn` — real, tested, itemized (2026-08-20)
+
+Founder, real-time: "ship redgarden map editor" → "allowing building custom modes" →
+"implemented into PARENAS as a plugin first redgarden feature" → "plan any missing stdlibs
+first." REDGARDEN's map editor (and the custom-game-mode building it's meant to unlock, the
+stated goal being closer to Warcraft 3's World Editor lineage than a fixed level format) is
+scoped to be REDGARDEN's first real PARENA plugin feature, mod-surface-first per this whole
+project's own standing architecture principle. `mapbuilder/tools.prn` and `world.prn` are
+already real, complete `.prn` source (not aspirational notes) — this section is what actually
+running `parena build` against them, today, found blocking full compilation, checked directly
+rather than guessed at from reading the source alone. Each gap below is a real, itemized,
+independent VS0 emitter feature, not a single monolithic "make it work":
+
+1. **Multi-field `defenum` payload variants.** The first real blocker hit:
+   `mapbuilder/tools.prn`'s own `CanvasCommand` has `(EraseCmd (obj : PlacedObject) (idx :
+   I32))` — two payload fields. VS0's `defenum` (shipped this session) deliberately caps
+   variants at one payload field, reusing Result/Option's own single `void *value` shape. A
+   real fix needs a per-variant anonymous payload struct (reusing the `StructField`
+   machinery `defstruct` already has) plus a real destination-arena argument on the
+   constructor for the multi-field case, since the payload struct needs somewhere to live.
+2. **Map-literal struct construction (`{:field val ...}`).** Every struct construction in
+   `mapbuilder/tools.prn` uses this form (`{:tool tool :start-x x ...}` for `DragState`,
+   `{:block-name "unset" :x x :y 0 :z y}` for `PlacedObject`), not the positional
+   `(StructName val1 val2 ...)` form VS0's own `defstruct` currently emits construction
+   support for. The target struct type has to be inferred from context (the enclosing
+   `let` binding's or function's own declared type), not named explicitly in the literal
+   itself — a real, separate type-inference question `defstruct`'s own positional-call
+   design deliberately sidestepped.
+3. **Namespaced variant construction (`EnumName/VariantName`).** `CanvasCommand/PlaceCmd`
+   and `CanvasCommand/EraseCmd` qualify the variant with its own enum name at the
+   construction call site; VS0's current `find_enum_variant()` looks up a variant by its
+   bare name only, assuming global uniqueness across every registered enum in the file —
+   real, honest, and already wrong the moment two enums share a variant name, which this
+   exact file doesn't hit yet but a real qualified-lookup path should handle anyway.
+4. **Real `Vec` collection operations** (`vec/new`, `vec/push!`, `vec/len`, `vec-pop!`).
+   `vec`/`map` are marked resolved above in this same doc's own gap list, but that resolution
+   is a design pass, not emitter support — VS0's actual emitter has no notion of `(Vec T)` as
+   a real, constructible, indexable runtime type yet; every `(Vec ..)` return type seen so far
+   this session only ever appeared nested inside a `Result`/`Option` that already stopped the
+   emitter from needing to look inside it.
+5. **Reference types (`&T` / `&mut T`).** `&Canvas`, `&mut DragState`, `&mut Terrain` appear
+   throughout both files as parameter types — VS0 has no borrow/reference type at all yet
+   (already flagged as a real, separate gap by `pentest/pcap.prn`'s own `&mut Capture`
+   parameter earlier this session).
+6. **Tuple types** (`(I32 I32)` as `pixel-to-cell`'s own return type, `(I32 I32 I32 I32)` as
+   a rectangle parameter type elsewhere in this doc). No tuple representation exists in the
+   emitter at all — would need its own real C struct-per-arity scheme, similar in spirit to
+   `defstruct` but anonymous and arity-keyed rather than named.
+7. **`set!` mutation syntax.** `(set! (get-field !drag :cur-x) x)` — VS0 has no assignment
+   form to an existing binding or field at all yet (every real value so far in this compiler
+   is bound once via `let`/a parameter and never reassigned in place).
+8. **`F64` as a recognized primitive type.** Both `gfd.prn` (`spawn-panel`'s `x`/`y`/`z`
+   parameters) and `world.prn`'s own `Terrain`/`set-height`/`get-height` need a real
+   floating-point type beyond `NODE_NUMBER`'s own untyped `"double"` inference — the
+   smallest, most mechanical item on this list (a straight `F64` → `"double"` addition
+   alongside `I32`/`String` in `resolve_declared_type()` and the plain-parameter-type
+   branch), genuinely no different in shape from work already shipped this session.
+
+Real, honest note on sequencing: items are listed in roughly the order `parena build` actually
+surfaces them against these two real files, not in order of implementation difficulty — #8
+(`F64`) is the smallest, most mechanical of the eight and could reasonably be picked up
+independently of the rest; #1-#3 are all real extensions of features already shipped this
+session (`defenum`/`defstruct`); #4-#7 are each a genuinely new language feature, not an
+extension of an existing one, and #5 (reference types) in particular has real implications for
+the region analyzer (domain 2), not just the emitter (domain 3) — borrowing changes what "does
+this escape its region" even means, a question this list doesn't attempt to answer.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - ~~**Collections beyond `Vec`/`Map` literals**~~ — resolved above (`vec`/`map` packages), once
