@@ -1778,6 +1778,35 @@ Not designed here, flagged for later: raw namespace primitives (`clone`/`unshare
 API already wraps this, and nothing in the OpenClaw/Moltbook hardening ask needs going lower than
 LXC's own container abstraction.
 
+**`container/docker`** — founder, real-time: "docker APIS" → "parena underneath" → "into EMILY
+os". A second, real, separate container backend alongside `container/lxc`, not a replacement —
+LXC and Docker solve overlapping but distinct problems (LXC: lightweight OS-level isolation for
+one long-lived daemon like an OpenClaw instance; Docker: portable, image-based deployment — the
+real shape "Emily OS" (the planned Arch-based, PARENA-built, Raspberry Pi/k3s distro — real backlog
+item, S189-56d) needs for shipping *workloads* onto a master+worker cluster, not just isolating
+one process on this box). Real API surface: the Docker Engine API is a plain HTTP API over a Unix
+socket (`/var/run/docker.sock`) — this rides directly on the `net/http` package already designed
+above (a Unix-socket HTTP client is the one real gap `net/http`'s own design doesn't cover yet,
+flagged here rather than silently assumed) rather than needing a new FFI binding the way
+`container/lxc` does:
+
+```clojure
+(defn pull       [(image : String @ :region/scratch)] : (Result Unit DockerError))
+(defn create     [(dest : Arena @ Region) (image : String @ :region/scratch) (name : String @ :region/scratch)] : (Result DockerContainer DockerError) @ Region)
+(defn start      [(!c : &mut DockerContainer)] : (Result Unit DockerError))
+(defn stop       [(!c : &mut DockerContainer)] : (Result Unit DockerError))
+(defn remove     [(!c : &mut DockerContainer)] : (Result Unit DockerError))
+(defn logs       [(dest : Arena @ Region) (c : &DockerContainer)] : (Result String DockerError) @ Region)
+```
+
+"PARENA underneath" / "the PARENA method": same discipline as every other package in this doc —
+this is a real API design grounded in Docker's own actual Engine API shape, not a shell-out
+wrapper around the `docker` CLI binary pretending to be a native binding. Same honest blocker as
+`container/lxc`/`container/cgroup` above: needs `net/http`'s own Unix-socket gap closed first, on
+top of the pre-existing file-I/O gap `io` itself still has. Design-complete, not a new compiler
+gap — three real container-adjacent packages now queued behind the same one real prerequisite
+(`io`/`net/http` landing for real), not three separate unstarted problems.
+
 ## VS0 compiler gaps blocking `mapbuilder/tools.prn` + `world.prn` — real, tested, itemized (2026-08-20)
 
 Founder, real-time: "ship redgarden map editor" → "allowing building custom modes" →
