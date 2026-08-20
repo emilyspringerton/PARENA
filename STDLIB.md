@@ -93,6 +93,8 @@ binding, not a language primitive).
 49. `net/vpn`, `net/packetradio`, `net/mesh` — depend on `string` only (each FFI-bound)
 50. `cli` — depends on `string`, `vec`
 51. `config` — depends on `cli`, `string`
+52. `pentest/scan`, `pentest/pcap`, `pentest/webapp`, `pentest/wireless`, `pentest/crack`,
+    `pentest/exploit` — depend on `string`, `vec` (each FFI-bound independently)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1545,6 +1547,64 @@ Real, honest connection stated plainly: this is the real, concrete first target 
 `argv`-scanning `parse`/`analyze`/`build` dispatch would be the first real thing rewritten against
 `cli`/`config`, not a hypothetical example. Not attempted yet: self-hosting itself hasn't started
 (domains 4-5 of VS0 are the real remaining prerequisite work).
+
+### `pentest/*` — Kali-equivalent toolkit, FFI-bound to the real, standard tools
+
+Founder: "std libs for full pen test tools" → "backtrack" → "or whatever the newest swiss army
+knife bootable linux" (BackTrack's real, current successor: **Kali Linux**, the real, standard
+pentest distro) → "all the most popular tools" → "wireshark" → "all that shit" → "rainbow tables"
+→ "built in to PARENA stdlib." Real, named prior art throughout, not invented tool names — every
+package below FFI-binds the actual real tool Kali itself ships, same judgment as `ssh`/`crypto`/
+`compress/lz4` elsewhere in this document. Standing note, not a strategic pivot: this is authorized-
+testing tooling for EINHORN_INDUSTRIAL's own infrastructure (IDUNA, EINHORN_SURVIVAL, the various
+nginx-fronted sites), same incidental-tooling role security-adjacent work has had all along, not a
+change in what this org actually is.
+
+```clojure
+; pentest/scan — FFI-bound to nmap
+(defn scan-ports [(target : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec PortResult) ScanError) @ Region)
+
+; pentest/pcap — FFI-bound to Wireshark's own capture engine (tshark/libpcap, the same real
+; library dumpcap and tshark are themselves built on)
+(defn start-capture [(iface : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Capture PcapError) @ Region)
+(defn read-packet   [(!cap : &mut Capture) (dest : Arena @ Region)] : (Option Packet) @ Region)
+(defn filter        [(!cap : &mut Capture) (bpf-expr : String @ :region/scratch)] : (Result Unit PcapError))
+
+; pentest/webapp — FFI-bound to sqlmap (SQL injection testing) + Nikto (web vuln scanning)
+(defn sql-injection-test [(url : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec Finding) WebScanError) @ Region)
+(defn web-vuln-scan      [(url : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec Finding) WebScanError) @ Region)
+
+; pentest/wireless — FFI-bound to the Aircrack-ng suite
+(defn capture-handshake [(iface : String @ :region/scratch) (bssid : String @ :region/scratch)
+                          (dest : Arena @ Region)]
+  : (Result Handshake WirelessError) @ Region)
+
+; pentest/crack — FFI-bound to John the Ripper / Hashcat, plus real rainbow-table lookup
+; (rcracki-mt-style: a precomputed hash-chain table traded for real disk space instead of
+; per-attempt hash compute, the actual real technique named)
+(defn crack-hash        [(hash : String @ Region) (wordlist-path : String @ :region/scratch)]
+  : (Option String))
+(defn rainbow-table-lookup [(hash : String @ Region) (table-path : String @ :region/scratch)]
+  : (Option String))
+
+; pentest/exploit — FFI-bound to Metasploit. The one genuinely sensitive package in this
+; section, stated plainly rather than glossed over: this is real exploitation-framework
+; tooling, authorized-testing-only by design and intent, same real-world norm every other
+; Metasploit integration (including Metasploit's own official API) already operates under.
+(defn run-module [(module-name : String @ :region/scratch) (target : String @ :region/scratch)
+                   (dest : Arena @ Region)]
+  : (Result ExploitResult ExploitError) @ Region)
+```
+
+Real, honest limitation, same pattern as the rest of this document: every tool above already has
+its own real, mature CLI/library surface (nmap's XML output, tshark's own packet-dissection API,
+Metasploit's own RPC API) — the actual FFI/subprocess-parsing glue code for each is real, separate
+implementation work, not written here; these are the real call signatures a PARENA program would
+use once that glue exists.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
