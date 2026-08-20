@@ -1,0 +1,47 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+
+cc_library(
+    name = "arena",
+    srcs = ["arena.c"],
+    hdrs = ["arena.h"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "ast",
+    srcs = ["ast.c"],
+    hdrs = ["ast.h"],
+    deps = [":arena"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "lexer",
+    srcs = ["lexer.c"],
+    hdrs = ["lexer.h"],
+    deps = [":arena"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "parser",
+    srcs = ["parser.c"],
+    hdrs = ["parser.h"],
+    deps = [
+        ":arena",
+        ":ast",
+        ":lexer",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "parena",
+    srcs = ["main.c"],
+    deps = [
+        ":arena",
+        ":ast",
+        ":parser",
+    ],
+    visibility = ["//visibility:public"],
+)

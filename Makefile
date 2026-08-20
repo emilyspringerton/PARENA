@@ -1,3 +1,9 @@
+# Bazel (MODULE.bazel, src/BUILD.bazel, tests/BUILD.bazel) is CI's and this
+# repo's primary build system as of 2026-08-20 -- `bazel build //...` /
+# `bazel test //tests:test_lexer_parser`. This Makefile is kept alongside
+# for the fastest possible local edit-compile-test loop (no Bazel analysis
+# overhead for a 5-file C project) — both stay in sync by hand since
+# there's no codegen step between them yet.
 CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 

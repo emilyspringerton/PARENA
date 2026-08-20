@@ -25,6 +25,13 @@ implemented.**
 VS0 targets C (the compiler itself and its C99 output). Later targets (JVM 22+/Panama,
 TypeScript, WebAssembly) are specified in `NORTHSTAR.md` but not started.
 
+**Build system: Bazel** (`bazel build //...`, `bazel test //tests:test_lexer_parser`,
+`bazel test --config=asan //tests:test_lexer_parser` for the sanitizer build) — CI's primary
+build path as of 2026-08-20. `bazelisk` (installed via `go install
+github.com/bazelbuild/bazelisk@latest`, no sudo) resolves the exact version pinned in
+`.bazelversion`. A plain `Makefile` is kept alongside for fast local iteration — see its own
+header comment.
+
 ## Related Repos
 
 - `GoblinFoxDragon` — `docs2/MOD_SURFACE_NORTHSTAR.md` names PARENA as the not-yet-located

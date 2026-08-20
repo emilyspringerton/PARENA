@@ -1,0 +1,17 @@
+"""PARENA — the parena-c compiler build, under Bazel.
+
+Founder real-time: "continue PARENA build it with BAZEL." Replaces the
+Makefile as the primary build entry point (Makefile kept alongside for
+quick local iteration — see its own header comment). No external
+dependencies yet: VS0 is plain C99 stdlib only, so this module doesn't
+declare any bazel_dep entries. That will change once the region
+analyzer/emitter need something real (e.g. a C JSON/testing library),
+not speculatively added now.
+"""
+
+module(
+    name = "parena",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")

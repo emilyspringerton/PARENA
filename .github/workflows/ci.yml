@@ -6,25 +6,28 @@ on:
 
 jobs:
   build_and_test:
-    name: Build, Test & Sanitize
+    name: Build, Test & Sanitize (Bazel)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build (matches VS0 DoD's own gcc -Wall -Wextra -pedantic -std=c99 bar)
-        run: make build
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Build (bazel build //... — global -std=c99 -Wall -Wextra -pedantic
+          via .bazelrc, matching VS0 DoD's own C-emitter bar)
+        run: bazel build //...
 
       - name: Test (DoD domain 1 — balanced + imbalanced S-expression unit tests)
-        run: make test
+        run: bazel test //tests:test_lexer_parser --test_output=all
 
       - name: AddressSanitizer + UndefinedBehaviorSanitizer
-        run: |
-          set -euo pipefail
-          gcc -std=c99 -Wall -Wextra -pedantic -g -fsanitize=address,undefined \
-            -o /tmp/parena_test_asan tests/test_lexer_parser.c src/arena.c src/ast.c src/lexer.c src/parser.c
-          /tmp/parena_test_asan
+        run: bazel test --config=asan //tests:test_lexer_parser --test_output=all
 
       - name: CLI smoke test against the real VS0 test.prn from NORTHSTAR.md
         run: |
           set -euo pipefail
-          ./parena parse examples/test.prn
+          bazel run //src:parena -- parse "$(pwd)/examples/test.prn"

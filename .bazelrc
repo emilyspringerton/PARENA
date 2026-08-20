@@ -1,0 +1,21 @@
+# PARENA's Bazel config.
+#
+# --config=asan: AddressSanitizer + UndefinedBehaviorSanitizer build, same
+# two sanitizers CI already ran directly via gcc before this repo had a
+# Bazel setup -- `bazel test --config=asan //tests:...` is the Bazel-native
+# equivalent, replacing that raw invocation.
+build:asan --copt=-fsanitize=address,undefined
+build:asan --linkopt=-fsanitize=address,undefined
+build:asan --copt=-g
+build:asan --copt=-fno-omit-frame-pointer
+
+# Same compiler flags the Makefile/CI already held this codebase to (matches
+# NORTHSTAR.md's own VS0 DoD C-emitter bar, applied to the compiler's own
+# source too) -- set globally rather than per-target so a plain `bazel
+# build //...` gets the same discipline `tests/BUILD.bazel`'s cc_test
+# already opts into explicitly.
+build --cxxopt=-std=c99
+build --conlyopt=-std=c99
+build --copt=-Wall
+build --copt=-Wextra
+build --copt=-pedantic
