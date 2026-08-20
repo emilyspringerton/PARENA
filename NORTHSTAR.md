@@ -1,7 +1,9 @@
 # NORTHSTAR — PARENA
 
-**Status:** VS0 lexer/parser built and CI-verified (DoD domain 1 of 5). Region analyzer, C
-emitter, and full build pipeline (domains 2-5) not yet built.
+**Status:** VS0 lexer/parser (domain 1) and region analyzer (domain 2) built and CI-verified —
+`parena analyze examples/test.prn` produces NORTHSTAR's own DoD error message verbatim, line
+number included. C emitter, memory verification, and the full build pipeline (domains 3-5) not
+yet built.
 **Date:** 2026-08-20.
 
 ## What this is
@@ -269,10 +271,24 @@ backend sitting where the C emitter sits today, several stages beyond where VS0 
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression
-reading with no heap allocation outside the compiler's own bump arena. Region analyzer, C emitter,
-and the full `parena build` pipeline (VS0's remaining 4 DoD domains) are real, scoped, unstarted
-follow-up work — the DoD table above is the actual acceptance bar, not a vague target.
-Self-hosting (above) is sequenced after VS0 completes.
+reading with no heap allocation outside the compiler's own bump arena.
+
+VS0 region analyzer done (commit `b6d1e43`): a real single-pass symbol-table walk enforcing the
+assignment invariant (`Region(Source) ⪰ Region(Destination)`) — `parena analyze` on the real
+`examples/test.prn` produces NORTHSTAR's own DoD-table error message verbatim: `Compile Error:
+Escaping region pointer from :region/scratch to :region/buffer at line 16`. 8 unit tests (the
+DoD's own required positive+negative case, plus real edge cases: same-rank assignment not a false
+positive, promoting a longer-lived value into a shorter-lived slot not a false positive, an
+unconstrained non-`alloc` `let` binding not falsely flagged, a nested `with-arena` escape still
+caught), ASan/UBSan clean, CI green (run confirmed via the GitHub Actions API, not assumed). Real,
+honest scope stated in `src/region.h`'s own header: only the assignment invariant — not the Return
+invariant, not the Move/ownership invariant, not full bidirectional type inference. `check_call_
+escape`'s own real limitation: it recognizes "first argument is the destination" (matching every
+`set-data`/`write-string`-shaped STDLIB.md signature), not a general call-graph analysis.
+
+C emitter, memory verification, and the full `parena build` pipeline (VS0's remaining 3 DoD
+domains) are real, scoped, unstarted follow-up work — the DoD table above is the actual acceptance
+bar, not a vague target. Self-hosting (above) is sequenced after VS0 completes.
 
 ## Related
 
