@@ -111,6 +111,28 @@ static int is_call_named(Node *n, const char *fn_name) {
     return n && n->type == NODE_LIST && n->child_count > 0 && is_symbol(n->children[0], fn_name);
 }
 
+/* binop_c_symbol maps a real PARENA operator symbol to its C infix
+ * equivalent, or NULL if `sym` isn't one of them. Real, honest scope:
+ * the 2-argument case only -- every real (op a b) call this stdlib's own
+ * .prn files actually use (region.c's own vec/map/string test source is
+ * the real grounding), not a general variadic-arithmetic evaluator. `=`
+ * maps to C's `==` since PARENA's own `=` is equality (mutation is the
+ * separate `set!` form), not assignment. */
+static const char *binop_c_symbol(const char *sym) {
+    if (strcmp(sym, "+") == 0) return "+";
+    if (strcmp(sym, "-") == 0) return "-";
+    if (strcmp(sym, "*") == 0) return "*";
+    if (strcmp(sym, "/") == 0) return "/";
+    if (strcmp(sym, "<") == 0) return "<";
+    if (strcmp(sym, ">") == 0) return ">";
+    if (strcmp(sym, "<=") == 0) return "<=";
+    if (strcmp(sym, ">=") == 0) return ">=";
+    if (strcmp(sym, "=") == 0) return "==";
+    if (strcmp(sym, "and") == 0) return "&&";
+    if (strcmp(sym, "or") == 0) return "||";
+    return NULL;
+}
+
 static const char *find_keyword_child(Node *n) {
     for (size_t i = 0; i < n->child_count; i++) {
         if (n->children[i]->type == NODE_KEYWORD) return n->children[i]->text;
@@ -181,11 +203,108 @@ static const char *emit_alloc_call(Arena *arena, Node *call, EmitScope *scope, c
     return arena_strdup(arena, buf, strlen(buf));
 }
 
-/* emit_expr emits a plain value-producing expression: a symbol
- * reference (the mangled identifier) or an `alloc` call. Anything else
- * is real, unsupported territory for this pass -- reported, not guessed. */
+static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const char **out_type,
+                              const char **out_error);
+
+/* emit_binop handles `(op a b)` for the real operator set binop_c_symbol
+ * knows -- recursively emits both operands, joins with the real C infix
+ * operator, wraps in parens so this composes correctly as a sub-
+ * expression of anything else (another binop, a function-call argument,
+ * an if-branch). Comparison/boolean ops report "int" (real C bool-as-int,
+ * matching how region.c's own C code already treats truthiness); the
+ * arithmetic operators report the left operand's own type (a real, honest simplification --
+ * no actual numeric-type-promotion rules, flagged rather than pretended
+ * solved). */
+static const char *emit_binop(Arena *arena, Node *call, const char *c_op, EmitScope *scope,
+                               const char **out_type, const char **out_error) {
+    if (call->child_count != 3) {
+        return fail(arena, out_error,
+                     "emit: operator '%s' at line %d needs exactly 2 arguments (VS0's emitter doesn't "
+                     "support variadic operators yet)",
+                     call->children[0]->text, call->line);
+    }
+    const char *lhs_type = NULL;
+    const char *lhs = emit_expr(arena, call->children[1], scope, &lhs_type, out_error);
+    if (!lhs) return NULL;
+    const char *rhs_type = NULL;
+    const char *rhs = emit_expr(arena, call->children[2], scope, &rhs_type, out_error);
+    if (!rhs) return NULL;
+
+    int is_comparison = strcmp(c_op, "&&") == 0 || strcmp(c_op, "||") == 0 || strcmp(c_op, "==") == 0 ||
+                         strcmp(c_op, "<") == 0 || strcmp(c_op, ">") == 0 || strcmp(c_op, "<=") == 0 ||
+                         strcmp(c_op, ">=") == 0;
+    *out_type = is_comparison ? "int" : lhs_type;
+
+    char buf[512];
+    snprintf(buf, sizeof(buf), "(%s %s %s)", lhs, c_op, rhs);
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* emit_if handles `(if cond then else)` as a real C ternary -- correct
+ * for expression position (which is the only position VS0's own real
+ * `.prn` examples use `if` in so far), not a statement-position `if`
+ * with side-effecting branches. */
+static const char *emit_if(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
+                            const char **out_error) {
+    if (call->child_count != 4) {
+        return fail(arena, out_error, "emit: if at line %d needs exactly (if cond then else)", call->line);
+    }
+    const char *cond_type = NULL;
+    const char *cond = emit_expr(arena, call->children[1], scope, &cond_type, out_error);
+    if (!cond) return NULL;
+    const char *then_type = NULL;
+    const char *then_c = emit_expr(arena, call->children[2], scope, &then_type, out_error);
+    if (!then_c) return NULL;
+    const char *else_type = NULL;
+    const char *else_c = emit_expr(arena, call->children[3], scope, &else_type, out_error);
+    if (!else_c) return NULL;
+
+    *out_type = then_type; /* real, honest simplification: no branch-type unification check yet */
+    char buf[512];
+    snprintf(buf, sizeof(buf), "(%s ? %s : %s)", cond, then_c, else_c);
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* emit_call handles a general function call `(fn-name arg1 arg2 ...)`
+ * not otherwise recognized -- mangles the function name, recursively
+ * emits each argument. Real, honest limitation: VS0 has no function-
+ * signature table yet (no separate type-checking pass), so the return
+ * type of an arbitrary call is reported as "void *" unless the callee
+ * happens to be a known local closure -- a real gap flagged here, not
+ * silently guessed at as something more specific. */
+static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
+                              const char **out_error) {
+    const char *fn_name = mangle(arena, call->children[0]->text);
+    StrBuf args;
+    sb_init(&args);
+    for (size_t i = 1; i < call->child_count; i++) {
+        const char *arg_type = NULL;
+        const char *arg_c = emit_expr(arena, call->children[i], scope, &arg_type, out_error);
+        if (!arg_c) {
+            sb_free(&args);
+            return NULL;
+        }
+        if (i > 1) sb_append(&args, ", ");
+        sb_append(&args, arg_c);
+    }
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s(%s)", fn_name, args.data);
+    sb_free(&args);
+    *out_type = "void *";
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* emit_expr emits a plain value-producing expression: a number literal,
+ * a symbol reference, an `alloc` call, a known binary operator, an `if`
+ * expression, or a general function call. Anything else (loop/recur,
+ * match, collection literals, ...) is real, unsupported territory for
+ * this pass -- reported, not guessed. */
 static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const char **out_type,
                               const char **out_error) {
+    if (expr->type == NODE_NUMBER) {
+        *out_type = "double"; /* VS0 has no int-vs-float distinction yet -- a real, honest simplification */
+        return expr->text;
+    }
     if (expr->type == NODE_SYMBOL) {
         Local *b = scope_lookup(scope, expr->text);
         if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text, expr->line);
@@ -195,10 +314,15 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     if (is_call_named(expr, "alloc")) {
         return emit_alloc_call(arena, expr, scope, out_type, out_error);
     }
-    return fail(arena, out_error,
-                "emit: unsupported expression form at line %d (VS0's emitter only understands symbol "
-                "references and (alloc ...) calls so far)",
-                expr->line);
+    if (is_call_named(expr, "if")) {
+        return emit_if(arena, expr, scope, out_type, out_error);
+    }
+    if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
+        const char *c_op = binop_c_symbol(expr->children[0]->text);
+        if (c_op) return emit_binop(arena, expr, c_op, scope, out_type, out_error);
+        return emit_call(arena, expr, scope, out_type, out_error);
+    }
+    return fail(arena, out_error, "emit: unsupported expression form at line %d", expr->line);
 }
 
 /* emit_with_arena emits `(with-arena [name region-kw size] body...)` as

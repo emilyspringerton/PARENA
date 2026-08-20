@@ -54,19 +54,48 @@ int main(void) {
         arena_free_all(&arena);
     }
 
-    /* --- real, honest failure: an unsupported construct is reported,
-     * not silently mis-emitted. --- */
+    /* --- arithmetic/comparison/if now really work (this used to be the
+     * "unsupported form" negative case -- promoted to a real positive
+     * test once the emitter actually grew this capability). --- */
     {
         Arena arena;
         arena_init(&arena);
-        const char *src = "(defn weird [(a : Arena @ :region/buffer)] (+ 1 2))";
+        const char *src =
+            "(defn compute [(buf-arena : Arena @ :region/buffer)]\n"
+            "  (let [x 5\n"
+            "        y 3\n"
+            "        sum (+ x y)\n"
+            "        biggest (if (> x y) x y)\n"
+            "        ok (= sum 8)]\n"
+            "    (alloc buf-arena String \"done\")))";
         const char *parse_err = NULL;
         Node *program = parse_program(&arena, src, strlen(src), &parse_err);
-        CHECK(program != NULL, "an arithmetic-call function parses fine (VS0 syntax is generic)");
+        CHECK(program != NULL, "a function using arithmetic/comparison/if parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "arithmetic/comparison/if emit successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "(x + y)") != NULL, "+ emits as a real C infix operator");
+            CHECK(strstr(c_src, "(x > y) ? x : y") != NULL, "if emits as a real C ternary");
+            CHECK(strstr(c_src, "(sum == 8)") != NULL, "= emits as C's == , not assignment");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: a genuinely still-unsupported construct
+     * (loop/recur -- VS0's emitter has no iteration support yet) is
+     * reported, not silently mis-emitted. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn weird [(a : Arena @ :region/buffer)] (loop [i 0] (recur (+ i 1))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a loop/recur function parses fine (VS0 syntax is generic)");
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src == NULL && emit_err != NULL,
-              "emitting an unsupported form (VS0 doesn't understand arithmetic calls yet) fails honestly");
+              "emitting loop/recur (still genuinely unsupported) fails honestly, not silently");
         arena_free_all(&arena);
     }
 
