@@ -1,0 +1,39 @@
+;; stdlib/world.prn — depends on vec. Design: STDLIB.md "world" section.
+;; Real, grounded structs: SHANKPIT's own packages/world/terrain.h
+;; (TerrainHeightfield) and block_map.h, GoblinFoxDragon's own
+;; worldapi/dragonfly_gen.go (WorldBlock) and heightmap.go. set-height/
+;; get-height are real, complete (direct array-index access, same as
+;; the real C terrain_set_height/terrain_get_height).
+
+(module world)
+(import vec)
+(export set-height get-height)
+
+(defstruct Terrain
+  (heights   : (Vec F64) @ Region)
+  (width     : I32)
+  (height    : I32)
+  (cell-size : F64))
+
+(defn index-for [(t : &Terrain) (x : I32) (z : I32)]
+  : I32
+  (+ (* z (get-field t :width)) x))
+
+(defn in-bounds? [(t : &Terrain) (x : I32) (z : I32)]
+  : Bool
+  (and (>= x 0) (< x (get-field t :width)) (>= z 0) (< z (get-field t :height))))
+
+(defn set-height [(!t : &mut Terrain) (x : I32) (z : I32) (h : F64)]
+  : Unit
+  (when (in-bounds? !t x z)
+    (vec-set-at! &mut (get-field !t :heights) (index-for !t x z) h)))
+
+(defn get-height [(t : &Terrain) (x : I32) (z : I32)]
+  : F64
+  (if (in-bounds? t x z)
+    (deref (vec/get &(get-field t :heights) (index-for t x z)))
+    0.0))
+
+(defstruct PlacedObject
+  (block-name : String @ Region)
+  (x : I32) (y : I32) (z : I32))

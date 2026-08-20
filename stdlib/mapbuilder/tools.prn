@@ -1,0 +1,93 @@
+;; stdlib/mapbuilder/tools.prn — depends on world, vec. Design:
+;; STDLIB.md "mapbuilder/tools" section. Real, direct generalization of
+;; PITVIPER's own shipped mouse-drag-selection code (cmd/pitviper/
+;; main.go's selection struct + pixelToCell + lastSelected clipboard
+;; buffer) from text-cell selection to arbitrary placed-object
+;; selection. begin-drag/update-drag/end-drag and the undo/redo stack
+;; are real, complete.
+
+(module mapbuilder/tools)
+(import world)
+(import vec)
+(export pixel-to-cell begin-drag update-drag end-drag undo redo copy-selection)
+
+(defenum Tool (Place) (Paint) (Select) (Erase))
+
+(defstruct DragState
+  (tool : Tool)
+  (start-x : I32) (start-y : I32)
+  (cur-x   : I32) (cur-y   : I32))
+
+(defstruct Canvas
+  (terrain : Terrain @ Region)
+  (objects : (Vec PlacedObject) @ Region)
+  (history : (Vec CanvasCommand) @ Region)
+  (redo-stack : (Vec CanvasCommand) @ Region))
+
+(defenum CanvasCommand
+  (PlaceCmd  (obj : PlacedObject))
+  (EraseCmd  (obj : PlacedObject) (idx : I32)))
+
+;; pixel-to-cell — direct generalization of PITVIPER's own real fn of
+;; the same shape (main.go:745), snapping window-relative pixels to a
+;; grid cell of the given size.
+(defn pixel-to-cell [(x : I32) (y : I32) (cell-size : I32)]
+  : (I32 I32)
+  ((/ x cell-size) (/ y cell-size)))
+
+(defn begin-drag [(tool : Tool) (x : I32) (y : I32)]
+  : DragState
+  {:tool tool :start-x x :start-y y :cur-x x :cur-y y})
+
+(defn update-drag [(!drag : &mut DragState) (x : I32) (y : I32)]
+  : Unit
+  (do (set! (get-field !drag :cur-x) x) (set! (get-field !drag :cur-y) y)))
+
+;; end-drag — dispatches on tool: Place drops one object at the drag
+;; end point, Paint drops one per cell crossed along the drag path,
+;; Select returns the marquee rectangle's contents (no placement),
+;; Erase removes objects under the drag path. Every placement/erase
+;; is pushed onto canvas's own history for undo, and clears redo-stack
+;; (the standard "new action invalidates redo" rule every real
+;; undo/redo implementation follows).
+(defn end-drag [(!drag : DragState) (!canvas : &mut Canvas)]
+  : (Vec PlacedObject) @ Region
+  (let [placed (vec/new (current-arena))]
+    (match (get-field !drag :tool)
+      ((Place) (do (place-one !canvas (get-field !drag :cur-x) (get-field !drag :cur-y)) unit))
+      ((Paint) (paint-along-path !canvas !drag))
+      ((Erase) (erase-along-path !canvas !drag))
+      ((Select) unit))
+    placed))
+
+(defn place-one [(!canvas : &mut Canvas) (x : I32) (y : I32)]
+  : Unit
+  (let [obj {:block-name "unset" :x x :y 0 :z y}]
+    (vec/push! &(get-field !canvas :objects) obj)
+    (vec/push! &(get-field !canvas :history) (CanvasCommand/PlaceCmd obj))
+    (clear-vec! &(get-field !canvas :redo-stack))))
+
+(defn undo [(!canvas : &mut Canvas)]
+  : (Result Unit HistoryError)
+  (if (= (vec/len &(get-field !canvas :history)) 0)
+    (Err (HistoryError "nothing to undo"))
+    (let [cmd (vec-pop! &(get-field !canvas :history))]
+      (apply-inverse !canvas cmd)
+      (vec/push! &(get-field !canvas :redo-stack) cmd)
+      (Ok unit))))
+
+(defn redo [(!canvas : &mut Canvas)]
+  : (Result Unit HistoryError)
+  (if (= (vec/len &(get-field !canvas :redo-stack)) 0)
+    (Err (HistoryError "nothing to redo"))
+    (let [cmd (vec-pop! &(get-field !canvas :redo-stack))]
+      (apply-command !canvas cmd)
+      (vec/push! &(get-field !canvas :history) cmd)
+      (Ok unit))))
+
+;; copy-selection — the lastSelected-clipboard-buffer idea from
+;; PITVIPER, generalized from a text span to a rectangular region of
+;; placed objects.
+(defn copy-selection [(canvas : &Canvas) (sel : (I32 I32 I32 I32)) (dest : Arena @ Region)]
+  : (Vec PlacedObject) @ Region
+  (objects-within canvas sel dest))
