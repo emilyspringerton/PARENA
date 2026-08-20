@@ -155,6 +155,69 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- #target {:c (inline-c "...")} now really works: the real FFI
+     * escape hatch stdlib/editor's own plugin surface (editor/plugin.prn
+     * etc.) needs to declare functions whose real body lives host-side. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn notify [] : Unit\n  #target\n  {:c (inline-c \"host_notify();\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a #target Unit-returning function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "#target with a Unit return emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "void notify(void)") != NULL,
+                  "the declared Unit return type becomes a real C void signature");
+            CHECK(strstr(c_src, "host_notify();") != NULL,
+                  "the inline-c statement is emitted verbatim, trusted as real C");
+            CHECK(strstr(c_src, "return host_notify") == NULL,
+                  "a Unit-returning #target body is NOT wrapped in a return statement");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- #target with a declared non-Unit return type wraps the inline-c
+     * expression in a real `return (...)`, and (Result ..)/(Option ..)
+     * declared types resolve to the real runtime struct names. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn poll-event [] : (Option I32)\n  #target\n  {:c (inline-c \"host_poll_event()\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a #target Option-returning function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "#target with a declared (Option ..) return emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Option poll_event(void)") != NULL,
+                  "(Option I32) resolves to the real Option runtime type in the C signature");
+            CHECK(strstr(c_src, "return (host_poll_event());") != NULL,
+                  "a non-Unit #target body wraps the inline-c expression in a real return statement");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: an unsupported declared return-type
+     * spelling is reported, not silently guessed at. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn weird [] : Frobnicate\n  #target\n  {:c (inline-c \"x()\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a function with an unknown declared return type parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "an unsupported declared return-type spelling (still genuinely unsupported) fails honestly");
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure: referencing an unbound identifier is
      * reported, not silently emitted as a dangling C reference. --- */
     {

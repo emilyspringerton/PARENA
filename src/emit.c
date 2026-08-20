@@ -796,13 +796,105 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     return 1;
 }
 
+/* resolve_declared_type maps an explicit `: <type>` annotation (written
+ * after a defn's parameter vector, e.g. `(defn f [] : Unit ...)`) to a
+ * real C type string. Real, honest, narrow scope -- just the handful of
+ * type spellings this stdlib's own real `#target` FFI declarations
+ * actually use (stdlib/editor's own .prn files): `Unit`/`I32`/`String` map to their
+ * obvious C equivalents; `(Result ...)`/`(Option ...)` map to the real
+ * runtime struct names (matching emit_match's own Result/Option handling
+ * elsewhere in this file) without inspecting or validating their inner
+ * type parameters -- VS0 has no generics/real type-checking pass yet, so
+ * `(Result Unit BufferError)` and `(Result String String)` both just
+ * resolve to the same real `Result` C type; not pretended more precise
+ * than that. Anything else fails honestly rather than guessing. */
+static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error) {
+    if (type_node->type == NODE_SYMBOL) {
+        if (is_symbol(type_node, "Unit")) return "void";
+        if (is_symbol(type_node, "I32")) return "int";
+        if (is_symbol(type_node, "String")) return "char *";
+        return fail(arena, out_error,
+                    "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
+                    "understands Unit/I32/String so far)",
+                    type_node->text ? type_node->text : "?", type_node->line);
+    }
+    if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
+        if (is_symbol(type_node->children[0], "Result")) return "Result";
+        if (is_symbol(type_node->children[0], "Option")) return "Option";
+    }
+    return fail(arena, out_error,
+                "defn: unsupported return type form at line %d (VS0's emitter only understands "
+                "Unit/I32/String/(Result ..)/(Option ..) so far)",
+                type_node->line);
+}
+
+/* emit_target_defn handles a `#target {:c (inline-c "...")}` function body
+ * -- the real FFI escape hatch stdlib/editor's own plugin surface
+ * (editor/plugin.prn, editor/buffer.prn, etc.) uses to declare functions
+ * whose real implementation lives host-side (the not-yet-decided editor
+ * shell), not in emitted-C at all. Real, honest, narrow scope: only the
+ * `:c` target key is understood (the map's own real design, per
+ * NORTHSTAR.md, anticipates other targets like `:js`/`:wasm` later --
+ * not attempted here); the inline-c string is trusted verbatim as real C
+ * (VS0 has no way to check it, same trust boundary `alloc`'s own literal
+ * string argument already crosses elsewhere in this file). A `void`
+ * (`Unit`) return emits the string as a bare statement -- the real
+ * stdlib source's own convention is to include its own trailing `;` for
+ * that case (see editor/plugin.prn's `register-command`); any other
+ * return type wraps it as `return (...);` instead. */
+static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const char *fn_name,
+                             const char *param_list, const char *return_type, const char **out_error) {
+    if (target_map->child_count % 2 != 0) {
+        return fail(arena, out_error, "defn: #target map at line %d has an odd number of forms "
+                                       "(expected key/value pairs)",
+                    target_map->line) != NULL;
+    }
+    Node *c_value = NULL;
+    for (size_t i = 0; i + 1 < target_map->child_count; i += 2) {
+        Node *key = target_map->children[i];
+        if (key->type == NODE_KEYWORD && key->text && strcmp(key->text, ":c") == 0) {
+            c_value = target_map->children[i + 1];
+            break;
+        }
+    }
+    if (!c_value) {
+        return fail(arena, out_error,
+                     "defn: #target map at line %d has no :c key (VS0's emitter only understands "
+                     "the C target so far)",
+                     target_map->line) != NULL;
+    }
+    if (c_value->type != NODE_LIST || c_value->child_count != 2 || c_value->children[0]->type != NODE_SYMBOL ||
+        !is_symbol(c_value->children[0], "inline-c") || c_value->children[1]->type != NODE_STRING) {
+        return fail(arena, out_error,
+                     "defn: #target :c value at line %d must be (inline-c \"...\")",
+                     c_value->line) != NULL;
+    }
+    Node *src = c_value->children[1];
+    StrBuf body;
+    sb_init(&body);
+    if (strcmp(return_type, "void") == 0) {
+        sb_appendf(&body, "    %.*s\n", (int)src->text_len, src->text);
+    } else {
+        sb_appendf(&body, "    return (%.*s);\n", (int)src->text_len, src->text);
+    }
+    sb_appendf(out, "%s %s(%s) {\n%s}\n\n", return_type, fn_name, param_list, body.data);
+    sb_free(&body);
+    return 1;
+}
+
 /* emit_defn handles one top-level `(defn name [params] body...)`. Every
  * parameter is emitted as `Arena *mangled_name` -- the only parameter
  * type test.prn's own real examples use (`Arena @ region`); a real,
  * scoped limitation, not a general type system. The function's return
- * type is inferred from its own tail expression's resolved C type
- * (found while emitting the body, since VS0 has no separate type-
- * checking pass yet), defaulting to `void` if nothing resolves. */
+ * type is, by default, inferred from its own tail expression's resolved
+ * C type (found while emitting the body, since VS0 has no separate type-
+ * checking pass yet), defaulting to `void` if nothing resolves -- unless
+ * an explicit `: <type>` annotation follows the parameter vector, in
+ * which case that declared type is used for the C signature directly
+ * instead (VS0 has no way to check the two actually agree; a real,
+ * stated limitation, not silently pretended solved). A body of exactly
+ * `#target {...}` skips normal body emission entirely -- see
+ * emit_target_defn. */
 static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_error) {
     if (defn->child_count < 3 || defn->children[1]->type != NODE_SYMBOL ||
         defn->children[2]->type != NODE_VEC) {
@@ -845,17 +937,48 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
         sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
     }
 
+    size_t body_start = 3;
+    const char *declared_return_type = NULL;
+    if (body_start < defn->child_count && defn->children[body_start]->type == NODE_COLON) {
+        if (body_start + 1 >= defn->child_count) {
+            fail(arena, out_error, "defn: ':' return-type annotation at line %d has no type after it",
+                 defn->children[body_start]->line);
+            sb_free(&param_list);
+            return 0;
+        }
+        declared_return_type = resolve_declared_type(arena, defn->children[body_start + 1], out_error);
+        if (!declared_return_type) {
+            sb_free(&param_list);
+            return 0;
+        }
+        body_start += 2;
+    }
+
+    if (body_start < defn->child_count && is_symbol(defn->children[body_start], "#target")) {
+        if (body_start + 1 >= defn->child_count || defn->children[body_start + 1]->type != NODE_MAP) {
+            fail(arena, out_error, "defn: #target at line %d must be followed by a {...} map",
+                 defn->children[body_start]->line);
+            sb_free(&param_list);
+            return 0;
+        }
+        int ok = emit_target_defn(arena, out, defn->children[body_start + 1], fn_name, param_list.data,
+                                   declared_return_type ? declared_return_type : "void", out_error);
+        sb_free(&param_list);
+        return ok;
+    }
+
     StrBuf body;
     sb_init(&body);
-    const char *return_type = "void";
-    int ok = emit_body(arena, &body, defn->children + 3, defn->child_count - 3, &base, 1, &return_type,
-                        out_error);
+    const char *inferred_return_type = "void";
+    int ok = emit_body(arena, &body, defn->children + body_start, defn->child_count - body_start, &base, 1,
+                        &inferred_return_type, out_error);
     if (!ok) {
         sb_free(&param_list);
         sb_free(&body);
         return 0;
     }
 
+    const char *return_type = declared_return_type ? declared_return_type : inferred_return_type;
     sb_appendf(out, "%s %s(%s) {\n%s}\n\n", return_type, fn_name, param_list.data, body.data);
     sb_free(&param_list);
     sb_free(&body);
