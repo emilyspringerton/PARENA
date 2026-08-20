@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 里程碑:firefly.prn(ladybug BDD 框架的地基)真的通過真正 gcc -Wall -Wextra -pedantic -Werror 編譯——這一輪額外抓到並修好五個真實 bug(呼叫一等函式值、defstruct 的 Fn 欄位語法接錯位置、emit_call 對已知函式回傳型別的猜測蓋掉了正確答案、deref 少轉型導致對 void* 直接解參考、sb_appendf 固定 1024 bytes 緩衝區默默截斷過長的函式本體),外加補上 g_vec_elem_hints(Vec 元素型別追蹤)跟真正的 string_concat runtime 實作 (sess-20260820-0649-a3f19d93)
 - map-literal struct construction(STDLIB.md 缺口 #2)+ let/do 在 loop tail position 的真實結構性 bug 修復,firefly.prn 的 run-tests 又推進一步,現在卡在更深的 Vec 元素型別遺失問題(deref (vec/get ...) 拿不到真正的 TestCase 型別,只剩 void) (sess-20260820-0649-a3f19d93)
 - STDLIB.md 新增 fp 套件設計(Ramda 對等的 FP toolkit:map/filter/reduce/compose/pipe/prop/pluck/predicate combinators),搭在這次新落地的 (Vec T) 之上;auto-currying 誠實標記為尚未開始(需要真正的 closure 表示法) (sess-20260820-0649-a3f19d93)
 - emit.c 新增 &Type/&mut T 參考型別、(Vec T)、do/set!/deref 特殊形式、get-field 自動穿透參考;修掉 has_region_marker() 的真實既有 bug(任何 Type @ Region 都被誤判成 Arena *,不只 Arena 本身)+ ISO C99 void 函式 return 表達式的真實 gcc -pedantic bug;test_emit.c 95→121;firefly.prn 真的通過 Vec 欄位那關,推進到下一個已知、獨立的 gap (sess-20260820-0649-a3f19d93)
