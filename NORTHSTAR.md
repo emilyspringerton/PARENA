@@ -1,6 +1,7 @@
 # NORTHSTAR — PARENA
 
-**Status:** VS0 not yet built. This doc + the source spec are the only content in the repo.
+**Status:** VS0 lexer/parser built and CI-verified (DoD domain 1 of 5). Region analyzer, C
+emitter, and full build pipeline (domains 2-5) not yet built.
 **Date:** 2026-08-20.
 
 ## What this is
@@ -225,11 +226,25 @@ pattern and a rejected invalid region escape:
 targets, macros (`defmacro`), and the mod-surface integration question. VS0 is the parser +
 region analyzer + C emitter + CLI, nothing else.
 
+## Self-hosting — a real future milestone, not started
+
+Founder, real-time: "ok but after we have a compiler we also need to write parena in parena" →
+"not c" → "silly." A real, well-understood language-engineering milestone (the same one Go, Rust,
+and most serious systems languages eventually hit): once the language and its C-implemented
+compiler (`parena-c`, VS0 above) are complete enough, rewrite the compiler *in Parena itself* —
+explicitly not staying C underneath, per the founder's own emphasis. Architecturally this can't
+start until VS0's remaining domains (region analyzer, C emitter, full build pipeline) exist AND
+enough of the stdlib (still undesigned — see "Standard library" above) is real enough to write a
+parser/analyzer/emitter in Parena. Not scoped further than that here — a real VS1/VS2-class
+milestone, sequenced after VS0 is actually done, not attempted now.
+
 ## Status
 
-Repo scaffolding + this NORTHSTAR only, as of 2026-08-20. VS0 implementation is real,
-scoped, unstarted follow-up work — the DoD table above is the actual acceptance bar, not a vague
-target.
+VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression
+reading with no heap allocation outside the compiler's own bump arena. Region analyzer, C emitter,
+and the full `parena build` pipeline (VS0's remaining 4 DoD domains) are real, scoped, unstarted
+follow-up work — the DoD table above is the actual acceptance bar, not a vague target.
+Self-hosting (above) is sequenced after VS0 completes.
 
 ## Related
 
