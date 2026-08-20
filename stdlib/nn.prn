@@ -1,0 +1,48 @@
+;; stdlib/nn.prn — depends on array. Design: STDLIB.md "nn" section.
+;; The exact 3 primitives gpt2.c's gpt2_model_forward calls by name --
+;; real, complete formulas (layernorm/gelu/softmax are all short,
+;; well-known), matching that source's own behavior, not a fused
+;; "attention"/"transformer-block" call (a program composes those from
+;; these + linalg/matmul itself, same as the real C).
+
+(module nn)
+(import array)
+(export layernorm gelu softmax)
+
+(defn layernorm [(x : &NDArray) (weight : &NDArray) (bias : &NDArray) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (let [m (stats/mean x) v (square (stats/std x)) eps 0.00001
+        n (vec/len &(get-field x :data)) out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (let [normed (/ (- (deref (vec/get &(get-field x :data) i)) m) (sqrt (+ v eps)))]
+          (vec/push! &out (+ (* normed (deref (vec/get &(get-field weight :data) i)))
+                              (deref (vec/get &(get-field bias :data) i)))))
+        (recur (+ i 1))))
+    (Ok {:data out :shape (get-field x :shape) :strides (get-field x :strides)})))
+
+;; gelu — tanh approximation, the same one gpt2.c itself uses.
+(defn gelu [(x : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (let [n (vec/len &(get-field x :data)) out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (let [v (deref (vec/get &(get-field x :data) i))]
+          (vec/push! &out (* 0.5 v (+ 1.0 (tanh (* 0.7978845608 (+ v (* 0.044715 v v v))))))))
+        (recur (+ i 1))))
+    {:data out :shape (get-field x :shape) :strides (get-field x :strides)}))
+
+(defn softmax [(x : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (let [n (vec/len &(get-field x :data))
+        max-v (unwrap (stats/max x))
+        exps (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (vec/push! &exps (exp (- (deref (vec/get &(get-field x :data) i)) max-v)))
+        (recur (+ i 1))))
+    (let [total (loop [i 0 acc 0.0] (if (>= i n) acc (recur (+ i 1) (+ acc (deref (vec/get &exps i))))))
+          out (vec/new dest)]
+      (loop [i 0]
+        (when (< i n) (vec/push! &out (/ (deref (vec/get &exps i)) total)) (recur (+ i 1))))
+      {:data out :shape (get-field x :shape) :strides (get-field x :strides)})))

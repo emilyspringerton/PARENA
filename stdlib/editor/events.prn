@@ -1,0 +1,25 @@
+;; stdlib/editor/events.prn — depends on string, vec. Design: STDLIB.md
+;; "editor/events" section. Shell resolved this thread (founder: "focus
+;; on using parena to build vim that we will build some gui little bits
+;; like drag and drop and copy paste on" -> "im assuming it has to
+;; built on sdl") -- an SDL2-based modal (Vim-like) editor, same
+;; architecture PITVIPER already ships (SDL2 terminal emulator, real
+;; ConPTY + mouse-drag-selection + clipboard this session). OnKeybind
+;; below is the real hook a modal editor's own normal/insert/visual
+;; mode dispatch sits on top of.
+
+(module editor/events)
+(import string)
+(export subscribe)
+
+(defenum EditorEvent
+  (OnSave)
+  (OnChange)
+  (OnKeybind (key : String @ Region))
+  (OnDragDrop (path : String @ Region))   ;; the founder's own "gui little bits" ask, made real
+  (OnPaste    (text : String @ Region)))  ;; PITVIPER's own SDL_GetClipboardText precedent
+
+(defn subscribe [(event : EditorEvent) (handler : (Fn [] Unit))]
+  : Unit
+  #target
+  {:c (inline-c "editor_subscribe(event, handler);")})

@@ -1,0 +1,91 @@
+;; stdlib/array.prn — depends on vec. Design: STDLIB.md "array" section,
+;; the numpy equivalent. Real, complete implementations for the
+;; primitives below -- these are short, standard formulas, not deferred.
+
+(module array)
+(import vec)
+(export zeros from-vec get set! reshape add mul-elementwise)
+
+(defstruct NDArray
+  (data    : (Vec F64) @ Region)
+  (shape   : (Vec I32) @ Region)
+  (strides : (Vec I32) @ Region))
+
+(defn product [(shape : &(Vec I32))]
+  : I32
+  (loop [i 0 acc 1]
+    (if (>= i (vec/len shape)) acc (recur (+ i 1) (* acc (deref (vec/get shape i)))))))
+
+(defn strides-for [(shape : &(Vec I32)) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  ;; row-major (C order): stride[i] = product(shape[i+1:])
+  (let [n (vec/len shape) s (vec/new dest)]
+    (loop [i (- n 1) running 1]
+      (when (>= i 0)
+        (vec/push! &s running)
+        (recur (- i 1) (* running (deref (vec/get shape i))))))
+    s))
+
+(defn zeros [(shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (let [n (product &shape) data (vec/new dest)]
+    (loop [i 0] (when (< i n) (vec/push! &data 0.0) (recur (+ i 1))))
+    {:data data :shape shape :strides (strides-for &shape dest)}))
+
+(defn from-vec [(data : (Vec F64) @ Region) (shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (if (= (vec/len &data) (product &shape))
+    (Ok {:data data :shape shape :strides (strides-for &shape dest)})
+    (Err (ShapeError "data length does not match shape product"))))
+
+;; flat-index computes the row-major offset for an N-D index via strides
+;; -- the one real piece of arithmetic every op below reduces to.
+(defn flat-index [(a : &NDArray) (idx : &(Vec I32))]
+  : I32
+  (loop [i 0 offset 0]
+    (if (>= i (vec/len idx))
+      offset
+      (recur (+ i 1) (+ offset (* (deref (vec/get idx i)) (deref (vec/get &(get-field a :strides) i))))))))
+
+(defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch)]
+  : (Result F64 IndexError)
+  (let [off (flat-index a &idx)]
+    (if (or (< off 0) (>= off (vec/len &(get-field a :data))))
+      (Err (IndexError "out of bounds"))
+      (Ok (deref (vec/get &(get-field a :data) off))))))
+
+(defn set! [(a : &mut NDArray) (idx : (Vec I32) @ :region/scratch) (v : F64)]
+  : (Result Unit IndexError)
+  (let [off (flat-index a &idx)]
+    (if (or (< off 0) (>= off (vec/len &(get-field a :data))))
+      (Err (IndexError "out of bounds"))
+      (do (vec-set-at! &mut (get-field a :data) off v) (Ok unit)))))
+
+(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch)]
+  : (Result NDArray ShapeError) @ Region
+  (if (= (product &new-shape) (product &(get-field a :shape)))
+    (Ok {:data (get-field a :data) :shape new-shape :strides (strides-for &new-shape (current-arena))})
+    (Err (ShapeError "reshape must preserve element count"))))
+
+(defn same-shape? [(a : &NDArray) (b : &NDArray)]
+  : Bool
+  (vec-eq? &(get-field a :shape) &(get-field b :shape)))
+
+(defn elementwise [(a : &NDArray) (b : &NDArray) (op : (Fn [F64 F64] F64)) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (if (not (same-shape? a b))
+    (Err (ShapeError "shape mismatch"))
+    (let [n (vec/len &(get-field a :data)) out (vec/new dest)]
+      (loop [i 0]
+        (when (< i n)
+          (vec/push! &out (op (deref (vec/get &(get-field a :data) i)) (deref (vec/get &(get-field b :data) i))))
+          (recur (+ i 1))))
+      (Ok {:data out :shape (get-field a :shape) :strides (get-field a :strides)}))))
+
+(defn add [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (elementwise a b (fn [x y] (+ x y)) dest))
+
+(defn mul-elementwise [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (elementwise a b (fn [x y] (* x y)) dest))

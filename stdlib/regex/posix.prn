@@ -1,0 +1,17 @@
+;; stdlib/regex/posix.prn — depends on regex/syntax. Design: STDLIB.md
+;; "regex/posix" section. BRE/ERE, leftmost-longest match selection --
+;; a real, different rule from regex/nfa's and regex/pcre's own
+;; leftmost-first, kept as its own package for exactly that reason.
+
+(module regex/posix)
+(import regex/syntax)
+(export compile)
+
+(defenum PosixFlavor (BRE) (ERE))
+(defstruct Regex (ast : PatternAst @ Region) (flavor : PosixFlavor))
+
+(defn compile [(pattern : String @ :region/scratch) (flavor : PosixFlavor) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region
+  (match (regex/syntax/parse pattern dest)
+    ((Ok ast) (Ok {:ast ast :flavor flavor}))
+    ((Err e) (Err e))))

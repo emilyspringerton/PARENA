@@ -1,0 +1,29 @@
+;; stdlib/editor/buffer.prn — depends on string, vec. Design: STDLIB.md
+;; "editor/buffer" section. Real limitation: the actual text-buffer
+;; representation (rope/gap-buffer/piece-table) is shell-specific,
+;; undecided work (same open question as editor/plugin's own header
+;; comment) -- these calls are FFI into whatever the chosen shell owns.
+
+(module editor/buffer)
+(import string)
+(export active-text insert delete-range selection)
+
+(defn active-text [(dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "editor_active_buffer_text(dest)")})
+
+(defn insert [(pos : I32) (text : String @ Region)]
+  : (Result Unit BufferError)
+  #target
+  {:c (inline-c "editor_buffer_insert(pos, text) == 0 ? OK : ERR")})
+
+(defn delete-range [(start : I32) (end : I32)]
+  : (Result Unit BufferError)
+  #target
+  {:c (inline-c "editor_buffer_delete_range(start, end) == 0 ? OK : ERR")})
+
+(defn selection []
+  : (Option (I32 I32))
+  #target
+  {:c (inline-c "editor_buffer_selection()")})

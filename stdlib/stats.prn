@@ -1,0 +1,41 @@
+;; stdlib/stats.prn — depends on array. Design: STDLIB.md "stats"
+;; section. Real, complete: these are single-pass reductions, short
+;; enough to just write, not defer.
+
+(module stats)
+(import array)
+(export mean std sum min max)
+
+(defn sum [(a : &NDArray)]
+  : F64
+  (loop [i 0 acc 0.0]
+    (if (>= i (vec/len &(get-field a :data))) acc
+      (recur (+ i 1) (+ acc (deref (vec/get &(get-field a :data) i)))))))
+
+(defn mean [(a : &NDArray)]
+  : F64
+  (/ (sum a) (to-f64 (vec/len &(get-field a :data)))))
+
+(defn std [(a : &NDArray)]
+  : F64
+  (let [m (mean a) n (to-f64 (vec/len &(get-field a :data)))]
+    (sqrt (/ (loop [i 0 acc 0.0]
+               (if (>= i (vec/len &(get-field a :data))) acc
+                 (recur (+ i 1) (+ acc (square (- (deref (vec/get &(get-field a :data) i)) m))))))
+             n))))
+
+(defn min [(a : &NDArray)]
+  : (Result F64 EmptyArrayError)
+  (if (= (vec/len &(get-field a :data)) 0)
+    (Err (EmptyArrayError "empty array"))
+    (Ok (loop [i 1 acc (deref (vec/get &(get-field a :data) 0))]
+          (if (>= i (vec/len &(get-field a :data))) acc
+            (recur (+ i 1) (if (< (deref (vec/get &(get-field a :data) i)) acc) (deref (vec/get &(get-field a :data) i)) acc)))))))
+
+(defn max [(a : &NDArray)]
+  : (Result F64 EmptyArrayError)
+  (if (= (vec/len &(get-field a :data)) 0)
+    (Err (EmptyArrayError "empty array"))
+    (Ok (loop [i 1 acc (deref (vec/get &(get-field a :data) 0))]
+          (if (>= i (vec/len &(get-field a :data))) acc
+            (recur (+ i 1) (if (> (deref (vec/get &(get-field a :data) i)) acc) (deref (vec/get &(get-field a :data) i)) acc)))))))

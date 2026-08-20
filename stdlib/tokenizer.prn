@@ -1,0 +1,36 @@
+;; stdlib/tokenizer.prn — depends on string, vec, io. Design: STDLIB.md
+;; "tokenizer" section. Real BPE tokenizer matching tokenizer_load/
+;; gpt2_encode/gpt2_decode's own three-function shape. encode/decode's
+;; actual merge-loop bodies are genuinely deferred (a real BPE merge
+;; requires a loaded merge-rank table this signature-level pass doesn't
+;; populate from a real vocab file yet) -- load's own file-reading is
+;; real via io/read-string, the merge algorithm itself is flagged, not
+;; faked with a placeholder that would silently mis-tokenize.
+
+(module tokenizer)
+(import string)
+(import vec)
+(import io)
+(export load encode decode)
+
+(defstruct Tokenizer
+  (vocab  : (Map String I32) @ Region)
+  (merges : (Vec (String String)) @ Region))
+
+(defn load [(vocab-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Tokenizer IoError) @ Region
+  (match (io/open vocab-path (io/OpenMode/Read))
+    ((Ok !f)
+      (do
+        (let [raw (io/read-string !f dest)]
+          (io/close !f)
+          (match raw
+            ((Ok text) (Ok (parse-vocab-file text dest)))
+            ((Err e) (Err e))))))
+    ((Err e) (Err e))))
+
+;; encode/decode — real BPE merge loop deferred, per header comment above.
+(defn encode [(!t : &Tokenizer) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result (Vec I32) TokenizeError) @ Region)
+(defn decode [(!t : &Tokenizer) (ids : &(Vec I32)) (dest : Arena @ Region)]
+  : (Result String TokenizeError) @ Region)

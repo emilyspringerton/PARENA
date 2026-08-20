@@ -1,0 +1,54 @@
+;; stdlib/dataframe.prn — depends on array, string, vec. Design:
+;; STDLIB.md "dataframe" section, the pandas equivalent. column/select
+;; are real, complete (linear scans over column-names). read-csv and
+;; filter/group-by are genuinely deferred: a real CSV parser (quoting,
+;; escaping) and a real columnar-scan filter/group-by are their own
+;; work, same honest limitation STDLIB.md already states.
+
+(module dataframe)
+(import array)
+(import string)
+(import vec)
+(export column select read-csv filter group-by)
+
+(defenum Column
+  (NumericCol (data : NDArray @ Region))
+  (StringCol  (data : (Vec String) @ Region)))
+
+(defstruct DataFrame
+  (columns      : (Vec Column) @ Region)
+  (column-names : (Vec String) @ Region)
+  (row-count    : I32))
+
+(defn column [(df : &DataFrame) (name : String @ :region/scratch)]
+  : (Result (&Column) ColumnNotFoundError)
+  (loop [i 0]
+    (if (>= i (vec/len &(get-field df :column-names)))
+      (Err (ColumnNotFoundError name))
+      (if (str-eq? (deref (vec/get &(get-field df :column-names) i)) name)
+        (Ok (vec/get &(get-field df :columns) i))
+        (recur (+ i 1))))))
+
+(defn select [(df : &DataFrame) (names : (Vec String) @ :region/scratch) (dest : Arena @ Region)]
+  : (Result DataFrame ColumnNotFoundError) @ Region
+  (let [out-cols (vec/new dest) out-names (vec/new dest)]
+    (loop [i 0]
+      (when (< i (vec/len &names))
+        (match (column df (deref (vec/get &names i)))
+          ((Ok col) (do (vec/push! &out-cols (deref col)) (vec/push! &out-names (deref (vec/get &names i)))))
+          ((Err e) (return (Err e))))
+        (recur (+ i 1))))
+    (Ok {:columns out-cols :column-names out-names :row-count (get-field df :row-count)})))
+
+;; read-csv — real CSV quoting/escaping is genuinely deferred (RFC 4180
+;; edge cases: quoted fields containing the delimiter, embedded
+;; newlines, doubled-quote escaping) -- left as a real follow-up rather
+;; than a naive split-on-comma that would silently mis-parse real data.
+(defn read-csv [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result DataFrame IoError) @ Region)
+
+(defn filter [(df : &DataFrame) (pred : (Fn [I32] Bool)) (dest : Arena @ Region)]
+  : DataFrame @ Region)
+
+(defn group-by [(df : &DataFrame) (name : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (Vec DataFrame) ColumnNotFoundError) @ Region)

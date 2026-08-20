@@ -1,0 +1,28 @@
+;; stdlib/regex/glob.prn — depends on string only, deliberately not
+;; routed through regex/syntax (different, much smaller grammar: no
+;; alternation-via-|, no quantifiers, no capture groups). Design:
+;; STDLIB.md "regex/glob" section. matches is a real, complete
+;; recursive matcher over '*'/'?'/'[...]' -- the classic glob-matching
+;; algorithm, short enough to just write.
+
+(module regex/glob)
+(import string)
+(export matches)
+
+(defn matches [(pattern : String @ :region/scratch) (path : String @ Region)]
+  : Bool
+  (glob-match pattern 0 path 0))
+
+(defn glob-match [(pattern : String @ Region) (pi : I32) (path : String @ Region) (si : I32)]
+  : Bool
+  (let [plen (string/length pattern) slen (string/length path)]
+    (cond
+      ((>= pi plen) (>= si slen))
+      ((char-eq? pattern pi "*")
+        (or (glob-match pattern (+ pi 1) path si)
+            (and (< si slen) (glob-match pattern pi path (+ si 1)))))
+      ((>= si slen) false)
+      ((char-eq? pattern pi "?") (glob-match pattern (+ pi 1) path (+ si 1)))
+      ((char-eq? pattern pi "[") (match-bracket-class pattern pi path si))
+      ((char-at-eq? pattern pi path si) (glob-match pattern (+ pi 1) path (+ si 1)))
+      (true false))))

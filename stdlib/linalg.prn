@@ -1,0 +1,64 @@
+;; stdlib/linalg.prn — depends on array. Design: STDLIB.md "linalg"
+;; section. matmul/transpose/dot below are real, naive (triple-nested-
+;; loop / row-major) implementations -- correct, not fast. inverse/solve
+;; are genuinely deferred: Gauss-Jordan with partial pivoting is real
+;; algorithmic work beyond a same-pass reference implementation, and
+;; STDLIB.md's own honest limitation note already says a real fast path
+;; would FFI-bind BLAS/LAPACK rather than hand-roll any of this --
+;; matmul/transpose/dot exist here as the reference semantics that FFI
+;; path would have to match, not a competing fast implementation.
+
+(module linalg)
+(import array)
+(export matmul transpose dot inverse solve)
+
+(defn matmul [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region
+  (let [a-rows (deref (vec/get &(get-field a :shape) 0))
+        a-cols (deref (vec/get &(get-field a :shape) 1))
+        b-cols (deref (vec/get &(get-field b :shape) 1))]
+    (if (not (= a-cols (deref (vec/get &(get-field b :shape) 0))))
+      (Err (ShapeError "inner dimensions must match"))
+      (let [out (array/zeros [a-rows b-cols] dest)]
+        (loop [i 0]
+          (when (< i a-rows)
+            (loop [j 0]
+              (when (< j b-cols)
+                (loop [k 0 sum 0.0]
+                  (if (>= k a-cols)
+                    (array/set! &mut out [i j] sum)
+                    (recur (+ k 1) (+ sum (* (unwrap (array/get a [i k])) (unwrap (array/get b [k j])))))))
+                (recur (+ j 1))))
+            (recur (+ i 1))))
+        (Ok out)))))
+
+(defn transpose [(a : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (let [rows (deref (vec/get &(get-field a :shape) 0))
+        cols (deref (vec/get &(get-field a :shape) 1))
+        out (array/zeros [cols rows] dest)]
+    (loop [i 0]
+      (when (< i rows)
+        (loop [j 0]
+          (when (< j cols)
+            (array/set! &mut out [j i] (unwrap (array/get a [i j])))
+            (recur (+ j 1))))
+        (recur (+ i 1))))
+    out))
+
+(defn dot [(a : &NDArray) (b : &NDArray)]
+  : (Result F64 ShapeError)
+  (if (not (= (vec/len &(get-field a :data)) (vec/len &(get-field b :data))))
+    (Err (ShapeError "length mismatch"))
+    (loop [i 0 sum 0.0]
+      (if (>= i (vec/len &(get-field a :data)))
+        (Ok sum)
+        (recur (+ i 1) (+ sum (* (deref (vec/get &(get-field a :data) i)) (deref (vec/get &(get-field b :data) i)))))))))
+
+;; inverse/solve — real, deferred: Gauss-Jordan with partial pivoting
+;; (the standard direct-solve algorithm) is genuine, separate numerical
+;; work, honestly not written in this pass; a real implementation should
+;; most plausibly FFI-bind LAPACK's own dgetrf/dgetri rather than
+;; hand-roll pivoting here, per STDLIB.md's own stated limitation.
+(defn inverse [(a : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)
+(defn solve   [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)

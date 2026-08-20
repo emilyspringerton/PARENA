@@ -1,0 +1,31 @@
+;; stdlib/editor/ui.prn — depends on editor/events, sdl2. Design:
+;; STDLIB.md "editor/ui" section. Shell resolved this thread: SDL2-based
+;; (founder: "im assuming it has to built on sdl" -- "i dunno what
+;; other alternative we would have," correct, sdl2 already ships
+;; built-in) -- gutter/diagnostics/status-bar/popups below render via
+;; sdl2's own real primitives (window/renderer), same architecture as
+;; PITVIPER's own SDL2 terminal-emulator precedent, not a new toolkit.
+
+(module editor/ui)
+(import sdl2)
+(export set-gutter-marker show-diagnostic set-status-bar show-popup)
+
+(defn set-gutter-marker [(line : I32) (glyph : String @ :region/scratch)]
+  : Unit
+  #target
+  {:c (inline-c "editor_ui_set_gutter_marker(line, glyph);")})
+
+(defn show-diagnostic [(line : I32) (severity : DiagnosticSeverity) (msg : String @ Region)]
+  : Unit
+  #target
+  {:c (inline-c "editor_ui_show_diagnostic(line, severity, msg);")})
+
+(defn set-status-bar [(text : String @ Region)]
+  : Unit
+  #target
+  {:c (inline-c "editor_ui_set_status_bar(text);")})
+
+(defn show-popup [(text : String @ Region) (x : I32) (y : I32)]
+  : Unit
+  #target
+  {:c (inline-c "editor_ui_show_popup(text, x, y);")})

@@ -1,0 +1,34 @@
+;; stdlib/regex/nfa.prn — depends on regex/syntax, vec. Design:
+;; STDLIB.md "regex/nfa" section. Thompson-construction NFA run as
+;; Pike's VM (all live threads advanced in lockstep, breadth-first) --
+;; guaranteed O(len(text)*len(pattern)), no backtracking by
+;; construction, hence no backrefs/lookaround (regex/pcre's own job).
+;; compile (AST -> instruction list) and the run loop are real,
+;; well-known algorithms; left as signatures here since the actual
+;; instruction encoding is a real design choice that should be made
+;; once VS0 domain 2+ exists to test it against, not guessed blind.
+
+(module regex/nfa)
+(import regex/syntax)
+(import vec)
+(export compile is-match find find-all)
+
+(defstruct Regex (program : (Vec NfaInstr) @ Region))
+(defstruct Match (start : I32) (end : I32) (groups : (Vec (Option (I32 I32))) @ Region))
+
+(defenum NfaInstr
+  (Char  (ch : String @ Region) (next : I32))
+  (Split (a : I32) (b : I32))
+  (Jmp   (target : I32))
+  (Match))
+
+(defn compile [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Regex SyntaxError) @ Region
+  (match (regex/syntax/parse pattern dest)
+    ((Ok ast) (Ok {:program (ast-to-program (get-field ast :root) dest)}))
+    ((Err e) (Err e))))
+
+(defn is-match  [(re : &Regex) (text : String @ Region)] : Bool)
+(defn find      [(re : &Regex) (text : String @ Region)] : (Option Match))
+(defn find-all  [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
+  : (Vec Match) @ Region)

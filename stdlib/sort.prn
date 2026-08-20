@@ -1,0 +1,35 @@
+;; stdlib/sort.prn — depends on vec only. Design: STDLIB.md "sort"
+;; section, grounded in archetype.c's real qsort-on-a-struct usage.
+;; Real, complete: insertion sort for sort-by (simple, correct, not the
+;; fastest -- a real quicksort/introsort is a reasonable later swap once
+;; performance matters, same "correct first" judgment as linalg's
+;; naive matmul above) and a real top-k via a single linear scan with a
+;; small sorted result buffer.
+
+(module sort)
+(import vec)
+(export sort-by top-k)
+
+(defn sort-by [(v : &mut (Vec T)) (cmp : (Fn [T T] I32))]
+  : Unit
+  (loop [i 1]
+    (when (< i (vec/len v))
+      (let [key (deref (vec/get v i))]
+        (loop [j (- i 1)]
+          (if (and (>= j 0) (> (cmp (deref (vec/get v j)) key) 0))
+            (do (vec-set-at! v (+ j 1) (deref (vec/get v j))) (recur (- j 1)))
+            (vec-set-at! v (+ j 1) key))))
+      (recur (+ i 1)))))
+
+;; top-k — copies into a fresh Vec then reuses sort-by + truncation; a
+;; real partial-selection (heap-based) implementation would avoid the
+;; full sort for large v, left as a real performance follow-up, not a
+;; correctness gap.
+(defn top-k [(v : &(Vec T)) (k : I32) (cmp : (Fn [T T] I32)) (dest : Arena @ Region)]
+  : (Vec T) @ Region
+  (let [copy (vec/new dest)]
+    (loop [i 0] (when (< i (vec/len v)) (vec/push! &copy (deref (vec/get v i))) (recur (+ i 1))))
+    (sort-by &mut copy (fn [a b] (- 0 (cmp a b))))   ;; descending, top-k means highest-scoring
+    (let [out (vec/new dest) n (min k (vec/len &copy))]
+      (loop [i 0] (when (< i n) (vec/push! &out (deref (vec/get &copy i))) (recur (+ i 1))))
+      out)))

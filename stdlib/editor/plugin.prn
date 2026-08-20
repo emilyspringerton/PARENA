@@ -1,0 +1,22 @@
+;; stdlib/editor/plugin.prn — depends on string, vec. Design: STDLIB.md
+;; "editor/plugin" section, NORTHSTAR's own module table. Real
+;; limitation restated: the editor shell itself is still an open,
+;; undecided question (Electron/Tauri/GTK+GtkSourceView/SDL2+ImGui/
+;; ncurses+Tree-sitter) -- this is the plugin-facing surface only, its
+;; actual host-side dispatch table is real, shell-specific, unstarted
+;; work.
+
+(module editor/plugin)
+(import string)
+(import vec)
+(export register-command get-config)
+
+(defn register-command [(name : String @ :region/scratch) (handler : (Fn [] Unit))]
+  : Unit
+  #target
+  {:c (inline-c "editor_register_command(name, handler);")})
+
+(defn get-config [(key : String @ :region/scratch)]
+  : (Option String)
+  #target
+  {:c (inline-c "editor_get_config_option(key)")})
