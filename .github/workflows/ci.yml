@@ -24,13 +24,25 @@ jobs:
       - name: Test (DoD domain 1 — balanced + imbalanced S-expression unit tests)
         run: bazel test //tests:test_lexer_parser --test_output=all
 
+      - name: Test (DoD domain 2 — region analyzer, 1 positive + 1 negative case)
+        run: bazel test //tests:test_region --test_output=all
+
       - name: AddressSanitizer + UndefinedBehaviorSanitizer
-        run: bazel test --config=asan //tests:test_lexer_parser --test_output=all
+        run: |
+          bazel test --config=asan //tests:test_lexer_parser --test_output=all
+          bazel test --config=asan //tests:test_region --test_output=all
 
       - name: CLI smoke test against the real VS0 test.prn from NORTHSTAR.md
         run: |
           set -euo pipefail
           bazel run //src:parena -- parse "$(pwd)/examples/test.prn"
+          # test.prn's own break-safety function is a real, deliberately
+          # invalid escape (NORTHSTAR.md's own negative DoD case) -- expect
+          # exit 1, not success, from the analyzer.
+          if bazel run //src:parena -- analyze "$(pwd)/examples/test.prn"; then
+            echo "expected analyze to reject test.prn's break-safety, but it exited 0" >&2
+            exit 1
+          fi
 
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,

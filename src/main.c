@@ -9,6 +9,7 @@
 #include "arena.h"
 #include "ast.h"
 #include "parser.h"
+#include "region.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,18 +79,54 @@ static int cmd_parse(const char *path) {
     return 0;
 }
 
+/* cmd_analyze — VS0 domain 2, the region analyzer. Parses `path`, then
+ * runs region_analyze() over the resulting AST. Real, honest scope
+ * (see region.h's own header comment): checks the assignment invariant
+ * only, not the full region-safety story yet. */
+static int cmd_analyze(const char *path) {
+    size_t len;
+    char *src = read_file(path, &len);
+    if (!src) {
+        fprintf(stderr, "parena: cannot read %s\n", path);
+        return 1;
+    }
+    Arena arena;
+    arena_init(&arena);
+    const char *parse_err = NULL;
+    Node *program = parse_program(&arena, src, len, &parse_err);
+    free(src);
+    if (!program) {
+        fprintf(stderr, "parena: parse error: %s\n", parse_err);
+        arena_free_all(&arena);
+        return 1;
+    }
+    const char *region_err = region_analyze(&arena, program);
+    if (region_err) {
+        fprintf(stderr, "parena: %s\n", region_err);
+        arena_free_all(&arena);
+        return 1;
+    }
+    printf("parena: %s: region analysis OK\n", path);
+    arena_free_all(&arena);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
-                         "       parena build <file.prn> -o <output.c>  (not yet implemented -- S189-13)\n");
+                         "       parena analyze <file.prn>                (VS0 domain 2 -- region analyzer)\n"
+                         "       parena build <file.prn> -o <output.c>    (not yet implemented -- S189-13)\n");
         return 1;
     }
     if (strcmp(argv[1], "parse") == 0 && argc >= 3) {
         return cmd_parse(argv[2]);
     }
+    if (strcmp(argv[1], "analyze") == 0 && argc >= 3) {
+        return cmd_analyze(argv[2]);
+    }
     if (strcmp(argv[1], "build") == 0) {
-        fprintf(stderr, "parena: build not yet implemented -- lexer/parser exist, region analyzer "
-                         "and C emitter don't yet (see PARENA/NORTHSTAR.md's VS0 Definition of Done, "
+        fprintf(stderr, "parena: build not yet implemented -- lexer/parser/region analyzer exist, "
+                         "C emitter doesn't yet (see PARENA/NORTHSTAR.md's VS0 Definition of Done, "
                          "backlog S189-13)\n");
         return 1;
     }

@@ -35,6 +35,17 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "region",
+    srcs = ["region.c"],
+    hdrs = ["region.h"],
+    deps = [
+        ":arena",
+        ":ast",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "parena",
     srcs = ["main.c"],
@@ -42,6 +53,7 @@ cc_binary(
         ":arena",
         ":ast",
         ":parser",
+        ":region",
     ],
     visibility = ["//visibility:public"],
 )
