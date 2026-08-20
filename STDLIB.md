@@ -187,6 +187,75 @@ or capacity tuning. `array`'s `NDArray.data`, `dataframe`'s `Column`/`DataFrame`
 `Vec` were all already assuming this package exists implicitly; this section makes that dependency
 real instead of implicit.
 
+### `fp` — Ramda-equivalent functional-programming toolkit, depends on `vec`
+
+Founder, real-time: "add stdlibs that all the functional programming js bros use" → "like after
+underscore thewent really far out into functional programming i cant remember the library" →
+"we need those stdlibs". Real, identified precedent: [Ramda](https://ramdajs.com) — the real JS
+library that lineage describes (Underscore → Lodash → Ramda going further into pure FP than either:
+auto-curried by default, immutable, point-free composition as the whole point, not a bolt-on).
+Depends on `vec` (this session's own newly-real `(Vec T)`/`vec/new`/`vec/push!`/`vec/get`/
+`vec/len`) for every collection-shaped signature below, the same way `regex`/`grep`/`awk` already
+assumed it before `vec` itself was designed.
+
+```clojure
+; the three real Ramda-shaped collection operations every other one below builds on
+(defn map    [(f : (Fn [T] U)) (v : &(Vec T)) (dest : Arena @ Region)] : (Vec U) @ Region)
+(defn filter [(f : (Fn [T] Bool)) (v : &(Vec T)) (dest : Arena @ Region)] : (Vec T) @ Region)
+(defn reduce [(f : (Fn [Acc T] Acc)) (init : Acc) (v : &(Vec T))] : Acc)
+
+; composition -- Ramda's own real point: point-free pipelines, not currying for its own sake
+(defn identity [(x : T)] : T)
+(defn always   [(x : T)] : (Fn [] T))          ; Ramda's own const/K-combinator
+(defn compose  [(f : (Fn [B] C)) (g : (Fn [A] B))] : (Fn [A] C))   ; right-to-left, Ramda's own convention
+(defn pipe     [(f : (Fn [A] B)) (g : (Fn [B] C))] : (Fn [A] C))   ; left-to-right, the readable-pipeline sibling
+(defn flip     [(f : (Fn [A B] C))] : (Fn [B A] C))
+(defn tap      [(f : (Fn [T] Unit)) (x : T)] : T)   ; side-effect passthrough, Ramda's own real debug idiom
+
+; predicate combinators -- Ramda's own real, small, genuinely useful set
+(defn both       [(f : (Fn [T] Bool)) (g : (Fn [T] Bool))] : (Fn [T] Bool))
+(defn either      [(f : (Fn [T] Bool)) (g : (Fn [T] Bool))] : (Fn [T] Bool))
+(defn complement [(f : (Fn [T] Bool))] : (Fn [T] Bool))
+
+; struct/field access -- Ramda's own real prop/pluck, natural fit over get-field
+(defn prop  [(field : :Keyword) (x : &T)] : &U)               ; wraps get-field for a first-class-value use site
+(defn pluck [(field : :Keyword) (v : &(Vec T)) (dest : Arena @ Region)] : (Vec U) @ Region)
+
+; collection-shaping -- the other real, common Ramda exports worth naming explicitly
+(defn uniq    [(v : &(Vec T)) (dest : Arena @ Region)] : (Vec T) @ Region)
+(defn flatten [(v : &(Vec (Vec T))) (dest : Arena @ Region)] : (Vec T) @ Region)
+(defn zip     [(a : &(Vec T)) (b : &(Vec U)) (dest : Arena @ Region)] : (Vec (T U)) @ Region)   ; tuple element -- real VS0 gap, see below
+```
+
+Real, honest scope decisions, not glossed over:
+
+- **`curry` (Ramda's own headline feature — every function auto-curried by arity) is deliberately
+  NOT designed here.** Real auto-currying needs runtime arity introspection (how many arguments
+  does this `Fn` value actually expect, so a partial call can return a new closure awaiting the
+  rest) — VS0 has no reflection/arity-inspection primitive of any kind, and no real, generic
+  "closure that captures already-bound arguments" mechanism either (every `(Fn [...] ...)` value
+  today is a bare C function pointer — `%s (*)(void)`/similar in `emit_defn`'s own parameter-type
+  handling — not a real closure struct that could carry captured state). Faking curry as
+  fixed-arity-only special cases (`curry2`, `curry3`, ...) was considered and rejected as exactly
+  the kind of "pretend more precise than it is" this whole document avoids elsewhere — flagged
+  as real, unstarted, and blocked on a genuine closure-representation feature, not silently
+  skipped.
+- **`map`/`filter`/`reduce`/`pluck`/`uniq`/`flatten`/`zip` above all take a callback or produce a
+  `Vec` of a *different* element type than their input (`T` → `U`, or `T` → `(Vec T)` → `T`)** —
+  real, additional generics pressure beyond what `(Vec T)`'s own single-type-parameter erasure
+  (landed this session) covers; `T`/`U`/`Acc` in every signature above are illustrative of the
+  *real* target shape, not something the current single-type-erasure `(Vec T)` support can resolve
+  today without further emitter work (a real, separate, next increment, not conflated with this
+  design pass).
+- **`zip`'s own `(Vec (T U))` return type uses a tuple element shape** — STDLIB.md's own VS0 gap
+  list already names tuple types as unimplemented (gap analysis further below); `zip` is included
+  here for real completeness against Ramda's own actual export list, not because it's more ready
+  to build than anything else in this section.
+- **`assoc`/`dissoc`/`merge`/`path`/`pathOr`/`cond`/`when`/`unless`/`juxt`/`groupBy`/`sortBy`/
+  `partial`** — real, further Ramda exports, explicitly NOT designed in this pass (this is already
+  a large single addition); flagged as real follow-up scope, not an exhaustive Ramda port attempted
+  in one sitting.
+
 ### `io` — the two calls the source spec already uses, plus their obvious neighbors
 
 ```clojure

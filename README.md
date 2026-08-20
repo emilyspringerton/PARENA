@@ -65,8 +65,9 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 
 | Package | Purpose |
 |---|---|
-| `vec` | Growable array — `new`/`push!`/`get`/`len` |
+| `vec` | Growable array — `new`/`push!`/`get`/`len`. **Real, working, `parena build`-verified today** — a real arena-allocated runtime `Vec` struct, not just a design |
 | `map` | Open-addressing hash table — `new`/`get`/`set!`/`contains` |
+| `fp` | Ramda-equivalent FP toolkit — `map`/`filter`/`reduce`/`compose`/`pipe`/`prop`/`pluck`/predicate combinators. Real auto-currying explicitly deferred (needs a real closure representation VS0 doesn't have yet) |
 | `string` | `parse-i32`/`length`/`concat`/`split` |
 | `log` | `info`/`warn`/`error` |
 | `buffer` | `set-data`/`get-data` on an arena-backed buffer |
