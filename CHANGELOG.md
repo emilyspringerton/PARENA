@@ -1,4 +1,5 @@
 ## 2026-08-20
+- (Fn [] ..) callback 泛化支援任意回傳型別 + 新增 cache stdlib(Russian doll nested caching,Rails 真實先例);CI 綠燈 (commit 24f82b3) (sess-20260820-0649-a3f19d93)
 - emit_defn 支援不帶 region 標註的純 I32/String 參數,對應 stdlib/editor/ui.prn 的行號/像素座標這類參數形狀;CI 綠燈 (commit cf14d96) (sess-20260820-0649-a3f19d93)
 - emit_defn 新增 #target/inline-c FFI 逃逸機制 + 明確回傳型別標註(Unit/I32/String/(Result ..)/(Option ..)),讓 stdlib/editor 的 mod-surface plugin 介面檔案能真正被辨識;CI 綠燈 (commit aa25d6b) (sess-20260820-0649-a3f19d93)
 - emit_match：新增 Result/Option 上的模式匹配支援（Ok/Err/Some/None），含新的執行期 Result/Option 型別與建構輔助函式；CI 綠燈 (commit 64f5527) (sess-20260820-0649-a3f19d93)
