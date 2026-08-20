@@ -6,6 +6,26 @@ emitter, and full build pipeline (domains 2-5) not yet built.
 
 ## What this is
 
+Founder's own mission statement for the project, stated directly mid-session (2026-08-20), worth
+carrying verbatim rather than paraphrased: **"PARENA is a language to make your software more
+programmable via fluid and composible plugin APIS."** Everything below — the editor/plugin
+surface, the GFD mod-surface binding, PITVIPER hosting a PARENA-authored vim-like editor, the
+"build the plugin API, then the feature, then expand the API only when a new feature needs it"
+development pattern the founder separately named as "a new emerging pattern" already recurring
+across GFD's mod API and PITVIPER's own plugin surface — is that mission applied to a specific
+surface, not a separate goal.
+
+The concrete adoption mechanism, stated the same session: **"we bolt on the plugin interface on
+to software and then PARENA slowly eats the codebase from the outside in."** A real, named
+software-migration shape (close kin to the "strangler fig" pattern — replace a legacy system
+piece by piece from its edges rather than a rewrite) applied specifically to how PARENA is meant
+to enter an existing codebase: expose a plugin/FFI boundary first (PITVIPER's Go core gaining a
+plugin API; GFD's `apps2/battlegrounds_gui` gaining the `gfd` binding surface), let PARENA code
+live on that boundary, and only later — incrementally, as real need justifies it, not on a fixed
+schedule — does more of the host's own internals get rewritten in PARENA. Not started as an actual
+rewrite anywhere yet; the boundary-first half of this (PITVIPER's plugin API) is the concrete near-
+term work.
+
 A new systems language, built from scratch, with a real editor/plugin surface as a first-class
 part of the design (not bolted on later). Founder, real-time, across a fast, fragmented thread:
 "LANGUAGE SPEC FOUND" → "PARENA UPSTREAM" → "ITS AN EDITOR AND A LANGUAGE" → "its like EDU
