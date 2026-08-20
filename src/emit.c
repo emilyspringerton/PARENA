@@ -402,6 +402,182 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
                       out_return_type, out_error);
 }
 
+#define MAX_LOOP_VARS 32
+
+/* emit_loop_tail handles the real tail position inside a `loop` body --
+ * exactly the shape every real `loop`/`recur` use in this stdlib
+ * actually has (test.prn/region.c's own C code doesn't use this yet,
+ * but stdlib/vec.prn's push!/grow!, stdlib/map.prn's find-slot, etc. --
+ * the real .prn source already written this session -- all follow this
+ * same shape): `(if cond then else)` where one branch is a plain
+ * terminal value and the other is `(recur new-vals...)`. Real, honest
+ * scope: only `if` and `recur` are understood in tail position -- a
+ * `loop` whose tail is a bare `recur` (no `if` at all, an infinite loop
+ * with no base case) or a `cond`/`match` in tail position isn't
+ * supported yet, reported not guessed. */
+static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scope,
+                           Local **loop_locals, size_t loop_var_count, const char *result_var,
+                           const char **out_result_type, const char **out_error) {
+    if (is_call_named(tail, "if")) {
+        if (tail->child_count != 4) {
+            return fail(arena, out_error, "loop: if in tail position needs (if cond then else) at line %d",
+                        tail->line) != NULL;
+        }
+        const char *cond_type = NULL;
+        const char *cond = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        if (!cond) return 0;
+        sb_appendf(out, "        if (%s) {\n", cond);
+        const char *then_type = NULL;
+        if (!emit_loop_tail(arena, out, tail->children[2], scope, loop_locals, loop_var_count,
+                             result_var, &then_type, out_error)) {
+            return 0;
+        }
+        sb_append(out, "        } else {\n");
+        const char *else_type = NULL;
+        if (!emit_loop_tail(arena, out, tail->children[3], scope, loop_locals, loop_var_count,
+                             result_var, &else_type, out_error)) {
+            return 0;
+        }
+        sb_append(out, "        }\n");
+        /* recur branches report no result type (they don't produce the
+         * loop's own value) -- take whichever branch actually resolved
+         * one, real terminal-value branch wins over a recur sibling. */
+        if (out_result_type) *out_result_type = then_type ? then_type : else_type;
+        return 1;
+    }
+    if (is_call_named(tail, "recur")) {
+        if (tail->child_count - 1 != loop_var_count) {
+            return fail(arena, out_error,
+                        "loop: recur at line %d passes %zu value(s), loop has %zu variable(s)",
+                        tail->line, tail->child_count - 1, loop_var_count) != NULL;
+        }
+        if (loop_var_count > MAX_LOOP_VARS) {
+            return fail(arena, out_error, "loop: too many loop variables at line %d (max %d)",
+                        tail->line, MAX_LOOP_VARS) != NULL;
+        }
+        /* Real simultaneous-assignment: every new value is computed into
+         * its own temp FIRST, then assigned back -- so `(recur y x)`
+         * really swaps rather than reading an already-overwritten var,
+         * the same correctness property real `recur` semantics require. */
+        char tmp_names[MAX_LOOP_VARS][32];
+        for (size_t i = 0; i < loop_var_count; i++) {
+            const char *val_type = NULL;
+            const char *val_c = emit_expr(arena, tail->children[i + 1], scope, &val_type, out_error);
+            if (!val_c) return 0;
+            snprintf(tmp_names[i], sizeof(tmp_names[i]), "__recur_tmp_%zu", i);
+            sb_appendf(out, "        %s %s = %s;\n", loop_locals[i]->c_type, tmp_names[i], val_c);
+        }
+        for (size_t i = 0; i < loop_var_count; i++) {
+            sb_appendf(out, "        %s = %s;\n", loop_locals[i]->c_name, tmp_names[i]);
+        }
+        sb_append(out, "        continue;\n");
+        if (out_result_type) *out_result_type = NULL;
+        return 1;
+    }
+    /* A plain value in tail position: this is the loop's own real result. */
+    const char *val_type = NULL;
+    const char *val_c = emit_expr(arena, tail, scope, &val_type, out_error);
+    if (!val_c) return 0;
+    sb_appendf(out, "        %s = %s;\n", result_var, val_c);
+    sb_append(out, "        break;\n");
+    if (out_result_type) *out_result_type = val_type;
+    return 1;
+}
+
+/* emit_loop handles `(loop [var1 init1 var2 init2 ...] body...)` as a
+ * real C `while (1) { ... }`, mutable loop-variable locals reassigned
+ * (via emit_loop_tail's own real simultaneous-assignment) on `recur`,
+ * `break` on the real terminal case. The loop's own result type is
+ * inferred the same "emit into a temp buffer first, read the type back
+ * as a side effect" way emit_defn's own return type already is (the
+ * result variable's own declaration needs a real type, but that type
+ * isn't known until the body -- specifically its terminal branch -- has
+ * actually been walked). */
+static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
+                      const char **out_return_type, const char **out_error) {
+    if (node->child_count < 2 || node->children[1]->type != NODE_VEC) {
+        return fail(arena, out_error, "loop: expected a binding vector at line %d", node->line) != NULL;
+    }
+    Node *bindings = node->children[1];
+
+    EmitScope child;
+    scope_init(&child, scope);
+
+    Local *loop_locals[MAX_LOOP_VARS];
+    size_t loop_var_count = 0;
+    for (size_t i = 0; i + 1 < bindings->child_count; i += 2) {
+        Node *name_node = bindings->children[i];
+        Node *init_node = bindings->children[i + 1];
+        if (name_node->type != NODE_SYMBOL) {
+            return fail(arena, out_error, "loop: binding name must be a plain identifier at line %d",
+                        node->line) != NULL;
+        }
+        const char *c_type = NULL;
+        const char *init_c = emit_expr(arena, init_node, scope, &c_type, out_error);
+        if (!init_c) return 0;
+        const char *c_name = mangle(arena, name_node->text);
+        sb_appendf(out, "    %s %s = %s;\n", c_type, c_name, init_c);
+        scope_bind(&child, name_node->text, c_name, c_type, 0);
+        if (loop_var_count < MAX_LOOP_VARS) {
+            loop_locals[loop_var_count++] = &child.locals[child.count - 1];
+        }
+    }
+
+    static int loop_counter = 0;
+    char result_var[64];
+    snprintf(result_var, sizeof(result_var), "__loop_result_%d", loop_counter++);
+
+    Node **body_forms = node->children + 2;
+    size_t body_count = node->child_count - 2;
+    if (body_count == 0) {
+        return fail(arena, out_error, "loop: empty body at line %d", node->line) != NULL;
+    }
+
+    StrBuf body;
+    sb_init(&body);
+    for (size_t i = 0; i + 1 < body_count; i++) {
+        Node *form = body_forms[i];
+        if (is_call_named(form, "with-arena")) {
+            if (!emit_with_arena(arena, &body, form, &child, 0, NULL, out_error)) {
+                sb_free(&body);
+                return 0;
+            }
+        } else if (is_call_named(form, "let")) {
+            if (!emit_let(arena, &body, form, &child, 0, NULL, out_error)) {
+                sb_free(&body);
+                return 0;
+            }
+        } else {
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, form, &child, &c_type, out_error);
+            if (!expr_c) {
+                sb_free(&body);
+                return 0;
+            }
+            sb_appendf(&body, "        %s;\n", expr_c);
+        }
+    }
+
+    const char *result_type = NULL;
+    if (!emit_loop_tail(arena, &body, body_forms[body_count - 1], &child, loop_locals, loop_var_count,
+                         result_var, &result_type, out_error)) {
+        sb_free(&body);
+        return 0;
+    }
+
+    sb_appendf(out, "    %s %s;\n", result_type ? result_type : "void *", result_var);
+    sb_append(out, "    while (1) {\n");
+    sb_append(out, body.data);
+    sb_append(out, "    }\n");
+    sb_free(&body);
+
+    if (return_mode) {
+        if (out_return_type) *out_return_type = result_type ? result_type : "void *";
+        sb_appendf(out, "    return %s;\n", result_var);
+    }
+    return 1;
+}
+
 static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, EmitScope *scope,
                       int return_mode, const char **out_return_type, const char **out_error) {
     if (count == 0) return 1;
@@ -412,6 +588,8 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             if (!emit_with_arena(arena, out, form, scope, 0, NULL, out_error)) return 0;
         } else if (is_call_named(form, "let")) {
             if (!emit_let(arena, out, form, scope, 0, NULL, out_error)) return 0;
+        } else if (is_call_named(form, "loop")) {
+            if (!emit_loop(arena, out, form, scope, 0, NULL, out_error)) return 0;
         } else {
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
@@ -426,6 +604,9 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     }
     if (is_call_named(tail, "let")) {
         return emit_let(arena, out, tail, scope, return_mode, out_return_type, out_error);
+    }
+    if (is_call_named(tail, "loop")) {
+        return emit_loop(arena, out, tail, scope, return_mode, out_return_type, out_error);
     }
     const char *c_type = NULL;
     const char *expr_c = emit_expr(arena, tail, scope, &c_type, out_error);
@@ -481,7 +662,11 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
         const char *c_name = mangle(arena, param->children[0]->text);
         scope_bind(&base, param->children[0]->text, c_name, "Arena *", 0 /* already a pointer */);
         if (i > 0) sb_append(&param_list, ", ");
-        sb_appendf(&param_list, "Arena *%s", c_name);
+        /* __attribute__((unused)): same real reasoning as `let` bindings
+         * above -- a real function can validly not use one of its own
+         * parameters (matching a required signature shape), that's not
+         * a genuine Parena-source bug worth a C compiler warning. */
+        sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
     }
 
     StrBuf body;

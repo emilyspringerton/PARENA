@@ -82,20 +82,50 @@ int main(void) {
         arena_free_all(&arena);
     }
 
-    /* --- real, honest failure: a genuinely still-unsupported construct
-     * (loop/recur -- VS0's emitter has no iteration support yet) is
-     * reported, not silently mis-emitted. --- */
+    /* --- loop/recur now really works: the exact accumulator shape this
+     * whole stdlib's own real .prn source (vec.prn's push!/grow!,
+     * map.prn's find-slot, etc.) already uses -- promoted from the
+     * "unsupported" negative case to a real positive one. --- */
     {
         Arena arena;
         arena_init(&arena);
-        const char *src = "(defn weird [(a : Arena @ :region/buffer)] (loop [i 0] (recur (+ i 1))))";
+        const char *src =
+            "(defn compute-sum [(buf-arena : Arena @ :region/buffer)]\n"
+            "  (loop [i 0 acc 0]\n"
+            "    (if (>= i 10)\n"
+            "      acc\n"
+            "      (recur (+ i 1) (+ acc i)))))";
         const char *parse_err = NULL;
         Node *program = parse_program(&arena, src, strlen(src), &parse_err);
-        CHECK(program != NULL, "a loop/recur function parses fine (VS0 syntax is generic)");
+        CHECK(program != NULL, "a real loop/recur accumulator function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "loop/recur emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "while (1)") != NULL, "loop emits as a real C while(1)");
+            CHECK(strstr(c_src, "break;") != NULL, "the terminal branch emits a real break");
+            CHECK(strstr(c_src, "continue;") != NULL, "recur emits a real continue");
+            CHECK(strstr(c_src, "__recur_tmp_0") != NULL,
+                  "recur uses real temp variables (simultaneous assignment), not direct reassignment");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: `match` (VS0's emitter has no pattern-
+     * matching support yet) is reported, not silently mis-emitted. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn weird [(a : Arena @ :region/buffer)]\n"
+            "  (match a ((Some x) x) (None a)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match function parses fine (VS0 syntax is generic)");
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src == NULL && emit_err != NULL,
-              "emitting loop/recur (still genuinely unsupported) fails honestly, not silently");
+              "emitting match (still genuinely unsupported) fails honestly, not silently");
         arena_free_all(&arena);
     }
 
