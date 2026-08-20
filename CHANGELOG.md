@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 泛用 Arena @ Region 支援(參數+回傳型別)+ 新增 pentest stdlib(nmap/Wireshark/sqlmap+Nikto/Aircrack-ng/John the Ripper+Hashcat/Metasploit FFI 綁定,5/6 檔案完整編譯成功);CI 綠燈 (commit d5456d1) (sess-20260820-0649-a3f19d93)
 - 新增 defenum:真正的使用者自訂 tagged union(重用 Result/Option 的 {tag; void *value;} 形狀),讓 stdlib/editor/events.prn 完整編譯成功;CI 綠燈 (commit 4830d02) (sess-20260820-0649-a3f19d93)
 - editor_plugin.prn 進 examples/,新增真正的 Bazel target(genrule 產生 C + cc_library 真的編譯驗證,DoD 同一套旗標);CI 綠燈 (commit 90a8cfa) (sess-20260820-0649-a3f19d93)
 - (Fn [] ..) callback 泛化支援任意回傳型別 + 新增 cache stdlib(Russian doll nested caching,Rails 真實先例);CI 綠燈 (commit 24f82b3) (sess-20260820-0649-a3f19d93)
