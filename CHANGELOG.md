@@ -1,4 +1,5 @@
 ## 2026-08-20
+- emit.c 新增 &Type/&mut T 參考型別、(Vec T)、do/set!/deref 特殊形式、get-field 自動穿透參考;修掉 has_region_marker() 的真實既有 bug(任何 Type @ Region 都被誤判成 Arena *,不只 Arena 本身)+ ISO C99 void 函式 return 表達式的真實 gcc -pedantic bug;test_emit.c 95→121;firefly.prn 真的通過 Vec 欄位那關,推進到下一個已知、獨立的 gap (sess-20260820-0649-a3f19d93)
 - STDLIB.md 新增 container/docker 設計(Docker Engine API,搭在 net/http 之上),明確連結到 Emily OS backlog(S189-56d)當作實際部署 workload 的容器後端 (sess-20260820-0649-a3f19d93)
 - STDLIB.md 新增 container/lxc + container/cgroup 設計(LXC 生命週期 + cgroups v2 真實檔案系統介面),回應 Moltbook/OpenClaw hardening 討論;順手修正 firefly/gomega 改名後遺留的過期命名 (sess-20260820-0649-a3f19d93)
 - 改名 firefly/gomega → firefly/ladybug(甲蟲命名慣例,呼應 firefly/scarab;gomega.prn 保留為 back-compat alias,exported API 不變,scarab.prn 的 import 已跟進改用新名);查證 firefly/ladybug/scarab 三檔各自仍卡在既有已知 gap(&Any 參考型別、回傳型別、multi-field defenum payload),額外發現 VS0 emitter 目前尚無 module/import/export 真實連結機制 (sess-20260820-0649-a3f19d93)
