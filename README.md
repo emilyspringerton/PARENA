@@ -11,26 +11,42 @@ manual free), linear ownership for native resources, multiple compilation target
 JVM/TypeScript/WebAssembly). Ships its own editor/plugin API as a first-class part of the design.
 Full design: `NORTHSTAR.md`. Full standard-library design: `STDLIB.md`.
 
-**Status:** VS0 (the `parena-c` compiler) has a working lexer/parser (domain 1 of 5) — `parena
-parse file.prn` is real and works. The region analyzer, C emitter, and memory verification
-(domains 2-4) don't exist yet; `parena build` says so rather than pretending. See
-`EMILY/BACKLOG.md` S189-13 for the live status.
+**Status (2026-08-20): all 5 VS0 DoD domains are complete** — lexer/parser, region analyzer, C
+emitter, memory verification (ASan/UBSan/real Valgrind), and the CLI runner (`parena parse` /
+`parena analyze` / `parena build file.prn -o out.c`) all real, all CI-verified. This is a closed
+milestone for VS0 *itself* — it does not mean the mod-surface stdlib is finished; that's real,
+separate, ongoing work tracked below and in `STDLIB.md`/`EMILY/BACKLOG.md`. The emitter has grown
+well past the original spec-grounded minimum since VS0 closed: `defenum`/`defstruct` (real
+user-defined tagged unions and structs), generic `Arena @ Region` params/returns, `Bool`/`F64`,
+`(Vec T)` (a real, working, arena-allocated dynamic array — `vec/new`/`vec/push!`/`vec/get`/
+`vec/len`), `&Type`/`&mut Type` reference parameters/fields/returns plus `deref`, `do`, and `set!`
+— each landed by actually compiling real `.prn` files (not synthetic snippets) and their emitted C
+with `gcc -Wall -Wextra -pedantic -Werror`, not just trusting `parena build`'s own exit code.
 
-The `stdlib/` directory holds real, `parena parse`-verified `.prn` source for the packages below,
-in the dependency order given here — it is not compilable/runnable yet, since that needs domains
-2-3. "Built out in Parena" currently means *real, parseable Parena source exists*, not *the
-standard library is executable*. See `STDLIB.md`'s own "Dependency order" section for the full
-build-order rationale and the "Priority order" section for what's getting attention first.
+The `stdlib/` directory holds real `.prn` source for the packages below, in the dependency order
+given here. Most files parse and region-analyze cleanly; how far each one gets through the C
+emitter varies by package — some compile completely end to end (`gfd.prn`, `csv.prn`'s pure-PARENA
+portions), others are blocked on real, specific, itemized gaps (see `STDLIB.md`'s own gap-analysis
+sections) rather than a blanket "not implemented yet." "Built out in Parena" means *real Parena
+source exists*, checked per-file against the current compiler — not a claim that the whole
+standard library links and runs.
 
-**Real source exists today** (`stdlib/`, all `parena parse`-verified) for: `vec`, `map`, `string`,
-`log`, `buffer`, `io`, `thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg`
-(matmul/transpose/dot; inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/
-filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`,
-`regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
-`regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`, `editor/plugin`, `editor/buffer`, `editor/events`,
-`editor/ui`, `ringo`, `world`, `mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`,
-`crypto/ed25519`, `gfd/browser`, `firefly`, `firefly/gomega`, `scarab`. Every other package in the tables below is designed in `STDLIB.md`
-but has no `.prn` file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`).
+**Real source exists today** (`stdlib/`) for: `vec`, `map`, `string`, `log`, `buffer`, `io`,
+`thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg` (matmul/transpose/dot;
+inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/filter/group-by deferred),
+`nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`, `regex/nfa` (signatures
+only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`, `regex/glob`, `expr`,
+`grep`, `sed`, `awk`, `gfd` (compiles completely, zero warnings), `csv` (the LONGMA port —
+`split`/`generate`, pure PARENA except the real file-I/O gap every stdlib package still shares),
+`editor/plugin`, `editor/buffer`, `editor/events`, `editor/ui`, `ringo`, `world`,
+`mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`, `crypto/ed25519`,
+`gfd/browser`, `pentest/{scan,pcap,webapp,wireless,crack,exploit}` (5 of 6 compile clean; `pcap`
+blocked on a reference-typed parameter), `firefly`, `firefly/ladybug` (renamed from
+`firefly/gomega` — see the Testing section below), `firefly/gomega` (kept as a back-compat alias),
+`scarab`. Every other package in the tables below is designed in `STDLIB.md` but has no `.prn`
+file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`, `container/*` —
+LXC/cgroups/Docker, designed for the Moltbook/OpenClaw hardening + Emily OS threads, blocked on the
+shared file-I/O gap before real `.prn` source is worth writing).
 
 ## Standard library — full planned API surface
 
@@ -122,8 +138,15 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | Package | Purpose |
 |---|---|
 | `firefly` | The base testing library — Go `testing.T`-shaped (`errorf`/`fatalf`/`skip`/`run-tests`). Beetle-named: fireflies are real beetles (Lampyridae) |
-| `firefly/gomega` | The matcher-chain library — `expect(x).to(equal(y))`, real Gomega shape |
+| `firefly/ladybug` | The matcher-chain library — `expect(x).to(equal(y))`, real Gomega shape. Renamed from `firefly/gomega` (that broke the beetle-naming convention — Gomega is Go's own library name, not a beetle; ladybugs are real beetles, and a direct "finds bugs" pun) |
+| `firefly/gomega` | Kept as a back-compat alias of `firefly/ladybug` — exported API unchanged, delegates straight through |
 | `scarab` | BDD + test runner, the real Ginkgo shape — `describe`/`context`/`it`/`before-each`/`after-each`/`run-suite`. Beetle-named for the real scarab cycle/renewal association |
+
+This whole framework is also published as its own standalone repo,
+[`github.com/emilyspringerton/ladybug`](https://github.com/emilyspringerton/ladybug) — EINHORN_INDUSTRIAL's
+official BDD framework, the same way Ginkgo/Gomega are their own repos rather than bundled into Go
+itself. That repo's own CI verifies domains 1+2 (parse/region-analyze) on all four files today;
+`STDLIB.md`'s own gap list names exactly what's still blocking a full `parena build` there.
 
 `stdlib/tests/` holds real `.prn` test files written *using* `firefly`, dogfooding it against the
 stdlib itself — `vec_test.prn`, `map_test.prn`, `world_test.prn` so far.
