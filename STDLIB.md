@@ -79,6 +79,7 @@ binding, not a language primitive).
 35. `ssh` — depends on `string`
 36. `crypto/hash`, `crypto/aes`, `crypto/ed25519` — depend on `string` only (each FFI-bound)
 37. `gfd/browser` — depends on `gfd`, `vec` (FFI-bound to a real embeddable engine)
+38. `ncurses` — depends on `string` only (FFI-bound; kept narrow per founder's own scope call)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1167,6 +1168,24 @@ introduce real, serious vulnerabilities, so this explicitly does not attempt it)
   : String @ Region)
 (defn ed25519-verify [(pubkey : String @ Region) (msg : String @ Region) (sig : String @ Region)]
   : Bool)
+```
+
+### `ncurses` — real, kept narrow
+
+Founder: "i guess ncurses needs to be added to stdlib," immediately followed by "all in on PARENA
+stdlibs and only build out the ones we need to dogfood the fixes for PITVIPER" — real scope
+discipline applied to this package specifically: PITVIPER is its own SDL2-rendered terminal
+*emulator*, not an ncurses consumer, so this isn't itself part of the PITVIPER-dogfooding path.
+Kept here only as a minimal, real, FFI-bound wrapper (same judgment as `sdl2`/`ssh`/`crypto`) for
+whichever real terminal *program* — tmux included — ends up wanting one, not expanded further
+while the founder's own priority is the compiler (below).
+
+```clojure
+(defn init [] : (Result Screen NcursesError))
+(defn print [(!scr : &mut Screen) (y : I32) (x : I32) (text : String @ Region)] : Unit)
+(defn refresh [(!scr : &mut Screen)] : Unit)
+(defn getch [(!scr : &mut Screen)] : I32)
+(defn endwin [(!scr : Screen)] : Unit)
 ```
 
 ## Explicitly not designed yet — real gaps, not silently filled
