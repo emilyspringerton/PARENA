@@ -1,4 +1,5 @@
 ## 2026-08-20
+- 重大里程碑：parena build 支援多檔案編譯（parena build a.prn b.prn -o out.c），真正把多個 .prn 檔案的頂層形式合併成同一個編譯單元——這正是這整個 session 一直撞到的 ladybug/scarab 模組連結缺口的真正、架構層級解法。真實驗證：多檔一起編譯出真正 gcc 乾淨的 C，同一個檔案單獨編譯依然誠實失敗（證明不是巧合）。新增 run_multifile_check.sh 整合測試，接進 Makefile 跟 CI。順手發現的新缺口：firefly.prn+ladybug.prn 一起編譯後推進到匿名函式/closure（(fn [args] body)）這個全新、獨立、還沒開始的缺口 (sess-20260820-0649-a3f19d93)
 - 多欄位 defenum variant payload——scarab.prn 的 SuiteNode 真的能過這關了，往前推進到跟另外兩個 ladybug 檔案一樣的同一個既有模組連結缺口 (sess-20260820-0649-a3f19d93)
 - 里程碑:firefly.prn(ladybug BDD 框架的地基)真的通過真正 gcc -Wall -Wextra -pedantic -Werror 編譯——這一輪額外抓到並修好五個真實 bug(呼叫一等函式值、defstruct 的 Fn 欄位語法接錯位置、emit_call 對已知函式回傳型別的猜測蓋掉了正確答案、deref 少轉型導致對 void* 直接解參考、sb_appendf 固定 1024 bytes 緩衝區默默截斷過長的函式本體),外加補上 g_vec_elem_hints(Vec 元素型別追蹤)跟真正的 string_concat runtime 實作 (sess-20260820-0649-a3f19d93)
 - map-literal struct construction(STDLIB.md 缺口 #2)+ let/do 在 loop tail position 的真實結構性 bug 修復,firefly.prn 的 run-tests 又推進一步,現在卡在更深的 Vec 元素型別遺失問題(deref (vec/get ...) 拿不到真正的 TestCase 型別,只剩 void) (sess-20260820-0649-a3f19d93)
