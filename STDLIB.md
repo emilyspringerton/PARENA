@@ -1222,7 +1222,16 @@ while the founder's own priority is the compiler (below).
 (defn endwin [(!scr : Screen)] : Unit)
 ```
 
-### `firefly` / `firefly/gomega` / `scarab` — testing, Go's package + Ginkgo/Gomega on top, beetle-named
+### `firefly` / `firefly/ladybug` / `scarab` — testing, Go's package + Ginkgo/Gomega on top, beetle-named
+
+**2026-08-20 update**: `firefly/gomega` renamed to `firefly/ladybug` — "gomega" broke this very
+section's own beetle-naming convention (it's Go's own library name, not a beetle); ladybugs
+(*Coccinellidae*) are real beetles and a direct pun (a *ladybug*-family matcher library is the
+thing that finds *bugs*). `firefly/gomega` is kept as a back-compat alias with its exported API
+unchanged. The whole framework has also been published as its own standalone repo,
+`github.com/emilyspringerton/ladybug` (golden-indexed `LADYBUG-NORTH`), the same way Ginkgo and
+Gomega are separate repos from the Go toolchain — this section stays the design source of truth,
+that repo is the publish target.
 
 Founder: "add testing to the stdlib" → "like the go testing module" → "and then build bdd ginkgo
 style affordances on top" → "or in addition however that works" → "ginkgo and gomega" → "whatever
@@ -1710,6 +1719,64 @@ substrate (`thread`'s pthreads, `sql/driver`'s real driver). `(Vec String)`/`(Fn
 parameters above are real VS0 gaps too (collections-as-parameters, and callback parameters with a
 non-`Unit` return) — not glossed over, this doc's own job is to describe the target shape even
 where the compiler doesn't reach it yet.
+
+### `container/lxc` / `container/cgroup` — LXC + cgroups v2, real isolation primitives
+
+Founder, real-time (from the Moltbook/OpenClaw hardening thread — `docs/NORTHSTAR_MOLTBOOK_
+INTEGRATION.md` §4's "dedicated, non-privileged OS user/container" requirement): "we probably need
+to bring in a round of hardening first" → "LXC primatives" → "container primatives" → "chgroups"
+→ "built into the standard library" → "cli first" → "plan the stdlib deps" → "then march onward".
+Planning pass only, per the founder's own "plan the stdlib deps" — not yet implemented.
+
+Two real, separate, layerable primitives, not one blob:
+
+**`container/lxc`** — high-level container lifecycle, FFI-bound to real `liblxc`
+(`lxc/lxccontainer.h`, the same C API `lxc-create`/`lxc-start`/`lxc-stop` shell out to), matching
+this doc's own established FFI-binding pattern (`sdl2`, `media/audio`, `pentest/*`, `git` above —
+`#target` inline-C declares the real host symbols, this doc doesn't pretend a pure-PARENA
+reimplementation of LXC itself):
+
+```clojure
+(defn create   [(name : String @ :region/scratch) (template : String @ :region/scratch)] : (Result Container LxcError) @ Region)
+(defn start    [(!c : &mut Container)] : (Result Unit LxcError))
+(defn stop     [(!c : &mut Container)] : (Result Unit LxcError))
+(defn destroy  [(!c : &mut Container)] : (Result Unit LxcError))
+(defn set-config [(!c : &mut Container) (key : String @ :region/scratch) (value : String @ :region/scratch)] : (Result Unit LxcError))
+(defn running? [(c : &Container)] : Bool)
+```
+
+**`container/cgroup`** — real cgroups v2, direct filesystem interface (no liblxc dependency —
+useful standalone for anything that just needs its *own* process resource-limited, like an
+OpenClaw daemon, without a full container). Cgroups v2's real interface is a hierarchy of plain
+files under `/sys/fs/cgroup/<name>/` — `cgroup.procs` (write a PID to join), `memory.max`,
+`cpu.max`, `pids.max`, `memory.current` (read-only, for monitoring). This is real file I/O, so it
+rides directly on the `io` package's `open`/`read`/`write` calls already designed above — not a
+new I/O mechanism:
+
+```clojure
+(defn create-group  [(dest : Arena @ Region) (name : String @ :region/scratch)] : (Result CGroup LxcError) @ Region)
+(defn set-memory-max [(!g : &mut CGroup) (bytes : I32)] : (Result Unit LxcError))   ; writes memory.max
+(defn set-pids-max   [(!g : &mut CGroup) (max : I32)] : (Result Unit LxcError))     ; writes pids.max
+(defn add-process    [(!g : &mut CGroup) (pid : I32)] : (Result Unit LxcError))     ; writes cgroup.procs
+(defn current-memory [(g : &CGroup)] : (Result I32 LxcError))                       ; reads memory.current
+```
+
+Real, honest limitation, not glossed over: **both packages are currently blocked on the same
+pre-existing gap already named elsewhere in this doc — VS0's C emitter has no working file-I/O
+primitives yet** (the same caveat `csv.prn`'s own header carries: file I/O today only exists as
+`#target` inline-C escape hatches, not real PARENA-native calls the region analyzer can reason
+about). `container/cgroup` needs real file I/O by definition (writing `memory.max`, reading
+`memory.current`); `container/lxc` needs a working FFI-call mechanism for non-`#target` scoped
+calls into `liblxc`'s real C API surface (VS0's existing `#target` pattern *can* express this today
+the same way `sdl2`/`pentest/*` already do — the harder ask isn't calling into `liblxc`, it's the
+uid/gid/namespace privilege boundary itself, which is an OS-level concern, not a compiler one).
+Nothing here needs a new compiler feature beyond what `io`/`#target` already cover once `io` itself
+is real — this is a design-complete, implementation-blocked-on-`io` package, not a new gap.
+
+Not designed here, flagged for later: raw namespace primitives (`clone`/`unshare` with
+`CLONE_NEWPID`/`CLONE_NEWNET`/`CLONE_NEWUSER`/etc.) below LXC's own abstraction — LXC's own real C
+API already wraps this, and nothing in the OpenClaw/Moltbook hardening ask needs going lower than
+LXC's own container abstraction.
 
 ## VS0 compiler gaps blocking `mapbuilder/tools.prn` + `world.prn` — real, tested, itemized (2026-08-20)
 
