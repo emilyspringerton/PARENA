@@ -972,6 +972,98 @@ layout (axis scaling, tick placement, label text rendering) is real, non-trivial
 these are the real function signatures a plotting program calls, not a claim that the layout math
 is solved here.
 
+### `mapbuilder/tools` / `mapbuilder/layout` / `mapbuilder/template` / `world` — visual builder affordances
+
+Founder: "can we build map builder affordances into the stdlib if thats a thing?" → resolved via
+AskUserQuestion to a level/world map editor (not a `map`-the-dictionary builder pattern) → "like
+maybe that s not stdlib i dunno" → clarified twice more: "like the actual affordances of how the
+actual editor interface gets build and the affordances that editor gives to the user" → "like
+whatever android has as an equivalent or the objective c whatever the iphone auto templating
+stuff" → "to make it easy to design interfaces for both pc and mobile." Three real, distinct
+affordance categories, each grounded in existing real code rather than invented:
+
+**`mapbuilder/tools`** — click/drag/select/undo, the literal interaction primitives, grounded
+directly in PITVIPER's own real mouse-drag-selection code shipped this session
+(`cmd/pitviper/main.go`'s `selection` struct with `startRow`/`startCol`/`endRow`/`endCol`,
+`pixelToCell`, and the `lastSelected` clipboard buffer) — generalized from text-cell selection to
+arbitrary placeable-object selection:
+
+```clojure
+(defenum Tool (Place) (Paint) (Select) (Erase))
+
+(defn pixel-to-cell [(x : I32) (y : I32) (cell-size : I32)] : (I32 I32))   ; direct generalization
+                                                                              ; of PITVIPER's own fn
+(defn begin-drag [(tool : Tool) (x : I32) (y : I32)] : DragState)
+(defn update-drag [(!drag : &mut DragState) (x : I32) (y : I32)] : Unit)
+(defn end-drag [(!drag : DragState) (canvas : &mut Canvas)] : (Vec PlacedObject) @ Region)
+
+(defn undo [(!canvas : &mut Canvas)] : (Result Unit HistoryError))   ; real command-pattern stack
+(defn redo [(!canvas : &mut Canvas)] : (Result Unit HistoryError))
+(defn copy-selection [(canvas : &Canvas) (sel : &(I32 I32 I32 I32)) (dest : Arena @ Region)]
+  : (Vec PlacedObject) @ Region)   ; the lastSelected-buffer idea, generalized past text
+```
+
+**`mapbuilder/layout`** — the real "android/iOS auto templating stuff" ask: constraint-based
+auto-layout, the actual reason those two platforms use constraints instead of raw pixel
+coordinates — one layout definition has to resolve correctly across many real screen sizes (PC
+window resize, phone portrait/landscape). Grounded in the real, well-known ConstraintLayout/Auto
+Layout model (align-to, pin-to-edge, aspect-ratio, chains), not invented terminology:
+
+```clojure
+(defenum Constraint
+  (AlignTo    (target : ViewId) (edge : Edge))
+  (PinToEdge  (edge : Edge) (margin : I32))
+  (AspectRatio (ratio : F64))
+  (Chain      (members : (Vec ViewId) @ Region) (direction : ChainDirection)))
+
+(defn add-constraint [(!layout : &mut Layout) (view : ViewId) (c : Constraint)] : Unit)
+(defn solve [(layout : &Layout) (viewport-w : I32) (viewport-h : I32) (dest : Arena @ Region)]
+  : (Map ViewId (I32 I32 I32 I32)) @ Region)   ; ViewId -> resolved (x y w h), one solve per resize
+```
+
+Real, honest limitation: the actual constraint-solving algorithm (Cassowary, the same
+linear-arithmetic constraint solver both Auto Layout and ConstraintLayout are built on) is real,
+separate, well-documented-elsewhere work — `solve`'s signature is real, its body isn't attempted
+here.
+
+**`mapbuilder/template`** — named prefab/scene instantiation, grounded directly in
+GoblinFoxDragon's own real, already-shipped per-scene procedural generators
+(`server/worldapi/scenes.go`'s `meadowChunk`/`hillsChunk`/`cavesChunk`/`swampChunk`/`urbanChunk`,
+each a real named function generating a chunk's content) — a "template" here is exactly that
+pattern, generalized into a registry instead of one hardcoded Go switch:
+
+```clojure
+(defn register-template [(name : String @ :region/scratch) (generator : (Fn [TemplateParams Arena] (Vec PlacedObject)))]
+  : Unit)
+(defn instantiate [(name : String @ :region/scratch) (params : TemplateParams) (dest : Arena @ Region)]
+  : (Result (Vec PlacedObject) TemplateError) @ Region)
+```
+
+**`world`** — the underlying data model these tools place objects onto, grounded in real,
+already-shipped structs rather than invented: SHANKPIT's own `packages/world/terrain.h`
+(`TerrainHeightfield{width, height, cell_size, origin_x, origin_z, float *heights}`,
+`terrain_set_height`/`terrain_get_height`/`terrain_sample_height`) and `packages/common/block_map.h`
+(`block_map_entry_t{name, block_id}`), plus GoblinFoxDragon's `server/worldapi/dragonfly_gen.go`
+(`WorldBlock{X, Y, Z int; BlockName string}`) and `heightmap.go`'s `HeightmapChunk`/`ColumnHeight`.
+`mapbuilder/tools`' own `Canvas`/`PlacedObject` types are built on this, not a separate world
+model per game:
+
+```clojure
+(defstruct Terrain (heights : (Vec F64) @ Region) (width : I32) (height : I32) (cell-size : F64))
+(defn set-height [(!t : &mut Terrain) (x : I32) (z : I32) (h : F64)] : Unit)
+(defn get-height [(t : &Terrain) (x : I32) (z : I32)] : F64)
+
+(defstruct PlacedObject (block-name : String @ Region) (x : I32) (y : I32) (z : I32))
+```
+
+**Founder's own hedge stands, restated honestly**: "maybe that s not stdlib i dunno" is a real,
+open question this design doesn't resolve either way — `mapbuilder/tools`/`layout`/`template` are
+designed here as stdlib packages (matching `editor/*`'s own precedent: interaction primitives a
+program imports), but whether the actual visual builder *application* (the equivalent of Android
+Studio's Layout Editor or Xcode's Interface Builder, as a standalone tool) belongs in this repo at
+all, versus being its own separate application built on these primitives (same distinction already
+drawn for MIXFORGE and the editor shell), is not decided by this pass.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - ~~**Collections beyond `Vec`/`Map` literals**~~ — resolved above (`vec`/`map` packages), once
