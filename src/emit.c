@@ -920,21 +920,42 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             return 0;
         }
         const char *region_kw = find_keyword_child(param);
-        if (!region_kw) {
-            fail(arena, out_error, "defn: parameter '%s' has no region annotation (VS0 only supports "
-                                    "`Arena @ :region/x` parameters so far)",
+        const char *c_name = mangle(arena, param->children[0]->text);
+        if (i > 0) sb_append(&param_list, ", ");
+        if (region_kw) {
+            scope_bind(&base, param->children[0]->text, c_name, "Arena *", 0 /* already a pointer */);
+            /* __attribute__((unused)): same real reasoning as `let` bindings
+             * above -- a real function can validly not use one of its own
+             * parameters (matching a required signature shape), that's not
+             * a genuine Parena-source bug worth a C compiler warning. */
+            sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
+        } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL &&
+                   (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "String"))) {
+            /* A plain, non-region-annotated `I32`/`String` parameter -- the
+             * real shape stdlib/editor's own mod-surface files actually use
+             * for things like a gutter line number or an x/y pixel
+             * coordinate (editor/ui.prn's set-gutter-marker/show-popup),
+             * where there's genuinely no arena/region involved at all.
+             * Bound as a plain C value, not an `Arena *` -- real, narrower
+             * scope than the `Arena @ :region/x` path above, not a general
+             * type system (a param typed `Arena @ Region` with a bare,
+             * non-keyword region variable, or any other custom named type
+             * like `DiagnosticSeverity`, still falls through to the honest
+             * failure below -- VS0 has no generic region parameters or
+             * user-defined enums yet). */
+            const char *c_type = is_symbol(param->children[2], "I32") ? "int" : "char *";
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else {
+            fail(arena, out_error,
+                 "defn: parameter '%s' has no region annotation and isn't a plain I32/String "
+                 "either (VS0 only supports `Arena @ :region/x`, `I32`, and `String` parameters "
+                 "so far)",
                  param->children[0]->text);
             sb_free(&param_list);
             return 0;
         }
-        const char *c_name = mangle(arena, param->children[0]->text);
-        scope_bind(&base, param->children[0]->text, c_name, "Arena *", 0 /* already a pointer */);
-        if (i > 0) sb_append(&param_list, ", ");
-        /* __attribute__((unused)): same real reasoning as `let` bindings
-         * above -- a real function can validly not use one of its own
-         * parameters (matching a required signature shape), that's not
-         * a genuine Parena-source bug worth a C compiler warning. */
-        sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
     }
 
     size_t body_start = 3;

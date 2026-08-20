@@ -218,6 +218,51 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- plain I32/String parameters (no Arena @ :region/x annotation)
+     * now really work: the real shape stdlib/editor/ui.prn's own
+     * set-gutter-marker/show-popup use for a line number or x/y pixel
+     * coordinate, where there's genuinely no arena involved. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn set-gutter-marker [(line : I32) (glyph : String @ :region/scratch)]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"host_set_gutter_marker(line, glyph);\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a mixed I32/Arena-param function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "a plain I32 parameter emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "int line __attribute__((unused))") != NULL,
+                  "the I32 parameter becomes a real plain C int, not Arena *");
+            CHECK(strstr(c_src, "Arena *glyph __attribute__((unused))") != NULL,
+                  "the region-annotated String parameter still becomes Arena *, unaffected");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: a parameter with neither a region
+     * annotation nor a recognized plain I32/String type (a custom named
+     * type like DiagnosticSeverity, or a bare, non-keyword region
+     * variable) is reported, not silently guessed at. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn weird [(severity : DiagnosticSeverity)]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"x();\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a function with a custom-typed parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "a parameter with an unrecognized custom type (still genuinely unsupported) fails honestly");
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure: referencing an unbound identifier is
      * reported, not silently emitted as a dangling C reference. --- */
     {
