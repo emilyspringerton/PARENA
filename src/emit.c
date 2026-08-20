@@ -305,6 +305,13 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = "double"; /* VS0 has no int-vs-float distinction yet -- a real, honest simplification */
         return expr->text;
     }
+    /* None -- the one real Result/Option constructor with no payload,
+     * checked before the generic symbol-lookup path since it's a real
+     * core-language value, not a local variable reference. */
+    if (is_symbol(expr, "None")) {
+        *out_type = "Option";
+        return "option_none()";
+    }
     if (expr->type == NODE_SYMBOL) {
         Local *b = scope_lookup(scope, expr->text);
         if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text, expr->line);
@@ -316,6 +323,48 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     }
     if (is_call_named(expr, "if")) {
         return emit_if(arena, expr, scope, out_type, out_error);
+    }
+    /* Ok/Err/Some -- the real, payload-carrying Result/Option
+     * constructors, matching NORTHSTAR's own "Zero-allocation pattern
+     * matching" section's own Ok/Err/Some/None naming. Real, honest
+     * limitation: the payload is emitted as-is and stored in the real
+     * runtime's `void *value` field, an implicit pointer conversion the
+     * C compiler allows but doesn't type-check against what `match`
+     * later assumes it is -- the same real gap already flagged for
+     * emit_call's own cross-function return types. */
+    if (is_call_named(expr, "Ok") || is_call_named(expr, "Err") ||
+        is_call_named(expr, "Some")) {
+        if (expr->child_count != 2) {
+            return fail(arena, out_error, "%s: expects exactly one argument at line %d",
+                        expr->children[0]->text, expr->line);
+        }
+        const char *inner_type = NULL;
+        const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
+        if (!inner_c) return NULL;
+        /* Real, honest limitation: the runtime's own Result/Option store
+         * their payload as `void *value` (see parena_runtime.h's own
+         * comment) -- a non-pointer payload (e.g. a bare `double`) can't
+         * implicitly convert to void* in real C, so this is reported
+         * rather than emitting C that fails to compile downstream with a
+         * much more confusing error at the *emitted-C* compile step. */
+        if (!inner_type || inner_type[strlen(inner_type) - 1] != '*') {
+            return fail(arena, out_error,
+                        "%s: VS0's emitter only supports pointer-typed payloads so far (got type "
+                        "'%s' at line %d)",
+                        expr->children[0]->text, inner_type ? inner_type : "?", expr->line);
+        }
+        char buf[512];
+        if (is_symbol(expr->children[0], "Ok")) {
+            *out_type = "Result";
+            snprintf(buf, sizeof(buf), "result_ok(%s)", inner_c);
+        } else if (is_symbol(expr->children[0], "Err")) {
+            *out_type = "Result";
+            snprintf(buf, sizeof(buf), "result_err(%s)", inner_c);
+        } else {
+            *out_type = "Option";
+            snprintf(buf, sizeof(buf), "option_some(%s)", inner_c);
+        }
+        return arena_strdup(arena, buf, strlen(buf));
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
@@ -578,6 +627,128 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
     return 1;
 }
 
+/* emit_match handles `(match scrutinee-expr (pattern body) (pattern
+ * body) ...)` -- real, honest scope: only the two real built-in tagged
+ * unions NORTHSTAR.md's own "Zero-allocation pattern matching" section
+ * names (`Result`/`Option`, via their real `Ok`/`Err`/`Some`/`None`
+ * constructors), not a general N-variant `defenum` matcher (`defenum`
+ * itself has no emission at all yet). Each clause's own pattern is
+ * either `(Ctor binding)` or a bare symbol (`None`, or `_` as a real
+ * wildcard); each clause body is exactly one expression -- real,
+ * deliberately narrower than emit_body's own full with-arena/let/loop
+ * support, the same scoping judgment `emit_if`'s own ternary-only,
+ * expression-position-only design already made. */
+static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
+                       const char **out_return_type, const char **out_error) {
+    if (node->child_count < 3) {
+        return fail(arena, out_error, "match: expected (match scrutinee clause...) at line %d",
+                    node->line) != NULL;
+    }
+    const char *scrut_type = NULL;
+    const char *scrut_c = emit_expr(arena, node->children[1], scope, &scrut_type, out_error);
+    if (!scrut_c) return 0;
+    if (!scrut_type || (strcmp(scrut_type, "Result") != 0 && strcmp(scrut_type, "Option") != 0)) {
+        return fail(arena, out_error,
+                    "match: VS0's emitter only understands matching a Result or Option at line %d "
+                    "(scrutinee's own type resolved to '%s')",
+                    node->line, scrut_type ? scrut_type : "?") != NULL;
+    }
+
+    static int match_counter = 0;
+    int id = match_counter++;
+    char tmp_var[64], result_var[64];
+    snprintf(tmp_var, sizeof(tmp_var), "__match_tmp_%d", id);
+    snprintf(result_var, sizeof(result_var), "__match_result_%d", id);
+
+    sb_appendf(out, "    %s %s = %s;\n", scrut_type, tmp_var, scrut_c);
+
+    StrBuf clauses;
+    sb_init(&clauses);
+    const char *result_type = NULL;
+    int first = 1;
+    for (size_t i = 2; i < node->child_count; i++) {
+        Node *clause = node->children[i];
+        if (clause->type != NODE_LIST || clause->child_count != 2) {
+            sb_free(&clauses);
+            return fail(arena, out_error,
+                        "match: VS0's emitter only supports a single-expression clause body, "
+                        "(pattern expr), at line %d",
+                        node->line) != NULL;
+        }
+        Node *pattern = clause->children[0];
+        const char *ctor_name = NULL;
+        Node *bind_node = NULL;
+        if (pattern->type == NODE_LIST && pattern->child_count >= 1 &&
+            pattern->children[0]->type == NODE_SYMBOL) {
+            ctor_name = pattern->children[0]->text;
+            if (pattern->child_count >= 2 && pattern->children[1]->type == NODE_SYMBOL) {
+                bind_node = pattern->children[1];
+            }
+        } else if (pattern->type == NODE_SYMBOL) {
+            ctor_name = pattern->text;
+        } else {
+            sb_free(&clauses);
+            return fail(arena, out_error, "match: unsupported pattern shape at line %d", node->line) != NULL;
+        }
+
+        int tag_value;
+        int is_wildcard = strcmp(ctor_name, "_") == 0;
+        if (strcmp(ctor_name, "Ok") == 0 || strcmp(ctor_name, "Some") == 0) {
+            tag_value = 1;
+        } else if (strcmp(ctor_name, "Err") == 0 || strcmp(ctor_name, "None") == 0) {
+            tag_value = 0;
+        } else if (is_wildcard) {
+            tag_value = -1;
+        } else {
+            sb_free(&clauses);
+            return fail(arena, out_error,
+                        "match: VS0's emitter only understands Ok/Err/Some/None/_ patterns so far "
+                        "(got '%s' at line %d)",
+                        ctor_name, node->line) != NULL;
+        }
+
+        if (is_wildcard) {
+            sb_appendf(&clauses, "    %s (1) {\n", first ? "if" : "else if");
+        } else {
+            sb_appendf(&clauses, "    %s (%s.tag == %d) {\n", first ? "if" : "else if", tmp_var, tag_value);
+        }
+        first = 0;
+
+        EmitScope clause_scope;
+        scope_init(&clause_scope, scope);
+        if (bind_node) {
+            const char *c_name = mangle(arena, bind_node->text);
+            /* __attribute__((unused)): same real reasoning as `let`
+             * bindings and function parameters above -- a real match
+             * clause can validly ignore its own bound payload (e.g. an
+             * Err arm that doesn't need the error value), not a genuine
+             * Parena-source bug. */
+            sb_appendf(&clauses, "        void *%s __attribute__((unused)) = %s.value;\n", c_name, tmp_var);
+            scope_bind(&clause_scope, bind_node->text, c_name, "void *", 0);
+        }
+
+        const char *clause_type = NULL;
+        const char *clause_c = emit_expr(arena, clause->children[1], &clause_scope, &clause_type, out_error);
+        if (!clause_c) {
+            sb_free(&clauses);
+            return 0;
+        }
+        sb_appendf(&clauses, "        %s = %s;\n", result_var, clause_c);
+        if (!result_type) result_type = clause_type;
+        sb_append(&clauses, "    }\n");
+    }
+
+    sb_appendf(out, "    %s %s;\n", result_type ? result_type : "void *", result_var);
+    sb_append(out, clauses.data);
+    sb_free(&clauses);
+
+    if (return_mode) {
+        if (out_return_type) *out_return_type = result_type ? result_type : "void *";
+        sb_appendf(out, "    return %s;\n", result_var);
+    }
+    return 1;
+}
+
 static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, EmitScope *scope,
                       int return_mode, const char **out_return_type, const char **out_error) {
     if (count == 0) return 1;
@@ -590,6 +761,8 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             if (!emit_let(arena, out, form, scope, 0, NULL, out_error)) return 0;
         } else if (is_call_named(form, "loop")) {
             if (!emit_loop(arena, out, form, scope, 0, NULL, out_error)) return 0;
+        } else if (is_call_named(form, "match")) {
+            if (!emit_match(arena, out, form, scope, 0, NULL, out_error)) return 0;
         } else {
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
@@ -607,6 +780,9 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     }
     if (is_call_named(tail, "loop")) {
         return emit_loop(arena, out, tail, scope, return_mode, out_return_type, out_error);
+    }
+    if (is_call_named(tail, "match")) {
+        return emit_match(arena, out, tail, scope, return_mode, out_return_type, out_error);
     }
     const char *c_type = NULL;
     const char *expr_c = emit_expr(arena, tail, scope, &c_type, out_error);

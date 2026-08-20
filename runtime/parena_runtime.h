@@ -38,4 +38,49 @@ char *arena_strdup(Arena *a, const char *src, size_t len);
  * when its region ends"). */
 void arena_free_all(Arena *a);
 
+/* Result/Option — the real C representation VS0's own `match` emission
+ * targets. NORTHSTAR.md's own "Zero-allocation pattern matching" section
+ * names `Option T`/`Result T E` as core, `match`-destructured tagged
+ * unions -- this is their real C shape: `tag` distinguishes Ok/Some
+ * (1) from Err/None (0), `value` carries the payload as `void *`. Real,
+ * honest limitation: one shared `void *value` field for both variants
+ * (rather than a real, separately-typed union) is a genuine loss of
+ * C-level type safety, matching VS0's own already-stated "no function-
+ * signature table / full type-checking pass yet" gap elsewhere in this
+ * emitter -- not pretended solved here either. */
+typedef struct {
+    int tag; /* 1 = Ok, 0 = Err */
+    void *value;
+} Result;
+
+typedef struct {
+    int tag; /* 1 = Some, 0 = None */
+    void *value;
+} Option;
+
+static inline Result result_ok(void *v) {
+    Result r;
+    r.tag = 1;
+    r.value = v;
+    return r;
+}
+static inline Result result_err(void *v) {
+    Result r;
+    r.tag = 0;
+    r.value = v;
+    return r;
+}
+static inline Option option_some(void *v) {
+    Option o;
+    o.tag = 1;
+    o.value = v;
+    return o;
+}
+static inline Option option_none(void) {
+    Option o;
+    o.tag = 0;
+    o.value = NULL;
+    return o;
+}
+
 #endif /* PARENA_RUNTIME_H */

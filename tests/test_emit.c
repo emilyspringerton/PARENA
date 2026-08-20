@@ -111,8 +111,34 @@ int main(void) {
         arena_free_all(&arena);
     }
 
-    /* --- real, honest failure: `match` (VS0's emitter has no pattern-
-     * matching support yet) is reported, not silently mis-emitted. --- */
+    /* --- match on Result/Option now really works: NORTHSTAR's own real
+     * `Ok`/`Err`/`Some`/`None` constructors, destructured. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn describe [(x : Arena @ :region/buffer) (val : Arena @ :region/scratch)]\n"
+            "  (match (Ok val)\n"
+            "    ((Ok v) v)\n"
+            "    ((Err e) x)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a real match-on-Result function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "match on Result emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "result_ok(val)") != NULL, "(Ok val) emits as a real result_ok() call");
+            CHECK(strstr(c_src, ".tag == 1") != NULL, "the Ok clause checks the real tag == 1");
+            CHECK(strstr(c_src, ".tag == 0") != NULL, "the Err clause checks the real tag == 0");
+            CHECK(strstr(c_src, "else if") != NULL, "clauses chain as real if/else-if, not independent ifs");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: matching a non-Result/Option value (VS0
+     * has no general defenum matcher yet) is reported, not silently
+     * mis-emitted. --- */
     {
         Arena arena;
         arena_init(&arena);
@@ -121,11 +147,11 @@ int main(void) {
             "  (match a ((Some x) x) (None a)))";
         const char *parse_err = NULL;
         Node *program = parse_program(&arena, src, strlen(src), &parse_err);
-        CHECK(program != NULL, "a match function parses fine (VS0 syntax is generic)");
+        CHECK(program != NULL, "a match-on-Arena function parses fine (VS0 syntax is generic)");
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src == NULL && emit_err != NULL,
-              "emitting match (still genuinely unsupported) fails honestly, not silently");
+              "matching a non-Result/Option scrutinee (still genuinely unsupported) fails honestly");
         arena_free_all(&arena);
     }
 
