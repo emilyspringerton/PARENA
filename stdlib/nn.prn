@@ -1,13 +1,27 @@
 ;; stdlib/nn.prn — depends on array. Design: STDLIB.md "nn" section.
-;; The exact 3 primitives gpt2.c's gpt2_model_forward calls by name --
-;; real, complete formulas (layernorm/gelu/softmax are all short,
-;; well-known), matching that source's own behavior, not a fused
-;; "attention"/"transformer-block" call (a program composes those from
-;; these + linalg/matmul itself, same as the real C).
+;; layernorm/gelu/softmax are the exact 3 primitives gpt2.c's
+;; gpt2_model_forward calls by name; relu/sigmoid/tanh-activation below
+;; are the founder's own follow-up ("build ML and AI primatives in like
+;; relu and sigma and all that stuff") -- the standard activation-
+;; function trio no real NN stdlib ships without, same short-formula,
+;; real-not-deferred treatment as everything else in this file. All go
+;; through map-elementwise so adding another activation later is a
+;; one-line formula, not another hand-rolled loop.
 
 (module nn)
 (import array)
-(export layernorm gelu softmax)
+(export layernorm gelu softmax relu sigmoid tanh-activation leaky-relu)
+
+;; map-elementwise — the shared real primitive every activation function
+;; below reduces to: apply `f` to every element, same shape out.
+(defn map-elementwise [(x : &NDArray) (f : (Fn [F64] F64)) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (let [n (vec/len &(get-field x :data)) out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (vec/push! &out (f (deref (vec/get &(get-field x :data) i))))
+        (recur (+ i 1))))
+    {:data out :shape (get-field x :shape) :strides (get-field x :strides)}))
 
 (defn layernorm [(x : &NDArray) (weight : &NDArray) (bias : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
@@ -31,6 +45,22 @@
           (vec/push! &out (* 0.5 v (+ 1.0 (tanh (* 0.7978845608 (+ v (* 0.044715 v v v))))))))
         (recur (+ i 1))))
     {:data out :shape (get-field x :shape) :strides (get-field x :strides)}))
+
+(defn relu [(x : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (map-elementwise x (fn [v] (if (> v 0.0) v 0.0)) dest))
+
+(defn leaky-relu [(x : &NDArray) (alpha : F64) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (map-elementwise x (fn [v] (if (> v 0.0) v (* alpha v))) dest))
+
+(defn sigmoid [(x : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (map-elementwise x (fn [v] (/ 1.0 (+ 1.0 (exp (- 0.0 v))))) dest))
+
+(defn tanh-activation [(x : &NDArray) (dest : Arena @ Region)]
+  : NDArray @ Region
+  (map-elementwise x (fn [v] (tanh v)) dest))
 
 (defn softmax [(x : &NDArray) (dest : Arena @ Region)]
   : NDArray @ Region
