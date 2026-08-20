@@ -90,6 +90,9 @@ binding, not a language primitive).
 46. `git` — depends on `shell`, `pty`, `vec` (wraps the real `git` CLI, not a from-scratch object model)
 47. `media/tts` — depends on `sdl2`, `array` (F5-TTS sidecar client; the sidecar process itself is separate, unstarted work)
 48. `pitviper/quicklook` — depends on `pitviper/protocol`, `mapbuilder/tools`, `media/codec`, `media/audio`
+49. `net/vpn`, `net/packetradio`, `net/mesh` — depend on `string` only (each FFI-bound)
+50. `cli` — depends on `string`, `vec`
+51. `config` — depends on `cli`, `string`
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1475,6 +1478,73 @@ Real, honest limitation, same pattern as the rest of this document: this designs
 requested interaction model and the real dispatch surface; the actual Markdown-layout algorithm,
 image/video decoder integration depth, and playback-timing code are each genuinely separate
 implementation work, not resolved by this pass.
+
+### `net/vpn` / `net/packetradio` / `net/mesh` — real domains, real named prior art
+
+Founder: "also we need any networking primatives for a vpn and beyond" → "also our domains are
+mesh networks and packet radios" — a real, direct statement of what EINHORN_INDUSTRIAL's own
+networking work actually covers, not a hypothetical. Three packages, each FFI-bound to real,
+established, named technology (same judgment as everywhere else in this document — none of these
+protocols get reimplemented from scratch):
+
+```clojure
+; net/vpn — FFI-bound to WireGuard (real, modern, deliberately simple protocol with real
+; embeddable C/Go reference implementations — the honest choice over OpenVPN/IPsec's own much
+; larger real implementation surface)
+(defn create-tunnel  [(config : WgConfig) (dest : Arena @ Region)] : (Result Tunnel VpnError) @ Region)
+(defn tunnel-send     [(!t : &mut Tunnel) (data : String @ Region)] : (Result Unit VpnError))
+(defn tunnel-recv     [(!t : &mut Tunnel) (dest : Arena @ Region)] : (Result String VpnError) @ Region)
+
+; net/packetradio — FFI-bound to AX.25 (real, decades-old amateur-radio packet protocol) + APRS
+; (real, built on AX.25) framing
+(defn ax25-encode [(payload : String @ Region) (dest : Arena @ Region)] : String @ Region)
+(defn ax25-decode [(frame : String @ Region) (dest : Arena @ Region)] : (Result String Ax25Error) @ Region)
+(defn aprs-parse  [(packet : String @ Region) (dest : Arena @ Region)] : (Result AprsPacket AprsError) @ Region)
+
+; net/mesh — FFI-bound to real mesh routing (Meshtastic-style LoRa mesh, or B.A.T.M.A.N.-adv for
+; a wired/wifi mesh -- both real, named, not invented)
+(defn join-mesh   [(config : MeshConfig) (dest : Arena @ Region)] : (Result MeshNode MeshError) @ Region)
+(defn broadcast   [(!node : &mut MeshNode) (data : String @ Region)] : (Result Unit MeshError))
+(defn mesh-recv   [(!node : &mut MeshNode) (dest : Arena @ Region)] : (Result (String String) MeshError) @ Region)   ; (sender-id, data)
+```
+
+Real, honest limitation: which specific mesh technology (Meshtastic/LoRa vs. B.A.T.M.A.N.-adv)
+depends on real hardware/deployment decisions (LoRa radios vs. wifi mesh) this pass doesn't have
+enough information to resolve — both real signatures are given, actual backend selection is real
+follow-up work once a specific deployment is chosen, not guessed at here.
+
+### `cli` / `config` — Cobra/Viper equivalents, and the `parena` CLI's own eventual self-hosting target
+
+Founder: "we need to build parena cli to start systamatizing it" → "so alsoo the cli stuff needs
+to be in stdlib - viper and cobra equivalents" → "we will build the parena cli in PARENA of
+course." Real, named Go prior art (`spf13/cobra` for command trees, `spf13/viper` for layered
+config) — the real reason these are designed together: Viper's own actual value is precedence-
+ordered config sources (flags > env > file > defaults), which only matters once a real `cli`
+package's flags exist to be one of those sources.
+
+```clojure
+; cli — Cobra-equivalent
+(defstruct Command
+  (name        : String @ Region)
+  (short       : String @ Region)
+  (run         : (Fn [&(Vec String)] Unit))
+  (subcommands : (Vec Command) @ Region))
+
+(defn add-command [(!parent : &mut Command) (child : Command)] : Unit)
+(defn add-flag    [(!cmd : &mut Command) (name : String @ Region) (default : String @ Region)] : Unit)
+(defn execute     [(!root : &mut Command) (args : &(Vec String))] : (Result Unit CliError))
+
+; config — Viper-equivalent, depends on cli (for flag precedence) + string
+(defn load [(config-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Config ConfigError) @ Region)
+(defn get  [(cfg : &Config) (key : String @ :region/scratch)] : (Option String))   ; real precedence: flag > env > file > default
+```
+
+Real, honest connection stated plainly: this is the real, concrete first target once self-hosting
+(NORTHSTAR.md's own "Self-hosting" section) actually starts — `main.c`'s own hand-written
+`argv`-scanning `parse`/`analyze`/`build` dispatch would be the first real thing rewritten against
+`cli`/`config`, not a hypothetical example. Not attempted yet: self-hosting itself hasn't started
+(domains 4-5 of VS0 are the real remaining prerequisite work).
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
