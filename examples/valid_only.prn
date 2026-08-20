@@ -1,0 +1,13 @@
+;; The valid half of test.prn's own two functions, isolated into its own
+;; file for VS0 domain 3's own real acceptance test: `parena build` runs
+;; the full parse -> region-analyze -> emit pipeline, which aborts before
+;; reaching the emitter at all if region analysis finds a violation (as
+;; it correctly does on test.prn's own break-safety) -- so proving domain
+;; 3 actually emits correct C needs a file where region analysis passes,
+;; not the mixed valid+invalid file domain 2's own test already covers.
+
+(defn load-config [(buf-arena : Arena @ :region/buffer)]
+  (with-arena [scratch :region/scratch 1024]
+    (let [temp-str (alloc scratch String "config.json")
+          real-buf (alloc buf-arena String "parsed_data")]
+      real-buf)))

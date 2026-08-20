@@ -36,3 +36,21 @@ cc_test(
         "-pedantic",
     ],
 )
+
+cc_test(
+    name = "test_emit",
+    srcs = ["test_emit.c"],
+    deps = [
+        "//src:arena",
+        "//src:ast",
+        "//src:emit",
+        "//src:parser",
+        "//src:region",
+    ],
+    copts = [
+        "-std=c99",
+        "-Wall",
+        "-Wextra",
+        "-pedantic",
+    ],
+)

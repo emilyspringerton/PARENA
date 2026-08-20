@@ -1,0 +1,11 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# The minimal C runtime VS0-emitted programs link against -- a real,
+# separate library from src:arena on purpose, see parena_runtime.h's own
+# header comment.
+cc_library(
+    name = "parena_runtime",
+    srcs = ["parena_runtime.c"],
+    hdrs = ["parena_runtime.h"],
+    visibility = ["//visibility:public"],
+)

@@ -8,6 +8,7 @@
  */
 #include "arena.h"
 #include "ast.h"
+#include "emit.h"
 #include "parser.h"
 #include "region.h"
 #include <stdio.h>
@@ -111,11 +112,60 @@ static int cmd_analyze(const char *path) {
     return 0;
 }
 
+/* cmd_build — VS0 domain 3, the C emitter, wired into the full DoD
+ * pipeline: parse -> region-analyze (abort on error, same as cmd_analyze)
+ * -> emit -> write output.c. Real, honest scope carried from emit.h's own
+ * header comment: only understands the shape examples/test.prn's own
+ * load-config uses; a real "unsupported" error is reported (not guessed
+ * C) for anything past that. */
+static int cmd_build(const char *path, const char *out_path) {
+    size_t len;
+    char *src = read_file(path, &len);
+    if (!src) {
+        fprintf(stderr, "parena: cannot read %s\n", path);
+        return 1;
+    }
+    Arena arena;
+    arena_init(&arena);
+    const char *parse_err = NULL;
+    Node *program = parse_program(&arena, src, len, &parse_err);
+    free(src);
+    if (!program) {
+        fprintf(stderr, "parena: parse error: %s\n", parse_err);
+        arena_free_all(&arena);
+        return 1;
+    }
+    const char *region_err = region_analyze(&arena, program);
+    if (region_err) {
+        fprintf(stderr, "parena: %s\n", region_err);
+        arena_free_all(&arena);
+        return 1;
+    }
+    const char *emit_err = NULL;
+    const char *c_source = emit_c(&arena, program, &emit_err);
+    if (!c_source) {
+        fprintf(stderr, "parena: %s\n", emit_err);
+        arena_free_all(&arena);
+        return 1;
+    }
+    FILE *out = fopen(out_path, "wb");
+    if (!out) {
+        fprintf(stderr, "parena: cannot write %s\n", out_path);
+        arena_free_all(&arena);
+        return 1;
+    }
+    fputs(c_source, out);
+    fclose(out);
+    printf("parena: %s -> %s\n", path, out_path);
+    arena_free_all(&arena);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
                          "       parena analyze <file.prn>                (VS0 domain 2 -- region analyzer)\n"
-                         "       parena build <file.prn> -o <output.c>    (not yet implemented -- S189-13)\n");
+                         "       parena build <file.prn> -o <output.c>    (VS0 domain 3 -- C emitter)\n");
         return 1;
     }
     if (strcmp(argv[1], "parse") == 0 && argc >= 3) {
@@ -125,10 +175,11 @@ int main(int argc, char **argv) {
         return cmd_analyze(argv[2]);
     }
     if (strcmp(argv[1], "build") == 0) {
-        fprintf(stderr, "parena: build not yet implemented -- lexer/parser/region analyzer exist, "
-                         "C emitter doesn't yet (see PARENA/NORTHSTAR.md's VS0 Definition of Done, "
-                         "backlog S189-13)\n");
-        return 1;
+        if (argc < 5 || strcmp(argv[3], "-o") != 0) {
+            fprintf(stderr, "usage: parena build <file.prn> -o <output.c>\n");
+            return 1;
+        }
+        return cmd_build(argv[2], argv[4]);
     }
     fprintf(stderr, "parena: unknown command '%s'\n", argv[1]);
     return 1;

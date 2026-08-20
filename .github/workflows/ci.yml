@@ -27,10 +27,14 @@ jobs:
       - name: Test (DoD domain 2 — region analyzer, 1 positive + 1 negative case)
         run: bazel test //tests:test_region --test_output=all
 
+      - name: Test (DoD domain 3 — C emitter)
+        run: bazel test //tests:test_emit --test_output=all
+
       - name: AddressSanitizer + UndefinedBehaviorSanitizer
         run: |
           bazel test --config=asan //tests:test_lexer_parser --test_output=all
           bazel test --config=asan //tests:test_region --test_output=all
+          bazel test --config=asan //tests:test_emit --test_output=all
 
       - name: CLI smoke test against the real VS0 test.prn from NORTHSTAR.md
         run: |
@@ -43,6 +47,16 @@ jobs:
             echo "expected analyze to reject test.prn's break-safety, but it exited 0" >&2
             exit 1
           fi
+
+      - name: CLI smoke test — domain 3 end-to-end (parse -> analyze -> emit -> real gcc compile)
+        run: |
+          set -euo pipefail
+          bazel run //src:parena -- build "$(pwd)/examples/valid_only.prn" -o "$(pwd)/dist_valid_only.c"
+          # The DoD's own literal acceptance bar: "gcc -Wall -Wextra
+          # -pedantic -std=c99 zero warnings" on the emitted C, not just
+          # "parena itself didn't crash."
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -c \
+            -o "$(pwd)/dist_valid_only.o" "$(pwd)/dist_valid_only.c"
 
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,

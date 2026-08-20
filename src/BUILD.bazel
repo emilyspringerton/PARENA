@@ -46,12 +46,24 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "emit",
+    srcs = ["emit.c"],
+    hdrs = ["emit.h"],
+    deps = [
+        ":arena",
+        ":ast",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "parena",
     srcs = ["main.c"],
     deps = [
         ":arena",
         ":ast",
+        ":emit",
         ":parser",
         ":region",
     ],

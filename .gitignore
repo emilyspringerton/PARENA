@@ -1,5 +1,6 @@
 parena
 tests/test_lexer_parser
 tests/test_region
+tests/test_emit
 src/*.o
 bazel-*
