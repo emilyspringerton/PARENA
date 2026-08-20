@@ -256,10 +256,19 @@ Founder, real-time: "ok but after we have a compiler we also need to write paren
 and most serious systems languages eventually hit): once the language and its C-implemented
 compiler (`parena-c`, VS0 above) are complete enough, rewrite the compiler *in Parena itself* —
 explicitly not staying C underneath, per the founder's own emphasis. Architecturally this can't
-start until VS0's remaining domains (region analyzer, C emitter, full build pipeline) exist AND
-enough of the stdlib (still undesigned — see "Standard library" above) is real enough to write a
-parser/analyzer/emitter in Parena. Not scoped further than that here — a real VS1/VS2-class
-milestone, sequenced after VS0 is actually done, not attempted now.
+start until VS0's remaining domains exist AND enough of the stdlib (see `STDLIB.md`) is real
+enough to write a parser/analyzer/emitter in Parena. Real progress toward the first half of that
+gate: domains 1-3 (lexer/parser, region analyzer, C emitter) are done and CI-green as of this
+session — only memory verification and CLI-runner polish (domains 4-5) remain. Not scoped further
+than that here — a real VS1/VS2-class milestone, sequenced after VS0 is actually done, not
+attempted now.
+
+**Build system, decided now for when this milestone starts**: founder, real-time: "also when we
+write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
+already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary
+path) — the self-hosted `parena` compiler, once it exists, keeps that same build system rather
+than introducing a second one. Not a new decision so much as confirming the existing one carries
+forward; no new work implied today.
 
 **JIT compilation — a real, much further-out idea, not scoped**: founder, real-time: "we can do
 some fancy stuff like v8 with our compiler i bet to make it groovy." A genuinely real compiler-
