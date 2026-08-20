@@ -107,6 +107,66 @@ static int is_symbol(Node *n, const char *text) {
     return n && n->type == NODE_SYMBOL && n->text && strcmp(n->text, text) == 0;
 }
 
+/* ---- defenum registry: a real, user-defined tagged union, generalizing
+ * the same {tag; void *value;} shape Result/Option already use (see
+ * parena_runtime.h's own header comment on that real, honest single-
+ * payload-field limitation -- restated here, not solved differently for
+ * user enums). Real, narrow scope: each variant carries at most one
+ * payload field (every real defenum in this stdlib's own .prn files --
+ * editor/events.prn's EditorEvent, gfd.prn's PanelKind, etc. -- fits this
+ * shape; a variant with two or more payload fields is separate, real,
+ * unstarted work, same honest boundary as everywhere else in this file).
+ *
+ * g_enums is file-scope state, not threaded through every emit_* function
+ * signature -- a deliberate, scoped simplification: `parena build`
+ * processes exactly one file per process invocation (see main.c), so
+ * there's no real reentrancy concern here, and threading a new parameter
+ * through emit_expr/emit_match/emit_body/emit_defn/emit_loop/emit_if/
+ * emit_binop/emit_call/emit_with_arena/emit_let (ten-plus call sites)
+ * would be a lot of mechanical churn for a property that's genuinely
+ * global to one compilation. */
+typedef struct {
+    const char *name;
+    int has_payload;
+    int tag_value;
+} EnumVariant;
+
+typedef struct EnumInfo {
+    const char *name;
+    EnumVariant *variants;
+    size_t variant_count;
+    struct EnumInfo *next;
+} EnumInfo;
+
+static EnumInfo *g_enums = NULL;
+
+/* find_enum_variant looks up variant_name across every registered enum,
+ * regardless of which enum owns it -- used by emit_expr to recognize a
+ * bare `VariantName` or `(VariantName arg)` construction, the same way
+ * `Ok`/`Err`/`Some`/`None` are already recognized for the built-in
+ * Result/Option types. */
+static EnumInfo *find_enum_variant(const char *variant_name, EnumVariant **out_variant) {
+    for (EnumInfo *e = g_enums; e; e = e->next) {
+        for (size_t i = 0; i < e->variant_count; i++) {
+            if (strcmp(e->variants[i].name, variant_name) == 0) {
+                if (out_variant) *out_variant = &e->variants[i];
+                return e;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* find_enum_by_name looks up a registered enum by its own type name --
+ * used by emit_match to recognize a scrutinee typed as a user defenum,
+ * generalizing the hardcoded Result/Option check it already does. */
+static EnumInfo *find_enum_by_name(const char *name) {
+    for (EnumInfo *e = g_enums; e; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e;
+    }
+    return NULL;
+}
+
 static int is_call_named(Node *n, const char *fn_name) {
     return n && n->type == NODE_LIST && n->child_count > 0 && is_symbol(n->children[0], fn_name);
 }
@@ -148,6 +208,74 @@ static char *fail(Arena *arena, const char **out_error, const char *fmt, ...) {
     va_end(ap);
     *out_error = arena_strdup(arena, buf, strlen(buf));
     return NULL;
+}
+
+/* process_defenum handles one top-level `(defenum Name (Variant1)
+ * (Variant2 (field : Type)) ...)`: registers Name into g_enums (so
+ * emit_expr/emit_match can recognize its variants later in the same
+ * compilation) and emits its real C type definitions -- a tag enum plus
+ * a struct reusing Result/Option's own {tag; void *value;} shape (see
+ * this file's own EnumInfo comment for why that's a deliberate, honest
+ * generalization rather than a real per-variant-typed union), plus one
+ * `static inline` constructor per variant. Emitted before any function
+ * bodies (emit_c's own pre-pass), since a defn can reference these types
+ * anywhere in its own signature or body. */
+static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **out_error) {
+    if (node->child_count < 3 || node->children[1]->type != NODE_SYMBOL) {
+        return fail(arena, out_error, "defenum: malformed definition at line %d", node->line) != NULL;
+    }
+    const char *enum_name = node->children[1]->text;
+    size_t variant_count = node->child_count - 2;
+    EnumVariant *variants = (EnumVariant *)arena_alloc(arena, sizeof(EnumVariant) * variant_count);
+    for (size_t i = 0; i < variant_count; i++) {
+        Node *variant = node->children[2 + i];
+        if (variant->type != NODE_LIST || variant->child_count < 1 || variant->child_count > 2 ||
+            variant->children[0]->type != NODE_SYMBOL) {
+            return fail(arena, out_error,
+                        "defenum: variant at line %d must be (Name) or (Name (field : Type)) -- "
+                        "VS0's emitter only supports at most one payload field per variant so far",
+                        node->line) != NULL;
+        }
+        variants[i].name = variant->children[0]->text;
+        variants[i].has_payload = (variant->child_count == 2);
+        variants[i].tag_value = (int)i;
+    }
+
+    EnumInfo *info = (EnumInfo *)arena_alloc(arena, sizeof(EnumInfo));
+    info->name = enum_name;
+    info->variants = variants;
+    info->variant_count = variant_count;
+    info->next = g_enums;
+    g_enums = info;
+
+    /* Tag constants get a real, distinct `_TAG_` infix (EditorEvent_TAG_
+     * OnSave) rather than the same EnumName_VariantName shape the
+     * constructor function below uses (EditorEvent_OnSave) -- C has a
+     * single namespace for ordinary identifiers, so an enum constant and
+     * a function can't share a name; caught by actually compiling a real
+     * generated file with gcc during this feature's own development,
+     * not just eyeballed. */
+    sb_append(out, "typedef enum {\n");
+    for (size_t i = 0; i < variant_count; i++) {
+        sb_appendf(out, "    %s_TAG_%s,\n", enum_name, variants[i].name);
+    }
+    sb_appendf(out, "} %s_Tag;\n", enum_name);
+    sb_appendf(out, "typedef struct { %s_Tag tag; void *value; } %s;\n", enum_name, enum_name);
+    for (size_t i = 0; i < variant_count; i++) {
+        if (variants[i].has_payload) {
+            sb_appendf(out,
+                       "static inline %s %s_%s(void *value) { %s v; v.tag = %s_TAG_%s; v.value = value; "
+                       "return v; }\n",
+                       enum_name, enum_name, variants[i].name, enum_name, enum_name, variants[i].name);
+        } else {
+            sb_appendf(out,
+                       "static inline %s %s_%s(void) { %s v; v.tag = %s_TAG_%s; v.value = NULL; "
+                       "return v; }\n",
+                       enum_name, enum_name, variants[i].name, enum_name, enum_name, variants[i].name);
+        }
+    }
+    sb_append(out, "\n");
+    return 1;
 }
 
 /* arena_arg_expr resolves how to pass a known local/param wherever an
@@ -312,6 +440,21 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = "Option";
         return "option_none()";
     }
+    /* A bare, zero-payload user defenum variant (e.g. `OnSave`) -- same
+     * "checked before generic symbol lookup" treatment as `None` above,
+     * since it's a real value constructor, not a local variable
+     * reference. Checked before scope_lookup so a real variant name never
+     * gets misreported as an unbound identifier. */
+    if (expr->type == NODE_SYMBOL) {
+        EnumVariant *variant = NULL;
+        EnumInfo *owner = find_enum_variant(expr->text, &variant);
+        if (owner && !variant->has_payload) {
+            *out_type = owner->name;
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s_%s()", owner->name, variant->name);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+    }
     if (expr->type == NODE_SYMBOL) {
         Local *b = scope_lookup(scope, expr->text);
         if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text, expr->line);
@@ -365,6 +508,36 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             snprintf(buf, sizeof(buf), "option_some(%s)", inner_c);
         }
         return arena_strdup(arena, buf, strlen(buf));
+    }
+    /* A payload-carrying user defenum variant call, e.g. `(OnKeybind
+     * key-expr)` -- checked before the generic binop/call dispatch below
+     * so a real variant name is never mistaken for a general function
+     * call (which would mangle "OnKeybind" and emit a call to a
+     * function that was never defined). Same real, honest pointer-typed-
+     * payload requirement Ok/Err/Some already enforce above, for the
+     * same reason (the runtime's own `void *value` field). */
+    if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
+        EnumVariant *variant = NULL;
+        EnumInfo *owner = find_enum_variant(expr->children[0]->text, &variant);
+        if (owner && variant->has_payload) {
+            if (expr->child_count != 2) {
+                return fail(arena, out_error, "%s: expects exactly one argument at line %d",
+                            expr->children[0]->text, expr->line);
+            }
+            const char *inner_type = NULL;
+            const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
+            if (!inner_c) return NULL;
+            if (!inner_type || inner_type[strlen(inner_type) - 1] != '*') {
+                return fail(arena, out_error,
+                            "%s: VS0's emitter only supports pointer-typed payloads so far (got type "
+                            "'%s' at line %d)",
+                            expr->children[0]->text, inner_type ? inner_type : "?", expr->line);
+            }
+            *out_type = owner->name;
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%s_%s(%s)", owner->name, variant->name, inner_c);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
@@ -647,10 +820,16 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
     const char *scrut_type = NULL;
     const char *scrut_c = emit_expr(arena, node->children[1], scope, &scrut_type, out_error);
     if (!scrut_c) return 0;
-    if (!scrut_type || (strcmp(scrut_type, "Result") != 0 && strcmp(scrut_type, "Option") != 0)) {
+    /* scrut_enum is non-NULL when the scrutinee resolved to a real,
+     * registered user defenum type -- generalizes the hardcoded
+     * Result/Option check below to any such type, using that enum's own
+     * real variant->tag table instead of the built-in Ok/Err/Some/None
+     * mapping. */
+    EnumInfo *scrut_enum = scrut_type ? find_enum_by_name(scrut_type) : NULL;
+    if (!scrut_type || (!scrut_enum && strcmp(scrut_type, "Result") != 0 && strcmp(scrut_type, "Option") != 0)) {
         return fail(arena, out_error,
-                    "match: VS0's emitter only understands matching a Result or Option at line %d "
-                    "(scrutinee's own type resolved to '%s')",
+                    "match: VS0's emitter only understands matching a Result, Option, or a "
+                    "registered defenum type at line %d (scrutinee's own type resolved to '%s')",
                     node->line, scrut_type ? scrut_type : "?") != NULL;
     }
 
@@ -693,12 +872,33 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
 
         int tag_value;
         int is_wildcard = strcmp(ctor_name, "_") == 0;
-        if (strcmp(ctor_name, "Ok") == 0 || strcmp(ctor_name, "Some") == 0) {
+        if (is_wildcard) {
+            tag_value = -1;
+        } else if (scrut_enum) {
+            /* A registered user defenum scrutinee: look the pattern's own
+             * ctor_name up in *this* enum's real variant table, not the
+             * hardcoded Ok/Err/Some/None one below -- a pattern naming a
+             * variant that belongs to some OTHER enum (or no enum at all)
+             * is reported, not silently matched against the wrong tag. */
+            EnumVariant *pat_variant = NULL;
+            size_t vi;
+            for (vi = 0; vi < scrut_enum->variant_count; vi++) {
+                if (strcmp(scrut_enum->variants[vi].name, ctor_name) == 0) {
+                    pat_variant = &scrut_enum->variants[vi];
+                    break;
+                }
+            }
+            if (!pat_variant) {
+                sb_free(&clauses);
+                return fail(arena, out_error,
+                            "match: '%s' is not a variant of %s at line %d",
+                            ctor_name, scrut_enum->name, node->line) != NULL;
+            }
+            tag_value = pat_variant->tag_value;
+        } else if (strcmp(ctor_name, "Ok") == 0 || strcmp(ctor_name, "Some") == 0) {
             tag_value = 1;
         } else if (strcmp(ctor_name, "Err") == 0 || strcmp(ctor_name, "None") == 0) {
             tag_value = 0;
-        } else if (is_wildcard) {
-            tag_value = -1;
         } else {
             sb_free(&clauses);
             return fail(arena, out_error,
@@ -980,11 +1180,24 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s (*%s)(void) __attribute__((unused))", ret_type, c_name);
+        } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL &&
+                   find_enum_by_name(param->children[2]->text)) {
+            /* A parameter typed as a registered defenum, e.g.
+             * editor/events.prn's `(event : EditorEvent)` -- passed as a
+             * real plain C value of that enum's own struct type (the
+             * {tag; void *value;} shape process_defenum() already
+             * emitted), same "no Arena involved" reasoning as the plain
+             * I32/String case above. */
+            const char *c_type = param->children[2]->text;
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
         } else {
             fail(arena, out_error,
                  "defn: parameter '%s' has no region annotation and isn't a plain I32/String/"
-                 "(Fn [] ..) either (VS0 only supports `Arena @ :region/x`, `I32`, `String`, "
-                 "and zero-argument `(Fn [] <ReturnType>)` parameters so far)",
+                 "(Fn [] ..)/registered-defenum-type either (VS0 only supports `Arena @ :region/x`, "
+                 "`I32`, `String`, zero-argument `(Fn [] <ReturnType>)`, and registered defenum "
+                 "type parameters so far)",
                  param->children[0]->text);
             sb_free(&param_list);
             return 0;
@@ -1041,11 +1254,34 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
 
 const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     *out_error = NULL;
+    /* g_enums is reset per emit_c() call, not just per process: the test
+     * suite calls emit_c() many times in the same process (one per test
+     * case), and without this reset a defenum registered by an earlier
+     * test would still be "known" to a later one -- real cross-test
+     * contamination, not a hypothetical. `parena build` (main.c) only
+     * ever calls emit_c() once per process invocation, so this is a
+     * no-op there. */
+    g_enums = NULL;
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
     sb_append(&out, "#include \"parena_runtime.h\"\n");
     sb_append(&out, "#include <string.h>\n\n");
+
+    /* Pre-pass: register every defenum and emit its real C type
+     * definitions before any function body is emitted, since a defn
+     * anywhere in the file can reference a defenum declared anywhere
+     * else in the file (order-independent, matching how a real C
+     * program's own typedefs would need to come first regardless of
+     * where in the source they were declared). */
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_call_named(form, "defenum")) continue;
+        if (!process_defenum(arena, &out, form, out_error)) {
+            sb_free(&out);
+            return NULL;
+        }
+    }
 
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];

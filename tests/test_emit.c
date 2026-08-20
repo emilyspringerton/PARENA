@@ -286,6 +286,94 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- defenum now really works: a real, user-defined tagged union
+     * with both zero-payload and one-payload variants, matching
+     * stdlib/editor/events.prn's own real EditorEvent shape. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum Signal (Ping) (Data (payload : String @ :region/scratch)))\n"
+            "(defn subscribe [(sig : Signal) (handler : (Fn [] Unit))]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"host_subscribe(sig, handler);\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defenum with mixed zero/one-payload variants parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "defenum + a defenum-typed parameter emit successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "typedef enum {") != NULL, "defenum emits a real C tag enum");
+            CHECK(strstr(c_src, "typedef struct { Signal_Tag tag; void *value; } Signal;") != NULL,
+                  "defenum emits the real {tag; void *value;} struct, generalizing Result/Option's own shape");
+            CHECK(strstr(c_src, "static inline Signal Signal_Ping(void)") != NULL,
+                  "a zero-payload variant gets a real, callable, zero-arg constructor");
+            CHECK(strstr(c_src, "static inline Signal Signal_Data(void *value)") != NULL,
+                  "a payload-carrying variant gets a real, callable, one-arg constructor");
+            CHECK(strstr(c_src, "Signal sig __attribute__((unused))") != NULL,
+                  "a parameter typed as a registered defenum becomes a real plain C value of that type");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- match now really works on a registered user defenum, not just
+     * the built-in Result/Option -- generalizing emit_match's own
+     * scrutinee-type check and tag lookup. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum Signal (Ping) (Data (payload : String @ :region/scratch)))\n"
+            "(defn describe [(sig : Signal) (fallback : String @ :region/scratch)]\n"
+            "  (match sig\n"
+            "    ((Data d) d)\n"
+            "    (Ping fallback)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match-on-user-defenum function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "match on a registered defenum emits successfully");
+        if (c_src) {
+            /* Not "__match_tmp_0" specifically -- match_counter is a
+             * file-static counter shared across every emit_c() call in
+             * this test binary's own process lifetime (real, deliberate:
+             * see emit_match's own comment), so its exact numeric suffix
+             * by this point in the suite isn't 0 and isn't worth pinning
+             * down; "Signal __match_tmp_" + " = sig;" as two separate
+             * substring checks proves the same real thing without
+             * depending on that shared counter's current value. */
+            CHECK(strstr(c_src, "Signal __match_tmp_") != NULL && strstr(c_src, " = sig;") != NULL,
+                  "match on a user defenum scrutinee stores it in a real temp of its own real type");
+            CHECK(strstr(c_src, ".tag == 1)") != NULL || strstr(c_src, ".tag == 0)") != NULL,
+                  "the user defenum's own real tag values (not the hardcoded Ok/Err ones) are used");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure: a match pattern naming a variant that
+     * doesn't belong to the scrutinee's own registered enum is reported,
+     * not silently matched against the wrong tag. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum Signal (Ping) (Data (payload : String @ :region/scratch)))\n"
+            "(defenum Other (Foo))\n"
+            "(defn weird [(sig : Signal)]\n"
+            "  (match sig\n"
+            "    (Foo sig)\n"
+            "    (Ping sig)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "matching a variant from an unrelated enum parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "matching a variant that isn't part of the scrutinee's own enum fails honestly");
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure: referencing an unbound identifier is
      * reported, not silently emitted as a dangling C reference. --- */
     {
