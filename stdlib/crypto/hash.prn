@@ -1,0 +1,15 @@
+;; stdlib/crypto/hash.prn — depends on string. Design: STDLIB.md
+;; "crypto/hash" section. FFI-bound to OpenSSL's real EVP hash API, not
+;; a from-scratch SHA-256 implementation — hand-rolled crypto is a
+;; known real way to introduce serious vulnerabilities, explicitly
+;; avoided here same as everywhere else this document uses this
+;; judgment (linalg/media/codec/ssh).
+
+(module crypto/hash)
+(import string)
+(export sha256)
+
+(defn sha256 [(data : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "openssl_sha256_hex(data, dest)")})   ;; EVP_DigestInit_ex(EVP_sha256())

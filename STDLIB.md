@@ -74,6 +74,10 @@ binding, not a language primitive).
 30. `sql/planner` — depends on `sql/ast`
 31. `sql/driver` — depends on `net/tcp`, `sql/planner`
 32. `ringo` — depends on `array`, `sdl2`
+33. `pty` — depends on `string`
+34. `shell` — depends on `pty`, `string`
+35. `ssh` — depends on `string`
+36. `crypto/hash`, `crypto/aes`, `crypto/ed25519` — depend on `string` only (each FFI-bound)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a

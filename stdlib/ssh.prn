@@ -1,0 +1,26 @@
+;; stdlib/ssh.prn — depends on string. Design: STDLIB.md "ssh" section.
+;; FFI-bound to libssh2 (real, established, embeddable SSH client
+;; library), not a from-scratch SSH protocol implementation.
+
+(module ssh)
+(import string)
+(export connect exec open-pty)
+
+(defn connect [(host : String @ :region/scratch) (port : I32) (user : String @ :region/scratch)
+                (dest : Arena @ Region)]
+  : (Result SshSession SshError) @ Region
+  #target
+  {:c (inline-c "libssh2_connect(host, port, user, dest)")})
+
+(defn exec [(!sess : &mut SshSession) (cmd : String @ Region) (dest : Arena @ Region)]
+  : (Result String SshError) @ Region
+  #target
+  {:c (inline-c "libssh2_channel_exec_and_read(sess, cmd, dest)")})
+
+;; open-pty — interactive shell over SSH, same read/write shape as the
+;; local pty package so a caller can treat a local shell and a remote
+;; one identically.
+(defn open-pty [(!sess : &mut SshSession) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result SshChannel SshError) @ Region
+  #target
+  {:c (inline-c "libssh2_channel_request_pty_and_shell(sess, cols, rows, dest)")})

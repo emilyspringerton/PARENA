@@ -28,8 +28,9 @@ build-order rationale and the "Priority order" section for what's getting attent
 filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`,
 `regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
 `regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`, `editor/plugin`, `editor/buffer`, `editor/events`,
-`editor/ui`, `ringo`. Every other package in the tables below is designed in `STDLIB.md` but has no
-`.prn` file yet (`otp/*`, `media/*`, `sql/*`).
+`editor/ui`, `ringo`, `world`, `mapbuilder/tools`, `pty`, `shell`, `ssh`, `crypto/hash`, `crypto/aes`,
+`crypto/ed25519`. Every other package in the tables below is designed in `STDLIB.md` but has no
+`.prn` file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template`).
 
 ## Standard library — full planned API surface
 
@@ -115,6 +116,24 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | Package | Purpose |
 |---|---|
 | `ringo` | The matplotlib equivalent — `figure`/`plot`/`scatter`/`bar`/`hist`/`show`/`save`, plots `array`'s `NDArray` onto an `sdl2` window. Named by the founder: "apparently parena is a beetle" -> "RINGO" |
+
+### World/map building
+
+| Package | Purpose |
+|---|---|
+| `world` | Terrain/block placement data model, grounded in SHANKPIT's `TerrainHeightfield` and GoblinFoxDragon's `WorldBlock`/heightmap |
+| `mapbuilder/tools` | Click/drag/select/undo affordances, direct generalization of PITVIPER's own real mouse-drag-selection code |
+| `mapbuilder/layout` | Constraint-based auto-layout (Android ConstraintLayout / iOS Auto Layout model) — for PC + mobile interface design |
+| `mapbuilder/template` | Named prefab/scene instantiation, grounded in GoblinFoxDragon's real per-scene procedural generators |
+
+### Shell/remote/crypto — the concrete dogfooding path into PITVIPER
+
+| Package | Purpose |
+|---|---|
+| `pty` | Spawn a subprocess on a pseudo-console, generalized from PITVIPER's own ConPTY/openpty code |
+| `shell` | The actual shell-resolution policy — direct port of PITVIPER's `isWslStub`/`findGitBash` fix |
+| `ssh` | `connect`/`exec`/`open-pty`, FFI-bound to libssh2 |
+| `crypto/hash` `crypto/aes` `crypto/ed25519` | FFI-bound to OpenSSL/libsodium — no from-scratch cryptography |
 
 ### Editor/plugin API — shell resolved: a PARENA-authored, SDL2-based vim-like editor, hosted by PITVIPER
 

@@ -1,0 +1,39 @@
+;; stdlib/pty.prn — depends on string. Design: STDLIB.md "pty" section.
+;; Real, direct generalization of PITVIPER's own shipped Open()/
+;; ConPTY(Windows)/openpty(POSIX) code. Real, honest note carried from
+;; STDLIB.md: the C-target body picks ConPTY vs. openpty via ordinary
+;; C preprocessor #ifdef _WIN32 inside inline-c, not a second
+;; PARENA-level #target dispatch (NORTHSTAR's #target branches by
+;; compilation target, not host OS).
+
+(module pty)
+(import string)
+(export open read write resize close)
+
+(defn open [(shell : String @ :region/scratch) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Pty PtyError) @ Region
+  #target
+  {:c (inline-c "pty_open(shell, cols, rows, dest)")})
+  ;; C body: #ifdef _WIN32 -> CreatePseudoConsole (mirrors PITVIPER's
+  ;; internal/pty/pty_windows.go); #else -> openpty(3) (mirrors
+  ;; internal/pty/pty_linux.go).
+
+(defn read [(!p : &mut Pty) (dest : Arena @ Region)]
+  : (Result String PtyError) @ Region
+  #target
+  {:c (inline-c "pty_read(p, dest)")})
+
+(defn write [(!p : &mut Pty) (data : String @ Region)]
+  : (Result I32 PtyError)
+  #target
+  {:c (inline-c "pty_write(p, data)")})
+
+(defn resize [(!p : &mut Pty) (cols : I32) (rows : I32)]
+  : (Result Unit PtyError)
+  #target
+  {:c (inline-c "pty_resize(p, cols, rows)")})
+
+(defn close [(!p : Pty)]
+  : Unit
+  #target
+  {:c (inline-c "pty_close(p);")})

@@ -1,0 +1,67 @@
+;; stdlib/shell.prn — depends on pty, string. Design: STDLIB.md "shell"
+;; section. A real, direct port of PITVIPER's own shell-resolution
+;; policy (internal/pty/pty_windows.go's Open(), isWslStub, findGitBash
+;; -- commits 908ac6a, 8db557c) from hand-written Go into real PARENA
+;; control flow. The individual OS primitives (env lookup, PATH search,
+;; file existence) are real #target inline-c calls, same "OS interop
+;; goes through inline-c" pattern io/open already uses; the decision
+;; chain itself -- the actual policy PITVIPER's bug reports were about
+;; -- is real PARENA cond logic, not hidden inside a C function.
+
+(module shell)
+(import pty)
+(import string)
+(export resolve spawn-bash spawn-zsh)
+
+(defn getenv [(name : String @ :region/scratch)]
+  : (Option String) @ :region/scratch
+  #target
+  {:c (inline-c "getenv_as_option(name)")})
+
+(defn lookup-path [(name : String @ :region/scratch)]
+  : (Option String) @ :region/scratch
+  #target
+  {:c (inline-c "exec_lookpath_as_option(name)")})   ;; PATH search, mirrors Go's exec.LookPath
+
+;; is-wsl-stub — direct port of PITVIPER's own isWslStub (pty_windows.go).
+(defn is-wsl-stub? [(path : String @ Region)]
+  : Bool
+  (string/contains? (string/to-lower path) "\\system32\\bash.exe"))
+
+;; find-git-bash — direct port of PITVIPER's own findGitBash: checks the
+;; well-known Git-for-Windows install locations directly, since the
+;; installer often skips adding bin/ to PATH.
+(defn find-git-bash [(dest : Arena @ Region)]
+  : (Option String) @ Region
+  (let [roots (real-git-bash-roots dest)]
+    (find-first-existing roots dest)))
+
+;; resolve — the actual policy: explicit arg > $SHELL > Git Bash off
+;; PATH (skipping the WSL stub) > Git Bash at its well-known install
+;; paths > platform fallback. Exactly PITVIPER's own chain, generalized
+;; past one specific Go program.
+(defn resolve [(explicit : (Option String) @ :region/scratch) (dest : Arena @ Region)]
+  : String @ :region/scratch
+  (match explicit
+    ((Some s) s)
+    (None
+      (match (getenv "SHELL")
+        ((Some s) s)
+        (None
+          (match (lookup-path "bash.exe")
+            ((Some p) (if (is-wsl-stub? p) (resolve-past-wsl-stub dest) p))
+            (None (resolve-past-wsl-stub dest))))))))
+
+(defn resolve-past-wsl-stub [(dest : Arena @ Region)]
+  : String @ :region/scratch
+  (match (find-git-bash dest)
+    ((Some p) p)
+    (None (platform-fallback-shell))))
+
+(defn spawn-bash [(cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Pty PtyError) @ Region
+  (pty/open "bash" cols rows dest))
+
+(defn spawn-zsh [(cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Pty PtyError) @ Region
+  (pty/open "zsh" cols rows dest))

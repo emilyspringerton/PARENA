@@ -1,0 +1,24 @@
+;; stdlib/crypto/ed25519.prn — depends on string. Design: STDLIB.md
+;; "crypto/ed25519" section. FFI-bound to libsodium's real
+;; crypto_sign_ed25519 family, not a from-scratch implementation.
+
+(module crypto/ed25519)
+(import string)
+(export keygen sign verify)
+
+(defstruct KeyPair (public-key : String @ Region) (secret-key : String @ Region))
+
+(defn keygen [(dest : Arena @ Region)]
+  : KeyPair @ Region
+  #target
+  {:c (inline-c "sodium_ed25519_keygen(dest)")})   ;; crypto_sign_ed25519_keypair
+
+(defn sign [(key : &KeyPair) (msg : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "sodium_ed25519_sign(key, msg, dest)")})   ;; crypto_sign_ed25519_detached
+
+(defn verify [(pubkey : String @ Region) (msg : String @ Region) (sig : String @ Region)]
+  : Bool
+  #target
+  {:c (inline-c "sodium_ed25519_verify(pubkey, msg, sig)")})   ;; crypto_sign_ed25519_verify_detached

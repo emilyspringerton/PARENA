@@ -1,0 +1,17 @@
+;; stdlib/crypto/aes.prn — depends on string. Design: STDLIB.md
+;; "crypto/aes" section. FFI-bound to OpenSSL's real EVP_aes_256_gcm,
+;; not a from-scratch AES implementation.
+
+(module crypto/aes)
+(import string)
+(export aes-encrypt aes-decrypt)
+
+(defn aes-encrypt [(key : String @ Region) (plaintext : String @ Region) (dest : Arena @ Region)]
+  : (Result String CryptoError) @ Region
+  #target
+  {:c (inline-c "openssl_aes_gcm_encrypt(key, plaintext, dest)")})
+
+(defn aes-decrypt [(key : String @ Region) (ciphertext : String @ Region) (dest : Arena @ Region)]
+  : (Result String CryptoError) @ Region
+  #target
+  {:c (inline-c "openssl_aes_gcm_decrypt(key, ciphertext, dest)")})
