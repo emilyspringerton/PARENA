@@ -1,5 +1,11 @@
 # PARENA
 
+**"PARENA is a language to make your software more programmable via fluid and composible plugin
+APIS."** — founder's own mission statement. The adoption mechanism: bolt a plugin/FFI boundary
+onto existing software first, let PARENA code live there, and PARENA eats more of the host from
+the outside in, iteratively — not a rewrite. See `NORTHSTAR.md`'s "What this is" for the full
+statement.
+
 A new systems language: S-expression syntax, compile-time region-based memory safety (no GC, no
 manual free), linear ownership for native resources, multiple compilation targets (C first, then
 JVM/TypeScript/WebAssembly). Ships its own editor/plugin API as a first-class part of the design.
@@ -16,6 +22,14 @@ in the dependency order given here — it is not compilable/runnable yet, since 
 standard library is executable*. See `STDLIB.md`'s own "Dependency order" section for the full
 build-order rationale and the "Priority order" section for what's getting attention first.
 
+**Real source exists today** (`stdlib/`, all `parena parse`-verified) for: `vec`, `map`, `string`,
+`log`, `buffer`, `io`, `thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg`
+(matmul/transpose/dot; inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/
+filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`,
+`regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
+`regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`. Every other package in the tables below is
+designed in `STDLIB.md` but has no `.prn` file yet (`otp/*`, `media/*`, `sql/*`, `editor/*`).
+
 ## Standard library — full planned API surface
 
 Every package below is designed in `STDLIB.md` with real function signatures (region-typed,
@@ -27,7 +41,7 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | Package | Purpose |
 |---|---|
 | `core` | `Option`/`Result`, `Arena`/`with-arena` — already core language forms |
-| `sdl2` | Windowing/input/audio-device/clipboard, FFI-bound to real SDL2, same function names |
+| `sdl2` | Windowing/input/audio-device/clipboard, FFI-bound to real SDL2, same function names. Long-term goal is a *native* PARENA reimplementation (not FFI) — explicitly deferred, not started |
 
 ### Foundation
 
@@ -85,18 +99,31 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | `otp/gen-server` | Callback-module servers (`init`/`handle-call`/`handle-cast`) on real `thread`s |
 | `otp/supervisor` | Restart policies (`OneForOne`/`OneForAll`/`RestForOne`) over child gen-servers |
 | `otp/ets` | Thread-safe in-memory keyed table |
+| `otp/scheduler` | Cooperative work-stealing task pool on real OS threads — real BEAM-style preemption is a much bigger, explicitly deferred undertaking |
 
-### Editor/plugin API
+### SQL — building blocks, real implementation deferred
+
+| Package | Purpose |
+|---|---|
+| `sql/ast` | Parsed `Select`/`Insert`/`Update`/`Delete` representation |
+| `sql/planner` | `SqlStmt` → `QueryPlan` — real query planning genuinely deferred |
+| `sql/driver` | Backend-agnostic `Connection`/`execute`, real wire-protocol work per backend |
+
+### Editor/plugin API — shell resolved: a PARENA-authored, SDL2-based vim-like editor, hosted by PITVIPER
 
 | Package | Purpose |
 |---|---|
 | `editor/plugin` | Lifecycle, config, command-palette registration |
 | `editor/buffer` | Read/insert/delete/select text ranges |
-| `editor/events` | Subscribe to `OnSave`/`OnChange`/`OnKeybind` |
-| `editor/ui` | Gutter markers, diagnostics, status bar, popups |
+| `editor/events` | Subscribe to `OnSave`/`OnChange`/`OnKeybind`/`OnDragDrop`/`OnPaste` |
+| `editor/ui` | Gutter markers, diagnostics, status bar, popups — renders via `sdl2` |
 
-The editor *shell* itself (Electron/Tauri/GTK+GtkSourceView/SDL2+ImGui/ncurses+Tree-sitter) is
-still an open, undecided question — flagged, not resolved, per `NORTHSTAR.md`.
+NORTHSTAR's own "editor shell: Electron/Tauri/GTK/SDL2+ImGui/ncurses+Tree-sitter, undecided"
+question is resolved: a modal, Vim-like editor built on `sdl2`, following the same
+plugin-boundary-first adoption mechanic named above — `PITVIPER` (Go+SDL2, already real, already
+ships ConPTY + mouse-drag-selection + clipboard) hosts it short-term and grows a real plugin API;
+the PARENA rewrite happens incrementally once VS0 can compile something this size. Concrete next
+step, not yet started: PITVIPER's own Go-side plugin API.
 
 ### Mod-surface binding
 
