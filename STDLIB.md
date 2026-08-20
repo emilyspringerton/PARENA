@@ -746,6 +746,17 @@ already added risks the "add dependencies as std libs themselves" instruction tu
 unbounded scope creep; flagged as the next real extension once a renderer-owning program actually
 needs it, not designed blind here.
 
+**Real scope correction, stated by the founder directly after this section was first written**:
+"we want to reimplement the sdl2 in parena like not just embed it" → "that can be a longer term
+ask i guess." Everything above is an FFI wrapper — real SDL2 does the actual window/render/input
+work, `sdl2` just calls it. That is explicitly **not** the end state wanted: the real long-term
+goal is a native PARENA reimplementation of SDL2's own functionality (raw framebuffer/window
+management, input polling, audio mixing — written in PARENA itself, no libSDL2.so underneath at
+all). Founder's own follow-up correctly scoped this as "longer term," not this pass — the FFI
+wrapper above is the real, buildable near-term package (and the thing PITVIPER's own plugin API
+and the vim-editor work below actually need first); the native reimplementation is flagged here
+as a real, large, separate future undertaking, not designed or started in this document.
+
 ### `editor/plugin` / `editor/buffer` / `editor/events` / `editor/ui` — the editor half, real API surface only
 
 Founder: "also the stdlibs we need for the editor." NORTHSTAR.md's own "Editor/plugin API"
@@ -831,6 +842,26 @@ not the one chosen).
 (defn lookup [(t : &(EtsTable K V)) (key : &K)] : (Option (&V)))
 ```
 
+**`otp/scheduler` — real escalation past "ergonomics only," a scoped middle ground**: founder,
+after the OTP-ergonomics resolution above, went further — "also go even harder into erlang with
+the scheduler stuff." A full BEAM-style *preemptive* scheduler (interrupting a running process
+mid-instruction on a fairness timer, no cooperation required from the code running) is a real
+VM-level undertaking on par with the earlier-declined "full OTP runtime" AskUserQuestion option —
+still not built here. What real "scheduler stuff" *is* buildable on top of `thread` without that:
+a **cooperative work-stealing scheduler** — a fixed pool of OS threads (`thread/spawn`) each
+running a work-stealing deque of queued tasks, tasks yielding at real await/blocking points rather
+than being preempted. This is the same real, honest "bind the closest working real primitive"
+judgment used throughout this document (BLAS/LAPACK for `linalg`, real SDL2 for `sdl2`) applied to
+scheduling: cooperative-on-real-threads is a real, scoped, buildable design; full BEAM preemption
+is not attempted.
+
+```clojure
+(defn start-pool [(worker-count : I32) (dest : Arena @ Region)] : SchedulerPool @ Region)
+(defn submit [(!pool : &SchedulerPool) (task : (Fn [] Unit))] : (Result Unit SchedulerError))
+(defn yield-point [] : Unit)   ; cooperative yield -- called at real blocking points (channel
+                                 ; recv, mutex lock) so one long task can't starve the pool
+```
+
 ### `media/audio` / `media/codec` / `media/stream` — FFI-bound, resolved scope
 
 Founder: "and full audio apis" → "we are going to build djsoftware in PARENA too" → "MIXFORGE"
@@ -871,6 +902,42 @@ codec, a real audio backend for `audio`), not reimplemented natively.
 (defn publish [(frame : &MediaFrame) (destinations : &(Vec StreamDest))]
   : (Result Unit StreamError))               ; fan-out to every connected destination at once
 ```
+
+### `sql/ast` / `sql/planner` / `sql/driver` — building blocks, implementation deferred
+
+Founder: "we need the building blocks for the sql drivers" → "we can deferr that for now i think"
+→ "we need the building blocks for the sql drivers" → "and the query planners" → "so we need AST
+stuff" → "i guess." Net read, taken at face value rather than resolved by guessing: design the
+package *surfaces* now (so `dataframe/read-csv`-adjacent code and any future ETS/gen-server-backed
+service has a real interface to target), leave the actual parser grammar, query-planning
+algorithm, and wire-protocol driver implementations as real, separate, deferred work — the
+founder's own "defer for now" stands for the deep implementation, not the shape.
+
+```clojure
+; sql/ast — parsed query representation, same "shared AST, multiple consumers" shape as
+; regex/syntax above
+(defenum SqlStmt
+  (Select (columns : (Vec String) @ Region) (from : String @ Region) (where : (Option SqlExpr) @ Region))
+  (Insert (table : String @ Region) (values : (Map String SqlValue) @ Region))
+  (Update (table : String @ Region) (set : (Map String SqlValue) @ Region) (where : (Option SqlExpr) @ Region))
+  (Delete (table : String @ Region) (where : (Option SqlExpr) @ Region)))
+
+(defn parse [(query : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result SqlStmt SyntaxError) @ Region)
+
+; sql/planner — depends on sql/ast; turns a SqlStmt into a real execution plan (index scan vs.
+; full scan, join order) -- genuinely deferred: real query planning is its own field of study,
+; not a same-pass reference implementation the way linalg's naive matmul was.
+(defn plan [(stmt : &SqlStmt) (schema : &TableSchema) (dest : Arena @ Region)]
+  : (Result QueryPlan PlanError) @ Region)
+
+; sql/driver — depends on net/tcp; a connection interface any real backend (Postgres wire
+; protocol, SQLite's own C API via FFI) implements, matching io's own FileHandle-abstraction
+; judgment: target-agnostic at the signature level, real wire-protocol work per backend.
+(defn connect [(dsn : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Connection ConnError) @ Region)
+(defn execute [(!conn : &mut Connection) (plan : &QueryPlan) (dest : Arena @ Region)]
+  : (Result (Vec (Map String SqlValue)) ConnError) @ Region)
 ```
 
 ## Explicitly not designed yet — real gaps, not silently filled
