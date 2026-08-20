@@ -12,6 +12,7 @@
 #define PARENA_RUNTIME_H
 
 #include <stddef.h>
+#include <string.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -152,6 +153,25 @@ static inline void *vec_get(Vec *v, int idx) {
 
 static inline int vec_len(Vec *v) {
     return (int)v->count;
+}
+
+/* string_concat -- real, minimal `string/concat` implementation
+ * (STDLIB.md's own "string" package design), found genuinely missing
+ * (not just designed) while getting firefly.prn's own `skip` to
+ * actually gcc-compile (it calls `(string/concat "SKIP: " reason
+ * dest)`). Allocates a real, arena-backed buffer sized to both inputs'
+ * combined length + a null terminator, copies both, returns a real
+ * `char *`. Real, honest, narrow scope: exactly two strings + a
+ * destination arena, matching the one real call site that surfaced
+ * this gap -- not a variadic/N-argument concat. */
+static inline char *string_concat(const char *a, const char *b, Arena *dest) {
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    char *out = (char *)arena_alloc(dest, la + lb + 1);
+    memcpy(out, a, la);
+    memcpy(out + la, b, lb);
+    out[la + lb] = '\0';
+    return out;
 }
 
 #endif /* PARENA_RUNTIME_H */

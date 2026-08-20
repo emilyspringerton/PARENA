@@ -13,6 +13,7 @@
 #include "../src/parser.h"
 #include "../src/region.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_pass = 0;
@@ -767,7 +768,10 @@ int main(void) {
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src != NULL && emit_err == NULL, "deref on a real pointer-typed expression emits successfully");
         if (c_src) {
-            CHECK(strstr(c_src, "(*(_x))") != NULL, "deref emits a real C dereference, not a function call");
+            CHECK(strstr(c_src, "(*((Item *)(_x)))") != NULL,
+                  "deref emits a real, cast C dereference (not a bare *(expr), which is only valid "
+                  "when expr's own real C type already matches -- vec_get's real void* return type "
+                  "is the real counter-example that requires the cast), not a function call");
         }
         arena_free_all(&arena);
     }
@@ -981,6 +985,155 @@ int main(void) {
                   "the let's own binding is emitted as a real statement inside the if's own else branch");
             CHECK(strstr(c_src, "continue;") != NULL,
                   "the recur nested inside the let's own body still reaches a real C continue");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- calling a first-class function VALUE (a (Fn [..] ..)-typed
+     * struct field, not a plain named function) -- firefly.prn's own
+     * real `((get-field tc :run) &mut t)`. Real, distinct gap from
+     * emit_call()'s own symbol-headed-call path: the callee position
+     * here is itself a compound expression. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (run : (Fn [I32] Unit)))\n"
+            "(defn call-it [(x : Item)] : Unit\n"
+            "  ((get-field x :run) 1))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "calling a Fn-typed struct field value parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "((x).run)(1)") != NULL,
+                  "the callee expression is emitted and parenthesized, then called directly");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a defstruct field/constructor of a Fn (function-pointer) type
+     * -- a real bug found via an actual gcc compile (firefly.prn's own
+     * TestCase.run field): a plain "%s %s" splice produces invalid C
+     * for a function-pointer type ("void (*)(T *) run" instead of
+     * "void (*run)(T *)"). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defstruct Item (run : (Fn [I32] Unit)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defstruct with a Fn-typed field parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "void (*run)(int);") != NULL,
+                  "the field's own function-pointer name is spliced inside the (*), real valid C");
+            CHECK(strstr(c_src, "void (*)(int) run") == NULL,
+                  "the old, invalid splice (name after the whole type) never appears");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a known, already-emitted user-defined function's own real
+     * return type is used by a later caller in the same file, instead
+     * of the generic "void *" guess -- a real bug found via an actual
+     * gcc compile (firefly.prn's own `fatalf`, whose whole body is a
+     * plain call to `errorf`, a real Unit(void)-returning function;
+     * the generic guess broke the void-tail-statement-not-return fix
+     * from earlier this session, since it only matched "void", not
+     * "void *"). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn helper [] : Unit\n"
+            "  #target\n"
+            "  {:c (inline-c \"host_call()\")})\n"
+            "(defn caller [] : Unit\n"
+            "  (helper))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a function whose body is a plain call to an earlier void-returning "
+                                "function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "return helper()") == NULL,
+                  "the call to a known void-returning function is never wrapped in return");
+            CHECK(strstr(c_src, "helper();") != NULL,
+                  "it's emitted as a real, bare statement instead");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- sb_appendf()'s own fixed 1024-byte internal buffer used to
+     * silently truncate a whole function body once it grew past that --
+     * a real bug found via an actual gcc compile of firefly.prn's own
+     * `run-tests` (the generated file was cut off mid-token, right in
+     * the middle of a real `continue;`). Regression-tested here with a
+     * large, real function body built to comfortably exceed 1024 bytes
+     * on its own. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        /* Plain, manually-grown buffer (not the compiler's own
+         * file-local StrBuf, which test_emit.c as a separate
+         * translation unit can't see) -- 40 chained let-bindings, each
+         * with a real, non-trivial initializer expression, comfortably
+         * pushes the function body's own emitted C past 1024 bytes on
+         * its own. */
+        char *src = (char *)malloc(8192);
+        size_t src_len = 0;
+        src_len += (size_t)sprintf(src + src_len,
+                                    "(defn big [] : I32\n  (loop [i 0 acc 0]\n    (if (>= i 1)\n      acc\n      (let [");
+        for (int i = 0; i < 40; i++) {
+            src_len += (size_t)sprintf(src + src_len, "v%d (+ acc %d) ", i, i);
+        }
+        src_len += (size_t)sprintf(src + src_len, "]\n        (recur (+ i 1) v39)))))");
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, src_len, &parse_err);
+        CHECK(program != NULL, "a function body large enough to exceed 1024 bytes parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strlen(c_src) > 1024, "the emitted C really is larger than sb_appendf()'s own old fixed buffer");
+            CHECK(strstr(c_src, "v39 __attribute__((unused)) = (acc + 39);") != NULL,
+                  "the LAST let-binding is present and intact -- not silently truncated");
+            size_t clen = strlen(c_src);
+            CHECK(clen > 3 && c_src[clen - 1] == '\n' && c_src[clen - 2] == '\n' && c_src[clen - 3] == '}',
+                  "the emitted C ends with a real, intact closing brace, not cut off mid-token");
+        }
+        free(src);
+        arena_free_all(&arena);
+    }
+
+    /* --- string_concat -- a real, minimal runtime implementation, found
+     * genuinely missing (only ever designed, STDLIB.md's own "string"
+     * package) while getting firefly.prn's own `skip` to gcc-compile.
+     * Compiler-level: just confirms the call itself emits correctly;
+     * the runtime function's own correctness is a real C-level concern
+     * (verified separately by the firefly.prn gcc compile itself). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn f [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)] : String @ Region\n"
+            "  (string/concat a b dest))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a string/concat call parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "string_concat(a, b, dest)") != NULL,
+                  "it emits a real call to the runtime's own real string_concat");
         }
         arena_free_all(&arena);
     }

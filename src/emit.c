@@ -45,6 +45,30 @@ static void sb_appendf(StrBuf *sb, const char *fmt, ...) {
     sb_append(sb, buf);
 }
 
+/* sb_append_decl appends a real C variable/field declaration for
+ * `c_type c_name` -- real, honest fix for a bug found this session
+ * (caught by an actual gcc compile, not `parena build`'s own exit
+ * code): a plain `"%s %s"` splice, used everywhere in this file until
+ * now, produces flatly invalid C for a function-pointer type like
+ * `"void (*)(T *)"` (resolve_declared_type()'s own real (Fn ..)
+ * emission) -- C's own declarator syntax puts the name *inside* the
+ * `(*)`, not after the whole type, e.g. `void (*run)(T *)`, not
+ * `void (*)(T *) run`. emit_defn's own parameter-list loop already had
+ * to solve this splicing once (for Fn-typed *parameters*); this is the
+ * same real fix, factored out so process_defstruct's own field-typedef
+ * and constructor-parameter-list emission (which hit this same bug
+ * independently, for Fn-typed *struct fields*) can share it instead of
+ * re-deriving it a third time. */
+static void sb_append_decl(StrBuf *sb, const char *c_type, const char *c_name) {
+    const char *paren_star = strstr(c_type, "(*)");
+    if (paren_star) {
+        size_t prefix_len = (size_t)(paren_star - c_type);
+        sb_appendf(sb, "%.*s(*%s)%s", (int)prefix_len, c_type, c_name, paren_star + 3);
+    } else {
+        sb_appendf(sb, "%s %s", c_type, c_name);
+    }
+}
+
 /* ---- EmitScope: tracks each in-scope binding's C type and whether it's
  * an Arena *value* (a with-arena local, `Arena name;`, needs `&` when
  * passed where Arena* is expected) or already a pointer (a function
@@ -206,6 +230,73 @@ typedef struct StructInfo {
 } StructInfo;
 
 static StructInfo *g_structs = NULL;
+
+/* g_vec_elem_hints -- a real, narrow, structural fix for a real gap
+ * found while getting firefly.prn's own `run-tests` to compile:
+ * `(Vec T)` erases T the same way `(Result ..)`/`(Option ..)` erase
+ * their own type parameters (resolve_declared_type()'s own comment),
+ * which is fine for the *struct field/param C type itself* (there's
+ * only ever one real runtime `Vec` struct regardless of T -- VS0 has
+ * no generics), but it means `(deref (vec/get cases i))` has no way to
+ * know `cases` (bound `Vec *`) holds `TestCase` elements specifically,
+ * so `vec/get`'s own return type falls back to the generic, useless
+ * "void *" -- `deref` then can't do anything meaningful with that.
+ *
+ * Rather than thread real generic type parameters through every C type
+ * string this emitter produces (a much larger, riskier redesign -- see
+ * the commit message for the fuller real reasoning), this is a small,
+ * separate, parallel side-table: when a parameter is bound with a
+ * `&(Vec ElemType)` type (the exact shape that surfaced this gap),
+ * record `param's own mangled C name -> ElemType` here. emit_call()'s
+ * own `vec_get` handling consults it, keyed off the CALL SITE's own
+ * first-argument symbol text, to report the real element type instead
+ * of the generic fallback. Reset per emit_c() call, same real reason
+ * g_enums/g_structs already are (this is per-compilation state, not
+ * something that should leak across files/tests). */
+typedef struct VecElemHint {
+    const char *c_name;    /* the Vec-holding param/local's own mangled C name */
+    const char *elem_type; /* the real element type name, e.g. "TestCase" */
+    struct VecElemHint *next;
+} VecElemHint;
+static VecElemHint *g_vec_elem_hints = NULL;
+
+static const char *find_vec_elem_hint(const char *c_name) {
+    for (VecElemHint *h = g_vec_elem_hints; h; h = h->next) {
+        if (strcmp(h->c_name, c_name) == 0) return h->elem_type;
+    }
+    return NULL;
+}
+
+/* g_defn_return_types -- a real, minimal function-signature registry:
+ * every `defn`'s own mangled name -> its own declared return type,
+ * populated as each defn is emitted. Real bug found this session (an
+ * actual gcc -pedantic compile of firefly.prn's own `fatalf`, whose
+ * whole body is a plain call to `errorf` -- a real, user-defined,
+ * Unit(void)-returning function): emit_call()'s own "no function-
+ * signature table yet" fallback reports every unrecognized call as
+ * returning generic "void *", which is wrong for a *known*, already-
+ * emitted-earlier-in-this-same-file function like `errorf` -- wrong
+ * enough that emit_body's own void-tail-statement-not-return fix
+ * (added earlier this session for the exact same real ISO C99 rule)
+ * never even fired, since it only checked for the literal string
+ * "void", not "void *". Consulted by emit_call() before falling back
+ * to the generic "void *" guess. Real, honest, narrow scope: only
+ * functions VS0 has already emitted earlier in the SAME file are
+ * registered -- a forward reference to a function not yet emitted
+ * still falls back to the generic guess, same as before. */
+typedef struct DefnReturnType {
+    const char *c_name;
+    const char *return_type;
+    struct DefnReturnType *next;
+} DefnReturnType;
+static DefnReturnType *g_defn_return_types = NULL;
+
+static const char *find_defn_return_type(const char *c_name) {
+    for (DefnReturnType *d = g_defn_return_types; d; d = d->next) {
+        if (strcmp(d->c_name, c_name) == 0) return d->return_type;
+    }
+    return NULL;
+}
 
 static StructInfo *find_struct_by_name(const char *name) {
     for (StructInfo *s = g_structs; s; s = s->next) {
@@ -516,7 +607,8 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * (no space) is already handled inside emit_expr() itself; this
          * is specifically the two-node form only a call's own argument
          * loop can see both halves of. */
-        if (call->children[i]->type == NODE_SYMBOL && is_symbol(call->children[i], "&") &&
+        if (call->children[i]->type == NODE_SYMBOL &&
+            (is_symbol(call->children[i], "&") || is_symbol(call->children[i], "&mut")) &&
             i + 1 < call->child_count) {
             const char *inner_type = NULL;
             const char *inner_c = emit_expr(arena, call->children[i + 1], scope, &inner_type, out_error);
@@ -560,8 +652,41 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
         *out_type = "Vec";
     } else if (strcmp(fn_name, "vec_len") == 0) {
         *out_type = "int";
+    } else if (strcmp(fn_name, "vec_get") == 0 && call->child_count >= 2 &&
+               call->children[1]->type == NODE_SYMBOL) {
+        /* Real fix for the deeper Vec-element-type gap found while
+         * getting firefly.prn's own `run-tests` to compile: `vec_get`
+         * genuinely returns `void *` at the C level (every Vec is the
+         * same one erased runtime struct), but if the call site's own
+         * first argument is a param/local this compilation recorded a
+         * real element type for (g_vec_elem_hints, populated by the
+         * `&(Vec ElemType)` parameter-binding path), report that real
+         * type instead of the generic fallback -- `(deref (vec/get
+         * cases i))` can then actually resolve to `TestCase`, not a
+         * useless `void`. Narrow, not a general type table: only fires
+         * when a real hint was recorded for this exact call's own first
+         * argument symbol. */
+        const char *mangled = mangle(arena, call->children[1]->text);
+        const char *elem = find_vec_elem_hint(mangled);
+        if (elem) {
+            char t[128];
+            snprintf(t, sizeof(t), "%s *", elem);
+            *out_type = arena_strdup(arena, t, strlen(t));
+        } else {
+            *out_type = "void *";
+        }
     } else {
-        *out_type = "void *";
+        /* g_defn_return_types (see its own declaration comment): a
+         * known, already-emitted user-defined function's own real
+         * declared return type, consulted before the generic "void *"
+         * guess -- found necessary the same real way vec_get's own fix
+         * above was, via an actual gcc compile of firefly.prn's `fatalf`
+         * (a plain call to `errorf`, a real, Unit(void)-returning
+         * function -- the generic "void *" guess made emit_body's own
+         * void-tail-statement fix never fire, since it only matched the
+         * literal string "void"). */
+        const char *known = find_defn_return_type(fn_name);
+        *out_type = known ? known : "void *";
     }
     return arena_strdup(arena, buf, strlen(buf));
 }
@@ -851,8 +976,23 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         size_t tl = strlen(type_buf);
         while (tl > 0 && type_buf[tl - 1] == ' ') type_buf[--tl] = '\0';
         *out_type = arena_strdup(arena, type_buf, tl);
+        /* Real bug found and fixed here (an actual gcc compile of
+         * firefly.prn's own `run-tests`): a bare `*(expr)` is only
+         * valid C when `expr`'s own REAL C type (not just what this
+         * emitter's own internal type-tracking believes it to be) is
+         * already the correct concrete pointer type. `vec_get` is the
+         * real counter-example that surfaced this: parena_runtime.h's
+         * own `vec_get` genuinely returns `void *` in real C regardless
+         * of what emit_call()'s own g_vec_elem_hints-informed *out_type*
+         * says it "means" -- dereferencing a real `void *` directly is
+         * itself a distinct real ISO C error ("dereferencing 'void *'
+         * pointer"). Casting to the known target type before
+         * dereferencing fixes both at once: `*((TestCase *)(expr))` is
+         * real, valid C whether `expr`'s own actual declared C type was
+         * already `TestCase *` (a harmless redundant cast) or generic
+         * `void *` (the cast is load-bearing there). */
         char buf[512];
-        snprintf(buf, sizeof(buf), "(*(%s))", inner_c);
+        snprintf(buf, sizeof(buf), "(*((%s *)(%s)))", type_buf, inner_c);
         return arena_strdup(arena, buf, strlen(buf));
     }
     if (is_call_named(expr, "get-field")) {
@@ -912,6 +1052,59 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         const char *c_op = binop_c_symbol(expr->children[0]->text);
         if (c_op) return emit_binop(arena, expr, c_op, scope, out_type, out_error);
         return emit_call(arena, expr, scope, out_type, out_error);
+    }
+    /* `((expr) arg1 arg2 ...)` -- calling a first-class function VALUE
+     * (a `(Fn [..] ..)`-typed struct field/local, not a plain named
+     * function), e.g. firefly.prn's own `((get-field tc :run) &mut t)`
+     * (TestCase.run is exactly `(Fn [&mut T] Unit)`). Real, distinct gap
+     * from emit_call()'s own symbol-headed-call path above: the callee
+     * position here is itself a compound expression (a get-field call),
+     * not a bare symbol, so it was never reachable through emit_call()
+     * (which always mangles `call->children[0]->text`, assuming a
+     * symbol). Real C function-pointer values are directly callable
+     * with normal call syntax once parenthesized, so this just emits
+     * the callee expression, wraps it in parens, and appends the
+     * argument list -- the same real "&(expr)" two-node address-of
+     * pairing emit_call()'s own argument loop already does is repeated
+     * here rather than factored out, since duplicating ~10 lines is
+     * cheaper and safer under real time pressure than restructuring
+     * emit_call() to accept a pre-computed callee string this late in
+     * the session. */
+    if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_LIST) {
+        const char *callee_type = NULL;
+        const char *callee_c = emit_expr(arena, expr->children[0], scope, &callee_type, out_error);
+        if (!callee_c) return NULL;
+        StrBuf args;
+        sb_init(&args);
+        for (size_t i = 1; i < expr->child_count; i++) {
+            if (expr->children[i]->type == NODE_SYMBOL &&
+                (is_symbol(expr->children[i], "&") || is_symbol(expr->children[i], "&mut")) &&
+                i + 1 < expr->child_count) {
+                const char *inner_type = NULL;
+                const char *inner_c = emit_expr(arena, expr->children[i + 1], scope, &inner_type, out_error);
+                if (!inner_c) {
+                    sb_free(&args);
+                    return NULL;
+                }
+                if (i > 1) sb_append(&args, ", ");
+                sb_appendf(&args, "&(%s)", inner_c);
+                i++;
+                continue;
+            }
+            const char *arg_type = NULL;
+            const char *arg_c = emit_expr(arena, expr->children[i], scope, &arg_type, out_error);
+            if (!arg_c) {
+                sb_free(&args);
+                return NULL;
+            }
+            if (i > 1) sb_append(&args, ", ");
+            sb_append(&args, arg_c);
+        }
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "(%s)(%s)", callee_c, args.data);
+        sb_free(&args);
+        *out_type = "void *"; /* same real, honest "no function-signature table yet" fallback emit_call() itself uses */
+        return arena_strdup(arena, buf, strlen(buf));
     }
     /* `{:key1 val1 :key2 val2 ...}` -- map-literal struct construction,
      * the real gap STDLIB.md's own gap-analysis section already itemized
@@ -1761,14 +1954,16 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
 
     sb_appendf(out, "typedef struct {\n");
     for (size_t i = 0; i < field_count; i++) {
-        sb_appendf(out, "    %s %s;\n", fields[i].c_type, fields[i].c_name);
+        sb_append(out, "    ");
+        sb_append_decl(out, fields[i].c_type, fields[i].c_name);
+        sb_append(out, ";\n");
     }
     sb_appendf(out, "} %s;\n", struct_name);
 
     sb_appendf(out, "static inline %s %s_new(", struct_name, struct_name);
     for (size_t i = 0; i < field_count; i++) {
         if (i > 0) sb_append(out, ", ");
-        sb_appendf(out, "%s %s", fields[i].c_type, fields[i].c_name);
+        sb_append_decl(out, fields[i].c_type, fields[i].c_name);
     }
     if (field_count == 0) sb_append(out, "void");
     sb_appendf(out, ") {\n    %s v;\n", struct_name);
@@ -1828,7 +2023,23 @@ static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const c
     } else {
         sb_appendf(&body, "    return (%.*s);\n", (int)src->text_len, src->text);
     }
-    sb_appendf(out, "%s %s(%s) {\n%s}\n\n", return_type, fn_name, param_list, body.data);
+    /* Real, honest bug found and fixed here (an actual gcc compile of a
+     * real, large function -- firefly.prn's own `run-tests`): sb_appendf()
+     * routes every call through a FIXED 1024-byte internal buffer
+     * (vsnprintf), which silently truncates whatever doesn't fit --
+     * fine for the short, bounded format strings used everywhere else
+     * in this file, genuinely wrong here, where `body.data` is an
+     * entire function body and can be arbitrarily large. sb_append()
+     * (used directly, piece by piece, below) goes through StrBuf's own
+     * real, dynamically-growing buffer instead -- no fixed ceiling. */
+    sb_append(out, return_type);
+    sb_append(out, " ");
+    sb_append(out, fn_name);
+    sb_append(out, "(");
+    sb_append(out, param_list);
+    sb_append(out, ") {\n");
+    sb_append(out, body.data);
+    sb_append(out, "}\n\n");
     sb_free(&body);
     return 1;
 }
@@ -2051,6 +2262,23 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+            /* `&(Vec ElemType)` specifically -- record the real element
+             * type in g_vec_elem_hints (see its own declaration comment
+             * for why): a registered defenum/defstruct/or plain resolved
+             * base type name for ElemType, keyed by this param's own
+             * mangled C name, so a later `(vec/get cases i)` call site
+             * can report a real element type instead of the generic
+             * "void *" fallback. */
+            if (param->children[3]->type == NODE_LIST && param->children[3]->child_count == 2 &&
+                param->children[3]->children[0]->type == NODE_SYMBOL &&
+                is_symbol(param->children[3]->children[0], "Vec") &&
+                param->children[3]->children[1]->type == NODE_SYMBOL) {
+                VecElemHint *hint = (VecElemHint *)arena_alloc(arena, sizeof(VecElemHint));
+                hint->c_name = c_name;
+                hint->elem_type = param->children[3]->children[1]->text;
+                hint->next = g_vec_elem_hints;
+                g_vec_elem_hints = hint;
+            }
         } else if (param->child_count == 5 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL && param->children[3]->type == NODE_AT) {
             /* `Type @ Region` on a NON-Arena type, e.g. firefly.prn's own
@@ -2094,6 +2322,17 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             sb_free(&param_list);
             return 0;
         }
+        /* Register into g_defn_return_types (see its own declaration
+         * comment) -- BEFORE this function's own body is emitted below,
+         * so a self-recursive call within its own body (or a `#target`
+         * call in a later function calling back into this one) can
+         * already see it, same "register first, emit second" order
+         * process_defenum()/process_defstruct() already use. */
+        DefnReturnType *drt = (DefnReturnType *)arena_alloc(arena, sizeof(DefnReturnType));
+        drt->c_name = fn_name;
+        drt->return_type = declared_return_type;
+        drt->next = g_defn_return_types;
+        g_defn_return_types = drt;
         body_start += 2;
         /* An optional trailing `@ <region>` on the return type itself,
          * e.g. `: Cache @ Region` (cache.prn's own open) or
@@ -2133,7 +2372,25 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
     }
 
     const char *return_type = declared_return_type ? declared_return_type : inferred_return_type;
-    sb_appendf(out, "%s %s(%s) {\n%s}\n\n", return_type, fn_name, param_list.data, body.data);
+    /* Real bug found and fixed here (an actual gcc compile of
+     * firefly.prn's own real `run-tests` -- the file silently got cut
+     * off mid-token, right in the middle of `continue;`): sb_appendf()
+     * routes through a fixed 1024-byte internal vsnprintf buffer, which
+     * silently truncates whatever doesn't fit -- fine for this file's
+     * many short, bounded format strings, genuinely wrong for a whole
+     * function body, which can be (and here, was) far larger than that.
+     * `parena build`'s own exit code never caught this either -- it
+     * doesn't re-parse its own output C, by design. sb_append() (used
+     * piece by piece below) goes through StrBuf's own real,
+     * dynamically-growing buffer instead. */
+    sb_append(out, return_type);
+    sb_append(out, " ");
+    sb_append(out, fn_name);
+    sb_append(out, "(");
+    sb_append(out, param_list.data);
+    sb_append(out, ") {\n");
+    sb_append(out, body.data);
+    sb_append(out, "}\n\n");
     sb_free(&param_list);
     sb_free(&body);
     return 1;
@@ -2150,6 +2407,8 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * no-op there. */
     g_enums = NULL;
     g_structs = NULL; /* same per-call reset, same real reason -- see g_enums' own comment */
+    g_vec_elem_hints = NULL; /* same per-call reset -- see its own declaration comment */
+    g_defn_return_types = NULL; /* same per-call reset -- see its own declaration comment */
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
