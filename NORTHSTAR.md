@@ -1,10 +1,26 @@
 # NORTHSTAR — PARENA
 
-**Status:** VS0 lexer/parser (domain 1), region analyzer (domain 2), and C emitter (domain 3)
-built and CI-verified — `parena build examples/valid_only.prn -o out.c` produces real C99 that
-compiles with zero warnings under `gcc -Wall -Wextra -pedantic -std=c99` (the DoD's own literal
-bar) and, verified beyond the DoD's own requirement, actually runs correctly when linked against
-the real runtime. Memory verification and the CLI runner polish (domains 4-5) not yet built.
+**Status:** all five VS0 DoD domains built and CI-verified. Lexer/parser (domain 1), region
+analyzer (domain 2), and C emitter (domain 3) — `parena build examples/valid_only.prn -o out.c`
+produces real C99 that compiles with zero warnings under `gcc -Wall -Wextra -pedantic -std=c99`
+(the DoD's own literal bar) and, verified beyond the DoD's own requirement, actually runs
+correctly when linked against the real runtime. Memory verification (domain 4) — the same real
+emitted program runs clean under ASan+UBSan (and Valgrind, where installed), and a deliberately-
+broken fixture is confirmed to actually get caught, proving the check has teeth. CLI runner
+(domain 5) — the DoD's own literal bar (`./parena build input.prn -o output.c`, exit 0 on
+success, exit 1 on a real region error) verified automatically (`tests/integration/
+run_domain5_check.sh`, wired into CI): a real valid file exits 0 and writes real, non-empty
+output; a real region-safety violation (the DoD's own literal example, an escaping `:region/
+scratch` pointer) exits 1 and leaves no stale output file behind.
+
+**Explicitly still out of scope for VS0** (per the DoD table's own "Explicitly out of scope"
+line, unchanged by the above): the stdlib, the editor/plugin API, JVM/TypeScript/WebAssembly
+targets, macros (`defmacro`), and the mod-surface integration question. All five domains being
+done means VS0 itself — the parser + region analyzer + C emitter + CLI — is complete; it does
+not mean the mod-surface stdlib (`stdlib/editor/*`, `stdlib/gfd.prn`, `stdlib/mapbuilder/*`, the
+`#target`/`defenum`/`defstruct` emitter extensions layered on top of VS0 this same session) is
+finished — that work continues on its own, separate, real timeline, tracked in `STDLIB.md` and
+`EMILY/BACKLOG.md`, not conflated with VS0's own closed scope here.
 **Date:** 2026-08-20.
 
 ## What this is

@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 clean
+.PHONY: all build test test-domain4 test-domain5 clean
 
 all: build
 
@@ -34,6 +34,15 @@ test: tests/test_lexer_parser tests/test_region tests/test_emit
 # $(CFLAGS)/$(OBJ) plumbing -- a real, separate integration check.
 test-domain4: build
 	bash tests/integration/run_domain4_check.sh
+
+# VS0 domain 5 -- the DoD's own literal CLI Runner acceptance bar: a real
+# valid file exits 0 and writes real output, a real region-safety
+# violation exits 1 and leaves no stale output file behind. Not folded
+# into the plain `test` target for the same "separate, real integration
+# check, not this Makefile's own $(CFLAGS)/$(OBJ) plumbing" reason
+# test-domain4 already isn't.
+test-domain5: build
+	bash tests/integration/run_domain5_check.sh
 
 tests/test_lexer_parser: tests/test_lexer_parser.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_lexer_parser tests/test_lexer_parser.c $(OBJ)
