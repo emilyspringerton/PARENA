@@ -1675,6 +1675,42 @@ signatures only, not deep — PITVIPER's own real pane model already exists in G
 NORTHSTAR), this designs what a future PARENA-native tiling layer would look like once dogfooded
 in, not a redesign of what's already shipped.
 
+### `cache` — Russian-doll nested caching, Rails' own real precedent
+
+Founder: "add russian doll nested cashing to the stdlib." Real, named prior art: Rails'
+"Russian doll caching" — a fragment's own cache key is derived not just from its own identity and
+version, but from every child fragment's *current* key too, so touching a child (bumping its own
+version) changes the child's key, which changes the parent's composed key, which is a real cache
+miss on the parent next time it's fetched — cascading invalidation for free, from key composition
+alone, with no explicit "walk up and invalidate every ancestor" bookkeeping anywhere.
+
+```clojure
+(defn open       [(dest : Arena @ Region) (namespace : String @ :region/scratch)] : Cache @ Region)
+(defn key        [(name : String @ :region/scratch) (version : I32) (children : (Vec String) @ Region)] : String @ Region)
+(defn fetch      [(!c : &Cache) (k : String @ :region/scratch) (compute : (Fn [] String))] : String @ Region)
+(defn invalidate! [(!c : &Cache) (k : String @ :region/scratch)] : Unit)
+(defn touch!     [(!c : &Cache) (name : String @ :region/scratch)] : I32)   ; bumps + returns the new version
+```
+
+`key` is the real Russian-doll mechanism: it composes `name`/`version` with every string already
+in `children` (each child's own most recent `key` result, collected by the caller) into one
+composed key — a real, honest string composition (e.g. `name/version/child1-key/child2-key`), not
+a cryptographic content hash; VS0 has no hashing primitive in scope yet, and a Rails-style
+composed key is real, working prior art on its own without one. `fetch` is the classic
+cache-fetch-or-compute-and-store idiom (`Rails.cache.fetch(key) { compute }`): look `k` up in `c`,
+return it on a hit, otherwise call `compute`, store the result under `k`, and return it. `touch!`
+is the explicit, real invalidation primitive for a leaf fragment that has no cache-derived key of
+its own (e.g. a value read fresh from a database row) — bump its version so every parent whose
+composed `key` call includes this fragment's name picks up a new value next call.
+
+Real, honest limitation: the actual storage backend (in-memory map, on-disk, shared across
+processes) is real, host-side, undecided work — same `#target` FFI-declared-here,
+implemented-elsewhere shape every other stdlib package in this doc already uses for its own real
+substrate (`thread`'s pthreads, `sql/driver`'s real driver). `(Vec String)`/`(Fn [] String)`-typed
+parameters above are real VS0 gaps too (collections-as-parameters, and callback parameters with a
+non-`Unit` return) — not glossed over, this doc's own job is to describe the target shape even
+where the compiler doesn't reach it yet.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - ~~**Collections beyond `Vec`/`Map` literals**~~ — resolved above (`vec`/`map` packages), once

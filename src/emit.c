@@ -947,11 +947,44 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             const char *c_type = is_symbol(param->children[2], "I32") ? "int" : "char *";
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+                   is_call_named(param->children[2], "Fn") && param->children[2]->child_count == 3 &&
+                   param->children[2]->children[1]->type == NODE_VEC &&
+                   param->children[2]->children[1]->child_count == 0) {
+            /* A `(Fn [] <ReturnType>)` zero-argument callback parameter --
+             * the real shape stdlib/editor's own mod-surface plugin
+             * functions need (editor/plugin.prn's register-command,
+             * editor/events.prn's subscribe, cache.prn's fetch), extended
+             * from the original Unit-only support to any return type
+             * resolve_declared_type() already understands (Unit/I32/
+             * String/(Result ..)/(Option ..)), since a callback returning
+             * a value (cache.prn's `(Fn [] String)` compute thunk, for
+             * one real example) is exactly as real a shape as one
+             * returning Unit. Emitted as a real C function pointer --
+             * C's own inside-out function-pointer declaration syntax,
+             * which is why this needs its own format string rather than
+             * the `<type> <name>` pattern every other parameter shape
+             * above uses. Real, honest, narrow scope: only zero-argument
+             * Fn types are understood -- the wider stdlib's own `(Fn
+             * [F64 F64] F64)`/`(Fn [&mut T] Unit)`/generic-parameter Fn
+             * shapes elsewhere (array.prn, sort.prn, scarab.prn, etc.)
+             * are real, separate, unstarted work (VS0 has no generics or
+             * reference types yet either), not silently guessed at here. */
+            const char *ret_type = resolve_declared_type(arena, param->children[2]->children[2], out_error);
+            if (!ret_type) {
+                sb_free(&param_list);
+                return 0;
+            }
+            char c_type_buf[64];
+            snprintf(c_type_buf, sizeof(c_type_buf), "%s (*)(void)", ret_type);
+            const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s (*%s)(void) __attribute__((unused))", ret_type, c_name);
         } else {
             fail(arena, out_error,
-                 "defn: parameter '%s' has no region annotation and isn't a plain I32/String "
-                 "either (VS0 only supports `Arena @ :region/x`, `I32`, and `String` parameters "
-                 "so far)",
+                 "defn: parameter '%s' has no region annotation and isn't a plain I32/String/"
+                 "(Fn [] ..) either (VS0 only supports `Arena @ :region/x`, `I32`, `String`, "
+                 "and zero-argument `(Fn [] <ReturnType>)` parameters so far)",
                  param->children[0]->text);
             sb_free(&param_list);
             return 0;

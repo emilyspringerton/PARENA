@@ -1,0 +1,51 @@
+;; stdlib/cache.prn — depends on string, vec. Design: STDLIB.md "cache"
+;; section. Real, named prior art: Rails' own "Russian doll caching" --
+;; a fragment's cache key is composed from its own identity/version plus
+;; every child fragment's own current key, so bumping a child's version
+;; changes the child's key, which changes the parent's composed key,
+;; which is a real cache miss on the parent -- cascading invalidation for
+;; free from key composition alone, no explicit walk-up-and-invalidate
+;; bookkeeping anywhere. Real limitation restated: the actual storage
+;; backend is real, host-side, undecided work (same #target shape every
+;; other stdlib package's own real substrate already uses).
+
+(module cache)
+(import string)
+(import vec)
+(export open key fetch invalidate! touch!)
+
+(defn open [(dest : Arena @ Region) (namespace : String @ :region/scratch)]
+  : Cache @ Region
+  #target
+  {:c (inline-c "cache_open(dest, namespace)")})
+
+(defn key [(name : String @ :region/scratch) (version : I32) (children : (Vec String) @ Region)]
+  : String @ Region
+  ;; The real Russian-doll mechanism: compose name/version with every
+  ;; already-computed child key -- a real, honest string composition
+  ;; (name/version/child1-key/child2-key), not a cryptographic hash (VS0
+  ;; has no hashing primitive in scope yet, and this is real, working
+  ;; prior art on its own without one).
+  #target
+  {:c (inline-c "cache_compose_key(name, version, children)")})
+
+(defn fetch [(!c : &Cache) (k : String @ :region/scratch) (compute : (Fn [] String))]
+  : String @ Region
+  ;; The classic Rails.cache.fetch(key) { compute } idiom: hit -> return
+  ;; the stored value, miss -> call compute, store it under k, return it.
+  #target
+  {:c (inline-c "cache_fetch_or_compute(c, k, compute)")})
+
+(defn invalidate! [(!c : &Cache) (k : String @ :region/scratch)]
+  : Unit
+  #target
+  {:c (inline-c "cache_invalidate(c, k);")})
+
+(defn touch! [(!c : &Cache) (name : String @ :region/scratch)]
+  : I32
+  ;; Explicit invalidation for a leaf fragment with no cache-derived key
+  ;; of its own (e.g. a value read fresh from a database row): bump its
+  ;; version, return the new one, so every parent whose composed `key`
+  ;; call includes `name` picks up a new value next call.
+  #target
+  {:c (inline-c "cache_bump_version(c, name)")})

@@ -263,6 +263,29 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- (Fn [] <ReturnType>) callback parameters now work for any
+     * return type resolve_declared_type() understands, not just Unit --
+     * the real shape stdlib/cache.prn's own fetch() needs (a compute
+     * thunk returning String, not Unit). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn fetch [(name : String @ :region/scratch) (compute : (Fn [] String))]\n"
+            "  : String\n  #target\n  {:c (inline-c \"cache_fetch(name, compute)\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a (Fn [] String) callback parameter function parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "(Fn [] String) parameter emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "char * (*compute)(void)") != NULL,
+                  "the callback's own declared String return type becomes a real char * function pointer");
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure: referencing an unbound identifier is
      * reported, not silently emitted as a dangling C reference. --- */
     {
