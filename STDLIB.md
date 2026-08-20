@@ -106,11 +106,75 @@ something real needs one.
 example call it). `get-data` is the obvious read-side counterpart — without it, `buffer` would
 be a write-only package, which no real stdlib package is.
 
+### `array` / `linalg` / `stats` — the numpy/scipy equivalent
+
+Founder: "can we build scipy and numpy into the standard language of PARENA?" → "whatever the
+equivalent would be" → "build building blocks as stdlib if you need to or if it helps" → "to keep
+things nice and composible." Real design, not a wholesale port of numpy/scipy's own API surface —
+those two libraries are themselves layered (numpy: the array type + memory layout; scipy: linear
+algebra/stats/optimization/signal-processing *built on top of* numpy's array), and that layering
+is exactly the "nice and composable" shape to reuse: three small packages, each usable alone,
+each `import`able without pulling in the others.
+
+**`array`** — the actual numpy-equivalent: one region-typed, contiguous N-dimensional buffer type
+and the operations every layer above it needs. This is the foundation everything else in this
+section is built from — `linalg`/`stats` never touch raw memory themselves, only `NDArray`.
+
+```clojure
+(defstruct NDArray
+  (data  : (Vec F64) @ Region)   ; contiguous backing storage, arena-owned by whatever
+                                  ; region the array itself was allocated in
+  (shape : (Vec I32)  @ Region)  ; e.g. [3 4] for a 3x4 matrix
+  (strides : (Vec I32) @ Region))
+
+(defn zeros  [(shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)] : NDArray @ Region)
+(defn from-vec [(data : (Vec F64) @ Region) (shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region)
+(defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch)] : (Result F64 IndexError))
+(defn set! [(a : &mut NDArray) (idx : (Vec I32) @ :region/scratch) (v : F64)] : (Result Unit IndexError))
+(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch)] : (Result NDArray ShapeError) @ Region)
+(defn add [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
+(defn mul-elementwise [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
+```
+
+Every allocating function takes an explicit `dest : Arena @ Region` — same "caller picks the
+region" idiom `io/open`/`string/concat` already use above, not a hidden global allocator the way
+numpy's own C implementation has one. That's the actual place PARENA's version has to diverge
+from numpy, not a cosmetic API difference: region typing means "where does this array live" is
+part of every signature, not an implementation detail.
+
+**`linalg`** — depends only on `array`, matches scipy's own `scipy.linalg` scope, not scipy's
+full breadth:
+
+```clojure
+(defn matmul  [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
+(defn transpose [(a : &NDArray) (dest : Arena @ Region)] : NDArray @ Region)
+(defn dot     [(a : &NDArray) (b : &NDArray)] : (Result F64 ShapeError))
+(defn inverse [(a : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)
+(defn solve   [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)
+```
+
+**`stats`** — depends only on `array`, matches scipy's own `scipy.stats` scope, deliberately
+starting narrow (mean/std/summary statistics, not distributions/hypothesis-testing yet — those
+are real, separate follow-up work once something actually needs them):
+
+```clojure
+(defn mean [(a : &NDArray)] : F64)
+(defn std  [(a : &NDArray)] : F64)
+(defn sum  [(a : &NDArray)] : F64)
+(defn min  [(a : &NDArray)] : (Result F64 EmptyArrayError))
+(defn max  [(a : &NDArray)] : (Result F64 EmptyArrayError))
+```
+
+**Real, honest limitation**: numpy/scipy's actual value is decades of vectorized, SIMD-tuned,
+BLAS/LAPACK-backed numerical kernels — nothing above specifies *how* `matmul`/`inverse`/etc. get
+implemented fast. A first real implementation would plausibly call out to a real BLAS/LAPACK C
+library via the FFI block NORTHSTAR.md's own core idioms already show (`#target {:c (inline-c
+...)}`), rather than hand-writing a naive triple-nested-loop matmul and calling it done — flagged
+as a real follow-up decision, not resolved by this design pass.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
-- **`math`** — no numeric operation beyond literal integers/decimals appears anywhere in the
-  source spec. Needed eventually (every real language ships one), not scoped here because
-  nothing concrete grounds a specific function list yet.
 - **Collections beyond `Vec`/`Map` literals** — `[...]`/`{...}` are core syntax (NORTHSTAR
   §"Syntax"), but no package for e.g. `vec/push`, `map/get` appears in any source example.
   Needed before anything past toy programs can be written; deliberately left for whoever
