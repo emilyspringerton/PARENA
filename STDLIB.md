@@ -95,33 +95,51 @@ binding, not a language primitive).
 51. `config` — depends on `cli`, `string`
 52. `pentest/scan`, `pentest/pcap`, `pentest/webapp`, `pentest/wireless`, `pentest/crack`,
     `pentest/exploit` — depend on `string`, `vec` (each FFI-bound independently)
+53. `world` — depends on `vec` only
+54. `mapbuilder/tools` — depends on `world`, `vec`
+55. `mapbuilder/layout`, `mapbuilder/template` — depend on `mapbuilder/tools`, `vec`
+56. `idvault` — depends on `net/http`, `string` (a real IDUNA REST client, same shape as
+    `pitviper/protocol`'s own `net/tcp`-based client)
+57. `pitviper/expand` — depends on `string`, `map`
 
-**Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
-this is *build/attention* priority, dependency-respecting but not identical to it, since a
-low-numbered dependency tier isn't automatically high-value on its own):
+**Founder: "again we need the cli to systematize i say over and over plan those deps - whatever
+makes sense - plan the deps etc"** — the list above is the full, current re-sort across every
+package this document now designs (57 entries, up from the last full re-sort's 38) — topological
+by `import`, same rule as every earlier pass: a package appears only after everything it actually
+depends on.
 
-1. **Foundational, blocks everything** — `vec`, `map`, `string`, `io`, `log`, `buffer` (nothing
-   else in this document is usable without these).
-2. **Directly blocks the two live product asks** (GFD web/mod-surface, already-shipping; MIXFORGE/
-   streaming, newly stated intent) — `sdl2`, `thread`, `net/tcp`+`net/udp`, `regex/pcre` (`awk`/
-   `sed`/`grep` all need it), `gfd`.
-3. **Second-order product-blocking** — `media/audio`, `media/codec`, `media/stream`, `net/http`,
-   `expr`, `awk`/`sed`/`grep` themselves, `otp/gen-server`+`otp/supervisor`+`otp/ets` (concurrency
-   ergonomics for whatever server process ends up running `media/stream`'s multi-destination
-   fan-out).
-4. **Real but not currently blocking a stated product** — `array`/`linalg`/`stats`/`dataframe`/
-   `nn`/`tokenizer`/`sort` (the gpt2-alpine-c-port + numpy/pandas-equivalent work, real and
-   grounded, but no live thread this session asked to build something on top of them yet),
-   `regex/syntax`+`regex/nfa`+`regex/posix`+`regex/glob` (regex/pcre alone unblocks `awk`/`sed`/
-   `grep`; the other three engines are completeness, not a live blocker), `editor/*` (blocked on
-   NORTHSTAR's own still-undecided shell question, not on this stdlib).
+**Priority order, re-planned** (founder: "and then prioritize them," repeated this pass —
+*build/attention* priority, dependency-respecting but not identical to it):
 
-Real, honest limitation restated once here rather than per-package below: VS0 only has a working
-*parser* (domain 1) — no region analyzer or C emitter yet (S189-13, domains 2-5 not started). Every
-`.prn` file under `stdlib/` is real source, written in the language's actual documented syntax and
-checked against the real `parena parse` command, but none of it compiles or runs yet — that
-requires domains 2-3, which this pass does not build. "Built out in Parena" means *real, parseable
-Parena source exists*, not *the standard library is executable*.
+1. **Foundational, blocks everything, already real `.prn` source** — `vec`, `map`, `string`, `io`,
+   `log`, `buffer`, `thread`, `pty`, `shell` — done, `parena parse`-verified.
+2. **Directly blocks the live "PARENA eats PITVIPER" thread** — `cli`/`config` (the real, concrete
+   self-hosting target once VS0 domain 5 lands — `main.c`'s own `argv` dispatch is the literal
+   first rewrite candidate), `pitviper/protocol`+`compress/lz4` (the real remote-IDE workflow),
+   `pitviper/quicklook`, `git`, `ssh`. None of these have real `.prn` source yet except
+   `ssh`/`pty`/`shell` above — this tier is designed, not built.
+3. **Second-order product-blocking, partially real** — `sdl2` (real `.prn`), `net/tcp`/`net/udp`
+   (real `.prn`), `net/http` (design only), `regex/pcre` (real `.prn`, the one engine `awk`/`sed`/
+   `grep` actually need), `gfd`/`gfd/browser`, `world`/`mapbuilder/tools` (real `.prn`),
+   `mapbuilder/layout`/`mapbuilder/template` (design only).
+4. **Real but not currently blocking a stated live thread** — `array`/`linalg`/`stats`/`dataframe`/
+   `nn`/`tokenizer`/`sort` (real `.prn`, gpt2-alpine-c-port grounded), `regex/syntax`+`regex/nfa`+
+   `regex/posix`+`regex/glob` (real `.prn`), `editor/*` (real `.prn`, blocked on NORTHSTAR's own
+   still-open shell question — now *resolved* as SDL2-based, not "undecided" anymore, this note
+   was stale), `otp/*`, `media/*`, `sql/*`, `firefly`/`firefly/gomega`/`scarab` (real `.prn`),
+   `crypto/*` (real `.prn`), `ncurses` (real `.prn`), `profile`, `staticanalysis`, `net/vpn`+
+   `net/packetradio`+`net/mesh`, `pentest/*`, `idvault`, `pitviper/expand`.
+
+**Real status, corrected — this note was stale and understated real progress**: VS0 domains 1-4
+are done and CI-green (lexer/parser, region analyzer, C emitter, memory verification) — `parena
+build examples/valid_only.prn -o out.c` produces real, running, ASan/Valgrind-clean C. Domain 5
+(the CLI runner's own remaining polish) is the one real gap left in VS0 itself. What's still real
+and true: only that one narrow shape (`examples/valid_only.prn`'s own `with-arena`/`let`/`alloc`
+pattern) actually compiles — none of the ~57 stdlib packages above run yet, including the ~30 that
+already have real, `parena parse`-verified `.prn` source. "Built out in Parena" still means *real,
+parseable source exists*, not *executable* — that gap is now about the emitter's own real
+generality (VS0 domain 3 only understands one program shape), not about domains 1-4 being
+unstarted, which they no longer are.
 
 ## Package list
 
@@ -1605,6 +1623,32 @@ its own real, mature CLI/library surface (nmap's XML output, tshark's own packet
 Metasploit's own RPC API) — the actual FFI/subprocess-parsing glue code for each is real, separate
 implementation work, not written here; these are the real call signatures a PARENA program would
 use once that glue exists.
+
+### `idvault` / `pitviper/expand` — real, deliberately deferred, not designed deep
+
+Founder: "and vault integration for password management" → checked directly, confirmed real: IDUNA
+already has a working Vault (`internal/vault/store.go`, real REST API — `/api/v1/vault/init`+
+`unlock`+`lock`+`status`+`items` CRUD, client-side-encrypted `Item`/`RawItem`). Real signature only
+(no deep design pass), per PITVIPER's own new §7 principle (docs/NORTHSTAR.md) the founder stated
+immediately after: "keep it an agnostic tool until we really need to tighten all of those feedback
+loops":
+
+```clojure
+(defn unlock [(password : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result VaultSession VaultError) @ Region)
+(defn get-item [(!sess : &VaultSession) (id : I32) (dest : Arena @ Region)]
+  : (Result String VaultError) @ Region)
+```
+
+`pitviper/expand` — real precedent named nowhere directly by the founder but real and worth
+citing: macOS's own Text Replacement / the real, popular open-source **Espanso** tool (trigger
+string → expansion, works inside any terminal). Same deliberately-shallow treatment as `idvault`
+above — real signature, not a deep design pass, until real usage justifies more:
+
+```clojure
+(defn register-snippet [(trigger : String @ :region/scratch) (expansion : String @ Region)] : Unit)
+(defn expand-if-match   [(buffer : String @ Region)] : (Option String))
+```
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
