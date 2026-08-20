@@ -88,6 +88,7 @@ binding, not a language primitive).
 44. `profile` — depends on `core` only (FFI-bound; `heap-snapshot` is real/native, region-native)
 45. `staticanalysis` — depends on `string`, `vec` (FFI-bound)
 46. `git` — depends on `shell`, `pty`, `vec` (wraps the real `git` CLI, not a from-scratch object model)
+47. `media/tts` — depends on `sdl2`, `array` (F5-TTS sidecar client; the sidecar process itself is separate, unstarted work)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1404,6 +1405,35 @@ than reimplementing Git's own object model, pack-file format, or wire protocol f
 those are real, substantial, separate undertakings (this is exactly the kind of thing the eventual
 Rails-then-PARENA GitHub-alternative web UI would itself need built out for real, once that
 project actually starts) that this pass explicitly declines to attempt.
+
+### `media/tts` — F5-TTS as a local sidecar, resolved scope
+
+Founder: "we need to build a FIRE TTS model into pitviper" → AskUserQuestion confirmed the real,
+specific model: **F5-TTS** (`SWivid/F5-TTS`, a real 2024 open-source flow-matching TTS model) →
+"its gotta be tiny and local" → real, stated tension flagged directly rather than glossed over:
+F5-TTS's real checkpoints run a few hundred MB and need a real PyTorch/ONNX inference runtime —
+genuinely local (no cloud API call), not genuinely tiny in the sense of something FFI-bindable
+into a native Go+SDL2 binary the way `ssh`/`crypto` above are. AskUserQuestion resolved this as a
+**local sidecar service**, not a scope swap to a smaller model: F5-TTS runs as its own small local
+Python process (the real F5-TTS repo, unmodified), PITVIPER/PARENA talk to it over a local
+socket — text in, raw audio out, played via `sdl2`'s own `queue-audio` (already designed above,
+same `NDArray`-as-PCM-buffer reasoning `io/read-floats` already established for GPT-2 checkpoint
+weights).
+
+```clojure
+(defn synthesize [(text : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result NDArray TtsError) @ Region)   ; PCM samples, fed straight into sdl2/queue-audio
+(defn connect-sidecar [(socket-path : String @ :region/scratch)] : (Result Unit TtsError))
+```
+
+Real, honest limitation: the F5-TTS sidecar process itself (starting it, health-checking it, the
+actual Python-side inference code) is real, separate, unstarted work — this designs the PARENA-
+side client call only. Real, honest sequencing note also flagged plainly: PARENA can't execute
+code yet (VS0 domains 3-4 only cover the exact shape `examples/valid_only.prn` uses, not a real
+program like this), so PITVIPER's own near-term TTS integration — if wanted before VS0 progresses
+further — would need to be real Go code talking to the same sidecar, not this `.prn` design,
+mirroring how every other "dogfood PARENA into PITVIPER" package in this document is currently
+signatures-and-intent, not something actually running inside PITVIPER today.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
