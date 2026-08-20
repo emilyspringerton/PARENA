@@ -180,7 +180,15 @@ static EnumInfo *find_enum_by_name(const char *name) {
  * reference types yet either), reported honestly rather than guessed
  * at. */
 typedef struct {
-    const char *name;
+    const char *name;    /* original source spelling, e.g. "start-x" -- used for
+                           * get-field's own :keyword lookup, which strips a
+                           * leading ':' but never mangles (a real keyword like
+                           * :start-x still has the literal hyphen in its text). */
+    const char *c_name;  /* mangle()'d, e.g. "start_x" -- the only form ever
+                           * written into emitted C; a source field name with a
+                           * '-' emitted verbatim would be invalid C syntax (a
+                           * real bug caught by actually compiling stdlib/csv.prn's
+                           * own SplitOptions with real gcc, not guessed at). */
     const char *c_type;
 } StructField;
 
@@ -648,10 +656,16 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
          * already relies on elsewhere in this file. */
         const char *field_name = expr->children[2]->text + 1;
         for (size_t i = 0; i < sinfo->field_count; i++) {
+            /* Lookup against the field's original source spelling
+             * (a real :keyword's own text is never mangled), but the
+             * emitted C has to reference the mangled c_name -- a field
+             * declared `start-x` is really named `start_x` in the
+             * struct's own C typedef (see process_defstruct's own
+             * comment on why unmangled hyphens are invalid C). */
             if (strcmp(sinfo->fields[i].name, field_name) == 0) {
                 *out_type = sinfo->fields[i].c_type;
                 char buf[512];
-                snprintf(buf, sizeof(buf), "(%s).%s", struct_c, field_name);
+                snprintf(buf, sizeof(buf), "(%s).%s", struct_c, sinfo->fields[i].c_name);
                 return arena_strdup(arena, buf, strlen(buf));
             }
         }
@@ -1200,6 +1214,7 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
          * honest "existence only" treatment as everywhere else in this
          * file. */
         fields[i].name = field->children[0]->text;
+        fields[i].c_name = mangle(arena, field->children[0]->text);
         fields[i].c_type = field_type;
     }
 
@@ -1212,19 +1227,19 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
 
     sb_appendf(out, "typedef struct {\n");
     for (size_t i = 0; i < field_count; i++) {
-        sb_appendf(out, "    %s %s;\n", fields[i].c_type, fields[i].name);
+        sb_appendf(out, "    %s %s;\n", fields[i].c_type, fields[i].c_name);
     }
     sb_appendf(out, "} %s;\n", struct_name);
 
     sb_appendf(out, "static inline %s %s_new(", struct_name, struct_name);
     for (size_t i = 0; i < field_count; i++) {
         if (i > 0) sb_append(out, ", ");
-        sb_appendf(out, "%s %s", fields[i].c_type, fields[i].name);
+        sb_appendf(out, "%s %s", fields[i].c_type, fields[i].c_name);
     }
     if (field_count == 0) sb_append(out, "void");
     sb_appendf(out, ") {\n    %s v;\n", struct_name);
     for (size_t i = 0; i < field_count; i++) {
-        sb_appendf(out, "    v.%s = %s;\n", fields[i].name, fields[i].name);
+        sb_appendf(out, "    v.%s = %s;\n", fields[i].c_name, fields[i].c_name);
     }
     sb_append(out, "    return v;\n}\n\n");
     return 1;

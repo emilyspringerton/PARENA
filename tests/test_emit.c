@@ -386,6 +386,40 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a defstruct field name containing a real '-' (kebab-case, the
+     * normal PARENA identifier convention -- rows-per-file, start-x,
+     * etc.) is mangled before being written into emitted C, not passed
+     * through verbatim. A real bug caught by actually compiling
+     * stdlib/csv.prn's own SplitOptions (rows-per-file/lazy-quotes/
+     * compressed) with gcc: the unmangled field name produced literally
+     * invalid C (`int rows-per-file;` -- gcc parses the hyphens as
+     * subtraction), not a hypothetical. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct SplitOptions (rows-per-file : I32) (lazy-quotes : Bool))\n"
+            "(defn make-opts [] : SplitOptions (SplitOptions 100 0))\n"
+            "(defn get-rpf [(o : SplitOptions)] : I32 (get-field o :rows-per-file))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defstruct with a hyphenated field name parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "a hyphenated field name emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "int rows_per_file;") != NULL,
+                  "the struct typedef's own field is mangled to a real, valid C identifier");
+            CHECK(strstr(c_src, "rows-per-file") == NULL,
+                  "the raw, unmangled hyphenated name never appears anywhere in the emitted C");
+            CHECK(strstr(c_src, "static inline SplitOptions SplitOptions_new(int rows_per_file, int lazy_quotes)") != NULL,
+                  "the constructor's own parameter name is mangled too");
+            CHECK(strstr(c_src, "return (o).rows_per_file;") != NULL,
+                  "get-field on a hyphenated field name emits the real, mangled C field access");
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure: constructing a defstruct with the wrong
      * number of arguments, or accessing a field it doesn't have, is
      * reported, not silently zero-filled or miscompiled. --- */
