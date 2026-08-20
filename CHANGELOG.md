@@ -1,4 +1,5 @@
 ## 2026-08-20
+- STDLIB.md 新增 container/lxc + container/cgroup 設計(LXC 生命週期 + cgroups v2 真實檔案系統介面),回應 Moltbook/OpenClaw hardening 討論;順手修正 firefly/gomega 改名後遺留的過期命名 (sess-20260820-0649-a3f19d93)
 - 改名 firefly/gomega → firefly/ladybug(甲蟲命名慣例,呼應 firefly/scarab;gomega.prn 保留為 back-compat alias,exported API 不變,scarab.prn 的 import 已跟進改用新名);查證 firefly/ladybug/scarab 三檔各自仍卡在既有已知 gap(&Any 參考型別、回傳型別、multi-field defenum payload),額外發現 VS0 emitter 目前尚無 module/import/export 真實連結機制 (sess-20260820-0649-a3f19d93)
 - LONGMA(streaming CSV chunker,github.com/emilyspringerton/longma)功能真正移植進 PARENA:新增 stdlib/csv.prn,並在 longma fork 本身建立完整 Bazel+PARENA 交叉 repo 建置(MODULE.bazel git_override 釘死 commit、BUILD.bazel genrule+cc_library、CI workflow),本地驗證 bazel clean 後重新建置零警告全過;遠端 CI 因 GitHub API rate limit 待後續確認,誠實記錄 (sess-20260820-0649-a3f19d93)
 - resolve_declared_type 支援 Bool/F64,修好 parena_runtime.h 缺少的 OK/ERR 巨集(6 個 stdlib 檔案、18 個真實呼叫點依賴這個),gfd.prn(METALVERSE)整個檔案現在完整編譯成功並用真正 gcc 驗證零警告;CI 綠燈 (commit c9fc3b5) (sess-20260820-0649-a3f19d93)
