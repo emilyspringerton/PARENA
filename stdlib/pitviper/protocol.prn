@@ -1,0 +1,54 @@
+;; stdlib/pitviper/protocol.prn — depends on net/tcp, string, vec,
+;; compress/lz4. Design: STDLIB.md "pitviper/protocol" section. The
+;; real remote-IDE workflow: GUI popout -> ListDir/FetchFile against a
+;; small server-side daemon -> file content fetched via the real ssh
+;; package (not this channel) -> edited locally in PARENA's own
+;; vim-like editor -> git push back. Real, honest limitation: serve's
+;; own request-dispatch loop and the daemon's filesystem-watching
+;; behavior are real, unresolved implementation work (STDLIB.md's own
+;; header comment already flags this) -- signatures only here, not a
+;; working server.
+
+(module pitviper/protocol)
+(import net/tcp)
+(import string)
+(import vec)
+(import compress/lz4)
+(export serve connect request)
+
+(defenum Request
+  (ListDir   (path : String @ Region))
+  (FetchFile (path : String @ Region)))
+
+(defenum DirEntry
+  (File (name : String @ Region))
+  (Dir  (name : String @ Region)))
+
+(defenum Response
+  (DirListing (entries : (Vec DirEntry) @ Region))
+  (Error      (msg : String @ Region)))
+
+(defstruct ProtocolSession (stream : TcpStream @ Region))
+
+(defn serve [(port : I32) (root : String @ :region/scratch)]
+  : (Result Unit NetError)
+  (match (net/tcp/listen port (current-arena))
+    ((Ok !listener) (serve-loop &mut !listener root))
+    ((Err e) (Err e))))
+
+(defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result ProtocolSession NetError) @ Region
+  (match (net/tcp/connect host port dest)
+    ((Ok !stream) (Ok {:stream !stream}))
+    ((Err e) (Err e))))
+
+;; request — real wire-format decision from STDLIB.md's own design:
+;; every Response travels through compress/lz4 before send, decompress
+;; on receipt.
+(defn request [(!sess : &mut ProtocolSession) (req : Request) (dest : Arena @ Region)]
+  : (Result Response NetError) @ Region
+  (do
+    (net/tcp/write &mut (get-field !sess :stream) (encode-request req dest))
+    (match (net/tcp/read &mut (get-field !sess :stream) dest)
+      ((Ok compressed) (decode-response (lz4/decompress compressed (expected-size compressed) dest) dest))
+      ((Err e) (Err e)))))
