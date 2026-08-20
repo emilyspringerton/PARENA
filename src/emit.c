@@ -97,7 +97,13 @@ static const char *mangle(Arena *arena, const char *name) {
     char *out = (char *)arena_alloc(arena, len + 1);
     for (size_t i = 0; i < len; i++) {
         char c = name[i];
-        out[i] = (c == '-' || c == '/') ? '_' : c;
+        /* '!' joins '-'/'/' here for the same reason: real source uses it
+         * both as a linear-binding-name prefix (`!t`) and a mutating-call
+         * suffix (`vec/push!`, `set!`) -- neither is a valid C identifier
+         * character. Untested until now because reference-type support
+         * (the thing that actually lets `!t : &mut T`-shaped code reach
+         * this function) didn't exist yet. */
+        out[i] = (c == '-' || c == '/' || c == '!') ? '_' : c;
     }
     out[len] = '\0';
     return out;
@@ -246,9 +252,28 @@ static const char *binop_c_symbol(const char *sym) {
  * same real "this is a region-scoped Arena" signal is a direct
  * widening of that existing behavior, not a new claim to have
  * implemented real region-polymorphism analysis (a genuinely separate,
- * much bigger domain-2 concern, not attempted here). */
+ * much bigger domain-2 concern, not attempted here).
+ *
+ * Real bug found and fixed here (2026-08-20, while getting firefly.prn
+ * to compile): despite this function's own doc always having said
+ * "Arena @ ...", the implementation only ever checked for the presence
+ * of ANY `@`/keyword anywhere in the parameter node -- never that the
+ * type token actually preceding `@` was the symbol `Arena`. That meant
+ * `(msg : String @ :region/scratch)` (a real, common shape -- any
+ * scratch-region-annotated non-Arena parameter) silently matched too,
+ * and emit_defn's own param-binding branch below bound it as a bare
+ * `Arena *`, discarding the real declared type entirely. Never caught
+ * before now because nothing that previously reached a real gcc compile
+ * combined a non-Arena type with a region annotation on a *parameter*
+ * specifically (struct fields and return types both resolve their type
+ * through resolve_declared_type() directly and never call this function
+ * at all, so they were never affected). */
 static int has_region_marker(Node *n) {
-    for (size_t i = 0; i < n->child_count; i++) {
+    if (n->child_count < 3 || n->children[2]->type != NODE_SYMBOL ||
+        !is_symbol(n->children[2], "Arena")) {
+        return 0;
+    }
+    for (size_t i = 3; i < n->child_count; i++) {
         if (n->children[i]->type == NODE_KEYWORD) return 1;
         if (n->children[i]->type == NODE_AT) return 1;
     }
@@ -461,6 +486,30 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
     StrBuf args;
     sb_init(&args);
     for (size_t i = 1; i < call->child_count; i++) {
+        /* `&(expr)` -- a bare `&` symbol followed by a parenthesized
+         * expression lexes as two SIBLING nodes in this call's own
+         * argument list (see mangle()'s own header note on `!`/`-`/`/`
+         * for the parallel "real syntax, real lexer/parser output"
+         * discipline; here it's parser output, not mangling, but the
+         * same "checked against a real `parena parse` run, not guessed"
+         * standard applies) -- e.g. firefly.prn's own `(vec/push!
+         * &(get-field !t :messages) msg)`. The single-token `&x` form
+         * (no space) is already handled inside emit_expr() itself; this
+         * is specifically the two-node form only a call's own argument
+         * loop can see both halves of. */
+        if (call->children[i]->type == NODE_SYMBOL && is_symbol(call->children[i], "&") &&
+            i + 1 < call->child_count) {
+            const char *inner_type = NULL;
+            const char *inner_c = emit_expr(arena, call->children[i + 1], scope, &inner_type, out_error);
+            if (!inner_c) {
+                sb_free(&args);
+                return NULL;
+            }
+            if (i > 1) sb_append(&args, ", ");
+            sb_appendf(&args, "&(%s)", inner_c);
+            i++;
+            continue;
+        }
         const char *arg_type = NULL;
         const char *arg_c = emit_expr(arena, call->children[i], scope, &arg_type, out_error);
         if (!arg_c) {
@@ -473,7 +522,28 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
     char buf[1024];
     snprintf(buf, sizeof(buf), "%s(%s)", fn_name, args.data);
     sb_free(&args);
-    *out_type = "void *";
+    /* Real, honest, narrow exception to the generic "assume void *"
+     * fallback below: parena_runtime.h's own Vec functions have real,
+     * known, non-void*-by-default return types (vec_push_ specifically
+     * returns real C void, not a pointer) -- reported accurately here
+     * since callers genuinely need to know, e.g. `do`/emit_body's own
+     * tail-position return-vs-statement choice (a real bug found this
+     * same pass: emitting `return vec_push_(...)` inside a `Unit`-typed
+     * function is real ISO C99 -pedantic error, "forbids 'return' with
+     * expression, in function returning void" -- caught by actually
+     * compiling the emitted C with gcc, not just trusting `parena
+     * build`'s own exit code). Not a general function-signature table --
+     * VS0 still doesn't have one -- just these four real, fixed runtime
+     * names. */
+    if (strcmp(fn_name, "vec_push_") == 0) {
+        *out_type = "void";
+    } else if (strcmp(fn_name, "vec_new") == 0) {
+        *out_type = "Vec";
+    } else if (strcmp(fn_name, "vec_len") == 0) {
+        *out_type = "int";
+    } else {
+        *out_type = "void *";
+    }
     return arena_strdup(arena, buf, strlen(buf));
 }
 
@@ -509,6 +579,24 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             snprintf(buf, sizeof(buf), "%s_%s()", owner->name, variant->name);
             return arena_strdup(arena, buf, strlen(buf));
         }
+    }
+    /* `&x` -- single-token address-of a plain local (the two-sibling-node
+     * `& (expr)` form, e.g. `&(get-field !t :messages)`, is handled at
+     * each call site's own argument-list loop instead, since it spans
+     * two parent-list children rather than being one self-contained
+     * node emit_expr's own per-node dispatch could recognize alone).
+     * Checked before the generic scope_lookup path below since `&x`'s
+     * own literal text (with the `&`) is never itself a bound name. */
+    if (expr->type == NODE_SYMBOL && expr->text && expr->text[0] == '&' &&
+        strcmp(expr->text, "&mut") != 0 && strlen(expr->text) > 1) {
+        Local *b = scope_lookup(scope, expr->text + 1);
+        if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text + 1, expr->line);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "&(%s)", b->c_name);
+        char type_buf[128];
+        snprintf(type_buf, sizeof(type_buf), "%s *", b->c_type);
+        *out_type = arena_strdup(arena, type_buf, strlen(type_buf));
+        return arena_strdup(arena, buf, strlen(buf));
     }
     if (expr->type == NODE_SYMBOL) {
         Local *b = scope_lookup(scope, expr->text);
@@ -637,6 +725,67 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
      * struct-expr's own type must resolve to a registered defstruct;
      * :field-name must be a real field of that struct -- both checked,
      * neither guessed at. */
+    /* (deref expr) -- the real dereference form scarab.prn's own
+     * `(deref (vec/get &suite-tree i))` already uses, grounded in that
+     * real prior usage the same way get-field is. Emits a real C
+     * dereference; `expr`'s own resolved type must be a pointer (ends in
+     * `*`) for that to mean anything, checked rather than guessed. */
+    /* (set! (get-field target :field) value) -- the real, only shape
+     * this stdlib's own mutation actually uses (firefly.prn's own
+     * `errorf`: `(set! (get-field !t :failed) true)`), matching
+     * STDLIB.md's own already-itemized gap #7 ("set! mutation"). Emits a
+     * real C assignment; the target must literally be a `get-field` form
+     * -- get-field's own emission already produces a real, valid C
+     * lvalue (`(x).field` or `(x)->field`), reused here rather than
+     * duplicating struct/field lookup a second time. A plain local-
+     * variable target (`(set! x value)`, no defstruct involved) is real,
+     * separate, unstarted scope -- not silently guessed at. */
+    if (is_call_named(expr, "set!")) {
+        if (expr->child_count != 3) {
+            return fail(arena, out_error, "set!: expects exactly 2 arguments at line %d", expr->line);
+        }
+        if (!is_call_named(expr->children[1], "get-field")) {
+            return fail(arena, out_error,
+                        "set!: VS0's emitter only supports (set! (get-field target :field) value) so "
+                        "far at line %d", expr->line);
+        }
+        const char *lhs_type = NULL;
+        const char *lhs_c = emit_expr(arena, expr->children[1], scope, &lhs_type, out_error);
+        if (!lhs_c) return NULL;
+        const char *rhs_type = NULL;
+        const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
+        if (!rhs_c) return NULL;
+        *out_type = "void";
+        char buf[512];
+        snprintf(buf, sizeof(buf), "(%s = %s)", lhs_c, rhs_c);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    if (is_call_named(expr, "deref")) {
+        if (expr->child_count != 2) {
+            return fail(arena, out_error, "deref: expects exactly one argument at line %d", expr->line);
+        }
+        const char *inner_type = NULL;
+        const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
+        if (!inner_c) return NULL;
+        size_t inner_len = inner_type ? strlen(inner_type) : 0;
+        if (inner_len == 0 || inner_type[inner_len - 1] != '*') {
+            return fail(arena, out_error,
+                        "deref: expects a pointer-typed argument at line %d (got type '%s')",
+                        expr->line, inner_type ? inner_type : "?");
+        }
+        char type_buf[128];
+        snprintf(type_buf, sizeof(type_buf), "%.*s", (int)(inner_len - 1), inner_type);
+        /* Trailing space left by a "T *"-shaped type (every pointer type
+         * this emitter produces, e.g. resolve_declared_type()'s own
+         * "%s *" format) is harmless as a C type spelling but trimmed
+         * here for a tidier scope_bind()/out_type value. */
+        size_t tl = strlen(type_buf);
+        while (tl > 0 && type_buf[tl - 1] == ' ') type_buf[--tl] = '\0';
+        *out_type = arena_strdup(arena, type_buf, tl);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "(*(%s))", inner_c);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
     if (is_call_named(expr, "get-field")) {
         if (expr->child_count != 3 || expr->children[2]->type != NODE_KEYWORD) {
             return fail(arena, out_error,
@@ -645,7 +794,25 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         const char *struct_type = NULL;
         const char *struct_c = emit_expr(arena, expr->children[1], scope, &struct_type, out_error);
         if (!struct_c) return NULL;
-        StructInfo *sinfo = struct_type ? find_struct_by_name(struct_type) : NULL;
+        /* struct-expr may be a reference (e.g. `!t : &mut T`, resolved
+         * type "T *") rather than a plain value -- get-field auto-derefs
+         * through exactly one pointer level the same way C's own `->`
+         * does, since a real linear/mutable binding is still logically
+         * "the struct itself" to every real call site in this stdlib
+         * (firefly.prn's own `(get-field !t :failed)`). Only one level:
+         * VS0 has no nested-reference types to worry about yet. */
+        int is_ref = 0;
+        const char *lookup_type = struct_type;
+        char stripped_buf[128];
+        if (struct_type) {
+            size_t stl = strlen(struct_type);
+            if (stl > 2 && struct_type[stl - 1] == '*' && struct_type[stl - 2] == ' ') {
+                snprintf(stripped_buf, sizeof(stripped_buf), "%.*s", (int)(stl - 2), struct_type);
+                lookup_type = stripped_buf;
+                is_ref = 1;
+            }
+        }
+        StructInfo *sinfo = lookup_type ? find_struct_by_name(lookup_type) : NULL;
         if (!sinfo) {
             return fail(arena, out_error,
                         "get-field: '%s' at line %d isn't a registered defstruct type",
@@ -665,7 +832,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             if (strcmp(sinfo->fields[i].name, field_name) == 0) {
                 *out_type = sinfo->fields[i].c_type;
                 char buf[512];
-                snprintf(buf, sizeof(buf), "(%s).%s", struct_c, sinfo->fields[i].c_name);
+                snprintf(buf, sizeof(buf), is_ref ? "(%s)->%s" : "(%s).%s", struct_c, sinfo->fields[i].c_name);
                 return arena_strdup(arena, buf, strlen(buf));
             }
         }
@@ -1096,6 +1263,23 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             if (!emit_loop(arena, out, form, scope, 0, NULL, out_error)) return 0;
         } else if (is_call_named(form, "match")) {
             if (!emit_match(arena, out, form, scope, 0, NULL, out_error)) return 0;
+        } else if (is_call_named(form, "do")) {
+            /* `(do a b c)` -- a plain, real sequence of forms, not a
+             * value-producing call. Recurses into emit_body() itself
+             * over `do`'s own children (skipping the leading `do`
+             * symbol) rather than duplicating the with-arena/let/loop/
+             * match dispatch table above -- a nested `do` inside a `do`
+             * (or a `let` inside a `do`, etc.) is handled the same real
+             * way any other nested body already is. Found missing (not
+             * broken by this change -- genuinely never implemented)
+             * while getting firefly.prn's own real `errorf` (`(do (set!
+             * ...) (vec/push! ...))`) to compile -- previously fell
+             * through to the generic call path and mangled into a bogus
+             * `do(...)` function call, since nothing before this ever
+             * exercised `do` as a function body's own form. */
+            if (!emit_body(arena, out, form->children + 1, form->child_count - 1, scope, 0, NULL, out_error)) {
+                return 0;
+            }
         } else {
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
@@ -1117,12 +1301,29 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     if (is_call_named(tail, "match")) {
         return emit_match(arena, out, tail, scope, return_mode, out_return_type, out_error);
     }
+    if (is_call_named(tail, "do")) {
+        return emit_body(arena, out, tail->children + 1, tail->child_count - 1, scope, return_mode,
+                          out_return_type, out_error);
+    }
     const char *c_type = NULL;
     const char *expr_c = emit_expr(arena, tail, scope, &c_type, out_error);
     if (!expr_c) return 0;
     if (return_mode) {
         if (out_return_type) *out_return_type = c_type ? c_type : "void";
-        sb_appendf(out, "    return %s;\n", expr_c);
+        /* Real ISO C99 constraint (`-pedantic` catches it, found by
+         * actually compiling firefly.prn's own real `errorf` -- its
+         * whole body is a `do` block whose own tail call is `vec/push!`,
+         * a void-returning runtime call, inside a `Unit`(void)-returning
+         * function): "ISO C forbids 'return' with expression, in
+         * function returning void" -- even when the expression's own
+         * type genuinely is void. A void-typed tail expression is
+         * emitted as a bare statement instead; falling off the end of a
+         * void C function is valid and means the same thing. */
+        if (c_type && strcmp(c_type, "void") == 0) {
+            sb_appendf(out, "    %s;\n", expr_c);
+        } else {
+            sb_appendf(out, "    return %s;\n", expr_c);
+        }
     } else {
         sb_appendf(out, "    %s;\n", expr_c);
     }
@@ -1145,25 +1346,62 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
  * type's own real name directly -- process_defenum()/process_defstruct()
  * already emitted a real C typedef for it earlier in the same
  * compilation. Anything else fails honestly rather than guessing. */
+/* resolve_base_type_name is resolve_declared_type's own bare-symbol
+ * lookup, factored out so the new `&Type`/`&mut Type` reference-type
+ * path below can share it exactly rather than duplicating the
+ * Unit/I32/Bool/F64/String/enum/struct table. `Any` is deliberately NOT
+ * accepted here as a bare, non-reference type (nothing in this stdlib
+ * declares a plain `Any`-typed value, only `&Any`) -- it's handled
+ * inside resolve_declared_type's own reference-type branch instead,
+ * mapped to `void` (an untyped pointer target), the same "erase what
+ * VS0 can't represent yet" honesty every other erasure in this function
+ * already uses. */
+static const char *resolve_base_type_name(Node *type_node) {
+    if (is_symbol(type_node, "Unit")) return "void";
+    if (is_symbol(type_node, "I32")) return "int";
+    if (is_symbol(type_node, "Bool")) return "int";
+    if (is_symbol(type_node, "F64")) return "double";
+    if (is_symbol(type_node, "String")) return "char *";
+    if (find_enum_by_name(type_node->text)) return type_node->text;
+    if (find_struct_by_name(type_node->text)) return type_node->text;
+    return NULL;
+}
+
 static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error) {
     if (type_node->type == NODE_SYMBOL) {
-        if (is_symbol(type_node, "Unit")) return "void";
-        if (is_symbol(type_node, "I32")) return "int";
-        /* Bool -> real C int, the same "real C bool-as-int" convention
-         * emit_binop's own comparison/boolean operators already report
-         * (see that function's own header comment) -- not a fresh
-         * choice invented here, matching what this compiler already
-         * does with truthiness everywhere else. C99's own <stdbool.h>
-         * `bool`/`true`/`false` would be the more idiomatic choice, but
-         * would require a new #include this emitter doesn't otherwise
-         * need and a new true/false literal in the lexer/emit_expr
-         * neither exist yet -- real, honest, deliberately deferred, not
-         * silently half-done. */
-        if (is_symbol(type_node, "Bool")) return "int";
-        if (is_symbol(type_node, "F64")) return "double";
-        if (is_symbol(type_node, "String")) return "char *";
-        if (find_enum_by_name(type_node->text)) return type_node->text;
-        if (find_struct_by_name(type_node->text)) return type_node->text;
+        /* `&Type` -- a real reference type, written as one token (no
+         * space between `&` and the type name; `&mut Type` is a
+         * *separate* two-token form the defstruct-field/defn-param call
+         * sites handle themselves, since by the time a bare `&mut` token
+         * alone reaches this function there's no next token left to look
+         * at). Emitted as a real C pointer -- VS0 doesn't distinguish
+         * mutable from immutable references at the C level any more than
+         * it enforces immutability anywhere else yet (Bool-as-int is the
+         * same kind of honest non-enforcement), so `&T` and `&mut T` both
+         * just become `T *`. */
+        if (type_node->text && type_node->text[0] == '&' && strcmp(type_node->text, "&mut") != 0) {
+            const char *inner_name = type_node->text + 1;
+            const char *base = NULL;
+            if (strcmp(inner_name, "Any") == 0) {
+                base = "void";
+            } else {
+                Node inner = *type_node;
+                inner.text = inner_name;
+                base = resolve_base_type_name(&inner);
+            }
+            if (!base) {
+                return fail(arena, out_error,
+                            "defn: unsupported reference target type '%s' at line %d (VS0's "
+                            "emitter only understands &Any/&Unit/&I32/&Bool/&F64/&String/a "
+                            "registered defenum-or-defstruct name so far)",
+                            inner_name, type_node->line);
+            }
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s *", base);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+        const char *base = resolve_base_type_name(type_node);
+        if (base) return base;
         return fail(arena, out_error,
                     "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
                     "understands Unit/I32/Bool/F64/String/a registered defenum/defstruct name so far)",
@@ -1172,6 +1410,11 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
         if (is_symbol(type_node->children[0], "Result")) return "Result";
         if (is_symbol(type_node->children[0], "Option")) return "Option";
+        /* (Vec T) -- erases T the same way (Result ..)/(Option ..) erase
+         * their own type parameters above (VS0 has no generics/real
+         * type-checking pass yet); maps to the real runtime Vec struct
+         * (parena_runtime.h), a void*-item dynamic array. */
+        if (is_symbol(type_node->children[0], "Vec")) return "Vec";
     }
     return fail(arena, out_error,
                 "defn: unsupported return type form at line %d (VS0's emitter only understands "
@@ -1206,8 +1449,30 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
                         "defstruct: field at line %d must be (name : Type) or (name : Type @ Region) "
                         "at line %d", node->line, node->line) != NULL;
         }
-        const char *field_type = resolve_declared_type(arena, field->children[2], out_error);
-        if (!field_type) return 0;
+        const char *field_type;
+        /* `&mut Type` -- a real, distinct two-token reference-type form
+         * (space between `&mut` and the type name, unlike the single-
+         * token `&Type` resolve_declared_type() already handles), e.g.
+         * firefly/gomega.prn's own `(t : &mut T)`. Detected here rather
+         * than inside resolve_declared_type() since that function only
+         * ever sees one type node at a time -- this is the one call site
+         * that actually has the next token available to look at. */
+        if (field->child_count == 4 && field->children[2]->type == NODE_SYMBOL &&
+            is_symbol(field->children[2], "&mut") && field->children[3]->type == NODE_SYMBOL) {
+            const char *base = resolve_base_type_name(field->children[3]);
+            if (!base && strcmp(field->children[3]->text, "Any") == 0) base = "void";
+            if (!base) {
+                return fail(arena, out_error,
+                            "defstruct: unsupported reference target type '%s' at line %d",
+                            field->children[3]->text, field->children[3]->line) != NULL;
+            }
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s *", base);
+            field_type = arena_strdup(arena, buf, strlen(buf));
+        } else {
+            field_type = resolve_declared_type(arena, field->children[2], out_error);
+            if (!field_type) return 0;
+        }
         /* An optional trailing `@ <region>` on the field's own type
          * (child_count == 5: name, colon, type, at, region) is simply
          * never read past index 2 -- consumed by omission, same real,
@@ -1417,12 +1682,68 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             const char *c_type = param->children[2]->text;
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL && param->children[2]->text &&
+                   param->children[2]->text[0] == '&' &&
+                   strcmp(param->children[2]->text, "&mut") != 0) {
+            /* Single-token `&Type` reference parameter (e.g.
+             * firefly/gomega.prn's own `(actual : &Any)`,
+             * scarab.prn's `(cases : &(Vec TestCase))` -- that inner
+             * form is a NODE_LIST, not NODE_SYMBOL, so it still falls
+             * through to the honest failure below, not silently
+             * mishandled). resolve_declared_type() already understands
+             * this shape (added alongside the field-type path). */
+            const char *c_type = resolve_declared_type(arena, param->children[2], out_error);
+            if (!c_type) {
+                sb_free(&param_list);
+                return 0;
+            }
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else if (param->child_count == 4 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL && is_symbol(param->children[2], "&mut") &&
+                   param->children[3]->type == NODE_SYMBOL) {
+            /* Two-token `&mut Type` reference parameter (e.g.
+             * firefly.prn's own `(!t : &mut T)`) -- same real, honest
+             * "&mut and & both just become a C pointer" treatment
+             * resolve_declared_type()'s own single-token path uses. */
+            const char *base_type = resolve_base_type_name(param->children[3]);
+            if (!base_type && strcmp(param->children[3]->text, "Any") == 0) base_type = "void";
+            if (!base_type) {
+                fail(arena, out_error,
+                     "defn: unsupported reference target type '%s' at line %d",
+                     param->children[3]->text, param->children[3]->line);
+                sb_free(&param_list);
+                return 0;
+            }
+            char c_type_buf[128];
+            snprintf(c_type_buf, sizeof(c_type_buf), "%s *", base_type);
+            const char *c_type = arena_strdup(arena, c_type_buf, strlen(c_type_buf));
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+        } else if (param->child_count == 5 && param->children[1]->type == NODE_COLON &&
+                   param->children[2]->type == NODE_SYMBOL && param->children[3]->type == NODE_AT) {
+            /* `Type @ Region` on a NON-Arena type, e.g. firefly.prn's own
+             * `(msg : String @ Region)` -- the real, honest fix for the
+             * has_region_marker() bug documented on that function itself:
+             * a trailing region annotation on a real, named type still
+             * means "resolve the real type, discard the region name"
+             * (same as defstruct fields and return types already do),
+             * not "silently become an opaque Arena *". */
+            const char *c_type = resolve_declared_type(arena, param->children[2], out_error);
+            if (!c_type) {
+                sb_free(&param_list);
+                return 0;
+            }
+            scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
+            sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
         } else {
             fail(arena, out_error,
                  "defn: parameter '%s' has no region annotation and isn't a plain I32/String/"
-                 "(Fn [] ..)/registered-defenum-or-defstruct-type either (VS0 only supports "
-                 "`Arena @ :region/x`, `I32`, `String`, zero-argument `(Fn [] <ReturnType>)`, and "
-                 "registered defenum/defstruct type parameters so far)",
+                 "(Fn [] ..)/registered-defenum-or-defstruct-type/reference-type either (VS0 only "
+                 "supports `Arena @ :region/x`, `I32`, `String`, zero-argument `(Fn [] <ReturnType>)`, "
+                 "registered defenum/defstruct type, and `&Type`/`&mut Type` reference parameters so "
+                 "far)",
                  param->children[0]->text);
             sb_free(&param_list);
             return 0;

@@ -221,7 +221,18 @@ int main(void) {
     /* --- plain I32/String parameters (no Arena @ :region/x annotation)
      * now really work: the real shape stdlib/editor/ui.prn's own
      * set-gutter-marker/show-popup use for a line number or x/y pixel
-     * coordinate, where there's genuinely no arena involved. --- */
+     * coordinate, where there's genuinely no arena involved. ---
+     *
+     * Corrected 2026-08-20: this test used to assert that a
+     * region-annotated *String* parameter (`glyph : String @
+     * :region/scratch`) became `Arena *glyph` -- that was itself a real
+     * bug in has_region_marker() (its own doc always said "Arena @
+     * ...", but the implementation matched ANY `@`/keyword regardless of
+     * the type token before it), not correct, intended behavior. Found
+     * while getting firefly.prn's own `(msg : String @ Region)`
+     * parameter to compile to a real `char *`, not a bogus `Arena *`
+     * that silently discarded the declared String type. Now asserts the
+     * real, fixed behavior instead of the bug. */
     {
         Arena arena;
         arena_init(&arena);
@@ -237,8 +248,35 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "int line __attribute__((unused))") != NULL,
                   "the I32 parameter becomes a real plain C int, not Arena *");
-            CHECK(strstr(c_src, "Arena *glyph __attribute__((unused))") != NULL,
-                  "the region-annotated String parameter still becomes Arena *, unaffected");
+            CHECK(strstr(c_src, "char * glyph __attribute__((unused))") != NULL,
+                  "the region-annotated String parameter becomes a real char *, not a bogus Arena * "
+                  "(has_region_marker() bug fix)");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real regression test for the has_region_marker() fix itself:
+     * an Arena @ :region/x parameter still, correctly, becomes Arena *
+     * (the one real case this function is actually supposed to
+     * recognize) -- proving the fix narrowed the check to "type is
+     * literally Arena", not that it broke the real, intended case. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn write-log [(dest : Arena @ :region/task) (msg : String @ :region/scratch)]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"host_write_log(dest, msg);\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "an Arena @ :region/x parameter alongside a String @ :region/x one parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "the mixed Arena/String parameter function emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Arena *dest __attribute__((unused))") != NULL,
+                  "the real Arena @ :region/x parameter still, correctly, becomes Arena *");
+            CHECK(strstr(c_src, "char * msg __attribute__((unused))") != NULL,
+                  "the neighboring String @ :region/x parameter becomes its own real char *, not Arena *");
         }
         arena_free_all(&arena);
     }
@@ -622,6 +660,158 @@ int main(void) {
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src != NULL && emit_err == NULL, "a with-arena-free function emits correctly");
+        arena_free_all(&arena);
+    }
+
+    /* --- (Vec T) as a real defstruct field type: erases T, maps to the
+     * real runtime Vec struct -- the real shape firefly.prn's own `T`
+     * struct (`messages : (Vec String) @ Region`) needs, the first of
+     * this whole batch's real blockers found by trying to get firefly/
+     * ladybug/scarab.prn to actually compile. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defstruct Bag (items : (Vec String) @ Region))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defstruct with a (Vec T) field parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "(Vec T) as a field type emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Vec items;") != NULL,
+                  "(Vec String) erases to the real runtime Vec struct, matching Result/Option's own erasure");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `&Type` (single-token) and `&mut Type` (two-token) reference
+     * parameters and fields both become real C pointers -- the real
+     * shape firefly.prn's own `(!t : &mut T)` and firefly/ladybug.prn's
+     * own `(actual : &Any)` need. `Any` maps to `void` (an untyped
+     * pointer target). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct T (failed : I32))\n"
+            "(defstruct Expectation (actual : &Any) (t : &mut T))\n"
+            "(defn touch [(actual : &Any) (!t : &mut T)] : Unit\n"
+            "  (set! (get-field !t :failed) 1))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "&Any/&mut T fields and parameters parse fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "&Any/&mut T fields and parameters emit successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "void * actual;") != NULL,
+                  "a &Any field becomes a real void * (Any erases to void, the reference wraps it in a pointer)");
+            CHECK(strstr(c_src, "T * t;") != NULL,
+                  "a &mut T field becomes a real T * (mut/immut references both erase to a plain C pointer)");
+            CHECK(strstr(c_src, "T * _t") != NULL,
+                  "a &mut T PARAMETER (the two-token form, distinct from the single-token &Type field/param "
+                  "path above) also becomes a real T *");
+            CHECK(strstr(c_src, "(_t)->failed = 1") != NULL,
+                  "get-field auto-derefs through a reference parameter's own pointer type, emitting -> not .");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `do` as a real statement sequence (not a bogus function call to
+     * a nonexistent `do()`), and `vec/push!`/`&(expr)` (the two-sibling-
+     * node address-of form a call's own argument list has to pair back
+     * together) both work together -- the real shape firefly.prn's own
+     * `errorf` (`(do (set! ...) (vec/push! &(get-field !t :messages)
+     * msg))`) needs end to end. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct T (failed : I32) (messages : (Vec String) @ Region))\n"
+            "(defn errorf [(!t : &mut T) (msg : String @ :region/scratch)] : Unit\n"
+            "  (do\n"
+            "    (set! (get-field !t :failed) 1)\n"
+            "    (vec/push! &(get-field !t :messages) msg)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a do-block function body with set!/vec-push!/&(expr) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "the do-block body emits successfully, not a bogus do(...) call");
+        if (c_src) {
+            CHECK(strstr(c_src, "do(") == NULL,
+                  "`do` never appears as a literal emitted function call -- it's a real statement sequence");
+            CHECK(strstr(c_src, "vec_push_(&((_t)->messages), msg)") != NULL,
+                  "vec/push! mangles to the real runtime vec_push_ call, and &(get-field ...) emits a real "
+                  "C address-of around the get-field access, both inside the do-block's own statements");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `deref` on a real pointer-typed expression emits a real C
+     * dereference -- scarab.prn's own `(deref (vec/get &suite-tree
+     * i))` shape. A non-pointer argument fails honestly rather than
+     * emitting a nonsensical `*(int_value)`. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (value : I32))\n"
+            "(defn touch [(!x : &mut Item)] : I32\n"
+            "  (get-field (deref !x) :value))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(deref !x) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "deref on a real pointer-typed expression emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "(*(_x))") != NULL, "deref emits a real C dereference, not a function call");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn bad [(x : I32)] : I32 (deref x))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "deref on a non-pointer value parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL, "deref on a non-pointer-typed argument fails honestly");
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest ISO C99 bug found via an actual gcc -pedantic
+     * compile of firefly.prn's own `errorf`: a `Unit`(void)-returning
+     * function whose tail expression is itself a void-typed call (e.g.
+     * `vec/push!`) must emit that call as a bare statement, not
+     * `return <call>;` -- ISO C forbids `return` with an expression in a
+     * void function even when the expression's own type genuinely is
+     * void. `parena build`'s own exit code alone didn't catch this
+     * (region analysis/emission both "succeeded"); only compiling the
+     * real output with gcc did. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct T (messages : (Vec String) @ Region))\n"
+            "(defn errorf [(!t : &mut T) (msg : String @ :region/scratch)] : Unit\n"
+            "  (vec/push! &(get-field !t :messages) msg))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a Unit-returning function whose sole body form is a void-typed call parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "return vec_push_") == NULL,
+                  "a void-typed tail call is never wrapped in `return` (real ISO C99 -pedantic error)");
+            CHECK(strstr(c_src, "vec_push_(&((_t)->messages), msg);") != NULL,
+                  "it's instead emitted as a real, bare statement");
+        }
         arena_free_all(&arena);
     }
 

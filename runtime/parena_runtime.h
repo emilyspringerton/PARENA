@@ -100,4 +100,58 @@ static inline Option option_none(void) {
 #define OK (result_ok(NULL))
 #define ERR (result_err(NULL))
 
+/* Vec -- STDLIB.md's own "vec — no dependencies, generic over T" design
+ * (new/push!/get/len), erased to `void *` items the same real, honest
+ * way Result/Option erase their own payload above (no generics/real
+ * type-checking pass yet). Deliberately arena-allocated, not
+ * malloc/realloc'd: STDLIB.md's own `vec/new` signature takes a `dest :
+ * Arena @ Region` for a real reason -- every other allocation in this
+ * language ties its lifetime to a region, and a `Vec` growing via
+ * malloc/free underneath a language with no manual free anywhere else
+ * would be a real, silent exception to that model. Growing means
+ * bump-allocating a fresh, larger backing array from the same arena and
+ * copying the old items over -- the old block is simply abandoned
+ * inside the arena (never freed individually, matching every other
+ * bump-allocator tradeoff `arena_alloc` already makes elsewhere), not
+ * reclaimed until the whole arena itself is. Function names below are
+ * written to already match `mangle()`'s own real output for `vec/new`/
+ * `vec/push!`/`vec/get`/`vec/len` (`/`s and the trailing `!` both become
+ * `_`) -- emit_call()'s generic call path needs no special-casing to
+ * reach these, the same way it reaches any other stdlib function. */
+typedef struct {
+    Arena *arena;
+    void **items;
+    size_t count;
+    size_t capacity;
+} Vec;
+
+static inline Vec vec_new(Arena *dest) {
+    Vec v;
+    v.arena = dest;
+    v.items = NULL;
+    v.count = 0;
+    v.capacity = 0;
+    return v;
+}
+
+static inline void vec_push_(Vec *v, void *item) {
+    if (v->count == v->capacity) {
+        size_t new_cap = v->capacity == 0 ? 4 : v->capacity * 2;
+        void **new_items = (void **)arena_alloc(v->arena, new_cap * sizeof(void *));
+        for (size_t i = 0; i < v->count; i++) new_items[i] = v->items[i];
+        v->items = new_items;
+        v->capacity = new_cap;
+    }
+    v->items[v->count++] = item;
+}
+
+static inline void *vec_get(Vec *v, int idx) {
+    if (idx < 0 || (size_t)idx >= v->count) return NULL;
+    return v->items[idx];
+}
+
+static inline int vec_len(Vec *v) {
+    return (int)v->count;
+}
+
 #endif /* PARENA_RUNTIME_H */
