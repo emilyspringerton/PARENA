@@ -1064,6 +1064,78 @@ Studio's Layout Editor or Xcode's Interface Builder, as a standalone tool) belon
 all, versus being its own separate application built on these primitives (same distinction already
 drawn for MIXFORGE and the editor shell), is not decided by this pass.
 
+### `pty` / `shell` / `ssh` / `crypto/*` — the concrete dogfooding path into PITVIPER
+
+Founder: "then crunch on PARENA until we can dog food it into pitviper to fix our issue" — the
+literal strangler-fig mechanism NORTHSTAR.md already names, applied to a real, current target:
+PITVIPER's own two real bugs fixed this session (the `System32\bash.exe` WSL-stub misfire, Git
+Bash not being found off PATH) both live in one place, `internal/pty/pty_windows.go`'s shell-
+resolution logic. If PARENA had a `pty`/`shell` package covering the same ground, that logic could
+move to PARENA-authored code over PITVIPER's plugin boundary instead of staying hand-written Go —
+this section designs that package, direct precedent already shipped and real, not invented.
+
+**`pty`** — spawn a subprocess attached to a pseudo-console, generalized from PITVIPER's own real
+`Open()`/ConPTY (Windows)/`openpty` (POSIX) code:
+
+```clojure
+(defn open  [(shell : String @ :region/scratch) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Pty PtyError) @ Region)
+(defn read  [(!p : &mut Pty) (dest : Arena @ Region)] : (Result String PtyError) @ Region)
+(defn write [(!p : &mut Pty) (data : String @ Region)] : (Result I32 PtyError))
+(defn resize [(!p : &mut Pty) (cols : I32) (rows : I32)] : (Result Unit PtyError))
+(defn close [(!p : Pty)] : Unit)
+```
+
+Real, honest note on cross-target dispatch: NORTHSTAR's `#target` form branches by *compilation
+target* (C/JVM/TS/Wasm), not by host OS — `pty/open`'s actual C-target body needs ConPTY vs.
+`openpty` chosen by `#ifdef _WIN32`, ordinary C preprocessor branching *inside* the C-target
+`inline-c` block, not a second PARENA-level dispatch mechanism. Flagged here since it's the first
+package in this document where that distinction actually matters.
+
+**`shell`** — the actual shell-resolution policy, a direct, real port of PITVIPER's own
+`isWslStub`/`findGitBash`/fallback-chain logic (commits `908ac6a`, `8db557c`) onto `pty`:
+
+```clojure
+(defn resolve [(explicit : (Option String) @ :region/scratch)] : String @ :region/scratch)
+  ;; explicit arg > $SHELL > Git Bash off PATH (skipping the WSL stub, same isWslStub check) >
+  ;; Git Bash at its well-known install paths (same findGitBash check) > cmd.exe/zsh/bash fallback
+(defn spawn-bash [(cols : I32) (rows : I32) (dest : Arena @ Region)] : (Result Pty PtyError) @ Region)
+(defn spawn-zsh  [(cols : I32) (rows : I32) (dest : Arena @ Region)] : (Result Pty PtyError) @ Region)
+```
+
+**`ssh`** — FFI-bound to `libssh2` (real, established, embeddable SSH client library — same FFI-
+bind judgment as `linalg`'s BLAS/LAPACK and `media/codec`'s libavcodec, not a from-scratch SSH
+protocol implementation):
+
+```clojure
+(defn connect [(host : String @ :region/scratch) (port : I32) (user : String @ :region/scratch)
+                (dest : Arena @ Region)]
+  : (Result SshSession SshError) @ Region)
+(defn exec    [(!sess : &mut SshSession) (cmd : String @ Region) (dest : Arena @ Region)]
+  : (Result String SshError) @ Region)
+(defn open-pty [(!sess : &mut SshSession) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result SshChannel SshError) @ Region)   ; interactive shell over SSH, same Pty-like read/write shape
+```
+
+**`crypto/hash`** / **`crypto/aes`** / **`crypto/ed25519`** — FFI-bound to OpenSSL/libsodium (same
+judgment, not from-scratch cryptographic primitives — hand-rolled crypto is a well-known way to
+introduce real, serious vulnerabilities, so this explicitly does not attempt it):
+
+```clojure
+(defn sha256 [(data : String @ Region) (dest : Arena @ Region)] : String @ Region)   ; hex digest
+
+(defn aes-encrypt [(key : String @ Region) (plaintext : String @ Region) (dest : Arena @ Region)]
+  : (Result String CryptoError) @ Region)
+(defn aes-decrypt [(key : String @ Region) (ciphertext : String @ Region) (dest : Arena @ Region)]
+  : (Result String CryptoError) @ Region)
+
+(defn ed25519-keygen [(dest : Arena @ Region)] : KeyPair @ Region)
+(defn ed25519-sign   [(key : &KeyPair) (msg : String @ Region) (dest : Arena @ Region)]
+  : String @ Region)
+(defn ed25519-verify [(pubkey : String @ Region) (msg : String @ Region) (sig : String @ Region)]
+  : Bool)
+```
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - ~~**Collections beyond `Vec`/`Map` literals**~~ — resolved above (`vec`/`map` packages), once
