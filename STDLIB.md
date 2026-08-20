@@ -289,6 +289,92 @@ Generic over `T` (not `NDArray`-specific) since `archetype.c`'s own comparator s
 (`ArchetypeScore`), not raw floats — a `sort` package tied to `array` would have been narrower
 than the real C code it's meant to replace.
 
+### `gfd` — the GFD mod-surface binding, VS0 planning pass
+
+Founder: "add any mor stdlib we think we will need for the vs0 of the mod api for GFD look at
+that northstar do any planning necessary and add some docs." This section is that planning pass,
+grounded in `GoblinFoxDragon/docs2/MOD_SURFACE_NORTHSTAR.md` (read in full, not skimmed) and the
+real, already-running EduScript binding layer it names as the closest existing precedent — not a
+green-field design.
+
+**The real precedent, checked directly**: `packages/education/edu_bindings.c`'s builtin table —
+`set_switch`/`is_switch_on`, `open_gate`/`close_gate`, `raise_bridge`, `stabilize_portal`/
+`open_portal`, `move_crate`/`stop_crate`/`set_crate_speed`, `mark_enemy`/`slow_enemy`,
+`spawn_prop`, `set_entity_pos`/`set_entity_vel`, `query_grounded`, `mark_quest_complete`/
+`get_quest_state`, `print`/`show_message`, `scan_gate`/`scan_portal`/`scan_enemy_count` — is a
+real, working, already-shipped C-style FFI table (flat function names, int-only args, dispatched
+through `edu_binding_call(EduWorldState *world, ...)`). It runs today in `apps/lobby`'s
+"Architect's Orb" terminal. `gfd` below is that same shape, upgraded to PARENA's actual type
+system (real structs/enums/regions instead of raw ints) — not a reinvention of what world-object
+scripting should look like, a direct port of a pattern that's already proven to work.
+
+**Real, still-open blocker, not glossed over**: `apps2/battlegrounds_gui` (the FPS "edu edition"
+client the founder specifically prioritized, per that northstar's own §1) has **zero** plugin/
+mod/script-loading mechanism today — this section designs the PARENA-side function signatures a
+future binding layer would expose; it does not build that loading mechanism, which is real,
+separate, unstarted work on the GFD side, not a PARENA-side gap.
+
+```clojure
+(defenum WorldObjectKind (Gate) (Bridge) (Portal) (Switch) (Crate) (Prop))
+
+(defn set-switch    [(id : I32) (on : Bool)] : (Result Unit WorldError))
+(defn open-gate     [(id : I32)] : (Result Unit WorldError))
+(defn raise-bridge   [(id : I32)] : (Result Unit WorldError))
+(defn spawn-prop     [(kind : String @ :region/scratch) (x : F64) (y : F64) (z : F64)]
+  : (Result I32 WorldError))
+(defn set-entity-pos [(id : I32) (x : F64) (y : F64) (z : F64)] : (Result Unit WorldError))
+(defn query-grounded [(id : I32)] : Bool)
+```
+
+**Solidity / destructibility** (NORTHSTAR §4's "solid buildings ~80% collidable" +
+"destructible-environments engine" — the latter explicitly meant to share one real system with
+`/home/fatbaby/skateboard/NORTHSTAR.md`'s own mesh-based damage/reveal design, not become a
+second parallel implementation):
+
+```clojure
+(defn set-solid       [(prop-type : String @ :region/scratch) (solid : Bool)] : (Result Unit WorldError))
+(defn breach          [(prop-id : I32) (impact-x : F64) (impact-y : F64) (impact-z : F64)]
+  : (Result Unit WorldError))     ; opens a real mesh-based damage/reveal state, per skateboard's own spec
+(defn is-breached      [(prop-id : I32)] : Bool)
+```
+
+**Skate-culture surfaces** (NORTHSTAR §4's own citation of `skateboard/NORTHSTAR.md`'s "the city
+itself is the skatepark" — grindable/ollie-able as a per-surface-type property, not a hardcoded
+mesh list):
+
+```clojure
+(defn set-grindable [(surface-type : String @ :region/scratch) (grindable : Bool)]
+  : (Result Unit WorldError))
+(defn set-ollieable  [(surface-type : String @ :region/scratch) (ollieable : Bool)]
+  : (Result Unit WorldError))
+```
+
+**Faction hooks** (NORTHSTAR §4's own citation of GTA7's real, already-shipped
+`FactionManager.java` — `join(player, faction)`/`reputation(playerId)`/
+`addRep(playerId, amount)` checked directly — same shape, not a bespoke GFD-only system):
+
+```clojure
+(defn faction-join     [(player-id : I32) (faction : String @ :region/scratch)] : (Result Unit WorldError))
+(defn faction-rep      [(player-id : I32)] : I32)
+(defn faction-add-rep  [(player-id : I32) (amount : I32)] : (Result Unit WorldError))
+```
+
+**METALVERSE terminal panels** (NORTHSTAR §4a — spawn a world-anchored typed panel showing a
+ticker chart or news feed, backed by FatBaby's real, already-live `signalapi` on `:9091`):
+
+```clojure
+(defenum PanelKind (TickerChart (ticker : String @ Region)) (NewsFeed))
+(defn spawn-panel [(kind : PanelKind) (x : F64) (y : F64) (z : F64)] : (Result I32 WorldError))
+```
+
+**Explicitly not resolved by this planning pass** — same open questions `MOD_SURFACE_NORTHSTAR.md`
+§6 itself lists, not silently answered here: whether EduScript's arrays/functions gap needs
+closing regardless of PARENA's own progress (moot if PARENA is the chosen path, still real if
+not), how a `gfd` binding layer actually loads/sandboxes untrusted mod scripts inside
+`apps2/battlegrounds_gui` (a real security/stability question, zero design here), and whether
+`gfd` should be one flat package or split further once real usage exists to ground that call —
+matching every other "don't split packages speculatively" decision already made in this document.
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
 - **Collections beyond `Vec`/`Map` literals** — `[...]`/`{...}` are core syntax (NORTHSTAR
@@ -296,10 +382,9 @@ than the real C code it's meant to replace.
   Needed before anything past toy programs can be written; deliberately left for whoever
   actually writes the first real `.prn` program past `test.prn` to ground against real need,
   not guessed at here.
-- **`net`** — nothing in the source spec or NORTHSTAR touches networking. Given PARENA's own
-  GFD-mod-surface positioning (deferred per "build it pure"), this would eventually matter, but
-  designing it now would be exactly the premature EduScript-integration thinking the founder's
-  own sequencing explicitly said to avoid.
+- **`net`** — nothing in the source spec, NORTHSTAR, or the `gfd` planning above touches raw
+  networking (the METALVERSE panel binding above calls into GFD's existing signalapi client
+  code, not a PARENA-native HTTP client) — still not designed, still not guessed at.
 - **Cross-target divergence** — every signature above is written target-agnostic (`FileHandle`,
   not `int fd` or `java.io.RandomAccessFile`); NORTHSTAR's own "Multi-target compilation" table
   says C/JVM/TS/Wasm each get a different `Arena`-under-the-hood, but VS0 only targets C — how
