@@ -87,6 +87,7 @@ binding, not a language primitive).
 43. `pitviper/protocol` — depends on `net/tcp`, `string`, `vec`, `compress/lz4`
 44. `profile` — depends on `core` only (FFI-bound; `heap-snapshot` is real/native, region-native)
 45. `staticanalysis` — depends on `string`, `vec` (FFI-bound)
+46. `git` — depends on `shell`, `pty`, `vec` (wraps the real `git` CLI, not a from-scratch object model)
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -1371,6 +1372,38 @@ source-level analysis pass competing with `region_analyze` itself, which already
 compile-time-enforced static analysis for the properties that actually matter most (region safety),
 stronger than anything an external C linter can see once the region information itself has been
 erased by emission.
+
+### `git` — as a real PARENA stdlib, not just shell/pty subprocess calls
+
+Founder: "we need to start building our own GIT gui in the browser on top of iduna" → "write it in
+rails before we PARENA it" → "as a parena stdlib." The founder's own real sequencing for the
+GitHub-alternative web UI itself is Rails first (own admitted reasoning: "i guess we build it in
+ruby on rails thats what github and gitlab do" → "i dunno why tho" — pattern-matched off real
+prior art, not a deeper technical reason, real and honestly stated as such) — that web app is
+explicitly **not** designed here. What *is* real PARENA stdlib scope right now: the same "as a
+parena stdlib" instruction applied to `pitviper/protocol`'s own already-noted git-push-back path
+(above: "invoked as a real subprocess through `shell`/`pty`... reusing what already works") —
+promoted from an inline note into its own real package, since founder-flagged "as a parena stdlib"
+is a real, separate ask from wrapping a couple of subprocess calls ad hoc:
+
+```clojure
+(defn status [(repo-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result GitStatus GitError) @ Region)
+(defn diff   [(repo-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result String GitError) @ Region)
+(defn add    [(repo-path : String @ :region/scratch) (paths : &(Vec String))] : (Result Unit GitError))
+(defn commit [(repo-path : String @ :region/scratch) (message : String @ Region)] : (Result Unit GitError))
+(defn push   [(repo-path : String @ :region/scratch) (remote : String @ :region/scratch)
+               (branch : String @ :region/scratch)]
+  : (Result Unit GitError))
+```
+
+Real, honest scoping, same judgment already used for `ssh`/`crypto`/`compress/lz4`: this wraps the
+real `git` CLI via `shell`/`pty` (spawn `git status`/`git diff`/etc., parse real stdout) rather
+than reimplementing Git's own object model, pack-file format, or wire protocol from scratch —
+those are real, substantial, separate undertakings (this is exactly the kind of thing the eventual
+Rails-then-PARENA GitHub-alternative web UI would itself need built out for real, once that
+project actually starts) that this pass explicitly declines to attempt.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
