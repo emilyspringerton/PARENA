@@ -70,6 +70,10 @@ binding, not a language primitive).
 27. `media/codec` — depends on `string` only (FFI-bound; the real codec library is the dependency,
     not another PARENA package)
 28. `media/stream` — depends on `net/tcp`, `media/codec`, `vec`
+29. `sql/ast` — depends on `string`, `map`
+30. `sql/planner` — depends on `sql/ast`
+31. `sql/driver` — depends on `net/tcp`, `sql/planner`
+32. `ringo` — depends on `array`, `sdl2`
 
 **Priority order** (founder: "and then prioritize them" — distinct from dependency order above;
 this is *build/attention* priority, dependency-respecting but not identical to it, since a
@@ -939,6 +943,34 @@ founder's own "defer for now" stands for the deep implementation, not the shape.
 (defn execute [(!conn : &mut Connection) (plan : &QueryPlan) (dest : Arena @ Region)]
   : (Result (Vec (Map String SqlValue)) ConnError) @ Region)
 ```
+
+### `ringo` — the matplotlib equivalent
+
+Founder: "and matplotlib" → "give at qute parena name" → "apparently parena is a beetle" → "so
+give it a qute beetle name maybe RINGO." Named directly by the founder, not invented here. Same
+layering judgment as `array`/`linalg`/`stats`/`dataframe` above: matplotlib itself plots numpy
+arrays onto a real rendering surface, so `ringo` depends on `array` for data and the already-
+built-in `sdl2` for the surface — not a third, separate graphics backend.
+
+```clojure
+(defn figure [(w : I32) (h : I32) (dest : Arena @ Region)] : Figure @ Region)   ; opens an sdl2/create-window under the hood
+
+(defn plot    [(!fig : &mut Figure) (x : &NDArray) (y : &NDArray)] : (Result Unit ShapeError))
+(defn scatter [(!fig : &mut Figure) (x : &NDArray) (y : &NDArray)] : (Result Unit ShapeError))
+(defn bar     [(!fig : &mut Figure) (labels : &(Vec String)) (values : &NDArray)] : (Result Unit ShapeError))
+(defn hist    [(!fig : &mut Figure) (data : &NDArray) (bins : I32)] : Unit)
+
+(defn set-title [(!fig : &mut Figure) (title : String @ Region)] : Unit)
+(defn set-labels [(!fig : &mut Figure) (x-label : String @ Region) (y-label : String @ Region)] : Unit)
+
+(defn show [(!fig : &Figure)] : Unit)   ; sdl2/poll-event loop until window closed, matches PITVIPER's own loop shape
+(defn save [(fig : &Figure) (path : String @ :region/scratch)] : (Result Unit IoError))   ; via media/codec for PNG encode
+```
+
+Real, honest limitation, same pattern as everywhere above: `bar`/`hist`'s actual pixel-space
+layout (axis scaling, tick placement, label text rendering) is real, non-trivial rendering work —
+these are the real function signatures a plotting program calls, not a claim that the layout math
+is solved here.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 

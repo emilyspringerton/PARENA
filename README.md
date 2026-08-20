@@ -27,8 +27,9 @@ build-order rationale and the "Priority order" section for what's getting attent
 (matmul/transpose/dot; inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/
 filter/group-by deferred), `nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`,
 `regex/nfa` (signatures only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`,
-`regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`. Every other package in the tables below is
-designed in `STDLIB.md` but has no `.prn` file yet (`otp/*`, `media/*`, `sql/*`, `editor/*`).
+`regex/glob`, `expr`, `grep`, `sed`, `awk`, `gfd`, `editor/plugin`, `editor/buffer`, `editor/events`,
+`editor/ui`, `ringo`. Every other package in the tables below is designed in `STDLIB.md` but has no
+`.prn` file yet (`otp/*`, `media/*`, `sql/*`).
 
 ## Standard library — full planned API surface
 
@@ -108,6 +109,12 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | `sql/ast` | Parsed `Select`/`Insert`/`Update`/`Delete` representation |
 | `sql/planner` | `SqlStmt` → `QueryPlan` — real query planning genuinely deferred |
 | `sql/driver` | Backend-agnostic `Connection`/`execute`, real wire-protocol work per backend |
+
+### Plotting
+
+| Package | Purpose |
+|---|---|
+| `ringo` | The matplotlib equivalent — `figure`/`plot`/`scatter`/`bar`/`hist`/`show`/`save`, plots `array`'s `NDArray` onto an `sdl2` window. Named by the founder: "apparently parena is a beetle" -> "RINGO" |
 
 ### Editor/plugin API — shell resolved: a PARENA-authored, SDL2-based vim-like editor, hosted by PITVIPER
 
