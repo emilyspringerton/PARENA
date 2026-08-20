@@ -63,6 +63,20 @@ makes "write after close" a compile error, not a runtime check `io` has to perfo
 `open`/`read-string` are the obvious symmetric operations no `io` package could ship without,
 grounded in the same `FileHandle` type the source examples already assume exists.
 
+**`io` extension — binary reads** (grounded in porting `gpt2-alpine-c`, below): its real weight
+loader (`gpt2.c`'s `fread_or_fail`) does raw `fread(buf, sizeof(float), n, f)` — a checkpoint file
+is just a flat sequence of `float32`s read straight into a buffer, no string decoding involved.
+`read-string` alone can't express that.
+
+```clojure
+(defn read-floats [(!f : FileHandle @ :region/task) (n : I32) (dest : Arena @ Region)]
+  : (Result NDArray IoError) @ Region)   ; reads n raw F32 values, same "region caller picks" idiom
+```
+
+Returns `array`'s own `NDArray` directly (1-D, `shape = [n]`) rather than a bare `(Vec F64)` —
+model weights are immediately going to be reshaped and matmul'd, so handing back the type
+`linalg` already operates on avoids a pointless intermediate conversion step.
+
 ### `string` — one real call, plus the minimum a "no arrays yet but has Strings" language needs
 
 ```clojure
@@ -215,6 +229,65 @@ own `get-data` used above.
 **Same honest limitation as `array`/`linalg`/`stats`**: a real fast CSV parser and a real
 columnar-scan `filter`/`group-by` implementation are both genuine engineering, not specified by
 the signatures above — flagged, not resolved here.
+
+### `nn` / `tokenizer` / `sort` — grounded in porting `gpt2-alpine-c`
+
+Founder: "add any more stdlib you can think of that would be needed to port gpt2alpinec." Not
+speculative — read the real source (`/home/fatbaby/gpt2-alpine-c/src/`) rather than guessing what
+a GPT-2 inference engine needs. It's a small, real C program: `gpt2.c`'s `gpt2_model_forward`
+(the transformer forward pass) calls three static helpers by name — `layernorm`, `gelu_inplace`,
+`softmax_inplace` — plus raw matmuls that `linalg` above already covers; `tokenizer.c` has
+`tokenizer_load`/`gpt2_encode`/`gpt2_decode` (a real BPE-style tokenizer); `archetype.c` calls
+`qsort` with a comparator for top-N ranking (the sampling-time top-k selection every GPT-2-style
+decoder needs). Three small packages, matching those three real needs exactly — nothing extra.
+
+**`nn`** — depends on `array` only, three primitives, not a full deep-learning framework:
+
+```clojure
+(defn layernorm [(x : &NDArray) (weight : &NDArray) (bias : &NDArray) (dest : Arena @ Region)]
+  : (Result NDArray ShapeError) @ Region)
+(defn gelu [(x : &NDArray) (dest : Arena @ Region)] : NDArray @ Region)
+(defn softmax [(x : &NDArray) (dest : Arena @ Region)] : NDArray @ Region)
+```
+
+Deliberately **not** an `attention` or `transformer-block` function — `gpt2_model_forward` itself
+composes attention from matmuls (`linalg/matmul`) + `softmax` + `layernorm`, not a single fused
+call, and that composition is exactly the shape worth preserving: a program *using* `nn` builds
+its own attention out of these primitives, the same way it's expected to build its own model
+architecture. Baking "attention" in as one opaque stdlib call would hide the actual computation a
+`gpt2-alpine-c` port needs to be honest about.
+
+**`tokenizer`** — a real, stateful BPE tokenizer, matching `tokenizer_load`/`gpt2_encode`/
+`gpt2_decode`'s own three-function shape exactly:
+
+```clojure
+(defn load [(vocab-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Tokenizer IoError) @ Region)
+(defn encode [(!t : &Tokenizer) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result (Vec I32) TokenizeError) @ Region)
+(defn decode [(!t : &Tokenizer) (ids : &(Vec I32)) (dest : Arena @ Region)]
+  : (Result String TokenizeError) @ Region)
+```
+
+Unlike the source's own `tokenizer_load`/`tokenizer_free` pair (a global, process-lifetime
+singleton — real C, but exactly the kind of hidden global state region typing exists to avoid), a
+`Tokenizer` here is a real value with its own region, loaded once and passed explicitly to
+`encode`/`decode` — no separate `free` function needed, since it's just an arena allocation like
+everything else, reclaimed when its region ends.
+
+**`sort`** — depends on nothing, generic over any `Vec`, grounded in `archetype.c`'s real
+`qsort(sorted, ARCH_COUNT, sizeof(ArchetypeScore), score_cmp)` top-N-ranking use, which is exactly
+what GPT-2-style sampling's top-k/top-p selection needs at generation time:
+
+```clojure
+(defn sort-by [(v : &mut (Vec T)) (cmp : (Fn [T T] I32))])
+(defn top-k [(v : &(Vec T)) (k : I32) (cmp : (Fn [T T] I32)) (dest : Arena @ Region)]
+  : (Vec T) @ Region)
+```
+
+Generic over `T` (not `NDArray`-specific) since `archetype.c`'s own comparator sorts a struct
+(`ArchetypeScore`), not raw floats — a `sort` package tied to `array` would have been narrower
+than the real C code it's meant to replace.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
