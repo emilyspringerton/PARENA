@@ -101,6 +101,7 @@ binding, not a language primitive).
 56. `idvault` — depends on `net/http`, `string` (a real IDUNA REST client, same shape as
     `pitviper/protocol`'s own `net/tcp`-based client)
 57. `pitviper/expand` — depends on `string`, `map`
+58. `pitviper/tiling` — depends on `vec` only
 
 **Founder: "again we need the cli to systematize i say over and over plan those deps - whatever
 makes sense - plan the deps etc"** — the list above is the full, current re-sort across every
@@ -1649,6 +1650,30 @@ above — real signature, not a deep design pass, until real usage justifies mor
 (defn register-snippet [(trigger : String @ :region/scratch) (expansion : String @ Region)] : Unit)
 (defn expand-if-match   [(buffer : String @ Region)] : (Option String))
 ```
+
+### `pitviper/tiling` — real i3wm interaction model
+
+Founder: "add i3 window management affordances to the stdlib." Real, named precedent (i3 — the
+real, well-known keyboard-driven Linux tiling window manager), applied to PITVIPER's own real
+panes (already has a real pane concept per `docs/NORTHSTAR.md`'s own "native pane model... does
+not wrap another multiplexer" design constraint — §5): i3's own real model is a tree of splits
+(horizontal/vertical), each leaf a window, keyboard-driven focus movement and window movement
+between splits, plus workspaces as named, switchable sets of that tree.
+
+```clojure
+(defenum SplitDirection (Horizontal) (Vertical))
+(defenum Layout (SplitContainer (direction : SplitDirection) (children : (Vec Layout) @ Region))
+                (Leaf (pane-id : I32)))
+
+(defn split       [(!layout : &mut Layout) (pane-id : I32) (direction : SplitDirection)] : Unit)
+(defn focus-move  [(!layout : &mut Layout) (direction : SplitDirection)] : Unit)   ; i3's own real h/j/k/l-style focus movement
+(defn switch-workspace [(name : String @ :region/scratch)] : Unit)
+```
+
+Real, honest limitation: same deferred-depth treatment as `idvault`/`pitviper/expand` above, real
+signatures only, not deep — PITVIPER's own real pane model already exists in Go (per its own
+NORTHSTAR), this designs what a future PARENA-native tiling layer would look like once dogfooded
+in, not a redesign of what's already shipped.
 
 ## Explicitly not designed yet — real gaps, not silently filled
 
