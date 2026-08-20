@@ -286,6 +286,54 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a generic, bare-symbol region parameter (`Arena @ Region`, not
+     * a literal `:region/x` keyword) is now recognized as a real
+     * region-scoped Arena parameter -- the shape stdlib/cache.prn's own
+     * open() and pentest/scan.prn's own scan-ports() actually use. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn scan-ports [(target : String @ :region/scratch) (dest : Arena @ Region)]\n"
+            "  : Unit\n  #target\n  {:c (inline-c \"host_scan(target, dest);\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a generic Arena @ Region parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "a generic Arena @ Region parameter emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Arena *dest __attribute__((unused))") != NULL,
+                  "the generic-region parameter becomes a real Arena *, same as a :region/x one");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a `Type @ Region` return-type annotation (not just a bare
+     * type) is now parsed correctly -- the shape pentest/scan.prn's own
+     * scan-ports() return type uses: `(Result (Vec PortResult)
+     * ScanError) @ Region`. Before this, the trailing `@ Region` was
+     * left dangling as bogus extra "body" content. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn get-config [(key : String @ :region/scratch)]\n"
+            "  : (Option String) @ Region\n  #target\n  {:c (inline-c \"host_get_config(key)\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a `Type @ Region` return-type annotation parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "a `Type @ Region` return-type annotation emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Option get_config(") != NULL,
+                  "the trailing @ Region on a return type is consumed, not left dangling as bogus body content");
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- defenum now really works: a real, user-defined tagged union
      * with both zero-payload and one-payload variants, matching
      * stdlib/editor/events.prn's own real EditorEvent shape. --- */

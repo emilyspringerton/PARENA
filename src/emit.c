@@ -193,11 +193,25 @@ static const char *binop_c_symbol(const char *sym) {
     return NULL;
 }
 
-static const char *find_keyword_child(Node *n) {
+/* has_region_marker answers "is this an Arena @ :region/x (or generic
+ * Arena @ <bare-symbol-region>) parameter": true for either a literal
+ * `:region/x` keyword or a generic, bare-symbol region variable (the
+ * real `Arena @ Region` shape this stdlib's own design docs use
+ * throughout for a caller-supplied region -- cache.prn's open,
+ * pentest/scan.prn's scan-ports, gfd.prn, etc.). Real, honest scope:
+ * this doesn't do anything WITH the specific region name either way --
+ * emit_defn's own binding logic only ever checked for the marker's
+ * presence, never its content, so recognizing `@ <bare symbol>` as the
+ * same real "this is a region-scoped Arena" signal is a direct
+ * widening of that existing behavior, not a new claim to have
+ * implemented real region-polymorphism analysis (a genuinely separate,
+ * much bigger domain-2 concern, not attempted here). */
+static int has_region_marker(Node *n) {
     for (size_t i = 0; i < n->child_count; i++) {
-        if (n->children[i]->type == NODE_KEYWORD) return n->children[i]->text;
+        if (n->children[i]->type == NODE_KEYWORD) return 1;
+        if (n->children[i]->type == NODE_AT) return 1;
     }
-    return NULL;
+    return 0;
 }
 
 static char *fail(Arena *arena, const char **out_error, const char *fmt, ...) {
@@ -1119,10 +1133,10 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             sb_free(&param_list);
             return 0;
         }
-        const char *region_kw = find_keyword_child(param);
+        int has_region = has_region_marker(param);
         const char *c_name = mangle(arena, param->children[0]->text);
         if (i > 0) sb_append(&param_list, ", ");
-        if (region_kw) {
+        if (has_region) {
             scope_bind(&base, param->children[0]->text, c_name, "Arena *", 0 /* already a pointer */);
             /* __attribute__((unused)): same real reasoning as `let` bindings
              * above -- a real function can validly not use one of its own
@@ -1219,6 +1233,17 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             return 0;
         }
         body_start += 2;
+        /* An optional trailing `@ <region>` on the return type itself,
+         * e.g. `: Cache @ Region` (cache.prn's own open) or
+         * `: (Result (Vec PortResult) ScanError) @ Region`
+         * (pentest/scan.prn's own scan-ports) -- the same real region-
+         * annotation shape parameters already accept via
+         * has_region_marker(), now also accepted on a return type.
+         * Consumed and discarded, same "existence only, no semantic use
+         * of the specific region name" honesty as the parameter side. */
+        if (body_start + 1 < defn->child_count && defn->children[body_start]->type == NODE_AT) {
+            body_start += 2;
+        }
     }
 
     if (body_start < defn->child_count && is_symbol(defn->children[body_start], "#target")) {
