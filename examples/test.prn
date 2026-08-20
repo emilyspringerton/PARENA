@@ -1,0 +1,16 @@
+;; The VS0 test program from NORTHSTAR.md's own Definition of Done --
+;; copied verbatim from the source spec document, not written fresh here.
+
+;; Valid: Promotes scratch result to buffer arena
+(defn load-config [(buf-arena : Arena @ :region/buffer)]
+  (with-arena [scratch :region/scratch 1024]
+    (let [temp-str (alloc scratch String "config.json")
+          real-buf (alloc buf-arena String "parsed_data")]
+      real-buf)))
+
+;; INVALID: Should fail compilation during region analysis
+(defn break-safety [(buf-arena : Arena @ :region/buffer)]
+  (with-arena [scratch :region/scratch 1024]
+    (let [bad-str (alloc scratch String "escaped_memory")]
+      ;; Error: Assigning scratch pointer to buffer-scoped slot
+      (buffer/set-data buf-arena bad-str))))

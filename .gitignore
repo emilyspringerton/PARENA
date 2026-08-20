@@ -1,0 +1,3 @@
+parena
+tests/test_lexer_parser
+src/*.o
