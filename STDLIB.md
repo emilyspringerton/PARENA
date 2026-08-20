@@ -28,6 +28,48 @@ Every package below either contains one of these five verbatim (with a real, spe
 signature now) or is new — and every new package is justified against something VS0's own DoD
 or NORTHSTAR.md's own examples already need, not spec-crept in.
 
+## Dependency order
+
+Founder: "planning any more stdlibs you need" → "then sort them in dep order" → "and build them
+out" → "in parena" → (after `sdl2`/`editor`/`net` were added) → "and replan the whole deps
+heirarchy." Full re-sort, every package planned this thread, topological by `import` (each
+package appears only after everything it depends on) — this is the real build order for the
+`.prn` source tree under `stdlib/`:
+
+**Tier 0 — built-in, no `import` needed:** `core` (already core language forms) and `sdl2`
+(founder: "SDL2 is built in" — the one package elevated to this tier despite being a real FFI
+binding, not a language primitive).
+
+1. `vec`, `map` — no stdlib dependencies (leaves)
+2. `string`, `log`, `buffer` — depend on `core` only
+3. `io` — depends on `string`
+4. `array` — depends on `vec`
+5. `linalg`, `stats` — depend on `array`
+6. `expr` — depends on `map`, `string`
+7. `regex/syntax` — depends on `string`, `vec`
+8. `regex/nfa`, `regex/pcre`, `regex/posix`, `regex/glob` — depend on `regex/syntax`, `vec`
+9. `dataframe` — depends on `array`, `string`, `vec`
+10. `nn` — depends on `array`
+11. `tokenizer` — depends on `string`, `vec`, `io`
+12. `sort` — depends on `vec`
+13. `net/tcp` — depends on `string` (leaf beyond that — raw sockets, no other package needed)
+14. `net/udp` — depends on `string` (same tier as `net/tcp`, no dependency between the two)
+15. `net/http` — depends on `net/tcp`, `map`, `string`
+16. `grep` — depends on `regex/nfa`, `regex/pcre`, `regex/posix`, `io`, `vec`
+17. `sed` — depends on `regex/pcre`, `io`, `string`
+18. `awk` — depends on `regex/pcre`, `expr`, `vec`, `string`
+19. `gfd` — depends on `string` only (world-state calls are FFI, not internal package deps)
+20. `editor/plugin`, `editor/buffer`, `editor/events` — depend on `string`, `vec`
+21. `editor/ui` — depends on `editor/events`, and *may* depend on `sdl2` once a shell is chosen
+    (NORTHSTAR's own editor-shell question is still open — not resolved by this re-sort)
+
+Real, honest limitation restated once here rather than per-package below: VS0 only has a working
+*parser* (domain 1) — no region analyzer or C emitter yet (S189-13, domains 2-5 not started). Every
+`.prn` file under `stdlib/` is real source, written in the language's actual documented syntax and
+checked against the real `parena parse` command, but none of it compiles or runs yet — that
+requires domains 2-3, which this pass does not build. "Built out in Parena" means *real, parseable
+Parena source exists*, not *the standard library is executable*.
+
 ## Package list
 
 ### `core` — always in scope, no `import` needed
@@ -40,6 +82,38 @@ predeclared identifiers (`len`, `error`, `int`, `nil`) play.
 - `Arena`, `with-arena` — already core forms per NORTHSTAR's own "Declarations & bindings" and
   "Memory model" sections, not a package function, listed here only so this doc's own package
   list is complete.
+
+### `vec` / `map` — the collection gap earlier drafts of this doc flagged but didn't design
+
+Founder: "do any remaining dependency planning." Real, no-longer-speculative trigger: `expr`'s
+`eval` (below, added for `awk`) takes `bindings : &Map`, and `regex`/`grep`/`awk`'s own
+`(Vec ...)`-returning signatures throughout this doc assume push/get/len operations exist
+somewhere — every prior draft left that as "Collections beyond `Vec`/`Map` literals... deliberately
+left for whoever actually writes the first real program to ground against real need." That
+program turned out to be this document's own `expr`/`awk` sections, so it's designed now, not
+deferred again.
+
+```clojure
+; vec — no dependencies, generic over T
+(defn new    [(dest : Arena @ Region)] : (Vec T) @ Region)
+(defn push!  [(v : &mut (Vec T)) (item : T)])
+(defn get    [(v : &(Vec T)) (idx : I32)] : (Option (&T)))
+(defn len    [(v : &(Vec T))] : I32)
+
+; map — no dependencies, generic over K/V
+(defn new      [(dest : Arena @ Region)] : (Map K V) @ Region)
+(defn get      [(m : &(Map K V)) (key : &K)] : (Option (&V)))
+(defn set!     [(m : &mut (Map K V)) (key : K) (value : V)])
+(defn contains [(m : &(Map K V)) (key : &K)] : Bool)
+```
+
+Both are as small as `[...]`/`{...}` literal syntax needs to become *usable* past a fixed literal
+— exactly the same "minimum any language ships before its first real program" judgment `string`
+used above, not a `Vec`/`HashMap`-standard-library's-worth of iterator adapters, sorted variants,
+or capacity tuning. `array`'s `NDArray.data`, `dataframe`'s `Column`/`DataFrame`, `nn`/`tokenizer`/
+`sort`'s `Vec I32`/`Vec T` parameters, and every `regex`/`grep`/`awk` signature that returns a
+`Vec` were all already assuming this package exists implicitly; this section makes that dependency
+real instead of implicit.
 
 ### `io` — the two calls the source spec already uses, plus their obvious neighbors
 
@@ -507,15 +581,23 @@ package:
 ```clojure
 ; expr — new dependency: a tiny arithmetic/string/comparison expression evaluator
 (defenum ExprValue (Num (v : F64)) (Str (v : String @ Region)))
-(defn eval [(src : String @ :region/scratch) (bindings : &Map) (dest : Arena @ Region)]
+(defn eval [(src : String @ :region/scratch) (bindings : &(Map String ExprValue))
+            (dest : Arena @ Region)]
   : (Result ExprValue EvalError) @ Region)
 ```
 
 ```clojure
+(defstruct AwkRule
+  (pattern : (Option Regex) @ Region)   ; None = unconditional (BEGIN/END or a bare action)
+  (action  : String @ Region))          ; expr source text, (re-)evaluated per matching Record
+
+(defstruct AwkProgram (rules : (Vec AwkRule) @ Region))
 (defstruct Record (fields : (Vec String) @ Region) (nr : I32))
 
-(defn run [(!f : FileHandle @ :region/task) (program : AwkProgram) (dest : Arena @ Region)]
-  : (Result Unit IoError) @ Region)   ; program: (pattern via regex/pcre, action via expr) pairs
+(defn run [(!f : FileHandle @ :region/task) (program : &AwkProgram) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region)   ; per line: read-line -> split into Record.fields via string/split
+                                       ; -> each rule whose pattern (regex/pcre) matches (or is None)
+                                       ; gets its action run through expr/eval against NR/NF/$1../$N
 ```
 
 **"and beyond"** — named but deliberately not designed here, same "flagged, not resolved" pattern
@@ -536,13 +618,146 @@ same "small, single-purpose, composable packages" discipline still applies *with
 packages that's allowed to be large, same as CPython's own stdlib being simultaneously huge and
 made of individually small modules.
 
+### `net/tcp` / `net/udp` / `net/http` — resolves the earlier "net — not designed" gap for real
+
+Founder: "i think thats the stack?" → "as long as we have full http stuff" → "and tcp" → "and
+udp." Grounded in two real, different networking shapes already live in this monorepo, not
+invented from scratch: SHANKPIT's server-authoritative UDP FPS (`:6969`) and REDGARDEN/
+GoblinFoxDragon's `arena_server`/`wsudprelay` (raw `sendto`/`recvfrom` UDP, socket-per-port) are
+the real `net/udp` precedent; IDUNA and PRRJECT_FATBABY's `signalapi`-style JSON-over-HTTP
+services are the real `net/http` precedent. Three packages, not one flat `net`, because UDP/TCP's
+own connectionless-vs-connection-oriented distinction is as real a semantic split as
+`regex/posix`'s leftmost-longest-vs-leftmost-first was above — collapsing them into one package
+would hide that difference behind a single API that has to lie about one side of it.
+
+```clojure
+; net/udp — connectionless, matches SHANKPIT/arena_server's own sendto/recvfrom shape
+(defn bind    [(port : I32) (dest : Arena @ Region)] : (Result UdpSocket NetError) @ Region)
+(defn send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region)]
+  : (Result I32 NetError))
+(defn recv-from [(!sock : &UdpSocket) (dest : Arena @ Region)]
+  : (Result (String SocketAddr) NetError) @ Region)   ; blocks; a real server owns its own poll loop
+
+; net/tcp — connection-oriented
+(defn listen  [(port : I32) (dest : Arena @ Region)] : (Result TcpListener NetError) @ Region)
+(defn accept  [(!l : &TcpListener) (dest : Arena @ Region)] : (Result TcpStream NetError) @ Region)
+(defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result TcpStream NetError) @ Region)
+(defn read    [(!s : &mut TcpStream) (dest : Arena @ Region)] : (Result String NetError) @ Region)
+(defn write   [(!s : &mut TcpStream) (data : String @ Region)] : (Result I32 NetError))
+
+; net/http — depends on net/tcp only, matches signalapi's own request/response JSON shape
+(defstruct HttpRequest  (method : String @ Region) (path : String @ Region)
+                        (headers : (Map String String) @ Region) (body : (Option String) @ Region))
+(defstruct HttpResponse (status : I32) (headers : (Map String String) @ Region)
+                        (body : String @ Region))
+
+(defn get  [(url : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region)
+(defn post [(url : String @ :region/scratch) (body : String @ Region) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region)
+(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse))]
+  : (Result Unit NetError))   ; matches signalapi/IDUNA's own "one handler fn per route" shape
+```
+
+Real, honest limitation, same pattern as `array`/`linalg`'s BLAS/LAPACK note above: real TLS
+(`net/http`'s `get`/`post` against `https://` URLs, which IDUNA/signalapi both require in
+production) needs a real TLS implementation underneath — not specified here, genuinely separate
+work, most plausibly an FFI binding to a real C TLS library rather than a from-scratch
+implementation, the same judgment call already made for `linalg`.
+
+### `sdl2` — built-in, not an optional `import`
+
+Founder: "we need to build SDL2 in PARENA" → "in the stdlib" → "SDL2 is built in" → "but written
+in PARENA" → "same APIs." Four real, separate decisions, each honored exactly, not blended into
+one vague "add SDL2 support": **(1)** it's a *stdlib* package, not a code-generator or build-
+system integration; **(2)** it ships **built-in** — same tier as `core`, no `(import sdl2)` line
+needed, unlike every other package in this document; **(3)** the binding itself is **real Parena
+source**, using the `#target {:c (inline-c "...")}` FFI escape NORTHSTAR's own "Cross-target
+native FFI" idiom already specifies, not hand-written C glue code sitting outside the language;
+**(4)** function names **mirror real SDL2**, translated to kebab-case, not a redesigned windowing
+API — `sdl2/create-window` calls real `SDL_CreateWindow`, it doesn't reinvent what a window is.
+
+Call surface grounded in a real grep across this monorepo's own SDL2 usage (BRAWLPIT, SHANKPIT,
+REDGARDEN, PITVIPER, GoblinFoxDragon) rather than the full upstream SDL2 API — the same "small,
+grounded in real need" discipline as every other package above, not a wholesale header port:
+
+```clojure
+(defn init [] : (Result Unit Sdl2Error))
+(defn quit [])
+(defn create-window [(title : String @ :region/scratch) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result Window Sdl2Error) @ Region)
+(defn destroy-window [(!w : Window)])
+
+(defn poll-event [] : (Option Event))          ; matches every client's own SDL_PollEvent loop shape
+(defn get-keyboard-state [] : &(Vec Bool))      ; SDL_GetKeyboardState
+(defn get-mouse-state [] : (I32 I32 I32))       ; x, y, button-mask — SDL_GetMouseState
+(defn set-relative-mouse-mode [(on : Bool)])    ; PITVIPER's own mouse-drag-selection precedent
+
+(defn get-ticks [] : I32)                       ; SDL_GetTicks
+(defn delay [(ms : I32)])                       ; SDL_Delay
+
+(defn get-clipboard-text [(dest : Arena @ Region)] : (Result String Sdl2Error) @ Region)
+(defn set-cursor [(cursor : SystemCursor)])      ; SDL_CreateSystemCursor + SDL_SetCursor, PITVIPER precedent
+
+(defn open-audio-device [(dest : Arena @ Region)] : (Result AudioDevice Sdl2Error) @ Region)
+(defn queue-audio [(!dev : &AudioDevice) (samples : &NDArray)] : (Result Unit Sdl2Error))
+```
+
+`get-mouse-state` returning a tuple and `queue-audio` taking `array`'s own `NDArray` (raw PCM
+samples are just a float/int buffer, same reasoning `io/read-floats` used for GPT-2 checkpoint
+weights above) are the two real design choices here beyond a flat rename — everything else is a
+direct one-to-one mirror of the grepped call, on purpose.
+
+**Real, honest limitation**: game controller support (`SDL_GameControllerOpen`/`GetAxis`/
+`GetButton`, real, grepped, used by BRAWLPIT/REDGARDEN/GoblinFoxDragon) and full renderer/texture
+calls (`SDL_CreateRenderer`, draw calls) are left out of this pass — the grep surfaced them, but
+folding two more real subsystems (controller input state machine, a texture/renderer resource
+lifecycle with its own linear-ownership shape) into the same pass as everything else this session
+already added risks the "add dependencies as std libs themselves" instruction turning into
+unbounded scope creep; flagged as the next real extension once a renderer-owning program actually
+needs it, not designed blind here.
+
+### `editor/plugin` / `editor/buffer` / `editor/events` / `editor/ui` — the editor half, real API surface only
+
+Founder: "also the stdlibs we need for the editor." NORTHSTAR.md's own "Editor/plugin API"
+section already names these four modules and their purpose (`parena/plugin` lifecycle+commands,
+`parena/buffer` text access, `parena/events` hooks, `parena/ui` decorations/overlays) but
+explicitly flags the editor shell itself — which of Electron/Tauri/GTK+GtkSourceView/SDL2+ImGui/
+ncurses+Tree-sitter — as **"Not started, not in VS0... an open, undecided question."** That
+undecided-shell status hasn't changed; what's designed here is only the plugin-facing surface a
+`.prn` plugin author would call, matching NORTHSTAR's own module table exactly, not the shell's
+internal text-buffer representation (rope vs. gap-buffer vs. piece-table is real, separate,
+shell-specific work that can't be honestly designed until the shell itself is chosen) or rendering
+(if SDL2+ImGui ends up the chosen shell, `editor/ui` would plausibly be implemented on top of the
+`sdl2` package above — a real, live connection worth noting, not yet decided).
+
+```clojure
+; editor/plugin — lifecycle, configuration, command palette
+(defn register-command [(name : String @ :region/scratch) (handler : (Fn [] Unit))])
+(defn get-config [(key : String @ :region/scratch)] : (Option String))
+
+; editor/buffer — read/insert/delete/select text ranges in the active buffer
+(defn active-text [(dest : Arena @ Region)] : String @ Region)
+(defn insert [(pos : I32) (text : String @ Region)] : (Result Unit BufferError))
+(defn delete-range [(start : I32) (end : I32)] : (Result Unit BufferError))
+(defn selection [] : (Option (I32 I32)))
+
+; editor/events — subscribe to editor actions
+(defenum EditorEvent (OnSave) (OnChange) (OnKeybind (key : String @ Region)))
+(defn subscribe [(event : EditorEvent) (handler : (Fn [] Unit))])
+
+; editor/ui — gutter decorations, inline diagnostics, status bar, popups
+(defn set-gutter-marker [(line : I32) (glyph : String @ :region/scratch)])
+(defn show-diagnostic [(line : I32) (severity : DiagnosticSeverity) (msg : String @ Region)])
+(defn set-status-bar [(text : String @ Region)])
+(defn show-popup [(text : String @ Region) (x : I32) (y : I32)])
+```
+
 ## Explicitly not designed yet — real gaps, not silently filled
 
-- **Collections beyond `Vec`/`Map` literals** — `[...]`/`{...}` are core syntax (NORTHSTAR
-  §"Syntax"), but no package for e.g. `vec/push`, `map/get` appears in any source example.
-  Needed before anything past toy programs can be written; deliberately left for whoever
-  actually writes the first real `.prn` program past `test.prn` to ground against real need,
-  not guessed at here.
+- ~~**Collections beyond `Vec`/`Map` literals**~~ — resolved above (`vec`/`map` packages), once
+  `expr`/`awk` made the dependency real instead of speculative.
 - **`net`** — nothing in the source spec, NORTHSTAR, or the `gfd` planning above touches raw
   networking (the METALVERSE panel binding above calls into GFD's existing signalapi client
   code, not a PARENA-native HTTP client) — still not designed, still not guessed at.
