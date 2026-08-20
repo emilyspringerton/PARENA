@@ -1,9 +1,10 @@
 # NORTHSTAR — PARENA
 
-**Status:** VS0 lexer/parser (domain 1) and region analyzer (domain 2) built and CI-verified —
-`parena analyze examples/test.prn` produces NORTHSTAR's own DoD error message verbatim, line
-number included. C emitter, memory verification, and the full build pipeline (domains 3-5) not
-yet built.
+**Status:** VS0 lexer/parser (domain 1), region analyzer (domain 2), and C emitter (domain 3)
+built and CI-verified — `parena build examples/valid_only.prn -o out.c` produces real C99 that
+compiles with zero warnings under `gcc -Wall -Wextra -pedantic -std=c99` (the DoD's own literal
+bar) and, verified beyond the DoD's own requirement, actually runs correctly when linked against
+the real runtime. Memory verification and the CLI runner polish (domains 4-5) not yet built.
 **Date:** 2026-08-20.
 
 ## What this is
@@ -286,7 +287,25 @@ invariant, not the Move/ownership invariant, not full bidirectional type inferen
 escape`'s own real limitation: it recognizes "first argument is the destination" (matching every
 `set-data`/`write-string`-shaped STDLIB.md signature), not a general call-graph analysis.
 
-C emitter, memory verification, and the full `parena build` pipeline (VS0's remaining 3 DoD
+VS0 C emitter done (commit `9bdf91e`): `src/emit.c`, a single-pass emitter producing real C99 for
+`with-arena`/`let`/`alloc` — `with-arena` compiles to a real C block scoping a
+`__attribute__((cleanup(arena_free_all)))`-attributed `Arena` local, matching NORTHSTAR's own
+"reclaimed when its region ends" wording literally. `parena build examples/valid_only.prn -o
+out.c` produces C that compiles with zero warnings under the DoD's own exact flags
+(`gcc -Wall -Wextra -pedantic -std=c99`, checked in CI with `-Werror` besides), and — verified
+beyond what the DoD itself requires — a real driver program linking the emitted code against
+`runtime/parena_runtime.c` actually runs it correctly (asserts the real returned value, clean
+under ASan/UBSan: the scratch arena's cleanup fired at its own block's exit, the promoted
+buffer-arena value survived it). 13 unit tests (real success cases — the cleanup attribute, the
+return statement, the runtime `#include` all actually present in the output — and real failure
+cases — an unsupported construct or an unbound identifier fails honestly rather than emitting
+guessed-at C), CI green (run confirmed via the GitHub Actions API). Real, honest scope stated in
+`emit.h`'s own header: only understands the exact shape `test.prn`'s own valid function uses (no
+numeric/boolean literals, no arithmetic, no nested calls beyond `alloc`, `char *` is the only
+inferred type) — a real, scoped emitter for what VS0's own acceptance case needs, not yet a
+general-purpose one for arbitrary future `.prn` programs.
+
+Memory verification and the full `parena build` pipeline's remaining polish (VS0's last 2 DoD
 domains) are real, scoped, unstarted follow-up work — the DoD table above is the actual acceptance
 bar, not a vague target. Self-hosting (above) is sequenced after VS0 completes.
 
