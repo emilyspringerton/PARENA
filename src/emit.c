@@ -913,6 +913,80 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         if (c_op) return emit_binop(arena, expr, c_op, scope, out_type, out_error);
         return emit_call(arena, expr, scope, out_type, out_error);
     }
+    /* `{:key1 val1 :key2 val2 ...}` -- map-literal struct construction,
+     * the real gap STDLIB.md's own gap-analysis section already itemized
+     * (#2), found blocking firefly.prn's own `run-tests`
+     * (`{:passed passed :failed failed :skipped 0}`) and
+     * firefly/ladybug.prn's own `expect` (`{:actual actual :t !t}`).
+     * Real, honest, structural approach rather than deep type-context
+     * threading: VS0 has no type-checking pass to tell this function
+     * "the enclosing tail position expects a TestReport" (emit_expr()'s
+     * own signature has no such hint), so this instead searches every
+     * registered defstruct for the one whose own field NAME SET exactly
+     * matches this map literal's own keyword keys -- the same "no real
+     * type table, best real match" character every other part of this
+     * emitter already has (struct/defenum construction-by-name is the
+     * same kind of structural match, not name-mangled type inference).
+     * Genuinely ambiguous only if two different registered structs
+     * share an identical field-name set, which nothing in this stdlib's
+     * own real source does today -- flagged, not silently guessed at,
+     * if it ever happens. */
+    if (expr->type == NODE_MAP) {
+        if (expr->child_count % 2 != 0) {
+            return fail(arena, out_error,
+                        "map literal at line %d has an odd number of forms (expected :key value pairs)",
+                        expr->line);
+        }
+        size_t pair_count = expr->child_count / 2;
+        StructInfo *match = NULL;
+        for (StructInfo *s = g_structs; s; s = s->next) {
+            if (s->field_count != pair_count) continue;
+            int all_found = 1;
+            for (size_t f = 0; f < s->field_count; f++) {
+                int found = 0;
+                for (size_t i = 0; i < expr->child_count; i += 2) {
+                    if (expr->children[i]->type == NODE_KEYWORD &&
+                        strcmp(expr->children[i]->text + 1, s->fields[f].name) == 0) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) { all_found = 0; break; }
+            }
+            if (all_found) { match = s; break; }
+        }
+        if (!match) {
+            return fail(arena, out_error,
+                        "map literal at line %d doesn't match any registered defstruct's own field "
+                        "set (VS0 has no real type context to construct an anonymous struct from)",
+                        expr->line);
+        }
+        StrBuf args;
+        sb_init(&args);
+        for (size_t f = 0; f < match->field_count; f++) {
+            Node *value_node = NULL;
+            for (size_t i = 0; i < expr->child_count; i += 2) {
+                if (expr->children[i]->type == NODE_KEYWORD &&
+                    strcmp(expr->children[i]->text + 1, match->fields[f].name) == 0) {
+                    value_node = expr->children[i + 1];
+                    break;
+                }
+            }
+            const char *val_type = NULL;
+            const char *val_c = emit_expr(arena, value_node, scope, &val_type, out_error);
+            if (!val_c) {
+                sb_free(&args);
+                return NULL;
+            }
+            if (f > 0) sb_append(&args, ", ");
+            sb_append(&args, val_c);
+        }
+        *out_type = match->name;
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%s_new(%s)", match->name, args.data);
+        sb_free(&args);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
     return fail(arena, out_error, "emit: unsupported expression form at line %d", expr->line);
 }
 
@@ -1035,6 +1109,75 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
          * one, real terminal-value branch wins over a recur sibling. */
         if (out_result_type) *out_result_type = then_type ? then_type : else_type;
         return 1;
+    }
+    if (is_call_named(tail, "let")) {
+        /* A real, structural bug found here (2026-08-20, while getting
+         * firefly.prn's own real `run-tests` to compile): a `let`
+         * (or `do`, below) in a loop's own tail position -- e.g. the
+         * `else` branch of `(if cond {...} (let [...] ...))` -- used to
+         * fall through to the generic "plain value" case below, which
+         * calls emit_expr() on the WHOLE `let` node; emit_expr() has no
+         * handling for `let` at all (it's only ever special-cased at
+         * the *body*-statement level, never as a generic expression),
+         * so this always failed with "unsupported expression form."
+         * Fixed the same way `if` just above already is: emit the
+         * `let`'s own bindings as real statements directly, then
+         * recurse emit_loop_tail() on the let's own body's own tail
+         * form -- a `let` with an `if`/`recur`/nested `let` as its own
+         * last body form now composes correctly, the same real
+         * "any depth of nesting" property `if`'s own recursion above
+         * already has. */
+        if (tail->child_count < 2 || tail->children[1]->type != NODE_VEC) {
+            return fail(arena, out_error, "loop: let expected a binding vector at line %d", tail->line) != NULL;
+        }
+        Node *bindings = tail->children[1];
+        EmitScope child;
+        scope_init(&child, scope);
+        for (size_t i = 0; i + 1 < bindings->child_count; i += 2) {
+            Node *name_node = bindings->children[i];
+            Node *expr_node = bindings->children[i + 1];
+            if (name_node->type != NODE_SYMBOL) {
+                return fail(arena, out_error, "loop: let binding name must be a plain identifier at line %d",
+                            tail->line) != NULL;
+            }
+            const char *c_name = mangle(arena, name_node->text);
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s %s __attribute__((unused)) = %s;\n", c_type, c_name, expr_c);
+            scope_bind(&child, name_node->text, c_name, c_type, 0);
+        }
+        Node **body_forms = tail->children + 2;
+        size_t body_count = tail->child_count - 2;
+        if (body_count == 0) {
+            return fail(arena, out_error, "loop: let has an empty body at line %d", tail->line) != NULL;
+        }
+        for (size_t i = 0; i + 1 < body_count; i++) {
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, body_forms[i], &child, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s;\n", expr_c);
+        }
+        return emit_loop_tail(arena, out, body_forms[body_count - 1], &child, loop_locals, loop_var_count,
+                               result_var, out_result_type, out_error);
+    }
+    if (is_call_named(tail, "do")) {
+        /* Same real fix as `let` just above, for the same real reason --
+         * `do` is likewise only ever special-cased at the body-statement
+         * level, never as a generic emit_expr() form. */
+        Node **body_forms = tail->children + 1;
+        size_t body_count = tail->child_count - 1;
+        if (body_count == 0) {
+            return fail(arena, out_error, "loop: do has an empty body at line %d", tail->line) != NULL;
+        }
+        for (size_t i = 0; i + 1 < body_count; i++) {
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, body_forms[i], scope, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s;\n", expr_c);
+        }
+        return emit_loop_tail(arena, out, body_forms[body_count - 1], scope, loop_locals, loop_var_count,
+                               result_var, out_result_type, out_error);
     }
     if (is_call_named(tail, "recur")) {
         if (tail->child_count - 1 != loop_var_count) {

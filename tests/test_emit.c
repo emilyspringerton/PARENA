@@ -911,6 +911,80 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- map-literal struct construction -- STDLIB.md's own gap #2,
+     * found blocking firefly.prn's own `run-tests`
+     * (`{:passed passed :failed failed :skipped 0}`). Real, structural
+     * match: no type-context threading, searches every registered
+     * defstruct for the one whose own field NAME SET exactly matches
+     * the map literal's own keyword keys. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Report (passed : I32) (failed : I32) (skipped : I32))\n"
+            "(defn f [] : Report\n"
+            "  {:passed 1 :failed 0 :skipped 2})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a map literal matching a registered defstruct's fields parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Report_new(1, 0, 2)") != NULL,
+                  "it constructs the matching struct via its own real constructor, fields in the "
+                  "struct's own declared order, not the map literal's own key order");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : Unit {:nope 1 :also-nope 2})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a map literal matching no registered defstruct parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "a map literal with no matching registered defstruct fails honestly");
+        arena_free_all(&arena);
+    }
+
+    /* --- `let`/`do` in a loop's own tail position -- a real, structural
+     * bug found while getting firefly.prn's own `run-tests` to compile:
+     * `(loop [...] (if cond then-val (let [...] ... (recur ...))))` used
+     * to fail, since emit_loop_tail()'s own fallback called emit_expr()
+     * on the whole `let` node, which has no handling for it at all
+     * (only ever special-cased at the body-statement level). Fixed the
+     * same way `if` itself already composes recursively in tail
+     * position. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sum-to [(n : I32)] : I32\n"
+            "  (loop [i 0 acc 0]\n"
+            "    (if (>= i n)\n"
+            "      acc\n"
+            "      (let [next (+ acc i)]\n"
+            "        (recur (+ i 1) next)))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a let-in-loop-tail-else-branch with a recur inside it parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form')");
+        if (c_src) {
+            CHECK(strstr(c_src, "next __attribute__((unused)) = (acc + i);") != NULL,
+                  "the let's own binding is emitted as a real statement inside the if's own else branch");
+            CHECK(strstr(c_src, "continue;") != NULL,
+                  "the recur nested inside the let's own body still reaches a real C continue");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
