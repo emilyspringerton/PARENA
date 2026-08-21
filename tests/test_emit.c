@@ -2854,6 +2854,74 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- the single-token `&name` form (no space, e.g. `&names`/`&v`
+     * -- the far more common shape than the two-sibling-node `& (expr)`
+     * form) was never unwrapped by vec_call_target_hint()'s own lookup
+     * key computation, so a real, correctly-registered element-type
+     * hint for a plain local/parameter Vec was NEVER found via
+     * `(vec/get &name i)` -- the lookup key ("&(name)", from emit_expr's
+     * own separate, unrelated single-token-&-handling) never matched
+     * the registration key ("name", a plain bound c_name). Found
+     * genuinely broken (2026-08-21, gcc-verifying dataframe.prn's own
+     * real `select`/vec_test.prn's own `(vec/get &names i)`) despite
+     * every OTHER real, already-verified `&(get-field ...)`-shaped call
+     * site in this same stdlib working fine all along (that's the
+     * OTHER, two-node form, unaffected by this bug). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn first-of [(names : (Vec String) @ :region/scratch)]\n"
+            "  : String\n"
+            "  (vec/get &names 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec/get on a single-token &name-prefixed Vec parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed only at the *gcc* stage -- a real cast to "
+              "the wrong pointer depth -- since the hint lookup key never matched the "
+              "registration key for this exact shape)");
+        if (c_src) {
+            CHECK(strstr(c_src, "return vec_get(&(names), 0);") != NULL,
+                  "the real, correctly-typed hint is found and used, reporting 'char *' directly "
+                  "(String's own real C type) rather than falling back to a generic void *");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `vec_get`'s own hint-informed cast used to always add one
+     * level of pointer indirection ("ElemType *"), correct for a BOXED
+     * scalar (I32/F64) but silently wrong for a pointer-representable
+     * element (String -> "char *", never boxed at all -- the Vec's own
+     * stored item genuinely IS the raw pointer, not a pointer to a
+     * boxed cell holding one). Found via an actual gcc compile
+     * (2026-08-21, dataframe.prn's own real `column`), producing a
+     * real double-indirection cast ("char * *") that `deref` then
+     * couldn't safely dereference. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn first-of [(names : (Vec String) @ :region/scratch)]\n"
+            "  : String\n"
+            "  (vec/get &names 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec/get on a (Vec String) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "char * *") == NULL,
+                  "no double-pointer cast is generated for a pointer-representable element type "
+                  "(previously 'char * *', a real, wrong extra level of indirection since the "
+                  "boxed-scalar cast formula was applied uniformly regardless of element kind)");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

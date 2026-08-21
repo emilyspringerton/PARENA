@@ -1207,6 +1207,36 @@ static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *sc
     if (target_node->type == NODE_SYMBOL &&
         (is_symbol(target_node, "&") || is_symbol(target_node, "&mut")) && call->child_count >= 3) {
         target_node = call->children[2];
+    } else if (target_node->type == NODE_SYMBOL && target_node->text && target_node->text[0] == '&' &&
+               strcmp(target_node->text, "&mut") != 0 && strlen(target_node->text) > 1) {
+        /* Real, general bug found and fixed here (2026-08-21, gcc-
+         * verifying dataframe.prn's own real `select`/vec_test.prn's
+         * own `(vec/get &names i)`): the single-TOKEN `&name` form
+         * (no space, e.g. `&names`/`&v`/`&exps` -- the far more common
+         * shape than the two-SIBLING-NODE `& (expr)` form the branch
+         * above already handles) was never unwrapped here at all. It
+         * fell through to the generic emit_expr() call below, which
+         * has its OWN, completely different real handling for a bare
+         * `&x` token (see its own comment) -- returning `"&(%s)"`-
+         * wrapped text, e.g. "&(names)" -- a real, different STRING
+         * than the plain "names" a hint was actually REGISTERED under
+         * (a parameter/local's own bound c_name never has "&(" wrapped
+         * around it). The lookup key silently never matched the
+         * registration key, so `vec/get &names i` always missed its
+         * own real, correctly-registered hint -- not because no hint
+         * existed, but because this function was asking the hint table
+         * the wrong question. Fixed by looking the STRIPPED name up in
+         * scope directly and using ITS OWN real c_name (the same one
+         * registration used) as both the lookup key and the returned
+         * target text. Falls through to the old generic path (below)
+         * if the stripped name isn't a real, known local at all --
+         * preserves the previous, honest behavior for anything this
+         * new branch doesn't confidently understand. */
+        Local *b = scope_lookup(scope, target_node->text + 1);
+        if (b) {
+            *out_target_text = b->c_name;
+            return find_vec_elem_hint(b->c_name);
+        }
     }
     const char *target_type = NULL;
     const char *target_text = emit_expr(arena, target_node, scope, &target_type, out_error);
@@ -1291,6 +1321,11 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
                                             * since a `&`/`&mut`-prefixed call site needs that
                                             * prefix back for a real pointer expression. */
     size_t box_logical_index = 0; /* 1-based position among children[1..]; 0 = "no boxing" */
+    const char *push_target_text = NULL; /* hoisted out of the if-block below so the real, new
+                                           * retroactive-hint registration further down (see its
+                                           * own comment) can still see it -- the block-scoped
+                                           * `target_text` local this if-block already had didn't
+                                           * survive past its own closing brace. */
     if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0) {
         const char *target_text = NULL;
         /* Real, honest widening (2026-08-21, gcc-verifying array.prn's
@@ -1314,6 +1349,7 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * happens inline in the loop below. */
         (void)vec_call_target_hint(arena, call, scope, &target_text, out_error);
         if (!target_text && out_error && *out_error) return NULL;
+        push_target_text = target_text;
         box_logical_index = strcmp(fn_name, "vec_push_") == 0 ? 2 : 3;
         /* Real bug found and fixed here (an actual gcc compile of
          * world.prn's own set-height): the boxing wrap used to read
@@ -1323,8 +1359,23 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * index, comma-joined), producing real, broken C
          * (`vec_box_f64(target, idx, , h)`). Captured here, once,
          * completely separately from the growing `args` buffer. */
+        /* Real, self-caught regression fixed here (2026-08-21, gcc-
+         * verifying this exact fix's own effect on an existing,
+         * already-passing test -- `(vec/push! &s 42)`): vec_call_
+         * target_hint()'s own new single-token `&name` branch (see its
+         * own declaration comment) now returns the TARGET's bare,
+         * unwrapped c_name ("s") as target_text, not the old "&(s)"-
+         * wrapped text that branch used to fall through and produce.
+         * This wrapping decision here used to only re-add "&(...)" for
+         * the bare `&`/`&mut` SYMBOL case (two-sibling-node form) --
+         * needs the identical single-token `&name` case recognized
+         * too, or `box_vec_arg` ends up as the bare Vec VALUE ("s")
+         * where a real `Vec *` is required by vec_box_i32/vec_box_f64,
+         * a real gcc type mismatch. */
         if (call->children[1]->type == NODE_SYMBOL &&
-            (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut"))) {
+            (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut") ||
+             (call->children[1]->text && call->children[1]->text[0] == '&' &&
+              strcmp(call->children[1]->text, "&mut") != 0 && strlen(call->children[1]->text) > 1))) {
             char buf[512];
             snprintf(buf, sizeof(buf), "&(%s)", target_text);
             box_vec_arg = arena_strdup(arena, buf, strlen(buf));
@@ -1405,6 +1456,39 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * boxing decision. */
         int is_boxable_struct = arg_type && !is_boxable_scalar && strcmp(arg_type, "void") != 0 &&
                                  arg_type[strlen(arg_type) - 1] != '*';
+        /* Real, general gap closed here (2026-08-21, gcc-verifying
+         * vec_test.prn's own real `(deref (vec/get &v 0))` after
+         * `(vec/push! &v 7)`): g_vec_elem_hints was NEVER populated for
+         * a plain `let`-bound local Vec (only a `&(Vec T)` PARAMETER or
+         * a `(Vec T)` struct FIELD get one) -- so a later `vec/get` +
+         * `deref` on such a local always fell back to a generic
+         * `"void *"`, which `deref` can't safely dereference (real
+         * ISO C error, "dereferencing 'void *' pointer"). Found
+         * repeatedly this session (array.prn's own strides-for reverse-
+         * pass attempt, nn.prn's own softmax, dataframe.prn's own
+         * `select`) and worked around each time by routing the read
+         * through a separately-hinted parameter -- this closes the gap
+         * for real instead: `vec/push!`'s own value argument already
+         * has a known, real C type right here (`arg_type`, already
+         * computed for the scalar-boxing decision above) -- exactly
+         * the same information vec_get's own hint lookup needs, so
+         * this call's own real target (`push_target_text`) is hinted
+         * with it retroactively, the moment a push is compiled. Real,
+         * honest, narrow scope: only helps a `vec/get` occurring
+         * TEXTUALLY AFTER a push to the same target within the same
+         * combined build (this emitter has no separate pass ordering
+         * independent of real source order) -- the overwhelmingly
+         * common real shape (build a Vec by pushing, read it back
+         * later), not a general control-flow-aware type inference
+         * pass. A struct/enum-typed push (is_boxable_struct) is
+         * pointer-representable once boxed, so its own real hint is
+         * `arg_type` itself, not a derived pointer type -- matching
+         * exactly how a `&(Vec StructType)` PARAMETER's own hint
+         * already works. */
+        if (push_target_text && logical_index == box_logical_index && arg_type &&
+            strcmp(arg_type, "void") != 0) {
+            record_vec_elem_hint(arena, push_target_text, arg_type, is_boxable_scalar);
+        }
         if (box_vec_arg && logical_index == box_logical_index && is_boxable_scalar) {
             /* Box this specific value argument -- vec_box_i32/vec_box_f64
              * need the real `Vec *` target too (to allocate the scalar
@@ -1467,18 +1551,50 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
         VecElemHint *hint = vec_call_target_hint(arena, call, scope, &target_text, out_error);
         if (!target_text && out_error && *out_error) return NULL;
         if (hint) {
-            /* A scalar element (I32/F64/Bool) reports the same "ElemType
-             * *" shape a pointer-representable element already does:
-             * real usage (world.prn's own `get-height`: `(deref
-             * (vec/get ...))`) always wraps it in `deref` uniformly
-             * regardless of element kind, and the Vec's own stored item
-             * genuinely IS a real pointer to an arena-allocated scalar
-             * cell now (parena_runtime.h's own vec_box_i32/vec_box_f64,
-             * used at the push!/set-at! call site above), not a bit-
-             * boxed value needing different deref treatment. */
-            char t[128];
-            snprintf(t, sizeof(t), "%s *", hint->elem_type);
-            *out_type = arena_strdup(arena, t, strlen(t));
+            /* A scalar element (I32/F64/Bool) reports "ElemType *": the
+             * Vec's own stored item genuinely IS a real pointer to an
+             * arena-allocated scalar cell (parena_runtime.h's own
+             * vec_box_i32/vec_box_f64, used at the push!/set-at! call
+             * site above), so real usage (world.prn's own `get-height`:
+             * `(deref (vec/get ...))`) correctly wraps it in `deref` to
+             * get the real value back.
+             *
+             * Real bug found and fixed here (2026-08-21, gcc-verifying
+             * dataframe.prn's own real `select`/vec_test.prn's own
+             * `(deref (vec/get &names i))`, both real `(Vec String)`
+             * call sites): a POINTER-REPRESENTABLE element (String ->
+             * "char *", or any registered struct/enum) is NEVER boxed
+             * at all -- `is_boxable_struct`'s own check above excludes
+             * anything whose type already ends in '*', "already
+             * directly usable as void *" (see its own declaration
+             * comment) -- so the Vec's own stored item for a String
+             * element genuinely IS the raw `char *` value itself, not a
+             * pointer to a boxed cell holding one. The old, uniform
+             * "%s *" formula silently added a SECOND, wrong level of
+             * indirection for this case ("char * *"), producing real,
+             * invalid C the moment `deref` tried to strip only one of
+             * them back off ("dereferencing 'void *' pointer" -- the
+             * cast itself was already wrong before deref even ran).
+             * Reported here as `hint->elem_type` DIRECTLY (no extra
+             * `" *"`) when it's already a pointer type -- the real,
+             * correct cast target for a value that was never boxed.
+             * Real, honest, narrower correctness fix rather than a
+             * wider guarantee: `deref` is still the correct convention
+             * for the SCALAR case above, only this specific pointer-
+             * representable case changes. A caller with pointer-
+             * representable elements should use this value directly
+             * (no `deref`) -- attempting `deref` on it now fails
+             * honestly (a real, correct type mismatch), rather than
+             * emitting invalid C silently. */
+            int elem_is_pointer = hint->elem_type[0] != '\0' &&
+                                   hint->elem_type[strlen(hint->elem_type) - 1] == '*';
+            if (elem_is_pointer) {
+                *out_type = hint->elem_type;
+            } else {
+                char t[128];
+                snprintf(t, sizeof(t), "%s *", hint->elem_type);
+                *out_type = arena_strdup(arena, t, strlen(t));
+            }
         } else {
             *out_type = "void *";
         }
@@ -3150,6 +3266,28 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
     const char *scrut_type = NULL;
     const char *scrut_c = emit_expr(arena, node->children[1], scope, &scrut_type, out_error);
     if (!scrut_c) return 0;
+    /* scrut_payload_type -- the same real lookup `unwrap` already uses
+     * (see resolve_result_option_payload_type()'s own declaration
+     * comment for the full real reasoning: VS0 has no generics, so a
+     * Result/Option's own payload type is only knowable by looking up
+     * a SPECIFIC, already-registered callee, not derived from the
+     * Result/Option runtime shape itself). Real, honest, narrow scope,
+     * identical to `unwrap`'s own: only fires when the scrutinee is a
+     * DIRECT call to a known top-level function (dataframe.prn's own
+     * real `(match (column df name dest) ((Ok col) ...) ...)` is
+     * exactly this shape) -- an arbitrary scrutinee expression gets no
+     * payload type, the same honest "can't decide" case that was
+     * already true before this. Consulted below when binding a
+     * single-field Ok/Some clause on the BUILT-IN Result/Option path
+     * (scrut_enum is NULL there, so the registered-defenum pat_variant
+     * path above can't help it) -- the identical real gap that path's
+     * own fix already closed for a real, registered user defenum. */
+    const char *scrut_payload_type = NULL;
+    if (node->children[1]->type == NODE_LIST && node->children[1]->child_count > 0 &&
+        node->children[1]->children[0]->type == NODE_SYMBOL) {
+        const char *scrut_callee = mangle_call_name(arena, node->children[1]->children[0]->text);
+        scrut_payload_type = find_defn_payload_type(scrut_callee);
+    }
     /* scrut_enum is non-NULL when the scrutinee resolved to a real,
      * registered user defenum type -- generalizes the hardcoded
      * Result/Option check below to any such type, using that enum's own
@@ -3331,14 +3469,38 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
              * `(deref col)` (an Ok-bound single-field payload) already
              * assumes elsewhere in this stdlib. Falls back to the
              * previous generic "void *" when no defenum info is
-             * available (matching Result/Option's own real, honest,
-             * permanently-erased-payload-type limitation -- there's no
-             * equivalent "field type" to look up for those). */
+             * available. Real, honest, narrower fallback added
+             * (2026-08-21, see scrut_payload_type's own declaration
+             * comment): Result/Option's own payload type ISN'T always
+             * permanently erased -- when the scrutinee is a direct call
+             * to a KNOWN function (found via g_defn_return_types' own
+             * payload_type field), an `Ok`/`Some` clause's own bound
+             * value can be typed the identical real way. Only valid for
+             * `Ok`/`Some` specifically (the payload_type lookup only
+             * ever resolves `(Result X ..)`/`(Option X)`'s own success-
+             * side X, never the Err/None side, which this emitter has
+             * no equivalent lookup for at all). */
             const char *bound_c_type = "void *";
             if (pat_variant && pat_variant->field_count == 1) {
                 char t[128];
                 snprintf(t, sizeof(t), "%s *", pat_variant->fields[0].c_type);
                 bound_c_type = arena_strdup(arena, t, strlen(t));
+            } else if (!scrut_enum && scrut_payload_type &&
+                       (strcmp(ctor_name, "Ok") == 0 || strcmp(ctor_name, "Some") == 0)) {
+                /* Same real double-indirection guard vec_get's own hint-
+                 * informed cast needed (see its own declaration comment):
+                 * a pointer-representable payload type (e.g. column's
+                 * own real `(&Column)` -> "Column *") is never boxed at
+                 * all, so it needs no extra "*" here either. */
+                size_t plen = strlen(scrut_payload_type);
+                int payload_is_pointer = plen > 0 && scrut_payload_type[plen - 1] == '*';
+                if (payload_is_pointer) {
+                    bound_c_type = scrut_payload_type;
+                } else {
+                    char t[128];
+                    snprintf(t, sizeof(t), "%s *", scrut_payload_type);
+                    bound_c_type = arena_strdup(arena, t, strlen(t));
+                }
             }
             scope_bind(&clause_scope, bind_node->text, c_name, bound_c_type, 0);
         }

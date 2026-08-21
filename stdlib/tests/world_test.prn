@@ -1,5 +1,14 @@
 ;; stdlib/tests/world_test.prn — real tests for stdlib/world.prn, using
 ;; firefly.
+;;
+;; Real, honest fix (2026-08-21, gcc-verifying this file for the first
+;; time): every test body used to call `(vec/new (current-arena))` --
+;; `current-arena` is a builtin that was never designed and doesn't fit
+;; VS0's own memory model at all (no ambient/implicit arenas anywhere
+;; in this language, on purpose -- see firefly.prn's own `skip` for the
+;; same real fix applied earlier). Each test body now opens its own
+;; real `with-arena` block instead, the same real pattern this whole
+;; stdlib already uses everywhere else.
 
 (module tests/world-test)
 (import world)
@@ -8,20 +17,22 @@
 
 (defn test-set-then-get-height [(!t : &mut T)]
   : Unit
-  (let [heights (vec/new (current-arena))]
-    (loop [i 0] (when (< i 100) (vec/push! &heights 0.0) (recur (+ i 1))))
-    (let [terrain {:heights heights :width 10 :height 10 :cell-size 1.0}]
-      (world/set-height &mut terrain 3 4 12.5)
-      (when (not (= (world/get-height &terrain 3 4) 12.5))
-        (firefly/errorf !t "world/set-height then get-height should round-trip")))))
+  (with-arena [dest :region/scratch 4096]
+    (let [heights (vec/new &dest)]
+      (loop [i 0] (when (< i 100) (vec/push! &heights 0.0) (recur (+ i 1))))
+      (let [terrain {:heights heights :width 10 :height 10 :cell-size 1.0}]
+        (world/set-height &mut terrain 3 4 12.5)
+        (when (not (= (world/get-height &terrain 3 4) 12.5))
+          (firefly/errorf !t "world/set-height then get-height should round-trip"))))))
 
 (defn test-out-of-bounds-get-returns-zero [(!t : &mut T)]
   : Unit
-  (let [heights (vec/new (current-arena))]
-    (loop [i 0] (when (< i 4) (vec/push! &heights 5.0) (recur (+ i 1))))
-    (let [terrain {:heights heights :width 2 :height 2 :cell-size 1.0}]
-      (when (not (= (world/get-height &terrain 99 99) 0.0))
-        (firefly/errorf !t "world/get-height: expected 0.0 for an out-of-bounds cell, not a crash")))))
+  (with-arena [dest :region/scratch 4096]
+    (let [heights (vec/new &dest)]
+      (loop [i 0] (when (< i 4) (vec/push! &heights 5.0) (recur (+ i 1))))
+      (let [terrain {:heights heights :width 2 :height 2 :cell-size 1.0}]
+        (when (not (= (world/get-height &terrain 99 99) 0.0))
+          (firefly/errorf !t "world/get-height: expected 0.0 for an out-of-bounds cell, not a crash"))))))
 
 (defn test-out-of-bounds-set-is-a-no-op [(!t : &mut T)]
   : Unit
@@ -29,12 +40,13 @@
   ;; out-of-bounds write is silently ignored rather than corrupting an
   ;; adjacent row via a miscalculated flat index -- worth a real test,
   ;; not just trusting the guard exists.
-  (let [heights (vec/new (current-arena))]
-    (loop [i 0] (when (< i 4) (vec/push! &heights 1.0) (recur (+ i 1))))
-    (let [terrain {:heights heights :width 2 :height 2 :cell-size 1.0}]
-      (world/set-height &mut terrain 50 50 999.0)
-      (when (not (= (world/get-height &terrain 0 0) 1.0))
-        (firefly/errorf !t "world/set-height: an out-of-bounds write must not corrupt in-bounds cells")))))
+  (with-arena [dest :region/scratch 4096]
+    (let [heights (vec/new &dest)]
+      (loop [i 0] (when (< i 4) (vec/push! &heights 1.0) (recur (+ i 1))))
+      (let [terrain {:heights heights :width 2 :height 2 :cell-size 1.0}]
+        (world/set-height &mut terrain 50 50 999.0)
+        (when (not (= (world/get-height &terrain 0 0) 1.0))
+          (firefly/errorf !t "world/set-height: an out-of-bounds write must not corrupt in-bounds cells"))))))
 
 (defn test-cases [(dest : Arena @ Region)]
   : (Vec TestCase) @ Region

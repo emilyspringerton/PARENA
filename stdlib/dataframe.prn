@@ -6,15 +6,27 @@
 ;; work, same honest limitation STDLIB.md already states.
 ;;
 ;; Real status update (2026-08-21, see STDLIB.md's own "dataframe"
-;; section for the full real reasoning): `column` is gcc-clean.
-;; `select` surfaced and closed a real, general control-flow gap
-;; (`return` -- bailing the whole function early from inside a loop's
-;; own match clause -- had no handling anywhere in this emitter before
-;; now), but is itself still blocked on a SEPARATE, real, deeper gap:
-;; `names`'s own String (pointer-representable, non-scalar) elements
-;; don't round-trip correctly through `vec/get`'s own element-type-hint
-;; + `deref` convention the way a scalar I32/F64 element already does.
-;; Not fixed this pass -- real, separate, un-attempted work.
+;; section for the full real reasoning): `column` is now real, gcc-
+;; clean, AND runtime-verified (a real harness confirming both the
+;; found and not-found cases). Getting there closed two real, general,
+;; broadly-impactful emitter bugs (see STDLIB.md for the full detail):
+;; the single-token `&name` form's own element-type-hint lookup never
+;; matched its own registration key, and `vec_get`'s own hint-informed
+;; cast added a wrong extra level of pointer indirection for a
+;; pointer-representable element (String) that's never boxed at all.
+;; The real, visible, SOURCE-level consequence: a String element read
+;; via `vec/get` is now used DIRECTLY, with no `deref` -- it's already
+;; the real value.
+;;
+;; `select` still doesn't compile -- surfaced (and got past two of the
+;; above fixes, then hit) a THIRD, real, separate, deeper gap:
+;; `resolve_declared_type()` doesn't understand a parenthesized `(&Type)`
+;; reference nested inside a `Result`/`Option`'s own payload-type slot
+;; (`column`'s own real return type is `(Result (&Column)
+;; ColumnNotFoundError)`), so `select`'s own `(match (column df name
+;; dest) ((Ok col) ...) ...)` can't type `col`'s own bound value beyond
+;; the generic `void *` fallback. Not fixed this pass -- real, separate,
+;; un-attempted work.
 
 (module dataframe)
 (import array)
@@ -50,7 +62,7 @@
   (loop [i 0]
     (if (>= i (vec/len &(get-field df :column-names)))
       (Err (ColumnNotFoundError name))
-      (if (str-eq? (deref (vec/get &(get-field df :column-names) i)) name)
+      (if (str-eq? (vec/get &(get-field df :column-names) i) name)
         (Ok (vec/get &(get-field df :columns) i))
         (recur (+ i 1))))))
 
@@ -59,8 +71,8 @@
   (let [out-cols (vec/new dest) out-names (vec/new dest)]
     (loop [i 0]
       (when (< i (vec/len &names))
-        (match (column df (deref (vec/get &names i)) dest)
-          ((Ok col) (do (vec/push! &out-cols (deref col)) (vec/push! &out-names (deref (vec/get &names i)))))
+        (match (column df (vec/get &names i) dest)
+          ((Ok col) (do (vec/push! &out-cols (deref col)) (vec/push! &out-names (vec/get &names i))))
           ((Err e) (return (Err e))))
         (recur (+ i 1))))
     (Ok {:columns out-cols :column-names out-names :row-count (get-field df :row-count)})))

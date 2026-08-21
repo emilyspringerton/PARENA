@@ -699,14 +699,48 @@ target). Verified both gcc-clean and correct at real runtime (a harness confirmi
 path fires exactly when expected, and the fall-through path still completes the whole loop when it
 doesn't).
 
-`select` itself is still blocked — surfaced a real, DIFFERENT, deeper gap than anything closed
-elsewhere this session: `names`'s own elements are `String` (`char *`, pointer-representable, not
-a scalar), and `(deref (vec/get &names i))` produces invalid C (`dereferencing 'void *' pointer`)
-even though `names : (Vec String) @ :region/scratch` is a real, explicitly-typed parameter that
-DOES get a recorded `g_vec_elem_hints` entry — unlike the scalar (I32/F64) case, this emitter's
-existing hint mechanism doesn't yet correctly round-trip a pointer-representable element type
-through `vec_get`'s own cast-and-deref convention. Not investigated further or fixed this pass —
-real, separate, un-attempted work, distinct from every other gap this session closed.
+**`column` now real, gcc-clean, AND runtime-verified; `select` still blocked, now on a THIRD, real,
+separate gap (2026-08-21, continued)**: the pointer-representable-Vec-element investigation above
+led to two real, general, self-caught emitter bugs, both now fixed:
+
+1. **The single-token `&name` form's own hint lookup never matched its own registration key.**
+   `vec_call_target_hint()`'s own `&`-unwrap only ever handled the two-SIBLING-NODE `& (expr)` form
+   (e.g. `&(get-field a :data)`) — the far more common single-TOKEN `&name` form (no space, e.g.
+   `&names`/`&v`/`&exps`) fell through to the generic `emit_expr()` call instead, which has its
+   OWN, separate, unrelated real handling for a bare `&x` token — returning `"&(%s)"`-wrapped text
+   (e.g. `"&(names)"`) as the lookup key, a real, different string than the plain `"names"` a hint
+   was ever actually REGISTERED under. The lookup silently asked the hint table the wrong question
+   — not because no hint existed, but because the key never matched — so `(vec/get &names i)`
+   always missed its own real, correctly-registered hint. This bug predates today entirely; it
+   simply never got exercised by any single-token `&name`-shaped `vec/get` call site this session
+   had already gcc-verified (every one so far used either the two-node form or no `&` at all, the
+   Vec already being a reference).
+
+2. **`vec_get`'s own hint-informed cast added a wrong extra level of pointer indirection for a
+   pointer-representable element.** A scalar (I32/F64) element is genuinely boxed (`vec_box_i32`/
+   `vec_box_f64`), so the Vec's own stored item IS a pointer to an arena-allocated cell — casting to
+   `"ElemType *"` and `deref`-ing it back is correct. A pointer-representable element (String ->
+   `char *`, or any registered struct/enum) is NEVER boxed at all (`is_boxable_struct`'s own check
+   explicitly excludes anything already ending in `'*'`, "already directly usable as `void *`") —
+   the Vec's own stored item genuinely IS the raw pointer itself, so the old, uniform `"%s *"`
+   formula silently added a SECOND, wrong level of indirection (`"char * *"`), producing a real,
+   invalid cast — the deeper root cause behind the `select`-blocking error reported previously.
+   Fixed: `vec_get`'s own reported type is now `hint->elem_type` directly when that type is already
+   a pointer, no extra `" *"` — the correct, matching cast for a value that was never boxed. Real,
+   deliberate consequence: `deref` on such a value now fails HONESTLY (a real, correct type
+   mismatch — dereferencing an already-final `char *` gives a single `char`, not the string), rather
+   than silently emitting invalid C. `column`'s own real source updated to match (String reads used
+   directly, no `deref`) and re-verified both gcc-clean and correct at real runtime (found/not-found
+   cases, confirmed against a real `DataFrame`).
+
+`select` remains blocked — past both fixes above, it hits a genuinely THIRD, separate gap:
+`resolve_declared_type()` doesn't understand a parenthesized `(&Type)` reference nested inside a
+`Result`/`Option`'s own payload-type slot (`column`'s own real return type is `(Result (&Column)
+ColumnNotFoundError)`), so a real, general extension added this session (`unwrap`'s own payload-type
+lookup, generalized so a `match` on a direct call to a known function can type an `Ok`/`Some`
+clause's own bound value the identical way) can't resolve `column`'s own payload type either, and
+`col` inside `select`'s own match clause stays a generic `void *`. Not fixed this pass — real,
+separate, un-attempted work, distinct from every other gap closed today.
 
 ### `nn` / `tokenizer` / `sort` — grounded in porting `gpt2-alpine-c`
 
