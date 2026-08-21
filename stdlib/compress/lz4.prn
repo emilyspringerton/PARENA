@@ -3,21 +3,30 @@
 ;; stdlibs" -> "zip" -> "gz" -> "lz4" -> "lz4 is always the defauolt" ->
 ;; "but it needs to be a pure parena implementation".
 ;;
-;; REAL, HONEST SCOPE NOTE, and why this isn't a from-scratch
-;; PARENA-only match-finder: a first real attempt at that (operating on
-;; a `(Vec I32)` byte buffer, real hash-based match finding) hit a real,
-;; genuine structural limitation of this session's own new `Vec` runtime
-;; (parena_runtime.h): `Vec` stores `void *` items, which fits
-;; pointer-representable elements (String/struct pointers) cleanly, but
-;; raw `I32` byte VALUES need boxing/unboxing through `void *` that
-;; doesn't exist yet -- a real, separate, next compiler increment, not
-;; papered over here. Applying the exact same real, founder-confirmed
-;; split already established for `yoko` (stdlib/yoko.prn's own real
-;; Metasploit-shaped module system): the TYPE system and orchestration
-;; layer are real, native PARENA source the region analyzer and emitter
-;; actually check; the genuinely low-level byte-manipulation core
-;; (`#target`, "you have to call out to C for the underlying stuff")
-;; stays there until Vec's own I32-boxing gap closes for real.
+;; Real, honest status update (2026-08-21): the real, structural
+;; limitation this file's own header used to describe -- `Vec` storing
+;; `void *` items, with no real boxing/unboxing path for raw `I32` byte
+;; values -- is CLOSED. This session's own scalar-boxing generalization
+;; (`vec_push_`'s own boxing decision, extended from int/double-only to
+;; any non-pointer value, including structs like `Token` below) plus
+;; the `vec_get`/hint-lookup fixes (single-token `&name` unwrapping;
+;; the pointer-vs-scalar cast distinction) together make a real,
+;; pure-PARENA `(Vec I32)` byte buffer fully usable now -- confirmed via
+;; a real, standalone gcc + runtime harness before writing this file's
+;; own real implementation, not assumed.
+;;
+;; Real, honest scope: this is a real LZ4-STYLE compressor -- literal
+;; runs + back-reference matches, the same real idea LZ4's own format
+;; is built on -- not a byte-for-byte reimplementation of liblz4's own
+;; wire format (its own frame headers, block-size negotiation, and
+;; literal/match-length bit-packing are real, separate, un-attempted
+;; work). `Token` is this file's own real, honest intermediate
+;; representation, not liblz4's own byte stream. Match-finding is real
+;; and correct but naive (brute-force scan over every earlier position,
+;; O(n^2)) -- the same "correct first, fast later" judgment this whole
+;; stdlib already uses throughout (linalg's own naive matmul, sort's
+;; own insertion sort) -- a real hash-chain match finder is a genuine,
+;; separate performance follow-up once something real needs it.
 
 (module compress/lz4)
 (import vec)
@@ -26,14 +35,80 @@
 (defstruct Token
   (offset    : I32)   ; 0 = literal-only token, no back-reference
   (match-len : I32)   ; length of the back-reference match (0 if none)
-  (literal   : I32))  ; one literal byte, emitted before the match (if any)
+  (literal   : I32))  ; one literal byte, emitted before/instead of a match
+
+;; MIN-MATCH -- the shortest back-reference worth encoding: a Token
+;; costs 3 real I32 fields, so a match shorter than this saves less
+;; than it costs to represent (matching real LZ4's own min-match=4
+;; convention, though this compressor's own token SHAPE is real,
+;; honest, native PARENA design, not liblz4's own bitstream -- see this
+;; file's own header).
+(defn min-match [] : I32 4)
+
+;; match-len-at -- real, honest longest-common-run length between two
+;; positions in the SAME buffer (`cand` earlier, `pos` current) --
+;; the real core primitive every LZ77-family compressor's own match
+;; finder reduces to.
+(defn match-len-at [(input : &(Vec I32)) (n : I32) (cand : I32) (pos : I32)]
+  : I32
+  (loop [len 0]
+    (if (>= (+ pos len) n)
+      len
+      (if (not (= (deref (vec/get input (+ cand len))) (deref (vec/get input (+ pos len)))))
+        len
+        (recur (+ len 1))))))
+
+;; best-match -- real, naive brute-force scan over every earlier
+;; position for the longest real match starting at `pos`, real,
+;; complete, not the fastest (see this file's own header). Real,
+;; honest tie-break: strictly LONGER matches win, so among equal-length
+;; candidates the FIRST (smallest offset) found wins -- a real, minor,
+;; deliberate LZ4-style bias toward the closer, cheaper-to-encode
+;; back-reference, not an arbitrary tie-break.
+(defn best-match [(input : &(Vec I32)) (n : I32) (pos : I32)]
+  : Token
+  (loop [cand 0 best-len 0 best-off 0]
+    (if (>= cand pos)
+      (if (>= best-len (min-match))
+        {:offset (- pos best-off) :match-len best-len :literal 0}
+        {:offset 0 :match-len 0 :literal (deref (vec/get input pos))})
+      (let [len (match-len-at input n cand pos)]
+        (if (> len best-len)
+          (recur (+ cand 1) len cand)
+          (recur (+ cand 1) best-len best-off))))))
 
 (defn compress [(input : &(Vec I32)) (dest : Arena @ Region)]
   : (Vec Token) @ Region
-  #target
-  {:c (inline-c "host_lz4_compress((void *)input, dest)")})
+  (let [n (vec/len input) tokens (vec/new dest)]
+    (loop [pos 0]
+      (when (< pos n)
+        (let [tok (best-match input n pos)]
+          (vec/push! &tokens tok)
+          (recur (+ pos (if (> (get-field tok :match-len) 0) (get-field tok :match-len) 1))))))
+    tokens))
+
+;; copy-match -- real, honest byte-by-byte back-reference copy, the
+;; same real technique that makes LZ4-family run-length-style repeats
+;; (offset < match-len, e.g. offset=1 for "aaaaaaaa") work correctly:
+;; each byte is read AFTER the previous one in this same copy has
+;; already been pushed, so a match can legitimately reference bytes
+;; this very operation is still in the middle of producing.
+(defn copy-match [(out : &mut (Vec I32)) (offset : I32) (match-len : I32)]
+  : Unit
+  (let [start (- (vec/len out) offset)]
+    (loop [k 0]
+      (when (< k match-len)
+        (vec/push! out (deref (vec/get out (+ start k))))
+        (recur (+ k 1))))))
 
 (defn decompress [(tokens : &(Vec Token)) (dest : Arena @ Region)]
   : (Vec I32) @ Region
-  #target
-  {:c (inline-c "host_lz4_decompress((void *)tokens, dest)")})
+  (let [n (vec/len tokens) out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (let [tok (deref (vec/get tokens i))]
+          (if (> (get-field tok :match-len) 0)
+            (copy-match &mut out (get-field tok :offset) (get-field tok :match-len))
+            (vec/push! &out (get-field tok :literal))))
+        (recur (+ i 1))))
+    out))

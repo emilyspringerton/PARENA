@@ -2922,6 +2922,73 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `&mut (ComplexType)` -- a mutable reference to a compound
+     * type (e.g. `&mut (Vec I32)`), found genuinely unsupported
+     * (2026-08-21, gcc-verifying compress/lz4.prn's own real
+     * `copy-match`, whose `out` parameter is exactly this shape): the
+     * two-token `&mut Type` branch only ever accepted a single-SYMBOL
+     * target (e.g. `&mut T`), and the `&(ComplexType)` branch only ever
+     * accepted the bare `&` symbol, never `&mut`, for its own leading
+     * token -- a mutable reference to any compound type had no real
+     * parameter shape to compile through at all. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn push-one [(v : &mut (Vec I32)) (x : I32)] : Unit (vec/push! v x))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a &mut (ComplexType) parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'parameter has no region annotation and "
+              "isn't a plain I32/String/... reference-type either', since neither existing "
+              "reference-parameter branch accepted a compound type after &mut)");
+        if (c_src) {
+            CHECK(strstr(c_src, "Vec * v") != NULL,
+                  "it resolves to a real, plain C pointer, the same real representation & and "
+                  "&mut both already collapse to everywhere else in this emitter");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a `loop` used as a function's own tail, in return_mode, whose
+     * own body is a `when`-only tail with no real terminal value on any
+     * path (every branch either recurs or stops) -- found genuinely
+     * broken (2026-08-21, gcc-verifying compress/lz4.prn's own real
+     * `copy-match`, a Unit-returning function shaped exactly this way):
+     * `result_type` being NULL (genuinely unknown, not the literal
+     * string "void") used to still unconditionally emit `return
+     * result_var;`, returning an uninitialized value from a
+     * void-declared function. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn touch-n [(out : &mut (Vec I32)) (n : I32)]\n"
+            "  : Unit\n"
+            "  (loop [k 0]\n"
+            "    (when (< k n)\n"
+            "      (vec/push! out k)\n"
+            "      (recur (+ k 1)))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a when-only loop tail with no real terminal value, as a Unit "
+                                "function's own body, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed only at the *gcc* stage -- 'return with a "
+              "value, in function returning void' -- since a NULL result_type still triggered an "
+              "unconditional return statement)");
+        if (c_src) {
+            CHECK(strstr(c_src, "return __loop_result") == NULL,
+                  "no return statement is emitted for the loop's own genuinely valueless result "
+                  "-- control correctly falls off the end of the enclosing while(1) block instead");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

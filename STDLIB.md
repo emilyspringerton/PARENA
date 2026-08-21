@@ -83,7 +83,7 @@ binding, not a language primitive).
 39. `firefly` — depends on `vec`, `string` (no other stdlib deps — the base testing library)
 40. `firefly/gomega` — depends on `firefly` only
 41. `scarab` — depends on `firefly`, `firefly/gomega`
-42. `compress/lz4` — depends on `string` only (FFI-bound)
+42. `compress/lz4` — depends on `vec` only (real, pure PARENA — see its own section below)
 43. `pitviper/protocol` — depends on `net/tcp`, `string`, `vec`, `compress/lz4`
 44. `profile` — depends on `core` only (FFI-bound; `heap-snapshot` is real/native, region-native)
 45. `staticanalysis` — depends on `string`, `vec` (FFI-bound)
@@ -1958,26 +1958,56 @@ now concrete enough to design a real protocol against, not speculative:
   : (Result Response NetError) @ Region)
 ```
 
-**`compress/lz4`** — depends on `string` only, FFI-bound to the real, tiny, widely-embedded LZ4
-reference implementation (same FFI-bind judgment as `ssh`/`crypto`/`media/codec` above — LZ4 is
-picked specifically, not zstd/gzip, because the founder's own ask was about keeping a live,
-interactive protocol *fast*, and LZ4's real, well-known niche is exactly "favor compression/
-decompression speed over ratio" for latency-sensitive links, not archival size):
+**`compress/lz4`** — depends on `vec` only. LZ4 is picked specifically, not zstd/gzip, because the
+founder's own ask was about keeping a live, interactive protocol *fast*, and LZ4's real, well-known
+niche is exactly "favor compression/decompression speed over ratio" for latency-sensitive links,
+not archival size. Original design here specified an FFI-bound wrapper around the real, tiny,
+widely-embedded LZ4 reference implementation (`String`-in/`String`-out) — founder, real-time,
+overriding that: **"but it needs to be a pure parena implementation."**
+
+**Now real, gcc-clean, AND runtime-verified (2026-08-21)** — the real, structural blocker the
+FFI-bound design above was originally scoped around (`Vec` storing `void *` items, no real
+boxing/unboxing path for raw `I32` byte values) is closed, by this same session's own earlier work
+(the general scalar-boxing widening, plus the `vec_get`/hint-lookup fixes). A real, pure-PARENA
+LZ4-STYLE compressor now exists — literal runs + back-reference matches, the same real idea LZ4's
+own format is built on:
 
 ```clojure
-(defn compress   [(data : String @ Region) (dest : Arena @ Region)] : String @ Region)
-(defn decompress [(data : String @ Region) (original-size : I32) (dest : Arena @ Region)]
-  : (Result String CompressError) @ Region)
+(defstruct Token (offset : I32) (match-len : I32) (literal : I32))
+(defn compress   [(input : &(Vec I32)) (dest : Arena @ Region)] : (Vec Token) @ Region)
+(defn decompress [(tokens : &(Vec Token)) (dest : Arena @ Region)] : (Vec I32) @ Region)
 ```
 
-`pitviper/protocol/request`'s own real wire format would run every `Response` through
-`compress/lz4`'s `compress` before sending, `decompress` on receipt — real, direct application of
-"lz4ify the fuck out of everything," not a separate unused package.
+Real, honest scope, distinct from the original `String`-in/`String`-out design above: this is a
+real LZ4-STYLE compressor, not a byte-for-byte reimplementation of liblz4's own wire format (its
+own frame headers, block-size negotiation, and literal/match-length bit-packing remain real,
+separate, un-attempted work) — `Token` is this file's own real, honest intermediate
+representation. Match-finding is real and correct but naive (brute-force scan over every earlier
+position, O(n²)) — the same "correct first, fast later" judgment this whole stdlib already uses
+throughout (`linalg`'s own naive `matmul`, `sort`'s own insertion sort) — a real hash-chain match
+finder is a genuine, separate performance follow-up once something real needs it. Verified via a
+real round-trip harness: repeated phrases, run-length/overlapping-copy data (offset < match-len,
+the trickiest real LZ4 case — confirmed correct), mostly-unique text, and edge cases (empty input,
+single byte) all round-trip byte-exact; a 100-byte highly repetitive input compresses to 3 tokens,
+confirming real compression, not just correctness. A real, general emitter gap surfaced and fixed
+along the way: `&mut (ComplexType)` (e.g. `copy-match`'s own `&mut (Vec I32)` parameter) had no
+real parameter shape to compile through at all — the two-token `&mut Type` branch only ever
+accepted a single-symbol target, and the `&(ComplexType)` branch only ever accepted bare `&`, never
+`&mut`, as its own leading token. A second, separate, self-caught bug: a `loop` used as a
+function's own tail whose own body never resolves a real terminal value on any path (a `when`-only
+tail where every branch either recurs or stops, `copy-match`'s own exact shape) used to still
+unconditionally emit a `return` statement, returning a genuinely uninitialized value from a
+`void`-declared function — fixed in both `emit_loop` and `emit_match`.
 
-**Real, honest limitation**: this designs the protocol's real message shapes and the real
-compression choice; the server daemon's own file-system-watching/live-update behavior (does the
-GUI tree refresh automatically on remote changes, or only on demand?) is real, unresolved product
-design, not answered here — same "flagged, not resolved" pattern as everywhere else in this doc.
+`pitviper/protocol/request`'s own real wire format would still run every `Response` through
+`compress/lz4`'s `compress` before sending, `decompress` on receipt — real, direct application of
+"lz4ify the fuck out of everything" — though the wire-format integration itself (converting a real
+`String` payload to/from `(Vec I32)` bytes at that boundary) is real, separate, un-attempted work.
+
+**Real, honest limitation**: the server daemon's own file-system-watching/live-update behavior
+(does the GUI tree refresh automatically on remote changes, or only on demand?) is real, unresolved
+product design, not answered here — same "flagged, not resolved" pattern as everywhere else in
+this doc.
 
 ### `profile` / `staticanalysis` — gnarly C/C++-grade tooling, FFI-bound to the real thing
 

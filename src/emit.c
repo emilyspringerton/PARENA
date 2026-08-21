@@ -3007,8 +3007,35 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
     sb_free(&body);
 
     if (return_mode) {
-        if (out_return_type) *out_return_type = result_type ? result_type : "void *";
-        sb_appendf(out, "    return %s;\n", result_var);
+        /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying
+         * compress/lz4.prn's own real `copy-match`, whose whole body is
+         * a `when`-only loop tail with no real terminal value anywhere
+         * -- every path either recurs or stops, matching that Unit-
+         * returning function's own real intent): `result_type` being
+         * NULL here (not the LITERAL string "void", genuinely unknown --
+         * see `when`'s own loop-tail comment: "recur branches report no
+         * result type... a when in the tail of a loop whose OWN result
+         * genuinely feeds a return would leave result_var honestly
+         * unset") used to still unconditionally emit `return
+         * result_var;` regardless -- `result_var` itself was declared
+         * but NEVER ASSIGNED on any path (a real, purely side-effecting
+         * loop), so this returned a genuinely uninitialized value, and
+         * did so even from a `void`-declared function ("'return' with a
+         * value, in function returning void"). A NULL result_type is a
+         * real, honest signal that this loop never produced one --
+         * skip the `return` entirely and let control fall off the end
+         * of the enclosing `while(1)` block naturally (valid, and the
+         * correct behavior, for a real void-returning function), the
+         * same real "no result, no return statement" treatment
+         * `emit_body`'s own tail-position void handling already gives a
+         * literal `"void"`-typed value -- this extends it to the
+         * "genuinely never resolved a type at all" case too. */
+        if (result_type) {
+            if (out_return_type) *out_return_type = result_type;
+            sb_appendf(out, "    return %s;\n", result_var);
+        } else if (out_return_type) {
+            *out_return_type = "void";
+        }
     }
     return 1;
 }
@@ -3561,9 +3588,19 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
     sb_append(out, body.data);
     sb_free(&body);
 
+    /* Same real NULL-result_type fix emit_loop's own return_mode
+     * handling needed (see its own declaration comment for the full
+     * real reasoning) -- a real, analogous risk here too: a `match`
+     * whose every clause recurs/has no real terminal value, used
+     * directly as a function's own tail, would hit the identical
+     * "return an uninitialized value from a void function" bug. */
     if (return_mode) {
-        if (out_return_type) *out_return_type = result_type ? result_type : "void *";
-        sb_appendf(out, "    return %s;\n", result_var);
+        if (result_type) {
+            if (out_return_type) *out_return_type = result_type;
+            sb_appendf(out, "    return %s;\n", result_var);
+        } else if (out_return_type) {
+            *out_return_type = "void";
+        }
     }
     return 1;
 }
@@ -4377,22 +4414,39 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
         } else if (param->child_count == 4 && param->children[1]->type == NODE_COLON &&
-                   param->children[2]->type == NODE_SYMBOL && is_symbol(param->children[2], "&") &&
+                   param->children[2]->type == NODE_SYMBOL &&
+                   (is_symbol(param->children[2], "&") || is_symbol(param->children[2], "&mut")) &&
                    (param->children[3]->type == NODE_LIST || param->children[3]->type == NODE_SYMBOL)) {
-            /* `&(ComplexType)` -- the bare `&` symbol immediately
-             * followed by a parenthesized type (no space, e.g.
-             * firefly.prn's own `(cases : &(Vec TestCase))`) lexes/
-             * parses as two SIBLING nodes here too, the same real
-             * two-node shape the expression-level `&(expr)` form
-             * already has (see emit_call()'s own argument-loop handling
-             * for that parallel case) -- distinct from the single-token
-             * `&Type` symbol form resolve_declared_type() handles
-             * directly, since a complex type like `(Vec TestCase)`
-             * can't be glued onto the `&` as one lexer token the way
-             * `&Any` can. Delegates to resolve_declared_type() for the
-             * inner type (covers (Vec ..)/(Result ..)/(Option ..)/
-             * registered names/plain symbols alike) and wraps the
-             * result in a pointer. */
+            /* `&(ComplexType)` / `&mut (ComplexType)` -- the bare `&`
+             * (or `&mut`) symbol immediately followed by a parenthesized
+             * type (no space, e.g. firefly.prn's own `(cases : &(Vec
+             * TestCase))`) lexes/parses as two SIBLING nodes here too,
+             * the same real two-node shape the expression-level
+             * `&(expr)` form already has (see emit_call()'s own
+             * argument-loop handling for that parallel case) --
+             * distinct from the single-token `&Type` symbol form
+             * resolve_declared_type() handles directly, since a complex
+             * type like `(Vec TestCase)` can't be glued onto the `&` as
+             * one lexer token the way `&Any` can. Delegates to
+             * resolve_declared_type() for the inner type (covers
+             * (Vec ..)/(Result ..)/(Option ..)/registered names/plain
+             * symbols alike) and wraps the result in a pointer.
+             *
+             * Real, honest widening (2026-08-21, gcc-verifying
+             * compress/lz4.prn's own real `copy-match`, whose `out`
+             * parameter is `&mut (Vec I32)`): this branch used to only
+             * accept the bare `&` symbol for children[2], never `&mut`
+             * -- a real, genuine gap, not a deliberate scope limit (the
+             * two-token `&mut Type` branch just above only ever
+             * accepted a SINGLE-SYMBOL target, e.g. `&mut T`, never a
+             * compound one like `&mut (Vec I32)`), so a mutable
+             * reference to any compound type had no real parameter
+             * shape to compile through at all. Both `&`/`&mut` already
+             * collapse to the identical real C pointer representation
+             * everywhere else in this emitter (see the single-symbol
+             * `&mut Type` branch's own comment: "&mut and & both just
+             * become a C pointer") -- widening this condition is the
+             * same real, honest treatment, not a new one. */
             const char *inner_type = resolve_declared_type(arena, param->children[3], out_error);
             if (!inner_type) {
                 sb_free(&param_list);
