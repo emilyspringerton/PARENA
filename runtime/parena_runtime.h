@@ -13,6 +13,8 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -81,6 +83,32 @@ static inline Option option_none(void) {
     Option o;
     o.tag = 0;
     o.value = NULL;
+    return o;
+}
+
+/* result_unwrap_check / option_unwrap_check -- the real runtime half of
+ * VS0's `unwrap` (see emit.c's own `is_call_named(expr, "unwrap")`
+ * handling for the full real reasoning): Rust's own well-known
+ * `.unwrap()` semantics -- pass through unchanged on Ok/Some, abort
+ * with a real stderr message on Err/None, rather than silently
+ * dereferencing a NULL `.value` (undefined behavior) or a stale one.
+ * Pass-through-by-value (not void) so the call site can chain `.value`
+ * straight off the return, evaluating the checked expression exactly
+ * once -- the same real reason g_box_helpers' own generated helpers
+ * are real functions, not a GNU statement-expression (rejected under
+ * this project's own `-pedantic -Werror` build). */
+static inline Result result_unwrap_check(Result r) {
+    if (!r.tag) {
+        fprintf(stderr, "parena: unwrap called on an Err result\n");
+        abort();
+    }
+    return r;
+}
+static inline Option option_unwrap_check(Option o) {
+    if (!o.tag) {
+        fprintf(stderr, "parena: unwrap called on a None option\n");
+        abort();
+    }
     return o;
 }
 

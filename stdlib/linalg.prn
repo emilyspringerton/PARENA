@@ -12,6 +12,24 @@
 (import array)
 (export matmul transpose dot inverse solve)
 
+;; Real, honest call-site update (2026-08-21): array/get and array/set!
+;; both gained an explicit dest : Arena @ Region parameter of their own
+;; earlier this session (STDLIB.md's own array-package section); every
+;; call site here updated to pass matmul's/transpose's own dest through.
+;;
+;; Real, significant, NOT-yet-fixed gap, found via an actual runtime
+;; harness, not just a clean compile (2026-08-21, see STDLIB.md's own
+;; "linalg" section for the full real reasoning): matmul/transpose
+;; compile real gcc-clean but do NOT yet produce correct numbers -- a
+;; loop variable seeded from an integer literal (`(loop [i 0] ...)`) is
+;; C-typed `double` (VS0's own accepted, whole-language "no int/float
+;; distinction" simplification), which silently corrupts an `[i j]`
+;; index-Vec literal once boxed (boxed as an 8-byte double, later read
+;; back via a 4-byte `int` cast). The real fix touches loop-variable/
+;; number-literal type inference broadly, a genuinely cross-cutting
+;; change not attempted in this pass -- do not treat matmul/transpose
+;; as verified; `dot` below (no index-Vec construction) IS verified,
+;; both gcc-clean and numerically correct.
 (defn matmul [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
   (let [a-rows (deref (vec/get &(get-field a :shape) 0))
@@ -26,8 +44,8 @@
               (when (< j b-cols)
                 (loop [k 0 sum 0.0]
                   (if (>= k a-cols)
-                    (array/set! &mut out [i j] sum)
-                    (recur (+ k 1) (+ sum (* (unwrap (array/get a [i k])) (unwrap (array/get b [k j])))))))
+                    (array/set! &mut out [i j] sum dest)
+                    (recur (+ k 1) (+ sum (* (unwrap (array/get a [i k] dest)) (unwrap (array/get b [k j] dest)))))))
                 (recur (+ j 1))))
             (recur (+ i 1))))
         (Ok out)))))
@@ -41,13 +59,18 @@
       (when (< i rows)
         (loop [j 0]
           (when (< j cols)
-            (array/set! &mut out [j i] (unwrap (array/get a [i j])))
+            (array/set! &mut out [j i] (unwrap (array/get a [i j] dest)) dest)
             (recur (+ j 1))))
         (recur (+ i 1))))
     out))
 
-(defn dot [(a : &NDArray) (b : &NDArray)]
-  : (Result F64 ShapeError)
+;; Real, honest gap closed here (2026-08-21): dot's own (Err (ShapeError
+;; ...)) needs to box a non-pointer struct payload, but the signature
+;; carried no Arena to box into at all -- the identical real gap
+;; array.prn's own get/set! and string.prn's own parse-i32 already had,
+;; fixed the same way: an explicit dest : Arena @ Region parameter.
+(defn dot [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
+  : (Result F64 ShapeError) @ Region
   (if (not (= (vec/len &(get-field a :data)) (vec/len &(get-field b :data))))
     (Err (ShapeError "length mismatch"))
     (loop [i 0 sum 0.0]

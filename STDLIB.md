@@ -595,7 +595,53 @@ gcc-clean but numerically correct at real runtime: a standalone harness building
 running `set!`/`get`/`add`/`mul-elementwise`/`reshape`/`same-shape?` end to end, confirms every
 real expected value, not just a clean compile.
 
-### `dataframe` — the pandas equivalent, depends on `array` + `string`
+**`linalg` real progress and a real, significant, NOT-yet-fixed gap found (2026-08-21)**:
+gcc-verifying `matmul`/`transpose`/`dot` surfaced three real, separate things.
+
+(1) **Real emitter gap closed**: `[e1 e2 ...]` — a Vec LITERAL used directly as a value (both
+`matmul`'s own `(array/zeros [a-rows b-cols] dest)` and every `[i j]` index literal) — had no
+value-position handling anywhere in `emit_expr` at all (`NODE_VEC` only had PARAMETER-list
+handling), an honest "unsupported expression form." Fixed via `g_veclit_helpers`, the same real
+"compiler generates a helper function" architecture `g_box_helpers`/`g_lambda_helpers`/
+`g_veceq_helpers` already established: one fresh, addressable `static` C function per literal
+(no dedup — two literals at different call sites aren't interchangeable) that allocates via
+`vec_new(dest)` and pushes each element, boxing I32/F64 scalars the same way `vec/push!` already
+does. The Arena is found via the same `find_dest_arena()` scope search Ok/Err/Some's own boxing
+already uses.
+
+(2) **Real emitter gap closed**: `unwrap` — real call sites in `linalg.prn`
+(`(unwrap (array/get a idx))`), `ringo.prn`, and `nn.prn` (`(unwrap (stats/min data))`) — was never
+defined anywhere. Real Rust-style `.unwrap()` semantics: aborts with a real stderr message on
+Err/None (`result_unwrap_check`/`option_unwrap_check`, two new `parena_runtime.h` helpers), unboxes
+the payload otherwise. The one real design constraint: VS0 has no generics, so a `Result`/`Option`'s
+own payload type is erased everywhere *except* at a known `defn`'s own registration — `unwrap` is
+therefore scoped to a DIRECT call to a known, already-registered top-level function (the exact real
+shape every actual call site uses), not an arbitrary expression; `g_defn_return_types` grew a
+`payload_type` field (resolved once, at the same two spots the return type itself already is)
+purely to support this.
+
+(3) **Real, significant, NOT-yet-fixed gap found via real runtime verification, not a compile
+check** — the exact same "compiling clean isn't the same as being correct" lesson `strides-for`
+already taught this same session: a harness computing a real 2×3 matmul against known values got
+`C[0][0]` right and every other cell silently wrong (0). Root cause, found by inspecting the
+generated C directly: `(loop [i 0] ...)`-style loop variables are declared as C `double` — not
+`int` — because a bare integer literal like `0` always reports its own type as `"double"`
+(`NODE_NUMBER`'s own emit_expr case, documented as "VS0 has no int-vs-float distinction yet — a
+real, honest simplification," a whole-language, deliberate tradeoff, not a bug in itself). That's
+silently fine for arithmetic and comparisons (C's own usual conversions paper over it) but genuinely
+wrong the moment such a loop variable is BOXED into a Vec meant to hold `I32` values (e.g. as an
+array index, via the new `g_veclit_helpers` above): it gets `vec_box_f64`'d (8-byte double), then
+read back elsewhere via `flat-index`'s own `(int *)`-cast `deref` — reinterpreting 4 of those 8
+bytes as a raw `int`, real memory-level type confusion, not merely "wrong value." **Deliberately
+NOT fixed here**: the real fix touches loop-variable (or number-literal) type inference broadly —
+a genuinely cross-cutting change with real regression risk across all ~51 real `(loop [...] ...)`
+call sites in this stdlib and everything this session already gcc/runtime-verified, not a narrow,
+contained fix like every other gap this pass closed. `matmul`/`transpose` compile
+`gcc -Wall -Wextra -pedantic -Werror` clean (the `array/get`/`array/set!` call sites were updated
+to pass their own new `dest` argument, a real, separate, necessary fix, kept) but are **not**
+verified numerically correct and should not be treated as done — `dot` (verified: real
+`{1,2,3}·{4,5,6} = 32`, no index-Vec construction involved) is the one function in this file
+confirmed both gcc-clean and correct.
 
 Founder: "and pandas build pandas into the standard library." The one real thing that makes
 pandas a different tool from numpy, not just numpy-with-more-functions: **heterogeneous, labeled,

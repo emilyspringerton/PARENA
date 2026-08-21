@@ -2535,6 +2535,119 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a Vec LITERAL (`[e1 e2 ...]`) used directly as a value, e.g.
+     * linalg.prn's own real `(array/zeros [a-rows b-cols] dest)` --
+     * found completely unhandled (2026-08-21, gcc-verifying
+     * linalg.prn), NODE_VEC having no real expression-position
+     * handling anywhere (only as a defn/loop/let PARAMETER-LIST
+     * shape). Elements here are real I32-typed struct fields, not
+     * loop variables -- deliberately avoiding the separate, real,
+     * NOT-yet-fixed int/double loop-variable gap STDLIB.md's own
+     * linalg.prn section now documents (a loop variable seeded from
+     * an integer literal is C-typed 'double', silently wrong when
+     * boxed as an I32 Vec element -- a real, deeper, pre-existing
+     * language limitation this test doesn't exercise). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Pair (x : I32) (y : I32))\n"
+            "(defn make-shape [(p : &Pair) (dest : Arena @ Region)]\n"
+            "  : (Vec I32) @ Region\n"
+            "  [(get-field p :x) (get-field p :y)])";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a Vec literal built from two real I32 struct-field accesses "
+                                "parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form', since "
+              "NODE_VEC had no value-position handling anywhere before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "static inline Vec __veclit_0(Arena *dest, int e0, int e1)") != NULL,
+                  "a real, addressable, file-scope static C function is generated for the "
+                  "literal, allocating a real Vec and pushing each element in source order");
+            CHECK(strstr(c_src, "vec_box_i32(&v, e0)") != NULL,
+                  "each I32 element is correctly scalar-boxed before being pushed, the same real "
+                  "boxing vec/push! itself already does at every other real call site");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a Vec literal with no Arena in scope to allocate into must
+     * fail honestly, not silently guess or crash. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn make-shape-no-dest [(x : I32) (y : I32)]\n"
+                           "  : (Vec I32)\n"
+                           "  [x y])";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a Vec literal in a function with no Arena parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly, reporting no Arena in scope to allocate into, rather than "
+              "silently guessing or crashing");
+        arena_free_all(&arena);
+    }
+
+    /* --- `unwrap` on a direct call to a known function returning
+     * `(Result .. ..)`, found completely unimplemented (2026-08-21,
+     * gcc-verifying linalg.prn's own real `(unwrap (array/get a
+     * idx))`) despite real call sites in linalg.prn/ringo.prn/nn.prn.
+     * Requires the payload type to be resolvable from a KNOWN,
+     * registered callee (VS0 has no generics) -- see
+     * resolve_result_option_payload_type()'s own declaration comment. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct LookupError (message : String))\n"
+            "(defn lookup [(ok : Bool) (dest : Arena @ Region)]\n"
+            "  : (Result I32 LookupError) @ Region\n"
+            "  (if ok (Ok 1) (Err (LookupError \"nope\"))))\n"
+            "(defn get-it [(ok : Bool) (dest : Arena @ Region)]\n"
+            "  : I32\n"
+            "  (unwrap (lookup ok dest)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "unwrap on a direct call to a known Result-returning function "
+                                "parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form', since "
+              "unwrap had no handling anywhere before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "result_unwrap_check(lookup(ok, dest)).value") != NULL,
+                  "it emits as a real call through the runtime's own result_unwrap_check "
+                  "pass-through, chaining .value off the return rather than re-evaluating the "
+                  "checked call expression a second time");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `unwrap` on something OTHER than a direct call to a known
+     * function must fail honestly -- VS0 has no generics, so there's
+     * no other way to know the real payload type to cast to. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn get-it [(r : I32)] : I32 (unwrap r))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "unwrap on a bare, non-call expression parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly, reporting that a direct call to a known function is required, "
+              "rather than silently guessing a payload type or crashing");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

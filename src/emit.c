@@ -365,6 +365,12 @@ static VecElemHint *find_vec_elem_hint(const char *c_name) {
 typedef struct DefnReturnType {
     const char *c_name;
     const char *return_type;
+    const char *payload_type; /* NULL unless return_type is "Result"/"Option" AND the
+                                * payload type itself was resolvable -- see
+                                * resolve_result_option_payload_type()'s own declaration
+                                * comment for why this is real, but narrower than a full
+                                * generic type-parameter system. Consulted by `unwrap`'s
+                                * own emit_expr handling. */
     struct DefnReturnType *next;
 } DefnReturnType;
 static DefnReturnType *g_defn_return_types = NULL;
@@ -372,6 +378,13 @@ static DefnReturnType *g_defn_return_types = NULL;
 static const char *find_defn_return_type(const char *c_name) {
     for (DefnReturnType *d = g_defn_return_types; d; d = d->next) {
         if (strcmp(d->c_name, c_name) == 0) return d->return_type;
+    }
+    return NULL;
+}
+
+static const char *find_defn_payload_type(const char *c_name) {
+    for (DefnReturnType *d = g_defn_return_types; d; d = d->next) {
+        if (strcmp(d->c_name, c_name) == 0) return d->payload_type;
     }
     return NULL;
 }
@@ -567,6 +580,24 @@ static const char *ensure_veceq_helper(Arena *arena, const char *c_type) {
 static StrBuf g_lambda_helpers;
 static int g_lambda_count = 0;
 
+/* g_veclit_helpers / g_veclit_count -- the real fix for a Vec LITERAL
+ * (`[e1 e2 ...]`) used directly as a value, e.g. linalg.prn's own real
+ * `(array/zeros [a-rows b-cols] dest)` -- found completely unhandled
+ * (2026-08-21, gcc-verifying linalg.prn: `matmul`/`transpose` both
+ * construct a shape Vec this way), falling through to the generic
+ * "unsupported expression form" fallback (NODE_VEC had no real
+ * expression-position handling anywhere, only as a defn/loop/let
+ * PARAMETER-LIST shape). Same "generate a real, addressable helper
+ * function" architecture g_box_helpers/g_lambda_helpers/g_veceq_helpers
+ * above already established -- one fresh function PER LITERAL (no
+ * dedup like the per-type helpers above; two literals at different
+ * call sites aren't guaranteed interchangeable) that allocates a real
+ * Vec via `vec_new(dest)` then pushes each element in source order,
+ * boxing I32/F64 scalars the same way `vec/push!` already does at
+ * every other real call site. */
+static StrBuf g_veclit_helpers;
+static int g_veclit_count = 0;
+
 static const char *ensure_box_helper(Arena *arena, const char *c_type) {
     char name_buf[160];
     snprintf(name_buf, sizeof(name_buf), "%s_box", c_type);
@@ -728,6 +759,42 @@ static char *fail(Arena *arena, const char **out_error, const char *fmt, ...) {
     va_end(ap);
     *out_error = arena_strdup(arena, buf, strlen(buf));
     return NULL;
+}
+
+/* resolve_result_option_payload_type -- the real, narrow fix for
+ * `unwrap` (array.prn/linalg.prn/stats.prn/ringo.prn/nn.prn's own real
+ * `(unwrap (array/get a idx))`/`(unwrap (stats/min data))` call sites,
+ * found genuinely never defined anywhere in this stdlib): resolve_
+ * declared_type()'s own `(Result X Y)`/`(Option X)` branch erases X
+ * entirely, reporting just the bare string `"Result"`/`"Option"` (VS0
+ * has no generics / real type-checking pass, the same real limitation
+ * `(Vec T)`/`(Map K V)` already have) -- correct for every OTHER real
+ * call site (Result/Option's own runtime shape genuinely is just
+ * `{tag; void *value}`, X doesn't change that), but `unwrap` needs to
+ * know X specifically to cast `.value` back to a real, concrete type
+ * before dereferencing it. Rather than a real generic-parameter system,
+ * this narrowly re-resolves just the payload slot X, called ONLY when
+ * a `defn`'s own return type is registered into g_defn_return_types
+ * (see its own declaration comment) -- so `unwrap` can look up a
+ * KNOWN, already-emitted (or forward-declared) function's real payload
+ * type by name, the same "real, narrow, call-site-grounded" scope this
+ * emitter's other special forms already use. Returns NULL (not a real
+ * failure -- silently declining, exactly like `find_defn_return_type`
+ * itself returning NULL for a genuinely unknown callee) if `type_node`
+ * isn't `(Result ..)`/`(Option ..)` at all, OR if X itself can't be
+ * resolved (a `dummy_out_error` is used so a real resolution failure
+ * here never breaks the OUTER, already-successful "Result"/"Option"
+ * resolution that already covers every other real call site). */
+static const char *resolve_result_option_payload_type(Arena *arena, Node *type_node) {
+    if (type_node->type != NODE_LIST || type_node->child_count < 2 ||
+        type_node->children[0]->type != NODE_SYMBOL) {
+        return NULL;
+    }
+    if (!is_symbol(type_node->children[0], "Result") && !is_symbol(type_node->children[0], "Option")) {
+        return NULL;
+    }
+    const char *dummy_out_error = NULL;
+    return resolve_declared_type(arena, type_node->children[1], &dummy_out_error);
 }
 
 /* process_defenum handles one top-level `(defenum Name (Variant1)
@@ -1959,6 +2026,50 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         snprintf(buf, sizeof(buf), "(!(%s))", inner_c);
         return arena_strdup(arena, buf, strlen(buf));
     }
+    /* `(unwrap expr)` -- real, honest, narrow scope, found genuinely
+     * never defined anywhere in this stdlib despite real call sites
+     * (linalg.prn's own real `(unwrap (array/get a idx))`,
+     * ringo.prn/nn.prn's own `(unwrap (stats/min data))`): panics
+     * (aborts, with a real stderr message) on Err/None, otherwise
+     * unboxes the real payload -- Rust's own well-known `.unwrap()`
+     * semantics, the obvious real meaning this name signals. Requires
+     * `expr` to be a DIRECT call to a known top-level defn whose own
+     * payload type was resolved at registration time (see
+     * resolve_result_option_payload_type()'s own declaration comment
+     * for why: VS0 has no generics, so a Result/Option's own payload
+     * type can only be known here by looking up a SPECIFIC, already-
+     * registered callee, not derived from the Result/Option runtime
+     * shape itself, which is genuinely erased). Checked here, before
+     * the generic symbol-headed-call dispatch just below, the same
+     * placement `not`/`fn` needed for the identical real reason. */
+    if (is_call_named(expr, "unwrap") && expr->child_count == 2) {
+        Node *inner = expr->children[1];
+        if (inner->type != NODE_LIST || inner->child_count == 0 || inner->children[0]->type != NODE_SYMBOL) {
+            return fail(arena, out_error,
+                        "unwrap: at line %d, expects a direct call to a known function (e.g. "
+                        "'(unwrap (array/get a idx))') -- VS0 has no generics, so a Result/"
+                        "Option's own real payload type can only be found by looking up a "
+                        "specific, known callee, not derived from an arbitrary expression",
+                        expr->line);
+        }
+        const char *callee_name = mangle_call_name(arena, inner->children[0]->text);
+        const char *payload_type = find_defn_payload_type(callee_name);
+        const char *ret_kind = find_defn_return_type(callee_name);
+        if (!payload_type || !ret_kind || (strcmp(ret_kind, "Result") != 0 && strcmp(ret_kind, "Option") != 0)) {
+            return fail(arena, out_error,
+                        "unwrap: at line %d, '%s' isn't a known function returning (Result .. ..) "
+                        "or (Option ..) with a resolvable payload type",
+                        expr->line, inner->children[0]->text);
+        }
+        const char *inner_type = NULL;
+        const char *inner_c = emit_expr(arena, inner, scope, &inner_type, out_error);
+        if (!inner_c) return NULL;
+        const char *check_fn = strcmp(ret_kind, "Result") == 0 ? "result_unwrap_check" : "option_unwrap_check";
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "(*((%s *)(%s(%s).value)))", payload_type, check_fn, inner_c);
+        *out_type = payload_type;
+        return arena_strdup(arena, buf, strlen(buf));
+    }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
         if (c_op) return emit_binop(arena, expr, c_op, scope, out_type, out_error);
@@ -2090,6 +2201,86 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         snprintf(buf, sizeof(buf), "%s_new(%s)", match->name, args.data);
         sb_free(&args);
         return arena_strdup(arena, buf, strlen(buf));
+    }
+    /* `[e1 e2 ...]` -- a Vec LITERAL used directly as a value. See
+     * g_veclit_helpers' own declaration comment for the full real
+     * reasoning. The Arena to allocate the Vec's own backing store
+     * into is found via find_dest_arena() -- the identical scope
+     * search Ok/Err/Some's own boxing already uses (a local literally
+     * named "dest" first, else the first Arena-typed local in scope)
+     * -- a real, honest, narrower limitation than a full call-site-
+     * level Arena-inference feature, but consistent with every other
+     * implicit-arena lookup this emitter already does. Real, honest,
+     * narrow scope: every element must share ONE real C type (the
+     * first element's own, matching every other "no real type-checking
+     * pass" simplification already documented throughout this file) --
+     * a genuinely mixed-type literal isn't checked for and isn't a
+     * real call site anywhere in this stdlib today. */
+    if (expr->type == NODE_VEC) {
+        Local *dest_local = find_dest_arena(scope);
+        if (!dest_local) {
+            return fail(arena, out_error,
+                        "vec literal at line %d needs an Arena in scope to allocate into (no "
+                        "local named 'dest', or any other Arena-typed local, found)",
+                        expr->line);
+        }
+        if (expr->child_count == 0) {
+            return fail(arena, out_error,
+                        "vec literal at line %d cannot be empty (no element type to infer -- VS0 "
+                        "has no separate type-annotation syntax for an empty Vec literal)",
+                        expr->line);
+        }
+        StrBuf elems;
+        sb_init(&elems);
+        const char *elem_c_type = NULL;
+        for (size_t i = 0; i < expr->child_count; i++) {
+            const char *el_type = NULL;
+            const char *el_c = emit_expr(arena, expr->children[i], scope, &el_type, out_error);
+            if (!el_c) {
+                sb_free(&elems);
+                return NULL;
+            }
+            if (i == 0) elem_c_type = el_type;
+            if (i > 0) sb_append(&elems, ", ");
+            sb_append(&elems, el_c);
+        }
+        int is_scalar = elem_c_type && (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
+        const char *box_fn = is_scalar ? (strcmp(elem_c_type, "int") == 0 ? "vec_box_i32" : "vec_box_f64") : NULL;
+        char lit_name_buf[32];
+        snprintf(lit_name_buf, sizeof(lit_name_buf), "__veclit_%d", g_veclit_count++);
+        const char *lit_name = arena_strdup(arena, lit_name_buf, strlen(lit_name_buf));
+        StrBuf params;
+        sb_init(&params);
+        sb_append(&params, "Arena *dest");
+        for (size_t i = 0; i < expr->child_count; i++) {
+            sb_appendf(&params, ", %s e%zu", elem_c_type, i);
+        }
+        StrBuf body;
+        sb_init(&body);
+        sb_append(&body, "    Vec v = vec_new(dest);\n");
+        for (size_t i = 0; i < expr->child_count; i++) {
+            if (box_fn) {
+                sb_appendf(&body, "    vec_push_(&v, %s(&v, e%zu));\n", box_fn, i);
+            } else {
+                sb_appendf(&body, "    vec_push_(&v, e%zu);\n", i);
+            }
+        }
+        sb_append(&body, "    return v;\n");
+        sb_appendf(&g_veclit_helpers, "static inline Vec %s(%s) {\n%s}\n\n", lit_name, params.data, body.data);
+        sb_free(&params);
+        sb_free(&body);
+        char call_buf[1024];
+        snprintf(call_buf, sizeof(call_buf), "%s(%s, %s)", lit_name, dest_local->c_name, elems.data);
+        sb_free(&elems);
+        const char *call_text = arena_strdup(arena, call_buf, strlen(call_buf));
+        /* Register a real g_vec_elem_hints entry too, keyed by this
+         * call's own emitted text, so a later vec/get on the
+         * CONSTRUCTED value (not just on a named local/field) also
+         * reports a real element type instead of the generic void *
+         * fallback. */
+        record_vec_elem_hint(arena, call_text, elem_c_type, is_scalar);
+        *out_type = "Vec";
+        return call_text;
     }
     return fail(arena, out_error, "emit: unsupported expression form at line %d", expr->line);
 }
@@ -3927,6 +4118,7 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
         DefnReturnType *drt = (DefnReturnType *)arena_alloc(arena, sizeof(DefnReturnType));
         drt->c_name = fn_name;
         drt->return_type = declared_return_type;
+        drt->payload_type = resolve_result_option_payload_type(arena, defn->children[body_start + 1]);
         drt->next = g_defn_return_types;
         g_defn_return_types = drt;
         body_start += 2;
@@ -4020,6 +4212,11 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     if (veceq_helpers_ever_inited) sb_free(&g_veceq_helpers);
     sb_init(&g_veceq_helpers);
     veceq_helpers_ever_inited = 1;
+    g_veclit_count = 0; /* same per-call reset -- see g_veclit_helpers' own declaration comment */
+    static int veclit_helpers_ever_inited = 0;
+    if (veclit_helpers_ever_inited) sb_free(&g_veclit_helpers);
+    sb_init(&g_veclit_helpers);
+    veclit_helpers_ever_inited = 1;
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
@@ -4139,6 +4336,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         DefnReturnType *drt = (DefnReturnType *)arena_alloc(arena, sizeof(DefnReturnType));
         drt->c_name = proto_fn_name;
         drt->return_type = proto_return_type;
+        drt->payload_type = resolve_result_option_payload_type(arena, form->children[4]);
         drt->next = g_defn_return_types;
         g_defn_return_types = drt;
     }
@@ -4166,6 +4364,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     }
     sb_append(&out, g_box_helpers.data);
     sb_append(&out, g_veceq_helpers.data);
+    sb_append(&out, g_veclit_helpers.data);
     sb_append(&out, g_lambda_helpers.data);
     sb_append(&out, defn_out.data);
     sb_free(&defn_out);
