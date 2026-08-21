@@ -1399,6 +1399,39 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- Non-reference compound-typed param with a trailing region
+     * annotation, e.g. array.prn's own real `(shape : (Vec I32) @
+     * :region/scratch)` (no `&` prefix, unlike the already-working
+     * `&(Vec I32)` reference-param form). The "Type @ Region on a
+     * non-Arena type" branch originally required children[2] to be a
+     * NODE_SYMBOL, so a compound/list type (`(Vec I32)`) with a trailing
+     * region fell through to the generic "no region annotation and isn't
+     * a plain ... type either" failure instead of resolving -- found
+     * while getting array.prn's own `zeros`/`from-vec`/`reshape` to
+     * compile, all of which pass shape as a plain (non-reference) Vec
+     * with a scratch-region annotation. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn shape-len [(shape : (Vec I32) @ :region/scratch)] : I32\n"
+            "  (vec/len &shape))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a bare (non-reference) (Vec I32) @ :region/scratch param parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'no region annotation and isn't a plain "
+              "... type either', since the Type @ Region branch required a bare NODE_SYMBOL type)");
+        if (c_src) {
+            CHECK(strstr(c_src, "Vec shape") != NULL,
+                  "the param is bound as a real, by-value Vec (its own resolved compound type), "
+                  "not left as an opaque Arena * or rejected outright");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

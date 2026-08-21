@@ -2656,14 +2656,27 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
                 }
             }
         } else if (param->child_count == 5 && param->children[1]->type == NODE_COLON &&
-                   param->children[2]->type == NODE_SYMBOL && param->children[3]->type == NODE_AT) {
+                   (param->children[2]->type == NODE_SYMBOL || param->children[2]->type == NODE_LIST) &&
+                   param->children[3]->type == NODE_AT) {
             /* `Type @ Region` on a NON-Arena type, e.g. firefly.prn's own
              * `(msg : String @ Region)` -- the real, honest fix for the
              * has_region_marker() bug documented on that function itself:
              * a trailing region annotation on a real, named type still
              * means "resolve the real type, discard the region name"
              * (same as defstruct fields and return types already do),
-             * not "silently become an opaque Arena *". */
+             * not "silently become an opaque Arena *".
+             *
+             * Real bug found and fixed here (2026-08-21, array.prn's own
+             * `zeros`/`from-vec`/`reshape`): this branch originally required
+             * children[2]->type == NODE_SYMBOL, so a NON-reference compound
+             * type with a trailing region annotation -- e.g. array.prn's
+             * own `(shape : (Vec I32) @ :region/scratch)`, no `&` prefix --
+             * fell through to the generic failure message instead of being
+             * resolved. resolve_declared_type() already handles a NODE_LIST
+             * type node fine (that's exactly what the `&(ComplexType)`
+             * branch above already delegates to for its own inner type),
+             * so accepting NODE_LIST here too is a direct, narrow fix, not
+             * a new resolution path. */
             const char *c_type = resolve_declared_type(arena, param->children[2], out_error);
             if (!c_type) {
                 sb_free(&param_list);
@@ -2671,6 +2684,21 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             }
             scope_bind(&base, param->children[0]->text, c_name, c_type, 0 /* not an arena value */);
             sb_appendf(&param_list, "%s %s __attribute__((unused))", c_type, c_name);
+            /* `(Vec ElemType) @ Region` specifically -- same
+             * g_vec_elem_hints registration the `&(Vec ElemType)` branch
+             * above already does, so vec/get et al. on a non-reference
+             * Vec-typed param (passed by value, still a real Vec struct)
+             * gets a real element type instead of the generic fallback. */
+            if (param->children[2]->type == NODE_LIST && param->children[2]->child_count == 2 &&
+                param->children[2]->children[0]->type == NODE_SYMBOL &&
+                is_symbol(param->children[2]->children[0], "Vec") &&
+                param->children[2]->children[1]->type == NODE_SYMBOL) {
+                const char *elem_c_type = resolve_base_type_name(param->children[2]->children[1]);
+                if (elem_c_type) {
+                    int is_scalar = (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
+                    record_vec_elem_hint(arena, c_name, elem_c_type, is_scalar);
+                }
+            }
         } else {
             fail(arena, out_error,
                  "defn: parameter '%s' has no region annotation and isn't a plain I32/String/"

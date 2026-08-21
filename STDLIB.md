@@ -409,6 +409,21 @@ library via the FFI block NORTHSTAR.md's own core idioms already show (`#target 
 ...)}`), rather than hand-writing a naive triple-nested-loop matmul and calling it done — flagged
 as a real follow-up decision, not resolved by this design pass.
 
+**Real VS0 emitter gap found compiling this package (2026-08-21)**: `zeros`/`from-vec`'s own bare
+(non-reference) `(shape : (Vec I32) @ :region/scratch)` parameter shape — distinct from `product`/
+`strides-for`'s already-working `&(Vec I32)` reference form — was rejected outright by the
+compiler's own param-parsing loop (it only accepted a bare-symbol type with a trailing region
+annotation, not a compound/list type like `(Vec I32)`); fixed. Once past that, `from-vec`'s own
+`(Ok {:data data :shape shape ...})` surfaced a second, deeper, NOT-yet-fixed gap: `Ok`/`Err`/
+`Some` currently require a pointer-typed payload (the runtime's `Result`/`Option` store `void
+*value`), but a map-literal struct construction (`NDArray_new(...)`) and a `deref`'d scalar both
+produce a real, non-pointer *value* — boxing it into an arena cell first (the same idea
+`vec_box_i32`/`vec_box_f64` already use for `Vec` elements) needs either a GNU statement-expression
+(rejected under this project's own `-pedantic -Werror` build) or hoisting a synthesized temp-
+variable declaration into the enclosing statement, which `emit_expr`'s pure-expression-returning
+architecture isn't built for today. Real, separate, scoped follow-up work, not chased further in
+the same pass that found it — `get`/`reshape` in this same package hit the identical wall.
+
 ### `dataframe` — the pandas equivalent, depends on `array` + `string`
 
 Founder: "and pandas build pandas into the standard library." The one real thing that makes
