@@ -1031,12 +1031,26 @@ every other `#target`-bound file in this stdlib already has). `net/http.prn`'s o
 call `connect-from-url`/`build-get-request`/`parse-http-response`/`build-post-request` — real,
 genuinely un-designed helper functions (URL parsing, HTTP request serialization, HTTP response
 parsing) that would need designing essentially from scratch, a real, substantial undertaking well
-beyond this pass's own scope, not attempted here. `serve` specifically has at least two MORE
-separate blockers of its own on top of that: it calls the already-documented, never-designed
-`(current-arena)` builtin (see `firefly.prn`'s own comment on that gap elsewhere in this doc), and
-its own accept-loop body is `(loop [] ...)` used directly as a match clause's own body — a real,
-narrower gap in `emit_match_clause_body`'s own statement-form dispatch (handles `if`/`let`/`do`/
-`match` but not yet `loop`) — neither attempted in this pass.
+beyond this pass's own scope, not attempted here. `serve` specifically has one MORE separate blocker on top of that: it calls the already-documented,
+never-designed `(current-arena)` builtin (see `firefly.prn`'s own comment on that gap elsewhere in
+this doc), not attempted here.
+
+**Real gap closed in a follow-up pass (2026-08-21)**: `serve`'s own accept-loop body — `(loop []
+...)` used directly as a match clause's own body — used to be a real, separate gap in
+`emit_match_clause_body`'s own statement-form dispatch (`if`/`let`/`do`/`match` were handled, `loop`
+wasn't). Fixed by factoring `emit_loop_core()` out of `emit_loop()` itself (the exact same real
+"share the outer's already-owned result_var, no fresh declaration" composition
+`emit_match_core()`'s own nested-match case already uses) — a `loop`'s own final value now becomes a
+real assignment into a match's shared result variable instead of a `return`. Verified via an
+isolated repro (real gcc-clean). While gcc-verifying this fix, also found and fixed a real, SEPARATE,
+general bug it surfaced: `emit_match_clause_body`'s own `let`/`do` handling processed non-last body
+forms via raw `emit_expr()` — the same "no statement dispatch" class of gap already fixed elsewhere
+— AND, once that was fixed, a discarded statement whose own value happens to be a bare variable
+reference (or any side-effect-free expression) produced a real gcc `-Wunused-value` ("statement with
+no effect") error; reproducible in a PLAIN function body with no match/loop involved at all,
+confirming it was a real, general, pre-existing gap. Fixed by wrapping every discarded statement
+this emitter produces in `(void)(...)`, the standard, idiomatic C way to mark a value as
+deliberately discarded.
 
 ### `sdl2` — built-in, not an optional `import`
 

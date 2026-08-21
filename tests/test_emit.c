@@ -814,8 +814,11 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "return vec_push_") == NULL,
                   "a void-typed tail call is never wrapped in `return` (real ISO C99 -pedantic error)");
-            CHECK(strstr(c_src, "vec_push_(&((t)->messages), msg);") != NULL,
-                  "it's instead emitted as a real, bare statement");
+            CHECK(strstr(c_src, "(void)(vec_push_(&((t)->messages), msg));") != NULL,
+                  "it's instead emitted as a real, bare statement (wrapped in (void)(...), the "
+                  "standard idiomatic C way to mark a value deliberately discarded -- added "
+                  "2026-08-21 after a separate real bug found a bare-symbol discarded statement "
+                  "hitting a real gcc -Wunused-value error)");
         }
         arena_free_all(&arena);
     }
@@ -2142,6 +2145,92 @@ int main(void) {
             CHECK(strstr(c_src, "int (*f)(Arena *)") != NULL,
                   "the bare Arena argument type resolves to a real Arena *, matching every other "
                   "real Arena value's own C representation in this emitter");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `loop` used directly as a match clause's own body -- found
+     * missing (2026-08-21, gcc-verifying net/http.prn's own real
+     * `serve`, whose accept-loop is exactly `(match (net/tcp/listen
+     * ...) ((Ok !listener) (loop [] ...)) ...)` -- the loop IS the
+     * whole first clause's own value): emit_match_clause_body() handled
+     * `if`/`let`/`do`/`match` as clause-body forms but not `loop`.
+     * Fixed by recursing into emit_loop_core() (factored out of
+     * emit_loop() itself the same real way emit_match_core() was
+     * factored out of emit_match()), targeting the match's own
+     * already-owned result_var directly -- the loop's own final value
+     * becomes a real assignment, not a `return`. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Conn (id : I32))\n"
+            "(defn get-conn [(c : &Conn)] : (Result (&Conn) I32) (Ok c))\n"
+            "(defn accept-loop [(c : &Conn)] : (Result (&Conn) I32)\n"
+            "  (match (get-conn c)\n"
+            "    ((Ok !conn)\n"
+            "      (loop [count 0]\n"
+            "        (if (>= count 3)\n"
+            "          (Ok !conn)\n"
+            "          (recur (+ count 1)))))\n"
+            "    ((Err e) (Err e))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a loop used directly as a match clause's own body parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed at the generic call-dispatch path, since "
+              "emit_match_clause_body() had no handling for loop at all before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "while (1) {") != NULL,
+                  "the loop emits its own real while(1) statement, nested inside the match's own "
+                  "clause");
+            CHECK(strstr(c_src, "__match_result_") != NULL && strstr(c_src, "break;") != NULL,
+                  "the loop's own terminal value assigns into the match's shared result_var and "
+                  "breaks, rather than returning separately");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- Discarded statement-position expressions wrapped in
+     * `(void)(...)` -- a real, self-caught bug found (2026-08-21) while
+     * gcc-verifying the `loop`-as-match-clause-body fix above, via a
+     * faithful isolated repro of net/http.prn's own real `serve`
+     * (whose accept-loop clause body is `(do (let [req ...] req)
+     * (recur))` -- the `let`'s own tail form is a bare, already-bound
+     * variable, discarded since the whole `let` is a non-last `do`
+     * form): a bare-symbol (or any side-effect-free) discarded
+     * statement previously emitted as a plain `expr;`, which gcc
+     * flags with a real `-Wunused-value` ("statement with no effect")
+     * error -- reproducible even OUTSIDE match/loop entirely, in a
+     * plain function body, confirming this was a real, general,
+     * pre-existing gap, not specific to the nesting that surfaced it.
+     * Fixed by wrapping every discarded statement in `(void)(...)`,
+     * the standard, idiomatic C way to mark a value as deliberately
+     * discarded -- valid regardless of whether the expression already
+     * has side effects. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn f [(x : I32)] : I32\n"
+            "  (do\n"
+            "    (let [req (+ x 1)] req)\n"
+            "    0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a do-block whose non-last form is a let ending in a bare bound "
+                                "variable parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously would only fail at the *gcc* stage -- 'statement "
+              "with no effect' -- parena build's own exit code stayed 0 either way)");
+        if (c_src) {
+            CHECK(strstr(c_src, "(void)(req);") != NULL,
+                  "the discarded bare-symbol tail value is wrapped in (void)(...), not left as a "
+                  "bare 'req;' statement gcc would flag under -Wunused-value");
         }
         arena_free_all(&arena);
     }

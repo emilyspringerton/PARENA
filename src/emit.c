@@ -2116,7 +2116,7 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, body_forms[i], &child, &c_type, out_error);
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s;\n", expr_c);
+            sb_appendf(out, "        (void)(%s);\n", expr_c);
         }
         return emit_loop_tail(arena, out, body_forms[body_count - 1], &child, loop_locals, loop_var_count,
                                result_var, out_result_type, out_error);
@@ -2134,7 +2134,7 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, body_forms[i], scope, &c_type, out_error);
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s;\n", expr_c);
+            sb_appendf(out, "        (void)(%s);\n", expr_c);
         }
         return emit_loop_tail(arena, out, body_forms[body_count - 1], scope, loop_locals, loop_var_count,
                                result_var, out_result_type, out_error);
@@ -2178,17 +2178,20 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
     return 1;
 }
 
-/* emit_loop handles `(loop [var1 init1 var2 init2 ...] body...)` as a
- * real C `while (1) { ... }`, mutable loop-variable locals reassigned
- * (via emit_loop_tail's own real simultaneous-assignment) on `recur`,
- * `break` on the real terminal case. The loop's own result type is
- * inferred the same "emit into a temp buffer first, read the type back
- * as a side effect" way emit_defn's own return type already is (the
- * result variable's own declaration needs a real type, but that type
- * isn't known until the body -- specifically its terminal branch -- has
- * actually been walked). */
-static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
-                      const char **out_return_type, const char **out_error) {
+/* emit_loop_core -- the real loop machinery (binding-var setup + body
+ * statements + tail composition via emit_loop_tail), factored out of
+ * emit_loop() itself (2026-08-21, gcc-verifying net/http.prn's own
+ * real `serve`, whose accept-loop `(loop [] ...)` is used DIRECTLY as
+ * a match clause's own body -- `(match (net/tcp/listen ...) ((Ok
+ * !listener) (loop [] ...)) ...)`) so emit_match_clause_body()'s own
+ * `loop` case can recurse into it directly, targeting an
+ * ALREADY-OWNED result_var the SAME real way emit_match_core()'s own
+ * nested-match case already does -- no fresh declaration, the loop's
+ * own final value becomes a real assignment into the match's own
+ * shared result variable instead of a `return`. */
+static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                           const char *result_var, const char **out_result_type,
+                           const char **out_error) {
     if (node->child_count < 2 || node->children[1]->type != NODE_VEC) {
         return fail(arena, out_error, "loop: expected a binding vector at line %d", node->line) != NULL;
     }
@@ -2217,10 +2220,6 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
         }
     }
 
-    static int loop_counter = 0;
-    char result_var[64];
-    snprintf(result_var, sizeof(result_var), "__loop_result_%d", loop_counter++);
-
     Node **body_forms = node->children + 2;
     size_t body_count = node->child_count - 2;
     if (body_count == 0) {
@@ -2248,7 +2247,7 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
                 sb_free(&body);
                 return 0;
             }
-            sb_appendf(&body, "        %s;\n", expr_c);
+            sb_appendf(&body, "        (void)(%s);\n", expr_c);
         }
     }
 
@@ -2259,20 +2258,40 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
         return 0;
     }
 
-    /* __attribute__((unused)): a real, valid Parena `loop` can be used
-     * purely for its own side effects, its own result never consumed
-     * by anything (e.g. array.prn's own real `strides-for`, whose loop
-     * only pushes onto `s` -- the real return value is the following
-     * `s` symbol, not the loop). gcc -Wall correctly flags a C local
-     * that's set but genuinely never read in that shape
-     * (-Wunused-but-set-variable, found via an actual gcc -pedantic
-     * -Werror compile of that exact real function), same real, honest
-     * suppression `let`'s own bindings already use above for the
-     * identical reason, not a real bug in the Parena source. */
-    sb_appendf(out, "    %s %s __attribute__((unused));\n", result_type ? result_type : "void *", result_var);
     sb_append(out, "    while (1) {\n");
     sb_append(out, body.data);
     sb_append(out, "    }\n");
+    sb_free(&body);
+    if (out_result_type) *out_result_type = result_type;
+    return 1;
+}
+
+/* emit_loop -- the real, public entry point (unchanged signature, used
+ * by emit_body's own statement/tail dispatch): owns result_var's one
+ * real declaration (`__attribute__((unused))`: a real, valid Parena
+ * `loop` can be used purely for its own side effects, its own result
+ * never consumed by anything -- e.g. array.prn's own real
+ * `strides-for`, whose loop only pushes onto `s`; found via an actual
+ * gcc -pedantic -Werror compile, same real, honest suppression `let`'s
+ * own bindings already use) and return_mode's own `return result_var;`
+ * wrap. */
+static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
+                      const char **out_return_type, const char **out_error) {
+    static int loop_counter = 0;
+    char result_var[64];
+    snprintf(result_var, sizeof(result_var), "__loop_result_%d", loop_counter++);
+
+    StrBuf body;
+    sb_init(&body);
+    const char *result_type = NULL;
+    if (!emit_loop_core(arena, &body, node, scope, result_var, &result_type, out_error)) {
+        sb_free(&body);
+        return 0;
+    }
+
+    sb_appendf(out, "    %s %s __attribute__((unused));\n", result_type ? result_type : "void *",
+               result_var);
+    sb_append(out, body.data);
     sb_free(&body);
 
     if (return_mode) {
@@ -2369,11 +2388,23 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         if (body_count == 0) {
             return fail(arena, out_error, "match: let has an empty body at line %d", body->line) != NULL;
         }
-        for (size_t i = 0; i + 1 < body_count; i++) {
-            const char *c_type = NULL;
-            const char *expr_c = emit_expr(arena, body_forms[i], &child, &c_type, out_error);
-            if (!expr_c) return 0;
-            sb_appendf(out, "        %s;\n", expr_c);
+        /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying
+         * an isolated repro of net/http.prn's own real `serve`, whose
+         * accept-loop's own `(Ok !conn)` clause body is `(do (let
+         * [req ...] req) (recur))` -- the `let` itself is a NON-LAST
+         * `do` form): non-last body forms here used to go through raw
+         * emit_expr(), the same "no handling for statement-shaped
+         * constructs" gap already found and fixed for `if`-in-tail-
+         * position, match's own clause bodies, and when-in-loop-tail's
+         * own non-last forms -- a nested `let`/`loop`/`match`/`when`
+         * appearing here (not as the LAST form) fell through the same
+         * generic call-dispatch mis-parse. Delegates to emit_body()
+         * itself (return_mode=0, discarding any value) instead of
+         * hand-rolling yet another narrower statement dispatcher. */
+        if (body_count > 1) {
+            if (!emit_body(arena, out, body_forms, body_count - 1, &child, 0, NULL, out_error)) {
+                return 0;
+            }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], &child, result_var,
                                        out_result_type, out_error);
@@ -2384,17 +2415,31 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         if (body_count == 0) {
             return fail(arena, out_error, "match: do has an empty body at line %d", body->line) != NULL;
         }
-        for (size_t i = 0; i + 1 < body_count; i++) {
-            const char *c_type = NULL;
-            const char *expr_c = emit_expr(arena, body_forms[i], scope, &c_type, out_error);
-            if (!expr_c) return 0;
-            sb_appendf(out, "        %s;\n", expr_c);
+        /* Same real, self-caught fix as `let`'s own body handling just
+         * above -- see its own comment. */
+        if (body_count > 1) {
+            if (!emit_body(arena, out, body_forms, body_count - 1, scope, 0, NULL, out_error)) {
+                return 0;
+            }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], scope, result_var,
                                        out_result_type, out_error);
     }
     if (is_call_named(body, "match")) {
         return emit_match_core(arena, out, body, scope, result_var, out_result_type, out_error);
+    }
+    if (is_call_named(body, "loop")) {
+        /* `loop` used directly as a match clause's own body -- found
+         * missing (2026-08-21, gcc-verifying net/http.prn's own real
+         * `serve`, whose accept-loop is exactly `(match (net/tcp/listen
+         * ...) ((Ok !listener) (loop [] ...)) ...)`: the loop IS the
+         * whole first clause's own value). Recurses into
+         * emit_loop_core() directly, the same real "share the outer's
+         * already-owned result_var, no fresh declaration" composition
+         * emit_match_core()'s own nested-match case just above already
+         * uses -- the loop's own final value becomes a real assignment
+         * into match's shared result variable instead of a `return`. */
+        return emit_loop_core(arena, out, body, scope, result_var, out_result_type, out_error);
     }
     const char *clause_type = NULL;
     const char *clause_c = emit_expr(arena, body, scope, &clause_type, out_error);
@@ -2638,7 +2683,7 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             const char *body_type = NULL;
             const char *body_c = emit_expr(arena, form->children[2], scope, &body_type, out_error);
             if (!body_c) return 0;
-            sb_appendf(out, "    if (%s) {\n        %s;\n    }\n", cond_c, body_c);
+            sb_appendf(out, "    if (%s) {\n        (void)(%s);\n    }\n", cond_c, body_c);
         } else if (is_symbol(form, "#target") && i + 1 < count) {
             /* `#target {:c (inline-c "...")}` as a MID-BODY statement,
              * not a whole function body -- found missing (2026-08-21,
@@ -2674,7 +2719,7 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
             if (!expr_c) return 0;
-            sb_appendf(out, "    %s;\n", expr_c);
+            sb_appendf(out, "    (void)(%s);\n", expr_c);
         }
     }
 
@@ -2697,7 +2742,7 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
         const char *body_type = NULL;
         const char *body_c = emit_expr(arena, tail->children[2], scope, &body_type, out_error);
         if (!body_c) return 0;
-        sb_appendf(out, "    if (%s) {\n        %s;\n    }\n", cond_c, body_c);
+        sb_appendf(out, "    if (%s) {\n        (void)(%s);\n    }\n", cond_c, body_c);
         if (return_mode) {
             if (out_return_type) *out_return_type = "void";
         }
@@ -2782,12 +2827,26 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
          * emitted as a bare statement instead; falling off the end of a
          * void C function is valid and means the same thing. */
         if (c_type && strcmp(c_type, "void") == 0) {
-            sb_appendf(out, "    %s;\n", expr_c);
+            sb_appendf(out, "    (void)(%s);\n", expr_c);
         } else {
             sb_appendf(out, "    return %s;\n", expr_c);
         }
     } else {
-        sb_appendf(out, "    %s;\n", expr_c);
+        /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying
+         * an isolated repro of net/http.prn's own real `serve`, whose
+         * accept-loop clause body is `(do (let [req ...] req) (recur))`
+         * -- the `let`'s own tail form is a bare, already-bound
+         * variable, discarded here since return_mode=0 (this whole
+         * `let` is itself a non-last `do` form)): a bare-symbol (or any
+         * side-effect-free) discarded tail value produces a real gcc
+         * `-Wunused-value` ("statement with no effect") error, found
+         * via an actual compile, not `parena build`'s own exit code.
+         * Wrapped in `(void)(...)`, the standard, idiomatic C way to
+         * mark a value as deliberately discarded -- valid regardless
+         * of whether the expression already has side effects, so this
+         * is safe to apply unconditionally here, not just for the bare-
+         * symbol case that surfaced it. */
+        sb_appendf(out, "    (void)(%s);\n", expr_c);
     }
     return 1;
 }
