@@ -684,6 +684,30 @@ own `get-data` used above.
 columnar-scan `filter`/`group-by` implementation are both genuine engineering, not specified by
 the signatures above — flagged, not resolved here.
 
+**`column` gcc-clean, `select` blocked on a new, real, deeper gap (2026-08-21)**: `column`'s own
+`(Err (ColumnNotFoundError name))` needed the same real `dest : Arena @ Region` fix `array.prn`'s
+own `get`/`set!` already had — closed the same way, `ColumnNotFoundError` itself defined (the same
+real missing-definition class already closed elsewhere). A real, separate, previously undocumented
+**general control-flow gap closed along the way**: `select`'s own `(return (Err e))` — bailing the
+whole function early from inside a `loop`'s own `match` clause on the first error, not just this
+one iteration — used `return`, found genuinely never implemented anywhere (`firefly.prn`'s own
+header comment already names this as a known missing primitive). Real, and simpler than it first
+looks: a plain C `return` statement already exits the enclosing function immediately regardless of
+loop-nesting depth — normal C semantics, no propagation logic needed (unlike `recur`, which
+genuinely does need one, since a PARENA `loop` is a real C `while(1)`, not a native early-exit
+target). Verified both gcc-clean and correct at real runtime (a harness confirming the early-return
+path fires exactly when expected, and the fall-through path still completes the whole loop when it
+doesn't).
+
+`select` itself is still blocked — surfaced a real, DIFFERENT, deeper gap than anything closed
+elsewhere this session: `names`'s own elements are `String` (`char *`, pointer-representable, not
+a scalar), and `(deref (vec/get &names i))` produces invalid C (`dereferencing 'void *' pointer`)
+even though `names : (Vec String) @ :region/scratch` is a real, explicitly-typed parameter that
+DOES get a recorded `g_vec_elem_hints` entry — unlike the scalar (I32/F64) case, this emitter's
+existing hint mechanism doesn't yet correctly round-trip a pointer-representable element type
+through `vec_get`'s own cast-and-deref convention. Not investigated further or fixed this pass —
+real, separate, un-attempted work, distinct from every other gap this session closed.
+
 ### `nn` / `tokenizer` / `sort` — grounded in porting `gpt2-alpine-c`
 
 Founder: "add any more stdlib you can think of that would be needed to port gpt2alpinec." Not

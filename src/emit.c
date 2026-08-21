@@ -2972,6 +2972,34 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         if (out_result_type) *out_result_type = NULL;
         return 1;
     }
+    /* `(return expr)` -- real, non-local control flow, found genuinely
+     * never implemented anywhere (2026-08-21, gcc-verifying
+     * dataframe.prn's own real `select`: a `loop` over column names,
+     * whose own `match` clause needs to bail the WHOLE function early
+     * on the first `Err`, not just this one loop iteration -- exactly
+     * the real gap firefly.prn's own header comment already names:
+     * "VS0 has no non-local control-flow primitive yet"). Real,
+     * honest, and simpler than it first looks: a plain C `return`
+     * statement ALREADY exits the enclosing function immediately no
+     * matter how many loops/blocks it's nested inside -- normal C
+     * semantics, not something this emitter needs to simulate with its
+     * own propagation logic (unlike `recur`, which needs a real
+     * simultaneous-assignment + `continue` because a PARENA loop is
+     * itself a real C `while(1)`, not a native early-exit target).
+     * Handled here (match clause bodies) and in emit_body's own
+     * top-level statement dispatch (see its own new `return` case) --
+     * the two real places a non-tail statement can appear. */
+    if (is_call_named(body, "return")) {
+        if (body->child_count != 2) {
+            return fail(arena, out_error, "return: expects exactly one value at line %d", body->line) != NULL;
+        }
+        const char *val_type = NULL;
+        const char *val_c = emit_expr(arena, body->children[1], scope, &val_type, out_error);
+        if (!val_c) return 0;
+        sb_appendf(out, "        return %s;\n", val_c);
+        if (out_result_type) *out_result_type = NULL;
+        return 1;
+    }
     if (is_call_named(body, "if")) {
         if (body->child_count != 4) {
             return fail(arena, out_error, "match: if in clause body needs (if cond then else) at line %d",
@@ -3432,6 +3460,21 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             const char *body_c = emit_expr(arena, form->children[2], scope, &body_type, out_error);
             if (!body_c) return 0;
             sb_appendf(out, "    if (%s) {\n        (void)(%s);\n    }\n", cond_c, body_c);
+        } else if (is_call_named(form, "return")) {
+            /* `(return expr)` as a plain, top-level non-tail statement
+             * (not nested in a match clause -- see emit_match_clause_
+             * body's own `return` case, and its own declaration
+             * comment, for the fuller real reasoning). A real C
+             * `return` statement here needs no special propagation
+             * logic either, for the identical real reason. */
+            if (form->child_count != 2) {
+                fail(arena, out_error, "return: expects exactly one value at line %d", form->line);
+                return 0;
+            }
+            const char *val_type = NULL;
+            const char *val_c = emit_expr(arena, form->children[1], scope, &val_type, out_error);
+            if (!val_c) return 0;
+            sb_appendf(out, "    return %s;\n", val_c);
         } else if (is_symbol(form, "#target") && i + 1 < count) {
             /* `#target {:c (inline-c "...")}` as a MID-BODY statement,
              * not a whole function body -- found missing (2026-08-21,

@@ -2814,6 +2814,46 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `(return expr)` -- real, non-local control flow, found
+     * genuinely never implemented anywhere (2026-08-21, gcc-verifying
+     * dataframe.prn's own real `select`: a `loop` over column names
+     * whose own `match` clause needs to bail the WHOLE function early
+     * on the first Err, not just this one loop iteration -- the exact
+     * gap firefly.prn's own header comment already names). Tested here
+     * inside a match clause body, the real shape `select` needed; a
+     * plain top-level statement `return` (emit_body's own new case) is
+     * the same real fix, not separately exercised here. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum Lookup (Found (n : I32)) (Missing))\n"
+            "(defn find-first-negative [(v : &(Vec I32)) (probe : &Lookup)]\n"
+            "  : I32\n"
+            "  (loop [i 0]\n"
+            "    (when (< i (vec/len v))\n"
+            "      (match (deref probe)\n"
+            "        ((Found n) (return (deref n)))\n"
+            "        (Missing unit))\n"
+            "      (recur (+ i 1))))\n"
+            "    -1)";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a return inside a match clause body inside a loop parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form' via a "
+              "bogus never-defined return(...) call, since return had no handling anywhere)");
+        if (c_src) {
+            CHECK(strstr(c_src, "return (") != NULL,
+                  "it emits as a real, plain C return statement -- no special propagation logic "
+                  "needed, since a real C return already exits the enclosing function regardless "
+                  "of loop nesting depth");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

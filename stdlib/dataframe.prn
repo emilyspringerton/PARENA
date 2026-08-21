@@ -4,6 +4,17 @@
 ;; filter/group-by are genuinely deferred: a real CSV parser (quoting,
 ;; escaping) and a real columnar-scan filter/group-by are their own
 ;; work, same honest limitation STDLIB.md already states.
+;;
+;; Real status update (2026-08-21, see STDLIB.md's own "dataframe"
+;; section for the full real reasoning): `column` is gcc-clean.
+;; `select` surfaced and closed a real, general control-flow gap
+;; (`return` -- bailing the whole function early from inside a loop's
+;; own match clause -- had no handling anywhere in this emitter before
+;; now), but is itself still blocked on a SEPARATE, real, deeper gap:
+;; `names`'s own String (pointer-representable, non-scalar) elements
+;; don't round-trip correctly through `vec/get`'s own element-type-hint
+;; + `deref` convention the way a scalar I32/F64 element already does.
+;; Not fixed this pass -- real, separate, un-attempted work.
 
 (module dataframe)
 (import array)
@@ -20,8 +31,22 @@
   (column-names : (Vec String) @ Region)
   (row-count    : I32))
 
-(defn column [(df : &DataFrame) (name : String @ :region/scratch)]
-  : (Result (&Column) ColumnNotFoundError)
+;; Real, honest gap closed here (2026-08-21): column/select both used
+;; ColumnNotFoundError in their own real signature but this file never
+;; actually DEFINED it -- the same real missing-definition-in-source-
+;; itself gap class already closed for pcap.prn/io.prn/array.prn/
+;; string.prn/glob.prn/stats.prn.
+(defstruct ColumnNotFoundError
+  (name : String))
+
+;; Real, honest gap closed here (2026-08-21): column's own (Err
+;; (ColumnNotFoundError name)) needs to box a non-pointer struct
+;; payload, but the signature carried no Arena to box into at all --
+;; the identical real gap array.prn's own get/set!/string.prn's own
+;; parse-i32 already had, fixed the same way: an explicit
+;; dest : Arena @ Region parameter.
+(defn column [(df : &DataFrame) (name : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result (&Column) ColumnNotFoundError) @ Region
   (loop [i 0]
     (if (>= i (vec/len &(get-field df :column-names)))
       (Err (ColumnNotFoundError name))
@@ -34,7 +59,7 @@
   (let [out-cols (vec/new dest) out-names (vec/new dest)]
     (loop [i 0]
       (when (< i (vec/len &names))
-        (match (column df (deref (vec/get &names i)))
+        (match (column df (deref (vec/get &names i)) dest)
           ((Ok col) (do (vec/push! &out-cols (deref col)) (vec/push! &out-names (deref (vec/get &names i)))))
           ((Err e) (return (Err e))))
         (recur (+ i 1))))
