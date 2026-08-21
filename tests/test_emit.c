@@ -1769,6 +1769,49 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- Forward-referenced defn calls -- found missing (2026-08-21,
+     * gcc-verifying string.prn's own real `parse-i32`, which calls
+     * `is-valid-i32-text?`, defined LATER in the same file): every
+     * `defn` was previously emitted strictly in source order with no
+     * declarations at all, so any function calling another one defined
+     * later in the same file hit a real "implicit declaration of
+     * function" gcc error -- `parena build`'s own exit code never
+     * caught it, since it never re-parses its own generated C. Fixed
+     * via a real forward-DECLARATION pre-pass, emitted for every defn
+     * with an explicit `: ReturnType` annotation -- `ReturnType
+     * mangled_name();`, an old-style unspecified-argument C
+     * declaration (confirmed via a standalone gcc test to compile
+     * cleanly under this project's own `-pedantic -Werror`, so this
+     * deliberately does NOT duplicate emit_defn's own much larger
+     * parameter-type-resolution logic just to match a full prototype
+     * nobody's own call site needs). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn is-even? [(n : I32)] : Bool\n"
+            "  (if (= n 0) true (is-odd? (- n 1))))\n"
+            "(defn is-odd? [(n : I32)] : Bool\n"
+            "  (if (= n 0) false (is-even? (- n 1))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "two mutually-forward-referencing defns parse fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously would only fail at the *gcc* stage -- 'implicit "
+              "declaration of function is_odd_' -- parena build's own exit code stayed 0 either way)");
+        if (c_src) {
+            CHECK(strstr(c_src, "int is_odd_();") != NULL,
+                  "is-even?'s own forward call to is-odd? (defined LATER in the file) gets a real "
+                  "C forward declaration emitted ahead of every defn body");
+            CHECK(strstr(c_src, "int is_even_();") != NULL,
+                  "and vice versa -- both directions of the real mutual-recursion get a real "
+                  "declaration, not just the one that happens to be called first in file order");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

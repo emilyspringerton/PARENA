@@ -331,15 +331,22 @@ its own side effect, then return the buffer separately) rather than replacing an
 body, the only shape it supported before. (4) A missing `#include <stdint.h>` in every generated
 file's own preamble (`length`'s own `#target` body casts to `int32_t`).
 
-**Real, NOT-yet-fixed gaps, this file's own**: `parse-i32` calls `is-valid-i32-text?`, which is
-defined LATER in the same file — VS0 has no forward-declaration pre-pass for `defn`s (only
-`defenum`/`defstruct` get one), so this is a genuine, separate, real architecture gap: any function
-calling another defined later in the same file hits a real "implicit declaration" error under gcc,
-undetected by `parena build`'s own exit code. Separately, `ParseError`/`substring`/`str-eq?`/
-`is-digit?`/`char-at`/`raw-parse-i32` are referenced throughout this file but never defined
-anywhere in it — the same real missing-definition-in-source-itself gap class already closed for
-pcap.prn/io.prn/array.prn, not yet closed here. Neither gap was attempted in this same pass —
-flagged, not chased, matching this doc's own established discipline.
+**Second real gap, found and fixed in a follow-up pass (2026-08-21)**: `parse-i32` calls
+`is-valid-i32-text?`, which is defined LATER in the same file — VS0 had no forward-declaration
+pre-pass for `defn`s at all (only `defenum`/`defstruct` got one), so any function calling another
+defined later in the same file hit a real "implicit declaration" error under gcc, undetected by
+`parena build`'s own exit code. Fixed via a real forward-declaration pre-pass emitted ahead of every
+defn body, for every `defn` carrying an explicit `: ReturnType` annotation — deliberately just
+`ReturnType mangled_name();` (an old-style, unspecified-argument C declaration, confirmed to compile
+cleanly under this project's own `-pedantic -Werror`), not a full parameter-matching prototype,
+since C only requires a function be *declared* before use, not exactly re-specified. A `defn` with
+no explicit return type (inferred from its own body) still gets no forward declaration — real,
+narrower, honest scope, not yet hit by any known real call site.
+
+**Real, still-NOT-yet-fixed gap, this file's own**: `ParseError`/`substring`/`str-eq?`/`is-digit?`/
+`char-at`/`raw-parse-i32` are referenced throughout this file but never defined anywhere in it — the
+same real missing-definition-in-source-itself gap class already closed for pcap.prn/io.prn/
+array.prn, not yet closed here. Not attempted in this pass — flagged, not chased.
 
 ### `log` — one real call
 
@@ -793,11 +800,14 @@ two real forms: a pure ternary-chain (folding right-to-left, matching `if`'s own
 never live inside a ternary — `string/split`'s and `map/find-slot`'s own real `cond` usage are both
 this second shape).
 
-**Real, NOT-yet-fixed gaps, this file's own**: `matches` calls `glob-match`, which is defined LATER
-in the same file — the same real forward-declaration-pre-pass gap flagged on `string.prn` above,
-not this file's own issue and not attempted here either. Separately, `glob-match`'s own `#target`-
-adjacent runtime dependencies (`string/length`, `char-eq?`, `char-at-eq?`, `match-bracket-class`)
-are referenced but never defined anywhere reachable — real, separate, un-started work.
+**Second real gap, fixed in a follow-up pass (2026-08-21)**: `matches` calls `glob-match`, which is
+defined LATER in the same file — the same real forward-declaration-pre-pass gap `string.prn` above
+surfaced first, not specific to this file; closed by the same fix (a real forward declaration for
+every `defn` carrying an explicit return type, emitted ahead of every defn body).
+
+**Real, still-NOT-yet-fixed gap, this file's own**: `glob-match`'s own `#target`-adjacent runtime
+dependencies (`string/length`, `char-eq?`, `char-at-eq?`, `match-bracket-class`) are referenced but
+never defined anywhere reachable — real, separate, un-started work.
 
 **`grep`/`sed`/`awk`** — the actual Unix tools, each thin and built directly on the packages
 above rather than reimplementing matching logic:

@@ -3348,6 +3348,72 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         }
     }
 
+    /* Pre-pass: a real forward DECLARATION for every `defn` that has an
+     * explicit `: ReturnType` annotation -- found genuinely missing
+     * (2026-08-21, gcc-verifying string.prn's own real `parse-i32`,
+     * which calls `is-valid-i32-text?`, defined LATER in the same
+     * file): C requires a function be at least declared before its
+     * first use, and every defn was previously emitted strictly in the
+     * program's own real source order with no declarations at all --
+     * any function calling another one defined later in the same file
+     * hit a real "implicit declaration of function" gcc error,
+     * undetected by `parena build`'s own exit code (which never
+     * re-parses its own generated C).
+     *
+     * Real, honest, deliberately narrow scope: only the RETURN TYPE is
+     * needed for a valid forward declaration here, not the full
+     * parameter list -- `ReturnType mangled_name();` (an old-style,
+     * unspecified-argument C declaration) compiles cleanly under this
+     * project's own `-std=c99 -Wall -Wextra -pedantic -Werror`
+     * (confirmed via a real, standalone gcc test before writing this),
+     * so this deliberately does NOT duplicate emit_defn's own much
+     * larger parameter-type-resolution logic (many branches: I32/
+     * String/Fn/&Type/&(ComplexType)/Type@Region/etc.) just to build a
+     * full prototype nobody's own call site needs matched exactly.
+     *
+     * Real, honest, NOT-yet-covered case: a `defn` with NO explicit `:`
+     * return-type annotation (return type inferred from its own body's
+     * tail expression) gets no forward declaration here -- resolving
+     * that would require walking the body BEFORE this pre-pass has any
+     * business doing so (the same real "no separate type-checking
+     * pass" limitation this whole emitter already has elsewhere,
+     * flagged rather than solved). Every real forward-reference case
+     * found so far (string.prn's `is-valid-i32-text?`, regex/glob.prn's
+     * `glob-match`) has an explicit return type, so this narrower scope
+     * already covers every real, known-blocking case.
+     *
+     * Also registers into g_defn_return_types here, same real registry
+     * emit_defn itself populates later (see its own declaration
+     * comment) -- a free, correct improvement once resolved this early:
+     * emit_call()'s own "no function-signature table" fallback can now
+     * see a forward-referenced function's real return type too, not
+     * just an earlier-in-file one. emit_defn's own later, redundant
+     * registration (once it reaches that same defn) is harmless --
+     * find_defn_return_type() only ever reads the first match, and it's
+     * the same value either way. */
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_call_named(form, "defn")) continue;
+        if (form->child_count < 3 || form->children[1]->type != NODE_SYMBOL) continue;
+        if (form->child_count < 5 || form->children[3]->type != NODE_COLON) continue;
+        const char *proto_fn_name = mangle(arena, form->children[1]->text);
+        const char *proto_return_type = resolve_declared_type(arena, form->children[4], out_error);
+        if (!proto_return_type) {
+            sb_free(&out);
+            return NULL;
+        }
+        sb_append(&out, proto_return_type);
+        sb_append(&out, " ");
+        sb_append(&out, proto_fn_name);
+        sb_append(&out, "();\n");
+        DefnReturnType *drt = (DefnReturnType *)arena_alloc(arena, sizeof(DefnReturnType));
+        drt->c_name = proto_fn_name;
+        drt->return_type = proto_return_type;
+        drt->next = g_defn_return_types;
+        g_defn_return_types = drt;
+    }
+    sb_append(&out, "\n");
+
     /* defn bodies are built into their OWN buffer, not appended to `out`
      * directly, so g_box_helpers (populated lazily as a side effect of
      * emitting Ok/Err/Some calls INSIDE these very defn bodies -- see
