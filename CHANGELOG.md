@@ -1,4 +1,5 @@
 ## 2026-08-21
+- cond 特殊形式(純值三元折疊 + loop-tail 陳述式版,含自己抓到的結果型別 bug 修正)+ if-in-tail 陳述式化 + alloc 尺寸運算式 + mid-body #target + #include <stdint.h>;string.prn/regex/glob.prn 卡在下一層獨立缺口(函式前向參照排序、未定義型別/函式),誠實記錄未解;Apple #15166,commit 03a6c56 (sess-20260820-0649-a3f19d93)
 - Ok/Err/Some 非指標 payload 裝箱(生成 per-type box 輔助函式)+ when-in-loop-tail 處理 + 純量裝箱判斷改看值型別而非 hint;補齊 array.prn 的 ShapeError/IndexError 型別定義;product/strides-for/zeros/flat-index/from-vec 五個函式真正 gcc-clean;get/set! 卡在新的、更深的 stdlib 設計缺口(誠實記錄,未解);Apple #15163,commit 3735d28 (sess-20260820-0649-a3f19d93)
 - 修正非引用型 (Vec T) @ Region 參數形狀(array.prn 的 zeros/from-vec/reshape);product/strides-for/zeros 完全編譯過關;發現並記錄 Ok/Err/Some 指標型別 payload 限制這個獨立、更深的缺口(需要 arena 裝箱機制,STDLIB.md 已誠實記錄);Apple #15160,commit 899bef0 (sess-20260820-0649-a3f19d93)
 - 里程碑:world.prn 真正通過真正 gcc 編譯。這一輪抓到四個獨立、真實的缺口:N-ary and/or(左結合折疊,只針對邏輯運算子)、when 特殊形式(真正的陳述式層級 if、不是三元運算子)、mangle() 補上問號結尾的 predicate 命名慣例、Vec 純量裝箱(讓 F64/I32 元素真正配置成真的可解參考的 cell,不是 bit-boxing 技巧,跟既有 deref 慣例完全一致)。順手補上 vec-set-at! 這個 STDLIB.md 自己設計文件裡本來就漏掉的操作 (sess-20260820-0649-a3f19d93)
