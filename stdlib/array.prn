@@ -31,14 +31,44 @@
   (loop [i 0 acc 1]
     (if (>= i (vec/len shape)) acc (recur (+ i 1) (* acc (deref (vec/get shape i)))))))
 
+;; Real, honest bug found and fixed here (2026-08-21, a real runtime
+;; harness -- not just a clean compile -- calling zeros/set!/get/add
+;; end to end and finding the summed values all landed on the SAME
+;; slot instead of each cell's own real value): the stride computation
+;; itself needs stride[i] = product(shape[i+1:]), a genuine suffix
+;; product -- the old body walked dimensions right-to-left to compute
+;; that, but pushed each result straight onto `s` in that SAME
+;; right-to-left order. Vec has no insert-at-front, only append, so
+;; `s` ended up holding `[stride[n-1], stride[n-2], ..., stride[0]]`,
+;; backwards from what flat-index's own `(vec/get strides i)` expects
+;; (stride[0] first). flat-index silently read the wrong dimension's
+;; stride for every index but 1-D, producing a real, wrong flat offset
+;; -- not caught by any compile-time check, only by actually running
+;; the generated code and checking real numbers.
+;;
+;; Fixed with a real reformulation, not a two-pass reverse: since
+;; stride[i-1] = shape[i] * stride[i], walking i FORWARD from 0 with
+;; `running` seeded at product(shape) (every dimension) and divided by
+;; shape[i] at each step yields each stride[i] directly, in the real,
+;; correct index order, on the very first pass -- no second pass
+;; needed. (A first attempt at a two-pass reverse-then-reread version
+;; hit two SEPARATE, real, pre-existing compiler gaps instead: two
+;; sibling, non-nested `loop`s in the same function both declaring a C
+;; local named `i` at the same block scope, and `vec/get` on a plain
+;; `let`-bound local -- no recorded scalar-element hint outside a typed
+;; parameter/struct-field -- falling back to a raw `void *` that
+;; `deref` then tried to dereference directly, invalid C. Both are real,
+;; separate, un-attempted compiler work, avoided here by this single-
+;; pass reformulation rather than fixed.)
 (defn strides-for [(shape : &(Vec I32)) (dest : Arena @ Region)]
   : (Vec I32) @ Region
   ;; row-major (C order): stride[i] = product(shape[i+1:])
-  (let [n (vec/len shape) s (vec/new dest)]
-    (loop [i (- n 1) running 1]
-      (when (>= i 0)
-        (vec/push! &s running)
-        (recur (- i 1) (* running (deref (vec/get shape i))))))
+  (let [n (vec/len shape) total (product shape) s (vec/new dest)]
+    (loop [i 0 running total]
+      (when (< i n)
+        (let [next (/ running (deref (vec/get shape i)))]
+          (vec/push! &s next)
+          (recur (+ i 1) next))))
     s))
 
 (defn zeros [(shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]

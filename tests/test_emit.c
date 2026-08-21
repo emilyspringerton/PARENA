@@ -2405,6 +2405,136 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- unary `(not x)` -- distinct from binop_c_symbol()'s own
+     * strictly 2-argument operator set, found unhandled (2026-08-21,
+     * gcc-verifying array.prn's own real `elementwise`: `(if (not
+     * (same-shape? a b)) ...)`), falling through to the generic call
+     * dispatch and mangling into a bogus call to a never-defined
+     * `not(...)` C function. Checked before that generic dispatch, the
+     * same real placement fix `fn` literals needed just above it. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn negate [(b : Bool)] : Bool (not b))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a unary (not x) call parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form' via a "
+              "bogus never-defined not(...) call, since unary not had no handling anywhere)");
+        if (c_src) {
+            CHECK(strstr(c_src, "(!(b))") != NULL,
+                  "it emits as a real C logical-not expression, not a call to a never-defined "
+                  "not() function");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a call through a scope-bound `(Fn ..)`-typed PARAMETER (not a
+     * registered top-level defn) pushed onto a Vec -- found blocking
+     * array.prn's own real `elementwise`: `(vec/push! &out (op ...))`
+     * where `op : (Fn [F64 F64] F64)`. The call itself already worked
+     * (a bare identifier naming a function-pointer-typed local is
+     * already valid C call syntax), but its own reported out_type used
+     * to always fall to the generic "void *" guess (g_defn_return_types
+     * only knows real top-level defns), silently breaking vec_push_'s
+     * own scalar-boxing decision (which only fires for the literal
+     * strings "int"/"double") -- producing real, broken C (a raw
+     * `double` where `void *` is required), caught only by an actual
+     * gcc compile. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn apply-and-collect [(op : (Fn [F64 F64] F64)) (x : F64) (y : F64) (dest : Arena @ Region)]\n"
+            "  : (Vec F64) @ Region\n"
+            "  (let [out (vec/new dest)]\n"
+            "    (vec/push! &out (op x y))\n"
+            "    out))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "pushing the result of calling a (Fn ..)-typed parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed only at the *gcc* stage -- 'incompatible "
+              "type for argument 2 of vec_push_', a raw double where void * is required -- since "
+              "an indirect call's own out_type always fell back to the generic void * guess)");
+        if (c_src) {
+            CHECK(strstr(c_src, "vec_box_f64(") != NULL,
+                  "the indirect call's own F64 return value is correctly scalar-boxed before "
+                  "being pushed, now that its real return type (extracted from the callee "
+                  "parameter's own function-pointer C type) is reported instead of a generic "
+                  "void * guess");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `vec-eq?` -- found completely unimplemented (2026-08-21,
+     * gcc-verifying array.prn's own real `same-shape?`): no runtime
+     * `vec_eq_` function existed anywhere, an honest "implicit
+     * declaration of function" gcc error. Fixed via a generated,
+     * per-scalar-element-type comparison helper (the same real
+     * "compiler generates a per-type helper, deduped" shape
+     * g_box_helpers already established), found via the same
+     * g_vec_elem_hints registry vec_get's own element-type reporting
+     * already reads. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Box (shape : (Vec I32) @ Region))\n"
+            "(defn same? [(a : &Box) (b : &Box)]\n"
+            "  : Bool\n"
+            "  (vec-eq? &(get-field a :shape) &(get-field b :shape)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec-eq? on two struct fields, each a scalar-element Vec, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'implicit declaration of function "
+              "vec_eq_', since no vec-eq? handling existed anywhere before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "static inline int int_vec_eq(Vec *a, Vec *b)") != NULL,
+                  "a real, generated per-element-type comparison helper exists, deduped by "
+                  "element type the same way box helpers already are");
+            CHECK(strstr(c_src, "int_vec_eq(&((a)->shape), &((b)->shape))") != NULL,
+                  "the call site itself references the generated helper with both real struct-"
+                  "field targets, correctly address-of'd");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `vec-eq?` on a Vec whose recorded element type is NOT a known
+     * scalar (a pointer-representable struct element, e.g. `(Vec Item)`)
+     * -- must fail honestly (no generic runtime fallback exists, since a
+     * plain pointer comparison there could be silently wrong for real
+     * structural equality -- see g_veceq_helpers' own declaration
+     * comment), not silently guess or crash. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (n : I32))\n"
+            "(defstruct Box (items : (Vec Item) @ Region))\n"
+            "(defn same? [(a : &Box) (b : &Box)]\n"
+            "  : Bool\n"
+            "  (vec-eq? &(get-field a :items) &(get-field b :items)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec-eq? on a (Vec Item)-typed struct field (a pointer-"
+                                "representable, non-scalar element) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly, reporting no known scalar element type, rather than silently "
+              "guessing or crashing");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

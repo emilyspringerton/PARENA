@@ -476,6 +476,63 @@ typedef struct BoxedType {
 static BoxedType *g_boxed_types = NULL;
 static StrBuf g_box_helpers;
 
+/* g_veceq_types / g_veceq_helpers -- the real fix for `vec-eq?`
+ * (array.prn's own real `same-shape?`: `(vec-eq? &(get-field a :shape)
+ * &(get-field b :shape))`), found completely unimplemented anywhere --
+ * no runtime `vec_eq_` function at all, an honest "implicit declaration
+ * of function" gcc error, not caught by `parena build`'s own exit code.
+ *
+ * Real, honest reasoning for why this can't just be one generic runtime
+ * function: `Vec` is fully type-erased at the runtime level (a plain
+ * `void *item` per slot -- see parena_runtime.h's own struct). For a
+ * scalar element (I32/F64), each slot holds a BOXED pointer to a fresh
+ * arena cell (vec_box_i32/vec_box_f64), a different pointer value on
+ * every push even for equal underlying numbers -- a generic pointer
+ * comparison would be real, actively WRONG (reporting two structurally
+ * equal shape Vecs as unequal). The correct comparison needs to know
+ * the element type to dereference-and-compare it, which the runtime
+ * itself has no way to know. Real, honest, narrow scope, the same
+ * "compiler generates a per-type helper, deduped" shape g_box_helpers
+ * above already established: one `static inline int Type_vec_eq(Vec *,
+ * Vec *)` helper generated per distinct SCALAR element type actually
+ * compared, found via the exact same g_vec_elem_hints registry
+ * vec_get's own element-type reporting already reads. A non-scalar
+ * (pointer-representable) element type is real, separate, un-attempted
+ * work -- reported as an honest compiler error, not guessed at, since a
+ * plain pointer comparison there might sometimes be right (two
+ * references to the very same allocation) but is not real, general
+ * structural equality either. */
+typedef struct VecEqHelper {
+    const char *elem_type;
+    struct VecEqHelper *next;
+} VecEqHelper;
+static VecEqHelper *g_veceq_types = NULL;
+static StrBuf g_veceq_helpers;
+
+static const char *ensure_veceq_helper(Arena *arena, const char *c_type) {
+    char name_buf[160];
+    snprintf(name_buf, sizeof(name_buf), "%s_vec_eq", c_type);
+    for (VecEqHelper *v = g_veceq_types; v; v = v->next) {
+        if (strcmp(v->elem_type, c_type) == 0) {
+            return arena_strdup(arena, name_buf, strlen(name_buf));
+        }
+    }
+    VecEqHelper *nv = (VecEqHelper *)arena_alloc(arena, sizeof(VecEqHelper));
+    nv->elem_type = arena_strdup(arena, c_type, strlen(c_type));
+    nv->next = g_veceq_types;
+    g_veceq_types = nv;
+    sb_appendf(&g_veceq_helpers,
+               "static inline int %s_vec_eq(Vec *a, Vec *b) {\n"
+               "    if (vec_len(a) != vec_len(b)) return 0;\n"
+               "    for (int i = 0; i < vec_len(a); i++) {\n"
+               "        if (*(%s *)vec_get(a, i) != *(%s *)vec_get(b, i)) return 0;\n"
+               "    }\n"
+               "    return 1;\n"
+               "}\n\n",
+               c_type, c_type, c_type);
+    return arena_strdup(arena, name_buf, strlen(name_buf));
+}
+
 /* g_lambda_helpers / g_lambda_count -- the real fix for `(fn [params]
  * body)` used as a VALUE (array.prn's own real `add`/`mul-elementwise`:
  * `(elementwise a b (fn [x y] (+ x y)) dest)`, passed where `elementwise`
@@ -1068,6 +1125,61 @@ static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *sc
 static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                               const char **out_error) {
     const char *fn_name = mangle_call_name(arena, call->children[0]->text);
+    /* vec-eq? -- see g_veceq_types/g_veceq_helpers' own declaration
+     * comment for the full real reasoning. Handled entirely separately
+     * from the generic argument loop below (like vec_push_/vec_set_at_'s
+     * own special-casing, but returning early rather than just tweaking
+     * one logical argument -- vec_eq_ needs BOTH its own arguments'
+     * element-type hints resolved, not the generic call shape at all).
+     * Each of the two arguments may independently carry its own
+     * `&`/`&mut` two-node prefix (array.prn's own real call site,
+     * `(vec-eq? &(get-field a :shape) &(get-field b :shape))`, has
+     * both) -- unwrapped by hand here since vec_call_target_hint() only
+     * ever handles the FIRST argument of a call (every other real
+     * vec_* call site only ever has one Vec-typed argument to find). */
+    if (strcmp(fn_name, "vec_eq_") == 0) {
+        size_t idx = 1;
+        if (idx >= call->child_count) {
+            return fail(arena, out_error, "vec-eq?: expected exactly 2 arguments at line %d", call->line);
+        }
+        Node *a_node = call->children[idx];
+        int a_ref = (a_node->type == NODE_SYMBOL && (is_symbol(a_node, "&") || is_symbol(a_node, "&mut")) &&
+                     idx + 1 < call->child_count);
+        if (a_ref) { idx++; a_node = call->children[idx]; }
+        idx++;
+        if (idx >= call->child_count) {
+            return fail(arena, out_error, "vec-eq?: expected exactly 2 arguments at line %d", call->line);
+        }
+        Node *b_node = call->children[idx];
+        int b_ref = (b_node->type == NODE_SYMBOL && (is_symbol(b_node, "&") || is_symbol(b_node, "&mut")) &&
+                     idx + 1 < call->child_count);
+        if (b_ref) { idx++; b_node = call->children[idx]; }
+        idx++;
+        if (idx != call->child_count) {
+            return fail(arena, out_error, "vec-eq?: expected exactly 2 arguments at line %d", call->line);
+        }
+        const char *a_type = NULL;
+        const char *a_text = emit_expr(arena, a_node, scope, &a_type, out_error);
+        if (!a_text) return NULL;
+        const char *b_type = NULL;
+        const char *b_text = emit_expr(arena, b_node, scope, &b_type, out_error);
+        if (!b_text) return NULL;
+        VecElemHint *hint = find_vec_elem_hint(a_text);
+        if (!hint || !hint->is_scalar) {
+            return fail(arena, out_error,
+                        "vec-eq?: at line %d, no known scalar (I32/F64) element type for this Vec "
+                        "-- VS0's emitter only supports comparing scalar-boxed Vecs so far (real, "
+                        "separate, un-attempted work for pointer-representable elements)",
+                        call->line);
+        }
+        const char *eq_fn = ensure_veceq_helper(arena, hint->elem_type);
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "%s(%s%s%s, %s%s%s)", eq_fn,
+                 a_ref ? "&(" : "", a_text, a_ref ? ")" : "",
+                 b_ref ? "&(" : "", b_text, b_ref ? ")" : "");
+        *out_type = "int";
+        return arena_strdup(arena, buf, strlen(buf));
+    }
     /* Real, narrow scalar-boxing fixup (2026-08-21, found via world.prn's
      * own real `Terrain.heights : (Vec F64)`): if this call is
      * vec_push_/vec_set_at_ AND its own target Vec has a recorded
@@ -1242,7 +1354,36 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * void-tail-statement fix never fire, since it only matched the
          * literal string "void"). */
         const char *known = find_defn_return_type(fn_name);
-        *out_type = known ? known : "void *";
+        /* Real gap closed here (2026-08-21, gcc-verifying array.prn's own
+         * real `elementwise`: `(vec/push! &out (op ...))`, where `op` is
+         * a `(Fn [F64 F64] F64)`-typed PARAMETER, not a registered
+         * top-level defn): a call through a scope-bound function-pointer
+         * VALUE (a plain call-site symbol, e.g. `(op x y)` -- mangle_
+         * call_name() leaves a name with no `/` in it unchanged, so this
+         * emits as a real, valid `op(x, y)` C call through the pointer)
+         * used to fall straight to the generic "void *" guess, since
+         * g_defn_return_types only ever knows about real top-level defns.
+         * That silently broke vec_push_'s own scalar-boxing decision just
+         * above (`is_boxable_scalar` only fires for the literal strings
+         * "int"/"double"), producing real, broken C (`vec_push_(&out,
+         * op(x, y))`, a raw `double` where `void *` is required) --
+         * caught only by an actual gcc compile, not `parena build`'s own
+         * exit code. Fixed by checking scope for a local bound to this
+         * exact callee name whose own resolved C type is a function-
+         * pointer shape ("RetType (*)(ArgTypes)", the same shape
+         * resolve_declared_type()'s own (Fn ..) branch produces) and
+         * reporting its real return type instead. */
+        Local *callee_local = known ? NULL : scope_lookup(scope, call->children[0]->text);
+        const char *paren_star = callee_local ? strstr(callee_local->c_type, "(*)") : NULL;
+        if (known) {
+            *out_type = known;
+        } else if (paren_star) {
+            size_t ret_len = (size_t)(paren_star - callee_local->c_type);
+            while (ret_len > 0 && callee_local->c_type[ret_len - 1] == ' ') ret_len--;
+            *out_type = arena_strdup(arena, callee_local->c_type, ret_len);
+        } else {
+            *out_type = "void *";
+        }
     }
     return arena_strdup(arena, buf, strlen(buf));
 }
@@ -1796,6 +1937,27 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         sb_free(&type_list);
         *out_type = arena_strdup(arena, type_buf, strlen(type_buf));
         return lambda_name;
+    }
+    /* `(not x)` -- real, honest unary-operator gap found and fixed here
+     * (2026-08-21, gcc-verifying array.prn's own real `elementwise`:
+     * `(if (not (same-shape? a b)) ...)`): `binop_c_symbol()` only ever
+     * maps 2-ARGUMENT operators, so `not` (a real, distinct 1-argument
+     * form, not to be confused with `!`/`&mut`'s own reference-marker
+     * meaning elsewhere in this emitter) fell through to the generic
+     * symbol-headed-call dispatch just below and mangled into a bogus
+     * call to a never-defined `not(...)` C function. Checked here, same
+     * as `fn` just above, so it's never reached by that catch-all.
+     * Reports "int" the same real, honest way every other comparison/
+     * boolean operator in emit_binop() already does (C's own bool-as-
+     * int convention, matching region.c's own real code). */
+    if (is_call_named(expr, "not") && expr->child_count == 2) {
+        const char *inner_type = NULL;
+        const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
+        if (!inner_c) return NULL;
+        *out_type = "int";
+        char buf[512];
+        snprintf(buf, sizeof(buf), "(!(%s))", inner_c);
+        return arena_strdup(arena, buf, strlen(buf));
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
@@ -3853,6 +4015,11 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     if (lambda_helpers_ever_inited) sb_free(&g_lambda_helpers);
     sb_init(&g_lambda_helpers);
     lambda_helpers_ever_inited = 1;
+    g_veceq_types = NULL; /* same per-call reset -- see g_veceq_helpers' own declaration comment */
+    static int veceq_helpers_ever_inited = 0;
+    if (veceq_helpers_ever_inited) sb_free(&g_veceq_helpers);
+    sb_init(&g_veceq_helpers);
+    veceq_helpers_ever_inited = 1;
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
@@ -3998,6 +4165,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         }
     }
     sb_append(&out, g_box_helpers.data);
+    sb_append(&out, g_veceq_helpers.data);
     sb_append(&out, g_lambda_helpers.data);
     sb_append(&out, defn_out.data);
     sb_free(&defn_out);

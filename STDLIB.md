@@ -559,6 +559,42 @@ but a first-class call through a `(Fn ..)`-typed value (the `"((expr) arg1 arg2 
 signature table for indirect calls" limitation that branch's own header comment already names.
 None of these three are attempted here — flagged, not silently worked around.
 
+**All three real gaps closed (2026-08-21)**: `array.prn` now compiles end to end,
+`gcc -Wall -Wextra -pedantic -Werror` clean, no exceptions. (1) `vec-eq?`: a generated,
+per-scalar-element-type comparison helper (`static inline int Type_vec_eq(Vec *, Vec *)`), the
+same "compiler generates a per-type helper, deduped" shape `g_box_helpers` already established —
+found via the same `g_vec_elem_hints` registry `vec_get`'s own element-type reporting already
+reads. A non-scalar (pointer-representable) element type is real, separate, un-attempted work,
+reported as an honest compiler error rather than a real-but-possibly-wrong pointer comparison.
+(2) `(not x)`: emits as a real C `(!(...))` expression, checked in `emit_expr` before the generic
+symbol-headed-call dispatch (the same placement fix the `fn`-literal gap above needed). (3) the
+indirect-call boxing gap: `emit_call()`'s own generic "void *" fallback now first checks whether
+the callee is a scope-bound local whose own resolved C type is a function-pointer shape (`"RetType
+(*)(ArgTypes)"`) and, if so, reports the real return type extracted from it — letting `vec_push_`'s
+existing scalar-boxing decision see a real `"double"` instead of the generic guess.
+
+**A fourth, genuinely separate bug found by real RUNTIME verification, not a compile check**
+(2026-08-21): getting `array.prn` to compile clean was not the same as getting it CORRECT — a real
+harness calling `zeros`/`set!`/`get`/`add` end to end found every summed value landing on the same
+slot instead of each cell's own real value. Root cause was in `strides-for`'s own source, not the
+compiler: computing `stride[i] = product(shape[i+1:])` genuinely has to walk dimensions
+right-to-left, but the old body pushed each computed stride straight onto the result Vec in that
+same right-to-left order — Vec has no insert-at-front, only append, so the result ended up
+`[stride[n-1], ..., stride[0]]`, backwards from what `flat-index`'s own `(vec/get strides i)`
+expects. Fixed with a real reformulation (not a two-pass reverse): since `stride[i-1] = shape[i] *
+stride[i]`, walking `i` forward from 0 with `running` seeded at `product(shape)` and divided by
+`shape[i]` at each step yields each `stride[i]` directly, in the correct order, on the first pass.
+A first attempt at a two-pass reverse-then-reread fix hit two SEPARATE, real, still-open compiler
+gaps instead — flagged here rather than fixed, since the single-pass reformulation above sidesteps
+both cleanly: (a) two sibling, non-nested `loop` forms in the same function both declaring a C
+local named `i` at the same block scope collide (`redefinition of 'i'`) — this emitter doesn't
+currently scope each loop's own C declarations to avoid that; (b) `vec/get` on a plain `let`-bound
+local Vec (no recorded `g_vec_elem_hints` entry outside a typed parameter/struct-field) falls back
+to a raw `void *`, which `deref` then tries to dereference directly — invalid C. Verified not just
+gcc-clean but numerically correct at real runtime: a standalone harness building 2×3 `NDArray`s,
+running `set!`/`get`/`add`/`mul-elementwise`/`reshape`/`same-shape?` end to end, confirms every
+real expected value, not just a clean compile.
+
 ### `dataframe` — the pandas equivalent, depends on `array` + `string`
 
 Founder: "and pandas build pandas into the standard library." The one real thing that makes
