@@ -1,4 +1,5 @@
 ## 2026-08-21
+- match 支援巢狀(拆成公開入口 + 可遞迴的 core,共用 result_var)+ emit_loop_tail when 非尾端陳述式委派給 emit_body;同一類「raw emit_expr 用在需要陳述式分派的地方」缺口的第三個出現位置;match result_var 補 unused attribute;Apple #15199,commit 49c2f59 (sess-20260820-0649-a3f19d93)
 - 修好 vec/get 被誤解析成使用者自己同名 get 函式的真實 regression(自己抓到,vec 前綴明確排除在裸名字解析之外);補上 unit 字面值(Unit 型別單例值,輸出 NULL);Apple #15196,commit bea812f (sess-20260820-0649-a3f19d93)
 - string.prn 補齊 char-at/str-eq?/is-digit?/substring/ParseError(原始設計,STDLIB.md 沒涵蓋)+ 修好三個原始碼 bug(substring 誤用 dest 參數、char-at 無效三參數形式)+ #include <stdlib.h>;10/11 函式真正 gcc-clean,parse-i32 卡在已知的 stdlib 設計問題;Apple #15193,commit e36ed21 (sess-20260820-0649-a3f19d93)
 - 新增 mangle_call_name() 修正跨模組 module/function 呼叫解析——之前一律誤 mangle 成從未存在的名字,現在靠 g_defn_return_types 判斷裸名字是否為真實 defn,保守 fallback 保護 vec/push!、string/concat 等既有正確案例;影響遍及 map/array/io/stats/sdl2/pty 等整個 stdlib;Apple #15188,commit b139bd9 (sess-20260820-0649-a3f19d93)
