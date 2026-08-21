@@ -1889,17 +1889,22 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
 
 #define MAX_LOOP_VARS 32
 
+static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                            const char *result_var, Local **loop_locals, size_t loop_var_count,
+                            const char **out_result_type, const char **out_error);
+
 /* emit_loop_tail handles the real tail position inside a `loop` body --
  * exactly the shape every real `loop`/`recur` use in this stdlib
  * actually has (test.prn/region.c's own C code doesn't use this yet,
  * but stdlib/vec.prn's push!/grow!, stdlib/map.prn's find-slot, etc. --
  * the real .prn source already written this session -- all follow this
  * same shape): `(if cond then else)` where one branch is a plain
- * terminal value and the other is `(recur new-vals...)`. Real, honest
- * scope: only `if` and `recur` are understood in tail position -- a
- * `loop` whose tail is a bare `recur` (no `if` at all, an infinite loop
- * with no base case) or a `cond`/`match` in tail position isn't
- * supported yet, reported not guessed. */
+ * terminal value and the other is `(recur new-vals...)`. Originally
+ * real, honest, narrower scope ("a `cond`/`match` in tail position
+ * isn't supported yet") -- `cond` and (2026-08-21, gcc-verifying
+ * net/http.prn's own real `serve`, whose accept-loop's whole body is
+ * `(match (net/tcp/accept ...) ((Ok !conn) (do ... (recur))) ((Err e)
+ * (Err e)))`) `match` were both since added below. */
 static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scope,
                            Local **loop_locals, size_t loop_var_count, const char *result_var,
                            const char **out_result_type, const char **out_error) {
@@ -2168,6 +2173,21 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
         if (out_result_type) *out_result_type = NULL;
         return 1;
     }
+    if (is_call_named(tail, "match")) {
+        /* `match` in loop-tail position -- real, honest necessity
+         * (found 2026-08-21, gcc-verifying net/http.prn's own real
+         * `serve`): recurses into emit_match_core() directly, passing
+         * THIS loop's own real `loop_locals`/`loop_var_count`/
+         * `result_var` straight through -- so a `recur` inside one of
+         * the match's own clause bodies (emit_match_clause_body's own
+         * new `recur` case, see its own comment) correctly continues
+         * THIS loop, and a plain terminal value inside a clause
+         * correctly becomes this loop's own result and breaks it,
+         * exactly the same real semantics `if`/`cond` already have in
+         * this same tail position. */
+        return emit_match_core(arena, out, tail, scope, result_var, loop_locals, loop_var_count,
+                                out_result_type, out_error);
+    }
     /* A plain value in tail position: this is the loop's own real result. */
     const char *val_type = NULL;
     const char *val_c = emit_expr(arena, tail, scope, &val_type, out_error);
@@ -2302,8 +2322,8 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
 }
 
 static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
-                            const char *result_var, const char **out_result_type,
-                            const char **out_error);
+                            const char *result_var, Local **loop_locals, size_t loop_var_count,
+                            const char **out_result_type, const char **out_error);
 
 /* emit_match_clause_body -- real, structural extension (2026-08-21,
  * gcc-verifying shell.prn's own real `resolve`, whose actual policy
@@ -2335,8 +2355,47 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
  * whose own C type is only known once every real branch, nested or
  * not, has contributed one). */
 static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitScope *scope,
-                                   const char *result_var, const char **out_result_type,
-                                   const char **out_error) {
+                                   const char *result_var, Local **loop_locals, size_t loop_var_count,
+                                   const char **out_result_type, const char **out_error) {
+    /* `recur` inside a match clause body -- found missing (2026-08-21,
+     * gcc-verifying net/http.prn's own real `serve`, whose accept-loop
+     * is `(loop [] (match (net/tcp/accept ...) ((Ok !conn) (do ...
+     * (recur))) ((Err e) (Err e))))`: the match itself is the loop's
+     * own TAIL, and one of ITS clauses recurs). Real, honest, narrow
+     * scope: only valid when a real loop context was actually passed
+     * down (`loop_locals` non-NULL -- see emit_loop_tail's own new
+     * `match` case below, the one real place that supplies it); a
+     * `recur` inside a match with no enclosing loop is reported, not
+     * silently miscompiled. Same real simultaneous-assignment
+     * emit_loop_tail's own recur handling already uses. */
+    if (is_call_named(body, "recur")) {
+        if (!loop_locals) {
+            return fail(arena, out_error, "recur: not inside a loop at line %d", body->line) != NULL;
+        }
+        if (body->child_count - 1 != loop_var_count) {
+            return fail(arena, out_error,
+                        "match: recur at line %d passes %zu value(s), loop has %zu variable(s)",
+                        body->line, body->child_count - 1, loop_var_count) != NULL;
+        }
+        if (loop_var_count > MAX_LOOP_VARS) {
+            return fail(arena, out_error, "match: too many loop variables at line %d (max %d)",
+                        body->line, MAX_LOOP_VARS) != NULL;
+        }
+        char tmp_names[MAX_LOOP_VARS][32];
+        for (size_t i = 0; i < loop_var_count; i++) {
+            const char *val_type = NULL;
+            const char *val_c = emit_expr(arena, body->children[i + 1], scope, &val_type, out_error);
+            if (!val_c) return 0;
+            snprintf(tmp_names[i], sizeof(tmp_names[i]), "__recur_tmp_%zu", i);
+            sb_appendf(out, "        %s %s = %s;\n", loop_locals[i]->c_type, tmp_names[i], val_c);
+        }
+        for (size_t i = 0; i < loop_var_count; i++) {
+            sb_appendf(out, "        %s = %s;\n", loop_locals[i]->c_name, tmp_names[i]);
+        }
+        sb_append(out, "        continue;\n");
+        if (out_result_type) *out_result_type = NULL;
+        return 1;
+    }
     if (is_call_named(body, "if")) {
         if (body->child_count != 4) {
             return fail(arena, out_error, "match: if in clause body needs (if cond then else) at line %d",
@@ -2347,14 +2406,14 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         if (!cond_c) return 0;
         sb_appendf(out, "        if (%s) {\n", cond_c);
         const char *then_type = NULL;
-        if (!emit_match_clause_body(arena, out, body->children[2], scope, result_var, &then_type,
-                                     out_error)) {
+        if (!emit_match_clause_body(arena, out, body->children[2], scope, result_var, loop_locals,
+                                     loop_var_count, &then_type, out_error)) {
             return 0;
         }
         sb_append(out, "        } else {\n");
         const char *else_type = NULL;
-        if (!emit_match_clause_body(arena, out, body->children[3], scope, result_var, &else_type,
-                                     out_error)) {
+        if (!emit_match_clause_body(arena, out, body->children[3], scope, result_var, loop_locals,
+                                     loop_var_count, &else_type, out_error)) {
             return 0;
         }
         sb_append(out, "        }\n");
@@ -2407,7 +2466,7 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], &child, result_var,
-                                       out_result_type, out_error);
+                                       loop_locals, loop_var_count, out_result_type, out_error);
     }
     if (is_call_named(body, "do")) {
         Node **body_forms = body->children + 1;
@@ -2423,10 +2482,11 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], scope, result_var,
-                                       out_result_type, out_error);
+                                       loop_locals, loop_var_count, out_result_type, out_error);
     }
     if (is_call_named(body, "match")) {
-        return emit_match_core(arena, out, body, scope, result_var, out_result_type, out_error);
+        return emit_match_core(arena, out, body, scope, result_var, loop_locals, loop_var_count,
+                                out_result_type, out_error);
     }
     if (is_call_named(body, "loop")) {
         /* `loop` used directly as a match clause's own body -- found
@@ -2445,6 +2505,26 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
     const char *clause_c = emit_expr(arena, body, scope, &clause_type, out_error);
     if (!clause_c) return 0;
     sb_appendf(out, "        %s = %s;\n", result_var, clause_c);
+    /* Real, self-caught bug fixed here (2026-08-21, before it ever hit
+     * gcc -- caught by re-reading emit_loop_tail's own new `match`
+     * case above and realizing this assignment alone leaves nothing to
+     * stop the enclosing `while (1)`): when a real loop context IS
+     * available (loop_locals non-NULL, meaning this whole match is
+     * ultimately nested inside a loop's own tail -- see
+     * emit_loop_tail's own new `match` case), a plain-value clause is
+     * the loop's own real terminal case and must `break` the loop, the
+     * exact same real convention emit_loop_tail's OWN "plain value in
+     * tail position" fallback already uses. Without this, control
+     * would fall out of the match's own if/else-if chain and loop back
+     * to `while (1)`'s own top, silently re-running the scrutinee
+     * check forever instead of stopping. Outside a loop context
+     * (loop_locals NULL, the ordinary non-nested match case), no
+     * `break` is emitted -- there's no enclosing loop to break out of,
+     * and falling through past the if/else-if chain to whatever comes
+     * after the match is already the correct, real behavior. */
+    if (loop_locals) {
+        sb_append(out, "        break;\n");
+    }
     if (out_result_type) *out_result_type = clause_type;
     return 1;
 }
@@ -2457,8 +2537,8 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
  * emit_match() call is the one real place that ever declares
  * result_var, whether or not any nesting is involved). */
 static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
-                            const char *result_var, const char **out_result_type,
-                            const char **out_error) {
+                            const char *result_var, Local **loop_locals, size_t loop_var_count,
+                            const char **out_result_type, const char **out_error) {
     if (node->child_count < 3) {
         return fail(arena, out_error, "match: expected (match scrutinee clause...) at line %d",
                     node->line) != NULL;
@@ -2574,7 +2654,7 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
 
         const char *clause_type = NULL;
         if (!emit_match_clause_body(arena, &clauses, clause->children[1], &clause_scope, result_var,
-                                     &clause_type, out_error)) {
+                                     loop_locals, loop_var_count, &clause_type, out_error)) {
             sb_free(&clauses);
             return 0;
         }
@@ -2604,7 +2684,12 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
     StrBuf body;
     sb_init(&body);
     const char *result_type = NULL;
-    if (!emit_match_core(arena, &body, node, scope, result_var, &result_type, out_error)) {
+    /* NULL, 0 -- this is the top-level entry point (used by emit_body's
+     * own statement/tail dispatch), never itself directly inside a
+     * loop's own tail composition; emit_loop_tail's own new `match`
+     * case below supplies the real loop context instead, by recursing
+     * into emit_match_core() directly rather than through here. */
+    if (!emit_match_core(arena, &body, node, scope, result_var, NULL, 0, &result_type, out_error)) {
         sb_free(&body);
         return 0;
     }

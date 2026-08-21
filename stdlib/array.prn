@@ -76,10 +76,16 @@
       (Err (IndexError "out of bounds"))
       (do (vec-set-at! &mut (get-field a :data) off v) (Ok unit)))))
 
-(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch)]
+;; Real fix, not a workaround (2026-08-21): an earlier draft called
+;; `(current-arena)` here, a builtin that was never designed and
+;; doesn't fit VS0's own memory model at all -- see firefly.prn's own
+;; real `skip` for the identical, already-established fix: an explicit
+;; `dest` parameter, same as every other allocating function in this
+;; file already takes.
+(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
   (if (= (product &new-shape) (product &(get-field a :shape)))
-    (Ok {:data (get-field a :data) :shape new-shape :strides (strides-for &new-shape (current-arena))})
+    (Ok {:data (get-field a :data) :shape new-shape :strides (strides-for &new-shape dest)})
     (Err (ShapeError "reshape must preserve element count"))))
 
 (defn same-shape? [(a : &NDArray) (b : &NDArray)]

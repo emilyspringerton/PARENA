@@ -41,18 +41,25 @@
 ;; handed to `handler`, matching signalapi/IDUNA's own one-handler-per-
 ;; route shape (route dispatch itself is the handler's own job, same as
 ;; a real http.HandleFunc).
-(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse))]
+;; Real fix, not a workaround (2026-08-21): an earlier draft called
+;; `(current-arena)` here, a builtin that was never designed and
+;; doesn't fit VS0's own memory model at all -- see firefly.prn's own
+;; real `skip` for the identical, already-established fix: an explicit
+;; `dest` parameter. The caller starting the server owns picking a
+;; real, long-lived region for it -- `serve` itself runs forever, so
+;; this arena's own lifetime is deliberately the caller's own choice,
+;; not something `serve` could sensibly default on its own.
+(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse)) (dest : Arena @ Region)]
   : (Result Unit NetError)
-  (let [dest (current-arena)]
-    (match (net/tcp/listen port dest)
-      ((Ok !listener)
-        (loop []
-          (match (net/tcp/accept &!listener dest)
-            ((Ok !conn)
-              (do
-                (let [req (parse-http-request (net/tcp/read &!conn dest) dest)
-                      resp (handler &req dest)]
-                  (net/tcp/write &!conn (serialize-response resp)))
-                (recur)))
-            ((Err e) (Err e)))))
-      ((Err e) (Err e)))))
+  (match (net/tcp/listen port dest)
+    ((Ok !listener)
+      (loop []
+        (match (net/tcp/accept &!listener dest)
+          ((Ok !conn)
+            (do
+              (let [req (parse-http-request (net/tcp/read &!conn dest) dest)
+                    resp (handler &req dest)]
+                (net/tcp/write &!conn (serialize-response resp)))
+              (recur)))
+          ((Err e) (Err e)))))
+    ((Err e) (Err e))))

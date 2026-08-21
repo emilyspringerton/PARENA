@@ -445,7 +445,7 @@ section is built from — `linalg`/`stats` never touch raw memory themselves, on
   : (Result NDArray ShapeError) @ Region)
 (defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch)] : (Result F64 IndexError))
 (defn set! [(a : &mut NDArray) (idx : (Vec I32) @ :region/scratch) (v : F64)] : (Result Unit IndexError))
-(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch)] : (Result NDArray ShapeError) @ Region)
+(defn reshape [(a : &NDArray) (new-shape : (Vec I32) @ :region/scratch) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
 (defn add [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
 (defn mul-elementwise [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray ShapeError) @ Region)
 ```
@@ -985,7 +985,7 @@ would hide that difference behind a single API that has to lie about one side of
   : (Result HttpResponse NetError) @ Region)
 (defn post [(url : String @ :region/scratch) (body : String @ Region) (dest : Arena @ Region)]
   : (Result HttpResponse NetError) @ Region)
-(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse))]
+(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse)) (dest : Arena @ Region)]
   : (Result Unit NetError))   ; matches signalapi/IDUNA's own "one handler fn per route" shape
 ```
 
@@ -1031,9 +1031,18 @@ every other `#target`-bound file in this stdlib already has). `net/http.prn`'s o
 call `connect-from-url`/`build-get-request`/`parse-http-response`/`build-post-request` — real,
 genuinely un-designed helper functions (URL parsing, HTTP request serialization, HTTP response
 parsing) that would need designing essentially from scratch, a real, substantial undertaking well
-beyond this pass's own scope, not attempted here. `serve` specifically has one MORE separate blocker on top of that: it calls the already-documented,
-never-designed `(current-arena)` builtin (see `firefly.prn`'s own comment on that gap elsewhere in
-this doc), not attempted here.
+beyond this pass's own scope, not attempted here.
+
+**`current-arena` closed for `serve` (and `array.prn`'s own `reshape`) in a follow-up pass
+(2026-08-21)**: both called the already-documented, never-designed `(current-arena)` builtin (see
+`firefly.prn`'s own comment on that gap elsewhere in this doc — a deliberate design decision, not an
+oversight: VS0 has no ambient/implicit arenas anywhere, every allocation traces to an explicit
+`Arena @ Region` parameter, on purpose). Fixed the same real, already-established way `firefly.prn`'s
+own `skip` was: `serve` now takes an explicit `dest : Arena @ Region` parameter (the caller starting
+the server owns picking a real, long-lived region for it, since `serve` itself runs forever), and
+`reshape` now takes the same `dest` parameter every other allocating function in `array.prn` already
+does. Verified: `reshape` compiles real gcc-clean in isolation (6 of `array.prn`'s functions now
+verified: `product`/`strides-for`/`zeros`/`flat-index`/`from-vec`/`reshape`).
 
 **Real gap closed in a follow-up pass (2026-08-21)**: `serve`'s own accept-loop body — `(loop []
 ...)` used directly as a match clause's own body — used to be a real, separate gap in
@@ -1051,6 +1060,22 @@ no effect") error; reproducible in a PLAIN function body with no match/loop invo
 confirming it was a real, general, pre-existing gap. Fixed by wrapping every discarded statement
 this emitter produces in `(void)(...)`, the standard, idiomatic C way to mark a value as
 deliberately discarded.
+
+**Real gap closed in a second follow-up pass (2026-08-21)**: once `current-arena` was fixed above,
+`serve`'s own `(loop [] (match (net/tcp/accept ...) ((Ok !conn) (do ... (recur))) ((Err e) (Err
+e))))` — a `match` used directly as a `loop`'s own TAIL, with `recur` inside one of its clause
+bodies — hit the identical class of gap ONE level up: `emit_loop_tail` understood `if`/`cond` in
+tail position but not `match` at all. Fixed by recursing into `emit_match_core()` from
+`emit_loop_tail`'s own new `match` case, threading the loop's real `loop_locals`/`loop_var_count`
+through so `recur` inside a match clause body (a new case added to `emit_match_clause_body` itself)
+correctly continues the right loop. A real, self-caught bug surfaced alongside this: a clause
+resolving to a plain terminal value previously only assigned into `result_var`, never `break` — fine
+for a standalone match, but when nested inside a loop's own tail this left nothing to stop the
+enclosing `while(1)`, silently looping back around instead of terminating; fixed by emitting `break`
+whenever a real loop context is present. Verified via an isolated repro (real gcc-clean) and via the
+full `net/tcp.prn` + `net/http.prn` combined build: `serve` now compiles with `parena build` and gcc
+reports only the already-documented FFI/helper-function gaps above — no remaining structural/
+compiler errors at all.
 
 ### `sdl2` — built-in, not an optional `import`
 

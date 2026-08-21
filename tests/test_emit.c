@@ -2235,6 +2235,67 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `match` used directly as a `loop`'s own tail, with `recur`
+     * inside one of its clause bodies -- found missing (2026-08-21,
+     * gcc-verifying net/http.prn's own real `serve`, whose accept-loop
+     * is `(loop [] (match (net/tcp/accept ...) ((Ok !conn) (do ...
+     * (recur))) ((Err e) (Err e))))`): emit_loop_tail understood `if`/
+     * `cond` in tail position but not `match` at all -- a `match`
+     * there fell through the generic "plain value" fallback, which
+     * calls emit_expr() (no `match` handling), mis-parsing the same
+     * way every other instance of this class of gap already has.
+     * Fixed by recursing into emit_match_core() directly from
+     * emit_loop_tail's own new `match` case, passing the loop's own
+     * real loop_locals/loop_var_count/result_var through so a `recur`
+     * inside one of the match's clause bodies (emit_match_clause_body's
+     * own new `recur` case) correctly continues THIS loop. A real,
+     * self-caught bug surfaced alongside this: a clause resolving to a
+     * plain TERMINAL value used to only assign into result_var, never
+     * `break` -- fine for match used standalone, but when nested
+     * inside a loop's own tail this left nothing to stop the enclosing
+     * `while(1)`, silently looping back around instead of stopping.
+     * Fixed by emitting `break` after a plain-value clause assignment
+     * whenever a real loop context is present (loop_locals non-NULL).
+     * --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Conn (id : I32))\n"
+            "(defn try-accept [(c : &Conn)] : (Result (&Conn) (&Conn)) (Ok c))\n"
+            "(defn touch [(c : &Conn)] : I32 0)\n"
+            "(defn accept-loop [(c : &Conn)] : (Result (&Conn) (&Conn))\n"
+            "  (loop []\n"
+            "    (match (try-accept c)\n"
+            "      ((Ok !conn)\n"
+            "        (do\n"
+            "          (touch c)\n"
+            "          (recur)))\n"
+            "      ((Err e) (Err e)))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match used directly as a loop's own tail, with recur inside one "
+                                "clause, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed at the generic call-dispatch path, since "
+              "emit_loop_tail had no handling for match at all before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "while (1) {") != NULL,
+                  "the loop emits its own real while(1) statement");
+            CHECK(strstr(c_src, "continue;") != NULL,
+                  "the Ok clause's own recur becomes a real continue; statement, correctly "
+                  "continuing the enclosing loop");
+            CHECK(strstr(c_src, "result_err(e);\n        break;") != NULL,
+                  "the Err clause's own terminal value assigns into the loop's real result "
+                  "variable AND breaks -- the real, self-caught bug this same fix found: without "
+                  "the break, control would fall through and loop back to while(1)'s own top "
+                  "instead of stopping");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
