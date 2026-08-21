@@ -2084,6 +2084,68 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `(Map K V)` as a struct-field/return type -- found missing
+     * (2026-08-21, gcc-verifying net/http.prn's own real `HttpRequest`/
+     * `HttpResponse`, both carrying a `headers : (Map String String) @
+     * Region` field): `resolve_declared_type()` handled `(Result ..)`/
+     * `(Option ..)`/`(Vec ..)` compound types but not `Map` at all.
+     * Erased to a plain `void *`, not a named struct -- unlike `Vec`,
+     * there's no real runtime `Map` struct backing it yet (map.prn's
+     * own real implementation is itself blocked on real generics), so
+     * this only lets a Map-typed field/return be NAMED, not
+     * constructed or manipulated -- real, honest, narrower than Vec's
+     * own treatment. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defstruct Headers (data : (Map String String) @ Region))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a (Map K V)-typed struct field parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported return type form', since "
+              "resolve_declared_type() had no handling for Map at all before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "void * data") != NULL,
+                  "the field is erased to a plain void *, honestly reflecting that no real Map "
+                  "runtime implementation exists yet, unlike Vec's own real backing struct");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- A bare `Arena` (no `@ region`) as a `(Fn [...] ...)` argument
+     * type -- found missing (2026-08-21, gcc-verifying net/http.prn's
+     * own real `serve`, whose `handler` parameter type is `(Fn
+     * [&HttpRequest Arena] HttpResponse)`): a Fn argument-type slot
+     * recurses into resolve_base_type_name() for a plain symbol like
+     * this, and "Arena" was never in its bare-symbol table at all --
+     * every OTHER real Arena usage in this emitter goes through the
+     * separate `Type @ Region` / has_region_marker() path instead,
+     * which a Fn-type's own argument list doesn't use. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn call-it [(f : (Fn [Arena] I32)) (dest : Arena @ Region)] : I32\n"
+            "  (f dest))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a bare Arena as a (Fn [...] ...) argument type parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported return type symbol Arena', "
+              "since resolve_base_type_name() had no handling for bare Arena at all before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "int (*f)(Arena *)") != NULL,
+                  "the bare Arena argument type resolves to a real Arena *, matching every other "
+                  "real Arena value's own C representation in this emitter");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

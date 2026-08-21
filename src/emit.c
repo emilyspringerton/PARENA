@@ -2824,6 +2824,19 @@ static const char *resolve_base_type_name(Node *type_node) {
     if (is_symbol(type_node, "Bool")) return "int";
     if (is_symbol(type_node, "F64")) return "double";
     if (is_symbol(type_node, "String")) return "char *";
+    /* Bare `Arena` (no `@ region`) -- found genuinely missing
+     * (2026-08-21, gcc-verifying net/http.prn's own real `serve`,
+     * whose `handler` parameter type is `(Fn [&HttpRequest Arena]
+     * HttpResponse)`): a `(Fn [...] ...)` argument-type slot recurses
+     * into resolve_declared_type() -> resolve_base_type_name() for a
+     * plain symbol like this, and "Arena" was never in the bare-symbol
+     * table at all (every OTHER real Arena usage in this emitter goes
+     * through the separate `Type @ Region` / has_region_marker() path
+     * instead, which this Fn-argument-list position doesn't use). Maps
+     * to "Arena *", matching every other real Arena value's own C
+     * representation throughout this emitter (a real pointer, never a
+     * bare struct value). */
+    if (is_symbol(type_node, "Arena")) return "Arena *";
     if (find_enum_by_name(type_node->text)) return type_node->text;
     if (find_struct_by_name(type_node->text)) return type_node->text;
     return NULL;
@@ -2877,6 +2890,29 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
          * type-checking pass yet); maps to the real runtime Vec struct
          * (parena_runtime.h), a void*-item dynamic array. */
         if (is_symbol(type_node->children[0], "Vec")) return "Vec";
+        /* (Map K V) -- found genuinely missing (2026-08-21, gcc-verifying
+         * net/http.prn's own real `HttpRequest`/`HttpResponse`, both
+         * carrying a `headers : (Map String String) @ Region` field):
+         * erases K/V the same real, honest way (Result ..)/(Option ..)/
+         * (Vec ..) already erase their own type parameters above.
+         * Real, deliberately narrower scope than `Vec`'s own treatment:
+         * `Vec` maps to a REAL runtime struct (parena_runtime.h defines
+         * one, backing every real `vec`-prefixed call this stdlib
+         * already uses) -- `Map` has no equivalent real backing implementation
+         * anywhere yet (map.prn's own real, intended hash-map source is
+         * itself blocked on real generics, a separate, much larger
+         * feature; there's no hardcoded runtime pseudo-module the way
+         * `vec` is either). Erased to a plain `void *` instead of a
+         * named struct -- honest about there being nothing real behind
+         * it yet, but still lets a real STRUCT FIELD merely reference a
+         * Map-typed value (net/http.prn's own real, only usage: never
+         * actually constructs or manipulates one in this file) compile,
+         * rather than failing outright on the type annotation alone.
+         * A real `map/new`/`map/get`/`map/set!` call site would still
+         * fail honestly downstream, unchanged -- this doesn't pretend
+         * Map is usable, only that naming its TYPE doesn't have to wait
+         * for that. */
+        if (is_symbol(type_node->children[0], "Map")) return "void *";
         /* (Fn [ArgType...] RetType) -- a real, typed, possibly
          * non-zero-argument callback type, e.g. firefly.prn's own
          * TestCase.run field (`(Fn [&mut T] Unit)`) and firefly/

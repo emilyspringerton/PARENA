@@ -995,6 +995,27 @@ production) needs a real TLS implementation underneath — not specified here, g
 work, most plausibly an FFI binding to a real C TLS library rather than a from-scratch
 implementation, the same judgment call already made for `linalg`.
 
+**Real VS0 emitter gaps found and fixed compiling this file (2026-08-21)**, both general emitter
+gaps this file happened to be the first real source to reach: (1) `(Map K V)` as a struct-field
+type (`HttpRequest`/`HttpResponse`'s own real `headers : (Map String String) @ Region` field) —
+`resolve_declared_type()` handled `(Result ..)`/`(Option ..)`/`(Vec ..)` compound types but never
+`Map` at all. Erased to a plain `void *`, not a named struct — real, deliberately narrower than
+`Vec`'s own treatment: there's no real runtime `Map` struct backing it yet (`map.prn`'s own real,
+intended implementation is itself blocked on real generics, a separate, much larger feature), so
+this only lets a Map-typed field/return be NAMED, not constructed or manipulated. (2) A bare `Arena`
+(no `@ region`) as a `(Fn [...] ...)` argument type (`serve`'s own real `handler` parameter:
+`(Fn [&HttpRequest Arena] HttpResponse)`) — every OTHER real Arena usage in this emitter goes
+through the separate `Type @ Region` / `has_region_marker()` path, which a `Fn`-type's own argument
+list doesn't use; `resolve_base_type_name()`'s own bare-symbol table never included "Arena" at all.
+Now resolves to a real `Arena *`, matching every other real Arena value's own C representation.
+
+**Real, STILL-not-fixed gap, this file's own**: `serve` calls `(net/tcp/listen port dest)`, a real
+cross-module qualified call into `net/tcp.prn`'s own `listen` — but `net/tcp.prn` itself has its
+own, separate, un-fixed gap (`TcpListener`/`TcpStream`/`UdpSocket` are referenced throughout
+`net/tcp.prn`/`net/udp.prn` but never defined anywhere in either file, the same real missing-
+definition-in-source-itself gap class already closed for pcap.prn/io.prn/array.prn/string.prn, not
+yet closed here) — a genuine multi-file dependency wall, not attempted in this same pass.
+
 ### `sdl2` — built-in, not an optional `import`
 
 Founder: "we need to build SDL2 in PARENA" → "in the stdlib" → "SDL2 is built in" → "but written
