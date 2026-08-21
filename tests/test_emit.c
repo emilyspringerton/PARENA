@@ -12,6 +12,7 @@
 #include "../src/emit.h"
 #include "../src/parser.h"
 #include "../src/region.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1969,6 +1970,117 @@ int main(void) {
             CHECK(strstr(c_src, "result_ok(NULL)") != NULL,
                   "unit emits as a plain NULL, already pointer-typed, no boxing needed at all");
         }
+        arena_free_all(&arena);
+    }
+
+    /* --- A nested `match` used as another match's own clause body --
+     * found missing (2026-08-21, gcc-verifying shell.prn's own real
+     * `resolve`, whose actual policy chain is `(match explicit (... s)
+     * (None (match (getenv "SHELL") (... s) (None ...))))`, a real,
+     * idiomatic "chain of Option checks, fall through on None"
+     * pattern): the original clause-body emission called emit_expr()
+     * directly, which has no handling for `match` as a bare value --
+     * the nested match, being a NODE_LIST headed by a symbol, fell all
+     * the way to the generic call-dispatch path and mis-parsed into a
+     * baffling "unknown identifier" error far from the real cause.
+     * Fixed by refactoring emit_match() into a public entry point
+     * (owns the one real result_var declaration + return_mode wrap)
+     * plus a reusable core the clause-body composer can recurse into
+     * directly, targeting the SAME, already-owned result_var -- no
+     * second declaration, matching the same real "declare once, learn
+     * the type from every branch including nested ones" property `if`
+     * and `cond` already have elsewhere in this file. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn get-b [(x : String @ Region)] : (Option String) @ Region\n"
+            "  #target\n"
+            "  {:c (inline-c \"getenv_as_option(x)\")})\n"
+            "(defn resolve [(explicit : (Option String) @ Region)] : String @ Region\n"
+            "  (match explicit\n"
+            "    ((Some s) s)\n"
+            "    (None\n"
+            "      (match (get-b \"B\")\n"
+            "        ((Some s) s)\n"
+            "        (None \"default\")))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match nested as another match's own clause body parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier s', since emit_expr() "
+              "had no handling for a nested match as a clause-body value)");
+        if (c_src) {
+            CHECK(strstr(c_src, "__match_result_") != NULL,
+                  "a real match result variable is emitted");
+            /* The inner match's own assignments target the SAME
+             * result_var the outer one declared -- no second, separate
+             * result variable for the nested match. */
+            const char *first_decl = strstr(c_src, "__match_result_");
+            char var_name[32];
+            size_t i = 0;
+            while (first_decl[i] && (isalnum((unsigned char)first_decl[i]) || first_decl[i] == '_') &&
+                   i < sizeof(var_name) - 1) {
+                var_name[i] = first_decl[i];
+                i++;
+            }
+            var_name[i] = '\0';
+            size_t occurrences = 0;
+            const char *p = c_src;
+            while ((p = strstr(p, var_name)) != NULL) {
+                occurrences++;
+                p += strlen(var_name);
+            }
+            CHECK(occurrences >= 3,
+                  "the same result_var is reused by both the outer and inner match's own clause "
+                  "assignments (declaration + at least two assignments), not a separate one per "
+                  "nesting level");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `when` in loop-tail position, with a NON-LAST body form that
+     * is itself statement-shaped (a `match`, in this real case) -- a
+     * real, THIRD instance of the same root class of gap (raw
+     * emit_expr() where a statement dispatch is needed), found via an
+     * isolated repro faithfully reproducing dataframe.prn's own real
+     * nesting (`loop` -> `when` -> `match` with a `do`-bodied clause ->
+     * `recur`): the non-last-body-form loop inside `when`'s own
+     * loop-tail handling used emit_expr() directly on each form except
+     * the last, so a `match` appearing there (not the tail form) fell
+     * through the same generic call-dispatch mis-parse. Fixed by
+     * delegating those non-last forms to emit_body() itself
+     * (return_mode=0, discarding any value) instead of hand-rolling a
+     * second, narrower statement dispatcher -- emit_body's own
+     * with-arena/let/loop/match/do/when/#target statement handling
+     * already covers every real statement shape needed, for free. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Box (n : I32))\n"
+            "(defn helper [(b : &Box)] : (Result (&Box) I32) (Ok b))\n"
+            "(defn use-loop [(items : &(Vec Box)) (n : I32) (dest : Arena @ Region)]\n"
+            "  (let [out (vec/new dest)]\n"
+            "    (loop [i 0]\n"
+            "      (when (< i n)\n"
+            "        (match (helper (vec/get items i))\n"
+            "          ((Ok col) (do (vec/push! &out col) col))\n"
+            "          ((Err e) (vec/get items 0)))\n"
+            "        (recur (+ i 1))))\n"
+            "    out))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a non-last, statement-shaped match inside when's own loop-tail body "
+                                "parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier col', since the "
+              "non-last-body-form loop inside when's own loop-tail handling used raw emit_expr(), "
+              "which can't recognize a statement-shaped match)");
         arena_free_all(&arena);
     }
 

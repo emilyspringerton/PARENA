@@ -2038,11 +2038,26 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
         const char *cond = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
         if (!cond) return 0;
         sb_appendf(out, "        if (%s) {\n", cond);
-        for (size_t i = 2; i + 1 < tail->child_count; i++) {
-            const char *body_type = NULL;
-            const char *body_c = emit_expr(arena, tail->children[i], scope, &body_type, out_error);
-            if (!body_c) return 0;
-            sb_appendf(out, "            %s;\n", body_c);
+        /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying an
+         * isolated repro of dataframe.prn's own real `select`, whose
+         * loop-tail `when` body is `(match ... (recur ...))` -- the
+         * match is NOT the last form): every non-last body form here
+         * used to go through raw emit_expr(), the same "no handling for
+         * statement-shaped constructs" gap already found and fixed for
+         * `if`-in-tail-position and match's own clause bodies -- a
+         * mid-when `match`/`let`/`do`/nested `loop` fell through to the
+         * generic call-dispatch path and silently mis-parsed. Delegates
+         * to emit_body() itself (return_mode=0, discarding any value)
+         * for these non-last forms instead of hand-rolling a second,
+         * narrower statement dispatcher here -- emit_body's own
+         * with-arena/let/loop/match/do/when/#target statement handling
+         * already covers every real statement shape this compiler
+         * understands, for free. */
+        if (tail->child_count > 3) {
+            if (!emit_body(arena, out, tail->children + 2, tail->child_count - 3, scope, 0, NULL,
+                            out_error)) {
+                return 0;
+            }
         }
         const char *last_type = NULL;
         if (!emit_loop_tail(arena, out, tail->children[tail->child_count - 1], scope, loop_locals,
@@ -2267,19 +2282,138 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
     return 1;
 }
 
-/* emit_match handles `(match scrutinee-expr (pattern body) (pattern
- * body) ...)` -- real, honest scope: only the two real built-in tagged
- * unions NORTHSTAR.md's own "Zero-allocation pattern matching" section
- * names (`Result`/`Option`, via their real `Ok`/`Err`/`Some`/`None`
- * constructors), not a general N-variant `defenum` matcher (`defenum`
- * itself has no emission at all yet). Each clause's own pattern is
- * either `(Ctor binding)` or a bare symbol (`None`, or `_` as a real
- * wildcard); each clause body is exactly one expression -- real,
- * deliberately narrower than emit_body's own full with-arena/let/loop
- * support, the same scoping judgment `emit_if`'s own ternary-only,
- * expression-position-only design already made. */
-static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
-                       const char **out_return_type, const char **out_error) {
+static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                            const char *result_var, const char **out_result_type,
+                            const char **out_error);
+
+/* emit_match_clause_body -- real, structural extension (2026-08-21,
+ * gcc-verifying shell.prn's own real `resolve`, whose actual policy
+ * chain is `(match explicit (... s) (None (match (getenv "SHELL")
+ * (... s) (None (match ...)))))` -- a NESTED match used as another
+ * match's own clause body, a real, idiomatic "chain of Option checks,
+ * fall through to the next on None" pattern): the original clause-body
+ * emission called emit_expr() directly on the body, which has no
+ * handling for `match` (or `if`/`let`/`do`) as a bare value -- those
+ * are only ever special-cased at the body-statement/tail level. A
+ * nested match, being a NODE_LIST whose own first child is a symbol,
+ * fell all the way to the generic call-dispatch path and silently
+ * mangled into a mis-parsed mess (a compound-callee call over the
+ * FIRST clause's own `(Some s)` pattern list, mistaking it for a
+ * first-class function value being invoked with `s` in the WRONG
+ * scope) -- surfacing as a baffling "unknown identifier 's'" far from
+ * the real cause.
+ *
+ * Same real recursive-composition idea `if` already got in emit_body's
+ * own tail dispatch, generalized to match's own "write into a shared
+ * result_var, no `return`" composition style instead of emit_body's
+ * `return`-based one (match's own result_var may itself be consumed by
+ * an ENCLOSING context that hasn't decided whether this whole match
+ * expression is itself in return position). A nested `match` is the
+ * one genuinely new case: it recurses into emit_match_core() directly,
+ * targeting the SAME result_var the outer clause already owns -- no
+ * new declaration, no new tmp_var (well, a fresh tmp_var for the
+ * INNER match's own distinct scrutinee, but the SAME result_var,
+ * whose own C type is only known once every real branch, nested or
+ * not, has contributed one). */
+static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitScope *scope,
+                                   const char *result_var, const char **out_result_type,
+                                   const char **out_error) {
+    if (is_call_named(body, "if")) {
+        if (body->child_count != 4) {
+            return fail(arena, out_error, "match: if in clause body needs (if cond then else) at line %d",
+                        body->line) != NULL;
+        }
+        const char *cond_type = NULL;
+        const char *cond_c = emit_expr(arena, body->children[1], scope, &cond_type, out_error);
+        if (!cond_c) return 0;
+        sb_appendf(out, "        if (%s) {\n", cond_c);
+        const char *then_type = NULL;
+        if (!emit_match_clause_body(arena, out, body->children[2], scope, result_var, &then_type,
+                                     out_error)) {
+            return 0;
+        }
+        sb_append(out, "        } else {\n");
+        const char *else_type = NULL;
+        if (!emit_match_clause_body(arena, out, body->children[3], scope, result_var, &else_type,
+                                     out_error)) {
+            return 0;
+        }
+        sb_append(out, "        }\n");
+        if (out_result_type) *out_result_type = then_type ? then_type : else_type;
+        return 1;
+    }
+    if (is_call_named(body, "let")) {
+        if (body->child_count < 2 || body->children[1]->type != NODE_VEC) {
+            return fail(arena, out_error, "match: let expected a binding vector at line %d", body->line) != NULL;
+        }
+        Node *bindings = body->children[1];
+        EmitScope child;
+        scope_init(&child, scope);
+        for (size_t i = 0; i + 1 < bindings->child_count; i += 2) {
+            Node *name_node = bindings->children[i];
+            Node *expr_node = bindings->children[i + 1];
+            if (name_node->type != NODE_SYMBOL) {
+                return fail(arena, out_error, "match: let binding name must be a plain identifier at "
+                                               "line %d",
+                            body->line) != NULL;
+            }
+            const char *c_name = mangle(arena, name_node->text);
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s %s __attribute__((unused)) = %s;\n", c_type, c_name, expr_c);
+            scope_bind(&child, name_node->text, c_name, c_type, 0);
+        }
+        Node **body_forms = body->children + 2;
+        size_t body_count = body->child_count - 2;
+        if (body_count == 0) {
+            return fail(arena, out_error, "match: let has an empty body at line %d", body->line) != NULL;
+        }
+        for (size_t i = 0; i + 1 < body_count; i++) {
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, body_forms[i], &child, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s;\n", expr_c);
+        }
+        return emit_match_clause_body(arena, out, body_forms[body_count - 1], &child, result_var,
+                                       out_result_type, out_error);
+    }
+    if (is_call_named(body, "do")) {
+        Node **body_forms = body->children + 1;
+        size_t body_count = body->child_count - 1;
+        if (body_count == 0) {
+            return fail(arena, out_error, "match: do has an empty body at line %d", body->line) != NULL;
+        }
+        for (size_t i = 0; i + 1 < body_count; i++) {
+            const char *c_type = NULL;
+            const char *expr_c = emit_expr(arena, body_forms[i], scope, &c_type, out_error);
+            if (!expr_c) return 0;
+            sb_appendf(out, "        %s;\n", expr_c);
+        }
+        return emit_match_clause_body(arena, out, body_forms[body_count - 1], scope, result_var,
+                                       out_result_type, out_error);
+    }
+    if (is_call_named(body, "match")) {
+        return emit_match_core(arena, out, body, scope, result_var, out_result_type, out_error);
+    }
+    const char *clause_type = NULL;
+    const char *clause_c = emit_expr(arena, body, scope, &clause_type, out_error);
+    if (!clause_c) return 0;
+    sb_appendf(out, "        %s = %s;\n", result_var, clause_c);
+    if (out_result_type) *out_result_type = clause_type;
+    return 1;
+}
+
+/* emit_match_core -- the real clause-matching machinery (tmp_var +
+ * if/else-if tag-check chain), factored out of emit_match() itself
+ * (2026-08-21) so emit_match_clause_body()'s own nested-match case
+ * above can recurse into it directly, targeting an ALREADY-OWNED
+ * result_var (no fresh declaration -- the outer match's own top-level
+ * emit_match() call is the one real place that ever declares
+ * result_var, whether or not any nesting is involved). */
+static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                            const char *result_var, const char **out_result_type,
+                            const char **out_error) {
     if (node->child_count < 3) {
         return fail(arena, out_error, "match: expected (match scrutinee clause...) at line %d",
                     node->line) != NULL;
@@ -2302,9 +2436,8 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
 
     static int match_counter = 0;
     int id = match_counter++;
-    char tmp_var[64], result_var[64];
+    char tmp_var[64];
     snprintf(tmp_var, sizeof(tmp_var), "__match_tmp_%d", id);
-    snprintf(result_var, sizeof(result_var), "__match_result_%d", id);
 
     sb_appendf(out, "    %s %s = %s;\n", scrut_type, tmp_var, scrut_c);
 
@@ -2395,19 +2528,55 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
         }
 
         const char *clause_type = NULL;
-        const char *clause_c = emit_expr(arena, clause->children[1], &clause_scope, &clause_type, out_error);
-        if (!clause_c) {
+        if (!emit_match_clause_body(arena, &clauses, clause->children[1], &clause_scope, result_var,
+                                     &clause_type, out_error)) {
             sb_free(&clauses);
             return 0;
         }
-        sb_appendf(&clauses, "        %s = %s;\n", result_var, clause_c);
         if (!result_type) result_type = clause_type;
         sb_append(&clauses, "    }\n");
     }
 
-    sb_appendf(out, "    %s %s;\n", result_type ? result_type : "void *", result_var);
     sb_append(out, clauses.data);
     sb_free(&clauses);
+    if (out_result_type) *out_result_type = result_type;
+    return 1;
+}
+
+/* emit_match -- the real, public entry point (unchanged signature, used
+ * by emit_body/emit_loop_tail's own tail dispatch): owns result_var's
+ * one real declaration (its own C type isn't known until every clause,
+ * nested or not, has been walked -- emit_match_core's own use of a
+ * separate `clauses` buffer before appending to `out` is exactly what
+ * makes learning the type first, declaring second, possible), and
+ * return_mode's own `return result_var;` wrap. */
+static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int return_mode,
+                       const char **out_return_type, const char **out_error) {
+    static int match_result_counter = 0;
+    char result_var[64];
+    snprintf(result_var, sizeof(result_var), "__match_result_%d", match_result_counter++);
+
+    StrBuf body;
+    sb_init(&body);
+    const char *result_type = NULL;
+    if (!emit_match_core(arena, &body, node, scope, result_var, &result_type, out_error)) {
+        sb_free(&body);
+        return 0;
+    }
+
+    /* __attribute__((unused)): same real reasoning as loop's own
+     * result_var already has -- a real, valid `match` can be used
+     * purely for its own side effects (return_mode=0, mid-body
+     * statement), its own result never consumed by anything, e.g. this
+     * exact real shape inside dataframe.prn's own real `select`: a
+     * `match` whose value is discarded, nested inside `when` inside a
+     * `loop`. Found via an actual gcc -pedantic -Werror compile
+     * (-Wunused-but-set-variable), not a real bug in the Parena
+     * source. */
+    sb_appendf(out, "    %s %s __attribute__((unused));\n", result_type ? result_type : "void *",
+               result_var);
+    sb_append(out, body.data);
+    sb_free(&body);
 
     if (return_mode) {
         if (out_return_type) *out_return_type = result_type ? result_type : "void *";

@@ -1400,6 +1400,32 @@ package in this document where that distinction actually matters.
 (defn spawn-zsh  [(cols : I32) (rows : I32) (dest : Arena @ Region)] : (Result Pty PtyError) @ Region)
 ```
 
+**Real VS0 emitter gaps found and fixed compiling this file (2026-08-21)** — none specific to
+`shell` itself, general emitter gaps this file happened to be the first real source to reach: a
+NESTED `match` used as another match's own clause body (`resolve`'s own real policy chain:
+`(match explicit (... s) (None (match (getenv "SHELL") (... s) (None ...))))` — a real, idiomatic
+"chain of Option checks, fall through on None" pattern). The original clause-body emission called
+`emit_expr()` directly, with no handling for `match` as a bare value, so the nested match mis-parsed
+into a baffling "unknown identifier" error far from the real cause. Fixed by refactoring
+`emit_match()` into a public entry point (owns the one real result-variable declaration) plus a
+reusable core the clause-body composer recurses into directly, targeting the SAME, already-owned
+result variable — no second declaration, the same real "declare once, learn the type from every
+branch including nested ones" property `if`/`cond` already have elsewhere in this emitter. The exact
+same underlying "raw `emit_expr()` where a statement dispatch is needed" gap was found a THIRD time
+in `emit_loop_tail`'s own `when` handling (a non-last body form that's itself statement-shaped, e.g.
+a `match`) — fixed by delegating those non-last forms to `emit_body()` itself instead of hand-rolling
+a second, narrower dispatcher.
+
+**Real, STILL-not-fixed gaps, this file's own**: this file's real body calls a real function
+literally named `getenv` — a genuine naming COLLISION with libc's own real `getenv` (declared in
+`<stdlib.h>`, unconditionally included in every generated file since an earlier pass this session),
+producing a real "conflicting types" gcc error; a real bug in this file's own source, not yet
+renamed. Separately, `getenv-as-option`/`exec-lookpath-as-option`/`real-git-bash-roots`/
+`find-first-existing`/`platform-fallback-shell`/`pty/open` and `string/contains?`/`string/to-lower`
+are all called but never defined anywhere reachable (nor declared via `#target` FFI the way every
+other host-backed primitive elsewhere in this stdlib is) — real, separate, un-started work, not
+attempted in this same pass.
+
 **`ssh`** — FFI-bound to `libssh2` (real, established, embeddable SSH client library — same FFI-
 bind judgment as `linalg`'s BLAS/LAPACK and `media/codec`'s libavcodec, not a from-scratch SSH
 protocol implementation):
