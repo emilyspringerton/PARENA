@@ -5,7 +5,37 @@
 
 (module net/udp)
 (import string)
-(export bind send-to recv-from)
+(export bind send-to recv-from UdpSocket SocketAddr NetError)
+
+;; Real, honest gap closed here (2026-08-21): every function below used
+;; `UdpSocket`/`SocketAddr`/`NetError` in its own real signature but
+;; this file never actually DEFINED any of them -- the same real class
+;; of gap net/tcp.prn's own TcpListener/TcpStream/NetError closed
+;; alongside this. `UdpSocket` is a real, minimal, opaque fd wrapper,
+;; same shape as net/tcp.prn's own handles. `SocketAddr` is a real,
+;; minimal host+port pair -- `send-to`'s own #target body casts it to
+;; a real POSIX `struct sockaddr*`, a genuine FFI-representation
+;; mismatch against this simplified shape that real host-implementation
+;; work (not attempted here, same "FFI declared, host glue deferred"
+;; boundary every #target-bound file in this stdlib already has) would
+;; need to resolve for real, not something the TYPE DEFINITION alone
+;; can paper over.
+;;
+;; `NetError` is defined separately here AND in net/tcp.prn's own file
+;; -- see that file's own comment for why this duplication is real,
+;; deliberate, and safe for every real, intended build combination.
+(defstruct UdpSocket
+  (fd : I32))
+
+(defstruct SocketAddr
+  (host : String)
+  (port : I32))
+
+(defenum NetError
+  (ConnectionRefused)
+  (Timeout)
+  (AddressInUse)
+  (Other))
 
 (defn bind [(port : I32) (dest : Arena @ Region)]
   : (Result UdpSocket NetError) @ Region

@@ -1009,12 +1009,34 @@ through the separate `Type @ Region` / `has_region_marker()` path, which a `Fn`-
 list doesn't use; `resolve_base_type_name()`'s own bare-symbol table never included "Arena" at all.
 Now resolves to a real `Arena *`, matching every other real Arena value's own C representation.
 
-**Real, STILL-not-fixed gap, this file's own**: `serve` calls `(net/tcp/listen port dest)`, a real
-cross-module qualified call into `net/tcp.prn`'s own `listen` — but `net/tcp.prn` itself has its
-own, separate, un-fixed gap (`TcpListener`/`TcpStream`/`UdpSocket` are referenced throughout
+**Second real gap, closed in a follow-up pass (2026-08-21)**: `serve` calls `(net/tcp/listen port
+dest)`, a real cross-module qualified call into `net/tcp.prn`'s own `listen` — `net/tcp.prn` itself
+had its own, separate gap (`TcpListener`/`TcpStream`/`NetError` referenced throughout
 `net/tcp.prn`/`net/udp.prn` but never defined anywhere in either file, the same real missing-
-definition-in-source-itself gap class already closed for pcap.prn/io.prn/array.prn/string.prn, not
-yet closed here) — a genuine multi-file dependency wall, not attempted in this same pass.
+definition-in-source-itself gap class already closed for pcap.prn/io.prn/array.prn/string.prn), now
+closed: both files get real, minimal, opaque-fd `defstruct`s (`TcpListener`/`TcpStream`/`UdpSocket`,
+each just an `fd : I32`) plus a real `NetError` defenum, and `net/udp.prn` additionally gets a real,
+minimal `SocketAddr` (`host`/`port`) struct. **Real, deliberate scope note**: `NetError` is defined
+SEPARATELY in each of `net/tcp.prn`/`net/udp.prn` rather than shared via a common import — this
+compiler's multi-file build has no real per-module C namespace, so combining ALL THREE of
+`net/tcp.prn`/`net/udp.prn`/`net/http.prn` in one build would hit a real duplicate-definition error;
+safe for every real, intended combination that actually exists (`net/http.prn` only ever imports
+`net/tcp`, never `net/udp` at the same time).
+
+Verified: `net/tcp.prn` and `net/udp.prn` each now compile standalone past their own type-definition
+gaps (remaining errors are real, expected, un-implemented host FFI primitives — `tcp_listen`/
+`tcp_accept`/`udp_bind`/etc. — the same "FFI declared, host implementation not written yet" boundary
+every other `#target`-bound file in this stdlib already has). `net/http.prn`'s own `get`/`post`
+(combined with `net/tcp.prn`) now compile all the way down to a THIRD, different, real gap: both
+call `connect-from-url`/`build-get-request`/`parse-http-response`/`build-post-request` — real,
+genuinely un-designed helper functions (URL parsing, HTTP request serialization, HTTP response
+parsing) that would need designing essentially from scratch, a real, substantial undertaking well
+beyond this pass's own scope, not attempted here. `serve` specifically has at least two MORE
+separate blockers of its own on top of that: it calls the already-documented, never-designed
+`(current-arena)` builtin (see `firefly.prn`'s own comment on that gap elsewhere in this doc), and
+its own accept-loop body is `(loop [] ...)` used directly as a match clause's own body — a real,
+narrower gap in `emit_match_clause_body`'s own statement-form dispatch (handles `if`/`let`/`do`/
+`match` but not yet `loop`) — neither attempted in this pass.
 
 ### `sdl2` — built-in, not an optional `import`
 
