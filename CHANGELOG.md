@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 補齊 glob.prn 缺少的 char-eq?/char-at-eq?/match-bracket-class,用 17 組真實 case 驗證正確。Apple #(見上),commit be56d5b。 (sess-20260820-0649-a3f19d93)
 - array.prn 全檔編譯過關並驗證數值正確:新增 unary not、vec-eq?、間接呼叫回傳值 boxing;修好 strides-for 真實 bug(stride 推入順序反了)。新增 272→290 個迴歸測試。Apple #15234,commit 55d13d6。 (sess-20260820-0649-a3f19d93)
 - 新增 fn lambda 字面值支援(非捕獲、需明確型別標注),修好 array.prn 的 add/mul-elementwise 缺口;新增 278 個迴歸測試。Apple #15231,commit 5312f6e。 (sess-20260820-0649-a3f19d93)
 - 補齊 STDLIB.md 記錄的 parse-i32 + array/get/set! 缺少 dest Arena 參數缺口(比照 reshape/serve 作法);新增 272 個迴歸測試涵蓋此形狀。Apple #15228,commit 33da3e1。 (sess-20260820-0649-a3f19d93)
