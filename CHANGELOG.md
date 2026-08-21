@@ -1,3 +1,7 @@
+## 2026-08-21
+
+- 真實修好 defenum/defstruct 前處理順序 bug——用新的多檔案編譯測真正的 ladybug/scarab 組合時發現：原本把整個程式所有 defenum 一次處理完才輪到所有 defstruct，不管真實檔案順序，導致 scarab.prn 的 SuiteNode（Spec 變體用到 firefly.prn 定義的 T）明明 T 排在前面卻找不到。改成合併成一個 pass、照真實合併後的檔案順序處理 (sess-20260820-0649-a3f19d93)
+
 ## 2026-08-20
 - 重大里程碑：parena build 支援多檔案編譯（parena build a.prn b.prn -o out.c），真正把多個 .prn 檔案的頂層形式合併成同一個編譯單元——這正是這整個 session 一直撞到的 ladybug/scarab 模組連結缺口的真正、架構層級解法。真實驗證：多檔一起編譯出真正 gcc 乾淨的 C，同一個檔案單獨編譯依然誠實失敗（證明不是巧合）。新增 run_multifile_check.sh 整合測試，接進 Makefile 跟 CI。順手發現的新缺口：firefly.prn+ladybug.prn 一起編譯後推進到匿名函式/closure（(fn [args] body)）這個全新、獨立、還沒開始的缺口 (sess-20260820-0649-a3f19d93)
 - 多欄位 defenum variant payload——scarab.prn 的 SuiteNode 真的能過這關了，往前推進到跟另外兩個 ladybug 檔案一樣的同一個既有模組連結缺口 (sess-20260820-0649-a3f19d93)
