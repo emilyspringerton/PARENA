@@ -2520,35 +2520,41 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     sb_append(&out, "#include \"parena_runtime.h\"\n");
     sb_append(&out, "#include <string.h>\n\n");
 
-    /* Pre-pass: register every defenum and emit its real C type
-     * definitions before any function body is emitted, since a defn
-     * anywhere in the file can reference a defenum declared anywhere
-     * else in the file (order-independent, matching how a real C
-     * program's own typedefs would need to come first regardless of
-     * where in the source they were declared). */
+    /* Pre-pass: every defenum AND defstruct, processed together in ONE
+     * pass, in their real, natural combined-file order -- before any
+     * defn. Real, honest, narrower limitation, unchanged from before:
+     * a type referencing ANOTHER registered type (a defenum field
+     * needing a defstruct, or vice versa) requires that other type to
+     * be declared EARLIER in the combined order -- a single linear
+     * pass, not a real two-pass "register every name first, then
+     * resolve every field" forward-reference system.
+     *
+     * Real bug found and fixed here (2026-08-20, while testing the new
+     * multi-file build against the real, combined ladybug/scarab
+     * files): this used to be two SEPARATE loops -- "every defenum in
+     * the whole program" fully processed first, THEN "every defstruct"
+     * -- regardless of where each form actually appeared. That broke
+     * scarab.prn's own real SuiteNode (its Spec variant's `body : (Fn
+     * [&mut T] Unit)` field needs T, a defstruct from firefly.prn)
+     * even though T genuinely appears EARLIER in the real, combined
+     * file order (firefly.prn's own forms come first) -- the old
+     * "all defenums, unconditionally, before any defstruct" ordering
+     * silently ignored that real, natural precedence. Merging into one
+     * pass over the program's own real, combined order fixes exactly
+     * that, without weakening the existing "earlier in the combined
+     * order" requirement itself. */
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
-        if (!is_call_named(form, "defenum")) continue;
-        if (!process_defenum(arena, &out, form, out_error)) {
-            sb_free(&out);
-            return NULL;
-        }
-    }
-
-    /* Pre-pass: every defstruct, after every defenum (a struct field can
-     * reference a registered enum type) but still before any defn. Real,
-     * honest, narrower limitation than defenum's own order-independence:
-     * a struct field referencing ANOTHER struct type requires that
-     * other struct to be declared earlier in the same file -- this is a
-     * single linear pass, not a two-pass "register every name first,
-     * then resolve every field" -- not attempted here since no real
-     * stdlib file needs struct-in-struct nesting yet. */
-    for (size_t i = 0; i < program->child_count; i++) {
-        Node *form = program->children[i];
-        if (!is_call_named(form, "defstruct")) continue;
-        if (!process_defstruct(arena, &out, form, out_error)) {
-            sb_free(&out);
-            return NULL;
+        if (is_call_named(form, "defenum")) {
+            if (!process_defenum(arena, &out, form, out_error)) {
+                sb_free(&out);
+                return NULL;
+            }
+        } else if (is_call_named(form, "defstruct")) {
+            if (!process_defstruct(arena, &out, form, out_error)) {
+                sb_free(&out);
+                return NULL;
+            }
         }
     }
 

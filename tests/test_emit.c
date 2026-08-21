@@ -1195,6 +1195,36 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a real, structural pre-pass ordering bug found while testing
+     * the new multi-file build against the real, combined ladybug/
+     * scarab files: emit_c() used to process EVERY defenum in the whole
+     * program first, then EVERY defstruct -- regardless of where each
+     * form actually appeared. That broke a defenum variant needing a
+     * defstruct type that genuinely comes EARLIER in the real,
+     * combined file order (scarab.prn's own SuiteNode needing T, a
+     * defstruct from firefly.prn, which appears first when the two
+     * files are built together) -- the old "all defenums,
+     * unconditionally, before any defstruct" order silently ignored
+     * that real, natural precedence. Now processed together in one
+     * pass, in real combined order. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct T (value : I32))\n"
+            "(defenum E (V (a : String @ Region) (b : (Fn [&mut T] Unit))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defstruct followed by a defenum variant needing it parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully -- the defstruct (appearing first) is visible to the "
+              "defenum's own field-type resolution, not silently processed after it regardless "
+              "of real source order");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
