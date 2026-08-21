@@ -1,4 +1,5 @@
 ## 2026-08-21
+- string.prn 補齊 char-at/str-eq?/is-digit?/substring/ParseError(原始設計,STDLIB.md 沒涵蓋)+ 修好三個原始碼 bug(substring 誤用 dest 參數、char-at 無效三參數形式)+ #include <stdlib.h>;10/11 函式真正 gcc-clean,parse-i32 卡在已知的 stdlib 設計問題;Apple #15193,commit e36ed21 (sess-20260820-0649-a3f19d93)
 - 新增 mangle_call_name() 修正跨模組 module/function 呼叫解析——之前一律誤 mangle 成從未存在的名字,現在靠 g_defn_return_types 判斷裸名字是否為真實 defn,保守 fallback 保護 vec/push!、string/concat 等既有正確案例;影響遍及 map/array/io/stats/sdl2/pty 等整個 stdlib;Apple #15188,commit b139bd9 (sess-20260820-0649-a3f19d93)
 - 新增 defn 前向宣告 pre-pass,修好函式間跨行前向參照(string.prn/regex/glob.prn 之前誠實記錄的缺口);舊式空括號 C 宣告,不複製完整參數型別解析邏輯;順手提早註冊 g_defn_return_types;Apple #15169,commit 7036ce1 (sess-20260820-0649-a3f19d93)
 - cond 特殊形式(純值三元折疊 + loop-tail 陳述式版,含自己抓到的結果型別 bug 修正)+ if-in-tail 陳述式化 + alloc 尺寸運算式 + mid-body #target + #include <stdint.h>;string.prn/regex/glob.prn 卡在下一層獨立缺口(函式前向參照排序、未定義型別/函式),誠實記錄未解;Apple #15166,commit 03a6c56 (sess-20260820-0649-a3f19d93)
