@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 新增 defn 前向宣告 pre-pass,修好函式間跨行前向參照(string.prn/regex/glob.prn 之前誠實記錄的缺口);舊式空括號 C 宣告,不複製完整參數型別解析邏輯;順手提早註冊 g_defn_return_types;Apple #15169,commit 7036ce1 (sess-20260820-0649-a3f19d93)
 - cond 特殊形式(純值三元折疊 + loop-tail 陳述式版,含自己抓到的結果型別 bug 修正)+ if-in-tail 陳述式化 + alloc 尺寸運算式 + mid-body #target + #include <stdint.h>;string.prn/regex/glob.prn 卡在下一層獨立缺口(函式前向參照排序、未定義型別/函式),誠實記錄未解;Apple #15166,commit 03a6c56 (sess-20260820-0649-a3f19d93)
 - Ok/Err/Some 非指標 payload 裝箱(生成 per-type box 輔助函式)+ when-in-loop-tail 處理 + 純量裝箱判斷改看值型別而非 hint;補齊 array.prn 的 ShapeError/IndexError 型別定義;product/strides-for/zeros/flat-index/from-vec 五個函式真正 gcc-clean;get/set! 卡在新的、更深的 stdlib 設計缺口(誠實記錄,未解);Apple #15163,commit 3735d28 (sess-20260820-0649-a3f19d93)
 - 修正非引用型 (Vec T) @ Region 參數形狀(array.prn 的 zeros/from-vec/reshape);product/strides-for/zeros 完全編譯過關;發現並記錄 Ok/Err/Some 指標型別 payload 限制這個獨立、更深的缺口(需要 arena 裝箱機制,STDLIB.md 已誠實記錄);Apple #15160,commit 899bef0 (sess-20260820-0649-a3f19d93)
