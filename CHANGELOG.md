@@ -1,4 +1,5 @@
 ## 2026-08-21
+- loop 支援直接當 match clause body(emit_loop_core 從 emit_loop 拆出來,共用 result_var);修好丟棄陳述式的通用 -Wunused-value 缺口(所有丟棄的陳述式包上 void(...));net/http.prn 的 serve 只剩 current-arena 一個獨立缺口;Apple #15206,commit 2932a95 (sess-20260820-0649-a3f19d93)
 - 補齊 net/tcp.prn(TcpListener/TcpStream/NetError)+ net/udp.prn(UdpSocket/SocketAddr/NetError)缺少的型別定義;net/http.prn get/post 推進到第三道缺口(未設計的 HTTP helper 函式);serve 另有 current-arena + loop-as-match-clause-body 兩個獨立缺口;Apple #15204,commit b194864 (sess-20260820-0649-a3f19d93)
 - (Map K V) 型別擦除(erased to void*,無真實 runtime 實作)+ Fn 型別參數列表支援裸 Arena(解析成 Arena *);net/http.prn 錯誤前緣推進到 net/tcp.prn 的多檔案依賴牆;Apple #15201,commit 8325a08 (sess-20260820-0649-a3f19d93)
 - match 支援巢狀(拆成公開入口 + 可遞迴的 core,共用 result_var)+ emit_loop_tail when 非尾端陳述式委派給 emit_body;同一類「raw emit_expr 用在需要陳述式分派的地方」缺口的第三個出現位置;match result_var 補 unused attribute;Apple #15199,commit 49c2f59 (sess-20260820-0649-a3f19d93)
