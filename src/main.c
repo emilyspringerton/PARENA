@@ -15,6 +15,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* PARENA_HAS_CI_STATUS -- real, deliberate two-stage bootstrap, not
+ * dead code: `parena ci-status` (founder, real-time, 2026-08-21: "add
+ * it to the parena cli") calls into `check()`, the C function
+ * stdlib/ci/status.prn itself compiles down to (a REAL PARENA module,
+ * not hand-written C -- see that file's own header comment) -- but
+ * `check()` only exists AFTER some already-built `parena` has compiled
+ * that module. This macro is defined ONLY by the Makefile's own
+ * second build stage (`make build`, see its own comment), which links
+ * against the just-generated tools/ci_status_gen.c; the first,
+ * bootstrap-only stage compiles main.c WITHOUT it, so the subcommand
+ * this guards (and the extern declaration it needs) simply isn't
+ * compiled in yet at that point -- there's genuinely nothing real to
+ * call. */
+#ifdef PARENA_HAS_CI_STATUS
+extern int check(char *repo, char *sha, char *token);
+#endif
+
 static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -190,12 +207,55 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
     return 0;
 }
 
+#ifdef PARENA_HAS_CI_STATUS
+/* cmd_ci_status -- the real PARENA CLI subcommand wired around
+ * stdlib/ci/status.prn's own `check()` (see PARENA_HAS_CI_STATUS's own
+ * comment above for why this whole function only exists in the
+ * second build stage). Reads GITHUB_TOKEN from the environment
+ * (matching every other real ops script in this monorepo's own
+ * convention) rather than accepting it as a THIRD positional argument
+ * -- a real, deliberate choice: a token is a real secret, and argv is
+ * visible to every other process on the same machine via /proc/<pid>/
+ * cmdline, an env var isn't quite as exposed but still a real,
+ * pre-existing convention this repo's own CI scripts already use
+ * (`GH_TOKEN`/`GITHUB_TOKEN` passed via `env:`, never as a bare CLI
+ * arg) -- kept consistent here rather than inventing a new pattern. */
+static int cmd_ci_status(const char *repo, const char *sha) {
+    const char *token = getenv("GITHUB_TOKEN");
+    if (!token) {
+        fprintf(stderr, "parena: ci-status: GITHUB_TOKEN must be set\n");
+        return 3;
+    }
+    int code = check((char *)repo, (char *)sha, (char *)token);
+    switch (code) {
+        case 0:
+            printf("parena: ci-status: %s @ %s: all checks completed, all conclusions success\n", repo, sha);
+            break;
+        case 1:
+            printf("parena: ci-status: %s @ %s: still pending\n", repo, sha);
+            break;
+        case 2:
+            printf("parena: ci-status: %s @ %s: completed, but at least one check failed\n", repo, sha);
+            break;
+        default:
+            printf("parena: ci-status: %s @ %s: no check-runs found, or the request itself failed\n", repo, sha);
+            break;
+    }
+    return code;
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
                          "       parena analyze <file.prn>                          (VS0 domain 2 -- region analyzer)\n"
                          "       parena build <file.prn> [file2.prn ...] -o <output.c>    (VS0 domain 3 -- C emitter; "
-                         "multiple files are combined into one compilation unit, in the order given)\n");
+                         "multiple files are combined into one compilation unit, in the order given)\n"
+#ifdef PARENA_HAS_CI_STATUS
+                         "       parena ci-status <owner/repo> <sha>                (GITHUB_TOKEN env var required; "
+                         "exit 0=all green, 1=pending, 2=failed, 3=not found/error)\n"
+#endif
+        );
         return 1;
     }
     if (strcmp(argv[1], "parse") == 0 && argc >= 3) {
@@ -204,6 +264,11 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "analyze") == 0 && argc >= 3) {
         return cmd_analyze(argv[2]);
     }
+#ifdef PARENA_HAS_CI_STATUS
+    if (strcmp(argv[1], "ci-status") == 0 && argc >= 4) {
+        return cmd_ci_status(argv[2], argv[3]);
+    }
+#endif
     if (strcmp(argv[1], "build") == 0) {
         /* Every argument between "build" and "-o" is an input file --
          * at least one required. `-o <output.c>` must be the final two

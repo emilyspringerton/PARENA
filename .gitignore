@@ -5,4 +5,4 @@ tests/test_emit
 src/*.o
 bazel-*
 tools/ci_status_gen.c
-tools/ci-status
+.parena-bootstrap

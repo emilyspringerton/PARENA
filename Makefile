@@ -10,14 +10,35 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile tools clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile clean
 
 all: build
 
+# Real, deliberate TWO-STAGE bootstrap (2026-08-21, founder: "add it to
+# the parena cli"): `parena ci-status` calls into `check()`, the C
+# function stdlib/ci/status.prn itself compiles down to (a REAL PARENA
+# module, not hand-written C -- see that file's own header comment) --
+# but that C doesn't exist until SOME already-built parena has compiled
+# it. Stage 1 (.parena-bootstrap) is an ordinary build with the
+# ci-status subcommand compiled OUT (PARENA_HAS_CI_STATUS undefined --
+# see main.c's own comment on that macro); it exists only to generate
+# tools/ci_status_gen.c. Stage 2 (the real, shipped `parena` binary)
+# recompiles main.c WITH that macro defined, this time linking the
+# freshly-generated module C plus its own real host implementation
+# (tools/ci_status_host.c) in. `build`'s own target is still just
+# `parena` -- callers never need to know this is two stages under the
+# hood.
 build: parena
 
-parena: src/main.c $(OBJ)
-	$(CC) $(CFLAGS) -o parena src/main.c $(OBJ)
+.parena-bootstrap: src/main.c $(OBJ)
+	$(CC) $(CFLAGS) -o .parena-bootstrap src/main.c $(OBJ)
+
+tools/ci_status_gen.c: .parena-bootstrap stdlib/ci/status.prn
+	./.parena-bootstrap build stdlib/ci/status.prn -o tools/ci_status_gen.c
+
+parena: src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c tools/ci_status.h
+	$(CC) $(CFLAGS) -DPARENA_HAS_CI_STATUS -I runtime -I tools -include tools/ci_status.h \
+		-o parena src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -56,24 +77,6 @@ tests/test_region: tests/test_region.c $(OBJ)
 tests/test_emit: tests/test_emit.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_emit tests/test_emit.c $(OBJ)
 
-# tools/ci-status -- a real, native-PARENA CLI tool (stdlib/ci/status.prn),
-# built to dogfood the language on a genuine, recurring need this repo's
-# own workflow hits repeatedly (checking a GitHub Actions commit's own
-# check-run status). Real two-step build, the honest reflection of how
-# this actually works: (1) the already-built `parena` compiles the real
-# PARENA module to C, (2) that generated C links against
-# tools/ci_status_host.c's own real, hand-written host implementation
-# (the #target FFI's actual host side, not left as a deferred gap here)
-# plus tools/ci_status_main.c's own thin C entry point. This is the real,
-# next step toward the founder's own stated "add it to the parena CLI"
-# direction, not yet done -- this still builds a separate, standalone
-# binary, not a `parena ci-status` subcommand.
-tools: build
-	./parena build stdlib/ci/status.prn -o tools/ci_status_gen.c
-	$(CC) $(CFLAGS) -I runtime -I tools -include tools/ci_status.h \
-		tools/ci_status_gen.c tools/ci_status_host.c tools/ci_status_main.c \
-		-o tools/ci-status
-
 clean:
-	rm -f parena tests/test_lexer_parser tests/test_region tests/test_emit src/*.o \
-		tools/ci_status_gen.c tools/ci-status
+	rm -f parena .parena-bootstrap tests/test_lexer_parser tests/test_region tests/test_emit \
+		src/*.o tools/ci_status_gen.c
