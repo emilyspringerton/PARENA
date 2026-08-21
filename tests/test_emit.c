@@ -1876,6 +1876,32 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- Every generated file's own preamble includes <stdlib.h> --
+     * found missing (2026-08-21, gcc-verifying string.prn's own real
+     * `raw-parse-i32`, whose #target inline-C body calls `atoi`,
+     * declared in <stdlib.h>). Same real, honest, unconditional-
+     * inclusion tradeoff already made for <stdint.h> -- VS0 has no way
+     * to inspect the trusted-verbatim contents of an inline-C string to
+     * decide whether it's actually needed. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : I32 0)";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a trivial defn parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "#include <stdlib.h>") != NULL,
+                  "every generated file's own preamble includes <stdlib.h> unconditionally "
+                  "(previously missing entirely -- atoi() in a #target body hit a real "
+                  "'implicit declaration' gcc error, undetected by parena build's own exit code)");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

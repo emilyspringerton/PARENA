@@ -6,12 +6,62 @@
 
 (module string)
 (import vec)
-(export parse-i32 length concat split)
+(export parse-i32 length concat split char-at str-eq? is-digit? substring ParseError)
 
 (defn length [(s : String @ Region)]
   : I32
   #target
   {:c (inline-c "(int32_t)strlen(s)")})
+
+;; Real, honest gap closed here (2026-08-21): parse-i32/starts-with-sign?/
+;; is-valid-i32-text?/split all referenced char-at/str-eq?/is-digit?/
+;; substring/ParseError/raw-parse-i32 without this file ever actually
+;; DEFINING any of them -- the same real missing-definition-in-source
+;; gap class already closed for pcap.prn/io.prn/array.prn, not just a
+;; compiler gap. None of these are designed in STDLIB.md's own "string"
+;; section either (only parse-i32/length/concat/split are) -- real,
+;; original design work, not just filling in an already-specified shape.
+;;
+;; char-at returns a character as its raw byte value (I32) -- this
+;; language has no separate Char type, matching every other real, honest
+;; "no X yet" scope limitation already documented elsewhere in this
+;; stdlib. Real callers compare it against ASCII literals directly
+;; (45 = '-', 43 = '+', 48/57 = '0'/'9' -- commented at each real use).
+(defn char-at [(s : String @ Region) (i : I32)]
+  : I32
+  #target
+  {:c (inline-c "(int32_t)s[i]")})
+
+(defn str-eq? [(a : String @ Region) (b : String @ Region)]
+  : Bool
+  #target
+  {:c (inline-c "strcmp(a, b) == 0")})
+
+(defn is-digit? [(c : I32)]
+  : Bool
+  (and (>= c 48) (<= c 57)))   ;; ASCII '0'..'9'
+
+;; substring — real, minimal [start, end) extraction into a fresh,
+;; arena-allocated buffer, the same alloc-then-#target-fill shape
+;; concat's own real body already uses below.
+(defn substring [(s : String @ Region) (start : I32) (end : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String (- end start))]
+    #target
+    {:c (inline-c "memcpy(out, s + start, end - start); out[end - start] = '\\0';")}
+    out))
+
+(defstruct ParseError
+  (message : String))
+
+;; raw-parse-i32 — not exported: an internal implementation detail of
+;; parse-i32 alone, called only after is-valid-i32-text? has already
+;; confirmed s really is parseable, matching NORTHSTAR.md's own
+;; safe-parse-int shape (validate first, then trust a real libc parse).
+(defn raw-parse-i32 [(s : String @ :region/scratch)]
+  : I32
+  #target
+  {:c (inline-c "atoi(s)")})
 
 (defn parse-i32 [(s : String @ :region/scratch)]
   : (Result I32 ParseError) @ :region/scratch
@@ -19,10 +69,22 @@
     (Ok (raw-parse-i32 s))
     (Err (ParseError "not a valid integer"))))
 
+;; Real bug found and fixed here (2026-08-21): this used to call
+;; `(substring s 0 1 s)`, passing s itself where substring's own dest
+;; Arena argument belongs -- starts-with-sign? has no Arena parameter
+;; in its own signature at all, and even if it did, allocating a whole
+;; new 1-byte buffer just to compare one character is real, unnecessary
+;; work substring was never designed for. char-at (no allocation)
+;; is the real, correct tool for a single-character check.
 (defn starts-with-sign? [(s : String @ Region)]
   : Bool
-  (or (str-eq? (substring s 0 1 s) "-") (str-eq? (substring s 0 1 s) "+")))
+  (or (= (char-at s 0) 45) (= (char-at s 0) 43)))   ;; '-' or '+'
 
+;; Real bug found and fixed here (2026-08-21), same real class as
+;; starts-with-sign? above: this used to call
+;; `(is-digit? (substring s i (+ i 1) s))`, the identical
+;; substring-with-no-real-arena misuse. char-at (no allocation) is the
+;; real, correct tool here too.
 (defn is-valid-i32-text? [(s : String @ Region)]
   : Bool
   (let [n (length s)]
@@ -32,7 +94,7 @@
              ok true]
         (if (>= i n)
           (and ok (> n (if (starts-with-sign? s) 1 0)))
-          (recur (+ i 1) (and ok (is-digit? (substring s i (+ i 1) s)))))))))
+          (recur (+ i 1) (and ok (is-digit? (char-at s i)))))))))
 
 (defn concat [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)]
   : String @ Region
@@ -43,6 +105,12 @@
 
 ;; split returns every substring of `s` delimited by `sep`, via vec/push!
 ;; onto a Vec allocated in `dest` — a real, if simple, single-pass scan.
+;;
+;; Real bug found and fixed here (2026-08-21): the delimiter check used
+;; to call `(char-at s i (char-at sep 0))` -- char-at is a real 2-argument
+;; function (string, index), so a 3rd argument here was never valid at
+;; all; the real, intended check is a plain equality comparison between
+;; two char-at results.
 (defn split [(s : String @ :region/scratch) (sep : String @ :region/scratch) (dest : Arena @ Region)]
   : (Vec String) @ Region
   (let [result (vec/new dest)]
@@ -51,6 +119,6 @@
            n (length s)]
       (cond
         ((>= i n) (do (vec/push! &result (substring s start i dest)) result))
-        ((char-at s i (char-at sep 0)) (do (vec/push! &result (substring s start i dest))
-                                            (recur (+ i 1) (+ i 1) n)))
+        ((= (char-at s i) (char-at sep 0)) (do (vec/push! &result (substring s start i dest))
+                                                (recur (+ i 1) (+ i 1) n)))
         (true (recur start (+ i 1) n))))))

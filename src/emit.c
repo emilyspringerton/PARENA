@@ -3362,7 +3362,12 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * (VS0 has no way to inspect the trusted-verbatim contents of an
      * inline-C string to know), it's included unconditionally too, the
      * same honest tradeoff already made for <string.h>. */
-    sb_append(&out, "#include <stdint.h>\n\n");
+    sb_append(&out, "#include <stdint.h>\n");
+    /* Same real, honest, unconditional-inclusion tradeoff as
+     * <stdint.h> above (2026-08-21, gcc-verifying string.prn's own
+     * real `raw-parse-i32`, whose #target inline-C body calls `atoi`,
+     * declared in <stdlib.h>). */
+    sb_append(&out, "#include <stdlib.h>\n\n");
 
     /* Pre-pass: every defenum AND defstruct, processed together in ONE
      * pass, in their real, natural combined-file order -- before any

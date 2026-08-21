@@ -343,10 +343,43 @@ since C only requires a function be *declared* before use, not exactly re-specif
 no explicit return type (inferred from its own body) still gets no forward declaration — real,
 narrower, honest scope, not yet hit by any known real call site.
 
-**Real, still-NOT-yet-fixed gap, this file's own**: `ParseError`/`substring`/`str-eq?`/`is-digit?`/
-`char-at`/`raw-parse-i32` are referenced throughout this file but never defined anywhere in it — the
-same real missing-definition-in-source-itself gap class already closed for pcap.prn/io.prn/
-array.prn, not yet closed here. Not attempted in this pass — flagged, not chased.
+**Third real gap, closed in a follow-up pass (2026-08-21)**: `ParseError`/`substring`/`str-eq?`/
+`is-digit?`/`char-at`/`raw-parse-i32` were referenced throughout this file but never defined
+anywhere in it — the same real missing-definition-in-source-itself gap class already closed for
+pcap.prn/io.prn/array.prn. None of these are designed in this doc's own "string" section either
+(only `parse-i32`/`length`/`concat`/`split` are) — real, original design work, not just filling in
+an already-specified shape:
+
+```clojure
+(defn char-at [(s : String @ Region) (i : I32)] : I32)   ;; raw byte value -- no Char type yet
+(defn str-eq? [(a : String @ Region) (b : String @ Region)] : Bool)
+(defn is-digit? [(c : I32)] : Bool)
+(defn substring [(s : String @ Region) (start : I32) (end : I32) (dest : Arena @ Region)] : String @ Region)
+(defstruct ParseError (message : String))
+```
+
+`char-at`/`str-eq?` are real `#target` FFI wrappers (`s[i]`/`strcmp`, the same shape `length`'s own
+body already uses); `is-digit?` is a plain ASCII range check (`>= 48 <= 57`), no new libc dependency
+needed. `raw-parse-i32` (an internal `atoi` wrapper, not exported — only `parse-i32` itself calls it)
+needed a new `#include <stdlib.h>` in every generated file's own preamble, the same unconditional-
+inclusion tradeoff already made for `<stdint.h>`.
+
+**Real, separate bugs found and fixed IN THIS FILE'S OWN SOURCE while closing the gap above**
+(not compiler bugs — the call sites themselves were wrong): `starts-with-sign?` and
+`is-valid-i32-text?` both used to call `(substring s 0 1 s)` / `(is-digit? (substring s i (+ i 1)
+s))` — passing `s` itself (a String) where `substring`'s own `dest : Arena` argument belongs, in a
+function whose own signature has no Arena parameter at all. Rewritten to use `char-at` (no
+allocation needed for a single-character check) instead. `split`'s own delimiter check used to call
+`(char-at s i (char-at sep 0))` — `char-at` is a real 2-argument function, so a 3rd argument was
+never valid; the real, intended check is `(= (char-at s i) (char-at sep 0))`.
+
+**Real, STILL-not-fixed gap, this file's own**: `parse-i32` itself remains blocked — `(Ok
+(raw-parse-i32 s))` needs to box a scalar `I32` payload, but `parse-i32`'s own signature carries no
+`Arena` parameter to box into at all, the identical real, open stdlib design question `array.prn`'s
+own `get`/`set!` already surfaced (should a function like this need to allocate at all just to
+report success, or does the runtime need a real static/singleton-value convention?). Every other
+function in this file — `length`/`char-at`/`str-eq?`/`is-digit?`/`substring`/`raw-parse-i32`/
+`starts-with-sign?`/`is-valid-i32-text?`/`concat`/`split` — compiles real gcc-clean.
 
 ### `log` — one real call
 
