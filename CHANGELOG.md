@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 新增 fn lambda 字面值支援(非捕獲、需明確型別標注),修好 array.prn 的 add/mul-elementwise 缺口;新增 278 個迴歸測試。Apple #15231,commit 5312f6e。 (sess-20260820-0649-a3f19d93)
 - 補齊 STDLIB.md 記錄的 parse-i32 + array/get/set! 缺少 dest Arena 參數缺口(比照 reshape/serve 作法);新增 272 個迴歸測試涵蓋此形狀。Apple #15228,commit 33da3e1。 (sess-20260820-0649-a3f19d93)
 - ci-status 接入 parena CLI 本體(兩階段 bootstrap:.parena-bootstrap 產生模組 C,PARENA_HAS_CI_STATUS 重編 main.c 連結進最終 binary);移除已取代的 tools/ci_status_main.c 獨立 binary。Apple #15225,commit ff93388。 (sess-20260820-0649-a3f19d93)
 - 新增 stdlib/ci/status.prn(native PARENA CI 查詢模組)+ tools/ci-status binary,真正 dogfood PARENA 取代 python3 one-liner;過程中自己抓到並修好兩個真實 JSON 格式假設 bug;已用它自己輪詢真實 CI 到通過;下一步 wire 進 parena CLI 本身;Apple #15221,commit 269e090 (sess-20260820-0649-a3f19d93)
