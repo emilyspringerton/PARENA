@@ -4,12 +4,22 @@ on:
   push:
   pull_request:
 
+# contents: write -- needed by the release step below (creating a git tag
+# + a GitHub Release). Everything else in this workflow only ever reads.
+permissions:
+  contents: write
+
 jobs:
   build_and_test:
     name: Build, Test & Sanitize (Bazel)
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 -- the release step below needs the full tag
+      # history to find the current version; actions/checkout's own
+      # default is a shallow clone that doesn't reliably include tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
@@ -101,3 +111,46 @@ jobs:
           name: parena-${{ github.run_number }}-${{ github.sha }}
           path: dist/parena
           if-no-files-found: error
+
+      # Founder real-time, 2026-08-21: "whenever a build passes release it
+      # as a minor version" -> "like a . bump" -> "i will handle big bumps
+      # to signify human verify releases" -> "start pushing the artifacts
+      # to releases in github". Every green build on main auto-bumps the
+      # MINOR version (X.Y.Z -> X.(Y+1).0) and cuts a real GitHub Release
+      # with the compiler binary attached -- the MAJOR version (X) is
+      # deliberately left alone here, reserved for the founder's own
+      # manual bump to mark a real, human-verified release. Gated to
+      # push-to-main only (not PRs, not other branches) so this doesn't
+      # flood the repo with a release per feature-branch push; only runs
+      # once every real check above has already passed.
+      - name: Compute next minor version
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: version
+        run: |
+          set -euo pipefail
+          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            major=0
+            minor=0
+          else
+            ver="${latest#v}"
+            major="$(echo "$ver" | cut -d. -f1)"
+            minor="$(echo "$ver" | cut -d. -f2)"
+          fi
+          next_minor=$((minor + 1))
+          next="v${major}.${next_minor}.0"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          git tag "$NEXT_VERSION"
+          git push origin "$NEXT_VERSION"
+          gh release create "$NEXT_VERSION" \
+            dist/parena \
+            --title "$NEXT_VERSION" \
+            --generate-notes
