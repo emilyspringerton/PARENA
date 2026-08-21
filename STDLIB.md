@@ -373,13 +373,11 @@ allocation needed for a single-character check) instead. `split`'s own delimiter
 `(char-at s i (char-at sep 0))` — `char-at` is a real 2-argument function, so a 3rd argument was
 never valid; the real, intended check is `(= (char-at s i) (char-at sep 0))`.
 
-**Real, STILL-not-fixed gap, this file's own**: `parse-i32` itself remains blocked — `(Ok
-(raw-parse-i32 s))` needs to box a scalar `I32` payload, but `parse-i32`'s own signature carries no
-`Arena` parameter to box into at all, the identical real, open stdlib design question `array.prn`'s
-own `get`/`set!` already surfaced (should a function like this need to allocate at all just to
-report success, or does the runtime need a real static/singleton-value convention?). Every other
-function in this file — `length`/`char-at`/`str-eq?`/`is-digit?`/`substring`/`raw-parse-i32`/
-`starts-with-sign?`/`is-valid-i32-text?`/`concat`/`split` — compiles real gcc-clean.
+**Real gap closed (2026-08-21)**: `parse-i32` used to be blocked — `(Ok (raw-parse-i32 s))` needed
+to box a scalar `I32` payload, but `parse-i32`'s own signature carried no `Arena` parameter to box
+into at all, the identical gap `array.prn`'s own `get`/`set!` had. Resolved the same way: an
+explicit `dest : Arena @ Region` parameter added. Every function in this file — including
+`parse-i32` now — compiles real gcc-clean.
 
 ### `log` — one real call
 
@@ -510,17 +508,18 @@ decision used to require a `g_vec_elem_hints` entry (only ever recorded for a `&
 or a `(Vec T)` struct field), generalized to instead decide from the pushed *value*'s own already-
 known resolved C type, which needs no hint at all.
 
-**Real, NOT-yet-fixed gap, narrower than before**: `get`/`set!` still fail — `(Err (IndexError "out
-of bounds"))` needs boxing (IndexError is a real, non-pointer struct), but neither function's own
-signature carries an `Arena` parameter to box into at all (`get`'s is `(a : &NDArray) (idx : (Vec
-I32) @ :region/scratch)` — genuinely no arena anywhere). This is no longer a compiler-architecture
-gap (the boxing mechanism itself works, see (2) above) — it's a real, open stdlib DESIGN question:
-should a read-only accessor like `get` really need to allocate at all just to report "out of
-bounds," or should the runtime grow a real, static/singleton error-value convention for payloads
-that are always the same fixed message? Not resolved here — `IndexError`/`ShapeError` were newly
-defined in this same pass (previously referenced but never defined anywhere in this file, the same
-real gap class `pcap.prn`/`io.prn` already closed) but the design question above is separate,
-larger, and un-attempted.
+**Real gap closed (2026-08-21)**: `get`/`set!` used to fail — `(Err (IndexError "out of bounds"))`
+needed boxing (IndexError is a real, non-pointer struct), but neither function's own signature
+carried an `Arena` parameter to box into at all. Resolved the same way `reshape` (below)/
+`net/http.prn`'s `serve`/`string.prn`'s `parse-i32` already were: an explicit `dest : Arena @
+Region` parameter added to both. This is a real, accepted cost of this language's own "no ambient
+arenas anywhere" design (see `current-arena`'s own rejection elsewhere in this doc) — a read-only
+accessor now takes an Arena solely to be able to report "out of bounds" — not a static/singleton
+error-value convention, which would be a real, separate, un-attempted design direction if this
+cost is ever judged too high. Both functions gcc-verified clean in isolation (isolated test file,
+since the full `array.prn` itself hits a separate, unrelated, pre-existing gap further down —
+`elementwise`/`add`/`mul-elementwise`'s own `fn` lambda-literal arguments, "unsupported expression
+form," not yet designed at all).
 
 ### `dataframe` — the pandas equivalent, depends on `array` + `string`
 

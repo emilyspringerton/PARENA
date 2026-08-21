@@ -62,15 +62,27 @@
       offset
       (recur (+ i 1) (+ offset (* (deref (vec/get idx i)) (deref (vec/get &(get-field a :strides) i))))))))
 
-(defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch)]
-  : (Result F64 IndexError)
+;; Real, honest gap closed here (2026-08-21): the STDLIB.md-documented
+;; "NOT-yet-fixed gap, narrower than before" for get/set! -- (Err
+;; (IndexError ...))'s own non-pointer struct payload needs boxing, but
+;; neither signature carried an Arena parameter to box into at all.
+;; Resolved the same real way reshape (below)/net/http.prn's serve/
+;; string.prn's parse-i32 already were: an explicit `dest : Arena @
+;; Region` parameter, not a hidden/ambient one -- every allocation in
+;; this language traces to an explicit Arena argument, on purpose. This
+;; does mean a read-only accessor now takes an Arena solely to be able
+;; to report "out of bounds" -- a real, known cost of this language's
+;; own "no ambient arenas anywhere" design, not hidden or worked around
+;; here.
+(defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
+  : (Result F64 IndexError) @ Region
   (let [off (flat-index a &idx)]
     (if (or (< off 0) (>= off (vec/len &(get-field a :data))))
       (Err (IndexError "out of bounds"))
       (Ok (deref (vec/get &(get-field a :data) off))))))
 
-(defn set! [(a : &mut NDArray) (idx : (Vec I32) @ :region/scratch) (v : F64)]
-  : (Result Unit IndexError)
+(defn set! [(a : &mut NDArray) (idx : (Vec I32) @ :region/scratch) (v : F64) (dest : Arena @ Region)]
+  : (Result Unit IndexError) @ Region
   (let [off (flat-index a &idx)]
     (if (or (< off 0) (>= off (vec/len &(get-field a :data))))
       (Err (IndexError "out of bounds"))

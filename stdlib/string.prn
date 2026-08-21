@@ -63,8 +63,16 @@
   #target
   {:c (inline-c "atoi(s)")})
 
-(defn parse-i32 [(s : String @ :region/scratch)]
-  : (Result I32 ParseError) @ :region/scratch
+;; Real, honest gap closed here (2026-08-21): the STDLIB.md-documented
+;; "STILL-not-fixed gap" for this function -- (Ok ...)'s own scalar I32
+;; payload needs boxing, but no Arena parameter existed anywhere in this
+;; signature to box into. Resolved the same way array.prn's reshape/
+;; net/http.prn's serve already did (see this doc's own comment on
+;; current-arena's rejection): an explicit `dest : Arena @ Region`
+;; parameter, not a hidden/ambient one -- every allocation in this
+;; language traces to an explicit Arena argument, on purpose.
+(defn parse-i32 [(s : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result I32 ParseError) @ Region
   (if (is-valid-i32-text? s)
     (Ok (raw-parse-i32 s))
     (Err (ParseError "not a valid integer"))))

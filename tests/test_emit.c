@@ -2296,6 +2296,53 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a read-only accessor whose ONLY reason to need an Arena
+     * parameter at all is boxing a non-pointer error struct on its
+     * failure path -- the exact real shape array.prn's own `get`
+     * (STDLIB.md's own "NOT-yet-fixed gap, narrower than before":
+     * `(Err (IndexError "out of bounds"))` needs boxing, but `get`'s
+     * pre-fix signature carried no Arena parameter anywhere to box
+     * into) and string.prn's own `parse-i32` (STDLIB.md's own
+     * "STILL-not-fixed gap") were both flagged as before this fix
+     * (2026-08-21): resolved the same real way reshape/serve already
+     * were -- an explicit `dest : Arena @ Region` parameter, not a
+     * hidden/ambient one. This isn't a new compiler mechanism (the
+     * box-helper machinery itself was already proven by reshape's own
+     * passing test above) -- it's confirming the same mechanism also
+     * covers a function whose only real allocation is on its OWN
+     * error path, not its success path. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Thing (val : I32))\n"
+            "(defstruct LookupError (message : String))\n"
+            "(defn lookup [(t : &Thing) (ok : Bool) (dest : Arena @ Region)]\n"
+            "  : (Result I32 LookupError) @ Region\n"
+            "  (if ok\n"
+            "    (Ok (get-field t :val))\n"
+            "    (Err (LookupError \"not found\"))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a read-only-accessor-shaped function whose only real allocation "
+                                "need is boxing its own Err payload, with an explicit dest "
+                                "parameter added for exactly that, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'no Arena is in scope to box this "
+              "non-pointer payload', since the function had no dest parameter at all before "
+              "this fix -- the same real gap STDLIB.md flagged for array.prn's own get/set! and "
+              "string.prn's own parse-i32)");
+        if (c_src) {
+            CHECK(strstr(c_src, "LookupError_box(dest") != NULL,
+                  "the Err clause's own non-pointer LookupError payload is boxed via the "
+                  "generated LookupError_box helper, using the new dest parameter it can now "
+                  "actually find");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
