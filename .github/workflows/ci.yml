@@ -150,7 +150,11 @@ jobs:
           set -euo pipefail
           git tag "$NEXT_VERSION"
           git push origin "$NEXT_VERSION"
+          # --prerelease: founder real-time, 2026-08-21, "PARENA is pre
+          # release for now" -- VS0 is still early, pre-1.0 compiler
+          # development, not a stable release track yet.
           gh release create "$NEXT_VERSION" \
             dist/parena \
             --title "$NEXT_VERSION" \
-            --generate-notes
+            --generate-notes \
+            --prerelease
