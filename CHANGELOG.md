@@ -1,4 +1,5 @@
 ## 2026-08-21
+- io.prn 補齊缺失的 FileHandle/IoError 型別定義，跟 pcap.prn 同一類缺口——型別現在能正確解析，#target host glue 本身還是誠實地留著沒實作（跟這個 stdlib 裡其他 FFI 綁定檔案一樣） (sess-20260820-0649-a3f19d93)
 - 修好 mangle() 的開頭驚嘆號處理——之前錯誤地轉成底線（_t/_m/_cap），但多個真實 stdlib 檔案自己手寫的 #target inline-C body（thread.prn 的 lock、pcap.prn 的 read-packet/filter）都是用去掉驚嘆號後的原始名稱（m、cap）直接引用參數，改成整個去掉開頭驚嘆號才對；中間/結尾的驚嘆號（vec/push!、set!）維持轉底線不變。順手把 pcap.prn 自己真正缺的 Capture/Packet/PcapError 型別定義補上——pentest/* 六個檔案現在全部真的能編譯 (sess-20260820-0649-a3f19d93)
 
 - 真實修好 defenum/defstruct 前處理順序 bug——用新的多檔案編譯測真正的 ladybug/scarab 組合時發現：原本把整個程式所有 defenum 一次處理完才輪到所有 defstruct，不管真實檔案順序，導致 scarab.prn 的 SuiteNode（Spec 變體用到 firefly.prn 定義的 T）明明 T 排在前面卻找不到。改成合併成一個 pass、照真實合併後的檔案順序處理 (sess-20260820-0649-a3f19d93)
