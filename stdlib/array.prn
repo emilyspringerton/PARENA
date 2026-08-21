@@ -4,12 +4,27 @@
 
 (module array)
 (import vec)
-(export zeros from-vec get set! reshape add mul-elementwise)
+(export zeros from-vec get set! reshape add mul-elementwise NDArray ShapeError IndexError)
 
 (defstruct NDArray
   (data    : (Vec F64) @ Region)
   (shape   : (Vec I32) @ Region)
   (strides : (Vec I32) @ Region))
+
+;; Real, honest gap closed here (2026-08-21): every function below (and
+;; linalg.prn's own matmul/dot) used `ShapeError`/`IndexError` in its own
+;; real signature but this file never actually DEFINED either -- not a
+;; compiler gap, a genuine missing-definition gap in the file itself,
+;; the same real class pcap.prn/io.prn's own Capture/Packet/PcapError
+;; and FileHandle/IoError gaps already were. Both are called as
+;; `(ShapeError "message text")`/`(IndexError "message text")` at every
+;; real call site in this file -- a single String field, matching
+;; defstruct's own positional-constructor-call convention exactly.
+(defstruct ShapeError
+  (message : String))
+
+(defstruct IndexError
+  (message : String))
 
 (defn product [(shape : &(Vec I32))]
   : I32

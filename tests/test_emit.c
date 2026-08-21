@@ -1432,6 +1432,137 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `when` in loop-tail position, with MULTIPLE body forms -- a
+     * real, structural gap found gcc-verifying array.prn's own real
+     * `strides-for`, whose whole loop body is `(when (>= i 0) (vec/push!
+     * &s running) (recur ...))`. This fell all the way through to the
+     * generic "plain value" case in emit_loop_tail, which calls
+     * emit_expr() on the WHOLE `when` node -- no handling for `when`
+     * exists there at all (only emit_body's own statement/tail dispatch
+     * does), so this silently mangled into a bogus call to a
+     * never-defined `when(...)` C function. `parena build`'s own exit
+     * code never caught this -- only an actual gcc -pedantic -Werror
+     * compile did (an "implicit declaration of function 'when'"
+     * error). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn fill [(shape : &(Vec I32)) (dest : Arena @ Region)] : (Vec I32) @ Region\n"
+            "  (let [n (vec/len shape) s (vec/new dest)]\n"
+            "    (loop [i 0]\n"
+            "      (when (< i n)\n"
+            "        (vec/push! &s (deref (vec/get shape i)))\n"
+            "        (recur (+ i 1))))\n"
+            "    s))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a multi-body-form (when cond body1 body2) in loop-tail position parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: implicit declaration of function 'when', "
+              "since emit_loop_tail had no handling for `when` at all)");
+        if (c_src) {
+            CHECK(strstr(c_src, "if ((i < n)) {") != NULL,
+                  "when's condition becomes a real, statement-level C if inside the loop");
+            CHECK(strstr(c_src, "continue;") != NULL && strstr(c_src, "} else {\n            break;") != NULL,
+                  "the true branch's own recur becomes continue, the false branch (when's own "
+                  "real, honest 'no else value' semantics) breaks the loop instead");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- Un-hinted, plain `let`-bound local Vec, scalar element pushed
+     * via vec/push! -- a real, structural gap found gcc-verifying
+     * array.prn's own real `strides-for`/`zeros`, both of which do
+     * `(let [s (vec/new dest)] (loop [...] (... (vec/push! &s running)
+     * ...)) s)`: `s` carries no type annotation of its own anywhere (no
+     * `&(Vec ElemType)` parameter, no `(Vec ElemType)` struct field), so
+     * the old hint-only boxing decision (g_vec_elem_hints) never fired,
+     * and a raw scalar (`running`, a real `double`/`int`) flowed
+     * straight into `vec_push_`'s own `void *item` parameter -- a real
+     * gcc type-mismatch error, not caught by `parena build`'s own exit
+     * code. Fixed by deciding boxing from the VALUE argument's own
+     * already-known emitted C type (from emit_expr itself) instead of
+     * requiring a separately-tracked hint for the TARGET Vec. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn build [(dest : Arena @ Region)]\n"
+            "  (let [s (vec/new dest)]\n"
+            "    (vec/push! &s 42)\n"
+            "    s))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec/push! of a scalar onto an un-hinted let-bound local Vec parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously produced a real gcc type mismatch: double where "
+              "void * was expected, since only param/struct-field Vecs got a boxing hint before)");
+        if (c_src) {
+            /* Real, pre-existing, unrelated convention confirmed here, not
+             * changed by this fix: a bare numeric literal like `42`
+             * always resolves to "double" (no I32-vs-F64 literal
+             * distinction exists in this compiler), so vec_box_f64 is
+             * the real, correct helper here -- matching what array.prn's
+             * own real strides-for/zeros (gcc-verified separately) also
+             * produce for their own int-looking loop-var pushes. */
+            CHECK(strstr(c_src, "vec_push_(&(s), vec_box_f64(&(s), 42))") != NULL,
+                  "the raw scalar literal is boxed via vec_box_f64 before being stored, decided "
+                  "from the argument's own resolved type, not a hint lookup on the target");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- Ok/Err/Some wrapping a NON-pointer payload (a by-value struct
+     * construction, or a deref'd scalar) with a real Arena in scope --
+     * the real, deeper gap found right after the (Vec T) @ Region param
+     * fix above got array.prn's own `from-vec` past its own parameter
+     * parsing: `(Ok {:data data :shape shape ...})` constructs a
+     * by-value NDArray struct (map-literal construction reports its own
+     * type as the plain struct name, never a pointer -- structs are
+     * always constructed by value in this compiler), which can't
+     * implicitly convert to the runtime's own `void *value` field.
+     * Fixed via a generated, per-type `TypeName_box(Arena *dest,
+     * TypeName v)` helper function (see g_box_helpers' own declaration
+     * comment for why this shape, not a GNU statement-expression or a
+     * temp-hoisting architecture change), found via the arena bound to
+     * the conventional `dest` parameter name (STDLIB.md's own
+     * documented "every allocating function takes an explicit dest"
+     * convention). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defenum MakeError (BadInput))\n"
+            "(defn make-point [(x : I32) (y : I32) (dest : Arena @ Region)]\n"
+            "  : (Result Point MakeError) @ Region\n"
+            "  (Ok {:x x :y y}))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(Ok {...}) wrapping a by-value struct construction, with a dest "
+                                "arena in scope, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'VS0's emitter only supports pointer-typed "
+              "payloads so far', since Ok/Err/Some never attempted boxing at all before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "static inline Point *Point_box(Arena *dest, Point v)") != NULL,
+                  "a real, per-type box helper function is generated once, ahead of the defn that "
+                  "needs it");
+            CHECK(strstr(c_src, "result_ok(Point_box(dest, Point_new(x, y)))") != NULL,
+                  "the call site boxes the by-value struct construction through the generated "
+                  "helper before handing it to result_ok, a plain, valid C99 function call -- no "
+                  "GNU statement-expression, no temp-hoisting");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

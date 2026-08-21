@@ -371,6 +371,97 @@ static const char *find_defn_return_type(const char *c_name) {
     return NULL;
 }
 
+/* g_boxed_types / g_box_helpers -- generated-once-per-type boxing
+ * helper functions, the real fix for Ok/Err/Some (and single-field
+ * defenum variants) needing to wrap a NON-pointer payload -- a
+ * map-literal struct construction (array.prn's own real `(Ok {:data
+ * data ...})`) or a deref'd scalar (array.prn's own real `(Ok (deref
+ * (vec/get ...)))`) -- into the runtime's `void *value` field.
+ *
+ * Real, honest reasoning for THIS approach over the alternatives: a
+ * GNU statement-expression (`({ Type *p = ...; *p = v; p; })`) is
+ * rejected outright by this project's own `-pedantic -Werror` build;
+ * hoisting a synthesized temp-variable DECLARATION into the enclosing
+ * statement would need `emit_expr`'s pure-expression-returning
+ * architecture to grow statement-emission capability everywhere it's
+ * called from, a much larger change. A generated `static inline
+ * TypeName *TypeName_box(Arena *dest, TypeName v)` helper sidesteps
+ * both: the "declare a local, take its address, copy the value in"
+ * logic lives inside the HELPER FUNCTION's own body, where `v` is a
+ * genuine, addressable C local (a function parameter) -- so the call
+ * SITE only ever needs a plain, valid, pure C99 function-call
+ * expression (`NDArray_box(dest, NDArray_new(...))`), composing
+ * exactly like any other call this emitter already produces.
+ *
+ * One real helper function is generated per distinct payload type
+ * (deduped via g_boxed_types), collected into a separate buffer
+ * (g_box_helpers, not `out` directly -- emit_expr has no StrBuf
+ * parameter) and spliced into the final output by emit_c() itself,
+ * positioned after the struct/enum pre-pass (so e.g. NDArray's own
+ * typedef already exists) but before any defn body (so every real
+ * call site, textually, follows its own helper's definition -- C
+ * requires a function be at least declared before use). */
+typedef struct BoxedType {
+    const char *type_name;
+    struct BoxedType *next;
+} BoxedType;
+static BoxedType *g_boxed_types = NULL;
+static StrBuf g_box_helpers;
+
+static const char *ensure_box_helper(Arena *arena, const char *c_type) {
+    char name_buf[160];
+    snprintf(name_buf, sizeof(name_buf), "%s_box", c_type);
+    for (BoxedType *b = g_boxed_types; b; b = b->next) {
+        if (strcmp(b->type_name, c_type) == 0) {
+            return arena_strdup(arena, name_buf, strlen(name_buf));
+        }
+    }
+    BoxedType *nb = (BoxedType *)arena_alloc(arena, sizeof(BoxedType));
+    nb->type_name = arena_strdup(arena, c_type, strlen(c_type));
+    nb->next = g_boxed_types;
+    g_boxed_types = nb;
+    sb_appendf(&g_box_helpers,
+               "static inline %s *%s_box(Arena *dest, %s v) {\n"
+               "    %s *p = (%s *)arena_alloc(dest, sizeof(%s));\n"
+               "    *p = v;\n"
+               "    return p;\n"
+               "}\n\n",
+               c_type, c_type, c_type, c_type, c_type, c_type);
+    return arena_strdup(arena, name_buf, strlen(name_buf));
+}
+
+/* find_dest_arena -- the real, narrow, honest search for "which Arena
+ * do I box this into" at an Ok/Err/Some call site, which (unlike
+ * `alloc`) names no arena of its own. STDLIB.md's own array-package
+ * design section states the real, established convention directly:
+ * "every allocating function takes an explicit dest : Arena @ Region"
+ * -- so a bound local named exactly "dest" is checked first. Falls
+ * back to the first arena-typed local found anywhere in scope
+ * (function parameter or with-arena local) if no "dest" exists, since
+ * a differently-named arena parameter is still real and usable. Real,
+ * honest limitation, unchanged in spirit from the map-literal
+ * struct-match's own "genuinely ambiguous only if..." comment: with
+ * more than one arena in scope and no "dest", the first one found
+ * wins rather than being reported as ambiguous -- narrower than a
+ * real type-directed choice, but no real stdlib call site today has
+ * more than one arena in scope at an Ok/Err/Some site. Returns NULL
+ * (boxing impossible) when no arena is in scope at all -- e.g.
+ * array.prn's own real `get`, whose whole signature carries no Arena
+ * parameter -- which keeps failing the same honest way it already did
+ * before this fix. */
+static Local *find_dest_arena(EmitScope *scope) {
+    Local *named = scope_lookup(scope, "dest");
+    if (named && (named->is_arena_value || strcmp(named->c_type, "Arena *") == 0)) return named;
+    for (EmitScope *cur = scope; cur; cur = cur->parent) {
+        for (int i = cur->count - 1; i >= 0; i--) {
+            if (cur->locals[i].is_arena_value || strcmp(cur->locals[i].c_type, "Arena *") == 0) {
+                return &cur->locals[i];
+            }
+        }
+    }
+    return NULL;
+}
+
 static StructInfo *find_struct_by_name(const char *name) {
     for (StructInfo *s = g_structs; s; s = s->next) {
         if (strcmp(s->name, name) == 0) return s;
@@ -791,7 +882,6 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
      * built, comma-joined argument text, which breaks the instant any
      * argument is itself a multi-argument call, e.g. world.prn's own
      * real `index-for(t, x, z)` as the index argument). */
-    const char *box_fn = NULL;
     const char *box_vec_arg = NULL;       /* the real `Vec *` text vec_box_i32/vec_box_f64's own
                                             * first argument needs -- NOT the same as
                                             * vec_call_target_hint()'s own unwrapped lookup key,
@@ -800,27 +890,43 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
     size_t box_logical_index = 0; /* 1-based position among children[1..]; 0 = "no boxing" */
     if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0) {
         const char *target_text = NULL;
-        VecElemHint *hint = vec_call_target_hint(arena, call, scope, &target_text, out_error);
+        /* Real, honest widening (2026-08-21, gcc-verifying array.prn's
+         * own real `strides-for`/`zeros`): the boxing DECISION used to
+         * require a g_vec_elem_hints entry for the target Vec, which
+         * only ever gets recorded for a `&(Vec ElemType)` PARAMETER or a
+         * `(Vec ElemType)` struct FIELD -- a plain `let`-bound local Vec
+         * (e.g. `(let [s (vec/new dest)] ...)`, no type annotation
+         * anywhere `s` itself owns) never got one, so a scalar pushed
+         * onto it flowed through unboxed, producing real, broken C
+         * (`vec_push_(&(s), running)` where `running` is a bare
+         * `double`, not `void *`) -- caught only by an actual gcc
+         * compile, `parena build`'s own exit code never noticed. The
+         * hint was only ever needed to answer "what's the Vec's element
+         * type" for vec_get's own return-type CAST -- for push/set-at,
+         * the real, sufficient signal is simpler and already available
+         * for free below: the VALUE argument's own emitted C type
+         * (arg_type, from emit_expr itself). Boxing here no longer
+         * depends on g_vec_elem_hints at all -- box_logical_index is
+         * set unconditionally, and the real per-argument type check
+         * happens inline in the loop below. */
+        (void)vec_call_target_hint(arena, call, scope, &target_text, out_error);
         if (!target_text && out_error && *out_error) return NULL;
-        if (hint && hint->is_scalar) {
-            box_fn = strcmp(hint->elem_type, "int") == 0 ? "vec_box_i32" : "vec_box_f64";
-            box_logical_index = strcmp(fn_name, "vec_push_") == 0 ? 2 : 3;
-            /* Real bug found and fixed here (an actual gcc compile of
-             * world.prn's own set-height): the boxing wrap used to read
-             * `args.data` at the point of processing the VALUE argument,
-             * wrongly assuming it still held only the target's own text
-             * -- by then it holds every PRIOR argument too (target AND
-             * index, comma-joined), producing real, broken C
-             * (`vec_box_f64(target, idx, , h)`). Captured here, once,
-             * completely separately from the growing `args` buffer. */
-            if (call->children[1]->type == NODE_SYMBOL &&
-                (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut"))) {
-                char buf[512];
-                snprintf(buf, sizeof(buf), "&(%s)", target_text);
-                box_vec_arg = arena_strdup(arena, buf, strlen(buf));
-            } else {
-                box_vec_arg = target_text;
-            }
+        box_logical_index = strcmp(fn_name, "vec_push_") == 0 ? 2 : 3;
+        /* Real bug found and fixed here (an actual gcc compile of
+         * world.prn's own set-height): the boxing wrap used to read
+         * `args.data` at the point of processing the VALUE argument,
+         * wrongly assuming it still held only the target's own text
+         * -- by then it holds every PRIOR argument too (target AND
+         * index, comma-joined), producing real, broken C
+         * (`vec_box_f64(target, idx, , h)`). Captured here, once,
+         * completely separately from the growing `args` buffer. */
+        if (call->children[1]->type == NODE_SYMBOL &&
+            (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut"))) {
+            char buf[512];
+            snprintf(buf, sizeof(buf), "&(%s)", target_text);
+            box_vec_arg = arena_strdup(arena, buf, strlen(buf));
+        } else {
+            box_vec_arg = target_text;
         }
     }
     StrBuf args;
@@ -860,11 +966,13 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
             return NULL;
         }
         if (i > 1) sb_append(&args, ", ");
-        if (box_fn && logical_index == box_logical_index) {
+        int is_boxable_scalar = arg_type && (strcmp(arg_type, "int") == 0 || strcmp(arg_type, "double") == 0);
+        if (box_vec_arg && logical_index == box_logical_index && is_boxable_scalar) {
             /* Box this specific value argument -- vec_box_i32/vec_box_f64
              * need the real `Vec *` target too (to allocate the scalar
              * cell from its own arena), which is always this call's own
              * first argument, already sitting at the front of `args`. */
+            const char *box_fn = strcmp(arg_type, "int") == 0 ? "vec_box_i32" : "vec_box_f64";
             sb_appendf(&args, "%s(%s, %s)", box_fn, box_vec_arg, arg_c);
         } else {
             sb_append(&args, arg_c);
@@ -1072,15 +1180,39 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         if (!inner_c) return NULL;
         /* Real, honest limitation: the runtime's own Result/Option store
          * their payload as `void *value` (see parena_runtime.h's own
-         * comment) -- a non-pointer payload (e.g. a bare `double`) can't
-         * implicitly convert to void* in real C, so this is reported
-         * rather than emitting C that fails to compile downstream with a
-         * much more confusing error at the *emitted-C* compile step. */
+         * comment) -- a non-pointer payload (e.g. a bare `double`, or a
+         * by-value struct like `NDArray`) can't implicitly convert to
+         * void* in real C. First real attempt: box it into a real,
+         * arena-allocated cell via a generated per-type helper function
+         * (see g_box_helpers' own comment) -- found genuinely necessary
+         * while getting array.prn's own `from-vec` (`(Ok {:data data
+         * ...})`, a by-value NDArray struct construction) to compile.
+         * Only possible when a real Arena is findable in scope
+         * (find_dest_arena) -- when none is (array.prn's own `get`, a
+         * scalar-Ok with no Arena parameter at all in its signature),
+         * this is reported rather than emitting C that fails to compile
+         * downstream with a much more confusing error at the
+         * *emitted-C* compile step. */
         if (!inner_type || inner_type[strlen(inner_type) - 1] != '*') {
-            return fail(arena, out_error,
-                        "%s: VS0's emitter only supports pointer-typed payloads so far (got type "
-                        "'%s' at line %d)",
-                        expr->children[0]->text, inner_type ? inner_type : "?", expr->line);
+            if (!inner_type) {
+                return fail(arena, out_error,
+                            "%s: VS0's emitter only supports pointer-typed payloads so far (got type "
+                            "'?' at line %d)",
+                            expr->children[0]->text, expr->line);
+            }
+            Local *arena_local = find_dest_arena(scope);
+            if (!arena_local) {
+                return fail(arena, out_error,
+                            "%s: VS0's emitter only supports pointer-typed payloads so far, and no "
+                            "Arena is in scope to box this non-pointer payload ('%s') into at line %d "
+                            "(add a 'dest : Arena @ Region' parameter to box it)",
+                            expr->children[0]->text, inner_type, expr->line);
+            }
+            const char *box_fn = ensure_box_helper(arena, inner_type);
+            char boxed_buf[512];
+            snprintf(boxed_buf, sizeof(boxed_buf), "%s(%s, %s)", box_fn, arena_arg_expr(arena, arena_local),
+                      inner_c);
+            inner_c = arena_strdup(arena, boxed_buf, strlen(boxed_buf));
         }
         char buf[512];
         if (is_symbol(expr->children[0], "Ok")) {
@@ -1146,11 +1278,26 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             const char *inner_type = NULL;
             const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
             if (!inner_c) return NULL;
+            /* Same real boxing fallback Ok/Err/Some's own site above
+             * uses, for the identical real reason (a single-field
+             * defenum variant's own payload field can just as easily be
+             * a by-value struct or scalar as a Result/Option's). */
             if (!inner_type || inner_type[strlen(inner_type) - 1] != '*') {
-                return fail(arena, out_error,
-                            "%s: VS0's emitter only supports pointer-typed payloads so far (got type "
-                            "'%s' at line %d)",
-                            expr->children[0]->text, inner_type ? inner_type : "?", expr->line);
+                Local *arena_local = inner_type ? find_dest_arena(scope) : NULL;
+                if (!arena_local) {
+                    return fail(arena, out_error,
+                                "%s: VS0's emitter only supports pointer-typed payloads so far%s at "
+                                "line %d",
+                                expr->children[0]->text,
+                                inner_type ? " (got type '?', no Arena in scope to box it into)"
+                                           : " (got type '?')",
+                                expr->line);
+                }
+                const char *box_fn = ensure_box_helper(arena, inner_type);
+                char boxed_buf[512];
+                snprintf(boxed_buf, sizeof(boxed_buf), "%s(%s, %s)", box_fn,
+                          arena_arg_expr(arena, arena_local), inner_c);
+                inner_c = arena_strdup(arena, boxed_buf, strlen(boxed_buf));
             }
             *out_type = owner->name;
             char buf[512];
@@ -1601,6 +1748,64 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
         if (out_result_type) *out_result_type = then_type ? then_type : else_type;
         return 1;
     }
+    if (is_call_named(tail, "when")) {
+        /* `when` in loop-tail position -- a real, structural gap found
+         * here (2026-08-21, gcc-verifying array.prn's own real
+         * `strides-for`, whose whole loop body is `(when (>= i 0)
+         * (vec/push! &s running) (recur ...))`): this fell through to
+         * the generic "plain value" case below, which calls emit_expr()
+         * on the WHOLE `when` node -- emit_expr() has no handling for
+         * `when` at all (only emit_body's own statement/tail dispatch
+         * does), so this silently mangled into a bogus call to a
+         * never-defined `when(...)` C function. `parena build`'s own
+         * exit code never caught it -- only an actual gcc compile did.
+         *
+         * Also real, and new here: `when` in loop-tail position can
+         * have MULTIPLE body forms (this exact real call site has two:
+         * the `vec/push!` side effect, then `recur`) -- unlike
+         * emit_body's own single-body-form `when` (child_count == 3
+         * only), every form here except the last is a plain statement,
+         * and the LAST one recurses back into emit_loop_tail itself
+         * (matching `if`/`let`/`do`'s own recursive composition above),
+         * since it can be a `recur`, a nested `if`, or a plain value.
+         *
+         * `when` has no real "else" value (see emit_body's own comment
+         * on this same real, honest scope) -- in loop-tail position
+         * that means "stop the loop" when the condition is false: a
+         * bare `break` with no result_var assignment. Real, honest,
+         * narrow limitation: correct for the one real shape this
+         * compiler has ever needed to emit (a side-effect-only loop
+         * whose own result is never consumed by the caller, exactly
+         * `strides-for`'s real shape below) -- a `when` in the tail of
+         * a loop whose OWN result genuinely feeds a `return` would
+         * leave result_var honestly unset on the false branch, not
+         * flagged separately here since no real call site needs that
+         * yet. */
+        if (tail->child_count < 3) {
+            return fail(arena, out_error, "loop: when expected (when cond body...) at line %d",
+                        tail->line) != NULL;
+        }
+        const char *cond_type = NULL;
+        const char *cond = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        if (!cond) return 0;
+        sb_appendf(out, "        if (%s) {\n", cond);
+        for (size_t i = 2; i + 1 < tail->child_count; i++) {
+            const char *body_type = NULL;
+            const char *body_c = emit_expr(arena, tail->children[i], scope, &body_type, out_error);
+            if (!body_c) return 0;
+            sb_appendf(out, "            %s;\n", body_c);
+        }
+        const char *last_type = NULL;
+        if (!emit_loop_tail(arena, out, tail->children[tail->child_count - 1], scope, loop_locals,
+                             loop_var_count, result_var, &last_type, out_error)) {
+            return 0;
+        }
+        sb_append(out, "        } else {\n");
+        sb_append(out, "            break;\n");
+        sb_append(out, "        }\n");
+        if (out_result_type) *out_result_type = last_type;
+        return 1;
+    }
     if (is_call_named(tail, "let")) {
         /* A real, structural bug found here (2026-08-20, while getting
          * firefly.prn's own real `run-tests` to compile): a `let`
@@ -1790,7 +1995,17 @@ static int emit_loop(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, in
         return 0;
     }
 
-    sb_appendf(out, "    %s %s;\n", result_type ? result_type : "void *", result_var);
+    /* __attribute__((unused)): a real, valid Parena `loop` can be used
+     * purely for its own side effects, its own result never consumed
+     * by anything (e.g. array.prn's own real `strides-for`, whose loop
+     * only pushes onto `s` -- the real return value is the following
+     * `s` symbol, not the loop). gcc -Wall correctly flags a C local
+     * that's set but genuinely never read in that shape
+     * (-Wunused-but-set-variable, found via an actual gcc -pedantic
+     * -Werror compile of that exact real function), same real, honest
+     * suppression `let`'s own bindings already use above for the
+     * identical reason, not a real bug in the Parena source. */
+    sb_appendf(out, "    %s %s __attribute__((unused));\n", result_type ? result_type : "void *", result_var);
     sb_append(out, "    while (1) {\n");
     sb_append(out, body.data);
     sb_append(out, "    }\n");
@@ -2813,6 +3028,11 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     g_structs = NULL; /* same per-call reset, same real reason -- see g_enums' own comment */
     g_vec_elem_hints = NULL; /* same per-call reset -- see its own declaration comment */
     g_defn_return_types = NULL; /* same per-call reset -- see its own declaration comment */
+    g_boxed_types = NULL; /* same per-call reset -- see its own declaration comment */
+    static int box_helpers_ever_inited = 0;
+    if (box_helpers_ever_inited) sb_free(&g_box_helpers); /* free any prior call's leftover buffer */
+    sb_init(&g_box_helpers);
+    box_helpers_ever_inited = 1;
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
@@ -2857,14 +3077,29 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         }
     }
 
+    /* defn bodies are built into their OWN buffer, not appended to `out`
+     * directly, so g_box_helpers (populated lazily as a side effect of
+     * emitting Ok/Err/Some calls INSIDE these very defn bodies -- see
+     * its own declaration comment) can be spliced into `out` BEFORE the
+     * defn text below, once every defn has actually run and every
+     * needed box helper is known. Necessary because C requires a
+     * function be at least declared before its first use, and a defn
+     * near the top of the file can be the very first thing that needs
+     * a not-yet-discovered box helper. */
+    StrBuf defn_out;
+    sb_init(&defn_out);
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
         if (!is_call_named(form, "defn")) continue;
-        if (!emit_defn(arena, &out, form, out_error)) {
+        if (!emit_defn(arena, &defn_out, form, out_error)) {
+            sb_free(&defn_out);
             sb_free(&out);
             return NULL;
         }
     }
+    sb_append(&out, g_box_helpers.data);
+    sb_append(&out, defn_out.data);
+    sb_free(&defn_out);
 
     const char *result = arena_strdup(arena, out.data, out.len);
     sb_free(&out);

@@ -409,20 +409,41 @@ library via the FFI block NORTHSTAR.md's own core idioms already show (`#target 
 ...)}`), rather than hand-writing a naive triple-nested-loop matmul and calling it done — flagged
 as a real follow-up decision, not resolved by this design pass.
 
-**Real VS0 emitter gap found compiling this package (2026-08-21)**: `zeros`/`from-vec`'s own bare
-(non-reference) `(shape : (Vec I32) @ :region/scratch)` parameter shape — distinct from `product`/
-`strides-for`'s already-working `&(Vec I32)` reference form — was rejected outright by the
-compiler's own param-parsing loop (it only accepted a bare-symbol type with a trailing region
-annotation, not a compound/list type like `(Vec I32)`); fixed. Once past that, `from-vec`'s own
-`(Ok {:data data :shape shape ...})` surfaced a second, deeper, NOT-yet-fixed gap: `Ok`/`Err`/
-`Some` currently require a pointer-typed payload (the runtime's `Result`/`Option` store `void
-*value`), but a map-literal struct construction (`NDArray_new(...)`) and a `deref`'d scalar both
-produce a real, non-pointer *value* — boxing it into an arena cell first (the same idea
-`vec_box_i32`/`vec_box_f64` already use for `Vec` elements) needs either a GNU statement-expression
-(rejected under this project's own `-pedantic -Werror` build) or hoisting a synthesized temp-
-variable declaration into the enclosing statement, which `emit_expr`'s pure-expression-returning
-architecture isn't built for today. Real, separate, scoped follow-up work, not chased further in
-the same pass that found it — `get`/`reshape` in this same package hit the identical wall.
+**Real VS0 emitter gaps found and fixed compiling this package (2026-08-21)**: (1) `zeros`/
+`from-vec`'s own bare (non-reference) `(shape : (Vec I32) @ :region/scratch)` parameter shape —
+distinct from `product`/`strides-for`'s already-working `&(Vec I32)` reference form — was rejected
+outright by the compiler's own param-parsing loop; fixed to accept a compound/list type there too.
+(2) `Ok`/`Err`/`Some` (and single-field `defenum` variants) previously required a pointer-typed
+payload outright (the runtime's `Result`/`Option` store `void *value`) — a map-literal struct
+construction (`from-vec`'s own `(Ok {:data data ...})`) or a `deref`'d scalar produce a real,
+non-pointer *value*, which used to just fail. Fixed via a generated, per-payload-type
+`static inline TypeName *TypeName_box(Arena *dest, TypeName v)` helper function — the temp-and-
+address-of logic lives inside that real, addressable C function body, sidestepping both a GNU
+statement-expression (rejected under this project's own `-pedantic -Werror` build) and hoisting a
+synthesized temp-declaration into `emit_expr`'s own pure-expression-returning call graph. The arena
+to box into is found via a real, honest, narrow scope search (a bound local literally named `dest`
+first — this doc's own already-established "every allocating function takes an explicit dest"
+convention — falling back to the first arena-typed local in scope). (3) `when` in `loop`-tail
+position (`strides-for`'s whole real loop body: `(when (>= i 0) (vec/push! &s running) (recur
+...))`) had no handling at all — silently mangled into a bogus call to a never-defined `when(...)`
+C function, caught only by an actual gcc compile, not `parena build`'s own exit code. (4) A scalar
+pushed via `vec/push!`/`vec-set-at!` onto a plain `let`-bound local Vec (`strides-for`'s/`zeros`'s
+own `s`/`data`, carrying no type annotation of their own anywhere) never got boxed — the boxing
+decision used to require a `g_vec_elem_hints` entry (only ever recorded for a `&(Vec T)` parameter
+or a `(Vec T)` struct field), generalized to instead decide from the pushed *value*'s own already-
+known resolved C type, which needs no hint at all.
+
+**Real, NOT-yet-fixed gap, narrower than before**: `get`/`set!` still fail — `(Err (IndexError "out
+of bounds"))` needs boxing (IndexError is a real, non-pointer struct), but neither function's own
+signature carries an `Arena` parameter to box into at all (`get`'s is `(a : &NDArray) (idx : (Vec
+I32) @ :region/scratch)` — genuinely no arena anywhere). This is no longer a compiler-architecture
+gap (the boxing mechanism itself works, see (2) above) — it's a real, open stdlib DESIGN question:
+should a read-only accessor like `get` really need to allocate at all just to report "out of
+bounds," or should the runtime grow a real, static/singleton error-value convention for payloads
+that are always the same fixed message? Not resolved here — `IndexError`/`ShapeError` were newly
+defined in this same pass (previously referenced but never defined anywhere in this file, the same
+real gap class `pcap.prn`/`io.prn` already closed) but the design question above is separate,
+larger, and un-attempted.
 
 ### `dataframe` — the pandas equivalent, depends on `array` + `string`
 
