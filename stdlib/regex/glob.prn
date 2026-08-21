@@ -26,3 +26,73 @@
       ((char-eq? pattern pi "[") (match-bracket-class pattern pi path si))
       ((char-at-eq? pattern pi path si) (glob-match pattern (+ pi 1) path (+ si 1)))
       (true false))))
+
+;; Real, honest gap closed here (2026-08-21): char-eq?/char-at-eq?/
+;; match-bracket-class were called throughout glob-match above but
+;; never defined anywhere reachable -- the same real missing-
+;; definition-in-source-itself gap class already closed for pcap.prn/
+;; io.prn/array.prn/string.prn. char-eq?/char-at-eq? are thin wrappers
+;; over string.prn's own real `char-at` (this language has no separate
+;; Char type -- see string.prn's own header comment -- so a single-
+;; character glob-pattern token like "*"/"?"/"[" arrives here as a
+;; real 1-character String literal, compared byte-for-byte against
+;; char-at's own I32 ASCII-code result).
+(defn char-eq? [(s : String @ Region) (i : I32) (c : String @ Region)]
+  : Bool
+  (= (char-at s i) (char-at c 0)))
+
+(defn char-at-eq? [(a : String @ Region) (ai : I32) (b : String @ Region) (bi : I32)]
+  : Bool
+  (= (char-at a ai) (char-at b bi)))
+
+;; find-close-bracket -- the real, narrow index scan match-bracket-
+;; class needs: the first ']' at or after `from`, or -1 if the class is
+;; unterminated (a real, honest malformed-pattern case -- reported as
+;; "no match" by match-bracket-class below, not a crash). No nested
+;; '[' is possible inside a glob character class (unlike regex), so the
+;; first ']' found really is the real, correct close.
+(defn find-close-bracket [(pattern : String @ Region) (from : I32) (plen : I32)]
+  : I32
+  (loop [j from]
+    (cond
+      ((>= j plen) -1)
+      ((char-eq? pattern j "]") j)
+      (true (recur (+ j 1))))))
+
+;; bracket-class-matches? -- real, honest, narrower scope than a full
+;; regex-class grammar: understands a flat run of literal characters
+;; (`[abc]`) and ONE-character-wide contiguous ranges (`[a-z]`) freely
+;; mixed within the same class (`[a-cx-z]` scans both), via ASCII
+;; ordering on char-at's own I32 code -- not a general-purpose regex
+;; character class (no escaped ']', no multi-byte/unicode ranges).
+(defn bracket-class-matches? [(pattern : String @ Region) (start : I32) (close : I32) (path : String @ Region) (si : I32)]
+  : Bool
+  (loop [j start]
+    (if (>= j close)
+      false
+      (if (and (< (+ j 2) close) (char-eq? pattern (+ j 1) "-"))
+        (if (and (>= (char-at path si) (char-at pattern j)) (<= (char-at path si) (char-at pattern (+ j 2))))
+          true
+          (recur (+ j 3)))
+        (if (char-at-eq? pattern j path si)
+          true
+          (recur (+ j 1)))))))
+
+;; match-bracket-class -- handles a single "[...]" glob character
+;; class starting at pattern[pi] (the '[' itself), matching it against
+;; path[si] (already known < slen by glob-match's own cond ordering
+;; above). Real, honest support for leading negation (`[!abc]`/
+;; `[^abc]`, both real, common shell-glob spellings) via
+;; bracket-class-matches?'s own membership test, inverted.
+(defn match-bracket-class [(pattern : String @ Region) (pi : I32) (path : String @ Region) (si : I32)]
+  : Bool
+  (let [plen (string/length pattern)
+        negate (or (char-eq? pattern (+ pi 1) "!") (char-eq? pattern (+ pi 1) "^"))
+        start (if negate (+ pi 2) (+ pi 1))
+        close (find-close-bracket pattern start plen)]
+    (if (< close 0)
+      false
+      (let [matched (bracket-class-matches? pattern start close path si)]
+        (if (if negate (not matched) matched)
+          (glob-match pattern (+ close 1) path (+ si 1))
+          false)))))

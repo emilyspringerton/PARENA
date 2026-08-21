@@ -942,9 +942,19 @@ runtime's own hardcoded `string_concat` helper) are untouched. Confirmed via rea
 affects far beyond glob.prn: `map/*`, `array/*`, `io/*`, `stats/*`, `sdl2/*`, `pty/*` qualified
 calls appear throughout the stdlib, all previously mis-resolving the same way.
 
-**Real, still-NOT-yet-fixed gap, this file's own**: `glob-match`'s own `#target`-adjacent runtime
-dependencies (`char-eq?`, `char-at-eq?`, `match-bracket-class`) are referenced but never defined
-anywhere reachable — real, separate, un-started work.
+**Real gap closed (2026-08-21)**: `glob-match`'s own `char-eq?`/`char-at-eq?`/`match-bracket-class`
+— the same real missing-definition-in-source-itself gap class already closed for pcap.prn/io.prn/
+array.prn/string.prn — are now real, defined functions. `char-eq?`/`char-at-eq?` are thin wrappers
+over `string/char-at` (a single-character glob token like `"*"`/`"?"`/`"["` arrives as a real
+1-character String literal, this language having no separate Char type — see string.prn's own
+header comment). `match-bracket-class` is a real, honestly-scoped bracket-class matcher: literal
+character runs (`[abc]`) and one-character-wide contiguous ranges (`[a-z]`) freely mixed within one
+class (`[a-cx-z]`), plus leading negation (`[!abc]`/`[^abc]`) — not a general regex-class grammar
+(no escaped `]`, no multi-byte/unicode ranges). Two new internal helpers needed along the way:
+`find-close-bracket` (the real index scan for the class's own terminating `]`) and
+`bracket-class-matches?` (the real membership test). Verified gcc-clean AND at real runtime: a
+17-case harness covering `*`/`?`/literal classes/ranges/negation/empty-pattern/exact-match all pass
+their real expected result, not just a clean compile.
 
 **`grep`/`sed`/`awk`** — the actual Unix tools, each thin and built directly on the packages
 above rather than reimplementing matching logic:
