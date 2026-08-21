@@ -733,14 +733,38 @@ led to two real, general, self-caught emitter bugs, both now fixed:
    directly, no `deref`) and re-verified both gcc-clean and correct at real runtime (found/not-found
    cases, confirmed against a real `DataFrame`).
 
-`select` remains blocked — past both fixes above, it hits a genuinely THIRD, separate gap:
-`resolve_declared_type()` doesn't understand a parenthesized `(&Type)` reference nested inside a
+**`select` now real, gcc-clean, AND runtime-verified too — the third AND a fourth gap, both closed
+(2026-08-21, continued)**: past both fixes above, `select` hit a genuinely THIRD, separate gap:
+`resolve_declared_type()` didn't understand a parenthesized `(&Type)` reference nested inside a
 `Result`/`Option`'s own payload-type slot (`column`'s own real return type is `(Result (&Column)
-ColumnNotFoundError)`), so a real, general extension added this session (`unwrap`'s own payload-type
-lookup, generalized so a `match` on a direct call to a known function can type an `Ok`/`Some`
-clause's own bound value the identical way) can't resolve `column`'s own payload type either, and
-`col` inside `select`'s own match clause stays a generic `void *`. Not fixed this pass — real,
-separate, un-attempted work, distinct from every other gap closed today.
+ColumnNotFoundError)`), so the real, general extension added earlier this session (`unwrap`'s own
+payload-type lookup, generalized so a `match` on a direct call to a known function can type an
+`Ok`/`Some` clause's own bound value the identical way) couldn't resolve `column`'s own payload type
+either, and `col` inside `select`'s own match clause stayed a generic `void *`. **Fixed**: when
+`resolve_declared_type()` receives a `NODE_LIST` holding exactly one child that's itself a
+single-token `&Type` symbol, the parens are redundant — it now just recurses into itself on the
+inner symbol, reusing the already-correct real logic the bare (unparenthesized) `&Type` case
+already has, rather than duplicating it.
+
+That fix alone still weren't enough — surfaced a real, FOURTH, separate, self-caught bug: `select`'s
+own `Ok` clause body is `(do (vec/push! ...) (vec/push! ...))`, a real, honest `void`-typed tail
+(`vec_push_` is one of the few runtime calls this emitter tracks as genuinely returning C `void`).
+`emit_match_clause_body`'s own plain-value fallback used to unconditionally ASSIGN a clause's value
+into `result_var` — real, invalid C the instant that value is `void` ("void value not ignored as it
+ought to be"). Fixing that alone surfaced a second layer of the same problem: `result_var` itself
+used to be DECLARED with the literal type `"void"` in this case, and C simply has no valid `void
+result_var;` declaration at all ("declared void") — a real, KNOWN type that just isn't declarable as
+a local variable, distinct from the separate "genuinely unknown type" (`NULL`) case already handled.
+Both fixed: a void-typed clause value is now emitted as a bare `(void)(...)` statement instead of an
+assignment (never touching `result_var` at all), and `result_var`'s own declaration uses a real,
+valid, inert placeholder type (`int`) instead of the undeclarable literal `"void"` whenever the
+clause's own real type is void — the same fix applied to both `emit_match_core`'s own real body and
+`emit_match`'s own top-level return-mode handling (a `void`-typed match, like a `void`-typed loop,
+now correctly falls off the end of its own enclosing function rather than attempting a `return`).
+
+`select` is now fully verified: a real harness selecting a real multi-column subset (confirming
+correct column values AND correct name ordering) and confirming the real `Err` path fires for an
+unknown column name, both via the real, compiled `select` function, not a hand-written equivalent.
 
 ### `nn` / `tokenizer` / `sort` — grounded in porting `gpt2-alpine-c`
 

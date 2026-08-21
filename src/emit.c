@@ -3251,7 +3251,25 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
     const char *clause_type = NULL;
     const char *clause_c = emit_expr(arena, body, scope, &clause_type, out_error);
     if (!clause_c) return 0;
-    sb_appendf(out, "        %s = %s;\n", result_var, clause_c);
+    /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying
+     * dataframe.prn's own real `select`, whose `Ok` clause body is
+     * `(do (vec/push! ...) (vec/push! ...))` -- a real, honest void-
+     * returning tail, `vec_push_` being one of the few runtime calls
+     * this emitter tracks as genuinely returning C `void`, not a
+     * pointer): this used to unconditionally assign the clause's own
+     * value into `result_var`, real, invalid C the moment that value's
+     * own type is `void` ("void value not ignored as it ought to be").
+     * Same real "void gets a bare statement, not an assignment"
+     * treatment `emit_body`'s own tail-position handling already gives
+     * a `"void"`-typed value, applied here too -- `result_var` itself
+     * (declared `void` in exactly this case, see emit_match's own
+     * declaration) is simply never assigned, matching its own real,
+     * honest "this clause produces nothing" meaning. */
+    if (clause_type && strcmp(clause_type, "void") == 0) {
+        sb_appendf(out, "        (void)(%s);\n", clause_c);
+    } else {
+        sb_appendf(out, "        %s = %s;\n", result_var, clause_c);
+    }
     /* Real, self-caught bug fixed here (2026-08-21, before it ever hit
      * gcc -- caught by re-reading emit_loop_tail's own new `match`
      * case above and realizing this assignment alone leaves nothing to
@@ -3583,8 +3601,25 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
      * `loop`. Found via an actual gcc -pedantic -Werror compile
      * (-Wunused-but-set-variable), not a real bug in the Parena
      * source. */
-    sb_appendf(out, "    %s %s __attribute__((unused));\n", result_type ? result_type : "void *",
-               result_var);
+    /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying
+     * dataframe.prn's own real `select`): `result_type` can genuinely
+     * be the literal string "void" (a real clause whose own tail is a
+     * void-returning runtime call, e.g. `vec_push_` -- see this
+     * function's own clause-body fix above), and C simply has no valid
+     * `void result_var;` declaration at all ("variable or field
+     * '...' declared void") -- unlike the "unknown type, guess void *"
+     * NULL case just below it, this is a real, KNOWN type that just
+     * isn't declarable as a local variable. Declared as a real, inert
+     * placeholder (`int`) instead in that one case -- never assigned
+     * (this function's own clause-body fix already skips the
+     * assignment for a void clause) and never read (return_mode's own
+     * logic below also skips returning it), so the concrete type here
+     * is arbitrary as long as it's valid C; `int` is simply the
+     * smallest, most ordinary choice. */
+    const char *decl_type = result_type && strcmp(result_type, "void") == 0
+                                 ? "int"
+                                 : (result_type ? result_type : "void *");
+    sb_appendf(out, "    %s %s __attribute__((unused));\n", decl_type, result_var);
     sb_append(out, body.data);
     sb_free(&body);
 
@@ -3593,9 +3628,13 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
      * real reasoning) -- a real, analogous risk here too: a `match`
      * whose every clause recurs/has no real terminal value, used
      * directly as a function's own tail, would hit the identical
-     * "return an uninitialized value from a void function" bug. */
+     * "return an uninitialized value from a void function" bug. A
+     * literal "void" result_type gets the identical real treatment as
+     * NULL here -- there's no real value to return either way, only a
+     * real KNOWN type in the "void" case (used above for the real
+     * declaration decision), never a real return target. */
     if (return_mode) {
-        if (result_type) {
+        if (result_type && strcmp(result_type, "void") != 0) {
             if (out_return_type) *out_return_type = result_type;
             sb_appendf(out, "    return %s;\n", result_var);
         } else if (out_return_type) {
@@ -3932,6 +3971,31 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
                     type_node->text ? type_node->text : "?", type_node->line);
     }
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
+        /* `(&Type)` -- a single-token `&Type` reference WRAPPED in its
+         * own parens, e.g. dataframe.prn's own real `column` return
+         * type `(Result (&Column) ColumnNotFoundError)` -- the `X`
+         * slot there is written `(&Column)`, not bare `&Column`, simply
+         * because it's nested inside another type constructor's own
+         * child list. Found genuinely unhandled (2026-08-21, gcc-
+         * verifying `select`'s own real `(match (column df name dest)
+         * ((Ok col) ...))`, which needed `column`'s own real payload
+         * type resolved to type `col`'s bound value correctly): this
+         * whole NODE_LIST branch only ever recognized specific type-
+         * constructor symbols (`Result`/`Option`/`Vec`/`Map`/`Fn`) as
+         * children[0] -- `&Column` matches none of them, so this fell
+         * through to the generic "unsupported return type form"
+         * failure below, even though the single-token `&Type` case
+         * just above already handles the semantically identical BARE
+         * `&Column` just fine. Real, narrow, honest fix: when this
+         * list holds EXACTLY one child, and that child is itself a
+         * single-token `&Type` symbol, the parens are redundant --
+         * just recurse into resolve_declared_type() on the inner
+         * symbol directly, reusing that already-correct real logic
+         * rather than duplicating it. */
+        if (type_node->child_count == 1 && type_node->children[0]->text &&
+            type_node->children[0]->text[0] == '&' && strcmp(type_node->children[0]->text, "&mut") != 0) {
+            return resolve_declared_type(arena, type_node->children[0], out_error);
+        }
         if (is_symbol(type_node->children[0], "Result")) return "Result";
         if (is_symbol(type_node->children[0], "Option")) return "Option";
         /* (Vec T) -- erases T the same way (Result ..)/(Option ..) erase

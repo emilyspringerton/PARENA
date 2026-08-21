@@ -6,27 +6,23 @@
 ;; work, same honest limitation STDLIB.md already states.
 ;;
 ;; Real status update (2026-08-21, see STDLIB.md's own "dataframe"
-;; section for the full real reasoning): `column` is now real, gcc-
-;; clean, AND runtime-verified (a real harness confirming both the
-;; found and not-found cases). Getting there closed two real, general,
-;; broadly-impactful emitter bugs (see STDLIB.md for the full detail):
-;; the single-token `&name` form's own element-type-hint lookup never
-;; matched its own registration key, and `vec_get`'s own hint-informed
-;; cast added a wrong extra level of pointer indirection for a
-;; pointer-representable element (String) that's never boxed at all.
-;; The real, visible, SOURCE-level consequence: a String element read
-;; via `vec/get` is now used DIRECTLY, with no `deref` -- it's already
-;; the real value.
-;;
-;; `select` still doesn't compile -- surfaced (and got past two of the
-;; above fixes, then hit) a THIRD, real, separate, deeper gap:
-;; `resolve_declared_type()` doesn't understand a parenthesized `(&Type)`
-;; reference nested inside a `Result`/`Option`'s own payload-type slot
-;; (`column`'s own real return type is `(Result (&Column)
-;; ColumnNotFoundError)`), so `select`'s own `(match (column df name
-;; dest) ((Ok col) ...) ...)` can't type `col`'s own bound value beyond
-;; the generic `void *` fallback. Not fixed this pass -- real, separate,
-;; un-attempted work.
+;; section for the full real reasoning): `column` AND `select` are now
+;; both real, gcc-clean, AND runtime-verified (a real harness confirming
+;; column's own found/not-found cases and select's own real
+;; multi-column selection + unknown-name error path). Getting here
+;; closed four real, general, broadly-impactful emitter bugs, none
+;; specific to this file (full detail in STDLIB.md): the single-token
+;; `&name` form's own element-type-hint lookup never matched its own
+;; registration key; `vec_get`'s own hint-informed cast added a wrong
+;; extra level of pointer indirection for a pointer-representable
+;; element (String) that's never boxed at all; `resolve_declared_type()`
+;; didn't understand a parenthesized `(&Type)` reference nested inside a
+;; `Result`/`Option`'s own payload-type slot; and a `match` clause whose
+;; own tail is a real, void-returning runtime call (`vec_push_`) had
+;; nowhere valid to put that result, both in its own declaration
+;; (`void` isn't a real declarable C type) and its own assignment (a
+;; void value can't be assigned at all). `read-csv`/`filter`/`group-by`
+;; remain genuinely deferred, unchanged.
 
 (module dataframe)
 (import array)

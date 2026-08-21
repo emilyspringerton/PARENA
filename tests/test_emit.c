@@ -2989,6 +2989,76 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `(&Type)` -- a single-token `&Type` reference WRAPPED in its
+     * own parens (e.g. dataframe.prn's own real `column` return type
+     * `(Result (&Column) ColumnNotFoundError)`), found genuinely
+     * unhandled (2026-08-21, gcc-verifying `select`'s own real `(match
+     * (column df name dest) ((Ok col) ...))`, which needed `column`'s
+     * own real payload type resolved to type `col`'s bound value):
+     * resolve_declared_type()'s own NODE_LIST branch only ever
+     * recognized specific type-constructor symbols (Result/Option/Vec/
+     * Map/Fn) as children[0] -- `&Column` matches none of them, even
+     * though the semantically identical BARE `&Column` (no parens)
+     * already resolves fine via the single-token branch just above. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (n : I32))\n"
+            "(defstruct NotFoundError (msg : String))\n"
+            "(defn find [(items : &(Vec Item)) (dest : Arena @ Region)]\n"
+            "  : (Result (&Item) NotFoundError) @ Region\n"
+            "  (Err (NotFoundError \"nope\")))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a parenthesized (&Type) inside a Result's own payload slot parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported return type form', since "
+              "only the bare, unparenthesized &Type form was ever recognized as a real type)");
+        arena_free_all(&arena);
+    }
+
+    /* --- a `match` clause whose own tail is a real, void-returning
+     * runtime call (e.g. `vec_push_`), found genuinely broken two
+     * separate ways (2026-08-21, gcc-verifying dataframe.prn's own real
+     * `select`, whose `Ok` clause body is `(do (vec/push! ...)
+     * (vec/push! ...))`): (1) the clause's own void-typed value used to
+     * be unconditionally ASSIGNED into result_var, invalid C the moment
+     * that value is void ("void value not ignored as it ought to be").
+     * (2) `result_var` itself used to be declared with the literal type
+     * "void" in this case, which C doesn't allow as a variable
+     * declaration at all ("declared void") -- a real, KNOWN type that
+     * simply isn't declarable, distinct from the separate NULL-
+     * result_type case (an unknown type) already fixed. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn fill [(v : &mut (Vec I32)) (n : I32) (dest : Arena @ Region)]\n"
+            "  : Unit\n"
+            "  (match (Ok n)\n"
+            "    ((Ok x) (do (vec/push! v x) (vec/push! v x)))\n"
+            "    ((Err e) unit)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match clause whose own tail is a void-returning vec_push_ call "
+                                "parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed only at the *gcc* stage -- first "
+              "'declared void', then 'void value not ignored as it ought to be' once that was "
+              "fixed -- since a real void clause result had nowhere valid to go)");
+        if (c_src) {
+            CHECK(strstr(c_src, "int __match_result") != NULL,
+                  "result_var is declared as a real, valid, inert placeholder type (int) instead "
+                  "of the literal 'void', which C doesn't allow as a variable declaration");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
