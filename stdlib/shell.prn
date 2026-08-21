@@ -13,7 +13,14 @@
 (import string)
 (export resolve spawn-bash spawn-zsh)
 
-(defn getenv [(name : String @ :region/scratch)]
+;; Real bug found and fixed here (2026-08-21): this was named `getenv`,
+;; a real, direct naming COLLISION with libc's own real `getenv`
+;; (declared in <stdlib.h>, unconditionally included in every generated
+;; file) -- a genuine bug in this file's own source, not a compiler
+;; gap, caught only by an actual gcc "conflicting types" error.
+;; Renamed `env-lookup`, matching `lookup-path`'s own real naming style
+;; right below.
+(defn env-lookup [(name : String @ :region/scratch)]
   : (Option String) @ :region/scratch
   #target
   {:c (inline-c "getenv_as_option(name)")})
@@ -45,7 +52,7 @@
   (match explicit
     ((Some s) s)
     (None
-      (match (getenv "SHELL")
+      (match (env-lookup "SHELL")
         ((Some s) s)
         (None
           (match (lookup-path "bash.exe")

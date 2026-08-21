@@ -1498,15 +1498,24 @@ in `emit_loop_tail`'s own `when` handling (a non-last body form that's itself st
 a `match`) — fixed by delegating those non-last forms to `emit_body()` itself instead of hand-rolling
 a second, narrower dispatcher.
 
-**Real, STILL-not-fixed gaps, this file's own**: this file's real body calls a real function
-literally named `getenv` — a genuine naming COLLISION with libc's own real `getenv` (declared in
-`<stdlib.h>`, unconditionally included in every generated file since an earlier pass this session),
-producing a real "conflicting types" gcc error; a real bug in this file's own source, not yet
-renamed. Separately, `getenv-as-option`/`exec-lookpath-as-option`/`real-git-bash-roots`/
-`find-first-existing`/`platform-fallback-shell`/`pty/open` and `string/contains?`/`string/to-lower`
-are all called but never defined anywhere reachable (nor declared via `#target` FFI the way every
-other host-backed primitive elsewhere in this stdlib is) — real, separate, un-started work, not
-attempted in this same pass.
+**Second real bug found and fixed in a follow-up pass (2026-08-21)**: this file's real body called a
+real function literally named `getenv` — a genuine naming COLLISION with libc's own real `getenv`
+(declared in `<stdlib.h>`, unconditionally included in every generated file), producing a real
+"conflicting types" gcc error; a real bug in this file's own source, not a compiler gap. Renamed
+`env-lookup`, matching `lookup-path`'s own real naming style right below it in the same file.
+
+**`pty`'s own missing `Pty`/`PtyError` closed in the same follow-up pass**: every function in `pty`
+used `Pty`/`PtyError` in its own real signature but the file never actually defined either — the
+same real missing-definition-in-source-itself gap class already closed for pcap.prn/io.prn/
+net/tcp.prn. `Pty` is a real, minimal, opaque fd wrapper, same shape as those files' own handles.
+
+**Real, STILL-not-fixed gap, both files' own**: `getenv-as-option`/`exec-lookpath-as-option`/
+`real-git-bash-roots`/`find-first-existing`/`platform-fallback-shell` (shell.prn) and `pty_open`/
+`pty_read`/`pty_write`/`pty_resize`/`pty_close` (pty.prn) are all called but never defined anywhere
+reachable, nor declared via `#target` FFI the way every other host-backed primitive elsewhere in
+this stdlib is — real, separate, un-started host-runtime glue work, not attempted in this pass.
+Verified: `pty.prn` + `shell.prn` combined now compile with `parena build`, and gcc reports only
+these already-documented FFI gaps — no naming collisions, no structural/compiler errors.
 
 **`ssh`** — FFI-bound to `libssh2` (real, established, embeddable SSH client library — same FFI-
 bind judgment as `linalg`'s BLAS/LAPACK and `media/codec`'s libavcodec, not a from-scratch SSH
