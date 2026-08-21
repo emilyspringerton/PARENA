@@ -1,4 +1,5 @@
 ## 2026-08-21
+- nn.prn 全檔編譯過關並用真實數值驗證正確(layernorm/gelu/softmax/relu/leaky-relu/sigmoid/tanh-activation)。新增 exp-of/tanh-of(#target FFI 包 libm)。新增 311→316 個迴歸測試。Apple #15247,commit 7f4e9a5。 (sess-20260820-0649-a3f19d93)
 - firefly/ladybug 真的能跑了(F64 特化,matcher 改為 tagged union);新增真實 BDD 範例測試(4/4 通過);補齊 4 個通用編譯器缺口(多欄位 match 解構、單欄位型別追蹤、裸 defn-name 當值、struct 值的 vec/push! boxing)。新增 301→311 個迴歸測試。Apple #15245,commit f1e84eb。 (sess-20260820-0649-a3f19d93)
 - 新增 Vec 字面值 + unwrap;用執行期 harness 抓到 loop 變數 int/double 混淆的真實缺口(誠實記錄未修)。新增 296→301 個迴歸測試。Apple #15240,commit 3d49190。 (sess-20260820-0649-a3f19d93)
 - 補齊 glob.prn 缺少的 char-eq?/char-at-eq?/match-bracket-class,用 17 組真實 case 驗證正確。Apple #(見上),commit be56d5b。 (sess-20260820-0649-a3f19d93)
