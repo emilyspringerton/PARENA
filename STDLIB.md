@@ -317,6 +317,30 @@ model weights are immediately going to be reshaped and matmul'd, so handing back
 does more than log a fixed string — deliberately small, not a full `strings`-package-worth of
 surface, matching "yolo like php" over speccing every function up front.
 
+**Real VS0 emitter gaps found and fixed compiling this file (2026-08-21)**, none specific to
+`string` itself — general emitter gaps this file happened to be the first real source to reach:
+(1) `if` in tail position with a `loop` (or `let`/`do`/`when`/`cond`/`match`/`with-arena`) as one of
+its own branch VALUES (`is-valid-i32-text?`'s own `(if (= n 0) false (loop ...))`) — `emit_if`'s own
+pure-ternary form has no way to hold a statement-shaped construct; fixed by giving `if` in tail
+position the same real statement-level composition its siblings already have in `emit_body`'s own
+tail dispatch. (2) `alloc` with a real SIZE EXPRESSION rather than a string literal (`concat`'s own
+`(alloc dest String (+ (length a) (length b)))`, immediately filled by a following `#target`
+inline-C body) — `alloc` previously only understood a literal value. (3) `#target {:c (inline-c
+"...")}` used as a MID-BODY statement (`concat`'s own real body: allocate, fill via inline-C for
+its own side effect, then return the buffer separately) rather than replacing an entire function
+body, the only shape it supported before. (4) A missing `#include <stdint.h>` in every generated
+file's own preamble (`length`'s own `#target` body casts to `int32_t`).
+
+**Real, NOT-yet-fixed gaps, this file's own**: `parse-i32` calls `is-valid-i32-text?`, which is
+defined LATER in the same file — VS0 has no forward-declaration pre-pass for `defn`s (only
+`defenum`/`defstruct` get one), so this is a genuine, separate, real architecture gap: any function
+calling another defined later in the same file hits a real "implicit declaration" error under gcc,
+undetected by `parena build`'s own exit code. Separately, `ParseError`/`substring`/`str-eq?`/
+`is-digit?`/`char-at`/`raw-parse-i32` are referenced throughout this file but never defined
+anywhere in it — the same real missing-definition-in-source-itself gap class already closed for
+pcap.prn/io.prn/array.prn, not yet closed here. Neither gap was attempted in this same pass —
+flagged, not chased, matching this doc's own established discipline.
+
 ### `log` — one real call
 
 ```clojure
@@ -755,6 +779,25 @@ design used above.
 ```clojure
 (defn matches [(pattern : String @ :region/scratch) (path : String @ Region)] : Bool)
 ```
+
+**Real VS0 emitter gap found and fixed compiling this file's own real implementation (2026-08-21)**:
+`glob-match`'s whole body is a `cond` (`(cond (test1 result1) (test2 result2) ... (true default))`)
+— Lisp's own classic multi-clause conditional, found genuinely never implemented anywhere in the
+emitter at all (three more real, already-written stdlib files use this same shape: string.prn's
+`split`, map.prn's `find-slot`, expr.prn's `apply-binop`). Before this fix, `cond` silently fell
+through to the generic call path and mangled into a bogus call to a never-defined `cond(...)` C
+function — `parena build`'s own exit code never caught it, only an actual gcc compile did. Fixed as
+two real forms: a pure ternary-chain (folding right-to-left, matching `if`'s own composition) for
+`cond` used as a plain value expression, plus a separate statement-level recursive composition for
+`cond` in `loop`-tail position (needed because `recur` emits a real `continue;` statement, which can
+never live inside a ternary — `string/split`'s and `map/find-slot`'s own real `cond` usage are both
+this second shape).
+
+**Real, NOT-yet-fixed gaps, this file's own**: `matches` calls `glob-match`, which is defined LATER
+in the same file — the same real forward-declaration-pre-pass gap flagged on `string.prn` above,
+not this file's own issue and not attempted here either. Separately, `glob-match`'s own `#target`-
+adjacent runtime dependencies (`string/length`, `char-eq?`, `char-at-eq?`, `match-bracket-class`)
+are referenced but never defined anywhere reachable — real, separate, un-started work.
 
 **`grep`/`sed`/`awk`** — the actual Unix tools, each thin and built directly on the packages
 above rather than reimplementing matching logic:

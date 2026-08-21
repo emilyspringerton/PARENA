@@ -1563,6 +1563,212 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `cond` as a pure value expression -- Lisp's own classic
+     * multi-clause conditional, found missing entirely (2026-08-21,
+     * gcc-verifying regex/glob.prn's own real `glob-match`): with no
+     * handling anywhere, `cond` fell through to the generic call path
+     * and mangled into a bogus call to a never-defined `cond(...)` C
+     * function, undetected by `parena build`'s own exit code. Folds
+     * right-to-left into nested C ternaries; the LAST clause is always
+     * the unconditional base case (matching every real clause set this
+     * stdlib actually writes, always ending `(true ...)`). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn classify [(n : I32)] : String\n"
+            "  (cond\n"
+            "    ((< n 0) \"negative\")\n"
+            "    ((= n 0) \"zero\")\n"
+            "    (true \"positive\")))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a (cond (test result) ... (true default)) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: mangled into a bogus call to a "
+              "never-defined 'cond' C function, since no handling for cond existed anywhere)");
+        if (c_src) {
+            CHECK(strstr(c_src, "((n < 0) ? \"negative\" : ((n == 0) ? \"zero\" : \"positive\"))") != NULL,
+                  "cond folds right-to-left into real, correctly-nested C ternaries, with the last "
+                  "clause's own result used unconditionally as the base case");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `cond` in loop-tail position, with `recur` inside more than
+     * one clause -- real, honest necessity beyond the pure-ternary form
+     * above: string.prn's own real `split` and map.prn's own real
+     * `find-slot` both have `cond` as their WHOLE loop body, with
+     * `recur` inside multiple clause results -- `recur` emits a real C
+     * `continue;` STATEMENT, which can never appear inside a ternary
+     * expression. Also covers a real, self-caught bug in this same fix
+     * (found via an actual gcc compile of an isolated repro): the loop
+     * result's own C type used to come only from the LAST clause,
+     * wrong the instant an EARLIER clause is the real terminal value
+     * and the last clause is a `recur` (which reports no type at all)
+     * -- fixed to take whichever clause actually resolved one, the
+     * same real fallback `if`'s own loop-tail handling already uses
+     * across exactly two branches, generalized across N. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn count-up-to [(n : I32)] : I32\n"
+            "  (loop [i 0 count 0]\n"
+            "    (cond\n"
+            "      ((>= i n) count)\n"
+            "      ((= i 3) (recur (+ i 1) count))\n"
+            "      (true (recur (+ i 1) (+ count 1))))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "cond with recur inside multiple clauses, as a whole loop body, "
+                                "parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously unreachable at all: emit_loop_tail had no `cond` "
+              "handling, only the pure-ternary emit_cond() form, which can't hold a `continue;`)");
+        if (c_src) {
+            CHECK(strstr(c_src, "continue;") != NULL,
+                  "a clause's own recur becomes a real continue; statement, not a ternary branch");
+            /* Real, pre-existing, unrelated convention confirmed here:
+             * a bare numeric literal always resolves to "double" (no
+             * I32-vs-F64 literal distinction in this compiler), so
+             * that's the real, correct terminal type here -- the actual
+             * bug this test targets is that it resolves to a real type
+             * AT ALL (previously NULL/void*, from only ever consulting
+             * the unrelated LAST clause), not which specific type. */
+            /* __loop_result_N's own number is a process-wide counter
+             * (not reset per emit_c() call), so only the prefix is
+             * checked here -- the exact number depends on how many
+             * other tests' own loops ran earlier in this same process. */
+            CHECK(strstr(c_src, "double __loop_result_") != NULL,
+                  "the loop's own result type resolves to the real terminal clause's own resolved "
+                  "type, not NULL/void* from the unrelated LAST clause happening to be a recur -- "
+                  "the real, self-caught bug in this same fix");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `if` in tail position, with `loop` (or `let`/`do`/`when`/
+     * `cond`/`match`/`with-arena`) as one of its own branch VALUES --
+     * found missing (2026-08-21, gcc-verifying string.prn's own real
+     * `is-valid-i32-text?`, whose own let-tail is `(if (= n 0) false
+     * (loop ...))`): emit_if() is a pure ternary that calls emit_expr()
+     * on both branches, and emit_expr() has no handling for `loop` (or
+     * any of its statement-shaped siblings) as a bare value -- those
+     * are only ever special-cased at the body-statement/tail level.
+     * Fixed by giving `if` the same real statement-level tail
+     * composition its siblings already get in emit_body's own tail
+     * dispatch, by recursing emit_body() itself on each branch treated
+     * as a one-form body -- reaching every one of emit_body's own
+     * tail-dispatch cases (including nested `if`) for free. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sum-to [(n : I32)] : I32\n"
+            "  (if (<= n 0)\n"
+            "    0\n"
+            "    (loop [i 0 acc 0]\n"
+            "      (if (> i n)\n"
+            "        acc\n"
+            "        (recur (+ i 1) (+ acc i))))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(if cond 0 (loop ...)) in tail position parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form', since "
+              "emit_if()'s own pure-ternary path has no handling for a loop as a branch value)");
+        if (c_src) {
+            CHECK(strstr(c_src, "if ((n <= 0)) {") != NULL,
+                  "if in tail position becomes a real, statement-level C if, not a ternary");
+            CHECK(strstr(c_src, "return 0;") != NULL && strstr(c_src, "while (1) {") != NULL,
+                  "each branch composes as its own real tail form -- a plain value returns "
+                  "directly, a loop still emits its own real while(1) statement");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `alloc` with a real SIZE EXPRESSION (not a string literal) --
+     * found missing (2026-08-21, gcc-verifying string.prn's own real
+     * `concat`: `(alloc dest String (+ (length a) (length b)))`,
+     * immediately filled by a following #target inline-C body's own
+     * strcpy/strcat, not pre-filled with known literal content at all).
+     * The original `alloc` only ever understood a NODE_STRING literal
+     * value (routing through arena_strdup). Fixed to also accept any
+     * other expression as a real byte-count, emitting `(char
+     * *)arena_alloc(<arena>, (<size-expr>) + 1)` -- the `+ 1` mirrors
+     * arena_strdup()'s own real behavior (reserving room for the null
+     * terminator), so a String alloc always gets that room regardless
+     * of which of the two real shapes filled it. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn make-buf [(n : I32) (dest : Arena @ Region)] : String @ Region\n"
+            "  (alloc dest String (* 2 n)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(alloc dest String <size-expr>) with a non-literal size parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'alloc: expected a string literal value', "
+              "since alloc only ever understood a NODE_STRING literal 3rd argument before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "(char *)arena_alloc(dest, ((2 * n)) + 1)") != NULL,
+                  "the size expression is emitted as a real arena_alloc call, with + 1 reserved for "
+                  "the null terminator, matching arena_strdup's own real behavior for the literal "
+                  "shape");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `#target {:c (inline-c "...")}` as a MID-BODY statement, not
+     * a whole function body -- found missing (2026-08-21, gcc-verifying
+     * string.prn's own real `concat`, whose let-body is exactly `[out
+     * (alloc ...)] #target {:c (inline-c "strcpy(out, a); strcat(out,
+     * a);")} out`: the inline-C fills the just-allocated buffer for its
+     * own side effect, then `out` is returned separately). Before this,
+     * `#target` was only ever recognized as a whole-body REPLACEMENT
+     * (emit_target_defn) -- a bare `#target` symbol mid-body had no
+     * handling at all and fell through to the generic identifier-lookup
+     * path, failing outright ('unknown identifier'). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn length [(s : String @ Region)] : I32\n"
+            "  #target\n"
+            "  {:c (inline-c \"(int32_t)strlen(s)\")})\n"
+            "(defn double-up [(a : String @ Region) (dest : Arena @ Region)] : String @ Region\n"
+            "  (let [out (alloc dest String (* 2 (length a)))]\n"
+            "    #target\n"
+            "    {:c (inline-c \"strcpy(out, a); strcat(out, a);\")}\n"
+            "    out))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a mid-body #target {:c (inline-c \"...\")} block, followed by a "
+                                "returned value, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier #target', since "
+              "#target had no mid-body statement handling before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "strcpy(out, a); strcat(out, a);") != NULL,
+                  "the raw inline-C is spliced in as a real, bare statement, no return-wrapping");
+            CHECK(strstr(c_src, "return out;") != NULL,
+                  "the following out symbol is still emitted as the let's own real tail value");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

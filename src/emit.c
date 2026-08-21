@@ -708,15 +708,34 @@ static const char *arena_arg_expr(Arena *arena, Local *b) {
 
 static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, EmitScope *scope,
                       int return_mode, const char **out_return_type, const char **out_error);
+static Node *find_target_c_src(Arena *arena, Node *target_map, const char **out_error);
 
 /* emit_alloc_call handles the one rank-producing/value-producing call
- * this pass understands: `(alloc arena-expr String "literal")`. Emits
- * `arena_strdup(<arena-arg>, "literal", strlen("literal"))` and reports
- * its own C type as "char *" via *out_type. */
+ * this pass understands: `(alloc arena-expr String value)`, two real
+ * shapes for `value`:
+ *
+ * (1) A string LITERAL (the original, only-ever-supported shape) --
+ * emits `arena_strdup(<arena-arg>, "literal", strlen("literal"))`.
+ *
+ * (2) A real SIZE EXPRESSION, not a literal -- found genuinely missing
+ * (2026-08-21, gcc-verifying string.prn's own real `concat`:
+ * `(alloc dest String (+ (length a) (length b)))`, immediately filled
+ * by a following `#target` inline-C body's own `strcpy`/`strcat`, not
+ * pre-filled with known content at all). Emits `(char *)arena_alloc(
+ * <arena-arg>, (<size-expr>) + 1)` -- the `+ 1` mirrors arena_strdup()'s
+ * own real behavior (parena_runtime.h's twin, src/arena.c's compiler-
+ * internal one: `arena_alloc(a, len + 1)`), so a String alloc always
+ * reserves real room for the null terminator the same way regardless
+ * of which of these two shapes filled it, not a detail `.prn` source
+ * has to remember to add itself.
+ *
+ * Both shapes report "char *" via *out_type. */
+static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const char **out_type,
+                              const char **out_error);
 static const char *emit_alloc_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                                     const char **out_error) {
     if (call->child_count < 4) {
-        return fail(arena, out_error, "alloc: expected (alloc arena-expr Type \"literal\"), got %zu forms",
+        return fail(arena, out_error, "alloc: expected (alloc arena-expr Type value), got %zu forms",
                     call->child_count);
     }
     Node *arena_node = call->children[1];
@@ -736,15 +755,26 @@ static const char *emit_alloc_call(Arena *arena, Node *call, EmitScope *scope, c
         return fail(arena, out_error, "alloc: only String is a supported alloc type so far (got '%s' at line %d)",
                     type_node->text ? type_node->text : "?", type_node->line);
     }
-    if (value_node->type != NODE_STRING) {
-        return fail(arena, out_error, "alloc: expected a string literal value at line %d", value_node->line);
-    }
-
-    char buf[512];
-    snprintf(buf, sizeof(buf), "arena_strdup(%s, \"%s\", %zu)", arena_arg_expr(arena, arena_local),
-              value_node->text, value_node->text_len);
     *out_type = "char *";
-    return arena_strdup(arena, buf, strlen(buf));
+    if (value_node->type == NODE_STRING) {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "arena_strdup(%s, \"%s\", %zu)", arena_arg_expr(arena, arena_local),
+                  value_node->text, value_node->text_len);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    const char *size_type = NULL;
+    const char *size_c = emit_expr(arena, value_node, scope, &size_type, out_error);
+    if (!size_c) return NULL;
+    StrBuf buf;
+    sb_init(&buf);
+    sb_append(&buf, "(char *)arena_alloc(");
+    sb_append(&buf, arena_arg_expr(arena, arena_local));
+    sb_append(&buf, ", (");
+    sb_append(&buf, size_c);
+    sb_append(&buf, ") + 1)");
+    const char *result = arena_strdup(arena, buf.data, buf.len);
+    sb_free(&buf);
+    return result;
 }
 
 static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const char **out_type,
@@ -833,6 +863,73 @@ static const char *emit_if(Arena *arena, Node *call, EmitScope *scope, const cha
     char buf[512];
     snprintf(buf, sizeof(buf), "(%s ? %s : %s)", cond, then_c, else_c);
     return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* emit_cond handles `(cond (test1 result1) (test2 result2) ... (testN
+ * resultN))` -- Lisp's own classic multi-clause conditional, found
+ * missing entirely (2026-08-21, gcc-verifying regex/glob.prn's own
+ * real `glob-match`, whose whole body is a `cond`): with no handling
+ * anywhere, this silently fell through to the generic call path and
+ * mangled into a bogus call to a never-defined `cond(...)` C function
+ * -- `parena build`'s own exit code never caught it, only an actual
+ * gcc compile did. Three more real, already-written stdlib files use
+ * this same real shape (string.prn's `split`, map.prn's `find-slot`,
+ * expr.prn's `apply-binop`).
+ *
+ * Folds right-to-left into nested C ternaries, the same real
+ * composition emit_if() already uses for a single `if` -- built via
+ * direct sb_append() pieces, not sb_appendf(), since a chain of
+ * several clauses folds into a long nested string that can genuinely
+ * exceed sb_appendf()'s own fixed 1024-byte internal vsnprintf buffer
+ * (the exact same class of real, previously-fixed truncation bug
+ * documented on emit_defn's own final assembly).
+ *
+ * Real, honest, narrow scope: the LAST clause is always treated as the
+ * unconditional default/base case -- its own result is used directly,
+ * its own test is never even emitted -- matching every real clause set
+ * actually written in this stdlib today (every one ends with a literal
+ * `(true ...)` catch-all clause). A `cond` with no clauses, or a clause
+ * that isn't a real `(test result)` two-element list, is reported, not
+ * guessed at. */
+static const char *emit_cond(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
+                              const char **out_error) {
+    if (call->child_count < 2) {
+        return fail(arena, out_error, "cond: needs at least one (test result) clause at line %d", call->line);
+    }
+    for (size_t i = 1; i < call->child_count; i++) {
+        Node *clause = call->children[i];
+        if (clause->type != NODE_LIST || clause->child_count != 2) {
+            return fail(arena, out_error, "cond: each clause must be (test result) at line %d",
+                        clause->line);
+        }
+    }
+    Node *last_clause = call->children[call->child_count - 1];
+    const char *result_type = NULL;
+    const char *acc = emit_expr(arena, last_clause->children[1], scope, &result_type, out_error);
+    if (!acc) return NULL;
+    *out_type = result_type; /* real, honest simplification: no branch-type unification check yet, same as emit_if */
+    for (size_t i = call->child_count - 2; i >= 1; i--) {
+        Node *clause = call->children[i];
+        const char *test_type = NULL;
+        const char *test_c = emit_expr(arena, clause->children[0], scope, &test_type, out_error);
+        if (!test_c) return NULL;
+        const char *branch_type = NULL;
+        const char *branch_c = emit_expr(arena, clause->children[1], scope, &branch_type, out_error);
+        if (!branch_c) return NULL;
+        StrBuf buf;
+        sb_init(&buf);
+        sb_append(&buf, "(");
+        sb_append(&buf, test_c);
+        sb_append(&buf, " ? ");
+        sb_append(&buf, branch_c);
+        sb_append(&buf, " : ");
+        sb_append(&buf, acc);
+        sb_append(&buf, ")");
+        acc = arena_strdup(arena, buf.data, buf.len);
+        sb_free(&buf);
+        if (i == 1) break;
+    }
+    return acc;
 }
 
 /* emit_call handles a general function call `(fn-name arg1 arg2 ...)`
@@ -1160,6 +1257,9 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     }
     if (is_call_named(expr, "if")) {
         return emit_if(arena, expr, scope, out_type, out_error);
+    }
+    if (is_call_named(expr, "cond")) {
+        return emit_cond(arena, expr, scope, out_type, out_error);
     }
     /* Ok/Err/Some -- the real, payload-carrying Result/Option
      * constructors, matching NORTHSTAR's own "Zero-allocation pattern
@@ -1748,6 +1848,73 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
         if (out_result_type) *out_result_type = then_type ? then_type : else_type;
         return 1;
     }
+    if (is_call_named(tail, "cond")) {
+        /* `cond` in loop-tail position -- real, honest necessity (not
+         * just the emit_expr()-level ternary-chain form emit_cond()
+         * already provides): string.prn's own real `split` and
+         * map.prn's own real `find-slot` both have `cond` as their
+         * whole loop body, with `recur` inside more than one clause's
+         * own result -- `recur` emits a real C `continue;` STATEMENT,
+         * which can never appear inside a ternary expression, so the
+         * plain emit_cond() ternary-chain genuinely cannot serve this
+         * real shape. Same real N-ary recursive nested-if/else
+         * composition `if`'s own loop-tail handling above already uses,
+         * generalized past exactly two branches: each clause but the
+         * last opens its own `if (test) { <recurse> } else {`, the
+         * LAST clause's own result is emitted unconditionally (same
+         * real, honest "last clause is the base case" scope
+         * emit_cond() itself documents), then every opened `else {`
+         * closes back up. */
+        if (tail->child_count < 2) {
+            return fail(arena, out_error, "loop: cond needs at least one (test result) clause at line %d",
+                        tail->line) != NULL;
+        }
+        for (size_t i = 1; i < tail->child_count; i++) {
+            Node *clause = tail->children[i];
+            if (clause->type != NODE_LIST || clause->child_count != 2) {
+                return fail(arena, out_error, "loop: cond clause must be (test result) at line %d",
+                            clause->line) != NULL;
+            }
+        }
+        size_t clause_count = tail->child_count - 1;
+        /* Real bug found and fixed here (an actual gcc compile of an
+         * isolated cond-in-loop-tail repro): only the LAST clause's own
+         * branch_type used to reach out_result_type -- wrong the moment
+         * the LAST clause is a `recur` (which reports no type at all)
+         * while an EARLIER clause is the real terminal value, e.g.
+         * `(cond ((>= i n) count) (true (recur ...)))`. Every clause's
+         * own resolved type is tracked here, same real "take whichever
+         * branch actually resolved one" fallback `if`'s own loop-tail
+         * handling above already uses across exactly two branches,
+         * generalized across N. */
+        const char *resolved_type = NULL;
+        for (size_t i = 1; i < clause_count; i++) {
+            Node *clause = tail->children[i];
+            const char *test_type = NULL;
+            const char *test_c = emit_expr(arena, clause->children[0], scope, &test_type, out_error);
+            if (!test_c) return 0;
+            sb_appendf(out, "        if (%s) {\n", test_c);
+            const char *branch_type = NULL;
+            if (!emit_loop_tail(arena, out, clause->children[1], scope, loop_locals, loop_var_count,
+                                 result_var, &branch_type, out_error)) {
+                return 0;
+            }
+            if (!resolved_type) resolved_type = branch_type;
+            sb_append(out, "        } else {\n");
+        }
+        Node *last_clause = tail->children[tail->child_count - 1];
+        const char *last_type = NULL;
+        if (!emit_loop_tail(arena, out, last_clause->children[1], scope, loop_locals, loop_var_count,
+                             result_var, &last_type, out_error)) {
+            return 0;
+        }
+        if (!resolved_type) resolved_type = last_type;
+        for (size_t i = 1; i < clause_count; i++) {
+            sb_append(out, "        }\n");
+        }
+        if (out_result_type) *out_result_type = resolved_type;
+        return 1;
+    }
     if (is_call_named(tail, "when")) {
         /* `when` in loop-tail position -- a real, structural gap found
          * here (2026-08-21, gcc-verifying array.prn's own real
@@ -2221,6 +2388,37 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             const char *body_c = emit_expr(arena, form->children[2], scope, &body_type, out_error);
             if (!body_c) return 0;
             sb_appendf(out, "    if (%s) {\n        %s;\n    }\n", cond_c, body_c);
+        } else if (is_symbol(form, "#target") && i + 1 < count) {
+            /* `#target {:c (inline-c "...")}` as a MID-BODY statement,
+             * not a whole function body -- found missing (2026-08-21,
+             * gcc-verifying string.prn's own real `concat`, whose
+             * `let`-body is exactly `[out (alloc ...)] #target {:c
+             * (inline-c "strcpy(out, a); strcat(out, b);")} out`: the
+             * inline-C fills the just-allocated buffer for its own side
+             * effect, then `out` is returned separately). Before this,
+             * `#target` was only ever recognized by emit_defn's own
+             * check for REPLACING the entire function body
+             * (emit_target_defn) -- a bare `#target` symbol showing up
+             * mid-body had no handling at all, and (being a two-sibling-
+             * node form, `#target` then the map, the same real "two
+             * adjacent top-level forms" shape `&(expr)` already has
+             * elsewhere in this file) fell through to the generic
+             * fallback below, which tried to look `#target` up as a
+             * plain identifier and failed outright.
+             *
+             * Shares find_target_c_src()'s own real `:c (inline-c
+             * "...")` extraction with emit_target_defn's whole-body use
+             * (factored out for exactly this reason) -- the raw C text
+             * is spliced in as a bare statement, no return-wrapping
+             * (unlike emit_target_defn's own return_type-aware
+             * wrapping), since a mid-body inline-C block is always used
+             * for its own side effect here, matching the one real call
+             * site's own convention of including its own trailing `;`. */
+            Node *target_map = forms[i + 1];
+            Node *src = find_target_c_src(arena, target_map, out_error);
+            if (!src) return 0;
+            sb_appendf(out, "    %.*s\n", (int)src->text_len, src->text);
+            i++; /* also consumed the following {:c ...} map form */
         } else {
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
@@ -2269,6 +2467,54 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     if (is_call_named(tail, "do")) {
         return emit_body(arena, out, tail->children + 1, tail->child_count - 1, scope, return_mode,
                           out_return_type, out_error);
+    }
+    if (is_call_named(tail, "if")) {
+        /* `if` in tail position, real, statement-level composition --
+         * found missing (2026-08-21, gcc-verifying string.prn's own real
+         * `is-valid-i32-text?`, whose own `let`-tail is `(if (= n 0)
+         * false (loop ...))`): the generic fallback below calls
+         * emit_expr() on the whole tail, which dispatches to emit_if()
+         * -- a pure ternary that itself calls emit_expr() on both
+         * branches, and emit_expr() has no handling for `loop` (or
+         * `let`/`when`/`cond`/`match`/`with-arena`/`do`) as a bare VALUE
+         * expression -- those are only ever special-cased at the
+         * body-statement/tail level, never inside a ternary. Hit the
+         * generic "unsupported expression form" fallback with no useful
+         * diagnostic pointing at the real cause.
+         *
+         * Fixed by giving `if` the same real statement-level tail
+         * composition `when`/`let`/`loop`/`match`/`do` already get here,
+         * simply by recursing into emit_body() itself on each branch
+         * treated as its own one-form body -- this reaches every one of
+         * emit_body()'s own tail-dispatch cases (including a nested
+         * `if`) for free, with no separate bespoke recursive composer
+         * needed. return_mode=1 threads through correctly too: each
+         * branch, if it resolves to a plain value, emits a real early
+         * `return <value>;` from inside its own `if`/`else` block --
+         * exactly correct, ordinary C, not requiring a shared result
+         * variable the way emit_loop_tail's own analogous `if` handling
+         * needs (that one has no `return`, only a shared loop
+         * accumulator). */
+        if (tail->child_count != 4) {
+            fail(arena, out_error, "if: expected (if cond then else) at line %d", tail->line);
+            return 0;
+        }
+        const char *cond_type = NULL;
+        const char *cond_c = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        if (!cond_c) return 0;
+        sb_appendf(out, "    if (%s) {\n", cond_c);
+        const char *then_type = NULL;
+        if (!emit_body(arena, out, tail->children + 2, 1, scope, return_mode, &then_type, out_error)) {
+            return 0;
+        }
+        sb_append(out, "    } else {\n");
+        const char *else_type = NULL;
+        if (!emit_body(arena, out, tail->children + 3, 1, scope, return_mode, &else_type, out_error)) {
+            return 0;
+        }
+        sb_append(out, "    }\n");
+        if (return_mode && out_return_type) *out_return_type = then_type ? then_type : else_type;
+        return 1;
     }
     const char *c_type = NULL;
     const char *expr_c = emit_expr(arena, tail, scope, &c_type, out_error);
@@ -2568,12 +2814,22 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
  * stdlib source's own convention is to include its own trailing `;` for
  * that case (see editor/plugin.prn's `register-command`); any other
  * return type wraps it as `return (...);` instead. */
-static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const char *fn_name,
-                             const char *param_list, const char *return_type, const char **out_error) {
+/* find_target_c_src -- shared `:c (inline-c "...")` extraction from a
+ * `#target {...}` map, factored out (2026-08-21) so the new mid-body
+ * `#target` STATEMENT form (see emit_body's own new handling, found
+ * missing while gcc-verifying string.prn's own real `concat`, whose
+ * `let`-body is `[out (alloc ...)] #target {:c (inline-c "...")} out`
+ * -- a #target block used for its own side effect partway through a
+ * body, not replacing the WHOLE function body the way this same map
+ * shape already did before this) can share it with emit_target_defn's
+ * own original whole-body use, instead of re-deriving the same real
+ * :c-key-search + `(inline-c "...")`-shape validation a second time. */
+static Node *find_target_c_src(Arena *arena, Node *target_map, const char **out_error) {
     if (target_map->child_count % 2 != 0) {
-        return fail(arena, out_error, "defn: #target map at line %d has an odd number of forms "
-                                       "(expected key/value pairs)",
-                    target_map->line) != NULL;
+        fail(arena, out_error, "#target map at line %d has an odd number of forms "
+                                "(expected key/value pairs)",
+             target_map->line);
+        return NULL;
     }
     Node *c_value = NULL;
     for (size_t i = 0; i + 1 < target_map->child_count; i += 2) {
@@ -2584,18 +2840,24 @@ static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const c
         }
     }
     if (!c_value) {
-        return fail(arena, out_error,
-                     "defn: #target map at line %d has no :c key (VS0's emitter only understands "
-                     "the C target so far)",
-                     target_map->line) != NULL;
+        fail(arena, out_error,
+             "#target map at line %d has no :c key (VS0's emitter only understands "
+             "the C target so far)",
+             target_map->line);
+        return NULL;
     }
     if (c_value->type != NODE_LIST || c_value->child_count != 2 || c_value->children[0]->type != NODE_SYMBOL ||
         !is_symbol(c_value->children[0], "inline-c") || c_value->children[1]->type != NODE_STRING) {
-        return fail(arena, out_error,
-                     "defn: #target :c value at line %d must be (inline-c \"...\")",
-                     c_value->line) != NULL;
+        fail(arena, out_error, "#target :c value at line %d must be (inline-c \"...\")", c_value->line);
+        return NULL;
     }
-    Node *src = c_value->children[1];
+    return c_value->children[1];
+}
+
+static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const char *fn_name,
+                             const char *param_list, const char *return_type, const char **out_error) {
+    Node *src = find_target_c_src(arena, target_map, out_error);
+    if (!src) return 0;
     StrBuf body;
     sb_init(&body);
     if (strcmp(return_type, "void") == 0) {
@@ -3037,7 +3299,16 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
     sb_append(&out, "#include \"parena_runtime.h\"\n");
-    sb_append(&out, "#include <string.h>\n\n");
+    sb_append(&out, "#include <string.h>\n");
+    /* Real, honest gap found and fixed here (2026-08-21, gcc-verifying
+     * string.prn's own real `length`, whose #target inline-C body casts
+     * to `int32_t`): every generated file always includes <string.h>
+     * unconditionally already, for the same real reason -- rather than
+     * only including <stdint.h> when some detectable feature needs it
+     * (VS0 has no way to inspect the trusted-verbatim contents of an
+     * inline-C string to know), it's included unconditionally too, the
+     * same honest tradeoff already made for <string.h>. */
+    sb_append(&out, "#include <stdint.h>\n\n");
 
     /* Pre-pass: every defenum AND defstruct, processed together in ONE
      * pass, in their real, natural combined-file order -- before any
