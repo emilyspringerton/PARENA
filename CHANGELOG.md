@@ -1,4 +1,5 @@
 ## 2026-08-21
+- dataframe.prn 全檔完工:select 修好後也真的能跑了。修好兩個新缺口:resolve_declared_type 對 (&Type) 的括號解析、match void-typed clause 的宣告+assign 問題。新增 331→336 個迴歸測試。Apple #15271,commit 4dbd60f。 (sess-20260820-0649-a3f19d93)
 - compress/lz4.prn 改成真正、純 PARENA 的 LZ4-style 壓縮器(不再是 FFI stub);round-trip 驗證正確含 overlap-copy 情境。補齊 &mut (ComplexType) 參數 + loop 空結果 return 兩個編譯器缺口。新增 325→331 個迴歸測試。Apple #15268,commit 923a24c。 (sess-20260820-0649-a3f19d93)
 - 修好兩個真實、通用的編譯器 bug:單一 token &name 的 hint 查找、vec_get 對指標型別元素的雙重間接參照。column 重新驗證正確;vec_test.prn/world_test.prn 修好並跑過 firefly/run-tests。select 卡在新的第三個缺口,誠實記錄。新增 319→325 個迴歸測試。Apple #15263,commit 741ce36。 (sess-20260820-0649-a3f19d93)
 - 新增 (return expr) 非局部控制流(真正的 C return,無需傳遞邏輯);column.prn 補齊 dest 參數 + ColumnNotFoundError,gcc 乾淨編譯;select 卡在 String 元素 vec_get hint 的新缺口,誠實記錄。新增 317→319 個迴歸測試。Apple #15249,commit 4df1176。 (sess-20260820-0649-a3f19d93)
