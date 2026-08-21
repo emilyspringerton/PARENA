@@ -115,18 +115,40 @@ static Local *scope_lookup(EmitScope *s, const char *src_name) {
 
 /* mangle turns a Parena identifier into a valid C one: '-' and '/' (the
  * only two non-C-identifier characters real STDLIB.md names use, e.g.
- * "buffer/set-data", "load-config") become '_'. */
+ * "buffer/set-data", "load-config") become '_'; a mid/trailing '!'
+ * (the mutating-call naming convention, `vec/push!`/`set!`) does too.
+ *
+ * Real, distinct bug found and fixed here (2026-08-21, while getting
+ * pentest/pcap.prn -- the first real stdlib file to actually reach a
+ * gcc compile with a `!`-prefixed reference parameter -- to compile):
+ * a LEADING '!' (the linear/mutable-binding sigil, `!t`/`!m`/`!cap`)
+ * is stripped entirely instead, not converted to '_'. Multiple real
+ * stdlib files' own hand-written `#target` inline-C bodies -- thread.
+ * prn's own `lock` (`pthread_mutex_lock(&m->handle); make_guard(m)`
+ * for a `(!m : &Mutex)` parameter) and pcap.prn's own `read-packet`/
+ * `filter` -- reference their own `!`-prefixed parameter by its BARE,
+ * un-prefixed name (`m`, `cap`), not an underscore-prefixed one; only
+ * converting the leading `!` to `_` (this function's own original,
+ * untested guess) produced a real, silent mismatch -- the emitted C
+ * declares `T *_m`/`Capture *_cap` but the human-authored inline-C
+ * body still says `m`/`cap`, an undeclared identifier. A trailing/
+ * mid `!` (the separate, real mutating-*call*-name convention) keeps
+ * converting to '_' as before -- that's this compiler's own naming
+ * choice on both ends (it both mangles the call site AND names the
+ * matching runtime function, e.g. parena_runtime.h's own `vec_push_`),
+ * not an external human expectation to match, and stripping it there
+ * instead would risk a real collision with a same-named non-mutating
+ * sibling function (`push` vs `push!`). */
 static const char *mangle(Arena *arena, const char *name) {
     size_t len = strlen(name);
+    const char *src = name;
+    if (len > 0 && name[0] == '!') {
+        src = name + 1;
+        len -= 1;
+    }
     char *out = (char *)arena_alloc(arena, len + 1);
     for (size_t i = 0; i < len; i++) {
-        char c = name[i];
-        /* '!' joins '-'/'/' here for the same reason: real source uses it
-         * both as a linear-binding-name prefix (`!t`) and a mutating-call
-         * suffix (`vec/push!`, `set!`) -- neither is a valid C identifier
-         * character. Untested until now because reference-type support
-         * (the thing that actually lets `!t : &mut T`-shaped code reach
-         * this function) didn't exist yet. */
+        char c = src[i];
         out[i] = (c == '-' || c == '/' || c == '!') ? '_' : c;
     }
     out[len] = '\0';

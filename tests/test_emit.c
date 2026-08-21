@@ -710,10 +710,10 @@ int main(void) {
                   "a &Any field becomes a real void * (Any erases to void, the reference wraps it in a pointer)");
             CHECK(strstr(c_src, "T * t;") != NULL,
                   "a &mut T field becomes a real T * (mut/immut references both erase to a plain C pointer)");
-            CHECK(strstr(c_src, "T * _t") != NULL,
+            CHECK(strstr(c_src, "T * t") != NULL,
                   "a &mut T PARAMETER (the two-token form, distinct from the single-token &Type field/param "
                   "path above) also becomes a real T *");
-            CHECK(strstr(c_src, "(_t)->failed = 1") != NULL,
+            CHECK(strstr(c_src, "(t)->failed = 1") != NULL,
                   "get-field auto-derefs through a reference parameter's own pointer type, emitting -> not .");
         }
         arena_free_all(&arena);
@@ -743,7 +743,7 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "do(") == NULL,
                   "`do` never appears as a literal emitted function call -- it's a real statement sequence");
-            CHECK(strstr(c_src, "vec_push_(&((_t)->messages), msg)") != NULL,
+            CHECK(strstr(c_src, "vec_push_(&((t)->messages), msg)") != NULL,
                   "vec/push! mangles to the real runtime vec_push_ call, and &(get-field ...) emits a real "
                   "C address-of around the get-field access, both inside the do-block's own statements");
         }
@@ -768,7 +768,7 @@ int main(void) {
         const char *c_src = emit_c(&arena, program, &emit_err);
         CHECK(c_src != NULL && emit_err == NULL, "deref on a real pointer-typed expression emits successfully");
         if (c_src) {
-            CHECK(strstr(c_src, "(*((Item *)(_x)))") != NULL,
+            CHECK(strstr(c_src, "(*((Item *)(x)))") != NULL,
                   "deref emits a real, cast C dereference (not a bare *(expr), which is only valid "
                   "when expr's own real C type already matches -- vec_get's real void* return type "
                   "is the real counter-example that requires the cast), not a function call");
@@ -813,7 +813,7 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "return vec_push_") == NULL,
                   "a void-typed tail call is never wrapped in `return` (real ISO C99 -pedantic error)");
-            CHECK(strstr(c_src, "vec_push_(&((_t)->messages), msg);") != NULL,
+            CHECK(strstr(c_src, "vec_push_(&((t)->messages), msg);") != NULL,
                   "it's instead emitted as a real, bare statement");
         }
         arena_free_all(&arena);
@@ -1222,6 +1222,60 @@ int main(void) {
               "it emits successfully -- the defstruct (appearing first) is visible to the "
               "defenum's own field-type resolution, not silently processed after it regardless "
               "of real source order");
+        arena_free_all(&arena);
+    }
+
+    /* --- mangle()'s own leading-'!' handling -- a real bug found while
+     * getting pentest/pcap.prn (the first real stdlib file to reach a
+     * gcc compile with a `!`-prefixed reference parameter used inside
+     * its own `#target` body) to compile clean: a leading `!` (the
+     * linear/mutable-binding sigil, `!t`/`!m`/`!cap`) must be STRIPPED
+     * entirely, not converted to `_` -- multiple real stdlib files'
+     * own hand-written #target inline-C bodies (thread.prn's `lock`,
+     * pcap.prn's `read-packet`/`filter`) reference their own
+     * `!`-prefixed parameter by its bare, un-prefixed name. A mid/
+     * trailing `!` (the separate mutating-*call*-name convention,
+     * `vec/push!`/`set!`) still converts to `_` as before -- that's
+     * this compiler's own naming choice on both ends, not an external
+     * human expectation, and changing it would risk a real collision
+     * with a same-named non-mutating sibling function. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Mutex (handle : I32))\n"
+            "(defn lock [(!m : &Mutex)] : Unit\n"
+            "  #target\n"
+            "  {:c (inline-c \"pthread_mutex_lock(&m->handle);\")})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a #target function with a !-prefixed reference parameter parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "Mutex * m __attribute__((unused))") != NULL,
+                  "the leading '!' is stripped entirely from the parameter's own C name (not '_m'), "
+                  "matching real hand-written #target bodies (thread.prn's own lock, pcap.prn's own "
+                  "read-packet/filter) that reference it by its bare name");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [(v : &Any)] : Unit (vec/push! v v))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec/push! (mid/trailing '!', not a leading one) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "vec_push_(v, v)") != NULL,
+                  "a mid/trailing '!' still mangles to '_' as before -- unchanged, this compiler's "
+                  "own naming choice on both ends, matching parena_runtime.h's own real vec_push_");
+        }
         arena_free_all(&arena);
     }
 
