@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 修好 current-arena(reshape/serve 改用明確 dest 參數,沿用 skip 已有做法);emit_loop_tail 新增 match 分支(遞迴 emit_match_core,貫穿 loop_locals);emit_match_clause_body 新增 recur 分支;自己抓到並修好純值 clause 巢狀在 loop 尾端缺少 break 的 bug;net/http.prn serve 現在只剩已知 FFI 缺口;Apple #15209,commit 9fd6510 (sess-20260820-0649-a3f19d93)
 - loop 支援直接當 match clause body(emit_loop_core 從 emit_loop 拆出來,共用 result_var);修好丟棄陳述式的通用 -Wunused-value 缺口(所有丟棄的陳述式包上 void(...));net/http.prn 的 serve 只剩 current-arena 一個獨立缺口;Apple #15206,commit 2932a95 (sess-20260820-0649-a3f19d93)
 - 補齊 net/tcp.prn(TcpListener/TcpStream/NetError)+ net/udp.prn(UdpSocket/SocketAddr/NetError)缺少的型別定義;net/http.prn get/post 推進到第三道缺口(未設計的 HTTP helper 函式);serve 另有 current-arena + loop-as-match-clause-body 兩個獨立缺口;Apple #15204,commit b194864 (sess-20260820-0649-a3f19d93)
 - (Map K V) 型別擦除(erased to void*,無真實 runtime 實作)+ Fn 型別參數列表支援裸 Arena(解析成 Arena *);net/http.prn 錯誤前緣推進到 net/tcp.prn 的多檔案依賴牆;Apple #15201,commit 8325a08 (sess-20260820-0649-a3f19d93)
