@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 新增 CI 自動 minor version bump + GitHub Release 機制(--prerelease,VS0 還在 pre-1.0);已驗證真的建出 v0.1.0;Apple #15216,commit be7a964/ff4f251 (sess-20260820-0649-a3f19d93)
 - 補齊 pty.prn 的 Pty/PtyError 型別定義;修好 shell.prn 自己原始碼裡的 getenv/libc 撞名 bug(改名 env-lookup);pty.prn+shell.prn 組合編譯剩下的都是已知 FFI 缺口;Apple #15211,commit 96aabe6 (sess-20260820-0649-a3f19d93)
 - 修好 current-arena(reshape/serve 改用明確 dest 參數,沿用 skip 已有做法);emit_loop_tail 新增 match 分支(遞迴 emit_match_core,貫穿 loop_locals);emit_match_clause_body 新增 recur 分支;自己抓到並修好純值 clause 巢狀在 loop 尾端缺少 break 的 bug;net/http.prn serve 現在只剩已知 FFI 缺口;Apple #15209,commit 9fd6510 (sess-20260820-0649-a3f19d93)
 - loop 支援直接當 match clause body(emit_loop_core 從 emit_loop 拆出來,共用 result_var);修好丟棄陳述式的通用 -Wunused-value 缺口(所有丟棄的陳述式包上 void(...));net/http.prn 的 serve 只剩 current-arena 一個獨立缺口;Apple #15206,commit 2932a95 (sess-20260820-0649-a3f19d93)
