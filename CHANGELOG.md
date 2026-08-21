@@ -1,4 +1,5 @@
 ## 2026-08-21
+- 修正非引用型 (Vec T) @ Region 參數形狀(array.prn 的 zeros/from-vec/reshape);product/strides-for/zeros 完全編譯過關;發現並記錄 Ok/Err/Some 指標型別 payload 限制這個獨立、更深的缺口(需要 arena 裝箱機制,STDLIB.md 已誠實記錄);Apple #15160,commit 899bef0 (sess-20260820-0649-a3f19d93)
 - 里程碑:world.prn 真正通過真正 gcc 編譯。這一輪抓到四個獨立、真實的缺口:N-ary and/or(左結合折疊,只針對邏輯運算子)、when 特殊形式(真正的陳述式層級 if、不是三元運算子)、mangle() 補上問號結尾的 predicate 命名慣例、Vec 純量裝箱(讓 F64/I32 元素真正配置成真的可解參考的 cell,不是 bit-boxing 技巧,跟既有 deref 慣例完全一致)。順手補上 vec-set-at! 這個 STDLIB.md 自己設計文件裡本來就漏掉的操作 (sess-20260820-0649-a3f19d93)
 - io.prn 補齊缺失的 FileHandle/IoError 型別定義，跟 pcap.prn 同一類缺口——型別現在能正確解析，#target host glue 本身還是誠實地留著沒實作（跟這個 stdlib 裡其他 FFI 綁定檔案一樣） (sess-20260820-0649-a3f19d93)
 - 修好 mangle() 的開頭驚嘆號處理——之前錯誤地轉成底線（_t/_m/_cap），但多個真實 stdlib 檔案自己手寫的 #target inline-C body（thread.prn 的 lock、pcap.prn 的 read-packet/filter）都是用去掉驚嘆號後的原始名稱（m、cap）直接引用參數，改成整個去掉開頭驚嘆號才對；中間/結尾的驚嘆號（vec/push!、set!）維持轉底線不變。順手把 pcap.prn 自己真正缺的 Capture/Packet/PcapError 型別定義補上——pentest/* 六個檔案現在全部真的能編譯 (sess-20260820-0649-a3f19d93)
