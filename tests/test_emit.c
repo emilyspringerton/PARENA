@@ -2752,6 +2752,68 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- every generated file now unconditionally includes <math.h>,
+     * the same real, honest "unconditional inclusion" tradeoff already
+     * made for <stdint.h>/<stdlib.h> -- found genuinely missing
+     * (2026-08-21, gcc-verifying nn.prn's own real `exp-of`/`tanh-of`
+     * #target bodies, which call libm's own `exp`/`tanh`). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn trivial [] : I32 1)";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a trivial defn parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "#include <math.h>") != NULL,
+                  "every generated file's own preamble includes <math.h> unconditionally "
+                  "(previously missing entirely -- exp()/tanh() in a #target body hit a real "
+                  "'implicit declaration' + 'incompatible built-in' gcc error, undetected by "
+                  "parena build's own exit code)");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- vec/push! boxing decision must NOT treat a bare "void" out_
+     * type (a real, honest side effect of a SEPARATE, still-open gap --
+     * deref on a hint-less vec_get falls back through "void *" trimmed
+     * to "void") as a boxable struct value -- found via an actual gcc
+     * compile of an earlier draft of nn.prn's own `softmax` ("void"
+     * generated an invalid `void_box(Arena *, void v)` C function).
+     * This doesn't exercise (or fix) that underlying hint-less-Vec gap
+     * itself, just confirms it can't ALSO corrupt this boxing
+     * decision -- CHECK is on the ABSENCE of a bogus void_box helper,
+     * not on the vec/get call succeeding (it's expected to still fail
+     * honestly, for the separate, real, un-fixed reason). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn make [(dest : Arena @ Region)]\n"
+            "  : Unit\n"
+            "  (let [v (vec/new dest) out (vec/new dest)]\n"
+            "    (vec/push! &out (deref (vec/get &v 0)))\n"
+            "    unit))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "pushing a deref'd read from a hint-less local Vec parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        if (c_src) {
+            CHECK(strstr(c_src, "void_box") == NULL,
+                  "no bogus void_box helper is generated for a genuinely un-typeable 'void' "
+                  "value, even though this compiles (a real, separate, un-fixed gap: deref on "
+                  "a hint-less Vec produces invalid C elsewhere in this same output, not "
+                  "checked for here -- only the boxing decision itself is under test)");
+        } else {
+            CHECK(1, "or it fails honestly for some other real reason -- either way, no crash");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

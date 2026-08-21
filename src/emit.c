@@ -1390,7 +1390,20 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
          * already had) or if arg_type is already a pointer (a real
          * `TypeName *` value needs no boxing at all, already directly
          * usable as `void *`). */
-        int is_boxable_struct = arg_type && !is_boxable_scalar &&
+        /* "void" excluded here (2026-08-21, gcc-verifying nn.prn's own
+         * real `softmax`, whose original body read a plain, hint-less
+         * local Vec -- a real, SEPARATE, still-open gap, see
+         * divide-vec-by's own comment in that file): a value's own
+         * out_type can genuinely be the bare string "void" (not "void
+         * *") as an honest side effect of that unrelated gap -- deref
+         * on a hint-less vec_get falls back through "void *" -> trimmed
+         * to "void" -- and "void" is neither a real scalar NOR a real,
+         * boxable struct/enum type; boxing it produced real, broken C
+         * (`static inline void *void_box(Arena *dest, void v)`, an
+         * invalid C parameter type). Real, honest: this doesn't FIX
+         * that underlying gap, just stops it from ALSO corrupting this
+         * boxing decision. */
+        int is_boxable_struct = arg_type && !is_boxable_scalar && strcmp(arg_type, "void") != 0 &&
                                  arg_type[strlen(arg_type) - 1] != '*';
         if (box_vec_arg && logical_index == box_logical_index && is_boxable_scalar) {
             /* Box this specific value argument -- vec_box_i32/vec_box_f64
@@ -4410,7 +4423,12 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * <stdint.h> above (2026-08-21, gcc-verifying string.prn's own
      * real `raw-parse-i32`, whose #target inline-C body calls `atoi`,
      * declared in <stdlib.h>). */
-    sb_append(&out, "#include <stdlib.h>\n\n");
+    sb_append(&out, "#include <stdlib.h>\n");
+    /* Same real, honest, unconditional-inclusion tradeoff again
+     * (2026-08-21, gcc-verifying nn.prn's own real `exp-of`/`tanh-of`,
+     * whose #target inline-C bodies call libm's own `exp`/`tanh`,
+     * declared in <math.h>). */
+    sb_append(&out, "#include <math.h>\n\n");
 
     /* Pre-pass: every defenum AND defstruct, processed together in ONE
      * pass, in their real, natural combined-file order -- before any

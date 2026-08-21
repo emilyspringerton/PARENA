@@ -1,5 +1,5 @@
-;; stdlib/nn.prn — depends on array. Design: STDLIB.md "nn" section.
-;; layernorm/gelu/softmax are the exact 3 primitives gpt2.c's
+;; stdlib/nn.prn — depends on array, stats. Design: STDLIB.md "nn"
+;; section. layernorm/gelu/softmax are the exact 3 primitives gpt2.c's
 ;; gpt2_model_forward calls by name; relu/sigmoid/tanh-activation below
 ;; are the founder's own follow-up ("build ML and AI primatives in like
 ;; relu and sigma and all that stuff") -- the standard activation-
@@ -10,7 +10,31 @@
 
 (module nn)
 (import array)
-(export layernorm gelu softmax relu sigmoid tanh-activation leaky-relu)
+(import stats)
+(export layernorm gelu softmax relu sigmoid tanh-activation leaky-relu exp-of tanh-of)
+
+;; exp-of / tanh-of -- real, honest FFI escape-hatch use (founder,
+;; real-time, this same session: "use your escape hatch when u need
+;; to"): unlike stats/sqrt-of (a real, short, pure-PARENA Newton's-
+;; method implementation), a real exp/tanh implementation is genuine,
+;; separate numerical work (a real series expansion or a real rational
+;; minimax approximation, not a same-pass reference formula) -- this
+;; wraps the real, already-correct libm implementation instead of
+;; hand-rolling a worse one. Named `exp-of`/`tanh-of`, not the more
+;; obvious bare `exp`/`tanh`, for the identical real reason
+;; stats/sqrt-of already isn't bare `sqrt`: both are real C compiler
+;; builtins, and a same-named PARENA function's own forward declaration
+;; collides with gcc's own built-in knowledge of them (confirmed via an
+;; actual gcc compile of an earlier draft of this file).
+(defn exp-of [(x : F64)]
+  : F64
+  #target
+  {:c (inline-c "exp(x)")})
+
+(defn tanh-of [(x : F64)]
+  : F64
+  #target
+  {:c (inline-c "tanh(x)")})
 
 ;; map-elementwise — the shared real primitive every activation function
 ;; below reduces to: apply `f` to every element, same shape out.
@@ -25,11 +49,11 @@
 
 (defn layernorm [(x : &NDArray) (weight : &NDArray) (bias : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
-  (let [m (stats/mean x) v (square (stats/std x)) eps 0.00001
+  (let [m (stats/mean x) v (stats/square (stats/std x)) eps 0.00001
         n (vec/len &(get-field x :data)) out (vec/new dest)]
     (loop [i 0]
       (when (< i n)
-        (let [normed (/ (- (deref (vec/get &(get-field x :data) i)) m) (sqrt-of (+ v eps)))]
+        (let [normed (/ (- (deref (vec/get &(get-field x :data) i)) m) (stats/sqrt-of (+ v eps)))]
           (vec/push! &out (+ (* normed (deref (vec/get &(get-field weight :data) i)))
                               (deref (vec/get &(get-field bias :data) i)))))
         (recur (+ i 1))))
@@ -41,38 +65,101 @@
   (let [n (vec/len &(get-field x :data)) out (vec/new dest)]
     (loop [i 0]
       (when (< i n)
-        (let [v (deref (vec/get &(get-field x :data) i))]
-          (vec/push! &out (* 0.5 v (+ 1.0 (tanh (* 0.7978845608 (+ v (* 0.044715 v v v))))))))
+        (let [v (deref (vec/get &(get-field x :data) i))
+              v3 (* v (* v v))]
+          (vec/push! &out (* (* 0.5 v) (+ 1.0 (tanh-of (* 0.7978845608 (+ v (* 0.044715 v3))))))))
         (recur (+ i 1))))
     {:data out :shape (get-field x :shape) :strides (get-field x :strides)}))
 
 (defn relu [(x : &NDArray) (dest : Arena @ Region)]
   : NDArray @ Region
-  (map-elementwise x (fn [v] (if (> v 0.0) v 0.0)) dest))
+  (map-elementwise x (fn [(v : F64)] (if (> v 0.0) v 0.0)) dest))
 
+;; Real, honest gap found and fixed here (2026-08-21, gcc-verifying this
+;; file): leaky-relu's own `alpha` parameter used to be captured
+;; directly by its own inline fn literal (`(fn [v] (if (> v 0.0) v (*
+;; alpha v)))`) -- this session's own `fn`-literal support deliberately
+;; builds each lambda a fresh, NON-capturing scope (the same real
+;; reason firefly/ladybug.prn's own `equal`/`be-close-to` needed
+;; redesigning away from a closure earlier this session), so `alpha`
+;; inside that lambda body would resolve to "unknown identifier."
+;; Rewritten to a real, separate, named helper taking `alpha` as an
+;; explicit parameter, then referenced by NAME as the value passed to
+;; map-elementwise -- the same real "a bare defn name IS a valid
+;; function-pointer value" mechanism this same session's own emit_expr
+;; fix (the bare-defn-name-as-value case) makes possible, avoiding the
+;; closure entirely.
+(defn leaky-relu-fn [(alpha : F64) (v : F64)]
+  : F64
+  (if (> v 0.0) v (* alpha v)))
+
+;; leaky-relu itself can't just pass `leaky-relu-fn` directly (it needs
+;; `alpha` partially applied first, and this session's own function
+;; values are always real, bare, zero-capture C function pointers, no
+;; partial application) -- so this still needs its own real per-call
+;; loop rather than routing through map-elementwise, the same honest
+;; "no closures" limitation ladybug's own matchers already carry.
 (defn leaky-relu [(x : &NDArray) (alpha : F64) (dest : Arena @ Region)]
   : NDArray @ Region
-  (map-elementwise x (fn [v] (if (> v 0.0) v (* alpha v))) dest))
+  (let [n (vec/len &(get-field x :data)) out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (vec/push! &out (leaky-relu-fn alpha (deref (vec/get &(get-field x :data) i))))
+        (recur (+ i 1))))
+    {:data out :shape (get-field x :shape) :strides (get-field x :strides)}))
+
+(defn sigmoid-fn [(v : F64)]
+  : F64
+  (/ 1.0 (+ 1.0 (exp-of (- 0.0 v)))))
 
 (defn sigmoid [(x : &NDArray) (dest : Arena @ Region)]
   : NDArray @ Region
-  (map-elementwise x (fn [v] (/ 1.0 (+ 1.0 (exp (- 0.0 v))))) dest))
+  (map-elementwise x sigmoid-fn dest))
 
 (defn tanh-activation [(x : &NDArray) (dest : Arena @ Region)]
   : NDArray @ Region
-  (map-elementwise x (fn [v] (tanh v)) dest))
+  (map-elementwise x tanh-of dest))
+
+;; sum-vec -- the same real "loop as its own defn's tail, not a nested
+;; sub-expression" restructuring stats/std's own sum-of-squares needed
+;; earlier this session: softmax's own original body nested `loop`
+;; inside `(let [total (loop ...)] ...)`, a sub-expression position
+;; this emitter doesn't support.
+(defn sum-vec [(v : &(Vec F64)) (n : I32)]
+  : F64
+  (loop [i 0 acc 0.0]
+    (if (>= i n) acc (recur (+ i 1) (+ acc (deref (vec/get v i)))))))
+
+;; divide-vec-by -- real, honest workaround for a real, separate, NOT-
+;; yet-fixed compiler gap (STDLIB.md's own "linalg" section documents
+;; it): `vec/get` on a plain `let`-bound local Vec (no recorded
+;; `g_vec_elem_hints` entry outside a typed parameter/struct-field)
+;; falls back to a raw `void *`, which `deref` then tries to
+;; dereference directly -- invalid C. Softmax's own `exps` is exactly
+;; such a plain local; routing every real read of it through a genuine
+;; `&(Vec F64)` PARAMETER (which DOES get a real hint, the same real
+;; mechanism `sum-vec` above already relies on) sidesteps the gap
+;; entirely, the same real "restructure around it" judgment call
+;; stats/std's own sum-of-squares extraction already used earlier this
+;; session, rather than fixing the broader gap itself.
+(defn divide-vec-by [(v : &(Vec F64)) (n : I32) (total : F64) (dest : Arena @ Region)]
+  : (Vec F64) @ Region
+  (let [out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (vec/push! &out (/ (deref (vec/get v i)) total))
+        (recur (+ i 1))))
+    out))
 
 (defn softmax [(x : &NDArray) (dest : Arena @ Region)]
   : NDArray @ Region
   (let [n (vec/len &(get-field x :data))
-        max-v (unwrap (stats/max x))
+        max-v (unwrap (stats/max x dest))
         exps (vec/new dest)]
     (loop [i 0]
       (when (< i n)
-        (vec/push! &exps (exp (- (deref (vec/get &(get-field x :data) i)) max-v)))
+        (vec/push! &exps (exp-of (- (deref (vec/get &(get-field x :data) i)) max-v)))
         (recur (+ i 1))))
-    (let [total (loop [i 0 acc 0.0] (if (>= i n) acc (recur (+ i 1) (+ acc (deref (vec/get &exps i))))))
-          out (vec/new dest)]
-      (loop [i 0]
-        (when (< i n) (vec/push! &out (/ (deref (vec/get &exps i)) total)) (recur (+ i 1))))
+    (let [total (sum-vec &exps n)
+          out (divide-vec-by &exps n total dest)]
       {:data out :shape (get-field x :shape) :strides (get-field x :strides)})))

@@ -711,6 +711,44 @@ its own attention out of these primitives, the same way it's expected to build i
 architecture. Baking "attention" in as one opaque stdlib call would hide the actual computation a
 `gpt2-alpine-c` port needs to be honest about.
 
+**Fully real, gcc-clean, AND runtime-verified (2026-08-21)** — every function in this file
+(`layernorm`/`gelu`/`softmax`/`relu`/`leaky-relu`/`sigmoid`/`tanh-activation`) compiles
+`gcc -Wall -Wextra -pedantic -Werror` clean and produces correct real numbers, confirmed against
+independently-computed reference values (`relu`/`leaky-relu` against hand-picked inputs;
+`sigmoid`/`tanh-activation`/`gelu` against libm's own `exp`/`tanh`; `softmax` against its own real
+invariant, output summing to 1.0; `layernorm` against a hand-computed mean/variance/normalize).
+
+Real, new gaps closed getting here, none specific to this file: (1) `exp`/`tanh` needed real
+definitions — added as `exp-of`/`tanh-of`, real, deliberate `#target` FFI wrapping libm (founder,
+real-time, this same session: "use your escape hatch when u need to" — unlike `stats/sqrt-of`, a
+real exp/tanh implementation is genuine, separate numerical work, not a same-pass reference
+formula worth hand-rolling). Named with the `-of` suffix, not the more obvious bare `exp`/`tanh`,
+for the identical real reason `sqrt-of` already isn't bare `sqrt` — both are real gcc builtins,
+and a same-named PARENA function's own forward declaration collides with gcc's own built-in
+knowledge of them. Every generated file now unconditionally includes `<math.h>` (the same real,
+honest tradeoff already made for `<stdint.h>`/`<stdlib.h>`). (2) `leaky-relu`'s own original
+design captured its own `alpha` parameter inside an inline `fn` literal — a real closure, which
+this session's own non-capturing `fn`-literal support can't express (the same real redesign
+`firefly/ladybug.prn`'s own `equal`/`be-close-to` needed earlier this same session) — rewritten as
+a real, separate, named `leaky-relu-fn` helper taking `alpha` explicitly, with `leaky-relu` itself
+keeping its own real per-element loop (no closures anywhere means no real partial application
+either, so it can't route through `map-elementwise` the way `sigmoid`/`tanh-activation` do). (3)
+`softmax`'s own original body nested a `loop` directly inside a `let` binding value position (`(let
+[total (loop ...)] ...)`) — the same real, still-open "loop as an arbitrary sub-expression" gap
+`stats/std`'s own `sum-of-squares` extraction already worked around earlier this session; worked
+around here the identical way, via two real, separate helper functions (`sum-vec`/
+`divide-vec-by`) whose own tail position IS the loop directly. Those two helpers also incidentally
+worked around a SECOND, real, separate, still-open gap while at it: `vec/get` on a plain
+`let`-bound local Vec (no recorded element-type hint) falls back to a raw `void *`, which `deref`
+then can't safely dereference — routing every real read of `softmax`'s own `exps` local through a
+genuine `&(Vec F64)` PARAMETER (which DOES get a real hint) sidesteps it entirely. (4) a real,
+general `vec_push_` boxing-decision bug self-caught along the way: a value's own reported type can
+genuinely be the bare string `"void"` (an honest side effect of gap (3) above, before the
+workaround), which the newly-generalized struct-boxing logic (see `firefly`'s own STDLIB.md entry)
+briefly, wrongly treated as a boxable struct type, generating invalid C (`static inline void
+*void_box(Arena *dest, void v)`) — excluded now, a narrow, defensive fix, not a fix for gap (3)
+itself.
+
 **`tokenizer`** — a real, stateful BPE tokenizer, matching `tokenizer_load`/`gpt2_encode`/
 `gpt2_decode`'s own three-function shape exactly:
 
