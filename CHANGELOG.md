@@ -1,4 +1,5 @@
 ## 2026-08-21
+- ci-status 接入 parena CLI 本體(兩階段 bootstrap:.parena-bootstrap 產生模組 C,PARENA_HAS_CI_STATUS 重編 main.c 連結進最終 binary);移除已取代的 tools/ci_status_main.c 獨立 binary。Apple #15225,commit ff93388。 (sess-20260820-0649-a3f19d93)
 - 新增 stdlib/ci/status.prn(native PARENA CI 查詢模組)+ tools/ci-status binary,真正 dogfood PARENA 取代 python3 one-liner;過程中自己抓到並修好兩個真實 JSON 格式假設 bug;已用它自己輪詢真實 CI 到通過;下一步 wire 進 parena CLI 本身;Apple #15221,commit 269e090 (sess-20260820-0649-a3f19d93)
 - 新增 CI 自動 minor version bump + GitHub Release 機制(--prerelease,VS0 還在 pre-1.0);已驗證真的建出 v0.1.0;Apple #15216,commit be7a964/ff4f251 (sess-20260820-0649-a3f19d93)
 - 補齊 pty.prn 的 Pty/PtyError 型別定義;修好 shell.prn 自己原始碼裡的 getenv/libc 撞名 bug(改名 env-lookup);pty.prn+shell.prn 組合編譯剩下的都是已知 FFI 缺口;Apple #15211,commit 96aabe6 (sess-20260820-0649-a3f19d93)
