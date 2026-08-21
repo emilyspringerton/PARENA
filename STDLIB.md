@@ -521,6 +521,44 @@ since the full `array.prn` itself hits a separate, unrelated, pre-existing gap f
 `elementwise`/`add`/`mul-elementwise`'s own `fn` lambda-literal arguments, "unsupported expression
 form," not yet designed at all).
 
+**Real gap closed (2026-08-21)**: the `fn` lambda-literal gap named just above is now fixed —
+`emit_expr()` generates a real, addressable, file-scope `static` C function per lambda literal
+(`g_lambda_helpers`, the same real "can't emit a function DEFINITION inline at an expression's own
+call site" shape `g_box_helpers`/`ensure_box_helper()` already established), with the call site
+itself just referencing that function's own name — a real C function name already IS a valid
+function-pointer value. Real, deliberately narrow scope, matching this language's own "no ambient
+anything, explicit everywhere" convention: every lambda param needs an explicit `(name : Type)`
+annotation (VS0 has no type inference at all, and this emitter has no expected-type context
+threading into `emit_expr` either) — `add`/`mul-elementwise`'s own `(fn [x y] ...)` rewritten to
+`(fn [(x : F64) (y : F64)] ...)` to match. No real closures either: the generated helper is a
+genuine top-level `static` function, which — same as any hand-written C function — can't see the
+enclosing PARENA function's own locals; an attempted capture fails honestly at the gcc stage
+("use of undeclared identifier"), not silently miscompiled. Real, self-caught bug along the way:
+the fix was first placed AFTER the generic symbol-headed-call dispatch in `emit_expr`, which
+matches ANY symbol-headed list including `fn` and unconditionally mangled it into a bogus call to
+a never-defined `fn(...)` C function — the new code was unreachable dead code until moved above
+that catch-all. Verified gcc-clean AND at real runtime (a standalone harness calling the generated
+functions directly, confirming `3+4=7`/`3*4=12` through the generated lambda, not just a clean
+compile).
+
+**Real, NOT-yet-fixed gaps found past this point, `elementwise`/`add`/`mul-elementwise`'s own,
+separate from the lambda-literal gap just closed**: the full `array.prn` still doesn't compile
+end to end. Three further, genuinely separate issues, found compiling past the now-fixed line:
+(1) `same-shape?` calls `vec-eq?`, which has no real runtime implementation anywhere
+(`parena_runtime.h` has no `vec_eq_`) — a real, unstarted Vec-equality feature. (2) `(not ...)` —
+`elementwise`'s own `(if (not (same-shape? a b)) ...)` — isn't a known operator to
+`binop_c_symbol()`, so it falls through to `emit_call()` and mangles into a bogus call to a
+never-defined `not(...)` C function; VS0's own unary-`not` support doesn't exist yet (`(not x)`,
+distinct from `!`/`&mut`'s own reference-marker meaning, which is real, separate syntax already
+handled elsewhere). (3) `elementwise`'s own `(vec/push! &out (op ...))` — pushing a first-class
+function CALL's own return value onto a Vec — doesn't get scalar-boxed even though `op`'s real
+return type is `F64`/`double`: the boxing decision in `emit_call()`'s own argument loop only fires
+when the pushed value's `arg_type` (from `emit_expr`) is literally the string `"int"`/`"double"`,
+but a first-class call through a `(Fn ..)`-typed value (the `"((expr) arg1 arg2 ...)"` branch in
+`emit_expr`) always reports `"void *"` as its own out_type — the same real, honest "no function-
+signature table for indirect calls" limitation that branch's own header comment already names.
+None of these three are attempted here — flagged, not silently worked around.
+
 ### `dataframe` — the pandas equivalent, depends on `array` + `string`
 
 Founder: "and pandas build pandas into the standard library." The one real thing that makes

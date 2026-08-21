@@ -2343,6 +2343,68 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `(fn [(name : Type) ...] body)` used as a first-class VALUE
+     * passed to a `(Fn [..] ..)`-typed parameter -- the exact real
+     * shape array.prn's own `add`/`mul-elementwise` need (`(elementwise
+     * a b (fn [(x : F64) (y : F64)] (+ x y)) dest)`), found completely
+     * unhandled (2026-08-21, gcc-verifying array.prn): fell through to
+     * the generic "unsupported expression form" fallback. Real, self-
+     * caught bug along the way: the fix was first placed AFTER the
+     * generic symbol-headed-call dispatch (`if (expr->children[0]->type
+     * == NODE_SYMBOL) { ... return emit_call(...); }`), which matches
+     * ANY symbol-headed list, `fn` included -- unreachable dead code
+     * until moved above that catch-all. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn apply-op [(op : (Fn [F64 F64] F64)) (x : F64) (y : F64)] : F64 (op x y))\n"
+            "(defn add-two [(a : F64) (b : F64)]\n"
+            "  : F64\n"
+            "  (apply-op (fn [(x : F64) (y : F64)] (+ x y)) a b))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a fn literal passed as a (Fn [..] ..)-typed argument parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form', since fn "
+              "literals had no handling anywhere in emit_expr() before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "static double __lambda_0(double x, double y) {\n    return (x + y);\n}") != NULL,
+                  "a real, addressable, file-scope static C function is generated for the lambda, "
+                  "with its own real, typed parameter list and body -- not an inline expression");
+            CHECK(strstr(c_src, "apply_op(__lambda_0, a, b)") != NULL,
+                  "the call site itself just references the generated function's own name, a "
+                  "real, valid C function-pointer value with no further decoration");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a `fn` literal parameter with NO explicit type annotation --
+     * VS0 has no type inference, so this must fail honestly (not
+     * silently guess a type or crash) -- same real convention every
+     * `defn` parameter already requires. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn apply-op [(op : (Fn [F64 F64] F64)) (x : F64) (y : F64)] : F64 (op x y))\n"
+            "(defn add-two [(a : F64) (b : F64)]\n"
+            "  : F64\n"
+            "  (apply-op (fn [x y] (+ x y)) a b))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a fn literal with untyped bare-symbol params parses fine (a "
+                                "parser-level concern, not a type-level one)");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly at the emit stage, reporting that an explicit type annotation is "
+              "required, rather than silently guessing a type or crashing");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

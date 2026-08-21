@@ -476,6 +476,40 @@ typedef struct BoxedType {
 static BoxedType *g_boxed_types = NULL;
 static StrBuf g_box_helpers;
 
+/* g_lambda_helpers / g_lambda_count -- the real fix for `(fn [params]
+ * body)` used as a VALUE (array.prn's own real `add`/`mul-elementwise`:
+ * `(elementwise a b (fn [x y] (+ x y)) dest)`, passed where `elementwise`
+ * itself declares `op : (Fn [F64 F64] F64)`) -- found genuinely
+ * unhandled anywhere in emit_expr(), falling through to the generic
+ * "unsupported expression form" fallback.
+ *
+ * Same real "generate a real, addressable, file-scope C function" shape
+ * g_box_helpers/ensure_box_helper() above already established for the
+ * identical underlying problem (emit_expr's own pure-expression-
+ * returning architecture can't emit a fresh function DEFINITION inline
+ * at an expression's own call site) -- collected into this separate
+ * buffer for the same reason, spliced into the final output by
+ * emit_c() itself before any defn body, so a lambda used near the top
+ * of the file is still declared before its own first use.
+ *
+ * Real, honest, deliberately narrow scope, matching this language's own
+ * "no ambient anything, explicit everywhere" convention: every param
+ * needs an EXPLICIT `(name : Type)` annotation, the same shape `defn`
+ * parameters already require -- VS0 has no type inference, so a bare
+ * `[x y]` would need to infer both param types from how the lambda gets
+ * USED, a real, separate, much larger feature (this emitter has no
+ * expected-type context threading into emit_expr at all). This also
+ * means a REAL closure/capture is not supported: the generated helper
+ * is a genuine top-level `static` C function, which -- exactly like any
+ * hand-written C function -- cannot see the enclosing PARENA function's
+ * own locals. An attempted capture fails honestly at the gcc stage
+ * ("use of undeclared identifier"), not silently miscompiled -- the
+ * lambda's own scope is deliberately built fresh (no parent), so a
+ * captured name isn't even accidentally resolved against the wrong
+ * binding first. */
+static StrBuf g_lambda_helpers;
+static int g_lambda_count = 0;
+
 static const char *ensure_box_helper(Arena *arena, const char *c_type) {
     char name_buf[160];
     snprintf(name_buf, sizeof(name_buf), "%s_box", c_type);
@@ -1674,6 +1708,94 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         }
         return fail(arena, out_error, "get-field: '%s' has no field '%s' at line %d",
                     sinfo->name, field_name, expr->line);
+    }
+    /* `(fn [(name : Type) ...] body)` -- an anonymous function VALUE
+     * passed where a `(Fn [..] ..)`-typed parameter expects a real C
+     * function pointer, e.g. array.prn's own `add`/`mul-elementwise`
+     * calling `elementwise`'s own `op` parameter. See g_lambda_helpers'
+     * own declaration comment for the full real reasoning: a fresh,
+     * non-capturing, file-scope `static` C function is generated once
+     * per lambda literal, collected into g_lambda_helpers (not `out`
+     * directly -- same real reason g_box_helpers isn't), and this
+     * expression position itself just becomes a reference to that
+     * function's own name -- a real C function name IS already a valid
+     * function-pointer value with no further decoration needed.
+     *
+     * Checked BEFORE the generic symbol-headed-call dispatch just below
+     * -- real bug found and fixed here (2026-08-21, gcc-verifying
+     * array.prn's own `add`): that generic case matches ANY
+     * NODE_LIST with a symbol head, `fn` included, and would otherwise
+     * always intercept it first and mangle `fn` into a bogus call to a
+     * never-defined `fn(...)` C function -- this branch never even ran,
+     * despite being real, present code, until moved above that catch-all. */
+    if (is_call_named(expr, "fn") && expr->child_count == 3 && expr->children[1]->type == NODE_VEC) {
+        Node *params = expr->children[1];
+        Node *body = expr->children[2];
+        EmitScope lambda_scope;
+        scope_init(&lambda_scope, NULL); /* deliberately no parent -- see
+                                             g_lambda_helpers' own comment
+                                             on why real captures aren't
+                                             supported and shouldn't even
+                                             accidentally resolve. */
+        StrBuf param_list;
+        sb_init(&param_list);
+        StrBuf type_list; /* real param C types only, comma-joined, so this
+                            * value's own out_type can report a real,
+                            * accurate "RetType (*)(ArgTypes)" function-
+                            * pointer type -- the same shape
+                            * resolve_declared_type()'s own (Fn ..) branch
+                            * already produces for a PARAMETER of this
+                            * type, kept consistent here for a VALUE of it. */
+        sb_init(&type_list);
+        if (params->child_count == 0) {
+            sb_append(&param_list, "void");
+            sb_append(&type_list, "void");
+        }
+        for (size_t i = 0; i < params->child_count; i++) {
+            Node *param = params->children[i];
+            if (param->type != NODE_LIST || param->child_count != 3 ||
+                param->children[0]->type != NODE_SYMBOL || param->children[1]->type != NODE_COLON) {
+                sb_free(&param_list);
+                sb_free(&type_list);
+                return fail(arena, out_error,
+                            "fn: parameter at line %d needs an explicit '(name : Type)' annotation "
+                            "-- VS0 has no type inference, the same explicit-typing convention "
+                            "every defn parameter already follows",
+                            expr->line);
+            }
+            const char *p_c_type = resolve_declared_type(arena, param->children[2], out_error);
+            if (!p_c_type) {
+                sb_free(&param_list);
+                sb_free(&type_list);
+                return NULL;
+            }
+            const char *p_c_name = mangle(arena, param->children[0]->text);
+            scope_bind(&lambda_scope, param->children[0]->text, p_c_name, p_c_type, 0 /* not an arena value */);
+            if (i > 0) {
+                sb_append(&param_list, ", ");
+                sb_append(&type_list, ", ");
+            }
+            sb_appendf(&param_list, "%s %s", p_c_type, p_c_name);
+            sb_append(&type_list, p_c_type);
+        }
+        const char *body_type = NULL;
+        const char *body_c = emit_expr(arena, body, &lambda_scope, &body_type, out_error);
+        if (!body_c) {
+            sb_free(&param_list);
+            sb_free(&type_list);
+            return NULL;
+        }
+        char lambda_name_buf[32];
+        snprintf(lambda_name_buf, sizeof(lambda_name_buf), "__lambda_%d", g_lambda_count++);
+        const char *lambda_name = arena_strdup(arena, lambda_name_buf, strlen(lambda_name_buf));
+        sb_appendf(&g_lambda_helpers, "static %s %s(%s) {\n    return %s;\n}\n\n",
+                   body_type, lambda_name, param_list.data, body_c);
+        sb_free(&param_list);
+        char type_buf[192];
+        snprintf(type_buf, sizeof(type_buf), "%s (*)(%s)", body_type, type_list.data);
+        sb_free(&type_list);
+        *out_type = arena_strdup(arena, type_buf, strlen(type_buf));
+        return lambda_name;
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
@@ -3726,6 +3848,11 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     if (box_helpers_ever_inited) sb_free(&g_box_helpers); /* free any prior call's leftover buffer */
     sb_init(&g_box_helpers);
     box_helpers_ever_inited = 1;
+    g_lambda_count = 0; /* same per-call reset -- see g_lambda_helpers' own declaration comment */
+    static int lambda_helpers_ever_inited = 0;
+    if (lambda_helpers_ever_inited) sb_free(&g_lambda_helpers);
+    sb_init(&g_lambda_helpers);
+    lambda_helpers_ever_inited = 1;
     StrBuf out;
     sb_init(&out);
     sb_append(&out, "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n");
@@ -3871,6 +3998,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         }
     }
     sb_append(&out, g_box_helpers.data);
+    sb_append(&out, g_lambda_helpers.data);
     sb_append(&out, defn_out.data);
     sb_free(&defn_out);
 

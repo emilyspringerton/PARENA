@@ -115,10 +115,18 @@
           (recur (+ i 1))))
       (Ok {:data out :shape (get-field a :shape) :strides (get-field a :strides)}))))
 
+;; Real, honest gap closed here (2026-08-21): `(fn [x y] ...)`'s own
+;; params used to be bare, untyped symbols -- VS0 has no type inference
+;; anywhere, so the emitter's own fn-literal support requires every
+;; param to carry an explicit `(name : Type)` annotation, the identical
+;; convention every defn parameter already follows. Rewritten to match;
+;; see src/emit.c's own g_lambda_helpers comment for the full real
+;; reasoning (a fresh, non-capturing, file-scope static C function is
+;; generated per lambda literal).
 (defn add [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
-  (elementwise a b (fn [x y] (+ x y)) dest))
+  (elementwise a b (fn [(x : F64) (y : F64)] (+ x y)) dest))
 
 (defn mul-elementwise [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
-  (elementwise a b (fn [x y] (* x y)) dest))
+  (elementwise a b (fn [(x : F64) (y : F64)] (* x y)) dest))
