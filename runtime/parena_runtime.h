@@ -155,6 +155,49 @@ static inline int vec_len(Vec *v) {
     return (int)v->count;
 }
 
+/* vec_set_at_ -- real, minimal index-assignment, found genuinely
+ * missing (matching mangle()'s own real output for `vec-set-at!`)
+ * while getting world.prn's own `set-height` to compile. STDLIB.md's
+ * own vec section never designed a `set!` operation (only new/push!/
+ * get/len) -- a real, honest gap in the design doc, not just the
+ * implementation, closed here to match the real, already-written call
+ * site. Same real, honest safety convention vec_get's own out-of-
+ * bounds NULL return already has: silently does nothing on an
+ * out-of-bounds index rather than writing past the backing array,
+ * since there's no real error-reporting channel a `void`-returning
+ * runtime function has to use here. */
+static inline void vec_set_at_(Vec *v, int idx, void *value) {
+    if (idx < 0 || (size_t)idx >= v->count) return;
+    v->items[idx] = value;
+}
+
+/* vec_box_i32/vec_box_f64 -- real, minimal scalar boxing, found
+ * genuinely necessary while getting world.prn's own real `Terrain`
+ * (`heights : (Vec F64)`) to compile: `Vec` stores `void *` items,
+ * which fits pointer-representable elements (String/struct pointers)
+ * directly, but a raw scalar (I32/F64) needs somewhere real to live
+ * before its ADDRESS can be stored as the item -- not a bit-boxing
+ * trick (reinterpreting the scalar's own bits as a pointer value),
+ * deliberately: world.prn's own real `get-height`
+ * (`(deref (vec/get ...))`) already uses the exact same `deref`
+ * idiom uniformly for scalar and struct-typed Vecs alike, so the
+ * real, consistent fix is making a scalar Vec's own stored items
+ * genuinely BE real pointers to real, arena-allocated cells (the
+ * same shape struct-pointer items already have), not a special case
+ * `deref` or `vec_get` need to know about. Allocates into the Vec's
+ * own already-stored arena (set once, at `vec_new`) -- no new
+ * parameter needed at any real call site. */
+static inline void *vec_box_i32(Vec *v, int value) {
+    int *cell = (int *)arena_alloc(v->arena, sizeof(int));
+    *cell = value;
+    return cell;
+}
+static inline void *vec_box_f64(Vec *v, double value) {
+    double *cell = (double *)arena_alloc(v->arena, sizeof(double));
+    *cell = value;
+    return cell;
+}
+
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
  * (not just designed) while getting firefly.prn's own `skip` to

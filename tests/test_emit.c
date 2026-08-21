@@ -1279,6 +1279,126 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- N-ary `and`/`or` -- found blocking world.prn's own real
+     * `(and (>= x 0) (< x (get-field t :width)) (>= z 0) (< z ...))`.
+     * Real, narrow extension: only `&&`/`||`, folded left-associatively
+     * (semantically exact for real logical AND/OR) -- NOT generalized
+     * to comparison/arithmetic operators, where naive pairwise folding
+     * would silently compute the wrong thing for a real chained
+     * comparison like `(< a b c)`. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [(a : I32) (b : I32) (c : I32)] : Bool (and (> a 0) (> b 0) (> c 0)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a 3-argument (and a b c) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'needs exactly 2 arguments')");
+        if (c_src) {
+            CHECK(strstr(c_src, "(((a > 0) && (b > 0)) && (c > 0))") != NULL,
+                  "it folds left-associatively into real, correct nested && operators");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `when` -- found blocking world.prn's own real `set-height`
+     * (`(when (in-bounds? ...) (vec-set-at! ...))`, its WHOLE body) and
+     * firefly/ladybug.prn's own `to` (mid-body). Real, honest scope:
+     * `when` has no real "else" value at all (unlike `if`), so it's
+     * handled as a real statement-level `if (cond) { expr; }`, not a
+     * value-producing ternary -- both as a mid-body statement and in
+     * tail position of a Unit(void)-returning function. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Counter (n : I32))\n"
+            "(defn maybe-log [(!c : &mut Counter) (cond : Bool)] : Unit\n"
+            "  (when cond\n"
+            "    (set! (get-field !c :n) 1)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(when cond expr) as a whole function body parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unsupported expression form')");
+        if (c_src) {
+            CHECK(strstr(c_src, "if (cond) {") != NULL,
+                  "when emits a real, statement-level C if with no else branch");
+            CHECK(strstr(c_src, "return when(") == NULL,
+                  "when is never treated as a generic function call, unlike before this fix");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `?`-suffixed predicate names (a real, common Scheme/Lisp/Ruby
+     * naming convention, e.g. world.prn's own real `in-bounds?`) --
+     * mangle() had no handling for '?' at all before this, producing
+     * flatly invalid C (`in_bounds?` isn't a valid identifier). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn zero? [(n : I32)] : Bool (= n 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a ?-suffixed predicate function name parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "int zero_(int n") != NULL,
+                  "the trailing '?' mangles to '_', a real valid C identifier");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- Vec scalar boxing -- the deepest of this batch's real fixes,
+     * found blocking world.prn's own real `Terrain.heights : (Vec F64)`.
+     * `Vec` stores `void *` items, fine for pointer-representable
+     * elements, but a raw I32/F64 needs a real, arena-allocated cell to
+     * point AT first (parena_runtime.h's own vec_box_i32/vec_box_f64) --
+     * not a bit-boxing trick, deliberately, since real usage (world.prn's
+     * own `get-height`: `(deref (vec/get ...))`) already wraps vec/get
+     * in `deref` uniformly for scalar and struct-typed Vecs alike, so a
+     * scalar Vec's own stored items need to genuinely BE real pointers
+     * to real cells, the same shape struct-pointer items already have.
+     * Covers a `(Vec ElemType)`-typed STRUCT FIELD specifically (a
+     * `&(Vec ElemType)` PARAMETER was already covered before this pass
+     * -- see the earlier "&(Vec T) parameter" test above) -- the real,
+     * additional gap: get-field's own emission now also registers a
+     * g_vec_elem_hints entry for a Vec-typed field access. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Row (cells : (Vec F64) @ Region))\n"
+            "(defn set-cell [(!r : &mut Row) (i : I32) (v : F64)] : Unit\n"
+            "  (vec-set-at! &mut (get-field !r :cells) i v))\n"
+            "(defn get-cell [(r : &Row) (i : I32)] : F64\n"
+            "  (deref (vec/get &(get-field r :cells) i)))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a (Vec F64)-typed struct field, set via vec-set-at! and read via "
+                                "deref+vec/get, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed with a type mismatch: double where void * "
+              "was expected, and a real 'dereferencing void *' error)");
+        if (c_src) {
+            CHECK(strstr(c_src, "vec_set_at_(&((r)->cells), i, vec_box_f64(&((r)->cells), v))") != NULL,
+                  "set-cell boxes the real scalar value into a real, arena-allocated cell before "
+                  "storing its address, not the raw double where void * is expected");
+            CHECK(strstr(c_src, "(*((double *)(vec_get(&((r)->cells), i))))") != NULL,
+                  "get-cell's deref+vec/get correctly resolves to a real double *, not a useless void *");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

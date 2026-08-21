@@ -149,7 +149,16 @@ static const char *mangle(Arena *arena, const char *name) {
     char *out = (char *)arena_alloc(arena, len + 1);
     for (size_t i = 0; i < len; i++) {
         char c = src[i];
-        out[i] = (c == '-' || c == '/' || c == '!') ? '_' : c;
+        /* '?' joins the set here too (2026-08-21, found via world.prn's
+         * own real `in-bounds?` predicate-naming convention -- a real,
+         * common Scheme/Lisp/Ruby-style suffix for a Bool-returning
+         * function, not previously exercised by anything that reached a
+         * real gcc compile): unlike the leading-'!' sigil, a trailing
+         * '?' has no real hand-authored #target body anywhere in this
+         * stdlib assuming a specific stripped spelling, so converting
+         * (not stripping) is the safe, consistent choice here, same
+         * reasoning as '-'/'/' and the mid/trailing '!' case above. */
+        out[i] = (c == '-' || c == '/' || c == '!' || c == '?') ? '_' : c;
     }
     out[len] = '\0';
     return out;
@@ -252,6 +261,18 @@ typedef struct {
                            * real bug caught by actually compiling stdlib/csv.prn's
                            * own SplitOptions with real gcc, not guessed at). */
     const char *c_type;
+    /* vec_elem_type/vec_elem_is_scalar: set only when this field's own
+     * declared type was `(Vec ElemType)` (c_type == "Vec") -- the real
+     * resolved element type (e.g. "double", "int", "TestCase"), and
+     * whether it's a scalar needing real boxing (see parena_runtime.h's
+     * own vec_box_i32/vec_box_f64) rather than a pointer-representable
+     * type. Consulted by get-field()'s own emission to register a
+     * g_vec_elem_hints entry for this exact field access, the same real
+     * mechanism the `&(Vec ElemType)` parameter-binding path already
+     * populates -- found necessary while getting world.prn's own real
+     * `Terrain.heights` (a struct FIELD, not a parameter) to compile. */
+    const char *vec_elem_type;
+    int vec_elem_is_scalar;
 } StructField;
 
 typedef struct StructInfo {
@@ -286,15 +307,35 @@ static StructInfo *g_structs = NULL;
  * g_enums/g_structs already are (this is per-compilation state, not
  * something that should leak across files/tests). */
 typedef struct VecElemHint {
-    const char *c_name;    /* the Vec-holding param/local's own mangled C name */
-    const char *elem_type; /* the real element type name, e.g. "TestCase" */
+    const char *c_name;    /* the Vec-holding expression's own exact emitted C
+                             * text -- a plain mangled param name for the
+                             * `&(Vec ElemType)` parameter path, or a real
+                             * struct-field-access expression like
+                             * "(t)->heights" for the get-field path added
+                             * alongside process_defstruct()'s own new
+                             * vec_elem_type tracking (2026-08-21, world.prn's
+                             * real `Terrain.heights`). */
+    const char *elem_type; /* the real element type name, e.g. "TestCase"/"double" */
+    int is_scalar;          /* real I32/F64/Bool element -- see parena_runtime.h's
+                              * own vec_box_i32/vec_box_f64 for why this needs a
+                              * real, separate boxing step at push!/set-at! call
+                              * sites, unlike a pointer-representable element. */
     struct VecElemHint *next;
 } VecElemHint;
 static VecElemHint *g_vec_elem_hints = NULL;
 
-static const char *find_vec_elem_hint(const char *c_name) {
+static void record_vec_elem_hint(Arena *arena, const char *c_name, const char *elem_type, int is_scalar) {
+    VecElemHint *hint = (VecElemHint *)arena_alloc(arena, sizeof(VecElemHint));
+    hint->c_name = c_name;
+    hint->elem_type = elem_type;
+    hint->is_scalar = is_scalar;
+    hint->next = g_vec_elem_hints;
+    g_vec_elem_hints = hint;
+}
+
+static VecElemHint *find_vec_elem_hint(const char *c_name) {
     for (VecElemHint *h = g_vec_elem_hints; h; h = h->next) {
-        if (strcmp(h->c_name, c_name) == 0) return h->elem_type;
+        if (strcmp(h->c_name, c_name) == 0) return h;
     }
     return NULL;
 }
@@ -629,6 +670,32 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
  * solved). */
 static const char *emit_binop(Arena *arena, Node *call, const char *c_op, EmitScope *scope,
                                const char **out_type, const char **out_error) {
+    /* Real, narrow N-ary extension (2026-08-21, found blocking world.prn's
+     * own real `(and a b c)`): `&&`/`||` specifically, not every operator
+     * here -- logical AND/OR are genuinely associative, so left-folding
+     * `(and a b c)` into `((a && b) && c)` is semantically exact, the
+     * same real value C's own left-to-right `&&`/`||` chaining already
+     * has. Deliberately NOT generalized to arithmetic/comparison
+     * operators too: `(< a b c)` in real Lisp/Scheme means "a<b AND
+     * b<c" (a genuine three-way chained comparison), which naive
+     * pairwise folding `((a < b) < c)` would silently compute wrong
+     * (comparing a real 0/1 int result against c) -- flagged as a
+     * real, separate, unstarted gap rather than guessed at here. */
+    if (call->child_count > 3 && (strcmp(c_op, "&&") == 0 || strcmp(c_op, "||") == 0)) {
+        const char *acc_type = NULL;
+        const char *acc = emit_expr(arena, call->children[1], scope, &acc_type, out_error);
+        if (!acc) return NULL;
+        for (size_t i = 2; i < call->child_count; i++) {
+            const char *next_type = NULL;
+            const char *next = emit_expr(arena, call->children[i], scope, &next_type, out_error);
+            if (!next) return NULL;
+            char buf[1024];
+            snprintf(buf, sizeof(buf), "(%s %s %s)", acc, c_op, next);
+            acc = arena_strdup(arena, buf, strlen(buf));
+        }
+        *out_type = "int";
+        return acc;
+    }
     if (call->child_count != 3) {
         return fail(arena, out_error,
                      "emit: operator '%s' at line %d needs exactly 2 arguments (VS0's emitter doesn't "
@@ -684,12 +751,83 @@ static const char *emit_if(Arena *arena, Node *call, EmitScope *scope, const cha
  * type of an arbitrary call is reported as "void *" unless the callee
  * happens to be a known local closure -- a real gap flagged here, not
  * silently guessed at as something more specific. */
+/* vec_call_target_hint -- shared by emit_call()'s own vec_get/
+ * vec_push_/vec_set_at_ special-casing below: every one of them takes
+ * the TARGET Vec as its own real first argument, optionally prefixed
+ * by a `&`/`&mut` two-node address-of pair (the common real shape,
+ * `&(get-field t :heights)`) -- this unwraps that prefix if present,
+ * emits the real target expression once (registering any get-field-
+ * sourced hint as a side effect, harmless to re-emit -- every
+ * expression this compiler produces is pure C text), and looks up its
+ * own recorded element-type hint by that exact text. Returns the
+ * target's own emitted text via *out_target_text (needed again by the
+ * scalar-boxing callers below) and the hint itself (NULL if none). */
+static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *scope,
+                                          const char **out_target_text, const char **out_error) {
+    Node *target_node = call->children[1];
+    if (target_node->type == NODE_SYMBOL &&
+        (is_symbol(target_node, "&") || is_symbol(target_node, "&mut")) && call->child_count >= 3) {
+        target_node = call->children[2];
+    }
+    const char *target_type = NULL;
+    const char *target_text = emit_expr(arena, target_node, scope, &target_type, out_error);
+    *out_target_text = target_text;
+    return target_text ? find_vec_elem_hint(target_text) : NULL;
+}
+
 static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                               const char **out_error) {
     const char *fn_name = mangle(arena, call->children[0]->text);
+    /* Real, narrow scalar-boxing fixup (2026-08-21, found via world.prn's
+     * own real `Terrain.heights : (Vec F64)`): if this call is
+     * vec_push_/vec_set_at_ AND its own target Vec has a recorded
+     * SCALAR element-type hint (I32/F64/Bool -- see parena_runtime.h's
+     * own vec_box_i32/vec_box_f64 for why a scalar needs real, separate
+     * boxing a pointer-representable element doesn't), the LOGICAL
+     * argument holding the value to store (vec_push_'s 2nd, vec_set_
+     * at_'s 3rd) needs wrapping in the matching box call -- computed
+     * once, up front, and applied by LOGICAL ARGUMENT POSITION inside
+     * the real argument loop below (never by re-parsing the already-
+     * built, comma-joined argument text, which breaks the instant any
+     * argument is itself a multi-argument call, e.g. world.prn's own
+     * real `index-for(t, x, z)` as the index argument). */
+    const char *box_fn = NULL;
+    const char *box_vec_arg = NULL;       /* the real `Vec *` text vec_box_i32/vec_box_f64's own
+                                            * first argument needs -- NOT the same as
+                                            * vec_call_target_hint()'s own unwrapped lookup key,
+                                            * since a `&`/`&mut`-prefixed call site needs that
+                                            * prefix back for a real pointer expression. */
+    size_t box_logical_index = 0; /* 1-based position among children[1..]; 0 = "no boxing" */
+    if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0) {
+        const char *target_text = NULL;
+        VecElemHint *hint = vec_call_target_hint(arena, call, scope, &target_text, out_error);
+        if (!target_text && out_error && *out_error) return NULL;
+        if (hint && hint->is_scalar) {
+            box_fn = strcmp(hint->elem_type, "int") == 0 ? "vec_box_i32" : "vec_box_f64";
+            box_logical_index = strcmp(fn_name, "vec_push_") == 0 ? 2 : 3;
+            /* Real bug found and fixed here (an actual gcc compile of
+             * world.prn's own set-height): the boxing wrap used to read
+             * `args.data` at the point of processing the VALUE argument,
+             * wrongly assuming it still held only the target's own text
+             * -- by then it holds every PRIOR argument too (target AND
+             * index, comma-joined), producing real, broken C
+             * (`vec_box_f64(target, idx, , h)`). Captured here, once,
+             * completely separately from the growing `args` buffer. */
+            if (call->children[1]->type == NODE_SYMBOL &&
+                (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut"))) {
+                char buf[512];
+                snprintf(buf, sizeof(buf), "&(%s)", target_text);
+                box_vec_arg = arena_strdup(arena, buf, strlen(buf));
+            } else {
+                box_vec_arg = target_text;
+            }
+        }
+    }
     StrBuf args;
     sb_init(&args);
+    size_t logical_index = 0;
     for (size_t i = 1; i < call->child_count; i++) {
+        logical_index++;
         /* `&(expr)` -- a bare `&` symbol followed by a parenthesized
          * expression lexes as two SIBLING nodes in this call's own
          * argument list (see mangle()'s own header note on `!`/`-`/`/`
@@ -722,7 +860,15 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
             return NULL;
         }
         if (i > 1) sb_append(&args, ", ");
-        sb_append(&args, arg_c);
+        if (box_fn && logical_index == box_logical_index) {
+            /* Box this specific value argument -- vec_box_i32/vec_box_f64
+             * need the real `Vec *` target too (to allocate the scalar
+             * cell from its own arena), which is always this call's own
+             * first argument, already sitting at the front of `args`. */
+            sb_appendf(&args, "%s(%s, %s)", box_fn, box_vec_arg, arg_c);
+        } else {
+            sb_append(&args, arg_c);
+        }
     }
     char buf[1024];
     snprintf(buf, sizeof(buf), "%s(%s)", fn_name, args.data);
@@ -740,31 +886,40 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
      * build`'s own exit code). Not a general function-signature table --
      * VS0 still doesn't have one -- just these four real, fixed runtime
      * names. */
-    if (strcmp(fn_name, "vec_push_") == 0) {
+    if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0) {
         *out_type = "void";
     } else if (strcmp(fn_name, "vec_new") == 0) {
         *out_type = "Vec";
     } else if (strcmp(fn_name, "vec_len") == 0) {
         *out_type = "int";
-    } else if (strcmp(fn_name, "vec_get") == 0 && call->child_count >= 2 &&
-               call->children[1]->type == NODE_SYMBOL) {
+    } else if (strcmp(fn_name, "vec_get") == 0 && call->child_count >= 2) {
         /* Real fix for the deeper Vec-element-type gap found while
          * getting firefly.prn's own `run-tests` to compile: `vec_get`
          * genuinely returns `void *` at the C level (every Vec is the
-         * same one erased runtime struct), but if the call site's own
-         * first argument is a param/local this compilation recorded a
-         * real element type for (g_vec_elem_hints, populated by the
-         * `&(Vec ElemType)` parameter-binding path), report that real
-         * type instead of the generic fallback -- `(deref (vec/get
-         * cases i))` can then actually resolve to `TestCase`, not a
-         * useless `void`. Narrow, not a general type table: only fires
-         * when a real hint was recorded for this exact call's own first
-         * argument symbol. */
-        const char *mangled = mangle(arena, call->children[1]->text);
-        const char *elem = find_vec_elem_hint(mangled);
-        if (elem) {
+         * same one erased runtime struct), but if this call's own real
+         * target expression -- a bare param/local (g_vec_elem_hints
+         * populated by the `&(Vec ElemType)` parameter-binding path) OR
+         * a get-field struct-field access (populated by process_
+         * defstruct()'s own new vec_elem_type tracking + get-field's
+         * own emission, 2026-08-21, world.prn's real `Terrain.heights`)
+         * -- has a recorded real element type, report that instead of
+         * the generic fallback -- `(deref (vec/get cases i))` can then
+         * actually resolve to `TestCase`, not a useless `void`. */
+        const char *target_text = NULL;
+        VecElemHint *hint = vec_call_target_hint(arena, call, scope, &target_text, out_error);
+        if (!target_text && out_error && *out_error) return NULL;
+        if (hint) {
+            /* A scalar element (I32/F64/Bool) reports the same "ElemType
+             * *" shape a pointer-representable element already does:
+             * real usage (world.prn's own `get-height`: `(deref
+             * (vec/get ...))`) always wraps it in `deref` uniformly
+             * regardless of element kind, and the Vec's own stored item
+             * genuinely IS a real pointer to an arena-allocated scalar
+             * cell now (parena_runtime.h's own vec_box_i32/vec_box_f64,
+             * used at the push!/set-at! call site above), not a bit-
+             * boxed value needing different deref treatment. */
             char t[128];
-            snprintf(t, sizeof(t), "%s *", elem);
+            snprintf(t, sizeof(t), "%s *", hint->elem_type);
             *out_type = arena_strdup(arena, t, strlen(t));
         } else {
             *out_type = "void *";
@@ -1169,7 +1324,23 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 *out_type = sinfo->fields[i].c_type;
                 char buf[512];
                 snprintf(buf, sizeof(buf), is_ref ? "(%s)->%s" : "(%s).%s", struct_c, sinfo->fields[i].c_name);
-                return arena_strdup(arena, buf, strlen(buf));
+                const char *result = arena_strdup(arena, buf, strlen(buf));
+                /* Register a g_vec_elem_hints entry for THIS exact field
+                 * access if process_defstruct() recorded a real element
+                 * type for it (a `(Vec ElemType)`-typed field) -- keyed
+                 * by this access's own emitted text (`result` itself),
+                 * the same real mechanism emit_call()'s vec_get/
+                 * vec_push_/vec_set_at_ handling looks hints up by (see
+                 * vec_call_target_hint()'s own comment). Found necessary
+                 * getting world.prn's own real `Terrain.heights` to
+                 * compile -- the earlier version of this mechanism only
+                 * ever covered `&(Vec ElemType)` PARAMETERS, never a
+                 * struct field accessed through get-field. */
+                if (sinfo->fields[i].vec_elem_type) {
+                    record_vec_elem_hint(arena, result, sinfo->fields[i].vec_elem_type,
+                                          sinfo->fields[i].vec_elem_is_scalar);
+                }
+                return result;
             }
         }
         return fail(arena, out_error, "get-field: '%s' has no field '%s' at line %d",
@@ -1812,6 +1983,29 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             if (!emit_body(arena, out, form->children + 1, form->child_count - 1, scope, 0, NULL, out_error)) {
                 return 0;
             }
+        } else if (is_call_named(form, "when")) {
+            /* `(when cond expr)` -- a real, common Lisp single-branch
+             * conditional, found missing while getting world.prn's own
+             * `set-height` and firefly/ladybug.prn's own `to` to
+             * compile (both real: `(when (not (matcher ...)) (firefly/
+             * errorf ...))`). Unlike `if`, `when` has no real "else"
+             * value at all -- it's inherently a statement-shaped,
+             * side-effecting construct (do nothing when the condition
+             * is false), not a value-producing ternary -- so this is
+             * handled the same statement-level way `do` is, a real C
+             * `if (cond) { expr; }` with no else, not attempted as a
+             * generic emit_expr() call. */
+            if (form->child_count != 3) {
+                fail(arena, out_error, "when: expected (when cond expr) at line %d", form->line);
+                return 0;
+            }
+            const char *cond_type = NULL;
+            const char *cond_c = emit_expr(arena, form->children[1], scope, &cond_type, out_error);
+            if (!cond_c) return 0;
+            const char *body_type = NULL;
+            const char *body_c = emit_expr(arena, form->children[2], scope, &body_type, out_error);
+            if (!body_c) return 0;
+            sb_appendf(out, "    if (%s) {\n        %s;\n    }\n", cond_c, body_c);
         } else {
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, form, scope, &c_type, out_error);
@@ -1821,6 +2015,30 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     }
 
     Node *tail = forms[count - 1];
+    if (is_call_named(tail, "when")) {
+        /* `when` in tail position -- real, honest scope: only makes
+         * sense for a Unit(void)-returning function (world.prn's own
+         * `set-height` is exactly this shape), since `when` has no real
+         * value to return on the false branch. A `when` in tail
+         * position of a NON-void function is reported, not silently
+         * guessed at (there's no honest value to fabricate for the
+         * false branch). */
+        if (tail->child_count != 3) {
+            fail(arena, out_error, "when: expected (when cond expr) at line %d", tail->line);
+            return 0;
+        }
+        const char *cond_type = NULL;
+        const char *cond_c = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        if (!cond_c) return 0;
+        const char *body_type = NULL;
+        const char *body_c = emit_expr(arena, tail->children[2], scope, &body_type, out_error);
+        if (!body_c) return 0;
+        sb_appendf(out, "    if (%s) {\n        %s;\n    }\n", cond_c, body_c);
+        if (return_mode) {
+            if (out_return_type) *out_return_type = "void";
+        }
+        return 1;
+    }
     if (is_call_named(tail, "with-arena")) {
         return emit_with_arena(arena, out, tail, scope, return_mode, out_return_type, out_error);
     }
@@ -2070,6 +2288,26 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
         fields[i].name = field->children[0]->text;
         fields[i].c_name = mangle(arena, field->children[0]->text);
         fields[i].c_type = field_type;
+        /* `(Vec ElemType)` field -- resolve the real element type too
+         * (field_type itself is just the erased "Vec"), so get-field's
+         * own emission can register a real g_vec_elem_hints entry for
+         * this exact field access. Real, honest, narrow re-parse of the
+         * same type node resolve_declared_type() already consumed above
+         * -- simplest way to recover ElemType without threading a second
+         * "and also tell me the Vec's own element type" out-parameter
+         * through resolve_declared_type() itself this late in the
+         * session. */
+        fields[i].vec_elem_type = NULL;
+        fields[i].vec_elem_is_scalar = 0;
+        if (strcmp(field_type, "Vec") == 0 && field->children[2]->type == NODE_LIST &&
+            field->children[2]->child_count == 2 && field->children[2]->children[1]->type == NODE_SYMBOL) {
+            Node *elem_node = field->children[2]->children[1];
+            const char *elem_c_type = resolve_base_type_name(elem_node);
+            if (elem_c_type) {
+                fields[i].vec_elem_type = elem_c_type;
+                fields[i].vec_elem_is_scalar = (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
+            }
+        }
     }
 
     StructInfo *info = (StructInfo *)arena_alloc(arena, sizeof(StructInfo));
@@ -2395,16 +2633,27 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
              * base type name for ElemType, keyed by this param's own
              * mangled C name, so a later `(vec/get cases i)` call site
              * can report a real element type instead of the generic
-             * "void *" fallback. */
+             * "void *" fallback.
+             *
+             * Real bug found and fixed here (2026-08-21, while extending
+             * this same mechanism to cover struct fields too): this used
+             * to store the RAW SOURCE symbol text directly (`param->
+             * children[3]->children[1]->text`) as the hint's own elem_type
+             * -- happens to be correct for a registered struct/enum name
+             * (never renamed), but wrong for a primitive ElemType like
+             * `F64` (real C type "double", not the literal text "F64")
+             * -- resolve_base_type_name() is the same real resolution
+             * process_defstruct's own new vec_elem_type tracking already
+             * uses, applied here too instead of trusting raw source text. */
             if (param->children[3]->type == NODE_LIST && param->children[3]->child_count == 2 &&
                 param->children[3]->children[0]->type == NODE_SYMBOL &&
                 is_symbol(param->children[3]->children[0], "Vec") &&
                 param->children[3]->children[1]->type == NODE_SYMBOL) {
-                VecElemHint *hint = (VecElemHint *)arena_alloc(arena, sizeof(VecElemHint));
-                hint->c_name = c_name;
-                hint->elem_type = param->children[3]->children[1]->text;
-                hint->next = g_vec_elem_hints;
-                g_vec_elem_hints = hint;
+                const char *elem_c_type = resolve_base_type_name(param->children[3]->children[1]);
+                if (elem_c_type) {
+                    int is_scalar = (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
+                    record_vec_elem_hint(arena, c_name, elem_c_type, is_scalar);
+                }
             }
         } else if (param->child_count == 5 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL && param->children[3]->type == NODE_AT) {

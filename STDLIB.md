@@ -167,10 +167,17 @@ deferred again.
 
 ```clojure
 ; vec — no dependencies, generic over T
-(defn new    [(dest : Arena @ Region)] : (Vec T) @ Region)
-(defn push!  [(v : &mut (Vec T)) (item : T)])
-(defn get    [(v : &(Vec T)) (idx : I32)] : (Option (&T)))
-(defn len    [(v : &(Vec T))] : I32)
+(defn new     [(dest : Arena @ Region)] : (Vec T) @ Region)
+(defn push!   [(v : &mut (Vec T)) (item : T)])
+(defn get     [(v : &(Vec T)) (idx : I32)] : (Option (&T)))
+(defn len     [(v : &(Vec T))] : I32)
+(defn set-at! [(v : &mut (Vec T)) (idx : I32) (item : T)])   ; real, honest gap in this
+  ; design doc itself, not just the implementation -- found missing (2026-08-21) via
+  ; world.prn's own real `vec-set-at!` (Terrain.set-height writing a new height into
+  ; its own heights vec by index), never designed here alongside new/push!/get/len.
+  ; Real runtime: parena_runtime.h's own vec_set_at_, same out-of-bounds-is-a-silent-
+  ; no-op safety convention `get` above already has (no real error-reporting channel a
+  ; void-returning runtime function has to use here).
 
 ; map — no dependencies, generic over K/V
 (defn new      [(dest : Arena @ Region)] : (Map K V) @ Region)
