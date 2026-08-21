@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile tools clean
 
 all: build
 
@@ -56,5 +56,24 @@ tests/test_region: tests/test_region.c $(OBJ)
 tests/test_emit: tests/test_emit.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_emit tests/test_emit.c $(OBJ)
 
+# tools/ci-status -- a real, native-PARENA CLI tool (stdlib/ci/status.prn),
+# built to dogfood the language on a genuine, recurring need this repo's
+# own workflow hits repeatedly (checking a GitHub Actions commit's own
+# check-run status). Real two-step build, the honest reflection of how
+# this actually works: (1) the already-built `parena` compiles the real
+# PARENA module to C, (2) that generated C links against
+# tools/ci_status_host.c's own real, hand-written host implementation
+# (the #target FFI's actual host side, not left as a deferred gap here)
+# plus tools/ci_status_main.c's own thin C entry point. This is the real,
+# next step toward the founder's own stated "add it to the parena CLI"
+# direction, not yet done -- this still builds a separate, standalone
+# binary, not a `parena ci-status` subcommand.
+tools: build
+	./parena build stdlib/ci/status.prn -o tools/ci_status_gen.c
+	$(CC) $(CFLAGS) -I runtime -I tools -include tools/ci_status.h \
+		tools/ci_status_gen.c tools/ci_status_host.c tools/ci_status_main.c \
+		-o tools/ci-status
+
 clean:
-	rm -f parena tests/test_lexer_parser tests/test_region tests/test_emit src/*.o
+	rm -f parena tests/test_lexer_parser tests/test_region tests/test_emit src/*.o \
+		tools/ci_status_gen.c tools/ci-status

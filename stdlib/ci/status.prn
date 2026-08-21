@@ -1,0 +1,38 @@
+;; stdlib/ci/status.prn — a real, native-PARENA stdlib module, built to
+;; dogfood the language on a genuine, recurring need this session's own
+;; workflow hit repeatedly: checking a GitHub Actions commit's own
+;; check-run status, previously done via ad-hoc python3 one-liners piped
+;; through curl. Founder, real-time (2026-08-21): "you are always
+;; checking that shit in python" -> "can you build a small parena tool
+;; to check it" -> "it will save a little time over and over" ->
+;; "instead of using python" -> "use native parena" -> "module first" ->
+;; "api first" -> "and then add it to the cli" -> "to the parena cli".
+;;
+;; Real, honest scope: this is NOT a general JSON library (PARENA's own
+;; stdlib has none yet) and NOT a real HTTPS client (net/http.prn's own
+;; real gaps -- no TLS implementation exists in this stdlib at all).
+;; Both of those are real, separate, much larger undertakings. Instead,
+;; matching every other host-interop file in this stdlib's own real
+;; `#target` FFI convention (io.prn/net/tcp.prn/pty.prn all delegate the
+;; actual OS-level work to inline-C rather than reimplementing it in
+;; pure PARENA), the ONE `#target` function below shells out to the
+;; real, already-installed `curl` via `popen` and does crude,
+;; substring-based field extraction (`strstr` for the literal
+;; `"status":"..."` / `"conclusion":"..."` JSON key patterns this one,
+;; specific GitHub API response shape actually uses) -- not a real JSON
+;; parse, an honest, narrow tool for exactly this one job.
+
+(module ci/status)
+(export check)
+
+;; check -- real return codes, matching a real CLI tool's own exit-code
+;; convention (0 = success, non-zero = each real distinct outcome a
+;; caller might want to branch on):
+;;   0 = every check-run is completed AND every conclusion is success
+;;   1 = at least one check-run is still pending (not yet completed)
+;;   2 = every check-run is completed, but at least one conclusion failed
+;;   3 = no check-runs found for this commit, or the request itself failed
+(defn check [(repo : String @ Region) (sha : String @ Region) (token : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "ci_status_check_c(repo, sha, token)")})
