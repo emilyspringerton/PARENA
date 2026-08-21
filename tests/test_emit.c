@@ -2648,6 +2648,110 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- multi-field defenum pattern destructuring in `match`, found
+     * genuinely never implemented (2026-08-21, gcc-verifying firefly/
+     * ladybug.prn's own real `((CloseTo expected tolerance) ...)`):
+     * pattern parsing only ever captured ONE bound name
+     * (`pattern->children[1]`), even though multi-field defenum variant
+     * CONSTRUCTION has been real since earlier this session -- a real
+     * gap in DESTRUCTURING specifically. `tolerance` fell straight
+     * through to scope_lookup's own generic "unknown identifier"
+     * failure, never even reaching a gcc compile. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum Matcher (CloseTo (expected : F64) (tolerance : F64)))\n"
+            "(defn within [(m : &Matcher) (actual : F64)]\n"
+            "  : Bool\n"
+            "  (match (deref m)\n"
+            "    ((CloseTo expected tolerance) (<= (- actual expected) tolerance))))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match pattern binding two names from a real multi-field "
+                                "defenum variant parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier tolerance', since "
+              "only the FIRST bound name in a multi-field pattern was ever captured)");
+        if (c_src) {
+            CHECK(strstr(c_src, "Matcher_CloseTo_Payload") != NULL,
+                  "the clause casts .value back to the real, generated payload struct type, the "
+                  "same one the variant's own multi-field constructor already produces");
+            CHECK(strstr(c_src, "->tolerance") != NULL,
+                  "the second bound name is correctly read from the payload struct's own real "
+                  "field, not left unbound");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a bare symbol naming a real, known, already-registered
+     * top-level `defn`, used as a VALUE (not called) -- e.g. assigning
+     * a named test function to a `(Fn ..)`-typed struct field
+     * (firefly.prn's own real `TestCase.run`). Found genuinely
+     * unhandled (2026-08-21, gcc-verifying a real BDD test file's own
+     * `{:run test-mean-of-known-values}`): scope_lookup only ever
+     * finds parameters/locals, never top-level functions, so this fell
+     * straight through to the generic "unknown identifier" failure. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn greet [(x : I32)] : I32 x)\n"
+            "(defn get-fn [] : I32 (greet 5))\n" /* unrelated defn, just to have >1 registered */
+            "(defstruct Holder (name : String) (run : (Fn [I32] I32)))\n"
+            "(defn make-holder [] : Holder {:name \"g\" :run greet})";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a bare defn name used as a struct-field value parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier greet', since a "
+              "bare top-level defn name had no value-reference handling anywhere before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "Holder_new(\"g\", greet)") != NULL,
+                  "the struct construction references the real function's own mangled C name "
+                  "directly, a real, valid C function-pointer value");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- pushing a real, non-pointer STRUCT VALUE (not a scalar) onto
+     * a Vec via vec/push!, found genuinely unboxed (2026-08-21, gcc-
+     * verifying a real BDD test file's own `(vec/push! &cases {:name
+     * ... :run ...})`, a real TestCase construction): the boxing
+     * decision only ever fired for the literal strings "int"/"double",
+     * so a struct VALUE flowed through completely unboxed, producing
+     * real, broken C (a bare struct where vec_push_ needs void *). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Item (n : I32))\n"
+            "(defn make-items [(dest : Arena @ Region)]\n"
+            "  : (Vec Item) @ Region\n"
+            "  (let [v (vec/new dest)]\n"
+            "    (vec/push! &v {:n 1})\n"
+            "    v))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "pushing a real struct VALUE (not a scalar) onto a Vec parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed only at the *gcc* stage -- 'incompatible "
+              "type for argument 2 of vec_push_' -- since the boxing decision only ever fired "
+              "for int/double, never a real struct value)");
+        if (c_src) {
+            CHECK(strstr(c_src, "Item_box(dest,") != NULL,
+                  "the struct value is boxed via the generated Item_box helper before being "
+                  "pushed, the same generic per-type boxing mechanism Ok/Err/Some already use");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

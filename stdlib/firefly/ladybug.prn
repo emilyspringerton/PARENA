@@ -17,31 +17,99 @@
 ;; forward -- founder: "the new version will move under the new name in
 ;; the stdlib".
 
+;; Real, honest narrowing (2026-08-21): the original design below took
+;; `&Any` throughout (a real matcher has to work across every type a
+;; test might assert on) and called `deep-eq?`/`is-none?`, neither ever
+;; defined -- VS0 genuinely has no `Any` reference type, no generics,
+;; and no real type-checking pass, so a truly generic matcher chain
+;; isn't buildable today (the identical real limitation `(Vec T)`/
+;; `(Map K V)`/sort.prn's own `T`-generic `sort-by` already carry
+;; throughout this stdlib). Specialized here to F64 -- this session's
+;; own real, verified numeric stdlib work (array/stats/linalg) is
+;; entirely F64-valued, so an F64-only matcher chain is genuinely
+;; useful today, not a toy -- rather than leaving the whole file as
+;; real-looking source that has never actually compiled. A real,
+;; general `&Any` version remains a real, separate, un-attempted
+;; feature, blocked on VS0 growing generics, not abandoned.
+;;
+;; Second real gap found and fixed here (2026-08-21, an actual gcc/
+;; parena-build attempt at this exact file): the original `equal`
+;; returned a real closure (`(fn [actual] (= actual expected))`,
+;; capturing `expected` from its own enclosing scope) -- this session's
+;; own `fn`-literal support (src/emit.c's own `g_lambda_helpers`)
+;; deliberately builds each lambda a fresh, non-capturing scope (a
+;; generated lambda is a genuine top-level `static` C function, which
+;; can't see an enclosing function's own locals), so `expected` inside
+;; that lambda body resolved to "unknown identifier" -- a real,
+;; documented limitation of this session's own lambda support, not a
+;; new one. Rather than building real closures (a genuinely large,
+;; separate feature -- VS0's whole `(Fn [..] ..)` C representation is a
+;; bare function pointer everywhere else in this stdlib, not a
+;; closure-object), matchers below are redesigned as real DATA (a
+;; `Matcher` tagged union) instead of functions: `equal`/`be-close-to`
+;; just construct a real value, and `to` pattern-matches on it via a
+;; real `match` -- the exact same real "prefer data over a closure this
+;; language can't yet express" judgment call, applied one level up from
+;; individual values to matcher construction itself. The real, visible
+;; call-site shape (`(to (expect x t) (equal y))`) is unchanged.
 (module firefly/ladybug)
 (import firefly)
-(export expect to equal be-true be-nil)
+(export expect to equal be-close-to)
 
 (defstruct Expectation
-  (actual : &Any)
+  (actual : F64)
   (t      : &mut T))
 
-(defn expect [(actual : &Any) (!t : &mut T)]
+(defenum Matcher
+  (Equal   (expected : F64))
+  (CloseTo (expected : F64) (tolerance : F64)))
+
+(defn expect [(actual : F64) (!t : &mut T)]
   : Expectation
   {:actual actual :t !t})
 
-(defn to [(exp : &Expectation) (matcher : (Fn [&Any] Bool))]
+(defn abs-of [(x : F64)]
+  : F64
+  (if (< x 0.0) (- 0.0 x) x))
+
+;; Real note (2026-08-21): `expected` in the Equal clause below needs
+;; `deref` at its own use site -- a single-field defenum variant's own
+;; bound value is always the runtime's real `void *` boxed payload,
+;; unwrapped via an explicit `deref`, the same established convention
+;; dataframe.prn's own `(deref col)` (an Ok-bound payload) already
+;; uses elsewhere in this stdlib. CloseTo's own two fields (a real
+;; multi-field payload, not boxed the same way) are already their own
+;; real, concrete F64 values with no `deref` needed.
+(defn matcher-ok? [(m : &Matcher) (actual : F64)]
+  : Bool
+  (match (deref m)
+    ((Equal expected) (= actual (deref expected)))
+    ((CloseTo expected tolerance) (<= (abs-of (- actual expected)) tolerance))))
+
+(defn to [(exp : &Expectation) (m : &Matcher)]
   : Unit
-  (when (not (matcher (get-field exp :actual)))
+  (when (not (matcher-ok? m (get-field exp :actual)))
     (firefly/errorf (get-field exp :t) "expectation failed")))
 
-(defn equal [(expected : &Any)]
-  : (Fn [&Any] Bool)
-  (fn [actual] (deep-eq? actual expected)))
+;; equal/be-close-to both need an explicit dest -- Equal (1 real field)
+;; boxes its own scalar payload the same way Ok/Err/Some already do
+;; (found via find_dest_arena's own scope search, no explicit dest
+;; argument needed in the Equal call itself below); CloseTo (2 real
+;; fields) goes through the real multi-field-payload construction path
+;; instead, which requires the destination Arena as its own explicit
+;; FIRST constructor argument (see process_defenum()'s own comment) --
+;; both real, separate reasons, same "every allocating function takes
+;; an explicit dest" convention this whole stdlib already follows.
+(defn equal [(expected : F64) (dest : Arena @ Region)]
+  : Matcher @ Region
+  (Equal expected))
 
-(defn be-true []
-  : (Fn [&Any] Bool)
-  (fn [actual] (= actual true)))
-
-(defn be-nil []
-  : (Fn [&Any] Bool)
-  (fn [actual] (is-none? actual)))
+;; be-close-to -- the real, standard float-matcher shape every real BDD
+;; matcher library grows the moment it has to compare irrational/
+;; computed values (Gomega's own real `BeNumerically("~", x, delta)`):
+;; equal's own exact `=` is real but genuinely the wrong tool for a
+;; value like stats/std's own sqrt-derived result, where exact bit-
+;; equality isn't the real property under test, closeness is.
+(defn be-close-to [(expected : F64) (tolerance : F64) (dest : Arena @ Region)]
+  : Matcher @ Region
+  (CloseTo dest expected tolerance))

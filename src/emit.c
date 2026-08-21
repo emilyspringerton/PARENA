@@ -851,7 +851,32 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
                 if (!field_type) return 0;
                 variants[i].fields[f].c_type = field_type;
             } else {
-                variants[i].fields[f].c_type = "void *"; /* unused for the single-field path below */
+                /* Real, honest, additive widening (2026-08-21, gcc-
+                 * verifying firefly/ladybug.prn's own real `((Equal
+                 * expected) (= actual (deref expected)))`): a single-
+                 * field variant's own real field type used to be
+                 * unconditionally hardcoded "void *" here, deliberately
+                 * unresolved (see this branch's own prior comment) --
+                 * but emit_match_core's own new single-field bind-type
+                 * precision fix (see its own declaration comment) needs
+                 * the real field type to give `deref` something correct
+                 * to cast through at a match clause's own use site.
+                 * Attempted here via the same resolve_declared_type()
+                 * every multi-field variant already uses, but with a
+                 * real, deliberate safety net the multi-field path
+                 * doesn't need: a failure here is NOT propagated as a
+                 * build error (`out_error` is discarded via a throwaway
+                 * pointer) -- falls back to the exact prior "void *"
+                 * behavior instead. This keeps the real, stated "zero
+                 * regression risk" guarantee this branch's own comment
+                 * already promises: every single-field defenum whose
+                 * own payload type ISN'T resolvable through this
+                 * function (there's no way to audit every real call
+                 * site across this whole stdlib for that risk in one
+                 * pass) keeps compiling exactly as it already did. */
+                const char *dummy_out_error = NULL;
+                const char *field_type = resolve_declared_type(arena, field->children[2], &dummy_out_error);
+                variants[i].fields[f].c_type = field_type ? field_type : "void *";
             }
         }
     }
@@ -1345,6 +1370,28 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
         }
         if (i > 1) sb_append(&args, ", ");
         int is_boxable_scalar = arg_type && (strcmp(arg_type, "int") == 0 || strcmp(arg_type, "double") == 0);
+        /* Real, general widening (2026-08-21, gcc-verifying a real BDD
+         * test file's own `(vec/push! &cases {:name "..." :run ...})`
+         * -- a real `TestCase` STRUCT value, not a scalar): the boxing
+         * decision above only ever fired for the literal strings "int"/
+         * "double" -- a real, non-pointer, non-scalar VALUE (a plain
+         * struct/enum construction result, e.g. TestCase's own
+         * map-literal `{:name ...}`) pushed onto a Vec never got boxed
+         * at all, producing real, broken C (`vec_push_(&v, some_struct)`
+         * where `void *` is required) -- caught only by an actual gcc
+         * compile. Uses the SAME generic ensure_box_helper() machinery
+         * Ok/Err/Some's own boxing already relies on (not vec_box_i32/
+         * vec_box_f64, which are scalar-specific and box into the
+         * TARGET VEC's own stored arena, not a separately-found dest) --
+         * needs its own Arena, found via the identical find_dest_arena()
+         * scope search Ok/Err/Some's own boxing already uses. Real,
+         * honest, narrow scope: skipped entirely if no arg_type is known
+         * at all (the same honest "can't decide" case scalar boxing
+         * already had) or if arg_type is already a pointer (a real
+         * `TypeName *` value needs no boxing at all, already directly
+         * usable as `void *`). */
+        int is_boxable_struct = arg_type && !is_boxable_scalar &&
+                                 arg_type[strlen(arg_type) - 1] != '*';
         if (box_vec_arg && logical_index == box_logical_index && is_boxable_scalar) {
             /* Box this specific value argument -- vec_box_i32/vec_box_f64
              * need the real `Vec *` target too (to allocate the scalar
@@ -1352,6 +1399,18 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
              * first argument, already sitting at the front of `args`. */
             const char *box_fn = strcmp(arg_type, "int") == 0 ? "vec_box_i32" : "vec_box_f64";
             sb_appendf(&args, "%s(%s, %s)", box_fn, box_vec_arg, arg_c);
+        } else if (box_vec_arg && logical_index == box_logical_index && is_boxable_struct) {
+            Local *arena_local = find_dest_arena(scope);
+            if (!arena_local) {
+                sb_free(&args);
+                return fail(arena, out_error,
+                            "%s: at line %d, no Arena in scope to box this non-pointer '%s' "
+                            "value before pushing it onto a Vec (add a 'dest : Arena @ Region' "
+                            "parameter to box it)",
+                            fn_name, call->line, arg_type);
+            }
+            const char *box_fn = ensure_box_helper(arena, arg_type);
+            sb_appendf(&args, "%s(%s, %s)", box_fn, arena_arg_expr(arena, arena_local), arg_c);
         } else {
             sb_append(&args, arg_c);
         }
@@ -1572,9 +1631,38 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     }
     if (expr->type == NODE_SYMBOL) {
         Local *b = scope_lookup(scope, expr->text);
-        if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text, expr->line);
-        *out_type = b->c_type;
-        return b->c_name;
+        if (b) {
+            *out_type = b->c_type;
+            return b->c_name;
+        }
+        /* Real gap closed here (2026-08-21, gcc-verifying a real BDD
+         * test file's own `{:name "..." :run test-mean-of-known-values}`
+         * -- firefly.prn's own pre-existing TestCase.run field, `(Fn
+         * [&mut T] Unit)`): a bare symbol naming a real, known, already-
+         * registered top-level `defn` -- not a call, a VALUE reference,
+         * e.g. passing a named test function where a callback parameter
+         * expects one -- fell through to the generic "unknown
+         * identifier" failure above, since scope_lookup only ever
+         * finds PARAMETERS/locals, never top-level functions (which
+         * live in a completely separate registry, g_defn_return_types).
+         * A real C function's own bare NAME already IS a valid function-
+         * pointer value with no further decoration needed, the exact
+         * same real fact a generated lambda's own name already relies
+         * on (see g_lambda_helpers' own declaration comment) -- this
+         * just extends that same real property to a NAMED defn instead
+         * of only a generated one. Real, honest, narrow out_type: this
+         * emitter has no per-function parameter-signature table (only
+         * return types), so "void *" is reported here, the same
+         * generic fallback every other function-pointer VALUE this
+         * emitter can't fully type already uses -- harmless for a
+         * direct struct-field assignment like TestCase.run, which
+         * doesn't consult it. */
+        const char *defn_c_name = mangle(arena, expr->text);
+        if (find_defn_return_type(defn_c_name)) {
+            *out_type = "void *";
+            return defn_c_name;
+        }
+        return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text, expr->line);
     }
     if (is_call_named(expr, "alloc")) {
         return emit_alloc_call(arena, expr, scope, out_type, out_error);
@@ -3057,12 +3145,29 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
         Node *pattern = clause->children[0];
         const char *ctor_name = NULL;
         Node *bind_node = NULL;
+        /* Real, honest gap closed here (2026-08-21, an actual gcc/parena-
+         * build attempt at firefly/ladybug.prn's own real `(CloseTo
+         * expected tolerance)` match clause): pattern destructuring used
+         * to only ever capture ONE bound name (`pattern->children[1]`),
+         * even though multi-field defenum variant CONSTRUCTION (see
+         * EnumVariant's own declaration comment) has been real since
+         * earlier this session -- a real, genuine gap in DESTRUCTURING,
+         * separate from that construction-side work. `tolerance` fell
+         * straight through to scope_lookup's own generic "unknown
+         * identifier" failure, never even reaching a gcc compile.
+         * bind_nodes collects every trailing symbol in the pattern list
+         * (bind_node, kept for the existing single-field code path
+         * below, is just bind_nodes[0]). */
+        Node *bind_nodes[16];
+        size_t bind_count = 0;
         if (pattern->type == NODE_LIST && pattern->child_count >= 1 &&
             pattern->children[0]->type == NODE_SYMBOL) {
             ctor_name = pattern->children[0]->text;
-            if (pattern->child_count >= 2 && pattern->children[1]->type == NODE_SYMBOL) {
-                bind_node = pattern->children[1];
+            for (size_t bi = 1; bi < pattern->child_count && bind_count < 16; bi++) {
+                if (pattern->children[bi]->type != NODE_SYMBOL) break;
+                bind_nodes[bind_count++] = pattern->children[bi];
             }
+            if (bind_count > 0) bind_node = bind_nodes[0];
         } else if (pattern->type == NODE_SYMBOL) {
             ctor_name = pattern->text;
         } else {
@@ -3071,6 +3176,9 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
         }
 
         int tag_value;
+        EnumVariant *pat_variant = NULL; /* hoisted out of the scrut_enum branch below --
+                                           * needed again at the multi-field binding site
+                                           * further down (bind_count >= 2). */
         int is_wildcard = strcmp(ctor_name, "_") == 0;
         if (is_wildcard) {
             tag_value = -1;
@@ -3080,7 +3188,6 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
              * hardcoded Ok/Err/Some/None one below -- a pattern naming a
              * variant that belongs to some OTHER enum (or no enum at all)
              * is reported, not silently matched against the wrong tag. */
-            EnumVariant *pat_variant = NULL;
             size_t vi;
             for (vi = 0; vi < scrut_enum->variant_count; vi++) {
                 if (strcmp(scrut_enum->variants[vi].name, ctor_name) == 0) {
@@ -3116,7 +3223,36 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
 
         EmitScope clause_scope;
         scope_init(&clause_scope, scope);
-        if (bind_node) {
+        if (bind_count >= 2 && pat_variant && pat_variant->field_count == bind_count) {
+            /* Real, multi-field destructuring, matching the real
+             * `EnumName_VariantName_Payload` struct process_defenum()
+             * itself already generates for a 2+-field variant's own
+             * constructor (see EnumVariant's own declaration comment) --
+             * cast `.value` back to that same payload struct type, then
+             * bind each real field by name, in the pattern's own
+             * written order (which construction already requires to
+             * match the variant's own real declared field order). */
+            char payload_type[192];
+            snprintf(payload_type, sizeof(payload_type), "%s_%s_Payload", scrut_enum->name, ctor_name);
+            char payload_var[64];
+            snprintf(payload_var, sizeof(payload_var), "__match_payload_%d", id);
+            sb_appendf(&clauses, "        %s *%s = (%s *)(%s.value);\n",
+                       payload_type, payload_var, payload_type, tmp_var);
+            for (size_t bi = 0; bi < bind_count; bi++) {
+                const char *c_name = mangle(arena, bind_nodes[bi]->text);
+                sb_appendf(&clauses, "        %s %s __attribute__((unused)) = %s->%s;\n",
+                           pat_variant->fields[bi].c_type, c_name, payload_var,
+                           pat_variant->fields[bi].c_name);
+                scope_bind(&clause_scope, bind_nodes[bi]->text, c_name, pat_variant->fields[bi].c_type, 0);
+            }
+        } else if (bind_count >= 2) {
+            sb_free(&clauses);
+            return fail(arena, out_error,
+                        "match: pattern '%s' at line %d binds %zu names, but the variant's own "
+                        "real field count doesn't match (VS0's emitter requires an exact, "
+                        "positional field-count match for a multi-field defenum pattern)",
+                        ctor_name, node->line, bind_count) != NULL;
+        } else if (bind_node) {
             const char *c_name = mangle(arena, bind_node->text);
             /* __attribute__((unused)): same real reasoning as `let`
              * bindings and function parameters above -- a real match
@@ -3124,7 +3260,46 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
              * Err arm that doesn't need the error value), not a genuine
              * Parena-source bug. */
             sb_appendf(&clauses, "        void *%s __attribute__((unused)) = %s.value;\n", c_name, tmp_var);
-            scope_bind(&clause_scope, bind_node->text, c_name, "void *", 0);
+            /* Real, honest precision improvement (2026-08-21, an actual
+             * gcc compile of firefly/ladybug.prn's own real `((Equal
+             * expected) (= actual expected))`): a single-field defenum
+             * variant's own bound value used to always be scope-tracked
+             * as the generic "void *" -- correct as far as it goes (the
+             * REAL C declaration here genuinely is `void *`, since the
+             * runtime's own `.value` field always is), but it meant a
+             * later real, typed use of the bound value (e.g. `(= actual
+             * expected)`, comparing against a real `double`) produced
+             * invalid C (`double == void *`), with no way to fix it up
+             * short of a manual `(deref ...)` at the use site -- and
+             * even `deref` itself couldn't help, since it needs the
+             * bound value's own TRACKED type to already be a real
+             * pointer type to cast through, not the generic "void *"
+             * every single-field bind reported here. When `pat_variant`
+             * is known (a registered defenum with real per-field type
+             * info -- see EnumVariant's own declaration comment), the
+             * bound value's own TRACKED scope type is now the real
+             * field's own C type plus "*", e.g. "double *" -- the
+             * EMITTED C declaration itself is unchanged (still a safe,
+             * generic `void *expected = ...`, exactly matching the
+             * runtime's own real representation), only the type this
+             * emitter believes it can be CAST to changes, which is
+             * exactly what a later `(deref expected)` at the real use
+             * site needs to correctly strip the pointer and cast to the
+             * real field type -- the same real, already-established
+             * "deref at the use site" convention dataframe.prn's own
+             * `(deref col)` (an Ok-bound single-field payload) already
+             * assumes elsewhere in this stdlib. Falls back to the
+             * previous generic "void *" when no defenum info is
+             * available (matching Result/Option's own real, honest,
+             * permanently-erased-payload-type limitation -- there's no
+             * equivalent "field type" to look up for those). */
+            const char *bound_c_type = "void *";
+            if (pat_variant && pat_variant->field_count == 1) {
+                char t[128];
+                snprintf(t, sizeof(t), "%s *", pat_variant->fields[0].c_type);
+                bound_c_type = arena_strdup(arena, t, strlen(t));
+            }
+            scope_bind(&clause_scope, bind_node->text, c_name, bound_c_type, 0);
         }
 
         const char *clause_type = NULL;

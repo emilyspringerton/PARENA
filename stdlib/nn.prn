@@ -29,7 +29,7 @@
         n (vec/len &(get-field x :data)) out (vec/new dest)]
     (loop [i 0]
       (when (< i n)
-        (let [normed (/ (- (deref (vec/get &(get-field x :data) i)) m) (sqrt (+ v eps)))]
+        (let [normed (/ (- (deref (vec/get &(get-field x :data) i)) m) (sqrt-of (+ v eps)))]
           (vec/push! &out (+ (* normed (deref (vec/get &(get-field weight :data) i)))
                               (deref (vec/get &(get-field bias :data) i)))))
         (recur (+ i 1))))

@@ -1771,6 +1771,52 @@ implementation does this with global mutable state + reflection-adjacent tricks)
 depth here; the signatures are real, the registration mechanism's own implementation is flagged as
 real follow-up work once VS0 can run enough Parena to build it against.
 
+**`firefly` + `firefly/ladybug`: now real, gcc-clean, AND runtime-verified (2026-08-21)** —
+founder, real-time: "can i please start to see some ladybug scarab tests too please?" A real,
+complete example test suite now exists and actually passes: `examples/stats_ladybug_test.prn`,
+4 real BDD-style cases against `stats.prn`'s own `mean`/`std`/`min`/`max`/`sqrt-of`, run through
+`firefly/run-tests` for real — `passed=4 failed=0 skipped=0`, confirmed at runtime, not just a
+clean compile (and confirmed the matcher chain has real teeth: a separate harness deliberately
+fed `equal`/`be-close-to` values that should fail, and both were correctly caught).
+
+`firefly/ladybug`'s own design above is `&Any`-typed (a real matcher has to work across every type
+under test) — genuinely unbuildable as written: VS0 has no `Any` reference type or generics, and
+`deep-eq?`/`is-none?` were never defined. **Specialized to F64** instead (this session's own
+verified numeric stdlib work — array/stats/linalg — is entirely F64-valued, so this is real,
+useful scope, not a toy): `equal`/`be-close-to` (a real, standard float-tolerance matcher, the
+`BeNumerically("~", x, delta)` every real matcher library needs the moment it compares an
+irrational/computed value like `std`'s own sqrt-derived result). `be-nil`/generic `&Any` support
+remain real, separate, un-attempted work, blocked on VS0 growing generics.
+
+A second real redesign was needed along the way: the original `equal`/`be-close-to` returned
+CLOSURES (`(fn [actual] (= actual expected))`, capturing `expected`) — this session's own `fn`-
+literal support deliberately builds non-capturing lambdas (a generated lambda is a real top-level
+`static` C function, which can't see an enclosing function's own locals), so this never compiled.
+Real closures are a genuinely separate, large feature (VS0's whole `(Fn [..] ..)` C representation
+is a bare function pointer everywhere else, not a closure object) — not attempted. Matchers are
+data instead: a real `Matcher` tagged union (`Equal`/`CloseTo`), with `to` pattern-matching on it
+via a real `match` — same visible call-site shape (`(to &exp &(equal y dest))`), no closures
+anywhere.
+
+**Four real, general VS0 emitter gaps closed getting this example to compile and actually pass**,
+none specific to this test file — general gaps it happened to be the first real source to reach:
+(1) multi-field defenum pattern DESTRUCTURING in `match` (e.g. `(CloseTo expected tolerance)`) —
+construction has supported 2+ real fields since earlier this session, but a match clause's own
+pattern parsing only ever captured the FIRST bound name; a second bound name fell through to
+"unknown identifier." (2) a single-field defenum pattern's own bound value is now scope-tracked
+with its real field type (not a generic `void *`) when that type is known, so a real `(deref ...)`
+at the use site — the same established convention `dataframe.prn`'s own `(deref col)` already
+relies on — correctly casts through to the real type instead of comparing `double` against
+`void *`. (3) a bare symbol naming a real, known, already-registered top-level `defn`, used as a
+VALUE (not called) — e.g. `{:run test-mean-of-known-values}`, assigning a named test function to
+`TestCase.run` — had no handling; `scope_lookup` only ever finds parameters/locals, never
+top-level functions. A real C function's own bare name already IS a valid function-pointer value,
+the same real fact a generated lambda's own name already relies on. (4) `vec/push!` onto a Vec of
+real STRUCT values (not scalars) — e.g. pushing a constructed `TestCase` — was never boxed at all;
+the boxing decision only ever fired for the literal strings `"int"`/`"double"`. Generalized to use
+the same `ensure_box_helper()` machinery Ok/Err/Some already rely on for any non-pointer,
+non-scalar value type, found via the same `find_dest_arena()` scope search.
+
 ### `pitviper/protocol` / `compress/lz4` — the custom remote-IDE protocol, resolved scope
 
 Founder: "basically i am extending my IDE which is actually this VPS" → "i am using pitviper to

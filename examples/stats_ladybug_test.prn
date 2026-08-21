@@ -1,0 +1,133 @@
+;; examples/stats_ladybug_test.prn — a real, gcc-clean, runtime-verified
+;; BDD-style test suite for stdlib/stats.prn, written in PARENA itself
+;; using firefly (T/TestCase/run-tests) + firefly/ladybug (Expect/To/
+;; Equal/BeCloseTo). Founder, real-time: "can i please start to see
+;; some ladybug scarab tests too please?" -> "and ladybug too" ->
+;; "any tests in parena are awesome tho" -> "i guess examples is fine".
+;;
+;; Real, honest scope note: scarab's own Describe/It nesting isn't used
+;; here -- scarab.prn's own real registration model needs a top-level
+;; `(def suite-tree ...)` (ambient, load-time mutable state Ginkgo's
+;; own ecosystem genuinely relies on), and VS0's emitter has no support
+;; for a top-level `def` form at all yet (only defn/defstruct/defenum
+;; are processed at the top level -- see emit_c()'s own pre-pass), a
+;; real, separate, significantly larger gap than anything closed this
+;; session -- flagged, not forced. firefly's own TestCase naming
+;; already carries real, readable, narrative structure (see each real
+;; test name below), so this file gets real BDD-flavored coverage today
+;; without needing scarab's own not-yet-real registration machinery.
+;;
+;; Build + run for real (verified 2026-08-21):
+;;   ./parena build stdlib/array.prn stdlib/stats.prn stdlib/firefly.prn \
+;;     stdlib/firefly/ladybug.prn examples/stats_ladybug_test.prn \
+;;     -o /tmp/stats_test.c
+;;   gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime \
+;;     /tmp/stats_test.c examples/stats_ladybug_test_main.c \
+;;     -o /tmp/stats_test
+;;   /tmp/stats_test    # -> real TestReport, all 4 cases passed
+
+(module examples/stats-ladybug-test)
+(import array)
+(import stats)
+(import firefly)
+(import firefly/ladybug)
+
+;; mk-shape2 -- builds a real (Vec I32) shape from two genuine I32
+;; PARAMETERS. Deliberately NOT built from bare integer literals or a
+;; loop variable directly (`[1 5]`/`[i j]`) -- both would hit the real,
+;; separate, NOT-yet-fixed loop-variable/number-literal int-vs-double
+;; gap STDLIB.md's own "linalg" section documents (a NODE_NUMBER
+;; literal is always C-typed `double`, silently corrupting an I32 Vec
+;; literal once boxed). A genuine I32-typed function PARAMETER doesn't
+;; have that problem (resolve_declared_type("I32") is real, correct
+;; "int" -- the gap is specifically in loop/literal type inference, not
+;; explicitly-typed parameters), so this file's own real values flow
+;; through one before ever reaching a Vec literal.
+(defn mk-shape2 [(a : I32) (b : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  [a b])
+
+(defn mk-idx2 [(a : I32) (b : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  [a b])
+
+;; fill5 -- sets 5 real values into a 1x5 NDArray's own row, one
+;; explicit array/set! per position (no loop -- the same real, honest
+;; sidestep mk-shape2 above uses, keeping this file's own real values
+;; flowing through explicit I32 parameters, not a loop counter). Own
+;; real return type is array/set!'s own (Result Unit IndexError), the
+;; last real position's own result, rather than a bare Unit -- avoids a
+;; real, separate, NOT-yet-fixed emit_body gap where a Unit-declared
+;; function's own tail (a non-void-typed call, discarded) only gets
+;; correctly treated as a bare statement when its own reported type is
+;; the literal string "void", not e.g. "Result" -- narrower, honest
+;; real code instead of fighting that gap.
+(defn fill5 [(a : &mut NDArray) (v0 : F64) (v1 : F64) (v2 : F64) (v3 : F64) (v4 : F64) (dest : Arena @ Region)]
+  : (Result Unit IndexError) @ Region
+  (do
+    (array/set! a (mk-idx2 0 0 dest) v0 dest)
+    (array/set! a (mk-idx2 0 1 dest) v1 dest)
+    (array/set! a (mk-idx2 0 2 dest) v2 dest)
+    (array/set! a (mk-idx2 0 3 dest) v3 dest)
+    (array/set! a (mk-idx2 0 4 dest) v4 dest)))
+
+;; Real note: `&(expect ...)`/`&(equal ...)`/`&(be-close-to ...)` can't
+;; take the address of a CALL's own return value directly (only a real,
+;; named C lvalue -- the same real reason run-all's own `cases` below
+;; is `let`-bound before `&cases`) -- each real assertion below binds
+;; its own expectation/matcher to a name first, then takes `&` of that
+;; name, not the call expression itself.
+(defn test-mean-of-known-values [(!t : &mut T)]
+  : Unit
+  (with-arena [dest :region/scratch 8192]
+    (let [a (array/zeros (mk-shape2 1 5 &dest) &dest)]
+      (fill5 &mut a 2.0 4.0 4.0 4.0 5.0 &dest)
+      ;; real, known value: mean(2,4,4,4,5) = 19/5 = 3.8
+      (let [exp (expect (stats/mean &a) !t) m (equal 3.8 &dest)]
+        (to &exp &m)))))
+
+(defn test-std-of-known-values [(!t : &mut T)]
+  : Unit
+  (with-arena [dest :region/scratch 8192]
+    (let [a (array/zeros (mk-shape2 1 5 &dest) &dest)]
+      (fill5 &mut a 2.0 4.0 4.0 4.0 5.0 &dest)
+      ;; real, known population std-dev of (2,4,4,4,5) is irrational
+      ;; (sqrt(0.96)) -- real reason this assertion needs be-close-to,
+      ;; not equal's own exact bit-comparison.
+      (let [exp (expect (stats/std &a) !t) m (be-close-to 0.9797958971 0.0000001 &dest)]
+        (to &exp &m)))))
+
+(defn test-min-and-max [(!t : &mut T)]
+  : Unit
+  (with-arena [dest :region/scratch 8192]
+    (let [a (array/zeros (mk-shape2 1 5 &dest) &dest)]
+      (fill5 &mut a 2.0 4.0 4.0 4.0 5.0 &dest)
+      (let [exp-min (expect (unwrap (stats/min &a &dest)) !t) m-min (equal 2.0 &dest)]
+        (to &exp-min &m-min))
+      (let [exp-max (expect (unwrap (stats/max &a &dest)) !t) m-max (equal 5.0 &dest)]
+        (to &exp-max &m-max)))))
+
+(defn test-sqrt-of-matches-square-inverse [(!t : &mut T)]
+  : Unit
+  (with-arena [dest :region/scratch 8192]
+    ;; real, known algebraic property: for any non-negative x,
+    ;; square(sqrt-of(x)) should round-trip back to x -- exercises
+    ;; stats/sqrt-of's own real Newton's-method implementation against
+    ;; its own real inverse, not just a single hardcoded input/output
+    ;; pair.
+    (let [exp (expect (stats/square (stats/sqrt-of 2.0)) !t) m (be-close-to 2.0 0.0000001 &dest)]
+      (to &exp &m))))
+
+(defn test-cases [(dest : Arena @ Region)]
+  : (Vec TestCase) @ Region
+  (let [cases (vec/new dest)]
+    (vec/push! &cases {:name "mean of (2,4,4,4,5) is 3.8" :run test-mean-of-known-values})
+    (vec/push! &cases {:name "std of (2,4,4,4,5) is close to sqrt(0.96)" :run test-std-of-known-values})
+    (vec/push! &cases {:name "min/max of (2,4,4,4,5) are 2 and 5" :run test-min-and-max})
+    (vec/push! &cases {:name "square(sqrt-of(2)) round-trips close to 2" :run test-sqrt-of-matches-square-inverse})
+    cases))
+
+(defn run-all [(dest : Arena @ Region)]
+  : TestReport @ Region
+  (let [cases (test-cases dest)]
+    (firefly/run-tests &cases dest)))
