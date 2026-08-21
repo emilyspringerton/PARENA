@@ -1902,6 +1902,76 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- Real, self-caught regression: `vec/get` (and friends) must
+     * NEVER resolve via mangle_call_name()'s own bare-name lookup, even
+     * when a real, unrelated defn happens to share that exact bare
+     * name elsewhere in the combined build -- found via array.prn's
+     * own real `product`, which calls `(vec/get shape i)`: array.prn
+     * ALSO defines its own, completely unrelated `get` function later
+     * in the very same file (returning `(Result F64 IndexError)`), and
+     * the bare-name-exists check alone silently resolved `vec/get` to
+     * THAT function instead of the runtime's own real `vec_get` --
+     * `parena build` itself produced `get(shape, i)`, not even needing
+     * a gcc compile to be wrong. `vec` is now explicitly excluded from
+     * bare-name resolution -- it's a confirmed, hardcoded RUNTIME
+     * pseudo-module with no real `vec.prn` file that could ever
+     * legitimately shadow it. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sum [(shape : &(Vec I32))] : I32\n"
+            "  (loop [i 0 acc 0]\n"
+            "    (if (>= i (vec/len shape))\n"
+            "      acc\n"
+            "      (recur (+ i 1) (+ acc (deref (vec/get shape i)))))))\n"
+            "(defn get [(a : I32)] : I32 a)";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "vec/get alongside an unrelated, real bare `get` defn parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "vec_get(shape, i)") != NULL,
+                  "vec/get still resolves to the real runtime vec_get, not the unrelated user "
+                  "defn also named get -- the real regression this test guards against");
+            CHECK(strstr(c_src, "= get(shape, i)") == NULL && strstr(c_src, "*)(get(shape") == NULL,
+                  "the unrelated get(a) defn is never mistakenly called in vec/get's place");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `unit` -- the Unit type's own singleton value literal, found
+     * genuinely missing (2026-08-21, gcc-verifying buffer.prn's own
+     * real `(Ok unit)` -- array.prn's `set!` uses the identical real
+     * shape): no handling anywhere, so a bare `unit` symbol fell
+     * through to the generic scope_lookup path and failed as an
+     * unknown identifier. Fixed as a reserved literal emitting `NULL`,
+     * reporting its own type as "void *" -- already pointer-typed, so
+     * Ok/Err/Some's own payload check accepts it directly with no
+     * boxing needed at all. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum MyErr (Bad))\n"
+            "(defn f [] : (Result Unit MyErr) (Ok unit))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "(Ok unit) parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed: 'unknown identifier unit', since unit "
+              "had no handling anywhere before this fix)");
+        if (c_src) {
+            CHECK(strstr(c_src, "result_ok(NULL)") != NULL,
+                  "unit emits as a plain NULL, already pointer-typed, no boxing needed at all");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

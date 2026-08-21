@@ -406,6 +406,19 @@ something real needs one.
 example call it). `get-data` is the obvious read-side counterpart — without it, `buffer` would
 be a write-only package, which no real stdlib package is.
 
+**Real VS0 emitter gap found and fixed compiling this file (2026-08-21)**: `set-data`'s own real
+body ends in `(Ok unit)` — `unit`, the `Unit` type's own singleton value, had no handling anywhere
+in the emitter at all, so a bare `unit` symbol fell through to the generic scope_lookup path and
+failed as an unknown identifier (array.prn's own `set!` uses the identical real shape, hitting the
+same gap). Fixed as a reserved literal emitting a plain `NULL`, reporting its own type as `void *`
+— already pointer-typed, so `Ok`/`Err`/`Some`'s own payload check accepts it directly with no
+boxing needed at all (`NULL` is already a valid, real pointer value).
+
+**Real, STILL-not-fixed gap, this file's own**: `raw-buffer-write!`/`raw-buffer-read` are called but
+never defined anywhere reachable, nor declared via `#target` FFI the way every other host-backed
+primitive elsewhere in this stdlib is — real, separate, un-started work; this file's own header
+comment already flags the underlying region-escape check itself as "VS0 domain 2, not built yet."
+
 ### `array` / `linalg` / `stats` — the numpy/scipy equivalent
 
 Founder: "can we build scipy and numpy into the standard language of PARENA?" → "whatever the

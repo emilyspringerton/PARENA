@@ -400,21 +400,35 @@ static const char *find_defn_return_type(const char *c_name) {
  * exact bare name (populated early by emit_c()'s own forward-
  * declaration pre-pass, so this sees every explicitly-typed defn in
  * the WHOLE combined build, not just earlier-in-file ones) --
- * otherwise falls back to the OLD, full-text mangle unchanged. This
- * matters concretely for two real, different reasons: (1) `vec/push!`
- * and friends are a hardcoded RUNTIME pseudo-module (parena_runtime.h's
- * own comment: its function names were deliberately chosen to already
- * match mangle()'s own full-text output) -- there's no real `vec.prn`
- * defn named `push!` to find by its bare name, so the bare-name lookup
- * correctly misses and the old, correct `vec_push_` mangling is kept.
- * (2) `string/concat`, found and fixed earlier this session by adding
- * a hardcoded `string_concat` RUNTIME helper specifically because no
- * real cross-module resolution existed yet -- a single-file build of a
- * file calling `string/concat` without string.prn combined in still
- * has no real bare `concat` defn anywhere in that build, so the
- * bare-name lookup still correctly misses there too, preserving that
- * already-working, already-tested call site exactly as before. */
+ * otherwise falls back to the OLD, full-text mangle unchanged.
+ *
+ * Real, self-caught regression fixed here (2026-08-21, an actual gcc
+ * -- no, caught even before that, by `parena build` itself misresolving
+ * -- compile of array.prn's own `product`, whose real body calls
+ * `(vec/get shape i)`): the bare-name-exists check ALONE isn't
+ * sufficient -- array.prn ALSO defines its own, unrelated, real `get`
+ * function (returning `(Result F64 IndexError)`) later in the very
+ * same file, so `vec/get`'s own bare-mangled "get" collided with a
+ * REAL, unrelated defn's own name, and the (wrong) resolution silently
+ * won, producing `get(shape, i)` instead of the real `vec_get(shape,
+ * i)`. `vec` is EXPLICITLY excluded from bare-name resolution here as
+ * a result -- it's a confirmed, hardcoded RUNTIME pseudo-module
+ * (parena_runtime.h's own comment: its function names were
+ * deliberately chosen to already match mangle()'s own full-text
+ * output), so its own qualified spelling is ALREADY the one, real,
+ * correct target -- there is no real `vec.prn` file at all whose own
+ * exported names could ever collide with a `vec/`-qualified call, so
+ * this exclusion loses nothing real. `string/concat`, found and fixed
+ * earlier this session by adding a hardcoded `string_concat` RUNTIME
+ * helper, needs no equivalent exclusion: a single-file build of a file
+ * calling `string/concat` without string.prn combined in has no real
+ * bare `concat` defn anywhere in that build, so the bare-name lookup
+ * correctly misses there on its own, preserving that already-working,
+ * already-tested call site exactly as before. */
 static const char *mangle_call_name(Arena *arena, const char *text) {
+    if (strncmp(text, "vec/", 4) == 0) {
+        return mangle(arena, text);
+    }
     const char *last_slash = strrchr(text, '/');
     if (last_slash && last_slash[1] != '\0') {
         const char *bare_mangled = mangle(arena, last_slash + 1);
@@ -1266,6 +1280,20 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
     if (is_symbol(expr, "false")) {
         *out_type = "int";
         return "0";
+    }
+    /* `unit` -- the Unit type's own singleton value, e.g. buffer.prn's
+     * own real `(Ok unit)` (array.prn's `set!` uses the identical real
+     * shape). Found genuinely missing (2026-08-21): no handling
+     * anywhere, so a bare `unit` symbol fell through to the generic
+     * scope_lookup path and failed as an unknown identifier. Real,
+     * deliberately minimal fix: emits as a plain `NULL` and reports its
+     * own type as "void *" -- already pointer-typed, so Ok/Err/Some's
+     * own boxing check accepts it directly with no boxing needed at
+     * all (NULL is already a valid, real `void *` value), unlike a
+     * genuine scalar payload. */
+    if (is_symbol(expr, "unit")) {
+        *out_type = "void *";
+        return "NULL";
     }
     /* A bare, zero-payload user defenum variant (e.g. `OnSave`) -- same
      * "checked before generic symbol lookup" treatment as `None` above,
