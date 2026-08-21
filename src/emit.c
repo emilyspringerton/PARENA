@@ -353,10 +353,15 @@ static VecElemHint *find_vec_elem_hint(const char *c_name) {
  * (added earlier this session for the exact same real ISO C99 rule)
  * never even fired, since it only checked for the literal string
  * "void", not "void *". Consulted by emit_call() before falling back
- * to the generic "void *" guess. Real, honest, narrow scope: only
- * functions VS0 has already emitted earlier in the SAME file are
- * registered -- a forward reference to a function not yet emitted
- * still falls back to the generic guess, same as before. */
+ * to the generic "void *" guess. Originally real, honest, narrow scope:
+ * only functions VS0 had already emitted earlier in the SAME file were
+ * registered -- a forward reference to a function not yet emitted fell
+ * back to the generic guess. Widened (2026-08-21, alongside emit_c()'s
+ * own new forward-declaration pre-pass -- see its own comment): every
+ * explicitly-typed defn now registers here BEFORE any body is emitted,
+ * so this registry also answers "is bare-name X a real, known defn
+ * anywhere in this combined build" for mangle_call_name()'s own use
+ * below, not just "what does it return." */
 typedef struct DefnReturnType {
     const char *c_name;
     const char *return_type;
@@ -369,6 +374,55 @@ static const char *find_defn_return_type(const char *c_name) {
         if (strcmp(d->c_name, c_name) == 0) return d->return_type;
     }
     return NULL;
+}
+
+/* mangle_call_name -- real, structural fix for a call-site gap
+ * genuinely distinct from mangle()'s own character-substitution job
+ * (found 2026-08-21 via a real, deliberate multi-file test: a function
+ * in one module calling another module's own exported function by its
+ * qualified `module/function` name, e.g. glob.prn's own real
+ * `(string/length pattern)` calling into string.prn's own real
+ * `length`). mangle() alone just blindly turns every `/` into `_`, so
+ * `string/length` becomes the call-site text "string_length" -- a C
+ * identifier that was NEVER what any real defn actually compiles to
+ * (a defn's own name is never itself prefixed by its enclosing
+ * module: `(defn length ...)` inside `(module string)` still compiles
+ * to bare `length`). This compiler's own multi-file build has no real
+ * per-module C symbol table at all -- every top-level form from every
+ * combined input file lives in one flat C namespace (see main.c's own
+ * cmd_build() comment) -- so a qualified call can only ever correctly
+ * resolve by falling back to the BARE, unqualified function name.
+ *
+ * Real, deliberately conservative resolution order, to avoid
+ * regressing any call site that already worked before this fix
+ * existed: try the bare (last `/`-segment) mangled name FIRST, but
+ * ONLY use it if g_defn_return_types already knows a real defn by that
+ * exact bare name (populated early by emit_c()'s own forward-
+ * declaration pre-pass, so this sees every explicitly-typed defn in
+ * the WHOLE combined build, not just earlier-in-file ones) --
+ * otherwise falls back to the OLD, full-text mangle unchanged. This
+ * matters concretely for two real, different reasons: (1) `vec/push!`
+ * and friends are a hardcoded RUNTIME pseudo-module (parena_runtime.h's
+ * own comment: its function names were deliberately chosen to already
+ * match mangle()'s own full-text output) -- there's no real `vec.prn`
+ * defn named `push!` to find by its bare name, so the bare-name lookup
+ * correctly misses and the old, correct `vec_push_` mangling is kept.
+ * (2) `string/concat`, found and fixed earlier this session by adding
+ * a hardcoded `string_concat` RUNTIME helper specifically because no
+ * real cross-module resolution existed yet -- a single-file build of a
+ * file calling `string/concat` without string.prn combined in still
+ * has no real bare `concat` defn anywhere in that build, so the
+ * bare-name lookup still correctly misses there too, preserving that
+ * already-working, already-tested call site exactly as before. */
+static const char *mangle_call_name(Arena *arena, const char *text) {
+    const char *last_slash = strrchr(text, '/');
+    if (last_slash && last_slash[1] != '\0') {
+        const char *bare_mangled = mangle(arena, last_slash + 1);
+        if (find_defn_return_type(bare_mangled)) {
+            return bare_mangled;
+        }
+    }
+    return mangle(arena, text);
 }
 
 /* g_boxed_types / g_box_helpers -- generated-once-per-type boxing
@@ -965,7 +1019,7 @@ static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *sc
 
 static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                               const char **out_error) {
-    const char *fn_name = mangle(arena, call->children[0]->text);
+    const char *fn_name = mangle_call_name(arena, call->children[0]->text);
     /* Real, narrow scalar-boxing fixup (2026-08-21, found via world.prn's
      * own real `Terrain.heights : (Vec F64)`): if this call is
      * vec_push_/vec_set_at_ AND its own target Vec has a recorded

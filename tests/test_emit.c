@@ -1812,6 +1812,70 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- Cross-module qualified calls (`module/function`) -- a real,
+     * structural gap distinct from mangle()'s own character-
+     * substitution job, found via a deliberate multi-file test
+     * (2026-08-21, right after regex/glob.prn's own real
+     * `(string/length pattern)` -- calling into string.prn's own real
+     * `length` -- got past its `cond` blocker only to hit a NEW
+     * 'implicit declaration of function string_length' error): calling
+     * another module's own exported function by its qualified name
+     * used to just blindly full-mangle the WHOLE qualified text
+     * (`string/length` -> `string_length`), a C identifier that was
+     * NEVER what any real defn actually compiles to (a defn's own name
+     * is never itself prefixed by its enclosing module). This
+     * compiler's multi-file build has no real per-module C symbol
+     * table -- everything lives in one flat namespace -- so the only
+     * correct resolution is the bare, unqualified function name.
+     *
+     * Fixed via mangle_call_name(): try the bare (last `/`-segment)
+     * name first, but only USE it if g_defn_return_types already knows
+     * a real defn by that exact bare name (populated early by emit_c()'s
+     * own forward-declaration pre-pass) -- otherwise fall back to the
+     * OLD, full-text mangle unchanged. This single test deliberately
+     * covers BOTH real cases at once, the same way a real combined
+     * multi-file build would (concatenating both "files'" forms into
+     * one program, exactly matching what cmd_build() itself does):
+     * `math/inc` resolving to the real, bare `inc` defn (the NEW fix),
+     * and `vec/push!` still resolving to the OLD, full-mangled
+     * `vec_push_` (no real bare `push!` defn exists anywhere to find,
+     * so the fallback correctly fires, unchanged from before). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn inc [(n : I32)] : I32 (+ n 1))\n"
+            "(defn bump-all [(dest : Arena @ Region)]\n"
+            "  (let [v (vec/new dest)]\n"
+            "    (vec/push! &v (math/inc 41))\n"
+            "    v))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a qualified call to a real defn, alongside vec/push!, parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously would only fail at the *gcc* stage -- 'implicit "
+              "declaration of function math_inc' -- parena build's own exit code stayed 0 either way)");
+        if (c_src) {
+            /* vec_box_i32, not vec_box_f64: a real, separate correctness
+             * bonus from this same fix -- math/inc's own return type
+             * (I32) is only correctly known here BECAUSE mangle_call_name
+             * resolved it to the real bare `inc` defn, whose return type
+             * g_defn_return_types already has on file; before this fix,
+             * emit_call's own return-type lookup for the bogus
+             * "math_inc" name would have missed entirely and fallen back
+             * to the generic "void *" guess. */
+            CHECK(strstr(c_src, "vec_push_(&(v), vec_box_i32(&(v), inc(41)))") != NULL,
+                  "math/inc resolves to the real, bare inc() defn -- not a bogus never-defined "
+                  "math_inc() -- while vec/push! in the very same call still correctly resolves to "
+                  "the old, full-mangled vec_push_, since no real bare push! defn exists to find");
+            CHECK(strstr(c_src, "math_inc") == NULL,
+                  "the bogus, never-defined math_inc() never appears anywhere in the output");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

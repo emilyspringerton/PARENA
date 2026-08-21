@@ -805,9 +805,27 @@ defined LATER in the same file — the same real forward-declaration-pre-pass ga
 surfaced first, not specific to this file; closed by the same fix (a real forward declaration for
 every `defn` carrying an explicit return type, emitted ahead of every defn body).
 
+**Third real gap, found and fixed in a follow-up pass (2026-08-21)**: `glob-match`'s own
+`(string/length pattern)` — a qualified call into string.prn's own real, already-defined `length` —
+still failed with a NEW, different error once combined with string.prn via multi-file build:
+`implicit declaration of function 'string_length'`. Real, structural, and much wider-reaching than
+this one file: mangle() alone just blindly turns every `/` into `_`, so `string/length` became the
+literal C identifier "string_length" — never what `length` (defined inside `(module string)`, but
+never itself prefixed by that module name when compiled) actually compiles to. This compiler's
+multi-file build has no real per-module C symbol table at all (every combined file's own top-level
+forms share one flat C namespace), so a qualified call can only ever correctly resolve by falling
+back to the bare, unqualified function name. Fixed via `mangle_call_name()`: try the bare (last
+`/`-segment) name first, but only use it if a real defn by that exact bare name is already known
+(via the same forward-declaration registry the second gap above populates) — otherwise fall back to
+the old, full-text mangle unchanged, so already-working call sites (`vec/push!`, and `string/concat`
+in a single-file build with no real `concat` combined in, which still correctly falls back to the
+runtime's own hardcoded `string_concat` helper) are untouched. Confirmed via real usage counts this
+affects far beyond glob.prn: `map/*`, `array/*`, `io/*`, `stats/*`, `sdl2/*`, `pty/*` qualified
+calls appear throughout the stdlib, all previously mis-resolving the same way.
+
 **Real, still-NOT-yet-fixed gap, this file's own**: `glob-match`'s own `#target`-adjacent runtime
-dependencies (`string/length`, `char-eq?`, `char-at-eq?`, `match-bracket-class`) are referenced but
-never defined anywhere reachable — real, separate, un-started work.
+dependencies (`char-eq?`, `char-at-eq?`, `match-bracket-class`) are referenced but never defined
+anywhere reachable — real, separate, un-started work.
 
 **`grep`/`sed`/`awk`** — the actual Unix tools, each thin and built directly on the packages
 above rather than reimplementing matching logic:
