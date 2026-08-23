@@ -2719,6 +2719,16 @@ static int emit_with_arena(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
     return 1;
 }
 
+/* Forward declarations -- emit_match_core/emit_loop_core are defined
+ * later in this file, but emit_let below (2026-08-23, its own `let`-
+ * binding-VALUE-is-match/loop fix) needs to call them directly. */
+static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                            const char *result_var, Local **loop_locals, size_t loop_var_count,
+                            const char **out_result_type, const char **out_error);
+static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                           const char *result_var, const char **out_result_type,
+                           const char **out_error);
+
 /* emit_let emits `(let [name1 expr1 name2 expr2 ...] body...)` as
  * sequential C local declarations -- VS0's own scope doesn't need
  * nested C blocks for `let` (no shadowing in the real test.prn shape),
@@ -2743,7 +2753,55 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
         }
         const char *c_name = mangle(arena, name_node->text);
         const char *c_type = NULL;
-        const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+        const char *expr_c = NULL;
+        /* Real gap found live (2026-08-23, building regex/nfa.prn's
+         * Pike's VM runner): this is THE real, general `let` handler
+         * (emit_body's own non-last-form dispatch and the function-tail
+         * dispatch both call here) -- a binding whose own VALUE is a
+         * `match` or `loop` fell through to a bare emit_expr() call,
+         * which (per this file's own "if in tail position" comment a
+         * few hundred lines below) has no case for either: their real
+         * handling lives only in the statement-shaped dispatchers
+         * (emit_body/emit_match_clause_body), never in emit_expr's own
+         * dispatch table. Same real fix shape emit_match()/emit_loop()
+         * themselves already use as public entry points (build into a
+         * scratch buffer first to learn the real result type, THEN
+         * declare, THEN append) -- inlined here via the lower-level
+         * _core functions directly (not calling emit_match()/emit_loop()
+         * themselves, so their own existing callers/behavior stay
+         * completely untouched) since neither exposes the fresh
+         * result_var name it generates back to its own caller. Real,
+         * honest, narrower scope than the general case: only `match`/
+         * `loop` handled here (the two concrete cases hit) -- `cond`/
+         * `when`/`if`/`do` as a `let`-binding VALUE are a real, separate,
+         * still-open gap, not attempted here. */
+        if (is_call_named(expr_node, "match") || is_call_named(expr_node, "loop")) {
+            static int let_val_counter = 0;
+            char temp_var[64];
+            snprintf(temp_var, sizeof(temp_var), "__let_val_%d", let_val_counter++);
+            StrBuf temp_body;
+            sb_init(&temp_body);
+            const char *temp_type = NULL;
+            int ok = is_call_named(expr_node, "match")
+                         ? emit_match_core(arena, &temp_body, expr_node, &child, temp_var, NULL, 0,
+                                            &temp_type, out_error)
+                         : emit_loop_core(arena, &temp_body, expr_node, &child, temp_var, &temp_type,
+                                           out_error);
+            if (!ok) {
+                sb_free(&temp_body);
+                return 0;
+            }
+            const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
+                                              ? "int"
+                                              : (temp_type ? temp_type : "void *");
+            sb_appendf(out, "    %s %s __attribute__((unused));\n", temp_decl_type, temp_var);
+            sb_append(out, temp_body.data);
+            sb_free(&temp_body);
+            expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
+            c_type = temp_decl_type;
+        } else {
+            expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+        }
         if (!expr_c) return 0;
         /* __attribute__((unused)): a `let` binding is real, valid source
          * (NORTHSTAR's own "scratch-to-buffer promotion" idiom computes
@@ -2765,6 +2823,13 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
 static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
                             const char *result_var, Local **loop_locals, size_t loop_var_count,
                             const char **out_result_type, const char **out_error);
+
+/* Forward declaration -- emit_loop_core is defined later in this file,
+ * but the `let`-binding-value fix below (2026-08-23, both inside
+ * emit_loop_tail and emit_body) needs to call it directly. */
+static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scope,
+                           const char *result_var, const char **out_result_type,
+                           const char **out_error);
 
 /* emit_loop_tail handles the real tail position inside a `loop` body --
  * exactly the shape every real `loop`/`recur` use in this stdlib
@@ -2980,7 +3045,52 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
             }
             const char *c_name = mangle(arena, name_node->text);
             const char *c_type = NULL;
-            const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            const char *expr_c = NULL;
+            /* Real gap found live (2026-08-23, building regex/nfa.prn's
+             * Pike's VM runner): a `let` binding whose own VALUE is a
+             * `match` or `loop` -- a real, ordinary thing to want (e.g.
+             * `(let [x (loop [i 0] ...)] ...)`) -- fell through to a
+             * bare emit_expr() call, which has no case for either
+             * (their real handling lives only in this statement-shaped
+             * dispatcher and emit_body's own, never registered in
+             * emit_expr's own dispatch table) -- generic-call parsing
+             * then tried to construct their own binding-vector `[...]`
+             * as a literal Vec value, failing confusingly downstream.
+             * Same real fix shape emit_match()/emit_loop() themselves
+             * already use as PUBLIC entry points (build into a scratch
+             * buffer first to learn the real result type, THEN declare,
+             * THEN append) -- inlined here via the lower-level _core
+             * functions directly (not calling emit_match()/emit_loop()
+             * themselves, so their own existing callers/behavior stay
+             * completely untouched) since neither exposes the fresh
+             * result_var name it generates back to its own caller. */
+            if (is_call_named(expr_node, "match") || is_call_named(expr_node, "loop")) {
+                static int let_val_counter = 0;
+                char temp_var[64];
+                snprintf(temp_var, sizeof(temp_var), "__let_val_%d", let_val_counter++);
+                StrBuf temp_body;
+                sb_init(&temp_body);
+                const char *temp_type = NULL;
+                int ok = is_call_named(expr_node, "match")
+                             ? emit_match_core(arena, &temp_body, expr_node, &child, temp_var, NULL, 0,
+                                                &temp_type, out_error)
+                             : emit_loop_core(arena, &temp_body, expr_node, &child, temp_var, &temp_type,
+                                               out_error);
+                if (!ok) {
+                    sb_free(&temp_body);
+                    return 0;
+                }
+                const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
+                                                  ? "int"
+                                                  : (temp_type ? temp_type : "void *");
+                sb_appendf(out, "        %s %s __attribute__((unused));\n", temp_decl_type, temp_var);
+                sb_append(out, temp_body.data);
+                sb_free(&temp_body);
+                expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
+                c_type = temp_decl_type;
+            } else {
+                expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            }
             if (!expr_c) return 0;
             sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
@@ -3374,7 +3484,52 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             }
             const char *c_name = mangle(arena, name_node->text);
             const char *c_type = NULL;
-            const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            const char *expr_c = NULL;
+            /* Real gap found live (2026-08-23, building regex/nfa.prn's
+             * Pike's VM runner): a `let` binding whose own VALUE is a
+             * `match` or `loop` -- a real, ordinary thing to want (e.g.
+             * `(let [x (loop [i 0] ...)] ...)`) -- fell through to a
+             * bare emit_expr() call, which has no case for either
+             * (their real handling lives only in this statement-shaped
+             * dispatcher and emit_body's own, never registered in
+             * emit_expr's own dispatch table) -- generic-call parsing
+             * then tried to construct their own binding-vector `[...]`
+             * as a literal Vec value, failing confusingly downstream.
+             * Same real fix shape emit_match()/emit_loop() themselves
+             * already use as PUBLIC entry points (build into a scratch
+             * buffer first to learn the real result type, THEN declare,
+             * THEN append) -- inlined here via the lower-level _core
+             * functions directly (not calling emit_match()/emit_loop()
+             * themselves, so their own existing callers/behavior stay
+             * completely untouched) since neither exposes the fresh
+             * result_var name it generates back to its own caller. */
+            if (is_call_named(expr_node, "match") || is_call_named(expr_node, "loop")) {
+                static int let_val_counter = 0;
+                char temp_var[64];
+                snprintf(temp_var, sizeof(temp_var), "__let_val_%d", let_val_counter++);
+                StrBuf temp_body;
+                sb_init(&temp_body);
+                const char *temp_type = NULL;
+                int ok = is_call_named(expr_node, "match")
+                             ? emit_match_core(arena, &temp_body, expr_node, &child, temp_var, NULL, 0,
+                                                &temp_type, out_error)
+                             : emit_loop_core(arena, &temp_body, expr_node, &child, temp_var, &temp_type,
+                                               out_error);
+                if (!ok) {
+                    sb_free(&temp_body);
+                    return 0;
+                }
+                const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
+                                                  ? "int"
+                                                  : (temp_type ? temp_type : "void *");
+                sb_appendf(out, "        %s %s __attribute__((unused));\n", temp_decl_type, temp_var);
+                sb_append(out, temp_body.data);
+                sb_free(&temp_body);
+                expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
+                c_type = temp_decl_type;
+            } else {
+                expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
+            }
             if (!expr_c) return 0;
             sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
