@@ -1,4 +1,5 @@
 #include "emit.h"
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -598,9 +599,158 @@ static int g_lambda_count = 0;
 static StrBuf g_veclit_helpers;
 static int g_veclit_count = 0;
 
+/* find_fnptr_star_group -- locates the bare "(<stars>)" hole in a C
+ * type string produced by this emitter's own function-pointer type
+ * shape ("RetType (*)(ArgTypes)", possibly with more than one '*' once
+ * format_c_type_ptr below has run on it) -- the spot a name (or more
+ * stars) has to be spliced into, since C's own declarator syntax puts
+ * a function pointer's name/extra indirection *inside* those parens,
+ * never after the whole type the way every ordinary type works. Returns
+ * 0 (not a function-pointer type) for anything else, e.g. "I32",
+ * "String", "MyStruct" -- the overwhelmingly common case everywhere
+ * else in this emitter. */
+static int find_fnptr_star_group(const char *c_type, size_t *prefix_len, int *num_stars, const char **suffix) {
+    const char *paren = strstr(c_type, "(*");
+    if (!paren) return 0;
+    const char *p = paren + 1;
+    int stars = 0;
+    while (*p == '*') {
+        stars++;
+        p++;
+    }
+    if (*p != ')') return 0;
+    *prefix_len = (size_t)(paren - c_type);
+    *num_stars = stars;
+    *suffix = p + 1;
+    return 1;
+}
+
+/* is_pointer_c_type -- true when a C type string is already pointer-
+ * representable at the C level: ends in '*' (String -> "char *", a
+ * registered struct/enum used behind a reference, etc.) OR is one of
+ * this emitter's own function-pointer type strings ("RetType
+ * (*)(ArgTypes)", which is real, valid, pointer-representable C but
+ * doesn't END in a literal '*' character the way every other pointer
+ * type string here does -- it ends in the closing ')' of its own
+ * argument list). Every call site that used to check only the trailing-
+ * '*' case (deciding "does this value need boxing before going in a
+ * Vec/Result/Option" / "is vec_get's own cast already the real pointer
+ * type, no extra '*' needed") needs this widened check too, or a real
+ * function-pointer element (scarab.prn's own `(Vec (Fn [] Unit))`
+ * before/after hook lists) gets silently, wrongly treated as a boxable
+ * scalar/struct instead of the already-a-pointer value it really is --
+ * found via a real gcc compile of scarab.prn's own `collect-hooks`/
+ * `run-hooks`. */
+static int is_pointer_c_type(const char *c_type) {
+    if (!c_type || c_type[0] == '\0') return 0;
+    if (c_type[strlen(c_type) - 1] == '*') return 1;
+    size_t prefix_len;
+    int stars;
+    const char *suffix;
+    return find_fnptr_star_group(c_type, &prefix_len, &stars, &suffix);
+}
+
+/* format_c_decl -- given a C type string that might be an ordinary type
+ * or one of this emitter's own function-pointer type strings, produces
+ * a valid C declaration "TYPE NAME" (ordinary case) or "RetType
+ * (*NAME)(ArgTypes)" (function-pointer case, name spliced inside the
+ * parens) for a variable/parameter/field of that type with the given
+ * name. Generalizes the same "(*)"-splice trick defn's own Fn-typed
+ * parameter branch already uses for parameter lists to every other
+ * declaration site (let/loop/match bindings, box-helper generation)
+ * that was still using an unconditional "%s %s" template and breaking
+ * on any function-pointer c_type it happened to receive -- found via a
+ * real gcc compile of scarab.prn's own before-each/after-each/
+ * collect-hooks/run-hooks/run-group ((Fn [] Unit) values held in a Vec,
+ * bound by `let` and by multi-field match destructuring). */
+static const char *format_c_decl(Arena *arena, const char *c_type, const char *name) {
+    size_t prefix_len;
+    int stars;
+    const char *suffix;
+    char buf[256];
+    if (!find_fnptr_star_group(c_type, &prefix_len, &stars, &suffix)) {
+        /* No space before `name` when c_type already ends in '*' (e.g.
+         * "Point *", format_c_type_ptr's own real output) -- found via
+         * ensure_box_helper's own real call site (2026-08-23):
+         * format_c_decl_ptr() feeds this function an already-pointer
+         * c_type, and the old unconditional "%s %s" template inserted a
+         * second, spurious space ("Point * Point_box(...)" instead of
+         * "Point *Point_box(...)"), a real, valid-but-ugly divergence
+         * from this file's own existing generated-code convention
+         * (every other pointer declaration here reads "Type *name",
+         * one space total, before the '*' not after it). */
+        size_t len = strlen(c_type);
+        const char *sep = (len > 0 && c_type[len - 1] == '*') ? "" : " ";
+        snprintf(buf, sizeof(buf), "%s%s%s", c_type, sep, name);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    char stars_buf[8];
+    int i;
+    for (i = 0; i < stars && i < 7; i++) stars_buf[i] = '*';
+    stars_buf[i] = '\0';
+    snprintf(buf, sizeof(buf), "%.*s(%s%s)%s", (int)prefix_len, c_type, stars_buf, name, suffix);
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* format_c_type_ptr -- given a C type string (ordinary or function-
+ * pointer), returns a new, still-abstract (no name) type string that
+ * means "pointer to c_type" -- "TYPE *" for the ordinary case, one more
+ * '*' spliced into the existing star-group for the function-pointer
+ * case ("RetType (*)(Args)" -> "RetType (**)(Args)"). The result is
+ * itself a valid input to format_c_decl/format_c_type_ptr again (the
+ * star-group it contains is still a bare, name-free hole). */
+static const char *format_c_type_ptr(Arena *arena, const char *c_type) {
+    size_t prefix_len;
+    int stars;
+    const char *suffix;
+    char buf[256];
+    if (!find_fnptr_star_group(c_type, &prefix_len, &stars, &suffix)) {
+        snprintf(buf, sizeof(buf), "%s *", c_type);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    char stars_buf[8];
+    int i;
+    for (i = 0; i < stars + 1 && i < 7; i++) stars_buf[i] = '*';
+    stars_buf[i] = '\0';
+    snprintf(buf, sizeof(buf), "%.*s(%s)%s", (int)prefix_len, c_type, stars_buf, suffix);
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
+/* format_c_decl_ptr -- declares `name` as a POINTER to c_type (one more
+ * level of indirection than format_c_decl itself gives). Used by
+ * ensure_box_helper below, whose real job IS to hand back a pointer to
+ * the value it just boxed -- composes cleanly from the two helpers
+ * above since format_c_type_ptr's own result is itself a valid
+ * format_c_decl input. */
+static const char *format_c_decl_ptr(Arena *arena, const char *c_type, const char *name) {
+    const char *ptr_type = format_c_type_ptr(arena, c_type);
+    return format_c_decl(arena, ptr_type, name);
+}
+
 static const char *ensure_box_helper(Arena *arena, const char *c_type) {
     char name_buf[160];
-    snprintf(name_buf, sizeof(name_buf), "%s_box", c_type);
+    size_t sg_prefix;
+    int sg_stars;
+    const char *sg_suffix;
+    if (find_fnptr_star_group(c_type, &sg_prefix, &sg_stars, &sg_suffix)) {
+        /* Function-pointer c_type strings ("void (*)(void)", "void
+         * (*)(T *)") can't form a valid C identifier via plain string
+         * concatenation the way every other c_type here can -- sanitize
+         * by replacing every non-identifier character with '_'. Doesn't
+         * need to be pretty, just a valid, stable, distinct identifier
+         * per distinct function-pointer type; the dedup check below
+         * still keys on the raw c_type string, not this sanitized
+         * name, so two identical Fn signatures still share one helper. */
+        char sanitized[128];
+        size_t j = 0;
+        for (const char *p = c_type; *p && j + 1 < sizeof(sanitized); p++) {
+            sanitized[j++] = (isalnum((unsigned char)*p) || *p == '_') ? *p : '_';
+        }
+        sanitized[j] = '\0';
+        snprintf(name_buf, sizeof(name_buf), "fnptr_%s_box", sanitized);
+    } else {
+        snprintf(name_buf, sizeof(name_buf), "%s_box", c_type);
+    }
     for (BoxedType *b = g_boxed_types; b; b = b->next) {
         if (strcmp(b->type_name, c_type) == 0) {
             return arena_strdup(arena, name_buf, strlen(name_buf));
@@ -610,13 +760,19 @@ static const char *ensure_box_helper(Arena *arena, const char *c_type) {
     nb->type_name = arena_strdup(arena, c_type, strlen(c_type));
     nb->next = g_boxed_types;
     g_boxed_types = nb;
+
+    char sig_buf[224];
+    snprintf(sig_buf, sizeof(sig_buf), "%s(Arena *dest, %s)", name_buf, format_c_decl(arena, c_type, "v"));
+    const char *fn_decl = format_c_decl_ptr(arena, c_type, sig_buf);
+    const char *ret_ptr_type = format_c_type_ptr(arena, c_type);
+    const char *p_decl = format_c_decl_ptr(arena, c_type, "p");
     sb_appendf(&g_box_helpers,
-               "static inline %s *%s_box(Arena *dest, %s v) {\n"
-               "    %s *p = (%s *)arena_alloc(dest, sizeof(%s));\n"
+               "static inline %s {\n"
+               "    %s = (%s)arena_alloc(dest, sizeof(%s));\n"
                "    *p = v;\n"
                "    return p;\n"
                "}\n\n",
-               c_type, c_type, c_type, c_type, c_type, c_type);
+               fn_decl, p_decl, ret_ptr_type, c_type);
     return arena_strdup(arena, name_buf, strlen(name_buf));
 }
 
@@ -814,6 +970,31 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
     const char *enum_name = node->children[1]->text;
     size_t variant_count = node->child_count - 2;
     EnumVariant *variants = (EnumVariant *)arena_alloc(arena, sizeof(EnumVariant) * variant_count);
+
+    /* Register the enum's own name into g_enums BEFORE resolving any
+     * variant field types below -- found genuinely missing (2026-08-23,
+     * building stdlib/regex/syntax.prn's own real recursive PatternNode:
+     * `(Star (inner : &PatternNode) (greedy : Bool))` references
+     * PatternNode from inside PatternNode's own defenum body, e.g. an
+     * AST node type pointing at itself, a completely ordinary shape for
+     * any tree/recursive data structure). find_enum_by_name() only ever
+     * reads ->name (variant lookups all walk ->variants, untouched until
+     * filled in below), so a self-reference resolves correctly the
+     * moment resolve_declared_type() hits it, without weakening the
+     * existing "other types must be declared earlier" rule this
+     * function's own pre-pass comment already documents -- this only
+     * adds "a type may also reference ITSELF", not "a type may
+     * reference something declared later". ->variants/->variant_count
+     * are filled in below once the real field data exists; g_enums
+     * already tolerates a mid-construction entry since nothing else
+     * touches this list while process_defenum() itself is running. */
+    EnumInfo *info = (EnumInfo *)arena_alloc(arena, sizeof(EnumInfo));
+    info->name = enum_name;
+    info->variants = NULL;
+    info->variant_count = 0;
+    info->next = g_enums;
+    g_enums = info;
+
     for (size_t i = 0; i < variant_count; i++) {
         Node *variant = node->children[2 + i];
         if (variant->type != NODE_LIST || variant->child_count < 1 || variant->children[0]->type != NODE_SYMBOL) {
@@ -881,12 +1062,12 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
         }
     }
 
-    EnumInfo *info = (EnumInfo *)arena_alloc(arena, sizeof(EnumInfo));
-    info->name = enum_name;
+    /* info was already allocated and linked into g_enums above, before
+     * the variant/field loop, precisely so a self-referencing field
+     * (e.g. PatternNode's own `&PatternNode`) can resolve mid-
+     * construction -- just fill in the real data now that it exists. */
     info->variants = variants;
     info->variant_count = variant_count;
-    info->next = g_enums;
-    g_enums = info;
 
     /* Tag constants get a real, distinct `_TAG_` infix (EditorEvent_TAG_
      * OnSave) rather than the same EnumName_VariantName shape the
@@ -2571,7 +2752,7 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
          * flags a genuinely unused C local, but that's not a real bug in
          * the *Parena* source, so it's suppressed the standard, honest
          * C99 way rather than by disabling -Wunused-variable wholesale. */
-        sb_appendf(out, "    %s %s __attribute__((unused)) = %s;\n", c_type, c_name, expr_c);
+        sb_appendf(out, "    %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
         scope_bind(&child, name_node->text, c_name, c_type, 0 /* not an arena value */);
     }
 
@@ -2801,7 +2982,7 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s %s __attribute__((unused)) = %s;\n", c_type, c_name, expr_c);
+            sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
         }
         Node **body_forms = tail->children + 2;
@@ -3072,10 +3253,19 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
  * new declaration, no new tmp_var (well, a fresh tmp_var for the
  * INNER match's own distinct scrutinee, but the SAME result_var,
  * whose own C type is only known once every real branch, nested or
- * not, has contributed one). */
+ * not, has contributed one).
+ *
+ * result_type_hint -- the overall match's own result_type as already
+ * decided by emit_match_core's clause loop (NULL for the very first
+ * clause, which is what DECIDES it). See the plain-value fallback
+ * below's own comment for the real bug this closes: once the match as
+ * a whole has committed to producing no value ("void"), every clause
+ * needs to honor that, not just whichever clause happens to look
+ * void-shaped on its own. */
 static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitScope *scope,
                                    const char *result_var, Local **loop_locals, size_t loop_var_count,
-                                   const char **out_result_type, const char **out_error) {
+                                   const char *result_type_hint, const char **out_result_type,
+                                   const char **out_error) {
     /* `recur` inside a match clause body -- found missing (2026-08-21,
      * gcc-verifying net/http.prn's own real `serve`, whose accept-loop
      * is `(loop [] (match (net/tcp/accept ...) ((Ok !conn) (do ...
@@ -3154,13 +3344,13 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         sb_appendf(out, "        if (%s) {\n", cond_c);
         const char *then_type = NULL;
         if (!emit_match_clause_body(arena, out, body->children[2], scope, result_var, loop_locals,
-                                     loop_var_count, &then_type, out_error)) {
+                                     loop_var_count, result_type_hint, &then_type, out_error)) {
             return 0;
         }
         sb_append(out, "        } else {\n");
         const char *else_type = NULL;
         if (!emit_match_clause_body(arena, out, body->children[3], scope, result_var, loop_locals,
-                                     loop_var_count, &else_type, out_error)) {
+                                     loop_var_count, result_type_hint, &else_type, out_error)) {
             return 0;
         }
         sb_append(out, "        }\n");
@@ -3186,7 +3376,7 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             const char *c_type = NULL;
             const char *expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s %s __attribute__((unused)) = %s;\n", c_type, c_name, expr_c);
+            sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
         }
         Node **body_forms = body->children + 2;
@@ -3213,7 +3403,8 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], &child, result_var,
-                                       loop_locals, loop_var_count, out_result_type, out_error);
+                                       loop_locals, loop_var_count, result_type_hint, out_result_type,
+                                       out_error);
     }
     if (is_call_named(body, "do")) {
         Node **body_forms = body->children + 1;
@@ -3229,7 +3420,8 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             }
         }
         return emit_match_clause_body(arena, out, body_forms[body_count - 1], scope, result_var,
-                                       loop_locals, loop_var_count, out_result_type, out_error);
+                                       loop_locals, loop_var_count, result_type_hint, out_result_type,
+                                       out_error);
     }
     if (is_call_named(body, "match")) {
         return emit_match_core(arena, out, body, scope, result_var, loop_locals, loop_var_count,
@@ -3264,8 +3456,29 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
      * a `"void"`-typed value, applied here too -- `result_var` itself
      * (declared `void` in exactly this case, see emit_match's own
      * declaration) is simply never assigned, matching its own real,
-     * honest "this clause produces nothing" meaning. */
-    if (clause_type && strcmp(clause_type, "void") == 0) {
+     * honest "this clause produces nothing" meaning.
+     *
+     * Real, self-caught follow-on bug fixed here (2026-08-21, gcc-
+     * verifying scarab.prn's own real `run-group`, whose match has
+     * clauses of BOTH kinds: a `(Spec ...)` clause whose value is a
+     * genuine `void`-returning call, sitting alongside a `((BeforeHook
+     * hook) unit)` clause whose bare `unit` literal's own real C type
+     * is `void *` -- a real, valid pointer value (`NULL`), not `void`.
+     * `result_type` (see emit_match_core's own clause loop) is decided
+     * from the FIRST clause alone, so once any earlier clause fixes it
+     * to `"void"`, `result_var` is declared as the real `int`
+     * placeholder that case uses -- but THIS clause's own `clause_type`
+     * is `"void *"`, not `"void"`, so the check above alone let it
+     * through into the assignment branch, `NULL` into an `int`, real
+     * invalid C. `result_type_hint` carries the ALREADY-DECIDED overall
+     * result type down from emit_match_core's clause loop (see its own
+     * declaration comment) -- once the match as a whole has committed
+     * to producing no real value, no individual clause should try to
+     * write one into result_var either, regardless of what that one
+     * clause's own value happens to look like. */
+    int result_is_void = (clause_type && strcmp(clause_type, "void") == 0) ||
+                          (result_type_hint && strcmp(result_type_hint, "void") == 0);
+    if (result_is_void) {
         sb_appendf(out, "        (void)(%s);\n", clause_c);
     } else {
         sb_appendf(out, "        %s = %s;\n", result_var, clause_c);
@@ -3464,8 +3677,8 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
                        payload_type, payload_var, payload_type, tmp_var);
             for (size_t bi = 0; bi < bind_count; bi++) {
                 const char *c_name = mangle(arena, bind_nodes[bi]->text);
-                sb_appendf(&clauses, "        %s %s __attribute__((unused)) = %s->%s;\n",
-                           pat_variant->fields[bi].c_type, c_name, payload_var,
+                sb_appendf(&clauses, "        %s __attribute__((unused)) = %s->%s;\n",
+                           format_c_decl(arena, pat_variant->fields[bi].c_type, c_name), payload_var,
                            pat_variant->fields[bi].c_name);
                 scope_bind(&clause_scope, bind_nodes[bi]->text, c_name, pat_variant->fields[bi].c_type, 0);
             }
@@ -3552,7 +3765,7 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
 
         const char *clause_type = NULL;
         if (!emit_match_clause_body(arena, &clauses, clause->children[1], &clause_scope, result_var,
-                                     loop_locals, loop_var_count, &clause_type, out_error)) {
+                                     loop_locals, loop_var_count, result_type, &clause_type, out_error)) {
             sb_free(&clauses);
             return 0;
         }
@@ -3930,6 +4143,32 @@ static const char *resolve_base_type_name(Node *type_node) {
     return NULL;
 }
 
+/* resolve_vec_elem_hint_type -- resolve_base_type_name() only ever
+ * understood a single-SYMBOL element type ("F64", "String", a
+ * registered struct/enum name) -- real, honest gap found here
+ * (2026-08-21, gcc-verifying scarab.prn's own real `(hooks : &(Vec (Fn
+ * [] Unit)))`): a `(Vec (Fn ...))` element position is a real, valid
+ * ElemType shape (every other `(Vec ElemType)` parameter branch below
+ * already accepts it structurally, they just never fed it through to
+ * g_vec_elem_hints registration), but got silently skipped -- no hint
+ * recorded at all, `vec_get`'s own hint-informed cast fell all the way
+ * back to the generic "void *" fallback, and `run_hooks`'s own `(*(void
+ * *)(vec_get(hooks, i)))()` -- casting a value to a NON-function type
+ * and then trying to CALL it -- is real, invalid C. Delegates to
+ * resolve_declared_type() (which already understands the full `(Fn
+ * [..] ..)` shape) for a Fn-typed element, resolve_base_type_name()
+ * unchanged for every other real element shape. */
+static const char *resolve_vec_elem_hint_type(Arena *arena, Node *elem_node) {
+    if (elem_node->type == NODE_SYMBOL) {
+        return resolve_base_type_name(elem_node);
+    }
+    if (elem_node->type == NODE_LIST && is_call_named(elem_node, "Fn")) {
+        const char *err = NULL;
+        return resolve_declared_type(arena, elem_node, &err);
+    }
+    return NULL;
+}
+
 static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error) {
     if (type_node->type == NODE_SYMBOL) {
         /* `&Type` -- a real reference type, written as one token (no
@@ -4109,6 +4348,21 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
     const char *struct_name = node->children[1]->text;
     size_t field_count = node->child_count - 2;
     StructField *fields = (StructField *)arena_alloc(arena, sizeof(StructField) * (field_count ? field_count : 1));
+
+    /* Register the struct's own name into g_structs before resolving any
+     * field types below -- same real self-reference fix as
+     * process_defenum() above (2026-08-23), and the same reasoning:
+     * find_struct_by_name()/resolve_base_type_name() only ever read
+     * ->name, so a field typed `&Name` (a linked node, a tree, any
+     * recursive record shape) resolves correctly mid-construction.
+     * ->fields/->field_count filled in below once the real data exists. */
+    StructInfo *info = (StructInfo *)arena_alloc(arena, sizeof(StructInfo));
+    info->name = struct_name;
+    info->fields = NULL;
+    info->field_count = 0;
+    info->next = g_structs;
+    g_structs = info;
+
     for (size_t i = 0; i < field_count; i++) {
         Node *field = node->children[2 + i];
         if (field->type != NODE_LIST || field->child_count < 3 || field->children[0]->type != NODE_SYMBOL ||
@@ -4171,12 +4425,11 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
         }
     }
 
-    StructInfo *info = (StructInfo *)arena_alloc(arena, sizeof(StructInfo));
-    info->name = struct_name;
+    /* info was already allocated and linked into g_structs above, before
+     * the field loop, precisely so a self-referencing field can resolve
+     * mid-construction -- just fill in the real data now that it exists. */
     info->fields = fields;
     info->field_count = field_count;
-    info->next = g_structs;
-    g_structs = info;
 
     sb_appendf(out, "typedef struct {\n");
     for (size_t i = 0; i < field_count; i++) {
@@ -4541,9 +4794,8 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
              * uses, applied here too instead of trusting raw source text. */
             if (param->children[3]->type == NODE_LIST && param->children[3]->child_count == 2 &&
                 param->children[3]->children[0]->type == NODE_SYMBOL &&
-                is_symbol(param->children[3]->children[0], "Vec") &&
-                param->children[3]->children[1]->type == NODE_SYMBOL) {
-                const char *elem_c_type = resolve_base_type_name(param->children[3]->children[1]);
+                is_symbol(param->children[3]->children[0], "Vec")) {
+                const char *elem_c_type = resolve_vec_elem_hint_type(arena, param->children[3]->children[1]);
                 if (elem_c_type) {
                     int is_scalar = (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
                     record_vec_elem_hint(arena, c_name, elem_c_type, is_scalar);
@@ -4585,9 +4837,8 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
              * gets a real element type instead of the generic fallback. */
             if (param->children[2]->type == NODE_LIST && param->children[2]->child_count == 2 &&
                 param->children[2]->children[0]->type == NODE_SYMBOL &&
-                is_symbol(param->children[2]->children[0], "Vec") &&
-                param->children[2]->children[1]->type == NODE_SYMBOL) {
-                const char *elem_c_type = resolve_base_type_name(param->children[2]->children[1]);
+                is_symbol(param->children[2]->children[0], "Vec")) {
+                const char *elem_c_type = resolve_vec_elem_hint_type(arena, param->children[2]->children[1]);
                 if (elem_c_type) {
                     int is_scalar = (strcmp(elem_c_type, "int") == 0 || strcmp(elem_c_type, "double") == 0);
                     record_vec_elem_hint(arena, c_name, elem_c_type, is_scalar);

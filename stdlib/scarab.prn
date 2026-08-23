@@ -5,13 +5,39 @@
 ;; association -- a test runner that cycles through the suite on every
 ;; run.
 ;;
-;; Real, honest limitation carried from STDLIB.md: describe/context/it
-;; need to register into a shared, ambient test tree that run-suite
-;; later walks -- real, non-trivial runtime bookkeeping (Ginkgo's own
-;; real implementation does this with global mutable state), not
-;; implemented in depth here; suite-tree below is a real, minimal
-;; registry (a Vec of registered nodes) rather than the full nested-
-;; scope tree a complete Ginkgo port would need -- flagged, not faked.
+;; Real redesign (2026-08-21, an actual gcc/parena-build attempt at
+;; this exact file): the original design used a module-level `(def
+;; suite-tree (vec/new (current-arena)))` as ambient, mutable global
+;; registration state -- Ginkgo's own real Describe/It calls run at
+;; import/load time, populating a global tree before any test runs.
+;; Two real, separate reasons this doesn't compile in VS0: (1) the
+;; already-documented `current-arena` gap (no ambient/implicit arenas
+;; anywhere in this language -- see firefly.prn's own `skip`), and
+;; (2), found here: a module-level `def` genuinely isn't a real,
+;; readable global in VS0 today -- `parena build` reports "unknown
+;; identifier" the moment a function body references one, confirmed
+;; with a real, isolated repro before touching this file. VS0 also has
+;; no module-load-time execution model at all (it compiles to a C
+;; program with an explicit `main`, not a script that runs top-level
+;; statements on import) -- so the whole "Describe/It calls register
+;; themselves as a side effect of being called" design is a real
+;; structural mismatch with this language, not a bug to patch.
+;;
+;; Redesigned as an explicit builder: describe/context/it/before-each/
+;; after-each now each construct and RETURN a real SuiteNode value
+;; (the same "prefer explicit data the caller assembles and passes in"
+;; shape firefly.prn's own run-tests already uses for TestCase) instead
+;; of mutating ambient state. Callers build a Vec of child nodes
+;; themselves (vec/new + vec/push!, same as any other Vec-of-values in
+;; this stdlib) and pass it to describe to get back one root SuiteNode,
+;; which run-suite walks.
+;;
+;; Real, honest limitation: hooks are scoped to their own DIRECT group
+;; only, not inherited into nested Describe/Context blocks the way real
+;; Ginkgo's own BeforeEach/AfterEach are. Real, general hook
+;; inheritance across nesting levels is a genuine, separate follow-up
+;; (would need each recursive call threading an accumulated hook list
+;; down through every nesting level) -- flagged, not faked.
 
 (module scarab)
 (import firefly)
@@ -25,46 +51,87 @@
   (BeforeHook (hook : (Fn [] Unit)))
   (AfterHook  (hook : (Fn [] Unit))))
 
-;; suite-tree is real, ambient, mutable registration state -- exactly
-;; the kind of hidden global state region typing exists to discourage
-;; elsewhere in this stdlib, but it's also exactly what Ginkgo's own
-;; real registration model needs (Describe/It calls happen at load
-;; time, before any test actually runs) -- flagged as a deliberate,
-;; scoped exception, not an oversight.
-(def suite-tree (vec/new (current-arena)))
+(defn describe [(name : String @ :region/scratch) (children : (Vec SuiteNode) @ Region) (dest : Arena @ Region)]
+  : SuiteNode @ Region
+  (Group dest name children))
 
-(defn describe [(name : String @ :region/scratch) (body : (Fn [] Unit))]
+(defn context [(name : String @ :region/scratch) (children : (Vec SuiteNode) @ Region) (dest : Arena @ Region)]
+  : SuiteNode @ Region
+  (describe name children dest))   ;; Ginkgo's own convention: Context is an alias of Describe
+
+(defn it [(name : String @ :region/scratch) (body : (Fn [&mut T] Unit)) (dest : Arena @ Region)]
+  : SuiteNode @ Region
+  (Spec dest name body))
+
+(defn before-each [(hook : (Fn [] Unit)) (dest : Arena @ Region)]
+  : SuiteNode @ Region
+  (BeforeHook hook))
+
+(defn after-each [(hook : (Fn [] Unit)) (dest : Arena @ Region)]
+  : SuiteNode @ Region
+  (AfterHook hook))
+
+;; collect-hooks — pass 1 over one Group's own direct children: gathers
+;; every BeforeHook/AfterHook found at THIS level (not descending into
+;; nested Group children -- see the file-level "hooks aren't inherited"
+;; note above) into the two Vecs the caller already built.
+(defn collect-hooks [(children : &(Vec SuiteNode)) (before : &mut (Vec (Fn [] Unit))) (after : &mut (Vec (Fn [] Unit)))]
   : Unit
-  (do (vec/push! &suite-tree (SuiteNode/Group name (vec/new (current-arena))))
-      (body)))
+  (loop [i 0]
+    (when (< i (vec/len children))
+      (match (deref (vec/get children i))
+        ((Group name grandchildren) unit)
+        ((Spec name body) unit)
+        ((BeforeHook hook) (vec/push! before hook))
+        ((AfterHook hook) (vec/push! after hook)))
+      (recur (+ i 1)))))
 
-(defn context [(name : String @ :region/scratch) (body : (Fn [] Unit))]
+;; run-hooks — call every hook in a Vec, in registration order.
+(defn run-hooks [(hooks : &(Vec (Fn [] Unit)))]
   : Unit
-  (describe name body))   ;; Ginkgo's own convention: Context is an alias of Describe
+  (loop [i 0]
+    (when (< i (vec/len hooks))
+      ((deref (vec/get hooks i)))
+      (recur (+ i 1)))))
 
-(defn it [(name : String @ :region/scratch) (body : (Fn [&mut T] Unit))]
+;; run-group — pass 2: walks one Group's own children, running this
+;; group's own before-hooks/after-hooks around each direct Spec, and
+;; recursing (with a FRESH, un-inherited hook scope) into each nested
+;; Group.
+(defn run-group [(children : &(Vec SuiteNode)) (dest : Arena @ Region) (!report : &mut TestReport)]
   : Unit
-  (vec/push! &suite-tree (SuiteNode/Spec name body)))
-
-(defn before-each [(hook : (Fn [] Unit))]
-  : Unit
-  (vec/push! &suite-tree (SuiteNode/BeforeHook hook)))
-
-(defn after-each [(hook : (Fn [] Unit))]
-  : Unit
-  (vec/push! &suite-tree (SuiteNode/AfterHook hook)))
-
-;; run-suite — walks suite-tree, running each BeforeHook before every
-;; Spec and each AfterHook after, via firefly/run-tests underneath so
-;; scarab stays a thin layer over firefly, not a second test-execution
-;; engine.
-(defn run-suite [(dest : Arena @ Region)]
-  : TestReport @ Region
-  (let [cases (vec/new dest)]
+  (let [before (vec/new dest) after (vec/new dest)]
+    (collect-hooks children &mut before &mut after)
     (loop [i 0]
-      (when (< i (vec/len &suite-tree))
-        (match (deref (vec/get &suite-tree i))
-          ((SuiteNode/Spec name body) (vec/push! &cases {:name name :run body}))
-          (_ unit))
-        (recur (+ i 1))))
-    (firefly/run-tests &cases dest)))
+      (when (< i (vec/len children))
+        (match (deref (vec/get children i))
+          ((Group name grandchildren)
+           (run-group &grandchildren dest !report))
+          ((Spec name body)
+           (do
+             (run-hooks &before)
+             (let [t {:name name :failed false :messages (vec/new dest)}]
+               (do
+                 (body &mut t)
+                 (if (get-field t :failed)
+                   (set! (get-field !report :failed) (+ (get-field !report :failed) 1))
+                   (set! (get-field !report :passed) (+ (get-field !report :passed) 1)))))
+             (run-hooks &after)))
+          ((BeforeHook hook) unit)
+          ((AfterHook hook) unit))
+        (recur (+ i 1))))))
+
+;; run-suite — walks the root node (built via describe/context) and
+;; produces a real TestReport. Thin layer over the same real bookkeeping
+;; firefly/run-tests already does, generalized to a real nested tree
+;; instead of a flat Vec of cases.
+(defn run-suite [(root : &SuiteNode) (dest : Arena @ Region)]
+  : TestReport @ Region
+  (let [report {:passed 0 :failed 0 :skipped 0}]
+    (do
+      (match (deref root)
+        ((Group name children) (run-group &children dest &mut report))
+        ((Spec name body) unit)
+        ((BeforeHook hook) unit)
+        ((AfterHook hook) unit))
+      report)))
