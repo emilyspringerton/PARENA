@@ -1,4 +1,5 @@
 ## 2026-08-23
+- feat(regex): real, working Pike's VM runner (is-match) for regex/nfa.prn -- unanchored breadth-first thread-stepping search, no backtracking anywhere. 35/35 runtime test cases pass, zero ASan findings. Found/worked around 5 more real compiler nesting gaps (match not recognized as a special form in when-body/let-value/cond-test/non-tail-do-statement positions, plus a deep-nesting result-var corruption). (sess-20260823-1554-932e157f)
 - feat(regex): real, working Thompson-construction NFA compiler (compile: AST -> bytecode) for regex/nfa.prn -- literals, concat, alternation, quantifiers, groups, char classes, anchors. 31/31 runtime test cases pass, zero ASan findings. is-match/find/find-all (the Pike's VM runner) still real, deferred follow-up. (sess-20260823-1554-932e157f)
 - feat(regex): real, working recursive-descent parser for regex/syntax.prn -- literals/alternation/quantifiers/capture groups/char classes/anchors/escapes, gcc-clean, ASan-clean, 13/13 well-formed + 4/4 malformed test cases correct. Real remaining gap for grep/sed/awk: regex/nfa.prn's matcher (Thompson NFA + Pike's VM) is still unbuilt. (sess-20260823-1554-932e157f)
 
