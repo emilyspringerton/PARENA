@@ -1,3 +1,7 @@
+## 2026-08-23
+
+- feat(tools): vim syntax highlighting for .prn source (tools/vim/); feat(emit): self-referencing defenum/defstruct type support + box-helper decl spacing fix, scarab.prn registration redesign to explicit builder -- make test 336/336 passing (sess-20260823-1554-932e157f)
+
 ## 2026-08-21
 - dataframe.prn 全檔完工:select 修好後也真的能跑了。修好兩個新缺口:resolve_declared_type 對 (&Type) 的括號解析、match void-typed clause 的宣告+assign 問題。新增 331→336 個迴歸測試。Apple #15271,commit 4dbd60f。 (sess-20260820-0649-a3f19d93)
 - compress/lz4.prn 改成真正、純 PARENA 的 LZ4-style 壓縮器(不再是 FFI stub);round-trip 驗證正確含 overlap-copy 情境。補齊 &mut (ComplexType) 參數 + loop 空結果 return 兩個編譯器缺口。新增 325→331 個迴歸測試。Apple #15268,commit 923a24c。 (sess-20260820-0649-a3f19d93)
