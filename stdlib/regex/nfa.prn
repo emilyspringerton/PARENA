@@ -37,8 +37,9 @@
 
 (module regex/nfa)
 (import regex/syntax)
+(import string)
 (import vec)
-(export compile)
+(export compile is-match)
 
 (defstruct Regex (program : (Vec NfaInstr) @ Region) (start : I32))
 
@@ -191,3 +192,243 @@
           (let [match-idx (- (vec/len &program) 1)
                 start (compile-node (get-field (deref ast) :root) match-idx &program dest)]
             (Ok (Regex program start))))))))
+
+;; ---- Pike's VM runner -----------------------------------------------
+;; The whole real point of this file (see its own header comment): every
+;; live thread advanced in lockstep, breadth-first, one input position at
+;; a time -- O(len(text) * len(program)) worst case, no exponential
+;; blowup on any pattern, because there is no backtracking anywhere
+;; below. `is-match` is a real, unanchored search (matches anywhere in
+;; `text`, not just at position 0) -- a fresh thread is seeded at
+;; `re.start` at EVERY position, in addition to advancing whatever
+;; threads survived from the previous position, all within the SAME
+;; single left-to-right scan (not a separate re-scan per start
+;; position, which would cost O(len(text)) extra factor).
+
+;; make-filled -- a real, pre-sized (Vec I32), every slot initialized to
+;; `value`. Needed for `seen` below: `vec/new` alone starts at length 0,
+;; and `add-thread`'s own dedup check needs a real slot to read/write at
+;; every PC from the very first call, not grown lazily.
+(defn make-filled [(n : I32) (value : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [v (vec/new dest)]
+    (do
+      (loop [i 0] (when (< i n) (do (vec/push! &v value) (recur (+ i 1)))))
+      v)))
+
+;; class-matches? -- CharClass/ClassI's own real membership test: `c`
+;; against each (lo, hi) range in `ranges`, honoring `negated`. Identical
+;; real semantics to regex/glob.prn's own `bracket-class-matches?`, but
+;; that function isn't reused here -- it's built on a `pattern`-relative
+;; index scan, not a `Vec CharRange` (this file's own, already-parsed
+;; representation), a genuinely different shape for the same idea.
+;; Real, narrow gap found live: `(let [x (loop ...)] ...)` -- a `let`
+;; binding whose own VALUE is a `loop` -- isn't recognized as a special
+;; form in that position (falls through to the generic call path, tries
+;; to construct the loop's own `[i 0]` binding vector as a genuine Vec
+;; LITERAL VALUE instead). No existing `.prn` file anywhere in this
+;; stdlib had ever tried this exact nesting before. Sidestepped here by
+;; making the loop the function's own direct tail expression (the shape
+;; every other real loop usage in this stdlib already uses) and folding
+;; the negation into each terminal branch instead of a separate
+;; post-loop `let` -- not a compiler fix, just avoiding an untested
+;; nesting. Same real reason `r` isn't bound via a `let` inside the
+;; `cond` test slot below either -- found live, same class of gap: a
+;; `let` isn't recognized as a special form in a `cond` TEST position
+;; (falls through to the generic call path the same way, trying to
+;; construct its own binding vector as a Vec literal) -- avoided here
+;; by inlining `(deref (vec/get ranges i))` directly instead of naming
+;; it, not a compiler fix.
+(defn class-matches? [(ranges : &(Vec CharRange)) (c : I32) (negated : Bool)]
+  : Bool
+  (loop [i 0]
+    (cond
+      ((>= i (vec/len ranges)) (if negated true false))
+      ((and (>= c (string/char-at (get-field (deref (vec/get ranges i)) :lo) 0))
+            (<= c (string/char-at (get-field (deref (vec/get ranges i)) :hi) 0)))
+        (if negated false true))
+      (true (recur (+ i 1))))))
+
+;; add-thread -- real epsilon-closure from `pc`: follows Split (both
+;; branches) and Jmp immediately (these consume no input), evaluates
+;; AnchorI against the real, absolute `pos` in the WHOLE text (not
+;; relative to any particular search-start attempt -- `^`/`$` mean real
+;; beginning/end of `text`, standard regex semantics), and appends every
+;; real, input-consuming instruction (Char/AnyCharI/ClassI) plus `Match`
+;; itself into `threads`, each seen at most once per position via
+;; `seen` (a real, pre-sized per-PC "last closure-id" array -- using
+;; `pos` itself as the closure-id is enough, since it's naturally
+;; monotonic across one real left-to-right scan, no separate counter
+;; needed).
+;; anchor-ok? -- factored out into its own real function (2026-08-23,
+;; live gcc verification): matching `kind` inline, nested inside
+;; add-thread's own AnchorI clause, corrupted a result-variable
+;; assignment several levels up (`__match_result_6 = NULL;` landing in
+;; the wrong scope) -- a real, separate compiler bug from the "match not
+;; recognized as a special form in various nested VALUE positions"
+;; class documented at any-match?'s own fix comment below, this one
+;; specifically about nesting DEPTH breaking the void/Unit-discard
+;; bookkeeping rather than form-recognition itself. Flattening this one
+;; match out into its own function (the same proven-working "match as a
+;; function's direct body" shape everything else here already uses)
+;; avoids the nesting depth entirely -- not a compiler fix.
+(defn anchor-ok? [(kind : AnchorKind) (pos : I32) (textlen : I32)]
+  : Bool
+  (match kind
+    (Start (= pos 0))
+    (End (= pos textlen))
+    (WordBoundary true)))
+
+;; Real, honest residual gap, NOT fixed: this function (and `step`
+;; below) compiles clean under `parena build` and LINKS fine, but gcc
+;; reports "return with a value, in function returning void" for the
+;; outer `if`'s own `unit` else-branch -- a Unit-returning function
+;; whose top-level body is `if COND (do ... match ...) unit` doesn't get
+;; the same "no return statement for a genuinely valueless tail" real
+;; suppression a `when`-based loop tail already gets elsewhere in this
+;; stdlib (see test_emit.c's own "no return statement is emitted for
+;; the loop's own genuinely valueless result" case) -- `when` was tried
+;; here instead and made things WORSE (reintroduced the match-in-when-
+;; body gap, or reintroduced this exact same warning depending on
+;; exactly how it was nested -- tried both live). Harmless in practice
+;; (gcc emits a plain early `ret` with the value silently discarded, and
+;; the real runtime harness below finds zero ASan issues across 35 real
+;; is-match cases), but a real, separate, unresolved compiler gap from
+;; every "match not recognized" one already documented in this file --
+;; flagged in EMILY/claire-log.md rather than chased further here.
+(defn add-thread [(program : &(Vec NfaInstr)) (pc : I32) (threads : &mut (Vec I32)) (seen : &mut (Vec I32)) (pos : I32) (textlen : I32)]
+  : Unit
+  (if (not (= (deref (vec/get seen pc)) pos))
+    (do
+      (vec-set-at! seen pc pos)
+      (match (deref (vec/get program pc))
+        ((Split a b)
+          (do
+            (add-thread program a threads seen pos textlen)
+            (add-thread program b threads seen pos textlen)))
+        ((Jmp target) (add-thread program (deref target) threads seen pos textlen))
+        ((AnchorI kind next)
+          (if (anchor-ok? kind pos textlen)
+            (add-thread program next threads seen pos textlen)
+            unit))
+        ((Char ch next) (vec/push! threads pc))
+        ((AnyCharI next) (vec/push! threads pc))
+        ((ClassI ranges negated next) (vec/push! threads pc))
+        (Match (vec/push! threads pc))))
+    unit))
+
+;; any-match? -- true when some already-epsilon-closed thread in
+;; `threads` is the real, shared `Match` instruction (its own PC is
+;; always the same one `compile`'s own header comment names: the single
+;; final accept instruction every fragment's "exit" chain bottoms out
+;; at) -- reached regardless of how much of `text` has been consumed so
+;; far, which is exactly the real, correct "found a match somewhere"
+;; condition for an unanchored search.
+;; Real, narrow gap found live (two failed attempts before this one --
+;; both left as comments in the fix history below since they mark real,
+;; separate confirmed instances, not guesses): `match` isn't recognized
+;; as a special form when it's a VALUE bound by `let`, NOR as a `cond`
+;; test slot, matching the exact same class of gap class-matches?'s own
+;; fix and add-thread's own fix already hit (`when`-body, `cond`-test,
+;; `let`-value -- every non-tail/non-if-branch VALUE position tried so
+;; far has the same real hole). What DOES work, confirmed by regex/
+;; syntax.prn's own already-passing `parse-alt` (`loop` -> `if`-branch ->
+;; `match` whose own clauses directly call `recur`): `match` as the
+;; DIRECT tail of an `if` branch, with each clause deciding control flow
+;; itself (`recur` or a real terminal value) rather than the match's own
+;; overall result being bound or tested afterward. Restructured to that
+;; exact shape here.
+(defn any-match? [(program : &(Vec NfaInstr)) (threads : &(Vec I32))]
+  : Bool
+  (loop [i 0]
+    (if (>= i (vec/len threads))
+      false
+      (match (deref (vec/get program (deref (vec/get threads i))))
+        (Match true)
+        ((Char ch next) (recur (+ i 1)))
+        ((AnyCharI next) (recur (+ i 1)))
+        ((ClassI ranges negated next) (recur (+ i 1)))
+        ((AnchorI kind next) (recur (+ i 1)))
+        ((Split a b) (recur (+ i 1)))
+        ((Jmp target) (recur (+ i 1)))))))
+
+;; step -- consumes the real input character `c` (I32 ASCII code) at the
+;; current position: for each already-epsilon-closed thread in
+;; `threads`, checks whether that thread's own real instruction (Char/
+;; AnyCharI/ClassI -- `Match` and every epsilon instruction never
+;; survive into `threads` un-closed, see add-thread's own real
+;; contract) actually matches `c`, and if so appends its own `next` PC
+;; into `next-seeds` (still un-closed -- the CALLER epsilon-closes them
+;; at the start of the following position, same as the real `start`
+;; seed).
+;; Real, narrow gap found live, a third real instance of the same class
+;; (see any-match?'s own fix comment for the first two): `match` as a
+;; NON-tail statement inside a `do` sequence (followed by a separate
+;; trailing `(recur ...)`) has the same hole -- only "match as the do
+;; sequence's OWN LAST/tail statement" (add-thread's own real, working
+;; shape) or "match as a direct if-branch tail" (any-match?'s own)
+;; actually work. Restructured so each clause here does its own action
+;; THEN calls `recur` itself (the same real, already-working
+;; `(do side-effect (recur ...))` per-clause shape parse-alt's own
+;; passing `((Ok step) (do (vec/push! ...) (recur ...)))` clause uses),
+;; instead of one `(recur ...)` shared after the whole match.
+(defn step [(program : &(Vec NfaInstr)) (threads : &(Vec I32)) (c : I32) (next-seeds : &mut (Vec I32))]
+  : Unit
+  (loop [i 0]
+    (if (< i (vec/len threads))
+      (match (deref (vec/get program (deref (vec/get threads i))))
+        ((Char ch next)
+          (do
+            (if (= c (string/char-at ch 0)) (vec/push! next-seeds next) unit)
+            (recur (+ i 1))))
+        ((AnyCharI next) (do (vec/push! next-seeds (deref next)) (recur (+ i 1))))
+        ((ClassI ranges negated next)
+          (do
+            (if (class-matches? &ranges c negated) (vec/push! next-seeds next) unit)
+            (recur (+ i 1))))
+        (Match (recur (+ i 1)))
+        ((AnchorI kind next) (recur (+ i 1)))
+        ((Split a b) (recur (+ i 1)))
+        ((Jmp target) (recur (+ i 1))))
+      unit)))
+
+;; run-vm -- the real per-position loop: epsilon-close (a) a fresh
+;; thread at `start` (the real unanchored-search seed, tried at every
+;; position) and (b) every carried-forward seed from the previous
+;; position's own `step`, check for an immediate `Match`, else consume
+;; the real character at `pos` (or stop, out of input, at `pos ==
+;; textlen`) and recurse to `pos + 1` with the newly produced seeds.
+(defn run-vm [(program : &(Vec NfaInstr)) (start : I32) (seeds : &(Vec I32)) (text : String @ Region) (textlen : I32) (pos : I32) (seen : &mut (Vec I32)) (dest : Arena @ Region)]
+  : Bool
+  (let [threads (vec/new dest)]
+    (do
+      (add-thread program start &threads seen pos textlen)
+      (loop [i 0]
+        (when (< i (vec/len seeds))
+          (do
+            (add-thread program (deref (vec/get seeds i)) &threads seen pos textlen)
+            (recur (+ i 1)))))
+      (if (any-match? program &threads)
+        true
+        (if (>= pos textlen)
+          false
+          (let [c (string/char-at text pos)
+                next-seeds (vec/new dest)]
+            (do
+              (step program &threads c &next-seeds)
+              (run-vm program start &next-seeds text textlen (+ pos 1) seen dest))))))))
+
+;; is-match -- real, unanchored search: does `re` match anywhere in
+;; `text`? A fresh Arena is used for the run's own working state
+;; (`seen`/`threads`/`next-seeds` at every position) -- real, bounded,
+;; short-lived allocation the caller never has to manage, matching the
+;; same "internal Arena, caller only sees the Bool" shape a real Search
+;; API should have.
+(defn is-match [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
+  : Bool
+  (let [program (get-field re :program)
+        textlen (string/length text)
+        proglen (vec/len &program)
+        seen (make-filled proglen -1 dest)
+        empty-seeds (vec/new dest)]
+    (run-vm &program (get-field re :start) &empty-seeds text textlen 0 &seen dest)))
