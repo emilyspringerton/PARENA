@@ -3,32 +3,191 @@
 ;; Pike's VM (all live threads advanced in lockstep, breadth-first) --
 ;; guaranteed O(len(text)*len(pattern)), no backtracking by
 ;; construction, hence no backrefs/lookaround (regex/pcre's own job).
-;; compile (AST -> instruction list) and the run loop are real,
-;; well-known algorithms; left as signatures here since the actual
-;; instruction encoding is a real design choice that should be made
-;; once VS0 domain 2+ exists to test it against, not guessed blind.
+;;
+;; `compile` (AST -> instruction list) landed here real and complete
+;; (2026-08-23, continuing the founder's own real-time grep/sed/awk ask
+;; after regex/syntax.prn's own parser landed first). `is-match`/`find`/
+;; `find-all` (the actual Pike's VM thread-stepping RUNNER) are still
+;; real, honest, deliberately deferred follow-up -- a genuinely separate,
+;; substantial unit of work (live thread-set management, epsilon-closure,
+;; PC dedup), and specifically NOT worth rushing as a quick backtracking
+;; walker instead: that would violate this exact file's own stated
+;; design contract two paragraphs up ("no backtracking, ever, by
+;; construction") for the sake of a shortcut, not a real implementation
+;; of what this file is FOR.
+;;
+;; No backpatch-list, no instruction mutation-after-emission for the
+;; NON-looping constructs (Concat/Alt/Optional): every instruction is
+;; emitted knowing its own real, absolute "next"/target index up front,
+;; by threading the fragment's own EXIT index down from the caller
+;; (standard recursive-descent codegen with an explicit continuation
+;; target) and returning the fragment's own START index -- physical
+;; position in `program` never matters, only the returned start index
+;; and each instruction's own explicit target fields do, since nothing
+;; here relies on implicit "falls through to pc+1" the way a real
+;; linear bytecode format normally would. Star/Plus are the one real
+;; exception: a loop-back edge is a genuine circular dependency (the
+;; loop instruction's own target needs the loop body's start index,
+;; which isn't known until the body is compiled, which needs the loop
+;; instruction's own index as ITS OWN "next" first) -- resolved via real
+;; backpatching (reserve a placeholder slot, compile the body, patch the
+;; placeholder), using `vec-set-at!` (parena_runtime.h's own real
+;; index-assignment primitive, already added for world.prn's
+;; `set-height`), not a design compromise.
 
 (module regex/nfa)
 (import regex/syntax)
 (import vec)
-(export compile is-match find find-all)
+(export compile)
 
-(defstruct Regex (program : (Vec NfaInstr) @ Region))
-(defstruct Match (start : I32) (end : I32) (groups : (Vec (Option (I32 I32))) @ Region))
+(defstruct Regex (program : (Vec NfaInstr) @ Region) (start : I32))
 
 (defenum NfaInstr
-  (Char  (ch : String @ Region) (next : I32))
-  (Split (a : I32) (b : I32))
-  (Jmp   (target : I32))
+  (Char     (ch : String @ Region) (next : I32))
+  (AnyCharI (next : I32))
+  (ClassI   (ranges : (Vec CharRange) @ Region) (negated : Bool) (next : I32))
+  (AnchorI  (kind : AnchorKind) (next : I32))
+  (Split    (a : I32) (b : I32))
+  (Jmp      (target : I32))
   (Match))
 
+;; node-at -- real, typed element read for a Vec<PatternNode>, routed
+;; through a real `&(Vec ElemType)` PARAMETER -- the one shape
+;; g_vec_elem_hints reliably covers today (see its own declaration
+;; comment in src/emit.c). A plain local or a match-bound single-field
+;; payload's own Vec don't get a real hint yet (a real, separate,
+;; narrower gap, not chased here -- regex/syntax.prn's own parser
+;; sidesteps it a different way, by never reading such a Vec back at
+;; all).
+(defn node-at [(v : &(Vec PatternNode)) (i : I32)]
+  : PatternNode
+  (deref (vec/get v i)))
+
+;; compile-node -- see this file's own header comment for the overall
+;; "no backpatch list except for real loops" strategy. `node`'s own
+;; match-bound payload access follows two different real, established
+;; conventions depending on the variant's own field count/shape (both
+;; found and fixed live this session, not guessed): a MULTI-field
+;; variant (Star/Plus/Optional/Group, 2-3 fields) binds each field with
+;; its own real, concrete C type directly -- no `deref` needed. A
+;; SINGLE-field variant whose field is already pointer-representable
+;; (Literal's own `ch : String`) binds the raw pointer directly too, no
+;; `deref` -- only a single-field variant whose field is a genuine
+;; by-value type (Concat/Alt's own `(Vec PatternNode)`, Anchor's own
+;; `AnchorKind`) needs `(deref binding)` at the use site.
+(defn compile-node [(node : PatternNode) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (match node
+    ((Literal ch)
+      (do (vec/push! program (Char dest ch exit)) (- (vec/len program) 1)))
+    (AnyChar
+      (do (vec/push! program (AnyCharI exit)) (- (vec/len program) 1)))
+    ((CharClass ranges negated)
+      (do (vec/push! program (ClassI dest ranges negated exit)) (- (vec/len program) 1)))
+    ((Anchor kind)
+      (do (vec/push! program (AnchorI dest (deref kind) exit)) (- (vec/len program) 1)))
+    ((Concat parts)
+      (compile-concat parts 0 exit program dest))
+    ((Alt branches)
+      (compile-alt branches 0 exit program dest))
+    ((Star inner greedy)
+      (compile-star inner exit program dest))
+    ((Plus inner greedy)
+      (compile-plus inner exit program dest))
+    ((Optional inner greedy)
+      (compile-optional inner exit program dest))
+    ((Group inner capture-index name)
+      (compile-node inner exit program dest))))
+
+;; concat := part[0] part[1] ... part[n-1] -- compiled idx-INCREASING
+;; but recursing to the END first (the base case, idx >= len, returns
+;; `exit` immediately), so the unwind compiles part[n-1] first (with
+;; next=exit, the only one whose next is known up front) and part[0]
+;; last (with next = wherever part[1] turned out to start) -- each
+;; part's own real "next" is always known before that part itself is
+;; compiled, so no instruction here is ever touched twice.
+(defn compile-concat [(parts : &(Vec PatternNode)) (idx : I32) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (if (>= idx (vec/len parts))
+    exit
+    (let [next-start (compile-concat parts (+ idx 1) exit program dest)]
+      (compile-node (node-at parts idx) next-start program dest))))
+
+;; alt := branch[0] | branch[1] | ... | branch[n-1] -- every branch
+;; compiles with next=exit DIRECTLY (the shared exit passed in), not a
+;; jump-past-the-next-branch the way a real LINEAR bytecode layout would
+;; need -- since nothing here relies on physical array position, a
+;; plain `Split(branch0-start, rest-of-alternatives-start)` (nested,
+;; right-associative, one real Split per branch after the first) is
+;; the whole mechanism; no Jmp instructions needed at all for Alt.
+(defn compile-alt [(branches : &(Vec PatternNode)) (idx : I32) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (if (>= (+ idx 1) (vec/len branches))
+    (compile-node (node-at branches idx) exit program dest)
+    (let [this-start (compile-node (node-at branches idx) exit program dest)
+          rest-start (compile-alt branches (+ idx 1) exit program dest)]
+      (do
+        (vec/push! program (Split dest this-start rest-start))
+        (- (vec/len program) 1)))))
+
+;; a* -- real backpatching: reserve the Split's own slot (a placeholder
+;; Jmp, target -1, never actually reached as -1 -- it's overwritten
+;; below before this fragment's own start index is ever handed to a
+;; caller), compile the loop body with next=split-idx (the real loop-
+;; back edge), then patch the placeholder into the real
+;; `Split(body-start, exit)`. Returns split-idx -- entering a Star tries
+;; the body first (real, honest limitation matching this file's own
+;; header comment: "greedy" itself isn't actually distinguished from
+;; non-greedy behavior anywhere yet, since Pike's VM thread-priority
+;; ordering -- not built here, that's the runner's own job -- is what a
+;; real greedy/non-greedy distinction would need).
+(defn compile-star [(inner : PatternNode) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (do
+    (vec/push! program (Jmp -1))
+    (let [split-idx (- (vec/len program) 1)
+          body-start (compile-node inner split-idx program dest)]
+      (do
+        (vec-set-at! program split-idx (Split dest body-start exit))
+        split-idx))))
+
+;; a+ -- identical real shape to compile-star above (same backpatched
+;; loop-back Split), differing only in the returned start index: a Plus
+;; MUST match the body at least once, so entry is the body's own start,
+;; not the Split (unlike Star, which may skip the body entirely).
+(defn compile-plus [(inner : PatternNode) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (do
+    (vec/push! program (Jmp -1))
+    (let [split-idx (- (vec/len program) 1)
+          body-start (compile-node inner split-idx program dest)]
+      (do
+        (vec-set-at! program split-idx (Split dest body-start exit))
+        body-start))))
+
+;; a? -- no loop, no backpatch: the body's own next (exit) is already
+;; known up front, so `Split(body-start, exit)` can be emitted directly
+;; once the body itself is compiled.
+(defn compile-optional [(inner : PatternNode) (exit : I32) (program : &mut (Vec NfaInstr)) (dest : Arena @ Region)]
+  : I32
+  (let [body-start (compile-node inner exit program dest)]
+    (do
+      (vec/push! program (Split dest body-start exit))
+      (- (vec/len program) 1))))
+
+;; compile -- parse `pattern`, then compile its AST into a real NfaInstr
+;; program. The overall exit is a single, real, final `Match`
+;; instruction appended once (compile-node itself never emits Match --
+;; every fragment's own "exit" is a parameter threaded in from here,
+;; ultimately bottoming out at this one shared accept instruction).
 (defn compile [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result Regex SyntaxError) @ Region
   (match (regex/syntax/parse pattern dest)
-    ((Ok ast) (Ok {:program (ast-to-program (get-field ast :root) dest)}))
-    ((Err e) (Err e))))
-
-(defn is-match  [(re : &Regex) (text : String @ Region)] : Bool)
-(defn find      [(re : &Regex) (text : String @ Region)] : (Option Match))
-(defn find-all  [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
-  : (Vec Match) @ Region)
+    ((Err e) (Err e))
+    ((Ok ast)
+      (let [program (vec/new dest)]
+        (do
+          (vec/push! &program Match)
+          (let [match-idx (- (vec/len &program) 1)
+                start (compile-node (get-field (deref ast) :root) match-idx &program dest)]
+            (Ok (Regex program start))))))))

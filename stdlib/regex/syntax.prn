@@ -46,18 +46,16 @@
 (import vec)
 (export parse PatternNode AnchorKind CharRange PatternAst SyntaxError)
 
-(defenum PatternNode
-  (Literal   (ch : String @ Region))
-  (AnyChar)
-  (Concat    (parts : (Vec PatternNode) @ Region))
-  (Alt       (branches : (Vec PatternNode) @ Region))
-  (Star      (inner : PatternNode @ Region) (greedy : Bool))
-  (Plus      (inner : PatternNode @ Region) (greedy : Bool))
-  (Optional  (inner : PatternNode @ Region) (greedy : Bool))
-  (Group     (inner : PatternNode @ Region) (capture-index : (Option I32)) (name : (Option String)))
-  (CharClass (ranges : (Vec CharRange) @ Region) (negated : Bool))
-  (Anchor    (kind : AnchorKind)))
-
+;; AnchorKind and CharRange are BOTH declared before PatternNode itself,
+;; not just before their own first use -- a real, narrow ordering
+;; constraint (2026-08-23, gcc-verifying regex/nfa.prn's own Anchor
+;; handling): process_defenum()'s pre-pass registers a type referencing
+;; ANOTHER type only correctly when that other type was declared EARLIER
+;; in the combined file order (this file's own self-reference fix from
+;; the same session only widens that to "a type may also reference
+;; ITSELF", not "may reference something declared later") -- silently
+;; falls back to untyped `void *` field storage otherwise, no build
+;; error, only a much later, confusing *gcc* error at a real use site.
 (defenum AnchorKind (Start) (End) (WordBoundary))
 
 ;; CharRange -- one real, distinct-typed (lo, hi) pair, standing in for
@@ -70,6 +68,18 @@
 (defstruct CharRange
   (lo : String @ Region)
   (hi : String @ Region))
+
+(defenum PatternNode
+  (Literal   (ch : String @ Region))
+  (AnyChar)
+  (Concat    (parts : (Vec PatternNode) @ Region))
+  (Alt       (branches : (Vec PatternNode) @ Region))
+  (Star      (inner : PatternNode @ Region) (greedy : Bool))
+  (Plus      (inner : PatternNode @ Region) (greedy : Bool))
+  (Optional  (inner : PatternNode @ Region) (greedy : Bool))
+  (Group     (inner : PatternNode @ Region) (capture-index : (Option I32)) (name : (Option String)))
+  (CharClass (ranges : (Vec CharRange) @ Region) (negated : Bool))
+  (Anchor    (kind : AnchorKind)))
 
 (defstruct PatternAst
   (root          : PatternNode @ Region)
