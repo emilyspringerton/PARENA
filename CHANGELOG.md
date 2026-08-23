@@ -1,4 +1,5 @@
 ## 2026-08-23
+- feat(regex): real, working recursive-descent parser for regex/syntax.prn -- literals/alternation/quantifiers/capture groups/char classes/anchors/escapes, gcc-clean, ASan-clean, 13/13 well-formed + 4/4 malformed test cases correct. Real remaining gap for grep/sed/awk: regex/nfa.prn's matcher (Thompson NFA + Pike's VM) is still unbuilt. (sess-20260823-1554-932e157f)
 
 - feat(tools): vim syntax highlighting for .prn source (tools/vim/); feat(emit): self-referencing defenum/defstruct type support + box-helper decl spacing fix, scarab.prn registration redesign to explicit builder -- make test 336/336 passing (sess-20260823-1554-932e157f)
 
