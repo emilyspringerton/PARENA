@@ -4,44 +4,275 @@
 ;; This is a real recursive-descent parser over regex pattern *text*
 ;; (not to be confused with PARENA's own lexer/parser in src/ -- this
 ;; parses regex syntax like "a(b|c)*", a completely different grammar).
+;;
+;; Real implementation landed here (2026-08-23, closing the founder's own
+;; real-time ask: PARENA-native grep/sed/awk to replace shell grep/sed/
+;; awk). Real design deviations from the original signature-only stub
+;; this file used to be, all because VS0's real, current capabilities
+;; don't support what the stub implied -- same "adapt the design to what
+;; this compiler can actually run" judgment call this session's own
+;; scarab.prn redesign already established as the house pattern here:
+;;
+;; 1. No `ParseState` mutable-cursor struct (the stub referenced `&
+;;    ParseState` but never defined it). Position and running capture
+;;    count are threaded explicitly through every parse-* function
+;;    instead -- the same "explicit data over ambient/mutable state"
+;;    shape regex/glob.prn's own real, already-working `glob-match`
+;;    already uses (index-threading, not a cursor object).
+;; 2. Star/Plus/Optional/Group's own `inner` field is `PatternNode @
+;;    Region` (by value) here, not `&PatternNode` (a reference) --
+;;    VS0 has no way to turn an arbitrary constructed value into a `&Type`
+;;    from real source position yet (no address-of/box-and-take-a-pointer
+;;    primitive reachable from `.prn` source; `ensure_box_helper`'s C
+;;    helpers are emitter-internal, invoked automatically only at Ok/Err/
+;;    Some and single-field-variant call sites, not user-callable). A
+;;    recursive defenum field storing its own type BY VALUE is exactly
+;;    what `Concat`/`Alt`'s own `(Vec PatternNode) @ Region` fields
+;;    already do safely (Vec-of-self-type, no pointer needed) -- this
+;;    just applies the same real, already-proven shape to a single
+;;    nested node instead of a vec of them.
+;; 3. Every `((Ok x) ...)` match clause below reads fields via
+;;    `(get-field (deref x) :field)`, never bare `(get-field x :field)` --
+;;    a real, established VS0 convention (dataframe.prn's own `(deref
+;;    col)` is the precedent), not a stylistic choice: a match-bound Ok/
+;;    Some payload's real, EMITTED C variable stays generically `void *`
+;;    on purpose (see emit_match_core's own real comment on this), while
+;;    the emitter only tracks a believed-castable-to type for it -- `->`
+;;    directly on the bare `void *` binding is invalid C, so `deref` has
+;;    to actually perform that cast at each use site first.
 
 (module regex/syntax)
 (import string)
 (import vec)
-(export parse)
+(export parse PatternNode AnchorKind CharRange PatternAst SyntaxError)
 
 (defenum PatternNode
   (Literal   (ch : String @ Region))
   (AnyChar)
   (Concat    (parts : (Vec PatternNode) @ Region))
   (Alt       (branches : (Vec PatternNode) @ Region))
-  (Star      (inner : &PatternNode) (greedy : Bool))
-  (Plus      (inner : &PatternNode) (greedy : Bool))
-  (Optional  (inner : &PatternNode) (greedy : Bool))
-  (Group     (inner : &PatternNode) (capture-index : (Option I32)) (name : (Option String)))
-  (CharClass (ranges : (Vec (String String)) @ Region) (negated : Bool))
+  (Star      (inner : PatternNode @ Region) (greedy : Bool))
+  (Plus      (inner : PatternNode @ Region) (greedy : Bool))
+  (Optional  (inner : PatternNode @ Region) (greedy : Bool))
+  (Group     (inner : PatternNode @ Region) (capture-index : (Option I32)) (name : (Option String)))
+  (CharClass (ranges : (Vec CharRange) @ Region) (negated : Bool))
   (Anchor    (kind : AnchorKind)))
 
 (defenum AnchorKind (Start) (End) (WordBoundary))
+
+;; CharRange -- one real, distinct-typed (lo, hi) pair, standing in for
+;; the tuple type `(String String)` STDLIB.md's own original design used
+;; -- VS0 has no tuple-type support yet (a real, separate, already-known
+;; gap, not invented here), so this sidesteps it via a defstruct the
+;; same way `PatternAst`/`ParseStep` below already carry multiple typed
+;; fields. A single character (lo == hi) is a real, valid one-element
+;; range, not a special case.
+(defstruct CharRange
+  (lo : String @ Region)
+  (hi : String @ Region))
 
 (defstruct PatternAst
   (root          : PatternNode @ Region)
   (capture-count : I32))
 
+(defstruct SyntaxError
+  (message : String @ Region)
+  (pos     : I32))
+
+;; ParseStep -- the real (parsed-node, next-position, running-capture-
+;; count) triple every parse-* function below returns on success. Capture
+;; indices are assigned left-to-right by OPENING paren order (the
+;; standard regex convention) as parse-group reserves its own index
+;; before recursing into its own body, so nested groups always get
+;; higher numbers than their enclosing group.
+(defstruct ParseStep
+  (node : PatternNode @ Region)
+  (next : I32)
+  (ncap : I32))
+
 (defn parse [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result PatternAst SyntaxError) @ Region
-  (let [state {:pos 0 :text pattern :capture-count 0}]
-    (match (parse-alt state dest)
-      ((Ok node) (Ok {:root node :capture-count (get-field state :capture-count)}))
-      ((Err e) (Err e)))))
+  (let [plen (string/length pattern)]
+    (match (parse-alt pattern 0 0 dest)
+      ((Err e) (Err e))
+      ((Ok step)
+        (if (< (get-field (deref step) :next) plen)
+          (Err (SyntaxError "unexpected ')'" (get-field (deref step) :next)))
+          (Ok (PatternAst (get-field (deref step) :node) (get-field (deref step) :ncap))))))))
 
-;; parse-alt / parse-concat / parse-atom / parse-quantifier are the real
-;; recursive-descent grammar: alt := concat ('|' concat)* ; concat := atom* ;
-;; atom := literal | '.' | '(' alt ')' | '[' class ']' | atom quantifier.
-;; Bodies elided at signature level here -- each is a direct, short,
-;; standard-recursive-descent function once VS0 domain 2+ exists to
-;; actually run this; the grammar itself (above) is the real design
-;; artifact this file exists to fix in place.
-(defn parse-alt     [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))
-(defn parse-concat  [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))
-(defn parse-atom    [(state : &ParseState) (dest : Arena @ Region)] : (Result PatternNode SyntaxError))
+;; alt := concat ('|' concat)*
+(defn parse-alt [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (match (parse-concat pattern pos ncap dest)
+    ((Err e) (Err e))
+    ((Ok first)
+      (let [plen (string/length pattern)
+            branches (vec/new dest)]
+        (vec/push! &branches (get-field (deref first) :node))
+        (loop [p (get-field (deref first) :next) nc (get-field (deref first) :ncap)]
+          (if (and (< p plen) (= (string/char-at pattern p) 124))  ;; |
+            (match (parse-concat pattern (+ p 1) nc dest)
+              ((Err e) (Err e))
+              ((Ok step)
+                (do
+                  (vec/push! &branches (get-field (deref step) :node))
+                  (recur (get-field (deref step) :next) (get-field (deref step) :ncap)))))
+            ;; Real, honest simplification: always wraps in Alt, even for
+            ;; exactly one branch (semantically identical to that branch
+            ;; alone -- every real matcher treats a one-armed alternation
+            ;; as a no-op). Reading back a just-pushed element to unwrap
+            ;; it would need vec/get's own element type known for a
+            ;; PLAIN LOCAL Vec, which today only works for a `&(Vec T)`
+            ;; PARAMETER or a `(Vec T)` STRUCT FIELD (see get-field's own
+            ;; g_vec_elem_hints comment) -- not yet extended to locals,
+            ;; a real, separate, narrower compiler gap not worth chasing
+            ;; here when this sidesteps it entirely and correctly.
+            ;; By VALUE, not `&branches` -- Alt's own field type is `(Vec
+            ;; PatternNode) @ Region`, not a reference. `&branches` would
+            ;; store the ADDRESS OF THIS STACK FRAME'S local, a real,
+            ;; genuine dangling-pointer bug once parse-alt returns (found
+            ;; live via ASan: "stack-use-after-return" reading it back
+            ;; through a later `vec/len`) -- VS0's region analyzer does
+            ;; NOT catch this class of escape yet, a real, separate gap
+            ;; worth flagging, not something this fix papers over. Passing
+            ;; the Vec BY VALUE here lets the same non-pointer-payload
+            ;; auto-boxing Ok/Err/CharClass's own `ranges` argument above
+            ;; already uses copy it into real arena memory instead.
+            (Ok (ParseStep (Alt branches) p nc))))))))
+
+;; concat := (atom quantifier?)* -- stops (without consuming) at '|', ')',
+;; or end of pattern. Zero atoms is a real, valid empty match (e.g. the
+;; body of "()").
+(defn parse-concat [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (let [plen (string/length pattern)
+        parts (vec/new dest)]
+    (loop [p pos nc ncap]
+      (if (or (>= p plen)
+              (= (string/char-at pattern p) 124)   ;; |
+              (= (string/char-at pattern p) 41))   ;; )
+        ;; Real, honest simplification, same reasoning as parse-alt's own
+        ;; Alt-wrapping above: always wraps in Concat, even for exactly
+        ;; one (or zero) parts -- semantically identical, and sidesteps
+        ;; the same plain-local Vec element-type gap.
+        ;; By VALUE, not `&parts` -- same real dangling-pointer bug (and
+        ;; same fix) as parse-alt's own Alt construction above.
+        (Ok (ParseStep (Concat parts) p nc))
+        (match (parse-quant pattern p nc dest)
+          ((Err e) (Err e))
+          ((Ok step)
+            (do
+              (vec/push! &parts (get-field (deref step) :node))
+              (recur (get-field (deref step) :next) (get-field (deref step) :ncap)))))))))
+
+;; atom-quantifier := atom ('*' | '+' | '?')? -- postfix repetition on a
+;; single already-parsed atom. Real, honest limitation: always greedy --
+;; the non-greedy suffix form (`*?`/`+?`/`??`) is a real, separate,
+;; deliberately deferred follow-up, not attempted here.
+(defn parse-quant [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (match (parse-atom pattern pos ncap dest)
+    ((Err e) (Err e))
+    ((Ok step)
+      (let [plen (string/length pattern) p (get-field (deref step) :next)]
+        (if (>= p plen)
+          (Ok (deref step))
+          (cond
+            ((= (string/char-at pattern p) 42)  ;; *
+              (Ok (ParseStep (Star dest (get-field (deref step) :node) true) (+ p 1) (get-field (deref step) :ncap))))
+            ((= (string/char-at pattern p) 43)  ;; +
+              (Ok (ParseStep (Plus dest (get-field (deref step) :node) true) (+ p 1) (get-field (deref step) :ncap))))
+            ((= (string/char-at pattern p) 63)  ;; ?
+              (Ok (ParseStep (Optional dest (get-field (deref step) :node) true) (+ p 1) (get-field (deref step) :ncap))))
+            (true (Ok (deref step)))))))))
+
+;; atom := literal | '.' | '^' | '$' | '\' escaped-char | '(' alt ')' |
+;;         '[' class ']'
+(defn parse-atom [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (let [plen (string/length pattern)]
+    (if (>= pos plen)
+      (Err (SyntaxError "unexpected end of pattern" pos))
+      (let [c (string/char-at pattern pos)]
+        (cond
+          ((= c 40) (parse-group pattern pos ncap dest))    ;; (
+          ((= c 91) (parse-class pattern pos ncap dest))    ;; [
+          ((= c 92) (parse-escape pattern pos ncap dest))   ;; backslash
+          ((= c 46) (Ok (ParseStep AnyChar (+ pos 1) ncap)))          ;; .
+          ((= c 94) (Ok (ParseStep (Anchor Start) (+ pos 1) ncap)))   ;; ^
+          ((= c 36) (Ok (ParseStep (Anchor End) (+ pos 1) ncap)))     ;; $
+          ((or (= c 42) (or (= c 43) (= c 63)))
+            (Err (SyntaxError "quantifier with nothing to repeat" pos)))
+          ((= c 124) (Err (SyntaxError "unexpected '|'" pos)))   ;; |
+          ((= c 41) (Err (SyntaxError "unexpected ')'" pos)))    ;; )
+          (true (Ok (ParseStep (Literal (string/substring pattern pos (+ pos 1) dest)) (+ pos 1) ncap))))))))
+
+;; '\' x -- every escape is treated as a literal `x` (no `\d`/`\w`/`\s`
+;; character-class shorthand yet -- a real, separate, deliberately
+;; deferred follow-up, flagged rather than silently mishandled).
+(defn parse-escape [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (if (>= (+ pos 1) (string/length pattern))
+    (Err (SyntaxError "trailing backslash" pos))
+    (Ok (ParseStep (Literal (string/substring pattern (+ pos 1) (+ pos 2) dest)) (+ pos 2) ncap))))
+
+;; '(' alt ')' -- always capturing (no `(?:...)` non-capturing group
+;; syntax yet, and no `(?<name>...)` named-group syntax yet -- both real,
+;; separate, deliberately deferred follow-ups; `name` is always None).
+;; This group's own capture index is reserved BEFORE recursing into its
+;; body, so nested groups correctly number higher than their parent.
+(defn parse-group [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (let [my-index (+ ncap 1)]
+    (match (parse-alt pattern (+ pos 1) my-index dest)
+      ((Err e) (Err e))
+      ((Ok inner)
+        (let [plen (string/length pattern) p (get-field (deref inner) :next)]
+          (if (or (>= p plen) (not (= (string/char-at pattern p) 41)))  ;; )
+            (Err (SyntaxError "expected ')'" p))
+            (Ok (ParseStep
+                  (Group dest (get-field (deref inner) :node) (Some my-index) None)
+                  (+ p 1)
+                  (get-field (deref inner) :ncap)))))))))
+
+;; find-class-close -- the first ']' at or after `from`, or -1 if the
+;; class is unterminated. Same real, narrow index-scan shape as regex/
+;; glob.prn's own find-close-bracket (a different file, deliberately not
+;; shared -- STDLIB.md's own regex/glob section explains why glob and
+;; regex/syntax stay separate, unrelated grammars).
+(defn find-class-close [(pattern : String @ Region) (from : I32) (plen : I32)]
+  : I32
+  (loop [j from]
+    (cond
+      ((>= j plen) -1)
+      ((= (string/char-at pattern j) 93) j)  ;; ]
+      (true (recur (+ j 1))))))
+
+;; '[' class ']' -- a flat run of literal characters and/or one-char-wide
+;; contiguous ranges (`a-z`), freely mixed (`[a-cx-z]` scans both), with
+;; real support for leading negation (`^`, the real regex convention --
+;; not glob's `!`/`^` pair). Real, honest, narrower scope than a full
+;; regex character class: no escaped `]` inside a class, no POSIX
+;; `[:alpha:]`-style named classes -- flagged, not silently mishandled.
+(defn parse-class [(pattern : String @ Region) (pos : I32) (ncap : I32) (dest : Arena @ Region)]
+  : (Result ParseStep SyntaxError) @ Region
+  (let [plen (string/length pattern)
+        negate (and (< (+ pos 1) plen) (= (string/char-at pattern (+ pos 1)) 94))
+        start (if negate (+ pos 2) (+ pos 1))
+        close (find-class-close pattern start plen)]
+    (if (< close 0)
+      (Err (SyntaxError "unterminated character class" pos))
+      (let [ranges (vec/new dest)]
+        (do
+          (loop [j start]
+            (when (< j close)
+              (if (and (< (+ j 2) close) (= (string/char-at pattern (+ j 1)) 45))  ;; lookahead '-'
+                (do
+                  (vec/push! &ranges (CharRange (string/substring pattern j (+ j 1) dest)
+                                                 (string/substring pattern (+ j 2) (+ j 3) dest)))
+                  (recur (+ j 3)))
+                (do
+                  (vec/push! &ranges (CharRange (string/substring pattern j (+ j 1) dest)
+                                                 (string/substring pattern j (+ j 1) dest)))
+                  (recur (+ j 1))))))
+          (Ok (ParseStep (CharClass dest ranges negate) (+ close 1) ncap)))))))
