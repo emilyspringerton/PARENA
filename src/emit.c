@@ -3740,9 +3740,29 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
              * no equivalent lookup for at all). */
             const char *bound_c_type = "void *";
             if (pat_variant && pat_variant->field_count == 1) {
-                char t[128];
-                snprintf(t, sizeof(t), "%s *", pat_variant->fields[0].c_type);
-                bound_c_type = arena_strdup(arena, t, strlen(t));
+                /* Real, narrow double-indirection bug (2026-08-23, gcc-
+                 * verifying regex/syntax.prn's own `(match node ((Literal
+                 * ch) (deref ch)))`): this branch unconditionally
+                 * appended " *" regardless of whether the field's own
+                 * c_type ALREADY ends in '*' (e.g. a String field, whose
+                 * c_type is "char *"), producing a genuinely wrong
+                 * double-pointer cast (`(*((char * *)(ch)))` against a
+                 * `ch` whose real value is a plain `char *`) -- compiles
+                 * clean, silently reads garbage at runtime, no build-time
+                 * signal at all. The sibling branch just below (scrut_
+                 * payload_type, for a known-function-return Ok/Some)
+                 * already has exactly this guard (`payload_is_pointer`) --
+                 * this was the one place it was missing, same real bug
+                 * class, same real fix. */
+                size_t flen = strlen(pat_variant->fields[0].c_type);
+                int field_is_pointer = flen > 0 && pat_variant->fields[0].c_type[flen - 1] == '*';
+                if (field_is_pointer) {
+                    bound_c_type = pat_variant->fields[0].c_type;
+                } else {
+                    char t[128];
+                    snprintf(t, sizeof(t), "%s *", pat_variant->fields[0].c_type);
+                    bound_c_type = arena_strdup(arena, t, strlen(t));
+                }
             } else if (!scrut_enum && scrut_payload_type &&
                        (strcmp(ctor_name, "Ok") == 0 || strcmp(ctor_name, "Some") == 0)) {
                 /* Same real double-indirection guard vec_get's own hint-
