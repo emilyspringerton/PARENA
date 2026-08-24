@@ -1,3 +1,7 @@
+## 2026-08-24
+
+- regex/pcre.prn rewritten closures-free (VS0's fn literals can't capture) -- compile/is-match/matcher internals gcc-clean; grep.prn updated to match; 2 real emit.c bugs fixed (set! ref-var deref-assign, struct-literal generic-pointer cast); io.prn's own missing host glue is the remaining end-to-end grep blocker (sess-20260824-2252-ce890e4f)
+
 ## 2026-08-23
 - fix(emit): let-binding value now recognizes match/loop as special forms -- real root-cause fix (not a workaround) for one of the 5 nesting gaps found building regex/nfa.prn. make test 336/336 + test-multifile + test-domain4 all clean, zero regressions. (sess-20260823-1554-932e157f)
 - feat(regex): real, working Pike's VM runner (is-match) for regex/nfa.prn -- unanchored breadth-first thread-stepping search, no backtracking anywhere. 35/35 runtime test cases pass, zero ASan findings. Found/worked around 5 more real compiler nesting gaps (match not recognized as a special form in when-body/let-value/cond-test/non-tail-do-statement positions, plus a deep-nesting result-var corruption). (sess-20260823-1554-932e157f)
