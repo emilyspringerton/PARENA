@@ -57,6 +57,14 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "fmt",
+    srcs = ["fmt.c"],
+    hdrs = ["fmt.h"],
+    deps = [":arena"],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "parena",
     srcs = ["main.c"],
@@ -64,6 +72,7 @@ cc_binary(
         ":arena",
         ":ast",
         ":emit",
+        ":fmt",
         ":parser",
         ":region",
     ],

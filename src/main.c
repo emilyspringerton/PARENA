@@ -9,6 +9,7 @@
 #include "arena.h"
 #include "ast.h"
 #include "emit.h"
+#include "fmt.h"
 #include "parser.h"
 #include "region.h"
 #include <stdio.h>
@@ -153,6 +154,46 @@ static int cmd_analyze(const char *path) {
  * already were -- multi-file `build` doesn't read or validate them,
  * ordering the files correctly on the command line is still the real,
  * human responsibility it always was. */
+/* cmd_fmt -- `parena fmt [-w] <file.prn> [file2.prn ...]`. Default
+ * (no -w) matches gofmt's own default: print the reformatted source to
+ * stdout, one file's output right after another, leave the file on
+ * disk untouched. `-w` writes each result back into its own source
+ * file in place -- gofmt's own real, most-used mode ("comeon bro", the
+ * founder's own real-time framing, is a request for the tool that just
+ * fixes the files, not a printer). See fmt.c's own header comment for
+ * this pass's real scope (depth-based re-indentation, comment/string-
+ * preserving, not full AST-based pretty-printing). */
+static int cmd_fmt(const char **paths, size_t path_count, int write_in_place) {
+    int had_error = 0;
+    for (size_t i = 0; i < path_count; i++) {
+        size_t len;
+        char *src = read_file(paths[i], &len);
+        if (!src) {
+            fprintf(stderr, "parena: cannot read %s\n", paths[i]);
+            had_error = 1;
+            continue;
+        }
+        Arena arena;
+        arena_init(&arena);
+        const char *formatted = fmt_source(&arena, src, len);
+        free(src);
+        if (write_in_place) {
+            FILE *out = fopen(paths[i], "wb");
+            if (!out) {
+                fprintf(stderr, "parena: cannot write %s\n", paths[i]);
+                had_error = 1;
+            } else {
+                fputs(formatted, out);
+                fclose(out);
+            }
+        } else {
+            fputs(formatted, stdout);
+        }
+        arena_free_all(&arena);
+    }
+    return had_error;
+}
+
 static int cmd_build(const char **paths, size_t path_count, const char *out_path) {
     Arena arena;
     arena_init(&arena);
@@ -251,6 +292,8 @@ int main(int argc, char **argv) {
                          "       parena analyze <file.prn>                          (VS0 domain 2 -- region analyzer)\n"
                          "       parena build <file.prn> [file2.prn ...] -o <output.c>    (VS0 domain 3 -- C emitter; "
                          "multiple files are combined into one compilation unit, in the order given)\n"
+                         "       parena fmt [-w] <file.prn> [file2.prn ...]         (re-indent; -w writes in place, "
+                         "default prints to stdout)\n"
 #ifdef PARENA_HAS_CI_STATUS
                          "       parena ci-status <owner/repo> <sha>                (GITHUB_TOKEN env var required; "
                          "exit 0=all green, 1=pending, 2=failed, 3=not found/error)\n"
@@ -269,6 +312,30 @@ int main(int argc, char **argv) {
         return cmd_ci_status(argv[2], argv[3]);
     }
 #endif
+    if (strcmp(argv[1], "fmt") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: parena fmt [-w] <file.prn> [file2.prn ...]\n");
+            return 1;
+        }
+        int write_in_place = 0;
+        int first_path_arg = 2;
+        if (strcmp(argv[2], "-w") == 0) {
+            write_in_place = 1;
+            first_path_arg = 3;
+        }
+        if (argc <= first_path_arg) {
+            fprintf(stderr, "usage: parena fmt [-w] <file.prn> [file2.prn ...]\n");
+            return 1;
+        }
+        size_t path_count = (size_t)(argc - first_path_arg);
+        const char **paths = (const char **)malloc(sizeof(char *) * path_count);
+        for (size_t i = 0; i < path_count; i++) {
+            paths[i] = argv[first_path_arg + i];
+        }
+        int rc = cmd_fmt(paths, path_count, write_in_place);
+        free(paths);
+        return rc;
+    }
     if (strcmp(argv[1], "build") == 0) {
         /* Every argument between "build" and "-o" is an input file --
          * at least one required. `-o <output.c>` must be the final two

@@ -7,7 +7,7 @@
 CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 
-SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c
+SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
 .PHONY: all build test test-domain4 test-domain5 test-multifile clean
