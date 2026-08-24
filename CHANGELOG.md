@@ -1,4 +1,5 @@
 ## 2026-08-24
+- parena fmt [-w] -- gofmt-style auto-formatter, comment/string-preserving text-level re-indenter (not AST round-trip, ast.h has no comment nodes) (sess-20260824-2252-ce890e4f)
 
 - regex/pcre.prn rewritten closures-free (VS0's fn literals can't capture) -- compile/is-match/matcher internals gcc-clean; grep.prn updated to match; 2 real emit.c bugs fixed (set! ref-var deref-assign, struct-literal generic-pointer cast); io.prn's own missing host glue is the remaining end-to-end grep blocker (sess-20260824-2252-ce890e4f)
 
