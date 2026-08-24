@@ -1,6 +1,17 @@
 ;; stdlib/grep.prn — depends on regex/nfa, regex/pcre, regex/posix, io,
 ;; vec. Design: STDLIB.md "grep/sed/awk" section. Engine-selectable, same
 ;; idea as real grep's own -G/-E/-P flags.
+;;
+;; Updated 2026-08-24 alongside regex/pcre.prn's own closures-removal
+;; rewrite: `is-match` now takes an explicit `dest : Arena @ Region`
+;; (the Vec-of-candidates redesign needs somewhere to allocate into --
+;; see that file's own header comment), and the nested `((Ok (Some
+;; line)) ...)` pattern below is split into two sequential single-level
+;; matches -- VS0's match-clause binder only ever collects TRAILING
+;; SYMBOL bindings one level deep (a nested compound pattern like
+;; `(Some line)` inside `(Ok ..)` breaks its own bind-collection loop
+;; immediately), a real, separate, pre-existing compiler gap, not
+;; attempted here.
 
 (module grep)
 (import regex/pcre)
@@ -20,13 +31,15 @@
         (do                                             ;; compile functions exist alongside this
           (loop []
             (match (io/read-line !f)
-              ((Ok (Some line))
-                (do
-                  (match (regex/pcre/is-match &re line)
-                    ((Ok true) (vec/push! &results line))
-                    (_ unit))
-                  (recur)))
-              ((Ok None) unit)
+              ((Ok opt)
+                (match (deref opt)
+                  ((Some line)
+                    (do
+                      (match (regex/pcre/is-match &re line dest)
+                        ((Ok true) (vec/push! &results line))
+                        (_ unit))
+                      (recur)))
+                  (None unit)))
               ((Err e) unit)))
           (Ok results)))
       ((Err e) (Err (IoError "bad pattern"))))))

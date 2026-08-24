@@ -2182,28 +2182,56 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
      * real C assignment; the target must literally be a `get-field` form
      * -- get-field's own emission already produces a real, valid C
      * lvalue (`(x).field` or `(x)->field`), reused here rather than
-     * duplicating struct/field lookup a second time. A plain local-
-     * variable target (`(set! x value)`, no defstruct involved) is real,
-     * separate, unstarted scope -- not silently guessed at. */
+     * duplicating struct/field lookup a second time.
+     *
+     * Second real shape, closed here (2026-08-24, gcc-verifying regex/
+     * pcre.prn's own real `match-node` step counter): `(set! symbol
+     * value)` where `symbol` is a plain, already-in-scope `&mut`-typed
+     * local/parameter (e.g. `(steps : &mut I32)`, then `(set! steps (+
+     * (deref steps) 1))`). VS0 has no mutable-let-rebinding anywhere in
+     * this stdlib yet -- every OTHER real value is bound once via let/a
+     * parameter and never reassigned -- so this is deliberately narrow:
+     * only a symbol whose scope-tracked C type is already a pointer
+     * (the C shape every `&mut T`/`&T` parameter already has, per
+     * resolve_declared_type()'s own "%s *" reference-type format)
+     * qualifies; a bare non-reference symbol target still fails
+     * honestly below rather than silently reassigning a value with no
+     * real backing storage to reassign through. */
     if (is_call_named(expr, "set!")) {
         if (expr->child_count != 3) {
             return fail(arena, out_error, "set!: expects exactly 2 arguments at line %d", expr->line);
         }
-        if (!is_call_named(expr->children[1], "get-field")) {
-            return fail(arena, out_error,
-                        "set!: VS0's emitter only supports (set! (get-field target :field) value) so "
-                        "far at line %d", expr->line);
+        if (is_call_named(expr->children[1], "get-field")) {
+            const char *lhs_type = NULL;
+            const char *lhs_c = emit_expr(arena, expr->children[1], scope, &lhs_type, out_error);
+            if (!lhs_c) return NULL;
+            const char *rhs_type = NULL;
+            const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
+            if (!rhs_c) return NULL;
+            *out_type = "void";
+            char buf[512];
+            snprintf(buf, sizeof(buf), "(%s = %s)", lhs_c, rhs_c);
+            return arena_strdup(arena, buf, strlen(buf));
         }
-        const char *lhs_type = NULL;
-        const char *lhs_c = emit_expr(arena, expr->children[1], scope, &lhs_type, out_error);
-        if (!lhs_c) return NULL;
-        const char *rhs_type = NULL;
-        const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
-        if (!rhs_c) return NULL;
-        *out_type = "void";
-        char buf[512];
-        snprintf(buf, sizeof(buf), "(%s = %s)", lhs_c, rhs_c);
-        return arena_strdup(arena, buf, strlen(buf));
+        if (expr->children[1]->type == NODE_SYMBOL) {
+            Local *target = scope_lookup(scope, expr->children[1]->text);
+            if (target && target->c_type) {
+                size_t tl = strlen(target->c_type);
+                if (tl > 0 && target->c_type[tl - 1] == '*') {
+                    const char *rhs_type = NULL;
+                    const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
+                    if (!rhs_c) return NULL;
+                    *out_type = "void";
+                    char buf[512];
+                    snprintf(buf, sizeof(buf), "(*(%s) = %s)", target->c_name, rhs_c);
+                    return arena_strdup(arena, buf, strlen(buf));
+                }
+            }
+        }
+        return fail(arena, out_error,
+                    "set!: VS0's emitter only supports (set! (get-field target :field) value) or "
+                    "(set! ref-var value) for an in-scope &mut-typed local/parameter so far at line %d",
+                    expr->line);
     }
     if (is_call_named(expr, "deref")) {
         if (expr->child_count != 2) {
@@ -2590,6 +2618,59 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             if (!val_c) {
                 sb_free(&args);
                 return NULL;
+            }
+            /* Real, honest, narrow cast inserted here (2026-08-24, gcc-
+             * verifying regex/pcre.prn's own real `compile`, whose
+             * `{:ast ast :budget budget}` constructs a Regex from a
+             * single-field-Ok-bound `ast`): Ok/Some's own single-field
+             * bind always types its bound value as SOME pointer type --
+             * either the generic `void *` (no pat_variant info for
+             * built-in Result/Option), or, when the scrutinee is a
+             * direct call to a known function, the real payload type
+             * plus "*" (e.g. "PatternAst *", via g_defn_return_types'
+             * own payload-type lookup just above this comment) -- real
+             * and correct as far as VS0's own type tracking goes either
+             * way, but a real C type mismatch once that value flows
+             * directly into a struct-literal field expecting a concrete
+             * BY-VALUE type (Regex_new's own real `PatternAst ast`
+             * parameter, not a pointer). The struct literal already
+             * knows the real target field type here (match->
+             * fields[f].c_type) -- insert the same cast-then-dereference
+             * `deref` already uses elsewhere in this file, keyed off the
+             * KNOWN target type instead of deref's own "strip the
+             * input's own trailing *" logic, since a target-directed
+             * cast is needed regardless of which of the two pointer
+             * shapes above val_type actually is (a harmless redundant
+             * cast when it's already the right pointer type, load-
+             * bearing when it's the generic "void *" marker). Fires
+             * whenever the source is SOME pointer (val_type ends in
+             * '*') but the target field wants a plain, non-pointer
+             * value -- every other field (a value that's ALREADY the
+             * right by-value shape, or a field that itself wants a
+             * pointer) keeps its existing, already-correct value
+             * expression untouched. */
+            size_t val_type_len = val_type ? strlen(val_type) : 0;
+            size_t field_type_len = match->fields[f].c_type ? strlen(match->fields[f].c_type) : 0;
+            int val_is_pointer = val_type_len > 0 && val_type[val_type_len - 1] == '*';
+            int field_is_pointer = field_type_len > 0 && match->fields[f].c_type[field_type_len - 1] == '*';
+            /* Real bug found and fixed here (make test, same pass): a
+             * `(Fn [..] ..)`-typed field's own real C type is a function
+             * pointer shape, e.g. "int (*)(int)" -- ends in ')', not
+             * '*', so field_is_pointer's own trailing-character check
+             * (correct for every OTHER pointer shape this emitter
+             * produces) misreads it as "wants a plain value" and wraps
+             * a real, already-correct bare function-name reference
+             * (firefly.prn's own TestCase.run assignment pattern, "void
+             * *" reported for exactly this real, harmless-until-now
+             * reason -- see that code's own comment) in a bogus cast-
+             * and-dereference. Excluded here rather than taught to
+             * field_is_pointer itself, since a `(*)`-shaped type is a
+             * real pointer for every OTHER purpose in this file. */
+            int field_is_fn_pointer = match->fields[f].c_type && strstr(match->fields[f].c_type, "(*)") != NULL;
+            if (val_is_pointer && !field_is_pointer && !field_is_fn_pointer) {
+                char cast_buf[512];
+                snprintf(cast_buf, sizeof(cast_buf), "(*((%s *)(%s)))", match->fields[f].c_type, val_c);
+                val_c = arena_strdup(arena, cast_buf, strlen(cast_buf));
             }
             if (f > 0) sb_append(&args, ", ");
             sb_append(&args, val_c);
