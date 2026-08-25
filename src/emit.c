@@ -105,10 +105,33 @@ static void scope_bind(EmitScope *s, const char *src_name, const char *c_name, c
     }
 }
 
+/* unbang skips a single leading '!' (the linear/mutable-binding sigil)
+ * if present -- used below so scope_lookup matches a binding
+ * regardless of which of the two real, both-real conventions this
+ * stdlib already uses to reference it: WITH the bang (get-field's own
+ * struct-expression argument, e.g. firefly.prn's own `(get-field !t
+ * :failed)`, already resolved correctly before this fix) or WITHOUT it
+ * (thread.prn/pcap.prn's own #target-string convention, and ordinary
+ * non-#target Parena code like io.prn's real `(get-field f :fd)` --
+ * found broken, 2026-08-24, gcc-verifying that exact file: scope_bind
+ * always keys a `!`-prefixed parameter under its raw, banged text, so
+ * a bare-name reference from real Parena source -- not inside a
+ * #target string, where it's just raw C text matching mangle()'s own
+ * already-stripped C name -- never found it). Real, minimal fix here
+ * rather than at each binding call site: comparing bang-stripped names
+ * on both sides makes a single Local match either spelling, without
+ * touching what scope_bind itself stores (leaving the already-correct
+ * WITH-bang path untouched). */
+static const char *unbang(const char *name) {
+    if (name && name[0] == '!') return name + 1;
+    return name;
+}
+
 static Local *scope_lookup(EmitScope *s, const char *src_name) {
+    const char *want = unbang(src_name);
     for (EmitScope *cur = s; cur; cur = cur->parent) {
         for (int i = cur->count - 1; i >= 0; i--) {
-            if (strcmp(cur->locals[i].src_name, src_name) == 0) return &cur->locals[i];
+            if (strcmp(unbang(cur->locals[i].src_name), want) == 0) return &cur->locals[i];
         }
     }
     return NULL;
@@ -3838,6 +3861,33 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
             ctor_name = pattern->children[0]->text;
             for (size_t bi = 1; bi < pattern->child_count && bind_count < 16; bi++) {
                 if (pattern->children[bi]->type != NODE_SYMBOL) break;
+                /* Real, dangerous, SILENT bug found and closed here
+                 * (2026-08-24, a real runtime smoke test of grep.prn's
+                 * own `((Ok true) ...)` clause -- meant as "payload
+                 * equals literal true" but this whole destructuring
+                 * path has no concept of a literal-value pattern at
+                 * all, only binding names -- so `true` bound a NEW
+                 * local shadowing the real boolean, and the clause
+                 * fired on every `Ok` regardless of the actual value.
+                 * No compile-time or gcc-level signal whatsoever --
+                 * wrong output at runtime, the worst class of bug.
+                 * Real fix here: refuse to silently bind over `true`/
+                 * `false` at all -- fail loudly with the actual
+                 * workaround (bind a real name, check it with `if`)
+                 * instead of a new pattern-matching feature, which is
+                 * real, separate, bigger work not attempted here. */
+                if (strcmp(pattern->children[bi]->text, "true") == 0 ||
+                    strcmp(pattern->children[bi]->text, "false") == 0) {
+                    return fail(arena, out_error,
+                                "match: '%s' at line %d looks like a literal-value pattern, but this "
+                                "destructuring only supports BINDING names, not value comparison -- "
+                                "'%s' would silently bind a new local named '%s' and match on every "
+                                "real value, not just %s. Bind a real name and check it with `if` "
+                                "instead: ((%s x) (if x ... ...))",
+                                pattern->children[bi]->text, pattern->children[bi]->line,
+                                pattern->children[bi]->text, pattern->children[bi]->text,
+                                pattern->children[bi]->text, ctor_name) != NULL;
+                }
                 bind_nodes[bind_count++] = pattern->children[bi];
             }
             if (bind_count > 0) bind_node = bind_nodes[0];

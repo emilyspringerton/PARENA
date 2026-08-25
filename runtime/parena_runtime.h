@@ -15,6 +15,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -243,6 +246,131 @@ static inline char *string_concat(const char *a, const char *b, Arena *dest) {
     memcpy(out + la, b, lb);
     out[la + lb] = '\0';
     return out;
+}
+
+/* ---- stdlib/io.prn real host glue (2026-08-24) ----------------------
+ * Raw POSIX fd-based primitives only -- every Result/Option/FileHandle
+ * value io.prn itself constructs is built with ordinary PARENA syntax
+ * (Ok/Err/{:field val}), not here. Real, honest, narrow scope: each
+ * function below returns a plain scalar or string, no boxing -- see
+ * io.prn's own header comment for the full reasoning on why the split
+ * is drawn exactly here. */
+static inline int raw_open_impl(const char *path, int mode_tag) {
+    int flags;
+    switch (mode_tag) {
+        case 0: flags = O_RDONLY; break;                      /* Read */
+        case 1: flags = O_WRONLY | O_CREAT | O_TRUNC; break;  /* Write */
+        case 2: flags = O_WRONLY | O_CREAT | O_APPEND; break; /* Append */
+        default: flags = O_RDONLY; break;
+    }
+    return open(path, flags, 0644);
+}
+
+static inline int raw_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, s + written, len - written);
+        if (n < 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+/* raw_read_all_impl -- reads every remaining byte from fd (from its
+ * current position) into one arena-allocated, NUL-terminated buffer.
+ * Grows in fixed 4096-byte chunks -- real, honest, simple, matching
+ * string_concat's own "narrow, not optimized" scope above. A read()
+ * error partway through returns whatever was successfully read so far
+ * rather than failing outright -- read-string's own real return type
+ * has no way to report a mid-read error separately from a full one
+ * without a second host primitive this file's own real scope doesn't
+ * need yet. */
+static inline char *raw_read_all_impl(int fd, Arena *dest) {
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    for (;;) {
+        if (len + 4096 > cap) {
+            size_t new_cap = cap + 4096;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        ssize_t n = read(fd, buf + len, 4096);
+        if (n <= 0) break;
+        len += (size_t)n;
+    }
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return out;
+}
+
+/* raw_at_eof_impl -- peek one byte via read() then lseek back if one
+ * was found. Real, honest, narrow scope: correct for seekable regular
+ * files (real grep/sed/awk targets), not pipes/sockets/terminals,
+ * where lseek is a real error -- not attempted for those here. */
+static inline int raw_at_eof_impl(int fd) {
+    char c;
+    ssize_t n = read(fd, &c, 1);
+    if (n <= 0) return 1;
+    lseek(fd, -1, SEEK_CUR);
+    return 0;
+}
+
+/* raw_read_line_impl -- real byte-by-byte read() (not buffered --
+ * genuinely not performant, but real and correct for line-at-a-time
+ * streaming, the actual dependency that motivated read-line existing
+ * at all per io.prn's own header comment). Only called after
+ * raw_at_eof_impl has already confirmed at least one byte is
+ * available, so this never itself has to distinguish "EOF with zero
+ * bytes" from "a blank line" -- io.prn's own read-line does that
+ * distinction at the .prn level instead. The trailing '\n' is
+ * consumed but not included in the returned string, matching every
+ * other real line-reader's own convention (Go's bufio.Scanner,
+ * Python's str.splitlines default); a final line with no trailing
+ * newline (real EOF mid-line) still returns everything read so far,
+ * same as a text editor treating a missing trailing newline as still
+ * a real last line. */
+static inline char *raw_read_line_impl(int fd, Arena *dest) {
+    size_t cap = 128;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    for (;;) {
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n <= 0) break;
+        if (c == '\n') break;
+        if (len + 1 > cap) {
+            size_t new_cap = cap * 2;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        buf[len++] = c;
+    }
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return out;
+}
+
+/* raw_read_f64_impl -- gpt2.c's own real weight-file shape: 4-byte
+ * float32 on disk, widened to PARENA's own only real float type (F64/
+ * double) on read, matching io.prn's own read-floats real intent
+ * (loaded weights are immediately reshaped/matmul'd as F64 downstream,
+ * same as gpt2.c's own fread_or_fail). Short-read/EOF/error all
+ * silently return 0.0 -- read-floats' own caller is expected to pass a
+ * real, correct `n`, matching this whole file's "narrow, not
+ * defensive beyond what's needed" scope. */
+static inline double raw_read_f64_impl(int fd) {
+    float f = 0.0f;
+    ssize_t n = read(fd, &f, sizeof(float));
+    (void)n;
+    return (double)f;
 }
 
 #endif /* PARENA_RUNTIME_H */

@@ -1,25 +1,42 @@
 ;; stdlib/io.prn — depends on string. Design: STDLIB.md "io" section.
 ;; write-string/close/read-string are grounded in NORTHSTAR's own
 ;; write-log-and-close example; read-floats matches gpt2.c's own
-;; fread_or_fail raw weight loading; read-line is the new dependency
-;; sed/awk needed (added this thread) for line-at-a-time streaming.
+;; fread_or_fail raw weight loading; read-line is the dependency
+;; sed/awk/grep need for line-at-a-time streaming.
+;;
+;; Rewritten 2026-08-24, real host implementation closing the gap this
+;; file's own previous version left open ("FFI declared, host
+;; implementation not written yet"). Two real, separate bugs found and
+;; fixed along with adding the actual glue, not just missing functions:
+;; (1) every `#target` body here returned a raw C value where the
+;; declared return type was `Result`/`Option` -- VS0 trusts `#target`
+;; C verbatim with no auto-boxing (emit.c's own find_target_c_src
+;; comment), so this genuinely never compiled to valid C, closures-
+;; adjacent gap or not. (2) `FileHandle` was declared as a plain `I32`
+;; fd, but every body used its own parameter `f` directly as if it
+;; were a raw stdio `FILE *` (`fclose(f)`, `fputs(s, f)`) -- a real
+;; type confusion between two different file-abstraction models in the
+;; same file.
+;;
+;; Fixed by keeping FileHandle's own real, already-declared shape (one
+;; I32 fd, matching real POSIX raw file descriptors) and doing the
+;; actual read()/write()/open()/close() syscalls, not stdio. The real
+;; design choice that keeps this file itself simple and correct: only
+;; the genuinely irreducible raw syscalls live behind `#target` (each
+;; one a single C expression, no Result/Option construction inside the
+;; C at all) -- every Result/Option/FileHandle/IoError VALUE is built
+;; with ordinary `(Ok ...)`/`(Err ...)`/`{:field val}` PARENA syntax,
+;; letting the compiler's own already-verified boxing logic (the same
+;; logic `regex/pcre.prn`'s closures rewrite already exercised
+;; extensively this session) do the real work, instead of hand-writing
+;; C that has to replicate it and risks getting the box-helper
+;; convention subtly wrong.
 
 (module io)
 (import string)
-(export open close write-string read-string read-line read-floats FileHandle IoError OpenMode)
+(import vec)
+(export file-open file-close write-string read-string read-line read-floats FileHandle IoError OpenMode)
 
-;; Real, honest gap closed here (2026-08-21): every function below used
-;; `FileHandle`/`IoError` in its own real signature but this file never
-;; actually DEFINED either -- not a compiler gap, a genuine missing-
-;; definition gap in the file itself, only surfaced once VS0's type
-;; resolution reached far enough to notice (the same real class of gap
-;; pentest/pcap.prn's own Capture/Packet/PcapError just closed).
-;; `FileHandle` is a real, minimal, opaque handle -- the actual host-
-;; side `FILE *` this file's own #target bodies (fopen/fclose/fputs)
-;; already assume exists is real, separate, unstarted host-runtime glue
-;; work (same honest "FFI declared, host implementation not written
-;; yet" boundary every other #target-bound file in this stdlib already
-;; has), not attempted here.
 (defstruct FileHandle
   (fd : I32))
 
@@ -31,38 +48,134 @@
 
 (defenum OpenMode (Read) (Write) (Append))
 
-(defn open [(path : String @ :region/scratch) (mode : OpenMode)]
-  : (Result FileHandle IoError) @ :region/task
-  #target
-  {:c (inline-c "fopen(path, mode_to_c_str(mode))")})
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression, no boxing. errno is read separately
+;; (raw-errno) right after a primitive reports failure, matching real
+;; C's own "check errno immediately after the failing call" discipline
+;; -- nothing else runs in between at the .prn level either.
 
-(defn close [(!f : FileHandle @ :region/task)]
-  : (Result Unit IoError) @ :region/scratch
+(defn raw-open [(path : String @ Region) (mode-tag : I32)]
+  : I32
   #target
-  {:c (inline-c "fclose(f) == 0 ? OK : ERR")})
+  {:c (inline-c "raw_open_impl(path, mode_tag)")})
 
-(defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch)]
-  : (Result Unit IoError) @ :region/scratch
+(defn raw-close [(fd : I32)]
+  : I32
   #target
-  {:c (inline-c "fputs(s, f) >= 0 ? OK : ERR")})
+  {:c (inline-c "(close(fd) == 0 ? 0 : -1)")})
+
+(defn raw-write [(fd : I32) (s : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "raw_write_impl(fd, s)")})
+
+(defn raw-read-all [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "raw_read_all_impl(fd, dest)")})
+
+;; raw-at-eof? -- real, honest scope: works by peeking one byte and
+;; seeking back (lseek), so it only makes sense for seekable regular
+;; files (real grep/sed/awk targets), not pipes/sockets. Checked BEFORE
+;; raw-read-line so read-line's own real accumulation loop never has to
+;; distinguish "EOF with zero bytes" from "a genuinely blank line"
+;; itself.
+(defn raw-at-eof? [(fd : I32)]
+  : Bool
+  #target
+  {:c (inline-c "raw_at_eof_impl(fd)")})
+
+(defn raw-read-line [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "raw_read_line_impl(fd, dest)")})
+
+(defn raw-errno []
+  : I32
+  #target
+  {:c (inline-c "errno")})
+
+;; ---- real PARENA-level logic -- ordinary Ok/Err/struct-literal
+;; construction, no C boxing.
+
+(defn mode-tag-of [(mode : OpenMode)]
+  : I32
+  (match mode
+    ((Read) 0)
+    ((Write) 1)
+    ((Append) 2)))
+
+(defn errno-to-io-error [(e : I32)]
+  : IoError
+  (cond
+    ((= e 2) NotFound)           ;; ENOENT
+    ((= e 13) PermissionDenied)  ;; EACCES
+    ((= e 17) AlreadyExists)     ;; EEXIST
+    (true Other)))
+
+;; Real, small signature change from the original design: open/close/
+;; write-string all now take an explicit `dest : Arena @ Region` --
+;; needed to box a real Err(IoError) payload (`ensure_box_helper` needs
+;; a findable Arena in scope, per emit.c's own comment on Ok/Err/Some's
+;; real "no generics, box non-pointer payloads explicitly" scope), the
+;; same real reason regex/pcre.prn's is-match/find gained one earlier
+;; this session.
+(defn file-open [(path : String @ :region/scratch) (mode : OpenMode) (dest : Arena @ Region)]
+  : (Result FileHandle IoError) @ Region
+  (let [fd (raw-open path (mode-tag-of mode))]
+    (if (< fd 0)
+      (Err (errno-to-io-error (raw-errno)))
+      (Ok {:fd fd}))))
+
+(defn file-close [(!f : FileHandle @ :region/task) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region
+  (if (< (raw-close (get-field f :fd)) 0)
+    (Err (errno-to-io-error (raw-errno)))
+    (Ok unit)))
+
+(defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region
+  (if (< (raw-write (get-field f :fd) s) 0)
+    (Err (errno-to-io-error (raw-errno)))
+    (Ok unit)))
 
 (defn read-string [(!f : FileHandle @ :region/task) (buf : Arena @ :region/buffer)]
   : (Result String IoError) @ :region/buffer
-  #target
-  {:c (inline-c "read_whole_file(f, buf)")})
+  (Ok (raw-read-all (get-field f :fd) buf)))
 
-;; read-line — real dependency sed/awk need for line-at-a-time streaming;
-;; io/read-string alone reads a whole file, which sed's own s/// substitute
-;; can't stream against a large input with.
-(defn read-line [(!f : FileHandle @ :region/task)]
-  : (Result (Option String) IoError) @ :region/scratch
+;; read-line — the real dependency sed/awk/grep need for line-at-a-time
+;; streaming; io/read-string alone reads a whole file, which a
+;; line-oriented tool can't stream a large input with.
+(defn read-line [(!f : FileHandle @ :region/task) (dest : Arena @ Region)]
+  : (Result (Option String) IoError) @ Region
+  (if (raw-at-eof? (get-field f :fd))
+    (Ok None)
+    (Ok (Some (raw-read-line (get-field f :fd) dest)))))
+
+(defn raw-read-f64 [(fd : I32)]
+  : F64
   #target
-  {:c (inline-c "read_one_line(f)")})   ; NULL at EOF -> None, not an Err
+  {:c (inline-c "raw_read_f64_impl(fd)")})
 
 ;; read-floats — gpt2.c's own fread(buf, sizeof(float), n, f); returns
 ;; array's own NDArray directly (1-D, shape=[n]) since model weights are
-;; immediately reshaped/matmul'd downstream.
+;; immediately reshaped/matmul'd downstream. Real, honest: not exercised
+;; by sed/awk/grep/turbo-grep at all -- decomposed the same
+;; raw-primitive-plus-real-PARENA-construction way as the rest of this
+;; file for consistency, not verified as thoroughly as the line-
+;; oriented path above (no real gpt2.c weight file was read against
+;; this in this pass).
 (defn read-floats [(!f : FileHandle @ :region/task) (n : I32) (dest : Arena @ Region)]
   : (Result NDArray IoError) @ Region
-  #target
-  {:c (inline-c "read_n_floats_as_ndarray(f, n, dest)")})
+  (let [data (vec/new dest)]
+    (do
+      (loop [i 0]
+        (when (< i n)
+          (do (vec/push! &data (raw-read-f64 (get-field f :fd)))
+              (recur (+ i 1)))))
+      (let [shape (vec/new dest)
+            strides (vec/new dest)]
+        (do
+          (vec/push! &shape n)
+          (vec/push! &strides 1)
+          (Ok {:data data :shape shape :strides strides}))))))

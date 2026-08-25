@@ -21,6 +21,25 @@
 
 (defenum Engine (Nfa) (Pcre) (Posix))
 
+;; unbox-bool -- real, second bug found alongside the (Ok true)
+;; literal-pattern one, same real class: even after binding is-match's
+;; own Ok payload to a real name (`matched`, not the literal `true`),
+;; it's still bound as a generic `void *` (the boxed cell's own
+;; ADDRESS), not the real boolean it points to -- `(if matched ...)`
+;; checks whether that address is non-NULL, which it always is for any
+;; successfully-boxed value, real or false. `deref` can't help here
+;; (its own cast target comes from the value's OWN tracked type, which
+;; is already the generic "void *" -- dereferencing THAT is real,
+;; invalid C, same class of gap `vec-i32-at`-style helpers elsewhere
+;; this session already work around). `&Any` as the param type
+;; resolves to exactly "void *" in C (resolve_declared_type's own
+;; reference-type branch), matching the boxed value's real
+;; representation with no cast needed at the call site.
+(defn unbox-bool [(b : &Any)]
+  : Bool
+  #target
+  {:c (inline-c "*(int *)b")})
+
 (defn lines-matching [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
                        (engine : Engine) (dest : Arena @ Region)]
   : (Result (Vec String) IoError) @ Region
@@ -30,16 +49,33 @@
       ((Ok re)                                         ;; way once regex/nfa + regex/posix's own
         (do                                             ;; compile functions exist alongside this
           (loop []
-            (match (io/read-line !f)
+            (match (io/read-line !f dest)
               ((Ok opt)
                 (match (deref opt)
                   ((Some line)
                     (do
-                      (match (regex/pcre/is-match &re line dest)
-                        ((Ok true) (vec/push! &results line))
+                      ;; real bug found+fixed here (2026-08-24): `re` is already
+                      ;; pointer-typed (single-field Ok-bound, payload-lookup-typed
+                      ;; "Regex *") -- `&re` over-indirects to Regex ** (gcc caught
+                      ;; this as an incompatible-pointer-type warning, not silently
+                      ;; wrong at the C level -- but the SECOND, silent bug below is
+                      ;; the real one: `(Ok true)` doesn't compare the payload
+                      ;; against the literal `true` at all -- VS0's match-clause
+                      ;; binder treats any trailing symbol (including `true`) as a
+                      ;; BINDING NAME, not a literal-value pattern, so this branch
+                      ;; fired unconditionally on every `Ok` result regardless of
+                      ;; whether is-match actually matched -- confirmed live: a real
+                      ;; smoke test against 6 lines, pattern "line", matched all 6
+                      ;; instead of the real 3. No compile-time or gcc signal at
+                      ;; all -- silently wrong at RUNTIME, the worst kind. Fixed by
+                      ;; binding the real Bool payload and checking it explicitly.
+                      (match (regex/pcre/is-match re line dest)
+                        ((Ok matched) (if (unbox-bool matched) (vec/push! &results line) unit))
                         (_ unit))
                       (recur)))
                   (None unit)))
               ((Err e) unit)))
           (Ok results)))
-      ((Err e) (Err (IoError "bad pattern"))))))
+      ((Err e) (Err Other)))))   ;; real bug found+fixed here (2026-08-24): IoError is the
+                                  ;; enum name, not a constructor -- Other is its real
+                                  ;; zero-payload fallback variant, matching io.prn's own
