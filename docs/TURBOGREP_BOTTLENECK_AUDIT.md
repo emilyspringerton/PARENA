@@ -20,8 +20,8 @@ each item is either confirmed by a real test/measurement or explicitly marked un
 
 | # | Gap | Status |
 |---|---|---|
-| C1 | `CharClass` (`[abc]`, `[a-z]`, `[^abc]`) unimplemented | **Confirmed live, dangerous**: `turbogrep '[0-9]' file` with a real digit-containing line returned **zero matches** — real grep found it. Silent wrong answer, no error. Falls to match-node's own catch-all `(_ (vec/new dest))` — same "empty, not an error" shape as an exceeded budget (see P/C below), compounding the silence. |
-| C2 | `Anchor` (`^`, `$`) unimplemented | **Confirmed by code inspection** (same catch-all as C1) — not independently re-tested, same real risk class as C1. |
+| C1 | `CharClass` (`[abc]`, `[a-z]`, `[^abc]`) unimplemented | **Fixed 2026-08-25** (PARENA `3de6384`, Apple #15713) — verified against real grep: `[0-9]`, `[a-m]` (range), and negated `[^0-9]` all byte-identical. Was the single most dangerous finding in this audit (silent zero-match wrong answers, no error). |
+| C2 | `Anchor` (`^`, `$`) unimplemented | **Fixed 2026-08-25** (PARENA `83bb915`, Apple #15722) — verified against real grep: `^hello`, `hello$`, `^hello$` all byte-identical. `WordBoundary` (`\b`) stays honestly unsupported (real `AnchorKind` variant, but the parser never actually produces it). |
 | C3 | `Plus` (`+`) unimplemented | **Confirmed by code inspection**, same catch-all. |
 | C4 | `Optional` (`?`) unimplemented | **Confirmed by code inspection**, same catch-all. |
 | C5 | Nested `Concat` (inside a `Group`) only exposes its own single best candidate, not a full candidate set | **Known, documented limitation from the closures rewrite** (`regex/pcre.prn`'s own header comment). Real impact needs `Plus`/`Star` interacting through a `Group` boundary — not independently exercisable yet since `Plus` (C3) doesn't exist. |
