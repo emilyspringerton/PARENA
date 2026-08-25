@@ -1,4 +1,5 @@
 ## 2026-08-25
+- Real WebDriver-protocol client (stdlib/net/webdriver.prn) -- Selenium bindings, built on net/http.prn+json.prn. New stdlib/process.prn (real fork+exec FFI). 13/13 e2e checks against a real Go fixture server, spawned via PARENA FFI. (sess-20260825-0828-cc32a704)
 - Real working HTTP client (net/http.prn) -- headers as parallel Vecs (no Map generics), url-free host/port/path API, live-verified against IDUNA :8080. (sess-20260825-0828-cc32a704)
 - Real BSD socket host glue for net/tcp.prn (renamed API: tcp-connect/tcp-listen/tcp-accept/tcp-read/tcp-write/tcp-close) -- first working network I/O in PARENA, live-verified against IDUNA :8080. (sess-20260825-0828-cc32a704)
 - Real json.prn and yaml.prn stdlib parsers, both live-verified against real inputs (json: 24 checks; yaml: 28 checks including a real bukkit.yml-shaped test); found and fixed 2 real compiler bugs (same-named #target self-recursion, and-argument loop misparse) along the way. (sess-20260825-0828-cc32a704)
