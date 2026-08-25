@@ -1,0 +1,35 @@
+;; stdlib/redgarden/item_curriculum_mod.prn -- REDGARDEN's fourth real PARENA mod, same
+;; minimal one-function/no-dispatch-table shape as bloodflower_mod.prn (S194-01),
+;; tree_passive_mod.prn, and build_template_mod.prn.
+;;
+;; Founder real-time, 2026-08-25: "continue the exotic auto curriculum redgarden work" ->
+;; "training" -> "parena mod driven first" -- NORTHSTAR.md §26.3.2's own "v0 autocurriculum
+;; scope expansion: tuning the game via items" ("i want v0 autocurriculum to be tuning the
+;; game via the items" -> "like it introduces new items to meta break the top teams"),
+;; started here per the founder's own explicit sequencing: the PARENA mod entry point comes
+;; first, following the established "PARENA mod is the trigger, host C does the real work"
+;; split every prior REDGARDEN mod already set.
+;;
+;; ABI: on-generate-counter-item(base-item-a, base-item-b, slot-index) calls straight into a
+;; host-provided redgarden_host_item_curriculum_generate_counter_item(base_item_a,
+;; base_item_b, slot_index) C function (arena_game.c-side) that blends the two named catalog
+;; items' own stat fields (average + a small deterministic jitter, so the result is
+;; reproducible from the same two inputs, not truly random) into a runtime-mutable
+;; "curriculum slot" living alongside, not inside, the fixed 33-item static ARENA_ITEMS
+;; catalog -- see arena_game.h's own "Item curriculum" section doc comment for exactly why
+;; the curriculum slots are a separate array rather than an appended catalog entry. Returns
+;; the synthesized item's id (>= 0) on success, -1 on an invalid base item or slot index.
+;;
+;; Honest scope note (matches NORTHSTAR.md §26.3.2's own honesty convention): this mod, and
+;; the host function it calls, generate and store a candidate counter-item. Deciding WHICH
+;; two base items to blend from (reading which items the currently-dominant team composition
+;; is using) and WHETHER a generated item actually counters that composition are real, still-
+;; open training-loop questions NOT resolved by this pass -- this is the generation primitive
+;; those questions will eventually call into, not the evaluation loop itself.
+
+(module redgarden/item-curriculum-mod)
+(export on-generate-counter-item)
+
+(defn on-generate-counter-item [(base-item-a : I32) (base-item-b : I32) (slot-index : I32)] : I32
+  #target
+  {:c (inline-c "redgarden_host_item_curriculum_generate_counter_item(base_item_a, base_item_b, slot_index)")})
