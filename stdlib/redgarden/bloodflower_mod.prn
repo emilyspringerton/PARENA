@@ -1,0 +1,37 @@
+;; stdlib/redgarden/bloodflower_mod.prn — REDGARDEN's first real PARENA mod,
+;; v0. Same minimal shape as PITVIPER's stdlib/pitviper/vterm_mod.prn
+;; (S192-01): one function, no dispatch table, no plugin discovery — the
+;; smallest real thing that makes "the feature is a PARENA mod" true.
+;;
+;; Founder real-time, 2026-08-25: "but bring it into GFD totally as
+;; parena" / "parena mods" / "but it should all be events with parena
+;; mods ya know?" -- redirected mid-session to build in REDGARDEN's
+;; apps/arena_server FIRST (upstream of GFD's apps2/battlegrounds_gui
+;; fork), same "validate here, then port" precedent the Jungle Camps /
+;; Four Heavenly Kings system already set (see arena_game.h's own doc
+;; comment on that).
+;;
+;; ABI: REDGARDEN's server-authoritative sim (packages/simulation/
+;; arena_game.c) calls straight into `on-moon-zenith` (emitted as
+;; `on_moon_zenith`) exactly once per day/night cycle, the instant the
+;; moon crosses its zenith point (arena_tick_daynight's own edge-trigger
+;; guard — this mod is never called more than once per cycle). This mod
+;; calls back out to a host-provided `redgarden_host_spawn_bloodflower
+;; (x, z)` C function (arena_game.c-side) to actually place the real,
+;; server-authoritative Bloodflower world object at the given map
+;; coordinates. No dispatch table, no registration step, same
+;; #target/inline-c FFI-escape pattern editor/plugin.prn (S189-29) and
+;; vterm_mod.prn (S192-01) both already established.
+;;
+;; NOTE: written from a git-worktree-isolated agent that cannot run git
+;; against PARENA's shared checkout (plain file writes work, git
+;; operations don't) — this file was written directly to its real
+;; destination, PARENA/stdlib/redgarden/bloodflower_mod.prn, but still
+;; needs `git add`/commit/push by whoever has git access to this repo.
+
+(module redgarden/bloodflower-mod)
+(export on-moon-zenith)
+
+(defn on-moon-zenith [(x : I32) (z : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_spawn_bloodflower(x, z);")})
