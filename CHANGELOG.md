@@ -1,3 +1,7 @@
+## 2026-08-25
+
+- io.prn real host implementation (POSIX raw-fd glue) + 2 real compiler bugs fixed (bang-insensitive scope_lookup, literal true/false-as-bind-name guard) -- grep.prn verified end-to-end, matches correctly against real files (sess-20260824-2252-ce890e4f)
+
 ## 2026-08-24
 - parena fmt [-w] -- gofmt-style auto-formatter, comment/string-preserving text-level re-indenter (not AST round-trip, ast.h has no comment nodes) (sess-20260824-2252-ce890e4f)
 
