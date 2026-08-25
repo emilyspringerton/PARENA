@@ -1782,13 +1782,16 @@ int main(void) {
      * function" gcc error -- `parena build`'s own exit code never
      * caught it, since it never re-parses its own generated C. Fixed
      * via a real forward-DECLARATION pre-pass, emitted for every defn
-     * with an explicit `: ReturnType` annotation -- `ReturnType
-     * mangled_name();`, an old-style unspecified-argument C
-     * declaration (confirmed via a standalone gcc test to compile
-     * cleanly under this project's own `-pedantic -Werror`, so this
-     * deliberately does NOT duplicate emit_defn's own much larger
-     * parameter-type-resolution logic just to match a full prototype
-     * nobody's own call site needs). --- */
+     * with an explicit `: ReturnType` annotation.
+     *
+     * Revised 2026-08-25 (founder: "fix the forward-declaration typing
+     * gap"): the prototype is now FULLY TYPED (`RetType
+     * mangled_name(T1, T2, ...);`) via build_defn_prototype(), not the
+     * old empty-parens/K&R style -- the empty-parens version let a
+     * real by-value/pointer call-site mismatch in regex/pcre.prn
+     * compile with zero gcc warnings and segfault at runtime. Falls
+     * back to empty parens only for a parameter shape the prototype
+     * builder doesn't recognize. --- */
     {
         Arena arena;
         arena_init(&arena);
@@ -1806,12 +1809,12 @@ int main(void) {
               "it emits successfully (previously would only fail at the *gcc* stage -- 'implicit "
               "declaration of function is_odd_' -- parena build's own exit code stayed 0 either way)");
         if (c_src) {
-            CHECK(strstr(c_src, "int is_odd_();") != NULL,
-                  "is-even?'s own forward call to is-odd? (defined LATER in the file) gets a real "
-                  "C forward declaration emitted ahead of every defn body");
-            CHECK(strstr(c_src, "int is_even_();") != NULL,
-                  "and vice versa -- both directions of the real mutual-recursion get a real "
-                  "declaration, not just the one that happens to be called first in file order");
+            CHECK(strstr(c_src, "int is_odd_(int") != NULL,
+                  "is-even?'s own forward call to is-odd? (defined LATER in the file) gets a real, "
+                  "fully-typed C forward declaration emitted ahead of every defn body");
+            CHECK(strstr(c_src, "int is_even_(int") != NULL,
+                  "and vice versa -- both directions of the real mutual-recursion get a real, "
+                  "typed declaration, not just the one that happens to be called first in file order");
         }
         arena_free_all(&arena);
     }

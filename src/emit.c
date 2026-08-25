@@ -5252,6 +5252,139 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
     return 1;
 }
 
+/* resolve_param_prototype_type: mirrors emit_defn()'s own parameter-
+ * shape matching above, WITHOUT any of its side effects (scope_bind,
+ * g_vec_elem_hints registration) -- used only by the forward-
+ * declaration pre-pass below to build a fully-typed prototype instead
+ * of the old empty-parens/K&R style. Real motivation (2026-08-25):
+ * empty-parens forward decls mean gcc can't type-check call-site
+ * arguments against the real function signature at all -- this let a
+ * `PatternNode` get passed BY VALUE at a call site expecting
+ * `PatternNode *` (regex/pcre.prn's match-node dispatching to
+ * match-star) compile with zero warnings and segfault at runtime the
+ * first time that code path actually ran (`./turbogrep 'a*b' file` ->
+ * exit 139). A real, typed prototype turns that whole bug class into
+ * an ordinary gcc "incompatible pointer/integer" error at compile
+ * time, same as it would be for any hand-written C.
+ *
+ * Returns NULL for ANY shape it doesn't recognize -- including shapes
+ * that are real compiler ERRORS, not just unsupported-for-prototypes
+ * ones -- the caller treats NULL as "fall back to empty-parens for
+ * this whole function" and lets emit_defn's own real pass raise the
+ * real error later when it actually processes this same defn, so this
+ * helper never needs to duplicate real error-reporting, only real type
+ * resolution. Deliberately does not attempt has_region_marker's own
+ * generic-region-keyword branches beyond `Arena *` -- the region name
+ * itself is discarded at the type level everywhere else in this
+ * emitter too, so `Arena *` is the one real C type an
+ * `Arena @ :region/x` parameter ever resolves to. */
+static const char *resolve_param_prototype_type(Arena *arena, Node *param) {
+    const char *dummy_err = NULL;
+    if (param->type != NODE_LIST || param->child_count == 0 || param->children[0]->type != NODE_SYMBOL) {
+        return NULL;
+    }
+    if (has_region_marker(param)) {
+        return "Arena *";
+    }
+    if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+        param->children[2]->type == NODE_SYMBOL &&
+        (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
+         is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String"))) {
+        return resolve_declared_type(arena, param->children[2], &dummy_err);
+    }
+    if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+        is_call_named(param->children[2], "Fn") && param->children[2]->child_count == 3 &&
+        param->children[2]->children[1]->type == NODE_VEC &&
+        param->children[2]->children[1]->child_count == 0) {
+        const char *ret_type = resolve_declared_type(arena, param->children[2]->children[2], &dummy_err);
+        if (!ret_type) return NULL;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%s (*)(void)", ret_type);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+        is_call_named(param->children[2], "Fn") && param->children[2]->child_count == 3 &&
+        param->children[2]->children[1]->type == NODE_VEC &&
+        param->children[2]->children[1]->child_count > 0) {
+        return resolve_declared_type(arena, param->children[2], &dummy_err);
+    }
+    if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+        param->children[2]->type == NODE_SYMBOL &&
+        (find_enum_by_name(param->children[2]->text) || find_struct_by_name(param->children[2]->text))) {
+        return param->children[2]->text;
+    }
+    if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
+        param->children[2]->type == NODE_SYMBOL && param->children[2]->text &&
+        param->children[2]->text[0] == '&' && strcmp(param->children[2]->text, "&mut") != 0) {
+        return resolve_declared_type(arena, param->children[2], &dummy_err);
+    }
+    if (param->child_count == 4 && param->children[1]->type == NODE_COLON &&
+        param->children[2]->type == NODE_SYMBOL && is_symbol(param->children[2], "&mut") &&
+        param->children[3]->type == NODE_SYMBOL) {
+        const char *base_type = resolve_base_type_name(param->children[3]);
+        if (!base_type && strcmp(param->children[3]->text, "Any") == 0) base_type = "void";
+        if (!base_type) return NULL;
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s *", base_type);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    if (param->child_count == 4 && param->children[1]->type == NODE_COLON &&
+        param->children[2]->type == NODE_SYMBOL &&
+        (is_symbol(param->children[2], "&") || is_symbol(param->children[2], "&mut")) &&
+        (param->children[3]->type == NODE_LIST || param->children[3]->type == NODE_SYMBOL)) {
+        const char *inner_type = resolve_declared_type(arena, param->children[3], &dummy_err);
+        if (!inner_type) return NULL;
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s *", inner_type);
+        return arena_strdup(arena, buf, strlen(buf));
+    }
+    if (param->child_count == 5 && param->children[1]->type == NODE_COLON &&
+        (param->children[2]->type == NODE_SYMBOL || param->children[2]->type == NODE_LIST) &&
+        param->children[3]->type == NODE_AT) {
+        return resolve_declared_type(arena, param->children[2], &dummy_err);
+    }
+    return NULL;
+}
+
+/* build_defn_prototype: builds a full, typed "RetType name(T1, T2, ...);"
+ * prototype for a `defn` form using resolve_param_prototype_type() above.
+ * Returns NULL if ANY parameter's shape isn't resolvable (or if the
+ * function is zero-argument, which already gets an unambiguous "(void)"
+ * either way but is simplest handled by the caller's own existing
+ * empty-parens path) -- the caller falls back to the old empty-parens
+ * style in that case, never a regression, just a missed opportunity for
+ * this one function. */
+static const char *build_defn_prototype(Arena *arena, Node *form, const char *proto_fn_name,
+                                         const char *proto_return_type) {
+    Node *params = form->children[2];
+    if (params->type != NODE_VEC || params->child_count == 0) {
+        return NULL;
+    }
+    StrBuf types;
+    sb_init(&types);
+    for (size_t i = 0; i < params->child_count; i++) {
+        const char *p_type = resolve_param_prototype_type(arena, params->children[i]);
+        if (!p_type) {
+            sb_free(&types);
+            return NULL;
+        }
+        if (i > 0) sb_append(&types, ", ");
+        sb_append(&types, p_type);
+    }
+    StrBuf proto;
+    sb_init(&proto);
+    sb_append(&proto, proto_return_type);
+    sb_append(&proto, " ");
+    sb_append(&proto, proto_fn_name);
+    sb_append(&proto, "(");
+    sb_append(&proto, types.data);
+    sb_append(&proto, ");\n");
+    sb_free(&types);
+    const char *result = arena_strdup(arena, proto.data, strlen(proto.data));
+    sb_free(&proto);
+    return result;
+}
+
 const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     *out_error = NULL;
     /* g_enums is reset per emit_c() call, not just per process: the test
@@ -5360,16 +5493,28 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * undetected by `parena build`'s own exit code (which never
      * re-parses its own generated C).
      *
-     * Real, honest, deliberately narrow scope: only the RETURN TYPE is
-     * needed for a valid forward declaration here, not the full
-     * parameter list -- `ReturnType mangled_name();` (an old-style,
-     * unspecified-argument C declaration) compiles cleanly under this
-     * project's own `-std=c99 -Wall -Wextra -pedantic -Werror`
-     * (confirmed via a real, standalone gcc test before writing this),
-     * so this deliberately does NOT duplicate emit_defn's own much
-     * larger parameter-type-resolution logic (many branches: I32/
-     * String/Fn/&Type/&(ComplexType)/Type@Region/etc.) just to build a
-     * full prototype nobody's own call site needs matched exactly.
+     * Real, honest scope, revised 2026-08-25 (founder: "fix the
+     * forward-declaration typing gap"): originally only the RETURN TYPE
+     * was resolved here, with `ReturnType mangled_name();` (empty-
+     * parens, old-style, unspecified-argument C) emitted for every
+     * defn regardless of its own parameters -- deliberately avoiding
+     * duplicating emit_defn's own much larger parameter-type-resolution
+     * logic. That was a REAL, LIVE bug source, not just a missed
+     * opportunity: empty parens mean gcc cannot type-check call-site
+     * arguments against the real signature at all, which let
+     * regex/pcre.prn's match-node pass a `PatternNode` BY VALUE at a
+     * call site expecting `PatternNode *` (match-star) compile with
+     * zero warnings and segfault at runtime the first time that path
+     * actually ran. build_defn_prototype()/resolve_param_prototype_type()
+     * (defined just above emit_c) now build a FULLY TYPED prototype --
+     * `RetType mangled_name(T1, T2, ...);` -- by mirroring emit_defn's
+     * own parameter-shape matching (without its scope_bind/
+     * g_vec_elem_hints side effects, which a prototype doesn't need).
+     * When a parameter's shape isn't one this mirror understands (or
+     * the function takes zero parameters), this still falls back to the
+     * old empty-parens style for THAT ONE function -- never a
+     * regression, just a missed opportunity, same as before this fix
+     * for functions this pre-pass genuinely can't type.
      *
      * Real, honest, NOT-yet-covered case: a `defn` with NO explicit `:`
      * return-type annotation (return type inferred from its own body's
@@ -5402,10 +5547,15 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
             sb_free(&out);
             return NULL;
         }
-        sb_append(&out, proto_return_type);
-        sb_append(&out, " ");
-        sb_append(&out, proto_fn_name);
-        sb_append(&out, "();\n");
+        const char *typed_proto = build_defn_prototype(arena, form, proto_fn_name, proto_return_type);
+        if (typed_proto) {
+            sb_append(&out, typed_proto);
+        } else {
+            sb_append(&out, proto_return_type);
+            sb_append(&out, " ");
+            sb_append(&out, proto_fn_name);
+            sb_append(&out, "();\n");
+        }
         DefnReturnType *drt = (DefnReturnType *)arena_alloc(arena, sizeof(DefnReturnType));
         drt->c_name = proto_fn_name;
         drt->return_type = proto_return_type;
