@@ -59,10 +59,14 @@
   #target
   {:c (inline-c "raw_open_impl(path, mode_tag)")})
 
+;; raw-close calls raw_close_impl (not a bare libc close()) -- real,
+;; load-bearing: it also releases this fd's own buffered-read state
+;; (2026-08-25's buffering fix), so a later open() reusing the same OS
+;; fd number never silently inherits a stale buffer from this file.
 (defn raw-close [(fd : I32)]
   : I32
   #target
-  {:c (inline-c "(close(fd) == 0 ? 0 : -1)")})
+  {:c (inline-c "raw_close_impl(fd)")})
 
 (defn raw-write [(fd : I32) (s : String @ Region)]
   : I32

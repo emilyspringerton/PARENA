@@ -308,54 +308,150 @@ static inline char *raw_read_all_impl(int fd, Arena *dest) {
     return out;
 }
 
-/* raw_at_eof_impl -- peek one byte via read() then lseek back if one
- * was found. Real, honest, narrow scope: correct for seekable regular
- * files (real grep/sed/awk targets), not pipes/sockets/terminals,
- * where lseek is a real error -- not attempted for those here. */
+/* ---- buffered line reading (2026-08-25) ------------------------------
+ * Real root cause found, not guessed: strace on the original byte-at-a-
+ * time raw_at_eof_impl/raw_read_line_impl (turbogrep against 50 real
+ * files) showed 2,699,542 real read() syscalls, 98.87% of total
+ * runtime -- process startup (execve/mmap/mprotect) was a rounding
+ * error (<0.001s combined). One read() syscall per BYTE is the actual
+ * cost, not "the runtime is big" or any startup effect. Fix: a small,
+ * real, per-fd buffer -- refilled via one real read() per IO_BUF_CAP
+ * bytes instead of one per byte, cutting the syscall count by roughly
+ * that factor. IO_MAX_HANDLES bounds concurrent buffered file handles
+ * (real, honest, bounded, matching this whole codebase's own MAX_*
+ * table conventions elsewhere) -- more than that degrades to the
+ * original unbuffered behavior rather than failing outright, a real
+ * but rare case (this stdlib's own real consumers, e.g. grep.prn, only
+ * ever hold one file open at a time).
+ *
+ * Real, honest, narrow limitation NOT solved here: this buffer is only
+ * ever filled/drained by raw_at_eof_impl/raw_read_line_impl -- mixing
+ * read-line and read-string (raw_read_all_impl, which reads the real
+ * fd directly, bypassing this buffer entirely) against the SAME open
+ * FileHandle would silently drop or duplicate whatever's sitting in
+ * the buffer. Not a problem for any real caller today (grep.prn only
+ * ever uses read-line), flagged rather than solved with a bigger
+ * unified-buffering rewrite this fix doesn't need yet. */
+#define IO_BUF_CAP 4096
+#define IO_MAX_HANDLES 32
+
+typedef struct {
+    int used;
+    int fd;
+    unsigned char buf[IO_BUF_CAP];
+    size_t pos;
+    size_t len;
+} IoBufState;
+
+static IoBufState g_io_bufs[IO_MAX_HANDLES]; /* zero-initialized (BSS): every
+                                                 `used` starts false, real and
+                                                 correct with no explicit
+                                                 init code needed. */
+
+static IoBufState *io_buf_for(int fd) {
+    for (int i = 0; i < IO_MAX_HANDLES; i++) {
+        if (g_io_bufs[i].used && g_io_bufs[i].fd == fd) return &g_io_bufs[i];
+    }
+    for (int i = 0; i < IO_MAX_HANDLES; i++) {
+        if (!g_io_bufs[i].used) {
+            g_io_bufs[i].used = 1;
+            g_io_bufs[i].fd = fd;
+            g_io_bufs[i].pos = 0;
+            g_io_bufs[i].len = 0;
+            return &g_io_bufs[i];
+        }
+    }
+    return NULL; /* real, rare fallback -- see header comment above */
+}
+
+/* io_buf_release -- called from raw_close_impl. Real, load-bearing
+ * correctness fix, not just cleanup: the OS is free to reuse a closed
+ * fd's own integer value for the very next open() call in the same
+ * process (turbogrep's own real usage pattern -- open/read/close one
+ * file, then the next, in a loop) -- leaving a stale buffer keyed by
+ * that fd number around would silently serve a NEW file's read-line
+ * calls from the OLD file's leftover buffered bytes. */
+static void io_buf_release(int fd) {
+    for (int i = 0; i < IO_MAX_HANDLES; i++) {
+        if (g_io_bufs[i].used && g_io_bufs[i].fd == fd) {
+            g_io_bufs[i].used = 0;
+            return;
+        }
+    }
+}
+
+static inline int raw_close_impl(int fd) {
+    io_buf_release(fd);
+    return close(fd) == 0 ? 0 : -1;
+}
+
+/* raw_at_eof_impl -- checks (and, if needed, refills) this fd's own
+ * buffer; real EOF only once a real read() returns 0. Real, honest,
+ * narrow scope carried over from the original unbuffered version:
+ * correct for seekable regular files (real grep/sed/awk targets), not
+ * pipes/sockets/terminals -- those never worked with the original
+ * lseek-based peek either, not a regression. */
 static inline int raw_at_eof_impl(int fd) {
-    char c;
-    ssize_t n = read(fd, &c, 1);
+    IoBufState *b = io_buf_for(fd);
+    if (!b) {
+        /* IO_MAX_HANDLES exceeded -- real, rare, honest fallback to the
+         * original unbuffered peek rather than failing outright. */
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n <= 0) return 1;
+        lseek(fd, -1, SEEK_CUR);
+        return 0;
+    }
+    if (b->pos < b->len) return 0;
+    ssize_t n = read(fd, b->buf, IO_BUF_CAP);
     if (n <= 0) return 1;
-    lseek(fd, -1, SEEK_CUR);
+    b->pos = 0;
+    b->len = (size_t)n;
     return 0;
 }
 
-/* raw_read_line_impl -- real byte-by-byte read() (not buffered --
- * genuinely not performant, but real and correct for line-at-a-time
- * streaming, the actual dependency that motivated read-line existing
- * at all per io.prn's own header comment). Only called after
- * raw_at_eof_impl has already confirmed at least one byte is
- * available, so this never itself has to distinguish "EOF with zero
- * bytes" from "a blank line" -- io.prn's own read-line does that
- * distinction at the .prn level instead. The trailing '\n' is
- * consumed but not included in the returned string, matching every
- * other real line-reader's own convention (Go's bufio.Scanner,
- * Python's str.splitlines default); a final line with no trailing
- * newline (real EOF mid-line) still returns everything read so far,
- * same as a text editor treating a missing trailing newline as still
- * a real last line. */
+/* raw_read_line_impl -- reads from the already-primed buffer
+ * (raw_at_eof_impl always runs first per io.prn's own read-line, so a
+ * refill has already happened if one was needed), refilling again
+ * mid-line via one more real read() only when the buffer runs dry
+ * before the line does. Same real trailing-'\n'-consumed-not-included
+ * convention as the original (Go's bufio.Scanner, Python's
+ * str.splitlines default); a final line with no trailing newline
+ * still returns everything read so far, same as a text editor
+ * treating a missing trailing newline as still a real last line. */
 static inline char *raw_read_line_impl(int fd, Arena *dest) {
+    IoBufState *b = io_buf_for(fd);
     size_t cap = 128;
     size_t len = 0;
-    char *buf = (char *)arena_alloc(dest, cap);
+    char *out = (char *)arena_alloc(dest, cap);
     for (;;) {
         char c;
-        ssize_t n = read(fd, &c, 1);
-        if (n <= 0) break;
+        if (b) {
+            if (b->pos >= b->len) {
+                ssize_t n = read(fd, b->buf, IO_BUF_CAP);
+                if (n <= 0) break;
+                b->pos = 0;
+                b->len = (size_t)n;
+            }
+            c = (char)b->buf[b->pos++];
+        } else {
+            ssize_t n = read(fd, &c, 1);
+            if (n <= 0) break;
+        }
         if (c == '\n') break;
         if (len + 1 > cap) {
             size_t new_cap = cap * 2;
             char *grown = (char *)arena_alloc(dest, new_cap);
-            memcpy(grown, buf, len);
-            buf = grown;
+            memcpy(grown, out, len);
+            out = grown;
             cap = new_cap;
         }
-        buf[len++] = c;
+        out[len++] = c;
     }
-    char *out = (char *)arena_alloc(dest, len + 1);
-    memcpy(out, buf, len);
-    out[len] = '\0';
-    return out;
+    char *result = (char *)arena_alloc(dest, len + 1);
+    memcpy(result, out, len);
+    result[len] = '\0';
+    return result;
 }
 
 /* raw_read_f64_impl -- gpt2.c's own real weight-file shape: 4-byte

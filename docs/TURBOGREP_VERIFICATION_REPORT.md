@@ -28,19 +28,29 @@ Every pattern's sorted output (`file:line` format, matching `grep -H`) diffed by
 against real GNU grep across the whole corpus. Total: 12,521 matched lines across 7 patterns,
 zero discrepancies.
 
-## Performance — real, honest, not hidden
+## Performance — root-caused with real data, then fixed (2026-08-25 update)
 
-| | system grep | turbogrep |
-|---|---:|---:|
-| pattern `error`, 949 files, 5 runs | ~0.03s | ~12.8s |
+**Original measurement**: ~430-660x slower than system grep (~12.6-12.8s vs ~0.02-0.03s per run,
+pattern `error`, 949 files). Diagnosed with `strace -c` rather than guessed at: on a 50-file
+subset, turbogrep made **2,699,542 real `read()` syscalls** — 98.87% of total runtime. Process
+startup (execve/mmap/mprotect) was a rounding error (<0.001s combined) — the actual cost was
+`read-line`'s own byte-at-a-time reads, one syscall per byte.
 
-**~430x slower.** Root causes, both already known and documented in the source, not discovered
-here: (1) `read-line` does one real `read()` syscall per BYTE (`runtime/parena_runtime.h`'s own
-`raw_read_line_impl` comment: "genuinely not performant, but real and correct" — a real, deliberate
-scope choice, buffered I/O is real, separate follow-up work); (2) the regex engine
-(`regex/pcre.prn`) is a simple recursive backtracking matcher with no DFA/Boyer-Moore-class
-optimization GNU grep's decades of engineering include. Neither is a correctness problem — both
-are real, honestly-scoped performance gaps.
+**Fix**: a real, per-fd buffered-read layer added to `runtime/parena_runtime.h` (`IoBufState`,
+`io_buf_for`/`io_buf_release`) — refills via one real `read()` per 4096 bytes instead of one per
+byte, transparent to `io.prn`'s own public API (no `.prn`-level signature changes). `raw-close`
+now calls a real `raw_close_impl` that releases the buffer, closing a real correctness hazard: an
+OS-reused fd number inheriting a stale buffer from the file that used to hold it.
+
+**Result, re-measured**: `read()` syscalls on the same 50-file subset dropped from 2,699,542 to
+**713** — a 3,786x reduction. Full-corpus wall time dropped from ~12.6s to **~0.69s** — turbogrep
+is now ~23x slower than system grep, not ~430-660x. All 7 correctness patterns re-verified
+byte-identical against real grep after the fix (counts shifted slightly from the corpus itself
+changing during this session, not from any regression — both tools agree on the new counts).
+
+Remaining, real, not chased further here: the regex engine (`regex/pcre.prn`) is still a simple
+recursive backtracking matcher with no DFA/Boyer-Moore-class optimization — the ~23x gap that's
+left. A real, separate, bigger undertaking than the I/O fix was.
 
 ## Feature coverage — narrower than real grep, flagged not hidden
 
@@ -54,10 +64,11 @@ pattern would not work yet. Not tested here because it can't be, not because it 
 
 For the real feature surface it has (literal and simple-alternation substring matching),
 `turbogrep` is **verified correct** against real GNU grep on a large, real, unmodified production
-corpus — not a toy test. It is real, honestly slow, and covers a real subset of grep's own
-pattern language. **Not recommended for a PATH swap yet**: `sed`/`awk` haven't been attempted at
-all, and CharClass/Anchor/Plus/Optional are real gaps that would make turbogrep silently wrong
-(not just slow) on patterns real shell scripts across this monorepo actually use.
+corpus — not a toy test. It is now only ~23x slower (down from ~430-660x, root-caused and fixed
+with real data, not guessed at), and covers a real subset of grep's own pattern language. **Not
+recommended for a PATH swap yet**: `sed`/`awk` haven't been attempted at all, and
+CharClass/Anchor/Plus/Optional are real gaps that would make turbogrep silently wrong (not just
+slow) on patterns real shell scripts across this monorepo actually use.
 
 ## Reproduction
 
