@@ -82,17 +82,40 @@
 ;; (Concat/Alt/Star/Group) so a real, complex pattern that only USES
 ;; unsupported syntax somewhere deep inside is still caught, not just
 ;; a bare top-level `+`/`?`/`^`/`$`.
+;; unbox-anchor-kind -- same real, separate gap as grep.prn's own
+;; unbox-bool: `(Anchor kind)`'s single-field bind reports `kind` as
+;; the generic `void *` marker, not `AnchorKind *`/`AnchorKind` --
+;; confirmed directly (gcc: "expected AnchorKind but argument is of
+;; type void *"). Same `&Any`-typed #target escape hatch.
+(defn unbox-anchor-kind [(k : &Any)]
+  : AnchorKind
+  #target
+  {:c (inline-c "*(AnchorKind *)k")})
+
+;; anchor-kind-supported? -- WordBoundary is a real AnchorKind variant
+;; but the parser never produces it (see anchor-matches?'s own header
+;; comment) -- reported unsupported here too so pattern-supported?
+;; stays honest even in that currently-unreachable case, rather than
+;; claiming every Anchor is fine just because Start/End now are.
+(defn anchor-kind-supported? [(kind : AnchorKind)]
+  : Bool
+  (match kind
+    ((Start) true)
+    ((End) true)
+    ((WordBoundary) false)))
+
 (defn node-supported? [(node : &PatternNode)]
   : Bool
   (match (deref node)
     ((Literal ch) true)
     ((AnyChar) true)
     ((CharClass ranges negated) true)
+    ((Anchor kind) (anchor-kind-supported? (unbox-anchor-kind kind)))
     ((Concat parts) (all-nodes-supported? parts 0))
     ((Alt branches) (all-nodes-supported? branches 0))
     ((Star inner greedy) (node-supported? &inner))
     ((Group inner _capture _name) (node-supported? &inner))
-    (_ false)))   ;; Plus/Optional/Anchor -- the real, current gap
+    (_ false)))   ;; Plus/Optional -- the real, current gap
 
 (defn all-nodes-supported? [(parts : &(Vec PatternNode)) (i : I32)]
   : Bool
@@ -297,6 +320,26 @@
           in-class (char-in-any-range? c ranges 0)]
       (if negated (if in-class false true) in-class))))
 
+;; ---- Anchor (^, $) -- 2026-08-25 --------------------------------------
+;; Zero-width assertions: unlike every other real node above, a match
+;; consumes NO characters -- the candidate end position is the SAME as
+;; the input `pos`, not `pos + 1`. Real, honest, narrow scope matching
+;; this whole matcher's own per-line design (read-line already strips
+;; each real line before match-node ever sees it): `^`/`$` mean start/
+;; end of the CURRENT LINE, real grep's own default (non-multiline-
+;; flag) behavior, not "start/end of the whole file." `WordBoundary`
+;; (`\b`) is a real AnchorKind variant but regex/syntax.prn's own
+;; parser never actually produces it (no `\b` escape handling exists
+;; anywhere in that file) -- honestly reported unsupported here and in
+;; `node-supported?` below rather than silently claimed working for a
+;; case that can't be reached today, in case the parser ever grows it.
+(defn anchor-matches? [(text : String @ Region) (pos : I32) (kind : AnchorKind)]
+  : Bool
+  (match kind
+    ((Start) (= pos 0))
+    ((End) (= pos (string/length text)))
+    ((WordBoundary) false)))
+
 (defn match-node [(node : &PatternNode) (text : String @ Region) (pos : I32)
                    (steps : &mut I32) (budget : I32) (dest : Arena @ Region)]
   : (Vec I32) @ Region
@@ -312,7 +355,8 @@
         ((Star inner greedy) (match-star inner greedy text pos steps budget dest))
         ((Group inner _capture _name) (match-node &inner text pos steps budget dest))
         ((CharClass ranges negated) (single-or-empty (char-class-matches? text pos &ranges negated) (+ pos 1) dest))
-        (_ (vec/new dest))))))   ;; Plus/Optional/Anchor: same shape, elided for length
+        ((Anchor kind) (single-or-empty (anchor-matches? text pos (unbox-anchor-kind kind)) pos dest))
+        (_ (vec/new dest))))))   ;; Plus/Optional: same shape, elided for length
 
 ;; match-concat -- always 0-or-1 candidates; see the file header comment
 ;; on why this is the one deliberate narrowing vs. the original.
