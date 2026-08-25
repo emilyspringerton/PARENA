@@ -1,4 +1,5 @@
 ## 2026-08-25
+- README: added a real section documenting parena ci-status and the two-stage bootstrap build, verified fact-by-fact against stdlib/ci/status.prn and the Makefile. Commit e940d58. (sess-20260824-2252-ce890e4f)
 - Forward-declaration typing gap fixed: src/emit.c's defn pre-pass now emits fully-typed prototypes (resolve_param_prototype_type/build_defn_prototype) instead of empty-parens/K&R-style, so gcc catches by-value/pointer call-site mismatches at compile time (the exact bug class behind the Star segfault, fixed separately in 9a622f5). Commit 99ef91a, Apple #15728. (sess-20260824-2252-ce890e4f)
 - Plus/Optional regex quantifiers implemented (match-plus/match-optional in stdlib/regex/pcre.prn); found+fixed a critical live segfault in Star dispatch (by-value where a pointer was expected, undetected by gcc due to empty-parens forward declarations). Commit 9a622f5, Apple #15726. (sess-20260824-2252-ce890e4f)
 - bottleneck audit doc updated: C1 (CharClass) and C2 (Anchor) both marked fixed (sess-20260824-2252-ce890e4f)
