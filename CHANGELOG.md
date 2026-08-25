@@ -1,4 +1,5 @@
 ## 2026-08-25
+- Plus/Optional regex quantifiers implemented (match-plus/match-optional in stdlib/regex/pcre.prn); found+fixed a critical live segfault in Star dispatch (by-value where a pointer was expected, undetected by gcc due to empty-parens forward declarations). Commit 9a622f5, Apple #15726. (sess-20260824-2252-ce890e4f)
 - bottleneck audit doc updated: C1 (CharClass) and C2 (Anchor) both marked fixed (sess-20260824-2252-ce890e4f)
 - Anchor (^/$) implemented in regex/pcre.prn -- verified against real grep, router now routes anchored patterns to turbogrep instead of falling back (sess-20260824-2252-ce890e4f)
 - grep router rewritten flag-safe (delegates any flag/stdin usage straight to real grep) + installed at ~/.local/bin/grep + fixed a real symlink-resolution bug (dirname doesn't follow symlinks) (sess-20260824-2252-ce890e4f)
