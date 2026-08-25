@@ -79,6 +79,85 @@
   : Bool
   (and (< pos (string/length text)) (= (string/char-at text pos) (string/char-at ch 0))))
 
+;; ---- literal fast path (2026-08-25) ----------------------------------
+;; Real, measured follow-on to the buffered-I/O fix: after that fix cut
+;; read() syscalls 3,786x, turbogrep was still ~23x slower than real
+;; grep. `strace` showed syscalls were no longer the story (a 100-file
+;; run made under 900 total, ~7ms combined) -- the remaining cost is
+;; pure CPU work in match-node/match-concat's own general backtracking
+;; machinery, which allocates a fresh Vec (an arena_alloc call) for
+;; EVERY character position it tries, even for a plain literal pattern
+;; with no alternation/repetition at all -- real overhead every one of
+;; this session's own 7 test patterns paid on every single character
+;; of all 213,709 corpus lines, since all 7 were plain literals.
+;;
+;; is-match-literal?/is-match-literal detect this exact real, common
+;; case (a Concat of nothing but Literal nodes, or a single Literal --
+;; no Alt/Star/Group/AnyChar anywhere) and do a tight, allocation-free
+;; substring scan instead of ever touching match-node at all. Real,
+;; honest, narrow: doesn't help a pattern that actually uses Alt/Star/
+;; Group (falls through to the general matcher, unchanged, same as
+;; before this fix) -- this is a fast path for the common case, not a
+;; rewrite of the general one.
+;; Real bug found+fixed here (2026-08-25, actual isolated benchmark --
+;; the fast path below never fired, timing was unchanged, and printing
+;; the real root node's own tag showed why): regex/syntax.prn's own
+;; top-level parser always wraps the whole pattern in an `Alt` node,
+;; even with zero real `|` alternation in the source pattern -- a
+;; single-branch `Alt` is structurally how "no alternation at all" is
+;; represented, not a special case the parser skips. `ast-literal-text`
+;; only ever matched `Literal`/`Concat`, so EVERY real pattern (always
+;; Alt-wrapped) fell through to `_` -> `None`, and the general
+;; backtracking matcher ran unconditionally regardless of how simple
+;; the real pattern was -- confirmed directly: `re->ast.root.tag` was
+;; 3 (Alt) for the plain literal pattern "error", not 2 (Concat).
+(defn ast-literal-text [(node : &PatternNode) (dest : Arena @ Region)]
+  : (Option String)
+  (match (deref node)
+    ((Literal ch) (Some ch))
+    ((Concat parts) (concat-literal-parts parts 0 "" dest))
+    ((Alt branches) (single-branch-literal branches dest))
+    (_ None)))
+
+;; single-branch-literal -- only a one-branch Alt is a real literal (a
+;; genuine `a|b` alternation is NOT a plain substring, correctly falls
+;; through to the general matcher via the `_ -> None` case below).
+(defn single-branch-literal [(branches : &(Vec PatternNode)) (dest : Arena @ Region)]
+  : (Option String)
+  (if (= (vec/len branches) 1)
+    (ast-literal-text (vec/get branches 0) dest)
+    None))
+
+(defn concat-literal-parts [(parts : &(Vec PatternNode)) (i : I32) (acc : String @ Region) (dest : Arena @ Region)]
+  : (Option String)
+  (if (>= i (vec/len parts))
+    (Some acc)
+    (match (ast-literal-text (vec/get parts i) dest)
+      ((Some s) (concat-literal-parts parts (+ i 1) (string/concat acc s dest) dest))
+      (None None))))
+
+(defn literal-matches-at? [(text : String @ Region) (start : I32) (needle : String @ Region) (nlen : I32)]
+  : Bool
+  (loop [j 0]
+    (if (>= j nlen)
+      true
+      (if (= (string/char-at text (+ start j)) (string/char-at needle j))
+        (recur (+ j 1))
+        false))))
+
+(defn string-contains? [(text : String @ Region) (needle : String @ Region)]
+  : Bool
+  (let [tlen (string/length text)
+        nlen (string/length needle)]
+    (if (> nlen tlen)
+      false
+      (loop [i 0]
+        (if (> i (- tlen nlen))
+          false
+          (if (literal-matches-at? text i needle nlen)
+            true
+            (recur (+ i 1))))))))
+
 ;; zero-i32 -- real, narrow workaround for a real, separate, PRE-
 ;; EXISTING gap this rewrite ran into but doesn't own: every numeric
 ;; literal in VS0 is unconditionally typed `double` (emit.c's own
@@ -204,15 +283,18 @@
 
 (defn is-match [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
   : (Result Bool BudgetExceededError) @ Region
-  (let [steps (zero-i32)]
-    (loop [start 0]
-      (if (> start (string/length text))
-        (Ok false)
-        (let [candidates (match-node &(get-field (get-field re :ast) :root) text start &steps
-                            (get-field (get-field re :budget) :max-steps) dest)]
-          (if (> (vec/len &candidates) 0)
-            (Ok true)
-            (recur (+ start 1))))))))
+  (match (ast-literal-text &(get-field (get-field re :ast) :root) dest)
+    ((Some needle) (Ok (string-contains? text needle)))
+    (None
+      (let [steps (zero-i32)]
+        (loop [start 0]
+          (if (> start (string/length text))
+            (Ok false)
+            (let [candidates (match-node &(get-field (get-field re :ast) :root) text start &steps
+                                (get-field (get-field re :budget) :max-steps) dest)]
+              (if (> (vec/len &candidates) 0)
+                (Ok true)
+                (recur (+ start 1))))))))))
 
 (defn find [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
   : (Result (Option Match) BudgetExceededError) @ Region

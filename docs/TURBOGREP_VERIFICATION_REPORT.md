@@ -48,9 +48,28 @@ is now ~23x slower than system grep, not ~430-660x. All 7 correctness patterns r
 byte-identical against real grep after the fix (counts shifted slightly from the corpus itself
 changing during this session, not from any regression — both tools agree on the new counts).
 
-Remaining, real, not chased further here: the regex engine (`regex/pcre.prn`) is still a simple
-recursive backtracking matcher with no DFA/Boyer-Moore-class optimization — the ~23x gap that's
-left. A real, separate, bigger undertaking than the I/O fix was.
+## Literal fast path (2026-08-25, second update)
+
+Founder: "figure out how to make it faster." The remaining ~23x gap was assumed to be the general
+backtracking matcher's own per-character `Vec` allocation overhead — real architecturally, but an
+isolated `is-match` benchmark (200,000 calls, shared arena) showed no improvement from a first
+attempt at a literal-substring fast path, timing unchanged. Investigated rather than assumed
+further: `re->ast.root.tag` was 3 (`Alt`), not 2 (`Concat`), for the plain literal pattern
+`"error"` — `regex/syntax.prn`'s own top-level parser always wraps the whole pattern in an `Alt`
+node, even with zero real `|` in the source, and the fast-path detector only matched
+`Literal`/`Concat`, so it silently never fired for any real pattern. Fixed by unwrapping a
+single-branch `Alt` (a genuine `a|b` alternation, more than one branch, correctly still falls
+through to the general matcher).
+
+**Re-measured after the real fix**: full-corpus wall time (949 files, pattern `error`) dropped
+from **0.69s to 0.168s** — another ~4x. From the original 12.6s baseline, turbogrep is now
+**~75x faster overall**, and only **~8x slower than system grep**, not ~430-660x. All 7
+correctness patterns re-verified byte-identical after this fix too.
+
+Remaining, real, not chased further here: any pattern using real `Alt`/`Star`/`Group` still runs
+through the general backtracking matcher, unchanged — this fast path only ever helps the literal
+case (which happens to be all 7 of this report's own test patterns). A DFA/Boyer-Moore-class
+rewrite of the general matcher itself is real, separate, bigger work.
 
 ## Feature coverage — narrower than real grep, flagged not hidden
 
