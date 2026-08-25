@@ -1,0 +1,36 @@
+;; stdlib/redgarden/tree_passive_mod.prn — REDGARDEN's second real PARENA
+;; mod, same minimal one-function/no-dispatch-table shape as
+;; bloodflower_mod.prn (S194-01) and PITVIPER's vterm_mod.prn (S192-01).
+;;
+;; Founder real-time, 2026-08-25: "can you add a passive to tree that when
+;; he is close enough to a tree to auto attack it he auto attacks it and
+;; slowly regenerates health?" -> "the tree he attacks never does or
+;; anything have it jiggle animate extra squishy" -> "as a parena first
+;; mod led dev cycle" -- following the established "PARENA mod is the
+;; trigger, host C does the real work" split bloodflower_mod.prn already
+;; set, not inventing a new shape.
+;;
+;; "tree" here is the ARENA_HERO_TREE hero auto-attacking a nearby
+;; ARENA_OBSTACLE_TREE jungle-decoration obstacle (packages/simulation/
+;; arena_game.c's arena_obstacles_reset_layout) -- the existing decorative
+;; trees that dot the map already had zero interaction; this is what gives
+;; them HP, a hit reaction, and regen, gated to the one hero whose kit fits
+;; the flavor.
+;;
+;; ABI: arena_hero_tree_passive (arena_game.c) calls straight into
+;; `on-tree-passive-strike` (emitted as `on_tree_passive_strike`) once per
+;; successful strike -- already gated by range/cooldown/hero-id checks on
+;; the host side, this mod is never called for any other hero or out of
+;; range. Calls back out to a host-provided
+;; `redgarden_host_tree_passive_strike(hero_index, obstacle_index)` C
+;; function (arena_game.c-side) to apply the real damage/heal/hit-reaction
+;; trigger. Same #target/inline-c FFI-escape pattern editor/plugin.prn
+;; (S189-29), vterm_mod.prn (S192-01), and bloodflower_mod.prn (S194-01)
+;; all already established.
+
+(module redgarden/tree-passive-mod)
+(export on-tree-passive-strike)
+
+(defn on-tree-passive-strike [(hero-index : I32) (obstacle-index : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_tree_passive_strike(hero_index, obstacle_index);")})
