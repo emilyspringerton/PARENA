@@ -22,8 +22,8 @@ each item is either confirmed by a real test/measurement or explicitly marked un
 |---|---|---|
 | C1 | `CharClass` (`[abc]`, `[a-z]`, `[^abc]`) unimplemented | **Fixed 2026-08-25** (PARENA `3de6384`, Apple #15713) — verified against real grep: `[0-9]`, `[a-m]` (range), and negated `[^0-9]` all byte-identical. Was the single most dangerous finding in this audit (silent zero-match wrong answers, no error). |
 | C2 | `Anchor` (`^`, `$`) unimplemented | **Fixed 2026-08-25** (PARENA `83bb915`, Apple #15722) — verified against real grep: `^hello`, `hello$`, `^hello$` all byte-identical. `WordBoundary` (`\b`) stays honestly unsupported (real `AnchorKind` variant, but the parser never actually produces it). |
-| C3 | `Plus` (`+`) unimplemented | **Confirmed by code inspection**, same catch-all. |
-| C4 | `Optional` (`?`) unimplemented | **Confirmed by code inspection**, same catch-all. |
+| C3 | `Plus` (`+`) unimplemented | **Fixed 2026-08-25** (PARENA `9a622f5`, Apple #15726) — `match-plus` added, verified byte-identical to real grep (`a+b`) across the 949-file corpus. |
+| C4 | `Optional` (`?`) unimplemented | **Fixed 2026-08-25** (PARENA `9a622f5`, Apple #15726) — `match-optional` added, verified byte-identical to real grep (`colou?r`) across the 949-file corpus. |
 | C5 | Nested `Concat` (inside a `Group`) only exposes its own single best candidate, not a full candidate set | **Known, documented limitation from the closures rewrite** (`regex/pcre.prn`'s own header comment). Real impact needs `Plus`/`Star` interacting through a `Group` boundary — not independently exercisable yet since `Plus` (C3) doesn't exist. |
 | C6 | `find`/`find-all`: `Match.groups` always empty, no capture-group support at all | **Confirmed by code inspection** — `find`'s own construction hardcodes `:groups (vec/new dest)`. |
 | C7 | `replace` is a stub (`text` returned unchanged, doesn't actually substitute) | **Confirmed, already flagged honestly in the source** — blocked on a real, separate Vec-of-struct elem-type-hint compiler gap (same root cause noted for `build-replaced-string`, see item G below). |
@@ -41,6 +41,7 @@ each item is either confirmed by a real test/measurement or explicitly marked un
 | G1 | Struct/enum registry is flat, not module-scoped — `regex/nfa.prn` and `regex/pcre.prn` both declare a `Regex` struct with different fields; building both together silently shadows one | **Confirmed, worked around** (never build both engines together), **not fixed**. Real risk for any future multi-engine or multi-module build that happens to reuse a common type name. |
 | G2 | Vec-of-struct elem-type-hint gap for a plain local (not a struct field, not an `&mut` parameter) | **Confirmed** — root cause of C7 (`replace`). The existing hint mechanism only covers struct fields and `&mut`-typed parameters; a `let`-bound local `(Vec SomeStruct)` from a function's own return value gets no hint, so `vec/get`+`deref` on it produces invalid C (`void*` dereference). Real, general fix would unblock more than just `replace`. |
 | G3 | `#target` bodies are trusted verbatim with zero auto-boxing/type-checking | **Working as designed, not a bug** — but the real source of most of this session's own "real, silently wrong" findings (io.prn's original raw-value-instead-of-boxed-Result bugs). Listed here as a standing hazard class, not a specific defect: any future hand-written `#target` body can reintroduce this exact class of silent error. |
+| G4 | Forward declarations in `src/emit.c` (`emit_forward_decls`, ~line 5394-5414) are deliberately empty-parens/K&R-style (`ReturnType mangled_name();`) — documented, deliberate tradeoff to avoid duplicating `emit_defn`'s parameter-type-resolution logic | **Confirmed, real live impact found 2026-08-25.** Empty-parens forward decls mean gcc CANNOT type-check call-site arguments against the real function signature. This let `match-star`'s dispatch call in `match-node` pass a `PatternNode` struct BY VALUE where `match_star`'s real definition expects `PatternNode *` — zero compiler warnings, compiled clean, then segfaulted at runtime the first time a `*`-pattern was actually exercised (`./turbogrep 'a*b' file` → exit 139). Fixed locally (PARENA `9a622f5`) by correcting the call site, but the CLASS of bug (any future by-value/pointer mismatch at a call site to a forward-declared function) remains uncaught by the compiler. Investigated a bounded fix (typed prototypes via `resolve_declared_type()` for common single/two-token param shapes, falling back to empty-parens for shapes it can't resolve) but **not yet implemented** — surfacing here for founder prioritization rather than started unilaterally, since it wasn't itself the requested task (Plus/Optional was). |
 
 ## What this audit does NOT cover
 
@@ -53,7 +54,8 @@ so far needed at least one real fix) — flagged as unknown, not assumed clean.
 ## Priority read, for the founder's own call before picking the next "hack"
 
 Highest real risk, ranked by "how likely is this to produce a silently wrong answer a user would
-trust": **C1 (CharClass) > C11 (MatchBudget, unverified) > C2/C3/C4 (Anchor/Plus/Optional) > C10
-(binary files)**. Highest real remaining perf lever: **P3/P4** (general matcher + multi-literal
-Alt), likely bigger than P5/P6/P7 combined for real-world grep usage. G1/G2 are compiler-level and
-would each unblock multiple stdlib gaps at once rather than one at a time.
+trust": **G4 (empty-parens forward decls — already caused one real segfault in shipped code) > C11
+(MatchBudget, unverified) > C10 (binary files)**. C1/C2/C3/C4 (CharClass/Anchor/Plus/Optional) are
+now all fixed. Highest real remaining perf lever: **P3/P4** (general matcher + multi-literal Alt),
+likely bigger than P5/P6/P7 combined for real-world grep usage. G1/G2/G4 are compiler-level and
+would each unblock/protect multiple stdlib gaps at once rather than one at a time.
