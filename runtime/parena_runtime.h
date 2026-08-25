@@ -629,4 +629,16 @@ static inline int process_kill_impl(int pid) {
     return kill((pid_t)pid, SIGTERM) == 0 ? 0 : -1;
 }
 
+/* ---- real `(current-arena)` builtin (2026-08-25) -----------------------
+ * See src/emit.c's own `is_call_named(expr, "current-arena")` comment
+ * for the full real reasoning. g_process_arena is zero-initialized by
+ * plain C static-storage rules -- `{a->head = NULL}` is arena_init's
+ * own entire body, so no explicit init call or constructor is needed
+ * here at all. Never freed (a process-lifetime Arena, by design). */
+static Arena g_process_arena;
+
+static inline Arena *parena_current_arena(void) {
+    return &g_process_arena;
+}
+
 #endif /* PARENA_RUNTIME_H */

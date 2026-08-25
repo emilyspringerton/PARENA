@@ -513,6 +513,28 @@ typedef struct BoxedType {
 static BoxedType *g_boxed_types = NULL;
 static StrBuf g_box_helpers;
 
+/* g_globals -- real top-level `(def NAME EXPR)` support, added
+ * 2026-08-25 unblocking ladybug's own scarab.prn (`suite-tree`, a
+ * top-level mutable Vec accumulator every real Ginkgo-shaped test
+ * runner needs: Describe/It calls register into it at load time,
+ * before any spec runs). Previously `def` was not a recognized
+ * top-level form at all -- silently produced no symbol, so every
+ * later reference to the name failed as a plain "unknown identifier",
+ * confirmed live. Real, honest, narrower scope than a fully general
+ * globals system: one shared EmitScope every defn's own top-level
+ * scope now chains to as its parent (see emit_defn's own
+ * `scope_init(&base, &g_globals)` below) -- a def can be READ from
+ * any function, and its address taken (`&name`) for mutation the
+ * exact same way any other in-scope value already works, with no new
+ * emit_expr logic needed for that half. What IS new is process_defs()
+ * below: a real pre-pass emitting one static C global + one real
+ * initializer per `def`, run once at process startup via a real GCC
+ * constructor -- see current_arena_impl's own doc comment in
+ * runtime/parena_runtime.h for the matching real `(current-arena)`
+ * builtin most real defs (like suite-tree's own `(vec/new
+ * (current-arena))`) need to even construct their initial value. */
+static EmitScope g_globals;
+
 /* g_veceq_types / g_veceq_helpers -- the real fix for `vec-eq?`
  * (array.prn's own real `same-shape?`: `(vec-eq? &(get-field a :shape)
  * &(get-field b :shape))`), found completely unimplemented anywhere --
@@ -929,6 +951,7 @@ static int has_region_marker(Node *n) {
  * real multi-field payload types), same as several other functions
  * defined between here and there already do. */
 static const char *resolve_declared_type(Arena *arena, Node *type_node, const char **out_error);
+static const char *resolve_base_type_name(Node *type_node);
 
 static char *fail(Arena *arena, const char **out_error, const char *fmt, ...) {
     char buf[512];
@@ -2385,6 +2408,36 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
      * always intercept it first and mangle `fn` into a bogus call to a
      * never-defined `fn(...)` C function -- this branch never even ran,
      * despite being real, present code, until moved above that catch-all. */
+    /* `(current-arena)` -- real builtin added 2026-08-25 unblocking
+     * `(def NAME (vec/new (current-arena)))`-shaped top-level globals
+     * (see g_globals's own declaration comment): every other Arena in
+     * this language traces to an explicit `dest : Arena @ Region`
+     * parameter, on purpose (the whole point of the region-safety
+     * story) -- multiple earlier comments across this stdlib flagged
+     * `(current-arena)` as "never designed, doesn't fit VS0's own
+     * memory model" for exactly that reason, and every one of them is
+     * still right for ordinary function-local code. A top-level `def`
+     * is the one real, narrow exception: its initializer runs once, at
+     * process startup, before any real region/`with-arena` scope
+     * exists to hand it a `dest` -- it has no caller to receive one
+     * from. `parena_current_arena()` (runtime/parena_runtime.h) is a
+     * real, permanent, process-lifetime Arena for exactly that real
+     * need. Honest, not narrowly gated to only the def-initializer
+     * position: this resolves anywhere `(current-arena)` appears,
+     * including an ordinary function body -- there is no real way to
+     * restrict a plain expression-level builtin to one syntactic
+     * position without a second, separate pass this fix doesn't add.
+     * A real, deliberate widening of what compiles, not just what
+     * `def` needs -- using it inside ordinary code sidesteps the
+     * region-safety discipline every `dest`-threaded Arena elsewhere
+     * in this language enforces (nothing ever frees this Arena's own
+     * allocations), so it stays something a caller reaches for on
+     * purpose, not this fix's claim that it's now the recommended way
+     * to get an Arena in general. */
+    if (is_call_named(expr, "current-arena") && expr->child_count == 1) {
+        *out_type = "Arena *";
+        return "parena_current_arena()";
+    }
     if (is_call_named(expr, "fn") && expr->child_count == 3 && expr->children[1]->type == NODE_VEC) {
         Node *params = expr->children[1];
         Node *body = expr->children[2];
@@ -2410,8 +2463,26 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         }
         for (size_t i = 0; i < params->child_count; i++) {
             Node *param = params->children[i];
-            if (param->type != NODE_LIST || param->child_count != 3 ||
-                param->children[0]->type != NODE_SYMBOL || param->children[1]->type != NODE_COLON) {
+            int shape_ok = param->type == NODE_LIST && param->child_count >= 3 &&
+                           param->children[0]->type == NODE_SYMBOL && param->children[1]->type == NODE_COLON;
+            /* Real, honest gap closed here (2026-08-25, ladybug's own
+             * `firefly/ladybug.prn`/`scarab.prn`, e.g. `(fn [(!t : &mut
+             * T)] ...)`): a `&`/`&mut Type` reference parameter is TWO
+             * tokens after the colon (`param->child_count == 4`), not
+             * one -- this loop only ever checked the plain single-token
+             * `child_count == 3` shape, so any reference-typed lambda
+             * parameter failed here as "needs an explicit annotation"
+             * even though it plainly had one; `emit_defn`'s own param
+             * loop already has a real, working `child_count == 4` `&mut`
+             * branch (its own header comment names the exact real
+             * example this mirrors) -- this is that same real handling,
+             * not new design. */
+            int is_ref_shape = param->type == NODE_LIST && param->child_count == 4 &&
+                                param->children[1]->type == NODE_COLON &&
+                                param->children[2]->type == NODE_SYMBOL &&
+                                (is_symbol(param->children[2], "&") || is_symbol(param->children[2], "&mut")) &&
+                                param->children[3]->type == NODE_SYMBOL;
+            if (!shape_ok && !is_ref_shape) {
                 sb_free(&param_list);
                 sb_free(&type_list);
                 return fail(arena, out_error,
@@ -2420,7 +2491,23 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                             "every defn parameter already follows",
                             expr->line);
             }
-            const char *p_c_type = resolve_declared_type(arena, param->children[2], out_error);
+            const char *p_c_type;
+            if (is_ref_shape) {
+                const char *base_type = resolve_base_type_name(param->children[3]);
+                if (!base_type && strcmp(param->children[3]->text, "Any") == 0) base_type = "void";
+                if (!base_type) {
+                    sb_free(&param_list);
+                    sb_free(&type_list);
+                    return fail(arena, out_error,
+                                "fn: unsupported reference target type '%s' at line %d",
+                                param->children[3]->text, param->children[3]->line);
+                }
+                char ref_buf[128];
+                snprintf(ref_buf, sizeof(ref_buf), "%s *", base_type);
+                p_c_type = arena_strdup(arena, ref_buf, strlen(ref_buf));
+            } else {
+                p_c_type = resolve_declared_type(arena, param->children[2], out_error);
+            }
             if (!p_c_type) {
                 sb_free(&param_list);
                 sb_free(&type_list);
@@ -4868,7 +4955,9 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
     Node *params = defn->children[2];
 
     EmitScope base;
-    scope_init(&base, NULL);
+    scope_init(&base, &g_globals); /* real top-level (def ...) values are
+                                     * visible to every defn body -- see
+                                     * g_globals's own declaration comment. */
 
     StrBuf param_list;
     sb_init(&param_list);
@@ -5385,8 +5474,42 @@ static const char *build_defn_prototype(Arena *arena, Node *form, const char *pr
     return result;
 }
 
+/* process_defs -- real top-level `(def NAME EXPR)` support (see
+ * g_globals's own declaration comment for the full real-world need
+ * this closes). For each def: emits `static <Type> <name>;` into
+ * `out_decls` and `<name> = <init-code>;` into `out_init` (the body of
+ * a real GCC constructor emit_c splices in once, after every def has
+ * run), and registers `NAME` into g_globals so any later defn's body
+ * -- and any LATER def's own initializer, same forward-visibility
+ * emit_defn's own forward-declaration pass already gives ordinary
+ * functions -- can reference it. `expr` is emitted with g_globals
+ * itself as its scope (not a plain fresh/NULL one): a def's own
+ * initializer is real top-level code, same real "sees every earlier
+ * global" rule a defn body gets, not sandboxed off from them. */
+static int process_defs(Arena *arena, StrBuf *out_decls, StrBuf *out_init, Node *program,
+                         const char **out_error) {
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_call_named(form, "def")) continue;
+        if (form->child_count != 3 || form->children[1]->type != NODE_SYMBOL) {
+            return fail(arena, out_error,
+                        "def: expected '(def name expr)' at line %d", form->line) != NULL;
+        }
+        const char *src_name = form->children[1]->text;
+        const char *c_name = mangle(arena, src_name);
+        const char *init_type = NULL;
+        const char *init_code = emit_expr(arena, form->children[2], &g_globals, &init_type, out_error);
+        if (!init_code) return 0;
+        sb_appendf(out_decls, "static %s %s;\n", init_type, c_name);
+        sb_appendf(out_init, "    %s = %s;\n", c_name, init_code);
+        scope_bind(&g_globals, src_name, c_name, init_type, 0);
+    }
+    return 1;
+}
+
 const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     *out_error = NULL;
+    scope_init(&g_globals, NULL);
     /* g_enums is reset per emit_c() call, not just per process: the test
      * suite calls emit_c() many times in the same process (one per test
      * case), and without this reset a defenum registered by an earlier
@@ -5480,6 +5603,32 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
             }
         }
     }
+
+    /* Pre-pass: every top-level `(def NAME EXPR)` -- see g_globals's
+     * own declaration comment and process_defs's own doc comment.
+     * After struct/enum registration (a def's initializer may need a
+     * registered type) but before any defn (so a defn body referencing
+     * a def sees it already bound in g_globals, the same forward-
+     * visibility ordinary defn-to-defn calls already get from the
+     * pre-pass below). The real C global declarations go straight into
+     * `out`; the real initializer statements go into a constructor
+     * function, emitted once every def has run (a def's own
+     * initializer can itself reference an EARLIER def, so all
+     * initializer code must exist before any of it executes at
+     * runtime -- one constructor covering every def, not one each). */
+    StrBuf def_init;
+    sb_init(&def_init);
+    if (!process_defs(arena, &out, &def_init, program, out_error)) {
+        sb_free(&def_init);
+        sb_free(&out);
+        return NULL;
+    }
+    if (def_init.len > 0) {
+        sb_append(&out, "__attribute__((constructor))\nstatic void parena_init_globals(void) {\n");
+        sb_append(&out, def_init.data);
+        sb_append(&out, "}\n\n");
+    }
+    sb_free(&def_init);
 
     /* Pre-pass: a real forward DECLARATION for every `defn` that has an
      * explicit `: ReturnType` annotation -- found genuinely missing
