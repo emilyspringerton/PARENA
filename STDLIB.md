@@ -54,7 +54,10 @@ binding, not a language primitive).
 12. `sort` — depends on `vec`
 13. `net/tcp` — depends on `string` (leaf beyond that — raw sockets, no other package needed)
 14. `net/udp` — depends on `string` (same tier as `net/tcp`, no dependency between the two)
-15. `net/http` — depends on `net/tcp`, `map`, `string`
+15. `net/http` — depends on `net/tcp`, `string` (not `map` — headers are two parallel `Vec
+    String`s, same real reason json.prn's `JObject` avoids `Map`: `K`/`V` generics fail VS0's
+    emitter today. Client-side only (`http-get`/`http-post`/`http-request`); no URL parsing,
+    callers pass host/port/path separately; real host glue + FFI verified live 2026-08-25)
 16. `grep` — depends on `regex/nfa`, `regex/pcre`, `regex/posix`, `io`, `vec`
 17. `sed` — depends on `regex/pcre`, `io`, `string`
 18. `awk` — depends on `regex/pcre`, `expr`, `vec`, `string`

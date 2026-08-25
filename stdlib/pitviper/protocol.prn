@@ -32,13 +32,13 @@
 
 (defn serve [(port : I32) (root : String @ :region/scratch)]
   : (Result Unit NetError)
-  (match (net/tcp/listen port (current-arena))
+  (match (net/tcp/tcp-listen port (current-arena))
     ((Ok !listener) (serve-loop &mut !listener root))
     ((Err e) (Err e))))
 
 (defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
   : (Result ProtocolSession NetError) @ Region
-  (match (net/tcp/connect host port dest)
+  (match (net/tcp/tcp-connect host port dest)
     ((Ok !stream) (Ok {:stream !stream}))
     ((Err e) (Err e))))
 
@@ -48,7 +48,7 @@
 (defn request [(!sess : &mut ProtocolSession) (req : Request) (dest : Arena @ Region)]
   : (Result Response NetError) @ Region
   (do
-    (net/tcp/write &mut (get-field !sess :stream) (encode-request req dest))
-    (match (net/tcp/read &mut (get-field !sess :stream) dest)
+    (net/tcp/tcp-write &mut (get-field !sess :stream) (encode-request req dest) dest)
+    (match (net/tcp/tcp-read &mut (get-field !sess :stream) dest)
       ((Ok compressed) (decode-response (lz4/decompress compressed (expected-size compressed) dest) dest))
       ((Err e) (Err e)))))

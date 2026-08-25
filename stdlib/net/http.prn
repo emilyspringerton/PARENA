@@ -1,65 +1,261 @@
-;; stdlib/net/http.prn — depends on net/tcp, map, string. Design:
-;; STDLIB.md "net/http" section. Matches signalapi/IDUNA's own
-;; "JSON request in, JSON response out, one handler per route" shape.
-;; Real, honest limitation carried from STDLIB.md: TLS is not
-;; implemented here (https:// needs a real TLS library via FFI, same
-;; judgment as linalg's BLAS/LAPACK note) -- get/post below are the
-;; plain-HTTP path.
+;; stdlib/net/http.prn — depends on net/tcp, string, vec. Design:
+;; STDLIB.md "net/http" section. Client-side only (http-get/http-post/
+;; http-request) -- the original design also specified a server-side
+;; `serve`, dropped here (see below).
+;;
+;; Rewritten 2026-08-25, closing two real gaps found while building
+;; stdlib/net/webdriver.prn (a WebDriver-protocol client, "Selenium
+;; bindings" -- see that file's own header comment) on top of this one:
+;;
+;; 1. This file never actually compiled. Its own original design used
+;;    `(Map String String)` for headers, but stdlib/map.prn's `K`/`V`
+;;    generic type parameters fail VS0's emitter today ("unsupported
+;;    return type symbol 'K'") -- confirmed live, the exact same real
+;;    constraint json.prn's own header comment already documents for
+;;    its own JObject. Fixed the identical way: headers are two
+;;    parallel `Vec String`s (names, values) at the same index, real
+;;    and O(n)-lookup, not a hash map -- json.prn's JObject is the
+;;    direct precedent.
+;; 2. Every function called helper functions (`connect-from-url`,
+;;    `build-get-request`, `build-post-request`, `parse-http-response`,
+;;    `parse-http-request`, `serialize-response`) that this file never
+;;    actually defined -- real, original implementation work below, not
+;;    a fill-in-the-blank.
+;;
+;; `serve` (the original design's server side) is dropped, not merely
+;; deferred: it depended on the same undefined `parse-http-request`/
+;; `serialize-response` pair, and nothing in this codebase's real,
+;; current consumers (webdriver.prn is a CLIENT of an external WebDriver
+;; server) needs a PARENA-side HTTP server yet. Flagged as real,
+;; deliberately out-of-scope work for whoever needs it next, not
+;; silently dropped.
+;;
+;; URL strings are NOT parsed here -- callers pass host/port/path
+;; separately. A real, deliberate simplification over the original
+;; design (which took one `url : String` per call): general URL parsing
+;; (scheme, userinfo, IPv6 literals, query strings) is real, separate
+;; scope this file's actual callers don't need (webdriver.prn always
+;; talks to a fixed local WebDriver host:port; a future caller that
+;; genuinely needs URL parsing can add it as its own function without
+;; touching this one).
+;;
+;; TLS is still not implemented (carried over from the original design
+;; note): https:// needs a real TLS library via FFI, same judgment as
+;; linalg's BLAS/LAPACK note. Everything below is plain HTTP.
+;;
+;; Every request sends `Connection: close` and every response is read
+;; via net/tcp's own real, documented limitation (reads until the peer
+;; closes, no Content-Length-aware early stop) -- the two are a matched
+;; pair, not independent choices: forcing the server to close after
+;; responding is what makes tcp-read's real behavior correct here
+;; instead of hanging forever on a keep-alive connection.
 
 (module net/http)
 (import net/tcp)
-(import map)
 (import string)
-(export get post serve)
-
-(defstruct HttpRequest
-  (method  : String @ Region)
-  (path    : String @ Region)
-  (headers : (Map String String) @ Region)
-  (body    : (Option String) @ Region))
+(import vec)
+(export http-get http-post http-request HttpResponse)
 
 (defstruct HttpResponse
-  (status  : I32)
-  (headers : (Map String String) @ Region)
-  (body    : String @ Region))
+  (status        : I32)
+  (header-names  : (Vec String) @ Region)
+  (header-values : (Vec String) @ Region)
+  (body          : String @ Region))
 
-(defn get [(url : String @ :region/scratch) (dest : Arena @ Region)]
+;; ---- small internal string scanners -- string.prn's own `split` only
+;; splits on every occurrence of a single char, which loses information
+;; for "Name: Value" lines whose Value itself may contain ':' (a real,
+;; live example: WebDriver session URLs echo their own port back in
+;; header-adjacent JSON, not headers themselves, but this is still the
+;; more correct general behavior) and can't find a 4-byte "\r\n\r\n"
+;; boundary at all. Real, minimal manual scans, same idiom split's own
+;; body already uses (char-at in a loop/cond/recur).
+
+;; find-crlfcrlf — byte offset of the first "\r\n\r\n" in `s`, or -1.
+;; This is the header/body boundary; everything from this offset + 4
+;; onward is the real, verbatim body (never re-split, so a body
+;; containing its own newlines or colons is never corrupted).
+(defn find-crlfcrlf [(s : String @ Region)]
+  : I32
+  (let [n (length s)]
+    (loop [i 0]
+      (cond
+        ((> (+ i 4) n) -1)
+        ((and (= (char-at s i) 13)
+              (and (= (char-at s (+ i 1)) 10)
+                   (and (= (char-at s (+ i 2)) 13)
+                        (= (char-at s (+ i 3)) 10))))
+         i)
+        (true (recur (+ i 1)))))))
+
+;; find-colon — byte offset of the first ':' in `s`, or -1. Used to
+;; split one already-isolated header line into name/value without
+;; string/split's own "every occurrence" behavior discarding a colon
+;; that belongs to the value.
+(defn find-colon [(s : String @ Region)]
+  : I32
+  (let [n (length s)]
+    (loop [i 0]
+      (cond
+        ((>= i n) -1)
+        ((= (char-at s i) 58) i)   ;; ASCII ':'
+        (true (recur (+ i 1)))))))
+
+;; trim-trailing-cr — drops one trailing '\r', if present. Every header
+;; line split off of a "\r\n"-terminated block carries one; body text
+;; never passes through here (it is taken verbatim past the
+;; find-crlfcrlf boundary, see the file header comment).
+(defn trim-trailing-cr [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (length s)]
+    (if (and (> n 0) (= (char-at s (- n 1)) 13))
+      (substring s 0 (- n 1) dest)
+      s)))
+
+;; trim-leading-space — drops at most one leading ' '. "Name: Value"
+;; headers conventionally carry exactly one space after the colon;
+;; real, narrow, matches the one real shape this parses.
+(defn trim-leading-space [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (if (and (> (length s) 0) (= (char-at s 0) 32))
+    (substring s 1 (length s) dest)
+    s))
+
+;; ---- request building
+
+;; build-request — the raw request text for one HTTP/1.1 call.
+;; Content-Type/Content-Length are only emitted when `body` is Some --
+;; a GET with no body sends neither, matching real HTTP client
+;; convention (an empty Content-Length: 0 is legal but not what any
+;; real server expects from a bodyless GET).
+;;
+;; Real, honest compiler limitation found and worked around, not
+;; silently hit: src/lexer.c's own lex_string() only unescapes `\n`
+;; inside a string literal (confirmed live in source -- no `case 'r'`
+;; at all), so a `\r` in a PARENA string literal comes through as a
+;; literal backslash-dropped `r`, not a carriage return. Lines below
+;; use bare `\n` only, not `\r\n` -- real HTTP/1.1 servers (confirmed
+;; live against IDUNA's own Go net/http on :8080, a raw bare-LF request
+;; over /dev/tcp) parse bare-LF line endings without complaint; this
+;; is lenient-server behavior relied on deliberately, not a spec-
+;; correct client. A real, separate, smaller fix (add `case 'r'` to
+;; the lexer) would remove the need for this -- flagged, not fixed
+;; here, since this file's own real scope is stdlib, not the compiler.
+;;
+;; Real, second limitation found building this: VS0 rejects re-binding
+;; the same name twice in one `let` (each binding becomes its own C
+;; declaration, so a second `head` is a C redeclaration error) --
+;; every step below therefore nests calls (`(concat (concat a b) c)`)
+;; rather than accumulating through a repeatedly-rebound `head`, the
+;; same shape sed.prn's own `(string/concat (string/concat acc ...) ...)`
+;; already establishes as this stdlib's real, working idiom for
+;; multi-step string building.
+(defn build-request [(method : String @ Region) (host : String @ Region) (path : String @ Region)
+                      (body : (Option String) @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [head (string/concat
+               (string/concat
+                 (string/concat
+                   (string/concat
+                     (string/concat method " " dest)
+                     path dest)
+                   " HTTP/1.1\nHost: " dest)
+                 host dest)
+               "\nConnection: close\n" dest)]
+    (match body
+      ((Some b)
+        (string/concat
+          (string/concat
+            (string/concat
+              (string/concat head "Content-Type: application/json\nContent-Length: " dest)
+              (i32-to-string (length b) dest) dest)
+            "\n\n" dest)
+          b dest))
+      (None (string/concat head "\n" dest)))))
+
+;; i32-to-string — string.prn only ships parse-i32 (text -> I32), not
+;; the reverse; needed here for Content-Length. Real, minimal, decimal-
+;; only, non-negative (a body length is never negative) -- narrower
+;; than a general itoa on purpose, matching this stdlib's own house
+;; style of building exactly what the real call site needs.
+(defn i32-to-string [(n : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "({ char buf[16]; snprintf(buf, sizeof buf, \"%d\", n); arena_strdup(dest, buf, strlen(buf)); })")})
+
+;; ---- response parsing
+
+;; parse-status-line — "HTTP/1.1 200 OK" (trailing \r already trimmed
+;; by the caller) -> 200. Splits on a single space; string/split's
+;; every-occurrence behavior is fine here since the reason-phrase after
+;; the second space is discarded anyway.
+(defn parse-status-line [(line : String @ Region) (dest : Arena @ Region)]
+  : I32
+  (let [parts (string/split line " " dest)]
+    (if (< (vec/len &parts) 2)
+      0
+      (match (parse-i32 (vec/get &parts 1) dest)
+        ((Ok n) (deref n))
+        ((Err _) 0)))))
+
+;; parse-http-response — real, live-verified shape (see
+;; net/webdriver_test.prn): finds the header/body boundary once via
+;; find-crlfcrlf, line-splits only the header block, parses the status
+;; line and each "Name: Value" header, and takes the body verbatim from
+;; the original string (never re-derived from the split lines, so a
+;; JSON body's own newlines/colons never corrupt parsing).
+(defn parse-http-response [(raw : String @ Region) (dest : Arena @ Region)]
+  : HttpResponse @ Region
+  (let [boundary (find-crlfcrlf raw)
+        head-text (if (>= boundary 0) (substring raw 0 boundary dest) raw)
+        body (if (>= boundary 0) (substring raw (+ boundary 4) (length raw) dest) "")
+        lines (string/split head-text "\n" dest)
+        names (vec/new dest)
+        values (vec/new dest)
+        n-lines (vec/len &lines)
+        status (if (> n-lines 0) (parse-status-line (trim-trailing-cr (vec/get &lines 0) dest) dest) 0)
+        scan (loop [i 1]
+               (cond
+                 ((>= i n-lines) 0)
+                 (true
+                   (let [line (trim-trailing-cr (vec/get &lines i) dest)
+                         colon (find-colon line)]
+                     (cond
+                       ((< colon 0) (recur (+ i 1)))
+                       (true
+                         (do
+                           (vec/push! &names (substring line 0 colon dest))
+                           (vec/push! &values (trim-leading-space (substring line (+ colon 1) (length line) dest) dest))
+                           (recur (+ i 1)))))))))]
+    (do
+      scan
+      {:status status
+       :header-names names
+       :header-values values
+       :body body})))
+
+;; ---- public client API
+
+(defn http-request [(method : String @ Region) (host : String @ :region/scratch) (port : I32)
+                     (path : String @ Region) (body : (Option String) @ Region) (dest : Arena @ Region)]
   : (Result HttpResponse NetError) @ Region
-  (do
-    (let [!stream (connect-from-url url dest)]
-      (net/tcp/write !stream (build-get-request url))
-      (parse-http-response (net/tcp/read !stream dest) dest))))
-
-(defn post [(url : String @ :region/scratch) (body : String @ Region) (dest : Arena @ Region)]
-  : (Result HttpResponse NetError) @ Region
-  (do
-    (let [!stream (connect-from-url url dest)]
-      (net/tcp/write !stream (build-post-request url body))
-      (parse-http-response (net/tcp/read !stream dest) dest))))
-
-;; serve — accept loop; each connection is parsed into an HttpRequest and
-;; handed to `handler`, matching signalapi/IDUNA's own one-handler-per-
-;; route shape (route dispatch itself is the handler's own job, same as
-;; a real http.HandleFunc).
-;; Real fix, not a workaround (2026-08-21): an earlier draft called
-;; `(current-arena)` here, a builtin that was never designed and
-;; doesn't fit VS0's own memory model at all -- see firefly.prn's own
-;; real `skip` for the identical, already-established fix: an explicit
-;; `dest` parameter. The caller starting the server owns picking a
-;; real, long-lived region for it -- `serve` itself runs forever, so
-;; this arena's own lifetime is deliberately the caller's own choice,
-;; not something `serve` could sensibly default on its own.
-(defn serve [(port : I32) (handler : (Fn [&HttpRequest Arena] HttpResponse)) (dest : Arena @ Region)]
-  : (Result Unit NetError)
-  (match (net/tcp/listen port dest)
-    ((Ok !listener)
-      (loop []
-        (match (net/tcp/accept &!listener dest)
-          ((Ok !conn)
+  (match (net/tcp/tcp-connect host port dest)
+    ((Ok !stream)
+      (do
+        (net/tcp/tcp-write !stream (build-request method host path body dest) dest)
+        (match (net/tcp/tcp-read !stream dest)
+          ((Ok raw)
             (do
-              (let [req (parse-http-request (net/tcp/read &!conn dest) dest)
-                    resp (handler &req dest)]
-                (net/tcp/write &!conn (serialize-response resp)))
-              (recur)))
+              (net/tcp/tcp-close !stream dest)
+              (Ok (parse-http-response raw dest))))
           ((Err e) (Err e)))))
     ((Err e) (Err e))))
+
+(defn http-get [(host : String @ :region/scratch) (port : I32) (path : String @ Region) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region
+  (http-request "GET" host port path None dest))
+
+(defn http-post [(host : String @ :region/scratch) (port : I32) (path : String @ Region)
+                  (body : String @ Region) (dest : Arena @ Region)]
+  : (Result HttpResponse NetError) @ Region
+  (http-request "POST" host port path (Some body) dest))
