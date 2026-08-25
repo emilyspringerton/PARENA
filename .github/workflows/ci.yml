@@ -112,6 +112,56 @@ jobs:
           path: dist/parena
           if-no-files-found: error
 
+      # Real gap closed 2026-08-25 (S202-19): every other active repo with real CI
+      # already had a *_CONSTRUCT.txt build artifact (a full concatenation of its
+      # own source, matching emily.cli's own ci.yml "Generate Construct Bundle"
+      # step) -- PARENA was one of 9 confirmed missing it (S202-18's audit).
+      - name: Generate Construct Bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="PARENA_CONSTRUCT.txt"
+          {
+            echo "PARENA CONSTRUCT ${{ github.run_number }}"
+            echo "commit: $GITHUB_SHA"
+            echo "generated_utc: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo
+          } > "$OUT"
+
+          while IFS= read -r relpath; do
+            {
+              echo "--- FILE START: ${relpath} ---"
+              cat "${relpath}"
+              echo
+              echo "--- FILE END: ${relpath} ---"
+              echo
+            } >> "$OUT"
+          done < <(
+            find . \
+              \( \
+                -path './.git' \
+                -o -path './bazel-*' \
+                -o -path './dist' \
+              \) -prune -o \
+              -type f \
+              \( \
+                -name '*.c' -o -name '*.h' -o -name '*.prn' -o -name 'BUILD.bazel' -o \
+                -name 'MODULE.bazel' -o -name '*.bazelrc' -o -name 'Makefile' -o \
+                -name '*.md' -o -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
+              \) \
+              ! -name "$OUT" \
+              -print | sed 's#^./##' | LC_ALL=C sort
+          )
+
+          test -s "$OUT"
+
+      - name: Upload Construct Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PARENA_Construct_${{ github.run_number }}_${{ github.sha }}
+          path: PARENA_CONSTRUCT.txt
+          if-no-files-found: error
+
       # Founder real-time, 2026-08-21: "whenever a build passes release it
       # as a minor version" -> "like a . bump" -> "i will handle big bumps
       # to signify human verify releases" -> "start pushing the artifacts
