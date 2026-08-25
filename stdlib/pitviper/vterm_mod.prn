@@ -1,0 +1,29 @@
+;; stdlib/pitviper/vterm_mod.prn — PITVIPER core-terminal input mod surface,
+;; v0. Narrower than editor/plugin.prn on purpose: that file is the
+;; future PARENA-authored *editor*'s plugin API (command palette,
+;; config) — a different, higher layer that sits on top of PITVIPER, not
+;; PITVIPER's own core VT100 terminal-emulation behavior. Wheel-scroll is
+;; core-terminal input handling, so it gets its own minimal mod surface
+;; here instead of being force-fit into editor/plugin.prn's namespace.
+;;
+;; ABI: PITVIPER's Go/cgo host calls straight into `on-wheel-scroll`
+;; (emitted as `on_wheel_scroll`) on every SDL wheel event; this mod
+;; calls back out to a host-provided `pitviper_host_scroll(delta)` C
+;; function (Go-side, exported via cgo `//export`) to actually move the
+;; existing scrollback. No dispatch table, no registration step — the
+;; minimal real thing that makes "write the fix as a PARENA mod" true
+;; without inventing plugin-discovery machinery nothing has asked for
+;; yet. This file declares its own extern for `pitviper_host_scroll` via
+;; #target/inline-c, same FFI-escape pattern editor/plugin.prn already
+;; established (S189-29).
+;;
+;; NOTE: written from a git-worktree-isolated agent that cannot write into
+;; PARENA's shared checkout — this file's real destination is
+;; PARENA/stdlib/pitviper/vterm_mod.prn. Parent/founder: copy it there.
+
+(module pitviper/vterm-mod)
+(export on-wheel-scroll)
+
+(defn on-wheel-scroll [(delta : I32)] : Unit
+  #target
+  {:c (inline-c "pitviper_host_scroll(delta);")})
