@@ -114,8 +114,10 @@
     ((Concat parts) (all-nodes-supported? parts 0))
     ((Alt branches) (all-nodes-supported? branches 0))
     ((Star inner greedy) (node-supported? &inner))
+    ((Plus inner greedy) (node-supported? &inner))
+    ((Optional inner greedy) (node-supported? &inner))
     ((Group inner _capture _name) (node-supported? &inner))
-    (_ false)))   ;; Plus/Optional -- the real, current gap
+    (_ false)))
 
 (defn all-nodes-supported? [(parts : &(Vec PatternNode)) (i : I32)]
   : Bool
@@ -352,11 +354,13 @@
         ((AnyChar) (single-or-empty (< pos (string/length text)) (+ pos 1) dest))
         ((Concat parts) (match-concat parts 0 text pos steps budget dest))
         ((Alt branches) (match-alt branches 0 text pos steps budget dest))
-        ((Star inner greedy) (match-star inner greedy text pos steps budget dest))
+        ((Star inner greedy) (match-star &inner greedy text pos steps budget dest))
         ((Group inner _capture _name) (match-node &inner text pos steps budget dest))
         ((CharClass ranges negated) (single-or-empty (char-class-matches? text pos &ranges negated) (+ pos 1) dest))
         ((Anchor kind) (single-or-empty (anchor-matches? text pos (unbox-anchor-kind kind)) pos dest))
-        (_ (vec/new dest))))))   ;; Plus/Optional: same shape, elided for length
+        ((Plus inner greedy) (match-plus &inner greedy text pos steps budget dest))
+        ((Optional inner greedy) (match-optional &inner greedy text pos steps budget dest))
+        (_ (vec/new dest))))))
 
 ;; match-concat -- always 0-or-1 candidates; see the file header comment
 ;; on why this is the one deliberate narrowing vs. the original.
@@ -404,6 +408,49 @@
                 (do (vec/push! &ascending next-pos)
                     (recur next-pos)))))))
       (if greedy (vec-reversed &ascending dest) ascending))))
+
+;; ---- Plus (+), Optional (?) -- 2026-08-25 -----------------------------
+;; Real variants of match-star's own repetition walk, not a new
+;; algorithm: Plus is "at least one match, then the same star-style
+;; walk for any more"; Optional is "the same star-style walk capped at
+;; one repetition." Both reuse match-star's own greedy/non-greedy
+;; ordering convention directly.
+(defn match-plus [(inner : &PatternNode) (greedy : Bool) (text : String @ Region) (pos : I32)
+                   (steps : &mut I32) (budget : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [first-candidates (match-node inner text pos steps budget dest)]
+    (if (= (vec/len &first-candidates) 0)
+      (vec/new dest)   ;; must match at least once -- no match here means no match at all
+      (let [first-pos (vec-i32-at &first-candidates 0)
+            ascending (vec/new dest)]
+        (do
+          (vec/push! &ascending first-pos)
+          (loop [cur first-pos]
+            (let [inner-candidates (match-node inner text cur steps budget dest)]
+              (when (> (vec/len &inner-candidates) 0)
+                (let [next-pos (vec-i32-at &inner-candidates 0)]
+                  (when (> next-pos cur)
+                    (do (vec/push! &ascending next-pos)
+                        (recur next-pos)))))))
+          (if greedy (vec-reversed &ascending dest) ascending))))))
+
+(defn match-optional [(inner : &PatternNode) (greedy : Bool) (text : String @ Region) (pos : I32)
+                       (steps : &mut I32) (budget : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [inner-candidates (match-node inner text pos steps budget dest)]
+    (if (= (vec/len &inner-candidates) 0)
+      (single-or-empty true pos dest)   ;; inner doesn't match here -- only the zero-rep candidate
+      (let [one-pos (vec-i32-at &inner-candidates 0)
+            both (vec/new dest)]
+        (do
+          ;; real bug found+fixed here: `do` doesn't work as an `if`
+          ;; branch's own VALUE (same real class of gap as `when`
+          ;; unsupported in match-clause tail position elsewhere in
+          ;; this file) -- two plain statement-level `if`s instead of
+          ;; one `if` with `do`-shaped branches.
+          (if greedy (vec/push! &both one-pos) (vec/push! &both pos))
+          (if greedy (vec/push! &both pos) (vec/push! &both one-pos))
+          both)))))
 
 (defn is-match [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
   : (Result Bool BudgetExceededError) @ Region
