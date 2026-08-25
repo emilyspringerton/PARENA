@@ -1,0 +1,21 @@
+;; stdlib/redgarden/build_template_mod.prn — REDGARDEN's third real PARENA mod, same
+;; one-function/no-dispatch-table shape as bloodflower_mod.prn and tree_passive_mod.prn.
+;;
+;; Founder real-time: "ok in redgarden lets experiment with the idea that tech trees are just
+;; item templates" -> "choosing a build can let you auto buy at the shop" -> ... -> "all powered
+;; by parena scripting and parena mods."
+;;
+;; ABI: arena_hero_apply_build_template (arena_game.c) calls straight into
+;; `on-apply-build-template-item` (emitted as `on_apply_build_template_item`) once per item in a
+;; template's ordered list, already gated host-side (affordability/slot-already-owned checks
+;; happen in the caller, same "host decides when, mod is the trigger" split as tree_passive_mod).
+;; Calls back into a host-provided `redgarden_host_buy_build_item(hero_index, item_id)` C function
+;; to make the real purchase (arena_shop_buy underneath), returning 1 on success / 0 otherwise so
+;; the caller knows whether to keep advancing through the template.
+
+(module redgarden/build-template-mod)
+(export on-apply-build-template-item)
+
+(defn on-apply-build-template-item [(hero-index : I32) (item-id : I32)] : I32
+  #target
+  {:c (inline-c "redgarden_host_buy_build_item(hero_index, item_id)")})
