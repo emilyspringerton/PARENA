@@ -199,6 +199,51 @@
       ((Some s) (concat-literal-parts parts (+ i 1) (string/concat acc s dest) dest))
       (None None))))
 
+;; ---- multi-literal Alt fast path (P4, 2026-08-25) ---------------------
+;; Real, measured follow-on to the single-literal fast path above (the
+;; bottleneck audit's own P4 entry, "bounded, natural extension of P2's
+;; own fix"): a genuine multi-branch alternation of pure literals (e.g.
+;; "foo|bar", no real Alt/Star/Group/CharClass anywhere inside any
+;; branch) still fell through to the general backtracking matcher
+;; unconditionally -- single-branch-literal above only ever handles
+;; exactly ONE branch, by design (a genuine `a|b` alternation is
+;; correctly NOT a single literal string). When EVERY branch resolves
+;; to a real literal via ast-literal-text, the whole Alt still reduces
+;; to "does text contain ANY of these literals" -- same allocation-free
+;; string-contains? scan as the single-literal case, just OR'd across
+;; branches instead of one.
+;;
+;; alt-literal-scan short-circuits both ways: returns (Some true) the
+;; moment any confirmed-literal branch actually matches -- correct even
+;; without checking whether LATER branches are literal too, since Alt's
+;; own OR semantics mean one real match already settles the whole node,
+;; the same behavior real grep's own alternation has -- and returns
+;; None the moment it hits a branch that isn't a pure literal, falling
+;; back to the general matcher unchanged, same honest fallback as every
+;; other fast-path gap in this file.
+(defn alt-literal-scan [(branches : &(Vec PatternNode)) (i : I32) (text : String @ Region) (dest : Arena @ Region)]
+  : (Option Bool)
+  (if (>= i (vec/len branches))
+    (Some false)
+    (match (ast-literal-text (vec/get branches i) dest)
+      ((Some needle)
+        (if (string-contains? text needle)
+          (Some true)
+          (alt-literal-scan branches (+ i 1) text dest)))
+      (None None))))
+
+;; alt-literal-scan-root -- only a genuine multi-branch Alt is a real
+;; candidate here; a single-branch Alt is already fully handled by
+;; ast-literal-text's own Some/None result (is-match never even calls
+;; this for that case), and anything else at the true root honestly
+;; falls through to None, same general-matcher fallback as everywhere
+;; else.
+(defn alt-literal-scan-root [(node : &PatternNode) (text : String @ Region) (dest : Arena @ Region)]
+  : (Option Bool)
+  (match (deref node)
+    ((Alt branches) (if (> (vec/len branches) 1) (alt-literal-scan branches 0 text dest) None))
+    (_ None)))
+
 (defn literal-matches-at? [(text : String @ Region) (start : I32) (needle : String @ Region) (nlen : I32)]
   : Bool
   (loop [j 0]
@@ -457,15 +502,18 @@
   (match (ast-literal-text &(get-field (get-field re :ast) :root) dest)
     ((Some needle) (Ok (string-contains? text needle)))
     (None
-      (let [steps (zero-i32)]
-        (loop [start 0]
-          (if (> start (string/length text))
-            (Ok false)
-            (let [candidates (match-node &(get-field (get-field re :ast) :root) text start &steps
-                                (get-field (get-field re :budget) :max-steps) dest)]
-              (if (> (vec/len &candidates) 0)
-                (Ok true)
-                (recur (+ start 1))))))))))
+      (match (alt-literal-scan-root &(get-field (get-field re :ast) :root) text dest)
+        ((Some result) (Ok result))
+        (None
+          (let [steps (zero-i32)]
+            (loop [start 0]
+              (if (> start (string/length text))
+                (Ok false)
+                (let [candidates (match-node &(get-field (get-field re :ast) :root) text start &steps
+                                    (get-field (get-field re :budget) :max-steps) dest)]
+                  (if (> (vec/len &candidates) 0)
+                    (Ok true)
+                    (recur (+ start 1))))))))))))
 
 (defn find [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
   : (Result (Option Match) BudgetExceededError) @ Region
