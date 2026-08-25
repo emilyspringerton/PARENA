@@ -198,6 +198,33 @@ step, not yet started: PITVIPER's own Go-side plugin API.
 | `gfd` | World-object/solidity/skate-surface/faction/METALVERSE-panel bindings for GoblinFoxDragon's `apps2/battlegrounds_gui`, matching the real, already-shipped EduScript builtin table |
 | `gfd/browser` | A real, modern web browser panel — FFI-bound to a real embeddable engine (CEF-class), not a native HTML/CSS/JS implementation. Real, unresolved security note: which URLs it can load is GFD-side policy, not answered here |
 
+### Native CLI tooling — `parena ci-status`, a real, narrow dogfooding milestone
+
+The `parena` binary ships a real subcommand, `parena ci-status`, that polls a commit's own
+GitHub Actions check-run status directly (`stdlib/ci/status.prn`, module `ci/status`, exported
+`check`). Real, honest scope: it replaces the specific ad-hoc `python3`-plus-`curl` one-liners
+this session's own workflow had been reaching for repeatedly to check build status — not a
+general "phase out Python" initiative, just this one recurring, narrow job (founder, 2026-08-21:
+"you are always checking that shit in python" → "build a small parena tool" → "instead of using
+python" → "use native parena"). Real, distinct exit codes, matching a normal CLI tool's own
+branchable convention: `0` = every check-run completed and green, `1` = at least one still
+pending, `2` = completed with at least one real failure, `3` = no check-runs found or the
+request itself failed. Same honest `#target` FFI convention every other host-interop file in
+this stdlib already uses (`io.prn`/`net/tcp.prn`/`pty.prn`) — the stdlib has no JSON parser or
+TLS client of its own yet, so the one `#target` function shells out to the already-installed
+`curl` via `popen` and does crude, substring-based extraction of this one specific GitHub API
+response shape. Not a general HTTP/JSON library.
+
+The build that produces it is a real, deliberate two-stage bootstrap (`Makefile`): stage 1
+(`.parena-bootstrap`, an ordinary build with `ci-status` compiled out) exists only to compile
+`stdlib/ci/status.prn` itself down to C (`tools/ci_status_gen.c`) — using PARENA to build part of
+its own tooling. Stage 2 recompiles the real, shipped `parena` binary with that generated C
+linked back in alongside its host implementation (`tools/ci_status_host.c`). `make build`'s own
+target is still just `parena`; callers never need to know it's two stages underneath. A real,
+small-scale, working instance of PARENA dogfooding itself — not the full self-hosting compiler
+NORTHSTAR's own longer-term plan describes, but a genuine, verified, checked-in first step in
+that direction.
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan
