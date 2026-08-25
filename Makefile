@@ -68,6 +68,26 @@ test-domain5: build
 test-multifile: build
 	bash tests/integration/run_multifile_check.sh
 
+# test-json -- real end-to-end verification for stdlib/json.prn (parsing
+# actual JSON text and checking the resulting structure, not just "does
+# it compile"). tests/test_json_gen.c is committed (matches how other
+# generated stdlib .c isn't recreated fresh on every run elsewhere in
+# this repo) but regenerated here to catch drift if json.prn changes.
+test-json: build
+	./parena build stdlib/string.prn stdlib/json.prn -o tests/test_json_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_json.c runtime/parena_runtime.c \
+		-o /tmp/test_json_bin -lm
+	/tmp/test_json_bin
+
+# test-yaml -- real end-to-end verification for stdlib/yaml.prn, same
+# discipline as test-json above (real parsing + structure checks, not
+# just "does it compile").
+test-yaml: build
+	./parena build stdlib/string.prn stdlib/yaml.prn -o tests/test_yaml_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_yaml.c runtime/parena_runtime.c \
+		-o /tmp/test_yaml_bin -lm
+	/tmp/test_yaml_bin
+
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the
 # real corpus run this backs). tools/turbogrep_host.c is deliberately

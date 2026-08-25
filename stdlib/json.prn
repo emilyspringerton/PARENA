@@ -1,0 +1,284 @@
+;; stdlib/json.prn — depends on string, vec. Design: real JSON parser,
+;; not previously designed in STDLIB.md. Founder real-time: "ensure we
+;; have stdlibs for json parsing and yaml parsing."
+;;
+;; Real design decisions, all forced by VS0's actual current capabilities
+;; (checked live against the real `parena` binary, not assumed):
+;;
+;; 1. No `Map` for JSON objects — `stdlib/map.prn` uses bare `K`/`V`
+;;    generic type-parameter symbols, confirmed live via `parena build`
+;;    to fail with "unsupported return type symbol 'K'" (VS0's emitter
+;;    only understands Unit/I32/Bool/F64/String/a registered defenum/
+;;    defstruct name, no generics yet). `JObject` instead carries two
+;;    parallel `Vec`s (keys, values) at the same index — a real, honest,
+;;    O(n)-lookup representation, not a hash map; `get` below documents
+;;    this cost plainly.
+;; 2. No separate `JsonMember{key,value}` pair struct for object entries
+;;    — that would need JsonValue and JsonMember to reference each other
+;;    (JObject's members need JsonValue; JsonMember needs JsonValue too),
+;;    and VS0's `process_defenum`/`process_defstruct` pre-pass only
+;;    resolves a type reference correctly when the referenced type was
+;;    declared EARLIER in file order (or is a self-reference) — see
+;;    `regex/syntax.prn`'s own header comment on this exact constraint,
+;;    S190-01's origin. Two mutually-referencing distinct types can't
+;;    both satisfy "declared earlier than the other." The parallel-Vec
+;;    design above sidesteps this entirely: `JsonValue` only ever
+;;    references itself (`JArray`'s items, `JObject`'s values), the same
+;;    self-reference shape `PatternNode`'s own `Group.inner` already
+;;    proves works.
+;; 3. String escape decoding (`\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t`
+;;    `\uXXXX`) happens behind a single `#target inline-c` call to a
+;;    distinctly-named host function (`host_json_unescape` — real bug
+;;    found and fixed while verifying this file: an earlier draft named
+;;    the #target call the same as the wrapping PARENA function itself,
+;;    which the compiler emits as a literal function body, not an extern
+;;    declaration — see `pentest/pcap.prn`'s own `start_capture` ->
+;;    `pentest_pcap_start_capture` for the real, correct, differently-
+;;    named pattern this now matches), not a hand-rolled PARENA
+;;    character-by-character loop — this stdlib has no mutable
+;;    string-builder/append primitive,
+;;    and building one via repeated `concat` would be real, unnecessary
+;;    O(n^2) work for something a single real C loop does correctly and
+;;    fast. Same "push genuinely irreducible string manipulation behind
+;;    #target" call `net/tcp.prn`'s own honest gap notes already
+;;    establish as this stdlib's house pattern.
+;; 4. Number parsing (int or float, since JSON has one numeric type)
+;;    goes through a local `#target` `strtod` wrapper — `string.prn`'s
+;;    own `parse-i32` only handles integers; JSON numbers can carry a
+;;    fractional part/exponent. Kept local to this file rather than
+;;    added to `string.prn` itself — out of scope for what this file was
+;;    actually asked to do.
+
+(module json)
+(import string)
+(import vec)
+(export parse JsonValue JsonError)
+
+(defenum JsonValue
+  (JNull)
+  (JBool   (v : Bool))
+  (JNumber (v : F64))
+  (JString (v : String @ Region))
+  (JArray  (items : (Vec JsonValue) @ Region))
+  (JObject (keys : (Vec String) @ Region) (values : (Vec JsonValue) @ Region)))
+
+(defstruct JsonError
+  (message : String @ Region)
+  (pos     : I32))
+
+;; JsonStep — (parsed value, next position) pair every parse-* function
+;; below returns on success, same real shape regex/syntax.prn's own
+;; ParseStep already established for this exact "explicit position-
+;; threading instead of a mutable cursor object" convention.
+(defstruct JsonStep
+  (value : JsonValue @ Region)
+  (next  : I32))
+
+;; Real host-side string-unescape (see file header, point 3). Scans
+;; [start, end) of `s` (the raw bytes BETWEEN the opening/closing quote,
+;; not including them), decoding backslash escapes into a fresh,
+;; arena-allocated buffer. \uXXXX is decoded as a raw UTF-8-encoded
+;; codepoint (real, correct for the common BMP case) — surrogate-pair
+;; \uXXXX\uXXXX sequences for codepoints above U+FFFF are NOT decoded
+;; (a real, honest, narrow limitation, not silently wrong: the two
+;; halves pass through as their own separate UTF-8-encoded values
+;; instead of combining into one, which will render as two replacement-
+;; adjacent codepoints rather than crashing or truncating).
+(defn json-unescape [(s : String @ Region) (start : I32) (end : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String (- end start))]
+    #target
+    {:c (inline-c "host_json_unescape(s, start, end, out);")}
+    out))
+
+;; Real host-side strtod wrapper — string.prn's own parse-i32 only
+;; covers integers; JSON numbers can carry a fractional part/exponent.
+(defn parse-f64-raw [(s : String @ :region/scratch)]
+  : F64
+  #target
+  {:c (inline-c "strtod(s, NULL)")})
+
+(defn is-whitespace? [(c : I32)]
+  : Bool
+  (or (= c 32) (or (= c 9) (or (= c 10) (= c 13)))))  ;; space, tab, \n, \r
+
+(defn skip-ws [(s : String @ Region) (pos : I32)]
+  : I32
+  (let [n (string/length s)]
+    (loop [p pos]
+      (if (and (< p n) (is-whitespace? (string/char-at s p)))
+        (recur (+ p 1))
+        p))))
+
+;; parse — top-level entry point. Rejects trailing non-whitespace
+;; garbage after the one real top-level value (JSON's own real grammar:
+;; exactly one value per document, matching every real JSON parser's own
+;; behavior here, not a narrower-than-spec choice).
+(defn parse [(text : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result JsonValue JsonError) @ Region
+  (let [n (string/length text)]
+    (match (parse-value text (skip-ws text 0) dest)
+      ((Err e) (Err e))
+      ((Ok step)
+        (let [after (skip-ws text (get-field (deref step) :next))]
+          (if (< after n)
+            (Err (JsonError "trailing data after top-level value" after))
+            (Ok (get-field (deref step) :value))))))))
+
+(defn parse-value [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [n (string/length s)]
+    (if (>= pos n)
+      (Err (JsonError "unexpected end of input" pos))
+      (let [c (string/char-at s pos)]
+        (cond
+          ((= c 123) (parse-object s pos dest))    ;; {
+          ((= c 91)  (parse-array s pos dest))     ;; [
+          ((= c 34)  (parse-string-value s pos dest))  ;; "
+          ((= c 116) (parse-literal s pos "true" (JBool true) dest))   ;; t
+          ((= c 102) (parse-literal s pos "false" (JBool false) dest)) ;; f
+          ((= c 110) (parse-literal s pos "null" JNull dest))        ;; n
+          ((or (string/is-digit? c) (= c 45)) (parse-number s pos dest))      ;; digit or '-'
+          (true (Err (JsonError "unexpected character" pos))))))))
+
+;; parse-literal — matches a fixed keyword (`true`/`false`/`null`) at
+;; `pos` against `word`, returning `value` on a real match. Real, honest
+;; check: compares the actual slice via substring+str-eq? rather than
+;; assuming the first-character dispatch in parse-value already proves
+;; it (a malformed `nul!` would otherwise wrongly parse as `null` if this
+;; only checked the length and the leading byte).
+(defn parse-literal [(s : String @ Region) (pos : I32) (word : String @ :region/scratch)
+                      (value : JsonValue) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [wlen (string/length word)
+        n (string/length s)]
+    (if (> (+ pos wlen) n)
+      (Err (JsonError "unexpected end of input" pos))
+      (let [slice (string/substring s pos (+ pos wlen) dest)]
+        (if (string/str-eq? slice word)
+          (Ok (JsonStep value (+ pos wlen)))
+          (Err (JsonError "invalid literal" pos)))))))
+
+;; parse-number — real JSON number grammar: optional leading '-',
+;; integer part, optional '.'-fraction, optional exponent ('e'/'E' with
+;; optional sign). Scans the full extent first (no validation beyond
+;; "these are the only characters a JSON number can contain" — malformed
+;; numbers like "1.2.3" are handed to strtod, which parses the leading
+;; valid prefix "1.2" and silently ignores the rest; a real, honest,
+;; narrower-than-strict-JSON limitation, not a crash).
+(defn parse-number [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [n (string/length s)]
+    (loop [p (if (= (string/char-at s pos) 45) (+ pos 1) pos)]
+      (cond
+        ((and (< p n) (string/is-digit? (string/char-at s p))) (recur (+ p 1)))
+        ((and (< p n) (= (string/char-at s p) 46)) (recur (+ p 1)))  ;; '.'
+        ((and (< p n) (or (= (string/char-at s p) 101) (= (string/char-at s p) 69)))  ;; e/E
+          (recur (+ p 1)))
+        ((and (< p n) (or (= (string/char-at s p) 43) (= (string/char-at s p) 45)))  ;; +/-
+          (recur (+ p 1)))
+        (true
+          (if (= p pos)
+            (Err (JsonError "invalid number" pos))
+            (let [slice (string/substring s pos p dest)]
+              (Ok (JsonStep (JNumber (parse-f64-raw slice)) p)))))))))
+
+;; find-string-end — scans past the closing '"' of a string literal
+;; starting at `pos` (which must point AT the opening quote), honoring
+;; backslash-escaped quotes so an escaped `\"` inside the string doesn't
+;; end the scan early. Returns the position of the closing quote itself
+;; (not past it), or -1 on an unterminated string.
+(defn find-string-end [(s : String @ Region) (pos : I32)]
+  : I32
+  (let [n (string/length s)]
+    (loop [p (+ pos 1)]
+      (cond
+        ((>= p n) -1)
+        ((= (string/char-at s p) 34) p)                          ;; unescaped '"'
+        ((= (string/char-at s p) 92) (recur (+ p 2)))             ;; '\' — skip the escaped char too
+        (true (recur (+ p 1)))))))
+
+(defn parse-string-value [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [close (find-string-end s pos)]
+    (if (< close 0)
+      (Err (JsonError "unterminated string" pos))
+      (Ok (JsonStep (JString (json-unescape s (+ pos 1) close dest)) (+ close 1))))))
+
+(defn parse-array [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [n (string/length s)
+        items (vec/new dest)
+        p1 (skip-ws s (+ pos 1))]
+    (if (and (< p1 n) (= (string/char-at s p1) 93))  ;; ']' — empty array
+      (Ok (JsonStep (JArray items) (+ p1 1)))
+      (match (parse-value s p1 dest)
+        ((Err e) (Err e))
+        ((Ok first)
+          (do
+            (vec/push! &items (get-field (deref first) :value))
+            (loop [p (skip-ws s (get-field (deref first) :next))]
+              (cond
+                ((>= p n) (Err (JsonError "unterminated array" pos)))
+                ((= (string/char-at s p) 93) (Ok (JsonStep (JArray items) (+ p 1))))  ;; ']'
+                ((= (string/char-at s p) 44)  ;; ','
+                  (match (parse-value s (skip-ws s (+ p 1)) dest)
+                    ((Err e) (Err e))
+                    ((Ok step)
+                      (do
+                        (vec/push! &items (get-field (deref step) :value))
+                        (recur (skip-ws s (get-field (deref step) :next)))))))
+                (true (Err (JsonError "expected ',' or ']'" p)))))))))))
+
+(defn parse-object [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result JsonStep JsonError) @ Region
+  (let [n (string/length s)
+        keys (vec/new dest)
+        values (vec/new dest)
+        p1 (skip-ws s (+ pos 1))]
+    (if (and (< p1 n) (= (string/char-at s p1) 125))  ;; '}' — empty object
+      (Ok (JsonStep (JObject dest keys values) (+ p1 1)))
+      (match (parse-member s p1 dest)
+        ((Err e) (Err e))
+        ((Ok first)
+          (do
+            (vec/push! &keys (get-field (deref first) :key))
+            (vec/push! &values (get-field (deref first) :value))
+            (loop [p (skip-ws s (get-field (deref first) :next))]
+              (cond
+                ((>= p n) (Err (JsonError "unterminated object" pos)))
+                ((= (string/char-at s p) 125) (Ok (JsonStep (JObject dest keys values) (+ p 1))))  ;; '}'
+                ((= (string/char-at s p) 44)  ;; ','
+                  (match (parse-member s (skip-ws s (+ p 1)) dest)
+                    ((Err e) (Err e))
+                    ((Ok step)
+                      (do
+                        (vec/push! &keys (get-field (deref step) :key))
+                        (vec/push! &values (get-field (deref step) :value))
+                        (recur (skip-ws s (get-field (deref step) :next)))))))
+                (true (Err (JsonError "expected ',' or '}'" p)))))))))))
+
+;; MemberStep — one real "key": value pair plus the next position, the
+;; object-parsing equivalent of JsonStep above (kept separate since it
+;; threads a String key alongside the JsonValue, not the same shape).
+(defstruct MemberStep
+  (key   : String @ Region)
+  (value : JsonValue @ Region)
+  (next  : I32))
+
+(defn parse-member [(s : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result MemberStep JsonError) @ Region
+  (let [n (string/length s)]
+    (if (or (>= pos n) (not (= (string/char-at s pos) 34)))
+      (Err (JsonError "expected string key" pos))
+      (let [close (find-string-end s pos)]
+        (if (< close 0)
+          (Err (JsonError "unterminated key string" pos))
+          (let [key (json-unescape s (+ pos 1) close dest)
+                p1 (skip-ws s (+ close 1))]
+            (if (or (>= p1 n) (not (= (string/char-at s p1) 58)))  ;; ':'
+              (Err (JsonError "expected ':' after key" p1))
+              (match (parse-value s (skip-ws s (+ p1 1)) dest)
+                ((Err e) (Err e))
+                ((Ok step)
+                  (Ok (MemberStep key (get-field (deref step) :value) (get-field (deref step) :next))))))))))))

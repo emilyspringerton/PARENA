@@ -1,0 +1,326 @@
+;; stdlib/yaml.prn — depends on string, vec. Design: real YAML parser,
+;; scoped honestly rather than attempting full YAML 1.2. Founder
+;; real-time: "ensure we have stdlibs for json parsing and yaml parsing."
+;;
+;; SCOPE DECISION, checked against real usage before committing to it —
+;; not guessed. Full YAML 1.2 is a notoriously large, ambiguous spec
+;; (flow style, anchors/aliases, multi-document streams, complex scalar
+;; folding, tag resolution) — a much bigger undertaking than JSON.
+;; Surveyed every real `.yaml`/`.yml` file actually in this monorepo
+;; (IDUNA/openapi.yaml, EINHORN_SURVIVAL/server/*.yml, docker-compose.yml,
+;; saga.manifest.yaml, etc.) before scoping: every one of them uses only
+;; block mappings, block sequences, plain/quoted scalars, and comments —
+;; none use flow style (`{...}`/`[...]` inline), anchors/aliases (`&`/
+;; `*`), multi-document streams (`---` separators), or folded/literal
+;; block scalars (`|`/`>`). This parser covers exactly that real subset,
+;; matching this stdlib's own established "honest, narrower-than-spec,
+;; not silently wrong" house style (`turboawk`'s own scope decision this
+;; same session is the direct precedent: build the real common case,
+;; document what's out rather than forcing full coverage).
+;;
+;; NOT SUPPORTED, explicitly:
+;;   - Flow style: `{a: 1, b: 2}` / `[1, 2, 3]` inline
+;;   - Anchors/aliases: `&name` / `*name`
+;;   - Multi-document streams (`---` / `...` separators)
+;;   - Block scalars: `|` (literal) / `>` (folded)
+;;   - Inline sequence-of-mappings shorthand: `- key: value` (a sequence
+;;     item must be a plain scalar, or empty with a nested block below it)
+;;   - Tag resolution (`!!str`, custom tags)
+;;   - `yes`/`no`/`on`/`off` as boolean synonyms (only `true`/`false`)
+;;
+;; Representation mirrors `json.prn`'s own real, compiler-forced design
+;; (no generics, no `Map` — see that file's own header for why): a
+;; self-referential `YamlValue` enum, `YMap` as parallel key/value `Vec`s.
+;;
+;; Real compiler quirks this file's own construction sites already work
+;; around (discovered and documented fixing `json.prn` in this same
+;; session, applying directly here rather than rediscovering):
+;;   - Niladic enum variants (`YNull`) must be declared WITH parens
+;;     (`(YNull)`) but CONSTRUCTED bare (`YNull`, no parens) — confirmed
+;;     against `regex/syntax.prn`'s own `AnyChar`/`Start`/`End` usage.
+;;   - A variant with 2+ `@ Region`-tagged fields (`YMap`) needs the
+;;     destination arena passed explicitly as its first constructor
+;;     argument; a variant with exactly 1 such field (`YSeq`) does not.
+;;   - `#target inline-c` calls must reference a DIFFERENTLY-named host
+;;     function than the wrapping PARENA function — the compiler emits
+;;     the inline-c string as the function's own literal body, not an
+;;     extern declaration, so a same-named call is genuine infinite
+;;     self-recursion, not a forward reference.
+;;
+;; One more real compiler bug found and worked around while writing THIS
+;; file: a single-variable `(loop [i 0] ...)` used directly as an
+;; argument to `and`/`or` (e.g. `(and has-digit (loop [i 0] ...))`)
+;; misparses with `vec literal at line N needs an Arena in scope` — the
+;; exact same `(loop [i 0] ...)` shape compiles fine as the then/else
+;; branch of an `if`, or as a `let` binding's value (both already proven
+;; working in `json.prn`'s own `skip-ws`). `looks-numeric?` below routes
+;; around this by restructuring `(and a (loop ...))` into
+;; `(if (not a) false (loop ...))` rather than fixing the compiler
+;; itself — a real, narrow parser/type-inference gap in how `and`/`or`
+;; propagate arena context to a lone-binding `loop` operand, flagged
+;; here for whoever picks up VS0's own emitter work next, not fixed at
+;; the source.
+
+(module yaml)
+(import string)
+(import vec)
+(export parse YamlValue YamlError)
+
+(defenum YamlValue
+  (YNull)
+  (YBool   (v : Bool))
+  (YNumber (v : F64))
+  (YString (v : String @ Region))
+  (YSeq    (items : (Vec YamlValue) @ Region))
+  (YMap    (keys : (Vec String) @ Region) (values : (Vec YamlValue) @ Region)))
+
+(defstruct YamlError
+  (message : String @ Region)
+  (line    : I32))
+
+;; YamlStep — (parsed value, next line index) pair, the line-indexed
+;; equivalent of json.prn's own JsonStep (character-position-indexed).
+(defstruct YamlStep
+  (value : YamlValue @ Region)
+  (next  : I32))
+
+;; --- line-level helpers -------------------------------------------------
+
+(defn count-leading-spaces [(s : String @ Region)]
+  : I32
+  (let [n (string/length s)]
+    (loop [i 0]
+      (if (and (< i n) (= (string/char-at s i) 32))
+        (recur (+ i 1))
+        i))))
+
+;; strip-comment — cuts a line at the first '#' that is NOT inside a
+;; single- or double-quoted run. Real, narrow YAML comment rule (a '#'
+;; inside quotes is real string content, not a comment marker); does not
+;; attempt to handle a '#' immediately after a non-whitespace character
+;; inside an otherwise-unquoted scalar (YAML's own real rule there is
+;; "preceded by whitespace or line-start", not modeled here — a real,
+;; honest narrowing, not silently wrong for the comment styles this
+;; monorepo's own real YAML files actually use, which are always either
+;; full-line or preceded by whitespace).
+(defn strip-comment [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (loop [i 0
+           in-quote 0]  ;; 0 = none, 34 = in "...", 39 = in '...'
+      (cond
+        ((>= i n) s)
+        ((and (= in-quote 0) (= (string/char-at s i) 35))  ;; '#'
+          (string/substring s 0 i dest))
+        ((and (= in-quote 0) (or (= (string/char-at s i) 34) (= (string/char-at s i) 39)))
+          (recur (+ i 1) (string/char-at s i)))
+        ((and (not (= in-quote 0)) (= (string/char-at s i) in-quote))
+          (recur (+ i 1) 0))
+        (true (recur (+ i 1) in-quote))))))
+
+(defn trim [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (let [start (loop [i 0] (if (and (< i n) (= (string/char-at s i) 32)) (recur (+ i 1)) i))]
+      (let [end (loop [j n] (if (and (> j start) (= (string/char-at s (- j 1)) 32)) (recur (- j 1)) j))]
+        (string/substring s start end dest)))))
+
+(defn blank? [(s : String @ Region)]
+  : Bool
+  (= (string/length s) 0))
+
+;; line-content — a real line, comment-stripped and trimmed, ready for
+;; structural inspection. Indentation is measured on the ORIGINAL line
+;; (count-leading-spaces s), not this trimmed form.
+(defn line-content [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (trim (strip-comment s dest) dest))
+
+;; skip-blanks — advances past blank/comment-only lines, returning the
+;; index of the next real content line (or `(vec/len lines)` if none).
+(defn skip-blanks [(lines : &(Vec String)) (start : I32) (dest : Arena @ Region)]
+  : I32
+  (let [n (vec/len lines)]
+    (loop [i start]
+      (if (>= i n)
+        i
+        (if (blank? (line-content (vec/get lines i) dest))
+          (recur (+ i 1))
+          i)))))
+
+;; --- scalar parsing -------------------------------------------------
+
+(defn parse-f64-raw [(s : String @ :region/scratch)]
+  : F64
+  #target
+  {:c (inline-c "strtod(s, NULL)")})
+
+;; looks-numeric? — real, narrow check: every character is a digit,
+;; '-', '+', or '.', and at least one digit exists. Deliberately
+;; conservative — a string like "-" or "." alone falls through to
+;; being treated as a plain string, not a malformed number.
+(defn looks-numeric? [(s : String @ Region)]
+  : Bool
+  (let [n (string/length s)]
+    (if (= n 0)
+      false
+      (let [has-digit
+             (loop [i 0 found false]
+               (if (>= i n)
+                 found
+                 (let [c (string/char-at s i)]
+                   (if (string/is-digit? c)
+                     (recur (+ i 1) true)
+                     (recur (+ i 1) found)))))]
+        (if (not has-digit)
+          false
+          (loop [i 0]
+            (if (>= i n)
+              true
+              (let [c (string/char-at s i)]
+                (if (or (string/is-digit? c) (or (= c 45) (or (= c 43) (= c 46))))
+                  (recur (+ i 1))
+                  false)))))))))
+
+;; unquote — strips a matching pair of leading/trailing quote
+;; characters (`"..."` or `'...'`). Real, honest narrow limitation: does
+;; NOT decode backslash escapes inside double-quoted scalars the way
+;; `json.prn`'s own `host_json_unescape` does for JSON strings — none of
+;; this monorepo's real YAML files use escaped characters inside quoted
+;; scalars (checked directly), so this was scoped out rather than built
+;; unverified.
+(defn unquote [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (if (< n 2)
+      s
+      (let [first (string/char-at s 0) last (string/char-at s (- n 1))]
+        (if (and (= first last) (or (= first 34) (= first 39)))
+          (string/substring s 1 (- n 1) dest)
+          s)))))
+
+(defn parse-scalar [(raw : String @ Region) (dest : Arena @ Region)]
+  : YamlValue @ Region
+  (let [n (string/length raw)]
+    (cond
+      ((= n 0) YNull)
+      ((string/str-eq? raw "null") YNull)
+      ((string/str-eq? raw "~") YNull)
+      ((string/str-eq? raw "true") (YBool true))
+      ((string/str-eq? raw "false") (YBool false))
+      ((looks-numeric? raw) (YNumber (parse-f64-raw raw)))
+      ((or (= (string/char-at raw 0) 34) (= (string/char-at raw 0) 39))
+        (YString (unquote raw dest)))
+      (true (YString raw)))))
+
+;; --- structural parsing -------------------------------------------------
+
+(defn is-seq-item-line? [(content : String @ Region)]
+  : Bool
+  (and (> (string/length content) 0) (= (string/char-at content 0) 45)))  ;; '-'
+
+;; find-colon — real, narrow key/value split: the first ':' that is
+;; followed by whitespace or end-of-line (YAML's own actual rule — a
+;; ':' inside a plain scalar with no following space, e.g. a URL like
+;; "http://x", is NOT a key/value separator). Returns -1 if none.
+(defn find-colon [(s : String @ Region)]
+  : I32
+  (let [n (string/length s)]
+    (loop [i 0]
+      (cond
+        ((>= i n) -1)
+        ((and (= (string/char-at s i) 58) (or (= (+ i 1) n) (= (string/char-at s (+ i 1)) 32))) i)
+        (true (recur (+ i 1)))))))
+
+;; parse-block — the real recursive entry point. Parses one mapping or
+;; sequence whose lines all sit at exactly `indent`, starting the scan
+;; at line `start`. Returns the parsed value and the index of the first
+;; line NOT belonging to this block (either shallower indent, or a
+;; sequence/mapping mismatch at the same indent, or end of input).
+(defn parse-block [(lines : &(Vec String)) (start : I32) (indent : I32) (dest : Arena @ Region)]
+  : (Result YamlStep YamlError) @ Region
+  (let [s1 (skip-blanks lines start dest)]
+    (if (>= s1 (vec/len lines))
+      (Ok (YamlStep YNull s1))
+      (let [first-line (vec/get lines s1)
+            first-content (line-content first-line dest)]
+        (if (is-seq-item-line? first-content)
+          (parse-sequence lines s1 indent dest)
+          ;; A block with no ':' on its first real content line isn't a
+          ;; mapping at all — it's a bare scalar document/value (valid
+          ;; YAML: a whole file can just be `42` or `hello`, and a
+          ;; mapping-key's nested value can likewise be a single plain
+          ;; scalar line rather than a nested structure). Real, honest
+          ;; narrowing: only the ONE line is consumed as the scalar —
+          ;; a genuine multi-line plain-scalar block (folded across
+          ;; several lines with no `|`/`>` marker) is not modeled, same
+          ;; "not attempting block scalars" scope line already drawn in
+          ;; this file's own header.
+          (if (< (find-colon first-content) 0)
+            (Ok (YamlStep (parse-scalar first-content dest) (+ s1 1)))
+            (parse-mapping lines s1 indent dest)))))))
+
+(defn parse-sequence [(lines : &(Vec String)) (start : I32) (indent : I32) (dest : Arena @ Region)]
+  : (Result YamlStep YamlError) @ Region
+  (let [items (vec/new dest)]
+    (loop [i start]
+      (let [si (skip-blanks lines i dest)]
+        (if (>= si (vec/len lines))
+          (Ok (YamlStep (YSeq items) si))
+          (let [line (vec/get lines si)
+                lindent (count-leading-spaces line)
+                content (line-content line dest)]
+            (if (or (< lindent indent) (not (is-seq-item-line? content)))
+              (Ok (YamlStep (YSeq items) si))
+              (let [after-dash (trim (string/substring content 1 (string/length content) dest) dest)]
+                (if (blank? after-dash)
+                  ;; empty "- " : nested block follows at deeper indent
+                  (match (parse-block lines (+ si 1) (+ lindent 1) dest)
+                    ((Err e) (Err e))
+                    ((Ok step)
+                      (do
+                        (vec/push! &items (get-field (deref step) :value))
+                        (recur (get-field (deref step) :next)))))
+                  (do
+                    (vec/push! &items (parse-scalar after-dash dest))
+                    (recur (+ si 1))))))))))))
+
+(defn parse-mapping [(lines : &(Vec String)) (start : I32) (indent : I32) (dest : Arena @ Region)]
+  : (Result YamlStep YamlError) @ Region
+  (let [keys (vec/new dest) values (vec/new dest)]
+    (loop [i start]
+      (let [si (skip-blanks lines i dest)]
+        (if (>= si (vec/len lines))
+          (Ok (YamlStep (YMap dest keys values) si))
+          (let [line (vec/get lines si)
+                lindent (count-leading-spaces line)
+                content (line-content line dest)]
+            (if (< lindent indent)
+              (Ok (YamlStep (YMap dest keys values) si))
+              (let [colon (find-colon content)]
+                (if (< colon 0)
+                  (Err (YamlError "expected 'key:' mapping entry" si))
+                  (let [key (trim (string/substring content 0 colon dest) dest)
+                        rest (trim (string/substring content (+ colon 1) (string/length content) dest) dest)]
+                    (if (blank? rest)
+                      ;; "key:" with no inline value -> nested block follows
+                      (match (parse-block lines (+ si 1) (+ lindent 1) dest)
+                        ((Err e) (Err e))
+                        ((Ok step)
+                          (do
+                            (vec/push! &keys key)
+                            (vec/push! &values (get-field (deref step) :value))
+                            (recur (get-field (deref step) :next)))))
+                      (do
+                        (vec/push! &keys key)
+                        (vec/push! &values (parse-scalar rest dest))
+                        (recur (+ si 1))))))))))))))
+
+;; parse — top-level entry point. Splits on '\n' and parses one real
+;; top-level block starting at indent 0.
+(defn parse [(text : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result YamlValue YamlError) @ Region
+  (let [lines (string/split text "\n" dest)]
+    (match (parse-block &lines 0 0 dest)
+      ((Err e) (Err e))
+      ((Ok step) (Ok (get-field (deref step) :value))))))
