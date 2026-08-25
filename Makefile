@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile turbogrep clean
 
 all: build
 
@@ -67,6 +67,26 @@ test-domain5: build
 
 test-multifile: build
 	bash tests/integration/run_multifile_check.sh
+
+# turbogrep -- real, standalone verification/benchmark CLI for
+# stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the
+# real corpus run this backs). tools/turbogrep_host.c is deliberately
+# concatenated onto the end of the generated grep output rather than
+# compiled as its own translation unit -- Parena's own generated
+# structs (FileHandle/Engine/OpenMode/Vec/Arena/Result) have no
+# emitted header yet, so a separate .c file would need hand-duplicated
+# declarations with a real, silent ABI-mismatch risk if they ever
+# drift; concatenation instead inherits the real, single, generated
+# definitions directly, the same shape this session's own /tmp test
+# harnesses already verified working. Not wired into the `parena` CLI
+# itself the way `ci-status` is -- see EMILY/BACKLOG.md's own S170-295
+# for why (turbo-sed/turbo-awk don't exist yet, and a system PATH swap
+# is a separate, explicitly-approved step).
+turbogrep: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
+		stdlib/regex/pcre.prn stdlib/grep.prn -o /tmp/turbogrep_gen.c
+	cat /tmp/turbogrep_gen.c tools/turbogrep_host.c > /tmp/turbogrep_full.c
+	$(CC) -std=c99 -O2 -I runtime /tmp/turbogrep_full.c src/arena.c -o turbogrep
 
 tests/test_lexer_parser: tests/test_lexer_parser.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_lexer_parser tests/test_lexer_parser.c $(OBJ)
