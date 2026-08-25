@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver turbogrep clean
 
 all: build
 
@@ -87,6 +87,23 @@ test-yaml: build
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_yaml.c runtime/parena_runtime.c \
 		-o /tmp/test_yaml_bin -lm
 	/tmp/test_yaml_bin
+
+# test-webdriver -- real end-to-end verification for
+# stdlib/net/webdriver.prn (the WebDriver-protocol "Selenium bindings"),
+# same discipline as test-json/test-yaml above. Fully self-contained,
+# no external process orchestration here: tests/test_webdriver.c itself
+# starts and stops tests/fake_webdriver_server (a real Go binary
+# standing in for a real WebDriver driver -- see that file's own header
+# for the honest scope of what it stands in for) through real PARENA
+# FFI (stdlib/process.prn's process-spawn/process-kill), not shell
+# scripting around this Makefile target.
+test-webdriver: build
+	./parena build stdlib/string.prn stdlib/json.prn stdlib/net/tcp.prn stdlib/net/http.prn \
+		stdlib/net/webdriver.prn stdlib/process.prn -o tests/test_webdriver_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_webdriver.c runtime/parena_runtime.c \
+		-o /tmp/test_webdriver_bin -lm
+	cd tests && go build -o fake_webdriver_server fake_webdriver_server.go
+	cd tests && /tmp/test_webdriver_bin ./fake_webdriver_server 9515
 
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the

@@ -7,4 +7,5 @@ bazel-*
 tools/ci_status_gen.c
 .parena-bootstrap
 turbogrep
+tests/fake_webdriver_server
 var/

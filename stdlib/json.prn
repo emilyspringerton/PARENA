@@ -52,7 +52,7 @@
 (module json)
 (import string)
 (import vec)
-(export parse JsonValue JsonError)
+(export parse JsonValue JsonError get as-string)
 
 (defenum JsonValue
   (JNull)
@@ -282,3 +282,36 @@
                 ((Err e) (Err e))
                 ((Ok step)
                   (Ok (MemberStep key (get-field (deref step) :value) (get-field (deref step) :next))))))))))))
+
+;; get / as-string — added 2026-08-25, real, obviously-missing pieces
+;; found building stdlib/net/webdriver.prn on top of this file: every
+;; WebDriver response is `{"value": ...}`-wrapped JSON that needs
+;; field lookup and leaf-string extraction, and this file only ever
+;; had `parse` -- nothing to read the tree back with. `get` is O(n) in
+;; the object's own key count, matching JObject's own parallel-Vec
+;; representation (no hash map, documented at the top of this file);
+;; real and honest for the small, shallow objects a WebDriver response
+;; actually is, not claimed to scale further than that.
+
+;; get — looks up `key` in a JObject, None for any other JsonValue
+;; variant (not an error: "the value at this path isn't an object" and
+;; "the key isn't present" collapse to the same real answer a caller
+;; needs — absent).
+(defn get [(v : JsonValue @ Region) (key : String @ Region)]
+  : (Option JsonValue) @ Region
+  (match v
+    ((JObject keys values)
+      (let [n (vec/len &keys)]
+        (loop [i 0]
+          (cond
+            ((>= i n) None)
+            ((string/str-eq? (vec/get &keys i) key) (Some (vec/get &values i)))
+            (true (recur (+ i 1)))))))
+    (_ None)))
+
+;; as-string — unwraps a JString leaf, None for any other variant.
+(defn as-string [(v : JsonValue @ Region)]
+  : (Option String) @ Region
+  (match v
+    ((JString s) (Some s))
+    (_ None)))

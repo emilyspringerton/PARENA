@@ -1,0 +1,69 @@
+;; stdlib/process.prn — depends on string. Design: new, real, undesigned-
+;; in-STDLIB.md work, added 2026-08-25 building stdlib/net/webdriver.prn's
+;; own test harness: a fixture process (tests/fake_webdriver_server.go,
+;; a real Go binary standing in for a real WebDriver driver -- see that
+;; file's own header) needs to be started and later stopped, and the
+;; founder asked for that launch itself to go through real PARENA FFI
+;; rather than shell/Makefile scripting around it -- "wrap it in parena
+;; ffi if possible".
+;;
+;; Real, narrow scope, stated plainly: fork+exec, one argument, no
+;; pipe/stdio capture, no wait/reap. This is "start an external helper
+;; and later kill it by pid" -- the exact shape a test harness spawning
+;; a fixture server needs -- not a general subprocess/IPC library
+;; (real, separate, future scope: captured stdout/stderr, multiple
+;; args, wait-for-exit).
+;;
+;; Real, honest note on what "FFI" means here: spawning a separately-
+;; compiled Go binary is OS-level process composition (fork+exec, the
+;; same mechanism a shell uses to run any program), not code-level
+;; linking -- there is no shared memory or symbol resolution between
+;; the two processes' runtimes, so there is no Go/C runtime conflict to
+;; worry about. `spawn` below is the real FFI boundary: a PARENA
+;; program calling a real C syscall wrapper to launch an arbitrary
+;; external program, exactly the same shape shell.prn's own
+;; lookup-path/env-lookup already establish for "OS interop goes
+;; through inline-c".
+
+(module process)
+(import string)
+(export process-spawn process-kill ProcessError)
+
+(defenum ProcessError
+  (SpawnFailed)
+  (KillFailed))
+
+(defn raw-spawn [(path : String @ Region) (arg1 : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "spawn_detached_impl(path, arg1)")})
+
+(defn raw-kill [(pid : I32)]
+  : I32
+  #target
+  {:c (inline-c "process_kill_impl(pid)")})
+
+;; spawn — fork+exec `path` with exactly one argument, detached (no
+;; wait/reap -- the caller owns the returned pid and is expected to
+;; `kill` it when done, same contract a test harness starting a fixture
+;; server and tearing it down after has). Real, honest, narrow: no PATH
+;; search (`path` must be a real, resolvable path, absolute or
+;; relative to the calling process's own cwd, matching plain execl's
+;; own real semantics -- shell.prn's own `lookup-path` is the tool for
+;; PATH resolution, not duplicated here).
+(defn process-spawn [(path : String @ :region/scratch) (arg1 : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result I32 ProcessError) @ Region
+  (let [pid (raw-spawn path arg1)]
+    (if (< pid 0)
+      (Err SpawnFailed)
+      (Ok pid))))
+
+;; kill — SIGTERM, not SIGKILL: a real fixture server (like
+;; fake_webdriver_server.go, a plain net/http.ListenAndServe) exits
+;; cleanly on SIGTERM with Go's own default handling, no forced-kill
+;; needed for this real, narrow use case.
+(defn process-kill [(pid : I32) (dest : Arena @ Region)]
+  : (Result Unit ProcessError) @ Region
+  (if (< (raw-kill pid) 0)
+    (Err KillFailed)
+    (Ok unit)))

@@ -32,6 +32,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <signal.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -599,6 +601,32 @@ static inline int tcp_write_impl(int fd, const char *s) {
 
 static inline int tcp_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
+}
+
+/* ---- stdlib/process.prn real host glue (2026-08-25) -------------------
+ * Real fork+exec, detached (no pipe/wait plumbing -- this stdlib's own
+ * real, narrow scope is "start an external helper process and later
+ * kill it by pid", the exact shape a test harness spawning a fixture
+ * server needs, not a general subprocess/IPC library). A double-fork
+ * is deliberately NOT used: the child stays this process's direct
+ * child so process_kill_impl's real pid is meaningful and a stray
+ * child is visible to `ps` rooted at this process, matching the "start
+ * it, kill it yourself" contract callers get -- no orphan-and-forget
+ * daemonization semantics assumed. */
+static inline int spawn_detached_impl(const char *path, const char *arg1) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        /* Child: replace this process image entirely. execl only
+         * returns on failure. */
+        execl(path, path, arg1, (char *)NULL);
+        _exit(127);
+    }
+    return (int)pid;
+}
+
+static inline int process_kill_impl(int pid) {
+    return kill((pid_t)pid, SIGTERM) == 0 ? 0 : -1;
 }
 
 #endif /* PARENA_RUNTIME_H */

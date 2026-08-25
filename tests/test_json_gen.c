@@ -98,6 +98,8 @@ Result parse_string_value(char *, int, Arena *);
 Result parse_array(char *, int, Arena *);
 Result parse_object(char *, int, Arena *);
 Result parse_member(char *, int, Arena *);
+Option get(JsonValue, char *);
+Option as_string(JsonValue);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -539,5 +541,49 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
     }
     }
     }
+}
+
+Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused))) {
+    Option __match_result_4 __attribute__((unused));
+    JsonValue __match_tmp_6 = v;
+    if (__match_tmp_6.tag == 5) {
+        JsonValue_JObject_Payload *__match_payload_6 = (JsonValue_JObject_Payload *)(__match_tmp_6.value);
+        Vec keys __attribute__((unused)) = __match_payload_6->keys;
+        Vec values __attribute__((unused)) = __match_payload_6->values;
+        int n __attribute__((unused)) = vec_len(&(keys));
+    double i = 0;
+    while (1) {
+        if ((i >= n)) {
+        __match_result_4 = option_none();
+        break;
+        } else {
+        if (str_eq_(vec_get(&(keys), i), key)) {
+        __match_result_4 = option_some(vec_get(&(values), i));
+        break;
+        } else {
+        double __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    }
+    else if (1) {
+        __match_result_4 = option_none();
+    }
+    return __match_result_4;
+}
+
+Option as_string(JsonValue v __attribute__((unused))) {
+    Option __match_result_5 __attribute__((unused));
+    JsonValue __match_tmp_7 = v;
+    if (__match_tmp_7.tag == 3) {
+        void *s __attribute__((unused)) = __match_tmp_7.value;
+        __match_result_5 = option_some(s);
+    }
+    else if (1) {
+        __match_result_5 = option_none();
+    }
+    return __match_result_5;
 }
 
