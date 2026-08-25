@@ -88,6 +88,22 @@ test-yaml: build
 		-o /tmp/test_yaml_bin -lm
 	/tmp/test_yaml_bin
 
+# test-awk -- real end-to-end verification for stdlib/expr.prn (the
+# arithmetic/string/variable-binding expression evaluator) and
+# stdlib/awk.prn's own read-split-match-evaluate pipeline, same
+# discipline as test-json/test-yaml above. Deliberately NOT a
+# `turboawk` CLI target (unlike turbogrep/turbosed below): expr.prn's
+# expression language has no `print`/output primitive yet, so there is
+# no real, honest CLI to build here -- see tests/test_awk.c's own
+# header comment. This target is the real thing that exists today.
+test-awk: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn \
+		stdlib/regex/syntax.prn stdlib/regex/pcre.prn stdlib/expr.prn stdlib/awk.prn \
+		-o tests/test_awk_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_awk.c runtime/parena_runtime.c \
+		-o /tmp/test_awk_bin -lm
+	/tmp/test_awk_bin
+
 # test-webdriver -- real end-to-end verification for
 # stdlib/net/webdriver.prn (the WebDriver-protocol "Selenium bindings"),
 # same discipline as test-json/test-yaml above. Fully self-contained,

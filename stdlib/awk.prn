@@ -11,7 +11,6 @@
 (import vec)
 (import string)
 (import io)
-(import map)
 (export run)
 
 (defstruct AwkRule
@@ -21,45 +20,92 @@
 (defstruct AwkProgram (rules : (Vec AwkRule) @ Region))
 (defstruct Record (fields : (Vec String) @ Region) (nr : I32))
 
+;; Real compiler-gap workaround, matching grep.prn/sed.prn's own established pattern (see
+;; sed.prn's own header comment on stream-substitute for the full explanation): VS0's
+;; match-clause binder only collects TRAILING SYMBOL bindings one level deep, so a nested
+;; compound pattern like `(Ok (Some line))` never actually binds `line` -- split into two
+;; sequential single-level matches instead. Also fixed read-line's real arity (`(!f dest)`,
+;; not `(!f)` -- it needs an Arena to allocate the returned line into, per io.prn's own
+;; current signature).
 (defn run [(!f : FileHandle @ :region/task) (program : &AwkProgram) (dest : Arena @ Region)]
   : (Result Unit IoError) @ Region
   (loop [nr 1]
-    (match (io/read-line !f)
-      ((Ok (Some line))
-        (do
-          (run-rules (get-field program :rules) (record-from-line line nr dest) dest)
-          (recur (+ nr 1))))
-      ((Ok None) (Ok unit))
+    (match (io/read-line !f dest)
+      ((Ok opt)
+        (match (deref opt)
+          ((Some line)
+            (do
+              (run-rules &(get-field program :rules) (record-from-line line nr dest) dest)
+              (recur (+ nr 1))))
+          (None (Ok unit))))
       ((Err e) (Err e)))))
 
 (defn record-from-line [(line : String @ Region) (nr : I32) (dest : Arena @ Region)]
   : Record @ Region
   {:fields (string/split line " " dest) :nr nr})
 
+;; join-fields/concat-field-name -- called by rule-matches?/bindings-for below but,
+;; like parse-expr/EvalError/coerce-num/coerce-str in expr.prn, never actually defined
+;; anywhere in this file (a real, previously-undiscovered gap, found the same way --
+;; only reachable once C13's own shallow bug and expr.prn's own deeper gaps were fixed
+;; and compilation got this far). join-fields rebuilds a real, whitespace-normalized
+;; "$0"-equivalent (real awk's own whole-record text, used for whole-line pattern
+;; matching) from the already-split fields, rather than keeping the original line
+;; separately -- Record has no field for that, and re-joining is the honest fit given
+;; the struct's own current shape. concat-field-name builds "$1".."$N" (1-indexed, real
+;; awk convention) via a narrow #target snprintf cast, matching f64-to-string's own
+;; alloc-then-#target-fill shape in expr.prn.
+(defn join-fields [(rec : Record) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (vec/len &(get-field rec :fields))]
+    (if (= n 0)
+      ""
+      (loop [i 1 acc (vec/get &(get-field rec :fields) 0)]
+        (if (>= i n)
+          acc
+          (recur (+ i 1) (string/concat (string/concat acc " " dest) (vec/get &(get-field rec :fields) i) dest)))))))
+
+(defn concat-field-name [(i : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String 16)]
+    #target
+    {:c (inline-c "snprintf(out, 16, \"$%d\", i + 1);")}
+    out))
+
 (defn run-rules [(rules : &(Vec AwkRule)) (rec : Record) (dest : Arena @ Region)]
   : Unit
   (loop [i 0]
     (when (< i (vec/len rules))
-      (let [rule (vec/get rules i)]
+      (let [rule (vec/get rules i) b (bindings-for rec dest)]
         (when (rule-matches? rule rec dest)
-          (expr/eval (get-field rule :action) &(bindings-for rec dest) dest)))
+          (expr/eval (get-field rule :action) &b dest)))
       (recur (+ i 1)))))
+
+;; unbox-bool -- same real, narrow FFI helper grep.prn's own copy already established
+;; (see that file's own header comment on it): a boxed Bool payload's `deref` can't be
+;; used directly (its own tracked type is already the generic erased "void *"), so a
+;; raw #target cast recovers the real int underneath. Duplicated here rather than
+;; imported from grep.prn purely for this one call site (grep.prn doesn't export it).
+(defn unbox-bool [(b : &Any)]
+  : Bool
+  #target
+  {:c (inline-c "*(int *)b")})
 
 (defn rule-matches? [(rule : &AwkRule) (rec : Record) (dest : Arena @ Region)]
   : Bool
   (match (get-field (deref rule) :pattern)
     (None true)
-    ((Some re) (match (regex/pcre/is-match &re (join-fields rec dest)) ((Ok m) m) ((Err _) false)))))
+    ((Some re) (match (regex/pcre/is-match re (join-fields rec dest) dest) ((Ok m) (unbox-bool m)) ((Err _) false)))))
 
 ;; bindings-for seeds NR/NF/$1../$N — the real awk variable surface a
 ;; program's action expressions reference.
 (defn bindings-for [(rec : Record) (dest : Arena @ Region)]
-  : (Map String ExprValue) @ Region
-  (let [m (map/new dest)]
-    (map/set! &m "NR" (expr/Num (get-field rec :nr)))
-    (map/set! &m "NF" (expr/Num (vec/len &(get-field rec :fields))))
+  : Bindings @ Region
+  (let [b (expr/bindings-new dest)]
+    (expr/bindings-set! &b "NR" (Num (expr/i32-to-f64 (get-field rec :nr))) dest)
+    (expr/bindings-set! &b "NF" (Num (expr/i32-to-f64 (vec/len &(get-field rec :fields)))) dest)
     (loop [i 0]
       (when (< i (vec/len &(get-field rec :fields)))
-        (map/set! &m (concat-field-name i dest) (expr/Str (deref (vec/get &(get-field rec :fields) i))))
+        (expr/bindings-set! &b (concat-field-name i dest) (Str (vec/get &(get-field rec :fields) i)) dest)
         (recur (+ i 1))))
-    m))
+    b))

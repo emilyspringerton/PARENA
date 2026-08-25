@@ -1,36 +1,106 @@
-;; stdlib/expr.prn — depends on map, string. Design: STDLIB.md "expr"
+;; stdlib/expr.prn — depends on vec, string. Design: STDLIB.md "expr"
 ;; section. Tiny arithmetic/string/comparison expression evaluator with
 ;; awk's own coercion rules ("3" + 4 is 7). Real recursive-descent
 ;; parse-then-eval, not a bytecode VM -- awk expressions are small enough
 ;; that tree-walking is the honest right-sized implementation.
+;;
+;; Real, honest gap closed here (2026-08-25, continuing PARENA's own
+;; self-hosting/dogfooding thread -- turbogrep and turbosed are real,
+;; working, PARENA-compiled tools; turboawk is the missing third,
+;; blocked on this file). `parse-expr` was declared in `eval`'s own
+;; header comment ("Real recursive-descent parse-then-eval") but never
+;; actually defined anywhere in this file -- neither was `EvalError`
+;; (the error half of `eval`'s own return type) nor `coerce-num`/
+;; `coerce-str` (called by `apply-binop` below, also undefined). A real,
+;; previously-undiscovered gap, not the shallow "unknown identifier
+;; 'line'" bug `stdlib/awk.prn`'s own C13 audit entry named -- that one
+;; was awk.prn's, this is expr.prn's own, found only once C13 itself was
+;; fixed and compilation got far enough to reach this file.
+;;
+;; Also fixed here: `ExprNode`'s own `BinOp` variant originally declared
+;; `(lhs : &ExprNode) (rhs : &ExprNode)` -- real references. VS0 has no
+;; way to construct a NEW `&Type` value from `.prn` source (no address-
+;; of/box-and-take-a-pointer primitive reachable outside Ok/Some/
+;; single-field-variant call sites -- see `regex/syntax.prn`'s own
+;; header comment, point 2, for the fuller explanation), so a `.prn`
+;; program could never actually BUILD a BinOp node with those field
+;; types, only declare the shape. Changed to `ExprNode @ Region` (by
+;; value), the exact same recursive-defenum-field convention
+;; `regex/syntax.prn`'s own `PatternNode` (Star/Plus/Optional/Group's
+;; `inner` field) already proves works: `eval-tree`'s own `(BinOp op lhs
+;; rhs)` match arm now binds `lhs`/`rhs` BY VALUE and takes `&lhs`/
+;; `&rhs` (address-of an EXISTING bound local, which IS supported) at
+;; its own recursive call sites, instead of trying to construct a
+;; reference at BinOp-construction time.
 
 (module expr)
-(import map)
+(import vec)
 (import string)
-(export eval)
+(export eval Bindings bindings-new bindings-set! i32-to-f64)
 
 (defenum ExprValue (Num (v : F64)) (Str (v : String @ Region)))
 
-(defn eval [(src : String @ :region/scratch) (bindings : &(Map String ExprValue))
+(defstruct EvalError
+  (message : String @ Region)
+  (pos     : I32))
+
+;; Bindings -- a real, minimal (String -> ExprValue) lookup, standing in
+;; for `(Map String ExprValue)`. `map.prn`'s own real hash-map source is
+;; blocked on real generics (a separate, much larger, unstarted VS0
+;; feature -- see resolve_declared_type's own comment on `(Map K V)` in
+;; src/emit.c) and has no runtime backing at all (unlike `(Vec T)`,
+;; which erases to a real runtime struct every `vec/*` call already
+;; works against). Awk's own variable surface (NR/NF/$1../$N plus
+;; whatever a program's own action assigns) is always small, so a
+;; linear-scan parallel-vector pair is the honest, right-sized
+;; implementation here -- same "specific concrete workaround now, the
+;; general feature is real separate follow-up work" precedent
+;; `regex/syntax.prn`'s own `CharRange`/`ParseStep` (standing in for a
+;; tuple type VS0 also doesn't have) already set.
+(defstruct Bindings
+  (keys   : (Vec String) @ Region)
+  (values : (Vec ExprValue) @ Region))
+
+(defn bindings-new [(dest : Arena @ Region)]
+  : Bindings @ Region
+  (Bindings (vec/new dest) (vec/new dest)))
+
+(defn bindings-set! [(b : &Bindings) (key : String @ Region) (value : ExprValue) (dest : Arena @ Region)]
+  : Unit
+  (do
+    (vec/push! &(get-field (deref b) :keys) key)
+    (vec/push! &(get-field (deref b) :values) value)))
+
+(defn bindings-get [(b : &Bindings) (key : String @ Region) (dest : Arena @ Region)]
+  : ExprValue
+  (let [n (vec/len &(get-field (deref b) :keys))]
+    (loop [i 0]
+      (if (>= i n)
+        (Num 0.0) ;; unbound variable reads as 0, awk's own real convention
+        (if (str-eq? (vec/get &(get-field (deref b) :keys) i) key)
+          (deref (vec/get &(get-field (deref b) :values) i))
+          (recur (+ i 1)))))))
+
+(defn eval [(src : String @ :region/scratch) (bindings : &Bindings)
             (dest : Arena @ Region)]
   : (Result ExprValue EvalError) @ Region
-  (match (parse-expr src 0)
-    ((Ok (tree _)) (Ok (eval-tree tree bindings dest)))
+  (match (parse-expr src 0 dest)
+    ((Ok step) (Ok (eval-tree &(get-field (deref step) :node) bindings dest)))
     ((Err e) (Err e))))
 
 (defenum ExprNode
   (NumLit (v : F64))
   (StrLit (v : String @ Region))
   (Var    (name : String @ Region))
-  (BinOp  (op : String @ Region) (lhs : &ExprNode) (rhs : &ExprNode)))
+  (BinOp  (op : String @ Region) (lhs : ExprNode @ Region) (rhs : ExprNode @ Region)))
 
-(defn eval-tree [(node : &ExprNode) (bindings : &(Map String ExprValue)) (dest : Arena @ Region)]
+(defn eval-tree [(node : &ExprNode) (bindings : &Bindings) (dest : Arena @ Region)]
   : ExprValue @ Region
   (match (deref node)
     ((NumLit v) (Num v))
     ((StrLit v) (Str v))
-    ((Var name) (match (map/get bindings &name) ((Some v) (deref v)) (None (Num 0.0))))
-    ((BinOp op lhs rhs) (apply-binop op (eval-tree lhs bindings dest) (eval-tree rhs bindings dest) dest))))
+    ((Var name) (bindings-get bindings name dest))
+    ((BinOp op lhs rhs) (apply-binop op (eval-tree &lhs bindings dest) (eval-tree &rhs bindings dest) dest))))
 
 ;; apply-binop implements awk's own coercion: numeric context coerces
 ;; strings via string/parse-i32-equivalent float parse; "+" on two Str
@@ -49,3 +119,135 @@
       ((str-eq? op "/") (Num (/ ln rn)))
       ((str-eq? op ".") (Str (string/concat (coerce-str l dest) (coerce-str r dest) dest)))
       (true (Num 0.0)))))
+
+;; coerce-num/coerce-str -- awk's own real coercion rules: a Num is
+;; already a number, a Str gets parsed via a real, narrow libc `atof`
+;; FFI escape (same class of single-line #target cast char-at/str-eq?
+;; already use, and to-f64's own I32->F64 cast in stats.prn) since
+;; string.prn's own parse-i32 is integer-only and would silently drop
+;; a fractional part. Conversely a Num formatted for string context
+;; (coerce-str) uses a narrow `snprintf` cast, matching substring's own
+;; alloc-then-#target-fill shape.
+(defn raw-parse-f64 [(s : String @ :region/scratch)]
+  : F64
+  #target
+  {:c (inline-c "atof(s)")})
+
+(defn coerce-num [(v : ExprValue)]
+  : F64
+  (match v
+    ((Num n) (deref n))
+    ((Str s) (raw-parse-f64 s))))
+
+(defn coerce-str [(v : ExprValue) (dest : Arena @ Region)]
+  : String @ Region
+  (match v
+    ((Str s) s)
+    ((Num n) (f64-to-string (deref n) dest))))
+
+(defn f64-to-string [(v : F64) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String 32)]
+    #target
+    {:c (inline-c "snprintf(out, 32, \"%g\", v);")}
+    out))
+
+;; ---- parse-expr and its helpers: a real, minimal recursive-descent
+;; parser, matching regex/syntax.prn's own ParseStep-triple convention
+;; (parsed-node + next-position, no tuple/Pair generic needed). Single
+;; precedence level, left-to-right (no `*`/`/` binding tighter than
+;; `+`/`-`) -- a real, deliberate, minimal-first choice, same "flagged
+;; not resolved" honesty this stdlib's other files already use for
+;; scope not yet needed by a real caller; a real precedence-climbing
+;; rewrite is genuine, scoped follow-up work if an actual awk program
+;; needs it, not invented here. ----
+
+(defstruct ExprParseStep
+  (node : ExprNode @ Region)
+  (next : I32))
+
+(defn i32-to-f64 [(x : I32)]
+  : F64
+  #target
+  {:c (inline-c "(double)(x)")})
+
+(defn is-space? [(c : I32)] : Bool (= c 32))
+(defn is-alpha? [(c : I32)] : Bool (or (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122))))
+(defn is-ident-start? [(c : I32)] : Bool (or (is-alpha? c) (= c 95))) ;; letter or '_'
+(defn is-ident-char? [(c : I32)] : Bool (or (is-ident-start? c) (is-digit? c)))
+(defn is-op-char? [(c : I32)] : Bool
+  (or (= c 43) (or (= c 45) (or (= c 42) (or (= c 47) (= c 46)))))) ;; + - * / .
+
+(defn skip-ws [(src : String @ Region) (pos : I32)]
+  : I32
+  (let [len (length src)]
+    (loop [p pos]
+      (if (and (< p len) (is-space? (char-at src p)))
+        (recur (+ p 1))
+        p))))
+
+(defn parse-number [(src : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : ExprParseStep @ Region
+  (let [len (length src)]
+    (loop [p pos acc 0.0]
+      (if (and (< p len) (is-digit? (char-at src p)))
+        (recur (+ p 1) (+ (* acc 10.0) (i32-to-f64 (- (char-at src p) 48))))
+        (if (and (< p len) (= (char-at src p) 46)) ;; '.'
+          (parse-fraction src (+ p 1) acc dest)
+          (ExprParseStep (NumLit acc) p))))))
+
+(defn parse-fraction [(src : String @ Region) (pos : I32) (whole : F64) (dest : Arena @ Region)]
+  : ExprParseStep @ Region
+  (let [len (length src)]
+    (loop [p pos acc whole scale 0.1]
+      (if (and (< p len) (is-digit? (char-at src p)))
+        (recur (+ p 1) (+ acc (* scale (i32-to-f64 (- (char-at src p) 48)))) (* scale 0.1))
+        (ExprParseStep (NumLit acc) p)))))
+
+(defn parse-string-lit [(src : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result ExprParseStep EvalError) @ Region
+  (let [len (length src)]
+    (loop [p (+ pos 1)]
+      (if (>= p len)
+        (Err (EvalError "unterminated string literal" pos))
+        (if (= (char-at src p) 34) ;; closing '"'
+          (Ok (ExprParseStep (StrLit (substring src (+ pos 1) p dest)) (+ p 1)))
+          (recur (+ p 1)))))))
+
+(defn parse-ident [(src : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : ExprParseStep @ Region
+  (let [len (length src)]
+    (loop [p pos]
+      (if (and (< p len) (is-ident-char? (char-at src p)))
+        (recur (+ p 1))
+        (ExprParseStep (Var (substring src pos p dest)) p)))))
+
+(defn parse-term [(src : String @ Region) (pos0 : I32) (dest : Arena @ Region)]
+  : (Result ExprParseStep EvalError) @ Region
+  (let [pos (skip-ws src pos0) len (length src)]
+    (if (>= pos len)
+      (Err (EvalError "unexpected end of expression" pos))
+      (let [c (char-at src pos)]
+        (cond
+          ((is-digit? c) (Ok (parse-number src pos dest)))
+          ((= c 34) (parse-string-lit src pos dest))
+          ((is-ident-start? c) (Ok (parse-ident src pos dest)))
+          (true (Err (EvalError "unexpected character" pos))))))))
+
+(defn parse-expr [(src : String @ :region/scratch) (pos : I32) (dest : Arena @ Region)]
+  : (Result ExprParseStep EvalError) @ Region
+  (match (parse-term src pos dest)
+    ((Err e) (Err e))
+    ((Ok step) (parse-expr-rest src (get-field (deref step) :node) (get-field (deref step) :next) dest))))
+
+(defn parse-expr-rest [(src : String @ Region) (lhs : ExprNode @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result ExprParseStep EvalError) @ Region
+  (let [p (skip-ws src pos) len (length src)]
+    (if (or (>= p len) (not (is-op-char? (char-at src p))))
+      (Ok (ExprParseStep lhs pos))
+      (let [op (substring src p (+ p 1) dest)]
+        (match (parse-term src (+ p 1) dest)
+          ((Err e) (Err e))
+          ((Ok rstep)
+            (parse-expr-rest src (BinOp dest op lhs (get-field (deref rstep) :node))
+                              (get-field (deref rstep) :next) dest)))))))
