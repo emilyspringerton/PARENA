@@ -88,6 +88,12 @@ turbogrep: build
 	cat /tmp/turbogrep_gen.c tools/turbogrep_host.c > /tmp/turbogrep_full.c
 	$(CC) -std=c99 -O2 -I runtime /tmp/turbogrep_full.c src/arena.c -o turbogrep
 
+turbosed: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
+		stdlib/regex/pcre.prn stdlib/sed.prn -o /tmp/turbosed_gen.c
+	cat /tmp/turbosed_gen.c tools/turbosed_host.c > /tmp/turbosed_full.c
+	$(CC) -std=c99 -O2 -I runtime /tmp/turbosed_full.c src/arena.c -o turbosed
+
 tests/test_lexer_parser: tests/test_lexer_parser.c $(OBJ)
 	$(CC) $(CFLAGS) -o tests/test_lexer_parser tests/test_lexer_parser.c $(OBJ)
 

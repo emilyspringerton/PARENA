@@ -544,6 +544,30 @@
   #target
   {:c (inline-c "((Match *)m)->end")})
 
+;; Real bug found+fixed here 2026-08-25 (never exercised before -- the
+;; turbogrep milestone this file's own rewrite targeted only ever
+;; called compile/is-match, never find-all; caught live once
+;; stdlib/sed.prn's real `replace` started calling it: multi-match
+;; input hung/OOM'd). `find` is always called against a FRESH
+;; substring starting at `start`, so the Match it returns has
+;; start/end relative to THAT substring, not the original `text` --
+;; the old code pushed that relative Match straight into `results`
+;; (wrong absolute position for every match after the first) and
+;; recurred on `(+ (match-end-i32 m) 1)` (a relative offset used as if
+;; it were absolute, so `start` walks the wrong amount each iteration
+;; -- on some inputs this understeps enough that the same match region
+;; gets rescanned forever, the real cause of the hang). Fixed: offset
+;; both the stored Match and the recur position by the running
+;; absolute `start`.
+(defn match-start-i32 [(m : &Match)]
+  : I32
+  #target
+  {:c (inline-c "((Match *)m)->start")})
+
+(defn offset-match [(m : &Match) (offset : I32) (dest : Arena @ Region)]
+  : Match @ Region
+  {:start (+ (match-start-i32 m) offset) :end (+ (match-end-i32 m) offset) :groups (vec/new dest)})
+
 (defn find-all [(re : &Regex) (text : String @ Region) (dest : Arena @ Region)]
   : (Result (Vec Match) BudgetExceededError) @ Region
   (let [results (vec/new dest)]
@@ -553,7 +577,28 @@
           (match (find re (string/substring text start (string/length text) dest) dest)
             ((Ok opt)
               (match (deref opt)
-                ((Some m) (do (vec/push! &results m) (recur (+ (match-end-i32 m) 1))))
+                ((Some m)
+                  (let [absolute (offset-match m start dest)
+                        mend (match-end-i32 &absolute)
+                        mstart (match-start-i32 &absolute)]
+                    (do
+                      (vec/push! &results absolute)
+                      ;; Real off-by-one, found+fixed here (2026-08-25,
+                      ;; live against this repo's own real files --
+                      ;; s/e/E/g on adjacent "ee" only replaced the
+                      ;; first, confirmed via diff against real sed on
+                      ;; 43/68 real .prn files before this fix): a
+                      ;; NON-zero-width match should resume scanning
+                      ;; exactly at its own `end` (real sed's own
+                      ;; non-overlapping-match convention), not
+                      ;; `end + 1` -- that extra +1 silently skipped
+                      ;; one character after every match, missing any
+                      ;; match starting immediately adjacent to the
+                      ;; previous one. Only a genuinely zero-width
+                      ;; match (start == end, e.g. bare `a*` matching
+                      ;; nothing) needs the +1 forward-progress nudge
+                      ;; to avoid rescanning the same position forever.
+                      (recur (+ mend (if (= mend mstart) 1 0))))))
                 (None unit)))
             ((Err _) unit))))
       (Ok results))))
@@ -598,10 +643,66 @@
 ;; for a struct elem type instead of I32, where the #target-escape-
 ;; hatch trick doesn't cleanly apply (get-field's own struct-typed
 ;; resolution needs a REAL registered-defstruct type on the Parena
-;; side, not just a raw C accessor). Not needed for the turbo-grep
-;; milestone this rewrite exists for (grep.prn only calls compile/
-;; is-match) -- left as a real, flagged gap rather than force-fit.
+;; side, not just a raw C accessor).
+;;
+;; Closed 2026-08-25 for the turbosed milestone (stdlib/sed.prn needs a
+;; real, non-stub `replace`) via the exact same #target escape-hatch
+;; pattern vec-i32-at/vec-string-at/match-end-i32 above already use --
+;; vec-match-start-at/vec-match-end-at sidestep the Vec-elem-type-hint
+;; gap entirely by reading the C struct fields directly, no PARENA-side
+;; struct-type registration needed. Parameter typed `&Any` (not
+;; `&(Vec Match)`) on purpose: a `Vec Match` bound via an `Ok` match
+;; clause comes back generically typed `void *` already (same real
+;; "already pointer-typed, don't over-indirect with `&`" class of gap
+;; grep.prn's own header comment documents for `&re`) -- declaring the
+;; PARENA-side param as `&(Vec Match)` produced a real
+;; incompatible-pointer-type warning at the call site; `&Any` matches
+;; what's actually passed with zero cast noise.
+(defn vec-match-start-at [(v : &Any) (idx : I32)]
+  : I32
+  #target
+  {:c (inline-c "((Match *)vec_get((Vec *)v, idx))->start")})
+
+(defn vec-match-end-at [(v : &Any) (idx : I32)]
+  : I32
+  #target
+  {:c (inline-c "((Match *)vec_get((Vec *)v, idx))->end")})
+
+;; replace -- walks find-all's own match boundaries, splicing
+;; `replacement` in between real, unmatched spans of `text`.
+;; `global?` matches real sed's own `s///` vs `s///g` distinction:
+;; false replaces only the first match (real sed's own default),
+;; true replaces every non-overlapping match -- picked up here rather
+;; than silently defaulting to global-always, which would be a real,
+;; dangerous divergence from what `s/PAT/REPL/` means to every real
+;; sed user and script in this monorepo (caught live: the original
+;; version of this function had no `global?` param at all and always
+;; replaced every match, confirmed wrong against real GNU sed on a
+;; multi-match-per-line test file before this param was added).
+;; Same honest scope note as the removed stub's doc comment:
+;; Match.groups is always empty (capture-group tracking isn't
+;; implemented anywhere in this file yet), so this is literal
+;; substitution only -- backreference expansion ($1/$name) is real,
+;; separate, unstarted work, not silently faked here. Zero matches or
+;; a BudgetExceededError both return `text` unchanged, matching
+;; find-all's own "no match" and grep.prn's own established
+;; convention of degrading rather than failing loudly on budget
+;; exhaustion.
 (defn replace [(re : &Regex) (text : String @ Region) (replacement : String @ Region)
-                (dest : Arena @ Region)]
+                (global? : Bool) (dest : Arena @ Region)]
   : String @ Region
-  text)
+  (match (find-all re text dest)
+    ((Ok matches)
+      (let [total (vec/len matches)
+            n (if global? total (if (> total 0) 1 0))]
+        (if (= n 0)
+          text
+          (loop [i 0 pos 0 acc ""]
+            (if (>= i n)
+              (string/concat acc (string/substring text pos (string/length text) dest) dest)
+              (let [mstart (vec-match-start-at matches i)
+                    mend (vec-match-end-at matches i)
+                    before (string/substring text pos mstart dest)
+                    spliced (string/concat (string/concat acc before dest) replacement dest)]
+                (recur (+ i 1) mend spliced)))))))
+    ((Err e) text)))

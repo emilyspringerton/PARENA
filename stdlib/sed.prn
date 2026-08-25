@@ -9,23 +9,36 @@
 (import string)
 (export substitute)
 
+;; `global?` mirrors real sed's own `s///` (false, first-match-per-line)
+;; vs `s///g` (true, every match per line) distinction -- threaded
+;; through from the caller rather than hardcoded, see regex/pcre.prn's
+;; own `replace` header comment for why defaulting to always-global
+;; would be a real, dangerous divergence from what callers expect.
 (defn substitute [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
-                   (replacement : String @ :region/scratch) (dest : Arena @ Region)]
+                   (replacement : String @ :region/scratch) (global? : Bool) (dest : Arena @ Region)]
   : (Result String IoError) @ Region
   (let [budget {:max-steps 100000}]
     (match (regex/pcre/compile pattern budget dest)
-      ((Ok re) (stream-substitute !f re replacement dest))
-      ((Err e) (Err (IoError "bad pattern"))))))
+      ((Ok re) (stream-substitute !f re replacement global? dest))
+      ((Err e) (Err Other)))))
 
+;; Real compiler-gap workaround, matching grep.prn's own established
+;; pattern (see that file's header comment): VS0's match-clause binder
+;; only collects TRAILING SYMBOL bindings one level deep, so a nested
+;; compound pattern like `(Ok (Some line))` never actually binds `line`
+;; -- split into two sequential single-level matches instead. Also
+;; fixed read-line's real arity (`(!f dest)`, not `(!f)` -- it needs an
+;; Arena to allocate the returned line into, per io.prn's own current
+;; signature).
 (defn stream-substitute [(!f : FileHandle @ :region/task) (re : &Regex)
-                          (replacement : String @ :region/scratch) (dest : Arena @ Region)]
+                          (replacement : String @ :region/scratch) (global? : Bool) (dest : Arena @ Region)]
   : (Result String IoError) @ Region
-  (let [out (alloc dest String 0)]
-    (loop []
-      (match (io/read-line !f)
-        ((Ok (Some line))
-          (do
-            (string/concat out (regex/pcre/replace re line replacement dest) dest)
-            (recur)))
-        ((Ok None) (Ok out))
-        ((Err e) (Err e))))))
+  (loop [acc ""]
+    (match (io/read-line !f dest)
+      ((Ok opt)
+        (match (deref opt)
+          ((Some line)
+            (recur (string/concat (string/concat acc (regex/pcre/replace re line replacement global? dest) dest)
+                                   "\n" dest)))
+          (None (Ok acc))))
+      ((Err e) (Err e)))))
