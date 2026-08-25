@@ -1,0 +1,40 @@
+\
+;; stdlib/emilyos/fsacl.prn (staged here pending parent copy -- see
+;; footer note) -- EmilyOS's GRANT_FS/REVOKE_FS mod. Founder real-time,
+;; 2026-08-25: "do more work on the EmilyOS GRANT-FS REVOKE-FS with
+;; parena mods for arch linux."
+;;
+;; ABI: EmilyOS's Go/cgo host (internal/fsaclmod) calls straight into
+;; `grant-fs`/`revoke-fs` (emitted as `grant_fs`/`revoke_fs`), which call
+;; back out to host-provided `emilyos_fsacl_grant`/`emilyos_fsacl_revoke`
+;; C functions (Go-side, exported via cgo `//export`) to actually run
+;; the real setfacl logic (internal/fsacl's own denylist-checked Grant/
+;; Revoke). Same minimal "one real round trip through compiled PARENA
+;; code, no dispatch table, no plugin discovery" shape PITVIPER's
+;; stdlib/pitviper/vterm_mod.prn already established (S192-01) -- this
+;; file follows that exact precedent rather than inventing a new one.
+;;
+;; Returns I32 status (0 = success, nonzero = error) rather than a
+;; PARENA-side Result/Option -- marshaling Result/Option across the cgo
+;; boundary has no working precedent yet in this stdlib (editor/
+;; plugin.prn's own host stubs are declared, not implemented); a plain
+;; I32 status code is the same honest, narrow scope S192-01 itself used
+;; (I32 delta, not a richer type) rather than reaching for something
+;; unverified.
+;;
+;; NOTE: written from a git-worktree-isolated agent whose isolation
+;; boundary covers the EMILY repo, not PARENA -- this file's real
+;; destination is PARENA/stdlib/emilyos/fsacl.prn. Parent/founder: copy
+;; it there (a new `emilyos/` stdlib directory, matching `pitviper/`'s
+;; own per-target-system directory convention).
+
+(module emilyos/fsacl)
+(export grant-fs revoke-fs)
+
+(defn grant-fs [(identity : String) (path : String)] : I32
+  #target
+  {:c (inline-c "emilyos_fsacl_grant(identity, path)")})
+
+(defn revoke-fs [(identity : String) (path : String)] : I32
+  #target
+  {:c (inline-c "emilyos_fsacl_revoke(identity, path)")})
