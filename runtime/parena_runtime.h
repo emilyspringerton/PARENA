@@ -11,6 +11,16 @@
 #ifndef PARENA_RUNTIME_H
 #define PARENA_RUNTIME_H
 
+/* _POSIX_C_SOURCE must be defined before any system header is
+ * included: under -std=c99 (this project's own strict ISO build
+ * flag, not -std=gnu99), glibc hides getaddrinfo/struct addrinfo and
+ * the rest of the POSIX-only surface behind this feature-test macro.
+ * Found for real (not assumed) getting stdlib/net/tcp.prn's new
+ * tcp_connect_impl to actually gcc-compile -- a plain #include
+ * <netdb.h> alone was not enough. 200112L = POSIX.1-2001, the version
+ * that defines getaddrinfo. */
+#define _POSIX_C_SOURCE 200112L
+
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
@@ -18,6 +28,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -467,6 +481,124 @@ static inline double raw_read_f64_impl(int fd) {
     ssize_t n = read(fd, &f, sizeof(float));
     (void)n;
     return (double)f;
+}
+
+/* ---- stdlib/net/tcp.prn real host glue (2026-08-25) ------------------
+ * Real BSD sockets -- net/tcp.prn's own #target bodies previously
+ * declared `tcp_listen`/`tcp_accept`/`tcp_connect`/`tcp_read`/
+ * `tcp_write` but this runtime never actually implemented any of them
+ * ("FFI declared, host implementation not written yet", the exact same
+ * class of gap io.prn's own 2026-08-24 rewrite closed for file I/O —
+ * see that section's header comment above for the full reasoning this
+ * mirrors). Closed here for real, first real network I/O anywhere in
+ * this language: net/tcp.prn itself was also carrying io.prn's
+ * pre-fix bug (a `#target` body declared to return `Result`/`TcpStream`
+ * directly, which VS0 never auto-boxes -- see emit.c's own
+ * find_target_c_src comment) until this same pass fixed it to match
+ * io.prn's now-established shape: raw primitives return a plain
+ * scalar/string here, Result/Option/struct construction happens in
+ * ordinary PARENA source in net/tcp.prn itself.
+ *
+ * Real, honest, narrow limitation, stated plainly rather than silently
+ * assumed away: tcp_read_impl below reads until the peer closes the
+ * connection or a read() error, the same one-shot shape
+ * raw_read_all_impl above already uses for files. That is CORRECT for
+ * a server that closes after responding (HTTP/1.0-style, or HTTP/1.1
+ * with a `Connection: close` request header -- which is exactly why
+ * net/http.prn's own request builder sends one) and WRONG for a
+ * keep-alive connection the peer intends to reuse -- reading would
+ * simply block forever waiting for an EOF that never comes. No
+ * Content-Length-aware early stop or chunked-encoding support exists
+ * yet; a real future gap, not this pass's scope. */
+static inline int tcp_connect_impl(const char *host, int port) {
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+static inline int tcp_listen_impl(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
+    if (listen(fd, 16) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static inline int tcp_accept_impl(int listener_fd) {
+    return accept(listener_fd, NULL, NULL);
+}
+
+/* tcp_read_impl -- same grow-by-4096-and-copy shape as
+ * raw_read_all_impl above, deliberately not shared code: that one is
+ * documented as the io.prn-specific real host glue, this one is
+ * net/tcp.prn's own, and the two stdlib files are never combined in
+ * the same real build (net/tcp.prn's own header comment already
+ * documents an identical reason for NetError's own duplication) so
+ * keeping them textually separate costs nothing and avoids coupling
+ * either file's future changes to the other's. */
+static inline char *tcp_read_impl(int fd, Arena *dest) {
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    for (;;) {
+        if (len + 4096 > cap) {
+            size_t new_cap = cap + 4096;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        ssize_t n = read(fd, buf + len, 4096);
+        if (n <= 0) break;
+        len += (size_t)n;
+    }
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return out;
+}
+
+/* tcp_write_impl -- byte-for-byte the same loop as string_concat's
+ * sibling raw_write_impl above (write() is write() whether the fd is a
+ * file or a socket); kept as its own real, distinctly-named function
+ * rather than reused across the file/socket boundary, matching this
+ * runtime's own established preference for names that say what they
+ * are (net/tcp.prn's own header comment on NetError draws the same
+ * file/socket line for the identical reason). */
+static inline int tcp_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, s + written, len - written);
+        if (n < 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int tcp_close_impl(int fd) {
+    return close(fd) == 0 ? 0 : -1;
 }
 
 #endif /* PARENA_RUNTIME_H */

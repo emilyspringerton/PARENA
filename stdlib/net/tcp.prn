@@ -2,31 +2,45 @@
 ;; section. Connection-oriented; thin FFI over real BSD sockets, the same
 ;; primitive REDGARDEN/SHANKPIT's own UDP servers sit on top of, just the
 ;; TCP half of it.
+;;
+;; Rewritten 2026-08-25, real host implementation closing the gap this
+;; file's own previous version left open ("FFI declared, host
+;; implementation not written yet") — same real bug class io.prn's own
+;; 2026-08-24 rewrite found and fixed for file I/O, found again here by
+;; the same discipline (actually compiling to C, not trusting `parena
+;; build`'s success): every `#target` body below used to declare its
+;; return type as `(Result TcpStream NetError)` directly, but `#target`
+;; is trusted verbatim with no auto-boxing (emit.c's own
+;; find_target_c_src comment) — that never produced valid C. Fixed by
+;; io.prn's own already-established shape: the only `#target` bodies
+;; left are genuinely-irreducible raw syscalls returning a plain scalar
+;; (an fd, or -1 on failure) or a plain String; every Result/TcpStream
+;; value is built with ordinary `(Ok ...)`/`(Err ...)`/`{:field val}`
+;; PARENA syntax, same as io.prn's `file-open`.
+;;
+;; Second real bug found in the same pass, distinct from the boxing one
+;; above: VS0 emits a top-level `defn`'s name as a BARE, unprefixed C
+;; identifier (no module-path mangling for a module's own top-level
+;; definitions — mangle()'s `/`-to-`_` prefixing is a call-site
+;; convention for cross-module references, e.g. `vec/new` -> `vec_new`
+;; from another file, not something the defining module applies to
+;; itself). The original API names here (`connect`/`listen`/`accept`/
+;; `read`/`write`/`close`) are also literal libc function names
+;; declared in <sys/socket.h>/<unistd.h> -- gcc genuinely fails on the
+;; conflicting redeclaration the instant this file and any system
+;; header meet in the same translation unit (confirmed live, not
+;; assumed: this is exactly what broke building the very first attempt
+;; at a real end-to-end tcp test). io.prn's own public names
+;; (`file-open`/`file-close`/`read-string`/`write-string`, never bare
+;; `open`/`close`/`read`/`write`) already avoid this by convention, not
+;; by any compiler-level namespacing -- there isn't any yet. Renamed to
+;; match that same real, established house pattern: every exported name
+;; below is `tcp-`-prefixed.
 
 (module net/tcp)
 (import string)
-(export listen accept connect read write TcpListener TcpStream NetError)
+(export tcp-listen tcp-accept tcp-connect tcp-read tcp-write tcp-close TcpListener TcpStream NetError)
 
-;; Real, honest gap closed here (2026-08-21): every function below used
-;; `TcpListener`/`TcpStream`/`NetError` in its own real signature but
-;; this file never actually DEFINED any of them -- the same real class
-;; of gap pentest/pcap.prn's own Capture/Packet/PcapError and io.prn's
-;; own FileHandle/IoError already closed. Both handles are real,
-;; minimal, opaque fd wrappers -- the actual host-side socket fd every
-;; #target body above already assumes exists (tcp_listen/tcp_accept/
-;; tcp_connect/tcp_read/tcp_write) is real, separate, unstarted
-;; host-runtime glue work, same honest "FFI declared, host
-;; implementation not written yet" boundary every other #target-bound
-;; file in this stdlib already has.
-;;
-;; Real, deliberately narrow scope: `NetError` is defined separately
-;; here AND in net/udp.prn's own file (not shared via a common import)
-;; -- net/http.prn's own real design only ever imports net/tcp (never
-;; net/udp at the same time), and net/tcp.prn/net/udp.prn are never
-;; combined together in any real, intended build, so this duplication
-;; is safe for every real combination that actually exists. Combining
-;; all three files in one build would hit a real duplicate-definition
-;; error -- a real, honest, narrow limitation, not silently hidden.
 (defstruct TcpListener
   (fd : I32))
 
@@ -39,27 +53,80 @@
   (AddressInUse)
   (Other))
 
-(defn listen [(port : I32) (dest : Arena @ Region)]
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; tcp_*_impl functions, no boxing.
+
+(defn raw-connect [(host : String @ Region) (port : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_connect_impl(host, port)")})
+
+(defn raw-listen [(port : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_listen_impl(port)")})
+
+(defn raw-accept [(listener-fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_accept_impl(listener_fd)")})
+
+(defn raw-read [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "tcp_read_impl(fd, dest)")})
+
+(defn raw-write [(fd : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "tcp_write_impl(fd, data)")})
+
+(defn raw-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_close_impl(fd)")})
+
+;; tcp-connect -- errno isn't inspected here (unlike io.prn's
+;; file-open): getaddrinfo/socket/connect failures inside
+;; tcp_connect_impl don't map cleanly onto plain libc errno
+;; (getaddrinfo has its own EAI_* error space), so this deliberately
+;; narrower NetError enum just reports ConnectionRefused for any
+;; raw-connect failure -- a real, honest, coarser signal than io.prn's
+;; per-errno mapping, not a fake finer one.
+(defn tcp-connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result TcpStream NetError) @ Region
+  (let [fd (raw-connect host port)]
+    (if (< fd 0)
+      (Err ConnectionRefused)
+      (Ok {:fd fd}))))
+
+(defn tcp-listen [(port : I32) (dest : Arena @ Region)]
   : (Result TcpListener NetError) @ Region
-  #target
-  {:c (inline-c "tcp_listen(port, dest)")})
+  (let [fd (raw-listen port)]
+    (if (< fd 0)
+      (Err AddressInUse)
+      (Ok {:fd fd}))))
 
-(defn accept [(!l : &TcpListener) (dest : Arena @ Region)]
+(defn tcp-accept [(!l : &TcpListener) (dest : Arena @ Region)]
   : (Result TcpStream NetError) @ Region
-  #target
-  {:c (inline-c "tcp_accept(l, dest)")})
+  (let [fd (raw-accept (get-field !l :fd))]
+    (if (< fd 0)
+      (Err Other)
+      (Ok {:fd fd}))))
 
-(defn connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
-  : (Result TcpStream NetError) @ Region
-  #target
-  {:c (inline-c "tcp_connect(host, port, dest)")})
-
-(defn read [(!s : &mut TcpStream) (dest : Arena @ Region)]
+(defn tcp-read [(!s : &mut TcpStream) (dest : Arena @ Region)]
   : (Result String NetError) @ Region
-  #target
-  {:c (inline-c "tcp_read(s, dest)")})
+  (Ok (raw-read (get-field !s :fd) dest)))
 
-(defn write [(!s : &mut TcpStream) (data : String @ Region)]
-  : (Result I32 NetError)
-  #target
-  {:c (inline-c "tcp_write(s, data)")})
+(defn tcp-write [(!s : &mut TcpStream) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 NetError) @ Region
+  (if (< (raw-write (get-field !s :fd) data) 0)
+    (Err Other)
+    (Ok 0)))
+
+(defn tcp-close [(!s : &mut TcpStream) (dest : Arena @ Region)]
+  : (Result Unit NetError) @ Region
+  (if (< (raw-close (get-field !s :fd)) 0)
+    (Err Other)
+    (Ok unit)))
