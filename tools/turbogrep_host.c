@@ -24,7 +24,15 @@
  * Prints every matching line, prefixed with its filename when more
  * than one file is given -- the same real convention GNU grep itself
  * uses, not invented here.
- */
+ *
+ * Exit code 3 is a real, distinct sentinel (separate from 0=matched,
+ * 1=no match, 2=usage error): the pattern parses fine but uses a
+ * regex feature match-node doesn't implement yet (Plus/Optional/
+ * Anchor, per docs/TURBOGREP_BOTTLENECK_AUDIT.md's own C2-C4) --
+ * checked ONCE up front via pattern-supported? (regex/pcre.prn),
+ * before touching any file, so a caller (tools/turbogrep-router.sh)
+ * can tell "unsupported, fall back to real grep" apart from "ran and
+ * genuinely found nothing" without scraping stderr text. */
 #include <stdio.h>
 
 int main(int argc, char **argv) {
@@ -35,6 +43,26 @@ int main(int argc, char **argv) {
     const char *pattern = argv[1];
     int file_count = argc - 2;
     int any_match = 0;
+
+    {
+        Arena check_arena;
+        arena_init(&check_arena);
+        MatchBudget check_budget;
+        check_budget.max_steps = 100000;
+        Result check_compile = compile((char *)pattern, check_budget, &check_arena);
+        if (check_compile.tag != 1) {
+            fprintf(stderr, "turbogrep: %s: bad pattern\n", pattern);
+            arena_free_all(&check_arena);
+            return 2;
+        }
+        Regex *check_re = (Regex *)check_compile.value;
+        if (!pattern_supported_(check_re)) {
+            fprintf(stderr, "turbogrep: pattern uses an unimplemented feature (Plus/Optional/Anchor)\n");
+            arena_free_all(&check_arena);
+            return 3;
+        }
+        arena_free_all(&check_arena);
+    }
 
     for (int i = 2; i < argc; i++) {
         const char *path = argv[i];

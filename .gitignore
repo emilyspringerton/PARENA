@@ -7,3 +7,4 @@ bazel-*
 tools/ci_status_gen.c
 .parena-bootstrap
 turbogrep
+var/

@@ -59,7 +59,7 @@
 (import regex/syntax)
 (import string)
 (import vec)
-(export compile is-match find find-all replace)
+(export compile is-match find find-all replace pattern-supported?)
 
 (defstruct MatchBudget (max-steps : I32))
 (defstruct Regex (ast : PatternAst @ Region) (budget : MatchBudget))
@@ -70,6 +70,44 @@
   (match (regex/syntax/parse pattern dest)
     ((Ok ast) (Ok {:ast ast :budget budget}))
     ((Err e) (Err e))))
+
+;; node-supported? / pattern-supported? -- real, honest capability
+;; check for the founder's own real ask: "a grep router that can route
+;; between regular grep and turbo grep depending on if the feature is
+;; implemented." Walks the real parsed AST (not a text-level heuristic
+;; guessing at what characters "look like" regex syntax) for any node
+;; this file's own match-node still doesn't implement (Plus/Optional/
+;; Anchor -- CharClass closed 2026-08-25, see this file's own header
+;; comment on that fix). Recurses through every real container shape
+;; (Concat/Alt/Star/Group) so a real, complex pattern that only USES
+;; unsupported syntax somewhere deep inside is still caught, not just
+;; a bare top-level `+`/`?`/`^`/`$`.
+(defn node-supported? [(node : &PatternNode)]
+  : Bool
+  (match (deref node)
+    ((Literal ch) true)
+    ((AnyChar) true)
+    ((CharClass ranges negated) true)
+    ((Concat parts) (all-nodes-supported? parts 0))
+    ((Alt branches) (all-nodes-supported? branches 0))
+    ((Star inner greedy) (node-supported? &inner))
+    ((Group inner _capture _name) (node-supported? &inner))
+    (_ false)))   ;; Plus/Optional/Anchor -- the real, current gap
+
+(defn all-nodes-supported? [(parts : &(Vec PatternNode)) (i : I32)]
+  : Bool
+  (if (>= i (vec/len parts))
+    true
+    (if (node-supported? (vec/get parts i))
+      (all-nodes-supported? parts (+ i 1))
+      false)))
+
+;; pattern-supported? -- the real, public entry point a router calls
+;; once, on the already-compiled Regex, before deciding whether to run
+;; turbogrep or fall back to real grep for this specific pattern.
+(defn pattern-supported? [(re : &Regex)]
+  : Bool
+  (node-supported? &(get-field (get-field re :ast) :root)))
 
 ;; char-matches? -- this language has no separate Char type (string.prn's
 ;; own char-at note), so a Literal node's `ch` field is itself a
