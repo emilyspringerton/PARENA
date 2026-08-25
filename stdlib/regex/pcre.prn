@@ -218,6 +218,47 @@
               (recur (- i 1)))))
       out)))
 
+;; ---- CharClass ([abc], [a-z], [^abc]) -- 2026-08-25 -----------------
+;; Real, confirmed-dangerous gap closed here (found live in the audit:
+;; `turbogrep '[0-9]' file` silently matched ZERO lines on a real
+;; digit-containing line, no error at all -- fell into match-node's own
+;; catch-all `(_ (vec/new dest))`, same "empty means no match" shape an
+;; exceeded budget also uses, indistinguishable from the outside).
+;;
+;; vec-charrange-at is the same #target escape hatch this whole file
+;; already uses repeatedly (vec-i32-at, vec-string-at above) for the
+;; same real, separate compiler gap: `vec/get` on a plain `&(Vec T)`
+;; parameter for a STRUCT element type (CharRange, here) has no real
+;; elem-type hint registered, so `deref`-ing it would try to
+;; dereference a generic `void *` -- real, invalid C. Returns the real
+;; struct BY VALUE (matching how a registered-struct parameter/return
+;; already works everywhere else in this compiler), not a pointer.
+(defn vec-charrange-at [(v : &(Vec CharRange)) (idx : I32)]
+  : CharRange
+  #target
+  {:c (inline-c "*(CharRange *)vec_get(v, idx)")})
+
+(defn char-in-range? [(c : I32) (r : CharRange)]
+  : Bool
+  (and (>= c (string/char-at (get-field r :lo) 0))
+       (<= c (string/char-at (get-field r :hi) 0))))
+
+(defn char-in-any-range? [(c : I32) (ranges : &(Vec CharRange)) (i : I32)]
+  : Bool
+  (if (>= i (vec/len ranges))
+    false
+    (if (char-in-range? c (vec-charrange-at ranges i))
+      true
+      (char-in-any-range? c ranges (+ i 1)))))
+
+(defn char-class-matches? [(text : String @ Region) (pos : I32) (ranges : &(Vec CharRange)) (negated : Bool)]
+  : Bool
+  (if (>= pos (string/length text))
+    false
+    (let [c (string/char-at text pos)
+          in-class (char-in-any-range? c ranges 0)]
+      (if negated (if in-class false true) in-class))))
+
 (defn match-node [(node : &PatternNode) (text : String @ Region) (pos : I32)
                    (steps : &mut I32) (budget : I32) (dest : Arena @ Region)]
   : (Vec I32) @ Region
@@ -232,7 +273,8 @@
         ((Alt branches) (match-alt branches 0 text pos steps budget dest))
         ((Star inner greedy) (match-star inner greedy text pos steps budget dest))
         ((Group inner _capture _name) (match-node &inner text pos steps budget dest))
-        (_ (vec/new dest))))))   ;; Plus/Optional/CharClass/Anchor: same shape, elided for length
+        ((CharClass ranges negated) (single-or-empty (char-class-matches? text pos &ranges negated) (+ pos 1) dest))
+        (_ (vec/new dest))))))   ;; Plus/Optional/Anchor: same shape, elided for length
 
 ;; match-concat -- always 0-or-1 candidates; see the file header comment
 ;; on why this is the one deliberate narrowing vs. the original.

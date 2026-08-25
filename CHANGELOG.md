@@ -1,4 +1,5 @@
 ## 2026-08-25
+- CharClass ([abc]/[a-z]/[^abc]) implemented in regex/pcre.prn -- closes the most dangerous bottleneck-audit finding (was silently matching zero lines) (sess-20260824-2252-ce890e4f)
 - full bottleneck audit before further point fixes: 7 perf items + 13 correctness gaps + 3 compiler hazards, each verified or explicitly flagged unverified (sess-20260824-2252-ce890e4f)
 - literal fast path in is-match: turbogrep another 4x faster (0.69s -> 0.168s), ~75x faster than original baseline, ~8x slower than system grep (was ~430-660x) (sess-20260824-2252-ce890e4f)
 - buffered read-line: 3,786x fewer read() syscalls (root-caused via strace), turbogrep 18x faster (12.6s -> 0.69s, ~23x slower than grep instead of ~430-660x) (sess-20260824-2252-ce890e4f)
