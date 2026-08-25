@@ -1,4 +1,5 @@
 ## 2026-08-25
+- turbogrep verification report: 7/7 patterns byte-identical vs real GNU grep on a 949-file/213K-line monorepo corpus; tools/turbogrep_host.c + 'make turbogrep' added (sess-20260824-2252-ce890e4f)
 
 - io.prn real host implementation (POSIX raw-fd glue) + 2 real compiler bugs fixed (bang-insensitive scope_lookup, literal true/false-as-bind-name guard) -- grep.prn verified end-to-end, matches correctly against real files (sess-20260824-2252-ce890e4f)
 
