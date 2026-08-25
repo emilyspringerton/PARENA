@@ -1,4 +1,5 @@
 ## 2026-08-25
+- Real working HTTP client (net/http.prn) -- headers as parallel Vecs (no Map generics), url-free host/port/path API, live-verified against IDUNA :8080. (sess-20260825-0828-cc32a704)
 - Real BSD socket host glue for net/tcp.prn (renamed API: tcp-connect/tcp-listen/tcp-accept/tcp-read/tcp-write/tcp-close) -- first working network I/O in PARENA, live-verified against IDUNA :8080. (sess-20260825-0828-cc32a704)
 - Real json.prn and yaml.prn stdlib parsers, both live-verified against real inputs (json: 24 checks; yaml: 28 checks including a real bukkit.yml-shaped test); found and fixed 2 real compiler bugs (same-named #target self-recursion, and-argument loop misparse) along the way. (sess-20260825-0828-cc32a704)
 - stdlib/redgarden/bloodflower_mod.prn: REDGARDEN's first real PARENA mod (on-moon-zenith), compiled via 'parena build' and linked directly into REDGARDEN's C binaries -- pure C-to-C, no cgo layer needed. Verified live: REDGARDEN's new tests/test_bloodflower.c exercises the real compiled mod end-to-end. (sess-20260825-0828-cc32a704)
