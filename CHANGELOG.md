@@ -1,4 +1,5 @@
 ## 2026-08-25
+- Anchor (^/$) implemented in regex/pcre.prn -- verified against real grep, router now routes anchored patterns to turbogrep instead of falling back (sess-20260824-2252-ce890e4f)
 - grep router rewritten flag-safe (delegates any flag/stdin usage straight to real grep) + installed at ~/.local/bin/grep + fixed a real symlink-resolution bug (dirname doesn't follow symlinks) (sess-20260824-2252-ce890e4f)
 - turbogrep router (tools/turbogrep-router.sh): falls back to real grep on unsupported patterns via a real AST-based capability check (exit code 3), logs every invocation to NDJSON for future usage-driven prioritization (sess-20260824-2252-ce890e4f)
 - CharClass ([abc]/[a-z]/[^abc]) implemented in regex/pcre.prn -- closes the most dangerous bottleneck-audit finding (was silently matching zero lines) (sess-20260824-2252-ce890e4f)
