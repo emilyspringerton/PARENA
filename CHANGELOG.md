@@ -1,4 +1,5 @@
 ## 2026-08-26
+- editor/buffer.prn: real keyboard-driven text buffer (Buffer{text,cursor}, insert-at-cursor/backspace-at-cursor), sdl2.prn's EventKind gained real KeyDown/TextInput payloads -- real edit sequence verified end-to-end through real SDL events (make test-editor) (sess-20260825-1938-f6bd411e)
 - sdl2.prn: real text rendering (SDL2_ttf) -- ttf-init/open-font/render-text/measure-text-width/height, using PITVIPER's own real JetBrains Mono font, verified end-to-end under Xvfb (make test-sdl2) (sess-20260825-1938-f6bd411e)
 - sdl2.prn: real host implementation + real renderer calls (create-renderer/set-draw-color/render-clear/render-fill-rect/render-present) -- first real slice of the PARENA-authored editor shell, verified with a real window+render test under Xvfb (make test-sdl2) (sess-20260825-1938-f6bd411e)
 
