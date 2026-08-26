@@ -414,7 +414,7 @@ int main(void) {
             CHECK(strstr(c_src, "typedef struct {") != NULL, "defstruct emits a real C struct typedef");
             CHECK(strstr(c_src, "int x;") != NULL && strstr(c_src, "int y;") != NULL,
                   "each field gets its own real, distinct C type, not a shared void *");
-            CHECK(strstr(c_src, "static inline Point Point_new(int x, int y)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) Point Point_new(int x, int y)") != NULL,
                   "a real, callable positional constructor is emitted");
             CHECK(strstr(c_src, "return Point_new(0, 0);") != NULL,
                   "a (Point 0 0) construction call emits as a real Point_new(0, 0) call");
@@ -452,7 +452,7 @@ int main(void) {
                   "the struct typedef's own field is mangled to a real, valid C identifier");
             CHECK(strstr(c_src, "rows-per-file") == NULL,
                   "the raw, unmangled hyphenated name never appears anywhere in the emitted C");
-            CHECK(strstr(c_src, "static inline SplitOptions SplitOptions_new(int rows_per_file, int lazy_quotes)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) SplitOptions SplitOptions_new(int rows_per_file, int lazy_quotes)") != NULL,
                   "the constructor's own parameter name is mangled too");
             CHECK(strstr(c_src, "return (o).rows_per_file;") != NULL,
                   "get-field on a hyphenated field name emits the real, mangled C field access");

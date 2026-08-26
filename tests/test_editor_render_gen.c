@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -28,7 +28,7 @@ typedef struct {
     char * lo;
     char * hi;
 } CharRange;
-static inline CharRange CharRange_new(char * lo, char * hi) {
+static inline __attribute__((unused)) CharRange CharRange_new(char * lo, char * hi) {
     CharRange v;
     v.lo = lo;
     v.hi = hi;
@@ -110,7 +110,7 @@ typedef struct {
     PatternNode root;
     int capture_count;
 } PatternAst;
-static inline PatternAst PatternAst_new(PatternNode root, int capture_count) {
+static inline __attribute__((unused)) PatternAst PatternAst_new(PatternNode root, int capture_count) {
     PatternAst v;
     v.root = root;
     v.capture_count = capture_count;
@@ -121,7 +121,7 @@ typedef struct {
     char * message;
     int pos;
 } SyntaxError;
-static inline SyntaxError SyntaxError_new(char * message, int pos) {
+static inline __attribute__((unused)) SyntaxError SyntaxError_new(char * message, int pos) {
     SyntaxError v;
     v.message = message;
     v.pos = pos;
@@ -133,7 +133,7 @@ typedef struct {
     int next;
     int ncap;
 } ParseStep;
-static inline ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
+static inline __attribute__((unused)) ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
     ParseStep v;
     v.node = node;
     v.next = next;
@@ -144,7 +144,7 @@ static inline ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
 typedef struct {
     int max_steps;
 } MatchBudget;
-static inline MatchBudget MatchBudget_new(int max_steps) {
+static inline __attribute__((unused)) MatchBudget MatchBudget_new(int max_steps) {
     MatchBudget v;
     v.max_steps = max_steps;
     return v;
@@ -154,7 +154,7 @@ typedef struct {
     PatternAst ast;
     MatchBudget budget;
 } Regex;
-static inline Regex Regex_new(PatternAst ast, MatchBudget budget) {
+static inline __attribute__((unused)) Regex Regex_new(PatternAst ast, MatchBudget budget) {
     Regex v;
     v.ast = ast;
     v.budget = budget;
@@ -166,7 +166,7 @@ typedef struct {
     int end;
     Vec groups;
 } Match;
-static inline Match Match_new(int start, int end, Vec groups) {
+static inline __attribute__((unused)) Match Match_new(int start, int end, Vec groups) {
     Match v;
     v.start = start;
     v.end = end;
@@ -177,7 +177,7 @@ static inline Match Match_new(int start, int end, Vec groups) {
 typedef struct {
     int handle;
 } Window;
-static inline Window Window_new(int handle) {
+static inline __attribute__((unused)) Window Window_new(int handle) {
     Window v;
     v.handle = handle;
     return v;
@@ -186,7 +186,7 @@ static inline Window Window_new(int handle) {
 typedef struct {
     int handle;
 } Renderer;
-static inline Renderer Renderer_new(int handle) {
+static inline __attribute__((unused)) Renderer Renderer_new(int handle) {
     Renderer v;
     v.handle = handle;
     return v;
@@ -195,7 +195,7 @@ static inline Renderer Renderer_new(int handle) {
 typedef struct {
     int handle;
 } Font;
-static inline Font Font_new(int handle) {
+static inline __attribute__((unused)) Font Font_new(int handle) {
     Font v;
     v.handle = handle;
     return v;
@@ -233,7 +233,7 @@ typedef struct {
     char * scope;
     Regex pattern;
 } TmRule;
-static inline TmRule TmRule_new(char * scope, Regex pattern) {
+static inline __attribute__((unused)) TmRule TmRule_new(char * scope, Regex pattern) {
     TmRule v;
     v.scope = scope;
     v.pattern = pattern;
@@ -245,7 +245,7 @@ typedef struct {
     int end;
     char * scope;
 } Token;
-static inline Token Token_new(int start, int end, char * scope) {
+static inline __attribute__((unused)) Token Token_new(int start, int end, char * scope) {
     Token v;
     v.start = start;
     v.end = end;
@@ -264,7 +264,7 @@ typedef struct {
     int g;
     int b;
 } Color;
-static inline Color Color_new(int r, int g, int b) {
+static inline __attribute__((unused)) Color Color_new(int r, int g, int b) {
     Color v;
     v.r = r;
     v.g = g;

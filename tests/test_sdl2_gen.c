@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -17,7 +17,7 @@ static inline ParseError ParseError_new(char * message) {
 typedef struct {
     int handle;
 } Window;
-static inline Window Window_new(int handle) {
+static inline __attribute__((unused)) Window Window_new(int handle) {
     Window v;
     v.handle = handle;
     return v;
@@ -26,7 +26,7 @@ static inline Window Window_new(int handle) {
 typedef struct {
     int handle;
 } Renderer;
-static inline Renderer Renderer_new(int handle) {
+static inline __attribute__((unused)) Renderer Renderer_new(int handle) {
     Renderer v;
     v.handle = handle;
     return v;
@@ -35,7 +35,7 @@ static inline Renderer Renderer_new(int handle) {
 typedef struct {
     int handle;
 } Font;
-static inline Font Font_new(int handle) {
+static inline __attribute__((unused)) Font Font_new(int handle) {
     Font v;
     v.handle = handle;
     return v;

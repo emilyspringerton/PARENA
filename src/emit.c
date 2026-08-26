@@ -4878,7 +4878,16 @@ static int process_defstruct(Arena *arena, StrBuf *out, Node *node, const char *
     }
     sb_appendf(out, "} %s;\n", struct_name);
 
-    sb_appendf(out, "static inline %s %s_new(", struct_name, struct_name);
+    /* __attribute__((unused)) -- same real reasoning as emit_defenum's
+     * own variant constructors: a real program compiling this struct's
+     * own module might genuinely never call its plain positional `_new`
+     * (e.g. sdl2.prn's own real Window/Renderer are only ever
+     * constructed through create-window/create-renderer's own
+     * #target host glue, never Window_new/Renderer_new directly) --
+     * found on the exact same real macos-latest CI run, a second real
+     * emission site hitting the identical Clang -Wunused-function gap
+     * GCC doesn't flag for `static inline`. */
+    sb_appendf(out, "static inline __attribute__((unused)) %s %s_new(", struct_name, struct_name);
     for (size_t i = 0; i < field_count; i++) {
         if (i > 0) sb_append(out, ", ");
         sb_append_decl(out, fields[i].c_type, fields[i].c_name);

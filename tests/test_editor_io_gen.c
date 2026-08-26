@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -19,7 +19,7 @@ typedef struct {
     Vec shape;
     Vec strides;
 } NDArray;
-static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
+static inline __attribute__((unused)) NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
     NDArray v;
     v.data = data;
     v.shape = shape;
@@ -30,7 +30,7 @@ static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
 typedef struct {
     char * message;
 } ShapeError;
-static inline ShapeError ShapeError_new(char * message) {
+static inline __attribute__((unused)) ShapeError ShapeError_new(char * message) {
     ShapeError v;
     v.message = message;
     return v;
@@ -39,7 +39,7 @@ static inline ShapeError ShapeError_new(char * message) {
 typedef struct {
     char * message;
 } IndexError;
-static inline IndexError IndexError_new(char * message) {
+static inline __attribute__((unused)) IndexError IndexError_new(char * message) {
     IndexError v;
     v.message = message;
     return v;
@@ -48,7 +48,7 @@ static inline IndexError IndexError_new(char * message) {
 typedef struct {
     int fd;
 } FileHandle;
-static inline FileHandle FileHandle_new(int fd) {
+static inline __attribute__((unused)) FileHandle FileHandle_new(int fd) {
     FileHandle v;
     v.fd = fd;
     return v;
@@ -80,7 +80,7 @@ typedef struct {
     char * text;
     int cursor;
 } Buffer;
-static inline Buffer Buffer_new(char * text, int cursor) {
+static inline __attribute__((unused)) Buffer Buffer_new(char * text, int cursor) {
     Buffer v;
     v.text = text;
     v.cursor = cursor;
