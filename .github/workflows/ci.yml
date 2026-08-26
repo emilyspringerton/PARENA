@@ -272,8 +272,16 @@ jobs:
       - name: Build editor-demo.exe
         run: |
           set -euo pipefail
+          # -lmingw32 -lSDL2main -lSDL2 (that order): SDL2's own SDL_main.h
+          # #defines main to SDL_main under _WIN32 -- SDL2main.a supplies
+          # the real WinMain entry point that calls back into it. Without
+          # this, link fails with a real "undefined reference to WinMain"
+          # (confirmed live on a real windows-latest runner, 2026-08-26 --
+          # this repo's own earlier mingw verification only ever checked
+          # compilation, never the link stage, so this gap wasn't caught
+          # until a real CI run hit it).
           gcc -std=c99 -Wall -Wextra -Werror -I runtime editor_demo_full.c runtime/parena_runtime.c \
-            -o editor-demo.exe -lSDL2 -lSDL2_ttf -lm
+            -o editor-demo.exe -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lm
 
       - name: Bundle with required DLLs
         run: |
@@ -327,7 +335,15 @@ jobs:
           set -euo pipefail
           SDL2_PREFIX="$(brew --prefix sdl2)"
           SDL2_TTF_PREFIX="$(brew --prefix sdl2_ttf)"
-          cc -std=c99 -Wall -Wextra -Werror -I runtime -I "$SDL2_PREFIX/include" -I "$SDL2_TTF_PREFIX/include" \
+          # Both <prefix>/include (so this repo's own runtime.h
+          # `#include <SDL2/SDL.h>` resolves) AND <prefix>/include/SDL2
+          # (so SDL_ttf.h's own internal unqualified `#include "SDL.h"`
+          # resolves too) -- confirmed live on a real macos-latest runner,
+          # 2026-08-26: the include/SDL2 form alone left SDL_ttf.h's own
+          # include unresolved ("fatal error: 'SDL.h' file not found").
+          cc -std=c99 -Wall -Wextra -Werror -I runtime \
+            -I "$SDL2_PREFIX/include" -I "$SDL2_PREFIX/include/SDL2" \
+            -I "$SDL2_TTF_PREFIX/include" -I "$SDL2_TTF_PREFIX/include/SDL2" \
             editor_demo_full.c runtime/parena_runtime.c \
             -L"$SDL2_PREFIX/lib" -L"$SDL2_TTF_PREFIX/lib" -lSDL2 -lSDL2_ttf -lm \
             -o editor-demo
