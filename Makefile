@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor turbogrep clean
 
 all: build
 
@@ -152,6 +152,23 @@ test-sdl2: build
 	trap 'kill $$(cat /tmp/test_sdl2_xvfb.pid) 2>/dev/null; rm -f /tmp/test_sdl2_xvfb.pid' EXIT; \
 	sleep 1; \
 	DISPLAY=:97 /tmp/test_sdl2_bin
+
+# test-editor -- real end-to-end verification of the actual keyboard-
+# driven text editing loop: stdlib/editor/buffer.prn (real text buffer +
+# cursor) fed by stdlib/sdl2.prn's own real SDL_TEXTINPUT/SDL_KEYDOWN
+# events (founder: "continue working on parena editor"). Drives a real
+# edit sequence through SDL's own real event queue (SDL_PushEvent, tests/
+# test_editor.c's own header comment has the full reasoning for why this
+# is real input, not a mock) and confirms the buffer holds the real,
+# correct final text.
+test-editor: build
+	./parena build stdlib/string.prn stdlib/sdl2.prn stdlib/editor/buffer.prn -o tests/test_editor_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_editor.c runtime/parena_runtime.c \
+		-o /tmp/test_editor_bin -lSDL2 -lSDL2_ttf -lm
+	@Xvfb :98 -screen 0 1280x720x24 & echo $$! > /tmp/test_editor_xvfb.pid; \
+	trap 'kill $$(cat /tmp/test_editor_xvfb.pid) 2>/dev/null; rm -f /tmp/test_editor_xvfb.pid' EXIT; \
+	sleep 1; \
+	DISPLAY=:98 /tmp/test_editor_bin
 
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the

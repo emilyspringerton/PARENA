@@ -51,7 +51,8 @@
 (module sdl2)
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
-        poll-event get-ticks delay
+        poll-event get-ticks delay start-text-input stop-text-input
+        key-backspace key-return key-left key-right
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -73,14 +74,19 @@
   (FontFailed)
   (TextRenderFailed))
 
-;; EventKind -- a real, minimal poll-event result for v0: distinguishes
-;; Quit (the window close button / Cmd-Q) and KeyDown (any key) from
-;; everything else SDL can report. See runtime/parena_runtime.h's own
-;; sdl2_poll_event_impl header comment for why finer-grained event data
-;; (which key, mouse motion, resize) is real, separate, deferred work.
+;; EventKind -- v1 (2026-08-26, real keyboard-driven editing). KeyDown
+;; carries the real SDL keysym (compare against key-backspace/key-return/
+;; key-left/key-right below); TextInput carries the real typed UTF-8
+;; text (PITVIPER's own cmd/pitviper/main.go is the real precedent for
+;; using both together -- SDL_KEYDOWN for special keys, SDL_TEXTINPUT
+;; for actual characters, correctly handling shift/IME/etc.). See
+;; runtime/parena_runtime.h's own sdl2_poll_event_impl header comment
+;; for why finer-grained event data (mouse motion, resize) is real,
+;; separate, deferred work.
 (defenum EventKind
   (Quit)
-  (KeyDown)
+  (KeyDown (key : I32))
+  (TextInput (text : String @ Region))
   (Other))
 
 ;; ---- raw syscall primitives -- the only #target bodies in this file,
@@ -134,6 +140,14 @@
 (defn sdl2-raw-poll-event [] : I32
   #target
   {:c (inline-c "sdl2_poll_event_impl()")})
+
+(defn sdl2-raw-last-event-key [] : I32
+  #target
+  {:c (inline-c "sdl2_last_event_key_impl()")})
+
+(defn sdl2-raw-last-event-text [(dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "sdl2_last_event_text_impl(dest)")})
 
 ;; ---- real, boxed public API ------------------------------------------
 
@@ -192,18 +206,46 @@
 
 ;; poll-event -- None means "no event pending right now" (SDL_PollEvent
 ;; itself returned 0), matching every real client's own SDL_PollEvent
-;; loop shape (NORTHSTAR.md's own note on this function).
+;; loop shape (NORTHSTAR.md's own note on this function). KeyDown/
+;; TextInput read their real payload via sdl2-raw-last-event-key/-text
+;; immediately after -- see runtime/parena_runtime.h's own
+;; sdl2_poll_event_impl header comment for why (no tuple returns).
 (defn poll-event [(dest : Arena @ Region)] : (Option EventKind) @ Region
   (let [code (sdl2-raw-poll-event)]
     (cond
       ((= code 0) None)
       ((= code 1) (Some Quit))
-      ((= code 2) (Some KeyDown))
+      ((= code 2) (Some (KeyDown (sdl2-raw-last-event-key))))
+      ((= code 3) (Some (TextInput (sdl2-raw-last-event-text dest))))
       (true (Some Other)))))
 
 (defn get-ticks [] : I32
   #target
   {:c (inline-c "sdl2_get_ticks_impl()")})
+
+(defn start-text-input [] : Unit
+  #target
+  {:c (inline-c "sdl2_start_text_input_impl();")})
+
+(defn stop-text-input [] : Unit
+  #target
+  {:c (inline-c "sdl2_stop_text_input_impl();")})
+
+(defn key-backspace [] : I32
+  #target
+  {:c (inline-c "sdl2_key_backspace_impl()")})
+
+(defn key-return [] : I32
+  #target
+  {:c (inline-c "sdl2_key_return_impl()")})
+
+(defn key-left [] : I32
+  #target
+  {:c (inline-c "sdl2_key_left_impl()")})
+
+(defn key-right [] : I32
+  #target
+  {:c (inline-c "sdl2_key_right_impl()")})
 
 (defn delay [(ms : I32)]
   : Unit

@@ -123,7 +123,7 @@ int main(void) {
             Option ev;
             while ((ev = poll_event(&a)).tag == 1 && drained < 64) {
                 EventKind kind = *(EventKind *)ev.value;
-                if (kind.tag < 0 || kind.tag > 2) all_real_events = 0;
+                if (kind.tag < 0 || kind.tag > 3) all_real_events = 0;
                 drained++;
             }
             CHECK(all_real_events, "every drained event is a real, well-formed EventKind");

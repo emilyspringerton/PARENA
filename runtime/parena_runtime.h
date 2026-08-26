@@ -920,19 +920,76 @@ static inline void sdl2_render_present_impl(int renderer_handle) {
     }
 }
 
-/* poll-event -- a real, minimal Event for v0: 0 = no event pending,
- * 1 = Quit, 2 = KeyDown, 3 = Other (every other real SDL_EventType this
- * program doesn't distinguish yet -- mouse motion, window resize, etc.,
- * real, separate, deferred follow-up once an editor loop actually needs
- * to react to them individually, same "expand the API only when a new
- * feature needs it" pattern this whole stdlib already follows). */
+/* poll-event -- v1 (2026-08-26, real keyboard-driven editing: founder
+ * "continue working on parena editor"). Codes: 0 = no event pending,
+ * 1 = Quit, 2 = KeyDown, 3 = TextInput, 4 = Other (every other real
+ * SDL_EventType this program doesn't distinguish yet -- mouse motion,
+ * window resize, real, separate, deferred follow-up once an editor loop
+ * actually needs to react to them individually).
+ *
+ * A raw primitive can only return one plain scalar (no tuples -- VS0's
+ * emitter doesn't support them, confirmed live), so KeyDown's real
+ * keysym and TextInput's real typed text are read via two SEPARATE
+ * follow-up raw calls (sdl2_last_event_key_impl/
+ * sdl2_last_event_text_impl) right after poll-event reports which kind
+ * fired -- the same "check a side-channel immediately after the call
+ * that set it" shape io.prn's own raw-errno already establishes for
+ * this exact reason. PITVIPER's own cmd/pitviper/main.go is the real
+ * precedent for using BOTH SDL_KEYDOWN (special keys: backspace,
+ * arrows, enter) and SDL_TEXTINPUT (real typed characters, correctly
+ * handling shift/IME/etc. -- the actually-correct way to do text input
+ * in SDL2, not raw keysym-to-ASCII mapping) together. */
+static int g_sdl2_last_event_key = 0;
+static char g_sdl2_last_event_text[32];
+
 static inline int sdl2_poll_event_impl(void) {
     SDL_Event e;
     if (!SDL_PollEvent(&e)) return 0;
     if (e.type == SDL_QUIT) return 1;
-    if (e.type == SDL_KEYDOWN) return 2;
-    return 3;
+    if (e.type == SDL_KEYDOWN) {
+        g_sdl2_last_event_key = (int)e.key.keysym.sym;
+        return 2;
+    }
+    if (e.type == SDL_TEXTINPUT) {
+        size_t n = sizeof(g_sdl2_last_event_text) - 1;
+        strncpy(g_sdl2_last_event_text, e.text.text, n);
+        g_sdl2_last_event_text[n] = '\0';
+        return 3;
+    }
+    return 4;
 }
+
+static inline int sdl2_last_event_key_impl(void) {
+    return g_sdl2_last_event_key;
+}
+
+static inline char *sdl2_last_event_text_impl(Arena *dest) {
+    size_t len = strlen(g_sdl2_last_event_text);
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, g_sdl2_last_event_text, len + 1);
+    return out;
+}
+
+static inline void sdl2_start_text_input_impl(void) {
+    SDL_StartTextInput();
+}
+
+static inline void sdl2_stop_text_input_impl(void) {
+    SDL_StopTextInput();
+}
+
+/* Real SDL keysym constants an editor's own keyboard loop actually
+ * needs to distinguish -- SDLK_* values exposed as plain I32-returning
+ * functions rather than PARENA-level constants (this language has no
+ * const/#define-equivalent yet), matching the "thin FFI wrapper, not a
+ * redesigned API" philosophy this whole file already follows. Narrow,
+ * real set: whatever a real single-line text-edit loop needs
+ * (backspace, enter, left/right for cursor movement) -- more added when
+ * a real feature needs them, not speculatively here. */
+static inline int sdl2_key_backspace_impl(void) { return SDLK_BACKSPACE; }
+static inline int sdl2_key_return_impl(void) { return SDLK_RETURN; }
+static inline int sdl2_key_left_impl(void) { return SDLK_LEFT; }
+static inline int sdl2_key_right_impl(void) { return SDLK_RIGHT; }
 
 static inline int sdl2_get_ticks_impl(void) {
     return (int)SDL_GetTicks();

@@ -69,6 +69,23 @@ static inline EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = Ev
 static inline EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
 static inline EventKind EventKind_Other(void) { EventKind v; v.tag = EventKind_TAG_Other; v.value = NULL; return v; }
 
+typedef struct {
+    char * text;
+    int cursor;
+} Buffer;
+static inline Buffer Buffer_new(char * text, int cursor) {
+    Buffer v;
+    v.text = text;
+    v.cursor = cursor;
+    return v;
+}
+
+typedef enum {
+    BufferError_TAG_OutOfRange,
+} BufferError_Tag;
+typedef struct { BufferError_Tag tag; void *value; } BufferError;
+static inline BufferError BufferError_OutOfRange(void) { BufferError v; v.tag = BufferError_TAG_OutOfRange; v.value = NULL; return v; }
+
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
@@ -125,6 +142,13 @@ void close_font(Font);
 Result render_text(Renderer *, Font *, char *, int, int, int, int, int, Arena *);
 int measure_text_width(Font *, char *);
 int measure_text_height(Font *, char *);
+Buffer new(Arena *);
+char * active_text(Buffer *);
+int cursor_pos(Buffer *);
+Result insert(Buffer *, int, char *, Arena *);
+Result delete_range(Buffer *, int, int, Arena *);
+Result insert_at_cursor(Buffer *, char *, Arena *);
+Result backspace_at_cursor(Buffer *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -152,6 +176,18 @@ static inline Font *Font_box(Arena *dest, Font v) {
 
 static inline EventKind *EventKind_box(Arena *dest, EventKind v) {
     EventKind *p = (EventKind *)arena_alloc(dest, sizeof(EventKind));
+    *p = v;
+    return p;
+}
+
+static inline BufferError *BufferError_box(Arena *dest, BufferError v) {
+    BufferError *p = (BufferError *)arena_alloc(dest, sizeof(BufferError));
+    *p = v;
+    return p;
+}
+
+static inline Buffer *Buffer_box(Arena *dest, Buffer v) {
+    Buffer *p = (Buffer *)arena_alloc(dest, sizeof(Buffer));
     *p = v;
     return p;
 }
@@ -477,5 +513,70 @@ int measure_text_width(Font * f __attribute__((unused)), char * text __attribute
 
 int measure_text_height(Font * f __attribute__((unused)), char * text __attribute__((unused))) {
     return sdl2_raw_measure_text_height((f)->handle, text);
+}
+
+Buffer new(Arena *dest __attribute__((unused))) {
+    return Buffer_new("", 0);
+}
+
+char * active_text(Buffer * buf __attribute__((unused))) {
+    return (buf)->text;
+}
+
+int cursor_pos(Buffer * buf __attribute__((unused))) {
+    return (buf)->cursor;
+}
+
+Result insert(Buffer * buf __attribute__((unused)), int pos __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *cur __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(cur);
+    if (((pos < 0) || (pos > len))) {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
+    } else {
+    char *before __attribute__((unused)) = substring(cur, 0, pos, dest);
+    char *after __attribute__((unused)) = substring(cur, pos, len, dest);
+    char *combined __attribute__((unused)) = concat(concat(before, text, dest), after, dest);
+    return result_ok(Buffer_box(dest, Buffer_new(combined, (buf)->cursor)));
+    }
+}
+
+Result delete_range(Buffer * buf __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *cur __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(cur);
+    if ((((start < 0) || (end > len)) || (start > end))) {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
+    } else {
+    char *before __attribute__((unused)) = substring(cur, 0, start, dest);
+    char *after __attribute__((unused)) = substring(cur, end, len, dest);
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (buf)->cursor)));
+    }
+}
+
+Result insert_at_cursor(Buffer * buf __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
+    char *cur __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(cur);
+    if (((pos < 0) || (pos > len))) {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
+    } else {
+    char *before __attribute__((unused)) = substring(cur, 0, pos, dest);
+    char *after __attribute__((unused)) = substring(cur, pos, len, dest);
+    char *combined __attribute__((unused)) = concat(concat(before, text, dest), after, dest);
+    int advance __attribute__((unused)) = length(text);
+    return result_ok(Buffer_box(dest, Buffer_new(combined, (pos + advance))));
+    }
+}
+
+Result backspace_at_cursor(Buffer * buf __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
+    if ((pos <= 0)) {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
+    } else {
+    char *cur __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(cur);
+    char *before __attribute__((unused)) = substring(cur, 0, (pos - 1), dest);
+    char *after __attribute__((unused)) = substring(cur, pos, len, dest);
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (pos - 1))));
+    }
 }
 

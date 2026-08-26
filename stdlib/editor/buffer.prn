@@ -1,29 +1,109 @@
-;; stdlib/editor/buffer.prn — depends on string, vec. Design: STDLIB.md
-;; "editor/buffer" section. Real limitation: the actual text-buffer
-;; representation (rope/gap-buffer/piece-table) is shell-specific,
-;; undecided work (same open question as editor/plugin's own header
-;; comment) -- these calls are FFI into whatever the chosen shell owns.
+;; stdlib/editor/buffer.prn — depends on string. Design: STDLIB.md
+;; "editor/buffer" section, NORTHSTAR.md's own module table.
+;;
+;; Rewritten 2026-08-26, founder real-time: "continue working on parena
+;; editor" -- the shell-specific undecided-ness this file's own original
+;; header comment flagged ("FFI into whatever the chosen shell owns")
+;; is resolved now: the shell IS SDL2 (stdlib/sdl2.prn's own real window/
+;; renderer/text-rendering work shipped earlier the same day), and this
+;; is the real, first, in-PARENA text buffer it edits.
+;;
+;; Real design departure from the original sketch, forced by two real,
+;; confirmed VS0 emitter limits (not guessed at -- both hit live trying
+;; the original shape): (1) no struct field mutation exists yet (no
+;; `set-field!` or equivalent anywhere in this compiler) -- so a Buffer
+;; is NOT mutated in place; insert/delete-range/insert-at-cursor/
+;; backspace-at-cursor all return a real, NEW Buffer value via Result,
+;; and the caller rebinds its own local (`(let [buf2 (insert-at-cursor
+;; buf ch dest)] ...)`), the honest, buildable-today shape rather than a
+;; mutable one. (2) tuple return types aren't supported (confirmed live:
+;; a real "unsupported return type form" error) -- the original
+;; `selection : (Option (I32 I32))` can't compile as written; dropped
+;; entirely for v0 rather than worked around, since nothing in this pass
+;; needs a selection concept yet (no selection UI exists) -- real,
+;; separate, deferred work once something actually needs it, matching
+;; this whole stdlib's "expand the API only when a new feature needs it"
+;; pattern, not silently designed around blind.
+;;
+;; cursor-tracking replaces the original's own more abstract `selection`
+;; entry point for this same reason -- a single I32 cursor position is
+;; the real, minimal, useful thing a keyboard-driven single-line edit
+;; loop needs (insert-at-cursor/backspace-at-cursor), not a speculative
+;; richer model nothing calls yet.
 
 (module editor/buffer)
 (import string)
-(export active-text insert delete-range selection)
+(export new active-text cursor-pos insert delete-range
+        insert-at-cursor backspace-at-cursor Buffer BufferError)
 
-(defn active-text [(dest : Arena @ Region)]
+(defstruct Buffer
+  (text   : String @ Region)
+  (cursor : I32))
+
+(defenum BufferError
+  (OutOfRange))
+
+(defn new [(dest : Arena @ Region)] : Buffer @ Region
+  {:text "" :cursor 0})
+
+(defn active-text [(!buf : &Buffer)]
   : String @ Region
-  #target
-  {:c (inline-c "editor_active_buffer_text(dest)")})
+  (get-field !buf :text))
 
-(defn insert [(pos : I32) (text : String @ Region)]
-  : (Result Unit BufferError)
-  #target
-  {:c (inline-c "editor_buffer_insert(pos, text) == 0 ? OK : ERR")})
+(defn cursor-pos [(!buf : &Buffer)]
+  : I32
+  (get-field !buf :cursor))
 
-(defn delete-range [(start : I32) (end : I32)]
-  : (Result Unit BufferError)
-  #target
-  {:c (inline-c "editor_buffer_delete_range(start, end) == 0 ? OK : ERR")})
+;; insert -- NORTHSTAR.md's own documented entry point, real value-
+;; semantics shape (see this file's own header comment for why). Cursor
+;; position is left unchanged -- callers editing at an arbitrary offset
+;; are responsible for their own cursor bookkeeping; insert-at-cursor
+;; below is the real convenience path a keyboard loop actually wants.
+(defn insert [(!buf : &Buffer) (pos : I32) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (let [cur (get-field !buf :text)
+        len (string/length cur)]
+    (if (or (< pos 0) (> pos len))
+      (Err OutOfRange)
+      (let [before (string/substring cur 0 pos dest)
+            after (string/substring cur pos len dest)
+            combined (string/concat (string/concat before text dest) after dest)]
+        (Ok {:text combined :cursor (get-field !buf :cursor)})))))
 
-(defn selection []
-  : (Option (I32 I32))
-  #target
-  {:c (inline-c "editor_buffer_selection()")})
+(defn delete-range [(!buf : &Buffer) (start : I32) (end : I32) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (let [cur (get-field !buf :text)
+        len (string/length cur)]
+    (if (or (< start 0) (> end len) (> start end))
+      (Err OutOfRange)
+      (let [before (string/substring cur 0 start dest)
+            after (string/substring cur end len dest)]
+        (Ok {:text (string/concat before after dest) :cursor (get-field !buf :cursor)})))))
+
+;; insert-at-cursor / backspace-at-cursor -- the real, minimal pair a
+;; keyboard-driven single-line edit loop needs (SDL_TEXTINPUT ->
+;; insert-at-cursor, backspace keydown -> backspace-at-cursor). Cursor
+;; genuinely advances/retreats, unlike plain insert/delete-range above.
+(defn insert-at-cursor [(!buf : &Buffer) (text : String @ Region) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (let [pos (get-field !buf :cursor)
+        cur (get-field !buf :text)
+        len (string/length cur)]
+    (if (or (< pos 0) (> pos len))
+      (Err OutOfRange)
+      (let [before (string/substring cur 0 pos dest)
+            after (string/substring cur pos len dest)
+            combined (string/concat (string/concat before text dest) after dest)
+            advance (string/length text)]
+        (Ok {:text combined :cursor (+ pos advance)})))))
+
+(defn backspace-at-cursor [(!buf : &Buffer) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (let [pos (get-field !buf :cursor)]
+    (if (<= pos 0)
+      (Err OutOfRange)
+      (let [cur (get-field !buf :text)
+            len (string/length cur)
+            before (string/substring cur 0 (- pos 1) dest)
+            after (string/substring cur pos len dest)]
+        (Ok {:text (string/concat before after dest) :cursor (- pos 1)})))))
