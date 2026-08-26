@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render turbogrep clean
 
 all: build
 
@@ -169,6 +169,23 @@ test-editor: build
 	trap 'kill $$(cat /tmp/test_editor_xvfb.pid) 2>/dev/null; rm -f /tmp/test_editor_xvfb.pid' EXIT; \
 	sleep 1; \
 	DISPLAY=:98 /tmp/test_editor_bin
+
+# test-editor-render -- real end-to-end verification tying together
+# everything shipped this session: the tokenizer, the real PARENA
+# grammar, a real theme (scope -> color), and real rendering -- the
+# concrete "see real syntax-highlighted PARENA source on screen" moment
+# (founder: "start adding all of the features of textmate" -> "ALL THE
+# FEATURES").
+test-editor-render: build
+	./parena build stdlib/string.prn stdlib/regex/syntax.prn stdlib/regex/pcre.prn stdlib/sdl2.prn \
+		stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn stdlib/editor/theme.prn \
+		stdlib/editor/render.prn -o tests/test_editor_render_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_editor_render.c runtime/parena_runtime.c \
+		-o /tmp/test_editor_render_bin -lSDL2 -lSDL2_ttf -lm
+	@Xvfb :96 -screen 0 1280x720x24 & echo $$! > /tmp/test_editor_render_xvfb.pid; \
+	trap 'kill $$(cat /tmp/test_editor_render_xvfb.pid) 2>/dev/null; rm -f /tmp/test_editor_render_xvfb.pid' EXIT; \
+	sleep 1; \
+	DISPLAY=:96 /tmp/test_editor_render_bin
 
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the

@@ -1,0 +1,46 @@
+;; stdlib/editor/render.prn — depends on string, sdl2, editor/textmate,
+;; editor/theme. Ties everything shipped this session together for
+;; real: tokenize a real line with a real grammar, color each token with
+;; a real theme, draw it through the real SDL2 renderer/font -- the
+;; concrete "see real syntax-highlighted PARENA source on screen" moment
+;; founder real-time "start adding all of the features of textmate" ->
+;; "ALL THE FEATURES" was aiming at.
+
+(module editor/render)
+(import string)
+(import regex/syntax)
+(import regex/pcre)
+(import editor/textmate)
+(import editor/theme)
+(export render-highlighted-line)
+
+;; render-highlighted-line -- tokenizes `line` with `rules`, draws each
+;; token in its own theme color at (x, y), advancing x by each token's
+;; own real measured pixel width so tokens sit flush against each other
+;; (no per-glyph atlas/kerning cache yet -- editor/textmate.prn's own
+;; render-text is already a real, honest "fresh surface per call" v0;
+;; this composes on top of that same tradeoff, not a new one). An
+;; untokenized (empty-scope) span still gets drawn, in the theme's own
+;; real default color -- real whitespace/punctuation between real
+;; tokens needs to occupy real screen space too, not be silently
+;; skipped, or every token after the first would visually collide.
+(defn render-highlighted-line [(!ren : &Renderer) (!f : &Font) (rules : &(Vec TmRule))
+                                (line : String @ Region) (x : I32) (y : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (let [tokens (editor/textmate/tokenize-line rules line dest)]
+    (render-tokens !ren !f line &tokens 0 x y dest)))
+
+(defn render-tokens [(!ren : &Renderer) (!f : &Font) (line : String @ Region) (tokens : &(Vec Token))
+                      (i : I32) (x : I32) (y : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (>= i (vec/len tokens))
+    (Ok unit)
+    (let [tok (vec/get tokens i)
+          span (string/substring line (get-field tok :start) (get-field tok :end) dest)]
+      (if (string/str-eq? span " ")
+        (render-tokens !ren !f line tokens (+ i 1) (+ x (sdl2/measure-text-width !f " ")) y dest)
+        (let [color (editor/theme/color-for-scope (get-field tok :scope))]
+          (match (sdl2/render-text !ren !f span x y (get-field color :r) (get-field color :g) (get-field color :b) dest)
+            ((Err e) (Err e))
+            ((Ok u)
+              (render-tokens !ren !f line tokens (+ i 1) (+ x (sdl2/measure-text-width !f span)) y dest))))))))

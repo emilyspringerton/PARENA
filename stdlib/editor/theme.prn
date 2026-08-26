@@ -1,0 +1,35 @@
+;; stdlib/editor/theme.prn — depends on string. A real, minimal
+;; scope-name -> color mapping for stdlib/editor/textmate.prn's own
+;; Token.scope, the piece that turns real tokenization into real visible
+;; syntax highlighting. Founder real-time: "start adding all of the
+;; features of textmate" -> "ALL THE FEATURES" -- this is TextMate's own
+;; other real half (a grammar assigns scope names; a *theme* maps scope
+;; names to colors -- the two-part design every real TextMate/VS Code
+;; setup uses, `.tmLanguage` + `.tmTheme`).
+;;
+;; Real, concrete color choices, not arbitrary: approximates VS Code's
+;; own real "Dark+" default theme palette for the closest matching real
+;; TextMate scope names (keyword.control -> purple, string.quoted ->
+;; orange, comment.line -> green, constant.numeric -> light green,
+;; constant.other.keyword -> blue, variable.other -> light gray) --
+;; recognizable to anyone who's used VS Code, not invented from scratch.
+
+(module editor/theme)
+(import string)
+(export color-for-scope Color)
+
+(defstruct Color
+  (r : I32)
+  (g : I32)
+  (b : I32))
+
+(defn color-for-scope [(scope : String @ Region)] : Color
+  (cond
+    ((string/str-eq? scope "keyword.control.parena") {:r 197 :g 134 :b 192})
+    ((string/str-eq? scope "keyword.other.region.parena") {:r 197 :g 134 :b 192})
+    ((string/str-eq? scope "string.quoted.double.parena") {:r 206 :g 145 :b 120})
+    ((string/str-eq? scope "comment.line.semicolon.parena") {:r 106 :g 153 :b 85})
+    ((string/str-eq? scope "constant.numeric.parena") {:r 181 :g 206 :b 168})
+    ((string/str-eq? scope "constant.other.keyword.parena") {:r 86 :g 156 :b 214})
+    ((string/str-eq? scope "variable.other.parena") {:r 212 :g 212 :b 212})
+    (true {:r 212 :g 212 :b 212})))
