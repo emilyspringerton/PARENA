@@ -143,12 +143,46 @@
 ;; (2026-08-26, the next real keys a single-line edit loop needs once
 ;; Left/Right exist). Always succeeds -- jumping to a position the
 ;; cursor is already at is a real, harmless no-op, not an error.
+;;
+;; Real, corrected 2026-08-26 (same day, after real multi-line editing
+;; shipped): originally jumped to the start/end of the WHOLE buffer --
+;; correct for a single-line buffer (where "start of buffer" and "start
+;; of line" are the same position), but genuinely wrong real editor UX
+;; once multi-line text exists (real editors' own plain Home/End mean
+;; "start/end of the CURRENT line," not the document -- Ctrl+Home/
+;; Ctrl+End is the usual whole-document shortcut, and this stdlib has no
+;; modifier-key detection yet to offer that separately). Made real and
+;; line-aware here instead of leaving the old, now-misleading
+;; whole-buffer behavior under the same name.
 (defn move-cursor-home [(!buf : &Buffer)] : Buffer
-  {:text (get-field !buf :text) :cursor 0})
+  (let [pos (get-field !buf :cursor)
+        text (get-field !buf :text)]
+    {:text text :cursor (line-start-before text pos)}))
 
 (defn move-cursor-end [(!buf : &Buffer)] : Buffer
-  (let [text (get-field !buf :text)]
-    {:text text :cursor (string/length text)}))
+  (let [pos (get-field !buf :cursor)
+        text (get-field !buf :text)]
+    {:text text :cursor (line-end-after text pos (string/length text))}))
+
+;; line-start-before / line-end-after -- real, minimal backward/forward
+;; scans for the nearest real newline (ASCII 10) around `pos`, the
+;; actual boundary of the CURRENT line. Real, honest, simple linear
+;; scan -- no line-index cache, matching this buffer's own already-
+;; established "real, simple, not optimized" tradeoff (render-text's
+;; own fresh-surface-per-call design carries the identical judgment).
+(defn line-start-before [(text : String @ Region) (pos : I32)] : I32
+  (if (<= pos 0)
+    0
+    (if (= (string/char-at text (- pos 1)) 10)
+      pos
+      (line-start-before text (- pos 1)))))
+
+(defn line-end-after [(text : String @ Region) (pos : I32) (len : I32)] : I32
+  (if (>= pos len)
+    len
+    (if (= (string/char-at text pos) 10)
+      pos
+      (line-end-after text (+ pos 1) len))))
 
 ;; delete-forward-at-cursor -- the real Delete key: removes the
 ;; character AHEAD of the cursor (Backspace/backspace-at-cursor already

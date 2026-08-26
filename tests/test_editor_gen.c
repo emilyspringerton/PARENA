@@ -159,6 +159,8 @@ Buffer move_cursor_left(Buffer *);
 Buffer move_cursor_right(Buffer *);
 Buffer move_cursor_home(Buffer *);
 Buffer move_cursor_end(Buffer *);
+int line_start_before(char *, int);
+int line_end_after(char *, int, int);
 Result delete_forward_at_cursor(Buffer *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -637,12 +639,39 @@ Buffer move_cursor_right(Buffer * buf __attribute__((unused))) {
 }
 
 Buffer move_cursor_home(Buffer * buf __attribute__((unused))) {
-    return Buffer_new((buf)->text, 0);
+    int pos __attribute__((unused)) = (buf)->cursor;
+    char *text __attribute__((unused)) = (buf)->text;
+    return Buffer_new(text, line_start_before(text, pos));
 }
 
 Buffer move_cursor_end(Buffer * buf __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
     char *text __attribute__((unused)) = (buf)->text;
-    return Buffer_new(text, length(text));
+    return Buffer_new(text, line_end_after(text, pos, length(text)));
+}
+
+int line_start_before(char * text __attribute__((unused)), int pos __attribute__((unused))) {
+    if ((pos <= 0)) {
+    return 0;
+    } else {
+    if ((char_at(text, (pos - 1)) == 10)) {
+    return pos;
+    } else {
+    return line_start_before(text, (pos - 1));
+    }
+    }
+}
+
+int line_end_after(char * text __attribute__((unused)), int pos __attribute__((unused)), int len __attribute__((unused))) {
+    if ((pos >= len)) {
+    return len;
+    } else {
+    if ((char_at(text, pos) == 10)) {
+    return pos;
+    } else {
+    return line_end_after(text, (pos + 1), len);
+    }
+    }
 }
 
 Result delete_forward_at_cursor(Buffer * buf __attribute__((unused)), Arena *dest __attribute__((unused))) {

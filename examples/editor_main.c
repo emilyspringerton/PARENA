@@ -25,10 +25,11 @@
  * awareness). Escape or the window's own close button quits, Backspace/
  * Delete edit, Left/Right move the cursor (correctly crossing real line
  * boundaries -- a single byte-offset cursor needs no special-casing for
- * that), Home/End jump to the real start/end of the WHOLE buffer, not
- * the current line -- a real, deliberate v0 scope note, not the more
- * common per-line Home/End behavior (that needs real line-aware cursor
- * functions this pass doesn't add). F2 saves the real, whole buffer
+ * that), Home/End jump to the real start/end of the CURRENT line
+ * (corrected same day, after multi-line shipped -- the original v0
+ * jumped to the whole buffer instead, indistinguishable from line-
+ * start/end when the buffer was still single-line-only). F2 saves the
+ * real, whole buffer
  * (newlines included) to a real file; F3 reloads the real whole file
  * back (io/read-string, not read-line, now that multi-line is real). No
  * selection, no undo -- real, separate, deferred follow-up, matching

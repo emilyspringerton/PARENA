@@ -190,6 +190,35 @@ int main(void) {
         CHECK(del2.tag == 0, "delete-forward-at-cursor at the real end of the text correctly reports OutOfRange");
     }
 
+    /* --- real, LINE-aware Home/End on real multi-line text (2026-08-26,
+     * corrected the same day real multi-line editing shipped: Home/End
+     * used to jump to the whole buffer's start/end, indistinguishable
+     * from line-start/end for single-line text -- this is the real test
+     * that actually distinguishes the two). --- */
+    {
+        Buffer ml = from_text("Line one\nLine two\nLine three");
+        /* cursor starts at the real end (from-text's own documented
+         * behavior) -- somewhere in "Line three". */
+        ml = move_cursor_home(&ml);
+        CHECK(cursor_pos(&ml) == 18,
+              "move-cursor-home on real multi-line text jumps to the start of the CURRENT line, not the whole buffer");
+
+        ml = move_cursor_end(&ml);
+        CHECK(cursor_pos(&ml) == (int)strlen(active_text(&ml)),
+              "move-cursor-end on the real LAST line lands at the real end of the whole text");
+
+        /* Move into the middle of the FIRST line and confirm home/end
+         * both correctly stay within that line, not the whole buffer. */
+        for (int i = 0; i < 100; i++) ml = move_cursor_left(&ml); /* clamps at 0 */
+        for (int i = 0; i < 4; i++) ml = move_cursor_right(&ml);  /* "Line" | " one" */
+        CHECK(cursor_pos(&ml) == 4, "cursor is genuinely inside the real first line");
+        ml = move_cursor_home(&ml);
+        CHECK(cursor_pos(&ml) == 0, "move-cursor-home on the real FIRST line correctly lands at 0");
+        ml = move_cursor_end(&ml);
+        CHECK(cursor_pos(&ml) == 8,
+              "move-cursor-end on the real first line stops at its own real newline, not the whole buffer's end");
+    }
+
     /* Real render of the final buffer contents, proving the buffer's
      * own real output is actually drawable through the real renderer
      * this session already verified. */
