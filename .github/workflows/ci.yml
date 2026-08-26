@@ -4,8 +4,10 @@ on:
   push:
   pull_request:
 
-# contents: write -- needed by the release step below (creating a git tag
-# + a GitHub Release). Everything else in this workflow only ever reads.
+# contents: write -- needed by the release job below (creating a git tag
+# + a GitHub Release). Everything else in this workflow only ever reads;
+# the build_editor_windows/build_editor_macos jobs below scope themselves
+# down to contents: read explicitly.
 permissions:
   contents: write
 
@@ -13,13 +15,10 @@ jobs:
   build_and_test:
     name: Build, Test & Sanitize (Bazel)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      # fetch-depth: 0 -- the release step below needs the full tag
-      # history to find the current version; actions/checkout's own
-      # default is a shallow clone that doesn't reliably include tags.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
@@ -125,6 +124,67 @@ jobs:
           path: dist/parena
           if-no-files-found: error
 
+      # Founder real-time, 2026-08-26: "ensure editor binaries for windows
+      # linux and mac are released in artifacts on parena on release" -- the
+      # `parena` compiler itself only ever runs here (Linux, this job), so
+      # the real per-platform work is generating editor-demo's own combined
+      # C source ONCE here (same real "host driver concatenated onto the
+      # generated .c" shape editor-demo's own Makefile target already
+      # uses), then handing that one file to the build_editor_windows/
+      # build_editor_macos jobs below to compile NATIVELY on their own real
+      # runner -- matching PITVIPER's own real, proven precedent (its own
+      # .github/workflows/ci.yml build_windows job) of a real per-OS
+      # compile, not a cross-compile from Linux. This step itself doesn't
+      # need runtime/parena_runtime.h's Windows-portability fix (Apple
+      # #16235) -- it only runs the `parena` compiler, real C compilation
+      # happens on each platform's own job below.
+      - name: Generate editor-demo C source (compiled natively per-platform below)
+        run: |
+          set -euo pipefail
+          ./dist/parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
+            stdlib/regex/pcre.prn stdlib/sdl2.prn \
+            stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
+            stdlib/editor/theme.prn stdlib/editor/render.prn -o editor_demo_gen.c
+          cat editor_demo_gen.c examples/editor_main.c > editor_demo_full.c
+
+      - name: Upload editor-demo generated C source (consumed by the Windows/macOS native-compile jobs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-demo-src-${{ github.run_number }}-${{ github.sha }}
+          path: editor_demo_full.c
+          if-no-files-found: error
+
+      # Real Linux editor-demo build + bundle, same real "bundle just the
+      # SDL2-family .so files + patchelf RPATH" technique PITVIPER's own
+      # ci.yml already established for its own pitviper binary -- the DoD's
+      # own -Werror bar applies here too (editor-demo's own Makefile target
+      # already builds it that way locally).
+      - name: Install patchelf (for RPATH bundling below)
+        run: sudo apt-get install -y patchelf
+
+      - name: Build editor-demo (Linux)
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime editor_demo_full.c runtime/parena_runtime.c \
+            -o editor-demo -lSDL2 -lSDL2_ttf -lm
+
+      - name: Bundle SDL2 runtime libraries for standalone distribution (Linux)
+        run: |
+          set -euo pipefail
+          mkdir -p dist-editor-linux/lib
+          cp editor-demo dist-editor-linux/
+          cp /usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0 dist-editor-linux/lib/
+          cp /usr/lib/x86_64-linux-gnu/libSDL2_ttf-2.0.so.0 dist-editor-linux/lib/
+          patchelf --set-rpath '$ORIGIN/lib' dist-editor-linux/editor-demo
+          echo "RPATH set: $(patchelf --print-rpath dist-editor-linux/editor-demo)"
+
+      - name: Upload editor-demo (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-demo-linux-${{ github.run_number }}-${{ github.sha }}
+          path: dist-editor-linux/
+          if-no-files-found: error
+
       # Real gap closed 2026-08-25 (S202-19): every other active repo with real CI
       # already had a *_CONSTRUCT.txt build artifact (a full concatenation of its
       # own source, matching emily.cli's own ci.yml "Generate Construct Bundle"
@@ -175,19 +235,181 @@ jobs:
           path: PARENA_CONSTRUCT.txt
           if-no-files-found: error
 
-      # Founder real-time, 2026-08-21: "whenever a build passes release it
-      # as a minor version" -> "like a . bump" -> "i will handle big bumps
-      # to signify human verify releases" -> "start pushing the artifacts
-      # to releases in github". Every green build on main auto-bumps the
-      # MINOR version (X.Y.Z -> X.(Y+1).0) and cuts a real GitHub Release
-      # with the compiler binary attached -- the MAJOR version (X) is
-      # deliberately left alone here, reserved for the founder's own
-      # manual bump to mark a real, human-verified release. Gated to
-      # push-to-main only (not PRs, not other branches) so this doesn't
-      # flood the repo with a release per feature-branch push; only runs
-      # once every real check above has already passed.
+  # Real, native Windows compile of editor-demo, mirroring PITVIPER's own
+  # real, proven build_windows job (.github/workflows/ci.yml): MSYS2/MinGW64
+  # provides SDL2 + a matching gcc in one self-consistent toolchain, avoiding
+  # the ABI mismatches of bolting a separate cross-compiler onto a native
+  # setup-* toolchain. Only needs runtime/parena_runtime.h's real
+  # -Wall -Wextra clean bar under mingw -- already verified by hand this
+  # same session (Apple #16235) via the real x86_64-w64-mingw32-gcc
+  # cross-compiler, before this job existed.
+  build_editor_windows:
+    name: Build Editor (Windows)
+    runs-on: windows-latest
+    needs: build_and_test
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-SDL2_ttf
+
+      - name: Download editor-demo generated C source
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-demo-src-${{ github.run_number }}-${{ github.sha }}
+
+      - name: Build editor-demo.exe
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -Wall -Wextra -Werror -I runtime editor_demo_full.c runtime/parena_runtime.c \
+            -o editor-demo.exe -lSDL2 -lSDL2_ttf -lm
+
+      - name: Bundle with required DLLs
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp editor-demo.exe dist/
+          # SDL2.dll (and friends) are dynamically linked — ldd lists every
+          # MSYS2-provided DLL the binary actually needs so the zip is
+          # self-contained on a machine without MSYS2 installed. Same real
+          # technique PITVIPER's own ci.yml bundle step already uses.
+          for dll in $(ldd editor-demo.exe | grep -i '/mingw64/bin/' | awk '{print $3}'); do
+            cp "$dll" dist/
+          done
+
+      - name: Upload editor-demo (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-demo-windows-${{ github.run_number }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
+  # Real, native macOS compile of editor-demo. No PITVIPER precedent for
+  # this platform (its own ci.yml only ever built Linux + Windows) -- new
+  # for real here. Real, deliberate scope limit, not an oversight: unlike
+  # the Linux/Windows jobs above, this does NOT bundle the Homebrew SDL2/
+  # SDL2_ttf dylibs (would need install_name_tool rewriting + a real
+  # per-arch matrix, since macos-latest's own real architecture has moved
+  # under GitHub before) -- ships a real, working binary that expects
+  # `brew install sdl2 sdl2_ttf` on the machine that runs it, same
+  # "expand only once something real needs it" tradeoff this whole
+  # stdlib's own host-glue work already carries elsewhere.
+  build_editor_macos:
+    name: Build Editor (macOS)
+    runs-on: macos-latest
+    needs: build_and_test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2 + SDL2_ttf (Homebrew)
+        run: brew install sdl2 sdl2_ttf
+
+      - name: Download editor-demo generated C source
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-demo-src-${{ github.run_number }}-${{ github.sha }}
+
+      - name: Build editor-demo
+        run: |
+          set -euo pipefail
+          SDL2_PREFIX="$(brew --prefix sdl2)"
+          SDL2_TTF_PREFIX="$(brew --prefix sdl2_ttf)"
+          cc -std=c99 -Wall -Wextra -Werror -I runtime -I "$SDL2_PREFIX/include" -I "$SDL2_TTF_PREFIX/include" \
+            editor_demo_full.c runtime/parena_runtime.c \
+            -L"$SDL2_PREFIX/lib" -L"$SDL2_TTF_PREFIX/lib" -lSDL2 -lSDL2_ttf -lm \
+            -o editor-demo
+
+      - name: Upload editor-demo (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-demo-macos-${{ github.run_number }}-${{ github.sha }}
+          path: editor-demo
+          if-no-files-found: error
+
+  # Founder real-time, 2026-08-21: "whenever a build passes release it
+  # as a minor version" -> "like a . bump" -> "i will handle big bumps
+  # to signify human verify releases" -> "start pushing the artifacts
+  # to releases in github". Every green build on main auto-bumps the
+  # MINOR version (X.Y.Z -> X.(Y+1).0) and cuts a real GitHub Release
+  # with the compiler binary + every real per-platform editor-demo
+  # bundle attached -- the MAJOR version (X) is deliberately left alone
+  # here, reserved for the founder's own manual bump to mark a real,
+  # human-verified release. Gated to push-to-main only (not PRs, not
+  # other branches) so this doesn't flood the repo with a release per
+  # feature-branch push; needs every build/test/compile job above to
+  # have already passed on every real platform.
+  #
+  # Split into its own job (2026-08-26, founder: "ensure editor binaries
+  # for windows linux and mac are released in artifacts on parena on
+  # release") -- previously these steps ran inline at the end of
+  # build_and_test, which only ever had the Linux compiler binary to
+  # attach; a real release now needs the Windows/macOS jobs' own
+  # artifacts too, which don't exist until those jobs finish.
+  release:
+    name: Tag & Release
+    runs-on: ubuntu-latest
+    needs: [build_and_test, build_editor_windows, build_editor_macos]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth: 0 -- this job needs the full tag history to find the
+      # current version; actions/checkout's own default is a shallow clone
+      # that doesn't reliably include tags.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download parena compiler binary
+        uses: actions/download-artifact@v4
+        with:
+          name: parena-${{ github.run_number }}-${{ github.sha }}
+          path: dist
+
+      - name: Download editor-demo (Linux)
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-demo-linux-${{ github.run_number }}-${{ github.sha }}
+          path: dist-editor/linux
+
+      - name: Download editor-demo (Windows)
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-demo-windows-${{ github.run_number }}-${{ github.sha }}
+          path: dist-editor/windows
+
+      - name: Download editor-demo (macOS)
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-demo-macos-${{ github.run_number }}-${{ github.sha }}
+          path: dist-editor/macos
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+          chmod +x dist/parena
+          chmod +x dist-editor/linux/editor-demo
+          chmod +x dist-editor/macos/editor-demo
+          # Linux/macOS: real tar.gz (Linux includes the bundled lib/ dir
+          # the build_and_test job's own patchelf/RPATH step set up).
+          tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib
+          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo
+          (cd dist-editor/windows && zip -r ../../editor-demo-windows-x86_64.zip .)
+
       - name: Compute next minor version
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: version
         run: |
           set -euo pipefail
@@ -205,7 +427,6 @@ jobs:
           echo "next=$next" >> "$GITHUB_OUTPUT"
 
       - name: Tag and release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.next }}
@@ -213,11 +434,16 @@ jobs:
           set -euo pipefail
           git tag "$NEXT_VERSION"
           git push origin "$NEXT_VERSION"
-          # --prerelease: founder real-time, 2026-08-21, "PARENA is pre
-          # release for now" -- VS0 is still early, pre-1.0 compiler
-          # development, not a stable release track yet.
+          # Regular (not --prerelease) as of 2026-08-26 -- founder
+          # real-time: "move parena from pre release releases to regular
+          # releases on auto releases". Previously --prerelease per an
+          # earlier founder call (2026-08-21, "PARENA is pre release for
+          # now" -- VS0 was still early, pre-1.0 compiler development);
+          # superseded by this later, explicit direction.
           gh release create "$NEXT_VERSION" \
             dist/parena \
+            editor-demo-linux-x86_64.tar.gz \
+            editor-demo-windows-x86_64.zip \
+            editor-demo-macos.tar.gz \
             --title "$NEXT_VERSION" \
-            --generate-notes \
-            --prerelease
+            --generate-notes
