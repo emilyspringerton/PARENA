@@ -1,0 +1,39 @@
+;; stdlib/redgarden/abraham_fireball_mod.prn — REDGARDEN's sixth real PARENA
+;; mod, same minimal one-function/no-dispatch-table shape as
+;; bloodflower_mod.prn (S194-01), tree_passive_mod.prn (S202-08),
+;; build_template_mod.prn (S202-14), item_curriculum_mod.prn (S202-22), and
+;; duck_smoke_bomb_mod.prn (S202-30ish).
+;;
+;; Founder real-time, 2026-08-26: "give abraham a real targetable slow
+;; moving projectile fireball that moves a long distance and damages
+;; enemies it passes through, replace his dumbest ability" -> "usually w"
+;; -> "there is no real range limit just have it go whatever direction is
+;; the click" -> "also rotate the hero that way pre cast" -> "give a micro
+;; rotation animation first" -> "quick and smooth ease in and out use
+;; golden band as a parena mod". Following the established "PARENA mod is
+;; the trigger, host C does the real work" split every real mod in this
+;; repo already uses, not inventing a new shape.
+;;
+;; ABI: arena_toggle_w's own ARENA_HERO_ABRAHAM case (arena_game.c) calls
+;; straight into `on-abraham-fireball-cast` (emitted as
+;; `on_abraham_fireball_cast`) once per real ground-targeted W cast --
+;; already gated by cooldown/mp/silence/stun checks on the host side, this
+;; mod is never called for a blocked cast. Calls back out to a
+;; host-provided `redgarden_host_abraham_fireball_cast(hero_index,
+;; target_x, target_z)` C function (arena_game.c-side) to begin the real
+;; windup (facing rotation, GOLDENBAND-sampled ease-in/out curve) and, once
+;; it completes, spawn the real piercing ArenaProjectile. Same #target/
+;; inline-c FFI-escape pattern editor/plugin.prn (S189-29), vterm_mod.prn
+;; (S192-01), bloodflower_mod.prn (S194-01), and every sibling mod above
+;; already established.
+
+(module redgarden/abraham-fireball-mod)
+(export on-abraham-fireball-cast)
+
+;; target-x/target-z are I32, not F32 -- VS0 doesn't support F32 params yet
+;; (confirmed live), same reason bloodflower_mod.prn's on-moon-zenith takes
+;; I32 x/z for a world position instead of float; the host C side
+;; (redgarden_host_abraham_fireball_cast) converts back to float itself.
+(defn on-abraham-fireball-cast [(hero-index : I32) (target-x : I32) (target-z : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_abraham_fireball_cast(hero_index, target_x, target_z);")})
