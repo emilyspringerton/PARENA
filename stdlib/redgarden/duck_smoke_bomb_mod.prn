@@ -1,0 +1,31 @@
+;; stdlib/redgarden/duck_smoke_bomb_mod.prn — REDGARDEN's fifth real PARENA
+;; mod, same minimal one-function/no-dispatch-table shape as
+;; bloodflower_mod.prn (S194-01), tree_passive_mod.prn (S202-08),
+;; build_template_mod.prn (S202-14), and item_curriculum_mod.prn (S202-22).
+;;
+;; Founder real-time, 2026-08-25: "ok do fog of war as an ability" -> "add to
+;; the duck" -> "there is no natural fog of war just duck smoke bomb" ->
+;; "server authorittive" -> "as a parena mod" -> "mod first dev" --
+;; following the established "PARENA mod is the trigger, host C does the
+;; real work" split every real mod in this repo already uses, not inventing
+;; a new shape.
+;;
+;; ABI: arena_toggle_w's own ARENA_HERO_DUCK case (arena_game.c) calls
+;; straight into `on-duck-smoke-bomb-cast` (emitted as
+;; `on_duck_smoke_bomb_cast`) once per real cast -- already gated by
+;; cooldown/mp/silence/stun checks on the host side, this mod is never
+;; called for a blocked cast. Calls back out to a host-provided
+;; `redgarden_host_duck_smoke_bomb_cast(hero_index)` C function
+;; (arena_game.c-side) to apply the real world-state mutation (sets
+;; duck_smoke_ms/x/z on the casting hero) -- see hero_obscured_from
+;; (arena_game.c, static) for the actual targeting-denial mechanic this
+;; state drives. Same #target/inline-c FFI-escape pattern editor/plugin.prn
+;; (S189-29), vterm_mod.prn (S192-01), bloodflower_mod.prn (S194-01), and
+;; tree_passive_mod.prn (S202-08) all already established.
+
+(module redgarden/duck-smoke-bomb-mod)
+(export on-duck-smoke-bomb-cast)
+
+(defn on-duck-smoke-bomb-cast [(hero-index : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_duck_smoke_bomb_cast(hero_index);")})
