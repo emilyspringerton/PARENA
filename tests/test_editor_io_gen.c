@@ -516,7 +516,7 @@ int raw_errno(void) {
 }
 
 int mode_tag_of(OpenMode mode __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused));
+    double __match_result_0 __attribute__((unused)) = {0};
     OpenMode __match_tmp_0 = mode;
     if (__match_tmp_0.tag == 0) {
         __match_result_0 = 0;

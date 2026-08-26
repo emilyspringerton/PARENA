@@ -341,7 +341,21 @@ jobs:
           # resolves too) -- confirmed live on a real macos-latest runner,
           # 2026-08-26: the include/SDL2 form alone left SDL_ttf.h's own
           # include unresolved ("fatal error: 'SDL.h' file not found").
-          cc -std=c99 -Wall -Wextra -Werror -I runtime \
+          # -Wno-parentheses-equality: the real, unguarded-match-result
+          # -Wsometimes-uninitialized errors this same real CI run also
+          # hit were a genuine emitter gap, fixed at the root in
+          # src/emit.c (Apple filed same day). This one is different --
+          # src/emit.c's expression emitter wraps every binary op in its
+          # own parens for nested-precedence safety, which is correct and
+          # necessary in general, but reads as `if ((x == y))` at the top
+          # of a conditional -- redundant, harmless, and only Clang's own
+          # -Wparentheses-equality (part of -Wall under Clang, not GCC)
+          # flags it. Fixing that generally means touching every
+          # conditional-emission call site in the emitter for zero
+          # correctness benefit, so it's suppressed here rather than
+          # "fixed" -- a real, deliberate, Clang-only cosmetic carve-out,
+          # not a correctness concern like the uninitialized-var case was.
+          cc -std=c99 -Wall -Wextra -Werror -Wno-parentheses-equality -I runtime \
             -I "$SDL2_PREFIX/include" -I "$SDL2_PREFIX/include/SDL2" \
             -I "$SDL2_TTF_PREFIX/include" -I "$SDL2_TTF_PREFIX/include/SDL2" \
             editor_demo_full.c runtime/parena_runtime.c \

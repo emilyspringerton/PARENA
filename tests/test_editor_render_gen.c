@@ -615,7 +615,7 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
 
 Result parse(char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int plen __attribute__((unused)) = length(pattern);
-    Result __match_result_0 __attribute__((unused));
+    Result __match_result_0 __attribute__((unused)) = {0};
     Result __match_tmp_0 = parse_alt(pattern, 0, 0, dest);
     if (__match_tmp_0.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_0.value;
@@ -633,7 +633,7 @@ Result parse(char * pattern __attribute__((unused)), Arena *dest __attribute__((
 }
 
 Result parse_alt(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_1 __attribute__((unused));
+    Result __match_result_1 __attribute__((unused)) = {0};
     Result __match_tmp_1 = parse_concat(pattern, pos, ncap, dest);
     if (__match_tmp_1.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_1.value;
@@ -704,7 +704,7 @@ Result parse_concat(char * pattern __attribute__((unused)), int pos __attribute_
 }
 
 Result parse_quant(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_2 __attribute__((unused));
+    Result __match_result_2 __attribute__((unused)) = {0};
     Result __match_tmp_4 = parse_atom(pattern, pos, ncap, dest);
     if (__match_tmp_4.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_4.value;
@@ -743,7 +743,7 @@ Result parse_escape(char * pattern __attribute__((unused)), int pos __attribute_
 
 Result parse_group(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int my_index __attribute__((unused)) = (ncap + 1);
-    Result __match_result_3 __attribute__((unused));
+    Result __match_result_3 __attribute__((unused)) = {0};
     Result __match_tmp_5 = parse_alt(pattern, (pos + 1), my_index, dest);
     if (__match_tmp_5.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_5.value;
@@ -816,7 +816,7 @@ Result parse_class(char * pattern __attribute__((unused)), int pos __attribute__
 }
 
 Result compile(char * pattern __attribute__((unused)), MatchBudget budget __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_4 __attribute__((unused));
+    Result __match_result_4 __attribute__((unused)) = {0};
     Result __match_tmp_6 = parse(pattern, dest);
     if (__match_tmp_6.tag == 1) {
         void *ast __attribute__((unused)) = __match_tmp_6.value;
@@ -834,7 +834,7 @@ AnchorKind unbox_anchor_kind(void * k __attribute__((unused))) {
 }
 
 int anchor_kind_supported_(AnchorKind kind __attribute__((unused))) {
-    int __match_result_5 __attribute__((unused));
+    int __match_result_5 __attribute__((unused)) = {0};
     AnchorKind __match_tmp_7 = kind;
     if (__match_tmp_7.tag == 0) {
         __match_result_5 = 1;
@@ -849,7 +849,7 @@ int anchor_kind_supported_(AnchorKind kind __attribute__((unused))) {
 }
 
 int node_supported_(PatternNode * node __attribute__((unused))) {
-    int __match_result_6 __attribute__((unused));
+    int __match_result_6 __attribute__((unused)) = {0};
     PatternNode __match_tmp_8 = (*((PatternNode *)(node)));
     if (__match_tmp_8.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_8.value;
@@ -928,7 +928,7 @@ int char_matches_(char * text __attribute__((unused)), int pos __attribute__((un
 }
 
 Option ast_literal_text(PatternNode * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Option __match_result_7 __attribute__((unused));
+    Option __match_result_7 __attribute__((unused)) = {0};
     PatternNode __match_tmp_9 = (*((PatternNode *)(node)));
     if (__match_tmp_9.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_9.value;
@@ -960,7 +960,7 @@ Option concat_literal_parts(Vec * parts __attribute__((unused)), int i __attribu
     if ((i >= vec_len(parts))) {
     return option_some(acc);
     } else {
-    Option __match_result_8 __attribute__((unused));
+    Option __match_result_8 __attribute__((unused)) = {0};
     Option __match_tmp_10 = ast_literal_text(vec_get(parts, i), dest);
     if (__match_tmp_10.tag == 1) {
         void *s __attribute__((unused)) = __match_tmp_10.value;
@@ -977,7 +977,7 @@ Option alt_literal_scan(Vec * branches __attribute__((unused)), int i __attribut
     if ((i >= vec_len(branches))) {
     return option_some(int_box(dest, 0));
     } else {
-    Option __match_result_9 __attribute__((unused));
+    Option __match_result_9 __attribute__((unused)) = {0};
     Option __match_tmp_11 = ast_literal_text(vec_get(branches, i), dest);
     if (__match_tmp_11.tag == 1) {
         void *needle __attribute__((unused)) = __match_tmp_11.value;
@@ -995,7 +995,7 @@ Option alt_literal_scan(Vec * branches __attribute__((unused)), int i __attribut
 }
 
 Option alt_literal_scan_root(PatternNode * node __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Option __match_result_10 __attribute__((unused));
+    Option __match_result_10 __attribute__((unused)) = {0};
     PatternNode __match_tmp_12 = (*((PatternNode *)(node)));
     if (__match_tmp_12.tag == 3) {
         void *branches __attribute__((unused)) = __match_tmp_12.value;
@@ -1131,7 +1131,7 @@ int char_class_matches_(char * text __attribute__((unused)), int pos __attribute
 }
 
 int anchor_matches_(char * text __attribute__((unused)), int pos __attribute__((unused)), AnchorKind kind __attribute__((unused))) {
-    int __match_result_11 __attribute__((unused));
+    int __match_result_11 __attribute__((unused)) = {0};
     AnchorKind __match_tmp_13 = kind;
     if (__match_tmp_13.tag == 0) {
         __match_result_11 = (pos == 0);
@@ -1150,7 +1150,7 @@ Vec match_node(PatternNode * node __attribute__((unused)), char * text __attribu
     if (((*((int *)(steps))) > budget)) {
     return vec_new(dest);
     } else {
-    Vec __match_result_12 __attribute__((unused));
+    Vec __match_result_12 __attribute__((unused)) = {0};
     PatternNode __match_tmp_14 = (*((PatternNode *)(node)));
     if (__match_tmp_14.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_14.value;
@@ -1325,7 +1325,7 @@ Vec match_optional(PatternNode * inner __attribute__((unused)), int greedy __att
 }
 
 Result is_match(Regex * re __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_13 __attribute__((unused));
+    Result __match_result_13 __attribute__((unused)) = {0};
     Option __match_tmp_15 = ast_literal_text(&(((re)->ast).root), dest);
     if (__match_tmp_15.tag == 1) {
         void *needle __attribute__((unused)) = __match_tmp_15.value;
@@ -1465,7 +1465,7 @@ int vec_match_end_at(void * v __attribute__((unused)), int idx __attribute__((un
 }
 
 char * replace(Regex * re __attribute__((unused)), char * text __attribute__((unused)), char * replacement __attribute__((unused)), int global_ __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char * __match_result_14 __attribute__((unused));
+    char * __match_result_14 __attribute__((unused)) = {0};
     Result __match_tmp_19 = find_all(re, text, dest);
     if (__match_tmp_19.tag == 1) {
         void *matches __attribute__((unused)) = __match_tmp_19.value;
@@ -1757,7 +1757,7 @@ char * tm_token_scope(Token * t __attribute__((unused)), Arena *dest __attribute
 }
 
 Result compile_rule(char * scope __attribute__((unused)), char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_15 __attribute__((unused));
+    Result __match_result_15 __attribute__((unused)) = {0};
     Result __match_tmp_20 = compile(pattern, MatchBudget_new(10000), dest);
     if (__match_tmp_20.tag == 1) {
         void *re __attribute__((unused)) = __match_tmp_20.value;
@@ -1775,7 +1775,7 @@ Option try_rules_at(Vec * rules __attribute__((unused)), char * remaining __attr
     return option_none();
     } else {
     TmRule *rule __attribute__((unused)) = vec_get(rules, idx);
-    Option __match_result_16 __attribute__((unused));
+    Option __match_result_16 __attribute__((unused)) = {0};
     Result __match_tmp_21 = find(&((rule)->pattern), remaining, dest);
     if (__match_tmp_21.tag == 1) {
         void *maybe_m __attribute__((unused)) = __match_tmp_21.value;
@@ -1805,7 +1805,7 @@ void tokenize_step(Vec * rules __attribute__((unused)), char * line __attribute_
     (void)(NULL);
     } else {
     char *remaining __attribute__((unused)) = substring(line, pos, len, dest);
-    int __match_result_17 __attribute__((unused));
+    int __match_result_17 __attribute__((unused)) = {0};
     Option __match_tmp_23 = try_rules_at(rules, remaining, 0, dest);
     if (__match_tmp_23.tag == 1) {
         void *t __attribute__((unused)) = __match_tmp_23.value;
@@ -1830,7 +1830,7 @@ Vec tokenize_line(Vec * rules __attribute__((unused)), char * line __attribute__
 }
 
 Result add_rule(Vec * rules __attribute__((unused)), char * scope __attribute__((unused)), char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_18 __attribute__((unused));
+    Result __match_result_18 __attribute__((unused)) = {0};
     Result __match_tmp_24 = compile_rule(scope, pattern, dest);
     if (__match_tmp_24.tag == 1) {
         void *rule __attribute__((unused)) = __match_tmp_24.value;
@@ -1846,7 +1846,7 @@ Result add_rule(Vec * rules __attribute__((unused)), char * scope __attribute__(
 
 Result build_grammar(Arena *dest __attribute__((unused))) {
     Vec rules __attribute__((unused)) = vec_new(dest);
-    Result __match_result_19 __attribute__((unused));
+    Result __match_result_19 __attribute__((unused)) = {0};
     Result __match_tmp_25 = add_rule(&(rules), "comment.line.semicolon.parena", ";;.*", dest);
     if (__match_tmp_25.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_25.value;
@@ -1926,7 +1926,7 @@ Result render_tokens(Renderer * ren __attribute__((unused)), Font * f __attribut
     return render_tokens(ren, f, line, tokens, (i + 1), (x + measure_text_width(f, " ")), y, dest);
     } else {
     Color color __attribute__((unused)) = color_for_scope((tok)->scope);
-    Result __match_result_20 __attribute__((unused));
+    Result __match_result_20 __attribute__((unused)) = {0};
     Result __match_tmp_32 = render_text(ren, f, span, x, y, (color).r, (color).g, (color).b, dest);
     if (__match_tmp_32.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_32.value;
@@ -1951,7 +1951,7 @@ Result render_lines(Renderer * ren __attribute__((unused)), Font * f __attribute
     return result_ok(NULL);
     } else {
     char *line __attribute__((unused)) = vec_get(lines, i);
-    Result __match_result_21 __attribute__((unused));
+    Result __match_result_21 __attribute__((unused)) = {0};
     Result __match_tmp_33 = render_highlighted_line(ren, f, rules, line, x, (y + (i * line_height)), dest);
     if (__match_tmp_33.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_33.value;

@@ -4225,7 +4225,21 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
     const char *decl_type = result_type && strcmp(result_type, "void") == 0
                                  ? "int"
                                  : (result_type ? result_type : "void *");
-    sb_appendf(out, "    %s %s __attribute__((unused));\n", decl_type, result_var);
+    /* = {0} -- real, confirmed-live bug found on a real macos-latest CI
+     * runner (2026-08-26): a real, exhaustive PARENA `match` over every
+     * variant of an enum (e.g. OpenMode's 3 variants) lowers to a plain
+     * if/else-if chain with no trailing `else`, since C can't see the
+     * region analyzer's own exhaustiveness proof -- so a bare
+     * declaration here reads as a genuinely uninitialized path to any C
+     * compiler's flow analysis. GCC's own -Wall -Wextra (this repo's
+     * own literal DoD bar) never flagged it, but Clang's
+     * -Wsometimes-uninitialized does, and it's a real, general emitter
+     * gap either way, not just a Clang-specific nuisance -- `= {0}` is
+     * valid, portable C99 for every real decl_type this can be (scalar,
+     * pointer, or struct: C99 6.7.8p21 zero-initializes every member an
+     * initializer list under-specifies), so it costs nothing and closes
+     * the gap for real rather than just quieting one compiler. */
+    sb_appendf(out, "    %s %s __attribute__((unused)) = {0};\n", decl_type, result_var);
     sb_append(out, body.data);
     sb_free(&body);
 
