@@ -1372,14 +1372,23 @@ samples are just a float/int buffer, same reasoning `io/read-floats` used for GP
 weights above) are the two real design choices here beyond a flat rename — everything else is a
 direct one-to-one mirror of the grepped call, on purpose.
 
-**Real, honest limitation**: game controller support (`SDL_GameControllerOpen`/`GetAxis`/
-`GetButton`, real, grepped, used by BRAWLPIT/REDGARDEN/GoblinFoxDragon) and full renderer/texture
-calls (`SDL_CreateRenderer`, draw calls) are left out of this pass — the grep surfaced them, but
-folding two more real subsystems (controller input state machine, a texture/renderer resource
-lifecycle with its own linear-ownership shape) into the same pass as everything else this session
-already added risks the "add dependencies as std libs themselves" instruction turning into
-unbounded scope creep; flagged as the next real extension once a renderer-owning program actually
-needs it, not designed blind here.
+**Renderer/draw calls: CLOSED 2026-08-26** — real host implementation shipped (PARENA commit
+`7968229`), founder real-time: "continue working on parena editor." `create-renderer`/
+`destroy-renderer`/`set-draw-color`/`render-clear`/`render-fill-rect`/`render-present` are real,
+matching `pty.prn`'s own established raw-primitive-returns-scalar shape; `Window`/`Renderer` are
+real opaque `I32` handles into a real host-side table (`runtime/parena_runtime.h`'s
+`g_sdl2_windows`/`g_sdl2_renderers`) rather than a raw-pointer struct field — see that file's own
+header comment for why. Verified with a real end-to-end test (`tests/test_sdl2.c`, `make
+test-sdl2`) that opens a real window under a real (self-launched, scratch) Xvfb X server, creates a
+real renderer, and draws a real multi-frame PITVIPER-shaped cell grid (`SetDrawColor`+`FillRect`
+per cell, matching `cmd/pitviper/main.go`'s own `renderFrame`) — clean under ASan+UBSan. Texture/
+glyph blitting (`SDL_CreateTexture`, `ren.Copy`) is real, separate, deferred follow-up — needs font
+loading this pass doesn't add, the concrete next real extension once an editor loop actually needs
+to render text, not designed blind here.
+
+**Real, honest limitation, still open**: game controller support (`SDL_GameControllerOpen`/
+`GetAxis`/`GetButton`, real, grepped, used by BRAWLPIT/REDGARDEN/GoblinFoxDragon) is still out of
+scope — an editor shell doesn't need it, flagged for whichever future program actually does.
 
 **Real scope correction, stated by the founder directly after this section was first written**:
 "we want to reimplement the sdl2 in parena like not just embed it" → "that can be a longer term
