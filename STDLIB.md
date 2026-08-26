@@ -1419,13 +1419,24 @@ Founder: "also the stdlibs we need for the editor." NORTHSTAR.md's own "Editor/p
 section already names these four modules and their purpose (`parena/plugin` lifecycle+commands,
 `parena/buffer` text access, `parena/events` hooks, `parena/ui` decorations/overlays) but
 explicitly flags the editor shell itself — which of Electron/Tauri/GTK+GtkSourceView/SDL2+ImGui/
-ncurses+Tree-sitter — as **"Not started, not in VS0... an open, undecided question."** That
-undecided-shell status hasn't changed; what's designed here is only the plugin-facing surface a
-`.prn` plugin author would call, matching NORTHSTAR's own module table exactly, not the shell's
-internal text-buffer representation (rope vs. gap-buffer vs. piece-table is real, separate,
-shell-specific work that can't be honestly designed until the shell itself is chosen) or rendering
-(if SDL2+ImGui ends up the chosen shell, `editor/ui` would plausibly be implemented on top of the
-`sdl2` package above — a real, live connection worth noting, not yet decided).
+ncurses+Tree-sitter — as **"Not started, not in VS0... an open, undecided question."**
+
+**`editor/buffer`: the shell question is answered, real host implementation shipped 2026-08-26**
+(PARENA commit `ca10ff6`) — the shell IS SDL2 (`stdlib/sdl2.prn`'s own real window/renderer/text
+work, shipped the same day), and `editor/buffer.prn` is the real, first in-PARENA text buffer it
+edits. Real design departure from the sketch below, forced by two real, confirmed VS0 emitter
+limits: no struct field mutation exists yet (no `set-field!` anywhere in this compiler), so
+`Buffer{text, cursor}` is never mutated in place — `insert`/`delete-range`/`insert-at-cursor`/
+`backspace-at-cursor` all return a real, NEW `Buffer` via `Result`, the caller rebinds its own
+local. Tuple return types aren't supported either (a real "unsupported return type form" error,
+confirmed live) — `selection : (Option (I32 I32))` below doesn't compile as written and was
+dropped for v0 (nothing calls it yet); `cursor-pos` (a plain `I32`) replaces it as the real,
+minimal thing a keyboard-driven single-line edit loop actually needs. Verified with a real
+end-to-end test (`tests/test_editor.c`, `make test-editor`) that drives a real edit sequence
+through SDL's own real event queue (`SDL_PushEvent`) and confirms the buffer holds the real,
+correct final text. `editor/plugin`/`editor/events`/`editor/ui` below are still real,
+separate, unstarted work — not attempted in this pass, no reason yet to revisit their own
+design sketches.
 
 ```clojure
 ; editor/plugin — lifecycle, configuration, command palette
