@@ -33,7 +33,7 @@
 
 (module editor/buffer)
 (import string)
-(export new active-text cursor-pos insert delete-range
+(export new from-text active-text cursor-pos insert delete-range
         insert-at-cursor backspace-at-cursor delete-forward-at-cursor
         move-cursor-left move-cursor-right move-cursor-home move-cursor-end
         Buffer BufferError)
@@ -47,6 +47,13 @@
 
 (defn new [(dest : Arena @ Region)] : Buffer @ Region
   {:text "" :cursor 0})
+
+;; from-text -- real constructor for loading an existing string into a
+;; Buffer (2026-08-26, the real save/load path an actual editor needs).
+;; Cursor starts at the real end of the loaded text, matching how a
+;; real editor drops you at the end of whatever you just opened.
+(defn from-text [(text : String @ Region)] : Buffer @ Region
+  {:text text :cursor (string/length text)})
 
 (defn active-text [(!buf : &Buffer)]
   : String @ Region

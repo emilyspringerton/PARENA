@@ -61,13 +61,13 @@ typedef enum {
     EventKind_TAG_Quit,
     EventKind_TAG_KeyDown,
     EventKind_TAG_TextInput,
-    EventKind_TAG_Other,
+    EventKind_TAG_UnhandledEvent,
 } EventKind_Tag;
 typedef struct { EventKind_Tag tag; void *value; } EventKind;
 static inline EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
 static inline EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
 static inline EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
-static inline EventKind EventKind_Other(void) { EventKind v; v.tag = EventKind_TAG_Other; v.value = NULL; return v; }
+static inline EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
 
 typedef struct {
     char * text;
@@ -131,6 +131,8 @@ int key_right();
 int key_home();
 int key_end();
 int key_delete();
+int key_f2();
+int key_f3();
 void delay(int);
 int sdl2_raw_ttf_init();
 int sdl2_raw_open_font(char *, int);
@@ -146,6 +148,7 @@ Result render_text(Renderer *, Font *, char *, int, int, int, int, int, Arena *)
 int measure_text_width(Font *, char *);
 int measure_text_height(Font *, char *);
 Buffer new(Arena *);
+Buffer from_text(char *);
 char * active_text(Buffer *);
 int cursor_pos(Buffer *);
 Result insert(Buffer *, int, char *, Arena *);
@@ -423,7 +426,7 @@ void render_present(Renderer * ren __attribute__((unused))) {
 
 Option poll_event(Arena *dest __attribute__((unused))) {
     int code __attribute__((unused)) = sdl2_raw_poll_event();
-    return ((code == 0) ? option_none() : ((code == 1) ? option_some(EventKind_box(dest, EventKind_Quit())) : ((code == 2) ? option_some(EventKind_box(dest, EventKind_KeyDown(int_box(dest, sdl2_raw_last_event_key())))) : ((code == 3) ? option_some(EventKind_box(dest, EventKind_TextInput(sdl2_raw_last_event_text(dest)))) : option_some(EventKind_box(dest, EventKind_Other()))))));
+    return ((code == 0) ? option_none() : ((code == 1) ? option_some(EventKind_box(dest, EventKind_Quit())) : ((code == 2) ? option_some(EventKind_box(dest, EventKind_KeyDown(int_box(dest, sdl2_raw_last_event_key())))) : ((code == 3) ? option_some(EventKind_box(dest, EventKind_TextInput(sdl2_raw_last_event_text(dest)))) : option_some(EventKind_box(dest, EventKind_UnhandledEvent()))))));
 }
 
 int get_ticks(void) {
@@ -464,6 +467,14 @@ int key_end(void) {
 
 int key_delete(void) {
     return (sdl2_key_delete_impl());
+}
+
+int key_f2(void) {
+    return (sdl2_key_f2_impl());
+}
+
+int key_f3(void) {
+    return (sdl2_key_f3_impl());
 }
 
 void delay(int ms __attribute__((unused))) {
@@ -537,6 +548,10 @@ int measure_text_height(Font * f __attribute__((unused)), char * text __attribut
 
 Buffer new(Arena *dest __attribute__((unused))) {
     return Buffer_new("", 0);
+}
+
+Buffer from_text(char * text __attribute__((unused))) {
+    return Buffer_new(text, length(text));
 }
 
 char * active_text(Buffer * buf __attribute__((unused))) {

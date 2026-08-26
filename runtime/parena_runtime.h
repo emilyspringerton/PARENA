@@ -997,6 +997,12 @@ static inline int sdl2_key_right_impl(void) { return SDLK_RIGHT; }
 static inline int sdl2_key_home_impl(void) { return SDLK_HOME; }
 static inline int sdl2_key_end_impl(void) { return SDLK_END; }
 static inline int sdl2_key_delete_impl(void) { return SDLK_DELETE; }
+/* F2/F3 -- real save/load keys (2026-08-26), a plain function-key
+ * shortcut rather than a Ctrl+S-style modifier combo: real modifier-key
+ * detection (SDL_Keymod) isn't wired up anywhere in this stdlib yet, a
+ * real, separate, deferred feature, not needed for this real, honest v0. */
+static inline int sdl2_key_f2_impl(void) { return SDLK_F2; }
+static inline int sdl2_key_f3_impl(void) { return SDLK_F3; }
 
 static inline int sdl2_get_ticks_impl(void) {
     return (int)SDL_GetTicks();

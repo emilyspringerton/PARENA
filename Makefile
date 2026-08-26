@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -224,12 +224,25 @@ turbosed: build
 # -- this program needs the real SDL2/SDL2_ttf host glue turbogrep/
 # turbosed don't.
 editor-demo: build
-	./parena build stdlib/string.prn stdlib/regex/syntax.prn stdlib/regex/pcre.prn stdlib/sdl2.prn \
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
+		stdlib/regex/pcre.prn stdlib/sdl2.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
 		stdlib/editor/theme.prn stdlib/editor/render.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime /tmp/editor_demo_full.c runtime/parena_runtime.c \
 		-o editor-demo -lSDL2 -lSDL2_ttf -lm
+
+# test-editor-io -- real end-to-end verification of the editor's own
+# real save/load path (stdlib/io.prn's file-open/write-string/
+# read-line/file-close + editor/buffer.prn's from-text), the same real
+# functions examples/editor_main.c's own save_to_file/load_first_line
+# helpers call.
+test-editor-io: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/editor/buffer.prn \
+		-o tests/test_editor_io_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_io.c \
+		runtime/parena_runtime.c -o /tmp/test_editor_io_bin -lm
+	/tmp/test_editor_io_bin
 
 # editor-demo-smoke -- real, bounded build-verification run for
 # editor-demo on this repo's own headless dev box (a real, scratch Xvfb

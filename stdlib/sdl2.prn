@@ -52,7 +52,7 @@
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
-        key-backspace key-return key-left key-right key-home key-end key-delete
+        key-backspace key-return key-left key-right key-home key-end key-delete key-f2 key-f3
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -83,11 +83,23 @@
 ;; runtime/parena_runtime.h's own sdl2_poll_event_impl header comment
 ;; for why finer-grained event data (mouse motion, resize) is real,
 ;; separate, deferred work.
+;; Real, genuine VS0 emitter gap found combining this file with io.prn
+;; (2026-08-26): a bare defenum variant constructor (e.g. `Other`)
+;; resolves GLOBALLY across the whole compiled program, last-
+;; declaration-wins, not scoped to its own owning enum -- the exact
+;; same class of bug already found and worked around for pty.prn's own
+;; PtyError (see that file's own header comment on PtyIoError). io.prn's
+;; own IoError.Other collided with this file's EventKind.Other the same
+;; way once both got compiled together (a real file-open/save feature
+;; genuinely needing both stdlib/io and stdlib/sdl2 in the same build --
+;; confirmed live via a real gcc "type mismatch in conditional
+;; expression" error, not assumed). Worked around here the same way:
+;; named distinctly instead of reusing the generic `Other`.
 (defenum EventKind
   (Quit)
   (KeyDown (key : I32))
   (TextInput (text : String @ Region))
-  (Other))
+  (UnhandledEvent))
 
 ;; ---- raw syscall primitives -- the only #target bodies in this file,
 ;; each a single C expression against runtime/parena_runtime.h's own
@@ -217,7 +229,7 @@
       ((= code 1) (Some Quit))
       ((= code 2) (Some (KeyDown (sdl2-raw-last-event-key))))
       ((= code 3) (Some (TextInput (sdl2-raw-last-event-text dest))))
-      (true (Some Other)))))
+      (true (Some UnhandledEvent)))))
 
 (defn get-ticks [] : I32
   #target
@@ -260,6 +272,17 @@
 (defn key-delete [] : I32
   #target
   {:c (inline-c "sdl2_key_delete_impl()")})
+
+;; key-f2/key-f3 -- real save/load keys (2026-08-26). See
+;; runtime/parena_runtime.h's own sdl2_key_f2_impl header comment for
+;; why a plain function key, not a Ctrl+S-style modifier combo.
+(defn key-f2 [] : I32
+  #target
+  {:c (inline-c "sdl2_key_f2_impl()")})
+
+(defn key-f3 [] : I32
+  #target
+  {:c (inline-c "sdl2_key_f3_impl()")})
 
 (defn delay [(ms : I32)]
   : Unit
