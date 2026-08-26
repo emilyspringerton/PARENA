@@ -1071,6 +1071,19 @@ static inline int sdl2_key_delete_impl(void) { return SDLK_DELETE; }
 static inline int sdl2_key_f2_impl(void) { return SDLK_F2; }
 static inline int sdl2_key_f3_impl(void) { return SDLK_F3; }
 
+/* shift_held -- real modifier-key detection (2026-08-26, founder:
+ * "continue working on parena editor" -- real text SELECTION, which
+ * needs Shift+Left/Right). The gap flagged in the F2/F3 comment above
+ * is closed here, but only for Shift, and via SDL_GetModState() (a
+ * live query of the current keyboard state) rather than threading a
+ * modifier field through poll-event's own KeyDown payload -- a raw
+ * primitive can only return one plain scalar (no tuples), and
+ * SDL_GetModState() is the real, standard SDL2 way to ask "is this
+ * held right now" independent of which specific event just fired. */
+static inline int sdl2_shift_held_impl(void) {
+    return (SDL_GetModState() & KMOD_SHIFT) != 0;
+}
+
 static inline int sdl2_get_ticks_impl(void) {
     return (int)SDL_GetTicks();
 }

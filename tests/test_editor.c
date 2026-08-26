@@ -219,6 +219,64 @@ int main(void) {
               "move-cursor-end on the real first line stops at its own real newline, not the whole buffer's end");
     }
 
+    /* --- real text SELECTION (2026-08-26, founder: "continue working
+     * on parena editor") --- */
+    {
+        Buffer sel = from_text("Hello");
+        CHECK(has_selection_(&sel) == 0, "a freshly loaded buffer has no active selection");
+
+        /* cursor starts at 5 (the real end, from-text's own documented
+         * behavior). Shift+Left twice should select "lo". */
+        sel = extend_selection_left(&sel);
+        CHECK(has_selection_(&sel) != 0, "extend-selection-left starts a real selection when none was active");
+        CHECK(cursor_pos(&sel) == 4, "extend-selection-left moves the real cursor back by one, same as move-cursor-left");
+        sel = extend_selection_left(&sel);
+        CHECK(cursor_pos(&sel) == 3, "extend-selection-left again lands the cursor at 3");
+        CHECK(selection_start(&sel) == 3, "selection-start is the real, smaller of anchor/cursor");
+        CHECK(selection_end(&sel) == 5, "selection-end is the real, larger of anchor/cursor -- the real anchor, unmoved since it was first set");
+
+        /* A PLAIN (non-extending) cursor move collapses the selection --
+         * real, standard editor UX. */
+        sel = move_cursor_right(&sel);
+        CHECK(has_selection_(&sel) == 0, "a plain move-cursor-right clears the real active selection");
+
+        /* Real delete-selection: select "ell" (positions 1..4) and
+         * delete it. */
+        Buffer sel2 = from_text("Hello");
+        for (int i = 0; i < 100; i++) sel2 = move_cursor_left(&sel2); /* clamps at 0 */
+        for (int i = 0; i < 1; i++) sel2 = move_cursor_right(&sel2);  /* cursor at 1: "H|ello" */
+        for (int i = 0; i < 3; i++) sel2 = extend_selection_right(&sel2); /* selects "ell": "H[ell]o" */
+        CHECK(has_selection_(&sel2) != 0, "extend-selection-right builds a real selection forward from the cursor");
+        CHECK(selection_start(&sel2) == 1 && selection_end(&sel2) == 4,
+              "the real selected range is exactly [1, 4), covering \"ell\"");
+
+        Result delr = delete_selection(&sel2, &a);
+        CHECK(delr.tag == 1, "delete-selection on a real active selection succeeds");
+        if (delr.tag == 1) sel2 = *(Buffer *)delr.value;
+        CHECK(strcmp(active_text(&sel2), "Ho") == 0,
+              "delete-selection removes exactly the real selected range, leaving \"Ho\"");
+        CHECK(cursor_pos(&sel2) == 1, "delete-selection leaves the real cursor at the start of where the selection was");
+        CHECK(has_selection_(&sel2) == 0, "delete-selection clears the selection afterward");
+
+        /* Real, honest OutOfRange when there's no selection to delete. */
+        Buffer no_sel = from_text("x");
+        Result baddel = delete_selection(&no_sel, &a);
+        CHECK(baddel.tag == 0, "delete-selection with no active selection correctly reports OutOfRange");
+
+        /* Real, insert-at-cursor after a mutating op (delete-selection
+         * itself) also clears any stale selection -- confirmed above via
+         * has_selection_ == 0 post-delete; insert-at-cursor's own
+         * identical real behavior: */
+        Buffer sel3 = from_text("ab");
+        sel3 = move_cursor_home(&sel3);
+        sel3 = extend_selection_right(&sel3); /* selects "a" */
+        CHECK(has_selection_(&sel3) != 0, "a real selection is active before the insert below");
+        Result insr = insert_at_cursor(&sel3, "X", &a);
+        CHECK(insr.tag == 1, "insert-at-cursor succeeds with a selection still technically active on the buffer passed in");
+        if (insr.tag == 1) sel3 = *(Buffer *)insr.value;
+        CHECK(has_selection_(&sel3) == 0, "insert-at-cursor clears the selection on the real, returned Buffer -- a stale range would point at shifted byte offsets");
+    }
+
     /* Real render of the final buffer contents, proving the buffer's
      * own real output is actually drawable through the real renderer
      * this session already verified. */

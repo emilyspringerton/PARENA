@@ -368,6 +368,7 @@ int key_end();
 int key_delete();
 int key_f2();
 int key_f3();
+int shift_held_();
 void delay(int);
 int sdl2_raw_ttf_init();
 int sdl2_raw_open_font(char *, int);
@@ -1669,6 +1670,10 @@ int key_f2(void) {
 
 int key_f3(void) {
     return (sdl2_key_f3_impl());
+}
+
+int shift_held_(void) {
+    return (sdl2_shift_held_impl() != 0);
 }
 
 void delay(int ms __attribute__((unused))) {

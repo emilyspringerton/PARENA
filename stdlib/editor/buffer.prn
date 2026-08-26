@@ -31,29 +31,48 @@
 ;; loop needs (insert-at-cursor/backspace-at-cursor), not a speculative
 ;; richer model nothing calls yet.
 
+;; selection-anchor -- real text SELECTION (2026-08-26, founder:
+;; "continue working on parena editor"). Same real design departure as
+;; the original `selection : (Option (I32 I32))` sketch this file's own
+;; header comment already documents dropping (no tuple return types) --
+;; a second I32 field instead of an Option-of-tuple: -1 means "no
+;; active selection," any value >= 0 is the real anchor position, and
+;; the selection spans [min(anchor,cursor), max(anchor,cursor)) --
+;; cursor is always one real end of the selection, matching how every
+;; real text editor's own Shift+Arrow behaves (the cursor is the moving
+;; end, the anchor is where Shift was first held down). EVERY mutating
+;; function (insert/delete-range/insert-at-cursor/backspace-at-cursor/
+;; delete-forward-at-cursor) and every PLAIN (non-extending) cursor
+;; move clears it to -1 -- a stale selection range after an edit would
+;; point at shifted byte offsets, and a plain arrow key collapsing the
+;; selection is standard real editor UX.
+
 (module editor/buffer)
 (import string)
 (export new from-text active-text cursor-pos insert delete-range
         insert-at-cursor backspace-at-cursor delete-forward-at-cursor
         move-cursor-left move-cursor-right move-cursor-home move-cursor-end
+        has-selection? selection-start selection-end
+        extend-selection-left extend-selection-right delete-selection
         Buffer BufferError)
 
 (defstruct Buffer
-  (text   : String @ Region)
-  (cursor : I32))
+  (text             : String @ Region)
+  (cursor           : I32)
+  (selection-anchor : I32))
 
 (defenum BufferError
   (OutOfRange))
 
 (defn new [(dest : Arena @ Region)] : Buffer @ Region
-  {:text "" :cursor 0})
+  {:text "" :cursor 0 :selection-anchor -1})
 
 ;; from-text -- real constructor for loading an existing string into a
 ;; Buffer (2026-08-26, the real save/load path an actual editor needs).
 ;; Cursor starts at the real end of the loaded text, matching how a
 ;; real editor drops you at the end of whatever you just opened.
 (defn from-text [(text : String @ Region)] : Buffer @ Region
-  {:text text :cursor (string/length text)})
+  {:text text :cursor (string/length text) :selection-anchor -1})
 
 (defn active-text [(!buf : &Buffer)]
   : String @ Region
@@ -77,7 +96,7 @@
       (let [before (string/substring cur 0 pos dest)
             after (string/substring cur pos len dest)
             combined (string/concat (string/concat before text dest) after dest)]
-        (Ok {:text combined :cursor (get-field !buf :cursor)})))))
+        (Ok {:text combined :cursor (get-field !buf :cursor) :selection-anchor -1})))))
 
 (defn delete-range [(!buf : &Buffer) (start : I32) (end : I32) (dest : Arena @ Region)]
   : (Result Buffer BufferError) @ Region
@@ -87,7 +106,7 @@
       (Err OutOfRange)
       (let [before (string/substring cur 0 start dest)
             after (string/substring cur end len dest)]
-        (Ok {:text (string/concat before after dest) :cursor (get-field !buf :cursor)})))))
+        (Ok {:text (string/concat before after dest) :cursor (get-field !buf :cursor) :selection-anchor -1})))))
 
 ;; insert-at-cursor / backspace-at-cursor -- the real, minimal pair a
 ;; keyboard-driven single-line edit loop needs (SDL_TEXTINPUT ->
@@ -104,7 +123,7 @@
             after (string/substring cur pos len dest)
             combined (string/concat (string/concat before text dest) after dest)
             advance (string/length text)]
-        (Ok {:text combined :cursor (+ pos advance)})))))
+        (Ok {:text combined :cursor (+ pos advance) :selection-anchor -1})))))
 
 (defn backspace-at-cursor [(!buf : &Buffer) (dest : Arena @ Region)]
   : (Result Buffer BufferError) @ Region
@@ -115,7 +134,7 @@
             len (string/length cur)
             before (string/substring cur 0 (- pos 1) dest)
             after (string/substring cur pos len dest)]
-        (Ok {:text (string/concat before after dest) :cursor (- pos 1)})))))
+        (Ok {:text (string/concat before after dest) :cursor (- pos 1) :selection-anchor -1})))))
 
 ;; move-cursor-left / move-cursor-right -- real Left/Right arrow-key
 ;; support (sdl2/key-left, sdl2/key-right were added alongside
@@ -128,16 +147,16 @@
   (let [pos (get-field !buf :cursor)
         text (get-field !buf :text)]
     (if (<= pos 0)
-      {:text text :cursor 0}
-      {:text text :cursor (- pos 1)})))
+      {:text text :cursor 0 :selection-anchor -1}
+      {:text text :cursor (- pos 1) :selection-anchor -1})))
 
 (defn move-cursor-right [(!buf : &Buffer)] : Buffer
   (let [pos (get-field !buf :cursor)
         text (get-field !buf :text)
         len (string/length text)]
     (if (>= pos len)
-      {:text text :cursor len}
-      {:text text :cursor (+ pos 1)})))
+      {:text text :cursor len :selection-anchor -1}
+      {:text text :cursor (+ pos 1) :selection-anchor -1})))
 
 ;; move-cursor-home / move-cursor-end -- real Home/End key support
 ;; (2026-08-26, the next real keys a single-line edit loop needs once
@@ -157,12 +176,12 @@
 (defn move-cursor-home [(!buf : &Buffer)] : Buffer
   (let [pos (get-field !buf :cursor)
         text (get-field !buf :text)]
-    {:text text :cursor (line-start-before text pos)}))
+    {:text text :cursor (line-start-before text pos) :selection-anchor -1}))
 
 (defn move-cursor-end [(!buf : &Buffer)] : Buffer
   (let [pos (get-field !buf :cursor)
         text (get-field !buf :text)]
-    {:text text :cursor (line-end-after text pos (string/length text))}))
+    {:text text :cursor (line-end-after text pos (string/length text)) :selection-anchor -1}))
 
 ;; line-start-before / line-end-after -- real, minimal backward/forward
 ;; scans for the nearest real newline (ASCII 10) around `pos`, the
@@ -199,4 +218,70 @@
       (Err OutOfRange)
       (let [before (string/substring cur 0 pos dest)
             after (string/substring cur (+ pos 1) len dest)]
-        (Ok {:text (string/concat before after dest) :cursor pos})))))
+        (Ok {:text (string/concat before after dest) :cursor pos :selection-anchor -1})))))
+
+;; has-selection? / selection-start / selection-end -- real text
+;; SELECTION query API. selection-start/selection-end are only
+;; meaningful when has-selection? is true (an active selection spans
+;; [selection-start, selection-end)) -- callers check has-selection?
+;; first, same real precondition-checking discipline as this file's own
+;; Result-returning functions already establish elsewhere (e.g.
+;; move-cursor-* always succeeds and clamps; these three are the
+;; equivalent "always succeeds" query trio for selection, cursor is
+;; always one real end, selection-anchor the other, ordered here so
+;; callers never have to know which end is which).
+(defn has-selection? [(!buf : &Buffer)] : Bool
+  (>= (get-field !buf :selection-anchor) 0))
+
+(defn selection-start [(!buf : &Buffer)] : I32
+  (let [a (get-field !buf :selection-anchor)
+        c (get-field !buf :cursor)]
+    (if (< a c) a c)))
+
+(defn selection-end [(!buf : &Buffer)] : I32
+  (let [a (get-field !buf :selection-anchor)
+        c (get-field !buf :cursor)]
+    (if (> a c) a c)))
+
+;; extend-selection-left / extend-selection-right -- real Shift+Left/
+;; Shift+Right. If no selection is active yet, the anchor is set to the
+;; CURRENT cursor position first (where Shift was first held down),
+;; then the cursor moves the same real clamped way move-cursor-left/
+;; move-cursor-right already do -- the anchor itself never moves once
+;; set, matching every real editor's own Shift+Arrow behavior.
+(defn extend-selection-left [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        anchor (get-field !buf :selection-anchor)
+        real-anchor (if (< anchor 0) cursor anchor)
+        new-cursor (if (<= cursor 0) 0 (- cursor 1))]
+    {:text text :cursor new-cursor :selection-anchor real-anchor}))
+
+(defn extend-selection-right [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        len (string/length text)
+        anchor (get-field !buf :selection-anchor)
+        real-anchor (if (< anchor 0) cursor anchor)
+        new-cursor (if (>= cursor len) len (+ cursor 1))]
+    {:text text :cursor new-cursor :selection-anchor real-anchor}))
+
+;; delete-selection -- removes the real selected range [selection-start,
+;; selection-end), places the cursor at the real start of where the
+;; selection was, and clears the selection. Real, honest OutOfRange when
+;; there's no active selection to delete -- callers (a real Backspace/
+;; Delete/typed-replacement in an event loop) check has-selection? first
+;; and fall back to backspace-at-cursor/delete-forward-at-cursor/
+;; insert-at-cursor instead, the same real "check the precondition, pick
+;; the right op" shape this whole file already establishes.
+(defn delete-selection [(!buf : &Buffer) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (if (has-selection? !buf)
+    (let [start (selection-start !buf)
+          end (selection-end !buf)
+          text (get-field !buf :text)
+          len (string/length text)
+          before (string/substring text 0 start dest)
+          after (string/substring text end len dest)]
+      (Ok {:text (string/concat before after dest) :cursor start :selection-anchor -1}))
+    (Err OutOfRange)))

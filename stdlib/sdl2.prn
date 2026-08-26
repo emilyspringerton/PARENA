@@ -53,6 +53,7 @@
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-home key-end key-delete key-f2 key-f3
+        shift-held?
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -283,6 +284,14 @@
 (defn key-f3 [] : I32
   #target
   {:c (inline-c "sdl2_key_f3_impl()")})
+
+;; shift-held? -- real modifier-key detection (2026-08-26, real text
+;; SELECTION). A live query (SDL_GetModState()), not tied to the
+;; specific KeyDown event that just fired -- see runtime/
+;; parena_runtime.h's own sdl2_shift_held_impl header comment for why.
+(defn shift-held? [] : Bool
+  #target
+  {:c (inline-c "sdl2_shift_held_impl() != 0")})
 
 (defn delay [(ms : I32)]
   : Unit

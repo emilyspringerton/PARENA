@@ -79,11 +79,13 @@ static inline __attribute__((unused)) OpenMode OpenMode_Append(void) { OpenMode 
 typedef struct {
     char * text;
     int cursor;
+    int selection_anchor;
 } Buffer;
-static inline __attribute__((unused)) Buffer Buffer_new(char * text, int cursor) {
+static inline __attribute__((unused)) Buffer Buffer_new(char * text, int cursor, int selection_anchor) {
     Buffer v;
     v.text = text;
     v.cursor = cursor;
+    v.selection_anchor = selection_anchor;
     return v;
 }
 
@@ -149,6 +151,12 @@ Buffer move_cursor_end(Buffer *);
 int line_start_before(char *, int);
 int line_end_after(char *, int, int);
 Result delete_forward_at_cursor(Buffer *, Arena *);
+int has_selection_(Buffer *);
+int selection_start(Buffer *);
+int selection_end(Buffer *);
+Buffer extend_selection_left(Buffer *);
+Buffer extend_selection_right(Buffer *);
+Result delete_selection(Buffer *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -601,11 +609,11 @@ Result read_floats(FileHandle f __attribute__((unused)), int n __attribute__((un
 }
 
 Buffer new(Arena *dest __attribute__((unused))) {
-    return Buffer_new("", 0);
+    return Buffer_new("", 0, -1);
 }
 
 Buffer from_text(char * text __attribute__((unused))) {
-    return Buffer_new(text, length(text));
+    return Buffer_new(text, length(text), -1);
 }
 
 char * active_text(Buffer * buf __attribute__((unused))) {
@@ -625,7 +633,7 @@ Result insert(Buffer * buf __attribute__((unused)), int pos __attribute__((unuse
     char *before __attribute__((unused)) = substring(cur, 0, pos, dest);
     char *after __attribute__((unused)) = substring(cur, pos, len, dest);
     char *combined __attribute__((unused)) = concat(concat(before, text, dest), after, dest);
-    return result_ok(Buffer_box(dest, Buffer_new(combined, (buf)->cursor)));
+    return result_ok(Buffer_box(dest, Buffer_new(combined, (buf)->cursor, -1)));
     }
 }
 
@@ -637,7 +645,7 @@ Result delete_range(Buffer * buf __attribute__((unused)), int start __attribute_
     } else {
     char *before __attribute__((unused)) = substring(cur, 0, start, dest);
     char *after __attribute__((unused)) = substring(cur, end, len, dest);
-    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (buf)->cursor)));
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (buf)->cursor, -1)));
     }
 }
 
@@ -652,7 +660,7 @@ Result insert_at_cursor(Buffer * buf __attribute__((unused)), char * text __attr
     char *after __attribute__((unused)) = substring(cur, pos, len, dest);
     char *combined __attribute__((unused)) = concat(concat(before, text, dest), after, dest);
     int advance __attribute__((unused)) = length(text);
-    return result_ok(Buffer_box(dest, Buffer_new(combined, (pos + advance))));
+    return result_ok(Buffer_box(dest, Buffer_new(combined, (pos + advance), -1)));
     }
 }
 
@@ -665,7 +673,7 @@ Result backspace_at_cursor(Buffer * buf __attribute__((unused)), Arena *dest __a
     int len __attribute__((unused)) = length(cur);
     char *before __attribute__((unused)) = substring(cur, 0, (pos - 1), dest);
     char *after __attribute__((unused)) = substring(cur, pos, len, dest);
-    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (pos - 1))));
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (pos - 1), -1)));
     }
 }
 
@@ -673,9 +681,9 @@ Buffer move_cursor_left(Buffer * buf __attribute__((unused))) {
     int pos __attribute__((unused)) = (buf)->cursor;
     char *text __attribute__((unused)) = (buf)->text;
     if ((pos <= 0)) {
-    return Buffer_new(text, 0);
+    return Buffer_new(text, 0, -1);
     } else {
-    return Buffer_new(text, (pos - 1));
+    return Buffer_new(text, (pos - 1), -1);
     }
 }
 
@@ -684,22 +692,22 @@ Buffer move_cursor_right(Buffer * buf __attribute__((unused))) {
     char *text __attribute__((unused)) = (buf)->text;
     int len __attribute__((unused)) = length(text);
     if ((pos >= len)) {
-    return Buffer_new(text, len);
+    return Buffer_new(text, len, -1);
     } else {
-    return Buffer_new(text, (pos + 1));
+    return Buffer_new(text, (pos + 1), -1);
     }
 }
 
 Buffer move_cursor_home(Buffer * buf __attribute__((unused))) {
     int pos __attribute__((unused)) = (buf)->cursor;
     char *text __attribute__((unused)) = (buf)->text;
-    return Buffer_new(text, line_start_before(text, pos));
+    return Buffer_new(text, line_start_before(text, pos), -1);
 }
 
 Buffer move_cursor_end(Buffer * buf __attribute__((unused))) {
     int pos __attribute__((unused)) = (buf)->cursor;
     char *text __attribute__((unused)) = (buf)->text;
-    return Buffer_new(text, line_end_after(text, pos, length(text)));
+    return Buffer_new(text, line_end_after(text, pos, length(text)), -1);
 }
 
 int line_start_before(char * text __attribute__((unused)), int pos __attribute__((unused))) {
@@ -735,7 +743,64 @@ Result delete_forward_at_cursor(Buffer * buf __attribute__((unused)), Arena *des
     } else {
     char *before __attribute__((unused)) = substring(cur, 0, pos, dest);
     char *after __attribute__((unused)) = substring(cur, (pos + 1), len, dest);
-    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), pos)));
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), pos, -1)));
+    }
+}
+
+int has_selection_(Buffer * buf __attribute__((unused))) {
+    return ((buf)->selection_anchor >= 0);
+}
+
+int selection_start(Buffer * buf __attribute__((unused))) {
+    int a __attribute__((unused)) = (buf)->selection_anchor;
+    int c __attribute__((unused)) = (buf)->cursor;
+    if ((a < c)) {
+    return a;
+    } else {
+    return c;
+    }
+}
+
+int selection_end(Buffer * buf __attribute__((unused))) {
+    int a __attribute__((unused)) = (buf)->selection_anchor;
+    int c __attribute__((unused)) = (buf)->cursor;
+    if ((a > c)) {
+    return a;
+    } else {
+    return c;
+    }
+}
+
+Buffer extend_selection_left(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int anchor __attribute__((unused)) = (buf)->selection_anchor;
+    int real_anchor __attribute__((unused)) = ((anchor < 0) ? cursor : anchor);
+    double new_cursor __attribute__((unused)) = ((cursor <= 0) ? 0 : (cursor - 1));
+    return Buffer_new(text, new_cursor, real_anchor);
+}
+
+Buffer extend_selection_right(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int len __attribute__((unused)) = length(text);
+    int anchor __attribute__((unused)) = (buf)->selection_anchor;
+    int real_anchor __attribute__((unused)) = ((anchor < 0) ? cursor : anchor);
+    int new_cursor __attribute__((unused)) = ((cursor >= len) ? len : (cursor + 1));
+    return Buffer_new(text, new_cursor, real_anchor);
+}
+
+Result delete_selection(Buffer * buf __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (has_selection_(buf)) {
+    int start __attribute__((unused)) = selection_start(buf);
+    int end __attribute__((unused)) = selection_end(buf);
+    char *text __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(text);
+    char *before __attribute__((unused)) = substring(text, 0, start, dest);
+    char *after __attribute__((unused)) = substring(text, end, len, dest);
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), start, -1)));
+    } else {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
     }
 }
 

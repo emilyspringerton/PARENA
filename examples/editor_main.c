@@ -31,10 +31,17 @@
  * start/end when the buffer was still single-line-only). F2 saves the
  * real, whole buffer
  * (newlines included) to a real file; F3 reloads the real whole file
- * back (io/read-string, not read-line, now that multi-line is real). No
- * selection, no undo -- real, separate, deferred follow-up, matching
- * every other "expand when a real feature needs it" scope note this
- * whole stdlib already carries.
+ * back (io/read-string, not read-line, now that multi-line is real).
+ * Real text SELECTION (2026-08-26): Shift+Left/Shift+Right extend a
+ * real selection (rendered as a real translucent-free filled rect
+ * behind the selected text -- SDL2's own alpha blending isn't wired up
+ * anywhere in this stdlib yet, a real, separate, deferred gap, so this
+ * uses a solid, muted color and draws it BEFORE the real text so the
+ * text still renders legibly on top); Backspace/Delete/typed
+ * replacement all act on the whole selection when one is active. No
+ * undo -- real, separate, deferred follow-up, matching every other
+ * "expand when a real feature needs it" scope note this whole stdlib
+ * already carries.
  *
  * Usage: ./editor-demo [file]
  *   file defaults to "scratch.prn" in the current directory if not
@@ -86,6 +93,66 @@ static Buffer load_from_file(const char *path, Arena *a) {
     return from_text(text);
 }
 
+/* row_and_line_start_for_pos / line_end_from -- real, minimal host-
+ * driver plumbing (2026-08-26, real text SELECTION): the same "scan for
+ * newlines to find the real row/line-start" logic the main loop's own
+ * cursor-position tracking already used inline, pulled out here so
+ * selection rendering (which needs this for BOTH the selection's start
+ * and end, potentially several rows apart) doesn't duplicate it a
+ * third time. Real, honest, simple linear scan -- no line-index cache,
+ * matching stdlib/editor/buffer.prn's own line-start-before/line-end-
+ * after real, established tradeoff. */
+static void row_and_line_start_for_pos(const char *text, int pos, int *out_row, int *out_line_start) {
+    int row = 0, line_start = 0;
+    for (int i = 0; i < pos; i++) {
+        if (text[i] == '\n') { row++; line_start = i + 1; }
+    }
+    *out_row = row;
+    *out_line_start = line_start;
+}
+
+static int line_end_from(const char *text, int line_start) {
+    int i = line_start;
+    while (text[i] != '\0' && text[i] != '\n') i++;
+    return i;
+}
+
+/* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
+ * founder real-time actually running a real Windows build): the
+ * original single hardcoded path
+ * (/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf)
+ * is a Linux-package-manager-only path that doesn't exist on Windows
+ * or macOS -- open-font failed there, and this program exits
+ * immediately on any startup failure (real, by design: no silent
+ * fallback to a broken half-initialized window), which is what the
+ * founder actually saw ("2 black screens then closed" -- both real
+ * windows appearing and then the whole process exiting near-instantly).
+ * Fixed by trying an ordered list of real candidate paths and using
+ * the first one that actually opens: a path relative to the CURRENT
+ * DIRECTORY first (what a real release bundle's own RUN.bat/extracted-
+ * zip layout puts the font at, right next to the binary), the repo's
+ * own real vendored copy at assets/fonts/ (what a local `make
+ * editor-demo` run from the repo root finds), then the original Linux
+ * system path last (keeps working on any machine that already has the
+ * fonts-jetbrains-mono package installed, even without either of the
+ * above). assets/fonts/JetBrainsMono-Regular.ttf is a real, vendored,
+ * Apache-2.0-licensed copy (see assets/fonts/LICENSE.txt) -- not
+ * downloaded at build time, so this doesn't add a network dependency
+ * to CI or to a user's own build. */
+static Result open_font_with_fallback(int point_size, Arena *a) {
+    static const char *candidates[] = {
+        "JetBrainsMono-Regular.ttf",
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+        "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        Result r = open_font((char *)candidates[i], point_size, a);
+        if (r.tag == 1) return r;
+    }
+    fprintf(stderr, "editor: could not find JetBrainsMono-Regular.ttf in any real candidate location\n");
+    return open_font((char *)candidates[0], point_size, a); /* real, honest final failure */
+}
+
 int main(int argc, char **argv) {
     const char *path = (argc > 1) ? argv[1] : "scratch.prn";
 
@@ -106,7 +173,7 @@ int main(int argc, char **argv) {
     Result ttfr = ttf_init(&a);
     if (ttfr.tag != 1) { fprintf(stderr, "editor: ttf-init failed\n"); return 1; }
 
-    Result fontr = open_font("/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf", 20, &a);
+    Result fontr = open_font_with_fallback(20, &a);
     if (fontr.tag != 1) { fprintf(stderr, "editor: open-font failed\n"); return 1; }
     Font font = *(Font *)fontr.value;
 
@@ -126,16 +193,24 @@ int main(int argc, char **argv) {
                 running = 0;
             } else if (kind.tag == EventKind_TAG_KeyDown) {
                 int key = *(int *)kind.value;
+                /* Backspace/Delete with an active selection remove the
+                 * WHOLE selection instead of one character -- real,
+                 * standard editor UX (2026-08-26, real text SELECTION). */
                 if (key == key_backspace()) {
-                    Result del = backspace_at_cursor(&buf, &a);
+                    Result del = has_selection_(&buf) ? delete_selection(&buf, &a)
+                                                       : backspace_at_cursor(&buf, &a);
                     if (del.tag == 1) buf = *(Buffer *)del.value;
                 } else if (key == key_delete()) {
-                    Result del = delete_forward_at_cursor(&buf, &a);
+                    Result del = has_selection_(&buf) ? delete_selection(&buf, &a)
+                                                       : delete_forward_at_cursor(&buf, &a);
                     if (del.tag == 1) buf = *(Buffer *)del.value;
                 } else if (key == key_left()) {
-                    buf = move_cursor_left(&buf);
+                    /* Shift+Left extends the selection; plain Left moves
+                     * (and clears any selection -- move_cursor_left's own
+                     * real behavior). */
+                    buf = shift_held_() ? extend_selection_left(&buf) : move_cursor_left(&buf);
                 } else if (key == key_right()) {
-                    buf = move_cursor_right(&buf);
+                    buf = shift_held_() ? extend_selection_right(&buf) : move_cursor_right(&buf);
                 } else if (key == key_home()) {
                     buf = move_cursor_home(&buf);
                 } else if (key == key_end()) {
@@ -145,6 +220,10 @@ int main(int argc, char **argv) {
                 } else if (key == key_f3()) {
                     buf = load_from_file(path, &a);
                 } else if (key == key_return()) {
+                    if (has_selection_(&buf)) {
+                        Result del = delete_selection(&buf, &a);
+                        if (del.tag == 1) buf = *(Buffer *)del.value;
+                    }
                     Result ins = insert_at_cursor(&buf, "\n", &a);
                     if (ins.tag == 1) buf = *(Buffer *)ins.value;
                 } else if (key == 27 /* SDLK_ESCAPE -- real, standard "quit" key, no dependency
@@ -152,7 +231,14 @@ int main(int argc, char **argv) {
                     running = 0;
                 }
             } else if (kind.tag == EventKind_TAG_TextInput) {
+                /* Typed text with an active selection REPLACES it --
+                 * real, standard editor UX: delete the selection first,
+                 * then insert at the (now-collapsed) cursor. */
                 char *text = (char *)kind.value;
+                if (has_selection_(&buf)) {
+                    Result del = delete_selection(&buf, &a);
+                    if (del.tag == 1) buf = *(Buffer *)del.value;
+                }
                 Result ins = insert_at_cursor(&buf, text, &a);
                 if (ins.tag == 1) buf = *(Buffer *)ins.value;
             }
@@ -163,24 +249,55 @@ int main(int argc, char **argv) {
         render_clear(&ren, &a);
 
         char *text = active_text(&buf);
+
+        /* Real selection highlight, drawn BEFORE the text so the text
+         * renders on top and stays legible (2026-08-26, real text
+         * SELECTION). Multi-line-aware: one filled rect per real row the
+         * selection spans -- the first/last rows clip to the real
+         * selection boundary within that row, any row strictly between
+         * them is highlighted edge-to-edge (the real full width of that
+         * line's own text). */
+        if (has_selection_(&buf)) {
+            int sel_start = selection_start(&buf);
+            int sel_end = selection_end(&buf);
+            int start_row, start_line_start, end_row, ignored_line_start;
+            row_and_line_start_for_pos(text, sel_start, &start_row, &start_line_start);
+            row_and_line_start_for_pos(text, sel_end, &end_row, &ignored_line_start);
+
+            Result scol = set_draw_color(&ren, 60, 90, 140, 255, &a);
+            (void)scol;
+            /* cur_line_start walks forward one real line at a time,
+             * starting from the selection's own first row -- simpler and
+             * correct than trying to independently derive each middle
+             * row's own line_start from sel_start/sel_end alone. */
+            int cur_line_start = start_line_start;
+            for (int row = start_row; row <= end_row; row++) {
+                int line_end = line_end_from(text, cur_line_start);
+                int seg_start = (row == start_row) ? sel_start : cur_line_start;
+                int seg_end = (row == end_row) ? sel_end : line_end;
+                char *before_seg = substring(text, cur_line_start, seg_start, &a);
+                char *seg_text = substring(text, seg_start, seg_end, &a);
+                int x_from = 12 + measure_text_width(&font, before_seg);
+                int width = measure_text_width(&font, seg_text);
+                /* An empty selected segment (e.g. selecting exactly up
+                 * to a newline) still gets a thin, visible sliver rather
+                 * than vanishing entirely. */
+                if (width < 2) width = 2;
+                render_fill_rect(&ren, x_from, 12 + row * LINE_HEIGHT, width, LINE_HEIGHT - 2, &a);
+                cur_line_start = line_end + 1;
+            }
+        }
+
         Result hr = render_highlighted_text(&ren, &font, &rules, text, 12, 12, LINE_HEIGHT, &a);
         (void)hr;
 
         /* Real cursor: a thin filled rect at the real measured pixel
          * position of the cursor -- proves the buffer's own real
          * cursor-pos genuinely drives something visible, not just
-         * tracked internally. Real multi-line row/column: scan the
-         * real text up to the real cursor byte-offset, counting real
-         * newlines (-> row) and remembering the start of the real
-         * current line (-> for measuring the real column's own pixel
-         * width) -- host-driver plumbing (screen position), same
-         * "stays in C" reasoning save/load's own real functions already
-         * carry, not editor logic itself. */
+         * tracked internally. */
         int cpos = cursor_pos(&buf);
-        int row = 0, line_start = 0;
-        for (int i = 0; i < cpos; i++) {
-            if (text[i] == '\n') { row++; line_start = i + 1; }
-        }
+        int row, line_start;
+        row_and_line_start_for_pos(text, cpos, &row, &line_start);
         char *before_cursor_on_line = substring(text, line_start, cpos, &a);
         int cursor_x = 12 + measure_text_width(&font, before_cursor_on_line);
         int cursor_y = 12 + row * LINE_HEIGHT;
