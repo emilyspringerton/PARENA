@@ -111,6 +111,9 @@ int key_backspace();
 int key_return();
 int key_left();
 int key_right();
+int key_home();
+int key_end();
+int key_delete();
 void delay(int);
 int sdl2_raw_ttf_init();
 int sdl2_raw_open_font(char *, int);
@@ -408,6 +411,18 @@ int key_left(void) {
 
 int key_right(void) {
     return (sdl2_key_right_impl());
+}
+
+int key_home(void) {
+    return (sdl2_key_home_impl());
+}
+
+int key_end(void) {
+    return (sdl2_key_end_impl());
+}
+
+int key_delete(void) {
+    return (sdl2_key_delete_impl());
 }
 
 void delay(int ms __attribute__((unused))) {

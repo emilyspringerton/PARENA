@@ -52,7 +52,7 @@
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
-        key-backspace key-return key-left key-right
+        key-backspace key-return key-left key-right key-home key-end key-delete
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -246,6 +246,20 @@
 (defn key-right [] : I32
   #target
   {:c (inline-c "sdl2_key_right_impl()")})
+
+;; key-home/key-end/key-delete -- the next real keys a single-line edit
+;; loop needs once Left/Right cursor movement exists (added 2026-08-26).
+(defn key-home [] : I32
+  #target
+  {:c (inline-c "sdl2_key_home_impl()")})
+
+(defn key-end [] : I32
+  #target
+  {:c (inline-c "sdl2_key_end_impl()")})
+
+(defn key-delete [] : I32
+  #target
+  {:c (inline-c "sdl2_key_delete_impl()")})
 
 (defn delay [(ms : I32)]
   : Unit

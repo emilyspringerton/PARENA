@@ -128,6 +128,9 @@ int key_backspace();
 int key_return();
 int key_left();
 int key_right();
+int key_home();
+int key_end();
+int key_delete();
 void delay(int);
 int sdl2_raw_ttf_init();
 int sdl2_raw_open_font(char *, int);
@@ -151,6 +154,9 @@ Result insert_at_cursor(Buffer *, char *, Arena *);
 Result backspace_at_cursor(Buffer *, Arena *);
 Buffer move_cursor_left(Buffer *);
 Buffer move_cursor_right(Buffer *);
+Buffer move_cursor_home(Buffer *);
+Buffer move_cursor_end(Buffer *);
+Result delete_forward_at_cursor(Buffer *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -448,6 +454,18 @@ int key_right(void) {
     return (sdl2_key_right_impl());
 }
 
+int key_home(void) {
+    return (sdl2_key_home_impl());
+}
+
+int key_end(void) {
+    return (sdl2_key_end_impl());
+}
+
+int key_delete(void) {
+    return (sdl2_key_delete_impl());
+}
+
 void delay(int ms __attribute__((unused))) {
     sdl2_delay_impl(ms);
 }
@@ -600,6 +618,28 @@ Buffer move_cursor_right(Buffer * buf __attribute__((unused))) {
     return Buffer_new(text, len);
     } else {
     return Buffer_new(text, (pos + 1));
+    }
+}
+
+Buffer move_cursor_home(Buffer * buf __attribute__((unused))) {
+    return Buffer_new((buf)->text, 0);
+}
+
+Buffer move_cursor_end(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    return Buffer_new(text, length(text));
+}
+
+Result delete_forward_at_cursor(Buffer * buf __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
+    char *cur __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(cur);
+    if ((pos >= len)) {
+    return result_err(BufferError_box(dest, BufferError_OutOfRange()));
+    } else {
+    char *before __attribute__((unused)) = substring(cur, 0, pos, dest);
+    char *after __attribute__((unused)) = substring(cur, (pos + 1), len, dest);
+    return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), pos)));
     }
 }
 

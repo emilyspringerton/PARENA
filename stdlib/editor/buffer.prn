@@ -34,8 +34,9 @@
 (module editor/buffer)
 (import string)
 (export new active-text cursor-pos insert delete-range
-        insert-at-cursor backspace-at-cursor
-        move-cursor-left move-cursor-right Buffer BufferError)
+        insert-at-cursor backspace-at-cursor delete-forward-at-cursor
+        move-cursor-left move-cursor-right move-cursor-home move-cursor-end
+        Buffer BufferError)
 
 (defstruct Buffer
   (text   : String @ Region)
@@ -130,3 +131,31 @@
     (if (>= pos len)
       {:text text :cursor len}
       {:text text :cursor (+ pos 1)})))
+
+;; move-cursor-home / move-cursor-end -- real Home/End key support
+;; (2026-08-26, the next real keys a single-line edit loop needs once
+;; Left/Right exist). Always succeeds -- jumping to a position the
+;; cursor is already at is a real, harmless no-op, not an error.
+(defn move-cursor-home [(!buf : &Buffer)] : Buffer
+  {:text (get-field !buf :text) :cursor 0})
+
+(defn move-cursor-end [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)]
+    {:text text :cursor (string/length text)}))
+
+;; delete-forward-at-cursor -- the real Delete key: removes the
+;; character AHEAD of the cursor (Backspace/backspace-at-cursor already
+;; covers the one behind it). Real, honest OutOfRange when the cursor is
+;; already at the real end of the text -- nothing ahead of it to delete,
+;; same "clamped movement is fine, deleting nothing is an error" split
+;; backspace-at-cursor's own header comment already establishes.
+(defn delete-forward-at-cursor [(!buf : &Buffer) (dest : Arena @ Region)]
+  : (Result Buffer BufferError) @ Region
+  (let [pos (get-field !buf :cursor)
+        cur (get-field !buf :text)
+        len (string/length cur)]
+    (if (>= pos len)
+      (Err OutOfRange)
+      (let [before (string/substring cur 0 pos dest)
+            after (string/substring cur (+ pos 1) len dest)]
+        (Ok {:text (string/concat before after dest) :cursor pos})))))

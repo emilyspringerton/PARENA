@@ -990,6 +990,13 @@ static inline int sdl2_key_backspace_impl(void) { return SDLK_BACKSPACE; }
 static inline int sdl2_key_return_impl(void) { return SDLK_RETURN; }
 static inline int sdl2_key_left_impl(void) { return SDLK_LEFT; }
 static inline int sdl2_key_right_impl(void) { return SDLK_RIGHT; }
+/* Home/End/Delete (2026-08-26, real editor loop growth): the next real
+ * keys a single-line edit loop needs once Left/Right cursor movement
+ * exists -- jump to the start/end of the line, delete the character
+ * AHEAD of the cursor (Backspace already covers behind it). */
+static inline int sdl2_key_home_impl(void) { return SDLK_HOME; }
+static inline int sdl2_key_end_impl(void) { return SDLK_END; }
+static inline int sdl2_key_delete_impl(void) { return SDLK_DELETE; }
 
 static inline int sdl2_get_ticks_impl(void) {
     return (int)SDL_GetTicks();

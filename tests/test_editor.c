@@ -169,6 +169,27 @@ int main(void) {
               "move-cursor-right repeatedly clamps at the real end of the text, doesn't overrun");
     }
 
+    /* --- real Home/End keys, and real forward-delete --- */
+    {
+        /* buf is "HelXlo" (6 chars), cursor at the real end (6). */
+        buf = move_cursor_home(&buf);
+        CHECK(cursor_pos(&buf) == 0, "move-cursor-home jumps the real cursor to position 0");
+
+        Result del1 = delete_forward_at_cursor(&buf, &a);
+        CHECK(del1.tag == 1, "delete-forward-at-cursor at the start of the text succeeds");
+        if (del1.tag == 1) buf = *(Buffer *)del1.value;
+        CHECK(strcmp(active_text(&buf), "elXlo") == 0,
+              "delete-forward-at-cursor removes the real character AHEAD of the cursor ('H')");
+        CHECK(cursor_pos(&buf) == 0, "delete-forward-at-cursor leaves the cursor position itself unchanged");
+
+        buf = move_cursor_end(&buf);
+        CHECK(cursor_pos(&buf) == (int)strlen(active_text(&buf)),
+              "move-cursor-end jumps the real cursor to the real end of the text");
+
+        Result del2 = delete_forward_at_cursor(&buf, &a);
+        CHECK(del2.tag == 0, "delete-forward-at-cursor at the real end of the text correctly reports OutOfRange");
+    }
+
     /* Real render of the final buffer contents, proving the buffer's
      * own real output is actually drawable through the real renderer
      * this session already verified. */
