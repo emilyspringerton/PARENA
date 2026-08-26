@@ -32,17 +32,30 @@ static inline Renderer Renderer_new(int handle) {
     return v;
 }
 
+typedef struct {
+    int handle;
+} Font;
+static inline Font Font_new(int handle) {
+    Font v;
+    v.handle = handle;
+    return v;
+}
+
 typedef enum {
     Sdl2Error_TAG_InitFailed,
     Sdl2Error_TAG_WindowFailed,
     Sdl2Error_TAG_RendererFailed,
     Sdl2Error_TAG_DrawFailed,
+    Sdl2Error_TAG_FontFailed,
+    Sdl2Error_TAG_TextRenderFailed,
 } Sdl2Error_Tag;
 typedef struct { Sdl2Error_Tag tag; void *value; } Sdl2Error;
 static inline Sdl2Error Sdl2Error_InitFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_InitFailed; v.value = NULL; return v; }
 static inline Sdl2Error Sdl2Error_WindowFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_WindowFailed; v.value = NULL; return v; }
 static inline Sdl2Error Sdl2Error_RendererFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_RendererFailed; v.value = NULL; return v; }
 static inline Sdl2Error Sdl2Error_DrawFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_DrawFailed; v.value = NULL; return v; }
+static inline Sdl2Error Sdl2Error_FontFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_FontFailed; v.value = NULL; return v; }
+static inline Sdl2Error Sdl2Error_TextRenderFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_TextRenderFailed; v.value = NULL; return v; }
 
 typedef enum {
     EventKind_TAG_Quit,
@@ -89,6 +102,19 @@ void render_present(Renderer *);
 Option poll_event(Arena *);
 int get_ticks();
 void delay(int);
+int sdl2_raw_ttf_init();
+int sdl2_raw_open_font(char *, int);
+void sdl2_raw_close_font(int);
+int sdl2_raw_render_text(int, int, char *, int, int, int, int, int);
+int sdl2_raw_measure_text_width(int, char *);
+int sdl2_raw_measure_text_height(int, char *);
+Result ttf_init(Arena *);
+void ttf_quit();
+Result open_font(char *, int, Arena *);
+void close_font(Font);
+Result render_text(Renderer *, Font *, char *, int, int, int, int, int, Arena *);
+int measure_text_width(Font *, char *);
+int measure_text_height(Font *, char *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -108,8 +134,8 @@ static inline Sdl2Error *Sdl2Error_box(Arena *dest, Sdl2Error v) {
     return p;
 }
 
-static inline Renderer *Renderer_box(Arena *dest, Renderer v) {
-    Renderer *p = (Renderer *)arena_alloc(dest, sizeof(Renderer));
+static inline Font *Font_box(Arena *dest, Font v) {
+    Font *p = (Font *)arena_alloc(dest, sizeof(Font));
     *p = v;
     return p;
 }
@@ -284,7 +310,7 @@ Result create_window(char * title __attribute__((unused)), int w __attribute__((
     if ((handle < 0)) {
     return result_err(Sdl2Error_box(dest, Sdl2Error_WindowFailed()));
     } else {
-    return result_ok(Renderer_box(dest, Renderer_new(handle)));
+    return result_ok(Font_box(dest, Font_new(handle)));
     }
 }
 
@@ -297,7 +323,7 @@ Result create_renderer(Window * win __attribute__((unused)), Arena *dest __attri
     if ((handle < 0)) {
     return result_err(Sdl2Error_box(dest, Sdl2Error_RendererFailed()));
     } else {
-    return result_ok(Renderer_box(dest, Renderer_new(handle)));
+    return result_ok(Font_box(dest, Font_new(handle)));
     }
 }
 
@@ -344,5 +370,70 @@ int get_ticks(void) {
 
 void delay(int ms __attribute__((unused))) {
     sdl2_delay_impl(ms);
+}
+
+int sdl2_raw_ttf_init(void) {
+    return (sdl2_ttf_init_impl());
+}
+
+int sdl2_raw_open_font(char * path __attribute__((unused)), int point_size __attribute__((unused))) {
+    return (sdl2_open_font_impl(path, point_size));
+}
+
+void sdl2_raw_close_font(int handle __attribute__((unused))) {
+    sdl2_close_font_impl(handle);
+}
+
+int sdl2_raw_render_text(int renderer_handle __attribute__((unused)), int font_handle __attribute__((unused)), char * text __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int r __attribute__((unused)), int g __attribute__((unused)), int b __attribute__((unused))) {
+    return (sdl2_render_text_impl(renderer_handle, font_handle, text, x, y, r, g, b));
+}
+
+int sdl2_raw_measure_text_width(int font_handle __attribute__((unused)), char * text __attribute__((unused))) {
+    return (sdl2_measure_text_width_impl(font_handle, text));
+}
+
+int sdl2_raw_measure_text_height(int font_handle __attribute__((unused)), char * text __attribute__((unused))) {
+    return (sdl2_measure_text_height_impl(font_handle, text));
+}
+
+Result ttf_init(Arena *dest __attribute__((unused))) {
+    if ((sdl2_raw_ttf_init() < 0)) {
+    return result_err(Sdl2Error_box(dest, Sdl2Error_InitFailed()));
+    } else {
+    return result_ok(NULL);
+    }
+}
+
+void ttf_quit(void) {
+    sdl2_ttf_quit_impl();
+}
+
+Result open_font(char * path __attribute__((unused)), int point_size __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int handle __attribute__((unused)) = sdl2_raw_open_font(path, point_size);
+    if ((handle < 0)) {
+    return result_err(Sdl2Error_box(dest, Sdl2Error_FontFailed()));
+    } else {
+    return result_ok(Font_box(dest, Font_new(handle)));
+    }
+}
+
+void close_font(Font f __attribute__((unused))) {
+    (void)(sdl2_raw_close_font((f).handle));
+}
+
+Result render_text(Renderer * ren __attribute__((unused)), Font * f __attribute__((unused)), char * text __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int r __attribute__((unused)), int g __attribute__((unused)), int b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((sdl2_raw_render_text((ren)->handle, (f)->handle, text, x, y, r, g, b) < 0)) {
+    return result_err(Sdl2Error_box(dest, Sdl2Error_TextRenderFailed()));
+    } else {
+    return result_ok(NULL);
+    }
+}
+
+int measure_text_width(Font * f __attribute__((unused)), char * text __attribute__((unused))) {
+    return sdl2_raw_measure_text_width((f)->handle, text);
+}
+
+int measure_text_height(Font * f __attribute__((unused)), char * text __attribute__((unused))) {
+    return sdl2_raw_measure_text_height((f)->handle, text);
 }
 

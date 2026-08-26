@@ -74,6 +74,39 @@ int main(void) {
             }
             CHECK(all_draws_ok, "a real multi-frame PITVIPER-shaped cell grid renders without error");
 
+            /* Real text rendering, PITVIPER's own real font (JetBrains
+             * Mono, the same font its own F11 "shiny font" toggle uses
+             * via SDL2_ttf). */
+            Result ttfr = ttf_init(&a);
+            CHECK(ttfr.tag == 1, "sdl2/ttf-init succeeds");
+
+            Result badfont = open_font("/nonexistent/font/path.ttf", 16, &a);
+            CHECK(badfont.tag == 0, "open-font on a real nonexistent path correctly fails, not a false Ok");
+
+            Result fontr = open_font(
+                "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf", 16, &a);
+            CHECK(fontr.tag == 1, "sdl2/open-font loads the real JetBrains Mono font PITVIPER itself uses");
+            if (fontr.tag == 1) {
+                Font font = *(Font *)fontr.value;
+                CHECK(font.handle >= 0, "the real font has a valid handle");
+
+                int gw = measure_text_width(&font, "M");
+                int gh = measure_text_height(&font, "M");
+                CHECK(gw > 0 && gh > 0, "measure-text-width/height report real, positive glyph cell dimensions");
+
+                Result txtr = render_text(&ren, &font, "PARENA editor -- real text", 4, 4, 230, 230, 230, &a);
+                CHECK(txtr.tag == 1, "render-text draws a real string with the real font onto the real renderer");
+
+                Result emptytxtr = render_text(&ren, &font, "", 4, 20, 230, 230, 230, &a);
+                CHECK(emptytxtr.tag == 1, "render-text on an empty string is a real, honest no-op, not an error");
+
+                render_present(&ren);
+                delay(16);
+
+                close_font(font);
+            }
+            ttf_quit();
+
             /* Real event pump -- proves poll-event actually talks to the
              * real SDL event queue, not a canned value. No real user
              * input exists on this headless Xvfb run, but SDL itself

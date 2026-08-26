@@ -57,6 +57,12 @@
  * emits no symbol at all, no -lSDL2 needed unless something actually
  * calls one. */
 #include <SDL2/SDL.h>
+/* SDL2_ttf -- real text rendering, the concrete next real extension
+ * flagged when sdl2.prn's own renderer/draw calls were closed (2026-08-26):
+ * "the next real extension once an editor loop actually needs to render
+ * text." Same "unconditionally available, harmless if unused" reasoning
+ * as SDL2 itself above -- confirmed libsdl2-ttf-dev present on this box. */
+#include <SDL2/SDL_ttf.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -938,6 +944,102 @@ static inline void sdl2_delay_impl(int ms) {
 
 static inline void sdl2_quit_impl(void) {
     SDL_Quit();
+}
+
+/* ---- stdlib/sdl2.prn real TEXT host glue (2026-08-26) -------------------
+ * The concrete "next real extension once an editor loop actually needs
+ * to render text" flagged when the renderer/draw-call gap was closed
+ * earlier the same day -- real glyph/string rendering via SDL2_ttf,
+ * PITVIPER's own real font backend (cmd/pitviper/main.go's shinyTexture,
+ * "F11 shiny font... real JetBrains Mono via SDL2_ttf"). Font is a real
+ * opaque I32 handle into a real host-side table, same reasoning as
+ * Window/Renderer's own header comment above (a raw TTF_Font pointer
+ * carried as a struct field is untested territory in this compiler, not
+ * risked here).
+ *
+ * render-text is deliberately NOT a glyph-atlas/texture-cache system --
+ * a real, honest v0: render the whole string to a fresh surface, blit
+ * it, free both surface and texture immediately, every call. Correct,
+ * simple, and reuses zero state across frames; real future work once an
+ * editor loop's own frame budget actually needs per-glyph texture
+ * caching (PITVIPER's own buildGlyphAtlas is the real precedent for
+ * that, not attempted here). */
+#define SDL2_MAX_FONTS 8
+static TTF_Font *g_sdl2_fonts[SDL2_MAX_FONTS];
+static int g_sdl2_font_count = 0;
+
+static inline int sdl2_ttf_init_impl(void) {
+    return TTF_Init() == 0 ? 0 : -1;
+}
+
+static inline void sdl2_ttf_quit_impl(void) {
+    TTF_Quit();
+}
+
+static inline int sdl2_open_font_impl(const char *path, int point_size) {
+    if (g_sdl2_font_count >= SDL2_MAX_FONTS) return -1;
+    TTF_Font *f = TTF_OpenFont(path, point_size);
+    if (f == NULL) return -1;
+    int handle = g_sdl2_font_count++;
+    g_sdl2_fonts[handle] = f;
+    return handle;
+}
+
+static inline void sdl2_close_font_impl(int handle) {
+    if (handle >= 0 && handle < g_sdl2_font_count && g_sdl2_fonts[handle] != NULL) {
+        TTF_CloseFont(g_sdl2_fonts[handle]);
+        g_sdl2_fonts[handle] = NULL;
+    }
+}
+
+/* render-text -- renders `text` in `(r,g,b)` at `(x,y)` into the given
+ * renderer, using the given font. Empty string is a real, honest no-op
+ * (0, not an error) -- TTF_RenderUTF8_Blended itself fails on an empty
+ * string, which is real SDL2_ttf behavior, not a bug this wrapper should
+ * paper over as a fake success OR a fake failure; treating "nothing to
+ * draw" as Ok matches how a real editor loop would want to call this
+ * unconditionally per line, blank lines included, without a caller-side
+ * special case. */
+static inline int sdl2_render_text_impl(int renderer_handle, int font_handle, const char *text,
+                                         int x, int y, int r, int g, int b) {
+    if (renderer_handle < 0 || renderer_handle >= g_sdl2_renderer_count
+        || g_sdl2_renderers[renderer_handle] == NULL) return -1;
+    if (font_handle < 0 || font_handle >= g_sdl2_font_count
+        || g_sdl2_fonts[font_handle] == NULL) return -1;
+    if (text[0] == '\0') return 0;
+    SDL_Color color;
+    color.r = (Uint8)r; color.g = (Uint8)g; color.b = (Uint8)b; color.a = 255;
+    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_sdl2_fonts[font_handle], text, color);
+    if (surf == NULL) return -1;
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_sdl2_renderers[renderer_handle], surf);
+    int w = surf->w, h = surf->h;
+    SDL_FreeSurface(surf);
+    if (tex == NULL) return -1;
+    SDL_Rect dst;
+    dst.x = x; dst.y = y; dst.w = w; dst.h = h;
+    int ok = SDL_RenderCopy(g_sdl2_renderers[renderer_handle], tex, NULL, &dst) == 0 ? 0 : -1;
+    SDL_DestroyTexture(tex);
+    return ok;
+}
+
+/* measure-text-width/height -- real glyph-cell sizing (PITVIPER's own
+ * font.GlyphW/GlyphH, the numbers a real monospace terminal grid needs
+ * to lay cells out correctly). No tuple return here -- VS0's emitter
+ * does not support tuple return types yet (confirmed live: a real
+ * "unsupported return type form" error trying one, not assumed), so
+ * width and height are two separate real calls instead of one. */
+static inline int sdl2_measure_text_width_impl(int font_handle, const char *text) {
+    if (font_handle < 0 || font_handle >= g_sdl2_font_count || g_sdl2_fonts[font_handle] == NULL) return -1;
+    int w = 0, h = 0;
+    if (TTF_SizeUTF8(g_sdl2_fonts[font_handle], text, &w, &h) != 0) return -1;
+    return w;
+}
+
+static inline int sdl2_measure_text_height_impl(int font_handle, const char *text) {
+    if (font_handle < 0 || font_handle >= g_sdl2_font_count || g_sdl2_fonts[font_handle] == NULL) return -1;
+    int w = 0, h = 0;
+    if (TTF_SizeUTF8(g_sdl2_fonts[font_handle], text, &w, &h) != 0) return -1;
+    return h;
 }
 
 #endif /* PARENA_RUNTIME_H */

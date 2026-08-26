@@ -147,7 +147,7 @@ test-shell: build
 test-sdl2: build
 	./parena build stdlib/string.prn stdlib/sdl2.prn -o tests/test_sdl2_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_sdl2.c runtime/parena_runtime.c \
-		-o /tmp/test_sdl2_bin -lSDL2 -lm
+		-o /tmp/test_sdl2_bin -lSDL2 -lSDL2_ttf -lm
 	@Xvfb :97 -screen 0 1280x720x24 & echo $$! > /tmp/test_sdl2_xvfb.pid; \
 	trap 'kill $$(cat /tmp/test_sdl2_xvfb.pid) 2>/dev/null; rm -f /tmp/test_sdl2_xvfb.pid' EXIT; \
 	sleep 1; \

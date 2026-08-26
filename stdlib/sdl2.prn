@@ -28,10 +28,17 @@
 ;; render-fill-rect/render-present, PITVIPER's own real per-cell
 ;; background-fill shape (cmd/pitviper/main.go's renderFrame:
 ;; SetDrawColor + FillRect per cell, Clear once per frame, Present once
-;; per frame). Texture/glyph blitting (SDL_CreateTexture, ren.Copy) is
-;; real, separate, deferred follow-up -- needs font loading this pass
-;; doesn't add, same "expand the API only when a new feature needs it"
-;; pattern NORTHSTAR.md names as the founder's own preferred shape.
+;; per frame).
+;;
+;; SAME DAY, second real extension: real TEXT rendering (SDL2_ttf --
+;; PITVIPER's own real font backend, cmd/pitviper/main.go's shinyTexture,
+;; "F11 shiny font... real JetBrains Mono via SDL2_ttf"). ttf-init/
+;; ttf-quit/open-font/close-font/render-text/measure-text-width/
+;; measure-text-height -- render-text is deliberately a fresh
+;; surface-then-texture-then-blit-then-free every call, not a glyph
+;; atlas/texture cache; see runtime/parena_runtime.h's own header
+;; comment on sdl2_render_text_impl for why that's the honest v0 here,
+;; not a corner cut silently.
 ;;
 ;; Real, honest, NOT closed in this pass (left exactly as before, still
 ;; real #target declarations with no host implementation yet -- same
@@ -44,7 +51,10 @@
 (module sdl2)
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
-        poll-event get-ticks delay Window Renderer Sdl2Error EventKind)
+        poll-event get-ticks delay
+        ttf-init ttf-quit open-font close-font render-text
+        measure-text-width measure-text-height
+        Window Renderer Font Sdl2Error EventKind)
 
 (defstruct Window
   (handle : I32))
@@ -52,11 +62,16 @@
 (defstruct Renderer
   (handle : I32))
 
+(defstruct Font
+  (handle : I32))
+
 (defenum Sdl2Error
   (InitFailed)
   (WindowFailed)
   (RendererFailed)
-  (DrawFailed))
+  (DrawFailed)
+  (FontFailed)
+  (TextRenderFailed))
 
 ;; EventKind -- a real, minimal poll-event result for v0: distinguishes
 ;; Quit (the window close button / Cmd-Q) and KeyDown (any key) from
@@ -194,3 +209,74 @@
   : Unit
   #target
   {:c (inline-c "sdl2_delay_impl(ms);")})
+
+;; ---- text rendering (SDL2_ttf), added 2026-08-26 -----------------------
+
+(defn sdl2-raw-ttf-init [] : I32
+  #target
+  {:c (inline-c "sdl2_ttf_init_impl()")})
+
+(defn sdl2-raw-open-font [(path : String @ Region) (point-size : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_open_font_impl(path, point_size)")})
+
+(defn sdl2-raw-close-font [(handle : I32)]
+  : Unit
+  #target
+  {:c (inline-c "sdl2_close_font_impl(handle);")})
+
+(defn sdl2-raw-render-text [(renderer-handle : I32) (font-handle : I32) (text : String @ Region)
+                             (x : I32) (y : I32) (r : I32) (g : I32) (b : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_render_text_impl(renderer_handle, font_handle, text, x, y, r, g, b)")})
+
+(defn sdl2-raw-measure-text-width [(font-handle : I32) (text : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_measure_text_width_impl(font_handle, text)")})
+
+(defn sdl2-raw-measure-text-height [(font-handle : I32) (text : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_measure_text_height_impl(font_handle, text)")})
+
+(defn ttf-init [(dest : Arena @ Region)] : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-ttf-init) 0)
+    (Err InitFailed)
+    (Ok unit)))
+
+(defn ttf-quit [] : Unit
+  #target
+  {:c (inline-c "sdl2_ttf_quit_impl();")})
+
+(defn open-font [(path : String @ Region) (point-size : I32) (dest : Arena @ Region)]
+  : (Result Font Sdl2Error) @ Region
+  (let [handle (sdl2-raw-open-font path point-size)]
+    (if (< handle 0)
+      (Err FontFailed)
+      (Ok {:handle handle}))))
+
+(defn close-font [(!f : Font)]
+  : Unit
+  (sdl2-raw-close-font (get-field !f :handle)))
+
+;; render-text -- draws `text` at (x, y) in color (r, g, b), using the
+;; given font, into the given renderer. See runtime/parena_runtime.h's
+;; own sdl2_render_text_impl header comment for the real, honest v0
+;; scope (no glyph-atlas caching yet).
+(defn render-text [(!ren : &Renderer) (!f : &Font) (text : String @ Region) (x : I32) (y : I32)
+                    (r : I32) (g : I32) (b : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-render-text (get-field !ren :handle) (get-field !f :handle) text x y r g b) 0)
+    (Err TextRenderFailed)
+    (Ok unit)))
+
+(defn measure-text-width [(!f : &Font) (text : String @ Region)]
+  : I32
+  (sdl2-raw-measure-text-width (get-field !f :handle) text))
+
+(defn measure-text-height [(!f : &Font) (text : String @ Region)]
+  : I32
+  (sdl2-raw-measure-text-height (get-field !f :handle) text))
