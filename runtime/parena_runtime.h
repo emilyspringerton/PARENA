@@ -46,6 +46,17 @@
 #include <pty.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+/* SDL2 -- built-in, same tier as core (STDLIB.md's own "sdl2" section:
+ * "SDL2 is built in... no (import sdl2) line needed"), so its header is
+ * unconditionally available here rather than gated behind a feature
+ * macro. Real, honest dependency this adds to every build of this
+ * runtime, not silently glossed over: any environment building PARENA
+ * programs needs libsdl2-dev installed (confirmed present on this box).
+ * Harmless for a program that never calls into stdlib/sdl2.prn -- every
+ * sdl2_*_impl function below is `static inline`, so an unreferenced one
+ * emits no symbol at all, no -lSDL2 needed unless something actually
+ * calls one. */
+#include <SDL2/SDL.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -799,6 +810,134 @@ static Arena g_process_arena;
 
 static inline Arena *parena_current_arena(void) {
     return &g_process_arena;
+}
+
+/* ---- stdlib/sdl2.prn real host glue (2026-08-26) ------------------------
+ * The concrete "next real extension" STDLIB.md's own `sdl2` section
+ * already flagged as pending ("full renderer/texture calls... left out
+ * of this pass... the next real extension once a renderer-owning
+ * program actually needs it") -- this is that program: the first real
+ * slice of a PARENA-authored editor shell, PITVIPER's own real
+ * SDL_CreateRenderer/SetDrawColor/Clear/FillRect/Copy/Present call shape
+ * (cmd/pitviper/main.go's own renderFrame) ported one real primitive at
+ * a time, cell-background rendering first (Copy/glyph-texture blitting
+ * is real, separate, deferred follow-up work -- needs font/texture
+ * loading this pass doesn't add).
+ *
+ * Window/Renderer are real opaque handle tables (a small fixed array of
+ * real SDL_Window pointers and SDL_Renderer pointers, indexed by a plain
+ * I32 handle), not a raw pointer carried through PARENA source directly
+ * -- a deliberate,
+ * pragmatic choice: this stdlib's own established struct convention
+ * (Pty{fd:I32}, FileHandle{fd:I32}) already proves I32-handle structs
+ * work end-to-end through VS0's real Result/Option boxing; a struct
+ * field holding a raw C pointer is untested territory in this compiler
+ * and not worth risking on this pass. */
+#define SDL2_MAX_WINDOWS 8
+#define SDL2_MAX_RENDERERS 8
+static SDL_Window *g_sdl2_windows[SDL2_MAX_WINDOWS];
+static int g_sdl2_window_count = 0;
+static SDL_Renderer *g_sdl2_renderers[SDL2_MAX_RENDERERS];
+static int g_sdl2_renderer_count = 0;
+
+static inline int sdl2_init_impl(void) {
+    return SDL_Init(SDL_INIT_VIDEO) == 0 ? 0 : -1;
+}
+
+static inline int sdl2_create_window_impl(const char *title, int w, int h) {
+    if (g_sdl2_window_count >= SDL2_MAX_WINDOWS) return -1;
+    SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                        w, h, SDL_WINDOW_SHOWN);
+    if (win == NULL) return -1;
+    int handle = g_sdl2_window_count++;
+    g_sdl2_windows[handle] = win;
+    return handle;
+}
+
+static inline void sdl2_destroy_window_impl(int handle) {
+    if (handle >= 0 && handle < g_sdl2_window_count && g_sdl2_windows[handle] != NULL) {
+        SDL_DestroyWindow(g_sdl2_windows[handle]);
+        g_sdl2_windows[handle] = NULL;
+    }
+}
+
+static inline int sdl2_create_renderer_impl(int window_handle) {
+    if (window_handle < 0 || window_handle >= g_sdl2_window_count
+        || g_sdl2_windows[window_handle] == NULL) return -1;
+    if (g_sdl2_renderer_count >= SDL2_MAX_RENDERERS) return -1;
+    /* Accelerated first, software fallback -- this box's own real
+     * Xvfb-backed verification run has no GPU, matching any other real
+     * headless CI runner this might build on later. */
+    SDL_Renderer *ren = SDL_CreateRenderer(g_sdl2_windows[window_handle], -1,
+                                            SDL_RENDERER_ACCELERATED);
+    if (ren == NULL) {
+        ren = SDL_CreateRenderer(g_sdl2_windows[window_handle], -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (ren == NULL) return -1;
+    int handle = g_sdl2_renderer_count++;
+    g_sdl2_renderers[handle] = ren;
+    return handle;
+}
+
+static inline void sdl2_destroy_renderer_impl(int handle) {
+    if (handle >= 0 && handle < g_sdl2_renderer_count && g_sdl2_renderers[handle] != NULL) {
+        SDL_DestroyRenderer(g_sdl2_renderers[handle]);
+        g_sdl2_renderers[handle] = NULL;
+    }
+}
+
+static inline int sdl2_set_draw_color_impl(int renderer_handle, int r, int g, int b, int a) {
+    if (renderer_handle < 0 || renderer_handle >= g_sdl2_renderer_count
+        || g_sdl2_renderers[renderer_handle] == NULL) return -1;
+    return SDL_SetRenderDrawColor(g_sdl2_renderers[renderer_handle],
+                                   (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a) == 0 ? 0 : -1;
+}
+
+static inline int sdl2_render_clear_impl(int renderer_handle) {
+    if (renderer_handle < 0 || renderer_handle >= g_sdl2_renderer_count
+        || g_sdl2_renderers[renderer_handle] == NULL) return -1;
+    return SDL_RenderClear(g_sdl2_renderers[renderer_handle]) == 0 ? 0 : -1;
+}
+
+static inline int sdl2_render_fill_rect_impl(int renderer_handle, int x, int y, int w, int h) {
+    if (renderer_handle < 0 || renderer_handle >= g_sdl2_renderer_count
+        || g_sdl2_renderers[renderer_handle] == NULL) return -1;
+    SDL_Rect rect;
+    rect.x = x; rect.y = y; rect.w = w; rect.h = h;
+    return SDL_RenderFillRect(g_sdl2_renderers[renderer_handle], &rect) == 0 ? 0 : -1;
+}
+
+static inline void sdl2_render_present_impl(int renderer_handle) {
+    if (renderer_handle >= 0 && renderer_handle < g_sdl2_renderer_count
+        && g_sdl2_renderers[renderer_handle] != NULL) {
+        SDL_RenderPresent(g_sdl2_renderers[renderer_handle]);
+    }
+}
+
+/* poll-event -- a real, minimal Event for v0: 0 = no event pending,
+ * 1 = Quit, 2 = KeyDown, 3 = Other (every other real SDL_EventType this
+ * program doesn't distinguish yet -- mouse motion, window resize, etc.,
+ * real, separate, deferred follow-up once an editor loop actually needs
+ * to react to them individually, same "expand the API only when a new
+ * feature needs it" pattern this whole stdlib already follows). */
+static inline int sdl2_poll_event_impl(void) {
+    SDL_Event e;
+    if (!SDL_PollEvent(&e)) return 0;
+    if (e.type == SDL_QUIT) return 1;
+    if (e.type == SDL_KEYDOWN) return 2;
+    return 3;
+}
+
+static inline int sdl2_get_ticks_impl(void) {
+    return (int)SDL_GetTicks();
+}
+
+static inline void sdl2_delay_impl(int ms) {
+    SDL_Delay((Uint32)ms);
+}
+
+static inline void sdl2_quit_impl(void) {
+    SDL_Quit();
 }
 
 #endif /* PARENA_RUNTIME_H */

@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 turbogrep clean
 
 all: build
 
@@ -135,6 +135,23 @@ test-shell: build
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_shell.c runtime/parena_runtime.c \
 		-o /tmp/test_shell_bin -lm
 	/tmp/test_shell_bin
+
+# test-sdl2 -- real end-to-end verification for stdlib/sdl2.prn, the
+# first real slice of a PARENA-authored editor shell (founder: "continue
+# working on parena editor"). Actually opens a real SDL2 window and
+# renders real frames -- this box has no real X server, so a scratch
+# Xvfb instance is launched on :97 for the duration of the test only
+# (killed in a trap either way) rather than assuming a display is
+# already up, same "make the target reproducible from a clean checkout"
+# discipline test-webdriver's own fake_webdriver_server already follows.
+test-sdl2: build
+	./parena build stdlib/string.prn stdlib/sdl2.prn -o tests/test_sdl2_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_sdl2.c runtime/parena_runtime.c \
+		-o /tmp/test_sdl2_bin -lSDL2 -lm
+	@Xvfb :97 -screen 0 1280x720x24 & echo $$! > /tmp/test_sdl2_xvfb.pid; \
+	trap 'kill $$(cat /tmp/test_sdl2_xvfb.pid) 2>/dev/null; rm -f /tmp/test_sdl2_xvfb.pid' EXIT; \
+	sleep 1; \
+	DISPLAY=:97 /tmp/test_sdl2_bin
 
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the

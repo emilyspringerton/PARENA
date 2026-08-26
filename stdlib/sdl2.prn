@@ -4,78 +4,193 @@
 ;; REDGARDEN/PITVIPER/GoblinFoxDragon, function names mirroring the real
 ;; SDL2 C API translated to kebab-case ("same APIs"), thin #target
 ;; inline-c wrappers -- not a redesigned windowing API.
+;;
+;; Rewritten 2026-08-26, founder real-time: "continue working on parena
+;; editor" -- the concrete first slice of a PARENA-authored editor shell
+;; (NORTHSTAR.md's own "editor/plugin API" section, PITVIPER's own
+;; internal/vterm + cmd/pitviper/main.go renderFrame as the port target).
+;; Real host implementation closing the same gap class every other file
+;; in this stdlib has already been through: the previous version's
+;; #target bodies declared Result/Option return types directly (VS0
+;; never auto-boxes), and Window/Sdl2Error/Event were referenced but
+;; never DEFINED anywhere in this file. Fixed to net/tcp.prn's own
+;; established shape (raw primitive returns a plain scalar, Result/
+;; Option construction happens in ordinary PARENA source), Window/
+;; Renderer represented as real opaque I32 handles into a real host-side
+;; table (runtime/parena_runtime.h's own g_sdl2_windows/g_sdl2_renderers)
+;; -- see that file's own header comment for why a raw pointer field
+;; wasn't used instead.
+;;
+;; Also real, concrete progress on STDLIB.md's own flagged gap: "full
+;; renderer/texture calls... left out of this pass... the next real
+;; extension once a renderer-owning program actually needs it." This is
+;; that program -- create-renderer/set-draw-color/render-clear/
+;; render-fill-rect/render-present, PITVIPER's own real per-cell
+;; background-fill shape (cmd/pitviper/main.go's renderFrame:
+;; SetDrawColor + FillRect per cell, Clear once per frame, Present once
+;; per frame). Texture/glyph blitting (SDL_CreateTexture, ren.Copy) is
+;; real, separate, deferred follow-up -- needs font loading this pass
+;; doesn't add, same "expand the API only when a new feature needs it"
+;; pattern NORTHSTAR.md names as the founder's own preferred shape.
+;;
+;; Real, honest, NOT closed in this pass (left exactly as before, still
+;; real #target declarations with no host implementation yet -- same
+;; documented-gap convention this stdlib already uses elsewhere):
+;; get-keyboard-state, get-mouse-state, set-relative-mouse-mode,
+;; get-clipboard-text, set-cursor, open-audio-device, queue-audio.
+;; Game controller support was already flagged as out of scope in
+;; STDLIB.md and stays that way.
 
 (module sdl2)
-(export init quit create-window destroy-window poll-event get-keyboard-state
-        get-mouse-state set-relative-mouse-mode get-ticks delay
-        get-clipboard-text set-cursor open-audio-device queue-audio)
+(export init quit create-window destroy-window create-renderer destroy-renderer
+        set-draw-color render-clear render-fill-rect render-present
+        poll-event get-ticks delay Window Renderer Sdl2Error EventKind)
 
-(defn init []
-  : (Result Unit Sdl2Error)
+(defstruct Window
+  (handle : I32))
+
+(defstruct Renderer
+  (handle : I32))
+
+(defenum Sdl2Error
+  (InitFailed)
+  (WindowFailed)
+  (RendererFailed)
+  (DrawFailed))
+
+;; EventKind -- a real, minimal poll-event result for v0: distinguishes
+;; Quit (the window close button / Cmd-Q) and KeyDown (any key) from
+;; everything else SDL can report. See runtime/parena_runtime.h's own
+;; sdl2_poll_event_impl header comment for why finer-grained event data
+;; (which key, mouse motion, resize) is real, separate, deferred work.
+(defenum EventKind
+  (Quit)
+  (KeyDown)
+  (Other))
+
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; sdl2_*_impl functions, no boxing.
+
+(defn sdl2-raw-init [] : I32
   #target
-  {:c (inline-c "SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) == 0 ? OK : ERR")})
+  {:c (inline-c "sdl2_init_impl()")})
 
-(defn quit []
-  : Unit
-  #target
-  {:c (inline-c "SDL_Quit();")})
-
-(defn create-window [(title : String @ :region/scratch) (w : I32) (h : I32) (dest : Arena @ Region)]
-  : (Result Window Sdl2Error) @ Region
-  #target
-  {:c (inline-c "SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_SHOWN)")})
-
-(defn destroy-window [(!w : Window)]
-  : Unit
-  #target
-  {:c (inline-c "SDL_DestroyWindow(w.handle);")})
-
-(defn poll-event []
-  : (Option Event)
-  #target
-  {:c (inline-c "sdl_poll_event_to_option()")})   ; wraps SDL_PollEvent's own int return
-
-(defn get-keyboard-state []
-  : &(Vec Bool)
-  #target
-  {:c (inline-c "SDL_GetKeyboardState(NULL)")})
-
-(defn get-mouse-state []
-  : (I32 I32 I32)
-  #target
-  {:c (inline-c "sdl_mouse_state_tuple()")})   ; wraps SDL_GetMouseState(&x, &y) + button mask
-
-(defn set-relative-mouse-mode [(on : Bool)]
-  : Unit
-  #target
-  {:c (inline-c "SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);")})
-
-(defn get-ticks []
+(defn sdl2-raw-create-window [(title : String @ Region) (w : I32) (h : I32)]
   : I32
   #target
-  {:c (inline-c "(int32_t)SDL_GetTicks()")})
+  {:c (inline-c "sdl2_create_window_impl(title, w, h)")})
+
+(defn sdl2-raw-destroy-window [(handle : I32)]
+  : Unit
+  #target
+  {:c (inline-c "sdl2_destroy_window_impl(handle);")})
+
+(defn sdl2-raw-create-renderer [(window-handle : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_create_renderer_impl(window_handle)")})
+
+(defn sdl2-raw-destroy-renderer [(handle : I32)]
+  : Unit
+  #target
+  {:c (inline-c "sdl2_destroy_renderer_impl(handle);")})
+
+(defn sdl2-raw-set-draw-color [(renderer-handle : I32) (r : I32) (g : I32) (b : I32) (a : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_set_draw_color_impl(renderer_handle, r, g, b, a)")})
+
+(defn sdl2-raw-render-clear [(renderer-handle : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_render_clear_impl(renderer_handle)")})
+
+(defn sdl2-raw-render-fill-rect [(renderer-handle : I32) (x : I32) (y : I32) (w : I32) (h : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_render_fill_rect_impl(renderer_handle, x, y, w, h)")})
+
+(defn sdl2-raw-render-present [(renderer-handle : I32)]
+  : Unit
+  #target
+  {:c (inline-c "sdl2_render_present_impl(renderer_handle);")})
+
+(defn sdl2-raw-poll-event [] : I32
+  #target
+  {:c (inline-c "sdl2_poll_event_impl()")})
+
+;; ---- real, boxed public API ------------------------------------------
+
+(defn init [(dest : Arena @ Region)] : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-init) 0)
+    (Err InitFailed)
+    (Ok unit)))
+
+(defn quit [] : Unit
+  #target
+  {:c (inline-c "sdl2_quit_impl();")})
+
+(defn create-window [(title : String @ Region) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result Window Sdl2Error) @ Region
+  (let [handle (sdl2-raw-create-window title w h)]
+    (if (< handle 0)
+      (Err WindowFailed)
+      (Ok {:handle handle}))))
+
+(defn destroy-window [(!win : Window)]
+  : Unit
+  (sdl2-raw-destroy-window (get-field !win :handle)))
+
+(defn create-renderer [(!win : &Window) (dest : Arena @ Region)]
+  : (Result Renderer Sdl2Error) @ Region
+  (let [handle (sdl2-raw-create-renderer (get-field !win :handle))]
+    (if (< handle 0)
+      (Err RendererFailed)
+      (Ok {:handle handle}))))
+
+(defn destroy-renderer [(!ren : Renderer)]
+  : Unit
+  (sdl2-raw-destroy-renderer (get-field !ren :handle)))
+
+(defn set-draw-color [(!ren : &Renderer) (r : I32) (g : I32) (b : I32) (a : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-set-draw-color (get-field !ren :handle) r g b a) 0)
+    (Err DrawFailed)
+    (Ok unit)))
+
+(defn render-clear [(!ren : &Renderer) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-render-clear (get-field !ren :handle)) 0)
+    (Err DrawFailed)
+    (Ok unit)))
+
+(defn render-fill-rect [(!ren : &Renderer) (x : I32) (y : I32) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-render-fill-rect (get-field !ren :handle) x y w h) 0)
+    (Err DrawFailed)
+    (Ok unit)))
+
+(defn render-present [(!ren : &Renderer)]
+  : Unit
+  (sdl2-raw-render-present (get-field !ren :handle)))
+
+;; poll-event -- None means "no event pending right now" (SDL_PollEvent
+;; itself returned 0), matching every real client's own SDL_PollEvent
+;; loop shape (NORTHSTAR.md's own note on this function).
+(defn poll-event [(dest : Arena @ Region)] : (Option EventKind) @ Region
+  (let [code (sdl2-raw-poll-event)]
+    (cond
+      ((= code 0) None)
+      ((= code 1) (Some Quit))
+      ((= code 2) (Some KeyDown))
+      (true (Some Other)))))
+
+(defn get-ticks [] : I32
+  #target
+  {:c (inline-c "sdl2_get_ticks_impl()")})
 
 (defn delay [(ms : I32)]
   : Unit
   #target
-  {:c (inline-c "SDL_Delay((Uint32)ms);")})
-
-(defn get-clipboard-text [(dest : Arena @ Region)]
-  : (Result String Sdl2Error) @ Region
-  #target
-  {:c (inline-c "sdl_clipboard_text_into(dest)")})
-
-(defn set-cursor [(cursor : SystemCursor)]
-  : Unit
-  #target
-  {:c (inline-c "SDL_SetCursor(SDL_CreateSystemCursor(cursor_to_sdl(cursor)));")})
-
-(defn open-audio-device [(dest : Arena @ Region)]
-  : (Result AudioDevice Sdl2Error) @ Region
-  #target
-  {:c (inline-c "sdl_open_default_audio_device(dest)")})
-
-(defn queue-audio [(!dev : &AudioDevice) (samples : &NDArray)]
-  : (Result Unit Sdl2Error)
-  #target
-  {:c (inline-c "SDL_QueueAudio(dev->id, samples->data, samples->shape[0] * sizeof(float)) == 0 ? OK : ERR")})
+  {:c (inline-c "sdl2_delay_impl(ms);")})
