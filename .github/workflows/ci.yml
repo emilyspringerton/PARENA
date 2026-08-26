@@ -27,6 +27,19 @@ jobs:
           disk-cache: ${{ github.workflow }}
           repository-cache: true
 
+      # SDL2/SDL2_ttf dev headers -- runtime/parena_runtime.h unconditionally
+      # includes <SDL2/SDL.h>/<SDL2/SDL_ttf.h> (stdlib/sdl2.prn is "built in,
+      # same tier as core" per STDLIB.md's own design intent, so every build
+      # of this runtime needs them, not just ones that happen to call into
+      # sdl2.prn). Found for real, not assumed: this step was missing and CI
+      # broke with a real "fatal error: SDL2/SDL.h: No such file or
+      # directory" the moment runtime/parena_runtime.h started including it
+      # (2026-08-26) -- the dev box that change was verified on already had
+      # libsdl2-dev/libsdl2-ttf-dev installed, this runner didn't. Same real
+      # "apt is normal here" precedent as the Valgrind install step below.
+      - name: Install SDL2 + SDL2_ttf dev headers (CI runner, not the interactive dev sandbox -- apt is normal here)
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev
+
       - name: Build (bazel build //... — global -std=c99 -Wall -Wextra -pedantic
           via .bazelrc, matching VS0 DoD's own C-emitter bar)
         run: bazel build //...
