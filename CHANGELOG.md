@@ -1,3 +1,7 @@
+## 2026-08-26
+
+- pty.prn + shell.prn: real forkpty-based host implementation (spawn/read/write/resize/close, env lookup, PATH search, Git Bash detection) -- the concrete PARENA-eats-PITVIPER step, verified with a real end-to-end pty round trip (make test-shell) (sess-20260825-1938-f6bd411e)
+
 ## 2026-08-25
 - turboawk dogfooding finished: expr.prn's parse-expr/EvalError/coerce-num/coerce-str + awk.prn's compiler gaps fixed, tests/test_awk.c 10/10 PASS against freshly-generated tests/test_awk_gen.c. Added 'make test-awk' (not a turboawk CLI -- expr.prn has no print/output primitive yet, honestly flagged, not built here). Full core suite (336 tests) + turbogrep/turbosed both still clean. Commit 8a5fcdd. (sess-20260825-1938-f6bd411e)
 - tree_passive_mod.prn -- second real REDGARDEN PARENA mod (ARENA_HERO_TREE auto-attack passive) (sess-20260825-1938-f6bd411e)
