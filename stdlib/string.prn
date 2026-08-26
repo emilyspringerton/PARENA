@@ -6,7 +6,7 @@
 
 (module string)
 (import vec)
-(export parse-i32 length concat split char-at str-eq? is-digit? substring ParseError)
+(export parse-i32 length concat split char-at str-eq? contains-ci? is-digit? substring ParseError)
 
 (defn length [(s : String @ Region)]
   : I32
@@ -36,6 +36,20 @@
   : Bool
   #target
   {:c (inline-c "strcmp(a, b) == 0")})
+
+;; contains-ci? -- case-insensitive substring search, added 2026-08-26
+;; closing a real gap found porting PITVIPER's own isWslStub
+;; (stdlib/shell.prn) to PARENA: that port needed a case-insensitive
+;; contains check and this file had neither `contains?` nor `to-lower`.
+;; A single case-insensitive primitive (glibc's real strcasestr, visible
+;; under runtime/parena_runtime.h's own _DEFAULT_SOURCE) is the real,
+;; simpler shape here -- avoids threading a `dest` arena through just to
+;; allocate a throwaway lowercased copy the way `contains?`+`to-lower`
+;; composed separately would need.
+(defn contains-ci? [(haystack : String @ Region) (needle : String @ Region)]
+  : Bool
+  #target
+  {:c (inline-c "strcasestr(haystack, needle) != NULL")})
 
 (defn is-digit? [(c : I32)]
   : Bool

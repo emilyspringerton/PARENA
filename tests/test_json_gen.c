@@ -77,6 +77,7 @@ static inline MemberStep MemberStep_new(char * key, JsonValue value, int next) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
@@ -159,6 +160,10 @@ int char_at(char * s __attribute__((unused)), int i __attribute__((unused))) {
 
 int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) {
     return (strcmp(a, b) == 0);
+}
+
+int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
+    return (strcasestr(haystack, needle) != NULL);
 }
 
 int is_digit_(int c __attribute__((unused))) {

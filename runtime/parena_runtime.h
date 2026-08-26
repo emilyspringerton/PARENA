@@ -20,6 +20,15 @@
  * <netdb.h> alone was not enough. 200112L = POSIX.1-2001, the version
  * that defines getaddrinfo. */
 #define _POSIX_C_SOURCE 200112L
+/* _DEFAULT_SOURCE alongside _POSIX_C_SOURCE (both may coexist under glibc,
+ * unlike _POSIX_C_SOURCE alone) -- needed for pty_open_impl below:
+ * forkpty/openpty are a real glibc/BSD extension declared in <pty.h>, not
+ * POSIX-standard, and glibc hides them when _POSIX_C_SOURCE is defined
+ * without this. Found for real getting stdlib/pty.prn's pty_open_impl to
+ * actually see forkpty's declaration, the same "define the feature-test
+ * macro before any system header, verify by actually compiling" discipline
+ * tcp_connect_impl's own header comment above already documents. */
+#define _DEFAULT_SOURCE
 
 #include <stddef.h>
 #include <string.h>
@@ -34,6 +43,9 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <pty.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -601,6 +613,154 @@ static inline int tcp_write_impl(int fd, const char *s) {
 
 static inline int tcp_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
+}
+
+/* ---- stdlib/pty.prn real host glue (2026-08-26) ------------------------
+ * The concrete "PARENA eats PITVIPER" dogfooding step NORTHSTAR.md's own
+ * strangler-fig section names -- a real, direct generalization of
+ * PITVIPER's own shipped internal/pty/pty_linux.go (openpty(3)-based; the
+ * Windows ConPTY half PITVIPER also has is real, separate, unstarted host
+ * glue here, same honest boundary this file already draws elsewhere for
+ * anything not reachable from this box). Closes the same real gap class
+ * tcp_*_impl above already closed for net/tcp.prn: pty.prn's own
+ * previous version declared its #target bodies to return Result/Pty
+ * directly, which VS0 never auto-boxes -- these are the raw
+ * scalar-returning primitives pty.prn's rewrite calls instead, Result/
+ * struct construction happens in ordinary PARENA source there.
+ *
+ * Real, honest, narrow limitation, stated plainly: no pid is tracked or
+ * returned -- same deliberate scope process.prn's own real host glue
+ * already carries ("fork+exec, detached -- no pipe/wait plumbing"). A
+ * caller can read/write/resize/close the pty by fd, but can't waitpid or
+ * signal the child shell directly; a real future gap if PITVIPER's own
+ * port ever needs to detect "the shell process itself exited" instead of
+ * inferring it from read() returning EOF. */
+static inline int pty_open_impl(const char *shell, int cols, int rows) {
+    struct winsize ws;
+    memset(&ws, 0, sizeof ws);
+    ws.ws_col = (unsigned short)cols;
+    ws.ws_row = (unsigned short)rows;
+    int master_fd;
+    pid_t pid = forkpty(&master_fd, NULL, NULL, &ws);
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        setenv("TERM", "xterm-256color", 1);
+        execlp(shell, shell, (char *)NULL);
+        _exit(127);
+    }
+    return master_fd;
+}
+
+/* Same grow-by-4096-and-copy shape as tcp_read_impl above, kept as its
+ * own distinctly-named function rather than shared -- same reasoning
+ * tcp_read_impl's own header comment already gives for not sharing with
+ * raw_read_all_impl (io.prn), applied one boundary further out. */
+static inline char *pty_read_impl(int fd, Arena *dest) {
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    for (;;) {
+        if (len + 4096 > cap) {
+            size_t new_cap = cap + 4096;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        ssize_t n = read(fd, buf + len, 4096);
+        if (n <= 0) break;
+        len += (size_t)n;
+    }
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return out;
+}
+
+static inline int pty_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, s + written, len - written);
+        if (n < 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int pty_resize_impl(int fd, int cols, int rows) {
+    struct winsize ws;
+    memset(&ws, 0, sizeof ws);
+    ws.ws_col = (unsigned short)cols;
+    ws.ws_row = (unsigned short)rows;
+    return ioctl(fd, TIOCSWINSZ, &ws) == 0 ? 0 : -1;
+}
+
+static inline int pty_close_impl(int fd) {
+    return close(fd) == 0 ? 0 : -1;
+}
+
+/* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
+ * A real, direct port of PITVIPER's own shell-resolution policy
+ * (internal/pty/pty_windows.go's Open()/isWslStub/findGitBash). Every
+ * function here is a genuinely irreducible raw OS primitive (env read,
+ * PATH search, file existence) -- the real decision chain (explicit >
+ * $SHELL > Git Bash off PATH > Git Bash well-known paths > platform
+ * fallback) is real PARENA `match`/`cond` logic in shell.prn itself, not
+ * hidden in here, matching that file's own stated design intent.
+ *
+ * Each function returns a plain empty string ("") as its "not found"
+ * sentinel rather than NULL -- consistent with this runtime's own
+ * established "raw primitives return a plain scalar/string, Option/
+ * Result construction happens in ordinary PARENA source" convention
+ * (tcp_read_impl et al. above), and avoids the caller ever having to
+ * null-check a raw C pointer from PARENA source directly. */
+static inline char *env_get_impl(const char *name, Arena *dest) {
+    const char *v = getenv(name);
+    if (v == NULL) v = "";
+    size_t len = strlen(v);
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, v, len + 1);
+    return out;
+}
+
+/* exec_lookpath_impl -- real, portable PATH search, mirrors Go's own
+ * exec.LookPath (checked for X_OK on POSIX; Windows PATHEXT resolution
+ * is real, separate, unstarted host glue here, same honest "not
+ * reachable from this box" boundary pty_open_impl's own header comment
+ * already draws -- this box is Linux). */
+static inline char *exec_lookpath_impl(const char *name, Arena *dest) {
+    const char *path_env = getenv("PATH");
+    if (path_env == NULL || path_env[0] == '\0') {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    size_t path_len = strlen(path_env);
+    char *path_copy = (char *)malloc(path_len + 1);
+    memcpy(path_copy, path_env, path_len + 1);
+    char *saveptr = NULL;
+    char *dir = strtok_r(path_copy, ":", &saveptr);
+    char candidate[4096];
+    while (dir != NULL) {
+        snprintf(candidate, sizeof candidate, "%s/%s", dir, name);
+        if (access(candidate, X_OK) == 0) {
+            size_t len = strlen(candidate);
+            char *out = (char *)arena_alloc(dest, len + 1);
+            memcpy(out, candidate, len + 1);
+            free(path_copy);
+            return out;
+        }
+        dir = strtok_r(NULL, ":", &saveptr);
+    }
+    free(path_copy);
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline int file_exists_impl(const char *path) {
+    return access(path, F_OK) == 0 ? 1 : 0;
 }
 
 /* ---- stdlib/process.prn real host glue (2026-08-25) -------------------

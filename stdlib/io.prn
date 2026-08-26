@@ -35,7 +35,7 @@
 (module io)
 (import string)
 (import vec)
-(export file-open file-close write-string read-string read-line read-floats FileHandle IoError OpenMode)
+(export file-open file-close path-exists? write-string read-string read-line read-floats FileHandle IoError OpenMode)
 
 (defstruct FileHandle
   (fd : I32))
@@ -136,6 +136,15 @@
   (if (< (raw-close (get-field f :fd)) 0)
     (Err (errno-to-io-error (raw-errno)))
     (Ok unit)))
+
+;; path-exists? -- added 2026-08-26, real gap found porting PITVIPER's
+;; own findGitBash (stdlib/shell.prn) to PARENA: that port needs a plain
+;; existence check (access(2), not open+close) for each well-known
+;; candidate path it probes.
+(defn path-exists? [(path : String @ Region)]
+  : Bool
+  #target
+  {:c (inline-c "file_exists_impl(path) != 0")})
 
 (defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result Unit IoError) @ Region

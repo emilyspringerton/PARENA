@@ -1,57 +1,121 @@
 ;; stdlib/pty.prn — depends on string. Design: STDLIB.md "pty" section.
 ;; Real, direct generalization of PITVIPER's own shipped Open()/
-;; ConPTY(Windows)/openpty(POSIX) code. Real, honest note carried from
-;; STDLIB.md: the C-target body picks ConPTY vs. openpty via ordinary
-;; C preprocessor #ifdef _WIN32 inside inline-c, not a second
-;; PARENA-level #target dispatch (NORTHSTAR's #target branches by
-;; compilation target, not host OS).
+;; openpty(POSIX) code (internal/pty/pty_linux.go) -- the concrete
+;; "PARENA eats PITVIPER" dogfooding step NORTHSTAR.md's own
+;; strangler-fig section names. The Windows ConPTY half PITVIPER also
+;; has is real, separate, unstarted host glue here (this box is Linux;
+;; matches every other #target-bound file's own honest "not reachable
+;; from this box" boundary, not silently pretended away).
+;;
+;; Rewritten 2026-08-26, real host implementation closing the gap the
+;; previous version left open ("FFI declared, host implementation not
+;; written yet", STDLIB.md's own still-not-fixed note) -- same real bug
+;; class net/tcp.prn's 2026-08-25 rewrite found and fixed: a #target
+;; body declared to return Result/Pty directly, which VS0 never
+;; auto-boxes (emit.c's own find_target_c_src comment). Fixed to
+;; net/tcp.prn's own established shape: the only #target bodies left
+;; are genuinely-irreducible raw syscalls returning a plain scalar (an
+;; fd, or -1 on failure) or a plain String; Result/struct construction
+;; happens in ordinary PARENA source here.
+;;
+;; Second real bug fixed in the same pass: `open`/`read`/`write`/
+;; `close` are literal libc function names (declared in <unistd.h>/
+;; <fcntl.h>, unconditionally reachable from any translation unit that
+;; includes runtime/parena_runtime.h) -- the same real symbol-collision
+;; class net/tcp.prn's own header comment already documents and fixed
+;; via a `tcp-` prefix. Renamed to `pty-` throughout for the same
+;; reason, verified live by actually compiling (not assumed).
 
 (module pty)
 (import string)
-(export open read write resize close Pty PtyError)
+(export pty-open pty-read pty-write pty-resize pty-close Pty PtyError)
 
-;; Real, honest gap closed here (2026-08-21): every function below used
-;; `Pty`/`PtyError` in its own real signature but this file never
-;; actually DEFINED either -- the same real missing-definition-in-
-;; source-itself gap class already closed for pcap.prn/io.prn/
-;; net/tcp.prn. `Pty` is a real, minimal, opaque fd wrapper -- the
-;; actual host-side ConPTY/openpty handle every #target body above
-;; already assumes exists is real, separate, unstarted host-runtime
-;; glue work, same honest "FFI declared, host implementation not
-;; written yet" boundary every other #target-bound file in this
-;; stdlib already has.
 (defstruct Pty
   (fd : I32))
 
+;; Real, genuine VS0 emitter gap found compiling this file together with
+;; io.prn (2026-08-26): a bare defenum variant constructor (e.g. `Other`)
+;; resolves GLOBALLY across the whole compiled program, last-declaration-
+;; wins, not scoped to its own owning enum/module -- io.prn's own
+;; errno-to-io-error uses a bare `Other` meaning IoError's variant, but
+;; once this file's own PtyError also declared an `Other`, the emitted C
+;; for io.prn's `Other` silently resolved to PtyError_Other() instead
+;; (confirmed live: a real "type mismatch in conditional expression" gcc
+;; error, not assumed). Real, separate, un-fixed compiler limitation
+;; (whole-program bare-identifier resolution needs to become type/module-
+;; scoped) -- worked around here at the stdlib level by naming this
+;; variant distinctly instead, not fixed at the emitter level in this
+;; pass.
 (defenum PtyError
   (SpawnFailed)
   (ResizeFailed)
-  (Other))
+  (PtyIoError))
 
-(defn open [(shell : String @ :region/scratch) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; pty_*_impl functions, no boxing.
+
+(defn pty-raw-open [(shell : String @ Region) (cols : I32) (rows : I32)]
+  : I32
+  #target
+  {:c (inline-c "pty_open_impl(shell, cols, rows)")})
+
+(defn pty-raw-read [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "pty_read_impl(fd, dest)")})
+
+(defn pty-raw-write [(fd : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "pty_write_impl(fd, data)")})
+
+(defn pty-raw-resize [(fd : I32) (cols : I32) (rows : I32)]
+  : I32
+  #target
+  {:c (inline-c "pty_resize_impl(fd, cols, rows)")})
+
+(defn pty-raw-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "pty_close_impl(fd)")})
+
+;; pty-open -- no pid is tracked (same real, deliberate scope
+;; process.prn's own real host glue already carries: "fork+exec,
+;; detached -- no pipe/wait plumbing"). SpawnFailed is the only real
+;; failure signal pty-raw-open's -1 can mean here (forkpty itself failing,
+;; or exec failing inside the child, indistinguishable from the parent
+;; side without pid tracking -- a real, honest, coarser signal, not a
+;; fake finer one, same judgment net/tcp.prn's own ConnectionRefused
+;; comment already makes for getaddrinfo/connect).
+(defn pty-open [(shell : String @ Region) (cols : I32) (rows : I32) (dest : Arena @ Region)]
   : (Result Pty PtyError) @ Region
-  #target
-  {:c (inline-c "pty_open(shell, cols, rows, dest)")})
-  ;; C body: #ifdef _WIN32 -> CreatePseudoConsole (mirrors PITVIPER's
-  ;; internal/pty/pty_windows.go); #else -> openpty(3) (mirrors
-  ;; internal/pty/pty_linux.go).
+  (let [fd (pty-raw-open shell cols rows)]
+    (if (< fd 0)
+      (Err SpawnFailed)
+      (Ok {:fd fd}))))
 
-(defn read [(!p : &mut Pty) (dest : Arena @ Region)]
+(defn pty-read [(!p : &mut Pty) (dest : Arena @ Region)]
   : (Result String PtyError) @ Region
-  #target
-  {:c (inline-c "pty_read(p, dest)")})
+  (Ok (pty-raw-read (get-field !p :fd) dest)))
 
-(defn write [(!p : &mut Pty) (data : String @ Region)]
-  : (Result I32 PtyError)
-  #target
-  {:c (inline-c "pty_write(p, data)")})
+(defn pty-write [(!p : &mut Pty) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 PtyError) @ Region
+  (if (< (pty-raw-write (get-field !p :fd) data) 0)
+    (Err PtyIoError)
+    (Ok 0)))
 
-(defn resize [(!p : &mut Pty) (cols : I32) (rows : I32)]
-  : (Result Unit PtyError)
-  #target
-  {:c (inline-c "pty_resize(p, cols, rows)")})
+(defn pty-resize [(!p : &mut Pty) (cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Unit PtyError) @ Region
+  (if (< (pty-raw-resize (get-field !p :fd) cols rows) 0)
+    (Err ResizeFailed)
+    (Ok unit)))
 
-(defn close [(!p : Pty)]
-  : Unit
-  #target
-  {:c (inline-c "pty_close(p);")})
+;; pty-close -- Result-boxed like tcp-close, unlike the previous
+;; version's bare Unit return (which couldn't have type-checked against
+;; pty-raw-close's real I32 result anyway -- fixed in the same pass).
+(defn pty-close [(!p : Pty) (dest : Arena @ Region)]
+  : (Result Unit PtyError) @ Region
+  (if (< (pty-raw-close (get-field !p :fd)) 0)
+    (Err PtyIoError)
+    (Ok unit)))

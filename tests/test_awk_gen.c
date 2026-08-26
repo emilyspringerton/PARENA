@@ -334,6 +334,7 @@ static inline Record Record_new(Vec fields, int nr) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
@@ -365,6 +366,7 @@ int mode_tag_of(OpenMode);
 IoError errno_to_io_error(int);
 Result file_open(char *, OpenMode, Arena *);
 Result file_close(FileHandle, Arena *);
+int path_exists_(char *);
 Result write_string(FileHandle, char *, Arena *);
 Result read_string(FileHandle, Arena *);
 Result read_line(FileHandle, Arena *);
@@ -604,6 +606,10 @@ int char_at(char * s __attribute__((unused)), int i __attribute__((unused))) {
 
 int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) {
     return (strcmp(a, b) == 0);
+}
+
+int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
+    return (strcasestr(haystack, needle) != NULL);
 }
 
 int is_digit_(int c __attribute__((unused))) {
@@ -907,6 +913,10 @@ Result file_close(FileHandle f __attribute__((unused)), Arena *dest __attribute_
     } else {
     return result_ok(NULL);
     }
+}
+
+int path_exists_(char * path __attribute__((unused))) {
+    return (file_exists_impl(path) != 0);
 }
 
 Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {

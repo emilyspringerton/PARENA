@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell turbogrep clean
 
 all: build
 
@@ -120,6 +120,21 @@ test-webdriver: build
 		-o /tmp/test_webdriver_bin -lm
 	cd tests && go build -o fake_webdriver_server fake_webdriver_server.go
 	cd tests && /tmp/test_webdriver_bin ./fake_webdriver_server 9515
+
+# test-shell -- real end-to-end verification for stdlib/pty.prn and
+# stdlib/shell.prn, the concrete "PARENA eats PITVIPER" dogfooding step
+# (a real, direct port of PITVIPER's own internal/pty/pty_linux.go +
+# pty_windows.go shell-resolution policy). Same discipline as
+# test-json/test-yaml/test-awk above, but the strongest version of it in
+# this file: actually forks a real bash process attached to a real pty,
+# writes a real command, and reads real output back -- not a mock pty,
+# not a stubbed subprocess.
+test-shell: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/pty.prn \
+		stdlib/shell.prn -o tests/test_shell_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_shell.c runtime/parena_runtime.c \
+		-o /tmp/test_shell_bin -lm
+	/tmp/test_shell_bin
 
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the
