@@ -562,9 +562,9 @@ int main(void) {
             CHECK(strstr(c_src, "typedef enum {") != NULL, "defenum emits a real C tag enum");
             CHECK(strstr(c_src, "typedef struct { Signal_Tag tag; void *value; } Signal;") != NULL,
                   "defenum emits the real {tag; void *value;} struct, generalizing Result/Option's own shape");
-            CHECK(strstr(c_src, "static inline Signal Signal_Ping(void)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) Signal Signal_Ping(void)") != NULL,
                   "a zero-payload variant gets a real, callable, zero-arg constructor");
-            CHECK(strstr(c_src, "static inline Signal Signal_Data(void *value)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) Signal Signal_Data(void *value)") != NULL,
                   "a payload-carrying variant gets a real, callable, one-arg constructor");
             CHECK(strstr(c_src, "Signal sig __attribute__((unused))") != NULL,
                   "a parameter typed as a registered defenum becomes a real plain C value of that type");
@@ -1168,14 +1168,14 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "typedef struct {\n    char * name;\n    int children;\n} SuiteNode_Group_Payload;") != NULL,
                   "the two-field variant gets a real companion payload struct with real, distinct field types");
-            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Group(Arena *dest, char * name, int children) {") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) SuiteNode SuiteNode_Group(Arena *dest, char * name, int children) {") != NULL,
                   "its own constructor takes an explicit destination Arena as its first parameter, "
                   "then the real, typed field values");
             CHECK(strstr(c_src, "arena_alloc(dest, sizeof(SuiteNode_Group_Payload))") != NULL,
                   "it allocates the companion payload struct into that arena");
-            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Spec(void *value)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) SuiteNode SuiteNode_Spec(void *value)") != NULL,
                   "the one-field variant keeps its exact pre-existing generic void* shape, unchanged");
-            CHECK(strstr(c_src, "static inline SuiteNode SuiteNode_Empty(void)") != NULL,
+            CHECK(strstr(c_src, "static inline __attribute__((unused)) SuiteNode SuiteNode_Empty(void)") != NULL,
                   "the zero-field variant keeps its exact pre-existing shape too, unchanged");
             CHECK(strstr(c_src, "return SuiteNode_Group(dest, n, 5);") != NULL,
                   "a real call site passes the destination arena plus each field value positionally");

@@ -50,12 +50,12 @@ typedef enum {
     Sdl2Error_TAG_TextRenderFailed,
 } Sdl2Error_Tag;
 typedef struct { Sdl2Error_Tag tag; void *value; } Sdl2Error;
-static inline Sdl2Error Sdl2Error_InitFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_InitFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_WindowFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_WindowFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_RendererFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_RendererFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_DrawFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_DrawFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_FontFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_FontFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_TextRenderFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_TextRenderFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_InitFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_InitFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_WindowFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_WindowFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_RendererFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_RendererFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_DrawFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_DrawFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_FontFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_FontFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_TextRenderFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_TextRenderFailed; v.value = NULL; return v; }
 
 typedef enum {
     EventKind_TAG_Quit,
@@ -64,10 +64,10 @@ typedef enum {
     EventKind_TAG_UnhandledEvent,
 } EventKind_Tag;
 typedef struct { EventKind_Tag tag; void *value; } EventKind;
-static inline EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
-static inline EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
-static inline EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
-static inline EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
+static inline __attribute__((unused)) EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
+static inline __attribute__((unused)) EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
 
 typedef struct {
     char * text;
@@ -84,7 +84,7 @@ typedef enum {
     BufferError_TAG_OutOfRange,
 } BufferError_Tag;
 typedef struct { BufferError_Tag tag; void *value; } BufferError;
-static inline BufferError BufferError_OutOfRange(void) { BufferError v; v.tag = BufferError_TAG_OutOfRange; v.value = NULL; return v; }
+static inline __attribute__((unused)) BufferError BufferError_OutOfRange(void) { BufferError v; v.tag = BufferError_TAG_OutOfRange; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);

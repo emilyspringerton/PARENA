@@ -1128,6 +1128,20 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
     }
     sb_appendf(out, "} %s_Tag;\n", enum_name);
     sb_appendf(out, "typedef struct { %s_Tag tag; void *value; } %s;\n", enum_name, enum_name);
+    /* __attribute__((unused)) on every real variant constructor below --
+     * real, confirmed-live gap found on a real macos-latest CI runner
+     * (2026-08-26): a program that only compiles a SUBSET of an enum's
+     * variants into real use (e.g. editor-demo needs OpenMode_Read/Write
+     * but never OpenMode_Append) leaves the unused ones as genuinely
+     * unused `static inline` functions. GCC's own -Wall -Wextra (this
+     * repo's own DoD bar) never warns about an unused static inline --
+     * a real, long-standing GCC behavior, not a coincidence -- but
+     * Clang's -Wunused-function does. Same real "expected, harmless,
+     * only-Clang-flags-it" shape as this function's own already-
+     * established `__attribute__((unused))` convention on generated
+     * parameters/match-result vars elsewhere in this file, just applied
+     * to constructor functions too now that a real Clang build exists
+     * to catch it. */
     for (size_t i = 0; i < variant_count; i++) {
         if (variants[i].field_count >= 2) {
             /* Real, new multi-field-payload shape: a companion struct,
@@ -1144,7 +1158,7 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
                 sb_append(out, ";\n");
             }
             sb_appendf(out, "} %s_%s_Payload;\n", enum_name, variants[i].name);
-            sb_appendf(out, "static inline %s %s_%s(Arena *dest", enum_name, enum_name, variants[i].name);
+            sb_appendf(out, "static inline __attribute__((unused)) %s %s_%s(Arena *dest", enum_name, enum_name, variants[i].name);
             for (size_t f = 0; f < variants[i].field_count; f++) {
                 sb_append(out, ", ");
                 sb_append_decl(out, variants[i].fields[f].c_type, variants[i].fields[f].c_name);
@@ -1158,12 +1172,12 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
                        enum_name, enum_name, variants[i].name);
         } else if (variants[i].field_count == 1) {
             sb_appendf(out,
-                       "static inline %s %s_%s(void *value) { %s v; v.tag = %s_TAG_%s; v.value = value; "
+                       "static inline __attribute__((unused)) %s %s_%s(void *value) { %s v; v.tag = %s_TAG_%s; v.value = value; "
                        "return v; }\n",
                        enum_name, enum_name, variants[i].name, enum_name, enum_name, variants[i].name);
         } else {
             sb_appendf(out,
-                       "static inline %s %s_%s(void) { %s v; v.tag = %s_TAG_%s; v.value = NULL; "
+                       "static inline __attribute__((unused)) %s %s_%s(void) { %s v; v.tag = %s_TAG_%s; v.value = NULL; "
                        "return v; }\n",
                        enum_name, enum_name, variants[i].name, enum_name, enum_name, variants[i].name);
         }

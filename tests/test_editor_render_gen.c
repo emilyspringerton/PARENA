@@ -20,9 +20,9 @@ typedef enum {
     AnchorKind_TAG_WordBoundary,
 } AnchorKind_Tag;
 typedef struct { AnchorKind_Tag tag; void *value; } AnchorKind;
-static inline AnchorKind AnchorKind_Start(void) { AnchorKind v; v.tag = AnchorKind_TAG_Start; v.value = NULL; return v; }
-static inline AnchorKind AnchorKind_End(void) { AnchorKind v; v.tag = AnchorKind_TAG_End; v.value = NULL; return v; }
-static inline AnchorKind AnchorKind_WordBoundary(void) { AnchorKind v; v.tag = AnchorKind_TAG_WordBoundary; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_Start(void) { AnchorKind v; v.tag = AnchorKind_TAG_Start; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_End(void) { AnchorKind v; v.tag = AnchorKind_TAG_End; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_WordBoundary(void) { AnchorKind v; v.tag = AnchorKind_TAG_WordBoundary; v.value = NULL; return v; }
 
 typedef struct {
     char * lo;
@@ -48,15 +48,15 @@ typedef enum {
     PatternNode_TAG_Anchor,
 } PatternNode_Tag;
 typedef struct { PatternNode_Tag tag; void *value; } PatternNode;
-static inline PatternNode PatternNode_Literal(void *value) { PatternNode v; v.tag = PatternNode_TAG_Literal; v.value = value; return v; }
-static inline PatternNode PatternNode_AnyChar(void) { PatternNode v; v.tag = PatternNode_TAG_AnyChar; v.value = NULL; return v; }
-static inline PatternNode PatternNode_Concat(void *value) { PatternNode v; v.tag = PatternNode_TAG_Concat; v.value = value; return v; }
-static inline PatternNode PatternNode_Alt(void *value) { PatternNode v; v.tag = PatternNode_TAG_Alt; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Literal(void *value) { PatternNode v; v.tag = PatternNode_TAG_Literal; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_AnyChar(void) { PatternNode v; v.tag = PatternNode_TAG_AnyChar; v.value = NULL; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Concat(void *value) { PatternNode v; v.tag = PatternNode_TAG_Concat; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Alt(void *value) { PatternNode v; v.tag = PatternNode_TAG_Alt; v.value = value; return v; }
 typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Star_Payload;
-static inline PatternNode PatternNode_Star(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Star(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Star_Payload *p = (PatternNode_Star_Payload *)arena_alloc(dest, sizeof(PatternNode_Star_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -66,7 +66,7 @@ typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Plus_Payload;
-static inline PatternNode PatternNode_Plus(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Plus(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Plus_Payload *p = (PatternNode_Plus_Payload *)arena_alloc(dest, sizeof(PatternNode_Plus_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -76,7 +76,7 @@ typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Optional_Payload;
-static inline PatternNode PatternNode_Optional(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Optional(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Optional_Payload *p = (PatternNode_Optional_Payload *)arena_alloc(dest, sizeof(PatternNode_Optional_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -87,7 +87,7 @@ typedef struct {
     Option capture_index;
     Option name;
 } PatternNode_Group_Payload;
-static inline PatternNode PatternNode_Group(Arena *dest, PatternNode inner, Option capture_index, Option name) {
+static inline __attribute__((unused)) PatternNode PatternNode_Group(Arena *dest, PatternNode inner, Option capture_index, Option name) {
     PatternNode_Group_Payload *p = (PatternNode_Group_Payload *)arena_alloc(dest, sizeof(PatternNode_Group_Payload));
     p->inner = inner;
     p->capture_index = capture_index;
@@ -98,13 +98,13 @@ typedef struct {
     Vec ranges;
     int negated;
 } PatternNode_CharClass_Payload;
-static inline PatternNode PatternNode_CharClass(Arena *dest, Vec ranges, int negated) {
+static inline __attribute__((unused)) PatternNode PatternNode_CharClass(Arena *dest, Vec ranges, int negated) {
     PatternNode_CharClass_Payload *p = (PatternNode_CharClass_Payload *)arena_alloc(dest, sizeof(PatternNode_CharClass_Payload));
     p->ranges = ranges;
     p->negated = negated;
     PatternNode v; v.tag = PatternNode_TAG_CharClass; v.value = p; return v;
 }
-static inline PatternNode PatternNode_Anchor(void *value) { PatternNode v; v.tag = PatternNode_TAG_Anchor; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Anchor(void *value) { PatternNode v; v.tag = PatternNode_TAG_Anchor; v.value = value; return v; }
 
 typedef struct {
     PatternNode root;
@@ -210,12 +210,12 @@ typedef enum {
     Sdl2Error_TAG_TextRenderFailed,
 } Sdl2Error_Tag;
 typedef struct { Sdl2Error_Tag tag; void *value; } Sdl2Error;
-static inline Sdl2Error Sdl2Error_InitFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_InitFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_WindowFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_WindowFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_RendererFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_RendererFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_DrawFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_DrawFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_FontFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_FontFailed; v.value = NULL; return v; }
-static inline Sdl2Error Sdl2Error_TextRenderFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_TextRenderFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_InitFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_InitFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_WindowFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_WindowFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_RendererFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_RendererFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_DrawFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_DrawFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_FontFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_FontFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) Sdl2Error Sdl2Error_TextRenderFailed(void) { Sdl2Error v; v.tag = Sdl2Error_TAG_TextRenderFailed; v.value = NULL; return v; }
 
 typedef enum {
     EventKind_TAG_Quit,
@@ -224,10 +224,10 @@ typedef enum {
     EventKind_TAG_UnhandledEvent,
 } EventKind_Tag;
 typedef struct { EventKind_Tag tag; void *value; } EventKind;
-static inline EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
-static inline EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
-static inline EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
-static inline EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
+static inline __attribute__((unused)) EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
+static inline __attribute__((unused)) EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
 
 typedef struct {
     char * scope;
@@ -257,7 +257,7 @@ typedef enum {
     TmError_TAG_BadPattern,
 } TmError_Tag;
 typedef struct { TmError_Tag tag; void *value; } TmError;
-static inline TmError TmError_BadPattern(void) { TmError v; v.tag = TmError_TAG_BadPattern; v.value = NULL; return v; }
+static inline __attribute__((unused)) TmError TmError_BadPattern(void) { TmError v; v.tag = TmError_TAG_BadPattern; v.value = NULL; return v; }
 
 typedef struct {
     int r;

@@ -61,10 +61,10 @@ typedef enum {
     IoError_TAG_Other,
 } IoError_Tag;
 typedef struct { IoError_Tag tag; void *value; } IoError;
-static inline IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
-static inline IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
-static inline IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
-static inline IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
 
 typedef enum {
     OpenMode_TAG_Read,
@@ -72,9 +72,9 @@ typedef enum {
     OpenMode_TAG_Append,
 } OpenMode_Tag;
 typedef struct { OpenMode_Tag tag; void *value; } OpenMode;
-static inline OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
 
 typedef struct {
     char * text;
@@ -91,7 +91,7 @@ typedef enum {
     BufferError_TAG_OutOfRange,
 } BufferError_Tag;
 typedef struct { BufferError_Tag tag; void *value; } BufferError;
-static inline BufferError BufferError_OutOfRange(void) { BufferError v; v.tag = BufferError_TAG_OutOfRange; v.value = NULL; return v; }
+static inline __attribute__((unused)) BufferError BufferError_OutOfRange(void) { BufferError v; v.tag = BufferError_TAG_OutOfRange; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);
