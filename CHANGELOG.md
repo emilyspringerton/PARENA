@@ -1,4 +1,5 @@
 ## 2026-08-26
+- Real per-platform (Windows/Linux/macOS) editor-demo binaries now attached to every GitHub Release; releases switched from --prerelease to regular. Fixed 3 real compiler/CI bugs found via live cross-platform CI (SDL2main Windows link, macOS SDL_ttf.h include, and a general emit.c uninitialized-match-result gap + unused-constructor warnings only Clang catches). v0.69.0 (sess-20260825-1938-f6bd411e)
 - Made runtime.h + string.prn Windows-portable (ifndef _WIN32 guards on tcp/pty/process glue, portable contains-ci? impl), verified via real mingw cross-compile (sess-20260825-1938-f6bd411e)
 - editor: fixed Home/End to be line-aware (was whole-buffer), now correct now that multi-line editing is real (sess-20260825-1938-f6bd411e)
 - editor: real multi-line editing -- Return inserts a real newline, render-highlighted-text draws multi-line, real row/column cursor tracking, load switched to read-string (whole file). Verified with a real file round-trip (cat -A confirms a real newline byte on disk). (sess-20260825-1938-f6bd411e)
