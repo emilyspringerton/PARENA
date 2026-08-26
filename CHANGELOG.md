@@ -1,4 +1,5 @@
 ## 2026-08-26
+- Made runtime.h + string.prn Windows-portable (ifndef _WIN32 guards on tcp/pty/process glue, portable contains-ci? impl), verified via real mingw cross-compile (sess-20260825-1938-f6bd411e)
 - editor: fixed Home/End to be line-aware (was whole-buffer), now correct now that multi-line editing is real (sess-20260825-1938-f6bd411e)
 - editor: real multi-line editing -- Return inserts a real newline, render-highlighted-text draws multi-line, real row/column cursor tracking, load switched to read-string (whole file). Verified with a real file round-trip (cat -A confirms a real newline byte on disk). (sess-20260825-1938-f6bd411e)
 - editor: real file save/load (F2/F3), using the already-real stdlib/io.prn; found+fixed a second real instance of the bare-defenum-variant-collides-globally compiler bug (EventKind.Other -> UnhandledEvent) (sess-20260825-1938-f6bd411e)
