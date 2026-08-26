@@ -1761,13 +1761,21 @@ used `Pty`/`PtyError` in its own real signature but the file never actually defi
 same real missing-definition-in-source-itself gap class already closed for pcap.prn/io.prn/
 net/tcp.prn. `Pty` is a real, minimal, opaque fd wrapper, same shape as those files' own handles.
 
-**Real, STILL-not-fixed gap, both files' own**: `getenv-as-option`/`exec-lookpath-as-option`/
-`real-git-bash-roots`/`find-first-existing`/`platform-fallback-shell` (shell.prn) and `pty_open`/
-`pty_read`/`pty_write`/`pty_resize`/`pty_close` (pty.prn) are all called but never defined anywhere
-reachable, nor declared via `#target` FFI the way every other host-backed primitive elsewhere in
-this stdlib is — real, separate, un-started host-runtime glue work, not attempted in this pass.
-Verified: `pty.prn` + `shell.prn` combined now compile with `parena build`, and gcc reports only
-these already-documented FFI gaps — no naming collisions, no structural/compiler errors.
+**CLOSED 2026-08-26** — real host implementation shipped (PARENA commit `d069439`), founder
+real-time: "work on the pure parena editor port of pitviper in the parena repo." Both files
+rewritten to `net/tcp.prn`'s own established raw-primitive-returns-scalar shape;
+`runtime/parena_runtime.h` gained real `forkpty`-based `pty_open_impl`/`pty_read_impl`/
+`pty_write_impl`/`pty_resize_impl`/`pty_close_impl` and real `env_get_impl`/`exec_lookpath_impl`/
+`file_exists_impl`. Verified with a real end-to-end test (`tests/test_shell.c`, `make test-shell`)
+that actually forks a real bash process attached to a real pty, writes a real command, and reads
+real output back — not a mock — clean under ASan+UBSan. Two general VS0 emitter gaps found along
+the way (both worked around at the stdlib level, not fixed in the compiler): top-level *private*
+helper names aren't module-scoped either (only exported ones are — `pty.prn`'s own private
+`raw-open` etc. collided with `io.prn`'s identically-named private helpers once compiled together,
+fixed via a `pty-raw-` prefix), and bare `defenum` variant constructors resolve globally,
+last-declaration-wins, not scoped to their own enum (`io.prn`'s `IoError.Other` and this file's own
+new `PtyError.Other` collided the same way, fixed by naming the latter `PtyIoError` instead). See
+`tests/test_shell.c`'s and `stdlib/pty.prn`'s own header comments for the full detail.
 
 **`ssh`** — FFI-bound to `libssh2` (real, established, embeddable SSH client library — same FFI-
 bind judgment as `linalg`'s BLAS/LAPACK and `media/codec`'s libavcodec, not a from-scratch SSH
