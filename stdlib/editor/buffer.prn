@@ -34,7 +34,8 @@
 (module editor/buffer)
 (import string)
 (export new active-text cursor-pos insert delete-range
-        insert-at-cursor backspace-at-cursor Buffer BufferError)
+        insert-at-cursor backspace-at-cursor
+        move-cursor-left move-cursor-right Buffer BufferError)
 
 (defstruct Buffer
   (text   : String @ Region)
@@ -107,3 +108,25 @@
             before (string/substring cur 0 (- pos 1) dest)
             after (string/substring cur pos len dest)]
         (Ok {:text (string/concat before after dest) :cursor (- pos 1)})))))
+
+;; move-cursor-left / move-cursor-right -- real Left/Right arrow-key
+;; support (sdl2/key-left, sdl2/key-right were added alongside
+;; key-backspace/key-return but never actually wired into a real edit
+;; loop until now). Clamps at the buffer's own edges rather than
+;; erroring -- a real editor's own arrow key just stops doing anything
+;; at the start/end of the line, that's not a failure case worth a
+;; Result here the way an out-of-range insert/delete genuinely is.
+(defn move-cursor-left [(!buf : &Buffer)] : Buffer
+  (let [pos (get-field !buf :cursor)
+        text (get-field !buf :text)]
+    (if (<= pos 0)
+      {:text text :cursor 0}
+      {:text text :cursor (- pos 1)})))
+
+(defn move-cursor-right [(!buf : &Buffer)] : Buffer
+  (let [pos (get-field !buf :cursor)
+        text (get-field !buf :text)
+        len (string/length text)]
+    (if (>= pos len)
+      {:text text :cursor len}
+      {:text text :cursor (+ pos 1)})))

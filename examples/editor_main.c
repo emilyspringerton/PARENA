@@ -76,6 +76,10 @@ int main(void) {
                 if (key == key_backspace()) {
                     Result del = backspace_at_cursor(&buf, &a);
                     if (del.tag == 1) buf = *(Buffer *)del.value;
+                } else if (key == key_left()) {
+                    buf = move_cursor_left(&buf);
+                } else if (key == key_right()) {
+                    buf = move_cursor_right(&buf);
                 } else if (key == 27 /* SDLK_ESCAPE -- real, standard "quit" key, no dependency
                                         on <SDL2/SDL.h> being included directly in this file */) {
                     running = 0;

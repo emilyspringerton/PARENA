@@ -136,6 +136,39 @@ int main(void) {
     Result badins = insert(&buf, 999, "x", &a);
     CHECK(badins.tag == 0, "insert at an out-of-range position correctly reports OutOfRange");
 
+    /* --- real Left/Right arrow-key cursor movement, and a real
+     * move-left-twice + insert to prove the cursor position genuinely
+     * drives WHERE text gets inserted, not just its own reported
+     * value --- */
+    {
+        /* buf is "Hello", cursor at 5 (confirmed above). */
+        buf = move_cursor_left(&buf);
+        CHECK(cursor_pos(&buf) == 4, "move-cursor-left moves the real cursor back by one");
+        buf = move_cursor_left(&buf);
+        CHECK(cursor_pos(&buf) == 3, "move-cursor-left again lands at position 3 ('Hel|lo')");
+
+        Result ins = insert_at_cursor(&buf, "X", &a);
+        CHECK(ins.tag == 1, "insert-at-cursor after moving the cursor left succeeds");
+        if (ins.tag == 1) buf = *(Buffer *)ins.value;
+        CHECK(strcmp(active_text(&buf), "HelXlo") == 0,
+              "the real cursor position after moving left genuinely determines where new text lands");
+        CHECK(cursor_pos(&buf) == 4, "the cursor advances past the freshly inserted character");
+
+        buf = move_cursor_right(&buf);
+        buf = move_cursor_right(&buf);
+        CHECK(cursor_pos(&buf) == 6, "move-cursor-right moves the real cursor forward");
+
+        /* Real clamping at both edges -- an arrow key at the boundary
+         * is a real no-op, not an error or a crash. */
+        Buffer clamp_test = new(&a);
+        Buffer clamped = move_cursor_left(&clamp_test);
+        CHECK(cursor_pos(&clamped) == 0,
+              "move-cursor-left on an empty buffer clamps at 0, doesn't go negative");
+        for (int i = 0; i < 10; i++) buf = move_cursor_right(&buf);
+        CHECK(cursor_pos(&buf) == (int)strlen(active_text(&buf)),
+              "move-cursor-right repeatedly clamps at the real end of the text, doesn't overrun");
+    }
+
     /* Real render of the final buffer contents, proving the buffer's
      * own real output is actually drawable through the real renderer
      * this session already verified. */

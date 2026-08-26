@@ -149,6 +149,8 @@ Result insert(Buffer *, int, char *, Arena *);
 Result delete_range(Buffer *, int, int, Arena *);
 Result insert_at_cursor(Buffer *, char *, Arena *);
 Result backspace_at_cursor(Buffer *, Arena *);
+Buffer move_cursor_left(Buffer *);
+Buffer move_cursor_right(Buffer *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -577,6 +579,27 @@ Result backspace_at_cursor(Buffer * buf __attribute__((unused)), Arena *dest __a
     char *before __attribute__((unused)) = substring(cur, 0, (pos - 1), dest);
     char *after __attribute__((unused)) = substring(cur, pos, len, dest);
     return result_ok(Buffer_box(dest, Buffer_new(concat(before, after, dest), (pos - 1))));
+    }
+}
+
+Buffer move_cursor_left(Buffer * buf __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
+    char *text __attribute__((unused)) = (buf)->text;
+    if ((pos <= 0)) {
+    return Buffer_new(text, 0);
+    } else {
+    return Buffer_new(text, (pos - 1));
+    }
+}
+
+Buffer move_cursor_right(Buffer * buf __attribute__((unused))) {
+    int pos __attribute__((unused)) = (buf)->cursor;
+    char *text __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(text);
+    if ((pos >= len)) {
+    return Buffer_new(text, len);
+    } else {
+    return Buffer_new(text, (pos + 1));
     }
 }
 
