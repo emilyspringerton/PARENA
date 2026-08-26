@@ -1381,10 +1381,22 @@ real opaque `I32` handles into a real host-side table (`runtime/parena_runtime.h
 header comment for why. Verified with a real end-to-end test (`tests/test_sdl2.c`, `make
 test-sdl2`) that opens a real window under a real (self-launched, scratch) Xvfb X server, creates a
 real renderer, and draws a real multi-frame PITVIPER-shaped cell grid (`SetDrawColor`+`FillRect`
-per cell, matching `cmd/pitviper/main.go`'s own `renderFrame`) — clean under ASan+UBSan. Texture/
-glyph blitting (`SDL_CreateTexture`, `ren.Copy`) is real, separate, deferred follow-up — needs font
-loading this pass doesn't add, the concrete next real extension once an editor loop actually needs
-to render text, not designed blind here.
+per cell, matching `cmd/pitviper/main.go`'s own `renderFrame`) — clean under ASan+UBSan.
+
+**Text rendering: CLOSED 2026-08-26, same day** — real SDL2_ttf host implementation shipped
+(PARENA commit `55a70fc`), same founder direction, continued. `ttf-init`/`ttf-quit`/`open-font`/
+`close-font`/`render-text`/`measure-text-width`/`measure-text-height` are real, using PITVIPER's
+own real font (JetBrains Mono, the same font its own F11 "shiny font" toggle loads via SDL2_ttf).
+`Font` is a real opaque `I32` handle, same shape as `Window`/`Renderer`. `render-text` is a real,
+honest v0 — a fresh surface→texture→blit→free every call, not a glyph-atlas/texture cache (real,
+separate future work once an editor loop's own frame budget actually needs per-glyph caching,
+PITVIPER's own `buildGlyphAtlas` the real precedent for that). Also confirmed live, not assumed:
+VS0's emitter does not support tuple return types yet (a real "unsupported return type form"
+error), so `measure-text-width`/`measure-text-height` are two separate calls rather than one
+`(I32 I32)`-returning one — worth knowing for any future package design in this document.
+Verified with a real end-to-end test loading the real font, confirming a real nonexistent-path
+open correctly fails, drawing real text, and confirming real positive glyph-cell measurements —
+clean under ASan+UBSan.
 
 **Real, honest limitation, still open**: game controller support (`SDL_GameControllerOpen`/
 `GetAxis`/`GetButton`, real, grepped, used by BRAWLPIT/REDGARDEN/GoblinFoxDragon) is still out of
