@@ -1,0 +1,91 @@
+;; stdlib/editor/textmate_parena.prn — depends on string, regex/syntax,
+;; regex/pcre, editor/textmate. A real, concrete PARENA-language grammar
+;; for stdlib/editor/textmate.prn's own real tokenizer -- the "parena
+;; variant" half of founder real-time: "have it support text mate syntax
+;; and a parena variant of it" -> "for the regexes". Scope names follow
+;; real TextMate/VS Code convention (`keyword.control.parena`,
+;; `string.quoted.double.parena`, etc. -- the `.parena` suffix is this
+;; grammar's own real scope-naming convention, matching how every real
+;; TextMate grammar suffixes its own language, e.g. `.rust`/`.go`) so a
+;; real TextMate-compatible theme can color PARENA source the same way
+;; it colors any other language.
+;;
+;; Real, honest v0 coverage, not a claim of completeness: the keyword/
+;; literal/comment/identifier surface every real `.prn` file in this
+;; whole stdlib actually uses (grepped from real source, not guessed) --
+;; `;;` line comments, double-quoted strings, `:keyword` atoms (including
+;; `:region/scratch`-shaped ones), decimal numbers, the real defn/
+;; defstruct/defenum/module/import/export/let/match/cond/if/when/do/
+;; loop/recur/fn keyword set, and plain identifiers. Real, separate,
+;; deferred follow-up: nested-comment-aware string escaping, character
+;; literals (this language doesn't have a separate Char type yet per
+;; string.prn's own header comment), and any construct added to the
+;; language after this grammar was written.
+;;
+;; Real, honest limitation carried from editor/textmate.prn's own tests
+;; (found there, not re-derived here): `\b` word-boundary anchoring is
+;; declared in regex/syntax.prn's own AnchorKind type but not actually
+;; wired up in its real parser -- confirmed live. Keyword rules below
+;; are plain prefix matches without a trailing boundary check, so
+;; `(word-boundary-sensitive matching)` doesn't fully happen -- e.g. a
+;; real identifier starting with "let-me" would tokenize "let" as the
+;; keyword first (this file's own rule ORDER puts keywords before the
+;; generic identifier rule, matching real TextMate array-order-tiebreak
+;; semantics) then "-me" as more identifier text, not as one clean
+;; "let-me" token. Flagged honestly, not silently worked around --
+;; fixing regex/syntax.prn's own `\b` gap is real, separate, larger
+;; compiler work, out of this grammar file's own scope.
+
+(module editor/textmate-parena)
+(import string)
+(import regex/syntax)
+(import regex/pcre)
+(import editor/textmate)
+(export build-grammar)
+
+;; add-rule -- compiles one (scope, pattern) pair and pushes it onto
+;; `rules`, propagating a real compile failure as (Err TmError) rather
+;; than silently dropping the rule (which would produce a grammar that
+;; quietly mis-highlights). A grammar file's own rules are fixed,
+;; known-valid regex literals at build time, so a real failure here
+;; means THIS file's own pattern is wrong -- a real, honest bug to
+;; surface, not paper over.
+(defn add-rule [(rules : &mut (Vec TmRule)) (scope : String @ Region) (pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit TmError) @ Region
+  (match (editor/textmate/compile-rule scope pattern dest)
+    ((Ok rule) (do (vec/push! rules rule) (Ok unit)))
+    ((Err e) (Err e))))
+
+;; build-grammar -- compiles the real rule list below into a real
+;; (Vec TmRule), ready to hand to editor/textmate/tokenize-line. Order
+;; matters (first-match-in-array-order wins, real TextMate semantics,
+;; editor/textmate.prn's own try-rules-at) -- comments and strings come
+;; first (so a keyword-looking substring INSIDE a comment or string
+;; never gets re-tokenized as a keyword), then keywords (checked before
+;; the generic identifier rule, for the exact reason `try-rules-at`'s
+;; own array-order tiebreak exists), then literals, then identifiers
+;; last as the real catch-all.
+(defn build-grammar [(dest : Arena @ Region)] : (Result (Vec TmRule) TmError) @ Region
+  (let [rules (vec/new dest)]
+    (match (add-rule &rules "comment.line.semicolon.parena" ";;.*" dest)
+      ((Err e) (Err e))
+      ((Ok u)
+        (match (add-rule &rules "string.quoted.double.parena" "^\"[^\"]*\"" dest)
+          ((Err e) (Err e))
+          ((Ok u)
+            (match (add-rule &rules "keyword.control.parena"
+                     "^(defn|defstruct|defenum|module|import|export|let|match|cond|if|when|do|loop|recur|fn)" dest)
+              ((Err e) (Err e))
+              ((Ok u)
+                (match (add-rule &rules "keyword.other.region.parena" "^@" dest)
+                  ((Err e) (Err e))
+                  ((Ok u)
+                    (match (add-rule &rules "constant.other.keyword.parena" "^:[a-zA-Z0-9_/-]+" dest)
+                      ((Err e) (Err e))
+                      ((Ok u)
+                        (match (add-rule &rules "constant.numeric.parena" "^[0-9]+(\\.[0-9]+)?" dest)
+                          ((Err e) (Err e))
+                          ((Ok u)
+                            (match (add-rule &rules "variable.other.parena" "^[a-zA-Z!&][a-zA-Z0-9_?!-]*" dest)
+                              ((Err e) (Err e))
+                              ((Ok u) (Ok rules)))))))))))))))))
