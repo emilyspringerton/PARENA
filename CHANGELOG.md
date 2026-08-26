@@ -1,4 +1,5 @@
 ## 2026-08-26
+- editor: real file save/load (F2/F3), using the already-real stdlib/io.prn; found+fixed a second real instance of the bare-defenum-variant-collides-globally compiler bug (EventKind.Other -> UnhandledEvent) (sess-20260825-1938-f6bd411e)
 - editor: real Home/End keys + forward-delete (move-cursor-home/move-cursor-end/delete-forward-at-cursor), wired into examples/editor_main.c (sess-20260825-1938-f6bd411e)
 - editor/buffer.prn: real move-cursor-left/move-cursor-right, wired into examples/editor_main.c's event loop -- closes a gap left from earlier the same day (key-left/key-right constants existed but were never used) (sess-20260825-1938-f6bd411e)
 - examples/editor_main.c: the real, standalone, runnable PARENA editor -- 'make editor-demo' builds a real SDL2 program with live keyboard-driven editing and TextMate-style syntax highlighting, the actual deliverable of this session's editor thread (sess-20260825-1938-f6bd411e)
