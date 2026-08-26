@@ -41,15 +41,17 @@
 ;; closing a real gap found porting PITVIPER's own isWslStub
 ;; (stdlib/shell.prn) to PARENA: that port needed a case-insensitive
 ;; contains check and this file had neither `contains?` nor `to-lower`.
-;; A single case-insensitive primitive (glibc's real strcasestr, visible
-;; under runtime/parena_runtime.h's own _DEFAULT_SOURCE) is the real,
-;; simpler shape here -- avoids threading a `dest` arena through just to
-;; allocate a throwaway lowercased copy the way `contains?`+`to-lower`
-;; composed separately would need.
+;; Originally called glibc's own strcasestr directly -- real and correct
+;; on Linux, but a glibc/BSD extension, not something MinGW/Windows
+;; declares (found for real cross-compiling editor-demo under
+;; x86_64-w64-mingw32-gcc, 2026-08-26). Routed through runtime.h's own
+;; portable string_contains_ci_impl instead, same "hand-written portable
+;; C helper, called via the raw-primitive convention" shape string_concat
+;; already established.
 (defn contains-ci? [(haystack : String @ Region) (needle : String @ Region)]
   : Bool
   #target
-  {:c (inline-c "strcasestr(haystack, needle) != NULL")})
+  {:c (inline-c "string_contains_ci_impl(haystack, needle) != 0")})
 
 (defn is-digit? [(c : I32)]
   : Bool

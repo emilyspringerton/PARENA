@@ -32,20 +32,41 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <signal.h>
+/* Real cross-platform split (2026-08-26, founder: "ensure editor
+ * binaries for windows linux and mac are released"): everything below
+ * this point -- BSD sockets (net/tcp.prn), POSIX ptys (pty.prn),
+ * fork/exec (process.prn) -- is genuinely platform-specific and has no
+ * real Windows equivalent in the same shape (WinSock2 and ConPTY are
+ * different APIs entirely, not drop-in replacements); macOS/BSD's own
+ * pty API lives in <util.h>, not Linux glibc's <pty.h>. Guarded so a
+ * program that doesn't call into net/tcp, pty, or process (editor-demo
+ * is the real, concrete case that needed this) can still build clean
+ * on a real Windows runner -- programs that DO need those stay
+ * Linux/macOS-only, an honest, pre-existing limitation (pty.prn's own
+ * header comment already documented Windows ConPTY as real, separate,
+ * unstarted work; this doesn't change that, just stops it from ALSO
+ * blocking unrelated Windows builds). */
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/types.h>
-#include <signal.h>
-#include <pty.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#if defined(__linux__)
+#include <pty.h>
+#elif defined(__APPLE__)
+#include <util.h>
+#endif
+#endif
 /* SDL2 -- built-in, same tier as core (STDLIB.md's own "sdl2" section:
  * "SDL2 is built in... no (import sdl2) line needed"), so its header is
  * unconditionally available here rather than gated behind a feature
@@ -293,6 +314,33 @@ static inline char *string_concat(const char *a, const char *b, Arena *dest) {
     return out;
 }
 
+/* string_contains_ci_impl -- real, portable case-insensitive substring
+ * search for stdlib/string.prn's own contains-ci?. Originally called
+ * glibc's own strcasestr directly inline -- real, genuinely portable
+ * everywhere this runtime had been verified before (Linux) -- but a
+ * glibc/BSD extension, not standard, and not what MinGW/Windows
+ * provides (found for real cross-compiling editor-demo under
+ * x86_64-w64-mingw32-gcc, 2026-08-26: a real "implicit declaration of
+ * function 'strcasestr'" warning/link risk, not assumed). A real,
+ * hand-written O(n*m) scan instead -- correct on every real platform
+ * this runtime targets, and haystack/needle here are real editor-sized
+ * strings (grammar keywords, file paths), not a hot path that needs a
+ * faster real algorithm. */
+static inline int string_contains_ci_impl(const char *haystack, const char *needle) {
+    size_t hlen = strlen(haystack);
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return 1;
+    if (nlen > hlen) return 0;
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        size_t j = 0;
+        while (j < nlen && tolower((unsigned char)haystack[i + j]) == tolower((unsigned char)needle[j])) {
+            j++;
+        }
+        if (j == nlen) return 1;
+    }
+    return 0;
+}
+
 /* ---- stdlib/io.prn real host glue (2026-08-24) ----------------------
  * Raw POSIX fd-based primitives only -- every Result/Option/FileHandle
  * value io.prn itself constructs is built with ordinary PARENA syntax
@@ -514,6 +562,13 @@ static inline double raw_read_f64_impl(int fd) {
     return (double)f;
 }
 
+/* Real BSD sockets (net/tcp.prn) and real POSIX ptys (pty.prn) below --
+ * both genuinely unavailable on Windows (see this file's own top-of-
+ * file header comment on the include split for the full reasoning),
+ * guarded so a program that doesn't need either (editor-demo) can
+ * still build clean there. */
+#ifndef _WIN32
+
 /* ---- stdlib/net/tcp.prn real host glue (2026-08-25) ------------------
  * Real BSD sockets -- net/tcp.prn's own #target bodies previously
  * declared `tcp_listen`/`tcp_accept`/`tcp_connect`/`tcp_read`/
@@ -717,6 +772,8 @@ static inline int pty_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
+#endif /* !_WIN32 -- end of net/tcp.prn + pty.prn real host glue */
+
 /* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
  * A real, direct port of PITVIPER's own shell-resolution policy
  * (internal/pty/pty_windows.go's Open()/isWslStub/findGitBash). Every
@@ -789,7 +846,16 @@ static inline int file_exists_impl(const char *path) {
  * child so process_kill_impl's real pid is meaningful and a stray
  * child is visible to `ps` rooted at this process, matching the "start
  * it, kill it yourself" contract callers get -- no orphan-and-forget
- * daemonization semantics assumed. */
+ * daemonization semantics assumed.
+ *
+ * Guarded on Windows (2026-08-26, same reasoning as the net/tcp.prn +
+ * pty.prn block above): fork()/execl()/pid_t/kill() are genuinely
+ * POSIX-only, no drop-in Windows equivalent (CreateProcess/
+ * TerminateProcess are a different shape entirely) -- a real, separate,
+ * unstarted port, not attempted here since editor-demo (the real
+ * Windows build this guard exists for) doesn't need process.prn at
+ * all. */
+#ifndef _WIN32
 static inline int spawn_detached_impl(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -805,6 +871,7 @@ static inline int spawn_detached_impl(const char *path, const char *arg1) {
 static inline int process_kill_impl(int pid) {
     return kill((pid_t)pid, SIGTERM) == 0 ? 0 : -1;
 }
+#endif /* !_WIN32 -- end of process.prn real host glue */
 
 /* ---- real `(current-arena)` builtin (2026-08-25) -----------------------
  * See src/emit.c's own `is_call_named(expr, "current-arena")` comment

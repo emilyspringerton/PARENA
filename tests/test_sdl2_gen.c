@@ -174,7 +174,7 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
 }
 
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
-    return (strcasestr(haystack, needle) != NULL);
+    return (string_contains_ci_impl(haystack, needle) != 0);
 }
 
 int is_digit_(int c __attribute__((unused))) {
