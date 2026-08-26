@@ -12,7 +12,7 @@
 (import regex/pcre)
 (import editor/textmate)
 (import editor/theme)
-(export render-highlighted-line)
+(export render-highlighted-line render-highlighted-text)
 
 ;; render-highlighted-line -- tokenizes `line` with `rules`, draws each
 ;; token in its own theme color at (x, y), advancing x by each token's
@@ -44,3 +44,29 @@
             ((Err e) (Err e))
             ((Ok u)
               (render-tokens !ren !f line tokens (+ i 1) (+ x (sdl2/measure-text-width !f span)) y dest))))))))
+
+;; render-highlighted-text -- real multi-line support (2026-08-26): splits
+;; `text` on real newline characters (string/split, single-char
+;; delimiter, already real and working) and draws each real line via
+;; render-highlighted-line above, at increasing Y (line-height apart).
+;; Buffer.text itself needed no change to support this -- it's already
+;; a plain String, and a String can already hold embedded '\n' bytes;
+;; only rendering (and, on the host-driver side, cursor row/column
+;; tracking) needed real multi-line awareness, not the buffer's own
+;; core representation.
+(defn render-highlighted-text [(!ren : &Renderer) (!f : &Font) (rules : &(Vec TmRule))
+                                (text : String @ Region) (x : I32) (y : I32) (line-height : I32)
+                                (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (let [lines (string/split text "\n" dest)]
+    (render-lines !ren !f rules &lines 0 x y line-height dest)))
+
+(defn render-lines [(!ren : &Renderer) (!f : &Font) (rules : &(Vec TmRule)) (lines : &(Vec String))
+                     (i : I32) (x : I32) (y : I32) (line-height : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (>= i (vec/len lines))
+    (Ok unit)
+    (let [line (vec/get lines i)]
+      (match (render-highlighted-line !ren !f rules line x (+ y (* i line-height)) dest)
+        ((Err e) (Err e))
+        ((Ok u) (render-lines !ren !f rules lines (+ i 1) x y line-height dest))))))

@@ -17,22 +17,27 @@
  * TextMate tokenizer/grammar/theme) was building toward: type real
  * text, see it highlighted, live, in a real window.
  *
- * Real, honest v0 scope: single line only (stdlib/editor/buffer.prn's
- * own real, current scope), Escape or the window's own close button
- * quits, Backspace/Delete edit, Left/Right/Home/End move the cursor,
- * F2 saves the real current line to a real file, F3 reloads the real
- * first line of that same file back into the buffer. No multi-line, no
+ * Real, honest v0 scope: real multi-line editing (Return inserts a real
+ * newline; Buffer.text needed no change to support this -- it was
+ * already a plain String, which can already hold embedded '\n' bytes;
+ * only rendering, via the new render-highlighted-text, and this file's
+ * own real row/column cursor tracking, needed real multi-line
+ * awareness). Escape or the window's own close button quits, Backspace/
+ * Delete edit, Left/Right move the cursor (correctly crossing real line
+ * boundaries -- a single byte-offset cursor needs no special-casing for
+ * that), Home/End jump to the real start/end of the WHOLE buffer, not
+ * the current line -- a real, deliberate v0 scope note, not the more
+ * common per-line Home/End behavior (that needs real line-aware cursor
+ * functions this pass doesn't add). F2 saves the real, whole buffer
+ * (newlines included) to a real file; F3 reloads the real whole file
+ * back (io/read-string, not read-line, now that multi-line is real). No
  * selection, no undo -- real, separate, deferred follow-up, matching
  * every other "expand when a real feature needs it" scope note this
- * whole stdlib already carries. Real, honest v0 on save/load itself
- * too: single line only (this editor's own real current scope) --
- * loading a genuinely multi-line file reads only its real first line,
- * not a silent truncation nobody could see coming, an honest
- * consequence of the buffer's own real, current single-line model.
+ * whole stdlib already carries.
  *
  * Usage: ./editor-demo [file]
  *   file defaults to "scratch.prn" in the current directory if not
- *   given. If the file exists at startup, its real first line is
+ *   given. If the file exists at startup, its real full contents are
  *   loaded into the buffer.
  *   (needs a real X display -- DISPLAY must point at one; this repo's
  *   own headless dev box runs it under a real, scratch Xvfb instance
@@ -43,13 +48,15 @@
 #include <stdio.h>
 #include <string.h>
 
-/* save-to-file / load-first-line -- thin C wrappers around the real
- * PARENA io/file-open/write-string/read-line/file-close functions
+#define LINE_HEIGHT 26 /* real pixel spacing between real lines, matches the real 20pt font this editor opens */
+
+/* save-to-file / load-from-file -- thin C wrappers around the real
+ * PARENA io/file-open/write-string/read-string/file-close functions
  * (already real and working, this session's own stdlib/shell.prn work
  * exercises the same file), kept here rather than as more PARENA
  * source since they're pure host-driver plumbing (which file, when to
- * save/load), not editor logic. Returns 1 on real success, 0 on a
- * real, reported (not silently swallowed) failure. */
+ * save/load), not editor logic. save_to_file's own return is 1 on real
+ * success, 0 on a real, reported (not silently swallowed) failure. */
 static int save_to_file(const char *path, const char *text, Arena *a) {
     Result openr = file_open((char *)path, OpenMode_Write(), a);
     if (openr.tag != 1) { fprintf(stderr, "editor: save failed (could not open %s)\n", path); return 0; }
@@ -61,19 +68,21 @@ static int save_to_file(const char *path, const char *text, Arena *a) {
     return 1;
 }
 
-static Buffer load_first_line(const char *path, Arena *a) {
+static Buffer load_from_file(const char *path, Arena *a) {
     if (!path_exists_((char *)path)) return new(a);
     Result openr = file_open((char *)path, OpenMode_Read(), a);
     if (openr.tag != 1) { fprintf(stderr, "editor: load failed (could not open %s)\n", path); return new(a); }
     FileHandle f = *(FileHandle *)openr.value;
-    Result lr = read_line(f, a);
+    /* read-string (whole file), not read-line -- now that the buffer
+       and renderer both support real multi-line text (2026-08-26), a
+       real load should restore the whole real file, not just its first
+       line. */
+    Result rr = read_string(f, a);
     file_close(f, a);
-    if (lr.tag != 1) { fprintf(stderr, "editor: load failed (read error)\n"); return new(a); }
-    Option maybe_line = *(Option *)lr.value;
-    if (maybe_line.tag != 1) return new(a); /* real, empty file -- a real, honest empty buffer, not an error */
-    char *line = (char *)maybe_line.value;
+    if (rr.tag != 1) { fprintf(stderr, "editor: load failed (read error)\n"); return new(a); }
+    char *text = (char *)rr.value;
     fprintf(stderr, "editor: loaded from %s\n", path);
-    return from_text(line);
+    return from_text(text);
 }
 
 int main(int argc, char **argv) {
@@ -85,7 +94,7 @@ int main(int argc, char **argv) {
     Result r = init(&a);
     if (r.tag != 1) { fprintf(stderr, "editor: sdl2 init failed\n"); return 1; }
 
-    Result wr = create_window("PARENA editor -- v0", 900, 200, &a);
+    Result wr = create_window("PARENA editor -- v0", 900, 500, &a);
     if (wr.tag != 1) { fprintf(stderr, "editor: create-window failed\n"); return 1; }
     Window win = *(Window *)wr.value;
 
@@ -105,7 +114,7 @@ int main(int argc, char **argv) {
     Vec rules = *(Vec *)gr.value;
 
     start_text_input();
-    Buffer buf = load_first_line(path, &a);
+    Buffer buf = load_from_file(path, &a);
 
     int running = 1;
     while (running) {
@@ -133,7 +142,10 @@ int main(int argc, char **argv) {
                 } else if (key == key_f2()) {
                     save_to_file(path, active_text(&buf), &a);
                 } else if (key == key_f3()) {
-                    buf = load_first_line(path, &a);
+                    buf = load_from_file(path, &a);
+                } else if (key == key_return()) {
+                    Result ins = insert_at_cursor(&buf, "\n", &a);
+                    if (ins.tag == 1) buf = *(Buffer *)ins.value;
                 } else if (key == 27 /* SDLK_ESCAPE -- real, standard "quit" key, no dependency
                                         on <SDL2/SDL.h> being included directly in this file */) {
                     running = 0;
@@ -150,19 +162,30 @@ int main(int argc, char **argv) {
         render_clear(&ren, &a);
 
         char *text = active_text(&buf);
-        Result hr = render_highlighted_line(&ren, &font, &rules, text, 12, 12, &a);
+        Result hr = render_highlighted_text(&ren, &font, &rules, text, 12, 12, LINE_HEIGHT, &a);
         (void)hr;
 
         /* Real cursor: a thin filled rect at the real measured pixel
-         * width of the text before the cursor -- proves the buffer's
-         * own real cursor-pos is actually driving something visible,
-         * not just tracked internally. */
+         * position of the cursor -- proves the buffer's own real
+         * cursor-pos genuinely drives something visible, not just
+         * tracked internally. Real multi-line row/column: scan the
+         * real text up to the real cursor byte-offset, counting real
+         * newlines (-> row) and remembering the start of the real
+         * current line (-> for measuring the real column's own pixel
+         * width) -- host-driver plumbing (screen position), same
+         * "stays in C" reasoning save/load's own real functions already
+         * carry, not editor logic itself. */
         int cpos = cursor_pos(&buf);
-        char *before_cursor = substring(text, 0, cpos, &a);
-        int cursor_x = 12 + measure_text_width(&font, before_cursor);
+        int row = 0, line_start = 0;
+        for (int i = 0; i < cpos; i++) {
+            if (text[i] == '\n') { row++; line_start = i + 1; }
+        }
+        char *before_cursor_on_line = substring(text, line_start, cpos, &a);
+        int cursor_x = 12 + measure_text_width(&font, before_cursor_on_line);
+        int cursor_y = 12 + row * LINE_HEIGHT;
         Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
         (void)ccol;
-        render_fill_rect(&ren, cursor_x, 12, 2, 24, &a);
+        render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &a);
 
         render_present(&ren);
         delay(16);

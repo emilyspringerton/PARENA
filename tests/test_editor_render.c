@@ -101,6 +101,22 @@ int main(void) {
     delay(16);
     CHECK(all_ok, "4 real lines of actual PARENA source tokenize and render as real syntax-highlighted text, no errors");
 
+    /* --- real multi-line rendering (render-highlighted-text), added
+     * 2026-08-26 alongside real multi-line editing support --- */
+    {
+        const char *multiline_src =
+            ";; a real multi-line PARENA snippet\n"
+            "(defn add [(a : I32) (b : I32)] : I32\n"
+            "  (+ a b))";
+        Result cbg2 = set_draw_color(&ren, 30, 30, 35, 255, &a);
+        Result clr2 = render_clear(&ren, &a);
+        Result mlr = render_highlighted_text(&ren, &font, &rules, (char *)multiline_src, 8, 8, 22, &a);
+        render_present(&ren);
+        delay(16);
+        CHECK(cbg2.tag == 1 && clr2.tag == 1 && mlr.tag == 1,
+              "render-highlighted-text renders a real 3-line PARENA snippet (embedded real newlines) without error");
+    }
+
     close_font(font);
     ttf_quit();
     destroy_renderer(ren);
