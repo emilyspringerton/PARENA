@@ -225,9 +225,42 @@ small-scale, working instance of PARENA dogfooding itself — not the full self-
 NORTHSTAR's own longer-term plan describes, but a genuine, verified, checked-in first step in
 that direction.
 
+## Self-hosting dogfooding: turbogrep/turbosed/turboawk
+
+Three real CLI tools, each PARENA-compiled `stdlib/regex/pcre.prn` + `stdlib/{grep,sed,awk}.prn`
+concatenated with a thin C host wrapper (`tools/turbo{grep,sed}_host.c`) — genuine dogfooding,
+not synthetic test files:
+
+- **turbogrep** — real, working, and actually **installed**: `~/.local/bin/grep` resolves to
+  `turbogrep-router.sh`, an AST-based capability check that routes a pattern here if PARENA's own
+  regex engine can handle it, falling back to real `grep` otherwise (currently ~8x slower than
+  system grep, down from an initial ~430x — see `docs/TURBOGREP_VERIFICATION_REPORT.md`). Every
+  invocation logs to `var/grep-invocations.ndjson` to guide its own next work.
+- **turbosed** — real and working (`docs/TURBOSED_VERIFICATION_REPORT.md`, verified against real
+  GNU sed output across 68 real `.prn` files), deliberately **not** routed into `~/.local/bin/sed`
+  — sed mutates real pipelines, a higher bar than grep's read-only matching.
+- **turboawk** — `stdlib/expr.prn`'s arithmetic/string/variable-binding evaluator and
+  `stdlib/awk.prn`'s read-split-match-evaluate pipeline both compile and pass real end-to-end
+  tests (`make test-awk`, 10/10). No CLI binary yet — `expr.prn`'s expression language has no
+  `print`/output primitive, so a real, honest `turboawk` command needs that designed first; not
+  faked by shipping a tool with nothing to print.
+
+## REDGARDEN mods: PARENA driving another repo's live gameplay
+
+`stdlib/redgarden/` compiles real PARENA mods straight into REDGARDEN's own C binaries (pure
+C-to-C linking, no cgo layer) — "the mod is the trigger, host C does the real work": Bloodflower
+(day/night lunar event), Tree passive (auto-attack + self-heal), build templates (shop auto-buy),
+item curriculum (NORTHSTAR §26.3.2's stat-blending generation primitive), and Duck's Smoke Bomb
+(a real AoE target-denial ability). Same pattern already proven in EmilyOS (`fsaclmod`,
+GRANT_FS/REVOKE_FS) and PITVIPER (`scrollmod`, mod-surface v0) — real, live, shipped features in
+other repos' own production code, not a demo.
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan
 - `STDLIB.md` — every package above, with real signatures, grounding, and stated limitations
 - `stdlib/` — the real `.prn` source tree, in build order
 - `EMILY/BACKLOG.md` — S189-13 (VS0 compiler status) and S189-14/15 (stdlib build history)
+- `ladybug` — EINHORN_INDUSTRIAL's own BDD testing framework, written in PARENA (`firefly`/
+  `firefly/ladybug` above are its stdlib half)
+- `longma` — a real PARENA port of a CSV split/generate tool (`stdlib/csv.prn` above)
