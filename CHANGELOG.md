@@ -1,4 +1,5 @@
 ## 2026-08-26
+- editor: real Home/End keys + forward-delete (move-cursor-home/move-cursor-end/delete-forward-at-cursor), wired into examples/editor_main.c (sess-20260825-1938-f6bd411e)
 - editor/buffer.prn: real move-cursor-left/move-cursor-right, wired into examples/editor_main.c's event loop -- closes a gap left from earlier the same day (key-left/key-right constants existed but were never used) (sess-20260825-1938-f6bd411e)
 - examples/editor_main.c: the real, standalone, runnable PARENA editor -- 'make editor-demo' builds a real SDL2 program with live keyboard-driven editing and TextMate-style syntax highlighting, the actual deliverable of this session's editor thread (sess-20260825-1938-f6bd411e)
 - real syntax-highlighted PARENA source rendering: editor/theme.prn (scope->color) + editor/render.prn tie the tokenizer, real PARENA grammar, and SDL2 renderer together -- 4 real lines of actual PARENA source render as real colored text on screen (make test-editor-render). Also fixed a real VS0 emitter bug (bare 'unit' in a void-returning tail emitted 'return NULL;'). (sess-20260825-1938-f6bd411e)
