@@ -1,4 +1,5 @@
 ## 2026-08-26
+- sdl2.prn: real text rendering (SDL2_ttf) -- ttf-init/open-font/render-text/measure-text-width/height, using PITVIPER's own real JetBrains Mono font, verified end-to-end under Xvfb (make test-sdl2) (sess-20260825-1938-f6bd411e)
 - sdl2.prn: real host implementation + real renderer calls (create-renderer/set-draw-color/render-clear/render-fill-rect/render-present) -- first real slice of the PARENA-authored editor shell, verified with a real window+render test under Xvfb (make test-sdl2) (sess-20260825-1938-f6bd411e)
 
 - pty.prn + shell.prn: real forkpty-based host implementation (spawn/read/write/resize/close, env lookup, PATH search, Git Bash detection) -- the concrete PARENA-eats-PITVIPER step, verified with a real end-to-end pty round trip (make test-shell) (sess-20260825-1938-f6bd411e)
