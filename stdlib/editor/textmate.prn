@@ -1,0 +1,149 @@
+;; stdlib/editor/textmate.prn — depends on string, regex/syntax,
+;; regex/pcre. A real TextMate-grammar-shaped tokenizer: real Oniguruma-
+;; family regex patterns (via the already-real, already-working
+;; regex/pcre.prn engine turbogrep/turbosed/turboawk are built on),
+;; each tagged with a real TextMate scope name, applied to a line of
+;; text to produce real, scope-tagged Tokens.
+;;
+;; Founder real-time: "start adding all of the features of textmate" ->
+;; https://macromates.com/textmate/manual/ -> "have it support text mate
+;; syntax and a parena variant of it" -> "for the regexes" -- scoped to
+;; the regex/grammar tokenization engine specifically (TextMate's own
+;; distinctive core mechanism: a `patterns` array of {match, name}
+;; rules, applied to source text to assign scope names themes then
+;; color), not TextMate's full feature set (snippets/macros/bundles/
+;; commands are real, separate, much larger, not started here).
+;;
+;; Real, honest v0 simplification, stated plainly: real TextMate/VS Code
+;; engines find the globally-EARLIEST match across all patterns at each
+;; step (oniguruma's own onig_search, tried per pattern, minimum start
+;; position wins, ties broken by pattern order). This file instead tries
+;; each rule ANCHORED at the current scan position (in array order,
+;; first match wins) and falls back to advancing one byte as an
+;; untokenized span when nothing matches there -- correct and useful for
+;; a real grammar whose patterns are written as prefix-anchored token
+;; matchers (keywords, identifiers, strings, comments -- the real shape
+;; editor/textmate_parena.prn below actually uses), but not a full
+;; leftmost-longest-across-all-patterns search. Real, separate, deferred
+;; follow-up if a grammar ever needs mid-span pattern matching this
+;; can't find. No `begin`/`end` multi-line constructs either (comments/
+;; strings here are single-regex, not two-part spans) -- real, separate,
+;; deferred follow-up, same "expand when a real feature needs it"
+;; pattern this whole stdlib already follows.
+;;
+;; Real compiler-gap workarounds, matching regex/pcre.prn's own already-
+;; documented shape exactly (not invented fresh here): get-field on a
+;; match-clause-bound local has no payload-type lookup once the
+;; scrutinee isn't a direct function call (regex/pcre.prn's own
+;; match-start-i32/match-end-i32 comment has the full detail) -- this
+;; file declares its own equivalent raw #target accessors rather than
+;; reusing pcre.prn's (private, not exported).
+
+(module editor/textmate)
+(import string)
+(import regex/syntax)
+(import regex/pcre)
+(export compile-rule tokenize-line TmRule Token TmError)
+
+(defstruct TmRule
+  (scope   : String @ Region)
+  (pattern : Regex @ Region))
+
+(defstruct Token
+  (start : I32)
+  (end   : I32)
+  (scope : String @ Region))
+
+(defenum TmError
+  (BadPattern))
+
+;; Real #target accessors, same shape as regex/pcre.prn's own private
+;; match-start-i32/match-end-i32 -- see this file's own header comment.
+;; Called WITHOUT `&` at their own call sites below: `m`/`t` there come
+;; from a match-clause's own (Some x) binding, which is already an
+;; untyped pointer value (not a plain struct local needing its address
+;; taken) -- confirmed live via a real gcc "incompatible pointer type"
+;; error trying `&m`, not assumed.
+(defn tm-match-start [(m : &Match)] : I32
+  #target
+  {:c (inline-c "((Match *)m)->start")})
+
+(defn tm-match-end [(m : &Match)] : I32
+  #target
+  {:c (inline-c "((Match *)m)->end")})
+
+;; Same real gap, same real workaround, for reading Token's own fields
+;; back out of a match-bound local (try-rules-at's own `(Some t)`).
+(defn tm-token-end [(t : &Token)] : I32
+  #target
+  {:c (inline-c "((Token *)t)->end")})
+
+(defn tm-token-scope [(t : &Token) (dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "((Token *)t)->scope")})
+
+;; compile-rule -- max-steps=10000 is a real, arbitrary-but-generous
+;; budget (same order of magnitude regex/pcre.prn's own tests use),
+;; real, honest limit stated plainly: a pathological grammar pattern
+;; could still hit it on a long enough line, same documented tradeoff
+;; every MatchBudget-gated call in this stdlib already carries.
+(defn compile-rule [(scope : String @ Region) (pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result TmRule TmError) @ Region
+  (match (regex/pcre/compile pattern {:max-steps 10000} dest)
+    ((Ok re) (Ok {:scope scope :pattern re}))
+    ((Err e) (Err BadPattern))))
+
+;; try-rules-at -- tries each rule in `rules` (starting at `idx`) against
+;; `remaining`, ANCHORED at position 0 of `remaining` (see this file's
+;; own header comment on why anchored, not a full earliest-match
+;; search). Returns the matched span's length and scope for the first
+;; rule (in array order) that matches right here, or None.
+(defn try-rules-at [(rules : &(Vec TmRule)) (remaining : String @ Region) (idx : I32) (dest : Arena @ Region)]
+  : (Option Token) @ Region
+  (if (>= idx (vec/len rules))
+    None
+    (let [rule (vec/get rules idx)]
+      (match (regex/pcre/find &(get-field rule :pattern) remaining dest)
+        ((Ok maybe-m)
+          (match (deref maybe-m)
+            ((Some m)
+              (if (= (tm-match-start m) 0)
+                (Some {:start 0 :end (tm-match-end m) :scope (get-field rule :scope)})
+                (try-rules-at rules remaining (+ idx 1) dest)))
+            (None (try-rules-at rules remaining (+ idx 1) dest))))
+        ((Err e) (try-rules-at rules remaining (+ idx 1) dest))))))
+
+;; tokenize-step -- the real scan loop. `pos` walks forward through
+;; `line`; each iteration either consumes a real rule match (emitting
+;; one Token with that rule's scope) or, when nothing matches right
+;; here, consumes exactly one byte as an untokenized (empty-scope)
+;; Token -- real, honest, not coalesced in v0 (a real, minor,
+;; documented inefficiency, not a correctness bug; coalescing adjacent
+;; untokenized bytes into one Token is real, separate, deferred
+;; follow-up).
+(defn tokenize-step [(rules : &(Vec TmRule)) (line : String @ Region) (pos : I32) (len : I32)
+                      (tokens : &(Vec Token)) (dest : Arena @ Region)]
+  : Unit
+  (if (>= pos len)
+    (do unit)
+    (let [remaining (string/substring line pos len dest)]
+      (match (try-rules-at rules remaining 0 dest)
+        ((Some t)
+          (let [span (tm-token-end t)
+                real-span (if (<= span 0) 1 span)
+                scope (tm-token-scope t dest)]
+            (do
+              (vec/push! tokens {:start pos :end (+ pos real-span) :scope scope})
+              (tokenize-step rules line (+ pos real-span) len tokens dest))))
+        (None
+          (do
+            (vec/push! tokens {:start pos :end (+ pos 1) :scope ""})
+            (tokenize-step rules line (+ pos 1) len tokens dest)))))))
+
+(defn tokenize-line [(rules : &(Vec TmRule)) (line : String @ Region) (dest : Arena @ Region)]
+  : (Vec Token) @ Region
+  (let [tokens (vec/new dest)
+        len (string/length line)]
+    (do
+      (tokenize-step rules line 0 len &tokens dest)
+      tokens)))

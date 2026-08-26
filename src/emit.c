@@ -4451,7 +4451,25 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     const char *expr_c = emit_expr(arena, tail, scope, &c_type, out_error);
     if (!expr_c) return 0;
     if (return_mode) {
-        if (out_return_type) *out_return_type = c_type ? c_type : "void";
+        /* Real, narrow gap found and fixed here (2026-08-26, gcc-
+         * verifying stdlib/editor/textmate.prn's own real tokenize-step,
+         * whose Unit-returning `if`'s false branch is a bare `unit`):
+         * the bare literal `unit` reports its own emit_expr() type as
+         * "void *" (deliberately -- see that literal's own emit_expr()
+         * comment: it needs to look pointer-typed so Ok/Err/Some's own
+         * boxing check accepts it with no boxing), not the exact string
+         * "void" the check right below already looks for. That made a
+         * `unit` tail inside a genuinely void-returning function fall
+         * into the `else` branch and emit `return NULL;` -- valid C,
+         * but a real, confirmed-live `-Wreturn-type` warning ("return
+         * with a value, in function returning void"), not the "0
+         * warnings" bar this emitter's own C output is supposed to
+         * hold to. Treated as void here specifically for the literal
+         * `unit` symbol (not any other "void *"-typed value, which
+         * genuinely should stay a real returned pointer) -- both the
+         * emitted statement AND the reported return type below. */
+        int tail_is_bare_unit = is_symbol(tail, "unit");
+        if (out_return_type) *out_return_type = tail_is_bare_unit ? "void" : (c_type ? c_type : "void");
         /* Real ISO C99 constraint (`-pedantic` catches it, found by
          * actually compiling firefly.prn's own real `errorf` -- its
          * whole body is a `do` block whose own tail call is `vec/push!`,
@@ -4461,7 +4479,7 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
          * type genuinely is void. A void-typed tail expression is
          * emitted as a bare statement instead; falling off the end of a
          * void C function is valid and means the same thing. */
-        if (c_type && strcmp(c_type, "void") == 0) {
+        if (tail_is_bare_unit || (c_type && strcmp(c_type, "void") == 0)) {
             sb_appendf(out, "    (void)(%s);\n", expr_c);
         } else {
             sb_appendf(out, "    return %s;\n", expr_c);
