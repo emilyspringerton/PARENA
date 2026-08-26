@@ -16,9 +16,10 @@ with compile-time memory verification), but that integration is explicitly defer
 "northstar that bitch and build it pure before we have to think about how it plays with EDU
 script." Read `NORTHSTAR.md` before assuming anything about mod-surface scope.
 
-**Status: NORTHSTAR only. VS0 (the `parena-c` compiler: S-expr parser → region analyzer → C99
-emitter) is real, concrete, and scoped — including its own Definition of Done — but not yet
-implemented.**
+**Status: VS0 (the `parena-c` compiler: S-expr parser → region analyzer → C99 emitter) is real,
+built, and CI-verified — all five DoD domains pass, see `NORTHSTAR.md`'s own current top status
+for the detail. Stdlib and the editor/plugin API build out on top of it now, on their own
+separate, ongoing timeline (`STDLIB.md`) — that work is not "done" the way VS0 itself is.**
 
 ## Stack
 
