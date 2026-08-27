@@ -52,6 +52,14 @@
  * positions the cursor (set-cursor), a real click-drag selects
  * (set-selection, anchored at the real click position) -- see
  * pos_from_mouse below for the real screen-to-byte-offset math.
+ * Real NERDTree-style file-tree sidebar (2026-08-27, same day, founder:
+ * "we are going to need to do the nerd tree style implementation to
+ * display a tree of files"): lists the real current working directory
+ * (one flat level, via the new stdlib/io.prn list-dir), toggled via a
+ * second real Toggle widget in the status bar, clicking an entry opens
+ * it in a real new window (same spawn_new_instance drag-and-drop
+ * already uses) -- see this file's own SIDEBAR_WIDTH header comment
+ * for the full real, honest v0 scope.
  *
  * Usage: ./editor-demo [file]
  *   file defaults to "scratch.prn" in the current directory if not
@@ -112,6 +120,29 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * accidentally BECOME a half-considered widget-system precedent. */
 #define STATUS_BAR_HEIGHT 28
 #define HOVER_REVEAL_ZONE 40 /* real pixels from the bottom edge that reveal the bar */
+
+/* Real, minimal NERDTree-style file-tree sidebar (2026-08-27, founder
+ * real-time: "we are going to need to do the nerd tree style
+ * implementation to display a tree of files" -- picked as the next
+ * real increment continuing this session's own PARENA editor thread,
+ * building on the just-shipped Toggle widget for its own visibility
+ * control). Real, honest v0 scope: lists the real CURRENT WORKING
+ * DIRECTORY (not the open file's own directory -- a real, separate,
+ * deferred refinement) ONE FLAT LEVEL (files and subdirectories both,
+ * no expand/collapse -- stdlib/io.prn's own list-dir is itself
+ * documented as one flat level only), fixed real screen width
+ * regardless of content zoom (same "fixed UI chrome" treatment the
+ * status bar already established), clicking any entry spawns a real
+ * new editor window for it via the same spawn_new_instance() drag-and-
+ * drop already uses -- clicking a SUBDIRECTORY entry currently opens
+ * it as if it were a file (load_from_file's own real, honest failure
+ * path: an empty scratch buffer, not a crash -- real recursive tree
+ * expansion is separate, deferred UI work). Directory/source TABS (the
+ * founder's own separate, related ask, "tabs to switch between the
+ * current directory open vs the source of the editor") stays deferred
+ * -- depends on this file tree existing first. */
+#define SIDEBAR_WIDTH 180
+#define FILE_TREE_ROW_HEIGHT 20
 
 /* save-to-file / load-from-file -- thin C wrappers around the real
  * PARENA io/file-open/write-string/read-string/file-close functions
@@ -242,8 +273,15 @@ static int paren_depth_before(const char *text, int pos) {
  * judgment). Real, honest clamp: a click below the real last line
  * lands on that last line, not past the real end of the text; a
  * negative x/y (can't really happen from a real SDL2 mouse event, but
- * host-driver code shouldn't assume) clamps to the real start. */
-static int pos_from_mouse(char *text, int mouse_x, int mouse_y, Font *font, Arena *a) {
+ * host-driver code shouldn't assume) clamps to the real start.
+ *
+ * x_origin -- real, added 2026-08-27 (file-tree sidebar): the real
+ * logical x where text content actually starts, shifted right of the
+ * plain 12px margin by the sidebar's own real width when it's visible
+ * (see this file's own text_x_origin computation at each call site) --
+ * without this, every click would still measure from the old fixed
+ * margin even though the text itself visibly starts further right. */
+static int pos_from_mouse(char *text, int mouse_x, int mouse_y, int x_origin, Font *font, Arena *a) {
     int len = (int)strlen(text);
     int target_row = (mouse_y - 12) / LINE_HEIGHT;
     if (target_row < 0) target_row = 0;
@@ -255,7 +293,7 @@ static int pos_from_mouse(char *text, int mouse_x, int mouse_y, Font *font, Aren
     }
     int line_end = line_end_from(text, line_start);
 
-    int target_x = mouse_x - 12;
+    int target_x = mouse_x - x_origin;
     if (target_x < 0) target_x = 0;
     int best_pos = line_start;
     for (int col = line_start; col <= line_end; col++) {
@@ -606,9 +644,32 @@ int main(int argc, char **argv) {
      * v0.77.0-v0.80.0 close-out) -- replaces what used to be a bare
      * `int` flipped by hand next to a raw rect hit-test inline here. */
     int last_mouse_y = 0;
-    Toggle auto_indent_toggle = new_toggle(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, WINDOW_WIDTH, STATUS_BAR_HEIGHT,
+    Toggle auto_indent_toggle = new_toggle(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 340, STATUS_BAR_HEIGHT,
                                             "Auto-indent: ON (click to turn off)",
                                             "Auto-indent: OFF (click to turn on)", 1);
+
+    /* file_tree_toggle -- the widget system's real SECOND caller
+     * (2026-08-27, continuing straight off the first: the auto-indent
+     * control above). Placed right after auto_indent_toggle's own
+     * real fixed width, same status bar, off by default -- matches
+     * this bar's own established "hidden/minimal unless you ask"
+     * taste (hover-reveal itself, auto-indent defaulting ON because
+     * it's a behavior change vs. this being a supplementary VIEW). */
+    Toggle file_tree_toggle = new_toggle(350, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+                                          "Files: ON (click to hide)",
+                                          "Files: OFF (click to show)", 0);
+
+    /* file_tree_dir/file_tree_entries -- real, listed ONCE at startup
+     * (not re-listed every frame -- a real, honest, deliberate v0
+     * tradeoff, matching load_from_file's own "read once at startup"
+     * scope; a file created/deleted elsewhere while this window stays
+     * open won't appear until relaunch, real, separate, deferred
+     * follow-up, same class of gap this file already carries for
+     * glyph-atlas caching etc.). Real CURRENT WORKING DIRECTORY, not
+     * dirname(path) -- see this file's own SIDEBAR_WIDTH header
+     * comment for the real reasoning. */
+    char *file_tree_dir = ".";
+    Vec file_tree_entries = list_dir(file_tree_dir, &a);
 
     /* Real Ctrl+Zoom state (2026-08-27, founder real-time: "ctrl plus
      * and ctrl minus and ctrl mous wheel scoll should zoom just like
@@ -909,8 +970,29 @@ int main(int argc, char **argv) {
                 int raw_mx = mouse_x();
                 int raw_my = mouse_y();
                 int bar_visible_now = last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE;
-                if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
+                /* Real file-tree sidebar click (2026-08-27) -- same RAW-
+                 * screen-coordinate treatment as the status bar's own
+                 * toggle immediately below (fixed UI chrome, unaffected
+                 * by content zoom). Checked before the status bar toggle
+                 * since the sidebar occupies real screen space the
+                 * status bar's own toggle rects don't overlap (sidebar
+                 * is y in [0, WINDOW_HEIGHT-STATUS_BAR_HEIGHT), the bar
+                 * itself is the strip below that), so order between
+                 * them doesn't actually matter here -- checked first
+                 * only because it's the more specific real region. */
+                if (toggle_on_(&file_tree_toggle) && raw_mx >= 0 && raw_mx < SIDEBAR_WIDTH
+                    && raw_my >= 0 && raw_my < WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
+                    if (row_idx >= 0 && row_idx < vec_len(&file_tree_entries)) {
+                        char *name = (char *)vec_get(&file_tree_entries, row_idx);
+                        char full_path[4096];
+                        snprintf(full_path, sizeof full_path, "%s/%s", file_tree_dir, name);
+                        spawn_new_instance(exe_path, full_path);
+                    }
+                } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
+                } else if (bar_visible_now && toggle_hit_(&file_tree_toggle, raw_mx, raw_my)) {
+                    file_tree_toggle = toggle_flip(&file_tree_toggle, &a);
                 } else {
                     /* Real mouse click: position the cursor there
                      * (which also clears any active selection --
@@ -921,10 +1003,16 @@ int main(int argc, char **argv) {
                      * pixel amount is what pos_from_mouse's own math
                      * needs to land on the real, correct LOGICAL line,
                      * not whatever's currently drawn at that screen
-                     * row. */
+                     * row. text_x_origin (2026-08-27, file-tree
+                     * sidebar): the real logical text-start x, shifted
+                     * right of the plain 12px margin by the sidebar's
+                     * own real (zoom-corrected) width when visible --
+                     * same real integer-safe *100/zoom_percent
+                     * convention mx/my already use. */
                     int mx = mouse_x() * 100 / zoom_percent;
                     int my = mouse_y() * 100 / zoom_percent;
-                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, &font, &a);
+                    int text_x_origin = 12 + (toggle_on_(&file_tree_toggle) ? (SIDEBAR_WIDTH * 100 / zoom_percent) : 0);
+                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, text_x_origin, &font, &a);
                     buf = set_cursor(&buf, pos);
                     mouse_down_pos = pos;
                     dragging = 1;
@@ -950,7 +1038,8 @@ int main(int argc, char **argv) {
                 if (dragging) {
                     int mx = mouse_x() * 100 / zoom_percent;
                     int my = mouse_y() * 100 / zoom_percent;
-                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, &font, &a);
+                    int text_x_origin = 12 + (toggle_on_(&file_tree_toggle) ? (SIDEBAR_WIDTH * 100 / zoom_percent) : 0);
+                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, text_x_origin, &font, &a);
                     buf = set_selection(&buf, mouse_down_pos, pos);
                 }
             } else if (kind.tag == EventKind_TAG_FileDrop) {
@@ -1027,6 +1116,16 @@ int main(int argc, char **argv) {
 
         char *text = active_text(&buf);
 
+        /* text_x_origin (2026-08-27, file-tree sidebar): real logical
+         * x where text content starts, shifted right of the plain
+         * 12px margin by the sidebar's own real, zoom-corrected width
+         * when visible -- same integer-safe *100/zoom_percent
+         * convention already used for mouse-coordinate conversion, so
+         * the sidebar's own REAL screen-pixel width stays constant
+         * (SIDEBAR_WIDTH) regardless of content zoom, matching how the
+         * status bar itself stays a real, fixed screen size. */
+        int text_x_origin = 12 + (toggle_on_(&file_tree_toggle) ? (SIDEBAR_WIDTH * 100 / zoom_percent) : 0);
+
         /* Real scroll offset, applied uniformly to every real Y
          * coordinate below (selection highlight, the actual text,
          * and the cursor) -- see the real scroll_offset state
@@ -1060,7 +1159,7 @@ int main(int argc, char **argv) {
                 int seg_end = (row == end_row) ? sel_end : line_end;
                 char *before_seg = substring(text, cur_line_start, seg_start, &a);
                 char *seg_text = substring(text, seg_start, seg_end, &a);
-                int x_from = 12 + measure_text_width(&font, before_seg);
+                int x_from = text_x_origin + measure_text_width(&font, before_seg);
                 int width = measure_text_width(&font, seg_text);
                 /* An empty selected segment (e.g. selecting exactly up
                  * to a newline) still gets a thin, visible sliver rather
@@ -1071,7 +1170,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        Result hr = render_highlighted_text(&ren, &font, &rules, text, 12, 12 - scroll_y_px, LINE_HEIGHT, &a);
+        Result hr = render_highlighted_text(&ren, &font, &rules, text, text_x_origin, 12 - scroll_y_px, LINE_HEIGHT, &a);
         (void)hr;
 
         /* Real cursor: a thin filled rect at the real measured pixel
@@ -1082,7 +1181,7 @@ int main(int argc, char **argv) {
         int row, line_start;
         row_and_line_start_for_pos(text, cpos, &row, &line_start);
         char *before_cursor_on_line = substring(text, line_start, cpos, &a);
-        int cursor_x = 12 + measure_text_width(&font, before_cursor_on_line);
+        int cursor_x = text_x_origin + measure_text_width(&font, before_cursor_on_line);
         int cursor_y = 12 + row * LINE_HEIGHT - scroll_y_px;
         Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
         (void)ccol;
@@ -1108,9 +1207,35 @@ int main(int argc, char **argv) {
          * re-applies the real current zoom_percent fresh. */
         Result scalereset = render_set_scale(&ren, 100, &a);
         (void)scalereset;
+
+        /* Real file-tree sidebar (2026-08-27) -- drawn in this same
+         * real 100%-scale block as the status bar immediately below,
+         * same "fixed UI chrome, not zoomed content" real reasoning.
+         * Drawn BEFORE the status bar so the status bar's own real
+         * hover-reveal strip stays on top at the bottom edge (they
+         * don't actually overlap -- the sidebar's own real height
+         * stops at WINDOW_HEIGHT - STATUS_BAR_HEIGHT -- but matching
+         * draw order to the rest of this file's own "background things
+         * first" convention regardless). */
+        if (toggle_on_(&file_tree_toggle)) {
+            Result ftbg = set_draw_color(&ren, 32, 32, 38, 255, &a);
+            (void)ftbg;
+            render_fill_rect(&ren, 0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &a);
+            int fn = vec_len(&file_tree_entries);
+            for (int fi = 0; fi < fn; fi++) {
+                int fy = 4 + fi * FILE_TREE_ROW_HEIGHT;
+                if (fy > WINDOW_HEIGHT - STATUS_BAR_HEIGHT - FILE_TREE_ROW_HEIGHT) break;
+                char *entry_name = (char *)vec_get(&file_tree_entries, fi);
+                Result fr = render_text(&ren, &font, entry_name, 8, fy, 190, 190, 205, &a);
+                (void)fr;
+            }
+        }
+
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
             Result togglr = render_toggle(&ren, &font, &auto_indent_toggle, 45, 45, 52, 200, 200, 200, &a);
             (void)togglr;
+            Result togglr2 = render_toggle(&ren, &font, &file_tree_toggle, 45, 45, 52, 200, 200, 200, &a);
+            (void)togglr2;
         }
 
         render_present(&ren);

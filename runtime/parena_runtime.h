@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <signal.h>
@@ -835,6 +836,61 @@ static inline char *exec_lookpath_impl(const char *name, Arena *dest) {
 
 static inline int file_exists_impl(const char *path) {
     return access(path, F_OK) == 0 ? 1 : 0;
+}
+
+/* list_dir_impl -- real, portable directory listing (2026-08-27,
+ * founder real-time: "we are going to need to do the nerd tree style
+ * implementation to display a tree of files"). Returns a real,
+ * newline-joined list of entry names in `path` (both files and
+ * subdirectories, "." and ".." skipped), or an empty string on any
+ * error (path doesn't exist, not a directory, permission denied) --
+ * same "empty string on failure, not NULL" convention env_get_impl/
+ * exec_lookpath_impl above already establish; stdlib/io.prn's own
+ * list-dir wrapper splits this on "\n" via the already-real
+ * string/split, special-casing "" to a real empty Vec rather than a
+ * Vec holding one blank entry (string/split's own real, documented
+ * behavior on an empty input string). dirent.h's opendir/readdir/
+ * closedir are genuinely portable here -- MinGW-w64 ships a real
+ * dirent.h emulation (backed by FindFirstFile/FindNextFile
+ * internally), confirmed via a real local mingw cross-compile, so
+ * this needs no #ifdef _WIN32 split unlike net/tcp.prn's sockets or
+ * pty.prn's forkpty elsewhere in this file. Real, honest v0: one flat
+ * level only, not recursive -- a real tree view expanding a
+ * subdirectory is separate, deferred UI work the file-tree sidebar
+ * built on top of this doesn't have yet either. */
+static inline char *list_dir_impl(const char *path, Arena *dest) {
+    DIR *d = opendir(path);
+    if (d == NULL) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    struct dirent *ent;
+    int first = 1;
+    while ((ent = readdir(d)) != NULL) {
+        const char *name = ent->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        size_t nlen = strlen(name);
+        size_t need = nlen + (first ? 0 : 1);
+        if (len + need + 1 > cap) {
+            size_t new_cap = cap;
+            while (len + need + 1 > new_cap) new_cap += 4096;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        if (!first) buf[len++] = '\n';
+        memcpy(buf + len, name, nlen);
+        len += nlen;
+        first = 0;
+    }
+    closedir(d);
+    buf[len] = '\0';
+    return buf;
 }
 
 /* ---- stdlib/process.prn real host glue (2026-08-25) -------------------

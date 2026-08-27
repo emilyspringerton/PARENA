@@ -35,7 +35,7 @@
 (module io)
 (import string)
 (import vec)
-(export file-open file-close path-exists? write-string read-string read-line read-floats FileHandle IoError OpenMode)
+(export file-open file-close path-exists? list-dir write-string read-string read-line read-floats FileHandle IoError OpenMode)
 
 (defstruct FileHandle
   (fd : I32))
@@ -145,6 +145,28 @@
   : Bool
   #target
   {:c (inline-c "file_exists_impl(path) != 0")})
+
+;; list-dir -- added 2026-08-27, real gap found building the editor's
+;; own NERDTree-style file-tree sidebar (founder real-time: "we are
+;; going to need to do the nerd tree style implementation to display a
+;; tree of files"). One flat directory level, real entry names (files
+;; and subdirectories both, "." and ".." already skipped by
+;; list_dir_impl), real empty Vec on a nonexistent/unreadable path or a
+;; genuinely empty directory -- not a Vec holding one blank entry
+;; (string/split's own real documented behavior on "" would otherwise
+;; produce exactly that, so it's special-cased here rather than left
+;; for every caller to rediscover).
+(defn raw-list-dir [(path : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "list_dir_impl(path, dest)")})
+
+(defn list-dir [(path : String @ Region) (dest : Arena @ Region)]
+  : (Vec String) @ Region
+  (let [joined (raw-list-dir path dest)]
+    (if (string/str-eq? joined "")
+      (vec/new dest)
+      (string/split joined "\n" dest))))
 
 (defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result Unit IoError) @ Region

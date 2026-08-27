@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "test_editor_io_gen.c"
 
@@ -93,6 +94,45 @@ int main(void) {
     }
     unlink(empty_path);
     unlink(path);
+
+    /* --- real list-dir (2026-08-27, added for the file-tree sidebar):
+     * a real, isolated temp directory with known real entries, not a
+     * canned expectation against some pre-existing repo path. --- */
+    {
+        char dir_template[] = "/tmp/parena_editor_listdir_test_XXXXXX";
+        char *dirpath = mkdtemp(dir_template);
+        CHECK(dirpath != NULL, "a real temp directory is created for the list-dir test");
+        if (dirpath != NULL) {
+            char file_a[512], file_b[512], subdir[512];
+            snprintf(file_a, sizeof file_a, "%s/a.txt", dirpath);
+            snprintf(file_b, sizeof file_b, "%s/b.prn", dirpath);
+            snprintf(subdir, sizeof subdir, "%s/subdir", dirpath);
+            FILE *fa = fopen(file_a, "w"); if (fa) fclose(fa);
+            FILE *fb = fopen(file_b, "w"); if (fb) fclose(fb);
+            CHECK(mkdir(subdir, 0755) == 0, "a real subdirectory is created inside the temp dir");
+
+            Vec entries = list_dir(dirpath, &a);
+            CHECK(vec_len(&entries) == 3, "list-dir finds all 3 real entries (2 files + 1 subdirectory)");
+            int found_a = 0, found_b = 0, found_sub = 0;
+            for (int i = 0; i < vec_len(&entries); i++) {
+                char *name = (char *)vec_get(&entries, i);
+                if (strcmp(name, "a.txt") == 0) found_a = 1;
+                if (strcmp(name, "b.prn") == 0) found_b = 1;
+                if (strcmp(name, "subdir") == 0) found_sub = 1;
+                CHECK(strcmp(name, ".") != 0 && strcmp(name, "..") != 0,
+                      "list-dir never includes the real '.' or '..' entries");
+            }
+            CHECK(found_a && found_b && found_sub, "list-dir's real entries are exactly the 3 real files/dirs created above");
+
+            unlink(file_a);
+            unlink(file_b);
+            rmdir(subdir);
+            rmdir(dirpath);
+        }
+
+        Vec missing = list_dir("/tmp/parena-this-real-path-does-not-exist-anywhere", &a);
+        CHECK(vec_len(&missing) == 0, "list-dir on a real nonexistent path returns a real empty Vec, not a crash or a stale/garbage entry");
+    }
 
     arena_free_all(&a);
 

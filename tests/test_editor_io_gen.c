@@ -131,6 +131,8 @@ IoError errno_to_io_error(int);
 Result file_open(char *, OpenMode, Arena *);
 Result file_close(FileHandle, Arena *);
 int path_exists_(char *);
+char * raw_list_dir(char *, Arena *);
+Vec list_dir(char *, Arena *);
 Result write_string(FileHandle, char *, Arena *);
 Result read_string(FileHandle, Arena *);
 Result read_line(FileHandle, Arena *);
@@ -567,6 +569,19 @@ Result file_close(FileHandle f __attribute__((unused)), Arena *dest __attribute_
 
 int path_exists_(char * path __attribute__((unused))) {
     return (file_exists_impl(path) != 0);
+}
+
+char * raw_list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (list_dir_impl(path, dest));
+}
+
+Vec list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *joined __attribute__((unused)) = raw_list_dir(path, dest);
+    if (str_eq_(joined, "")) {
+    return vec_new(dest);
+    } else {
+    return split(joined, "\n", dest);
+    }
 }
 
 Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
