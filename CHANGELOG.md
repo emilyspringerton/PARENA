@@ -1,4 +1,5 @@
 ## 2026-08-27
+- Real macOS dylib bundling (otool/install_name_tool/codesign) for the PARENA editor release binary -- no longer needs 'brew install sdl2 sdl2_ttf'. v0.76.0 (sess-20260825-1938-f6bd411e)
 - Real Markdown (.md) syntax highlighting in the PARENA editor -- headings/bold/italic/code/quotes/lists, auto-selected by file extension. v0.75.0 (sess-20260825-1938-f6bd411e)
 - Real mouse-driven selection (click + click-drag) in the PARENA editor, plus a deep SDL2 event-queue timing finding from testing it. v0.74.0 (sess-20260825-1938-f6bd411e)
 - Real Ctrl+Y redo in the PARENA editor, fixing a real spurious-duplicate-entry bug found while testing it. v0.73.0 (sess-20260825-1938-f6bd411e)
