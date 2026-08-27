@@ -133,6 +133,7 @@ Result file_close(FileHandle, Arena *);
 int path_exists_(char *);
 char * raw_list_dir(char *, Arena *);
 Vec list_dir(char *, Arena *);
+int is_dir_(char *);
 Result write_string(FileHandle, char *, Arena *);
 Result read_string(FileHandle, Arena *);
 Result read_line(FileHandle, Arena *);
@@ -582,6 +583,10 @@ Vec list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unu
     } else {
     return split(joined, "\n", dest);
     }
+}
+
+int is_dir_(char * path __attribute__((unused))) {
+    return (is_dir_impl(path) != 0);
 }
 
 Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {

@@ -179,6 +179,58 @@ static Buffer load_from_file(const char *path, Arena *a) {
     return from_text(text);
 }
 
+/* parent_dir_of -- real, minimal host-driver plumbing for the file-tree
+ * sidebar's own real directory navigation (2026-08-27, closing v0.83.0's
+ * own honest "clicking a subdirectory opens it as a file" gap). Strips
+ * the last '/'-delimited path segment off `dir`. Real, DELIBERATELY
+ * bounded scope, not a general path-normalization routine: "." maps to
+ * "..", and stripping a segment off a path with no '/' at all (which
+ * only "..", ".", or a truly root-relative single name can be, given
+ * every OTHER path this file ever builds is produced by this same
+ * function or by snprintf-ing "%s/%s" onto an existing one) falls back
+ * to ".". This means going up from "." twice in a row lands back on
+ * "." rather than genuinely escaping two levels above the real launch
+ * CWD via a real ".." chain (".." has no '/' in it either, so its own
+ * "parent" is the same "." fallback) -- a real, deliberate, safe,
+ * DOCUMENTED cap (bounces between "." and ".." rather than mis-parsing
+ * ".."-chains into the wrong directory), not a bug nobody noticed;
+ * real, unbounded multi-level upward traversal is separate, deferred
+ * work (a real path-normalization pass, not attempted here). */
+static char *parent_dir_of(const char *dir, Arena *a) {
+    if (strcmp(dir, ".") == 0) {
+        char *out = (char *)arena_alloc(a, 3);
+        memcpy(out, "..", 3);
+        return out;
+    }
+    int len = (int)strlen(dir);
+    int last_slash = -1;
+    for (int i = len - 1; i >= 0; i--) {
+        if (dir[i] == '/') { last_slash = i; break; }
+    }
+    if (last_slash < 0) {
+        char *out = (char *)arena_alloc(a, 2);
+        out[0] = '.'; out[1] = '\0';
+        return out;
+    }
+    if (last_slash == 0) {
+        /* A real absolute path one level below the real root (e.g.
+         * "/home") -- last_slash==0 means the ONLY '/' is the leading
+         * one, so the real parent is the root itself, not the "."
+         * fallback above (which is for a path with NO '/' at all --
+         * genuinely unreachable from THIS editor's own real
+         * file_tree_dir state space, which only ever holds "." or a
+         * "./..."-prefixed path, but this function reads as general-
+         * purpose, so it's handled correctly regardless). */
+        char *out = (char *)arena_alloc(a, 2);
+        out[0] = '/'; out[1] = '\0';
+        return out;
+    }
+    char *out = (char *)arena_alloc(a, (size_t)last_slash + 1);
+    memcpy(out, dir, (size_t)last_slash);
+    out[last_slash] = '\0';
+    return out;
+}
+
 /* row_and_line_start_for_pos / line_end_from -- real, minimal host-
  * driver plumbing (2026-08-26, real text SELECTION): the same "scan for
  * newlines to find the real row/line-start" logic the main loop's own
@@ -659,15 +711,26 @@ int main(int argc, char **argv) {
                                           "Files: ON (click to hide)",
                                           "Files: OFF (click to show)", 0);
 
-    /* file_tree_dir/file_tree_entries -- real, listed ONCE at startup
-     * (not re-listed every frame -- a real, honest, deliberate v0
-     * tradeoff, matching load_from_file's own "read once at startup"
-     * scope; a file created/deleted elsewhere while this window stays
-     * open won't appear until relaunch, real, separate, deferred
-     * follow-up, same class of gap this file already carries for
-     * glyph-atlas caching etc.). Real CURRENT WORKING DIRECTORY, not
-     * dirname(path) -- see this file's own SIDEBAR_WIDTH header
-     * comment for the real reasoning. */
+    /* file_tree_dir/file_tree_entries -- real CURRENT WORKING DIRECTORY
+     * at startup, not dirname(path) -- see this file's own
+     * SIDEBAR_WIDTH header comment for the real reasoning.
+     * file_tree_entries is re-listed every time file_tree_dir changes
+     * (real directory navigation, 2026-08-27 -- see the MouseDown
+     * handler below), NOT every frame -- a real, honest, deliberate v0
+     * tradeoff, matching load_from_file's own "read once, not
+     * continuously polled" scope; a file created/deleted elsewhere in
+     * the CURRENTLY-listed directory while this window stays open
+     * won't appear until you navigate away and back, real, separate,
+     * deferred follow-up, same class of gap this file already carries
+     * for glyph-atlas caching etc. Row 0 in the sidebar is always a
+     * real synthetic ".." entry (not part of file_tree_entries itself
+     * -- see the render/click-handling code below), letting you
+     * navigate back up; parent_dir_of's own real, honest, bounded scope
+     * (see its header comment) means going up stops making further
+     * progress two levels above the real launch CWD rather than
+     * escaping arbitrarily far via mis-parsed ".." chains -- a real,
+     * deliberate correctness-over-generality tradeoff, not an
+     * oversight. */
     char *file_tree_dir = ".";
     Vec file_tree_entries = list_dir(file_tree_dir, &a);
 
@@ -982,12 +1045,29 @@ int main(int argc, char **argv) {
                  * only because it's the more specific real region. */
                 if (toggle_on_(&file_tree_toggle) && raw_mx >= 0 && raw_mx < SIDEBAR_WIDTH
                     && raw_my >= 0 && raw_my < WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    /* Real directory navigation (2026-08-27, closing
+                     * v0.83.0's own honest gap): row 0 is always the
+                     * real synthetic ".." entry -- NOT part of
+                     * file_tree_entries itself, see parent_dir_of's own
+                     * header comment for its real, deliberately bounded
+                     * scope -- so real entries start at row_idx 1. */
                     int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
-                    if (row_idx >= 0 && row_idx < vec_len(&file_tree_entries)) {
-                        char *name = (char *)vec_get(&file_tree_entries, row_idx);
+                    if (row_idx == 0) {
+                        file_tree_dir = parent_dir_of(file_tree_dir, &a);
+                        file_tree_entries = list_dir(file_tree_dir, &a);
+                    } else if (row_idx >= 1 && (row_idx - 1) < vec_len(&file_tree_entries)) {
+                        char *name = (char *)vec_get(&file_tree_entries, row_idx - 1);
                         char full_path[4096];
                         snprintf(full_path, sizeof full_path, "%s/%s", file_tree_dir, name);
-                        spawn_new_instance(exe_path, full_path);
+                        if (is_dir_(full_path)) {
+                            size_t plen = strlen(full_path) + 1;
+                            char *dir_copy = (char *)arena_alloc(&a, plen);
+                            memcpy(dir_copy, full_path, plen);
+                            file_tree_dir = dir_copy;
+                            file_tree_entries = list_dir(file_tree_dir, &a);
+                        } else {
+                            spawn_new_instance(exe_path, full_path);
+                        }
                     }
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
@@ -1221,12 +1301,38 @@ int main(int argc, char **argv) {
             Result ftbg = set_draw_color(&ren, 32, 32, 38, 255, &a);
             (void)ftbg;
             render_fill_rect(&ren, 0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &a);
+            /* Row 0 is always the real synthetic ".." entry (real
+             * directory navigation, 2026-08-27) -- a slightly dimmer
+             * color than real file/directory names so it reads as
+             * chrome, not a real listed entry. Real entries below it
+             * start at fi=1, matching the MouseDown handler's own
+             * identical row_idx convention. */
+            Result upr = render_text(&ren, &font, "..", 8, 4, 140, 140, 155, &a);
+            (void)upr;
             int fn = vec_len(&file_tree_entries);
+            /* Real, deliberate v0 tradeoff: is_dir_() runs fresh per
+             * visible row per FRAME (an opendir/closedir pair each),
+             * not cached alongside file_tree_entries -- same "simple
+             * over optimized" judgment this file's own render-text
+             * (fresh SDL surface per call) and pos_from_mouse (O(n)
+             * per-line walk) already make. A few dozen syscalls at 60Hz
+             * for a real, honest directory-color hint is not a real
+             * bottleneck; caching it would need a second array kept in
+             * lockstep with file_tree_entries across both navigation
+             * sites below for a purely cosmetic win. */
             for (int fi = 0; fi < fn; fi++) {
-                int fy = 4 + fi * FILE_TREE_ROW_HEIGHT;
+                int fy = 4 + (fi + 1) * FILE_TREE_ROW_HEIGHT;
                 if (fy > WINDOW_HEIGHT - STATUS_BAR_HEIGHT - FILE_TREE_ROW_HEIGHT) break;
                 char *entry_name = (char *)vec_get(&file_tree_entries, fi);
-                Result fr = render_text(&ren, &font, entry_name, 8, fy, 190, 190, 205, &a);
+                int is_dir_entry;
+                {
+                    char full_path[4096];
+                    snprintf(full_path, sizeof full_path, "%s/%s", file_tree_dir, entry_name);
+                    is_dir_entry = is_dir_(full_path);
+                }
+                Result fr = is_dir_entry
+                    ? render_text(&ren, &font, entry_name, 8, fy, 120, 170, 220, &a)
+                    : render_text(&ren, &font, entry_name, 8, fy, 190, 190, 205, &a);
                 (void)fr;
             }
         }

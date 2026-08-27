@@ -124,6 +124,15 @@ int main(void) {
             }
             CHECK(found_a && found_b && found_sub, "list-dir's real entries are exactly the 3 real files/dirs created above");
 
+            /* --- real is-dir? (2026-08-27, added closing the file-tree
+             * sidebar's own "clicking a subdirectory opens it as a
+             * file" gap) --- */
+            CHECK(is_dir_(dirpath), "is-dir? correctly reports true for a real directory");
+            CHECK(!is_dir_(file_a), "is-dir? correctly reports false for a real regular file");
+            CHECK(is_dir_(subdir), "is-dir? correctly reports true for a real subdirectory");
+            CHECK(!is_dir_("/tmp/parena-this-real-path-does-not-exist-anywhere"),
+                  "is-dir? correctly reports false for a real nonexistent path, not a crash");
+
             unlink(file_a);
             unlink(file_b);
             rmdir(subdir);

@@ -893,6 +893,23 @@ static inline char *list_dir_impl(const char *path, Arena *dest) {
     return buf;
 }
 
+/* is_dir_impl -- real, portable directory test (2026-08-27, closing
+ * the file-tree sidebar's own honest v0.83.0 gap: "clicking a
+ * subdirectory entry currently opens it as if it were a file").
+ * Deliberately reuses opendir()'s own real success/failure rather than
+ * a separate stat()/GetFileAttributes call -- one real portable
+ * primitive already proven to work cross-platform (list_dir_impl
+ * above), not a second one; real, honest false on anything that isn't
+ * a real, openable directory (nonexistent path, a regular file, a
+ * permission-denied directory all alike -- this repo's own
+ * path-exists? already covers plain existence). */
+static inline int is_dir_impl(const char *path) {
+    DIR *d = opendir(path);
+    if (d == NULL) return 0;
+    closedir(d);
+    return 1;
+}
+
 /* ---- stdlib/process.prn real host glue (2026-08-25) -------------------
  * Real fork+exec, detached (no pipe/wait plumbing -- this stdlib's own
  * real, narrow scope is "start an external helper process and later

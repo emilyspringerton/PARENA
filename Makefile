@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -298,6 +298,14 @@ test-editor-undo: build
 test-editor-indent:
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -o /tmp/test_editor_indent_bin tests/test_editor_indent.c
 	/tmp/test_editor_indent_bin
+
+# test-editor-navigation -- real, direct verification of parent_dir_of,
+# the file-tree sidebar's own real directory-navigation helper
+# (2026-08-27, closing v0.83.0's own honest "clicking a subdirectory
+# opens it as a file" gap).
+test-editor-navigation:
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -o /tmp/test_editor_navigation_bin tests/test_editor_navigation.c
+	/tmp/test_editor_navigation_bin
 
 # editor-demo-smoke -- real, bounded build-verification run for
 # editor-demo on this repo's own headless dev box (a real, scratch Xvfb

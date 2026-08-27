@@ -35,7 +35,7 @@
 (module io)
 (import string)
 (import vec)
-(export file-open file-close path-exists? list-dir write-string read-string read-line read-floats FileHandle IoError OpenMode)
+(export file-open file-close path-exists? list-dir is-dir? write-string read-string read-line read-floats FileHandle IoError OpenMode)
 
 (defstruct FileHandle
   (fd : I32))
@@ -167,6 +167,20 @@
     (if (string/str-eq? joined "")
       (vec/new dest)
       (string/split joined "\n" dest))))
+
+;; is-dir? -- added 2026-08-27, real gap found closing the file-tree
+;; sidebar's own previously-honest v0.83.0 limitation ("clicking a
+;; subdirectory entry currently opens it as if it were a file"). Reuses
+;; opendir()'s own real success/failure as the directory test (same
+;; dirent.h list-dir already needs) rather than a separate stat() call
+;; -- one real host primitive, not two, and no new #include. Real,
+;; honest false-on-anything-else: a nonexistent path, a regular file, a
+;; permission-denied directory all report false alike -- callers that
+;; need to tell those apart have path-exists? already.
+(defn is-dir? [(path : String @ Region)]
+  : Bool
+  #target
+  {:c (inline-c "is_dir_impl(path) != 0")})
 
 (defn write-string [(!f : FileHandle @ :region/task) (s : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result Unit IoError) @ Region
