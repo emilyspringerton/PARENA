@@ -1,4 +1,5 @@
 ## 2026-08-27
+- New redgarden mod: bacon_puck_intangible_speed_mod.prn — real PARENA decision logic (Arena API 'real logic' tier) computing the movement-speed bonus for Bacon+Puck's intangibility window. commit 96f1b83. (sess-20260825-1938-f6bd411e)
 - Recovered two orphaned PARENA mods from an earlier isolated agent: stdlib/eventstore/seqlock.prn (cross-process file lock) and stdlib/redgarden/combat_log_mod.prn (combat-log v2 trigger layer). commit 4709fdd. (sess-20260825-1938-f6bd411e)
 - Real fix for the large-file crash: windowed render-highlighted-text to the visible line range + added a separate per-frame arena that's reset every frame instead of sharing the persistent arena. Verified flat RSS over a 60s real repro (was unbounded growth before). commit e16076f. (sess-20260825-1938-f6bd411e)
 - Terminal/editor toggle UI (fourth bottom-bar Toggle, shell/spawn + pty-poll-read per-frame drain, KeyDown/TextInput routing to pty-write): commit b841243. Windows pty stub fixing a real CI break: commit e1ee367. O_BINARY fix for a real CRLF-text-misdetected-as-binary bug: commit 33c6e4d. (sess-20260825-1938-f6bd411e)
