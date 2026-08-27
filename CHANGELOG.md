@@ -1,3 +1,7 @@
+## 2026-08-27
+
+- Real Ctrl+C/X/V clipboard copy/cut/paste in the PARENA editor (SDL2's own real clipboard). v0.71.0 (sess-20260825-1938-f6bd411e)
+
 ## 2026-08-26
 - Fixed real Windows editor-demo launch failure (hardcoded Linux-only font path caused instant crash) -- vendored JetBrainsMono-Regular.ttf, added RUN.bat + -mwindows to the Windows release. Shipped real text selection (Shift+Left/Right, Backspace/Delete/typed-replace act on selection, visual highlight). v0.70.0 (sess-20260825-1938-f6bd411e)
 - Real per-platform (Windows/Linux/macOS) editor-demo binaries now attached to every GitHub Release; releases switched from --prerelease to regular. Fixed 3 real compiler/CI bugs found via live cross-platform CI (SDL2main Windows link, macOS SDL_ttf.h include, and a general emit.c uninitialized-match-result gap + unused-constructor warnings only Clang catches). v0.69.0 (sess-20260825-1938-f6bd411e)
