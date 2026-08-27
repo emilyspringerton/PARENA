@@ -102,6 +102,7 @@ int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
 char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
@@ -258,6 +259,12 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
 char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
     out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
     return out;
 }
 

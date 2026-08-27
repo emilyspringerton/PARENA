@@ -6,7 +6,7 @@
 
 (module string)
 (import vec)
-(export parse-i32 length concat split char-at char-from-code str-eq? contains-ci? is-digit? substring ParseError)
+(export parse-i32 length concat split char-at char-from-code i32-to-string str-eq? contains-ci? is-digit? substring ParseError)
 
 (defn length [(s : String @ Region)]
   : I32
@@ -48,6 +48,19 @@
   (let [out (alloc dest String 1)]
     #target
     {:c (inline-c "out[0] = (char)code; out[1] = '\\0';")}
+    out))
+
+;; i32-to-string -- real, minimal I32 -> decimal String constructor
+;; (2026-08-27, real gap found building selfhost/parser.prn's own real
+;; error-message formatting, e.g. "...at line 3" -- needs to embed a
+;; real I32 line number into a String, and this file had no way to do
+;; that yet). Same real #target-snprintf shape expr.prn's own already-
+;; established f64-to-string already uses for the identical reason.
+(defn i32-to-string [(n : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String 16)]
+    #target
+    {:c (inline-c "snprintf(out, 16, \"%d\", n);")}
     out))
 
 ;; contains-ci? -- case-insensitive substring search, added 2026-08-26

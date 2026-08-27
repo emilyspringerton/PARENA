@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -23,16 +23,16 @@ typedef enum {
     JsonValue_TAG_JObject,
 } JsonValue_Tag;
 typedef struct { JsonValue_Tag tag; void *value; } JsonValue;
-static inline JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
-static inline JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
-static inline JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
-static inline JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
-static inline JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
 typedef struct {
     Vec keys;
     Vec values;
 } JsonValue_JObject_Payload;
-static inline JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
+static inline __attribute__((unused)) JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
     JsonValue_JObject_Payload *p = (JsonValue_JObject_Payload *)arena_alloc(dest, sizeof(JsonValue_JObject_Payload));
     p->keys = keys;
     p->values = values;
@@ -43,7 +43,7 @@ typedef struct {
     char * message;
     int pos;
 } JsonError;
-static inline JsonError JsonError_new(char * message, int pos) {
+static inline __attribute__((unused)) JsonError JsonError_new(char * message, int pos) {
     JsonError v;
     v.message = message;
     v.pos = pos;
@@ -54,7 +54,7 @@ typedef struct {
     JsonValue value;
     int next;
 } JsonStep;
-static inline JsonStep JsonStep_new(JsonValue value, int next) {
+static inline __attribute__((unused)) JsonStep JsonStep_new(JsonValue value, int next) {
     JsonStep v;
     v.value = value;
     v.next = next;
@@ -66,7 +66,7 @@ typedef struct {
     JsonValue value;
     int next;
 } MemberStep;
-static inline MemberStep MemberStep_new(char * key, JsonValue value, int next) {
+static inline __attribute__((unused)) MemberStep MemberStep_new(char * key, JsonValue value, int next) {
     MemberStep v;
     v.key = key;
     v.value = value;
@@ -77,6 +77,8 @@ static inline MemberStep MemberStep_new(char * key, JsonValue value, int next) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
@@ -162,8 +164,20 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
     return (strcmp(a, b) == 0);
 }
 
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
-    return (strcasestr(haystack, needle) != NULL);
+    return (string_contains_ci_impl(haystack, needle) != 0);
 }
 
 int is_digit_(int c __attribute__((unused))) {
@@ -290,7 +304,7 @@ int skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
 
 Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(text);
-    Result __match_result_0 __attribute__((unused));
+    Result __match_result_0 __attribute__((unused)) = {0};
     Result __match_tmp_0 = parse_value(text, skip_ws(text, 0), dest);
     if (__match_tmp_0.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_0.value;
@@ -418,7 +432,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     if (((p1 < n) && (char_at(s, p1) == 93))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p1 + 1))));
     } else {
-    Result __match_result_1 __attribute__((unused));
+    Result __match_result_1 __attribute__((unused)) = {0};
     Result __match_tmp_1 = parse_value(s, p1, dest);
     if (__match_tmp_1.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_1.value;
@@ -471,7 +485,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
     if (((p1 < n) && (char_at(s, p1) == 125))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p1 + 1))));
     } else {
-    Result __match_result_2 __attribute__((unused));
+    Result __match_result_2 __attribute__((unused)) = {0};
     Result __match_tmp_3 = parse_member(s, p1, dest);
     if (__match_tmp_3.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_3.value;
@@ -532,7 +546,7 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
     if (((p1 >= n) || (!((char_at(s, p1) == 58))))) {
     return result_err(JsonError_box(dest, JsonError_new("expected ':' after key", p1)));
     } else {
-    Result __match_result_3 __attribute__((unused));
+    Result __match_result_3 __attribute__((unused)) = {0};
     Result __match_tmp_5 = parse_value(s, skip_ws(s, (p1 + 1)), dest);
     if (__match_tmp_5.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_5.value;
@@ -549,7 +563,7 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
 }
 
 Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused))) {
-    Option __match_result_4 __attribute__((unused));
+    Option __match_result_4 __attribute__((unused)) = {0};
     JsonValue __match_tmp_6 = v;
     if (__match_tmp_6.tag == 5) {
         JsonValue_JObject_Payload *__match_payload_6 = (JsonValue_JObject_Payload *)(__match_tmp_6.value);
@@ -580,7 +594,7 @@ Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused
 }
 
 Option as_string(JsonValue v __attribute__((unused))) {
-    Option __match_result_5 __attribute__((unused));
+    Option __match_result_5 __attribute__((unused)) = {0};
     JsonValue __match_tmp_7 = v;
     if (__match_tmp_7.tag == 3) {
         void *s __attribute__((unused)) = __match_tmp_7.value;

@@ -395,6 +395,12 @@ typedef struct DefnReturnType {
                                 * comment for why this is real, but narrower than a full
                                 * generic type-parameter system. Consulted by `unwrap`'s
                                 * own emit_expr handling. */
+    const char *error_type;   /* NULL unless return_type is "Result" AND the error type
+                                * itself was resolvable -- see resolve_result_error_type()'s
+                                * own declaration comment (2026-08-27, the real symmetric
+                                * counterpart to payload_type above, for the Err side).
+                                * Consulted by emit_match's own Err/None single-field
+                                * binding case. */
     struct DefnReturnType *next;
 } DefnReturnType;
 static DefnReturnType *g_defn_return_types = NULL;
@@ -402,6 +408,13 @@ static DefnReturnType *g_defn_return_types = NULL;
 static const char *find_defn_return_type(const char *c_name) {
     for (DefnReturnType *d = g_defn_return_types; d; d = d->next) {
         if (strcmp(d->c_name, c_name) == 0) return d->return_type;
+    }
+    return NULL;
+}
+
+static const char *find_defn_error_type(const char *c_name) {
+    for (DefnReturnType *d = g_defn_return_types; d; d = d->next) {
+        if (strcmp(d->c_name, c_name) == 0) return d->error_type;
     }
     return NULL;
 }
@@ -997,6 +1010,32 @@ static const char *resolve_result_option_payload_type(Arena *arena, Node *type_n
     }
     const char *dummy_out_error = NULL;
     return resolve_declared_type(arena, type_node->children[1], &dummy_out_error);
+}
+
+/* resolve_result_error_type -- the real symmetric counterpart to
+ * resolve_result_option_payload_type above, for the Err SIDE of a
+ * `(Result X E)` (2026-08-27, found self-hosting selfhost/parser.prn:
+ * a real recursive-descent parser propagating/converting a match-bound
+ * `((Err e) ...)` payload needs to know E, exactly the same real need
+ * `unwrap`/Ok-binding already have for X -- confirmed missing via a
+ * real "dereferencing 'void *' pointer" gcc error on `(deref e)`,
+ * traced to this exact function's own real, honestly-documented
+ * absence: "the payload_type lookup only ever resolves ... X, never
+ * the Err/None side, which this emitter has no equivalent lookup for
+ * at all" (see the bound_c_type comment below, now updated). `Option`
+ * has no error type at all (`(Option X)` is 1-argument) -- returns
+ * NULL for it, same as the payload-type lookup already returns NULL
+ * for anything that isn't `(Result ..)`/`(Option ..)` at all. */
+static const char *resolve_result_error_type(Arena *arena, Node *type_node) {
+    if (type_node->type != NODE_LIST || type_node->child_count < 3 ||
+        type_node->children[0]->type != NODE_SYMBOL) {
+        return NULL;
+    }
+    if (!is_symbol(type_node->children[0], "Result")) {
+        return NULL;
+    }
+    const char *dummy_out_error = NULL;
+    return resolve_declared_type(arena, type_node->children[2], &dummy_out_error);
 }
 
 /* process_defenum handles one top-level `(defenum Name (Variant1)
@@ -3957,10 +3996,18 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
      * path above can't help it) -- the identical real gap that path's
      * own fix already closed for a real, registered user defenum. */
     const char *scrut_payload_type = NULL;
+    /* scrut_error_type -- the real symmetric counterpart to
+     * scrut_payload_type above, for the Err SIDE (2026-08-27, see
+     * resolve_result_error_type()'s own declaration comment for the
+     * full real reasoning -- found self-hosting selfhost/parser.prn,
+     * confirmed live via a real "dereferencing 'void *' pointer" gcc
+     * error on `(deref e)` for a match-bound Err payload). */
+    const char *scrut_error_type = NULL;
     if (node->children[1]->type == NODE_LIST && node->children[1]->child_count > 0 &&
         node->children[1]->children[0]->type == NODE_SYMBOL) {
         const char *scrut_callee = mangle_call_name(arena, node->children[1]->children[0]->text);
         scrut_payload_type = find_defn_payload_type(scrut_callee);
+        scrut_error_type = find_defn_error_type(scrut_callee);
     }
     /* scrut_enum is non-NULL when the scrutinee resolved to a real,
      * registered user defenum type -- generalizes the hardcoded
@@ -4176,11 +4223,15 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
              * permanently erased -- when the scrutinee is a direct call
              * to a KNOWN function (found via g_defn_return_types' own
              * payload_type field), an `Ok`/`Some` clause's own bound
-             * value can be typed the identical real way. Only valid for
-             * `Ok`/`Some` specifically (the payload_type lookup only
-             * ever resolves `(Result X ..)`/`(Option X)`'s own success-
-             * side X, never the Err/None side, which this emitter has
-             * no equivalent lookup for at all). */
+             * value can be typed the identical real way. Real symmetric
+             * counterpart added 2026-08-27 for `Err` specifically (see
+             * scrut_error_type/resolve_result_error_type's own
+             * declaration comments) -- found genuinely missing self-
+             * hosting selfhost/parser.prn, confirmed live via a real
+             * "dereferencing 'void *' pointer" gcc error on `(deref e)`
+             * for a match-bound Err payload; `None` still has no
+             * equivalent (`(Option X)` carries no error type at all, so
+             * there is nothing to look up). */
             const char *bound_c_type = "void *";
             if (pat_variant && pat_variant->field_count == 1) {
                 /* Real, narrow double-indirection bug (2026-08-23, gcc-
@@ -4220,6 +4271,21 @@ static int emit_match_core(Arena *arena, StrBuf *out, Node *node, EmitScope *sco
                 } else {
                     char t[128];
                     snprintf(t, sizeof(t), "%s *", scrut_payload_type);
+                    bound_c_type = arena_strdup(arena, t, strlen(t));
+                }
+            } else if (!scrut_enum && scrut_error_type && strcmp(ctor_name, "Err") == 0) {
+                /* Real symmetric counterpart to the Ok/Some branch just
+                 * above, for Err -- see scrut_error_type's own
+                 * declaration comment. None carries no payload at all
+                 * (Option has no error type), so this deliberately only
+                 * matches "Err", never "None". */
+                size_t elen = strlen(scrut_error_type);
+                int error_is_pointer = elen > 0 && scrut_error_type[elen - 1] == '*';
+                if (error_is_pointer) {
+                    bound_c_type = scrut_error_type;
+                } else {
+                    char t[128];
+                    snprintf(t, sizeof(t), "%s *", scrut_error_type);
                     bound_c_type = arena_strdup(arena, t, strlen(t));
                 }
             }
@@ -5405,6 +5471,7 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
         drt->c_name = fn_name;
         drt->return_type = declared_return_type;
         drt->payload_type = resolve_result_option_payload_type(arena, defn->children[body_start + 1]);
+        drt->error_type = resolve_result_error_type(arena, defn->children[body_start + 1]);
         drt->next = g_defn_return_types;
         g_defn_return_types = drt;
         body_start += 2;
@@ -5838,6 +5905,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
         drt->c_name = proto_fn_name;
         drt->return_type = proto_return_type;
         drt->payload_type = resolve_result_option_payload_type(arena, form->children[4]);
+        drt->error_type = resolve_result_error_type(arena, form->children[4]);
         drt->next = g_defn_return_types;
         g_defn_return_types = drt;
     }

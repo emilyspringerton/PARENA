@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -19,7 +19,7 @@ typedef struct {
     Vec shape;
     Vec strides;
 } NDArray;
-static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
+static inline __attribute__((unused)) NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
     NDArray v;
     v.data = data;
     v.shape = shape;
@@ -30,7 +30,7 @@ static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
 typedef struct {
     char * message;
 } ShapeError;
-static inline ShapeError ShapeError_new(char * message) {
+static inline __attribute__((unused)) ShapeError ShapeError_new(char * message) {
     ShapeError v;
     v.message = message;
     return v;
@@ -39,7 +39,7 @@ static inline ShapeError ShapeError_new(char * message) {
 typedef struct {
     char * message;
 } IndexError;
-static inline IndexError IndexError_new(char * message) {
+static inline __attribute__((unused)) IndexError IndexError_new(char * message) {
     IndexError v;
     v.message = message;
     return v;
@@ -48,7 +48,7 @@ static inline IndexError IndexError_new(char * message) {
 typedef struct {
     int fd;
 } FileHandle;
-static inline FileHandle FileHandle_new(int fd) {
+static inline __attribute__((unused)) FileHandle FileHandle_new(int fd) {
     FileHandle v;
     v.fd = fd;
     return v;
@@ -61,10 +61,10 @@ typedef enum {
     IoError_TAG_Other,
 } IoError_Tag;
 typedef struct { IoError_Tag tag; void *value; } IoError;
-static inline IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
-static inline IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
-static inline IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
-static inline IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
 
 typedef enum {
     OpenMode_TAG_Read,
@@ -72,9 +72,9 @@ typedef enum {
     OpenMode_TAG_Append,
 } OpenMode_Tag;
 typedef struct { OpenMode_Tag tag; void *value; } OpenMode;
-static inline OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
 
 typedef enum {
     AnchorKind_TAG_Start,
@@ -82,15 +82,15 @@ typedef enum {
     AnchorKind_TAG_WordBoundary,
 } AnchorKind_Tag;
 typedef struct { AnchorKind_Tag tag; void *value; } AnchorKind;
-static inline AnchorKind AnchorKind_Start(void) { AnchorKind v; v.tag = AnchorKind_TAG_Start; v.value = NULL; return v; }
-static inline AnchorKind AnchorKind_End(void) { AnchorKind v; v.tag = AnchorKind_TAG_End; v.value = NULL; return v; }
-static inline AnchorKind AnchorKind_WordBoundary(void) { AnchorKind v; v.tag = AnchorKind_TAG_WordBoundary; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_Start(void) { AnchorKind v; v.tag = AnchorKind_TAG_Start; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_End(void) { AnchorKind v; v.tag = AnchorKind_TAG_End; v.value = NULL; return v; }
+static inline __attribute__((unused)) AnchorKind AnchorKind_WordBoundary(void) { AnchorKind v; v.tag = AnchorKind_TAG_WordBoundary; v.value = NULL; return v; }
 
 typedef struct {
     char * lo;
     char * hi;
 } CharRange;
-static inline CharRange CharRange_new(char * lo, char * hi) {
+static inline __attribute__((unused)) CharRange CharRange_new(char * lo, char * hi) {
     CharRange v;
     v.lo = lo;
     v.hi = hi;
@@ -110,15 +110,15 @@ typedef enum {
     PatternNode_TAG_Anchor,
 } PatternNode_Tag;
 typedef struct { PatternNode_Tag tag; void *value; } PatternNode;
-static inline PatternNode PatternNode_Literal(void *value) { PatternNode v; v.tag = PatternNode_TAG_Literal; v.value = value; return v; }
-static inline PatternNode PatternNode_AnyChar(void) { PatternNode v; v.tag = PatternNode_TAG_AnyChar; v.value = NULL; return v; }
-static inline PatternNode PatternNode_Concat(void *value) { PatternNode v; v.tag = PatternNode_TAG_Concat; v.value = value; return v; }
-static inline PatternNode PatternNode_Alt(void *value) { PatternNode v; v.tag = PatternNode_TAG_Alt; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Literal(void *value) { PatternNode v; v.tag = PatternNode_TAG_Literal; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_AnyChar(void) { PatternNode v; v.tag = PatternNode_TAG_AnyChar; v.value = NULL; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Concat(void *value) { PatternNode v; v.tag = PatternNode_TAG_Concat; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Alt(void *value) { PatternNode v; v.tag = PatternNode_TAG_Alt; v.value = value; return v; }
 typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Star_Payload;
-static inline PatternNode PatternNode_Star(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Star(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Star_Payload *p = (PatternNode_Star_Payload *)arena_alloc(dest, sizeof(PatternNode_Star_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -128,7 +128,7 @@ typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Plus_Payload;
-static inline PatternNode PatternNode_Plus(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Plus(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Plus_Payload *p = (PatternNode_Plus_Payload *)arena_alloc(dest, sizeof(PatternNode_Plus_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -138,7 +138,7 @@ typedef struct {
     PatternNode inner;
     int greedy;
 } PatternNode_Optional_Payload;
-static inline PatternNode PatternNode_Optional(Arena *dest, PatternNode inner, int greedy) {
+static inline __attribute__((unused)) PatternNode PatternNode_Optional(Arena *dest, PatternNode inner, int greedy) {
     PatternNode_Optional_Payload *p = (PatternNode_Optional_Payload *)arena_alloc(dest, sizeof(PatternNode_Optional_Payload));
     p->inner = inner;
     p->greedy = greedy;
@@ -149,7 +149,7 @@ typedef struct {
     Option capture_index;
     Option name;
 } PatternNode_Group_Payload;
-static inline PatternNode PatternNode_Group(Arena *dest, PatternNode inner, Option capture_index, Option name) {
+static inline __attribute__((unused)) PatternNode PatternNode_Group(Arena *dest, PatternNode inner, Option capture_index, Option name) {
     PatternNode_Group_Payload *p = (PatternNode_Group_Payload *)arena_alloc(dest, sizeof(PatternNode_Group_Payload));
     p->inner = inner;
     p->capture_index = capture_index;
@@ -160,19 +160,19 @@ typedef struct {
     Vec ranges;
     int negated;
 } PatternNode_CharClass_Payload;
-static inline PatternNode PatternNode_CharClass(Arena *dest, Vec ranges, int negated) {
+static inline __attribute__((unused)) PatternNode PatternNode_CharClass(Arena *dest, Vec ranges, int negated) {
     PatternNode_CharClass_Payload *p = (PatternNode_CharClass_Payload *)arena_alloc(dest, sizeof(PatternNode_CharClass_Payload));
     p->ranges = ranges;
     p->negated = negated;
     PatternNode v; v.tag = PatternNode_TAG_CharClass; v.value = p; return v;
 }
-static inline PatternNode PatternNode_Anchor(void *value) { PatternNode v; v.tag = PatternNode_TAG_Anchor; v.value = value; return v; }
+static inline __attribute__((unused)) PatternNode PatternNode_Anchor(void *value) { PatternNode v; v.tag = PatternNode_TAG_Anchor; v.value = value; return v; }
 
 typedef struct {
     PatternNode root;
     int capture_count;
 } PatternAst;
-static inline PatternAst PatternAst_new(PatternNode root, int capture_count) {
+static inline __attribute__((unused)) PatternAst PatternAst_new(PatternNode root, int capture_count) {
     PatternAst v;
     v.root = root;
     v.capture_count = capture_count;
@@ -183,7 +183,7 @@ typedef struct {
     char * message;
     int pos;
 } SyntaxError;
-static inline SyntaxError SyntaxError_new(char * message, int pos) {
+static inline __attribute__((unused)) SyntaxError SyntaxError_new(char * message, int pos) {
     SyntaxError v;
     v.message = message;
     v.pos = pos;
@@ -195,7 +195,7 @@ typedef struct {
     int next;
     int ncap;
 } ParseStep;
-static inline ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
+static inline __attribute__((unused)) ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
     ParseStep v;
     v.node = node;
     v.next = next;
@@ -206,7 +206,7 @@ static inline ParseStep ParseStep_new(PatternNode node, int next, int ncap) {
 typedef struct {
     int max_steps;
 } MatchBudget;
-static inline MatchBudget MatchBudget_new(int max_steps) {
+static inline __attribute__((unused)) MatchBudget MatchBudget_new(int max_steps) {
     MatchBudget v;
     v.max_steps = max_steps;
     return v;
@@ -216,7 +216,7 @@ typedef struct {
     PatternAst ast;
     MatchBudget budget;
 } Regex;
-static inline Regex Regex_new(PatternAst ast, MatchBudget budget) {
+static inline __attribute__((unused)) Regex Regex_new(PatternAst ast, MatchBudget budget) {
     Regex v;
     v.ast = ast;
     v.budget = budget;
@@ -228,7 +228,7 @@ typedef struct {
     int end;
     Vec groups;
 } Match;
-static inline Match Match_new(int start, int end, Vec groups) {
+static inline __attribute__((unused)) Match Match_new(int start, int end, Vec groups) {
     Match v;
     v.start = start;
     v.end = end;
@@ -241,14 +241,14 @@ typedef enum {
     ExprValue_TAG_Str,
 } ExprValue_Tag;
 typedef struct { ExprValue_Tag tag; void *value; } ExprValue;
-static inline ExprValue ExprValue_Num(void *value) { ExprValue v; v.tag = ExprValue_TAG_Num; v.value = value; return v; }
-static inline ExprValue ExprValue_Str(void *value) { ExprValue v; v.tag = ExprValue_TAG_Str; v.value = value; return v; }
+static inline __attribute__((unused)) ExprValue ExprValue_Num(void *value) { ExprValue v; v.tag = ExprValue_TAG_Num; v.value = value; return v; }
+static inline __attribute__((unused)) ExprValue ExprValue_Str(void *value) { ExprValue v; v.tag = ExprValue_TAG_Str; v.value = value; return v; }
 
 typedef struct {
     char * message;
     int pos;
 } EvalError;
-static inline EvalError EvalError_new(char * message, int pos) {
+static inline __attribute__((unused)) EvalError EvalError_new(char * message, int pos) {
     EvalError v;
     v.message = message;
     v.pos = pos;
@@ -259,7 +259,7 @@ typedef struct {
     Vec keys;
     Vec values;
 } Bindings;
-static inline Bindings Bindings_new(Vec keys, Vec values) {
+static inline __attribute__((unused)) Bindings Bindings_new(Vec keys, Vec values) {
     Bindings v;
     v.keys = keys;
     v.values = values;
@@ -273,15 +273,15 @@ typedef enum {
     ExprNode_TAG_BinOp,
 } ExprNode_Tag;
 typedef struct { ExprNode_Tag tag; void *value; } ExprNode;
-static inline ExprNode ExprNode_NumLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_NumLit; v.value = value; return v; }
-static inline ExprNode ExprNode_StrLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_StrLit; v.value = value; return v; }
-static inline ExprNode ExprNode_Var(void *value) { ExprNode v; v.tag = ExprNode_TAG_Var; v.value = value; return v; }
+static inline __attribute__((unused)) ExprNode ExprNode_NumLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_NumLit; v.value = value; return v; }
+static inline __attribute__((unused)) ExprNode ExprNode_StrLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_StrLit; v.value = value; return v; }
+static inline __attribute__((unused)) ExprNode ExprNode_Var(void *value) { ExprNode v; v.tag = ExprNode_TAG_Var; v.value = value; return v; }
 typedef struct {
     char * op;
     ExprNode lhs;
     ExprNode rhs;
 } ExprNode_BinOp_Payload;
-static inline ExprNode ExprNode_BinOp(Arena *dest, char * op, ExprNode lhs, ExprNode rhs) {
+static inline __attribute__((unused)) ExprNode ExprNode_BinOp(Arena *dest, char * op, ExprNode lhs, ExprNode rhs) {
     ExprNode_BinOp_Payload *p = (ExprNode_BinOp_Payload *)arena_alloc(dest, sizeof(ExprNode_BinOp_Payload));
     p->op = op;
     p->lhs = lhs;
@@ -293,7 +293,7 @@ typedef struct {
     ExprNode node;
     int next;
 } ExprParseStep;
-static inline ExprParseStep ExprParseStep_new(ExprNode node, int next) {
+static inline __attribute__((unused)) ExprParseStep ExprParseStep_new(ExprNode node, int next) {
     ExprParseStep v;
     v.node = node;
     v.next = next;
@@ -304,7 +304,7 @@ typedef struct {
     Option pattern;
     char * action;
 } AwkRule;
-static inline AwkRule AwkRule_new(Option pattern, char * action) {
+static inline __attribute__((unused)) AwkRule AwkRule_new(Option pattern, char * action) {
     AwkRule v;
     v.pattern = pattern;
     v.action = action;
@@ -314,7 +314,7 @@ static inline AwkRule AwkRule_new(Option pattern, char * action) {
 typedef struct {
     Vec rules;
 } AwkProgram;
-static inline AwkProgram AwkProgram_new(Vec rules) {
+static inline __attribute__((unused)) AwkProgram AwkProgram_new(Vec rules) {
     AwkProgram v;
     v.rules = rules;
     return v;
@@ -324,7 +324,7 @@ typedef struct {
     Vec fields;
     int nr;
 } Record;
-static inline Record Record_new(Vec fields, int nr) {
+static inline __attribute__((unused)) Record Record_new(Vec fields, int nr) {
     Record v;
     v.fields = fields;
     v.nr = nr;
@@ -334,6 +334,8 @@ static inline Record Record_new(Vec fields, int nr) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
@@ -367,6 +369,9 @@ IoError errno_to_io_error(int);
 Result file_open(char *, OpenMode, Arena *);
 Result file_close(FileHandle, Arena *);
 int path_exists_(char *);
+char * raw_list_dir(char *, Arena *);
+Vec list_dir(char *, Arena *);
+int is_dir_(char *);
 Result write_string(FileHandle, char *, Arena *);
 Result read_string(FileHandle, Arena *);
 Result read_line(FileHandle, Arena *);
@@ -608,8 +613,20 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
     return (strcmp(a, b) == 0);
 }
 
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
-    return (strcasestr(haystack, needle) != NULL);
+    return (string_contains_ci_impl(haystack, needle) != 0);
 }
 
 int is_digit_(int c __attribute__((unused))) {
@@ -880,7 +897,7 @@ int raw_errno(void) {
 }
 
 int mode_tag_of(OpenMode mode __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused));
+    double __match_result_0 __attribute__((unused)) = {0};
     OpenMode __match_tmp_0 = mode;
     if (__match_tmp_0.tag == 0) {
         __match_result_0 = 0;
@@ -917,6 +934,23 @@ Result file_close(FileHandle f __attribute__((unused)), Arena *dest __attribute_
 
 int path_exists_(char * path __attribute__((unused))) {
     return (file_exists_impl(path) != 0);
+}
+
+char * raw_list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (list_dir_impl(path, dest));
+}
+
+Vec list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *joined __attribute__((unused)) = raw_list_dir(path, dest);
+    if (str_eq_(joined, "")) {
+    return vec_new(dest);
+    } else {
+    return split(joined, "\n", dest);
+    }
+}
+
+int is_dir_(char * path __attribute__((unused))) {
+    return (is_dir_impl(path) != 0);
 }
 
 Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -966,7 +1000,7 @@ Result read_floats(FileHandle f __attribute__((unused)), int n __attribute__((un
 
 Result parse(char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int plen __attribute__((unused)) = length(pattern);
-    Result __match_result_1 __attribute__((unused));
+    Result __match_result_1 __attribute__((unused)) = {0};
     Result __match_tmp_1 = parse_alt(pattern, 0, 0, dest);
     if (__match_tmp_1.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_1.value;
@@ -984,7 +1018,7 @@ Result parse(char * pattern __attribute__((unused)), Arena *dest __attribute__((
 }
 
 Result parse_alt(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_2 __attribute__((unused));
+    Result __match_result_2 __attribute__((unused)) = {0};
     Result __match_tmp_2 = parse_concat(pattern, pos, ncap, dest);
     if (__match_tmp_2.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_2.value;
@@ -1055,7 +1089,7 @@ Result parse_concat(char * pattern __attribute__((unused)), int pos __attribute_
 }
 
 Result parse_quant(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_3 __attribute__((unused));
+    Result __match_result_3 __attribute__((unused)) = {0};
     Result __match_tmp_5 = parse_atom(pattern, pos, ncap, dest);
     if (__match_tmp_5.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_5.value;
@@ -1094,7 +1128,7 @@ Result parse_escape(char * pattern __attribute__((unused)), int pos __attribute_
 
 Result parse_group(char * pattern __attribute__((unused)), int pos __attribute__((unused)), int ncap __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int my_index __attribute__((unused)) = (ncap + 1);
-    Result __match_result_4 __attribute__((unused));
+    Result __match_result_4 __attribute__((unused)) = {0};
     Result __match_tmp_6 = parse_alt(pattern, (pos + 1), my_index, dest);
     if (__match_tmp_6.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_6.value;
@@ -1167,7 +1201,7 @@ Result parse_class(char * pattern __attribute__((unused)), int pos __attribute__
 }
 
 Result compile(char * pattern __attribute__((unused)), MatchBudget budget __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_5 __attribute__((unused));
+    Result __match_result_5 __attribute__((unused)) = {0};
     Result __match_tmp_7 = parse(pattern, dest);
     if (__match_tmp_7.tag == 1) {
         void *ast __attribute__((unused)) = __match_tmp_7.value;
@@ -1185,7 +1219,7 @@ AnchorKind unbox_anchor_kind(void * k __attribute__((unused))) {
 }
 
 int anchor_kind_supported_(AnchorKind kind __attribute__((unused))) {
-    int __match_result_6 __attribute__((unused));
+    int __match_result_6 __attribute__((unused)) = {0};
     AnchorKind __match_tmp_8 = kind;
     if (__match_tmp_8.tag == 0) {
         __match_result_6 = 1;
@@ -1200,7 +1234,7 @@ int anchor_kind_supported_(AnchorKind kind __attribute__((unused))) {
 }
 
 int node_supported_(PatternNode * node __attribute__((unused))) {
-    int __match_result_7 __attribute__((unused));
+    int __match_result_7 __attribute__((unused)) = {0};
     PatternNode __match_tmp_9 = (*((PatternNode *)(node)));
     if (__match_tmp_9.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_9.value;
@@ -1279,7 +1313,7 @@ int char_matches_(char * text __attribute__((unused)), int pos __attribute__((un
 }
 
 Option ast_literal_text(PatternNode * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Option __match_result_8 __attribute__((unused));
+    Option __match_result_8 __attribute__((unused)) = {0};
     PatternNode __match_tmp_10 = (*((PatternNode *)(node)));
     if (__match_tmp_10.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_10.value;
@@ -1311,7 +1345,7 @@ Option concat_literal_parts(Vec * parts __attribute__((unused)), int i __attribu
     if ((i >= vec_len(parts))) {
     return option_some(acc);
     } else {
-    Option __match_result_9 __attribute__((unused));
+    Option __match_result_9 __attribute__((unused)) = {0};
     Option __match_tmp_11 = ast_literal_text(vec_get(parts, i), dest);
     if (__match_tmp_11.tag == 1) {
         void *s __attribute__((unused)) = __match_tmp_11.value;
@@ -1328,7 +1362,7 @@ Option alt_literal_scan(Vec * branches __attribute__((unused)), int i __attribut
     if ((i >= vec_len(branches))) {
     return option_some(int_box(dest, 0));
     } else {
-    Option __match_result_10 __attribute__((unused));
+    Option __match_result_10 __attribute__((unused)) = {0};
     Option __match_tmp_12 = ast_literal_text(vec_get(branches, i), dest);
     if (__match_tmp_12.tag == 1) {
         void *needle __attribute__((unused)) = __match_tmp_12.value;
@@ -1346,7 +1380,7 @@ Option alt_literal_scan(Vec * branches __attribute__((unused)), int i __attribut
 }
 
 Option alt_literal_scan_root(PatternNode * node __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Option __match_result_11 __attribute__((unused));
+    Option __match_result_11 __attribute__((unused)) = {0};
     PatternNode __match_tmp_13 = (*((PatternNode *)(node)));
     if (__match_tmp_13.tag == 3) {
         void *branches __attribute__((unused)) = __match_tmp_13.value;
@@ -1482,7 +1516,7 @@ int char_class_matches_(char * text __attribute__((unused)), int pos __attribute
 }
 
 int anchor_matches_(char * text __attribute__((unused)), int pos __attribute__((unused)), AnchorKind kind __attribute__((unused))) {
-    int __match_result_12 __attribute__((unused));
+    int __match_result_12 __attribute__((unused)) = {0};
     AnchorKind __match_tmp_14 = kind;
     if (__match_tmp_14.tag == 0) {
         __match_result_12 = (pos == 0);
@@ -1501,7 +1535,7 @@ Vec match_node(PatternNode * node __attribute__((unused)), char * text __attribu
     if (((*((int *)(steps))) > budget)) {
     return vec_new(dest);
     } else {
-    Vec __match_result_13 __attribute__((unused));
+    Vec __match_result_13 __attribute__((unused)) = {0};
     PatternNode __match_tmp_15 = (*((PatternNode *)(node)));
     if (__match_tmp_15.tag == 0) {
         void *ch __attribute__((unused)) = __match_tmp_15.value;
@@ -1676,7 +1710,7 @@ Vec match_optional(PatternNode * inner __attribute__((unused)), int greedy __att
 }
 
 Result is_match(Regex * re __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_14 __attribute__((unused));
+    Result __match_result_14 __attribute__((unused)) = {0};
     Option __match_tmp_16 = ast_literal_text(&(((re)->ast).root), dest);
     if (__match_tmp_16.tag == 1) {
         void *needle __attribute__((unused)) = __match_tmp_16.value;
@@ -1816,7 +1850,7 @@ int vec_match_end_at(void * v __attribute__((unused)), int idx __attribute__((un
 }
 
 char * replace(Regex * re __attribute__((unused)), char * text __attribute__((unused)), char * replacement __attribute__((unused)), int global_ __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char * __match_result_15 __attribute__((unused));
+    char * __match_result_15 __attribute__((unused)) = {0};
     Result __match_tmp_20 = find_all(re, text, dest);
     if (__match_tmp_20.tag == 1) {
         void *matches __attribute__((unused)) = __match_tmp_20.value;
@@ -1887,7 +1921,7 @@ ExprValue bindings_get(Bindings * b __attribute__((unused)), char * key __attrib
 }
 
 Result eval(char * src __attribute__((unused)), Bindings * bindings __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_16 __attribute__((unused));
+    Result __match_result_16 __attribute__((unused)) = {0};
     Result __match_tmp_21 = parse_expr(src, 0, dest);
     if (__match_tmp_21.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_21.value;
@@ -1901,7 +1935,7 @@ Result eval(char * src __attribute__((unused)), Bindings * bindings __attribute_
 }
 
 ExprValue eval_tree(ExprNode * node __attribute__((unused)), Bindings * bindings __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    ExprValue __match_result_17 __attribute__((unused));
+    ExprValue __match_result_17 __attribute__((unused)) = {0};
     ExprNode __match_tmp_22 = (*((ExprNode *)(node)));
     if (__match_tmp_22.tag == 0) {
         void *v __attribute__((unused)) = __match_tmp_22.value;
@@ -1936,7 +1970,7 @@ double raw_parse_f64(char * s __attribute__((unused))) {
 }
 
 double coerce_num(ExprValue v __attribute__((unused))) {
-    double __match_result_18 __attribute__((unused));
+    double __match_result_18 __attribute__((unused)) = {0};
     ExprValue __match_tmp_23 = v;
     if (__match_tmp_23.tag == 0) {
         void *n __attribute__((unused)) = __match_tmp_23.value;
@@ -1950,7 +1984,7 @@ double coerce_num(ExprValue v __attribute__((unused))) {
 }
 
 char * coerce_str(ExprValue v __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char * __match_result_19 __attribute__((unused));
+    char * __match_result_19 __attribute__((unused)) = {0};
     ExprValue __match_tmp_24 = v;
     if (__match_tmp_24.tag == 1) {
         void *s __attribute__((unused)) = __match_tmp_24.value;
@@ -2109,7 +2143,7 @@ Result parse_term(char * src __attribute__((unused)), int pos0 __attribute__((un
 }
 
 Result parse_expr(char * src __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_20 __attribute__((unused));
+    Result __match_result_20 __attribute__((unused)) = {0};
     Result __match_tmp_25 = parse_term(src, pos, dest);
     if (__match_tmp_25.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_25.value;
@@ -2129,7 +2163,7 @@ Result parse_expr_rest(char * src __attribute__((unused)), ExprNode lhs __attrib
     return result_ok(ExprParseStep_box(dest, ExprParseStep_new(lhs, pos)));
     } else {
     char *op __attribute__((unused)) = substring(src, p, (p + 1), dest);
-    Result __match_result_21 __attribute__((unused));
+    Result __match_result_21 __attribute__((unused)) = {0};
     Result __match_tmp_26 = parse_term(src, (p + 1), dest);
     if (__match_tmp_26.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_26.value;
@@ -2230,7 +2264,7 @@ int unbox_bool(void * b __attribute__((unused))) {
 }
 
 int rule_matches_(AwkRule * rule __attribute__((unused)), Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int __match_result_22 __attribute__((unused));
+    int __match_result_22 __attribute__((unused)) = {0};
     Option __match_tmp_29 = ((*((AwkRule *)(rule)))).pattern;
     if (__match_tmp_29.tag == 0) {
         __match_result_22 = 1;

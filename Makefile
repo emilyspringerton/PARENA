@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -289,6 +289,15 @@ test-selfhost-lexer: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_selfhost_lexer.c \
 		runtime/parena_runtime.c -o /tmp/test_selfhost_lexer_bin -lm
 	/tmp/test_selfhost_lexer_bin
+
+# test-selfhost-parser -- real end-to-end verification of
+# selfhost/parser.prn, the real second domain of PARENA's own
+# self-hosting effort.
+test-selfhost-parser: build
+	./parena build stdlib/string.prn selfhost/lexer.prn selfhost/parser.prn -o tests/test_selfhost_parser_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_selfhost_parser.c \
+		runtime/parena_runtime.c -o /tmp/test_selfhost_parser_bin -lm
+	/tmp/test_selfhost_parser_bin
 
 # test-editor-undo -- real, direct verification of the Ctrl+Z undo
 # stack semantics (push/pop/overflow), the same real logic

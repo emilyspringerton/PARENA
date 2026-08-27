@@ -91,6 +91,62 @@ static inline __attribute__((unused)) LexStep LexStep_new(Token token, Lexer lex
     return v;
 }
 
+typedef enum {
+    NodeType_TAG_NList,
+    NodeType_TAG_NVec,
+    NodeType_TAG_NMap,
+    NodeType_TAG_NSymbol,
+    NodeType_TAG_NKeyword,
+    NodeType_TAG_NString,
+    NodeType_TAG_NNumber,
+    NodeType_TAG_NColon,
+    NodeType_TAG_NAt,
+} NodeType_Tag;
+typedef struct { NodeType_Tag tag; void *value; } NodeType;
+static inline __attribute__((unused)) NodeType NodeType_NList(void) { NodeType v; v.tag = NodeType_TAG_NList; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NVec(void) { NodeType v; v.tag = NodeType_TAG_NVec; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NMap(void) { NodeType v; v.tag = NodeType_TAG_NMap; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NSymbol(void) { NodeType v; v.tag = NodeType_TAG_NSymbol; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NKeyword(void) { NodeType v; v.tag = NodeType_TAG_NKeyword; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NString(void) { NodeType v; v.tag = NodeType_TAG_NString; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NNumber(void) { NodeType v; v.tag = NodeType_TAG_NNumber; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NColon(void) { NodeType v; v.tag = NodeType_TAG_NColon; v.value = NULL; return v; }
+static inline __attribute__((unused)) NodeType NodeType_NAt(void) { NodeType v; v.tag = NodeType_TAG_NAt; v.value = NULL; return v; }
+
+typedef struct {
+    NodeType kind;
+    char * text;
+    Vec children;
+    int line;
+} Node;
+static inline __attribute__((unused)) Node Node_new(NodeType kind, char * text, Vec children, int line) {
+    Node v;
+    v.kind = kind;
+    v.text = text;
+    v.children = children;
+    v.line = line;
+    return v;
+}
+
+typedef enum {
+    SelfhostParseError_TAG_SelfhostParseFailed,
+} SelfhostParseError_Tag;
+typedef struct { SelfhostParseError_Tag tag; void *value; } SelfhostParseError;
+static inline __attribute__((unused)) SelfhostParseError SelfhostParseError_SelfhostParseFailed(void *value) { SelfhostParseError v; v.tag = SelfhostParseError_TAG_SelfhostParseFailed; v.value = value; return v; }
+
+typedef struct {
+    Node node;
+    Lexer lexer;
+    Token cur;
+} ParseStep;
+static inline __attribute__((unused)) ParseStep ParseStep_new(Node node, Lexer lexer, Token cur) {
+    ParseStep v;
+    v.node = node;
+    v.lexer = lexer;
+    v.cur = cur;
+    return v;
+}
+
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
@@ -124,6 +180,15 @@ Result lex_number(Lexer *, Arena *);
 Result lex_string(Lexer *, Arena *);
 Result lexer_next(Lexer *, Arena *);
 Result tokenize(char *, Arena *);
+int kind_code(TokenType);
+int is_close_token_(TokenType);
+char * close_name(TokenType);
+char * join_all(Vec *, Arena *);
+SelfhostParseError lex_error_to_parse_error(LexError, Arena *);
+Result parse_form(Lexer, Token, Arena *);
+Result parse_atom(NodeType, Lexer, Token, Arena *);
+Result parse_compound(NodeType, TokenType, int, Lexer, Token, Arena *);
+Result parse_program(char *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -157,6 +222,24 @@ static inline Token *Token_box(Arena *dest, Token v) {
 
 static inline Vec *Vec_box(Arena *dest, Vec v) {
     Vec *p = (Vec *)arena_alloc(dest, sizeof(Vec));
+    *p = v;
+    return p;
+}
+
+static inline SelfhostParseError *SelfhostParseError_box(Arena *dest, SelfhostParseError v) {
+    SelfhostParseError *p = (SelfhostParseError *)arena_alloc(dest, sizeof(SelfhostParseError));
+    *p = v;
+    return p;
+}
+
+static inline ParseStep *ParseStep_box(Arena *dest, ParseStep v) {
+    ParseStep *p = (ParseStep *)arena_alloc(dest, sizeof(ParseStep));
+    *p = v;
+    return p;
+}
+
+static inline Node *Node_box(Arena *dest, Node v) {
+    Node *p = (Node *)arena_alloc(dest, sizeof(Node));
     *p = v;
     return p;
 }
@@ -584,5 +667,293 @@ Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((u
     }
     }
     return __loop_result_7;
+}
+
+int kind_code(TokenType k __attribute__((unused))) {
+    double __match_result_0 __attribute__((unused)) = {0};
+    TokenType __match_tmp_2 = k;
+    if (__match_tmp_2.tag == 0) {
+        __match_result_0 = 0;
+    }
+    else if (__match_tmp_2.tag == 1) {
+        __match_result_0 = 1;
+    }
+    else if (__match_tmp_2.tag == 2) {
+        __match_result_0 = 2;
+    }
+    else if (__match_tmp_2.tag == 3) {
+        __match_result_0 = 3;
+    }
+    else if (__match_tmp_2.tag == 4) {
+        __match_result_0 = 4;
+    }
+    else if (__match_tmp_2.tag == 5) {
+        __match_result_0 = 5;
+    }
+    else if (__match_tmp_2.tag == 6) {
+        __match_result_0 = 6;
+    }
+    else if (__match_tmp_2.tag == 7) {
+        __match_result_0 = 7;
+    }
+    else if (__match_tmp_2.tag == 8) {
+        __match_result_0 = 8;
+    }
+    else if (__match_tmp_2.tag == 9) {
+        __match_result_0 = 9;
+    }
+    else if (__match_tmp_2.tag == 10) {
+        __match_result_0 = 10;
+    }
+    else if (__match_tmp_2.tag == 11) {
+        __match_result_0 = 11;
+    }
+    else if (__match_tmp_2.tag == 12) {
+        __match_result_0 = 12;
+    }
+    return __match_result_0;
+}
+
+int is_close_token_(TokenType k __attribute__((unused))) {
+    return ((kind_code(k) == 1) || ((kind_code(k) == 3) || (kind_code(k) == 5)));
+}
+
+char * close_name(TokenType k __attribute__((unused))) {
+    char * __match_result_1 __attribute__((unused)) = {0};
+    TokenType __match_tmp_3 = k;
+    if (__match_tmp_3.tag == 1) {
+        __match_result_1 = ")";
+    }
+    else if (__match_tmp_3.tag == 3) {
+        __match_result_1 = "]";
+    }
+    else if (__match_tmp_3.tag == 5) {
+        __match_result_1 = "}";
+    }
+    else if (1) {
+        __match_result_1 = "?";
+    }
+    return __match_result_1;
+}
+
+char * join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __loop_result_8 __attribute__((unused));
+    double i = 0;
+    char * acc = "";
+    while (1) {
+        if ((i >= vec_len(parts))) {
+        __loop_result_8 = acc;
+        break;
+        } else {
+        double __recur_tmp_0 = (i + 1);
+        char * __recur_tmp_1 = concat(acc, vec_get(parts, i), dest);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_8;
+}
+
+SelfhostParseError lex_error_to_parse_error(LexError e __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    SelfhostParseError __match_result_2 __attribute__((unused)) = {0};
+    LexError __match_tmp_4 = e;
+    if (__match_tmp_4.tag == 0) {
+        void *line __attribute__((unused)) = __match_tmp_4.value;
+        Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "unterminated string literal (opened at line "));
+    (void)(vec_push_(&(parts), i32_to_string((*((int *)(line))), dest)));
+    (void)(vec_push_(&(parts), ")"));
+        __match_result_2 = SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest));
+    }
+    else if (__match_tmp_4.tag == 1) {
+        void *line __attribute__((unused)) = __match_tmp_4.value;
+        Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "unexpected character at line "));
+    (void)(vec_push_(&(parts), i32_to_string((*((int *)(line))), dest)));
+        __match_result_2 = SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest));
+    }
+    return __match_result_2;
+}
+
+Result parse_form(Lexer lx __attribute__((unused)), Token cur __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Result __match_result_3 __attribute__((unused)) = {0};
+    TokenType __match_tmp_5 = (cur).kind;
+    if (__match_tmp_5.tag == 0) {
+        __match_result_3 = parse_compound(NodeType_NList(), TokenType_TRParen(), (cur).line, lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 2) {
+        __match_result_3 = parse_compound(NodeType_NVec(), TokenType_TRBracket(), (cur).line, lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 4) {
+        __match_result_3 = parse_compound(NodeType_NMap(), TokenType_TRBrace(), (cur).line, lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 8) {
+        __match_result_3 = parse_atom(NodeType_NSymbol(), lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 9) {
+        __match_result_3 = parse_atom(NodeType_NKeyword(), lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 10) {
+        __match_result_3 = parse_atom(NodeType_NString(), lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 11) {
+        __match_result_3 = parse_atom(NodeType_NNumber(), lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 6) {
+        __match_result_3 = parse_atom(NodeType_NColon(), lx, cur, dest);
+    }
+    else if (__match_tmp_5.tag == 7) {
+        __match_result_3 = parse_atom(NodeType_NAt(), lx, cur, dest);
+    }
+    else if (1) {
+        if (is_close_token_((cur).kind)) {
+        Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "unexpected '"));
+    (void)(vec_push_(&(parts), close_name((cur).kind)));
+    (void)(vec_push_(&(parts), "' with no matching open bracket at line "));
+    (void)(vec_push_(&(parts), i32_to_string((cur).line, dest)));
+        __match_result_3 = result_err(SelfhostParseError_box(dest, SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest))));
+        } else {
+        Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "unexpected end of file, expected a form at line "));
+    (void)(vec_push_(&(parts), i32_to_string((cur).line, dest)));
+        __match_result_3 = result_err(SelfhostParseError_box(dest, SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest))));
+        }
+    }
+    return __match_result_3;
+}
+
+Result parse_atom(NodeType kind __attribute__((unused)), Lexer lx __attribute__((unused)), Token cur __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node node __attribute__((unused)) = Node_new(kind, (cur).text, vec_new(dest), (cur).line);
+    Result __match_result_4 __attribute__((unused)) = {0};
+    Result __match_tmp_6 = lexer_next(&(lx), dest);
+    if (__match_tmp_6.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_6.value;
+        __match_result_4 = result_err(SelfhostParseError_box(dest, lex_error_to_parse_error((*((LexError *)(e))), dest)));
+    }
+    else if (__match_tmp_6.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_6.value;
+        __match_result_4 = result_ok(ParseStep_box(dest, ParseStep_new(node, ((*((LexStep *)(step)))).lexer, ((*((LexStep *)(step)))).token)));
+    }
+    return __match_result_4;
+}
+
+Result parse_compound(NodeType kind __attribute__((unused)), TokenType close_tag __attribute__((unused)), int open_line __attribute__((unused)), Lexer lx __attribute__((unused)), Token cur __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec children __attribute__((unused)) = vec_new(dest);
+    Result __match_result_5 __attribute__((unused)) = {0};
+    Result __match_tmp_7 = lexer_next(&(lx), dest);
+    if (__match_tmp_7.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_7.value;
+        __match_result_5 = result_err(SelfhostParseError_box(dest, lex_error_to_parse_error((*((LexError *)(e))), dest)));
+    }
+    else if (__match_tmp_7.tag == 1) {
+        void *step0 __attribute__((unused)) = __match_tmp_7.value;
+    Lexer lx2 = ((*((LexStep *)(step0)))).lexer;
+    Token cur2 = ((*((LexStep *)(step0)))).token;
+    while (1) {
+        if ((kind_code((cur2).kind) == kind_code(close_tag))) {
+    Result __match_tmp_8 = lexer_next(&(lx2), dest);
+    if (__match_tmp_8.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_8.value;
+        __match_result_5 = result_err(SelfhostParseError_box(dest, lex_error_to_parse_error((*((LexError *)(e))), dest)));
+        break;
+    }
+    else if (__match_tmp_8.tag == 1) {
+        void *stepc __attribute__((unused)) = __match_tmp_8.value;
+        __match_result_5 = result_ok(ParseStep_box(dest, ParseStep_new(Node_new(kind, "", children, open_line), ((*((LexStep *)(stepc)))).lexer, ((*((LexStep *)(stepc)))).token)));
+        break;
+    }
+        } else {
+        if ((kind_code((cur2).kind) == 12)) {
+        Vec parts __attribute__((unused)) = vec_new(dest);
+        (void)(vec_push_(&(parts), "unterminated form: expected '"));
+        (void)(vec_push_(&(parts), close_name(close_tag)));
+        (void)(vec_push_(&(parts), "' to close the form opened at line "));
+        (void)(vec_push_(&(parts), i32_to_string(open_line, dest)));
+        __match_result_5 = result_err(SelfhostParseError_box(dest, SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest))));
+        break;
+        } else {
+        if (is_close_token_((cur2).kind)) {
+        Vec parts __attribute__((unused)) = vec_new(dest);
+        (void)(vec_push_(&(parts), "mismatched bracket: expected '"));
+        (void)(vec_push_(&(parts), close_name(close_tag)));
+        (void)(vec_push_(&(parts), "' but found '"));
+        (void)(vec_push_(&(parts), close_name((cur2).kind)));
+        (void)(vec_push_(&(parts), "' at line "));
+        (void)(vec_push_(&(parts), i32_to_string((cur2).line, dest)));
+        __match_result_5 = result_err(SelfhostParseError_box(dest, SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest))));
+        break;
+        } else {
+    Result __match_tmp_9 = parse_form(lx2, cur2, dest);
+    if (__match_tmp_9.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_9.value;
+        __match_result_5 = result_err(e);
+        break;
+    }
+    else if (__match_tmp_9.tag == 1) {
+        void *childstep __attribute__((unused)) = __match_tmp_9.value;
+    (void)(vec_push_(&(children), Node_box(dest, ((*((ParseStep *)(childstep)))).node)));
+        Lexer __recur_tmp_0 = ((*((ParseStep *)(childstep)))).lexer;
+        Token __recur_tmp_1 = ((*((ParseStep *)(childstep)))).cur;
+        lx2 = __recur_tmp_0;
+        cur2 = __recur_tmp_1;
+        continue;
+    }
+        }
+        }
+        }
+    }
+    }
+    return __match_result_5;
+}
+
+Result parse_program(char * src __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Lexer lx0 __attribute__((unused)) = new_lexer(src);
+    Vec children __attribute__((unused)) = vec_new(dest);
+    Result __match_result_6 __attribute__((unused)) = {0};
+    Result __match_tmp_10 = lexer_next(&(lx0), dest);
+    if (__match_tmp_10.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_10.value;
+        __match_result_6 = result_err(SelfhostParseError_box(dest, lex_error_to_parse_error((*((LexError *)(e))), dest)));
+    }
+    else if (__match_tmp_10.tag == 1) {
+        void *step0 __attribute__((unused)) = __match_tmp_10.value;
+    Lexer lx2 = ((*((LexStep *)(step0)))).lexer;
+    Token cur2 = ((*((LexStep *)(step0)))).token;
+    while (1) {
+        if ((kind_code((cur2).kind) == 12)) {
+        __match_result_6 = result_ok(Node_box(dest, Node_new(NodeType_NList(), "", children, 1)));
+        break;
+        } else {
+        if (is_close_token_((cur2).kind)) {
+        Vec parts __attribute__((unused)) = vec_new(dest);
+        (void)(vec_push_(&(parts), "unexpected '"));
+        (void)(vec_push_(&(parts), close_name((cur2).kind)));
+        (void)(vec_push_(&(parts), "' with no matching open bracket at line "));
+        (void)(vec_push_(&(parts), i32_to_string((cur2).line, dest)));
+        __match_result_6 = result_err(SelfhostParseError_box(dest, SelfhostParseError_SelfhostParseFailed(join_all(&(parts), dest))));
+        break;
+        } else {
+    Result __match_tmp_11 = parse_form(lx2, cur2, dest);
+    if (__match_tmp_11.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_11.value;
+        __match_result_6 = result_err(e);
+        break;
+    }
+    else if (__match_tmp_11.tag == 1) {
+        void *childstep __attribute__((unused)) = __match_tmp_11.value;
+    (void)(vec_push_(&(children), Node_box(dest, ((*((ParseStep *)(childstep)))).node)));
+        Lexer __recur_tmp_0 = ((*((ParseStep *)(childstep)))).lexer;
+        Token __recur_tmp_1 = ((*((ParseStep *)(childstep)))).cur;
+        lx2 = __recur_tmp_0;
+        cur2 = __recur_tmp_1;
+        continue;
+    }
+        }
+        }
+    }
+    }
+    return __match_result_6;
 }
 

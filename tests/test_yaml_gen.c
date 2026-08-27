@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -23,16 +23,16 @@ typedef enum {
     YamlValue_TAG_YMap,
 } YamlValue_Tag;
 typedef struct { YamlValue_Tag tag; void *value; } YamlValue;
-static inline YamlValue YamlValue_YNull(void) { YamlValue v; v.tag = YamlValue_TAG_YNull; v.value = NULL; return v; }
-static inline YamlValue YamlValue_YBool(void *value) { YamlValue v; v.tag = YamlValue_TAG_YBool; v.value = value; return v; }
-static inline YamlValue YamlValue_YNumber(void *value) { YamlValue v; v.tag = YamlValue_TAG_YNumber; v.value = value; return v; }
-static inline YamlValue YamlValue_YString(void *value) { YamlValue v; v.tag = YamlValue_TAG_YString; v.value = value; return v; }
-static inline YamlValue YamlValue_YSeq(void *value) { YamlValue v; v.tag = YamlValue_TAG_YSeq; v.value = value; return v; }
+static inline __attribute__((unused)) YamlValue YamlValue_YNull(void) { YamlValue v; v.tag = YamlValue_TAG_YNull; v.value = NULL; return v; }
+static inline __attribute__((unused)) YamlValue YamlValue_YBool(void *value) { YamlValue v; v.tag = YamlValue_TAG_YBool; v.value = value; return v; }
+static inline __attribute__((unused)) YamlValue YamlValue_YNumber(void *value) { YamlValue v; v.tag = YamlValue_TAG_YNumber; v.value = value; return v; }
+static inline __attribute__((unused)) YamlValue YamlValue_YString(void *value) { YamlValue v; v.tag = YamlValue_TAG_YString; v.value = value; return v; }
+static inline __attribute__((unused)) YamlValue YamlValue_YSeq(void *value) { YamlValue v; v.tag = YamlValue_TAG_YSeq; v.value = value; return v; }
 typedef struct {
     Vec keys;
     Vec values;
 } YamlValue_YMap_Payload;
-static inline YamlValue YamlValue_YMap(Arena *dest, Vec keys, Vec values) {
+static inline __attribute__((unused)) YamlValue YamlValue_YMap(Arena *dest, Vec keys, Vec values) {
     YamlValue_YMap_Payload *p = (YamlValue_YMap_Payload *)arena_alloc(dest, sizeof(YamlValue_YMap_Payload));
     p->keys = keys;
     p->values = values;
@@ -43,7 +43,7 @@ typedef struct {
     char * message;
     int line;
 } YamlError;
-static inline YamlError YamlError_new(char * message, int line) {
+static inline __attribute__((unused)) YamlError YamlError_new(char * message, int line) {
     YamlError v;
     v.message = message;
     v.line = line;
@@ -54,7 +54,7 @@ typedef struct {
     YamlValue value;
     int next;
 } YamlStep;
-static inline YamlStep YamlStep_new(YamlValue value, int next) {
+static inline __attribute__((unused)) YamlStep YamlStep_new(YamlValue value, int next) {
     YamlStep v;
     v.value = value;
     v.next = next;
@@ -64,6 +64,8 @@ static inline YamlStep YamlStep_new(YamlValue value, int next) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
@@ -144,8 +146,20 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
     return (strcmp(a, b) == 0);
 }
 
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
-    return (strcasestr(haystack, needle) != NULL);
+    return (string_contains_ci_impl(haystack, needle) != 0);
 }
 
 int is_digit_(int c __attribute__((unused))) {
@@ -583,7 +597,7 @@ Result parse_mapping(Vec * lines __attribute__((unused)), int start __attribute_
 
 Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec lines __attribute__((unused)) = split(text, "\n", dest);
-    Result __match_result_0 __attribute__((unused));
+    Result __match_result_0 __attribute__((unused)) = {0};
     Result __match_tmp_2 = parse_block(&(lines), 0, 0, dest);
     if (__match_tmp_2.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_2.value;

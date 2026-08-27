@@ -1,0 +1,264 @@
+;; selfhost/parser.prn -- the real second domain of PARENA's own self-
+;; hosting effort (NORTHSTAR.md's own "Self-hosting" section), directly
+;; continuing selfhost/lexer.prn (2026-08-27, founder real-time:
+;; "self hosted compiler" -> "continue" -> "clnt"/"continue"). VS0's
+;; own src/parser.c (a real recursive-descent reader over
+;; selfhost/lexer.prn's own token stream, producing the generic
+;; S-expression AST src/ast.h defines) is the real reference
+;; implementation this file PORTS -- not a from-scratch design, a
+;; faithful behavioral port, verified against src/parser.c's own real
+;; output on identical inputs (see tests/test_selfhost_parser.c).
+;;
+;; Real, deliberate departures from src/parser.c's own shape, forced by
+;; VS0's own real, confirmed current limits -- same class of departure
+;; selfhost/lexer.prn's own header comment already documents:
+;;
+;; 1. No setjmp/longjmp (a C-specific escape mechanism with no PARENA
+;;    equivalent) -- every real parse function here returns a real
+;;    (Result ParseStep SelfhostParseError), propagating an Err upward through
+;;    ordinary match-based short-circuiting, the same idiom every real
+;;    recursive-descent parser already shipped in this stdlib uses
+;;    (stdlib/regex/syntax.prn's own real precedent). Arguably simpler
+;;    than the reference C, not just a forced substitution.
+;; 2. Node.children is `(Vec Node) @ Region` (a Vec of the struct
+;;    itself, BY VALUE) -- the exact same real, already-proven, already-
+;;    shipped shape stdlib/regex/syntax.prn's own PatternNode uses for
+;;    its own recursive Concat/Alt variants (see that file's own header
+;;    comment, point 2, for the full real reasoning: no address-of/
+;;    box-and-take-a-pointer primitive reachable from .prn source yet).
+;; 3. No in-place node_push_child mutation (no struct field mutation
+;;    exists) -- every compound form's own children are accumulated
+;;    into a local Vec via ordinary vec/push! BEFORE the parent Node is
+;;    constructed once, fully formed -- the real, already-established
+;;    "build the Vec first, construct the struct once" shape
+;;    stdlib/string.prn's own `split` already uses.
+;; 4. A match-bound Ok payload's own emitted C variable stays void* --
+;;    every `(get-field (deref x) :field)` below follows the real,
+;;    already-documented convention stdlib/regex/syntax.prn's own
+;;    header comment established (point 3 there).
+;;
+;; Real, honest status: this file is compiled BY the existing C-based
+;; parena-c (self-hosting only becomes real once a PARENA-in-PARENA
+;; pipeline can compile ITSELF -- this is the second domain toward
+;; that, not a claim of having reached it). The real next domain (a
+;; region analyzer, mirroring src/region.c) is separate, unstarted
+;; follow-up work.
+
+(module selfhost/parser)
+(import string)
+(import selfhost/lexer)
+(export parse-program Node NodeType SelfhostParseError)
+
+(defenum NodeType
+  (NList) (NVec) (NMap) (NSymbol) (NKeyword) (NString) (NNumber) (NColon) (NAt))
+
+(defstruct Node
+  (kind     : NodeType)
+  (text     : String @ Region)
+  (children : (Vec Node) @ Region)
+  (line     : I32))
+
+;; SelfhostParseError -- real, deliberate simplification vs. modeling each
+;; failure class as its own defenum variant (unterminated form,
+;; mismatched bracket, etc.): a single SelfhostParseFailed(message) carries the
+;; already-formatted, human-readable text directly, matching
+;; src/parser.c's own real fail() -- one string, always. Real, minor,
+;; honest departure from src/parser.c's own exact wording in ONE case:
+;; a lexer-reported error (e.g. an unterminated string) doesn't repeat
+;; the C reference's own "line appears twice" artifact (the C parser's
+;; own advance() appends a SECOND " at line N" using whatever the
+;; lexer's own post-failure EOF token line happened to be, redundant
+;; with the message the lexer already built) -- this file's own
+;; LexError already carries the one real, meaningful line number, used
+;; once, not stitched onto a second one.
+(defenum SelfhostParseError
+  (SelfhostParseFailed (message : String @ Region)))
+
+;; ParseStep -- same real "named-struct tuple-return stand-in"
+;; selfhost/lexer.prn's own LexStep already establishes: bundles the
+;; produced Node with the advanced (Lexer, Token) pair.
+(defstruct ParseStep
+  (node  : Node)
+  (lexer : Lexer)
+  (cur   : Token))
+
+;; kind-code -- real defenum-to-I32 tag, the same convention
+;; stdlib/io.prn's own mode-tag-of already establishes for OpenMode --
+;; lets close-tag comparisons below use plain `=` instead of nested
+;; match.
+(defn kind-code [(k : TokenType)] : I32
+  (match k
+    ((TLParen) 0) ((TRParen) 1) ((TLBracket) 2) ((TRBracket) 3)
+    ((TLBrace) 4) ((TRBrace) 5) ((TColon) 6) ((TAt) 7)
+    ((TSymbol) 8) ((TKeyword) 9) ((TString) 10) ((TNumber) 11) ((TEof) 12)))
+
+(defn is-close-token? [(k : TokenType)] : Bool
+  (or (= (kind-code k) 1) (or (= (kind-code k) 3) (= (kind-code k) 5))))
+
+(defn close-name [(k : TokenType)] : String @ Region
+  (match k
+    ((TRParen) ")")
+    ((TRBracket) "]")
+    ((TRBrace) "}")
+    (_ "?")))
+
+;; join-all -- real, minimal string-piece joiner for building error
+;; messages out of several parts (a literal, a formatted line number,
+;; another literal, ...) without deeply hand-nesting string/concat's
+;; own real 2-argument-only signature at every call site.
+;; Real, deliberate NO deref on vec/get's own result here: unlike an
+;; F64 or struct-payload Vec element (which nn.prn's own real
+;; precedent needs deref for), a String is already char* at the C
+;; level -- vec_get's own void* cast straight back to char* IS the
+;; complete unwrap, matching examples/editor_main.c's own identical
+;; real (Vec String) handling for the file-tree sidebar.
+(defn join-all [(parts : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i (vec/len parts))
+      acc
+      (recur (+ i 1) (string/concat acc (vec/get parts i) dest)))))
+
+;; Real, confirmed-live convention (matching stdlib/regex/syntax.prn's
+;; own documented "match-bound payload stays void*" rule exactly, not
+;; just for struct fields -- ANY match-bound payload, including a bare
+;; I32/LexError scalar bound directly by a variant pattern like
+;; `(UnterminatedString line)`, needs a real `deref` before use as its
+;; own real type): both `line` bindings below, and every match-bound
+;; `e` at every call site of this function, are deref'd.
+(defn lex-error-to-parse-error [(e : LexError) (dest : Arena @ Region)] : SelfhostParseError
+  (match e
+    ((UnterminatedString line)
+      (let [parts (vec/new dest)]
+        (do (vec/push! &parts "unterminated string literal (opened at line ")
+            (vec/push! &parts (string/i32-to-string (deref line) dest))
+            (vec/push! &parts ")")
+            (SelfhostParseFailed (join-all &parts dest)))))
+    ((UnexpectedChar line)
+      (let [parts (vec/new dest)]
+        (do (vec/push! &parts "unexpected character at line ")
+            (vec/push! &parts (string/i32-to-string (deref line) dest))
+            (SelfhostParseFailed (join-all &parts dest)))))))
+
+(defn parse-form [(lx : Lexer) (cur : Token) (dest : Arena @ Region)]
+  : (Result ParseStep SelfhostParseError) @ Region
+  (match (get-field cur :kind)
+    ((TLParen) (parse-compound NList TRParen (get-field cur :line) lx cur dest))
+    ((TLBracket) (parse-compound NVec TRBracket (get-field cur :line) lx cur dest))
+    ((TLBrace) (parse-compound NMap TRBrace (get-field cur :line) lx cur dest))
+    ((TSymbol) (parse-atom NSymbol lx cur dest))
+    ((TKeyword) (parse-atom NKeyword lx cur dest))
+    ((TString) (parse-atom NString lx cur dest))
+    ((TNumber) (parse-atom NNumber lx cur dest))
+    ((TColon) (parse-atom NColon lx cur dest))
+    ((TAt) (parse-atom NAt lx cur dest))
+    (_
+      (if (is-close-token? (get-field cur :kind))
+        (let [parts (vec/new dest)]
+          (do (vec/push! &parts "unexpected '")
+              (vec/push! &parts (close-name (get-field cur :kind)))
+              (vec/push! &parts "' with no matching open bracket at line ")
+              (vec/push! &parts (string/i32-to-string (get-field cur :line) dest))
+              (Err (SelfhostParseFailed (join-all &parts dest)))))
+        (let [parts (vec/new dest)]
+          (do (vec/push! &parts "unexpected end of file, expected a form at line ")
+              (vec/push! &parts (string/i32-to-string (get-field cur :line) dest))
+              (Err (SelfhostParseFailed (join-all &parts dest)))))))))
+
+;; parse-atom -- real port of src/parser.c's own 5 identical
+;; TOK_SYMBOL/TOK_KEYWORD/TOK_STRING/TOK_NUMBER/TOK_COLON/TOK_AT cases
+;; (each just "build an atom Node from the current token, advance"),
+;; folded into one real, shared function parameterized on the real
+;; target NodeType -- C repeats this shape 6 times inline; that
+;; repetition exists there because C has no closures/currying to
+;; abstract it away cheaply, not because it's 6 genuinely different
+;; behaviors.
+(defn parse-atom [(kind : NodeType) (lx : Lexer) (cur : Token) (dest : Arena @ Region)]
+  : (Result ParseStep SelfhostParseError) @ Region
+  (let [node {:kind kind :text (get-field cur :text) :children (vec/new dest) :line (get-field cur :line)}]
+    (match (selfhost/lexer/lexer-next &lx dest)
+      ((Err e) (Err (lex-error-to-parse-error (deref e) dest)))
+      ((Ok step)
+        (Ok {:node node
+             :lexer (get-field (deref step) :lexer)
+             :cur (get-field (deref step) :token)})))))
+
+;; parse-compound -- real port of src/parser.c's own parse_compound.
+;; Real, deliberate simplification vs. C's own open_tok parameter
+;; (unused there too -- C's own header comment marks it `(void)
+;; open_tok`): not carried here at all. children accumulates via
+;; ordinary vec/push! (captured by the outer let, NOT threaded through
+;; loop/recur -- see this file's own header comment, point 3) while
+;; lx2/cur2 (the real parse POSITION) are the only real loop/recur
+;; bindings, the same real "outer accumulator, inner position-only
+;; loop" split stdlib/string.prn's own `split` already establishes.
+(defn parse-compound [(kind : NodeType) (close-tag : TokenType) (open-line : I32)
+                       (lx : Lexer) (cur : Token) (dest : Arena @ Region)]
+  : (Result ParseStep SelfhostParseError) @ Region
+  (let [children (vec/new dest)]
+    (match (selfhost/lexer/lexer-next &lx dest)  ;; consume the real opening bracket
+      ((Err e) (Err (lex-error-to-parse-error (deref e) dest)))
+      ((Ok step0)
+        (loop [lx2 (get-field (deref step0) :lexer)
+               cur2 (get-field (deref step0) :token)]
+          (cond
+            ((= (kind-code (get-field cur2 :kind)) (kind-code close-tag))
+              (match (selfhost/lexer/lexer-next &lx2 dest)  ;; consume the real closing bracket
+                ((Err e) (Err (lex-error-to-parse-error (deref e) dest)))
+                ((Ok stepc)
+                  (Ok {:node {:kind kind :text "" :children children :line open-line}
+                       :lexer (get-field (deref stepc) :lexer)
+                       :cur (get-field (deref stepc) :token)}))))
+            ((= (kind-code (get-field cur2 :kind)) 12)  ;; TEof
+              (let [parts (vec/new dest)]
+                (do (vec/push! &parts "unterminated form: expected '")
+                    (vec/push! &parts (close-name close-tag))
+                    (vec/push! &parts "' to close the form opened at line ")
+                    (vec/push! &parts (string/i32-to-string open-line dest))
+                    (Err (SelfhostParseFailed (join-all &parts dest))))))
+            ((is-close-token? (get-field cur2 :kind))
+              (let [parts (vec/new dest)]
+                (do (vec/push! &parts "mismatched bracket: expected '")
+                    (vec/push! &parts (close-name close-tag))
+                    (vec/push! &parts "' but found '")
+                    (vec/push! &parts (close-name (get-field cur2 :kind)))
+                    (vec/push! &parts "' at line ")
+                    (vec/push! &parts (string/i32-to-string (get-field cur2 :line) dest))
+                    (Err (SelfhostParseFailed (join-all &parts dest))))))
+            (true
+              (match (parse-form lx2 cur2 dest)
+                ((Err e) (Err e))
+                ((Ok childstep)
+                  (do
+                    (vec/push! &children (get-field (deref childstep) :node))
+                    (recur (get-field (deref childstep) :lexer) (get-field (deref childstep) :cur))))))))))))
+
+;; parse-program -- real port of src/parser.c's own parse_program: a
+;; top-level sequence of forms wrapped in a synthetic NList (an empty
+;; input parses to an empty list, not an error, matching that file's
+;; own real, documented contract exactly).
+(defn parse-program [(src : String @ Region) (dest : Arena @ Region)]
+  : (Result Node SelfhostParseError) @ Region
+  (let [lx0 (selfhost/lexer/new-lexer src)
+        children (vec/new dest)]
+    (match (selfhost/lexer/lexer-next &lx0 dest)
+      ((Err e) (Err (lex-error-to-parse-error (deref e) dest)))
+      ((Ok step0)
+        (loop [lx2 (get-field (deref step0) :lexer)
+               cur2 (get-field (deref step0) :token)]
+          (cond
+            ((= (kind-code (get-field cur2 :kind)) 12)  ;; TEof
+              (Ok {:kind NList :text "" :children children :line 1}))
+            ((is-close-token? (get-field cur2 :kind))
+              (let [parts (vec/new dest)]
+                (do (vec/push! &parts "unexpected '")
+                    (vec/push! &parts (close-name (get-field cur2 :kind)))
+                    (vec/push! &parts "' with no matching open bracket at line ")
+                    (vec/push! &parts (string/i32-to-string (get-field cur2 :line) dest))
+                    (Err (SelfhostParseFailed (join-all &parts dest))))))
+            (true
+              (match (parse-form lx2 cur2 dest)
+                ((Err e) (Err e))
+                ((Ok childstep)
+                  (do
+                    (vec/push! &children (get-field (deref childstep) :node))
+                    (recur (get-field (deref childstep) :lexer) (get-field (deref childstep) :cur))))))))))))

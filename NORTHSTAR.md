@@ -307,9 +307,42 @@ real emitted C variable stays generically `void *` (already documented as a real
 convention in `stdlib/regex/syntax.prn`'s own header comment — `(get-field (deref x) :field)`,
 never bare `(get-field x :field)`), applied here for the first time outside that one file.
 
-Not scoped further than the lexer here — the real next domain (a PARENA-language parser consuming
-`selfhost/lexer.prn`'s own `tokenize`, mirroring `src/parser.c`) is separate, unstarted follow-up
-work, picked up the same "one real, faithful domain at a time" way this file itself was.
+**Real second step, same day (founder: "continue"/"clnt")**: `selfhost/parser.prn` — a real,
+faithful PARENA-language port of `src/parser.c` (VS0's own recursive-descent reader over the
+lexer's own token stream, producing the generic S-expression AST `src/ast.h` defines). Real design
+departures forced by the same class of VS0 limits: no `setjmp`/`longjmp` (every parse function
+returns a real `(Result ParseStep SelfhostParseError)`, propagating an `Err` upward through
+ordinary match-based short-circuiting — arguably simpler than the C reference, not just a forced
+substitution); `Node.children` is `(Vec Node) @ Region` (a Vec of the struct itself, BY VALUE),
+the same real, already-proven shape `stdlib/regex/syntax.prn`'s own `PatternNode` uses for its own
+recursive `Concat`/`Alt` variants; no in-place `node_push_child` mutation — every compound form's
+children accumulate into a local Vec via ordinary `vec/push!` (captured by an outer `let`, not
+threaded through `loop`/`recur`) before the parent `Node` is constructed once, fully formed, the
+same "build the Vec first, construct the struct once" shape `stdlib/string.prn`'s own `split`
+already uses.
+
+Found and fixed a real, deeper compiler gap along the way (confirmed live via a real "dereferencing
+'void *' pointer" gcc error attempting `(deref e)` on a match-bound `Err` payload): the emitter's
+own real type-hint mechanism for a single-field `Ok`/`Some` payload bound from a KNOWN function's
+`(Result X E)` return type (added 2026-08-21 for `unwrap`) was, by its own header comment's honest
+admission, "only valid for Ok/Some specifically ... this emitter has no equivalent lookup for
+[the Err/None side] at all." Added the real, symmetric counterpart (`resolve_result_error_type`,
+`scrut_error_type`, a new `error_type` field on `DefnReturnType`) so a match-bound `Err` payload's
+own real type is now resolvable the identical way, letting `deref` correctly cast it instead of
+silently staying generic `void *`. `None` still has no equivalent (`(Option X)` carries no error
+type to look up).
+
+51 real assertions in `tests/test_selfhost_parser.c`, hand-traced against `src/parser.c`'s own
+real, documented behavior — including the DoD's own exact required error wording for 3 of 4 real
+failure cases (`tests/test_lexer_parser.c`'s own C-reference suite already pins these same 3
+strings verbatim); the 4th (an unterminated string literal) is this file's own honest, documented,
+minor departure — `SelfhostParseError`'s own header comment explains why it doesn't repeat the C
+reference's own "line number appears twice" artifact. Full local suite + bazel build/test + real
+mingw cross-compile all clean, zero regressions.
+
+Not scoped further than the parser here — the real next domain (a region analyzer, mirroring
+`src/region.c`) is separate, unstarted follow-up work, picked up the same "one real, faithful
+domain at a time" way this file itself was.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
