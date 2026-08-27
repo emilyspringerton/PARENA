@@ -1,16 +1,17 @@
-/* tests/test_editor_undo.c -- real, direct verification of the undo
- * STACK semantics examples/editor_main.c's own push_undo/pop_undo use
- * (2026-08-27, founder: "continue working on parena editor" -- real
- * Ctrl+Z). push_undo/pop_undo are `static`, private to editor_main.c
- * (coupled to main()'s own event loop, not a real PARENA module), so
- * this test carries its own exact copy of that same, small, simple
- * logic rather than trying to extract it -- same real "test what's
- * actually there" discipline as every other real test in this repo:
- * this session already found a real, live bug (SDL_PushEvent not
- * updating SDL_GetModState) by actually running something instead of
- * trusting code review alone, so undo -- a stateful stack, not a pure
- * function -- gets the same real treatment rather than being trusted
- * by inspection.
+/* tests/test_editor_undo.c -- real, direct verification of the
+ * undo/redo STACK semantics examples/editor_main.c's own push_undo/
+ * pop_undo/push_redo/pop_redo use (2026-08-27, founder: "continue
+ * working on parena editor" -- real Ctrl+Z, then "continue" again --
+ * real Ctrl+Y, the direct complement). These are `static`, private to
+ * editor_main.c (coupled to main()'s own event loop, not a real PARENA
+ * module), so this test carries its own exact copy of that same,
+ * small, simple logic rather than trying to extract it -- same real
+ * "test what's actually there" discipline as every other real test in
+ * this repo: this session already found a real, live bug
+ * (SDL_PushEvent not updating SDL_GetModState) by actually running
+ * something instead of trusting code review alone, so undo/redo --
+ * stateful stacks, not pure functions -- get the same real treatment
+ * rather than being trusted by inspection.
  */
 #include "parena_runtime.h"
 #include <stdio.h>
@@ -25,23 +26,43 @@ static int failures = 0;
 } while (0)
 
 #define UNDO_MAX 512
-static Buffer undo_stack[UNDO_MAX];
-static int undo_count = 0;
 
-static void push_undo(Buffer b) {
-    if (undo_count < UNDO_MAX) {
-        undo_stack[undo_count++] = b;
+static void push_stack(Buffer *stack, int *count, Buffer b) {
+    if (*count < UNDO_MAX) {
+        stack[(*count)++] = b;
     } else {
-        memmove(&undo_stack[0], &undo_stack[1], sizeof(Buffer) * (UNDO_MAX - 1));
-        undo_stack[UNDO_MAX - 1] = b;
+        memmove(&stack[0], &stack[1], sizeof(Buffer) * (UNDO_MAX - 1));
+        stack[UNDO_MAX - 1] = b;
     }
 }
 
-static Buffer pop_undo(Buffer fallback) {
-    if (undo_count > 0) {
-        return undo_stack[--undo_count];
+static Buffer pop_stack(Buffer *stack, int *count, Buffer fallback) {
+    if (*count > 0) {
+        return stack[--(*count)];
     }
     return fallback;
+}
+
+static Buffer undo_stack[UNDO_MAX];
+static int undo_count = 0;
+static Buffer redo_stack[UNDO_MAX];
+static int redo_count = 0;
+
+static void push_undo(Buffer b) {
+    push_stack(undo_stack, &undo_count, b);
+    redo_count = 0;
+}
+
+static Buffer pop_undo(Buffer fallback) {
+    return pop_stack(undo_stack, &undo_count, fallback);
+}
+
+static void push_redo(Buffer b) {
+    push_stack(redo_stack, &redo_count, b);
+}
+
+static Buffer pop_redo(Buffer fallback) {
+    return pop_stack(redo_stack, &redo_count, fallback);
 }
 
 int main(void) {
@@ -109,6 +130,63 @@ int main(void) {
     CHECK(undo_count == 0, "walking all the way back drains the real stack to empty");
     CHECK(strcmp(active_text(&walked_back), "start01234") == 0,
           "the real oldest surviving entry is exactly \"start01234\" -- markers 0..4's own pushes were genuinely evicted on overflow, in the correct oldest-first order");
+
+    /* --- real Ctrl+Y redo (2026-08-27) --- */
+    {
+        Buffer rb = new (&a);
+        push_undo(rb);
+        Result ra = insert_at_cursor(&rb, "H", &a);
+        if (ra.tag == 1) rb = *(Buffer *)ra.value;
+        push_undo(rb);
+        Result rc = insert_at_cursor(&rb, "i", &a);
+        if (rc.tag == 1) rb = *(Buffer *)rc.value;
+        CHECK(strcmp(active_text(&rb), "Hi") == 0, "real edit sequence produces \"Hi\" before any undo/redo");
+
+        /* do_undo/do_redo -- the exact real, GUARDED pairing
+         * examples/editor_main.c's own Ctrl+Z/Ctrl+Y event-loop
+         * branches use (real, confirmed-live bug caught by an EARLIER
+         * draft of this exact test: an unconditional push before
+         * popping left a spurious duplicate entry on the OTHER stack
+         * whenever there was actually nothing to undo/redo -- fixed at
+         * the root in editor_main.c, mirrored here). */
+        int did;
+        did = 0; if (undo_count > 0) { push_redo(rb); rb = pop_undo(rb); did = 1; }
+        CHECK(did && strcmp(active_text(&rb), "H") == 0, "first real Ctrl+Z restores \"H\"");
+        did = 0; if (undo_count > 0) { push_redo(rb); rb = pop_undo(rb); did = 1; }
+        CHECK(did && strcmp(active_text(&rb), "") == 0, "second real Ctrl+Z restores empty");
+        CHECK(redo_count == 2, "both real undone edits are genuinely queued on the real redo stack");
+
+        /* Real Ctrl+Y, twice: walks back FORWARD through the exact same
+         * real history. */
+        did = 0; if (redo_count > 0) { push_stack(undo_stack, &undo_count, rb); rb = pop_redo(rb); did = 1; }
+        CHECK(did && strcmp(active_text(&rb), "H") == 0, "first real Ctrl+Y replays the first real edit, restoring \"H\"");
+        did = 0; if (redo_count > 0) { push_stack(undo_stack, &undo_count, rb); rb = pop_redo(rb); did = 1; }
+        CHECK(did && strcmp(active_text(&rb), "Hi") == 0, "second real Ctrl+Y replays the second real edit, restoring \"Hi\" -- back to exactly where undo started");
+        CHECK(redo_count == 0, "the real redo stack is genuinely empty once every undone edit has been redone");
+
+        /* Real, honest no-op at the top of redo history -- guarded on
+         * redo_count > 0, so a Ctrl+Y here does genuinely nothing at
+         * all (not even a spurious push onto undo). */
+        Buffer before_redo_noop = rb;
+        int undo_count_before = undo_count;
+        if (redo_count > 0) { push_stack(undo_stack, &undo_count, rb); rb = pop_redo(rb); }
+        CHECK(strcmp(active_text(&rb), active_text(&before_redo_noop)) == 0,
+              "real Ctrl+Y with nothing left to redo is a real, honest no-op on the buffer");
+        CHECK(undo_count == undo_count_before,
+              "real Ctrl+Y with nothing left to redo doesn't even push a spurious duplicate entry onto undo");
+
+        /* Real, standard editor semantics: a genuinely NEW edit after
+         * undoing invalidates the pending redo history. */
+        if (undo_count > 0) { push_redo(rb); rb = pop_undo(rb); } /* undo back to "H", redo=["Hi"] */
+        CHECK(strcmp(active_text(&rb), "H") == 0, "real Ctrl+Z before the real new-edit check restores \"H\"");
+        CHECK(redo_count == 1, "exactly one real entry is queued on redo before the new edit");
+        push_undo(rb); /* a real NEW edit -- must clear redo */
+        Result rd = insert_at_cursor(&rb, "!", &a);
+        if (rd.tag == 1) rb = *(Buffer *)rd.value;
+        CHECK(strcmp(active_text(&rb), "H!") == 0, "the real new edit genuinely applies");
+        CHECK(redo_count == 0,
+              "a real NEW edit after undoing correctly clears the real redo stack -- \"Hi\" is no longer reachable via Ctrl+Y, matching every real editor's own undo/redo semantics");
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

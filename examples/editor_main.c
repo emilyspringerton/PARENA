@@ -42,12 +42,12 @@
  * Real Ctrl+C/X/V copy/cut/paste (2026-08-27), through SDL2's own real
  * clipboard (sdl2/get-clipboard-text and set-clipboard-text -- closes
  * that file's own previously-flagged "NOT closed in this pass" gap).
- * Real Ctrl+Z undo (2026-08-27, same day): a plain stack of PAST
- * Buffer values (push_undo/pop_undo below), each real keystroke its
- * own undo step -- no redo, no coalescing consecutive typing into one
- * step -- real, separate, deferred follow-up, matching every other
- * "expand when a real feature needs it" scope note this whole stdlib
- * already carries.
+ * Real Ctrl+Z undo + real Ctrl+Y redo (2026-08-27, same day): a plain
+ * stack of PAST Buffer values (push_undo/pop_undo/push_redo/pop_redo
+ * below), each real keystroke its own undo step -- no coalescing
+ * consecutive typing into one step -- real, separate, deferred
+ * follow-up, matching every other "expand when a real feature needs
+ * it" scope note this whole stdlib already carries.
  *
  * Usage: ./editor-demo [file]
  *   file defaults to "scratch.prn" in the current directory if not
@@ -159,40 +159,73 @@ static Result open_font_with_fallback(int point_size, Arena *a) {
     return open_font((char *)candidates[0], point_size, a); /* real, honest final failure */
 }
 
-/* push_undo / pop_undo -- real Ctrl+Z undo (2026-08-27, founder:
- * "continue working on parena editor"). A genuinely simple, correct
- * fit for VS0's own "every buffer edit returns a NEW Buffer value,
- * never mutates in place" design (already leaned on for selection/
- * clipboard): a prior Buffer's own text pointer stays valid forever in
- * the same arena (nothing here is ever freed until the whole program
- * exits), so a plain stack of PAST Buffer VALUES, pushed right before
- * each real mutating key handles its own edit, is the real, honest,
- * minimal undo -- no diffing, no separate op log. Real, deliberate v0
- * scope: every keystroke is its own undo step (typing "Hello" is 5
- * real undo steps, not one coalesced "typed word" step -- a real,
- * separate, deferred follow-up, matching every other "expand when a
- * real feature needs it" note this whole stdlib already carries); no
- * REDO stack either, same reasoning. Fixed-capacity, oldest-entry-
- * dropped-on-overflow -- a real, bounded editing session's own actual
- * undo depth needs, not unbounded growth. */
+/* push_undo / pop_undo / push_redo / pop_redo -- real Ctrl+Z undo
+ * (2026-08-27, founder: "continue working on parena editor") + real
+ * Ctrl+Y redo (2026-08-27, same day, founder: "continue" -- the direct
+ * complement). A genuinely simple, correct fit for VS0's own "every
+ * buffer edit returns a NEW Buffer value, never mutates in place"
+ * design (already leaned on for selection/clipboard): a prior Buffer's
+ * own text pointer stays valid forever in the same arena (nothing here
+ * is ever freed until the whole program exits), so a plain stack of
+ * PAST Buffer VALUES, pushed right before each real mutating key
+ * handles its own edit, is the real, honest, minimal undo -- no
+ * diffing, no separate op log. Real, deliberate v0 scope: every
+ * keystroke is its own undo step (typing "Hello" is 5 real undo steps,
+ * not one coalesced "typed word" step -- a real, separate, deferred
+ * follow-up, matching every other "expand when a real feature needs
+ * it" note this whole stdlib already carries). Fixed-capacity, oldest-
+ * entry-dropped-on-overflow -- a real, bounded editing session's own
+ * actual undo depth needs, not unbounded growth. push_stack/pop_stack
+ * is the one shared real implementation both the undo stack and the
+ * redo stack use -- they're the identical bounded-LIFO shape, only the
+ * backing array differs.
+ *
+ * Real redo semantics: push_undo (called at every real NEW edit) also
+ * clears the redo stack -- a genuinely new edit invalidates whatever
+ * was pending to redo, same real behavior every real editor's own
+ * undo/redo already has. Ctrl+Z pushes the buffer it's ABOUT to leave
+ * onto redo before popping undo; Ctrl+Y does the exact mirror (a raw
+ * push onto undo -- NOT through push_undo, since redoing isn't itself
+ * a new edit and must NOT clear the redo stack it's actively popping
+ * from) before popping redo. */
 #define UNDO_MAX 512
-static Buffer undo_stack[UNDO_MAX];
-static int undo_count = 0;
 
-static void push_undo(Buffer b) {
-    if (undo_count < UNDO_MAX) {
-        undo_stack[undo_count++] = b;
+static void push_stack(Buffer *stack, int *count, Buffer b) {
+    if (*count < UNDO_MAX) {
+        stack[(*count)++] = b;
     } else {
-        memmove(&undo_stack[0], &undo_stack[1], sizeof(Buffer) * (UNDO_MAX - 1));
-        undo_stack[UNDO_MAX - 1] = b;
+        memmove(&stack[0], &stack[1], sizeof(Buffer) * (UNDO_MAX - 1));
+        stack[UNDO_MAX - 1] = b;
     }
 }
 
-static Buffer pop_undo(Buffer fallback) {
-    if (undo_count > 0) {
-        return undo_stack[--undo_count];
+static Buffer pop_stack(Buffer *stack, int *count, Buffer fallback) {
+    if (*count > 0) {
+        return stack[--(*count)];
     }
     return fallback; /* real, honest no-op at the bottom of real history */
+}
+
+static Buffer undo_stack[UNDO_MAX];
+static int undo_count = 0;
+static Buffer redo_stack[UNDO_MAX];
+static int redo_count = 0;
+
+static void push_undo(Buffer b) {
+    push_stack(undo_stack, &undo_count, b);
+    redo_count = 0;
+}
+
+static Buffer pop_undo(Buffer fallback) {
+    return pop_stack(undo_stack, &undo_count, fallback);
+}
+
+static void push_redo(Buffer b) {
+    push_stack(redo_stack, &redo_count, b);
+}
+
+static Buffer pop_redo(Buffer fallback) {
+    return pop_stack(redo_stack, &redo_count, fallback);
 }
 
 int main(int argc, char **argv) {
@@ -247,10 +280,33 @@ int main(int argc, char **argv) {
                  * TEXTINPUT for a Ctrl-held combo, so there's no double-
                  * handling risk here. */
                 if (key == 'z' && ctrl_held_()) {
-                    /* Real Ctrl+Z undo -- pop the real previous Buffer
-                     * value straight off the real undo stack. No push
-                     * here: undoing isn't itself a real edit. */
-                    buf = pop_undo(buf);
+                    /* Real Ctrl+Z undo -- the buffer about to be LEFT
+                     * goes onto redo (so Ctrl+Y can bring it back),
+                     * then pop the real previous Buffer value off the
+                     * real undo stack. push_redo, not push_undo: this
+                     * isn't itself a new edit, so it must NOT clear the
+                     * real redo history it's actively adding to. Real,
+                     * confirmed-live bug caught by this feature's own
+                     * test (tests/test_editor_undo.c): guarded on
+                     * undo_count > 0 -- pressing Ctrl+Z with nothing
+                     * left to undo would otherwise still push a
+                     * spurious duplicate entry onto redo. */
+                    if (undo_count > 0) {
+                        push_redo(buf);
+                        buf = pop_undo(buf);
+                    }
+                } else if (key == 'y' && ctrl_held_()) {
+                    /* Real Ctrl+Y redo -- the exact mirror of Ctrl+Z:
+                     * raw push onto undo (via push_stack directly, NOT
+                     * push_undo -- redoing isn't a new edit either, and
+                     * must NOT clear the real redo stack it's actively
+                     * popping from), then pop the real next Buffer
+                     * value off the real redo stack. Same real guard,
+                     * same real reason: redo_count > 0 first. */
+                    if (redo_count > 0) {
+                        push_stack(undo_stack, &undo_count, buf);
+                        buf = pop_redo(buf);
+                    }
                 } else if (key == 'c' && ctrl_held_()) {
                     if (has_selection_(&buf)) {
                         char *whole = active_text(&buf);
@@ -312,11 +368,13 @@ int main(int argc, char **argv) {
                     save_to_file(path, active_text(&buf), &a);
                 } else if (key == key_f3()) {
                     /* A fresh load is a real, deliberate new starting
-                     * point, not something to undo INTO -- clears the
-                     * real undo history rather than leaving stale
-                     * entries pointing at the PREVIOUS file's content. */
+                     * point, not something to undo/redo INTO -- clears
+                     * both real history stacks rather than leaving
+                     * stale entries pointing at the PREVIOUS file's
+                     * content. */
                     buf = load_from_file(path, &a);
                     undo_count = 0;
+                    redo_count = 0;
                 } else if (key == key_return()) {
                     push_undo(buf);
                     if (has_selection_(&buf)) {
