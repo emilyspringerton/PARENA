@@ -6,7 +6,7 @@
 
 (module string)
 (import vec)
-(export parse-i32 length concat split char-at str-eq? contains-ci? is-digit? substring ParseError)
+(export parse-i32 length concat split char-at char-from-code str-eq? contains-ci? is-digit? substring ParseError)
 
 (defn length [(s : String @ Region)]
   : I32
@@ -36,6 +36,19 @@
   : Bool
   #target
   {:c (inline-c "strcmp(a, b) == 0")})
+
+;; char-from-code -- real, minimal I32 char-code -> one-character String
+;; constructor, the natural complement to char-at's own I32 decode
+;; (2026-08-27, real gap found building selfhost/lexer.prn's own real
+;; escape-sequence decoding for string literals -- \n/\t/\"/\\ etc. need
+;; to become real, single decoded bytes, not just pass through as their
+;; still-escaped two-character source form).
+(defn char-from-code [(code : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String 1)]
+    #target
+    {:c (inline-c "out[0] = (char)code; out[1] = '\\0';")}
+    out))
 
 ;; contains-ci? -- case-insensitive substring search, added 2026-08-26
 ;; closing a real gap found porting PITVIPER's own isWslStub

@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -280,6 +280,15 @@ test-editor-io: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_io.c \
 		runtime/parena_runtime.c -o /tmp/test_editor_io_bin -lm
 	/tmp/test_editor_io_bin
+
+# test-selfhost-lexer -- real end-to-end verification of
+# selfhost/lexer.prn, the first real slice of PARENA's own
+# self-hosting effort (NORTHSTAR.md's own "Self-hosting" section).
+test-selfhost-lexer: build
+	./parena build stdlib/string.prn selfhost/lexer.prn -o tests/test_selfhost_lexer_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_selfhost_lexer.c \
+		runtime/parena_runtime.c -o /tmp/test_selfhost_lexer_bin -lm
+	/tmp/test_selfhost_lexer_bin
 
 # test-editor-undo -- real, direct verification of the Ctrl+Z undo
 # stack semantics (push/pop/overflow), the same real logic

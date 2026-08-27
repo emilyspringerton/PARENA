@@ -265,19 +265,51 @@ pattern and a rejected invalid region escape:
 targets, macros (`defmacro`), and the mod-surface integration question. VS0 is the parser +
 region analyzer + C emitter + CLI, nothing else.
 
-## Self-hosting — a real future milestone, not started
+## Self-hosting — real progress started (2026-08-27)
 
 Founder, real-time: "ok but after we have a compiler we also need to write parena in parena" →
 "not c" → "silly." A real, well-understood language-engineering milestone (the same one Go, Rust,
 and most serious systems languages eventually hit): once the language and its C-implemented
 compiler (`parena-c`, VS0 above) are complete enough, rewrite the compiler *in Parena itself* —
-explicitly not staying C underneath, per the founder's own emphasis. Architecturally this can't
-start until VS0's remaining domains exist AND enough of the stdlib (see `STDLIB.md`) is real
-enough to write a parser/analyzer/emitter in Parena. Real progress toward the first half of that
-gate: domains 1-3 (lexer/parser, region analyzer, C emitter) are done and CI-green as of this
-session — only memory verification and CLI-runner polish (domains 4-5) remain. Not scoped further
-than that here — a real VS1/VS2-class milestone, sequenced after VS0 is actually done, not
-attempted now.
+explicitly not staying C underneath, per the founder's own emphasis. This section's own gating
+condition ("Architecturally this can't start until VS0's remaining domains exist") is now
+satisfied — VS0 is complete, all 5 DoD domains done and CI-green (see root `CLAUDE.md`'s current
+status line) — so the C-implemented half of the gate is real, not aspirational.
+
+**Real first step taken, same day, founder real-time: "self hosted compiler" → "continue"**:
+`selfhost/lexer.prn` — a real, faithful PARENA-language port of `src/lexer.c` (VS0's own C
+tokenizer), compiled BY the existing C-based `parena-c` (self-hosting only becomes real once a
+PARENA-in-PARENA pipeline can compile ITSELF — this is the first domain toward that, not a claim
+of having reached it). Real design departures from `src/lexer.c`'s own imperative, pointer-
+mutating shape, forced by VS0's own real, confirmed current limits (no struct field mutation, no
+tuple returns): every "advance" operation returns a NEW `Lexer` value; `lexer-next` returns a
+`LexStep` struct bundling the produced `Token` and the advanced `Lexer` together, a named-struct
+stand-in for a tuple return. 60 real assertions in `tests/test_selfhost_lexer.c` (hand-traced
+against `src/lexer.c`'s own real, documented behavior — parens/brackets, bang/amp-prefixed
+symbols, keyword-vs-standalone-colon disambiguation, negative/decimal numbers, every real escape
+sequence a string literal supports, unterminated-string error reporting, `;;` comment skipping,
+and a real fragment lifted from `stdlib/string.prn` itself), all passing, zero regressions across
+the full existing suite + bazel + real mingw cross-compile.
+
+**Real compiler bugs found and fixed along the way** (not guessed at — confirmed live via actual
+gcc errors self-hosting this file surfaced, the exact kind of real-world exercise a reference
+lexer port is good for): `emit_if`/`emit_binop` in `src/emit.c` built their own final C ternary/
+expression text via a fixed 512/1024-byte `snprintf` buffer, silently TRUNCATING mid-identifier
+once a deeply-nested `cond`/`if`/comparison chain's combined text exceeded it (confirmed live via
+a real `'LexSte' undeclared; did you mean 'LexStep'?` gcc error) — the exact same class of bug
+`emit_cond` had already been written to avoid (see its own header comment), just not yet applied
+to `emit_if`/`emit_binop`, or to 3 more `sb_appendf(out, "return %s;", ...)` call sites building a
+function's own final return statement. Fixed everywhere found via the same real, growable `StrBuf`
++ direct `sb_append` pattern `emit_cond` already established — not a speculative blanket rewrite
+of every remaining fixed-buffer site in `emit.c` (~25 more exist, unaudited, a real, separate,
+deferred systemic-review item, not attempted here). Also found: a match-bound `Ok` payload's own
+real emitted C variable stays generically `void *` (already documented as a real, established
+convention in `stdlib/regex/syntax.prn`'s own header comment — `(get-field (deref x) :field)`,
+never bare `(get-field x :field)`), applied here for the first time outside that one file.
+
+Not scoped further than the lexer here — the real next domain (a PARENA-language parser consuming
+`selfhost/lexer.prn`'s own `tokenize`, mirroring `src/parser.c`) is separate, unstarted follow-up
+work, picked up the same "one real, faithful domain at a time" way this file itself was.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
@@ -331,8 +363,11 @@ inferred type) — a real, scoped emitter for what VS0's own acceptance case nee
 general-purpose one for arbitrary future `.prn` programs.
 
 Memory verification and the full `parena build` pipeline's remaining polish (VS0's last 2 DoD
-domains) are real, scoped, unstarted follow-up work — the DoD table above is the actual acceptance
-bar, not a vague target. Self-hosting (above) is sequenced after VS0 completes.
+domains) were real, scoped follow-up work at the time this paragraph was written — since done: all
+5 DoD domains are complete and CI-green (see root `CLAUDE.md`'s current status line for the
+up-to-date summary; this paragraph is kept as the real, dated historical record of how each domain
+landed, not rewritten to erase that). Self-hosting (above) has genuinely started as of 2026-08-27,
+now that its own gating condition is met.
 
 ## Related
 

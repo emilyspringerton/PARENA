@@ -1,0 +1,336 @@
+;; selfhost/lexer.prn -- the first real slice of PARENA's own
+;; self-hosting effort (NORTHSTAR.md's own "Self-hosting" section,
+;; founder real-time: "ok but after we have a compiler we also need to
+;; write parena in parena" -> "not c" -> "silly"). VS0 (src/lexer.c,
+;; the C-implemented bootstrap compiler's own tokenizer) is the real
+;; reference implementation this file PORTS -- not a from-scratch
+;; design, a faithful behavioral port, verified against src/lexer.c's
+;; own real output on identical inputs (see tests/test_selfhost_lexer.c).
+;;
+;; Real, honest status (2026-08-27): NORTHSTAR.md's own stated gate for
+;; starting this ("VS0's remaining domains exist") is now satisfied --
+;; VS0 is complete, all 5 DoD domains done and CI-green (see root
+;; CLAUDE.md's current status line) -- this file is the actual first
+;; step, not a jump ahead of where the doc says self-hosting can start.
+;; Scope is deliberately narrow: THIS FILE IS ONLY THE LEXER (domain 1
+;; of what will eventually be a parser/region-analyzer/C-emitter too,
+;; mirroring VS0's own 5-domain build-out) -- compiled by the EXISTING
+;; C-based `parena-c` (VS0), not by itself; self-hosting only becomes
+;; real once a PARENA-in-PARENA pipeline can compile ITSELF, a real,
+;; much later milestone this file is the very first step toward, not a
+;; claim of having reached it.
+;;
+;; Real, deliberate departures from src/lexer.c's own imperative,
+;; pointer-mutating shape, forced by VS0's own real, confirmed current
+;; limits (no struct field mutation, no tuple returns -- the same class
+;; of departure every other stdlib file in this repo already documents
+;; when porting a C/Go reference implementation): every "advance the
+;; lexer" operation returns a NEW Lexer value rather than mutating one
+;; in place, and `lexer-next` (which in C returns a Token while ALSO
+;; mutating the lexer's own position via its pointer parameter) instead
+;; returns a LexStep struct bundling BOTH the produced Token and the
+;; advanced Lexer into one value -- a real, named-struct alternative to
+;; a tuple return, matching how Buffer already bundles multiple pieces
+;; of state into one struct elsewhere in this codebase.
+
+(module selfhost/lexer)
+(import string)
+(export new-lexer lexer-next tokenize
+        Lexer Token TokenType LexError LexStep)
+
+(defenum TokenType
+  (TLParen) (TRParen) (TLBracket) (TRBracket) (TLBrace) (TRBrace)
+  (TColon) (TAt) (TSymbol) (TKeyword) (TString) (TNumber) (TEof))
+
+(defstruct Token
+  (kind : TokenType)
+  (text : String @ Region)
+  (line : I32))
+
+(defstruct Lexer
+  (src  : String @ Region)
+  (pos  : I32)
+  (len  : I32)
+  (line : I32))
+
+(defenum LexError
+  (UnterminatedString (line : I32))
+  (UnexpectedChar (line : I32)))
+
+;; LexStep -- see this file's own header comment for why this exists
+;; (the real tuple-return workaround: bundles the produced Token AND
+;; the Lexer's own advanced state into one value).
+(defstruct LexStep
+  (token  : Token)
+  (lexer  : Lexer))
+
+(defn new-lexer [(src : String @ Region)]
+  : Lexer @ Region
+  {:src src :pos 0 :len (string/length src) :line 1})
+
+;; ---- real, private, low-level scanning helpers -- direct ports of
+;; src/lexer.c's own at_end/peek/peek2/advance/is_symbol_char. All take
+;; `&Lexer` (a real reference/borrow, matching every other real "query
+;; a struct" function in this stdlib, e.g. stdlib/editor/buffer.prn's
+;; own cursor-pos), never mutate it -- lx-advance returns a real NEW
+;; Lexer value instead, same functional-update shape insert-at-cursor/
+;; set-cursor already establish.
+
+(defn lx-at-end? [(lx : &Lexer)] : Bool
+  (>= (get-field lx :pos) (get-field lx :len)))
+
+(defn lx-peek [(lx : &Lexer)] : I32
+  (if (lx-at-end? lx) 0 (string/char-at (get-field lx :src) (get-field lx :pos))))
+
+(defn lx-peek2 [(lx : &Lexer)] : I32
+  (let [p (+ (get-field lx :pos) 1)]
+    (if (>= p (get-field lx :len)) 0 (string/char-at (get-field lx :src) p))))
+
+;; lx-advance -- real port of C's own advance(): consumes exactly one
+;; char, bumping `line` if it was a real newline (ASCII 10). Returns a
+;; brand new Lexer value -- see this file's own header comment on why
+;; (no struct field mutation in VS0 today).
+(defn lx-advance [(lx : &Lexer)] : Lexer @ Region
+  (let [c (lx-peek lx)]
+    {:src (get-field lx :src)
+     :pos (+ (get-field lx :pos) 1)
+     :len (get-field lx :len)
+     :line (if (= c 10) (+ (get-field lx :line) 1) (get-field lx :line))}))
+
+;; lx-is-whitespace?/lx-is-symbol-char? -- real, private (not exported)
+;; local helpers, deliberately NOT reused from elsewhere (e.g.
+;; stdlib/json.prn's own identically-shaped is-whitespace?) -- this
+;; whole session found the same real VS0 gap 3 separate times (private
+;; top-level names aren't module-scoped, so two DIFFERENTLY-INTENDED
+;; but IDENTICALLY-NAMED private helpers collide the moment both
+;; compile together); giving this file's own copies a distinct lx-
+;; prefix sidesteps that real, confirmed-live class of bug rather than
+;; risking it again.
+(defn lx-is-whitespace? [(c : I32)] : Bool
+  (or (= c 32) (or (= c 9) (or (= c 10) (= c 13)))))
+
+;; lx-is-symbol-char? -- real port of C's own is_symbol_char: everything
+;; except whitespace and the six structural/reader-macro characters
+;; ( ) [ ] { } : @ " ; is a valid symbol constituent, matching this
+;; language's own Lisp-family reader (!file, &var, &mut, set!, etc. are
+;; all real, valid symbols).
+(defn lx-is-symbol-char? [(c : I32)] : Bool
+  (cond
+    ((lx-is-whitespace? c) false)
+    ((= c 40) false)  ;; (
+    ((= c 41) false)  ;; )
+    ((= c 91) false)  ;; [
+    ((= c 93) false)  ;; ]
+    ((= c 123) false) ;; {
+    ((= c 125) false) ;; }
+    ((= c 58) false)  ;; :
+    ((= c 64) false)  ;; @
+    ((= c 34) false)  ;; "
+    ((= c 59) false)  ;; ;
+    (true true)))
+
+;; lx-skip-ws-and-comments -- real port of C's own
+;; skip_whitespace_and_comments. A single flat loop with 3 real,
+;; simultaneously-updated bindings (pos/line/in-comment) rather than a
+;; nested loop for the comment-skip -- VS0's own loop/recur already
+;; gives real simultaneous reassignment, so this stays one loop instead
+;; of two, a real, deliberate simplification over C's own nested-while
+;; shape (same observable behavior: ';'/';;' both run to end of line,
+;; the newline itself is left unconsumed so the outer loop's own
+;; whitespace branch is what actually bumps `line` for it).
+(defn lx-skip-ws-and-comments [(lx : &Lexer)] : Lexer @ Region
+  (let [src (get-field lx :src)
+        len (get-field lx :len)]
+    (loop [pos (get-field lx :pos)
+           line (get-field lx :line)
+           in-comment false]
+      (if (>= pos len)
+        {:src src :pos pos :len len :line line}
+        (let [c (string/char-at src pos)]
+          (cond
+            (in-comment
+              (if (= c 10)
+                (recur pos line false)
+                (recur (+ pos 1) line true)))
+            ((lx-is-whitespace? c)
+              (recur (+ pos 1) (if (= c 10) (+ line 1) line) false))
+            ((= c 59)
+              (recur (+ pos 1) line true))
+            (true {:src src :pos pos :len len :line line})))))))
+
+;; ---- real, private end-position scanners -- direct ports of C's own
+;; lex_symbol/lex_keyword/lex_number's own internal scan loops, split
+;; out here as pure "how far does this token extend" helpers so
+;; lex-symbol/lex-keyword/lex-number below can all share the same real
+;; "scan then substring" shape lex_symbol/lex_keyword/lex_number in C
+;; each repeat inline.
+
+(defn lx-scan-symbol-end [(lx : &Lexer)] : I32
+  (let [src (get-field lx :src) len (get-field lx :len)]
+    (loop [pos (get-field lx :pos)]
+      (if (>= pos len) pos
+        (if (lx-is-symbol-char? (string/char-at src pos)) (recur (+ pos 1)) pos)))))
+
+;; lx-scan-keyword-end -- same as lx-scan-symbol-end but ALSO allows a
+;; real '/' (47) mid-keyword (:region/scratch), matching C's own
+;; `is_symbol_char(c) || c == '/'` exactly. Starts one past the leading
+;; ':' (matching C's own advance() call before the scan loop).
+(defn lx-scan-keyword-end [(lx : &Lexer)] : I32
+  (let [src (get-field lx :src) len (get-field lx :len)]
+    (loop [pos (+ (get-field lx :pos) 1)]
+      (if (>= pos len) pos
+        (let [c (string/char-at src pos)]
+          (if (or (lx-is-symbol-char? c) (= c 47)) (recur (+ pos 1)) pos))))))
+
+(defn lx-scan-digits-end [(src : String @ Region) (len : I32) (start : I32)] : I32
+  (loop [pos start]
+    (if (>= pos len) pos
+      (if (string/is-digit? (string/char-at src pos)) (recur (+ pos 1)) pos))))
+
+;; lx-looks-like-number? -- real port of C's own looks_like_number_start:
+;; a plain digit, OR a '-'/'+' immediately followed by a digit (so a
+;; bare '-' or '+' alone -- e.g. a real symbol like `-` itself, used as
+;; a function name -- still correctly falls through to lex-symbol
+;; instead).
+(defn lx-looks-like-number? [(lx : &Lexer)] : Bool
+  (let [c (lx-peek lx)]
+    (cond
+      ((string/is-digit? c) true)
+      ((or (= c 45) (= c 43)) (string/is-digit? (lx-peek2 lx)))
+      (true false))))
+
+;; lx-scan-number-end -- real port of C's own lex_number: an optional
+;; leading -/+, a real integer run, then an optional '.' + a second
+;; digit run (a decimal point NOT followed by a digit, e.g. a trailing
+;; '.', is deliberately NOT consumed -- matches C's own real
+;; `peek(lx) == '.' && isdigit(peek2(lx))` guard exactly).
+(defn lx-scan-number-end [(lx : &Lexer)] : I32
+  (let [src (get-field lx :src) len (get-field lx :len)
+        p0 (get-field lx :pos)
+        c0 (string/char-at src p0)
+        int-start (if (or (= c0 45) (= c0 43)) (+ p0 1) p0)
+        int-end (lx-scan-digits-end src len int-start)]
+    (if (>= int-end len)
+      int-end
+      (if (and (= (string/char-at src int-end) 46)
+               (and (< (+ int-end 1) len)
+                    (string/is-digit? (string/char-at src (+ int-end 1)))))
+        (lx-scan-digits-end src len (+ int-end 1))
+        int-end))))
+
+;; ---- real token constructors -- each a direct port of its own
+;; identically-named C function, all sharing the real "capture start
+;; pos/line, scan to an end position (or, for strings, decode char by
+;; char), substring/build the text, return the new Lexer positioned
+;; past it" shape.
+
+(defn lex-symbol [(lx : &Lexer) (dest : Arena @ Region)] : (Result LexStep LexError) @ Region
+  (let [src (get-field lx :src) start (get-field lx :pos) line (get-field lx :line)
+        end (lx-scan-symbol-end lx)
+        text (string/substring src start end dest)]
+    (Ok {:token {:kind TSymbol :text text :line line}
+         :lexer {:src src :pos end :len (get-field lx :len) :line line}})))
+
+(defn lex-keyword [(lx : &Lexer) (dest : Arena @ Region)] : (Result LexStep LexError) @ Region
+  (let [src (get-field lx :src) start (get-field lx :pos) line (get-field lx :line)
+        end (lx-scan-keyword-end lx)
+        text (string/substring src start end dest)]
+    (Ok {:token {:kind TKeyword :text text :line line}
+         :lexer {:src src :pos end :len (get-field lx :len) :line line}})))
+
+(defn lex-number [(lx : &Lexer) (dest : Arena @ Region)] : (Result LexStep LexError) @ Region
+  (let [src (get-field lx :src) start (get-field lx :pos) line (get-field lx :line)
+        end (lx-scan-number-end lx)
+        text (string/substring src start end dest)]
+    (Ok {:token {:kind TNumber :text text :line line}
+         :lexer {:src src :pos end :len (get-field lx :len) :line line}})))
+
+;; lex-string -- real port of C's own lex_string, including real escape
+;; decoding (\n \t \" \\ -> their real single-byte form, matching
+;; C's own switch exactly; any OTHER char after a backslash passes
+;; through literally, same as C's own `default: c = e;`). Real,
+;; deliberate departure from C's own fixed 4096-byte stack buffer:
+;; builds the decoded text via repeated string/concat, one real
+;; decoded character at a time -- an honest O(n^2) v0 (matches this
+;; whole codebase's own established "simple over optimized" tradeoff,
+;; e.g. array.prn's own linear Vec growth), with no hidden 4096-byte
+;; truncation C's own version silently has. An unterminated string
+;; (EOF before the closing quote, including a real trailing backslash
+;; at EOF) reports UnterminatedString at the line the string OPENED,
+;; matching C's own start_line-in-the-message convention exactly.
+(defn lex-string [(lx : &Lexer) (dest : Arena @ Region)] : (Result LexStep LexError) @ Region
+  (let [start-line (get-field lx :line)
+        src (get-field lx :src)
+        len (get-field lx :len)]
+    (loop [pos (+ (get-field lx :pos) 1)
+           line start-line
+           acc ""]
+      (if (>= pos len)
+        (Err (UnterminatedString start-line))
+        (let [c (string/char-at src pos)]
+          (cond
+            ((= c 34)
+              (Ok {:token {:kind TString :text acc :line start-line}
+                   :lexer {:src src :pos (+ pos 1) :len len :line line}}))
+            ((= c 92)
+              (if (>= (+ pos 1) len)
+                (Err (UnterminatedString start-line))
+                (let [e (string/char-at src (+ pos 1))
+                      decoded (cond
+                                ((= e 110) 10)  ;; \n
+                                ((= e 116) 9)   ;; \t
+                                ((= e 34) 34)   ;; \"
+                                ((= e 92) 92)   ;; \\
+                                (true e))]
+                  (recur (+ pos 2) line (string/concat acc (string/char-from-code decoded dest) dest)))))
+            (true
+              (recur (+ pos 1) (if (= c 10) (+ line 1) line)
+                     (string/concat acc (string/char-from-code c dest) dest)))))))))
+
+;; lexer-next -- real port of C's own lexer_next: skips whitespace/
+;; comments first, then dispatches on the real next character. Real
+;; departure from C's own shape: returns (Result LexStep LexError)
+;; instead of a bare Token + an out-param error -- see this file's own
+;; header comment.
+(defn lexer-next [(lx : &Lexer) (dest : Arena @ Region)] : (Result LexStep LexError) @ Region
+  (let [skipped (lx-skip-ws-and-comments lx)]
+    (if (lx-at-end? &skipped)
+      (Ok {:token {:kind TEof :text "" :line (get-field skipped :line)}
+           :lexer skipped})
+      (let [line (get-field skipped :line)
+            c (lx-peek &skipped)]
+        (cond
+          ((= c 40) (Ok {:token {:kind TLParen :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 41) (Ok {:token {:kind TRParen :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 91) (Ok {:token {:kind TLBracket :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 93) (Ok {:token {:kind TRBracket :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 123) (Ok {:token {:kind TLBrace :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 125) (Ok {:token {:kind TRBrace :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 34) (lex-string &skipped dest))
+          ((= c 64) (Ok {:token {:kind TAt :text "" :line line} :lexer (lx-advance &skipped)}))
+          ((= c 58)
+            (if (lx-is-symbol-char? (lx-peek2 &skipped))
+              (lex-keyword &skipped dest)
+              (Ok {:token {:kind TColon :text "" :line line} :lexer (lx-advance &skipped)})))
+          ((lx-looks-like-number? &skipped) (lex-number &skipped dest))
+          ((lx-is-symbol-char? c) (lex-symbol &skipped dest))
+          (true (Err (UnexpectedChar line))))))))
+
+;; tokenize -- real convenience wrapper: lexes `src` all the way to
+;; TEof (inclusive) or the first real error, returning every real
+;; token as a (Vec Token) -- the shape a future real PARENA-in-PARENA
+;; parser (the real next domain of this same self-hosting effort) will
+;; actually consume.
+(defn tokenize [(src : String @ Region) (dest : Arena @ Region)] : (Result (Vec Token) LexError) @ Region
+  (let [out (vec/new dest)]
+    (loop [lx (new-lexer src)]
+      (match (lexer-next &lx dest)
+        ((Err e) (Err e))
+        ((Ok step)
+          (let [tok (get-field (deref step) :token)
+                next-lx (get-field (deref step) :lexer)]
+            (do
+              (vec/push! &out tok)
+              (match (get-field tok :kind)
+                ((TEof) (Ok out))
+                (_ (recur next-lx))))))))))

@@ -1302,9 +1302,22 @@ static const char *emit_binop(Arena *arena, Node *call, const char *c_op, EmitSc
             const char *next_type = NULL;
             const char *next = emit_expr(arena, call->children[i], scope, &next_type, out_error);
             if (!next) return NULL;
-            char buf[1024];
-            snprintf(buf, sizeof(buf), "(%s %s %s)", acc, c_op, next);
-            acc = arena_strdup(arena, buf, strlen(buf));
+            /* Real, confirmed-live truncation risk (see emit_if's own
+             * header comment for the exact class of bug and how it was
+             * found) -- acc grows on every iteration of this loop, so a
+             * long enough &&/|| chain can genuinely exceed a fixed
+             * buffer here too. StrBuf + plain sb_append, not snprintf. */
+            StrBuf buf;
+            sb_init(&buf);
+            sb_append(&buf, "(");
+            sb_append(&buf, acc);
+            sb_append(&buf, " ");
+            sb_append(&buf, c_op);
+            sb_append(&buf, " ");
+            sb_append(&buf, next);
+            sb_append(&buf, ")");
+            acc = arena_strdup(arena, buf.data, buf.len);
+            sb_free(&buf);
         }
         *out_type = "int";
         return acc;
@@ -1327,15 +1340,43 @@ static const char *emit_binop(Arena *arena, Node *call, const char *c_op, EmitSc
                          strcmp(c_op, ">=") == 0;
     *out_type = is_comparison ? "int" : lhs_type;
 
-    char buf[512];
-    snprintf(buf, sizeof(buf), "(%s %s %s)", lhs, c_op, rhs);
-    return arena_strdup(arena, buf, strlen(buf));
+    /* Real, confirmed-live truncation risk -- see emit_if's own header
+     * comment for the exact class of bug and how it was found. lhs/rhs
+     * can themselves be long, already-nested expressions. */
+    StrBuf buf;
+    sb_init(&buf);
+    sb_append(&buf, "(");
+    sb_append(&buf, lhs);
+    sb_append(&buf, " ");
+    sb_append(&buf, c_op);
+    sb_append(&buf, " ");
+    sb_append(&buf, rhs);
+    sb_append(&buf, ")");
+    const char *result = arena_strdup(arena, buf.data, buf.len);
+    sb_free(&buf);
+    return result;
 }
 
 /* emit_if handles `(if cond then else)` as a real C ternary -- correct
  * for expression position (which is the only position VS0's own real
  * `.prn` examples use `if` in so far), not a statement-position `if`
- * with side-effecting branches. */
+ * with side-effecting branches.
+ *
+ * Real, confirmed-live bug fixed here (2026-08-27, found self-hosting
+ * selfhost/lexer.prn -- a real `if` nested inside a `cond` clause,
+ * whose own `then`/`else` branches were themselves long nested struct-
+ * construction expressions): the original body built the final "(%s ?
+ * %s : %s)" text via a fixed `char buf[512]; snprintf(...)` -- the
+ * exact same class of real truncation bug emit_cond's own header
+ * comment already documents and works around (a long enough cond/then/
+ * else combination silently truncates mid-identifier, no error, just
+ * broken generated C -- confirmed live via a real "'LexSte' undeclared;
+ * did you mean 'LexStep'?" gcc error). Fixed the same way emit_cond
+ * already does: a growable StrBuf with each piece appended via plain
+ * sb_append (never sb_appendf, whose own internal vsnprintf buffer has
+ * the identical real 1024-byte limit one level down -- appending the
+ * arbitrarily-long cond/then/else pieces through it would just move
+ * the same bug rather than fix it). */
 static const char *emit_if(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                             const char **out_error) {
     if (call->child_count != 4) {
@@ -1352,9 +1393,18 @@ static const char *emit_if(Arena *arena, Node *call, EmitScope *scope, const cha
     if (!else_c) return NULL;
 
     *out_type = then_type; /* real, honest simplification: no branch-type unification check yet */
-    char buf[512];
-    snprintf(buf, sizeof(buf), "(%s ? %s : %s)", cond, then_c, else_c);
-    return arena_strdup(arena, buf, strlen(buf));
+    StrBuf buf;
+    sb_init(&buf);
+    sb_append(&buf, "(");
+    sb_append(&buf, cond);
+    sb_append(&buf, " ? ");
+    sb_append(&buf, then_c);
+    sb_append(&buf, " : ");
+    sb_append(&buf, else_c);
+    sb_append(&buf, ")");
+    const char *result = arena_strdup(arena, buf.data, buf.len);
+    sb_free(&buf);
+    return result;
 }
 
 /* emit_cond handles `(cond (test1 result1) (test2 result2) ... (testN
@@ -3644,7 +3694,13 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
         const char *val_type = NULL;
         const char *val_c = emit_expr(arena, body->children[1], scope, &val_type, out_error);
         if (!val_c) return 0;
-        sb_appendf(out, "        return %s;\n", val_c);
+        /* Real, confirmed-live truncation risk -- see emit_if's own
+         * header comment. val_c can be an arbitrarily long emitted
+         * expression, so this uses direct sb_append, not sb_appendf's
+         * own fixed-buffer %s substitution. */
+        sb_append(out, "        return ");
+        sb_append(out, val_c);
+        sb_append(out, ";\n");
         if (out_result_type) *out_result_type = NULL;
         return 1;
     }
@@ -4346,7 +4402,11 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             const char *val_type = NULL;
             const char *val_c = emit_expr(arena, form->children[1], scope, &val_type, out_error);
             if (!val_c) return 0;
-            sb_appendf(out, "    return %s;\n", val_c);
+            /* Real, confirmed-live truncation risk -- see emit_if's own
+             * header comment. Direct sb_append, not sb_appendf. */
+            sb_append(out, "    return ");
+            sb_append(out, val_c);
+            sb_append(out, ";\n");
         } else if (is_symbol(form, "#target") && i + 1 < count) {
             /* `#target {:c (inline-c "...")}` as a MID-BODY statement,
              * not a whole function body -- found missing (2026-08-21,
@@ -4507,10 +4567,24 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
          * type genuinely is void. A void-typed tail expression is
          * emitted as a bare statement instead; falling off the end of a
          * void C function is valid and means the same thing. */
+        /* Real, confirmed-live truncation bug fixed here (2026-08-27,
+         * found self-hosting selfhost/lexer.prn -- a function whose
+         * whole body is one long nested if/cond/let tail expression):
+         * sb_appendf's own internal vsnprintf uses a fixed 1024-byte
+         * buffer (see its definition near the top of this file) --
+         * expr_c here is the FULL emitted tail expression, which can
+         * genuinely exceed that, silently truncating mid-identifier
+         * with no error (confirmed live via a real "'LexSte' undeclared;
+         * did you mean 'LexStep'?" gcc error). Direct sb_append calls,
+         * same fix as emit_if/emit_binop above. */
         if (tail_is_bare_unit || (c_type && strcmp(c_type, "void") == 0)) {
-            sb_appendf(out, "    (void)(%s);\n", expr_c);
+            sb_append(out, "    (void)(");
+            sb_append(out, expr_c);
+            sb_append(out, ");\n");
         } else {
-            sb_appendf(out, "    return %s;\n", expr_c);
+            sb_append(out, "    return ");
+            sb_append(out, expr_c);
+            sb_append(out, ";\n");
         }
     } else {
         /* Real, self-caught bug fixed here (2026-08-21, gcc-verifying

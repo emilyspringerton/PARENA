@@ -101,6 +101,7 @@ static inline __attribute__((unused)) BufferError BufferError_OutOfRange(void) {
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
@@ -252,6 +253,12 @@ int char_at(char * s __attribute__((unused)), int i __attribute__((unused))) {
 
 int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) {
     return (strcmp(a, b) == 0);
+}
+
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
 }
 
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
