@@ -73,6 +73,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* prnfmt_format_and_copy -- real, plain forward declaration only (2026-
  * 08-27, founder real-time: "build prnfmt into the editor so saving
@@ -173,6 +174,37 @@ static Vec recompute_spotlight(const char *root, const char *query, Arena *a) {
     return run_providers((char *)query, (char *)root, a);
 }
 
+/* looks_like_binary -- real, minimal, standard "is this text" heuristic
+ * (2026-08-27, real bug found live: founder clicked a real .exe in the
+ * file-tree sidebar, "it just says like MZ" -- the real DOS/PE
+ * executable magic header, rendered as raw garbage bytes since
+ * load_from_file had no binary detection at all, same real gap every
+ * text editor has to close). Same real, standard "a NUL byte in the
+ * first N bytes means binary" check every real editor (vim, VS Code,
+ * git's own diff heuristic) uses -- genuine UTF-8/ASCII text never
+ * legitimately contains a raw NUL byte; a compiled binary, image, or
+ * archive almost always does within its first few hundred bytes. Real,
+ * honest, narrow: doesn't attempt real encoding detection (UTF-16,
+ * etc.) or a full binary/text classifier -- just the one, cheap,
+ * standard signal that actually matters for "don't render an .exe as
+ * garbage text." */
+/* Real, confirmed-live bug in an earlier draft of this same fix, caught
+ * before shipping: read-string's own return value is a real, plain,
+ * NUL-terminated C string -- if the real on-disk file has an EMBEDDED
+ * NUL byte partway through (the common case for a real binary), the
+ * string implicitly ends right there; strlen() on it can never then
+ * "find" that same NUL within [0, strlen) by definition, since
+ * everything up to strlen is exactly the bytes that AREN'T NUL. So the
+ * real, correct check isn't scanning the (already-truncated) string
+ * for a NUL -- it's comparing the string's own real length against the
+ * REAL on-disk file size: they only differ when an embedded NUL cut
+ * the string short. */
+static int looks_like_binary(const char *path, const char *text) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (size_t)st.st_size != strlen(text);
+}
+
 static Buffer load_from_file(const char *path, Arena *a) {
     if (!path_exists_((char *)path)) return new(a);
     Result openr = file_open((char *)path, OpenMode_Read(), a);
@@ -186,6 +218,10 @@ static Buffer load_from_file(const char *path, Arena *a) {
     file_close(f, a);
     if (rr.tag != 1) { fprintf(stderr, "editor: load failed (read error)\n"); return new(a); }
     char *text = (char *)rr.value;
+    if (looks_like_binary(path, text)) {
+        fprintf(stderr, "editor: %s looks like a binary file -- not opening it as text\n", path);
+        return from_text("(this looks like a binary file -- PARENA editor does not open binary files)\n");
+    }
     fprintf(stderr, "editor: loaded from %s\n", path);
     return from_text(text);
 }
@@ -1174,7 +1210,51 @@ int main(int argc, char **argv) {
                             file_tree_dir = dir_copy;
                             file_tree_entries = list_dir(file_tree_dir, &a);
                         } else {
-                            spawn_new_instance(exe_path, full_path);
+                            /* Real, confirmed-live bug fixed here
+                             * (2026-08-27, founder real-time: "it seems
+                             * like double clicking a file in the nerd
+                             * tree does not work"): clicking a file
+                             * here used to call spawn_new_instance,
+                             * the SAME real "open in a genuinely new
+                             * window" behavior drag-and-drop
+                             * deliberately uses (that one's own real,
+                             * considered scope -- "for now spawns a new
+                             * window is fine" -- was never about the
+                             * sidebar). Reusing it here was a real
+                             * oversight, not a separately-considered
+                             * choice: a file-tree BROWSER whose whole
+                             * point is navigating and opening files
+                             * from the current project should load
+                             * in-place, the same real expectation every
+                             * other real editor's own sidebar sets --
+                             * spawning an invisible-until-you-notice-it
+                             * second window instead reads exactly like
+                             * "nothing happened." Fixed to the same
+                             * real load+undo/redo-reset shape F3
+                             * (reload) already establishes below.
+                             * Drag-and-drop (spawn_new_instance's other
+                             * real call site) is untouched -- that
+                             * one's own "new window" behavior stays the
+                             * founder's own explicit, considered
+                             * choice. */
+                            size_t fplen = strlen(full_path) + 1;
+                            char *path_copy = (char *)arena_alloc(&a, fplen);
+                            memcpy(path_copy, full_path, fplen);
+                            path = path_copy;
+                            buf = load_from_file(path, &a);
+                            undo_count = 0;
+                            redo_count = 0;
+                            /* Real grammar reselection to match, same
+                             * real reasoning path itself needed
+                             * updating: switching to a genuinely
+                             * different file type (e.g. .prn -> .md)
+                             * via the file-tree should highlight with
+                             * that file's own real grammar, not keep
+                             * whatever grammar this window happened to
+                             * launch with. */
+                            is_markdown = path_has_suffix(path, ".md");
+                            Result gr2 = is_markdown ? build_markdown_grammar(&a) : build_grammar(&a);
+                            if (gr2.tag == 1) rules = *(Vec *)gr2.value;
                         }
                     }
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
