@@ -1,4 +1,5 @@
 ## 2026-08-27
+- Root-caused and fixed a real Windows DPI-awareness bug making mouse click/drag coordinates wrong in the PARENA editor (SDL_HINT_WINDOWS_DPI_AWARENESS=permonitorv2); added a hover-reveal status bar (auto-indent toggle) that stays hidden except near the bottom edge. v0.79.0 (sess-20260825-1938-f6bd411e) (sess-20260825-1938-f6bd411e)
 - Real Ctrl+A select-all, mouse-wheel scroll (line-based), auto-indent-on-Enter (comment/string-aware paren-depth counter), and Tab-to-indent in the PARENA editor. v0.78.0 (sess-20260825-1938-f6bd411e) (sess-20260825-1938-f6bd411e)
 - Real drag-and-drop file opening in the PARENA editor -- SDL_DROPFILE plumbed end-to-end, spawns a genuinely new editor process/window per dropped file (fork+execl/CreateProcessA); exe-relative font path lookup (executable_path/executable_dir) fixes the double-black-screen Windows launch bug the founder hit live. v0.77.0 (sess-20260825-1938-f6bd411e) (sess-20260825-1938-f6bd411e)
 - Real macOS dylib bundling (otool/install_name_tool/codesign) for the PARENA editor release binary -- no longer needs 'brew install sdl2 sdl2_ttf'. v0.76.0 (sess-20260825-1938-f6bd411e)
