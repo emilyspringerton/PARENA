@@ -321,6 +321,32 @@ jobs:
           path: PARENA_CONSTRUCT.txt
           if-no-files-found: error
 
+      # Founder real-time: "ensure parena ci uploads construct artifacts...
+      # have 2 additional artifacts one targz the other zip of that file" --
+      # 2 real, separately-downloadable compressed copies of the SAME
+      # PARENA_CONSTRUCT.txt this step just generated, alongside (not
+      # instead of) the raw .txt artifact above.
+      - name: Compress Construct Bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf PARENA_CONSTRUCT.tar.gz PARENA_CONSTRUCT.txt
+          zip PARENA_CONSTRUCT.zip PARENA_CONSTRUCT.txt
+
+      - name: Upload Construct Artifact (tar.gz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: PARENA_Construct_${{ github.run_number }}_${{ github.sha }}_targz
+          path: PARENA_CONSTRUCT.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Construct Artifact (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: PARENA_Construct_${{ github.run_number }}_${{ github.sha }}_zip
+          path: PARENA_CONSTRUCT.zip
+          if-no-files-found: error
+
   # Real, native Windows compile of editor-demo, mirroring PITVIPER's own
   # real, proven build_windows job (.github/workflows/ci.yml): MSYS2/MinGW64
   # provides SDL2 + a matching gcc in one self-consistent toolchain, avoiding
@@ -700,21 +726,40 @@ jobs:
           name: editor-demo-macos-${{ github.run_number }}-${{ github.sha }}
           path: dist-editor/macos
 
+      # Founder real-time: "include the construct file in the client
+      # artifact so we can identify specific versions if we find them
+      # later" -- the raw PARENA_CONSTRUCT.txt this same commit's own
+      # build_and_test job already generated, bundled directly into
+      # each real, downloadable client package below (same real
+      # "identify a build from its own source snapshot" precedent
+      # SHANKPIT's own ci.yml already establishes for its own
+      # ShankPit_Client zip).
+      - name: Download Construct Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: PARENA_Construct_${{ github.run_number }}_${{ github.sha }}
+          path: dist-construct
+
       - name: Package release assets
         run: |
           set -euo pipefail
           chmod +x dist/parena
           chmod +x dist-editor/linux/editor-demo
           chmod +x dist-editor/macos/editor-demo
+          cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/linux/
+          cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/macos/
+          cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/windows/
           # Linux/macOS: real tar.gz. Both include a real bundled lib/
           # dir (Linux via patchelf/RPATH, macOS via otool/
           # install_name_tool/codesign -- see each platform's own real
-          # bundling step earlier in this file) and the bundled
+          # bundling step earlier in this file), the bundled
           # JetBrainsMono-Regular.ttf font (real, confirmed-live bug
           # fix, 2026-08-26 -- see examples/editor_main.c's own
-          # open_font_with_fallback header comment).
-          tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf
-          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo lib JetBrainsMono-Regular.ttf
+          # open_font_with_fallback header comment), and now
+          # PARENA_CONSTRUCT.txt itself (see this job's own "Download
+          # Construct Bundle" step comment above).
+          tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt
+          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt
           (cd dist-editor/windows && zip -r ../../editor-demo-windows-x86_64.zip .)
 
       - name: Compute next minor version
