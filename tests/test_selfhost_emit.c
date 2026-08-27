@@ -154,6 +154,65 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* --- real coverage for param-type-name/param-c-type, added
+     * 2026-08-27: emit-params used to hard-code EVERY param's own C
+     * type as `Arena *` regardless of its real declared type -- a
+     * real, confirmed type-correctness bug (this file's own prior
+     * header comment already honestly flagged it as a known, narrow
+     * v0 gap). selfhost/lexer.prn's own real `new-lexer` function,
+     * `(defn new-lexer [(src : String @ Region)] ...)`, is a real,
+     * live example: its own single param is String-typed, not
+     * Arena-typed. --- */
+    {
+        char *snippet =
+            "(defn string-param-fn [(s : String @ Region)]\n"
+            "  s)";
+        Result pr3 = parse_program(snippet, &a);
+        CHECK(pr3.tag == 1, "a real String-typed param parses fine");
+        if (pr3.tag == 1) {
+            Node program3 = *(Node *)pr3.value;
+            char *generated3 = emit_program(&program3, &a);
+            CHECK(generated3 != NULL && strstr(generated3, "char * string_param_fn(char *s") != NULL,
+                  "a real String-typed param is declared as a real C char *, not the old hard-coded Arena *");
+        }
+    }
+    {
+        char *snippet =
+            "(defn i32-param-fn [(n : I32)]\n"
+            "  n)";
+        Result pr4 = parse_program(snippet, &a);
+        CHECK(pr4.tag == 1, "a real I32-typed param parses fine");
+        if (pr4.tag == 1) {
+            Node program4 = *(Node *)pr4.value;
+            char *generated4 = emit_program(&program4, &a);
+            CHECK(generated4 != NULL && strstr(generated4, "char * i32_param_fn(int n") != NULL,
+                  "a real I32-typed param is declared as a real C int, not the old hard-coded Arena *");
+        }
+    }
+    {
+        /* real, honest regression guard: an Arena-typed param must
+         * still get its own real "Arena *" C type and still get added
+         * to the real ArenaBinding scope (so an alloc call referencing
+         * it still resolves bare, no stray '&') -- the whole reason
+         * this codepath existed before param-type-name/param-c-type
+         * were added. */
+        char *snippet =
+            "(defn arena-param-fn [(buf-arena : Arena @ :region/buffer)]\n"
+            "  (let [x (alloc buf-arena String \"hi\")]\n"
+            "    x))";
+        Result pr5 = parse_program(snippet, &a);
+        CHECK(pr5.tag == 1, "a real Arena-typed param parses fine");
+        if (pr5.tag == 1) {
+            Node program5 = *(Node *)pr5.value;
+            char *generated5 = emit_program(&program5, &a);
+            CHECK(generated5 != NULL && strstr(generated5, "char * arena_param_fn(Arena *buf_arena") != NULL,
+                  "a real Arena-typed param still gets its own real Arena * C type, zero regression");
+            CHECK(generated5 != NULL && strstr(generated5, "arena_strdup(buf_arena, \"hi\", 2)") != NULL,
+                  "a real Arena-typed param is still correctly added to the ArenaBinding scope -- "
+                  "referenced bare (no stray '&'), zero regression");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

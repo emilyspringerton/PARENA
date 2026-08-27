@@ -307,11 +307,48 @@
   (text  : String @ Region)
   (scope : (Vec ArenaBinding) @ Region))
 
-;; emit-params -- real, narrow v0: every param is assumed Arena-typed
-;; (`(name : Arena @ :region/xxx)`), matching examples/valid_only.prn's
-;; own real, only shape -- src/emit.c's own real, current version
-;; handles I32/String/Vec/registered-defenum-or-defstruct params too;
-;; a real, separate, deferred gap, not attempted here.
+;; param-type-name -- real, direct read of a param's own type-name
+;; symbol: `(name : Type @ ...)` parses as an NList with children
+;; [NSymbol name, NColon, NSymbol Type, NAt, ...] -- confirmed live via
+;; a real AST dump of `(src : String @ Region)`, index 2 is always the
+;; type-name symbol regardless of whether a region annotation follows.
+;; Real, honest fallback: a param with fewer than 3 children (should
+;; never happen for a real, parsed param -- the parser itself requires
+;; `name : Type` at minimum) reports "Arena" rather than crashing on a
+;; missing index, preserving this file's own prior narrow behavior.
+(defn param-type-name [(param : &Node)] : String @ Region
+  (if (< (vec/len &(get-field param :children)) 3)
+    "Arena"
+    (let [type-node (vec/get &(get-field param :children) 2)]
+      (get-field type-node :text))))
+
+;; param-c-type -- real, narrow type-name -> C type-prefix mapping,
+;; each already carrying its own real trailing punctuation the way the
+;; original hard-coded "Arena *" literal did (so `join3 prefix c-name
+;; " __attribute__((unused))" dest` stays correct for every case).
+;; Real, honest, narrow v0: only the 2 additional real scalar types
+;; selfhost/lexer.prn's own real function signatures actually use
+;; beyond Arena (String, I32) are mapped -- src/emit.c's own real,
+;; current version handles Vec/registered-defenum-or-defstruct params
+;; too; a real, separate, deferred gap, not attempted here. Anything
+;; else (a real defstruct type, &Type references, Bool, F64, ...)
+;; falls back to "Arena *", this file's own prior universal behavior.
+(defn param-c-type [(type-name : String @ Region)] : String @ Region
+  (cond
+    ((string/str-eq? type-name "String") "char *")
+    ((string/str-eq? type-name "I32") "int ")
+    (true "Arena *")))
+
+;; emit-params -- real, narrow v0: every param's own real declared C
+;; type is now read from its own type annotation (Arena/String/I32;
+;; param-c-type's own header comment explains the real, narrow
+;; fallback for anything else). Only an Arena-typed param is added to
+;; the real ArenaBinding scope (the &-vs-bare distinction
+;; resolve-arena-ref needs only ever applies to arena-typed names) --
+;; resolve-arena-ref's own real `None` case already falls back to a
+;; bare mangled name for anything not found in scope, which is exactly
+;; the correct real behavior for a String/I32 param referenced
+;; elsewhere.
 (defn emit-params [(params : &Node) (dest : Arena @ Region)] : ParamInfo @ Region
   (loop [i 0 pieces (vec/new dest) scope (vec/new dest)]
     (if (>= i (vec/len &(get-field params :children)))
@@ -320,11 +357,15 @@
             name-node (vec/get &(get-field param :children) 0)
             pname (get-field name-node :text)
             c-name (mangle pname dest)
-            new-binding {:name pname :kind PointerArena}
-            piece (join3 "Arena *" c-name " __attribute__((unused))" dest)]
+            type-name (param-type-name param)
+            c-type (param-c-type type-name)
+            piece (join3 c-type c-name " __attribute__((unused))" dest)
+            next-scope (if (string/str-eq? type-name "Arena")
+                         (arena-scope-extend &scope {:name pname :kind PointerArena} dest)
+                         scope)]
         (do
           (vec/push! &pieces piece)
-          (recur (+ i 1) pieces (arena-scope-extend &scope new-binding dest)))))))
+          (recur (+ i 1) pieces next-scope))))))
 
 ;; emit-defn -- real, narrow port of a top-level `(defn name [params]
 ;; body...)`. Real, honest, narrow v0: return type is always hard-coded

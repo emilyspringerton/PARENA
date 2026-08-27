@@ -510,6 +510,46 @@ crash into an honest, diagnosable failure, the same bar every other domain in th
 holds itself to. The actual language-coverage expansion stays real, separate, unstarted follow-up
 work.
 
+**Real first step of that language-coverage expansion, same day (founder: "continue working on
+self hosted parena compiler")**: `emit-params` used to hard-code EVERY param's own C type as
+`Arena *`, regardless of its real declared type — this file's own prior header comment already
+honestly flagged it ("every param is assumed Arena-typed... src/emit.c's own real, current version
+handles I32/String/Vec/... params too; a real, separate, deferred gap"). Concretely wrong for a real,
+live function: `selfhost/lexer.prn`'s own `new-lexer` takes `(src : String @ Region)`, a String
+param, which the old code silently declared as `Arena *src` instead of the correct `char *src`.
+Fixed with two new real, narrow helpers: `param-type-name` (reads a param's own type-name symbol —
+confirmed live via a real AST dump of `(src : String @ Region)` that it always parses as an NList
+`[NSymbol name, NColon, NSymbol Type, NAt, ...]`, so index 2 is always the type-name symbol) and
+`param-c-type` (a real, narrow type-name → C-type mapping: `String` → `char *`, `I32` → `int`,
+anything else — a real defstruct type, `&Type`, `Bool`, `F64`, ... — falls back to the file's own
+prior universal `Arena *` behavior, an honest, narrow v0 boundary, not a claim of covering every
+real param shape). Only an Arena-typed param is still added to the real `ArenaBinding` scope
+(`resolve-arena-ref`'s own real `None` case already falls back to a bare mangled name for anything
+not found in scope, which is exactly the correct behavior for a String/I32 param referenced
+elsewhere). Found and fixed the same real, already-documented "inline `get-field` on a bare
+`vec/get` call doesn't compile" gap along the way (`region.prn`'s own `is-symbol-headed-list?`
+header comment already covers this class) — restructured `param-type-name` with an explicit `let`
+binding.
+
+7 new real assertions in `tests/test_selfhost_emit.c` (20 total for domain 4): a real String-typed
+param now gets a real `char *`, a real I32-typed param gets a real `int`, and a real Arena-typed
+param still gets `Arena *` and is still correctly scoped (an `alloc` call referencing it still
+resolves bare, no stray `&` — the zero-regression check for the exact codepath this change touches).
+Full local suite (336 tests) + all 5 selfhost domains + real mingw cross-compile clean, zero
+regressions.
+
+Real, honest picture, re-checked via the same self-compile diagnostic used to find the original
+crash: `selfhost/lexer.prn` still doesn't compile through the pipeline, and the real error count
+against it is UNCHANGED by this fix (still dominated by the same 35 `#error` "unsupported let-
+binding shape" instances plus a real, separate, not-yet-diagnosed class of "undeclared identifier"
+errors — `Region`/`I32`/`Lexer` bare tokens leaking into value position, likely a real bug in
+`emit-form`'s own fallback-to-bare-symbol-tail branch misfiring on a non-symbol node). Expected and
+honest: `new-lexer`'s own params were never what was blocking `lexer.prn`'s self-compile — this fix
+closes a real, independently-confirmed type-correctness bug on its own merits, not a claim of moving
+`lexer.prn` closer to compiling. The dominant real blocker (non-alloc-shaped let-bindings, i.e. real
+function calls used as `let` values) is real, separate, unstarted follow-up work — the next, much
+larger step in this same expansion.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

@@ -381,6 +381,8 @@ char * emit_body_forms(Node *, int, Vec *, Arena *);
 char * emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
 char * emit_with_arena(Node *, Vec *, Arena *);
+char * param_type_name(Node *);
+char * param_c_type(char *);
 ParamInfo emit_params(Node *, Arena *);
 char * emit_defn(Node *, Arena *);
 char * program_header(Arena *);
@@ -2265,6 +2267,19 @@ char * emit_with_arena(Node * node __attribute__((unused)), Vec * scope __attrib
     return emit_join_all(&(parts), dest);
 }
 
+char * param_type_name(Node * param __attribute__((unused))) {
+    if ((vec_len(&((param)->children)) < 3)) {
+    return "Arena";
+    } else {
+    Node *type_node __attribute__((unused)) = vec_get(&((param)->children), 2);
+    return (type_node)->text;
+    }
+}
+
+char * param_c_type(char * type_name __attribute__((unused))) {
+    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int " : "Arena *"));
+}
+
 ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attribute__((unused))) {
     ParamInfo __loop_result_29 __attribute__((unused));
     double i = 0;
@@ -2279,12 +2294,14 @@ ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attri
         Node *name_node __attribute__((unused)) = vec_get(&((param)->children), 0);
         char *pname __attribute__((unused)) = (name_node)->text;
         char *c_name __attribute__((unused)) = mangle(pname, dest);
-        ArenaBinding new_binding __attribute__((unused)) = ArenaBinding_new(pname, ArenaKind_PointerArena());
-        char *piece __attribute__((unused)) = join3("Arena *", c_name, " __attribute__((unused))", dest);
+        char *type_name __attribute__((unused)) = param_type_name(param);
+        char *c_type __attribute__((unused)) = param_c_type(type_name);
+        char *piece __attribute__((unused)) = join3(c_type, c_name, " __attribute__((unused))", dest);
+        Vec next_scope __attribute__((unused)) = (str_eq_(type_name, "Arena") ? arena_scope_extend(&(scope), ArenaBinding_new(pname, ArenaKind_PointerArena()), dest) : scope);
         (void)(vec_push_(&(pieces), piece));
         double __recur_tmp_0 = (i + 1);
         Vec __recur_tmp_1 = pieces;
-        Vec __recur_tmp_2 = arena_scope_extend(&(scope), new_binding, dest);
+        Vec __recur_tmp_2 = next_scope;
         i = __recur_tmp_0;
         pieces = __recur_tmp_1;
         scope = __recur_tmp_2;
