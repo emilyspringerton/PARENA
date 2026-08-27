@@ -1,4 +1,5 @@
 ## 2026-08-27
+- Real drag-and-drop file opening in the PARENA editor -- SDL_DROPFILE plumbed end-to-end, spawns a genuinely new editor process/window per dropped file (fork+execl/CreateProcessA); exe-relative font path lookup (executable_path/executable_dir) fixes the double-black-screen Windows launch bug the founder hit live. v0.77.0 (sess-20260825-1938-f6bd411e) (sess-20260825-1938-f6bd411e)
 - Real macOS dylib bundling (otool/install_name_tool/codesign) for the PARENA editor release binary -- no longer needs 'brew install sdl2 sdl2_ttf'. v0.76.0 (sess-20260825-1938-f6bd411e)
 - Real Markdown (.md) syntax highlighting in the PARENA editor -- headings/bold/italic/code/quotes/lists, auto-selected by file extension. v0.75.0 (sess-20260825-1938-f6bd411e)
 - Real mouse-driven selection (click + click-drag) in the PARENA editor, plus a deep SDL2 event-queue timing finding from testing it. v0.74.0 (sess-20260825-1938-f6bd411e)
