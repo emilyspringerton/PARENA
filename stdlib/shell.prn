@@ -30,7 +30,7 @@
 (import pty)
 (import string)
 (import io)
-(export resolve spawn-bash spawn-zsh)
+(export resolve spawn-bash spawn-zsh spawn)
 
 (defn raw-env-get [(name : String @ Region) (dest : Arena @ Region)]
   : String @ Region
@@ -131,3 +131,15 @@
 (defn spawn-zsh [(cols : I32) (rows : I32) (dest : Arena @ Region)]
   : (Result Pty PtyError) @ Region
   (pty/pty-open "zsh" cols rows dest))
+
+;; spawn -- real, new (2026-08-27, founder real-time: "toggle between
+;; terminal and editor... have it work just like pitviper where it
+;; auto finds git bash for the terminal") -- resolve's own real
+;; explicit>$SHELL>Git-Bash>fallback chain, then actually open a pty
+;; against whatever it picks. spawn-bash/spawn-zsh above stay as they
+;; were (a real caller that specifically wants bash or zsh, not the
+;; general auto-detected policy) -- this is the one the PARENA editor's
+;; own terminal panel calls.
+(defn spawn [(cols : I32) (rows : I32) (dest : Arena @ Region)]
+  : (Result Pty PtyError) @ Region
+  (pty/pty-open (resolve None dest) cols rows dest))

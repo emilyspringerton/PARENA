@@ -62,6 +62,7 @@
 #include <arpa/inet.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #if defined(__linux__)
 #include <pty.h>
 #elif defined(__APPLE__)
@@ -747,6 +748,53 @@ static inline char *pty_read_impl(int fd, Arena *dest) {
     char *out = (char *)arena_alloc(dest, len + 1);
     memcpy(out, buf, len);
     out[len] = '\0';
+    return out;
+}
+
+/* pty_poll_read_impl -- real, new, NON-blocking sibling to
+ * pty_read_impl above (2026-08-27, real gap found integrating pty.prn
+ * into the PARENA editor's own terminal panel, founder real-time:
+ * "toggle between terminal and editor... work just like pitviper").
+ * pty_read_impl's own real, documented contract ("reads until the
+ * peer side closes") is exactly right for a "run one command, wait
+ * for it to finish" caller (test_shell.c's own real usage) but wrong
+ * for an interactive, long-lived shell a UI render loop polls every
+ * frame -- calling a blocking read() against an idle shell sitting at
+ * its next prompt would freeze the WHOLE editor, not just the
+ * terminal, until the user's next keystroke produced output.
+ *
+ * Deliberately does NOT set O_NONBLOCK on the fd itself (which would
+ * have silently changed pty_read_impl's own existing, tested
+ * blocking behavior for every caller, including test_shell.c's own
+ * real "write a command, read until EOF" check -- a real regression
+ * risk, not a safe change to make to a shared fd's own mode). Instead
+ * uses a real, standard poll(2) with a ZERO timeout to check "is
+ * there data ready right now" before ever calling read() at all --
+ * read() itself is only reached when poll confirms data (or EOF) is
+ * actually pending, so it can never block. Returns a real, valid
+ * (often empty) String either way -- "" is the correct, honest
+ * "nothing new this frame" signal, not an error. */
+static inline char *pty_poll_read_impl(int fd, Arena *dest) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int pr = poll(&pfd, 1, 0);
+    if (pr <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof buf);
+    if (n <= 0) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    char *out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(out, buf, (size_t)n);
+    out[n] = '\0';
     return out;
 }
 

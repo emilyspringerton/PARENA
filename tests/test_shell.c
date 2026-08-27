@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "test_shell_gen.c"
 
@@ -58,6 +59,28 @@ int main(void) {
         char *resolved = resolve(none_explicit, &a);
         CHECK(resolved != NULL && strlen(resolved) > 0,
               "resolve with no explicit arg still resolves to a real, non-empty shell");
+    }
+
+    /* --- shell/spawn: the real, new (2026-08-27) resolve+pty-open
+     * combinator the PARENA editor's own terminal panel calls --
+     * proves it actually forks a real, working shell using resolve's
+     * own auto-detected policy, not just that resolve itself returns
+     * a plausible string. */
+    {
+        Result sr = spawn(80, 24, &a);
+        CHECK(sr.tag == 1, "shell/spawn successfully forks a real pty-attached shell via resolve's own auto-detected policy");
+        if (sr.tag == 1) {
+            Pty sp = *(Pty *)sr.value;
+            CHECK(sp.fd >= 0, "shell/spawn's own spawned pty has a real, valid master fd");
+            Result swr = pty_write(&sp, "echo real-parena-shell-spawn-test; exit\n", &a);
+            CHECK(swr.tag == 1, "pty-write to shell/spawn's own spawned shell succeeds");
+            Result srr = pty_read(&sp, &a);
+            char *sout = srr.tag == 1 ? (char *)srr.value : NULL;
+            CHECK(sout != NULL && strstr(sout, "real-parena-shell-spawn-test") != NULL,
+                  "real output from shell/spawn's own spawned shell round-trips back through pty-read");
+            Result scr = pty_close(sp, &a);
+            CHECK(scr.tag == 1, "pty-close on shell/spawn's own spawned pty succeeds");
+        }
     }
 
     /* --- shell/find-git-bash: correctly finds nothing on this real
@@ -105,6 +128,68 @@ int main(void) {
 
             Result cr = pty_close(p, &a);
             CHECK(cr.tag == 1, "pty-close on the real spawned pty succeeds");
+        }
+    }
+
+    /* --- pty/poll-read: the real, new, non-blocking sibling to
+     * pty-read (2026-08-27, real gap found integrating this into the
+     * PARENA editor's own terminal panel -- a UI render loop can't
+     * call the BLOCKING pty-read every frame against a long-lived
+     * interactive shell without freezing the whole editor the moment
+     * the shell sits idle). This time the spawned bash is genuinely
+     * left INTERACTIVE (no "; exit"), proving pty-poll-read returns
+     * immediately either way: no data pending yet (nothing written),
+     * and real data once something is. A real wall-clock check proves
+     * "returns immediately" isn't just an assumption -- if this
+     * regressed back to a blocking read, this call would hang for the
+     * real shell's own lifetime (or the whole test process's timeout),
+     * not just run slow. */
+    {
+        Result r = spawn_bash(80, 24, &a);
+        CHECK(r.tag == 1, "spawn-bash successfully forks a real, interactive pty-attached bash for poll-read testing");
+        if (r.tag == 1) {
+            Pty p = *(Pty *)r.value;
+
+            time_t t0 = time(NULL);
+            Result rr1 = pty_poll_read(&p, &a);
+            time_t t1 = time(NULL);
+            CHECK(rr1.tag == 1, "pty-poll-read returns Ok against a real, genuinely idle interactive shell");
+            CHECK((t1 - t0) < 2,
+                  "pty-poll-read returns immediately (well under a second) against an idle shell, "
+                  "not blocked waiting for output that isn't coming");
+
+            /* Give bash a real moment to actually print its own prompt
+             * (a real, tiny, unavoidable race with a freshly-forked
+             * interactive shell -- not polled instantly on purpose, so
+             * this doesn't depend on winning that race for its own
+             * real assertions below). */
+            usleep(300000);
+
+            Result wr2 = pty_write(&p, "echo real-parena-poll-test\n", &a);
+            CHECK(wr2.tag == 1, "pty-write to the real, still-interactive spawned shell succeeds");
+
+            /* Real, honest, bounded poll loop -- up to 2 real seconds,
+             * checking every 50ms, matching the same real "poll every
+             * frame" shape a real render loop uses, not a single
+             * lucky-timing check. */
+            char *found = NULL;
+            for (int attempt = 0; attempt < 40 && !found; attempt++) {
+                usleep(50000);
+                Result rr2 = pty_poll_read(&p, &a);
+                if (rr2.tag == 1) {
+                    char *chunk = (char *)rr2.value;
+                    if (chunk && strstr(chunk, "real-parena-poll-test")) found = chunk;
+                }
+            }
+            CHECK(found != NULL,
+                  "real output from the real, still-interactive spawned shell round-trips back "
+                  "through repeated pty-poll-read calls, the same real per-frame polling shape "
+                  "the editor's own terminal panel uses");
+
+            Result wr3 = pty_write(&p, "exit\n", &a);
+            (void)wr3;
+            Result cr2 = pty_close(p, &a);
+            CHECK(cr2.tag == 1, "pty-close on the real, poll-read-tested spawned pty succeeds");
         }
     }
 

@@ -28,7 +28,7 @@
 
 (module pty)
 (import string)
-(export pty-open pty-read pty-write pty-resize pty-close Pty PtyError)
+(export pty-open pty-read pty-poll-read pty-write pty-resize pty-close Pty PtyError)
 
 (defstruct Pty
   (fd : I32))
@@ -65,6 +65,20 @@
   #target
   {:c (inline-c "pty_read_impl(fd, dest)")})
 
+;; pty-raw-poll-read -- real, new, non-blocking sibling to pty-raw-read
+;; (2026-08-27, real gap found integrating this into the PARENA
+;; editor's own terminal panel). See runtime/parena_runtime.h's own
+;; pty_poll_read_impl header comment for the full real reasoning: a
+;; single real poll(2) check with a zero timeout, read() only reached
+;; when data (or EOF) is actually pending, so it can never block --
+;; safe to call every frame from a UI render loop, unlike pty-read
+;; itself (which stays exactly as it was, unchanged, for
+;; test_shell.c's own real "run one command, read until EOF" use).
+(defn pty-raw-poll-read [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "pty_poll_read_impl(fd, dest)")})
+
 (defn pty-raw-write [(fd : I32) (data : String @ Region)]
   : I32
   #target
@@ -98,6 +112,14 @@
 (defn pty-read [(!p : &mut Pty) (dest : Arena @ Region)]
   : (Result String PtyError) @ Region
   (Ok (pty-raw-read (get-field !p :fd) dest)))
+
+;; pty-poll-read -- the real, non-blocking read a terminal-panel render
+;; loop calls every frame. See pty-raw-poll-read's own header comment
+;; above for the full reasoning; this wrapper is otherwise identical in
+;; shape to pty-read.
+(defn pty-poll-read [(!p : &mut Pty) (dest : Arena @ Region)]
+  : (Result String PtyError) @ Region
+  (Ok (pty-raw-poll-read (get-field !p :fd) dest)))
 
 (defn pty-write [(!p : &mut Pty) (data : String @ Region) (dest : Arena @ Region)]
   : (Result I32 PtyError) @ Region

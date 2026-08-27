@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -19,7 +19,7 @@ typedef struct {
     Vec shape;
     Vec strides;
 } NDArray;
-static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
+static inline __attribute__((unused)) NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
     NDArray v;
     v.data = data;
     v.shape = shape;
@@ -30,7 +30,7 @@ static inline NDArray NDArray_new(Vec data, Vec shape, Vec strides) {
 typedef struct {
     char * message;
 } ShapeError;
-static inline ShapeError ShapeError_new(char * message) {
+static inline __attribute__((unused)) ShapeError ShapeError_new(char * message) {
     ShapeError v;
     v.message = message;
     return v;
@@ -39,7 +39,7 @@ static inline ShapeError ShapeError_new(char * message) {
 typedef struct {
     char * message;
 } IndexError;
-static inline IndexError IndexError_new(char * message) {
+static inline __attribute__((unused)) IndexError IndexError_new(char * message) {
     IndexError v;
     v.message = message;
     return v;
@@ -48,7 +48,7 @@ static inline IndexError IndexError_new(char * message) {
 typedef struct {
     int fd;
 } FileHandle;
-static inline FileHandle FileHandle_new(int fd) {
+static inline __attribute__((unused)) FileHandle FileHandle_new(int fd) {
     FileHandle v;
     v.fd = fd;
     return v;
@@ -61,10 +61,10 @@ typedef enum {
     IoError_TAG_Other,
 } IoError_Tag;
 typedef struct { IoError_Tag tag; void *value; } IoError;
-static inline IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
-static inline IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
-static inline IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
-static inline IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
+static inline __attribute__((unused)) IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
 
 typedef enum {
     OpenMode_TAG_Read,
@@ -72,14 +72,14 @@ typedef enum {
     OpenMode_TAG_Append,
 } OpenMode_Tag;
 typedef struct { OpenMode_Tag tag; void *value; } OpenMode;
-static inline OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
-static inline OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
+static inline __attribute__((unused)) OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
 
 typedef struct {
     int fd;
 } Pty;
-static inline Pty Pty_new(int fd) {
+static inline __attribute__((unused)) Pty Pty_new(int fd) {
     Pty v;
     v.fd = fd;
     return v;
@@ -91,18 +91,21 @@ typedef enum {
     PtyError_TAG_PtyIoError,
 } PtyError_Tag;
 typedef struct { PtyError_Tag tag; void *value; } PtyError;
-static inline PtyError PtyError_SpawnFailed(void) { PtyError v; v.tag = PtyError_TAG_SpawnFailed; v.value = NULL; return v; }
-static inline PtyError PtyError_ResizeFailed(void) { PtyError v; v.tag = PtyError_TAG_ResizeFailed; v.value = NULL; return v; }
-static inline PtyError PtyError_PtyIoError(void) { PtyError v; v.tag = PtyError_TAG_PtyIoError; v.value = NULL; return v; }
+static inline __attribute__((unused)) PtyError PtyError_SpawnFailed(void) { PtyError v; v.tag = PtyError_TAG_SpawnFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) PtyError PtyError_ResizeFailed(void) { PtyError v; v.tag = PtyError_TAG_ResizeFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) PtyError PtyError_PtyIoError(void) { PtyError v; v.tag = PtyError_TAG_PtyIoError; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
 int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
 Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
 int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
@@ -131,6 +134,9 @@ IoError errno_to_io_error(int);
 Result file_open(char *, OpenMode, Arena *);
 Result file_close(FileHandle, Arena *);
 int path_exists_(char *);
+char * raw_list_dir(char *, Arena *);
+Vec list_dir(char *, Arena *);
+int is_dir_(char *);
 Result write_string(FileHandle, char *, Arena *);
 Result read_string(FileHandle, Arena *);
 Result read_line(FileHandle, Arena *);
@@ -138,11 +144,13 @@ double raw_read_f64(int);
 Result read_floats(FileHandle, int, Arena *);
 int pty_raw_open(char *, int, int);
 char * pty_raw_read(int, Arena *);
+char * pty_raw_poll_read(int, Arena *);
 int pty_raw_write(int, char *);
 int pty_raw_resize(int, int, int);
 int pty_raw_close(int);
 Result pty_open(char *, int, int, Arena *);
 Result pty_read(Pty *, Arena *);
+Result pty_poll_read(Pty *, Arena *);
 Result pty_write(Pty *, char *, Arena *);
 Result pty_resize(Pty *, int, int, Arena *);
 Result pty_close(Pty, Arena *);
@@ -158,6 +166,7 @@ char * resolve(Option, Arena *);
 char * resolve_past_wsl_stub(Arena *);
 Result spawn_bash(int, int, Arena *);
 Result spawn_zsh(int, int, Arena *);
+Result spawn(int, int, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -247,8 +256,20 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
     return (strcmp(a, b) == 0);
 }
 
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
 int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
-    return (strcasestr(haystack, needle) != NULL);
+    return (string_contains_ci_impl(haystack, needle) != 0);
 }
 
 int is_digit_(int c __attribute__((unused))) {
@@ -271,6 +292,10 @@ Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((un
     } else {
     return result_err(ParseError_box(dest, ParseError_new("not a valid integer")));
     }
+}
+
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
 }
 
 int starts_with_sign_(char * s __attribute__((unused))) {
@@ -519,7 +544,7 @@ int raw_errno(void) {
 }
 
 int mode_tag_of(OpenMode mode __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused));
+    double __match_result_0 __attribute__((unused)) = {0};
     OpenMode __match_tmp_0 = mode;
     if (__match_tmp_0.tag == 0) {
         __match_result_0 = 0;
@@ -556,6 +581,23 @@ Result file_close(FileHandle f __attribute__((unused)), Arena *dest __attribute_
 
 int path_exists_(char * path __attribute__((unused))) {
     return (file_exists_impl(path) != 0);
+}
+
+char * raw_list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (list_dir_impl(path, dest));
+}
+
+Vec list_dir(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *joined __attribute__((unused)) = raw_list_dir(path, dest);
+    if (str_eq_(joined, "")) {
+    return vec_new(dest);
+    } else {
+    return split(joined, "\n", dest);
+    }
+}
+
+int is_dir_(char * path __attribute__((unused))) {
+    return (is_dir_impl(path) != 0);
 }
 
 Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -611,6 +653,10 @@ char * pty_raw_read(int fd __attribute__((unused)), Arena *dest __attribute__((u
     return (pty_read_impl(fd, dest));
 }
 
+char * pty_raw_poll_read(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (pty_poll_read_impl(fd, dest));
+}
+
 int pty_raw_write(int fd __attribute__((unused)), char * data __attribute__((unused))) {
     return (pty_write_impl(fd, data));
 }
@@ -634,6 +680,10 @@ Result pty_open(char * shell __attribute__((unused)), int cols __attribute__((un
 
 Result pty_read(Pty * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return result_ok(pty_raw_read((p)->fd, dest));
+}
+
+Result pty_poll_read(Pty * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return result_ok(pty_raw_poll_read((p)->fd, dest));
 }
 
 Result pty_write(Pty * p __attribute__((unused)), char * data __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -691,7 +741,7 @@ int is_wsl_stub_(char * path __attribute__((unused))) {
 }
 
 Option find_git_bash(Arena *dest __attribute__((unused))) {
-    Option __match_result_1 __attribute__((unused));
+    Option __match_result_1 __attribute__((unused)) = {0};
     Option __match_tmp_1 = env_lookup("ProgramFiles", dest);
     if (__match_tmp_1.tag == 1) {
         void *root __attribute__((unused)) = __match_tmp_1.value;
@@ -736,7 +786,7 @@ char * platform_fallback_shell(void) {
 }
 
 char * resolve(Option explicit __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    void * __match_result_2 __attribute__((unused));
+    void * __match_result_2 __attribute__((unused)) = {0};
     Option __match_tmp_4 = explicit;
     if (__match_tmp_4.tag == 1) {
         void *s __attribute__((unused)) = __match_tmp_4.value;
@@ -767,7 +817,7 @@ char * resolve(Option explicit __attribute__((unused)), Arena *dest __attribute_
 }
 
 char * resolve_past_wsl_stub(Arena *dest __attribute__((unused))) {
-    char * __match_result_3 __attribute__((unused));
+    char * __match_result_3 __attribute__((unused)) = {0};
     Option __match_tmp_7 = find_git_bash(dest);
     if (__match_tmp_7.tag == 1) {
         void *p __attribute__((unused)) = __match_tmp_7.value;
@@ -785,5 +835,9 @@ Result spawn_bash(int cols __attribute__((unused)), int rows __attribute__((unus
 
 Result spawn_zsh(int cols __attribute__((unused)), int rows __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return pty_open("zsh", cols, rows, dest);
+}
+
+Result spawn(int cols __attribute__((unused)), int rows __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return pty_open(resolve(option_none(), dest), cols, rows, dest);
 }
 
