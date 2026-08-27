@@ -340,9 +340,44 @@ minor departure — `SelfhostParseError`'s own header comment explains why it do
 reference's own "line number appears twice" artifact. Full local suite + bazel build/test + real
 mingw cross-compile all clean, zero regressions.
 
-Not scoped further than the parser here — the real next domain (a region analyzer, mirroring
-`src/region.c`) is separate, unstarted follow-up work, picked up the same "one real, faithful
-domain at a time" way this file itself was.
+**Real third step, same day (founder: "continue"/"contginue")**: `selfhost/region.prn` — a real,
+faithful PARENA-language port of `src/region.c` (VS0's own DoD-domain-2 checker: a single-pass
+symbol-table walk enforcing the assignment invariant, Region(Source) >= Region(Destination), over
+the parser's own real Node AST). Real design departures forced by VS0's own confirmed current
+limits: no linked `Scope`-with-a-`parent`-pointer chain — VS0 has no way to store a reference type
+as a struct field at all, so the whole scope is ONE flat `(Vec Binding) @ Region`, most-recently-
+pushed bindings scanned first (a real, functionally-equivalent substitute for the C reference's own
+per-scope-then-walk-to-parent lookup, not a silent behavior change); "entering a child scope"
+(`with-arena`/`let`/a `defn`'s own params) copies every existing binding into a fresh Vec before
+adding the new one(s), rather than mutating a shared Scope in place.
+
+Found and fixed 3 more real bugs along the way (all confirmed live, none guessed at): (1) a `match`
+nested as a VALUE inside an `if`/`cond` branch that isn't itself in tail position doesn't compile
+("unknown identifier" at the match's own bound name) — a real, deep architectural gap (match's own
+value production is fundamentally statement-shaped, incompatible with being embedded in a single C
+ternary the way `emit_if`/`emit_cond` compose their own branches; a general fix would need
+something like GCC's own statement-expression extension, genuinely incompatible with this whole
+repo's `-std=c99 -pedantic` discipline) — worked around throughout this file by extracting every
+such `match` into its own small function instead, whose own body directly IS the match (a real,
+already-proven-safe tail position). (2) An Ok-bound raw `(Vec T)` Result payload doesn't get its
+own element type resolved (stays generic `void *`) — worked around by wrapping the Vec in a real
+struct field instead (a `ScopeResult` wrapper), the same "named-struct tuple-return stand-in"
+pattern `LexStep`/`ParseStep` already establish. (3) A genuine LOGIC bug in this file's own first
+draft, not the compiler: `walk-let-bindings` seeded its own accumulator scope from an empty Vec
+instead of a real copy of the outer scope, silently losing every outer binding (a `defn`'s own
+params, an enclosing `with-arena`'s own bound name) the moment a `let` was entered — found via a
+real minimal debug harness after the DoD's own required negative test case came back a false
+negative, fixed with a new `scope-copy` helper.
+
+9 real assertions in `tests/test_selfhost_region.c`, EVERY ONE lifted directly from
+`tests/test_region.c`'s own real test suite (the DoD's own required 1 positive + 1 negative case,
+plus its own 5 real edge cases) — identical real inputs against a completely independent
+implementation, including an exact match on the DoD's own required error message string. Full local
+suite + bazel build/test + real mingw cross-compile all clean, zero regressions.
+
+Not scoped further than the region analyzer here — the real next domain (a C emitter, mirroring
+`src/emit.c`) is separate, unstarted follow-up work, picked up the same "one real, faithful domain
+at a time" way this file itself was.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself

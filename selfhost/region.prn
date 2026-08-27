@@ -1,0 +1,441 @@
+;; selfhost/region.prn -- the real third domain of PARENA's own self-
+;; hosting effort (NORTHSTAR.md's own "Self-hosting" section), directly
+;; continuing selfhost/lexer.prn + selfhost/parser.prn (2026-08-27,
+;; founder real-time: "self hosted compiler" -> "continue"/"contginue").
+;; VS0's own src/region.c (the C-implemented DoD domain 2 checker) is
+;; the real reference implementation this file PORTS -- a real, single-
+;; pass symbol-table walk enforcing the assignment invariant
+;; (Region(Source) >= Region(Destination)) over selfhost/parser.prn's
+;; own real Node AST, not a from-scratch design.
+;;
+;; Real, deliberate departures from src/region.c's own shape, forced by
+;; VS0's own real, confirmed current limits -- same class of departure
+;; the lexer/parser's own header comments already document:
+;;
+;; 1. No linked Scope-with-a-parent-pointer chain. src/region.c's own
+;;    `Scope { Scope *parent; Binding bindings[64]; int count; }` needs
+;;    a real self-referential POINTER field (a child scope's own
+;;    `parent` must reference an ANCESTOR scope that outlives it) --
+;;    VS0 has no way to store a reference type as a struct field at all
+;;    (the same real gap stdlib/regex/syntax.prn's own header comment
+;;    already documents for PatternNode's `inner` field). Real,
+;;    functionally-equivalent substitute: the whole scope is ONE flat
+;;    `(Vec Binding) @ Region`, most-recently-pushed bindings scanned
+;;    FIRST (scope-lookup walks backward), matching C's own real
+;;    shadowing semantics exactly (innermost/most-recent binding wins).
+;;    "Entering a child scope" (with-arena/let/a defn's own params) is
+;;    scope-extend: copy every existing binding into a fresh Vec, then
+;;    push the new one(s) -- a real, honest O(n) copy per scope-entry
+;;    (matches this whole codebase's "simple over optimized" tradeoff,
+;;    e.g. array.prn's own linear Vec growth), not a shared mutable
+;;    Vec two sibling branches could accidentally see each other's
+;;    bindings through.
+;; 2. Every `walk*` function takes an explicit `dest-arena : Arena @
+;;    Region` (needed to build a real, arena-allocated error message
+;;    string) and returns `(Option String) @ Region` (None = no error,
+;;    Some(message) = the DoD's own real, exact-format error) rather
+;;    than C's own `const char *` (NULL = no error) -- the same real,
+;;    already-established "Option instead of a nullable C pointer"
+;;    idiom every other real port in this repo already uses.
+;; 3. alloc-rank returns `(Option Binding)` directly (reusing scope-
+;;    lookup's own real return shape) instead of C's own two-out-param
+;;    `(int rank, const char **out_region_name)` -- a real, named-
+;;    struct tuple-return stand-in, same class of departure LexStep/
+;;    ParseStep already establish.
+;;
+;; Real, honest status: this file is compiled BY the existing C-based
+;; parena-c, consuming selfhost/parser.prn's own real Node AST -- the
+;; third domain toward a real PARENA-in-PARENA pipeline, not a claim of
+;; having reached it. The real next domain (a C emitter, mirroring
+;; src/emit.c) is separate, unstarted follow-up work.
+
+(module selfhost/region)
+(import string)
+(import selfhost/parser)
+(export region-analyze)
+
+(defstruct Binding
+  (name        : String @ Region)
+  (rank        : I32)
+  (region-name : String @ Region))
+
+;; region-rank-for -- real, direct port of C's own region_rank_for:
+;; only the two ranks NORTHSTAR.md's own "Memory model" section
+;; actually specifies. Any other region keyword is real, unconstrained
+;; territory (rank -1), not guessed at.
+(defn region-rank-for [(kw : String @ Region)] : I32
+  (cond
+    ((string/str-eq? kw ":region/scratch") 0)
+    ((string/str-eq? kw ":region/buffer") 2)
+    (true -1)))
+
+;; node-kind-code -- real defenum-to-I32 tag, same convention
+;; selfhost/parser.prn's own kind-code already establishes for
+;; TokenType.
+(defn node-kind-code [(k : NodeType)] : I32
+  (match k
+    ((NList) 0) ((NVec) 1) ((NMap) 2) ((NSymbol) 3) ((NKeyword) 4)
+    ((NString) 5) ((NNumber) 6) ((NColon) 7) ((NAt) 8)))
+
+(defn is-symbol? [(n : &Node) (text : String @ Region)] : Bool
+  (and (= (node-kind-code (get-field n :kind)) 3)
+       (string/str-eq? (get-field n :text) text)))
+
+;; Real, confirmed-live emitter gap found here (2026-08-27): calling
+;; get-field DIRECTLY, inline, on a bare `(vec/get ...)` call (no
+;; intermediate `let` binding) doesn't compile -- "dereferencing
+;; 'void *' pointer," confirmed via a real minimal repro. vec/get's own
+;; real element-type hint mechanism only fires when its result is
+;; bound to a real named local first (the same real shape every other
+;; working vec/get+get-field use in this repo already has -- e.g.
+;; is-call-named? below passes vec/get's own result directly as a
+;; FUNCTION ARGUMENT instead, a real, separately-confirmed-safe
+;; position) -- restructured to an explicit `let` rather than inline
+;; nesting for exactly this reason.
+(defn is-symbol-headed-list? [(n : &Node)] : Bool
+  (if (not (= (node-kind-code (get-field n :kind)) 0))
+    false
+    (if (<= (vec/len &(get-field n :children)) 0)
+      false
+      (let [first-child (vec/get &(get-field n :children) 0)]
+        (= (node-kind-code (get-field first-child :kind)) 3)))))
+
+(defn is-call-named? [(n : &Node) (fn-name : String @ Region)] : Bool
+  (and (is-symbol-headed-list? n)
+       (is-symbol? (vec/get &(get-field n :children) 0) fn-name)))
+
+;; find-keyword-child -- real, direct port of C's own
+;; find_keyword_child: the first NKeyword among n's direct children
+;; (pulls a param's own region annotation out of `(name : Type @
+;; :region/xxx)` without depending on its exact position). Real,
+;; honest "" (not NULL -- this language has no nullable strings) when
+;; none is found.
+(defn find-keyword-child [(n : &Node)] : String @ Region
+  (loop [i 0]
+    (if (>= i (vec/len &(get-field n :children)))
+      ""
+      (let [c (vec/get &(get-field n :children) i)]
+        (if (= (node-kind-code (get-field c :kind)) 4)
+          (get-field c :text)
+          (recur (+ i 1)))))))
+
+;; region-join-all -- real, private copy of selfhost/parser.prn's own
+;; identically-shaped helper (small, generic, deliberately duplicated
+;; rather than forcing a cross-module dependency for 6 lines -- same
+;; real judgment call selfhost/lexer.prn's own lex-error-to-parse-error
+;; message-building already makes).
+(defn region-join-all [(parts : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i (vec/len parts))
+      acc
+      (recur (+ i 1) (string/concat acc (vec/get parts i) dest)))))
+
+;; fmt-error -- real, direct port of C's own fmt_error: the DoD's own
+;; exact required format, "Compile Error: Escaping region pointer from
+;; %s to %s at line %d".
+(defn fmt-error [(src-region : String @ Region) (dst-region : String @ Region) (line : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "Compile Error: Escaping region pointer from ")
+      (vec/push! &parts src-region)
+      (vec/push! &parts " to ")
+      (vec/push! &parts dst-region)
+      (vec/push! &parts " at line ")
+      (vec/push! &parts (string/i32-to-string line dest))
+      (region-join-all &parts dest))))
+
+;; scope-lookup -- real port of C's own scope_lookup, collapsed to ONE
+;; flat backward scan (most-recently-pushed first) instead of walking
+;; a linked parent chain -- see this file's own header comment, point 1,
+;; for why this is a real, functionally-equivalent substitute, not a
+;; silent behavior change: a flat Vec with later entries scanned first
+;; gives the identical real "innermost/most-recent binding shadows an
+;; outer one with the same name" result the original's own per-scope-
+;; then-walk-to-parent search does.
+(defn scope-lookup [(scope : &(Vec Binding)) (name : String @ Region) (dest : Arena @ Region)] : (Option Binding) @ Region
+  (loop [i (- (vec/len scope) 1)]
+    (if (< i 0)
+      None
+      (let [b (vec/get scope i)]
+        (if (string/str-eq? (get-field (deref b) :name) name)
+          (Some (deref b))
+          (recur (- i 1)))))))
+
+;; scope-extend -- see this file's own header comment, point 1: the
+;; real substitute for allocating a real child Scope with a `parent`
+;; pointer -- copies every existing binding into a fresh Vec, then
+;; pushes the one new binding. Real, deliberate v0 scope: only ONE new
+;; binding per call (every real caller below -- with-arena's own single
+;; bound name, one param at a time, one let-binding at a time -- only
+;; ever needs exactly one).
+(defn scope-extend [(scope : &(Vec Binding)) (b : Binding) (dest : Arena @ Region)] : (Vec Binding) @ Region
+  (let [copy (scope-copy scope dest)]
+    (do
+      (vec/push! &copy b)
+      copy)))
+
+;; scope-copy -- real, small shared helper factored out of scope-extend:
+;; copies every existing binding into a fresh Vec, no new binding
+;; added. Real, confirmed-live bug this exists to fix (2026-08-27,
+;; found via a real minimal debug harness after test-selfhost-region's
+;; own real negative-case tests all came back false-negative): walk-
+;; let-bindings used to seed its own accumulator from a bare
+;; `(vec/new dest-arena)` -- an EMPTY scope -- instead of a real COPY
+;; of `outer-scope`, silently losing every real outer binding (a
+;; defn's own params, an enclosing with-arena's own bound name) the
+;; very moment a `let` was entered. The real C reference never has
+;; this bug: `scope_init(&child, scope)` gives the child scope a real
+;; `parent` pointer, so `scope_lookup` naturally falls through to the
+;; outer scope for anything the child doesn't itself bind -- see this
+;; file's own header comment, point 1, for why this file's own flat-
+;; Vec substitute needs an explicit copy instead.
+(defn scope-copy [(scope : &(Vec Binding)) (dest : Arena @ Region)] : (Vec Binding) @ Region
+  (let [copy (vec/new dest)]
+    (do
+      (loop [i 0]
+        (when (< i (vec/len scope))
+          (do (vec/push! &copy (deref (vec/get scope i)))
+              (recur (+ i 1)))))
+      copy)))
+
+;; alloc-rank -- real port of C's own alloc_rank: the region rank an
+;; `(alloc arena-expr Type value...)` call produces (the allocated
+;; value inherits arena-expr's own region, NORTHSTAR's own "scratch-to-
+;; buffer promotion" idiom). Real, deliberate departure from C's own
+;; two-out-param shape -- see this file's own header comment, point 3:
+;; reuses scope-lookup's own real (Option Binding) return directly.
+(defn alloc-rank [(call : &Node) (scope : &(Vec Binding)) (dest : Arena @ Region)] : (Option Binding) @ Region
+  (if (not (is-call-named? call "alloc"))
+    None
+    (if (< (vec/len &(get-field call :children)) 2)
+      None
+      (let [arena-expr (vec/get &(get-field call :children) 1)]
+        (if (not (= (node-kind-code (get-field arena-expr :kind)) 3))
+          None
+          (scope-lookup scope (get-field arena-expr :text) dest))))))
+
+;; binding-of -- real, small shared helper: builds a real Binding from
+;; a name-node + an optional region keyword ("" = none), the same
+;; real "region-annotated, or rank -1 unconstrained" shape
+;; analyze-defn's own param loop and walk-with-arena's own single
+;; bound name both need.
+(defn binding-of [(name : String @ Region) (region-kw : String @ Region)] : Binding
+  (if (string/str-eq? region-kw "")
+    {:name name :rank -1 :region-name ""}
+    {:name name :rank (region-rank-for region-kw) :region-name region-kw}))
+
+;; handle-symbol-headed-call -- real, small extracted helper (2026-08-27,
+;; a real, confirmed-live VS0 emitter gap found here: a bare `match`
+;; nested as a VALUE inside an `if`/`cond` branch that ISN'T itself in
+;; tail position doesn't compile -- "unknown identifier" at the match's
+;; own bound name, confirmed via a real minimal repro. `match` only
+;; ever gets real, working handling when it's the direct TAIL of a
+;; defn/let/loop body (a real, deep architectural reason: match's own
+;; value production is fundamentally STATEMENT-shaped -- real if/else
+;; blocks writing into a shared result variable -- which can't be
+;; embedded inside a single C ternary expression the way emit_if/
+;; emit_cond compose their own branches; fixing that generally would
+;; need something like GCC's own statement-expression extension,
+;; genuinely incompatible with this whole repo's `-std=c99 -pedantic`
+;; discipline (a real, separate, much bigger undertaking, not attempted
+;; here). The real, honest, narrow WORKAROUND used throughout this
+;; file instead: any `match` that would otherwise land as a non-tail
+;; value (a cond clause, an `if` used as a let-binding's own
+;; initializer) is pulled into its own small function instead, whose
+;; OWN body directly IS the match (a real, already-proven-safe tail
+;; position, per every match in selfhost/lexer.prn and selfhost/
+;; parser.prn) -- an ordinary FUNCTION CALL returning an
+;; already-resolved value is always safe in any position, since no
+;; special dispatch is needed for a plain value. */
+(defn handle-symbol-headed-call [(node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)]
+  : (Option String) @ Region
+  (match (check-call-escape node scope dest-arena)
+    ((Some e) (Some e))
+    ((None) (walk-children node scope dest-arena))))
+
+(defn walk [(node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (cond
+    ((is-call-named? node "with-arena") (walk-with-arena node scope dest-arena))
+    ((is-call-named? node "let") (walk-let node scope dest-arena))
+    ((is-symbol-headed-list? node) (handle-symbol-headed-call node scope dest-arena))
+    (true (walk-children node scope dest-arena))))
+
+;; walk-body-from -- real, small shared helper: walks node.children
+;; [start..], returning the first real Some(error) found, or None.
+;; Reused by walk-children (start=0), walk-with-arena/walk-let (their
+;; own real body forms), and analyze-defn (a defn's own real body,
+;; after name+params).
+(defn walk-body-from [(node : &Node) (start : I32) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)]
+  : (Option String) @ Region
+  (loop [i start]
+    (if (>= i (vec/len &(get-field node :children)))
+      None
+      (match (walk (vec/get &(get-field node :children) i) scope dest-arena)
+        ((Some e) (Some e))
+        ((None) (recur (+ i 1)))))))
+
+(defn walk-children [(node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (walk-body-from node 0 scope dest-arena))
+
+;; check-call-escape -- real port of C's own check_call_escape, the
+;; actual invariant: in a call shaped `(fn dest-expr src-expr...)`, if
+;; dest-expr names a binding with a known region rank and any later
+;; src-expr names a binding with a strictly lower rank (shorter-lived),
+;; that source's region pointer is escaping into the destination's
+;; longer-lived scope. Same real, honest limitation the C reference
+;; documents: only recognizes "first argument is the destination," not
+;; a general call-graph analysis.
+(defn check-call-escape [(call : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)]
+  : (Option String) @ Region
+  (if (< (vec/len &(get-field call :children)) 3)
+    None
+    (let [dest-node (vec/get &(get-field call :children) 1)]
+      (if (not (= (node-kind-code (get-field dest-node :kind)) 3))
+        None
+        (match (scope-lookup scope (get-field dest-node :text) dest-arena)
+          ((None) None)
+          ((Some db)
+            (if (< (get-field (deref db) :rank) 0)
+              None
+              (loop [i 2]
+                (if (>= i (vec/len &(get-field call :children)))
+                  None
+                  (let [arg (vec/get &(get-field call :children) i)]
+                    (if (not (= (node-kind-code (get-field arg :kind)) 3))
+                      (recur (+ i 1))
+                      (match (scope-lookup scope (get-field arg :text) dest-arena)
+                        ((None) (recur (+ i 1)))
+                        ((Some sb)
+                          (if (and (>= (get-field (deref sb) :rank) 0)
+                                   (< (get-field (deref sb) :rank) (get-field (deref db) :rank)))
+                            (Some (fmt-error (get-field (deref sb) :region-name) (get-field (deref db) :region-name)
+                                             (get-field arg :line) dest-arena))
+                            (recur (+ i 1))))))))))))))))
+
+;; walk-with-arena -- real port of C's own walk_with_arena: `(with-arena
+;; [name region-kw size] body...)` binds `name` at region-kw's rank in
+;; a fresh child scope, then walks every body form under it.
+(defn walk-with-arena [(node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (if (< (vec/len &(get-field node :children)) 2)
+    (walk-children node scope dest-arena)
+    (let [binding-vec (vec/get &(get-field node :children) 1)]
+      (if (not (= (node-kind-code (get-field binding-vec :kind)) 1))
+        (walk-children node scope dest-arena)
+        (if (< (vec/len &(get-field binding-vec :children)) 1)
+          (walk-children node scope dest-arena)
+          (let [name-node (vec/get &(get-field binding-vec :children) 0)]
+            (if (not (= (node-kind-code (get-field name-node :kind)) 3))
+              (walk-children node scope dest-arena)
+              (let [region-kw (find-keyword-child binding-vec)
+                    new-binding (binding-of (get-field name-node :text) region-kw)
+                    child-scope (scope-extend scope new-binding dest-arena)]
+                (walk-body-from node 2 &child-scope dest-arena)))))))))
+
+;; region-kw-of-expr -- real, small extracted helper (see
+;; handle-symbol-headed-call's own header comment for why): resolves
+;; the region keyword a let-binding's own expr should carry (from
+;; alloc-rank, when the expr is a real `(alloc arena-expr ...)` call),
+;; or "" (unconstrained) otherwise -- pulled out of walk-let-bindings
+;; specifically because it used to be a `match` sitting directly in a
+;; let-binding's own initializer position, a real, confirmed-live
+;; non-tail spot the emitter can't handle.
+(defn region-kw-of-expr [(expr-node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)] : String @ Region
+  (match (alloc-rank expr-node scope dest-arena)
+    ((Some b) (get-field (deref b) :region-name))
+    ((None) "")))
+
+;; ScopeResult -- real, small wrapper struct, working around a real,
+;; confirmed-live emitter gap found here (2026-08-27, a real minimal
+;; repro isolated it): an Ok-bound RAW `(Vec T)` Result payload doesn't
+;; get its own real element type resolved (stays generic `void *`,
+;; confirmed via a real "passing argument ... from incompatible
+;; pointer type ... expected 'Vec *' but argument is of type
+;; 'void **'" gcc error) -- unlike a STRUCT Ok-payload, which already
+;; works correctly (get-field (deref x) :field), the same real,
+;; already-proven convention selfhost/lexer.prn/parser.prn both rely
+;; on throughout. Wrapping the Vec inside a real struct field sidesteps
+;; this entirely: walk-let-bindings returns (Result ScopeResult
+;; String) instead of (Result (Vec Binding) String), and the real
+;; struct-payload path (already proven correct) handles the rest.
+(defstruct ScopeResult
+  (scope : (Vec Binding) @ Region))
+
+;; walk-let-bindings -- real port of C's own walk_let's own inner
+;; binding loop: each expr is walked under the OUTER scope (matching
+;; C's own real, deliberate non-recursive-let semantics -- a binding's
+;; own expr can never see an EARLIER sibling binding from the same
+;; let), while a NEW scope accumulates every binding for the real BODY
+;; forms afterward. Returns (Err message) on the first real escape
+;; found while walking an expr, else (Ok final-scope).
+(defn walk-let-bindings [(bindings : &Node) (outer-scope : &(Vec Binding)) (dest-arena : Arena @ Region)]
+  : (Result ScopeResult String) @ Region
+  (loop [i 0 acc-scope (scope-copy outer-scope dest-arena)]
+    (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
+      (Ok {:scope acc-scope})
+      (let [name-node (vec/get &(get-field bindings :children) i)
+            expr-node (vec/get &(get-field bindings :children) (+ i 1))]
+        (if (not (= (node-kind-code (get-field name-node :kind)) 3))
+          (recur (+ i 2) acc-scope)
+          (match (walk expr-node outer-scope dest-arena)
+            ((Some e) (Err e))
+            ((None)
+              (let [new-binding (binding-of (get-field name-node :text) (region-kw-of-expr expr-node outer-scope dest-arena))]
+                (recur (+ i 2) (scope-extend &acc-scope new-binding dest-arena))))))))))
+
+;; walk-let -- real port of C's own walk_let: `(let [name1 expr1 ...]
+;; body...)`.
+(defn walk-let [(node : &Node) (scope : &(Vec Binding)) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (if (< (vec/len &(get-field node :children)) 2)
+    (walk-children node scope dest-arena)
+    (let [bindings (vec/get &(get-field node :children) 1)]
+      (if (not (= (node-kind-code (get-field bindings :kind)) 1))
+        (walk-children node scope dest-arena)
+        (match (walk-let-bindings bindings scope dest-arena)
+          ((Err e) (Some e))
+          ((Ok sr) (walk-body-from node 2 &(get-field (deref sr) :scope) dest-arena)))))))
+
+;; build-param-bindings -- real port of C's own analyze_defn's own
+;; param-binding loop: each `(name : Type @ :region/xxx)` param becomes
+;; a real Binding, region-annotated or unconstrained (rank -1).
+(defn build-param-bindings [(params : &Node) (dest-arena : Arena @ Region)] : (Vec Binding) @ Region
+  (loop [i 0 acc (vec/new dest-arena)]
+    (if (>= i (vec/len &(get-field params :children)))
+      acc
+      (let [param (vec/get &(get-field params :children) i)]
+        (if (or (not (= (node-kind-code (get-field param :kind)) 0))
+                (= (vec/len &(get-field param :children)) 0))
+          (recur (+ i 1) acc)
+          (let [name-node (vec/get &(get-field param :children) 0)]
+            (if (not (= (node-kind-code (get-field name-node :kind)) 3))
+              (recur (+ i 1) acc)
+              (let [region-kw (find-keyword-child param)
+                    new-binding (binding-of (get-field name-node :text) region-kw)]
+                (recur (+ i 1) (scope-extend &acc new-binding dest-arena))))))))))
+
+;; analyze-defn -- real port of C's own analyze_defn: one top-level
+;; `(defn name [params] body...)`.
+(defn analyze-defn [(defn-node : &Node) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (if (< (vec/len &(get-field defn-node :children)) 3)
+    None
+    (let [params (vec/get &(get-field defn-node :children) 2)]
+      (if (not (= (node-kind-code (get-field params :kind)) 1))
+        None
+        (let [base-scope (build-param-bindings params dest-arena)]
+          (walk-body-from defn-node 3 &base-scope dest-arena))))))
+
+;; region-analyze -- real port of C's own region_analyze, the public
+;; entry point: walks every top-level `(defn ...)` form in `program`.
+;; Returns None if every form satisfies the assignment invariant; on
+;; the first violation found, returns Some(message) in the exact DoD
+;; format.
+(defn region-analyze [(program : &Node) (dest-arena : Arena @ Region)] : (Option String) @ Region
+  (loop [i 0]
+    (if (>= i (vec/len &(get-field program :children)))
+      None
+      (let [form (vec/get &(get-field program :children) i)]
+        (if (is-call-named? form "defn")
+          (match (analyze-defn form dest-arena)
+            ((Some e) (Some e))
+            ((None) (recur (+ i 1))))
+          (recur (+ i 1)))))))
