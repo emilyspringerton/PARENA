@@ -476,6 +476,40 @@ language coverage (`match`, `loop`/`recur`, arithmetic, closures, Vec/Map generi
 emission) `selfhost/emit.prn`'s own "not scoped further" paragraph above already flags as real,
 separate, unstarted follow-up work — real, honest, unstarted, not attempted here.
 
+**Real, empirical first attempt at that same day (founder: "continue working on self hosted parena
+compiler")**: with `build-file` now real and callable, actually tried it — `build-file
+"selfhost/lexer.prn" "/tmp/out.c"`, the pipeline's own first real attempt to compile a real piece of
+ITSELF. Confirmed live, not guessed: it segfaulted. Root cause, found via `gdb`'s own real
+backtrace: `emit-let-bindings` called `emit-alloc-call` unconditionally on every let-binding's own
+expr-node, with zero check that the node was actually an `alloc` call at all (the header comment
+already honestly flagged this as a real, narrow-v0 assumption — just never enforced). `lexer.prn`'s
+own real first let-binding, `(let [lx0 (selfhost/lexer/new-lexer src)] ...)`, is a genuine, in-scope
+PARENA shape (a plain function call) this narrow emitter has never claimed to support — `vec/get`'s
+own real, honest out-of-bounds convention returns `NULL` (see `runtime/parena_runtime.h`), but
+`emit-alloc-call` then did a bare `get-field` on that `NULL`, which has no such check and crashes at
+the C level. "Unsupported" crashing the compiler process itself is real harm regardless of how
+narrow v0's own honest scope already is — every other domain in this whole effort holds to "fails
+honestly … not guessed C" (this doc's own emit.prn write-up above), this was the one real gap in
+that discipline. Fixed with a real `alloc-call-shaped?` guard (`emit-is-call-named?` + a real
+`vec/len` check before ever touching the node's own children) in `selfhost/emit.prn` — a non-
+alloc-shaped binding now emits a real, clean C `#error` line instead, verified to make a subsequent
+`gcc` compile fail with a real, comprehensible diagnostic (exit 1, "unsupported let-binding shape")
+rather than crash anything. New regression test in `tests/test_selfhost_emit.c` (a hand-written
+non-alloc-shaped let-binding, not the full self-compile fixture) proves the fix without needing
+`lexer.prn`'s own much larger real gap surface as a test dependency. 3 new assertions there (13
+total for domain 4); full local suite (336 tests) + all 5 selfhost domains + real mingw cross-
+compile all clean, zero regressions.
+
+Real, honest picture after this fix: `selfhost/lexer.prn` still doesn't actually compile through
+the selfhost pipeline — the segfault is gone, but the resulting C now fails a real `gcc` compile
+with dozens of genuine, expected errors (undeclared struct-typed identifiers in tail position,
+`return` statements with no value in non-`Unit` functions, and more), all real symptoms of the same
+already-documented, much bigger gap (no `match`/`loop`/arithmetic/closures/generics support). This
+was never expected to make a real self-compile succeed — the real, scoped value here was turning a
+crash into an honest, diagnosable failure, the same bar every other domain in this effort already
+holds itself to. The actual language-coverage expansion stays real, separate, unstarted follow-up
+work.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

@@ -373,6 +373,7 @@ Option arena_scope_lookup(Vec *, char *, Arena *);
 Vec arena_scope_extend(Vec *, ArenaBinding, Arena *);
 char * arena_ref_of(ArenaBinding, char *, Arena *);
 char * resolve_arena_ref(char *, Vec *, Arena *);
+int alloc_call_shaped_(Node *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
@@ -2164,6 +2165,10 @@ char * resolve_arena_ref(char * arena_text __attribute__((unused)), Vec * scope 
     return __match_result_15;
 }
 
+int alloc_call_shaped_(Node * expr_node __attribute__((unused))) {
+    return (emit_is_call_named_(expr_node, "alloc") && (vec_len(&((expr_node)->children)) >= 4));
+}
+
 char * emit_alloc_call(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *arena_node __attribute__((unused)) = vec_get(&((call)->children), 1);
     Node *lit_node __attribute__((unused)) = vec_get(&((call)->children), 3);
@@ -2218,9 +2223,11 @@ char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attrib
     Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
     Node *expr_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
     char *c_name __attribute__((unused)) = mangle((name_node)->text, dest);
-    char *expr_c __attribute__((unused)) = emit_alloc_call(expr_node, scope, dest);
+    char *expr_c __attribute__((unused)) = (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : "0 /* see #error above */");
+    char *error_prefix __attribute__((unused)) = (alloc_call_shaped_(expr_node) ? "" : "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls)\n");
     char *rest_c __attribute__((unused)) = emit_let_bindings(bindings, (i + 2), scope, dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), error_prefix));
     (void)(vec_push_(&(parts), "    char *"));
     (void)(vec_push_(&(parts), c_name));
     (void)(vec_push_(&(parts), " __attribute__((unused)) = "));

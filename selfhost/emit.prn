@@ -174,6 +174,26 @@
 ;; arena-expr String "literal")` shape -> `arena_strdup(arena-ref,
 ;; "literal", byte-len)`, matching examples/valid_only.prn's own real,
 ;; already-verified generated output exactly.
+;; alloc-call-shaped? -- real shape guard added after a real, live
+;; segfault: emit-alloc-call used to be called unconditionally on
+;; EVERY let-binding's own expr-node, with no check that the node was
+;; actually an `alloc` call at all. vec/get's own real, honest
+;; out-of-bounds convention returns NULL rather than crashing (see
+;; runtime/parena_runtime.h's own vec_get) -- but emit-alloc-call then
+;; unconditionally did `(get-field lit-node :text)` on that NULL,
+;; which crashes at the C level (a bare struct-field dereference has
+;; no NULL check, unlike vec_get). Confirmed live attempting a real
+;; self-compile of selfhost/lexer.prn through this very pipeline: its
+;; own real first let-binding, `(let [lx0 (selfhost/lexer/new-lexer
+;; src)] ...)`, is a genuine, real, in-scope PARENA shape (a plain
+;; function call, not an alloc) that this narrow v0 emitter has never
+;; claimed to support (see emit-let-bindings' own header comment
+;; below) -- but "unsupported" should mean a clean, honest failure,
+;; not a segfault of the compiler process itself.
+(defn alloc-call-shaped? [(expr-node : &Node)] : Bool
+  (and (emit-is-call-named? expr-node "alloc")
+       (>= (vec/len &(get-field expr-node :children)) 4)))
+
 (defn emit-alloc-call [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [arena-node (vec/get &(get-field call :children) 1)
         lit-node (vec/get &(get-field call :children) 3)
@@ -219,7 +239,10 @@
 ;; line, matching examples/valid_only.prn's own real generated output.
 ;; Real, honest, narrow v0: every binding's own expr is assumed to be
 ;; a real `alloc` call -- src/emit.c's own real, current version
-;; handles arbitrary let-binding exprs; not attempted here.
+;; handles arbitrary let-binding exprs; not attempted here. A
+;; non-alloc-shaped binding now emits a real, clean `#error` line
+;; (alloc-call-shaped?'s own header comment explains why) instead of
+;; crashing the compiler itself -- still narrow v0, but honestly so.
 (defn emit-let-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
   (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
@@ -227,10 +250,16 @@
     (let [name-node (vec/get &(get-field bindings :children) i)
           expr-node (vec/get &(get-field bindings :children) (+ i 1))
           c-name (mangle (get-field name-node :text) dest)
-          expr-c (emit-alloc-call expr-node scope dest)
+          expr-c (if (alloc-call-shaped? expr-node)
+                   (emit-alloc-call expr-node scope dest)
+                   "0 /* see #error above */")
+          error-prefix (if (alloc-call-shaped? expr-node)
+                         ""
+                         "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls)\n")
           rest-c (emit-let-bindings bindings (+ i 2) scope dest)
           parts (vec/new dest)]
       (do
+        (vec/push! &parts error-prefix)
         (vec/push! &parts "    char *")
         (vec/push! &parts c-name)
         (vec/push! &parts " __attribute__((unused)) = ")

@@ -120,6 +120,40 @@ int main(int argc, char **argv) {
         remove(bin_path);
     }
 
+    /* --- real regression test for a real, live segfault found and
+     * fixed 2026-08-27 attempting a real self-compile of
+     * selfhost/lexer.prn through this very pipeline: emit-let-bindings
+     * used to call emit-alloc-call unconditionally on every let-
+     * binding's own expr-node, with no check that the node was
+     * actually an `alloc` call at all. A plain function-call binding
+     * (a real, in-scope PARENA shape this narrow v0 emitter has never
+     * claimed to support) made emit-alloc-call read past the real
+     * `alloc` call's own expected shape via vec/get's own honest
+     * out-of-bounds NULL, then crash on a bare get-field dereference
+     * of that NULL. Fixed with a real alloc-call-shaped? guard: a
+     * non-alloc-shaped binding now emits a real, clean `#error` line
+     * instead. This test proves the fix without needing a real
+     * self-compile fixture: same non-alloc-call-shaped let-binding
+     * shape, hand-written. */
+    {
+        char *snippet =
+            "(defn f [(a : Arena @ :region/buffer)]\n"
+            "  (let [x (some-call a)]\n"
+            "    x))";
+        Result pr2 = parse_program(snippet, &a);
+        CHECK(pr2.tag == 1, "a real non-alloc-shaped let-binding (a plain function call) parses fine");
+        if (pr2.tag == 1) {
+            Node program2 = *(Node *)pr2.value;
+            /* the real regression: this used to segfault the whole
+             * process instead of returning. */
+            char *generated2 = emit_program(&program2, &a);
+            CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on a non-alloc-shaped let-binding");
+            CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
+                  "the real generated C carries a clean, honest #error line for the unsupported shape, "
+                  "instead of silently guessing at wrong C");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
