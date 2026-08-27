@@ -103,6 +103,41 @@ jobs:
           make build
           make test-multifile
 
+      # Self-hosting effort (NORTHSTAR.md's own "Self-hosting" section):
+      # selfhost/lexer.prn -> parser.prn -> region.prn -> emit.prn, a real
+      # PARENA-language port of VS0's own lexer/parser/region-analyzer/
+      # C-emitter. Real, honest gap this closes (first flagged in the
+      # v0.88.0 Apple): these had only ever been verified on this
+      # contributor's own dev box, never a real, official CI run.
+      - name: "Self-hosting domain 1 — lexer.prn (real port of src/lexer.c)"
+        run: |
+          set -euo pipefail
+          make build
+          make test-selfhost-lexer
+
+      - name: "Self-hosting domain 2 — parser.prn (real port of src/parser.c)"
+        run: |
+          set -euo pipefail
+          make build
+          make test-selfhost-parser
+
+      - name: "Self-hosting domain 3 — region.prn (real port of src/region.c)"
+        run: |
+          set -euo pipefail
+          make build
+          make test-selfhost-region
+
+      # test-selfhost-emit shells out to gcc via system() to compile+
+      # link+run its own generated C (see tests/test_selfhost_emit.c's
+      # own header comment) -- a real, genuinely different verification
+      # shape from the other 3 selfhost tests, kept as its own separate
+      # step so a real failure there is immediately attributable.
+      - name: "Self-hosting domain 4 — emit.prn (real port of src/emit.c, real compile+run proof)"
+        run: |
+          set -euo pipefail
+          make build
+          make test-selfhost-emit
+
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,
       # GoblinFoxDragon, BRAWLPIT, SHANKPIT) uploads its built binary via
@@ -332,6 +367,36 @@ jobs:
             pf_bridge.o pf_arena.o pf_fmt.o \
             -o editor-demo.exe -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lm
 
+      # Real, native Windows verification for 3 of the 4 self-hosting
+      # domains (NORTHSTAR.md's own "Self-hosting" section) -- a real,
+      # honest gap this closes (first flagged in the v0.88.0 Apple):
+      # selfhost/lexer.prn/parser.prn/region.prn had only ever been
+      # verified via a local mingw COMPILE-only check, never a real
+      # link+run on an actual Windows runner. Compiles the ALREADY-
+      # COMMITTED tests/test_selfhost_*_gen.c directly (these are real,
+      # checked-in generated C, the same convention every other real
+      # _gen.c file in this repo already follows) -- no `parena`
+      # compiler binary needed on this runner at all, since this job
+      # only ever compiles already-generated C natively. domain 4
+      # (emit.prn) is deliberately NOT wired here: its own real test
+      # shells out to gcc via system() to compile a FURTHER generated
+      # program (see tests/test_selfhost_emit.c's own header comment),
+      # a genuinely different, harder-to-verify-without-real-runner-
+      # access shape -- a real, separate, deferred follow-up, not
+      # silently skipped.
+      - name: "Self-hosting domains 1-3 (lexer/parser/region) — real Windows link+run"
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
+            tests/test_selfhost_lexer.c runtime/parena_runtime.c -o test_selfhost_lexer.exe -lm
+          ./test_selfhost_lexer.exe
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
+            tests/test_selfhost_parser.c runtime/parena_runtime.c -o test_selfhost_parser.exe -lm
+          ./test_selfhost_parser.exe
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
+            tests/test_selfhost_region.c runtime/parena_runtime.c -o test_selfhost_region.exe -lm
+          ./test_selfhost_region.exe
+
       - name: Bundle with required DLLs
         run: |
           set -euo pipefail
@@ -430,6 +495,31 @@ jobs:
             pf_bridge.o pf_arena.o pf_fmt.o \
             -L"$SDL2_PREFIX/lib" -L"$SDL2_TTF_PREFIX/lib" -lSDL2 -lSDL2_ttf -lm \
             -o editor-demo
+
+      # Real, native macOS (real Clang, via `cc`) verification for 3 of
+      # the 4 self-hosting domains -- same real gap + same real scope
+      # limit as the Windows job's own identically-shaped step above
+      # (see its own comment for the full real reasoning: domain 4/
+      # emit.prn's own system()-based sub-compilation is deliberately
+      # NOT wired here, a real, separate, deferred follow-up). Compiles
+      # the ALREADY-COMMITTED tests/test_selfhost_*_gen.c directly --
+      # no `parena` compiler binary needed on this runner. Only the
+      # SDL2 header include paths are needed (parena_runtime.h
+      # unconditionally includes <SDL2/SDL.h>), not the library link --
+      # none of these tests ever call an actual SDL2 function.
+      - name: "Self-hosting domains 1-3 (lexer/parser/region) — real macOS link+run"
+        run: |
+          set -euo pipefail
+          SDL2_PREFIX="$(brew --prefix sdl2)"
+          SDL2_TTF_PREFIX="$(brew --prefix sdl2_ttf)"
+          for name in lexer parser region; do
+            cc -std=c99 -Wall -Wextra -pedantic -Werror -Wno-parentheses-equality -I runtime -I tests \
+              -I "$SDL2_PREFIX/include" -I "$SDL2_PREFIX/include/SDL2" \
+              -I "$SDL2_TTF_PREFIX/include" -I "$SDL2_TTF_PREFIX/include/SDL2" \
+              "tests/test_selfhost_${name}.c" runtime/parena_runtime.c \
+              -o "test_selfhost_${name}" -lm
+            "./test_selfhost_${name}"
+          done
 
       - name: Bundle font + Homebrew dylibs for standalone distribution (macOS)
         run: |
