@@ -174,6 +174,25 @@ static Vec recompute_spotlight(const char *root, const char *query, Arena *a) {
     return run_providers((char *)query, (char *)root, a);
 }
 
+/* spotlight_keep_selection_visible -- real, new (2026-08-27, founder
+ * real-time: "ctrl t needs to scroll when you do down and it scrolls
+ * past the view"): called after every real change to the selected
+ * row, adjusts the real scroll offset (by reference) just enough to
+ * bring the selection back inside [offset, offset+max_visible-1] --
+ * scrolls DOWN by the minimum amount when the selection moved past the
+ * bottom of the visible window, UP by the minimum amount when it moved
+ * above the top (Up from row 0 of the current window). Takes
+ * max_visible as a real parameter rather than reading the SPOTLIGHT_
+ * MAX_VISIBLE_ROWS macro directly -- that's defined inside main() itself,
+ * after this function, so referencing it here isn't textually possible. */
+static void spotlight_keep_selection_visible(int selected, int *scroll_offset, int max_visible) {
+    if (selected < *scroll_offset) {
+        *scroll_offset = selected;
+    } else if (selected >= *scroll_offset + max_visible) {
+        *scroll_offset = selected - max_visible + 1;
+    }
+}
+
 /* looks_like_binary -- real, minimal, standard "is this text" heuristic
  * (2026-08-27, real bug found live: founder clicked a real .exe in the
  * file-tree sidebar, "it just says like MZ" -- the real DOS/PE
@@ -730,6 +749,18 @@ int main(int argc, char **argv) {
     int scroll_offset = 0;
 #define SCROLL_LINES_PER_NOTCH 3 /* real, standard default most real apps use */
 
+    /* Real, separate scroll state for the file-tree sidebar (2026-08-27,
+     * founder real-time: "nerd tree needs to scroll with mouse wheel if
+     * im hovering over nerd tree vs hovering over text editor"). Same
+     * real line-count-offset shape scroll_offset above already
+     * establishes, just for the sidebar's own real row list instead of
+     * the code buffer's own real lines. Reset to 0 on real directory
+     * navigation (both the ".." and into-a-subdirectory real MouseDown
+     * branches below) -- a freshly-listed directory should always open
+     * scrolled to its own real top, not wherever the PREVIOUS
+     * directory's own scroll happened to land. */
+    int file_tree_scroll_offset = 0;
+
     /* Real hover-reveal bottom status bar state (2026-08-27, see this
      * file's own STATUS_BAR_HEIGHT/HOVER_REVEAL_ZONE header comment for
      * the real, deliberate v0 scope). last_mouse_y is updated on EVERY
@@ -800,6 +831,18 @@ int main(int argc, char **argv) {
     int spotlight_query_len = 0;
     Vec spotlight_results = vec_new(&a);
     int spotlight_selected = 0;
+    /* Real, new (2026-08-27, founder real-time: "ctrl t needs to
+     * scroll when you do down and it scrolls past the view"):
+     * spotlight_selected used to be clamped to the real result count
+     * but the render loop below always drew rows 0..SPOTLIGHT_MAX_
+     * VISIBLE_ROWS-1 with no scroll offset at all -- pressing Down past
+     * row 11 kept moving the real selection, just off-screen, with
+     * nothing on screen ever showing it had moved. spotlight_scroll_
+     * offset is adjusted (spotlight_keep_selection_visible, below)
+     * every time spotlight_selected changes, the same real "keep the
+     * selection inside the visible window" behavior every real list/
+     * menu widget needs. */
+    int spotlight_scroll_offset = 0;
 #define SPOTLIGHT_MAX_VISIBLE_ROWS 12
 #define SPOTLIGHT_ROW_HEIGHT 26
 
@@ -850,11 +893,14 @@ int main(int argc, char **argv) {
                             spotlight_query[spotlight_query_len] = '\0';
                             spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
                             spotlight_selected = 0;
+                            spotlight_scroll_offset = 0;
                         }
                     } else if (key == key_up()) {
                         if (spotlight_selected > 0) spotlight_selected--;
+                        spotlight_keep_selection_visible(spotlight_selected, &spotlight_scroll_offset, SPOTLIGHT_MAX_VISIBLE_ROWS);
                     } else if (key == key_down()) {
                         if (spotlight_selected < vec_len(&spotlight_results) - 1) spotlight_selected++;
+                        spotlight_keep_selection_visible(spotlight_selected, &spotlight_scroll_offset, SPOTLIGHT_MAX_VISIBLE_ROWS);
                     } else if (key == key_return()) {
                         /* Real, deliberate v0 scope: activates the real
                          * currently-selected row. A File result opens it
@@ -883,6 +929,7 @@ int main(int argc, char **argv) {
                     spotlight_query[0] = '\0';
                     spotlight_query_len = 0;
                     spotlight_selected = 0;
+                    spotlight_scroll_offset = 0;
                     spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
                 /* Real Ctrl+C/X/V copy/cut/paste (2026-08-27) -- checked
                  * FIRST, before the plain-key branches below, since 'c'/
@@ -1143,6 +1190,7 @@ int main(int argc, char **argv) {
                     spotlight_query[spotlight_query_len] = '\0';
                     spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
                     spotlight_selected = 0;
+                    spotlight_scroll_offset = 0;
                 } else {
                 /* Typed text with an active selection REPLACES it --
                  * real, standard editor UX: delete the selection first,
@@ -1194,13 +1242,19 @@ int main(int argc, char **argv) {
                      * real synthetic ".." entry -- NOT part of
                      * file_tree_entries itself, see parent_dir_of's own
                      * header comment for its real, deliberately bounded
-                     * scope -- so real entries start at row_idx 1. */
+                     * scope -- so real entries start at row_idx 1. entry_idx
+                     * (2026-08-27) folds in file_tree_scroll_offset so a
+                     * click still targets the real, currently-visible
+                     * (post-scroll) entry, not whatever row_idx alone
+                     * would mean at scroll_offset 0. */
                     int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
+                    int entry_idx = row_idx - 1 + file_tree_scroll_offset;
                     if (row_idx == 0) {
                         file_tree_dir = parent_dir_of(file_tree_dir, &a);
                         file_tree_entries = list_dir(file_tree_dir, &a);
-                    } else if (row_idx >= 1 && (row_idx - 1) < vec_len(&file_tree_entries)) {
-                        char *name = (char *)vec_get(&file_tree_entries, row_idx - 1);
+                        file_tree_scroll_offset = 0;
+                    } else if (row_idx >= 1 && entry_idx < vec_len(&file_tree_entries)) {
+                        char *name = (char *)vec_get(&file_tree_entries, entry_idx);
                         char full_path[4096];
                         snprintf(full_path, sizeof full_path, "%s/%s", file_tree_dir, name);
                         if (is_dir_(full_path)) {
@@ -1209,6 +1263,7 @@ int main(int argc, char **argv) {
                             memcpy(dir_copy, full_path, plen);
                             file_tree_dir = dir_copy;
                             file_tree_entries = list_dir(file_tree_dir, &a);
+                            file_tree_scroll_offset = 0;
                         } else {
                             /* Real course-correction (2026-08-27):
                              * founder real-time first read as "double
@@ -1327,6 +1382,25 @@ int main(int argc, char **argv) {
                         zoom_percent -= ZOOM_STEP;
                         if (zoom_percent < ZOOM_MIN) zoom_percent = ZOOM_MIN;
                     }
+                } else if (toggle_on_(&file_tree_toggle) && mouse_x() >= 0 && mouse_x() < SIDEBAR_WIDTH
+                           && mouse_y() >= 0 && mouse_y() < WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    /* Real file-tree sidebar scroll (2026-08-27, founder
+                     * real-time: "nerd tree needs to scroll with mouse
+                     * wheel if im hovering over nerd tree vs hovering
+                     * over text editor"). Same real RAW-screen-coordinate
+                     * hit-test the file-tree's own MouseDown handler
+                     * above already uses (fixed UI chrome, unaffected by
+                     * content zoom) -- when the cursor is over the
+                     * sidebar, the wheel scrolls file_tree_scroll_offset
+                     * instead of the code buffer's own scroll_offset.
+                     * Clamped to [0, real entry count] -- same real
+                     * "can't scroll above the top, harmless overscroll
+                     * past the bottom" shape scroll_offset's own clamp
+                     * below already establishes. */
+                    file_tree_scroll_offset -= delta * SCROLL_LINES_PER_NOTCH;
+                    if (file_tree_scroll_offset < 0) file_tree_scroll_offset = 0;
+                    int max_scroll = vec_len(&file_tree_entries);
+                    if (file_tree_scroll_offset > max_scroll) file_tree_scroll_offset = max_scroll;
                 } else {
                     /* Real mouse-wheel vertical scroll (2026-08-27).
                      * SDL2's own real convention: positive delta =
@@ -1491,8 +1565,15 @@ int main(int argc, char **argv) {
              * bottleneck; caching it would need a second array kept in
              * lockstep with file_tree_entries across both navigation
              * sites below for a purely cosmetic win. */
-            for (int fi = 0; fi < fn; fi++) {
-                int fy = 4 + (fi + 1) * FILE_TREE_ROW_HEIGHT;
+            /* Real, minimal scroll application (2026-08-27): starts the
+             * visible range at file_tree_scroll_offset instead of 0, and
+             * fy is computed relative to that offset so row 1 (right
+             * below "..") always shows entry index file_tree_scroll_offset,
+             * not entry index 0 -- same real "offset shifts what's
+             * visible, doesn't change row HEIGHT/layout" shape
+             * scroll_offset already establishes for the code buffer. */
+            for (int fi = file_tree_scroll_offset; fi < fn; fi++) {
+                int fy = 4 + (fi - file_tree_scroll_offset + 1) * FILE_TREE_ROW_HEIGHT;
                 if (fy > WINDOW_HEIGHT - STATUS_BAR_HEIGHT - FILE_TREE_ROW_HEIGHT) break;
                 char *entry_name = (char *)vec_get(&file_tree_entries, fi);
                 int is_dir_entry;
@@ -1525,8 +1606,18 @@ int main(int argc, char **argv) {
         if (spotlight_visible) {
 #define SPOTLIGHT_BOX_X 90
 #define SPOTLIGHT_BOX_W 520
-            int visible_rows = vec_len(&spotlight_results);
+            /* Real scroll application (2026-08-27): visible_rows is how
+             * many rows actually fit starting at spotlight_scroll_offset
+             * (the real remaining result count from there, capped at
+             * SPOTLIGHT_MAX_VISIBLE_ROWS) -- spotlight_keep_selection_
+             * visible (called at every real spotlight_selected mutation
+             * site above) is what keeps the real selection inside this
+             * same window, so by the time this renders, spotlight_selected
+             * is always already within [offset, offset+visible_rows). */
+            int total_results = vec_len(&spotlight_results);
+            int visible_rows = total_results - spotlight_scroll_offset;
             if (visible_rows > SPOTLIGHT_MAX_VISIBLE_ROWS) visible_rows = SPOTLIGHT_MAX_VISIBLE_ROWS;
+            if (visible_rows < 0) visible_rows = 0;
             int box_h = 44 + visible_rows * SPOTLIGHT_ROW_HEIGHT + 10;
             Result sbg = set_draw_color(&ren, 26, 26, 32, 245, &a);
             (void)sbg;
@@ -1540,9 +1631,9 @@ int main(int argc, char **argv) {
             Result sq = render_text(&ren, &font, query_line, SPOTLIGHT_BOX_X + 14, 82, 235, 235, 245, &a);
             (void)sq;
 
-            for (int si = 0; si < visible_rows; si++) {
+            for (int si = spotlight_scroll_offset; si < spotlight_scroll_offset + visible_rows; si++) {
                 SpotlightResult *res = (SpotlightResult *)vec_get(&spotlight_results, si);
-                int ry = 118 + si * SPOTLIGHT_ROW_HEIGHT;
+                int ry = 118 + (si - spotlight_scroll_offset) * SPOTLIGHT_ROW_HEIGHT;
                 if (si == spotlight_selected) {
                     Result shl = set_draw_color(&ren, 55, 75, 110, 255, &a);
                     (void)shl;
