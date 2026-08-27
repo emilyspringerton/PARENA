@@ -54,19 +54,32 @@
 ;; only rendering (and, on the host-driver side, cursor row/column
 ;; tracking) needed real multi-line awareness, not the buffer's own
 ;; core representation.
+;; render-highlighted-text -- real, confirmed-live crash fixed here
+;; (2026-08-27, founder real-time: opening a real ~2MB/57k-line file
+;; "crashes... we need to open it streaming or whatever"). This used
+;; to walk every line via a real, plain SELF-RECURSIVE FUNCTION CALL
+;; (render-lines calling itself once per line, not a real loop/recur),
+;; one real C stack frame per line -- for a real 57,524-line file,
+;; that's 57,524 levels of C call-stack depth. gcc's own tail-call
+;; optimization isn't guaranteed for this shape (the call sits inside
+;; a match arm, itself inside a let, itself inside an if -- not a
+;; textually bare tail call gcc is certain to fold even at -O2), and
+;; the confirmed-live symptom (a real, reproducible crash opening a
+;; real 2.7MB/57,524-line PARENA_CONSTRUCT.txt, with a default 8MB
+;; stack -- ulimit -s 8192) matches a real stack overflow exactly.
+;; Rewritten as a real loop/recur -- the same real, proven, genuinely
+;; iterative (no growing C call stack) construct every other line-at-
+;; a-time walk in this stdlib already uses -- so file size no longer
+;; bounds this function's own real stack depth at all.
 (defn render-highlighted-text [(!ren : &Renderer) (!f : &Font) (rules : &(Vec TmRule))
                                 (text : String @ Region) (x : I32) (y : I32) (line-height : I32)
                                 (dest : Arena @ Region)]
   : (Result Unit Sdl2Error) @ Region
   (let [lines (string/split text "\n" dest)]
-    (render-lines !ren !f rules &lines 0 x y line-height dest)))
-
-(defn render-lines [(!ren : &Renderer) (!f : &Font) (rules : &(Vec TmRule)) (lines : &(Vec String))
-                     (i : I32) (x : I32) (y : I32) (line-height : I32) (dest : Arena @ Region)]
-  : (Result Unit Sdl2Error) @ Region
-  (if (>= i (vec/len lines))
-    (Ok unit)
-    (let [line (vec/get lines i)]
-      (match (render-highlighted-line !ren !f rules line x (+ y (* i line-height)) dest)
-        ((Err e) (Err e))
-        ((Ok u) (render-lines !ren !f rules lines (+ i 1) x y line-height dest))))))
+    (loop [i 0]
+      (if (>= i (vec/len &lines))
+        (Ok unit)
+        (let [line (vec/get &lines i)]
+          (match (render-highlighted-line !ren !f rules line x (+ y (* i line-height)) dest)
+            ((Err e) (Err e))
+            ((Ok u) (recur (+ i 1)))))))))

@@ -393,6 +393,7 @@ int key_f2();
 int key_f3();
 int shift_held_();
 int ctrl_held_();
+int gui_held_();
 char * get_clipboard_text(Arena *);
 void set_clipboard_text(char *);
 void delay(int);
@@ -423,7 +424,6 @@ Color color_for_scope(char *);
 Result render_highlighted_line(Renderer *, Font *, Vec *, char *, int, int, Arena *);
 Result render_tokens(Renderer *, Font *, char *, Vec *, int, int, int, Arena *);
 Result render_highlighted_text(Renderer *, Font *, Vec *, char *, int, int, int, Arena *);
-Result render_lines(Renderer *, Font *, Vec *, Vec *, int, int, int, int, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -1766,6 +1766,10 @@ int ctrl_held_(void) {
     return (sdl2_ctrl_held_impl() != 0);
 }
 
+int gui_held_(void) {
+    return (sdl2_gui_held_impl() != 0);
+}
+
 char * get_clipboard_text(Arena *dest __attribute__((unused))) {
     return (sdl2_get_clipboard_text_impl(dest));
 }
@@ -2132,25 +2136,28 @@ Result render_tokens(Renderer * ren __attribute__((unused)), Font * f __attribut
 
 Result render_highlighted_text(Renderer * ren __attribute__((unused)), Font * f __attribute__((unused)), Vec * rules __attribute__((unused)), char * text __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int line_height __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec lines __attribute__((unused)) = split(text, "\n", dest);
-    return render_lines(ren, f, rules, &(lines), 0, x, y, line_height, dest);
-}
-
-Result render_lines(Renderer * ren __attribute__((unused)), Font * f __attribute__((unused)), Vec * rules __attribute__((unused)), Vec * lines __attribute__((unused)), int i __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int line_height __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((i >= vec_len(lines))) {
-    return result_ok(NULL);
-    } else {
-    char *line __attribute__((unused)) = vec_get(lines, i);
-    Result __match_result_23 __attribute__((unused)) = {0};
+    Result __loop_result_14 __attribute__((unused));
+    double i = 0;
+    while (1) {
+        if ((i >= vec_len(&(lines)))) {
+        __loop_result_14 = result_ok(NULL);
+        break;
+        } else {
+        void *line __attribute__((unused)) = vec_get(&(lines), i);
     Result __match_tmp_43 = render_highlighted_line(ren, f, rules, line, x, (y + (i * line_height)), dest);
     if (__match_tmp_43.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_43.value;
-        __match_result_23 = result_err(e);
+        __loop_result_14 = result_err(e);
+        break;
     }
     else if (__match_tmp_43.tag == 1) {
         void *u __attribute__((unused)) = __match_tmp_43.value;
-        __match_result_23 = render_lines(ren, f, rules, lines, (i + 1), x, y, line_height, dest);
+        double __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
     }
-    return __match_result_23;
+        }
     }
+    return __loop_result_14;
 }
 
