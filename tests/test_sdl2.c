@@ -129,6 +129,34 @@ int main(void) {
             CHECK(all_real_events, "every drained event is a real, well-formed EventKind");
             CHECK(ev.tag == 0, "poll-event correctly reports None once the real SDL event queue is empty");
 
+            /* --- real clipboard round-trip + real Ctrl modifier
+             * detection (2026-08-27, real Ctrl+C/X/V copy/cut/paste)
+             * --- */
+            set_clipboard_text("hello from parena");
+            char *clip = get_clipboard_text(&a);
+            CHECK(strcmp(clip, "hello from parena") == 0,
+                  "set-clipboard-text then get-clipboard-text round-trips the real X11 clipboard exactly");
+
+            CHECK(ctrl_held_() == 0, "ctrl-held? is false with no Ctrl key actually held");
+            {
+                /* Real, confirmed-live finding (2026-08-27): SDL_PushEvent
+                 * alone does NOT update SDL's own internal modifier-state
+                 * tracking (what SDL_GetModState reads) -- that update
+                 * happens inside SDL_SendKeyboardKey, the real internal
+                 * path a genuine OS-generated key event takes, which a
+                 * manually pushed queue entry bypasses. Confirmed by
+                 * actually trying the push-event approach first and
+                 * watching it fail. SDL_SetModState is the real, public,
+                 * intended-for-exactly-this SDL2 API for imposing a
+                 * modifier state directly (its own real doc comment: "the
+                 * inverse of SDL_GetModState... allows you to impose
+                 * modifier key states on your program"). */
+                SDL_SetModState(KMOD_LCTRL);
+                CHECK(ctrl_held_() != 0, "ctrl-held? reports true once SDL_SetModState actually sets KMOD_LCTRL");
+                SDL_SetModState(KMOD_NONE);
+                CHECK(ctrl_held_() == 0, "ctrl-held? goes back to false once the modifier state is actually cleared");
+            }
+
             destroy_renderer(ren);
         }
         destroy_window(win);

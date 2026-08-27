@@ -1084,6 +1084,38 @@ static inline int sdl2_shift_held_impl(void) {
     return (SDL_GetModState() & KMOD_SHIFT) != 0;
 }
 
+/* ctrl_held / clipboard -- real clipboard integration (2026-08-27,
+ * founder: "continue" -- the natural next real increment after text
+ * SELECTION just shipped: copy/cut/paste). Same live-query shape as
+ * shift_held above (SDL_GetModState() & KMOD_CTRL). Closes this file's
+ * own sdl2.prn header comment's already-flagged "get-clipboard-text...
+ * real, honest, NOT closed in this pass" gap.
+ *
+ * SDL_GetClipboardText() returns a real, SDL-malloc'd C string (never
+ * NULL per SDL2's own docs -- an empty "" on no/unavailable clipboard
+ * content, not a null pointer) that the CALLER must free with
+ * SDL_free(); copied into the real PARENA arena here (matching every
+ * other string-returning raw primitive in this file) and freed
+ * immediately after, so no SDL-owned pointer ever escapes into PARENA
+ * code. */
+static inline int sdl2_ctrl_held_impl(void) {
+    return (SDL_GetModState() & KMOD_CTRL) != 0;
+}
+
+static inline void sdl2_set_clipboard_text_impl(const char *text) {
+    SDL_SetClipboardText(text);
+}
+
+static inline char *sdl2_get_clipboard_text_impl(Arena *dest) {
+    char *sdl_text = SDL_GetClipboardText();
+    size_t len = sdl_text ? strlen(sdl_text) : 0;
+    char *out = (char *)arena_alloc(dest, len + 1);
+    if (len > 0) memcpy(out, sdl_text, len);
+    out[len] = '\0';
+    if (sdl_text) SDL_free(sdl_text);
+    return out;
+}
+
 static inline int sdl2_get_ticks_impl(void) {
     return (int)SDL_GetTicks();
 }

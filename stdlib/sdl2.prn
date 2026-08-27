@@ -44,16 +44,21 @@
 ;; real #target declarations with no host implementation yet -- same
 ;; documented-gap convention this stdlib already uses elsewhere):
 ;; get-keyboard-state, get-mouse-state, set-relative-mouse-mode,
-;; get-clipboard-text, set-cursor, open-audio-device, queue-audio.
+;; set-cursor, open-audio-device, queue-audio.
 ;; Game controller support was already flagged as out of scope in
 ;; STDLIB.md and stays that way.
+;;
+;; 2026-08-27, founder: "continue" -- ctrl-held?/get-clipboard-text/
+;; set-clipboard-text ARE closed now (real Ctrl+C/X/V copy/cut/paste,
+;; the natural next increment after text selection): get-clipboard-text
+;; moves off the list above.
 
 (module sdl2)
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-home key-end key-delete key-f2 key-f3
-        shift-held?
+        shift-held? ctrl-held? get-clipboard-text set-clipboard-text
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -292,6 +297,24 @@
 (defn shift-held? [] : Bool
   #target
   {:c (inline-c "sdl2_shift_held_impl() != 0")})
+
+;; ctrl-held? / get-clipboard-text / set-clipboard-text -- real
+;; clipboard integration (2026-08-27, real Ctrl+C/X/V copy/cut/paste).
+;; get-clipboard-text always succeeds with a real, possibly-empty
+;; string (SDL2's own SDL_GetClipboardText never returns NULL) --
+;; matches this file's own "thin FFI wrapper" philosophy rather than
+;; inventing a Result/Option this real SDL2 call doesn't have.
+(defn ctrl-held? [] : Bool
+  #target
+  {:c (inline-c "sdl2_ctrl_held_impl() != 0")})
+
+(defn get-clipboard-text [(dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "sdl2_get_clipboard_text_impl(dest)")})
+
+(defn set-clipboard-text [(text : String @ Region)] : Unit
+  #target
+  {:c (inline-c "sdl2_set_clipboard_text_impl(text);")})
 
 (defn delay [(ms : I32)]
   : Unit

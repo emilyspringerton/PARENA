@@ -117,6 +117,9 @@ int key_delete();
 int key_f2();
 int key_f3();
 int shift_held_();
+int ctrl_held_();
+char * get_clipboard_text(Arena *);
+void set_clipboard_text(char *);
 void delay(int);
 int sdl2_raw_ttf_init();
 int sdl2_raw_open_font(char *, int);
@@ -438,6 +441,18 @@ int key_f3(void) {
 
 int shift_held_(void) {
     return (sdl2_shift_held_impl() != 0);
+}
+
+int ctrl_held_(void) {
+    return (sdl2_ctrl_held_impl() != 0);
+}
+
+char * get_clipboard_text(Arena *dest __attribute__((unused))) {
+    return (sdl2_get_clipboard_text_impl(dest));
+}
+
+void set_clipboard_text(char * text __attribute__((unused))) {
+    sdl2_set_clipboard_text_impl(text);
 }
 
 void delay(int ms __attribute__((unused))) {

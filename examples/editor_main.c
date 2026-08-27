@@ -38,8 +38,11 @@
  * anywhere in this stdlib yet, a real, separate, deferred gap, so this
  * uses a solid, muted color and draws it BEFORE the real text so the
  * text still renders legibly on top); Backspace/Delete/typed
- * replacement all act on the whole selection when one is active. No
- * undo -- real, separate, deferred follow-up, matching every other
+ * replacement all act on the whole selection when one is active.
+ * Real Ctrl+C/X/V copy/cut/paste (2026-08-27), through SDL2's own real
+ * clipboard (sdl2/get-clipboard-text and set-clipboard-text -- closes
+ * that file's own previously-flagged "NOT closed in this pass" gap).
+ * No undo -- real, separate, deferred follow-up, matching every other
  * "expand when a real feature needs it" scope note this whole stdlib
  * already carries.
  *
@@ -193,10 +196,44 @@ int main(int argc, char **argv) {
                 running = 0;
             } else if (kind.tag == EventKind_TAG_KeyDown) {
                 int key = *(int *)kind.value;
-                /* Backspace/Delete with an active selection remove the
-                 * WHOLE selection instead of one character -- real,
-                 * standard editor UX (2026-08-26, real text SELECTION). */
-                if (key == key_backspace()) {
+                /* Real Ctrl+C/X/V copy/cut/paste (2026-08-27) -- checked
+                 * FIRST, before the plain-key branches below, since 'c'/
+                 * 'x'/'v' are otherwise ordinary printable keys (SDL2's
+                 * own SDLK_c/SDLK_x/SDLK_v keysyms ARE their literal
+                 * ASCII values, same real "no wrapper needed" precedent
+                 * this file's own Escape check already establishes with
+                 * the literal 27). Guarded on ctrl_held_() so a bare "c"/
+                 * "x"/"v" keypress still falls through untouched to
+                 * SDL_TEXTINPUT for real typing -- SDL2 doesn't fire
+                 * TEXTINPUT for a Ctrl-held combo, so there's no double-
+                 * handling risk here. */
+                if (key == 'c' && ctrl_held_()) {
+                    if (has_selection_(&buf)) {
+                        char *whole = active_text(&buf);
+                        char *sel_text = substring(whole, selection_start(&buf), selection_end(&buf), &a);
+                        set_clipboard_text(sel_text);
+                    }
+                } else if (key == 'x' && ctrl_held_()) {
+                    if (has_selection_(&buf)) {
+                        char *whole = active_text(&buf);
+                        char *sel_text = substring(whole, selection_start(&buf), selection_end(&buf), &a);
+                        set_clipboard_text(sel_text);
+                        Result del = delete_selection(&buf, &a);
+                        if (del.tag == 1) buf = *(Buffer *)del.value;
+                    }
+                } else if (key == 'v' && ctrl_held_()) {
+                    if (has_selection_(&buf)) {
+                        Result del = delete_selection(&buf, &a);
+                        if (del.tag == 1) buf = *(Buffer *)del.value;
+                    }
+                    char *clip = get_clipboard_text(&a);
+                    Result ins = insert_at_cursor(&buf, clip, &a);
+                    if (ins.tag == 1) buf = *(Buffer *)ins.value;
+                } else if (key == key_backspace()) {
+                    /* Backspace/Delete with an active selection remove
+                     * the WHOLE selection instead of one character --
+                     * real, standard editor UX (2026-08-26, real text
+                     * SELECTION). */
                     Result del = has_selection_(&buf) ? delete_selection(&buf, &a)
                                                        : backspace_at_cursor(&buf, &a);
                     if (del.tag == 1) buf = *(Buffer *)del.value;
