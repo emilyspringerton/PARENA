@@ -223,6 +223,25 @@ turbosed: build
 # turbosed above, but links runtime/parena_runtime.c (not src/arena.c)
 # -- this program needs the real SDL2/SDL2_ttf host glue turbogrep/
 # turbosed don't.
+# PRNFMT_RENAME -- real, standard C symbol-renaming (the same technique
+# real, large C codebases use for exactly this, e.g. zlib's own
+# "prefix all symbols" build option): src/arena.c's own arena_init/
+# arena_alloc/arena_strdup/arena_free_all collide at LINK time (not
+# just the real, separately-solved Arena TYPE collision runtime/
+# prnfmt_bridge.c's own header comment documents) with runtime/
+# parena_runtime.c's own identically-named functions once both land in
+# the SAME final editor-demo executable -- confirmed live via a real
+# "multiple definition of `arena_init`" linker error, not assumed.
+# Fixed by recompiling src/arena.c + src/fmt.c FRESH for this one link
+# (not reusing src/arena.o/src/fmt.o, which are compiled for the real
+# `parena` compiler's own, separate linkage) with these 4 symbols
+# preprocessor-renamed -- applied consistently to src/arena.c, src/
+# fmt.c (which itself calls arena_alloc/arena_strdup internally), and
+# runtime/prnfmt_bridge.c (which also calls them), so every reference
+# resolves to the same real, renamed symbol.
+PRNFMT_RENAME := -Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc \
+	-Darena_strdup=pf_arena_strdup -Darena_free_all=pf_arena_free_all
+
 editor-demo: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
 		stdlib/regex/pcre.prn stdlib/sdl2.prn \
@@ -230,7 +249,11 @@ editor-demo: build
 		stdlib/editor/textmate_markdown.prn \
 		stdlib/editor/theme.prn stdlib/editor/render.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/arena.c -o /tmp/pf_arena.o
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/fmt.c -o /tmp/pf_fmt.o
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -I runtime -c runtime/prnfmt_bridge.c -o /tmp/pf_bridge.o
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime /tmp/editor_demo_full.c runtime/parena_runtime.c \
+		/tmp/pf_bridge.o /tmp/pf_arena.o /tmp/pf_fmt.o \
 		-o editor-demo -lSDL2 -lSDL2_ttf -lm
 
 # test-editor-io -- real end-to-end verification of the editor's own

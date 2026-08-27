@@ -55,7 +55,7 @@
 
 (module sdl2)
 (export init quit create-window destroy-window create-renderer destroy-renderer
-        set-draw-color render-clear render-fill-rect render-present
+        set-draw-color render-clear render-fill-rect render-present render-set-scale
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-tab key-f2 key-f3
         shift-held? ctrl-held? get-clipboard-text set-clipboard-text mouse-x mouse-y
@@ -176,6 +176,11 @@
   #target
   {:c (inline-c "sdl2_render_present_impl(renderer_handle);")})
 
+(defn sdl2-raw-render-set-scale [(renderer-handle : I32) (scale-percent : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_render_set_scale_impl(renderer_handle, scale_percent)")})
+
 (defn sdl2-raw-poll-event [] : I32
   #target
   {:c (inline-c "sdl2_poll_event_impl()")})
@@ -258,6 +263,21 @@
 (defn render-present [(!ren : &Renderer)]
   : Unit
   (sdl2-raw-render-present (get-field !ren :handle)))
+
+;; render-set-scale -- real Ctrl+Zoom support (2026-08-27, founder
+;; real-time: "ctrl plus and ctrl minus and ctrl mous wheel scoll
+;; should zoom just like pitviper" -- PITVIPER's own real, already-
+;; shipped zoomScale + SDL_RenderSetScale is the real, explicit model).
+;; scale-percent is a real I32 (100 = 1.0x, 150 = 1.5x), matching this
+;; whole file's own "thin FFI wrapper, real values, not a redesigned
+;; API" philosophy -- the real float SDL_RenderSetScale actually wants
+;; is a host-glue-only detail (see runtime/parena_runtime.h's own
+;; sdl2_render_set_scale_impl).
+(defn render-set-scale [(!ren : &Renderer) (scale-percent : I32) (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (if (< (sdl2-raw-render-set-scale (get-field !ren :handle) scale-percent) 0)
+    (Err DrawFailed)
+    (Ok unit)))
 
 ;; poll-event -- None means "no event pending right now" (SDL_PollEvent
 ;; itself returned 0), matching every real client's own SDL_PollEvent

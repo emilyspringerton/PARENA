@@ -166,7 +166,23 @@ jobs:
       - name: Build editor-demo (Linux)
         run: |
           set -euo pipefail
+          # Real prnfmt-on-save bridge (2026-08-27, founder: "build
+          # prnfmt into the editor so saving files auto formats them")
+          # -- src/arena.c's own arena_init/arena_alloc/arena_strdup/
+          # arena_free_all collide at LINK time with runtime/
+          # parena_runtime.c's own identically-named functions once
+          # both land in the same final editor-demo executable
+          # (confirmed live via a real "multiple definition" linker
+          # error) -- fixed the same real, standard way on every real
+          # platform: recompile src/arena.c + src/fmt.c fresh with
+          # these 4 symbols preprocessor-renamed, matching Makefile's
+          # own real PRNFMT_RENAME.
+          PRNFMT_RENAME="-Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc -Darena_strdup=pf_arena_strdup -Darena_free_all=pf_arena_free_all"
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror $PRNFMT_RENAME -c src/arena.c -o pf_arena.o
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror $PRNFMT_RENAME -c src/fmt.c -o pf_fmt.o
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror $PRNFMT_RENAME -I runtime -c runtime/prnfmt_bridge.c -o pf_bridge.o
           gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime editor_demo_full.c runtime/parena_runtime.c \
+            pf_bridge.o pf_arena.o pf_fmt.o \
             -o editor-demo -lSDL2 -lSDL2_ttf -lm
 
       - name: Bundle SDL2 runtime libraries for standalone distribution (Linux)
@@ -304,7 +320,16 @@ jobs:
           # Windows -- a real, separate, deferred follow-up (e.g. a
           # MessageBox on real startup failure) would close that, not
           # attempted here.
+          #
+          # PRNFMT_RENAME: real prnfmt-on-save bridge, same real link-
+          # level symbol collision fixed the same way on every real
+          # platform -- see the Linux job's own identical comment above.
+          PRNFMT_RENAME="-Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc -Darena_strdup=pf_arena_strdup -Darena_free_all=pf_arena_free_all"
+          gcc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -c src/arena.c -o pf_arena.o
+          gcc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -c src/fmt.c -o pf_fmt.o
+          gcc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -I runtime -c runtime/prnfmt_bridge.c -o pf_bridge.o
           gcc -std=c99 -Wall -Wextra -Werror -mwindows -I runtime editor_demo_full.c runtime/parena_runtime.c \
+            pf_bridge.o pf_arena.o pf_fmt.o \
             -o editor-demo.exe -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lm
 
       - name: Bundle with required DLLs
@@ -391,10 +416,18 @@ jobs:
           # correctness benefit, so it's suppressed here rather than
           # "fixed" -- a real, deliberate, Clang-only cosmetic carve-out,
           # not a correctness concern like the uninitialized-var case was.
+          # PRNFMT_RENAME: real prnfmt-on-save bridge, same real link-
+          # level symbol collision fixed the same way on every real
+          # platform -- see the Linux job's own identical comment.
+          PRNFMT_RENAME="-Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc -Darena_strdup=pf_arena_strdup -Darena_free_all=pf_arena_free_all"
+          cc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -c src/arena.c -o pf_arena.o
+          cc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -c src/fmt.c -o pf_fmt.o
+          cc -std=c99 -Wall -Wextra -Werror $PRNFMT_RENAME -I runtime -c runtime/prnfmt_bridge.c -o pf_bridge.o
           cc -std=c99 -Wall -Wextra -Werror -Wno-parentheses-equality -I runtime \
             -I "$SDL2_PREFIX/include" -I "$SDL2_PREFIX/include/SDL2" \
             -I "$SDL2_TTF_PREFIX/include" -I "$SDL2_TTF_PREFIX/include/SDL2" \
             editor_demo_full.c runtime/parena_runtime.c \
+            pf_bridge.o pf_arena.o pf_fmt.o \
             -L"$SDL2_PREFIX/lib" -L"$SDL2_TTF_PREFIX/lib" -lSDL2 -lSDL2_ttf -lm \
             -o editor-demo
 

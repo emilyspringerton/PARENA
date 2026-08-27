@@ -65,6 +65,15 @@
  */
 #include <stdio.h>
 #include <string.h>
+
+/* prnfmt_format_and_copy -- real, plain forward declaration only (2026-
+ * 08-27, founder real-time: "build prnfmt into the editor so saving
+ * files auto formats them"). Deliberately NOT #include-ing runtime/
+ * prnfmt_bridge.c's own real header dependencies here -- see that
+ * file's own header comment for the real Arena-type-collision reason
+ * this stays a plain `char *`/`size_t` boundary. */
+char *prnfmt_format_and_copy(const char *src, size_t len);
+
 /* Real, portable "where is my own executable" + "spawn another copy of
  * myself" support (2026-08-27, founder real-time: "i need an easy way
  * to actually open the files drag and drop onto the window for now is
@@ -593,6 +602,22 @@ int main(int argc, char **argv) {
     int last_mouse_y = 0;
     int auto_indent_enabled = 1;
 
+    /* Real Ctrl+Zoom state (2026-08-27, founder real-time: "ctrl plus
+     * and ctrl minus and ctrl mous wheel scoll should zoom just like
+     * pitviper"). zoom_percent is a real I32 (matches sdl2/render-set-
+     * scale's own real convention, 100 = 1.0x), NOT a float -- this
+     * whole editor already uses I32 for every other real UI quantity
+     * (LINE_HEIGHT, WINDOW_HEIGHT, etc.), so this stays consistent
+     * rather than introducing the only float in the file. Real, exact
+     * values lifted from PITVIPER's own cmd/pitviper/main.go
+     * (zoomMin=0.5, zoomMax=3.0, zoomStep=0.1 -- the explicit real
+     * model the founder named), scaled x100 for the I32 convention
+     * here. */
+    int zoom_percent = 100;
+#define ZOOM_MIN 50
+#define ZOOM_MAX 300
+#define ZOOM_STEP 10
+
     int running = 1;
     while (running) {
         Option ev;
@@ -626,6 +651,26 @@ int main(int argc, char **argv) {
                      * already goes through). */
                     char *whole_text = active_text(&buf);
                     buf = set_selection(&buf, 0, (int)strlen(whole_text));
+                } else if (key == '=' && ctrl_held_()) {
+                    /* Real Ctrl+Zoom in (2026-08-27, founder real-time:
+                     * "ctrl plus and ctrl minus... should zoom just
+                     * like pitviper"). The real UNSHIFTED '=' key
+                     * (SDL2's own keysym for it IS its literal ASCII
+                     * value, same real precedent 'c'/'x'/'v'/'a'/'z'
+                     * already establish) -- PITVIPER's own real,
+                     * explicit convention: "the unshifted key '+'
+                     * lives on," Photoshop's own real Ctrl/Cmd+'='
+                     * zoom-in binding, not requiring Shift too. */
+                    zoom_percent += ZOOM_STEP;
+                    if (zoom_percent > ZOOM_MAX) zoom_percent = ZOOM_MAX;
+                } else if (key == '-' && ctrl_held_()) {
+                    zoom_percent -= ZOOM_STEP;
+                    if (zoom_percent < ZOOM_MIN) zoom_percent = ZOOM_MIN;
+                } else if (key == '0' && ctrl_held_()) {
+                    /* Real Ctrl+0 reset -- Photoshop's own real "Fit on
+                     * Screen"/100% reset, PITVIPER's own identical real
+                     * binding. */
+                    zoom_percent = 100;
                 } else if (key == 'z' && ctrl_held_()) {
                     /* Real Ctrl+Z undo -- the buffer about to be LEFT
                      * goes onto redo (so Ctrl+Y can bring it back),
@@ -712,7 +757,49 @@ int main(int argc, char **argv) {
                 } else if (key == key_end()) {
                     buf = move_cursor_end(&buf);
                 } else if (key == key_f2()) {
-                    save_to_file(path, active_text(&buf), &a);
+                    /* Real auto-format-on-save (2026-08-27, founder
+                     * real-time: "build prnfmt into the editor so
+                     * saving files auto formats them"). PARENA source
+                     * only -- fmt_source() is a real, PARENA-syntax-
+                     * specific re-indenter, running it on a real .md
+                     * file would just mangle real prose. Real, honest
+                     * v0: the in-memory buffer is updated to the
+                     * FORMATTED text too (not just the file on disk),
+                     * matching every real "format on save" tool's own
+                     * expected behavior -- what you see after saving
+                     * really is what got written. A real cursor-
+                     * position shift across the reformat is a real,
+                     * accepted v0 simplification (from-text's own
+                     * documented "cursor at the end" default), same
+                     * honest tradeoff this whole file's own load path
+                     * already carries. */
+                    if (!is_markdown) {
+                        char *whole = active_text(&buf);
+                        char *formatted = prnfmt_format_and_copy(whole, strlen(whole));
+                        if (formatted) {
+                            push_undo(buf);
+                            save_to_file(path, formatted, &a);
+                            /* Real, deliberate copy into THIS program's
+                             * own arena before handing it to from-text
+                             * -- `formatted` is a plain malloc'd buffer
+                             * (prnfmt_format_and_copy's own real
+                             * contract), and from-text's own Buffer
+                             * struct stores its `text` field pointer
+                             * directly, not copied -- freeing the raw
+                             * malloc'd buffer right after would leave
+                             * that field dangling. */
+                            size_t flen = strlen(formatted);
+                            char *arena_copy = (char *)arena_alloc(&a, flen + 1);
+                            memcpy(arena_copy, formatted, flen + 1);
+                            free(formatted);
+                            buf = from_text(arena_copy);
+                        } else {
+                            fprintf(stderr, "editor: prnfmt formatting failed (real allocation failure), saving unformatted\n");
+                            save_to_file(path, whole, &a);
+                        }
+                    } else {
+                        save_to_file(path, active_text(&buf), &a);
+                    }
                 } else if (key == key_f3()) {
                     /* A fresh load is a real, deliberate new starting
                      * point, not something to undo/redo INTO -- clears
@@ -793,17 +880,27 @@ int main(int argc, char **argv) {
                 Result ins = insert_at_cursor(&buf, text, &a);
                 if (ins.tag == 1) buf = *(Buffer *)ins.value;
             } else if (kind.tag == EventKind_TAG_MouseDown) {
-                /* Real hover-reveal status-bar click, checked FIRST:
-                 * only the bar's own real toggle button (the bar is
-                 * only visible, and only clickable, while last_mouse_y
-                 * is within HOVER_REVEAL_ZONE of the real bottom edge --
-                 * same real condition the render section below uses to
-                 * decide whether to draw it at all) intercepts the
-                 * click; anywhere else falls through to the real,
-                 * normal cursor-positioning click below. */
+                /* Real, confirmed-live-needed split (2026-08-27, found
+                 * by actually rendering a real screenshot at a real
+                 * zoomed scale and looking at it -- the status bar had
+                 * silently rendered OFF-SCREEN, not just "compiles
+                 * clean"): the status bar is real, fixed UI CHROME, NOT
+                 * content -- it stays a real, constant, unzoomed size
+                 * on screen regardless of content zoom (matching how
+                 * real apps, e.g. VS Code's own status bar, keep chrome
+                 * fixed while only the editor's own text zooms), so its
+                 * own hit-testing uses RAW screen coordinates. The real
+                 * TEXT/cursor/selection, by contrast, genuinely is
+                 * inside the zoomed content, so pos_from_mouse needs
+                 * the real zoom-corrected logical coordinates -- SDL_
+                 * RenderSetScale does NOT transform input coordinates
+                 * back (confirmed against the real SDL2 docs -- SDL_
+                 * RenderWindowToLogical exists as its own, separate,
+                 * real function for exactly this reason). Integer-safe
+                 * (*100/zoom_percent), not float division. */
+                int raw_my = mouse_y();
                 int bar_visible_now = last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE;
-                int click_y = mouse_y();
-                if (bar_visible_now && click_y >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                if (bar_visible_now && raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
                     auto_indent_enabled = !auto_indent_enabled;
                 } else {
                     /* Real mouse click: position the cursor there
@@ -811,13 +908,14 @@ int main(int argc, char **argv) {
                      * set_cursor's own real behavior) and start
                      * tracking a real drag from this real position.
                      * Real, confirmed-live-needed scroll adjustment
-                     * (2026-08-27): mouse_y() is a real raw SCREEN
-                     * coordinate, unaware of any real scrolling --
-                     * adding back the real scrolled-off pixel amount is
-                     * what pos_from_mouse's own math needs to land on
-                     * the real, correct LOGICAL line, not whatever's
-                     * currently drawn at that screen row. */
-                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
+                     * (2026-08-27): adding back the real scrolled-off
+                     * pixel amount is what pos_from_mouse's own math
+                     * needs to land on the real, correct LOGICAL line,
+                     * not whatever's currently drawn at that screen
+                     * row. */
+                    int mx = mouse_x() * 100 / zoom_percent;
+                    int my = mouse_y() * 100 / zoom_percent;
+                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, &font, &a);
                     buf = set_cursor(&buf, pos);
                     mouse_down_pos = pos;
                     dragging = 1;
@@ -827,7 +925,11 @@ int main(int argc, char **argv) {
             } else if (kind.tag == EventKind_TAG_MouseMotion) {
                 /* Real hover-reveal tracking -- updated on EVERY real
                  * motion, independent of dragging (see this file's own
-                 * last_mouse_y state declaration above). */
+                 * last_mouse_y state declaration above). Real RAW
+                 * screen y -- the bar's own real drawn position (fixed
+                 * UI chrome, unaffected by zoom, see MouseDown's own
+                 * identical real reasoning above) is itself real,
+                 * unzoomed screen pixels. */
                 last_mouse_y = mouse_y();
                 /* Real mouse drag: only while the real button is
                  * actually held (SDL2 sends real MouseMotion on every
@@ -837,7 +939,9 @@ int main(int argc, char **argv) {
                  * mouse now is. Same real scroll adjustment as MouseDown
                  * above. */
                 if (dragging) {
-                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
+                    int mx = mouse_x() * 100 / zoom_percent;
+                    int my = mouse_y() * 100 / zoom_percent;
+                    int pos = pos_from_mouse(active_text(&buf), mx, my + scroll_offset * LINE_HEIGHT, &font, &a);
                     buf = set_selection(&buf, mouse_down_pos, pos);
                 }
             } else if (kind.tag == EventKind_TAG_FileDrop) {
@@ -856,32 +960,61 @@ int main(int argc, char **argv) {
                 char *dropped_path = (char *)kind.value;
                 spawn_new_instance(exe_path, dropped_path);
             } else if (kind.tag == EventKind_TAG_MouseWheel) {
-                /* Real mouse-wheel vertical scroll (2026-08-27). SDL2's
-                 * own real convention: positive delta = wheel rolled
-                 * away from the user (the real, physical "scroll up"
-                 * motion) -- moves the view UP, revealing earlier
-                 * content, so it DECREASES scroll_offset; negative
-                 * delta increases it. Clamped to [0, real total lines
-                 * in the buffer] -- can't scroll above the real first
-                 * line, and scrolling arbitrarily far past the real
-                 * last line is a real, honest, low-priority overscroll
-                 * (harmless blank space, not attempted to prevent
-                 * here). */
                 int delta = *(int *)kind.value;
-                scroll_offset -= delta * SCROLL_LINES_PER_NOTCH;
-                if (scroll_offset < 0) scroll_offset = 0;
-                char *scroll_text = active_text(&buf);
-                int total_lines = 1;
-                for (int si = 0; scroll_text[si] != '\0'; si++) {
-                    if (scroll_text[si] == '\n') total_lines++;
+                if (ctrl_held_()) {
+                    /* Real Ctrl+scroll zoom (2026-08-27, founder real-
+                     * time: "...ctrl mous wheel scoll should zoom just
+                     * like pitviper"). Same real convention PITVIPER's
+                     * own cmd/pitviper/main.go already establishes:
+                     * e.Y > 0 (wheel forward/up) zooms IN, e.Y < 0
+                     * zooms OUT -- takes over the wheel entirely while
+                     * Ctrl is held, real, standard "Ctrl+scroll always
+                     * means zoom, never scroll" behavior (Photoshop,
+                     * VS Code, browsers all agree on this). */
+                    if (delta > 0) {
+                        zoom_percent += ZOOM_STEP;
+                        if (zoom_percent > ZOOM_MAX) zoom_percent = ZOOM_MAX;
+                    } else if (delta < 0) {
+                        zoom_percent -= ZOOM_STEP;
+                        if (zoom_percent < ZOOM_MIN) zoom_percent = ZOOM_MIN;
+                    }
+                } else {
+                    /* Real mouse-wheel vertical scroll (2026-08-27).
+                     * SDL2's own real convention: positive delta =
+                     * wheel rolled away from the user (the real,
+                     * physical "scroll up" motion) -- moves the view
+                     * UP, revealing earlier content, so it DECREASES
+                     * scroll_offset; negative delta increases it.
+                     * Clamped to [0, real total lines in the buffer] --
+                     * can't scroll above the real first line, and
+                     * scrolling arbitrarily far past the real last line
+                     * is a real, honest, low-priority overscroll
+                     * (harmless blank space, not attempted to prevent
+                     * here). */
+                    scroll_offset -= delta * SCROLL_LINES_PER_NOTCH;
+                    if (scroll_offset < 0) scroll_offset = 0;
+                    char *scroll_text = active_text(&buf);
+                    int total_lines = 1;
+                    for (int si = 0; scroll_text[si] != '\0'; si++) {
+                        if (scroll_text[si] == '\n') total_lines++;
+                    }
+                    if (scroll_offset > total_lines) scroll_offset = total_lines;
                 }
-                if (scroll_offset > total_lines) scroll_offset = total_lines;
             }
         }
 
         Result cbg = set_draw_color(&ren, 24, 24, 28, 255, &a);
         (void)cbg;
         render_clear(&ren, &a);
+
+        /* Real Ctrl+Zoom, applied once per frame (2026-08-27) -- every
+         * draw call below (text, cursor, selection, the status bar)
+         * happens in real LOGICAL coordinates; SDL scales the whole
+         * frame uniformly on present, the exact real technique
+         * PITVIPER's own cmd/pitviper/main.go already uses ("zoomScale
+         * applied once for the whole frame via SDL's own renderer"). */
+        Result zoomr = render_set_scale(&ren, zoom_percent, &a);
+        (void)zoomr;
 
         char *text = active_text(&buf);
 
@@ -950,7 +1083,22 @@ int main(int argc, char **argv) {
          * LAST so it sits on top of the real text/cursor/selection
          * layers beneath it, matching how every other real "on top"
          * element in this file (the cursor rect) is already drawn
-         * after its own real background. */
+         * after its own real background. Real, confirmed-live-needed
+         * scale RESET (found by actually rendering a real screenshot at
+         * a real zoomed scale and looking at it -- the bar had silently
+         * rendered OFF-SCREEN at 150% zoom, since its own fixed logical
+         * Y position no longer fit inside the SHRUNKEN logical viewport
+         * a real SDL_RenderSetScale(>1.0) leaves visible): the bar is
+         * real, fixed UI chrome, not zoomed content -- reset to real
+         * 1:1 (100%) right before drawing it, so it always renders at
+         * its own real, constant screen size regardless of content
+         * zoom (matches this same block's own real MouseDown/
+         * MouseMotion hit-testing, which already uses RAW screen
+         * coordinates for exactly this reason). No restore needed after
+         * -- next frame's own render-set-scale call at the top always
+         * re-applies the real current zoom_percent fresh. */
+        Result scalereset = render_set_scale(&ren, 100, &a);
+        (void)scalereset;
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
             Result barcol = set_draw_color(&ren, 45, 45, 52, 255, &a);
             (void)barcol;

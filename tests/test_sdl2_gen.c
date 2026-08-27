@@ -100,6 +100,7 @@ int sdl2_raw_set_draw_color(int, int, int, int, int);
 int sdl2_raw_render_clear(int);
 int sdl2_raw_render_fill_rect(int, int, int, int, int);
 void sdl2_raw_render_present(int);
+int sdl2_raw_render_set_scale(int, int);
 int sdl2_raw_poll_event();
 int sdl2_raw_last_event_key();
 char * sdl2_raw_last_event_text(Arena *);
@@ -117,6 +118,7 @@ Result set_draw_color(Renderer *, int, int, int, int, Arena *);
 Result render_clear(Renderer *, Arena *);
 Result render_fill_rect(Renderer *, int, int, int, int, Arena *);
 void render_present(Renderer *);
+Result render_set_scale(Renderer *, int, Arena *);
 Option poll_event(Arena *);
 int get_ticks();
 void start_text_input();
@@ -325,6 +327,10 @@ void sdl2_raw_render_present(int renderer_handle __attribute__((unused))) {
     sdl2_render_present_impl(renderer_handle);
 }
 
+int sdl2_raw_render_set_scale(int renderer_handle __attribute__((unused)), int scale_percent __attribute__((unused))) {
+    return (sdl2_render_set_scale_impl(renderer_handle, scale_percent));
+}
+
 int sdl2_raw_poll_event(void) {
     return (sdl2_poll_event_impl());
 }
@@ -417,6 +423,14 @@ Result render_fill_rect(Renderer * ren __attribute__((unused)), int x __attribut
 
 void render_present(Renderer * ren __attribute__((unused))) {
     (void)(sdl2_raw_render_present((ren)->handle));
+}
+
+Result render_set_scale(Renderer * ren __attribute__((unused)), int scale_percent __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((sdl2_raw_render_set_scale((ren)->handle, scale_percent) < 0)) {
+    return result_err(Sdl2Error_box(dest, Sdl2Error_DrawFailed()));
+    } else {
+    return result_ok(NULL);
+    }
 }
 
 Option poll_event(Arena *dest __attribute__((unused))) {

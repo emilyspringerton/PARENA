@@ -1001,6 +1001,22 @@ static inline int sdl2_render_fill_rect_impl(int renderer_handle, int x, int y, 
     return SDL_RenderFillRect(g_sdl2_renderers[renderer_handle], &rect) == 0 ? 0 : -1;
 }
 
+/* sdl2_render_set_scale_impl -- real Ctrl+Zoom support (2026-08-27,
+ * founder real-time: "ctrl plus and ctrl minus and ctrl mous wheel
+ * scoll should zoom just like pitviper" -- PITVIPER's own real,
+ * already-shipped zoom feature, cmd/pitviper/main.go's zoomScale +
+ * SDL_RenderSetScale, is the real, explicit model). `scale_percent`
+ * (not a plain float) matches this whole runtime's own real "I32
+ * everywhere at the PARENA-source boundary" convention -- 100 = real
+ * 1.0x, 150 = real 1.5x -- converted to the real float SDL_
+ * RenderSetScale actually wants only here, at the host-glue boundary. */
+static inline int sdl2_render_set_scale_impl(int renderer_handle, int scale_percent) {
+    if (renderer_handle < 0 || renderer_handle >= g_sdl2_renderer_count
+        || g_sdl2_renderers[renderer_handle] == NULL) return -1;
+    float scale = (float)scale_percent / 100.0f;
+    return SDL_RenderSetScale(g_sdl2_renderers[renderer_handle], scale, scale) == 0 ? 0 : -1;
+}
+
 static inline void sdl2_render_present_impl(int renderer_handle) {
     if (renderer_handle >= 0 && renderer_handle < g_sdl2_renderer_count
         && g_sdl2_renderers[renderer_handle] != NULL) {
