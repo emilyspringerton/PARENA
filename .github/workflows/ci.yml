@@ -387,15 +387,23 @@ jobs:
       - name: "Self-hosting domains 1-3 (lexer/parser/region) — real Windows link+run"
         run: |
           set -euo pipefail
-          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
-            tests/test_selfhost_lexer.c runtime/parena_runtime.c -o test_selfhost_lexer.exe -lm
-          ./test_selfhost_lexer.exe
-          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
-            tests/test_selfhost_parser.c runtime/parena_runtime.c -o test_selfhost_parser.exe -lm
-          ./test_selfhost_parser.exe
-          gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
-            tests/test_selfhost_region.c runtime/parena_runtime.c -o test_selfhost_region.exe -lm
-          ./test_selfhost_region.exe
+          # Real, confirmed-live LINK error found by this exact step's own
+          # first real CI run (2026-08-27): SDL_main.h's own real `#define
+          # main SDL_main` (see the previous "conflicting types" fix, same
+          # commit's own header comment) means the linker now expects a
+          # real `WinMain` -- which SDL2main.a itself provides (it calls
+          # back into SDL_main/main internally), but only if actually
+          # linked. `-mwindows` deliberately NOT added here (unlike
+          # editor-demo's own real build above): these are real CLI test
+          # tools meant to be read from their own real stdout in the CI
+          # log, not an interactive GUI app where hiding the console
+          # window is the whole point.
+          for name in lexer parser region; do
+            gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests \
+              "tests/test_selfhost_${name}.c" runtime/parena_runtime.c \
+              -o "test_selfhost_${name}.exe" -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lm
+            "./test_selfhost_${name}.exe"
+          done
 
       - name: Bundle with required DLLs
         run: |
