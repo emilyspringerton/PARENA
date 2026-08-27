@@ -67,7 +67,9 @@ static void check_token(Token tok, TokenType_Tag expect_kind, const char *expect
     CHECK(tok.line == expect_line, msg);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     Arena a;
     arena_init(&a);
 

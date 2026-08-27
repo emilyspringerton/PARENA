@@ -37,7 +37,9 @@ static int failures = 0;
     else { printf("PASS: %s\n", msg); } \
 } while (0)
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     Arena a;
     arena_init(&a);
 

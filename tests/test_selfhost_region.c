@@ -46,7 +46,9 @@ static int analyze_src(char *src, char **out_msg, Arena *a) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     Arena a;
     arena_init(&a);
 

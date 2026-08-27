@@ -49,7 +49,9 @@ static void check_atom(Node n, NodeType_Tag expect_kind, const char *expect_text
     CHECK(vec_len(&n.children) == 0, msg);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     Arena a;
     arena_init(&a);
 
