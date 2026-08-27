@@ -51,9 +51,11 @@
 (import string)
 (export new from-text active-text cursor-pos insert delete-range
         insert-at-cursor backspace-at-cursor delete-forward-at-cursor
-        move-cursor-left move-cursor-right move-cursor-home move-cursor-end
+        move-cursor-left move-cursor-right move-cursor-up move-cursor-down
+        move-cursor-home move-cursor-end
         has-selection? selection-start selection-end
-        extend-selection-left extend-selection-right delete-selection
+        extend-selection-left extend-selection-right
+        extend-selection-up extend-selection-down delete-selection
         Buffer BufferError)
 
 (defstruct Buffer
@@ -183,6 +185,47 @@
         text (get-field !buf :text)]
     {:text text :cursor (line-end-after text pos (string/length text)) :selection-anchor -1}))
 
+;; move-cursor-up / move-cursor-down -- real Up/Down arrow-key support
+;; (2026-08-27, founder real-time actually using the editor: "left and
+;; right arrow work in the editor but up down doesnt work with arrow
+;; keys" -- neither key had ever been wired up before this). Real "same
+;; COLUMN" behavior every real editor's own Up/Down uses -- moves to
+;; the same column on the adjacent line, clamped to that line's own
+;; real length if it's shorter (not "same byte offset back/forward a
+;; line's worth," which would drift onto the wrong column the moment
+;; two adjacent lines have different lengths). Real, honest clamp at
+;; the very first/last line -- no previous/next line to move onto, so
+;; the cursor stays exactly where it is, same real "clamped movement is
+;; fine" behavior move-cursor-left/right already establish at the
+;; buffer's own edges.
+(defn move-cursor-up [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        cur-line-start (line-start-before text cursor)
+        column (- cursor cur-line-start)]
+    (if (<= cur-line-start 0)
+      {:text text :cursor cursor :selection-anchor -1}
+      (let [prev-line-end (- cur-line-start 1)
+            prev-line-start (line-start-before text prev-line-end)
+            prev-line-len (- prev-line-end prev-line-start)
+            target-col (if (< column prev-line-len) column prev-line-len)]
+        {:text text :cursor (+ prev-line-start target-col) :selection-anchor -1}))))
+
+(defn move-cursor-down [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        len (string/length text)
+        cur-line-start (line-start-before text cursor)
+        column (- cursor cur-line-start)
+        cur-line-end (line-end-after text cursor len)]
+    (if (>= cur-line-end len)
+      {:text text :cursor cursor :selection-anchor -1}
+      (let [next-line-start (+ cur-line-end 1)
+            next-line-end (line-end-after text next-line-start len)
+            next-line-len (- next-line-end next-line-start)
+            target-col (if (< column next-line-len) column next-line-len)]
+        {:text text :cursor (+ next-line-start target-col) :selection-anchor -1}))))
+
 ;; line-start-before / line-end-after -- real, minimal backward/forward
 ;; scans for the nearest real newline (ASCII 10) around `pos`, the
 ;; actual boundary of the CURRENT line. Real, honest, simple linear
@@ -265,6 +308,43 @@
         real-anchor (if (< anchor 0) cursor anchor)
         new-cursor (if (>= cursor len) len (+ cursor 1))]
     {:text text :cursor new-cursor :selection-anchor real-anchor}))
+
+;; extend-selection-up / extend-selection-down -- real Shift+Up/
+;; Shift+Down (2026-08-27, the natural complement to move-cursor-up/
+;; move-cursor-down above, same real column-clamped logic, but
+;; preserving/setting the anchor the way extend-selection-left/right do
+;; instead of clearing it).
+(defn extend-selection-up [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        anchor (get-field !buf :selection-anchor)
+        real-anchor (if (< anchor 0) cursor anchor)
+        cur-line-start (line-start-before text cursor)
+        column (- cursor cur-line-start)]
+    (if (<= cur-line-start 0)
+      {:text text :cursor cursor :selection-anchor real-anchor}
+      (let [prev-line-end (- cur-line-start 1)
+            prev-line-start (line-start-before text prev-line-end)
+            prev-line-len (- prev-line-end prev-line-start)
+            target-col (if (< column prev-line-len) column prev-line-len)]
+        {:text text :cursor (+ prev-line-start target-col) :selection-anchor real-anchor}))))
+
+(defn extend-selection-down [(!buf : &Buffer)] : Buffer
+  (let [text (get-field !buf :text)
+        cursor (get-field !buf :cursor)
+        len (string/length text)
+        anchor (get-field !buf :selection-anchor)
+        real-anchor (if (< anchor 0) cursor anchor)
+        cur-line-start (line-start-before text cursor)
+        column (- cursor cur-line-start)
+        cur-line-end (line-end-after text cursor len)]
+    (if (>= cur-line-end len)
+      {:text text :cursor cursor :selection-anchor real-anchor}
+      (let [next-line-start (+ cur-line-end 1)
+            next-line-end (line-end-after text next-line-start len)
+            next-line-len (- next-line-end next-line-start)
+            target-col (if (< column next-line-len) column next-line-len)]
+        {:text text :cursor (+ next-line-start target-col) :selection-anchor real-anchor}))))
 
 ;; delete-selection -- removes the real selected range [selection-start,
 ;; selection-end), places the cursor at the real start of where the

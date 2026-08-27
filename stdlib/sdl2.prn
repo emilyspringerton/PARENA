@@ -57,7 +57,7 @@
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
-        key-backspace key-return key-left key-right key-home key-end key-delete key-f2 key-f3
+        key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-f2 key-f3
         shift-held? ctrl-held? get-clipboard-text set-clipboard-text
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
@@ -264,6 +264,17 @@
 (defn key-right [] : I32
   #target
   {:c (inline-c "sdl2_key_right_impl()")})
+
+;; key-up/key-down -- real, confirmed-live gap closed (2026-08-27,
+;; founder actually using the editor). See runtime/parena_runtime.h's
+;; own sdl2_key_up_impl header comment.
+(defn key-up [] : I32
+  #target
+  {:c (inline-c "sdl2_key_up_impl()")})
+
+(defn key-down [] : I32
+  #target
+  {:c (inline-c "sdl2_key_down_impl()")})
 
 ;; key-home/key-end/key-delete -- the next real keys a single-line edit
 ;; loop needs once Left/Right cursor movement exists (added 2026-08-26).

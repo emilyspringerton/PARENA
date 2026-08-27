@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io test-editor-undo editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -243,6 +243,16 @@ test-editor-io: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_io.c \
 		runtime/parena_runtime.c -o /tmp/test_editor_io_bin -lm
 	/tmp/test_editor_io_bin
+
+# test-editor-undo -- real, direct verification of the Ctrl+Z undo
+# stack semantics (push/pop/overflow), the same real logic
+# examples/editor_main.c's own push_undo/pop_undo use.
+test-editor-undo: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/editor/buffer.prn \
+		-o tests/test_editor_undo_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_undo.c \
+		runtime/parena_runtime.c -o /tmp/test_editor_undo_bin -lm
+	/tmp/test_editor_undo_bin
 
 # editor-demo-smoke -- real, bounded build-verification run for
 # editor-demo on this repo's own headless dev box (a real, scratch Xvfb

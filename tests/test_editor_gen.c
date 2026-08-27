@@ -130,6 +130,8 @@ int key_backspace();
 int key_return();
 int key_left();
 int key_right();
+int key_up();
+int key_down();
 int key_home();
 int key_end();
 int key_delete();
@@ -165,6 +167,8 @@ Buffer move_cursor_left(Buffer *);
 Buffer move_cursor_right(Buffer *);
 Buffer move_cursor_home(Buffer *);
 Buffer move_cursor_end(Buffer *);
+Buffer move_cursor_up(Buffer *);
+Buffer move_cursor_down(Buffer *);
 int line_start_before(char *, int);
 int line_end_after(char *, int, int);
 Result delete_forward_at_cursor(Buffer *, Arena *);
@@ -173,6 +177,8 @@ int selection_start(Buffer *);
 int selection_end(Buffer *);
 Buffer extend_selection_left(Buffer *);
 Buffer extend_selection_right(Buffer *);
+Buffer extend_selection_up(Buffer *);
+Buffer extend_selection_down(Buffer *);
 Result delete_selection(Buffer *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -471,6 +477,14 @@ int key_right(void) {
     return (sdl2_key_right_impl());
 }
 
+int key_up(void) {
+    return (sdl2_key_up_impl());
+}
+
+int key_down(void) {
+    return (sdl2_key_down_impl());
+}
+
 int key_home(void) {
     return (sdl2_key_home_impl());
 }
@@ -678,6 +692,40 @@ Buffer move_cursor_end(Buffer * buf __attribute__((unused))) {
     return Buffer_new(text, line_end_after(text, pos, length(text)), -1);
 }
 
+Buffer move_cursor_up(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int cur_line_start __attribute__((unused)) = line_start_before(text, cursor);
+    int column __attribute__((unused)) = (cursor - cur_line_start);
+    if ((cur_line_start <= 0)) {
+    return Buffer_new(text, cursor, -1);
+    } else {
+    int prev_line_end __attribute__((unused)) = (cur_line_start - 1);
+    int prev_line_start __attribute__((unused)) = line_start_before(text, prev_line_end);
+    int prev_line_len __attribute__((unused)) = (prev_line_end - prev_line_start);
+    int target_col __attribute__((unused)) = ((column < prev_line_len) ? column : prev_line_len);
+    return Buffer_new(text, (prev_line_start + target_col), -1);
+    }
+}
+
+Buffer move_cursor_down(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int len __attribute__((unused)) = length(text);
+    int cur_line_start __attribute__((unused)) = line_start_before(text, cursor);
+    int column __attribute__((unused)) = (cursor - cur_line_start);
+    int cur_line_end __attribute__((unused)) = line_end_after(text, cursor, len);
+    if ((cur_line_end >= len)) {
+    return Buffer_new(text, cursor, -1);
+    } else {
+    int next_line_start __attribute__((unused)) = (cur_line_end + 1);
+    int next_line_end __attribute__((unused)) = line_end_after(text, next_line_start, len);
+    int next_line_len __attribute__((unused)) = (next_line_end - next_line_start);
+    int target_col __attribute__((unused)) = ((column < next_line_len) ? column : next_line_len);
+    return Buffer_new(text, (next_line_start + target_col), -1);
+    }
+}
+
 int line_start_before(char * text __attribute__((unused)), int pos __attribute__((unused))) {
     if ((pos <= 0)) {
     return 0;
@@ -756,6 +804,44 @@ Buffer extend_selection_right(Buffer * buf __attribute__((unused))) {
     int real_anchor __attribute__((unused)) = ((anchor < 0) ? cursor : anchor);
     int new_cursor __attribute__((unused)) = ((cursor >= len) ? len : (cursor + 1));
     return Buffer_new(text, new_cursor, real_anchor);
+}
+
+Buffer extend_selection_up(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int anchor __attribute__((unused)) = (buf)->selection_anchor;
+    int real_anchor __attribute__((unused)) = ((anchor < 0) ? cursor : anchor);
+    int cur_line_start __attribute__((unused)) = line_start_before(text, cursor);
+    int column __attribute__((unused)) = (cursor - cur_line_start);
+    if ((cur_line_start <= 0)) {
+    return Buffer_new(text, cursor, real_anchor);
+    } else {
+    int prev_line_end __attribute__((unused)) = (cur_line_start - 1);
+    int prev_line_start __attribute__((unused)) = line_start_before(text, prev_line_end);
+    int prev_line_len __attribute__((unused)) = (prev_line_end - prev_line_start);
+    int target_col __attribute__((unused)) = ((column < prev_line_len) ? column : prev_line_len);
+    return Buffer_new(text, (prev_line_start + target_col), real_anchor);
+    }
+}
+
+Buffer extend_selection_down(Buffer * buf __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int cursor __attribute__((unused)) = (buf)->cursor;
+    int len __attribute__((unused)) = length(text);
+    int anchor __attribute__((unused)) = (buf)->selection_anchor;
+    int real_anchor __attribute__((unused)) = ((anchor < 0) ? cursor : anchor);
+    int cur_line_start __attribute__((unused)) = line_start_before(text, cursor);
+    int column __attribute__((unused)) = (cursor - cur_line_start);
+    int cur_line_end __attribute__((unused)) = line_end_after(text, cursor, len);
+    if ((cur_line_end >= len)) {
+    return Buffer_new(text, cursor, real_anchor);
+    } else {
+    int next_line_start __attribute__((unused)) = (cur_line_end + 1);
+    int next_line_end __attribute__((unused)) = line_end_after(text, next_line_start, len);
+    int next_line_len __attribute__((unused)) = (next_line_end - next_line_start);
+    int target_col __attribute__((unused)) = ((column < next_line_len) ? column : next_line_len);
+    return Buffer_new(text, (next_line_start + target_col), real_anchor);
+    }
 }
 
 Result delete_selection(Buffer * buf __attribute__((unused)), Arena *dest __attribute__((unused))) {

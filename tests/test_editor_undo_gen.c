@@ -46,37 +46,6 @@ static inline __attribute__((unused)) IndexError IndexError_new(char * message) 
 }
 
 typedef struct {
-    int fd;
-} FileHandle;
-static inline __attribute__((unused)) FileHandle FileHandle_new(int fd) {
-    FileHandle v;
-    v.fd = fd;
-    return v;
-}
-
-typedef enum {
-    IoError_TAG_NotFound,
-    IoError_TAG_PermissionDenied,
-    IoError_TAG_AlreadyExists,
-    IoError_TAG_Other,
-} IoError_Tag;
-typedef struct { IoError_Tag tag; void *value; } IoError;
-static inline __attribute__((unused)) IoError IoError_NotFound(void) { IoError v; v.tag = IoError_TAG_NotFound; v.value = NULL; return v; }
-static inline __attribute__((unused)) IoError IoError_PermissionDenied(void) { IoError v; v.tag = IoError_TAG_PermissionDenied; v.value = NULL; return v; }
-static inline __attribute__((unused)) IoError IoError_AlreadyExists(void) { IoError v; v.tag = IoError_TAG_AlreadyExists; v.value = NULL; return v; }
-static inline __attribute__((unused)) IoError IoError_Other(void) { IoError v; v.tag = IoError_TAG_Other; v.value = NULL; return v; }
-
-typedef enum {
-    OpenMode_TAG_Read,
-    OpenMode_TAG_Write,
-    OpenMode_TAG_Append,
-} OpenMode_Tag;
-typedef struct { OpenMode_Tag tag; void *value; } OpenMode;
-static inline __attribute__((unused)) OpenMode OpenMode_Read(void) { OpenMode v; v.tag = OpenMode_TAG_Read; v.value = NULL; return v; }
-static inline __attribute__((unused)) OpenMode OpenMode_Write(void) { OpenMode v; v.tag = OpenMode_TAG_Write; v.value = NULL; return v; }
-static inline __attribute__((unused)) OpenMode OpenMode_Append(void) { OpenMode v; v.tag = OpenMode_TAG_Append; v.value = NULL; return v; }
-
-typedef struct {
     char * text;
     int cursor;
     int selection_anchor;
@@ -119,23 +88,6 @@ int same_shape_(NDArray *, NDArray *);
 Result elementwise(NDArray *, NDArray *, double (*)(double, double), Arena *);
 Result add(NDArray *, NDArray *, Arena *);
 Result mul_elementwise(NDArray *, NDArray *, Arena *);
-int raw_open(char *, int);
-int raw_close(int);
-int raw_write(int, char *);
-char * raw_read_all(int, Arena *);
-int raw_at_eof_(int);
-char * raw_read_line(int, Arena *);
-int raw_errno();
-int mode_tag_of(OpenMode);
-IoError errno_to_io_error(int);
-Result file_open(char *, OpenMode, Arena *);
-Result file_close(FileHandle, Arena *);
-int path_exists_(char *);
-Result write_string(FileHandle, char *, Arena *);
-Result read_string(FileHandle, Arena *);
-Result read_line(FileHandle, Arena *);
-double raw_read_f64(int);
-Result read_floats(FileHandle, int, Arena *);
 Buffer new(Arena *);
 Buffer from_text(char *);
 char * active_text(Buffer *);
@@ -194,24 +146,6 @@ static inline IndexError *IndexError_box(Arena *dest, IndexError v) {
 
 static inline double *double_box(Arena *dest, double v) {
     double *p = (double *)arena_alloc(dest, sizeof(double));
-    *p = v;
-    return p;
-}
-
-static inline IoError *IoError_box(Arena *dest, IoError v) {
-    IoError *p = (IoError *)arena_alloc(dest, sizeof(IoError));
-    *p = v;
-    return p;
-}
-
-static inline FileHandle *FileHandle_box(Arena *dest, FileHandle v) {
-    FileHandle *p = (FileHandle *)arena_alloc(dest, sizeof(FileHandle));
-    *p = v;
-    return p;
-}
-
-static inline Option *Option_box(Arena *dest, Option v) {
-    Option *p = (Option *)arena_alloc(dest, sizeof(Option));
     *p = v;
     return p;
 }
@@ -497,119 +431,6 @@ Result add(NDArray * a __attribute__((unused)), NDArray * b __attribute__((unuse
 
 Result mul_elementwise(NDArray * a __attribute__((unused)), NDArray * b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return elementwise(a, b, __lambda_1, dest);
-}
-
-int raw_open(char * path __attribute__((unused)), int mode_tag __attribute__((unused))) {
-    return (raw_open_impl(path, mode_tag));
-}
-
-int raw_close(int fd __attribute__((unused))) {
-    return (raw_close_impl(fd));
-}
-
-int raw_write(int fd __attribute__((unused)), char * s __attribute__((unused))) {
-    return (raw_write_impl(fd, s));
-}
-
-char * raw_read_all(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (raw_read_all_impl(fd, dest));
-}
-
-int raw_at_eof_(int fd __attribute__((unused))) {
-    return (raw_at_eof_impl(fd));
-}
-
-char * raw_read_line(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (raw_read_line_impl(fd, dest));
-}
-
-int raw_errno(void) {
-    return (errno);
-}
-
-int mode_tag_of(OpenMode mode __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused)) = {0};
-    OpenMode __match_tmp_0 = mode;
-    if (__match_tmp_0.tag == 0) {
-        __match_result_0 = 0;
-    }
-    else if (__match_tmp_0.tag == 1) {
-        __match_result_0 = 1;
-    }
-    else if (__match_tmp_0.tag == 2) {
-        __match_result_0 = 2;
-    }
-    return __match_result_0;
-}
-
-IoError errno_to_io_error(int e __attribute__((unused))) {
-    return ((e == 2) ? IoError_NotFound() : ((e == 13) ? IoError_PermissionDenied() : ((e == 17) ? IoError_AlreadyExists() : IoError_Other())));
-}
-
-Result file_open(char * path __attribute__((unused)), OpenMode mode __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int fd __attribute__((unused)) = raw_open(path, mode_tag_of(mode));
-    if ((fd < 0)) {
-    return result_err(IoError_box(dest, errno_to_io_error(raw_errno())));
-    } else {
-    return result_ok(FileHandle_box(dest, FileHandle_new(fd)));
-    }
-}
-
-Result file_close(FileHandle f __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((raw_close((f).fd) < 0)) {
-    return result_err(IoError_box(dest, errno_to_io_error(raw_errno())));
-    } else {
-    return result_ok(NULL);
-    }
-}
-
-int path_exists_(char * path __attribute__((unused))) {
-    return (file_exists_impl(path) != 0);
-}
-
-Result write_string(FileHandle f __attribute__((unused)), char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((raw_write((f).fd, s) < 0)) {
-    return result_err(IoError_box(dest, errno_to_io_error(raw_errno())));
-    } else {
-    return result_ok(NULL);
-    }
-}
-
-Result read_string(FileHandle f __attribute__((unused)), Arena *buf __attribute__((unused))) {
-    return result_ok(raw_read_all((f).fd, buf));
-}
-
-Result read_line(FileHandle f __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if (raw_at_eof_((f).fd)) {
-    return result_ok(Option_box(dest, option_none()));
-    } else {
-    return result_ok(Option_box(dest, option_some(raw_read_line((f).fd, dest))));
-    }
-}
-
-double raw_read_f64(int fd __attribute__((unused))) {
-    return (raw_read_f64_impl(fd));
-}
-
-Result read_floats(FileHandle f __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Vec data __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_7 __attribute__((unused));
-    double i = 0;
-    while (1) {
-        if ((i < n)) {
-        (void)(vec_push_(&(data), vec_box_f64(&(data), raw_read_f64((f).fd))));
-        double __recur_tmp_0 = (i + 1);
-        i = __recur_tmp_0;
-        continue;
-        } else {
-            break;
-        }
-    }
-    Vec shape __attribute__((unused)) = vec_new(dest);
-    Vec strides __attribute__((unused)) = vec_new(dest);
-    (void)(vec_push_(&(shape), vec_box_i32(&(shape), n)));
-    (void)(vec_push_(&(strides), vec_box_f64(&(strides), 1)));
-    return result_ok(NDArray_box(dest, NDArray_new(data, shape, strides)));
 }
 
 Buffer new(Arena *dest __attribute__((unused))) {

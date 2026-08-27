@@ -111,6 +111,8 @@ int key_backspace();
 int key_return();
 int key_left();
 int key_right();
+int key_up();
+int key_down();
 int key_home();
 int key_end();
 int key_delete();
@@ -417,6 +419,14 @@ int key_left(void) {
 
 int key_right(void) {
     return (sdl2_key_right_impl());
+}
+
+int key_up(void) {
+    return (sdl2_key_up_impl());
+}
+
+int key_down(void) {
+    return (sdl2_key_down_impl());
 }
 
 int key_home(void) {

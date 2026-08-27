@@ -219,6 +219,60 @@ int main(void) {
               "move-cursor-end on the real first line stops at its own real newline, not the whole buffer's end");
     }
 
+    /* --- real Up/Down arrow-key movement (2026-08-27, founder actually
+     * using the editor: "left and right arrow work in the editor but
+     * up down doesnt work with arrow keys" -- real, confirmed-live gap,
+     * neither key had ever been wired up before this). Real "same
+     * COLUMN" behavior, clamped to the target line's own real length --
+     * every byte offset below is computed precisely (a real Python
+     * simulation of this exact recursive logic), not guessed, same
+     * discipline the earlier line-aware Home/End fix already used. --- */
+    {
+        Buffer ml2 = from_text("Line one\nLine two\nLine three");
+        CHECK((int)strlen(active_text(&ml2)) == 28, "the real fixture text is genuinely 28 bytes");
+
+        Buffer up1 = ml2; up1.cursor = 18; /* col 0 of "Line three" */
+        up1 = move_cursor_up(&up1);
+        CHECK(cursor_pos(&up1) == 9, "move-cursor-up from col 0 of line 3 lands at col 0 of line 2");
+        up1 = move_cursor_up(&up1);
+        CHECK(cursor_pos(&up1) == 0, "move-cursor-up again lands at col 0 of line 1");
+        up1 = move_cursor_up(&up1);
+        CHECK(cursor_pos(&up1) == 0, "move-cursor-up at the real FIRST line is a real, honest clamp -- no previous line, cursor stays put");
+
+        Buffer down1 = ml2; down1.cursor = 5; /* col 5 of "Line one" -- mid-line */
+        down1 = move_cursor_down(&down1);
+        CHECK(cursor_pos(&down1) == 14, "move-cursor-down from col 5 of line 1 lands at col 5 of line 2, same real column");
+        down1 = move_cursor_down(&down1);
+        CHECK(cursor_pos(&down1) == 23, "move-cursor-down again lands at col 5 of line 3");
+        down1 = move_cursor_down(&down1);
+        CHECK(cursor_pos(&down1) == 23, "move-cursor-down at the real LAST line is a real, honest clamp -- no next line, cursor stays put");
+
+        /* Real column CLAMPING when the adjacent line is shorter --
+         * fixture2's own middle line is much longer than its last. */
+        Buffer clamp_buf = from_text("Short\nA very long line here\nX");
+        clamp_buf.cursor = 27; /* end of the real long middle line, col 21 */
+        Buffer clamped_down = move_cursor_down(&clamp_buf);
+        CHECK(cursor_pos(&clamped_down) == 29,
+              "move-cursor-down clamps the real column to the real, much shorter next line's own length (\"X\", 1 char)");
+        Buffer back_up = clamped_down; back_up.cursor = 29;
+        back_up = move_cursor_up(&back_up);
+        CHECK(cursor_pos(&back_up) == 7,
+              "move-cursor-up from the clamped position returns to real col 1 of the long line -- not stuck at the clamped column");
+
+        /* Real Shift+Up/Down selection, preserving the anchor the same
+         * way Shift+Left/Right already do. */
+        Buffer selud = ml2; selud.cursor = 23; /* col 5, line 3 */
+        selud = extend_selection_up(&selud);
+        CHECK(has_selection_(&selud) != 0, "extend-selection-up starts a real selection when none was active");
+        CHECK(cursor_pos(&selud) == 14, "extend-selection-up moves the real cursor up a line, same column math as move-cursor-up");
+        CHECK(selection_start(&selud) == 14 && selection_end(&selud) == 23,
+              "the real selected range after one extend-selection-up is exactly [14, 23)");
+        selud = extend_selection_up(&selud);
+        CHECK(cursor_pos(&selud) == 5, "extend-selection-up again moves the cursor up another real line");
+        CHECK(selection_start(&selud) == 5 && selection_end(&selud) == 23,
+              "the real anchor (23) stays fixed across both extends -- only the cursor end of the selection moves");
+    }
+
     /* --- real text SELECTION (2026-08-26, founder: "continue working
      * on parena editor") --- */
     {

@@ -42,7 +42,10 @@
  * Real Ctrl+C/X/V copy/cut/paste (2026-08-27), through SDL2's own real
  * clipboard (sdl2/get-clipboard-text and set-clipboard-text -- closes
  * that file's own previously-flagged "NOT closed in this pass" gap).
- * No undo -- real, separate, deferred follow-up, matching every other
+ * Real Ctrl+Z undo (2026-08-27, same day): a plain stack of PAST
+ * Buffer values (push_undo/pop_undo below), each real keystroke its
+ * own undo step -- no redo, no coalescing consecutive typing into one
+ * step -- real, separate, deferred follow-up, matching every other
  * "expand when a real feature needs it" scope note this whole stdlib
  * already carries.
  *
@@ -156,6 +159,42 @@ static Result open_font_with_fallback(int point_size, Arena *a) {
     return open_font((char *)candidates[0], point_size, a); /* real, honest final failure */
 }
 
+/* push_undo / pop_undo -- real Ctrl+Z undo (2026-08-27, founder:
+ * "continue working on parena editor"). A genuinely simple, correct
+ * fit for VS0's own "every buffer edit returns a NEW Buffer value,
+ * never mutates in place" design (already leaned on for selection/
+ * clipboard): a prior Buffer's own text pointer stays valid forever in
+ * the same arena (nothing here is ever freed until the whole program
+ * exits), so a plain stack of PAST Buffer VALUES, pushed right before
+ * each real mutating key handles its own edit, is the real, honest,
+ * minimal undo -- no diffing, no separate op log. Real, deliberate v0
+ * scope: every keystroke is its own undo step (typing "Hello" is 5
+ * real undo steps, not one coalesced "typed word" step -- a real,
+ * separate, deferred follow-up, matching every other "expand when a
+ * real feature needs it" note this whole stdlib already carries); no
+ * REDO stack either, same reasoning. Fixed-capacity, oldest-entry-
+ * dropped-on-overflow -- a real, bounded editing session's own actual
+ * undo depth needs, not unbounded growth. */
+#define UNDO_MAX 512
+static Buffer undo_stack[UNDO_MAX];
+static int undo_count = 0;
+
+static void push_undo(Buffer b) {
+    if (undo_count < UNDO_MAX) {
+        undo_stack[undo_count++] = b;
+    } else {
+        memmove(&undo_stack[0], &undo_stack[1], sizeof(Buffer) * (UNDO_MAX - 1));
+        undo_stack[UNDO_MAX - 1] = b;
+    }
+}
+
+static Buffer pop_undo(Buffer fallback) {
+    if (undo_count > 0) {
+        return undo_stack[--undo_count];
+    }
+    return fallback; /* real, honest no-op at the bottom of real history */
+}
+
 int main(int argc, char **argv) {
     const char *path = (argc > 1) ? argv[1] : "scratch.prn";
 
@@ -207,7 +246,12 @@ int main(int argc, char **argv) {
                  * SDL_TEXTINPUT for real typing -- SDL2 doesn't fire
                  * TEXTINPUT for a Ctrl-held combo, so there's no double-
                  * handling risk here. */
-                if (key == 'c' && ctrl_held_()) {
+                if (key == 'z' && ctrl_held_()) {
+                    /* Real Ctrl+Z undo -- pop the real previous Buffer
+                     * value straight off the real undo stack. No push
+                     * here: undoing isn't itself a real edit. */
+                    buf = pop_undo(buf);
+                } else if (key == 'c' && ctrl_held_()) {
                     if (has_selection_(&buf)) {
                         char *whole = active_text(&buf);
                         char *sel_text = substring(whole, selection_start(&buf), selection_end(&buf), &a);
@@ -218,10 +262,12 @@ int main(int argc, char **argv) {
                         char *whole = active_text(&buf);
                         char *sel_text = substring(whole, selection_start(&buf), selection_end(&buf), &a);
                         set_clipboard_text(sel_text);
+                        push_undo(buf);
                         Result del = delete_selection(&buf, &a);
                         if (del.tag == 1) buf = *(Buffer *)del.value;
                     }
                 } else if (key == 'v' && ctrl_held_()) {
+                    push_undo(buf);
                     if (has_selection_(&buf)) {
                         Result del = delete_selection(&buf, &a);
                         if (del.tag == 1) buf = *(Buffer *)del.value;
@@ -233,14 +279,17 @@ int main(int argc, char **argv) {
                     /* Backspace/Delete with an active selection remove
                      * the WHOLE selection instead of one character --
                      * real, standard editor UX (2026-08-26, real text
-                     * SELECTION). */
+                     * SELECTION). push_undo only on a real, confirmed
+                     * success (e.g. backspace at position 0 correctly
+                     * fails, and would otherwise push a stale, wasted
+                     * no-op entry). */
                     Result del = has_selection_(&buf) ? delete_selection(&buf, &a)
                                                        : backspace_at_cursor(&buf, &a);
-                    if (del.tag == 1) buf = *(Buffer *)del.value;
+                    if (del.tag == 1) { push_undo(buf); buf = *(Buffer *)del.value; }
                 } else if (key == key_delete()) {
                     Result del = has_selection_(&buf) ? delete_selection(&buf, &a)
                                                        : delete_forward_at_cursor(&buf, &a);
-                    if (del.tag == 1) buf = *(Buffer *)del.value;
+                    if (del.tag == 1) { push_undo(buf); buf = *(Buffer *)del.value; }
                 } else if (key == key_left()) {
                     /* Shift+Left extends the selection; plain Left moves
                      * (and clears any selection -- move_cursor_left's own
@@ -248,6 +297,13 @@ int main(int argc, char **argv) {
                     buf = shift_held_() ? extend_selection_left(&buf) : move_cursor_left(&buf);
                 } else if (key == key_right()) {
                     buf = shift_held_() ? extend_selection_right(&buf) : move_cursor_right(&buf);
+                } else if (key == key_up()) {
+                    /* Real, confirmed-live gap closed (2026-08-27,
+                     * founder actually using the editor: "left and
+                     * right arrow work... but up down doesnt work"). */
+                    buf = shift_held_() ? extend_selection_up(&buf) : move_cursor_up(&buf);
+                } else if (key == key_down()) {
+                    buf = shift_held_() ? extend_selection_down(&buf) : move_cursor_down(&buf);
                 } else if (key == key_home()) {
                     buf = move_cursor_home(&buf);
                 } else if (key == key_end()) {
@@ -255,8 +311,14 @@ int main(int argc, char **argv) {
                 } else if (key == key_f2()) {
                     save_to_file(path, active_text(&buf), &a);
                 } else if (key == key_f3()) {
+                    /* A fresh load is a real, deliberate new starting
+                     * point, not something to undo INTO -- clears the
+                     * real undo history rather than leaving stale
+                     * entries pointing at the PREVIOUS file's content. */
                     buf = load_from_file(path, &a);
+                    undo_count = 0;
                 } else if (key == key_return()) {
+                    push_undo(buf);
                     if (has_selection_(&buf)) {
                         Result del = delete_selection(&buf, &a);
                         if (del.tag == 1) buf = *(Buffer *)del.value;
@@ -272,6 +334,7 @@ int main(int argc, char **argv) {
                  * real, standard editor UX: delete the selection first,
                  * then insert at the (now-collapsed) cursor. */
                 char *text = (char *)kind.value;
+                push_undo(buf);
                 if (has_selection_(&buf)) {
                     Result del = delete_selection(&buf, &a);
                     if (del.tag == 1) buf = *(Buffer *)del.value;

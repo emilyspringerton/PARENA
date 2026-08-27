@@ -1057,6 +1057,12 @@ static inline int sdl2_key_backspace_impl(void) { return SDLK_BACKSPACE; }
 static inline int sdl2_key_return_impl(void) { return SDLK_RETURN; }
 static inline int sdl2_key_left_impl(void) { return SDLK_LEFT; }
 static inline int sdl2_key_right_impl(void) { return SDLK_RIGHT; }
+/* Up/Down (2026-08-27, real, confirmed-live gap -- founder actually
+ * using the editor: "left and right arrow work in the editor but up
+ * down doesnt work with arrow keys" -- neither key was ever wired up
+ * before this, only Left/Right/Home/End). */
+static inline int sdl2_key_up_impl(void) { return SDLK_UP; }
+static inline int sdl2_key_down_impl(void) { return SDLK_DOWN; }
 /* Home/End/Delete (2026-08-26, real editor loop growth): the next real
  * keys a single-line edit loop needs once Left/Right cursor movement
  * exists -- jump to the start/end of the line, delete the character
