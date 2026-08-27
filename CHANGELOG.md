@@ -1,4 +1,5 @@
 ## 2026-08-27
+- Real Up/Down arrow-key cursor movement (fixing a real gap the founder hit live) + real Ctrl+Z undo in the PARENA editor. v0.72.0 (sess-20260825-1938-f6bd411e)
 
 - Real Ctrl+C/X/V clipboard copy/cut/paste in the PARENA editor (SDL2's own real clipboard). v0.71.0 (sess-20260825-1938-f6bd411e)
 
