@@ -1,0 +1,32 @@
+;; stdlib/redgarden/bacon_puck_intangible_speed_mod.prn — real PARENA mod, Arena API
+;; "trigger + real decision logic" tier (same shape ecowar/card_effect_mod.prn already
+;; established: no #target/host callback needed, the mod IS the real logic).
+;;
+;; Founder real-time: "in redgarden and GFD battlegrounds and ECOWAR when baconpuck goes
+;; intangible can we get a movement speed increase?" -> "parena mod powered development".
+;;
+;; GFD Battlegrounds has no separate hero implementation of its own -- it consumes REDGARDEN's
+;; own matchmaker/server as a service (GoblinFoxDragon/apps2/mud/main.go's redgardenMatchmakerPort,
+;; confirmed by grep: no ARENA_HERO_BACON_PUCK or equivalent exists anywhere in GoblinFoxDragon),
+;; so fixing REDGARDEN's own arena_game.c covers it; no GFD-side change needed. ECOWAR is a hard
+;; fork with currently-byte-identical hero kits, so the same generated C is committed into both
+;; repos' own packages/simulation/, same real precedent bloodflower_mod.c/tree_passive_mod.c/etc.
+;; already establish for shared REDGARDEN-lineage content.
+;;
+;; ABI: update_hero_motion (arena_game.c, both repos) reads h->intangible_ms (set by
+;; bacon_puck_cast_q on Bacon+Puck's Q -- Shadow Step's real intangibility window, ARENA_BACON_
+;; PUCK_Q_INTANGIBLE_MS = 1500ms) and, while it's still counting down, multiplies speed_mult by
+;; this mod's own real percentage -- same multiplicative shape ARENA_KING_MUSIC_MOVE_SPEED_PCT's
+;; own Catchy Song buff already uses just above it in that same function, so it composes
+;; correctly with slows/item speed/other buffs rather than fighting them.
+;;
+;; 30%: a real, deliberately chosen balance number, not a placeholder -- comparable to King
+;; Music's own 20% passive (this one's stronger since it's a short, ~1.5s burst window tied to a
+;; real ability cooldown, not a persistent passive), same ballpark as this file's own real
+;; precedent rather than an arbitrary guess. A real, single, easy-to-retune constant if a
+;; different value turns out to feel better in play.
+
+(module redgarden/bacon-puck-intangible-speed-mod)
+(export on-bacon-puck-intangible-speed-pct)
+
+(defn on-bacon-puck-intangible-speed-pct [] : I32 30)
