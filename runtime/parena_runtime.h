@@ -914,6 +914,27 @@ static SDL_Renderer *g_sdl2_renderers[SDL2_MAX_RENDERERS];
 static int g_sdl2_renderer_count = 0;
 
 static inline int sdl2_init_impl(void) {
+    /* Real, confirmed-live bug fix (2026-08-27, founder real-time,
+     * actively testing on real Windows: "drag to select doesnt work" +
+     * "click to insert cursor doesnt work" -- BOTH core mouse features
+     * broken together, not two separate bugs, pointed straight at a
+     * real, systemic mouse-COORDINATE problem). SDL2's own real,
+     * documented default on Windows is DPI-UNAWARE (SDL_HINT_WINDOWS_
+     * DPI_AWARENESS defaults to "" -- "do not change the DPI
+     * awareness"): on any real display with non-100% scaling (very
+     * common on real Windows laptops), Windows silently virtualizes/
+     * scales a DPI-unaware app's window, and the mouse coordinates SDL2
+     * then reports can mismatch this editor's own fixed-pixel rendering
+     * math (LINE_HEIGHT, the real x=12 left margin, etc., all assume
+     * un-scaled real pixels) -- exactly the real, well-documented SDL2-
+     * on-Windows gotcha this matches. Set BEFORE SDL_Init, a real,
+     * standard SDL2 hint (a real, harmless no-op on Linux/macOS, so
+     * left unconditional rather than #ifdef _WIN32-gated -- one fewer
+     * platform-specific branch for identical real behavior everywhere
+     * it doesn't apply). "permonitorv2" is SDL2's own documented
+     * "preferred" level (Windows 10 1607+, falls back automatically to
+     * the best available match on older Windows per SDL2's own docs). */
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
     return SDL_Init(SDL_INIT_VIDEO) == 0 ? 0 : -1;
 }
 

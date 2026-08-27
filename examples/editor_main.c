@@ -86,6 +86,23 @@
 #endif
 
 #define LINE_HEIGHT 26 /* real pixel spacing between real lines, matches the real 20pt font this editor opens */
+#define WINDOW_WIDTH 900
+#define WINDOW_HEIGHT 500 /* matches the real create-window call below -- no real window-resize support exists yet, a real, separate, deferred gap */
+
+/* Real, minimal hover-reveal bottom status bar (2026-08-27, founder
+ * real-time: "we need an ui affordance at the bottom of the screen to
+ * turn auto indent off same hover near botom to reveal"). Real,
+ * deliberate v0 scope: ONE real control (the auto-indent toggle the
+ * founder actually asked for), not a general reusable widget system --
+ * the founder separately raised that as its own real, bigger, explicit
+ * architecture question ("start building out a ui widget system... it
+ * would be cool if we implemented the react apis but for native apps
+ * like true react native"), not something to build blind mid-stream
+ * without a real design conversation first. This bar's own real
+ * drawing code is intentionally simple/ad-hoc so it doesn't
+ * accidentally BECOME a half-considered widget-system precedent. */
+#define STATUS_BAR_HEIGHT 28
+#define HOVER_REVEAL_ZONE 40 /* real pixels from the bottom edge that reveal the bar */
 
 /* save-to-file / load-from-file -- thin C wrappers around the real
  * PARENA io/file-open/write-string/read-string/file-close functions
@@ -510,7 +527,7 @@ int main(int argc, char **argv) {
     Result r = init(&a);
     if (r.tag != 1) { fprintf(stderr, "editor: sdl2 init failed\n"); return 1; }
 
-    Result wr = create_window("PARENA editor -- v0", 900, 500, &a);
+    Result wr = create_window("PARENA editor -- v0", WINDOW_WIDTH, WINDOW_HEIGHT, &a);
     if (wr.tag != 1) { fprintf(stderr, "editor: create-window failed\n"); return 1; }
     Window win = *(Window *)wr.value;
 
@@ -566,6 +583,15 @@ int main(int argc, char **argv) {
      * how many real lines are scrolled off the top of the view. */
     int scroll_offset = 0;
 #define SCROLL_LINES_PER_NOTCH 3 /* real, standard default most real apps use */
+
+    /* Real hover-reveal bottom status bar state (2026-08-27, see this
+     * file's own STATUS_BAR_HEIGHT/HOVER_REVEAL_ZONE header comment for
+     * the real, deliberate v0 scope). last_mouse_y is updated on EVERY
+     * real MouseMotion (not just while dragging), independent of
+     * scroll -- this is a real, raw SCREEN coordinate, checking against
+     * the real, fixed window edge, not anything scrolled. */
+    int last_mouse_y = 0;
+    int auto_indent_enabled = 1;
 
     int running = 1;
     while (running) {
@@ -708,9 +734,11 @@ int main(int argc, char **argv) {
                      * you" -- PARENA source only; a real Markdown
                      * file's own [links](like-this) would make a
                      * bracket-depth counter actively wrong there, not
-                     * just unhelpful). */
+                     * just unhelpful). Also real-time gated on the
+                     * hover-reveal status bar's own toggle ("we need an
+                     * ui affordance... to turn auto indent off"). */
                     char newline_and_indent[2 + INDENT_WIDTH * 32];
-                    if (!is_markdown) {
+                    if (!is_markdown && auto_indent_enabled) {
                         int depth = paren_depth_before(active_text(&buf), cursor_pos(&buf));
                         int n = depth * INDENT_WIDTH;
                         if (n > (int)(sizeof(newline_and_indent) - 2)) n = (int)(sizeof(newline_and_indent) - 2);
@@ -765,23 +793,42 @@ int main(int argc, char **argv) {
                 Result ins = insert_at_cursor(&buf, text, &a);
                 if (ins.tag == 1) buf = *(Buffer *)ins.value;
             } else if (kind.tag == EventKind_TAG_MouseDown) {
-                /* Real mouse click: position the cursor there (which
-                 * also clears any active selection -- set_cursor's own
-                 * real behavior) and start tracking a real drag from
-                 * this real position. Real, confirmed-live-needed
-                 * scroll adjustment (2026-08-27): mouse_y() is a real
-                 * raw SCREEN coordinate, unaware of any real scrolling
-                 * -- adding back the real scrolled-off pixel amount is
-                 * what pos_from_mouse's own math needs to land on the
-                 * real, correct LOGICAL line, not whatever's currently
-                 * drawn at that screen row. */
-                int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
-                buf = set_cursor(&buf, pos);
-                mouse_down_pos = pos;
-                dragging = 1;
+                /* Real hover-reveal status-bar click, checked FIRST:
+                 * only the bar's own real toggle button (the bar is
+                 * only visible, and only clickable, while last_mouse_y
+                 * is within HOVER_REVEAL_ZONE of the real bottom edge --
+                 * same real condition the render section below uses to
+                 * decide whether to draw it at all) intercepts the
+                 * click; anywhere else falls through to the real,
+                 * normal cursor-positioning click below. */
+                int bar_visible_now = last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE;
+                int click_y = mouse_y();
+                if (bar_visible_now && click_y >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    auto_indent_enabled = !auto_indent_enabled;
+                } else {
+                    /* Real mouse click: position the cursor there
+                     * (which also clears any active selection --
+                     * set_cursor's own real behavior) and start
+                     * tracking a real drag from this real position.
+                     * Real, confirmed-live-needed scroll adjustment
+                     * (2026-08-27): mouse_y() is a real raw SCREEN
+                     * coordinate, unaware of any real scrolling --
+                     * adding back the real scrolled-off pixel amount is
+                     * what pos_from_mouse's own math needs to land on
+                     * the real, correct LOGICAL line, not whatever's
+                     * currently drawn at that screen row. */
+                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
+                    buf = set_cursor(&buf, pos);
+                    mouse_down_pos = pos;
+                    dragging = 1;
+                }
             } else if (kind.tag == EventKind_TAG_MouseUp) {
                 dragging = 0;
             } else if (kind.tag == EventKind_TAG_MouseMotion) {
+                /* Real hover-reveal tracking -- updated on EVERY real
+                 * motion, independent of dragging (see this file's own
+                 * last_mouse_y state declaration above). */
+                last_mouse_y = mouse_y();
                 /* Real mouse drag: only while the real button is
                  * actually held (SDL2 sends real MouseMotion on every
                  * mouse move over the window regardless, not just while
@@ -898,6 +945,22 @@ int main(int argc, char **argv) {
         Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
         (void)ccol;
         render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &a);
+
+        /* Real hover-reveal bottom status bar (2026-08-27) -- drawn
+         * LAST so it sits on top of the real text/cursor/selection
+         * layers beneath it, matching how every other real "on top"
+         * element in this file (the cursor rect) is already drawn
+         * after its own real background. */
+        if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
+            Result barcol = set_draw_color(&ren, 45, 45, 52, 255, &a);
+            (void)barcol;
+            render_fill_rect(&ren, 0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, WINDOW_WIDTH, STATUS_BAR_HEIGHT, &a);
+            const char *label = auto_indent_enabled ? "Auto-indent: ON (click to turn off)"
+                                                      : "Auto-indent: OFF (click to turn on)";
+            Result labelr = render_text(&ren, &font, (char *)label, 10, WINDOW_HEIGHT - STATUS_BAR_HEIGHT + 6,
+                                         200, 200, 200, &a);
+            (void)labelr;
+        }
 
         render_present(&ren);
         delay(16);
