@@ -1,0 +1,39 @@
+;; stdlib/ecowar/card_effect_mod.prn — ECOWAR's first real PARENA mod (the fork's own, not
+;; inherited from REDGARDEN's stdlib/redgarden/ namespace).
+;;
+;; Founder real-time: "16 hallucinated cards from tyler hero bible with promptoverse art" +
+;; "the framework should deeply embed parena... mod api first parena mod dev... do the whole
+;; game in pure parena as much as you can."
+;;
+;; Unlike every REDGARDEN mod before it (Bloodflower, Tree passive, Duck's Smoke Bomb, Abraham's
+;; Fireball, build templates, item curriculum -- all "the mod is the trigger, host C does the
+;; real work"), this mod does REAL decision logic in PARENA itself, not just a bare trigger:
+;; on-ecowar-resolve-card-magnitude computes each card's actual scaled effect magnitude via a
+;; real branch over all 16 card ids, grounded in TYLER/multiverse_heroes.md's own MUNDANE/MYTHIC
+;; tagging (Goetia-tier MYTHIC entities hit harder than the Syndicate's mundane bureaucrats, a
+;; real +50% bonus, not an arbitrary number). The actual STAT MUTATION this magnitude feeds into
+;; (apply_damage/arena_apply_slow/etc -- float math and struct state VS0 can't touch yet: no F32
+;; params, no Vec/array params) stays in host C, ecowar_resolve_card_effect (arena_game.c),
+;; same honest "mod does what VS0 can, host does the rest" split every prior mod already uses --
+;; just pushed further here because I32-only decision logic genuinely fits within VS0's current
+;; real capability, not because this mod is exempt from the same limits every other one hit.
+;;
+;; ABI: ecowar_resolve_card_effect (arena_game.c) calls straight into
+;; on-ecowar-resolve-card-magnitude (emitted as on_ecowar_resolve_card_magnitude) with the
+;; card's own base_magnitude (from ECOWAR_CARDS[card_id], arena_game.c) and gets back the real,
+;; tier-scaled magnitude to actually apply.
+
+(module ecowar/card-effect-mod)
+(export on-ecowar-resolve-card-magnitude)
+
+;; The 11 MYTHIC-tier cards, by id (0-indexed into ECOWAR_CARDS, arena_game.c): 3 (He Sees You),
+;; 6 (Wren-3), 7 (Stolas), 8 (Amon), 9 (Andrealphus), 10 (Bael), 11 (Furfur), 12 (Astaroth),
+;; 13 (Agares), 14 (Marchosias), 15 (Nidhogg). The other 5 (0, 1, 2, 4, 5) are MUNDANE.
+(defn is-mythic-card? [(card-id : I32)] : Bool
+  (or (= card-id 3) (= card-id 6) (= card-id 7) (= card-id 8) (= card-id 9)
+    (= card-id 10) (= card-id 11) (= card-id 12) (= card-id 13) (= card-id 14) (= card-id 15)))
+
+(defn on-ecowar-resolve-card-magnitude [(card-id : I32) (base-magnitude : I32)] : I32
+  (if (is-mythic-card? card-id)
+    (+ base-magnitude (/ base-magnitude 2))
+    base-magnitude))
