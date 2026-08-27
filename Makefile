@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -308,6 +308,17 @@ test-selfhost-region: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_selfhost_region.c \
 		runtime/parena_runtime.c -o /tmp/test_selfhost_region_bin -lm
 	/tmp/test_selfhost_region_bin
+
+# test-selfhost-emit -- real end-to-end verification of
+# selfhost/emit.prn, the real fourth domain of PARENA's own
+# self-hosting effort. Real compile+run, not just in-process
+# assertions -- see that test's own header comment.
+test-selfhost-emit: build
+	./parena build stdlib/string.prn selfhost/lexer.prn selfhost/parser.prn selfhost/emit.prn \
+		-o tests/test_selfhost_emit_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_selfhost_emit.c \
+		runtime/parena_runtime.c -o /tmp/test_selfhost_emit_bin -lm
+	/tmp/test_selfhost_emit_bin
 
 # test-editor-undo -- real, direct verification of the Ctrl+Z undo
 # stack semantics (push/pop/overflow), the same real logic

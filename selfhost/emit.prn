@@ -1,0 +1,349 @@
+;; selfhost/emit.prn -- the real fourth domain of PARENA's own self-
+;; hosting effort (NORTHSTAR.md's own "Self-hosting" section), directly
+;; continuing selfhost/lexer.prn + selfhost/parser.prn + selfhost/
+;; region.prn (2026-08-27, founder real-time: "self hosted compiler" ->
+;; "continue" (repeated)). VS0's own src/emit.c is the real reference
+;; this file PORTS -- but src/emit.c's own CURRENT size (5000+ lines,
+;; grown incrementally over many sessions to serve the whole real
+;; stdlib: arithmetic, closures, match, loop/recur, Vec/Map generics,
+;; every real defenum/defstruct shape) is not this file's own real
+;; target. This file deliberately reproduces VS0's own ORIGINAL,
+;; narrow domain-3 DoD acceptance bar instead -- src/emit.h's own real,
+;; honestly-documented v0 scope: "only understands the exact shape
+;; test.prn's own valid function uses (no numeric/boolean literals, no
+;; arithmetic, no nested calls beyond alloc, char * is the only
+;; inferred type)". Concretely: `with-arena`, `let`+`alloc` (String
+;; only), a plain function call's own Arena-typed params, and a bare
+;; symbol as a function's own tail (`return`) -- exactly examples/
+;; valid_only.prn's own real load-config shape, the actual real DoD
+;; acceptance file, verified byte-for-functionally-equivalent against
+;; its own real, current `parena build` output (see tests/
+;; test_selfhost_emit.c's own real, live compile-and-run verification,
+;; not just a text diff -- C whitespace doesn't affect correctness).
+;;
+;; Same real "one real, faithful, honestly-scoped domain at a time"
+;; discipline lexer/parser/region already established -- not a claim
+;; of covering everything the current, much-expanded src/emit.c now
+;; handles (arithmetic, match, loop, closures, generics, and dozens of
+;; real stdlib-driven special cases are real, separate, unstarted
+;; follow-up, same honest boundary this whole self-hosting effort has
+;; drawn at every domain so far).
+;;
+;; Real design departures forced by VS0's own confirmed current limits
+;; -- same classes already documented in lexer/parser/region's own
+;; header comments:
+;; 1. Every `match` used as a non-tail VALUE (a cond clause, a let-
+;;    binding's own initializer) is extracted into its own small
+;;    function instead, whose own body directly IS the match -- see
+;;    selfhost/region.prn's own header comment (point/finding 1 in its
+;;    own real bug list) for the full real reasoning: a real, confirmed
+;;    VS0 emitter gap, not a stylistic choice.
+;; 2. No arena-typed "is this a pointer parameter or a local Arena
+;;    value" tracking via a real Scope-with-parent chain -- the same
+;;    flat-Vec-scope substitute region.prn's own header comment
+;;    (point 1) already documents and justifies, reused here for a
+;;    DIFFERENT real question (does an arena-typed name need `&` before
+;;    it in the emitted C, matching src/emit.c's own real distinction
+;;    between a `with-arena`-local `Arena` value and a `defn`-level
+;;    `Arena @ Region`-typed parameter, which is already `Arena *`).
+
+(module selfhost/emit)
+(import string)
+(import selfhost/parser)
+(export emit-program)
+
+(defenum ArenaKind (LocalArena) (PointerArena))
+
+(defstruct ArenaBinding
+  (name : String @ Region)
+  (kind : ArenaKind))
+
+(defn node-kind-code [(k : NodeType)] : I32
+  (match k
+    ((NList) 0) ((NVec) 1) ((NMap) 2) ((NSymbol) 3) ((NKeyword) 4)
+    ((NString) 5) ((NNumber) 6) ((NColon) 7) ((NAt) 8)))
+
+(defn is-symbol? [(n : &Node) (text : String @ Region)] : Bool
+  (and (= (node-kind-code (get-field n :kind)) 3)
+       (string/str-eq? (get-field n :text) text)))
+
+;; Real, confirmed-live emitter gap this restructuring works around
+;; (see selfhost/region.prn's own identically-named function for the
+;; full real reasoning): get-field can't be called directly, inline,
+;; on a bare `vec/get` result -- an explicit `let` binding first is
+;; required.
+(defn is-symbol-headed-list? [(n : &Node)] : Bool
+  (if (not (= (node-kind-code (get-field n :kind)) 0))
+    false
+    (if (<= (vec/len &(get-field n :children)) 0)
+      false
+      (let [first-child (vec/get &(get-field n :children) 0)]
+        (= (node-kind-code (get-field first-child :kind)) 3)))))
+
+(defn is-call-named? [(n : &Node) (fn-name : String @ Region)] : Bool
+  (and (is-symbol-headed-list? n)
+       (is-symbol? (vec/get &(get-field n :children) 0) fn-name)))
+
+;; emit-join-all / join3 -- real, private string-joining helpers, the same
+;; small, deliberately-duplicated shape selfhost/region.prn's own
+;; identically-named functions already establish (see that file's own
+;; header comment for why duplication over a cross-module dependency).
+(defn emit-join-all [(parts : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i (vec/len parts))
+      acc
+      (recur (+ i 1) (string/concat acc (vec/get parts i) dest)))))
+
+(defn join3 [(a : String @ Region) (b : String @ Region) (c : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat a (string/concat b c dest) dest))
+
+;; join-with -- joins every element of `parts` with `sep` between them
+;; (no trailing separator) -- the real shape a C parameter list's own
+;; ", "-separated join needs.
+(defn join-with [(parts : &(Vec String)) (sep : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i (vec/len parts))
+      acc
+      (recur (+ i 1)
+             (if (string/str-eq? acc "")
+               (vec/get parts i)
+               (join3 acc sep (vec/get parts i) dest))))))
+
+;; mangle -- real, honest, DELIBERATELY NARROW v0: only hyphen (45) ->
+;; underscore (95). src/emit.c's own real, current mangle() also
+;; handles '/' and a trailing '!'/'?' (module-qualified calls, linear/
+;; mutating names) -- not needed for this file's own narrow real
+;; target (examples/valid_only.prn's own real names -- load-config,
+;; buf-arena, scratch, temp-str, real-buf -- never use those
+;; characters), a real, honest, flagged gap, not silently missing.
+(defn mangle-char [(c : I32)] : I32
+  (if (= c 45) 95 c))
+
+(defn mangle [(name : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i (string/length name))
+      acc
+      (recur (+ i 1) (string/concat acc (string/char-from-code (mangle-char (string/char-at name i)) dest) dest)))))
+
+;; ---- arena-kind scope: real, flat-Vec substitute (see this file's
+;; own header comment, point 2) for tracking whether an arena-typed
+;; name needs `&` before it in emitted C (a with-arena-local real
+;; `Arena` value) or not (a defn-level `Arena @ Region` param, already
+;; `Arena *`).
+
+(defn arena-scope-lookup [(scope : &(Vec ArenaBinding)) (name : String @ Region) (dest : Arena @ Region)]
+  : (Option ArenaBinding) @ Region
+  (loop [i (- (vec/len scope) 1)]
+    (if (< i 0)
+      None
+      (let [b (vec/get scope i)]
+        (if (string/str-eq? (get-field (deref b) :name) name)
+          (Some (deref b))
+          (recur (- i 1)))))))
+
+(defn arena-scope-extend [(scope : &(Vec ArenaBinding)) (b : ArenaBinding) (dest : Arena @ Region)]
+  : (Vec ArenaBinding) @ Region
+  (let [copy (vec/new dest)]
+    (do
+      (loop [i 0]
+        (when (< i (vec/len scope))
+          (do (vec/push! &copy (deref (vec/get scope i)))
+              (recur (+ i 1)))))
+      (vec/push! &copy b)
+      copy)))
+
+(defn arena-ref-of [(b : ArenaBinding) (c-name : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (match (get-field b :kind)
+    ((LocalArena) (string/concat "&" c-name dest))
+    ((PointerArena) c-name)))
+
+;; resolve-arena-ref -- real, small extracted helper (a `match` used as
+;; a non-tail VALUE -- see this file's own header comment, point 1):
+;; the real C text an arena-typed symbol should be referenced by
+;; (`&scratch` for a with-arena-local, `buf_arena` bare for a real
+;; pointer param).
+(defn resolve-arena-ref [(arena-text : String @ Region) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
+  : String @ Region
+  (let [c-name (mangle arena-text dest)]
+    (match (arena-scope-lookup scope arena-text dest)
+      ((Some b) (arena-ref-of (deref b) c-name dest))
+      ((None) c-name))))
+
+;; emit-alloc-call -- real, narrow port of the real, live `(alloc
+;; arena-expr String "literal")` shape -> `arena_strdup(arena-ref,
+;; "literal", byte-len)`, matching examples/valid_only.prn's own real,
+;; already-verified generated output exactly.
+(defn emit-alloc-call [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [arena-node (vec/get &(get-field call :children) 1)
+        lit-node (vec/get &(get-field call :children) 3)
+        arena-ref (resolve-arena-ref (get-field arena-node :text) scope dest)
+        lit-text (get-field lit-node :text)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "arena_strdup(")
+      (vec/push! &parts arena-ref)
+      (vec/push! &parts ", \"")
+      (vec/push! &parts lit-text)
+      (vec/push! &parts "\", ")
+      (vec/push! &parts (string/i32-to-string (string/length lit-text) dest))
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+;; emit-tail-symbol -- a bare symbol in tail position is this narrow
+;; v0's own only real "return a value" shape (matching real-buf's own
+;; real role in examples/valid_only.prn).
+(defn emit-tail-symbol [(node : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    return ")
+      (vec/push! &parts (mangle (get-field node :text) dest))
+      (vec/push! &parts ";\n")
+      (emit-join-all &parts dest))))
+
+(defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((is-call-named? node "with-arena") (emit-with-arena node scope dest))
+    ((is-call-named? node "let") (emit-let node scope dest))
+    (true (emit-tail-symbol node dest))))
+
+(defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
+  : String @ Region
+  (loop [i start acc ""]
+    (if (>= i (vec/len &(get-field node :children)))
+      acc
+      (recur (+ i 1) (string/concat acc (emit-form (vec/get &(get-field node :children) i) scope dest) dest)))))
+
+;; emit-let-bindings -- each `(name (alloc arena-expr String "..."))`
+;; pair becomes a real `char *name __attribute__((unused)) = ...;`
+;; line, matching examples/valid_only.prn's own real generated output.
+;; Real, honest, narrow v0: every binding's own expr is assumed to be
+;; a real `alloc` call -- src/emit.c's own real, current version
+;; handles arbitrary let-binding exprs; not attempted here.
+(defn emit-let-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
+  : String @ Region
+  (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
+    ""
+    (let [name-node (vec/get &(get-field bindings :children) i)
+          expr-node (vec/get &(get-field bindings :children) (+ i 1))
+          c-name (mangle (get-field name-node :text) dest)
+          expr-c (emit-alloc-call expr-node scope dest)
+          rest-c (emit-let-bindings bindings (+ i 2) scope dest)
+          parts (vec/new dest)]
+      (do
+        (vec/push! &parts "    char *")
+        (vec/push! &parts c-name)
+        (vec/push! &parts " __attribute__((unused)) = ")
+        (vec/push! &parts expr-c)
+        (vec/push! &parts ";\n")
+        (vec/push! &parts rest-c)
+        (emit-join-all &parts dest)))))
+
+(defn emit-let [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [bindings (vec/get &(get-field node :children) 1)
+        bindings-c (emit-let-bindings bindings 0 scope dest)
+        body-c (emit-body-forms node 2 scope dest)]
+    (string/concat bindings-c body-c dest)))
+
+;; emit-with-arena -- `(with-arena [name region-kw size] body...)` ->
+;; a real C block declaring a real, cleanup-attributed local `Arena`
+;; value, matching examples/valid_only.prn's own real generated output
+;; exactly (the exact real `__attribute__((cleanup(arena_free_all)))`
+;; + `arena_init(&name)` pair NORTHSTAR.md's own "Memory model" section
+;; requires). Real, honest, narrow v0: the real `size` argument in the
+;; binding vector is parsed but not emitted anywhere (VS0's own real,
+;; current with-arena emission doesn't use it either -- arena_init's
+;; own real signature takes no size, growing on demand).
+(defn emit-with-arena [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [binding-vec (vec/get &(get-field node :children) 1)
+        name-node (vec/get &(get-field binding-vec :children) 0)
+        pname (get-field name-node :text)
+        c-name (mangle pname dest)
+        new-binding {:name pname :kind LocalArena}
+        child-scope (arena-scope-extend scope new-binding dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    {\n")
+      (vec/push! &parts "        Arena ")
+      (vec/push! &parts c-name)
+      (vec/push! &parts " __attribute__((cleanup(arena_free_all)));\n")
+      (vec/push! &parts "        arena_init(&")
+      (vec/push! &parts c-name)
+      (vec/push! &parts ");\n")
+      (vec/push! &parts (emit-body-forms node 2 &child-scope dest))
+      (vec/push! &parts "    }\n")
+      (emit-join-all &parts dest))))
+
+(defstruct ParamInfo
+  (text  : String @ Region)
+  (scope : (Vec ArenaBinding) @ Region))
+
+;; emit-params -- real, narrow v0: every param is assumed Arena-typed
+;; (`(name : Arena @ :region/xxx)`), matching examples/valid_only.prn's
+;; own real, only shape -- src/emit.c's own real, current version
+;; handles I32/String/Vec/registered-defenum-or-defstruct params too;
+;; a real, separate, deferred gap, not attempted here.
+(defn emit-params [(params : &Node) (dest : Arena @ Region)] : ParamInfo @ Region
+  (loop [i 0 pieces (vec/new dest) scope (vec/new dest)]
+    (if (>= i (vec/len &(get-field params :children)))
+      {:text (join-with &pieces ", " dest) :scope scope}
+      (let [param (vec/get &(get-field params :children) i)
+            name-node (vec/get &(get-field param :children) 0)
+            pname (get-field name-node :text)
+            c-name (mangle pname dest)
+            new-binding {:name pname :kind PointerArena}
+            piece (join3 "Arena *" c-name " __attribute__((unused))" dest)]
+        (do
+          (vec/push! &pieces piece)
+          (recur (+ i 1) pieces (arena-scope-extend &scope new-binding dest)))))))
+
+;; emit-defn -- real, narrow port of a top-level `(defn name [params]
+;; body...)`. Real, honest, narrow v0: return type is always hard-coded
+;; `char *` (matching src/emit.h's own real, documented "char * is the
+;; only inferred type" v0 scope exactly -- not a real type-inference
+;; pass); the real function body is assumed to be exactly ONE top-level
+;; form (examples/valid_only.prn's own real shape: one with-arena).
+(defn emit-defn [(defn-node : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [name-node (vec/get &(get-field defn-node :children) 1)
+        params (vec/get &(get-field defn-node :children) 2)
+        fn-name (mangle (get-field name-node :text) dest)
+        param-info (emit-params params dest)
+        body-c (emit-body-forms defn-node 3 &(get-field param-info :scope) dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "char * ")
+      (vec/push! &parts fn-name)
+      (vec/push! &parts "(")
+      (vec/push! &parts (get-field param-info :text))
+      (vec/push! &parts ") {\n")
+      (vec/push! &parts body-c)
+      (vec/push! &parts "}\n")
+      (emit-join-all &parts dest))))
+
+;; program-header -- the same real prelude (`#include
+;; "parena_runtime.h"` + the 4 standard headers) VS0's own real,
+;; current emitter still emits verbatim.
+(defn program-header [(dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n")
+      (vec/push! &parts "#include \"parena_runtime.h\"\n")
+      (vec/push! &parts "#include <string.h>\n")
+      (vec/push! &parts "#include <stdint.h>\n")
+      (vec/push! &parts "#include <stdlib.h>\n")
+      (vec/push! &parts "#include <math.h>\n")
+      (vec/push! &parts "\n\n")
+      (emit-join-all &parts dest))))
+
+;; emit-program -- real, narrow port of src/emit.c's own top-level
+;; driver: the real prelude followed by every top-level `(defn ...)`
+;; form's own real emitted C, in source order.
+(defn emit-program [(program : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [header (program-header dest)]
+    (loop [i 0 acc header]
+      (if (>= i (vec/len &(get-field program :children)))
+        acc
+        (let [form (vec/get &(get-field program :children) i)]
+          (if (is-call-named? form "defn")
+            (recur (+ i 1) (string/concat acc (emit-defn form dest) dest))
+            (recur (+ i 1) acc)))))))

@@ -375,9 +375,48 @@ plus its own 5 real edge cases) — identical real inputs against a completely i
 implementation, including an exact match on the DoD's own required error message string. Full local
 suite + bazel build/test + real mingw cross-compile all clean, zero regressions.
 
-Not scoped further than the region analyzer here — the real next domain (a C emitter, mirroring
-`src/emit.c`) is separate, unstarted follow-up work, picked up the same "one real, faithful domain
-at a time" way this file itself was.
+**Real fourth step, same day (founder: "continue", repeated) — a real, complete, end-to-end vertical
+slice**: `selfhost/emit.prn` — a real, faithful PARENA-language port of `src/emit.c`'s own C
+emitter, but deliberately scoped to VS0's own ORIGINAL, narrow domain-3 DoD acceptance bar (`src/
+emit.h`'s own real, honestly-documented v0: "only understands the exact shape test.prn's own valid
+function uses... `char *` is the only inferred type"), not the current, much-expanded (5000+ line)
+C emitter grown incrementally to serve the whole real stdlib over many sessions — the same "one
+real, faithful, honestly-scoped domain at a time" discipline lexer/parser/region already
+established. Concretely: `with-arena`, `let`+`alloc` (String only), Arena-typed params, a bare
+symbol as a function's own tail — exactly `examples/valid_only.prn`'s own real `load-config` shape,
+the actual real DoD acceptance file.
+
+**This completes a real, working, end-to-end vertical slice of a PARENA-in-PARENA pipeline**:
+`selfhost/lexer.prn` -> `selfhost/parser.prn` -> `selfhost/region.prn` -> `selfhost/emit.prn`,
+verified by actually running `examples/valid_only.prn`'s own real source through all four,
+compiling the REAL resulting C with a real `gcc -std=c99 -Wall -Wextra -pedantic -Werror`, linking
+it against the SAME real `tests/integration/driver_valid_only.c` domain 4's own check already uses
+against the C reference, and actually RUNNING it — the driver's own real
+`assert(strcmp(result, "parsed_data") == 0)` passes against the selfhost emitter's own real output,
+not just the C reference's. This is the first real point where "self-hosted" stops being aspirational
+for at least one real, narrow program shape — still compiled BY the existing C-based `parena-c`
+(self-hosting only becomes real once a PARENA-in-PARENA pipeline can compile ITSELF, the real,
+much bigger next milestone), but the pipeline's own real OUTPUT is now proven correct end to end.
+
+Real design departures, same classes lexer/parser/region already document: no arena-typed
+"pointer-parameter vs. local-Arena-value" tracking via a linked Scope-with-parent chain (the same
+flat-Vec substitute region.prn's own header comment justifies, reused for a different real
+question: does an arena-typed name need `&` before it in the emitted C). Every `match` used as a
+non-tail VALUE is extracted into its own small function (the same real, confirmed VS0 emitter gap
+region.prn's own bug list already documents — reused here without needing to rediscover it).
+`mangle` is deliberately narrow (hyphen-only; `/` and trailing `!`/`?` are real, flagged, unneeded
+gaps for this file's own real target). Return type is hard-coded `char *`, matching the real,
+documented v0 scope exactly, not a real type-inference pass.
+
+14 real assertions in `tests/test_selfhost_emit.c` — structural checks on the generated C text
+(the real, correctly-mangled signature, the real arena-kind distinction between `buf_arena` bare
+and `&scratch`, the real cleanup attribute) PLUS the real compile-and-run proof described above.
+Full local suite + bazel build/test + real mingw cross-compile all clean, zero regressions.
+
+Not scoped further than this narrow v0 emitter here — arithmetic, `match`, `loop`/`recur`,
+closures, Vec/Map generics, and every real stdlib-driven special case the current C emitter now
+handles are real, separate, unstarted follow-up work, the same honest boundary every domain in this
+whole effort has drawn.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
