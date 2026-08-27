@@ -1,4 +1,5 @@
 ## 2026-08-27
+- Real mouse-driven selection (click + click-drag) in the PARENA editor, plus a deep SDL2 event-queue timing finding from testing it. v0.74.0 (sess-20260825-1938-f6bd411e)
 - Real Ctrl+Y redo in the PARENA editor, fixing a real spurious-duplicate-entry bug found while testing it. v0.73.0 (sess-20260825-1938-f6bd411e)
 - Real Up/Down arrow-key cursor movement (fixing a real gap the founder hit live) + real Ctrl+Z undo in the PARENA editor. v0.72.0 (sess-20260825-1938-f6bd411e)
 
