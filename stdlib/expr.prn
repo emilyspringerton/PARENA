@@ -36,7 +36,7 @@
 (module expr)
 (import vec)
 (import string)
-(export eval Bindings bindings-new bindings-set! i32-to-f64)
+(export eval Bindings bindings-new bindings-set! i32-to-f64 f64-to-string)
 
 (defenum ExprValue (Num (v : F64)) (Str (v : String @ Region)))
 

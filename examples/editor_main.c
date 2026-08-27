@@ -162,6 +162,17 @@ static int save_to_file(const char *path, const char *text, Arena *a) {
     return 1;
 }
 
+/* recompute_spotlight -- real, explicit-args wrapper around
+ * run-providers (2026-08-27), since spotlight_query/spotlight_results
+ * are real, mutable local state inside main() -- no closures in this
+ * dialect, so the recompute logic takes them as plain arguments
+ * instead of capturing them. Called whenever the real query text
+ * actually changes (opened, typed into, backspaced), not every
+ * frame. */
+static Vec recompute_spotlight(const char *root, const char *query, Arena *a) {
+    return run_providers((char *)query, (char *)root, a);
+}
+
 static Buffer load_from_file(const char *path, Arena *a) {
     if (!path_exists_((char *)path)) return new(a);
     Result openr = file_open((char *)path, OpenMode_Read(), a);
@@ -734,6 +745,28 @@ int main(int argc, char **argv) {
     char *file_tree_dir = ".";
     Vec file_tree_entries = list_dir(file_tree_dir, &a);
 
+    /* Real Spotlight overlay state (2026-08-27, founder real-time:
+     * "quick open via ctrl+t windows and linux or cmd+t for mac" ->
+     * "thats going to be a magic spotlight feature"). spotlight_query
+     * is a real, fixed-size C buffer (not a PARENA Buffer/String) --
+     * this is genuinely mutable, keystroke-by-keystroke text entry the
+     * same class of state auto_indent_toggle's own real C `int`
+     * already is, not something PARENA's own no-mutation functional-
+     * update convention needs to own. spotlight_results is real
+     * stdlib/editor/spotlight.prn output, recomputed via run-providers
+     * every time the query text actually changes (not every frame --
+     * same "recompute on change, not continuously" tradeoff
+     * file_tree_entries' own header comment above already documents),
+     * spotlight_selected is the real, currently-highlighted row
+     * (Up/Down moves it, Enter activates it). */
+    int spotlight_visible = 0;
+    char spotlight_query[256] = "";
+    int spotlight_query_len = 0;
+    Vec spotlight_results = vec_new(&a);
+    int spotlight_selected = 0;
+#define SPOTLIGHT_MAX_VISIBLE_ROWS 12
+#define SPOTLIGHT_ROW_HEIGHT 26
+
     /* Real Ctrl+Zoom state (2026-08-27, founder real-time: "ctrl plus
      * and ctrl minus and ctrl mous wheel scoll should zoom just like
      * pitviper"). zoom_percent is a real I32 (matches sdl2/render-set-
@@ -759,6 +792,62 @@ int main(int argc, char **argv) {
                 running = 0;
             } else if (kind.tag == EventKind_TAG_KeyDown) {
                 int key = *(int *)kind.value;
+                /* Real Spotlight overlay (2026-08-27, founder real-time:
+                 * "quick open via ctrl+t windows and linux or cmd+t for
+                 * mac"). Checked FIRST, same real reasoning the Ctrl+C/
+                 * X/V comment just below already establishes: while the
+                 * overlay is open, every KeyDown is swallowed here and
+                 * never reaches the ordinary editor keybinds below (a
+                 * real, deliberate modal -- typing "s" to search
+                 * shouldn't also fall through to whatever "s" does in
+                 * the code buffer). gui_held_() is Cmd on macOS (real
+                 * KMOD_GUI, see runtime/parena_runtime.h's own
+                 * sdl2_gui_held_impl header comment). */
+                if (spotlight_visible) {
+                    if (key == 27 /* Escape closes the overlay, does NOT quit -- see the
+                                      real quit-Escape branch far below, now guarded on
+                                      !spotlight_visible for exactly this reason. */) {
+                        spotlight_visible = 0;
+                    } else if (key == key_backspace()) {
+                        if (spotlight_query_len > 0) {
+                            spotlight_query_len--;
+                            spotlight_query[spotlight_query_len] = '\0';
+                            spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
+                            spotlight_selected = 0;
+                        }
+                    } else if (key == key_up()) {
+                        if (spotlight_selected > 0) spotlight_selected--;
+                    } else if (key == key_down()) {
+                        if (spotlight_selected < vec_len(&spotlight_results) - 1) spotlight_selected++;
+                    } else if (key == key_return()) {
+                        /* Real, deliberate v0 scope: activates the real
+                         * currently-selected row. A File result opens it
+                         * the same real way the file-tree sidebar's own
+                         * click-to-open already does (load_from_file +
+                         * reset undo/redo, matching that call site's
+                         * own real header comment on why a fresh load
+                         * isn't something to undo/redo INTO); a
+                         * Calculator result has already shown its real
+                         * computed value in the list, so Enter there
+                         * just closes the overlay. */
+                        if (spotlight_selected >= 0 && spotlight_selected < vec_len(&spotlight_results)) {
+                            SpotlightResult *sel = (SpotlightResult *)vec_get(&spotlight_results, spotlight_selected);
+                            if (sel->kind.tag == SpotlightKind_TAG_SKFile) {
+                                buf = load_from_file(sel->path, &a);
+                                undo_count = 0;
+                                redo_count = 0;
+                            }
+                        }
+                        spotlight_visible = 0;
+                    }
+                    /* every other key is real, deliberately swallowed
+                       here -- see this branch's own header comment. */
+                } else if (key == 't' && (ctrl_held_() || gui_held_())) {
+                    spotlight_visible = 1;
+                    spotlight_query[0] = '\0';
+                    spotlight_query_len = 0;
+                    spotlight_selected = 0;
+                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
                 /* Real Ctrl+C/X/V copy/cut/paste (2026-08-27) -- checked
                  * FIRST, before the plain-key branches below, since 'c'/
                  * 'x'/'v' are otherwise ordinary printable keys (SDL2's
@@ -770,7 +859,7 @@ int main(int argc, char **argv) {
                  * SDL_TEXTINPUT for real typing -- SDL2 doesn't fire
                  * TEXTINPUT for a Ctrl-held combo, so there's no double-
                  * handling risk here. */
-                if (key == 'a' && ctrl_held_()) {
+                } else if (key == 'a' && ctrl_held_()) {
                     /* Real Ctrl+A select-all (2026-08-27, founder real-
                      * time, actively using the editor: "ctrl a to
                      * select all backspace does not work" -- select-
@@ -1000,10 +1089,28 @@ int main(int argc, char **argv) {
                     running = 0;
                 }
             } else if (kind.tag == EventKind_TAG_TextInput) {
+                char *text = (char *)kind.value;
+                /* Real Spotlight overlay text routing (2026-08-27) --
+                 * same modal reasoning the KeyDown branch above already
+                 * documents: while the overlay is open, typed text goes
+                 * into the real query buffer, never the code buffer.
+                 * spotlight_query is a plain, fixed-size C buffer (this
+                 * file's own header comment on it explains why), so
+                 * this appends byte-by-byte with a real bounds check
+                 * rather than assuming SDL2's own TextInput chunk
+                 * always fits. */
+                if (spotlight_visible) {
+                    size_t tlen = strlen(text);
+                    for (size_t ti = 0; ti < tlen && spotlight_query_len < (int)sizeof(spotlight_query) - 1; ti++) {
+                        spotlight_query[spotlight_query_len++] = text[ti];
+                    }
+                    spotlight_query[spotlight_query_len] = '\0';
+                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
+                    spotlight_selected = 0;
+                } else {
                 /* Typed text with an active selection REPLACES it --
                  * real, standard editor UX: delete the selection first,
                  * then insert at the (now-collapsed) cursor. */
-                char *text = (char *)kind.value;
                 push_undo(buf);
                 if (has_selection_(&buf)) {
                     Result del = delete_selection(&buf, &a);
@@ -1011,6 +1118,7 @@ int main(int argc, char **argv) {
                 }
                 Result ins = insert_at_cursor(&buf, text, &a);
                 if (ins.tag == 1) buf = *(Buffer *)ins.value;
+                }
             } else if (kind.tag == EventKind_TAG_MouseDown) {
                 /* Real, confirmed-live-needed split (2026-08-27, found
                  * by actually rendering a real screenshot at a real
@@ -1342,6 +1450,46 @@ int main(int argc, char **argv) {
             (void)togglr;
             Result togglr2 = render_toggle(&ren, &font, &file_tree_toggle, 45, 45, 52, 200, 200, 200, &a);
             (void)togglr2;
+        }
+
+        /* Real Spotlight overlay render (2026-08-27) -- drawn LAST, on
+         * top of everything else (including the status bar toggles
+         * just above), the same real "a modal draws over its own
+         * host" convention every real Spotlight-style launcher uses.
+         * Fixed real screen coordinates, same "UI chrome, not zoomed
+         * content" reasoning the file-tree sidebar/status bar already
+         * establish above. */
+        if (spotlight_visible) {
+#define SPOTLIGHT_BOX_X 90
+#define SPOTLIGHT_BOX_W 520
+            int visible_rows = vec_len(&spotlight_results);
+            if (visible_rows > SPOTLIGHT_MAX_VISIBLE_ROWS) visible_rows = SPOTLIGHT_MAX_VISIBLE_ROWS;
+            int box_h = 44 + visible_rows * SPOTLIGHT_ROW_HEIGHT + 10;
+            Result sbg = set_draw_color(&ren, 26, 26, 32, 245, &a);
+            (void)sbg;
+            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, box_h, &a);
+            Result sborder = set_draw_color(&ren, 90, 130, 200, 255, &a);
+            (void)sborder;
+            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, 2, &a);
+
+            char query_line[300];
+            snprintf(query_line, sizeof query_line, "> %s", spotlight_query[0] ? spotlight_query : "Search files, or type a math expression\xE2\x80\xA6");
+            Result sq = render_text(&ren, &font, query_line, SPOTLIGHT_BOX_X + 14, 82, 235, 235, 245, &a);
+            (void)sq;
+
+            for (int si = 0; si < visible_rows; si++) {
+                SpotlightResult *res = (SpotlightResult *)vec_get(&spotlight_results, si);
+                int ry = 118 + si * SPOTLIGHT_ROW_HEIGHT;
+                if (si == spotlight_selected) {
+                    Result shl = set_draw_color(&ren, 55, 75, 110, 255, &a);
+                    (void)shl;
+                    render_fill_rect(&ren, SPOTLIGHT_BOX_X + 4, ry - 2, SPOTLIGHT_BOX_W - 8, SPOTLIGHT_ROW_HEIGHT, &a);
+                }
+                Result srow = (res->kind.tag == SpotlightKind_TAG_SKFile)
+                    ? render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 210, 235, &a)
+                    : render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 235, 195, &a);
+                (void)srow;
+            }
         }
 
         render_present(&ren);

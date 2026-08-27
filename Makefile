@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -200,6 +200,19 @@ test-editor-widget: build
 	sleep 1; \
 	DISPLAY=:98 /tmp/test_editor_widget_bin
 
+# test-editor-spotlight -- real end-to-end verification of stdlib/
+# editor/spotlight.prn, the PARENA editor's own Ctrl+T/Cmd+T command
+# palette (2026-08-27, founder real-time: "quick open via ctrl+t...
+# thats going to be a magic spotlight feature"). Pure logic, no SDL2/
+# Xvfb needed -- see tests/test_editor_spotlight.c's own header
+# comment for the real reasoning.
+test-editor-spotlight: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/expr.prn \
+		stdlib/editor/spotlight.prn -o tests/test_editor_spotlight_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_spotlight.c \
+		runtime/parena_runtime.c -o /tmp/test_editor_spotlight_bin -lm
+	/tmp/test_editor_spotlight_bin
+
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the
 # real corpus run this backs). tools/turbogrep_host.c is deliberately
@@ -257,10 +270,11 @@ PRNFMT_RENAME := -Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc \
 
 editor-demo: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
-		stdlib/regex/pcre.prn stdlib/sdl2.prn \
+		stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
 		stdlib/editor/textmate_markdown.prn \
-		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn -o /tmp/editor_demo_gen.c
+		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
+		stdlib/editor/spotlight.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/arena.c -o /tmp/pf_arena.o
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/fmt.c -o /tmp/pf_fmt.o

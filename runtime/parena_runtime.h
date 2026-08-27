@@ -1305,6 +1305,17 @@ static inline int sdl2_ctrl_held_impl(void) {
     return (SDL_GetModState() & KMOD_CTRL) != 0;
 }
 
+/* gui_held -- real Cmd-key detection (2026-08-27, founder real-time:
+ * Spotlight quick-open needs to fire on Ctrl+T on Windows/Linux OR
+ * Cmd+T on macOS). SDL2's own KMOD_GUI is the real, portable modifier
+ * mask for "the OS meta key" -- Cmd on macOS, the Windows/Super key
+ * elsewhere -- same live SDL_GetModState() shape ctrl_held/shift_held
+ * above already establish, not a new pattern.
+ */
+static inline int sdl2_gui_held_impl(void) {
+    return (SDL_GetModState() & KMOD_GUI) != 0;
+}
+
 static inline void sdl2_set_clipboard_text_impl(const char *text) {
     SDL_SetClipboardText(text);
 }

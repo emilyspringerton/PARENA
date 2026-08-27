@@ -58,7 +58,7 @@
         set-draw-color render-clear render-fill-rect render-present render-set-scale
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-tab key-f2 key-f3
-        shift-held? ctrl-held? get-clipboard-text set-clipboard-text mouse-x mouse-y
+        shift-held? ctrl-held? gui-held? get-clipboard-text set-clipboard-text mouse-x mouse-y
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -387,6 +387,15 @@
 (defn ctrl-held? [] : Bool
   #target
   {:c (inline-c "sdl2_ctrl_held_impl() != 0")})
+
+;; gui-held? -- real Cmd-key detection (2026-08-27, founder real-time:
+;; Spotlight quick-open needs Ctrl+T on Windows/Linux OR Cmd+T on
+;; macOS). Same live SDL_GetModState() shape as ctrl-held?/shift-held?
+;; above -- see runtime/parena_runtime.h's own sdl2_gui_held_impl
+;; header comment for why KMOD_GUI is the real, portable choice.
+(defn gui-held? [] : Bool
+  #target
+  {:c (inline-c "sdl2_gui_held_impl() != 0")})
 
 (defn get-clipboard-text [(dest : Arena @ Region)] : String @ Region
   #target
