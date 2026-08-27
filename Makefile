@@ -178,8 +178,8 @@ test-editor: build
 # FEATURES").
 test-editor-render: build
 	./parena build stdlib/string.prn stdlib/regex/syntax.prn stdlib/regex/pcre.prn stdlib/sdl2.prn \
-		stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn stdlib/editor/theme.prn \
-		stdlib/editor/render.prn -o tests/test_editor_render_gen.c
+		stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn stdlib/editor/textmate_markdown.prn \
+		stdlib/editor/theme.prn stdlib/editor/render.prn -o tests/test_editor_render_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_editor_render.c runtime/parena_runtime.c \
 		-o /tmp/test_editor_render_bin -lSDL2 -lSDL2_ttf -lm
 	@Xvfb :96 -screen 0 1280x720x24 & echo $$! > /tmp/test_editor_render_xvfb.pid; \
@@ -227,6 +227,7 @@ editor-demo: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
 		stdlib/regex/pcre.prn stdlib/sdl2.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
+		stdlib/editor/textmate_markdown.prn \
 		stdlib/editor/theme.prn stdlib/editor/render.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime /tmp/editor_demo_full.c runtime/parena_runtime.c \

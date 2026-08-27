@@ -49,6 +49,23 @@ int main(void) {
         Color plain = color_for_scope("");
         CHECK(unknown.r == plain.r && unknown.g == plain.g && unknown.b == plain.b,
               "an unrecognized scope falls back to the real default color, not a crash or garbage");
+
+        /* Real Markdown scope colors (2026-08-27, founder: "make sure
+         * we support .md syntax highlighting"). */
+        Color heading = color_for_scope("markup.heading.markdown");
+        CHECK(heading.r == 86 && heading.g == 156 && heading.b == 214, "markup.heading.markdown maps to the real documented blue");
+        Color bold = color_for_scope("markup.bold.markdown");
+        CHECK(bold.r == 220 && bold.g == 158 && bold.b == 84, "markup.bold.markdown maps to the real documented warm orange");
+        Color italic = color_for_scope("markup.italic.markdown");
+        CHECK(italic.r == 96 && italic.g == 179 && italic.b == 166, "markup.italic.markdown maps to the real documented muted teal");
+        Color code = color_for_scope("markup.inline.raw.markdown");
+        CHECK(code.r == 206 && code.g == 145 && code.b == 120,
+              "markup.inline.raw.markdown reuses the real existing string/code orange");
+        Color quote = color_for_scope("markup.quote.markdown");
+        CHECK(quote.r == 106 && quote.g == 153 && quote.b == 85,
+              "markup.quote.markdown reuses the real existing comment green");
+        Color list = color_for_scope("markup.list.markdown");
+        CHECK(list.r == 128 && list.g == 179 && list.b == 224, "markup.list.markdown maps to the real documented light blue");
     }
 
     /* --- real end-to-end render: an actual grammar tokenizing and
@@ -115,6 +132,52 @@ int main(void) {
         delay(16);
         CHECK(cbg2.tag == 1 && clr2.tag == 1 && mlr.tag == 1,
               "render-highlighted-text renders a real 3-line PARENA snippet (embedded real newlines) without error");
+    }
+
+    /* --- real Markdown grammar (2026-08-27, founder: "make sure we
+     * support .md syntax highlighting") -- real lines lifted from this
+     * very repo's own real .md files (CLAUDE.md, BACKLOG.md,
+     * emiree-emily-fatbaby.md), not synthetic test strings, same real
+     * discipline the PARENA grammar's own test above already uses. --- */
+    {
+        Result mgr = build_markdown_grammar(&a);
+        CHECK(mgr.tag == 1, "editor/textmate-markdown's real build-markdown-grammar compiles every real rule");
+        if (mgr.tag == 1) {
+            Vec mrules = *(Vec *)mgr.value;
+            CHECK(vec_len(&mrules) == 9, "the real Markdown grammar has exactly its 9 real documented rules");
+
+            /* Real, direct tokenization check (not just "did it render
+             * without crashing") -- confirms the real heading rule
+             * actually fires on a real heading line, matching the real
+             * PARENA grammar's own tokenize-line precedent used
+             * elsewhere in this file's own test_editor.c sibling. */
+            Vec toks = tokenize_line(&mrules, (char *)"# CLAUDE.md", &a);
+            CHECK(vec_len(&toks) >= 1, "tokenize-line produces at least one real token for a real heading line");
+            if (vec_len(&toks) >= 1) {
+                Token first = *(Token *)vec_get(&toks, 0);
+                CHECK(strcmp(first.scope, "markup.heading.markdown") == 0,
+                      "the real heading line's own first token is genuinely scoped markup.heading.markdown");
+            }
+
+            const char *real_md_lines[] = {
+                "# CLAUDE.md",
+                "**Before starting any work, read `EMILY/BACKLOG.md`.** Pick the highest-priority unchecked item.",
+                "> *\"The backlog is the load-bearing node. Everything else is downstream of that.\"*",
+                "1. Provision MySQL and set `MYSQL_DSN`",
+            };
+            int md_all_ok = 1;
+            Result mbg = set_draw_color(&ren, 30, 30, 35, 255, &a);
+            if (mbg.tag != 1) md_all_ok = 0;
+            Result mclr = render_clear(&ren, &a);
+            if (mclr.tag != 1) md_all_ok = 0;
+            for (int i = 0; i < 4; i++) {
+                Result hr = render_highlighted_line(&ren, &font, &mrules, (char *)real_md_lines[i], 8, 8 + i * 22, &a);
+                if (hr.tag != 1) md_all_ok = 0;
+            }
+            render_present(&ren);
+            delay(16);
+            CHECK(md_all_ok, "4 real lines lifted from this repo's own .md files tokenize and render as real syntax-highlighted text, no errors");
+        }
     }
 
     close_font(font);

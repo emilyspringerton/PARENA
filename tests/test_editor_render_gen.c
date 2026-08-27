@@ -406,6 +406,8 @@ void tokenize_step(Vec *, char *, int, int, Vec *, Arena *);
 Vec tokenize_line(Vec *, char *, Arena *);
 Result add_rule(Vec *, char *, char *, Arena *);
 Result build_grammar(Arena *);
+Result add_markdown_rule(Vec *, char *, char *, Arena *);
+Result build_markdown_grammar(Arena *);
 Color color_for_scope(char *);
 Result render_highlighted_line(Renderer *, Font *, Vec *, char *, int, int, Arena *);
 Result render_tokens(Renderer *, Font *, char *, Vec *, int, int, int, Arena *);
@@ -1953,8 +1955,102 @@ Result build_grammar(Arena *dest __attribute__((unused))) {
     return __match_result_19;
 }
 
+Result add_markdown_rule(Vec * rules __attribute__((unused)), char * scope __attribute__((unused)), char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Result __match_result_20 __attribute__((unused)) = {0};
+    Result __match_tmp_32 = compile_rule(scope, pattern, dest);
+    if (__match_tmp_32.tag == 1) {
+        void *rule __attribute__((unused)) = __match_tmp_32.value;
+    (void)(vec_push_(rules, rule));
+        __match_result_20 = result_ok(NULL);
+    }
+    else if (__match_tmp_32.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_32.value;
+        __match_result_20 = result_err(e);
+    }
+    return __match_result_20;
+}
+
+Result build_markdown_grammar(Arena *dest __attribute__((unused))) {
+    Vec rules __attribute__((unused)) = vec_new(dest);
+    Result __match_result_21 __attribute__((unused)) = {0};
+    Result __match_tmp_33 = add_markdown_rule(&(rules), "markup.heading.markdown", "^#+ .*", dest);
+    if (__match_tmp_33.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_33.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_33.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_33.value;
+    Result __match_tmp_34 = add_markdown_rule(&(rules), "markup.bold.markdown", "^\\*\\*[^*]+\\*\\*", dest);
+    if (__match_tmp_34.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_34.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_34.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_34.value;
+    Result __match_tmp_35 = add_markdown_rule(&(rules), "markup.italic.markdown", "^\\*[^*]+\\*", dest);
+    if (__match_tmp_35.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_35.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_35.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_35.value;
+    Result __match_tmp_36 = add_markdown_rule(&(rules), "markup.italic.markdown", "^_[^_]+_", dest);
+    if (__match_tmp_36.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_36.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_36.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_36.value;
+    Result __match_tmp_37 = add_markdown_rule(&(rules), "markup.inline.raw.markdown", "^`[^`]+`", dest);
+    if (__match_tmp_37.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_37.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_37.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_37.value;
+    Result __match_tmp_38 = add_markdown_rule(&(rules), "markup.quote.markdown", "^> ", dest);
+    if (__match_tmp_38.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_38.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_38.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_38.value;
+    Result __match_tmp_39 = add_markdown_rule(&(rules), "markup.list.markdown", "^[-*+] ", dest);
+    if (__match_tmp_39.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_39.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_39.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_39.value;
+    Result __match_tmp_40 = add_markdown_rule(&(rules), "markup.list.markdown", "^[0-9]+\\. ", dest);
+    if (__match_tmp_40.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_40.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_40.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_40.value;
+    Result __match_tmp_41 = add_markdown_rule(&(rules), "", "^[a-zA-Z0-9]+", dest);
+    if (__match_tmp_41.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_41.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_41.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_41.value;
+        __match_result_21 = result_ok(Vec_box(dest, rules));
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    return __match_result_21;
+}
+
 Color color_for_scope(char * scope __attribute__((unused))) {
-    return (str_eq_(scope, "keyword.control.parena") ? Color_new(197, 134, 192) : (str_eq_(scope, "keyword.other.region.parena") ? Color_new(197, 134, 192) : (str_eq_(scope, "string.quoted.double.parena") ? Color_new(206, 145, 120) : (str_eq_(scope, "comment.line.semicolon.parena") ? Color_new(106, 153, 85) : (str_eq_(scope, "constant.numeric.parena") ? Color_new(181, 206, 168) : (str_eq_(scope, "constant.other.keyword.parena") ? Color_new(86, 156, 214) : (str_eq_(scope, "variable.other.parena") ? Color_new(212, 212, 212) : Color_new(212, 212, 212))))))));
+    return (str_eq_(scope, "keyword.control.parena") ? Color_new(197, 134, 192) : (str_eq_(scope, "keyword.other.region.parena") ? Color_new(197, 134, 192) : (str_eq_(scope, "string.quoted.double.parena") ? Color_new(206, 145, 120) : (str_eq_(scope, "comment.line.semicolon.parena") ? Color_new(106, 153, 85) : (str_eq_(scope, "constant.numeric.parena") ? Color_new(181, 206, 168) : (str_eq_(scope, "constant.other.keyword.parena") ? Color_new(86, 156, 214) : (str_eq_(scope, "variable.other.parena") ? Color_new(212, 212, 212) : (str_eq_(scope, "markup.heading.markdown") ? Color_new(86, 156, 214) : (str_eq_(scope, "markup.bold.markdown") ? Color_new(220, 158, 84) : (str_eq_(scope, "markup.italic.markdown") ? Color_new(96, 179, 166) : (str_eq_(scope, "markup.inline.raw.markdown") ? Color_new(206, 145, 120) : (str_eq_(scope, "markup.quote.markdown") ? Color_new(106, 153, 85) : (str_eq_(scope, "markup.list.markdown") ? Color_new(128, 179, 224) : Color_new(212, 212, 212))))))))))))));
 }
 
 Result render_highlighted_line(Renderer * ren __attribute__((unused)), Font * f __attribute__((unused)), Vec * rules __attribute__((unused)), char * line __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1972,17 +2068,17 @@ Result render_tokens(Renderer * ren __attribute__((unused)), Font * f __attribut
     return render_tokens(ren, f, line, tokens, (i + 1), (x + measure_text_width(f, " ")), y, dest);
     } else {
     Color color __attribute__((unused)) = color_for_scope((tok)->scope);
-    Result __match_result_20 __attribute__((unused)) = {0};
-    Result __match_tmp_32 = render_text(ren, f, span, x, y, (color).r, (color).g, (color).b, dest);
-    if (__match_tmp_32.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_32.value;
-        __match_result_20 = result_err(e);
+    Result __match_result_22 __attribute__((unused)) = {0};
+    Result __match_tmp_42 = render_text(ren, f, span, x, y, (color).r, (color).g, (color).b, dest);
+    if (__match_tmp_42.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_42.value;
+        __match_result_22 = result_err(e);
     }
-    else if (__match_tmp_32.tag == 1) {
-        void *u __attribute__((unused)) = __match_tmp_32.value;
-        __match_result_20 = render_tokens(ren, f, line, tokens, (i + 1), (x + measure_text_width(f, span)), y, dest);
+    else if (__match_tmp_42.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_42.value;
+        __match_result_22 = render_tokens(ren, f, line, tokens, (i + 1), (x + measure_text_width(f, span)), y, dest);
     }
-    return __match_result_20;
+    return __match_result_22;
     }
     }
 }
@@ -1997,17 +2093,17 @@ Result render_lines(Renderer * ren __attribute__((unused)), Font * f __attribute
     return result_ok(NULL);
     } else {
     char *line __attribute__((unused)) = vec_get(lines, i);
-    Result __match_result_21 __attribute__((unused)) = {0};
-    Result __match_tmp_33 = render_highlighted_line(ren, f, rules, line, x, (y + (i * line_height)), dest);
-    if (__match_tmp_33.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_33.value;
-        __match_result_21 = result_err(e);
+    Result __match_result_23 __attribute__((unused)) = {0};
+    Result __match_tmp_43 = render_highlighted_line(ren, f, rules, line, x, (y + (i * line_height)), dest);
+    if (__match_tmp_43.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_43.value;
+        __match_result_23 = result_err(e);
     }
-    else if (__match_tmp_33.tag == 1) {
-        void *u __attribute__((unused)) = __match_tmp_33.value;
-        __match_result_21 = render_lines(ren, f, rules, lines, (i + 1), x, y, line_height, dest);
+    else if (__match_tmp_43.tag == 1) {
+        void *u __attribute__((unused)) = __match_tmp_43.value;
+        __match_result_23 = render_lines(ren, f, rules, lines, (i + 1), x, y, line_height, dest);
     }
-    return __match_result_21;
+    return __match_result_23;
     }
 }
 

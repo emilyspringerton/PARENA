@@ -144,6 +144,7 @@ jobs:
           ./dist/parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
             stdlib/regex/pcre.prn stdlib/sdl2.prn \
             stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
+            stdlib/editor/textmate_markdown.prn \
             stdlib/editor/theme.prn stdlib/editor/render.prn -o editor_demo_gen.c
           cat editor_demo_gen.c examples/editor_main.c > editor_demo_full.c
 

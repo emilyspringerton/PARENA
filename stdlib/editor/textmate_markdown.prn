@@ -1,0 +1,88 @@
+;; stdlib/editor/textmate_markdown.prn — depends on string, regex/syntax,
+;; regex/pcre, editor/textmate. A real, concrete Markdown grammar, built
+;; on the same real TextMate-style engine editor/textmate_parena.prn
+;; already uses for PARENA source. Founder real-time: "make sure we
+;; support .md syntax highlighting" -- .md files are a real, common
+;; thing to open in this editor (this repo's own CLAUDE.md/NORTHSTAR.md/
+;; STDLIB.md files, for one), and until now the editor had no grammar
+;; for anything but PARENA source.
+;;
+;; Real, honest v0 scope, same "single-line, first-match-wins, no
+;; begin/end multi-line spans" constraint editor/textmate.prn's own
+;; header comment already documents for every grammar built on it:
+;; headings, **bold**, *italic*/_italic_, `inline code`, > blockquote
+;; markers, and -/*/+ bullet + N. numbered list markers. Real, honest
+;; gaps NOT attempted here (documented, not silently missing): fenced
+;; ``` code blocks and real [link](url) syntax both need either a real
+;; multi-line begin/end span (fenced blocks) or a real "exclude ]"
+;; character class (regex/syntax.prn's own parse-class has a real,
+;; documented gap: "no escaped `]` inside a class" -- confirmed by
+;; reading that file directly, not guessed -- which rules out a clean
+;; `[^\]]*` for real link-text matching); tables, footnotes, and HTML-
+;; in-Markdown are real, separate, deferred follow-ups too, matching
+;; every other "expand when a real feature needs it" scope note this
+;; whole stdlib already carries.
+;;
+;; Rule ORDER matters (editor/textmate.prn's own try-rules-at tries
+;; rules in array order, first match wins): bold (**) is listed BEFORE
+;; italic (*) so a real `**bold**` span is never misparsed as two
+;; adjacent italic spans -- though in practice italic's own pattern
+;; (`\*[^*]+\*`) can't match `**...` anyway, since `[^*]+` requires at
+;; least one non-asterisk character right after the opening `*`, and
+;; position 1 of `**` is itself another `*`. Kept in this order anyway
+;; for real, obvious correctness, not relying on that coincidence.
+;; A real trailing catch-all rule (empty scope, `[a-zA-Z0-9]+`) consumes
+;; plain prose words in one token instead of editor/textmate.prn's own
+;; byte-by-byte untokenized fallback -- a real, direct efficiency win on
+;; long paragraphs, same real role editor/textmate_parena.prn's own
+;; variable.other.parena rule already plays for PARENA source (except
+;; this one deliberately carries no distinct color -- plain markdown
+;; prose should render as the theme's default text color).
+
+(module editor/textmate-markdown)
+(import string)
+(import regex/syntax)
+(import regex/pcre)
+(import editor/textmate)
+(export build-markdown-grammar)
+
+;; add-markdown-rule -- same real chained-Result-propagation shape editor/
+;; textmate_parena.prn's own build-grammar already establishes (an
+;; earlier draft of THAT file used infinite retry on a compile error
+;; instead, caught and fixed before shipping -- this file follows the
+;; corrected shape from the start).
+(defn add-markdown-rule [(rules : &mut (Vec TmRule)) (scope : String @ Region) (pattern : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit TmError) @ Region
+  (match (editor/textmate/compile-rule scope pattern dest)
+    ((Ok rule) (do (vec/push! rules rule) (Ok unit)))
+    ((Err e) (Err e))))
+
+(defn build-markdown-grammar [(dest : Arena @ Region)] : (Result (Vec TmRule) TmError) @ Region
+  (let [rules (vec/new dest)]
+    (match (add-markdown-rule &rules "markup.heading.markdown" "^#+ .*" dest)
+      ((Err e) (Err e))
+      ((Ok u)
+        (match (add-markdown-rule &rules "markup.bold.markdown" "^\\*\\*[^*]+\\*\\*" dest)
+          ((Err e) (Err e))
+          ((Ok u)
+            (match (add-markdown-rule &rules "markup.italic.markdown" "^\\*[^*]+\\*" dest)
+              ((Err e) (Err e))
+              ((Ok u)
+                (match (add-markdown-rule &rules "markup.italic.markdown" "^_[^_]+_" dest)
+                  ((Err e) (Err e))
+                  ((Ok u)
+                    (match (add-markdown-rule &rules "markup.inline.raw.markdown" "^`[^`]+`" dest)
+                      ((Err e) (Err e))
+                      ((Ok u)
+                        (match (add-markdown-rule &rules "markup.quote.markdown" "^> " dest)
+                          ((Err e) (Err e))
+                          ((Ok u)
+                            (match (add-markdown-rule &rules "markup.list.markdown" "^[-*+] " dest)
+                              ((Err e) (Err e))
+                              ((Ok u)
+                                (match (add-markdown-rule &rules "markup.list.markdown" "^[0-9]+\\. " dest)
+                                  ((Err e) (Err e))
+                                  ((Ok u)
+                                    (match (add-markdown-rule &rules "" "^[a-zA-Z0-9]+" dest)
+                                      ((Err e) (Err e))
+                                      ((Ok u) (Ok rules)))))))))))))))))))))

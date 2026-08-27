@@ -13,6 +13,22 @@
 ;; orange, comment.line -> green, constant.numeric -> light green,
 ;; constant.other.keyword -> blue, variable.other -> light gray) --
 ;; recognizable to anyone who's used VS Code, not invented from scratch.
+;;
+;; Markdown scopes added 2026-08-27 (founder: "make sure we support .md
+;; syntax highlighting"), same real Dark+ approximation approach:
+;; markup.heading -> blue (VS Code's own real markdown heading color),
+;; markup.bold -> a warm orange (this renderer has no bold-FONT-WEIGHT
+;; concept -- SDL2_ttf's own real glyph rendering here is a single
+;; regular-weight JetBrains Mono face, no bold variant loaded -- so a
+;; real, honest v0 substitutes a distinct COLOR for bold instead of
+;; actual bold weight), markup.italic -> a muted teal (same real
+;; "color stands in for a font-style this renderer can't do" reasoning),
+;; markup.inline.raw (inline code) -> reuses the existing string/code
+;; orange (real TextMate convention: code spans are visually treated
+;; much like string literals), markup.quote -> reuses the existing
+;; comment green (both are real "de-emphasized aside" content in most
+;; real themes), markup.list -> light blue (list markers, distinct from
+;; plain prose text).
 
 (module editor/theme)
 (import string)
@@ -32,4 +48,10 @@
     ((string/str-eq? scope "constant.numeric.parena") {:r 181 :g 206 :b 168})
     ((string/str-eq? scope "constant.other.keyword.parena") {:r 86 :g 156 :b 214})
     ((string/str-eq? scope "variable.other.parena") {:r 212 :g 212 :b 212})
+    ((string/str-eq? scope "markup.heading.markdown") {:r 86 :g 156 :b 214})
+    ((string/str-eq? scope "markup.bold.markdown") {:r 220 :g 158 :b 84})
+    ((string/str-eq? scope "markup.italic.markdown") {:r 96 :g 179 :b 166})
+    ((string/str-eq? scope "markup.inline.raw.markdown") {:r 206 :g 145 :b 120})
+    ((string/str-eq? scope "markup.quote.markdown") {:r 106 :g 153 :b 85})
+    ((string/str-eq? scope "markup.list.markdown") {:r 128 :g 179 :b 224})
     (true {:r 212 :g 212 :b 212})))

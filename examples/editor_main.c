@@ -169,6 +169,20 @@ static int pos_from_mouse(char *text, int mouse_x, int mouse_y, Font *font, Aren
     return best_pos;
 }
 
+/* path_has_suffix -- real, minimal host-driver plumbing (2026-08-27,
+ * founder real-time: "make sure we support .md syntax highlighting"):
+ * picks the real grammar to load based on the real file being opened.
+ * Plain, case-sensitive suffix match -- a real, honest v0 (a real,
+ * separate, deferred follow-up would add case-insensitivity or more
+ * extensions, e.g. ".markdown"; not needed for this real, immediate
+ * ask). */
+static int path_has_suffix(const char *path, const char *suffix) {
+    size_t plen = strlen(path);
+    size_t slen = strlen(suffix);
+    if (slen > plen) return 0;
+    return strcmp(path + (plen - slen), suffix) == 0;
+}
+
 /* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
  * founder real-time actually running a real Windows build): the
  * original single hardcoded path
@@ -298,7 +312,12 @@ int main(int argc, char **argv) {
     if (fontr.tag != 1) { fprintf(stderr, "editor: open-font failed\n"); return 1; }
     Font font = *(Font *)fontr.value;
 
-    Result gr = build_grammar(&a);
+    /* Real grammar selection by file extension (2026-08-27, founder:
+     * "make sure we support .md syntax highlighting") -- PARENA source
+     * stays the real default (matches this file's own original scope,
+     * the "parena text editor"), a real .md file gets the real
+     * Markdown grammar instead. */
+    Result gr = path_has_suffix(path, ".md") ? build_markdown_grammar(&a) : build_grammar(&a);
     if (gr.tag != 1) { fprintf(stderr, "editor: build-grammar failed\n"); return 1; }
     Vec rules = *(Vec *)gr.value;
 
