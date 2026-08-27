@@ -1210,51 +1210,34 @@ int main(int argc, char **argv) {
                             file_tree_dir = dir_copy;
                             file_tree_entries = list_dir(file_tree_dir, &a);
                         } else {
-                            /* Real, confirmed-live bug fixed here
-                             * (2026-08-27, founder real-time: "it seems
-                             * like double clicking a file in the nerd
-                             * tree does not work"): clicking a file
-                             * here used to call spawn_new_instance,
-                             * the SAME real "open in a genuinely new
-                             * window" behavior drag-and-drop
-                             * deliberately uses (that one's own real,
-                             * considered scope -- "for now spawns a new
-                             * window is fine" -- was never about the
-                             * sidebar). Reusing it here was a real
-                             * oversight, not a separately-considered
-                             * choice: a file-tree BROWSER whose whole
-                             * point is navigating and opening files
-                             * from the current project should load
-                             * in-place, the same real expectation every
-                             * other real editor's own sidebar sets --
-                             * spawning an invisible-until-you-notice-it
-                             * second window instead reads exactly like
-                             * "nothing happened." Fixed to the same
-                             * real load+undo/redo-reset shape F3
-                             * (reload) already establishes below.
-                             * Drag-and-drop (spawn_new_instance's other
-                             * real call site) is untouched -- that
-                             * one's own "new window" behavior stays the
-                             * founder's own explicit, considered
-                             * choice. */
-                            size_t fplen = strlen(full_path) + 1;
-                            char *path_copy = (char *)arena_alloc(&a, fplen);
-                            memcpy(path_copy, full_path, fplen);
-                            path = path_copy;
-                            buf = load_from_file(path, &a);
-                            undo_count = 0;
-                            redo_count = 0;
-                            /* Real grammar reselection to match, same
-                             * real reasoning path itself needed
-                             * updating: switching to a genuinely
-                             * different file type (e.g. .prn -> .md)
-                             * via the file-tree should highlight with
-                             * that file's own real grammar, not keep
-                             * whatever grammar this window happened to
-                             * launch with. */
-                            is_markdown = path_has_suffix(path, ".md");
-                            Result gr2 = is_markdown ? build_markdown_grammar(&a) : build_grammar(&a);
-                            if (gr2.tag == 1) rules = *(Vec *)gr2.value;
+                            /* Real course-correction (2026-08-27):
+                             * founder real-time first read as "double
+                             * clicking a file in the nerd tree does not
+                             * work" -> (this file's own first fix
+                             * attempt switched this to load in-place,
+                             * reasoning the new-window behavior itself
+                             * was the mistake) -> founder real-time,
+                             * directly correcting that: "no double
+                             * click on nerd tree should open a new
+                             * window it just doesnt actually open the
+                             * real file". New-window IS the real,
+                             * wanted behavior here after all --
+                             * spawn_new_instance restored. The REAL bug
+                             * (found by actually tracing spawn_new_
+                             * instance's own real fork+execl end to
+                             * end, confirmed live: the child process
+                             * DOES correctly load the real target file)
+                             * was in sdl2_create_window_impl (runtime/
+                             * parena_runtime.h): every window this
+                             * program creates used SDL_WINDOWPOS_
+                             * CENTERED, so a spawned second window
+                             * opens in the EXACT same screen position
+                             * as the still-open first one, perfectly
+                             * overlapping it -- reads exactly like
+                             * "nothing happened" even though a real,
+                             * correctly-loaded new window is really
+                             * there. Fixed there, not here. */
+                            spawn_new_instance(exe_path, full_path);
                         }
                     }
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {

@@ -198,6 +198,40 @@ int main(void) {
         }
     }
 
+    /* --- real regression test for a real bug found in an earlier
+     * draft of the O(N^2) fix above, caught before shipping further
+     * (2026-08-27): fstat-sizing the buffer up front means a SMALL
+     * file's own initial capacity can be far less than 4096 -- a
+     * single `cap * 2` doubling step (as opposed to looping the
+     * doubling until real capacity is actually sufficient) doesn't
+     * reliably leave `cap >= len + 4096` before the next real read()
+     * call, which unconditionally requests up to 4096 bytes. Real,
+     * minimal repro: a real file smaller than 4096 bytes, read via
+     * read-string, must come back byte-for-byte correct. */
+    {
+        char smallpath[256];
+        snprintf(smallpath, sizeof smallpath, "/tmp/parena_editor_io_smallfile_test_%d.txt", (int)getpid());
+        FILE *sf = fopen(smallpath, "w");
+        CHECK(sf != NULL, "a real small (<4096 byte) test file opens for writing");
+        if (sf) {
+            const char *small_content = "a real small file, well under 4096 bytes\n";
+            fputs(small_content, sf);
+            fclose(sf);
+
+            Result openr = file_open(smallpath, OpenMode_Read(), &a);
+            CHECK(openr.tag == 1, "the real small test file opens via file-open");
+            if (openr.tag == 1) {
+                FileHandle sfh = *(FileHandle *)openr.value;
+                Result rr = read_string(sfh, &a);
+                file_close(sfh, &a);
+                CHECK(rr.tag == 1 && strcmp((char *)rr.value, small_content) == 0,
+                      "read-string returns a real small file's content byte-for-byte correct -- "
+                      "no corruption from the fstat-sized buffer's own real growth path");
+            }
+            unlink(smallpath);
+        }
+    }
+
     arena_free_all(&a);
 
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

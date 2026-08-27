@@ -409,7 +409,23 @@ static inline char *raw_read_all_impl(int fd, Arena *dest) {
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
     for (;;) {
-        if (len + 4096 > cap) {
+        /* Real, confirmed-live buffer-overflow bug in an earlier draft
+         * of this fix, caught before it corrupted anything further
+         * (2026-08-27, founder actually opening a real small file
+         * through the file-tree, got no visible content at all): a
+         * single `cap * 2` doubling step does NOT guarantee
+         * `cap >= len + 4096` the way the OLD fixed-+4096-growth
+         * always did (every old grow step produced a cap that was
+         * exactly len+4096, by construction) -- for an fstat-sized
+         * small file (say cap=101 for a 100-byte file), one doubling
+         * step (202) is still far short of the 4096 bytes the very
+         * next read() call unconditionally requests, so read() could
+         * write past the end of a real, too-small buffer. Real,
+         * correct fix: loop the grow step (real doubling, not a
+         * single step) until cap actually covers the next real read
+         * request, matching the invariant the old code held (if less
+         * elegantly) the whole time. */
+        while (len + 4096 > cap) {
             size_t new_cap = cap * 2;
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
@@ -1082,9 +1098,32 @@ static inline int sdl2_init_impl(void) {
     return SDL_Init(SDL_INIT_VIDEO) == 0 ? 0 : -1;
 }
 
+/* Real, confirmed-live bug fixed here (2026-08-27, founder real-time,
+ * actually double-clicking a real file in the editor's own file-tree
+ * sidebar: "no double click on nerd tree should open a new window it
+ * just doesnt actually open the real file"). Traced end to end,
+ * confirmed live, not guessed: spawn_new_instance's own real
+ * fork+execl DOES correctly re-exec with the real target file as its
+ * own argv[1] (verified directly -- the child's own real "editor:
+ * loaded from <path>" line prints correctly). The real bug is here:
+ * every window this program EVER creates -- the original one AND
+ * every spawned instance -- used SDL_WINDOWPOS_CENTERED for both x
+ * and y, so a second, spawned window opens in the EXACT same screen
+ * position as the still-open first one, perfectly overlapping it.
+ * Whether the new window lands behind or on top of the old one is
+ * down to the window manager's own real stacking policy, but either
+ * way it reads exactly like "nothing happened" -- the file WAS opened
+ * in a real, correctly-loaded new window, just invisibly stacked
+ * under (or indistinguishable from) the one already there. Fixed with
+ * SDL_WINDOWPOS_UNDEFINED, the real, standard way to ask the window
+ * manager for its OWN default placement instead of forcing dead
+ * center -- every real desktop WM already staggers/cascades
+ * successive undefined-position windows so they don't perfectly
+ * overlap, the same real behavior every other multi-window desktop
+ * app already relies on. */
 static inline int sdl2_create_window_impl(const char *title, int w, int h) {
     if (g_sdl2_window_count >= SDL2_MAX_WINDOWS) return -1;
-    SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+    SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                                         w, h, SDL_WINDOW_SHOWN);
     if (win == NULL) return -1;
     int handle = g_sdl2_window_count++;
