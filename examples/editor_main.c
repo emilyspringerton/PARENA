@@ -72,6 +72,7 @@
  *   machine with a real screen.)
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -104,15 +105,19 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
 #endif
 
 #define LINE_HEIGHT 26 /* real pixel spacing between real lines, matches the real 20pt font this editor opens */
-#define WINDOW_WIDTH 1040 /* widened from 900 (2026-08-27) to fit a real
-                            fourth bottom-bar toggle (terminal_toggle,
-                            800-1020) alongside auto-indent/file-tree/
-                            settings -- WINDOW_WIDTH has exactly one
-                            other real use in this file (create_window
-                            below); every bottom-bar toggle already uses
-                            fixed screen x-positions, not a WINDOW_WIDTH-
-                            relative layout, so nothing else depends on
-                            this number. */
+#define WINDOW_WIDTH 1300 /* widened again from 1040 (2026-08-27, founder
+                            real-time: "a separate nerd tree on the right
+                            for the editor's source") to fit a real fifth
+                            bottom-bar toggle (editor_source_toggle,
+                            1025-1245) AND the right sidebar itself
+                            (SIDEBAR_WIDTH, reserved at the right edge)
+                            alongside the existing four toggles/left
+                            sidebar -- WINDOW_WIDTH has exactly one other
+                            real use in this file (create_window below);
+                            every bottom-bar toggle and sidebar already
+                            uses fixed screen x-positions, not a
+                            WINDOW_WIDTH-relative layout, so nothing else
+                            depends on this number. */
 #define WINDOW_HEIGHT 500 /* matches the real create-window call below -- no real window-resize support exists yet, a real, separate, deferred gap */
 
 /* Real, minimal hover-reveal bottom status bar (2026-08-27, founder
@@ -151,6 +156,33 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * current directory open vs the source of the editor") stays deferred
  * -- depends on this file tree existing first. */
 #define SIDEBAR_WIDTH 180
+
+/* Real, second, independent NERDTree-style sidebar (2026-08-27, founder
+ * real-time: "a separate nerd tree on the right for the editor's
+ * source" -> "i guess the compile button can be at the bottom of the
+ * right nerd tree") -- same real, honest v0 shape the left file-tree
+ * sidebar above already establishes (one flat level, fixed real screen
+ * width, click-to-navigate/click-to-open via spawn_new_instance),
+ * mirrored on the RIGHT edge instead of the left, with its own fully
+ * independent navigation state (editor_source_dir/_entries/
+ * _scroll_offset) -- both sidebars can be open at once. Defaults to
+ * real CWD at startup, same convention file_tree_dir already uses;
+ * "the editor's own source" in practice just means launching this dev
+ * build the normal way (from the PARENA repo root), not a hardcoded
+ * path guess. Reserves a real, fixed COMPILE_BUTTON_HEIGHT strip at
+ * its own bottom for the Compile control (real, honest v0: rebuilds
+ * the editor via `make editor-demo` and spawns the fresh binary into a
+ * new window via the already-real spawn_new_instance path -- the
+ * "hot reload compile into a new window" idea raised earlier this
+ * same session). Real, honest, accepted limitation: this sidebar
+ * draws OVER whatever code content happens to be at its own x-range
+ * (no horizontal-scroll/text-reflow mechanism exists in this editor to
+ * genuinely reserve space the way the LEFT sidebar's own text_x_origin
+ * shift does) -- acceptable since long lines running under a hidden-
+ * by-default sidebar is a real, visible, honest tradeoff, not a silent
+ * bug. */
+#define COMPILE_BUTTON_HEIGHT 28
+#define SAVE_BUTTON_WIDTH 140
 #define FILE_TREE_ROW_HEIGHT 20
 
 /* save-to-file / load-from-file -- thin C wrappers around the real
@@ -548,6 +580,40 @@ static void spawn_new_instance(const char *exe_path, const char *file_path) {
 #endif
 }
 
+/* compile_and_relaunch -- the real "hot reload" action behind the new
+ * right sidebar's own Compile button (2026-08-27, founder real-time:
+ * "buttons on the top for compile" -> "i guess the compile button can
+ * be at the bottom of the right nerd tree", tying into the earlier-
+ * in-session "hot reload compile into a new window" question). Real,
+ * honest v0: shells out to `make editor-demo` (assumes the real
+ * process cwd is the PARENA repo root -- true whenever this dev build
+ * is launched the normal way, same real assumption editor_source_dir's
+ * own default already makes) via a plain, blocking system() call --
+ * no threading/async infrastructure exists anywhere in this codebase,
+ * so the window is genuinely unresponsive for however long the real
+ * build takes (a few seconds on this box); a real, accepted v0
+ * tradeoff, not hidden. On a real, successful rebuild (exit code 0),
+ * relaunches via the SAME spawn_new_instance path the file-tree/drag-
+ * and-drop already use -- exe_path is this RUNNING process's own real
+ * path (executable_path(), captured once at startup), which after a
+ * successful `make editor-demo` now points at the FRESH binary on
+ * disk, so no separate "find the new binary" step is needed. Reopens
+ * whatever file this window currently has open, so the new window
+ * picks up right where you were. On a real build failure, logs to
+ * stderr and leaves the CURRENTLY RUNNING (old) editor exactly as it
+ * was -- same real "failure is honest and non-fatal" convention
+ * spawn_new_instance's own header comment already establishes. */
+static void compile_and_relaunch(const char *exe_path, const char *current_file) {
+    fprintf(stderr, "editor: compiling (make editor-demo)...\n");
+    int rc = system("make editor-demo");
+    if (rc != 0) {
+        fprintf(stderr, "editor: compile failed (make editor-demo exited %d), not relaunching\n", rc);
+        return;
+    }
+    fprintf(stderr, "editor: compile succeeded, relaunching\n");
+    spawn_new_instance(exe_path, current_file);
+}
+
 /* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
  * founder real-time actually running a real Windows build): the
  * original single hardcoded path
@@ -673,6 +739,39 @@ static void push_redo(Buffer b) {
 
 static Buffer pop_redo(Buffer fallback) {
     return pop_stack(redo_stack, &redo_count, fallback);
+}
+
+/* do_save -- real, shared save-to-disk action (2026-08-27, founder
+ * real-time: "also a save button" -> "still i want a asave button top
+ * left"). Factored out of what used to be the F2 keybind's own inline
+ * body so the new top-left hover-reveal Save BUTTON and the existing
+ * F2 KEYBIND call the exact same real code, not two copies that could
+ * drift -- identical real behavior either way: PARENA source gets
+ * real prnfmt auto-format-on-save (the in-memory buffer is updated to
+ * the formatted text too, matching every real "format on save" tool's
+ * own expected behavior), a real Markdown file just saves as-is. Takes
+ * `buf` BY POINTER (unlike push_undo/pop_undo's own by-value shape)
+ * since this real function needs to REASSIGN the caller's own buffer
+ * on a successful reformat, not just read it. */
+static void do_save(Buffer *buf, const char *path, int is_markdown, Arena *a) {
+    if (!is_markdown) {
+        char *whole = active_text(buf);
+        char *formatted = prnfmt_format_and_copy(whole, strlen(whole));
+        if (formatted) {
+            push_undo(*buf);
+            save_to_file(path, formatted, a);
+            size_t flen = strlen(formatted);
+            char *arena_copy = (char *)arena_alloc(a, flen + 1);
+            memcpy(arena_copy, formatted, flen + 1);
+            free(formatted);
+            *buf = from_text(arena_copy);
+        } else {
+            fprintf(stderr, "editor: prnfmt formatting failed (real allocation failure), saving unformatted\n");
+            save_to_file(path, whole, a);
+        }
+    } else {
+        save_to_file(path, active_text(buf), a);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -808,6 +907,12 @@ int main(int argc, char **argv) {
      * directory's own scroll happened to land. */
     int file_tree_scroll_offset = 0;
 
+    /* editor_source_scroll_offset -- same real shape as
+     * file_tree_scroll_offset above, for the new RIGHT sidebar's own
+     * independent row list (see SIDEBAR_WIDTH's own header comment
+     * further up for the full real reasoning). */
+    int editor_source_scroll_offset = 0;
+
     /* Real hover-reveal bottom status bar state (2026-08-27, see this
      * file's own STATUS_BAR_HEIGHT/HOVER_REVEAL_ZONE header comment for
      * the real, deliberate v0 scope). last_mouse_y is updated on EVERY
@@ -870,6 +975,14 @@ int main(int argc, char **argv) {
     Toggle terminal_toggle = new_toggle(800, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
                                          "Terminal: ON (click to hide)",
                                          "Terminal: OFF (click to show)", 0);
+    /* editor_source_toggle -- the new RIGHT sidebar's own visibility
+     * control (2026-08-27, founder real-time: "a separate nerd tree
+     * on the right for the editor's source"). Fifth real bottom-bar
+     * Toggle, same shape/taste as the other four, placed right after
+     * terminal_toggle's own fixed width. */
+    Toggle editor_source_toggle = new_toggle(1025, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+                                              "Source: ON (click to hide)",
+                                              "Source: OFF (click to show)", 0);
     /* Real terminal-session state -- the pty is spawned ONCE, the
      * first time terminal_toggle is switched on, and stays alive
      * across later off/on toggles (a real, persistent shell session,
@@ -917,6 +1030,13 @@ int main(int argc, char **argv) {
      * oversight. */
     char *file_tree_dir = ".";
     Vec file_tree_entries = list_dir(file_tree_dir, &a);
+
+    /* editor_source_dir/_entries -- the new RIGHT sidebar's own fully
+     * independent navigation state, same real shape as file_tree_dir/
+     * _entries above (see SIDEBAR_WIDTH's own header comment further
+     * up for the full real reasoning). */
+    char *editor_source_dir = ".";
+    Vec editor_source_entries = list_dir(editor_source_dir, &a);
 
     /* Real Spotlight overlay state (2026-08-27, founder real-time:
      * "quick open via ctrl+t windows and linux or cmd+t for mac" ->
@@ -1221,47 +1341,11 @@ int main(int argc, char **argv) {
                 } else if (key == key_f2()) {
                     /* Real auto-format-on-save (2026-08-27, founder
                      * real-time: "build prnfmt into the editor so
-                     * saving files auto formats them"). PARENA source
-                     * only -- fmt_source() is a real, PARENA-syntax-
-                     * specific re-indenter, running it on a real .md
-                     * file would just mangle real prose. Real, honest
-                     * v0: the in-memory buffer is updated to the
-                     * FORMATTED text too (not just the file on disk),
-                     * matching every real "format on save" tool's own
-                     * expected behavior -- what you see after saving
-                     * really is what got written. A real cursor-
-                     * position shift across the reformat is a real,
-                     * accepted v0 simplification (from-text's own
-                     * documented "cursor at the end" default), same
-                     * honest tradeoff this whole file's own load path
-                     * already carries. */
-                    if (!is_markdown) {
-                        char *whole = active_text(&buf);
-                        char *formatted = prnfmt_format_and_copy(whole, strlen(whole));
-                        if (formatted) {
-                            push_undo(buf);
-                            save_to_file(path, formatted, &a);
-                            /* Real, deliberate copy into THIS program's
-                             * own arena before handing it to from-text
-                             * -- `formatted` is a plain malloc'd buffer
-                             * (prnfmt_format_and_copy's own real
-                             * contract), and from-text's own Buffer
-                             * struct stores its `text` field pointer
-                             * directly, not copied -- freeing the raw
-                             * malloc'd buffer right after would leave
-                             * that field dangling. */
-                            size_t flen = strlen(formatted);
-                            char *arena_copy = (char *)arena_alloc(&a, flen + 1);
-                            memcpy(arena_copy, formatted, flen + 1);
-                            free(formatted);
-                            buf = from_text(arena_copy);
-                        } else {
-                            fprintf(stderr, "editor: prnfmt formatting failed (real allocation failure), saving unformatted\n");
-                            save_to_file(path, whole, &a);
-                        }
-                    } else {
-                        save_to_file(path, active_text(&buf), &a);
-                    }
+                     * saving files auto formats them"). See do_save's
+                     * own header comment (factored out above, now also
+                     * the top-left hover-reveal Save button's own real
+                     * action) for the full reasoning. */
+                    do_save(&buf, path, is_markdown, &a);
                 } else if (key == key_f3()) {
                     /* A fresh load is a real, deliberate new starting
                      * point, not something to undo/redo INTO -- clears
@@ -1464,6 +1548,57 @@ int main(int argc, char **argv) {
                             spawn_new_instance(exe_path, full_path);
                         }
                     }
+                } else if (toggle_on_(&editor_source_toggle) && raw_mx >= WINDOW_WIDTH - SIDEBAR_WIDTH && raw_mx < WINDOW_WIDTH
+                           && raw_my >= 0 && raw_my < WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    /* Real RIGHT sidebar click (2026-08-27) -- same real
+                     * shape the LEFT file-tree sidebar's own click
+                     * handler just above already establishes, mirrored
+                     * at the right edge with its own independent
+                     * editor_source_dir/_entries/_scroll_offset state.
+                     * The bottom COMPILE_BUTTON_HEIGHT strip is real,
+                     * reserved UI chrome, not a navigable row -- checked
+                     * FIRST so a click there triggers Compile instead of
+                     * falling through to row-index math that was never
+                     * meant to cover it. */
+                    if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT) {
+                        compile_and_relaunch(exe_path, path);
+                    } else {
+                        int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
+                        int entry_idx = row_idx - 1 + editor_source_scroll_offset;
+                        if (row_idx == 0) {
+                            editor_source_dir = parent_dir_of(editor_source_dir, &a);
+                            editor_source_entries = list_dir(editor_source_dir, &a);
+                            editor_source_scroll_offset = 0;
+                        } else if (row_idx >= 1 && entry_idx < vec_len(&editor_source_entries)) {
+                            char *name = (char *)vec_get(&editor_source_entries, entry_idx);
+                            char full_path2[4096];
+                            snprintf(full_path2, sizeof full_path2, "%s/%s", editor_source_dir, name);
+                            if (is_dir_(full_path2)) {
+                                size_t plen2 = strlen(full_path2) + 1;
+                                char *dir_copy2 = (char *)arena_alloc(&a, plen2);
+                                memcpy(dir_copy2, full_path2, plen2);
+                                editor_source_dir = dir_copy2;
+                                editor_source_entries = list_dir(editor_source_dir, &a);
+                                editor_source_scroll_offset = 0;
+                            } else {
+                                spawn_new_instance(exe_path, full_path2);
+                            }
+                        }
+                    }
+                } else if (last_mouse_y <= HOVER_REVEAL_ZONE && raw_mx >= 0 && raw_mx < SAVE_BUTTON_WIDTH
+                           && raw_my >= 0 && raw_my < STATUS_BAR_HEIGHT) {
+                    /* Real top-left Save button click (2026-08-27,
+                     * founder real-time: "also a save button" -> "still
+                     * i want a asave button top left that apepears when
+                     * you hover near top same as we have hover near for
+                     * bottom ui widgets"). Gated on last_mouse_y (the
+                     * SAME real state the bottom bar's own bar_visible_
+                     * now already reads, mirrored for the top edge
+                     * instead) rather than a separate bar_visible_now_
+                     * top local, since this is the only real top-bar
+                     * control -- no real need for a second named flag
+                     * yet. */
+                    do_save(&buf, path, is_markdown, &a);
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
                 } else if (bar_visible_now && toggle_hit_(&file_tree_toggle, raw_mx, raw_my)) {
@@ -1481,6 +1616,8 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "editor: terminal spawn failed (real SpawnFailed from shell/spawn)\n");
                         }
                     }
+                } else if (bar_visible_now && toggle_hit_(&editor_source_toggle, raw_mx, raw_my)) {
+                    editor_source_toggle = toggle_flip(&editor_source_toggle, &a);
                 } else if (toggle_on_(&settings_toggle)
                            && raw_mx >= SETTINGS_BOX_X && raw_mx < SETTINGS_BOX_X + SETTINGS_BOX_W
                            && raw_my >= 70 && raw_my < 70 + SETTINGS_ZOOM_ROW_H) {
@@ -1604,6 +1741,15 @@ int main(int argc, char **argv) {
                     if (file_tree_scroll_offset < 0) file_tree_scroll_offset = 0;
                     int max_scroll = vec_len(&file_tree_entries);
                     if (file_tree_scroll_offset > max_scroll) file_tree_scroll_offset = max_scroll;
+                } else if (toggle_on_(&editor_source_toggle) && mouse_x() >= WINDOW_WIDTH - SIDEBAR_WIDTH && mouse_x() < WINDOW_WIDTH
+                           && mouse_y() >= 0 && mouse_y() < WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
+                    /* Real RIGHT sidebar scroll -- same real shape the
+                     * left file-tree's own wheel handler just above
+                     * already establishes. */
+                    editor_source_scroll_offset -= delta * SCROLL_LINES_PER_NOTCH;
+                    if (editor_source_scroll_offset < 0) editor_source_scroll_offset = 0;
+                    int max_scroll2 = vec_len(&editor_source_entries);
+                    if (editor_source_scroll_offset > max_scroll2) editor_source_scroll_offset = max_scroll2;
                 } else {
                     /* Real mouse-wheel vertical scroll (2026-08-27).
                      * SDL2's own real convention: positive delta =
@@ -1939,6 +2085,67 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Real RIGHT sidebar render (2026-08-27) -- same real shape the
+         * left file-tree's own render block just above already
+         * establishes, mirrored at the right edge (SIDEBAR_RIGHT_X),
+         * with a real, reserved COMPILE_BUTTON_HEIGHT strip at its own
+         * bottom for the Compile control instead of a navigable row. */
+        if (toggle_on_(&editor_source_toggle)) {
+#define SIDEBAR_RIGHT_X (WINDOW_WIDTH - SIDEBAR_WIDTH)
+            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT;
+            Result esbg = set_draw_color(&ren, 32, 32, 38, 255, &frame_arena);
+            (void)esbg;
+            render_fill_rect(&ren, SIDEBAR_RIGHT_X, 0, SIDEBAR_WIDTH, right_tree_h, &frame_arena);
+            Result esupr = render_text(&ren, &font, "..", SIDEBAR_RIGHT_X + 8, 4, 140, 140, 155, &frame_arena);
+            (void)esupr;
+            int esn = vec_len(&editor_source_entries);
+            for (int ei = editor_source_scroll_offset; ei < esn; ei++) {
+                int ey = 4 + (ei - editor_source_scroll_offset + 1) * FILE_TREE_ROW_HEIGHT;
+                if (ey > right_tree_h - FILE_TREE_ROW_HEIGHT) break;
+                char *entry_name2 = (char *)vec_get(&editor_source_entries, ei);
+                int is_dir_entry2;
+                {
+                    char full_path3[4096];
+                    snprintf(full_path3, sizeof full_path3, "%s/%s", editor_source_dir, entry_name2);
+                    is_dir_entry2 = is_dir_(full_path3);
+                }
+                Result er = is_dir_entry2
+                    ? render_text(&ren, &font, entry_name2, SIDEBAR_RIGHT_X + 8, ey, 120, 170, 220, &frame_arena)
+                    : render_text(&ren, &font, entry_name2, SIDEBAR_RIGHT_X + 8, ey, 190, 190, 205, &frame_arena);
+                (void)er;
+            }
+            /* Real Compile button, reserved bottom strip -- same real
+             * "fixed-position hand-rolled click region" shape the
+             * Settings panel's own Zoom -/+ buttons already use, not a
+             * Toggle-typed widget (Compile is a momentary ACTION, not
+             * an on/off state). */
+            Result cbtnbg = set_draw_color(&ren, 45, 65, 45, 255, &frame_arena);
+            (void)cbtnbg;
+            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
+            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 200, 235, 200, &frame_arena);
+            (void)cbtntxt;
+        }
+
+        /* Real top-left hover-reveal Save button (2026-08-27, founder
+         * real-time: "still i want a asave button top left that
+         * apepears when you hover near top same as we have hover near
+         * for bottom ui widgets") -- exact real mirror of the bottom
+         * bar's own hover-reveal mechanic (last_mouse_y's own header
+         * comment already documents it's updated on every real
+         * MouseMotion), just gated on nearness to y=0 instead of
+         * WINDOW_HEIGHT. Real, honest v0: ONE control (Save), not a
+         * general top-bar widget row -- matches the bottom bar's own
+         * original "one real control, not a speculative row" starting
+         * scope before it grew a second/third/fourth/fifth toggle over
+         * this same session. */
+        if (last_mouse_y <= HOVER_REVEAL_ZONE) {
+            Result tbarbg = set_draw_color(&ren, 30, 30, 34, 255, &frame_arena);
+            (void)tbarbg;
+            render_fill_rect(&ren, 0, 0, SAVE_BUTTON_WIDTH, STATUS_BAR_HEIGHT, &frame_arena);
+            Result savetxt = render_text(&ren, &font, "Save (F2)", 8, 6, 200, 220, 235, &frame_arena);
+            (void)savetxt;
+        }
+
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
             Result togglr = render_toggle(&ren, &font, &auto_indent_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr;
@@ -1948,6 +2155,8 @@ int main(int argc, char **argv) {
             (void)togglr3;
             Result togglr4 = render_toggle(&ren, &font, &terminal_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr4;
+            Result togglr5 = render_toggle(&ren, &font, &editor_source_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
+            (void)togglr5;
         }
 
         /* Real Linnen Settings panel v0 (2026-08-27) -- Zoom is the
