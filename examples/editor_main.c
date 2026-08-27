@@ -598,9 +598,17 @@ int main(int argc, char **argv) {
      * the real, deliberate v0 scope). last_mouse_y is updated on EVERY
      * real MouseMotion (not just while dragging), independent of
      * scroll -- this is a real, raw SCREEN coordinate, checking against
-     * the real, fixed window edge, not anything scrolled. */
+     * the real, fixed window edge, not anything scrolled.
+     *
+     * auto_indent_toggle is the first real caller of stdlib/editor/
+     * widget.prn's new Toggle type (2026-08-27, founder real-time: the
+     * "ui widget system" ask, chosen as the next thread after the
+     * v0.77.0-v0.80.0 close-out) -- replaces what used to be a bare
+     * `int` flipped by hand next to a raw rect hit-test inline here. */
     int last_mouse_y = 0;
-    int auto_indent_enabled = 1;
+    Toggle auto_indent_toggle = new_toggle(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, WINDOW_WIDTH, STATUS_BAR_HEIGHT,
+                                            "Auto-indent: ON (click to turn off)",
+                                            "Auto-indent: OFF (click to turn on)", 1);
 
     /* Real Ctrl+Zoom state (2026-08-27, founder real-time: "ctrl plus
      * and ctrl minus and ctrl mous wheel scoll should zoom just like
@@ -825,7 +833,7 @@ int main(int argc, char **argv) {
                      * hover-reveal status bar's own toggle ("we need an
                      * ui affordance... to turn auto indent off"). */
                     char newline_and_indent[2 + INDENT_WIDTH * 32];
-                    if (!is_markdown && auto_indent_enabled) {
+                    if (!is_markdown && toggle_on_(&auto_indent_toggle)) {
                         int depth = paren_depth_before(active_text(&buf), cursor_pos(&buf));
                         int n = depth * INDENT_WIDTH;
                         if (n > (int)(sizeof(newline_and_indent) - 2)) n = (int)(sizeof(newline_and_indent) - 2);
@@ -898,10 +906,11 @@ int main(int argc, char **argv) {
                  * RenderWindowToLogical exists as its own, separate,
                  * real function for exactly this reason). Integer-safe
                  * (*100/zoom_percent), not float division. */
+                int raw_mx = mouse_x();
                 int raw_my = mouse_y();
                 int bar_visible_now = last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE;
-                if (bar_visible_now && raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT) {
-                    auto_indent_enabled = !auto_indent_enabled;
+                if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
+                    auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
                 } else {
                     /* Real mouse click: position the cursor there
                      * (which also clears any active selection --
@@ -1100,14 +1109,8 @@ int main(int argc, char **argv) {
         Result scalereset = render_set_scale(&ren, 100, &a);
         (void)scalereset;
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
-            Result barcol = set_draw_color(&ren, 45, 45, 52, 255, &a);
-            (void)barcol;
-            render_fill_rect(&ren, 0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, WINDOW_WIDTH, STATUS_BAR_HEIGHT, &a);
-            const char *label = auto_indent_enabled ? "Auto-indent: ON (click to turn off)"
-                                                      : "Auto-indent: OFF (click to turn on)";
-            Result labelr = render_text(&ren, &font, (char *)label, 10, WINDOW_HEIGHT - STATUS_BAR_HEIGHT + 6,
-                                         200, 200, 200, &a);
-            (void)labelr;
+            Result togglr = render_toggle(&ren, &font, &auto_indent_toggle, 45, 45, 52, 200, 200, 200, &a);
+            (void)togglr;
         }
 
         render_present(&ren);

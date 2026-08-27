@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io test-editor-undo test-editor-indent editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-io test-editor-undo test-editor-indent editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -187,6 +187,19 @@ test-editor-render: build
 	sleep 1; \
 	DISPLAY=:96 /tmp/test_editor_render_bin
 
+# test-editor-widget -- real end-to-end verification of stdlib/editor/
+# widget.prn's Toggle type, the first real slice of the "UI widget
+# system" (2026-08-27, founder real-time, chosen as the next thread
+# after v0.77.0-v0.80.0 shipped).
+test-editor-widget: build
+	./parena build stdlib/string.prn stdlib/sdl2.prn stdlib/editor/widget.prn -o tests/test_editor_widget_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_editor_widget.c runtime/parena_runtime.c \
+		-o /tmp/test_editor_widget_bin -lSDL2 -lSDL2_ttf -lm
+	@Xvfb :98 -screen 0 1280x720x24 & echo $$! > /tmp/test_editor_widget_xvfb.pid; \
+	trap 'kill $$(cat /tmp/test_editor_widget_xvfb.pid) 2>/dev/null; rm -f /tmp/test_editor_widget_xvfb.pid' EXIT; \
+	sleep 1; \
+	DISPLAY=:98 /tmp/test_editor_widget_bin
+
 # turbogrep -- real, standalone verification/benchmark CLI for
 # stdlib/grep.prn (see docs/TURBOGREP_VERIFICATION_REPORT.md for the
 # real corpus run this backs). tools/turbogrep_host.c is deliberately
@@ -247,7 +260,7 @@ editor-demo: build
 		stdlib/regex/pcre.prn stdlib/sdl2.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
 		stdlib/editor/textmate_markdown.prn \
-		stdlib/editor/theme.prn stdlib/editor/render.prn -o /tmp/editor_demo_gen.c
+		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/arena.c -o /tmp/pf_arena.o
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/fmt.c -o /tmp/pf_fmt.o

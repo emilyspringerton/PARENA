@@ -1,0 +1,98 @@
+;; stdlib/editor/widget.prn — depends on string, sdl2. First real slice
+;; of the "UI widget system" founder asked for while testing the
+;; status-bar auto-indent toggle (2026-08-25/26/27, "start building out
+;; a ui widget system or something for reusable ui elements" -> deferred
+;; pending "finish the ui stuff enqueued before switching to self hosted
+;; parena compiler" -> raised again after v0.77.0-v0.80.0 shipped and
+;; explicitly chosen over the file-tree/tabs and self-hosted
+;; live-recompile threads).
+;;
+;; Deliberately scoped to ONE real widget type -- Toggle -- rather than
+;; a speculative button/slider/checkbox catalog nothing calls yet, same
+;; "expand the API only when a real feature needs it" discipline
+;; editor/buffer.prn's own header comment already established. The one
+;; real, concrete use this closes: examples/editor_main.c's hand-rolled
+;; auto-indent status-bar control (a raw rect-hit-test + bare `int`
+;; toggle inline in main()) becomes the first real caller, proving the
+;; abstraction against a real, already-shipped UI element instead of a
+;; blind design. stdlib/editor/ui.prn and editor/events.prn are older,
+;; still-speculative design stubs (inline-c FFI into C functions that
+;; were never written) from before the editor shell was resolved to be
+;; SDL2 -- this file is the first real, buildable, host-driven one.
+;;
+;; Same real design departure buffer.prn's own header already documents
+;; and this whole stdlib repeats every time it's relevant: no struct
+;; field mutation exists yet, so toggle-flip returns a real NEW Toggle
+;; value (functional update), not an in-place mutation -- the caller
+;; rebinds its own local, same shape as insert-at-cursor/set-cursor.
+;; `on` is a real I32 0/1 sentinel, not a Bool struct field -- matching
+;; Buffer's own selection-anchor : I32 sentinel convention (an untested
+;; assumption at write time whether Bool struct fields even compile;
+;; I32 is the already-proven-working shape, so this doesn't spend a
+;; first real use finding out).
+
+(module editor/widget)
+(import string)
+(import sdl2)
+(export new-toggle toggle-hit? toggle-on? toggle-flip toggle-label render-toggle Toggle)
+
+(defstruct Toggle
+  (x         : I32)
+  (y         : I32)
+  (w         : I32)
+  (h         : I32)
+  (label-on  : String @ Region)
+  (label-off : String @ Region)
+  (on        : I32))
+
+(defn new-toggle [(x : I32) (y : I32) (w : I32) (h : I32)
+                   (label-on : String @ Region) (label-off : String @ Region)
+                   (initial-on : Bool)]
+  : Toggle @ Region
+  {:x x :y y :w w :h h :label-on label-on :label-off label-off
+   :on (if initial-on 1 0)})
+
+;; toggle-hit? -- real point-in-rect test, same shape the status bar's
+;; own hand-rolled hit-test in editor_main.c already used, now shared.
+;; Callers pass RAW screen coordinates for fixed UI chrome (matching the
+;; real, confirmed-live zoom+status-bar finding from v0.80.0 -- chrome
+;; stays unzoomed, only buffer content zooms) or zoom-corrected logical
+;; coordinates for a widget that lives inside zoomed content; this
+;; function itself is agnostic to which, same as pos_from_mouse is.
+(defn toggle-hit? [(!t : &Toggle) (mx : I32) (my : I32)]
+  : Bool
+  (and (and (>= mx (get-field !t :x)) (< mx (+ (get-field !t :x) (get-field !t :w))))
+       (and (>= my (get-field !t :y)) (< my (+ (get-field !t :y) (get-field !t :h))))))
+
+(defn toggle-on? [(!t : &Toggle)]
+  : Bool
+  (= (get-field !t :on) 1))
+
+(defn toggle-flip [(!t : &Toggle) (dest : Arena @ Region)]
+  : Toggle @ Region
+  {:x (get-field !t :x) :y (get-field !t :y) :w (get-field !t :w) :h (get-field !t :h)
+   :label-on (get-field !t :label-on) :label-off (get-field !t :label-off)
+   :on (if (toggle-on? !t) 0 1)})
+
+(defn toggle-label [(!t : &Toggle)]
+  : String @ Region
+  (if (toggle-on? !t) (get-field !t :label-on) (get-field !t :label-off)))
+
+;; render-toggle -- draws the toggle's own fill rect + current label,
+;; same two real sdl2 calls (set-draw-color+render-fill-rect, then
+;; render-text) the status bar's own hand-rolled block in editor_main.c
+;; already made directly; this composes them behind the widget instead.
+(defn render-toggle [(!ren : &Renderer) (!f : &Font) (!t : &Toggle)
+                      (bg-r : I32) (bg-g : I32) (bg-b : I32)
+                      (fg-r : I32) (fg-g : I32) (fg-b : I32)
+                      (dest : Arena @ Region)]
+  : (Result Unit Sdl2Error) @ Region
+  (match (sdl2/set-draw-color !ren bg-r bg-g bg-b 255 dest)
+    ((Err e) (Err e))
+    ((Ok u)
+      (match (sdl2/render-fill-rect !ren (get-field !t :x) (get-field !t :y) (get-field !t :w) (get-field !t :h) dest)
+        ((Err e2) (Err e2))
+        ((Ok u2)
+          (sdl2/render-text !ren !f (toggle-label !t)
+                             (+ (get-field !t :x) 6) (+ (get-field !t :y) 6)
+                             fg-r fg-g fg-b dest))))))
