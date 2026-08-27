@@ -377,6 +377,15 @@ int alloc_call_shaped_(Node *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
+int is_vec_call_(char *, Arena *);
+int every_call_arg_symbol_(Node *, int);
+int plain_call_shaped_(Node *, Arena *);
+char * mangle_call_name(char *, Arena *);
+char * emit_call_arg(Node *, Vec *, Arena *);
+char * emit_call_args(Node *, int, Vec *, Arena *);
+char * emit_plain_call(Node *, Vec *, Arena *);
+char * emit_let_value(Node *, Vec *, Arena *);
+char * let_value_error_prefix(Node *, Arena *);
 char * emit_body_forms(Node *, int, Vec *, Arena *);
 char * emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
@@ -2199,13 +2208,99 @@ char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__(
     return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : emit_tail_symbol(node, dest)));
 }
 
-char * emit_body_forms(Node * node __attribute__((unused)), int start __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((length(fn_text) >= 4) && str_eq_(substring(fn_text, 0, 4, dest), "vec/"));
+}
+
+int every_call_arg_symbol_(Node * call __attribute__((unused)), int i __attribute__((unused))) {
+    if ((i >= vec_len(&((call)->children)))) {
+    return 1;
+    } else {
+    Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
+    if ((emit_node_kind_code((arg_node)->kind) == 3)) {
+    return every_call_arg_symbol_(call, (i + 1));
+    } else {
+    return 0;
+    }
+    }
+}
+
+int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(emit_is_symbol_headed_list_(expr_node)))) {
+    return 0;
+    } else {
+    Node *fn_node __attribute__((unused)) = vec_get(&((expr_node)->children), 0);
+    char *fn_text __attribute__((unused)) = (fn_node)->text;
+    return ((!(str_eq_(fn_text, "alloc"))) && ((!(is_vec_call_(fn_text, dest))) && every_call_arg_symbol_(expr_node, 1)));
+    }
+}
+
+char * mangle_call_name(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec parts __attribute__((unused)) = split(fn_text, "/", dest);
+    int n __attribute__((unused)) = vec_len(&(parts));
+    if ((n <= 1)) {
+    return mangle(fn_text, dest);
+    } else {
+    return mangle(vec_get(&(parts), (n - 1)), dest);
+    }
+}
+
+char * emit_call_arg(Node * arg_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return resolve_arena_ref((arg_node)->text, scope, dest);
+}
+
+char * emit_call_args(Node * call __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_28 __attribute__((unused));
+    int j = i;
+    Vec pieces = vec_new(dest);
+    while (1) {
+        if ((j >= vec_len(&((call)->children)))) {
+        __loop_result_28 = join_with(&(pieces), ", ", dest);
+        break;
+        } else {
+        Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), j);
+        (void)(vec_push_(&(pieces), emit_call_arg(arg_node, scope, dest)));
+        int __recur_tmp_0 = (j + 1);
+        Vec __recur_tmp_1 = pieces;
+        j = __recur_tmp_0;
+        pieces = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_28;
+}
+
+char * emit_plain_call(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *fn_node __attribute__((unused)) = vec_get(&((call)->children), 0);
+    char *fn_name __attribute__((unused)) = mangle_call_name((fn_node)->text, dest);
+    char *args_c __attribute__((unused)) = emit_call_args(call, 1, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), fn_name));
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), args_c));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_let_value(Node * expr_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */"));
+}
+
+char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((alloc_call_shaped_(expr_node) || plain_call_shaped_(expr_node, dest))) {
+    return "";
+    } else {
+    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls and plain function calls with symbol args)\n";
+    }
+}
+
+char * emit_body_forms(Node * node __attribute__((unused)), int start __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __loop_result_29 __attribute__((unused));
     int i = start;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(&((node)->children)))) {
-        __loop_result_28 = acc;
+        __loop_result_29 = acc;
         break;
         } else {
         int __recur_tmp_0 = (i + 1);
@@ -2215,7 +2310,7 @@ char * emit_body_forms(Node * node __attribute__((unused)), int start __attribut
         continue;
         }
     }
-    return __loop_result_28;
+    return __loop_result_29;
 }
 
 char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2225,8 +2320,8 @@ char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attrib
     Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
     Node *expr_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
     char *c_name __attribute__((unused)) = mangle((name_node)->text, dest);
-    char *expr_c __attribute__((unused)) = (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : "0 /* see #error above */");
-    char *error_prefix __attribute__((unused)) = (alloc_call_shaped_(expr_node) ? "" : "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls)\n");
+    char *expr_c __attribute__((unused)) = emit_let_value(expr_node, scope, dest);
+    char *error_prefix __attribute__((unused)) = let_value_error_prefix(expr_node, dest);
     char *rest_c __attribute__((unused)) = emit_let_bindings(bindings, (i + 2), scope, dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), error_prefix));
@@ -2281,13 +2376,13 @@ char * param_c_type(char * type_name __attribute__((unused))) {
 }
 
 ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    ParamInfo __loop_result_29 __attribute__((unused));
+    ParamInfo __loop_result_30 __attribute__((unused));
     double i = 0;
     Vec pieces = vec_new(dest);
     Vec scope = vec_new(dest);
     while (1) {
         if ((i >= vec_len(&((params)->children)))) {
-        __loop_result_29 = ParamInfo_new(join_with(&(pieces), ", ", dest), scope);
+        __loop_result_30 = ParamInfo_new(join_with(&(pieces), ", ", dest), scope);
         break;
         } else {
         Node *param __attribute__((unused)) = vec_get(&((params)->children), i);
@@ -2308,7 +2403,7 @@ ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attri
         continue;
         }
     }
-    return __loop_result_29;
+    return __loop_result_30;
 }
 
 char * emit_defn(Node * defn_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2342,12 +2437,12 @@ char * program_header(Arena *dest __attribute__((unused))) {
 
 char * emit_program(Node * program __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *header __attribute__((unused)) = program_header(dest);
-    char * __loop_result_30 __attribute__((unused));
+    char * __loop_result_31 __attribute__((unused));
     double i = 0;
     char * acc = header;
     while (1) {
         if ((i >= vec_len(&((program)->children)))) {
-        __loop_result_30 = acc;
+        __loop_result_31 = acc;
         break;
         } else {
         Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
@@ -2366,7 +2461,7 @@ char * emit_program(Node * program __attribute__((unused)), Arena *dest __attrib
         }
         }
     }
-    return __loop_result_30;
+    return __loop_result_31;
 }
 
 Result write_output(char * out_path __attribute__((unused)), char * generated __attribute__((unused)), Arena *dest __attribute__((unused))) {

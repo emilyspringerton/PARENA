@@ -227,6 +227,109 @@
     ((emit-is-call-named? node "let") (emit-let node scope dest))
     (true (emit-tail-symbol node dest))))
 
+;; is-vec-call? -- the one real exclusion plain-call-shaped? makes,
+;; the same real reason src/emit.c's own mangle_call_name excludes
+;; `vec/`-qualified calls from its own bare-name resolution: `vec` is
+;; a real, hardcoded RUNTIME pseudo-module (parena_runtime.h's own
+;; comment -- its function names were deliberately chosen to already
+;; match `mangle`'s own full-text output), not a real, registered
+;; `.prn` module this narrow emitter could ever disambiguate from a
+;; real user-defined bare name the way the C reference's own
+;; find_defn_return_type registry does. Left unsupported here rather
+;; than risk emitting a wrong call.
+(defn is-vec-call? [(fn-text : String @ Region) (dest : Arena @ Region)] : Bool
+  (and (>= (string/length fn-text) 4)
+       (string/str-eq? (string/substring fn-text 0 4 dest) "vec/")))
+
+(defn every-call-arg-symbol? [(call : &Node) (i : I32)] : Bool
+  (if (>= i (vec/len &(get-field call :children)))
+    true
+    (let [arg-node (vec/get &(get-field call :children) i)]
+      (if (= (emit-node-kind-code (get-field arg-node :kind)) 3)
+        (every-call-arg-symbol? call (+ i 1))
+        false))))
+
+;; plain-call-shaped? -- a real, user-defined function call this
+;; narrow emitter can now support: a symbol-headed list, not `alloc`,
+;; not a `vec/` runtime call (is-vec-call?'s own header comment
+;; explains why), every real argument itself a bare symbol (no nested
+;; calls, no literals -- a real, narrower scope than the C reference's
+;; own general call-argument emission, not attempted here).
+(defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-symbol-headed-list? expr-node))
+    false
+    (let [fn-node (vec/get &(get-field expr-node :children) 0)
+          fn-text (get-field fn-node :text)]
+      (and (not (string/str-eq? fn-text "alloc"))
+           (and (not (is-vec-call? fn-text dest))
+                (every-call-arg-symbol? expr-node 1))))))
+
+;; mangle-call-name -- real, narrow port of src/emit.c's own
+;; mangle_call_name for the one real shape this narrow emitter
+;; supports: strip a `/`-qualified call name (`selfhost/lexer/
+;; new-lexer`) down to its own real final segment (`new-lexer`),
+;; matching how the full C compiler's own generated top-level defn
+;; names are never module-prefixed in the emitted C (confirmed live:
+;; grepping the real generated C for `new_lexer` finds a bare
+;; `char * new_lexer(...)`, not `selfhost_lexer_new_lexer`), then runs
+;; the normal hyphen-only `mangle` on that segment. Real, honest,
+;; narrower than the C reference: no find_defn_return_type-backed
+;; disambiguation (this narrow emitter has no such registry) -- safe
+;; here because plain-call-shaped? already excludes the one real
+;; collision risk (`vec/`) the C reference itself guards against.
+(defn mangle-call-name [(fn-text : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [parts (string/split fn-text "/" dest)
+        n (vec/len &parts)]
+    (if (<= n 1)
+      (mangle fn-text dest)
+      (mangle (vec/get &parts (- n 1)) dest))))
+
+(defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (resolve-arena-ref (get-field arg-node :text) scope dest))
+
+(defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
+  : String @ Region
+  (loop [j i pieces (vec/new dest)]
+    (if (>= j (vec/len &(get-field call :children)))
+      (join-with &pieces ", " dest)
+      (let [arg-node (vec/get &(get-field call :children) j)]
+        (do
+          (vec/push! &pieces (emit-call-arg arg-node scope dest))
+          (recur (+ j 1) pieces))))))
+
+;; emit-plain-call -- `(fn-name arg1 arg2 ...)` -> real
+;; `mangled_fn_name(arg1_c, arg2_c, ...)`, each argument resolved via
+;; the same real resolve-arena-ref every arena-typed reference already
+;; goes through elsewhere in this file (correctly falls back to a bare
+;; mangled name for a non-arena-scoped symbol -- exactly right for a
+;; String/I32 argument).
+(defn emit-plain-call [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [fn-node (vec/get &(get-field call :children) 0)
+        fn-name (mangle-call-name (get-field fn-node :text) dest)
+        args-c (emit-call-args call 1 scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts fn-name)
+      (vec/push! &parts "(")
+      (vec/push! &parts args-c)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+;; emit-let-value / let-value-error-prefix -- the real 3-way dispatch
+;; a let-binding's own expr-node now gets: a real `alloc` call, a real
+;; plain function call, or (still) a real, clean #error for anything
+;; else this narrow v0 doesn't support.
+(defn emit-let-value [(expr-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
+    ((plain-call-shaped? expr-node dest) (emit-plain-call expr-node scope dest))
+    (true "0 /* see #error above */")))
+
+(defn let-value-error-prefix [(expr-node : &Node) (dest : Arena @ Region)] : String @ Region
+  (if (or (alloc-call-shaped? expr-node) (plain-call-shaped? expr-node dest))
+    ""
+    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls and plain function calls with symbol args)\n"))
+
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
   (loop [i start acc ""]
@@ -234,15 +337,13 @@
       acc
       (recur (+ i 1) (string/concat acc (emit-form (vec/get &(get-field node :children) i) scope dest) dest)))))
 
-;; emit-let-bindings -- each `(name (alloc arena-expr String "..."))`
-;; pair becomes a real `char *name __attribute__((unused)) = ...;`
-;; line, matching examples/valid_only.prn's own real generated output.
-;; Real, honest, narrow v0: every binding's own expr is assumed to be
-;; a real `alloc` call -- src/emit.c's own real, current version
-;; handles arbitrary let-binding exprs; not attempted here. A
-;; non-alloc-shaped binding now emits a real, clean `#error` line
-;; (alloc-call-shaped?'s own header comment explains why) instead of
-;; crashing the compiler itself -- still narrow v0, but honestly so.
+;; emit-let-bindings -- each binding pair becomes a real
+;; `char *name __attribute__((unused)) = ...;` line, matching
+;; examples/valid_only.prn's own real generated output for the
+;; `alloc`-shaped case. Real, honest, narrow v0: emit-let-value's own
+;; header comment names the real 3-way dispatch (alloc call / plain
+;; function call / #error) -- src/emit.c's own real, current version
+;; handles far more arbitrary let-binding exprs; not attempted here.
 (defn emit-let-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
   (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
@@ -250,12 +351,8 @@
     (let [name-node (vec/get &(get-field bindings :children) i)
           expr-node (vec/get &(get-field bindings :children) (+ i 1))
           c-name (mangle (get-field name-node :text) dest)
-          expr-c (if (alloc-call-shaped? expr-node)
-                   (emit-alloc-call expr-node scope dest)
-                   "0 /* see #error above */")
-          error-prefix (if (alloc-call-shaped? expr-node)
-                         ""
-                         "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls)\n")
+          expr-c (emit-let-value expr-node scope dest)
+          error-prefix (let-value-error-prefix expr-node dest)
           rest-c (emit-let-bindings bindings (+ i 2) scope dest)
           parts (vec/new dest)]
       (do

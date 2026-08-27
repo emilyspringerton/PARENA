@@ -550,6 +550,51 @@ closes a real, independently-confirmed type-correctness bug on its own merits, n
 function calls used as `let` values) is real, separate, unstarted follow-up work — the next, much
 larger step in this same expansion.
 
+**Real second step of that expansion, same day (founder: "continue working on self hosted parena
+compiler")**: went after that dominant blocker directly — a `let`-binding whose value is a real,
+plain function call (not `alloc`), the exact shape `selfhost/lexer.prn`'s own real
+`(let [lx0 (selfhost/lexer/new-lexer src)] ...)` needs, and the one responsible for 35 of the ~57
+real self-compile errors found above. `emit-let-bindings`'s own 2-way `alloc-call-shaped?` dispatch
+became a real 3-way one (`emit-let-value`/`let-value-error-prefix`): a real `alloc` call (unchanged),
+a real **plain call** (new), or — still — a clean `#error` for anything else.
+
+A plain call is scoped deliberately narrow: `plain-call-shaped?` requires a symbol-headed list that
+isn't `alloc`, isn't a `vec/`-qualified call (`is-vec-call?`'s own real, deliberate, PERMANENT
+exclusion — the identical real collision risk `src/emit.c`'s own `mangle_call_name` already guards
+against: `vec` is a real, hardcoded runtime pseudo-module, not a registered `.prn` module this
+narrow emitter has any `find_defn_return_type`-style registry to disambiguate from a real,
+same-named user function), and every real argument is itself a bare symbol (no nested calls, no
+literals — `every-call-arg-symbol?`'s own real, narrower-than-the-C-reference scope). Each argument
+resolves through the same real `resolve-arena-ref` every other arena-typed reference in this file
+already goes through — correctly falls back to a bare mangled name for a non-arena-scoped symbol,
+exactly right for a `String`/`I32` argument, no new logic needed there.
+
+A real `/`-qualified call name (`selfhost/lexer/new-lexer`) needed a new `mangle-call-name`: a real,
+narrow port of `src/emit.c`'s own `mangle_call_name` for the one shape this emitter supports — strip
+the name down to its own real final segment (via `string/split` on `/`, confirmed live that the full
+C compiler's own generated top-level defn names are never module-prefixed: grepping the real
+generated C for `new_lexer` finds a bare `char * new_lexer(...)`, not
+`selfhost_lexer_new_lexer`), then run the existing hyphen-only `mangle` on that segment. Real,
+honest, narrower than the C reference: no `find_defn_return_type`-backed disambiguation (this narrow
+emitter has no such registry) — safe only because `plain-call-shaped?` already excludes the one real
+collision risk (`vec/`) the C reference itself guards against.
+
+13 new real assertions in `tests/test_selfhost_emit.c` (26 total for domain 4): the original crash
+regression fixture was updated to a shape `plain-call-shaped?` still deliberately excludes (a
+nested-call argument) since its own original fixture is now real, supported emission, not an error
+— plus new coverage proving a bare plain call, a `/`-qualified plain call, and a `vec/`-qualified
+call's own real, permanent `#error` exclusion. Full local suite (336 tests) + all 5 selfhost domains
++ real mingw cross-compile clean, zero regressions.
+
+Real, measured progress via the same self-compile diagnostic: `selfhost/lexer.prn`'s own real error
+count dropped from 57 to 46 (the `#error` count specifically: 35 → 24), a genuine, empirically-
+confirmed step, not just a claim. Still doesn't compile — the remaining `#error`s are let-bindings
+with non-symbol arguments or other unsupported shapes, plus the same real, separate,
+not-yet-diagnosed `Region`/`I32`/`Lexer` undeclared-identifier class flagged above. Real, honest
+next steps in this same expansion, not attempted here: literal/numeric arguments in a plain call,
+`match`/`cond` as a real body form (not just a tail-position bare symbol), and diagnosing the
+undeclared-identifier class.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

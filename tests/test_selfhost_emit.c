@@ -126,31 +126,102 @@ int main(int argc, char **argv) {
      * used to call emit-alloc-call unconditionally on every let-
      * binding's own expr-node, with no check that the node was
      * actually an `alloc` call at all. A plain function-call binding
-     * (a real, in-scope PARENA shape this narrow v0 emitter has never
-     * claimed to support) made emit-alloc-call read past the real
-     * `alloc` call's own expected shape via vec/get's own honest
-     * out-of-bounds NULL, then crash on a bare get-field dereference
-     * of that NULL. Fixed with a real alloc-call-shaped? guard: a
-     * non-alloc-shaped binding now emits a real, clean `#error` line
-     * instead. This test proves the fix without needing a real
-     * self-compile fixture: same non-alloc-call-shaped let-binding
-     * shape, hand-written. */
+     * was the real, in-scope shape that first exposed the crash --
+     * fixed first by turning it into a clean #error (this test's own
+     * original fixture), then, same day, by ACTUALLY SUPPORTING that
+     * exact shape (emit-plain-call, below) since it turned out to be
+     * the single dominant real blocker (35 of ~57 real self-compile
+     * errors) toward selfhost/lexer.prn actually compiling. This
+     * fixture now exercises the still-crash-free, still-honest #error
+     * path via a shape plain-call-shaped? deliberately still excludes
+     * (a nested call as an argument -- every-call-arg-symbol?'s own
+     * header comment explains why), so the original regression this
+     * test existed for stays covered. */
     {
         char *snippet =
             "(defn f [(a : Arena @ :region/buffer)]\n"
-            "  (let [x (some-call a)]\n"
+            "  (let [x (some-call (other-call a))]\n"
             "    x))";
         Result pr2 = parse_program(snippet, &a);
-        CHECK(pr2.tag == 1, "a real non-alloc-shaped let-binding (a plain function call) parses fine");
+        CHECK(pr2.tag == 1, "a real unsupported let-binding (a nested-call argument) parses fine");
         if (pr2.tag == 1) {
             Node program2 = *(Node *)pr2.value;
             /* the real regression: this used to segfault the whole
              * process instead of returning. */
             char *generated2 = emit_program(&program2, &a);
-            CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on a non-alloc-shaped let-binding");
+            CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on an unsupported let-binding");
             CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
-                  "the real generated C carries a clean, honest #error line for the unsupported shape, "
-                  "instead of silently guessing at wrong C");
+                  "the real generated C carries a clean, honest #error line for the still-unsupported shape "
+                  "(a nested-call argument), instead of silently guessing at wrong C");
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-27: a plain function-call
+     * let-binding with bare-symbol arguments -- the dominant real
+     * blocker found via the real self-compile attempt of
+     * selfhost/lexer.prn (35 of ~57 real errors were exactly this
+     * shape, e.g. lexer.prn's own real
+     * `(let [lx0 (selfhost/lexer/new-lexer src)] ...)`) -- is now a
+     * real, supported emission, not just a clean #error. --- */
+    {
+        char *snippet =
+            "(defn f [(a : Arena @ :region/buffer) (s : String @ Region)]\n"
+            "  (let [x (some-call a s)]\n"
+            "    x))";
+        Result pr6 = parse_program(snippet, &a);
+        CHECK(pr6.tag == 1, "a real plain-call let-binding with bare-symbol args parses fine");
+        if (pr6.tag == 1) {
+            Node program6 = *(Node *)pr6.value;
+            char *generated6 = emit_program(&program6, &a);
+            CHECK(generated6 != NULL && strstr(generated6, "#error") == NULL,
+                  "a real plain-call let-binding no longer produces a #error -- it's now a real, "
+                  "supported emission");
+            CHECK(generated6 != NULL && strstr(generated6, "char *x __attribute__((unused)) = some_call(a, s);") != NULL,
+                  "the real generated C is a real, correctly-mangled call expression, with the real "
+                  "Arena-typed arg 'a' referenced bare (matching the real function-param convention "
+                  "resolve-arena-ref already established) and the real String-typed arg 's' also bare");
+        }
+    }
+
+    /* --- real new coverage: the SAME plain-call shape, but calling a
+     * real `/`-qualified cross-module name (selfhost/lexer.prn's own
+     * exact real shape) -- proves mangle-call-name's own real
+     * strip-to-final-segment logic, not just a bare, unqualified
+     * call name. --- */
+    {
+        char *snippet =
+            "(defn f [(s : String @ Region)]\n"
+            "  (let [x (selfhost/lexer/new-lexer s)]\n"
+            "    x))";
+        Result pr7 = parse_program(snippet, &a);
+        CHECK(pr7.tag == 1, "a real /-qualified plain-call let-binding parses fine");
+        if (pr7.tag == 1) {
+            Node program7 = *(Node *)pr7.value;
+            char *generated7 = emit_program(&program7, &a);
+            CHECK(generated7 != NULL && strstr(generated7, "char *x __attribute__((unused)) = new_lexer(s);") != NULL,
+                  "a real /-qualified call name (selfhost/lexer/new-lexer) is correctly stripped down to "
+                  "its own real final segment and mangled, matching the real, unprefixed C name the full "
+                  "compiler itself already gives every top-level defn");
+        }
+    }
+
+    /* --- real, honest exclusion coverage: a `vec/`-qualified call as
+     * a let-binding value stays a real, clean #error (is-vec-call?'s
+     * own header comment explains the real collision-risk reasoning
+     * this deliberately, permanently excludes, not a temporary gap). */
+    {
+        char *snippet =
+            "(defn f [(a : Arena @ :region/buffer)]\n"
+            "  (let [x (vec/new a)]\n"
+            "    x))";
+        Result pr8 = parse_program(snippet, &a);
+        CHECK(pr8.tag == 1, "a real vec/-qualified let-binding parses fine");
+        if (pr8.tag == 1) {
+            Node program8 = *(Node *)pr8.value;
+            char *generated8 = emit_program(&program8, &a);
+            CHECK(generated8 != NULL && strstr(generated8, "#error") != NULL,
+                  "a real vec/-qualified let-binding is deliberately, permanently left as a clean #error, "
+                  "not guessed at");
         }
     }
 
