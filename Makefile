@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io test-editor-undo editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-io test-editor-undo test-editor-indent editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -254,6 +254,14 @@ test-editor-undo: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_undo.c \
 		runtime/parena_runtime.c -o /tmp/test_editor_undo_bin -lm
 	/tmp/test_editor_undo_bin
+
+# test-editor-indent -- real, direct verification of paren_depth_before,
+# examples/editor_main.c's own real auto-indent-on-Enter bracket-
+# nesting counter. Pure C string logic, no PARENA/SDL dependency at
+# all -- no `./parena build` step needed.
+test-editor-indent:
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -o /tmp/test_editor_indent_bin tests/test_editor_indent.c
+	/tmp/test_editor_indent_bin
 
 # editor-demo-smoke -- real, bounded build-verification run for
 # editor-demo on this repo's own headless dev box (a real, scratch Xvfb

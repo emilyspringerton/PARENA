@@ -148,21 +148,21 @@ int main(void) {
              * everything actually pending (a real, bounded loop, not an
              * infinite one) and confirm each drained event is a real,
              * well-formed EventKind (Quit/KeyDown/TextInput/MouseDown/
-             * MouseUp/MouseMotion/FileDrop/UnhandledEvent, never a
-             * garbage tag), then confirm the queue genuinely empties
-             * (poll-event correctly returns None once there is truly
-             * nothing left, not just once). Upper bound updated twice
-             * now, same real reason each time (2026-08-27, mouse event
-             * plumbing grew EventKind from 4 to 7 real variants, then
-             * real drag-and-drop grew it again to 8) -- caught both
-             * times by actually running this test, not noticed by
-             * inspection either time. */
+             * MouseUp/MouseMotion/FileDrop/MouseWheel/UnhandledEvent,
+             * never a garbage tag), then confirm the queue genuinely
+             * empties (poll-event correctly returns None once there is
+             * truly nothing left, not just once). Upper bound updated
+             * three times now, same real reason every time (2026-08-27,
+             * mouse event plumbing grew EventKind from 4 to 7 real
+             * variants, drag-and-drop grew it to 8, mouse-wheel scroll
+             * grew it to 9) -- caught every time by actually running
+             * this test, not noticed by inspection. */
             int drained = 0;
             int all_real_events = 1;
             Option ev;
             while ((ev = poll_event(&a)).tag == 1 && drained < 64) {
                 EventKind kind = *(EventKind *)ev.value;
-                if (kind.tag < 0 || kind.tag > 7) all_real_events = 0;
+                if (kind.tag < 0 || kind.tag > 8) all_real_events = 0;
                 drained++;
             }
             CHECK(all_real_events, "every drained event is a real, well-formed EventKind");
@@ -312,6 +312,43 @@ int main(void) {
                     char *dropped_path = (char *)dk.value;
                     CHECK(strcmp(dropped_path, "/tmp/real-dropped-file.txt") == 0,
                           "the real FileDrop payload carries the exact real dropped path");
+                }
+            }
+
+            /* --- real mouse-wheel scroll plumbing (2026-08-27, founder
+             * real-time, actively using the editor: "mouse wheel
+             * scroll does not work"). --- */
+            {
+                { Option drain; int n = 0; while ((drain = poll_event(&a)).tag == 1 && n < 32) n++; }
+
+                SDL_Event wheel;
+                memset(&wheel, 0, sizeof wheel);
+                wheel.type = SDL_MOUSEWHEEL;
+                wheel.wheel.type = SDL_MOUSEWHEEL;
+                wheel.wheel.y = 4;
+                SDL_PushEvent(&wheel);
+
+                EventKind wk;
+                int wheel_found = poll_until_tag(&a, EventKind_TAG_MouseWheel, &wk);
+                CHECK(wheel_found, "poll-event correctly reports a real pushed SDL_MOUSEWHEEL as MouseWheel");
+                if (wheel_found) {
+                    int delta = *(int *)wk.value;
+                    CHECK(delta == 4, "the real MouseWheel payload carries the exact real pushed delta");
+                }
+
+                SDL_Event wheel_neg;
+                memset(&wheel_neg, 0, sizeof wheel_neg);
+                wheel_neg.type = SDL_MOUSEWHEEL;
+                wheel_neg.wheel.type = SDL_MOUSEWHEEL;
+                wheel_neg.wheel.y = -2;
+                SDL_PushEvent(&wheel_neg);
+
+                EventKind wk2;
+                int wheel_found2 = poll_until_tag(&a, EventKind_TAG_MouseWheel, &wk2);
+                CHECK(wheel_found2, "poll-event correctly reports a second real pushed SDL_MOUSEWHEEL");
+                if (wheel_found2) {
+                    int delta2 = *(int *)wk2.value;
+                    CHECK(delta2 == -2, "a real negative wheel delta (scroll toward the user) round-trips correctly too");
                 }
             }
 

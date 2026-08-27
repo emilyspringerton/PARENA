@@ -57,7 +57,7 @@
 (export init quit create-window destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
-        key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-f2 key-f3
+        key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-tab key-f2 key-f3
         shift-held? ctrl-held? get-clipboard-text set-clipboard-text mouse-x mouse-y
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
@@ -113,6 +113,10 @@
 ;; directly into the constructor call via a raw follow-up read, not a
 ;; second separate call site the way KeyDown/MouseDown's own scalar
 ;; payloads need).
+;; MouseWheel -- real mouse-wheel scroll support (2026-08-27, founder
+;; real-time, actively using the editor: "mouse wheel scroll does not
+;; work" -- scrolling had never been implemented at all). One-field,
+;; same real shape KeyDown already uses for a plain I32 payload.
 (defenum EventKind
   (Quit)
   (KeyDown (key : I32))
@@ -121,6 +125,7 @@
   (MouseUp)
   (MouseMotion)
   (FileDrop (path : String @ Region))
+  (MouseWheel (delta : I32))
   (UnhandledEvent))
 
 ;; ---- raw syscall primitives -- the only #target bodies in this file,
@@ -195,6 +200,10 @@
   #target
   {:c (inline-c "sdl2_last_event_drop_path_impl(dest)")})
 
+(defn sdl2-raw-last-event-wheel-delta [] : I32
+  #target
+  {:c (inline-c "sdl2_last_event_wheel_delta_impl()")})
+
 ;; ---- real, boxed public API ------------------------------------------
 
 (defn init [(dest : Arena @ Region)] : (Result Unit Sdl2Error) @ Region
@@ -267,6 +276,7 @@
       ((= code 6) (Some MouseUp))
       ((= code 7) (Some MouseMotion))
       ((= code 8) (Some (FileDrop (sdl2-raw-last-event-drop-path dest))))
+      ((= code 9) (Some (MouseWheel (sdl2-raw-last-event-wheel-delta))))
       (true (Some UnhandledEvent)))))
 
 (defn get-ticks [] : I32
@@ -321,6 +331,13 @@
 (defn key-delete [] : I32
   #target
   {:c (inline-c "sdl2_key_delete_impl()")})
+
+;; key-tab -- real tab-to-indent support (2026-08-27). See
+;; runtime/parena_runtime.h's own sdl2_key_tab_impl header comment for
+;; why it needed its own real KeyDown handling.
+(defn key-tab [] : I32
+  #target
+  {:c (inline-c "sdl2_key_tab_impl()")})
 
 ;; key-f2/key-f3 -- real save/load keys (2026-08-26). See
 ;; runtime/parena_runtime.h's own sdl2_key_f2_impl header comment for

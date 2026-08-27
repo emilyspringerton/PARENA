@@ -1011,6 +1011,7 @@ static char g_sdl2_last_event_text[32];
 static int g_sdl2_last_mouse_x = 0;
 static int g_sdl2_last_mouse_y = 0;
 static char g_sdl2_last_drop_path[1024];
+static int g_sdl2_last_wheel_delta = 0;
 
 /* codes 5/6/7 -- real mouse event plumbing (2026-08-27, real mouse-
  * driven selection: click-to-position-cursor, click-drag-to-select --
@@ -1071,6 +1072,19 @@ static inline int sdl2_poll_event_impl(void) {
         SDL_free(e.drop.file);
         return 8;
     }
+    /* code 9 -- real mouse-wheel scroll support (2026-08-27, founder
+     * real-time, actively using the editor: "mouse wheel scroll does
+     * not work" -- scrolling had never been implemented at all, so any
+     * real file taller than the window had no way to see past the
+     * first screenful). e.wheel.y is real SDL2 convention: positive
+     * "away from the user" (a real, physical wheel-forward/up motion),
+     * negative "toward the user" -- handed straight through as a real
+     * signed delta, the real scroll-direction convention decision
+     * lives in the editor's own event-loop code, not here. */
+    if (e.type == SDL_MOUSEWHEEL) {
+        g_sdl2_last_wheel_delta = e.wheel.y;
+        return 9;
+    }
     return 4;
 }
 
@@ -1098,6 +1112,10 @@ static inline char *sdl2_last_event_drop_path_impl(Arena *dest) {
     char *out = (char *)arena_alloc(dest, len + 1);
     memcpy(out, g_sdl2_last_drop_path, len + 1);
     return out;
+}
+
+static inline int sdl2_last_event_wheel_delta_impl(void) {
+    return g_sdl2_last_wheel_delta;
 }
 
 static inline void sdl2_start_text_input_impl(void) {
@@ -1133,6 +1151,12 @@ static inline int sdl2_key_down_impl(void) { return SDLK_DOWN; }
 static inline int sdl2_key_home_impl(void) { return SDLK_HOME; }
 static inline int sdl2_key_end_impl(void) { return SDLK_END; }
 static inline int sdl2_key_delete_impl(void) { return SDLK_DELETE; }
+/* Tab (2026-08-27, founder real-time, actively using the editor: "tab
+ * to indent doesnt work" -- SDL2 doesn't fire a real SDL_TEXTINPUT for
+ * Tab (a real, standard GUI-toolkit convention: Tab is a navigation/
+ * control key, not insertable text), so it needed its own real
+ * KeyDown handling, same as Backspace/Return/Delete. */
+static inline int sdl2_key_tab_impl(void) { return SDLK_TAB; }
 /* F2/F3 -- real save/load keys (2026-08-26), a plain function-key
  * shortcut rather than a Ctrl+S-style modifier combo: real modifier-key
  * detection (SDL_Keymod) isn't wired up anywhere in this stdlib yet, a

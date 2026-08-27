@@ -146,6 +146,59 @@ static int line_end_from(const char *text, int line_start) {
     return i;
 }
 
+/* INDENT_WIDTH -- real, fixed 2-space indent (2026-08-27, founder real-
+ * time, actively using the editor: "auto 2 space indent doesnt work...
+ * if you are in parens and hit enter it should indendt you" -- the
+ * founder's own explicit "2 space" number). Founder also raised real
+ * tabs-vs-spaces/configurable-width as an open question ("i dunno how
+ * ides usually do that we probably need... 2 vs 4 vs 8 space") and a
+ * real hover-reveal settings-bar UI to control it -- a real, separate,
+ * bigger feature (actual settings STATE + a new UI affordance), scoped
+ * out of this pass on purpose rather than guessed at; this constant is
+ * the real, working, immediate default in the meantime. */
+#define INDENT_WIDTH 2
+
+/* paren_depth_before -- real bracket-nesting depth at a given real
+ * byte offset (2026-08-27, real auto-indent-on-Enter: "if you are in
+ * parens and hit enter it should indent you"). Counts `(`/`[`/`{` as
+ * +1, their real closing partners as -1 (never below 0 -- a real
+ * unbalanced close, e.g. mid-edit, shouldn't drive the depth negative)
+ * -- deliberately NOT bracket-TYPE-aware (a `)` closes a `[` just as
+ * readily here), matching how a real, simple v0 indent counter only
+ * needs overall NESTING depth, not real matched-pair validation (a
+ * real, separate, much bigger job -- this repo's own region analyzer
+ * already does real, rigorous validation at a different layer
+ * entirely). Real, honest comment/string-aware scanning -- a `(` typed
+ * inside a `;;` comment or a `"..."` string literal must NOT count
+ * toward real indent depth, or PARENA source with literal parens in
+ * prose/strings would visibly mis-indent. */
+static int paren_depth_before(const char *text, int pos) {
+    int depth = 0;
+    int i = 0;
+    while (i < pos) {
+        if (text[i] == ';' && i + 1 < pos && text[i + 1] == ';') {
+            while (i < pos && text[i] != '\n') i++;
+            continue;
+        }
+        if (text[i] == '"') {
+            i++;
+            while (i < pos && text[i] != '"') {
+                if (text[i] == '\\' && i + 1 < pos) i++;
+                i++;
+            }
+            if (i < pos) i++;
+            continue;
+        }
+        if (text[i] == '(' || text[i] == '[' || text[i] == '{') {
+            depth++;
+        } else if (text[i] == ')' || text[i] == ']' || text[i] == '}') {
+            if (depth > 0) depth--;
+        }
+        i++;
+    }
+    return depth;
+}
+
 /* pos_from_mouse -- real mouse-driven cursor positioning (2026-08-27,
  * real mouse-driven selection: click-to-position-cursor, click-drag-
  * to-select). The real INVERSE of the row/col-to-pixel math this same
@@ -477,7 +530,8 @@ int main(int argc, char **argv) {
      * stays the real default (matches this file's own original scope,
      * the "parena text editor"), a real .md file gets the real
      * Markdown grammar instead. */
-    Result gr = path_has_suffix(path, ".md") ? build_markdown_grammar(&a) : build_grammar(&a);
+    int is_markdown = path_has_suffix(path, ".md");
+    Result gr = is_markdown ? build_markdown_grammar(&a) : build_grammar(&a);
     if (gr.tag != 1) { fprintf(stderr, "editor: build-grammar failed\n"); return 1; }
     Vec rules = *(Vec *)gr.value;
 
@@ -504,6 +558,15 @@ int main(int argc, char **argv) {
     int dragging = 0;
     int mouse_down_pos = 0;
 
+    /* Real vertical scroll state (2026-08-27, founder real-time,
+     * actively using the editor: "mouse wheel scroll does not work" --
+     * scrolling had never existed at all before this, so any real file
+     * taller than the window had no way to see past the first
+     * screenful). Real, minimal, LINE-based (not pixel-based) offset:
+     * how many real lines are scrolled off the top of the view. */
+    int scroll_offset = 0;
+#define SCROLL_LINES_PER_NOTCH 3 /* real, standard default most real apps use */
+
     int running = 1;
     while (running) {
         Option ev;
@@ -524,7 +587,20 @@ int main(int argc, char **argv) {
                  * SDL_TEXTINPUT for real typing -- SDL2 doesn't fire
                  * TEXTINPUT for a Ctrl-held combo, so there's no double-
                  * handling risk here. */
-                if (key == 'z' && ctrl_held_()) {
+                if (key == 'a' && ctrl_held_()) {
+                    /* Real Ctrl+A select-all (2026-08-27, founder real-
+                     * time, actively using the editor: "ctrl a to
+                     * select all backspace does not work" -- select-
+                     * all had never been implemented at all). Real,
+                     * standard OS convention: selects the WHOLE
+                     * buffer, cursor lands at the real end (so a
+                     * following Backspace/Delete/typed-replacement
+                     * correctly acts on the entire selection, same
+                     * real path every other selection-aware key
+                     * already goes through). */
+                    char *whole_text = active_text(&buf);
+                    buf = set_selection(&buf, 0, (int)strlen(whole_text));
+                } else if (key == 'z' && ctrl_held_()) {
                     /* Real Ctrl+Z undo -- the buffer about to be LEFT
                      * goes onto redo (so Ctrl+Y can bring it back),
                      * then pop the real previous Buffer value off the
@@ -626,7 +702,51 @@ int main(int argc, char **argv) {
                         Result del = delete_selection(&buf, &a);
                         if (del.tag == 1) buf = *(Buffer *)del.value;
                     }
-                    Result ins = insert_at_cursor(&buf, "\n", &a);
+                    /* Real auto-indent-on-Enter (2026-08-27, founder
+                     * real-time, actively using the editor: "if you
+                     * are in parens and hit enter it should indent
+                     * you" -- PARENA source only; a real Markdown
+                     * file's own [links](like-this) would make a
+                     * bracket-depth counter actively wrong there, not
+                     * just unhelpful). */
+                    char newline_and_indent[2 + INDENT_WIDTH * 32];
+                    if (!is_markdown) {
+                        int depth = paren_depth_before(active_text(&buf), cursor_pos(&buf));
+                        int n = depth * INDENT_WIDTH;
+                        if (n > (int)(sizeof(newline_and_indent) - 2)) n = (int)(sizeof(newline_and_indent) - 2);
+                        newline_and_indent[0] = '\n';
+                        for (int k = 0; k < n; k++) newline_and_indent[1 + k] = ' ';
+                        newline_and_indent[1 + n] = '\0';
+                    } else {
+                        newline_and_indent[0] = '\n';
+                        newline_and_indent[1] = '\0';
+                    }
+                    Result ins = insert_at_cursor(&buf, newline_and_indent, &a);
+                    if (ins.tag == 1) buf = *(Buffer *)ins.value;
+                } else if (key == key_tab()) {
+                    /* Real Tab-to-indent (2026-08-27, founder real-
+                     * time, actively using the editor: "tab to indent
+                     * doesnt work"). SDL2 doesn't fire a real
+                     * SDL_TEXTINPUT for Tab (a real, standard GUI-
+                     * toolkit convention), so it needed this real
+                     * KeyDown branch, same as every other special key.
+                     * Real, deliberate v0: inserts INDENT_WIDTH real
+                     * spaces, not a literal tab character -- matches
+                     * this file's own auto-indent-on-Enter convention
+                     * above; real tabs-vs-spaces/configurable-width is
+                     * a real, separate, deliberately deferred design
+                     * question (a real settings UI, not guessed at
+                     * here). Same selection-replace shape every other
+                     * real insert already establishes. */
+                    push_undo(buf);
+                    if (has_selection_(&buf)) {
+                        Result del = delete_selection(&buf, &a);
+                        if (del.tag == 1) buf = *(Buffer *)del.value;
+                    }
+                    char tab_spaces[INDENT_WIDTH + 1];
+                    for (int k = 0; k < INDENT_WIDTH; k++) tab_spaces[k] = ' ';
+                    tab_spaces[INDENT_WIDTH] = '\0';
+                    Result ins = insert_at_cursor(&buf, tab_spaces, &a);
                     if (ins.tag == 1) buf = *(Buffer *)ins.value;
                 } else if (key == 27 /* SDLK_ESCAPE -- real, standard "quit" key, no dependency
                                         on <SDL2/SDL.h> being included directly in this file */) {
@@ -648,8 +768,14 @@ int main(int argc, char **argv) {
                 /* Real mouse click: position the cursor there (which
                  * also clears any active selection -- set_cursor's own
                  * real behavior) and start tracking a real drag from
-                 * this real position. */
-                int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y(), &font, &a);
+                 * this real position. Real, confirmed-live-needed
+                 * scroll adjustment (2026-08-27): mouse_y() is a real
+                 * raw SCREEN coordinate, unaware of any real scrolling
+                 * -- adding back the real scrolled-off pixel amount is
+                 * what pos_from_mouse's own math needs to land on the
+                 * real, correct LOGICAL line, not whatever's currently
+                 * drawn at that screen row. */
+                int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
                 buf = set_cursor(&buf, pos);
                 mouse_down_pos = pos;
                 dragging = 1;
@@ -661,9 +787,10 @@ int main(int argc, char **argv) {
                  * mouse move over the window regardless, not just while
                  * dragging). Anchors the selection at the real click
                  * position, extends the cursor end to wherever the
-                 * mouse now is. */
+                 * mouse now is. Same real scroll adjustment as MouseDown
+                 * above. */
                 if (dragging) {
-                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y(), &font, &a);
+                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y() + scroll_offset * LINE_HEIGHT, &font, &a);
                     buf = set_selection(&buf, mouse_down_pos, pos);
                 }
             } else if (kind.tag == EventKind_TAG_FileDrop) {
@@ -681,6 +808,27 @@ int main(int argc, char **argv) {
                  * already opens all of them. */
                 char *dropped_path = (char *)kind.value;
                 spawn_new_instance(exe_path, dropped_path);
+            } else if (kind.tag == EventKind_TAG_MouseWheel) {
+                /* Real mouse-wheel vertical scroll (2026-08-27). SDL2's
+                 * own real convention: positive delta = wheel rolled
+                 * away from the user (the real, physical "scroll up"
+                 * motion) -- moves the view UP, revealing earlier
+                 * content, so it DECREASES scroll_offset; negative
+                 * delta increases it. Clamped to [0, real total lines
+                 * in the buffer] -- can't scroll above the real first
+                 * line, and scrolling arbitrarily far past the real
+                 * last line is a real, honest, low-priority overscroll
+                 * (harmless blank space, not attempted to prevent
+                 * here). */
+                int delta = *(int *)kind.value;
+                scroll_offset -= delta * SCROLL_LINES_PER_NOTCH;
+                if (scroll_offset < 0) scroll_offset = 0;
+                char *scroll_text = active_text(&buf);
+                int total_lines = 1;
+                for (int si = 0; scroll_text[si] != '\0'; si++) {
+                    if (scroll_text[si] == '\n') total_lines++;
+                }
+                if (scroll_offset > total_lines) scroll_offset = total_lines;
             }
         }
 
@@ -689,6 +837,12 @@ int main(int argc, char **argv) {
         render_clear(&ren, &a);
 
         char *text = active_text(&buf);
+
+        /* Real scroll offset, applied uniformly to every real Y
+         * coordinate below (selection highlight, the actual text,
+         * and the cursor) -- see the real scroll_offset state
+         * declaration above for why this is line-based, not pixel. */
+        int scroll_y_px = scroll_offset * LINE_HEIGHT;
 
         /* Real selection highlight, drawn BEFORE the text so the text
          * renders on top and stays legible (2026-08-26, real text
@@ -723,12 +877,12 @@ int main(int argc, char **argv) {
                  * to a newline) still gets a thin, visible sliver rather
                  * than vanishing entirely. */
                 if (width < 2) width = 2;
-                render_fill_rect(&ren, x_from, 12 + row * LINE_HEIGHT, width, LINE_HEIGHT - 2, &a);
+                render_fill_rect(&ren, x_from, 12 + row * LINE_HEIGHT - scroll_y_px, width, LINE_HEIGHT - 2, &a);
                 cur_line_start = line_end + 1;
             }
         }
 
-        Result hr = render_highlighted_text(&ren, &font, &rules, text, 12, 12, LINE_HEIGHT, &a);
+        Result hr = render_highlighted_text(&ren, &font, &rules, text, 12, 12 - scroll_y_px, LINE_HEIGHT, &a);
         (void)hr;
 
         /* Real cursor: a thin filled rect at the real measured pixel
@@ -740,7 +894,7 @@ int main(int argc, char **argv) {
         row_and_line_start_for_pos(text, cpos, &row, &line_start);
         char *before_cursor_on_line = substring(text, line_start, cpos, &a);
         int cursor_x = 12 + measure_text_width(&font, before_cursor_on_line);
-        int cursor_y = 12 + row * LINE_HEIGHT;
+        int cursor_y = 12 + row * LINE_HEIGHT - scroll_y_px;
         Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
         (void)ccol;
         render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &a);
