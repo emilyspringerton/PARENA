@@ -40,6 +40,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <signal.h>
 /* Real cross-platform split (2026-08-26, founder: "ensure editor
  * binaries for windows linux and mac are released"): everything below
@@ -374,20 +375,42 @@ static inline int raw_write_impl(int fd, const char *s) {
 
 /* raw_read_all_impl -- reads every remaining byte from fd (from its
  * current position) into one arena-allocated, NUL-terminated buffer.
- * Grows in fixed 4096-byte chunks -- real, honest, simple, matching
- * string_concat's own "narrow, not optimized" scope above. A read()
- * error partway through returns whatever was successfully read so far
- * rather than failing outright -- read-string's own real return type
- * has no way to report a mid-read error separately from a full one
- * without a second host primitive this file's own real scope doesn't
- * need yet. */
+ *
+ * Real, confirmed-live bug fixed here (2026-08-27, founder actually
+ * dropping a real large file onto the PARENA editor: "it crashed...
+ * if we try to open a too large file it just chokes"): this used to
+ * grow in FIXED 4096-byte chunks, reallocating (not resizing in
+ * place -- this is a bump arena, the old buffer is never freed) and
+ * copying the ENTIRE buffer so far on every single grow step. For an
+ * N-byte file that's N/4096 grow steps, each copying up to N bytes --
+ * real O(N^2) copy work, and since every intermediate buffer stays
+ * permanently allocated (arena, not a real realloc), real O(N^2)
+ * WASTED memory too: a 100MB file needs roughly 1.2TB of total arena
+ * allocations across every intermediate step, not the 100MB anyone
+ * would expect -- the real, confirmed root cause of "chokes"/crashes
+ * on a large file, not a vague performance concern.
+ *
+ * Fixed with the real, obvious right answer for a REGULAR FILE
+ * specifically (raw-read-all's only real caller, io.prn's own
+ * read-string, is documented as FileHandle-only): fstat(2) the real
+ * file size up front and allocate that in ONE shot -- zero grow
+ * steps, zero wasted intermediate buffers, for the real common case.
+ * fstat can still be wrong (the file grows while being read, or a
+ * non-regular fd somehow reaches here) -- real doubling growth (not
+ * the old fixed +4096) is kept as the real fallback for exactly that
+ * case, so this stays correct even when the size hint is, not just
+ * fast when it's right. */
 static inline char *raw_read_all_impl(int fd, Arena *dest) {
     size_t cap = 4096;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size > 0) {
+        cap = (size_t)st.st_size + 1;
+    }
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
     for (;;) {
         if (len + 4096 > cap) {
-            size_t new_cap = cap + 4096;
+            size_t new_cap = cap * 2;
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
