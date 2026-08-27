@@ -58,7 +58,7 @@
         set-draw-color render-clear render-fill-rect render-present
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-f2 key-f3
-        shift-held? ctrl-held? get-clipboard-text set-clipboard-text
+        shift-held? ctrl-held? get-clipboard-text set-clipboard-text mouse-x mouse-y
         ttf-init ttf-quit open-font close-font render-text
         measure-text-width measure-text-height
         Window Renderer Font Sdl2Error EventKind)
@@ -101,10 +101,18 @@
 ;; confirmed live via a real gcc "type mismatch in conditional
 ;; expression" error, not assumed). Worked around here the same way:
 ;; named distinctly instead of reusing the generic `Other`.
+;; MouseDown/MouseUp/MouseMotion -- real mouse event plumbing
+;; (2026-08-27, real mouse-driven selection). Zero-field, same real
+;; shape Quit/UnhandledEvent already use -- x/y read via mouse-x/
+;; mouse-y right after, the same real "two separate follow-up raw
+;; calls" pattern KeyDown/TextInput's own payloads already establish.
 (defenum EventKind
   (Quit)
   (KeyDown (key : I32))
   (TextInput (text : String @ Region))
+  (MouseDown)
+  (MouseUp)
+  (MouseMotion)
   (UnhandledEvent))
 
 ;; ---- raw syscall primitives -- the only #target bodies in this file,
@@ -166,6 +174,14 @@
 (defn sdl2-raw-last-event-text [(dest : Arena @ Region)] : String @ Region
   #target
   {:c (inline-c "sdl2_last_event_text_impl(dest)")})
+
+(defn mouse-x [] : I32
+  #target
+  {:c (inline-c "sdl2_last_event_mouse_x_impl()")})
+
+(defn mouse-y [] : I32
+  #target
+  {:c (inline-c "sdl2_last_event_mouse_y_impl()")})
 
 ;; ---- real, boxed public API ------------------------------------------
 
@@ -235,6 +251,9 @@
       ((= code 1) (Some Quit))
       ((= code 2) (Some (KeyDown (sdl2-raw-last-event-key))))
       ((= code 3) (Some (TextInput (sdl2-raw-last-event-text dest))))
+      ((= code 5) (Some MouseDown))
+      ((= code 6) (Some MouseUp))
+      ((= code 7) (Some MouseMotion))
       (true (Some UnhandledEvent)))))
 
 (defn get-ticks [] : I32

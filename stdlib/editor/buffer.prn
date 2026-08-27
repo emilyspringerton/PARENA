@@ -56,6 +56,7 @@
         has-selection? selection-start selection-end
         extend-selection-left extend-selection-right
         extend-selection-up extend-selection-down delete-selection
+        set-cursor set-selection
         Buffer BufferError)
 
 (defstruct Buffer
@@ -365,3 +366,36 @@
           after (string/substring text end len dest)]
       (Ok {:text (string/concat before after dest) :cursor start :selection-anchor -1}))
     (Err OutOfRange)))
+
+;; set-cursor / set-selection -- real mouse-driven cursor positioning
+;; and selection (2026-08-27, the last real gap on this editor's own
+;; "still not done" list besides redo-coalescing/glyph-atlas/macOS-
+;; dylib-bundling -- keyboard Shift+Arrow had been the only selection
+;; method until now). Both clamp every position to the real valid
+;; range [0, length] -- a real mouse click can report a screen position
+;; past the real end of the text (an empty line, clicking below the
+;; last line), and this is real, host-driver-computed input, not
+;; something a Result/OutOfRange error is useful for.
+;;
+;; set-cursor is the real mouse-CLICK case: positions the cursor,
+;; clears any active selection -- same real "positioning the cursor
+;; collapses selection" behavior every plain (non-extending) cursor
+;; move already establishes.
+(defn set-cursor [(!buf : &Buffer) (pos : I32)] : Buffer
+  (let [text (get-field !buf :text)
+        len (string/length text)
+        clamped (if (< pos 0) 0 (if (> pos len) len pos))]
+    {:text text :cursor clamped :selection-anchor -1}))
+
+;; set-selection is the real mouse-DRAG case: explicitly sets BOTH the
+;; anchor (where the drag started) and the cursor (where the mouse
+;; currently is) to arbitrary positions -- the real, minimal complement
+;; to extend-selection-*, which can only move the cursor by ONE unit
+;; at a time from wherever it already is; a real mouse drag needs to
+;; jump the cursor straight to wherever the pointer now is.
+(defn set-selection [(!buf : &Buffer) (anchor : I32) (cursor : I32)] : Buffer
+  (let [text (get-field !buf :text)
+        len (string/length text)
+        clamped-anchor (if (< anchor 0) 0 (if (> anchor len) len anchor))
+        clamped-cursor (if (< cursor 0) 0 (if (> cursor len) len cursor))]
+    {:text text :cursor clamped-cursor :selection-anchor clamped-anchor}))

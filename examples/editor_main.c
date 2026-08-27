@@ -48,6 +48,10 @@
  * consecutive typing into one step -- real, separate, deferred
  * follow-up, matching every other "expand when a real feature needs
  * it" scope note this whole stdlib already carries.
+ * Real mouse-driven selection (2026-08-27, same day): a real click
+ * positions the cursor (set-cursor), a real click-drag selects
+ * (set-selection, anchored at the real click position) -- see
+ * pos_from_mouse below for the real screen-to-byte-offset math.
  *
  * Usage: ./editor-demo [file]
  *   file defaults to "scratch.prn" in the current directory if not
@@ -121,6 +125,48 @@ static int line_end_from(const char *text, int line_start) {
     int i = line_start;
     while (text[i] != '\0' && text[i] != '\n') i++;
     return i;
+}
+
+/* pos_from_mouse -- real mouse-driven cursor positioning (2026-08-27,
+ * real mouse-driven selection: click-to-position-cursor, click-drag-
+ * to-select). The real INVERSE of the row/col-to-pixel math this same
+ * file's own cursor/selection rendering already does: given a real
+ * screen (x, y), find which real byte offset in `text` it corresponds
+ * to. Real, honest, simple approach -- no binary search, no cached
+ * glyph-width table -- walks the target row's own real line character
+ * by character, measuring each growing prefix's real pixel width via
+ * the same real measure-text-width already used for rendering, and
+ * stops at the first column whose own width would overshoot the real
+ * click x. Real, deliberate O(n) per real line (not O(n^2) globally --
+ * only the ONE clicked line is walked), matching this whole editor's
+ * own already-established "simple over optimized" tradeoff (render-
+ * text's own fresh-surface-per-call design carries the identical
+ * judgment). Real, honest clamp: a click below the real last line
+ * lands on that last line, not past the real end of the text; a
+ * negative x/y (can't really happen from a real SDL2 mouse event, but
+ * host-driver code shouldn't assume) clamps to the real start. */
+static int pos_from_mouse(char *text, int mouse_x, int mouse_y, Font *font, Arena *a) {
+    int len = (int)strlen(text);
+    int target_row = (mouse_y - 12) / LINE_HEIGHT;
+    if (target_row < 0) target_row = 0;
+
+    int line_start = 0, row = 0;
+    for (int i = 0; i < len; i++) {
+        if (row == target_row) break;
+        if (text[i] == '\n') { row++; line_start = i + 1; }
+    }
+    int line_end = line_end_from(text, line_start);
+
+    int target_x = mouse_x - 12;
+    if (target_x < 0) target_x = 0;
+    int best_pos = line_start;
+    for (int col = line_start; col <= line_end; col++) {
+        char *sub = substring(text, line_start, col, a);
+        int w = measure_text_width(font, sub);
+        if (w > target_x) break;
+        best_pos = col;
+    }
+    return best_pos;
 }
 
 /* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
@@ -258,6 +304,14 @@ int main(int argc, char **argv) {
 
     start_text_input();
     Buffer buf = load_from_file(path, &a);
+
+    /* Real mouse-drag selection state (2026-08-27): dragging tracks
+     * whether the real left mouse button is currently held (set on a
+     * real MouseDown, cleared on a real MouseUp); mouse_down_pos is the
+     * real byte offset the drag started at -- the real, fixed anchor
+     * end of the selection for as long as the drag continues. */
+    int dragging = 0;
+    int mouse_down_pos = 0;
 
     int running = 1;
     while (running) {
@@ -399,6 +453,28 @@ int main(int argc, char **argv) {
                 }
                 Result ins = insert_at_cursor(&buf, text, &a);
                 if (ins.tag == 1) buf = *(Buffer *)ins.value;
+            } else if (kind.tag == EventKind_TAG_MouseDown) {
+                /* Real mouse click: position the cursor there (which
+                 * also clears any active selection -- set_cursor's own
+                 * real behavior) and start tracking a real drag from
+                 * this real position. */
+                int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y(), &font, &a);
+                buf = set_cursor(&buf, pos);
+                mouse_down_pos = pos;
+                dragging = 1;
+            } else if (kind.tag == EventKind_TAG_MouseUp) {
+                dragging = 0;
+            } else if (kind.tag == EventKind_TAG_MouseMotion) {
+                /* Real mouse drag: only while the real button is
+                 * actually held (SDL2 sends real MouseMotion on every
+                 * mouse move over the window regardless, not just while
+                 * dragging). Anchors the selection at the real click
+                 * position, extends the cursor end to wherever the
+                 * mouse now is. */
+                if (dragging) {
+                    int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y(), &font, &a);
+                    buf = set_selection(&buf, mouse_down_pos, pos);
+                }
             }
         }
 

@@ -1008,7 +1008,18 @@ static inline void sdl2_render_present_impl(int renderer_handle) {
  * in SDL2, not raw keysym-to-ASCII mapping) together. */
 static int g_sdl2_last_event_key = 0;
 static char g_sdl2_last_event_text[32];
+static int g_sdl2_last_mouse_x = 0;
+static int g_sdl2_last_mouse_y = 0;
 
+/* codes 5/6/7 -- real mouse event plumbing (2026-08-27, real mouse-
+ * driven selection: click-to-position-cursor, click-drag-to-select --
+ * the last real gap on this editor's own "still not done" list besides
+ * redo-coalescing/glyph-atlas/macOS-dylib-bundling). Only SDL_BUTTON_
+ * LEFT is reported as a real MouseDown/MouseUp -- right/middle-click
+ * are a real, separate, deferred follow-up (this editor has no context
+ * menu or paste-on-middle-click yet). x/y read via the same real
+ * "two separate follow-up raw calls" shape KeyDown/TextInput already
+ * establish (a raw primitive can only return one plain scalar). */
 static inline int sdl2_poll_event_impl(void) {
     SDL_Event e;
     if (!SDL_PollEvent(&e)) return 0;
@@ -1023,6 +1034,21 @@ static inline int sdl2_poll_event_impl(void) {
         g_sdl2_last_event_text[n] = '\0';
         return 3;
     }
+    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+        g_sdl2_last_mouse_x = e.button.x;
+        g_sdl2_last_mouse_y = e.button.y;
+        return 5;
+    }
+    if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+        g_sdl2_last_mouse_x = e.button.x;
+        g_sdl2_last_mouse_y = e.button.y;
+        return 6;
+    }
+    if (e.type == SDL_MOUSEMOTION) {
+        g_sdl2_last_mouse_x = e.motion.x;
+        g_sdl2_last_mouse_y = e.motion.y;
+        return 7;
+    }
     return 4;
 }
 
@@ -1035,6 +1061,14 @@ static inline char *sdl2_last_event_text_impl(Arena *dest) {
     char *out = (char *)arena_alloc(dest, len + 1);
     memcpy(out, g_sdl2_last_event_text, len + 1);
     return out;
+}
+
+static inline int sdl2_last_event_mouse_x_impl(void) {
+    return g_sdl2_last_mouse_x;
+}
+
+static inline int sdl2_last_event_mouse_y_impl(void) {
+    return g_sdl2_last_mouse_y;
 }
 
 static inline void sdl2_start_text_input_impl(void) {

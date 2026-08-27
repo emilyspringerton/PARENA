@@ -28,6 +28,39 @@ static int failures = 0;
     else { printf("PASS: %s\n", msg); } \
 } while (0)
 
+/* poll_until_tag -- drains real pending events (bounded) until one
+ * with the wanted real EventKind tag is found, or gives up. Real,
+ * confirmed-live need (2026-08-27, real mouse event tests): a single
+ * poll-event call right after pushing a synthetic event isn't safe to
+ * assume is THAT event -- real window-lifecycle/X11 events genuinely
+ * land in this same real queue too (same phenomenon this file's own
+ * earlier event-pump test already documents for KeyDown/TextInput).
+ *
+ * Real, confirmed-live, precisely-isolated finding along the way (NOT
+ * assumed): SDL_PollEvent right after SDL_PushEvent can genuinely
+ * return "no event" ONCE even though the pushed event really is on the
+ * queue (confirmed independently via SDL_PeepEvents(..., SDL_PEEKEVENT,
+ * ...), which saw it when a same-instant SDL_PollEvent call did not) --
+ * a real SDL2/Xvfb timing quirk in SDL_PollEvent's own internal
+ * SDL_PumpEvents() step, reproduced deterministically across repeated
+ * runs (always exactly one empty poll, never zero, never more than
+ * one, for a MouseUp specifically). Real production input never hits
+ * this (a real OS-generated event arrives via SDL_SendMouseButton, a
+ * completely different code path that doesn't share this quirk) -- an
+ * earlier draft of this exact helper gave up the INSTANT poll-event
+ * returned None even once, which is why it kept failing here
+ * specifically for MouseUp; fixed by retrying THROUGH empty polls too,
+ * not just non-matching ones. */
+static int poll_until_tag(Arena *a, int want_tag, EventKind *out) {
+    for (int i = 0; i < 32; i++) {
+        Option ev = poll_event(a);
+        if (ev.tag != 1) continue;
+        EventKind k = *(EventKind *)ev.value;
+        if (k.tag == want_tag) { *out = k; return 1; }
+    }
+    return 0;
+}
+
 int main(void) {
     Arena a;
     arena_init(&a);
@@ -114,16 +147,21 @@ int main(void) {
              * exposed, focus) the instant a window is created -- drain
              * everything actually pending (a real, bounded loop, not an
              * infinite one) and confirm each drained event is a real,
-             * well-formed EventKind (Quit/KeyDown/Other, never a
-             * garbage tag), then confirm the queue genuinely empties
-             * (poll-event correctly returns None once there is truly
-             * nothing left, not just once). */
+             * well-formed EventKind (Quit/KeyDown/TextInput/MouseDown/
+             * MouseUp/MouseMotion/UnhandledEvent, never a garbage tag),
+             * then confirm the queue genuinely empties (poll-event
+             * correctly returns None once there is truly nothing left,
+             * not just once). Upper bound updated 2026-08-27 (real
+             * mouse event plumbing grew EventKind from 4 real variants
+             * to 7 -- this bound went stale the moment that landed,
+             * caught by actually running this test, not noticed by
+             * inspection). */
             int drained = 0;
             int all_real_events = 1;
             Option ev;
             while ((ev = poll_event(&a)).tag == 1 && drained < 64) {
                 EventKind kind = *(EventKind *)ev.value;
-                if (kind.tag < 0 || kind.tag > 3) all_real_events = 0;
+                if (kind.tag < 0 || kind.tag > 6) all_real_events = 0;
                 drained++;
             }
             CHECK(all_real_events, "every drained event is a real, well-formed EventKind");
@@ -155,6 +193,97 @@ int main(void) {
                 CHECK(ctrl_held_() != 0, "ctrl-held? reports true once SDL_SetModState actually sets KMOD_LCTRL");
                 SDL_SetModState(KMOD_NONE);
                 CHECK(ctrl_held_() == 0, "ctrl-held? goes back to false once the modifier state is actually cleared");
+            }
+
+            /* --- real mouse event plumbing (2026-08-27, real mouse-
+             * driven selection) -- unlike modifier state above, x/y are
+             * plain DATA carried directly on the pushed event struct
+             * (e.button.x/.y, e.motion.x/.y), read straight off by
+             * sdl2_poll_event_impl -- no separate SDL-internal-state
+             * side effect required, so SDL_PushEvent should genuinely
+             * work here. Verified for real rather than assumed, same
+             * discipline the modifier-state finding above already
+             * established. --- */
+            {
+                EventKind k;
+
+                SDL_Event down;
+                memset(&down, 0, sizeof down);
+                down.type = SDL_MOUSEBUTTONDOWN;
+                down.button.type = SDL_MOUSEBUTTONDOWN;
+                down.button.button = SDL_BUTTON_LEFT;
+                down.button.x = 42;
+                down.button.y = 99;
+                SDL_PushEvent(&down);
+                CHECK(poll_until_tag(&a, EventKind_TAG_MouseDown, &k), "poll-event correctly reports a real MouseDown");
+                CHECK(mouse_x() == 42 && mouse_y() == 99,
+                      "mouse-x/mouse-y report the real pushed event's own real coordinates, not stale or zeroed values");
+
+                SDL_Event up;
+                memset(&up, 0, sizeof up);
+                up.type = SDL_MOUSEBUTTONUP;
+                up.button.type = SDL_MOUSEBUTTONUP;
+                up.button.button = SDL_BUTTON_LEFT;
+                up.button.x = 7;
+                up.button.y = 13;
+                SDL_PushEvent(&up);
+                CHECK(poll_until_tag(&a, EventKind_TAG_MouseUp, &k), "poll-event correctly reports a real MouseUp");
+                CHECK(mouse_x() == 7 && mouse_y() == 13, "mouse-x/mouse-y update to the real MouseUp event's own coordinates");
+
+                SDL_Event motion;
+                memset(&motion, 0, sizeof motion);
+                motion.type = SDL_MOUSEMOTION;
+                motion.motion.type = SDL_MOUSEMOTION;
+                motion.motion.x = 200;
+                motion.motion.y = 150;
+                SDL_PushEvent(&motion);
+                CHECK(poll_until_tag(&a, EventKind_TAG_MouseMotion, &k), "poll-event correctly reports a real MouseMotion");
+                CHECK(mouse_x() == 200 && mouse_y() == 150, "mouse-x/mouse-y update to the real MouseMotion event's own coordinates");
+
+                /* A real RIGHT-click is deliberately NOT reported as
+                 * MouseDown -- only SDL_BUTTON_LEFT is (this editor has
+                 * no context menu yet, a real, separate, deferred gap).
+                 * No poll_until_tag here on purpose: real interleaved
+                 * events (window focus/expose, etc.) ALSO report as
+                 * UnhandledEvent, so this assertion would pass
+                 * vacuously if it hunted for that specific tag -- a
+                 * single, immediate poll right after the push is the
+                 * real, meaningful check (confirms THIS event, not
+                 * "some event or other, eventually, reports
+                 * UnhandledEvent"). */
+                /* Drain to a genuinely clean queue first -- real
+                 * interleaved events can still be pending from the
+                 * MouseMotion push above, and this specific check needs
+                 * to know the event it polls really is the one just
+                 * pushed, not an unrelated real one that also happens
+                 * to report UnhandledEvent. */
+                { Option drain; int n = 0; while ((drain = poll_event(&a)).tag == 1 && n < 32) n++; }
+
+                SDL_Event right;
+                memset(&right, 0, sizeof right);
+                right.type = SDL_MOUSEBUTTONDOWN;
+                right.button.type = SDL_MOUSEBUTTONDOWN;
+                right.button.button = SDL_BUTTON_RIGHT;
+                right.button.x = 1;
+                right.button.y = 1;
+                SDL_PushEvent(&right);
+                /* Retries past the real, confirmed SDL_PollEvent-right-
+                 * after-SDL_PushEvent empty-poll quirk documented on
+                 * poll_until_tag above -- the queue was just fully
+                 * drained, so the first non-empty result really is this
+                 * right-click, not a broad hunt for any UnhandledEvent. */
+                Option rev;
+                int found = 0;
+                for (int i = 0; i < 32 && !found; i++) {
+                    rev = poll_event(&a);
+                    if (rev.tag == 1) found = 1;
+                }
+                CHECK(found, "a real pushed right-click MouseDown event is genuinely drained from the queue");
+                if (found) {
+                    EventKind rk = *(EventKind *)rev.value;
+                    CHECK(rk.tag == EventKind_TAG_UnhandledEvent,
+                          "a real right-click reports as UnhandledEvent, not MouseDown -- left-click only for now");
+                }
             }
 
             destroy_renderer(ren);

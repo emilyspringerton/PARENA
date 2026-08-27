@@ -61,12 +61,18 @@ typedef enum {
     EventKind_TAG_Quit,
     EventKind_TAG_KeyDown,
     EventKind_TAG_TextInput,
+    EventKind_TAG_MouseDown,
+    EventKind_TAG_MouseUp,
+    EventKind_TAG_MouseMotion,
     EventKind_TAG_UnhandledEvent,
 } EventKind_Tag;
 typedef struct { EventKind_Tag tag; void *value; } EventKind;
 static inline __attribute__((unused)) EventKind EventKind_Quit(void) { EventKind v; v.tag = EventKind_TAG_Quit; v.value = NULL; return v; }
 static inline __attribute__((unused)) EventKind EventKind_KeyDown(void *value) { EventKind v; v.tag = EventKind_TAG_KeyDown; v.value = value; return v; }
 static inline __attribute__((unused)) EventKind EventKind_TextInput(void *value) { EventKind v; v.tag = EventKind_TAG_TextInput; v.value = value; return v; }
+static inline __attribute__((unused)) EventKind EventKind_MouseDown(void) { EventKind v; v.tag = EventKind_TAG_MouseDown; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_MouseUp(void) { EventKind v; v.tag = EventKind_TAG_MouseUp; v.value = NULL; return v; }
+static inline __attribute__((unused)) EventKind EventKind_MouseMotion(void) { EventKind v; v.tag = EventKind_TAG_MouseMotion; v.value = NULL; return v; }
 static inline __attribute__((unused)) EventKind EventKind_UnhandledEvent(void) { EventKind v; v.tag = EventKind_TAG_UnhandledEvent; v.value = NULL; return v; }
 
 int length(char *);
@@ -93,6 +99,8 @@ void sdl2_raw_render_present(int);
 int sdl2_raw_poll_event();
 int sdl2_raw_last_event_key();
 char * sdl2_raw_last_event_text(Arena *);
+int mouse_x();
+int mouse_y();
 Result init(Arena *);
 void quit();
 Result create_window(char *, int, int, Arena *);
@@ -322,6 +330,14 @@ char * sdl2_raw_last_event_text(Arena *dest __attribute__((unused))) {
     return (sdl2_last_event_text_impl(dest));
 }
 
+int mouse_x(void) {
+    return (sdl2_last_event_mouse_x_impl());
+}
+
+int mouse_y(void) {
+    return (sdl2_last_event_mouse_y_impl());
+}
+
 Result init(Arena *dest __attribute__((unused))) {
     if ((sdl2_raw_init() < 0)) {
     return result_err(Sdl2Error_box(dest, Sdl2Error_InitFailed()));
@@ -390,7 +406,7 @@ void render_present(Renderer * ren __attribute__((unused))) {
 
 Option poll_event(Arena *dest __attribute__((unused))) {
     int code __attribute__((unused)) = sdl2_raw_poll_event();
-    return ((code == 0) ? option_none() : ((code == 1) ? option_some(EventKind_box(dest, EventKind_Quit())) : ((code == 2) ? option_some(EventKind_box(dest, EventKind_KeyDown(int_box(dest, sdl2_raw_last_event_key())))) : ((code == 3) ? option_some(EventKind_box(dest, EventKind_TextInput(sdl2_raw_last_event_text(dest)))) : option_some(EventKind_box(dest, EventKind_UnhandledEvent()))))));
+    return ((code == 0) ? option_none() : ((code == 1) ? option_some(EventKind_box(dest, EventKind_Quit())) : ((code == 2) ? option_some(EventKind_box(dest, EventKind_KeyDown(int_box(dest, sdl2_raw_last_event_key())))) : ((code == 3) ? option_some(EventKind_box(dest, EventKind_TextInput(sdl2_raw_last_event_text(dest)))) : ((code == 5) ? option_some(EventKind_box(dest, EventKind_MouseDown())) : ((code == 6) ? option_some(EventKind_box(dest, EventKind_MouseUp())) : ((code == 7) ? option_some(EventKind_box(dest, EventKind_MouseMotion())) : option_some(EventKind_box(dest, EventKind_UnhandledEvent())))))))));
 }
 
 int get_ticks(void) {

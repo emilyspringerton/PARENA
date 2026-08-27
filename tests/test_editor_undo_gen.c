@@ -113,6 +113,8 @@ Buffer extend_selection_right(Buffer *);
 Buffer extend_selection_up(Buffer *);
 Buffer extend_selection_down(Buffer *);
 Result delete_selection(Buffer *, Arena *);
+Buffer set_cursor(Buffer *, int);
+Buffer set_selection(Buffer *, int, int);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -699,5 +701,20 @@ Result delete_selection(Buffer * buf __attribute__((unused)), Arena *dest __attr
     } else {
     return result_err(BufferError_box(dest, BufferError_OutOfRange()));
     }
+}
+
+Buffer set_cursor(Buffer * buf __attribute__((unused)), int pos __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(text);
+    double clamped __attribute__((unused)) = ((pos < 0) ? 0 : ((pos > len) ? len : pos));
+    return Buffer_new(text, clamped, -1);
+}
+
+Buffer set_selection(Buffer * buf __attribute__((unused)), int anchor __attribute__((unused)), int cursor __attribute__((unused))) {
+    char *text __attribute__((unused)) = (buf)->text;
+    int len __attribute__((unused)) = length(text);
+    double clamped_anchor __attribute__((unused)) = ((anchor < 0) ? 0 : ((anchor > len) ? len : anchor));
+    double clamped_cursor __attribute__((unused)) = ((cursor < 0) ? 0 : ((cursor > len) ? len : cursor));
+    return Buffer_new(text, clamped_cursor, clamped_anchor);
 }
 

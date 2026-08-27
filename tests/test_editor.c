@@ -331,6 +331,49 @@ int main(void) {
         CHECK(has_selection_(&sel3) == 0, "insert-at-cursor clears the selection on the real, returned Buffer -- a stale range would point at shifted byte offsets");
     }
 
+    /* --- real mouse-driven cursor positioning and selection
+     * (2026-08-27, the last real gap on this editor's own "still not
+     * done" list -- keyboard Shift+Arrow had been the only selection
+     * method until now) --- */
+    {
+        Buffer mb = from_text("Hello");
+        mb = set_cursor(&mb, 2);
+        CHECK(cursor_pos(&mb) == 2, "set-cursor positions the real cursor at an arbitrary real byte offset");
+        CHECK(has_selection_(&mb) == 0, "set-cursor clears any active selection, same real behavior every plain cursor move already has");
+
+        Buffer mb_clamp_hi = from_text("Hi");
+        mb_clamp_hi = set_cursor(&mb_clamp_hi, 999);
+        CHECK(cursor_pos(&mb_clamp_hi) == 2, "set-cursor clamps a real out-of-range HIGH position to the real end of the text");
+
+        Buffer mb_clamp_lo = from_text("Hi");
+        mb_clamp_lo = set_cursor(&mb_clamp_lo, -5);
+        CHECK(cursor_pos(&mb_clamp_lo) == 0, "set-cursor clamps a real out-of-range LOW (negative) position to 0");
+
+        /* Real mouse-drag selection: set-selection sets BOTH the
+         * anchor (drag start) and cursor (current mouse position)
+         * directly, unlike extend-selection-* which only moves the
+         * cursor by one unit. */
+        Buffer drag = from_text("Hello, world");
+        drag = set_selection(&drag, 2, 7);
+        CHECK(has_selection_(&drag) != 0, "set-selection starts a real selection");
+        CHECK(cursor_pos(&drag) == 7, "set-selection places the real cursor at the given position");
+        CHECK(selection_start(&drag) == 2 && selection_end(&drag) == 7,
+              "set-selection's real anchor/cursor pair produces the exact real selected range [2, 7)");
+
+        /* A real mouse drag moving BACKWARD (cursor ends up before the
+         * anchor) is still a real, correctly-ordered selection --
+         * selection-start/selection-end already order by min/max. */
+        drag = set_selection(&drag, 7, 2);
+        CHECK(selection_start(&drag) == 2 && selection_end(&drag) == 7,
+              "set-selection correctly orders the real range even when the real cursor ends up BEFORE the real anchor (dragging backward)");
+
+        /* Real clamping on both the anchor and cursor independently. */
+        Buffer drag_clamp = from_text("Hi");
+        drag_clamp = set_selection(&drag_clamp, -3, 999);
+        CHECK(selection_start(&drag_clamp) == 0 && selection_end(&drag_clamp) == 2,
+              "set-selection clamps a real out-of-range anchor and cursor independently to the real valid range");
+    }
+
     /* Real render of the final buffer contents, proving the buffer's
      * own real output is actually drawable through the real renderer
      * this session already verified. */
