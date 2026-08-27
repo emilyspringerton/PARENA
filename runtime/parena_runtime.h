@@ -728,6 +728,28 @@ static inline int tcp_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
+#endif /* !_WIN32 -- end of net/tcp.prn real host glue. Nothing
+        * cross-platform currently includes net/tcp.prn (editor-demo's
+        * own file list never has), so it stays exactly as it was --
+        * genuinely absent on Windows, not stubbed. */
+
+/* pty.prn gets its OWN guard, separate from net/tcp.prn's above
+ * (2026-08-27, real CI break found live: the editor's new terminal-
+ * toggle feature added stdlib/pty.prn + stdlib/shell.prn to
+ * editor-demo's own file list, which DOES build cross-platform --
+ * Windows Build Editor job failed with "implicit declaration of
+ * function 'pty_open_impl'" etc. once pty.prn's functions were
+ * expected to exist there too, since the old shared #ifndef _WIN32
+ * block simply didn't define them on Windows at all). Real Windows
+ * ConPTY support is still genuinely unstarted (pty.prn's own header
+ * comment already says so) -- the #else stubs below let the terminal-
+ * toggle FEATURE compile and link cleanly cross-platform and fail
+ * HONESTLY at runtime (a real, visible SpawnFailed the editor already
+ * shows as "(terminal not spawned...)", not a silent lie or a crash)
+ * rather than breaking the whole cross-platform editor build over one
+ * genuinely POSIX-only backend. */
+#ifndef _WIN32
+
 /* ---- stdlib/pty.prn real host glue (2026-08-26) ------------------------
  * The concrete "PARENA eats PITVIPER" dogfooding step NORTHSTAR.md's own
  * strangler-fig section names -- a real, direct generalization of
@@ -860,7 +882,48 @@ static inline int pty_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
-#endif /* !_WIN32 -- end of net/tcp.prn + pty.prn real host glue */
+#else /* _WIN32 -- real Windows ConPTY backend genuinely not written
+       * yet (see this block's own opening comment above). These
+       * stubs exist purely so a cross-platform target that includes
+       * pty.prn compiles and links on Windows; every real caller goes
+       * through pty-open first (stdlib/pty.prn), which turns this -1
+       * into a real Err(SpawnFailed) the editor's own terminal-toggle
+       * feature already handles and reports honestly -- these never
+       * silently claim success. */
+static inline int pty_open_impl(const char *shell, int cols, int rows) {
+    (void)shell; (void)cols; (void)rows;
+    return -1;
+}
+
+static inline char *pty_read_impl(int fd, Arena *dest) {
+    (void)fd;
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline char *pty_poll_read_impl(int fd, Arena *dest) {
+    (void)fd;
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline int pty_write_impl(int fd, const char *s) {
+    (void)fd; (void)s;
+    return -1;
+}
+
+static inline int pty_resize_impl(int fd, int cols, int rows) {
+    (void)fd; (void)cols; (void)rows;
+    return -1;
+}
+
+static inline int pty_close_impl(int fd) {
+    (void)fd;
+    return -1;
+}
+#endif /* _WIN32 -- end of pty.prn real host glue / Windows stub */
 
 /* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
  * A real, direct port of PITVIPER's own shell-resolution policy
