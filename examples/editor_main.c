@@ -789,6 +789,27 @@ int main(int argc, char **argv) {
                                           "Files: ON (click to hide)",
                                           "Files: OFF (click to show)", 0);
 
+    /* settings_toggle -- Linnen's own real, first-named-as-such caller
+     * (2026-08-27, founder real-time: "we need a widget at the bottom
+     * to open settings" -- see docs/NORTHSTAR_LINNEN.md). Same real
+     * bottom-bar Toggle shape auto_indent_toggle/file_tree_toggle
+     * already establish, placed right after file_tree_toggle's own
+     * fixed width. Off by default, same "hidden/minimal unless you
+     * ask" taste this bar already has. */
+    Toggle settings_toggle = new_toggle(575, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+                                         "Settings: ON (click to hide)",
+                                         "Settings: OFF (click to show)", 0);
+    /* Settings panel geometry -- real fixed screen coords, same "UI
+     * chrome, not zoomed content" shape SPOTLIGHT_BOX_X/W already use
+     * (docs/NORTHSTAR_LINNEN.md's own "matching the Spotlight overlay's
+     * own real modal box precedent"). Defined here, ahead of both the
+     * MouseDown click-region test and the render block below, so both
+     * real call sites share the one set of numbers instead of two
+     * that could drift. */
+#define SETTINGS_BOX_X 650
+#define SETTINGS_BOX_W 340
+#define SETTINGS_ZOOM_ROW_H 40
+
     /* file_tree_dir/file_tree_entries -- real CURRENT WORKING DIRECTORY
      * at startup, not dirname(path) -- see this file's own
      * SIDEBAR_WIDTH header comment for the real reasoning.
@@ -1299,6 +1320,29 @@ int main(int argc, char **argv) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
                 } else if (bar_visible_now && toggle_hit_(&file_tree_toggle, raw_mx, raw_my)) {
                     file_tree_toggle = toggle_flip(&file_tree_toggle, &a);
+                } else if (bar_visible_now && toggle_hit_(&settings_toggle, raw_mx, raw_my)) {
+                    settings_toggle = toggle_flip(&settings_toggle, &a);
+                } else if (toggle_on_(&settings_toggle)
+                           && raw_mx >= SETTINGS_BOX_X && raw_mx < SETTINGS_BOX_X + SETTINGS_BOX_W
+                           && raw_my >= 70 && raw_my < 70 + SETTINGS_ZOOM_ROW_H) {
+                    /* Real Zoom -/+ click regions (2026-08-27, Linnen's
+                     * own first real Settings-panel control -- see
+                     * docs/NORTHSTAR_LINNEN.md). Same real hand-rolled
+                     * click-region shape the file-tree sidebar/Spotlight
+                     * overlay's own row hit-testing already use, not a
+                     * new pattern. Reuses the exact same zoom_percent
+                     * adjust+clamp the existing Ctrl+scroll/Ctrl+-+
+                     * keybinds already establish -- one real, shared
+                     * value, three real ways to change it. */
+                    int zoom_minus_x1 = SETTINGS_BOX_X + 150;
+                    int zoom_plus_x0 = SETTINGS_BOX_X + 190;
+                    if (raw_mx >= SETTINGS_BOX_X + 110 && raw_mx < zoom_minus_x1) {
+                        zoom_percent -= ZOOM_STEP;
+                        if (zoom_percent < ZOOM_MIN) zoom_percent = ZOOM_MIN;
+                    } else if (raw_mx >= zoom_plus_x0 && raw_mx < zoom_plus_x0 + 40) {
+                        zoom_percent += ZOOM_STEP;
+                        if (zoom_percent > ZOOM_MAX) zoom_percent = ZOOM_MAX;
+                    }
                 } else {
                     /* Real mouse click: position the cursor there
                      * (which also clears any active selection --
@@ -1594,6 +1638,31 @@ int main(int argc, char **argv) {
             (void)togglr;
             Result togglr2 = render_toggle(&ren, &font, &file_tree_toggle, 45, 45, 52, 200, 200, 200, &a);
             (void)togglr2;
+            Result togglr3 = render_toggle(&ren, &font, &settings_toggle, 45, 45, 52, 200, 200, 200, &a);
+            (void)togglr3;
+        }
+
+        /* Real Linnen Settings panel v0 (2026-08-27) -- Zoom is the
+         * only real setting so far (docs/NORTHSTAR_LINNEN.md's own
+         * real, scoped v0: "figure out the basic settings? zoom i
+         * dunno something relevant"). Same real "modal box drawn on
+         * top of everything else" shape the Spotlight overlay already
+         * establishes just below -- deliberately reusing that pattern,
+         * not inventing a second one, per the NORTHSTAR doc's own
+         * "real, hand-rolled click regions... not yet a reusable
+         * Linnen widget type" scope note. */
+        if (toggle_on_(&settings_toggle)) {
+            Result pbg = set_draw_color(&ren, 26, 26, 32, 245, &a);
+            (void)pbg;
+            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, SETTINGS_ZOOM_ROW_H + 20, &a);
+            Result pborder = set_draw_color(&ren, 90, 130, 200, 255, &a);
+            (void)pborder;
+            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, 2, &a);
+
+            char zoom_line[64];
+            snprintf(zoom_line, sizeof zoom_line, "Zoom: %d%%   [ - ]   [ + ]", zoom_percent);
+            Result zt = render_text(&ren, &font, zoom_line, SETTINGS_BOX_X + 14, 82, 235, 235, 245, &a);
+            (void)zt;
         }
 
         /* Real Spotlight overlay render (2026-08-27) -- drawn LAST, on
