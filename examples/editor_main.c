@@ -104,7 +104,15 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
 #endif
 
 #define LINE_HEIGHT 26 /* real pixel spacing between real lines, matches the real 20pt font this editor opens */
-#define WINDOW_WIDTH 900
+#define WINDOW_WIDTH 1040 /* widened from 900 (2026-08-27) to fit a real
+                            fourth bottom-bar toggle (terminal_toggle,
+                            800-1020) alongside auto-indent/file-tree/
+                            settings -- WINDOW_WIDTH has exactly one
+                            other real use in this file (create_window
+                            below); every bottom-bar toggle already uses
+                            fixed screen x-positions, not a WINDOW_WIDTH-
+                            relative layout, so nothing else depends on
+                            this number. */
 #define WINDOW_HEIGHT 500 /* matches the real create-window call below -- no real window-resize support exists yet, a real, separate, deferred gap */
 
 /* Real, minimal hover-reveal bottom status bar (2026-08-27, founder
@@ -810,6 +818,44 @@ int main(int argc, char **argv) {
 #define SETTINGS_BOX_W 340
 #define SETTINGS_ZOOM_ROW_H 40
 
+    /* terminal_toggle -- the real editor/terminal toggle button
+     * (2026-08-27, founder real-time: "can we add a new button to the
+     * bottom of the parena editor to toggle between terminal and
+     * deditor? unifying pitviper and the parena editor - have it work
+     * just like pitviper where it auto finds git bash for the
+     * terminal"). Backend already shipped (Apple #16430: pty-poll-
+     * read + shell/spawn); this is the UI wiring. Fourth real
+     * bottom-bar Toggle, placed right after settings_toggle's own
+     * fixed width -- same "hidden/minimal unless you ask" taste,
+     * off by default. */
+    Toggle terminal_toggle = new_toggle(800, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+                                         "Terminal: ON (click to hide)",
+                                         "Terminal: OFF (click to show)", 0);
+    /* Real terminal-session state -- the pty is spawned ONCE, the
+     * first time terminal_toggle is switched on, and stays alive
+     * across later off/on toggles (a real, persistent shell session,
+     * matching how a real terminal app or PITVIPER itself behaves --
+     * toggling the VIEW off doesn't kill the shell). term_output is a
+     * plain, fixed-size scrollback buffer (same real "fixed C buffer,
+     * not a growing arena allocation every frame" judgment
+     * spotlight_query already uses) -- when full, the oldest half is
+     * discarded to make room, a real, honest v0 "recent scrollback
+     * only", not unbounded history.
+     *
+     * Real, honest, NOT-yet-done gap, matching this thread's own
+     * BACKLOG.md scope note: the spawned shell inherits THIS process's
+     * cwd, not the file-tree sidebar's own browsed directory --
+     * pty-open/shell/spawn take no cwd argument (confirmed by reading
+     * runtime/parena_runtime.h's own pty_open_impl: forkpty+execlp,
+     * no chdir). Real cwd-sharing is separate, unstarted follow-up. */
+    int term_spawned = 0;
+    Pty term_pty;
+    memset(&term_pty, 0, sizeof term_pty);
+#define TERM_OUTPUT_CAP 65536
+    char term_output[TERM_OUTPUT_CAP];
+    int term_output_len = 0;
+    term_output[0] = '\0';
+
     /* file_tree_dir/file_tree_entries -- real CURRENT WORKING DIRECTORY
      * at startup, not dirname(path) -- see this file's own
      * SIDEBAR_WIDTH header comment for the real reasoning.
@@ -945,6 +991,49 @@ int main(int argc, char **argv) {
                     }
                     /* every other key is real, deliberately swallowed
                        here -- see this branch's own header comment. */
+                } else if (toggle_on_(&terminal_toggle)) {
+                    /* Real terminal-mode key routing (2026-08-27) --
+                     * checked before every ordinary editor keybind
+                     * below, same real modal precedent the
+                     * spotlight_visible branch above already
+                     * establishes: while the terminal panel is
+                     * showing, every real key maps to the byte
+                     * sequence a real terminal emulator would send
+                     * the pty, not to any editor keybind (including
+                     * Escape, deliberately NOT treated as "quit" here
+                     * -- a real shell program running inside, e.g.
+                     * vim/less, needs a real Escape byte to reach it).
+                     * Plain printable characters arrive via
+                     * SDL_TEXTINPUT below, not here -- same real split
+                     * this file's own editor keybinds already rely on. */
+                    if (term_spawned) {
+                        char *term_key_seq = NULL;
+                        if (key == key_backspace()) {
+                            term_key_seq = "\x7f";
+                        } else if (key == key_return()) {
+                            term_key_seq = "\r";
+                        } else if (key == key_tab()) {
+                            term_key_seq = "\t";
+                        } else if (key == key_left()) {
+                            term_key_seq = "\x1b[D";
+                        } else if (key == key_right()) {
+                            term_key_seq = "\x1b[C";
+                        } else if (key == key_up()) {
+                            term_key_seq = "\x1b[A";
+                        } else if (key == key_down()) {
+                            term_key_seq = "\x1b[B";
+                        } else if (key == 27 /* SDLK_ESCAPE */) {
+                            term_key_seq = "\x1b";
+                        } else if (key == 'c' && ctrl_held_()) {
+                            term_key_seq = "\x03"; /* SIGINT */
+                        } else if (key == 'd' && ctrl_held_()) {
+                            term_key_seq = "\x04"; /* EOF */
+                        }
+                        if (term_key_seq) {
+                            Result twr = pty_write(&term_pty, term_key_seq, &a);
+                            (void)twr;
+                        }
+                    }
                 } else if (key == 't' && (ctrl_held_() || gui_held_())) {
                     spotlight_visible = 1;
                     spotlight_query[0] = '\0';
@@ -1212,6 +1301,17 @@ int main(int argc, char **argv) {
                     spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
                     spotlight_selected = 0;
                     spotlight_scroll_offset = 0;
+                } else if (toggle_on_(&terminal_toggle)) {
+                    /* Real terminal-mode text routing (2026-08-27) --
+                     * same real split KeyDown's own terminal branch
+                     * above documents: plain typed characters arrive
+                     * here, not through KeyDown, and go straight to
+                     * the pty as raw input, exactly like a real
+                     * terminal emulator. */
+                    if (term_spawned) {
+                        Result twr = pty_write(&term_pty, text, &a);
+                        (void)twr;
+                    }
                 } else {
                 /* Typed text with an active selection REPLACES it --
                  * real, standard editor UX: delete the selection first,
@@ -1322,6 +1422,17 @@ int main(int argc, char **argv) {
                     file_tree_toggle = toggle_flip(&file_tree_toggle, &a);
                 } else if (bar_visible_now && toggle_hit_(&settings_toggle, raw_mx, raw_my)) {
                     settings_toggle = toggle_flip(&settings_toggle, &a);
+                } else if (bar_visible_now && toggle_hit_(&terminal_toggle, raw_mx, raw_my)) {
+                    terminal_toggle = toggle_flip(&terminal_toggle, &a);
+                    if (toggle_on_(&terminal_toggle) && !term_spawned) {
+                        Result spr = spawn(80, 24, &a);
+                        if (spr.tag == 1) {
+                            term_pty = *(Pty *)spr.value;
+                            term_spawned = 1;
+                        } else {
+                            fprintf(stderr, "editor: terminal spawn failed (real SpawnFailed from shell/spawn)\n");
+                        }
+                    }
                 } else if (toggle_on_(&settings_toggle)
                            && raw_mx >= SETTINGS_BOX_X && raw_mx < SETTINGS_BOX_X + SETTINGS_BOX_W
                            && raw_my >= 70 && raw_my < 70 + SETTINGS_ZOOM_ROW_H) {
@@ -1470,6 +1581,43 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Real per-frame, non-blocking pty drain (2026-08-27) -- runs
+         * every frame regardless of terminal_toggle's own on/off state
+         * (a real, persistent background shell session keeps producing
+         * output whether or not its VIEW is showing, same real
+         * behavior a real terminal app / tmux session has), using
+         * pty-poll-read specifically because it's real, non-blocking
+         * (see stdlib/pty.prn's own header comment) -- calling
+         * pty-read here instead would freeze the WHOLE editor at an
+         * idle shell prompt. Appended into the real, fixed-size
+         * term_output scrollback buffer; when a new chunk would
+         * overflow it, the oldest half is discarded first to make
+         * room -- a real, honest "recent scrollback only" v0, not
+         * unbounded history. */
+        if (term_spawned) {
+            Result tpr = pty_poll_read(&term_pty, &a);
+            if (tpr.tag == 1) {
+                char *chunk = (char *)tpr.value;
+                size_t chunk_len = strlen(chunk);
+                if (chunk_len > 0) {
+                    if (term_output_len + (int)chunk_len >= TERM_OUTPUT_CAP) {
+                        int keep = TERM_OUTPUT_CAP / 2;
+                        int drop = term_output_len - keep;
+                        if (drop < 0) drop = 0;
+                        memmove(term_output, term_output + drop, term_output_len - drop);
+                        term_output_len -= drop;
+                    }
+                    int copy_len = (int)chunk_len;
+                    if (term_output_len + copy_len >= TERM_OUTPUT_CAP) copy_len = TERM_OUTPUT_CAP - 1 - term_output_len;
+                    if (copy_len > 0) {
+                        memcpy(term_output + term_output_len, chunk, (size_t)copy_len);
+                        term_output_len += copy_len;
+                        term_output[term_output_len] = '\0';
+                    }
+                }
+            }
+        }
+
         Result cbg = set_draw_color(&ren, 24, 24, 28, 255, &a);
         (void)cbg;
         render_clear(&ren, &a);
@@ -1508,6 +1656,13 @@ int main(int argc, char **argv) {
          * selection boundary within that row, any row strictly between
          * them is highlighted edge-to-edge (the real full width of that
          * line's own text). */
+        /* Real editor-vs-terminal content-area switch (2026-08-27) --
+         * "toggle between terminal and editor" means these two views
+         * are mutually exclusive in the main content area, not an
+         * overlay (unlike Spotlight/Settings, which draw ON TOP of
+         * whichever of these is showing -- both are drawn further
+         * below, after this real either/or block). */
+        if (!toggle_on_(&terminal_toggle)) {
         if (has_selection_(&buf)) {
             int sel_start = selection_start(&buf);
             int sel_end = selection_end(&buf);
@@ -1555,6 +1710,55 @@ int main(int argc, char **argv) {
         Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
         (void)ccol;
         render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &a);
+        } else {
+            /* Real terminal panel content (2026-08-27) -- plain
+             * monospace text, no syntax highlighting (a real shell's
+             * own output isn't PARENA/Markdown source). Tails the
+             * real term_output scrollback: shows only however many of
+             * the MOST RECENT lines fit in the content area, same
+             * real "recent output visible, older stuff scrolls off"
+             * behavior any real terminal emulator has -- v0 has no
+             * independent terminal scrollback UI yet (a real, separate
+             * follow-up, same "expand only when something real needs
+             * it" judgment this whole editor's own widget system
+             * already applies elsewhere). */
+            Result tbg = set_draw_color(&ren, 12, 12, 15, 255, &a);
+            (void)tbg;
+            render_fill_rect(&ren, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &a);
+            int visible_term_rows = (WINDOW_HEIGHT - STATUS_BAR_HEIGHT - 24) / LINE_HEIGHT;
+            if (visible_term_rows < 1) visible_term_rows = 1;
+            int term_line_count = 1;
+            for (int oi = 0; oi < term_output_len; oi++) {
+                if (term_output[oi] == '\n') term_line_count++;
+            }
+            int skip_lines = term_line_count - visible_term_rows;
+            if (skip_lines < 0) skip_lines = 0;
+            int cur_line = 0;
+            int line_start_i = 0;
+            int draw_row = 0;
+            for (int oi = 0; oi <= term_output_len; oi++) {
+                if (oi == term_output_len || term_output[oi] == '\n') {
+                    if (cur_line >= skip_lines) {
+                        char term_line[512];
+                        int seg_len = oi - line_start_i;
+                        if (seg_len > (int)sizeof(term_line) - 1) seg_len = (int)sizeof(term_line) - 1;
+                        if (seg_len > 0) memcpy(term_line, term_output + line_start_i, (size_t)seg_len);
+                        term_line[seg_len < 0 ? 0 : seg_len] = '\0';
+                        if (term_line[0] != '\0') {
+                            Result trow = render_text(&ren, &font, term_line, 12, 12 + draw_row * LINE_HEIGHT, 200, 220, 200, &a);
+                            (void)trow;
+                        }
+                        draw_row++;
+                    }
+                    cur_line++;
+                    line_start_i = oi + 1;
+                }
+            }
+            if (!term_spawned) {
+                Result tmsg = render_text(&ren, &font, "(terminal not spawned -- shell/spawn failed, see stderr)", 12, 12, 220, 120, 120, &a);
+                (void)tmsg;
+            }
+        }
 
         /* Real hover-reveal bottom status bar (2026-08-27) -- drawn
          * LAST so it sits on top of the real text/cursor/selection
@@ -1640,6 +1844,8 @@ int main(int argc, char **argv) {
             (void)togglr2;
             Result togglr3 = render_toggle(&ren, &font, &settings_toggle, 45, 45, 52, 200, 200, 200, &a);
             (void)togglr3;
+            Result togglr4 = render_toggle(&ren, &font, &terminal_toggle, 45, 45, 52, 200, 200, 200, &a);
+            (void)togglr4;
         }
 
         /* Real Linnen Settings panel v0 (2026-08-27) -- Zoom is the

@@ -270,7 +270,7 @@ PRNFMT_RENAME := -Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc \
 
 editor-demo: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
-		stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn \
+		stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn stdlib/pty.prn stdlib/shell.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
 		stdlib/editor/textmate_markdown.prn \
 		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
