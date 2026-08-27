@@ -351,13 +351,36 @@ static inline int string_contains_ci_impl(const char *haystack, const char *need
  * function below returns a plain scalar or string, no boxing -- see
  * io.prn's own header comment for the full reasoning on why the split
  * is drawn exactly here. */
+/* O_BINARY (2026-08-27, real, confirmed-live bug: founder opened a
+ * real, plain CRLF .bat file in the editor and got the "looks like a
+ * binary file" placeholder). O_BINARY only exists on Windows -- on
+ * POSIX there's no text/binary distinction and open() never needs it,
+ * so this is a real no-op #define there, not a behavior change.
+ * Without it, MinGW's own CRT opens every file in TEXT mode by
+ * default: CRLF is silently collapsed to LF on read (and LF silently
+ * expanded back to CRLF on write), and a raw 0x1A byte is treated as
+ * an early EOF marker. Every real Windows-authored text file this
+ * session has actually looked at (build_win.bat, PLAY.bat, ...) is
+ * CRLF-terminated -- read in text mode, the returned String is
+ * shorter than the real on-disk stat() size by exactly its own
+ * newline count, which is precisely the mismatch looks_like_binary
+ * checks for. Same real bug class on the WRITE side too: saving would
+ * have silently rewritten a real file's own line endings. Applied
+ * unconditionally (read/write/append all get it) so this editor
+ * always treats a file's bytes as its own, not the CRT's translated
+ * view of them -- matches this whole session's own "byte-exact,
+ * stat-size-vs-strlen must actually mean something" discipline. */
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 static inline int raw_open_impl(const char *path, int mode_tag) {
     int flags;
     switch (mode_tag) {
-        case 0: flags = O_RDONLY; break;                      /* Read */
-        case 1: flags = O_WRONLY | O_CREAT | O_TRUNC; break;  /* Write */
-        case 2: flags = O_WRONLY | O_CREAT | O_APPEND; break; /* Append */
-        default: flags = O_RDONLY; break;
+        case 0: flags = O_RDONLY | O_BINARY; break;                      /* Read */
+        case 1: flags = O_WRONLY | O_CREAT | O_TRUNC | O_BINARY; break;  /* Write */
+        case 2: flags = O_WRONLY | O_CREAT | O_APPEND | O_BINARY; break; /* Append */
+        default: flags = O_RDONLY | O_BINARY; break;
     }
     return open(path, flags, 0644);
 }
