@@ -219,10 +219,10 @@ Result parse_form(Lexer, Token, Arena *);
 Result parse_atom(NodeType, Lexer, Token, Arena *);
 Result parse_compound(NodeType, TokenType, int, Lexer, Token, Arena *);
 Result parse_program(char *, Arena *);
-int node_kind_code(NodeType);
-int is_symbol_(Node *, char *);
-int is_symbol_headed_list_(Node *);
-int is_call_named_(Node *, char *);
+int emit_node_kind_code(NodeType);
+int emit_is_symbol_(Node *, char *);
+int emit_is_symbol_headed_list_(Node *);
+int emit_is_call_named_(Node *, char *);
 char * emit_join_all(Vec *, Arena *);
 char * join3(char *, char *, char *, Arena *);
 char * join_with(Vec *, char *, Arena *);
@@ -1017,7 +1017,7 @@ Result parse_program(char * src __attribute__((unused)), Arena *dest __attribute
     return __match_result_6;
 }
 
-int node_kind_code(NodeType k __attribute__((unused))) {
+int emit_node_kind_code(NodeType k __attribute__((unused))) {
     double __match_result_7 __attribute__((unused)) = {0};
     NodeType __match_tmp_12 = k;
     if (__match_tmp_12.tag == 0) {
@@ -1050,25 +1050,25 @@ int node_kind_code(NodeType k __attribute__((unused))) {
     return __match_result_7;
 }
 
-int is_symbol_(Node * n __attribute__((unused)), char * text __attribute__((unused))) {
-    return ((node_kind_code((n)->kind) == 3) && str_eq_((n)->text, text));
+int emit_is_symbol_(Node * n __attribute__((unused)), char * text __attribute__((unused))) {
+    return ((emit_node_kind_code((n)->kind) == 3) && str_eq_((n)->text, text));
 }
 
-int is_symbol_headed_list_(Node * n __attribute__((unused))) {
-    if ((!((node_kind_code((n)->kind) == 0)))) {
+int emit_is_symbol_headed_list_(Node * n __attribute__((unused))) {
+    if ((!((emit_node_kind_code((n)->kind) == 0)))) {
     return 0;
     } else {
     if ((vec_len(&((n)->children)) <= 0)) {
     return 0;
     } else {
     Node *first_child __attribute__((unused)) = vec_get(&((n)->children), 0);
-    return (node_kind_code((first_child)->kind) == 3);
+    return (emit_node_kind_code((first_child)->kind) == 3);
     }
     }
 }
 
-int is_call_named_(Node * n __attribute__((unused)), char * fn_name __attribute__((unused))) {
-    return (is_symbol_headed_list_(n) && is_symbol_(vec_get(&((n)->children), 0), fn_name));
+int emit_is_call_named_(Node * n __attribute__((unused)), char * fn_name __attribute__((unused))) {
+    return (emit_is_symbol_headed_list_(n) && emit_is_symbol_(vec_get(&((n)->children), 0), fn_name));
 }
 
 char * emit_join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1231,7 +1231,7 @@ char * emit_tail_symbol(Node * node __attribute__((unused)), Arena *dest __attri
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (is_call_named_(node, "let") ? emit_let(node, scope, dest) : emit_tail_symbol(node, dest)));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : emit_tail_symbol(node, dest)));
 }
 
 char * emit_body_forms(Node * node __attribute__((unused)), int start __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1369,7 +1369,7 @@ char * emit_program(Node * program __attribute__((unused)), Arena *dest __attrib
         break;
         } else {
         Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
-        if (is_call_named_(form, "defn")) {
+        if (emit_is_call_named_(form, "defn")) {
         double __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, emit_defn(form, dest), dest);
         i = __recur_tmp_0;

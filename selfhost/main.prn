@@ -1,0 +1,110 @@
+;; selfhost/main.prn -- real, faithful PARENA-language port of src/
+;; main.c's own cmd_build (VS0's CLI runner, domain 5): parse a real
+;; .prn source file off disk, region-analyze it (abort on error, same
+;; real DoD pipeline order cmd_build itself uses), emit real C, write
+;; it to a real output file. Direct continuation of selfhost/lexer.prn
+;; -> selfhost/parser.prn -> selfhost/region.prn -> selfhost/emit.prn
+;; (2026-08-27, founder real-time: "self hosted compiler" -> "continue"
+;; repeated -> "continue on welf hosted parena compiler"), the same
+;; "one real, faithful, honestly-scoped domain at a time" discipline
+;; every prior selfhost file already established.
+;;
+;; This is the first selfhost file to do real disk I/O rather than
+;; work purely on in-memory strings -- build-file below is a real,
+;; callable, end-to-end "compile this file to that file" pipeline
+;; function, not just a driver-harness convenience the way
+;; test_selfhost_emit.c's own inline read/compile/run steps were.
+;;
+;; Real, honest scope note: NOT yet a real argv-parsing standalone
+;; executable the way `./parena build in.prn -o out.c` is. parena-c
+;; itself has no `(defn main ...)` -> C `int main` emission convention
+;; for ANY PARENA program yet (checked: src/emit.c never emits a
+;; `main` at all -- every emitted program is a library of functions
+;; linked into a hand-written C driver, selfhost's own test drivers
+;; included) -- argv plumbing and a real main-emission convention are
+;; a genuinely separate, unstarted emitter feature, not attempted
+;; here. build-file is the real pipeline-sequencing logic cmd_build
+;; wraps around argv parsing; this file ports that logic faithfully,
+;; exercised by a real C test driver that calls it with real path
+;; strings (tests/test_selfhost_main.c), the same honest shape
+;; test_selfhost_emit.c's own driver already established for the
+;; emit-only step.
+;;
+;; Whatever selfhost/emit.prn's own v0 emitter can and can't handle,
+;; build-file inherits verbatim (see that file's own header comment)
+;; -- this file adds real sequencing and real disk I/O, not new
+;; language coverage.
+
+(module selfhost/main)
+(import string)
+(import io)
+(import selfhost/parser)
+(import selfhost/region)
+(import selfhost/emit)
+(export build-file)
+
+;; build-file -- read in-path, run it through the real selfhost
+;; lexer+parser+region+emit pipeline, write the resulting C to
+;; out-path. Returns (Err message) on the first real failure at any
+;; stage (open, parse, region-analysis, or write), matching cmd_build's
+;; own "abort on the first real error, print it, don't emit anything
+;; misleading" behavior -- just returned as a real Result instead of a
+;; process exit code + stderr write, since this is a callable function,
+;; not the CLI entry point itself yet.
+;; write-output -- the real final stage: open out-path, write the
+;; already-generated C text, close. Split out as its own function
+;; (rather than nested inline) purely for legibility at this call
+;; depth -- every branch here is already in tail position, so this
+;; isn't a workaround for the match-as-non-tail-value gap
+;; selfhost/region.prn's own header comment documents, just plain
+;; decomposition.
+(defn write-output [(out-path : String @ :region/scratch) (generated : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (match (io/file-open out-path Write dest)
+    ((Err e2) (Err "parena: cannot open output file"))
+    ((Ok out-fh)
+      (match (io/write-string (deref out-fh) generated dest)
+        ((Err e3) (Err "parena: cannot write output file"))
+        ((Ok _)
+          (do
+            (io/file-close (deref out-fh) dest)
+            (Ok unit)))))))
+
+;; analyze-and-emit -- region-analyze the parsed program (abort on
+;; error, matching cmd_build's own real pipeline order), then emit and
+;; write.
+(defn analyze-and-emit [(program : Node) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (match (selfhost/region/region-analyze &program dest)
+    ((Some msg) (Err msg))
+    ((None)
+      (let [generated (selfhost/emit/emit-program &program dest)]
+        (write-output out-path generated dest)))))
+
+;; parse-and-continue -- parse the real source text, then continue the
+;; pipeline on success.
+(defn parse-and-continue [(src : String @ Region) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (match (selfhost/parser/parse-program src dest)
+    ((Err pe) (Err "parena: parse error"))
+    ((Ok program) (analyze-and-emit (deref program) out-path dest))))
+
+;; build-file -- read in-path, run it through the real selfhost
+;; lexer+parser+region+emit pipeline, write the resulting C to
+;; out-path. Returns (Err message) on the first real failure at any
+;; stage (open, parse, region-analysis, or write), matching cmd_build's
+;; own "abort on the first real error, print it, don't emit anything
+;; misleading" behavior -- just returned as a real Result instead of a
+;; process exit code + stderr write, since this is a callable function,
+;; not the CLI entry point itself yet.
+(defn build-file [(in-path : String @ :region/scratch) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (match (io/file-open in-path Read dest)
+    ((Err e) (Err "parena: cannot open input file"))
+    ((Ok in-fh)
+      (match (io/read-string (deref in-fh) dest)
+        ((Err e) (Err "parena: cannot read input file"))
+        ((Ok src)
+          (do
+            (io/file-close (deref in-fh) dest)
+            (parse-and-continue src out-path dest)))))))

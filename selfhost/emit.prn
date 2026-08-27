@@ -58,13 +58,13 @@
   (name : String @ Region)
   (kind : ArenaKind))
 
-(defn node-kind-code [(k : NodeType)] : I32
+(defn emit-node-kind-code [(k : NodeType)] : I32
   (match k
     ((NList) 0) ((NVec) 1) ((NMap) 2) ((NSymbol) 3) ((NKeyword) 4)
     ((NString) 5) ((NNumber) 6) ((NColon) 7) ((NAt) 8)))
 
-(defn is-symbol? [(n : &Node) (text : String @ Region)] : Bool
-  (and (= (node-kind-code (get-field n :kind)) 3)
+(defn emit-is-symbol? [(n : &Node) (text : String @ Region)] : Bool
+  (and (= (emit-node-kind-code (get-field n :kind)) 3)
        (string/str-eq? (get-field n :text) text)))
 
 ;; Real, confirmed-live emitter gap this restructuring works around
@@ -72,17 +72,17 @@
 ;; full real reasoning): get-field can't be called directly, inline,
 ;; on a bare `vec/get` result -- an explicit `let` binding first is
 ;; required.
-(defn is-symbol-headed-list? [(n : &Node)] : Bool
-  (if (not (= (node-kind-code (get-field n :kind)) 0))
+(defn emit-is-symbol-headed-list? [(n : &Node)] : Bool
+  (if (not (= (emit-node-kind-code (get-field n :kind)) 0))
     false
     (if (<= (vec/len &(get-field n :children)) 0)
       false
       (let [first-child (vec/get &(get-field n :children) 0)]
-        (= (node-kind-code (get-field first-child :kind)) 3)))))
+        (= (emit-node-kind-code (get-field first-child :kind)) 3)))))
 
-(defn is-call-named? [(n : &Node) (fn-name : String @ Region)] : Bool
-  (and (is-symbol-headed-list? n)
-       (is-symbol? (vec/get &(get-field n :children) 0) fn-name)))
+(defn emit-is-call-named? [(n : &Node) (fn-name : String @ Region)] : Bool
+  (and (emit-is-symbol-headed-list? n)
+       (emit-is-symbol? (vec/get &(get-field n :children) 0) fn-name)))
 
 ;; emit-join-all / join3 -- real, private string-joining helpers, the same
 ;; small, deliberately-duplicated shape selfhost/region.prn's own
@@ -203,8 +203,8 @@
 
 (defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
-    ((is-call-named? node "with-arena") (emit-with-arena node scope dest))
-    ((is-call-named? node "let") (emit-let node scope dest))
+    ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
+    ((emit-is-call-named? node "let") (emit-let node scope dest))
     (true (emit-tail-symbol node dest))))
 
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
@@ -344,6 +344,6 @@
       (if (>= i (vec/len &(get-field program :children)))
         acc
         (let [form (vec/get &(get-field program :children) i)]
-          (if (is-call-named? form "defn")
+          (if (emit-is-call-named? form "defn")
             (recur (+ i 1) (string/concat acc (emit-defn form dest) dest))
             (recur (+ i 1) acc)))))))

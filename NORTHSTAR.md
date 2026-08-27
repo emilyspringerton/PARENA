@@ -418,6 +418,64 @@ closures, Vec/Map generics, and every real stdlib-driven special case the curren
 handles are real, separate, unstarted follow-up work, the same honest boundary every domain in this
 whole effort has drawn.
 
+**Real fifth step, same day (founder: "continue on welf hosted parena compiler")**:
+`selfhost/main.prn` — a real, faithful PARENA-language port of `src/main.c`'s own `cmd_build`
+(VS0's CLI-runner domain: parse → region-analyze (abort on error) → emit → write output file), the
+same real pipeline order `cmd_build` itself uses. The first selfhost file to do real disk I/O
+(`io/file-open`/`io/read-string`/`io/write-string`/`io/file-close`) rather than work purely on
+in-memory strings the way `selfhost/emit.prn`'s own test harness did — `build-file` is a real,
+callable, end-to-end "compile this file to that file" function.
+
+Real, honest scope note: NOT yet a real argv-parsing standalone executable the way
+`./parena build in.prn -o out.c` is — confirmed live (grepped `src/emit.c` for any `int main`
+emission: none) that parena-c has no `(defn main ...)` → C `int main` emission convention for ANY
+PARENA program yet, selfhost included; every emitted program stays a library of functions linked
+into a hand-written C driver. Real argv plumbing and a main-emission convention are a genuinely
+separate, unstarted emitter feature, not attempted here. `build-file` is the real pipeline-
+sequencing logic `cmd_build` wraps around argv parsing, exercised by a real C test driver
+(`tests/test_selfhost_main.c`) calling it with real path strings — the same honest shape
+`test_selfhost_emit.c`'s own driver already established for the emit-only step.
+
+Two more real bugs found and fixed along the way (both confirmed live via real gcc errors, not
+guessed at): (1) `node-kind-code`/`is-symbol?`/`is-symbol-headed-list?`/`is-call-named?` were
+defined identically, verbatim, in both `selfhost/region.prn` and `selfhost/emit.prn` — the same
+real, already-documented "private top-level names aren't module-scoped" gap `join-all` hit earlier
+(region.prn/emit.prn), just never actually exercised for THESE 4 names before now, since no prior
+build ever compiled region.prn and emit.prn together in one translation unit (`test-selfhost-region`
+only ever built lexer+parser+region; `test-selfhost-emit` only ever built lexer+parser+emit —
+`build-file` is the first thing that needs both). Fixed the same way: emit.prn's own 4 copies
+renamed with an `emit-` prefix (`emit-node-kind-code`, `emit-is-symbol?`,
+`emit-is-symbol-headed-list?`, `emit-is-call-named?`), region.prn's left untouched. (2) A match-
+bound `Ok` payload of a real `defstruct` type (here, `io/file-open`'s own `FileHandle`, and
+`selfhost/parser/parse-program`'s own `Node`), passed DIRECTLY as a function's own by-value
+argument (not through `get-field`), stays generic `void *` and fails to compile — the same real,
+already-documented "match-bound Ok payload needs `deref`" convention `stdlib/regex/syntax.prn`'s
+own header comment established for the `get-field (deref x) :field` case, confirmed here to apply
+identically to a bare `(deref x)` passed as a whole-value argument, not just inside `get-field`
+(and already precedented elsewhere in the codebase — `stdlib/dataframe.prn`'s own `(vec/push!
+&out-cols (deref col))` — just not yet needed by any prior selfhost file).
+
+7 real assertions in `tests/test_selfhost_main.c`: a real end-to-end run of `build-file` against
+the real `examples/valid_only.prn` DoD acceptance file (open → read → parse → region-analyze → emit
+→ write, all inside `build-file` itself, not the test harness), a check that the real output file
+exists and holds real, non-empty, correctly-mangled C, a real `gcc -std=c99 -Wall -Wextra -pedantic
+-Werror` compile of that disk-written file linked against the same real
+`tests/integration/driver_valid_only.c` domain 4 already uses, an actual run of the result, and a
+real negative case (a nonexistent input path returns a clean `Err`, not a crash). Full local suite
+(336 tests) + `make test-selfhost-lexer/parser/region/emit` (zero regressions) + real mingw
+cross-compile of the new test file all clean. Wired into real CI as a 5th, Linux-only step
+(`test-selfhost-main`, same `Makefile` pattern as domains 1-4) — Linux-only for the same real,
+already-documented reason domain 4 stayed Linux-only: `build-file`'s own real compile+run step
+shells out to `gcc` via `system()`, not wired to the Windows/macOS jobs' own selfhost loop (still
+just `lexer parser region`).
+
+Not scoped further than this here either — the real next step toward "self-hosting" actually
+becoming true (not just a proven vertical slice) is compiling the selfhost pipeline's OWN five
+`.prn` files (lexer/parser/region/emit/main) back through itself, which needs the much-expanded
+language coverage (`match`, `loop`/`recur`, arithmetic, closures, Vec/Map generics, real argv/main
+emission) `selfhost/emit.prn`'s own "not scoped further" paragraph above already flags as real,
+separate, unstarted follow-up work — real, honest, unstarted, not attempted here.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary
