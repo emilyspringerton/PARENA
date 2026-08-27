@@ -1010,6 +1010,7 @@ static int g_sdl2_last_event_key = 0;
 static char g_sdl2_last_event_text[32];
 static int g_sdl2_last_mouse_x = 0;
 static int g_sdl2_last_mouse_y = 0;
+static char g_sdl2_last_drop_path[1024];
 
 /* codes 5/6/7 -- real mouse event plumbing (2026-08-27, real mouse-
  * driven selection: click-to-position-cursor, click-drag-to-select --
@@ -1049,6 +1050,27 @@ static inline int sdl2_poll_event_impl(void) {
         g_sdl2_last_mouse_y = e.motion.y;
         return 7;
     }
+    /* code 8 -- real drag-and-drop-a-file-onto-the-window support
+     * (2026-08-27, founder real-time: "i need an easy way to actually
+     * open the files drag and drop onto the window"). e.drop.file is a
+     * real SDL-malloc'd string the CALLER must free with SDL_free() --
+     * copied out to a real, fixed-size buffer here (matching this
+     * file's own established g_sdl2_last_event_text convention) and
+     * freed immediately, so no SDL-owned pointer ever escapes into
+     * PARENA code. SDL_DROPTEXT/DROPBEGIN/DROPCOMPLETE are real,
+     * separate, deferred follow-ups (a real, honest v0: only real
+     * FILE drops are handled, not a dragged text selection or the
+     * begin/complete bracket events around a real multi-file drop --
+     * each dropped file in a real multi-file drag still fires its own
+     * real SDL_DROPFILE, so multi-file drops already work file-by-file
+     * even without those). */
+    if (e.type == SDL_DROPFILE) {
+        size_t n = sizeof(g_sdl2_last_drop_path) - 1;
+        strncpy(g_sdl2_last_drop_path, e.drop.file, n);
+        g_sdl2_last_drop_path[n] = '\0';
+        SDL_free(e.drop.file);
+        return 8;
+    }
     return 4;
 }
 
@@ -1069,6 +1091,13 @@ static inline int sdl2_last_event_mouse_x_impl(void) {
 
 static inline int sdl2_last_event_mouse_y_impl(void) {
     return g_sdl2_last_mouse_y;
+}
+
+static inline char *sdl2_last_event_drop_path_impl(Arena *dest) {
+    size_t len = strlen(g_sdl2_last_drop_path);
+    char *out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, g_sdl2_last_drop_path, len + 1);
+    return out;
 }
 
 static inline void sdl2_start_text_input_impl(void) {

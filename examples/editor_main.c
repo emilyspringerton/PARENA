@@ -65,6 +65,25 @@
  */
 #include <stdio.h>
 #include <string.h>
+/* Real, portable "where is my own executable" + "spawn another copy of
+ * myself" support (2026-08-27, founder real-time: "i need an easy way
+ * to actually open the files drag and drop onto the window for now is
+ * fine it can open a new window with that file" -- for now spawns a
+ * genuinely new, separate editor instance/window per dropped file,
+ * matching that explicit real, simpler scope, not in-place buffer
+ * replacement with its own real unsaved-changes/undo-reset questions).
+ * Three genuinely different real OS APIs, none of them optional --
+ * matches the real, established #ifdef _WIN32 / __APPLE__ / else
+ * split runtime/parena_runtime.h's own tcp/pty/process glue already
+ * uses for the identical reason. */
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <unistd.h>
+#else
+#include <unistd.h>
+#endif
 
 #define LINE_HEIGHT 26 /* real pixel spacing between real lines, matches the real 20pt font this editor opens */
 
@@ -183,6 +202,109 @@ static int path_has_suffix(const char *path, const char *suffix) {
     return strcmp(path + (plen - slen), suffix) == 0;
 }
 
+/* executable_path -- real, portable "where is my own executable"
+ * (2026-08-27, real drag-and-drop-a-file-onto-the-window: spawning a
+ * new instance of THIS SAME program needs a real path to re-exec, not
+ * just argv[0] -- argv[0] can be a bare relative name like
+ * "editor-demo" with no real directory info, or "." if launched
+ * through some shells, unreliable to re-exec from). Three genuinely
+ * different real OS APIs (matches this file's own top-of-file #ifdef
+ * split): GetModuleFileNameA on Windows, _NSGetExecutablePath on
+ * macOS (its own real, documented way -- macOS has no /proc), and
+ * /proc/self/exe on Linux (a real, standard Linux-specific symlink,
+ * not POSIX-portable to macOS, hence the split). Returns NULL on any
+ * real failure -- callers fall back to their own next real candidate
+ * rather than trusting a half-populated path. */
+static char *executable_path(Arena *a) {
+    char buf[4096];
+#ifdef _WIN32
+    DWORD len = GetModuleFileNameA(NULL, buf, sizeof buf);
+    if (len == 0 || len >= sizeof buf) return NULL;
+#elif defined(__APPLE__)
+    uint32_t size = sizeof buf;
+    if (_NSGetExecutablePath(buf, &size) != 0) return NULL;
+    size_t len = strlen(buf);
+#else
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (len < 0) return NULL;
+    buf[len] = '\0';
+#endif
+    size_t blen = strlen(buf);
+    (void)len;
+    char *out = (char *)arena_alloc(a, blen + 1);
+    memcpy(out, buf, blen + 1);
+    return out;
+}
+
+/* executable_dir -- strips the real filename off executable_path's own
+ * result, real forward/backslash-aware (a real Windows path uses `\`,
+ * real Linux/macOS paths use `/`) -- used to find files bundled right
+ * next to this binary (the real font, primarily) regardless of how
+ * the program was actually launched (double-click, a pinned taskbar
+ * icon, drag-a-file-onto-that-icon, or a real file-type association --
+ * every one of those can hand this program an unpredictable, even
+ * unrelated, CURRENT DIRECTORY, unlike its own real, fixed install
+ * location). */
+static char *executable_dir(Arena *a) {
+    char *path = executable_path(a);
+    if (!path) return NULL;
+    char *last_slash = strrchr(path, '/');
+    char *last_backslash = strrchr(path, '\\');
+    char *cut = last_slash;
+    if (last_backslash && (!cut || last_backslash > cut)) cut = last_backslash;
+    if (!cut) return NULL;
+    *cut = '\0';
+    return path;
+}
+
+/* spawn_new_instance -- real, portable "open this file in a genuinely
+ * new editor window" (2026-08-27). Real, deliberate v0 scope, matching
+ * the founder's own explicit real ask: a real SEPARATE process/window
+ * per dropped file, not in-place buffer replacement (which would raise
+ * real, separate questions -- discard unsaved changes? reset undo
+ * history? -- not attempted here). POSIX: real fork+execl, the child
+ * re-execs itself with the dropped path as its own real argv[1],
+ * detached from the parent (no wait() -- a real, independent window,
+ * not a blocking child). Windows: real CreateProcessA with a real
+ * quoted command line (handles a real dropped path containing spaces,
+ * which a real Windows file path very often does). Failure is real,
+ * honest, non-fatal -- logged to stderr, the CURRENTLY RUNNING editor
+ * keeps going either way; a failed spawn shouldn't crash the window
+ * the user was already using. */
+static void spawn_new_instance(const char *exe_path, const char *file_path) {
+#ifdef _WIN32
+    char cmdline[2048];
+    int n = snprintf(cmdline, sizeof cmdline, "\"%s\" \"%s\"", exe_path, file_path);
+    if (n < 0 || (size_t)n >= sizeof cmdline) {
+        fprintf(stderr, "editor: spawn-new-instance failed (path too long)\n");
+        return;
+    }
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        fprintf(stderr, "editor: spawn-new-instance failed (CreateProcessA)\n");
+        return;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+#else
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "editor: spawn-new-instance failed (fork)\n");
+        return;
+    }
+    if (pid == 0) {
+        execl(exe_path, exe_path, file_path, (char *)NULL);
+        /* execl only returns on real failure -- a real, separate child
+         * process, not the running editor, so _exit (not exit) to skip
+         * any real atexit/stdio-flush double-work with the parent. */
+        _exit(127);
+    }
+#endif
+}
+
 /* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
  * founder real-time actually running a real Windows build): the
  * original single hardcoded path
@@ -204,8 +326,30 @@ static int path_has_suffix(const char *path, const char *suffix) {
  * above). assets/fonts/JetBrainsMono-Regular.ttf is a real, vendored,
  * Apache-2.0-licensed copy (see assets/fonts/LICENSE.txt) -- not
  * downloaded at build time, so this doesn't add a network dependency
- * to CI or to a user's own build. */
+ * to CI or to a user's own build.
+ *
+ * Real, confirmed-live follow-up (2026-08-27, founder raised real
+ * Windows taskbar-pin-and-relaunch + drag-file-onto-icon concerns):
+ * the CWD-relative candidate above only works when the launcher
+ * happens to set CWD to this binary's own directory -- true for a
+ * terminal-launched `./editor-demo` or RUN.bat's own explicit `cd /d
+ * %~dp0`, but NOT guaranteed for every real way Windows can launch an
+ * exe (a taskbar pin, a file dragged onto that pinned icon, a real
+ * file-type association) -- any of those hitting a different CWD would
+ * silently reproduce the exact "2 black screens then closed" bug fixed
+ * above. executable_dir() resolves this binary's own REAL, absolute
+ * install location via a real OS API, independent of CWD entirely --
+ * tried FIRST, ahead of the CWD-relative ones. */
 static Result open_font_with_fallback(int point_size, Arena *a) {
+    char *exe_dir = executable_dir(a);
+    if (exe_dir) {
+        char candidate[4096];
+        int n = snprintf(candidate, sizeof candidate, "%s/JetBrainsMono-Regular.ttf", exe_dir);
+        if (n > 0 && (size_t)n < sizeof candidate) {
+            Result r = open_font(candidate, point_size, a);
+            if (r.tag == 1) return r;
+        }
+    }
     static const char *candidates[] = {
         "JetBrainsMono-Regular.ttf",
         "assets/fonts/JetBrainsMono-Regular.ttf",
@@ -291,6 +435,22 @@ static Buffer pop_redo(Buffer fallback) {
 int main(int argc, char **argv) {
     const char *path = (argc > 1) ? argv[1] : "scratch.prn";
 
+#ifndef _WIN32
+    /* Real, standard fire-and-forget-child fix (2026-08-27, real
+     * drag-and-drop): spawn_new_instance's own real fork()+execl()
+     * never wait()s on the spawned window (an independent, real,
+     * separate editor process/window the user closes on their own
+     * schedule, not something this window should block on) -- without
+     * this, each exited child becomes a real zombie process-table
+     * entry until this window itself eventually exits and the child
+     * gets reparented+reaped. SIG_IGN on SIGCHLD is the real, standard
+     * POSIX fix: the kernel reaps an exited child immediately, no
+     * zombie ever created, no explicit wait() needed. Windows has no
+     * zombie-process concept -- spawn_new_instance's own CloseHandle
+     * calls are the real Windows equivalent (don't leak the handles). */
+    signal(SIGCHLD, SIG_IGN);
+#endif
+
     Arena a;
     arena_init(&a);
 
@@ -323,6 +483,18 @@ int main(int argc, char **argv) {
 
     start_text_input();
     Buffer buf = load_from_file(path, &a);
+
+    /* Real, resolved once at startup (2026-08-27, real drag-and-drop):
+     * spawn_new_instance's own real re-exec target. Resolved here, not
+     * inside the event handler itself, since it's the same real value
+     * every time and executable_path()'s own real OS call has no
+     * reason to be repeated per drop. A real, honest fallback to
+     * argv[0] if the real OS-level resolution fails for any reason --
+     * won't work from every real CWD, but better than silently
+     * disabling drag-and-drop entirely over a real, rare resolution
+     * failure. */
+    char *exe_path = executable_path(&a);
+    if (!exe_path) exe_path = argv[0];
 
     /* Real mouse-drag selection state (2026-08-27): dragging tracks
      * whether the real left mouse button is currently held (set on a
@@ -494,6 +666,21 @@ int main(int argc, char **argv) {
                     int pos = pos_from_mouse(active_text(&buf), mouse_x(), mouse_y(), &font, &a);
                     buf = set_selection(&buf, mouse_down_pos, pos);
                 }
+            } else if (kind.tag == EventKind_TAG_FileDrop) {
+                /* Real drag-and-drop-a-file-onto-the-window (2026-08-27,
+                 * founder real-time: "i need an easy way to actually
+                 * open the files drag and drop onto the window for now
+                 * is fine it can open a new window with that file").
+                 * Real, deliberate v0: opens a genuinely NEW, separate
+                 * editor instance/window for the dropped file, leaving
+                 * THIS window's own current buffer completely
+                 * untouched (no discarded unsaved changes, no undo-
+                 * history reset). A real multi-file drag fires one
+                 * real FileDrop per file -- each spawns its own real
+                 * new window, so dropping several files at once
+                 * already opens all of them. */
+                char *dropped_path = (char *)kind.value;
+                spawn_new_instance(exe_path, dropped_path);
             }
         }
 

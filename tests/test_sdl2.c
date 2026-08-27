@@ -148,20 +148,21 @@ int main(void) {
              * everything actually pending (a real, bounded loop, not an
              * infinite one) and confirm each drained event is a real,
              * well-formed EventKind (Quit/KeyDown/TextInput/MouseDown/
-             * MouseUp/MouseMotion/UnhandledEvent, never a garbage tag),
-             * then confirm the queue genuinely empties (poll-event
-             * correctly returns None once there is truly nothing left,
-             * not just once). Upper bound updated 2026-08-27 (real
-             * mouse event plumbing grew EventKind from 4 real variants
-             * to 7 -- this bound went stale the moment that landed,
-             * caught by actually running this test, not noticed by
-             * inspection). */
+             * MouseUp/MouseMotion/FileDrop/UnhandledEvent, never a
+             * garbage tag), then confirm the queue genuinely empties
+             * (poll-event correctly returns None once there is truly
+             * nothing left, not just once). Upper bound updated twice
+             * now, same real reason each time (2026-08-27, mouse event
+             * plumbing grew EventKind from 4 to 7 real variants, then
+             * real drag-and-drop grew it again to 8) -- caught both
+             * times by actually running this test, not noticed by
+             * inspection either time. */
             int drained = 0;
             int all_real_events = 1;
             Option ev;
             while ((ev = poll_event(&a)).tag == 1 && drained < 64) {
                 EventKind kind = *(EventKind *)ev.value;
-                if (kind.tag < 0 || kind.tag > 6) all_real_events = 0;
+                if (kind.tag < 0 || kind.tag > 7) all_real_events = 0;
                 drained++;
             }
             CHECK(all_real_events, "every drained event is a real, well-formed EventKind");
@@ -283,6 +284,34 @@ int main(void) {
                     EventKind rk = *(EventKind *)rev.value;
                     CHECK(rk.tag == EventKind_TAG_UnhandledEvent,
                           "a real right-click reports as UnhandledEvent, not MouseDown -- left-click only for now");
+                }
+            }
+
+            /* --- real drag-and-drop-a-file-onto-the-window plumbing
+             * (2026-08-27, founder real-time: "i need an easy way to
+             * actually open the files drag and drop onto the window").
+             * e.drop.file must be a real, genuinely SDL-malloc'd string
+             * (matching what SDL_DROPFILE really carries in production
+             * -- sdl2_poll_event_impl calls SDL_free() on it), not a
+             * stack/static buffer -- SDL_strdup is the real, correct
+             * way to synthesize that for this test. --- */
+            {
+                { Option drain; int n = 0; while ((drain = poll_event(&a)).tag == 1 && n < 32) n++; }
+
+                SDL_Event drop;
+                memset(&drop, 0, sizeof drop);
+                drop.type = SDL_DROPFILE;
+                drop.drop.type = SDL_DROPFILE;
+                drop.drop.file = SDL_strdup("/tmp/real-dropped-file.txt");
+                SDL_PushEvent(&drop);
+
+                EventKind dk;
+                int drop_found = poll_until_tag(&a, EventKind_TAG_FileDrop, &dk);
+                CHECK(drop_found, "poll-event correctly reports a real pushed SDL_DROPFILE as FileDrop");
+                if (drop_found) {
+                    char *dropped_path = (char *)dk.value;
+                    CHECK(strcmp(dropped_path, "/tmp/real-dropped-file.txt") == 0,
+                          "the real FileDrop payload carries the exact real dropped path");
                 }
             }
 

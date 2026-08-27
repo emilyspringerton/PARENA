@@ -106,6 +106,13 @@
 ;; shape Quit/UnhandledEvent already use -- x/y read via mouse-x/
 ;; mouse-y right after, the same real "two separate follow-up raw
 ;; calls" pattern KeyDown/TextInput's own payloads already establish.
+;; FileDrop -- real drag-and-drop-a-file-onto-the-window support
+;; (2026-08-27, founder real-time: "i need an easy way to actually open
+;; the files drag and drop onto the window"). One-field, same real
+;; shape TextInput's own payload already uses (the real path packed
+;; directly into the constructor call via a raw follow-up read, not a
+;; second separate call site the way KeyDown/MouseDown's own scalar
+;; payloads need).
 (defenum EventKind
   (Quit)
   (KeyDown (key : I32))
@@ -113,6 +120,7 @@
   (MouseDown)
   (MouseUp)
   (MouseMotion)
+  (FileDrop (path : String @ Region))
   (UnhandledEvent))
 
 ;; ---- raw syscall primitives -- the only #target bodies in this file,
@@ -182,6 +190,10 @@
 (defn mouse-y [] : I32
   #target
   {:c (inline-c "sdl2_last_event_mouse_y_impl()")})
+
+(defn sdl2-raw-last-event-drop-path [(dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "sdl2_last_event_drop_path_impl(dest)")})
 
 ;; ---- real, boxed public API ------------------------------------------
 
@@ -254,6 +266,7 @@
       ((= code 5) (Some MouseDown))
       ((= code 6) (Some MouseUp))
       ((= code 7) (Some MouseMotion))
+      ((= code 8) (Some (FileDrop (sdl2-raw-last-event-drop-path dest))))
       (true (Some UnhandledEvent)))))
 
 (defn get-ticks [] : I32
