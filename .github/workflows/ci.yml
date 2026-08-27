@@ -398,15 +398,87 @@ jobs:
             -L"$SDL2_PREFIX/lib" -L"$SDL2_TTF_PREFIX/lib" -lSDL2 -lSDL2_ttf -lm \
             -o editor-demo
 
-      - name: Bundle font for standalone distribution (macOS)
+      - name: Bundle font + Homebrew dylibs for standalone distribution (macOS)
         run: |
           set -euo pipefail
-          mkdir -p dist-editor-macos
+          mkdir -p dist-editor-macos/lib
           cp editor-demo dist-editor-macos/
           # Real, confirmed-live bug: examples/editor_main.c's own
           # open_font_with_fallback needs JetBrainsMono-Regular.ttf next
           # to the binary -- see the Linux job's own identical comment.
           cp assets/fonts/JetBrainsMono-Regular.ttf dist-editor-macos/
+
+          # Real dylib bundling (2026-08-27, founder: "continue working
+          # on parena editor" -- closes the last of the 3 real platform
+          # release builds that wasn't yet standalone; Linux already
+          # bundles its own .so via patchelf, Windows its own .dll via
+          # ldd, both earlier in this same file). Real, standard macOS
+          # app-bundling technique: a fixed-point walk over otool -L's
+          # own real dependency list, copying every real Homebrew-
+          # provided dylib (SDL2/SDL2_ttf plus their OWN real transitive
+          # deps -- SDL2_ttf itself depends on libfreetype, which
+          # depends on libpng/zlib/etc, not just the 2 top-level libs)
+          # into lib/, rewriting every real load command (both the
+          # binary's own and each bundled dylib's own cross-references)
+          # to a real @executable_path/lib/-relative path via
+          # install_name_tool, until a full pass discovers nothing new.
+          # Only /opt/homebrew or /usr/local paths are bundled -- real
+          # macOS system libraries (/usr/lib, /System) are always
+          # present on any real Mac and are deliberately left alone,
+          # same real "don't bundle base-OS libraries" judgment
+          # PITVIPER's own Linux .so-bundling step already documents.
+          #
+          # Deliberately NOT using bash arrays/associative-arrays for
+          # the real fixed-point queue (an earlier draft did) -- macOS
+          # runners can default to the real system /bin/bash (3.2, GPLv2
+          # licensing, no `declare -A`, and empty-array expansion under
+          # `set -u` is version-fragile even for plain arrays). Instead:
+          # every outer pass re-scans the binary plus every file
+          # currently in lib/, copying any newly-discovered real
+          # Homebrew dep; repeats until a pass adds nothing -- portable
+          # to any real POSIX-ish bash, no array features needed at all.
+          # Idempotent by construction: once a dep is rewritten to
+          # @executable_path/..., otool -L no longer reports it under
+          # /opt/homebrew|/usr/local, so re-scanning an already-fixed
+          # file is a real, harmless no-op.
+          BINPATH="dist-editor-macos/editor-demo"
+          LIBDIR="dist-editor-macos/lib"
+          changed=1
+          while [ "$changed" -eq 1 ]; do
+            changed=0
+            for current in "$BINPATH" "$LIBDIR"/*; do
+              [ -f "$current" ] || continue
+              deps="$(otool -L "$current" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/' || true)"
+              for dep in $deps; do
+                base="$(basename "$dep")"
+                target="$LIBDIR/$base"
+                if [ ! -f "$target" ]; then
+                  cp "$dep" "$target"
+                  chmod u+w "$target"
+                  install_name_tool -id "@executable_path/lib/$base" "$target"
+                  changed=1
+                fi
+                install_name_tool -change "$dep" "@executable_path/lib/$base" "$current"
+              done
+            done
+          done
+          # Real, ad-hoc (no Apple Developer certificate needed) re-sign
+          # -- required for the binary to even LAUNCH on Apple Silicon:
+          # rewriting load commands via install_name_tool invalidates
+          # any existing signature, and arm64 macOS refuses to run a
+          # binary with no signature at all (unlike Intel, which is more
+          # lenient). This is NOT the same as real notarization/a signed
+          # release (a genuinely separate, much bigger undertaking
+          # needing a paid Apple Developer account) -- an unsigned-by-a-
+          # real-identity binary will still show Gatekeeper's own
+          # "unidentified developer" warning on first launch, a real,
+          # separate, pre-existing limitation of any binary distributed
+          # this way, not something this bundling step makes worse.
+          for f in "$LIBDIR"/*; do
+            if [ -f "$f" ]; then codesign --force --sign - "$f"; fi
+          done
+          codesign --force --sign - "$BINPATH"
+          echo "Bundled dylibs:" && ls -lh "$LIBDIR"
 
       - name: Upload editor-demo (macOS)
         uses: actions/upload-artifact@v4
@@ -479,13 +551,15 @@ jobs:
           chmod +x dist/parena
           chmod +x dist-editor/linux/editor-demo
           chmod +x dist-editor/macos/editor-demo
-          # Linux/macOS: real tar.gz. Linux includes the bundled lib/ dir
-          # the build_and_test job's own patchelf/RPATH step set up; both
-          # include the bundled JetBrainsMono-Regular.ttf font (real,
-          # confirmed-live bug fix, 2026-08-26 -- see examples/
-          # editor_main.c's own open_font_with_fallback header comment).
+          # Linux/macOS: real tar.gz. Both include a real bundled lib/
+          # dir (Linux via patchelf/RPATH, macOS via otool/
+          # install_name_tool/codesign -- see each platform's own real
+          # bundling step earlier in this file) and the bundled
+          # JetBrainsMono-Regular.ttf font (real, confirmed-live bug
+          # fix, 2026-08-26 -- see examples/editor_main.c's own
+          # open_font_with_fallback header comment).
           tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf
-          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo JetBrainsMono-Regular.ttf
+          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo lib JetBrainsMono-Regular.ttf
           (cd dist-editor/windows && zip -r ../../editor-demo-windows-x86_64.zip .)
 
       - name: Compute next minor version
