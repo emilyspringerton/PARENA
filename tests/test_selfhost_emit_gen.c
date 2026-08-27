@@ -187,6 +187,7 @@ int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
 Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
 int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
@@ -364,6 +365,10 @@ Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((un
     } else {
     return result_err(ParseError_box(dest, ParseError_new("not a valid integer")));
     }
+}
+
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
 }
 
 int starts_with_sign_(char * s __attribute__((unused))) {

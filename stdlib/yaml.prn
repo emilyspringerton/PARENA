@@ -150,11 +150,6 @@
 
 ;; --- scalar parsing -------------------------------------------------
 
-(defn parse-f64-raw [(s : String @ :region/scratch)]
-  : F64
-  #target
-  {:c (inline-c "strtod(s, NULL)")})
-
 ;; looks-numeric? — real, narrow check: every character is a digit,
 ;; '-', '+', or '.', and at least one digit exists. Deliberately
 ;; conservative — a string like "-" or "." alone falls through to
@@ -208,7 +203,7 @@
       ((string/str-eq? raw "~") YNull)
       ((string/str-eq? raw "true") (YBool true))
       ((string/str-eq? raw "false") (YBool false))
-      ((looks-numeric? raw) (YNumber (parse-f64-raw raw)))
+      ((looks-numeric? raw) (YNumber (string/parse-f64-raw raw)))
       ((or (= (string/char-at raw 0) 34) (= (string/char-at raw 0) 39))
         (YString (unquote raw dest)))
       (true (YString raw)))))

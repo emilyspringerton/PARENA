@@ -59,7 +59,7 @@
 (import regex/syntax)
 (import string)
 (import vec)
-(export compile is-match find find-all replace pattern-supported?)
+(export compile is-match find find-all replace pattern-supported? unbox-bool match-start-i32 match-end-i32)
 
 (defstruct MatchBudget (max-steps : I32))
 (defstruct Regex (ast : PatternAst @ Region) (budget : MatchBudget))
@@ -82,8 +82,8 @@
 ;; (Concat/Alt/Star/Group) so a real, complex pattern that only USES
 ;; unsupported syntax somewhere deep inside is still caught, not just
 ;; a bare top-level `+`/`?`/`^`/`$`.
-;; unbox-anchor-kind -- same real, separate gap as grep.prn's own
-;; unbox-bool: `(Anchor kind)`'s single-field bind reports `kind` as
+;; unbox-anchor-kind -- same real gap unbox-bool (below) already
+;; documents: `(Anchor kind)`'s single-field bind reports `kind` as
 ;; the generic `void *` marker, not `AnchorKind *`/`AnchorKind` --
 ;; confirmed directly (gcc: "expected AnchorKind but argument is of
 ;; type void *"). Same `&Any`-typed #target escape hatch.
@@ -91,6 +91,25 @@
   : AnchorKind
   #target
   {:c (inline-c "*(AnchorKind *)k")})
+
+;; unbox-bool -- real, narrow FFI helper: a match-bound Bool payload's
+;; `deref` can't be used directly (its own tracked type is already the
+;; generic erased "void *"), so a raw #target cast recovers the real
+;; int underneath. Consolidated here 2026-08-27 (founder real-time:
+;; "there is a lot of c ffi maybe we can replace some of it") from two
+;; real, byte-for-byte identical copies this file's own is-match
+;; callers (awk.prn, grep.prn) each carried independently -- grep.prn's
+;; own original header comment on its copy explicitly noted duplicating
+;; into awk.prn rather than exporting "purely for this one call site,"
+;; a real, considered tradeoff at the time that no longer holds now
+;; that 2 separate files need it against the exact same real boxed
+;; Result this module's own is-match already produces -- this module
+;; is already a shared dependency both call sites import, so it's the
+;; real, natural home, not a new dependency for either.
+(defn unbox-bool [(b : &Any)]
+  : Bool
+  #target
+  {:c (inline-c "*(int *)b")})
 
 ;; anchor-kind-supported? -- WordBoundary is a real AnchorKind variant
 ;; but the parser never produces it (see anchor-matches?'s own header

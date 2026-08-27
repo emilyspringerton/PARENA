@@ -43,11 +43,15 @@
 ;;    #target" call `net/tcp.prn`'s own honest gap notes already
 ;;    establish as this stdlib's house pattern.
 ;; 4. Number parsing (int or float, since JSON has one numeric type)
-;;    goes through a local `#target` `strtod` wrapper — `string.prn`'s
-;;    own `parse-i32` only handles integers; JSON numbers can carry a
-;;    fractional part/exponent. Kept local to this file rather than
-;;    added to `string.prn` itself — out of scope for what this file was
-;;    actually asked to do.
+;;    goes through `string/parse-f64-raw`, a `strtod` wrapper —
+;;    `string.prn`'s own `parse-i32` only handles integers; JSON
+;;    numbers can carry a fractional part/exponent. Originally a local
+;;    copy kept in this file ("out of scope for what this file was
+;;    asked to do"); consolidated into string.prn 2026-08-27 (founder
+;;    real-time: "there is a lot of c ffi maybe we can replace some of
+;;    it") once yaml.prn turned out to need the exact same byte-for-
+;;    byte function — see string.prn's own header comment on
+;;    parse-f64-raw for the real reasoning.
 
 (module json)
 (import string)
@@ -90,13 +94,6 @@
     #target
     {:c (inline-c "host_json_unescape(s, start, end, out);")}
     out))
-
-;; Real host-side strtod wrapper — string.prn's own parse-i32 only
-;; covers integers; JSON numbers can carry a fractional part/exponent.
-(defn parse-f64-raw [(s : String @ :region/scratch)]
-  : F64
-  #target
-  {:c (inline-c "strtod(s, NULL)")})
 
 (defn is-whitespace? [(c : I32)]
   : Bool
@@ -181,7 +178,7 @@
           (if (= p pos)
             (Err (JsonError "invalid number" pos))
             (let [slice (string/substring s pos p dest)]
-              (Ok (JsonStep (JNumber (parse-f64-raw slice)) p)))))))))
+              (Ok (JsonStep (JNumber (string/parse-f64-raw slice)) p)))))))))
 
 ;; find-string-end — scans past the closing '"' of a string literal
 ;; starting at `pos` (which must point AT the opening quote), honoring

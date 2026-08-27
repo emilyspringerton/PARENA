@@ -292,6 +292,7 @@ int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
 Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
 int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
@@ -307,6 +308,7 @@ int find_class_close(char *, int, int);
 Result parse_class(char *, int, int, Arena *);
 Result compile(char *, MatchBudget, Arena *);
 AnchorKind unbox_anchor_kind(void *);
+int unbox_bool(void *);
 int anchor_kind_supported_(AnchorKind);
 int node_supported_(PatternNode *);
 int all_nodes_supported_(Vec *, int);
@@ -407,8 +409,6 @@ void close_font(Font);
 Result render_text(Renderer *, Font *, char *, int, int, int, int, int, Arena *);
 int measure_text_width(Font *, char *);
 int measure_text_height(Font *, char *);
-int tm_match_start(Match *);
-int tm_match_end(Match *);
 int tm_token_end(Token *);
 char * tm_token_scope(Token *, Arena *);
 Result compile_rule(char *, char *, Arena *);
@@ -581,6 +581,10 @@ Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((un
     } else {
     return result_err(ParseError_box(dest, ParseError_new("not a valid integer")));
     }
+}
+
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
 }
 
 int starts_with_sign_(char * s __attribute__((unused))) {
@@ -870,6 +874,10 @@ Result compile(char * pattern __attribute__((unused)), MatchBudget budget __attr
 
 AnchorKind unbox_anchor_kind(void * k __attribute__((unused))) {
     return (*(AnchorKind *)k);
+}
+
+int unbox_bool(void * b __attribute__((unused))) {
+    return (*(int *)b);
 }
 
 int anchor_kind_supported_(AnchorKind kind __attribute__((unused))) {
@@ -1835,14 +1843,6 @@ int measure_text_height(Font * f __attribute__((unused)), char * text __attribut
     return sdl2_raw_measure_text_height((f)->handle, text);
 }
 
-int tm_match_start(Match * m __attribute__((unused))) {
-    return (((Match *)m)->start);
-}
-
-int tm_match_end(Match * m __attribute__((unused))) {
-    return (((Match *)m)->end);
-}
-
 int tm_token_end(Token * t __attribute__((unused))) {
     return (((Token *)t)->end);
 }
@@ -1877,8 +1877,8 @@ Option try_rules_at(Vec * rules __attribute__((unused)), char * remaining __attr
     Option __match_tmp_22 = (*((Option *)(maybe_m)));
     if (__match_tmp_22.tag == 1) {
         void *m __attribute__((unused)) = __match_tmp_22.value;
-        if ((tm_match_start(m) == 0)) {
-        __match_result_16 = option_some(Token_box(dest, Token_new(0, tm_match_end(m), (rule)->scope)));
+        if ((match_start_i32(m) == 0)) {
+        __match_result_16 = option_some(Token_box(dest, Token_new(0, match_end_i32(m), (rule)->scope)));
         } else {
         __match_result_16 = try_rules_at(rules, remaining, (idx + 1), dest);
         }

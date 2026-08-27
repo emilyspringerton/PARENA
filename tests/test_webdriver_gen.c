@@ -8,7 +8,7 @@
 typedef struct {
     char * message;
 } ParseError;
-static inline ParseError ParseError_new(char * message) {
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
     ParseError v;
     v.message = message;
     return v;
@@ -23,16 +23,16 @@ typedef enum {
     JsonValue_TAG_JObject,
 } JsonValue_Tag;
 typedef struct { JsonValue_Tag tag; void *value; } JsonValue;
-static inline JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
-static inline JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
-static inline JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
-static inline JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
-static inline JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
 typedef struct {
     Vec keys;
     Vec values;
 } JsonValue_JObject_Payload;
-static inline JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
+static inline __attribute__((unused)) JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
     JsonValue_JObject_Payload *p = (JsonValue_JObject_Payload *)arena_alloc(dest, sizeof(JsonValue_JObject_Payload));
     p->keys = keys;
     p->values = values;
@@ -43,7 +43,7 @@ typedef struct {
     char * message;
     int pos;
 } JsonError;
-static inline JsonError JsonError_new(char * message, int pos) {
+static inline __attribute__((unused)) JsonError JsonError_new(char * message, int pos) {
     JsonError v;
     v.message = message;
     v.pos = pos;
@@ -54,7 +54,7 @@ typedef struct {
     JsonValue value;
     int next;
 } JsonStep;
-static inline JsonStep JsonStep_new(JsonValue value, int next) {
+static inline __attribute__((unused)) JsonStep JsonStep_new(JsonValue value, int next) {
     JsonStep v;
     v.value = value;
     v.next = next;
@@ -66,7 +66,7 @@ typedef struct {
     JsonValue value;
     int next;
 } MemberStep;
-static inline MemberStep MemberStep_new(char * key, JsonValue value, int next) {
+static inline __attribute__((unused)) MemberStep MemberStep_new(char * key, JsonValue value, int next) {
     MemberStep v;
     v.key = key;
     v.value = value;
@@ -77,7 +77,7 @@ static inline MemberStep MemberStep_new(char * key, JsonValue value, int next) {
 typedef struct {
     int fd;
 } TcpListener;
-static inline TcpListener TcpListener_new(int fd) {
+static inline __attribute__((unused)) TcpListener TcpListener_new(int fd) {
     TcpListener v;
     v.fd = fd;
     return v;
@@ -86,7 +86,7 @@ static inline TcpListener TcpListener_new(int fd) {
 typedef struct {
     int fd;
 } TcpStream;
-static inline TcpStream TcpStream_new(int fd) {
+static inline __attribute__((unused)) TcpStream TcpStream_new(int fd) {
     TcpStream v;
     v.fd = fd;
     return v;
@@ -99,10 +99,10 @@ typedef enum {
     NetError_TAG_Other,
 } NetError_Tag;
 typedef struct { NetError_Tag tag; void *value; } NetError;
-static inline NetError NetError_ConnectionRefused(void) { NetError v; v.tag = NetError_TAG_ConnectionRefused; v.value = NULL; return v; }
-static inline NetError NetError_Timeout(void) { NetError v; v.tag = NetError_TAG_Timeout; v.value = NULL; return v; }
-static inline NetError NetError_AddressInUse(void) { NetError v; v.tag = NetError_TAG_AddressInUse; v.value = NULL; return v; }
-static inline NetError NetError_Other(void) { NetError v; v.tag = NetError_TAG_Other; v.value = NULL; return v; }
+static inline __attribute__((unused)) NetError NetError_ConnectionRefused(void) { NetError v; v.tag = NetError_TAG_ConnectionRefused; v.value = NULL; return v; }
+static inline __attribute__((unused)) NetError NetError_Timeout(void) { NetError v; v.tag = NetError_TAG_Timeout; v.value = NULL; return v; }
+static inline __attribute__((unused)) NetError NetError_AddressInUse(void) { NetError v; v.tag = NetError_TAG_AddressInUse; v.value = NULL; return v; }
+static inline __attribute__((unused)) NetError NetError_Other(void) { NetError v; v.tag = NetError_TAG_Other; v.value = NULL; return v; }
 
 typedef struct {
     int status;
@@ -110,7 +110,7 @@ typedef struct {
     Vec header_values;
     char * body;
 } HttpResponse;
-static inline HttpResponse HttpResponse_new(int status, Vec header_names, Vec header_values, char * body) {
+static inline __attribute__((unused)) HttpResponse HttpResponse_new(int status, Vec header_names, Vec header_values, char * body) {
     HttpResponse v;
     v.status = status;
     v.header_names = header_names;
@@ -124,7 +124,7 @@ typedef struct {
     int port;
     char * session_id;
 } Session;
-static inline Session Session_new(char * host, int port, char * session_id) {
+static inline __attribute__((unused)) Session Session_new(char * host, int port, char * session_id) {
     Session v;
     v.host = host;
     v.port = port;
@@ -138,31 +138,34 @@ typedef enum {
     WebDriverError_TAG_ProtocolError,
 } WebDriverError_Tag;
 typedef struct { WebDriverError_Tag tag; void *value; } WebDriverError;
-static inline WebDriverError WebDriverError_ConnectFailed(void) { WebDriverError v; v.tag = WebDriverError_TAG_ConnectFailed; v.value = NULL; return v; }
-static inline WebDriverError WebDriverError_BadResponse(void) { WebDriverError v; v.tag = WebDriverError_TAG_BadResponse; v.value = NULL; return v; }
-static inline WebDriverError WebDriverError_ProtocolError(void *value) { WebDriverError v; v.tag = WebDriverError_TAG_ProtocolError; v.value = value; return v; }
+static inline __attribute__((unused)) WebDriverError WebDriverError_ConnectFailed(void) { WebDriverError v; v.tag = WebDriverError_TAG_ConnectFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) WebDriverError WebDriverError_BadResponse(void) { WebDriverError v; v.tag = WebDriverError_TAG_BadResponse; v.value = NULL; return v; }
+static inline __attribute__((unused)) WebDriverError WebDriverError_ProtocolError(void *value) { WebDriverError v; v.tag = WebDriverError_TAG_ProtocolError; v.value = value; return v; }
 
 typedef enum {
     ProcessError_TAG_SpawnFailed,
     ProcessError_TAG_KillFailed,
 } ProcessError_Tag;
 typedef struct { ProcessError_Tag tag; void *value; } ProcessError;
-static inline ProcessError ProcessError_SpawnFailed(void) { ProcessError v; v.tag = ProcessError_TAG_SpawnFailed; v.value = NULL; return v; }
-static inline ProcessError ProcessError_KillFailed(void) { ProcessError v; v.tag = ProcessError_TAG_KillFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) ProcessError ProcessError_SpawnFailed(void) { ProcessError v; v.tag = ProcessError_TAG_SpawnFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) ProcessError ProcessError_KillFailed(void) { ProcessError v; v.tag = ProcessError_TAG_KillFailed; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
+int contains_ci_(char *, char *);
 int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
 Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
 int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
 char * json_unescape(char *, int, int, Arena *);
-double parse_f64_raw(char *);
 int is_whitespace_(int);
 int skip_ws(char *, int);
 Result parse(char *, Arena *);
@@ -193,7 +196,6 @@ int find_colon(char *);
 char * trim_trailing_cr(char *, Arena *);
 char * trim_leading_space(char *, Arena *);
 char * build_request(char *, char *, char *, Option, Arena *);
-char * i32_to_string(int, Arena *);
 int parse_status_line(char *, Arena *);
 HttpResponse parse_http_response(char *, Arena *);
 Result http_request(char *, char *, int, char *, Option, Arena *);
@@ -311,6 +313,22 @@ int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) 
     return (strcmp(a, b) == 0);
 }
 
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
+int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
+    return (string_contains_ci_impl(haystack, needle) != 0);
+}
+
 int is_digit_(int c __attribute__((unused))) {
     return ((c >= 48) && (c <= 57));
 }
@@ -331,6 +349,10 @@ Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((un
     } else {
     return result_err(ParseError_box(dest, ParseError_new("not a valid integer")));
     }
+}
+
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
 }
 
 int starts_with_sign_(char * s __attribute__((unused))) {
@@ -408,10 +430,6 @@ char * json_unescape(char * s __attribute__((unused)), int start __attribute__((
     return out;
 }
 
-double parse_f64_raw(char * s __attribute__((unused))) {
-    return (strtod(s, NULL));
-}
-
 int is_whitespace_(int c __attribute__((unused))) {
     return ((c == 32) || ((c == 9) || ((c == 10) || (c == 13))));
 }
@@ -435,7 +453,7 @@ int skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
 
 Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(text);
-    Result __match_result_0 __attribute__((unused));
+    Result __match_result_0 __attribute__((unused)) = {0};
     Result __match_tmp_0 = parse_value(text, skip_ws(text, 0), dest);
     if (__match_tmp_0.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_0.value;
@@ -563,7 +581,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     if (((p1 < n) && (char_at(s, p1) == 93))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p1 + 1))));
     } else {
-    Result __match_result_1 __attribute__((unused));
+    Result __match_result_1 __attribute__((unused)) = {0};
     Result __match_tmp_1 = parse_value(s, p1, dest);
     if (__match_tmp_1.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_1.value;
@@ -616,7 +634,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
     if (((p1 < n) && (char_at(s, p1) == 125))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p1 + 1))));
     } else {
-    Result __match_result_2 __attribute__((unused));
+    Result __match_result_2 __attribute__((unused)) = {0};
     Result __match_tmp_3 = parse_member(s, p1, dest);
     if (__match_tmp_3.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_3.value;
@@ -677,7 +695,7 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
     if (((p1 >= n) || (!((char_at(s, p1) == 58))))) {
     return result_err(JsonError_box(dest, JsonError_new("expected ':' after key", p1)));
     } else {
-    Result __match_result_3 __attribute__((unused));
+    Result __match_result_3 __attribute__((unused)) = {0};
     Result __match_tmp_5 = parse_value(s, skip_ws(s, (p1 + 1)), dest);
     if (__match_tmp_5.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_5.value;
@@ -694,7 +712,7 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
 }
 
 Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused))) {
-    Option __match_result_4 __attribute__((unused));
+    Option __match_result_4 __attribute__((unused)) = {0};
     JsonValue __match_tmp_6 = v;
     if (__match_tmp_6.tag == 5) {
         JsonValue_JObject_Payload *__match_payload_6 = (JsonValue_JObject_Payload *)(__match_tmp_6.value);
@@ -725,7 +743,7 @@ Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused
 }
 
 Option as_string(JsonValue v __attribute__((unused))) {
-    Option __match_result_5 __attribute__((unused));
+    Option __match_result_5 __attribute__((unused)) = {0};
     JsonValue __match_tmp_7 = v;
     if (__match_tmp_7.tag == 3) {
         void *s __attribute__((unused)) = __match_tmp_7.value;
@@ -871,7 +889,7 @@ char * trim_leading_space(char * s __attribute__((unused)), Arena *dest __attrib
 
 char * build_request(char * method __attribute__((unused)), char * host __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *head __attribute__((unused)) = concat(concat(concat(concat(concat(method, " ", dest), path, dest), " HTTP/1.1\nHost: ", dest), host, dest), "\nConnection: close\n", dest);
-    char * __match_result_6 __attribute__((unused));
+    char * __match_result_6 __attribute__((unused)) = {0};
     Option __match_tmp_8 = body;
     if (__match_tmp_8.tag == 1) {
         void *b __attribute__((unused)) = __match_tmp_8.value;
@@ -883,16 +901,12 @@ char * build_request(char * method __attribute__((unused)), char * host __attrib
     return __match_result_6;
 }
 
-char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (({ char buf[16]; snprintf(buf, sizeof buf, "%d", n); arena_strdup(dest, buf, strlen(buf)); }));
-}
-
 int parse_status_line(char * line __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec parts __attribute__((unused)) = split(line, " ", dest);
     if ((vec_len(&(parts)) < 2)) {
     return 0;
     } else {
-    int __match_result_7 __attribute__((unused));
+    int __match_result_7 __attribute__((unused)) = {0};
     Result __match_tmp_9 = parse_i32(vec_get(&(parts), 1), dest);
     if (__match_tmp_9.tag == 1) {
         void *n __attribute__((unused)) = __match_tmp_9.value;
@@ -943,7 +957,7 @@ HttpResponse parse_http_response(char * raw __attribute__((unused)), Arena *dest
 }
 
 Result http_request(char * method __attribute__((unused)), char * host __attribute__((unused)), int port __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_8 __attribute__((unused));
+    Result __match_result_8 __attribute__((unused)) = {0};
     Result __match_tmp_10 = tcp_connect(host, port, dest);
     if (__match_tmp_10.tag == 1) {
         void *stream __attribute__((unused)) = __match_tmp_10.value;
@@ -1015,7 +1029,7 @@ char * json_escape_string(char * s __attribute__((unused)), Arena *dest __attrib
 }
 
 Result do_request(char * method __attribute__((unused)), char * host __attribute__((unused)), int port __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_9 __attribute__((unused));
+    Result __match_result_9 __attribute__((unused)) = {0};
     Result __match_tmp_12 = http_request(method, host, port, path, body, dest);
     if (__match_tmp_12.tag == 0) {
         void *_ __attribute__((unused)) = __match_tmp_12.value;
@@ -1050,7 +1064,7 @@ Result do_request(char * method __attribute__((unused)), char * host __attribute
 }
 
 Result new_session(char * host __attribute__((unused)), int port __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_10 __attribute__((unused));
+    Result __match_result_10 __attribute__((unused)) = {0};
     Result __match_tmp_15 = do_request("POST", host, port, "/session", option_some("{\"capabilities\":{\"alwaysMatch\":{}}}"), dest);
     if (__match_tmp_15.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_15.value;
@@ -1080,7 +1094,7 @@ Result new_session(char * host __attribute__((unused)), int port __attribute__((
 Result navigate_to(Session * sess __attribute__((unused)), char * url __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/url", dest);
     char *body __attribute__((unused)) = concat(concat("{\"url\":\"", json_escape_string(url, dest), dest), "\"}", dest);
-    Result __match_result_11 __attribute__((unused));
+    Result __match_result_11 __attribute__((unused)) = {0};
     Result __match_tmp_18 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
     if (__match_tmp_18.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_18.value;
@@ -1096,7 +1110,7 @@ Result navigate_to(Session * sess __attribute__((unused)), char * url __attribut
 Result find_element(Session * sess __attribute__((unused)), char * css_selector __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/element", dest);
     char *body __attribute__((unused)) = concat(concat("{\"using\":\"css selector\",\"value\":\"", json_escape_string(css_selector, dest), dest), "\"}", dest);
-    Result __match_result_12 __attribute__((unused));
+    Result __match_result_12 __attribute__((unused)) = {0};
     Result __match_tmp_19 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
     if (__match_tmp_19.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_19.value;
@@ -1125,7 +1139,7 @@ Result find_element(Session * sess __attribute__((unused)), char * css_selector 
 
 Result element_click(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/click", dest);
-    Result __match_result_13 __attribute__((unused));
+    Result __match_result_13 __attribute__((unused)) = {0};
     Result __match_tmp_22 = do_request("POST", (sess)->host, (sess)->port, path, option_some("{}"), dest);
     if (__match_tmp_22.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_22.value;
@@ -1141,7 +1155,7 @@ Result element_click(Session * sess __attribute__((unused)), char * element_id _
 Result element_send_keys(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/value", dest);
     char *body __attribute__((unused)) = concat(concat("{\"text\":\"", json_escape_string(text, dest), dest), "\"}", dest);
-    Result __match_result_14 __attribute__((unused));
+    Result __match_result_14 __attribute__((unused)) = {0};
     Result __match_tmp_23 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
     if (__match_tmp_23.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_23.value;
@@ -1156,7 +1170,7 @@ Result element_send_keys(Session * sess __attribute__((unused)), char * element_
 
 Result element_text(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/text", dest);
-    Result __match_result_15 __attribute__((unused));
+    Result __match_result_15 __attribute__((unused)) = {0};
     Result __match_tmp_24 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
     if (__match_tmp_24.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_24.value;
@@ -1178,7 +1192,7 @@ Result element_text(Session * sess __attribute__((unused)), char * element_id __
 
 Result page_title(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/title", dest);
-    Result __match_result_16 __attribute__((unused));
+    Result __match_result_16 __attribute__((unused)) = {0};
     Result __match_tmp_26 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
     if (__match_tmp_26.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_26.value;
@@ -1200,7 +1214,7 @@ Result page_title(Session * sess __attribute__((unused)), Arena *dest __attribut
 
 Result quit_session(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *path __attribute__((unused)) = concat("/session/", (sess)->session_id, dest);
-    Result __match_result_17 __attribute__((unused));
+    Result __match_result_17 __attribute__((unused)) = {0};
     Result __match_tmp_28 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
     if (__match_tmp_28.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_28.value;

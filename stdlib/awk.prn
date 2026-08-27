@@ -81,21 +81,11 @@
           (expr/eval (get-field rule :action) &b dest)))
       (recur (+ i 1)))))
 
-;; unbox-bool -- same real, narrow FFI helper grep.prn's own copy already established
-;; (see that file's own header comment on it): a boxed Bool payload's `deref` can't be
-;; used directly (its own tracked type is already the generic erased "void *"), so a
-;; raw #target cast recovers the real int underneath. Duplicated here rather than
-;; imported from grep.prn purely for this one call site (grep.prn doesn't export it).
-(defn unbox-bool [(b : &Any)]
-  : Bool
-  #target
-  {:c (inline-c "*(int *)b")})
-
 (defn rule-matches? [(rule : &AwkRule) (rec : Record) (dest : Arena @ Region)]
   : Bool
   (match (get-field (deref rule) :pattern)
     (None true)
-    ((Some re) (match (regex/pcre/is-match re (join-fields rec dest) dest) ((Ok m) (unbox-bool m)) ((Err _) false)))))
+    ((Some re) (match (regex/pcre/is-match re (join-fields rec dest) dest) ((Ok m) (regex/pcre/unbox-bool m)) ((Err _) false)))))
 
 ;; bindings-for seeds NR/NF/$1../$N — the real awk variable surface a
 ;; program's action expressions reference.

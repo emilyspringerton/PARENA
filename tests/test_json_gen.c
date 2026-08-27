@@ -84,12 +84,12 @@ int is_digit_(int);
 char * substring(char *, int, int, Arena *);
 int raw_parse_i32(char *);
 Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
 int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
 char * json_unescape(char *, int, int, Arena *);
-double parse_f64_raw(char *);
 int is_whitespace_(int);
 int skip_ws(char *, int);
 Result parse(char *, Arena *);
@@ -202,6 +202,10 @@ Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((un
     }
 }
 
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
+}
+
 int starts_with_sign_(char * s __attribute__((unused))) {
     return ((char_at(s, 0) == 45) || (char_at(s, 0) == 43));
 }
@@ -275,10 +279,6 @@ char * json_unescape(char * s __attribute__((unused)), int start __attribute__((
     char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((end - start)) + 1);
     host_json_unescape(s, start, end, out);
     return out;
-}
-
-double parse_f64_raw(char * s __attribute__((unused))) {
-    return (strtod(s, NULL));
 }
 
 int is_whitespace_(int c __attribute__((unused))) {

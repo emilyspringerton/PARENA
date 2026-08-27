@@ -6,7 +6,7 @@
 
 (module string)
 (import vec)
-(export parse-i32 length concat split char-at char-from-code i32-to-string str-eq? contains-ci? is-digit? substring ParseError)
+(export parse-i32 length concat split char-at char-from-code i32-to-string str-eq? contains-ci? is-digit? substring ParseError parse-f64-raw)
 
 (defn length [(s : String @ Region)]
   : I32
@@ -118,6 +118,26 @@
   (if (is-valid-i32-text? s)
     (Ok (raw-parse-i32 s))
     (Err (ParseError "not a valid integer"))))
+
+;; parse-f64-raw -- exported (unlike raw-parse-i32 above): json.prn and
+;; yaml.prn each independently carried a byte-for-byte identical copy
+;; of this exact function (both named `parse-f64-raw`, both `#target
+;; {:c (inline-c "strtod(s, NULL)")}`), each already doing their own
+;; real validation (JSON's own digit-scanning, YAML's own
+;; looks-numeric?) before calling it -- the same real "validate first,
+;; then trust a raw libc parse" shape raw-parse-i32/parse-i32 already
+;; establish, just without a single shared, generic Result wrapper
+;; either format's own real error type could reuse (JsonError and
+;; YamlError are real, format-specific types, not a generic
+;; ParseError). Consolidated here 2026-08-27 (founder real-time:
+;; "there is a lot of c ffi maybe we can replace some of it") as the
+;; one real shared raw primitive both formats now call directly,
+;; exported specifically because neither caller wants string.prn's own
+;; validation (they already have their own).
+(defn parse-f64-raw [(s : String @ :region/scratch)]
+  : F64
+  #target
+  {:c (inline-c "strtod(s, NULL)")})
 
 ;; Real bug found and fixed here (2026-08-21): this used to call
 ;; `(substring s 0 1 s)`, passing s itself where substring's own dest

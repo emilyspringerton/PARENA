@@ -57,20 +57,20 @@
 (defenum TmError
   (BadPattern))
 
-;; Real #target accessors, same shape as regex/pcre.prn's own private
-;; match-start-i32/match-end-i32 -- see this file's own header comment.
-;; Called WITHOUT `&` at their own call sites below: `m`/`t` there come
-;; from a match-clause's own (Some x) binding, which is already an
-;; untyped pointer value (not a plain struct local needing its address
-;; taken) -- confirmed live via a real gcc "incompatible pointer type"
-;; error trying `&m`, not assumed.
-(defn tm-match-start [(m : &Match)] : I32
-  #target
-  {:c (inline-c "((Match *)m)->start")})
-
-(defn tm-match-end [(m : &Match)] : I32
-  #target
-  {:c (inline-c "((Match *)m)->end")})
+;; tm-match-start/tm-match-end used to be their own separate #target
+;; accessors here, byte-for-byte identical to regex/pcre.prn's own
+;; match-start-i32/match-end-i32 (same real Match struct -- this file
+;; already imports regex/pcre and never defines its own Match type, so
+;; it was always really pcre's own struct under a second, private
+;; name). Consolidated 2026-08-27 (founder real-time: "there is a lot
+;; of c ffi maybe we can replace some of it") into direct calls to
+;; regex/pcre's own now-exported match-start-i32/match-end-i32 below --
+;; no new dependency, this file already imports that module for
+;; compile/find. Called WITHOUT `&` at their own call sites below:
+;; `m`/`t` there come from a match-clause's own (Some x) binding, which
+;; is already an untyped pointer value (not a plain struct local
+;; needing its address taken) -- confirmed live via a real gcc
+;; "incompatible pointer type" error trying `&m`, not assumed.
 
 ;; Same real gap, same real workaround, for reading Token's own fields
 ;; back out of a match-bound local (try-rules-at's own `(Some t)`).
@@ -107,8 +107,8 @@
         ((Ok maybe-m)
           (match (deref maybe-m)
             ((Some m)
-              (if (= (tm-match-start m) 0)
-                (Some {:start 0 :end (tm-match-end m) :scope (get-field rule :scope)})
+              (if (= (regex/pcre/match-start-i32 m) 0)
+                (Some {:start 0 :end (regex/pcre/match-end-i32 m) :scope (get-field rule :scope)})
                 (try-rules-at rules remaining (+ idx 1) dest)))
             (None (try-rules-at rules remaining (+ idx 1) dest))))
         ((Err e) (try-rules-at rules remaining (+ idx 1) dest))))))

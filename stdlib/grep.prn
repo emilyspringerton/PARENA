@@ -22,23 +22,21 @@
 (defenum Engine (Nfa) (Pcre) (Posix))
 
 ;; unbox-bool -- real, second bug found alongside the (Ok true)
-;; literal-pattern one, same real class: even after binding is-match's
-;; own Ok payload to a real name (`matched`, not the literal `true`),
-;; it's still bound as a generic `void *` (the boxed cell's own
-;; ADDRESS), not the real boolean it points to -- `(if matched ...)`
-;; checks whether that address is non-NULL, which it always is for any
-;; successfully-boxed value, real or false. `deref` can't help here
-;; (its own cast target comes from the value's OWN tracked type, which
-;; is already the generic "void *" -- dereferencing THAT is real,
-;; invalid C, same class of gap `vec-i32-at`-style helpers elsewhere
-;; this session already work around). `&Any` as the param type
-;; resolves to exactly "void *" in C (resolve_declared_type's own
-;; reference-type branch), matching the boxed value's real
-;; representation with no cast needed at the call site.
-(defn unbox-bool [(b : &Any)]
-  : Bool
-  #target
-  {:c (inline-c "*(int *)b")})
+;; literal-pattern one below, same real class: even after binding
+;; is-match's own Ok payload to a real name (`matched`, not the
+;; literal `true`), it's still bound as a generic `void *` (the boxed
+;; cell's own ADDRESS), not the real boolean it points to -- `(if
+;; matched ...)` checks whether that address is non-NULL, which it
+;; always is for any successfully-boxed value, real or false. `deref`
+;; can't help here (its own cast target comes from the value's OWN
+;; tracked type, which is already the generic "void *" -- same class
+;; of gap `vec-i32-at`-style helpers elsewhere this session already
+;; work around). Consolidated 2026-08-27 (founder real-time: "there is
+;; a lot of c ffi maybe we can replace some of it") into
+;; regex/pcre/unbox-bool -- this file already imports regex/pcre for
+;; is-match itself, so calling its own now-exported unbox-bool needs
+;; no new dependency; see that module's own header comment on it for
+;; the real, considered reasoning this used to duplicate instead.
 
 (defn lines-matching [(!f : FileHandle @ :region/task) (pattern : String @ :region/scratch)
                        (engine : Engine) (dest : Arena @ Region)]
@@ -70,7 +68,7 @@
                       ;; all -- silently wrong at RUNTIME, the worst kind. Fixed by
                       ;; binding the real Bool payload and checking it explicitly.
                       (match (regex/pcre/is-match re line dest)
-                        ((Ok matched) (if (unbox-bool matched) (vec/push! &results line) unit))
+                        ((Ok matched) (if (regex/pcre/unbox-bool matched) (vec/push! &results line) unit))
                         (_ unit))
                       (recur)))
                   (None unit)))

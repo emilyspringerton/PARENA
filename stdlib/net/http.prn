@@ -168,20 +168,10 @@
           (string/concat
             (string/concat
               (string/concat head "Content-Type: application/json\nContent-Length: " dest)
-              (i32-to-string (length b) dest) dest)
+              (string/i32-to-string (length b) dest) dest)
             "\n\n" dest)
           b dest))
       (None (string/concat head "\n" dest)))))
-
-;; i32-to-string — string.prn only ships parse-i32 (text -> I32), not
-;; the reverse; needed here for Content-Length. Real, minimal, decimal-
-;; only, non-negative (a body length is never negative) -- narrower
-;; than a general itoa on purpose, matching this stdlib's own house
-;; style of building exactly what the real call site needs.
-(defn i32-to-string [(n : I32) (dest : Arena @ Region)]
-  : String @ Region
-  #target
-  {:c (inline-c "({ char buf[16]; snprintf(buf, sizeof buf, \"%d\", n); arena_strdup(dest, buf, strlen(buf)); })")})
 
 ;; ---- response parsing
 
