@@ -1,0 +1,53 @@
+;; stdlib/redgarden/combat_log_mod.prn — REDGARDEN combat-log v2, same-day
+;; follow-up to bloodflower_mod.prn (S189-01's own first PARENA mod). Same
+;; minimal shape: one function per event, no dispatch table, no plugin
+;; discovery -- five small functions, not a heavier unified system, since
+;; PARENA still can't express a tagged-union payload across the #target
+;; FFI boundary cleanly (checked this session: even a self-referential
+;; JsonValue enum needed a parallel-vec workaround for the same class of
+;; limitation, stdlib/json.prn). The actual unified ArenaLogEntry ring
+;; buffer lives host-side in C (arena_game.h/.c) -- these mods are the
+;; trigger layer: REDGARDEN's sim calls into each of these the instant the
+;; real event happens, and each calls straight back to its own host
+;; log-write function.
+;;
+;; Founder real-time, same session as S189-01: "add kills and item
+;; purchases and node captures and uncaptures and kings spawns to
+;; redgarden combat logs" -> "via parena mod api first development."
+;;
+;; ABI, same #target/inline-c FFI-escape pattern bloodflower_mod.prn/
+;; vterm_mod.prn/editor_plugin.prn already established:
+;;   on-hero-kill      -> redgarden_host_log_kill(victim, killer)
+;;   on-item-purchase  -> redgarden_host_log_purchase(buyer, item_id, cost)
+;;   on-node-capture   -> redgarden_host_log_node_capture(node_id, team)
+;;   on-node-uncapture -> redgarden_host_log_node_uncapture(node_id, team)
+;;   on-king-spawn     -> redgarden_host_log_king_spawn(camp_id)
+;;
+;; NOTE: written from a git-worktree-isolated agent that cannot run git
+;; against PARENA's shared checkout (plain file writes work, git
+;; operations don't) -- this file was written directly to its real
+;; destination, PARENA/stdlib/redgarden/combat_log_mod.prn, but still
+;; needs `git add`/commit/push by whoever has git access to this repo.
+
+(module redgarden/combat-log-mod)
+(export on-hero-kill on-item-purchase on-node-capture on-node-uncapture on-king-spawn)
+
+(defn on-hero-kill [(victim : I32) (killer : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_log_kill(victim, killer);")})
+
+(defn on-item-purchase [(buyer : I32) (item-id : I32) (cost : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_log_purchase(buyer, item_id, cost);")})
+
+(defn on-node-capture [(node-id : I32) (team : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_log_node_capture(node_id, team);")})
+
+(defn on-node-uncapture [(node-id : I32) (team : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_log_node_uncapture(node_id, team);")})
+
+(defn on-king-spawn [(camp-id : I32)] : Unit
+  #target
+  {:c (inline-c "redgarden_host_log_king_spawn(camp_id);")})

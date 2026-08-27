@@ -1,0 +1,48 @@
+;; stdlib/eventstore/seqlock.prn — cross-process sequence-assignment lock
+;; for PRRJECT_FATBABY's eventstore.FileStore. Founder real-time,
+;; 2026-08-25: root-caused a real, live, currently-occurring bug (a
+;; PRNewswire press release rendering with an unrelated NVIDIA SEC 8-K
+;; link) to ~15 separate Go binaries (pr-indexer, processor, secwatch,
+;; entity-graph, form4-watcher, etc.) all appending to the same
+;; var/secwatch event store as independent OS processes, each with its
+;; own in-memory sequence counter and zero cross-process coordination --
+;; confirmed live: sequence 112200 in one real journal file has 5
+;; different records from 2 different processes all claiming it.
+;; Founder: "fix it with parena mod api first."
+;;
+;; Real, minimal fix: an OS-level advisory file lock (flock) around the
+;; read-current-sequence -> increment -> write-record -> persist-sequence
+;; critical section in FileStore.Append, so only one process across the
+;; whole system can be in that section at a time -- the actual missing
+;; cross-process mutual exclusion the existing in-process sync.Mutex
+;; never provided. Deliberately narrow: this module owns only the lock
+;; primitive itself (acquire/release on a dedicated lock file); the
+;; critical-section logic (re-reading persisted state, computing next
+;; sequence, writing records) stays in Go, called under the held lock --
+;; matching io.prn's own "only the genuinely irreducible raw syscall
+;; lives behind #target" discipline, not reinventing file I/O here.
+;;
+;; NOTE: written from a git-worktree-isolated agent that cannot write
+;; into PARENA's shared checkout -- this file's real destination is
+;; PARENA/stdlib/eventstore/seqlock.prn. Parent/founder: copy it there.
+
+(module eventstore/seqlock)
+(export lock-acquire lock-release)
+
+;; lock-acquire opens (creating if needed) the lock file at path and
+;; blocks until an exclusive advisory lock (flock LOCK_EX) is held,
+;; returning the real POSIX fd on success or -1 on failure (open or
+;; flock error) -- the caller checks for -1, matching every other raw-fd
+;; primitive in this stdlib (io.prn's own raw-open convention).
+(defn lock-acquire [(path : String @ Region)] : I32
+  #target
+  {:c (inline-c "eventstore_seqlock_acquire(path)")})
+
+;; lock-release unlocks and closes fd, returning 0 on success or -1 on
+;; failure. Safe to call with a negative fd (a failed acquire's own
+;; return value) -- becomes a real no-op, not a crash, matching
+;; raw_close_impl's own "closing an invalid fd is a caller bug, but
+;; this primitive itself stays defensive" posture.
+(defn lock-release [(fd : I32)] : I32
+  #target
+  {:c (inline-c "eventstore_seqlock_release(fd)")})
