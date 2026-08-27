@@ -697,6 +697,45 @@ int main(int argc, char **argv) {
     Arena a;
     arena_init(&a);
 
+    /* frame_arena -- real, confirmed-live fix (2026-08-27, founder
+     * real-time: opening a large file "still crashes... read some
+     * into memory but not too much... scan or whatever?", and
+     * separately "tryna open a md file... it just beechballed").
+     * Directly measured via a real Xvfb repro + a debug arena-block
+     * counter (not guessed): even after windowing the actual render
+     * call to just the visible line range (see window_start/
+     * window_end below), the render section still allocated ~150-175
+     * fresh 64KB arena blocks (~10-11MB) in the first 60 frames alone
+     * -- and, critically, the SAME order of magnitude for a tiny
+     * 20-line plain-text file as for the real 58k-line construct
+     * file, proving the cost is "re-tokenize + re-render every single
+     * frame regardless of whether anything changed," not something
+     * that scales with file size at all. `a` is shared by everything
+     * genuinely persistent (the buffer's own text, undo/redo stacks,
+     * spotlight results, file-tree entries, ...) and NEVER freed
+     * mid-run by design (this whole program's own bump-allocator
+     * model) -- correct for state that must survive across frames,
+     * wrong for pure per-frame drawing garbage (a tokenized Vec of
+     * Tokens, a handful of Result wrappers) that's produced and
+     * discarded 60 times a second forever. frame_arena is reset
+     * (arena_free_all + arena_init) at the top of every single frame
+     * (see the real event loop below) and used ONLY for the render
+     * section's own ephemeral calls (never for anything the next
+     * frame, or any later frame, needs to still be valid) -- bounds
+     * real per-frame memory to roughly one frame's own drawing cost
+     * instead of every frame ever rendered accumulating forever. A
+     * real, separate, deferred follow-up remains: WHY tokenization
+     * costs this much per byte at all (an actual glyph/token cache
+     * across frames, not just a bounded-and-freed one) needs real
+     * SDL2 render-to-texture host glue that doesn't exist in this
+     * stdlib yet (sdl2.prn's own header comment already documents
+     * "render-text is deliberately NOT a glyph-atlas/texture-cache
+     * system" as a stated v0 tradeoff) -- out of scope here; this fix
+     * closes the actual reported crash (unbounded growth), not the
+     * separate, now-harmless-since-bounded CPU cost. */
+    Arena frame_arena;
+    arena_init(&frame_arena);
+
     Result r = init(&a);
     if (r.tag != 1) { fprintf(stderr, "editor: sdl2 init failed\n"); return 1; }
 
@@ -931,6 +970,15 @@ int main(int argc, char **argv) {
 
     int running = 1;
     while (running) {
+        /* Reset the real, per-frame render arena FIRST, before this
+         * frame does any of its own drawing (frame_arena's own header
+         * comment above has the full reasoning) -- frees every
+         * allocation the PREVIOUS frame's render section made, so
+         * this frame starts from a clean, bounded slate rather than
+         * accumulating on top of every frame ever rendered. */
+        arena_free_all(&frame_arena);
+        arena_init(&frame_arena);
+
         Option ev;
         while ((ev = poll_event(&a)).tag == 1) {
             EventKind kind = *(EventKind *)ev.value;
@@ -1618,9 +1666,9 @@ int main(int argc, char **argv) {
             }
         }
 
-        Result cbg = set_draw_color(&ren, 24, 24, 28, 255, &a);
+        Result cbg = set_draw_color(&ren, 24, 24, 28, 255, &frame_arena);
         (void)cbg;
-        render_clear(&ren, &a);
+        render_clear(&ren, &frame_arena);
 
         /* Real Ctrl+Zoom, applied once per frame (2026-08-27) -- every
          * draw call below (text, cursor, selection, the status bar)
@@ -1628,7 +1676,7 @@ int main(int argc, char **argv) {
          * frame uniformly on present, the exact real technique
          * PITVIPER's own cmd/pitviper/main.go already uses ("zoomScale
          * applied once for the whole frame via SDL's own renderer"). */
-        Result zoomr = render_set_scale(&ren, zoom_percent, &a);
+        Result zoomr = render_set_scale(&ren, zoom_percent, &frame_arena);
         (void)zoomr;
 
         char *text = active_text(&buf);
@@ -1670,7 +1718,7 @@ int main(int argc, char **argv) {
             row_and_line_start_for_pos(text, sel_start, &start_row, &start_line_start);
             row_and_line_start_for_pos(text, sel_end, &end_row, &ignored_line_start);
 
-            Result scol = set_draw_color(&ren, 60, 90, 140, 255, &a);
+            Result scol = set_draw_color(&ren, 60, 90, 140, 255, &frame_arena);
             (void)scol;
             /* cur_line_start walks forward one real line at a time,
              * starting from the selection's own first row -- simpler and
@@ -1681,20 +1729,74 @@ int main(int argc, char **argv) {
                 int line_end = line_end_from(text, cur_line_start);
                 int seg_start = (row == start_row) ? sel_start : cur_line_start;
                 int seg_end = (row == end_row) ? sel_end : line_end;
-                char *before_seg = substring(text, cur_line_start, seg_start, &a);
-                char *seg_text = substring(text, seg_start, seg_end, &a);
+                char *before_seg = substring(text, cur_line_start, seg_start, &frame_arena);
+                char *seg_text = substring(text, seg_start, seg_end, &frame_arena);
                 int x_from = text_x_origin + measure_text_width(&font, before_seg);
                 int width = measure_text_width(&font, seg_text);
                 /* An empty selected segment (e.g. selecting exactly up
                  * to a newline) still gets a thin, visible sliver rather
                  * than vanishing entirely. */
                 if (width < 2) width = 2;
-                render_fill_rect(&ren, x_from, 12 + row * LINE_HEIGHT - scroll_y_px, width, LINE_HEIGHT - 2, &a);
+                render_fill_rect(&ren, x_from, 12 + row * LINE_HEIGHT - scroll_y_px, width, LINE_HEIGHT - 2, &frame_arena);
                 cur_line_start = line_end + 1;
             }
         }
 
-        Result hr = render_highlighted_text(&ren, &font, &rules, text, text_x_origin, 12 - scroll_y_px, LINE_HEIGHT, &a);
+        /* Real windowed render (2026-08-27, founder real-time: opening
+         * a real large file "still crashes... we need to open a
+         * pointer and read some into memory but not too much ya
+         * know? scan or whatever?" -- and separately, live: "tryna
+         * open a md file... it just beechballed"). Confirmed live by
+         * actually measuring it (Xvfb + a real local 2.7MB/58,524-
+         * line PARENA_CONSTRUCT.txt): RSS climbed ~7.5MB/s with NO
+         * bound over a sustained 60-second run -- render-highlighted-
+         * text re-splits (string/split) AND re-tokenizes the WHOLE
+         * file text every single frame regardless of scroll position,
+         * and every one of those allocations lives in the arena
+         * forever (this whole program's own bump-allocator model
+         * never frees mid-run, same real tradeoff this file's own
+         * spawn_new_instance-per-window/undo-stack already carry
+         * elsewhere). Given enough time, or several windows open at
+         * once (the file-tree's own double-click opens a NEW window
+         * per file), that's a real, eventual OOM, not a false alarm.
+         *
+         * Real fix: only pass the VISIBLE window of lines to
+         * render_highlighted_text -- window_start/window_end are
+         * found with a plain byte-offset scan over `text` (counting
+         * '\n' bytes, no allocation), bounding the real per-frame
+         * split/tokenize/render cost -- and its arena cost -- to
+         * however many rows actually fit on screen, independent of
+         * real file size. Safe because tokenize-line is genuinely
+         * stateless per line (stdlib/editor/textmate.prn's own header
+         * comment: "No begin/end multi-line constructs" -- no cross-
+         * line scope state an arbitrary window could cut through and
+         * get wrong). visible_text_rows adds 2 rows of slack so a
+         * partially-visible row at the very top/bottom still renders,
+         * matching this file's own terminal-panel row-count math just
+         * below in spirit. The window starts exactly at scroll_offset,
+         * so it draws at a plain y=12 -- the real "- scroll_y_px"
+         * shift that used to place the FULL text's own scroll_offset-
+         * th line at the top is now already baked into window_start
+         * itself. */
+        int visible_text_rows = (WINDOW_HEIGHT - STATUS_BAR_HEIGHT - 24) / LINE_HEIGHT + 2;
+        int window_start = 0;
+        {
+            int line_i = 0;
+            while (text[window_start] != '\0' && line_i < scroll_offset) {
+                if (text[window_start] == '\n') line_i++;
+                window_start++;
+            }
+        }
+        int window_end = window_start;
+        {
+            int line_i = 0;
+            while (text[window_end] != '\0' && line_i < visible_text_rows) {
+                if (text[window_end] == '\n') line_i++;
+                window_end++;
+            }
+        }
+        char *visible_text = substring(text, window_start, window_end, &frame_arena);
+        Result hr = render_highlighted_text(&ren, &font, &rules, visible_text, text_x_origin, 12, LINE_HEIGHT, &frame_arena);
         (void)hr;
 
         /* Real cursor: a thin filled rect at the real measured pixel
@@ -1704,12 +1806,12 @@ int main(int argc, char **argv) {
         int cpos = cursor_pos(&buf);
         int row, line_start;
         row_and_line_start_for_pos(text, cpos, &row, &line_start);
-        char *before_cursor_on_line = substring(text, line_start, cpos, &a);
+        char *before_cursor_on_line = substring(text, line_start, cpos, &frame_arena);
         int cursor_x = text_x_origin + measure_text_width(&font, before_cursor_on_line);
         int cursor_y = 12 + row * LINE_HEIGHT - scroll_y_px;
-        Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &a);
+        Result ccol = set_draw_color(&ren, 220, 220, 220, 255, &frame_arena);
         (void)ccol;
-        render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &a);
+        render_fill_rect(&ren, cursor_x, cursor_y, 2, 24, &frame_arena);
         } else {
             /* Real terminal panel content (2026-08-27) -- plain
              * monospace text, no syntax highlighting (a real shell's
@@ -1722,9 +1824,9 @@ int main(int argc, char **argv) {
              * follow-up, same "expand only when something real needs
              * it" judgment this whole editor's own widget system
              * already applies elsewhere). */
-            Result tbg = set_draw_color(&ren, 12, 12, 15, 255, &a);
+            Result tbg = set_draw_color(&ren, 12, 12, 15, 255, &frame_arena);
             (void)tbg;
-            render_fill_rect(&ren, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &a);
+            render_fill_rect(&ren, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &frame_arena);
             int visible_term_rows = (WINDOW_HEIGHT - STATUS_BAR_HEIGHT - 24) / LINE_HEIGHT;
             if (visible_term_rows < 1) visible_term_rows = 1;
             int term_line_count = 1;
@@ -1745,7 +1847,7 @@ int main(int argc, char **argv) {
                         if (seg_len > 0) memcpy(term_line, term_output + line_start_i, (size_t)seg_len);
                         term_line[seg_len < 0 ? 0 : seg_len] = '\0';
                         if (term_line[0] != '\0') {
-                            Result trow = render_text(&ren, &font, term_line, 12, 12 + draw_row * LINE_HEIGHT, 200, 220, 200, &a);
+                            Result trow = render_text(&ren, &font, term_line, 12, 12 + draw_row * LINE_HEIGHT, 200, 220, 200, &frame_arena);
                             (void)trow;
                         }
                         draw_row++;
@@ -1755,7 +1857,7 @@ int main(int argc, char **argv) {
                 }
             }
             if (!term_spawned) {
-                Result tmsg = render_text(&ren, &font, "(terminal not spawned -- shell/spawn failed, see stderr)", 12, 12, 220, 120, 120, &a);
+                Result tmsg = render_text(&ren, &font, "(terminal not spawned -- shell/spawn failed, see stderr)", 12, 12, 220, 120, 120, &frame_arena);
                 (void)tmsg;
             }
         }
@@ -1778,7 +1880,7 @@ int main(int argc, char **argv) {
          * coordinates for exactly this reason). No restore needed after
          * -- next frame's own render-set-scale call at the top always
          * re-applies the real current zoom_percent fresh. */
-        Result scalereset = render_set_scale(&ren, 100, &a);
+        Result scalereset = render_set_scale(&ren, 100, &frame_arena);
         (void)scalereset;
 
         /* Real file-tree sidebar (2026-08-27) -- drawn in this same
@@ -1791,16 +1893,16 @@ int main(int argc, char **argv) {
          * draw order to the rest of this file's own "background things
          * first" convention regardless). */
         if (toggle_on_(&file_tree_toggle)) {
-            Result ftbg = set_draw_color(&ren, 32, 32, 38, 255, &a);
+            Result ftbg = set_draw_color(&ren, 32, 32, 38, 255, &frame_arena);
             (void)ftbg;
-            render_fill_rect(&ren, 0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &a);
+            render_fill_rect(&ren, 0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, &frame_arena);
             /* Row 0 is always the real synthetic ".." entry (real
              * directory navigation, 2026-08-27) -- a slightly dimmer
              * color than real file/directory names so it reads as
              * chrome, not a real listed entry. Real entries below it
              * start at fi=1, matching the MouseDown handler's own
              * identical row_idx convention. */
-            Result upr = render_text(&ren, &font, "..", 8, 4, 140, 140, 155, &a);
+            Result upr = render_text(&ren, &font, "..", 8, 4, 140, 140, 155, &frame_arena);
             (void)upr;
             int fn = vec_len(&file_tree_entries);
             /* Real, deliberate v0 tradeoff: is_dir_() runs fresh per
@@ -1831,20 +1933,20 @@ int main(int argc, char **argv) {
                     is_dir_entry = is_dir_(full_path);
                 }
                 Result fr = is_dir_entry
-                    ? render_text(&ren, &font, entry_name, 8, fy, 120, 170, 220, &a)
-                    : render_text(&ren, &font, entry_name, 8, fy, 190, 190, 205, &a);
+                    ? render_text(&ren, &font, entry_name, 8, fy, 120, 170, 220, &frame_arena)
+                    : render_text(&ren, &font, entry_name, 8, fy, 190, 190, 205, &frame_arena);
                 (void)fr;
             }
         }
 
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {
-            Result togglr = render_toggle(&ren, &font, &auto_indent_toggle, 45, 45, 52, 200, 200, 200, &a);
+            Result togglr = render_toggle(&ren, &font, &auto_indent_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr;
-            Result togglr2 = render_toggle(&ren, &font, &file_tree_toggle, 45, 45, 52, 200, 200, 200, &a);
+            Result togglr2 = render_toggle(&ren, &font, &file_tree_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr2;
-            Result togglr3 = render_toggle(&ren, &font, &settings_toggle, 45, 45, 52, 200, 200, 200, &a);
+            Result togglr3 = render_toggle(&ren, &font, &settings_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr3;
-            Result togglr4 = render_toggle(&ren, &font, &terminal_toggle, 45, 45, 52, 200, 200, 200, &a);
+            Result togglr4 = render_toggle(&ren, &font, &terminal_toggle, 45, 45, 52, 200, 200, 200, &frame_arena);
             (void)togglr4;
         }
 
@@ -1858,16 +1960,16 @@ int main(int argc, char **argv) {
          * "real, hand-rolled click regions... not yet a reusable
          * Linnen widget type" scope note. */
         if (toggle_on_(&settings_toggle)) {
-            Result pbg = set_draw_color(&ren, 26, 26, 32, 245, &a);
+            Result pbg = set_draw_color(&ren, 26, 26, 32, 245, &frame_arena);
             (void)pbg;
-            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, SETTINGS_ZOOM_ROW_H + 20, &a);
-            Result pborder = set_draw_color(&ren, 90, 130, 200, 255, &a);
+            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, SETTINGS_ZOOM_ROW_H + 20, &frame_arena);
+            Result pborder = set_draw_color(&ren, 90, 130, 200, 255, &frame_arena);
             (void)pborder;
-            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, 2, &a);
+            render_fill_rect(&ren, SETTINGS_BOX_X, 70, SETTINGS_BOX_W, 2, &frame_arena);
 
             char zoom_line[64];
             snprintf(zoom_line, sizeof zoom_line, "Zoom: %d%%   [ - ]   [ + ]", zoom_percent);
-            Result zt = render_text(&ren, &font, zoom_line, SETTINGS_BOX_X + 14, 82, 235, 235, 245, &a);
+            Result zt = render_text(&ren, &font, zoom_line, SETTINGS_BOX_X + 14, 82, 235, 235, 245, &frame_arena);
             (void)zt;
         }
 
@@ -1894,29 +1996,29 @@ int main(int argc, char **argv) {
             if (visible_rows > SPOTLIGHT_MAX_VISIBLE_ROWS) visible_rows = SPOTLIGHT_MAX_VISIBLE_ROWS;
             if (visible_rows < 0) visible_rows = 0;
             int box_h = 44 + visible_rows * SPOTLIGHT_ROW_HEIGHT + 10;
-            Result sbg = set_draw_color(&ren, 26, 26, 32, 245, &a);
+            Result sbg = set_draw_color(&ren, 26, 26, 32, 245, &frame_arena);
             (void)sbg;
-            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, box_h, &a);
-            Result sborder = set_draw_color(&ren, 90, 130, 200, 255, &a);
+            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, box_h, &frame_arena);
+            Result sborder = set_draw_color(&ren, 90, 130, 200, 255, &frame_arena);
             (void)sborder;
-            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, 2, &a);
+            render_fill_rect(&ren, SPOTLIGHT_BOX_X, 70, SPOTLIGHT_BOX_W, 2, &frame_arena);
 
             char query_line[300];
             snprintf(query_line, sizeof query_line, "> %s", spotlight_query[0] ? spotlight_query : "Search files, or type a math expression\xE2\x80\xA6");
-            Result sq = render_text(&ren, &font, query_line, SPOTLIGHT_BOX_X + 14, 82, 235, 235, 245, &a);
+            Result sq = render_text(&ren, &font, query_line, SPOTLIGHT_BOX_X + 14, 82, 235, 235, 245, &frame_arena);
             (void)sq;
 
             for (int si = spotlight_scroll_offset; si < spotlight_scroll_offset + visible_rows; si++) {
                 SpotlightResult *res = (SpotlightResult *)vec_get(&spotlight_results, si);
                 int ry = 118 + (si - spotlight_scroll_offset) * SPOTLIGHT_ROW_HEIGHT;
                 if (si == spotlight_selected) {
-                    Result shl = set_draw_color(&ren, 55, 75, 110, 255, &a);
+                    Result shl = set_draw_color(&ren, 55, 75, 110, 255, &frame_arena);
                     (void)shl;
-                    render_fill_rect(&ren, SPOTLIGHT_BOX_X + 4, ry - 2, SPOTLIGHT_BOX_W - 8, SPOTLIGHT_ROW_HEIGHT, &a);
+                    render_fill_rect(&ren, SPOTLIGHT_BOX_X + 4, ry - 2, SPOTLIGHT_BOX_W - 8, SPOTLIGHT_ROW_HEIGHT, &frame_arena);
                 }
                 Result srow = (res->kind.tag == SpotlightKind_TAG_SKFile)
-                    ? render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 210, 235, &a)
-                    : render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 235, 195, &a);
+                    ? render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 210, 235, &frame_arena)
+                    : render_text(&ren, &font, res->label, SPOTLIGHT_BOX_X + 14, ry, 190, 235, 195, &frame_arena);
                 (void)srow;
             }
         }
@@ -1929,6 +2031,7 @@ int main(int argc, char **argv) {
     destroy_renderer(ren);
     destroy_window(win);
     quit();
+    arena_free_all(&frame_arena);
     arena_free_all(&a);
     return 0;
 }
