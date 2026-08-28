@@ -237,97 +237,115 @@ static inline __attribute__((unused)) Match Match_new(int start, int end, Vec gr
 }
 
 typedef enum {
-    ExprValue_TAG_Num,
-    ExprValue_TAG_Str,
-} ExprValue_Tag;
-typedef struct { ExprValue_Tag tag; void *value; } ExprValue;
-static inline __attribute__((unused)) ExprValue ExprValue_Num(void *value) { ExprValue v; v.tag = ExprValue_TAG_Num; v.value = value; return v; }
-static inline __attribute__((unused)) ExprValue ExprValue_Str(void *value) { ExprValue v; v.tag = ExprValue_TAG_Str; v.value = value; return v; }
+    JsonValue_TAG_JNull,
+    JsonValue_TAG_JBool,
+    JsonValue_TAG_JNumber,
+    JsonValue_TAG_JString,
+    JsonValue_TAG_JArray,
+    JsonValue_TAG_JObject,
+} JsonValue_Tag;
+typedef struct { JsonValue_Tag tag; void *value; } JsonValue;
+static inline __attribute__((unused)) JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
+typedef struct {
+    Vec keys;
+    Vec values;
+} JsonValue_JObject_Payload;
+static inline __attribute__((unused)) JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
+    JsonValue_JObject_Payload *p = (JsonValue_JObject_Payload *)arena_alloc(dest, sizeof(JsonValue_JObject_Payload));
+    p->keys = keys;
+    p->values = values;
+    JsonValue v; v.tag = JsonValue_TAG_JObject; v.value = p; return v;
+}
 
 typedef struct {
     char * message;
     int pos;
-} EvalError;
-static inline __attribute__((unused)) EvalError EvalError_new(char * message, int pos) {
-    EvalError v;
+} JsonError;
+static inline __attribute__((unused)) JsonError JsonError_new(char * message, int pos) {
+    JsonError v;
     v.message = message;
     v.pos = pos;
     return v;
 }
 
 typedef struct {
-    Vec keys;
-    Vec values;
-} Bindings;
-static inline __attribute__((unused)) Bindings Bindings_new(Vec keys, Vec values) {
-    Bindings v;
-    v.keys = keys;
-    v.values = values;
-    return v;
-}
-
-typedef enum {
-    ExprNode_TAG_NumLit,
-    ExprNode_TAG_StrLit,
-    ExprNode_TAG_Var,
-    ExprNode_TAG_BinOp,
-} ExprNode_Tag;
-typedef struct { ExprNode_Tag tag; void *value; } ExprNode;
-static inline __attribute__((unused)) ExprNode ExprNode_NumLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_NumLit; v.value = value; return v; }
-static inline __attribute__((unused)) ExprNode ExprNode_StrLit(void *value) { ExprNode v; v.tag = ExprNode_TAG_StrLit; v.value = value; return v; }
-static inline __attribute__((unused)) ExprNode ExprNode_Var(void *value) { ExprNode v; v.tag = ExprNode_TAG_Var; v.value = value; return v; }
-typedef struct {
-    char * op;
-    ExprNode lhs;
-    ExprNode rhs;
-} ExprNode_BinOp_Payload;
-static inline __attribute__((unused)) ExprNode ExprNode_BinOp(Arena *dest, char * op, ExprNode lhs, ExprNode rhs) {
-    ExprNode_BinOp_Payload *p = (ExprNode_BinOp_Payload *)arena_alloc(dest, sizeof(ExprNode_BinOp_Payload));
-    p->op = op;
-    p->lhs = lhs;
-    p->rhs = rhs;
-    ExprNode v; v.tag = ExprNode_TAG_BinOp; v.value = p; return v;
-}
-
-typedef struct {
-    ExprNode node;
+    JsonValue value;
     int next;
-} ExprParseStep;
-static inline __attribute__((unused)) ExprParseStep ExprParseStep_new(ExprNode node, int next) {
-    ExprParseStep v;
-    v.node = node;
+} JsonStep;
+static inline __attribute__((unused)) JsonStep JsonStep_new(JsonValue value, int next) {
+    JsonStep v;
+    v.value = value;
     v.next = next;
     return v;
 }
 
 typedef struct {
-    Option pattern;
-    char * action;
-} AwkRule;
-static inline __attribute__((unused)) AwkRule AwkRule_new(Option pattern, char * action) {
-    AwkRule v;
-    v.pattern = pattern;
-    v.action = action;
+    char * key;
+    JsonValue value;
+    int next;
+} MemberStep;
+static inline __attribute__((unused)) MemberStep MemberStep_new(char * key, JsonValue value, int next) {
+    MemberStep v;
+    v.key = key;
+    v.value = value;
+    v.next = next;
     return v;
 }
+
+typedef struct {
+    char * scope;
+    Regex pattern;
+} TmRule;
+static inline __attribute__((unused)) TmRule TmRule_new(char * scope, Regex pattern) {
+    TmRule v;
+    v.scope = scope;
+    v.pattern = pattern;
+    return v;
+}
+
+typedef struct {
+    int start;
+    int end;
+    char * scope;
+} Token;
+static inline __attribute__((unused)) Token Token_new(int start, int end, char * scope) {
+    Token v;
+    v.start = start;
+    v.end = end;
+    v.scope = scope;
+    return v;
+}
+
+typedef enum {
+    TmError_TAG_BadPattern,
+} TmError_Tag;
+typedef struct { TmError_Tag tag; void *value; } TmError;
+static inline __attribute__((unused)) TmError TmError_BadPattern(void) { TmError v; v.tag = TmError_TAG_BadPattern; v.value = NULL; return v; }
+
+typedef enum {
+    TextMateLoadError_TAG_JsonParseFailed,
+    TextMateLoadError_TAG_MissingPatterns,
+    TextMateLoadError_TAG_PatternsNotArray,
+    TextMateLoadError_TAG_RuleCompileFailed,
+} TextMateLoadError_Tag;
+typedef struct { TextMateLoadError_Tag tag; void *value; } TextMateLoadError;
+static inline __attribute__((unused)) TextMateLoadError TextMateLoadError_JsonParseFailed(void *value) { TextMateLoadError v; v.tag = TextMateLoadError_TAG_JsonParseFailed; v.value = value; return v; }
+static inline __attribute__((unused)) TextMateLoadError TextMateLoadError_MissingPatterns(void) { TextMateLoadError v; v.tag = TextMateLoadError_TAG_MissingPatterns; v.value = NULL; return v; }
+static inline __attribute__((unused)) TextMateLoadError TextMateLoadError_PatternsNotArray(void) { TextMateLoadError v; v.tag = TextMateLoadError_TAG_PatternsNotArray; v.value = NULL; return v; }
+static inline __attribute__((unused)) TextMateLoadError TextMateLoadError_RuleCompileFailed(void *value) { TextMateLoadError v; v.tag = TextMateLoadError_TAG_RuleCompileFailed; v.value = value; return v; }
 
 typedef struct {
     Vec rules;
-} AwkProgram;
-static inline __attribute__((unused)) AwkProgram AwkProgram_new(Vec rules) {
-    AwkProgram v;
+    int skipped;
+} LoadResult;
+static inline __attribute__((unused)) LoadResult LoadResult_new(Vec rules, int skipped) {
+    LoadResult v;
     v.rules = rules;
-    return v;
-}
-
-typedef struct {
-    Vec fields;
-    int nr;
-} Record;
-static inline __attribute__((unused)) Record Record_new(Vec fields, int nr) {
-    Record v;
-    v.fields = fields;
-    v.nr = nr;
+    v.skipped = skipped;
     return v;
 }
 
@@ -428,37 +446,33 @@ char * join_strings(Vec *, Arena *);
 int vec_match_start_at(void *, int);
 int vec_match_end_at(void *, int);
 char * replace(Regex *, char *, char *, int, Arena *);
-Bindings bindings_new(Arena *);
-void bindings_set_(Bindings *, char *, ExprValue, Arena *);
-ExprValue bindings_get(Bindings *, char *, Arena *);
-Result eval(char *, Bindings *, Arena *);
-ExprValue eval_tree(ExprNode *, Bindings *, Arena *);
-ExprValue apply_binop(char *, ExprValue, ExprValue, Arena *);
-double raw_parse_f64(char *);
-double coerce_num(ExprValue);
-char * coerce_str(ExprValue, Arena *);
-char * f64_to_string(double, Arena *);
-double i32_to_f64(int);
-int is_space_(int);
-int is_alpha_(int);
-int is_ident_start_(int);
-int is_ident_char_(int);
-int is_op_char_(int);
+char * json_unescape(char *, int, int, Arena *);
+int is_whitespace_(int);
 int skip_ws(char *, int);
-ExprParseStep parse_number(char *, int, Arena *);
-ExprParseStep parse_fraction(char *, int, double, Arena *);
-Result parse_string_lit(char *, int, Arena *);
-ExprParseStep parse_ident(char *, int, Arena *);
-Result parse_term(char *, int, Arena *);
-Result parse_expr(char *, int, Arena *);
-Result parse_expr_rest(char *, ExprNode, int, Arena *);
-Result run(FileHandle, AwkProgram *, Arena *);
-Record record_from_line(char *, int, Arena *);
-char * join_fields(Record, Arena *);
-char * concat_field_name(int, Arena *);
-void run_rules(Vec *, Record, Arena *);
-int rule_matches_(AwkRule *, Record, Arena *);
-Bindings bindings_for(Record, Arena *);
+Result parse(char *, Arena *);
+Result parse_value(char *, int, Arena *);
+Result parse_literal(char *, int, char *, JsonValue, Arena *);
+Result parse_number(char *, int, Arena *);
+int find_string_end(char *, int);
+Result parse_string_value(char *, int, Arena *);
+Result parse_array(char *, int, Arena *);
+Result parse_object(char *, int, Arena *);
+Result parse_member(char *, int, Arena *);
+Option get(JsonValue, char *);
+Option as_string(JsonValue);
+int tm_token_end(Token *);
+char * tm_token_scope(Token *, Arena *);
+Result compile_rule(char *, char *, Arena *);
+Option try_rules_at(Vec *, char *, int, Arena *);
+void tokenize_step(Vec *, char *, int, int, Vec *, Arena *);
+Vec tokenize_line(Vec *, char *, Arena *);
+int skipped_count(LoadResult *);
+int has_key_(JsonValue *, char *);
+char * string_field(JsonValue *, char *, Arena *);
+Result process_pattern_entries(Vec *, int, Vec *, int, Arena *);
+Result load_grammar(char *, Arena *);
+char * grammar_json();
+Result build_json_grammar(Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -568,20 +582,56 @@ static inline Match *Match_box(Arena *dest, Match v) {
     return p;
 }
 
-static inline ExprValue *ExprValue_box(Arena *dest, ExprValue v) {
-    ExprValue *p = (ExprValue *)arena_alloc(dest, sizeof(ExprValue));
+static inline JsonError *JsonError_box(Arena *dest, JsonError v) {
+    JsonError *p = (JsonError *)arena_alloc(dest, sizeof(JsonError));
     *p = v;
     return p;
 }
 
-static inline EvalError *EvalError_box(Arena *dest, EvalError v) {
-    EvalError *p = (EvalError *)arena_alloc(dest, sizeof(EvalError));
+static inline JsonValue *JsonValue_box(Arena *dest, JsonValue v) {
+    JsonValue *p = (JsonValue *)arena_alloc(dest, sizeof(JsonValue));
     *p = v;
     return p;
 }
 
-static inline ExprParseStep *ExprParseStep_box(Arena *dest, ExprParseStep v) {
-    ExprParseStep *p = (ExprParseStep *)arena_alloc(dest, sizeof(ExprParseStep));
+static inline JsonStep *JsonStep_box(Arena *dest, JsonStep v) {
+    JsonStep *p = (JsonStep *)arena_alloc(dest, sizeof(JsonStep));
+    *p = v;
+    return p;
+}
+
+static inline MemberStep *MemberStep_box(Arena *dest, MemberStep v) {
+    MemberStep *p = (MemberStep *)arena_alloc(dest, sizeof(MemberStep));
+    *p = v;
+    return p;
+}
+
+static inline TmRule *TmRule_box(Arena *dest, TmRule v) {
+    TmRule *p = (TmRule *)arena_alloc(dest, sizeof(TmRule));
+    *p = v;
+    return p;
+}
+
+static inline TmError *TmError_box(Arena *dest, TmError v) {
+    TmError *p = (TmError *)arena_alloc(dest, sizeof(TmError));
+    *p = v;
+    return p;
+}
+
+static inline Token *Token_box(Arena *dest, Token v) {
+    Token *p = (Token *)arena_alloc(dest, sizeof(Token));
+    *p = v;
+    return p;
+}
+
+static inline TextMateLoadError *TextMateLoadError_box(Arena *dest, TextMateLoadError v) {
+    TextMateLoadError *p = (TextMateLoadError *)arena_alloc(dest, sizeof(TextMateLoadError));
+    *p = v;
+    return p;
+}
+
+static inline LoadResult *LoadResult_box(Arena *dest, LoadResult v) {
+    LoadResult *p = (LoadResult *)arena_alloc(dest, sizeof(LoadResult));
     *p = v;
     return p;
 }
@@ -1898,413 +1948,538 @@ char * replace(Regex * re __attribute__((unused)), char * text __attribute__((un
     return __match_result_15;
 }
 
-Bindings bindings_new(Arena *dest __attribute__((unused))) {
-    return Bindings_new(vec_new(dest), vec_new(dest));
+char * json_unescape(char * s __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((end - start)) + 1);
+    host_json_unescape(s, start, end, out);
+    return out;
 }
 
-void bindings_set_(Bindings * b __attribute__((unused)), char * key __attribute__((unused)), ExprValue value __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    (void)(vec_push_(&(((*((Bindings *)(b)))).keys), key));
-    (void)(vec_push_(&(((*((Bindings *)(b)))).values), ExprValue_box(dest, value)));
+int is_whitespace_(int c __attribute__((unused))) {
+    return ((c == 32) || ((c == 9) || ((c == 10) || (c == 13))));
 }
 
-ExprValue bindings_get(Bindings * b __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int n __attribute__((unused)) = vec_len(&(((*((Bindings *)(b)))).keys));
-    ExprValue __loop_result_20 __attribute__((unused));
-    double i = 0;
+int skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    int __loop_result_20 __attribute__((unused));
+    int p = pos;
     while (1) {
-        if ((i >= n)) {
-        __loop_result_20 = ExprValue_Num(double_box(dest, 0.0));
-        break;
-        } else {
-        if (str_eq_(vec_get(&(((*((Bindings *)(b)))).keys), i), key)) {
-        __loop_result_20 = (*((ExprValue *)(vec_get(&(((*((Bindings *)(b)))).values), i))));
-        break;
-        } else {
-        double __recur_tmp_0 = (i + 1);
-        i = __recur_tmp_0;
+        if (((p < n) && is_whitespace_(char_at(s, p)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
         continue;
-        }
+        } else {
+        __loop_result_20 = p;
+        break;
         }
     }
     return __loop_result_20;
 }
 
-Result eval(char * src __attribute__((unused)), Bindings * bindings __attribute__((unused)), Arena *dest __attribute__((unused))) {
+Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(text);
     Result __match_result_16 __attribute__((unused)) = {0};
-    Result __match_tmp_21 = parse_expr(src, 0, dest);
-    if (__match_tmp_21.tag == 1) {
-        void *step __attribute__((unused)) = __match_tmp_21.value;
-        __match_result_16 = result_ok(ExprValue_box(dest, eval_tree(&(((*((ExprParseStep *)(step)))).node), bindings, dest)));
-    }
-    else if (__match_tmp_21.tag == 0) {
+    Result __match_tmp_21 = parse_value(text, skip_ws(text, 0), dest);
+    if (__match_tmp_21.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_21.value;
         __match_result_16 = result_err(e);
+    }
+    else if (__match_tmp_21.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_21.value;
+        int after __attribute__((unused)) = skip_ws(text, ((*((JsonStep *)(step)))).next);
+        if ((after < n)) {
+        __match_result_16 = result_err(JsonError_box(dest, JsonError_new("trailing data after top-level value", after)));
+        } else {
+        __match_result_16 = result_ok(JsonValue_box(dest, ((*((JsonStep *)(step)))).value));
+        }
     }
     return __match_result_16;
 }
 
-ExprValue eval_tree(ExprNode * node __attribute__((unused)), Bindings * bindings __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    ExprValue __match_result_17 __attribute__((unused)) = {0};
-    ExprNode __match_tmp_22 = (*((ExprNode *)(node)));
-    if (__match_tmp_22.tag == 0) {
-        void *v __attribute__((unused)) = __match_tmp_22.value;
-        __match_result_17 = ExprValue_Num(v);
+Result parse_value(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    if ((pos >= n)) {
+    return result_err(JsonError_box(dest, JsonError_new("unexpected end of input", pos)));
+    } else {
+    int c __attribute__((unused)) = char_at(s, pos);
+    return ((c == 123) ? parse_object(s, pos, dest) : ((c == 91) ? parse_array(s, pos, dest) : ((c == 34) ? parse_string_value(s, pos, dest) : ((c == 116) ? parse_literal(s, pos, "true", JsonValue_JBool(int_box(dest, 1)), dest) : ((c == 102) ? parse_literal(s, pos, "false", JsonValue_JBool(int_box(dest, 0)), dest) : ((c == 110) ? parse_literal(s, pos, "null", JsonValue_JNull(), dest) : ((is_digit_(c) || (c == 45)) ? parse_number(s, pos, dest) : result_err(JsonError_box(dest, JsonError_new("unexpected character", pos))))))))));
     }
-    else if (__match_tmp_22.tag == 1) {
-        void *v __attribute__((unused)) = __match_tmp_22.value;
-        __match_result_17 = ExprValue_Str(v);
+}
+
+Result parse_literal(char * s __attribute__((unused)), int pos __attribute__((unused)), char * word __attribute__((unused)), JsonValue value __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int wlen __attribute__((unused)) = length(word);
+    int n __attribute__((unused)) = length(s);
+    if (((pos + wlen) > n)) {
+    return result_err(JsonError_box(dest, JsonError_new("unexpected end of input", pos)));
+    } else {
+    char *slice __attribute__((unused)) = substring(s, pos, (pos + wlen), dest);
+    if (str_eq_(slice, word)) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(value, (pos + wlen))));
+    } else {
+    return result_err(JsonError_box(dest, JsonError_new("invalid literal", pos)));
     }
-    else if (__match_tmp_22.tag == 2) {
-        void *name __attribute__((unused)) = __match_tmp_22.value;
-        __match_result_17 = bindings_get(bindings, name, dest);
     }
-    else if (__match_tmp_22.tag == 3) {
-        ExprNode_BinOp_Payload *__match_payload_22 = (ExprNode_BinOp_Payload *)(__match_tmp_22.value);
-        char *op __attribute__((unused)) = __match_payload_22->op;
-        ExprNode lhs __attribute__((unused)) = __match_payload_22->lhs;
-        ExprNode rhs __attribute__((unused)) = __match_payload_22->rhs;
-        __match_result_17 = apply_binop(op, eval_tree(&(lhs), bindings, dest), eval_tree(&(rhs), bindings, dest), dest);
-    }
-    return __match_result_17;
 }
 
-ExprValue apply_binop(char * op __attribute__((unused)), ExprValue l __attribute__((unused)), ExprValue r __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    double ln __attribute__((unused)) = coerce_num(l);
-    double rn __attribute__((unused)) = coerce_num(r);
-    return (str_eq_(op, "+") ? ExprValue_Num(double_box(dest, (ln + rn))) : (str_eq_(op, "-") ? ExprValue_Num(double_box(dest, (ln - rn))) : (str_eq_(op, "*") ? ExprValue_Num(double_box(dest, (ln * rn))) : (str_eq_(op, "/") ? ExprValue_Num(double_box(dest, (ln / rn))) : (str_eq_(op, ".") ? ExprValue_Str(concat(coerce_str(l, dest), coerce_str(r, dest), dest)) : ExprValue_Num(double_box(dest, 0.0)))))));
-}
-
-double raw_parse_f64(char * s __attribute__((unused))) {
-    return (atof(s));
-}
-
-double coerce_num(ExprValue v __attribute__((unused))) {
-    double __match_result_18 __attribute__((unused)) = {0};
-    ExprValue __match_tmp_23 = v;
-    if (__match_tmp_23.tag == 0) {
-        void *n __attribute__((unused)) = __match_tmp_23.value;
-        __match_result_18 = (*((double *)(n)));
-    }
-    else if (__match_tmp_23.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_23.value;
-        __match_result_18 = raw_parse_f64(s);
-    }
-    return __match_result_18;
-}
-
-char * coerce_str(ExprValue v __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char * __match_result_19 __attribute__((unused)) = {0};
-    ExprValue __match_tmp_24 = v;
-    if (__match_tmp_24.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_24.value;
-        __match_result_19 = s;
-    }
-    else if (__match_tmp_24.tag == 0) {
-        void *n __attribute__((unused)) = __match_tmp_24.value;
-        __match_result_19 = f64_to_string((*((double *)(n))), dest);
-    }
-    return __match_result_19;
-}
-
-char * f64_to_string(double v __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (32) + 1);
-    snprintf(out, 32, "%g", v);
-    return out;
-}
-
-double i32_to_f64(int x __attribute__((unused))) {
-    return ((double)(x));
-}
-
-int is_space_(int c __attribute__((unused))) {
-    return (c == 32);
-}
-
-int is_alpha_(int c __attribute__((unused))) {
-    return (((c >= 65) && (c <= 90)) || ((c >= 97) && (c <= 122)));
-}
-
-int is_ident_start_(int c __attribute__((unused))) {
-    return (is_alpha_(c) || (c == 95));
-}
-
-int is_ident_char_(int c __attribute__((unused))) {
-    return (is_ident_start_(c) || is_digit_(c));
-}
-
-int is_op_char_(int c __attribute__((unused))) {
-    return ((c == 43) || ((c == 45) || ((c == 42) || ((c == 47) || (c == 46)))));
-}
-
-int skip_ws(char * src __attribute__((unused)), int pos __attribute__((unused))) {
-    int len __attribute__((unused)) = length(src);
-    int __loop_result_21 __attribute__((unused));
-    int p = pos;
+Result parse_number(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Result __loop_result_21 __attribute__((unused));
+    int p = ((char_at(s, pos) == 45) ? (pos + 1) : pos);
     while (1) {
-        if (((p < len) && is_space_(char_at(src, p)))) {
+        if (((p < n) && is_digit_(char_at(s, p)))) {
         int __recur_tmp_0 = (p + 1);
         p = __recur_tmp_0;
         continue;
         } else {
-        __loop_result_21 = p;
+        if (((p < n) && (char_at(s, p) == 46))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if (((p < n) && ((char_at(s, p) == 101) || (char_at(s, p) == 69)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if (((p < n) && ((char_at(s, p) == 43) || (char_at(s, p) == 45)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if ((p == pos)) {
+        __loop_result_21 = result_err(JsonError_box(dest, JsonError_new("invalid number", pos)));
         break;
+        } else {
+        char *slice __attribute__((unused)) = substring(s, pos, p, dest);
+        __loop_result_21 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JNumber(double_box(dest, parse_f64_raw(slice))), p)));
+        break;
+        }
+        }
+        }
+        }
         }
     }
     return __loop_result_21;
 }
 
-ExprParseStep parse_number(char * src __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int len __attribute__((unused)) = length(src);
-    ExprParseStep __loop_result_22 __attribute__((unused));
-    int p = pos;
-    double acc = 0.0;
+int find_string_end(char * s __attribute__((unused)), int pos __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    double __loop_result_22 __attribute__((unused));
+    int p = (pos + 1);
     while (1) {
-        if (((p < len) && is_digit_(char_at(src, p)))) {
-        int __recur_tmp_0 = (p + 1);
-        double __recur_tmp_1 = ((acc * 10.0) + i32_to_f64((char_at(src, p) - 48)));
+        if ((p >= n)) {
+        __loop_result_22 = -1;
+        break;
+        } else {
+        if ((char_at(s, p) == 34)) {
+        __loop_result_22 = p;
+        break;
+        } else {
+        if ((char_at(s, p) == 92)) {
+        int __recur_tmp_0 = (p + 2);
         p = __recur_tmp_0;
-        acc = __recur_tmp_1;
         continue;
         } else {
-        if (((p < len) && (char_at(src, p) == 46))) {
-        __loop_result_22 = parse_fraction(src, (p + 1), acc, dest);
-        break;
-        } else {
-        __loop_result_22 = ExprParseStep_new(ExprNode_NumLit(double_box(dest, acc)), p);
-        break;
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        }
         }
         }
     }
     return __loop_result_22;
 }
 
-ExprParseStep parse_fraction(char * src __attribute__((unused)), int pos __attribute__((unused)), double whole __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int len __attribute__((unused)) = length(src);
-    ExprParseStep __loop_result_23 __attribute__((unused));
-    int p = pos;
-    double acc = whole;
-    double scale = 0.1;
-    while (1) {
-        if (((p < len) && is_digit_(char_at(src, p)))) {
-        int __recur_tmp_0 = (p + 1);
-        double __recur_tmp_1 = (acc + (scale * i32_to_f64((char_at(src, p) - 48))));
-        double __recur_tmp_2 = (scale * 0.1);
-        p = __recur_tmp_0;
-        acc = __recur_tmp_1;
-        scale = __recur_tmp_2;
-        continue;
-        } else {
-        __loop_result_23 = ExprParseStep_new(ExprNode_NumLit(double_box(dest, acc)), p);
-        break;
-        }
-    }
-    return __loop_result_23;
-}
-
-Result parse_string_lit(char * src __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int len __attribute__((unused)) = length(src);
-    Result __loop_result_24 __attribute__((unused));
-    int p = (pos + 1);
-    while (1) {
-        if ((p >= len)) {
-        __loop_result_24 = result_err(EvalError_box(dest, EvalError_new("unterminated string literal", pos)));
-        break;
-        } else {
-        if ((char_at(src, p) == 34)) {
-        __loop_result_24 = result_ok(ExprParseStep_box(dest, ExprParseStep_new(ExprNode_StrLit(substring(src, (pos + 1), p, dest)), (p + 1))));
-        break;
-        } else {
-        int __recur_tmp_0 = (p + 1);
-        p = __recur_tmp_0;
-        continue;
-        }
-        }
-    }
-    return __loop_result_24;
-}
-
-ExprParseStep parse_ident(char * src __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int len __attribute__((unused)) = length(src);
-    ExprParseStep __loop_result_25 __attribute__((unused));
-    int p = pos;
-    while (1) {
-        if (((p < len) && is_ident_char_(char_at(src, p)))) {
-        int __recur_tmp_0 = (p + 1);
-        p = __recur_tmp_0;
-        continue;
-        } else {
-        __loop_result_25 = ExprParseStep_new(ExprNode_Var(substring(src, pos, p, dest)), p);
-        break;
-        }
-    }
-    return __loop_result_25;
-}
-
-Result parse_term(char * src __attribute__((unused)), int pos0 __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int pos __attribute__((unused)) = skip_ws(src, pos0);
-    int len __attribute__((unused)) = length(src);
-    if ((pos >= len)) {
-    return result_err(EvalError_box(dest, EvalError_new("unexpected end of expression", pos)));
+Result parse_string_value(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int close __attribute__((unused)) = find_string_end(s, pos);
+    if ((close < 0)) {
+    return result_err(JsonError_box(dest, JsonError_new("unterminated string", pos)));
     } else {
-    int c __attribute__((unused)) = char_at(src, pos);
-    return (is_digit_(c) ? result_ok(ExprParseStep_box(dest, parse_number(src, pos, dest))) : ((c == 34) ? parse_string_lit(src, pos, dest) : (is_ident_start_(c) ? result_ok(ExprParseStep_box(dest, parse_ident(src, pos, dest))) : result_err(EvalError_box(dest, EvalError_new("unexpected character", pos))))));
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JString(json_unescape(s, (pos + 1), close, dest)), (close + 1))));
     }
 }
 
-Result parse_expr(char * src __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_20 __attribute__((unused)) = {0};
-    Result __match_tmp_25 = parse_term(src, pos, dest);
+Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Vec items __attribute__((unused)) = vec_new(dest);
+    int p1 __attribute__((unused)) = skip_ws(s, (pos + 1));
+    if (((p1 < n) && (char_at(s, p1) == 93))) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p1 + 1))));
+    } else {
+    Result __match_result_17 __attribute__((unused)) = {0};
+    Result __match_tmp_22 = parse_value(s, p1, dest);
+    if (__match_tmp_22.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_22.value;
+        __match_result_17 = result_err(e);
+    }
+    else if (__match_tmp_22.tag == 1) {
+        void *first __attribute__((unused)) = __match_tmp_22.value;
+    (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(first)))).value)));
+    int p = skip_ws(s, ((*((JsonStep *)(first)))).next);
+    while (1) {
+        if ((p >= n)) {
+        __match_result_17 = result_err(JsonError_box(dest, JsonError_new("unterminated array", pos)));
+        break;
+        } else {
+        if ((char_at(s, p) == 93)) {
+        __match_result_17 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p + 1))));
+        break;
+        } else {
+        if ((char_at(s, p) == 44)) {
+    Result __match_tmp_23 = parse_value(s, skip_ws(s, (p + 1)), dest);
+    if (__match_tmp_23.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_23.value;
+        __match_result_17 = result_err(e);
+        break;
+    }
+    else if (__match_tmp_23.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_23.value;
+    (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(step)))).value)));
+        int __recur_tmp_0 = skip_ws(s, ((*((JsonStep *)(step)))).next);
+        p = __recur_tmp_0;
+        continue;
+    }
+        } else {
+        __match_result_17 = result_err(JsonError_box(dest, JsonError_new("expected ',' or ']'", p)));
+        break;
+        }
+        }
+        }
+    }
+    }
+    return __match_result_17;
+    }
+}
+
+Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Vec keys __attribute__((unused)) = vec_new(dest);
+    Vec values __attribute__((unused)) = vec_new(dest);
+    int p1 __attribute__((unused)) = skip_ws(s, (pos + 1));
+    if (((p1 < n) && (char_at(s, p1) == 125))) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p1 + 1))));
+    } else {
+    Result __match_result_18 __attribute__((unused)) = {0};
+    Result __match_tmp_24 = parse_member(s, p1, dest);
+    if (__match_tmp_24.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_24.value;
+        __match_result_18 = result_err(e);
+    }
+    else if (__match_tmp_24.tag == 1) {
+        void *first __attribute__((unused)) = __match_tmp_24.value;
+    (void)(vec_push_(&(keys), ((*((MemberStep *)(first)))).key));
+    (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(first)))).value)));
+    int p = skip_ws(s, ((*((MemberStep *)(first)))).next);
+    while (1) {
+        if ((p >= n)) {
+        __match_result_18 = result_err(JsonError_box(dest, JsonError_new("unterminated object", pos)));
+        break;
+        } else {
+        if ((char_at(s, p) == 125)) {
+        __match_result_18 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p + 1))));
+        break;
+        } else {
+        if ((char_at(s, p) == 44)) {
+    Result __match_tmp_25 = parse_member(s, skip_ws(s, (p + 1)), dest);
     if (__match_tmp_25.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_25.value;
-        __match_result_20 = result_err(e);
+        __match_result_18 = result_err(e);
+        break;
     }
     else if (__match_tmp_25.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_25.value;
-        __match_result_20 = parse_expr_rest(src, ((*((ExprParseStep *)(step)))).node, ((*((ExprParseStep *)(step)))).next, dest);
+    (void)(vec_push_(&(keys), ((*((MemberStep *)(step)))).key));
+    (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(step)))).value)));
+        int __recur_tmp_0 = skip_ws(s, ((*((MemberStep *)(step)))).next);
+        p = __recur_tmp_0;
+        continue;
+    }
+        } else {
+        __match_result_18 = result_err(JsonError_box(dest, JsonError_new("expected ',' or '}'", p)));
+        break;
+        }
+        }
+        }
+    }
+    }
+    return __match_result_18;
+    }
+}
+
+Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    if (((pos >= n) || (!((char_at(s, pos) == 34))))) {
+    return result_err(JsonError_box(dest, JsonError_new("expected string key", pos)));
+    } else {
+    int close __attribute__((unused)) = find_string_end(s, pos);
+    if ((close < 0)) {
+    return result_err(JsonError_box(dest, JsonError_new("unterminated key string", pos)));
+    } else {
+    char *key __attribute__((unused)) = json_unescape(s, (pos + 1), close, dest);
+    int p1 __attribute__((unused)) = skip_ws(s, (close + 1));
+    if (((p1 >= n) || (!((char_at(s, p1) == 58))))) {
+    return result_err(JsonError_box(dest, JsonError_new("expected ':' after key", p1)));
+    } else {
+    Result __match_result_19 __attribute__((unused)) = {0};
+    Result __match_tmp_26 = parse_value(s, skip_ws(s, (p1 + 1)), dest);
+    if (__match_tmp_26.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_26.value;
+        __match_result_19 = result_err(e);
+    }
+    else if (__match_tmp_26.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_26.value;
+        __match_result_19 = result_ok(MemberStep_box(dest, MemberStep_new(key, ((*((JsonStep *)(step)))).value, ((*((JsonStep *)(step)))).next)));
+    }
+    return __match_result_19;
+    }
+    }
+    }
+}
+
+Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused))) {
+    Option __match_result_20 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_27 = v;
+    if (__match_tmp_27.tag == 5) {
+        JsonValue_JObject_Payload *__match_payload_27 = (JsonValue_JObject_Payload *)(__match_tmp_27.value);
+        Vec keys __attribute__((unused)) = __match_payload_27->keys;
+        Vec values __attribute__((unused)) = __match_payload_27->values;
+        int n __attribute__((unused)) = vec_len(&(keys));
+    double i = 0;
+    while (1) {
+        if ((i >= n)) {
+        __match_result_20 = option_none();
+        break;
+        } else {
+        if (str_eq_(vec_get(&(keys), i), key)) {
+        __match_result_20 = option_some(vec_get(&(values), i));
+        break;
+        } else {
+        double __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    }
+    else if (1) {
+        __match_result_20 = option_none();
     }
     return __match_result_20;
 }
 
-Result parse_expr_rest(char * src __attribute__((unused)), ExprNode lhs __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int p __attribute__((unused)) = skip_ws(src, pos);
-    int len __attribute__((unused)) = length(src);
-    if (((p >= len) || (!(is_op_char_(char_at(src, p)))))) {
-    return result_ok(ExprParseStep_box(dest, ExprParseStep_new(lhs, pos)));
-    } else {
-    char *op __attribute__((unused)) = substring(src, p, (p + 1), dest);
-    Result __match_result_21 __attribute__((unused)) = {0};
-    Result __match_tmp_26 = parse_term(src, (p + 1), dest);
-    if (__match_tmp_26.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_26.value;
-        __match_result_21 = result_err(e);
+Option as_string(JsonValue v __attribute__((unused))) {
+    Option __match_result_21 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_28 = v;
+    if (__match_tmp_28.tag == 3) {
+        void *s __attribute__((unused)) = __match_tmp_28.value;
+        __match_result_21 = option_some(s);
     }
-    else if (__match_tmp_26.tag == 1) {
-        void *rstep __attribute__((unused)) = __match_tmp_26.value;
-        __match_result_21 = parse_expr_rest(src, ExprNode_BinOp(dest, op, lhs, ((*((ExprParseStep *)(rstep)))).node), ((*((ExprParseStep *)(rstep)))).next, dest);
+    else if (1) {
+        __match_result_21 = option_none();
     }
     return __match_result_21;
-    }
 }
 
-Result run(FileHandle f __attribute__((unused)), AwkProgram * program __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __loop_result_26 __attribute__((unused));
-    double nr = 1;
-    while (1) {
-    Result __match_tmp_27 = read_line(f, dest);
-    if (__match_tmp_27.tag == 1) {
-        void *opt __attribute__((unused)) = __match_tmp_27.value;
-    Option __match_tmp_28 = (*((Option *)(opt)));
-    if (__match_tmp_28.tag == 1) {
-        void *line __attribute__((unused)) = __match_tmp_28.value;
-    (void)(run_rules(&((program)->rules), record_from_line(line, nr, dest), dest));
-        double __recur_tmp_0 = (nr + 1);
-        nr = __recur_tmp_0;
-        continue;
-    }
-    else if (__match_tmp_28.tag == 0) {
-        __loop_result_26 = result_ok(NULL);
-        break;
-    }
-    }
-    else if (__match_tmp_27.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_27.value;
-        __loop_result_26 = result_err(e);
-        break;
-    }
-    }
-    return __loop_result_26;
+int tm_token_end(Token * t __attribute__((unused))) {
+    return (((Token *)t)->end);
 }
 
-Record record_from_line(char * line __attribute__((unused)), int nr __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return Record_new(split(line, " ", dest), nr);
+char * tm_token_scope(Token * t __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (((Token *)t)->scope);
 }
 
-char * join_fields(Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int n __attribute__((unused)) = vec_len(&((rec).fields));
-    if ((n == 0)) {
-    return "";
-    } else {
-    char * __loop_result_27 __attribute__((unused));
-    double i = 1;
-    char * acc = vec_get(&((rec).fields), 0);
-    while (1) {
-        if ((i >= n)) {
-        __loop_result_27 = acc;
-        break;
-        } else {
-        double __recur_tmp_0 = (i + 1);
-        char * __recur_tmp_1 = concat(concat(acc, " ", dest), vec_get(&((rec).fields), i), dest);
-        i = __recur_tmp_0;
-        acc = __recur_tmp_1;
-        continue;
-        }
-    }
-    return __loop_result_27;
-    }
-}
-
-char * concat_field_name(int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
-    snprintf(out, 16, "$%d", i + 1);
-    return out;
-}
-
-void run_rules(Vec * rules __attribute__((unused)), Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    void * __loop_result_28 __attribute__((unused));
-    double i = 0;
-    while (1) {
-        if ((i < vec_len(rules))) {
-    AwkRule *rule __attribute__((unused)) = vec_get(rules, i);
-    Bindings b __attribute__((unused)) = bindings_for(rec, dest);
-    if (rule_matches_(rule, rec, dest)) {
-        (void)(eval((rule)->action, &(b), dest));
-    }
-        double __recur_tmp_0 = (i + 1);
-        i = __recur_tmp_0;
-        continue;
-        } else {
-            break;
-        }
-    }
-}
-
-int rule_matches_(AwkRule * rule __attribute__((unused)), Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int __match_result_22 __attribute__((unused)) = {0};
-    Option __match_tmp_29 = ((*((AwkRule *)(rule)))).pattern;
-    if (__match_tmp_29.tag == 0) {
-        __match_result_22 = 1;
-    }
-    else if (__match_tmp_29.tag == 1) {
+Result compile_rule(char * scope __attribute__((unused)), char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Result __match_result_22 __attribute__((unused)) = {0};
+    Result __match_tmp_29 = compile(pattern, MatchBudget_new(10000), dest);
+    if (__match_tmp_29.tag == 1) {
         void *re __attribute__((unused)) = __match_tmp_29.value;
-    Result __match_tmp_30 = is_match(re, join_fields(rec, dest), dest);
-    if (__match_tmp_30.tag == 1) {
-        void *m __attribute__((unused)) = __match_tmp_30.value;
-        __match_result_22 = unbox_bool(m);
+        __match_result_22 = result_ok(TmRule_box(dest, TmRule_new(scope, (*((Regex *)(re))))));
     }
-    else if (__match_tmp_30.tag == 0) {
-        void *_ __attribute__((unused)) = __match_tmp_30.value;
-        __match_result_22 = 0;
-    }
+    else if (__match_tmp_29.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_29.value;
+        __match_result_22 = result_err(TmError_box(dest, TmError_BadPattern()));
     }
     return __match_result_22;
 }
 
-Bindings bindings_for(Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Bindings b __attribute__((unused)) = bindings_new(dest);
-    (void)(bindings_set_(&(b), "NR", ExprValue_Num(double_box(dest, i32_to_f64((rec).nr))), dest));
-    (void)(bindings_set_(&(b), "NF", ExprValue_Num(double_box(dest, i32_to_f64(vec_len(&((rec).fields))))), dest));
-    void * __loop_result_29 __attribute__((unused));
-    double i = 0;
-    while (1) {
-        if ((i < vec_len(&((rec).fields)))) {
-    (void)(bindings_set_(&(b), concat_field_name(i, dest), ExprValue_Str(vec_get(&((rec).fields), i)), dest));
-        double __recur_tmp_0 = (i + 1);
-        i = __recur_tmp_0;
-        continue;
+Option try_rules_at(Vec * rules __attribute__((unused)), char * remaining __attribute__((unused)), int idx __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((idx >= vec_len(rules))) {
+    return option_none();
+    } else {
+    TmRule *rule __attribute__((unused)) = vec_get(rules, idx);
+    Option __match_result_23 __attribute__((unused)) = {0};
+    Result __match_tmp_30 = find(&((rule)->pattern), remaining, dest);
+    if (__match_tmp_30.tag == 1) {
+        void *maybe_m __attribute__((unused)) = __match_tmp_30.value;
+    Option __match_tmp_31 = (*((Option *)(maybe_m)));
+    if (__match_tmp_31.tag == 1) {
+        void *m __attribute__((unused)) = __match_tmp_31.value;
+        if ((match_start_i32(m) == 0)) {
+        __match_result_23 = option_some(Token_box(dest, Token_new(0, match_end_i32(m), (rule)->scope)));
         } else {
-            break;
+        __match_result_23 = try_rules_at(rules, remaining, (idx + 1), dest);
         }
     }
-    return b;
+    else if (__match_tmp_31.tag == 0) {
+        __match_result_23 = try_rules_at(rules, remaining, (idx + 1), dest);
+    }
+    }
+    else if (__match_tmp_30.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_30.value;
+        __match_result_23 = try_rules_at(rules, remaining, (idx + 1), dest);
+    }
+    return __match_result_23;
+    }
+}
+
+void tokenize_step(Vec * rules __attribute__((unused)), char * line __attribute__((unused)), int pos __attribute__((unused)), int len __attribute__((unused)), Vec * tokens __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((pos >= len)) {
+    (void)(NULL);
+    } else {
+    char *remaining __attribute__((unused)) = substring(line, pos, len, dest);
+    int __match_result_24 __attribute__((unused)) = {0};
+    Option __match_tmp_32 = try_rules_at(rules, remaining, 0, dest);
+    if (__match_tmp_32.tag == 1) {
+        void *t __attribute__((unused)) = __match_tmp_32.value;
+        int span __attribute__((unused)) = tm_token_end(t);
+        double real_span __attribute__((unused)) = ((span <= 0) ? 1 : span);
+        char *scope __attribute__((unused)) = tm_token_scope(t, dest);
+    (void)(vec_push_(tokens, Token_box(dest, Token_new(pos, (pos + real_span), scope))));
+        (void)(tokenize_step(rules, line, (pos + real_span), len, tokens, dest));
+    }
+    else if (__match_tmp_32.tag == 0) {
+    (void)(vec_push_(tokens, Token_box(dest, Token_new(pos, (pos + 1), ""))));
+        (void)(tokenize_step(rules, line, (pos + 1), len, tokens, dest));
+    }
+    }
+}
+
+Vec tokenize_line(Vec * rules __attribute__((unused)), char * line __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec tokens __attribute__((unused)) = vec_new(dest);
+    int len __attribute__((unused)) = length(line);
+    (void)(tokenize_step(rules, line, 0, len, &(tokens), dest));
+    return tokens;
+}
+
+int skipped_count(LoadResult * r __attribute__((unused))) {
+    return (r)->skipped;
+}
+
+int has_key_(JsonValue * v __attribute__((unused)), char * key __attribute__((unused))) {
+    int __match_result_25 __attribute__((unused)) = {0};
+    Option __match_tmp_33 = get((*((JsonValue *)(v))), key);
+    if (__match_tmp_33.tag == 1) {
+        void *x __attribute__((unused)) = __match_tmp_33.value;
+        __match_result_25 = 1;
+    }
+    else if (__match_tmp_33.tag == 0) {
+        __match_result_25 = 0;
+    }
+    return __match_result_25;
+}
+
+char * string_field(JsonValue * v __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __match_result_26 __attribute__((unused)) = {0};
+    Option __match_tmp_34 = get((*((JsonValue *)(v))), key);
+    if (__match_tmp_34.tag == 1) {
+        void *sv __attribute__((unused)) = __match_tmp_34.value;
+    Option __match_tmp_35 = as_string((*((JsonValue *)(sv))));
+    if (__match_tmp_35.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_35.value;
+        __match_result_26 = s;
+    }
+    else if (__match_tmp_35.tag == 0) {
+        __match_result_26 = "";
+    }
+    }
+    else if (__match_tmp_34.tag == 0) {
+        __match_result_26 = "";
+    }
+    return __match_result_26;
+}
+
+Result process_pattern_entries(Vec * items __attribute__((unused)), int i __attribute__((unused)), Vec * rules __attribute__((unused)), int skipped __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(items))) {
+    return result_ok(int_box(dest, skipped));
+    } else {
+    JsonValue *entry __attribute__((unused)) = vec_get(items, i);
+    if (has_key_(entry, "begin")) {
+    return process_pattern_entries(items, (i + 1), rules, (skipped + 1), dest);
+    } else {
+    if (has_key_(entry, "match")) {
+    char *pattern __attribute__((unused)) = string_field(entry, "match", dest);
+    char *scope __attribute__((unused)) = string_field(entry, "name", dest);
+    Result __match_result_27 __attribute__((unused)) = {0};
+    Result __match_tmp_36 = compile_rule(scope, pattern, dest);
+    if (__match_tmp_36.tag == 1) {
+        void *rule __attribute__((unused)) = __match_tmp_36.value;
+    (void)(vec_push_(rules, rule));
+        __match_result_27 = process_pattern_entries(items, (i + 1), rules, skipped, dest);
+    }
+    else if (__match_tmp_36.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_36.value;
+        __match_result_27 = result_err(TextMateLoadError_box(dest, TextMateLoadError_RuleCompileFailed(int_box(dest, i))));
+    }
+    return __match_result_27;
+    } else {
+    return process_pattern_entries(items, (i + 1), rules, (skipped + 1), dest);
+    }
+    }
+    }
+}
+
+Result load_grammar(char * json_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Result __match_result_28 __attribute__((unused)) = {0};
+    Result __match_tmp_37 = parse(json_text, dest);
+    if (__match_tmp_37.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_37.value;
+        __match_result_28 = result_err(TextMateLoadError_box(dest, TextMateLoadError_JsonParseFailed(((*((JsonError *)(e)))).message)));
+    }
+    else if (__match_tmp_37.tag == 1) {
+        void *doc __attribute__((unused)) = __match_tmp_37.value;
+    Option __match_tmp_38 = get((*((JsonValue *)(doc))), "patterns");
+    if (__match_tmp_38.tag == 0) {
+        __match_result_28 = result_err(TextMateLoadError_box(dest, TextMateLoadError_MissingPatterns()));
+    }
+    else if (__match_tmp_38.tag == 1) {
+        void *patterns_val __attribute__((unused)) = __match_tmp_38.value;
+    JsonValue __match_tmp_39 = (*((JsonValue *)(patterns_val)));
+    if (__match_tmp_39.tag == 4) {
+        void *items __attribute__((unused)) = __match_tmp_39.value;
+        Vec rules __attribute__((unused)) = vec_new(dest);
+    Result __match_tmp_40 = process_pattern_entries(&((*((Vec *)(items)))), 0, &(rules), 0, dest);
+    if (__match_tmp_40.tag == 1) {
+        void *skipped __attribute__((unused)) = __match_tmp_40.value;
+        LoadResult result __attribute__((unused)) = LoadResult_new(rules, (*((int *)(skipped))));
+        __match_result_28 = result_ok(LoadResult_box(dest, result));
+    }
+    else if (__match_tmp_40.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_40.value;
+        __match_result_28 = result_err(e);
+    }
+    }
+    else if (1) {
+        __match_result_28 = result_err(TextMateLoadError_box(dest, TextMateLoadError_PatternsNotArray()));
+    }
+    }
+    }
+    return __match_result_28;
+}
+
+char * grammar_json(void) {
+    return "{\"patterns\": [{\"match\": \"^\\\"[^\\\"]*\\\"\", \"name\": \"string.quoted.double.json\"}, {\"match\": \"^-?[0-9]+(\\\\.[0-9]+)?\", \"name\": \"constant.numeric.json\"}, {\"match\": \"^(true|false)\", \"name\": \"constant.language.boolean.json\"}, {\"match\": \"^null\", \"name\": \"constant.language.null.json\"}, {\"match\": \"^\\\\{\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\}\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\[\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\]\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^:\", \"name\": \"punctuation.separator.json\"}, {\"match\": \"^,\", \"name\": \"punctuation.separator.json\"}]}";
+}
+
+Result build_json_grammar(Arena *dest __attribute__((unused))) {
+    Result __match_result_29 __attribute__((unused)) = {0};
+    Result __match_tmp_41 = load_grammar(grammar_json(), dest);
+    if (__match_tmp_41.tag == 1) {
+        void *result __attribute__((unused)) = __match_tmp_41.value;
+        __match_result_29 = result_ok(Vec_box(dest, ((*((LoadResult *)(result)))).rules));
+    }
+    else if (__match_tmp_41.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_41.value;
+        __match_result_29 = result_err(e);
+    }
+    return __match_result_29;
 }
 

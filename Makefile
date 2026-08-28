@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -78,6 +78,20 @@ test-json: build
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_json.c runtime/parena_runtime.c \
 		-o /tmp/test_json_bin -lm
 	/tmp/test_json_bin
+
+# test-textmate-loader -- real end-to-end verification for stdlib/editor/textmate_loader.prn
+# (the real ".tmLanguage.json" grammar loader, "using text mate files" per founder real-time)
+# and stdlib/editor/lang_json.prn (the first real language mod built on it) -- same discipline
+# test-json above already establishes: not just "does it compile," actually loads a real
+# grammar and tokenizes real source through it, checking real token scopes/spans.
+test-textmate-loader: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
+		stdlib/regex/pcre.prn stdlib/json.prn stdlib/editor/textmate.prn \
+		stdlib/editor/textmate_loader.prn stdlib/editor/lang_json.prn \
+		-o tests/test_textmate_loader_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_textmate_loader.c runtime/parena_runtime.c \
+		-o /tmp/test_textmate_loader_bin -lm
+	/tmp/test_textmate_loader_bin
 
 # test-yaml -- real end-to-end verification for stdlib/yaml.prn, same
 # discipline as test-json above (real parsing + structure checks, not
@@ -286,8 +300,10 @@ PRNFMT_RENAME := -Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc \
 editor-demo: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
 		stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn stdlib/pty.prn stdlib/shell.prn \
+		stdlib/json.prn \
 		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
-		stdlib/editor/textmate_markdown.prn \
+		stdlib/editor/textmate_markdown.prn stdlib/editor/textmate_loader.prn \
+		stdlib/editor/lang_json.prn \
 		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
 		stdlib/editor/construct_split.prn stdlib/editor/spotlight.prn -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c

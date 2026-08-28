@@ -12,7 +12,7 @@
 (import array)
 (export matmul transpose dot inverse solve)
 
-;; Real, honest call-site update (2026-08-21): array/get and array/set!
+;; Real, honest call-site update (2026-08-21): array/array-get and array/set!
 ;; both gained an explicit dest : Arena @ Region parameter of their own
 ;; earlier this session (STDLIB.md's own array-package section); every
 ;; call site here updated to pass matmul's/transpose's own dest through.
@@ -45,7 +45,7 @@
                 (loop [k 0 sum 0.0]
                   (if (>= k a-cols)
                     (array/set! &mut out [i j] sum dest)
-                    (recur (+ k 1) (+ sum (* (unwrap (array/get a [i k] dest)) (unwrap (array/get b [k j] dest)))))))
+                    (recur (+ k 1) (+ sum (* (unwrap (array/array-get a [i k] dest)) (unwrap (array/array-get b [k j] dest)))))))
                 (recur (+ j 1))))
             (recur (+ i 1))))
         (Ok out)))))
@@ -59,7 +59,7 @@
       (when (< i rows)
         (loop [j 0]
           (when (< j cols)
-            (array/set! &mut out [j i] (unwrap (array/get a [i j] dest)) dest)
+            (array/set! &mut out [j i] (unwrap (array/array-get a [i j] dest)) dest)
             (recur (+ j 1))))
         (recur (+ i 1))))
     out))

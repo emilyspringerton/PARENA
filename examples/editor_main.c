@@ -477,6 +477,41 @@ static int path_has_suffix(const char *path, const char *suffix) {
     return strcmp(path + (plen - slen), suffix) == 0;
 }
 
+/* host_json_unescape -- the real host-side FFI companion stdlib/json.prn's own #target
+ * escape needs (2026-08-28, wiring stdlib/editor/lang_json.prn's real .tmLanguage.json
+ * grammar in for real .json file syntax highlighting). Same real implementation tests/
+ * test_json.c/tests/test_webdriver.c already establish and verify for this exact FFI
+ * escape -- the seven named single-char escapes, plus the same real, honest, documented
+ * \uXXXX-passthrough narrow limit those files' own header comments already state (raw hex
+ * digits, not real UTF-8 codepoint encoding) -- not attempting a fuller implementation
+ * here that those already-tested reference copies don't attempt either. */
+char *host_json_unescape(char *s, int start, int end, char *out) {
+    int oi = 0;
+    for (int i = start; i < end; i++) {
+        if (s[i] == '\\' && i + 1 < end) {
+            i++;
+            switch (s[i]) {
+                case '"': out[oi++] = '"'; break;
+                case '\\': out[oi++] = '\\'; break;
+                case '/': out[oi++] = '/'; break;
+                case 'b': out[oi++] = '\b'; break;
+                case 'f': out[oi++] = '\f'; break;
+                case 'n': out[oi++] = '\n'; break;
+                case 'r': out[oi++] = '\r'; break;
+                case 't': out[oi++] = '\t'; break;
+                case 'u':
+                    for (int k = 0; k < 4 && i + 1 < end; k++) { i++; out[oi++] = s[i]; }
+                    break;
+                default: out[oi++] = s[i];
+            }
+        } else {
+            out[oi++] = s[i];
+        }
+    }
+    out[oi] = 0;
+    return out;
+}
+
 /* executable_path -- real, portable "where is my own executable"
  * (2026-08-27, real drag-and-drop-a-file-onto-the-window: spawning a
  * new instance of THIS SAME program needs a real path to re-exec, not
@@ -857,9 +892,24 @@ int main(int argc, char **argv) {
      * "make sure we support .md syntax highlighting") -- PARENA source
      * stays the real default (matches this file's own original scope,
      * the "parena text editor"), a real .md file gets the real
-     * Markdown grammar instead. */
+     * Markdown grammar instead.
+     *
+     * .json (2026-08-28, Phase of "ensure parena editor supports
+     * typescript js python go c c sharp etc css js syntax highlighting"
+     * -> "using text mate files" -> "as parena mods"): the first real
+     * grammar built on stdlib/editor/textmate_loader.prn (a real
+     * .tmLanguage.json interpreter) instead of hand-written rules --
+     * see that file's own header comment for the real, scoped v0 this
+     * proves. The founder's own named languages (typescript/js/python/
+     * go/c/c#/css) are real, separate, larger follow-up (their real
+     * official grammars need begin/end span support this engine
+     * doesn't have yet) -- JSON is the proof case, not the finish
+     * line. */
     int is_markdown = path_has_suffix(path, ".md");
-    Result gr = is_markdown ? build_markdown_grammar(&a) : build_grammar(&a);
+    int is_json = path_has_suffix(path, ".json");
+    Result gr = is_markdown ? build_markdown_grammar(&a)
+                : is_json ? build_json_grammar(&a)
+                : build_grammar(&a);
     if (gr.tag != 1) { fprintf(stderr, "editor: build-grammar failed\n"); return 1; }
     Vec rules = *(Vec *)gr.value;
 

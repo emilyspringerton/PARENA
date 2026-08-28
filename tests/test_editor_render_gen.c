@@ -297,7 +297,7 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
-Result parse(char *, Arena *);
+Result parse_pattern(char *, Arena *);
 Result parse_alt(char *, int, int, Arena *);
 Result parse_concat(char *, int, int, Arena *);
 Result parse_quant(char *, int, int, Arena *);
@@ -656,7 +656,7 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
-Result parse(char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
+Result parse_pattern(char * pattern __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int plen __attribute__((unused)) = length(pattern);
     Result __match_result_0 __attribute__((unused)) = {0};
     Result __match_tmp_0 = parse_alt(pattern, 0, 0, dest);
@@ -860,7 +860,7 @@ Result parse_class(char * pattern __attribute__((unused)), int pos __attribute__
 
 Result compile(char * pattern __attribute__((unused)), MatchBudget budget __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Result __match_result_4 __attribute__((unused)) = {0};
-    Result __match_tmp_6 = parse(pattern, dest);
+    Result __match_tmp_6 = parse_pattern(pattern, dest);
     if (__match_tmp_6.tag == 1) {
         void *ast __attribute__((unused)) = __match_tmp_6.value;
         __match_result_4 = result_ok(Regex_box(dest, Regex_new((*((PatternAst *)(ast))), budget)));

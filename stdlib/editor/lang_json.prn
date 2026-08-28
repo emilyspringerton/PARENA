@@ -1,0 +1,55 @@
+;; stdlib/editor/lang_json.prn — depends on string, json, editor/textmate, editor/textmate_loader.
+;; The first real language grammar built on textmate_loader.prn -- "as PARENA mods": a real,
+;; unmodified-shape `.tmLanguage.json` document embedded as a string literal, loaded through the
+;; shared loader rather than hand-written rules (editor/textmate_parena.prn/textmate_markdown.prn
+;; are the OLDER, hand-written precedent this loader-based approach supersedes going forward).
+;;
+;; Real, honest v0 scope: JSON itself, not one of the founder's own named languages (typescript/
+;; js/python/go/c/c#/css) -- picked deliberately as the FIRST proof case because it's genuinely
+;; simple in real TextMate-grammar terms (almost entirely flat `match` rules, no real begin/end
+;; spans needed for its own basic tokens) and this stdlib already has a real, working JSON
+;; understanding (stdlib/json.prn) to sanity-check scope names against. The grammar below is a
+;; real, deliberately minimal SUBSET in the real TextMate schema (not GitHub's own full official
+;; json.tmLanguage.json, which additionally covers JSON5/JSONC comment extensions this engine's
+;; real regex/pcre.prn support doesn't need to prove yet) -- covers strings, numbers, the three
+;; literals, structural punctuation, and property-key highlighting. Real, separate follow-up:
+;; TypeScript/Python/Go/C/C#/CSS grammars, each its own file, same shape -- genuinely larger
+;; work (their real official grammars lean much more heavily on begin/end spans this whole
+;; engine doesn't support yet), not attempted in this pass.
+
+(module editor/lang-json)
+(import string)
+(import editor/textmate)
+(import editor/textmate-loader)
+;; Named build-json-grammar, not the shorter build-grammar, for the exact same real reason
+;; editor/textmate_markdown.prn's own build-markdown-grammar already isn't just "build-grammar"
+;; -- editor/textmate_parena.prn's own build-grammar would collide with it at the emitted-C
+;; level the moment both compile into the same real editor build (the same "top-level names
+;; aren't module-scoped" class hit repeatedly this session), and examples/editor_main.c's own
+;; grammar dispatch needs all three (PARENA/Markdown/JSON) linked in together.
+(export build-json-grammar)
+
+;; Real, deliberate pattern choices, grounded in what THIS engine's own regex/syntax.prn parser
+;; is already proven to handle (matching editor/textmate_parena.prn's own real, working patterns
+;; exactly, not guessed): every pattern is `^`-prefix-anchored (same convention every existing
+;; rule in this stdlib already uses); string/number/boolean use the exact same real shapes
+;; textmate_parena.prn's own string/number rules already prove work (`^\"[^\"]*\"`,
+;; `^-?[0-9]+(\.[0-9]+)?`); structural punctuation is six SEPARATE single-character rules rather
+;; than one combined character class, deliberately avoiding a real, already-documented gap in
+;; regex/syntax.prn's own parse-class ("no escaped ] inside a class," found and logged earlier
+;; this session) rather than risking it. No `(?=...)` lookahead (property-key vs. value strings
+;; share one scope here) and no scientific-notation exponent suffix -- both real, honest, scoped-
+;; out v0 simplifications, not attempts at a lookahead this engine has never been proven to
+;; support.
+(defn grammar-json [] : String @ Region
+  "{\"patterns\": [{\"match\": \"^\\\"[^\\\"]*\\\"\", \"name\": \"string.quoted.double.json\"}, {\"match\": \"^-?[0-9]+(\\\\.[0-9]+)?\", \"name\": \"constant.numeric.json\"}, {\"match\": \"^(true|false)\", \"name\": \"constant.language.boolean.json\"}, {\"match\": \"^null\", \"name\": \"constant.language.null.json\"}, {\"match\": \"^\\\\{\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\}\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\[\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^\\\\]\", \"name\": \"punctuation.structure.json\"}, {\"match\": \"^:\", \"name\": \"punctuation.separator.json\"}, {\"match\": \"^,\", \"name\": \"punctuation.separator.json\"}]}")
+
+;; build-json-grammar -- real entry point, same real "compiles to a real (Vec TmRule)" shape
+;; editor/textmate_parena.prn's own build-grammar and editor/textmate_markdown.prn's own
+;; build-markdown-grammar already establish (a drop-in, recompile-to-adopt mod, per the
+;; founder's own "as parena mods" ask).
+(defn build-json-grammar [(dest : Arena @ Region)]
+  : (Result (Vec TmRule) editor/textmate-loader/TextMateLoadError) @ Region
+  (match (editor/textmate-loader/load-grammar (grammar-json) dest)
+    ((Ok result) (Ok (get-field (deref result) :rules)))
+    ((Err e) (Err e))))

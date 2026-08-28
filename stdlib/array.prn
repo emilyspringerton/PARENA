@@ -4,7 +4,7 @@
 
 (module array)
 (import vec)
-(export zeros from-vec get set! reshape add mul-elementwise NDArray ShapeError IndexError)
+(export zeros from-vec array-get set! reshape add mul-elementwise NDArray ShapeError IndexError)
 
 (defstruct NDArray
   (data    : (Vec F64) @ Region)
@@ -104,7 +104,13 @@
 ;; to report "out of bounds" -- a real, known cost of this language's
 ;; own "no ambient arenas anywhere" design, not hidden or worked around
 ;; here.
-(defn get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
+;; array-get -- named this instead of the shorter "get" specifically to avoid a real,
+;; confirmed-live top-level name collision at the emitted-C level (2026-08-28, found compiling
+;; this module together with json.prn's own equally-public, equally-top-level `get` for the
+;; first time -- the same "top-level names aren't module-scoped" VS0 gap this stdlib has hit
+;; repeatedly). Only real callers are array/set!'s own read-back and linalg.prn (2 real call
+;; sites) -- renamed here and at each call site, not worked around per-caller.
+(defn array-get [(a : &NDArray) (idx : (Vec I32) @ :region/scratch) (dest : Arena @ Region)]
   : (Result F64 IndexError) @ Region
   (let [off (flat-index a &idx)]
     (if (or (< off 0) (>= off (vec/len &(get-field a :data))))

@@ -12,6 +12,6 @@
 
 (defn compile [(pattern : String @ :region/scratch) (flavor : PosixFlavor) (dest : Arena @ Region)]
   : (Result Regex SyntaxError) @ Region
-  (match (regex/syntax/parse pattern dest)
+  (match (regex/syntax/parse-pattern pattern dest)
     ((Ok ast) (Ok {:ast ast :flavor flavor}))
     ((Err e) (Err e))))

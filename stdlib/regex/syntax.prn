@@ -44,7 +44,7 @@
 (module regex/syntax)
 (import string)
 (import vec)
-(export parse PatternNode AnchorKind CharRange PatternAst SyntaxError)
+(export parse-pattern PatternNode AnchorKind CharRange PatternAst SyntaxError)
 
 ;; AnchorKind and CharRange are BOTH declared before PatternNode itself,
 ;; not just before their own first use -- a real, narrow ordering
@@ -100,7 +100,14 @@
   (next : I32)
   (ncap : I32))
 
-(defn parse [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
+;; parse-pattern -- named this instead of the shorter, more obvious "parse" specifically to
+;; avoid a real, confirmed-live top-level name collision at the emitted-C level (2026-08-28,
+;; found compiling this module together with json.prn's own equally-top-level, equally-public
+;; `parse` for the first time -- the same "private/public top-level names aren't module-scoped"
+;; VS0 gap this whole stdlib has hit repeatedly). Only 3 real callers, all already module-
+;; prefixed (regex/syntax/parse) -- renamed here and at each call site, not worked around
+;; per-caller.
+(defn parse-pattern [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result PatternAst SyntaxError) @ Region
   (let [plen (string/length pattern)]
     (match (parse-alt pattern 0 0 dest)

@@ -1662,4 +1662,21 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
     return h;
 }
 
+/* ---- stdlib/json.prn's own real host-glue forward declaration (2026-08-28) --------------
+ * json.prn's own json-unescape #target body calls host_json_unescape -- a real, per-HOST-
+ * PROGRAM implementation (not a runtime primitive; the actual escape-decoding logic lives
+ * entirely in whichever C program links json.prn in, same real division tests/test_json.c's
+ * own header comment already documents), same real shape every mod's own `_host.h` file
+ * already establishes for a callback INTO host code. Declared HERE (not in a separate
+ * `_host.h`, unlike the REDGARDEN/ECOWAR mod convention) because every generated .c file
+ * already `#include`s this header at its own top regardless of build shape -- a host program
+ * that concatenates generated code AHEAD of its own real implementation (examples/
+ * editor_main.c's own `cat gen.c editor_main.c`) needs this declaration reachable before that
+ * real implementation appears later in the same translation unit, and this header is the one
+ * real place guaranteed to already be there first. A host program that never links json.prn's
+ * generated code never triggers a real "undefined reference" for this at link time -- a bare
+ * forward declaration costs nothing there. Real implementations: examples/editor_main.c,
+ * tests/test_json.c, tests/test_webdriver.c. */
+extern char *host_json_unescape(char *s, int start, int end, char *out);
+
 #endif /* PARENA_RUNTIME_H */

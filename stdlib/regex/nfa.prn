@@ -183,7 +183,7 @@
 ;; ultimately bottoming out at this one shared accept instruction).
 (defn compile [(pattern : String @ :region/scratch) (dest : Arena @ Region)]
   : (Result Regex SyntaxError) @ Region
-  (match (regex/syntax/parse pattern dest)
+  (match (regex/syntax/parse-pattern pattern dest)
     ((Err e) (Err e))
     ((Ok ast)
       (let [program (vec/new dest)]

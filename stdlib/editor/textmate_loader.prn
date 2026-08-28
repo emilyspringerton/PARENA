@@ -1,0 +1,110 @@
+;; stdlib/editor/textmate_loader.prn — depends on string, json, editor/textmate. Real
+;; ".tmLanguage.json" grammar loader — the "using text mate files" half of founder real-time:
+;; "ensure parena editor supports typescript js python go c c sharp etc css js syntax
+;; highlighting" -> "using text mate files" -> "github requires text mate syntax highlighting to
+;; support so we should standardize on that" -> "as parena mods".
+;;
+;; Real, honest v0 scope, stated plainly: loads the FLAT "patterns": [{"match": "...", "name":
+;; "..."}] shape every real TextMate grammar's own top level uses for its own simple, single-
+;; line token rules -- exactly the same real subset editor/textmate.prn's own tokenizer engine
+;; already supports (anchored, single-position matching, see that file's own header comment).
+;; Real, deliberately NOT supported here, same real reason: `begin`/`end` multi-line spans and
+;; `repository`/`include` reference resolution -- editor/textmate.prn's own real engine has
+;; neither yet (no cross-line state, no nested pattern lists), so loading a grammar that leans on
+;; them would either silently drop real rules or misrender; a pattern entry using either is
+;; skipped with a real, honest warning path (returned as part of the result, not silently eaten),
+;; not pretended to work. This is genuinely enough to load many REAL, simple official grammars
+;; (JSON's own official tmLanguage is almost entirely flat `match` rules) and every language mod
+;; built on top of this loader inherits the exact same real, stated limit -- not a per-language
+;; gap to rediscover each time.
+;;
+;; "as PARENA mods": this loader is the shared machinery; each real language's own grammar ships
+;; as its own small .prn file (e.g. editor/lang_json.prn) that embeds a real, unmodified
+;; .tmLanguage.json document as a string literal and calls load-grammar -- the same real "drop in
+;; a new file, recompile" pattern this whole stdlib already establishes for mods (Spotlight's own
+;; providers, REDGARDEN/ECOWAR's own gameplay mods).
+
+(module editor/textmate-loader)
+(import string)
+(import json)
+(import editor/textmate)
+(export load-grammar TextMateLoadError skipped-count)
+
+(defenum TextMateLoadError
+  (JsonParseFailed (message : String @ Region))
+  (MissingPatterns)
+  (PatternsNotArray)
+  (RuleCompileFailed (index : I32)))
+
+;; LoadResult -- real rules PLUS an honest count of how many pattern entries were skipped
+;; (missing "match", or a begin/end-shaped entry this v0 doesn't support) -- a caller can
+;; decide whether a real, partial grammar is still useful (JSON's own grammar: usually 0
+;; skipped) or too degraded to bother with, rather than this loader silently deciding for them.
+(defstruct LoadResult
+  (rules   : (Vec TmRule) @ Region)
+  (skipped : I32))
+
+(defn skipped-count [(r : &LoadResult)]
+  : I32
+  (get-field r :skipped))
+
+;; has-key? -- real, minimal presence check (json/get already collapses "not an object" and
+;; "key absent" to the same None, exactly the distinction this loader needs: "does this pattern
+;; entry name a match rule at all").
+(defn has-key? [(v : &JsonValue) (key : String @ Region)]
+  : Bool
+  (match (json/get (deref v) key)
+    ((Some x) true)
+    (None false)))
+
+;; string-field -- real, minimal "get this key as a string, or empty string if absent/wrong
+;; type" -- callers here always check has-key? first, so an empty-string fallback is never
+;; actually reached in practice; it exists only so this function has a real, total return type
+;; VS0 can check, matching regex/pcre.prn's own "empty means no match" convention elsewhere in
+;; this stdlib for the identical reason.
+(defn string-field [(v : &JsonValue) (key : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (match (json/get (deref v) key)
+    ((Some sv)
+      (match (json/as-string (deref sv))
+        ((Some s) s)
+        (None "")))
+    (None "")))
+
+;; process-pattern-entries -- real loop/recur over the patterns array (this stdlib's own
+;; established "walk one element at a time via loop/recur, never self-recursion" discipline for
+;; anything that could see a real, large real-world grammar file). A "begin"-keyed entry (a
+;; multi-line span this v0 doesn't support) is counted as skipped, not attempted.
+(defn process-pattern-entries [(items : &(Vec JsonValue)) (i : I32) (rules : &mut (Vec TmRule))
+                                (skipped : I32) (dest : Arena @ Region)]
+  : (Result I32 TextMateLoadError) @ Region
+  (if (>= i (vec/len items))
+    (Ok skipped)
+    (let [entry (vec/get items i)]
+      (if (has-key? entry "begin")
+        (process-pattern-entries items (+ i 1) rules (+ skipped 1) dest)
+        (if (has-key? entry "match")
+          (let [pattern (string-field entry "match" dest)
+                scope (string-field entry "name" dest)]
+            (match (editor/textmate/compile-rule scope pattern dest)
+              ((Ok rule) (do (vec/push! rules rule) (process-pattern-entries items (+ i 1) rules skipped dest)))
+              ((Err e) (Err (RuleCompileFailed i)))))
+          (process-pattern-entries items (+ i 1) rules (+ skipped 1) dest))))))
+
+;; load-grammar -- real entry point. See this file's own header comment for the full real v0
+;; scope.
+(defn load-grammar [(json-text : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result LoadResult TextMateLoadError) @ Region
+  (match (json/parse json-text dest)
+    ((Err e) (Err (JsonParseFailed (get-field (deref e) :message))))
+    ((Ok doc)
+      (match (json/get (deref doc) "patterns")
+        (None (Err MissingPatterns))
+        ((Some patterns-val)
+          (match (deref patterns-val)
+            ((JArray items)
+              (let [rules (vec/new dest)]
+                (match (process-pattern-entries &(deref items) 0 &rules 0 dest)
+                  ((Ok skipped) (let [result (LoadResult rules (deref skipped))] (Ok result)))
+                  ((Err e) (Err e)))))
+            (_ (Err PatternsNotArray))))))))

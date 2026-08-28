@@ -67,7 +67,7 @@
 
 (defn compile [(pattern : String @ :region/scratch) (budget : MatchBudget) (dest : Arena @ Region)]
   : (Result Regex SyntaxError) @ Region
-  (match (regex/syntax/parse pattern dest)
+  (match (regex/syntax/parse-pattern pattern dest)
     ((Ok ast) (Ok {:ast ast :budget budget}))
     ((Err e) (Err e))))
 
