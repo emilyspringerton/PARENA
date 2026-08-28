@@ -649,12 +649,23 @@ the PARENA-language PORT specifically):
   `defstruct` is silently skipped entirely (confirmed: a `defstruct T` + a `defn` using `T` across
   two files compiles "successfully" but the struct never appears in the output, and the function
   using it emits garbage).
-- `emit-form`'s own top-level dispatch (`selfhost/emit.prn`) only recognizes `with-arena` and
-  `let` as real defn-body shapes; everything else falls through to `emit-tail-symbol`, which ONLY
+- `emit-form`'s own top-level dispatch (`selfhost/emit.prn`) only recognized `with-arena` and
+  `let` as real defn-body shapes; everything else fell through to `emit-tail-symbol`, which ONLY
   correctly handles a bare symbol tail (`return <mangled-text>;`) -- a bare `alloc` call, a bare
-  arithmetic expression, or a bare `match`/`cond` as a function's ENTIRE body all silently emit
+  arithmetic expression, or a bare `match`/`cond` as a function's ENTIRE body all silently emitted
   wrong/empty C through this path (confirmed via direct instrumentation: `(+ n 10)` as an entire
-  body emits `return ;`, not `return (n + 10);`).
+  body emitted `return ;`, not `return (n + 10);`). **Fixed, 2026-08-28** (same day, continuing
+  "removing c ffi when possible"): `emit-form` now also dispatches a bare `alloc` call or a real
+  `plain-call-shaped?` function call (both already-existing let-binding-value emitters,
+  `emit-alloc-call`/`emit-plain-call`, just never reached from tail position before) through a new
+  shared `emit-tail-expr` wrapper. A bare arithmetic expression (`+`/`-`/etc, whose args include a
+  non-symbol literal) and a bare `match`/`cond` as the entire body are still real, separate,
+  unfixed gaps -- `plain-call-shaped?`'s own "every argument a bare symbol" requirement (see the
+  next bullet) still excludes them, and `match`/`cond` still have no dispatch anywhere in
+  `emit-form` at all. 2 new tests (`tests/test_selfhost_emit.c`, 15 total for domain 4), verified
+  both via direct emitted-C-text assertions and via a real, live `build_files` round-trip; zero
+  regressions across the full local suite (336 tests) + all 6 selfhost test binaries (the 5
+  pre-existing ones plus `test-selfhost-main-multifile`) + `bazel build //...`.
 - `emit-let-bindings`' own real, narrow let-value dispatch (its own header comment already admits
   "alloc call / plain function call / #error") further requires a plain call's every argument to
   be a bare symbol -- no nested calls, no literals. `(add-ten (add-ten n))` and `(+ n 10)` both

@@ -377,6 +377,7 @@ char * resolve_arena_ref(char *, Vec *, Arena *);
 int alloc_call_shaped_(Node *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
+char * emit_tail_expr(char *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
 int is_vec_call_(char *, Arena *);
 int every_call_arg_symbol_(Node *, int);
@@ -2214,8 +2215,16 @@ char * emit_tail_symbol(Node * node __attribute__((unused)), Arena *dest __attri
     return emit_join_all(&(parts), dest);
 }
 
+char * emit_tail_expr(char * expr_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    return "));
+    (void)(vec_push_(&(parts), expr_c));
+    (void)(vec_push_(&(parts), ";\n"));
+    return emit_join_all(&(parts), dest);
+}
+
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : emit_tail_symbol(node, dest)));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : emit_tail_symbol(node, dest)))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {

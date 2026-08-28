@@ -221,10 +221,40 @@
       (vec/push! &parts ";\n")
       (emit-join-all &parts dest))))
 
+;; emit-tail-expr -- wraps an already-emitted C EXPRESSION (from
+;; emit-alloc-call/emit-plain-call, both real, existing let-binding-
+;; value emitters that already return a plain expression string, not a
+;; statement) into a real `    return <expr>;\n` -- the same real shape
+;; emit-tail-symbol's own body already uses for a bare symbol tail,
+;; just generic over WHICH expression string it wraps, so emit-form's
+;; own two new tail-position cases below (2026-08-28, real gap found
+;; and closed while verifying build-files: a bare `alloc` call or a
+;; plain function call as a defn's ENTIRE body previously fell through
+;; to emit-tail-symbol, which only correctly handles a bare symbol,
+;; silently emitting an empty `return ;` for anything else) don't each
+;; need their own copy of this 3-line wrap.
+(defn emit-tail-expr [(expr-c : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    return ")
+      (vec/push! &parts expr-c)
+      (vec/push! &parts ";\n")
+      (emit-join-all &parts dest))))
+
 (defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
     ((emit-is-call-named? node "let") (emit-let node scope dest))
+    ;; Real, additive tail-position cases (2026-08-28): a bare `alloc`
+    ;; call or a plain-call-shaped function call as the WHOLE body
+    ;; (not wrapped in with-arena/let) now emits a real `return
+    ;; <call>;` instead of silently falling through to emit-tail-
+    ;; symbol's own bare-symbol-only shape. Same real dispatch order
+    ;; emit-let-value already establishes for the identical shapes in
+    ;; a let-binding's own value position (alloc checked first, since
+    ;; alloc-call-shaped? is the narrower, more specific check).
+    ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
+    ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
     (true (emit-tail-symbol node dest))))
 
 ;; is-vec-call? -- the one real exclusion plain-call-shaped? makes,

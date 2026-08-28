@@ -284,6 +284,50 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real gap found and closed 2026-08-28 (verifying build-files):
+         * a bare `alloc` call as a defn's ENTIRE body (no with-arena/
+         * let wrapper) used to fall through emit-form's own catch-all
+         * to emit-tail-symbol, which only correctly handles a bare
+         * symbol -- silently emitting an empty `return ;` for anything
+         * else, confirmed via direct instrumentation. Now dispatches to
+         * emit-tail-expr(emit-alloc-call ...), the same real expression
+         * emit-let-value already produces for the identical shape in a
+         * let-binding's own value position. */
+        char *snippet =
+            "(defn bare-alloc-fn [(dest : Arena @ Region)]\n"
+            "  (alloc dest String \"hi\"))";
+        Result pr6 = parse_program(snippet, &a);
+        CHECK(pr6.tag == 1, "a real defn with a bare alloc call as its whole body parses fine");
+        if (pr6.tag == 1) {
+            Node program6 = *(Node *)pr6.value;
+            char *generated6 = emit_program(&program6, &a);
+            CHECK(generated6 != NULL && strstr(generated6, "return arena_strdup(dest, \"hi\", 2);") != NULL,
+                  "a bare alloc call as the whole body now emits a real return statement, "
+                  "not the old silent empty 'return ;'");
+        }
+    }
+    {
+        /* same real gap, the plain-function-call half: a bare call to
+         * another defn (not alloc, every arg a bare symbol) as a
+         * defn's ENTIRE body now dispatches to
+         * emit-tail-expr(emit-plain-call ...), the same real
+         * expression emit-let-value already produces for the identical
+         * shape in a let-binding's own value position. */
+        char *snippet =
+            "(defn bare-call-fn [(dest : Arena @ Region)]\n"
+            "  (bare-alloc-fn dest))";
+        Result pr7 = parse_program(snippet, &a);
+        CHECK(pr7.tag == 1, "a real defn with a bare plain-call as its whole body parses fine");
+        if (pr7.tag == 1) {
+            Node program7 = *(Node *)pr7.value;
+            char *generated7 = emit_program(&program7, &a);
+            CHECK(generated7 != NULL && strstr(generated7, "return bare_alloc_fn(dest);") != NULL,
+                  "a bare plain-call as the whole body now emits a real return statement, "
+                  "not the old silent empty 'return ;'");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
