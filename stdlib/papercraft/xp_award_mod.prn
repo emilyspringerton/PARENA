@@ -1,0 +1,25 @@
+;; stdlib/papercraft/xp_award_mod.prn — real, event-driven XP, PAPERCRAFT's first real worked
+;; mod-authoring example (PAPERCRAFT/MODDING.md walks a real modder through writing exactly this
+;; kind of mod end to end: write .prn -> parena build -> wire into host -> bazel build -> run
+;; server locally -> connect a client).
+;;
+;; Ported real value, not invented: SHANKPIT_CONSTRUCT.txt's own progression_tick (construct line
+;; 860) awards `delta * 60` XP per real combat kill on top of the already-ported flat 5xp/sec
+;; passive tick (level_mod.prn's own citation). PAPERCRAFT has no combat/kills yet (no invented
+;; placeholder system here either, same restraint stat_effects_mod.prn's own doc comment already
+;; named for vitality/handling/shield/storm) -- but it DOES have a real "kill"-shaped event
+;; already: fully destroying a real Paper Engine world object (every fragment reaches
+;; PAPER_STATE_GONE). Rewarding that with the construct's own real per-kill XP value is an honest
+;; adaptation of a real formula to this sandbox's own real mechanics, not a fabricated number.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-xp-for-object-destroyed (no real game-state
+;; input needed -- a flat, real, ported constant) exactly once, the first real tick a world
+;; object's own mesh transitions from "not fully destroyed" to "fully destroyed" (host C tracks
+;; that transition per-object; this mod only supplies the real reward amount, matching every
+;; other "mod decides the tunable number, host applies the gate + consequence" split in this
+;; monorepo).
+
+(module papercraft/xp-award-mod)
+(export on-papercraft-xp-for-object-destroyed)
+
+(defn on-papercraft-xp-for-object-destroyed [] : I32 60)
