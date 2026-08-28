@@ -422,42 +422,70 @@ static inline int raw_write_impl(int fd, const char *s) {
  * non-regular fd somehow reaches here) -- real doubling growth (not
  * the old fixed +4096) is kept as the real fallback for exactly that
  * case, so this stays correct even when the size hint is, not just
- * fast when it's right. */
+ * fast when it's right.
+ *
+ * Real, confirmed-live SECOND bug found and fixed here (2026-08-28,
+ * founder real-time: "when i open a large file its dog shit slow we
+ * dont want to load the whole thing into memory"): the fast path
+ * above (fstat succeeded) was STILL silently paying for a full extra
+ * copy of the whole file. Root cause, confirmed via direct
+ * instrumentation against a real 119MB test file (cap ended up
+ * EXACTLY 2x the real file size -- one full, needless doubling, not
+ * the "zero grow steps" the fstat fast path was supposed to
+ * guarantee): a real EOF can only ever be detected by actually
+ * calling read() with a NONZERO size and getting 0 back -- there is
+ * no way to know "the file has no more bytes" without asking. A cap
+ * sized to EXACTLY st_size+1 leaves no room left for that one
+ * confirming call once every real content byte has been read, so the
+ * old code (any version that tries to guarantee room for a real
+ * read() request right up to the exact byte) is forced to grow the
+ * WHOLE buffer just to make room for one call that's going to return
+ * 0 bytes anyway.
+ *
+ * Real fix: size `cap` with `st_size + 4097` instead of `st_size + 1`
+ * -- the real content, PLUS one full extra 4096-byte read-chunk's
+ * worth of headroom (so the loop can always make one more real,
+ * nonzero-sized read attempt right at the true end and get back a
+ * real EOF signal without ever needing to grow first), PLUS 1 for the
+ * NUL terminator. 4096 bytes of slack is negligible next to any file
+ * large enough for this to matter (0.003% of the 119MB test file),
+ * and the growth check itself (`len + 4096 >= cap`) can never fire
+ * while reading real content anymore, since cap is always at least
+ * 4096 bytes ahead of the real file size. A real `grew` flag (not an
+ * exact `cap == len + 1` size comparison, which the 4097-byte slack
+ * would always fail even in the genuinely no-growth case) tracks
+ * whether a real overshoot doubling ever actually happened -- only
+ * then is the trim-copy below real, needed work; the ordinary case
+ * (fstat right, file didn't grow mid-read) skips it entirely. */
 static inline char *raw_read_all_impl(int fd, Arena *dest) {
     size_t cap = 4096;
+    int have_size_hint = 0;
     struct stat st;
     if (fstat(fd, &st) == 0 && st.st_size > 0) {
-        cap = (size_t)st.st_size + 1;
+        cap = (size_t)st.st_size + 4097;
+        have_size_hint = 1;
     }
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
+    int grew = 0;
     for (;;) {
-        /* Real, confirmed-live buffer-overflow bug in an earlier draft
-         * of this fix, caught before it corrupted anything further
-         * (2026-08-27, founder actually opening a real small file
-         * through the file-tree, got no visible content at all): a
-         * single `cap * 2` doubling step does NOT guarantee
-         * `cap >= len + 4096` the way the OLD fixed-+4096-growth
-         * always did (every old grow step produced a cap that was
-         * exactly len+4096, by construction) -- for an fstat-sized
-         * small file (say cap=101 for a 100-byte file), one doubling
-         * step (202) is still far short of the 4096 bytes the very
-         * next read() call unconditionally requests, so read() could
-         * write past the end of a real, too-small buffer. Real,
-         * correct fix: loop the grow step (real doubling, not a
-         * single step) until cap actually covers the next real read
-         * request, matching the invariant the old code held (if less
-         * elegantly) the whole time. */
-        while (len + 4096 > cap) {
+        if (len + 4096 >= cap) {
             size_t new_cap = cap * 2;
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
             cap = new_cap;
+            grew = 1;
         }
-        ssize_t n = read(fd, buf + len, 4096);
+        size_t want = cap - len - 1; /* leave room for the trailing NUL */
+        if (want > 4096) want = 4096;
+        ssize_t n = read(fd, buf + len, want);
         if (n <= 0) break;
         len += (size_t)n;
+    }
+    if (!grew && have_size_hint) {
+        buf[len] = '\0';
+        return buf;
     }
     char *out = (char *)arena_alloc(dest, len + 1);
     memcpy(out, buf, len);

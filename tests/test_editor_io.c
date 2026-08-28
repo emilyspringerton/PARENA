@@ -232,6 +232,69 @@ int main(void) {
         }
     }
 
+    /* --- real regression test for a real, live bug found and fixed
+     * 2026-08-28 (founder real-time: "when i open a large file its
+     * dog shit slow we dont want to load the whole thing into
+     * memory"): raw_read_all_impl's own fstat fast path (confirmed
+     * live with a real 119MB test file) was STILL paying for a full,
+     * needless SECOND copy of the whole file's content -- the growth
+     * check fired one needless time right at EOF (there's no way to
+     * detect real EOF without one more nonzero-sized read() attempt,
+     * and the old cap left no room for it), doubling `cap` to roughly
+     * 2x the real file size, which then made the final "is buf already
+     * the right size" check fail and fall through to an unconditional
+     * trim-copy. Fixed by sizing `cap` with real headroom (one full
+     * extra read-chunk) so that confirming read never needs to grow
+     * first. This test walks the Arena's own real block chain (the
+     * same real ParenaArenaBlock list arena_alloc itself maintains,
+     * not a synthetic proxy) after reading a real ~4MB file into a
+     * FRESH, dedicated arena, and asserts the real total allocated
+     * bytes stay well under 2x the file's own real size -- a real,
+     * direct guard against this exact "silent extra full-file copy"
+     * class of regression, not just a wall-clock timing proxy for it. */
+    {
+        char memtest_path[256];
+        snprintf(memtest_path, sizeof memtest_path, "/tmp/parena_editor_io_memtest_%d.txt", (int)getpid());
+        FILE *mf = fopen(memtest_path, "w");
+        CHECK(mf != NULL, "a real ~4MB memory-regression test file opens for writing");
+        if (mf) {
+            const char *line = "the quick brown fox jumps over the lazy dog, twice, for real bulk\n";
+            size_t line_len = strlen(line);
+            size_t target = 4 * 1024 * 1024;
+            size_t written = 0;
+            while (written < target) {
+                fputs(line, mf);
+                written += line_len;
+            }
+            fclose(mf);
+
+            Arena mem_arena;
+            arena_init(&mem_arena);
+            Result openr = file_open(memtest_path, OpenMode_Read(), &mem_arena);
+            CHECK(openr.tag == 1, "the real ~4MB memory-regression test file opens via file-open");
+            if (openr.tag == 1) {
+                FileHandle mfh = *(FileHandle *)openr.value;
+                Result rr = read_string(mfh, &mem_arena);
+                file_close(mfh, &mem_arena);
+                CHECK(rr.tag == 1 && strlen((char *)rr.value) == written,
+                      "read-string returns the real, complete, correctly-sized content into the "
+                      "fresh, dedicated arena");
+
+                size_t total_capacity = 0;
+                for (ParenaArenaBlock *b = mem_arena.head; b != NULL; b = b->next) {
+                    total_capacity += b->capacity;
+                }
+                double ratio = (double)total_capacity / (double)written;
+                CHECK(ratio < 1.5,
+                      "the real total Arena capacity used to hold a ~4MB file stays well under "
+                      "1.5x the file's own real size (a silent extra full-file copy, this exact "
+                      "regression, would push this well past 2x)");
+            }
+            arena_free_all(&mem_arena);
+            unlink(memtest_path);
+        }
+    }
+
     arena_free_all(&a);
 
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
