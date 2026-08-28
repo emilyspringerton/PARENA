@@ -411,7 +411,7 @@ char * emit_form(Node *, Vec *, Arena *);
 int is_vec_call_(char *, Arena *);
 int get_field_shaped_(Node *);
 char * emit_get_field(Node *, Vec *, Arena *);
-int every_call_arg_symbol_or_number_(Node *, int);
+int every_call_arg_symbol_or_number_(Node *, int, Arena *);
 int binary_op_symbol_(char *);
 char * c_operator_text(char *);
 int binary_op_call_shaped_(Node *, Arena *);
@@ -2594,14 +2594,14 @@ char * emit_get_field(Node * node __attribute__((unused)), Vec * scope __attribu
     return emit_join_all(&(parts), dest);
 }
 
-int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i __attribute__((unused))) {
+int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
     if ((i >= vec_len(&((call)->children)))) {
     return 1;
     } else {
     Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
     int k __attribute__((unused)) = emit_node_kind_code((arg_node)->kind);
-    if ((((k == 3) || (k == 6)) || get_field_shaped_(arg_node))) {
-    return every_call_arg_symbol_or_number_(call, (i + 1));
+    if (((((k == 3) || (k == 6)) || get_field_shaped_(arg_node)) || (plain_call_shaped_(arg_node, dest) || binary_op_call_shaped_(arg_node, dest)))) {
+    return every_call_arg_symbol_or_number_(call, (i + 1), dest);
     } else {
     return 0;
     }
@@ -2626,7 +2626,7 @@ int binary_op_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest
     } else {
     Node *fn_node __attribute__((unused)) = vec_get(&((expr_node)->children), 0);
     char *fn_text __attribute__((unused)) = (fn_node)->text;
-    return (binary_op_symbol_(fn_text) && ((vec_len(&((expr_node)->children)) == 3) && every_call_arg_symbol_or_number_(expr_node, 1)));
+    return (binary_op_symbol_(fn_text) && ((vec_len(&((expr_node)->children)) == 3) && every_call_arg_symbol_or_number_(expr_node, 1, dest)));
     }
 }
 
@@ -2659,7 +2659,7 @@ int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __a
     } else {
     Node *fn_node __attribute__((unused)) = vec_get(&((expr_node)->children), 0);
     char *fn_text __attribute__((unused)) = (fn_node)->text;
-    return ((!(str_eq_(fn_text, "alloc"))) && ((!(is_vec_call_(fn_text, dest))) && ((!(binary_op_symbol_(fn_text))) && every_call_arg_symbol_or_number_(expr_node, 1))));
+    return ((!(str_eq_(fn_text, "alloc"))) && ((!(is_vec_call_(fn_text, dest))) && ((!(binary_op_symbol_(fn_text))) && every_call_arg_symbol_or_number_(expr_node, 1, dest))));
     }
 }
 
@@ -2674,11 +2674,7 @@ char * mangle_call_name(char * fn_text __attribute__((unused)), Arena *dest __at
 }
 
 char * emit_call_arg(Node * arg_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if (get_field_shaped_(arg_node)) {
-    return emit_get_field(arg_node, scope, dest);
-    } else {
-    return resolve_arena_ref((arg_node)->text, scope, dest);
-    }
+    return (get_field_shaped_(arg_node) ? emit_get_field(arg_node, scope, dest) : (plain_call_shaped_(arg_node, dest) ? emit_plain_call(arg_node, scope, dest) : (binary_op_call_shaped_(arg_node, dest) ? emit_binary_op(arg_node, scope, dest) : resolve_arena_ref((arg_node)->text, scope, dest))));
 }
 
 char * emit_call_args(Node * call __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {

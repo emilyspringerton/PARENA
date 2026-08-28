@@ -793,9 +793,7 @@
 ;; just reads the node's own real :text and mangles it (a no-op for
 ;; digits, no hyphens to replace), the exact same path a bare symbol
 ;; already goes through -- so widening the SHAPE GUARD here is the
-;; whole real fix; emit-call-arg itself is untouched. Still real,
-;; honest, narrower than the C reference: a NESTED CALL as an argument
-;; (`(f (g x))`) is still not accepted, not attempted here.
+;; whole real fix; emit-call-arg itself is untouched.
 ;; get-field-shaped? / emit-get-field -- real, narrow struct
 ;; field-read support (2026-08-28, the other real half of top-level
 ;; defstruct support, see that section's own header comment): a real
@@ -845,13 +843,39 @@
 ;; call-arg below already knows how to emit it as a raw, correctly-
 ;; typed C expression, no boxing needed at this position (see
 ;; get-field-shaped?'s own header comment for the full real reasoning).
-(defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32)] : Bool
+;;
+;; Widened a THIRD time, same day: a NESTED CALL as an argument
+;; (`(f (g x))`) -- real, honest, repeatedly-named-but-not-fixed gap
+;; (NORTHSTAR.md's own Self-hosting section, this function's own prior
+;; two header-comment entries above) -- closes now. A nested argument
+;; is accepted when it's itself plain-call-shaped? (`(g x)`, emitted
+;; via emit-plain-call as a real `mangled_g(x)` call expression) or
+;; binary-op-call-shaped? (`(+ a b)`, emitted via emit-binary-op as a
+;; real `(a + b)` expression) -- both real, existing expression
+;; emitters this file already trusts for a WHOLE function body/let-
+;; value; the only real, new part is calling them from a CALL-ARGUMENT
+;; position too. Neither needs boxing here: a nested plain-call's own
+;; real return type is whatever the callee's OWN real, declared C type
+;; is (matching this position's own pre-existing "the outer callee's
+;; declared param type governs, this emitter doesn't box arguments"
+;; rule bare-symbol/number arguments already rely on); a nested
+;; binary-op's own raw C int is likewise passed as-is, correct exactly
+;; when the outer callee's own param is itself I32-typed (`int `) --
+;; the same real, honest, no-cross-function-type-checking limitation
+;; this whole narrow emitter already has everywhere else. This makes
+;; every-call-arg-symbol-or-number?, plain-call-shaped?, and binary-
+;; op-call-shaped? real, mutual recursion (a nested call's own
+;; arguments get the identical real check, recursively, all the way
+;; down) -- safe and terminating since a real, parsed Node tree is
+;; always finite.
+(defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
     (let [arg-node (vec/get &(get-field call :children) i)
           k (emit-node-kind-code (get-field arg-node :kind))]
-      (if (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
-        (every-call-arg-symbol-or-number? call (+ i 1))
+      (if (or (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
+              (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
+        (every-call-arg-symbol-or-number? call (+ i 1) dest)
         false))))
 
 ;; binary-op-symbol? / c-operator-text -- the real, narrow list of
@@ -890,7 +914,7 @@
           fn-text (get-field fn-node :text)]
       (and (binary-op-symbol? fn-text)
            (and (= (vec/len &(get-field expr-node :children)) 3)
-                (every-call-arg-symbol-or-number? expr-node 1))))))
+                (every-call-arg-symbol-or-number? expr-node 1 dest))))))
 
 (defn emit-binary-op [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [fn-node (vec/get &(get-field call :children) 0)
@@ -938,9 +962,9 @@
 ;; explains why), not a binary-op-call-shaped? operator call (those
 ;; need real C infix syntax, not `mangled_name(args)` call syntax --
 ;; emit-binary-op handles them separately), every real argument itself
-;; a bare symbol or number literal (every-call-arg-symbol-or-number?'s
-;; own header comment). Still real, honest, narrower than the C
-;; reference: no nested calls as arguments, not attempted here.
+;; a supported shape (every-call-arg-symbol-or-number?'s own header
+;; comment -- now including a nested plain-call/binary-op argument,
+;; not just a bare symbol/number/get-field).
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))
     false
@@ -949,7 +973,7 @@
       (and (not (string/str-eq? fn-text "alloc"))
            (and (not (is-vec-call? fn-text dest))
                 (and (not (binary-op-symbol? fn-text))
-                     (every-call-arg-symbol-or-number? expr-node 1)))))))
+                     (every-call-arg-symbol-or-number? expr-node 1 dest)))))))
 
 ;; mangle-call-name -- real, narrow port of src/emit.c's own
 ;; mangle_call_name for the one real shape this narrow emitter
@@ -971,10 +995,25 @@
       (mangle fn-text dest)
       (mangle (vec/get &parts (- n 1)) dest))))
 
+;; emit-call-arg -- widened 2026-08-28 alongside every-call-arg-
+;; symbol-or-number?'s own nested-call widening above: a real nested
+;; plain-call-shaped?/binary-op-call-shaped? argument now emits
+;; through the SAME real emit-plain-call/emit-binary-op this file
+;; already uses for a whole function body -- checked in this order
+;; (get-field, plain-call, binary-op, bare-symbol/number fallback)
+;; since a NAME could theoretically satisfy more than one shape guard
+;; and only one is ever correct for a given real node (get-field is
+;; its own distinct call-named shape, never ambiguous with the other
+;; two; plain-call-shaped? itself already excludes binary-op-symbol?
+;; names, so plain-call vs. binary-op can never both match the same
+;; node either -- this ordering is for defensiveness, not resolving a
+;; real ambiguity).
 (defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
-  (if (get-field-shaped? arg-node)
-    (emit-get-field arg-node scope dest)
-    (resolve-arena-ref (get-field arg-node :text) scope dest)))
+  (cond
+    ((get-field-shaped? arg-node) (emit-get-field arg-node scope dest))
+    ((plain-call-shaped? arg-node dest) (emit-plain-call arg-node scope dest))
+    ((binary-op-call-shaped? arg-node dest) (emit-binary-op arg-node scope dest))
+    (true (resolve-arena-ref (get-field arg-node :text) scope dest))))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region

@@ -131,19 +131,27 @@ int main(int argc, char **argv) {
      * original fixture), then, same day, by ACTUALLY SUPPORTING that
      * exact shape (emit-plain-call, below) since it turned out to be
      * the single dominant real blocker (35 of ~57 real self-compile
-     * errors) toward selfhost/lexer.prn actually compiling. This
-     * fixture now exercises the still-crash-free, still-honest #error
-     * path via a shape plain-call-shaped? deliberately still excludes
-     * (a nested call as an argument -- every-call-arg-symbol?'s own
-     * header comment explains why), so the original regression this
-     * test existed for stays covered. */
+     * errors) toward selfhost/lexer.prn actually compiling.
+     *
+     * This fixture's own original negative case (a NESTED call as an
+     * argument, `(some-call (other-call a))`) is no longer unsupported
+     * as of the same day's later nested-call-argument widening (see
+     * every-call-arg-symbol-or-number?'s own header comment) -- moved
+     * to real, positive coverage further below instead. A genuinely
+     * different shape now exercises the still-crash-free, still-honest
+     * #error path this fixture originally existed to prove: a nested
+     * `alloc` call as an argument, which plain-call-shaped? still
+     * deliberately excludes (an `alloc` call needs its own real,
+     * distinguished Arena-destination argument, not composable as an
+     * ordinary call argument the way a ordinary plain-call/binary-op
+     * result already safely is). */
     {
         char *snippet =
             "(defn f [(a : Arena @ :region/buffer)]\n"
-            "  (let [x (some-call (other-call a))]\n"
+            "  (let [x (some-call (alloc String :region/buffer))]\n"
             "    x))";
         Result pr2 = parse_program(snippet, &a);
-        CHECK(pr2.tag == 1, "a real unsupported let-binding (a nested-call argument) parses fine");
+        CHECK(pr2.tag == 1, "a real unsupported let-binding (a nested alloc-call argument) parses fine");
         if (pr2.tag == 1) {
             Node program2 = *(Node *)pr2.value;
             /* the real regression: this used to segfault the whole
@@ -152,7 +160,73 @@ int main(int argc, char **argv) {
             CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on an unsupported let-binding");
             CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
                   "the real generated C carries a clean, honest #error line for the still-unsupported shape "
-                  "(a nested-call argument), instead of silently guessing at wrong C");
+                  "(a nested alloc-call argument), instead of silently guessing at wrong C");
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-28: a NESTED call as a call
+     * argument (`(f (g x))`), the exact shape the fixture just above
+     * used to prove was honestly unsupported -- closes the real,
+     * repeatedly-named gap (this file's own prior "no nested calls, no
+     * literals" header comments, NORTHSTAR.md's own Self-hosting
+     * section). every-call-arg-symbol-or-number? now also accepts a
+     * nested plain-call-shaped?/binary-op-call-shaped? argument,
+     * emitted through the SAME real emit-plain-call/emit-binary-op
+     * this file already trusts for a whole function body. */
+    {
+        char *snippet =
+            "(defn twice [(n : I32)] : I32\n"
+            "  (* n 2))\n"
+            "(defn add-doubled [(a : I32) (b : I32)] : I32\n"
+            "  (+ (twice a) b))";
+        Result pr2a = parse_program(snippet, &a);
+        CHECK(pr2a.tag == 1, "a real 2-function program, the second calling the first with a "
+                              "NESTED call as one argument of a real binary-op, parses fine");
+        if (pr2a.tag == 1) {
+            Node program2a = *(Node *)pr2a.value;
+            char *generated2a = emit_program(&program2a, &a);
+            CHECK(generated2a != NULL && strstr(generated2a, "#error") == NULL,
+                  "no #error is emitted -- the nested call argument is now a real, supported shape, "
+                  "not silently falling back to the honest-failure path");
+            CHECK(generated2a != NULL && strstr(generated2a, "(twice(a) + b)") != NULL,
+                  "add-doubled's own body emits a real, genuinely nested C expression -- "
+                  "twice(a) called INLINE as one operand of the real (... + ...) binary-op, not "
+                  "hoisted into a separate statement or silently dropped");
+
+            if (generated2a) {
+                char c_path2a[300];
+                snprintf(c_path2a, sizeof c_path2a, "/tmp/parena_selfhost_emit_nested_call_test_%d.c",
+                         (int)getpid());
+                FILE *out2a = fopen(c_path2a, "w");
+                CHECK(out2a != NULL, "a real temp file opens to write the nested-call generated C into");
+                if (out2a) {
+                    fputs(generated2a, out2a);
+                    fclose(out2a);
+
+                    char bin_path2a[310];
+                    snprintf(bin_path2a, sizeof bin_path2a, "%s.bin", c_path2a);
+                    char cmd2a[1024];
+                    snprintf(cmd2a, sizeof cmd2a,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_nested_call.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2a, c_path2a);
+                    int compile_status2a = system(cmd2a);
+                    CHECK(compile_status2a == 0,
+                          "the real nested-call generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_nested_call.c");
+                    if (compile_status2a == 0) {
+                        int run_status2a = system(bin_path2a);
+                        CHECK(run_status2a == 0,
+                              "the real compiled add-doubled genuinely computes the correct value on "
+                              "every real input (including a negative operand) -- "
+                              "driver_nested_call.c's own internal asserts all pass, proving the "
+                              "nested call argument's own boxed-int-through-char* value round-trips "
+                              "correctly through real C pointer arithmetic, not just compiles clean");
+                    }
+                    remove(c_path2a);
+                    remove(bin_path2a);
+                }
+            }
         }
     }
 
