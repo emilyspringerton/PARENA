@@ -1587,6 +1587,82 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real struct-return-type support PLUS a non-get-field nested
+         * call as a get-field target (2026-08-28): two of this same
+         * day's own remaining still-open gaps, closed together since
+         * they're naturally paired -- a function returning a struct
+         * BY VALUE is the real, motivating reason a get-field target
+         * needs to accept a plain-call in the first place. */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn identity-point [(p : Point)] : Point\n"
+            "  p)\n"
+            "(defn point-x-via-identity [(p : Point)] : I32\n"
+            "  (get-field (identity-point p) :x))";
+        Result pr22 = parse_program(snippet, &a);
+        CHECK(pr22.tag == 1, "a real 2-defn program -- identity-point returning its own Point "
+                              "param straight through, point-x-via-identity reading a field off "
+                              "identity-point's own real call result -- parses fine");
+        if (pr22.tag == 1) {
+            Node program22 = *(Node *)pr22.value;
+            char *generated22 = emit_program(&program22, &a);
+            CHECK(generated22 != NULL && strstr(generated22, "#error") == NULL,
+                  "no #error is emitted for either shape -- both are now real, supported, not "
+                  "silently falling back to the honest-failure path");
+            CHECK(generated22 != NULL && strstr(generated22, "Point identity_point(") != NULL,
+                  "identity-point's own declared 'Point' return type is emitted as the real, "
+                  "concrete C return type, not this file's own pre-existing hardcoded 'char *' "
+                  "default -- the same by-value struct-return recognition Result/Option already "
+                  "established, now covering a registered struct name too");
+            CHECK(generated22 != NULL && strstr(generated22, "return p;") != NULL,
+                  "identity-point's own bare-symbol-param body emits a real, unboxed 'return p;' "
+                  "-- correct since both p's own real C type and the function's own real C return "
+                  "type are now the identical 'Point', no boxing needed or possible");
+            CHECK(generated22 != NULL &&
+                  strstr(generated22, "(identity_point(p)).x") != NULL,
+                  "point-x-via-identity's own body emits a real, genuinely composed C expression "
+                  "-- the real identity_point(p) call result read straight through via get-field, "
+                  "not a bogus reference to an undeclared bare symbol");
+
+            if (generated22) {
+                char c_path13[300];
+                snprintf(c_path13, sizeof c_path13, "/tmp/parena_selfhost_emit_struct_ret_test_%d.c",
+                         (int)getpid());
+                FILE *out13 = fopen(c_path13, "w");
+                CHECK(out13 != NULL, "a real temp file opens to write the struct-return generated C into");
+                if (out13) {
+                    fputs(generated22, out13);
+                    fclose(out13);
+
+                    char bin_path13[310];
+                    snprintf(bin_path13, sizeof bin_path13, "%s.bin", c_path13);
+                    char cmd13[1024];
+                    snprintf(cmd13, sizeof cmd13,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_struct_return_type.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path13, c_path13);
+                    int compile_status13 = system(cmd13);
+                    CHECK(compile_status13 == 0,
+                          "the real struct-return generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_struct_return_type.c");
+                    if (compile_status13 == 0) {
+                        int run_status13 = system(bin_path13);
+                        CHECK(run_status13 == 0,
+                              "the real compiled point-x-via-identity genuinely computes the "
+                              "correct real value on every real input, round-tripping a real "
+                              "struct through a real by-value function return -- "
+                              "driver_struct_return_type.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path13);
+                    remove(bin_path13);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

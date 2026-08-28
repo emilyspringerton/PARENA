@@ -1247,6 +1247,40 @@ attempted); a struct-typed field used as a tail-position return; a non-get-field
 get-field target; `Vec`/enum-typed `defstruct` fields; general struct-literal construction for a
 user-defined `defstruct`.
 
+**Real struct-return-type support PLUS a non-get-field nested call as a get-field target, added
+together the same day (2026-08-28)**, closing two of the still-open gaps named above at once — they
+turned out to be naturally paired: a function returning a registered struct BY VALUE is the real,
+motivating reason a get-field target ever needs to accept a plain function call in the first place.
+`defn-c-return-type` widened (now taking `known-structs`/`dest`, both already available at its own 2
+real call sites, `emit-defn`/`emit-defn-prototype`) to recognize a declared return type naming an
+ALREADY-REGISTERED struct, the same by-value convention `param-c-type`/`struct-field-c-type` already
+established for these two positions — needed for the same real reason `Result`/`Option` needed it: a
+function whose whole body is a bare struct-typed param passed straight through
+(`(defn identity-point [(p : Point)] : Point p)`) produces a real `Point` C struct value via
+`emit-tail-symbol`'s own unboxed `return p;`, correct ONLY when the function's own declared C return
+type is ALSO `Point`, not the pre-existing `char *` default. `get-field-shaped?`/`emit-get-field`
+widened again (this function's own THIRD real widening the same day) to accept a `plain-call-shaped?`
+target too, alongside the bare-symbol/nested-get-field targets from earlier the same day — emits via
+the SAME real `emit-plain-call` this file already trusts everywhere else, composing
+`(identity_point(p)).x`. Makes `get-field-shaped?` real, terminating mutual recursion with
+`plain-call-shaped?`/`every-call-arg-symbol-or-number?` (which itself already calls
+`get-field-shaped?` on its own call arguments) — safe since every recursive call here strictly
+descends into a smaller child subtree of a real, finite parsed `Node` tree.
+
+7 new tests (`tests/test_selfhost_emit.c`): structural checks confirming the real, concrete `Point`
+return type, the correct unboxed `return p;`, and the real `(identity_point(p)).x` composition, plus
+a real compile+run+assert check (`tests/integration/driver_struct_return_type.c`) proving a real
+struct value genuinely round-trips through a real by-value function return and a real get-field read
+on multiple real inputs including a negative value, not just that gcc accepts the generated text.
+Zero regressions: full local suite (336 tests) + all 6 selfhost domain test binaries + `bazel
+build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument (by design, not
+attempted); a struct-typed field used as a tail-position return; `Vec`/enum-typed `defstruct` fields;
+general struct-literal construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

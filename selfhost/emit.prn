@@ -649,11 +649,11 @@
 ;; attempted here.
 (defn result-option-payload-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
   (or (= (emit-node-kind-code (get-field node :kind)) 3)
-      (or (get-field-shaped? node) (plain-call-shaped? node dest))))
+      (or (get-field-shaped? node dest) (plain-call-shaped? node dest))))
 
 (defn emit-result-option-payload [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
-    ((get-field-shaped? node) (emit-get-field node scope dest))
+    ((get-field-shaped? node dest) (emit-get-field node scope dest))
     ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
     (true (resolve-arena-ref (get-field node :text) scope dest))))
 
@@ -758,7 +758,7 @@
     ;; primary, already-verified use via emit-call-arg, is correct
     ;; regardless of the field's real type, since that position never
     ;; boxes at all).
-    ((get-field-shaped? node) (emit-tail-expr (emit-i32-boxed (emit-get-field node scope dest) dest) dest))
+    ((get-field-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-get-field node scope dest) dest) dest))
     ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
     ;; Real, separate gap found and closed 2026-08-28 while verifying
     ;; cond support: a bare NUMBER literal as a tail-position result
@@ -823,25 +823,40 @@
 ;; (`line.start.x`-style), now real, tractable, mutual recursion
 ;; between get-field-shaped?/emit-get-field (safe and terminating
 ;; since a real, parsed Node tree is always finite). This narrow v0's
-;; own real scope stays LIMITED to a chain of get-field calls all the
-;; way down to a bare-symbol root -- `(get-field (some-call x) :f)`
-;; (a non-get-field NESTED call as the target) is still a real,
-;; separate, harder case, not attempted here.
-(defn get-field-shaped? [(node : &Node)] : Bool
+;; own real scope, until now, stayed LIMITED to a chain of get-field
+;; calls all the way down to a bare-symbol root.
+;;
+;; Widened AGAIN 2026-08-28 (closing the "non-get-field nested call as
+;; a get-field target" gap named immediately above, alongside real
+;; struct-return-type support the same day -- defn-c-return-type's own
+;; header comment): `(get-field (some-call x) :f)`, a get-field target
+;; that's itself a real plain-call-shaped? function call (the natural
+;; shape once a FUNCTION can return a registered struct BY VALUE, not
+;; just a param already holding one) -- emits via the SAME real
+;; emit-plain-call this file already trusts everywhere else, no new
+;; expression-emitting machinery needed. Real, terminating mutual
+;; recursion with plain-call-shaped?/every-call-arg-symbol-or-number?
+;; (which itself already calls get-field-shaped? on ITS OWN call
+;; arguments) -- safe since every recursive call here strictly
+;; descends into a smaller child subtree of a real, finite parsed Node
+;; tree, the same termination argument already relied on throughout
+;; this file's other real mutual-recursion widenings.
+(defn get-field-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-call-named? node "get-field"))
     false
     (if (not (= (vec/len &(get-field node :children)) 3))
       false
       (let [target-node (vec/get &(get-field node :children) 1)]
         (or (= (emit-node-kind-code (get-field target-node :kind)) 3)
-            (get-field-shaped? target-node))))))
+            (or (get-field-shaped? target-node dest) (plain-call-shaped? target-node dest)))))))
 
 (defn emit-get-field [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [target-node (vec/get &(get-field node :children) 1)
         field-node (vec/get &(get-field node :children) 2)
-        target-c (if (get-field-shaped? target-node)
-                   (emit-get-field target-node scope dest)
-                   (resolve-arena-ref (get-field target-node :text) scope dest))
+        target-c (cond
+                   ((get-field-shaped? target-node dest) (emit-get-field target-node scope dest))
+                   ((plain-call-shaped? target-node dest) (emit-plain-call target-node scope dest))
+                   (true (resolve-arena-ref (get-field target-node :text) scope dest)))
         field-text (get-field field-node :text)
         field-name (string/substring field-text 1 (string/length field-text) dest)
         field-c (mangle field-name dest)
@@ -933,7 +948,7 @@
     true
     (let [arg-node (vec/get &(get-field call :children) i)
           k (emit-node-kind-code (get-field arg-node :kind))]
-      (if (or (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? arg-node))
+      (if (or (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? arg-node dest))
                   (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
               (or (alloc-call-shaped? arg-node)
                   (or (or-and-shaped? arg-node dest)
@@ -1153,7 +1168,7 @@
 ;; resolving a real ambiguity).
 (defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
-    ((get-field-shaped? arg-node) (emit-get-field arg-node scope dest))
+    ((get-field-shaped? arg-node dest) (emit-get-field arg-node scope dest))
     ((plain-call-shaped? arg-node dest) (emit-plain-call arg-node scope dest))
     ((binary-op-call-shaped? arg-node dest) (emit-binary-op arg-node scope dest))
     ((alloc-call-shaped? arg-node) (emit-alloc-call arg-node scope dest))
@@ -1438,7 +1453,7 @@
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
         body-c (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest)
-        return-type-c (defn-c-return-type defn-node)
+        return-type-c (defn-c-return-type defn-node known-structs dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts return-type-c)
@@ -1476,15 +1491,28 @@
 ;; confirmed C type-mismatch compile error. Same real by-value
 ;; recognition param-c-type already established for these two names
 ;; (added for match's own scrutinee param) -- this is its return-
-;; position counterpart. Every other declared return type (including
-;; none at all) keeps this file's own pre-existing, uniform `char *`
-;; default completely unchanged -- still real, honest, narrow v0, not
-;; a real type-inference pass.
-(defn defn-c-return-type [(defn-node : &Node)] : String @ Region
+;; position counterpart.
+;;
+;; Widened again 2026-08-28 (alongside real defstruct field-type/
+;; nested-get-field work the same day): a declared return type naming
+;; an ALREADY-REGISTERED struct is now ALSO recognized, the same
+;; by-value struct-return-type convention -- needed for the same real
+;; reason Result/Option needed it: a function whose whole body is a
+;; bare struct-typed param passed straight through (`(defn identity-
+;; point [(p : Point)] : Point p)`) produces a REAL `Point` C struct
+;; value via emit-tail-symbol's own unboxed `return p;`, which only
+;; type-checks when the function's OWN declared C return type is ALSO
+;; `Point`, not the pre-existing `char *` default. Every other
+;; declared return type (including none at all, or a struct name that
+;; ISN'T registered) keeps this file's own pre-existing, uniform
+;; `char *` default completely unchanged -- still real, honest, narrow
+;; v0, not a real type-inference pass.
+(defn defn-c-return-type [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name (defn-declared-return-type-name defn-node)]
     (cond
       ((string/str-eq? name "Result") "Result ")
       ((string/str-eq? name "Option") "Option ")
+      ((vec-contains-string? known-structs name 0) (string/concat name " " dest))
       (true "char * "))))
 
 ;; program-header -- the same real prelude (`#include
@@ -1678,7 +1706,7 @@
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
-        return-type-c (defn-c-return-type defn-node)
+        return-type-c (defn-c-return-type defn-node known-structs dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts return-type-c)
