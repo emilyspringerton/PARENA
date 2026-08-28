@@ -1,0 +1,30 @@
+;; stdlib/papercraft/talent_mod.prn — the real allocation-gate decision for PAPERCRAFT's own
+;; talent/tech tree, the "bones" the founder pointed at in the real construct: "a tech tree makes
+;; sense or whatever you call a talent tree we have the bones of one in a construct" / "keep the
+;; experience gain from the construct i like the idea of papercraft having a leveling system" /
+;; "all of it parena mod powered".
+;;
+;; Ported real decision, not invented: SHANKPIT_CONSTRUCT.txt's own progression_try_allocate
+;; (lines 867-872) gates a talent-point spend on three real conditions -- a valid ability slot, at
+;; least one unspent point, and the target ability not already at its own real cap (5) -- before
+;; allowing the increment. This mod is that same real gate, PARENA-native, following the exact
+;; ABI ECOWAR's own card_effect_mod.prn established (real I32-only decision logic, no F32/struct
+;; across the boundary -- ECOWAR/docs/ARENA_API.md).
+;;
+;; ABI: a real host function (not yet written -- PAPERCRAFT has no gameplay code yet) calls
+;; on-papercraft-can-allocate-talent with the target ability's own current value and the player's
+;; own current unspent-points count. A real 1 means the host should apply BOTH real state changes
+;; the construct's own progression_try_allocate makes atomically (ability value +1, unspent
+;; points -1) -- this mod only decides whether that's legal, matching every other real "mod
+;; decides, host applies" split in this monorepo (card_effect_mod decides magnitude, host applies
+;; it to health; this mod decides yes/no, host applies both real increments).
+;;
+;; MAX_TALENT_RANK (5) mirrors the construct's own hardcoded cap exactly -- named here so a
+;; future change to the real cap has one real place to change it, not a magic number repeated at
+;; every call site.
+
+(module papercraft/talent-mod)
+(export on-papercraft-can-allocate-talent)
+
+(defn on-papercraft-can-allocate-talent [(ability-value : I32) (unspent-points : I32)] : Bool
+  (and (> unspent-points 0) (< ability-value 5)))
