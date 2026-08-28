@@ -522,6 +522,75 @@ int main(int argc, char **argv) {
                   "narrow v0 already gives every other unsupported shape, not a silent wrong guess");
         }
     }
+    {
+        /* real gap found and closed 2026-08-28, continuing the same
+         * day's cond work: `or`/`and`/`not` compound tests, one of
+         * cond-call-shaped?'s own explicitly-named "not attempted
+         * here" exclusions. New, real, RECURSIVE bool-expr-supported?/
+         * emit-bool-expr sub-language -- or/and (binary, this
+         * codebase's own real "nest pairs, not N-ary" convention,
+         * confirmed via is-close-token?'s own real body) and not
+         * (unary), each recursively composing further real
+         * comparisons or bool-expr sub-expressions. Verified both
+         * structurally and, more importantly, behaviorally: a real
+         * compile+run+assert against all 7 real branches (both sides
+         * of the or, both sides of the and, the not, and the final
+         * true fallback), since generated C that merely compiles is
+         * not proof the real boolean logic branches correctly. */
+        char *snippet =
+            "(defn classify2 [(n : I32)] : I32\n"
+            "  (cond\n"
+            "    ((or (= n 1) (= n 3)) 100)\n"
+            "    ((and (>= n 4) (<= n 6)) 200)\n"
+            "    ((not (= n 0)) 300)\n"
+            "    (true 0)))";
+        Result pr13 = parse_program(snippet, &a);
+        CHECK(pr13.tag == 1, "a real cond with or/and/not tests parses fine");
+        if (pr13.tag == 1) {
+            Node program13 = *(Node *)pr13.value;
+            char *generated13 = emit_program(&program13, &a);
+            CHECK(generated13 != NULL && strstr(generated13, "if (((n == 1) || (n == 3))) {") != NULL,
+                  "a real 'or' test emits real C '||', both operands their own real comparisons, "
+                  "not a mangled function call");
+            CHECK(generated13 != NULL && strstr(generated13, "} else if (((n >= 4) && (n <= 6))) {") != NULL,
+                  "a real 'and' test emits real C '&&', chained as a real 'else if'");
+            CHECK(generated13 != NULL && strstr(generated13, "} else if ((!(n == 0))) {") != NULL,
+                  "a real 'not' test emits real C '!', its own operand a real comparison");
+
+            if (generated13) {
+                char c_path4[] = "/tmp/parena_selfhost_emit_boolexpr_test_XXXXXX.c";
+                snprintf(c_path4, sizeof c_path4, "/tmp/parena_selfhost_emit_boolexpr_test_%d.c", (int)getpid());
+                FILE *out4 = fopen(c_path4, "w");
+                CHECK(out4 != NULL, "a real temp file opens to write the or/and/not generated C into");
+                if (out4) {
+                    fputs(generated13, out4);
+                    fclose(out4);
+
+                    char bin_path4[300];
+                    snprintf(bin_path4, sizeof bin_path4, "%s.bin", c_path4);
+                    char cmd4[1024];
+                    snprintf(cmd4, sizeof cmd4,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_bool_expr.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path4, c_path4);
+                    int compile_status4 = system(cmd4);
+                    CHECK(compile_status4 == 0,
+                          "classify2's own real generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_bool_expr.c");
+                    if (compile_status4 == 0) {
+                        int run_status4 = system(bin_path4);
+                        CHECK(run_status4 == 0,
+                              "the real compiled classify2 actually branches correctly on all 7 real "
+                              "or/and/not inputs -- driver_bool_expr.c's own internal asserts all "
+                              "pass, proving the real boolean logic genuinely works, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path4);
+                    remove(bin_path4);
+                }
+            }
+        }
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

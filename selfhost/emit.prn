@@ -273,32 +273,97 @@
 ;; the emitted if/else chain is exhaustive (a real, separate "control
 ;; reaches end of non-void function" problem otherwise).
 
-;; cond-test-supported? -- shared by both the shape-guard
-;; (cond-call-shaped?) and the real emitter (emit-cond-test) below, so
-;; the two can never silently drift out of sync with each other.
-(defn cond-test-supported? [(test-node : &Node) (dest : Arena @ Region)] : Bool
-  (or (emit-is-symbol? test-node "true")
-      (or (binary-op-call-shaped? test-node dest)
-          (= (emit-node-kind-code (get-field test-node :kind)) 3))))
-
-;; emit-cond-test -- a real cond clause's own TEST, emitted as a plain
-;; C boolean/int expression (a real `if (...)` condition needs no
-;; boxing at all, unlike a scalar crossing this emitter's own uniform
-;; char* value/return boundary elsewhere in this file). `true` maps to
-;; the literal `1` -- <stdbool.h> is never included, so the bare
-;; identifier `true` isn't real C here.
-(defn emit-cond-test [(test-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+;; ---- Real, narrow, RECURSIVE boolean-expression sub-language
+;; (2026-08-28) -- used by cond's own test position below, and any
+;; other real boolean-context use this file might grow later. A real,
+;; separate, additive extension of cond-test's own original scope (a
+;; bare comparison or symbol) to also recognize `or`/`and` (binary --
+;; this codebase's own real convention, confirmed via is-close-token?'s
+;; own real body, nests PAIRS rather than writing a variadic N-ary
+;; call) and `not` (unary), each RECURSIVELY composing further
+;; bool-expr-supported? sub-expressions. This deliberately does NOT
+;; generalize to arbitrary nested calls as arguments (a real, separate,
+;; harder gap this file's own header comments elsewhere already flag,
+;; since a general nested call needs real box/unbox type-tracking this
+;; emitter doesn't have) -- a boolean/test-context expression sidesteps
+;; that entirely: it never crosses this file's own char*-boxing
+;; boundary at all, a real C `if (...)`/`||`/`&&`/`!` condition just
+;; wants a raw int, the same as before.
+(defn bool-expr-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
   (cond
-    ((emit-is-symbol? test-node "true") "1")
-    ((binary-op-call-shaped? test-node dest) (emit-binary-op test-node scope dest))
-    (true (resolve-arena-ref (get-field test-node :text) scope dest))))
+    ((emit-is-symbol? node "true") true)
+    ((binary-op-call-shaped? node dest) true)
+    ((= (emit-node-kind-code (get-field node :kind)) 3) true)
+    ((or-and-shaped? node dest) true)
+    (true (not-shaped? node dest))))
+
+;; or-and-shaped? -- a real, exactly-2-argument `(or a b)`/`(and a b)`
+;; call, both operands themselves real bool-expr-supported?
+;; sub-expressions.
+(defn or-and-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (or (emit-is-call-named? node "or") (emit-is-call-named? node "and")))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 3))
+      false
+      (and (bool-expr-supported? (vec/get &(get-field node :children) 1) dest)
+           (bool-expr-supported? (vec/get &(get-field node :children) 2) dest)))))
+
+;; not-shaped? -- a real, exactly-1-argument `(not a)` call, its own
+;; operand itself a real bool-expr-supported? sub-expression.
+(defn not-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-call-named? node "not"))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 2))
+      false
+      (bool-expr-supported? (vec/get &(get-field node :children) 1) dest))))
+
+;; emit-bool-op -- shared 2-operand emitter for both `(or a b)` ->
+;; `(a || b)` and `(and a b)` -> `(a && b)`, op-c naming which real C
+;; operator this particular call uses.
+(defn emit-bool-op [(node : &Node) (op-c : String @ Region) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [lhs (emit-bool-expr (vec/get &(get-field node :children) 1) scope dest)
+        rhs (emit-bool-expr (vec/get &(get-field node :children) 2) scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(")
+      (vec/push! &parts lhs)
+      (vec/push! &parts " ")
+      (vec/push! &parts op-c)
+      (vec/push! &parts " ")
+      (vec/push! &parts rhs)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+(defn emit-not [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [operand-c (emit-bool-expr (vec/get &(get-field node :children) 1) scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(!")
+      (vec/push! &parts operand-c)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+;; emit-bool-expr -- a real boolean/test-context expression, emitted
+;; as a plain C boolean/int expression (needs no boxing at all, unlike
+;; a scalar crossing this emitter's own uniform char* value/return
+;; boundary elsewhere in this file). `true` maps to the literal `1` --
+;; <stdbool.h> is never included, so the bare identifier `true` isn't
+;; real C here.
+(defn emit-bool-expr [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((emit-is-symbol? node "true") "1")
+    ((binary-op-call-shaped? node dest) (emit-binary-op node scope dest))
+    ((emit-is-call-named? node "or") (emit-bool-op node "||" scope dest))
+    ((emit-is-call-named? node "and") (emit-bool-op node "&&" scope dest))
+    ((emit-is-call-named? node "not") (emit-not node scope dest))
+    (true (resolve-arena-ref (get-field node :text) scope dest))))
 
 (defn cond-clause-shaped? [(clause : &Node) (dest : Arena @ Region)] : Bool
   (if (not (= (emit-node-kind-code (get-field clause :kind)) 0))
     false
     (if (not (= (vec/len &(get-field clause :children)) 2))
       false
-      (cond-test-supported? (vec/get &(get-field clause :children) 0) dest))))
+      (bool-expr-supported? (vec/get &(get-field clause :children) 0) dest))))
 
 (defn all-clauses-shaped? [(node : &Node) (i : I32) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field node :children)))
@@ -348,7 +413,7 @@
         (vec/push! &parts result-c)
         (vec/push! &parts "    }\n")
         (emit-join-all &parts dest))
-      (let [test-c (emit-cond-test test-node scope dest)
+      (let [test-c (emit-bool-expr test-node scope dest)
             rest-c (emit-cond-clauses node (+ i 1) scope dest)]
         (do
           (vec/push! &parts "if (")

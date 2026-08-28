@@ -378,8 +378,12 @@ int alloc_call_shaped_(Node *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
 char * emit_tail_expr(char *, Arena *);
-int cond_test_supported_(Node *, Arena *);
-char * emit_cond_test(Node *, Vec *, Arena *);
+int bool_expr_supported_(Node *, Arena *);
+int or_and_shaped_(Node *, Arena *);
+int not_shaped_(Node *, Arena *);
+char * emit_bool_op(Node *, char *, Vec *, Arena *);
+char * emit_not(Node *, Vec *, Arena *);
+char * emit_bool_expr(Node *, Vec *, Arena *);
 int cond_clause_shaped_(Node *, Arena *);
 int all_clauses_shaped_(Node *, int, Arena *);
 int last_clause_is_true_(Node *);
@@ -2237,12 +2241,59 @@ char * emit_tail_expr(char * expr_c __attribute__((unused)), Arena *dest __attri
     return emit_join_all(&(parts), dest);
 }
 
-int cond_test_supported_(Node * test_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_symbol_(test_node, "true") || (binary_op_call_shaped_(test_node, dest) || (emit_node_kind_code((test_node)->kind) == 3)));
+int bool_expr_supported_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_symbol_(node, "true") ? 1 : (binary_op_call_shaped_(node, dest) ? 1 : ((emit_node_kind_code((node)->kind) == 3) ? 1 : (or_and_shaped_(node, dest) ? 1 : not_shaped_(node, dest)))));
 }
 
-char * emit_cond_test(Node * test_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_symbol_(test_node, "true") ? "1" : (binary_op_call_shaped_(test_node, dest) ? emit_binary_op(test_node, scope, dest) : resolve_arena_ref((test_node)->text, scope, dest)));
+int or_and_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!((emit_is_call_named_(node, "or") || emit_is_call_named_(node, "and"))))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 3)))) {
+    return 0;
+    } else {
+    return (bool_expr_supported_(vec_get(&((node)->children), 1), dest) && bool_expr_supported_(vec_get(&((node)->children), 2), dest));
+    }
+    }
+}
+
+int not_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(emit_is_call_named_(node, "not")))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 2)))) {
+    return 0;
+    } else {
+    return bool_expr_supported_(vec_get(&((node)->children), 1), dest);
+    }
+    }
+}
+
+char * emit_bool_op(Node * node __attribute__((unused)), char * op_c __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *lhs __attribute__((unused)) = emit_bool_expr(vec_get(&((node)->children), 1), scope, dest);
+    char *rhs __attribute__((unused)) = emit_bool_expr(vec_get(&((node)->children), 2), scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), lhs));
+    (void)(vec_push_(&(parts), " "));
+    (void)(vec_push_(&(parts), op_c));
+    (void)(vec_push_(&(parts), " "));
+    (void)(vec_push_(&(parts), rhs));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_not(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *operand_c __attribute__((unused)) = emit_bool_expr(vec_get(&((node)->children), 1), scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "(!"));
+    (void)(vec_push_(&(parts), operand_c));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_bool_expr(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_symbol_(node, "true") ? "1" : (binary_op_call_shaped_(node, dest) ? emit_binary_op(node, scope, dest) : (emit_is_call_named_(node, "or") ? emit_bool_op(node, "||", scope, dest) : (emit_is_call_named_(node, "and") ? emit_bool_op(node, "&&", scope, dest) : (emit_is_call_named_(node, "not") ? emit_not(node, scope, dest) : resolve_arena_ref((node)->text, scope, dest))))));
 }
 
 int cond_clause_shaped_(Node * clause __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2252,7 +2303,7 @@ int cond_clause_shaped_(Node * clause __attribute__((unused)), Arena *dest __att
     if ((!((vec_len(&((clause)->children)) == 2)))) {
     return 0;
     } else {
-    return cond_test_supported_(vec_get(&((clause)->children), 0), dest);
+    return bool_expr_supported_(vec_get(&((clause)->children), 0), dest);
     }
     }
 }
@@ -2293,7 +2344,7 @@ char * emit_cond_clauses(Node * node __attribute__((unused)), int i __attribute_
     (void)(vec_push_(&(parts), "    }\n"));
     return emit_join_all(&(parts), dest);
     } else {
-    char *test_c __attribute__((unused)) = emit_cond_test(test_node, scope, dest);
+    char *test_c __attribute__((unused)) = emit_bool_expr(test_node, scope, dest);
     char *rest_c __attribute__((unused)) = emit_cond_clauses(node, (i + 1), scope, dest);
     (void)(vec_push_(&(parts), "if ("));
     (void)(vec_push_(&(parts), test_c));

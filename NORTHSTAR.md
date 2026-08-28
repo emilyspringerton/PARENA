@@ -759,9 +759,30 @@ correct), and a real negative case (no trailing `(true ...)` -- confirmed NOT tr
 6 selfhost test binaries + `bazel build //...` all clean.
 
 Real, honest, still-open scope after five: `match` itself (defenum tag dispatch); `cond` as a
-non-tail value (the genuinely hard case above); `or`/`and`/`not` and plain-call-shaped predicate
-calls as a `cond` test; nested calls as call arguments generally (shared with the third gap
-above); `defstruct` still not walked at the top level.
+non-tail value (the genuinely hard case above); nested calls as call arguments generally (shared
+with the third gap above); `defstruct` still not walked at the top level.
+
+**`or`/`and`/`not` compound `cond` tests added the same day (2026-08-28)**, closing one of the
+two real exclusions the `cond` work above explicitly named. A real, RECURSIVE boolean-expression
+sub-language (`bool-expr-supported?`/`emit-bool-expr`, replacing the narrower `cond-test-
+supported?`/`emit-cond-test`) now also recognizes `or`/`and` (binary -- this codebase's own real
+convention, confirmed via `is-close-token?`'s own real body, nests PAIRS rather than a variadic
+N-ary call) and `not` (unary), each recursively composing further real comparisons or bool-expr
+sub-expressions -- `(or (= n 1) (= n 3))` emits real `((n == 1) || (n == 3))`. Deliberately does
+NOT generalize to arbitrary nested calls as arguments (the genuinely harder, still-open gap
+above) -- a boolean/test-context expression sidesteps that entirely, since it never crosses this
+file's own char*-boxing boundary at all, a real C `if`/`||`/`&&`/`!` just wants a raw int, same as
+before. 2 new tests (`tests/test_selfhost_emit.c`, 25 total for domain 4): structural assertions
+on the generated `||`/`&&`/`!` text, plus a real compile+run+assert-across-7-real-branches check
+(`tests/integration/driver_bool_expr.c` -- both sides of the `or`, both sides of the `and`, the
+`not`, and the final `true` fallback). Zero regressions: full local suite (336 tests) + all 6
+selfhost test binaries + `bazel build //...` all clean.
+
+Real, honest, still-open scope after six: `match` itself (defenum tag dispatch); `cond` as a
+non-tail value (the genuinely hard architectural case); a plain-call-shaped predicate function
+call as a `cond` test (e.g. `(is-symbol? node "defn")` -- would need the callee's own Bool return
+correctly boxed/unboxed the same way `emit-i32-boxed` handles I32, not attempted for Bool yet);
+nested calls as call arguments generally; `defstruct` still not walked at the top level.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
