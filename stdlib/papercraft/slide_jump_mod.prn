@@ -1,0 +1,52 @@
+;; stdlib/papercraft/slide_jump_mod.prn — the real first "trick" input for PAPERCRAFT's own
+;; "plus SKATE2" pitch. Founder: "PAPERCRAFT is like minecraft meets gta3" -> "plus SKATE2" ->
+;; (later, continuing the same session) real jump physics + this real trick were the next
+;; appropriately-sized item down NORTHSTAR.md's own "Explicitly not Phase 0" list.
+;;
+;; Ported real formula, not invented: SHANKPIT_CONSTRUCT.txt's own local_update, "PHASE 485:
+;; TUNED SLIDE JUMP" (construct lines 9183-9196) grants a real, momentary horizontal speed boost
+;; on a fresh jump press while crouching and already moving:
+;;   boost_mult = 1.0f + (0.25f / speed);
+;;   clamp(boost_mult, 1.02f, 1.4f);
+;; -- a real crouch+jump combo trick, exactly the kind of momentum-chaining move a SKATE game
+;; rewards, not an invented mechanic. VS0 has no F32 parameters yet (ECOWAR/docs/ARENA_API.md's
+;; own "Real VS0 limits" section), so this mod takes speed pre-scaled to fixed-point milli (round
+;; (speed * 1000) -- matching the same "milli/permille fixed point crossing the VS0 boundary"
+;; convention stat_effects_mod.prn already established for the real MOVE-stat boost) and returns
+;; the boost as fixed-point permille (x1000). Host C (apps/server/src/main.c) does the one real
+;; float division needed to turn permille back into an actual multiplier, applied as a temporary,
+;; timed speed boost rather than folded into a persistent momentum/velocity vector -- PAPERCRAFT
+;; has no persistent-momentum movement model yet (unlike the construct's own real vx/vz-based
+;; physics), so a real, honest, timed multiplier window is this game's own real equivalent, not a
+;; unit-for-unit copy of the construct's own different movement model.
+;;
+;; The real gate (was this jump actually a valid slide-jump? -- on_ground, fresh press, crouching,
+;; moving faster than a real minimum) stays real, simple host-C logic (same "mod decides the
+;; tunable number, host applies the gate + consequence" split every real mod call site in this
+;; monorepo already uses) -- this mod is only the real magnitude decision once host C has already
+;; confirmed a slide-jump is happening.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-slide-jump-boost-permille once, at the real
+;; moment a valid slide-jump triggers, with the player's own current horizontal speed (world
+;; units/sec, pre-scaled to milli) -- and multiplies PC_MOVE_SPEED by the real result / 1000.0f
+;; for a real, timed window (PC_SLIDE_JUMP_BOOST_MS).
+
+(module papercraft/slide-jump-mod)
+(export on-papercraft-slide-jump-boost-permille)
+
+;; Real, honest fixed-point re-derivation of the construct's own float formula:
+;;   boost_mult = 1.0 + 0.25 / speed
+;; Let speed-milli = round(speed * 1000). Then 0.25 / speed = 250000 / speed-milli, and
+;;   boost-permille = 1000 + (250000 / speed-milli)
+;; Guards against speed-milli <= 0 (shouldn't happen -- host C's own real gate already requires
+;; speed > 0.5 before calling this -- but a real, defensive fallback to "no boost" beats a real
+;; division-by-zero if that gate is ever loosened later).
+(defn on-papercraft-slide-jump-boost-permille [(speed-milli : I32)] : I32
+  (if (<= speed-milli 0)
+    1000
+    (let [raw (+ 1000 (/ 250000 speed-milli))]
+      (if (> raw 1400)
+        1400
+        (if (< raw 1020)
+          1020
+          raw)))))
