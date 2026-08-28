@@ -1379,6 +1379,55 @@ attempted); a STRUCT-typed field used as a let-value; a struct-typed field neste
 `with-arena`/`cond`/`match` body; `Vec`/enum-typed `defstruct` fields; general struct-literal
 construction for a user-defined `defstruct`.
 
+**Real non-pointer-shaped (I32) Ok/Err/Some payload CONSTRUCTION support added the same day
+(2026-08-28)**, closing the gap named directly above — the natural complement to the same day's
+earlier real `deref` support, together completing the FULL real round trip: a value can now be both
+PRODUCED and CONSUMED, scalar payload included, entirely by real selfhost-emitted C on both ends.
+
+New `int-box-helper-decl` emits a genuine, minimal, narrow port of the ONE real case src/emit.c's own
+much larger, general `ensure_box_helper`/`g_box_helpers` mechanism exists for — a single, hardcoded
+`int_box(Arena *dest, int v) -> int *` helper, matching the reference's own real naming convention
+exactly (genuinely different from `parena_runtime.h`'s own, unrelated `vec_box_i32`, which boxes into
+a `Vec`'s own stored arena for a different real purpose). Real, deliberate simplification over the
+reference's own on-demand, per-distinct-type, deduplicated generation: since this narrow v0 only ever
+needs ONE type, `int_box` is emitted UNCONDITIONALLY, every program, matching this file's own already-
+established "simple over optimized" tradeoff (e.g. always-emit-every-prototype) — no generation-
+tracking/deduplication infrastructure needed. `static inline` means an unused `int_box` in a program
+that never constructs an I32 payload produces no real "unused function" warning under `-Wall -Wextra`
+(confirmed directly).
+
+New `result-option-payload-is-i32?` recognizes a bare NUMBER literal or a real
+`binary-op-call-shaped?` expression as I32-shaped (the same 2 shapes `emit-i32-boxed`'s own existing
+callers already recognize as "definitely produces a raw int", reused here for boxing into a REAL heap
+cell instead — the two conventions are genuinely different and must never be confused). New
+`arena-scope-any-ref` finds the destination Arena to box into: the most-recently-pushed arena binding
+currently in scope (the same "most recent wins" convention `arena-scope-lookup`'s own reverse
+iteration already establishes) — a real, honest, self-documenting invalid-identifier fallback for the
+genuinely degenerate no-arena-in-scope case (never actually hit in this whole codebase's own real
+test snippets), matching the same real, already-accepted "we don't verify everything, but we never
+emit text that silently compiles into WRONG behavior" class of limitation `plain-call-shaped?`'s own
+unverified callee names already establish.
+
+An I32-typed bare-symbol payload (e.g. `(Some n)` where `n` is a plain I32 local) is deliberately NOT
+included — this narrow emitter has no real per-symbol type tracking, so a bare-symbol payload is
+already claimed by the pointer-shaped branch (correct for the dominant real case, a String/struct
+value); a real, separate, not-yet-attempted gap.
+
+7 new tests (`tests/test_selfhost_emit.c`): structural checks confirming no `#error`, the real,
+unconditionally-present `int_box` helper, the real `Option` return type, and the real, correctly
+composed `option_some(int_box(dest, 42))`, plus a real compile+run+assert check (`tests/integration/
+driver_i32_roundtrip.c`) proving a real I32 value genuinely round-trips through a real heap box, a
+real Option construction, and a real match+deref consumption — construction AND consumption BOTH
+entirely selfhost-emitted, never hand-constructed or hand-dereferenced in the driver, not just that
+gcc accepts the generated text. Zero regressions: full local suite (336 tests) + all 6 selfhost
+domain test binaries + `bazel build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; an I32-typed BARE-SYMBOL Ok/Err/Some payload; `cond`/`match` as a call argument (by
+design, not attempted); a STRUCT-typed field used as a let-value; a struct-typed field nested inside
+a `with-arena`/`cond`/`match` body; `Vec`/enum-typed `defstruct` fields; general struct-literal
+construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

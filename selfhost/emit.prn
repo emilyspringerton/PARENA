@@ -181,6 +181,29 @@
       ((Some b) (arena-ref-of (deref b) c-name dest))
       ((None) c-name))))
 
+;; arena-scope-any-ref -- real, best-effort "find ANY arena currently
+;; in scope" helper (2026-08-28, needed to box a real I32 payload into
+;; -- see result-option-payload-is-i32?'s own header comment below).
+;; Unlike resolve-arena-ref (which looks up a KNOWN name), this has no
+;; name to search for -- takes the MOST-RECENTLY-PUSHED binding, the
+;; same "most recent wins" convention arena-scope-lookup's own reverse
+;; iteration already establishes. Real, honest fallback for the
+;; genuinely degenerate case (no arena anywhere in scope -- never
+;; happens in this whole codebase's own real test snippets, every one
+;; of which needs SOME arena to do anything region-related at all): a
+;; deliberately self-documenting, invalid C identifier that fails to
+;; compile with a real, honest, readable gcc "undeclared identifier"
+;; error -- the same real, already-accepted failure mode plain-call-
+;; shaped?'s own unverified callee names already produce (this file
+;; never verifies a called function actually exists either), not a
+;; silent wrong VALUE.
+(defn arena-scope-any-ref [(scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (= (vec/len scope) 0)
+    "NO_ARENA_IN_SCOPE_FOR_I32_BOX"
+    (let [b (deref (vec/get scope (- (vec/len scope) 1)))
+          c-name (mangle (get-field b :name) dest)]
+      (arena-ref-of b c-name dest))))
+
 ;; emit-alloc-call -- real, narrow port of the real, live `(alloc
 ;; arena-expr String "literal")` shape -> `arena_strdup(arena-ref,
 ;; "literal", byte-len)`, matching examples/valid_only.prn's own real,
@@ -625,36 +648,68 @@
 ;;
 ;; Mirrors src/emit.c's own real Ok/Err/Some handling (is_call_named on
 ;; each of the 3 names, `result_ok(inner)`/`result_err(inner)`/
-;; `option_some(inner)`) and bare `None` -> `option_none()` -- but
-;; narrower: src/emit.c boxes a non-pointer payload into a real,
-;; per-type heap cell via a generated `_box` helper (ensure_box_helper)
-;; whenever the payload's own C type isn't already pointer-shaped; this
-;; file has no such helper-generation infrastructure yet. Real, honest
-;; v0 scope: the payload must ALREADY be pointer-shaped -- a bare
-;; symbol, a get-field-shaped? struct-field read, or a plain-call-
-;; shaped? function call, the exact same 3 shapes this file's own
+;; `option_some(inner)`) and bare `None` -> `option_none()`. Real,
+;; honest v0 scope: the payload is EITHER already pointer-shaped -- a
+;; bare symbol, a get-field-shaped? struct-field read, or a plain-
+;; call-shaped? function call, the exact same 3 shapes this file's own
 ;; uniform char*-typed convention already makes pointer-shaped with no
-;; boxing needed. An I32 payload is deliberately NOT supported here --
-;; this file's own emit-i32-boxed reinterprets a raw int as a real
-;; pointer VALUE via `(char *)(intptr_t)n`, a technique that only stays
-;; safe for THIS file's own uniform char*-return/let-value convention
-;; (every caller unboxes the identical way, `(int)(intptr_t)result`);
-;; reusing it here would hand the runtime's own real `result_ok`/
-;; `option_some` a bogus, non-dereferenceable "pointer" that a later
-;; real `deref` (this stdlib's own real, established convention for
-;; reading a boxed scalar Result/Option payload) would crash
-;; dereferencing -- a real, separate, harder gap (needs a genuine
-;; per-type heap box, the same real infrastructure src/emit.c's own
-;; ensure_box_helper provides and this file doesn't have yet), not
-;; attempted here.
+;; boxing needed -- OR (2026-08-28, widened, closing the "non-pointer-
+;; shaped payload" gap this file's own header comment history named
+;; repeatedly as still open, the natural complement to real deref
+;; support added the same day) a real I32-shaped expression (a bare
+;; number literal or a binary-op-call-shaped? expression), boxed via
+;; the new `int_box` helper (int-box-helper-decl's own header comment)
+;; -- a genuine, minimal, narrow port of the ONE real case src/emit.c's
+;; own much larger, general `ensure_box_helper` mechanism exists for.
+;; See result-option-payload-is-i32?'s own header comment just below
+;; for the full real reasoning (the destination Arena to box into, and
+;; why that particular design choice was made).
+;; result-option-payload-is-i32? -- real, narrow "does this payload
+;; produce a raw C int" check (2026-08-28): a bare NUMBER literal
+;; (kind NNumber, 6) or a real binary-op-call-shaped? expression --
+;; the exact same 2 shapes emit-i32-boxed's OWN existing callers
+;; already recognize as "definitely produces a raw int", reused here
+;; for a DIFFERENT real reason (this position needs a real HEAP box,
+;; not this file's own intptr_t-reinterpret trick -- the two boxing
+;; conventions are genuinely different and must never be confused, a
+;; real, previously-confirmed confusion point). A bare symbol
+;; referencing an I32-typed local/param is deliberately NOT included
+;; here -- this narrow emitter has no real per-symbol type tracking,
+;; so a bare symbol payload is already claimed by the pointer-shaped
+;; branch above (correct for the dominant real case, a String/struct
+;; value); an I32-typed bare-symbol payload remains a real, separate,
+;; not-yet-attempted gap.
+(defn result-option-payload-is-i32? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (or (= (emit-node-kind-code (get-field node :kind)) 6) (binary-op-call-shaped? node dest)))
+
 (defn result-option-payload-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
   (or (= (emit-node-kind-code (get-field node :kind)) 3)
-      (or (get-field-shaped? node dest) (plain-call-shaped? node dest))))
+      (or (get-field-shaped? node dest)
+          (or (plain-call-shaped? node dest) (result-option-payload-is-i32? node dest)))))
+
+;; emit-int-box-call -- real, narrow `int_box(<dest-arena>, <raw-int-
+;; expr>)` composition, closing the real "which Arena to box into"
+;; question via arena-scope-any-ref's own real, best-effort "any arena
+;; currently in scope" search (see that function's own header comment
+;; for the full real reasoning, including its own honest fallback for
+;; the genuinely degenerate no-arena-in-scope case).
+(defn emit-int-box-call [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [raw-c (if (binary-op-call-shaped? node dest) (emit-binary-op node scope dest) (get-field node :text))
+        arena-c (arena-scope-any-ref scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "int_box(")
+      (vec/push! &parts arena-c)
+      (vec/push! &parts ", ")
+      (vec/push! &parts raw-c)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
 
 (defn emit-result-option-payload [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((get-field-shaped? node dest) (emit-get-field node scope dest))
     ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
+    ((result-option-payload-is-i32? node dest) (emit-int-box-call node scope dest))
     (true (resolve-arena-ref (get-field node :text) scope dest))))
 
 ;; result-option-ctor-shaped? -- a real `(Ok expr)`/`(Err expr)`/
@@ -1637,6 +1692,38 @@
 ;; program-header -- the same real prelude (`#include
 ;; "parena_runtime.h"` + the 4 standard headers) VS0's own real,
 ;; current emitter still emits verbatim.
+;; int_box's own real, unconditional emission (2026-08-28, real per-
+;; type heap-box helper closing the "a real, non-pointer-shaped Ok/
+;; Err/Some payload" gap this file's own header comment history named
+;; repeatedly as still open, the natural complement to real deref
+;; support -- see result-option-payload-is-i32?'s own header comment
+;; below for the full real reasoning): a genuine, minimal, narrow port
+;; of the ONE real case src/emit.c's own much larger, general
+;; `ensure_box_helper`/g_box_helpers mechanism exists for -- matching
+;; its own real `TypeName_box(Arena *dest, TypeName v) -> TypeName *`
+;; naming convention exactly (`int_box`, not this file's OWN unrelated
+;; `vec_box_i32` from parena_runtime.h, which takes a Vec* and boxes
+;; into ITS OWN stored arena -- a genuinely different real shape for a
+;; genuinely different real purpose). Real, deliberate simplification
+;; over the reference's own general, on-demand, per-distinct-type,
+;; deduplicated helper-generation machinery: this narrow v0 only ever
+;; needs ONE type (I32), so it's emitted UNCONDITIONALLY, every
+;; program, matching this file's own already-established "simple over
+;; optimized" tradeoff (e.g. always-emit-every-prototype, not tracking
+;; real need) -- no generation-tracking/deduplication infrastructure
+;; needed at all. `static inline` means an unused int_box in a program
+;; that never constructs an I32 payload produces no real "unused
+;; function" warning under -Wall -Wextra (confirmed directly).
+(defn int-box-helper-decl [(dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "static inline int *int_box(Arena *dest, int v) {\n")
+      (vec/push! &parts "    int *p = (int *)arena_alloc(dest, sizeof(int));\n")
+      (vec/push! &parts "    *p = v;\n")
+      (vec/push! &parts "    return p;\n")
+      (vec/push! &parts "}\n\n")
+      (emit-join-all &parts dest))))
+
 (defn program-header [(dest : Arena @ Region)] : String @ Region
   (let [parts (vec/new dest)]
     (do
@@ -1647,6 +1734,7 @@
       (vec/push! &parts "#include <stdlib.h>\n")
       (vec/push! &parts "#include <math.h>\n")
       (vec/push! &parts "\n\n")
+      (vec/push! &parts (int-box-helper-decl dest))
       (emit-join-all &parts dest))))
 
 ;; ---- Real, narrow top-level `defstruct` support (2026-08-28) ----

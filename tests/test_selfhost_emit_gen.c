@@ -233,6 +233,7 @@ Option arena_scope_lookup(Vec *, char *, Arena *);
 Vec arena_scope_extend(Vec *, ArenaBinding, Arena *);
 char * arena_ref_of(ArenaBinding, char *, Arena *);
 char * resolve_arena_ref(char *, Vec *, Arena *);
+char * arena_scope_any_ref(Vec *, Arena *);
 int alloc_call_shaped_(Node *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
@@ -260,7 +261,9 @@ char * emit_match_scrutinee(Node *, Vec *, Arena *);
 char * emit_match_clause_body(Node *, Vec *, Arena *);
 int match_uses_result_(Node *);
 char * emit_match(Node *, Vec *, Arena *);
+int result_option_payload_is_i32_(Node *, Arena *);
 int result_option_payload_supported_(Node *, Arena *);
+char * emit_int_box_call(Node *, Vec *, Arena *);
 char * emit_result_option_payload(Node *, Vec *, Arena *);
 int result_option_ctor_shaped_(Node *, Arena *);
 char * result_option_ctor_runtime_fn(char *);
@@ -302,6 +305,7 @@ int struct_returning_get_field_body_(Node *, char *, Arena *);
 char * emit_defn(Node *, Vec *, Arena *);
 char * defn_declared_return_type_name(Node *);
 char * defn_c_return_type(Node *, Vec *, Arena *);
+char * int_box_helper_decl(Arena *);
 char * program_header(Arena *);
 char * struct_field_c_type(char *, Vec *, Arena *);
 int struct_field_supported_(char *, Vec *, Arena *);
@@ -1280,6 +1284,16 @@ char * resolve_arena_ref(char * arena_text __attribute__((unused)), Vec * scope 
     return __match_result_9;
 }
 
+char * arena_scope_any_ref(Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((vec_len(scope) == 0)) {
+    return "NO_ARENA_IN_SCOPE_FOR_I32_BOX";
+    } else {
+    ArenaBinding b __attribute__((unused)) = (*((ArenaBinding *)(vec_get(scope, (vec_len(scope) - 1)))));
+    char *c_name __attribute__((unused)) = mangle((b).name, dest);
+    return arena_ref_of(b, c_name, dest);
+    }
+}
+
 int alloc_call_shaped_(Node * expr_node __attribute__((unused))) {
     return (emit_is_call_named_(expr_node, "alloc") && (vec_len(&((expr_node)->children)) >= 4));
 }
@@ -1557,12 +1571,28 @@ char * emit_match(Node * node __attribute__((unused)), Vec * scope __attribute__
     return emit_join_all(&(parts), dest);
 }
 
+int result_option_payload_is_i32_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((emit_node_kind_code((node)->kind) == 6) || binary_op_call_shaped_(node, dest));
+}
+
 int result_option_payload_supported_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return ((emit_node_kind_code((node)->kind) == 3) || (get_field_shaped_(node, dest) || plain_call_shaped_(node, dest)));
+    return ((emit_node_kind_code((node)->kind) == 3) || (get_field_shaped_(node, dest) || (plain_call_shaped_(node, dest) || result_option_payload_is_i32_(node, dest))));
+}
+
+char * emit_int_box_call(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *raw_c __attribute__((unused)) = (binary_op_call_shaped_(node, dest) ? emit_binary_op(node, scope, dest) : (node)->text);
+    char *arena_c __attribute__((unused)) = arena_scope_any_ref(scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "int_box("));
+    (void)(vec_push_(&(parts), arena_c));
+    (void)(vec_push_(&(parts), ", "));
+    (void)(vec_push_(&(parts), raw_c));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
 }
 
 char * emit_result_option_payload(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (get_field_shaped_(node, dest) ? emit_get_field(node, scope, dest) : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : resolve_arena_ref((node)->text, scope, dest)));
+    return (get_field_shaped_(node, dest) ? emit_get_field(node, scope, dest) : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : (result_option_payload_is_i32_(node, dest) ? emit_int_box_call(node, scope, dest) : resolve_arena_ref((node)->text, scope, dest))));
 }
 
 int result_option_ctor_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2000,6 +2030,16 @@ char * defn_c_return_type(Node * defn_node __attribute__((unused)), Vec * known_
     return (str_eq_(name, "Result") ? "Result " : (str_eq_(name, "Option") ? "Option " : (vec_contains_string_(known_structs, name, 0) ? concat(name, " ", dest) : "char * ")));
 }
 
+char * int_box_helper_decl(Arena *dest __attribute__((unused))) {
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "static inline int *int_box(Arena *dest, int v) {\n"));
+    (void)(vec_push_(&(parts), "    int *p = (int *)arena_alloc(dest, sizeof(int));\n"));
+    (void)(vec_push_(&(parts), "    *p = v;\n"));
+    (void)(vec_push_(&(parts), "    return p;\n"));
+    (void)(vec_push_(&(parts), "}\n\n"));
+    return emit_join_all(&(parts), dest);
+}
+
 char * program_header(Arena *dest __attribute__((unused))) {
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "/* Generated by parena build -- VS0 domain 3, do not edit by hand. */\n"));
@@ -2009,6 +2049,7 @@ char * program_header(Arena *dest __attribute__((unused))) {
     (void)(vec_push_(&(parts), "#include <stdlib.h>\n"));
     (void)(vec_push_(&(parts), "#include <math.h>\n"));
     (void)(vec_push_(&(parts), "\n\n"));
+    (void)(vec_push_(&(parts), int_box_helper_decl(dest)));
     return emit_join_all(&(parts), dest);
 }
 

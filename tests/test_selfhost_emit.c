@@ -1887,6 +1887,85 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, non-pointer-shaped (I32) Ok/Err/Some payload
+         * CONSTRUCTION support (2026-08-28): closes the "non-pointer-
+         * shaped payload" gap this file's own header comment history
+         * named repeatedly as still open, and -- combined with the
+         * same day's earlier deref support -- completes the FULL real
+         * round trip: a value can now be both produced and consumed,
+         * scalar payload included, entirely by real selfhost-emitted
+         * C. */
+        char *snippet =
+            "(defn unwrap-or-zero [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some x) (deref x))\n"
+            "    (None 0)))\n"
+            "(defn make-answer [(dest : Arena @ :region/buffer)] : Option\n"
+            "  (Some 42))\n"
+            "(defn make-none-i32 [] : Option\n"
+            "  None)";
+        Result pr27 = parse_program(snippet, &a);
+        CHECK(pr27.tag == 1, "a real 3-function program -- a real Some-42 I32 construction, a "
+                              "real None construction, and a real match+deref consumer -- "
+                              "parses fine");
+        if (pr27.tag == 1) {
+            Node program27 = *(Node *)pr27.value;
+            char *generated27 = emit_program(&program27, &a);
+            CHECK(generated27 != NULL && strstr(generated27, "#error") == NULL,
+                  "no #error is emitted -- an I32-shaped Ok/Err/Some payload is now a real, "
+                  "supported shape, not silently falling back to the honest-failure path");
+            CHECK(generated27 != NULL &&
+                  strstr(generated27, "static inline int *int_box(Arena *dest, int v) {") != NULL,
+                  "the real, unconditionally-emitted int_box helper is present in the generated "
+                  "program");
+            CHECK(generated27 != NULL && strstr(generated27, "Option make_answer(") != NULL,
+                  "make-answer's own declared 'Option' return type is emitted as the real, "
+                  "concrete C return type");
+            CHECK(generated27 != NULL &&
+                  strstr(generated27, "return option_some(int_box(dest, 42));") != NULL,
+                  "make-answer's own body emits a real, correctly composed "
+                  "'option_some(int_box(dest, 42))' -- the real per-type heap box, not this "
+                  "file's own separate, unrelated emit-i32-boxed intptr_t-reinterpret trick, "
+                  "which would hand the runtime a bogus, non-dereferenceable pointer here");
+
+            if (generated27) {
+                char c_path17[300];
+                snprintf(c_path17, sizeof c_path17, "/tmp/parena_selfhost_emit_i32_ctor_test_%d.c",
+                         (int)getpid());
+                FILE *out17 = fopen(c_path17, "w");
+                CHECK(out17 != NULL, "a real temp file opens to write the I32-ctor generated C into");
+                if (out17) {
+                    fputs(generated27, out17);
+                    fclose(out17);
+
+                    char bin_path17[310];
+                    snprintf(bin_path17, sizeof bin_path17, "%s.bin", c_path17);
+                    char cmd17[1024];
+                    snprintf(cmd17, sizeof cmd17,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_i32_roundtrip.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path17, c_path17);
+                    int compile_status17 = system(cmd17);
+                    CHECK(compile_status17 == 0,
+                          "the real I32-ctor generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_i32_roundtrip.c");
+                    if (compile_status17 == 0) {
+                        int run_status17 = system(bin_path17);
+                        CHECK(run_status17 == 0,
+                              "the real compiled make-answer/make-none-i32/unwrap-or-zero all "
+                              "genuinely construct AND consume a real I32 Option payload "
+                              "correctly, entirely via real selfhost-emitted C on both ends -- "
+                              "driver_i32_roundtrip.c's own internal asserts all pass, closing "
+                              "the real round trip, not just compiling clean");
+                    }
+                    remove(c_path17);
+                    remove(bin_path17);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
