@@ -239,7 +239,12 @@ char * emit_tail_symbol(Node *, Arena *);
 char * emit_tail_expr(char *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
 int is_vec_call_(char *, Arena *);
-int every_call_arg_symbol_(Node *, int);
+int every_call_arg_symbol_or_number_(Node *, int);
+int binary_op_symbol_(char *);
+char * c_operator_text(char *);
+int binary_op_call_shaped_(Node *, Arena *);
+char * emit_binary_op(Node *, Vec *, Arena *);
+char * emit_i32_boxed(char *, Arena *);
 int plain_call_shaped_(Node *, Arena *);
 char * mangle_call_name(char *, Arena *);
 char * emit_call_arg(Node *, Vec *, Arena *);
@@ -254,6 +259,7 @@ char * emit_with_arena(Node *, Vec *, Arena *);
 char * param_type_name(Node *);
 char * param_c_type(char *);
 ParamInfo emit_params(Node *, Arena *);
+int body_start_index(Node *);
 char * emit_defn(Node *, Arena *);
 char * program_header(Arena *);
 char * emit_program(Node *, Arena *);
@@ -1261,24 +1267,70 @@ char * emit_tail_expr(char * expr_c __attribute__((unused)), Arena *dest __attri
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : emit_tail_symbol(node, dest)))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : emit_tail_symbol(node, dest))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return ((length(fn_text) >= 4) && str_eq_(substring(fn_text, 0, 4, dest), "vec/"));
 }
 
-int every_call_arg_symbol_(Node * call __attribute__((unused)), int i __attribute__((unused))) {
+int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i __attribute__((unused))) {
     if ((i >= vec_len(&((call)->children)))) {
     return 1;
     } else {
     Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
-    if ((emit_node_kind_code((arg_node)->kind) == 3)) {
-    return every_call_arg_symbol_(call, (i + 1));
+    int k __attribute__((unused)) = emit_node_kind_code((arg_node)->kind);
+    if (((k == 3) || (k == 6))) {
+    return every_call_arg_symbol_or_number_(call, (i + 1));
     } else {
     return 0;
     }
     }
+}
+
+int binary_op_symbol_(char * sym __attribute__((unused))) {
+    return (str_eq_(sym, "+") || (str_eq_(sym, "-") || (str_eq_(sym, "*") || (str_eq_(sym, "/") || (str_eq_(sym, "=") || (str_eq_(sym, ">=") || (str_eq_(sym, "<=") || (str_eq_(sym, ">") || str_eq_(sym, "<")))))))));
+}
+
+char * c_operator_text(char * sym __attribute__((unused))) {
+    if (str_eq_(sym, "=")) {
+    return "==";
+    } else {
+    return sym;
+    }
+}
+
+int binary_op_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(emit_is_symbol_headed_list_(expr_node)))) {
+    return 0;
+    } else {
+    Node *fn_node __attribute__((unused)) = vec_get(&((expr_node)->children), 0);
+    char *fn_text __attribute__((unused)) = (fn_node)->text;
+    return (binary_op_symbol_(fn_text) && ((vec_len(&((expr_node)->children)) == 3) && every_call_arg_symbol_or_number_(expr_node, 1)));
+    }
+}
+
+char * emit_binary_op(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *fn_node __attribute__((unused)) = vec_get(&((call)->children), 0);
+    char *op_c __attribute__((unused)) = c_operator_text((fn_node)->text);
+    char *lhs __attribute__((unused)) = emit_call_arg(vec_get(&((call)->children), 1), scope, dest);
+    char *rhs __attribute__((unused)) = emit_call_arg(vec_get(&((call)->children), 2), scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), lhs));
+    (void)(vec_push_(&(parts), " "));
+    (void)(vec_push_(&(parts), op_c));
+    (void)(vec_push_(&(parts), " "));
+    (void)(vec_push_(&(parts), rhs));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_i32_boxed(char * expr_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "(char *)(intptr_t)"));
+    (void)(vec_push_(&(parts), expr_c));
+    return emit_join_all(&(parts), dest);
 }
 
 int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1287,7 +1339,7 @@ int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __a
     } else {
     Node *fn_node __attribute__((unused)) = vec_get(&((expr_node)->children), 0);
     char *fn_text __attribute__((unused)) = (fn_node)->text;
-    return ((!(str_eq_(fn_text, "alloc"))) && ((!(is_vec_call_(fn_text, dest))) && every_call_arg_symbol_(expr_node, 1)));
+    return ((!(str_eq_(fn_text, "alloc"))) && ((!(is_vec_call_(fn_text, dest))) && ((!(binary_op_symbol_(fn_text))) && every_call_arg_symbol_or_number_(expr_node, 1))));
     }
 }
 
@@ -1339,14 +1391,14 @@ char * emit_plain_call(Node * call __attribute__((unused)), Vec * scope __attrib
 }
 
 char * emit_let_value(Node * expr_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */"));
+    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */")));
 }
 
 char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((alloc_call_shaped_(expr_node) || plain_call_shaped_(expr_node, dest))) {
+    if ((alloc_call_shaped_(expr_node) || (binary_op_call_shaped_(expr_node, dest) || plain_call_shaped_(expr_node, dest)))) {
     return "";
     } else {
-    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls and plain function calls with symbol args)\n";
+    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, and plain function calls with symbol/number args)\n";
     }
 }
 
@@ -1462,12 +1514,35 @@ ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attri
     return __loop_result_16;
 }
 
+int body_start_index(Node * defn_node __attribute__((unused))) {
+    if ((vec_len(&((defn_node)->children)) < 4)) {
+    return 3;
+    } else {
+    Node *maybe_colon __attribute__((unused)) = vec_get(&((defn_node)->children), 3);
+    if ((!((emit_node_kind_code((maybe_colon)->kind) == 7)))) {
+    return 3;
+    } else {
+    double after_type __attribute__((unused)) = (3 + 2);
+    if ((vec_len(&((defn_node)->children)) < (after_type + 1))) {
+    return after_type;
+    } else {
+    Node *maybe_at __attribute__((unused)) = vec_get(&((defn_node)->children), after_type);
+    if ((emit_node_kind_code((maybe_at)->kind) == 8)) {
+    return (after_type + 2);
+    } else {
+    return after_type;
+    }
+    }
+    }
+    }
+}
+
 char * emit_defn(Node * defn_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *name_node __attribute__((unused)) = vec_get(&((defn_node)->children), 1);
     Node *params __attribute__((unused)) = vec_get(&((defn_node)->children), 2);
     char *fn_name __attribute__((unused)) = mangle((name_node)->text, dest);
     ParamInfo param_info __attribute__((unused)) = emit_params(params, dest);
-    char *body_c __attribute__((unused)) = emit_body_forms(defn_node, 3, &((param_info).scope), dest);
+    char *body_c __attribute__((unused)) = emit_body_forms(defn_node, body_start_index(defn_node), &((param_info).scope), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "char * "));
     (void)(vec_push_(&(parts), fn_name));

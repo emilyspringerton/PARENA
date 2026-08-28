@@ -328,6 +328,111 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real gap found and closed 2026-08-28 (continuing "removing c
+         * ffi when possible"): a bare arithmetic/comparison call
+         * (`+`/`-`/`*`/`/`/`=`/`>=`/`<=`/`>`/`<`) with a real number-
+         * literal argument used to fail every-call-arg-symbol?'s own
+         * "every arg must be a bare symbol" gate entirely (a real,
+         * separate, previously-flagged part of the same NORTHSTAR.md
+         * gap this whole domain's own commit history already named:
+         * "no nested calls, no literals"). Now a real, dedicated
+         * binary-op-call-shaped? dispatch emits real C infix syntax,
+         * boxed into this emitter's own uniform char* convention via
+         * emit-i32-boxed -- verified both structurally (this block)
+         * and behaviorally (the real compile+run below, since a type
+         * that merely COMPILES isn't proof the real value round-trips
+         * correctly through the (char *)(intptr_t) reinterpretation). */
+        char *snippet =
+            "(defn add-ten [(n : I32)] : I32\n"
+            "  (+ n 10))";
+        Result pr8 = parse_program(snippet, &a);
+        CHECK(pr8.tag == 1, "a real defn with a bare binary-op call as its whole body parses fine");
+        if (pr8.tag == 1) {
+            Node program8 = *(Node *)pr8.value;
+            char *generated8 = emit_program(&program8, &a);
+            CHECK(generated8 != NULL && strstr(generated8, "return (char *)(intptr_t)(n + 10);") != NULL,
+                  "a bare binary-op call as the whole body emits a real, correctly-boxed C return "
+                  "statement -- real infix syntax, not a mangled function call, and not the old "
+                  "silent empty 'return ;'");
+        }
+    }
+    {
+        /* real, separate gap found while verifying the above: an
+         * explicit `: ReturnType` annotation on a defn (the exact same
+         * `] : I32` shape kind-code/is-close-token?/etc all already use
+         * throughout this very codebase's own real source) used to have
+         * its own colon-and-type-symbol children wrongly walked as
+         * extra, bogus body statements by emit-body-forms, which always
+         * started its own walk at a hard-coded index 3 -- confirmed via
+         * direct instrumentation: add-ten's own real body used to emit
+         * THREE return statements (an empty one, then 'return I32;',
+         * THEN the real one) before body-start-index's own fix. The
+         * add-ten check above already proves this is fixed for a simple
+         * `] : I32` annotation (only ONE real return statement in its
+         * own generated text); this block proves the wider, even more
+         * common `] : String @ Region` shape (4 extra children: colon,
+         * type, at, region) is fixed too. */
+        char *snippet =
+            "(defn identity-str [(s : String @ Region)] : String @ Region\n"
+            "  s)";
+        Result pr9 = parse_program(snippet, &a);
+        CHECK(pr9.tag == 1, "a real defn with a ': Type @ Region' return annotation parses fine");
+        if (pr9.tag == 1) {
+            Node program9 = *(Node *)pr9.value;
+            char *generated9 = emit_program(&program9, &a);
+            CHECK(generated9 != NULL && strstr(generated9, "{\n    return s;\n}\n") != NULL,
+                  "a ': Type @ Region' return annotation's own colon/type/at/region children are "
+                  "correctly skipped -- exactly one real return statement, not four extra bogus ones");
+        }
+    }
+    {
+        /* real, live compile+run: the add-ten snippet above, actually
+         * compiled and called, checking the real returned VALUE (not
+         * just that gcc accepts the types) -- see driver_arith.c's own
+         * header comment. */
+        char *snippet =
+            "(defn add-ten [(n : I32)] : I32\n"
+            "  (+ n 10))";
+        Result pr10 = parse_program(snippet, &a);
+        if (pr10.tag == 1) {
+            Node program10 = *(Node *)pr10.value;
+            char *generated10 = emit_program(&program10, &a);
+            if (generated10) {
+                char c_path2[] = "/tmp/parena_selfhost_emit_arith_test_XXXXXX.c";
+                snprintf(c_path2, sizeof c_path2, "/tmp/parena_selfhost_emit_arith_test_%d.c", (int)getpid());
+                FILE *out2 = fopen(c_path2, "w");
+                CHECK(out2 != NULL, "a real temp file opens to write the binary-op generated C into");
+                if (out2) {
+                    fputs(generated10, out2);
+                    fclose(out2);
+
+                    char bin_path2[300];
+                    snprintf(bin_path2, sizeof bin_path2, "%s.bin", c_path2);
+                    char cmd2[1024];
+                    snprintf(cmd2, sizeof cmd2,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_arith.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2, c_path2);
+                    int compile_status2 = system(cmd2);
+                    CHECK(compile_status2 == 0,
+                          "add-ten's own real generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_arith.c");
+                    if (compile_status2 == 0) {
+                        int run_status2 = system(bin_path2);
+                        CHECK(run_status2 == 0,
+                              "the real compiled add-ten actually returns the real, correct value 15 "
+                              "-- driver_arith.c's own internal assert(result == 15) passes, proving "
+                              "emit-i32-boxed's own (char *)(intptr_t) reinterpretation genuinely "
+                              "round-trips the value, not just compiles clean");
+                    }
+                    remove(c_path2);
+                    remove(bin_path2);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

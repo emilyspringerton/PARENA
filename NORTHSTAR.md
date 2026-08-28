@@ -679,6 +679,54 @@ the first gap immediately). Real, honest, not-yet-scoped next steps for whoever 
 closing any one of these three would meaningfully widen what real `.prn` source the selfhost
 emitter can correctly self-compile, independent of and complementary to `build-files` itself.
 
+**Second bullet's "no literals" half closed too, same day (2026-08-28)**: `every-call-arg-symbol?`
+(renamed `every-call-arg-symbol-or-number?`) now accepts a real number-literal argument, not just a
+bare symbol -- `emit-call-arg` already handled the text correctly either way, only the shape guard
+was too narrow. New `binary-op-symbol?`/`emit-binary-op`/`binary-op-call-shaped?` recognize
+`+`/`-`/`*`/`/`/`=`/`>=`/`<=`/`>`/`<` as real C infix operators (not `mangled_name(args)` call
+syntax -- `plain-call-shaped?` now explicitly excludes them) -- `(+ n 10)` is exactly the real,
+motivating case. Wired into both `emit-let-value` and `emit-form`'s own tail-position dispatch.
+
+Closing this surfaced a real, separate, THIRD gap, found and fixed the same day: an arithmetic
+expression is a real, unboxed C `int`, but this emitter's own uniform convention declares
+EVERY function `char *` and EVERY let-binding `char *` -- assigning or returning a raw `int`
+into either is a real, confirmed `-Wint-conversion` -- a hard `-Werror` failure. New
+`emit-i32-boxed` reinterprets the value via a real `(char *)(intptr_t)` cast (not a heap
+allocation -- the C reference's own `int_box`-style per-file box-helper generation, `src/
+emit.c`'s `g_box_helpers`, is a genuinely separate, larger undertaking) -- any real caller
+unboxes with `(int)(intptr_t)result`. Verified as a genuine round-trip, not just "compiles
+clean": a new driver (`tests/integration/driver_arith.c`) actually calls the compiled
+`add-ten(5)` and asserts the real returned value is 15.
+
+A FOURTH gap was found and fixed while chasing why `add-ten` (`] : I32`) still emitted THREE
+return statements instead of one, even after the above: `emit-body-forms` always started its own
+body walk at a hard-coded index 3, so a defn with an EXPLICIT `: ReturnType` annotation -- the
+exact same `] : I32` shape `kind-code`/`is-close-token?`/etc (this very codebase's own real
+source) all already use, or the even more common `] : String @ Region` -- had its own
+colon/type(/at/region) children wrongly walked as 2-4 extra, bogus body statements, each
+emitting its own spurious `return ...;` before the real one. New `body-start-index` detects and
+skips the annotation (the type itself is still never used for anything, same "consumed by
+omission" treatment an optional `@ region` already gets elsewhere in this file) -- fixes BOTH
+the `] : I32` and `] : String @ Region` shapes, verified separately.
+
+4 new tests total (`tests/test_selfhost_emit.c`, 19 for domain 4: parse+emit-text assertions for
+the binary-op and return-annotation fixes, plus a real compile+run+assert-on-the-actual-value
+check for the boxing round-trip). Zero regressions: full local suite (336 tests) + all 6 selfhost
+test binaries + `bazel build //...` all clean.
+
+Real, honest, still-open scope after all four: `plain-call-shaped?`/`every-call-arg-symbol-or-
+number?` still reject a NESTED call as an argument (`(f (g x))`) -- only a bare symbol or number
+literal is accepted. `binary-op-call-shaped?` is exactly 2-argument, no unary `-`, no `(+ a b c)`
+chains. `match`/`cond` still have no dispatch anywhere in `emit-form` at all -- the single
+largest remaining gap, and (per `handle-symbol-headed-call`'s own header comment in
+`region.prn`) a genuinely harder one: a real tail-position `if`/`else`-chain emission is
+tractable, but `match`/`cond` used as a NON-tail value would need something like GCC's own
+statement-expression extension, incompatible with this whole repo's `-std=c99 -pedantic`
+discipline. And `defstruct` is still not walked at the top level at all -- no `typedef struct`
+emission, no `get-field`/struct-literal-construction support for code the selfhost emitter is
+asked to compile (as opposed to code ABOUT structs living inside the selfhost `.prn` files
+themselves, which the REFERENCE compiler already handles fine, unaffected by any of this).
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

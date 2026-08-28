@@ -246,14 +246,15 @@
     ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
     ((emit-is-call-named? node "let") (emit-let node scope dest))
     ;; Real, additive tail-position cases (2026-08-28): a bare `alloc`
-    ;; call or a plain-call-shaped function call as the WHOLE body
-    ;; (not wrapped in with-arena/let) now emits a real `return
-    ;; <call>;` instead of silently falling through to emit-tail-
-    ;; symbol's own bare-symbol-only shape. Same real dispatch order
-    ;; emit-let-value already establishes for the identical shapes in
-    ;; a let-binding's own value position (alloc checked first, since
-    ;; alloc-call-shaped? is the narrower, more specific check).
+    ;; call, a bare binary-op expression, or a plain-call-shaped
+    ;; function call as the WHOLE body (not wrapped in with-arena/let)
+    ;; now emits a real `return <call>;` instead of silently falling
+    ;; through to emit-tail-symbol's own bare-symbol-only shape. Same
+    ;; real dispatch order emit-let-value already establishes for the
+    ;; identical shapes in a let-binding's own value position (alloc
+    ;; checked first as the narrowest, most specific check).
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
+    ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
     ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
     (true (emit-tail-symbol node dest))))
 
@@ -271,20 +272,113 @@
   (and (>= (string/length fn-text) 4)
        (string/str-eq? (string/substring fn-text 0 4 dest) "vec/")))
 
-(defn every-call-arg-symbol? [(call : &Node) (i : I32)] : Bool
+;; every-call-arg-symbol-or-number? -- widened 2026-08-28 (real gap
+;; named but not fixed in this file's own header comment history, and
+;; in NORTHSTAR.md's own Self-hosting section: "no nested calls, no
+;; literals"). A real NUMBER literal argument (kind NNumber, code 6)
+;; needs no special handling at emission time -- emit-call-arg already
+;; just reads the node's own real :text and mangles it (a no-op for
+;; digits, no hyphens to replace), the exact same path a bare symbol
+;; already goes through -- so widening the SHAPE GUARD here is the
+;; whole real fix; emit-call-arg itself is untouched. Still real,
+;; honest, narrower than the C reference: a NESTED CALL as an argument
+;; (`(f (g x))`) is still not accepted, not attempted here.
+(defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
-    (let [arg-node (vec/get &(get-field call :children) i)]
-      (if (= (emit-node-kind-code (get-field arg-node :kind)) 3)
-        (every-call-arg-symbol? call (+ i 1))
+    (let [arg-node (vec/get &(get-field call :children) i)
+          k (emit-node-kind-code (get-field arg-node :kind))]
+      (if (or (= k 3) (= k 6))
+        (every-call-arg-symbol-or-number? call (+ i 1))
         false))))
+
+;; binary-op-symbol? / c-operator-text -- the real, narrow list of
+;; arithmetic/comparison operators this emitter can now emit as real C
+;; infix syntax (2026-08-28, closing the other real half of the same
+;; "no literals" gap): `+`/`-`/`*`/`/` and the 4 real comparisons
+;; already used pervasively throughout this very codebase's own real
+;; source (region.prn/emit.prn's own many `(>= i n)`/`(= a b)`
+;; checks). `=` is PARENA's own equality symbol but real C equality is
+;; `==` -- every other operator already matches its own real C
+;; spelling verbatim, so only that one needs translating.
+(defn binary-op-symbol? [(sym : String @ Region)] : Bool
+  (or (string/str-eq? sym "+")
+      (or (string/str-eq? sym "-")
+          (or (string/str-eq? sym "*")
+              (or (string/str-eq? sym "/")
+                  (or (string/str-eq? sym "=")
+                      (or (string/str-eq? sym ">=")
+                          (or (string/str-eq? sym "<=")
+                              (or (string/str-eq? sym ">")
+                                  (string/str-eq? sym "<"))))))))))
+
+(defn c-operator-text [(sym : String @ Region)] : String @ Region
+  (if (string/str-eq? sym "=") "==" sym))
+
+;; binary-op-call-shaped? -- a real, narrow 2-argument call to one of
+;; the real operators above, every argument a bare symbol or number
+;; literal (every-call-arg-symbol-or-number?'s own widened shape guard
+;; -- `(+ n 10)` is exactly the real, motivating case). Real, honest,
+;; narrower than the C reference: no unary `-`, no >2-argument chains
+;; (`(+ a b c)`), not attempted here.
+(defn binary-op-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-symbol-headed-list? expr-node))
+    false
+    (let [fn-node (vec/get &(get-field expr-node :children) 0)
+          fn-text (get-field fn-node :text)]
+      (and (binary-op-symbol? fn-text)
+           (and (= (vec/len &(get-field expr-node :children)) 3)
+                (every-call-arg-symbol-or-number? expr-node 1))))))
+
+(defn emit-binary-op [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [fn-node (vec/get &(get-field call :children) 0)
+        op-c (c-operator-text (get-field fn-node :text))
+        lhs (emit-call-arg (vec/get &(get-field call :children) 1) scope dest)
+        rhs (emit-call-arg (vec/get &(get-field call :children) 2) scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(")
+      (vec/push! &parts lhs)
+      (vec/push! &parts " ")
+      (vec/push! &parts op-c)
+      (vec/push! &parts " ")
+      (vec/push! &parts rhs)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+;; emit-i32-boxed -- a real, plain C expression (`(int-expr)`) forced
+;; into this emitter's own uniform char*-return/let-value convention
+;; via a real `(char *)(intptr_t)` reinterpretation, not a heap
+;; allocation -- `int_box`-style arena boxing (the C reference's own
+;; real, per-file-generated helper, see src/emit.c's own g_box_helpers)
+;; is a genuinely separate, larger undertaking, not attempted here.
+;; intptr_t is guaranteed round-trippable with any real pointer value
+;; on any real platform (<stdint.h>, already unconditionally included
+;; by program-header) -- a real, valid, if narrow, technique: any
+;; caller that needs the real I32 back out casts `(int)(intptr_t)
+;; result`, the same real "this file's own uniform scalar-as-pointer
+;; erasure" shape emit-defn's own hard-coded `char *` return already
+;; commits every function to. Needed because emit-binary-op's own raw
+;; C expression (`(n + 10)`) is a real, unboxed `int` -- assigning or
+;; returning it directly into a `char *` slot is a real, confirmed
+;; `-Wint-conversion` warning (a hard -Werror failure under this whole
+;; repo's own real DoD bar) without this wrapper.
+(defn emit-i32-boxed [(expr-c : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(char *)(intptr_t)")
+      (vec/push! &parts expr-c)
+      (emit-join-all &parts dest))))
 
 ;; plain-call-shaped? -- a real, user-defined function call this
 ;; narrow emitter can now support: a symbol-headed list, not `alloc`,
 ;; not a `vec/` runtime call (is-vec-call?'s own header comment
-;; explains why), every real argument itself a bare symbol (no nested
-;; calls, no literals -- a real, narrower scope than the C reference's
-;; own general call-argument emission, not attempted here).
+;; explains why), not a binary-op-call-shaped? operator call (those
+;; need real C infix syntax, not `mangled_name(args)` call syntax --
+;; emit-binary-op handles them separately), every real argument itself
+;; a bare symbol or number literal (every-call-arg-symbol-or-number?'s
+;; own header comment). Still real, honest, narrower than the C
+;; reference: no nested calls as arguments, not attempted here.
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))
     false
@@ -292,7 +386,8 @@
           fn-text (get-field fn-node :text)]
       (and (not (string/str-eq? fn-text "alloc"))
            (and (not (is-vec-call? fn-text dest))
-                (every-call-arg-symbol? expr-node 1))))))
+                (and (not (binary-op-symbol? fn-text))
+                     (every-call-arg-symbol-or-number? expr-node 1)))))))
 
 ;; mangle-call-name -- real, narrow port of src/emit.c's own
 ;; mangle_call_name for the one real shape this narrow emitter
@@ -352,13 +447,14 @@
 (defn emit-let-value [(expr-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
+    ((binary-op-call-shaped? expr-node dest) (emit-i32-boxed (emit-binary-op expr-node scope dest) dest))
     ((plain-call-shaped? expr-node dest) (emit-plain-call expr-node scope dest))
     (true "0 /* see #error above */")))
 
 (defn let-value-error-prefix [(expr-node : &Node) (dest : Arena @ Region)] : String @ Region
-  (if (or (alloc-call-shaped? expr-node) (plain-call-shaped? expr-node dest))
+  (if (or (alloc-call-shaped? expr-node) (or (binary-op-call-shaped? expr-node dest) (plain-call-shaped? expr-node dest)))
     ""
-    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls and plain function calls with symbol args)\n"))
+    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, and plain function calls with symbol/number args)\n"))
 
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
@@ -495,6 +591,42 @@
           (recur (+ i 1) pieces next-scope))))))
 
 ;; emit-defn -- real, narrow port of a top-level `(defn name [params]
+;; body-start-index -- real, narrow detection and skip of an explicit
+;; `: ReturnType` (optionally `@ region`-suffixed) annotation on a defn
+;; (2026-08-28, real gap found and closed while verifying binary-op
+;; support): emit-body-forms always started its own body walk at index
+;; 3 UNCONDITIONALLY, so a defn WITH an explicit return-type annotation
+;; -- `] : I32`, the exact same shape kind-code/is-close-token?/etc
+;; (this very codebase's own real source) all already use, or the even
+;; more common `] : String @ Region` -- had its own colon/type(/at/
+;; region) children wrongly walked as 2-4 extra, bogus body statements,
+;; each emitting its own spurious `return ...;` BEFORE the real body's
+;; own real return (confirmed via direct instrumentation: `] : I32`
+;; produced a stray `return ;` then `return I32;`; `] : String @
+;; Region` produced FOUR stray lines). Real, honest, narrow v0: the
+;; return type itself is still never USED for anything (this emitter's
+;; own uniform char*-boxed-return convention doesn't need it) -- this
+;; only detects and SKIPS the annotation, the same "consumed by
+;; omission" treatment an optional trailing `@ region` already gets
+;; everywhere else in this file. The type node itself (child at colon+1)
+;; is always exactly ONE child regardless of whether it's a bare symbol
+;; (`I32`) or a compound list (`(Result Unit String)`) -- Node.children
+;; nests, it doesn't flatten -- so this doesn't need to distinguish the
+;; two shapes at all.
+(defn body-start-index [(defn-node : &Node)] : I32
+  (if (< (vec/len &(get-field defn-node :children)) 4)
+    3
+    (let [maybe-colon (vec/get &(get-field defn-node :children) 3)]
+      (if (not (= (emit-node-kind-code (get-field maybe-colon :kind)) 7))
+        3
+        (let [after-type (+ 3 2)]
+          (if (< (vec/len &(get-field defn-node :children)) (+ after-type 1))
+            after-type
+            (let [maybe-at (vec/get &(get-field defn-node :children) after-type)]
+              (if (= (emit-node-kind-code (get-field maybe-at :kind)) 8)
+                (+ after-type 2)
+                after-type))))))))
+
 ;; body...)`. Real, honest, narrow v0: return type is always hard-coded
 ;; `char *` (matching src/emit.h's own real, documented "char * is the
 ;; only inferred type" v0 scope exactly -- not a real type-inference
@@ -505,7 +637,7 @@
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params dest)
-        body-c (emit-body-forms defn-node 3 &(get-field param-info :scope) dest)
+        body-c (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts "char * ")
