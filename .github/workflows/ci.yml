@@ -206,15 +206,19 @@ jobs:
       # need runtime/parena_runtime.h's Windows-portability fix (Apple
       # #16235) -- it only runs the `parena` compiler, real C compilation
       # happens on each platform's own job below.
+      # Real structural fix (2026-08-28): this step used to hardcode its own separate copy of
+      # editor-demo's own source-file list, independent from the Makefile's own editor-demo
+      # target -- confirmed-live recurring gap, the SAME "two hand-maintained copies drift
+      # apart" class ECOWAR's own CI hit four times for its mod list (see that repo's own
+      # ci.yml comment history) -- pty.prn/shell.prn were missed here once already this
+      # session, then json.prn/textmate_loader.prn/lang_json.prn hit it again immediately
+      # after (real CI failure, run 33145201449: "implicit declaration of function
+      # 'build_json_grammar'"). Now reads the exact same examples/editor-demo-sources.txt the
+      # Makefile's own editor-demo target reads -- one real list, not two.
       - name: Generate editor-demo C source (compiled natively per-platform below)
         run: |
           set -euo pipefail
-          ./dist/parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
-            stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn stdlib/pty.prn stdlib/shell.prn \
-            stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
-            stdlib/editor/textmate_markdown.prn \
-            stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
-            stdlib/editor/construct_split.prn stdlib/editor/spotlight.prn -o editor_demo_gen.c
+          ./dist/parena build $(tr '\n' ' ' < examples/editor-demo-sources.txt) -o editor_demo_gen.c
           cat editor_demo_gen.c examples/editor_main.c > editor_demo_full.c
 
       - name: Upload editor-demo generated C source (consumed by the Windows/macOS native-compile jobs)

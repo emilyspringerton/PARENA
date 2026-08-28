@@ -297,15 +297,14 @@ turbosed: build
 PRNFMT_RENAME := -Darena_init=pf_arena_init -Darena_alloc=pf_arena_alloc \
 	-Darena_strdup=pf_arena_strdup -Darena_free_all=pf_arena_free_all
 
+# editor-demo's own real source-file list lives in examples/editor-demo-sources.txt, NOT
+# hardcoded here -- real, confirmed-live recurring bug (2026-08-28, the 2nd+ real instance in
+# THIS repo alone: pty.prn/shell.prn were missed here once already this session, now json.prn/
+# textmate_loader.prn/lang_json.prn hit the SAME class in CI's own separate hardcoded copy of
+# this exact list, .github/workflows/ci.yml's "Generate editor-demo C source" step). CI now
+# reads the same file, so this list only needs updating in ONE real place going forward.
 editor-demo: build
-	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \
-		stdlib/regex/pcre.prn stdlib/sdl2.prn stdlib/expr.prn stdlib/pty.prn stdlib/shell.prn \
-		stdlib/json.prn \
-		stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
-		stdlib/editor/textmate_markdown.prn stdlib/editor/textmate_loader.prn \
-		stdlib/editor/lang_json.prn \
-		stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
-		stdlib/editor/construct_split.prn stdlib/editor/spotlight.prn -o /tmp/editor_demo_gen.c
+	./parena build $(shell tr '\n' ' ' < examples/editor-demo-sources.txt) -o /tmp/editor_demo_gen.c
 	cat /tmp/editor_demo_gen.c examples/editor_main.c > /tmp/editor_demo_full.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/arena.c -o /tmp/pf_arena.o
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror $(PRNFMT_RENAME) -c src/fmt.c -o /tmp/pf_fmt.o
