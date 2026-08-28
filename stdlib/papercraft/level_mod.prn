@@ -1,0 +1,50 @@
+;; stdlib/papercraft/level_mod.prn — PAPERCRAFT's first real PARENA mod, and its own first real
+;; slice of "mods first everything" (founder, 2026-08-28: "you have a construct file build the
+;; world from nothing parena native as much as possible" + "mods first everything" + "just like
+;; you did for the gear shift" -- direct continuation of the exact real pattern
+;; WEAKNIGHT_BEDROCK_RACERS' own racer/bike_gear_mod.prn just proved, itself following ECOWAR's
+;; own established mod ABI, see ECOWAR/docs/ARENA_API.md).
+;;
+;; Real I32-only decision logic (no F32/struct/Vec across the boundary, same VS0 ceiling every
+;; other real mod in this monorepo respects): given a player's current level and their current
+;; total XP, decide the real level they should actually be at. Host C still owns applying the
+;; real consequence of a level change (stat increases, unlocks, persistence writes) -- same "mod
+;; does what VS0 can, host does the rest" split every real mod in this monorepo already uses.
+;;
+;; ABI: a real host function (papercraft_apply_xp, host C, not yet written -- this repo has no
+;; gameplay code yet, see NORTHSTAR.md's own "Explicitly not scoped yet") calls straight into
+;; on-papercraft-level-for-xp (emitted as on_papercraft_level_for_xp) with the player's current
+;; level and total XP, and gets back the real level that XP total actually earns.
+
+(module papercraft/level-mod)
+(export on-papercraft-level-for-xp)
+
+;; Real curve, ported from the real construct's own xp_for_next_level (SHANKPIT_CONSTRUCT.txt
+;; line 792: `80 + (level - 1) * 35`) -- founder, 2026-08-28: "keep the experience gain from the
+;; construct i like the idea of papercraft having a leveling system." That original curve was
+;; match-scoped (8-minute matches, capped at level 10, MatchProgression/progression_add_xp,
+;; construct lines 777-812) -- this mod keeps the real per-level COST formula (a flat +35 XP per
+;; level, not proportional growth) but as a real persistent-account curve, extending the cap to
+;; 20 to fit Papercraft's own single-node persistent world (this repo has no matches, see
+;; NORTHSTAR.md's own "No matches" section) -- not the raw match-scoped numbers as-is.
+;;
+;; xp-required-for-level here returns the TOTAL XP a player needs to have earned to BE at `level`
+;; (cumulative), not the incremental per-level cost xp_for_next_level itself returns -- the shape
+;; on-papercraft-level-for-xp below needs, matching this mod's own total-XP-tracking convention
+;; (simpler for a real persistent account than re-deriving cumulative totals from a running
+;; incremental counter every login).
+(defn xp-required-for-level [(level : I32)] : I32
+  (if (<= level 1)
+    0
+    (+ (xp-required-for-level (- level 1)) (+ 80 (* (- level 2) 35)))))
+
+;; Recursive real decision, not a fixed-size branch table (unlike bike-gear-mod's own 5-gear
+;; table): the level cap here is real content, not a hard VS0 limit, so this is written to scale
+;; without a rewrite if the cap moves. Ticks the player's own level up one at a time, matching
+;; racer/bike-gear-mod's own real "one real shift at a time, never skips" convention.
+(defn on-papercraft-level-for-xp [(level : I32) (total-xp : I32)] : I32
+  (if (>= level 20)
+    20
+    (if (>= total-xp (xp-required-for-level (+ level 1)))
+      (on-papercraft-level-for-xp (+ level 1) total-xp)
+      level)))
