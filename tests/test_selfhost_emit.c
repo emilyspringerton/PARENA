@@ -591,6 +591,73 @@ int main(int argc, char **argv) {
             }
         }
     }
+    {
+        /* real gap found and closed 2026-08-28, closing the second (of
+         * two) real exclusions the same-day cond work explicitly
+         * named: a plain-call-shaped? predicate function call (e.g.
+         * `(is-zero n)`) as a cond test. Needs no new unboxing helper
+         * at the CALL site -- a Bool-returning function's own body
+         * already goes through this file's real, existing boxing
+         * convention on the CALLEE side (emit-i32-boxed makes 0/1 a
+         * real NULL/non-NULL char*), and a real C `if
+         * (some_char_star_expr)` already treats a non-NULL pointer as
+         * truthy. Verified both structurally and behaviorally: a real
+         * two-function program (a real predicate PLUS a real cond
+         * dispatching to it), compiled and run against both a zero and
+         * a non-zero input. */
+        char *snippet =
+            "(defn is-zero [(n : I32)] : Bool\n"
+            "  (= n 0))\n"
+            "(defn classify [(n : I32)] : I32\n"
+            "  (cond\n"
+            "    ((is-zero n) 1)\n"
+            "    (true 0)))";
+        Result pr14 = parse_program(snippet, &a);
+        CHECK(pr14.tag == 1, "a real predicate defn plus a real cond dispatching to it parses fine");
+        if (pr14.tag == 1) {
+            Node program14 = *(Node *)pr14.value;
+            char *generated14 = emit_program(&program14, &a);
+            CHECK(generated14 != NULL && strstr(generated14, "if (is_zero(n)) {") != NULL,
+                  "a plain-call-shaped predicate test emits a real, direct function call as the "
+                  "'if' condition -- no mangled-wrong call, no bogus unboxing cast needed at the "
+                  "call site");
+
+            if (generated14) {
+                char c_path5[] = "/tmp/parena_selfhost_emit_predcond_test_XXXXXX.c";
+                snprintf(c_path5, sizeof c_path5, "/tmp/parena_selfhost_emit_predcond_test_%d.c", (int)getpid());
+                FILE *out5 = fopen(c_path5, "w");
+                CHECK(out5 != NULL, "a real temp file opens to write the predicate-cond generated C into");
+                if (out5) {
+                    fputs(generated14, out5);
+                    fclose(out5);
+
+                    char bin_path5[300];
+                    snprintf(bin_path5, sizeof bin_path5, "%s.bin", c_path5);
+                    char cmd5[1024];
+                    snprintf(cmd5, sizeof cmd5,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_predicate_cond.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path5, c_path5);
+                    int compile_status5 = system(cmd5);
+                    CHECK(compile_status5 == 0,
+                          "the real predicate-plus-cond generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_predicate_cond.c");
+                    if (compile_status5 == 0) {
+                        int run_status5 = system(bin_path5);
+                        CHECK(run_status5 == 0,
+                              "the real compiled classify actually dispatches correctly to the "
+                              "real predicate on both a zero and a non-zero input -- driver_"
+                              "predicate_cond.c's own internal asserts pass, proving the real "
+                              "boxed-Bool-as-truthy-pointer convention genuinely round-trips "
+                              "correctly across a real function call, not just compiles clean");
+                    }
+                    remove(c_path5);
+                    remove(bin_path5);
+                }
+            }
+        }
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

@@ -779,10 +779,32 @@ on the generated `||`/`&&`/`!` text, plus a real compile+run+assert-across-7-rea
 selfhost test binaries + `bazel build //...` all clean.
 
 Real, honest, still-open scope after six: `match` itself (defenum tag dispatch); `cond` as a
-non-tail value (the genuinely hard architectural case); a plain-call-shaped predicate function
-call as a `cond` test (e.g. `(is-symbol? node "defn")` -- would need the callee's own Bool return
-correctly boxed/unboxed the same way `emit-i32-boxed` handles I32, not attempted for Bool yet);
-nested calls as call arguments generally; `defstruct` still not walked at the top level.
+non-tail value (the genuinely hard architectural case); nested calls as call arguments generally;
+`defstruct` still not walked at the top level.
+
+**Plain-call-shaped predicate calls as a `cond` test added the same day (2026-08-28)**, closing
+the second (and last) of the two real exclusions the `cond` work explicitly named. Turned out to
+need NO new boxing/unboxing machinery at all: a Bool-returning function's own body already goes
+through this file's real, existing convention on the CALLEE side (a comparison body boxes via
+`emit-i32-boxed` in `emit-form`'s own `binary-op-call-shaped?` branch, so `0`/`1` becomes a real
+`NULL`/non-`NULL` `char *`), and a real C `if (some_char_star_expr)` already treats a non-`NULL`
+pointer as truthy -- exactly right, zero extra casting needed at the CALL site.
+`bool-expr-supported?`/`emit-bool-expr` just gained one more `cond` clause each
+(`plain-call-shaped?` -> `emit-plain-call`, reusing both unchanged), and the existing
+`or-and-shaped?`/`not-shaped?` recursion means a predicate call also composes for free inside
+`(and (is-foo? x) (is-bar? y))`-shaped tests, no extra work. 2 new tests (`tests/
+test_selfhost_emit.c`, 27 total for domain 4): a structural assertion on the generated `if
+(is_zero(n))` text, plus a real compile+run+assert check (`tests/integration/
+driver_predicate_cond.c`) against a genuine two-function program (a real predicate defn plus a
+real `cond` dispatching to it), both a zero and a non-zero input. Zero regressions: full local
+suite (336 tests) + all 6 selfhost test binaries + `bazel build //...` all clean.
+
+Real, honest, still-open scope after seven: `match` itself (defenum tag dispatch); `cond` as a
+non-tail value (the genuinely hard architectural case); nested calls as call arguments generally
+(the one remaining real gap this whole `cond`-test arc never needed, since every real test shape
+so far -- comparisons, `or`/`and`/`not`, predicate calls -- stayed within a boolean/test context
+that never crosses this emitter's own `char*`-boxing boundary); `defstruct` still not walked at
+the top level at all.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself

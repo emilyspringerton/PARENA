@@ -295,7 +295,20 @@
     ((binary-op-call-shaped? node dest) true)
     ((= (emit-node-kind-code (get-field node :kind)) 3) true)
     ((or-and-shaped? node dest) true)
-    (true (not-shaped? node dest))))
+    ((not-shaped? node dest) true)
+    ;; Real, additive case (2026-08-28): a plain-call-shaped? predicate
+    ;; function call (e.g. `(is-symbol? node "defn")`) as a boolean
+    ;; test -- needs NO new unboxing helper, since a Bool-returning
+    ;; function's own body already goes through this file's real,
+    ;; existing boxing convention on the CALLEE side (a comparison body
+    ;; boxes via emit-i32-boxed in emit-form's own binary-op-call-
+    ;; shaped? branch, so 0/1 becomes a real NULL/non-NULL char*) --
+    ;; and a real C `if (some_char_star_expr)` already treats a
+    ;; non-NULL pointer as truthy, exactly right, with zero extra
+    ;; casting needed at the CALL site. Recursion through or-and-
+    ;; shaped?/not-shaped? above means this also composes for free
+    ;; inside `(and (is-foo? x) (is-bar? y))`-shaped tests.
+    (true (plain-call-shaped? node dest))))
 
 ;; or-and-shaped? -- a real, exactly-2-argument `(or a b)`/`(and a b)`
 ;; call, both operands themselves real bool-expr-supported?
@@ -356,6 +369,7 @@
     ((emit-is-call-named? node "or") (emit-bool-op node "||" scope dest))
     ((emit-is-call-named? node "and") (emit-bool-op node "&&" scope dest))
     ((emit-is-call-named? node "not") (emit-not node scope dest))
+    ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
     (true (resolve-arena-ref (get-field node :text) scope dest))))
 
 (defn cond-clause-shaped? [(clause : &Node) (dest : Arena @ Region)] : Bool

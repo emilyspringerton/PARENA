@@ -1279,7 +1279,7 @@ char * emit_tail_expr(char * expr_c __attribute__((unused)), Arena *dest __attri
 }
 
 int bool_expr_supported_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_symbol_(node, "true") ? 1 : (binary_op_call_shaped_(node, dest) ? 1 : ((emit_node_kind_code((node)->kind) == 3) ? 1 : (or_and_shaped_(node, dest) ? 1 : not_shaped_(node, dest)))));
+    return (emit_is_symbol_(node, "true") ? 1 : (binary_op_call_shaped_(node, dest) ? 1 : ((emit_node_kind_code((node)->kind) == 3) ? 1 : (or_and_shaped_(node, dest) ? 1 : (not_shaped_(node, dest) ? 1 : plain_call_shaped_(node, dest))))));
 }
 
 int or_and_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1330,7 +1330,7 @@ char * emit_not(Node * node __attribute__((unused)), Vec * scope __attribute__((
 }
 
 char * emit_bool_expr(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_symbol_(node, "true") ? "1" : (binary_op_call_shaped_(node, dest) ? emit_binary_op(node, scope, dest) : (emit_is_call_named_(node, "or") ? emit_bool_op(node, "||", scope, dest) : (emit_is_call_named_(node, "and") ? emit_bool_op(node, "&&", scope, dest) : (emit_is_call_named_(node, "not") ? emit_not(node, scope, dest) : resolve_arena_ref((node)->text, scope, dest))))));
+    return (emit_is_symbol_(node, "true") ? "1" : (binary_op_call_shaped_(node, dest) ? emit_binary_op(node, scope, dest) : (emit_is_call_named_(node, "or") ? emit_bool_op(node, "||", scope, dest) : (emit_is_call_named_(node, "and") ? emit_bool_op(node, "&&", scope, dest) : (emit_is_call_named_(node, "not") ? emit_not(node, scope, dest) : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : resolve_arena_ref((node)->text, scope, dest)))))));
 }
 
 int cond_clause_shaped_(Node * clause __attribute__((unused)), Arena *dest __attribute__((unused))) {
