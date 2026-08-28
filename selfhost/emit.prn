@@ -1439,6 +1439,40 @@
                 (+ after-type 2)
                 after-type))))))))
 
+;; struct-returning-get-field-body? -- real, narrow, SPECIAL-CASED fix
+;; (2026-08-28, closing "a struct-typed field used as a tail-position
+;; return" -- the ONE gap struct-return-type support's own landing
+;; explicitly left open the same day) for a real, confirmed problem:
+;; emit-form's own get-field-shaped? dispatch ALWAYS boxes its result
+;; via emit-i32-boxed, correct ONLY for a scalar (I32/Bool) field --
+;; boxing a real STRUCT VALUE this same way would try to cast a whole
+;; struct through `(char *)(intptr_t)...)`, which isn't even valid C
+;; (a struct isn't a scalar/pointer type). Real, honest, narrow fix:
+;; rather than threading struct-type-awareness through emit-form's own
+;; general recursion (used from many contexts -- let/with-arena
+;; bodies, match/cond clauses -- a genuinely bigger, riskier
+;; undertaking), this checks ONLY the one case where the needed
+;; information is already naturally at hand: a defn whose OWN declared
+;; return type is an already-registered struct (defn-c-return-type's
+;; own real output already answers this) AND whose ENTIRE body is
+;; exactly one get-field-shaped? form. In that one case, emit-defn
+;; below bypasses the general emit-body-forms/emit-form path entirely,
+;; emitting a real, unboxed `return (target).field;` directly via
+;; emit-get-field -- correct because the field's own real value, by
+;; construction, has the exact same real C type the function's own
+;; return type already promises. Every other case (a struct-typed
+;; field nested inside a `let`/`with-arena`/`cond`/`match` body, or a
+;; SCALAR-field get-field tail, or a non-get-field body) keeps this
+;; file's own pre-existing behavior completely unchanged.
+(defn struct-returning-get-field-body? [(defn-node : &Node) (return-type-c : String @ Region) (dest : Arena @ Region)] : Bool
+  (if (or (string/str-eq? return-type-c "char * ")
+          (or (string/str-eq? return-type-c "Result ") (string/str-eq? return-type-c "Option ")))
+    false
+    (let [start (body-start-index defn-node)]
+      (if (>= start (vec/len &(get-field defn-node :children)))
+        false
+        (get-field-shaped? (vec/get &(get-field defn-node :children) start) dest)))))
+
 ;; body...)`. Real, honest, narrow v0: return type defaults to hard-
 ;; coded `char *` (matching src/emit.h's own real, documented "char *
 ;; is the only inferred type" v0 scope exactly -- not a real general
@@ -1452,8 +1486,13 @@
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
-        body-c (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest)
         return-type-c (defn-c-return-type defn-node known-structs dest)
+        body-c (if (struct-returning-get-field-body? defn-node return-type-c dest)
+                 (emit-tail-expr
+                  (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node))
+                                   &(get-field param-info :scope) dest)
+                  dest)
+                 (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest))
         parts (vec/new dest)]
     (do
       (vec/push! &parts return-type-c)

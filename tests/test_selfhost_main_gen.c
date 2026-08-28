@@ -437,6 +437,7 @@ char * param_type_name(Node *);
 char * param_c_type(char *, Vec *, Arena *);
 ParamInfo emit_params(Node *, Vec *, Arena *);
 int body_start_index(Node *);
+int struct_returning_get_field_body_(Node *, char *, Arena *);
 char * emit_defn(Node *, Vec *, Arena *);
 char * defn_declared_return_type_name(Node *);
 char * defn_c_return_type(Node *, Vec *, Arena *);
@@ -2887,13 +2888,26 @@ int body_start_index(Node * defn_node __attribute__((unused))) {
     }
 }
 
+int struct_returning_get_field_body_(Node * defn_node __attribute__((unused)), char * return_type_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((str_eq_(return_type_c, "char * ") || (str_eq_(return_type_c, "Result ") || str_eq_(return_type_c, "Option ")))) {
+    return 0;
+    } else {
+    int start __attribute__((unused)) = body_start_index(defn_node);
+    if ((start >= vec_len(&((defn_node)->children)))) {
+    return 0;
+    } else {
+    return get_field_shaped_(vec_get(&((defn_node)->children), start), dest);
+    }
+    }
+}
+
 char * emit_defn(Node * defn_node __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *name_node __attribute__((unused)) = vec_get(&((defn_node)->children), 1);
     Node *params __attribute__((unused)) = vec_get(&((defn_node)->children), 2);
     char *fn_name __attribute__((unused)) = mangle((name_node)->text, dest);
     ParamInfo param_info __attribute__((unused)) = emit_params(params, known_structs, dest);
-    char *body_c __attribute__((unused)) = emit_body_forms(defn_node, body_start_index(defn_node), &((param_info).scope), dest);
     char *return_type_c __attribute__((unused)) = defn_c_return_type(defn_node, known_structs, dest);
+    char *body_c __attribute__((unused)) = (struct_returning_get_field_body_(defn_node, return_type_c, dest) ? emit_tail_expr(emit_get_field(vec_get(&((defn_node)->children), body_start_index(defn_node)), &((param_info).scope), dest), dest) : emit_body_forms(defn_node, body_start_index(defn_node), &((param_info).scope), dest));
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), return_type_c));
     (void)(vec_push_(&(parts), fn_name));

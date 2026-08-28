@@ -1663,6 +1663,97 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real struct-typed-field-as-a-tail-position-return support
+         * (2026-08-28): closes the one gap struct-return-type
+         * support's own landing explicitly left open the same day --
+         * emit-form's own get-field-shaped? dispatch always boxes via
+         * emit-i32-boxed, correct only for a scalar field. Special-
+         * cased directly in emit-defn (the function's own declared
+         * return type is already known there) rather than threading
+         * struct-type-awareness through emit-form's own general
+         * recursion. */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defstruct Line (start : Point) (end : Point))\n"
+            "(defn line-start [(l : Line)] : Point\n"
+            "  (get-field l :start))";
+        Result pr23 = parse_program(snippet, &a);
+        CHECK(pr23.tag == 1, "a real defn whose whole body is a struct-typed get-field tail, "
+                              "declared to return that same struct type, parses fine");
+        if (pr23.tag == 1) {
+            Node program23 = *(Node *)pr23.value;
+            char *generated23 = emit_program(&program23, &a);
+            CHECK(generated23 != NULL && strstr(generated23, "Point line_start(") != NULL,
+                  "line-start's own declared 'Point' return type is emitted as the real, "
+                  "concrete C return type");
+            CHECK(generated23 != NULL && strstr(generated23, "return (l).start;") != NULL,
+                  "line-start's own body emits a real, UNBOXED 'return (l).start;' -- no "
+                  "emit-i32-boxed intptr_t cast, which would be invalid C on a real struct value");
+            CHECK(generated23 != NULL && strstr(generated23, "intptr_t)(l).start") == NULL,
+                  "confirmed the old, wrong boxed form is genuinely gone, not just that the "
+                  "correct form happens to also be present");
+
+            if (generated23) {
+                char c_path14[300];
+                snprintf(c_path14, sizeof c_path14, "/tmp/parena_selfhost_emit_struct_gf_tail_test_%d.c",
+                         (int)getpid());
+                FILE *out14 = fopen(c_path14, "w");
+                CHECK(out14 != NULL, "a real temp file opens to write the struct-gf-tail generated C into");
+                if (out14) {
+                    fputs(generated23, out14);
+                    fclose(out14);
+
+                    char bin_path14[310];
+                    snprintf(bin_path14, sizeof bin_path14, "%s.bin", c_path14);
+                    char cmd14[1024];
+                    snprintf(cmd14, sizeof cmd14,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_struct_field_tail.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path14, c_path14);
+                    int compile_status14 = system(cmd14);
+                    CHECK(compile_status14 == 0,
+                          "the real struct-gf-tail generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_struct_field_tail.c");
+                    if (compile_status14 == 0) {
+                        int run_status14 = system(bin_path14);
+                        CHECK(run_status14 == 0,
+                              "the real compiled line-start genuinely returns the correct, "
+                              "complete struct value (both fields) on every real input -- "
+                              "driver_struct_field_tail.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path14);
+                    remove(bin_path14);
+                }
+            }
+        }
+
+        /* real, direct regression guard: the pre-existing SCALAR-field
+         * get-field tail case (point-x, used throughout this file's
+         * own earlier struct-field tests) must still box via
+         * emit-i32-boxed exactly as before -- struct-returning-get-
+         * field-body?'s own new special case must never fire for an
+         * I32-returning function, only a struct-returning one. */
+        char *snippet2 =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn point-x [(p : Point)] : I32\n"
+            "  (get-field p :x))";
+        Result pr24 = parse_program(snippet2, &a);
+        CHECK(pr24.tag == 1, "a real defn whose whole body is a SCALAR-typed get-field tail "
+                              "still parses fine");
+        if (pr24.tag == 1) {
+            Node program24 = *(Node *)pr24.value;
+            char *generated24 = emit_program(&program24, &a);
+            CHECK(generated24 != NULL &&
+                  strstr(generated24, "return (char *)(intptr_t)(p).x;") != NULL,
+                  "point-x's own body still emits the real, correctly BOXED "
+                  "'(char *)(intptr_t)(p).x' -- the pre-existing scalar-field behavior, "
+                  "genuinely unchanged by this round's new struct-field special case");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
