@@ -1316,6 +1316,33 @@ attempted); a struct-typed field nested inside a `let`/`with-arena`/`cond`/`matc
 round's own fix only covers a defn's ENTIRE body being one bare get-field); `Vec`/enum-typed
 `defstruct` fields; general struct-literal construction for a user-defined `defstruct`.
 
+**Real get-field-as-a-let-value support added the same day (2026-08-28)**, closing a real, honest,
+until-now-unsupported gap confirmed live via a direct probe: `(let [n (get-field p :x)] n)` fell
+straight to the honest `#error` fallback, `get-field-shaped?` never having been wired into
+`emit-let-value` at ALL (not even for a plain SCALAR field, unrelated to any struct-typing question).
+Real, honest, narrow v0: SCALAR-only, boxed via `emit-i32-boxed` — the SAME assumption `emit-form`'s
+own tail-position dispatch already made (and still correctly makes for a scalar field, even after
+this same day's earlier struct-return-type work narrowly carved out just the whole-defn-body case). A
+STRUCT-typed field as a let-value would be WRONGLY boxed here the exact same way a struct-typed field
+used to be wrongly boxed in tail position before that fix — but unlike a defn's own body, a
+let-binding carries no declared return-type annotation to special-case against, so there's no
+equivalent narrow fix available here without real field-type lookup infrastructure this file doesn't
+have yet; not attempted.
+
+6 new tests (`tests/test_selfhost_emit.c`): structural checks confirming no `#error` and the correct,
+boxed `(char *)(intptr_t)(p).x` let-binding, plus a real compile+run+assert check (`tests/
+integration/driver_let_get_field.c`) proving the real scalar struct-field read, passed through a real
+let-binding, genuinely computes the correct value on multiple real inputs including a negative one.
+Zero regressions: full local suite (336 tests) + all 6 selfhost domain test binaries + `bazel
+build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument (by design, not
+attempted); a STRUCT-typed field used as a let-value (needs real field-type lookup infrastructure);
+a struct-typed field nested inside a `with-arena`/`cond`/`match` body; `Vec`/enum-typed `defstruct`
+fields; general struct-literal construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

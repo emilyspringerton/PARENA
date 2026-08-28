@@ -1245,6 +1245,25 @@
     ;; ctor-shaped?'s own header comment).
     ((result-option-ctor-shaped? expr-node dest) (emit-result-option-ctor expr-node scope dest))
     ((none-shaped? expr-node) "option_none()")
+    ;; Real, additive case (2026-08-28, closing a real, honest, until-
+    ;; now-unsupported gap confirmed live via a direct probe: `(let [n
+    ;; (get-field p :x)] n)` fell straight to the #error fallback
+    ;; below, get-field-shaped? never having been wired into this
+    ;; function at all): a struct-field read as a let-value, boxed via
+    ;; emit-i32-boxed -- the SAME scalar-only assumption emit-form's
+    ;; own get-field-shaped? tail-position dispatch already made (and
+    ;; still correctly makes for a scalar field, even after this same
+    ;; day's later struct-return-type special case narrowly carved out
+    ;; JUST the whole-defn-body case, see struct-returning-get-field-
+    ;; body?'s own header comment). Real, honest, narrower-still gap
+    ;; this does NOT attempt: a STRUCT-typed field as a let-value would
+    ;; be WRONGLY boxed here exactly the same way a struct-typed field
+    ;; used to be wrongly boxed in tail position before that fix --
+    ;; unlike a defn's own body, a let-binding carries no declared
+    ;; return-type annotation to special-case against, so there is no
+    ;; equivalent narrow fix available here without real field-type
+    ;; lookup infrastructure this file doesn't have yet.
+    ((get-field-shaped? expr-node dest) (emit-i32-boxed (emit-get-field expr-node scope dest) dest))
     ((plain-call-shaped? expr-node dest) (emit-plain-call expr-node scope dest))
     (true "0 /* see #error above */")))
 
@@ -1253,9 +1272,10 @@
           (or (binary-op-call-shaped? expr-node dest)
               (or (let-value-is-bool-expr? expr-node dest)
                   (or (result-option-ctor-shaped? expr-node dest)
-                      (or (none-shaped? expr-node) (plain-call-shaped? expr-node dest))))))
+                      (or (none-shaped? expr-node)
+                          (or (get-field-shaped? expr-node dest) (plain-call-shaped? expr-node dest)))))))
     ""
-    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, and plain function calls with symbol/number args)\n"))
+    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, a struct-field read, and plain function calls with symbol/number args)\n"))
 
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region

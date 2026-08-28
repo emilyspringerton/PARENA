@@ -1779,14 +1779,14 @@ int let_value_is_bool_expr_(Node * expr_node __attribute__((unused)), Arena *des
 }
 
 char * emit_let_value(Node * expr_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (let_value_is_bool_expr_(expr_node, dest) ? emit_i32_boxed(emit_bool_expr(expr_node, scope, dest), dest) : (result_option_ctor_shaped_(expr_node, dest) ? emit_result_option_ctor(expr_node, scope, dest) : (none_shaped_(expr_node) ? "option_none()" : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */"))))));
+    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (let_value_is_bool_expr_(expr_node, dest) ? emit_i32_boxed(emit_bool_expr(expr_node, scope, dest), dest) : (result_option_ctor_shaped_(expr_node, dest) ? emit_result_option_ctor(expr_node, scope, dest) : (none_shaped_(expr_node) ? "option_none()" : (get_field_shaped_(expr_node, dest) ? emit_i32_boxed(emit_get_field(expr_node, scope, dest), dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */")))))));
 }
 
 char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((alloc_call_shaped_(expr_node) || (binary_op_call_shaped_(expr_node, dest) || (let_value_is_bool_expr_(expr_node, dest) || (result_option_ctor_shaped_(expr_node, dest) || (none_shaped_(expr_node) || plain_call_shaped_(expr_node, dest))))))) {
+    if ((alloc_call_shaped_(expr_node) || (binary_op_call_shaped_(expr_node, dest) || (let_value_is_bool_expr_(expr_node, dest) || (result_option_ctor_shaped_(expr_node, dest) || (none_shaped_(expr_node) || (get_field_shaped_(expr_node, dest) || plain_call_shaped_(expr_node, dest)))))))) {
     return "";
     } else {
-    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, and plain function calls with symbol/number args)\n";
+    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, a struct-field read, and plain function calls with symbol/number args)\n";
     }
 }
 

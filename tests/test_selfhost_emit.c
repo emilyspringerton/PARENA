@@ -1754,6 +1754,74 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real get-field-as-a-let-value support (2026-08-28): closes
+         * a real, honest, until-now-unsupported gap confirmed live
+         * via a direct probe -- get-field-shaped? was never wired
+         * into emit-let-value at all, so even a plain SCALAR-field
+         * read as a let-value fell straight to the honest #error
+         * fallback. Scalar-only (boxed via emit-i32-boxed, the same
+         * assumption emit-form's own tail-position dispatch already
+         * makes) -- a struct-typed field as a let-value would need
+         * real field-type lookup infrastructure this file doesn't
+         * have (unlike a defn's own tail position, a let-binding
+         * carries no declared return-type annotation to special-case
+         * against), not attempted here. */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn point-x-via-let [(p : Point)] : I32\n"
+            "  (let [n (get-field p :x)] n))";
+        Result pr25 = parse_program(snippet, &a);
+        CHECK(pr25.tag == 1, "a real defn whose whole body is a let-binding of a scalar "
+                              "struct-field read parses fine");
+        if (pr25.tag == 1) {
+            Node program25 = *(Node *)pr25.value;
+            char *generated25 = emit_program(&program25, &a);
+            CHECK(generated25 != NULL && strstr(generated25, "#error") == NULL,
+                  "no #error is emitted -- a struct-field read is now a real, supported "
+                  "let-value shape, not silently falling back to the honest-failure path");
+            CHECK(generated25 != NULL &&
+                  strstr(generated25, "char *n __attribute__((unused)) = (char *)(intptr_t)(p).x;") != NULL,
+                  "point-x-via-let's own let-binding emits a real, correctly BOXED "
+                  "'(char *)(intptr_t)(p).x' -- the same real scalar-boxing convention "
+                  "emit-form's own tail-position dispatch already uses");
+
+            if (generated25) {
+                char c_path15[300];
+                snprintf(c_path15, sizeof c_path15, "/tmp/parena_selfhost_emit_let_gf_test_%d.c",
+                         (int)getpid());
+                FILE *out15 = fopen(c_path15, "w");
+                CHECK(out15 != NULL, "a real temp file opens to write the let-get-field generated C into");
+                if (out15) {
+                    fputs(generated25, out15);
+                    fclose(out15);
+
+                    char bin_path15[310];
+                    snprintf(bin_path15, sizeof bin_path15, "%s.bin", c_path15);
+                    char cmd15[1024];
+                    snprintf(cmd15, sizeof cmd15,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_let_get_field.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path15, c_path15);
+                    int compile_status15 = system(cmd15);
+                    CHECK(compile_status15 == 0,
+                          "the real let-get-field generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_let_get_field.c");
+                    if (compile_status15 == 0) {
+                        int run_status15 = system(bin_path15);
+                        CHECK(run_status15 == 0,
+                              "the real compiled point-x-via-let genuinely computes the correct "
+                              "value on every real input -- driver_let_get_field.c's own "
+                              "internal asserts all pass, not just compiles clean");
+                    }
+                    remove(c_path15);
+                    remove(bin_path15);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
