@@ -1617,7 +1617,7 @@ int get_field_shaped_(Node * node __attribute__((unused))) {
     return 0;
     } else {
     Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
-    return (emit_node_kind_code((target_node)->kind) == 3);
+    return ((emit_node_kind_code((target_node)->kind) == 3) || get_field_shaped_(target_node));
     }
     }
 }
@@ -1625,7 +1625,7 @@ int get_field_shaped_(Node * node __attribute__((unused))) {
 char * emit_get_field(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
     Node *field_node __attribute__((unused)) = vec_get(&((node)->children), 2);
-    char *target_c __attribute__((unused)) = resolve_arena_ref((target_node)->text, scope, dest);
+    char *target_c __attribute__((unused)) = (get_field_shaped_(target_node) ? emit_get_field(target_node, scope, dest) : resolve_arena_ref((target_node)->text, scope, dest));
     char *field_text __attribute__((unused)) = (field_node)->text;
     char *field_name __attribute__((unused)) = substring(field_text, 1, length(field_text), dest);
     char *field_c __attribute__((unused)) = mangle(field_name, dest);

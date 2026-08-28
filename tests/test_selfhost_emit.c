@@ -1522,6 +1522,71 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real nested/chained get-field support (2026-08-28): closes
+         * the "get-field on a NESTED expression" gap get-field-shaped?
+         * 's own header comment named the moment get-field support
+         * first landed -- real friction found firsthand this same day
+         * while verifying struct-typed struct field support (a
+         * genuinely natural shape once a struct can itself CONTAIN
+         * another struct). */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defstruct Line (start : Point) (end : Point))\n"
+            "(defn line-start-x [(l : Line)] : I32\n"
+            "  (get-field (get-field l :start) :x))";
+        Result pr21 = parse_program(snippet, &a);
+        CHECK(pr21.tag == 1, "a real defn whose whole body is a chained, doubly-nested get-field "
+                              "(line.start.x-style) parses fine");
+        if (pr21.tag == 1) {
+            Node program21 = *(Node *)pr21.value;
+            char *generated21 = emit_program(&program21, &a);
+            CHECK(generated21 != NULL && strstr(generated21, "#error") == NULL,
+                  "no #error is emitted -- the chained get-field is now a real, supported shape, "
+                  "not silently falling back to the honest-failure path");
+            CHECK(generated21 != NULL &&
+                  strstr(generated21, "return (char *)(intptr_t)((l).start).x;") != NULL,
+                  "line-start-x's own body emits a real, correctly nested C expression -- "
+                  "((l).start).x, the inner get-field composed as the outer's own real target, "
+                  "boxed via emit-i32-boxed since the innermost field (x) is I32-typed");
+
+            if (generated21) {
+                char c_path12[300];
+                snprintf(c_path12, sizeof c_path12, "/tmp/parena_selfhost_emit_nested_gf_test_%d.c",
+                         (int)getpid());
+                FILE *out12 = fopen(c_path12, "w");
+                CHECK(out12 != NULL, "a real temp file opens to write the nested-get-field generated C into");
+                if (out12) {
+                    fputs(generated21, out12);
+                    fclose(out12);
+
+                    char bin_path12[310];
+                    snprintf(bin_path12, sizeof bin_path12, "%s.bin", c_path12);
+                    char cmd12[1024];
+                    snprintf(cmd12, sizeof cmd12,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_nested_get_field.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path12, c_path12);
+                    int compile_status12 = system(cmd12);
+                    CHECK(compile_status12 == 0,
+                          "the real nested-get-field generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_nested_get_field.c");
+                    if (compile_status12 == 0) {
+                        int run_status12 = system(bin_path12);
+                        CHECK(run_status12 == 0,
+                              "the real compiled line-start-x genuinely computes the correct real "
+                              "value through the chained field read -- "
+                              "driver_nested_get_field.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path12);
+                    remove(bin_path12);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

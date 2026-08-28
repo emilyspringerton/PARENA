@@ -1219,6 +1219,34 @@ attempted); a struct-typed field used as a tail-position return (needs real per-
 beyond emit-i32-boxed's own scalar-only trick); `Vec`/enum-typed `defstruct` fields; general
 struct-literal construction for a user-defined `defstruct`.
 
+**Real nested/chained `get-field` support added the same day (2026-08-28)**, closing the "get-field
+on a NESTED expression" gap that function's own header comment named the moment get-field support
+first landed — real friction found firsthand while verifying struct-typed struct field support the
+same day (a genuinely natural shape once a struct can itself CONTAIN another struct, e.g.
+`line.start.x`). `(get-field (get-field l :start) :x)` now real, tractable, mutual recursion between
+`get-field-shaped?`/`emit-get-field` (safe and terminating since a real, parsed `Node` tree is always
+finite) — `get-field-shaped?`'s own target check widened to accept EITHER a bare symbol OR itself a
+nested `get-field-shaped?` node; `emit-get-field`'s own target resolution widened to recurse into
+`emit-get-field` when the target itself is get-field-shaped, composing `((l).start).x`. Real, honest,
+narrower-than-general scope stays: a chain of get-field calls all the way down to a bare-symbol root
+only — `(get-field (some-call x) :f)` (a non-get-field NESTED call as the target) is still a real,
+separate, harder case, not attempted here.
+
+3 new tests (`tests/test_selfhost_emit.c`): structural checks confirming no `#error` and the correct,
+doubly-nested `((l).start).x` C expression (boxed via `emit-i32-boxed`, since the innermost field is
+I32-typed — the SAME pre-existing, documented boxing scope, unchanged by this widening), plus a real
+compile+run+assert check (`tests/integration/driver_nested_get_field.c`) proving the real chained
+field read genuinely computes the correct value on multiple real inputs, not just that gcc accepts
+the nested expression text. Zero regressions: full local suite (336 tests) + all 6 selfhost domain
+test binaries + `bazel build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument (by design, not
+attempted); a struct-typed field used as a tail-position return; a non-get-field nested call as a
+get-field target; `Vec`/enum-typed `defstruct` fields; general struct-literal construction for a
+user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

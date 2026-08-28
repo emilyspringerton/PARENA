@@ -798,34 +798,50 @@
 ;; field-read support (2026-08-28, the other real half of top-level
 ;; defstruct support, see that section's own header comment): a real
 ;; `(get-field target :field)` call -- exactly 3 children, target
-;; itself a bare symbol (this narrow v0's own real scope; get-field on
-;; a NESTED expression, e.g. `(get-field (get-other) :x)`, is a real,
-;; separate, harder case, not attempted here). `:field`'s own real
-;; node text carries the leading colon (confirmed directly: kind
-;; NKeyword, text literally ":x") -- stripped before mangling.
-;; Deliberately emits a RAW C expression (`(p).x`), matching the
-;; reference compiler's own real, confirmed generated shape exactly --
-;; never boxed here, since a call-argument position (this function's
-;; own real, primary use, via emit-call-arg below) never crosses this
-;; emitter's own char*-boxing boundary at all (a param already carries
-;; its own real, correctly-inferred C type, same reasoning
-;; binary-op-call-shaped?'s own bare-symbol/number arguments already
-;; rely on). Used in a return/let-value position DOES still need
-;; boxing -- handled at THOSE call sites instead (emit-form/
-;; emit-let-value), not here, so this one function stays correct for
-;; every real position it's used from.
+;; itself a bare symbol OR (2026-08-28, widened -- see below) itself a
+;; nested get-field-shaped? expression. `:field`'s own real node text
+;; carries the leading colon (confirmed directly: kind NKeyword, text
+;; literally ":x") -- stripped before mangling. Deliberately emits a
+;; RAW C expression (`(p).x`), matching the reference compiler's own
+;; real, confirmed generated shape exactly -- never boxed here, since
+;; a call-argument position (this function's own real, primary use,
+;; via emit-call-arg below) never crosses this emitter's own char*-
+;; boxing boundary at all (a param already carries its own real,
+;; correctly-inferred C type, same reasoning binary-op-call-shaped?'s
+;; own bare-symbol/number arguments already rely on). Used in a
+;; return/let-value position DOES still need boxing -- handled at
+;; THOSE call sites instead (emit-form/emit-let-value), not here, so
+;; this one function stays correct for every real position it's used
+;; from.
+;;
+;; Widened 2026-08-28 (closing the "get-field on a NESTED expression"
+;; gap this file's own header comment named the moment get-field
+;; support first landed, real friction found firsthand while verifying
+;; struct-typed struct field support the same day -- a genuinely
+;; natural shape once a struct can itself CONTAIN another struct):
+;; `(get-field (get-field l :start) :x)`, a chained/nested field read
+;; (`line.start.x`-style), now real, tractable, mutual recursion
+;; between get-field-shaped?/emit-get-field (safe and terminating
+;; since a real, parsed Node tree is always finite). This narrow v0's
+;; own real scope stays LIMITED to a chain of get-field calls all the
+;; way down to a bare-symbol root -- `(get-field (some-call x) :f)`
+;; (a non-get-field NESTED call as the target) is still a real,
+;; separate, harder case, not attempted here.
 (defn get-field-shaped? [(node : &Node)] : Bool
   (if (not (emit-is-call-named? node "get-field"))
     false
     (if (not (= (vec/len &(get-field node :children)) 3))
       false
       (let [target-node (vec/get &(get-field node :children) 1)]
-        (= (emit-node-kind-code (get-field target-node :kind)) 3)))))
+        (or (= (emit-node-kind-code (get-field target-node :kind)) 3)
+            (get-field-shaped? target-node))))))
 
 (defn emit-get-field [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [target-node (vec/get &(get-field node :children) 1)
         field-node (vec/get &(get-field node :children) 2)
-        target-c (resolve-arena-ref (get-field target-node :text) scope dest)
+        target-c (if (get-field-shaped? target-node)
+                   (emit-get-field target-node scope dest)
+                   (resolve-arena-ref (get-field target-node :text) scope dest))
         field-text (get-field field-node :text)
         field-name (string/substring field-text 1 (string/length field-text) dest)
         field-c (mangle field-name dest)
