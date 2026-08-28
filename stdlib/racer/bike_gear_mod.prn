@@ -1,0 +1,50 @@
+;; stdlib/racer/bike_gear_mod.prn — WEAKNIGHT_BEDROCK_RACERS' first real PARENA mod, and Phase
+;; A's own first real slice of "PARENA embedded from day one" (docs/NORTHSTAR.md's own PIVOT
+;; section, 2026-08-28).
+;;
+;; Founder real-time: "i found an old shankpit experience with a city and 2 diferent cars on fg
+;; its like 2 different gears in a car almost and the driving is crisp i want to build on top of
+;; this experience" + "i want the thing to embed parena into it deep into the core of it
+;; BEDROCKRACERS" + "start from scratch build parena in". This is that gear-shift feel, rebuilt
+;; from scratch with the actual decision logic living in PARENA, not ported C -- the reference
+;; SHANKPIT_CONSTRUCT.txt bike's own BIKE_GEAR_MAX/BIKE_GEAR_ACCEL upshift/downshift thresholds
+;; (construct lines 4716-4718, 3688-3690) are the real, tested tuning this mirrors; the code
+;; itself is new, PARENA-authored, not copied.
+;;
+;; Follows the exact real ABI ECOWAR's own card_effect_mod.prn already established (see
+;; ECOWAR/docs/ARENA_API.md) -- real I32-only decision logic in PARENA, host C still owns the
+;; actual float physics (racer_vehicle.h's own racer_bike_tick, packages/common), same "mod does
+;; what VS0 can, host does the rest" split: no F32 params, no struct/Vec across this boundary.
+;; Speed is fixed-point x100 (an F32 world-units/sec value times 100, truncated to I32) since VS0
+;; has no F32 parameters yet.
+;;
+;; ABI: racer_bike_tick (packages/common/racer_vehicle.h) calls straight into
+;; on-racer-bike-gear-shift (emitted as on_racer_bike_gear_shift) once per tick with the vehicle's
+;; current gear and its current |speed| (x100), and gets back the real gear to actually drive
+;; with this tick -- 1 real gear at a time, never skipping (matches the construct's own real
+;; upshift-or-downshift-by-one-per-check behavior).
+
+(module racer/bike-gear-mod)
+(export on-racer-bike-gear-shift)
+
+;; Real, tested top speed per gear (world units/sec x100), gears 1..5 -- mirrors the reference
+;; construct's own BIKE_GEAR_MAX = {0.0, 1.2, 2.0, 2.7, 3.3, 3.8} (index 0 unused there; this mod
+;; is 1-indexed the same way, gear 0 never occurs).
+(defn gear-max-x100 [(gear : I32)] : I32
+  (if (= gear 1) 120
+  (if (= gear 2) 200
+  (if (= gear 3) 270
+  (if (= gear 4) 330
+    380)))))
+
+(defn on-racer-bike-gear-shift [(gear : I32) (speed-x100 : I32)] : I32
+  ;; Upshift once speed clears ~92% of the CURRENT gear's own top speed -- matches the
+  ;; construct's own real threshold (`vmag > BIKE_GEAR_MAX[gear] * 0.92f`). Never skips past
+  ;; gear 5.
+  (if (and (< gear 5) (> speed-x100 (/ (* (gear-max-x100 gear) 92) 100)))
+    (+ gear 1)
+    ;; Downshift once speed falls under ~55% of the PREVIOUS gear's own top speed -- matches
+    ;; `vmag < BIKE_GEAR_MAX[gear - 1] * 0.55f`. Never drops below gear 1.
+    (if (and (> gear 1) (< speed-x100 (/ (* (gear-max-x100 (- gear 1)) 55) 100)))
+      (- gear 1)
+      gear)))
