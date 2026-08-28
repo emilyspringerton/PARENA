@@ -417,6 +417,8 @@ char * c_operator_text(char *);
 int binary_op_call_shaped_(Node *, Arena *);
 char * emit_binary_op(Node *, Vec *, Arena *);
 char * emit_i32_boxed(char *, Arena *);
+int deref_shaped_(Node *);
+char * emit_deref(Node *, Vec *, Arena *);
 int bool_op_symbol_(char *);
 int result_option_ctor_symbol_(char *);
 int other_special_form_symbol_(char *);
@@ -2566,7 +2568,7 @@ int none_shaped_(Node * node __attribute__((unused))) {
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest))))))))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (deref_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_deref(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest)))))))))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2660,6 +2662,29 @@ char * emit_i32_boxed(char * expr_c __attribute__((unused)), Arena *dest __attri
     return emit_join_all(&(parts), dest);
 }
 
+int deref_shaped_(Node * node __attribute__((unused))) {
+    if ((!(emit_is_call_named_(node, "deref")))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 2)))) {
+    return 0;
+    } else {
+    Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    return (emit_node_kind_code((target_node)->kind) == 3);
+    }
+    }
+}
+
+char * emit_deref(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    char *target_c __attribute__((unused)) = resolve_arena_ref((target_node)->text, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "*((int *)("));
+    (void)(vec_push_(&(parts), target_c));
+    (void)(vec_push_(&(parts), "))"));
+    return emit_join_all(&(parts), dest);
+}
+
 int bool_op_symbol_(char * sym __attribute__((unused))) {
     return (str_eq_(sym, "or") || (str_eq_(sym, "and") || str_eq_(sym, "not")));
 }
@@ -2669,7 +2694,7 @@ int result_option_ctor_symbol_(char * sym __attribute__((unused))) {
 }
 
 int other_special_form_symbol_(char * sym __attribute__((unused))) {
-    return (str_eq_(sym, "cond") || (str_eq_(sym, "match") || (str_eq_(sym, "with-arena") || (str_eq_(sym, "let") || str_eq_(sym, "get-field")))));
+    return (str_eq_(sym, "cond") || (str_eq_(sym, "match") || (str_eq_(sym, "with-arena") || (str_eq_(sym, "let") || (str_eq_(sym, "get-field") || str_eq_(sym, "deref"))))));
 }
 
 int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {

@@ -759,6 +759,12 @@
     ;; regardless of the field's real type, since that position never
     ;; boxes at all).
     ((get-field-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-get-field node scope dest) dest) dest))
+    ;; Real, additive case (2026-08-28): a real `(deref x)` -- see
+    ;; deref-shaped?'s own header comment for the full real reasoning.
+    ;; Checked BEFORE plain-call-shaped? for the identical real reason
+    ;; every other special-form name already is (other-special-form-
+    ;; symbol?'s own header comment).
+    ((deref-shaped? node) (emit-tail-expr (emit-i32-boxed (emit-deref node scope dest) dest) dest))
     ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
     ;; Real, separate gap found and closed 2026-08-28 while verifying
     ;; cond support: a bare NUMBER literal as a tail-position result
@@ -1034,6 +1040,48 @@
       (vec/push! &parts expr-c)
       (emit-join-all &parts dest))))
 
+;; deref-shaped? / emit-deref -- real, narrow `(deref x)` support
+;; (2026-08-28, closing the "a clause body that needs the payload
+;; beyond a bare-symbol tail" half of the match gap this file's own
+;; match-support section explicitly named as still open): reads back a
+;; real, boxed I32 value out of a match-bound `void *` payload local
+;; (`stdlib/regex/syntax.prn`'s own real, established convention this
+;; whole codebase already relies on -- `(get-field (deref x) :field)`,
+;; never bare `(get-field x :field)` -- named directly in this file's
+;; own header comment history but not implemented until now). Real,
+;; honest, narrow v0: the target must be a bare symbol (the ONLY real
+;; shape a match-bound payload name ever is), and the boxed value is
+;; ALWAYS assumed I32 -- `*((int *)(x))`, matching the runtime's own
+;; real `int_box`-style heap-boxing convention exactly (a REAL heap
+;; pointer, cast and dereferenced -- genuinely different from this
+;; file's OWN separate emit-i32-boxed convention, which reinterprets
+;; via intptr_t rather than allocating; the two must never be confused,
+;; a real, previously-confirmed confusion point). Constructing a REAL
+;; boxed I32 payload (the natural complement -- `(Some 42)` boxed via a
+;; real per-type heap-box helper) is a real, separate, harder gap this
+;; increment does NOT attempt (needs new box-helper-generation
+;; infrastructure this file doesn't have yet) -- this round proves
+;; deref alone works, verified against a value boxed in real C by a
+;; test driver, the same real technique driver_match.c's own original
+;; (pre-real-construction) version already used.
+(defn deref-shaped? [(node : &Node)] : Bool
+  (if (not (emit-is-call-named? node "deref"))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 2))
+      false
+      (let [target-node (vec/get &(get-field node :children) 1)]
+        (= (emit-node-kind-code (get-field target-node :kind)) 3)))))
+
+(defn emit-deref [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [target-node (vec/get &(get-field node :children) 1)
+        target-c (resolve-arena-ref (get-field target-node :text) scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "*((int *)(")
+      (vec/push! &parts target-c)
+      (vec/push! &parts "))")
+      (emit-join-all &parts dest))))
+
 ;; plain-call-shaped? -- a real, user-defined function call this
 ;; narrow emitter can now support: a symbol-headed list, not `alloc`,
 ;; not a `vec/` runtime call (is-vec-call?'s own header comment
@@ -1093,11 +1141,23 @@
 ;; all 4 names here anyway, not just `cond`, is real defense in depth
 ;; against this exact class of bug rather than relying on that
 ;; structural accident holding forever as this file keeps changing.
+;;
+;; Widened AGAIN 2026-08-28, same real bug class, confirmed live via
+;; the identical direct-probe technique while adding real `deref`
+;; support (see deref-shaped?'s own header comment below): `deref` was
+;; ALSO never excluded -- `(defn f [(x : I32)] (deref x))` silently
+;; emitted `deref(x)`, a call to a never-defined C function, before
+;; deref-shaped? existed to intercept it in emit-form's own dispatch
+;; (checked BEFORE plain-call-shaped there); excluded here too for the
+;; same real defense-in-depth reason (a call-argument/let-value
+;; position, where deref support is NOT attempted this round, would
+;; otherwise still be able to hit this exact bug).
 (defn other-special-form-symbol? [(sym : String @ Region)] : Bool
   (or (string/str-eq? sym "cond")
       (or (string/str-eq? sym "match")
           (or (string/str-eq? sym "with-arena")
-              (or (string/str-eq? sym "let") (string/str-eq? sym "get-field"))))))
+              (or (string/str-eq? sym "let")
+                  (or (string/str-eq? sym "get-field") (string/str-eq? sym "deref")))))))
 
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))

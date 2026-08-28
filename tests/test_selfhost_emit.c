@@ -1822,6 +1822,71 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real `deref` support (2026-08-28): closes the "a clause
+         * body that needs the payload beyond a bare-symbol tail" half
+         * of the match gap this file's own match-support section
+         * explicitly named as still open, AND fixes a real, live,
+         * silently-wrong-C bug found along the way: `deref` was never
+         * excluded from plain-call-shaped?'s own name checks, so a
+         * bare `(deref x)` used to silently emit `deref(x)`, a call
+         * to a never-defined C function. */
+        char *snippet =
+            "(defn unwrap-or-zero [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some x) (deref x))\n"
+            "    (None 0)))";
+        Result pr26 = parse_program(snippet, &a);
+        CHECK(pr26.tag == 1, "a real match whose Some clause reads its own payload via deref "
+                              "parses fine");
+        if (pr26.tag == 1) {
+            Node program26 = *(Node *)pr26.value;
+            char *generated26 = emit_program(&program26, &a);
+            CHECK(generated26 != NULL && strstr(generated26, "#error") == NULL,
+                  "no #error is emitted -- deref is now a real, supported shape, not silently "
+                  "falling back to the honest-failure path");
+            CHECK(generated26 != NULL &&
+                  strstr(generated26, "return (char *)(intptr_t)*((int *)(x));") != NULL,
+                  "the Some clause's own body emits a real, correctly boxed dereference of the "
+                  "real, boxed I32 payload -- not a bogus call to a function literally named "
+                  "'deref'");
+
+            if (generated26) {
+                char c_path16[300];
+                snprintf(c_path16, sizeof c_path16, "/tmp/parena_selfhost_emit_deref_test_%d.c",
+                         (int)getpid());
+                FILE *out16 = fopen(c_path16, "w");
+                CHECK(out16 != NULL, "a real temp file opens to write the deref generated C into");
+                if (out16) {
+                    fputs(generated26, out16);
+                    fclose(out16);
+
+                    char bin_path16[310];
+                    snprintf(bin_path16, sizeof bin_path16, "%s.bin", c_path16);
+                    char cmd16[1024];
+                    snprintf(cmd16, sizeof cmd16,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_deref.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path16, c_path16);
+                    int compile_status16 = system(cmd16);
+                    CHECK(compile_status16 == 0,
+                          "the real deref generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_deref.c");
+                    if (compile_status16 == 0) {
+                        int run_status16 = system(bin_path16);
+                        CHECK(run_status16 == 0,
+                              "the real compiled unwrap-or-zero genuinely reads back the correct "
+                              "value from a real, boxed I32 match payload on every real input -- "
+                              "driver_deref.c's own internal asserts all pass, not just compiles "
+                              "clean");
+                    }
+                    remove(c_path16);
+                    remove(bin_path16);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
