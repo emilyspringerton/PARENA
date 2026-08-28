@@ -133,28 +133,31 @@ int main(int argc, char **argv) {
      * the single dominant real blocker (35 of ~57 real self-compile
      * errors) toward selfhost/lexer.prn actually compiling.
      *
-     * This fixture's own negative case has moved TWICE now, each time
-     * to a genuinely different shape as this file's own real call-
-     * argument support widens: first from "a nested call as an
+     * This fixture's own negative case has moved THREE times now, each
+     * time to a genuinely different shape as this file's own real
+     * call-argument support widens: first from "a nested call as an
      * argument" (`(some-call (other-call a))`, no longer unsupported
      * as of the same day's nested-call-argument widening -- moved to
      * real, positive coverage below), then from "a nested `alloc` call
      * as an argument" (also no longer unsupported as of the SAME day's
-     * later alloc-as-argument widening, see every-call-arg-symbol-or-
-     * number?'s own 4th header-comment entry -- also moved to real,
-     * positive coverage below). A genuinely different shape now
-     * exercises the still-crash-free, still-honest #error path this
-     * fixture originally existed to prove: a raw STRING LITERAL as a
-     * call argument, which no shape guard in this file accepts yet
-     * (every-call-arg-symbol-or-number? never checks kind NString/5 at
-     * all) -- a real, separate, not-yet-attempted gap. */
+     * later alloc-as-argument widening), then from "a raw STRING
+     * LITERAL as a call argument" (also no longer unsupported as of
+     * the SAME day's later string-literal-as-argument widening, see
+     * every-call-arg-symbol-or-number?'s own 5th header-comment entry
+     * -- also moved to real, positive coverage below). A genuinely
+     * different shape now exercises the still-crash-free, still-honest
+     * #error path this fixture originally existed to prove: a real
+     * `or`/`and` boolean expression as a call argument, which no shape
+     * guard in this file accepts yet (bool-expr-supported?/emit-bool-
+     * expr are wired into emit-form/emit-let-value only, never
+     * emit-call-arg) -- a real, separate, not-yet-attempted gap. */
     {
         char *snippet =
-            "(defn f [(a : Arena @ :region/buffer)]\n"
-            "  (let [x (some-call \"literal\")]\n"
+            "(defn f [(a : Arena @ :region/buffer) (b : I32)]\n"
+            "  (let [x (some-call (and b b))]\n"
             "    x))";
         Result pr2 = parse_program(snippet, &a);
-        CHECK(pr2.tag == 1, "a real unsupported let-binding (a raw string-literal argument) parses fine");
+        CHECK(pr2.tag == 1, "a real unsupported let-binding (a bool-expr argument) parses fine");
         if (pr2.tag == 1) {
             Node program2 = *(Node *)pr2.value;
             /* the real regression: this used to segfault the whole
@@ -163,7 +166,75 @@ int main(int argc, char **argv) {
             CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on an unsupported let-binding");
             CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
                   "the real generated C carries a clean, honest #error line for the still-unsupported shape "
-                  "(a raw string-literal argument), instead of silently guessing at wrong C");
+                  "(a bool-expr argument), instead of silently guessing at wrong C");
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-28: a raw STRING LITERAL as
+     * a call argument (`(f "lit")`), the exact shape the fixture above
+     * used to prove was honestly unsupported before this round --
+     * closes the "no literals" half of a real, repeatedly-named gap
+     * this file's own header comments have carried since the very
+     * first binary-op/plain-call work (numbers were closed same-day
+     * back then; strings stayed open until now). emit-call-arg's new
+     * emit-string-literal branch simply re-wraps the literal's own
+     * real, already-decoded :text in C double-quotes -- the SAME real,
+     * honest, no-re-escaping convention emit-alloc-call's own literal
+     * argument already relies on (see emit-string-literal's own header
+     * comment). */
+    {
+        char *snippet =
+            "(defn greet [(name : String @ Region)] : String @ Region\n"
+            "  name)\n"
+            "(defn greet-world [] : String @ Region\n"
+            "  (greet \"world\"))";
+        Result pr2c = parse_program(snippet, &a);
+        CHECK(pr2c.tag == 1, "a real 2-function program, the second passing a raw string literal "
+                              "as an argument to the first, parses fine");
+        if (pr2c.tag == 1) {
+            Node program2c = *(Node *)pr2c.value;
+            char *generated2c = emit_program(&program2c, &a);
+            CHECK(generated2c != NULL && strstr(generated2c, "#error") == NULL,
+                  "no #error is emitted -- a raw string-literal argument is now a real, supported "
+                  "shape, not silently falling back to the honest-failure path");
+            CHECK(generated2c != NULL && strstr(generated2c, "greet(\"world\")") != NULL,
+                  "greet-world's own body emits a real, correctly re-quoted C string literal "
+                  "passed straight through to greet, not dropped or mangled");
+
+            if (generated2c) {
+                char c_path2c[300];
+                snprintf(c_path2c, sizeof c_path2c, "/tmp/parena_selfhost_emit_string_lit_test_%d.c",
+                         (int)getpid());
+                FILE *out2c = fopen(c_path2c, "w");
+                CHECK(out2c != NULL, "a real temp file opens to write the string-literal generated C into");
+                if (out2c) {
+                    fputs(generated2c, out2c);
+                    fclose(out2c);
+
+                    char bin_path2c[310];
+                    snprintf(bin_path2c, sizeof bin_path2c, "%s.bin", c_path2c);
+                    char cmd2c[1024];
+                    snprintf(cmd2c, sizeof cmd2c,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_string_literal_arg.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2c, c_path2c);
+                    int compile_status2c = system(cmd2c);
+                    CHECK(compile_status2c == 0,
+                          "the real string-literal generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_string_literal_arg.c");
+                    if (compile_status2c == 0) {
+                        int run_status2c = system(bin_path2c);
+                        CHECK(run_status2c == 0,
+                              "the real compiled greet-world genuinely returns the correct real "
+                              "string, passed as a real string-literal call argument -- "
+                              "driver_string_literal_arg.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path2c);
+                    remove(bin_path2c);
+                }
+            }
         }
     }
 

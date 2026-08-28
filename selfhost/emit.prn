@@ -885,12 +885,27 @@
 ;; (`char *`), so -- like get-field/plain-call, unlike binary-op --
 ;; there is no boxing ambiguity to worry about at this position
 ;; either.
+;;
+;; Widened a FIFTH time, same day: a raw STRING LITERAL as an argument
+;; (`(f "lit")`) -- kind NString (code 5), the one shape the prior
+;; widening's own test fixture named as the new still-honest negative
+;; case, now closed too. `emit-call-arg` below re-wraps the literal's
+;; own real, already-DECODED :text in real C double-quotes -- the
+;; EXACT SAME real, narrow, no-re-escaping convention `emit-alloc-
+;; call`'s own literal-string argument already relies on (this file's
+;; own lexer decodes `\n`/`\t`/`\"`/`\\` into their real single-byte
+;; form at LEX time -- see selfhost/lexer.prn's own lex-string header
+;; comment -- so a literal containing a real embedded quote, backslash,
+;; or newline BYTE would need genuine re-escaping to round-trip through
+;; a C string literal correctly, which this narrow v0 does not attempt
+;; here either, matching emit-alloc-call's own pre-existing, honest
+;; scope exactly, not a new limitation this widening introduces).
 (defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
     (let [arg-node (vec/get &(get-field call :children) i)
           k (emit-node-kind-code (get-field arg-node :kind))]
-      (if (or (or (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
+      (if (or (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? arg-node))
                   (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
               (alloc-call-shaped? arg-node))
         (every-call-arg-symbol-or-number? call (+ i 1) dest)
@@ -983,6 +998,27 @@
 ;; a supported shape (every-call-arg-symbol-or-number?'s own header
 ;; comment -- now including a nested plain-call/binary-op argument,
 ;; not just a bare symbol/number/get-field).
+;; bool-op-symbol? -- real, small helper (2026-08-28, a genuine, live
+;; bug found and fixed while adding call-argument support): `or`/
+;; `and`/`not` were never excluded from plain-call-shaped?'s own name
+;; checks the way `alloc` and every binary-op-symbol? name already are
+;; -- confirmed live via a direct probe that `(f (and b b))` silently
+;; emitted `f(and(b, b))`, a real call to a NEVER-DEFINED C function
+;; named `and`, instead of either the correct real boolean logic or an
+;; honest #error. Reachable ever since the nested-call-as-a-call-
+;; argument widening made plain-call-shaped? itself decide whether a
+;; NESTED call argument is supported (previously plain-call-shaped?
+;; was only ever checked at the WHOLE-body/let-value level, where
+;; or-and-shaped?/not-shaped? are always checked FIRST in the dispatch
+;; order, so this exact collision could never actually fire before
+;; then). Excluding these 3 names here is the real, correct, minimal
+;; fix -- `(and b b)` as a call argument now honestly falls through to
+;; a clean #error (bool-expr composition is not yet wired into
+;; emit-call-arg at all, a real, separate, not-yet-attempted gap),
+;; never silently wrong C.
+(defn bool-op-symbol? [(sym : String @ Region)] : Bool
+  (or (string/str-eq? sym "or") (or (string/str-eq? sym "and") (string/str-eq? sym "not"))))
+
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))
     false
@@ -991,7 +1027,8 @@
       (and (not (string/str-eq? fn-text "alloc"))
            (and (not (is-vec-call? fn-text dest))
                 (and (not (binary-op-symbol? fn-text))
-                     (every-call-arg-symbol-or-number? expr-node 1 dest)))))))
+                     (and (not (bool-op-symbol? fn-text))
+                          (every-call-arg-symbol-or-number? expr-node 1 dest))))))))
 
 ;; mangle-call-name -- real, narrow port of src/emit.c's own
 ;; mangle_call_name for the one real shape this narrow emitter
@@ -1013,26 +1050,47 @@
       (mangle fn-text dest)
       (mangle (vec/get &parts (- n 1)) dest))))
 
+;; emit-string-literal -- real, narrow `"lit"` -> `"lit"` re-wrap
+;; (2026-08-28), the SAME real, honest, no-re-escaping convention
+;; emit-alloc-call's own literal-string argument already relies on --
+;; see every-call-arg-symbol-or-number?'s own 5th header-comment entry
+;; above for the full real reasoning (this file's own lexer decodes
+;; escapes at LEX time, so a literal with a real embedded quote/
+;; backslash/newline byte isn't round-tripped correctly here; not a
+;; new limitation, matches emit-alloc-call's own pre-existing scope).
+(defn emit-string-literal [(node : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "\"")
+      (vec/push! &parts (get-field node :text))
+      (vec/push! &parts "\"")
+      (emit-join-all &parts dest))))
+
 ;; emit-call-arg -- widened 2026-08-28 alongside every-call-arg-
 ;; symbol-or-number?'s own nested-call widening above: a real nested
 ;; plain-call-shaped?/binary-op-call-shaped?/alloc-call-shaped?
 ;; argument now emits through the SAME real emit-plain-call/emit-
 ;; binary-op/emit-alloc-call this file already uses for a whole
-;; function body -- checked in this order (get-field, plain-call,
-;; binary-op, alloc, bare-symbol/number fallback) since a NAME could
-;; theoretically satisfy more than one shape guard and only one is
-;; ever correct for a given real node (get-field/alloc are each their
-;; own distinct call-named shape, never ambiguous with the other two
-;; or each other; plain-call-shaped? itself already excludes both
-;; `alloc` and binary-op-symbol? names, so plain-call vs. binary-op
-;; vs. alloc can never all match the same node either -- this ordering
-;; is for defensiveness, not resolving a real ambiguity).
+;; function body, and a raw string-literal argument (kind NString, 5)
+;; through the new emit-string-literal above -- checked in this order
+;; (get-field, plain-call, binary-op, alloc, string-literal, bare-
+;; symbol/number fallback) since a NAME could theoretically satisfy
+;; more than one shape guard and only one is ever correct for a given
+;; real node (get-field/alloc are each their own distinct call-named
+;; shape, never ambiguous with the other two or each other; plain-
+;; call-shaped? itself already excludes both `alloc` and binary-op-
+;; symbol? names, so plain-call vs. binary-op vs. alloc can never all
+;; match the same node either; a string-literal node is never symbol-
+;; headed-list-shaped at all, so it can never collide with any of the
+;; 4 call-shaped checks -- this ordering is for defensiveness, not
+;; resolving a real ambiguity).
 (defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((get-field-shaped? arg-node) (emit-get-field arg-node scope dest))
     ((plain-call-shaped? arg-node dest) (emit-plain-call arg-node scope dest))
     ((binary-op-call-shaped? arg-node dest) (emit-binary-op arg-node scope dest))
     ((alloc-call-shaped? arg-node) (emit-alloc-call arg-node scope dest))
+    ((= (emit-node-kind-code (get-field arg-node :kind)) 5) (emit-string-literal arg-node dest))
     (true (resolve-arena-ref (get-field arg-node :text) scope dest))))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
