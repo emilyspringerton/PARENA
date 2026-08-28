@@ -161,6 +161,16 @@ jobs:
           make build
           make test-editor-spotlight
 
+      # test-construct-split is pure logic too (see tests/test_construct_
+      # split.c's own header comment) -- same reasoning as test-editor-
+      # spotlight above for running it directly rather than under
+      # editor-demo-smoke's Xvfb setup.
+      - name: "construct-split (/construct-split N Spotlight command) — real splitting algorithm"
+        run: |
+          set -euo pipefail
+          make build
+          make test-construct-split
+
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,
       # GoblinFoxDragon, BRAWLPIT, SHANKPIT) uploads its built binary via
@@ -204,7 +214,7 @@ jobs:
             stdlib/editor/buffer.prn stdlib/editor/textmate.prn stdlib/editor/textmate_parena.prn \
             stdlib/editor/textmate_markdown.prn \
             stdlib/editor/theme.prn stdlib/editor/render.prn stdlib/editor/widget.prn \
-            stdlib/editor/spotlight.prn -o editor_demo_gen.c
+            stdlib/editor/construct_split.prn stdlib/editor/spotlight.prn -o editor_demo_gen.c
           cat editor_demo_gen.c examples/editor_main.c > editor_demo_full.c
 
       - name: Upload editor-demo generated C source (consumed by the Windows/macOS native-compile jobs)

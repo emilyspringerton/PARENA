@@ -31,14 +31,23 @@
 (import vec)
 (import io)
 (import expr)
-(export SpotlightResult SpotlightKind run-providers file-search-provider calculator-provider)
+(import editor/construct-split)
+(export SpotlightResult SpotlightKind run-providers file-search-provider calculator-provider
+        construct-split-provider)
 
-(defenum SpotlightKind (SKFile) (SKCalculator))
+(defenum SpotlightKind (SKFile) (SKCalculator) (SKConstructSplit))
 
 (defstruct SpotlightResult
   (kind  : SpotlightKind)
   (label : String @ Region)
-  (path  : String @ Region))   ;; SKFile: the real path to open. SKCalculator: unused ("").
+  ;; SKFile: the real path to open. SKCalculator: unused (""). SKConstructSplit
+  ;; (2026-08-28, founder real-time: "i want this as a parena mod - have it
+  ;; hook into the ctrl t quick open pane... /construct-split 10"): the real
+  ;; requested chunk count, as a decimal String -- reuses this field's own
+  ;; already-established "generic per-kind payload slot" convention rather
+  ;; than widening the struct itself, zero risk to SKFile/SKCalculator's own
+  ;; existing real construction sites.
+  (path  : String @ Region))
 
 ;; ---- file-search-provider: real, recursive (depth-bounded) filename
 ;; search under `root`, matching any entry whose name contains `query`
@@ -192,6 +201,52 @@
 ;; command -- the same real, already-proven "drop in new code and
 ;; recompile" mechanism every other mod in this monorepo already uses
 ;; (see this file's own header comment for the fuller reasoning).
+;; ---- construct-split-provider: real Spotlight hook for
+;; editor/construct-split's own real splitting logic (2026-08-28,
+;; founder real-time: "i want this as a parena mod - have it hook into
+;; the ctrl t quick open pane... if i type /construct-split 10 if it is
+;; a construct file it should use file start and file end to open up
+;; new panes with the chunks of the file broken into roughly equal 10
+;; sizes"). Real, deliberate scope split, matching this whole file's
+;; own established "a real PARENA mod decides WHAT to do, the C driver
+;; does the unavoidable host I/O" convention (file-search-provider
+;; decides WHICH files match; the C driver still does the real disk
+;; read at activation when a result opens) -- this provider only
+;; RECOGNIZES the real `/construct-split N` command syntax and, if the
+;; CURRENTLY OPEN buffer really is a construct file, offers exactly one
+;; real result. The real splitting (editor/construct-split's own
+;; split-construct) and the real per-chunk temp-file-write-plus-new-
+;; window-spawn both happen at ACTIVATION time in the C driver
+;; (examples/editor_main.c), the same real place SKFile's own "open
+;; this path" already lives -- construct-split-provider never touches
+;; disk itself.
+(defn construct-split-label [(n : I32) (dest : Arena @ Region)] : String @ Region
+  (string/concat "Split construct file into " (string/concat (string/i32-to-string n dest) " panes" dest) dest))
+
+;; current-buffer-text is passed in (not re-read from disk here) since
+;; the file the user wants split is whatever's ALREADY OPEN in this
+;; window right now -- the same real buffer text the C driver's own
+;; active-text call already has in hand, not a path this provider
+;; would need to go re-read on its own.
+(defn construct-split-provider [(query : String @ :region/scratch) (current-buffer-text : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Vec SpotlightResult) @ Region
+  (let [results (vec/new dest)]
+    (do
+      (match (editor/construct-split/parse-construct-split-count query dest)
+        ((Some n) (construct-split-maybe-push &results (deref n) current-buffer-text dest))
+        ((None) unit))
+      results)))
+
+;; construct-split-maybe-push -- extracted into its own small function
+;; (rather than nested inline inside construct-split-provider's own
+;; match/if) so the real if stays in real tail position -- the same
+;; real workaround maybe-push-file-match's own header comment above
+;; already documents for the identical class of gap.
+(defn construct-split-maybe-push [(results : &(Vec SpotlightResult)) (n : I32) (current-buffer-text : String @ :region/scratch) (dest : Arena @ Region)] : Unit
+  (if (editor/construct-split/construct-file? current-buffer-text dest)
+    (vec/push! results {:kind SKConstructSplit :label (construct-split-label n dest) :path (string/i32-to-string n dest)})
+    unit))
+
 (defn append-all [(dst : &(Vec SpotlightResult)) (src : &(Vec SpotlightResult)) (i : I32) (dest : Arena @ Region)] : Unit
   (if (>= i (vec/len src))
     unit
@@ -199,12 +254,14 @@
       (vec/push! dst (deref (vec/get src i)))
       (append-all dst src (+ i 1) dest))))
 
-(defn run-providers [(query : String @ :region/scratch) (root : String @ :region/scratch) (dest : Arena @ Region)]
+(defn run-providers [(query : String @ :region/scratch) (root : String @ :region/scratch) (current-buffer-text : String @ :region/scratch) (dest : Arena @ Region)]
   : (Vec SpotlightResult) @ Region
   (let [results (vec/new dest)
         calc-results (calculator-provider query dest)
-        file-results (file-search-provider query root dest)]
+        file-results (file-search-provider query root dest)
+        construct-results (construct-split-provider query current-buffer-text dest)]
     (do
       (append-all &results &calc-results 0 dest)
+      (append-all &results &construct-results 0 dest)
       (append-all &results &file-results 0 dest)
       results)))

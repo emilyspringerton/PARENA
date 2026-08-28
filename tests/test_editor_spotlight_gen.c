@@ -143,10 +143,12 @@ static inline __attribute__((unused)) ExprParseStep ExprParseStep_new(ExprNode n
 typedef enum {
     SpotlightKind_TAG_SKFile,
     SpotlightKind_TAG_SKCalculator,
+    SpotlightKind_TAG_SKConstructSplit,
 } SpotlightKind_Tag;
 typedef struct { SpotlightKind_Tag tag; void *value; } SpotlightKind;
 static inline __attribute__((unused)) SpotlightKind SpotlightKind_SKFile(void) { SpotlightKind v; v.tag = SpotlightKind_TAG_SKFile; v.value = NULL; return v; }
 static inline __attribute__((unused)) SpotlightKind SpotlightKind_SKCalculator(void) { SpotlightKind v; v.tag = SpotlightKind_TAG_SKCalculator; v.value = NULL; return v; }
+static inline __attribute__((unused)) SpotlightKind SpotlightKind_SKConstructSplit(void) { SpotlightKind v; v.tag = SpotlightKind_TAG_SKConstructSplit; v.value = NULL; return v; }
 
 typedef struct {
     SpotlightKind kind;
@@ -232,6 +234,16 @@ ExprParseStep parse_ident(char *, int, Arena *);
 Result parse_term(char *, int, Arena *);
 Result parse_expr(char *, int, Arena *);
 Result parse_expr_rest(char *, ExprNode, int, Arena *);
+char * file_start_marker();
+int marker_matches_at_(char *, int, char *, int, int);
+int find_marker_from(char *, char *, int, Arena *);
+int starts_with_(char *, char *);
+int construct_file_(char *, Arena *);
+Option parse_construct_split_count(char *, Arena *);
+void find_all_markers(char *, char *, int, Vec *, Arena *);
+int segment_end(Vec *, int, int);
+void build_chunks(char *, Vec *, int, char *, int, int, int, int, char *, int, Vec *, Arena *);
+Vec split_construct(char *, int, Arena *);
 int hidden_entry_(char *);
 int heavy_dir_prefix_(char *, Arena *);
 int skip_entry_(char *, Arena *);
@@ -245,8 +257,11 @@ int calc_char_ok_(int);
 int looks_like_calculation_(char *);
 Option maybe_calc_result(char *, Arena *);
 Vec calculator_provider(char *, Arena *);
+char * construct_split_label(int, Arena *);
+Vec construct_split_provider(char *, char *, Arena *);
+void construct_split_maybe_push(Vec *, int, char *, Arena *);
 void append_all(Vec *, Vec *, int, Arena *);
-Vec run_providers(char *, char *, Arena *);
+Vec run_providers(char *, char *, char *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -1031,6 +1046,144 @@ Result parse_expr_rest(char * src __attribute__((unused)), ExprNode lhs __attrib
     }
 }
 
+char * file_start_marker(void) {
+    return "--- FILE START: ";
+}
+
+int marker_matches_at_(char * text __attribute__((unused)), int pos __attribute__((unused)), char * marker __attribute__((unused)), int marker_len __attribute__((unused)), int j __attribute__((unused))) {
+    if ((j >= marker_len)) {
+    return 1;
+    } else {
+    if ((char_at(text, (pos + j)) == char_at(marker, j))) {
+    return marker_matches_at_(text, pos, marker, marker_len, (j + 1));
+    } else {
+    return 0;
+    }
+    }
+}
+
+int find_marker_from(char * text __attribute__((unused)), char * marker __attribute__((unused)), int start __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int text_len __attribute__((unused)) = length(text);
+    int marker_len __attribute__((unused)) = length(marker);
+    double __loop_result_14 __attribute__((unused));
+    int i = start;
+    while (1) {
+        if (((i + marker_len) > text_len)) {
+        __loop_result_14 = -1;
+        break;
+        } else {
+        if (marker_matches_at_(text, i, marker, marker_len, 0)) {
+        __loop_result_14 = i;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    return __loop_result_14;
+}
+
+int starts_with_(char * text __attribute__((unused)), char * prefix __attribute__((unused))) {
+    int text_len __attribute__((unused)) = length(text);
+    int prefix_len __attribute__((unused)) = length(prefix);
+    if ((prefix_len > text_len)) {
+    return 0;
+    } else {
+    return marker_matches_at_(text, 0, prefix, prefix_len, 0);
+    }
+}
+
+int construct_file_(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (!((find_marker_from(text, file_start_marker(), 0, dest) == -1)));
+}
+
+Option parse_construct_split_count(char * query __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *prefix __attribute__((unused)) = "/construct-split ";
+    if ((!(starts_with_(query, prefix)))) {
+    return option_none();
+    } else {
+    char *n_text __attribute__((unused)) = substring(query, length(prefix), length(query), dest);
+    Option __match_result_7 __attribute__((unused)) = {0};
+    Result __match_tmp_7 = parse_i32(n_text, dest);
+    if (__match_tmp_7.tag == 1) {
+        void *n __attribute__((unused)) = __match_tmp_7.value;
+        if (((*((int *)(n))) > 0)) {
+        __match_result_7 = option_some(int_box(dest, (*((int *)(n)))));
+        } else {
+        __match_result_7 = option_none();
+        }
+    }
+    else if (__match_tmp_7.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_7.value;
+        __match_result_7 = option_none();
+    }
+    return __match_result_7;
+    }
+}
+
+void find_all_markers(char * text __attribute__((unused)), char * marker __attribute__((unused)), int start __attribute__((unused)), Vec * results __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int pos __attribute__((unused)) = find_marker_from(text, marker, start, dest);
+    if ((pos == -1)) {
+    (void)(NULL);
+    } else {
+    (void)(vec_push_(results, vec_box_i32(results, pos)));
+    (void)(find_all_markers(text, marker, (pos + 1), results, dest));
+    }
+}
+
+int segment_end(Vec * markers __attribute__((unused)), int i __attribute__((unused)), int text_len __attribute__((unused))) {
+    if (((i + 1) >= vec_len(markers))) {
+    return text_len;
+    } else {
+    return (*((int *)(vec_get(markers, (i + 1)))));
+    }
+}
+
+void build_chunks(char * text __attribute__((unused)), Vec * markers __attribute__((unused)), int text_len __attribute__((unused)), char * header __attribute__((unused)), int target __attribute__((unused)), int chunks_remaining __attribute__((unused)), int i __attribute__((unused)), int n __attribute__((unused)), char * cur_text __attribute__((unused)), int cur_size __attribute__((unused)), Vec * chunks __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= n)) {
+    if ((cur_size > 0)) {
+    (void)(vec_push_(chunks, cur_text));
+    } else {
+    (void)(NULL);
+    }
+    } else {
+    int seg_start __attribute__((unused)) = (*((int *)(vec_get(markers, i))));
+    int seg_end __attribute__((unused)) = segment_end(markers, i, text_len);
+    char *segment __attribute__((unused)) = substring(text, seg_start, seg_end, dest);
+    int seg_size __attribute__((unused)) = (seg_end - seg_start);
+    char *new_text __attribute__((unused)) = concat(cur_text, segment, dest);
+    int new_size __attribute__((unused)) = (cur_size + seg_size);
+    if (((new_size >= target) && (chunks_remaining > 1))) {
+    (void)(vec_push_(chunks, new_text));
+    (void)(build_chunks(text, markers, text_len, header, target, (chunks_remaining - 1), (i + 1), n, header, 0, chunks, dest));
+    } else {
+    (void)(build_chunks(text, markers, text_len, header, target, chunks_remaining, (i + 1), n, new_text, new_size, chunks, dest));
+    }
+    }
+}
+
+Vec split_construct(char * text __attribute__((unused)), int chunk_count __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec markers __attribute__((unused)) = vec_new(dest);
+    (void)(find_all_markers(text, file_start_marker(), 0, &(markers), dest));
+    if ((vec_len(&(markers)) == 0)) {
+    Vec only __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(only), text));
+    return only;
+    } else {
+    int header_end __attribute__((unused)) = (*((int *)(vec_get(&(markers), 0))));
+    char *header __attribute__((unused)) = substring(text, 0, header_end, dest);
+    int text_len __attribute__((unused)) = length(text);
+    int content_len __attribute__((unused)) = (text_len - header_end);
+    double real_chunk_count __attribute__((unused)) = ((chunk_count < 1) ? 1 : chunk_count);
+    int target __attribute__((unused)) = (content_len / real_chunk_count);
+    Vec chunks __attribute__((unused)) = vec_new(dest);
+    (void)(build_chunks(text, &(markers), text_len, header, target, real_chunk_count, 0, vec_len(&(markers)), header, 0, &(chunks), dest));
+    return chunks;
+    }
+}
+
 int hidden_entry_(char * name __attribute__((unused))) {
     return (char_at(name, 0) == 46);
 }
@@ -1119,12 +1272,12 @@ int looks_like_calculation_(char * query __attribute__((unused))) {
     if ((n == 0)) {
     return 0;
     } else {
-    int __loop_result_14 __attribute__((unused));
+    int __loop_result_15 __attribute__((unused));
     double i = 0;
     int has_digit = 0;
     while (1) {
         if ((i >= n)) {
-        __loop_result_14 = has_digit;
+        __loop_result_15 = has_digit;
         break;
         } else {
         int c __attribute__((unused)) = char_at(query, i);
@@ -1135,12 +1288,12 @@ int looks_like_calculation_(char * query __attribute__((unused))) {
         has_digit = __recur_tmp_1;
         continue;
         } else {
-        __loop_result_14 = 0;
+        __loop_result_15 = 0;
         break;
         }
         }
     }
-    return __loop_result_14;
+    return __loop_result_15;
     }
 }
 
@@ -1149,40 +1302,66 @@ Option maybe_calc_result(char * query __attribute__((unused)), Arena *dest __att
     return option_none();
     } else {
     Bindings b __attribute__((unused)) = bindings_new(dest);
-    Option __match_result_7 __attribute__((unused)) = {0};
-    Result __match_tmp_7 = eval(query, &(b), dest);
-    if (__match_tmp_7.tag == 1) {
-        void *val __attribute__((unused)) = __match_tmp_7.value;
-    ExprValue __match_tmp_8 = (*((ExprValue *)(val)));
-    if (__match_tmp_8.tag == 0) {
-        void *n __attribute__((unused)) = __match_tmp_8.value;
-        __match_result_7 = option_some(SpotlightResult_box(dest, SpotlightResult_new(SpotlightKind_SKCalculator(), concat("= ", f64_to_string((*((double *)(n))), dest), dest), "")));
+    Option __match_result_8 __attribute__((unused)) = {0};
+    Result __match_tmp_8 = eval(query, &(b), dest);
+    if (__match_tmp_8.tag == 1) {
+        void *val __attribute__((unused)) = __match_tmp_8.value;
+    ExprValue __match_tmp_9 = (*((ExprValue *)(val)));
+    if (__match_tmp_9.tag == 0) {
+        void *n __attribute__((unused)) = __match_tmp_9.value;
+        __match_result_8 = option_some(SpotlightResult_box(dest, SpotlightResult_new(SpotlightKind_SKCalculator(), concat("= ", f64_to_string((*((double *)(n))), dest), dest), "")));
     }
-    else if (__match_tmp_8.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_8.value;
-        __match_result_7 = option_none();
+    else if (__match_tmp_9.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_9.value;
+        __match_result_8 = option_none();
     }
     }
-    else if (__match_tmp_7.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_7.value;
-        __match_result_7 = option_none();
+    else if (__match_tmp_8.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_8.value;
+        __match_result_8 = option_none();
     }
-    return __match_result_7;
+    return __match_result_8;
     }
 }
 
 Vec calculator_provider(char * query __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec results __attribute__((unused)) = vec_new(dest);
-    int __match_result_8 __attribute__((unused)) = {0};
-    Option __match_tmp_9 = maybe_calc_result(query, dest);
-    if (__match_tmp_9.tag == 1) {
-        void *r __attribute__((unused)) = __match_tmp_9.value;
+    int __match_result_9 __attribute__((unused)) = {0};
+    Option __match_tmp_10 = maybe_calc_result(query, dest);
+    if (__match_tmp_10.tag == 1) {
+        void *r __attribute__((unused)) = __match_tmp_10.value;
         (void)(vec_push_(&(results), r));
     }
-    else if (__match_tmp_9.tag == 0) {
+    else if (__match_tmp_10.tag == 0) {
         (void)(NULL);
     }
     return results;
+}
+
+char * construct_split_label(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return concat("Split construct file into ", concat(i32_to_string(n, dest), " panes", dest), dest);
+}
+
+Vec construct_split_provider(char * query __attribute__((unused)), char * current_buffer_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec results __attribute__((unused)) = vec_new(dest);
+    int __match_result_10 __attribute__((unused)) = {0};
+    Option __match_tmp_11 = parse_construct_split_count(query, dest);
+    if (__match_tmp_11.tag == 1) {
+        void *n __attribute__((unused)) = __match_tmp_11.value;
+        (void)(construct_split_maybe_push(&(results), (*((int *)(n))), current_buffer_text, dest));
+    }
+    else if (__match_tmp_11.tag == 0) {
+        (void)(NULL);
+    }
+    return results;
+}
+
+void construct_split_maybe_push(Vec * results __attribute__((unused)), int n __attribute__((unused)), char * current_buffer_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (construct_file_(current_buffer_text, dest)) {
+    (void)(vec_push_(results, SpotlightResult_box(dest, SpotlightResult_new(SpotlightKind_SKConstructSplit(), construct_split_label(n, dest), i32_to_string(n, dest)))));
+    } else {
+    (void)(NULL);
+    }
 }
 
 void append_all(Vec * dst __attribute__((unused)), Vec * src __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1194,11 +1373,13 @@ void append_all(Vec * dst __attribute__((unused)), Vec * src __attribute__((unus
     }
 }
 
-Vec run_providers(char * query __attribute__((unused)), char * root __attribute__((unused)), Arena *dest __attribute__((unused))) {
+Vec run_providers(char * query __attribute__((unused)), char * root __attribute__((unused)), char * current_buffer_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec results __attribute__((unused)) = vec_new(dest);
     Vec calc_results __attribute__((unused)) = calculator_provider(query, dest);
     Vec file_results __attribute__((unused)) = file_search_provider(query, root, dest);
+    Vec construct_results __attribute__((unused)) = construct_split_provider(query, current_buffer_text, dest);
     (void)(append_all(&(results), &(calc_results), 0, dest));
+    (void)(append_all(&(results), &(construct_results), 0, dest));
     (void)(append_all(&(results), &(file_results), 0, dest));
     return results;
 }

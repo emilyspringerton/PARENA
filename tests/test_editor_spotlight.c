@@ -100,11 +100,14 @@ int main(void) {
     CHECK(vec_len(&c4) == 0, "calculator-provider produces no result for a real empty query");
 
     /* --- real run-providers coverage: both providers fire together,
-     * matching the real overlay's own combined result list. --- */
-    Vec run1 = run_providers((char *)"3 + 4", root, &a);
+     * matching the real overlay's own combined result list. current-
+     * buffer-text (2026-08-28, real construct-split-provider support)
+     * is a plain, ordinary (non-construct) string here -- neither of
+     * these two real checks cares about it. --- */
+    Vec run1 = run_providers((char *)"3 + 4", root, (char *)"", &a);
     CHECK(any_label_contains(&run1, "7"), "run-providers includes the real calculator result for an arithmetic query");
 
-    Vec run2 = run_providers((char *)"parser", root, &a);
+    Vec run2 = run_providers((char *)"parser", root, (char *)"", &a);
     CHECK(any_label_contains(&run2, "parser.prn"), "run-providers includes the real file-search result for a filename query");
 
     arena_free_all(&a);

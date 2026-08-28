@@ -210,8 +210,8 @@ static int save_to_file(const char *path, const char *text, Arena *a) {
  * instead of capturing them. Called whenever the real query text
  * actually changes (opened, typed into, backspaced), not every
  * frame. */
-static Vec recompute_spotlight(const char *root, const char *query, Arena *a) {
-    return run_providers((char *)query, (char *)root, a);
+static Vec recompute_spotlight(const char *root, const char *query, const char *current_text, Arena *a) {
+    return run_providers((char *)query, (char *)root, (char *)current_text, a);
 }
 
 /* spotlight_keep_selection_visible -- real, new (2026-08-27, founder
@@ -1126,7 +1126,7 @@ int main(int argc, char **argv) {
                         if (spotlight_query_len > 0) {
                             spotlight_query_len--;
                             spotlight_query[spotlight_query_len] = '\0';
-                            spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
+                            spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, active_text(&buf), &a);
                             spotlight_selected = 0;
                             spotlight_scroll_offset = 0;
                         }
@@ -1153,6 +1153,53 @@ int main(int argc, char **argv) {
                                 buf = load_from_file(sel->path, &a);
                                 undo_count = 0;
                                 redo_count = 0;
+                            } else if (sel->kind.tag == SpotlightKind_TAG_SKConstructSplit) {
+                                /* Real "/construct-split N" activation (2026-08-28,
+                                 * founder real-time: "i want this as a parena mod -
+                                 * have it hook into the ctrl t quick open pane...").
+                                 * construct-split-provider already confirmed the
+                                 * currently open buffer IS a real construct file
+                                 * before ever offering this result (see its own
+                                 * header comment) -- the real splitting itself
+                                 * (editor/construct-split's own split-construct,
+                                 * a real PARENA mod, not hand-written C) runs here
+                                 * against the CURRENT buffer's own real text. Each
+                                 * real chunk gets its own real temp file (pid- and
+                                 * index-qualified, so N chunks never collide with
+                                 * each other or a prior run) and its own real new
+                                 * editor window, via the SAME spawn_new_instance
+                                 * path the file-tree/drag-and-drop already use --
+                                 * this editor's own real, only "new pane" concept
+                                 * is a genuinely separate window/process, not an
+                                 * in-process split view. Real, deliberate v0: the
+                                 * temp chunk files are NOT cleaned up afterward --
+                                 * each new window reads its own file once, on its
+                                 * own schedule, at its own startup, so deleting
+                                 * them here would race a child that hasn't opened
+                                 * its file yet; left in /tmp like every other real
+                                 * transient artifact this codebase already accepts
+                                 * (compile_and_relaunch's own build output, etc). */
+                                int chunk_count = atoi(sel->path);
+                                Vec chunks = split_construct(active_text(&buf), chunk_count, &a);
+                                int n_chunks = vec_len(&chunks);
+                                for (int ci = 0; ci < n_chunks; ci++) {
+                                    char *chunk_text = (char *)vec_get(&chunks, ci);
+                                    char chunk_path[300];
+                                    snprintf(chunk_path, sizeof chunk_path,
+                                             "/tmp/parena_construct_split_%d_%02d.txt",
+                                             (int)getpid(), ci);
+                                    FILE *cf = fopen(chunk_path, "w");
+                                    if (cf) {
+                                        fputs(chunk_text, cf);
+                                        fclose(cf);
+                                        spawn_new_instance(exe_path, chunk_path);
+                                    } else {
+                                        fprintf(stderr,
+                                                "editor: construct-split failed to write chunk %d to %s\n",
+                                                ci, chunk_path);
+                                    }
+                                }
+                                fprintf(stderr, "editor: construct-split opened %d real panes\n", n_chunks);
                             }
                         }
                         spotlight_visible = 0;
@@ -1208,7 +1255,7 @@ int main(int argc, char **argv) {
                     spotlight_query_len = 0;
                     spotlight_selected = 0;
                     spotlight_scroll_offset = 0;
-                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
+                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, active_text(&buf), &a);
                 /* Real Ctrl+C/X/V copy/cut/paste (2026-08-27) -- checked
                  * FIRST, before the plain-key branches below, since 'c'/
                  * 'x'/'v' are otherwise ordinary printable keys (SDL2's
@@ -1430,7 +1477,7 @@ int main(int argc, char **argv) {
                         spotlight_query[spotlight_query_len++] = text[ti];
                     }
                     spotlight_query[spotlight_query_len] = '\0';
-                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, &a);
+                    spotlight_results = recompute_spotlight(file_tree_dir, spotlight_query, active_text(&buf), &a);
                     spotlight_selected = 0;
                     spotlight_scroll_offset = 0;
                 } else if (toggle_on_(&terminal_toggle)) {

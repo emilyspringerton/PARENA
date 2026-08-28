@@ -1,0 +1,203 @@
+;; stdlib/editor/construct_split.prn -- real Spotlight-hookable
+;; construct-file splitter (2026-08-28, founder real-time: "i want this
+;; as a parena mod - have it hook into the ctrl t quick open pane when
+;; i have that open if i type /construct-split 10 if it is a construct
+;; file it should use file start and file end to open up new panes with
+;; the chunks of the file broken into roughly equal 10 sizes its not
+;; gonna be totally equal").
+;;
+;; "File start and file end" is a real, exact, already-established
+;; format: every real *_CONSTRUCT.txt this monorepo's own CI generates
+;; (PARENA's own .github/workflows/ci.yml "Generate Construct Bundle"
+;; step, matching emily.cli's own precedent that step's comment names)
+;; delimits each real source file with a literal
+;;   --- FILE START: <relpath> ---
+;;   <content>
+;;
+;;   --- FILE END: <relpath> ---
+;; block. This module never needs to locate the real "FILE END" markers
+;; at all -- every real segment BETWEEN two consecutive "FILE START"
+;; occurrences already includes its own trailing "FILE END" line plus
+;; the file that follows starts fresh at the next real "FILE START",
+;; so splitting the WHOLE text at every real "--- FILE START: "
+;; occurrence's own byte offset is exactly equivalent, and simpler.
+;;
+;; Real, honest, narrow v0: splits ONLY at real file boundaries, never
+;; mid-file -- chunk BYTE SIZES are only ever roughly equal, by design,
+;; matching the founder's own real ask ("roughly equal 10 sizes its
+;; not gonna be totally equal") exactly, not a bug to fix later. The
+;; real, shared CONSTRUCT header (everything before the first real
+;; "--- FILE START: ", i.e. the "PARENA CONSTRUCT <run>\ncommit:
+;; ...\ngenerated_utc: ...\n" preamble) is prepended to EVERY real
+;; chunk, not just the first -- so any one opened pane still carries
+;; real context about which construct run/commit it's a slice of, on
+;; its own, without needing the first pane still open alongside it.
+;;
+;; The REAL splitting algorithm here is real, callable PARENA logic --
+;; this module owns it end to end. Writing each real chunk to its own
+;; real temp file and spawning a real new editor window per chunk is
+;; unavoidably real host/OS work (a new process per pane, matching
+;; every other real "open in a new window" path this editor already
+;; has -- spawn_new_instance, examples/editor_main.c) -- that half
+;; lives in the C driver, wired through Spotlight's own real
+;; kind-dispatch at activation time, the same real split every other
+;; SpotlightKind (SKFile/SKCalculator) already has between "a real
+;; PARENA mod decides WHAT to do" and "the C driver does the real,
+;; unavoidable host I/O."
+
+(module editor/construct-split)
+(import string)
+(import vec)
+(export construct-file? parse-construct-split-count split-construct file-start-marker)
+
+(defn file-start-marker [] : String @ Region "--- FILE START: ")
+
+;; ---- real, narrow substring-search primitives (string.prn has no
+;; real index-of/find of its own -- contains-ci? is the closest real
+;; existing thing, and it's both case-insensitive and boolean-only,
+;; wrong on both counts for a real exact-format marker search). Real,
+;; deliberate char-by-char scan (no per-attempt substring allocation)
+;; -- a real CONSTRUCT file can be multi-MB, and this stdlib's own
+;; established "simple over optimized, but not wastefully so" judgment
+;; (spotlight.prn's own file-search-provider header comment makes the
+;; identical real tradeoff call) applies here too.
+
+(defn marker-matches-at? [(text : String @ Region) (pos : I32) (marker : String @ Region) (marker-len : I32) (j : I32)] : Bool
+  (if (>= j marker-len)
+    true
+    (if (= (string/char-at text (+ pos j)) (string/char-at marker j))
+      (marker-matches-at? text pos marker marker-len (+ j 1))
+      false)))
+
+;; find-marker-from -- the first real byte offset >= start where
+;; `marker` occurs in `text` verbatim, or -1 if it never does.
+(defn find-marker-from [(text : String @ Region) (marker : String @ Region) (start : I32) (dest : Arena @ Region)] : I32
+  (let [text-len (string/length text)
+        marker-len (string/length marker)]
+    (loop [i start]
+      (if (> (+ i marker-len) text-len)
+        -1
+        (if (marker-matches-at? text i marker marker-len 0)
+          i
+          (recur (+ i 1)))))))
+
+(defn starts-with? [(text : String @ Region) (prefix : String @ Region)] : Bool
+  (let [text-len (string/length text)
+        prefix-len (string/length prefix)]
+    (if (> prefix-len text-len)
+      false
+      (marker-matches-at? text 0 prefix prefix-len 0))))
+
+;; construct-file? -- the real, honest heuristic for "is the currently
+;; open buffer a real construct bundle": does it contain at least one
+;; real "--- FILE START: " marker anywhere. Real, deliberate,
+;; repo-agnostic: every *_CONSTRUCT.txt across this whole monorepo
+;; (PARENA's own, EMILY's, IDUNA's, etc.) shares this exact real
+;; delimiter format, so this works regardless of which repo's own
+;; construct bundle is open, not just PARENA's -- a real, narrower
+;; check keyed on the repo-specific "PARENA CONSTRUCT" header text
+;; would wrongly reject every other repo's own real construct file.
+(defn construct-file? [(text : String @ Region) (dest : Arena @ Region)] : Bool
+  (not (= (find-marker-from text (file-start-marker) 0 dest) -1)))
+
+;; parse-construct-split-count -- real, narrow command-syntax
+;; recognizer for the Spotlight query text itself: `/construct-split N`
+;; (a literal leading slash, the command name, one space, then a real
+;; positive I32). Returns None for anything else -- an ordinary file-
+;; search query never accidentally matches (no real file in this
+;; monorepo starts with a literal "/construct-split ").
+(defn parse-construct-split-count [(query : String @ Region) (dest : Arena @ Region)] : (Option I32)
+  (let [prefix "/construct-split "]
+    (if (not (starts-with? query prefix))
+      None
+      (let [n-text (string/substring query (string/length prefix) (string/length query) dest)]
+        (match (string/parse-i32 n-text dest)
+          ((Ok n) (if (> (deref n) 0) (Some (deref n)) None))
+          ((Err e) None))))))
+
+;; find-all-markers -- real, recursive collection of every real
+;; "--- FILE START: " occurrence's own byte offset, in real source
+;; order.
+(defn find-all-markers [(text : String @ Region) (marker : String @ Region) (start : I32)
+                         (results : &(Vec I32)) (dest : Arena @ Region)] : Unit
+  (let [pos (find-marker-from text marker start dest)]
+    (if (= pos -1)
+      unit
+      (do
+        (vec/push! results pos)
+        (find-all-markers text marker (+ pos 1) results dest)))))
+
+;; segment-end -- the real, exclusive end offset of the file-segment
+;; starting at marker index `i`: the NEXT marker's own start offset, or
+;; the real end of the whole text for the last segment.
+(defn segment-end [(markers : &(Vec I32)) (i : I32) (text-len : I32)] : I32
+  (if (>= (+ i 1) (vec/len markers))
+    text-len
+    (deref (vec/get markers (+ i 1)))))
+
+;; build-chunks -- real, recursive greedy bin-pack over the real
+;; file-segments [i, n), threading three real accumulators: `chunks`
+;; (completed real chunk texts so far, via vec/push! -- the same real
+;; "Vec as an output accumulator" idiom this whole stdlib already uses
+;; everywhere, e.g. spotlight.prn's own results Vec), `cur-text` (the
+;; CURRENTLY-OPEN chunk's own real accumulated text, always starting
+;; from `header`, never bare ""), and `cur-size` (that chunk's own real
+;; accumulated CONTENT byte count -- tracked separately from cur-text's
+;; own string/length specifically so the shared header's own bytes
+;; never count toward a chunk's real "am I full yet" threshold).
+;; `chunks-remaining` gates whether a chunk is allowed to close early --
+;; the LAST real chunk absorbs every remaining segment regardless of
+;; its own real size, so the real result is never more than
+;; chunk-count chunks, matching the founder's own real ask ("roughly
+;; equal... not gonna be totally equal") -- a real, honest greedy
+;; bin-pack, not a perfectly-balanced partition.
+(defn build-chunks [(text : String @ Region) (markers : &(Vec I32)) (text-len : I32)
+                     (header : String @ Region) (target : I32) (chunks-remaining : I32)
+                     (i : I32) (n : I32) (cur-text : String @ Region) (cur-size : I32)
+                     (chunks : &(Vec String)) (dest : Arena @ Region)] : Unit
+  (if (>= i n)
+    (if (> cur-size 0)
+      (vec/push! chunks cur-text)
+      unit)
+    (let [seg-start (deref (vec/get markers i))
+          seg-end (segment-end markers i text-len)
+          segment (string/substring text seg-start seg-end dest)
+          seg-size (- seg-end seg-start)
+          new-text (string/concat cur-text segment dest)
+          new-size (+ cur-size seg-size)]
+      (if (and (>= new-size target) (> chunks-remaining 1))
+        (do
+          (vec/push! chunks new-text)
+          (build-chunks text markers text-len header target (- chunks-remaining 1) (+ i 1) n header 0 chunks dest))
+        (build-chunks text markers text-len header target chunks-remaining (+ i 1) n new-text new-size chunks dest)))))
+
+;; split-construct -- the real, public entry point: given a real
+;; construct file's own text and a real requested chunk-count, returns
+;; a Vec of AT MOST chunk-count real, complete, independently-openable
+;; chunk texts (fewer if there are fewer real file-segments than
+;; chunk-count requested -- an honest result, not padded with empty
+;; chunks). Real, honest fallback: a `text` with zero real "--- FILE
+;; START: " markers (not actually a construct file at all) returns the
+;; whole text as a single, unsplit chunk rather than an empty Vec or a
+;; crash -- construct-file? is the real, separate check a caller (the
+;; Spotlight provider below) uses to decide whether to offer this
+;; command at all.
+(defn split-construct [(text : String @ Region) (chunk-count : I32) (dest : Arena @ Region)] : (Vec String) @ Region
+  (let [markers (vec/new dest)]
+    (do
+      (find-all-markers text (file-start-marker) 0 &markers dest)
+      (if (= (vec/len &markers) 0)
+        (let [only (vec/new dest)]
+          (do
+            (vec/push! &only text)
+            only))
+        (let [header-end (deref (vec/get &markers 0))
+              header (string/substring text 0 header-end dest)
+              text-len (string/length text)
+              content-len (- text-len header-end)
+              real-chunk-count (if (< chunk-count 1) 1 chunk-count)
+              target (/ content-len real-chunk-count)
+              chunks (vec/new dest)]
+          (do
+            (build-chunks text &markers text-len header target real-chunk-count 0 (vec/len &markers) header 0 &chunks dest)
+            chunks))))))
