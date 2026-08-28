@@ -1717,16 +1717,29 @@
 ;; position never boxes" property a struct-literal field's own real
 ;; position shares with a call argument's own -- reused via emit-call-
 ;; arg directly at emission time, see emit-struct-literal-args below).
-;; Deliberately excludes result-option-ctor-shaped?/none-shaped? (a
-;; struct field itself holding a freshly-constructed Result/Option is
-;; a real, separate, compoundable case not attempted in this narrow
-;; v0, to keep this increment's own real scope bounded).
+;;
+;; Widened 2026-08-28 (closing "a struct-literal field itself holding
+;; a freshly-constructed Result/Option value" -- named as a real,
+;; separate, deliberately out-of-scope case when struct-literal
+;; support first landed the same day) to ALSO accept result-option-
+;; ctor-shaped?/none-shaped? -- a genuinely FREE widening, not new
+;; work: emit-call-arg ALREADY dispatches both correctly (real
+;; Ok/Err/Some-as-a-call-argument support landed earlier the same
+;; day), and this function's own real job is ONLY the shape GUARD, not
+;; emission -- the only real change needed anywhere is here. Still
+;; real, honest, narrower than fully general: an I32-shaped payload
+;; INSIDE that Result/Option (e.g. `{:opt (Some 42)}`) still needs a
+;; real Arena in scope to box into, the SAME honest, self-documenting-
+;; invalid-identifier fallback arena-scope-any-ref's own header
+;; comment already establishes for every other real I32-boxing site.
 (defn struct-literal-field-value-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
   (let [k (emit-node-kind-code (get-field node :kind))]
     (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? node dest))
         (or (or (plain-call-shaped? node dest) (binary-op-call-shaped? node dest))
             (or (alloc-call-shaped? node)
-                (or (or-and-shaped? node dest) (not-shaped? node dest)))))))
+                (or (or-and-shaped? node dest)
+                    (or (not-shaped? node dest)
+                        (or (result-option-ctor-shaped? node dest) (none-shaped? node)))))))))
 
 ;; all-struct-literal-fields-match? -- real, exhaustive check: every
 ;; ONE of struct-node's own real declared fields (walked in DECLARED
@@ -2085,6 +2098,16 @@
 ;; space) avoids a real, confirmed double-space in the generated
 ;; struct field ("Point  start;") -- harmless to gcc but a genuine,
 ;; needless divergence from every other field's own real output.
+;; Widened 2026-08-28 (Result/Option as real, recognized struct FIELD
+;; types, by value, the SAME real convention param-c-type already
+;; established for these two names) -- the other real half of "a
+;; struct-literal field itself holding a freshly-constructed Result/
+;; Option value": that field's own real DECLARED type has to be
+;; Result/Option too, for the constructed value to have anywhere
+;; correctly-typed to land. Without this, a defstruct naming an
+;; Option/Result field was simply never treated as defstruct-shaped?
+;; at all (this file's own pre-existing honest "unsupported field
+;; type, whole defstruct skipped" behavior, never a wrong guess).
 (defn struct-field-c-type [(type-name : String @ Region) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((string/str-eq? type-name "String") "char *")
@@ -2092,19 +2115,35 @@
     ((string/str-eq? type-name "Bool") "int")
     ((string/str-eq? type-name "F64") "double")
     ((string/str-eq? type-name "Arena") "Arena *")
+    ((string/str-eq? type-name "Result") "Result")
+    ((string/str-eq? type-name "Option") "Option")
     ((vec-contains-string? known-structs type-name 0) type-name)
     (true "")))
 
 (defn struct-field-supported? [(type-name : String @ Region) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
   (not (string/str-eq? (struct-field-c-type type-name known-structs dest) "")))
 
-;; struct-field-shaped? -- a real `(name : Type)` field list -- exactly
-;; 3 children (name, colon, type), the type itself one of the real,
-;; supported scalar types above, or an already-registered struct name.
+;; struct-field-shaped? -- a real `(name : Type)` field list --
+;; AT LEAST 3 children (name, colon, type), the type itself one of the
+;; real, supported scalar types above, or an already-registered struct
+;; name. Widened 2026-08-28 (real, live, pre-existing bug found via a
+;; direct probe while verifying Result/Option struct-field support: a
+;; field WITH an explicit `@ Region`/`@ :region/x` suffix -- e.g.
+;; `(label : String @ Region)`, the exact real shape String fields
+;; typically use throughout this codebase -- has 5 real children, not
+;; 3, and was silently, unconditionally REJECTED by this function's
+;; own old exact-3 check, an honest "skipped, not registered" failure,
+;; never a wrong guess, but a real, confirmed, never-before-exercised
+;; gap all the same -- every one of this file's own prior struct-field
+;; tests happened to use a scalar field with no region annotation
+;; (`(x : I32)`), never hitting this). The type name is always at
+;; index 2 regardless of whether a region annotation follows -- the
+;; SAME real convention param-type-name already established for
+;; params, reused here.
 (defn struct-field-shaped? [(field : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
   (if (not (= (emit-node-kind-code (get-field field :kind)) 0))
     false
-    (if (not (= (vec/len &(get-field field :children)) 3))
+    (if (not (>= (vec/len &(get-field field :children)) 3))
       false
       (let [type-node (vec/get &(get-field field :children) 2)]
         (struct-field-supported? (get-field type-node :text) known-structs dest)))))

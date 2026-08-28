@@ -3000,7 +3000,7 @@ int map_literal_field_value_index(Node * map_node __attribute__((unused)), char 
 
 int struct_literal_field_value_supported_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int k __attribute__((unused)) = emit_node_kind_code((node)->kind);
-    return (((((k == 3) || (k == 6)) || (k == 5)) || get_field_shaped_(node, dest)) || ((plain_call_shaped_(node, dest) || binary_op_call_shaped_(node, dest)) || (alloc_call_shaped_(node) || (or_and_shaped_(node, dest) || not_shaped_(node, dest)))));
+    return (((((k == 3) || (k == 6)) || (k == 5)) || get_field_shaped_(node, dest)) || ((plain_call_shaped_(node, dest) || binary_op_call_shaped_(node, dest)) || (alloc_call_shaped_(node) || (or_and_shaped_(node, dest) || (not_shaped_(node, dest) || (result_option_ctor_shaped_(node, dest) || none_shaped_(node)))))));
 }
 
 int all_struct_literal_fields_match_(Node * map_node __attribute__((unused)), Node struct_node __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -3223,7 +3223,7 @@ char * program_header(Arena *dest __attribute__((unused))) {
 }
 
 char * struct_field_c_type(char * type_name __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int" : (str_eq_(type_name, "Bool") ? "int" : (str_eq_(type_name, "F64") ? "double" : (str_eq_(type_name, "Arena") ? "Arena *" : (vec_contains_string_(known_structs, type_name, 0) ? type_name : ""))))));
+    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int" : (str_eq_(type_name, "Bool") ? "int" : (str_eq_(type_name, "F64") ? "double" : (str_eq_(type_name, "Arena") ? "Arena *" : (str_eq_(type_name, "Result") ? "Result" : (str_eq_(type_name, "Option") ? "Option" : (vec_contains_string_(known_structs, type_name, 0) ? type_name : ""))))))));
 }
 
 int struct_field_supported_(char * type_name __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -3234,7 +3234,7 @@ int struct_field_shaped_(Node * field __attribute__((unused)), Vec * known_struc
     if ((!((emit_node_kind_code((field)->kind) == 0)))) {
     return 0;
     } else {
-    if ((!((vec_len(&((field)->children)) == 3)))) {
+    if ((!((vec_len(&((field)->children)) >= 3)))) {
     return 0;
     } else {
     Node *type_node __attribute__((unused)) = vec_get(&((field)->children), 2);

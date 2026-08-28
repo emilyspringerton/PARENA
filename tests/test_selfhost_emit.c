@@ -2161,6 +2161,79 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real "struct-literal field holding a freshly-constructed
+         * Result/Option value" support, PLUS a real, pre-existing bug
+         * fix found while verifying it: a defstruct field WITH an
+         * explicit `@ Region` suffix (5 real children, not 3) was
+         * silently rejected by struct-field-shaped?'s own old exact-3
+         * check -- never exercised by any prior struct-field test in
+         * this file (all used a scalar field with no region
+         * annotation). */
+        char *snippet =
+            "(defstruct Box (label : String @ Region) (opt : Option))\n"
+            "(defn make-box [(label : String @ Region) (v : String @ Region)] : Box\n"
+            "  {:label label :opt (Some v)})";
+        Result pr32 = parse_program(snippet, &a);
+        CHECK(pr32.tag == 1, "a real defstruct with a region-annotated String field AND an "
+                              "Option field, plus a real constructor defn whose struct literal "
+                              "constructs a fresh Some value for that field, parses fine");
+        if (pr32.tag == 1) {
+            Node program32 = *(Node *)pr32.value;
+            char *generated32 = emit_program(&program32, &a);
+            CHECK(generated32 != NULL && strstr(generated32, "#error") == NULL,
+                  "no #error is emitted -- both the region-annotated struct field and the "
+                  "Option-field struct-literal value are now real, supported shapes");
+            CHECK(generated32 != NULL && strstr(generated32, "char * label;\n") != NULL,
+                  "Box's own region-annotated 'label' field is emitted correctly -- the real, "
+                  "pre-existing struct-field-shaped? bug (exact-3-children check rejecting a "
+                  "real 5-child region-annotated field) is genuinely fixed");
+            CHECK(generated32 != NULL && strstr(generated32, "Option opt;\n") != NULL,
+                  "Box's own 'opt' field is emitted with the real, concrete 'Option' C type");
+            CHECK(generated32 != NULL &&
+                  strstr(generated32, "return (Box){label, option_some(v)};") != NULL,
+                  "make-box's own body emits a real, correctly composed compound literal -- the "
+                  "real option_some(v) construction composed INLINE as the struct literal's own "
+                  "'opt' field value, not a bogus reference or a #error");
+
+            if (generated32) {
+                char c_path20[300];
+                snprintf(c_path20, sizeof c_path20, "/tmp/parena_selfhost_emit_struct_lit_opt_test_%d.c",
+                         (int)getpid());
+                FILE *out20 = fopen(c_path20, "w");
+                CHECK(out20 != NULL, "a real temp file opens to write the struct-lit-opt generated C into");
+                if (out20) {
+                    fputs(generated32, out20);
+                    fclose(out20);
+
+                    char bin_path20[310];
+                    snprintf(bin_path20, sizeof bin_path20, "%s.bin", c_path20);
+                    char cmd20[1024];
+                    snprintf(cmd20, sizeof cmd20,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_struct_literal_option_field.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path20, c_path20);
+                    int compile_status20 = system(cmd20);
+                    CHECK(compile_status20 == 0,
+                          "the real struct-lit-opt generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_struct_literal_option_field.c");
+                    if (compile_status20 == 0) {
+                        int run_status20 = system(bin_path20);
+                        CHECK(run_status20 == 0,
+                              "the real compiled make-box genuinely constructs a struct whose "
+                              "real String field AND whose real, freshly-constructed Option "
+                              "field both hold the correct values -- driver_struct_literal_"
+                              "option_field.c's own internal asserts all pass, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path20);
+                    remove(bin_path20);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

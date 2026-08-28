@@ -1528,6 +1528,38 @@ body; a struct-literal field itself holding a freshly-constructed Result/Option 
 bare-symbol Ok/Err/Some payload referencing a `let`-bound local rather than a defn's own PARAM
 (this round's own fix only covers the param case, the one real, knowable-without-tracking shape).
 
+**Real "struct-literal field holding a freshly-constructed Result/Option value" support added the
+same day (2026-08-28)**, closing the gap named directly above — a genuinely FREE widening, not new
+work: `struct-literal-field-value-supported?` widened to accept `result-option-ctor-shaped?`/
+`none-shaped?`, and `emit-call-arg` (already used to emit every struct-literal field's own value)
+already dispatched both correctly (Ok/Err/Some/None-as-a-call-argument support landed earlier the
+same day) — the only real change needed anywhere was the shape GUARD.
+
+**Found and fixed a real, live, PRE-EXISTING bug while verifying this** (confirmed via a direct
+probe, not guessed): a defstruct field WITH an explicit `@ Region` suffix (`(label : String @
+Region)`, the exact real shape String fields typically use throughout this codebase) has 5 real
+children, not 3 — `struct-field-shaped?`'s own OLD exact-3-children check silently rejected it,
+an honest "skipped, not registered" failure (never a wrong guess), but never exercised by any PRIOR
+struct-field test in this file (every one used a scalar field with no region annotation). Widened
+the check from exact-3 to at-least-3 — the type name is always at index 2 regardless of whether a
+region annotation follows, the SAME real convention `param-type-name` already established for
+params. Also widened `struct-field-c-type` to recognize `Result`/`Option` as real, by-value struct
+FIELD types (the other real half needed: the constructed value has to have somewhere correctly-
+typed to land).
+
+7 new tests (`tests/test_selfhost_emit.c`): structural checks confirming both the region-annotated
+field AND the Option field are now emitted correctly, plus a real compile+run+assert check
+(`tests/integration/driver_struct_literal_option_field.c`) proving a real struct literal genuinely
+constructs a struct whose String field AND whose freshly-constructed Option field both hold the
+correct values, not just that gcc accepts the generated text. Zero regressions: full local suite
+(336 tests) + all 6 selfhost domain test binaries + `bazel build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; `cond`/`match` as a call argument (by design, not attempted); a STRUCT-typed field
+used as a let-value; a struct-typed field nested inside a `with-arena`/`cond`/`match` body;
+`Vec`/enum-typed `defstruct` fields; a struct literal in ANY position other than a defn's own entire
+body; an I32-typed bare-symbol Ok/Err/Some payload referencing a `let`-bound local.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary
