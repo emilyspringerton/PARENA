@@ -868,13 +868,31 @@
 ;; arguments get the identical real check, recursively, all the way
 ;; down) -- safe and terminating since a real, parsed Node tree is
 ;; always finite.
+;;
+;; Widened a FOURTH time, same day: a nested `alloc` call as an
+;; argument (`(f (alloc dest String "lit"))`) -- the ONE real
+;; exclusion the prior widening's own header comment named as still
+;; open (`alloc` needs its own real, distinguished Arena-destination
+;; argument, unlike an ordinary function call). Turns out that's not
+;; actually a real obstacle here: `alloc-call-shaped?`/
+;; `emit-alloc-call` already take the exact same `scope`/`dest`
+;; every other expression emitter in this file does, and the Arena to
+;; allocate into is always named EXPLICITLY in the `alloc` call's own
+;; syntax (`(alloc arena-expr String "lit")`) -- nothing about being
+;; called from a call-ARGUMENT position instead of a let-value/tail
+;; position changes what Arena it targets. `emit-alloc-call`'s own
+;; real return (`arena_strdup(...)`) is always pointer-shaped
+;; (`char *`), so -- like get-field/plain-call, unlike binary-op --
+;; there is no boxing ambiguity to worry about at this position
+;; either.
 (defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
     (let [arg-node (vec/get &(get-field call :children) i)
           k (emit-node-kind-code (get-field arg-node :kind))]
-      (if (or (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
-              (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
+      (if (or (or (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
+                  (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
+              (alloc-call-shaped? arg-node))
         (every-call-arg-symbol-or-number? call (+ i 1) dest)
         false))))
 
@@ -997,22 +1015,24 @@
 
 ;; emit-call-arg -- widened 2026-08-28 alongside every-call-arg-
 ;; symbol-or-number?'s own nested-call widening above: a real nested
-;; plain-call-shaped?/binary-op-call-shaped? argument now emits
-;; through the SAME real emit-plain-call/emit-binary-op this file
-;; already uses for a whole function body -- checked in this order
-;; (get-field, plain-call, binary-op, bare-symbol/number fallback)
-;; since a NAME could theoretically satisfy more than one shape guard
-;; and only one is ever correct for a given real node (get-field is
-;; its own distinct call-named shape, never ambiguous with the other
-;; two; plain-call-shaped? itself already excludes binary-op-symbol?
-;; names, so plain-call vs. binary-op can never both match the same
-;; node either -- this ordering is for defensiveness, not resolving a
-;; real ambiguity).
+;; plain-call-shaped?/binary-op-call-shaped?/alloc-call-shaped?
+;; argument now emits through the SAME real emit-plain-call/emit-
+;; binary-op/emit-alloc-call this file already uses for a whole
+;; function body -- checked in this order (get-field, plain-call,
+;; binary-op, alloc, bare-symbol/number fallback) since a NAME could
+;; theoretically satisfy more than one shape guard and only one is
+;; ever correct for a given real node (get-field/alloc are each their
+;; own distinct call-named shape, never ambiguous with the other two
+;; or each other; plain-call-shaped? itself already excludes both
+;; `alloc` and binary-op-symbol? names, so plain-call vs. binary-op
+;; vs. alloc can never all match the same node either -- this ordering
+;; is for defensiveness, not resolving a real ambiguity).
 (defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((get-field-shaped? arg-node) (emit-get-field arg-node scope dest))
     ((plain-call-shaped? arg-node dest) (emit-plain-call arg-node scope dest))
     ((binary-op-call-shaped? arg-node dest) (emit-binary-op arg-node scope dest))
+    ((alloc-call-shaped? arg-node) (emit-alloc-call arg-node scope dest))
     (true (resolve-arena-ref (get-field arg-node :text) scope dest))))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]

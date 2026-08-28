@@ -1032,6 +1032,37 @@ other non-pointer-shaped) Ok/Err/Some payload; a nested `alloc` call as a call a
 fields typed as another struct/`Vec`/enum; general struct-literal construction for a user-defined
 `defstruct`.
 
+**Real nested-`alloc`-call-as-a-call-argument support added the same day (2026-08-28)**, closing the
+one real exclusion the earlier same-day nested-call-argument work explicitly named as still open
+(`(f (alloc dest String "lit"))`). Turned out not to be a real obstacle: `alloc-call-shaped?`/
+`emit-alloc-call` already take the exact same `scope`/`dest` every other expression emitter in this
+file does, and the target Arena is always named EXPLICITLY in `alloc`'s own syntax -- nothing about
+being called from a call-argument position instead of a let-value/tail position changes what Arena
+it targets. `emit-alloc-call`'s own real return (`arena_strdup(...)`) is always pointer-shaped
+(`char *`), so — like get-field/plain-call, unlike binary-op — there's no boxing ambiguity at this
+position either. `every-call-arg-symbol-or-number?` gained a 4th accepted shape;
+`emit-call-arg` gained the matching `alloc-call-shaped?` -> `emit-alloc-call` dispatch clause.
+
+The crash-regression fixture that had already moved once this same day (from "nested call" to
+"nested alloc call" as its own negative case) moved a SECOND time, to a genuinely different still-
+unsupported shape: a raw STRING LITERAL as a call argument (`(f "lit")`) -- no shape guard in this
+file accepts kind `NString` at all yet, a real, separate, not-yet-attempted gap. New positive
+coverage (structural + a real compile+run+assert check, `tests/integration/driver_nested_alloc.c`)
+proves a real 2-function program — the second passing a nested `alloc` call as its one argument to
+the first — emits no `#error`, nests the call INLINE in the generated C, compiles clean, and
+genuinely allocates the correct real string into the correct Arena at runtime. (Also confirmed, in
+passing, a real, separate, pre-existing limitation this test's own fixture had to work around rather
+than fix: `emit-program` emits no forward prototypes at all, so a callee must textually precede its
+own caller for generated multi-function C to compile -- unrelated to this feature, not attempted
+here.) Zero regressions: full local suite (336 tests) + all 6 selfhost domain test binaries + `bazel
+build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; a raw string literal as a call argument; no forward
+prototypes emitted (a callee must textually precede its caller); `defstruct` fields typed as another
+struct/`Vec`/enum; general struct-literal construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

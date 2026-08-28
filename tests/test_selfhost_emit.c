@@ -133,25 +133,28 @@ int main(int argc, char **argv) {
      * the single dominant real blocker (35 of ~57 real self-compile
      * errors) toward selfhost/lexer.prn actually compiling.
      *
-     * This fixture's own original negative case (a NESTED call as an
-     * argument, `(some-call (other-call a))`) is no longer unsupported
-     * as of the same day's later nested-call-argument widening (see
-     * every-call-arg-symbol-or-number?'s own header comment) -- moved
-     * to real, positive coverage further below instead. A genuinely
-     * different shape now exercises the still-crash-free, still-honest
-     * #error path this fixture originally existed to prove: a nested
-     * `alloc` call as an argument, which plain-call-shaped? still
-     * deliberately excludes (an `alloc` call needs its own real,
-     * distinguished Arena-destination argument, not composable as an
-     * ordinary call argument the way a ordinary plain-call/binary-op
-     * result already safely is). */
+     * This fixture's own negative case has moved TWICE now, each time
+     * to a genuinely different shape as this file's own real call-
+     * argument support widens: first from "a nested call as an
+     * argument" (`(some-call (other-call a))`, no longer unsupported
+     * as of the same day's nested-call-argument widening -- moved to
+     * real, positive coverage below), then from "a nested `alloc` call
+     * as an argument" (also no longer unsupported as of the SAME day's
+     * later alloc-as-argument widening, see every-call-arg-symbol-or-
+     * number?'s own 4th header-comment entry -- also moved to real,
+     * positive coverage below). A genuinely different shape now
+     * exercises the still-crash-free, still-honest #error path this
+     * fixture originally existed to prove: a raw STRING LITERAL as a
+     * call argument, which no shape guard in this file accepts yet
+     * (every-call-arg-symbol-or-number? never checks kind NString/5 at
+     * all) -- a real, separate, not-yet-attempted gap. */
     {
         char *snippet =
             "(defn f [(a : Arena @ :region/buffer)]\n"
-            "  (let [x (some-call (alloc String :region/buffer))]\n"
+            "  (let [x (some-call \"literal\")]\n"
             "    x))";
         Result pr2 = parse_program(snippet, &a);
-        CHECK(pr2.tag == 1, "a real unsupported let-binding (a nested alloc-call argument) parses fine");
+        CHECK(pr2.tag == 1, "a real unsupported let-binding (a raw string-literal argument) parses fine");
         if (pr2.tag == 1) {
             Node program2 = *(Node *)pr2.value;
             /* the real regression: this used to segfault the whole
@@ -160,7 +163,80 @@ int main(int argc, char **argv) {
             CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on an unsupported let-binding");
             CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
                   "the real generated C carries a clean, honest #error line for the still-unsupported shape "
-                  "(a nested alloc-call argument), instead of silently guessing at wrong C");
+                  "(a raw string-literal argument), instead of silently guessing at wrong C");
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-28: a nested `alloc` call as
+     * a call argument (`(f (alloc dest String "lit"))`), the exact
+     * shape the fixture just above used to prove was honestly
+     * unsupported -- closes the one real exclusion the earlier same-day
+     * nested-call-argument widening's own header comment explicitly
+     * named as still open. `alloc-call-shaped?`/`emit-alloc-call`
+     * already take the same `scope`/`dest` every other expression
+     * emitter here does, and the target Arena is always named
+     * EXPLICITLY in `alloc`'s own syntax -- nothing about a call-
+     * argument position changes that. */
+    {
+        char *snippet =
+            /* wrap-buf defined FIRST, matching this file's own
+             * pre-existing, real, separate "no forward prototypes
+             * emitted" limitation (emit-program has no prototype pre-
+             * pass -- unrelated to this feature, not attempted here;
+             * a callee must textually precede its own caller for the
+             * generated C to compile). */
+            "(defn wrap-buf [(s : String @ Region)] : String @ Region\n"
+            "  s)\n"
+            "(defn make-buf [(dest : Arena @ :region/buffer)] : String @ Region\n"
+            "  (wrap-buf (alloc dest String \"hello\")))";
+        Result pr2b = parse_program(snippet, &a);
+        CHECK(pr2b.tag == 1, "a real 2-function program, the first passing a nested `alloc` call as "
+                              "an argument to the second, parses fine");
+        if (pr2b.tag == 1) {
+            Node program2b = *(Node *)pr2b.value;
+            char *generated2b = emit_program(&program2b, &a);
+            CHECK(generated2b != NULL && strstr(generated2b, "#error") == NULL,
+                  "no #error is emitted -- a nested alloc-call argument is now a real, supported "
+                  "shape, not silently falling back to the honest-failure path");
+            CHECK(generated2b != NULL &&
+                  strstr(generated2b, "wrap_buf(arena_strdup(dest, \"hello\", 5))") != NULL,
+                  "make-buf's own body emits a real, genuinely nested C expression -- the real "
+                  "arena_strdup(...) call composed INLINE as wrap_buf's own one argument, not "
+                  "hoisted into a separate statement or silently dropped");
+
+            if (generated2b) {
+                char c_path2b[300];
+                snprintf(c_path2b, sizeof c_path2b, "/tmp/parena_selfhost_emit_nested_alloc_test_%d.c",
+                         (int)getpid());
+                FILE *out2b = fopen(c_path2b, "w");
+                CHECK(out2b != NULL, "a real temp file opens to write the nested-alloc generated C into");
+                if (out2b) {
+                    fputs(generated2b, out2b);
+                    fclose(out2b);
+
+                    char bin_path2b[310];
+                    snprintf(bin_path2b, sizeof bin_path2b, "%s.bin", c_path2b);
+                    char cmd2b[1024];
+                    snprintf(cmd2b, sizeof cmd2b,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_nested_alloc.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2b, c_path2b);
+                    int compile_status2b = system(cmd2b);
+                    CHECK(compile_status2b == 0,
+                          "the real nested-alloc generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_nested_alloc.c");
+                    if (compile_status2b == 0) {
+                        int run_status2b = system(bin_path2b);
+                        CHECK(run_status2b == 0,
+                              "the real compiled make-buf genuinely allocates and returns the "
+                              "correct real string, round-tripped through a nested alloc-call "
+                              "argument -- driver_nested_alloc.c's own internal asserts all pass, "
+                              "not just compiles clean");
+                    }
+                    remove(c_path2b);
+                    remove(bin_path2b);
+                }
+            }
         }
     }
 

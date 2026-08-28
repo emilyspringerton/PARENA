@@ -1637,7 +1637,7 @@ int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i 
     } else {
     Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
     int k __attribute__((unused)) = emit_node_kind_code((arg_node)->kind);
-    if (((((k == 3) || (k == 6)) || get_field_shaped_(arg_node)) || (plain_call_shaped_(arg_node, dest) || binary_op_call_shaped_(arg_node, dest)))) {
+    if ((((((k == 3) || (k == 6)) || get_field_shaped_(arg_node)) || (plain_call_shaped_(arg_node, dest) || binary_op_call_shaped_(arg_node, dest))) || alloc_call_shaped_(arg_node))) {
     return every_call_arg_symbol_or_number_(call, (i + 1), dest);
     } else {
     return 0;
@@ -1711,7 +1711,7 @@ char * mangle_call_name(char * fn_text __attribute__((unused)), Arena *dest __at
 }
 
 char * emit_call_arg(Node * arg_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (get_field_shaped_(arg_node) ? emit_get_field(arg_node, scope, dest) : (plain_call_shaped_(arg_node, dest) ? emit_plain_call(arg_node, scope, dest) : (binary_op_call_shaped_(arg_node, dest) ? emit_binary_op(arg_node, scope, dest) : resolve_arena_ref((arg_node)->text, scope, dest))));
+    return (get_field_shaped_(arg_node) ? emit_get_field(arg_node, scope, dest) : (plain_call_shaped_(arg_node, dest) ? emit_plain_call(arg_node, scope, dest) : (binary_op_call_shaped_(arg_node, dest) ? emit_binary_op(arg_node, scope, dest) : (alloc_call_shaped_(arg_node) ? emit_alloc_call(arg_node, scope, dest) : resolve_arena_ref((arg_node)->text, scope, dest)))));
 }
 
 char * emit_call_args(Node * call __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
