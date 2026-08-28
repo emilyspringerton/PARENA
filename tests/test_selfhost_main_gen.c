@@ -450,7 +450,10 @@ int struct_literal_field_value_supported_(Node *, Arena *);
 int all_struct_literal_fields_match_(Node *, Node, int, Arena *);
 int defn_body_struct_literal_index(Node *, char *, char *, Vec *, Vec *, Arena *);
 char * emit_struct_literal_args(Node *, Node, int, Vec *, Arena *);
-char * emit_defn_body(Node *, char *, Vec *, Vec *, Vec *, Arena *);
+char * defn_param_type_name(Node *, char *, int);
+int defn_body_i32_param_ctor_(Node *, Node *, char *, Arena *);
+char * emit_defn_i32_param_ctor(Node *, Vec *, Arena *);
+char * emit_defn_body(Node *, Node *, char *, Vec *, Vec *, Vec *, Arena *);
 char * emit_defn(Node *, Vec *, Vec *, Arena *);
 char * defn_declared_return_type_name(Node *);
 char * defn_c_return_type(Node *, Vec *, Arena *);
@@ -3074,7 +3077,64 @@ char * emit_struct_literal_args(Node * map_node __attribute__((unused)), Node st
     }
 }
 
-char * emit_defn_body(Node * defn_node __attribute__((unused)), char * return_type_c __attribute__((unused)), Vec * known_structs __attribute__((unused)), Vec * known_struct_nodes __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+char * defn_param_type_name(Node * params __attribute__((unused)), char * name __attribute__((unused)), int i __attribute__((unused))) {
+    if ((i >= vec_len(&((params)->children)))) {
+    return "";
+    } else {
+    Node *param __attribute__((unused)) = vec_get(&((params)->children), i);
+    Node *param_name_node __attribute__((unused)) = vec_get(&((param)->children), 0);
+    if (str_eq_((param_name_node)->text, name)) {
+    return param_type_name(param);
+    } else {
+    return defn_param_type_name(params, name, (i + 1));
+    }
+    }
+}
+
+int defn_body_i32_param_ctor_(Node * defn_node __attribute__((unused)), Node * params __attribute__((unused)), char * return_type_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!((str_eq_(return_type_c, "Result ") || str_eq_(return_type_c, "Option "))))) {
+    return 0;
+    } else {
+    int start __attribute__((unused)) = body_start_index(defn_node);
+    if ((start >= vec_len(&((defn_node)->children)))) {
+    return 0;
+    } else {
+    Node *body_node __attribute__((unused)) = vec_get(&((defn_node)->children), start);
+    if ((!(result_option_ctor_shaped_(body_node, dest)))) {
+    return 0;
+    } else {
+    Node *payload_node __attribute__((unused)) = vec_get(&((body_node)->children), 1);
+    if ((!((emit_node_kind_code((payload_node)->kind) == 3)))) {
+    return 0;
+    } else {
+    return str_eq_(defn_param_type_name(params, (payload_node)->text, 0), "I32");
+    }
+    }
+    }
+    }
+}
+
+char * emit_defn_i32_param_ctor(Node * defn_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int start __attribute__((unused)) = body_start_index(defn_node);
+    Node *body_node __attribute__((unused)) = vec_get(&((defn_node)->children), start);
+    Node *fn_node __attribute__((unused)) = vec_get(&((body_node)->children), 0);
+    char *fn_text __attribute__((unused)) = (fn_node)->text;
+    char *runtime_fn __attribute__((unused)) = result_option_ctor_runtime_fn(fn_text);
+    Node *payload_node __attribute__((unused)) = vec_get(&((body_node)->children), 1);
+    char *payload_c __attribute__((unused)) = resolve_arena_ref((payload_node)->text, scope, dest);
+    char *arena_c __attribute__((unused)) = arena_scope_any_ref(scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    return "));
+    (void)(vec_push_(&(parts), runtime_fn));
+    (void)(vec_push_(&(parts), "(int_box("));
+    (void)(vec_push_(&(parts), arena_c));
+    (void)(vec_push_(&(parts), ", "));
+    (void)(vec_push_(&(parts), payload_c));
+    (void)(vec_push_(&(parts), "));\n"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_defn_body(Node * defn_node __attribute__((unused)), Node * params __attribute__((unused)), char * return_type_c __attribute__((unused)), Vec * known_structs __attribute__((unused)), Vec * known_struct_nodes __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *return_type_name __attribute__((unused)) = defn_declared_return_type_name(defn_node);
     int struct_idx __attribute__((unused)) = defn_body_struct_literal_index(defn_node, return_type_c, return_type_name, known_structs, known_struct_nodes, dest);
     if ((struct_idx >= 0)) {
@@ -3090,10 +3150,14 @@ char * emit_defn_body(Node * defn_node __attribute__((unused)), char * return_ty
     (void)(vec_push_(&(parts), "};\n"));
     return emit_join_all(&(parts), dest);
     } else {
+    if (defn_body_i32_param_ctor_(defn_node, params, return_type_c, dest)) {
+    return emit_defn_i32_param_ctor(defn_node, scope, dest);
+    } else {
     if (struct_returning_get_field_body_(defn_node, return_type_c, dest)) {
     return emit_tail_expr(emit_get_field(vec_get(&((defn_node)->children), body_start_index(defn_node)), scope, dest), dest);
     } else {
     return emit_body_forms(defn_node, body_start_index(defn_node), scope, dest);
+    }
     }
     }
 }
@@ -3104,7 +3168,7 @@ char * emit_defn(Node * defn_node __attribute__((unused)), Vec * known_structs _
     char *fn_name __attribute__((unused)) = mangle((name_node)->text, dest);
     ParamInfo param_info __attribute__((unused)) = emit_params(params, known_structs, dest);
     char *return_type_c __attribute__((unused)) = defn_c_return_type(defn_node, known_structs, dest);
-    char *body_c __attribute__((unused)) = emit_defn_body(defn_node, return_type_c, known_structs, known_struct_nodes, &((param_info).scope), dest);
+    char *body_c __attribute__((unused)) = emit_defn_body(defn_node, params, return_type_c, known_structs, known_struct_nodes, &((param_info).scope), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), return_type_c));
     (void)(vec_push_(&(parts), fn_name));

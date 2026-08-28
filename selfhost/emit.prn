@@ -1800,6 +1800,89 @@
         value-c
         (join3 value-c ", " rest-c dest)))))
 
+;; ---- Real, narrow I32-typed BARE-SYMBOL Ok/Err/Some payload support (2026-08-28) ----
+;;
+;; Closes the "I32-typed bare-symbol Ok/Err/Some payload" gap
+;; result-option-payload-is-i32?'s own header comment named explicitly
+;; as not-yet-attempted: `(defn wrap [(n : I32)] : Option (Some n))`.
+;; Real, confirmed-live problem (found via a direct probe, not
+;; guessed): a bare symbol payload ALREADY satisfies result-option-
+;; payload-supported?'s own existing "pointer-shaped" branch
+;; unconditionally (kind NSymbol, 3) -- correct for the dominant real
+;; case (a String/struct value already char*-shaped) but WRONG for an
+;; I32-typed one, emitting `option_some(n)` with `n` a raw C `int`
+;; passed where the runtime's own real `void *value` is expected -- a
+;; genuine `-Werror=int-conversion` compile failure (an HONEST failure,
+;; not a silent miscompile, but a real, fixable gap all the same).
+;;
+;; Real, narrow fix, the SAME "special-case only where the needed
+;; information is already naturally at hand" strategy struct-return-
+;; type/struct-literal support already established: rather than
+;; threading real per-symbol type tracking through this whole file's
+;; own general emit-form/emit-call-arg/emit-let-value recursive
+;; machinery (a genuinely much bigger undertaking), this checks ONLY
+;; the one case where a bare symbol's own real type IS already
+;; knowable without any new tracking: it names one of the ENCLOSING
+;; DEFN's OWN real, declared params, and that param's own declared
+;; type is I32. `emit-defn-body` special-cases this the SAME way it
+;; already special-cases struct-returning-get-field-body?/struct-
+;; literal construction -- checked and dispatched BEFORE the general
+;; path (which would otherwise still hit the exact same real bug this
+;; increment closes).
+(defn defn-param-type-name [(params : &Node) (name : String @ Region) (i : I32)] : String @ Region
+  (if (>= i (vec/len &(get-field params :children)))
+    ""
+    (let [param (vec/get &(get-field params :children) i)
+          param-name-node (vec/get &(get-field param :children) 0)]
+      (if (string/str-eq? (get-field param-name-node :text) name)
+        (param-type-name param)
+        (defn-param-type-name params name (+ i 1))))))
+
+;; defn-body-i32-param-ctor? -- real, top-level check: return-type-c
+;; names Result/Option, the defn's own ENTIRE body is exactly one
+;; real result-option-ctor-shaped? form (`(Ok x)`/`(Err x)`/`(Some x)`)
+;; whose own payload is a bare symbol naming one of THIS defn's own
+;; real, I32-typed params.
+(defn defn-body-i32-param-ctor? [(defn-node : &Node) (params : &Node) (return-type-c : String @ Region) (dest : Arena @ Region)] : Bool
+  (if (not (or (string/str-eq? return-type-c "Result ") (string/str-eq? return-type-c "Option ")))
+    false
+    (let [start (body-start-index defn-node)]
+      (if (>= start (vec/len &(get-field defn-node :children)))
+        false
+        (let [body-node (vec/get &(get-field defn-node :children) start)]
+          (if (not (result-option-ctor-shaped? body-node dest))
+            false
+            (let [payload-node (vec/get &(get-field body-node :children) 1)]
+              (if (not (= (emit-node-kind-code (get-field payload-node :kind)) 3))
+                false
+                (string/str-eq? (defn-param-type-name params (get-field payload-node :text) 0) "I32")))))))))
+
+;; emit-defn-i32-param-ctor -- real emission: boxes the real, mangled
+;; param reference (via resolve-arena-ref, correct for a bare symbol
+;; -- NOT emit-int-box-call's own bare :text fallback, which is only
+;; ever correct for a number literal, unmangled) into the SAME real
+;; int_box helper every other I32 payload construction already uses,
+;; then wraps it in the real runtime constructor call.
+(defn emit-defn-i32-param-ctor [(defn-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [start (body-start-index defn-node)
+        body-node (vec/get &(get-field defn-node :children) start)
+        fn-node (vec/get &(get-field body-node :children) 0)
+        fn-text (get-field fn-node :text)
+        runtime-fn (result-option-ctor-runtime-fn fn-text)
+        payload-node (vec/get &(get-field body-node :children) 1)
+        payload-c (resolve-arena-ref (get-field payload-node :text) scope dest)
+        arena-c (arena-scope-any-ref scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    return ")
+      (vec/push! &parts runtime-fn)
+      (vec/push! &parts "(int_box(")
+      (vec/push! &parts arena-c)
+      (vec/push! &parts ", ")
+      (vec/push! &parts payload-c)
+      (vec/push! &parts "));\n")
+      (emit-join-all &parts dest))))
+
 ;; body...)`. Real, honest, narrow v0: return type defaults to hard-
 ;; coded `char *` (matching src/emit.h's own real, documented "char *
 ;; is the only inferred type" v0 scope exactly -- not a real general
@@ -1818,7 +1901,7 @@
 ;; ...};` C99 compound literal directly, bypassing emit-body-forms/
 ;; emit-form entirely, the SAME real strategy struct-returning-get-
 ;; field-body? already established for its own real special case.
-(defn emit-defn-body [(defn-node : &Node) (return-type-c : String @ Region) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+(defn emit-defn-body [(defn-node : &Node) (params : &Node) (return-type-c : String @ Region) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [return-type-name (defn-declared-return-type-name defn-node)
         struct-idx (defn-body-struct-literal-index defn-node return-type-c return-type-name known-structs known-struct-nodes dest)]
     (if (>= struct-idx 0)
@@ -1834,11 +1917,13 @@
           (vec/push! &parts args-c)
           (vec/push! &parts "};\n")
           (emit-join-all &parts dest)))
-      (if (struct-returning-get-field-body? defn-node return-type-c dest)
-        (emit-tail-expr
-         (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node)) scope dest)
-         dest)
-        (emit-body-forms defn-node (body-start-index defn-node) scope dest)))))
+      (if (defn-body-i32-param-ctor? defn-node params return-type-c dest)
+        (emit-defn-i32-param-ctor defn-node scope dest)
+        (if (struct-returning-get-field-body? defn-node return-type-c dest)
+          (emit-tail-expr
+           (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node)) scope dest)
+           dest)
+          (emit-body-forms defn-node (body-start-index defn-node) scope dest))))))
 
 (defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field defn-node :children) 1)
@@ -1846,7 +1931,7 @@
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
         return-type-c (defn-c-return-type defn-node known-structs dest)
-        body-c (emit-defn-body defn-node return-type-c known-structs known-struct-nodes
+        body-c (emit-defn-body defn-node params return-type-c known-structs known-struct-nodes
                                 &(get-field param-info :scope) dest)
         parts (vec/new dest)]
     (do

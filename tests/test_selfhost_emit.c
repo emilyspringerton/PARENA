@@ -2062,6 +2062,105 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real I32-typed BARE-SYMBOL Ok/Err/Some payload support
+         * (2026-08-28): closes the gap result-option-payload-is-i32?'s
+         * own header comment named explicitly as not-yet-attempted.
+         * Real, confirmed-live bug found via a direct probe: a bare
+         * symbol payload already satisfied the existing "pointer-
+         * shaped" branch unconditionally, silently emitting
+         * `option_some(n)` with n a raw C int -- a real, confirmed
+         * -Werror=int-conversion compile failure (honest, not silent,
+         * but a real gap). wrap-err also proves Err/Result works the
+         * same way, not just Some/Option. */
+        char *snippet =
+            "(defn unwrap-or-zero [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some x) (deref x))\n"
+            "    (None 0)))\n"
+            "(defn wrap [(n : I32) (dest : Arena @ Region)] : Option\n"
+            "  (Some n))\n"
+            "(defn wrap-err [(n : I32) (dest : Arena @ Region)] : Result\n"
+            "  (Err n))";
+        Result pr30 = parse_program(snippet, &a);
+        CHECK(pr30.tag == 1, "a real 3-function program -- a real Some-n and a real Err-n "
+                              "construction, both from a bare-symbol I32 param, plus a real "
+                              "match+deref consumer -- parses fine");
+        if (pr30.tag == 1) {
+            Node program30 = *(Node *)pr30.value;
+            char *generated30 = emit_program(&program30, &a);
+            CHECK(generated30 != NULL && strstr(generated30, "#error") == NULL,
+                  "no #error is emitted -- an I32-typed bare-symbol payload is now a real, "
+                  "supported shape, not silently falling back to the honest-failure path");
+            CHECK(generated30 != NULL && strstr(generated30, "return option_some(int_box(dest, n));") != NULL,
+                  "wrap's own body emits a real, correctly composed 'option_some(int_box(dest, "
+                  "n))' -- the real per-type heap box applied to the real, mangled param "
+                  "reference, not the old, confirmed-broken 'option_some(n)' that used to pass "
+                  "a raw int where a real pointer is expected");
+            CHECK(generated30 != NULL && strstr(generated30, "return result_err(int_box(dest, n));") != NULL,
+                  "wrap-err's own body emits the real 'result_err(int_box(dest, n))' too -- "
+                  "proving this closes the gap for Err/Result, not just Some/Option");
+
+            if (generated30) {
+                char c_path19[300];
+                snprintf(c_path19, sizeof c_path19, "/tmp/parena_selfhost_emit_i32_param_ctor_test_%d.c",
+                         (int)getpid());
+                FILE *out19 = fopen(c_path19, "w");
+                CHECK(out19 != NULL, "a real temp file opens to write the I32-param-ctor generated C into");
+                if (out19) {
+                    fputs(generated30, out19);
+                    fclose(out19);
+
+                    char bin_path19[310];
+                    snprintf(bin_path19, sizeof bin_path19, "%s.bin", c_path19);
+                    char cmd19[1024];
+                    snprintf(cmd19, sizeof cmd19,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_i32_param_ctor.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path19, c_path19);
+                    int compile_status19 = system(cmd19);
+                    CHECK(compile_status19 == 0,
+                          "the real I32-param-ctor generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_i32_param_ctor.c");
+                    if (compile_status19 == 0) {
+                        int run_status19 = system(bin_path19);
+                        CHECK(run_status19 == 0,
+                              "the real compiled wrap/unwrap-or-zero genuinely round-trip a real "
+                              "I32 param through a real bare-symbol Option construction and a "
+                              "real match+deref consumption, on every real input -- "
+                              "driver_i32_param_ctor.c's own internal asserts all pass, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path19);
+                    remove(bin_path19);
+                }
+            }
+        }
+
+        /* real, direct regression guard: a bare-symbol payload that
+         * does NOT name a real, I32-typed param of the enclosing defn
+         * (e.g. a String-typed param, the dominant real case this
+         * whole file's own pointer-shaped payload branch already
+         * exists for) must keep emitting exactly as before -- this
+         * increment's own new special case must never misfire for a
+         * non-I32 bare-symbol payload. */
+        char *snippet2 =
+            "(defn wrap-string [(s : String @ Region)] : Option\n"
+            "  (Some s))";
+        Result pr31 = parse_program(snippet2, &a);
+        CHECK(pr31.tag == 1, "a real defn wrapping a real String-typed bare-symbol param still "
+                              "parses fine");
+        if (pr31.tag == 1) {
+            Node program31 = *(Node *)pr31.value;
+            char *generated31 = emit_program(&program31, &a);
+            CHECK(generated31 != NULL && strstr(generated31, "return option_some(s);") != NULL,
+                  "wrap-string's own body still emits the real, pre-existing, UNBOXED "
+                  "'option_some(s)' -- correct for a real pointer-shaped (String) payload, "
+                  "genuinely unchanged by this round's new I32-specific special case");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
