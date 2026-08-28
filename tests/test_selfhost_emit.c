@@ -133,7 +133,7 @@ int main(int argc, char **argv) {
      * the single dominant real blocker (35 of ~57 real self-compile
      * errors) toward selfhost/lexer.prn actually compiling.
      *
-     * This fixture's own negative case has moved THREE times now, each
+     * This fixture's own negative case has moved FOUR times now, each
      * time to a genuinely different shape as this file's own real
      * call-argument support widens: first from "a nested call as an
      * argument" (`(some-call (other-call a))`, no longer unsupported
@@ -142,22 +142,27 @@ int main(int argc, char **argv) {
      * as an argument" (also no longer unsupported as of the SAME day's
      * later alloc-as-argument widening), then from "a raw STRING
      * LITERAL as a call argument" (also no longer unsupported as of
-     * the SAME day's later string-literal-as-argument widening, see
-     * every-call-arg-symbol-or-number?'s own 5th header-comment entry
-     * -- also moved to real, positive coverage below). A genuinely
-     * different shape now exercises the still-crash-free, still-honest
-     * #error path this fixture originally existed to prove: a real
-     * `or`/`and` boolean expression as a call argument, which no shape
-     * guard in this file accepts yet (bool-expr-supported?/emit-bool-
-     * expr are wired into emit-form/emit-let-value only, never
-     * emit-call-arg) -- a real, separate, not-yet-attempted gap. */
+     * the SAME day's later string-literal-as-argument widening), then
+     * from "a real `or`/`and` boolean expression as a call argument"
+     * (also no longer unsupported as of the SAME day's later
+     * bool-expr-as-argument widening, see every-call-arg-symbol-or-
+     * number?'s own 6th header-comment entry -- also moved to real,
+     * positive coverage below). A genuinely different shape now
+     * exercises the still-crash-free, still-honest #error path this
+     * fixture originally existed to prove: a real `cond` expression as
+     * a call argument, which no shape guard in this file accepts yet
+     * (cond-call-shaped?/emit-cond are wired into emit-form only,
+     * never emit-call-arg -- and, unlike or/and/not, `cond` is
+     * documented elsewhere in this file as TAIL-POSITION-ONLY by real
+     * design, so this isn't expected to close the same way the others
+     * did). */
     {
         char *snippet =
             "(defn f [(a : Arena @ :region/buffer) (b : I32)]\n"
-            "  (let [x (some-call (and b b))]\n"
+            "  (let [x (some-call (cond (b 1) (true 2)))]\n"
             "    x))";
         Result pr2 = parse_program(snippet, &a);
-        CHECK(pr2.tag == 1, "a real unsupported let-binding (a bool-expr argument) parses fine");
+        CHECK(pr2.tag == 1, "a real unsupported let-binding (a cond-as-argument) parses fine");
         if (pr2.tag == 1) {
             Node program2 = *(Node *)pr2.value;
             /* the real regression: this used to segfault the whole
@@ -166,7 +171,167 @@ int main(int argc, char **argv) {
             CHECK(generated2 != NULL, "emit-program returns cleanly (does not crash) on an unsupported let-binding");
             CHECK(generated2 != NULL && strstr(generated2, "#error") != NULL,
                   "the real generated C carries a clean, honest #error line for the still-unsupported shape "
-                  "(a bool-expr argument), instead of silently guessing at wrong C");
+                  "(a cond-as-argument), instead of silently guessing at wrong C");
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-28: a real `or`/`and`/`not`
+     * boolean expression as a call argument (`(f (and a b))`), the
+     * exact shape the fixture above used to prove was honestly
+     * unsupported before this round -- closes the gap directly, AND
+     * fixes a real, live, silently-wrong-C bug found along the way
+     * (confirmed via a direct probe, not guessed): `(f (and b b))`
+     * used to silently emit `f(and(b, b))`, a call to a NEVER-DEFINED
+     * C function named `and`, since plain-call-shaped? never excluded
+     * `or`/`and`/`not` from its own name checks the way `alloc` and
+     * every binary-op-symbol? name already are -- reachable only since
+     * the earlier same-day nested-call-argument widening made
+     * plain-call-shaped? itself decide whether a NESTED argument is
+     * supported, a position or-and-shaped?/not-shaped? were never
+     * wired into. New bool-op-symbol? exclusion fixes the false
+     * positive; this new positive coverage proves the REAL fix (real
+     * boolean composition, not just a clean #error). `report`'s own
+     * body is a trivial `(+ v 0)` binary-op, the same real, already-
+     * supported/boxed shape `twice` used in the earlier nested-call-
+     * argument work -- deliberately NOT a bare `v` tail, which would
+     * hit a real, separate, unrelated, untested gap this narrow
+     * emitter's own emit-tail-symbol has: it never boxes a raw I32
+     * param passed straight through unchanged, unlike every OTHER real
+     * I32-producing shape in this file; not attempted or exercised
+     * here. No `if` needed either, sidestepping that real, separate,
+     * unrelated gap too. */
+    {
+        char *snippet =
+            "(defn report [(v : I32)] : I32\n"
+            "  (+ v 0))\n"
+            "(defn check-pair [(x : I32) (y : I32)] : I32\n"
+            "  (report (and (> x 0) (> y 0))))";
+        Result pr2d = parse_program(snippet, &a);
+        CHECK(pr2d.tag == 1, "a real 2-function program, the second passing a real `and` boolean "
+                              "expression as an argument to the first, parses fine");
+        if (pr2d.tag == 1) {
+            Node program2d = *(Node *)pr2d.value;
+            char *generated2d = emit_program(&program2d, &a);
+            CHECK(generated2d != NULL && strstr(generated2d, "#error") == NULL,
+                  "no #error is emitted -- the bool-expr argument is now a real, supported shape, "
+                  "not silently falling back to the honest-failure path");
+            CHECK(generated2d != NULL &&
+                  strstr(generated2d, "report(((x > 0) && (y > 0)))") != NULL,
+                  "check-pair's own body emits a real, genuinely composed C expression -- the real "
+                  "(x > 0) && (y > 0) boolean composed INLINE as report's own one argument, not "
+                  "hoisted into a separate statement, not a bogus call to a function named `and`");
+
+            if (generated2d) {
+                char c_path2d[300];
+                snprintf(c_path2d, sizeof c_path2d, "/tmp/parena_selfhost_emit_bool_arg_test_%d.c",
+                         (int)getpid());
+                FILE *out2d = fopen(c_path2d, "w");
+                CHECK(out2d != NULL, "a real temp file opens to write the bool-arg generated C into");
+                if (out2d) {
+                    fputs(generated2d, out2d);
+                    fclose(out2d);
+
+                    char bin_path2d[310];
+                    snprintf(bin_path2d, sizeof bin_path2d, "%s.bin", c_path2d);
+                    char cmd2d[1024];
+                    snprintf(cmd2d, sizeof cmd2d,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_bool_arg.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2d, c_path2d);
+                    int compile_status2d = system(cmd2d);
+                    CHECK(compile_status2d == 0,
+                          "the real bool-arg generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_bool_arg.c");
+                    if (compile_status2d == 0) {
+                        int run_status2d = system(bin_path2d);
+                        CHECK(run_status2d == 0,
+                              "the real compiled check-pair genuinely computes the correct boolean "
+                              "result on every real input -- driver_bool_arg.c's own internal "
+                              "asserts all pass, not just compiles clean");
+                    }
+                    remove(c_path2d);
+                    remove(bin_path2d);
+                }
+            }
+        }
+    }
+
+    /* --- real new coverage, added 2026-08-28: real Ok/Err/Some/None
+     * construction as a call argument (`(f (Some x))`, `(f None)`),
+     * closing TWO more real, live, silently-wrong-C bugs of the exact
+     * same class found via the identical direct-probe technique while
+     * building this: `(f (Some s))` used to silently emit `f(Some(s))`
+     * (a call to a NEVER-DEFINED function `Some`, since `Ok`/`Err`/
+     * `Some` were ALSO never excluded from plain-call-shaped?'s own
+     * name checks); a bare `(f None)` used to silently emit `f(None)`
+     * (referencing a NEVER-DECLARED identifier `None`, since a bare
+     * `None` symbol already satisfied the generic bare-symbol-argument
+     * fallback with no special-casing at all). New
+     * result-option-ctor-symbol? exclusion plus 2 new emit-call-arg
+     * dispatch clauses (checked BEFORE the generic bare-symbol
+     * fallback, since bare `None` would otherwise still match it)
+     * fix both at once with the real, correct runtime constructor
+     * calls. */
+    {
+        char *snippet =
+            "(defn wrap-opt [(o : Option)] : I32\n"
+            "  (match o ((Some s) 1) (None 0)))\n"
+            "(defn make-and-wrap [(s : String @ Region)] : I32\n"
+            "  (wrap-opt (Some s)))\n"
+            "(defn make-and-wrap-none [] : I32\n"
+            "  (wrap-opt None))";
+        Result pr2e = parse_program(snippet, &a);
+        CHECK(pr2e.tag == 1, "a real 3-function program, the 2nd/3rd each passing a real "
+                              "Ok/Err/Some construction or bare None as an argument to the 1st, "
+                              "parses fine");
+        if (pr2e.tag == 1) {
+            Node program2e = *(Node *)pr2e.value;
+            char *generated2e = emit_program(&program2e, &a);
+            CHECK(generated2e != NULL && strstr(generated2e, "#error") == NULL,
+                  "no #error is emitted for either shape -- both are now real, supported call "
+                  "arguments, not silently falling back to the honest-failure path");
+            CHECK(generated2e != NULL && strstr(generated2e, "wrap_opt(option_some(s))") != NULL,
+                  "make-and-wrap's own body emits the real option_some(s) runtime constructor "
+                  "call, composed INLINE as wrap-opt's own argument -- not a bogus call to a "
+                  "function literally named Some");
+            CHECK(generated2e != NULL && strstr(generated2e, "wrap_opt(option_none())") != NULL,
+                  "make-and-wrap-none's own body emits the real option_none() runtime constructor "
+                  "call for its bare None argument -- not a bogus reference to an undeclared "
+                  "identifier named None");
+
+            if (generated2e) {
+                char c_path2e[300];
+                snprintf(c_path2e, sizeof c_path2e, "/tmp/parena_selfhost_emit_optctor_arg_test_%d.c",
+                         (int)getpid());
+                FILE *out2e = fopen(c_path2e, "w");
+                CHECK(out2e != NULL, "a real temp file opens to write the ctor-as-argument generated C into");
+                if (out2e) {
+                    fputs(generated2e, out2e);
+                    fclose(out2e);
+
+                    char bin_path2e[310];
+                    snprintf(bin_path2e, sizeof bin_path2e, "%s.bin", c_path2e);
+                    char cmd2e[1024];
+                    snprintf(cmd2e, sizeof cmd2e,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_ctor_as_arg.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path2e, c_path2e);
+                    int compile_status2e = system(cmd2e);
+                    CHECK(compile_status2e == 0,
+                          "the real ctor-as-argument generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against driver_ctor_as_arg.c");
+                    if (compile_status2e == 0) {
+                        int run_status2e = system(bin_path2e);
+                        CHECK(run_status2e == 0,
+                              "the real compiled make-and-wrap and make-and-wrap-none both "
+                              "genuinely construct AND consume real Option values correctly, "
+                              "entirely as call arguments -- driver_ctor_as_arg.c's own internal "
+                              "asserts all pass, not just compiles clean");
+                    }
+                    remove(c_path2e);
+                    remove(bin_path2e);
+                }
+            }
         }
     }
 

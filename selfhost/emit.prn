@@ -900,6 +900,18 @@
 ;; a C string literal correctly, which this narrow v0 does not attempt
 ;; here either, matching emit-alloc-call's own pre-existing, honest
 ;; scope exactly, not a new limitation this widening introduces).
+;;
+;; Widened a SIXTH time, same day: a real `or`/`and`/`not` boolean
+;; expression as an argument (`(f (and a b))`) -- the exact shape the
+;; prior widening's own real bug fix (bool-op-symbol?'s own header
+;; comment) found silently mis-emitted and the fixture named as the
+;; new still-honest negative case, now closed the RIGHT way (real
+;; boolean composition, not a bogus call to a function named `and`).
+;; `emit-bool-expr` already emits a plain, raw C boolean/int expression
+;; needing NO boxing at all here -- the same real, pre-existing
+;; property binary-op-call-shaped? arguments already rely on (the
+;; outer callee's own declared param type governs; this position never
+;; boxes).
 (defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
@@ -907,7 +919,9 @@
           k (emit-node-kind-code (get-field arg-node :kind))]
       (if (or (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? arg-node))
                   (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
-              (alloc-call-shaped? arg-node))
+              (or (alloc-call-shaped? arg-node)
+                  (or (or-and-shaped? arg-node dest)
+                      (or (not-shaped? arg-node dest) (result-option-ctor-shaped? arg-node dest)))))
         (every-call-arg-symbol-or-number? call (+ i 1) dest)
         false))))
 
@@ -1019,6 +1033,41 @@
 (defn bool-op-symbol? [(sym : String @ Region)] : Bool
   (or (string/str-eq? sym "or") (or (string/str-eq? sym "and") (string/str-eq? sym "not"))))
 
+;; result-option-ctor-symbol? -- real, small helper (2026-08-28, the
+;; SAME real class of live bug bool-op-symbol? was just added to fix,
+;; found via the identical direct-probe technique): `Ok`/`Err`/`Some`
+;; were ALSO never excluded from plain-call-shaped?'s own name checks
+;; -- confirmed live that `(f (Some s))` silently emitted
+;; `f(Some(s))`, a real call to a NEVER-DEFINED C function named
+;; `Some`, instead of the correct real `option_some(s)` runtime
+;; constructor call. Same root cause, same fix shape: exclude these 3
+;; names here too.
+(defn result-option-ctor-symbol? [(sym : String @ Region)] : Bool
+  (or (string/str-eq? sym "Ok") (or (string/str-eq? sym "Err") (string/str-eq? sym "Some"))))
+
+;; other-special-form-symbol? -- real, small helper closing the REST of
+;; the same real bug class (2026-08-28), found via the identical
+;; direct-probe technique while adding cond-as-argument coverage:
+;; `cond` was ALSO never excluded from plain-call-shaped?'s own name
+;; checks -- confirmed live that `(f (cond (b 1) (true 2)))` silently
+;; emitted `f(cond(b(1), true(2))))` (THREE bogus calls to never-
+;; defined functions named `cond`/`b`/`true` at once, since a cond
+;; clause's own 2-element list shape -- `(test result)` -- happens to
+;; ALSO satisfy plain-call-shaped?'s own recursive argument check).
+;; `with-arena`/`let` are structurally safe already (their own 2nd
+;; child is always a binding VECTOR, kind NVec, which satisfies no
+;; accepted argument shape, so plain-call-shaped? already correctly
+;; rejects them) and `get-field` is already checked by its own
+;; dedicated, earlier guard everywhere this matters -- but excluding
+;; all 4 names here anyway, not just `cond`, is real defense in depth
+;; against this exact class of bug rather than relying on that
+;; structural accident holding forever as this file keeps changing.
+(defn other-special-form-symbol? [(sym : String @ Region)] : Bool
+  (or (string/str-eq? sym "cond")
+      (or (string/str-eq? sym "match")
+          (or (string/str-eq? sym "with-arena")
+              (or (string/str-eq? sym "let") (string/str-eq? sym "get-field"))))))
+
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))
     false
@@ -1028,7 +1077,9 @@
            (and (not (is-vec-call? fn-text dest))
                 (and (not (binary-op-symbol? fn-text))
                      (and (not (bool-op-symbol? fn-text))
-                          (every-call-arg-symbol-or-number? expr-node 1 dest))))))))
+                          (and (not (result-option-ctor-symbol? fn-text))
+                               (and (not (other-special-form-symbol? fn-text))
+                                    (every-call-arg-symbol-or-number? expr-node 1 dest))))))))))
 
 ;; mangle-call-name -- real, narrow port of src/emit.c's own
 ;; mangle_call_name for the one real shape this narrow emitter
@@ -1091,6 +1142,21 @@
     ((binary-op-call-shaped? arg-node dest) (emit-binary-op arg-node scope dest))
     ((alloc-call-shaped? arg-node) (emit-alloc-call arg-node scope dest))
     ((= (emit-node-kind-code (get-field arg-node :kind)) 5) (emit-string-literal arg-node dest))
+    ;; Real, additive case (2026-08-28): a real `or`/`and`/`not`
+    ;; boolean expression argument -- emit-bool-expr already dispatches
+    ;; on both shapes itself and needs no boxing here, the same way
+    ;; binary-op-call-shaped? arguments already don't.
+    ((or (or-and-shaped? arg-node dest) (not-shaped? arg-node dest)) (emit-bool-expr arg-node scope dest))
+    ;; Real, additive case (2026-08-28, the SAME real bug class fixed
+    ;; in result-option-ctor-symbol?'s own header comment above): a
+    ;; real `(Ok x)`/`(Err x)`/`(Some x)` construction argument, or a
+    ;; bare `None` -- the latter checked HERE, explicitly, and BEFORE
+    ;; the final bare-symbol fallback below, since a bare `None` symbol
+    ;; already satisfies that fallback's own kind-3 catch-all and would
+    ;; otherwise be silently (and wrongly) treated as an ordinary
+    ;; variable reference instead of the real `option_none()` builtin.
+    ((result-option-ctor-shaped? arg-node dest) (emit-result-option-ctor arg-node scope dest))
+    ((none-shaped? arg-node) "option_none()")
     (true (resolve-arena-ref (get-field arg-node :text) scope dest))))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]

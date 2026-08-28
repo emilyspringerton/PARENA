@@ -1101,6 +1101,52 @@ other non-pointer-shaped) Ok/Err/Some payload; `or`/`and`/`not` as a call argume
 prototypes emitted; `defstruct` fields typed as another struct/`Vec`/enum; general struct-literal
 construction for a user-defined `defstruct`.
 
+**Real `or`/`and`/`not`-as-a-call-argument support added the same day (2026-08-28)**, closing the
+last real exclusion from that same day's still-open list — `(f (and a b))`. `emit-bool-expr` already
+emits a plain, raw C boolean/int expression needing no boxing at all, the same real property
+binary-op-call-shaped? arguments already rely on (the outer callee's own declared param type
+governs). While building this, found and fixed THREE more real, live, silently-wrong-C bugs of the
+exact same class the previous round's `bool-op-symbol?` fix already caught one instance of —
+confirmed live via the identical direct-probe technique, not guessed:
+
+- `(f (and b b))` itself was STILL only half-fixed: the earlier fix excluded `or`/`and`/`not` from
+  `plain-call-shaped?`, but that was the ONLY thing standing between this exact shape and an honest
+  `#error` — closing the gap the RIGHT way (real boolean composition) is this round's own real
+  feature, not a second bug.
+- `(f (Some s))` was silently emitting `f(Some(s))`, a call to a NEVER-DEFINED C function named
+  `Some`, since `Ok`/`Err`/`Some` were ALSO never excluded from `plain-call-shaped?`'s own name
+  checks. Fixed with a new `result-option-ctor-symbol?` exclusion, plus real, correct support: a
+  `(Ok x)`/`(Err x)`/`(Some x)` construction argument now emits the real `result_ok`/`result_err`/
+  `option_some` runtime call via `emit-result-option-ctor`.
+- A bare `(f None)` was silently emitting `f(None)`, referencing a NEVER-DECLARED identifier
+  `None`, since a bare `None` symbol already satisfied the generic bare-symbol-argument fallback
+  with no special-casing at all (this one wasn't even a `plain-call-shaped?` exclusion gap — it's a
+  different code path entirely). Fixed with a new `emit-call-arg` dispatch clause, checked BEFORE
+  the generic fallback, emitting the real `option_none()`.
+- `(f (cond (b 1) (true 2)))` was silently emitting THREE bogus calls at once —
+  `f(cond(b(1), true(2)))` — since `cond` was ALSO never excluded, and a `cond` clause's own
+  `(test result)` 2-element list shape happens to ALSO satisfy `plain-call-shaped?`'s own recursive
+  argument check. Fixed with a new `other-special-form-symbol?` exclusion covering `cond`, `match`,
+  `with-arena`, and `let` all at once — real defense in depth rather than relying on the
+  (accidentally, today) structurally-safe shapes of the latter two holding forever as this file
+  keeps changing. `cond`-as-an-argument itself stays honestly unsupported (real, by-design tail-
+  position-only scope, documented elsewhere in this file) — this fix only stops it from being
+  silently WRONG, not adds real support for it.
+
+10 new tests (`tests/test_selfhost_emit.c`): the crash-regression fixture moved a FOURTH time (bool-
+expr — no longer unsupported — to a real `cond`-as-argument, the negative proof for the 4th bug
+above), plus 3 new real positive-coverage blocks (structural + real compile+run+assert checks,
+`tests/integration/driver_bool_arg.c` and `driver_ctor_as_arg.c`) proving `or`/`and` composition and
+both `Some`/`None` construction genuinely compute/round-trip correctly as call arguments, not just
+compile clean. Zero regressions: full local suite (336 tests) + all 6 selfhost domain test binaries +
+`bazel build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument (by design, real,
+separate, harder gap — not attempted); no forward prototypes emitted; `defstruct` fields typed as
+another struct/`Vec`/enum; general struct-literal construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary
