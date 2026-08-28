@@ -830,6 +830,31 @@
     ;; -Wint-conversion this file's own emit-i32-boxed already exists
     ;; to fix for binary-op results. Boxed the same way here.
     ((= (emit-node-kind-code (get-field node :kind)) 6) (emit-tail-expr (emit-i32-boxed (get-field node :text) dest) dest))
+    ;; Real, additive case (2026-08-28, closing a real, confirmed-live
+    ;; gap found while verifying struct-literal construction support):
+    ;; a bare map-literal-shaped? node reaching emit-form at all means
+    ;; struct-literal construction's own dedicated emit-defn-body check
+    ;; (which needs known-struct-nodes, deliberately NOT threaded into
+    ;; this whole general recursive machinery -- that section's own
+    ;; header comment) either never ran (this map literal isn't a
+    ;; defn's own ENTIRE body) or ran and found no real match (wrong
+    ;; declared return type, or a field-set mismatch). Previously fell
+    ;; through to emit-tail-symbol, which emits a map node's own real
+    ;; (always-empty) :text verbatim -- a genuine `return ;` on a non-
+    ;; void function, which DOES still fail to compile honestly (never
+    ;; silently WRONG C, `-Werror=return-type` catches it), but with a
+    ;; generic gcc message rather than this file's own established,
+    ;; real #error-directive convention (let-value-error-prefix's own
+    ;; precedent) every other unsupported shape already gets. A real
+    ;; #error PREPROCESSOR directive here instead -- halts compilation
+    ;; immediately, before any real C type-checking even runs, so the
+    ;; placeholder return value's own correctness genuinely doesn't
+    ;; matter (the same real reason let-value-error-prefix's own
+    ;; "0 /* see #error above */" placeholder never needs to be a real,
+    ;; correctly-typed value either).
+    ((map-literal-shaped? node)
+     (join3 "    #error selfhost/emit.prn: unsupported struct-literal shape (only a defn's ENTIRE body, whose own declared return type is an already-registered struct whose real field set exactly matches this literal's own keys, is supported)\n"
+            "    return 0" ";\n" dest))
     (true (emit-tail-symbol node dest))))
 
 ;; is-vec-call? -- the one real exclusion plain-call-shaped? makes,
@@ -1608,6 +1633,173 @@
         false
         (get-field-shaped? (vec/get &(get-field defn-node :children) start) dest)))))
 
+;; ---- Real, narrow struct-LITERAL construction support (2026-08-28) ----
+;;
+;; Closes "general struct-literal construction for a user-defined
+;; defstruct" -- the other of the two real gaps the defstruct
+;; section's own header comment named (alongside struct-typed struct
+;; FIELDS, closed earlier the same day) since defstruct support first
+;; landed. Mirrors src/emit.c's own real map-literal handling
+;; (structural field-NAME-SET matching against every registered
+;; defstruct, no real type-context threading -- see that function's
+;; own header comment for the shared real reasoning) but scoped MUCH
+;; narrower: rather than supporting a struct literal in ANY expression
+;; position (which would need `known-struct-nodes` threaded through
+;; this whole file's own general emit-form/emit-call-arg/emit-let-
+;; value recursive machinery -- a genuinely much bigger undertaking,
+;; the same class of "invasive general threading" already declined for
+;; struct-typed tail-position/let-value support elsewhere this same
+;; day), this checks ONLY the one case where `known-struct-nodes` is
+;; already naturally at hand without threading it anywhere new: a defn
+;; whose OWN declared return type is an already-registered struct AND
+;; whose ENTIRE body is exactly one map-literal matching that struct's
+;; own real field set exactly. `emit-defn` (below) special-cases this
+;; the SAME way it already special-cases struct-returning-get-field-
+;; body? -- bypassing the general emit-body-forms/emit-form path
+;; entirely. A struct literal in ANY other position (a let-value, a
+;; call argument, nested inside `with-arena`/`cond`/`match`) remains a
+;; real, separate, harder gap, not attempted here.
+;;
+;; Real, deliberate emission choice: a C99 compound literal
+;; (`(Point){x, y}`, positional, matching the struct's own DECLARED
+;; field order) rather than the reference compiler's own real
+;; `Point_new(x, y)` positional-constructor-FUNCTION convention -- a
+;; real, valid, standard C99 construct (not a GNU extension, compiles
+;; clean under -pedantic), avoiding the need to ALSO generate a whole
+;; new constructor function per struct, this file's own established
+;; "simple over matching-the-reference-exactly" tradeoff (the same
+;; real class of divergence already documented for this file's own
+;; boxing conventions).
+(defn map-literal-shaped? [(node : &Node)] : Bool
+  (= (emit-node-kind-code (get-field node :kind)) 2))
+
+;; find-struct-node-index-by-name / map-literal-field-value-index --
+;; real, deliberate INDEX-based design (I32, -1 for "not found"),
+;; NOT `Option Node` -- avoids needing to BOX a real Node struct value
+;; through this file's own Option machinery at all. A real, confirmed
+;; fragility found live via a real gcc compile error: the reference
+;; compiler's own real `deref` needs a concrete, DECLARED variable
+;; type to hook its own type inference into (matching src/emit.c's own
+;; documented scrut_error_type-style lookups), which a bare `Option
+;; Node` match clause's own value position doesn't reliably provide
+;; (defaults to a bogus generic `void *`, a real, confirmed
+;; miscompile, not a guess). Returning a plain I32 index instead lets
+;; every real caller look the actual node up directly via
+;; `(vec/get known-struct-nodes idx)` / `(vec/get &(get-field map-node
+;; :children) idx)` -- already a real `&Node` reference each time, no
+;; deref/boxing ever needed.
+(defn find-struct-node-index-by-name [(name : String @ Region) (known-structs : &(Vec String)) (i : I32)] : I32
+  (if (>= i (vec/len known-structs))
+    -1
+    (if (string/str-eq? (vec/get known-structs i) name)
+      i
+      (find-struct-node-index-by-name name known-structs (+ i 1)))))
+
+;; map-literal-field-value-index -- real, linear search of a map-
+;; literal node's own `:key value :key value ...` children (stepping
+;; by 2, keyword then value) for the CHILD INDEX of the value matching
+;; a given field NAME (keyword text with its own leading `:` already
+;; stripped by the caller); -1 if not found.
+(defn map-literal-field-value-index [(map-node : &Node) (field-name : String @ Region) (i : I32) (dest : Arena @ Region)] : I32
+  (if (>= (+ i 1) (vec/len &(get-field map-node :children)))
+    -1
+    (let [key-node (vec/get &(get-field map-node :children) i)
+          key-text (get-field key-node :text)
+          key-name (string/substring key-text 1 (string/length key-text) dest)]
+      (if (string/str-eq? key-name field-name)
+        (+ i 1)
+        (map-literal-field-value-index map-node field-name (+ i 2) dest)))))
+
+;; struct-literal-field-value-supported? -- real, narrow shape guard
+;; for ONE struct-literal field's own value expression, mirroring
+;; every-call-arg-symbol-or-number?'s own single-iteration check (the
+;; SAME real "already produces the right, unboxed C type, this
+;; position never boxes" property a struct-literal field's own real
+;; position shares with a call argument's own -- reused via emit-call-
+;; arg directly at emission time, see emit-struct-literal-args below).
+;; Deliberately excludes result-option-ctor-shaped?/none-shaped? (a
+;; struct field itself holding a freshly-constructed Result/Option is
+;; a real, separate, compoundable case not attempted in this narrow
+;; v0, to keep this increment's own real scope bounded).
+(defn struct-literal-field-value-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (let [k (emit-node-kind-code (get-field node :kind))]
+    (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? node dest))
+        (or (or (plain-call-shaped? node dest) (binary-op-call-shaped? node dest))
+            (or (alloc-call-shaped? node)
+                (or (or-and-shaped? node dest) (not-shaped? node dest)))))))
+
+;; all-struct-literal-fields-match? -- real, exhaustive check: every
+;; ONE of struct-node's own real declared fields (walked in DECLARED
+;; order, starting at index 2 -- the same real convention emit-struct-
+;; fields already establishes) has a matching key in map-node, and
+;; that key's own value is a real, supported shape.
+(defn all-struct-literal-fields-match? [(map-node : &Node) (struct-node : Node) (i : I32) (dest : Arena @ Region)] : Bool
+  (if (>= i (vec/len &(get-field struct-node :children)))
+    true
+    (let [field-node (vec/get &(get-field struct-node :children) i)
+          name-node (vec/get &(get-field field-node :children) 0)
+          field-name (get-field name-node :text)
+          value-idx (map-literal-field-value-index map-node field-name 0 dest)]
+      (if (< value-idx 0)
+        false
+        (let [value-node (vec/get &(get-field map-node :children) value-idx)]
+          (if (struct-literal-field-value-supported? value-node dest)
+            (all-struct-literal-fields-match? map-node struct-node (+ i 1) dest)
+            false))))))
+
+;; defn-body-struct-literal-index -- real, top-level check: return-
+;; type-c names an already-registered struct (found via find-struct-
+;; node-index-by-name against the struct's own real NAME, not return-
+;; type-c's own trailing-space-suffixed text), the defn's own ENTIRE
+;; body is exactly one map-literal-shaped form, with a REAL, exact
+;; field-COUNT match (guarding against both a missing field and an
+;; unrecognized EXTRA key at once -- a map literal with the wrong
+;; number of pairs can never satisfy this, so all-struct-literal-
+;; fields-match?'s own per-field search never needs to separately
+;; check for leftover unknown keys). Returns the matched struct's own
+;; real index into known-structs/known-struct-nodes, or -1.
+(defn defn-body-struct-literal-index [(defn-node : &Node) (return-type-c : String @ Region) (defn-return-type-name : String @ Region) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (dest : Arena @ Region)] : I32
+  (if (or (string/str-eq? return-type-c "char * ")
+          (or (string/str-eq? return-type-c "Result ") (string/str-eq? return-type-c "Option ")))
+    -1
+    (let [start (body-start-index defn-node)]
+      (if (>= start (vec/len &(get-field defn-node :children)))
+        -1
+        (let [body-node (vec/get &(get-field defn-node :children) start)]
+          (if (not (map-literal-shaped? body-node))
+            -1
+            (let [struct-idx (find-struct-node-index-by-name defn-return-type-name known-structs 0)]
+              (if (< struct-idx 0)
+                -1
+                (let [struct-node (vec/get known-struct-nodes struct-idx)
+                      field-count (- (vec/len &(get-field (deref struct-node) :children)) 2)
+                      pair-count (/ (vec/len &(get-field body-node :children)) 2)]
+                  (if (not (= field-count pair-count))
+                    -1
+                    (if (all-struct-literal-fields-match? body-node (deref struct-node) 2 dest)
+                      struct-idx
+                      -1)))))))))))
+
+;; emit-struct-literal-args -- real, ordered emission: walks struct-
+;; node's own real fields in DECLARED order, emitting each one's own
+;; matching value from map-node via the SAME real emit-call-arg this
+;; file already trusts for every other "produces the right type, needs
+;; no boxing" position -- joined with ", " for a real C99 compound-
+;; literal's own positional-initializer list.
+(defn emit-struct-literal-args [(map-node : &Node) (struct-node : Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (>= i (vec/len &(get-field struct-node :children)))
+    ""
+    (let [field-node (vec/get &(get-field struct-node :children) i)
+          name-node (vec/get &(get-field field-node :children) 0)
+          field-name (get-field name-node :text)
+          value-idx (map-literal-field-value-index map-node field-name 0 dest)
+          value-node (vec/get &(get-field map-node :children) value-idx)
+          value-c (emit-call-arg value-node scope dest)
+          rest-c (emit-struct-literal-args map-node struct-node (+ i 1) scope dest)]
+      (if (string/str-eq? rest-c "")
+        value-c
+        (join3 value-c ", " rest-c dest)))))
+
 ;; body...)`. Real, honest, narrow v0: return type defaults to hard-
 ;; coded `char *` (matching src/emit.h's own real, documented "char *
 ;; is the only inferred type" v0 scope exactly -- not a real general
@@ -1616,18 +1808,46 @@
 ;; 28) now recognized concretely -- the real function body is assumed
 ;; to be exactly ONE top-level form (examples/valid_only.prn's own real
 ;; shape: one with-arena).
-(defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+;; emit-defn-body -- real, extracted helper (a `match` used as a
+;; non-tail VALUE -- see this file's own header comment, point 1):
+;; the real 3-way body decision emit-defn itself used to make inline
+;; before struct-literal construction support (2026-08-28) added a
+;; THIRD real case alongside struct-returning-get-field-body?'s own
+;; existing special case. A real struct-literal match (Some struct-
+;; node) emits a real, unboxed `return (StructName){field1, field2,
+;; ...};` C99 compound literal directly, bypassing emit-body-forms/
+;; emit-form entirely, the SAME real strategy struct-returning-get-
+;; field-body? already established for its own real special case.
+(defn emit-defn-body [(defn-node : &Node) (return-type-c : String @ Region) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [return-type-name (defn-declared-return-type-name defn-node)
+        struct-idx (defn-body-struct-literal-index defn-node return-type-c return-type-name known-structs known-struct-nodes dest)]
+    (if (>= struct-idx 0)
+      (let [start (body-start-index defn-node)
+            body-node (vec/get &(get-field defn-node :children) start)
+            struct-node (vec/get known-struct-nodes struct-idx)
+            args-c (emit-struct-literal-args body-node (deref struct-node) 2 scope dest)
+            parts (vec/new dest)]
+        (do
+          (vec/push! &parts "    return (")
+          (vec/push! &parts return-type-name)
+          (vec/push! &parts "){")
+          (vec/push! &parts args-c)
+          (vec/push! &parts "};\n")
+          (emit-join-all &parts dest)))
+      (if (struct-returning-get-field-body? defn-node return-type-c dest)
+        (emit-tail-expr
+         (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node)) scope dest)
+         dest)
+        (emit-body-forms defn-node (body-start-index defn-node) scope dest)))))
+
+(defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field defn-node :children) 1)
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
         return-type-c (defn-c-return-type defn-node known-structs dest)
-        body-c (if (struct-returning-get-field-body? defn-node return-type-c dest)
-                 (emit-tail-expr
-                  (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node))
-                                   &(get-field param-info :scope) dest)
-                  dest)
-                 (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest))
+        body-c (emit-defn-body defn-node return-type-c known-structs known-struct-nodes
+                                &(get-field param-info :scope) dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts return-type-c)
@@ -1877,7 +2097,16 @@
 ;; behavior (a struct-typed param needs its own type already known by
 ;; the time param-c-type looks it up). Non-defstruct forms are simply
 ;; skipped here (defn is handled by emit-program's own separate pass).
-(defn struct-prepass [(program : &Node) (i : I32) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+;; struct-prepass -- widened 2026-08-28 to ALSO build known-struct-
+;; nodes, a real Vec Node parallel to known-structs (same index i ->
+;; same struct) holding each registered struct's own RAW defstruct AST
+;; node, not just its name -- needed for real struct-literal
+;; construction support (defn-body-struct-literal?'s own header
+;; comment below), which needs each field's own real declared NAME and
+;; ORDER, not just "is this a registered name" (the only real question
+;; every EARLIER known-structs consumer -- param-c-type/struct-field-
+;; c-type/defn-c-return-type -- ever needed to answer).
+(defn struct-prepass [(program : &Node) (i : I32) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (dest : Arena @ Region)] : String @ Region
   (if (>= i (vec/len &(get-field program :children)))
     ""
     (let [form (vec/get &(get-field program :children) i)]
@@ -1886,8 +2115,9 @@
               struct-c (emit-defstruct form known-structs dest)]
           (do
             (vec/push! known-structs (get-field name-node :text))
-            (string/concat struct-c (struct-prepass program (+ i 1) known-structs dest) dest)))
-        (struct-prepass program (+ i 1) known-structs dest)))))
+            (vec/push! known-struct-nodes (deref form))
+            (string/concat struct-c (struct-prepass program (+ i 1) known-structs known-struct-nodes dest) dest)))
+        (struct-prepass program (+ i 1) known-structs known-struct-nodes dest)))))
 
 ;; emit-defn-prototype -- real, narrow forward-declaration support
 ;; (2026-08-28, closing a real, honest, previously-flagged gap: this
@@ -1943,12 +2173,13 @@
 (defn emit-program [(program : &Node) (dest : Arena @ Region)] : String @ Region
   (let [header (program-header dest)
         known-structs (vec/new dest)
-        structs-c (struct-prepass program 0 &known-structs dest)
+        known-struct-nodes (vec/new dest)
+        structs-c (struct-prepass program 0 &known-structs &known-struct-nodes dest)
         prototypes-c (emit-prototypes program 0 &known-structs dest)]
     (loop [i 0 acc (string/concat header (string/concat structs-c prototypes-c dest) dest)]
       (if (>= i (vec/len &(get-field program :children)))
         acc
         (let [form (vec/get &(get-field program :children) i)]
           (if (emit-is-call-named? form "defn")
-            (recur (+ i 1) (string/concat acc (emit-defn form &known-structs dest) dest))
+            (recur (+ i 1) (string/concat acc (emit-defn form &known-structs &known-struct-nodes dest) dest))
             (recur (+ i 1) acc)))))))

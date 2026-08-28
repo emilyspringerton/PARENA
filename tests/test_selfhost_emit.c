@@ -1966,6 +1966,102 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real struct-literal CONSTRUCTION support (2026-08-28):
+         * closes "general struct-literal construction for a user-
+         * defined defstruct" -- the other of the two real gaps the
+         * defstruct section's own header comment named since defstruct
+         * support first landed. Narrow v0: only a defn's own ENTIRE
+         * body, whose declared return type is an already-registered
+         * struct. The map literal's own keys are deliberately written
+         * in the OPPOSITE order from the struct's own real declared
+         * fields (y first, then x) to prove real field-order
+         * resolution, not just a lucky positional match. */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn make-point [(x : I32) (y : I32)] : Point\n"
+            "  {:y y :x x})\n"
+            "(defn point-x [(p : Point)] : I32\n"
+            "  (get-field p :x))\n"
+            "(defn point-y [(p : Point)] : I32\n"
+            "  (get-field p :y))";
+        Result pr28 = parse_program(snippet, &a);
+        CHECK(pr28.tag == 1, "a real defn whose whole body is a real struct literal (keys in the "
+                              "OPPOSITE order from the struct's own real declared fields), plus 2 "
+                              "real accessor defns, parses fine");
+        if (pr28.tag == 1) {
+            Node program28 = *(Node *)pr28.value;
+            char *generated28 = emit_program(&program28, &a);
+            CHECK(generated28 != NULL && strstr(generated28, "#error") == NULL,
+                  "no #error is emitted -- the struct literal is now a real, supported shape, not "
+                  "silently falling back to the honest-failure path");
+            CHECK(generated28 != NULL && strstr(generated28, "Point make_point(") != NULL,
+                  "make-point's own declared 'Point' return type is emitted as the real, "
+                  "concrete C return type");
+            CHECK(generated28 != NULL && strstr(generated28, "return (Point){x, y};") != NULL,
+                  "make-point's own body emits a real C99 compound literal '(Point){x, y}' -- "
+                  "correctly reordered into the struct's own real declared field order (x then "
+                  "y), even though the source map literal wrote y first");
+
+            if (generated28) {
+                char c_path18[300];
+                snprintf(c_path18, sizeof c_path18, "/tmp/parena_selfhost_emit_struct_lit_test_%d.c",
+                         (int)getpid());
+                FILE *out18 = fopen(c_path18, "w");
+                CHECK(out18 != NULL, "a real temp file opens to write the struct-literal generated C into");
+                if (out18) {
+                    fputs(generated28, out18);
+                    fclose(out18);
+
+                    char bin_path18[310];
+                    snprintf(bin_path18, sizeof bin_path18, "%s.bin", c_path18);
+                    char cmd18[1024];
+                    snprintf(cmd18, sizeof cmd18,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_struct_literal.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path18, c_path18);
+                    int compile_status18 = system(cmd18);
+                    CHECK(compile_status18 == 0,
+                          "the real struct-literal generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_struct_literal.c");
+                    if (compile_status18 == 0) {
+                        int run_status18 = system(bin_path18);
+                        CHECK(run_status18 == 0,
+                              "the real compiled make-point/point-x/point-y genuinely construct "
+                              "AND read back the correct struct value on every real input -- "
+                              "driver_struct_literal.c's own internal asserts all pass, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path18);
+                    remove(bin_path18);
+                }
+            }
+        }
+
+        /* real, direct negative test: a struct literal whose own keys
+         * DON'T match the declared struct's real field set (a bogus
+         * `:z` key instead of `:y`) must produce a real, honest,
+         * NAMED #error -- not the old, confirmed-live generic `return
+         * ;` empty-return fallback this file's own header comment
+         * history flagged as a real, separate finding while verifying
+         * this feature. */
+        char *snippet2 =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn make-bad [(x : I32)] : Point\n"
+            "  {:x x :z x})";
+        Result pr29 = parse_program(snippet2, &a);
+        CHECK(pr29.tag == 1, "a real defn whose whole body is a struct literal with a bogus, "
+                              "unrecognized key parses fine");
+        if (pr29.tag == 1) {
+            Node program29 = *(Node *)pr29.value;
+            char *generated29 = emit_program(&program29, &a);
+            CHECK(generated29 != NULL && strstr(generated29, "#error") != NULL,
+                  "the real generated C carries a clean, honest, NAMED #error line for the "
+                  "field-mismatched struct literal, not the old generic empty-return fallback");
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
