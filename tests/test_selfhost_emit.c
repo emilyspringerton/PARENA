@@ -658,6 +658,88 @@ int main(int argc, char **argv) {
             }
         }
     }
+    {
+        /* real gap found and closed 2026-08-28: top-level defstruct
+         * support (a real typedef, plus a real by-value struct-typed
+         * param, matching the reference compiler's own confirmed
+         * generated shape) and get-field as a real struct field-read
+         * expression -- both in tail position (a real accessor
+         * function's own natural shape) and as a call/binary-op
+         * argument (via the widened every-call-arg-symbol-or-number?/
+         * emit-call-arg). Also closes a real, separate, pre-existing,
+         * already-flagged gap found along the way: mangle() only ever
+         * handled a hyphen, so `is-zero-x?` emitted as the literal,
+         * INVALID C identifier `is_zero_x?` -- widened to match the
+         * reference compiler's own real mangle() (also converts '/',
+         * '!', '?', and strips a leading '!' entirely). Verified both
+         * structurally and, more importantly, behaviorally: a real
+         * three-form program (a real defstruct, a real accessor, and a
+         * real ?-suffixed predicate using get-field inside a
+         * comparison), compiled and run against real Point values. */
+        char *snippet =
+            "(defstruct Point\n"
+            "  (x : I32)\n"
+            "  (y : I32))\n"
+            "(defn get-x [(p : Point)] : I32\n"
+            "  (get-field p :x))\n"
+            "(defn is-zero-x? [(p : Point)] : Bool\n"
+            "  (= (get-field p :x) 0))";
+        Result pr15 = parse_program(snippet, &a);
+        CHECK(pr15.tag == 1, "a real defstruct plus a real accessor plus a real ?-suffixed predicate parses fine");
+        if (pr15.tag == 1) {
+            Node program15 = *(Node *)pr15.value;
+            char *generated15 = emit_program(&program15, &a);
+            CHECK(generated15 != NULL &&
+                  strstr(generated15, "typedef struct {\n    int x;\n    int y;\n} Point;\n") != NULL,
+                  "the real defstruct emits a real, correctly-shaped C typedef");
+            CHECK(generated15 != NULL && strstr(generated15, "char * get_x(Point p") != NULL,
+                  "get-x's own struct-typed param passes BY VALUE ('Point p', not 'Point *p'), "
+                  "matching the reference compiler's own real, confirmed generated shape");
+            CHECK(generated15 != NULL && strstr(generated15, "return (char *)(intptr_t)(p).x;") != NULL,
+                  "get-x's own real body reads the real field via a real '(p).x' expression, "
+                  "correctly boxed for its own tail position");
+            CHECK(generated15 != NULL && strstr(generated15, "char * is_zero_x_(Point p") != NULL,
+                  "the real ?-suffixed predicate name mangles to a real, valid C identifier "
+                  "(is_zero_x_), not the old invalid 'is_zero_x?'");
+            CHECK(generated15 != NULL && strstr(generated15, "((p).x == 0)") != NULL,
+                  "get-field composes correctly as a real comparison argument, not just in tail "
+                  "position alone");
+
+            if (generated15) {
+                char c_path6[] = "/tmp/parena_selfhost_emit_defstruct_test_XXXXXX.c";
+                snprintf(c_path6, sizeof c_path6, "/tmp/parena_selfhost_emit_defstruct_test_%d.c", (int)getpid());
+                FILE *out6 = fopen(c_path6, "w");
+                CHECK(out6 != NULL, "a real temp file opens to write the defstruct generated C into");
+                if (out6) {
+                    fputs(generated15, out6);
+                    fclose(out6);
+
+                    char bin_path6[300];
+                    snprintf(bin_path6, sizeof bin_path6, "%s.bin", c_path6);
+                    char cmd6[1024];
+                    snprintf(cmd6, sizeof cmd6,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_defstruct.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path6, c_path6);
+                    int compile_status6 = system(cmd6);
+                    CHECK(compile_status6 == 0,
+                          "the real defstruct-plus-accessors generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_defstruct.c");
+                    if (compile_status6 == 0) {
+                        int run_status6 = system(bin_path6);
+                        CHECK(run_status6 == 0,
+                              "the real compiled get-x and is-zero-x? both return the real, correct "
+                              "values against real Point instances -- driver_defstruct.c's own "
+                              "internal asserts all pass, proving the real struct/get-field/mangle "
+                              "machinery genuinely works, not just compiles clean");
+                    }
+                    remove(c_path6);
+                    remove(bin_path6);
+                }
+            }
+        }
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

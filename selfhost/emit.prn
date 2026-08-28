@@ -110,21 +110,32 @@
                (vec/get parts i)
                (join3 acc sep (vec/get parts i) dest))))))
 
-;; mangle -- real, honest, DELIBERATELY NARROW v0: only hyphen (45) ->
-;; underscore (95). src/emit.c's own real, current mangle() also
-;; handles '/' and a trailing '!'/'?' (module-qualified calls, linear/
-;; mutating names) -- not needed for this file's own narrow real
-;; target (examples/valid_only.prn's own real names -- load-config,
-;; buf-arena, scratch, temp-str, real-buf -- never use those
-;; characters), a real, honest, flagged gap, not silently missing.
+;; mangle -- widened 2026-08-28 (real gap found while verifying
+;; get-field/defstruct support: `is-origin?` emitted as the literal,
+;; invalid C identifier `is_origin?`) to match src/emit.c's own real,
+;; current mangle() exactly: '-', '/', '!', and trailing/mid '?' all
+;; become '_' (a real, common Scheme/Lisp/Ruby-style predicate-naming
+;; convention this codebase's own real source uses constantly --
+;; is-symbol?, is-close-token?, vec-push!, etc -- previously blocked
+;; from ever reaching a real gcc compile through the selfhost pipeline
+;; specifically), PLUS a real, separate sigil: a LEADING '!' is
+;; STRIPPED entirely, not converted (the mutation-marker param
+;; convention `(!f : FileHandle @ :region/task)` uses, confirmed
+;; directly against the reference's own real mangle()).
 (defn mangle-char [(c : I32)] : I32
-  (if (= c 45) 95 c))
+  (cond
+    ((= c 45) 95)  ;; '-' -> '_'
+    ((= c 47) 95)  ;; '/' -> '_'
+    ((= c 33) 95)  ;; '!' -> '_'
+    ((= c 63) 95)  ;; '?' -> '_'
+    (true c)))
 
 (defn mangle [(name : String @ Region) (dest : Arena @ Region)] : String @ Region
-  (loop [i 0 acc ""]
-    (if (>= i (string/length name))
-      acc
-      (recur (+ i 1) (string/concat acc (string/char-from-code (mangle-char (string/char-at name i)) dest) dest)))))
+  (let [start (if (and (> (string/length name) 0) (= (string/char-at name 0) 33)) 1 0)]
+    (loop [i start acc ""]
+      (if (>= i (string/length name))
+        acc
+        (recur (+ i 1) (string/concat acc (string/char-from-code (mangle-char (string/char-at name i)) dest) dest))))))
 
 ;; ---- arena-kind scope: real, flat-Vec substitute (see this file's
 ;; own header comment, point 2) for tracking whether an arena-typed
@@ -463,6 +474,20 @@
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
     ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
     ((cond-call-shaped? node dest) (emit-cond node scope dest))
+    ;; Real, additive case (2026-08-28, struct field-read support): a
+    ;; bare `(get-field p :x)` as the WHOLE body -- a real struct
+    ;; accessor function's own natural shape. Boxed via emit-i32-boxed
+    ;; the same way a bare binary-op/number-literal result already is
+    ;; -- real, honest, narrow v0: this assumes an I32/Bool-shaped
+    ;; field (this file's own only real, exercised defstruct field
+    ;; types so far, see that section's own header comment); a
+    ;; String/F64/Arena-typed field accessed this way would be WRONGLY
+    ;; boxed here -- a real, separate, narrower-still gap, not
+    ;; attempted (get-field as a CALL-ARGUMENT, this feature's own
+    ;; primary, already-verified use via emit-call-arg, is correct
+    ;; regardless of the field's real type, since that position never
+    ;; boxes at all).
+    ((get-field-shaped? node) (emit-tail-expr (emit-i32-boxed (emit-get-field node scope dest) dest) dest))
     ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
     ;; Real, separate gap found and closed 2026-08-28 while verifying
     ;; cond support: a bare NUMBER literal as a tail-position result
@@ -500,12 +525,61 @@
 ;; whole real fix; emit-call-arg itself is untouched. Still real,
 ;; honest, narrower than the C reference: a NESTED CALL as an argument
 ;; (`(f (g x))`) is still not accepted, not attempted here.
+;; get-field-shaped? / emit-get-field -- real, narrow struct
+;; field-read support (2026-08-28, the other real half of top-level
+;; defstruct support, see that section's own header comment): a real
+;; `(get-field target :field)` call -- exactly 3 children, target
+;; itself a bare symbol (this narrow v0's own real scope; get-field on
+;; a NESTED expression, e.g. `(get-field (get-other) :x)`, is a real,
+;; separate, harder case, not attempted here). `:field`'s own real
+;; node text carries the leading colon (confirmed directly: kind
+;; NKeyword, text literally ":x") -- stripped before mangling.
+;; Deliberately emits a RAW C expression (`(p).x`), matching the
+;; reference compiler's own real, confirmed generated shape exactly --
+;; never boxed here, since a call-argument position (this function's
+;; own real, primary use, via emit-call-arg below) never crosses this
+;; emitter's own char*-boxing boundary at all (a param already carries
+;; its own real, correctly-inferred C type, same reasoning
+;; binary-op-call-shaped?'s own bare-symbol/number arguments already
+;; rely on). Used in a return/let-value position DOES still need
+;; boxing -- handled at THOSE call sites instead (emit-form/
+;; emit-let-value), not here, so this one function stays correct for
+;; every real position it's used from.
+(defn get-field-shaped? [(node : &Node)] : Bool
+  (if (not (emit-is-call-named? node "get-field"))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 3))
+      false
+      (let [target-node (vec/get &(get-field node :children) 1)]
+        (= (emit-node-kind-code (get-field target-node :kind)) 3)))))
+
+(defn emit-get-field [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [target-node (vec/get &(get-field node :children) 1)
+        field-node (vec/get &(get-field node :children) 2)
+        target-c (resolve-arena-ref (get-field target-node :text) scope dest)
+        field-text (get-field field-node :text)
+        field-name (string/substring field-text 1 (string/length field-text) dest)
+        field-c (mangle field-name dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(")
+      (vec/push! &parts target-c)
+      (vec/push! &parts ").")
+      (vec/push! &parts field-c)
+      (emit-join-all &parts dest))))
+
+;; every-call-arg-symbol-or-number? -- widened again 2026-08-28 (real
+;; struct-field-read support): a real get-field-shaped? call
+;; (`(get-field p :x)`) is now also a valid call argument -- emit-
+;; call-arg below already knows how to emit it as a raw, correctly-
+;; typed C expression, no boxing needed at this position (see
+;; get-field-shaped?'s own header comment for the full real reasoning).
 (defn every-call-arg-symbol-or-number? [(call : &Node) (i : I32)] : Bool
   (if (>= i (vec/len &(get-field call :children)))
     true
     (let [arg-node (vec/get &(get-field call :children) i)
           k (emit-node-kind-code (get-field arg-node :kind))]
-      (if (or (= k 3) (= k 6))
+      (if (or (or (= k 3) (= k 6)) (get-field-shaped? arg-node))
         (every-call-arg-symbol-or-number? call (+ i 1))
         false))))
 
@@ -627,7 +701,9 @@
       (mangle (vec/get &parts (- n 1)) dest))))
 
 (defn emit-call-arg [(arg-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
-  (resolve-arena-ref (get-field arg-node :text) scope dest))
+  (if (get-field-shaped? arg-node)
+    (emit-get-field arg-node scope dest)
+    (resolve-arena-ref (get-field arg-node :text) scope dest)))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
@@ -766,30 +842,31 @@
 ;; each already carrying its own real trailing punctuation the way the
 ;; original hard-coded "Arena *" literal did (so `join3 prefix c-name
 ;; " __attribute__((unused))" dest` stays correct for every case).
-;; Real, honest, narrow v0: only the 2 additional real scalar types
-;; selfhost/lexer.prn's own real function signatures actually use
-;; beyond Arena (String, I32) are mapped -- src/emit.c's own real,
-;; current version handles Vec/registered-defenum-or-defstruct params
-;; too; a real, separate, deferred gap, not attempted here. Anything
-;; else (a real defstruct type, &Type references, Bool, F64, ...)
-;; falls back to "Arena *", this file's own prior universal behavior.
-(defn param-c-type [(type-name : String @ Region)] : String @ Region
+;; Real, honest, narrow v0: String/I32, plus (2026-08-28) a real
+;; registered defstruct name -- a struct-typed param passes BY VALUE
+;; (`Point p`, not `Point *p`), matching the reference compiler's own
+;; real, confirmed generated shape exactly (checked directly: `int
+;; get_x(Point);` / `int get_x(Point p) {...}`). Anything else (`&Type`
+;; references, Bool, F64 params) still falls back to "Arena *", this
+;; file's own prior universal behavior.
+(defn param-c-type [(type-name : String @ Region) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((string/str-eq? type-name "String") "char *")
     ((string/str-eq? type-name "I32") "int ")
+    ((vec-contains-string? known-structs type-name 0) (string/concat type-name " " dest))
     (true "Arena *")))
 
 ;; emit-params -- real, narrow v0: every param's own real declared C
-;; type is now read from its own type annotation (Arena/String/I32;
-;; param-c-type's own header comment explains the real, narrow
-;; fallback for anything else). Only an Arena-typed param is added to
-;; the real ArenaBinding scope (the &-vs-bare distinction
-;; resolve-arena-ref needs only ever applies to arena-typed names) --
-;; resolve-arena-ref's own real `None` case already falls back to a
-;; bare mangled name for anything not found in scope, which is exactly
-;; the correct real behavior for a String/I32 param referenced
-;; elsewhere.
-(defn emit-params [(params : &Node) (dest : Arena @ Region)] : ParamInfo @ Region
+;; type is now read from its own type annotation (Arena/String/I32/a
+;; registered struct name; param-c-type's own header comment explains
+;; the real, narrow fallback for anything else). Only an Arena-typed
+;; param is added to the real ArenaBinding scope (the &-vs-bare
+;; distinction resolve-arena-ref needs only ever applies to
+;; arena-typed names) -- resolve-arena-ref's own real `None` case
+;; already falls back to a bare mangled name for anything not found in
+;; scope, which is exactly the correct real behavior for a
+;; String/I32/struct param referenced elsewhere.
+(defn emit-params [(params : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : ParamInfo @ Region
   (loop [i 0 pieces (vec/new dest) scope (vec/new dest)]
     (if (>= i (vec/len &(get-field params :children)))
       {:text (join-with &pieces ", " dest) :scope scope}
@@ -798,7 +875,7 @@
             pname (get-field name-node :text)
             c-name (mangle pname dest)
             type-name (param-type-name param)
-            c-type (param-c-type type-name)
+            c-type (param-c-type type-name known-structs dest)
             piece (join3 c-type c-name " __attribute__((unused))" dest)
             next-scope (if (string/str-eq? type-name "Arena")
                          (arena-scope-extend &scope {:name pname :kind PointerArena} dest)
@@ -849,11 +926,11 @@
 ;; only inferred type" v0 scope exactly -- not a real type-inference
 ;; pass); the real function body is assumed to be exactly ONE top-level
 ;; form (examples/valid_only.prn's own real shape: one with-arena).
-(defn emit-defn [(defn-node : &Node) (dest : Arena @ Region)] : String @ Region
+(defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field defn-node :children) 1)
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
-        param-info (emit-params params dest)
+        param-info (emit-params params known-structs dest)
         body-c (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest)
         parts (vec/new dest)]
     (do
@@ -881,15 +958,143 @@
       (vec/push! &parts "\n\n")
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow top-level `defstruct` support (2026-08-28) ----
+;;
+;; Real, honest v0 scope: only scalar field types (I32, Bool, F64,
+;; String, Arena) -- a field typed as ANOTHER registered struct, a
+;; Vec, or an enum is a real, separate, larger undertaking (needs the
+;; C reference's own much larger real field-type/Vec-elem-hint
+;; tracking, process_defstruct's own real scope in src/emit.c), not
+;; attempted here; a defstruct with any such field is simply not
+;; treated as defstruct-shaped? at all (falls back to the pre-existing
+;; honest "skipped, no typedef emitted" behavior every unsupported
+;; top-level form already gets, never a wrong guess). No struct-
+;; literal construction (`{:field val}`) either -- this pass only lets
+;; an ALREADY-CONSTRUCTED struct value (a real param, matching this
+;; codebase's own real by-value struct-param convention confirmed
+;; directly against the reference compiler's own output) be READ via
+;; get-field, not built.
+
+(defn struct-field-c-type [(type-name : String @ Region)] : String @ Region
+  (cond
+    ((string/str-eq? type-name "String") "char *")
+    ((string/str-eq? type-name "I32") "int")
+    ((string/str-eq? type-name "Bool") "int")
+    ((string/str-eq? type-name "F64") "double")
+    ((string/str-eq? type-name "Arena") "Arena *")
+    (true "")))
+
+(defn struct-field-supported? [(type-name : String @ Region)] : Bool
+  (not (string/str-eq? (struct-field-c-type type-name) "")))
+
+;; struct-field-shaped? -- a real `(name : Type)` field list -- exactly
+;; 3 children (name, colon, type), the type itself one of the real,
+;; supported scalar types above.
+(defn struct-field-shaped? [(field : &Node)] : Bool
+  (if (not (= (emit-node-kind-code (get-field field :kind)) 0))
+    false
+    (if (not (= (vec/len &(get-field field :children)) 3))
+      false
+      (let [type-node (vec/get &(get-field field :children) 2)]
+        (struct-field-supported? (get-field type-node :text))))))
+
+(defn all-struct-fields-shaped? [(node : &Node) (i : I32)] : Bool
+  (if (>= i (vec/len &(get-field node :children)))
+    true
+    (if (struct-field-shaped? (vec/get &(get-field node :children) i))
+      (all-struct-fields-shaped? node (+ i 1))
+      false)))
+
+;; defstruct-shaped? -- a real top-level `(defstruct Name (f : T)
+;; ...)` this narrow v0 can support: at least one real field (an empty
+;; struct is real, valid PARENA but not exercised anywhere in this
+;; codebase's own real source, not attempted here), every field a
+;; supported scalar type.
+(defn defstruct-shaped? [(node : &Node)] : Bool
+  (and (emit-is-call-named? node "defstruct")
+       (and (> (vec/len &(get-field node :children)) 2)
+            (all-struct-fields-shaped? node 2))))
+
+(defn emit-struct-field [(field : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [name-node (vec/get &(get-field field :children) 0)
+        type-node (vec/get &(get-field field :children) 2)
+        c-name (mangle (get-field name-node :text) dest)
+        c-type (struct-field-c-type (get-field type-node :text))
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    ")
+      (vec/push! &parts c-type)
+      (vec/push! &parts " ")
+      (vec/push! &parts c-name)
+      (vec/push! &parts ";\n")
+      (emit-join-all &parts dest))))
+
+(defn emit-struct-fields [(node : &Node) (i : I32) (dest : Arena @ Region)] : String @ Region
+  (if (>= i (vec/len &(get-field node :children)))
+    ""
+    (string/concat (emit-struct-field (vec/get &(get-field node :children) i) dest)
+                    (emit-struct-fields node (+ i 1) dest) dest)))
+
+;; emit-defstruct -- `(defstruct Point (x : I32) (y : I32))` -> real
+;; `typedef struct {\n    int x;\n    int y;\n} Point;\n`, matching
+;; the reference compiler's own real generated typedef shape exactly
+;; (confirmed directly). No positional `_new` constructor (the
+;; reference emits one, `Point_new(int x, int y)`) -- this pass only
+;; supports reading an already-constructed struct via get-field, not
+;; building one, see this section's own header comment.
+(defn emit-defstruct [(node : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [name-node (vec/get &(get-field node :children) 1)
+        struct-name (get-field name-node :text)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "typedef struct {\n")
+      (vec/push! &parts (emit-struct-fields node 2 dest))
+      (vec/push! &parts "} ")
+      (vec/push! &parts struct-name)
+      (vec/push! &parts ";\n")
+      (emit-join-all &parts dest))))
+
+;; vec-contains-string? -- real, plain linear-scan membership check,
+;; used by param-c-type below to recognize a registered struct name.
+(defn vec-contains-string? [(v : &(Vec String)) (target : String @ Region) (i : I32)] : Bool
+  (if (>= i (vec/len v))
+    false
+    (if (string/str-eq? (vec/get v i) target)
+      true
+      (vec-contains-string? v target (+ i 1)))))
+
+;; struct-prepass -- walks every top-level form ONCE, in real, natural
+;; source order, accumulating (a) the real, combined typedef text for
+;; every real defstruct-shaped? form, and (b) each such form's own
+;; struct name into known-structs -- matching src/emit.c's own real
+;; "process every defstruct before any defn, in source order" DoD
+;; behavior (a struct-typed param needs its own type already known by
+;; the time param-c-type looks it up). Non-defstruct forms are simply
+;; skipped here (defn is handled by emit-program's own separate pass).
+(defn struct-prepass [(program : &Node) (i : I32) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (if (>= i (vec/len &(get-field program :children)))
+    ""
+    (let [form (vec/get &(get-field program :children) i)]
+      (if (defstruct-shaped? form)
+        (let [name-node (vec/get &(get-field form :children) 1)]
+          (do
+            (vec/push! known-structs (get-field name-node :text))
+            (string/concat (emit-defstruct form dest) (struct-prepass program (+ i 1) known-structs dest) dest)))
+        (struct-prepass program (+ i 1) known-structs dest)))))
+
 ;; emit-program -- real, narrow port of src/emit.c's own top-level
-;; driver: the real prelude followed by every top-level `(defn ...)`
+;; driver: the real prelude, then every real defstruct's own typedef
+;; (struct-prepass, in source order, before any defn -- see that
+;; function's own header comment), then every top-level `(defn ...)`
 ;; form's own real emitted C, in source order.
 (defn emit-program [(program : &Node) (dest : Arena @ Region)] : String @ Region
-  (let [header (program-header dest)]
-    (loop [i 0 acc header]
+  (let [header (program-header dest)
+        known-structs (vec/new dest)
+        structs-c (struct-prepass program 0 &known-structs dest)]
+    (loop [i 0 acc (string/concat header structs-c dest)]
       (if (>= i (vec/len &(get-field program :children)))
         acc
         (let [form (vec/get &(get-field program :children) i)]
           (if (emit-is-call-named? form "defn")
-            (recur (+ i 1) (string/concat acc (emit-defn form dest) dest))
+            (recur (+ i 1) (string/concat acc (emit-defn form &known-structs dest) dest))
             (recur (+ i 1) acc)))))))

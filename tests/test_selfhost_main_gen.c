@@ -392,6 +392,8 @@ char * emit_cond_clauses(Node *, int, Vec *, Arena *);
 char * emit_cond(Node *, Vec *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
 int is_vec_call_(char *, Arena *);
+int get_field_shaped_(Node *);
+char * emit_get_field(Node *, Vec *, Arena *);
 int every_call_arg_symbol_or_number_(Node *, int);
 int binary_op_symbol_(char *);
 char * c_operator_text(char *);
@@ -410,11 +412,21 @@ char * emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
 char * emit_with_arena(Node *, Vec *, Arena *);
 char * param_type_name(Node *);
-char * param_c_type(char *);
-ParamInfo emit_params(Node *, Arena *);
+char * param_c_type(char *, Vec *, Arena *);
+ParamInfo emit_params(Node *, Vec *, Arena *);
 int body_start_index(Node *);
-char * emit_defn(Node *, Arena *);
+char * emit_defn(Node *, Vec *, Arena *);
 char * program_header(Arena *);
+char * struct_field_c_type(char *);
+int struct_field_supported_(char *);
+int struct_field_shaped_(Node *);
+int all_struct_fields_shaped_(Node *, int);
+int defstruct_shaped_(Node *);
+char * emit_struct_field(Node *, Arena *);
+char * emit_struct_fields(Node *, int, Arena *);
+char * emit_defstruct(Node *, Arena *);
+int vec_contains_string_(Vec *, char *, int);
+char * struct_prepass(Node *, int, Vec *, Arena *);
 char * emit_program(Node *, Arena *);
 Result write_output(char *, char *, Arena *);
 Result analyze_and_emit(Node, char *, Arena *);
@@ -2113,16 +2125,13 @@ char * join_with(Vec * parts __attribute__((unused)), char * sep __attribute__((
 }
 
 int mangle_char(int c __attribute__((unused))) {
-    if ((c == 45)) {
-    return 95;
-    } else {
-    return c;
-    }
+    return ((c == 45) ? 95 : ((c == 47) ? 95 : ((c == 33) ? 95 : ((c == 63) ? 95 : c))));
 }
 
 char * mangle(char * name __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    double start __attribute__((unused)) = (((length(name) > 0) && (char_at(name, 0) == 33)) ? 1 : 0);
     char * __loop_result_25 __attribute__((unused));
-    double i = 0;
+    double i = start;
     char * acc = "";
     while (1) {
         if ((i >= length(name))) {
@@ -2364,11 +2373,39 @@ char * emit_cond(Node * node __attribute__((unused)), Vec * scope __attribute__(
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (get_field_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest)))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return ((length(fn_text) >= 4) && str_eq_(substring(fn_text, 0, 4, dest), "vec/"));
+}
+
+int get_field_shaped_(Node * node __attribute__((unused))) {
+    if ((!(emit_is_call_named_(node, "get-field")))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 3)))) {
+    return 0;
+    } else {
+    Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    return (emit_node_kind_code((target_node)->kind) == 3);
+    }
+    }
+}
+
+char * emit_get_field(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *target_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Node *field_node __attribute__((unused)) = vec_get(&((node)->children), 2);
+    char *target_c __attribute__((unused)) = resolve_arena_ref((target_node)->text, scope, dest);
+    char *field_text __attribute__((unused)) = (field_node)->text;
+    char *field_name __attribute__((unused)) = substring(field_text, 1, length(field_text), dest);
+    char *field_c __attribute__((unused)) = mangle(field_name, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), target_c));
+    (void)(vec_push_(&(parts), ")."));
+    (void)(vec_push_(&(parts), field_c));
+    return emit_join_all(&(parts), dest);
 }
 
 int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i __attribute__((unused))) {
@@ -2377,7 +2414,7 @@ int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i 
     } else {
     Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
     int k __attribute__((unused)) = emit_node_kind_code((arg_node)->kind);
-    if (((k == 3) || (k == 6))) {
+    if ((((k == 3) || (k == 6)) || get_field_shaped_(arg_node))) {
     return every_call_arg_symbol_or_number_(call, (i + 1));
     } else {
     return 0;
@@ -2451,7 +2488,11 @@ char * mangle_call_name(char * fn_text __attribute__((unused)), Arena *dest __at
 }
 
 char * emit_call_arg(Node * arg_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (get_field_shaped_(arg_node)) {
+    return emit_get_field(arg_node, scope, dest);
+    } else {
     return resolve_arena_ref((arg_node)->text, scope, dest);
+    }
 }
 
 char * emit_call_args(Node * call __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2576,11 +2617,11 @@ char * param_type_name(Node * param __attribute__((unused))) {
     }
 }
 
-char * param_c_type(char * type_name __attribute__((unused))) {
-    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int " : "Arena *"));
+char * param_c_type(char * type_name __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int " : (vec_contains_string_(known_structs, type_name, 0) ? concat(type_name, " ", dest) : "Arena *")));
 }
 
-ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attribute__((unused))) {
+ParamInfo emit_params(Node * params __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     ParamInfo __loop_result_30 __attribute__((unused));
     double i = 0;
     Vec pieces = vec_new(dest);
@@ -2595,7 +2636,7 @@ ParamInfo emit_params(Node * params __attribute__((unused)), Arena *dest __attri
         char *pname __attribute__((unused)) = (name_node)->text;
         char *c_name __attribute__((unused)) = mangle(pname, dest);
         char *type_name __attribute__((unused)) = param_type_name(param);
-        char *c_type __attribute__((unused)) = param_c_type(type_name);
+        char *c_type __attribute__((unused)) = param_c_type(type_name, known_structs, dest);
         char *piece __attribute__((unused)) = join3(c_type, c_name, " __attribute__((unused))", dest);
         Vec next_scope __attribute__((unused)) = (str_eq_(type_name, "Arena") ? arena_scope_extend(&(scope), ArenaBinding_new(pname, ArenaKind_PointerArena()), dest) : scope);
         (void)(vec_push_(&(pieces), piece));
@@ -2634,11 +2675,11 @@ int body_start_index(Node * defn_node __attribute__((unused))) {
     }
 }
 
-char * emit_defn(Node * defn_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+char * emit_defn(Node * defn_node __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *name_node __attribute__((unused)) = vec_get(&((defn_node)->children), 1);
     Node *params __attribute__((unused)) = vec_get(&((defn_node)->children), 2);
     char *fn_name __attribute__((unused)) = mangle((name_node)->text, dest);
-    ParamInfo param_info __attribute__((unused)) = emit_params(params, dest);
+    ParamInfo param_info __attribute__((unused)) = emit_params(params, known_structs, dest);
     char *body_c __attribute__((unused)) = emit_body_forms(defn_node, body_start_index(defn_node), &((param_info).scope), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "char * "));
@@ -2663,11 +2704,111 @@ char * program_header(Arena *dest __attribute__((unused))) {
     return emit_join_all(&(parts), dest);
 }
 
+char * struct_field_c_type(char * type_name __attribute__((unused))) {
+    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int" : (str_eq_(type_name, "Bool") ? "int" : (str_eq_(type_name, "F64") ? "double" : (str_eq_(type_name, "Arena") ? "Arena *" : "")))));
+}
+
+int struct_field_supported_(char * type_name __attribute__((unused))) {
+    return (!(str_eq_(struct_field_c_type(type_name), "")));
+}
+
+int struct_field_shaped_(Node * field __attribute__((unused))) {
+    if ((!((emit_node_kind_code((field)->kind) == 0)))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((field)->children)) == 3)))) {
+    return 0;
+    } else {
+    Node *type_node __attribute__((unused)) = vec_get(&((field)->children), 2);
+    return struct_field_supported_((type_node)->text);
+    }
+    }
+}
+
+int all_struct_fields_shaped_(Node * node __attribute__((unused)), int i __attribute__((unused))) {
+    if ((i >= vec_len(&((node)->children)))) {
+    return 1;
+    } else {
+    if (struct_field_shaped_(vec_get(&((node)->children), i))) {
+    return all_struct_fields_shaped_(node, (i + 1));
+    } else {
+    return 0;
+    }
+    }
+}
+
+int defstruct_shaped_(Node * node __attribute__((unused))) {
+    return (emit_is_call_named_(node, "defstruct") && ((vec_len(&((node)->children)) > 2) && all_struct_fields_shaped_(node, 2)));
+}
+
+char * emit_struct_field(Node * field __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *name_node __attribute__((unused)) = vec_get(&((field)->children), 0);
+    Node *type_node __attribute__((unused)) = vec_get(&((field)->children), 2);
+    char *c_name __attribute__((unused)) = mangle((name_node)->text, dest);
+    char *c_type __attribute__((unused)) = struct_field_c_type((type_node)->text);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    "));
+    (void)(vec_push_(&(parts), c_type));
+    (void)(vec_push_(&(parts), " "));
+    (void)(vec_push_(&(parts), c_name));
+    (void)(vec_push_(&(parts), ";\n"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_struct_fields(Node * node __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(&((node)->children)))) {
+    return "";
+    } else {
+    return concat(emit_struct_field(vec_get(&((node)->children), i), dest), emit_struct_fields(node, (i + 1), dest), dest);
+    }
+}
+
+char * emit_defstruct(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *name_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    char *struct_name __attribute__((unused)) = (name_node)->text;
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "typedef struct {\n"));
+    (void)(vec_push_(&(parts), emit_struct_fields(node, 2, dest)));
+    (void)(vec_push_(&(parts), "} "));
+    (void)(vec_push_(&(parts), struct_name));
+    (void)(vec_push_(&(parts), ";\n"));
+    return emit_join_all(&(parts), dest);
+}
+
+int vec_contains_string_(Vec * v __attribute__((unused)), char * target __attribute__((unused)), int i __attribute__((unused))) {
+    if ((i >= vec_len(v))) {
+    return 0;
+    } else {
+    if (str_eq_(vec_get(v, i), target)) {
+    return 1;
+    } else {
+    return vec_contains_string_(v, target, (i + 1));
+    }
+    }
+}
+
+char * struct_prepass(Node * program __attribute__((unused)), int i __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(&((program)->children)))) {
+    return "";
+    } else {
+    Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
+    if (defstruct_shaped_(form)) {
+    Node *name_node __attribute__((unused)) = vec_get(&((form)->children), 1);
+    (void)(vec_push_(known_structs, (name_node)->text));
+    return concat(emit_defstruct(form, dest), struct_prepass(program, (i + 1), known_structs, dest), dest);
+    } else {
+    return struct_prepass(program, (i + 1), known_structs, dest);
+    }
+    }
+}
+
 char * emit_program(Node * program __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *header __attribute__((unused)) = program_header(dest);
+    Vec known_structs __attribute__((unused)) = vec_new(dest);
+    char *structs_c __attribute__((unused)) = struct_prepass(program, 0, &(known_structs), dest);
     char * __loop_result_31 __attribute__((unused));
     double i = 0;
-    char * acc = header;
+    char * acc = concat(header, structs_c, dest);
     while (1) {
         if ((i >= vec_len(&((program)->children)))) {
         __loop_result_31 = acc;
@@ -2676,7 +2817,7 @@ char * emit_program(Node * program __attribute__((unused)), Arena *dest __attrib
         Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
         if (emit_is_call_named_(form, "defn")) {
         double __recur_tmp_0 = (i + 1);
-        char * __recur_tmp_1 = concat(acc, emit_defn(form, dest), dest);
+        char * __recur_tmp_1 = concat(acc, emit_defn(form, &(known_structs), dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
