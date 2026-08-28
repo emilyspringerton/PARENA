@@ -1,0 +1,31 @@
+;; stdlib/papercraft/stat_effects_mod.prn — the real gameplay CONSEQUENCE of a spent talent point,
+;; closing the gap talent_mod.prn's own doc comment named: "the real per-stat gameplay hooks... a
+;; real UI, and host game-loop wiring are still real, open follow-ups." Founder real-time: "make
+;; sure to tie parena mods deep in as we go."
+;;
+;; Ported real formula, not invented: SHANKPIT_CONSTRUCT.txt's own progression_apply_bonuses
+;; (construct lines 819-846) computes the real MOVE stat's own effect as
+;; `boost = 1.0f + 0.035f * (float)move` (a real F32 multiplier applied to the player's own
+;; velocity). VS0 has no F32 parameters yet (ECOWAR/docs/ARENA_API.md's own "Real VS0 limits"
+;; section) -- this mod computes the exact same real formula in I32 fixed-point (permille, x1000)
+;; instead, so the real DECISION (how much of a boost does this rank earn?) still lives in PARENA;
+;; host C (apps/server/src/main.c) only does the one real float division needed to turn permille
+;; back into an actual multiplier, same "mod decides, host applies" split every real mod call
+;; site in this monorepo already uses.
+;;
+;; The construct's own other four stats (vitality/handling/shield/storm) are deliberately NOT
+;; ported here -- they modify real health/shield/attack-cooldown/ability-cooldown systems this
+;; sandbox doesn't have yet (no combat, no shields, no abilities). Porting their own formulas
+;; now, with nothing real for them to affect, would be inventing placeholder systems just to have
+;; something to wire a mod into -- the opposite of this session's own "real, not speculative"
+;; discipline. Real, honest follow-up once those systems exist for real, not scoped here.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-move-speed-boost-permille once per tick per
+;; player with their own current ability[PC_ABILITY_MOVE] rank, and scales the real
+;; PC_MOVE_SPEED constant by the real result / 1000.0f.
+
+(module papercraft/stat-effects-mod)
+(export on-papercraft-move-speed-boost-permille)
+
+(defn on-papercraft-move-speed-boost-permille [(move-rank : I32)] : I32
+  (+ 1000 (* 35 move-rank)))
