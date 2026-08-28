@@ -858,9 +858,32 @@ attempted here.
 
 Real, honest, still-open scope after eight: `match` itself (defenum tag dispatch); `cond` as a
 non-tail value; nested calls as call arguments generally outside the boolean/test context;
-`and`/`or`/`not`/`get-field` as an entire tail-position body via the SAME general expression path
-(only `get-field` alone got wired into tail position this pass, not the full `bool-expr`
-machinery); `defstruct` fields typed as another struct/`Vec`/enum; struct-literal construction.
+`defstruct` fields typed as another struct/`Vec`/enum; struct-literal construction.
+
+**Top-level `and`/`or`/`not` (tail position AND let-value) added the same day (2026-08-28)**,
+closing the gap the defstruct work above flagged as found-but-not-fixed. `bool-expr-supported?`/
+`emit-bool-expr` (S202-49's own real, recursive boolean sub-language) were previously only ever
+reached from `cond`'s own test dispatch -- a defn whose ENTIRE body is `(and ...)` (not wrapped
+in a `cond`), the natural, expected shape for a real predicate function like `is-origin?`, fell
+through to the old silent empty `return ;`. Two new `emit-form` clauses (`or-and-shaped?`/
+`not-shaped?`, boxed via `emit-i32-boxed` -- an `or`/`and`/`not` result is always a real, raw C
+`int`, never a `String`, same reasoning `binary-op-call-shaped?`'s own comparison results already
+use) close the tail-position half; a new shared `let-value-is-bool-expr?` (reused by both
+`emit-let-value` and `let-value-error-prefix`, so they can't drift out of sync) closes the
+symmetric let-binding-value half.
+
+2 new tests (`tests/test_selfhost_emit.c`, 35 total for domain 4): structural assertions on the
+generated boxed-boolean text for BOTH positions, plus a real compile+run+assert check (`tests/
+integration/driver_bool_body.c`) combining both in one program -- `is-origin?`'s own real
+top-level `and` body (itself composing `get-field` inside a comparison, proving the whole chain
+of this session's own work fits together) and `is-boring`'s own `or` used as a LET-BINDING value
+specifically (not tail position), verified across every real branch. Zero regressions: full local
+suite (336 tests) + all 6 selfhost test binaries + `bazel build //...` all clean.
+
+Real, honest, still-open scope after nine: `match` itself (defenum tag dispatch); `cond` as a
+non-tail value (the genuinely hard architectural case); nested calls as call arguments generally
+outside the boolean/test context; `defstruct` fields typed as another struct/`Vec`/enum;
+struct-literal construction.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself

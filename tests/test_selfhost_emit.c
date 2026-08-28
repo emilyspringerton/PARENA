@@ -740,6 +740,79 @@ int main(int argc, char **argv) {
             }
         }
     }
+    {
+        /* real gap found and closed 2026-08-28, honestly flagged as
+         * NOT fixed at the end of the defstruct/get-field work above:
+         * a bare `or`/`and`/`not` expression at the TOP LEVEL / tail
+         * position (a defn whose entire body is `(and ...)`, or a
+         * let-binding's own value -- NOT inside a cond's own test
+         * position, the only place bool-expr-supported?/emit-bool-expr
+         * were reachable from before this). Found while trying to
+         * write is-origin? as a real, natural predicate-function body
+         * and discovering it silently emitted an empty 'return ;'.
+         * Verified both structurally and behaviorally: a real program
+         * combining BOTH new positions -- is-origin?'s own top-level
+         * `and` (itself composing get-field inside a comparison) and
+         * is-boring's own `or` used as a LET-BINDING value, not tail
+         * position -- compiled and run against every real branch. */
+        char *snippet =
+            "(defstruct Point\n"
+            "  (x : I32)\n"
+            "  (y : I32))\n"
+            "(defn is-origin? [(p : Point)] : Bool\n"
+            "  (and (= (get-field p :x) 0) (= (get-field p :y) 0)))\n"
+            "(defn is-boring [(n : I32)] : Bool\n"
+            "  (let [b (or (= n 0) (= n 1))]\n"
+            "    b))";
+        Result pr16 = parse_program(snippet, &a);
+        CHECK(pr16.tag == 1, "a real top-level 'and' body plus a real 'or' let-value both parse fine");
+        if (pr16.tag == 1) {
+            Node program16 = *(Node *)pr16.value;
+            char *generated16 = emit_program(&program16, &a);
+            CHECK(generated16 != NULL &&
+                  strstr(generated16, "return (char *)(intptr_t)(((p).x == 0) && ((p).y == 0));") != NULL,
+                  "is-origin?'s own top-level 'and' body emits real, boxed C -- get-field composed "
+                  "inside a comparison composed inside the and, not the old silent empty 'return ;'");
+            CHECK(generated16 != NULL &&
+                  strstr(generated16, "= (char *)(intptr_t)((n == 0) || (n == 1));") != NULL,
+                  "is-boring's own 'or' used as a LET-BINDING value (not tail position) also emits "
+                  "real, boxed C, not a clean #error");
+
+            if (generated16) {
+                char c_path7[] = "/tmp/parena_selfhost_emit_boolbody_test_XXXXXX.c";
+                snprintf(c_path7, sizeof c_path7, "/tmp/parena_selfhost_emit_boolbody_test_%d.c", (int)getpid());
+                FILE *out7 = fopen(c_path7, "w");
+                CHECK(out7 != NULL, "a real temp file opens to write the bool-body generated C into");
+                if (out7) {
+                    fputs(generated16, out7);
+                    fclose(out7);
+
+                    char bin_path7[300];
+                    snprintf(bin_path7, sizeof bin_path7, "%s.bin", c_path7);
+                    char cmd7[1024];
+                    snprintf(cmd7, sizeof cmd7,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_bool_body.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path7, c_path7);
+                    int compile_status7 = system(cmd7);
+                    CHECK(compile_status7 == 0,
+                          "the real bool-body generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_bool_body.c");
+                    if (compile_status7 == 0) {
+                        int run_status7 = system(bin_path7);
+                        CHECK(run_status7 == 0,
+                              "the real compiled is-origin? and is-boring both branch correctly on "
+                              "every real input -- driver_bool_body.c's own internal asserts all "
+                              "pass, proving the real top-level or/and/not machinery genuinely "
+                              "works in BOTH tail position and let-value position, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path7);
+                    remove(bin_path7);
+                }
+            }
+        }
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

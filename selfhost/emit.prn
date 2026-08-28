@@ -474,6 +474,19 @@
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
     ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
     ((cond-call-shaped? node dest) (emit-cond node scope dest))
+    ;; Real, additive case (2026-08-28, closing a gap flagged the same
+    ;; day while building the cond/get-field work above): a bare
+    ;; `or`/`and`/`not` expression as the WHOLE body (not inside a
+    ;; cond's own test position -- bool-expr-supported?/emit-bool-expr
+    ;; were only ever reached from THAT dispatch until now) -- e.g.
+    ;; `(defn is-origin? [(p : Point)] : Bool (and (= (get-field p :x)
+    ;; 0) (= (get-field p :y) 0)))`, a real, natural predicate-function
+    ;; shape found not working while verifying defstruct/get-field.
+    ;; Boxed via emit-i32-boxed, same real reason binary-op-call-
+    ;; shaped?'s own comparison results already are -- or/and/not
+    ;; always produce a real, raw C int (0/1), never a String.
+    ((or-and-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-bool-expr node scope dest) dest) dest))
+    ((not-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-bool-expr node scope dest) dest) dest))
     ;; Real, additive case (2026-08-28, struct field-read support): a
     ;; bare `(get-field p :x)` as the WHOLE body -- a real struct
     ;; accessor function's own natural shape. Boxed via emit-i32-boxed
@@ -737,17 +750,31 @@
 ;; a let-binding's own expr-node now gets: a real `alloc` call, a real
 ;; plain function call, or (still) a real, clean #error for anything
 ;; else this narrow v0 doesn't support.
+;; let-value-is-bool-expr? -- shared by emit-let-value and
+;; let-value-error-prefix below (2026-08-28, the same real "or/and/not
+;; at top-level tail position" gap closed in emit-form above, extended
+;; here for symmetry to a let-binding's own value position -- a plain
+;; boolean expression as a let-value is the ordinary, already-tractable
+;; case emit-i32-boxed already covers, NOT the genuinely hard
+;; non-tail-cond case cond-call-shaped?'s own header comment
+;; documents).
+(defn let-value-is-bool-expr? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
+  (or (or-and-shaped? expr-node dest) (not-shaped? expr-node dest)))
+
 (defn emit-let-value [(expr-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
     ((binary-op-call-shaped? expr-node dest) (emit-i32-boxed (emit-binary-op expr-node scope dest) dest))
+    ((let-value-is-bool-expr? expr-node dest) (emit-i32-boxed (emit-bool-expr expr-node scope dest) dest))
     ((plain-call-shaped? expr-node dest) (emit-plain-call expr-node scope dest))
     (true "0 /* see #error above */")))
 
 (defn let-value-error-prefix [(expr-node : &Node) (dest : Arena @ Region)] : String @ Region
-  (if (or (alloc-call-shaped? expr-node) (or (binary-op-call-shaped? expr-node dest) (plain-call-shaped? expr-node dest)))
+  (if (or (alloc-call-shaped? expr-node)
+          (or (binary-op-call-shaped? expr-node dest)
+              (or (let-value-is-bool-expr? expr-node dest) (plain-call-shaped? expr-node dest))))
     ""
-    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, and plain function calls with symbol/number args)\n"))
+    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, and plain function calls with symbol/number args)\n"))
 
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region

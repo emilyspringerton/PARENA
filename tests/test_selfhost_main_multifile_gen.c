@@ -405,6 +405,7 @@ char * mangle_call_name(char *, Arena *);
 char * emit_call_arg(Node *, Vec *, Arena *);
 char * emit_call_args(Node *, int, Vec *, Arena *);
 char * emit_plain_call(Node *, Vec *, Arena *);
+int let_value_is_bool_expr_(Node *, Arena *);
 char * emit_let_value(Node *, Vec *, Arena *);
 char * let_value_error_prefix(Node *, Arena *);
 char * emit_body_forms(Node *, int, Vec *, Arena *);
@@ -2373,7 +2374,7 @@ char * emit_cond(Node * node __attribute__((unused)), Vec * scope __attribute__(
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (get_field_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest)))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest)))))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2528,15 +2529,19 @@ char * emit_plain_call(Node * call __attribute__((unused)), Vec * scope __attrib
     return emit_join_all(&(parts), dest);
 }
 
+int let_value_is_bool_expr_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (or_and_shaped_(expr_node, dest) || not_shaped_(expr_node, dest));
+}
+
 char * emit_let_value(Node * expr_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */")));
+    return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (let_value_is_bool_expr_(expr_node, dest) ? emit_i32_boxed(emit_bool_expr(expr_node, scope, dest), dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */"))));
 }
 
 char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((alloc_call_shaped_(expr_node) || (binary_op_call_shaped_(expr_node, dest) || plain_call_shaped_(expr_node, dest)))) {
+    if ((alloc_call_shaped_(expr_node) || (binary_op_call_shaped_(expr_node, dest) || (let_value_is_bool_expr_(expr_node, dest) || plain_call_shaped_(expr_node, dest))))) {
     return "";
     } else {
-    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, and plain function calls with symbol/number args)\n";
+    return "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, and plain function calls with symbol/number args)\n";
     }
 }
 
