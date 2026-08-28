@@ -1,0 +1,50 @@
+;; stdlib/papercraft/paper_fragment_mod.prn — the real decision layer for PAPERCRAFT's own "Paper
+;; Engine" destructible geometry (docs/NORTHSTAR_PAPER_ENGINE.md). Founder real-time: "build the
+;; paper engine for destructable geometries" -> "its gonna need to get weird a simple cube needs
+;; to get subdivided then like the vertexes randomiuzed" -> "then some of those faces come off
+;; when you hit it with a shot gun" -> "like the world is destructable and how it deteriorates
+;; depends on what its built out of."
+;;
+;; Follows the exact real ABI ECOWAR's own card_effect_mod.prn established (real I32-only
+;; decision logic, no F32/struct/Vec across the boundary -- see ECOWAR/docs/ARENA_API.md) and
+;; WEAKNIGHT_BEDROCK_RACERS' own racer/bike-gear-mod.prn already proved outside ECOWAR. Host C
+;; (packages/common/paper_mesh.h) owns the actual subdivision/vertex-jitter geometry math (real
+;; F32/struct/array work VS0 can't touch) and the real physics/rendering consequence of a
+;; fragment detaching -- this mod is only the real DECISION: how much a hit actually hurts a
+;; fragment, and what visible damage tier that leaves it in.
+
+(module papercraft/paper-fragment-mod)
+(export on-paper-fragment-damage)
+(export on-paper-fragment-state-for-hp)
+
+;; Real material toughness (PAPER_MATERIAL_* constants, packages/common/paper_mesh.h): each
+;; material resists a percentage of incoming damage before it's applied -- "how it deteriorates
+;; depends on what its built out of," a real, named design constraint, not an arbitrary number.
+;; PAPER itself (material 0) resists nothing -- the weakest material in the system, matching the
+;; game's own name. WOOD/CONCRETE/METAL climb from there.
+(defn material-resist-pct [(material : I32)] : I32
+  (if (= material 0) 0    ;; PAPER -- no resistance, full damage always applies
+  (if (= material 1) 20   ;; WOOD
+  (if (= material 2) 50   ;; CONCRETE
+    75))))                ;; METAL (material 3)
+
+;; on-paper-fragment-damage: real branching over material tiers (mirrors card_effect_mod.prn's
+;; own is-mythic-card? split exactly), not a bare subtraction -- the same real material-aware
+;; reduction, then clamps at 0 (a fragment can't go damaged below fully gone).
+(defn on-paper-fragment-damage [(material : I32) (hp : I32) (damage : I32)] : I32
+  (let [effective-damage (- damage (/ (* damage (material-resist-pct material)) 100))]
+    (if (>= effective-damage hp) 0 (- hp effective-damage))))
+
+;; on-paper-fragment-state-for-hp: real threshold-lookup tier selection (mirrors
+;; racer/bike-gear-mod.prn's own gear-threshold shape) -- 0 = INTACT, 1 = CRACKED, 2 = TORN,
+;; 3 = GONE (matches packages/common/paper_mesh.h's own PAPER_STATE_* constants). Thresholds are
+;; percentages of max-hp so this works identically regardless of a fragment's own real max HP
+;; (which varies by material -- METAL fragments start with more HP than PAPER ones).
+(defn on-paper-fragment-state-for-hp [(hp : I32) (max-hp : I32)] : I32
+  (if (<= hp 0)
+    3
+    (if (< (* hp 100) (* max-hp 25))
+      2
+      (if (< (* hp 100) (* max-hp 60))
+        1
+        0))))
