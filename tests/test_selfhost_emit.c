@@ -814,6 +814,86 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, narrow, TAIL-POSITION-ONLY Result/Option `match`
+         * support (2026-08-28): this file's own earlier header comment
+         * (right before bool-expr-supported?'s own section) explicitly
+         * flagged match as "needs a real tag registry this emitter
+         * doesn't have yet" and NOT attempted for cond's own v0. This
+         * hardcodes the one real tag mapping (Ok/Some = 1, Err/None =
+         * 0) essentially every real match in this whole stdlib already
+         * relies on, rather than a general user-defenum registry. */
+        char *snippet =
+            "(defn describe-result [(r : Result)] : I32\n"
+            "  (match r\n"
+            "    ((Ok x) 1)\n"
+            "    ((Err e) 0)))\n"
+            "(defn describe-option [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some s) 1)\n"
+            "    (None 0)))";
+        Result pr17 = parse_program(snippet, &a);
+        CHECK(pr17.tag == 1, "a real defn whose whole body is a Result match, plus a second whose "
+                              "whole body is an Option match, both parse fine");
+        if (pr17.tag == 1) {
+            Node program17 = *(Node *)pr17.value;
+            char *generated17 = emit_program(&program17, &a);
+            CHECK(generated17 != NULL && strstr(generated17, "Result __match_scrutinee = r;") != NULL,
+                  "describe-result's own bare-symbol scrutinee emits a real 'Result "
+                  "__match_scrutinee = r;' local, not a re-evaluated expression");
+            CHECK(generated17 != NULL &&
+                  strstr(generated17, "if (__match_scrutinee.tag == 1) {") != NULL,
+                  "the real tag-1 (Ok/Some) branch is emitted as a real C 'if', not a mangled call");
+            CHECK(generated17 != NULL &&
+                  strstr(generated17, "void *x __attribute__((unused)) = __match_scrutinee.value;") !=
+                      NULL,
+                  "the Ok clause's own payload binding 'x' is a real, block-scoped 'void *' local "
+                  "bound to __match_scrutinee.value");
+            CHECK(generated17 != NULL && strstr(generated17, "Option __match_scrutinee = o;") != NULL,
+                  "describe-option's own bare-symbol scrutinee emits a real 'Option "
+                  "__match_scrutinee = o;' local, using the real, correct Option C type (not "
+                  "Result) for an Option-typed scrutinee");
+            CHECK(generated17 != NULL &&
+                  strstr(generated17,
+                         "void *e __attribute__((unused)) = __match_scrutinee.value;") != NULL,
+                  "the Err clause's own payload binding 'e' is a real, block-scoped 'void *' local");
+
+            if (generated17) {
+                char c_path8[] = "/tmp/parena_selfhost_emit_match_test_XXXXXX.c";
+                snprintf(c_path8, sizeof c_path8, "/tmp/parena_selfhost_emit_match_test_%d.c",
+                         (int)getpid());
+                FILE *out8 = fopen(c_path8, "w");
+                CHECK(out8 != NULL, "a real temp file opens to write the match generated C into");
+                if (out8) {
+                    fputs(generated17, out8);
+                    fclose(out8);
+
+                    char bin_path8[300];
+                    snprintf(bin_path8, sizeof bin_path8, "%s.bin", c_path8);
+                    char cmd8[1024];
+                    snprintf(cmd8, sizeof cmd8,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_match.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path8, c_path8);
+                    int compile_status8 = system(cmd8);
+                    CHECK(compile_status8 == 0,
+                          "the real match generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_match.c");
+                    if (compile_status8 == 0) {
+                        int run_status8 = system(bin_path8);
+                        CHECK(run_status8 == 0,
+                              "the real compiled describe-result and describe-option both "
+                              "dispatch correctly on every real tag -- driver_match.c's own "
+                              "internal asserts all pass, proving the real if/else tag-dispatch "
+                              "chain and payload binding genuinely work, not just compile clean");
+                    }
+                    remove(c_path8);
+                    remove(bin_path8);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

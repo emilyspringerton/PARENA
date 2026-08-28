@@ -885,6 +885,53 @@ non-tail value (the genuinely hard architectural case); nested calls as call arg
 outside the boolean/test context; `defstruct` fields typed as another struct/`Vec`/enum;
 struct-literal construction.
 
+**Real, narrow, TAIL-POSITION-ONLY Result/Option `match` support added the same day (2026-08-28)**,
+directly closing the first half of the `match` gap named above -- but deliberately NOT the general
+form. Building a real user-defenum tag registry (tracking every defenum's own constructor -> tag-
+number mapping across a whole build, arbitrary payload arity) is real, separate, harder work this
+increment doesn't attempt. Instead it hardcodes the ONE real tag mapping essentially every real
+`match` in this whole stdlib already relies on without ever declaring it itself -- Result's
+`Ok`/`Err` and Option's `Some`/`None`, VS0's own two BUILTIN two-variant enums (confirmed live:
+`runtime/parena_runtime.h`'s own `result_ok`/`result_err`/`option_some`/`option_none`, tag 1 =
+Ok/Some, tag 0 = Err/None) -- covering the overwhelmingly dominant real match usage across this
+whole stdlib (`json.prn`, `io.prn`, `shell.prn`, `textmate_loader.prn`, ... every one of them
+Result/Option, never a user defenum, this whole session). Same real "no shared `result_var`, each
+clause directly `return`s" simplification `cond`'s own v0 already uses -- but `match` adds one real
+new wrinkle `cond` never had: the scrutinee's own value needs evaluating exactly once into a real C
+local (`.tag` tested, `.value` read for the bound payload), so the whole `match` always wraps
+itself in a fresh `{ ... }` C block, making a single fixed local name (`__match_scrutinee`) safe
+even when matches nest, no gensym/counter infrastructure needed. Scrutinee: a bare symbol (an
+already-bound Result/Option local) or a real `plain-call-shaped?` call. Exactly 2 clauses, patterns
+either bare `None` (no payload, matching this stdlib's own real convention) or a 2-child list like
+`(Ok x)`/`(Err e)`/`(Some s)` (payload bound to a real, block-scoped `void *` local), covering both
+tags {0, 1} (never the same tag twice). Also added: `Result`/`Option` as real, recognized param
+types in `param-c-type` (passed by value, same convention a registered `defstruct` param already
+uses) -- needed to make a match's own scrutinee reachable via a real function signature at all.
+Using the bound payload beyond a bare-symbol tail (e.g. `(get-field (deref x) :foo)`) needs real
+`deref`-form emission this file doesn't have yet -- falls through to this file's own existing,
+honest final `emit-form` fallback the same way any other unsupported clause-body shape already
+does, not silently miscompiled.
+
+9 new tests (`tests/test_selfhost_emit.c`, 44 total for domain 4): structural assertions on the
+generated `Result __match_scrutinee = r;`/`Option __match_scrutinee = o;` locals (proving the
+correct builtin C type is picked per scrutinee, not always `Result`), the real `if
+(__match_scrutinee.tag == 1)` dispatch, and both payload bindings, plus a real compile+run+assert
+check (`tests/integration/driver_match.c`) constructing real `Result`/`Option` values in C
+(constructing one from PARENA itself -- `(Ok x)` as an expression, not a pattern -- is a real,
+separate, not-yet-started gap) and calling the real compiled `describe-result`/`describe-option`
+across every real tag. Zero regressions: full local suite (336 tests) + all selfhost domains
+clean. `bazel build //...` itself could not be re-checked this round (the same real, pre-existing
+`/home/treeiii/.cache` permission collision from a separate, concurrent session on this same
+machine already documented elsewhere in this repo's own history -- not a regression from this
+change) -- the Makefile-based suite above is the real, working verification path used instead.
+
+Real, honest, still-open `match` scope after this: a general user-defenum tag registry (any
+`match` over something other than Result/Option); `match` as a non-tail value; a clause body that
+needs the payload beyond a bare-symbol tail; constructing an `Ok`/`Err`/`Some`/`None` value from
+PARENA itself. `cond` as a non-tail value; nested calls as call arguments generally outside the
+boolean/test context; `defstruct` fields typed as another struct/`Vec`/enum; struct-literal
+construction remain open too, unchanged by this increment.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

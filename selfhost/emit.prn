@@ -456,6 +456,162 @@
       (vec/push! &parts (emit-cond-clauses node 1 scope dest))
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow, TAIL-POSITION-ONLY Result/Option `match` support
+;; (2026-08-28) ----
+;;
+;; A real, deliberately-narrow first slice of `match` itself (see this
+;; file's own earlier header comment above, right before bool-expr-
+;; supported?'s own section: "match ... needs a real tag registry this
+;; emitter doesn't have yet" -- NOT attempted for cond's own v0).
+;; Building a general user-defenum tag registry (tracking every real
+;; defenum's own constructor -> tag-number mapping across a whole
+;; build, arbitrary payload arity) is real, separate, harder work. This
+;; v0 instead hardcodes the ONE real tag mapping essentially every real
+;; match in this entire stdlib already relies on without ever
+;; declaring it itself -- Result's `Ok`/`Err` and Option's
+;; `Some`/`None`, VS0's own two BUILTIN two-variant enums (confirmed
+;; live: runtime/parena_runtime.h's own result_ok/result_err/
+;; option_some/option_none, tag 1 = Ok/Some, tag 0 = Err/None) --
+;; covering the overwhelmingly dominant real match usage across this
+;; whole stdlib (json.prn, io.prn, shell.prn, textmate_loader.prn, ...
+;; every one of them Result/Option, never a user defenum, this session).
+;; A real user-defenum match (this very file's own `emit-node-kind-
+;; code` above, matching its own NodeType) is real, separate,
+;; not-yet-started follow-up.
+;;
+;; Same real "no shared result_var, each clause directly `return`s"
+;; simplification cond's own v0 already uses and explains (tail-
+;; position-only means each branch's own return already fully resolves
+;; the enclosing function's own control flow) -- but match adds one
+;; real new wrinkle cond never had: the scrutinee's own emitted
+;; expression needs evaluating exactly ONCE into a real C local (its
+;; `.tag` is tested, its `.value` is read for the bound payload) -- so
+;; the whole match ALWAYS wraps itself in a fresh `{ ... }` C block,
+;; giving every match its own real, safely-shadowable block scope, so
+;; a single fixed local name (`__match_scrutinee`) is genuinely safe
+;; even when matches nest (sibling cond clauses, or a match inside a
+;; cond clause) -- no gensym/counter infrastructure needed.
+;;
+;; Real, honest, narrow v0 scope: scrutinee is a bare symbol (an
+;; already-bound Result/Option local) or a real plain-call-shaped?
+;; call -- exactly the two shapes this file already has an expression-
+;; position emitter for. Exactly 2 clauses, covering both tags {0, 1}
+;; (never the same tag twice). A clause's own pattern is either a bare
+;; `None` (no payload, matching this whole stdlib's own real, confirmed
+;; convention: the zero-arg builtin variant is never written `(None)`)
+;; or a 2-child list like `(Ok x)`/`(Err e)`/`(Some s)` (payload bound
+;; to a real, new, block-scoped `void *` local). A clause's own RESULT
+;; is emitted via emit-form itself, recursively -- same shared entry
+;; point cond's own clauses already go through, so a nested with-arena/
+;; let/alloc/binary-op/plain-call/cond/match result all just work, for
+;; free. Using the bound payload itself inside a clause body beyond a
+;; bare-symbol tail (e.g. `(get-field (deref x) :foo)`) needs real
+;; `deref`-form emission this file doesn't have yet either -- a real,
+;; separate, not-yet-started gap, not silently miscompiled here: it
+;; falls through to this file's own existing, already-honest final
+;; emit-form fallback the exact same way any other unsupported clause-
+;; body shape already does.
+(defn pattern-tag [(name : String @ Region)] : I32
+  (cond
+    ((or (string/str-eq? name "Ok") (string/str-eq? name "Some")) 1)
+    ((or (string/str-eq? name "Err") (string/str-eq? name "None")) 0)
+    (true -1)))
+
+(defn match-pattern-name [(pattern : &Node)] : String @ Region
+  (if (= (emit-node-kind-code (get-field pattern :kind)) 3)
+    (get-field pattern :text)
+    (let [head (vec/get &(get-field pattern :children) 0)]
+      (get-field head :text))))
+
+(defn match-pattern-has-payload? [(pattern : &Node)] : Bool
+  (= (emit-node-kind-code (get-field pattern :kind)) 0))
+
+(defn match-pattern-payload-name [(pattern : &Node)] : String @ Region
+  (let [payload (vec/get &(get-field pattern :children) 1)]
+    (get-field payload :text)))
+
+(defn match-clause-shaped? [(clause : &Node)] : Bool
+  (if (not (= (emit-node-kind-code (get-field clause :kind)) 0))
+    false
+    (if (not (= (vec/len &(get-field clause :children)) 2))
+      false
+      (>= (pattern-tag (match-pattern-name (vec/get &(get-field clause :children) 0))) 0))))
+
+(defn match-scrutinee-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (or (= (emit-node-kind-code (get-field node :kind)) 3)
+      (plain-call-shaped? node dest)))
+
+;; result-or-option-match-shaped? -- real, exhaustive-over-{0,1} check:
+;; symbol-headed "match", a supported scrutinee, EXACTLY 2 clauses,
+;; both real match-clause-shaped?, and their own two tags together
+;; cover {0, 1} (never the same tag twice -- catches a real mistake
+;; like two `Ok` clauses rather than silently mis-compiling it).
+(defn result-or-option-match-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-call-named? node "match"))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 4))
+      false
+      (if (not (match-scrutinee-supported? (vec/get &(get-field node :children) 1) dest))
+        false
+        (let [clause-a (vec/get &(get-field node :children) 2)
+              clause-b (vec/get &(get-field node :children) 3)]
+          (if (not (and (match-clause-shaped? clause-a) (match-clause-shaped? clause-b)))
+            false
+            (let [tag-a (pattern-tag (match-pattern-name (vec/get &(get-field clause-a :children) 0)))
+                  tag-b (pattern-tag (match-pattern-name (vec/get &(get-field clause-b :children) 0)))]
+              (not (= tag-a tag-b)))))))))
+
+(defn emit-match-scrutinee [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (= (emit-node-kind-code (get-field node :kind)) 3)
+    (mangle (get-field node :text) dest)
+    (emit-plain-call node scope dest)))
+
+(defn emit-match-clause-body [(clause : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [pattern (vec/get &(get-field clause :children) 0)
+        result-node (vec/get &(get-field clause :children) 1)
+        result-c (emit-form result-node scope dest)]
+    (if (match-pattern-has-payload? pattern)
+      (let [payload-name (mangle (match-pattern-payload-name pattern) dest)
+            parts (vec/new dest)]
+        (do
+          (vec/push! &parts "    void *")
+          (vec/push! &parts payload-name)
+          (vec/push! &parts " __attribute__((unused)) = __match_scrutinee.value;\n")
+          (vec/push! &parts result-c)
+          (emit-join-all &parts dest)))
+      result-c)))
+
+(defn match-uses-result? [(clause : &Node)] : Bool
+  (let [name (match-pattern-name (vec/get &(get-field clause :children) 0))]
+    (or (string/str-eq? name "Ok") (string/str-eq? name "Err"))))
+
+(defn emit-match [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [scrutinee-node (vec/get &(get-field node :children) 1)
+        clause-a (vec/get &(get-field node :children) 2)
+        clause-b (vec/get &(get-field node :children) 3)
+        tag-a (pattern-tag (match-pattern-name (vec/get &(get-field clause-a :children) 0)))
+        ok-clause (if (= tag-a 1) clause-a clause-b)
+        err-clause (if (= tag-a 1) clause-b clause-a)
+        c-type (if (match-uses-result? clause-a) "Result" "Option")
+        scrutinee-c (emit-match-scrutinee scrutinee-node scope dest)
+        ok-c (emit-match-clause-body ok-clause scope dest)
+        err-c (emit-match-clause-body err-clause scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    {\n")
+      (vec/push! &parts "    ")
+      (vec/push! &parts c-type)
+      (vec/push! &parts " __match_scrutinee = ")
+      (vec/push! &parts scrutinee-c)
+      (vec/push! &parts ";\n")
+      (vec/push! &parts "    if (__match_scrutinee.tag == 1) {\n")
+      (vec/push! &parts ok-c)
+      (vec/push! &parts "    } else {\n")
+      (vec/push! &parts err-c)
+      (vec/push! &parts "    }\n")
+      (vec/push! &parts "    }\n")
+      (emit-join-all &parts dest))))
+
 (defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
@@ -474,6 +630,10 @@
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
     ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
     ((cond-call-shaped? node dest) (emit-cond node scope dest))
+    ;; Real, additive tail-position case (2026-08-28): a real, narrow
+    ;; Result/Option `match` (see its own section header comment
+    ;; above, right before pattern-tag, for the full real scope).
+    ((result-or-option-match-shaped? node dest) (emit-match node scope dest))
     ;; Real, additive case (2026-08-28, closing a gap flagged the same
     ;; day while building the cond/get-field work above): a bare
     ;; `or`/`and`/`not` expression as the WHOLE body (not inside a
@@ -880,6 +1040,16 @@
   (cond
     ((string/str-eq? type-name "String") "char *")
     ((string/str-eq? type-name "I32") "int ")
+    ;; Real, narrow, additive case (2026-08-28, added alongside real
+    ;; match support above): a Result/Option-typed param -- the real,
+    ;; natural way a match's own scrutinee shows up as a bare symbol
+    ;; (this feature's own primary supported scrutinee shape besides a
+    ;; plain call) in a real function signature. Both are real,
+    ;; runtime-builtin C struct types (parena_runtime.h), passed BY
+    ;; VALUE, same convention a registered defstruct param already
+    ;; uses just below.
+    ((string/str-eq? type-name "Result") "Result ")
+    ((string/str-eq? type-name "Option") "Option ")
     ((vec-contains-string? known-structs type-name 0) (string/concat type-name " " dest))
     (true "Arena *")))
 

@@ -249,6 +249,17 @@ int last_clause_is_true_(Node *);
 int cond_call_shaped_(Node *, Arena *);
 char * emit_cond_clauses(Node *, int, Vec *, Arena *);
 char * emit_cond(Node *, Vec *, Arena *);
+int pattern_tag(char *);
+char * match_pattern_name(Node *);
+int match_pattern_has_payload_(Node *);
+char * match_pattern_payload_name(Node *);
+int match_clause_shaped_(Node *);
+int match_scrutinee_supported_(Node *, Arena *);
+int result_or_option_match_shaped_(Node *, Arena *);
+char * emit_match_scrutinee(Node *, Vec *, Arena *);
+char * emit_match_clause_body(Node *, Vec *, Arena *);
+int match_uses_result_(Node *);
+char * emit_match(Node *, Vec *, Arena *);
 char * emit_form(Node *, Vec *, Arena *);
 int is_vec_call_(char *, Arena *);
 int get_field_shaped_(Node *);
@@ -1410,8 +1421,127 @@ char * emit_cond(Node * node __attribute__((unused)), Vec * scope __attribute__(
     return emit_join_all(&(parts), dest);
 }
 
+int pattern_tag(char * name __attribute__((unused))) {
+    return ((str_eq_(name, "Ok") || str_eq_(name, "Some")) ? 1 : ((str_eq_(name, "Err") || str_eq_(name, "None")) ? 0 : -1));
+}
+
+char * match_pattern_name(Node * pattern __attribute__((unused))) {
+    if ((emit_node_kind_code((pattern)->kind) == 3)) {
+    return (pattern)->text;
+    } else {
+    Node *head __attribute__((unused)) = vec_get(&((pattern)->children), 0);
+    return (head)->text;
+    }
+}
+
+int match_pattern_has_payload_(Node * pattern __attribute__((unused))) {
+    return (emit_node_kind_code((pattern)->kind) == 0);
+}
+
+char * match_pattern_payload_name(Node * pattern __attribute__((unused))) {
+    Node *payload __attribute__((unused)) = vec_get(&((pattern)->children), 1);
+    return (payload)->text;
+}
+
+int match_clause_shaped_(Node * clause __attribute__((unused))) {
+    if ((!((emit_node_kind_code((clause)->kind) == 0)))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((clause)->children)) == 2)))) {
+    return 0;
+    } else {
+    return (pattern_tag(match_pattern_name(vec_get(&((clause)->children), 0))) >= 0);
+    }
+    }
+}
+
+int match_scrutinee_supported_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((emit_node_kind_code((node)->kind) == 3) || plain_call_shaped_(node, dest));
+}
+
+int result_or_option_match_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(emit_is_call_named_(node, "match")))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 4)))) {
+    return 0;
+    } else {
+    if ((!(match_scrutinee_supported_(vec_get(&((node)->children), 1), dest)))) {
+    return 0;
+    } else {
+    Node *clause_a __attribute__((unused)) = vec_get(&((node)->children), 2);
+    Node *clause_b __attribute__((unused)) = vec_get(&((node)->children), 3);
+    if ((!((match_clause_shaped_(clause_a) && match_clause_shaped_(clause_b))))) {
+    return 0;
+    } else {
+    int tag_a __attribute__((unused)) = pattern_tag(match_pattern_name(vec_get(&((clause_a)->children), 0)));
+    int tag_b __attribute__((unused)) = pattern_tag(match_pattern_name(vec_get(&((clause_b)->children), 0)));
+    return (!((tag_a == tag_b)));
+    }
+    }
+    }
+    }
+}
+
+char * emit_match_scrutinee(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((emit_node_kind_code((node)->kind) == 3)) {
+    return mangle((node)->text, dest);
+    } else {
+    return emit_plain_call(node, scope, dest);
+    }
+}
+
+char * emit_match_clause_body(Node * clause __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *pattern __attribute__((unused)) = vec_get(&((clause)->children), 0);
+    Node *result_node __attribute__((unused)) = vec_get(&((clause)->children), 1);
+    char *result_c __attribute__((unused)) = emit_form(result_node, scope, dest);
+    if (match_pattern_has_payload_(pattern)) {
+    char *payload_name __attribute__((unused)) = mangle(match_pattern_payload_name(pattern), dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    void *"));
+    (void)(vec_push_(&(parts), payload_name));
+    (void)(vec_push_(&(parts), " __attribute__((unused)) = __match_scrutinee.value;\n"));
+    (void)(vec_push_(&(parts), result_c));
+    return emit_join_all(&(parts), dest);
+    } else {
+    return result_c;
+    }
+}
+
+int match_uses_result_(Node * clause __attribute__((unused))) {
+    char *name __attribute__((unused)) = match_pattern_name(vec_get(&((clause)->children), 0));
+    return (str_eq_(name, "Ok") || str_eq_(name, "Err"));
+}
+
+char * emit_match(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *scrutinee_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Node *clause_a __attribute__((unused)) = vec_get(&((node)->children), 2);
+    Node *clause_b __attribute__((unused)) = vec_get(&((node)->children), 3);
+    int tag_a __attribute__((unused)) = pattern_tag(match_pattern_name(vec_get(&((clause_a)->children), 0)));
+    Node *ok_clause __attribute__((unused)) = ((tag_a == 1) ? clause_a : clause_b);
+    Node *err_clause __attribute__((unused)) = ((tag_a == 1) ? clause_b : clause_a);
+    char *c_type __attribute__((unused)) = (match_uses_result_(clause_a) ? "Result" : "Option");
+    char *scrutinee_c __attribute__((unused)) = emit_match_scrutinee(scrutinee_node, scope, dest);
+    char *ok_c __attribute__((unused)) = emit_match_clause_body(ok_clause, scope, dest);
+    char *err_c __attribute__((unused)) = emit_match_clause_body(err_clause, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    {\n"));
+    (void)(vec_push_(&(parts), "    "));
+    (void)(vec_push_(&(parts), c_type));
+    (void)(vec_push_(&(parts), " __match_scrutinee = "));
+    (void)(vec_push_(&(parts), scrutinee_c));
+    (void)(vec_push_(&(parts), ";\n"));
+    (void)(vec_push_(&(parts), "    if (__match_scrutinee.tag == 1) {\n"));
+    (void)(vec_push_(&(parts), ok_c));
+    (void)(vec_push_(&(parts), "    } else {\n"));
+    (void)(vec_push_(&(parts), err_c));
+    (void)(vec_push_(&(parts), "    }\n"));
+    (void)(vec_push_(&(parts), "    }\n"));
+    return emit_join_all(&(parts), dest);
+}
+
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest)))))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : emit_tail_symbol(node, dest))))))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1660,7 +1790,7 @@ char * param_type_name(Node * param __attribute__((unused))) {
 }
 
 char * param_c_type(char * type_name __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int " : (vec_contains_string_(known_structs, type_name, 0) ? concat(type_name, " ", dest) : "Arena *")));
+    return (str_eq_(type_name, "String") ? "char *" : (str_eq_(type_name, "I32") ? "int " : (str_eq_(type_name, "Result") ? "Result " : (str_eq_(type_name, "Option") ? "Option " : (vec_contains_string_(known_structs, type_name, 0) ? concat(type_name, " ", dest) : "Arena *")))));
 }
 
 ParamInfo emit_params(Node * params __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
