@@ -894,6 +894,109 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, narrow Result/Option CONSTRUCTION support (2026-08-28):
+         * the direct complement to match support above, closing the
+         * "constructing an Ok/Err/Some/None value from PARENA itself"
+         * gap driver_match.c's own header comment explicitly flagged
+         * as not-yet-started the moment match landed. */
+        char *snippet =
+            "(defn make-ok [(s : String @ Region)] : Result\n"
+            "  (Ok s))\n"
+            "(defn make-err [(s : String @ Region)] : Result\n"
+            "  (Err s))\n"
+            "(defn make-some [(s : String @ Region)] : Option\n"
+            "  (Some s))\n"
+            "(defn make-none [] : Option\n"
+            "  None)\n"
+            "(defn round-trip-result [(r : Result)] : I32\n"
+            "  (match r\n"
+            "    ((Ok x) 1)\n"
+            "    ((Err e) 0)))\n"
+            "(defn round-trip-option [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some s) 1)\n"
+            "    (None 0)))";
+        Result pr18 = parse_program(snippet, &a);
+        CHECK(pr18.tag == 1, "a real program with 4 real Ok/Err/Some/None constructor defns plus "
+                              "2 real match-based consumer defns parses fine");
+        if (pr18.tag == 1) {
+            Node program18 = *(Node *)pr18.value;
+            char *generated18 = emit_program(&program18, &a);
+            CHECK(generated18 != NULL && strstr(generated18, "Result make_ok(") != NULL,
+                  "make-ok's own declared 'Result' return type is emitted as the real, concrete "
+                  "C return type, not this file's own pre-existing hardcoded 'char *' default");
+            CHECK(generated18 != NULL && strstr(generated18, "return result_ok(s);") != NULL,
+                  "make-ok's own body emits a real 'return result_ok(s);', the real runtime "
+                  "constructor call, not a bogus call to a never-defined function named 'Ok'");
+            CHECK(generated18 != NULL && strstr(generated18, "Result make_err(") != NULL,
+                  "make-err's own declared 'Result' return type is emitted as the real, concrete "
+                  "C return type");
+            CHECK(generated18 != NULL && strstr(generated18, "return result_err(s);") != NULL,
+                  "make-err's own body emits a real 'return result_err(s);'");
+            CHECK(generated18 != NULL && strstr(generated18, "Option make_some(") != NULL,
+                  "make-some's own declared 'Option' return type is emitted as the real, concrete "
+                  "C return type");
+            CHECK(generated18 != NULL && strstr(generated18, "return option_some(s);") != NULL,
+                  "make-some's own body emits a real 'return option_some(s);'");
+            CHECK(generated18 != NULL && strstr(generated18, "Option make_none(") != NULL,
+                  "make-none's own declared 'Option' return type is emitted as the real, concrete "
+                  "C return type, even with zero real parameters");
+            CHECK(generated18 != NULL && strstr(generated18, "return option_none();") != NULL,
+                  "make-none's own bare 'None' body emits a real 'return option_none();', not a "
+                  "bogus reference to an undeclared local named 'None'");
+            /* Every OTHER already-tested declared return type (I32 on
+             * round-trip-result/round-trip-option, String @ Region
+             * elsewhere in this whole test file, no annotation at all
+             * on driver_valid_only's own load-config) must keep this
+             * file's own pre-existing, uniform 'char *' default
+             * completely unchanged -- a real, direct regression guard
+             * on defn-c-return-type's own fallback branch. */
+            CHECK(generated18 != NULL && strstr(generated18, "char * round_trip_result(") != NULL,
+                  "round-trip-result's own declared 'I32' return type still gets this file's own "
+                  "pre-existing, uniform 'char *' default, unchanged by the new Result/Option "
+                  "return-type recognition");
+            CHECK(generated18 != NULL && strstr(generated18, "char * round_trip_option(") != NULL,
+                  "round-trip-option's own declared 'I32' return type still gets the same "
+                  "pre-existing 'char *' default too");
+
+            if (generated18) {
+                char c_path9[300];
+                snprintf(c_path9, sizeof c_path9, "/tmp/parena_selfhost_emit_ctor_test_%d.c",
+                         (int)getpid());
+                FILE *out9 = fopen(c_path9, "w");
+                CHECK(out9 != NULL, "a real temp file opens to write the ctor generated C into");
+                if (out9) {
+                    fputs(generated18, out9);
+                    fclose(out9);
+
+                    char bin_path9[310];
+                    snprintf(bin_path9, sizeof bin_path9, "%s.bin", c_path9);
+                    char cmd9[1024];
+                    snprintf(cmd9, sizeof cmd9,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_result_ctor.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path9, c_path9);
+                    int compile_status9 = system(cmd9);
+                    CHECK(compile_status9 == 0,
+                          "the real ctor generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_result_ctor.c");
+                    if (compile_status9 == 0) {
+                        int run_status9 = system(bin_path9);
+                        CHECK(run_status9 == 0,
+                              "the real compiled make-ok/make-err/make-some/make-none and "
+                              "round-trip-result/round-trip-option all genuinely construct AND "
+                              "consume real Result/Option values correctly, tag and payload both "
+                              "surviving intact -- driver_result_ctor.c's own internal asserts all "
+                              "pass, closing the real round trip, not just compiling clean");
+                    }
+                    remove(c_path9);
+                    remove(bin_path9);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

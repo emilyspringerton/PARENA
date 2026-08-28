@@ -932,6 +932,58 @@ PARENA itself. `cond` as a non-tail value; nested calls as call arguments genera
 boolean/test context; `defstruct` fields typed as another struct/`Vec`/enum; struct-literal
 construction remain open too, unchanged by this increment.
 
+**Real, narrow Result/Option CONSTRUCTION support added the same day (2026-08-28)**, directly
+closing the "constructing an `Ok`/`Err`/`Some`/`None` value from PARENA itself" gap named above --
+the direct complement to match support, completing a real round trip (a function can now both
+PRODUCE and CONSUME a Result/Option entirely within this emitter's own real domain, not just
+consume one already hand-constructed in C the way `driver_match.c`'s own header comment explicitly
+flagged as still needed). Mirrors `src/emit.c`'s own real `Ok`/`Err`/`Some` handling
+(`result_ok(inner)`/`result_err(inner)`/`option_some(inner)`) and bare `None` -> `option_none()` --
+but narrower: the reference emitter boxes a non-pointer payload into a real, per-type heap cell via
+a generated `_box` helper (`ensure_box_helper`) whenever the payload's own C type isn't already
+pointer-shaped; this file has no such helper-generation infrastructure yet, so the payload here
+must ALREADY be pointer-shaped -- a bare symbol, a `get-field-shaped?` struct-field read, or a
+`plain-call-shaped?` function call, the same 3 shapes this file's own uniform `char *` convention
+already makes pointer-shaped with no boxing needed. An I32 payload is deliberately NOT supported:
+reusing `emit-i32-boxed`'s own `(char *)(intptr_t)n` reinterpretation trick here would hand the
+runtime's own real `result_ok`/`option_some` a bogus, non-dereferenceable "pointer" that a later
+real `deref` would crash on -- a real, separate, harder gap (needs a genuine per-type heap box),
+not attempted here.
+
+Found and fixed a real, deeper architectural gap while building this (confirmed live via a genuine
+gcc "incompatible types when returning type 'Result'" error): this file's own `emit-defn` hard-coded
+EVERY function's own C return type as `char *`, unconditionally -- correct for the narrow v0 this
+file has covered so far, but a real constructor function's own body (`(Ok s)`) produces an actual
+`Result`/`Option` C STRUCT value, which cannot be `return`ed from a function declared `char *`. New
+`defn-c-return-type`/`defn-declared-return-type-name` read a defn's own explicit `: ReturnType`
+annotation and recognize `Result`/`Option` by name as the real, concrete C return type (the same by-
+value recognition `param-c-type` already established for these two names, added for match's own
+scrutinee param) -- its own return-position counterpart. Every other declared return type (including
+none at all) keeps this file's own pre-existing, uniform `char *` default completely unchanged --
+still real, honest, narrow v0, not a general type-inference pass.
+
+11 new tests (`tests/test_selfhost_emit.c`): structural assertions on the real, concrete
+`Result`/`Option` return types (including a zero-parameter `make-none`), the real
+`result_ok`/`result_err`/`option_some`/`option_none` runtime calls, PLUS a direct regression guard
+proving `I32`-declared functions (`round-trip-result`/`round-trip-option`) still get the pre-
+existing `char *` default unchanged -- plus a real compile+run+assert check
+(`tests/integration/driver_result_ctor.c`) that constructs EVERY real Result/Option value via real
+selfhost-emitted `make-ok`/`make-err`/`make-some`/`make-none`, feeds each straight into real
+selfhost-emitted `round-trip-result`/`round-trip-option` (itself built on the match support above),
+and asserts both the tag AND the real payload survive the full round trip intact -- the first real
+proof this whole self-hosting effort has that a value can be produced and consumed by generated code
+on both ends, never hand-constructed in the driver. Zero regressions: full local suite (336 tests) +
+all 6 selfhost domain test binaries + `test-json`/`test-yaml` + `bazel build`/`bazel test //...` all
+clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload (needs a real per-type heap box, not attempted); nested
+calls as call arguments generally outside the boolean/test context; `defstruct` fields typed as
+another struct/`Vec`/enum; struct-literal construction (`{:field val}`) for a user-defined
+`defstruct` (still real, separate, not attempted -- Result/Option's own construction above is a
+narrower, hardcoded special case, not general struct-literal support).
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

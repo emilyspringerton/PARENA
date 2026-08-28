@@ -612,6 +612,97 @@
       (vec/push! &parts "    }\n")
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow Result/Option CONSTRUCTION support (2026-08-28) ----
+;;
+;; The real, direct complement to match support above -- closes the
+;; "constructing an Ok/Err/Some/None value from PARENA itself" gap
+;; NORTHSTAR.md's own Self-hosting section flagged the moment match
+;; landed (also named explicitly in driver_match.c's own header
+;; comment). Together they complete a real round trip: a function can
+;; now both PRODUCE and CONSUME a Result/Option entirely within this
+;; emitter's own real domain, not just consume one already constructed
+;; in hand-written C.
+;;
+;; Mirrors src/emit.c's own real Ok/Err/Some handling (is_call_named on
+;; each of the 3 names, `result_ok(inner)`/`result_err(inner)`/
+;; `option_some(inner)`) and bare `None` -> `option_none()` -- but
+;; narrower: src/emit.c boxes a non-pointer payload into a real,
+;; per-type heap cell via a generated `_box` helper (ensure_box_helper)
+;; whenever the payload's own C type isn't already pointer-shaped; this
+;; file has no such helper-generation infrastructure yet. Real, honest
+;; v0 scope: the payload must ALREADY be pointer-shaped -- a bare
+;; symbol, a get-field-shaped? struct-field read, or a plain-call-
+;; shaped? function call, the exact same 3 shapes this file's own
+;; uniform char*-typed convention already makes pointer-shaped with no
+;; boxing needed. An I32 payload is deliberately NOT supported here --
+;; this file's own emit-i32-boxed reinterprets a raw int as a real
+;; pointer VALUE via `(char *)(intptr_t)n`, a technique that only stays
+;; safe for THIS file's own uniform char*-return/let-value convention
+;; (every caller unboxes the identical way, `(int)(intptr_t)result`);
+;; reusing it here would hand the runtime's own real `result_ok`/
+;; `option_some` a bogus, non-dereferenceable "pointer" that a later
+;; real `deref` (this stdlib's own real, established convention for
+;; reading a boxed scalar Result/Option payload) would crash
+;; dereferencing -- a real, separate, harder gap (needs a genuine
+;; per-type heap box, the same real infrastructure src/emit.c's own
+;; ensure_box_helper provides and this file doesn't have yet), not
+;; attempted here.
+(defn result-option-payload-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (or (= (emit-node-kind-code (get-field node :kind)) 3)
+      (or (get-field-shaped? node) (plain-call-shaped? node dest))))
+
+(defn emit-result-option-payload [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((get-field-shaped? node) (emit-get-field node scope dest))
+    ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
+    (true (resolve-arena-ref (get-field node :text) scope dest))))
+
+;; result-option-ctor-shaped? -- a real `(Ok expr)`/`(Err expr)`/
+;; `(Some expr)` call: exactly 2 children, a supported payload (see
+;; above). Checked and dispatched BEFORE plain-call-shaped? everywhere
+;; both are wired in (emit-form/emit-let-value below) -- `Ok`/`Err`/
+;; `Some` would otherwise also satisfy plain-call-shaped?'s own shape
+;; guard (nothing in that check excludes these 3 names), which would
+;; silently emit a call to a real, never-defined C function literally
+;; named `Ok`/`Err`/`Some` instead of the real runtime constructor.
+(defn result-option-ctor-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-symbol-headed-list? node))
+    false
+    (let [fn-node (vec/get &(get-field node :children) 0)
+          fn-text (get-field fn-node :text)]
+      (if (not (or (string/str-eq? fn-text "Ok")
+                   (or (string/str-eq? fn-text "Err") (string/str-eq? fn-text "Some"))))
+        false
+        (if (not (= (vec/len &(get-field node :children)) 2))
+          false
+          (result-option-payload-supported? (vec/get &(get-field node :children) 1) dest))))))
+
+(defn result-option-ctor-runtime-fn [(fn-text : String @ Region)] : String @ Region
+  (cond
+    ((string/str-eq? fn-text "Ok") "result_ok")
+    ((string/str-eq? fn-text "Err") "result_err")
+    (true "option_some")))
+
+(defn emit-result-option-ctor [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [fn-node (vec/get &(get-field node :children) 0)
+        fn-text (get-field fn-node :text)
+        runtime-fn (result-option-ctor-runtime-fn fn-text)
+        payload-c (emit-result-option-payload (vec/get &(get-field node :children) 1) scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts runtime-fn)
+      (vec/push! &parts "(")
+      (vec/push! &parts payload-c)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
+;; none-shaped? -- a bare `None` symbol, the real zero-arg builtin
+;; Option variant (never written `(None)`, same real, confirmed
+;; convention pattern-tag's own header comment above already
+;; documents).
+(defn none-shaped? [(node : &Node)] : Bool
+  (emit-is-symbol? node "None"))
+
 (defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
@@ -634,6 +725,13 @@
     ;; Result/Option `match` (see its own section header comment
     ;; above, right before pattern-tag, for the full real scope).
     ((result-or-option-match-shaped? node dest) (emit-match node scope dest))
+    ;; Real, additive tail-position cases (2026-08-28, the direct
+    ;; complement to match support above): a real `(Ok expr)`/
+    ;; `(Err expr)`/`(Some expr)` construction, or a bare `None` --
+    ;; checked BEFORE plain-call-shaped? below (result-option-ctor-
+    ;; shaped?'s own header comment explains why order matters here).
+    ((result-option-ctor-shaped? node dest) (emit-tail-expr (emit-result-option-ctor node scope dest) dest))
+    ((none-shaped? node) (emit-tail-expr "option_none()" dest))
     ;; Real, additive case (2026-08-28, closing a gap flagged the same
     ;; day while building the cond/get-field work above): a bare
     ;; `or`/`and`/`not` expression as the WHOLE body (not inside a
@@ -926,15 +1024,24 @@
     ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
     ((binary-op-call-shaped? expr-node dest) (emit-i32-boxed (emit-binary-op expr-node scope dest) dest))
     ((let-value-is-bool-expr? expr-node dest) (emit-i32-boxed (emit-bool-expr expr-node scope dest) dest))
+    ;; Real, additive cases (2026-08-28, same Ok/Err/Some/None
+    ;; construction support as emit-form above, extended here for
+    ;; symmetry to a let-binding's own value position -- checked BEFORE
+    ;; plain-call-shaped? for the identical real reason (result-option-
+    ;; ctor-shaped?'s own header comment).
+    ((result-option-ctor-shaped? expr-node dest) (emit-result-option-ctor expr-node scope dest))
+    ((none-shaped? expr-node) "option_none()")
     ((plain-call-shaped? expr-node dest) (emit-plain-call expr-node scope dest))
     (true "0 /* see #error above */")))
 
 (defn let-value-error-prefix [(expr-node : &Node) (dest : Arena @ Region)] : String @ Region
   (if (or (alloc-call-shaped? expr-node)
           (or (binary-op-call-shaped? expr-node dest)
-              (or (let-value-is-bool-expr? expr-node dest) (plain-call-shaped? expr-node dest))))
+              (or (let-value-is-bool-expr? expr-node dest)
+                  (or (result-option-ctor-shaped? expr-node dest)
+                      (or (none-shaped? expr-node) (plain-call-shaped? expr-node dest))))))
     ""
-    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, and plain function calls with symbol/number args)\n"))
+    "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, and plain function calls with symbol/number args)\n"))
 
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
@@ -1118,20 +1225,24 @@
                 (+ after-type 2)
                 after-type))))))))
 
-;; body...)`. Real, honest, narrow v0: return type is always hard-coded
-;; `char *` (matching src/emit.h's own real, documented "char * is the
-;; only inferred type" v0 scope exactly -- not a real type-inference
-;; pass); the real function body is assumed to be exactly ONE top-level
-;; form (examples/valid_only.prn's own real shape: one with-arena).
+;; body...)`. Real, honest, narrow v0: return type defaults to hard-
+;; coded `char *` (matching src/emit.h's own real, documented "char *
+;; is the only inferred type" v0 scope exactly -- not a real general
+;; type-inference pass), EXCEPT a real, narrow `Result`/`Option`
+;; annotation (defn-c-return-type's own header comment above, 2026-08-
+;; 28) now recognized concretely -- the real function body is assumed
+;; to be exactly ONE top-level form (examples/valid_only.prn's own real
+;; shape: one with-arena).
 (defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field defn-node :children) 1)
         params (vec/get &(get-field defn-node :children) 2)
         fn-name (mangle (get-field name-node :text) dest)
         param-info (emit-params params known-structs dest)
         body-c (emit-body-forms defn-node (body-start-index defn-node) &(get-field param-info :scope) dest)
+        return-type-c (defn-c-return-type defn-node)
         parts (vec/new dest)]
     (do
-      (vec/push! &parts "char * ")
+      (vec/push! &parts return-type-c)
       (vec/push! &parts fn-name)
       (vec/push! &parts "(")
       (vec/push! &parts (get-field param-info :text))
@@ -1139,6 +1250,43 @@
       (vec/push! &parts body-c)
       (vec/push! &parts "}\n")
       (emit-join-all &parts dest))))
+
+;; defn-declared-return-type-name -- real, narrow read of a defn's own
+;; explicit `: ReturnType` annotation's NAME text, when present (child
+;; index 4, right after the `:` colon node body-start-index already
+;; detects at index 3) -- "" when no such annotation exists at all
+;; (this file's own pre-existing default, unchanged by this addition).
+(defn defn-declared-return-type-name [(defn-node : &Node)] : String @ Region
+  (if (< (vec/len &(get-field defn-node :children)) 5)
+    ""
+    (let [maybe-colon (vec/get &(get-field defn-node :children) 3)]
+      (if (not (= (emit-node-kind-code (get-field maybe-colon :kind)) 7))
+        ""
+        (let [type-node (vec/get &(get-field defn-node :children) 4)]
+          (get-field type-node :text))))))
+
+;; defn-c-return-type -- real, narrow return-type recognition (2026-08-
+;; 28, added alongside real Ok/Err/Some/None CONSTRUCTION support
+;; below): a `Result`/`Option` return-type annotation now names the
+;; real, concrete runtime C struct type instead of this file's own
+;; pre-existing hardcoded `char *` default -- needed because a real
+;; constructor function's own body (`(Ok s)` etc.) produces an actual
+;; `Result`/`Option` C struct value (`result_ok(s)`, a real
+;; parena_runtime.h struct, not a pointer), which cannot be `return`ed
+;; from a function declared to return `char *` without a genuine,
+;; confirmed C type-mismatch compile error. Same real by-value
+;; recognition param-c-type already established for these two names
+;; (added for match's own scrutinee param) -- this is its return-
+;; position counterpart. Every other declared return type (including
+;; none at all) keeps this file's own pre-existing, uniform `char *`
+;; default completely unchanged -- still real, honest, narrow v0, not
+;; a real type-inference pass.
+(defn defn-c-return-type [(defn-node : &Node)] : String @ Region
+  (let [name (defn-declared-return-type-name defn-node)]
+    (cond
+      ((string/str-eq? name "Result") "Result ")
+      ((string/str-eq? name "Option") "Option ")
+      (true "char * "))))
 
 ;; program-header -- the same real prelude (`#include
 ;; "parena_runtime.h"` + the 4 standard headers) VS0's own real,
