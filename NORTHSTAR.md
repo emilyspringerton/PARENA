@@ -595,6 +595,79 @@ next steps in this same expansion, not attempted here: literal/numeric arguments
 `match`/`cond` as a real body form (not just a tail-position bare symbol), and diagnosing the
 undeclared-identifier class.
 
+**Correction, 2026-08-28 (founder real-time: "continue working on parena self hosted" / "removing
+c ffi when possible")**: the "still doesn't compile" diagnostic above was real but incomplete --
+it ran `parena build selfhost/lexer.prn` ALONE, never with its own real dependency,
+`stdlib/string.prn`, in the same invocation. Every one of that run's real `Region`/`I32`/`Lexer`-
+class undeclared identifiers, and every one of its 24 `#error`s, was an artifact of that missing
+dependency, not a real, separate emitter gap. Confirmed directly: `./parena build stdlib/string.prn
+selfhost/lexer.prn -o out.c` compiles with **zero errors and zero gcc warnings** under
+`-std=c99 -Wall -Wextra -pedantic`, and always has -- `Makefile`'s own `test-selfhost-lexer` target
+already invoked it exactly this way and already passed all 60 of its real assertions; this was
+simply never reflected back into this doc's own prose.
+
+Once that was understood, the REAL next milestone this doc itself already named -- "compiling the
+selfhost pipeline's OWN five files together... duplicate struct definitions... never compiled
+together before" -- was checked directly too: `./parena build stdlib/string.prn stdlib/array.prn
+stdlib/io.prn selfhost/lexer.prn selfhost/parser.prn selfhost/region.prn selfhost/emit.prn
+selfhost/main.prn -o out.c` (8 real files, all 5 selfhost domains plus their 3 real stdlib
+dependencies -- `stdlib/array.prn` needed for `io/read-floats`'s own `NDArray` return type, a
+real, separate, minor gap `Makefile`'s own `test-selfhost-main` comment already documents) compiles
+to 2545 lines of C, **zero warnings**, Token/Node each defined exactly once despite living in both
+`region.prn` and `emit.prn` (the emitter already de-dupes identical struct definitions across
+files correctly -- the "duplicate struct" concern above never actually materializes as a problem).
+`make test-selfhost-main` (the same pipeline, run through `build-file` against
+`examples/valid_only.prn`, the real DoD acceptance file) already passes ALL PASS end to end --
+this was ALREADY true before today, an existing, working, already-committed Makefile target this
+doc's own prose just never caught up to reflecting.
+
+**New work today: `build-files`, the real multi-file entry point** (`selfhost/main.prn`) --
+`build-file` above is deliberately single-file only; this is the real, faithful port of
+`src/main.c`'s own `cmd_build` MULTI-FILE loop (parse each path into its own Node, merge every
+file's top-level children into one combined `NList`, region-analyze/emit/write exactly once),
+matching `parena build a.prn b.prn -o out.c`'s own "multiple files combined into one compilation
+unit" contract. `parse-file`/`merge-children!`/`build-files-step`/`build-files-parse-and-continue`
+are the real, small supporting pieces -- the match-in-tail-position workaround
+`handle-symbol-headed-call`'s own header comment already documents (region.prn) applies here too,
+so the per-index loop body is split across two small functions rather than nesting a `match`
+inside a `cond` branch. Verified via direct C-level instrumentation that the merge itself is
+correct (two real files' children genuinely combined into one 2-element Vec) independent of
+anything downstream, then verified end to end with a real, dedicated fixture (`examples/
+selfhost_multifile_a.prn`/`_b.prn`, deliberately NOT the reference compiler's own `examples/
+multifile_a.prn`/`_b.prn` -- see below for why) and a new test (`tests/
+test_selfhost_main_multifile.c`, `make test-selfhost-main-multifile`): both files built together
+via `build-files` produce real, gcc-clean C with a genuinely resolved cross-file function call;
+the callee file built alone still honestly fails to compile (undeclared function) -- the same real
+positive/negative pair `tests/integration/run_multifile_check.sh` already proves for the reference
+compiler, reproduced here through the selfhost pipeline. ALL PASS, zero regressions across the
+full local suite (336 tests) + every other selfhost domain's own test binary.
+
+**Three real, separate `selfhost/emit.prn` gaps found while building that fixture, none fixed
+here** (the reference C emitter, `src/emit.c`, handles all three correctly -- these are gaps in
+the PARENA-language PORT specifically):
+- `emit-program`/`region-analyze` only ever walk top-level `(defn ...)` forms -- a top-level
+  `defstruct` is silently skipped entirely (confirmed: a `defstruct T` + a `defn` using `T` across
+  two files compiles "successfully" but the struct never appears in the output, and the function
+  using it emits garbage).
+- `emit-form`'s own top-level dispatch (`selfhost/emit.prn`) only recognizes `with-arena` and
+  `let` as real defn-body shapes; everything else falls through to `emit-tail-symbol`, which ONLY
+  correctly handles a bare symbol tail (`return <mangled-text>;`) -- a bare `alloc` call, a bare
+  arithmetic expression, or a bare `match`/`cond` as a function's ENTIRE body all silently emit
+  wrong/empty C through this path (confirmed via direct instrumentation: `(+ n 10)` as an entire
+  body emits `return ;`, not `return (n + 10);`).
+- `emit-let-bindings`' own real, narrow let-value dispatch (its own header comment already admits
+  "alloc call / plain function call / #error") further requires a plain call's every argument to
+  be a bare symbol -- no nested calls, no literals. `(add-ten (add-ten n))` and `(+ n 10)` both
+  fail this for that reason.
+
+These three are why the multi-file fixture above is a dedicated, new one (a plain
+`with-arena`+`let`+`alloc`-shaped callee, `examples/valid_only.prn`'s own already-proven real
+shape, called via a plain-call-shaped, bare-symbol-argument let-binding) rather than the reference
+compiler's own `examples/multifile_a.prn`/`_b.prn` (which uses a top-level `defstruct`, hitting
+the first gap immediately). Real, honest, not-yet-scoped next steps for whoever continues this:
+closing any one of these three would meaningfully widen what real `.prn` source the selfhost
+emitter can correctly self-compile, independent of and complementary to `build-files` itself.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

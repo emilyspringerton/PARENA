@@ -41,7 +41,7 @@
 (import selfhost/parser)
 (import selfhost/region)
 (import selfhost/emit)
-(export build-file)
+(export build-file build-files)
 
 ;; build-file -- read in-path, run it through the real selfhost
 ;; lexer+parser+region+emit pipeline, write the resulting C to
@@ -108,3 +108,91 @@
           (do
             (io/file-close (deref in-fh) dest)
             (parse-and-continue src out-path dest)))))))
+
+;; build-files -- real, faithful port of src/main.c's own cmd_build
+;; MULTI-FILE loop (2026-08-28, continuing the founder's own repeated
+;; "continue working on self hosted parena" / "removing c ffi when
+;; possible" direction): cmd_build parses EACH input path into its own
+;; Node, merges every file's top-level children into ONE combined
+;; NList, then runs the region-analyze/emit/write pipeline exactly
+;; once on the merged whole -- this is the real "multiple files are
+;; combined into one compilation unit, in the order given" behavior
+;; `parena build a.prn b.prn -o out.c`'s own usage line documents,
+;; which build-file above (deliberately single-file, see its own
+;; header comment) never covered. Real, additive-only: build-file
+;; itself is untouched, zero regression risk.
+;;
+;; parse-file -- read+parse a single input path off disk, the exact
+;; same open/read/close/parse sequence build-file's own body already
+;; uses, just returning the parsed Node itself instead of continuing
+;; the pipeline on it.
+(defn parse-file [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Node String) @ Region
+  (match (io/file-open path Read dest)
+    ((Err e) (Err "parena: cannot open input file"))
+    ((Ok fh)
+      (match (io/read-string (deref fh) dest)
+        ((Err e2) (Err "parena: cannot read input file"))
+        ((Ok src)
+          (do
+            (io/file-close (deref fh) dest)
+            (match (selfhost/parser/parse-program src dest)
+              ((Err pe) (Err "parena: parse error"))
+              ((Ok program) (Ok (deref program))))))))))
+
+;; merge-children! -- append every element of file-children onto the
+;; end of combined, in order -- the real "node_push_child per child"
+;; half of cmd_build's own per-file loop body. Same real loop/vec/push!
+;; shape arena-scope-extend (selfhost/emit.prn) already established for
+;; "copy one vec's contents into another," just mutating combined in
+;; place (via its own &-ref) instead of building a fresh copy, since
+;; build-files-step below already owns combined's one, single lifetime
+;; across the whole multi-file loop.
+(defn merge-children! [(combined : &(Vec Node)) (file-children : &(Vec Node))]
+  : Unit
+  (loop [j 0]
+    (when (< j (vec/len file-children))
+      (do (vec/push! combined (vec/get file-children j))
+          (recur (+ j 1))))))
+
+;; build-files-parse-and-continue / build-files-step -- the real
+;; per-index body of the multi-file loop, split into two small
+;; functions rather than one `cond` with a `match` nested in a branch:
+;; a bare `match` as a non-tail value inside an `if`/`cond` branch is a
+;; real, documented, confirmed-live VS0 emitter gap (see selfhost/
+;; region.prn's own handle-symbol-headed-call header comment for the
+;; full explanation) -- the proven, narrow workaround used throughout
+;; this whole selfhost pipeline is pulling any such match into its own
+;; function, whose body directly IS the match (always a safe tail
+;; position), called as an ordinary function from the cond/if branch
+;; instead (always safe in any position, no special dispatch needed).
+(defn build-files-parse-and-continue [(paths : &(Vec String)) (i : I32) (combined : &(Vec Node)) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (match (parse-file (vec/get paths i) dest)
+    ((Err e) (Err e))
+    ((Ok file-node)
+      (do
+        (merge-children! combined &(get-field (deref file-node) :children))
+        (build-files-step paths (+ i 1) combined out-path dest)))))
+
+(defn build-files-step [(paths : &(Vec String)) (i : I32) (combined : &(Vec Node)) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (cond
+    ((>= i (vec/len paths))
+      (analyze-and-emit {:kind NList :text "" :children (deref combined) :line 1} out-path dest))
+    (true (build-files-parse-and-continue paths i combined out-path dest))))
+
+;; build-files -- the real, public multi-file entry point: paths is a
+;; real (Vec String), matching cmd_build's own `const char **paths,
+;; size_t path_count` in spirit (a Vec is this language's own real
+;; "list of strings," not a raw pointer+count pair). Real, honest
+;; scope: an EMPTY paths vec falls straight through build-files-step's
+;; own base case (vec/len paths == 0 >= i == 0), producing an empty
+;; NList and emitting whatever emit-program does for zero forms -- the
+;; same "empty input parses to an empty list, not an error" contract
+;; parse-program's own header comment already documents for a single
+;; empty file, extended here to zero files, not separately guarded.
+(defn build-files [(paths : &(Vec String)) (out-path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit String) @ Region
+  (let [combined (vec/new dest)]
+    (build-files-step paths 0 &combined out-path dest)))

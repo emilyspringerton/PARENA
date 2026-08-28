@@ -1,0 +1,14 @@
+;; examples/selfhost_multifile_b.prn -- companion to
+;; selfhost_multifile_a.prn. Real, minimal cross-file call: use-message
+;; calls get-message (defined in the other file) via a plain-call-
+;; shaped let-binding value (every arg -- just `dest` -- a bare symbol,
+;; matching emit-let-bindings' own real, narrow supported shape) whose
+;; tail is the bound name itself -- only resolves when both files are
+;; built together as one unit, the same real "only compiles when both
+;; files are built together" contract examples/multifile_b.prn's own
+;; header comment already established for the reference compiler's
+;; own multi-file support.
+
+(defn use-message [(dest : Arena @ Region)]
+  (let [msg (get-message dest)]
+    msg))

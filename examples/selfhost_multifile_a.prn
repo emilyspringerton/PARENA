@@ -1,0 +1,37 @@
+;; examples/selfhost_multifile_a.prn -- real, minimal cross-file fixture
+;; for build-files (selfhost/main.prn, 2026-08-28), the multi-file
+;; companion to examples/multifile_a.prn/b.prn used for the REFERENCE
+;; compiler's own test-multifile check.
+;;
+;; Real, honest scope note, found the hard way across three earlier
+;; drafts of this fixture (a defstruct-based one, then a plain-I32-
+;; arithmetic one), each hitting a real, separate, pre-existing
+;; selfhost/emit.prn gap:
+;;   - top-level defstruct isn't walked at all (emit-program/
+;;     region-analyze only ever recognize top-level `defn` forms).
+;;   - a defn body that's neither `with-arena` nor `let` at the very
+;;     top level falls through emit-form's own cond to emit-tail-
+;;     symbol, which ONLY correctly handles a bare symbol tail (its
+;;     whole real body is "return <mangled node.text>;") -- a bare
+;;     `alloc` call, arithmetic expression, or match/cond as the
+;;     ENTIRE body all silently emit wrong/empty C through this path
+;;     (confirmed via direct instrumentation, not guessed at).
+;;   - emit-let-bindings' own real, narrow let-value dispatch (its own
+;;     header comment: "alloc call / plain function call / #error")
+;;     further requires a plain-call's every argument to be a bare
+;;     symbol (no nested calls, no literals) -- `(+ n 10)` fails this
+;;     too (10 is a literal, not a symbol).
+;; This fixture uses the ONE shape actually proven end-to-end already
+;; (examples/valid_only.prn's own real, working `with-arena` + `let` +
+;; `alloc` + bare-symbol-tail shape, domain 4's own DoD acceptance
+;; case) so it isolates and proves the real thing it means to check --
+;; build-files' own cross-file resolution -- without also depending on
+;; selfhost/emit.prn coverage that doesn't exist yet. Those three real
+;; gaps are flagged in docs/NORTHSTAR.md's own Self-hosting section,
+;; not attempted here.
+
+(defn get-message [(buf-arena : Arena @ :region/buffer)]
+  (with-arena [scratch :region/scratch 1024]
+    (let [temp-str (alloc scratch String "temp")
+          real-buf (alloc buf-arena String "cross_file_message")]
+      real-buf)))
