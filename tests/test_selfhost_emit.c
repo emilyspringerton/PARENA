@@ -432,6 +432,96 @@ int main(int argc, char **argv) {
             }
         }
     }
+    {
+        /* real gap found and closed 2026-08-28, the single largest
+         * remaining gap this domain's own commit history had named:
+         * a real, TAIL-POSITION-ONLY `cond` (see body-start-index and
+         * cond-call-shaped?'s own header comments in selfhost/
+         * emit.prn for the full real reasoning -- a NON-tail cond is a
+         * real, separate, architecturally harder problem, not
+         * attempted here). Verified both structurally and, more
+         * importantly, behaviorally: a real compile+run+assert against
+         * all THREE branches, since a cond that merely COMPILES isn't
+         * proof the real if/else chain actually branches correctly. */
+        char *snippet =
+            "(defn classify [(n : I32)] : I32\n"
+            "  (cond\n"
+            "    ((= n 1) 10)\n"
+            "    ((>= n 2) 20)\n"
+            "    (true 0)))";
+        Result pr11 = parse_program(snippet, &a);
+        CHECK(pr11.tag == 1, "a real defn with a tail-position cond as its whole body parses fine");
+        if (pr11.tag == 1) {
+            Node program11 = *(Node *)pr11.value;
+            char *generated11 = emit_program(&program11, &a);
+            CHECK(generated11 != NULL && strstr(generated11, "if ((n == 1)) {") != NULL,
+                  "the first cond clause emits a real 'if' with the real comparison test, "
+                  "not a mangled function call");
+            CHECK(generated11 != NULL && strstr(generated11, "} else if ((n >= 2)) {") != NULL,
+                  "the second cond clause chains as a real 'else if', not a duplicated/nested 'else'");
+            CHECK(generated11 != NULL && strstr(generated11, "} else {\n    return (char *)(intptr_t)0;\n    }\n") != NULL,
+                  "the final (true ...) clause emits a real, bare 'else' block -- no redundant "
+                  "condition check, and its own literal result is correctly boxed");
+
+            if (generated11) {
+                char c_path3[] = "/tmp/parena_selfhost_emit_cond_test_XXXXXX.c";
+                snprintf(c_path3, sizeof c_path3, "/tmp/parena_selfhost_emit_cond_test_%d.c", (int)getpid());
+                FILE *out3 = fopen(c_path3, "w");
+                CHECK(out3 != NULL, "a real temp file opens to write the cond generated C into");
+                if (out3) {
+                    fputs(generated11, out3);
+                    fclose(out3);
+
+                    char bin_path3[300];
+                    snprintf(bin_path3, sizeof bin_path3, "%s.bin", c_path3);
+                    char cmd3[1024];
+                    snprintf(cmd3, sizeof cmd3,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_cond.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path3, c_path3);
+                    int compile_status3 = system(cmd3);
+                    CHECK(compile_status3 == 0,
+                          "classify's own real generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against driver_cond.c");
+                    if (compile_status3 == 0) {
+                        int run_status3 = system(bin_path3);
+                        CHECK(run_status3 == 0,
+                              "the real compiled classify actually branches correctly on all THREE "
+                              "real inputs -- driver_cond.c's own internal asserts (10/20/0) all "
+                              "pass, proving the real if/else-if/else chain genuinely works, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path3);
+                    remove(bin_path3);
+                }
+            }
+        }
+    }
+    {
+        /* real, honest negative case: a cond WITHOUT a trailing
+         * (true ...) clause is deliberately NOT treated as
+         * cond-call-shaped? (this narrow v0's own real requirement,
+         * needed to guarantee the emitted if/else chain is provably
+         * exhaustive) -- falls back to the pre-existing, honest
+         * emit-tail-symbol fallback rather than emitting a real but
+         * non-exhaustive if/else chain that could fall off the end of
+         * a non-void function. */
+        char *snippet =
+            "(defn bad-cond [(n : I32)] : I32\n"
+            "  (cond\n"
+            "    ((= n 1) 10)\n"
+            "    ((= n 2) 20)))";
+        Result pr12 = parse_program(snippet, &a);
+        CHECK(pr12.tag == 1, "a real cond with no trailing (true ...) clause parses fine");
+        if (pr12.tag == 1) {
+            Node program12 = *(Node *)pr12.value;
+            char *generated12 = emit_program(&program12, &a);
+            CHECK(generated12 != NULL && strstr(generated12, "if (") == NULL,
+                  "a cond with no trailing (true ...) clause is NOT treated as cond-call-shaped? -- "
+                  "no real 'if' is emitted, the same honest (if unhelpful-looking) fallback this "
+                  "narrow v0 already gives every other unsupported shape, not a silent wrong guess");
+        }
+    }
 
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

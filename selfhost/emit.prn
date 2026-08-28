@@ -241,21 +241,159 @@
       (vec/push! &parts ";\n")
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow, TAIL-POSITION-ONLY `cond` support (2026-08-28) ----
+;;
+;; region.prn's own handle-symbol-headed-call header comment already
+;; names the real, deep architectural reason match/cond are hard as a
+;; NON-TAIL value (a let-binding's own initializer, a plain sub-
+;; expression): their real value production is fundamentally
+;; STATEMENT-shaped -- real if/else blocks -- which can't be embedded
+;; inside a single C ternary/expression the way a plain call can,
+;; without something like GCC's own statement-expression extension
+;; (genuinely incompatible with this whole repo's -std=c99 -pedantic
+;; discipline). But in TAIL position -- which is exactly what
+;; emit-form itself already handles, the ONLY place this dispatches
+;; from -- a real if/else-if/else CHAIN is genuinely tractable: every
+;; clause's own result is already a real, complete STATEMENT (a
+;; `return`, via emit-form itself, recursively) once wrapped, no
+;; ternary or expression-position value needed at all.
+;;
+;; Real, honest, narrow v0 scope: `match` (defenum tag dispatch, needs
+;; a real tag registry this emitter doesn't have yet) is NOT attempted
+;; here, `cond` only. A test is either a real binary-op-call-shaped?
+;; comparison (`(= n 1)`), a bare symbol (a Bool-typed variable,
+;; referenced truthily), or the literal `true` -- an `or`/`and`/`not`
+;; compound test, or a plain-call-shaped? predicate call, are real,
+;; separate, not attempted here (cond-call-shaped? returns false for
+;; those, falling back to the existing plain-call/alloc/symbol
+;; dispatch, or ultimately emit-tail-symbol's own honest, if wrong-
+;; looking, fallback -- never a crash, never a guess). The LAST clause
+;; MUST be `(true ...)` -- this codebase's own real, universal cond
+;; convention already, and the only way this narrow v0 can guarantee
+;; the emitted if/else chain is exhaustive (a real, separate "control
+;; reaches end of non-void function" problem otherwise).
+
+;; cond-test-supported? -- shared by both the shape-guard
+;; (cond-call-shaped?) and the real emitter (emit-cond-test) below, so
+;; the two can never silently drift out of sync with each other.
+(defn cond-test-supported? [(test-node : &Node) (dest : Arena @ Region)] : Bool
+  (or (emit-is-symbol? test-node "true")
+      (or (binary-op-call-shaped? test-node dest)
+          (= (emit-node-kind-code (get-field test-node :kind)) 3))))
+
+;; emit-cond-test -- a real cond clause's own TEST, emitted as a plain
+;; C boolean/int expression (a real `if (...)` condition needs no
+;; boxing at all, unlike a scalar crossing this emitter's own uniform
+;; char* value/return boundary elsewhere in this file). `true` maps to
+;; the literal `1` -- <stdbool.h> is never included, so the bare
+;; identifier `true` isn't real C here.
+(defn emit-cond-test [(test-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((emit-is-symbol? test-node "true") "1")
+    ((binary-op-call-shaped? test-node dest) (emit-binary-op test-node scope dest))
+    (true (resolve-arena-ref (get-field test-node :text) scope dest))))
+
+(defn cond-clause-shaped? [(clause : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (= (emit-node-kind-code (get-field clause :kind)) 0))
+    false
+    (if (not (= (vec/len &(get-field clause :children)) 2))
+      false
+      (cond-test-supported? (vec/get &(get-field clause :children) 0) dest))))
+
+(defn all-clauses-shaped? [(node : &Node) (i : I32) (dest : Arena @ Region)] : Bool
+  (if (>= i (vec/len &(get-field node :children)))
+    true
+    (if (cond-clause-shaped? (vec/get &(get-field node :children) i) dest)
+      (all-clauses-shaped? node (+ i 1) dest)
+      false)))
+
+(defn last-clause-is-true? [(node : &Node)] : Bool
+  (let [n (vec/len &(get-field node :children))
+        last-clause (vec/get &(get-field node :children) (- n 1))
+        test-node (vec/get &(get-field last-clause :children) 0)]
+    (emit-is-symbol? test-node "true")))
+
+;; cond-call-shaped? -- a real `(cond (test result) ... (true
+;; result))` call this narrow emitter can now support: symbol-headed
+;; "cond", at least one real clause, every clause a real 2-child list
+;; with a supported test, and the LAST clause's own test literally
+;; `true`.
+(defn cond-call-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (and (emit-is-call-named? node "cond")
+       (and (> (vec/len &(get-field node :children)) 1)
+            (and (all-clauses-shaped? node 1 dest)
+                 (last-clause-is-true? node)))))
+
+;; emit-cond-clauses -- real, recursive if/else-if/else chain builder.
+;; A non-last clause emits `if (test) {\n<result>    } else ` and
+;; appends the NEXT clause's own text directly (no extra "else" of its
+;; own -- the CALLER'S trailing "else " already supplies it, chaining
+;; into either the next `if (...)` or the final bare `{...}` block).
+;; The final `(true ...)` clause emits a bare `{\n<result>    }\n`, no
+;; `if`/`else` of its own, matching that expectation exactly. Each
+;; clause's own RESULT is emitted via emit-form itself, recursively --
+;; the same shared entry point every other tail-position case already
+;; goes through, so a clause result that's itself a nested with-arena/
+;; let/alloc/binary-op/plain-call/cond all just work, for free.
+(defn emit-cond-clauses [(node : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [clause (vec/get &(get-field node :children) i)
+        test-node (vec/get &(get-field clause :children) 0)
+        result-node (vec/get &(get-field clause :children) 1)
+        is-last (= (+ i 1) (vec/len &(get-field node :children)))
+        result-c (emit-form result-node scope dest)
+        parts (vec/new dest)]
+    (if is-last
+      (do
+        (vec/push! &parts "{\n")
+        (vec/push! &parts result-c)
+        (vec/push! &parts "    }\n")
+        (emit-join-all &parts dest))
+      (let [test-c (emit-cond-test test-node scope dest)
+            rest-c (emit-cond-clauses node (+ i 1) scope dest)]
+        (do
+          (vec/push! &parts "if (")
+          (vec/push! &parts test-c)
+          (vec/push! &parts ") {\n")
+          (vec/push! &parts result-c)
+          (vec/push! &parts "    } else ")
+          (vec/push! &parts rest-c)
+          (emit-join-all &parts dest))))))
+
+(defn emit-cond [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    ")
+      (vec/push! &parts (emit-cond-clauses node 1 scope dest))
+      (emit-join-all &parts dest))))
+
 (defn emit-form [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((emit-is-call-named? node "with-arena") (emit-with-arena node scope dest))
     ((emit-is-call-named? node "let") (emit-let node scope dest))
     ;; Real, additive tail-position cases (2026-08-28): a bare `alloc`
-    ;; call, a bare binary-op expression, or a plain-call-shaped
-    ;; function call as the WHOLE body (not wrapped in with-arena/let)
-    ;; now emits a real `return <call>;` instead of silently falling
-    ;; through to emit-tail-symbol's own bare-symbol-only shape. Same
-    ;; real dispatch order emit-let-value already establishes for the
-    ;; identical shapes in a let-binding's own value position (alloc
-    ;; checked first as the narrowest, most specific check).
+    ;; call, a bare binary-op expression, a real cond-call-shaped?
+    ;; `cond`, or a plain-call-shaped function call as the WHOLE body
+    ;; (not wrapped in with-arena/let) now emits real C instead of
+    ;; silently falling through to emit-tail-symbol's own bare-symbol-
+    ;; only shape. Same real dispatch order emit-let-value already
+    ;; establishes for the alloc/binary-op/plain-call shapes in a
+    ;; let-binding's own value position (alloc checked first as the
+    ;; narrowest, most specific check); cond is tail-position-ONLY (see
+    ;; its own header comment above), so it's never wired into
+    ;; emit-let-value at all.
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
     ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
+    ((cond-call-shaped? node dest) (emit-cond node scope dest))
     ((plain-call-shaped? node dest) (emit-tail-expr (emit-plain-call node scope dest) dest))
+    ;; Real, separate gap found and closed 2026-08-28 while verifying
+    ;; cond support: a bare NUMBER literal as a tail-position result
+    ;; (a real cond clause's own `10`, or any defn whose whole body is
+    ;; just a literal) fell through to emit-tail-symbol, which emits
+    ;; the literal's own raw text verbatim -- a real, unboxed C `int`
+    ;; returned from a `char *`-declared function, the identical real
+    ;; -Wint-conversion this file's own emit-i32-boxed already exists
+    ;; to fix for binary-op results. Boxed the same way here.
+    ((= (emit-node-kind-code (get-field node :kind)) 6) (emit-tail-expr (emit-i32-boxed (get-field node :text) dest) dest))
     (true (emit-tail-symbol node dest))))
 
 ;; is-vec-call? -- the one real exclusion plain-call-shaped? makes,

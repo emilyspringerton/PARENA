@@ -717,15 +717,51 @@ test binaries + `bazel build //...` all clean.
 Real, honest, still-open scope after all four: `plain-call-shaped?`/`every-call-arg-symbol-or-
 number?` still reject a NESTED call as an argument (`(f (g x))`) -- only a bare symbol or number
 literal is accepted. `binary-op-call-shaped?` is exactly 2-argument, no unary `-`, no `(+ a b c)`
-chains. `match`/`cond` still have no dispatch anywhere in `emit-form` at all -- the single
-largest remaining gap, and (per `handle-symbol-headed-call`'s own header comment in
-`region.prn`) a genuinely harder one: a real tail-position `if`/`else`-chain emission is
-tractable, but `match`/`cond` used as a NON-tail value would need something like GCC's own
-statement-expression extension, incompatible with this whole repo's `-std=c99 -pedantic`
-discipline. And `defstruct` is still not walked at the top level at all -- no `typedef struct`
+chains. And `defstruct` is still not walked at the top level at all -- no `typedef struct`
 emission, no `get-field`/struct-literal-construction support for code the selfhost emitter is
 asked to compile (as opposed to code ABOUT structs living inside the selfhost `.prn` files
 themselves, which the REFERENCE compiler already handles fine, unaffected by any of this).
+
+**Real, TAIL-POSITION-ONLY `cond` support added the same day (2026-08-28)**, closing what was
+the single largest remaining gap: `match`/`cond` had no dispatch anywhere in `emit-form` at all.
+`handle-symbol-headed-call`'s own header comment (`region.prn`) already named the real,
+architectural reason a NON-tail `match`/`cond` (a let-binding's own value, a plain sub-expression)
+is genuinely hard -- their real value production is fundamentally STATEMENT-shaped (real if/else
+blocks), which can't embed inside a single C expression/ternary without something like GCC's own
+statement-expression extension, incompatible with this repo's `-std=c99 -pedantic` discipline. But
+in TAIL position -- exactly where `emit-form` itself dispatches from -- a real if/else-if/else
+chain is genuinely tractable: every clause's own result is already a complete STATEMENT (a
+`return`, via `emit-form` itself, recursively) once wrapped, no expression-position value needed.
+New `cond-call-shaped?`/`emit-cond`/`emit-cond-clauses`/`emit-cond-test`, wired into `emit-form`
+only (never `emit-let-value` -- a `cond` as a let-binding value is exactly the hard, non-tail
+case above, not attempted). Real, honest, narrow v0 scope: `match` itself (defenum tag dispatch,
+needs a real tag registry this emitter doesn't have) is NOT attempted -- `cond` only. A test is
+either a real `binary-op-call-shaped?` comparison, a bare symbol (a Bool-typed variable,
+referenced truthily), or the literal `true`; `or`/`and`/`not` compound tests and a plain-call-
+shaped? predicate call are real, separate, not attempted (falls back honestly, not a wrong
+guess). The LAST clause MUST be `(true ...)` -- this codebase's own real, universal `cond`
+convention already, and the only way this narrow v0 can guarantee the emitted chain is
+exhaustive; a `cond` missing it is deliberately NOT treated as `cond-call-shaped?` at all, falling
+back to the pre-existing honest fallback rather than risking a non-exhaustive if/else chain.
+
+A FIFTH gap was found and fixed while verifying `cond`: a bare NUMBER LITERAL as a tail-position
+result (any `cond` clause's own `10`, or any defn whose whole body is just a literal) fell
+through to `emit-tail-symbol`, which emits the literal's raw text verbatim -- the identical
+unboxed-`int`-into-`char*` problem `emit-i32-boxed` already exists to fix for binary-op results,
+just reached via a different, previously-unexercised path. Boxed the same way, one new `emit-form`
+clause.
+
+4 more new tests (`tests/test_selfhost_emit.c`, 23 total for domain 4): structural assertions on
+the generated if/else-if/else text, a real compile+run+assert-on-all-three-branches check (`tests/
+integration/driver_cond.c`, since a `cond` that merely compiles isn't proof the real branches are
+correct), and a real negative case (no trailing `(true ...)` -- confirmed NOT treated as
+`cond-call-shaped?`, no `if` emitted at all). Zero regressions: full local suite (336 tests) + all
+6 selfhost test binaries + `bazel build //...` all clean.
+
+Real, honest, still-open scope after five: `match` itself (defenum tag dispatch); `cond` as a
+non-tail value (the genuinely hard case above); `or`/`and`/`not` and plain-call-shaped predicate
+calls as a `cond` test; nested calls as call arguments generally (shared with the third gap
+above); `defstruct` still not walked at the top level.
 
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
