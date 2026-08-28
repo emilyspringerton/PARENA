@@ -1177,6 +1177,48 @@ other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument
 attempted); `defstruct` fields typed as another struct/`Vec`/enum; general struct-literal
 construction for a user-defined `defstruct`.
 
+**Real struct-typed struct field support added the same day (2026-08-28)**, closing one of the two
+real gaps the defstruct section's own header comment named the moment defstruct support first
+landed ("a field typed as ANOTHER registered struct ... a real, separate, larger undertaking ... not
+attempted here"). `struct-field-c-type`/`struct-field-supported?`/`struct-field-shaped?`/
+`all-struct-fields-shaped?`/`defstruct-shaped?`/`emit-struct-field`/`emit-struct-fields`/
+`emit-defstruct` all threaded `known-structs` through (the same registry `param-c-type` already
+established recognizing a registered struct name, reused here) — a struct-typed field is now
+recognized and emitted with the real struct's own name as its C type, by value, matching this whole
+file's own real, confirmed struct-param convention exactly. A struct-typed field's own struct must
+be REGISTERED already (declared EARLIER in the file) — not an arbitrary scope choice deferred for
+later, but the SAME real requirement plain C itself imposes on by-value struct nesting: a struct
+containing another BY VALUE needs that other struct's own complete size already known (an incomplete
+type can't be embedded by value), so two structs can never mutually reference each other by value in
+real C either, forward-declared or not.
+
+**Found and fixed a real, small formatting bug while verifying** (confirmed live, not guessed): the
+new struct-lookup branch, copied from `param-c-type`'s own convention (`"Point "`, WITH a trailing
+space, since `emit-params` never adds its own separator), produced a genuine double space
+(`"Point  start;"`) once composed with `emit-struct-field`'s own separate, pre-existing explicit `" "`
+push — harmless to gcc but a real, confirmed divergence from every other field's own real output.
+Fixed by returning the bare struct name (no trailing space) here instead, matching
+`struct-field-c-type`'s own sibling branches' convention exactly (they were never the ones with the
+trailing space to begin with).
+
+7 new tests (`tests/test_selfhost_emit.c`): structural checks confirming the correctly-typed,
+correctly-spaced field declaration and the real, unboxed struct-as-call-argument composition, plus a
+real compile+run+assert check (`tests/integration/driver_struct_field_type.c`) proving a real,
+genuinely nested `Point`-inside-`Line` struct read produces the correct value at runtime through a
+real by-value struct composition (deliberately exercised via the CALL-ARGUMENT position, not tail
+position — a struct-typed field used AS a whole function's own tail-position body would hit a real,
+separate, already-documented, pre-existing gap: `get-field`'s own tail-position dispatch always boxes
+via `emit-i32-boxed`, which only works for a scalar I32/Bool field, not a struct VALUE — not attempted
+or exercised here, not a regression from this change). Zero regressions: full local suite (336 tests)
++ all 6 selfhost domain test binaries + `bazel build`/`bazel test //...` all clean.
+
+Real, honest, still-open scope after this: a general user-defenum tag registry; `match`/`cond` as a
+non-tail value; a match clause body that needs the payload beyond a bare-symbol tail; an I32 (or any
+other non-pointer-shaped) Ok/Err/Some payload; `cond`/`match` as a call argument (by design, not
+attempted); a struct-typed field used as a tail-position return (needs real per-shape unboxing
+beyond emit-i32-boxed's own scalar-only trick); `Vec`/enum-typed `defstruct` fields; general
+struct-literal construction for a user-defined `defstruct`.
+
 **Build system, decided now for when this milestone starts**: founder, real-time: "also when we
 write PARENA in PARENA we want it to all be BAZEL powered." Consistent with `parena-c` itself
 already building on Bazel (`.bazelrc`/`MODULE.bazel`/per-directory `BUILD.bazel`, CI's own primary

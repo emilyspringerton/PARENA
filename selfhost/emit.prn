@@ -1488,66 +1488,93 @@
 
 ;; ---- Real, narrow top-level `defstruct` support (2026-08-28) ----
 ;;
-;; Real, honest v0 scope: only scalar field types (I32, Bool, F64,
-;; String, Arena) -- a field typed as ANOTHER registered struct, a
-;; Vec, or an enum is a real, separate, larger undertaking (needs the
-;; C reference's own much larger real field-type/Vec-elem-hint
-;; tracking, process_defstruct's own real scope in src/emit.c), not
-;; attempted here; a defstruct with any such field is simply not
-;; treated as defstruct-shaped? at all (falls back to the pre-existing
-;; honest "skipped, no typedef emitted" behavior every unsupported
-;; top-level form already gets, never a wrong guess). No struct-
-;; literal construction (`{:field val}`) either -- this pass only lets
-;; an ALREADY-CONSTRUCTED struct value (a real param, matching this
+;; Real, honest v0 scope: scalar field types (I32, Bool, F64, String,
+;; Arena), PLUS (2026-08-28, widened) a field typed as another
+;; ALREADY-REGISTERED struct -- a Vec or an enum field is still a
+;; real, separate, larger undertaking (needs the C reference's own
+;; much larger real field-type/Vec-elem-hint tracking,
+;; process_defstruct's own real scope in src/emit.c), not attempted
+;; here; a defstruct with any such field is simply not treated as
+;; defstruct-shaped? at all (falls back to the pre-existing honest
+;; "skipped, no typedef emitted" behavior every unsupported top-level
+;; form already gets, never a wrong guess). No struct-literal
+;; construction (`{:field val}`) either -- this pass only lets an
+;; ALREADY-CONSTRUCTED struct value (a real param, matching this
 ;; codebase's own real by-value struct-param convention confirmed
 ;; directly against the reference compiler's own output) be READ via
 ;; get-field, not built.
-
-(defn struct-field-c-type [(type-name : String @ Region)] : String @ Region
+;;
+;; A struct-typed field's own struct must be REGISTERED already --
+;; i.e. its own `defstruct` must appear EARLIER in the file, matching
+;; struct-prepass's own real, sequential, one-pass-in-source-order
+;; registration below (registers struct N's own name only AFTER
+;; checking struct N's own shape, so struct N's fields can already see
+;; structs 0..N-1, never N itself or anything later). This isn't an
+;; arbitrary scope choice deferred for later -- it's the SAME real
+;; requirement plain C itself imposes on by-value struct nesting: a
+;; struct containing another BY VALUE needs that other struct's own
+;; real, complete size already known (an incomplete type can't be
+;; embedded by value), so two struct definitions can never mutually
+;; reference each other by value in real C either, forward-declared or
+;; not. A struct-typed field naming a struct that ends up NOT
+;; registered yet (forward or genuinely undefined) simply fails
+;; struct-field-supported? -- the whole defstruct honestly isn't
+;; treated as defstruct-shaped?, not a wrong guess.
+;; Real, small formatting note: unlike param-c-type's own registered-
+;; struct branch (which returns "Point " WITH a trailing space, since
+;; emit-params never adds its own separator), this function's OWN
+;; sibling branches all carry NO trailing space -- emit-struct-field
+;; already inserts its own explicit " " between c-type and c-name.
+;; Matching that same convention here (a bare type-name, no trailing
+;; space) avoids a real, confirmed double-space in the generated
+;; struct field ("Point  start;") -- harmless to gcc but a genuine,
+;; needless divergence from every other field's own real output.
+(defn struct-field-c-type [(type-name : String @ Region) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((string/str-eq? type-name "String") "char *")
     ((string/str-eq? type-name "I32") "int")
     ((string/str-eq? type-name "Bool") "int")
     ((string/str-eq? type-name "F64") "double")
     ((string/str-eq? type-name "Arena") "Arena *")
+    ((vec-contains-string? known-structs type-name 0) type-name)
     (true "")))
 
-(defn struct-field-supported? [(type-name : String @ Region)] : Bool
-  (not (string/str-eq? (struct-field-c-type type-name) "")))
+(defn struct-field-supported? [(type-name : String @ Region) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
+  (not (string/str-eq? (struct-field-c-type type-name known-structs dest) "")))
 
 ;; struct-field-shaped? -- a real `(name : Type)` field list -- exactly
 ;; 3 children (name, colon, type), the type itself one of the real,
-;; supported scalar types above.
-(defn struct-field-shaped? [(field : &Node)] : Bool
+;; supported scalar types above, or an already-registered struct name.
+(defn struct-field-shaped? [(field : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
   (if (not (= (emit-node-kind-code (get-field field :kind)) 0))
     false
     (if (not (= (vec/len &(get-field field :children)) 3))
       false
       (let [type-node (vec/get &(get-field field :children) 2)]
-        (struct-field-supported? (get-field type-node :text))))))
+        (struct-field-supported? (get-field type-node :text) known-structs dest)))))
 
-(defn all-struct-fields-shaped? [(node : &Node) (i : I32)] : Bool
+(defn all-struct-fields-shaped? [(node : &Node) (i : I32) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
   (if (>= i (vec/len &(get-field node :children)))
     true
-    (if (struct-field-shaped? (vec/get &(get-field node :children) i))
-      (all-struct-fields-shaped? node (+ i 1))
+    (if (struct-field-shaped? (vec/get &(get-field node :children) i) known-structs dest)
+      (all-struct-fields-shaped? node (+ i 1) known-structs dest)
       false)))
 
 ;; defstruct-shaped? -- a real top-level `(defstruct Name (f : T)
 ;; ...)` this narrow v0 can support: at least one real field (an empty
 ;; struct is real, valid PARENA but not exercised anywhere in this
 ;; codebase's own real source, not attempted here), every field a
-;; supported scalar type.
-(defn defstruct-shaped? [(node : &Node)] : Bool
+;; supported scalar type or already-registered struct name.
+(defn defstruct-shaped? [(node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : Bool
   (and (emit-is-call-named? node "defstruct")
        (and (> (vec/len &(get-field node :children)) 2)
-            (all-struct-fields-shaped? node 2))))
+            (all-struct-fields-shaped? node 2 known-structs dest))))
 
-(defn emit-struct-field [(field : &Node) (dest : Arena @ Region)] : String @ Region
+(defn emit-struct-field [(field : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field field :children) 0)
         type-node (vec/get &(get-field field :children) 2)
         c-name (mangle (get-field name-node :text) dest)
-        c-type (struct-field-c-type (get-field type-node :text))
+        c-type (struct-field-c-type (get-field type-node :text) known-structs dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts "    ")
@@ -1557,11 +1584,11 @@
       (vec/push! &parts ";\n")
       (emit-join-all &parts dest))))
 
-(defn emit-struct-fields [(node : &Node) (i : I32) (dest : Arena @ Region)] : String @ Region
+(defn emit-struct-fields [(node : &Node) (i : I32) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (if (>= i (vec/len &(get-field node :children)))
     ""
-    (string/concat (emit-struct-field (vec/get &(get-field node :children) i) dest)
-                    (emit-struct-fields node (+ i 1) dest) dest)))
+    (string/concat (emit-struct-field (vec/get &(get-field node :children) i) known-structs dest)
+                    (emit-struct-fields node (+ i 1) known-structs dest) dest)))
 
 ;; emit-defstruct -- `(defstruct Point (x : I32) (y : I32))` -> real
 ;; `typedef struct {\n    int x;\n    int y;\n} Point;\n`, matching
@@ -1570,13 +1597,13 @@
 ;; reference emits one, `Point_new(int x, int y)`) -- this pass only
 ;; supports reading an already-constructed struct via get-field, not
 ;; building one, see this section's own header comment.
-(defn emit-defstruct [(node : &Node) (dest : Arena @ Region)] : String @ Region
+(defn emit-defstruct [(node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field node :children) 1)
         struct-name (get-field name-node :text)
         parts (vec/new dest)]
     (do
       (vec/push! &parts "typedef struct {\n")
-      (vec/push! &parts (emit-struct-fields node 2 dest))
+      (vec/push! &parts (emit-struct-fields node 2 known-structs dest))
       (vec/push! &parts "} ")
       (vec/push! &parts struct-name)
       (vec/push! &parts ";\n")
@@ -1603,11 +1630,12 @@
   (if (>= i (vec/len &(get-field program :children)))
     ""
     (let [form (vec/get &(get-field program :children) i)]
-      (if (defstruct-shaped? form)
-        (let [name-node (vec/get &(get-field form :children) 1)]
+      (if (defstruct-shaped? form known-structs dest)
+        (let [name-node (vec/get &(get-field form :children) 1)
+              struct-c (emit-defstruct form known-structs dest)]
           (do
             (vec/push! known-structs (get-field name-node :text))
-            (string/concat (emit-defstruct form dest) (struct-prepass program (+ i 1) known-structs dest) dest)))
+            (string/concat struct-c (struct-prepass program (+ i 1) known-structs dest) dest)))
         (struct-prepass program (+ i 1) known-structs dest)))))
 
 ;; emit-defn-prototype -- real, narrow forward-declaration support

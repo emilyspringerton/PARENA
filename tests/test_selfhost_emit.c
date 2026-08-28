@@ -1450,6 +1450,78 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real struct-typed struct field support (2026-08-28): closes
+         * one of the two real gaps this file's own defstruct section
+         * header comment named the moment defstruct support first
+         * landed -- "a field typed as ANOTHER registered struct ...
+         * not attempted here". A struct-typed field's own struct must
+         * already be registered (declared earlier in the file) --
+         * the same real requirement plain C itself imposes on by-value
+         * struct nesting (an incomplete type can't be embedded by
+         * value), not an arbitrary scope choice. */
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defstruct Line (start : Point) (end : Point))\n"
+            "(defn point-x [(p : Point)] : I32\n"
+            "  (get-field p :x))\n"
+            "(defn line-start-x [(l : Line)] : I32\n"
+            "  (point-x (get-field l :start)))";
+        Result pr20 = parse_program(snippet, &a);
+        CHECK(pr20.tag == 1, "a real 2-struct, 2-defn program -- Line's own 'start'/'end' fields "
+                              "typed as the already-registered Point struct -- parses fine");
+        if (pr20.tag == 1) {
+            Node program20 = *(Node *)pr20.value;
+            char *generated20 = emit_program(&program20, &a);
+            CHECK(generated20 != NULL && strstr(generated20, "    Point start;\n") != NULL,
+                  "Line's own 'start' field is emitted as a real 'Point start;' -- correctly typed "
+                  "by the already-registered struct name, with exactly ONE space (no double-space "
+                  "regression from struct-field-c-type's own new struct-lookup branch)");
+            CHECK(generated20 != NULL && strstr(generated20, "    Point end;\n") != NULL,
+                  "Line's own 'end' field is emitted correctly too, same real struct type");
+            CHECK(generated20 != NULL && strstr(generated20, "point_x((l).start)") != NULL,
+                  "line-start-x's own body emits a real, correctly-composed C expression -- the "
+                  "real (l).start struct-field read passed straight through as point-x's own "
+                  "Point-typed argument, no boxing (a real struct value can't be reinterpreted "
+                  "through emit-i32-boxed's own intptr_t trick the way a scalar field already is)");
+
+            if (generated20) {
+                char c_path11[300];
+                snprintf(c_path11, sizeof c_path11, "/tmp/parena_selfhost_emit_struct_field_test_%d.c",
+                         (int)getpid());
+                FILE *out11 = fopen(c_path11, "w");
+                CHECK(out11 != NULL, "a real temp file opens to write the struct-field generated C into");
+                if (out11) {
+                    fputs(generated20, out11);
+                    fclose(out11);
+
+                    char bin_path11[310];
+                    snprintf(bin_path11, sizeof bin_path11, "%s.bin", c_path11);
+                    char cmd11[1024];
+                    snprintf(cmd11, sizeof cmd11,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_struct_field_type.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path11, c_path11);
+                    int compile_status11 = system(cmd11);
+                    CHECK(compile_status11 == 0,
+                          "the real struct-field generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_struct_field_type.c");
+                    if (compile_status11 == 0) {
+                        int run_status11 = system(bin_path11);
+                        CHECK(run_status11 == 0,
+                              "the real compiled line-start-x genuinely reads the correct real "
+                              "value through a real nested by-value struct composition -- "
+                              "driver_struct_field_type.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path11);
+                    remove(bin_path11);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
