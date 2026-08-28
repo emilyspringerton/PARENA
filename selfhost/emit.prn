@@ -1610,16 +1610,63 @@
             (string/concat (emit-defstruct form dest) (struct-prepass program (+ i 1) known-structs dest) dest)))
         (struct-prepass program (+ i 1) known-structs dest)))))
 
+;; emit-defn-prototype -- real, narrow forward-declaration support
+;; (2026-08-28, closing a real, honest, previously-flagged gap: this
+;; file used to emit NO prototypes at all, so a callee had to
+;; textually PRECEDE its own caller for the generated C to compile --
+;; confirmed as a real, live limitation while building several of this
+;; file's own recent test fixtures, each one having to work around it
+;; by reordering functions rather than the emitter fixing it). Reuses
+;; the EXACT SAME real signature-building pieces emit-defn's own body
+;; already does (mangle/emit-params/defn-c-return-type) -- a
+;; prototype is just that same signature text followed by `;` instead
+;; of a real `{ body }` block, so there's no new type-resolution logic
+;; here, only a second, narrower use of machinery that already exists.
+;; Matches the C reference emitter's own real, established convention
+;; (`build_defn_prototype`) of emitting a real, always-present
+;; prototype for EVERY top-level defn unconditionally, not just the
+;; ones a dependency analysis would say actually need one -- simpler
+;; and safer than tracking real call-graph order, the same "simple
+;; over optimized" tradeoff this whole codebase already embraces
+;; elsewhere (e.g. selfhost/lexer.prn's own O(n^2) string building).
+(defn emit-defn-prototype [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (let [name-node (vec/get &(get-field defn-node :children) 1)
+        params (vec/get &(get-field defn-node :children) 2)
+        fn-name (mangle (get-field name-node :text) dest)
+        param-info (emit-params params known-structs dest)
+        return-type-c (defn-c-return-type defn-node)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts return-type-c)
+      (vec/push! &parts fn-name)
+      (vec/push! &parts "(")
+      (vec/push! &parts (get-field param-info :text))
+      (vec/push! &parts ");\n")
+      (emit-join-all &parts dest))))
+
+(defn emit-prototypes [(program : &Node) (i : I32) (known-structs : &(Vec String)) (dest : Arena @ Region)]
+  : String @ Region
+  (if (>= i (vec/len &(get-field program :children)))
+    ""
+    (let [form (vec/get &(get-field program :children) i)]
+      (if (emit-is-call-named? form "defn")
+        (string/concat (emit-defn-prototype form known-structs dest)
+                        (emit-prototypes program (+ i 1) known-structs dest) dest)
+        (emit-prototypes program (+ i 1) known-structs dest)))))
+
 ;; emit-program -- real, narrow port of src/emit.c's own top-level
 ;; driver: the real prelude, then every real defstruct's own typedef
 ;; (struct-prepass, in source order, before any defn -- see that
-;; function's own header comment), then every top-level `(defn ...)`
-;; form's own real emitted C, in source order.
+;; function's own header comment), then a real forward-prototype pass
+;; over every top-level defn (2026-08-28, emit-defn-prototype's own
+;; header comment above), then every top-level `(defn ...)` form's own
+;; real emitted C (bodies), in source order.
 (defn emit-program [(program : &Node) (dest : Arena @ Region)] : String @ Region
   (let [header (program-header dest)
         known-structs (vec/new dest)
-        structs-c (struct-prepass program 0 &known-structs dest)]
-    (loop [i 0 acc (string/concat header structs-c dest)]
+        structs-c (struct-prepass program 0 &known-structs dest)
+        prototypes-c (emit-prototypes program 0 &known-structs dest)]
+    (loop [i 0 acc (string/concat header (string/concat structs-c prototypes-c dest) dest)]
       (if (>= i (vec/len &(get-field program :children)))
         acc
         (let [form (vec/get &(get-field program :children) i)]

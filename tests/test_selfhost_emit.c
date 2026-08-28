@@ -1383,6 +1383,73 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real forward-prototype support (2026-08-28): closes a real,
+         * honest, repeatedly-worked-around gap -- this file used to
+         * emit NO prototypes at all, so a callee had to textually
+         * PRECEDE its own caller for the generated C to compile
+         * (several of this same day's own earlier test fixtures had
+         * to reorder their own functions specifically because of
+         * this). Deliberately CALLER-BEFORE-CALLEE order here -- the
+         * exact ordering that used to fail. */
+        char *snippet =
+            "(defn make-buf [(dest : Arena @ :region/buffer)] : String @ Region\n"
+            "  (wrap-buf (alloc dest String \"hello\")))\n"
+            "(defn wrap-buf [(s : String @ Region)] : String @ Region\n"
+            "  s)";
+        Result pr19 = parse_program(snippet, &a);
+        CHECK(pr19.tag == 1, "a real 2-function program, the CALLER (make-buf) defined BEFORE its "
+                              "own callee (wrap-buf), parses fine");
+        if (pr19.tag == 1) {
+            Node program19 = *(Node *)pr19.value;
+            char *generated19 = emit_program(&program19, &a);
+            CHECK(generated19 != NULL && strstr(generated19, "char * make_buf(Arena *dest") != NULL &&
+                  strstr(generated19, ");\n") != NULL,
+                  "a real forward prototype for make-buf is emitted");
+            CHECK(generated19 != NULL && strstr(generated19, "char * wrap_buf(char *s") != NULL,
+                  "a real forward prototype for wrap-buf is emitted too, even though its own "
+                  "definition already textually precedes no one -- every top-level defn gets one "
+                  "unconditionally, matching the C reference emitter's own real, established "
+                  "convention");
+
+            if (generated19) {
+                char c_path10[300];
+                snprintf(c_path10, sizeof c_path10, "/tmp/parena_selfhost_emit_forward_ref_test_%d.c",
+                         (int)getpid());
+                FILE *out10 = fopen(c_path10, "w");
+                CHECK(out10 != NULL, "a real temp file opens to write the forward-ref generated C into");
+                if (out10) {
+                    fputs(generated19, out10);
+                    fclose(out10);
+
+                    char bin_path10[310];
+                    snprintf(bin_path10, sizeof bin_path10, "%s.bin", c_path10);
+                    char cmd10[1024];
+                    snprintf(cmd10, sizeof cmd10,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_forward_ref.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path10, c_path10);
+                    int compile_status10 = system(cmd10);
+                    CHECK(compile_status10 == 0,
+                          "the real caller-before-callee generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_forward_ref.c -- the exact real gcc 'implicit declaration' error "
+                          "this ordering used to trigger is now genuinely gone");
+                    if (compile_status10 == 0) {
+                        int run_status10 = system(bin_path10);
+                        CHECK(run_status10 == 0,
+                              "the real compiled make-buf/wrap-buf pair, in caller-before-callee "
+                              "order, still computes the correct real value -- "
+                              "driver_forward_ref.c's own internal asserts all pass, not just "
+                              "compiles clean");
+                    }
+                    remove(c_path10);
+                    remove(bin_path10);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

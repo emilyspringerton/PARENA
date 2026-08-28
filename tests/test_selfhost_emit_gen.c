@@ -310,6 +310,8 @@ char * emit_struct_fields(Node *, int, Arena *);
 char * emit_defstruct(Node *, Arena *);
 int vec_contains_string_(Vec *, char *, int);
 char * struct_prepass(Node *, int, Vec *, Arena *);
+char * emit_defn_prototype(Node *, Vec *, Arena *);
+char * emit_prototypes(Node *, int, Vec *, Arena *);
 char * emit_program(Node *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -2069,13 +2071,42 @@ char * struct_prepass(Node * program __attribute__((unused)), int i __attribute_
     }
 }
 
+char * emit_defn_prototype(Node * defn_node __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *name_node __attribute__((unused)) = vec_get(&((defn_node)->children), 1);
+    Node *params __attribute__((unused)) = vec_get(&((defn_node)->children), 2);
+    char *fn_name __attribute__((unused)) = mangle((name_node)->text, dest);
+    ParamInfo param_info __attribute__((unused)) = emit_params(params, known_structs, dest);
+    char *return_type_c __attribute__((unused)) = defn_c_return_type(defn_node);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), return_type_c));
+    (void)(vec_push_(&(parts), fn_name));
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), (param_info).text));
+    (void)(vec_push_(&(parts), ");\n"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_prototypes(Node * program __attribute__((unused)), int i __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(&((program)->children)))) {
+    return "";
+    } else {
+    Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
+    if (emit_is_call_named_(form, "defn")) {
+    return concat(emit_defn_prototype(form, known_structs, dest), emit_prototypes(program, (i + 1), known_structs, dest), dest);
+    } else {
+    return emit_prototypes(program, (i + 1), known_structs, dest);
+    }
+    }
+}
+
 char * emit_program(Node * program __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *header __attribute__((unused)) = program_header(dest);
     Vec known_structs __attribute__((unused)) = vec_new(dest);
     char *structs_c __attribute__((unused)) = struct_prepass(program, 0, &(known_structs), dest);
+    char *prototypes_c __attribute__((unused)) = emit_prototypes(program, 0, &(known_structs), dest);
     char * __loop_result_17 __attribute__((unused));
     double i = 0;
-    char * acc = concat(header, structs_c, dest);
+    char * acc = concat(header, concat(structs_c, prototypes_c, dest), dest);
     while (1) {
         if ((i >= vec_len(&((program)->children)))) {
         __loop_result_17 = acc;
