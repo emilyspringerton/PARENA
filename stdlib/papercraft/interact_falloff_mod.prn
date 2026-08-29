@@ -1,0 +1,31 @@
+;; stdlib/papercraft/interact_falloff_mod.prn — real interact damage falloff by distance, closing
+;; packages/common/paper_mesh.h's own honestly-deferred gap: "uniform per-fragment for this first
+;; real pass; falloff by distance is real, later tuning, not needed to prove the technique."
+;;
+;; Real, simple, honest formula -- linear falloff from full damage at the real hit center to zero
+;; at the real edge of the interact radius: effective = base * (1 - dist/radius). VS0 has no F32
+;; parameters yet (ECOWAR/docs/ARENA_API.md's own "Real VS0 limits"), so distance is pre-scaled to
+;; a real, normalized fixed-point permille (dist-permille = round(dist/radius * 1000), 0 = dead
+;; center, 1000 = right at the radius edge) -- host C (packages/common/paper_mesh.h) does the one
+;; real division needed to derive that ratio from real F32 distance/radius, this mod does the rest
+;; of the real decision in pure I32.
+;;
+;; Real, deliberate composition, not replacement: this mod owns ONLY the distance decision. The
+;; existing real material-resistance decision (on-paper-fragment-damage,
+;; paper_fragment_mod.prn) still runs afterward, unchanged, on whatever effective base damage this
+;; mod returns -- each mod owns one real, distinct, separately-testable decision, matching every
+;; other real "mod decides, host composes" split in this monorepo (e.g. the real MOVE-stat boost
+;; and the real slide-jump boost already stack multiplicatively the same deliberate way).
+;;
+;; ABI: packages/common/paper_mesh.h's own paper_mesh_damage_radius calls
+;; on-papercraft-interact-damage-falloff once per fragment within real hit radius, with the real
+;; base damage and that fragment's own real dist-permille, and feeds the real result into the
+;; existing paper_fragment_apply_damage (material resistance) exactly as if it were the original
+;; base damage.
+
+(module papercraft/interact-falloff-mod)
+(export on-papercraft-interact-damage-falloff)
+
+(defn on-papercraft-interact-damage-falloff [(base-damage : I32) (dist-permille : I32)] : I32
+  (let [clamped (if (> dist-permille 1000) 1000 (if (< dist-permille 0) 0 dist-permille))]
+    (/ (* base-damage (- 1000 clamped)) 1000)))
