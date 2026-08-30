@@ -328,9 +328,10 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
                          "       parena analyze <file.prn>                          (VS0 domain 2 -- region analyzer)\n"
-                         "       parena build <file.prn> [file2.prn ...] -o <output.c|output.ts>    (VS0 domain 3 -- "
-                         "C emitter (default), or the real v0 TypeScript emitter if -o ends in .ts; "
-                         "multiple files are combined into one compilation unit, in the order given)\n"
+                         "       parena build <file.prn> [file2.prn ...] -o <output.c|output.ts|output.java>    "
+                         "(VS0 domain 3 -- C emitter (default), or the real v0 TypeScript/Java emitters if -o "
+                         "ends in .ts/.java; multiple files are combined into one compilation unit, in the "
+                         "order given)\n"
                          "       parena fmt [-w] <file.prn> [file2.prn ...]         (re-indent; -w writes in place, "
                          "default prints to stdout)\n"
 #ifdef PARENA_HAS_CI_STATUS
@@ -381,7 +382,7 @@ int main(int argc, char **argv) {
          * arguments, same real, simple convention the single-file form
          * already used. */
         if (argc < 5 || strcmp(argv[argc - 2], "-o") != 0) {
-            fprintf(stderr, "usage: parena build <file.prn> [file2.prn ...] -o <output.c|output.ts>\n");
+            fprintf(stderr, "usage: parena build <file.prn> [file2.prn ...] -o <output.c|output.ts|output.java>\n");
             return 1;
         }
         size_t path_count = (size_t)(argc - 4); /* argv[2..argc-3] are input files */
