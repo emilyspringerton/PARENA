@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-editor-document test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -158,6 +158,15 @@ test-http-router: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_http_router.c \
 		runtime/parena_runtime.c -o /tmp/test_http_router_bin -lm
 	/tmp/test_http_router_bin
+
+# test-editor-document -- real end-to-end verification for stdlib/editor/document.prn (real
+# document management: editor/buffer.prn + papercraft/note_version_mod.prn tied together).
+test-editor-document: build
+	./parena build stdlib/string.prn stdlib/editor/buffer.prn stdlib/papercraft/note_version_mod.prn \
+		stdlib/editor/document.prn -o tests/test_editor_document_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_document.c \
+		runtime/parena_runtime.c -o /tmp/test_editor_document_bin -lm
+	/tmp/test_editor_document_bin
 
 # test-textmate-loader -- real end-to-end verification for stdlib/editor/textmate_loader.prn
 # (the real ".tmLanguage.json" grammar loader, "using text mate files" per founder real-time)

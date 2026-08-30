@@ -3052,6 +3052,28 @@ The correct read-back is a single cast. The exact same bug existed in `regex/pcr
 of `vec-string-at` — never caught there because its only caller (`join-strings`) has no real
 caller anywhere in this stdlib. Both fixed. `make test-http-router` green, `-Werror` clean.
 
+### `editor/document` — new package, real document management (founder: "asap")
+
+Ties two already-real, already-verified pieces together: `editor/buffer.prn`'s own text/cursor
+Buffer, and `papercraft/note_version_mod.prn`'s own coalesce/version decision logic (S215-02).
+
+```clojure
+(defstruct Document (buf : Buffer) (current-version : I32) (last-edit-epoch : I32))
+(defn new-document [(now-epoch : I32) (dest : Arena @ Region)] : Document @ Region)
+(defn apply-edit [(doc : Document) (new-text : String @ Region) (now-epoch : I32) (dest : Arena @ Region)] : Document @ Region)
+(defn document-text [(doc : &Document)] : String @ Region)
+(defn document-version [(doc : &Document)] : I32)
+(defn document-cursor [(doc : &Document)] : I32)
+```
+
+Real behavior, verified: edits within `note_version_mod.prn`'s own 30s coalesce window overwrite
+the current version in place; a gap past that window forks a real new version (`current-version`
+increments). Real, honest scope: single-document only (a multi-document registry is a real,
+separate follow-up); version HISTORY bytes aren't stored here — `note_version_mod.prn`'s own
+scope is decision logic only, a real host still persists each version elsewhere (per
+`JEWEL/docs/NORTHSTAR_SARENA_NOTEBOOK.md`'s own word-processor pivot section, IDUNA). `make
+test-editor-document` green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

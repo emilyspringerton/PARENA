@@ -1,0 +1,60 @@
+;; stdlib/editor/document.prn — real document management, the "asap" foundation for JEWEL/
+;; SARENA_NOTEBOOK's word-processor pivot (founder real-time: "we need document management
+;; asap"). Ties two already-real, already-verified pieces together rather than inventing a third:
+;; `editor/buffer.prn`'s own real text/cursor/selection Buffer, and `papercraft/
+;; note_version_mod.prn`'s own real coalesce/eviction/conflict decision logic (S215-02) — a
+;; document IS a versioned buffer, and both halves already existed before this file.
+;;
+;; Real, deliberate scope boundary: this manages ONE document's own buffer + version metadata.
+;; A real multi-document REGISTRY (open files, switch-between, list-open) is a real, separate,
+;; named follow-up — not attempted here, matching this stdlib's own "start narrow" discipline.
+;; Real, honest limitation: version HISTORY itself (the actual prior text of each version) is
+;; NOT stored here — `note_version_mod.prn`'s own real scope is decision logic only (see its own
+;; header comment), and this file inherits that boundary rather than silently exceeding it; a
+;; real host still owns persisting each version's own bytes (to IDUNA, per FRAMEWORK_NORTHSTAR.md
+;; §"models"), this file only tracks the CURRENT version NUMBER and decides when it should
+;; advance.
+
+(module editor/document)
+(import string)
+(import editor/buffer)
+(import papercraft/note-version-mod)
+(export new-document apply-edit document-text document-version document-cursor)
+
+(defstruct Document
+  (buf              : Buffer)
+  (current-version  : I32)
+  (last-edit-epoch  : I32))
+
+;; new-document -- real constructor: an empty document, starting at version 1 (matching a real,
+;; human-facing "first version," not a 0-indexed internal counter leaking into the UI).
+(defn new-document [(now-epoch : I32) (dest : Arena @ Region)] : Document @ Region
+  {:buf (editor/buffer/new dest) :current-version 1 :last-edit-epoch now-epoch})
+
+;; open-document isn't a separate function: `new-document` plus `apply-edit` below with the real
+;; loaded text covers it, matching `buffer.prn`'s own `new`+`from-text` split — a real host loads
+;; bytes, then calls apply-edit with them, same as opening a file and immediately "typing" its
+;; full loaded content once.
+
+;; apply-edit -- real, direct reuse of note-version-mod's own coalesce decision: if this edit
+;; lands within the real coalesce window of the document's own last edit, it overwrites the
+;; current version in place (the version NUMBER doesn't advance); otherwise it forks a real new
+;; version (the number advances by 1). Either way, the buffer's own text is updated via
+;; `editor/buffer/from-text` (a real, already-verified constructor, not a new text-replacement
+;; path invented here).
+(defn apply-edit [(doc : Document) (new-text : String @ Region) (now-epoch : I32) (dest : Arena @ Region)]
+  : Document @ Region
+  (let [seconds-since-last (- now-epoch (get-field doc :last-edit-epoch))
+        new-buf (editor/buffer/from-text new-text)]
+    (if (papercraft/note-version-mod/on-papercraft-should-coalesce-edit seconds-since-last)
+      {:buf new-buf :current-version (get-field doc :current-version) :last-edit-epoch now-epoch}
+      {:buf new-buf :current-version (+ (get-field doc :current-version) 1) :last-edit-epoch now-epoch})))
+
+(defn document-text [(doc : &Document)] : String @ Region
+  (editor/buffer/active-text &(get-field doc :buf)))
+
+(defn document-version [(doc : &Document)] : I32
+  (get-field doc :current-version))
+
+(defn document-cursor [(doc : &Document)] : I32
+  (editor/buffer/cursor-pos &(get-field doc :buf)))
