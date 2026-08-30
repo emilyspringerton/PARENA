@@ -35,7 +35,7 @@ static const char *build_java(Arena *arena, const char *src, const char *class_n
         *out_error = region_err;
         return NULL;
     }
-    return emit_java(arena, program, class_name, out_error);
+    return emit_java(arena, program, class_name, "", out_error);
 }
 
 int main(void) {
@@ -161,6 +161,29 @@ int main(void) {
         const char *err = NULL;
         const char *java = build_java(&arena, src, "F", &err);
         CHECK(java == NULL, "a let-block body is a real, honest unsupported error, not silently guessed");
+        arena_free_all(&arena);
+    }
+
+    /* --- real, standard Maven/Gradle package-declaration convention: a caller passing a real
+       package name gets a real `package X;` line; empty stays package-less (every test above
+       already covers that default). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn xp-award [] : I32 60)";
+        const char *err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &err);
+        CHECK(program != NULL, "package test: source parses");
+        if (program) {
+            const char *region_err = region_analyze(&arena, program);
+            CHECK(region_err == NULL, "package test: region analysis OK");
+            const char *java = emit_java(&arena, program, "XpAward", "industrial.einhorn.gta7.generated", &err);
+            CHECK(java != NULL, "package test: emits successfully");
+            if (java) {
+                CHECK(strstr(java, "package industrial.einhorn.gta7.generated;\n\n") != NULL,
+                      "real package declaration emitted verbatim when a package name is supplied");
+            }
+        }
         arena_free_all(&arena);
     }
 

@@ -215,6 +215,32 @@ static const char *java_class_name_from_path(Arena *arena, const char *out_path)
     return arena_strdup(arena, base, base_len);
 }
 
+/* java_package_name_from_path -- real, standard Maven/Gradle convention: everything under
+ * "src/main/java/" up to the output file's own directory maps 1:1 to the Java package, slashes
+ * becoming dots (e.g. ".../src/main/java/industrial/einhorn/gta7/generated/Foo.java" ->
+ * "industrial.einhorn.gta7.generated"). Returns an arena-owned string, "" if `out_path` doesn't
+ * contain that marker (no package -- the default/unnamed package, same real behavior as before
+ * this convention was added). Real, narrow: only understands this one, standard layout -- a
+ * caller not using it gets no package declaration, not a guessed-at one. */
+static const char *java_package_name_from_path(Arena *arena, const char *out_path) {
+    static const char MARKER[] = "src/main/java/";
+    const char *marker_pos = strstr(out_path, MARKER);
+    if (!marker_pos) return "";
+    const char *pkg_start = marker_pos + (sizeof(MARKER) - 1);
+    const char *last_slash = NULL;
+    for (const char *p = pkg_start; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (!last_slash || last_slash == pkg_start) return "";
+    size_t pkg_len = (size_t)(last_slash - pkg_start);
+    char *pkg = arena_alloc(arena, pkg_len + 1);
+    for (size_t i = 0; i < pkg_len; i++) {
+        pkg[i] = (pkg_start[i] == '/') ? '.' : pkg_start[i];
+    }
+    pkg[pkg_len] = '\0';
+    return pkg;
+}
+
 static int cmd_build(const char **paths, size_t path_count, const char *out_path) {
     Arena arena;
     arena_init(&arena);
@@ -260,7 +286,8 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         emitted_source = emit_ts(&arena, program, &emit_err);
     } else if (is_java_target) {
         const char *class_name = java_class_name_from_path(&arena, out_path);
-        emitted_source = emit_java(&arena, program, class_name, &emit_err);
+        const char *package_name = java_package_name_from_path(&arena, out_path);
+        emitted_source = emit_java(&arena, program, class_name, package_name, &emit_err);
     } else {
         emitted_source = emit_c(&arena, program, &emit_err);
     }

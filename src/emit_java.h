@@ -50,6 +50,12 @@
  * sets *out_error to an arena-owned message naming the unsupported form -- never emits partial or
  * guessed-at Java for something it doesn't actually understand, same real discipline emit_c and
  * emit_ts already established. */
-const char *emit_java(Arena *arena, Node *program, const char *class_name, const char **out_error);
+/* package_name: a real, standard Java package name (e.g. "industrial.einhorn.gta7.generated"), or
+ * NULL/"" for no package declaration (the default/unnamed package) -- matches Maven/Gradle's own
+ * standard "everything under src/main/java/<package/path>/" convention, letting a caller in a
+ * consuming repo like GTA7's own plugin/src/main/java/ actually import the generated class from
+ * a real, named package rather than being stuck in the unnamed package a named-package caller
+ * can never import from (a real, hard Java rule, not a style preference). */
+const char *emit_java(Arena *arena, Node *program, const char *class_name, const char *package_name, const char **out_error);
 
 #endif /* PARENA_EMIT_JAVA_H */
