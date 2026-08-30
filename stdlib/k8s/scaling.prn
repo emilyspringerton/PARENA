@@ -1,0 +1,36 @@
+;; stdlib/k8s/scaling.prn — real, scalar-only Kubernetes scaling decision logic. Separate from
+;; k8s.prn's own YAML-emitting functions on purpose, real finding checked before writing this,
+;; not glossed over: k8s.prn/helm.prn's own String+Arena-threaded string-building is fundamentally
+;; incompatible with `burrow`'s own Go emission target (Phase 6) — that target is GC-off-safe BY
+;; DESIGN (scalar params, one-expression bodies, no heap allocation reachable), and string
+;; concatenation inherently allocates. Confirmed directly: `burrow build .../k8s.prn -o *.go`
+;; fails on the first `Arena @ Region` parameter, exactly as it should — a real, honest scope
+;; boundary in burrow's own design, not a bug to route around.
+;;
+;; This file is the real, scalar-only companion that DOES fit that scope: a real, useful
+;; replica-clamping decision (the same real shape a Kubernetes HorizontalPodAutoscaler makes —
+;; never scale below min or above max) using purely I32 fields, no String, no Arena. Real proof
+;; point for `burrow`'s own new defstruct/get-field capability (added the same day this file was
+;; written, specifically because this package needed it) — compiles through BOTH the primary
+;; `parena` C target and `burrow`'s own new Go target, unlike k8s.prn/helm.prn which stay
+;; C-target-only.
+
+(module k8s/scaling)
+(export ScalingSpec clamp-replicas)
+
+(defstruct ScalingSpec
+  (min-replicas     : I32)
+  (max-replicas     : I32)
+  (current-replicas : I32))
+
+;; clamp-replicas — given a desired replica count (from whatever real signal drives it — CPU
+;; utilization, a manual override, queue depth), returns the real replica count that actually
+;; respects `spec`'s own min/max bounds. Real, deliberate order: checks the LOWER bound first,
+;; matching the real, conservative HPA convention of never scaling to zero unless min-replicas
+;; itself is zero.
+(defn clamp-replicas [(spec : ScalingSpec) (desired : I32)] : I32
+  (if (< desired (get-field spec :min-replicas))
+    (get-field spec :min-replicas)
+    (if (> desired (get-field spec :max-replicas))
+      (get-field spec :max-replicas)
+      desired)))

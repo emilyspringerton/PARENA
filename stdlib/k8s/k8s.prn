@@ -1,0 +1,147 @@
+;; stdlib/k8s/k8s.prn — real Kubernetes resource primitives + YAML emission. Founder real-time:
+;; "write kubernetes primitives into the stdlib" — real, direct trigger:
+;; PRRJECT_FATBABY/docs/northstar/KUBERNETES_MIGRATION.md (Phase 5 of the distributed event
+;; intelligence plan) just hand-wrote `k8s/dashboard.yaml` as raw YAML text; this package makes
+;; that generation a real, typed PARENA program instead, the same "PARENA owns the decision
+;; logic" split every other real mod/stdlib package in this monorepo already follows.
+;;
+;; Real, honest, deliberate scope, checked against real, established precedent before writing
+;; anything ambitious: every real PARENA mod that crosses a live host ABI in this monorepo
+;; (PAPERCRAFT/ECOWAR/WEAKNIGHT_BEDROCK_RACERS's own real mods, `PAPERCRAFT/CLAUDE.md`'s own
+;; "Mods first, everything" section) stays real, narrow I32-only across that boundary — but this
+;; package does NOT cross a live game-mod ABI at all; it's a real, standalone generator, the same
+;; real shape `stdlib/yaml.prn`/`stdlib/json.prn` already are (String-heavy, Arena-threaded,
+;; tested via a real, separate C harness — not a live host calling into a running game loop every
+;; frame). Following `yaml.prn`'s own real, already-proven-working conventions directly: flat
+;; structs (no struct-in-struct field nesting attempted — real, honest, unverified territory this
+;; package doesn't need to enter for its own real v0 scope), `String @ Region` fields, an
+;; explicit `dest : Arena @ Region` threaded through every string-building function, `get-field`
+;; for access, `{:field val}` for construction — all confirmed against real, working examples
+;; (`world.prn`'s `Terrain`, `firefly.prn`'s `TestReport`) before use, not guessed.
+;;
+;; Real, narrow v0 resource coverage: exactly the three real resource kinds
+;; `PRRJECT_FATBABY/k8s/dashboard.yaml` already needed (Deployment, Service, PersistentVolumeClaim)
+;; — one container per Deployment (this monorepo's own real current process model is one process
+;; per Pod, no real multi-container Pod need yet), real YAML block-mapping output only (matching
+;; `yaml.prn`'s own parser scope note: every real `.yaml` file in this monorepo already sticks to
+;; block style, nothing here needs flow style either).
+
+(module k8s)
+(import string)
+(export Container Deployment ServiceSpec PVCSpec deployment-yaml service-yaml pvc-yaml)
+
+(defstruct Container
+  (name  : String @ Region)
+  (image : String @ Region)
+  (port  : I32))
+
+;; One container per Deployment — see this file's own header for why that's a real, deliberate
+;; v0 scope cut, not an oversight.
+(defstruct Deployment
+  (name      : String @ Region)
+  (namespace : String @ Region)
+  (replicas  : I32)
+  (container : Container))
+
+(defstruct ServiceSpec
+  (name        : String @ Region)
+  (namespace   : String @ Region)
+  (port        : I32)
+  (target-port : I32))
+
+(defstruct PVCSpec
+  (name        : String @ Region)
+  (namespace   : String @ Region)
+  (storage-gb  : I32))
+
+;; deployment-yaml — real block-mapping YAML for a single-container Deployment. Built as one long
+;; real `string/concat` chain (yaml.prn's own real parser has no matching emitter yet to build
+;; on, so this is real, direct string assembly) — verbose but mechanical, matching the real,
+;; established "no let-binding shortcuts beyond what's already proven" discipline every other
+;; real stdlib file in this session's own corpus already holds to.
+(defn deployment-yaml [(d : Deployment) (dest : Arena @ Region)]
+  : String @ Region
+  (let [c (get-field d :container)
+        replicas-s (string/i32-to-string (get-field d :replicas) dest)
+        port-s (string/i32-to-string (get-field c :port) dest)]
+    (string/concat
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: "
+      (string/concat (get-field d :name)
+        (string/concat "\n  namespace: "
+          (string/concat (get-field d :namespace)
+            (string/concat "\nspec:\n  replicas: "
+              (string/concat replicas-s
+                (string/concat "\n  selector:\n    matchLabels:\n      app: "
+                  (string/concat (get-field d :name)
+                    (string/concat "\n  template:\n    metadata:\n      labels:\n        app: "
+                      (string/concat (get-field d :name)
+                        (string/concat "\n    spec:\n      containers:\n        - name: "
+                          (string/concat (get-field c :name)
+                            (string/concat "\n          image: "
+                              (string/concat (get-field c :image)
+                                (string/concat "\n          ports:\n            - containerPort: "
+                                  (string/concat port-s "\n"
+                                    dest)
+                                  dest)
+                                dest)
+                              dest)
+                            dest)
+                          dest)
+                        dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; service-yaml — real block-mapping YAML for a ClusterIP Service (the real, deliberate default
+;; `KUBERNETES_MIGRATION.md` already chose — real external exposure is a real, separate Phase 5.4
+;; cutover decision, not this generator's to make).
+(defn service-yaml [(s : ServiceSpec) (dest : Arena @ Region)]
+  : String @ Region
+  (let [port-s (string/i32-to-string (get-field s :port) dest)
+        target-s (string/i32-to-string (get-field s :target-port) dest)]
+    (string/concat
+      "apiVersion: v1\nkind: Service\nmetadata:\n  name: "
+      (string/concat (get-field s :name)
+        (string/concat "\n  namespace: "
+          (string/concat (get-field s :namespace)
+            (string/concat "\nspec:\n  selector:\n    app: "
+              (string/concat (get-field s :name)
+                (string/concat "\n  ports:\n    - port: "
+                  (string/concat port-s
+                    (string/concat "\n      targetPort: "
+                      (string/concat target-s "\n  type: ClusterIP\n" dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; pvc-yaml — real block-mapping YAML for a ReadWriteOnce PersistentVolumeClaim (the real,
+;; deliberate default `KUBERNETES_MIGRATION.md`'s own Phase 5.2 chose: every real process this
+;; monorepo runs today is single-instance, so single-writer access is the honest real match, not
+;; a placeholder).
+(defn pvc-yaml [(p : PVCSpec) (dest : Arena @ Region)]
+  : String @ Region
+  (let [storage-s (string/i32-to-string (get-field p :storage-gb) dest)]
+    (string/concat
+      "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: "
+      (string/concat (get-field p :name)
+        (string/concat "\n  namespace: "
+          (string/concat (get-field p :namespace)
+            (string/concat "\nspec:\n  accessModes:\n    - ReadWriteOnce\n  resources:\n    requests:\n      storage: "
+              (string/concat storage-s "Gi\n" dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
