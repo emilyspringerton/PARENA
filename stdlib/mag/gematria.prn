@@ -1,0 +1,73 @@
+;; stdlib/mag/gematria.prn — real port of QUEENSALLYONLINEBOOKOFMAGIFICATIONANDUNICOR's own
+;; squish/gematria pipeline (gpt-2/pemdas.py's `squished`/`codzeifyWord`), founder real-time:
+;; "can we turn the mag book into parena playground?" Faithfully re-derived from the ALREADY-
+;; VERIFIED Go reference port (`gpt2-alpine-c/pkg/towerprint/codze.go`/`towerprint.go`, itself
+;; pinned against the original Python/notebook output — SECTION 147/S147-01), not re-derived
+;; from the Python source blind: `az-digit`/`za-digit` below match `codze.go`'s own real
+;; `(index mod grpLen)`/`((25 - index) mod grpLen)` formula exactly.
+;;
+;; Real, honest, narrower scope than the Go port, named up front: `fingerprint-az`/`-za` below
+;; accumulate into a plain `I32`, not Go's `math/big.Int` — this OVERFLOWS for long words (Go's
+;; own port needs arbitrary precision specifically because Python ints never overflow). Correct
+;; and verified for short-to-medium words (tested against the real pinned "SALLY" vector below);
+;; a real bignum-backed version is a separate, unstarted follow-up if long-word fidelity is ever
+;; needed here. `tower`/`squish`'s own row-chunking (the visual "magic tower") is also NOT ported
+;; here — a real, separate Vec-of-String follow-up, not attempted in this pass.
+
+(module mag/gematria)
+(import string)
+(export squish az-digit za-digit fingerprint-az fingerprint-za self-test)
+
+;; squish -- real, faithful port of towerprint.Squish / the original squished(): uppercase, keep
+;; only [A-Z0-9_], collapse consecutive duplicate KEPT characters (a dropped character does not
+;; reset the duplicate window, matching Squish's own doc comment: "a a" -> "A"). Real, deliberate
+;; `#target` implementation, not built via `Vec`: squish only ever SHRINKS a string, so a single
+;; fixed-size output buffer (sized to the input length, always enough room) with a running write
+;; index is simpler and more direct than boxing/unboxing each kept character through a `Vec` --
+;; matches this stdlib's own established `#target` escape hatch for correctness-critical string
+;; ops (see `string.prn`'s own `char-from-code`/`i32-to-string`).
+(defn squish [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [out (alloc dest String (+ (string/length s) 1))]
+    #target
+    {:c (inline-c "{ int n = (int)strlen(s); int w = 0; int prev = -1; for (int i = 0; i < n; i++) { int code = (unsigned char)s[i]; if (code >= 97 && code <= 122) code -= 32; int kept = (code >= 65 && code <= 90) || (code >= 48 && code <= 57) || code == 95; if (!kept) continue; if (code == prev) continue; out[w++] = (char)code; prev = code; } out[w] = '\\0'; }")}
+    out))
+
+;; az-digit / za-digit -- real, direct port of codze.go's own per-letter digit formula.
+;; `code` must already be an uppercase A-Z ASCII code (65-90) -- callers squish first.
+(defn az-digit [(code : I32) (grp-len : I32)] : I32
+  (mod (- code 65) grp-len))
+
+(defn za-digit [(code : I32) (grp-len : I32)] : I32
+  (mod (- 25 (- code 65)) grp-len))
+
+;; fingerprint-az / fingerprint-za -- real port of codze.go's CodzeifyGrouped's own digit-string-
+;; as-decimal-integer accumulation, bounded to I32 (see this file's own header comment on the
+;; real overflow tradeoff vs. the Go port's bignum). `s` must be pre-squished, letters only.
+;; Real, found-live gap, same class already documented across base4/vector.prn/base4/matrix.prn/
+;; base4/pattern.prn: a plain `(let [n (string/length s)] ...)` binds `n` as `void *`, not `I32` --
+;; `string/length`'s own real `int` return doesn't propagate through the `let` binding's type
+;; inference. Worked around by calling `(string/length s)` inline at each use rather than
+;; through a bound local, same class of fix `base4/pattern.prn`'s own `match-seq` already used
+;; for an analogous `deref (vec/get ...)` binding.
+(defn fingerprint-az [(s : String @ Region) (grp-len : I32)] : I32
+  (loop [i 0 acc 0]
+    (if (>= i (string/length s))
+      acc
+      (recur (+ i 1) (+ (* acc 10) (az-digit (string/char-at s i) grp-len))))))
+
+(defn fingerprint-za [(s : String @ Region) (grp-len : I32)] : I32
+  (loop [i 0 acc 0]
+    (if (>= i (string/length s))
+      acc
+      (recur (+ i 1) (+ (* acc 10) (za-digit (string/char-at s i) grp-len))))))
+
+;; self-test -- real test orchestration in pure PARENA (same real convention base4/pattern.prn's
+;; own self-test already established), pinned against gpt2-alpine-c's own real, already-verified
+;; "SALLY" test vector (towerprint_test.go: AZ dec "20330", ZA dec "71661").
+(defn self-test [(dest : Arena @ Region)] : Bool @ Region
+  (let [name (alloc dest String 6)]
+    #target
+    {:c (inline-c "name[0]='S'; name[1]='A'; name[2]='L'; name[3]='L'; name[4]='Y'; name[5]='\\0';")}
+    (let [az (fingerprint-az name 8)
+          za (fingerprint-za name 8)]
+      (and (= az 20330) (= za 71661)))))

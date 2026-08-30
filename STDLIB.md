@@ -3017,3 +3017,29 @@ this document.
 
 - `NORTHSTAR.md` — "Standard library" section names this same gap; this doc is that gap's actual
   design pass. "Core idioms" section is the source of all five grounded function calls above.
+
+### `mag/gematria` — new package, PARENA playground port of the "mag book"
+
+Founder real-time: "can we turn the mag book into parena playground?" Real port of
+`QUEENSALLYONLINEBOOKOFMAGIFICATIONANDUNICOR`'s squish/gematria pipeline, re-derived from the
+already-verified Go reference (`gpt2-alpine-c/pkg/towerprint`, itself pinned against the original
+Python/notebook output — SECTION 147/S147-01), not re-derived from Python blind.
+
+```clojure
+(defn squish [(s : String @ Region) (dest : Arena @ Region)] : String @ Region)
+(defn az-digit [(code : I32) (grp-len : I32)] : I32)
+(defn za-digit [(code : I32) (grp-len : I32)] : I32)
+(defn fingerprint-az [(s : String @ Region) (grp-len : I32)] : I32)
+(defn fingerprint-za [(s : String @ Region) (grp-len : I32)] : I32)
+```
+
+Real, honest, narrower than the Go port: `fingerprint-az`/`-za` accumulate into a plain `I32`,
+not Go's `math/big.Int` — overflows for long words, correct and verified for short-to-medium
+ones. `squish` is a deliberate `#target` implementation (fixed-size output buffer, single write
+index) rather than built via `Vec`, since squish only ever shrinks a string. Real, found-live
+compiler gap, same class already documented across `base4/*.prn`: a plain
+`(let [n (string/length s)] ...)` binds `n` as `void *`, not `I32` — worked around by calling
+`(string/length s)` inline at each use. `self-test` pinned against `towerprint_test.go`'s own
+real "SALLY" vector (AZ dec `20330`, ZA dec `71661`) — verified exact match. `make
+test-mag-gematria` green, `-Werror` clean. Tower/row-chunking (the visual "magic tower") not
+ported — a real, separate follow-up.
