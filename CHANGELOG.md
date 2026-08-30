@@ -1,4 +1,5 @@
 ## 2026-08-30
+- New stdlib/papercraft/item_drop_mod.prn, inventory_mod.prn, pickup_mod.prn -- GTA3 item-drop + FFXI inventory decision logic (sess-20260825-1938-f6bd411e)
 
 - New stdlib/papercraft/phone_mod.prn -- TYLER phone mechanics Phase 1 decision logic (sess-20260825-1938-f6bd411e)
 
