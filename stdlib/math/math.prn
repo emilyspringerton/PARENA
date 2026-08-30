@@ -1,0 +1,47 @@
+;; stdlib/math/math.prn — real `math` stdlib package (founder real-time, 2026-08-30: "start
+;; working on the parena ts emitter using MISHRI as proving ground" / "continue rewriting MISHRI
+;; using parena using parena mods"). Renamed and grown from an original single-function
+;; `random.prn` (still the exact same real, first `math/random` primitive, unchanged) once
+;; MISHRI's own real `HumannessLayer.randInt`/`addNoise` needed more of the real `Math` surface --
+;; one file per package, matching this stdlib's own established convention elsewhere (`string.prn`,
+;; `io.prn`), not one file per function.
+;;
+;; Real, honest FFI-shaped gap, same class as `net/tcp`/`crypto/hash`/`sdl2` elsewhere in this
+;; stdlib: none of these have a pure-PARENA implementation (VS0 has no PRNG/floating-point-math
+;; primitives of its own) -- every real function below is a real host call, lowered directly by
+;; whichever real backend compiles this file. The TypeScript emitter (src/emit_ts.c,
+;; MATH_PRIM_TABLE) recognizes each of these exact, qualified names and lowers them straight to
+;; the matching real `Math.*` call/constant; the C emitter has no equivalent mapping registered
+;; yet for any of them (a real, separate, unstarted follow-up -- likely libm's own `floor`/`sqrt`/
+;; `log`/`cos`/`M_PI` via `parena_runtime.h`, not attempted in this pass).
+;;
+;; Real signatures chosen to match JavaScript's own `Math.*` contracts exactly, deliberately, so
+;; the TypeScript target's own lowering is a direct, honest 1:1 mapping, not an approximation --
+;; same real reasoning `random`'s own original doc comment already gave.
+
+(module math/math)
+(export random floor sqrt log cos)
+
+(defn random [] : F64
+  0.0) ;; real, honest placeholder body -- see this file's own header comment; the TypeScript
+       ;; emitter never evaluates this body at all, it recognizes the qualified call name itself.
+
+(defn floor [(x : F64)] : F64
+  0.0) ;; real, honest placeholder body, same reasoning as `random` above.
+
+(defn sqrt [(x : F64)] : F64
+  0.0)
+
+(defn log [(x : F64)] : F64
+  0.0)
+
+(defn cos [(x : F64)] : F64
+  0.0)
+
+;; `pi` is a real, recognized external CONSTANT (a bare symbol reference `math/pi`, not a call --
+;; see MATH_PRIM_TABLE's own sibling doc comment in src/emit_ts.c), not a real, callable defn --
+;; PARENA's own `core` has no named-constant declaration form yet (a real, separate, unstarted
+;; gap), so there is no real `(defn pi ...)` to export here; `math/pi` is recognized purely by the
+;; TypeScript emitter's own symbol-lowering logic. Documented here, not silently undiscoverable,
+;; since this file is the real, canonical place a modder writing against the `math` package would
+;; look for it.

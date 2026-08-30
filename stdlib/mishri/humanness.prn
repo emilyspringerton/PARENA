@@ -1,0 +1,37 @@
+;; stdlib/mishri/humanness.prn — real, second slice of MISHRI's own `HumannessLayer.ts` ported to
+;; PARENA (founder real-time, 2026-08-30: "continue rewriting MISHRI using parena using parena
+;; mods"). Real, faithful ports, not invented: `chance`/`random-int`/`gaussian-noise` are MISHRI's
+;; own real `chance`/`randInt`/`addNoise` methods, term for term, still within this v0 TypeScript
+;; emitter's own real, narrow scope (a single expression body, no `let` needed -- see each real
+;; function's own doc comment below for why the original's `const` bindings collapse cleanly).
+;;
+;; ABI: every function here is a pure, real, scalar decision -- `chance`/`random-int` are
+;; genuinely stateless; `gaussian-noise` takes the caller's own `value`/`sigma` inputs directly
+;; (MISHRI's own real `HumannessLayer.addNoise` is a plain method with no `this`-state dependency
+;; either, so this is a real, exact 1:1 port, not a simplification).
+
+(module mishri/humanness)
+(export chance random-int gaussian-noise)
+
+;; Real port of `chance(probability = 0.5)`: `Math.random() < probability`.
+(defn chance [(probability : F64)] : Bool
+  (< (math/random) probability))
+
+;; Real port of `randInt(min, max)`: `Math.floor(min + Math.random() * (max - min + 1))`.
+(defn random-int [(min : F64) (max : F64)] : F64
+  (math/floor (+ min (* (math/random) (+ (- max min) 1)))))
+
+;; Real port of `addNoise(value, sigma = 0.05)` — Box-Muller gaussian noise:
+;;   u1 = Math.random(); u2 = Math.random()
+;;   z  = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2)
+;;   return value + z * sigma
+;; Real, deliberate: the original's own `u1`/`u2` `const` bindings each appear in exactly ONE
+;; place in the rest of the body (`u1` only inside the `log` call, `u2` only inside the `cos`
+;; call) -- collapsing them into two separate, inline `(math/random)` calls at their own single
+;; real use sites is mathematically identical to the original (two independent real draws either
+;; way), not an approximation, and needs no `let` at all.
+(defn gaussian-noise [(value : F64) (sigma : F64)] : F64
+  (+ value
+     (* (* (math/sqrt (* -2.0 (math/log (math/random))))
+           (math/cos (* 2.0 (* math/pi (math/random)))))
+        sigma)))

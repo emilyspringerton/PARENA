@@ -104,6 +104,30 @@ static const char *resolve_ts_type(Node *type_sym, const char **out_error) {
     return NULL;
 }
 
+/* MATH_PRIM_TABLE -- the real, recognized external math/ primitives this v0 lowers directly
+   to a real host `Math.*` call, same real "FFI-shaped gap, explicitly named, not silently
+   guessed" reasoning every other stdlib package with a real host dependency already documents
+   (net/tcp, the crypto packages, sdl2). Grown from the original single `math/random` entry
+   (2026-08-30, founder real-time: "continue rewriting MISHRI using parena using parena mods") to
+   cover the real, additional primitives MISHRI's own `HumannessLayer.randInt`/`addNoise` need --
+   see stdlib/math/math.prn's own doc comment for each real, matching PARENA-side signature. */
+typedef struct { const char *prn_name; const char *ts_fn; int arg_count; } MathPrimEntry;
+static const MathPrimEntry MATH_PRIM_TABLE[] = {
+    {"math/random", "Math.random", 0},
+    {"math/floor", "Math.floor", 1},
+    {"math/sqrt", "Math.sqrt", 1},
+    {"math/log", "Math.log", 1},
+    {"math/cos", "Math.cos", 1},
+};
+#define MATH_PRIM_TABLE_COUNT (sizeof(MATH_PRIM_TABLE) / sizeof(MATH_PRIM_TABLE[0]))
+
+static const MathPrimEntry *find_math_prim(const char *name) {
+    for (size_t i = 0; i < MATH_PRIM_TABLE_COUNT; i++) {
+        if (strcmp(MATH_PRIM_TABLE[i].prn_name, name) == 0) return &MATH_PRIM_TABLE[i];
+    }
+    return NULL;
+}
+
 /* BINOP_TABLE -- the real, narrow arithmetic/comparison/logical operator set this v0 recognizes,
    same real set the C emitter's own binop dispatch understands for this exact 2-operand shape
    (see PAPERCRAFT's own xp_award_mod.prn/item_drop_mod.prn/inventory_mod.prn for the real,
@@ -144,6 +168,11 @@ static const char *emit_ts_expr(Arena *arena, Node *expr, const char **out_error
     }
 
     if (expr->type == NODE_SYMBOL) {
+        /* math/pi -- the one real, recognized external CONSTANT this v0 knows (distinct from the
+           MATH_PRIM_TABLE calls above -- a bare symbol reference, not a call), lowered directly
+           to Math.PI. Checked before the generic camel_case fallback so it isn't mistaken for a
+           local parameter reference. */
+        if (strcmp(expr->text, "math/pi") == 0) return "Math.PI";
         return camel_case(arena, expr->text);
     }
 
@@ -194,16 +223,30 @@ static const char *emit_ts_expr(Arena *arena, Node *expr, const char **out_error
         return result;
     }
 
-    /* math/random -- the one real, recognized external primitive this v0 lowers directly to a
-       real host call, same real "FFI-shaped gap, explicitly named, not silently guessed" reasoning
-       every other stdlib package with a real host dependency already documents (net/tcp, the
-       crypto packages, sdl2). Zero args, matching stdlib/math/random.prn's own real signature. */
-    if (strcmp(head, "math/random") == 0) {
-        if (expr->child_count != 1) {
-            *out_error = "emit_ts: math/random takes no arguments";
+    /* Real, recognized external math primitives -- the table above. */
+    const MathPrimEntry *math_prim = find_math_prim(head);
+    if (math_prim) {
+        size_t got_args = expr->child_count - 1;
+        if ((int)got_args != math_prim->arg_count) {
+            *out_error = "emit_ts: math primitive called with the wrong number of arguments";
             return NULL;
         }
-        return "Math.random()";
+        TsBuf b;
+        tb_init(&b);
+        tb_appendf(&b, "%s(", math_prim->ts_fn);
+        for (size_t i = 1; i < expr->child_count; i++) {
+            if (i > 1) tb_append(&b, ", ");
+            const char *arg = emit_ts_expr(arena, expr->children[i], out_error);
+            if (!arg) {
+                tb_free(&b);
+                return NULL;
+            }
+            tb_append(&b, arg);
+        }
+        tb_append(&b, ")");
+        const char *result = arena_strdup(arena, b.data, b.len);
+        tb_free(&b);
+        return result;
     }
 
     /* Otherwise: a real call to another top-level defn in the same generated file. */

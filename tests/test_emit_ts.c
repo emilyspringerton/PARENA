@@ -97,6 +97,42 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real, grown math-primitive table (2026-08-30, "continue rewriting MISHRI using parena
+       using parena mods") -- the exact real shape stdlib/mishri/humanness.prn's own
+       randInt/addNoise use --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn rand-int [(lo : F64) (hi : F64)] : F64\n"
+            "  (math/floor (+ lo (* (math/random) (+ (- hi lo) 1)))))\n"
+            "(defn full-turn [] : F64 (* 2 math/pi))\n"
+            "(defn gauss [(u1 : F64) (u2 : F64)] : F64\n"
+            "  (* (math/sqrt (* -2 (math/log u1))) (math/cos (* 2 (* math/pi u2)))))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "math/floor + math/pi + math/sqrt + math/log + math/cos all emit successfully");
+        if (ts) {
+            CHECK(strstr(ts, "Math.floor(") != NULL, "math/floor lowers to Math.floor");
+            CHECK(strstr(ts, "Math.PI") != NULL, "math/pi lowers to the real Math.PI constant, not a camelCased identifier");
+            CHECK(strstr(ts, "Math.sqrt(") != NULL, "math/sqrt lowers to Math.sqrt");
+            CHECK(strstr(ts, "Math.log(") != NULL, "math/log lowers to Math.log");
+            CHECK(strstr(ts, "Math.cos(") != NULL, "math/cos lowers to Math.cos");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest failure case: a math primitive called with the wrong arity --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : F64 (math/floor 1 2))"; /* math/floor takes exactly 1 arg */
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts == NULL, "a math primitive called with the wrong arity is a real, honest error, not silently accepted");
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest failure case: an Arena/region-annotated parameter is NOT understood by
        this v0 (TypeScript is garbage-collected -- see emit_ts.h's own doc comment for why this
        is a deliberate scope boundary, not a bug) --- */

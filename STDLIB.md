@@ -2713,19 +2713,28 @@ pass, along with all 84 of MISHRI's own test assertions total.
 ### `math` — new package, depends on `core` only
 
 ```clojure
-(defn random [] : F64)   ; real FFI-shaped gap, no pure-PARENA PRNG exists yet -- the TypeScript
-                          ; emitter recognizes this exact call and lowers it to Math.random()
-                          ; directly (see stdlib/math/random.prn's own doc comment); no C-emitter
-                          ; mapping registered yet, real separate follow-up
+(defn random [] : F64)     ; real FFI-shaped gap, no pure-PARENA PRNG exists yet
+(defn floor  [(x : F64)] : F64)
+(defn sqrt   [(x : F64)] : F64)
+(defn log    [(x : F64)] : F64)
+(defn cos    [(x : F64)] : F64)
+;; `pi` -- a real, recognized external CONSTANT (bare symbol `math/pi`, not a call), no defn to
+;; export -- PARENA's own `core` has no named-constant declaration form yet.
 ```
 
-Real, deliberately minimal first slice — only what `bezier_interp.prn` above genuinely needed.
+The TypeScript emitter recognizes each of these exact, qualified names (`MATH_PRIM_TABLE`,
+`src/emit_ts.c`) and lowers them directly to the matching real `Math.*` call/constant; no
+C-emitter mapping registered for any of them yet, a real, separate follow-up. Grew from an
+original single-function `random.prn` (renamed `math.prn` once `floor`/`sqrt`/`log`/`cos`/`pi`
+were added for `mishri/humanness`'s own real `gaussian-noise`/`random-int` below — one file per
+package, matching `string.prn`/`io.prn`'s own established convention, not one file per function).
 **Real, designed-not-built follow-up** (not attempted this pass): a `vec3` sub-package
 (`math/vec3` — `new`/`add`/`subtract`/`scale`/`distance-to`/`normalize`, mirroring the real `vec3`
 npm package MISHRI's own `MovementManager.ts`/`SkillManager.ts` already depend on for 3D position
 math) — the one genuinely reusable, non-MISHRI-specific numeric package a real "MISHRI deps"
 audit surfaces, matching `array`/`linalg`'s own real "small, composable numeric package" shape
-already established above, not attempted in this pass since `bezier_interp.prn` didn't need it.
+already established above, not attempted in this pass since neither `bezier_interp.prn` nor
+`humanness.prn` needed it.
 
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
@@ -2734,15 +2743,23 @@ what's actually built vs. designed:
 
 1. **`mishri/bezier-interp`** — depends on `math` only. **Real, built, TS-emitter-verified** (see
    above).
-2. **`mishri/humanness`** — depends on `math`, `mishri/bezier-interp`. Design only: the rest of
-   MISHRI's own real `HumannessLayer.ts` (`addNoise`/`delay`/`throttleAPM`/`maybeTypo`/mood-state
-   transitions). Real, honest blocker for `delay`/`throttleAPM`: both are genuinely
-   `Promise`/`setTimeout`-based (async control flow) — PARENA/VS0 has no async primitive of any
-   kind yet, a real, separate, much bigger gap than this pass's own scalar-expression scope
-   (closer to `thread`/`otp/gen-server`'s own real FFI-to-OS-primitives shape above than to
-   anything `math`/`bezier-interp` needed). `maybeTypo`'s own real QWERTY-adjacency table is a
-   real `Map`-shaped lookup (this v0 emitter has no struct/map/String-indexing support at all
-   yet) — real, separate, narrower blockers than the async one, but still genuinely unstarted.
+2. **`mishri/humanness`** — depends on `math`, `mishri/bezier-interp`. **Real, partially built**
+   (2026-08-30, founder real-time: "continue rewriting MISHRI using parena using parena mods"):
+   `chance`/`random-int`/`gaussian-noise` (MISHRI's own real `chance`/`randInt`/`addNoise`) are
+   real, TS-emitter-compiled, and live in MISHRI's own production TypeScript source — the same
+   real verification bar `bezier-interp` set (bit-for-bit identical against the original across
+   many cases, `Math.random()` mocked deterministically, MISHRI's own full test suite still
+   green). Grew `math`'s own real primitive table (`floor`/`sqrt`/`log`/`cos`/`pi`) to support
+   `gaussian-noise`'s own real Box-Muller body — its original `u1`/`u2` `const` bindings each
+   appear in exactly one place in the rest of the body, so they collapse into two inline
+   `(math/random)` calls with zero `let` needed, same real technique `bezier-interp`'s own
+   collapsed `offset`/`mid`/`u` bindings already used. **Still real, design-only, and still
+   genuinely blocked**: `delay`/`throttleAPM` (`Promise`/`setTimeout`-based async control flow —
+   PARENA/VS0 has no async primitive of any kind yet, closer to `thread`/`otp/gen-server`'s own
+   real FFI-to-OS-primitives shape above than to anything built so far) and `maybeTypo` (a real
+   `Map`-shaped QWERTY-adjacency lookup — this v0 emitter has no struct/map/String-indexing
+   support at all yet). Neither blocker is closer to resolved than before this pass — the real
+   progress here is everything that DIDN'T need them.
 3. **`mishri/movement`** — depends on `math/vec3` (design only, see above), `mishri/humanness`.
    Design only: `MovementManager.ts`'s own real pathfinding-offset/manual-walk decision logic.
    Real blocker: genuinely needs `mishri/humanness`'s own `delay`/async support first.
@@ -2758,10 +2775,11 @@ what's actually built vs. designed:
    honestly the furthest-out tier — none of these are close to buildable against this v0 emitter's
    own current, real, narrow scope.
 
-**Real, current status, not overclaimed**: one real function (`bezier-interp`) is built,
-TS-emitter-compiled, and live in MISHRI's own production TypeScript source. Everything else in
-this section is real, dependency-ordered design — the honest next real increments, not built yet,
-same "real status" discipline the main package list's own status notes already use throughout
+**Real, current status, not overclaimed**: four real functions (`bezier-interp`, `chance`,
+`random-int`, `gaussian-noise`) are built, TS-emitter-compiled, and live in MISHRI's own
+production TypeScript source. Everything else in this section is real, dependency-ordered
+design — the honest next real increments, not built yet, same "real status" discipline the main
+package list's own status notes already use throughout
 this document.
 
 ## Related
