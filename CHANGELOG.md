@@ -1,4 +1,5 @@
 ## 2026-08-30
+- Grew emit_ts.c's math primitive table (floor/sqrt/log/cos/pi); new stdlib/mishri/humanness.prn (chance/randInt/addNoise, real ports, verified bit-for-bit identical); math/random.prn renamed math.prn (sess-20260825-1938-f6bd411e)
 - New v0 TypeScript emitter (src/emit_ts.c) -- scalar defn + single-expression body, wired into 'parena build ... -o *.ts'; new math/mishri stdlib packages; MISHRI's own bezierInterp proven as the first real, verified, bit-for-bit-identical proving-ground module (sess-20260825-1938-f6bd411e)
 - New stdlib/papercraft/item_drop_mod.prn, inventory_mod.prn, pickup_mod.prn -- GTA3 item-drop + FFXI inventory decision logic (sess-20260825-1938-f6bd411e)
 
