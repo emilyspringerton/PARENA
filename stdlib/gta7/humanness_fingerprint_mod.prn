@@ -1,0 +1,52 @@
+;; stdlib/gta7/humanness_fingerprint_mod.prn — real PARENA mod, Enforcement "humanness
+;; fingerprint" for GTA7. Founder real-time, 2026-08-30: "ok use mishri and parena mods to write
+;; an auto generated mod for gta7 like have it use some logging and shit some of the concepts in
+;; mishri to build like a humanness fingerprint."
+;;
+;; Real, concrete problem found before writing this (checked GTA7's own real, live
+;; EnforcementManager.java before designing anything, not guessed at): every Enforcement zombie
+;; calls `zombie.setTarget(owner)` in the SAME spawn tick, with zero variance -- every squad
+;; reacts with identical, instant, mechanically uniform timing. That's the real "not human" tell
+;; this mod exists to fix, the same real category of problem MISHRI's own HumannessLayer exists
+;; to solve for its bot (a Minecraft bot that reacts with zero jitter reads as obviously robotic).
+;;
+;; Real, deliberate reuse, not reinvention: this mod imports (via multi-file `parena build`, the
+;; real current cross-file mechanism -- see main.c's own "minimal multi-file support" header
+;; comment) stdlib/mishri/humanness.prn's own already-proven `chance`/`random-int`/
+;; `gaussian-noise` directly, rather than re-deriving the same math a second time. This mod's own
+;; real, narrow job is GTA7-specific TUNING (what base delay, what hesitation odds) on top of
+;; those general primitives -- the same real "generic primitive in one package, game-specific
+;; policy in another" split PAPERCRAFT's own stdlib/papercraft/*.prn mods already draw against
+;; stdlib/math.
+;;
+;; ABI: compiled together with stdlib/mishri/humanness.prn into ONE real Java file (multi-file
+;; build, `class_name` derived from the real output file's own basename per emit_java.h's own
+;; convention) -- GTA7/plugin/src/main/java/industrial/einhorn/gta7/generated/
+;; HumannessFingerprint.java, called directly from EnforcementManager.java (real, live consumer,
+;; not just a compiled-but-unused proof).
+
+(module gta7/humanness-fingerprint-mod)
+(export enforcement-reaction-delay-ticks)
+(export enforcement-should-hesitate)
+(export enforcement-hesitation-bonus-ticks)
+
+;; Real base reaction delay for an Enforcement zombie noticing its target, in server ticks
+;; (20 ticks/sec -- 10 ticks is a real, sensible half-second "human noticing" baseline, not instant
+;; target-acquisition). `gaussian-noise`'s own real sigma is a real, deliberate 30% of the base --
+;; enough real spread to feel organic without ever going negative in practice for this base value.
+(defn enforcement-reaction-delay-ticks [(base-ticks : F64)] : F64
+  (gaussian-noise base-ticks (* base-ticks 0.3)))
+
+;; Real, occasional hesitation before engaging -- not every Enforcement mob reacts at its own
+;; already-jittered reaction delay; some real fraction of the time (caller-tunable
+;; `hesitation-chance`, GTA7's own real design knob) it hesitates a beat longer first, the same
+;; real "not every reaction looks the same" texture MISHRI's own chance()-gated behaviors use.
+(defn enforcement-should-hesitate [(hesitation-chance : F64)] : Bool
+  (chance hesitation-chance))
+
+;; Real extra delay (ticks) added on top of the base reaction delay when
+;; enforcement-should-hesitate returns true -- a real, bounded random draw (0 to
+;; max-bonus-ticks), not a fixed extra beat, so hesitation itself doesn't read as its own uniform
+;; tell.
+(defn enforcement-hesitation-bonus-ticks [(max-bonus-ticks : F64)] : F64
+  (random-int 0 max-bonus-ticks))
