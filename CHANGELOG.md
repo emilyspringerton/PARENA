@@ -1,3 +1,7 @@
+## 2026-08-30
+
+- New stdlib/papercraft/phone_mod.prn -- TYLER phone mechanics Phase 1 decision logic (sess-20260825-1938-f6bd411e)
+
 ## 2026-08-28 (continued, struct-literal Option field + region-annotation field bug)
 - stdlib/papercraft/talent_mod.prn: real talent-point allocation gate, ported from SHANKPIT_CONSTRUCT.txt's own progression_try_allocate. (sess-20260825-1938-f6bd411e)
 - stdlib/papercraft/paper_fragment_mod.prn: real material-aware damage + threshold-based damage-tier decision logic for PAPERCRAFT's own Paper Engine destructible-geometry system. (sess-20260825-1938-f6bd411e)
