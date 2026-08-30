@@ -2821,6 +2821,50 @@ claimed: `AND`/`OR` give cycle length 1 for every start (both idempotent, `a&a=a
 gives 1 or 2, `ADD` gives 1, 2, or 4, all hand-traced and asserted in `tests/test_base4.c` (24
 assertions, `make test-base4`, `-Werror` clean).
 
+### `base4/vector` — new package, LO's real Phase 1 stdlib target
+
+Founder real-time, 2026-08-30: "continue working on lo adding to the stdlib libs necessary to
+make the language actually function... theoretically ffi into parena is acceptable if it
+satisfies the design." `LO/NORTHSTAR.md`'s own phased plan names LO/`qi` as emitting real `.prn`
+text that calls INTO existing PARENA stdlib rather than LO's compiler hand-generating base4 bit
+logic inline — this package is that real target for `LO/GRAMMAR.md`'s §5.1 `Arith` operators and
+§5.3 `EQ`/`DOT` applied to vectors (base4/algebra.prn only ever covered bare scalars).
+
+```clojure
+(defn dimlen [(v : &(Vec I32))] : I32)                                            ;; alias over vec/len
+(defn vec-eq [(a : &(Vec I32)) (b : &(Vec I32))] : Bool)
+(defn vec-xor [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option (Vec I32)) @ Region)
+(defn vec-and [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option (Vec I32)) @ Region)
+(defn vec-or  [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option (Vec I32)) @ Region)
+(defn vec-add [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option (Vec I32)) @ Region)
+(defn vec-subtract [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option (Vec I32)) @ Region)
+(defn dot [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)] : (Option I32) @ Region)
+```
+
+**Real, deliberate scope boundary**: covers elementwise vector ops, equality, and dot product only
+— GRAMMAR.md §5.2's `STACK`/`MATMUL` (matrix construction/multiplication) and §5.4's PCRE-lite
+pattern matcher are real, separately-sized follow-ups (`LO/BACKLOG` S208-03/S208-04), not attempted
+here, same "start narrow" discipline as every other package in this file.
+
+**Real design decision the source material never made**: `dot` needs a real multiply-then-
+accumulate definition and `LoLanguageSpec.pdf` only ever names the operator (🎯), never defines
+real multiplication over the 4-symbol state space. This package's own choice: base4-AND as
+elementwise "multiply" (the one op of the five that behaves like a real product on the 2-bit
+encoding), folded with base4-ADD (mod-4 accumulate) as the "sum" — flagged as this file's own
+call, not the source's, in `vector.prn`'s own header comment.
+
+**Real, genuine compiler gap found while building this, same class linalg.prn's own header
+already documents (not a new bug, a new confirmed instance)**: `dot`'s loop accumulator seeded
+from the integer literal `0` gets C-typed `double` by VS0's emitter, so its `Some acc` boxing goes
+through `double_box`, not an I32 box — the real generated C silently violates `dot`'s own declared
+`(Option I32)` return type. Confirmed directly in `tests/test_base4_vector.c`: a hand-traced dot
+product of `2` reads back as `0` via the only correct-per-signature `int*` cast, and only recovers
+`2.0` via the wrong `double*` cast. **Not fixed here** — same real, cross-cutting loop-variable/
+number-literal type-inference change linalg.prn's own header already named as out of scope for a
+single-file pass. `vec-xor`/`vec-and`/`vec-or`/`vec-add`/`vec-subtract`/`vec-eq`/`dimlen` do NOT
+hit this (none box a loop-seeded scalar through `Some`/`Ok` directly) and are real, verified
+end-to-end: 24 assertions, `make test-base4-vector`, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

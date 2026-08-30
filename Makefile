@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -88,6 +88,17 @@ test-base4: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_base4.c \
 		runtime/parena_runtime.c -o /tmp/test_base4_bin -lm
 	/tmp/test_base4_bin
+
+# test-base4-vector -- real end-to-end verification for stdlib/base4/vector.prn, the LO/GRAMMAR.md
+# Phase 1 stdlib slice (founder real-time, 2026-08-30: "continue working on lo adding to the
+# stdlib libs necessary to make the language actually function"). Confirms a real, live compiler
+# bug in the same class linalg.prn's own header already documents (loop-accumulator int literals
+# silently boxed as double) -- see vector.prn's own doc comment on `dot`.
+test-base4-vector: build
+	./parena build stdlib/base4/algebra.prn stdlib/base4/vector.prn -o tests/test_base4_vector_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_base4_vector.c \
+		runtime/parena_runtime.c -o /tmp/test_base4_vector_bin -lm
+	/tmp/test_base4_vector_bin
 
 # test-textmate-loader -- real end-to-end verification for stdlib/editor/textmate_loader.prn
 # (the real ".tmLanguage.json" grammar loader, "using text mate files" per founder real-time)

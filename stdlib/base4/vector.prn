@@ -1,0 +1,147 @@
+;; stdlib/base4/vector.prn — depends on vec, base4/algebra. Real Phase 1 stdlib slice for LO
+;; (LO/GRAMMAR.md's own §5.1/§5.2 operator set), not a general-purpose linalg package: LO/NORTHSTAR
+;; is explicit that LO/qi emits real .prn text calling INTO existing PARENA stdlib rather than
+;; LO's own compiler hand-generating base4 bit-ops inline every time ("FFI into PARENA is
+;; acceptable if it satisfies the design" — founder real-time, 2026-08-30). This file is that
+;; target: the real, callable primitives LO's Phase 1 compiler (LO/NORTHSTAR.md Phase 1, not yet
+;; built) will emit calls to for `➕ ➖ 🔗 🔮 🔀` applied to two LO vectors, `` (EQ) between two
+;; vectors, and `🎯` (dot product) — the ops GRAMMAR.md's `Arith`/`Cond` productions define but
+;; base4/algebra.prn only ever implemented over bare scalars.
+;;
+;; Real, deliberate scope boundary, named rather than silently assumed: this file does NOT cover
+;; GRAMMAR.md §5.2's `STACK`/`MATMUL` (matrix construction/multiplication) or §5.4's PCRE pattern-
+;; matcher (`MATCH` + the wildcard/star/anchor/group token set) — both are real, separately-sized
+;; pieces of work (matrix needs a shape convention decision this file doesn't need to make yet;
+;; the PCRE-lite matcher is a real backtracking engine over base4 vectors, not an elementwise op).
+;; Logged as LO/NORTHSTAR.md follow-ups (S208-03 matrix, S208-04 pattern-match) rather than
+;; attempted here and left half-verified — same "start narrow, real, verified" discipline every
+;; other stdlib package in this repo already documents.
+;;
+;; Real design decision GRAMMAR.md's own §5.1 left open and this file has to actually make:
+;; `dot` needs a real multiply-then-accumulate definition, and the source material
+;; (LoLanguageSpec.pdf) never gives one beyond naming the operator (🎯) — it only defines
+;; addition/subtraction/AND/OR/XOR over the 4-symbol state space, no real multiplication. This
+;; file's own real choice: base4-AND as the elementwise "multiply" (the natural analog already
+;; present in the algebra — AND, like multiplication over {0,1}, is idempotent-under-identity and
+;; the only one of the five ops that behaves like a real product on the 2-bit encoding), folded
+;; with base4-ADD (mod-4 accumulate) as the "sum." Flagged here, not asserted as the source's own
+;; intent — a founder call if a different accumulation is wanted once LO actually needs one.
+
+(module base4/vector)
+(import vec)
+(import base4/algebra)
+(export dimlen vec-eq vec-xor vec-and vec-or vec-add vec-subtract dot)
+
+;; dimlen -- GRAMMAR.md's DIMLEN (⚖️), a thin, LO-named alias over vec/len rather than a new
+;; concept: LO's own "dimension reader" is exactly the existing Vec length primitive.
+(defn dimlen [(v : &(Vec I32))] : I32
+  (vec/len v))
+
+;; vec-eq -- GRAMMAR.md's EQ (🟰, provisional glyph — see GRAMMAR.md §1.3) applied to two vectors:
+;; real structural equality, short-circuiting on the first mismatched element or a length
+;; mismatch (GRAMMAR.md §5.1's own "mismatched vector lengths are a compile-time error" is a
+;; parse-time/Phase-1-compiler concern, not this runtime primitive's — at the value level, unequal
+;; lengths are simply not equal, the same as any other structural equality).
+(defn vec-eq [(a : &(Vec I32)) (b : &(Vec I32))] : Bool
+  (if (not (= (vec/len a) (vec/len b)))
+    false
+    (loop [i 0]
+      (if (>= i (vec/len a))
+        true
+        (if (not (= (deref (vec/get a i)) (deref (vec/get b i))))
+          false
+          (recur (+ i 1)))))))
+
+;; vec-xor/and/or/add/subtract -- five real, deliberately near-identical elementwise loops rather
+;; than one shared higher-order helper: a cross-module function reference
+;; (`base4/algebra/base4-xor`) used as a first-class VALUE (not a direct call) is not accepted by
+;; the compiler as of this session (`parena: unknown identifier 'base4/algebra/base4-xor'`,
+;; confirmed live) — a real, narrower boundary than same-module higher-order calls
+;; (`base4-iterate`'s own `op` parameter, called plain-unqualified within `base4/algebra.prn`
+;; itself, already works). Matches the same "explicit loop, no captured closures" discipline
+;; `stdlib/regex/pcre.prn`'s own header comment already documents fighting around VS0's real
+;; `fn`-capture limitation — a direct, real call at each site instead of chasing a shared-helper
+;; abstraction the compiler doesn't support cross-module yet.
+
+(defn vec-xor [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option (Vec I32)) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (let [out (vec/new dest)]
+      (loop [i 0]
+        (when (< i (vec/len a))
+          (vec/push! &mut out (base4/algebra/base4-xor (deref (vec/get a i)) (deref (vec/get b i))))
+          (recur (+ i 1))))
+      (Some out))))
+
+(defn vec-and [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option (Vec I32)) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (let [out (vec/new dest)]
+      (loop [i 0]
+        (when (< i (vec/len a))
+          (vec/push! &mut out (base4/algebra/base4-and (deref (vec/get a i)) (deref (vec/get b i))))
+          (recur (+ i 1))))
+      (Some out))))
+
+(defn vec-or [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option (Vec I32)) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (let [out (vec/new dest)]
+      (loop [i 0]
+        (when (< i (vec/len a))
+          (vec/push! &mut out (base4/algebra/base4-or (deref (vec/get a i)) (deref (vec/get b i))))
+          (recur (+ i 1))))
+      (Some out))))
+
+(defn vec-add [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option (Vec I32)) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (let [out (vec/new dest)]
+      (loop [i 0]
+        (when (< i (vec/len a))
+          (vec/push! &mut out (base4/algebra/base4-add (deref (vec/get a i)) (deref (vec/get b i))))
+          (recur (+ i 1))))
+      (Some out))))
+
+(defn vec-subtract [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option (Vec I32)) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (let [out (vec/new dest)]
+      (loop [i 0]
+        (when (< i (vec/len a))
+          (vec/push! &mut out (base4/algebra/base4-subtract (deref (vec/get a i)) (deref (vec/get b i))))
+          (recur (+ i 1))))
+      (Some out))))
+
+;; dot -- GRAMMAR.md's DOT (🎯). See this file's own header comment for the real "AND-then-ADD"
+;; design decision this makes on the source material's behalf. None on a length mismatch, same
+;; convention as elementwise above.
+;;
+;; Real, honest, CONFIRMED-NOT-just-suspected bug, same class linalg.prn's own header comment
+;; already documents for matmul/transpose: `acc`'s `0` integer-literal seed makes the loop
+;; variable C-typed `double` (VS0's own real, cross-cutting "no int/float distinction on number
+;; literals" behavior), so `Some acc`'s boxing goes through `double_box`, not an I32 box — verified
+;; directly in `tests/test_base4_vector.c`: a real dot product of 2 reads back as `0` via the
+;; correct `(Option I32)` int-cast, and only recovers the real `2.0` if the caller (wrongly, per
+;; this function's own declared type) reads the payload as a double. **Do not trust `dot`'s return
+;; value from generated C yet** — same real, not-attempted-here fix linalg.prn names (loop-
+;; variable/number-literal type inference is a genuinely cross-cutting compiler change, not a
+;; one-file patch). `vec-xor`/`vec-and`/`vec-or`/`vec-add`/`vec-subtract`/`vec-eq`/`dimlen` above
+;; do NOT hit this — none of them box a loop-seeded scalar through `Some`/`Ok` (`vec-eq`/`dimlen`
+;; return unboxed `Bool`/`I32` directly; the elementwise ops box each element via the real
+;; `base4-*` scalar functions' own I32 return, never the loop counter itself) — all seven are
+;; real, verified end-to-end in `tests/test_base4_vector.c`.
+(defn dot [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option I32) @ Region
+  (if (not (= (vec/len a) (vec/len b)))
+    None
+    (loop [i 0 acc 0]
+      (if (>= i (vec/len a))
+        (Some acc)
+        (recur (+ i 1)
+               (base4/algebra/base4-add acc (base4/algebra/base4-and (deref (vec/get a i)) (deref (vec/get b i)))))))))
