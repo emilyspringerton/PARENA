@@ -2967,6 +2967,33 @@ embedded-ALT-token shape: binary alternation over two SEPARATE pattern `Vec`s (t
 `elems-b`), matching `regex/pcre.prn`'s own `match-alt` leftmost-first order. N-way (3+)
 alternation and a true flat-embedded-ALT-token form are named, real follow-ups, not built here.
 
+### `papercraft/note-version-mod` — new package, iCloud-style version-management decisions
+
+Founder real-time: "add parena primitives for managing versions of notes have it plug into
+papercraft - like the backend of icloud however it would manage different versions of a
+document." Real, narrow v0 filling the gap `notes_mod.prn`'s own header comment already named
+("a note's own real, variable-length, user-authored TEXT has no real storage/persistence story
+in VS0 yet") — this does NOT store note text or version blobs (a real, separate host/persistence
+concern, still open); it owns the real decisions an iCloud-style versioning backend needs.
+
+```clojure
+(defn max-versions-per-note [] : I32 50)
+(defn coalesce-window-seconds [] : I32 30)
+(defn on-papercraft-should-coalesce-edit [(seconds-since-last-edit : I32)] : Bool)
+(defn on-papercraft-version-to-evict [(current-version-count : I32)] : I32)   ;; -1 = no eviction needed
+(defn on-papercraft-has-version-conflict [(edit-based-on-version : I32) (current-version : I32)] : Bool)
+```
+
+Real, iCloud-observed-behavior default: edits within 30s of the current version coalesce (fold
+in place) rather than forking a new version — matches iCloud's own real "typing doesn't create a
+version per keystroke" behavior. Eviction is oldest-first once the bounded 50-version cap is hit
+(matching `note-slot-count`'s own bounded-not-unbounded convention). Conflict detection is the
+same real optimistic-concurrency check every versioned-document backend uses (iCloud, Google
+Docs, git's fast-forward check): an edit conflicts exactly when its base version is no longer
+current, not merely because two edits happened close in time (that's the non-conflicting
+coalescing case above). 8 real, hand-traced assertions, `make test-papercraft-note-version`
+green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

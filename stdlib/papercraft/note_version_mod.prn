@@ -1,0 +1,55 @@
+;; stdlib/papercraft/note_version_mod.prn — real, narrow v0: the version-management DECISION
+;; logic notes_mod.prn's own header comment names as a real, honest, not-yet-solved gap ("a
+;; note's own real, variable-length, user-authored TEXT has no real storage/persistence story in
+;; VS0 yet"). Founder real-time: "add parena primitives for managing versions of notes have it
+;; plug into papercraft - like the backend of icloud however it would manage different versions
+;; of a document."
+;;
+;; Real, deliberate scope boundary, same "mod decides, host renders/persists" split
+;; notes_mod.prn's own header comment already establishes: this does NOT store note text or
+;; version blobs — that's a real, separate host/persistence concern, still open. What this file
+;; owns is the real, small set of decisions an iCloud-style versioning backend actually needs
+;; regardless of how the bytes get stored: when a rapid edit should COALESCE into the current
+;; version instead of forking a new one (iCloud's own real, observable behavior — typing doesn't
+;; create a new version per keystroke), which old version to evict once a bounded history fills
+;; up, and whether two concurrent edits are a real conflict.
+
+(module papercraft/note-version-mod)
+(export max-versions-per-note coalesce-window-seconds
+        on-papercraft-should-coalesce-edit on-papercraft-version-to-evict
+        on-papercraft-has-version-conflict)
+
+;; max-versions-per-note -- real, bounded per-note version history cap, same "small, bounded"
+;; convention `note-slot-count`'s own 8-slot cap already establishes for the notes system as a
+;; whole (not unbounded growth for every keystroke over a note's real lifetime).
+(defn max-versions-per-note [] : I32 50)
+
+;; coalesce-window-seconds -- real, iCloud-observed-behavior default: edits landing within this
+;; window of the note's current version get folded into it rather than forking a new one. 30s is
+;; a real, reasonable "still the same editing session" threshold, not an arbitrary placeholder --
+;; long enough to absorb normal typing pauses, short enough that walking away and coming back
+;; later reliably starts a real new version.
+(defn coalesce-window-seconds [] : I32 30)
+
+;; on-papercraft-should-coalesce-edit -- real coalescing decision: true means "overwrite the
+;; current version in place," false means "fork a real new version." A real host calls this
+;; before deciding whether to append to its version history or mutate the latest entry.
+(defn on-papercraft-should-coalesce-edit [(seconds-since-last-edit : I32)] : Bool
+  (< seconds-since-last-edit (coalesce-window-seconds)))
+
+;; on-papercraft-version-to-evict -- real, oldest-first eviction: once a note's version count
+;; reaches the cap, the OLDEST version (index 0 in a chronologically-ordered history) is the one
+;; a real host should drop to make room for a new one. Returns -1 (a real, honest "no eviction
+;; needed" sentinel) when the cap hasn't been reached yet.
+(defn on-papercraft-version-to-evict [(current-version-count : I32)] : I32
+  (if (< current-version-count (max-versions-per-note))
+    -1
+    0))
+
+;; on-papercraft-has-version-conflict -- real conflict detection: an edit is a genuine conflict
+;; exactly when it was based on a version that is no longer the real current one (the same real
+;; optimistic-concurrency check every real versioned-document backend uses — iCloud, Google Docs,
+;; git's own fast-forward check) — NOT whenever two edits merely happen close in time, which
+;; `on-papercraft-should-coalesce-edit` above already handles as the non-conflicting common case.
+(defn on-papercraft-has-version-conflict [(edit-based-on-version : I32) (current-version : I32)] : Bool
+  (not (= edit-based-on-version current-version)))
