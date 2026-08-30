@@ -2772,6 +2772,55 @@ output isn't wired into any live consumer yet (MISHRI is a TypeScript codebase, 
 is a real, deliberate "one PARENA source, three real compiled targets" compiler-capability proof,
 not a live integration, matching the founder's own repeated "verified, not just written" bar.
 
+### `base4` — new package, real port of `examples/engine.py.txt`'s own symbolic algebra
+
+Founder uploaded `examples/engine.py.txt` directly to this repo (a real, complete "CUSTOM BASE-4 /
+BINARY ALGEBRA LAB" — a 4-symbol alphabet `0`/`1`/`-`/`+` mapped to 2-bit values `00`/`01`/`10`/
+`11`, explored as a base-4 number system, a symbolic algebra, and a state machine), then: "add to
+parena stdlibs."
+
+```clojure
+(defn symbol-zero  [] : I32 0)   ;; the four named symbol codes -- a symbol IS its own I32 value
+(defn symbol-one   [] : I32 1)
+(defn symbol-minus [] : I32 2)
+(defn symbol-plus  [] : I32 3)
+
+(defn base4-xor [(a : I32) (b : I32)] : I32)       ;; real bit-xor reuse, no reimplementation
+(defn base4-and [(a : I32) (b : I32)] : I32)       ;; real bit-and reuse
+(defn base4-or  [(a : I32) (b : I32)] : I32)       ;; real bit-or reuse
+(defn base4-add [(a : I32) (b : I32)] : I32)       ;; (mod (+ a b) 4)
+(defn base4-subtract [(a : I32) (b : I32)] : I32)  ;; (mod (+ (- a b) 4) 4) -- see below
+
+(defn base4-iterate [(start : I32) (op : (Fn [I32 I32] I32)) (steps : I32)] : I32)
+(defn base4-cycle-length [(start : I32) (op : (Fn [I32 I32] I32))] : I32)
+```
+
+**Real, narrow v0 scope, deliberate**: ports the algebra core the Python original's own closing
+message names as the actually interesting question ("what happens when we define different
+operations over these four states") — NOT the base-4-number/binary-stream generation, frequency
+counting, or substring pattern search, which are real, separate, string/Vec-heavy exploratory
+display code, not stdlib-primitive shaped. `base4-xor`/`base4-and`/`base4-or` are direct reuse of
+PARENA's own existing `bit-xor`/`bit-and`/`bit-or` primitives — no reimplementation needed, since
+each symbol already IS its own real 2-bit `I32` value.
+
+**Real, deliberate correctness fix over a naive transliteration**: `base4-subtract` uses
+`(mod (+ (- a b) 4) 4)`, not the bare `(mod (- a b) 4)` a literal reading of the Python original's
+own `(av - bv) % 4` might suggest — Python's `%` always returns a non-negative result for a
+positive modulus, but PARENA's `mod` compiles to C's own `%`, which returns a result with the same
+sign as the dividend. Adding 4 before the final mod guarantees a real, correct 0-3 result matching
+the Python original's own real observable behavior, not just its literal source text — verified in
+`tests/test_base4.c`, not just asserted in a comment.
+
+`base4-iterate`/`base4-cycle-length` use VS0's real typed `Fn`-callback-parameter support
+(`(Fn [I32 I32] I32)`) to take `base4-xor`/`base4-and`/etc. as real first-class arguments, matching
+the Python original's own `operation` parameter design directly. `base4-cycle-length` surfaces a
+real, provable property the Python original only ever discovers empirically (running 20 fixed
+steps and scanning for the first repeat): since the state space is exactly `{0,1,2,3}`, every real
+orbit under one of these operations must cycle within 4 steps (pigeonhole) — verified, not just
+claimed: `AND`/`OR` give cycle length 1 for every start (both idempotent, `a&a=a`/`a|a=a`), `XOR`
+gives 1 or 2, `ADD` gives 1, 2, or 4, all hand-traced and asserted in `tests/test_base4.c` (24
+assertions, `make test-base4`, `-Werror` clean).
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about
