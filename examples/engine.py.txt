@@ -1,0 +1,660 @@
+"""
+CUSTOM BASE-4 / BINARY ALGEBRA LAB
+===================================
+
+Symbols:
+    0 -> 00
+    1 -> 01
+    - -> 10
+    + -> 11
+
+The goal is to experiment with the four-symbol alphabet as:
+
+    1. A base-4 number system
+    2. A two-bit encoding
+    3. A symbolic algebra
+    4. A sequence generator
+    5. A state machine
+
+No assumptions are made about patterns.
+The program generates them and reports what it finds.
+"""
+
+from collections import Counter
+
+
+# ============================================================
+# SYMBOL SYSTEM
+# ============================================================
+
+SYMBOLS = ["0", "1", "-", "+"]
+
+SYMBOL_TO_VALUE = {
+    "0": 0,
+    "1": 1,
+    "-": 2,
+    "+": 3,
+}
+
+VALUE_TO_SYMBOL = {v: k for k, v in SYMBOL_TO_VALUE.items()}
+
+SYMBOL_TO_BITS = {
+    "0": "00",
+    "1": "01",
+    "-": "10",
+    "+": "11",
+}
+
+BITS_TO_SYMBOL = {
+    bits: symbol
+    for symbol, bits in SYMBOL_TO_BITS.items()
+}
+
+
+# ============================================================
+# BASIC CONVERSION
+# ============================================================
+
+def generate_custom_base4(count):
+    """
+    Generate integers represented using the custom
+    base-4 alphabet.
+    """
+
+    sequence = []
+
+    for i in range(count):
+
+        if i == 0:
+            sequence.append("0")
+            continue
+
+        current = i
+        digits = []
+
+        while current > 0:
+            remainder = current % 4
+            digits.append(VALUE_TO_SYMBOL[remainder])
+            current //= 4
+
+        sequence.append("".join(reversed(digits)))
+
+    return sequence
+
+
+def custom_to_decimal(value):
+    """
+    Convert a custom base-4 string back into decimal.
+    """
+
+    total = 0
+
+    for symbol in value:
+        total = total * 4 + SYMBOL_TO_VALUE[symbol]
+
+    return total
+
+
+def custom_to_binary(value):
+    """
+    Translate every custom symbol into its two-bit form.
+    """
+
+    return "".join(SYMBOL_TO_BITS[symbol] for symbol in value)
+
+
+def binary_to_custom(bits):
+    """
+    Translate a binary string back into custom symbols.
+
+    Binary length must be even.
+    """
+
+    if len(bits) % 2 != 0:
+        raise ValueError("Binary string must contain an even number of bits.")
+
+    result = []
+
+    for i in range(0, len(bits), 2):
+        pair = bits[i:i + 2]
+        result.append(BITS_TO_SYMBOL[pair])
+
+    return "".join(result)
+
+
+# ============================================================
+# SYMBOL OPERATIONS
+# ============================================================
+
+def xor_symbol(a, b):
+    """
+    XOR the underlying two-bit values.
+    """
+
+    av = SYMBOL_TO_VALUE[a]
+    bv = SYMBOL_TO_VALUE[b]
+
+    result = av ^ bv
+
+    return VALUE_TO_SYMBOL[result]
+
+
+def and_symbol(a, b):
+    """
+    AND the underlying two-bit values.
+    """
+
+    av = SYMBOL_TO_VALUE[a]
+    bv = SYMBOL_TO_VALUE[b]
+
+    result = av & bv
+
+    return VALUE_TO_SYMBOL[result]
+
+
+def or_symbol(a, b):
+    """
+    OR the underlying two-bit values.
+    """
+
+    av = SYMBOL_TO_VALUE[a]
+    bv = SYMBOL_TO_VALUE[b]
+
+    result = av | bv
+
+    return VALUE_TO_SYMBOL[result]
+
+
+def add_symbol(a, b):
+    """
+    Addition modulo 4.
+    """
+
+    av = SYMBOL_TO_VALUE[a]
+    bv = SYMBOL_TO_VALUE[b]
+
+    result = (av + bv) % 4
+
+    return VALUE_TO_SYMBOL[result]
+
+
+def subtract_symbol(a, b):
+    """
+    Subtraction modulo 4.
+    """
+
+    av = SYMBOL_TO_VALUE[a]
+    bv = SYMBOL_TO_VALUE[b]
+
+    result = (av - bv) % 4
+
+    return VALUE_TO_SYMBOL[result]
+
+
+# ============================================================
+# OPERATION TABLES
+# ============================================================
+
+def print_operation_table(name, operation):
+    print()
+    print(name)
+    print("=" * 30)
+
+    print("    " + " ".join(f"{s:>3}" for s in SYMBOLS))
+    print("   " + "-" * 15)
+
+    for a in SYMBOLS:
+
+        row = []
+
+        for b in SYMBOLS:
+            row.append(operation(a, b))
+
+        print(f"{a:>2} | " + " ".join(f"{x:>3}" for x in row))
+
+
+# ============================================================
+# SEQUENCE ANALYSIS
+# ============================================================
+
+def flatten_binary(sequence):
+    """
+    Turn a custom sequence into one continuous binary stream.
+    """
+
+    return "".join(custom_to_binary(x) for x in sequence)
+
+
+def bit_frequency(bits):
+    return Counter(bits)
+
+
+def symbol_frequency(sequence):
+    return Counter("".join(sequence))
+
+
+def find_repeating_patterns(bits, min_length=1, max_length=16):
+    """
+    Search for repeated substrings.
+
+    This is deliberately simple.
+    It is an exploratory tool, not a statistical test.
+    """
+
+    findings = []
+
+    for length in range(min_length, max_length + 1):
+
+        counts = Counter(
+            bits[i:i + length]
+            for i in range(len(bits) - length + 1)
+        )
+
+        repeated = {
+            pattern: count
+            for pattern, count in counts.items()
+            if count > 1
+        }
+
+        if repeated:
+            findings.append((length, repeated))
+
+    return findings
+
+
+# ============================================================
+# STATE MACHINE / ITERATION
+# ============================================================
+
+def iterate_operation(start, operation, steps=32):
+    """
+    Repeatedly apply an operation using the current state
+    and a fixed second symbol.
+
+    Example:
+
+        state = XOR(state, '-')
+
+    """
+
+    state = start
+    history = [state]
+
+    for _ in range(steps - 1):
+        state = operation(state, start)
+        history.append(state)
+
+    return history
+
+
+def detect_cycle(sequence):
+    """
+    Find the first repeated state and report the cycle.
+    """
+
+    seen = {}
+
+    for index, value in enumerate(sequence):
+
+        if value in seen:
+
+            start = seen[value]
+            cycle = sequence[start:index]
+
+            return {
+                "cycle_start": start,
+                "cycle_length": len(cycle),
+                "cycle": cycle,
+            }
+
+        seen[value] = index
+
+    return None
+
+
+# ============================================================
+# PAIRWISE EXPERIMENT
+# ============================================================
+
+def pairwise_experiment(sequence, operation):
+    """
+    Combine adjacent symbols.
+
+    Example:
+
+        0 1 - +
+
+    becomes:
+
+        op(0,1), op(1,-), op(-,+)
+    """
+
+    flattened = "".join(sequence)
+
+    output = []
+
+    for i in range(len(flattened) - 1):
+        output.append(
+            operation(
+                flattened[i],
+                flattened[i + 1]
+            )
+        )
+
+    return output
+
+
+# ============================================================
+# DISPLAY
+# ============================================================
+
+def print_number_sequence(count=32):
+
+    sequence = generate_custom_base4(count)
+
+    print()
+    print("CUSTOM BASE-4 SEQUENCE")
+    print("=" * 60)
+
+    print(
+        f"{'DECIMAL':>8} | "
+        f"{'CUSTOM':>10} | "
+        f"{'BINARY':>20}"
+    )
+
+    print("-" * 60)
+
+    for number, custom in enumerate(sequence):
+
+        binary = custom_to_binary(custom)
+
+        print(
+            f"{number:>8} | "
+            f"{custom:>10} | "
+            f"{binary:>20}"
+        )
+
+    return sequence
+
+
+def print_translation_demo():
+
+    print()
+    print("SYMBOL TRANSLATION")
+    print("=" * 30)
+
+    for symbol in SYMBOLS:
+
+        value = SYMBOL_TO_VALUE[symbol]
+        bits = SYMBOL_TO_BITS[symbol]
+
+        print(
+            f"{symbol}  ->  value {value}  ->  {bits}"
+        )
+
+
+# ============================================================
+# MAIN EXPERIMENT
+# ============================================================
+
+def main():
+
+    print()
+    print("╔══════════════════════════════════════════════╗")
+    print("║     CUSTOM BASE-4 / BINARY ALGEBRA LAB      ║")
+    print("╚══════════════════════════════════════════════╝")
+
+    print_translation_demo()
+
+    # --------------------------------------------------------
+    # 1. Generate sequence
+    # --------------------------------------------------------
+
+    sequence = print_number_sequence(32)
+
+    # --------------------------------------------------------
+    # 2. Continuous binary stream
+    # --------------------------------------------------------
+
+    bits = flatten_binary(sequence)
+
+    print()
+    print("CONTINUOUS BINARY STREAM")
+    print("=" * 60)
+    print(bits)
+
+    # --------------------------------------------------------
+    # 3. Frequencies
+    # --------------------------------------------------------
+
+    print()
+    print("SYMBOL FREQUENCY")
+    print("=" * 30)
+
+    frequencies = symbol_frequency(sequence)
+
+    for symbol in SYMBOLS:
+        print(
+            f"{symbol}: "
+            f"{frequencies.get(symbol, 0)}"
+        )
+
+    print()
+    print("BIT FREQUENCY")
+    print("=" * 30)
+
+    bit_counts = bit_frequency(bits)
+
+    print(f"0: {bit_counts.get('0', 0)}")
+    print(f"1: {bit_counts.get('1', 0)}")
+
+    # --------------------------------------------------------
+    # 4. Algebra tables
+    # --------------------------------------------------------
+
+    print_operation_table(
+        "XOR TABLE",
+        xor_symbol
+    )
+
+    print_operation_table(
+        "AND TABLE",
+        and_symbol
+    )
+
+    print_operation_table(
+        "OR TABLE",
+        or_symbol
+    )
+
+    print_operation_table(
+        "ADD MOD 4 TABLE",
+        add_symbol
+    )
+
+    print_operation_table(
+        "SUBTRACT MOD 4 TABLE",
+        subtract_symbol
+    )
+
+    # --------------------------------------------------------
+    # 5. Pairwise operations
+    # --------------------------------------------------------
+
+    print()
+    print("PAIRWISE XOR EXPERIMENT")
+    print("=" * 60)
+
+    pairwise_xor = pairwise_experiment(
+        sequence,
+        xor_symbol
+    )
+
+    print("Input:")
+    print(" ".join(sequence))
+
+    print()
+    print("Adjacent XOR:")
+    print(" ".join(pairwise_xor))
+
+    print()
+    print("As binary:")
+    print(custom_to_binary("".join(pairwise_xor)))
+
+    # --------------------------------------------------------
+    # 6. Repeated-state experiments
+    # --------------------------------------------------------
+
+    print()
+    print("STATE MACHINE EXPERIMENTS")
+    print("=" * 60)
+
+    for operation_name, operation in [
+        ("XOR", xor_symbol),
+        ("ADD MOD 4", add_symbol),
+        ("SUBTRACT MOD 4", subtract_symbol),
+    ]:
+
+        print()
+        print(operation_name)
+
+        for starting_symbol in SYMBOLS:
+
+            history = iterate_operation(
+                starting_symbol,
+                operation,
+                steps=20
+            )
+
+            cycle = detect_cycle(history)
+
+            print(
+                f"{starting_symbol}: "
+                f"{' '.join(history)}"
+            )
+
+            if cycle:
+                print(
+                    f"    cycle length = "
+                    f"{cycle['cycle_length']}"
+                )
+
+    # --------------------------------------------------------
+    # 7. Pattern search
+    # --------------------------------------------------------
+
+    print()
+    print("BINARY PATTERN SEARCH")
+    print("=" * 60)
+
+    patterns = find_repeating_patterns(
+        bits,
+        min_length=2,
+        max_length=12
+    )
+
+    for length, repeated in patterns:
+
+        # Only display the most common patterns
+        top = sorted(
+            repeated.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
+
+        print()
+        print(f"Length {length}:")
+
+        for pattern, count in top:
+
+            print(
+                f"    {pattern} -> "
+                f"{count} occurrences"
+            )
+
+    # --------------------------------------------------------
+    # 8. Round-trip verification
+    # --------------------------------------------------------
+
+    print()
+    print("ROUND-TRIP VERIFICATION")
+    print("=" * 60)
+
+    for custom in sequence:
+
+        binary = custom_to_binary(custom)
+        restored = binary_to_custom(binary)
+
+        decimal_original = custom_to_decimal(custom)
+        decimal_restored = custom_to_decimal(restored)
+
+        if custom != restored:
+            print(
+                "ERROR:",
+                custom,
+                binary,
+                restored
+            )
+            return
+
+        if decimal_original != decimal_restored:
+            print(
+                "ERROR:",
+                custom,
+                decimal_original,
+                decimal_restored
+            )
+            return
+
+    print("All conversions survived the round trip.")
+    print("Custom -> Binary -> Custom")
+    print("Custom -> Decimal -> Custom")
+
+    # --------------------------------------------------------
+    # Final observation
+    # --------------------------------------------------------
+
+    print()
+    print("EXPERIMENT COMPLETE")
+    print("=" * 60)
+
+    print("""
+The four symbols form a complete four-state alphabet:
+
+    0 = 00
+    1 = 01
+    - = 10
+    + = 11
+
+The interesting question is no longer whether the encoding
+works — it does.
+
+The interesting question is what happens when we define
+different operations over these four states and then observe
+the resulting sequences.
+
+Try changing:
+
+    count=32
+
+to:
+
+    count=256
+    count=4096
+    count=100000
+
+and experiment with the operations above.
+
+Look for:
+
+    - cycles
+    - symmetry
+    - repeating blocks
+    - frequency changes
+    - invariant states
+    - unexpected relationships between symbolic and binary forms
+""")
+
+
+if __name__ == "__main__":
+    main()
