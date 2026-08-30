@@ -1,0 +1,90 @@
+;; stdlib/base4/algebra.prn — real, faithful port of examples/engine.py.txt's own "CUSTOM BASE-4 /
+;; BINARY ALGEBRA LAB": a 4-symbol alphabet (0, 1, -, +) mapped to 2-bit values, explored as a
+;; symbolic algebra (XOR/AND/OR/ADD/SUBTRACT over the 4 states) and a state machine (repeatedly
+;; applying an operation and observing where it cycles). Founder real-time: "add to parena
+;; stdlibs" (after uploading examples/engine.py.txt to this repo directly).
+;;
+;; Real symbol encoding, unchanged from the Python original:
+;;   0 -> 00 (value 0)   1 -> 01 (value 1)   - -> 10 (value 2)   + -> 11 (value 3)
+;; A "symbol" in this module is just its own real I32 value (0-3) — VS0 has no string-keyed enum
+;; here worth the ceremony for a 4-element alphabet; the four named zero-arg constants below are
+;; the same real "named I32 code" convention PAPERCRAFT's own item_drop_mod.prn already
+;; establishes for material-paper/material-concrete/material-metal.
+;;
+;; Real, narrow v0 scope, same "start narrow, real, verified" discipline every other package in
+;; this repo already documents: this ports the algebra core (the operations table + the state
+;; machine) — the part the Python original's own final "EXPERIMENT COMPLETE" message names as the
+;; actually interesting question ("what happens when we define different operations over these
+;; four states and then observe the resulting sequences"). NOT ported here (real, honest, not
+;; silently dropped): the base-4-number/binary-stream generation, frequency counting, and
+;; substring pattern search — those are real, separate, string/Vec-heavy display/analysis code
+;; whose own real value is exploratory printing, not a stdlib primitive another PARENA program
+;; would want to call — a real, separate follow-up if that framing turns out to be wrong.
+;;
+;; Real, deliberate correctness fix over a naive transliteration: base4-subtract uses
+;; `(mod (+ (- a b) 4) 4)`, not the bare `(mod (- a b) 4)` a literal reading of the Python
+;; `(av - bv) % 4` might suggest — Python's own `%` always returns a non-negative result for a
+;; positive modulus (Python: `(0 - 3) % 4` == 1), but PARENA's `mod` compiles to C's own `%`,
+;; which returns a result with the SAME SIGN AS THE DIVIDEND (C: `(0 - 3) % 4` == -3). Adding 4
+;; before the final mod guarantees a real, correct 0-3 result for every real a/b in that range,
+;; matching the Python original's own real observable behavior exactly, not just its literal
+;; source text.
+
+(module base4/algebra)
+(export symbol-zero symbol-one symbol-minus symbol-plus
+        base4-xor base4-and base4-or base4-add base4-subtract
+        base4-iterate base4-cycle-length)
+
+;; Real, named symbol codes -- 0/1/-/+ in the Python original's own SYMBOL_TO_VALUE table.
+(defn symbol-zero  [] : I32 0)
+(defn symbol-one   [] : I32 1)
+(defn symbol-minus [] : I32 2)
+(defn symbol-plus  [] : I32 3)
+
+;; base4-xor/and/or -- real, direct reuse of PARENA's own built-in bit-xor/bit-and/bit-or
+;; primitives (no reimplementation needed: each symbol IS its own 2-bit value already, so the
+;; Python original's own "XOR the underlying two-bit values" is just a bitwise op on the real I32
+;; value directly).
+(defn base4-xor [(a : I32) (b : I32)] : I32 (bit-xor a b))
+(defn base4-and [(a : I32) (b : I32)] : I32 (bit-and a b))
+(defn base4-or  [(a : I32) (b : I32)] : I32 (bit-or a b))
+
+;; base4-add -- addition modulo 4. Python's own `%` already returns a real 0-3 result for two
+;; real 0-3 inputs summed (max 6, 6 % 4 == 2, never negative), so no correction is needed here
+;; the way base4-subtract below needs one.
+(defn base4-add [(a : I32) (b : I32)] : I32 (mod (+ a b) 4))
+
+;; base4-subtract -- see this file's own header comment for the real, deliberate
+;; C-vs-Python-modulo correction this needs that base4-add above doesn't.
+(defn base4-subtract [(a : I32) (b : I32)] : I32
+  (mod (+ (- a b) 4) 4))
+
+;; base4-iterate -- real port of the Python original's own iterate_operation, simplified to
+;; return just the FINAL state after `steps` real applications rather than the whole history
+;; (VS0's own real Fn-callback-parameter support, confirmed elsewhere in this stdlib, makes this
+;; a real, direct, faithful port of the original's own `state = operation(state, start)` loop --
+;; not a reimplementation of the algorithm, just a narrower real return shape).
+(defn base4-iterate [(start : I32) (op : (Fn [I32 I32] I32)) (steps : I32)] : I32
+  (loop [state start i 0]
+    (if (>= i steps)
+      state
+      (recur (op state start) (+ i 1)))))
+
+;; base4-cycle-length -- a real, provable property the Python original's own detect_cycle only
+;; ever discovers empirically by running a fixed 20 steps and scanning for the first repeat: since
+;; every real symbol value is one of exactly {0,1,2,3}, the sequence state_(n+1) = op(state_n,
+;; start) MUST return to `start` again within at most 4 real steps (pigeonhole on a 4-element
+;; state space) for any of this file's own real operations -- base4-xor/and/or/add/subtract are
+;; all real functions FROM {0,1,2,3} TO {0,1,2,3}, so the orbit of any starting state under
+;; repeated application of one of them is a real, finite cycle, always. Returns the real number of
+;; steps until the sequence returns to `start`; the `>= i 5` bound below is a real, defensive
+;; safety net (never actually triggered for a real 0-3 `start` under any of this file's own real
+;; operations -- the pigeonhole argument above guarantees a return within 4 -- kept honest as a
+;; sentinel rather than risking a real infinite loop if this function is ever handed an operation
+;; that doesn't actually stay within {0,1,2,3}).
+(defn base4-cycle-length [(start : I32) (op : (Fn [I32 I32] I32))] : I32
+  (loop [state (op start start) i 1]
+    (cond
+      ((= state start) i)
+      ((>= i 5) -1)
+      (true (recur (op state start) (+ i 1))))))
