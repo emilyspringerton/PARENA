@@ -7,10 +7,10 @@
 CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 
-SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/fmt.c
+SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -452,6 +452,10 @@ test-emit-ts: tests/test_emit_ts.c $(OBJ)
 	$(CC) $(CFLAGS) -Werror -o tests/test_emit_ts tests/test_emit_ts.c $(OBJ)
 	./tests/test_emit_ts
 
+test-emit-java: tests/test_emit_java.c $(OBJ)
+	$(CC) $(CFLAGS) -Werror -o tests/test_emit_java tests/test_emit_java.c $(OBJ)
+	./tests/test_emit_java
+
 clean:
 	rm -f parena .parena-bootstrap tests/test_lexer_parser tests/test_region tests/test_emit \
-		src/*.o tools/ci_status_gen.c
+		tests/test_emit_ts tests/test_emit_java src/*.o tools/ci_status_gen.c

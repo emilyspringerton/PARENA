@@ -3,6 +3,7 @@ tests/test_lexer_parser
 tests/test_region
 tests/test_emit
 tests/test_emit_ts
+tests/test_emit_java
 src/*.o
 bazel-*
 tools/ci_status_gen.c

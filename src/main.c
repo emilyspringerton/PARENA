@@ -9,6 +9,7 @@
 #include "arena.h"
 #include "ast.h"
 #include "emit.h"
+#include "emit_java.h"
 #include "emit_ts.h"
 #include "fmt.h"
 #include "parser.h"
@@ -195,6 +196,25 @@ static int cmd_fmt(const char **paths, size_t path_count, int write_in_place) {
     return had_error;
 }
 
+/* java_class_name_from_path -- real javac requirement: a `.java` file's own public top-level
+ * class must match the file's own basename exactly. Derives that name from `out_path` (strips any
+ * leading directory components, strips the trailing ".java"), arena-owned so it outlives the call
+ * into emit_java(). Real, narrow: doesn't validate the result is a legal Java identifier (no
+ * leading digit, no reserved word) -- same honest "garbage in, garbage out" scope emit_java.c's
+ * own real, narrow v0 already draws elsewhere; a human picking a sane output filename is assumed,
+ * same real assumption cmd_build already makes about every other -o argument. */
+static const char *java_class_name_from_path(Arena *arena, const char *out_path) {
+    const char *base = out_path;
+    for (const char *p = out_path; *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    size_t base_len = strlen(base);
+    if (base_len > 5 && strcmp(base + base_len - 5, ".java") == 0) {
+        base_len -= 5;
+    }
+    return arena_strdup(arena, base, base_len);
+}
+
 static int cmd_build(const char **paths, size_t path_count, const char *out_path) {
     Arena arena;
     arena_init(&arena);
@@ -225,15 +245,25 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         arena_free_all(&arena);
         return 1;
     }
-    /* Real, minimal target dispatch by output extension -- `-o output.ts` routes to the real,
-       new, v0 TypeScript emitter (emit_ts.h's own doc comment has the full real scope statement),
-       any other extension keeps the existing, default, unchanged C emitter path. No new
-       subcommand/flag needed; every existing `-o output.c` caller is completely unaffected. */
+    /* Real, minimal target dispatch by output extension -- `-o output.ts` routes to the real v0
+       TypeScript emitter (emit_ts.h's own doc comment has the full real scope statement), `-o
+       output.java` routes to the real v0 Java emitter (emit_java.h's own doc comment), any other
+       extension keeps the existing, default, unchanged C emitter path. No new subcommand/flag
+       needed; every existing `-o output.c` caller is completely unaffected. */
     size_t out_path_len = strlen(out_path);
     int is_ts_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ts") == 0;
+    int is_java_target = out_path_len >= 5 && strcmp(out_path + out_path_len - 5, ".java") == 0;
 
     const char *emit_err = NULL;
-    const char *emitted_source = is_ts_target ? emit_ts(&arena, program, &emit_err) : emit_c(&arena, program, &emit_err);
+    const char *emitted_source;
+    if (is_ts_target) {
+        emitted_source = emit_ts(&arena, program, &emit_err);
+    } else if (is_java_target) {
+        const char *class_name = java_class_name_from_path(&arena, out_path);
+        emitted_source = emit_java(&arena, program, class_name, &emit_err);
+    } else {
+        emitted_source = emit_c(&arena, program, &emit_err);
+    }
     if (!emitted_source) {
         fprintf(stderr, "parena: %s\n", emit_err);
         arena_free_all(&arena);

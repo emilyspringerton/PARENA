@@ -75,3 +75,24 @@ cc_test(
         "-Werror",
     ],
 )
+
+# test_emit_java -- real, v0 verification for the new Java emitter (src/emit_java.c), founder
+# real-time 2026-08-30: "break out the java emitter for PARENA."
+cc_test(
+    name = "test_emit_java",
+    srcs = ["test_emit_java.c"],
+    deps = [
+        "//src:arena",
+        "//src:ast",
+        "//src:emit_java",
+        "//src:parser",
+        "//src:region",
+    ],
+    copts = [
+        "-std=c99",
+        "-Wall",
+        "-Wextra",
+        "-pedantic",
+        "-Werror",
+    ],
+)

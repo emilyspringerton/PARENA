@@ -2736,6 +2736,42 @@ audit surfaces, matching `array`/`linalg`'s own real "small, composable numeric 
 already established above, not attempted in this pass since neither `bezier_interp.prn` nor
 `humanness.prn` needed it.
 
+### Real, third proof: the new Java emitter (`src/emit_java.c`, 2026-08-30)
+
+Founder real-time, immediately after the TypeScript emitter and the (correctly declined) "Java
+applet" pivot: "break out the java emitter for PARENA" — directly continuing the C-first-then-
+JVM/TypeScript/WebAssembly multi-target roadmap `CLAUDE.md` already committed to. Same real,
+deliberately narrow v0 scope as `emit_ts.c` (see that section above for the full real rationale,
+not repeated here): scalar `I32`/`F64`/`Bool`/`String` params only, no `Arena`/region annotations,
+one-expression body, same binop/`math/*`-primitive tables (`java.lang.Math` has identical real
+method names to JS's own `Math` — `Math.random`/`floor`/`sqrt`/`log`/`cos`/`PI` — a real,
+convenient overlap this emitter leans on rather than re-deriving). Own independent string builder
+and name-mangler, same "each target module stays independent" discipline `emit_ts.h` already
+documents — not shared code with `emit.c` or `emit_ts.c`.
+
+**Two real, Java-specific differences from the TypeScript target**, both load-bearing, not
+cosmetic: (1) `=` lowers to Java's own `==` (not TypeScript's `===` — Java has no triple-equals
+token at all), correct real value-equality for this v0's own narrow primitive-only type set; (2)
+Java has no top-level free functions, so every top-level `defn` from one compile invocation is
+wrapped in one real `public final class <ClassName> { ... }`, where `<ClassName>` is derived by
+the caller (`main.c`'s own `java_class_name_from_path()`) from the real output file's own
+basename — a genuine `javac` hard requirement (the public top-level class must match the
+filename), not a style choice. Wired into the same `parena build <file.prn> -o <output>` extension
+dispatch (`.java` routes here, `.ts`/anything-else unaffected). `tests/test_emit_java.c` (23
+assertions, `bazel test //tests:test_emit_java`) mirrors `test_emit_ts.c`'s own coverage plus the
+two real Java-specific shapes above.
+
+**Real proof, verified with an actual `javac`, not just written**: the exact same, unmodified
+`stdlib/mishri/bezier_interp.prn` and `stdlib/mishri/humanness.prn` sources already proven for the
+C and TypeScript targets were compiled a third time, to `BezierInterp.java`/`Humanness.java`, and
+actually compiled with a real JDK (`javac 25.0.4`) to `.class` files with zero errors — then run
+against a small smoke-test `Main.java` confirming sane real output (`chance(1.0)` → `true`,
+`chance(0.0)` → `false`, `gaussianNoise(x, sigma=0.0)` → exactly `x`, matching the real, expected
+zero-noise-when-sigma-is-zero identity). Real, honest: unlike the TypeScript target, this Java
+output isn't wired into any live consumer yet (MISHRI is a TypeScript codebase, not Java) — this
+is a real, deliberate "one PARENA source, three real compiled targets" compiler-capability proof,
+not a live integration, matching the founder's own repeated "verified, not just written" bar.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about
