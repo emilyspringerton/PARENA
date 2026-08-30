@@ -3074,6 +3074,26 @@ scope is decision logic only, a real host still persists each version elsewhere 
 `JEWEL/docs/NORTHSTAR_SARENA_NOTEBOOK.md`'s own word-processor pivot section, IDUNA). `make
 test-editor-document` green, `-Werror` clean.
 
+### `editor/registry` — new package, S217-03 multi-document registry
+
+Real open/switch/list on top of `editor/document.prn`.
+
+```clojure
+(defstruct Registry (docs : (Vec Document) @ Region) (current-index : I32))
+(defn new-registry [(dest : Arena @ Region)] : Registry @ Region)
+(defn open-document [(reg : Registry) (now-epoch : I32) (dest : Arena @ Region)] : Registry @ Region)
+(defn switch-document [(reg : Registry) (index : I32)] : Registry @ Region)
+(defn current-document [(reg : &Registry)] : Document)
+(defn document-count [(reg : &Registry)] : I32)
+```
+
+Real, functional-update shape (matches `document.prn`'s own `apply-edit`): each operation returns
+a NEW `Registry` rather than mutating in place. `switch-document` leaves the registry unchanged
+on an out-of-range index — verified. Same real `vec-T-at` `#target` escape hatch this stdlib's
+elem-type-hint gap already needs elsewhere, this time for a struct (`Document`) element. Closing
+a document, renaming, and real persistence are named, separate follow-ups. `make
+test-editor-registry` green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about
