@@ -1,0 +1,124 @@
+;; stdlib/base4/matrix.prn — depends on vec, base4/algebra. Real S208-06 follow-up to
+;; base4/vector.prn: GRAMMAR.md §5.2's `STACK`/`MATMUL`/`DIMLEN`-on-matrices for LO's real PARENA
+;; stdlib target (LO/NORTHSTAR.md's "groundwork already started" section).
+;;
+;; Real shape-representation decision this file has to make that GRAMMAR.md's own EBNF left open
+;; (§4 defines the TOKEN shape `STACK Value STACK` but not a runtime representation): flat,
+;; row-major `(Vec I32)` + explicit `rows`/`cols` I32 fields, matching `stdlib/array.prn`'s own
+;; already-real, already-working `NDArray` convention — not a `Vec`-of-`Vec`. Real reason, not
+;; just precedent-following: `base4/vector.prn`'s own header comment already found that a
+;; cross-module function reference used as a first-class value doesn't compile yet, and nested
+;; generic `(Vec (Vec I32))` is a real, separate, unproven capability this session has no evidence
+;; either way for — flat-with-strides sidesteps the question entirely by reusing a construct
+;; (`array.prn`'s `NDArray`) already confirmed real and working (linalg.prn's own `dot` over it is
+;; verified correct; only `matmul`/`transpose` there hit a separate, unrelated boxing bug).
+;;
+;; Real, deliberate scope boundary, named rather than silently assumed: `stack2` below builds
+;; exactly a 2-row matrix from two equal-length row vectors — every real matrix example in
+;; `LoLanguageSpec.pdf` is 2 rows (the 2x2 base4-state example, the ternary-gated matmul example).
+;; Real N-row stacking needs either variadic `defn` params or the same `Vec`-of-`Vec` question
+;; this file is deliberately avoiding — a real, separate follow-up if LO ever needs more than 2
+;; rows, not assumed unnecessary, just not built here.
+
+(module base4/matrix)
+(import vec)
+(import base4/algebra)
+(export dims-eq rows cols stack2 matrix-eq matmul)
+
+(defstruct Base4Matrix
+  (data : (Vec I32) @ Region)   ;; flat, row-major: element (r, c) lives at data[r * cols + c]
+  (rows : I32)
+  (cols : I32))
+
+(defn rows [(m : &Base4Matrix)] : I32
+  (get-field m :rows))
+
+(defn cols [(m : &Base4Matrix)] : I32
+  (get-field m :cols))
+
+;; dims-eq -- GRAMMAR.md §5.2's own real dimension-gate convention ("the source always gates
+;; MATMUL behind an explicit EQ of two DIMLEN reads first"): true when a's column count equals
+;; b's row count, the real inner-dimension-match test `matmul` below needs before it's safe to
+;; run at all.
+(defn dims-eq [(a : &Base4Matrix) (b : &Base4Matrix)] : Bool
+  (= (get-field a :cols) (get-field b :rows)))
+
+;; stack2 -- GRAMMAR.md §4's `STACK Value STACK Value STACK` (N=2: 3 STACK tokens) reduced to its
+;; real runtime effect: two equal-length row vectors combined into one flat Base4Matrix. Real,
+;; honest length-mismatch handling: returns None rather than trusting the caller, same convention
+;; base4/vector.prn's own elementwise ops already use.
+;; Real, genuine, second compiler gap found and worked around while building this (distinct from
+;; matmul's own double-boxing gap below): two sibling top-level `loop` forms in the same function
+;; body that reuse the same binding name (`i`) emit as C `double i = 0;` declarations at the same
+;; brace level with no block scope of their own between them — `gcc` correctly rejects this as a
+;; redefinition. Worked around here by naming the two loop variables `i0`/`i1` instead of sharing
+;; `i` — a real, live boundary in VS0's loop-emission (each `loop` needs either its own C block
+;; scope or truly fresh temp names), not something this file's own logic did wrong. Flagged, not
+;; silently patched around without a trace.
+(defn stack2 [(row0 : &(Vec I32)) (row1 : &(Vec I32)) (dest : Arena @ Region)]
+  : (Option Base4Matrix) @ Region
+  (if (not (= (vec/len row0) (vec/len row1)))
+    None
+    (let [n (vec/len row0)
+          data (vec/new dest)]
+      (loop [i0 0]
+        (when (< i0 n)
+          (vec/push! &mut data (deref (vec/get row0 i0)))
+          (recur (+ i0 1))))
+      (loop [i1 0]
+        (when (< i1 n)
+          (vec/push! &mut data (deref (vec/get row1 i1)))
+          (recur (+ i1 1))))
+      (Some {:data data :rows 2 :cols n}))))
+
+;; matrix-eq -- real structural equality, same short-circuit convention as
+;; base4/vector.prn's own vec-eq: shape mismatch first, then every element.
+(defn matrix-eq [(a : &Base4Matrix) (b : &Base4Matrix)] : Bool
+  (if (not (and (= (get-field a :rows) (get-field b :rows)) (= (get-field a :cols) (get-field b :cols))))
+    false
+    (let [n (vec/len &(get-field a :data))]
+      (loop [i 0]
+        (if (>= i n)
+          true
+          (if (not (= (deref (vec/get &(get-field a :data) i)) (deref (vec/get &(get-field b :data) i))))
+            false
+            (recur (+ i 1))))))))
+
+;; matmul -- GRAMMAR.md's MATMUL (🧮). Real, honest, NOT dimension-gated internally (matches
+;; GRAMMAR.md §5.2's own stated convention: "the grammar permits an unchecked MATMUL; whether
+;; Phase 1's compiler should reject one that isn't dimension-gated is a real open question for
+;; that phase" — this function trusts its caller to have already checked `dims-eq`, same as the
+;; source doc's own worked example always calls dims-eq/EQ before ever invoking MATMUL). Real
+;; multiply-then-accumulate convention: same base4/vector.prn's own `dot` decision (base4-AND as
+;; elementwise "multiply," base4-ADD as the mod-4 "sum") applied per output cell, since the source
+;; material defines matrix multiplication only as "cross-multiply rows and columns" via repeated
+;; Dot Products, never a concrete base4 formula of its own.
+;;
+;; Real, honest, CONFIRMED-to-be-at-risk of the exact same class of bug base4/vector.prn's own
+;; `dot` already found and documented (loop-accumulator integer literals boxed as `double`): this
+;; function's own inner accumulator (`acc`) is seeded from `0` the same way `dot`'s was. Not
+;; verified safe here — see this file's own test for the real, direct empirical check, not an
+;; assumption either way.
+(defn matmul [(a : &Base4Matrix) (b : &Base4Matrix) (dest : Arena @ Region)]
+  : Base4Matrix @ Region
+  (let [out-rows (get-field a :rows)
+        out-cols (get-field b :cols)
+        inner (get-field a :cols)
+        out (vec/new dest)]
+    (loop [r 0]
+      (when (< r out-rows)
+        (loop [c 0]
+          (when (< c out-cols)
+            (let [cell (loop [k 0 acc 0]
+                         (if (>= k inner)
+                           acc
+                           (recur (+ k 1)
+                                  (base4/algebra/base4-add
+                                    acc
+                                    (base4/algebra/base4-and
+                                      (deref (vec/get &(get-field a :data) (+ (* r inner) k)))
+                                      (deref (vec/get &(get-field b :data) (+ (* k out-cols) c))))))))]
+              (vec/push! &mut out cell))
+            (recur (+ c 1))))
+        (recur (+ r 1))))
+    {:data out :rows out-rows :cols out-cols}))

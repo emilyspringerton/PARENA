@@ -2865,6 +2865,45 @@ single-file pass. `vec-xor`/`vec-and`/`vec-or`/`vec-add`/`vec-subtract`/`vec-eq`
 hit this (none box a loop-seeded scalar through `Some`/`Ok` directly) and are real, verified
 end-to-end: 24 assertions, `make test-base4-vector`, `-Werror` clean.
 
+### `base4/matrix` — new package, S208-06, LO's real STACK/MATMUL stdlib target
+
+`LO/GRAMMAR.md`'s §5.2 `STACK`/`MATMUL`/matrix-`DIMLEN` over LO's real 2-row matrix examples.
+
+```clojure
+(defstruct Base4Matrix (data : (Vec I32) @ Region) (rows : I32) (cols : I32))  ;; flat, row-major
+
+(defn rows [(m : &Base4Matrix)] : I32)
+(defn cols [(m : &Base4Matrix)] : I32)
+(defn dims-eq [(a : &Base4Matrix) (b : &Base4Matrix)] : Bool)   ;; a.cols == b.rows
+(defn stack2 [(row0 : &(Vec I32)) (row1 : &(Vec I32)) (dest : Arena @ Region)] : (Option Base4Matrix) @ Region)
+(defn matrix-eq [(a : &Base4Matrix) (b : &Base4Matrix)] : Bool)
+(defn matmul [(a : &Base4Matrix) (b : &Base4Matrix) (dest : Arena @ Region)] : Base4Matrix @ Region)
+```
+
+**Real shape decision**: flat, row-major `(Vec I32)` + `rows`/`cols`, matching `array.prn`'s own
+already-proven `NDArray` convention — not a `Vec`-of-`Vec` (real, separate, unproven generic
+capability, sidestepped rather than assumed to work).
+
+**Real, deliberate scope boundary**: `stack2` builds exactly a 2-row matrix — every real matrix
+example in `LoLanguageSpec.pdf` is 2 rows. Real N-row stacking needs variadic `defn` params or the
+`Vec`-of-`Vec` question above; a real, separate follow-up, not built here.
+
+**Two real, genuine compiler gaps found and handled while building this, both flagged in
+`matrix.prn`'s own doc comments, neither silently patched over**:
+1. Two sibling top-level `loop` forms in the same function reusing the same binding name (`i`)
+   emit as colliding C `double i = 0;` declarations at the same brace level — `gcc` correctly
+   rejects it as a redefinition. Worked around with distinct names (`i0`/`i1`); a real, live
+   VS0 loop-emission boundary (each `loop` needs its own C block scope or truly fresh temp names),
+   not a logic error in this file.
+2. `matmul`'s own per-cell accumulator hits the exact same class of bug `base4/vector.prn`'s own
+   `dot` already confirmed: seeded from an integer literal, C-typed `double`, boxed via
+   `vec_box_f64` into a `Vec` declared `(Vec I32)`. Confirmed directly in
+   `tests/test_base4_matrix.c` (hand-traced product `[[2,3],[0,1]]`, each cell reads back wrong
+   via the only correct-per-signature `int*` cast, correct only via the wrong `double*` cast).
+   **Not fixed here** — same cross-cutting fix `linalg.prn`/`base4/vector.prn` already scoped out
+   of a single-file pass. `stack2`/`matrix-eq`/`dims-eq`/`rows`/`cols` don't hit this and are real,
+   verified: `make test-base4-matrix`, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

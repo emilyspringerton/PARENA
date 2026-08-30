@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -99,6 +99,17 @@ test-base4-vector: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_base4_vector.c \
 		runtime/parena_runtime.c -o /tmp/test_base4_vector_bin -lm
 	/tmp/test_base4_vector_bin
+
+# test-base4-matrix -- real end-to-end verification for stdlib/base4/matrix.prn (S208-06, LO's
+# real STACK/MATMUL stdlib target). Confirms two real, live compiler bugs: sibling same-named
+# loop bindings colliding at C emission (worked around in matrix.prn itself), and matmul's own
+# accumulator double-boxing (same class as base4/vector.prn's own documented `dot` bug) -- see
+# matrix.prn's own doc comments.
+test-base4-matrix: build
+	./parena build stdlib/base4/algebra.prn stdlib/base4/matrix.prn -o tests/test_base4_matrix_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_base4_matrix.c \
+		runtime/parena_runtime.c -o /tmp/test_base4_matrix_bin -lm
+	/tmp/test_base4_matrix_bin
 
 # test-textmate-loader -- real end-to-end verification for stdlib/editor/textmate_loader.prn
 # (the real ".tmLanguage.json" grammar loader, "using text mate files" per founder real-time)
