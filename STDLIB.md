@@ -3029,6 +3029,29 @@ ran the real generated Go). `day-of-year` does NOT reach burrow (uses `loop`, a 
 already-known boundary). `format-go-layout` is C-only regardless — no String-building in burrow
 yet, same boundary `k8s.prn` already hit. `make test-datetime` green, `-Werror` clean.
 
+### `http/router` — new package, LO FRAMEWORK_NORTHSTAR.md's Phase B proof point
+
+Founder real-time: "ok well write the deps in parena" — build the "batteries included" LO
+framework's real dependencies in PARENA now, ahead of LO's own Phase 2 (`qi`) landing.
+
+```clojure
+(defn route-matches? [(pattern : String @ Region) (path : String @ Region) (dest : Arena @ Region)] : Bool @ Region)
+(defn extract-param [(pattern : String @ Region) (path : String @ Region) (param-name : String @ Region) (dest : Arena @ Region)] : String @ Region)
+```
+
+Real, minimal Sinatra/Express-style router: literal `/` segments plus a single `:name` capture
+convention. Deliberately does NOT reuse `base4/pattern.prn`'s own backtracking matcher — that
+operates on base4 state vectors, not characters, and `FRAMEWORK_NORTHSTAR.md` named the byte-to-
+base4 encoding question as real and undecided; this file answers it by not waiting on it.
+
+**Real, genuine, previously-latent bug found and fixed while building this, confirmed via a real
+segfault**: `vec-string-at`'s cast (`*(char **)vec_get(v, idx)`, a double dereference) is wrong —
+a `String` element is already a `char *`; `string/split` pushes it directly with no extra boxing
+step (unlike `vec_box_i32`/`vec_box_f64` for scalars, which genuinely need a fresh heap slot).
+The correct read-back is a single cast. The exact same bug existed in `regex/pcre.prn`'s own copy
+of `vec-string-at` — never caught there because its only caller (`join-strings`) has no real
+caller anywhere in this stdlib. Both fixed. `make test-http-router` green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

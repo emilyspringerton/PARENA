@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -149,6 +149,15 @@ test-datetime: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_datetime.c \
 		runtime/parena_runtime.c -o /tmp/test_datetime_bin -lm
 	/tmp/test_datetime_bin
+
+# test-http-router -- real end-to-end verification for stdlib/http/router.prn (LO
+# FRAMEWORK_NORTHSTAR.md's Phase B proof point). Confirms a real, genuine, previously-latent
+# vec-string-at double-dereference bug (also fixed in regex/pcre.prn's own copy).
+test-http-router: build
+	./parena build stdlib/string.prn stdlib/http/router.prn -o tests/test_http_router_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_http_router.c \
+		runtime/parena_runtime.c -o /tmp/test_http_router_bin -lm
+	/tmp/test_http_router_bin
 
 # test-textmate-loader -- real end-to-end verification for stdlib/editor/textmate_loader.prn
 # (the real ".tmLanguage.json" grammar loader, "using text mate files" per founder real-time)

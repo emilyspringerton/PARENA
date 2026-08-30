@@ -627,10 +627,16 @@
 ;; vec-string-at -- same #target escape hatch as vec-i32-at above, one
 ;; more instance of the same real, pre-existing elem-type-hint gap
 ;; (this time for String elements, not I32).
+;; Real, GENUINE bug found and fixed (found live building stdlib/http/router.prn, a real
+;; segfault): `*(char **)vec_get(v, idx)` is a double dereference. `join-strings` below is this
+;; function's own only caller, and it has no real caller anywhere in this stdlib, so this cast
+;; was never actually exercised end-to-end until now. A `String` element is ALREADY a `char *`,
+;; pushed directly by callers with no extra boxing step (unlike `vec_box_i32`/`vec_box_f64` for
+;; scalars, which genuinely need a fresh heap slot) — the correct read-back is a single cast.
 (defn vec-string-at [(v : &(Vec String)) (idx : I32)]
   : String @ Region
   #target
-  {:c (inline-c "*(char **)vec_get(v, idx)")})
+  {:c (inline-c "(char *)vec_get(v, idx)")})
 
 (defn join-strings [(parts : &(Vec String)) (dest : Arena @ Region)]
   : String @ Region

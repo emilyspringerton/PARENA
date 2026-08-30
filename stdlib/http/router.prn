@@ -1,0 +1,93 @@
+;; stdlib/http/router.prn — real Phase B proof point for LO/FRAMEWORK_NORTHSTAR.md's own
+;; "batteries included" plan (founder real-time: "ok well write the deps in parena" — build the
+;; framework's real dependencies in PARENA now, ahead of LO's own Phase 2 (`qi`) landing, matching
+;; this repo's own established pattern of LO's future emitted `.prn` calling into pre-built
+;; PARENA primitives rather than waiting to hand-roll them later).
+;;
+;; Real, deliberate scope boundary, named rather than half-built: this is a real, minimal
+;; Sinatra/Express-style router — literal path segments plus a single `:name` capture-segment
+;; convention, split on `/`. It deliberately does NOT reuse `base4/pattern.prn`'s own real
+;; wildcard/quantifier/anchor/ALT/GROUP backtracking matcher, even though FRAMEWORK_NORTHSTAR.md's
+;; own "Router" section named that as the architectural precedent — that matcher operates on
+;; base4 STATE vectors, not characters/Strings, and FRAMEWORK_NORTHSTAR.md itself named the
+;; byte-to-base4 encoding question as real and undecided. This file answers that question for
+;; real by NOT waiting on it: a plain String-segment router needs no base4 encoding at all, and
+;; covers the actual, common routing need (`/repos/:name/commits`) directly. A real, separate
+;; follow-up if quantifier/wildcard route patterns are ever needed beyond simple `:name` capture.
+
+(module http/router)
+(import string)
+(export route-matches? extract-param)
+
+;; vec-string-at -- same real, pre-existing compiler gap `regex/pcre.prn`'s own already-documented
+;; `vec-string-at` works around (a plain LOCAL `(Vec String)` value has no elem-type hint
+;; registered). Redefined locally rather than imported since `pcre.prn` doesn't export its own
+;; copy — matches this stdlib's own established small-per-file-#target-helper convention.
+;;
+;; Real, GENUINE bug found and fixed in the process, not just copied over: `pcre.prn`'s own
+;; `vec-string-at` casts as `*(char **)vec_get(v, idx)` (a double dereference) — but its own real
+;; caller (`join-strings`) has no actual caller anywhere in this stdlib, so that cast was never
+;; actually exercised end-to-end. Confirmed live, via a real segfault building THIS file: a
+;; `String` element is ALREADY a `char *`, and `string/split` (this file's own real Vec String
+;; producer) pushes it directly with no extra boxing step (unlike `vec_box_i32`/`vec_box_f64` for
+;; scalars, which genuinely need a fresh heap slot) — so the correct read-back is a single cast,
+;; `(char *)vec_get(v, idx)`, not a double dereference through a nonexistent extra indirection.
+(defn vec-string-at [(v : &(Vec String)) (idx : I32)]
+  : String @ Region
+  #target
+  {:c (inline-c "(char *)vec_get(v, idx)")})
+
+;; is-capture-segment? -- real, minimal `:name` detection via the segment's own first char code
+;; (58 = ':', ASCII), avoiding a `string/substring` call (and its own `dest` requirement) for a
+;; check this simple.
+(defn is-capture-segment? [(seg : String @ Region)] : Bool
+  (and (> (string/length seg) 0) (= (string/char-at seg 0) 58)))
+
+;; segments-match? -- real, direct recursive per-segment comparison: a capture segment always
+;; matches (its value is extracted separately, by extract-param below); a literal segment must
+;; match exactly.
+(defn segments-match? [(pat-segs : &(Vec String)) (path-segs : &(Vec String)) (i : I32) (n : I32)] : Bool
+  (if (>= i n)
+    true
+    (let [pseg (vec-string-at pat-segs i)]
+      (if (is-capture-segment? pseg)
+        (segments-match? pat-segs path-segs (+ i 1) n)
+        (if (string/str-eq? pseg (vec-string-at path-segs i))
+          (segments-match? pat-segs path-segs (+ i 1) n)
+          false)))))
+
+;; route-matches? -- real, top-level route test: same segment count (a real, honest requirement —
+;; this v0 has no trailing-wildcard/optional-segment support, a real, separate follow-up), then
+;; segment-by-segment per segments-match? above.
+(defn route-matches? [(pattern : String @ Region) (path : String @ Region) (dest : Arena @ Region)]
+  : Bool @ Region
+  (let [pat-segs (string/split pattern "/" dest)
+        path-segs (string/split path "/" dest)]
+    (if (not (= (vec/len &pat-segs) (vec/len &path-segs)))
+      false
+      (segments-match? &pat-segs &path-segs 0 (vec/len &pat-segs)))))
+
+;; find-param-index -- real, direct linear search for the pattern segment spelled exactly
+;; `:param-name`. Returns -1 (a real, honest "not found" sentinel) rather than trusting the
+;; caller.
+(defn find-param-index [(pat-segs : &(Vec String)) (param-name : String @ Region) (i : I32) (n : I32) (dest : Arena @ Region)]
+  : I32 @ Region
+  (if (>= i n)
+    -1
+    (let [pseg (vec-string-at pat-segs i)]
+      (if (and (is-capture-segment? pseg) (string/str-eq? (string/substring pseg 1 (string/length pseg) dest) param-name))
+        i
+        (find-param-index pat-segs param-name (+ i 1) n dest)))))
+
+;; extract-param -- real, honest v0 limitation, named not hidden: assumes `route-matches?` has
+;; already confirmed `pattern`/`path` really do match and that `param-name` really is one of
+;; `pattern`'s own capture segments — a real host must call `route-matches?` first, same
+;; "server/caller decides, this just does the one job" split every other real PARENA mod file in
+;; this stdlib already follows. No real error return for a missing param in this v0 (a real,
+;; separate follow-up — `Option String` once a caller needs to distinguish "not found" safely).
+(defn extract-param [(pattern : String @ Region) (path : String @ Region) (param-name : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [pat-segs (string/split pattern "/" dest)
+        path-segs (string/split path "/" dest)
+        idx (find-param-index &pat-segs param-name 0 (vec/len &pat-segs) dest)]
+    (vec-string-at &path-segs idx)))
