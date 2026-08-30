@@ -54,3 +54,24 @@ cc_test(
         "-pedantic",
     ],
 )
+
+# test_emit_ts -- real, v0 verification for the new TypeScript emitter (src/emit_ts.c), founder
+# real-time 2026-08-30: "start working on the parena ts emitter using MISHRI as proving ground."
+cc_test(
+    name = "test_emit_ts",
+    srcs = ["test_emit_ts.c"],
+    deps = [
+        "//src:arena",
+        "//src:ast",
+        "//src:emit_ts",
+        "//src:parser",
+        "//src:region",
+    ],
+    copts = [
+        "-std=c99",
+        "-Wall",
+        "-Wextra",
+        "-pedantic",
+        "-Werror",
+    ],
+)

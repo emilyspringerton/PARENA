@@ -58,6 +58,17 @@ cc_library(
 )
 
 cc_library(
+    name = "emit_ts",
+    srcs = ["emit_ts.c"],
+    hdrs = ["emit_ts.h"],
+    deps = [
+        ":arena",
+        ":ast",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "fmt",
     srcs = ["fmt.c"],
     hdrs = ["fmt.h"],
@@ -72,6 +83,7 @@ cc_binary(
         ":arena",
         ":ast",
         ":emit",
+        ":emit_ts",
         ":fmt",
         ":parser",
         ":region",

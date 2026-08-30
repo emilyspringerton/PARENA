@@ -9,12 +9,13 @@
 #include "arena.h"
 #include "ast.h"
 #include "emit.h"
+#include "emit_ts.h"
 #include "fmt.h"
 #include "parser.h"
 #include "region.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* PARENA_HAS_CI_STATUS -- real, deliberate two-stage bootstrap, not
  * dead code: `parena ci-status` (founder, real-time, 2026-08-21: "add
@@ -224,9 +225,16 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         arena_free_all(&arena);
         return 1;
     }
+    /* Real, minimal target dispatch by output extension -- `-o output.ts` routes to the real,
+       new, v0 TypeScript emitter (emit_ts.h's own doc comment has the full real scope statement),
+       any other extension keeps the existing, default, unchanged C emitter path. No new
+       subcommand/flag needed; every existing `-o output.c` caller is completely unaffected. */
+    size_t out_path_len = strlen(out_path);
+    int is_ts_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ts") == 0;
+
     const char *emit_err = NULL;
-    const char *c_source = emit_c(&arena, program, &emit_err);
-    if (!c_source) {
+    const char *emitted_source = is_ts_target ? emit_ts(&arena, program, &emit_err) : emit_c(&arena, program, &emit_err);
+    if (!emitted_source) {
         fprintf(stderr, "parena: %s\n", emit_err);
         arena_free_all(&arena);
         return 1;
@@ -237,7 +245,7 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         arena_free_all(&arena);
         return 1;
     }
-    fputs(c_source, out);
+    fputs(emitted_source, out);
     fclose(out);
     if (path_count == 1) {
         printf("parena: %s -> %s\n", paths[0], out_path);
@@ -290,7 +298,8 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
                          "       parena analyze <file.prn>                          (VS0 domain 2 -- region analyzer)\n"
-                         "       parena build <file.prn> [file2.prn ...] -o <output.c>    (VS0 domain 3 -- C emitter; "
+                         "       parena build <file.prn> [file2.prn ...] -o <output.c|output.ts>    (VS0 domain 3 -- "
+                         "C emitter (default), or the real v0 TypeScript emitter if -o ends in .ts; "
                          "multiple files are combined into one compilation unit, in the order given)\n"
                          "       parena fmt [-w] <file.prn> [file2.prn ...]         (re-indent; -w writes in place, "
                          "default prints to stdout)\n"
@@ -342,7 +351,7 @@ int main(int argc, char **argv) {
          * arguments, same real, simple convention the single-file form
          * already used. */
         if (argc < 5 || strcmp(argv[argc - 2], "-o") != 0) {
-            fprintf(stderr, "usage: parena build <file.prn> [file2.prn ...] -o <output.c>\n");
+            fprintf(stderr, "usage: parena build <file.prn> [file2.prn ...] -o <output.c|output.ts>\n");
             return 1;
         }
         size_t path_count = (size_t)(argc - 4); /* argv[2..argc-3] are input files */

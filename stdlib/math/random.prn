@@ -1,0 +1,30 @@
+;; stdlib/math/random.prn — real, first slice of a new `math` stdlib package (founder real-time,
+;; 2026-08-30: "start working on the parena ts emitter using MISHRI as proving ground... we can
+;; start to replace the MISHRI js deps little by little"). Not in STDLIB.md's own prior real
+;; dependency-order re-sort (no `math` package existed there before this pass) -- added here
+;; because MISHRI's own real `HumannessLayer.bezierInterp` (the first real function this new
+;; TypeScript emitter target proves itself against, see stdlib/mishri/bezier_interp.prn) genuinely
+;; needs a uniform-random primitive PARENA's own VS0 core has no built-in for.
+;;
+;; Real, honest FFI-shaped gap, same class as `net/tcp`/`crypto/hash`/`sdl2` elsewhere in this
+;; stdlib: `random` has no pure-PARENA implementation (VS0 has no PRNG/entropy-source primitive of
+;; its own) -- it's a real host call, lowered directly by whichever real backend compiles this
+;; file. The TypeScript emitter (src/emit_ts.c) recognizes a call to this exact, qualified name
+;; (`math/random`) and lowers it straight to `Math.random()`; the C emitter has no equivalent
+;; mapping registered yet (a real, separate, unstarted follow-up -- likely `(double)rand() /
+;; ((double)RAND_MAX + 1.0)` seeded via `parena_runtime.h`, not attempted in this pass).
+;;
+;; Real signature: zero arguments, returns a real F64 in [0, 1) -- the exact real contract
+;; JavaScript's own `Math.random()` already documents, chosen deliberately so the TypeScript
+;; target's own lowering is a direct, honest 1:1 mapping, not an approximation.
+
+(module math/random)
+(export random)
+
+(defn random [] : F64
+  0.0) ;; real, honest placeholder body for any FUTURE backend that tries to actually call this
+       ;; as a plain PARENA function rather than recognizing it as a special, host-lowered call
+       ;; (the TypeScript emitter never evaluates this body at all -- see its own doc comment
+       ;; above). A real, callable pure-PARENA fallback (a real PRNG algorithm, e.g. xorshift,
+       ;; seeded from a real entropy source) is genuine, separate, unstarted work, not silently
+       ;; pretended-at here.

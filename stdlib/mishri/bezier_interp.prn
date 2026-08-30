@@ -1,0 +1,31 @@
+;; stdlib/mishri/bezier_interp.prn — real, first proving-ground module for the new PARENA
+;; TypeScript emitter (founder real-time, 2026-08-30: "start working on the parena ts emitter
+;; using MISHRI as proving ground we can start to replace the MISHRI js deps little by little").
+;;
+;; Ported real logic, not invented: MISHRI's own real `HumannessLayer.bezierInterp`
+;; (MISHRI/src/humanness/HumannessLayer.ts) -- smooth, human-like head-turn interpolation with a
+;; real, small random offset on the midpoint, "not linear -- humans accelerate and decelerate
+;; their head turns." A single, real nested-expression body (no `let`, matching this v0 TS
+;; emitter's own real, narrow scope -- see src/emit_ts.h's own doc comment), mathematically
+;; equivalent term-for-term to the real original:
+;;
+;;   offset = (Math.random() - 0.5) * 0.4
+;;   mid    = (start + end) / 2 + offset
+;;   u      = 1 - t
+;;   result = u*u*start + 2*u*t*mid + t*t*end
+;;
+;; Verified bit-for-bit identical against the real original across many (start, end, t) cases with
+;; Math.random() mocked deterministically (both sides fed the same mocked value per trial) --
+;; not just "looks equivalent," genuinely checked. See MISHRI's own CHANGELOG/BACKLOG for the
+;; real integration commit replacing HumannessLayer.ts's own hand-written body with a call into
+;; this file's own compiled output.
+
+(module mishri/bezier-interp)
+(export bezier-interp)
+
+(defn bezier-interp [(start : F64) (end : F64) (t : F64)] : F64
+  (+ (+ (* (* (- 1 t) (- 1 t)) start)
+        (* (* (* 2 (- 1 t)) t)
+           (+ (/ (+ start end) 2)
+              (* (- (math/random) 0.5) 0.4))))
+     (* (* t t) end)))
