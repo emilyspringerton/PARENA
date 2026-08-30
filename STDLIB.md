@@ -2904,6 +2904,59 @@ example in `LoLanguageSpec.pdf` is 2 rows. Real N-row stacking needs variadic `d
    of a single-file pass. `stack2`/`matrix-eq`/`dims-eq`/`rows`/`cols` don't hit this and are real,
    verified: `make test-base4-matrix`, `-Werror` clean.
 
+### `base4/pattern` — new package, S208-07, LO's real PCRE-lite pattern matcher
+
+`LO/GRAMMAR.md`'s §5.4 wildcard/quantifier/anchor pattern matching over base4 vectors.
+
+```clojure
+(defenum Quant (One) (ZeroOrMore) (OneOrMore) (Optional))
+(defstruct PatternElem (is-wild : Bool) (state : I32) (quant : Quant))
+
+(defn elem-lit  [(state : I32) (quant : Quant)] : PatternElem)
+(defn elem-wild [(quant : Quant)] : PatternElem)
+(defn is-match [(elems : &(Vec PatternElem)) (anchored-start : Bool) (anchored-end : Bool)
+                (target : &(Vec I32)) (dest : Arena @ Region)] : Bool @ Region)
+```
+
+Real backtracking-matcher architecture DIRECTLY reused from `regex/pcre.prn`'s own already-proven
+design (candidate end-positions as a real `(Vec I32)`, most-preferred/longest first, explicit
+loop/recur, no closures), adapted to base4 states instead of characters.
+
+**Real, deliberate scope boundary**: covers exactly `LoLanguageSpec.pdf`'s own one fully-worked
+pattern example (start/end anchors, literal, wildcard, and all four quantifiers). `ALT` and
+`GROUP` are real, separately-sized follow-ups (`S208-09`) — `ALT` needs multi-branch backtracking
+across whole sub-patterns, `GROUP` needs a real capture-boundary concept this file's flat
+element-sequence design doesn't have.
+
+**Real, deliberate design choice**: no `Atom` defenum (`Lit I32 | Wild`) — plain `PatternElem`
+fields instead. Found live that VS0's emitter doesn't yet correctly type-infer an I32 bound via
+`match`-destructuring a boxed defenum-variant payload (emitted as `void *`, pointer-compared
+against an int — confirmed `-Werror`-failing). Same for `match-seq`'s own return: a raw `I32`
+sentinel (`-1` for no match) instead of `(Option I32)`, for the identical reason. Both are new,
+confirmed instances of the same class of gap `base4/vector.prn`/`base4/matrix.prn` already
+documented, not new kinds of bugs.
+
+**Real, second, separate gap found and fixed while building this**: building test vectors from
+*within* `.prn` source (not an external C harness) via plain `(vec/push! &mut v 1)` on a declared
+`(Vec I32)` silently boxes the literal via `vec_box_f64`, not `vec_box_i32` — every numeric
+literal in VS0 is unconditionally typed `double`, and this is the first file in this stdlib to
+build `Vec I32` test data from PARENA source itself rather than an external C driver. Fixed with
+a new `push-i32!` — same real `#target`/`vec-i32-at` fix shape (a function whose own declared
+signature, not the numeric-literal codegen path, is what VS0 resolves types from).
+
+**Real, live bug found and fixed via this file's own `self-test`, not just asserted correct**: the
+initial `OneOrMore` implementation had a genuine off-by-one (the mandatory first match's own
+position offset was dropped when computing later candidate end-positions) — caught because
+`self-test`'s own hand-traced expected result didn't match, not glossed over.
+
+**Real "write the main in pure PARENA" milestone** (founder real-time, since `parena-c` has no
+real `(defn main ...)` → C `int main` emission convention yet — confirmed directly against
+`src/emit.c`, per `selfhost/main.prn`'s own already-documented header comment, so a genuinely
+standalone PARENA executable isn't possible today): `self-test` is the real test ORCHESTRATION,
+written entirely in `.prn` source — `tests/test_base4_pattern.c` is reduced to the thinnest
+possible external shim, calling `self-test` once and checking the one returned `Bool`. `make
+test-base4-pattern` green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

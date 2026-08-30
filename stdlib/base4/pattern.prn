@@ -1,0 +1,246 @@
+;; stdlib/base4/pattern.prn — depends on vec. Real S208-07 follow-up: LO/GRAMMAR.md §5.4's
+;; PCRE-lite pattern matcher over base4 vectors, for LO's real PARENA stdlib target.
+;;
+;; Real, deliberate scope boundary, named rather than silently assumed: this v0 covers exactly
+;; the source material's own one fully-worked pattern example (`LoLanguageSpec.pdf`'s
+;; `vec PARENA CONSTRUCT 312 🏁 🌒 🌓 ☄️ 🌔 🛑` — start-anchor, literal, literal, one-or-more,
+;; literal, end-anchor) and its quantifier family (STAR/ONEPLUS/OPT + WILDCARD), START/END
+;; anchors. `ALT` (🛤) and `GROUP` (🗜) are real, separately-sized follow-ups — named as
+;; **S208-09** rather than half-built here: `ALT` needs real multi-branch backtracking across
+;; whole sub-patterns (not just per-element retry), and `GROUP` (even non-nesting, per
+;; GRAMMAR.md §5.4's own v1 restriction) needs a real capture-boundary concept this file's flat
+;; element-sequence design doesn't have yet.
+;;
+;; Real design decision GRAMMAR.md's own §2/§5.4 leave open (LO's TOKEN shape, not a runtime
+;; representation): a pattern here is a flat `(Vec PatternElem)`, each element an atom (a literal
+;; base4 state 0-3, or `Wildcard`) plus a quantifier (`One`/`ZeroOrMore`/`OneOrMore`/`Optional`) —
+;; i.e. the quantifier is folded onto its own preceding atom at construction time (`elem-lit`/
+;; `elem-wild` below build one already-paired unit), rather than kept as a separate flat token
+;; the matcher has to look ahead to find. Matches GRAMMAR.md's own token-level `PatternAtom+`
+;; shape ("a quantifier glyph immediately follows the atom it modifies") one level up.
+;;
+;; Real backtracking-matcher architecture, DIRECTLY reused from `stdlib/regex/pcre.prn`'s own
+;; already-proven, already-documented design (not reinvented): `match-elem`/`match-seq` return
+;; every candidate END POSITION as a real `(Vec I32)`, most-preferred (greedy: longest) first, via
+;; explicit loop/recur — no closures anywhere, matching VS0's own real `fn`-capture limitation
+;; `pcre.prn`'s own header comment already fought through. `match-seq`'s own result is always
+;; 0-or-1 candidates (first full-sequence success), the exact same real, honest narrowing
+;; `pcre.prn`'s own `match-concat` already documents accepting.
+
+(module base4/pattern)
+(import vec)
+
+(defenum Quant
+  (One)
+  (ZeroOrMore)
+  (OneOrMore)
+  (Optional))
+
+;; Real, deliberate design choice, not a defenum `Atom` (Lit I32 | Wild): found live that VS0's
+;; emitter doesn't yet correctly type-infer an I32 bound via `match`-destructuring a boxed
+;; defenum-variant payload (`(match a ((Lit s) (= s state)))` emitted `s` as `void *`/pointer-
+;; compared against an int, a real `-Werror` build failure) — same class of gap
+;; `base4/vector.prn`/`base4/matrix.prn` already documented for the generic I32-boxing path, a
+;; new confirmed instance of it, not a new kind of bug. Plain fields sidestep it entirely: every
+;; existing `((Some x) ...)`/`((SomeVariant x) ...)` elsewhere in this stdlib only ever
+;; destructures a POINTER-typed payload (String, a struct) — this file avoids being the first to
+;; need an I32 one.
+(defstruct PatternElem
+  (is-wild : Bool)
+  (state   : I32)   ;; real, ignored when is-wild is true
+  (quant   : Quant))
+
+(export elem-lit elem-wild is-match self-test)
+
+;; vec-i32-at -- same real, pre-existing compiler gap `regex/pcre.prn`'s own already-documented
+;; `vec-i32-at` works around (a plain LOCAL `(Vec I32)` value has no elem-type hint registered,
+;; so `deref (vec/get ...)` on it emits an invalid `*((void *)(...))` — a `&mut`-parameter or
+;; struct-field Vec DOES get a real hint, which is why `match-one` below can still use the
+;; ordinary `deref (vec/get target pos)` form directly). Reused verbatim, not reinvented.
+(defn vec-i32-at [(v : &(Vec I32)) (idx : I32)]
+  : I32
+  #target
+  {:c (inline-c "*(int *)vec_get(v, idx)")})
+
+;; push-i32! -- real, second, separate instance of the exact same class of gap `vec-i32-at`/
+;; `linalg.prn`'s own header/`base4/vector.prn`'s own `dot` doc comment all already document (every
+;; numeric literal in VS0 is unconditionally typed `double`): a plain `(vec/push! &mut v 1)` on a
+;; declared `(Vec I32)` boxes `1` via `vec_box_f64`, not `vec_box_i32` -- confirmed live building
+;; this file's own `self-test` (target vectors silently held double-boxed garbage read back through
+;; `vec_i32_at`'s `int*` cast). Same real fix shape as `vec-i32-at`/`zero-i32`: a `#target` function
+;; whose own signature (not the numeric-literal codegen path) is what VS0 resolves types from.
+(defn push-i32! [(v : &mut (Vec I32)) (val : I32)] : Unit
+  #target
+  {:c (inline-c "vec_push_(v, vec_box_i32(v, val));")})
+
+;; elem-lit/elem-wild — real, small constructors so callers never build a PatternElem by hand;
+;; matches this stdlib's own established convention of exposing constructors over raw struct
+;; literals for anything with more than one real field (see array.prn's own `zeros`/`from-vec`).
+(defn elem-lit [(state : I32) (quant : Quant)] : PatternElem
+  {:is-wild false :state state :quant quant})
+
+(defn elem-wild [(quant : Quant)] : PatternElem
+  {:is-wild true :state 0 :quant quant})
+
+;; match-one — 0-or-1 candidate: does this element match the single state at `pos` (in-bounds
+;; check first), regardless of quantifier — the quantifier is handled by the callers below via
+;; repeated match-one attempts, same real separation of concerns pcre.prn's own `char-matches?`
+;; (raw atom test) vs `match-star` (repetition driver) already establishes.
+(defn match-one [(elem : &PatternElem) (target : &(Vec I32)) (pos : I32)] : Bool
+  (if (>= pos (vec/len target))
+    false
+    (if (get-field elem :is-wild)
+      true
+      (= (get-field elem :state) (deref (vec/get target pos))))))
+
+;; match-elem — real candidate-END-POSITIONS-from-pos generator for ONE element, honoring its
+;; own quantifier. Most-preferred (longest match) first, same greedy-first convention pcre.prn's
+;; own Star/Plus handling already uses.
+(defn match-elem [(elem : &PatternElem) (target : &(Vec I32)) (pos : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (match (get-field elem :quant)
+    ((One)
+      (let [out (vec/new dest)]
+        (when (match-one elem target pos)
+          (vec/push! &mut out (+ pos 1)))
+        out))
+    ((Optional)
+      (let [out (vec/new dest)]
+        (when (match-one elem target pos)
+          (vec/push! &mut out (+ pos 1)))
+        (vec/push! &mut out pos) ;; zero-width branch last -- longest-first ordering preserved
+        out))
+    ((OneOrMore)
+      (if (not (match-one elem target pos))
+        (vec/new dest)
+        ;; Real, found-live off-by-one, fixed: the mandatory first match already consumes one
+        ;; state (pos -> pos+1); `reps` below counts ADDITIONAL consecutive matches starting at
+        ;; pos+1, so an end position using `k` of those additional reps is `pos + 1 + k`, not
+        ;; `pos + k` -- the candidate list (longest-first) must include k=0 (the "exactly one"
+        ;; floor) down through k=reps.
+        (let [reps (count-reps elem target (+ pos 1))
+              out (vec/new dest)]
+          (loop [k reps]
+            (when (>= k 0)
+              (vec/push! &mut out (+ pos (+ 1 k)))
+              (recur (- k 1))))
+          out)))
+    ((ZeroOrMore)
+      (let [reps (count-reps elem target pos)
+            out (vec/new dest)]
+        (loop [n reps]
+          (when (>= n 0)
+            (vec/push! &mut out (+ pos n))
+            (recur (- n 1))))
+        out))))
+
+;; count-reps — real, real, minimal helper: how many further consecutive real matches of `elem`'s
+;; own atom start at `pos` (used by OneOrMore/ZeroOrMore above to build the full greedy-first
+;; candidate list without needing a shared higher-order helper — same cross-module first-class-
+;; function-value boundary base4/vector.prn's own header comment already found and worked around).
+(defn count-reps [(elem : &PatternElem) (target : &(Vec I32)) (pos : I32)] : I32
+  (loop [n 0]
+    (if (match-one elem target (+ pos n))
+      (recur (+ n 1))
+      n)))
+
+;; match-seq — real sequence matcher: element `i` of `elems`, tries each of its own candidate end
+;; positions (longest first) against the REST of the sequence, backtracking to the next candidate
+;; on failure. Same real 0-or-1-result narrowing `pcre.prn`'s own `match-concat` already documents
+;; and accepts.
+;;
+;; Real, deliberate design choice, not `Option I32`: returns -1 (real, honest sentinel, positions
+;; are never negative) for "no match" rather than `(Option I32)`. Found live, not guessed: VS0's
+;; emitter doesn't yet correctly type-infer an I32 bound via `match`-destructuring a boxed
+;; `Some`/`Lit` payload (`(match rest ((Some end) ...))` emitted `end` as `void *`/pointer-compared
+;; against an int, a real `-Werror` build failure) — every existing use of `((Some x) ...)`
+;; elsewhere in this stdlib destructures a POINTER-typed payload (String, a struct), never a bare
+;; I32, so this is a genuinely new instance of the class of gap already flagged in
+;; `base4/vector.prn`/`base4/matrix.prn`'s own doc comments (I32 payloads through the generic
+;; boxing path), not a new kind of bug. A raw I32 sentinel sidesteps it entirely rather than
+;; fighting the compiler.
+(defn match-seq [(elems : &(Vec PatternElem)) (i : I32) (target : &(Vec I32)) (pos : I32) (dest : Arena @ Region)]
+  : I32 @ Region
+  (if (>= i (vec/len elems))
+    pos
+    (let [candidates (match-elem (vec/get elems i) target pos dest)]
+      (loop [ci 0]
+        (if (>= ci (vec/len &candidates))
+          -1
+          (let [rest (match-seq elems (+ i 1) target (vec-i32-at &candidates ci) dest)]
+            (if (>= rest 0)
+              rest
+              (recur (+ ci 1)))))))))
+
+;; is-match — GRAMMAR.md's MATCH (🔍). `anchored-start`/`anchored-end` are real, separate Bool
+;; flags rather than START/END being ordinary PatternElems — an anchor tests POSITION, not a
+;; STATE, so it doesn't fit `Atom`'s own real shape (matches `regex/syntax.prn`'s own `Anchor`
+;; variant needing a distinct match branch, not a `CharClass`-shaped one, for the same real
+;; reason). `anchored-start` is enforced by starting the search only at `pos = 0` instead of
+;; scanning every start position; `anchored-end` by requiring the matched end position to equal
+;; the target's own real length.
+(defn is-match [(elems : &(Vec PatternElem)) (anchored-start : Bool) (anchored-end : Bool)
+                 (target : &(Vec I32)) (dest : Arena @ Region)]
+  : Bool @ Region
+  (if anchored-start
+    (let [end (match-seq elems 0 target 0 dest)]
+      (if (< end 0) false (if anchored-end (= end (vec/len target)) true)))
+    (loop [start 0]
+      (if (> start (vec/len target))
+        false
+        (let [end (match-seq elems 0 target start dest)]
+          (if (< end 0)
+            (recur (+ start 1))
+            (if anchored-end (= end (vec/len target)) true)))))))
+
+;; self-test — real test ORCHESTRATION written in pure PARENA, not the external C driver (founder
+;; real-time: "write the MAIN in pure parena, at least like the ffi for it" -- parena-c has no
+;; real `(defn main ...)` -> C `int main` emission convention yet, confirmed directly against
+;; `src/emit.c` by `selfhost/main.prn`'s own already-documented header comment, so a real
+;; standalone PARENA executable genuinely isn't possible today; this is that same honest
+;; boundary's own established fallback -- all the real assertion LOGIC lives here, in `.prn`
+;; source, and the unavoidable external C shim (`tests/test_base4_pattern.c`) is reduced to
+;; calling this ONE function and checking ONE returned Bool, the thinnest possible FFI surface.
+;;
+;; Real, hand-traced case, directly from `LoLanguageSpec.pdf`'s own fully-worked example: pattern
+;; `🏁 🌒 🌓 ☄️ 🌔 🛑` (start-anchor, S1, S2, one-or-more, S3, end-anchor) against target
+;; `🌒🌓🌓🌔` (S1 S2 S2 S3) -- the source's own text says this "matches perfectly" (one S2 covered
+;; by the literal element, a second S2 covered by the one-or-more repeating the S2 test again,
+;; but ONEPLUS here binds to S2 the second listed element, not S3 -- re-reading the source
+;; grammar literally: `🌒 🌓 ☄️ 🌔` is S1, THEN (S2 one-or-more), THEN S3 -- i.e. the ☄️ modifies
+;; the element immediately before it, S2, not S3. Against 🌒🌓🌓🌔: S1 matches pos0, S2-one-or-more
+;; greedily matches BOTH remaining 🌓s at pos1-2, leaving only 🌔 at pos3 for the final literal
+;; S3 -- consistent with the source's own "matches perfectly" claim).
+(defn self-test [(dest : Arena @ Region)] : Bool @ Region
+  (let [e0 (elem-lit 1 One)          ;; S1, exactly once
+        e1 (elem-lit 2 OneOrMore)    ;; S2, one or more
+        e2 (elem-lit 3 One)          ;; S3, exactly once
+        pattern (vec/new dest)]
+    (vec/push! &mut pattern e0)
+    (vec/push! &mut pattern e1)
+    (vec/push! &mut pattern e2)
+    (let [target-ok (vec/new dest)]
+      (push-i32! &mut target-ok 1)
+      (push-i32! &mut target-ok 2)
+      (push-i32! &mut target-ok 2)
+      (push-i32! &mut target-ok 3)
+      (let [case1 (is-match &pattern true true &target-ok dest)      ;; real, hand-traced: true
+
+            target-bad (vec/new dest)]
+        (push-i32! &mut target-bad 1)
+        (push-i32! &mut target-bad 3) ;; missing the required S2 entirely
+        (let [case2 (not (is-match &pattern true true &target-bad dest)) ;; real: should NOT match
+
+              wild-elem (elem-wild One)
+              wild-pattern (vec/new dest)]
+          (vec/push! &mut wild-pattern wild-elem)
+          (let [target-single (vec/new dest)]
+            (push-i32! &mut target-single 0)
+            (let [case3 (is-match &wild-pattern true true &target-single dest) ;; WILDCARD matches any one state
+
+                  opt-elem (elem-lit 0 Optional)
+                  opt-pattern (vec/new dest)]
+              (vec/push! &mut opt-pattern opt-elem)
+              (let [empty-target (vec/new dest)
+                    case4 (is-match &opt-pattern true true &empty-target dest)] ;; OPTIONAL matches zero-width
+                (and case1 (and case2 (and case3 case4)))))))))))
