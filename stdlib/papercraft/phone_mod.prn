@@ -1,0 +1,47 @@
+;; stdlib/papercraft/phone_mod.prn — real, event-driven phone-notification decision, PAPERCRAFT's
+;; own first real slice of TYLER/engine/tyler_phone_mechanics.md's "in-game smartphone system"
+;; spec (Einhorn Media x SHANKPIT, 2026-06-12, "status: spec only -- no implementation yet").
+;;
+;; Founder real-time: "can we build the tyler phone mechanics into papercraft as PARENA mod api
+;; first development using the document in TYLER/engine/tyler_phone_mechanics.md". Real, bounded
+;; scope: the spec's own stated Phase 1 only (Messages app + notification banner), and only the
+;; one real trigger event PAPERCRAFT already has wired for xp_award_mod.prn (fully destroying a
+;; Paper Engine world object) -- not the full 5-phase spec (Contacts/Map/Camera/Notes, faction
+;; trust ladders, preset-reply dialogue) in one pass. Same "smallest real proof point" discipline
+;; every other real PAPERCRAFT slice this session has used.
+;;
+;; Real I32-only decision logic (VS0's own real ceiling, same as every other mod in this
+;; monorepo): given a numeric event-type code, decide which fixed message-id (if any) should
+;; notify the player. 0 = no notification. Host C owns everything VS0 genuinely can't do --
+;; looking up the real handle/text strings for a message-id, building and sending the real
+;; PC_PACKET_PHONE_MESSAGE packet -- same "mod decides, host applies" split every real mod in
+;; this monorepo already uses. The spec's own JSON payload (designed for SHANKPIT's own Go
+;; server) is deliberately NOT ported as-is -- PAPERCRAFT's own real convention throughout is
+;; fixed-size binary structs, not JSON-over-UDP, and VS0 can't produce a JSON string itself
+;; regardless -- so the real wire shape here is one message-id byte, with both client and server
+;; holding an identical, real, hardcoded lookup table (same "client independently regenerates
+;; identical content from a shared id" convention this repo's own city-chunk/world-object
+;; systems already use).
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-phone-message-for-event with
+;; PC_PHONE_EVENT_OBJECT_DESTROYED (real event-type constant, defined host-side in
+;; papercraft_protocol.h so both host C and this mod agree on the real number) immediately after
+;; a real world-object destruction awards XP -- the same real hook point xp_award_mod.prn already
+;; uses, not a new, separate trigger invented for this mod.
+
+(module papercraft/phone-mod)
+(export on-papercraft-phone-message-for-event)
+
+;; Real event-type constants -- must match papercraft_protocol.h's own PC_PHONE_EVENT_* defines
+;; byte-for-byte. Only one real event exists yet (Phase 1's own bounded scope); more get added
+;; here and in the host header together as later phases wire up their own real triggers.
+(defn event-object-destroyed [] : I32 1)
+
+;; Real message-id constants -- must match apps/client/src/main.c's own PC_PHONE_MESSAGE_TABLE
+;; byte-for-byte. 0 is reserved for "no notification," not a real message.
+(defn message-object-destroyed [] : I32 1)
+
+(defn on-papercraft-phone-message-for-event [(event-type : I32)] : I32
+  (if (= event-type (event-object-destroyed))
+    (message-object-destroyed)
+    0))
