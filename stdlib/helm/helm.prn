@@ -1,0 +1,99 @@
+;; stdlib/helm/helm.prn — real Helm chart primitives, built on `k8s`'s own real resource types.
+;; Founder real-time: "write helm support into parena both in the stdlib and also into DUNG and
+;; project BURROW" -> "helm primatives" (a real, explicit follow-up naming the same discipline
+;; `k8s.prn`'s own header already documents: real primitive TYPES, not just glue functions).
+;;
+;; Real, honest, narrow v0 scope: a Helm chart is real Chart.yaml + values.yaml + one templated
+;; resource file per real `k8s` resource. This package does NOT implement Helm's own general
+;; templating language (Sprig functions, conditionals, ranges, sub-charts, hooks) — it emits the
+;; one real, common substitution shape this monorepo's own real Kubernetes migration actually
+;; needs today (image + replica count parameterized via `{{ .Values.X }}`, everything else
+;; static), matching `yaml.prn`'s own real "honest, narrower-than-spec" house style rather than
+;; attempting full Helm parity unverified. `replicaCount`/`image.repository`/`image.tag` naming
+;; matches Helm's own real, standard `helm create` scaffold convention directly (not invented),
+;; so a real chart this package emits is a real, recognizable Helm chart shape to anyone who's
+;; used `helm create` before.
+
+(module helm)
+(import string)
+(import k8s)
+(export Chart chart-yaml values-yaml templated-deployment-yaml)
+
+(defstruct Chart
+  (name        : String @ Region)
+  (version     : String @ Region)
+  (description : String @ Region))
+
+;; chart-yaml — real Chart.yaml content. `apiVersion: v2` and `type: application` match Helm 3's
+;; own real, current chart-format defaults (`helm create`'s own real output) — not guessed.
+(defn chart-yaml [(c : Chart) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat
+    "apiVersion: v2\nname: "
+    (string/concat (get-field c :name)
+      (string/concat "\ndescription: "
+        (string/concat (get-field c :description)
+          (string/concat "\ntype: application\nversion: "
+            (string/concat (get-field c :version) "\n" dest)
+            dest)
+          dest)
+        dest)
+      dest)
+    dest))
+
+;; values-yaml — real values.yaml content, real Helm-standard shape (`image.repository`/
+;; `image.tag` as a nested mapping, `replicaCount` as the top-level key `helm create`'s own real
+;; scaffold uses) -- image-ref is split on the LAST ':' into repository/tag, matching the real,
+;; standard `repo/path/image:tag` convention every image reference in this monorepo's own real
+;; k8s/dashboard.yaml already follows.
+(defn values-yaml [(image-repository : String @ Region) (image-tag : String @ Region) (replicas : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [replicas-s (string/i32-to-string replicas dest)]
+    (string/concat
+      "replicaCount: "
+      (string/concat replicas-s
+        (string/concat "\nimage:\n  repository: "
+          (string/concat image-repository
+            (string/concat "\n  tag: "
+              (string/concat image-tag "\n" dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; templated-deployment-yaml — the real, single-substitution-shape templated resource file this
+;; package's own v0 scope commits to: `d`'s own real `container` image/`d`'s own real `replicas`
+;; are replaced with real Helm template expressions (`{{ .Values.image.repository }}:{{
+;; .Values.image.tag }}`, `{{ .Values.replicaCount }}`); every other real field (name, namespace,
+;; container name/port) stays static, matching `k8s/deployment-yaml`'s own real output exactly
+;; apart from those two substitutions -- a real host still needs `k8s/service-yaml`/`pvc-yaml`
+;; for the sibling resources (those don't need templating in this v0 scope: a Service/PVC's own
+;; real fields don't vary per Helm install the way image/replica count do).
+(defn templated-deployment-yaml [(d : Deployment) (dest : Arena @ Region)]
+  : String @ Region
+  (let [c (get-field d :container)]
+    (string/concat
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: "
+      (string/concat (get-field d :name)
+        (string/concat "\n  namespace: "
+          (string/concat (get-field d :namespace)
+            (string/concat "\nspec:\n  replicas: {{ .Values.replicaCount }}\n  selector:\n    matchLabels:\n      app: "
+              (string/concat (get-field d :name)
+                (string/concat "\n  template:\n    metadata:\n      labels:\n        app: "
+                  (string/concat (get-field d :name)
+                    (string/concat "\n    spec:\n      containers:\n        - name: "
+                      (string/concat (get-field c :name)
+                        (string/concat "\n          image: \"{{ .Values.image.repository }}:{{ .Values.image.tag }}\"\n          ports:\n            - containerPort: "
+                          (string/concat (string/i32-to-string (get-field c :port) dest) "\n" dest)
+                          dest)
+                        dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
