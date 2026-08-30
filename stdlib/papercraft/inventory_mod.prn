@@ -1,0 +1,39 @@
+;; stdlib/papercraft/inventory_mod.prn — real inventory-slot decisions for PAPERCRAFT's own
+;; FFXI-style list inventory (founder real-time, 2026-08-30: "ffxi style list affordances first"
+;; / "all parena mod api based developed"). Real "mods first everything": the host (apps/server)
+;; owns only the fixed PC_INVENTORY_SLOTS array and the loop that finds a slot to put a picked-up
+;; item into -- every real per-item RULE (how big can a stack get, can these two items even share
+;; a slot) is this mod's own real decision, not a hardcoded host constant.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-inventory-stack-max when it needs to know a
+;; real item's own max stack size (deciding whether an existing slot has room for one more), and
+;; on-papercraft-inventory-can-stack when deciding whether a picked-up item may merge into an
+;; already-occupied slot at all (same item id) versus needing its own fresh empty slot.
+
+(module papercraft/inventory-mod)
+(export on-papercraft-inventory-stack-max)
+(export on-papercraft-inventory-can-stack)
+
+;; Real item-id constant -- must match packages/common/papercraft_protocol.h's own PC_ITEM_SCRAP
+;; byte-for-byte. Named `inventory-scrap-id`, not the bare `item-scrap` a first pass used --
+;; VS0's generated C gives every module-private helper plain, non-static linkage, so this real
+;; constant needs its own unique name per module now that item_drop_mod.prn also defines one for
+;; the same real item id (see item_drop_mod.prn's own doc comment for the full real reasoning --
+;; found live via a real link-time "multiple definition" failure).
+(defn inventory-scrap-id [] : I32 1)
+
+;; Real, bounded max stack per item id. 99 is a real, simple, standard "one real stack" size for a
+;; junk/crafting-material item like scrap (matches the real, common convention this kind of item
+;; uses across the genre this sandbox is drawing from -- GTA3/FFXI-style inventories both cap
+;; stackable junk well short of "unlimited"). Any item id this mod doesn't yet recognize returns 0
+;; (not stackable at all -- the host's own real, honest fallback is "always needs its own slot").
+(defn on-papercraft-inventory-stack-max [(item-id : I32)] : I32
+  (if (= item-id (inventory-scrap-id))
+    99
+    0))
+
+;; Real merge rule: two items can only share one real slot if they're the exact same real item id,
+;; and that id is a real, valid, non-empty item (PC_ITEM_NONE, 0, never merges with anything --
+;; an empty slot is a destination for a NEW stack, not something to "merge" into).
+(defn on-papercraft-inventory-can-stack [(existing-item-id : I32) (incoming-item-id : I32)] : Bool
+  (and (= existing-item-id incoming-item-id) (> existing-item-id 0)))

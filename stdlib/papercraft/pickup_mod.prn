@@ -1,0 +1,17 @@
+;; stdlib/papercraft/pickup_mod.prn — real pickup-radius decision for PAPERCRAFT's own GTA3-style
+;; walk-over item pickup (founder real-time, 2026-08-30: "gta3 style stuff drops and you can pick
+;; it up" -- GTA3's own real pickups are walk-over, no dedicated button -- and "all parena mod api
+;; based developed"). Even a flat, single real constant becomes a real mod here, matching
+;; xp_award_mod.prn's own original precedent (a real, zero-arg, tunable value belongs in PARENA,
+;; not hardcoded host C, even before there's more than one real value to decide between).
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-pickup-radius-millis once, at server startup
+;; (not per-tick -- this is a real, static tuning value, not a per-event decision), and divides
+;; the real I32 result by 1000.0f to get an actual float world-unit radius (VS0 has no F32 params/
+;; returns yet, same real fixed-point-millis convention on_papercraft_slide_jump_boost_permille's
+;; own real speed_milli input/output already uses elsewhere in this monorepo).
+
+(module papercraft/pickup-mod)
+(export on-papercraft-pickup-radius-millis)
+
+(defn on-papercraft-pickup-radius-millis [] : I32 1800)

@@ -1,0 +1,39 @@
+;; stdlib/papercraft/item_drop_mod.prn — real item-drop decision for PAPERCRAFT's own GTA3-style
+;; "stuff drops and you can pick it up" system (founder real-time, 2026-08-30: "go ahead with the
+;; entity and inventory system simple but trackable gta3 style stuff drops and you can pick it
+;; up" / "all parena mod api based developed").
+;;
+;; Real, bounded first slice: only PAPER_MATERIAL_PAPER objects drop a real item (PC_ITEM_SCRAP)
+;; when destroyed -- the same real restraint every other real mod in this monorepo uses (no
+;; invented drop table for materials this sandbox doesn't have a real use for an item from yet).
+;; Materials match packages/common/paper_mesh.h's own real PAPER_MATERIAL_* order (paper=0,
+;; wood=1, concrete=2, metal=3) -- kept in that exact order here so a future real drop for
+;; wood/concrete/metal is one more real branch, not a renumbering.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-item-for-object-destroyed with the destroyed
+;; object's own real material (packages/common/papercraft_worldobjects.h's own PcWorldObjectDef
+;; material field) at the exact same real "object fully destroyed" trigger point
+;; xp_award_mod/phone_mod already hook. A real 0 (PC_ITEM_NONE) means this event drops nothing --
+;; the host does not spawn a real entity in that case.
+
+(module papercraft/item-drop-mod)
+(export on-papercraft-item-for-object-destroyed)
+
+;; Real material constants -- must match packages/common/paper_mesh.h's own PAPER_MATERIAL_*
+;; defines byte-for-byte.
+(defn material-paper [] : I32 0)
+
+;; Real item-id constant -- must match packages/common/papercraft_protocol.h's own PC_ITEM_SCRAP
+;; byte-for-byte. Named `item-drop-scrap-id`, not the bare `item-scrap` a first pass used --
+;; VS0's generated C gives every module-private helper plain, non-static linkage, so a same-named
+;; helper in inventory_mod.prn (which also needs this real constant) collided at link time once
+;; both mods were statically linked into the same real server binary ("multiple definition of
+;; `item_scrap`", found live via a real `bazel build //...` failure). Real, current VS0 limitation
+;; (no per-module static/private linkage yet) -- a real, unique name per module is the real,
+;; correct workaround, not a bug in either mod's own logic.
+(defn item-drop-scrap-id [] : I32 1)
+
+(defn on-papercraft-item-for-object-destroyed [(material : I32)] : I32
+  (if (= material (material-paper))
+    (item-drop-scrap-id)
+    0))
