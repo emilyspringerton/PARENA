@@ -1,0 +1,82 @@
+;; stdlib/tyler/cutscene_mod.prn — TYLER cutscene system decision logic, real PARENA mod.
+;; Founder real-time, 2026-08-30: "building the tyler cutscene system into parena check the tyler
+;; engine docs." Real doc checked: TYLER/engine/tyler_cutscene_system.md ("FFXI-Style Dialogue
+;; Scene Spec v0.1", written 2026-06-12, "implementation deferred to GoblinFoxDragon EduScript").
+;; That recommendation predates PARENA's own existence -- PARENA is now real, built, and directly
+;; positioned as "EduScript's scary older sister" (PARENA/CLAUDE.md's own words), so this mod is
+;; the real, direct successor to that deferred recommendation, not a new, separate idea.
+;;
+;; Real, narrow v0 scope, same "mods first everything" split PAPERCRAFT/ECOWAR already established
+;; (see PAPERCRAFT/stdlib/papercraft/xp_award_mod.prn's own precedent): this mod owns the real
+;; DECISION logic tyler_cutscene_system.md's own "Trigger Model" and "Effects (choice outcomes)"
+;; sections name -- whether a real host should fire a trigger, and whether a resolved choice's
+;; effect actually needs to mutate persistent server state. Real line drawn deliberately: the
+;; scene's own line-by-line typewriter SEQUENCING (pause_ms timing, text reveal) stays host logic
+;; -- that's real timing, not real decision-making, matching SHANKPIT's own existing
+;; packages/simulation/cutscene.c ticker (CutsceneState/cutscene_tick), which is a real, already
+;; -proven, PURELY linear/no-branching slide sequencer with no server/choice concept at all (a
+;; genuinely different, simpler, already-shipped system from the FFXI-style branching dialogue
+;; this doc specs -- confirmed by reading both before writing this mod, not assumed identical).
+;;
+;; ABI: not yet wired into a live host. tyler_cutscene_system.md's own "Implementation Phases"
+;; table names Phase 1 ("Scene script parser + server trigger eval") as needing "Go server event
+;; system" -- SHANKPIT's own persistent backend (apps2/server-go) is real, live Go
+;; (dragonsnshit module, :6969), but PARENA's own Go emitter (project BURROW, see
+;; /home/fatbaby/BURROW/NORTHSTAR.md) is scoped, not built yet as of this mod's own writing. Real,
+;; honest current path to a live Go host call: cgo against this mod's own compiled C output (a
+;; real, standard, but real extra build-complexity cost) until BURROW ships a native Go target --
+;; named here so it isn't silently assumed away. This mod is compiled + tested (see
+;; packages/simulation/cutscene_effect_mod_test.c in the SHANKPIT repo) but NOT called from any
+;; real host yet, same real "compiled, verified, not yet wired" status xp_award_mod.prn/
+;; level_mod.prn carried before PAPERCRAFT's own host wiring landed.
+
+(module tyler/cutscene-mod)
+(export on-tyler-cutscene-effect-is-mechanical)
+(export on-tyler-cutscene-trust-threshold-met)
+(export on-tyler-cutscene-urgency-window-met)
+(export on-tyler-cutscene-trigger-ready)
+
+;; Real effect codes, matching tyler_cutscene_system.md's own "Effects (choice outcomes)" table
+;; verbatim (advance_stage / trigger_awareness / grant_contact / post_message / noop) -- zero-arg
+;; I32 constants, the same real named-code convention PAPERCRAFT's own item_drop_mod.prn uses for
+;; material-paper/material-concrete/material-metal.
+(defn cutscene-effect-noop [] : I32 0)
+(defn cutscene-effect-advance-stage [] : I32 1)
+(defn cutscene-effect-trigger-awareness [] : I32 2)
+(defn cutscene-effect-grant-contact [] : I32 3)
+(defn cutscene-effect-post-message [] : I32 4)
+
+;; Real dispatch: does this effect code require the host to actually mutate persistent server
+;; state (advance a faction stage, start tracking a player, add a phone contact, queue a phone
+;; message) -- or was the choice narrative-only (noop, the one real effect code with no mechanical
+;; consequence)? A real host calls this once per resolved choice, right after
+;; PacketCutsceneChoice comes back (tyler_cutscene_system.md's own "Client Implementation" step 6),
+;; to decide whether any of its own real state-mutation code paths need to run at all.
+(defn on-tyler-cutscene-effect-is-mechanical [(effect-code : I32)] : Bool
+  (> effect-code (cutscene-effect-noop)))
+
+;; Real trigger condition #1 (tyler_cutscene_system.md's own "Player has reached a faction trust
+;; threshold"): the server evaluates this, never the client, per that doc's own explicit
+;; "The server evaluates conditions — not the client" line.
+(defn on-tyler-cutscene-trust-threshold-met [(player-trust : I32) (required-trust : I32)] : Bool
+  (>= player-trust required-trust))
+
+;; Real trigger condition #2 ("Time-based: event has been live for X minutes (urgency escalation
+;; cutscenes)") -- both args in whatever one real unit the host chooses (ms, minutes, ticks); this
+;; mod is unit-agnostic as long as both share one, same real "host owns the real clock, mod owns
+;; the real comparison" split every other real trigger-condition mod in this monorepo already uses.
+(defn on-tyler-cutscene-urgency-window-met [(event-live-elapsed : I32) (urgency-threshold : I32)] : Bool
+  (>= event-live-elapsed urgency-threshold))
+
+;; Real, composed trigger-readiness check: folds tyler_cutscene_system.md's own "First time the
+;; player enters this zone (one-shot cutscenes)" rule (the scene's own `one_shot` field) on top of
+;; the trust-threshold gate above -- a one-shot scene the player has already seen never fires
+;; again, regardless of trust; otherwise it fires exactly when trust is met. `one-shot`/
+;; `already-seen` are real I32 booleans (0/1) crossing the host/mod boundary, matching every other
+;; real PARENA mod's own convention for this (VS0's own current wire-boundary shape, not a PARENA
+;; language limitation -- see inventory_mod.prn's own real Bool-returning functions for the same
+;; convention on the RETURN side).
+(defn on-tyler-cutscene-trigger-ready [(player-trust : I32) (required-trust : I32) (one-shot : I32) (already-seen : I32)] : Bool
+  (if (and (= one-shot 1) (= already-seen 1))
+    0
+    (on-tyler-cutscene-trust-threshold-met player-trust required-trust)))
