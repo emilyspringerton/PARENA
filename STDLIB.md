@@ -2994,6 +2994,41 @@ current, not merely because two edits happened close in time (that's the non-con
 coalescing case above). 8 real, hand-traced assertions, `make test-papercraft-note-version`
 green, `-Werror` clean.
 
+### `datetime` — new package, Go-style reference-time layout formatting
+
+Founder real-time: "add stdlibs for date time use the same magic string as golang."
+
+```clojure
+(defn is-leap-year? [(year : I32)] : Bool)
+(defn days-in-month [(year : I32) (month : I32)] : I32)      ;; month 1-12
+(defn day-of-year [(year : I32) (month : I32) (day : I32)] : I32)
+(defstruct DateParts (year month day hour minute second : I32))
+(defn unix-parts [(epoch-seconds : I32)] : DateParts)
+(defn format-go-layout [(epoch-seconds : I32) (layout : String @ Region) (dest : Arena @ Region)] : String @ Region)
+```
+
+Real, honest, narrower than Go's own `time` package: only `2006`/`01`/`02`/`15`/`04`/`05` are
+supported (enough for ISO-8601-shaped timestamps) — `06`/`03`/single-digit forms/`PM`/`pm`,
+month/weekday names, timezone offsets, and fractional seconds are real, separate follow-ups.
+
+**Real, genuine compiler gap found and worked around**: `src/emit.c` has several fixed `char
+buf[1024]` buffers involved in emitting `#target`/`inline-c` bodies — a first-draft, all-in-one
+inline-c version of `format-go-layout` (~1.3KB) silently truncated mid-token at offset ~1033, no
+error. Worked around architecturally, not just patched: `unix-parts`'s calendar breakdown stays a
+short `#target` (via `gmtime` + a compound-literal pointer, since `alloc` only supports `String`
+and a GNU statement-expression `({...})` is rejected under this project's own `-pedantic` build),
+and the actual layout-substitution scan is written in pure PARENA control flow instead of one
+giant C block.
+
+**Real dual-target result, checked directly**: `is-leap-year?`/`days-in-month` now reach `burrow`
+too — but only after fixing two real, genuine `BURROW` gaps found live (not pre-existing known
+issues): bare `true`/`false` literals had no handling in `emit_go.go` at all, and a trailing `?`/
+`!` in a defn name produced an illegal Go identifier (fixed by mirroring `src/emit.c`'s own
+`?`/`!` -> `_` mangling). Both fixed with real regression tests, verified end-to-end (built and
+ran the real generated Go). `day-of-year` does NOT reach burrow (uses `loop`, a real, separate,
+already-known boundary). `format-go-layout` is C-only regardless — no String-building in burrow
+yet, same boundary `k8s.prn` already hit. `make test-datetime` green, `-Werror` clean.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

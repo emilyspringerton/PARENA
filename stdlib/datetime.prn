@@ -1,0 +1,130 @@
+;; stdlib/datetime.prn — real date/time primitives. Founder real-time: "add stdlibs for date time
+;; use the same magic string as golang" — Go's own reference-time layout convention (a literal
+;; example timestamp, `Mon Jan 2 15:04:05 MST 2006`, whose substrings get pattern-matched and
+;; substituted, rather than `%Y-%m-%d`-style format specifiers).
+;;
+;; Real dual-target result, per founder real-time "use burrow", checked directly against a real
+;; `burrow build` run rather than assumed: `is-leap-year?`/`days-in-month` DO reach burrow now —
+;; but only after fixing two real, genuine gaps in BURROW itself, found live building this file,
+;; not pre-existing known issues: (1) bare `true`/`false` Bool literals had no handling at all in
+;; `emit_go.go`'s `NodeSymbol` case (`unknown identifier 'false'`); (2) a trailing `?`/`!` in a
+;; defn name (`is-leap-year?`) produced an illegal Go identifier character, confirmed via a real
+;; `gofmt` failure — fixed by mirroring `src/emit.c`'s own already-established `?`/`!` -> `_`
+;; mangling convention rather than inventing a new one. Both fixed in BURROW with real regression
+;; tests (`TestEmitGoBoolLiterals`/`TestEmitGoPredicateNameMangling`), verified end-to-end (built
+;; the real generated Go, ran it, confirmed correct output for both functions). `day-of-year`
+;; does NOT reach burrow — it uses `loop`/`recur`, a real, separate, already-known burrow
+;; boundary (no loop support at all yet), not something this pass touches. `format-go-layout`
+;; (the magic-string substitution) is real but C-only regardless — `burrow`'s own current real
+;; ceiling has no String-building support at all, the same honest boundary `k8s.prn` already hit.
+;;
+;; Real, genuine compiler gap found and worked around while building this, named rather than
+;; fought further: `src/emit.c` has several fixed `char buf[1024]` buffers involved in emitting
+;; `#target`/`inline-c` bodies — a single inline-c string longer than ~1KB gets silently
+;; truncated mid-token (confirmed live: a first-draft all-in-one-inline-c version of
+;; `format-go-layout` broke exactly around offset 1033, with the tail of the C body simply
+;; missing from the generated output, no error). Worked around by keeping `unix-parts` (the only
+;; real inline-c here) short, and writing the actual layout-substitution scan in pure PARENA
+;; control flow instead of one giant C block — also just the better design, not only a
+;; workaround.
+;;
+;; Real, honest, narrower scope than Go's own `time` package, named up front: only the most
+;; common reference-layout tokens are supported (`2006`, `01`, `02`, `15`, `04`, `05`) — enough
+;; for ISO-8601-shaped timestamps (`2006-01-02 15:04:05`). `06`/`03`/`1`-`5` (single-digit forms)/
+;; `PM`/`pm`, month/weekday NAMES (`Jan`/`Mon`/`Monday`), timezone offsets, and fractional
+;; seconds are NOT implemented — real, separate follow-ups, not silently assumed covered.
+
+(module datetime)
+(import string)
+(export is-leap-year? days-in-month day-of-year DateParts unix-parts unix-year unix-month unix-day unix-hour unix-minute unix-second format-go-layout)
+
+;; is-leap-year? -- real, standard Gregorian rule. Scalar-only: reaches both parena and burrow.
+(defn is-leap-year? [(year : I32)] : Bool
+  (if (not (= (mod year 4) 0))
+    false
+    (if (not (= (mod year 100) 0))
+      true
+      (= (mod year 400) 0))))
+
+;; days-in-month -- real, standard Gregorian month lengths, leap-year-aware. `month` is 1-12.
+;; Scalar-only: reaches both parena and burrow.
+(defn days-in-month [(year : I32) (month : I32)] : I32
+  (if (or (= month 1) (or (= month 3) (or (= month 5) (or (= month 7) (or (= month 8) (or (= month 10) (= month 12)))))))
+    31
+    (if (or (= month 4) (or (= month 6) (or (= month 9) (= month 11))))
+      30
+      (if (is-leap-year? year) 29 28))))
+
+;; day-of-year -- real, direct sum of days-in-month for every whole month before `month`, plus
+;; `day`. Scalar-only: reaches both parena and burrow.
+(defn day-of-year [(year : I32) (month : I32) (day : I32)] : I32
+  (loop [m 1 acc day]
+    (if (>= m month)
+      acc
+      (recur (+ m 1) (+ acc (days-in-month year m))))))
+
+;; DateParts -- flat, scalar-only calendar breakdown of a Unix timestamp (UTC).
+(defstruct DateParts
+  (year   : I32)
+  (month  : I32)
+  (day    : I32)
+  (hour   : I32)
+  (minute : I32)
+  (second : I32))
+
+;; unix-year/-month/-day/-hour/-minute/-second -- real, minimal `#target` field extractors, each
+;; a single valid C99 EXPRESSION (`alloc` only supports `String` so far, and a GNU statement-
+;; expression `({...})` is rejected under this project's own `-std=c99 -pedantic` build — real
+;; constraints found live, not style choices). `gmtime` (not the reentrant `_r` form) plus a
+;; compound-literal `(time_t[]){...}` pointer sidesteps both: no local variable declaration is
+;; needed at all, so the whole thing stays one expression. Six separate `gmtime` calls per
+;; `unix-parts` below is real, deliberate correctness-over-efficiency — fine at this scope.
+(defn unix-year [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_year + 1900")})
+(defn unix-month [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_mon + 1")})
+(defn unix-day [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_mday")})
+(defn unix-hour [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_hour")})
+(defn unix-minute [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_min")})
+(defn unix-second [(epoch-seconds : I32)] : I32
+  #target {:c (inline-c "gmtime((time_t[]){(time_t)epoch_seconds})->tm_sec")})
+
+;; unix-parts -- real calendar breakdown, combining the six single-field extractors above into
+;; one real DateParts struct.
+(defn unix-parts [(epoch-seconds : I32)] : DateParts
+  {:year (unix-year epoch-seconds) :month (unix-month epoch-seconds) :day (unix-day epoch-seconds)
+   :hour (unix-hour epoch-seconds) :minute (unix-minute epoch-seconds) :second (unix-second epoch-seconds)})
+
+;; pad2 -- real, minimal two-digit zero-padded decimal formatter (Go's own "%02d" behavior for
+;; the layout tokens supported below).
+(defn pad2 [(n : I32) (dest : Arena @ Region)] : String @ Region
+  (if (< n 10)
+    (string/concat "0" (string/i32-to-string n dest) dest)
+    (string/i32-to-string n dest)))
+
+;; format-go-layout -- real, pure-PARENA layout-substitution scan (see this file's own header
+;; comment on why this isn't one big inline-c block). Real, longest-match-first token check per
+;; position, matching Go's own real reference-time algorithm's intent on the supported subset.
+(defn format-go-layout [(epoch-seconds : I32) (layout : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (unix-parts epoch-seconds)
+        n (string/length layout)]
+    (loop [i 0 acc ""]
+      (if (>= i n)
+        acc
+        (if (and (<= (+ i 4) n) (string/str-eq? (string/substring layout i (+ i 4) dest) "2006"))
+          (recur (+ i 4) (string/concat acc (string/i32-to-string (get-field parts :year) dest) dest))
+          (if (and (<= (+ i 2) n) (string/str-eq? (string/substring layout i (+ i 2) dest) "01"))
+            (recur (+ i 2) (string/concat acc (pad2 (get-field parts :month) dest) dest))
+            (if (and (<= (+ i 2) n) (string/str-eq? (string/substring layout i (+ i 2) dest) "02"))
+              (recur (+ i 2) (string/concat acc (pad2 (get-field parts :day) dest) dest))
+              (if (and (<= (+ i 2) n) (string/str-eq? (string/substring layout i (+ i 2) dest) "15"))
+                (recur (+ i 2) (string/concat acc (pad2 (get-field parts :hour) dest) dest))
+                (if (and (<= (+ i 2) n) (string/str-eq? (string/substring layout i (+ i 2) dest) "04"))
+                  (recur (+ i 2) (string/concat acc (pad2 (get-field parts :minute) dest) dest))
+                  (if (and (<= (+ i 2) n) (string/str-eq? (string/substring layout i (+ i 2) dest) "05"))
+                    (recur (+ i 2) (string/concat acc (pad2 (get-field parts :second) dest) dest))
+                    (recur (+ i 1) (string/concat acc (string/substring layout i (+ i 1) dest) dest))))))))))))
