@@ -2957,6 +2957,16 @@ written entirely in `.prn` source — `tests/test_base4_pattern.c` is reduced to
 possible external shim, calling `self-test` once and checking the one returned `Bool`. `make
 test-base4-pattern` green, `-Werror` clean.
 
+**S208-09 follow-up, `ALT`/`GROUP` added**: `elem-group` — a real, zero-width GROUP (🗜) boundary
+marker (matches without consuming a target state, checked before quantifier dispatch in both
+`match-one` and `match-elem` since a group needs different arithmetic than a normal `One`
+element). Real, honest scope: no capture-VALUE extraction yet — nothing downstream needs a
+captured substring, so this only guarantees a group boundary doesn't break matching around it.
+`is-match-alt` — real, but deliberately narrower than GRAMMAR.md's own flat single-Vec-with-
+embedded-ALT-token shape: binary alternation over two SEPARATE pattern `Vec`s (try `elems-a`, then
+`elems-b`), matching `regex/pcre.prn`'s own `match-alt` leftmost-first order. N-way (3+)
+alternation and a true flat-embedded-ALT-token form are named, real follow-ups, not built here.
+
 ### `mishri` — new package tree, real dependency order (design only past `bezier-interp`)
 
 Topological by `import`, same rule as the main re-sort above. Real status column, honest about

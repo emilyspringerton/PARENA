@@ -19,12 +19,14 @@ static inline __attribute__((unused)) Quant Quant_Optional(void) { Quant v; v.ta
 
 typedef struct {
     int is_wild;
+    int is_group;
     int state;
     Quant quant;
 } PatternElem;
-static inline __attribute__((unused)) PatternElem PatternElem_new(int is_wild, int state, Quant quant) {
+static inline __attribute__((unused)) PatternElem PatternElem_new(int is_wild, int is_group, int state, Quant quant) {
     PatternElem v;
     v.is_wild = is_wild;
+    v.is_group = is_group;
     v.state = state;
     v.quant = quant;
     return v;
@@ -34,12 +36,15 @@ int vec_i32_at(Vec *, int);
 void push_i32_(Vec *, int);
 PatternElem elem_lit(int, Quant);
 PatternElem elem_wild(Quant);
+PatternElem elem_group();
 int match_one(PatternElem *, Vec *, int);
 Vec match_elem(PatternElem *, Vec *, int, Arena *);
 int count_reps(PatternElem *, Vec *, int);
 int match_seq(Vec *, int, Vec *, int, Arena *);
 int is_match(Vec *, int, int, Vec *, Arena *);
+int is_match_alt(Vec *, Vec *, int, int, Vec *, Arena *);
 int self_test(Arena *);
+int self_test_group_alt(Arena *);
 
 static inline PatternElem *PatternElem_box(Arena *dest, PatternElem v) {
     PatternElem *p = (PatternElem *)arena_alloc(dest, sizeof(PatternElem));
@@ -56,14 +61,21 @@ void push_i32_(Vec * v __attribute__((unused)), int val __attribute__((unused)))
 }
 
 PatternElem elem_lit(int state __attribute__((unused)), Quant quant __attribute__((unused))) {
-    return PatternElem_new(0, state, quant);
+    return PatternElem_new(0, 0, state, quant);
 }
 
 PatternElem elem_wild(Quant quant __attribute__((unused))) {
-    return PatternElem_new(1, 0, quant);
+    return PatternElem_new(1, 0, 0, quant);
+}
+
+PatternElem elem_group(void) {
+    return PatternElem_new(0, 1, 0, Quant_One());
 }
 
 int match_one(PatternElem * elem __attribute__((unused)), Vec * target __attribute__((unused)), int pos __attribute__((unused))) {
+    if ((elem)->is_group) {
+    return 1;
+    } else {
     if ((pos >= vec_len(target))) {
     return 0;
     } else {
@@ -73,9 +85,15 @@ int match_one(PatternElem * elem __attribute__((unused)), Vec * target __attribu
     return ((elem)->state == (*((int *)(vec_get(target, pos)))));
     }
     }
+    }
 }
 
 Vec match_elem(PatternElem * elem __attribute__((unused)), Vec * target __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((elem)->is_group) {
+    Vec out __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(out), vec_box_i32(&(out), pos)));
+    return out;
+    } else {
     Vec __match_result_0 __attribute__((unused)) = {0};
     Quant __match_tmp_0 = (elem)->quant;
     if (__match_tmp_0.tag == 0) {
@@ -132,6 +150,7 @@ Vec match_elem(PatternElem * elem __attribute__((unused)), Vec * target __attrib
         __match_result_0 = out;
     }
     return __match_result_0;
+    }
 }
 
 int count_reps(PatternElem * elem __attribute__((unused)), Vec * target __attribute__((unused)), int pos __attribute__((unused))) {
@@ -217,6 +236,14 @@ int is_match(Vec * elems __attribute__((unused)), int anchored_start __attribute
     }
 }
 
+int is_match_alt(Vec * elems_a __attribute__((unused)), Vec * elems_b __attribute__((unused)), int anchored_start __attribute__((unused)), int anchored_end __attribute__((unused)), Vec * target __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (is_match(elems_a, anchored_start, anchored_end, target, dest)) {
+    return 1;
+    } else {
+    return is_match(elems_b, anchored_start, anchored_end, target, dest);
+    }
+}
+
 int self_test(Arena *dest __attribute__((unused))) {
     PatternElem e0 __attribute__((unused)) = elem_lit(1, Quant_One());
     PatternElem e1 __attribute__((unused)) = elem_lit(2, Quant_OneOrMore());
@@ -246,6 +273,27 @@ int self_test(Arena *dest __attribute__((unused))) {
     (void)(vec_push_(&(opt_pattern), PatternElem_box(dest, opt_elem)));
     Vec empty_target __attribute__((unused)) = vec_new(dest);
     int case4 __attribute__((unused)) = is_match(&(opt_pattern), 1, 1, &(empty_target), dest);
-    return (case1 && (case2 && (case3 && case4)));
+    return (case1 && (case2 && (case3 && (case4 && self_test_group_alt(dest)))));
+}
+
+int self_test_group_alt(Arena *dest __attribute__((unused))) {
+    Vec group_pattern __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(group_pattern), PatternElem_box(dest, elem_lit(1, Quant_One()))));
+    (void)(vec_push_(&(group_pattern), PatternElem_box(dest, elem_group())));
+    (void)(vec_push_(&(group_pattern), PatternElem_box(dest, elem_lit(2, Quant_One()))));
+    (void)(vec_push_(&(group_pattern), PatternElem_box(dest, elem_group())));
+    Vec group_target __attribute__((unused)) = vec_new(dest);
+    (void)(push_i32_(&(group_target), 1));
+    (void)(push_i32_(&(group_target), 2));
+    int case5 __attribute__((unused)) = is_match(&(group_pattern), 1, 1, &(group_target), dest);
+    Vec alt_a __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(alt_a), PatternElem_box(dest, elem_lit(1, Quant_One()))));
+    Vec alt_b __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(alt_b), PatternElem_box(dest, elem_lit(2, Quant_One()))));
+    Vec alt_target __attribute__((unused)) = vec_new(dest);
+    (void)(push_i32_(&(alt_target), 2));
+    int case6 __attribute__((unused)) = is_match_alt(&(alt_a), &(alt_b), 1, 1, &(alt_target), dest);
+    int case7 __attribute__((unused)) = (!(is_match(&(alt_a), 1, 1, &(alt_target), dest)));
+    return (case5 && (case6 && case7));
 }
 

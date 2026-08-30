@@ -45,12 +45,21 @@
 ;; existing `((Some x) ...)`/`((SomeVariant x) ...)` elsewhere in this stdlib only ever
 ;; destructures a POINTER-typed payload (String, a struct) — this file avoids being the first to
 ;; need an I32 one.
+;; Real S208-09 addition: `is-group : Bool`. A GROUP (🗜) boundary marker, real and zero-width
+;; (matches without consuming any target state, like a `One`-quantified always-succeeding atom) —
+;; not a capture-VALUE extractor. Real, honest scope: nothing downstream consumes a captured
+;; substring yet, so this only guarantees a group boundary doesn't break matching around it, per
+;; GRAMMAR.md §5.4's own v1 restriction (non-nesting: exactly one open + one close per pattern,
+;; enforced by the caller — `elem-group` builds either delimiter identically since both are
+;; zero-width no-ops to the matcher; real capture-position tracking is a separate follow-up,
+;; nothing needs it yet).
 (defstruct PatternElem
-  (is-wild : Bool)
-  (state   : I32)   ;; real, ignored when is-wild is true
-  (quant   : Quant))
+  (is-wild  : Bool)
+  (is-group : Bool)
+  (state    : I32)   ;; real, ignored when is-wild or is-group is true
+  (quant    : Quant))
 
-(export elem-lit elem-wild is-match self-test)
+(export elem-lit elem-wild elem-group is-match is-match-alt self-test)
 
 ;; vec-i32-at -- same real, pre-existing compiler gap `regex/pcre.prn`'s own already-documented
 ;; `vec-i32-at` works around (a plain LOCAL `(Vec I32)` value has no elem-type hint registered,
@@ -77,28 +86,48 @@
 ;; matches this stdlib's own established convention of exposing constructors over raw struct
 ;; literals for anything with more than one real field (see array.prn's own `zeros`/`from-vec`).
 (defn elem-lit [(state : I32) (quant : Quant)] : PatternElem
-  {:is-wild false :state state :quant quant})
+  {:is-wild false :is-group false :state state :quant quant})
 
 (defn elem-wild [(quant : Quant)] : PatternElem
-  {:is-wild true :state 0 :quant quant})
+  {:is-wild true :is-group false :state 0 :quant quant})
+
+;; elem-group -- real S208-09 GROUP (🗜) constructor. See PatternElem's own doc comment: a real,
+;; zero-width boundary marker, not a capture extractor. `quant` is always effectively `One` (a
+;; group boundary occupies exactly one flat slot in the element sequence and always succeeds), but
+;; still takes the field for struct-literal uniformity with elem-lit/elem-wild.
+(defn elem-group [] : PatternElem
+  {:is-wild false :is-group true :state 0 :quant One})
 
 ;; match-one — 0-or-1 candidate: does this element match the single state at `pos` (in-bounds
 ;; check first), regardless of quantifier — the quantifier is handled by the callers below via
 ;; repeated match-one attempts, same real separation of concerns pcre.prn's own `char-matches?`
 ;; (raw atom test) vs `match-star` (repetition driver) already establishes.
+;;
+;; Real S208-09 addition: a GROUP boundary is checked FIRST and always succeeds without an
+;; in-bounds check — it's zero-width by design (see PatternElem's own doc comment), so it must
+;; match even at `pos == vec/len target` (the real end of the string), unlike every other element.
 (defn match-one [(elem : &PatternElem) (target : &(Vec I32)) (pos : I32)] : Bool
-  (if (>= pos (vec/len target))
-    false
-    (if (get-field elem :is-wild)
-      true
-      (= (get-field elem :state) (deref (vec/get target pos))))))
+  (if (get-field elem :is-group)
+    true
+    (if (>= pos (vec/len target))
+      false
+      (if (get-field elem :is-wild)
+        true
+        (= (get-field elem :state) (deref (vec/get target pos)))))))
 
 ;; match-elem — real candidate-END-POSITIONS-from-pos generator for ONE element, honoring its
 ;; own quantifier. Most-preferred (longest match) first, same greedy-first convention pcre.prn's
 ;; own Star/Plus handling already uses.
 (defn match-elem [(elem : &PatternElem) (target : &(Vec I32)) (pos : I32) (dest : Arena @ Region)]
   : (Vec I32) @ Region
-  (match (get-field elem :quant)
+  ;; Real S208-09 addition: a GROUP boundary is zero-width -- its one candidate is `pos` itself
+  ;; (unconsumed), not `pos + 1` the way a real matching element's `One` quantifier produces below.
+  ;; Checked before the Quant match since a group always uses `One` but needs different arithmetic.
+  (if (get-field elem :is-group)
+    (let [out (vec/new dest)]
+      (vec/push! &mut out pos)
+      out)
+    (match (get-field elem :quant)
     ((One)
       (let [out (vec/new dest)]
         (when (match-one elem target pos)
@@ -132,7 +161,7 @@
           (when (>= n 0)
             (vec/push! &mut out (+ pos n))
             (recur (- n 1))))
-        out))))
+        out)))))
 
 ;; count-reps — real, real, minimal helper: how many further consecutive real matches of `elem`'s
 ;; own atom start at `pos` (used by OneOrMore/ZeroOrMore above to build the full greedy-first
@@ -193,6 +222,22 @@
             (recur (+ start 1))
             (if anchored-end (= end (vec/len target)) true)))))))
 
+;; is-match-alt — real S208-09 ALT (🛤) support. Real, deliberately narrower than GRAMMAR.md's own
+;; flat single-Vec-with-embedded-ALT-token shape, named honestly rather than silently assumed
+;; equivalent: this is BINARY alternation over two SEPARATE pattern Vecs (try `elems-a`, then
+;; `elems-b` on failure) — the real, standard PCRE `|` semantics (leftmost-first, not longest-
+;; overall), matching `regex/pcre.prn`'s own `match-alt` order-of-trial exactly. Real, named
+;; follow-up, not built here: N-way (3+) alternation, and ALT as a token embedded inside one flat
+;; `(Vec PatternElem)` the way GRAMMAR.md's own grammar literally specifies it — that needs a real
+;; split-the-vec-on-separator pass this narrower two-pattern-argument version avoids needing.
+(defn is-match-alt [(elems-a : &(Vec PatternElem)) (elems-b : &(Vec PatternElem))
+                     (anchored-start : Bool) (anchored-end : Bool)
+                     (target : &(Vec I32)) (dest : Arena @ Region)]
+  : Bool @ Region
+  (if (is-match elems-a anchored-start anchored-end target dest)
+    true
+    (is-match elems-b anchored-start anchored-end target dest)))
+
 ;; self-test — real test ORCHESTRATION written in pure PARENA, not the external C driver (founder
 ;; real-time: "write the MAIN in pure parena, at least like the ffi for it" -- parena-c has no
 ;; real `(defn main ...)` -> C `int main` emission convention yet, confirmed directly against
@@ -243,4 +288,32 @@
               (vec/push! &mut opt-pattern opt-elem)
               (let [empty-target (vec/new dest)
                     case4 (is-match &opt-pattern true true &empty-target dest)] ;; OPTIONAL matches zero-width
-                (and case1 (and case2 (and case3 case4)))))))))))
+                (and case1 (and case2 (and case3 (and case4 (self-test-group-alt dest)))))))))))))
+
+;; self-test-group-alt — real S208-09 GROUP/ALT test cases, split out from self-test above as a
+;; separate function rather than deepening self-test's own already-deep let-nesting further.
+(defn self-test-group-alt [(dest : Arena @ Region)] : Bool @ Region
+  ;; GROUP: pattern [S1, GROUP, S2, GROUP] against [1,2] -- the group markers are zero-width and
+  ;; must not change whether this matches.
+  (let [group-pattern (vec/new dest)]
+    (vec/push! &mut group-pattern (elem-lit 1 One))
+    (vec/push! &mut group-pattern (elem-group))
+    (vec/push! &mut group-pattern (elem-lit 2 One))
+    (vec/push! &mut group-pattern (elem-group))
+    (let [group-target (vec/new dest)]
+      (push-i32! &mut group-target 1)
+      (push-i32! &mut group-target 2)
+      (let [case5 (is-match &group-pattern true true &group-target dest)
+
+            ;; ALT: pattern-a=[S1] vs pattern-b=[S2], target=[2] -- pattern-a alone would fail,
+            ;; pattern-b alone matches, so ALT must succeed by falling through to the second
+            ;; branch. case7 is a sanity check that pattern-a really does fail alone.
+            alt-a (vec/new dest)]
+        (vec/push! &mut alt-a (elem-lit 1 One))
+        (let [alt-b (vec/new dest)]
+          (vec/push! &mut alt-b (elem-lit 2 One))
+          (let [alt-target (vec/new dest)]
+            (push-i32! &mut alt-target 2)
+            (let [case6 (is-match-alt &alt-a &alt-b true true &alt-target dest)
+                  case7 (not (is-match &alt-a true true &alt-target dest))]
+              (and case5 (and case6 case7)))))))))
