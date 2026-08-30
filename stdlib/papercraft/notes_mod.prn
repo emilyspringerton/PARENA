@@ -1,0 +1,42 @@
+;; stdlib/papercraft/notes_mod.prn — real, first slice of the EmilyOS-in-PAPERCRAFT notes system
+;; (docs/NORTHSTAR_EMILYOS_UI.md's own real Phase 1). Founder real-time: "okok so lets start
+;; building emily os into papercraft i want the DUNG native experience" -> "like we can start to
+;; have workspaces per account" -> "papercraft notes mod" -> "parena".
+;;
+;; Real, narrow v0 scope, same exact real "mod decides, host renders" split
+;; stdlib/papercraft/phone_mod.prn's own already-proven, already-shipped design already uses (read
+;; directly before writing this, not guessed at): a note's own real, variable-length, user-authored
+;; TEXT has no real storage/persistence story in VS0 yet (real, honest, named in
+;; NORTHSTAR_EMILYOS_UI.md's own "Real risks" section, not solved here) -- what THIS mod owns
+;; instead is the real, small, well-defined set of DECISION points a notes system needs regardless
+;; of how text storage eventually gets solved: how many real note slots a player has, whether a
+;; given slot index is valid, and whether a given player is allowed to touch a given note (real,
+;; per-account privacy, matching NORTHSTAR_EMILYOS_UI.md's own "a real, private, per-player"
+;; workspace design -- nobody but the owner may read or edit their own notes, the same real
+;; boundary every other per-account PAPERCRAFT system, e.g. inventory/phone, already respects).
+;;
+;; ABI: not yet wired into a live host -- real, honest, same status xp_award_mod.prn/level_mod.prn
+;; carried before their own host wiring landed (see PAPERCRAFT/MODDING.md's own real, documented
+;; convention for this). A real host (apps/server/src/main.c) would call
+;; on-papercraft-note-slot-valid and on-papercraft-can-access-note before honoring any real client
+;; request touching a specific note slot, the same real "server decides, never trust the client"
+;; discipline every other real PAPERCRAFT system already follows.
+
+(module papercraft/notes-mod)
+(export note-slot-count on-papercraft-note-slot-valid on-papercraft-can-access-note)
+
+;; Real, fixed per-account note-slot count -- matches the real, small, bounded-inventory
+;; convention PC_INVENTORY_SLOTS already establishes elsewhere in this repo (packages/common/
+;; papercraft_protocol.h), not an unbounded, unscoped number.
+(defn note-slot-count [] : I32 8)
+
+;; Real, honest range check -- a real host must never trust a client-supplied slot index without
+;; this, the same real discipline on-papercraft-inventory-can-stack's own bounds already establish
+;; for inventory slots.
+(defn on-papercraft-note-slot-valid [(slot : I32)] : Bool
+  (and (>= slot 0) (< slot (note-slot-count))))
+
+;; Real, per-account privacy: only the real owner of a note may access it -- no shared/public
+;; notes in this real v0 (a real, later, separate design question, not silently assumed away).
+(defn on-papercraft-can-access-note [(owner-player-id : I32) (requesting-player-id : I32)] : Bool
+  (= owner-player-id requesting-player-id))
