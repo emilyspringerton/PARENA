@@ -4,8 +4,8 @@
  * right description of what a real Selenium binding actually is).
  *
  * Runs the full session lifecycle -- new-session, navigate-to,
- * find-element, element-click, element-text, page-title, quit-session
- * -- through the REAL compiled webdriver.prn output, over a real TCP
+ * find-element, element-click, element-text, page-title, page-source,
+ * quit-session -- through the REAL compiled webdriver.prn output, over a real TCP
  * connection, against tests/fake_webdriver_server.go (a real Go HTTP
  * server standing in for a real WebDriver driver; see that file's own
  * header for the honest scope of what it stands in for). Also
@@ -114,6 +114,10 @@ int main(int argc, char **argv) {
         Result r6 = page_title(sess, &a);
         CHECK(r6.tag && strcmp((char *)r6.value, "Test Page") == 0,
               "page-title returns the real title value");
+
+        Result r6b = page_source(sess, &a);
+        CHECK(r6b.tag && strcmp((char *)r6b.value, "<html><body><h1>Fake Rendered Page</h1></body></html>") == 0,
+              "page-source returns the real, currently-rendered HTML value");
 
         Result r7 = quit_session(sess, &a);
         CHECK(r7.tag, "quit-session succeeds");

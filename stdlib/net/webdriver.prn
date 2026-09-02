@@ -37,7 +37,7 @@
 (import json)
 (import string)
 (export new-session navigate-to find-element element-click element-text
-        element-send-keys page-title quit-session Session WebDriverError)
+        element-send-keys page-title page-source quit-session Session WebDriverError)
 
 (defstruct Session
   (host       : String @ Region)
@@ -198,6 +198,26 @@
 (defn page-title [(!sess : &Session) (dest : Arena @ Region)]
   : (Result String WebDriverError) @ Region
   (let [path (string/concat (string/concat "/session/" (get-field !sess :session-id) dest) "/title" dest)]
+    (match (do-request "GET" (get-field !sess :host) (get-field !sess :port) path None dest)
+      ((Err e) (Err e))
+      ((Ok value)
+        (match (json/as-string (deref value))
+          ((Some s) (Ok s))
+          (None (Err BadResponse)))))))
+
+;; page-source — GET /session/{id}/source. Returns the full, currently-
+;; rendered HTML of the page (document.documentElement.outerHTML, per
+;; the spec's own §17.1) -- the real, load-bearing piece a JS-rendered
+;; page (React/Vue/etc. list pages with no data in the raw server
+;; response) needs: navigate-to renders it, page-source hands back the
+;; POST-render DOM as one plain string, ready for the exact same
+;; regex-based extraction this stdlib's own callers (e.g. prwatch-style
+;; scrapers) already use against a plain HTTP GET body for a
+;; server-rendered page. Same shape as page-title above -- a bare
+;; string value, no nested object -- just a different path.
+(defn page-source [(!sess : &Session) (dest : Arena @ Region)]
+  : (Result String WebDriverError) @ Region
+  (let [path (string/concat (string/concat "/session/" (get-field !sess :session-id) dest) "/source" dest)]
     (match (do-request "GET" (get-field !sess :host) (get-field !sess :port) path None dest)
       ((Err e) (Err e))
       ((Ok value)

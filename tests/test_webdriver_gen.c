@@ -211,6 +211,7 @@ Result element_click(Session *, char *, Arena *);
 Result element_send_keys(Session *, char *, char *, Arena *);
 Result element_text(Session *, char *, Arena *);
 Result page_title(Session *, Arena *);
+Result page_source(Session *, Arena *);
 Result quit_session(Session *, Arena *);
 int raw_spawn(char *, char *);
 int raw_kill(int);
@@ -1214,19 +1215,41 @@ Result page_title(Session * sess __attribute__((unused)), Arena *dest __attribut
     return __match_result_16;
 }
 
-Result quit_session(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat("/session/", (sess)->session_id, dest);
+Result page_source(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/source", dest);
     Result __match_result_17 __attribute__((unused)) = {0};
-    Result __match_tmp_28 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
+    Result __match_tmp_28 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
     if (__match_tmp_28.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_28.value;
         __match_result_17 = result_err(e);
     }
     else if (__match_tmp_28.tag == 1) {
-        void *_ __attribute__((unused)) = __match_tmp_28.value;
-        __match_result_17 = result_ok(NULL);
+        void *value __attribute__((unused)) = __match_tmp_28.value;
+    Option __match_tmp_29 = as_string((*((JsonValue *)(value))));
+    if (__match_tmp_29.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_29.value;
+        __match_result_17 = result_ok(s);
+    }
+    else if (__match_tmp_29.tag == 0) {
+        __match_result_17 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
     }
     return __match_result_17;
+}
+
+Result quit_session(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat("/session/", (sess)->session_id, dest);
+    Result __match_result_18 __attribute__((unused)) = {0};
+    Result __match_tmp_30 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_30.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_30.value;
+        __match_result_18 = result_err(e);
+    }
+    else if (__match_tmp_30.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_30.value;
+        __match_result_18 = result_ok(NULL);
+    }
+    return __match_result_18;
 }
 
 int raw_spawn(char * path __attribute__((unused)), char * arg1 __attribute__((unused))) {

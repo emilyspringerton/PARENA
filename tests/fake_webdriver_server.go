@@ -33,9 +33,19 @@ type route struct {
 	handle  func(w http.ResponseWriter)
 }
 
+// writeJSON encodes with HTML-escaping OFF -- Go's json.Encoder defaults to
+// escaping '<'/'>'/'&' into <-style sequences, which no real WebDriver
+// driver (chromedriver/geckodriver) actually does for a JSON string value;
+// a real page-source response is full of literal '<'/'>' HTML tag bytes.
+// Found live: the default encoder silently broke this fixture's own
+// page-source route the moment a body containing real HTML was added (see
+// PARENA CHANGELOG for the full real bug trace) -- SetEscapeHTML(false)
+// matches a real driver's actual wire behavior, not just this test's needs.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v)
 }
 
 func main() {
@@ -65,6 +75,9 @@ func main() {
 		}},
 		{"GET", regexp.MustCompile(`^/session/[^/]+/title$`), func(w http.ResponseWriter) {
 			writeJSON(w, map[string]any{"value": "Test Page"})
+		}},
+		{"GET", regexp.MustCompile(`^/session/[^/]+/source$`), func(w http.ResponseWriter) {
+			writeJSON(w, map[string]any{"value": "<html><body><h1>Fake Rendered Page</h1></body></html>"})
 		}},
 		{"DELETE", regexp.MustCompile(`^/session/[^/]+$`), func(w http.ResponseWriter) {
 			writeJSON(w, map[string]any{"value": nil})
