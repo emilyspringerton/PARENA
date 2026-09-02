@@ -36,7 +36,7 @@
 (import net/http)
 (import json)
 (import string)
-(export new-session navigate-to find-element element-click element-text
+(export new-session new-session-with-capabilities navigate-to find-element element-click element-text
         element-send-keys page-title page-source quit-session Session WebDriverError)
 
 (defstruct Session
@@ -108,15 +108,34 @@
 ;; separate, future scope this narrow first version doesn't cover.
 (defn new-session [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
   : (Result Session WebDriverError) @ Region
-  (match (do-request "POST" host port "/session" (Some "{\"capabilities\":{\"alwaysMatch\":{}}}") dest)
-    ((Err e) (Err e))
-    ((Ok value)
-      (match (json/get (deref value) "sessionId")
-        ((Some sid)
-          (match (json/as-string (deref sid))
-            ((Some id) (Ok {:host host :port port :session-id id}))
-            (None (Err BadResponse))))
-        (None (Err BadResponse))))))
+  (new-session-with-capabilities host port "{}" dest))
+
+;; new-session-with-capabilities — same as new-session, but the caller
+;; supplies the real, raw JSON object to use as "alwaysMatch" instead of the
+;; empty default. Added 2026-09-02, found load-bearing the moment this was
+;; actually run against a real chromedriver in a real headless/no-X
+;; container (not just the fake fixture server): with an empty alwaysMatch,
+;; chromedriver launches Chrome with its own real defaults, which need an
+;; actual X display and a real sandbox namespace neither exists in a bare
+;; container -- Chrome exits immediately, "session not created: Chrome
+;; instance exited." A caller in that real situation needs to pass e.g.
+;;   "{\"goog:chromeOptions\":{\"args\":[\"--headless=new\",\"--no-sandbox\",\"--disable-gpu\",\"--disable-dev-shm-usage\"]}}"
+;; Still real, narrow v1 scope: the caller builds this JSON string
+;; themselves (no capabilities-builder API here), same house style
+;; find-element's own "one real strategy" scoping already uses.
+(defn new-session-with-capabilities [(host : String @ :region/scratch) (port : I32)
+                                      (capabilities-json : String @ Region) (dest : Arena @ Region)]
+  : (Result Session WebDriverError) @ Region
+  (let [body (string/concat (string/concat "{\"capabilities\":{\"alwaysMatch\":" capabilities-json dest) "}}" dest)]
+    (match (do-request "POST" host port "/session" (Some body) dest)
+      ((Err e) (Err e))
+      ((Ok value)
+        (match (json/get (deref value) "sessionId")
+          ((Some sid)
+            (match (json/as-string (deref sid))
+              ((Some id) (Ok {:host host :port port :session-id id}))
+              (None (Err BadResponse))))
+          (None (Err BadResponse)))))))
 
 ;; navigate-to — POST /session/{id}/url.
 (defn navigate-to [(!sess : &Session) (url : String @ Region) (dest : Arena @ Region)]

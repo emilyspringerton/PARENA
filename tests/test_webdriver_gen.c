@@ -205,6 +205,7 @@ char * element_ref_key();
 char * json_escape_string(char *, Arena *);
 Result do_request(char *, char *, int, char *, Option, Arena *);
 Result new_session(char *, int, Arena *);
+Result new_session_with_capabilities(char *, int, char *, Arena *);
 Result navigate_to(Session *, char *, Arena *);
 Result find_element(Session *, char *, Arena *);
 Result element_click(Session *, char *, Arena *);
@@ -1067,8 +1068,13 @@ Result do_request(char * method __attribute__((unused)), char * host __attribute
 }
 
 Result new_session(char * host __attribute__((unused)), int port __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return new_session_with_capabilities(host, port, "{}", dest);
+}
+
+Result new_session_with_capabilities(char * host __attribute__((unused)), int port __attribute__((unused)), char * capabilities_json __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *body __attribute__((unused)) = concat(concat("{\"capabilities\":{\"alwaysMatch\":", capabilities_json, dest), "}}", dest);
     Result __match_result_10 __attribute__((unused)) = {0};
-    Result __match_tmp_15 = do_request("POST", host, port, "/session", option_some("{\"capabilities\":{\"alwaysMatch\":{}}}"), dest);
+    Result __match_tmp_15 = do_request("POST", host, port, "/session", option_some(body), dest);
     if (__match_tmp_15.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_15.value;
         __match_result_10 = result_err(e);

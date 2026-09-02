@@ -33,19 +33,18 @@ type route struct {
 	handle  func(w http.ResponseWriter)
 }
 
-// writeJSON encodes with HTML-escaping OFF -- Go's json.Encoder defaults to
-// escaping '<'/'>'/'&' into <-style sequences, which no real WebDriver
-// driver (chromedriver/geckodriver) actually does for a JSON string value;
-// a real page-source response is full of literal '<'/'>' HTML tag bytes.
-// Found live: the default encoder silently broke this fixture's own
-// page-source route the moment a body containing real HTML was added (see
-// PARENA CHANGELOG for the full real bug trace) -- SetEscapeHTML(false)
-// matches a real driver's actual wire behavior, not just this test's needs.
+// writeJSON uses Go's json.Encoder default (HTML-escaping ON, '<'/'>'/'&'
+// encoded as \uXXXX). Verified live 2026-09-02 against a REAL chromedriver +
+// Chrome for Testing session (real page-source over the wire against
+// https://example.com): real drivers DO escape angle brackets this exact
+// way -- an earlier version of this comment/fixture assumed the opposite
+// and disabled escaping, which was backwards; see PARENA's own CHANGELOG
+// for the full real correction. The actual bug that assumption was papering
+// over lived in host_json_unescape's own \u handling (fixed in
+// tests/test_webdriver.c), not in this fixture.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.Encode(v)
+	json.NewEncoder(w).Encode(v)
 }
 
 func main() {

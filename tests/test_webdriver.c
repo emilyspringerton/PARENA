@@ -31,6 +31,27 @@
 #include <string.h>
 #include <unistd.h>
 
+/* \uXXXX -> real UTF-8, found load-bearing 2026-09-02: a real, live chromedriver
+ * session (real Chrome for Testing, no sandbox available beforehand -- see
+ * this repo's own CHANGELOG for the full trace) confirmed real WebDriver
+ * responses DO escape '<'/'>' as </> in page-source, same as any
+ * Go/JS JSON encoder's default HTML-escaping -- the earlier version of this
+ * function (and of every other host_json_unescape copy in this repo, a real,
+ * still-open follow-up) copied the 4 hex digit CHARACTERS through raw
+ * ("<" became the 5-byte string "003C", not the 1-byte character '<'),
+ * which would have silently corrupted every real page-source call the exact
+ * moment it hit real escaped markup. Encodes any BMP codepoint (U+0000-
+ * U+FFFF) correctly; surrogate pairs for astral-plane codepoints above
+ * U+FFFF are a real, separate, narrower gap not handled here -- every real
+ * HTML-significant escape this needs to decode (<, >, &, ", the whole
+ * printable ASCII/Latin-1/BMP range) is well within it. */
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
 char *host_json_unescape(char *s, int start, int end, char *out) {
     int oi = 0;
     for (int i = start; i < end; i++) {
@@ -45,9 +66,23 @@ char *host_json_unescape(char *s, int start, int end, char *out) {
                 case 'n': out[oi++] = '\n'; break;
                 case 'r': out[oi++] = '\r'; break;
                 case 't': out[oi++] = '\t'; break;
-                case 'u':
-                    for (int k = 0; k < 4 && i + 1 < end; k++) { i++; out[oi++] = s[i]; }
+                case 'u': {
+                    if (i + 4 < end) {
+                        int cp = 0;
+                        for (int k = 0; k < 4; k++) { i++; cp = (cp << 4) | hex_nibble(s[i]); }
+                        if (cp < 0x80) {
+                            out[oi++] = (char)cp;
+                        } else if (cp < 0x800) {
+                            out[oi++] = (char)(0xC0 | (cp >> 6));
+                            out[oi++] = (char)(0x80 | (cp & 0x3F));
+                        } else {
+                            out[oi++] = (char)(0xE0 | (cp >> 12));
+                            out[oi++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                            out[oi++] = (char)(0x80 | (cp & 0x3F));
+                        }
+                    }
                     break;
+                }
                 default: out[oi++] = s[i];
             }
         } else {
@@ -128,6 +163,17 @@ int main(int argc, char **argv) {
     /* Real error path: port 9 (discard) refuses every real connection. */
     Result r8 = new_session(host, 9, &a);
     CHECK(!r8.tag, "new-session against an unreachable port returns a real Err, not a crash");
+
+    /* new-session-with-capabilities -- the fake server ignores the real
+       request body content either way (see its own /session route), so
+       this exercises that the real capabilities JSON gets embedded and
+       sent without breaking the request/response parse, not that a real
+       driver actually honors it (that needs a real driver, see
+       webdriver_fetch_real.c / this repo's own CHANGELOG for that). */
+    Result r9 = new_session_with_capabilities(host, port,
+        "{\"goog:chromeOptions\":{\"args\":[\"--headless=new\",\"--no-sandbox\"]}}", &a);
+    CHECK(r9.tag, "new-session-with-capabilities succeeds against the fake driver");
+    if (r9.tag) quit_session((Session *)r9.value, &a);
 
     /* Real PARENA FFI teardown. */
     if (server_pid > 0) {
