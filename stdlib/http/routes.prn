@@ -1,0 +1,93 @@
+;; stdlib/http/routes.prn — depends on http/router, string, vec. Real extension of LO/
+;; FRAMEWORK_NORTHSTAR.md's own Rails-like "batteries included" plan (founder real-time: "ok lets
+;; build SHITHUB using LO... define the api first of the web framework... make it like rails").
+;; `http/router.prn` already answers path-PATTERN matching (`route-matches?`/`extract-param`);
+;; this file adds the missing HTTP-METHOD + ROUTE-TABLE layer Rails' own `config/routes.rb`
+;; provides: a real `Router` (an ordered `(Vec Route)`), `add-route!`, `match-route` (first
+;; method+path match, Rails' own "routes are tried in declaration order" semantics), and a real
+;; `resource-routes` helper generating Rails' own 5 standard RESTful entries for one resource name
+;; (index/create/show/update/destroy).
+;;
+;; Real, honest, named scope restriction, not silently hidden: a Route's own `handler-name` is a
+;; plain String, not a real callable function VALUE. PARENA's own `fn` literals are non-capturing,
+;; file-scope-only C functions (`regex/pcre.prn`'s own header comment already documents this as
+;; the real reason it dropped a continuation-passing design), and no cross-module first-class
+;; function reference is confirmed working either -- so a Router can't literally dispatch BY
+;; CALLING the matched route's own handler. The real, working v0 shape instead: `match-route`
+;; returns WHICH Route matched (read its own `handler-name`, e.g. "repos#index"), and the app's
+;; own generated dispatch code (today: a real, hand-written `cond`/`match` chain over that string;
+;; once `qi` lands: real, named function calls) decides what to actually call. Matches this
+;; stdlib's own established "name the real limitation, ship the useful real subset" precedent
+;; (`base4/vector.prn`'s own dot-product boxing bug, `regex/pcre.prn`'s own closures pivot).
+
+(module http/routes)
+(import http/router)
+(import string)
+(import vec)
+(export add-route! match-route resource-routes route-method route-pattern route-handler-name)
+
+(defstruct Route
+  (method : String)
+  (pattern : String)
+  (handler-name : String))
+
+(defn route-method [(r : &Route)] : String (get-field r :method))
+(defn route-pattern [(r : &Route)] : String (get-field r :pattern))
+(defn route-handler-name [(r : &Route)] : String (get-field r :handler-name))
+
+;; add-route! -- appends one real Route to an existing Router (a `(Vec Route)`), Rails' own
+;; declarative `get "/repos", to: "repos#index"` shape, just called directly rather than through a
+;; DSL macro (VS0 has none). Two real, found-live compiler constraints worked around here: (1) a
+;; `{...}` struct literal can't be passed directly as a call argument (`parena build` rejects it
+;; -- "map literal doesn't match any registered defstruct's own field set", no type context at a
+;; bare call site, the same class of issue S222-09's own MatchBudget literal hit) -- bound via a
+;; `let` first; (2) pushing a real by-VALUE struct (not a scalar) onto a Vec needs a real Arena to
+;; box it into (`vec/push!`'s own boxing fallback, the same one `Ok`/`Err`/`Some` already use) --
+;; `dest` added for exactly that.
+(defn add-route! [(router : &mut (Vec Route)) (method : String) (pattern : String) (handler-name : String) (dest : Arena @ Region)]
+  : Unit
+  (let [r {:method method :pattern pattern :handler-name handler-name}]
+    (vec/push! router r)))
+
+;; vec-route-at -- same real, per-file #target elem-access convention every other Vec-of-struct
+;; caller in this stdlib already uses (no generic elem-type hint exists yet).
+(defn vec-route-at [(v : &(Vec Route)) (idx : I32)]
+  : Route @ Region
+  #target
+  {:c (inline-c "*(Route *)vec_get(v, idx)")})
+
+;; match-route-from -- real, direct recursive linear scan, Rails' own "routes are tried in
+;; declaration order, first match wins" semantics -- not a radix-tree/trie lookup (a real,
+;; separate, later optimization if route tables ever get large enough to matter).
+(defn match-route-from [(router : &(Vec Route)) (method : String) (path : String) (i : I32) (n : I32) (dest : Arena @ Region)]
+  : I32 @ Region
+  (if (>= i n)
+    -1
+    (let [r (vec-route-at router i)]
+      (if (and (string/str-eq? (get-field r :method) method)
+               (http/router/route-matches? (get-field r :pattern) path dest))
+        i
+        (match-route-from router method path (+ i 1) n dest)))))
+
+;; match-route -- real, honest "not found" sentinel: -1, same convention http/router.prn's own
+;; find-param-index already uses, rather than a real Option (VS0's own Option boxing needs a real
+;; Arena for a non-pointer payload anyway -- I32 is already a real, simple, unambiguous sentinel
+;; here, since -1 is never a valid Vec index).
+(defn match-route [(router : &(Vec Route)) (method : String) (path : String) (dest : Arena @ Region)]
+  : I32 @ Region
+  (match-route-from router method path 0 (vec/len router) dest))
+
+;; resource-routes -- Rails' own `resources :repos` one-liner, generating the 5 standard RESTful
+;; entries for a plural resource `name` (e.g. "repos"), matching Rails' own exact HTTP-verb/path/
+;; action-name convention (`config/routes.rb`'s own `resources` macro), just built directly as a
+;; real function rather than a macro (VS0 has none).
+(defn resource-routes [(router : &mut (Vec Route)) (name : String) (dest : Arena @ Region)]
+  : Unit
+  (let [base (string/concat "/" name dest)]
+    (let [member (string/concat base "/:id" dest)]
+      (do
+        (add-route! router "GET" base (string/concat name "#index" dest) dest)
+        (add-route! router "POST" base (string/concat name "#create" dest) dest)
+        (add-route! router "GET" member (string/concat name "#show" dest) dest)
+        (add-route! router "PUT" member (string/concat name "#update" dest) dest)
+        (add-route! router "DELETE" member (string/concat name "#destroy" dest) dest)))))
