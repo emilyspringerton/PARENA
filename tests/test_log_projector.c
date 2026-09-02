@@ -47,6 +47,40 @@ int main(void) {
         "INSERT INTO events (kind, id, op, fields, ts) VALUES "
         "('Repo', 'repo-1', 'create', '{\"name\":\"O''Brien''s Repo\"}', 1000);") == 0);
 
+    /* Real, LIVE end-to-end verification against the real sqlite3 CLI, when one is actually
+     * installed (real, honest, environment-dependent skip -- matching this codebase's own
+     * established convention elsewhere for a check that needs an optional external tool, e.g.
+     * emitter_test.go's own PARENA-binary-not-found skips in the sibling LO repo). This exact
+     * live run (2026-09-02, once sudo-queue/45-install-sqlite3-and-postgresql-client.sh had
+     * been run) is what found and fixed a real, genuine shell-quoting bug -- see
+     * shell-single-quote's own doc comment in log/projector.prn -- not merely a defensive
+     * addition after the fact. */
+    if (system("command -v sqlite3 > /dev/null 2>&1") == 0) {
+        const char *db_path = "/tmp/test_log_projector_live.db";
+        unlink(db_path);
+        Event live_e = {"Repo", "repo-1", "create",
+                         "{\"name\":\"PARENA\",\"owner\":\"emilyspringerton\"}", 1000};
+        Result lr = project_sqlite_((char *)db_path, &live_e, &arena);
+        assert(lr.tag == 1);
+
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "sqlite3 %s \"SELECT fields FROM events;\"", db_path);
+        FILE *p = popen(cmd, "r");
+        assert(p != NULL);
+        char field_buf[256] = {0};
+        assert(fgets(field_buf, sizeof(field_buf), p) != NULL);
+        pclose(p);
+        /* The real, stored value must be the exact original JSON, quotes intact -- confirms
+         * shell-single-quote's own fix: the pre-fix bug silently stripped the embedded `"`
+         * characters (`{"name":"PARENA"}` was corrupted into `{name:PARENA}` in the real
+         * database, invalid JSON, found live exactly this way). */
+        assert(strstr(field_buf, "\"name\":\"PARENA\"") != NULL);
+        assert(strstr(field_buf, "\"owner\":\"emilyspringerton\"") != NULL);
+        unlink(db_path);
+    } else {
+        printf("test_log_projector: sqlite3 CLI not found, skipping the real live-DB check\n");
+    }
+
     /* Real, live shell-invocation plumbing: a temporary PATH directory holding stand-in
      * `sqlite3`/`mysql` scripts, standing in for the real CLI clients this sandbox doesn't have
      * installed/credentialed -- proves project-sqlite!/project-mysql! really do shell out with

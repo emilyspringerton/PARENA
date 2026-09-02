@@ -19,19 +19,23 @@
 ;; statement query -- a real, separate, security-relevant follow-up once each backend's own real
 ;; parameterized-input mechanism (sqlite3's own `.param`, MySQL's `--defaults-extra-file` plus a
 ;; real prepared statement, psql's own `-v` variables) is wired up instead of raw interpolation.
-;; Real, honest, currently-UNVERIFIED-live status (checked directly, not assumed): this sandbox
-;; has no `sqlite3`/`psql` CLI installed and no usable MySQL credentials (a real, separate,
-;; pre-existing gap: EMILY's own `sudo-queue/NOT_INCLUDED.md` already names "MySQL prod
-;; credentials" as needing a real root password nobody here has) -- every function below is
-;; unit-tested for its own real SQL-TEXT generation, but none has been run against a real,
-;; live database server this pass. A `sudo-queue` script installing the missing CLI tools is the
-;; real, named next step for whoever can run it.
+;; Real, honest, per-backend live-verification status (2026-09-02, updated after
+;; sudo-queue/45-install-sqlite3-and-postgresql-client.sh was actually run this session):
+;; **SQLite is real, live-verified** -- `project-sqlite!` run against an actual `sqlite3` CLI
+;; against a real on-disk database, queried back and confirmed correct. That same live run is
+;; exactly what surfaced a real, genuine bug (see shell-single-quote's own doc comment) fixed in
+;; this same pass, not a hypothetical caught only by unit tests. **MySQL and PostgreSQL remain
+;; unverified live**: `psql` is now installed but no local PostgreSQL server is running in this
+;; sandbox; MySQL's own server is running but has no usable credentials for this session (a real,
+;; separate, pre-existing gap -- EMILY's own `sudo-queue/NOT_INCLUDED.md` already names "MySQL
+;; prod credentials" as S30-02, needing a real root password or a dedicated app user nobody here
+;; has). Both are otherwise unit-tested the same way SQLite was before its own live run.
 
 (module log/projector)
 (import string)
 (import process)
 (import log/event)
-(export events-table-ddl sql-escape-string insert-event-sql
+(export events-table-ddl sql-escape-string shell-single-quote insert-event-sql
         project-sqlite! project-mysql! project-postgres! ProjectorError)
 
 (defenum ProjectorError
@@ -55,6 +59,34 @@
         (let [c (string/char-at s i)]
           (if (= c 39)
             (recur (+ i 1) (string/concat acc "''" dest))
+            (recur (+ i 1) (string/concat acc (string/char-from-code c dest) dest))))))))
+
+;; shell-single-quote -- real, standard POSIX shell single-quoting: wraps `s` in `'...'`, with
+;; any embedded `'` replaced by `'\''` (close-quote, escaped literal quote, reopen-quote) --
+;; everything else inside single quotes is completely literal to the shell (unlike double quotes,
+;; which still expand `$`/backtick/`\`, AND terminate early on any embedded `"`). Real, FOUND-LIVE
+;; bug this fixes, not a hypothetical: run-sql-via originally wrapped the whole SQL text in plain
+;; `"..."` for the shell command -- confirmed live by writing a real Event with a JSON
+;; `fields-json` value through `project-sqlite!` against a REAL `sqlite3` CLI once one became
+;; available in this sandbox: the shell's own double-quote parsing terminated at the FIRST `"`
+;; embedded in the JSON text, and everything after was silently re-tokenized as unquoted shell
+;; words -- the actual double-quote characters vanished from what got stored (`{"name":"PARENA"}`
+;; landed in the real database as `{name:PARENA}`, invalid JSON, a real, silent data-corruption
+;; bug, not merely a cosmetic one). Single-quoting the ENTIRE sql text closes this for any input
+;; containing `"` (JSON, most real text); `sql-escape-string`'s own `'`->`''` doubling still
+;; separately handles single quotes AT THE SQL LEVEL (values inside SQL string literals) -- the
+;; two escaping layers are distinct and both real: `sql-escape-string` produces the SQL an INSERT
+;; needs to parse correctly; `shell-single-quote` (applied to that already-SQL-escaped text)
+;; produces the shell argument that SQL needs to arrive at the CLI client unmangled.
+(defn shell-single-quote [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (loop [i 0 acc "'"]
+      (if (>= i n)
+        (string/concat acc "'" dest)
+        (let [c (string/char-at s i)]
+          (if (= c 39)
+            (recur (+ i 1) (string/concat acc "'\\''" dest))
             (recur (+ i 1) (string/concat acc (string/char-from-code c dest) dest))))))))
 
 ;; insert-event-sql -- one real INSERT statement for `e`, values single-quote-escaped per
@@ -81,42 +113,47 @@
                               (string/concat p9 ");" dest))))))))))))))))
 
 ;; run-sql-via -- real, shared "shell out, check the real exit code" plumbing every backend below
-;; uses, parameterized only by the CLI invocation prefix each one needs.
-(defn run-sql-via [(cli-cmd : String @ Region) (sql : String @ Region) (dest : Arena @ Region)]
+;; uses, parameterized by the CLI invocation prefix each one needs (already ending in the flag
+;; that takes the SQL text, e.g. `"sqlite3 db.sqlite "` or `"mysql shithub -e "`). The SQL text
+;; itself goes through shell-single-quote here, ONE real, shared place, rather than each backend
+;; re-implementing its own shell-quoting -- see that function's own doc comment for the real,
+;; found-live bug this closes.
+(defn run-sql-via [(cli-prefix : String @ Region) (sql : String @ Region) (dest : Arena @ Region)]
   : (Result Unit ProjectorError) @ Region
-  (let [full (string/concat cli-cmd sql dest)]
+  (let [full (string/concat cli-prefix (shell-single-quote sql dest) dest)]
     (let [ignored (process/run-capture full dest)]
       (let [code (process/run-capture-exit-code)]
         (if (= code 0)
           (Ok unit)
           (Err (CommandFailed code)))))))
 
-;; project-sqlite! -- real, honest v0: `sqlite3 <db-path> "<ddl> <insert>"`. Real, named,
-;; currently-unverified-live gap: this sandbox has no `sqlite3` CLI installed (checked directly).
+;; project-sqlite! -- real: `sqlite3 <db-path> '<ddl> <insert>'`. Verified live against a real
+;; `sqlite3` CLI once one became available in this sandbox (see shell-single-quote's own doc
+;; comment for the real bug found and fixed doing so).
 (defn project-sqlite! [(db-path : String @ Region) (e : &Event) (dest : Arena @ Region)]
   : (Result Unit ProjectorError) @ Region
   (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
-    (let [prefix (string/concat "sqlite3 " (string/concat db-path " \"" dest) dest)]
-      (run-sql-via prefix (string/concat sql "\"" dest) dest))))
+    (let [prefix (string/concat "sqlite3 " (string/concat db-path " " dest) dest)]
+      (run-sql-via prefix sql dest))))
 
-;; project-mysql! -- real, honest v0: `mysql <database> -e "<ddl> <insert>"`. `database` is the
+;; project-mysql! -- real: `mysql <database> -e '<ddl> <insert>'`. `database` is the
 ;; already-selected schema name (real, honest, named gap: connection/credential flags -- host/
 ;; user/password -- are NOT threaded through here at all yet; a real caller on a real box needs
 ;; its own `~/.my.cnf` or `--defaults-extra-file`, not solved by this function). Real, named,
 ;; currently-unverified-live gap: this sandbox's own real MySQL server has no usable credentials
-;; (EMILY's own sudo-queue/NOT_INCLUDED.md already names this).
+;; (EMILY's own sudo-queue/NOT_INCLUDED.md already names this, S30-02).
 (defn project-mysql! [(database : String @ Region) (e : &Event) (dest : Arena @ Region)]
   : (Result Unit ProjectorError) @ Region
   (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
-    (let [prefix (string/concat "mysql " (string/concat database " -e \"" dest) dest)]
-      (run-sql-via prefix (string/concat sql "\"" dest) dest))))
+    (let [prefix (string/concat "mysql " (string/concat database " -e " dest) dest)]
+      (run-sql-via prefix sql dest))))
 
-;; project-postgres! -- real, honest v0: `psql <database> -c "<ddl> <insert>"`. Same real,
-;; named connection-credential gap as project-mysql! above (relies on the caller's own real
+;; project-postgres! -- real: `psql <database> -c '<ddl> <insert>'`. Same real, named
+;; connection-credential gap as project-mysql! above (relies on the caller's own real
 ;; `PGPASSWORD`/`.pgpass`/peer auth, not threaded through here). Real, named, currently-
-;; unverified-live gap: this sandbox has no `psql` CLI installed (checked directly).
+;; unverified-live gap: this sandbox has `psql` installed but no local PostgreSQL server running.
 (defn project-postgres! [(database : String @ Region) (e : &Event) (dest : Arena @ Region)]
   : (Result Unit ProjectorError) @ Region
   (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
-    (let [prefix (string/concat "psql " (string/concat database " -c \"" dest) dest)]
-      (run-sql-via prefix (string/concat sql "\"" dest) dest))))
+    (let [prefix (string/concat "psql " (string/concat database " -c " dest) dest)]
+      (run-sql-via prefix sql dest))))

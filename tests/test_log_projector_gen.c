@@ -70,6 +70,7 @@ char * json_escape_string(char *, Arena *);
 char * event_encode(Event *, Arena *);
 char * events_table_ddl();
 char * sql_escape_string(char *, Arena *);
+char * shell_single_quote(char *, Arena *);
 char * insert_event_sql(Event *, Arena *);
 Result run_sql_via(char *, char *, Arena *);
 Result project_sqlite_(char *, Event *, Arena *);
@@ -359,6 +360,35 @@ char * sql_escape_string(char * s __attribute__((unused)), Arena *dest __attribu
     return __loop_result_3;
 }
 
+char * shell_single_quote(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    char * __loop_result_4 __attribute__((unused));
+    double i = 0;
+    char * acc = "'";
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_4 = concat(acc, "'", dest);
+        break;
+        } else {
+        int c __attribute__((unused)) = char_at(s, i);
+        if ((c == 39)) {
+        double __recur_tmp_0 = (i + 1);
+        char * __recur_tmp_1 = concat(acc, "'\\''", dest);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        } else {
+        double __recur_tmp_0 = (i + 1);
+        char * __recur_tmp_1 = concat(acc, char_from_code(c, dest), dest);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+        }
+    }
+    return __loop_result_4;
+}
+
 char * insert_event_sql(Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *kind __attribute__((unused)) = sql_escape_string((e)->kind, dest);
     char *id __attribute__((unused)) = sql_escape_string((e)->id, dest);
@@ -377,8 +407,8 @@ char * insert_event_sql(Event * e __attribute__((unused)), Arena *dest __attribu
     return concat(p9, ");", dest);
 }
 
-Result run_sql_via(char * cli_cmd __attribute__((unused)), char * sql __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *full __attribute__((unused)) = concat(cli_cmd, sql, dest);
+Result run_sql_via(char * cli_prefix __attribute__((unused)), char * sql __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *full __attribute__((unused)) = concat(cli_prefix, shell_single_quote(sql, dest), dest);
     char *ignored __attribute__((unused)) = run_capture(full, dest);
     int code __attribute__((unused)) = run_capture_exit_code();
     if ((code == 0)) {
@@ -390,19 +420,19 @@ Result run_sql_via(char * cli_cmd __attribute__((unused)), char * sql __attribut
 
 Result project_sqlite_(char * db_path __attribute__((unused)), Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *sql __attribute__((unused)) = concat(events_table_ddl(), insert_event_sql(e, dest), dest);
-    char *prefix __attribute__((unused)) = concat("sqlite3 ", concat(db_path, " \"", dest), dest);
-    return run_sql_via(prefix, concat(sql, "\"", dest), dest);
+    char *prefix __attribute__((unused)) = concat("sqlite3 ", concat(db_path, " ", dest), dest);
+    return run_sql_via(prefix, sql, dest);
 }
 
 Result project_mysql_(char * database __attribute__((unused)), Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *sql __attribute__((unused)) = concat(events_table_ddl(), insert_event_sql(e, dest), dest);
-    char *prefix __attribute__((unused)) = concat("mysql ", concat(database, " -e \"", dest), dest);
-    return run_sql_via(prefix, concat(sql, "\"", dest), dest);
+    char *prefix __attribute__((unused)) = concat("mysql ", concat(database, " -e ", dest), dest);
+    return run_sql_via(prefix, sql, dest);
 }
 
 Result project_postgres_(char * database __attribute__((unused)), Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *sql __attribute__((unused)) = concat(events_table_ddl(), insert_event_sql(e, dest), dest);
-    char *prefix __attribute__((unused)) = concat("psql ", concat(database, " -c \"", dest), dest);
-    return run_sql_via(prefix, concat(sql, "\"", dest), dest);
+    char *prefix __attribute__((unused)) = concat("psql ", concat(database, " -c ", dest), dest);
+    return run_sql_via(prefix, sql, dest);
 }
 
