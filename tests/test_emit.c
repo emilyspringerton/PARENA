@@ -3062,6 +3062,62 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a `let` used directly as an `if`'s own CONDITION (expression
+     * position) must fail with a real, honest diagnostic naming the
+     * limitation -- not the confusing "unknown identifier '<bound
+     * name>'" this used to produce. Found live 2026-09-02 (LO's own
+     * S222-09, EMILY/BACKLOG.md SECTION 223 / S223-01): emit_expr()
+     * (the plain expression dispatcher `if`'s own cond/then/else all
+     * go through) has no case for `let`/`match`/`loop` at all -- they
+     * only compile in STATEMENT position (a function's own body, a
+     * let's own body, a match clause's own body). Before this fix, one
+     * reaching emit_expr() fell through to the generic call path,
+     * which processed the `let`'s own `[binding value]` vector as an
+     * ordinary argument list and called scope_lookup on the bound NAME
+     * itself -- producing "unknown identifier 'x'", not a real
+     * diagnosis of the actual problem. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : I32 (if (let [x 1] (= x 1)) 1 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a let used directly as an if's own condition parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly, reporting that a let can't be used directly in expression "
+              "position, rather than the old confusing \"unknown identifier 'x'\"");
+        if (emit_err) {
+            CHECK(strstr(emit_err, "'let'") != NULL && strstr(emit_err, "expression position") != NULL,
+                  "the real error names the actual limitation (let + expression position), not "
+                  "the bound variable name");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- same real bug, `match` instead of `let` -- confirms this
+     * isn't a `let`-specific special case but the same expression-
+     * dispatcher gap for any binding form. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [(r : I32)] : I32 (if (match r ((0) 1) (_ 0)) 1 0))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a match used directly as an if's own condition parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err != NULL,
+              "it fails honestly, reporting that a match can't be used directly in expression "
+              "position, rather than falling through to a confusing unknown-identifier error");
+        if (emit_err) {
+            CHECK(strstr(emit_err, "'match'") != NULL && strstr(emit_err, "expression position") != NULL,
+                  "the real error names the actual limitation (match + expression position)");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

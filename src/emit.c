@@ -2709,6 +2709,32 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = payload_type;
         return arena_strdup(arena, buf, strlen(buf));
     }
+    /* Real, honest diagnostic, not a fix -- EMILY/BACKLOG.md SECTION 223 (S223-01) tracks the
+     * real fix (synthesizing a GNU C statement-expression around the statement-oriented emitter
+     * below) as separate, larger, not-yet-attempted work. `let`/`match`/`loop` are only handled
+     * in STATEMENT position (a function's own body, a let's own body, a match clause's own body
+     * -- see emit_body/emit_let/emit_match/emit_loop, each with a real `EmitScope child` that
+     * correctly threads new bindings). This function (the plain EXPRESSION dispatcher) has no
+     * case for any of them at all, so without this check one reaching here (because it's nested
+     * inside an `if`'s own condition, or any other expression-position slot, rather than sitting
+     * in a real statement/body position) would silently fall through to the generic call path
+     * just below -- which processes the form's own `[binding value]` bindings-vector as if it
+     * were an ordinary argument list, calling scope_lookup on the bound NAME itself as though it
+     * were a plain variable reference. That's why the resulting error was always the confusing
+     * "unknown identifier '<the bound name>'", never "unknown identifier 'let'" -- this function
+     * was partially, incorrectly processing the form's shape rather than rejecting it outright.
+     * Found live 2026-09-02 (LO's own S222-09, a MATCH used as an `if`'s own condition; minimal
+     * repro: `(if (let [x 1] (= x 1)) 1 0)` fails the identical way). Zero behavior change for
+     * any program that doesn't hit this shape -- it never compiled successfully before this
+     * check existed either, just with a worse error. */
+    if (is_call_named(expr, "let") || is_call_named(expr, "match") || is_call_named(expr, "loop")) {
+        return fail(arena, out_error,
+                    "emit: '%s' at line %d can't be used directly in expression position (e.g. an "
+                    "if's own condition) -- only as a function's own body, a let's own body, or a "
+                    "match clause's own body. Bind its result to a name in an enclosing let first, "
+                    "then reference that name here instead.",
+                    expr->children[0]->text, expr->line);
+    }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
         const char *c_op = binop_c_symbol(expr->children[0]->text);
         if (c_op) return emit_binop(arena, expr, c_op, scope, out_type, out_error);
