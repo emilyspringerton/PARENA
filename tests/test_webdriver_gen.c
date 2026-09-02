@@ -892,15 +892,16 @@ char * trim_leading_space(char * s __attribute__((unused)), Arena *dest __attrib
 }
 
 char * build_request(char * method __attribute__((unused)), char * host __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *head __attribute__((unused)) = concat(concat(concat(concat(concat(method, " ", dest), path, dest), " HTTP/1.1\nHost: ", dest), host, dest), "\nConnection: close\n", dest);
+    char *crlf __attribute__((unused)) = concat(char_from_code(13, dest), "\n", dest);
+    char *head __attribute__((unused)) = concat(concat(concat(concat(concat(concat(concat(method, " ", dest), path, dest), " HTTP/1.1", dest), crlf, dest), concat("Host: ", host, dest), dest), crlf, dest), concat("Connection: close", crlf, dest), dest);
     char * __match_result_6 __attribute__((unused)) = {0};
     Option __match_tmp_8 = body;
     if (__match_tmp_8.tag == 1) {
         void *b __attribute__((unused)) = __match_tmp_8.value;
-        __match_result_6 = concat(concat(concat(concat(head, "Content-Type: application/json\nContent-Length: ", dest), i32_to_string(length(b), dest), dest), "\n\n", dest), b, dest);
+        __match_result_6 = concat(concat(concat(concat(concat(head, "Content-Type: application/json", dest), crlf, dest), concat("Content-Length: ", i32_to_string(length(b), dest), dest), dest), concat(crlf, crlf, dest), dest), b, dest);
     }
     else if (__match_tmp_8.tag == 0) {
-        __match_result_6 = concat(head, "\n", dest);
+        __match_result_6 = concat(head, crlf, dest);
     }
     return __match_result_6;
 }

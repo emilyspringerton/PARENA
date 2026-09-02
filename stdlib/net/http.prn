@@ -129,18 +129,22 @@
 ;; convention (an empty Content-Length: 0 is legal but not what any
 ;; real server expects from a bodyless GET).
 ;;
-;; Real, honest compiler limitation found and worked around, not
-;; silently hit: src/lexer.c's own lex_string() only unescapes `\n`
-;; inside a string literal (confirmed live in source -- no `case 'r'`
-;; at all), so a `\r` in a PARENA string literal comes through as a
-;; literal backslash-dropped `r`, not a carriage return. Lines below
-;; use bare `\n` only, not `\r\n` -- real HTTP/1.1 servers (confirmed
-;; live against IDUNA's own Go net/http on :8080, a raw bare-LF request
-;; over /dev/tcp) parse bare-LF line endings without complaint; this
-;; is lenient-server behavior relied on deliberately, not a spec-
-;; correct client. A real, separate, smaller fix (add `case 'r'` to
-;; the lexer) would remove the need for this -- flagged, not fixed
-;; here, since this file's own real scope is stdlib, not the compiler.
+;; Real CRLF line endings (2026-09-02, found load-bearing against a real
+;; chromedriver session -- see PARENA's own CHANGELOG for the full trace).
+;; This function used to send bare `\n` only, on the theory that every real
+;; server it had actually been tested against (IDUNA's own Go net/http)
+;; parses bare-LF requests without complaint -- true, but not universal:
+;; chromedriver's own embedded HTTP server does NOT tolerate it (a real,
+;; identical JSON body succeeds via curl -- which sends real CRLF -- and
+;; fails via this client with an empty-body protocol error). Real, honest
+;; compiler limitation this works around, still not fixed at the source:
+;; src/lexer.c's own lex_string() only unescapes `\n` inside a string
+;; literal (confirmed live in source -- no `case 'r'` at all), so a literal
+;; `\r` in a PARENA string can't be written directly -- `crlf` below builds
+;; a real carriage-return byte via `string/char-from-code` instead. A real,
+;; separate, smaller compiler fix (add `case 'r'` to the lexer) would remove
+;; the need for this -- flagged, not fixed here, since this file's own real
+;; scope is stdlib, not the compiler.
 ;;
 ;; Real, second limitation found building this: VS0 rejects re-binding
 ;; the same name twice in one `let` (each binding becomes its own C
@@ -153,25 +157,32 @@
 (defn build-request [(method : String @ Region) (host : String @ Region) (path : String @ Region)
                       (body : (Option String) @ Region) (dest : Arena @ Region)]
   : String @ Region
-  (let [head (string/concat
+  (let [crlf (string/concat (string/char-from-code 13 dest) "\n" dest)
+        head (string/concat
                (string/concat
                  (string/concat
                    (string/concat
-                     (string/concat method " " dest)
-                     path dest)
-                   " HTTP/1.1\nHost: " dest)
-                 host dest)
-               "\nConnection: close\n" dest)]
+                     (string/concat
+                       (string/concat
+                         (string/concat method " " dest)
+                         path dest)
+                       " HTTP/1.1" dest)
+                     crlf dest)
+                   (string/concat "Host: " host dest) dest)
+                 crlf dest)
+               (string/concat "Connection: close" crlf dest) dest)]
     (match body
       ((Some b)
         (string/concat
           (string/concat
             (string/concat
-              (string/concat head "Content-Type: application/json\nContent-Length: " dest)
-              (string/i32-to-string (length b) dest) dest)
-            "\n\n" dest)
+              (string/concat
+                (string/concat head "Content-Type: application/json" dest)
+                crlf dest)
+              (string/concat "Content-Length: " (string/i32-to-string (length b) dest) dest) dest)
+            (string/concat crlf crlf dest) dest)
           b dest))
-      (None (string/concat head "\n" dest)))))
+      (None (string/concat head crlf dest)))))
 
 ;; ---- response parsing
 

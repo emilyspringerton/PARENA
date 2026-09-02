@@ -65,6 +65,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <poll.h>
+#include <strings.h>
 #if defined(__linux__)
 #include <pty.h>
 #elif defined(__APPLE__)
@@ -728,6 +729,34 @@ static inline int tcp_accept_impl(int listener_fd) {
     return accept(listener_fd, NULL, NULL);
 }
 
+/* find_body_length_from_headers -- scans `buf[0..have)` for the real
+ * header/body boundary ("\r\n\r\n") and, once found, a real
+ * case-insensitive "Content-Length:" header within the header block.
+ * Returns -1 if the boundary hasn't arrived yet (caller should keep
+ * reading), -2 if the boundary arrived but no real Content-Length header
+ * was found (caller should fall back to read-until-EOF/timeout), or the
+ * real, parsed Content-Length value (>= 0) with *header_end_out set to the
+ * byte offset where the real body starts. */
+static inline long find_body_length_from_headers(const char *buf, size_t have, size_t *header_end_out) {
+    const char *boundary = NULL;
+    for (size_t i = 0; i + 3 < have; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+            boundary = buf + i;
+            break;
+        }
+    }
+    if (!boundary) return -1;
+    size_t header_len = (size_t)(boundary - buf);
+    *header_end_out = header_len + 4;
+    for (size_t i = 0; i + 15 <= header_len; i++) {
+        if (strncasecmp(buf + i, "Content-Length:", 15) == 0) {
+            long v = strtol(buf + i + 15, NULL, 10);
+            return v >= 0 ? v : -2;
+        }
+    }
+    return -2;
+}
+
 /* tcp_read_impl -- same grow-by-4096-and-copy shape as
  * raw_read_all_impl above, deliberately not shared code: that one is
  * documented as the io.prn-specific real host glue, this one is
@@ -735,12 +764,36 @@ static inline int tcp_accept_impl(int listener_fd) {
  * the same real build (net/tcp.prn's own header comment already
  * documents an identical reason for NetError's own duplication) so
  * keeping them textually separate costs nothing and avoids coupling
- * either file's future changes to the other's. */
+ * either file's future changes to the other's.
+ *
+ * Content-Length-aware since 2026-09-02 (see PARENA's own CHANGELOG for the
+ * real trace): a real WebDriver server (chromedriver) sends a real
+ * Content-Length header but does NOT actually close the TCP connection
+ * after responding, despite its own response advertising
+ * "Connection:close" -- confirmed live two ways: a byte-identical request
+ * sent over a plain shell /dev/tcp socket also blocks forever waiting for
+ * an EOF that never comes, and a raw C reproduction calling this exact
+ * function directly (bypassing every other layer) hung the same way.
+ * Reading strictly until EOF -- this function's entire previous behavior
+ * -- therefore hung forever on every single real request to a real
+ * WebDriver server, not a webdriver.prn-specific bug. Fixed generically
+ * here (every real net/tcp.prn caller benefits, not just http.prn): once
+ * the header/body boundary is seen and a real Content-Length value is
+ * found, stop reading the moment that many body bytes have arrived,
+ * without waiting for the peer to close. Falls back to the original
+ * read-until-EOF behavior when no Content-Length header is present (a
+ * real, honestly-scoped limitation for chunked/close-delimited responses,
+ * unchanged from before). A bounded 30s idle-read timeout (via poll) is a
+ * real, cheap safety net against ever hanging forever again on a response
+ * shape this function's own parsing can't make sense of. */
 static inline char *tcp_read_impl(int fd, Arena *dest) {
     size_t cap = 4096;
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
+    long content_length = -1; /* -1 = not yet known (boundary not seen, or no Content-Length header) */
+    size_t header_end = 0;
     for (;;) {
+        if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
         if (len + 4096 > cap) {
             size_t new_cap = cap + 4096;
             char *grown = (char *)arena_alloc(dest, new_cap);
@@ -748,9 +801,21 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
             buf = grown;
             cap = new_cap;
         }
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int pr = poll(&pfd, 1, 30000);
+        if (pr <= 0) break; /* timeout or poll error -- return whatever's been read so far */
         ssize_t n = read(fd, buf + len, 4096);
         if (n <= 0) break;
         len += (size_t)n;
+        if (content_length < 0) {
+            long cl = find_body_length_from_headers(buf, len, &header_end);
+            if (cl >= 0) content_length = cl;
+            /* cl == -2 (boundary seen, no real Content-Length): keep the
+               original read-until-EOF/timeout behavior. cl == -1
+               (boundary not seen yet): keep reading. */
+        }
     }
     char *out = (char *)arena_alloc(dest, len + 1);
     memcpy(out, buf, len);
