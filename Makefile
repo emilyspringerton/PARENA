@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-process test-log-jsonl test-log-projector test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -167,6 +167,17 @@ test-http-routes: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_http_routes.c \
 		runtime/parena_runtime.c -o /tmp/test_http_routes_bin -lm
 	/tmp/test_http_routes_bin
+
+# test-http-controller -- real end-to-end verification for stdlib/http/controller.prn +
+# examples/shithub_controller_demo.prn (LO FRAMEWORK_NORTHSTAR.md's own Rails-like "batteries
+# included" plan, Controllers pillar, S225-04): the real Request/Response shape and a real,
+# hand-written dispatch chain from match-route to the right demo action.
+test-http-controller: build
+	./parena build stdlib/string.prn stdlib/http/router.prn stdlib/http/routes.prn \
+		stdlib/http/controller.prn examples/shithub_controller_demo.prn -o tests/test_http_controller_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_http_controller.c \
+		runtime/parena_runtime.c -o /tmp/test_http_controller_bin -lm
+	/tmp/test_http_controller_bin
 
 # test-process -- real end-to-end verification for stdlib/process.prn's own run-capture/
 # run-capture-exit-code (a real, general subprocess-capture primitive; SQL projectors below

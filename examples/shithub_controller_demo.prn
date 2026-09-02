@@ -1,0 +1,60 @@
+;; examples/shithub_controller_demo.prn — depends on string, http/router, http/routes,
+;; http/controller. LO/FRAMEWORK_NORTHSTAR.md's own Rails-like "batteries included" plan,
+;; Controllers pillar (S225-04): the real, hand-written `cond`/`if` dispatch chain from
+;; `match-route`'s own returned route to the right action `defn`, demonstrated concretely.
+;;
+;; Real, honest, explicitly named: `demo-repos-index`/`demo-repos-show` are ILLUSTRATIVE actions
+;; proving the real shape a controller takes (a `Request` in, a `Response` out) -- NOT real
+;; SHITHUB domain logic. The real git-hosting behavior (repos/users/issues/pull requests) is
+;; Phase C, explicitly scoped as separate, later, NORTHSTAR-worthy work in
+;; `LO/FRAMEWORK_NORTHSTAR.md` itself, not attempted here. This file lives in `examples/`, not
+;; `stdlib/`, for exactly that reason -- it's a real, working demo of the framework's own dispatch
+;; shape, not a framework primitive real applications import.
+;;
+;; Real, honest, unchanged limitation from `http/controller.prn`'s own header comment: `dispatch`
+;; below can't be a generic stdlib function -- PARENA's own `fn` literals are non-capturing/
+;; file-scope-only, and no cross-module first-class function reference is confirmed working
+;; either, so a Router can't hold real callable handler VALUES to invoke generically. Every real
+;; SHITHUB application writes its own version of this same real `cond`/`if` chain.
+
+(module examples/shithub-controller-demo)
+(import string)
+(import http/router)
+(import http/routes)
+(import http/controller)
+(export dispatch demo-repos-index demo-repos-show)
+
+;; demo-repos-index -- a real, minimal action taking no route params: Rails' own `def index; render
+;; json: @repos; end`, standing in for a real repo LIST (not fetched from anywhere real here).
+(defn demo-repos-index [(req : &Request) (dest : Arena @ Region)]
+  : Response
+  (response-json "[]" dest))
+
+;; demo-repos-show -- a real action reading a real route param via the already-real, already-
+;; tested `http/router/extract-param` (S225-02) against the request's own path and the matched
+;; route's own pattern -- exactly the real API `http/controller.prn`'s own header comment
+;; describes as how a controller reaches its own route params, with no generic params collection
+;; needed on Request itself.
+(defn demo-repos-show [(req : &Request) (pattern : String @ Region) (dest : Arena @ Region)]
+  : Response
+  (let [name (http/router/extract-param pattern (get-field req :path) "id" dest)]
+    (let [p1 (string/concat "{\"id\":\"" name dest)]
+      (response-json (string/concat p1 "\"}" dest) dest))))
+
+;; dispatch -- Rails' own real `ActionDispatch` shape: `match-route` finds WHICH route matched;
+;; this real, hand-written `if`/`string/str-eq?` chain over that route's own `handler-name` calls
+;; the right action. A real 404 (`response-not-found`) for both "no route matched" and "matched a
+;; route this demo doesn't actually implement a handler for" -- an honest, deliberately small demo
+;; surface, not a claim of covering every real `resource-routes`-generated entry.
+(defn dispatch [(router : &(Vec Route)) (req : &Request) (dest : Arena @ Region)]
+  : Response
+  (let [idx (http/routes/match-route router (get-field req :method) (get-field req :path) dest)]
+    (if (< idx 0)
+      (response-not-found)
+      (let [route (http/routes/vec-route-at router idx)]
+        (let [handler (route-handler-name &route)]
+          (if (string/str-eq? handler "repos#index")
+            (demo-repos-index req dest)
+            (if (string/str-eq? handler "repos#show")
+              (demo-repos-show req (route-pattern &route) dest)
+              (response-not-found))))))))

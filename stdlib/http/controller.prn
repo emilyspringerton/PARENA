@@ -1,0 +1,56 @@
+;; stdlib/http/controller.prn — depends on string. LO/FRAMEWORK_NORTHSTAR.md's own Rails-like
+;; "batteries included" plan, Controllers pillar (S225-04): the real `Request`/`Response` shape
+;; every controller action reads from/returns, plus Rails' own real convenience constructors
+;; (`render json: ...`/`head :not_found`, here as `response-json`/`response-not-found`).
+;;
+;; Real, deliberate representation decision, matching `log/event.prn`'s own already-established
+;; reasoning: `Request` carries no generic params collection (no `(Vec (String String))`) --
+;; checked directly, no real, PROVEN-working PARENA `Vec`-of-tuple usage exists anywhere in this
+;; stdlib. A controller action that needs a route param calls `http/router/extract-param` itself
+;; (already real and tested, S225-02) against the request's own `path` and the matched route's
+;; own `pattern` -- the dispatcher (see this file's own header for why dispatch itself can't be a
+;; generic stdlib function) already has both in hand when it looks up which action to call.
+;;
+;; Real, honest, named limitation, unchanged from `http/routes.prn`'s own already-documented one:
+;; there is no real, generic "framework dispatch" function here, and there can't be one yet --
+;; PARENA's own `fn` literals are non-capturing/file-scope-only, and no cross-module first-class
+;; function reference is confirmed working either, so a Router can't hold real callable handler
+;; VALUES to invoke generically. Rails' own `ActionDispatch` (route match -> actual method call)
+;; has to be a real, hand-written `cond`/`if` chain over `match-route`'s own returned route's
+;; `handler-name`, written once per real application -- demonstrated, not hidden behind a fake
+;; abstraction, in `tests/test_http_controller.c`'s own real demo dispatch.
+
+(module http/controller)
+(import string)
+(export Request Response response-ok response-not-found response-json)
+
+(defstruct Request
+  (method : String)
+  (path   : String)
+  (body   : String))
+
+(defstruct Response
+  (status       : I32)
+  (body         : String)
+  (content-type : String))
+
+;; response-ok -- Rails' own real default 200 text response.
+(defn response-ok [(body : String) (dest : Arena @ Region)]
+  : Response
+  (let [r {:status 200 :body body :content-type "text/plain"}]
+    r))
+
+;; response-json -- Rails' own real `render json: ...` shape: `body` is already-serialized JSON
+;; text (this stdlib's own `json.prn` has no real ENCODER yet, per `log/event.prn`'s own
+;; already-documented finding -- the caller builds `body` the same way that file's own
+;; `json-escape-string` does, or via a future real json/stringify once one exists).
+(defn response-json [(body : String) (dest : Arena @ Region)]
+  : Response
+  (let [r {:status 200 :body body :content-type "application/json"}]
+    r))
+
+;; response-not-found -- Rails' own real `head :not_found` shape, a genuine 404.
+(defn response-not-found []
+  : Response
+  (let [r {:status 404 :body "Not Found" :content-type "text/plain"}]
+    r))

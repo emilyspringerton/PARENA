@@ -24,7 +24,8 @@
 (import http/router)
 (import string)
 (import vec)
-(export add-route! match-route resource-routes route-method route-pattern route-handler-name)
+(export add-route! match-route resource-routes route-method route-pattern route-handler-name
+        vec-route-at)
 
 (defstruct Route
   (method : String)
