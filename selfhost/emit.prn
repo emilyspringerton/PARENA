@@ -546,8 +546,26 @@
     (let [head (vec/get &(get-field pattern :children) 0)]
       (get-field head :text))))
 
+;; match-pattern-has-payload? -- real, live-found bug fix (2026-09-02,
+;; discovered via a genuine self-compilation attempt: `parena-selfhost
+;; build selfhost/region.prn` segfaulted for real, gdb backtrace pointed
+;; straight at match-pattern-payload-name's own `(get-field payload
+;; :text)`). The OLD version only checked the pattern's own KIND
+;; (call-shaped, e.g. `(Ok x)` OR `(None)`), not whether it actually HAS a
+;; payload child -- a real, zero-payload variant pattern written
+;; parenthesized (`((None) body...)`, real and common throughout
+;; selfhost/region.prn's own match clauses) is call-shaped too, with only
+;; ONE child (the bare tag symbol), not two. match-pattern-payload-name
+;; unconditionally reads children[1] assuming a payload is always there --
+;; on a real 1-child pattern like `(None)`, that's a real out-of-bounds
+;; Vec read, which crashed instead of erroring cleanly. Fixed by also
+;; requiring at least 2 real children (the tag symbol AND a payload
+;; binding) -- a general, real fix (any zero-arg enum variant pattern
+;; written parenthesized, not just `None` specifically), not a
+;; special-cased patch for this one name.
 (defn match-pattern-has-payload? [(pattern : &Node)] : Bool
-  (= (emit-node-kind-code (get-field pattern :kind)) 0))
+  (and (= (emit-node-kind-code (get-field pattern :kind)) 0)
+       (>= (vec/len &(get-field pattern :children)) 2)))
 
 (defn match-pattern-payload-name [(pattern : &Node)] : String @ Region
   (let [payload (vec/get &(get-field pattern :children) 1)]

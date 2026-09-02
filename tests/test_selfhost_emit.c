@@ -2234,6 +2234,74 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, live-found segfault fix (2026-09-02), discovered via a
+         * genuine self-compilation attempt: `parena-selfhost build
+         * selfhost/region.prn` crashed for real (gdb: SIGSEGV in
+         * match-pattern-payload-name's own `(get-field payload
+         * :text)`). match-pattern-has-payload? only checked a pattern's
+         * KIND (call-shaped), not whether it genuinely has a payload
+         * child -- a real, zero-payload variant pattern written
+         * parenthesized (`((None) body...)`, real and common throughout
+         * selfhost/region.prn's own match clauses) is call-shaped with
+         * only ONE child, so match-pattern-payload-name's own
+         * unconditional children[1] read was a real out-of-bounds Vec
+         * access. See tests/integration/driver_none_paren_pattern.c's
+         * own header for the full real trace. */
+        char *snippet =
+            "(defn unwrap-or-zero [(o : Option)] : I32\n"
+            "  (match o\n"
+            "    ((Some x) (deref x))\n"
+            "    ((None) 0)))";
+        Result pr33 = parse_program(snippet, &a);
+        CHECK(pr33.tag == 1, "a real match whose second clause is a parenthesized, zero-payload "
+                              "`((None) ...)` pattern parses fine");
+        if (pr33.tag == 1) {
+            Node program33 = *(Node *)pr33.value;
+            char *generated33 = emit_program(&program33, &a);
+            CHECK(generated33 != NULL && strstr(generated33, "#error") == NULL,
+                  "no #error is emitted -- a parenthesized zero-payload pattern is a real, "
+                  "supported shape (this call alone used to SEGFAULT before the fix, not just "
+                  "emit a wrong/#error result -- reaching this line at all is itself the "
+                  "regression guard)");
+
+            if (generated33) {
+                char c_path21[300];
+                snprintf(c_path21, sizeof c_path21, "/tmp/parena_selfhost_emit_none_paren_test_%d.c",
+                         (int)getpid());
+                FILE *out21 = fopen(c_path21, "w");
+                CHECK(out21 != NULL, "a real temp file opens to write the None-paren-pattern generated C into");
+                if (out21) {
+                    fputs(generated33, out21);
+                    fclose(out21);
+
+                    char bin_path21[310];
+                    snprintf(bin_path21, sizeof bin_path21, "%s.bin", c_path21);
+                    char cmd21[1024];
+                    snprintf(cmd21, sizeof cmd21,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_none_paren_pattern.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path21, c_path21);
+                    int compile_status21 = system(cmd21);
+                    CHECK(compile_status21 == 0,
+                          "the real None-paren-pattern generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_none_paren_pattern.c");
+                    if (compile_status21 == 0) {
+                        int run_status21 = system(bin_path21);
+                        CHECK(run_status21 == 0,
+                              "the real compiled unwrap-or-zero genuinely handles both a real "
+                              "Some payload AND a real, parenthesized None pattern correctly -- "
+                              "driver_none_paren_pattern.c's own internal asserts all pass, not "
+                              "just compiles (or fails to crash) clean");
+                    }
+                    remove(c_path21);
+                    remove(bin_path21);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

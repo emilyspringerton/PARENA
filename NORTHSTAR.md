@@ -1575,6 +1575,53 @@ recompile hot functions with an optimizing tier) — but one that presupposes VS
 backend sitting where the C emitter sits today, several stages beyond where VS0 currently is
 (domain 1 of 5). Flagged as a real idea worth remembering, not designed or sequenced here.
 
+**Real sixth step (2026-09-02, "continue working on parena self hosted compiler"): a real,
+standalone, argv-parsing `parena-selfhost` binary** — closes the honest gap `selfhost/main.prn`'s
+own header comment named directly: "NOT yet a real argv-parsing standalone executable ... argv
+plumbing and a real main-emission convention are a genuinely separate, unstarted emitter
+feature." Rather than teach `parena-c` a new `(defn main ...)` → C `int main` emission convention
+(a real, separate, bigger undertaking with its own design questions), `selfhost/cli_main.c` is
+the same real pattern every selfhost test driver already established: a small, hand-written C
+`main` doing the real OS-interop (argv → a real `Vec String`, an exit code back out), calling
+straight into the PARENA-compiled `build-file`/`build-files` — no new compiler feature, no new
+language-level concept, just a real, permanent, user-runnable binary instead of a test-only one.
+Mirrors `src/main.c`'s own real `build` subcommand shape exactly (`parena-selfhost build <files...>
+-o <out.c>`). New `make parena-selfhost` / `make test-selfhost-cli` Makefile targets — the latter
+a real, `fork`+`exec` end-to-end test of the actual compiled binary (not build-file/build-files
+called in-process), covering single-file build, multi-file build, and a real nonzero exit code +
+stderr message on a real failure.
+
+**Real, live segfault found and fixed the moment this got used for real**: the first thing tried
+with the new binary was genuine self-compilation — `parena-selfhost build` pointed at the
+self-hosted compiler's own real source files. `selfhost/lexer.prn`/`parser.prn` and the 3 real
+stdlib dependencies compiled fine; `selfhost/region.prn`/`emit.prn`/`main.prn` each independently
+SEGFAULTED. `gdb` (rebuilt with `-g -O0`) pointed straight at `match-pattern-payload-name`'s own
+`(get-field payload :text)`: `match-pattern-has-payload?` only checked a pattern's KIND
+(call-shaped), not whether it genuinely has a payload child — a real, zero-payload variant
+pattern written parenthesized (`((None) body...)`, real and common throughout
+`selfhost/region.prn`'s own match clauses) is call-shaped too, with only ONE child, so
+`match-pattern-payload-name`'s own unconditional `children[1]` read was a real out-of-bounds
+`Vec` access. Fixed generically (checking child count ≥ 2, not special-cased to the name
+`None`) — every previously-crashing file, and the full real 8-file self-compilation attempt
+(`stdlib/string.prn`+`array.prn`+`io.prn` + all 5 selfhost domains), now completes cleanly, exit
+0, real C output. New regression test (`tests/test_selfhost_emit.c` + a new
+`tests/integration/driver_none_paren_pattern.c`): the exact previously-crashing shape, both a
+structural "no `#error`, and critically, no crash reaching this line" check and a real
+compile+run assertion.
+
+**Real, honest, newly-discovered next frontier**: the self-compiled OUTPUT (`self_compiled.c`,
+1544 real lines) does NOT yet compile clean under `gcc` — `selfhost/emit.prn`'s own real emitter
+has no support yet for `#target`/`inline-c` FFI bodies (`stdlib/string.prn`'s own real
+`length`/`char-at`/etc. all use this — confirmed the REAL `parena-c` compiler handles these
+correctly today, so this is a genuine, separate self-hosted-emitter scope gap, not a regression
+anywhere in production). True bootstrapping (the self-hosted compiler successfully compiling
+ITSELF into a working binary) needs real `#target` emission support in `selfhost/emit.prn` — a
+real, substantial, separate feature, not attempted this pass. Local `bazel build //...`
+unverifiable this pass (a pre-existing, local-only permission wall: stale `bazel-*` convenience
+symlinks in this checkout point into a different user account's own cache — a real environment
+quirk, not something CI's own fresh runners would ever hit); the full Makefile suite (342 tests)
+and all `test-selfhost-*` targets are clean.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression

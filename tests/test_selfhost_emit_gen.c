@@ -1477,7 +1477,7 @@ char * match_pattern_name(Node * pattern __attribute__((unused))) {
 }
 
 int match_pattern_has_payload_(Node * pattern __attribute__((unused))) {
-    return (emit_node_kind_code((pattern)->kind) == 0);
+    return ((emit_node_kind_code((pattern)->kind) == 0) && (vec_len(&((pattern)->children)) >= 2));
 }
 
 char * match_pattern_payload_name(Node * pattern __attribute__((unused))) {
