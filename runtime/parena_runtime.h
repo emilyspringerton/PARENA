@@ -57,6 +57,7 @@
  * unstarted work; this doesn't change that, just stops it from ALSO
  * blocking unrelated Windows builds). */
 #ifndef _WIN32
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -1130,6 +1131,8 @@ static inline int is_dir_impl(const char *path) {
  * Windows build this guard exists for) doesn't need process.prn at
  * all. */
 #ifndef _WIN32
+static int g_run_capture_last_exit_code = 0;
+
 static inline int spawn_detached_impl(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -1144,6 +1147,71 @@ static inline int spawn_detached_impl(const char *path, const char *arg1) {
 
 static inline int process_kill_impl(int pid) {
     return kill((pid_t)pid, SIGTERM) == 0 ? 0 : -1;
+}
+
+/* run_capture_impl -- real, general "run a shell command, capture its stdout" primitive, added
+ * 2026-09-02 filling in process.prn's own header comment's already-named "real, separate, future
+ * scope: captured stdout/stderr" gap (LO/FRAMEWORK_NORTHSTAR.md's own event-sourcing extension:
+ * SQL projectors shell out to real DB CLI clients -- sqlite3/mysql/psql -- rather than binding
+ * each one's own native C client library via FFI). Real, deliberate choice: `popen`, not
+ * `spawn_detached_impl`'s own fork+exec -- this needs to capture a pipe and wait synchronously
+ * for exit, the opposite of spawn's own "detached, caller kills it later" contract; `popen` is
+ * the real, standard, portable-enough (POSIX + Windows' own `_popen`, though this file's own
+ * guard doesn't currently extend that far -- see below) libc primitive for exactly this.
+ *
+ * Real, honest, named limitations, not silently glossed over:
+ * - `cmd` runs through `/bin/sh -c` -- any caller building `cmd` by concatenating untrusted
+ *   data (a user-supplied field value with a shell metacharacter in it) has a real shell-
+ *   injection risk. This file's own callers (SQL projectors) are responsible for either shell-
+ *   escaping interpolated values or avoiding shell interpolation entirely (e.g. via each CLI
+ *   tool's own `--defaults-extra-file`/parameterized-input mechanism) -- not solved generically
+ *   here, named as a real, separate, security-relevant follow-up.
+ * - stderr is NOT captured (shares the caller's own stderr) -- a real, separate follow-up if a
+ *   caller ever needs it multiplexed or suppressed.
+ * - The real exit code is stashed in a static (matching this file's own established "last
+ *   operation status" side-channel convention, e.g. raw_errno_impl) rather than returned
+ *   directly, since this function's own return type is the captured text -- read back via
+ *   run_capture_last_exit_code_impl. Deliberately NOT re-run to learn the exit code separately:
+ *   re-running a side-effecting command (a SQL write) to check its own status would be a real,
+ *   silent double-execution bug, not just wasteful.
+ * - Windows-guarded the same as this section's own existing spawn_detached_impl/
+ *   process_kill_impl, even though `popen`/`_popen` themselves exist on Windows too -- because
+ *   WIFEXITED/WEXITSTATUS (sys/wait.h) are POSIX-only; `_pclose`'s own real Windows return value
+ *   is already the raw exit code with no macro unwrapping needed, a real, separate, un-started
+ *   port if this framework ever needs to run on Windows. */
+static inline char *run_capture_impl(const char *cmd, Arena *dest) {
+    FILE *p = popen(cmd, "r");
+    if (p == NULL) {
+        g_run_capture_last_exit_code = -1;
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), p)) > 0) {
+        if (len + n + 1 > cap) {
+            size_t new_cap = cap * 2;
+            while (len + n + 1 > new_cap) new_cap *= 2;
+            char *new_buf = (char *)arena_alloc(dest, new_cap);
+            memcpy(new_buf, buf, len);
+            buf = new_buf;
+            cap = new_cap;
+        }
+        memcpy(buf + len, chunk, n);
+        len += n;
+    }
+    buf[len] = '\0';
+    int status = pclose(p);
+    g_run_capture_last_exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    return buf;
+}
+
+static inline int run_capture_last_exit_code_impl(void) {
+    return g_run_capture_last_exit_code;
 }
 #endif /* !_WIN32 -- end of process.prn real host glue */
 

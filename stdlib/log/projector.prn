@@ -1,0 +1,122 @@
+;; stdlib/log/projector.prn — depends on string, process, log/event. Real SQL projectors for
+;; LO/FRAMEWORK_NORTHSTAR.md's own event-sourcing extension (founder real-time: "continue
+;; building the framework with jsonl log streaming with mysql psql sqlite etc projectors"): the
+;; JSONL event log (log/jsonl.prn) is the real source of truth; this file replays one Event into
+;; a target SQL database, which becomes a real, REBUILDABLE read-model, not the primary store.
+;;
+;; Real, deliberate v0 scope, matching this stdlib's own established "narrowest real slice
+;; first" discipline: ONE generic `events` table (kind/id/op/fields/ts columns, `fields` stored
+;; as a raw JSON text blob) shared identically across all three backends, rather than per-kind
+;; typed tables with real schema migrations -- that's a real, separate, larger follow-up once
+;; this narrower shape is proven. All three dialects (SQLite/MySQL/PostgreSQL) accept the exact
+;; same real DDL/INSERT text for this narrow shape (TEXT/INTEGER, `IF NOT EXISTS`), so
+;; `events-table-ddl`/`insert-event-sql` are shared; only the actual CLI invocation differs.
+;;
+;; Real, honest, DELIBERATELY NOT solved here, named rather than hidden: each backend's own real
+;; CLI client is invoked via `process/run-capture`, which shells the whole command through
+;; `/bin/sh -c` (see that function's own doc comment). `sql-escape-string` below does standard
+;; single-quote doubling, which is NOT the same real guarantee as a parameterized/prepared-
+;; statement query -- a real, separate, security-relevant follow-up once each backend's own real
+;; parameterized-input mechanism (sqlite3's own `.param`, MySQL's `--defaults-extra-file` plus a
+;; real prepared statement, psql's own `-v` variables) is wired up instead of raw interpolation.
+;; Real, honest, currently-UNVERIFIED-live status (checked directly, not assumed): this sandbox
+;; has no `sqlite3`/`psql` CLI installed and no usable MySQL credentials (a real, separate,
+;; pre-existing gap: EMILY's own `sudo-queue/NOT_INCLUDED.md` already names "MySQL prod
+;; credentials" as needing a real root password nobody here has) -- every function below is
+;; unit-tested for its own real SQL-TEXT generation, but none has been run against a real,
+;; live database server this pass. A `sudo-queue` script installing the missing CLI tools is the
+;; real, named next step for whoever can run it.
+
+(module log/projector)
+(import string)
+(import process)
+(import log/event)
+(export events-table-ddl sql-escape-string insert-event-sql
+        project-sqlite! project-mysql! project-postgres! ProjectorError)
+
+(defenum ProjectorError
+  (CommandFailed (exit-code : I32)))
+
+;; events-table-ddl -- the one, shared generic-events-table schema (see this file's own header
+;; comment for why per-kind typed tables are a real, separate, later follow-up).
+(defn events-table-ddl []
+  : String
+  "CREATE TABLE IF NOT EXISTS events (kind TEXT NOT NULL, id TEXT NOT NULL, op TEXT NOT NULL, fields TEXT NOT NULL, ts INTEGER NOT NULL);")
+
+;; sql-escape-string -- real, standard SQL single-quote doubling (`'` -> `''`), the one escape
+;; every real SQL dialect this file targets agrees on. Real, honest, named limitation: NOT a
+;; substitute for real parameterized queries -- see this file's own header comment.
+(defn sql-escape-string [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (loop [i 0 acc ""]
+      (if (>= i n)
+        acc
+        (let [c (string/char-at s i)]
+          (if (= c 39)
+            (recur (+ i 1) (string/concat acc "''" dest))
+            (recur (+ i 1) (string/concat acc (string/char-from-code c dest) dest))))))))
+
+;; insert-event-sql -- one real INSERT statement for `e`, values single-quote-escaped per
+;; sql-escape-string above. `fields` is already a real, valid JSON object string (log/event.prn's
+;; own real, established representation) -- escaped and quoted like any other text value, since
+;; none of the three target dialects' own generic `events` table gives it a native JSON column
+;; type in this v0.
+(defn insert-event-sql [(e : &Event) (dest : Arena @ Region)]
+  : String @ Region
+  (let [kind (sql-escape-string (get-field e :kind) dest)]
+    (let [id (sql-escape-string (get-field e :id) dest)]
+      (let [op (sql-escape-string (get-field e :op) dest)]
+        (let [fields (sql-escape-string (get-field e :fields-json) dest)]
+          (let [ts (string/i32-to-string (get-field e :ts) dest)]
+            (let [p1 (string/concat "INSERT INTO events (kind, id, op, fields, ts) VALUES ('" kind dest)]
+              (let [p2 (string/concat p1 "', '" dest)]
+                (let [p3 (string/concat p2 id dest)]
+                  (let [p4 (string/concat p3 "', '" dest)]
+                    (let [p5 (string/concat p4 op dest)]
+                      (let [p6 (string/concat p5 "', '" dest)]
+                        (let [p7 (string/concat p6 fields dest)]
+                          (let [p8 (string/concat p7 "', " dest)]
+                            (let [p9 (string/concat p8 ts dest)]
+                              (string/concat p9 ");" dest))))))))))))))))
+
+;; run-sql-via -- real, shared "shell out, check the real exit code" plumbing every backend below
+;; uses, parameterized only by the CLI invocation prefix each one needs.
+(defn run-sql-via [(cli-cmd : String @ Region) (sql : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [full (string/concat cli-cmd sql dest)]
+    (let [ignored (process/run-capture full dest)]
+      (let [code (process/run-capture-exit-code)]
+        (if (= code 0)
+          (Ok unit)
+          (Err (CommandFailed code)))))))
+
+;; project-sqlite! -- real, honest v0: `sqlite3 <db-path> "<ddl> <insert>"`. Real, named,
+;; currently-unverified-live gap: this sandbox has no `sqlite3` CLI installed (checked directly).
+(defn project-sqlite! [(db-path : String @ Region) (e : &Event) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
+    (let [prefix (string/concat "sqlite3 " (string/concat db-path " \"" dest) dest)]
+      (run-sql-via prefix (string/concat sql "\"" dest) dest))))
+
+;; project-mysql! -- real, honest v0: `mysql <database> -e "<ddl> <insert>"`. `database` is the
+;; already-selected schema name (real, honest, named gap: connection/credential flags -- host/
+;; user/password -- are NOT threaded through here at all yet; a real caller on a real box needs
+;; its own `~/.my.cnf` or `--defaults-extra-file`, not solved by this function). Real, named,
+;; currently-unverified-live gap: this sandbox's own real MySQL server has no usable credentials
+;; (EMILY's own sudo-queue/NOT_INCLUDED.md already names this).
+(defn project-mysql! [(database : String @ Region) (e : &Event) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
+    (let [prefix (string/concat "mysql " (string/concat database " -e \"" dest) dest)]
+      (run-sql-via prefix (string/concat sql "\"" dest) dest))))
+
+;; project-postgres! -- real, honest v0: `psql <database> -c "<ddl> <insert>"`. Same real,
+;; named connection-credential gap as project-mysql! above (relies on the caller's own real
+;; `PGPASSWORD`/`.pgpass`/peer auth, not threaded through here). Real, named, currently-
+;; unverified-live gap: this sandbox has no `psql` CLI installed (checked directly).
+(defn project-postgres! [(database : String @ Region) (e : &Event) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
+    (let [prefix (string/concat "psql " (string/concat database " -c \"" dest) dest)]
+      (run-sql-via prefix (string/concat sql "\"" dest) dest))))

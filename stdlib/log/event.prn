@@ -1,0 +1,81 @@
+;; stdlib/log/event.prn — depends on string. Real Phase 1 of LO/FRAMEWORK_NORTHSTAR.md's own
+;; event-sourcing extension (founder real-time: "continue building the framework with jsonl log
+;; streaming with mysql psql sqlite etc projectors"): the append-only event log is the real
+;; source of truth; SQL databases become rebuildable PROJECTIONS of it, not the primary store
+;; S225-03 originally scoped through IDUNA directly. This file is the one, real event SHAPE
+;; every projector downstream reads — deliberately minimal, matching this stdlib's own
+;; established "narrowest real slice first" discipline.
+;;
+;; Real, deliberate representation decision, not an oversight: `fields-json` is a plain `String`
+;; (an already-valid, minified JSON object the CALLER builds, e.g. `{"name":"PARENA"}`), not a
+;; `(Vec (String String))`. Checked directly, not assumed: no real, PROVEN-working usage of a
+;; `Vec` of 2-element tuples exists anywhere in this stdlib today — `tokenizer.prn`'s own
+;; `merges` field of that exact shape is declared but never once read or written, and
+;; `regex/pcre.prn`'s own `Match.groups` (same tuple shape) is documented as ALWAYS EMPTY
+;; (capture-group tracking isn't implemented). A real, deliberately untested compiler path this
+;; file doesn't take a dependency on. `json-escape-string` below is the real, narrow helper for
+;; building `fields-json` safely by hand; a real, general JSON *encoder* completing
+;; `json.prn`'s own real, existing DECODER is a separate, later follow-up if a caller ever needs
+;; one, not assumed necessary here.
+
+(module log/event)
+(import string)
+(export Event event-encode json-escape-string)
+
+(defstruct Event
+  (kind : String)        ;; e.g. "Repo", "User", "Issue"
+  (id : String)
+  (op : String)           ;; "create" | "update" | "destroy" -- a real, honest plain String, not
+                            ;; a defenum yet (a real, separate follow-up once a second real
+                            ;; caller needs to exhaustively match on it)
+  (fields-json : String)  ;; a pre-built, already-valid, minified JSON object string
+  (ts : I32))              ;; unix timestamp (seconds)
+
+;; json-escape-string -- real, narrow JSON string-escaping: the missing ENCODER half of
+;; `json.prn`'s own real, existing parser (that file's own header names itself "a real JSON
+;; parser", not a codec). Matches the exact real escape set `src/emit.c`'s own `NODE_STRING`
+;; handling already uses for the identical real reason (a raw quote/backslash/newline/tab byte
+;; would otherwise produce invalid, or silently wrong, JSON text): `"`, `\`, newline, tab. Real,
+;; honest, narrower than full JSON (control characters below 0x20 other than `\n`/`\t` are not
+;; escaped) -- not exercised by any real SHITHUB field value this pass, named rather than
+;; silently assumed complete.
+(defn json-escape-string [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (loop [i 0 acc ""]
+      (if (>= i n)
+        acc
+        (let [c (string/char-at s i)]
+          (if (= c 34)
+            (recur (+ i 1) (string/concat acc "\\\"" dest))
+            (if (= c 92)
+              (recur (+ i 1) (string/concat acc "\\\\" dest))
+              (if (= c 10)
+                (recur (+ i 1) (string/concat acc "\\n" dest))
+                (if (= c 9)
+                  (recur (+ i 1) (string/concat acc "\\t" dest))
+                  (recur (+ i 1) (string/concat acc (string/char-from-code c dest) dest)))))))))))
+
+;; event-encode -- one Event -> one real, complete JSONL line (no trailing newline; the caller
+;; adds one, matching io/write-string's own "write exactly what you're given" convention). Field
+;; VALUES for kind/id/op go through json-escape-string; `fields-json` is embedded RAW (it's
+;; already valid JSON text, not a string to double-escape into a nested quoted blob). Built via
+;; sequential `let`-bound pieces rather than one deeply nested `string/concat` tree -- real,
+;; deliberate readability choice, same real shape `datetime.prn`'s own `format-go-layout` already
+;; uses for a long, piece-by-piece string build.
+(defn event-encode [(e : &Event) (dest : Arena @ Region)]
+  : String @ Region
+  (let [kind (json-escape-string (get-field e :kind) dest)]
+    (let [id (json-escape-string (get-field e :id) dest)]
+      (let [op (json-escape-string (get-field e :op) dest)]
+        (let [ts (string/i32-to-string (get-field e :ts) dest)]
+          (let [p1 (string/concat "{\"kind\":\"" kind dest)]
+            (let [p2 (string/concat p1 "\",\"id\":\"" dest)]
+              (let [p3 (string/concat p2 id dest)]
+                (let [p4 (string/concat p3 "\",\"op\":\"" dest)]
+                  (let [p5 (string/concat p4 op dest)]
+                    (let [p6 (string/concat p5 "\",\"fields\":" dest)]
+                      (let [p7 (string/concat p6 (get-field e :fields-json) dest)]
+                        (let [p8 (string/concat p7 ",\"ts\":" dest)]
+                          (let [p9 (string/concat p8 ts dest)]
+                            (string/concat p9 "}" dest)))))))))))))))

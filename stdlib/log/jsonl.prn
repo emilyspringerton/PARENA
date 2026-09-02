@@ -1,0 +1,72 @@
+;; stdlib/log/jsonl.prn — depends on io, string, log/event. Real, minimal append-only JSONL
+;; event-log I/O: LO/FRAMEWORK_NORTHSTAR.md's own event-sourcing extension (founder real-time:
+;; "continue building the framework with jsonl log streaming with mysql psql sqlite etc
+;; projectors"). One JSON object per line, one Event per line -- the real source of truth
+;; SQL projectors (a real, separate follow-up module) replay to build read-models from.
+
+(module log/jsonl)
+(import io)
+(import string)
+(import log/event)
+(export append-event! read-lines)
+
+;; unbox-filehandle -- real, found-live compiler gap, same class every other "generic void*
+;; boxed value used directly without type context" fix in this stdlib already works around
+;; (regex/pcre.prn's own unbox-bool is the closest precedent): a `FileHandle` bound by a `match`
+;; clause (e.g. `((Ok !f) ...)` from `io/file-open`'s own `Result`) reports as a real `FileHandle`
+;; at the .prn level, but the EMITTED C keeps it as the Result's own generic `void *value` --
+;; passing it straight to another function declaring a real `FileHandle` parameter (write-string/
+;; file-close/read-lines-from) fails to compile ("incompatible type ... void * ... expected
+;; FileHandle"). Found live building this file -- no real caller of `io/file-open` existed
+;; anywhere in this stdlib before it (checked directly, not assumed).
+(defn unbox-filehandle [(v : &Any)] : FileHandle
+  #target
+  {:c (inline-c "*(FileHandle *)v")})
+
+;; append-event! -- opens `path` in Append mode (io/OpenMode's own real Append variant, real
+;; POSIX O_APPEND semantics underneath -- concurrent single-writer-appends are safe, matching
+;; every real append-only log's own standard assumption), writes one real event-encode line plus
+;; a trailing newline, and closes the handle. Real, honest v0: opens/closes the file on every
+;; single call rather than holding a long-lived handle -- correct, just not the fastest possible
+;; shape for a high-throughput writer; a real, separate follow-up if that ever matters.
+(defn append-event! [(path : String @ Region) (e : &Event) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region
+  (match (io/file-open path Append dest)
+    ((Ok !fh)
+      (let [f (unbox-filehandle !fh)]
+        (let [line (string/concat (event-encode e dest) "\n" dest)]
+          (match (io/write-string f line dest)
+            ((Ok _) (io/file-close f dest))
+            ((Err werr) (Err werr))))))
+    ((Err oerr) (Err oerr))))
+
+;; read-lines-from -- real, direct recursive line-at-a-time read via io/read-line's own real
+;; (Option String) EOF signal, matching io.prn's own established "line at a time" convention
+;; (sed/awk/grep's own real dependency). Returns every line INCLUDING any final line missing its
+;; own trailing newline -- io/read-line's own real behavior already handles that, not re-solved
+;; here.
+(defn read-lines-from [(!f : FileHandle @ :region/task) (dest : Arena @ Region)]
+  : (Result (Vec String) IoError) @ Region
+  (let [lines (vec/new dest)]
+    (loop []
+      (match (io/read-line !f dest)
+        ((Ok opt)
+          (match (deref opt)
+            ((Some line) (do (vec/push! &lines line) (recur)))
+            (None (Ok lines))))
+        ((Err rerr) (Err rerr))))))
+
+;; read-lines -- opens `path` Read-only, reads every real JSONL line, closes the handle. A real,
+;; honest empty Vec (not an error) for a nonexistent log file -- a projector's own first real run
+;; against a log that hasn't been written to yet is a normal, expected case, not a failure.
+(defn read-lines [(path : String @ Region) (dest : Arena @ Region)]
+  : (Result (Vec String) IoError) @ Region
+  (if (not (io/path-exists? path))
+    (Ok (vec/new dest))
+    (match (io/file-open path Read dest)
+      ((Ok !fh)
+        (let [f (unbox-filehandle !fh)]
+          (match (read-lines-from f dest)
+            ((Ok lines) (do (io/file-close f dest) (Ok lines)))
+            ((Err rerr) (Err rerr)))))
+      ((Err oerr) (Err oerr)))))

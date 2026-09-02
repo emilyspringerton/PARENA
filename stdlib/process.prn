@@ -27,7 +27,7 @@
 
 (module process)
 (import string)
-(export process-spawn process-kill ProcessError)
+(export process-spawn process-kill run-capture run-capture-exit-code ProcessError)
 
 (defenum ProcessError
   (SpawnFailed)
@@ -67,3 +67,24 @@
   (if (< (raw-kill pid) 0)
     (Err KillFailed)
     (Ok unit)))
+
+;; run-capture / run-capture-exit-code -- real, general "run a shell command, capture its
+;; stdout" pair, added 2026-09-02 for LO/FRAMEWORK_NORTHSTAR.md's own event-sourcing extension
+;; (founder real-time: "continue building the framework with jsonl log streaming with mysql psql
+;; sqlite etc projectors"): SQL projectors shell out to real DB CLI clients (sqlite3/mysql/psql)
+;; rather than binding each one's own native C client library via FFI -- this stdlib's own real,
+;; general subprocess-capture primitive underneath, filling in this file's own header comment's
+;; already-named "real, separate, future scope: captured stdout/stderr" gap. Real, honest, named
+;; limitations (see runtime/parena_runtime.h's own run_capture_impl doc comment for the full
+;; reasoning): `cmd` runs through `/bin/sh -c` -- a real shell-injection risk if a caller
+;; concatenates untrusted data into it without escaping; stderr is not captured; the real exit
+;; code is a SEPARATE call reading back the last real run's own stashed status (a second call,
+;; not a second execution -- run-capture itself only ever runs `cmd` once).
+(defn run-capture [(cmd : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "run_capture_impl(cmd, dest)")})
+
+(defn run-capture-exit-code [] : I32
+  #target
+  {:c (inline-c "run_capture_last_exit_code_impl()")})

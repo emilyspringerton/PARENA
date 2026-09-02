@@ -167,11 +167,11 @@ char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
 char * json_unescape(char *, int, int, Arena *);
 int is_whitespace_(int);
-int skip_ws(char *, int);
+int json_skip_ws(char *, int);
 Result parse(char *, Arena *);
 Result parse_value(char *, int, Arena *);
 Result parse_literal(char *, int, char *, JsonValue, Arena *);
-Result parse_number(char *, int, Arena *);
+Result json_parse_number(char *, int, Arena *);
 int find_string_end(char *, int);
 Result parse_string_value(char *, int, Arena *);
 Result parse_array(char *, int, Arena *);
@@ -216,6 +216,8 @@ int raw_spawn(char *, char *);
 int raw_kill(int);
 Result process_spawn(char *, char *, Arena *);
 Result process_kill(int, Arena *);
+char * run_capture(char *, Arena *);
+int run_capture_exit_code();
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -434,7 +436,7 @@ int is_whitespace_(int c __attribute__((unused))) {
     return ((c == 32) || ((c == 9) || ((c == 10) || (c == 13))));
 }
 
-int skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
+int json_skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     int __loop_result_2 __attribute__((unused));
     int p = pos;
@@ -454,14 +456,14 @@ int skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
 Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(text);
     Result __match_result_0 __attribute__((unused)) = {0};
-    Result __match_tmp_0 = parse_value(text, skip_ws(text, 0), dest);
+    Result __match_tmp_0 = parse_value(text, json_skip_ws(text, 0), dest);
     if (__match_tmp_0.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_0.value;
         __match_result_0 = result_err(e);
     }
     else if (__match_tmp_0.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_0.value;
-        int after __attribute__((unused)) = skip_ws(text, ((*((JsonStep *)(step)))).next);
+        int after __attribute__((unused)) = json_skip_ws(text, ((*((JsonStep *)(step)))).next);
         if ((after < n)) {
         __match_result_0 = result_err(JsonError_box(dest, JsonError_new("trailing data after top-level value", after)));
         } else {
@@ -477,7 +479,7 @@ Result parse_value(char * s __attribute__((unused)), int pos __attribute__((unus
     return result_err(JsonError_box(dest, JsonError_new("unexpected end of input", pos)));
     } else {
     int c __attribute__((unused)) = char_at(s, pos);
-    return ((c == 123) ? parse_object(s, pos, dest) : ((c == 91) ? parse_array(s, pos, dest) : ((c == 34) ? parse_string_value(s, pos, dest) : ((c == 116) ? parse_literal(s, pos, "true", JsonValue_JBool(int_box(dest, 1)), dest) : ((c == 102) ? parse_literal(s, pos, "false", JsonValue_JBool(int_box(dest, 0)), dest) : ((c == 110) ? parse_literal(s, pos, "null", JsonValue_JNull(), dest) : ((is_digit_(c) || (c == 45)) ? parse_number(s, pos, dest) : result_err(JsonError_box(dest, JsonError_new("unexpected character", pos))))))))));
+    return ((c == 123) ? parse_object(s, pos, dest) : ((c == 91) ? parse_array(s, pos, dest) : ((c == 34) ? parse_string_value(s, pos, dest) : ((c == 116) ? parse_literal(s, pos, "true", JsonValue_JBool(int_box(dest, 1)), dest) : ((c == 102) ? parse_literal(s, pos, "false", JsonValue_JBool(int_box(dest, 0)), dest) : ((c == 110) ? parse_literal(s, pos, "null", JsonValue_JNull(), dest) : ((is_digit_(c) || (c == 45)) ? json_parse_number(s, pos, dest) : result_err(JsonError_box(dest, JsonError_new("unexpected character", pos))))))))));
     }
 }
 
@@ -496,7 +498,7 @@ Result parse_literal(char * s __attribute__((unused)), int pos __attribute__((un
     }
 }
 
-Result parse_number(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+Result json_parse_number(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     Result __loop_result_3 __attribute__((unused));
     int p = ((char_at(s, pos) == 45) ? (pos + 1) : pos);
@@ -577,7 +579,7 @@ Result parse_string_value(char * s __attribute__((unused)), int pos __attribute_
 Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     Vec items __attribute__((unused)) = vec_new(dest);
-    int p1 __attribute__((unused)) = skip_ws(s, (pos + 1));
+    int p1 __attribute__((unused)) = json_skip_ws(s, (pos + 1));
     if (((p1 < n) && (char_at(s, p1) == 93))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p1 + 1))));
     } else {
@@ -590,7 +592,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     else if (__match_tmp_1.tag == 1) {
         void *first __attribute__((unused)) = __match_tmp_1.value;
     (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(first)))).value)));
-    int p = skip_ws(s, ((*((JsonStep *)(first)))).next);
+    int p = json_skip_ws(s, ((*((JsonStep *)(first)))).next);
     while (1) {
         if ((p >= n)) {
         __match_result_1 = result_err(JsonError_box(dest, JsonError_new("unterminated array", pos)));
@@ -601,7 +603,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
         break;
         } else {
         if ((char_at(s, p) == 44)) {
-    Result __match_tmp_2 = parse_value(s, skip_ws(s, (p + 1)), dest);
+    Result __match_tmp_2 = parse_value(s, json_skip_ws(s, (p + 1)), dest);
     if (__match_tmp_2.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_2.value;
         __match_result_1 = result_err(e);
@@ -610,7 +612,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     else if (__match_tmp_2.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_2.value;
     (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(step)))).value)));
-        int __recur_tmp_0 = skip_ws(s, ((*((JsonStep *)(step)))).next);
+        int __recur_tmp_0 = json_skip_ws(s, ((*((JsonStep *)(step)))).next);
         p = __recur_tmp_0;
         continue;
     }
@@ -630,7 +632,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
     int n __attribute__((unused)) = length(s);
     Vec keys __attribute__((unused)) = vec_new(dest);
     Vec values __attribute__((unused)) = vec_new(dest);
-    int p1 __attribute__((unused)) = skip_ws(s, (pos + 1));
+    int p1 __attribute__((unused)) = json_skip_ws(s, (pos + 1));
     if (((p1 < n) && (char_at(s, p1) == 125))) {
     return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p1 + 1))));
     } else {
@@ -644,7 +646,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
         void *first __attribute__((unused)) = __match_tmp_3.value;
     (void)(vec_push_(&(keys), ((*((MemberStep *)(first)))).key));
     (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(first)))).value)));
-    int p = skip_ws(s, ((*((MemberStep *)(first)))).next);
+    int p = json_skip_ws(s, ((*((MemberStep *)(first)))).next);
     while (1) {
         if ((p >= n)) {
         __match_result_2 = result_err(JsonError_box(dest, JsonError_new("unterminated object", pos)));
@@ -655,7 +657,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
         break;
         } else {
         if ((char_at(s, p) == 44)) {
-    Result __match_tmp_4 = parse_member(s, skip_ws(s, (p + 1)), dest);
+    Result __match_tmp_4 = parse_member(s, json_skip_ws(s, (p + 1)), dest);
     if (__match_tmp_4.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_4.value;
         __match_result_2 = result_err(e);
@@ -665,7 +667,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
         void *step __attribute__((unused)) = __match_tmp_4.value;
     (void)(vec_push_(&(keys), ((*((MemberStep *)(step)))).key));
     (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(step)))).value)));
-        int __recur_tmp_0 = skip_ws(s, ((*((MemberStep *)(step)))).next);
+        int __recur_tmp_0 = json_skip_ws(s, ((*((MemberStep *)(step)))).next);
         p = __recur_tmp_0;
         continue;
     }
@@ -691,12 +693,12 @@ Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unu
     return result_err(JsonError_box(dest, JsonError_new("unterminated key string", pos)));
     } else {
     char *key __attribute__((unused)) = json_unescape(s, (pos + 1), close, dest);
-    int p1 __attribute__((unused)) = skip_ws(s, (close + 1));
+    int p1 __attribute__((unused)) = json_skip_ws(s, (close + 1));
     if (((p1 >= n) || (!((char_at(s, p1) == 58))))) {
     return result_err(JsonError_box(dest, JsonError_new("expected ':' after key", p1)));
     } else {
     Result __match_result_3 __attribute__((unused)) = {0};
-    Result __match_tmp_5 = parse_value(s, skip_ws(s, (p1 + 1)), dest);
+    Result __match_tmp_5 = parse_value(s, json_skip_ws(s, (p1 + 1)), dest);
     if (__match_tmp_5.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_5.value;
         __match_result_3 = result_err(e);
@@ -1250,5 +1252,13 @@ Result process_kill(int pid __attribute__((unused)), Arena *dest __attribute__((
     } else {
     return result_ok(NULL);
     }
+}
+
+char * run_capture(char * cmd __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (run_capture_impl(cmd, dest));
+}
+
+int run_capture_exit_code(void) {
+    return (run_capture_last_exit_code_impl());
 }
 

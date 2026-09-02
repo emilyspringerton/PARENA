@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-process test-log-jsonl test-log-projector test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -167,6 +167,39 @@ test-http-routes: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_http_routes.c \
 		runtime/parena_runtime.c -o /tmp/test_http_routes_bin -lm
 	/tmp/test_http_routes_bin
+
+# test-process -- real end-to-end verification for stdlib/process.prn's own run-capture/
+# run-capture-exit-code (a real, general subprocess-capture primitive; SQL projectors below
+# shell out through it to real DB CLI clients).
+test-process: build
+	./parena build stdlib/string.prn stdlib/process.prn -o tests/test_process_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_process.c \
+		runtime/parena_runtime.c -o /tmp/test_process_bin -lm
+	/tmp/test_process_bin
+
+# test-log-jsonl -- real end-to-end verification for stdlib/log/event.prn + stdlib/log/jsonl.prn
+# (LO FRAMEWORK_NORTHSTAR.md's own event-sourcing extension: the append-only JSONL log SQL
+# projectors will replay). array.prn is a real, required sibling of io.prn (io.prn's own
+# read-floats references NDArray) -- same real, pre-existing gap test-selfhost-main's own
+# Makefile comment already documents.
+test-log-jsonl: build
+	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/json.prn \
+		stdlib/log/event.prn stdlib/log/jsonl.prn -o tests/test_log_jsonl_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_log_jsonl.c \
+		runtime/parena_runtime.c -o /tmp/test_log_jsonl_bin -lm
+	/tmp/test_log_jsonl_bin
+
+# test-log-projector -- real end-to-end verification for stdlib/log/projector.prn's own
+# SQL-generation + real shell-invocation plumbing (SQLite/MySQL/PostgreSQL projectors over the
+# JSONL event log). Real, honest, currently-unverified-live gap named in that file's own header
+# comment: no real DB CLI/credentials exist in this sandbox, so this shims stand-in
+# sqlite3/mysql scripts via a real, temporary PATH directory instead.
+test-log-projector: build
+	./parena build stdlib/string.prn stdlib/process.prn stdlib/log/event.prn stdlib/log/projector.prn \
+		-o tests/test_log_projector_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_log_projector.c \
+		runtime/parena_runtime.c -o /tmp/test_log_projector_bin -lm
+	/tmp/test_log_projector_bin
 
 # test-editor-document -- real end-to-end verification for stdlib/editor/document.prn (real
 # document management: editor/buffer.prn + papercraft/note_version_mod.prn tied together).
