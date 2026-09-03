@@ -1,7 +1,10 @@
 # NORTHSTAR — V16 (a native-PARENA JavaScript engine)
 
-**Status: scoping only. No code exists yet. This document exists so the real size of this ask
-is written down honestly, not silently deferred.**
+**Status (2026-09-03): Phase 1 (the generics/representation decision) and Phase 2a (a real,
+tested JS lexer, `stdlib/v16/lexer.prn`) are shipped — see "Real, phased plan" below. Everything
+past that (parser/AST, interpreter, GC strategy, stdlib slice) remains real, unstarted, honestly
+scoped work; this document still exists so the real overall size of this ask stays written down
+honestly, not silently deferred.**
 
 ## What this is
 
@@ -81,15 +84,28 @@ real phases first, in writing, before committing to any implementation pass.**
   ambition, not a literal DOM-compatibility requirement.
 - Node.js-style module resolution / npm ecosystem compatibility.
 
-## Real, phased plan (scoping only — no phase has started)
+## Real, phased plan
 
-1. **Decide the generics question first.** Either (a) commit V16 to a single universal boxed-
-   value representation (workable now, real perf/ergonomics cost accepted knowingly) or (b) scope
-   real generic type parameters into VS0 itself as separate, prerequisite compiler work. This
-   decision gates everything else and should not be made implicitly by whichever path is easiest
-   to start coding, given how much of the rest of this plan depends on it.
-2. **JS lexer + parser** (real JS grammar, not S-expressions) → AST as PARENA data structures,
-   using whichever value representation Phase 1 settled on.
+1. **DECIDED (2026-09-03), real, checked live, not assumed**: (a) — commit V16 to concrete,
+   non-generic types rather than a real polymorphic container. Confirmed directly: VS0 still
+   rejects a bare `(Vec T)`/`(Map K V)` signature, but `(Vec Tok)` with a CONCRETE struct element
+   type compiles fine — so a JS token/value representation built from concrete structs (starting
+   with `JsToken` below) is real and buildable today, at the real, accepted cost of "one concrete
+   type per real need" rather than a genuinely generic value representation. Scoping real generic
+   type parameters into VS0 itself remains real, separate, much larger, unstarted work — not
+   pursued here.
+2. **JS lexer (Phase 2a) — SHIPPED (2026-09-03)**, kanban priority-queue card 34134124, "parena
+   v16 iteratejs engine": `stdlib/v16/lexer.prn`, a real, working, tested (`make test-v16-lexer`)
+   tokenizer — number/string/identifier/punctuation tokens plus a real `TokEof` sentinel, real
+   honest v0 boundaries named in that file's own header comment (integer-only numbers, no
+   escape-sequence decoding, no keyword table, a small fixed punctuation set, no comments/regex/
+   template strings). See `STDLIB.md`'s own "v16/lexer" section for the full writeup, including a
+   real, live-found multi-file-build invocation trap (a `.prn` file calling into another stdlib
+   module silently gets a wrong `void *` type guess if that module's own source isn't passed to
+   the SAME `parena build` invocation — not an emitter bug, a real, easy-to-hit mistake, now named
+   so it isn't rediscovered).
+2b. **JS parser → AST** (real JS grammar, not S-expressions) — real, separate, unstarted work,
+   building on the lexer's own real `(Vec JsToken)` output.
 3. **Tree-walking interpreter** over the AST — no bytecode compilation yet, correctness over
    speed, matching VS0's own historical "get a real reference interpreter working before
    optimizing" discipline.

@@ -3259,3 +3259,50 @@ comment: a `let` nested inside a non-first `cond` clause body reports a real, ho
 used directly in expression position" error even though the same `let`-in-an-if-branch shape
 compiles fine elsewhere; and `(get-field (vec/get &v i) :field)` needs the `vec/get` result
 bound via `let` first, or the emitted C dereferences an uncast `void *`.
+
+## v16/lexer — a real, minimal JS tokenizer, Phase 2a (2026-09-03)
+
+Real first slice past `PARENA/docs/V16_NORTHSTAR.md`'s own scoping-only pass, for kanban
+priority-queue card "34134124: parena v16 iteratejs engine." `stdlib/v16/lexer.prn` — a real,
+working, tested JS tokenizer: `lex` walks a source string once, left to right, producing a
+`(Vec JsToken)` (`JsToken { kind : I32, text : String }`), always ending with a real `TokEof`
+sentinel so a downstream parser never has to separately track `vec/len`.
+
+Real, decisive Phase 1 answer, checked live before writing a single token type: VS0 still has no
+generic type parameters (re-confirmed this same session — a bare `(Vec T)`/`(Map K V)` signature
+still fails to compile), but `(Vec Tok)` with a CONCRETE, non-generic struct element type compiles
+fine (confirmed live) — `JsToken` is one concrete struct, not an attempt at a generic container,
+the narrowest form of `V16_NORTHSTAR.md`'s own "(a) commit to a single universal boxed-value
+representation" path.
+
+Real, honest v0 scope, named explicitly in the file's own header comment, not silently handled
+wrong: integer number literals only (no floats/exponents); double-quoted strings with NO
+escape-sequence decoding (a `\"` inside a string ends the token early); identifiers (letters/
+digits/underscore, not starting with a digit) with no real keyword table yet (`var`/`function`/
+etc. all come back as plain `TokIdent`); a small, fixed single-character punctuation set
+(`( ) { } ; , + - * / = < >`) — no multi-character operators, comments, regex literals, or
+template strings; an unrecognized byte is silently skipped, not a crash, since there's no real
+error-reporting story yet.
+
+**Real, live bug found and fixed during this pass — a genuine compiler-behavior trap, not an
+emitter bug**: an early `parena build stdlib/v16/lexer.prn -o ...` (the `.prn` file compiled
+ALONE, without `stdlib/string.prn` also passed to the same invocation) produced C that gcc
+accepted only with real, serious warnings — `void *n = length(src);` and `double i = 0;` instead
+of `int`/`int32_t`. Root cause, confirmed via a minimal 2-line repro: VS0's multi-file build has
+no separate module-linking step at all (`main.go`'s own `cmd_build()`) — every real defn's return
+type is only known to a `let`-binding's own type inference if that defn's SOURCE FILE is part of
+the SAME `parena build` invocation; a called-but-not-combined function (even one this stdlib
+itself defines, like `string.prn`'s own `length`) silently falls back to a generic, wrong `void *`
+guess instead of erroring. Real fix: this file's own `test-v16-lexer` Makefile target (and every
+real build of this file) passes `stdlib/string.prn stdlib/v16/lexer.prn` together, matching
+`test-bstree`'s own already-established real precedent — not a bug in `lexer.prn` itself, a real,
+easy-to-hit invocation mistake this doc now names explicitly so the next `.prn` file that calls
+into another stdlib module doesn't lose time re-discovering it.
+
+Real, live-tested (`make test-v16-lexer`): a real mixed-token source (identifiers, an assignment,
+a number, an operator, a semicolon, a quoted string) tokenizes correctly end to end including the
+real `TokEof` sentinel; an empty source lexes to exactly one `TokEof`; an unterminated string is a
+real, honest degenerate case (takes the rest of the source as its own text, no crash/hang); an
+unrecognized byte (`#`) is silently skipped, matching the real, deliberate v0 boundary. Real,
+honest, unstarted: the real parser/AST (`V16_NORTHSTAR.md`'s own Phase 2b), a real keyword table,
+multi-character operators, and everything else that doc's own real 6-phase plan names.

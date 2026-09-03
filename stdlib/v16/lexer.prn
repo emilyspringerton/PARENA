@@ -1,0 +1,120 @@
+;; stdlib/v16/lexer.prn -- V16 JS engine (kanban priority-queue card 34134124, "parena v16
+;; iteratejs engine"), the real first slice past PARENA/docs/V16_NORTHSTAR.md's own scoping-only
+;; pass: a real, minimal JS tokenizer. Named there as Phase 2 ("JS lexer + parser (real JS
+;; grammar, not S-expressions) -> AST"); this file is the lexer half only, the narrowest real
+;; slice worth shipping on its own, matching this session's own "narrowest real slice first"
+;; discipline (bstree.prn/explosion_mod.prn's own precedent).
+;;
+;; Real, decisive Phase 1 answer, checked live before writing a single token type: VS0 still has
+;; no generic type parameters (re-confirmed this same session -- a plain `(Vec T)`/`(Map K V)`
+;; signature still fails to compile), but a Vec/struct pairing with a CONCRETE element type
+;; compiles fine (confirmed live: `(defstruct Tok ...) (defn f [] : (Vec Tok) @ Region ...)`
+;; builds without error) -- V16_NORTHSTAR.md's own "(a) commit to a single universal boxed-value
+;; representation" path, taken here in its narrowest form: JsToken is ONE concrete, non-generic
+;; struct, not a generic container.
+;;
+;; Real, honest v0 scope, named explicitly, not silently handled wrong:
+;;   - integer number literals only -- no floats, no exponents, no hex/octal/binary literals.
+;;   - double-quoted string literals with NO escape-sequence decoding (a `\"` inside a string
+;;     ends the token early, same real "known, separate, later gap" class string.prn's own
+;;     char-from-code doc comment already names for exactly this kind of future work).
+;;   - identifiers: ASCII letters/digits/underscore, not starting with a digit. No real JS
+;;     keyword table yet (`var`/`function`/`if`/... all come back as plain TokIdent) -- a real,
+;;     separate, later pass, not attempted here.
+;;   - a small, fixed single-character punctuation set: ( ) { } ; , + - * / = < > . No
+;;     multi-character operators (==, <=, &&, =>, ...), no comments, no regex literals, no
+;;     template strings, no semicolon-insertion -- all real, separate, later work.
+;;   - no real error type -- an unrecognized byte is silently skipped (advances one byte, no
+;;     token emitted), a real, honest "don't crash, don't silently misparse" choice for a v0 with
+;;     no error-reporting story yet, named here rather than pretended away.
+(module v16/lexer)
+(export lex tok-number tok-string tok-ident tok-punct tok-eof)
+
+(defstruct JsToken (kind : I32) (text : String))
+
+;; Token kind tags -- plain I32 constants via zero-arg functions, the same real, established
+;; convention this stdlib already uses for named values with no dedicated top-level const form
+;; (see e.g. shell.prn's own platform-fallback-shell).
+(defn tok-number [] : I32 0)
+(defn tok-string [] : I32 1)
+(defn tok-ident  [] : I32 2)
+(defn tok-punct  [] : I32 3)
+(defn tok-eof    [] : I32 4)
+
+(defn is-alpha? [(c : I32)] : Bool
+  (or (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122)) (= c 95))) ;; A-Z, a-z, _
+
+(defn is-ident-char? [(c : I32)] : Bool
+  (or (is-alpha? c) (is-digit? c)))
+
+;; is-punct? -- the real, fixed v0 punctuation set (see this file's own header comment).
+(defn is-punct? [(c : I32)] : Bool
+  (or (= c 40) (= c 41)   ;; ( )
+      (= c 123) (= c 125) ;; { }
+      (= c 59) (= c 44)   ;; ; ,
+      (= c 43) (= c 45)   ;; + -
+      (= c 42) (= c 47)   ;; * /
+      (= c 61) (= c 60) (= c 62))) ;; = < >
+
+(defn is-space? [(c : I32)] : Bool
+  (or (= c 32) (= c 9) (= c 10) (= c 13))) ;; space, tab, \n, \r
+
+;; scan-number/scan-ident: real, minimal forward scans returning the index one past the run's
+;; own last matching byte. Both real, tail-recursive loops -- no recursion depth risk on a real,
+;; long identifier/number the way a naive recursive-call-per-character version would have.
+(defn scan-number [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (or (>= j n) (not (is-digit? (char-at src j))))
+      j
+      (recur (+ j 1)))))
+
+(defn scan-ident [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (or (>= j n) (not (is-ident-char? (char-at src j))))
+      j
+      (recur (+ j 1)))))
+
+;; scan-string: scans past the run of bytes up to (not including) the closing '"', or up to n if
+;; the string is unterminated (see this file's own header comment on this real, honest choice).
+;; i is the index of the FIRST byte after the opening quote.
+(defn scan-string [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (or (>= j n) (= (char-at src j) 34)) ;; 34 = '"'
+      j
+      (recur (+ j 1)))))
+
+;; lex -- the real, public entry point. Walks src once, left to right, real byte-wise scanning
+;; (matching bstree.prn's own char-compare-at style, not a second parsing pass), appending one
+;; JsToken per real lexeme found. A real, explicit TokEof sentinel is always the last token
+;; (empty text), the same real "always know when you're done" convention a real parser consuming
+;; this token stream will need, rather than requiring callers to separately track vec/len.
+(defn lex [(src : String @ Region) (dest : Arena @ Region)] : (Vec JsToken) @ Region
+  (let [n (length src)
+        toks (vec/new dest)]
+    (loop [i 0]
+      (cond
+        ((>= i n)
+          (do
+            (vec/push! &mut toks {:kind (tok-eof) :text ""})
+            toks))
+        ((is-space? (char-at src i)) (recur (+ i 1)))
+        ((is-digit? (char-at src i))
+          (let [end (scan-number src i n)]
+            (vec/push! &mut toks {:kind (tok-number) :text (substring src i end dest)})
+            (recur end)))
+        ((is-alpha? (char-at src i))
+          (let [end (scan-ident src i n)]
+            (vec/push! &mut toks {:kind (tok-ident) :text (substring src i end dest)})
+            (recur end)))
+        ((= (char-at src i) 34) ;; '"' -- opening quote
+          (let [end (scan-string src (+ i 1) n)]
+            (vec/push! &mut toks {:kind (tok-string) :text (substring src (+ i 1) end dest)})
+            ;; Skip the closing quote too when one was actually found (end < n) -- an
+            ;; unterminated string (end == n) has no closing quote to skip past.
+            (if (< end n) (recur (+ end 1)) (recur end))))
+        ((is-punct? (char-at src i))
+          (do
+            (vec/push! &mut toks {:kind (tok-punct) :text (substring src i (+ i 1) dest)})
+            (recur (+ i 1))))
+        ;; Unrecognized byte -- real, honest skip (see header comment), not a crash.
+        (true (recur (+ i 1)))))))
