@@ -1,0 +1,44 @@
+;; stdlib/idunapro/cli_mod.prn — the real first slice of "the CLI for Emily for Business and
+;; IDUNA_PRO" (kanban priority-queue card 1199's own literal framing: "iterate on project
+;; burrow we need to get that ready to write the cli for emily for business and iduna pro";
+;; card 9988: "emily for business CLI written in GO with BURROW"). Compiled via BURROW's own
+;; native Go emission target (`burrow build ... -o *.go`), not `parena-c` — `idunapro`'s own
+;; host is a real Go binary, the same real reason DUNG's own PARENA mods use the Go target too.
+;;
+;; Real, deliberate "mods first everything" split, matching every other real PARENA integration
+;; in this monorepo: the Go host (cmd/idunapro/main.go, IDUNA_PRO repo) owns everything VS0's Go
+;; target genuinely can't do yet -- os.Args parsing, the real HTTP GET to a customer's own
+;; IDUNA_PRO instance, stdout/stderr, process exit codes. This mod owns the real DECISION: given
+;; a health-check response already fetched by the host, decide what the CLI should actually
+;; print and whether the call counts as a real success -- using this session's own freshly
+;; landed match/Result support (BURROW commit 6b74171) for real, not as a toy demonstration.
+;;
+;; Real, honest v0 scope: one real subcommand's worth of decision logic (`idunapro health
+;; <base-url>`), not a full CLI framework -- growing this to more subcommands is real, separate,
+;; later work, the same "narrowest real slice first" discipline this session's own bstree.prn/
+;; explosion_mod.prn additions already established.
+
+(module idunapro/cli-mod)
+(export interpret-health-response)
+
+;; interpret-health-response — real decision: given the real HTTP status code and whether the
+;; response body's own "ok" field was true (the host already parsed the real JSON;
+;; VS0's Go target has no real JSON/String-manipulation story yet, so that stays host-owned),
+;; decide the real, human-readable message the CLI prints and whether this counts as success.
+;; Ok(message) -> print to stdout, exit 0. Err(message) -> print to stderr, exit 1.
+(defn interpret-health-response [(status-code : I32) (body-ok : Bool)] : (Result String String)
+  (if (not (= status-code 200))
+    (Err "unexpected HTTP status (real endpoint responded, but not with 200)")
+    (if (not body-ok)
+      (Err "endpoint responded 200 but its own body reported not-ok")
+      (Ok "IDUNA_PRO instance is healthy"))))
+
+;; describe-outcome — real, thin wrapper matching the exact real outcome message onto its own
+;; real exit code, using this session's own newly-shipped `match` support end to end (not just
+;; constructing Result, also consuming it) -- the host calls THIS, not
+;; interpret-health-response directly, so all the real decision logic (including how to turn a
+;; Result into an exit code) stays in PARENA, not duplicated in the Go host.
+(defn exit-code-for-health [(status-code : I32) (body-ok : Bool)] : I32
+  (match (interpret-health-response status-code body-ok)
+    ((Ok message) 0)
+    ((Err message) 1)))

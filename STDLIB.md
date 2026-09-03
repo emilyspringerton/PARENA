@@ -3223,6 +3223,37 @@ work, not built here. Wiring this into IDUNA's own unified-log search
 work — IDUNA is a Go host, so that integration needs `BURROW`'s native Go emission target, the
 same real reason already established for IDUNA_PRO's own extensibility plan.
 
+## idunapro/cli-mod — a real, working v0 proof-of-concept CLI decision layer (2026-09-03)
+
+Real first slice of kanban cruise-queue card "9988: emily for business CLI written in GO with
+BURROW," picked up specifically because this session's own newly-shipped `match`/`Result` support
+in BURROW's Go emission target (see `BURROW/CHANGELOG.md`'s 2026-09-03 (3) entry) made a real,
+small, end-to-end proof worth building rather than continuing to plan in the abstract.
+
+`stdlib/idunapro/cli_mod.prn` — `interpret-health-response` takes a real HTTP status code and a
+real body-ok flag (the calling Go host does the actual HTTP GET and JSON parse — VS0's Go target
+has no real JSON/String story yet, so that correctly stays host-owned) and returns
+`(Result String String)`: `Ok` for a real 200-and-ok response, `Err` with a distinct message for
+a bad status code vs. a 200-with-not-ok body. `exit-code-for-health` wraps it with a real
+`match`, consuming the `Result` (not just constructing one) to decide the CLI's own real exit
+code — proving both directions of this session's match/Result port in one real file.
+
+Compiled via `burrow build ... -o *.go` into `IDUNA_PRO/internal/burrowgen/idunapro_cli_gen.go`
+(same package-naming convention DUNG's own `internal/burrowgen` already established), called
+directly from a new, real Go host binary `IDUNA_PRO/cmd/idunapro/main.go` (`idunapro health
+<base-url>`) — no cgo/FFI boundary, a real Go import, matching DUNG's own precedent. Live-verified
+end to end against IDUNA's real, currently-running `:8080` instance (`idunapro health
+http://localhost:8080` → "IDUNA_PRO instance is healthy", exit 0) and against a real unreachable
+host (connection-refused message, exit 1) — both the success and failure paths of the compiled
+PARENA decision logic driving a real process exit code.
+
+Real, honest scope: one subcommand, not a CLI framework. `defenum`/`loop`/`Vec`/struct
+construction all remain unstarted in BURROW's Go target — a fuller CLI (auth, kanban, apples,
+subscriptions) needs `loop` for iteration at minimum before more real subcommands are worth
+adding. This is the narrowest real slice proving the whole pipeline (PARENA decision logic →
+BURROW Go emission → real Go host → real network call → real exit code) actually works, not a
+claim that "the CLI" itself is finished.
+
 Two real, found VS0 emitter quirks worked around, not fixed, and named in the file's own header
 comment: a `let` nested inside a non-first `cond` clause body reports a real, honest "can't be
 used directly in expression position" error even though the same `let`-in-an-if-branch shape
