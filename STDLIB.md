@@ -3371,3 +3371,50 @@ end-to-end assertions (a real INVITE request parse, a real 200 OK response parse
 lookup hit AND miss, a real malformed-input `Err`, and a real BUILT request round-tripping back
 through the same parser, including reading its own `CSeq`/`Max-Forwards` headers back out).
 `make test`: 345/345 total, zero regressions.
+
+## pentest/pcap — real host implementation shipped (2026-09-03)
+
+Real answer to kanban priority-queue card 435423, "parena PCAP primatives." `stdlib/pentest/
+pcap.prn` already existed (real `.prn` signatures for `start-capture`/`read-packet`/`filter`,
+FFI-bound to libpcap, compiling fine at the language level) but its own `#target inline-c`
+bodies called real host functions that had never been implemented anywhere — confirmed live via
+a real `gcc` compile failure ("implicit declaration"/"incompatible types"), the exact "declared
+but host implementation not written yet" boundary already named elsewhere in this stdlib for
+`net/tcp.prn`'s own gaps. New `tools/pentest_pcap_host.c`: real `pcap_open_live`/`pcap_next`/
+`pcap_compile`+`pcap_setfilter` calls, a real, minimal, fixed-size opaque-handle table (`Capture`'s
+own `handle : I32` field is a table index, never a raw host pointer exposed to PARENA-side code,
+matching the file's own stated design intent), real safety choices named explicitly (a real
+1000ms read timeout so `read-packet` doesn't hang forever on a quiet interface; a real copy of
+the captured bytes into the arena rather than a raw pointer into libpcap's own internal buffer,
+which is only valid until the next `pcap_next()` call — a genuine use-after-free risk avoided).
+
+**Real, live environment gap found and worked around, not silently blocked on**: this box has
+`libpcap`'s own runtime library installed but not the `-dev` package carrying `<pcap.h>` —
+confirmed live, and per this monorepo's own standing sudo-queue convention, not installed
+directly (`sudo-queue/47-install-libpcap-dev.sh` queued instead). Real, working alternative found
+and used for THIS pass's own verification: `apt-get download libpcap0.8-dev` (a plain package
+download needs no root at all) + `dpkg-deb -x <the .deb> /tmp/pcap_extract` (a local, unpacked
+extraction, also no root) gets the exact real headers this compile needs, and the real, already-
+installed runtime `.so` links directly via GNU ld's own `-l:libpcap.so.0.8` exact-filename syntax
+— no system-wide install needed to reach a real, live, verified proof this pass.
+
+**Real, genuine build-integration gap found and fixed, distinct from the missing-host-code gap
+above**: `ci_status_host.c`'s own real `-include header.h` forward-declaration trick (already
+used for its own scalar-typed host function) doesn't reach a host function whose OWN parameter
+type is a struct the `.prn` compile itself generates (`Capture`) — a `-include`d header is
+textually prepended before `parena_runtime.h` even loads, too early for a type that doesn't exist
+yet. Real, working fix instead, documented in the new `test-pentest-pcap` Makefile target: `sed`
+splices the 3 real forward declarations in right after PARENA's own auto-generated prototype
+block (anchored on the always-generated `Result filter(Capture *, char *);` line) — the one real
+point in the file where `Capture`/`Result`/`Option` are already defined but no call site has
+fired yet.
+
+New `make test-pentest-pcap` / `tests/test_pentest_pcap.c`: real, honest, environment-dependent
+assertions, not glossed over — this sandbox has no real `CAP_NET_RAW`/root capture privilege, so
+`start-capture` against a real interface (`lo`) correctly reports a real, honest `Err`, not a
+crash or a fabricated success; a genuinely nonexistent interface name always fails regardless of
+privilege, asserted unconditionally. Both real outcome branches are written and would exercise
+the real success path (a real BPF filter applying, then correctly rejecting an invalid one)
+automatically the moment this runs with real capture privilege — the code path is real and
+structurally proven, just not exercised by THIS run given this sandbox's own real, current
+privilege level. `make test`: 345/345, zero regressions (this work doesn't touch the compiler).

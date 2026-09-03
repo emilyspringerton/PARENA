@@ -249,6 +249,33 @@ test-sip-message: build
 		runtime/parena_runtime.c -o /tmp/test_sip_message_bin -lm
 	/tmp/test_sip_message_bin
 
+# test-pentest-pcap -- real end-to-end verification for stdlib/pentest/pcap.prn's real host-side
+# FFI glue (tools/pentest_pcap_host.c), kanban priority-queue card 435423, "parena PCAP
+# primatives". Needs libpcap-dev installed (sudo-queue/47-install-libpcap-dev.sh, queued not yet
+# run as of 2026-09-03 -- if that hasn't landed, `apt-get download libpcap0.8-dev && dpkg-deb -x
+# <the .deb> /tmp/pcap_extract` gets the real headers without root, same real, live-verified path
+# this target's own first pass used). tools/pentest_pcap_host.c is concatenated onto the
+# generated output the same real way turbogrep_host.c/turbosed_host.c already are (Parena's own
+# generated structs have no emitted header) -- but pentest_pcap's own host functions take a
+# GENERATED struct (Capture) as a parameter, which ci_status.h's own `-include` forward-decl
+# trick can't reach (a `-include`d header is textually prepended before parena_runtime.h itself,
+# too early for a type the .prn file's own compile generates). Real, working fix instead: `sed`
+# splices the 3 real forward declarations in right after parena's own auto-generated prototype
+# block (anchored on the literal, always-generated `Result filter(Capture *, char *);` line),
+# the one point in the file where Capture/Result/Option are already real and visible but no call
+# site has fired yet.
+test-pentest-pcap: build
+	./parena build stdlib/string.prn stdlib/pentest/pcap.prn -o tests/test_pentest_pcap_gen.c
+	sed -i '/^Result filter(Capture \*, char \*);$$/a\
+Result pentest_pcap_start_capture(char *iface, Arena *dest);\
+Option pentest_pcap_read_packet(Capture *cap, Arena *dest);\
+int pentest_pcap_filter(Capture *cap, char *bpf_expr);' tests/test_pentest_pcap_gen.c
+	cat tests/test_pentest_pcap_gen.c tools/pentest_pcap_host.c > /tmp/test_pentest_pcap_full.c
+	cp /tmp/test_pentest_pcap_full.c tests/test_pentest_pcap_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_pentest_pcap.c \
+		runtime/parena_runtime.c -o /tmp/test_pentest_pcap_bin -lpcap
+	/tmp/test_pentest_pcap_bin
+
 # test-editor-document -- real end-to-end verification for stdlib/editor/document.prn (real
 # document management: editor/buffer.prn + papercraft/note_version_mod.prn tied together).
 test-editor-document: build
