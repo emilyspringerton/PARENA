@@ -17,20 +17,39 @@
 ;; <base-url>`), not a full CLI framework -- growing this to more subcommands is real, separate,
 ;; later work, the same "narrowest real slice first" discipline this session's own bstree.prn/
 ;; explosion_mod.prn additions already established.
+;;
+;; Real, second-pass upgrade (2026-09-03, cruise-queue card 9988's own next-named prerequisite):
+;; the error side of interpret-health-response now returns a real `HealthError` defenum instead
+;; of a bare String -- this session's own freshly-shipped `defenum` support (BURROW commit
+;; 8a3e64b) put into REAL use for the first time outside its own unit tests, not just exercised
+;; as a toy demonstration. Real, honest v0 boundary carried over unchanged: BURROW's Go target
+;; still can't `match` on a user defenum's own variant (only Result/Option's fixed Ok/Err/Some/
+;; None tags) -- so the host (cmd/idunapro/main.go) reads the real, exported `.Tag` field
+;; directly to pick its own message, the same real "PARENA decides WHAT happened, the host
+;; decides HOW to present it" split this file's own header comment already establishes.
 
 (module idunapro/cli-mod)
-(export interpret-health-response)
+(export interpret-health-response HealthError)
+
+;; HealthError — real, minimal tagged error for the health subcommand. Zero-payload variants
+;; only (BURROW's own current real v0 boundary for defenum), matching what this real subcommand
+;; actually needs -- no error message text lives here, that's the host's own real presentation
+;; job (see BadStatus/NotOk's own real, host-side message strings in main.go).
+(defenum HealthError
+  (BadStatus)
+  (NotOk))
 
 ;; interpret-health-response — real decision: given the real HTTP status code and whether the
 ;; response body's own "ok" field was true (the host already parsed the real JSON;
 ;; VS0's Go target has no real JSON/String-manipulation story yet, so that stays host-owned),
-;; decide the real, human-readable message the CLI prints and whether this counts as success.
-;; Ok(message) -> print to stdout, exit 0. Err(message) -> print to stderr, exit 1.
-(defn interpret-health-response [(status-code : I32) (body-ok : Bool)] : (Result String String)
+;; decide whether this counts as a real success, and which real HealthError it is if not.
+;; Ok(message) -> print to stdout, exit 0. Err(HealthError) -> host maps to a real message,
+;; prints to stderr, exit 1.
+(defn interpret-health-response [(status-code : I32) (body-ok : Bool)] : (Result String HealthError)
   (if (not (= status-code 200))
-    (Err "unexpected HTTP status (real endpoint responded, but not with 200)")
+    (Err BadStatus)
     (if (not body-ok)
-      (Err "endpoint responded 200 but its own body reported not-ok")
+      (Err NotOk)
       (Ok "IDUNA_PRO instance is healthy"))))
 
 ;; describe-outcome — real, thin wrapper matching the exact real outcome message onto its own
