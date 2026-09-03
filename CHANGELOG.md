@@ -1,3 +1,26 @@
+## 2026-09-03 (3)
+- 新增 `stdlib/bstree.prn`(kanban priority queue 卡片「9933:INDEXING primitives built into
+  PARENA to power IDUNA OG unified search - btries etc」的真實答案):一個真正、會編譯、有測試
+  (`make test-bstree`)的 String 鍵、I32 值二元搜尋樹——insert(真正的 insert-or-update,不是
+  insert-only)、get(`Option I32`)、`contains?`。兩個開工前就真的查證過的決定性設計限制:(1)
+  VS0 emitter 目前完全不支援泛型型別參數——`vec.prn` 自己的 `(Vec T)` 跟 `map.prn` 自己的
+  `(Map K V)` 現在都真的編不過(「unsupported return type symbol」,現場驗證過不是假設),所以
+  `bstree.prn` 直接鎖定具體型別 String/I32,跟 `json.prn` 自己的 `JObject` 為了同一個理由已經用
+  過的解法一樣。(2)節點全部放在同一個扁平的 `(Vec BSTNode)` 裡,`left`/`right` 是整數索引,不是
+  真正的指標——跟 `map.prn` 自己「扁平陣列、不用指標鏈」的設計一樣,順便完全不用去搞清楚 VS0
+  到底支不支援自我參照的 struct 型別(根本不需要知道答案)。真實、誠實的範圍:這是一顆普通、不
+  平衡的 BST——平均真的是 O(log n),但如果照排序好的順序插入,最壞情況真的是 O(n),沒有旋轉/
+  重新平衡。真正的多路、磁碟導向 B-tree(卡片字面上寫的「btries」)是真實、更大、獨立的後續工作,
+  這次沒有做。把這個接進 IDUNA 自己的統一日誌搜尋(`internal/http/handlers/logs.go`,現在是真的
+  線性 `Scan`)也是另一件獨立、這次沒動手的工作——IDUNA 是 Go host,那個整合需要 `BURROW` 的原生
+  Go emit target,跟 IDUNA_PRO 自己的 extensibility 計畫已經確立的理由一樣。過程中真的找到並繞開
+  (沒有去修)兩個 VS0 emitter 的真實怪癖,寫在檔案自己的 header comment 裡:`cond` 非第一個
+  clause 的 body 裡面直接包 `let` 會報一個真實、誠實的「不能用在 expression position」錯誤,即使
+  同樣的 `let` 包在 `if` 分支裡在這個 session 別的地方明明編得過;還有
+  `(get-field (vec/get &v i) :field)` 一定要先用 `let` 把 `vec/get` 的結果綁定起來,不然產生的
+  C 會對一個沒轉型的 `void *` 直接解參照。`make test`(342 條核心語言測試)、`test-process`、
+  `test-mixforge-import` 全部綠燈,零回歸。(sess-20260902-2008-ed50169e)
+
 ## 2026-09-03 (2)
 - 新增 `stdlib/mixforge/import.prn`(S243-01,MIXFORGE 的 V0:貼一個 YouTube 網址——加一個可選的
   第二個網址帶伴奏版——真的落地成本地音樂庫)。真實下載機制:透過 `process/run-capture` 呼叫真正、

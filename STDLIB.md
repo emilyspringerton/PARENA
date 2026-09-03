@@ -3198,3 +3198,33 @@ the same real "port it faithfully, verify against known test vectors" discipline
 stdlib addition here already uses) before `editor/render.prn` can honestly support mixed
 emoji/text spans. Not attempted this pass — named here so the real, concrete unblock (reuse
 PITVIPER's exact proven font-loading design, once codepoint iteration exists) isn't lost.
+
+## bstree — a real, working ordered index (2026-09-03)
+
+Real answer to the kanban priority-queue card "9933: INDEXING primitives built into PARENA to
+power IDUNA OG unified search - btries etc". `stdlib/bstree.prn` is a real, compiling, live-
+tested (`make test-bstree`) String-keyed, I32-valued binary search tree — insert (real
+insert-or-update, not insert-only), get (`Option I32`), `contains?`.
+
+Two real, decisive design constraints checked directly before writing this file, not assumed:
+(1) VS0's emitter has no generic type parameters — `vec.prn`'s own `(Vec T)` and `map.prn`'s own
+`(Map K V)` both fail to compile today ("unsupported return type symbol"), confirmed live — so
+`bstree.prn` commits to concrete `String`/`I32` types, the same real workaround `json.prn`'s own
+`JObject` already established for the identical reason. (2) Nodes live in one flat
+`(Vec BSTNode)` with `left`/`right` as integer INDICES, not raw pointers — matching `map.prn`'s
+own "flat, array-backed, no pointer-chasing" design, and sidestepping any open question about
+whether VS0 supports self-referential struct types at all (never needed to find out).
+
+Real, honest scope: this is a plain, unbalanced BST — real O(log n) average case, real O(n)
+worst case on already-sorted insertion order, no rotation/rebalancing. A genuine multi-way,
+disk-oriented B-tree (the literal "btries" the card names) is real, larger, separate follow-up
+work, not built here. Wiring this into IDUNA's own unified-log search
+(`internal/http/handlers/logs.go`, a real, current linear `Scan`) is ALSO separate, unattempted
+work — IDUNA is a Go host, so that integration needs `BURROW`'s native Go emission target, the
+same real reason already established for IDUNA_PRO's own extensibility plan.
+
+Two real, found VS0 emitter quirks worked around, not fixed, and named in the file's own header
+comment: a `let` nested inside a non-first `cond` clause body reports a real, honest "can't be
+used directly in expression position" error even though the same `let`-in-an-if-branch shape
+compiles fine elsewhere; and `(get-field (vec/get &v i) :field)` needs the `vec/get` result
+bound via `let` first, or the emitted C dereferences an uncast `void *`.
