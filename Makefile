@@ -249,6 +249,13 @@ test-sip-message: build
 		runtime/parena_runtime.c -o /tmp/test_sip_message_bin -lm
 	/tmp/test_sip_message_bin
 
+# test-wire -- stdlib/net/wire.prn 真實端對端驗證(kanban PCAP-0022)。
+test-wire: build
+	./parena build stdlib/string.prn stdlib/net/wire.prn -o tests/test_wire_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_wire.c \
+		runtime/parena_runtime.c -o /tmp/test_wire_bin -lm
+	/tmp/test_wire_bin
+
 # test-pentest-pcap -- real end-to-end verification for stdlib/pentest/pcap.prn's real host-side
 # FFI glue (tools/pentest_pcap_host.c), kanban priority-queue card 435423, "parena PCAP
 # primatives". Needs libpcap-dev installed (sudo-queue/47-install-libpcap-dev.sh, queued not yet

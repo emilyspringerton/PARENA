@@ -3379,6 +3379,18 @@ lookup hit AND miss, a real malformed-input `Err`, and a real BUILT request roun
 through the same parser, including reading its own `CSeq`/`Max-Forwards` headers back out).
 `make test`: 345/345 total, zero regressions.
 
+## net/wire — 多位元組欄位擷取(2026-09-03)
+
+kanban 優先佇列卡片 PCAP-0022,回應 `NATIVE_PCAP_NORTHSTAR.md` 第 2 階段。純
+PARENA,無 FFI:`read-u16-be`/`read-u32-be`(big-endian 多位元組讀取)、
+`mac-to-string`/`ipv4-to-string`(欄位格式化)。全部用既有原語(`bit-and`/
+`bit-or`/`shl`/`shr`/`char-at`)組成,沒有新增編譯器原語。真實找到並修正的
+臭蟲:`char-at` 底層是 `(int32_t)s[i]`,此機器 `char` 為有號,位元組值
+≥128(絕大多數 MAC/IPv4 位址)會被符號延伸成負數——新增 `raw-byte` 內部
+輔助函式,用 `bit-and 255` 遮掉高位還原正確值,已用含 `0xaa`/`0xff`/`192`
+等 ≥128 位元組的真實測試案例驗證。`make test-wire`:6 個真實斷言全過。
+`make test`:345/345,無回歸。
+
 ## pentest/pcap — real host implementation shipped (2026-09-03)
 
 Real answer to kanban priority-queue card 435423, "parena PCAP primatives." `stdlib/pentest/

@@ -1,0 +1,78 @@
+;; stdlib/net/wire.prn — 依賴 string。設計文件:STDLIB.md「net/wire」章節。
+;;
+;; 觸發:NATIVE_PCAP_NORTHSTAR.md 第 2 階段(kanban 優先佇列卡片 PCAP-0022,
+;; 「build multi byte feed extraction parena to support pcap work」)。原語
+;; 幾乎都已存在(bit-and/bit-or/shl/shr、char-at),缺的是把它們包成可重用、
+;; 有測試的封包欄位解析函式——純 PARENA,無 FFI。
+
+(module net/wire)
+(import string)
+(export read-u16-be read-u32-be mac-to-string ipv4-to-string)
+
+;; raw-byte — 修正真實臭蟲:char-at 是 (int32_t)s[i],此機器 char 為有號,
+;; byte>=128 會符號延伸成負數。bit-and 255 遮掉高位即可正確還原(驗證過)。
+(defn raw-byte [(buf : String @ Region) (i : I32)]
+  : I32
+  (bit-and (char-at buf i) 255))
+
+;; read-u16-be — big-endian 16 位元讀取。
+(defn read-u16-be [(buf : String @ Region) (i : I32)]
+  : I32
+  (bit-or (shl (raw-byte buf i) 8) (raw-byte buf (+ i 1))))
+
+;; read-u32-be — big-endian 32 位元讀取。誠實邊界:I32 為有號,最高位元組
+;; >=128 時結果會是負數(PARENA 尚無無號整數型別)。
+(defn read-u32-be [(buf : String @ Region) (i : I32)]
+  : I32
+  (bit-or
+    (bit-or
+      (shl (raw-byte buf i) 24)
+      (shl (raw-byte buf (+ i 1)) 16))
+    (bit-or
+      (shl (raw-byte buf (+ i 2)) 8)
+      (raw-byte buf (+ i 3)))))
+
+;; hex-digit — 半位元組(0-15)轉十六進位字元,查表 "0123456789abcdef"。
+(defn hex-digit [(nibble : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (char-from-code (char-at "0123456789abcdef" nibble) dest))
+
+;; hex-byte — 一個位元組(0-255)轉兩位十六進位字串,例如 26 -> "1a"。
+(defn hex-byte [(b : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (concat (hex-digit (shr b 4) dest) (hex-digit (bit-and b 15) dest) dest))
+
+;; mac-to-string — 6 個原始位元組格式化成 "aa:bb:cc:dd:ee:ff"。
+;; 第 3 階段 parse-ethernet 會用到,顯示來源/目的 MAC。
+(defn mac-to-string [(buf : String @ Region) (i : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (concat
+    (concat
+      (concat (hex-byte (raw-byte buf i) dest) ":" dest)
+      (concat
+        (concat (hex-byte (raw-byte buf (+ i 1)) dest) ":" dest)
+        (concat (hex-byte (raw-byte buf (+ i 2)) dest) ":" dest)
+        dest)
+      dest)
+    (concat
+      (concat (hex-byte (raw-byte buf (+ i 3)) dest) ":" dest)
+      (concat
+        (hex-byte (raw-byte buf (+ i 4)) dest)
+        (concat ":" (hex-byte (raw-byte buf (+ i 5)) dest) dest)
+        dest)
+      dest)
+    dest))
+
+;; ipv4-to-string — 4 個原始位元組格式化成 "a.b.c.d"。
+(defn ipv4-to-string [(buf : String @ Region) (i : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (concat
+    (concat
+      (concat (i32-to-string (raw-byte buf i) dest) "." dest)
+      (concat (i32-to-string (raw-byte buf (+ i 1)) dest) "." dest)
+      dest)
+    (concat
+      (concat (i32-to-string (raw-byte buf (+ i 2)) dest) "." dest)
+      (i32-to-string (raw-byte buf (+ i 3)) dest)
+      dest)
+    dest))
