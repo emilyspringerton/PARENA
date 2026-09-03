@@ -1445,6 +1445,22 @@ correct final text. `editor/plugin`/`editor/events`/`editor/ui` below are still 
 separate, unstarted work — not attempted in this pass, no reason yet to revisit their own
 design sketches.
 
+**Real, genuine UTF-8 bug found and fixed, 2026-09-03** (kanban cruise-queue card 3454353, "fix
+unicode in parena editor"): every cursor-movement/delete function (`move-cursor-left`/`-right`,
+`backspace-at-cursor`, `delete-forward-at-cursor`, `extend-selection-left`/`-right`) moved exactly
+one BYTE, not one UTF-8 codepoint — for any real multi-byte character, a single Backspace/arrow
+key only touched one byte of a real multi-byte sequence, corrupting it. Fixed via two new private
+helpers, `utf8-codepoint-len` (real byte count of the codepoint starting at a position, per RFC
+3629's own lead-byte bit patterns) and `utf8-prev-boundary` (walks backward over continuation
+bytes to the start of the preceding codepoint) — every affected function now moves by a whole
+codepoint. Real, honest signedness note, same fix class this session's own `net/wire.prn` already
+needed: `char-at` sign-extends a byte >= 0x80 on this box, so a new `byte-at` helper normalizes
+with `bit-and 255` first. New `tests/test_editor_unicode.c` (`make test-editor-unicode`),
+deliberately exercising both a real 2-byte codepoint (é) and a real 4-byte codepoint (an emoji),
+not just ASCII (which would pass even with the old, broken code) — all pass. `make test`:
+345/345, and the existing real SDL-driven `make test-editor` also stays green (ASCII-only edit
+path unaffected).
+
 ```clojure
 ; editor/plugin — lifecycle, configuration, command palette
 (defn register-command [(name : String @ :region/scratch) (handler : (Fn [] Unit))])

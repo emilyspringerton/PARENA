@@ -256,6 +256,14 @@ test-wire: build
 		runtime/parena_runtime.c -o /tmp/test_wire_bin -lm
 	/tmp/test_wire_bin
 
+# test-editor-unicode -- real end-to-end verification of the UTF-8 codepoint-boundary fix in
+# stdlib/editor/buffer.prn (kanban cruise-queue card 3454353, "fix unicode in parena editor").
+test-editor-unicode: build
+	./parena build stdlib/string.prn stdlib/editor/buffer.prn -o tests/test_editor_unicode_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_editor_unicode.c \
+		runtime/parena_runtime.c -o /tmp/test_editor_unicode_bin -lm
+	/tmp/test_editor_unicode_bin
+
 # test-pentest-pcap -- real end-to-end verification for stdlib/pentest/pcap.prn's real host-side
 # FFI glue (tools/pentest_pcap_host.c), kanban priority-queue card 435423, "parena PCAP
 # primatives". Needs libpcap-dev installed (sudo-queue/47-install-libpcap-dev.sh, queued not yet

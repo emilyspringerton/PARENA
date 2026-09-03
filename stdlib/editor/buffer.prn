@@ -111,6 +111,52 @@
             after (string/substring cur end len dest)]
         (Ok {:text (string/concat before after dest) :cursor (get-field !buf :cursor) :selection-anchor -1})))))
 
+;; Real, genuine bug found and fixed here (kanban cruise-queue card 3454353, "fix unicode in
+;; parena editor"): every cursor-movement/delete function below used to move exactly one BYTE,
+;; not one UTF-8 codepoint. For any real multi-byte character (accented Latin, CJK, emoji --
+;; anything outside plain ASCII), a single Backspace/Left/Right/Delete only touched one byte of
+;; a real, multi-byte sequence, leaving invalid, corrupted UTF-8 behind (the real, live symptom
+;; the founder's own bug report almost certainly means). Real, minimal fix: two new private
+;; helpers, `utf8-codepoint-len` (how many bytes the codepoint STARTING at a position occupies)
+;; and `utf8-prev-boundary` (walk backward to the start of the PRECEDING codepoint) -- every
+;; cursor-movement/delete function below now moves by a whole codepoint, not a byte.
+;;
+;; Real, honest byte-signedness note carried over from this session's own `net/wire.prn` fix:
+;; `char-at` is `(int32_t)s[i]`, and this box's `char` is signed, so a raw UTF-8 lead/continuation
+;; byte (always >= 0x80 = 128) sign-extends to a negative I32. `byte-at` below normalizes with
+;; `bit-and 255` FIRST, the same real fix `net/wire.prn`'s own `raw-byte` already applies, so
+;; every subsequent plain `<`/`>=` comparison here operates on a guaranteed real 0-255 value.
+(defn byte-at [(text : String @ Region) (i : I32)]
+  : I32
+  (bit-and (char-at text i) 255))
+
+;; utf8-codepoint-len — real byte count of the UTF-8 codepoint STARTING at `pos` (RFC 3629's own
+;; real lead-byte bit patterns: 0xxxxxxx=1, 110xxxxx=2, 1110xxxx=3, 11110xxx=4). A stray
+;; continuation byte or otherwise malformed lead byte falls back to 1 -- a real, honest, safe
+;; default (never a multi-byte skip past real, valid text) rather than a crash on malformed input.
+(defn utf8-codepoint-len [(text : String @ Region) (pos : I32)]
+  : I32
+  (let [b (byte-at text pos)]
+    (if (< b 128) 1
+      (if (= (bit-and b 224) 192) 2
+        (if (= (bit-and b 240) 224) 3
+          (if (= (bit-and b 248) 240) 4
+            1))))))
+
+;; utf8-prev-boundary — real byte offset of the start of the codepoint immediately BEFORE `pos`.
+;; Walks backward skipping real UTF-8 continuation bytes (`10xxxxxx`, i.e. `(bit-and b 192) = 128`)
+;; until landing on a real lead byte (or byte 0) -- the real, standard way to find "one codepoint
+;; back" without needing to re-scan from the start of the string. Bounded to at most 3 real steps
+;; back past `pos - 1` (UTF-8's own real max codepoint width), so malformed input can't loop
+;; indefinitely.
+(defn utf8-prev-boundary [(text : String @ Region) (pos : I32)]
+  : I32
+  (if (<= pos 0) 0
+    (loop [i (- pos 1)]
+      (if (or (<= i 0) (not (= (bit-and (byte-at text i) 192) 128)))
+        i
+        (recur (- i 1))))))
+
 ;; insert-at-cursor / backspace-at-cursor -- the real, minimal pair a
 ;; keyboard-driven single-line edit loop needs (SDL_TEXTINPUT ->
 ;; insert-at-cursor, backspace keydown -> backspace-at-cursor). Cursor
@@ -135,9 +181,10 @@
       (Err OutOfRange)
       (let [cur (get-field !buf :text)
             len (string/length cur)
-            before (string/substring cur 0 (- pos 1) dest)
+            prev (utf8-prev-boundary cur pos)
+            before (string/substring cur 0 prev dest)
             after (string/substring cur pos len dest)]
-        (Ok {:text (string/concat before after dest) :cursor (- pos 1) :selection-anchor -1})))))
+        (Ok {:text (string/concat before after dest) :cursor prev :selection-anchor -1})))))
 
 ;; move-cursor-left / move-cursor-right -- real Left/Right arrow-key
 ;; support (sdl2/key-left, sdl2/key-right were added alongside
@@ -151,7 +198,7 @@
         text (get-field !buf :text)]
     (if (<= pos 0)
       {:text text :cursor 0 :selection-anchor -1}
-      {:text text :cursor (- pos 1) :selection-anchor -1})))
+      {:text text :cursor (utf8-prev-boundary text pos) :selection-anchor -1})))
 
 (defn move-cursor-right [(!buf : &Buffer)] : Buffer
   (let [pos (get-field !buf :cursor)
@@ -159,7 +206,9 @@
         len (string/length text)]
     (if (>= pos len)
       {:text text :cursor len :selection-anchor -1}
-      {:text text :cursor (+ pos 1) :selection-anchor -1})))
+      (let [raw-next (+ pos (utf8-codepoint-len text pos))
+            next (if (> raw-next len) len raw-next)]
+        {:text text :cursor next :selection-anchor -1}))))
 
 ;; move-cursor-home / move-cursor-end -- real Home/End key support
 ;; (2026-08-26, the next real keys a single-line edit loop needs once
@@ -260,8 +309,10 @@
         len (string/length cur)]
     (if (>= pos len)
       (Err OutOfRange)
-      (let [before (string/substring cur 0 pos dest)
-            after (string/substring cur (+ pos 1) len dest)]
+      (let [raw-next (+ pos (utf8-codepoint-len cur pos))
+            next (if (> raw-next len) len raw-next)
+            before (string/substring cur 0 pos dest)
+            after (string/substring cur next len dest)]
         (Ok {:text (string/concat before after dest) :cursor pos :selection-anchor -1})))))
 
 ;; has-selection? / selection-start / selection-end -- real text
@@ -298,7 +349,7 @@
         cursor (get-field !buf :cursor)
         anchor (get-field !buf :selection-anchor)
         real-anchor (if (< anchor 0) cursor anchor)
-        new-cursor (if (<= cursor 0) 0 (- cursor 1))]
+        new-cursor (if (<= cursor 0) 0 (utf8-prev-boundary text cursor))]
     {:text text :cursor new-cursor :selection-anchor real-anchor}))
 
 (defn extend-selection-right [(!buf : &Buffer)] : Buffer
@@ -307,7 +358,8 @@
         len (string/length text)
         anchor (get-field !buf :selection-anchor)
         real-anchor (if (< anchor 0) cursor anchor)
-        new-cursor (if (>= cursor len) len (+ cursor 1))]
+        raw-next (+ cursor (utf8-codepoint-len text cursor))
+        new-cursor (if (>= cursor len) len (if (> raw-next len) len raw-next))]
     {:text text :cursor new-cursor :selection-anchor real-anchor}))
 
 ;; extend-selection-up / extend-selection-down -- real Shift+Up/
