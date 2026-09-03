@@ -3170,3 +3170,31 @@ compiler gap, same class already documented across `base4/*.prn`: a plain
 real "SALLY" vector (AZ dec `20330`, ZA dec `71661`) — verified exact match. `make
 test-mag-gematria` green, `-Werror` clean. Tower/row-chunking (the visual "magic tower") not
 ported — a real, separate follow-up.
+
+### Color emoji in the editor (`editor/render.prn`) — real investigation, real prerequisite named (2026-09-03)
+
+Founder, kanban cruise queue: "emojis need to work in pitviper and parena editor what do we need
+to build a custom emoji font or use image files or something?" Real, checked answer for this
+half of the ask (PITVIPER's own half is separately real, shipped, and test-verified — see
+`PITVIPER/internal/font/emoji.go`'s own updated header comment): **no custom font or image files
+needed here either.** `sdl2.prn`'s own `open-font` is already fully generic (any real TTF/OTF
+path, any point size) — loading Noto Color Emoji (`/usr/share/fonts/truetype/noto/
+NotoColorEmoji.ttf`, confirmed installed) as a second real `Font` handle needs zero new FFI
+surface, the same real capability PITVIPER's own Go code already proved works (SDL2_ttf 2.20+
+renders a color-glyph font's embedded color data directly).
+
+**Real, honest, separate prerequisite found, not glossed over**: `editor/render.prn`'s own
+`render-tokens` renders one whole highlighted token span at a time via a single `render-text`
+call against one `Font`. Mixing in a second, emoji-specific font requires detecting which
+*characters within a span* are emoji-range codepoints and splitting the span into sub-runs
+rendered through the right font each — but `stdlib/string.prn`'s own `char-at` is explicitly,
+by design, byte-indexed (its own doc comment: "returns a character as its raw byte value (I32)"),
+not UTF-8-codepoint-aware. A real emoji character is multi-byte UTF-8; there is no real function
+anywhere in this stdlib today that decodes a UTF-8 byte sequence into its actual Unicode
+codepoint, confirmed by grep — `string.prn` has no `codepoint`/`utf8`/`rune`-named function at
+all. This is a real, separate, more fundamental gap than the font-loading side, and needs its own
+scoping pass (a real UTF-8 decoder, likely a new `string/utf8-decode-at` or similar, following
+the same real "port it faithfully, verify against known test vectors" discipline every prior
+stdlib addition here already uses) before `editor/render.prn` can honestly support mixed
+emoji/text spans. Not attempted this pass — named here so the real, concrete unblock (reuse
+PITVIPER's exact proven font-loading design, once codepoint iteration exists) isn't lost.
