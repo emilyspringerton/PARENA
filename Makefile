@@ -56,6 +56,11 @@ test: tests/test_lexer_parser tests/test_region tests/test_emit
 test-domain4: build
 	bash tests/integration/run_domain4_check.sh
 
+# test-new -- real, automated verification for `parena new` (kanban priority-queue card
+# PXCL-9311, the C-target sibling of BURROW's own real `burrow new`).
+test-new: build
+	bash tests/integration/run_new_check.sh
+
 # VS0 domain 5 -- the DoD's own literal CLI Runner acceptance bar: a real
 # valid file exits 0 and writes real output, a real region-safety
 # violation exits 1 and leaves no stale output file behind. Not folded

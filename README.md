@@ -296,6 +296,24 @@ co-location already works trivially — it's just a file path argument, no macro
 (this repo's own `Makefile` already does this for every `test-*` target, e.g. `test-wire`/
 `test-sip-message`).
 
+## `parena new` — a real, "batteries included" scaffolding command
+
+Real, direct answer to kanban priority-queue card `PXCL-9311`: *"make parena cli tool do the same
+thing burrow new does but for C instead of for go"* — the direct C-target sibling of BURROW's own
+already-shipped `burrow new`. `parena new <name>` generates a real, immediately-runnable starter:
+`<name>.prn` (a minimal PARENA decision-logic module), `main.c` (a real C host including the
+compiled output directly and calling into it), and a local copy of `runtime/parena_runtime.h`/
+`.c` (so the new project doesn't need this repo's own source tree at a known relative path) —
+then actually compiles AND RUNS the result via a real `gcc`/`cc` invocation before returning
+success, so a broken scaffold is a real, honest failure in this command, never silently handed to
+the user. Built headless (`main.c` defines `PARENA_NO_GRAPHICS` before including the runtime
+header, this same repo's own real SDL2 opt-out), matching `burrow new`'s own "don't force a
+heavier dependency on a trivial scaffold" judgment. Real, honest v0 assumption: run it from this
+repo's own root (the runtime files are looked up relative to the current working directory, not
+argv[0]) — a real, more portable fix is separate, later work. Live-verified via
+`tests/integration/run_new_check.sh` (`make test-new`): a real scaffold builds, runs, prints the
+correct output, and a second `parena new` on the same name correctly refuses to overwrite it.
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan
