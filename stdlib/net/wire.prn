@@ -7,10 +7,12 @@
 
 (module net/wire)
 (import string)
-(export read-u16-be read-u32-be mac-to-string ipv4-to-string)
+(export read-u16-be read-u32-be mac-to-string ipv4-to-string raw-byte)
 
 ;; raw-byte — 修正真實臭蟲:char-at 是 (int32_t)s[i],此機器 char 為有號,
 ;; byte>=128 會符號延伸成負數。bit-and 255 遮掉高位即可正確還原(驗證過)。
+;; Exported 2026-09-03 (kanban PBX-001, sip/rtp.prn's own real second real consumer needing
+;; a single-byte, signedness-safe read for its own header bitfields).
 (defn raw-byte [(buf : String @ Region) (i : I32)]
   : I32
   (bit-and (char-at buf i) 255))

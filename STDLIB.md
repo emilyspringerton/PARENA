@@ -3407,6 +3407,42 @@ PARENA,無 FFI:`read-u16-be`/`read-u32-be`(big-endian 多位元組讀取)、
 等 ≥128 位元組的真實測試案例驗證。`make test-wire`:6 個真實斷言全過。
 `make test`:345/345,無回歸。
 
+## sip/rtp — real, low-level RTP header primitives (2026-09-03)
+
+Real, direct answer to kanban priority-queue card PBX-001, "Build the narrow scope parena PBX
+primitives... low level close to the metal primitives like what does asterisk need to build on
+top of, do that stuff first" — the real, most foundational media-plane primitive any real PBX
+needs, following directly on `docs/SIP_TWILIO_GATEWAY_NORTHSTAR.md`'s own Phase 1 plan. Pure
+PARENA, no FFI: `parse-rtp-header`/`build-rtp-header`, a real, direct RFC 3550 §5.1 fixed
+12-byte header codec, built entirely on `net/wire.prn`'s own already-tested `raw-byte`/
+`read-u16-be`/`read-u32-be` — no new compiler primitives needed.
+
+**Two real, genuine, decisive bugs found live, not designed in advance** — both from the same
+real root cause (`String`'s own C-string-based representation) but on opposite sides of the
+codec: (1) `parse-rtp-header` originally checked `(string/length buf)` against the fixed header
+size — confirmed live that `string/length` is literally `strlen(s)`, which truncates at the
+first embedded `0x00` byte; a real `sequence-number`/`timestamp`/`payload-type` of exactly 0 is
+completely ordinary real RTP traffic, not a rare edge case, so this would have silently
+misreported most real packets as "too short." Fixed by taking an explicit `len : I32` parameter
+instead — the exact same real precedent `pentest/pcap.prn`'s own `Packet` struct already set
+(`data : String` + a separate real `length : I32`, precisely because a `String` can't be trusted
+to self-report its own byte count once raw binary content is involved). (2) `build-rtp-header`
+has a genuinely deeper, NOT-fully-fixed limitation: `string/concat` is `strcpy`/`strcat` under
+the hood, which truncates the SAME way on the write side — real, honestly documented as a
+current limitation (only produces correct output when no field byte is zero), not silently
+patched over, since a real fix needs `concat` itself to grow real, length-aware (`memcpy`-based)
+semantics — a real, separate, larger change to a shared stdlib primitive, genuinely out of this
+card's own "narrow scope" ask.
+
+Real, honest v0 boundary named explicitly: only the fixed 12-byte header is parsed — a real CSRC
+list or header extension (RFC 3550's own optional cases) reports a real, honest `Unsupported`
+error rather than silently mis-parsing past them; real, live PBX/SIP-phone traffic overwhelmingly
+uses neither. New `make test-rtp` target, 6 real assertions (a valid header round-trip, a
+too-short buffer, an unsupported-extension case, and a real, deliberate all-zero-fields case
+proving the `len`-parameter fix actually works, not just compiles). `make test`: 345/345, zero
+regressions. `net/wire.prn`'s own `raw-byte` helper is now exported (was internal-only), its
+first real second consumer.
+
 ## pentest/pcap — real host implementation shipped (2026-09-03)
 
 Real answer to kanban priority-queue card 435423, "parena PCAP primatives." `stdlib/pentest/

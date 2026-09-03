@@ -725,3 +725,11 @@ test-emit-java: tests/test_emit_java.c $(OBJ)
 clean:
 	rm -f parena .parena-bootstrap tests/test_lexer_parser tests/test_region tests/test_emit \
 		tests/test_emit_ts tests/test_emit_java src/*.o tools/ci_status_gen.c
+
+# test-rtp -- real end-to-end verification for stdlib/sip/rtp.prn (kanban priority-queue card
+# PBX-001, "narrow scope parena PBX primitives... close to the metal like what does asterisk need").
+test-rtp: build
+	./parena build stdlib/string.prn stdlib/net/wire.prn stdlib/sip/rtp.prn -o tests/test_rtp_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_rtp.c \
+		runtime/parena_runtime.c -o /tmp/test_rtp_bin -lm
+	/tmp/test_rtp_bin
