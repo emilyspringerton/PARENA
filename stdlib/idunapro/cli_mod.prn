@@ -10,54 +10,67 @@
 ;; target genuinely can't do yet -- os.Args parsing, the real HTTP GET to a customer's own
 ;; IDUNA_PRO instance, stdout/stderr, process exit codes. This mod owns the real DECISION: given
 ;; a health-check response already fetched by the host, decide what the CLI should actually
-;; print and whether the call counts as a real success -- using this session's own freshly
-;; landed match/Result support (BURROW commit 6b74171) for real, not as a toy demonstration.
+;; print and whether the call counts as a real success.
 ;;
 ;; Real, honest v0 scope: one real subcommand's worth of decision logic (`idunapro health
 ;; <base-url>`), not a full CLI framework -- growing this to more subcommands is real, separate,
 ;; later work, the same "narrowest real slice first" discipline this session's own bstree.prn/
 ;; explosion_mod.prn additions already established.
 ;;
-;; Real, second-pass upgrade (2026-09-03, cruise-queue card 9988's own next-named prerequisite):
-;; the error side of interpret-health-response now returns a real `HealthError` defenum instead
-;; of a bare String -- this session's own freshly-shipped `defenum` support (BURROW commit
-;; 8a3e64b) put into REAL use for the first time outside its own unit tests, not just exercised
-;; as a toy demonstration. Real, honest v0 boundary carried over unchanged: BURROW's Go target
-;; still can't `match` on a user defenum's own variant (only Result/Option's fixed Ok/Err/Some/
-;; None tags) -- so the host (cmd/idunapro/main.go) reads the real, exported `.Tag` field
-;; directly to pick its own message, the same real "PARENA decides WHAT happened, the host
-;; decides HOW to present it" split this file's own header comment already establishes.
+;; Real, third-pass upgrade (2026-09-03, cruise-queue card 9988's own next-named prerequisite,
+;; closed the same day it was named): BURROW's Go target just shipped real `match`-on-a-user-
+;; defenum support. This REPLACES the prior Result/HealthError design (interpret-health-response
+;; returning `(Result String HealthError)`, with the host reading HealthError's own exported
+;; `.Tag` field directly since match couldn't reach it) with a real `HealthStatus` enum
+;; classify-health decides ONCE, then TWO real matches (health-message, health-exit-code) both
+;; consume directly -- no Go-side Tag-reading workaround left anywhere. The host is now a pure
+;; "fetch bytes, print what PARENA decided" shell, the real end state this whole thread's own
+;; "PARENA decides WHAT happened, the host decides HOW to present it" framing was always aiming
+;; at -- presentation itself has moved into PARENA too, since match now makes that expressible.
 
 (module idunapro/cli-mod)
-(export interpret-health-response HealthError)
+(export classify-health health-message health-exit-code)
 
-;; HealthError — real, minimal tagged error for the health subcommand. Zero-payload variants
-;; only (BURROW's own current real v0 boundary for defenum), matching what this real subcommand
-;; actually needs -- no error message text lives here, that's the host's own real presentation
-;; job (see BadStatus/NotOk's own real, host-side message strings in main.go).
-(defenum HealthError
+;; HealthStatus — real, minimal 3-variant enum. Healthy is a real variant here (unlike the prior
+;; HealthError design, which only ever modeled the two FAILURE cases and let Result's own Ok arm
+;; carry success) -- classify-health returns a bare HealthStatus, not a Result, since the real
+;; decision itself ("what state is this response in") is naturally a 3-way choice, not a
+;; success/failure split with a nested failure reason.
+(defenum HealthStatus
+  (Healthy)
   (BadStatus)
   (NotOk))
 
-;; interpret-health-response — real decision: given the real HTTP status code and whether the
-;; response body's own "ok" field was true (the host already parsed the real JSON;
-;; VS0's Go target has no real JSON/String-manipulation story yet, so that stays host-owned),
-;; decide whether this counts as a real success, and which real HealthError it is if not.
-;; Ok(message) -> print to stdout, exit 0. Err(HealthError) -> host maps to a real message,
-;; prints to stderr, exit 1.
-(defn interpret-health-response [(status-code : I32) (body-ok : Bool)] : (Result String HealthError)
+;; classify-health — real decision: given the real HTTP status code and whether the response
+;; body's own "ok" field was true (the host already parsed the real JSON; VS0's Go target has no
+;; real JSON/String-manipulation story yet, so that stays host-owned), decide which of the three
+;; real states this response is in. Every other function in this file matches on a direct call
+;; to this one -- BURROW's own real v0 boundary for match requires the scrutinee to be a direct
+;; defn call, not a `let`-bound or parameter-bound value, so classify-health is called fresh at
+;; each real match site rather than computed once and threaded through.
+(defn classify-health [(status-code : I32) (body-ok : Bool)] : HealthStatus
   (if (not (= status-code 200))
-    (Err BadStatus)
+    BadStatus
     (if (not body-ok)
-      (Err NotOk)
-      (Ok "IDUNA_PRO instance is healthy"))))
+      NotOk
+      Healthy)))
 
-;; describe-outcome — real, thin wrapper matching the exact real outcome message onto its own
-;; real exit code, using this session's own newly-shipped `match` support end to end (not just
-;; constructing Result, also consuming it) -- the host calls THIS, not
-;; interpret-health-response directly, so all the real decision logic (including how to turn a
-;; Result into an exit code) stays in PARENA, not duplicated in the Go host.
-(defn exit-code-for-health [(status-code : I32) (body-ok : Bool)] : I32
-  (match (interpret-health-response status-code body-ok)
-    ((Ok message) 0)
-    ((Err message) 1)))
+;; health-message — the real, final presentation string for a health-check outcome, decided
+;; entirely in PARENA now (previously split: Ok's own message lived here, but a real Err's own
+;; message was picked host-side by reading HealthError.Tag directly -- see this file's own
+;; header comment for the real history).
+(defn health-message [(status-code : I32) (body-ok : Bool)] : String
+  (match (classify-health status-code body-ok)
+    ((Healthy) "IDUNA_PRO instance is healthy")
+    ((BadStatus) "unexpected HTTP status (real endpoint responded, but not with 200)")
+    ((NotOk) "endpoint responded 200 but its own body reported not-ok")))
+
+;; health-exit-code — the real exit code for a health-check outcome. Both real failure variants
+;; (BadStatus/NotOk) map to 1 -- two real, separate match clauses naming the same body rather
+;; than a wildcard, since match's own v0 boundary requires exactly one clause per real variant,
+;; no fallthrough/wildcard pattern exists yet.
+(defn health-exit-code [(status-code : I32) (body-ok : Bool)] : I32
+  (match (classify-health status-code body-ok)
+    ((Healthy) 0)
+    ((BadStatus) 1)
+    ((NotOk) 1)))

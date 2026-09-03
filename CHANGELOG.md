@@ -1,3 +1,17 @@
+## 2026-09-03 (18)
+- feat: stdlib/idunapro/cli_mod.prn redesigned around a real HealthStatus enum (kanban
+  cruise-queue card 9988's own next-named prerequisite, closed the same day BURROW shipped
+  match-on-a-user-defenum support). Replaced the prior Result/HealthError design (host had to
+  read HealthError's own exported .Tag field directly, since match couldn't reach a user
+  defenum's variant yet) with classify-health returning a bare 3-variant HealthStatus
+  (Healthy/BadStatus/NotOk), consumed by two real matches (health-message, health-exit-code) --
+  PARENA now decides the presentation message too, not just the pass/fail outcome. Compiled via
+  the real `burrow build` into IDUNA_PRO/internal/burrowgen/idunapro_cli_gen.go (BURROW commit
+  dd406c5). IDUNA_PRO's own healthErrorMessage Go-side workaround is gone entirely -- runHealth
+  is now a pure "fetch bytes, print what PARENA decided" shell. Live-verified against IDUNA's
+  actual running :8080 (healthy -> exit 0, "IDUNA_PRO instance is healthy") and an unreachable
+  host (exit 1). IDUNA_PRO commit pending. (sess-20260902-2008-ed50169e)
+
 ## 2026-09-03 (17)
 - feat: parena new -- real, "batteries included" scaffolding command (kanban priority-queue card PXCL-9311, "make parena cli tool do the same thing burrow new does but for C instead of for go"), the direct C-target sibling of BURROW's own already-shipped burrow new. Generates a real, immediately-runnable starter: <name>.prn, main.c (a real C host including the compiled output and calling into it), and a local copy of runtime/parena_runtime.h/.c -- then actually compiles AND RUNS the result via a real cc invocation before returning success. Built headless (PARENA_NO_GRAPHICS), matching burrow new's own judgment. Real, honest v0 assumption: run from this repo's own root (runtime files looked up relative to cwd, not argv[0]). New tests/integration/run_new_check.sh (make test-new): a real scaffold builds+runs+prints correct output, and a second parena new on the same name correctly refuses to overwrite. make test: 345/345, zero regressions. (sess-20260902-2008-ed50169e)
 
