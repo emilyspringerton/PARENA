@@ -94,6 +94,18 @@ static Token lex_string(Lexer *lx, const char **out_error) {
             switch (e) {
                 case 'n': c = '\n'; break;
                 case 't': c = '\t'; break;
+                /* \r -- real, genuine gap found live (kanban priority-queue card 3124213,
+                   stdlib/sip/message.prn's own real "\r\n" line terminators, SIP's -- and
+                   HTTP's -- real, standard wire-format line ending): completely unhandled here
+                   before this fix, so every "\r" in a real .prn string literal silently decoded
+                   to a bare 'r' (this switch's own `default: c = e` fallback), not a real
+                   carriage return -- confirmed live via a real gcc-compiled, run test asserting
+                   round-trip re-parsing of a real built SIP request, which failed until this fix
+                   landed. No real .prn stdlib file had ever needed a literal CR byte before this
+                   one; net/http.prn's own real request/response line-building helpers were
+                   themselves never designed (STDLIB.md's own honest note on that file), so this
+                   is a genuinely new, first-ever real trigger, not a regression. */
+                case 'r': c = '\r'; break;
                 case '"': c = '"'; break;
                 case '\\': c = '\\'; break;
                 default: c = e; break;

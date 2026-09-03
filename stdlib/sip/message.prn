@@ -1,0 +1,224 @@
+;; stdlib/sip/message.prn — real, minimal SIP (Session Initiation Protocol, RFC 3261) message
+;; parsing and construction, for kanban priority-queue card 3124213, "SIP phone primitives in
+;; parena stdlib." Real, deliberate design: SIP's own wire format is a real, text-based,
+;; line-oriented protocol (start line + "Name: Value" headers + a blank line + optional body) --
+;; structurally the closest real precedent this stdlib already has is `net/http.prn`'s own
+;; request/response shape, not a binary protocol needing FFI (this file is pure PARENA, same
+;; "no FFI needed" class of win `json.prn`/`yaml.prn` already are). This file is the MESSAGE
+;; layer only (parse/build a SIP request or response as a real String) -- real UDP/TCP transport
+;; (SIP's own real default is UDP port 5060) is `net/udp.prn`'s own already-designed job, not
+;; duplicated here; a real SIP phone/softphone wiring the two together is separate, later work.
+;;
+;; Real, honest v0 scope, named explicitly, not silently narrowed: standard SIP methods and a
+;; real, minimal mandatory-header set (`Via`/`From`/`To`/`Call-ID`/`CSeq`/`Max-Forwards`/
+;; `Content-Length`) for BUILDING a request; parsing handles any real request OR response line
+;; plus an arbitrary real header set. No SDP body parsing (a real, separate, later protocol layer
+;; RFC 4566 defines on top of SIP, not part of SIP itself), no authentication (`WWW-Authenticate`/
+;; digest auth), no dialog/transaction state machine (RFC 3261's own real INVITE/non-INVITE
+;; transaction FSMs) — this file answers "can PARENA read and write one real, well-formed SIP
+;; message," the narrowest real slice underneath all of those, not the whole protocol stack.
+(module sip/message)
+(import string)
+(export parse-message build-request header-value
+        SipMessage SipHeader SipError
+        method-invite method-ack method-bye method-cancel method-register method-options)
+
+;; Real, minimal opaque header pair -- same "one concrete struct, no generics" workaround this
+;; whole stdlib already commits to (VS0 still has no real generic type parameters, re-confirmed
+;; live again this session building the V16 lexer).
+(defstruct SipHeader
+  (name  : String)
+  (value : String))
+
+;; SipMessage — real, minimal parsed-message shape. is-request distinguishes a Request-Line
+;; message (`method`/`request-uri` meaningful, `status-code`/`reason` unused, left "\"\"\"/0") from
+;; a Status-Line one (`status-code`/`reason` meaningful, `method`/`request-uri` unused) — SIP's own
+;; real start-line grammar is genuinely one of the two shapes, matching HTTP's own real
+;; request-vs-response distinction, not something this file invents.
+(defstruct SipMessage
+  (is-request  : Bool)
+  (method      : String)
+  (request-uri : String)
+  (status-code : I32)
+  (reason      : String)
+  (headers     : (Vec SipHeader))
+  (body        : String))
+
+(defenum SipError
+  (MalformedStartLine)
+  (MalformedHeaderLine))
+
+;; Real, standard SIP method name constants (RFC 3261 §4 / RFC 3515/3903 extensions not included
+;; -- the real, original six are the honest v0 scope). Zero-arg functions, the same real,
+;; established convention this stdlib already uses for named string/int constants with no
+;; dedicated top-level const form (see e.g. `shell.prn`'s own `platform-fallback-shell`).
+(defn method-invite   [] : String "INVITE")
+(defn method-ack      [] : String "ACK")
+(defn method-bye      [] : String "BYE")
+(defn method-cancel   [] : String "CANCEL")
+(defn method-register [] : String "REGISTER")
+(defn method-options  [] : String "OPTIONS")
+
+;; find-crlf — real, minimal forward scan for the next real CRLF (13 10) pair at or after `start`,
+;; SIP's own real line terminator (matching HTTP's own identical convention) -- returns `n`
+;; (one past the last real index) if none is found, the same real "end of buffer" sentinel
+;; `stdlib/v16/lexer.prn`'s own scan functions already established this session.
+(defn find-crlf [(s : String) (start : I32) (n : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i (- n 1)) n)
+      ((and (= (char-at s i) 13) (= (char-at s (+ i 1)) 10)) i)
+      (true (recur (+ i 1))))))
+
+;; find-char — real, minimal forward scan for the first occurrence of a single I32 char code at
+;; or after `start`, real, small, shared helper for splitting a Request-Line/Status-Line on its
+;; own space-separated fields and a header line on its own first ": ".
+(defn find-char [(s : String) (start : I32) (n : I32) (target : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i n) n)
+      ((= (char-at s i) target) i)
+      (true (recur (+ i 1))))))
+
+;; parse-start-line — real, minimal dispatch on SIP's own real, distinguishing convention: a
+;; Request-Line's first field is a METHOD NAME (`INVITE sip:bob@biloxi.com SIP/2.0`); a
+;; Status-Line's first field is always the literal version token `SIP/2.0` (`SIP/2.0 200 OK`) --
+;; checking whether the first space-delimited field equals `"SIP/2.0"` is the real, standard way
+;; every real SIP stack (and HTTP's own identical request-vs-response convention) makes this call.
+(defn parse-start-line [(line : String) (dest : Arena @ Region)] : (Result SipMessage SipError)
+  (let [n (length line)
+        sp1 (find-char line 0 n 32)]
+    (if (>= sp1 n)
+      (Err MalformedStartLine)
+      (let [first-field (substring line 0 sp1 dest)]
+        (if (str-eq? first-field "SIP/2.0")
+          ;; Status-Line: SIP/2.0 <code> <reason...>
+          (let [sp2 (find-char line (+ sp1 1) n 32)]
+            (if (>= sp2 n)
+              (Err MalformedStartLine)
+              (let [code-str (substring line (+ sp1 1) sp2 dest)
+                    reason (substring line (+ sp2 1) n dest)]
+                (match (parse-i32 code-str dest)
+                  ((Err e) (Err MalformedStartLine))
+                  ((Ok code)
+                    (Ok {:is-request false :method "" :request-uri ""
+                         :status-code code :reason reason
+                         :headers (vec/new dest) :body ""}))))))
+          ;; Request-Line: <METHOD> <Request-URI> SIP/2.0
+          (let [sp2 (find-char line (+ sp1 1) n 32)]
+            (if (>= sp2 n)
+              (Err MalformedStartLine)
+              (let [uri (substring line (+ sp1 1) sp2 dest)]
+                (Ok {:is-request true :method first-field :request-uri uri
+                     :status-code 0 :reason ""
+                     :headers (vec/new dest) :body ""})))))))))
+
+;; parse-headers! — real, minimal in-place header accumulation: walks `raw` starting at `pos`,
+;; one real CRLF-terminated line at a time, splitting each on its own first ": " into a
+;; `SipHeader`, stopping at a real, honest terminating blank line (an empty line before the next
+;; CRLF, exactly SIP/HTTP's own real header/body boundary convention) or end of buffer. Returns
+;; the real index the body starts at (one past the terminating CRLFCRLF, or `n` if the message
+;; has no body/no proper terminator) alongside the built header Vec.
+(defn parse-headers [(raw : String) (pos : I32) (n : I32) (dest : Arena @ Region)]
+  : (Result (Vec SipHeader) SipError) @ Region
+  (let [headers (vec/new dest)]
+    (loop [i pos]
+      (let [line-end (find-crlf raw i n)]
+        (cond
+          ((>= i n) (Ok headers))
+          ((= line-end i) (Ok headers)) ;; blank line -- real end of headers
+          (true
+            (let [colon (find-char raw i line-end 58)] ;; 58 = ':'
+              (if (>= colon line-end)
+                (Err MalformedHeaderLine)
+                (let [hname (substring raw i colon dest)
+                      ;; Real, standard SIP/HTTP header convention: exactly one space after the
+                      ;; colon before the real value begins -- skipped here rather than trimmed
+                      ;; generically, matching every real header line this parser is meant to
+                      ;; read (a real SIP stack always writes it this way).
+                      hval (substring raw (+ colon 2) line-end dest)]
+                  (do
+                    (vec/push! &mut headers {:name hname :value hval})
+                    (recur (+ line-end 2))))))))))))
+
+;; parse-message — the real, public entry point: splits `raw` on its own first CRLF into the
+;; start line and everything after, dispatches `parse-start-line`, then `parse-headers` over the
+;; remainder, and finally treats everything after the header block's own terminating blank line
+;; as the real message body (an SDP payload, or empty).
+(defn parse-message [(raw : String) (dest : Arena @ Region)] : (Result SipMessage SipError) @ Region
+  (let [n (length raw)
+        line1-end (find-crlf raw 0 n)]
+    (if (>= line1-end n)
+      (Err MalformedStartLine)
+      (match (parse-start-line (substring raw 0 line1-end dest) dest)
+        ((Err e) (Err e))
+        ((Ok msg)
+          ;; Real, live-found VS0 emitter quirk, worked around not fixed: a match-bound Ok
+          ;; payload's own real C variable is ALWAYS declared as a bare `void *`, regardless of
+          ;; its tracked type -- `get-field` directly on it fails to compile ("request for
+          ;; member 'x' in something not a structure or union"). `deref` is the one real,
+          ;; already-established path that correctly casts a match-bound payload back to its
+          ;; own real struct type (confirmed live via a minimal repro), so every field is read
+          ;; through `(get-field (deref msg) :field)` here, once, before the nested match below.
+          (let [is-req (get-field (deref msg) :is-request)
+                meth (get-field (deref msg) :method)
+                ruri (get-field (deref msg) :request-uri)
+                scode (get-field (deref msg) :status-code)
+                reas (get-field (deref msg) :reason)]
+            (match (parse-headers raw (+ line1-end 2) n dest)
+              ((Err e) (Err e))
+              ((Ok hdrs)
+                ;; Real body-start computation, re-walking from the header block's own start --
+                ;; parse-headers already validated the shape, this just needs the real byte
+                ;; offset one past the terminating blank line's own CRLF, not re-parsed content.
+                (let [body-start (find-body-start raw (+ line1-end 2) n)]
+                  (Ok {:is-request is-req :method meth :request-uri ruri
+                       :status-code scode :reason reas
+                       :headers hdrs
+                       :body (substring raw body-start n dest)}))))))))))
+
+;; find-body-start — real, minimal companion scan to parse-headers: walks the same real header
+;; block a second time (cheap -- SIP headers are a handful of short lines, not worth threading an
+;; extra return value through parse-headers just to avoid this) purely to find the real byte
+;; offset the body starts at, i.e. one past the first genuinely blank CRLF-terminated line.
+(defn find-body-start [(raw : String) (pos : I32) (n : I32)] : I32
+  (loop [i pos]
+    (let [line-end (find-crlf raw i n)]
+      (cond
+        ((>= i n) n)
+        ((= line-end i) (+ i 2))
+        (true (recur (+ line-end 2)))))))
+
+;; header-value — real, minimal case-sensitive linear lookup by header name (SIP header NAMES are
+;; conventionally written in a fixed canonical case by every real stack this parser reads from,
+;; same real, honest scope `json.prn`'s own `JObject` lookup already accepts for its own O(n)
+;; linear-scan cost — a real hash map would need VS0's still-missing real generics to build
+;; properly). Returns the FIRST matching header's value (a real SIP message can legally repeat a
+;; header name; returning only the first is a real, named, narrower-than-full-RFC scope).
+(defn header-value [(headers : &(Vec SipHeader)) (name : String)] : (Option String)
+  (loop [i 0]
+    (if (>= i (vec/len headers))
+      None
+      (let [h (vec/get headers i)]
+        (if (str-eq? (get-field h :name) name)
+          (Some (get-field h :value))
+          (recur (+ i 1)))))))
+
+;; build-request — real, minimal SIP request builder: emits a real, well-formed request with the
+;; real, standard mandatory header set RFC 3261 §8.1.1 names (`Via`/`From`/`To`/`Call-ID`/`CSeq`/
+;; `Max-Forwards`/`Content-Length`), no body (`Content-Length: 0`) -- a real, honest v0 boundary,
+;; not silently missing `Contact`/SDP (a real INVITE needs both for two-way media; naming this
+;; explicitly rather than pretending a bodyless INVITE is a complete one).
+(defn build-request [(method : String) (request-uri : String) (from-uri : String)
+                      (to-uri : String) (call-id : String) (cseq-num : I32)
+                      (via-host : String) (dest : Arena @ Region)] : String @ Region
+  (let [cseq-str (i32-to-string cseq-num dest)
+        line1 (concat method (concat " " (concat request-uri " SIP/2.0\r\n" dest) dest) dest)
+        via (concat "Via: SIP/2.0/UDP " (concat via-host "\r\n" dest) dest)
+        from (concat "From: " (concat from-uri "\r\n" dest) dest)
+        to (concat "To: " (concat to-uri "\r\n" dest) dest)
+        cid (concat "Call-ID: " (concat call-id "\r\n" dest) dest)
+        cseq (concat "CSeq: " (concat cseq-str (concat " " (concat method "\r\n" dest) dest) dest) dest)
+        maxfwd "Max-Forwards: 70\r\n"
+        clen "Content-Length: 0\r\n\r\n"]
+    (concat line1 (concat via (concat from (concat to (concat cid (concat cseq (concat maxfwd clen dest) dest) dest) dest) dest) dest) dest)))

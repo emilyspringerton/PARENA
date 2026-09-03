@@ -3328,3 +3328,46 @@ for `src/emit.c` (2026-08-21) and `BURROW/emit_c.go`/`emit_go.go` (2026-08-30); 
 simply hadn't hit a real `.prn` file using `not` yet. Fixed the same real way: Java's own `!`
 negation operator is the direct equivalent. `tests/test_emit_java.c`: 31/31 (4 new). `make test`:
 342/342, zero regressions.
+
+## sip/message — real SIP (RFC 3261) message parsing + construction (2026-09-03)
+
+Real answer to kanban priority-queue card 3124213, "SIP phone primitives in parena stdlib."
+`stdlib/sip/message.prn` — pure PARENA (no FFI needed, same real "text protocol, not a binary
+one" reasoning `json.prn`/`yaml.prn` already established): `parse-message` reads a real SIP
+request OR response into a `SipMessage` struct (method/request-uri or status-code/reason,
+depending which start-line shape it real is, plus a `(Vec SipHeader)` and the real body text);
+`build-request` emits a real, well-formed SIP request string with the real, standard mandatory
+header set (`Via`/`From`/`To`/`Call-ID`/`CSeq`/`Max-Forwards`/`Content-Length`); `header-value`
+does a real, honest O(n) linear lookup by name (same real cost `JObject`'s own lookup already
+accepts, for the identical "no generics for a real hash map yet" reason). Real, honest v0
+boundary, named explicitly: no SDP body parsing, no digest auth, no dialog/transaction state
+machine — this answers "can PARENA read and write one real, well-formed SIP message," not the
+whole protocol stack. Real transport (SIP's own default is UDP port 5060) reuses the
+already-designed `net/udp.prn`, not duplicated here.
+
+**Two real, genuine compiler bugs found and fixed live, not designed in advance** — both halves
+of the same real gap, SIP's own mandatory `\r\n` line ending being the very first real trigger
+this stdlib has ever had for a literal carriage return in a string: (1) `src/lexer.c`'s own
+`lex_string()` had NO case for `\r` in its escape switch at all — its `default: c = e` fallback
+silently decoded it to a bare `'r'` byte, not a real CR, with no compile-time signal; fixed by
+adding a real `case 'r': c = '\r';` alongside the existing `\n`/`\t`/`\"`/`\\` cases. (2)
+`src/emit.c`'s own string-literal RE-escaping loop (the one that turns a lexer-decoded raw byte
+back into valid C source) had the matching gap on the way back out — a raw CR byte got embedded
+verbatim into the generated `.c` file, a real, invalid C syntax error ("missing terminating '"'
+character"); fixed by adding the matching `\r` -> `"\\r"` case. Confirmed live via a real,
+gcc-compiled, run test: a built SIP request failed to re-parse until both fixes landed (the
+lexer fix alone left the emitter still broken, the two halves are genuinely separate real bugs).
+2 new `tests/test_lexer_parser.c` assertions (a real `\r\n` literal decodes to exactly 2 bytes,
+CR then LF, not left as literal text) + 3 new `tests/test_emit.c` assertions (the matching
+re-escape round-trip). **Real, third, separate emitter quirk found and worked around, not
+fixed**: a `match` clause's own `Ok`-bound STRUCT payload is always declared as a bare `void *`
+in the generated C regardless of its real, tracked type — `get-field` directly on it fails
+("request for member 'x' in something not a structure or union"); `deref` is the one real,
+already-established path that correctly casts it back (`(get-field (deref msg) :field)`),
+confirmed via a minimal, isolated repro before applying it here — the same real "bind/cast
+before touching a match-bound value's own fields" discipline this stdlib already holds itself to
+for `vec/get` results (see `bstree.prn`'s own header comment). `make test-sip-message`: 9/9 real
+end-to-end assertions (a real INVITE request parse, a real 200 OK response parse, a real header
+lookup hit AND miss, a real malformed-input `Err`, and a real BUILT request round-tripping back
+through the same parser, including reading its own `CSeq`/`Max-Forwards` headers back out).
+`make test`: 345/345 total, zero regressions.

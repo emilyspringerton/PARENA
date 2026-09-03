@@ -865,6 +865,31 @@ int main(void) {
         }
         arena_free_all(&arena);
     }
+    {
+        /* Real, genuine gap found live (kanban priority-queue card 3124213,
+         * stdlib/sip/message.prn's own real "\r\n" SIP/HTTP line terminators): the matching
+         * emitter-side half of the same real bug lex_string()'s own \r fix closed -- once the
+         * lexer correctly decodes \r into a raw CR byte, this re-escaping loop had NO case for
+         * it at all, so a raw CR byte got emitted VERBATIM into the generated C source (a
+         * literal embedded carriage return inside a C string literal -- real, invalid C, gcc
+         * correctly rejects it with "missing terminating '\"' character"). Confirmed live via a
+         * real gcc-compiled, run test round-tripping a built SIP request through its own parser,
+         * which failed until this fix landed. */
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [] : String \"a\\r\\nb\")";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a string literal with an embedded \\r\\n parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "\"a\\r\\nb\"") != NULL,
+                  "the real CR byte is re-escaped back into \\r in the generated C, not left as a raw, invalid embedded newline");
+        }
+        arena_free_all(&arena);
+    }
 
     /* --- `&(ComplexType)` -- a bare `&` symbol immediately followed by a
      * parenthesized type (the real firefly.prn shape: `(cases :

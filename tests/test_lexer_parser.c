@@ -130,6 +130,22 @@ int main(void) {
         arena_free_all(&arena);
     }
     {
+        /* Real, genuine gap found live (kanban priority-queue card 3124213,
+           stdlib/sip/message.prn's own real "\r\n" line terminators, SIP/HTTP's own real,
+           standard wire-format line ending): \r had NO handling in lex_string()'s own escape
+           switch at all before this fix -- its `default: c = e` fallback silently decoded it to
+           a bare 'r' byte, not a real carriage return, with no compile-time signal at all. */
+        Arena arena;
+        Node *n = parse_ok_arena(&arena, "\"a\\r\\nb\"", "string with a \\r\\n escape sequence parses");
+        if (n) {
+            CHECK(n->children[0]->type == NODE_STRING && n->children[0]->text_len == 4,
+                  "\\r\\n decodes to exactly 2 real bytes (CR LF), not 4 (the escapes left as literal text)");
+            CHECK(n->children[0]->text[1] == '\r' && n->children[0]->text[2] == '\n',
+                  "the decoded bytes are a real CR (13) then LF (10), not the literal characters 'r'/'n'");
+        }
+        arena_free_all(&arena);
+    }
+    {
         Arena arena;
         parse_ok_arena(&arena, "", "an empty file parses to an empty program, not an error");
         arena_free_all(&arena);

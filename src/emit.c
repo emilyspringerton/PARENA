@@ -2007,6 +2007,16 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 sb_append(&sb, "\\n");
             } else if (c == '\t') {
                 sb_append(&sb, "\\t");
+            } else if (c == '\r') {
+                /* Real, genuine gap found live, the matching emitter-side half of the same real
+                   bug the lexer's own \r fix (see lex_string's own doc comment, kanban card
+                   3124213) just closed: lex_string now correctly decodes a real \r escape into
+                   a raw CR byte, but this re-escaping loop had no case for it at all, so a raw
+                   CR byte got emitted VERBATIM into the generated C source -- a literal
+                   embedded carriage return inside a C string literal, which gcc correctly
+                   rejects ("missing terminating \" character"). Without this, \r couldn't
+                   actually be used in any real .prn string literal at all, lexer fix or not. */
+                sb_append(&sb, "\\r");
             } else {
                 char one[2] = {(char)c, '\0'};
                 sb_append(&sb, one);
