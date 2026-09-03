@@ -1,3 +1,21 @@
+## 2026-09-03 (2)
+- 新增 `stdlib/mixforge/import.prn`(S243-01,MIXFORGE 的 V0:貼一個 YouTube 網址——加一個可選的
+  第二個網址帶伴奏版——真的落地成本地音樂庫)。真實下載機制:透過 `process/run-capture` 呼叫真正、
+  未修改的 `yt-dlp` 二進位檔,`--print after_move:filepath` 拿回後製完之後真正的最終路徑,不用自己
+  猜檔名/副檔名。**真實、明確處理的安全議題**:`run-capture` 會把整個指令丟進 `/bin/sh -c`,是真正的
+  shell injection 風險——`safe-youtube-url?` 是一個真正、狹窄的白名單(只接受 youtube.com/youtu.be
+  兩個 host,而且整條網址逐字元檢查,只准英數字加上一組固定、真正 URL 會用到的標點),重用
+  `log/projector.prn` 已經驗證過的 `shell-single-quote` 再包一層。metadata 誠實地寫成 NDJSON 一行
+  (不是真的 SQLite——`sql/driver` 在 PARENA 目前只是設計、還沒實作,直接 FFI-bind libsqlite3 是另一個
+  獨立、還沒開始的工作,在檔案自己的 header comment 裡明確記下來)。新增
+  `tests/test_mixforge_import.c`(`make test-mixforge-import`):真實驗證白名單擋掉每一種真正的
+  shell injection 手法(`'; rm -rf /`、反引號、`&&`、`|`、`$HOME`)、真實用暫時 PATH 目錄假冒
+  `yt-dlp`(跟 `test-log-projector` 驗證 sqlite3/mysql 同一招)驗證真正的指令組成方式跟真正的
+  Ok/Err 傳遞,含 import-track 有無伴奏版兩種情況都測到。`./parena build` 一次過、`gcc -Wall -Wextra
+  -pedantic -Werror` 乾淨、`make test`(342 條核心語言測試)跟 `make test-process`/
+  `test-log-projector`(相鄰、共用 process/log-projector 模組的既有測試)全部綠燈,零回歸。
+  (sess-20260902-2008-ed50169e)
+
 ## 2026-09-03
 - STDLIB.md 新增一段真實調查記錄(創辦人,kanban cruise queue:「emojis need to work in pitviper and parena editor what do we need to build a custom emoji font or use image files or something?」)。真實、查證過的答案:不用另外做自訂字型或圖片檔——`sdl2.prn` 自己的 `open-font` 本來就是完全通用的(任何真實 TTF/OTF 路徑),載入 Noto Color Emoji(已確認系統上真的有裝)當第二個真正的 `Font` handle,完全不用新增任何 FFI,跟 PITVIPER 自己 Go 那邊已經驗證過能動的做法一模一樣。真實、誠實找到的另一個、更根本的前置缺口,沒有含糊帶過:`editor/render.prn` 的 `render-tokens` 一次只用一個 `Font` 畫完整個 token span;要真的混合 emoji 字型,需要先偵測 span 裡面哪些字元是 emoji 範圍的 codepoint 才能分段——但 `string.prn` 自己的 `char-at` 就是明講「回傳原始 byte 值」,完全不懂 UTF-8,整個 stdlib 目前沒有任何一個函式真的會把 UTF-8 位元組序列解碼成真正的 Unicode codepoint。這一步(真正的 UTF-8 解碼)是比字型載入更根本、需要獨立規劃的真實缺口,這次沒有動手做,只是誠實記錄下來,讓之後真正的解法(重用 PITVIPER 已經驗證過的字型設計,等 codepoint 解碼做出來之後)不會被忘記。(sess-20260902-2008-ed50169e)
 

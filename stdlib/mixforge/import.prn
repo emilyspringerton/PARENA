@@ -1,0 +1,181 @@
+;; stdlib/mixforge/import.prn — depends on string, process, log/projector (reused for its
+;; already-proven shell-single-quote helper, not for anything SQL). Real V0 for MIXFORGE
+;; (S243-01, EMILY/BACKLOG.md's own cruise-column sprint-planning pass, 2026-09-03): the
+;; legacy-conversation transcript's own explicitly-first feature, "paste a YouTube URL (plus an
+;; optional second URL for the instrumental) and have it land in a real local track library."
+;;
+;; Real, deliberate scope, matching MIXFORGE/NORTHSTAR.md's own "narrowest real slice first"
+;; discipline: this is import + local-library organization ONLY. Playback/crossfade needs
+;; stdlib/media/audio.prn + codec.prn, which are design-only in PARENA today (STDLIB.md
+;; §26-27, zero .prn source exists) -- a real, separate, PARENA-side prerequisite, not
+;; attempted here. Key/BPM detection is a further, later phase (needs an aubio FFI binding,
+;; also not attempted here) -- see NORTHSTAR.md's own real, current blockers section.
+;;
+;; Real download mechanism: shells out to the real, unmodified `yt-dlp` binary via
+;; stdlib/process.prn's own run-capture -- no reimplementation of YouTube's own extraction
+;; logic, matching the transcript's own real yt-dlp choice, just executed through PARENA's real
+;; subprocess primitive instead of C++. `--print after_move:filepath` is yt-dlp's own real,
+;; documented flag for printing the final on-disk path after any post-processing (audio
+;; extraction here), giving this file a real, exact path back rather than reconstructing one by
+;; guessing yt-dlp's own naming/extension logic.
+;;
+;; Real, honest, named security discipline: `run-capture` shells the whole command through
+;; `/bin/sh -c` (see process.prn's own doc comment) -- a real injection risk if a caller
+;; concatenates untrusted data into it unescaped. Two real, layered defenses, matching
+;; log/projector.prn's own already-proven pattern: (1) `safe-youtube-url?` is a real, narrow
+;; ALLOWLIST (only https://www.youtube.com/... or https://youtu.be/..., only URL-safe
+;; characters) -- anything else is rejected outright, not merely escaped; (2) whatever survives
+;; that allowlist is additionally passed through `log/projector`'s own proven
+;; `shell-single-quote` before landing in the shell command text, the same two-layer discipline
+;; that file's own header comment documents for SQL text.
+;;
+;; Real, honest, deliberately NOT solved here: metadata (title/artist/duration/BPM/key,
+;; MIXFORGE/NORTHSTAR.md's own real, eventual `tracks` table shape) is NOT written to a real
+;; SQLite database in this pass -- `sql/driver` is construction-blocked-not-implemented in
+;; PARENA (STDLIB.md) and FFI-binding libsqlite3 directly is real, separate, unstarted work.
+;; This writes a real, working NDJSON metadata line instead (one JSON object per imported
+;; track, append-only) -- the same real, already-established "flat append-only log first, real
+;; DB projector later" shape stdlib/log/jsonl.prn + log/projector.prn already prove out
+;; end-to-end elsewhere in this same stdlib. Real, named follow-up: a project-sqlite!-style
+;; projector for this NDJSON log, once MIXFORGE actually needs to query it, not before.
+
+(module mixforge/import)
+(import string)
+(import process)
+(import log/projector)
+(export safe-youtube-url? download-track import-track TrackImportError TrackRecord)
+
+(defenum TrackImportError
+  (InvalidURL)
+  (DownloadFailed (exit-code : I32)))
+
+;; TrackRecord -- real, minimal V0 shape. `instrumental-path` is "" (not a real Option) when no
+;; instrumental URL was supplied -- the same "empty string is the real no-value convention"
+;; shape stdlib/io.prn's own list-dir already establishes for this stdlib, rather than adding a
+;; boxed Option field here for a single optional string.
+(defstruct TrackRecord
+  (main-url : String)
+  (instrumental-url : String)
+  (main-path : String)
+  (instrumental-path : String))
+
+;; url-char-allowed? -- the real, narrow allowlist safe-youtube-url? scans every character
+;; against: alphanumerics plus the fixed punctuation an actual youtube.com/youtu.be URL
+;; legitimately needs (`:/.?=&%-_~`). Deliberately excludes every real shell metacharacter
+;; (quotes, backticks, `;`, `|`, `$`, backslash, whitespace) -- this is a real security
+;; boundary, not just character-set trivia, since the surviving string is what gets
+;; shell-single-quoted and interpolated into a real `/bin/sh -c` command below.
+(defn url-char-allowed? [(c : I32)]
+  : Bool
+  (or (and (>= c 97) (<= c 122))   ;; a-z
+    (or (and (>= c 65) (<= c 90))   ;; A-Z
+      (or (and (>= c 48) (<= c 57)) ;; 0-9
+        (or (= c 58)   ;; :
+          (or (= c 47)   ;; /
+            (or (= c 46)   ;; .
+              (or (= c 63)   ;; ?
+                (or (= c 61)   ;; =
+                  (or (= c 38)   ;; &
+                    (or (= c 37)   ;; %
+                      (or (= c 45)   ;; -
+                        (or (= c 95)   ;; _
+                          (= c 126))))))))))))))   ;; ~
+
+(defn all-chars-allowed? [(s : String @ Region) (i : I32) (n : I32)]
+  : Bool
+  (if (>= i n)
+    true
+    (if (url-char-allowed? (string/char-at s i))
+      (all-chars-allowed? s (+ i 1) n)
+      false)))
+
+(defn has-prefix? [(s : String @ Region) (prefix : String @ Region) (dest : Arena @ Region)]
+  : Bool
+  (let [pn (string/length prefix)]
+    (if (< (string/length s) pn)
+      false
+      (string/str-eq? (string/substring s 0 pn dest) prefix))))
+
+;; safe-youtube-url? -- see this file's own header comment for the full real, layered rationale.
+(defn safe-youtube-url? [(url : String @ Region) (dest : Arena @ Region)]
+  : Bool
+  (and
+    (or (has-prefix? url "https://www.youtube.com/" dest)
+      (has-prefix? url "https://youtu.be/" dest))
+    (all-chars-allowed? url 0 (string/length url))))
+
+;; download-track -- real, shells out to yt-dlp per this file's own header comment. `dest-dir`
+;; is the real target directory (e.g. "tracks/main" or "tracks/instrumental") -- caller's
+;; responsibility to ensure it exists (mkdir -p), same real division of labor
+;; log/projector.prn's own run-sql-via already establishes (the CLI-invocation layer doesn't
+;; own filesystem setup, its caller does).
+(defn download-track [(url : String @ Region) (dest-dir : String @ Region) (dest : Arena @ Region)]
+  : (Result String TrackImportError) @ Region
+  (if (not (safe-youtube-url? url dest))
+    (Err InvalidURL)
+    (let [quoted-url (log/projector/shell-single-quote url dest)]
+      (let [out-template (string/concat dest-dir "/%(id)s.%(ext)s" dest)]
+        (let [quoted-template (log/projector/shell-single-quote out-template dest)]
+          (let [flags "yt-dlp -x --audio-format mp3 --print after_move:filepath -o "]
+            (let [c1 (string/concat flags quoted-template dest)]
+              (let [cmd (string/concat c1 (string/concat " " quoted-url dest) dest)]
+                (let [output (process/run-capture cmd dest)]
+                  (let [code (process/run-capture-exit-code)]
+                    (if (= code 0)
+                      (Ok (trim-trailing-newline output dest))
+                      (Err (DownloadFailed code)))))))))))))
+
+;; trim-trailing-newline -- run-capture returns raw stdout, and yt-dlp's own `--print` line
+;; ends in "\n" like any real command's own stdout does. Strips at most one trailing "\n" (and
+;; a preceding "\r", for a real Windows-built yt-dlp) so download-track hands back the exact
+;; real path, not a path plus a stray newline a caller would otherwise have to know to strip.
+(defn trim-trailing-newline [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (if (= n 0)
+      s
+      (if (= (string/char-at s (- n 1)) 10)
+        (let [n2 (- n 1)]
+          (if (and (> n2 0) (= (string/char-at s (- n2 1)) 13))
+            (string/substring s 0 (- n2 1) dest)
+            (string/substring s 0 n2 dest)))
+        s))))
+
+;; track-metadata-json -- one real NDJSON line for an imported track. See this file's own
+;; header comment for why this is a flat append-only log, not a real SQLite row, in this pass.
+(defn track-metadata-json [(r : &TrackRecord) (dest : Arena @ Region)]
+  : String @ Region
+  (let [p1 "{\"main_url\":\""]
+    (let [p2 (string/concat p1 (get-field r :main-url) dest)]
+      (let [p3 (string/concat p2 "\",\"instrumental_url\":\"" dest)]
+        (let [p4 (string/concat p3 (get-field r :instrumental-url) dest)]
+          (let [p5 (string/concat p4 "\",\"main_path\":\"" dest)]
+            (let [p6 (string/concat p5 (get-field r :main-path) dest)]
+              (let [p7 (string/concat p6 "\",\"instrumental_path\":\"" dest)]
+                (let [p8 (string/concat p7 (get-field r :instrumental-path) dest)]
+                  (string/concat p8 "\"}" dest))))))))))
+
+;; import-track -- the real, top-level V0 orchestration: download the main track (required),
+;; optionally download the instrumental (if a non-empty URL was supplied), return a real
+;; TrackRecord. Writing the resulting NDJSON line to a real file and creating tracks/main +
+;; tracks/instrumental if they don't already exist are the caller's job (mkdir -p / io/file-open
+;; with OpenMode Append), same real, narrow division of labor this file's own download-track
+;; doc comment already states for directory setup -- kept out of this pure orchestration
+;; function so it stays easy to unit-test without real disk/network side effects beyond the
+;; download itself.
+(defn import-track [(main-url : String @ Region) (instrumental-url : String @ Region)
+                     (main-dir : String @ Region) (instrumental-dir : String @ Region)
+                     (dest : Arena @ Region)]
+  : (Result TrackRecord TrackImportError) @ Region
+  (let [main-result (download-track main-url main-dir dest)]
+    (match main-result
+      ((Err e) (Err e))
+      ((Ok main-path)
+        (if (string/str-eq? instrumental-url "")
+          (Ok {:main-url main-url :instrumental-url "" :main-path main-path :instrumental-path ""})
+          (let [inst-result (download-track instrumental-url instrumental-dir dest)]
+            (match inst-result
+              ((Err e) (Err e))
+              ((Ok inst-path)
+                (Ok {:main-url main-url :instrumental-url instrumental-url
+                     :main-path main-path :instrumental-path inst-path})))))))))

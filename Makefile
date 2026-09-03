@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -211,6 +211,16 @@ test-log-projector: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_log_projector.c \
 		runtime/parena_runtime.c -o /tmp/test_log_projector_bin -lm
 	/tmp/test_log_projector_bin
+
+# test-mixforge-import -- real end-to-end verification for stdlib/mixforge/import.prn (S243-01,
+# MIXFORGE V0: paste-a-YouTube-URL track import). Real, temporary PATH directory shims a
+# stand-in yt-dlp, same technique test-log-projector already established for sqlite3/mysql.
+test-mixforge-import: build
+	./parena build stdlib/string.prn stdlib/process.prn stdlib/log/event.prn stdlib/log/projector.prn \
+		stdlib/mixforge/import.prn -o tests/test_mixforge_import_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_mixforge_import.c \
+		runtime/parena_runtime.c -o /tmp/test_mixforge_import_bin -lm
+	/tmp/test_mixforge_import_bin
 
 # test-editor-document -- real end-to-end verification for stdlib/editor/document.prn (real
 # document management: editor/buffer.prn + papercraft/note_version_mod.prn tied together).
