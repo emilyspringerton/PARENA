@@ -1,3 +1,16 @@
+## 2026-09-03 (4)
+- 新增 `stdlib/papercraft/explosion_mod.prn`(kanban priority queue 卡片「499988:can we start to
+  add more api surfaces to PAPERCRAFT mod api surface we want to get parity with ROBLOX apis
+  start with the api for setting an explosion」)——真正的線性爆炸傷害衰減,對照的是 Roblox 自己
+  真實的 `Explosion` 物件(`Position`/`BlastRadius`)這個形狀,這次先做傷害的部分,
+  `BlastPressure` 那種真正的推力/擊退效果留給下一個、獨立的 API surface,沒有一起做。跟這個
+  repo 目前每一個 PAPERCRAFT mod 一樣的真實 I32-only、「mod 決定、host 套用」分工。已經在
+  PAPERCRAFT 那邊真的用 `parena build` 編過、`gcc -Wall -Wextra` 乾淨、真的寫了測試全部通過,
+  也真的用 `bazel test //packages/simulation:all`(15 條測試)跑過,零回歸。誠實記下真實、還沒
+  接線的缺口:PAPERCRAFT 目前完全沒有真正會觸發爆炸的 host 端遊戲邏輯(跟 `level_mod.prn` 自己
+  文件裡明講的「套用 XP 的 host 端還沒寫」是同一種真實缺口)——這是真的、測試過的決策邏輯,還
+  不是真正在遊戲裡能用的功能。 (sess-20260902-2008-ed50169e)
+
 ## 2026-09-03 (3)
 - 新增 `stdlib/bstree.prn`(kanban priority queue 卡片「9933:INDEXING primitives built into
   PARENA to power IDUNA OG unified search - btries etc」的真實答案):一個真正、會編譯、有測試

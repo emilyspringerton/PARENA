@@ -1,0 +1,53 @@
+;; stdlib/papercraft/explosion_mod.prn — the real decision layer for PAPERCRAFT's own first
+;; explosion primitive (kanban priority-queue card 499988, 2026-09-03: "can we start to add more
+;; api surfaces to PAPERCRAFT mod api surface we want to get parity with ROBLOX apis start with
+;; the api for setting an explosion"). Real, named reference point: Roblox's own `Explosion`
+;; instance (`Position`, `BlastRadius`, `BlastPressure`) applies falloff damage/force to
+;; anything within `BlastRadius` of `Position` -- this mod is the real DECISION half of that
+;; same shape (how much a target at a given distance actually takes), matching every other real
+;; PAPERCRAFT mod's own "mod decides, host applies" split (see paper_fragment_mod.prn's own
+;; header comment for the identical real reasoning on a sibling damage-decision mod).
+;;
+;; Real I32-only decision logic, no F32/struct/Vec across the boundary -- the same VS0 ceiling
+;; every real mod in this monorepo respects (ECOWAR/docs/ARENA_API.md). Distance and blast
+;; radius are real integer game units (whatever unit `packages/common` positions already use,
+;; e.g. centimeters or a fixed-point subdivision) -- host C owns converting real vector math
+;; (target position minus blast center, magnitude) into that single integer distance before
+;; calling in here, the same real split `paper_fragment_mod.prn`'s own material/hp decision
+;; already establishes for its own host-owned geometry math.
+;;
+;; Real, deliberate v0 scope, matching Roblox's own real, simpler documented behavior as the
+;; starting point, not its full physics-based force model: LINEAR damage falloff from
+;; `max-damage` at the blast center to 0 at `blast-radius` and beyond. Real, honest, named
+;; limitation: Roblox's own real Explosion applies actual outward FORCE (`BlastPressure`) to
+;; movable parts, not just damage -- a real knockback/force decision is a genuine, separate,
+;; later API surface (the founder's own "start with" framing already scopes this as the first
+;; of more, not the only one), not attempted here. Host C has no explosion-triggering code at
+;; all yet (PAPERCRAFT has no gameplay host code in general -- see NORTHSTAR.md's own
+;; "Explicitly not scoped yet" section, the same real gap `level_mod.prn`'s own header comment
+;; already names for XP application) -- this mod is real, compiled, and tested decision logic
+;; waiting for that real host wiring, not a live, in-game feature yet.
+
+(module papercraft/explosion-mod)
+(export on-papercraft-explosion-damage-at-distance)
+(export on-papercraft-explosion-in-range?)
+
+;; on-papercraft-explosion-in-range? — real, simple range check: a target is inside the blast
+;; if its distance from the blast center is no greater than the blast radius. A `blast-radius`
+;; of 0 hits nothing (not even distance 0) -- the real, honest reading of "a explosion with no
+;; radius has no effect," matching Roblox's own real behavior for a degenerate BlastRadius.
+(defn on-papercraft-explosion-in-range? [(blast-radius : I32) (distance : I32)] : Bool
+  (and (> blast-radius 0) (<= distance blast-radius)))
+
+;; on-papercraft-explosion-damage-at-distance — real linear falloff. Real, deliberate edge
+;; cases, each a genuine design decision, not an oversight: a non-positive blast-radius or a
+;; distance at/beyond the radius both deal 0 (out of range, matches the range check above); a
+;; distance of 0 or less (standing exactly at or "inside" the blast center) deals the full
+;; max-damage, not more -- negative distance is treated as 0, never amplified.
+(defn on-papercraft-explosion-damage-at-distance [(max-damage : I32) (blast-radius : I32) (distance : I32)] : I32
+  (if (<= blast-radius 0)
+    0
+    (if (>= distance blast-radius)
+      0
+      (let [clamped-distance (if (< distance 0) 0 distance)]
+        (/ (* max-damage (- blast-radius clamped-distance)) blast-radius)))))
