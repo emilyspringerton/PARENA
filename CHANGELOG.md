@@ -1,4 +1,5 @@
 ## 2026-09-03 (4)
+- feat: stdlib/idunapro/cli_mod.prn -- real match/Result decision logic for kanban card 9988's own CLI, compiled via BURROW's Go target into IDUNA_PRO/internal/burrowgen and driven by a new real Go host binary (IDUNA_PRO/cmd/idunapro), live-verified end to end against IDUNA's running :8080 instance (health check success + unreachable-host failure, both real exit codes). See STDLIB.md 'idunapro/cli-mod' section for full writeup. (sess-20260902-2008-ed50169e)
 - 新增 `stdlib/papercraft/explosion_mod.prn`(kanban priority queue 卡片「499988:can we start to
   add more api surfaces to PAPERCRAFT mod api surface we want to get parity with ROBLOX apis
   start with the api for setting an explosion」)——真正的線性爆炸傷害衰減,對照的是 Roblox 自己
