@@ -1,0 +1,7 @@
+# stdlib/BUILD.bazel — makes real stdlib .prn source files loadable by a consuming repo as
+# `@parena//stdlib:<name>.prn` (kanban priority-queue card LB-911, ladybug's own real
+# `firefly_build` genrule needing `@parena//stdlib:string.prn` as a real, combined-build input,
+# the same real multi-file `parena build` requirement STDLIB.md's own documented convention
+# already establishes).
+
+exports_files(glob(["**/*.prn"]))
