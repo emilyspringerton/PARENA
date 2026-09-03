@@ -110,6 +110,35 @@ challenge-response construction in a new SIP-auth module.
 TLS library, not scratch-built) and real G.711 encode/decode (only if PARENA ever needs to
 synthesize/consume audio directly, not for pure relay).
 
+## Addendum, kanban priority-queue card `SIPX-001`: "don't we need to build an Asterisk equivalent... routes our calls to our SIP?"
+
+Real, direct answer: **yes — Phase 1-2 above IS that equivalent.** A real B2BUA/SIP proxy routing
+calls between our own SIP clients and Twilio's trunk is functionally the same real role Asterisk
+(or FreeSWITCH/Kamailio) plays in a traditional PBX deployment. Real, honest comparison, worth
+naming explicitly rather than silently assumed away, matching this monorepo's own repeated
+"check what real, existing options exist first" discipline (the same judgment already applied to
+libpcap, HypriotOS/`FLASH`, Stalwart for email):
+
+- **Real Asterisk** is a mature, full-featured, real open-source PBX — dialplan scripting,
+  voicemail, IVR, conferencing, a huge real feature surface this gateway's own narrow "route
+  calls between our clients and Twilio" scope doesn't need. Adopting it wholesale is a real,
+  legitimate, much-faster path to a working system TODAY if the actual goal is "get calls
+  routing," full stop.
+- **A real, narrow, PARENA-native B2BUA** (this doc's own Phase 1-3) is deliberately lighter —
+  only the real signaling-relay + RTP-forwarding role, nothing else — and dogfoods PARENA the
+  same way every other real integration in this monorepo does (`sip/message.prn` already exists
+  and works; building the relay in PARENA extends real, load-bearing use of the language rather
+  than reaching for an off-the-shelf C application). Real, honest cost: this path is genuinely
+  slower to a working system, and re-derives real protocol logic (SIP proxy header-rewriting,
+  Phase 2's own hardest piece) that Asterisk has already solved and battle-tested for years.
+
+**Real, deliberate recommendation, not resolved unilaterally**: this is a real, founder-level
+build-vs-adopt tradeoff (speed-to-working-system vs. PARENA-dogfooding), not a technical question
+with one correct answer — flagged here explicitly rather than silently defaulting to either
+choice. If the founder wants calls routing sooner rather than PARENA-native, real Asterisk (or
+FreeSWITCH, its own real, modern alternative) sitting in front of the same Twilio trunk is a real,
+legitimate, much smaller lift than this whole doc's own Phase 1-5.
+
 ## Related
 
 - `PARENA/stdlib/sip/message.prn` — the real, already-shipped signaling-plane foundation this
