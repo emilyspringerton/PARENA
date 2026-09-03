@@ -1331,6 +1331,13 @@ compiler errors at all.
 
 ### `sdl2` — built-in, not an optional `import`
 
+**Real, honest exception carved out 2026-09-03** (kanban card PARENA-0001, see `docs/
+OS_PORTABILITY_NORTHSTAR.md` for the full writeup): "built-in" no longer means *unconditionally
+compiled into every generated program's includes* — `runtime/parena_runtime.h` now supports a
+`PARENA_NO_GRAPHICS` opt-out macro that skips SDL2/SDL2_ttf's headers and function glue entirely,
+for headless/musl/Alpine-style targets that never call into this package. Default (macro
+undefined) behavior is unchanged — every existing consumer still gets SDL2 exactly as before.
+
 Founder: "we need to build SDL2 in PARENA" → "in the stdlib" → "SDL2 is built in" → "but written
 in PARENA" → "same APIs." Four real, separate decisions, each honored exactly, not blended into
 one vague "add SDL2 support": **(1)** it's a *stdlib* package, not a code-generator or build-

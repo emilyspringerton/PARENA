@@ -81,7 +81,20 @@
  * Harmless for a program that never calls into stdlib/sdl2.prn -- every
  * sdl2_*_impl function below is `static inline`, so an unreferenced one
  * emits no symbol at all, no -lSDL2 needed unless something actually
- * calls one. */
+ * calls one.
+ *
+ * Real, honest exception carved out here (2026-09-03, kanban priority-queue
+ * card PARENA-0001, "smallest vertical slice to make PARENA work with the
+ * OS... alpine? debian?"): a headless/embedded/musl-static build target
+ * (real, live-checked motivating case -- Alpine's own real SDL2 dev headers
+ * are built against musl, not this box's glibc-linked libsdl2-dev, so
+ * mixing them fails; a real target with zero SDL2 in its own `.prn` source
+ * at all, like `sip/message.prn` or `pentest/pcap.prn`, shouldn't need SDL2
+ * headers present just to compile) can define `PARENA_NO_GRAPHICS` before
+ * including this header to skip SDL2/SDL2_ttf entirely. Default (undefined)
+ * behavior is unchanged -- every existing consumer still gets SDL2
+ * unconditionally, exactly as before. */
+#ifndef PARENA_NO_GRAPHICS
 #include <SDL2/SDL.h>
 /* SDL2_ttf -- real text rendering, the concrete next real extension
  * flagged when sdl2.prn's own renderer/draw calls were closed (2026-08-26):
@@ -89,6 +102,7 @@
  * text." Same "unconditionally available, harmless if unused" reasoning
  * as SDL2 itself above -- confirmed libsdl2-ttf-dev present on this box. */
 #include <SDL2/SDL_ttf.h>
+#endif /* PARENA_NO_GRAPHICS */
 
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
@@ -1292,6 +1306,7 @@ static inline Arena *parena_current_arena(void) {
     return &g_process_arena;
 }
 
+#ifndef PARENA_NO_GRAPHICS
 /* ---- stdlib/sdl2.prn real host glue (2026-08-26) ------------------------
  * The concrete "next real extension" STDLIB.md's own `sdl2` section
  * already flagged as pending ("full renderer/texture calls... left out
@@ -1794,6 +1809,7 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
     if (TTF_SizeUTF8(g_sdl2_fonts[font_handle], text, &w, &h) != 0) return -1;
     return h;
 }
+#endif /* PARENA_NO_GRAPHICS */
 
 /* ---- stdlib/json.prn's own real host-glue forward declaration (2026-08-28) --------------
  * json.prn's own json-unescape #target body calls host_json_unescape -- a real, per-HOST-
