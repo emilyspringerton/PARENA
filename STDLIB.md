@@ -3310,9 +3310,11 @@ multi-character operators, and everything else that doc's own real 6-phase plan 
 ## android/battery-ui — real Java-target proof, first slice (2026-09-03)
 
 Real answer to kanban cruise-queue card 32445324, "PARENA android app in JAVA using PARENA using
-the JAVA emitter" — see `docs/ANDROID_JAVA_TARGET_NORTHSTAR.md` for the full real scoping (what's
-shipped vs. the real, honest, unstarted Android-app wiring, which needs an Android SDK this
-sandbox doesn't have). `stdlib/android/battery_ui.prn` — two real, minimal, scalar-only decision
+the JAVA emitter" — see `github.com/emilyspringerton/SPIDERBEETLE`'s own `NORTHSTAR.md` for the
+full real scoping (what's shipped vs. the real, honest, unstarted Android-app wiring, which needs
+an Android SDK this sandbox doesn't have; `docs/ANDROID_JAVA_TARGET_NORTHSTAR.md` here is now
+just a pointer to that repo, the real, checked-out home for the compiled Java output and any
+future real Android app code). `stdlib/android/battery_ui.prn` — two real, minimal, scalar-only decision
 functions (`should-show-low-battery-warning`, `clamp-brightness`), matching `emit_java.h`'s own
 narrow v0 scope (I32/F64/Bool/String params, no Arena/region, one-expression bodies). Compiled
 via the real Java emitter and verified with an actual JDK (`javac`/`java 25.0.4`, same version
