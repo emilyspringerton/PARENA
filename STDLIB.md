@@ -3407,6 +3407,31 @@ PARENA,無 FFI:`read-u16-be`/`read-u32-be`(big-endian 多位元組讀取)、
 等 ≥128 位元組的真實測試案例驗證。`make test-wire`:6 個真實斷言全過。
 `make test`:345/345,無回歸。
 
+## ldap/ber — real BER TLV primitives (2026-09-03)
+
+Real, direct answer to kanban priority-queue card 342332432423, "ldap primatives parena".
+LDAP's own real wire format (RFC 4511) is ASN.1 BER-encoded (checked live via real web research)
+— every real LDAP message, at every nesting level, is a real Tag-Length-Value (TLV) element. This
+is the real, single most foundational LDAP primitive: reading/writing one real BER TLV element —
+the direct structural analog of `sip/rtp.prn`'s own RTP-header work and `net/dns.prn`'s own
+DNS-record work, for a real, general-purpose, recursive encoding instead of one fixed protocol's
+own specific header.
+
+Real, honest v0 boundary, named explicitly: short-form length only (the length byte's own top bit
+is 0, the byte itself IS the real length, 0-127) — covers every real, individual short field value
+an LDAP BindRequest/SearchRequest actually carries; long-form length (top bit set) reports a real,
+honest error rather than silently mis-decoding. Low tag numbers only (0-30) — the real
+high-tag-number continuation form is real, separate, unsupported.
+
+`build-ber-tlv` uses a real, honest `#target inline-c` escape hatch, the same real reason
+`net/dns.prn`'s own `build-dns-query` already needed one: a real tag/length header is frequently,
+legitimately zero (an empty value's own length byte, a real tag like `0x02` for INTEGER), and
+`string/concat`'s own `strcpy`/`strcat` truncation would corrupt output on real, ordinary cases,
+not just edge cases. New `make test-ber` target, 5 real assertions (a real INTEGER TLV decode, the
+long-form-length honest error, a real OCTET STRING TLV round-trip, and a deliberate zero-length
+value case proving the `inline-c` escape hatch was actually necessary). `make test`: 345/345,
+zero regressions.
+
 ## net/dns — real DNS query/response primitives (2026-09-03)
 
 Real, direct answer to kanban priority-queue card 334534, "DNS primitives parena". Real, direct

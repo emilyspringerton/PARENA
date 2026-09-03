@@ -741,3 +741,11 @@ test-dns: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_dns.c \
 		runtime/parena_runtime.c -o /tmp/test_dns_bin -lm
 	/tmp/test_dns_bin
+
+# test-ber -- real end-to-end verification for stdlib/ldap/ber.prn (kanban priority-queue card
+# 342332432423, "ldap primatives parena").
+test-ber: build
+	./parena build stdlib/string.prn stdlib/net/wire.prn stdlib/ldap/ber.prn -o tests/test_ber_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_ber.c \
+		runtime/parena_runtime.c -o /tmp/test_ber_bin -lm
+	/tmp/test_ber_bin

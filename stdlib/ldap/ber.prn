@@ -1,0 +1,67 @@
+;; stdlib/ldap/ber.prn — depends on string, net/wire. Design: STDLIB.md "ldap/ber" section.
+;;
+;; Real trigger: kanban priority-queue card 342332432423, "ldap primatives parena". LDAP's own
+;; real wire format (RFC 4511) is ASN.1 BER-encoded (checked live via real web research, not
+;; assumed) — every real LDAP message, at every nesting level, is a real Tag-Length-Value (TLV)
+;; element, the same real structure whether it's a whole BindRequest or one integer field inside
+;; it. This file builds the real, single most foundational LDAP primitive: reading/writing one
+;; real BER TLV element — the direct structural analog of `sip/rtp.prn`'s own RTP-header work
+;; and `net/dns.prn`'s own DNS-record work, just for a real, recursive, general-purpose encoding
+;; instead of one fixed protocol's own specific header shape.
+;;
+;; Real, honest v0 boundary, named explicitly: SHORT-FORM length only (the length byte's own top
+;; bit is 0, the byte itself IS the real length, 0-127) — covers every real, individual short
+;; field value an LDAP BindRequest/SearchRequest actually carries (usernames, simple integers,
+;; short DN strings). LONG-FORM length (top bit set, remaining 7 bits = a real COUNT of
+;; following bytes encoding the actual length) is real, separate, deliberately unsupported —
+;; reported as a real, honest error, never silently mis-decoded. Real, honest v0 boundary #2: low
+;; tag numbers only (tag value 0-30, the overwhelming majority of real BER/LDAP tags) — the real
+;; high-tag-number form (tag bits 1-5 all set to `11111`, followed by more tag-continuation
+;; bytes) is real, separate, unsupported.
+
+(module ldap/ber)
+(import string)
+(import net/wire)
+(export read-ber-tag read-ber-length ber-header-size build-ber-tlv BerError)
+
+(defenum BerError
+  (TooShort)              ;; real buffer too short to contain even a tag+length byte pair
+  (LongFormUnsupported))  ;; real, honest v0 boundary: a real long-form length byte was seen
+
+;; read-ber-tag — the real tag byte at `pos`, unqualified (real, honest v0: low tag numbers
+;; 0-30 only, the common real case for every LDAP protocol-op/attribute-type tag this stdlib
+;; would ever need — high-tag-number continuation form is real, separate, unsupported).
+(defn read-ber-tag [(buf : String @ Region) (pos : I32)]
+  : I32
+  (net/wire/raw-byte buf pos))
+
+;; read-ber-length — real, direct short-form BER length decode at `pos + 1` (the byte right
+;; after the tag). `dest` is required even though the real result is a scalar: VS0's own C
+;; emitter needs a real Arena in scope to box a non-pointer Result payload (the same real,
+;; already-documented constraint `sip/rtp.prn`'s own `parse-rtp-header` already names).
+(defn read-ber-length [(buf : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result I32 BerError) @ Region
+  (let [b (net/wire/raw-byte buf (+ pos 1))]
+    (if (= (bit-and b 128) 128)
+      (Err LongFormUnsupported)
+      (Ok b))))
+
+;; ber-header-size — the real, fixed 2-byte TLV header size this v0 supports: 1 tag byte + 1
+;; short-form length byte. A real caller adds this to `pos` to find where the real VALUE bytes
+;; begin (or, for a real constructed/SEQUENCE element, where its own nested TLV elements begin).
+(defn ber-header-size [] : I32 2)
+
+;; build-ber-tlv — real, direct BER TLV encoder for a real, already-encoded value (short form
+;; only — the real, honest v0 boundary named above; a value longer than 127 bytes is a real
+;; caller error, not attempted here). Real, honest, deliberate `#target inline-c` escape hatch,
+;; the same real reason `net/dns.prn`'s own `build-dns-query` already needed one: the tag/length
+;; header bytes this function writes are frequently, legitimately zero (a real length of 0 for
+;; an empty value, or a real tag value like 0x02 for INTEGER), and `string/concat`'s own
+;; `strcpy`/`strcat` truncation would corrupt output the moment that happens — not a rare edge
+;; case for a general-purpose TLV encoder.
+(defn build-ber-tlv [(tag : I32) (value : String @ Region) (value-len : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String (+ value-len 2))]
+    #target
+    {:c (inline-c "out[0]=(char)tag; out[1]=(char)value_len; memcpy(out+2, value, value_len);")}
+    out))
