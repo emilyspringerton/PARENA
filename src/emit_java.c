@@ -200,6 +200,30 @@ static const char *emit_java_expr(Arena *arena, Node *expr, const char **out_err
         return result;
     }
 
+    /* `(not x)` -- real, genuine gap found live (kanban cruise-queue card 32445324, a real
+       stdlib/android/battery_ui.prn probe: `(and (not is-charging) ...)`). `not` is a real,
+       distinct 1-argument form, not a 2-argument binop, so it fell through this dispatch's own
+       binop-table lookup just below into the generic symbol-headed-call fallback, mangling into
+       a bogus call to a never-defined `not(...)` Java method -- the SAME real gap `src/emit.c`
+       (2026-08-21) and `BURROW/emit_c.go`/`emit_go.go` (2026-08-30) already found and fixed for
+       their own targets; this Java target had simply never hit a real `.prn` file using `not`
+       yet. Direct port of `emit.c`'s own real fix: Java's `!` negation operator is the exact
+       real equivalent C's own `!` already is. */
+    if (strcmp(head, "not") == 0) {
+        if (expr->child_count != 2) {
+            *out_error = "emit_java: not requires exactly 1 operand";
+            return NULL;
+        }
+        const char *inner = emit_java_expr(arena, expr->children[1], out_error);
+        if (!inner) return NULL;
+        JavaBuf b;
+        jb_init(&b);
+        jb_appendf(&b, "(!(%s))", inner);
+        const char *result = arena_strdup(arena, b.data, b.len);
+        jb_free(&b);
+        return result;
+    }
+
     /* real, narrow binop set -- exactly 2 operands, matching every real call site this mirrors. */
     const char *java_op = find_binop(head);
     if (java_op) {

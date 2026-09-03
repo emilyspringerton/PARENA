@@ -187,6 +187,37 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `(not x)` -- real, genuine gap found live (kanban cruise-queue card 32445324,
+       stdlib/android/battery_ui.prn's own real `(and (not is-charging) ...)`): `not` is a real,
+       distinct 1-argument form, not a 2-argument binop, and fell through to a bogus call to a
+       never-defined `not(...)` Java method before this fix -- the same real gap already found
+       and fixed for src/emit.c (2026-08-21) and BURROW's own emit_c.go/emit_go.go (2026-08-30),
+       this Java target simply hadn't hit a real .prn file using it yet. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [(x : Bool)] : Bool (not x))";
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "F", &err);
+        CHECK(java != NULL, "(not x) emits successfully");
+        if (java) {
+            CHECK(strstr(java, "(!(x))") != NULL, "not lowers to Java's own ! negation operator, not a bogus not(x) call");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn f [(a : Bool) (b : Bool)] : Bool (and (not a) b))";
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "F", &err);
+        CHECK(java != NULL, "not composes correctly inside a real binop (and (not a) b)");
+        if (java) {
+            CHECK(strstr(java, "(!(a))") != NULL, "the nested not still lowers correctly inside the surrounding binop");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }

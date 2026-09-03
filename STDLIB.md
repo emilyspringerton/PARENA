@@ -3306,3 +3306,23 @@ real, honest degenerate case (takes the rest of the source as its own text, no c
 unrecognized byte (`#`) is silently skipped, matching the real, deliberate v0 boundary. Real,
 honest, unstarted: the real parser/AST (`V16_NORTHSTAR.md`'s own Phase 2b), a real keyword table,
 multi-character operators, and everything else that doc's own real 6-phase plan names.
+
+## android/battery-ui — real Java-target proof, first slice (2026-09-03)
+
+Real answer to kanban cruise-queue card 32445324, "PARENA android app in JAVA using PARENA using
+the JAVA emitter" — see `docs/ANDROID_JAVA_TARGET_NORTHSTAR.md` for the full real scoping (what's
+shipped vs. the real, honest, unstarted Android-app wiring, which needs an Android SDK this
+sandbox doesn't have). `stdlib/android/battery_ui.prn` — two real, minimal, scalar-only decision
+functions (`should-show-low-battery-warning`, `clamp-brightness`), matching `emit_java.h`'s own
+narrow v0 scope (I32/F64/Bool/String params, no Arena/region, one-expression bodies). Compiled
+via the real Java emitter and verified with an actual JDK (`javac`/`java 25.0.4`, same version
+`BezierInterp`/`Humanness`'s own real three-target proof used) against a real `Main.java` smoke
+test — 7 real assertions, including the real `battery-pct == 15` boundary (warns) vs. `16`
+(doesn't) and both brightness-clamp directions.
+
+**Real, genuine compiler bug found and fixed live, not designed in advance**: `(not x)` had no
+handling anywhere in `src/emit_java.c` at all — the exact same real gap already found and fixed
+for `src/emit.c` (2026-08-21) and `BURROW/emit_c.go`/`emit_go.go` (2026-08-30); this Java target
+simply hadn't hit a real `.prn` file using `not` yet. Fixed the same real way: Java's own `!`
+negation operator is the direct equivalent. `tests/test_emit_java.c`: 31/31 (4 new). `make test`:
+342/342, zero regressions.

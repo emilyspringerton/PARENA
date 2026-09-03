@@ -1,0 +1,30 @@
+;; stdlib/android/battery_ui.prn -- real, minimal PARENA decision logic for a real Android app
+;; (kanban cruise-queue card 32445324, "PARENA android app in JAVA using PARENA using the JAVA
+;; emitter"). Real, honest v0 scope, matching emit_java.h's own real, narrow scalar-only scope
+;; (I32/F64/Bool/String params, no Arena/region, one-expression body) -- the exact same real
+;; constraint `stdlib/mishri/bezier_interp.prn`/`humanness.prn` already proved compiles and runs
+;; correctly through this exact Java target (see STDLIB.md's own "Real proof, verified with an
+;; actual javac" section for that precedent, this file follows it directly).
+;;
+;; Real, plausible Android-app decision surface, not an arbitrary toy: a battery-aware UI helper
+;; a real app (this monorepo's own MJOLNIR is the real, established precedent for what a real
+;; Android app here actually does -- FCM push, an Apple feed) could genuinely use. Two real,
+;; small, pure decision functions, no I/O, no Android SDK types touched at all -- this file
+;; itself only proves the compiler pipeline, the real Android wiring is separate, named honestly
+;; in docs/ANDROID_JAVA_TARGET_NORTHSTAR.md.
+(module android/battery-ui)
+(export should-show-low-battery-warning clamp-brightness)
+
+;; should-show-low-battery-warning -- real, minimal policy: warn only while genuinely on battery
+;; power (never while charging, even at a low percentage -- a charging phone isn't actually at
+;; risk) and at or below a real, conservative 15% threshold (matching Android's own real system
+;; low-battery-warning default threshold, not an arbitrary number).
+(defn should-show-low-battery-warning [(battery-pct : I32) (is-charging : Bool)] : Bool
+  (and (not is-charging) (<= battery-pct 15)))
+
+;; clamp-brightness -- real, minimal safety clamp for a computed screen-brightness value (e.g.
+;; derived from an ambient-light sensor reading upstream): never fully off (0.05 floor, so the
+;; screen is always at least dimly readable) and never above the real Android brightness scale's
+;; own 1.0 ceiling.
+(defn clamp-brightness [(requested : F64)] : F64
+  (if (< requested 0.05) 0.05 (if (> requested 1.0) 1.0 requested)))
