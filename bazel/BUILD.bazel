@@ -1,0 +1,4 @@
+# bazel/BUILD.bazel — makes parena_compile.bzl loadable by a consuming repo as
+# `@parena//bazel:parena_compile.bzl` (kanban PX-001/PX-BZ-001).
+
+exports_files(["parena_compile.bzl"])

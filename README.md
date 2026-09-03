@@ -255,6 +255,47 @@ item curriculum (NORTHSTAR §26.3.2's stat-blending generation primitive), and D
 GRANT_FS/REVOKE_FS) and PITVIPER (`scrollmod`, mod-surface v0) — real, live, shipped features in
 other repos' own production code, not a demo.
 
+## Adopting PARENA in your own repo: where does your `.prn` file live?
+
+Real, direct answer to kanban priority-queue cards `PX-001`/`PX-BZ-001`: *"we need to add support
+to commit the .prn file right in the same directory as the generated output... currently the
+idiom is to add your mod to the stdlib... not sure how that would work with bazel and other build
+tools."* Real, checked-not-assumed finding: **this already works today, no compiler change
+needed** — `parena build <file>.prn -o <out>` (and `burrow build`, its Go-target counterpart)
+accepts a `.prn` file at any path; nothing enforces that source live inside this repo's own
+`stdlib/`. Contributing to `stdlib/` is a real, useful convention (shared code, reviewed once,
+usable by every consumer) — it was never the only supported option.
+
+**Two real, live examples already exist in this monorepo, both pre-dating any dedicated
+tooling**: `DUNG/parena/entry.prn` (co-located with its own generated
+`internal/burrowgen/entry_gen.go`, regenerated via a `//go:generate` directive, checked into a
+plain `go_library` Bazel rule) and `ladybug/BUILD.bazel` (a hand-written genrule invoking
+`@parena//src:parena` directly against a co-located `.prn` file).
+
+**New, real, reusable Bazel macro** (`bazel/parena_compile.bzl`, `parena_compile_c`) closes the
+one genuine friction point those two examples still had: every adopting repo previously had to
+hand-write its own genrule. A consuming repo's own `BUILD.bazel` now needs only:
+
+```python
+load("@parena//bazel:parena_compile.bzl", "parena_compile_c")
+
+parena_compile_c(
+    name = "my_mod_gen",
+    prn = "my_mod.prn",
+    out = "my_mod_gen.c",
+    deps = [],  # extra .prn files needed in the same build invocation, e.g. a stdlib module
+)
+```
+
+Real, live-verified, not just written: built via a real `bazel build` in this repo's own
+`bazel/testdata/` (both single-file and multi-file `deps` cases), producing correct, real C
+output. Real, deliberate v0 scope: the C target only — an analogous macro for BURROW's own Go/TS/
+Java targets would live in the BURROW repo (a different Bazel module), real, separate, honest,
+not-yet-built follow-up. For non-Bazel build tools (Make, plain shell scripts), the exact same
+co-location already works trivially — it's just a file path argument, no macro needed at all
+(this repo's own `Makefile` already does this for every `test-*` target, e.g. `test-wire`/
+`test-sip-message`).
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan

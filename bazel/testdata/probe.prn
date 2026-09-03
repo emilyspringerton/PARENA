@@ -1,0 +1,5 @@
+;; probe.prn -- real, minimal test fixture for parena_compile.bzl's own live verification
+;; (kanban PX-001/PX-BZ-001). Not a real feature, just proves the macro actually invokes
+;; `parena build` correctly and produces real, expected C output.
+(defn double-it [(x : I32)] : I32
+  (* x 2))

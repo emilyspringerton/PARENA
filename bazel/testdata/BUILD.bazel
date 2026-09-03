@@ -1,0 +1,18 @@
+# bazel/testdata/BUILD.bazel — real, live verification that parena_compile.bzl's own macro
+# actually works, not just parses (kanban PX-001/PX-BZ-001).
+
+load("@parena//bazel:parena_compile.bzl", "parena_compile_c")
+
+parena_compile_c(
+    name = "probe_gen",
+    prn = "probe.prn",
+    out = "probe_gen.c",
+)
+
+# Real, live proof the `deps` argument (multi-file parena build) works too.
+parena_compile_c(
+    name = "uses_helper_gen",
+    prn = "uses_helper.prn",
+    out = "uses_helper_gen.c",
+    deps = ["probe.prn", "helper.prn"],
+)

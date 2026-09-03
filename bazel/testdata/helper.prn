@@ -1,0 +1,2 @@
+(defn triple-it [(x : I32)] : I32
+  (* x 3))

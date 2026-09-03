@@ -1,0 +1,2 @@
+(defn triple-and-double [(x : I32)] : I32
+  (double-it (triple-it x)))
