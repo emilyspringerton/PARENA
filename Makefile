@@ -733,3 +733,11 @@ test-rtp: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_rtp.c \
 		runtime/parena_runtime.c -o /tmp/test_rtp_bin -lm
 	/tmp/test_rtp_bin
+
+# test-dns -- real end-to-end verification for stdlib/net/dns.prn (kanban priority-queue card
+# 334534, "DNS primitives parena").
+test-dns: build
+	./parena build stdlib/string.prn stdlib/net/wire.prn stdlib/net/dns.prn -o tests/test_dns_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_dns.c \
+		runtime/parena_runtime.c -o /tmp/test_dns_bin -lm
+	/tmp/test_dns_bin

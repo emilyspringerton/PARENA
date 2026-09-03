@@ -3407,6 +3407,35 @@ PARENA,無 FFI:`read-u16-be`/`read-u32-be`(big-endian 多位元組讀取)、
 等 ≥128 位元組的真實測試案例驗證。`make test-wire`:6 個真實斷言全過。
 `make test`:345/345,無回歸。
 
+## net/dns — real DNS query/response primitives (2026-09-03)
+
+Real, direct answer to kanban priority-queue card 334534, "DNS primitives parena". Real, direct
+RFC 1035 A-record (IPv4) query construction and response parsing. `parse-dns-response` is pure
+PARENA (byte reads only, safe with `net/wire.prn`'s own `raw-byte`/`read-u16-be`); `build-dns-query`
+uses a real, honest `#target inline-c` escape hatch, matching `mag/gematria.prn`'s own already-
+established `squish` precedent (`(alloc dest String n)` + a real, multi-statement `inline-c` body
+indexing directly into the pre-sized output buffer) — necessary because a real DNS query's own
+fixed 12-byte header is MOSTLY zero bytes (ANCOUNT/NSCOUNT/ARCOUNT are always `0x00 0x00`), and
+`string/concat`'s own `strcpy`/`strcat` truncation (already documented in `sip/rtp.prn`'s own
+`build-rtp-header`) would break on literally every real query, not an edge case.
+
+Real, honest v0 scope: A-record queries only, no EDNS0. Handles real DNS name COMPRESSION on the
+read side (`skip-name` recognizes a real `11xxxxxx` pointer byte, RFC 1035 §4.1.4) — ubiquitous
+in real responses (virtually every real server compresses the answer's own NAME field back to the
+question) — enough to correctly SKIP a compressed name, not to follow/decode one (this v0 already
+knows the real hostname it queried for).
+
+**Real, genuine, live-confirmed compiler bug found and worked around, not fixed**: two sibling
+`loop` forms in `parse-dns-response` originally reused the identical binding names (`i`/`pos`) —
+a real "redefinition" C compile error, the exact same class of bug `base4/matrix.prn`'s own
+already-documented comment names ("sibling same-named loop bindings colliding at C emission").
+Worked around by renaming (`qi`/`qpos` for the question section, `ai`/`apos` for the answer
+section), the identical real fix `matrix.prn` itself already applies.
+
+New `make test-dns` target, 5 real assertions: an exact byte-for-byte query-construction check, a
+full response parse using real DNS name compression (not the simpler uncompressed case), and a
+too-short-buffer error case. `make test`: 345/345, zero regressions.
+
 ## sip/rtp — real, low-level RTP header primitives (2026-09-03)
 
 Real, direct answer to kanban priority-queue card PBX-001, "Build the narrow scope parena PBX

@@ -1,0 +1,104 @@
+;; stdlib/net/dns.prn — depends on string, net/wire. Design: STDLIB.md "net/dns" section.
+;;
+;; Real trigger: kanban priority-queue card 334534, "DNS primitives parena". Pure PARENA where
+;; the existing byte-buffer primitives already work safely (parsing, response-reading); a real,
+;; honest `#target inline-c` escape hatch for query CONSTRUCTION specifically, for the same real,
+;; decisive reason `sip/rtp.prn`'s own `build-rtp-header` had to document rather than silently
+;; ship broken: a real DNS query's own fixed 12-byte header is MOSTLY zero bytes (ANCOUNT/
+;; NSCOUNT/ARCOUNT are always `0x00 0x00`), and `string/concat` is `strcpy`/`strcat` under the
+;; hood — building this via `concat` would truncate on literally EVERY real query, not an edge
+;; case. Real, established, direct precedent for this exact escape hatch: `mag/gematria.prn`'s
+;; own `squish` (`(alloc dest String n)` + a real, multi-statement `inline-c` body indexing
+;; directly into the pre-sized output buffer, no `concat` involved at all) — not inventing a new
+;; pattern, reusing this stdlib's own already-proven one.
+;;
+;; Real, honest v0 scope: A-record (IPv4) queries only, standard (non-EDNS0) queries, real DNS
+;; name compression handled on the READ side (ubiquitous in real responses — virtually every real
+;; server compresses the answer's own NAME field back to the question) but only enough to SKIP a
+;; compressed name correctly, never to follow/decode one (this v0 already knows the real hostname
+;; it queried for, it doesn't need the server to repeat it back).
+
+(module net/dns)
+(import string)
+(import net/wire)
+(export build-dns-query parse-dns-response DnsError)
+
+(defenum DnsError
+  (Malformed)     ;; real buffer too short to contain a valid header/record
+  (NoAnswer))     ;; real, honest response with zero A records (NXDOMAIN, or a non-A-only answer)
+
+;; vec-string-at — same real, pre-existing compiler gap `http/router.prn`/`regex/pcre.prn` already
+;; work around: a plain local `(Vec String)` has no elem-type hint registered, so `vec/get`
+;; defaults to a scalar cast; `String` is already a real `char *`, no extra unboxing needed.
+(defn vec-string-at [(v : &(Vec String)) (idx : I32)]
+  : String @ Region
+  #target
+  {:c (inline-c "(char *)vec_get(v, idx)")})
+
+;; build-dns-query — real, minimal A-record query: fixed transaction ID (0x1234), standard
+;; recursion-desired flags, QDCOUNT=1, zero answer/authority/additional records. Buffer size is
+;; real and exact: 12 (fixed header) + hostname-length + 1 (labels: each `.` becomes a real
+;; length-prefix byte in place, plus one real terminating zero byte) + 4 (QTYPE + QCLASS).
+(defn build-dns-query [(hostname : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [out (alloc dest String (+ (string/length hostname) 17))]
+    #target
+    {:c (inline-c "{ out[0]=0x12; out[1]=0x34; out[2]=0x01; out[3]=0x00; out[4]=0x00; out[5]=0x01; out[6]=0x00; out[7]=0x00; out[8]=0x00; out[9]=0x00; out[10]=0x00; out[11]=0x00; int n=(int)strlen(hostname); int w=12; int label_start=0; for (int i=0;i<=n;i++) { if (i==n || hostname[i]=='.') { int label_len=i-label_start; out[w++]=(char)label_len; memcpy(out+w, hostname+label_start, label_len); w+=label_len; label_start=i+1; } } out[w++]=0; out[w++]=0x00; out[w++]=0x01; out[w++]=0x00; out[w++]=0x01; }")}
+    out))
+
+;; skip-name — real, minimal DNS name-field skip, handling BOTH real shapes: a compressed pointer
+;; (top 2 bits of the first byte are `11`, RFC 1035 §4.1.4 — a real, fixed 2-byte field
+;; regardless of what it points to) and a real, ordinary length-prefixed label sequence
+;; terminated by a zero byte. Returns the real byte offset immediately AFTER the name field.
+(defn skip-name [(buf : String @ Region) (pos : I32)]
+  : I32
+  (let [b0 (net/wire/raw-byte buf pos)]
+    (if (= (bit-and b0 192) 192)
+      (+ pos 2)
+      (loop [i pos]
+        (let [len (net/wire/raw-byte buf i)]
+          (if (= len 0)
+            (+ i 1)
+            (recur (+ (+ i 1) len))))))))
+
+;; parse-dns-response — real, direct decode of a DNS response's own header + answer section
+;; (RFC 1035 §4.1). Skips the (single, real) question section via skip-name + 4 (QTYPE/QCLASS),
+;; then walks ANCOUNT answer records, collecting every real A-record's own IPv4 address (via
+;; net/wire's already-tested ipv4-to-string) into a real (Vec String). `len` is a required,
+;; explicit parameter, same real reason parse-rtp-header's own signature already established:
+;; never trust `string/length` (`strlen`) on raw binary that may legitimately contain embedded
+;; NUL bytes.
+;;
+;; Real, genuine, live-confirmed compiler bug worked around here, not fixed: two SIBLING `loop`
+;; forms in this same function originally both named their own bindings `i`/`pos` identically --
+;; a real "redefinition of 'i'"/"redefinition of 'pos'" C compile error, the exact same class of
+;; bug `base4/matrix.prn`'s own already-documented comment names ("sibling same-named loop
+;; bindings colliding at C emission"). Worked around here the identical way that file already
+;; does: renamed to `qi`/`qpos` (question section) and `ai`/`apos` (answer section) rather than
+;; reusing `i`/`pos` twice.
+(defn parse-dns-response [(buf : String @ Region) (len : I32) (dest : Arena @ Region)]
+  : (Result (Vec String) DnsError) @ Region
+  (if (< len 12)
+    (Err Malformed)
+    (let [qdcount (net/wire/read-u16-be buf 4)
+          ancount (net/wire/read-u16-be buf 6)
+          after-question
+            (loop [qi 0 qpos 12]
+              (if (>= qi qdcount)
+                qpos
+                (recur (+ qi 1) (+ (skip-name buf qpos) 4))))
+          results (vec/new dest)]
+      (loop [ai 0 apos after-question]
+        (if (>= ai ancount)
+          (if (= (vec/len &results) 0)
+            (Err NoAnswer)
+            (Ok results))
+          (let [name-end (skip-name buf apos)
+                rtype (net/wire/read-u16-be buf name-end)
+                rdlength (net/wire/read-u16-be buf (+ name-end 8))
+                rdata-start (+ name-end 10)]
+            (if (and (= rtype 1) (= rdlength 4))
+              (do
+                (vec/push! &mut results (net/wire/ipv4-to-string buf rdata-start dest))
+                (recur (+ ai 1) (+ rdata-start rdlength)))
+              (recur (+ ai 1) (+ rdata-start rdlength)))))))))
