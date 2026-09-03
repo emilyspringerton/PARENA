@@ -3418,3 +3418,13 @@ the real success path (a real BPF filter applying, then correctly rejecting an i
 automatically the moment this runs with real capture privilege — the code path is real and
 structurally proven, just not exercised by THIS run given this sandbox's own real, current
 privilege level. `make test`: 345/345, zero regressions (this work doesn't touch the compiler).
+
+**Founder real-time follow-up (same day)**: "we want to build pcap into parena on a deep low
+level... a parena pcap implementation and build the std lib deps it needs into the std lib" —
+see `docs/NATIVE_PCAP_NORTHSTAR.md` for the real, phased plan for a NATIVE (no libpcap FFI)
+implementation, kept as a real, separate, additional capability alongside the FFI-bound one
+above, not a replacement. Real, checked-live finding worth surfacing here directly: most of the
+real "stdlib deps" this ask names already exist (`bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` real
+binops since 2026-08-20's `compress/lz4.prn` work, `char-at` as a real byte-buffer read) — the
+genuinely new, missing piece is a raw `AF_PACKET` capture-socket runtime primitive, not new
+compiler primitives. Planning only, no code written yet.
