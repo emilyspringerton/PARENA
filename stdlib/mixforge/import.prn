@@ -43,7 +43,7 @@
 (import string)
 (import process)
 (import log/projector)
-(export safe-youtube-url? download-track import-track TrackImportError TrackRecord)
+(export safe-youtube-url? download-track import-track track-metadata-json TrackImportError TrackRecord)
 
 (defenum TrackImportError
   (InvalidURL)

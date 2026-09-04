@@ -1,4 +1,9 @@
 ## 2026-09-04
+- fix: `stdlib/mixforge/import.prn` exports `track-metadata-json` (MF-CORE-12441, "mixforge
+  iterate on the core product") -- real, small gap found live: the function existed and worked
+  (S243-01) but wasn't in the module's own `export` list, so no external caller (a future real
+  CLI) could ever reach it. Closed by `MIXFORGE/src/main.c`'s new real CLI host in the same
+  pass -- see that repo's own CHANGELOG.md for the full writeup.
 - feat: `stdlib/gfd/nm_bonus_mod.prn` (GFD-x-123/GFD-x-124, "mod interface for event broker in
   server mods... USE PARENA TYPES... mods should fire off signals for their callbacks" + "mods
   can subscribe to certain events... fire off callbacks on specific event types events can have
