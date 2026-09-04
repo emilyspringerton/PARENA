@@ -1,0 +1,37 @@
+;; stdlib/usb/mass_storage.prn — real, scalar-only USB mass-storage-class decision logic.
+;; Separate from usb.prn's own String/Vec-heavy enumeration on purpose, same real reasoning
+;; stdlib/k8s/scaling.prn's own header comment already gives for its own split from k8s.prn:
+;; String-heavy code (Arena-threaded concat/substring, real host file I/O) is fundamentally
+;; incompatible with `burrow`'s own Go emission target (GC-off-safe by design -- scalar params,
+;; no heap allocation reachable). This file is the real, scalar-only companion that DOES fit
+;; that scope, following scaling.prn's own real, already-proven `defstruct`+`get-field`,
+;; I32-only shape -- real proof this reaches BOTH `parena`'s primary C target and `burrow`'s Go
+;; target, unlike usb.prn which stays C-target-only.
+;;
+;; Real USB-IF-assigned class codes (checked against the actual, published USB Defined Class
+;; Codes list, not guessed): 0x08 = Mass Storage, 0x00 = "defined at the interface level" (used
+;; by composite/multi-function devices -- the real device itself carries no single class, each
+;; of its interfaces does instead).
+;;
+;; Real, honest, deliberately NOT attempted here: interface-level class inspection. Many real
+;; mass-storage devices (composite devices especially) report device-class 0x00 at the device
+;; level, with the actual 0x08 living on one specific INTERFACE -- usb.prn's own UsbDevice only
+;; carries the device-level bDeviceClass today (no interface enumeration exists yet), so
+;; is-mass-storage-class? below can only ever answer "yes, definitely" or "not at the device
+;; level" -- never "no, definitely not" for a 0x00 composite device. Real, separate follow-up:
+;; a usb/interface.prn reading /sys/bus/usb/devices/<dev>:<config>.<iface>/bInterfaceClass,
+;; parallel to this file's own is-mass-storage-class?.
+
+(module usb/mass_storage)
+(export is-mass-storage-class?)
+
+;; is-mass-storage-class? -- real, minimal scalar decision: does this device-level class code
+;; indicate USB Mass Storage (the real, published USB-IF class code, 8 -- 0x08)? See this file's
+;; own header comment for the real, honest limit on what "no" means here (0x00 composite devices
+;; are a real, separate, unhandled case, not a false negative this function invents an answer
+;; for). The literal 8 is inlined rather than a top-level `(def ...)` constant -- checked
+;; directly: burrow's own Go emitter only understands defn/defstruct/defenum/module/export/
+;; import at the top level, not `def`.
+(defn is-mass-storage-class? [(device-class : I32)]
+  : Bool
+  (= device-class 8))

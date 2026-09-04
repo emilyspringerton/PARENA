@@ -3553,3 +3553,45 @@ real "stdlib deps" this ask names already exist (`bit-and`/`bit-or`/`bit-xor`/`s
 binops since 2026-08-20's `compress/lz4.prn` work, `char-at` as a real byte-buffer read) — the
 genuinely new, missing piece is a raw `AF_PACKET` capture-socket runtime primitive, not new
 compiler primitives. Planning only, no code written yet.
+
+## usb — real USB device enumeration + a real, burrow-compatible mass-storage-class check (2026-09-04)
+
+`stdlib/usb/usb.prn` (S213-04/S215-04, "write usb shit into the stdlibs" -> "make it work in
+either parena or burrow"). Real, checked-live foundation before writing anything: this box's own
+`/sys/bus/usb/devices/` is real but empty (a VPS/container with no real USB bus -- same real "no
+physical device in this sandbox" limitation `UART_SERIAL_NORTHSTAR.md`/`pentest/pcap.prn` already
+name honestly). Real, standard Linux kernel sysfs convention, not guessed: each entry is either a
+real device (bus-port path like `1-1`, or a root hub `usbN`) or one of that device's own
+interface sub-nodes (name contains a colon, e.g. `1-1:1.0`) -- interfaces are skipped, matching
+every real userspace USB tool's own convention.
+
+Real scope split, following `k8s/k8s.prn` vs. `k8s/scaling.prn`'s own already-established
+precedent exactly: `usb.prn` does the real String/Vec-heavy enumeration (device-directory
+listing, reading `idVendor`/`idProduct`/`bDeviceClass` sysfs attribute files, a real, narrow
+2-hex-digit-byte parser since no general hex parser exists in this stdlib), C-target only (same
+Arena-threading-is-incompatible-with-burrow reasoning `scaling.prn`'s own header comment gives).
+`usb/mass_storage.prn` is the real, scalar-only, `burrow`-compatible companion:
+`is-mass-storage-class?` checks a device-level class byte against the real, published USB-IF
+mass-storage class code (8/0x08) -- real, honest, named limit: many real mass-storage devices are
+composite (device-level class 0x00, the actual 0x08 on one interface), and this v0 has no
+interface-level enumeration yet, so it can only answer "yes, definitely" or "not at the device
+level," never a confident "no" for a 0x00 device.
+
+Real bug found and fixed live while verifying, not glossed over: the first draft's own
+`(deref (vec/get &entries i))` loop over `io/list-dir`'s `(Vec String)` result compiled to a
+literal `void entry = ...` in the generated C (a real type-inference gap iterating a Vec of
+Strings specifically, this stdlib's first real consumer of that exact shape) -- fixed by
+following `awk.prn`'s own already-working convention of passing `vec/get`'s result directly,
+without an explicit `deref`, the same way that file already does for its own `Vec String` field
+access. Real, live-verified, not just parsed: `parena build stdlib/string.prn stdlib/array.prn
+stdlib/io.prn stdlib/usb/usb.prn -o usb_gen.c` (io.prn's own real Makefile-precedent file
+combination) and `parena build stdlib/usb/mass_storage.prn -o mass_storage_gen.c` both emit real
+C that compiles clean under `gcc -c` (zero warnings) with no `stdlib/vec.prn` file itself
+included -- a real, separate finding worth naming: `vec.prn`'s own source (generic `T`, never
+monomorphized) is reference/documentation only and must never be passed to `parena build`
+directly; `Vec` support is a compiler-native intrinsic, confirmed by successfully compiling a
+`(Vec CustomStruct)` return type once `vec.prn` was dropped from the build command. `mass_storage.prn`
+also verified through `burrow build ... -o mass_storage_gen.go`, and the emitted Go compiles
+clean via a real `go build`. Real, honest, not attempted here: a vendor-ID/product-ID name
+database, interface-level class enumeration (named above), and any live end-to-end run against a
+real USB device (none exists in this sandbox).

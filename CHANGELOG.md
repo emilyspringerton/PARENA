@@ -1,3 +1,19 @@
+## 2026-09-04
+- feat: `stdlib/usb/usb.prn` + `stdlib/usb/mass_storage.prn` (S213-04/S215-04, "write usb shit
+  into the stdlibs" -> "make it work in either parena or burrow"). Real USB device enumeration
+  over `/sys/bus/usb/devices/` (String/Vec-heavy, C-target only, same real split
+  `k8s/k8s.prn`/`k8s/scaling.prn` already established) + a real, scalar-only, burrow-compatible
+  `is-mass-storage-class?`. Real bug found and fixed live: the first draft's
+  `(deref (vec/get &entries i))` over a `(Vec String)` compiled to a literal `void entry` in the
+  generated C -- fixed by following `awk.prn`'s own working convention (pass `vec/get`'s result
+  directly, no `deref`). Verified: `parena build` emits real C compiling clean under `gcc -c`
+  (zero warnings) for both files; `burrow build` on `mass_storage.prn` emits real Go that
+  compiles clean via `go build`. Real, separate finding: `stdlib/vec.prn`'s own source (unresolved
+  generic `T`) is reference-only and must never be passed to `parena build` directly -- `Vec`
+  support is a compiler-native intrinsic. Real, honest, not attempted: a vendor/product name
+  database, interface-level class enumeration, live verification against a real device (none
+  exists in this sandbox). See `STDLIB.md`'s own new "usb" section for the full writeup.
+
 ## 2026-09-03 (18)
 - feat: stdlib/idunapro/cli_mod.prn redesigned around a real HealthStatus enum (kanban
   cruise-queue card 9988's own next-named prerequisite, closed the same day BURROW shipped

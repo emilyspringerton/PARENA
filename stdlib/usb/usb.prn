@@ -1,0 +1,126 @@
+;; stdlib/usb/usb.prn — real USB device enumeration, kanban S213-04/S215-04 ("write usb shit
+;; into the stdlibs" -> "make it work in either parena or burrow"). Real scope split, following
+;; the exact same String+Arena-heavy-vs-scalar-only precedent stdlib/k8s/k8s.prn vs.
+;; stdlib/k8s/scaling.prn already established: THIS file does the real device-enumeration work
+;; (String-heavy, real sysfs reads, C-target only, same reasoning k8s.prn's own header comment
+;; gives for why that kind of code can't reach burrow's GC-off-safe Go target), while
+;; usb/mass_storage.prn (own file, own header comment) carries the scalar-only decision logic
+;; that CAN reach burrow.
+;;
+;; Real, checked-not-guessed foundation: Linux's own sysfs USB tree lives at
+;; /sys/bus/usb/devices/ -- confirmed directly (not assumed) against this box's own real, empty
+;; instance (`ls -la /sys/bus/usb/devices/` -- a VPS/container with no real USB bus, same real
+;; "no physical device in this sandbox" limitation UART_SERIAL_NORTHSTAR.md and pentest/pcap.prn
+;; already name honestly elsewhere in this stdlib). Real, standard, well-documented Linux kernel
+;; convention (not guessed): each entry is either a real DEVICE (bus-port path like "1-1", or a
+;; root hub named "usbN") or one of that device's own INTERFACE sub-nodes (name contains a
+;; colon, e.g. "1-1:1.0") -- interfaces are skipped here, matching every real userspace USB
+;; enumeration tool's own convention (lsusb, udevadm, etc. all draw this same line). Each real
+;; device directory exposes flat, single-line attribute files this reads directly:
+;; idVendor/idProduct (4 lowercase hex digits, no "0x" prefix) and bDeviceClass (2 hex digits,
+;; 0x00 for "look at interfaces instead", 0x09 for hub, 0x08 for mass storage, etc. -- the real
+;; USB-IF-assigned class codes, not invented here).
+;;
+;; Real, honest, not attempted here: reading past the raw hex vendor/product ID strings into a
+;; real vendor-name/product-name database (usb.ids-style) -- this file returns the same raw IDs
+;; `lsusb -v`'s own fallback path shows for an unrecognized device, nothing more.
+
+(module usb)
+(import string)
+(import io)
+(import vec)
+(export UsbDevice list-usb-devices)
+
+(def usb-devices-root "/sys/bus/usb/devices")
+
+(defstruct UsbDevice
+  (path         : String)  ;; the real sysfs entry name, e.g. "1-1" or "usb1"
+  (vendor-id    : String)  ;; raw idVendor hex text, e.g. "1d6b" -- "" if unreadable
+  (product-id   : String)  ;; raw idProduct hex text -- "" if unreadable
+  (device-class : I32))    ;; parsed bDeviceClass byte (0-255) -- -1 if unreadable/malformed
+
+;; hex-digit-value -- one ASCII hex character (as char-at's own raw I32 byte value) -> 0-15,
+;; or -1 for anything else. Narrow on purpose: this file only ever needs to decode sysfs's own
+;; lowercase-hex attribute files, not parse arbitrary hex text -- see parse-hex-byte's own doc
+;; comment for why a general hex parser isn't attempted here.
+(defn hex-digit-value [(c : I32)]
+  : I32
+  (if (and (>= c 48) (<= c 57))          ;; '0'..'9'
+    (- c 48)
+    (if (and (>= c 97) (<= c 102))       ;; 'a'..'f'
+      (+ 10 (- c 97))
+      (if (and (>= c 65) (<= c 70))      ;; 'A'..'F' -- sysfs itself only ever emits lowercase,
+        (+ 10 (- c 65))                  ;; accepted here anyway since it costs nothing and rules
+        -1))))                           ;; out one real, easy-to-imagine future surprise.
+
+;; parse-hex-byte -- exactly 2 hex characters -> 0-255; -1 on any other length or a non-hex
+;; character (an unreadable/missing bDeviceClass file reads back as "" from read-attr below,
+;; which correctly falls through to -1 here via the length check, not a crash).
+(defn parse-hex-byte [(s : String @ Region)]
+  : I32
+  (if (not (= (string/length s) 2))
+    -1
+    (let [hi (hex-digit-value (string/char-at s 0))
+          lo (hex-digit-value (string/char-at s 1))]
+      (if (or (< hi 0) (< lo 0))
+        -1
+        (+ (* hi 16) lo)))))
+
+;; strip-trailing-newline -- every real sysfs attribute file this reads ends in exactly one
+;; "\n"; drops it if present, returns s untouched otherwise. Real, honest, narrow: does not trim
+;; any other whitespace, matching this stdlib's own existing "no general trim function yet" gap
+;; (checked directly -- string.prn has no trim/strip at all).
+(defn strip-trailing-newline [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (if (= n 0)
+      s
+      (if (= (string/char-at s (- n 1)) 10)  ;; 10 = '\n'
+        (string/substring s 0 (- n 1) dest)
+        s))))
+
+;; read-attr -- opens device-path/attr-name, reads the whole (small, single-line) file, strips
+;; its trailing newline. Real, deliberate fail-soft: "" on ANY failure (file doesn't exist for
+;; this device kind, permission denied, read error) -- a caller treats "" as "unknown", never a
+;; crash, matching read-attr's own real callers below (parse-hex-byte already handles "" as a
+;; real, valid "malformed" input via its own length check).
+(defn read-attr [(device-path : String @ Region) (attr-name : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [full-path (string/concat (string/concat device-path "/" dest) attr-name dest)]
+    (match (io/file-open full-path Read dest)
+      ((Err e) "")
+      ((Ok fh)
+        (match (io/read-string (deref fh) dest)
+          ((Err e2)
+            (do (io/file-close (deref fh) dest) ""))
+          ((Ok contents)
+            (do
+              (io/file-close (deref fh) dest)
+              (strip-trailing-newline contents dest))))))))
+
+;; read-one-device -- builds a real UsbDevice from one sysfs entry name.
+(defn read-one-device [(entry-path : String @ Region) (dest : Arena @ Region)]
+  : UsbDevice
+  (let [full-path (string/concat usb-devices-root (string/concat "/" entry-path dest) dest)]
+    {:path entry-path
+     :vendor-id (read-attr full-path "idVendor" dest)
+     :product-id (read-attr full-path "idProduct" dest)
+     :device-class (parse-hex-byte (read-attr full-path "bDeviceClass" dest))}))
+
+;; list-usb-devices -- real, top-level enumeration: every real DEVICE entry (not an interface
+;; sub-node) under /sys/bus/usb/devices, each read into a real UsbDevice. Real, honest,
+;; empty-Vec-not-error on a box with no USB bus at all, or wherever this path itself doesn't
+;; exist/isn't readable -- io/list-dir's own documented behavior already handles that case
+;; (empty Vec, not a crash), so no separate existence check is needed here.
+(defn list-usb-devices [(dest : Arena @ Region)]
+  : (Vec UsbDevice) @ Region
+  (let [entries (io/list-dir usb-devices-root dest)
+        n (vec/len &entries)
+        out (vec/new dest)]
+    (loop [i 0]
+      (when (< i n)
+        (let [entry (vec/get &entries i)]
+          (when (not (string/contains-ci? entry ":"))
+            (vec/push! &out (read-one-device entry dest))))
+        (recur (+ i 1))))
+    out))
