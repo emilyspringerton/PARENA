@@ -1,0 +1,8 @@
+(module models/repo)
+(export Repo)
+
+(defstruct Repo
+  (id : I32)
+  (name : String)
+  (owner : String)
+)

@@ -1,0 +1,18 @@
+(module controllers/repo)
+(import http/controller)
+(export repo-index repo-show repo-create repo-update repo-destroy)
+
+(defn repo-index [(req : &Request)] : Response
+  (response-json "[]")) ;; TODO: real listing, once a real store is wired in
+
+(defn repo-show [(req : &Request)] : Response
+  (response-not-found)) ;; TODO: real lookup by id
+
+(defn repo-create [(req : &Request)] : Response
+  (response-not-found)) ;; TODO: real create
+
+(defn repo-update [(req : &Request)] : Response
+  (response-not-found)) ;; TODO: real update
+
+(defn repo-destroy [(req : &Request)] : Response
+  (response-not-found)) ;; TODO: real destroy

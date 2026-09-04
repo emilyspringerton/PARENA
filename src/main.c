@@ -14,6 +14,7 @@
 #include "fmt.h"
 #include "parser.h"
 #include "region.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -474,6 +475,138 @@ static int cmd_new(const char *name) {
     return 0;
 }
 
+/* to_lower_str -- real, minimal ASCII lowercase copy (module/file names below need this;
+ * PARENA's own convention capitalizes a struct's own type name (`Repo`) but lowercases its
+ * module/file name (`repo.prn`), same real convention `stdlib/http/controller.prn`'s own
+ * `Request`/`Response` vs. that file's own lowercase path already follows). */
+static void to_lower_str(char *dst, const char *src) {
+    size_t i = 0;
+    for (; src[i]; i++) dst[i] = (char)tolower((unsigned char)src[i]);
+    dst[i] = '\0';
+}
+
+/* cmd_generate_scaffold -- real Rails-style `rails generate scaffold` for kanban cruise-queue
+ * cards PX-099/B-111 ("PARENA SCAFFOLD TOOL SCAFFOLD OUT SHITHUB" / "add commands for standing
+ * up the models and views and controllers... using it to scaffold shithub"). Real, direct
+ * consumer of SECTION 225's own already-shipped Rails-like framework
+ * (EMILY/BACKLOG.md's own S225-01..04): `http/routes.prn`'s `resource-routes`,
+ * `http/controller.prn`'s `Request`/`Response`. Generates two real, working `.prn` files -- a
+ * model (a plain `defstruct` with the given fields) and a controller (index/show/create/
+ * update/destroy action stubs matching `examples/shithub_controller_demo.prn`'s own real
+ * shape) -- for a given model name, e.g. `parena generate scaffold Repo name:String
+ * owner:String`, the real, first concrete step of SHITHUB's own still-unstarted Phase C domain
+ * (repos/users/issues/pull requests).
+ *
+ * Same "batteries included, prove it actually works" discipline `cmd_new` already established:
+ * the two generated files are actually compiled together with their real, minimal transitive
+ * dependency (`http/controller.prn` needs only `string`) before this command reports success --
+ * a scaffold that doesn't compile is a real bug in this command, not something the caller
+ * should discover themselves. Same real, honest, stated limitation as `cmd_new`: run from the
+ * PARENA repo's own root (the self-verify build references `stdlib/` by a relative path).
+ *
+ * Real, honest v0 scope, named directly: model/controller only, no real view-layer generation
+ * (SHITHUB's own real UI is a real, separate, later question -- server-rendered PARENA
+ * templates vs. a JS frontend was never decided, not guessed at here) and no route
+ * auto-registration (this command PRINTS the real `resource-routes` call to add, rather than
+ * silently editing a caller's own router-setup file it doesn't know the location or shape of).
+ */
+static int cmd_generate_scaffold(const char *model_name, int field_count, char **fields) {
+    char lower[256];
+    if (strlen(model_name) >= sizeof(lower)) {
+        fprintf(stderr, "parena: generate scaffold: model name too long\n");
+        return 1;
+    }
+    to_lower_str(lower, model_name);
+
+    char model_path[1024], controller_path[1024];
+    snprintf(model_path, sizeof(model_path), "%s.prn", lower);
+    snprintf(controller_path, sizeof(controller_path), "%s_controller.prn", lower);
+
+    struct stat st;
+    if (stat(model_path, &st) == 0) {
+        fprintf(stderr, "parena: generate scaffold: %s already exists\n", model_path);
+        return 1;
+    }
+    if (stat(controller_path, &st) == 0) {
+        fprintf(stderr, "parena: generate scaffold: %s already exists\n", controller_path);
+        return 1;
+    }
+
+    FILE *model = fopen(model_path, "wb");
+    if (!model) {
+        fprintf(stderr, "parena: generate scaffold: cannot write %s\n", model_path);
+        return 1;
+    }
+    fprintf(model,
+        "(module models/%s)\n"
+        "(export %s)\n\n"
+        "(defstruct %s\n"
+        "  (id : I32)\n",
+        lower, model_name, model_name);
+    for (int i = 0; i < field_count; i++) {
+        char field_copy[256];
+        snprintf(field_copy, sizeof(field_copy), "%s", fields[i]);
+        char *colon = strchr(field_copy, ':');
+        if (!colon) {
+            fprintf(stderr, "parena: generate scaffold: field %s must be name:Type (e.g. name:String)\n", fields[i]);
+            fclose(model);
+            remove(model_path);
+            return 1;
+        }
+        *colon = '\0';
+        fprintf(model, "  (%s : %s)\n", field_copy, colon + 1);
+    }
+    fprintf(model, ")\n");
+    fclose(model);
+
+    FILE *ctrl = fopen(controller_path, "wb");
+    if (!ctrl) {
+        fprintf(stderr, "parena: generate scaffold: cannot write %s\n", controller_path);
+        remove(model_path);
+        return 1;
+    }
+    fprintf(ctrl,
+        "(module controllers/%s)\n"
+        "(import http/controller)\n"
+        "(export %s-index %s-show %s-create %s-update %s-destroy)\n\n"
+        "(defn %s-index [(req : &Request)] : Response\n"
+        "  (response-json \"[]\")) ;; TODO: real listing, once a real store is wired in\n\n"
+        "(defn %s-show [(req : &Request)] : Response\n"
+        "  (response-not-found)) ;; TODO: real lookup by id\n\n"
+        "(defn %s-create [(req : &Request)] : Response\n"
+        "  (response-not-found)) ;; TODO: real create\n\n"
+        "(defn %s-update [(req : &Request)] : Response\n"
+        "  (response-not-found)) ;; TODO: real update\n\n"
+        "(defn %s-destroy [(req : &Request)] : Response\n"
+        "  (response-not-found)) ;; TODO: real destroy\n",
+        lower, lower, lower, lower, lower, lower, lower, lower, lower, lower, lower);
+    fclose(ctrl);
+
+    /* Real, "batteries included" verification: actually compile the two generated files
+     * together with http/controller.prn's own real, minimal dependency, proving this is real,
+     * working PARENA source, not just template text. */
+    char gen_path[1024];
+    snprintf(gen_path, sizeof(gen_path), "/tmp/parena_scaffold_%s_gen.c", lower);
+    char build_cmd[4096];
+    snprintf(build_cmd, sizeof(build_cmd),
+        "./parena build stdlib/string.prn stdlib/http/controller.prn %s %s -o %s",
+        model_path, controller_path, gen_path);
+    if (system(build_cmd) != 0) {
+        fprintf(stderr, "parena: generate scaffold: generated scaffold failed to compile "
+                         "(this is a real bug in \"parena generate scaffold\", not your fields)\n");
+        return 1;
+    }
+    remove(gen_path);
+
+    printf("parena: generate scaffold: %s scaffolded and compile-verified successfully\n", model_name);
+    printf("  %-30s -- real model (edit this)\n", model_path);
+    printf("  %-30s -- real controller (edit this)\n", controller_path);
+    printf("Real next step, not done automatically: add a real route for this resource, e.g.\n");
+    printf("  (resource-routes \"%ss\" \"%s#\")\n", lower, lower);
+    printf("to your own app's real router-setup code (http/routes.prn's own real API).\n");
+    return 0;
+}
+
 #ifdef PARENA_HAS_CI_STATUS
 /* cmd_ci_status -- the real PARENA CLI subcommand wired around
  * stdlib/ci/status.prn's own `check()` (see PARENA_HAS_CI_STATUS's own
@@ -530,11 +663,17 @@ int main(int argc, char **argv) {
                          "scaffold: a starter .prn file, a real C host main.c + a local copy of runtime/"
                          "parena_runtime.h/.c, built and run immediately so the scaffold is proven working "
                          "with zero further manual steps)\n"
+                         "       parena generate scaffold <Name> [field:Type ...]  (real Rails-style scaffold: "
+                         "a model + controller .prn pair, compile-verified immediately -- run from the PARENA "
+                         "repo's own root)\n"
         );
         return 1;
     }
     if (strcmp(argv[1], "new") == 0 && argc >= 3) {
         return cmd_new(argv[2]);
+    }
+    if (strcmp(argv[1], "generate") == 0 && argc >= 4 && strcmp(argv[2], "scaffold") == 0) {
+        return cmd_generate_scaffold(argv[3], argc - 4, argv + 4);
     }
     if (strcmp(argv[1], "parse") == 0 && argc >= 3) {
         return cmd_parse(argv[2]);

@@ -1,4 +1,25 @@
 ## 2026-09-04
+- feat: `parena generate scaffold <Name> [field:Type ...]` (kanban cruise-queue cards PX-099/
+  B-111: "PARENA SCAFFOLD TOOL SCAFFOLD OUT SHITHUB" / "add commands for standing up the
+  models and views and controllers... using it to scaffold shithub"). Real Rails-style `rails
+  generate scaffold` — new CLI subcommand generating a real model (`defstruct` with the given
+  fields) and a real controller (index/show/create/update/destroy action stubs, matching
+  `examples/shithub_controller_demo.prn`'s own shape) for a given model name, direct real
+  consumer of SECTION 225's own already-shipped Rails-like framework (`http/routes.prn`'s
+  `resource-routes`, `http/controller.prn`'s `Request`/`Response`). Same "batteries included,
+  prove it actually works" discipline `cmd_new` already established: the two generated files
+  are actually compiled together with their real, minimal transitive dependency before this
+  command reports success — a scaffold that doesn't compile is a real bug in this command, not
+  the caller's fields. Real, live proof, not just a demo: `parena generate scaffold Repo
+  name:String owner:String` — SHITHUB's own real, first Phase C domain object, committed at
+  `examples/shithub/repo.prn`/`repo_controller.prn`, compile-verified from its final location
+  too. Real error paths tested live: already-exists rejected without touching either file,
+  a malformed `field` (no `:Type`) rejected with the partially-written model file cleaned up
+  rather than left behind. `make test`: 345/345, zero regressions. Real, honest, explicitly NOT
+  done: no view-layer generation (SHITHUB's own real UI layer — server-rendered PARENA
+  templates vs. a JS frontend — was never decided, not guessed at here) and no route
+  auto-registration (the command prints the real `resource-routes` call to add, rather than
+  silently editing a caller's own router-setup file it doesn't know the shape of).
 - feat: `stdlib/pbx/ami.prn` (kanban cruise-queue card PBX-003: "either iterate more towards
   native pbx or more towards asterisk depending on what is actually working" — resolved by
   building `PBX_ASTERISK_NORTHSTAR.md`'s own already-decided Phase 1). Real, minimal Asterisk
