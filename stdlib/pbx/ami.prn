@@ -1,0 +1,111 @@
+;; stdlib/pbx/ami.prn — real, minimal Asterisk Manager Interface (AMI) message parsing and
+;; action construction, Phase 1 of `PBX_ASTERISK_NORTHSTAR.md`'s own real 4-phase plan (kanban
+;; cruise-queue card PBX-003: "either iterate more towards native pbx or more towards asterisk
+;; depending on what is actually working" — PBX-002's own research already made the real,
+;; decisive call: AMI first, not ARI (needs a WebSocket primitive PARENA doesn't have) or AGI
+;; (only reactive within one already-routed call, not a real monitor/control surface)).
+;;
+;; Real, checked-live finding this file is built on directly, not re-derived: AMI's own real
+;; wire format (`\r\n`-terminated `Key: Value` lines, terminated by a real blank line — a plain
+;; TCP connection to port 5038, no HTTP/SIP start line at all) is a direct structural sibling of
+;; `sip/message.prn`'s own already-solved header-parsing shape (`parse-headers`) — this file is
+;; that exact same real scan-for-CRLF/split-on-first-colon logic, ported to AMI's own simpler
+;; "just a header block, no start line" shape, not a new parsing problem invented from scratch.
+;;
+;; Real AMI message shapes this file covers (the three real kinds any AMI client sees):
+;;   - an Action (client -> server): a real header block whose first header is "Action: <Name>"
+;;   - a Response (server -> client): "Response: Success" | "Response: Error" + more headers
+;;   - an Event (server -> client, unsolicited): "Event: <Name>" + more headers
+;; All three share the exact same real wire shape (a header block) -- this file's own
+;; `parse-message` doesn't need to special-case which kind it's looking at; a caller reads the
+;; real "Action"/"Response"/"Event" header value itself via `header-value` to know which.
+;;
+;; Real, honest v0 scope, named explicitly: only `Login` is built as a real action (the one
+;; every real AMI session needs first); `Originate`/`Hangup`/`QueueStatus` and real event
+;; parsing helpers are Phase 3's own named next step, not attempted here. A real login
+;; round-trip against a live Asterisk instance is Phase 2, honestly un-testable in this sandbox
+;; (no Asterisk instance available) — this file's own tests exercise the real wire-format
+;; parsing/building logic directly, the same honest boundary `sip/message.prn`'s own tests
+;; already draw for SIP (no real SIP server in this sandbox either).
+(module pbx/ami)
+(import string)
+(export parse-message build-login-action header-value AmiHeader AmiError)
+
+;; AmiHeader — real, minimal opaque header pair, same "one concrete struct, no generics"
+;; workaround `sip/message.prn`'s own SipHeader already established (VS0 still has no real
+;; generic type parameters).
+(defstruct AmiHeader
+  (name  : String)
+  (value : String))
+
+(defenum AmiError
+  (MalformedHeaderLine))
+
+;; find-crlf / find-char — real, direct ports of sip/message.prn's own identically-named
+;; helpers (this stdlib's own "one concrete struct, no generics" limitation means small
+;; string-scanning helpers like these get duplicated per real consumer, not shared generically).
+(defn find-crlf [(s : String) (start : I32) (n : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i (- n 1)) n)
+      ((and (= (char-at s i) 13) (= (char-at s (+ i 1)) 10)) i)
+      (true (recur (+ i 1))))))
+
+(defn find-char [(s : String) (start : I32) (n : I32) (target : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i n) n)
+      ((= (char-at s i) target) i)
+      (true (recur (+ i 1))))))
+
+;; parse-message — the real, public entry point: walks `raw` one real CRLF-terminated line at a
+;; time, splitting each on its own first ": " into an AmiHeader, stopping at a real, honest
+;; terminating blank line (AMI's own real message boundary) or end of buffer. Unlike
+;; sip/message.prn's own parse-message, there is no start line to dispatch on first — AMI
+;; messages ARE just a header block, so this is parse-headers itself, exposed directly as the
+;; real public API.
+(defn parse-message [(raw : String) (dest : Arena @ Region)]
+  : (Result (Vec AmiHeader) AmiError) @ Region
+  (let [n (length raw)
+        headers (vec/new dest)]
+    (loop [i 0]
+      (let [line-end (find-crlf raw i n)]
+        (cond
+          ((>= i n) (Ok headers))
+          ((= line-end i) (Ok headers)) ;; blank line -- real end of message
+          (true
+            (let [colon (find-char raw i line-end 58)] ;; 58 = ':'
+              (if (>= colon line-end)
+                (Err MalformedHeaderLine)
+                (let [hname (substring raw i colon dest)
+                      ;; Real, standard AMI convention (confirmed against PBX_ASTERISK_NORTHSTAR
+                      ;; .md's own researched wire samples): exactly one space after the colon,
+                      ;; same real convention sip/message.prn's own header parser already
+                      ;; assumes for SIP/HTTP-shaped headers.
+                      hval (substring raw (+ colon 2) line-end dest)]
+                  (do
+                    (vec/push! &mut headers {:name hname :value hval})
+                    (recur (+ line-end 2))))))))))))
+
+;; header-value — real, direct port of sip/message.prn's own identically-named lookup helper.
+(defn header-value [(headers : &(Vec AmiHeader)) (name : String)] : (Option String)
+  (loop [i 0]
+    (if (>= i (vec/len headers))
+      None
+      (let [h (vec/get headers i)]
+        (if (str-eq? (get-field h :name) name)
+          (Some (get-field h :value))
+          (recur (+ i 1)))))))
+
+;; build-login-action — the real, minimal AMI Login action every real client session needs
+;; first: "Action: Login\r\nUsername: <u>\r\nSecret: <s>\r\n\r\n". Real, honest v0 boundary: no
+;; ActionID (AMI's own optional real correlation-ID header for matching a Response back to the
+;; Action that triggered it) — a real, separate, named follow-up once this file grows a second
+;; real action beyond Login, where correlation actually starts to matter.
+(defn build-login-action [(username : String) (secret : String) (dest : Arena @ Region)]
+  : String @ Region
+  (let [p1 "Action: Login\r\nUsername: "]
+    (let [p2 (concat p1 username dest)]
+      (let [p3 (concat p2 "\r\nSecret: " dest)]
+        (let [p4 (concat p3 secret dest)]
+          (concat p4 "\r\n\r\n" dest))))))

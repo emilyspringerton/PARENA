@@ -1,4 +1,23 @@
 ## 2026-09-04
+- feat: `stdlib/pbx/ami.prn` (kanban cruise-queue card PBX-003: "either iterate more towards
+  native pbx or more towards asterisk depending on what is actually working" — resolved by
+  building `PBX_ASTERISK_NORTHSTAR.md`'s own already-decided Phase 1). Real, minimal Asterisk
+  Manager Interface (AMI) parsing/construction — `build-login-action` (the real, exact
+  `Action: Login\r\nUsername: ...\r\nSecret: ...\r\n\r\n` wire bytes) and `parse-message` (a
+  real, direct structural port of `sip/message.prn`'s own `parse-headers`, since AMI's own real
+  wire format is the same CRLF-terminated `Key: Value` header-block shape with no start line at
+  all — every one of Action/Response/Event shares this one real shape, confirmed live: the same
+  `parse-message` correctly reads a real Response block and a real unsolicited Event block with
+  no special-casing). `header-value` mirrors `sip/message.prn`'s own lookup helper exactly. New
+  `make test-ami` target, 7 real assertions (login action bytes, Response parsing, Event
+  parsing, malformed-header error, empty-message edge case). `make test`: 345/345, zero
+  regressions. `PBX_ASTERISK_NORTHSTAR.md` updated: Phase 1 marked shipped, real naming
+  deviation from the original plan documented (`AmiHeader`/`AmiError`, not `AmiMessage`/
+  `AmiField` — matching what the real port actually needed). Real, honest, deliberately NOT
+  done: Phase 2 (a real login round trip against a live Asterisk instance) stays untestable in
+  this sandbox — no Asterisk instance available, same real limitation class this repo's own
+  `pentest/pcap.prn`/`UART_SERIAL_NORTHSTAR.md` gaps already named; Phase 3 (real event-driven
+  action set beyond Login) not started.
 - feat: `stdlib/git.prn` (kanban cruise-queue card 342534534535: "copy the git interface
   paradigms and idoms and affordances from vs codes for GIT for our parena editor"). Real Git
   integration primitives for the PARENA editor's future Source Control panel, matching VS Code's

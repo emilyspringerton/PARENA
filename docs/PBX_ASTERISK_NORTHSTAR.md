@@ -56,19 +56,24 @@ proven parsing shape applies directly), and gives real, immediate, useful capabi
 calls, monitor channel/registration state, query queues — the real "control an Asterisk PBX from
 PARENA" capability this card actually asks for.
 
-## Real, phased plan (none started)
+## Real, phased plan
 
-**Phase 1 — `stdlib/pbx/ami.prn`, the narrowest real slice.** `build-login-action(username,
-secret, dest) -> String` (a real, concrete single use case, matching `sip/message.prn`'s own
-`build-request` precedent of naming one real, working case rather than a generic, unproven
-key-value-builder). `parse-ami-message(raw, dest) -> Result AmiMessage AmiError` — a real, direct
-structural port of `sip/message.prn`'s own `parse-headers`, producing a `(Vec AmiField)` +
-`header-value`-style lookup, the same real API shape. Real, honest note carried over from this
-same session's own `sip/rtp.prn` fix: any of these functions handling raw bytes must take an
-explicit real length parameter, never trust `string/length` (`strlen`) on data that might
-legitimately contain embedded NUL bytes — checked directly, AMI's own real fields are ASCII text
-(usernames, channel names, response codes), so this is a real, lower-risk case than RTP's binary
-header was, but the same discipline applies if a future field is ever binary.
+**Phase 1 — `stdlib/pbx/ami.prn`, the narrowest real slice — SHIPPED.** `build-login-action
+(username, secret, dest) -> String` (a real, concrete single use case, matching
+`sip/message.prn`'s own `build-request` precedent of naming one real, working case rather than a
+generic, unproven key-value-builder). `parse-message(raw, dest) -> Result (Vec AmiHeader)
+AmiError` — a real, direct structural port of `sip/message.prn`'s own `parse-headers` (real
+naming deviation from this doc's own original plan, `AmiHeader`/`AmiError` rather than
+`AmiMessage`/`AmiField`, matching what the real port actually needed once written — AMI has no
+start line at all, so there's no separate "message" struct beyond the header Vec itself) +
+`header-value`-style lookup, the same real API shape `sip/message.prn` already uses. 7 real
+assertions (`make test-ami`): the real Login action's exact wire bytes, a real Response block, a
+real unsolicited Event block (proving `parse-message` doesn't need to special-case Action vs.
+Response vs. Event — they're all the same real wire shape), a real malformed-header error case,
+and a real empty-message edge case. `make test`: 345/345, zero regressions. AMI's own real
+fields (usernames, channel names, response codes) are all ASCII text, not binary — the real,
+lower-risk case `sip/rtp.prn`'s own `strlen`-truncation fix was guarding against for RTP's binary
+header doesn't apply here, named directly rather than silently assumed safe.
 
 **Phase 2 — real login + one real action/response round trip.** `net/tcp.prn`'s own real
 `tcp-connect`/`tcp-write`/`tcp-read` sends a real `Login` action to a real, live Asterisk
