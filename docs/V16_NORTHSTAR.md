@@ -1,10 +1,23 @@
 # NORTHSTAR — V16 (a native-PARENA JavaScript engine)
 
-**Status (2026-09-03): Phase 1 (the generics/representation decision) and Phase 2a (a real,
-tested JS lexer, `stdlib/v16/lexer.prn`) are shipped — see "Real, phased plan" below. Everything
-past that (parser/AST, interpreter, GC strategy, stdlib slice) remains real, unstarted, honestly
-scoped work; this document still exists so the real overall size of this ask stays written down
+**Status (2026-09-04): Phase 1 (the generics/representation decision), Phase 2a (a real, tested
+JS lexer, `stdlib/v16/lexer.prn`), and Phase 2b (a real, tested JS expression parser,
+`stdlib/v16/parser.prn`) are shipped — see "Real, phased plan" below. Everything past that
+(statements, interpreter, GC strategy, stdlib slice) remains real, unstarted, honestly scoped
+work; this document still exists so the real overall size of this ask stays written down
 honestly, not silently deferred.**
+
+**Founder real-time (2026-09-04): "continue that work to develop a full webview alternative
+(iterate)" → corrected "i mean webkit alternative".** Real, honest scope note: this reframes
+V16's own eventual real destination (a full WebKit-class engine — HTML/CSS/layout/rendering, not
+just a JS runtime) but does NOT change the real, incremental phased plan already written down
+below, which stays the correct path there. A full WebKit alternative is a strict superset of this
+document's own already-enormous scope (see "Explicitly out of scope for any v0/v1" — DOM/browser
+APIs were already named as out of scope for the JS *engine* specifically; a real HTML/CSS
+layout+render pipeline is separate, additional, unscoped work on top of everything below, not
+covered by this document). Continuing to iterate through this document's own real phases (Phase
+2b shipped this pass) is the real, correct next step either way — the destination changed, the
+path to it did not.
 
 ## What this is
 
@@ -104,8 +117,23 @@ real phases first, in writing, before committing to any implementation pass.**
    module silently gets a wrong `void *` type guess if that module's own source isn't passed to
    the SAME `parena build` invocation — not an emitter bug, a real, easy-to-hit mistake, now named
    so it isn't rediscovered).
-2b. **JS parser → AST** (real JS grammar, not S-expressions) — real, separate, unstarted work,
-   building on the lexer's own real `(Vec JsToken)` output.
+2b. **JS parser → AST — SHIPPED (2026-09-04)**, founder real-time "continue that work... iterate":
+   `stdlib/v16/parser.prn`, a real, working, tested (`make test-v16-parser`) EXPRESSION parser
+   (real precedence climbing — comparison over additive over multiplicative over primary — real
+   left-associativity, parenthesized sub-expressions, real multi-argument function calls via a
+   chained `AstArg` list). Real, honest v0 boundary named in that file's own header comment:
+   expressions only, no statements/assignment/`if`/blocks yet (the lexer has no keyword table, so
+   a real statement grammar needs that groundwork first — separate, later work). AST nodes use
+   bstree.prn's own established "flat `Vec`, integer-index children, no self-referential
+   pointers" convention, not a new representation. Three real, found-live VS0 emitter quirks
+   worked around this pass (documented in the file itself and `STDLIB.md`'s own "v16/parser"
+   section): a `do` block can never contain a `let` as any of its elements (not just non-final
+   position); a `cond` clause's own body (unlike an `if` branch, a `let` body, or a function body)
+   also can't be a `let` OR a `do` — both need extracting into a real, separate function whose own
+   body IS the let/do; and binding a Unit-returning call's result via `let` emits invalid C
+   (`void x = f();`) regardless of where that let sits, fixed by never naming a Unit result at
+   all. 8 real end-to-end assertions in `tests/test_v16_parser.c`, all pass; `make test`: 345/345
+   core compiler tests, zero regressions.
 3. **Tree-walking interpreter** over the AST — no bytecode compilation yet, correctness over
    speed, matching VS0's own historical "get a real reference interpreter working before
    optimizing" discipline.

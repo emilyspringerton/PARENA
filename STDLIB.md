@@ -3330,6 +3330,59 @@ unrecognized byte (`#`) is silently skipped, matching the real, deliberate v0 bo
 honest, unstarted: the real parser/AST (`V16_NORTHSTAR.md`'s own Phase 2b), a real keyword table,
 multi-character operators, and everything else that doc's own real 6-phase plan names.
 
+## v16/parser — a real JS expression parser, Phase 2b (2026-09-04)
+
+Founder real-time direction, "continue that work to develop a full webview alternative
+(iterate)" → corrected "i mean webkit alternative" — real, next unstarted slice of
+`V16_NORTHSTAR.md`'s own phased plan (2a lexer → 2b parser), not a jump straight to a browser
+engine; see that document's own new status note for why the WebKit-alternative reframing doesn't
+change the real incremental path. `stdlib/v16/parser.prn` — a real, working, tested JS
+EXPRESSION parser (`parse`) consuming `v16/lexer.prn`'s own `(Vec JsToken)` output, producing a
+real AST: `AstExpr { kind : I32, text : String, a : I32, b : I32 }` and `AstArg { expr : I32,
+next : I32 }`, both stored flat in `(Vec ...)` with children referenced by integer index (-1 =
+none) — `bstree.prn`'s own already-established "no self-referential pointers, no generics needed"
+convention, applied to a tree instead of a binary search tree.
+
+Real precedence climbing over the lexer's own real v0 punctuation set: comparison (`<`/`>`,
+loosest) over additive (`+`/`-`) over multiplicative (`*`/`/`, tightest) over primary (number/
+string/ident literals, parenthesized sub-expressions, real multi-argument function calls via a
+comma-separated `AstArg` chain, including the real zero-arg case). Real, honest v0 boundary named
+in the file's own header comment: expressions only — no statements, `=`-assignment, `if`, blocks,
+or function declarations, since the lexer has no real keyword table yet (`if`/`var`/`function`
+all lex as plain `TokIdent`) and a real statement grammar needs that groundwork first; no unary
+operators, `[]`, ternary, or `&&`/`||` either (none are in the lexer's own v0 punctuation set).
+
+**Three real, live-found VS0 emitter quirks worked around this pass, each distinct, each now
+named so they aren't rediscovered:**
+1. **`do` can never contain a `let` as any element, not just a non-final one.** Confirmed by
+   direct trial: `(do (advance! p) (let [x ...] ...))` fails even with the `let` as the do's own
+   last statement. Every real site needing "a Unit side effect, then a let-based value
+   computation" is split into an outer wrapper (a plain `do` of bare, unbound calls — no `let`
+   anywhere in it) and an inner function whose own body directly IS the let-chain (a function's
+   own body is a real, confirmed-allowed position for `let`, matching every other real VS0 quirk
+   workaround in this stdlib).
+2. **A `cond` clause's own body can't be a `let` (or a `do`) either — a real, separate restriction
+   from `if`-branches, which DO accept both.** Confirmed live: an `if`-branch directly holding a
+   full `let`-chain compiles fine; the identical shape as a `cond` clause does not. Every real
+   `cond` clause needing more than a single bare expression is extracted into its own named
+   function, called from the clause instead.
+3. **Binding a `Unit`-returning call's result via `let` emits invalid C** (`void x = f();`,
+   rejected by gcc regardless of the `let`'s own position being otherwise legal). Real fix: never
+   name a `Unit` result at all — call it as a bare, unbound statement inside a `do` instead.
+
+Real, live-tested (`make test-v16-parser`, 8 real assertions): real operator precedence
+(`1 + 2 * 3` → `(+ 1 (* 2 3))`, not `(* (+ 1 2) 3)`); real left-associativity (`10 - 3 - 2` →
+`((10 - 3) - 2)`, not `(10 - (3 - 2))` — a real, different, wrong number if mis-associated); real
+parenthesized sub-expressions overriding precedence; a real comparison with an identifier operand;
+a real 3-argument call producing a correctly-chained `AstArg` list; a real zero-argument call
+(`noop()`, `call->b == -1`); the real empty-source boundary (`parse("")` returns `root == -1`,
+matching the lexer's own `TokEof` convention rather than `parse-primary`'s own separate
+unexpected-token `-1` fallback silently standing in for "there was nothing here"); a string
+literal as a real call argument. `make test`: 345/345 core compiler tests, zero regressions.
+Real, honest, unstarted: statements/assignment/`if`/blocks (needs a real keyword table first),
+the tree-walking interpreter (`V16_NORTHSTAR.md`'s own Phase 3), and everything else that
+document's own real 6-phase plan names.
+
 ## android/battery-ui — real Java-target proof, first slice (2026-09-03)
 
 Real answer to kanban cruise-queue card 32445324, "PARENA android app in JAVA using PARENA using

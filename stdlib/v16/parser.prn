@@ -1,0 +1,252 @@
+;; stdlib/v16/parser.prn -- V16 JS engine, Phase 2b per PARENA/docs/V16_NORTHSTAR.md's own real
+;; phased plan ("JS parser -> AST -- real, separate, unstarted work, building on the lexer's own
+;; real (Vec JsToken) output"). Founder real-time direction (2026-09-04): "continue that work to
+;; develop a full webview alternative (iterate)" -> corrected "i mean webkit alternative" --
+;; V16_NORTHSTAR.md's own real, honest phased plan is still the correct incremental path there;
+;; this file is the real next unstarted slice of it (2a lexer -> 2b parser), not a jump to a full
+;; browser engine in one pass. The "WebKit alternative" reframing itself is a real, separate,
+;; much larger scope question (HTML/CSS/layout/rendering, none of which this file touches) --
+;; named honestly, not silently absorbed into "the parser now does everything."
+;;
+;; Real, honest v0 scope, narrower even than the lexer's own real punctuation set allows for --
+;; matching this whole stdlib's "narrowest real slice first" discipline (bstree.prn/
+;; explosion_mod.prn/lexer.prn's own precedent):
+;;   - EXPRESSIONS ONLY. No statements, no `var`/assignment, no `if`/blocks/functions-as-
+;;     declarations -- the lexer has no real keyword table yet (`if`/`var`/`function` all lex as
+;;     plain TokIdent, see lexer.prn's own header comment), so a real statement grammar needs
+;;     that groundwork first. This is real, separate, later work, not attempted here.
+;;   - Real precedence climbing over the lexer's own v0 punctuation set: comparison (`<` `>`,
+;;     loosest) over additive (`+` `-`) over multiplicative (`*` `/`, tightest) over primary
+;;     (number/string/ident literals, parenthesized sub-expressions, function calls).
+;;   - Real function calls with real, honest multi-argument support (`foo(a, b, c)`), comma-
+;;     separated, stored as a real linked chain of AstArg nodes (see below) -- not capped at a
+;;     fixed arity.
+;;   - No `=` in expression position (JS assignment is itself an expression in real JS -- v0
+;;     deliberately excludes it here since this file has no statement/assignment-target concept
+;;     yet; `=` stays a real, later addition once assignment is scoped).
+;;   - No unary operators (`-x`, `!x`), no `[]` member/array-literal access (not in the lexer's
+;;     own v0 punctuation set at all), no ternary, no `&&`/`||` (not lexable yet either).
+;;   - No real error recovery: malformed input can return -1 (this file's own "no node" sentinel,
+;;     matching bstree.prn's own -1-for-no-child convention) from a parse function that expected
+;;     a token that wasn't there -- callers of a -1 in a context that needs a real node will
+;;     produce garbage output, not a crash, the same honest "don't crash, don't silently misparse
+;;     into something plausible-looking" bar lexer.prn's own unterminated-string case already
+;;     set. A real error type is separate, later work.
+;;
+;; Real, decisive design choice, matching bstree.prn's own established convention exactly: AST
+;; nodes live in flat `(Vec AstExpr)`/`(Vec AstArg)` arrays, with children referenced by INTEGER
+;; INDEX (-1 = none), not raw/self-referential pointers -- this is the same real, working
+;; workaround for VS0 having no generics AND no tested self-referential struct support, applied
+;; to a tree instead of bstree.prn's own binary-search-tree shape.
+
+(module v16/parser)
+(import string)
+(import vec)
+(import v16/lexer)
+(export parse ParseResult PState AstExpr AstArg
+        expr-num expr-str expr-ident expr-binary expr-call)
+
+(defstruct AstExpr
+  (kind : I32)      ;; tag, see expr-* below
+  (text : String)    ;; literal text / ident name / binary operator punct text; "" for calls
+  (a    : I32)       ;; binary: left operand index. call: callee AstExpr index. else -1.
+  (b    : I32))      ;; binary: right operand index. call: first AstArg index (-1 = no args). else -1.
+
+(defstruct AstArg
+  (expr : I32)   ;; index into the shared exprs vec
+  (next : I32))  ;; next AstArg index in this call's own argument chain, -1 = last
+
+(defstruct PState
+  (toks  : (Vec JsToken) @ Region)
+  (pos   : I32)
+  (exprs : (Vec AstExpr) @ Region)
+  (args  : (Vec AstArg) @ Region))
+
+(defstruct ParseResult
+  (state : PState)
+  (root  : I32)) ;; -1 if the source was empty (immediate TokEof)
+
+(defn expr-num    [] : I32 0)
+(defn expr-str    [] : I32 1)
+(defn expr-ident  [] : I32 2)
+(defn expr-binary [] : I32 3)
+(defn expr-call   [] : I32 4)
+
+;; Real, found-live VS0 emitter quirk, same one bstree.prn's own header comment already
+;; documents: `vec/get`'s return doesn't resolve into its concrete element struct type until it
+;; flows through a `let` binding first -- returning it directly emits an uncast `void *`.
+(defn cur-tok [(p : &PState)] : &JsToken
+  (let [t (vec/get &(get-field p :toks) (get-field p :pos))]
+    t))
+
+(defn advance! [(p : &mut PState)] : Unit
+  (set! (get-field p :pos) (+ (get-field p :pos) 1)))
+
+(defn tok-is-punct? [(p : &PState) (ch : String @ Region)] : Bool
+  (let [t (cur-tok p)]
+    (and (= (get-field t :kind) (tok-punct)) (str-eq? (get-field t :text) ch))))
+
+;; push-expr! -- real, single choke point for appending a node to the shared exprs vec and
+;; getting back the real index it landed at, so every parse-* function below builds nodes the
+;; same way bstree.prn's own insert! does (index-of-the-just-pushed-element = old length).
+(defn push-expr! [(p : &mut PState) (dest : Arena @ Region) (kind : I32) (text : String @ Region) (a : I32) (b : I32)] : I32
+  (let [idx (vec/len &(get-field p :exprs))]
+    (do
+      (vec/push! &mut (get-field p :exprs) {:kind kind :text text :a a :b b})
+      idx)))
+
+;; parse-args -- comma-separated argument list, starting right after the callee's own '(' has
+;; already been consumed by the caller. Handles the real zero-arg case (an immediate ')')
+;; without special-casing it at every call site. Returns the first AstArg index, -1 if none.
+(defn parse-args [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (if (tok-is-punct? p ")")
+    (do (advance! p) -1)
+    (let [first-expr (parse-comparison p dest)]
+      (let [first-idx (vec/len &(get-field p :args))]
+        (do
+          (vec/push! &mut (get-field p :args) {:expr first-expr :next -1})
+          (parse-args-rest! p dest first-idx)
+          first-idx)))))
+
+;; Real, found-live VS0 emitter quirk, deeper than just "let position": a `do` block can never
+;; contain a `let` as any of its elements (confirmed live -- not just a non-final-position rule),
+;; AND separately, binding a Unit-returning call's result via `let` emits invalid C (`void x =
+;; f();`) regardless of where that let sits. Every function below that needs "a Unit side effect
+;; (advance!/set!/vec/push!), then a let-based value computation" is split into an outer wrapper
+;; (a plain `do` of bare, unbound statements/calls -- no `let` anywhere in it) and an inner
+;; function whose own body IS the let-chain (a function's own body is a real, allowed position).
+
+;; link-prev-arg! -- real, single-purpose helper so the set!-on-vec/get pattern (bstree.prn's own
+;; established convention) lives in a real function body, not inside another function's `do`.
+(defn link-prev-arg! [(p : &mut PState) (prev-idx : I32) (next-idx : I32)] : Unit
+  (let [prev-arg (vec/get &mut (get-field p :args) prev-idx)]
+    (set! (get-field prev-arg :next) next-idx)))
+
+;; parse-args-rest-body! -- the real value-computing half of parse-args-rest!'s own comma case
+;; (everything after the comma itself has already been consumed by the caller's own bare `do`).
+(defn parse-args-rest-body! [(p : &mut PState) (dest : Arena @ Region) (prev-idx : I32)] : Unit
+  (let [next-expr (parse-comparison p dest)]
+    (let [next-idx (vec/len &(get-field p :args))]
+      (do
+        (vec/push! &mut (get-field p :args) {:expr next-expr :next -1})
+        (link-prev-arg! p prev-idx next-idx)
+        (parse-args-rest! p dest next-idx)))))
+
+;; parse-args-rest! -- consumes zero or more `, expr` pairs, chaining each new AstArg onto the
+;; previous one's own :next field, then the real closing ')'.
+(defn parse-args-rest! [(p : &mut PState) (dest : Arena @ Region) (prev-idx : I32)] : Unit
+  (if (tok-is-punct? p ",")
+    (do (advance! p) (parse-args-rest-body! p dest prev-idx))
+    (advance! p))) ;; real closing ')' -- the only other legal token here for this v0 grammar
+
+;; parse-call-body -- the real value-computing half of parse-call, after its own leading '(' has
+;; already been consumed by the caller's own bare `do`.
+(defn parse-call-body [(p : &mut PState) (dest : Arena @ Region) (callee-name : String @ Region)] : I32
+  (let [callee-idx (push-expr! p dest (expr-ident) callee-name -1 -1)]
+    (let [first-arg (parse-args p dest)]
+      (push-expr! p dest (expr-call) "" callee-idx first-arg))))
+
+;; parse-call -- callee-name is the identifier already consumed by parse-primary; this function
+;; consumes the '(' (still current) through the matching ')' (consumed by parse-args/-rest!).
+(defn parse-call [(p : &mut PState) (dest : Arena @ Region) (callee-name : String @ Region)] : I32
+  (do (advance! p) (parse-call-body p dest callee-name)))
+
+;; parse-primary -- number/string/ident literals, a real call (ident immediately followed by
+;; '('), or a parenthesized sub-expression. This is the real base case every level of the
+;; precedence-climbing chain below bottoms out at.
+;; parse-paren-body/-expr -- real, found-live VS0 emitter quirk: a `let` isn't accepted directly
+;; as a `cond` clause's own body (unlike an `if` branch, a `let`'s own body, or a function body --
+;; confirmed live, `cond` clauses don't get the same allowance). Factored the '(' expr ')' case
+;; out of parse-primary's own cond into its own function specifically so its real let-chain sits
+;; in an allowed position (a function body) -- the cond clause below just calls it.
+(defn parse-paren-body [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (let [inner (parse-comparison p dest)]
+    (do (advance! p) inner))) ;; consume the matching ')' -- bare statement, then a plain var ref
+
+;; parse-paren-expr -- consumes the leading '(' (bare `do` statement, no let) then delegates the
+;; real value computation to parse-paren-body, matching parse-call's own outer/inner split above.
+(defn parse-paren-expr [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (do (advance! p) (parse-paren-body p dest)))
+
+;; parse-number-lit/parse-string-lit/parse-ident-or-call -- real, found-live VS0 emitter quirk,
+;; distinct from the let-in-do issue above: a `do` block used as a `cond` CLAUSE's own value
+;; (compiled down to a C ternary branch) emits the literal, invalid `do(...)` as if it were a C
+;; function call -- confirmed live. `do` works fine as a real function's own body (every fix
+;; above relies on that), just not as a bare cond-clause value. Same fix shape as
+;; parse-paren-expr's own extraction: each clause becomes a real function call instead.
+(defn parse-number-lit [(p : &mut PState) (dest : Arena @ Region) (t : &JsToken)] : I32
+  (do (advance! p) (push-expr! p dest (expr-num) (get-field t :text) -1 -1)))
+
+(defn parse-string-lit [(p : &mut PState) (dest : Arena @ Region) (t : &JsToken)] : I32
+  (do (advance! p) (push-expr! p dest (expr-str) (get-field t :text) -1 -1)))
+
+(defn parse-ident-or-call [(p : &mut PState) (dest : Arena @ Region) (t : &JsToken)] : I32
+  (do
+    (advance! p)
+    (if (tok-is-punct? p "(")
+      (parse-call p dest (get-field t :text))
+      (push-expr! p dest (expr-ident) (get-field t :text) -1 -1))))
+
+(defn parse-primary [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (let [t (cur-tok p)]
+    (cond
+      ((= (get-field t :kind) (tok-number)) (parse-number-lit p dest t))
+      ((= (get-field t :kind) (tok-string)) (parse-string-lit p dest t))
+      ((= (get-field t :kind) (tok-ident)) (parse-ident-or-call p dest t))
+      ((tok-is-punct? p "(") (parse-paren-expr p dest))
+      (true -1)))) ;; real, honest -1 sentinel -- an unexpected token here, no crash
+
+;; parse-multiplicative/-additive/-comparison -- real, textbook left-associative precedence
+;; climbing, each level a tail-recursive loop over its own operator set (same real
+;; loop/recur-not-recursive-descent-per-op style lexer.prn's own scan-number/scan-ident use).
+;; mul-op-step/add-op-step/cmp-op-step -- same real "let can't sit inside a do" fix as everywhere
+;; above: the "parse the right operand, build the binary node" value-computation is a real
+;; function body (allowed), called from the loop's own bare `do` (advance! statement, then a
+;; plain `recur` of a plain function-call result -- no `let` in that do at all).
+(defn mul-op-step [(p : &mut PState) (dest : Arena @ Region) (op : String @ Region) (acc : I32)] : I32
+  (let [right (parse-primary p dest)]
+    (push-expr! p dest (expr-binary) op acc right)))
+
+(defn add-op-step [(p : &mut PState) (dest : Arena @ Region) (op : String @ Region) (acc : I32)] : I32
+  (let [right (parse-multiplicative p dest)]
+    (push-expr! p dest (expr-binary) op acc right)))
+
+(defn cmp-op-step [(p : &mut PState) (dest : Arena @ Region) (op : String @ Region) (acc : I32)] : I32
+  (let [right (parse-additive p dest)]
+    (push-expr! p dest (expr-binary) op acc right)))
+
+(defn parse-multiplicative [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (let [left (parse-primary p dest)]
+    (loop [acc left]
+      (if (or (tok-is-punct? p "*") (tok-is-punct? p "/"))
+        (let [op (get-field (cur-tok p) :text)]
+          (do (advance! p) (recur (mul-op-step p dest op acc))))
+        acc))))
+
+(defn parse-additive [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (let [left (parse-multiplicative p dest)]
+    (loop [acc left]
+      (if (or (tok-is-punct? p "+") (tok-is-punct? p "-"))
+        (let [op (get-field (cur-tok p) :text)]
+          (do (advance! p) (recur (add-op-step p dest op acc))))
+        acc))))
+
+(defn parse-comparison [(p : &mut PState) (dest : Arena @ Region)] : I32
+  (let [left (parse-additive p dest)]
+    (loop [acc left]
+      (if (or (tok-is-punct? p "<") (tok-is-punct? p ">"))
+        (let [op (get-field (cur-tok p) :text)]
+          (do (advance! p) (recur (cmp-op-step p dest op acc))))
+        acc))))
+
+;; parse -- the real, public entry point. A source that lexes to only TokEof (empty/whitespace-
+;; only input) returns root = -1 rather than calling parse-comparison at all, matching lexer.prn's
+;; own "always know when you're done" TokEof convention rather than letting parse-primary's own
+;; -1-on-unexpected-token fallback silently stand in for "there was nothing here".
+(defn parse [(toks : (Vec JsToken) @ Region) (dest : Arena @ Region)] : ParseResult @ Region
+  (let [p0 {:toks toks :pos 0 :exprs (vec/new dest) :args (vec/new dest)}]
+    (let [first (cur-tok &p0)] ;; real void*-cast fix, same as cur-tok's own doc comment
+      (if (= (get-field first :kind) (tok-eof))
+        {:state p0 :root -1}
+        (let [root (parse-comparison &mut p0 dest)]
+          {:state p0 :root root})))))

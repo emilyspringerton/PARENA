@@ -1,4 +1,20 @@
 ## 2026-09-04
+- feat(v16): real JS expression parser, V16_NORTHSTAR.md Phase 2b (founder real-time: "continue
+  that work to develop a full webview alternative (iterate)" → corrected "i mean webkit
+  alternative"). `stdlib/v16/parser.prn` — real precedence climbing (comparison over additive
+  over multiplicative over primary) over `v16/lexer.prn`'s own token stream, real
+  left-associativity, parenthesized sub-expressions, multi-argument function calls via a
+  comma-chained `AstArg` list, all stored in `bstree.prn`'s own established flat-Vec/integer-index
+  AST representation. Three real, live-found VS0 emitter quirks worked around (all documented in
+  the file and `STDLIB.md`'s own new "v16/parser" section): `do` never accepts a `let` as any
+  element; `cond` clauses (unlike `if`-branches) don't accept a `let`/`do` body either, needing
+  extraction into named functions; binding a `Unit`-returning call via `let` emits invalid C. New
+  `make test-v16-parser` target, `tests/test_v16_parser.c`, 8 real end-to-end assertions, all
+  pass; `make test`: 345/345 core compiler tests, zero regressions. Real, honest, unstarted:
+  statements/assignment/`if`/blocks (no real keyword table yet), the tree-walking interpreter,
+  and the rest of `V16_NORTHSTAR.md`'s own real 6-phase plan — including the newly-noted "full
+  WebKit alternative" destination, a real, separate, much larger scope on top of everything here.
+
 - feat: `parena generate scaffold <Name> [field:Type ...]` (kanban cruise-queue cards PX-099/
   B-111: "PARENA SCAFFOLD TOOL SCAFFOLD OUT SHITHUB" / "add commands for standing up the
   models and views and controllers... using it to scaffold shithub"). Real Rails-style `rails

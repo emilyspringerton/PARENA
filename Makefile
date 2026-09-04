@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-sip-message test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -255,6 +255,15 @@ test-v16-lexer: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_v16_lexer.c \
 		runtime/parena_runtime.c -o /tmp/test_v16_lexer_bin -lm
 	/tmp/test_v16_lexer_bin
+
+# test-v16-parser -- real end-to-end verification for stdlib/v16/parser.prn (V16 JS engine
+# Phase 2b per PARENA/docs/V16_NORTHSTAR.md's own real phased plan -- the real JS expression
+# parser built on top of Phase 2a's own lexer.prn output).
+test-v16-parser: build
+	./parena build stdlib/string.prn stdlib/v16/lexer.prn stdlib/v16/parser.prn -o tests/test_v16_parser_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_v16_parser.c \
+		runtime/parena_runtime.c -o /tmp/test_v16_parser_bin -lm
+	/tmp/test_v16_parser_bin
 
 # test-sip-message -- real end-to-end verification for stdlib/sip/message.prn (kanban
 # priority-queue card 3124213, "SIP phone primitives in parena stdlib"): real request/response
