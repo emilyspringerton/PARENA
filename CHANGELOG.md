@@ -1,4 +1,14 @@
 ## 2026-09-04
+- docs: `docs/KISMET_WIRELESS_NORTHSTAR.md` — real research-and-planning pass for kanban
+  `PENT-0011` ("how does kismet work? what parena primatives needed"). Real Kismet architecture
+  researched (monitor-mode capture, Radiotap+802.11 dissection, device tracking, channel
+  hopping); real foundation checked (`pentest/pcap.prn` already real for plain capture,
+  `NATIVE_PCAP_NORTHSTAR.md`'s own byte-level primitive findings extend to 802.11 with nothing
+  new needed at the language level); recommends shelling out to `iw` for monitor-mode control
+  over a from-scratch nl80211 FFI binding. 4-phase plan; Phase 1 (a real frame parser) named
+  buildable/testable now with no hardware, Phase 2+ honestly named untestable in this sandbox
+  (no WiFi hardware). No code written — planning only.
+
 - feat(net): real HTTP reverse-proxy relay primitive (kanban priority-queue card 434534, "use
   fatbaby proxy and proxy broker to inform vpn primatives built into parena"). `net/vpn`'s own
   already-real WireGuard-FFI design stays unchanged/unimplemented; what's actually buildable
