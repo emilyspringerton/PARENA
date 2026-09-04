@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-net-proxy test-pentest-scan test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-net-proxy test-pentest-scan test-pentest-dot11 test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -284,6 +284,18 @@ test-net-proxy: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_net_proxy.c \
 		runtime/parena_runtime.c -o /tmp/test_net_proxy_bin -lm
 	/tmp/test_net_proxy_bin
+
+# test-pentest-dot11 -- real end-to-end verification of stdlib/pentest/dot11.prn (KISMET_WIRELESS
+# _NORTHSTAR.md's own real Phase 1: a native PARENA Radiotap+802.11 Beacon frame parser, kanban
+# PENT-0011). Real, native PARENA (no FFI/host-glue needed, unlike pcap/scan above) -- tests
+# against a hand-constructed, spec-accurate frame (see tests/test_pentest_dot11.c's own header
+# comment for the real byte-offset-by-byte-offset layout and its own honest note on why no
+# third-party dissector could cross-check it in this sandbox).
+test-pentest-dot11: build
+	./parena build stdlib/string.prn stdlib/pentest/dot11.prn -o tests/test_pentest_dot11_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_pentest_dot11.c \
+		runtime/parena_runtime.c -o /tmp/test_pentest_dot11_bin -lm
+	/tmp/test_pentest_dot11_bin
 
 # test-wire -- stdlib/net/wire.prn 真實端對端驗證(kanban PCAP-0022)。
 test-wire: build

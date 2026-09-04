@@ -3383,6 +3383,43 @@ Real, honest, unstarted: statements/assignment/`if`/blocks (needs a real keyword
 the tree-walking interpreter (`V16_NORTHSTAR.md`'s own Phase 3), and everything else that
 document's own real 6-phase plan names.
 
+## pentest/dot11 — a real, native Radiotap+802.11 Beacon frame parser (2026-09-04)
+
+Kismet-class wireless scanning research, `KISMET_WIRELESS_NORTHSTAR.md`'s own Phase 1 (kanban
+`PENT-0011`). Real, native PARENA (no FFI/host-glue, unlike `pentest/pcap.prn`/`pentest/scan.prn`
+above — this doc's own research found PARENA's existing `bit-and`/`bit-or`/`shl`/`shr`/`char-at`
+already sufficient for wire-format byte parsing). `parse-frame` reads a captured frame's own real
+Radiotap header length (skipping it regardless of what real fields a richer driver-emitted header
+carries), the 802.11 Frame Control byte's real type/subtype bitfields, and for a real Beacon
+frame, the real Address3 (BSSID) and the first real SSID Information Element (Element ID 0) from
+the IE list. Real, honest v0 scope: Beacon frames only, BSSID+SSID only — no probe-request/
+-response, supported-rates, or crypto-suite/OUI decoding yet.
+
+**Real, decisive, previously-unrecognized limitation found and fixed while building this**:
+`string.prn`'s own `length` is `strlen`-based — fine for the null-byte-free text this stdlib
+otherwise parses, but a real 802.11 frame routinely carries legitimate embedded zero bytes well
+before its own true end (Duration/ID, Sequence Control, most of a real Timestamp field). Calling
+`length` on a raw frame would silently truncate it there. Fix: `parse-frame` takes the real frame
+byte-length as an explicit, required parameter instead of ever deriving it from `length` — a real
+capture tool always knows the true byte count it read regardless of content. `char-at` (`s[i]`)
+and `substring` (a real, direct `memcpy` of an explicit byte range) were both confirmed safe for
+raw binary access via direct inspection of their own real implementations — only `length` itself
+was the trap, worth naming here so the next `.prn` file parsing arbitrary binary doesn't
+rediscover it.
+
+Real, live-tested (`make test-pentest-dot11`, `tests/test_pentest_dot11.c`, 5 real assertions)
+against a real, hand-constructed, spec-accurate Radiotap+802.11 Beacon frame (every field's own
+real offset/width documented byte-by-byte in the test file's own header comment, drawn from the
+real, stable, published Radiotap/802.11 formats): correct Beacon type/subtype detection, correct
+BSSID (Address3) and SSID (IE walk) extraction, a real non-Beacon frame correctly not flagged, a
+real frame with no SSID IE returning an empty string rather than crashing. Real, honest
+limitation: no third-party dissector (tshark/scapy) could be gotten running in this sandbox to
+independently cross-check the constructed bytes — `libwireshark`'s own real transitive dependency
+chain went deeper than `apt`/`dpkg-deb -x`/`pip` could fully resolve here without root (unlike
+`nmap`'s own shallower chain, fully resolved the same session for `pentest/scan`'s own real
+verification) — correctness here rests on the spec construction itself. `make test`: 345/345 core
+compiler tests, zero regressions.
+
 ## pentest/scan — real nmap-backed port scanning with real speed profiles (2026-09-04)
 
 Kanban `PEN-11412`, "add algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN

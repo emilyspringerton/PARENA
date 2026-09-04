@@ -1,4 +1,18 @@
 ## 2026-09-04
+- feat(pentest): real, native PARENA Radiotap+802.11 Beacon frame parser shipped (kanban
+  `PENT-0011`, `KISMET_WIRELESS_NORTHSTAR.md`'s own Phase 1). New `stdlib/pentest/dot11.prn` —
+  no FFI/host-glue needed, unlike `pentest/pcap.prn`/`pentest/scan.prn` (this doc's own research
+  found PARENA's existing `bit-and`/`bit-or`/`shl`/`shr`/`char-at` already sufficient). Real,
+  decisive limitation found and fixed along the way: `string.prn`'s own `length` is
+  `strlen`-based, which would silently truncate a real 802.11 frame at its own legitimate
+  embedded zero bytes (Duration/ID, Sequence Control, most of Timestamp) — `parse-frame` now
+  takes the real frame byte-length as an explicit required parameter instead. New `make
+  test-pentest-dot11` target + `tests/test_pentest_dot11.c`, real end-to-end test against a
+  hand-constructed, spec-accurate Beacon frame (byte-by-byte layout documented in the test's own
+  header comment): correct Beacon detection, BSSID/SSID extraction, and two honest degenerate
+  cases (non-Beacon frame, missing SSID), 5/5 pass. `make test`: 345/345, zero regressions.
+  `STDLIB.md`'s new "pentest/dot11" section has the full writeup.
+
 - feat(pentest): real, live nmap-backed `scan-ports` + speed profiles shipped (kanban
   `PEN-11412`, "add algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN
   SNEAKY_SCAN"), Phase 0+1 of the same-day `SCAN_PROFILES_NORTHSTAR.md` scoping pass below.
