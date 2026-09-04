@@ -1,4 +1,10 @@
 ## 2026-09-04
+- docs(compiler): S223-02 scoping pass — `EXPR_POSITION_BINDING_FORMS_NORTHSTAR.md`. Real finding:
+  the `g_boxed_types`/`g_box_helpers` synthesized-helper precedent doesn't transfer to
+  `let`/`match`/`loop`-in-expression-position, since it needs real free-variable capture analysis
+  this codebase has no primitive for, and a wrong capture is silent wrong-codegen, not a loud
+  failure. 3 options named for a founder decision; no code changed, S223-01's rejection stays
+  shipped.
 - feat(pentest): real, native PARENA Radiotap+802.11 Beacon frame parser shipped (kanban
   `PENT-0011`, `KISMET_WIRELESS_NORTHSTAR.md`'s own Phase 1). New `stdlib/pentest/dot11.prn` —
   no FFI/host-glue needed, unlike `pentest/pcap.prn`/`pentest/scan.prn` (this doc's own research
