@@ -1,4 +1,19 @@
 ## 2026-09-04
+- feat(pentest): real, live nmap-backed `scan-ports` + speed profiles shipped (kanban
+  `PEN-11412`, "add algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN
+  SNEAKY_SCAN"), Phase 0+1 of the same-day `SCAN_PROFILES_NORTHSTAR.md` scoping pass below.
+  `pentest/scan.prn`'s own `scan-ports` was never actually implemented (`PortResult`/`ScanError`
+  referenced, never defined; no real `pentest_scan_ports` C function existed) — now real,
+  defined structs plus `tools/pentest_scan_host.c` shelling out to the real `nmap` binary
+  (`popen`, real `-oG -` greppable-output parsing, no XML parser needed). Real profile mapping:
+  `scan-profile-fast`/`-slow`/`-sneaky`/`-smart` → nmap `-T4`/`-T0`/`-T1`/`-A` (`SneakyScan` =
+  nmap's own literal "-T1 Sneaky" name). Real, live-verified security precaution: a strict
+  target-string allow-list rejects shell metacharacters before they ever reach a shell command
+  line. New `make test-pentest-scan` target + `tests/test_pentest_scan.c`, real end-to-end scan
+  of `127.0.0.1` finding this box's own real open ports (22/80/443/3306/8080), all pass. New
+  `sudo-queue/48-install-nmap.sh` for a real deployment host. `make test`: 345/345, zero
+  regressions. `STDLIB.md`'s new "pentest/scan" section has the full writeup.
+
 - docs: `docs/SCAN_PROFILES_NORTHSTAR.md` — real scoping pass for kanban `PEN-11412` ("add
   algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN SNEAKY_SCAN"). Real,
   decisive finding: `pentest/scan.prn`'s own `scan-ports` was never actually implemented — its

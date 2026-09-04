@@ -2,8 +2,18 @@
 
 Real scoping pass for kanban priority-queue card `PEN-11412`: *"PARENA STDLIBS can we start to
 add algorythms for our homegrown scanner? FAST_SCAN SLOW_SCAN SMART_SCAN SNEAKY_SCAN."* Real
-investigation before any code — Principle 19 (`EMILY/docs/THE_EMILY_WAY.md`), no code written
-this pass.
+investigation — Principle 19 (`EMILY/docs/THE_EMILY_WAY.md`).
+
+**Status (2026-09-04): Phase 0 and Phase 1 are SHIPPED.** `pentest/scan.prn`'s own `scan-ports`
+is now a real, live, tested function — `tools/pentest_scan_host.c` shells out to the real `nmap`
+binary and parses its real greppable output; all 4 real scan profiles
+(`FastScan`/`SlowScan`/`SneakyScan`/`SmartScan`) map to real, distinct nmap flags. Real,
+live-verified end to end against `127.0.0.1` (`make test-pentest-scan`) — see "Real, phased plan"
+below for the full writeup, kept for the historical record of the investigation. Phase 2 (live
+verification against a real, unprivileged deployment) still needs `sudo-queue/48-install-nmap.sh`
+run on the real host — this pass developed and verified against a real, sandboxed, no-root nmap
+copy (`apt-get download` + `dpkg-deb -x`, real runtime deps resolved the same way), not the
+system-installed binary.
 
 ## Real, decisive finding: `pentest/scan.prn` itself was never actually implemented
 
@@ -40,21 +50,31 @@ adaptive service/OS-fingerprint-aware scan strategy, not a pure timing knob like
   same real gap as `scan.prn` (a real, honest, pre-existing pattern across this whole directory:
   designed function signatures, no actual linked C implementations behind most of them).
 
-## Real, phased plan (none started)
+## Real, phased plan
 
-**Phase 0 — a real, actually-linked `pentest_scan_ports` (blocking, not optional).** Write the
-real C shim FFI-binding `nmap` (either shelling out to the real `nmap` binary and parsing its
-real output — this session's own established "shell out to the well-known tool" precedent,
-matching `stdlib/shell.prn`'s own real convention — or linking `libnmap`/using nmap's own real
-XML output format) and wire it into the runtime so `scan-ports` actually runs. Nothing below this
-line is real until this exists — the same "real blocking Phase 0" shape this session found
-repeatedly (netcode, level format, HTML/CSS renderer).
+**Phase 0 — SHIPPED (2026-09-04): a real, actually-linked `pentest_scan_ports`.**
+`tools/pentest_scan_host.c` shells out to the real `nmap` binary via `popen` (this session's own
+established "shell out to the well-known tool" precedent) and parses its real `-oG -` greppable
+output into real `PortResult`s. Real, defined `PortResult`/`ScanError` structs added to
+`scan.prn` itself (the same "used but never defined" gap `pentest/pcap.prn` already had and
+fixed). Real security precaution: a strict target allow-list (`target_is_safe`) rejects any
+string carrying shell metacharacters BEFORE it reaches the shell command line — live-verified
+(`test-pentest-scan`'s own 3rd assertion) that a `; touch ...`-style target is rejected as
+`InvalidTarget`, never executed.
 
-**Phase 1 — real timing-profile parameters.** Extend `scan-ports` (or add a real
-`scan-ports-profile` variant) with a real `ScanProfile` enum (`FastScan`/`SlowScan`/`SneakyScan`/
-`SmartScan`), each mapping to a real nmap CLI flag combination per the research above (`-T4`/
-`-T0`/`-T1`/`-A` as the real, concrete starting mapping — refinable once Phase 0 is real and
-testable against an actual target).
+**Phase 1 — SHIPPED (2026-09-04): real timing-profile parameters.** `scan-ports` now takes a
+real `profile : I32` parameter (`scan-profile-fast`/`-slow`/`-sneaky`/`-smart`, zero-arg I32 tag
+functions matching `v16/lexer.prn`'s own established convention), mapped in the host's own
+`nmap_flag_for_profile` to `-T4`/`-T0`/`-T1`/`-A` respectively — the exact mapping this doc's own
+earlier research named, unchanged. An out-of-range profile tag falls back to nmap's own real
+default (`-T3`) rather than erroring, a real, honest, non-crashing degenerate case.
+
+**Real, live-tested (`make test-pentest-scan`)**: a real scan of `127.0.0.1` finds this box's
+own real, live open ports (22/80/443/3306/8080 — confirmed, not assumed); all 4 profile tags are
+real and distinct; a malicious target string is rejected before reaching a shell. `make test`:
+345/345 core compiler tests, zero regressions. Developed and verified against a real, sandboxed,
+no-root `nmap` copy (see the new status note above) — Phase 2's own live-host verification still
+needs `sudo-queue/48-install-nmap.sh` run for real on a deployment host.
 
 **Phase 2 — real, live verification.** Test each profile against a real, authorized target this
 org already owns (e.g. `EINHORN_SURVIVAL`'s own real, already-authorized infrastructure, matching

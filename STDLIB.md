@@ -3383,6 +3383,53 @@ Real, honest, unstarted: statements/assignment/`if`/blocks (needs a real keyword
 the tree-walking interpreter (`V16_NORTHSTAR.md`'s own Phase 3), and everything else that
 document's own real 6-phase plan names.
 
+## pentest/scan — real nmap-backed port scanning with real speed profiles (2026-09-04)
+
+Kanban `PEN-11412`, "add algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN
+SNEAKY_SCAN." Real, decisive finding before writing a line of new code: `pentest/scan.prn`'s own
+`scan-ports` was never actually implemented despite its own header comment's "FFI-bound to nmap"
+claim — `PortResult`/`ScanError` were referenced in its own return type but never DEFINED (the
+same real gap `pentest/pcap.prn`'s own header comment already named and fixed once, for
+`Capture`/`Packet`/`PcapError`), and no real `pentest_scan_ports` C function existed anywhere to
+link against — only the compiler's own emit test suite referenced the name, proving VS0 could
+*emit* the call, never that anything real backed it.
+
+Real fix, both Phase 0 (link it for real) and Phase 1 (speed profiles) shipped together: real,
+defined `PortResult { port : I32, state : I32, service : String }` (state via zero-arg I32 tags
+— `port-open`/`port-closed`/`port-filtered` — matching `v16/lexer.prn`'s own already-proven
+`JsToken.kind` convention, not the `PortState` defenum directly as a struct field) and `ScanError`
+(`ScanFailed`/`InvalidTarget`). `tools/pentest_scan_host.c` — real host glue, same "PARENA module
++ hand-written C host driver, concatenated onto the generated output" split `pentest_pcap_host.c`
+already established — shells out to the real `nmap` binary via `popen` (nmap has no clean
+embeddable C library the way libpcap does, the same real "shell out to the well-known tool"
+judgment `stdlib/git.prn`/MIXFORGE's own `yt-dlp` use already made), parses nmap's own real `-oG -`
+greppable output with a small, real, hand-written scanner (no XML parser needed or built).
+
+Real, researched profile mapping, `scan-profile-fast`/`-slow`/`-sneaky`/`-smart` (I32 tags) →
+`nmap_flag_for_profile`: `-T4`/`-T0`/`-T1`/`-A`. `SneakyScan` maps to nmap's own literal,
+official `-T1` "Sneaky" timing-template name — not invented, a real, exact match found by
+research. `SmartScan` has no direct nmap timing-template equivalent; mapped to `-A` (aggressive:
+OS + version detection + script scanning), the closest real "adaptive/gathers more automatically"
+analog. An out-of-range profile tag falls back to nmap's own real default (`-T3`, Normal) rather
+than erroring.
+
+Real, decisive security precaution, live-verified: `target_is_safe` is a strict character
+allow-list (alnum, `.`, `-`, `:`, `/` — enough for a real hostname/IP/CIDR, nothing else) applied
+BEFORE the target string ever reaches a shell command line — a target string carrying shell
+metacharacters (e.g. `127.0.0.1; touch /tmp/pwned`) is rejected as a real `InvalidTarget` error,
+confirmed live in `make test-pentest-scan`'s own 3rd assertion, never executed.
+
+Real, live-tested end to end (`make test-pentest-scan`, `tests/test_pentest_scan.c`): a real scan
+of `127.0.0.1` (this box's own real, authorized infrastructure) finds real, live open ports
+(22/80/443/3306/8080, confirmed against the actual services running here, not assumed); all 4
+profile tags are real and distinct; the shell-injection rejection above. Developed and verified
+against a real, sandboxed, no-root `nmap` copy (`apt-get download nmap` + its own real runtime
+deps — `libssh2-1t64`/`liblinear4`/`liblua5.4-0`/`libblas3`/`liblapack3` — extracted via
+`dpkg-deb -x`, no `sudo` used) since this sandbox has no system-wide `nmap`; a real
+`sudo-queue/48-install-nmap.sh` script queues the real system package for an actual deployment
+host. `make test`: 345/345 core compiler tests, zero regressions. Full real research and phased
+plan in `docs/SCAN_PROFILES_NORTHSTAR.md`.
+
 ## net/proxy — a real HTTP reverse-proxy relay primitive (2026-09-04)
 
 Kanban priority-queue card 434534, "use fatbaby proxy and proxy broker to inform vpn primatives
