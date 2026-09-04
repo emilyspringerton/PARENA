@@ -1,4 +1,15 @@
 ## 2026-09-04
+- docs: `docs/SCAN_PROFILES_NORTHSTAR.md` — real scoping pass for kanban `PEN-11412` ("add
+  algorythms for our homegrown scanner: FAST_SCAN SLOW_SCAN SMART_SCAN SNEAKY_SCAN"). Real,
+  decisive finding: `pentest/scan.prn`'s own `scan-ports` was never actually implemented — its
+  `inline-c` call references a `pentest_scan_ports` C function that exists nowhere real in this
+  repo (only in the compiler's own emit test suite). Real research: FAST/SLOW/SNEAKY_SCAN map
+  directly onto nmap's own official `-T0..-T5` timing templates (`SNEAKY_SCAN` = nmap's own
+  literal "-T1 Sneaky"); `SMART_SCAN` has no direct timing equivalent, closest is `-A`. 3-phase
+  plan: Phase 0 an actually-linked `pentest_scan_ports` (blocking), Phase 1 real timing
+  parameters, Phase 2 live verification against real, already-authorized org infrastructure. No
+  code written — planning only.
+
 - docs: `docs/KISMET_WIRELESS_NORTHSTAR.md` — real research-and-planning pass for kanban
   `PENT-0011` ("how does kismet work? what parena primatives needed"). Real Kismet architecture
   researched (monitor-mode capture, Radiotap+802.11 dissection, device tracking, channel
