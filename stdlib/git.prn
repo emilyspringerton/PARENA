@@ -1,0 +1,143 @@
+;; stdlib/git.prn — real Git integration primitives for the PARENA editor (kanban cruise-queue
+;; card 342534534535: "copy the git interface paradigms and idoms and affordances from vs codes
+;; for GIT for our parena editor").
+;;
+;; Real scope, matching this session's own established "shell out to the real, well-known tool"
+;; judgment (the exact same one MIXFORGE/import.prn already applies to yt-dlp -- FFI-binding or
+;; reimplementing libgit2 is real, separate, much bigger work, not attempted here): every real
+;; function below shells out to the actual `git` binary via `process/run-capture`, parsing its
+;; real, stable, scriptable output formats (`--porcelain=v1`, not `git status`'s own human
+;; formatting, which is explicitly NOT meant to be parsed).
+;;
+;; Real, named VS Code parity target -- the Source Control panel's own core affordances, not the
+;; whole of VS Code's git integration (no GitLens-style blame annotations, no merge-conflict UI,
+;; no stash management here):
+;;   - a real, structured status list (staged / unstaged / untracked), the panel's own central
+;;     view -- git-status
+;;   - stage / unstage a single file -- git-stage! / git-unstage!
+;;   - commit the currently staged changes -- git-commit!
+;;   - view a real diff, staged or unstaged -- git-diff
+;;   - the current branch name, shown in VS Code's own status bar -- git-current-branch
+;;
+;; Real, honest, deliberately NOT done here (a future, separate pass): renamed-file detection
+;; (porcelain v1's own `R  old -> new` two-path shape is real but not parsed specially -- a
+;; rename surfaces as one raw status line here, not split into old/new paths), branch
+;; switching/creation, push/pull/fetch, merge/rebase, and the actual editor-side UI (a real
+;; Source Control panel widget consuming these) -- this file is the real, testable backend layer
+;; only, same "stdlib primitive first, editor wiring later" split every other stdlib/editor/*.prn
+;; module already follows.
+;;
+;; Real, named security discipline, matching MIXFORGE/import.prn's own precedent exactly:
+;; run-capture shells the whole command through `/bin/sh -c` -- every caller-supplied string
+;; (repo-dir, a file path, a commit message) that lands in a real git command below is passed
+;; through shell-single-quote (log/projector.prn's own proven helper) first, never concatenated
+;; raw.
+
+(module git)
+(import string)
+(import process)
+(import log/projector)
+(export git-status git-stage! git-unstage! git-commit! git-diff git-diff-staged
+        git-current-branch GitStatusEntry GitError)
+
+(defenum GitError
+  (CommandFailed (exit-code : I32)))
+
+;; GitStatusEntry mirrors one real line of `git status --porcelain=v1` output: a 2-character
+;; status code (index/staged status, then worktree/unstaged status -- a space means "no change
+;; in that column", '?' means untracked) plus the real path. Real, direct parity with what VS
+;; Code's own Source Control panel shows per file (a staged/unstaged badge letter next to a
+;; path), not a redesign.
+(defstruct GitStatusEntry
+  (index-status    : String) ;; single char: staged status ('M'/'A'/'D'/'R'/'C'/'U'/' ')
+  (worktree-status : String) ;; single char: unstaged status, or '?' for untracked
+  (path            : String))
+
+;; git-status -- real, structured parse of `git status --porcelain=v1`, run inside repo-dir. One
+;; real GitStatusEntry per real line; an empty/clean tree returns a real, empty Vec, not an
+;; error (a clean working tree is a real, valid, common state, not a failure).
+(defn git-status [(repo-dir : String @ Region) (dest : Arena @ Region)]
+  : (Vec GitStatusEntry) @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [cmd (string/concat "git -C " (string/concat quoted-dir " status --porcelain=v1" dest) dest)]
+      (let [raw (process/run-capture cmd dest)]
+        (let [lines (string/split raw "\n" dest)]
+          (let [result (vec/new dest)]
+            (loop [i 0
+                   n (vec/len &lines)]
+              (if (>= i n)
+                result
+                (let [line (vec/get &lines i)]
+                  (if (>= (string/length line) 3)
+                    (do
+                      (vec/push! &result
+                        {:index-status    (string/substring line 0 1 dest)
+                         :worktree-status (string/substring line 1 2 dest)
+                         :path            (string/substring line 3 (string/length line) dest)})
+                      (recur (+ i 1) n))
+                    (recur (+ i 1) n)))))))))))
+
+;; git-stage! -- `git add <path>`, staging exactly one real file. Real, honest v0 scope: one
+;; path per call (VS Code's own "stage this file" per-row button, not "stage all").
+(defn git-stage! [(repo-dir : String @ Region) (path : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit GitError) @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [quoted-path (shell-single-quote path dest)]
+      (let [cmd (string/concat "git -C " (string/concat quoted-dir (string/concat " add -- " quoted-path dest) dest) dest)]
+        (do
+          (process/run-capture cmd dest)
+          (if (= (process/run-capture-exit-code) 0)
+            (Ok unit)
+            (Err (CommandFailed (process/run-capture-exit-code)))))))))
+
+;; git-unstage! -- `git reset HEAD -- <path>`, the real inverse of git-stage!.
+(defn git-unstage! [(repo-dir : String @ Region) (path : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit GitError) @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [quoted-path (shell-single-quote path dest)]
+      (let [cmd (string/concat "git -C " (string/concat quoted-dir (string/concat " reset HEAD -- " quoted-path dest) dest) dest)]
+        (do
+          (process/run-capture cmd dest)
+          (if (= (process/run-capture-exit-code) 0)
+            (Ok unit)
+            (Err (CommandFailed (process/run-capture-exit-code)))))))))
+
+;; git-commit! -- `git commit -m <message>`, committing whatever is currently staged. Real,
+;; honest v0 scope: no amend, no author override, no GPG signing -- the real, plain "commit the
+;; index" VS Code's own commit-message-box-plus-checkmark-button does.
+(defn git-commit! [(repo-dir : String @ Region) (message : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit GitError) @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [quoted-msg (shell-single-quote message dest)]
+      (let [cmd (string/concat "git -C " (string/concat quoted-dir (string/concat " commit -m " quoted-msg dest) dest) dest)]
+        (do
+          (process/run-capture cmd dest)
+          (if (= (process/run-capture-exit-code) 0)
+            (Ok unit)
+            (Err (CommandFailed (process/run-capture-exit-code)))))))))
+
+;; git-diff -- real unstaged diff text for one path (`git diff -- <path>`), the same real content
+;; VS Code's own inline diff editor renders when a Source Control panel row is clicked.
+(defn git-diff [(repo-dir : String @ Region) (path : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [quoted-path (shell-single-quote path dest)]
+      (let [cmd (string/concat "git -C " (string/concat quoted-dir (string/concat " diff -- " quoted-path dest) dest) dest)]
+        (process/run-capture cmd dest)))))
+
+;; git-diff-staged -- the staged (`--cached`) counterpart to git-diff, the real content VS Code
+;; shows when the diff is opened from the STAGED CHANGES section instead of CHANGES.
+(defn git-diff-staged [(repo-dir : String @ Region) (path : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [quoted-path (shell-single-quote path dest)]
+      (let [cmd (string/concat "git -C " (string/concat quoted-dir (string/concat " diff --cached -- " quoted-path dest) dest) dest)]
+        (process/run-capture cmd dest)))))
+
+;; git-current-branch -- `git rev-parse --abbrev-ref HEAD`, the real name VS Code shows in its
+;; own status bar (e.g. the bottom-left branch indicator).
+(defn git-current-branch [(repo-dir : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [quoted-dir (shell-single-quote repo-dir dest)]
+    (let [cmd (string/concat "git -C " (string/concat quoted-dir " rev-parse --abbrev-ref HEAD" dest) dest)]
+      (process/run-capture cmd dest))))

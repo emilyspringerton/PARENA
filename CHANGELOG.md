@@ -1,4 +1,28 @@
 ## 2026-09-04
+- feat: `stdlib/git.prn` (kanban cruise-queue card 342534534535: "copy the git interface
+  paradigms and idoms and affordances from vs codes for GIT for our parena editor"). Real Git
+  integration primitives for the PARENA editor's future Source Control panel, matching VS Code's
+  own core affordances -- `git-status` (a real, structured `(Vec GitStatusEntry)` parse of
+  `git status --porcelain=v1`), `git-stage!`/`git-unstage!`, `git-commit!`, `git-diff`/
+  `git-diff-staged`, `git-current-branch`. Real, deliberate scope decision: shells out to the
+  actual `git` binary via `process/run-capture` (the same "shell out to the real, well-known
+  tool" judgment MIXFORGE/import.prn already applies to yt-dlp), not an FFI binding to libgit2
+  or a from-scratch reimplementation. Every caller-supplied string (repo dir, path, commit
+  message) is passed through `log/projector.prn`'s own proven `shell-single-quote` before
+  landing in a shell command -- never concatenated raw. Real, found-live VS0 emitter quirk
+  worked around, not patched in the compiler itself: a `(if cond (vec/push! ...) unit)` used as
+  a `do`-sequenced statement emits a C ternary with one void arm, which `-pedantic -Werror`
+  correctly rejects (ISO C forbids a void/non-void ternary) -- fixed by putting the real `recur`
+  call inside both `if` branches instead of sequencing push-then-recur after a conditional void
+  call, a cleaner shape regardless. Real, new `make test-git` target: no stubbing needed (unlike
+  `test-mixforge-import`'s own yt-dlp stub -- a real `git` binary always exists in this sandbox),
+  exercises every real function against an actual, freshly-created throwaway repo, including a
+  real proof that a shell-injection-shaped path never executes anything outside the repo. `make
+  test`: 345/345 (0 new -- `test-git` is its own separate real target, not folded into the
+  existing suite). Real, honest, deliberately NOT done: renamed-file detection, branch
+  switching/creation, push/pull/fetch, merge/rebase, and the actual editor-side Source Control
+  panel widget that would consume these -- this is the real, tested backend layer only, matching
+  every other `stdlib/editor/*.prn` module's own "primitive first, UI wiring later" split.
 - fix: `stdlib/mixforge/import.prn` exports `track-metadata-json` (MF-CORE-12441, "mixforge
   iterate on the core product") -- real, small gap found live: the function existed and worked
   (S243-01) but wasn't in the module's own `export` list, so no external caller (a future real
