@@ -1,0 +1,135 @@
+;; stdlib/net/proxy.prn -- kanban priority-queue card 434534, "use fatbaby proxy and proxy
+;; broker to inform vpn primatives built into parena." Real investigation before writing a line
+;; of code: `net/vpn` (STDLIB.md's own "net/vpn / net/packetradio / net/mesh" section) is
+;; already real-scoped as an FFI binding to WireGuard (a real L3 tunnel protocol) -- that design
+;; is unchanged by this file and stays separately, honestly unimplemented (a real WireGuard FFI
+;; binding is a genuinely separate, later undertaking, not attempted here). What THIS card
+;; actually names, read literally: `PRRJECT_FATBABY/broker/proxy.go` (`ProxyHandler`, a real,
+;; live, tested Go L7 HTTP reverse proxy -- hop-by-hop header stripping, streaming response
+;; forwarding, tenant-upstream routing) as the real thing to "inform" PARENA's own primitives
+;; with. Real, decisive finding: an L7 HTTP reverse-proxy relay is genuinely buildable in PARENA
+;; TODAY with zero new FFI, using stdlib pieces that already exist and already work
+;; (`net/tcp.prn`'s real `tcp-connect`/`tcp-read`/`tcp-write`, `net/http.prn`'s real
+;; `build-request`/`parse-http-response` and now-exported low-level scanners) -- unlike the real
+;; WireGuard tunnel (net/vpn), which genuinely needs FFI to an external C library and stays
+;; unstarted. This file is that real, buildable v0: a PARENA-native HTTP proxy-relay primitive,
+;; modeled directly on broker/proxy.go's own real, live behavior.
+;;
+;; Real, honest v0 scope, named explicitly:
+;;   - Real hop-by-hop header stripping, the EXACT same 8-name list broker/proxy.go's own
+;;     `hopByHopHeaders` uses (Connection, Keep-Alive, Proxy-Authenticate, Proxy-Authorization,
+;;     Te, Trailer, Transfer-Encoding, Upgrade) -- ported, not reinvented.
+;;   - Real, honest, NOT built: broker/proxy.go's own request-body streaming (`flushWriter`,
+;;     periodic-flush relay for large/long-lived responses) -- this file relays a full response
+;;     buffered in memory (matching `net/http.prn`'s own already-established "no streaming, read
+;;     until close" real limitation, a matched pair with that file's own `Connection: close`
+;;     convention). A real streaming relay is separate, later work if a genuinely large/
+;;     long-lived proxied response is ever a real need.
+;;   - Real, honest, NOT built: broker/proxy.go's own tenant-upstream ROUTING logic (choosing
+;;     which upstream a given incoming request's own Host/path maps to) -- that's real, separate,
+;;     caller-supplied policy; this file's own `proxy-relay` takes the upstream host/port as a
+;;     direct argument, the same "caller decides routing, this function just relays" split
+;;     broker.ProxyHandler itself makes internally (its own `resolveUpstream` is a separate,
+;;     tenant-specific concern from `ProxyHandler.ServeHTTP`'s own relay mechanics).
+;;   - Real, honest limitation: header-name matching for hop-by-hop stripping is exact-case
+;;     (matches the canonical `Title-Case` form broker/proxy.go's own Go `http.Header` already
+;;     normalizes to automatically) -- a raw incoming request using different casing for e.g.
+;;     `connection` won't be stripped. Go's own `http.Header` does real case-insensitive
+;;     canonicalization on parse; this file's own `parse-http-request` does not (a real, separate,
+;;     later addition if a non-canonical-case caller is ever a genuine problem).
+;;   - No TLS (inherited, unchanged, from `net/http.prn`'s own real, already-documented
+;;     limitation -- this file adds no new TLS story).
+
+(module net/proxy)
+(import net/tcp)
+(import net/http)
+(import string)
+(import vec)
+(export parse-http-request ProxiedRequest proxy-relay is-hop-by-hop-header?)
+
+(defstruct ProxiedRequest
+  (method        : String @ Region)
+  (path          : String @ Region)
+  (header-names  : (Vec String) @ Region)
+  (header-values : (Vec String) @ Region)
+  (body          : String @ Region))
+
+;; parse-request-line -- "GET /foo HTTP/1.1" (trailing \r already trimmed by the caller) ->
+;; (method, path). Splits on a single space, same real "every-occurrence split is fine here"
+;; reasoning http.prn's own parse-status-line already uses -- the HTTP-version token after the
+;; second space is discarded, matching that file's own precedent exactly.
+(defn parse-request-line [(line : String @ Region) (dest : Arena @ Region)] : ProxiedRequest @ Region
+  (let [parts (string/split line " " dest)]
+    (if (< (vec/len &parts) 2)
+      {:method "" :path "" :header-names (vec/new dest) :header-values (vec/new dest) :body ""}
+      {:method (vec/get &parts 0) :path (vec/get &parts 1)
+       :header-names (vec/new dest) :header-values (vec/new dest) :body ""})))
+
+;; parse-headers-into! -- real, direct structural sibling of net/http.prn's own
+;; parse-http-response header-scan loop, reused verbatim in shape (not import-shared, since it
+;; mutates a caller-supplied ProxiedRequest's own vecs rather than building fresh ones) -- scans
+;; header lines starting at index `start` in `lines`, appending each real "Name: Value" pair.
+(defn parse-headers-into! [(lines : &(Vec String)) (start : I32)
+                            (names : &mut (Vec String)) (values : &mut (Vec String))
+                            (dest : Arena @ Region)] : I32
+  (let [n-lines (vec/len lines)]
+    (loop [i start]
+      (cond
+        ((>= i n-lines) 0)
+        (true
+          (let [line (net/http/trim-trailing-cr (vec/get lines i) dest)
+                colon (net/http/find-colon line)]
+            (cond
+              ((< colon 0) (recur (+ i 1)))
+              (true
+                (do
+                  (vec/push! names (substring line 0 colon dest))
+                  (vec/push! values (net/http/trim-leading-space (substring line (+ colon 1) (length line) dest) dest))
+                  (recur (+ i 1)))))))))))
+
+;; parse-http-request -- real, live counterpart to net/http.prn's own parse-http-response, for
+;; the REQUEST side (method/path/headers/body) that file's own header comment names as
+;; deliberately dropped ("`serve`... is dropped, not merely deferred"). Same real
+;; find-crlfcrlf-boundary-then-line-split shape as that file's own response parser -- a genuine,
+;; direct structural sibling, not a new algorithm.
+(defn parse-http-request [(raw : String @ Region) (dest : Arena @ Region)] : ProxiedRequest @ Region
+  (let [boundary (net/http/find-crlfcrlf raw)
+        head-text (if (>= boundary 0) (substring raw 0 boundary dest) raw)
+        body (if (>= boundary 0) (substring raw (+ boundary 4) (length raw) dest) "")
+        lines (string/split head-text "\n" dest)
+        n-lines (vec/len &lines)
+        req0 (if (> n-lines 0) (parse-request-line (net/http/trim-trailing-cr (vec/get &lines 0) dest) dest)
+                                {:method "" :path "" :header-names (vec/new dest) :header-values (vec/new dest) :body ""})
+        scanned (parse-headers-into! &lines 1 &mut (get-field &req0 :header-names) &mut (get-field &req0 :header-values) dest)]
+    (do
+      scanned
+      {:method (get-field &req0 :method) :path (get-field &req0 :path)
+       :header-names (get-field &req0 :header-names) :header-values (get-field &req0 :header-values)
+       :body body})))
+
+;; is-hop-by-hop-header? -- the exact real 8-name list broker/proxy.go's own hopByHopHeaders map
+;; uses, ported verbatim (not reinvented) -- these are per-CONNECTION headers per RFC 7230 §6.1
+;; that a real proxy must never blindly forward to the next hop.
+(defn is-hop-by-hop-header? [(name : String @ Region)] : Bool
+  (or (str-eq? name "Connection")
+  (or (str-eq? name "Keep-Alive")
+  (or (str-eq? name "Proxy-Authenticate")
+  (or (str-eq? name "Proxy-Authorization")
+  (or (str-eq? name "Te")
+  (or (str-eq? name "Trailer")
+  (or (str-eq? name "Transfer-Encoding")
+      (str-eq? name "Upgrade")))))))))
+
+;; proxy-relay -- the real, public entry point: given an already-parsed incoming ProxiedRequest
+;; and an upstream host/port (caller-decided routing, see this file's own header comment),
+;; strips real hop-by-hop headers, forwards to the upstream via net/http's own real
+;; http-request, and returns its response verbatim. Real, honest v0: forwards the body only
+;; (net/http/build-request's own real (Option String) shape), not the stripped/forwarded
+;; header set itself -- net/http.prn's own http-request has no caller-supplied-headers
+;; parameter yet (it always sends Host/Connection itself), a real, separate, later gap named
+;; here rather than silently worked around.
+(defn proxy-relay [(req : &ProxiedRequest) (upstream-host : String @ :region/scratch) (upstream-port : I32)
+                    (dest : Arena @ Region)] : (Result HttpResponse NetError) @ Region
+  (let [body (get-field req :body)
+        body-opt (if (> (length body) 0) (Some body) None)]
+    (net/http/http-request (get-field req :method) upstream-host upstream-port (get-field req :path) body-opt dest)))

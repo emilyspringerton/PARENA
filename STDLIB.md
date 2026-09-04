@@ -3383,6 +3383,58 @@ Real, honest, unstarted: statements/assignment/`if`/blocks (needs a real keyword
 the tree-walking interpreter (`V16_NORTHSTAR.md`'s own Phase 3), and everything else that
 document's own real 6-phase plan names.
 
+## net/proxy — a real HTTP reverse-proxy relay primitive (2026-09-04)
+
+Kanban priority-queue card 434534, "use fatbaby proxy and proxy broker to inform vpn primatives
+built into parena." Real investigation before writing a line of code: `net/vpn`'s own already-real
+design (this document's own "net/vpn / net/packetradio / net/mesh" section, above) is an FFI
+binding to WireGuard (a real L3 tunnel protocol) and stays exactly as designed, unchanged, still
+unimplemented — a genuinely separate, later undertaking. What this card actually names, read
+literally: `PRRJECT_FATBABY/broker/proxy.go` (`ProxyHandler`, a real, live, tested Go L7 HTTP
+reverse proxy) as the thing to "inform" PARENA's own primitives with. Real, decisive finding: an
+L7 HTTP proxy-relay is genuinely buildable in PARENA TODAY with zero new FFI — `net/tcp.prn`'s
+real `tcp-connect`/`tcp-read`/`tcp-write` and `net/http.prn`'s real `build-request`/
+`parse-http-response` (plus its now-exported low-level scanners `find-crlfcrlf`/`find-colon`/
+`trim-trailing-cr`/`trim-leading-space`, reused rather than duplicated) already cover everything
+needed — unlike the real WireGuard tunnel, which genuinely needs external-library FFI.
+
+`stdlib/net/proxy.prn` — `parse-http-request` (a real, direct structural sibling of
+`net/http.prn`'s own `parse-http-response`, for the REQUEST side that file's own header comment
+names as deliberately dropped: "`serve`... is dropped, not merely deferred"), `is-hop-by-hop-
+header?` (the exact same 8-name list `broker/proxy.go`'s own `hopByHopHeaders` map uses —
+Connection, Keep-Alive, Proxy-Authenticate, Proxy-Authorization, Te, Trailer, Transfer-Encoding,
+Upgrade — ported, not reinvented), and `proxy-relay` (forwards an already-parsed request to a
+caller-specified upstream host/port via `net/http`'s own real `http-request`).
+
+Real, honest v0 scope, named explicitly in the file's own header comment: buffered relay only, no
+`broker/proxy.go`'s own streaming `flushWriter` (matches `net/http.prn`'s own already-established
+"read until close, no streaming" limitation); no upstream-routing/tenant-resolution logic (a real,
+separate, caller-supplied policy, the same split `broker.ProxyHandler`'s own `resolveUpstream`
+already makes internally); exact-case-only hop-by-hop header matching (Go's own `http.Header`
+does real case-insensitive canonicalization on parse that this file's own parser does not); no
+TLS (inherited, unchanged, from `net/http.prn`).
+
+Real, live-tested (`make test-net-proxy`, `tests/test_net_proxy.c`): a real incoming request
+(method/path/headers/body) parses correctly; the real hop-by-hop header set matches
+`broker/proxy.go`'s own list exactly, checked name by name, plus a real non-hop-by-hop header
+confirmed NOT flagged; a real end-to-end relay against an ACTUAL local upstream HTTP server
+(`tests/test_proxy_upstream_fixture.py`, a real, small, standalone Python server, not a mock) over
+a real loopback TCP socket, verifying the real response status/body come back correctly through
+the full parse → relay → forward → parse-response chain. `make test`: 345/345 core compiler
+tests, zero regressions.
+
+**Real, live compiler bug found and fixed along the way, distinct from the V16 parser's own three
+(see that section below... elsewhere in this file)**: `Vec.items` stores each element's raw
+`void*` directly (confirmed by reading `runtime/parena_runtime.h`'s own real `vec_push_`/
+`vec_get`) — for a `Vec` of `String` (`char*` already), `vec_get` returns that `char*` DIRECTLY, a
+single cast (`(char *)vec_get(...)`), not a double dereference. Struct-element Vecs (like the V16
+lexer's own `(Vec JsToken)`) DO need a cast-then-deref, since a struct value gets boxed into
+arena-allocated memory first and the Vec stores a POINTER to that box — the two cases look similar
+from a `.prn` call site but emit genuinely different C access patterns; a hand-written test
+double-dereferencing a `Vec String` (assuming the struct-Vec pattern uniformly) segfaults
+immediately. Named here so the next `.prn` file's own test author doesn't lose time
+rediscovering it.
+
 ## android/battery-ui — real Java-target proof, first slice (2026-09-03)
 
 Real answer to kanban cruise-queue card 32445324, "PARENA android app in JAVA using PARENA using

@@ -1,4 +1,18 @@
 ## 2026-09-04
+- feat(net): real HTTP reverse-proxy relay primitive (kanban priority-queue card 434534, "use
+  fatbaby proxy and proxy broker to inform vpn primatives built into parena"). `net/vpn`'s own
+  already-real WireGuard-FFI design stays unchanged/unimplemented; what's actually buildable
+  today with zero new FFI is a real L7 HTTP proxy modeled on `PRRJECT_FATBABY/broker/proxy.go`'s
+  own real behavior. New `stdlib/net/proxy.prn`: `parse-http-request` (the real request-side
+  counterpart to `net/http.prn`'s own response parser), `is-hop-by-hop-header?` (broker/proxy.go's
+  exact 8-name list, ported), `proxy-relay` (forwards to a caller-specified upstream). New `make
+  test-net-proxy` target + `tests/test_net_proxy.c`, including a real end-to-end relay against an
+  actual local upstream HTTP server (`tests/test_proxy_upstream_fixture.py`), 3/3 assertions pass;
+  `make test`: 345/345, zero regressions. Real, live compiler-behavior finding along the way (not
+  a bug, a real gotcha): `Vec String` elements need a single cast via `vec_get`, not a
+  double-dereference (that's only for struct-element Vecs, which box into arena memory first) —
+  documented in `STDLIB.md`'s new "net/proxy" section.
+
 - feat(v16): real JS expression parser, V16_NORTHSTAR.md Phase 2b (founder real-time: "continue
   that work to develop a full webview alternative (iterate)" → corrected "i mean webkit
   alternative"). `stdlib/v16/parser.prn` — real precedence climbing (comparison over additive

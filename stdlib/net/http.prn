@@ -54,7 +54,11 @@
 (import net/tcp)
 (import string)
 (import vec)
-(export http-get http-post http-request HttpResponse)
+;; find-crlfcrlf/find-colon/trim-trailing-cr/trim-leading-space added to this export list
+;; 2026-09-04 (net/proxy real reuse, see that file's own header comment) -- these were real,
+;; already-written, already-correct low-level HTTP text scanners with no reason to duplicate.
+(export http-get http-post http-request HttpResponse
+        find-crlfcrlf find-colon trim-trailing-cr trim-leading-space)
 
 (defstruct HttpResponse
   (status        : I32)
