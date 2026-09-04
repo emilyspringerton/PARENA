@@ -1,0 +1,115 @@
+;; stdlib/gfd/action_bar_mod.prn — GoblinFoxDragon's first real PARENA mod (GFD-MACRO-0012).
+;;
+;; Founder, kanban: "GFD macro system make sure we tie the action frame stuff into a parena mod
+;; based shape so we can easily allow for extension at the action bar affordance" — a direct
+;; continuation of the just-shipped GFD-AF-01939 6-slot ability bar
+;; (apps2/battlegrounds_gui/src/main.c's town_ability_for_slot/town_draw_hud).
+;;
+;; Real, checked-first finding: GFD has had ZERO PARENA mod-surface presence until this file —
+;; confirmed directly against docs2/MOD_SURFACE_NORTHSTAR.md §2 ("apps2/battlegrounds_gui...has
+;; zero plugin/mod/script-loading mechanism"). That doc's own resolved shape for a NEW scripting
+;; capability is a not-yet-built federated EduScript<->PARENA process model (§3a, "north star
+;; only, nothing scoped or built") — too large and too undecided (4 real open questions, no
+;; message contract, no host location) to stand up just for this one card. Chosen instead: the
+;; ALREADY LIVE, proven-in-production static-link pattern ECOWAR uses for 8 real mods
+;; (ECOWAR/docs/ARENA_API.md) — a PARENA module compiled once via the real `parena build` CLI,
+;; its generated .c committed into the consuming repo, called by its emitted C name directly from
+;; host code. No dlopen/dlsym runtime loading (PAPERCRAFT's own heavier --mods-manifest pattern,
+;; apps/dynmod_poc) — that buys live-reload at real complexity cost GFD's single-binary release
+;; model (native + WASM, both statically linked at build time, see apps2/battlegrounds_gui/wasm/
+;; build_wasm.sh and .github/workflows/build.yml) doesn't need yet. Matches ECOWAR's own
+;; `card_effect_mod.prn` precedent exactly: this is REAL decision logic (a branch over every
+;; known job x slot pairing), not a bare trigger.
+;;
+;; Real, honest scope of "extension" this buys: adding a new ability to an EXISTING job/slot, or
+;; reassigning which ability lives in which slot, is now a `.prn` edit + `parena build` + a normal
+;; recompile — no more hunting through town_ability_for_slot's C body to change the job/slot
+;; DECISION. It is NOT hot-reload and NOT third-party/runtime modding (no dlopen surface exists
+;; here) — that would need PAPERCRAFT's heavier pattern or the still-unscoped federated-process
+;; model, either a real, separate future step, not this one.
+;;
+;; VS0 ceiling (same real reason every ECOWAR/PAPERCRAFT mod is I32-only, no strings/structs/Vec
+;; across the boundary): this mod returns an ABILITY ID (a plain I32 enum), not the actual command
+;; string/label/cast-timing. Host C (town_ability_for_slot) still owns a small static table
+;; mapping each ability id to its real (cmd, label, is_cast, cast_ms) — same "mod decides WHICH
+;; ability, host owns what that ability actually DOES" split every real mod in this monorepo uses.
+;;
+;; ABI: town_ability_for_slot (apps2/battlegrounds_gui/src/main.c) calls straight into
+;; on-gfd-ability-for-slot (emitted as on_gfd_ability_for_slot) with the player's job id and the
+;; pressed slot (0-5), and gets back the real ability id to look up (0 = unassigned).
+;;
+;; job id encoding (host's own g_town_job string, mapped by town_ability_for_slot before calling
+;; in): 0=WAR 1=MNK 2=WHM 3=BLM 4=RDM 5=THF 6=SMN. Any other value (an unrecognized job string)
+;; falls through every branch below to the universal slot-0 Attack check, matching the real,
+;; existing C behavior (the old code's unconditional `if (slot == 0) return "attack"` ran for
+;; every job it didn't have a strcmp branch for too).
+;;
+;; ability id encoding (host's own static table, town_ability_for_slot): 0=NONE 1=ATTACK 2=FIRE
+;; 3=POISON 4=CLEAR_MIND 5=PROVOKE 6=BERSERK 7=CHAKRA 8=BOOST 9=CURE 10=BENEDICTION 11=CONVERT
+;; 12=CHAINSPELL 13=BIO 14=DISTRACT 15=FRAZZLE 16=SNEAK_ATTACK 17=TRICK_ATTACK 18=SUMMON_ZAGAN
+;; 19=SUMMON_BELETH.
+
+(module gfd/action-bar-mod)
+(export on-gfd-ability-for-slot)
+
+;; BLM is the one job whose slot 0 is NOT the universal Attack (it's Fire) — checked first, same
+;; "special-case job checked before the universal slot-0 rule" order the original C used.
+(defn blm-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 0) 2
+    (if (= slot 1) 3
+      (if (= slot 2) 4
+        0))))
+
+(defn war-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 5
+    (if (= slot 2) 6
+      0)))
+
+(defn mnk-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 7
+    (if (= slot 2) 8
+      0)))
+
+(defn whm-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 9
+    (if (= slot 2) 10
+      0)))
+
+;; RDM is the one job with real content past slot 2 (GFD-AF-01939's own "hallucinated"
+;; Bio/Distract/Frazzle slots 3-5 — kept exactly as shipped, just relocated here).
+(defn rdm-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 11
+    (if (= slot 2) 12
+      (if (= slot 3) 13
+        (if (= slot 4) 14
+          (if (= slot 5) 15
+            0))))))
+
+(defn thf-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 16
+    (if (= slot 2) 17
+      0)))
+
+(defn smn-ability-for-slot [(slot : I32)] : I32
+  (if (= slot 1) 18
+    (if (= slot 2) 19
+      0)))
+
+(defn on-gfd-ability-for-slot [(job : I32) (slot : I32)] : I32
+  (if (= job 3)
+    (blm-ability-for-slot slot)
+    (if (= slot 0)
+      1
+      (if (= job 0)
+        (war-ability-for-slot slot)
+        (if (= job 1)
+          (mnk-ability-for-slot slot)
+          (if (= job 2)
+            (whm-ability-for-slot slot)
+            (if (= job 4)
+              (rdm-ability-for-slot slot)
+              (if (= job 5)
+                (thf-ability-for-slot slot)
+                (if (= job 6)
+                  (smn-ability-for-slot slot)
+                  0)))))))))

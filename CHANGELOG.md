@@ -1,4 +1,18 @@
 ## 2026-09-04
+- feat: `stdlib/gfd/action_bar_mod.prn` (GFD-MACRO-0012, "tie the action frame stuff into a
+  parena mod based shape so we can easily allow for extension at the action bar affordance") —
+  GFD's first real PARENA mod, real I32-only decision logic (`on-gfd-ability-for-slot`, a
+  job x slot branch) matching ECOWAR's `card_effect_mod.prn`-tier proof, not a bare trigger.
+  Chosen over the still-unscoped federated EduScript<->PARENA process model in GFD's own
+  `docs2/MOD_SURFACE_NORTHSTAR.md` §3a — reuses the already-live static-link pattern
+  `ECOWAR/docs/ARENA_API.md` documents instead. Generated C committed at
+  `GoblinFoxDragon/apps2/battlegrounds_gui/packages/simulation/action_bar_mod.c`, wired into
+  `town_ability_for_slot`. Verified via a standalone C probe (20 assertions) plus real native
+  and WASM builds of the consuming client, WASM redeployed live. See
+  `GoblinFoxDragon/docs2/MOD_SURFACE_NORTHSTAR.md` §7 for the full writeup, including a real
+  found-live gap: PARENA's current `runtime/parena_runtime.h` doesn't compile under Emscripten
+  (`forkpty` has no WASM equivalent) — fixed by pinning GFD's own copy to the original, minimal
+  41-line runtime (`git rev 9bdf91e`), same per-repo-pinned-copy precedent ECOWAR already set.
 - feat: `stdlib/usb/usb.prn` + `stdlib/usb/mass_storage.prn` (S213-04/S215-04, "write usb shit
   into the stdlibs" -> "make it work in either parena or burrow"). Real USB device enumeration
   over `/sys/bus/usb/devices/` (String/Vec-heavy, C-target only, same real split
