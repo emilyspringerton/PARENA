@@ -1,0 +1,37 @@
+;; stdlib/gfd/nm_bonus_mod.prn — the first real mod on GFD's new event-broker mod interface
+;; (GFD-x-123/GFD-x-124, server/modevent), and the first real host in this whole monorepo to
+;; consume BURROW's own Go emission target (shipped 2026-08-30, real per BURROW/README.md's own
+;; "Status," but never actually used by a real host until this mod).
+;;
+;; Founder, kanban: "mod interface for event broker in server mods should be able to register
+;; and or subscribe to specific named events in the system (USE PARENA TYPES) mods should fire
+;; off signals for their callbacks" + "mods can subscribe to certain events provided by core mods
+;; ... and can fire off callbacks on specific event types events can have generic payload must be
+;; typed."
+;;
+;; Real, checked-first finding: apps2/mud (Go) needed BURROW's Go target, not `parena build`'s C
+;; target GFD-MACRO-0012's own action_bar_mod.prn already uses for the (C-based)
+;; apps2/battlegrounds_gui client -- a real, different compile path for a real, different host
+;; language, same "mods first everything" discipline applied to a Go server for the first time.
+;;
+;; Real decision logic, not a bare trigger (matching ECOWAR's card_effect_mod.prn/GFD's own
+;; action_bar_mod.prn "real decision logic" tier): given whether the just-killed mob was a
+;; Notorious Monster (1) or not (0), decide the real bonus XP percent to award. This is the
+;; server/modevent.Broker's own "mob.death" event -- apps2/mud's resolveKill publishes it with
+;; that one real I32 payload and applies whatever percent every subscribed handler returns
+;; (summed across handlers, since more than one mod could plausibly want to react to the same
+;; kill) directly to the kill's own baseXP.
+;;
+;; ABI: apps2/mud's resolveKill calls server/modevent.Broker.Publish("mob.death", is_nm) which
+;; calls straight into OnGfdMobDeathXpBonusPercent (this mod's own BURROW-emitted Go name) for
+;; every subscriber -- committed generated Go at internal/burrowgen/nm_bonus_mod_gen.go, same
+;; "generate once via the real CLI, commit the output, call by name" precedent
+;; ECOWAR/docs/ARENA_API.md already established for the C target.
+
+(module gfd/nm-bonus-mod)
+(export on-gfd-mob-death-xp-bonus-percent)
+
+(defn on-gfd-mob-death-xp-bonus-percent [(is-nm : I32)] : I32
+  (if (>= is-nm 1)
+    50
+    0))

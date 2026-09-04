@@ -1,4 +1,21 @@
 ## 2026-09-04
+- feat: `stdlib/gfd/nm_bonus_mod.prn` (GFD-x-123/GFD-x-124, "mod interface for event broker in
+  server mods... USE PARENA TYPES... mods should fire off signals for their callbacks" + "mods
+  can subscribe to certain events... fire off callbacks on specific event types events can have
+  generic payload must be typed"). Real, checked-first finding: `apps2/mud` (GFD's Go server)
+  needed BURROW's own Go emission target, not `parena build`'s C target GFD-MACRO-0012's own
+  `action_bar_mod.prn` already uses for the C-based `apps2/battlegrounds_gui` client -- compiled
+  via `burrow build ... -o x.go` into `GoblinFoxDragon/apps2/mud/internal/burrowgen/
+  nm_bonus_mod_gen.go` (committed), the first real host anywhere in this monorepo to actually
+  consume BURROW's Go target (shipped 2026-08-30, never used by a real host until now -- see
+  `BURROW/NORTHSTAR.md`'s own updated risks section). Real decision logic (not a bare trigger):
+  given whether a just-killed mob was a Notorious Monster, decides the real bonus XP percent to
+  award -- called from GoblinFoxDragon's new `server/modevent.Broker` ("mob.death" event),
+  wired into `apps2/mud`'s `resolveKill`. Real, generic mod-interface design: events are
+  string-named (any core code or mod can define a new one) and I32-in/I32-out (the same real
+  VS0-across-a-mod-boundary ceiling every ECOWAR/PAPERCRAFT/GFD mod already respects), not a
+  closed enum -- see `GoblinFoxDragon/server/modevent/modevent.go`'s own doc comment for the
+  full ABI.
 - feat: `stdlib/gfd/action_bar_mod.prn` (GFD-MACRO-0012, "tie the action frame stuff into a
   parena mod based shape so we can easily allow for extension at the action bar affordance") —
   GFD's first real PARENA mod, real I32-only decision logic (`on-gfd-ability-for-slot`, a
