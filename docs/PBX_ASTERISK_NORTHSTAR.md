@@ -97,6 +97,52 @@ class `pentest/pcap.prn`'s own no-`CAP_NET_RAW` gap and `UART_SERIAL_NORTHSTAR.m
 no-physical-serial-device gap already named honestly) — Phase 2's own real end-to-end proof needs
 a real, running Asterisk somewhere reachable, not attempted or faked here.
 
+## Real install decision — PBX-SRE-12442 (2026-09-05)
+
+Founder real-time, direct question: *"what is the proper SRE way to get ASTERISK running i
+think its gotta go on our same iduna box everything is on for now do you just wanna yolo install
+it until we dev our own?"*
+
+**Answer: yes, install the real, plain Debian/Ubuntu `asterisk` package on the same box, via its
+own default systemd unit — "yolo" the infrastructure choice (no custom build, no container, no
+new box), not the security basics.** This is a real, ordinary interim SRE call, not a shortcut to
+apologize for: this box already runs many independent services this same way (`IDUNA`,
+`iduna.service`; the gpt2-alpine-c model server; etc.), and this whole PBX plan (see Phase 1-4
+above) is already "bind to a real, already-running Asterisk," which makes a real, live Asterisk a
+genuine prerequisite, not a stand-in to be replaced with something more custom later — "until we
+dev our own" more realistically means "until PARENA's own dialplan/call-state work matures enough
+to matter," which is a real, separate, much larger undertaking than this decision.
+
+Three real, checked-not-assumed things make this the RIGHT interim install, not a reckless one —
+all three are in `sudo-queue/50-install-asterisk-pbx.sh`, not yet run (queued, per this repo's own
+standing convention — no `sudo` from an interactive agent sandbox):
+
+1. **A real, found port conflict**: `ss -tulnp` shows this box's gpt2-alpine-c model server
+   already bound to `:8088` — Asterisk's own default built-in HTTP server (ARI) binds the same
+   port. Since this doc's own Phase 1-3 plan is AMI-only (not ARI — see "AMI first, not ARI/AGI"
+   above), the fix is to disable Asterisk's HTTP server entirely (`http.conf`'s `enabled=no`),
+   not to hunt for a free port for a surface this plan doesn't use anyway.
+2. **AMI stays localhost-only.** `manager.conf`'s AMI protocol is real, plain-text, unencrypted
+   auth over TCP — this box is real, public-internet-facing (`iduna.farthq.com`), and PARENA's
+   own AMI client runs on this same box, so AMI has no reason to ever be reachable from outside
+   it. Bound to `127.0.0.1`, with a real, freshly-generated secret (never a default/placeholder
+   password), and never opened in the firewall.
+3. **SIP/RTP opened narrowly, not by the package's own generous defaults.** UDP `5060` (SIP) does
+   need to be real and reachable for calls to work — opened. Asterisk's own default RTP range
+   (`10000-20000`, 10,000 ports) is needlessly wide for a real, low-volume interim deployment;
+   narrowed to `10000-10099` (100 concurrent streams, real headroom for this box's current real
+   traffic) both in `rtp.conf` and the matching firewall rule — a one-line change to widen later
+   if real traffic ever needs it.
+
+Real, checked headroom on the box before recommending this: 73GB free disk, ~7GB available
+memory (`free -h`, cache-reclaimable), no other conflicts on `5060`/`5038`/RTP range — only the
+one real `:8088` conflict named above, and it's fully resolved by turning off a server surface
+this plan was never going to use.
+
+**Not yet done**: the queued script hasn't been run (needs real root — sudo-queue's own standing
+convention); Phase 2's own real AMI login/round-trip proof still needs this real instance to
+exist first.
+
 ## Related
 
 - `PARENA/docs/SIP_TWILIO_GATEWAY_NORTHSTAR.md` — the real, sibling B2BUA/relay plan this doc's

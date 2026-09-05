@@ -1,3 +1,19 @@
+## 2026-09-05
+- docs(pbx): PBX-SRE-12442 — real SRE install decision for a live Asterisk instance. Founder
+  real-time: "what is the proper SRE way to get Asterisk running... gotta go on our same IDUNA
+  box... do you just wanna yolo install it until we dev our own?" Answer: yes, the plain
+  Debian `asterisk` package via its own default systemd unit — no custom build, no container,
+  no new box — but with three real, checked-not-assumed guardrails, all in the newly queued
+  `sudo-queue/50-install-asterisk-pbx.sh` (not yet run): (1) a real, found `:8088` conflict with
+  this box's existing gpt2-alpine-c model server, resolved by disabling Asterisk's own built-in
+  HTTP/ARI server entirely (`docs/PBX_ASTERISK_NORTHSTAR.md`'s own plan is AMI-only, so that
+  surface was never going to be used anyway); (2) AMI bound to `127.0.0.1` only with a
+  freshly-generated secret, never exposed on this box's real public internet interface; (3) the
+  RTP firewall opening narrowed from Asterisk's own 10,000-port default (`10000-20000`) to a
+  real, sufficient 100 ports (`10000-10099`) for current low-volume traffic. Full reasoning and
+  the real, checked headroom (`ss -tulnp`, `free -h`, `df -h`) in
+  `docs/PBX_ASTERISK_NORTHSTAR.md`'s new "Real install decision" section.
+
 ## 2026-09-04
 - docs(compiler): S223-02 scoping pass — `EXPR_POSITION_BINDING_FORMS_NORTHSTAR.md`. Real finding:
   the `g_boxed_types`/`g_box_helpers` synthesized-helper precedent doesn't transfer to
