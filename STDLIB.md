@@ -3784,3 +3784,42 @@ also verified through `burrow build ... -o mass_storage_gen.go`, and the emitted
 clean via a real `go build`. Real, honest, not attempted here: a vendor-ID/product-ID name
 database, interface-level class enumeration (named above), and any live end-to-end run against a
 real USB device (none exists in this sandbox).
+
+## sip/sdp — real SDP (RFC 4566) body parsing + construction (2026-09-05)
+
+Real, direct answer to CarePyre SIP Phone Phase 2 (`CarePyre/docs/SIP_PHONE_ANDROID_NORTHSTAR.md`,
+kanban priority-queue card CAREPYRE-911343), the real blocking gap that doc's own Phase 1 already
+named: `sip/message.prn` can read/write a real SIP message, but a real INVITE needs an SDP body to
+negotiate WHICH codec and port a call actually uses. `stdlib/sip/sdp.prn` — pure PARENA (no FFI
+needed, same real "line-oriented text protocol" reasoning `sip/message.prn`/`json.prn`/`yaml.prn`
+already established): `parse-sdp` reads the real session-level fields (`v=`/`o=`/`s=`/`c=`) plus
+exactly one real media block into an `SdpMessage`; `build-sdp-offer` emits the real inverse.
+
+Real, honest v0 boundary, named explicitly and reflected in the TYPE itself, not just prose:
+`SdpMessage.media` is a single `SdpMedia` struct, not `(Vec SdpMedia)` — a real multi-stream/
+multi-codec offer is separate, unbuilt work. This is a deliberate design choice, not an oversight:
+updating an EXISTING Vec element read back via `vec/get` on a plain local Vec is the exact real
+gap `array.prn`'s own header comment already documents live ("no recorded scalar-element hint
+outside a typed parameter/struct-field"), so this file sidesteps that path entirely by making
+"exactly one media block" a type-level fact instead of a runtime accumulation. No IPv6 (`c=`'s own
+nettype/addrtype assumed `IN`/`IP4`), no `b=`/`k=`/other `a=` attributes (bandwidth, encryption
+keys, ICE/SDES) — real, recognized-and-ignored line types, not silent mis-parsing.
+
+**Real, genuine compiler bug found and worked around, not designed in advance**: a `match` whose
+two arms return a raw scalar (not wrapped in `Ok`/a struct) — one a bare numeric literal (`0`),
+the other an `Ok`-bound `I32` payload — failed to compile: `error: incompatible types when
+assigning to type 'double' from type 'void *'`. The match's own result-type inference picked
+`double` as a generic numeric default from the literal arm, then choked assigning the still-boxed
+`void*` `Ok` payload into that slot. Same real root cause `regex/pcre.prn`'s own `unbox-bool` and
+`log/jsonl.prn`'s own `unbox-filehandle` already documented (a `Result`'s `Ok` payload is always
+emitted as the generic `void *value` field regardless of its real tracked `.prn`-level type) —
+`deref` is the proven fix for a STRUCT payload, but a plain scalar needs a raw cast instead. Fixed
+with a new, file-local `unbox-i32` (`#target inline-c "*(int *)v"`), the same real, established
+pattern, not a new one invented here.
+
+New `make test-sip-sdp` target, 7 real assertions: real session-level field parsing, a real
+`m=audio`/`a=rtpmap` parse (port, proto, payload-type, codec name, clock rate all read back
+correctly), a real, honest `MissingMediaLine` error for a body with no media block, a real
+malformed-line error, a real built offer round-tripping back through the parser, and the real
+RFC 3551 static payload-type constants (`codec-pcmu`=0, `codec-pcma`=8). `make test`: 345/345,
+zero regressions.

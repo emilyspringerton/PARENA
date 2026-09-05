@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-net-proxy test-pentest-scan test-pentest-dot11 test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-net-proxy test-pentest-scan test-pentest-dot11 test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -273,6 +273,16 @@ test-sip-message: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_sip_message.c \
 		runtime/parena_runtime.c -o /tmp/test_sip_message_bin -lm
 	/tmp/test_sip_message_bin
+
+# test-sip-sdp -- real end-to-end verification for stdlib/sip/sdp.prn (CarePyre SIP Phone
+# Phase 2, kanban priority-queue card CAREPYRE-911343): real session-level + m=/a=rtpmap
+# parsing, a real honest MissingMediaLine error, and a real built offer round-tripping back
+# through the same parser.
+test-sip-sdp: build
+	./parena build stdlib/string.prn stdlib/sip/sdp.prn -o tests/test_sip_sdp_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_sip_sdp.c \
+		runtime/parena_runtime.c -o /tmp/test_sip_sdp_bin -lm
+	/tmp/test_sip_sdp_bin
 
 # test-net-proxy -- real end-to-end verification of stdlib/net/proxy.prn (kanban priority-queue
 # card 434534, "use fatbaby proxy and proxy broker to inform vpn primatives built into parena"):

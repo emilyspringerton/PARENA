@@ -1,0 +1,272 @@
+;; stdlib/sip/sdp.prn — real, minimal SDP (Session Description Protocol, RFC 4566) body parsing
+;; and construction. Real trigger: CarePyre/docs/SIP_PHONE_ANDROID_NORTHSTAR.md's own Phase 2,
+;; kanban priority-queue card CAREPYRE-911343 ("PARENA codec and all the SIP plumbing to make the
+;; SIP phone work") — that doc names this explicitly as "the real blocking gap for negotiating a
+;; two-way audio session," sitting directly on top of sip/message.prn's own already-real SIP
+;; message layer (a real INVITE needs an SDP body to say what codec/port the caller offers).
+;;
+;; Real, honest v0 scope, named explicitly, not silently narrowed: SDP's own real line-oriented
+;; "type=value" grammar (RFC 4566 §5) — the real session-level fields a call actually needs
+;; (v=/o=/s=/c=) plus EXACTLY ONE real media block (m=audio ... plus its own a=rtpmap: line).
+;; No multiple m= blocks (a real multi-stream/multi-codec offer), no b=/k=/other a= attributes
+;; (bandwidth, encryption keys, ICE/SDES), no IPv6 (c= line's own nettype/addrtype are assumed
+;; "IN IP4", the real overwhelming common case). A single-audio-stream SIP call — the real,
+;; narrowest slice underneath a working CarePyre softphone call, not the whole spec. CRLF-
+;; terminated only, matching sip/message.prn's own identical, already-named boundary (a real SDP
+;; body inside a real SIP INVITE is written by the same stack that writes the surrounding SIP
+;; headers, so this isn't a new assumption).
+(module sip/sdp)
+(import string)
+(export parse-sdp build-sdp-offer SdpMessage SdpMedia SdpError
+        codec-pcmu codec-pcma)
+
+;; SdpMedia — real, minimal single-media-block shape. `media` on SdpMessage is this struct
+;; directly, not `(Vec SdpMedia)` — the real, honest v0 boundary above (exactly one media block)
+;; is reflected in the TYPE itself, not just prose, and sidesteps needing in-place mutation of a
+;; Vec element (parse-headers's own `vec/push!`-only pattern is the one proven-safe Vec idiom
+;; this stdlib already relies on; updating an EXISTING element read back via `vec/get` on a plain
+;; local Vec is the exact real class of gap `array.prn`'s own header comment already documents
+;; live — "no recorded scalar-element hint outside a typed parameter/struct-field" — so this file
+;; avoids that path entirely rather than risking it).
+(defstruct SdpMedia
+  (media-type   : String)  ;; e.g. "audio"
+  (port         : I32)
+  (proto        : String)  ;; e.g. "RTP/AVP"
+  (payload-type : I32)     ;; real, single payload type -- v0 boundary: one codec per call, not a
+                            ;; real multi-fmt offer/answer negotiation across several
+  (codec-name   : String)  ;; from this media's own a=rtpmap line, "" if none was present
+  (clock-rate   : I32))    ;; from a=rtpmap, 0 if none was present
+
+(defstruct SdpMessage
+  (version      : String)  ;; v= value, e.g. "0"
+  (origin       : String)  ;; o= value, real, opaque per RFC 4566 (username sess-id sess-version
+                            ;; nettype addrtype addr) -- not decomposed further, no real caller
+                            ;; need to read individual sub-fields back out in this v0
+  (session-name : String)  ;; s= value
+  (conn-addr    : String)  ;; c= line's own address field only (nettype/addrtype assumed IN/IP4)
+  (media        : SdpMedia))
+
+(defenum SdpError
+  (MalformedLine)       ;; a non-blank line isn't real "X=value" shape at all
+  (MalformedMediaLine)  ;; an m= line doesn't have the real, minimal "<type> <port> <proto> <fmt>" shape
+  (MissingMediaLine))   ;; no real m= line found by end of body -- not negotiable audio
+
+;; codec-pcmu / codec-pcma — real RTP static payload-type constants (RFC 3551 §6) for the two
+;; real G.711 variants SIP_PHONE_ANDROID_NORTHSTAR.md's own Phase 4 already names as the real,
+;; license-free codec choice. Zero-arg functions, same convention as sip/message.prn's own
+;; method-* constants.
+(defn codec-pcmu [] : I32 0)
+(defn codec-pcma [] : I32 8)
+
+;; find-crlf / find-char — real, minimal duplicated copies of sip/message.prn's own identical,
+;; unexported helpers. VS0 has no real cross-module private-helper sharing today (re-confirmed
+;; live again this session) — every real stdlib file that needs these is self-contained, matching
+;; sip/rtp.prn's own "each file stands alone" convention, not a new gap this file introduces.
+(defn find-crlf [(s : String) (start : I32) (n : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i (- n 1)) n)
+      ((and (= (char-at s i) 13) (= (char-at s (+ i 1)) 10)) i)
+      (true (recur (+ i 1))))))
+
+(defn find-char [(s : String) (start : I32) (n : I32) (target : I32)] : I32
+  (loop [i start]
+    (cond
+      ((>= i n) n)
+      ((= (char-at s i) target) i)
+      (true (recur (+ i 1))))))
+
+;; unbox-i32 — real, narrow FFI helper, same real class of fix `regex/pcre.prn`'s own
+;; `unbox-bool`/`log/jsonl.prn`'s own `unbox-filehandle` already document: a match-bound `Ok`
+;; payload's own emitted C type is always the Result's generic `void *value`, regardless of its
+;; real tracked `.prn`-level type (I32 here) -- `deref` is the proven fix for a STRUCT payload
+;; (casts back to the real struct type), but a plain scalar payload needs this raw cast instead.
+;; Found live writing `parse-rtpmap-rate` below: `(match (parse-i32 ...) ((Err e) 0) ((Ok rate)
+;; rate))` failed with "incompatible types when assigning to type 'double' from type 'void *'" --
+;; the match's own result-type inference picked `double` as a generic numeric default from the
+;; bare `0` literal in the Err arm, then choked assigning the still-`void*` `rate` into it.
+(defn unbox-i32 [(v : &Any)] : I32
+  #target
+  {:c (inline-c "*(int *)v")})
+
+;; parse-conn-addr — real, minimal extraction of a c= line's own address field: "IN IP4 <addr>"
+;; -- splits on spaces and takes the third field. Real, honest v0 assumption named above (nettype
+;; IN / addrtype IP4 always) -- if either leading field is missing this just returns the whole
+;; value unchanged rather than erroring, since a malformed c= line still leaves the rest of the
+;; message readable and this field alone isn't fatal to a caller that doesn't need it.
+(defn parse-conn-addr [(value : String) (dest : Arena @ Region)] : String @ Region
+  (let [n (length value)
+        sp1 (find-char value 0 n 32)
+        sp2 (find-char value (+ sp1 1) n 32)]
+    (if (or (>= sp1 n) (>= sp2 n))
+      value
+      (substring value (+ sp2 1) n dest))))
+
+;; parse-media-line — real, minimal decode of one m= line's own real grammar: "<media> <port>
+;; <proto> <fmt...>". Real, honest v0 boundary: only the FIRST fmt token becomes the real
+;; payload-type (a real m=audio line can list several, e.g. "0 8 101" for PCMU/PCMA/telephone-
+;; event — full multi-codec offer/answer negotiation is real, separate, unbuilt work, same
+;; boundary this file's own header comment names). `codec-name`/`clock-rate` start blank/0 here;
+;; a following a=rtpmap line (if present) fills them in back in parse-sdp's own loop.
+(defn parse-media-line [(value : String) (dest : Arena @ Region)] : (Result SdpMedia SdpError) @ Region
+  (let [n (length value)
+        sp1 (find-char value 0 n 32)]
+    (if (>= sp1 n)
+      (Err MalformedMediaLine)
+      (let [mtype (substring value 0 sp1 dest)
+            sp2 (find-char value (+ sp1 1) n 32)]
+        (if (>= sp2 n)
+          (Err MalformedMediaLine)
+          (let [port-str (substring value (+ sp1 1) sp2 dest)
+                sp3 (find-char value (+ sp2 1) n 32)]
+            (if (>= sp3 n)
+              (Err MalformedMediaLine)
+              (let [proto (substring value (+ sp2 1) sp3 dest)
+                    fmt-rest (substring value (+ sp3 1) n dest)
+                    fn-len (length fmt-rest)
+                    sp4 (find-char fmt-rest 0 fn-len 32)
+                    first-fmt (substring fmt-rest 0 sp4 dest)]
+                (match (parse-i32 port-str dest)
+                  ((Err e) (Err MalformedMediaLine))
+                  ((Ok port)
+                    (match (parse-i32 first-fmt dest)
+                      ((Err e) (Err MalformedMediaLine))
+                      ((Ok pt)
+                        (Ok {:media-type mtype :port port :proto proto
+                             :payload-type pt :codec-name "" :clock-rate 0})))))))))))))
+
+;; parse-rtpmap-codec / parse-rtpmap-rate — real, minimal decode of one a=rtpmap:<pt> <codec>/
+;; <rate> line's own value (the "rtpmap:..." part after "a="), the one real attribute this v0
+;; cares about (RFC 4566 §6) — every other real `a=` line is ignored by parse-sdp's own dispatch,
+;; named explicitly, not silently mis-parsed. Real, honest boundary: the leading <pt> number
+;; itself is NOT cross-checked against the media line's own payload-type here — v0 takes the
+;; first a=rtpmap line seen after an m= line as that media's codec info directly, matching this
+;; file's own "exactly one media block" scope (a real multi-codec answer would need the match).
+;; Two separate functions (not one returning a pair) because VS0 has no real tuple/multi-value
+;; return type — matching every other stdlib file's own established workaround for this.
+(defn parse-rtpmap-codec [(value : String) (dest : Arena @ Region)] : (Option String) @ Region
+  (if (< (length value) 7)
+    None
+    (if (str-eq? (substring value 0 7 dest) "rtpmap:")
+      (let [rest (substring value 7 (length value) dest)
+            n (length rest)
+            sp1 (find-char rest 0 n 32)]
+        (if (>= sp1 n)
+          None
+          (let [codec-rest (substring rest (+ sp1 1) n dest)
+                slash (find-char codec-rest 0 (length codec-rest) 47)]
+            (Some (substring codec-rest 0 slash dest)))))
+      None)))
+
+(defn parse-rtpmap-rate [(value : String) (dest : Arena @ Region)] : I32 @ Region
+  (if (< (length value) 7)
+    0
+    (if (str-eq? (substring value 0 7 dest) "rtpmap:")
+      (let [rest (substring value 7 (length value) dest)
+            n (length rest)
+            sp1 (find-char rest 0 n 32)]
+        (if (>= sp1 n)
+          0
+          (let [codec-rest (substring rest (+ sp1 1) n dest)
+                cn (length codec-rest)
+                slash (find-char codec-rest 0 cn 47)]
+            (if (>= slash cn)
+              0
+              (match (parse-i32 (substring codec-rest (+ slash 1) cn dest) dest)
+                ((Err e) 0)
+                ((Ok rate) (unbox-i32 rate)))))))
+      0)))
+
+;; parse-sdp — the real, public entry point. Walks `raw` one real CRLF-terminated line at a time
+;; (same real scan idiom sip/message.prn's own parse-headers already established), dispatching on
+;; each line's own leading type character (v/o/s/c/m/a; t and every other real SDP line type is
+;; recognized-and-ignored, not an error — a real, honest "don't need it for this v0" boundary,
+;; not silent mis-parsing of something this file claims to handle). Purely functional accumulator
+;; via loop/recur (no in-place struct/Vec mutation anywhere in this function) — every field is
+;; threaded through as an explicit loop binding, the same real idiom `array.prn`'s own `product`
+;; and every sibling `loop` in this stdlib already uses for multi-value fold state.
+(defn parse-sdp [(raw : String) (dest : Arena @ Region)] : (Result SdpMessage SdpError) @ Region
+  (let [n (length raw)]
+    (loop [i 0 version "" origin "" sname "" caddr ""
+           seen-media false mtype "" mport 0 mproto "" mpt 0 mcodec "" mrate 0]
+      (cond
+        ((>= i n)
+          (if seen-media
+            (Ok {:version version :origin origin :session-name sname :conn-addr caddr
+                 :media {:media-type mtype :port mport :proto mproto :payload-type mpt
+                         :codec-name mcodec :clock-rate mrate}})
+            (Err MissingMediaLine)))
+        (true
+          (let [line-end (find-crlf raw i n)]
+            (if (= line-end i)
+              ;; blank line -- real, honest no-op skip, same tolerance a permissive real SDP
+              ;; reader needs (a stray blank line inside a body isn't structurally fatal).
+              (recur (+ line-end 2) version origin sname caddr
+                     seen-media mtype mport mproto mpt mcodec mrate)
+              (let [line (substring raw i line-end dest)
+                    ln (length line)]
+                (if (or (< ln 2) (not (= (char-at line 1) 61))) ;; 61 = '='
+                  (Err MalformedLine)
+                  (let [key (char-at line 0)
+                        value (substring line 2 ln dest)]
+                    (cond
+                      ((= key 118) ;; 'v'
+                        (recur (+ line-end 2) value origin sname caddr
+                               seen-media mtype mport mproto mpt mcodec mrate))
+                      ((= key 111) ;; 'o'
+                        (recur (+ line-end 2) version value sname caddr
+                               seen-media mtype mport mproto mpt mcodec mrate))
+                      ((= key 115) ;; 's'
+                        (recur (+ line-end 2) version origin value caddr
+                               seen-media mtype mport mproto mpt mcodec mrate))
+                      ((= key 99) ;; 'c'
+                        (recur (+ line-end 2) version origin sname (parse-conn-addr value dest)
+                               seen-media mtype mport mproto mpt mcodec mrate))
+                      ((= key 109) ;; 'm'
+                        (match (parse-media-line value dest)
+                          ((Err e) (Err e))
+                          ((Ok med)
+                            (let [d (deref med)]
+                              (recur (+ line-end 2) version origin sname caddr
+                                     true (get-field d :media-type) (get-field d :port)
+                                     (get-field d :proto) (get-field d :payload-type) "" 0)))))
+                      ((= key 97) ;; 'a'
+                        (if seen-media
+                          (match (parse-rtpmap-codec value dest)
+                            ((Some cname)
+                              (recur (+ line-end 2) version origin sname caddr
+                                     seen-media mtype mport mproto mpt cname
+                                     (parse-rtpmap-rate value dest)))
+                            ((None)
+                              (recur (+ line-end 2) version origin sname caddr
+                                     seen-media mtype mport mproto mpt mcodec mrate)))
+                          (recur (+ line-end 2) version origin sname caddr
+                                 seen-media mtype mport mproto mpt mcodec mrate)))
+                      (true
+                        ;; every other real SDP line type (t=, b=, k=, other a=) -- recognized,
+                        ;; deliberately ignored, matching this file's own named v0 boundary.
+                        (recur (+ line-end 2) version origin sname caddr
+                               seen-media mtype mport mproto mpt mcodec mrate)))))))))))))
+
+;; build-sdp-offer — the real, direct inverse of parse-sdp: emits a real, minimal, well-formed
+;; single-audio-stream SDP offer body for an outbound INVITE. `session-id` is caller-supplied
+;; rather than generated here -- RFC 4566 §5.2 only requires it be "unique" for the calling user
+;; agent, and this file deliberately does not invent a pseudo-random generator just to fill it
+;; (an honest v0 boundary, not an oversight: a real caller already has a real, existing session/
+;; call-id source, matching sip/message.prn's own build-request taking `call-id` as a parameter
+;; rather than generating one).
+(defn build-sdp-offer [(local-ip : String) (session-id : String) (port : I32)
+                        (payload-type : I32) (codec-name : String) (clock-rate : I32)
+                        (dest : Arena @ Region)] : String @ Region
+  (let [port-str (i32-to-string port dest)
+        pt-str (i32-to-string payload-type dest)
+        rate-str (i32-to-string clock-rate dest)
+        v-line "v=0\r\n"
+        o-line (concat "o=- " (concat session-id (concat " " (concat session-id
+                  (concat " IN IP4 " (concat local-ip "\r\n" dest) dest) dest) dest) dest) dest)
+        s-line "s=CarePyre\r\n"
+        c-line (concat "c=IN IP4 " (concat local-ip "\r\n" dest) dest)
+        t-line "t=0 0\r\n"
+        m-line (concat "m=audio " (concat port-str (concat " RTP/AVP " (concat pt-str "\r\n" dest) dest) dest) dest)
+        a-line (concat "a=rtpmap:" (concat pt-str (concat " " (concat codec-name (concat "/" (concat rate-str "\r\n" dest) dest) dest) dest) dest) dest)]
+    (concat v-line (concat o-line (concat s-line (concat c-line (concat t-line (concat m-line a-line dest) dest) dest) dest) dest) dest)))
