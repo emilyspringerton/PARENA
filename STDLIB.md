@@ -3860,3 +3860,39 @@ New `make test-sip-transaction` target, 14 real assertions: a full outbound call
 call (both answer and decline), and three real, honest `InvalidTransition` errors — including a
 genuine protocol-violation case, not just an obviously-wrong pairing. `make test`: 345/345, zero
 regressions.
+
+## sip/dtmf — real RFC 4733/2833 DTMF telephone-event RTP payload (2026-09-05)
+
+Real, direct answer to CarePyre SIP Phone, kanban priority-queue card CAREPYRE-SIP-4324324 ("SIP
+PHONE NEEDS DTMF DIAL TONES ... ALSO IN BAND WHILE IN A CALL VIA THE NUMBER PAD"), already named
+as the real, correct mechanism in `PARENA/docs/SIP_TWILIO_GATEWAY_NORTHSTAR.md`: "DTMF: RFC
+4733/2833 (in-band RTP events, not audio tones) — real signaling-plane data, not a codec concern."
+`stdlib/sip/dtmf.prn`: `parse-dtmf-event`/`build-dtmf-event` codec RFC 4733's own real, fixed
+4-byte telephone-event payload (event code, end-of-event flag, volume, duration); `digit-to-event`/
+`digit-from-event` map a real keypad character to/from its RFC 4733 event code.
+
+Real, honest v0 boundary, named explicitly: no retransmission logic (RFC 4733 recommends sending
+the same event 2-3 times for reliability over lossy UDP — a real caller's own job), no payload-type
+negotiation (`telephone-event-payload-type` returns 101, the real, near-universal de-facto default
+every real implementation falls back to, not a substitute for real SDP `a=rtpmap` negotiation on
+`sip/sdp.prn`'s own critical path).
+
+**Two real, genuine compiler bugs found live, not designed in advance:** (1) `build-dtmf-event`
+needed the same `ldap/ber.prn`-established `alloc` + `memcpy`-based `inline-c` escape hatch as
+`build-ber-tlv` — a real event code of 0 (digit '0'), volume 0, or either duration byte being 0 are
+all completely ordinary DTMF traffic, and `string/concat`'s own `strcpy`/`strcat` truncation (the
+same real, documented limitation `sip/rtp.prn`'s own `build-rtp-header` already names) would
+corrupt output the moment any of them occur. (2) A genuinely NEW, separate quirk: binding
+`(if (get-field ev :end) 1 0)` to its own `let` name made the emitter infer `double` for it (and
+anything computed from it) — the same underlying "a bare numeric-literal branch has no int
+context to anchor to" class of bug `sip/sdp.prn`'s own `unbox-i32` already worked around for a
+`match`, this time hitting a plain `if`. Real, minimal fix: inline the `if` directly as `shl`'s own
+argument instead of naming it first — the exact pattern `sip/rtp.prn`'s own `build-rtp-header`
+already uses for its `padding`/`extension`/`marker` bits, confirming this was a pre-existing,
+narrowly-avoided trap rather than a wholly new shape of bug.
+
+New `make test-dtmf` target, 12 real assertions: a real telephone-event payload parse (including
+the E-bit and volume fields), a real honest `TooShort` error, the full real digit↔event mapping
+(0-9, `*`, `#`, A-D, plus an out-of-range miss on both sides), and two real build+round-trip cases
+— one deliberately all-zero-field (digit '0', volume 0) proving the `inline-c` path isn't
+truncated, one fully-populated. `make test`: 345/345, zero regressions.

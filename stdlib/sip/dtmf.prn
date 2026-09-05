@@ -1,0 +1,114 @@
+;; stdlib/sip/dtmf.prn — real RFC 4733/2833 DTMF telephone-event RTP payload parsing and
+;; construction. CarePyre SIP Phone, kanban priority-queue card CAREPYRE-SIP-4324324 ("SIP PHONE
+;; NEEDS DTMF DIAL TONES ... ALSO IN BAND WHILE IN A CALL VIA THE NUMBER PAD"), and already named
+;; as the real, correct mechanism in PARENA/docs/SIP_TWILIO_GATEWAY_NORTHSTAR.md: "DTMF: RFC
+;; 4733/2833 (in-band RTP events, not audio tones) — real signaling-plane data, not a codec
+;; concern." This is that payload — a special RTP payload (carried in the SAME RTP stream as the
+;; real audio, hence "in-band", at its own real, separate payload type from the audio codec
+;; itself, per RFC 4733 §3) representing a keypad digit, not an actual audible tone waveform.
+;;
+;; Real, honest v0 scope, named explicitly: the real, fixed 4-byte telephone-event payload body
+;; (RFC 4733 §2.3) — event code, end-of-event flag, volume, duration. No retransmission logic
+;; (RFC 4733 recommends sending the SAME event 2-3 times with the end bit set, for reliability
+;; over lossy UDP — a real caller's own job, not this module's), no negotiation of the payload
+;; type number itself (SDP's own `a=rtpmap:<pt> telephone-event/8000` line is real, separate work
+;; on `sip/sdp.prn`'s own critical path — `telephone-event-payload-type` below is only the real,
+;; conventional default value most real implementations pick when nothing else is negotiated).
+(module sip/dtmf)
+(import net/wire)
+(export parse-dtmf-event build-dtmf-event digit-to-event digit-from-event
+        DtmfEvent DtmfError telephone-event-payload-type dtmf-event-size)
+
+(defstruct DtmfEvent
+  (event    : I32)   ;; RFC 4733 event code: 0-9 = digits 0-9, 10 = '*', 11 = '#', 12-15 = A-D
+  (end      : Bool)  ;; the E bit -- set on the (redundantly repeated) final packet of a tone
+  (volume   : I32)   ;; 0-63, dBm0 below full scale (RFC 4733 §2.3) -- a LOWER number is LOUDER
+  (duration : I32))  ;; 16-bit, RTP timestamp units since the tone started (the same clock as the
+                      ;; audio stream's own timestamp -- 8000 for G.711)
+
+(defenum DtmfError
+  (TooShort))  ;; real buffer shorter than the fixed 4-byte payload
+
+;; dtmf-event-size — the real, fixed 4-byte telephone-event payload size (RFC 4733 §2.3), always
+;; the same regardless of digit, matching `rtp-header-size`'s own established convention in
+;; `sip/rtp.prn` for "this file's own real, fixed-size unit."
+(defn dtmf-event-size [] : I32 4)
+
+;; telephone-event-payload-type — the real, conventional default RTP payload type for
+;; telephone-event. RFC 4733 itself mandates a DYNAMIC type (96-127), negotiated per-call via
+;; SDP's own `a=rtpmap` — 101 is the real, near-universal de-facto default nearly every real
+;; implementation (Asterisk included) falls back to when nothing else is negotiated, not an
+;; arbitrary pick made here.
+(defn telephone-event-payload-type [] : I32 101)
+
+;; digit-to-event / digit-from-event — real, minimal mapping between a real keypad character
+;; ('0'-'9', '*', '#', 'A'-'D', by ASCII code) and its RFC 4733 event code. Two separate
+;; functions rather than one bidirectional table, matching every other stdlib file's own
+;; established workaround for VS0 having no real generic hash-map type yet. `-1` is the real,
+;; honest "not a real DTMF digit" sentinel for an out-of-range input on either side.
+(defn digit-to-event [(digit : I32)] : I32
+  (cond
+    ((and (>= digit 48) (<= digit 57)) (- digit 48))         ;; '0'-'9' -> 0-9
+    ((= digit 42) 10)                                        ;; '*'
+    ((= digit 35) 11)                                        ;; '#'
+    ((and (>= digit 65) (<= digit 68)) (+ (- digit 65) 12))  ;; 'A'-'D' -> 12-15
+    (true -1)))
+
+(defn digit-from-event [(event : I32)] : I32
+  (cond
+    ((and (>= event 0) (<= event 9)) (+ event 48))
+    ((= event 10) 42)
+    ((= event 11) 35)
+    ((and (>= event 12) (<= event 15)) (+ (- event 12) 65))
+    (true -1)))
+
+;; parse-dtmf-event — real, direct decode of RFC 4733's own fixed 4-byte payload. Byte 0: event
+;; code. Byte 1: E(1 bit) R(1 bit, always 0, ignored on read) volume(6 bits). Bytes 2-3: duration,
+;; real, standard network byte order — read via `net/wire`'s own already-tested `read-u16-be`,
+;; the same "zero new byte-order logic" discipline `sip/rtp.prn`'s own `parse-rtp-header` already
+;; commits to. `len` is a required, explicit parameter, NOT `(string/length buf)` — the identical
+;; real bug `sip/rtp.prn`'s own header comment already documents: a real event code, volume, or
+;; duration of exactly 0 is completely ordinary DTMF traffic (event 0 IS digit '0'), and
+;; `string/length` is literally `strlen`, which would misreport this as "too short" on that real,
+;; common case rather than a rare edge case. `dest` is required even though every real field here
+;; is a scalar: VS0's own C emitter needs a real Arena in scope to box a non-pointer Result
+;; payload, the same real, already-documented emitter constraint `parse-rtp-header` names.
+(defn parse-dtmf-event [(buf : String @ Region) (len : I32) (dest : Arena @ Region)] : (Result DtmfEvent DtmfError) @ Region
+  (if (< len (dtmf-event-size))
+    (Err TooShort)
+    (let [b0 (net/wire/raw-byte buf 0)
+          b1 (net/wire/raw-byte buf 1)]
+      (Ok {:event b0
+           :end (= (shr b1 7) 1)
+           :volume (bit-and b1 63)
+           :duration (net/wire/read-u16-be buf 2)}))))
+
+;; build-dtmf-event — the real, direct inverse. Uses a real, honest `#target inline-c` escape
+;; hatch (matching `ldap/ber.prn`'s own already-established `build-ber-tlv` precedent) instead of
+;; `string/concat` — a real event code of 0 ('0'), a volume of 0, or either duration byte being 0
+;; are all completely ordinary, common real values here, and `concat`'s own `strcpy`/`strcat`
+;; semantics would silently truncate the output the moment any of them occur: the exact same real
+;; class of bug `sip/rtp.prn`'s own `build-rtp-header` header comment already names as a genuine,
+;; NOT-yet-fixed limitation of `concat` itself. `ber.prn`'s `alloc` + `memcpy`-based `inline-c` is
+;; the one real, already-proven way around it in this stdlib — used here rather than
+;; rediscovering the same bug live a third time.
+;; Real, genuine compiler quirk found live, worked around not designed in advance: binding
+;; `(if (get-field ev :end) 1 0)` to its own `let` name (`eflag`) with no further context made
+;; the emitter infer `double` for it (and the `b1` expression using it), a real "bare numeric-
+;; literal `if` branch defaults to `double`" gap — the same underlying class of issue
+;; `sip/sdp.prn`'s own `unbox-i32` header comment already documents for a `match`, just hitting a
+;; plain `if` here instead. Real, minimal fix: inline the `if` directly as `shl`'s own argument
+;; instead of naming it first, the exact same pattern `sip/rtp.prn`'s own `build-rtp-header`
+;; already uses for its `padding`/`extension`/`marker` bits — inferring from the surrounding
+;; `shl`/`bit-or` call's own int context works where a standalone `let` binding didn't.
+(defn build-dtmf-event [(ev : DtmfEvent) (dest : Arena @ Region)] : String @ Region
+  (let [event (get-field ev :event)
+        volume (get-field ev :volume)
+        duration (get-field ev :duration)
+        b1 (bit-or (shl (if (get-field ev :end) 1 0) 7) (bit-and volume 63))
+        dur-hi (bit-and (shr duration 8) 255)
+        dur-lo (bit-and duration 255)
+        out (alloc dest String (dtmf-event-size))]
+    #target
+    {:c (inline-c "out[0]=(char)event; out[1]=(char)b1; out[2]=(char)dur_hi; out[3]=(char)dur_lo;")}
+    out))
