@@ -1,4 +1,5 @@
 ## 2026-09-05
+- Added sip/sdp.prn: real SDP body parsing/building (RFC 4566), CarePyre SIP Phone Phase 2 (CAREPYRE-911343). Found+fixed a genuine compiler bug (match returning raw scalar with mixed literal/Ok-bound arms) via new unbox-i32 helper. make test-sip-sdp 7/7, make test 345/345 (sess-20260905-0720-ec33e7c5)
 - feat(pbx): TWILLIO-OPS-12433 ("TWILLIO COMPLIANCE PROFILE CREATED") — real Twilio Elastic SIP
   Trunk provisioned end to end via the API once Trust Hub compliance cleared: trunk
   `carepyre.pstn.twilio.com` (`TK26beb46d6ae9c91ea0d0adef35eaa753`), a real IP ACL for this
