@@ -1,5 +1,32 @@
 # Twilio Elastic SIP Trunk — real setup checklist
 
+## Real, live-found blocker (2026-09-05) — read this first
+
+A real Twilio API Key was wired up and tested live against the real account
+("My First Twilio Account", $20.00 USD balance, a real "Full" — not trial — account; the real
+Account SID itself lives only in `~/.config/idunapro/env` on the box, never committed here).
+Read-only calls work fine (account info, balance, available phone number search). **Creating a
+real Elastic SIP Trunk via the API failed** with:
+
+```
+{"code": 20003, "message": "Primary compliance profile is not approved. Please refer to
+documentation and complete the KYC process in Trust Hub to gain access.", "status": 401}
+```
+
+This is a real, account-wide, human-only gate — Twilio's own Trust Hub identity/business
+verification, not something fixable via API calls or by anything in this codebase. **It almost
+certainly blocks the manual Console steps below too** (same account-level restriction), not just
+the API path — expect the Console's own Trunk-creation UI to show a similar compliance prompt
+until this is resolved.
+
+**Real, concrete next step**: in the Twilio Console, go to **Trust Hub** (left nav, or
+[twilio.com/console/trust-hub](https://www.twilio.com/console/trust-hub)) and complete a
+**Primary Customer Profile** — real business/identity info (legal business name, address, a
+real contact). This is the same KYC Twilio requires before SIP Trunking or (often) buying
+phone numbers on a fresh account. Once that profile shows **Approved**, re-run the steps below
+(or re-trigger the API-based creation — same real endpoints, no code changes needed once this
+clears).
+
 Kanban: "ok we have a platform we have a pbx we have a sip phone do all the plumbing while i
 sign up for twillio." This is the real, concrete Twilio Console side of that plumbing — the
 Asterisk side (`ops/asterisk/*.conf`) is already deployed and waiting for the one real value
