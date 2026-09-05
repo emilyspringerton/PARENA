@@ -1,4 +1,16 @@
 ## 2026-09-05
+- feat(pbx): "do all the plumbing while i sign up for twillio" — real, deployable Asterisk PJSIP
+  config (`ops/asterisk/`) connecting the CarePyre SIP Phone extension to a real Twilio Elastic
+  SIP Trunk: `pjsip_carepyre_phone.conf` (extension 1000), `pjsip_twilio_trunk.conf` (IP-ACL
+  auth, this box's real static IP `198.58.107.85`, all 8 real Twilio signaling regions verified
+  live against Twilio's own current published IP list), `extensions_carepyre.conf`
+  (E.164-formatted outbound/inbound dialplan). Config fields cross-checked against Twilio's own
+  official "Elastic SIP Trunking – Asterisk Configuration Guide" PDF
+  (`rewrite_contact`/`rtp_symmetric`/`dtmf_mode=rfc4733`) rather than guessed. New
+  `docs/TWILIO_SETUP_CHECKLIST.md` — the real, step-by-step Twilio Console side, using this
+  box's own real values. Queued for deploy (`sudo-queue/52-carepyre-asterisk-plumbing-deploy.sh`,
+  MONOREPO repo) — additive `#include`, not a destructive overwrite, not yet run. Apple #17934.
+
 - feat(pbx): PBX-SRE-124533 — Phase 3 of `PBX_ASTERISK_NORTHSTAR.md` shipped: real AMI action
   builders `build-originate-action` (Channel/Context/Exten/Priority dialplan form),
   `build-hangup-action`, `build-queue-status-action` in `stdlib/pbx/ami.prn`, following
