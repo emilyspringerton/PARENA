@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-net-proxy test-pentest-scan test-pentest-dot11 test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-net-proxy test-pentest-scan test-pentest-dot11 test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -283,6 +283,15 @@ test-sip-sdp: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_sip_sdp.c \
 		runtime/parena_runtime.c -o /tmp/test_sip_sdp_bin -lm
 	/tmp/test_sip_sdp_bin
+
+# test-sip-transaction -- real end-to-end verification for stdlib/sip/transaction.prn (CarePyre
+# SIP Phone Phase 3, kanban priority-queue card CAREPYRE-911343): real outbound/inbound call
+# progressions and real, honest InvalidTransition errors for nonsensical event/state pairings.
+test-sip-transaction: build
+	./parena build stdlib/sip/transaction.prn -o tests/test_sip_transaction_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_sip_transaction.c \
+		runtime/parena_runtime.c -o /tmp/test_sip_transaction_bin -lm
+	/tmp/test_sip_transaction_bin
 
 # test-net-proxy -- real end-to-end verification of stdlib/net/proxy.prn (kanban priority-queue
 # card 434534, "use fatbaby proxy and proxy broker to inform vpn primatives built into parena"):

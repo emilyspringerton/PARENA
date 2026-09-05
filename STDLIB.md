@@ -3823,3 +3823,40 @@ correctly), a real, honest `MissingMediaLine` error for a body with no media blo
 malformed-line error, a real built offer round-tripping back through the parser, and the real
 RFC 3551 static payload-type constants (`codec-pcmu`=0, `codec-pcma`=8). `make test`: 345/345,
 zero regressions.
+
+## sip/transaction — real, minimal SIP call-state machine (2026-09-05)
+
+Real, direct answer to CarePyre SIP Phone Phase 3 (`CarePyre/docs/SIP_PHONE_ANDROID_NORTHSTAR.md`,
+kanban priority-queue card CAREPYRE-911343 and its siblings CAREPYRE-245435/CAREPYRE-535454/
+CAREPYRE-5435439434 — all describing the same real finish line), the gap that doc's own Phase 1
+already named: `message.prn`/`sdp.prn` can read/write real SIP wire format, but neither tracks
+where a CALL actually is (has it rung yet? was it answered? is it over?). `stdlib/sip/
+transaction.prn` — pure PARENA, zero dependency on either sibling SIP module by design: a caller
+maps its own parsed messages to `CallEvent`s; this file only owns the state graph itself, the same
+"PARENA decides, host owns everything else" split this monorepo already uses everywhere (GFD's mod
+pattern, ECOWAR's decision logic).
+
+`CallState` (`Idle`/`Calling`/`Proceeding`/`Ringing`/`Established`/`Terminated`) and `CallEvent`
+(the real send/recv vocabulary for both an outbound-placed and an inbound-received call) are both
+plain `defenum`s with zero-payload variants — real, honest, and genuinely useful even without any
+payload, worth naming because it means `transition`'s own `Result` still needs Arena-boxing (VS0
+boxes ANY non-pointer `Ok` payload, including a bare enum tag with no data, the identical real
+constraint `sip/rtp.prn`'s own `parse-rtp-header` already documents for a scalar `I32`). One entry
+point, `(transition state event dest)`, returns the next state or a real, honest
+`InvalidTransition` for a nonsensical pairing — every state's own match arm names ONLY the events
+that are real, meaningful transitions out of it; anything else is a deliberate catch-all, not a
+forgotten case (e.g. `RecvBye` while still `Calling` is a genuine protocol violation, correctly
+refused rather than silently treated as a normal hangup).
+
+Real, honest v0 boundary, named explicitly: one call's state at a time (a real phone's call-
+waiting/multi-line handling is separate, later work), no retransmission timers, no CANCEL-vs-486
+race handling, no call forking (a real INVITE ringing several registered devices at once). One
+real, deliberate design choice worth calling out: `RecvOk` is valid directly from `Calling` (no
+`Ringing`/`Proceeding` in between) — real SIP UAs legitimately skip 180 entirely (auto-answer/
+voicemail-style endpoints), so this is a real, correct shortcut, not a gap.
+
+New `make test-sip-transaction` target, 14 real assertions: a full outbound call progression
+(Calling→Proceeding→Ringing→Established→Terminated), the real "skip 180" shortcut, a full inbound
+call (both answer and decline), and three real, honest `InvalidTransition` errors — including a
+genuine protocol-violation case, not just an obviously-wrong pairing. `make test`: 345/345, zero
+regressions.

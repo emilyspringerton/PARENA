@@ -1,0 +1,137 @@
+;; stdlib/sip/transaction.prn — real, minimal SIP call-state machine. CarePyre SIP Phone Phase 3
+;; (CarePyre/docs/SIP_PHONE_ANDROID_NORTHSTAR.md, kanban priority-queue card CAREPYRE-911343 and
+;; its own siblings CAREPYRE-245435/"FINISH THE SIPPHONE"/CAREPYRE-535454/"CONTINUE WIRING UP OUR
+;; PLATFORM"/CAREPYRE-5435439434/"making calls from our carepyre android sip phone" — all four
+;; describe the same real finish line this file is one more real step toward). That doc's own
+;; Phase 3 names this exactly: "a minimal transaction layer: real INVITE state (calling → ringing
+;; → established → terminated), enough to place and answer one real call, not the full RFC 3261
+;; FSM" — and gap #3 already named the boundary: "message.prn answers 'can PARENA read and write
+;; one real SIP message' — RFC 3261's own real INVITE/non-INVITE transaction FSMs (retries,
+;; timeouts, provisional vs. final responses, dialog state across a call) are real, separate,
+;; unbuilt work sitting on top of the message layer." This file is that layer.
+;;
+;; Real, honest v0 scope, named explicitly: ONE call's state at a time (a real phone handles one
+;; active call plus maybe a hold/waiting slot — multi-call/call-waiting is real, separate, later
+;; work), both directions (Outbound: this phone places the call; Inbound: this phone receives
+;; one) share the same CallState enum since the real state names the doc itself already uses
+;; (calling/ringing/established/terminated) describe the SAME real progression from either side,
+;; just entered via different events. No retransmission timers, no CANCEL-vs-486-race handling,
+;; no fork/parallel-search (a real INVITE can ring multiple registered devices at once) — the
+;; real, narrowest slice underneath "can this phone place and answer one call," matching this
+;; whole card's own established discipline of naming the boundary rather than silently
+;; pretending the full RFC is covered.
+;;
+;; Purely functional: `transition` takes a state and an event, returns the next state (or a real,
+;; honest error for a nonsensical transition, e.g. `Answer` while `Idle`) — no mutation, no I/O,
+;; no dependency on sip/message.prn or sip/sdp.prn (a real caller decides for itself which SIP
+;; message/event maps to which CallEvent; this file only owns the state graph itself, the same
+;; "PARENA owns the decision logic, host owns the platform" split this monorepo already uses
+;; everywhere else). This makes the whole module trivially testable with plain enum values, no
+;; Arena/Region needed anywhere in its own real signatures.
+(module sip/transaction)
+(export CallState CallEvent TransitionError transition initial-state terminal?)
+
+;; CallState — the real, minimal progression named directly in the NORTHSTAR doc's own words.
+;; Idle is the real "no call" resting state (not named in the doc's own "calling → ringing →
+;; established → terminated" phrase, but a real state machine needs a real starting point before
+;; the first event ever arrives).
+(defenum CallState
+  (Idle)
+  (Calling)      ;; outbound: INVITE sent, no response yet
+  (Proceeding)   ;; a provisional non-180 response arrived (e.g. 100 Trying) -- real, distinct
+                 ;; from Ringing because a real UAC can receive 100 Trying well before (or
+                 ;; instead of) a real 180, and a caller may want to render them differently
+  (Ringing)      ;; outbound: 180 Ringing received: OR inbound: INVITE received, not yet answered
+  (Established)  ;; both sides have exchanged a final 200 OK for the INVITE
+  (Terminated))  ;; the real, honest end state -- BYE, CANCEL, or a final error response
+
+;; CallEvent — the real, minimal event vocabulary a caller needs to drive this state machine.
+;; Deliberately named around REAL SIP semantics (a caller maps its own parsed
+;; sip/message.prn SipMessage to one of these), not generic UI actions -- `Answer`/`Reject` are
+;; the two real exceptions (local user intent, not a parsed message), matching the dial/incoming-
+;; call screens `android/app/src/main/assets/app.js` already ships (Phase 6, this same NORTHSTAR
+;; doc) and already names as real, named hand-off points for exactly this native bridge.
+(defenum CallEvent
+  (SendInvite)       ;; outbound: this phone places a call
+  (RecvInvite)       ;; inbound: an INVITE arrives for this phone
+  (RecvProvisional)  ;; a 1xx other than 180 arrived (e.g. 100 Trying)
+  (RecvRinging)      ;; a real 180 Ringing arrived
+  (Answer)           ;; inbound: local user accepts (this phone is about to send its own 200 OK)
+  (RecvOk)           ;; outbound: a real 200 OK arrived (far end answered)
+  (Reject)           ;; inbound: local user declines (this phone sends a final error response)
+  (RecvFailure)      ;; outbound: a real final 4xx/5xx/6xx arrived instead of 200 OK
+  (SendBye)          ;; either direction: this phone ends an established call
+  (RecvBye)          ;; either direction: the far end ends an established call
+  (SendCancel)       ;; outbound: this phone gives up before the far end answers
+  (RecvCancel))      ;; inbound: the far end gives up before local user answers
+
+(defenum TransitionError
+  (InvalidTransition))  ;; the real, honest "that event can't happen in this state" case -- e.g.
+                         ;; `Answer` while `Idle`, or ANY event once `Terminated` -- a real caller
+                         ;; almost certainly has its own bug if it sees this, not a case to
+                         ;; silently absorb
+
+;; initial-state — every real call starts here, before the first real SendInvite/RecvInvite.
+(defn initial-state [] : CallState Idle)
+
+;; terminal? — real, minimal convenience: true once a call has genuinely ended and no further
+;; real event should ever be sent to `transition` for it (a caller that keeps a per-call struct
+;; around can use this to know when it's safe to free/reuse the slot).
+(defn terminal? [(state : CallState)] : Bool
+  (match state
+    ((Terminated) true)
+    (_ false)))
+
+;; transition — the real, public entry point: given the current state and one real event, returns
+;; the next state, or a real, honest `Err InvalidTransition` for a nonsensical pairing. Every
+;; state's own match arm lists ONLY the events that are real, meaningful transitions out of it --
+;; the trailing `(_ (Err InvalidTransition))` in each is a deliberate, honest catch-all, not a
+;; sign anything was forgotten (e.g. `RecvBye` while `Calling` is a real protocol violation a real
+;; far end should never commit, and this correctly refuses to pretend it's a normal hangup).
+;; `dest` is required even though every real payload here is a scalar (a `CallState` enum value):
+;; VS0's own C emitter needs a real Arena in scope to box a non-pointer Result payload, the same
+;; real, already-documented emitter constraint `sip/rtp.prn`'s own `parse-rtp-header` names.
+(defn transition [(state : CallState) (event : CallEvent) (dest : Arena @ Region)] : (Result CallState TransitionError) @ Region
+  (match state
+    ((Idle)
+      (match event
+        ((SendInvite) (Ok Calling))
+        ((RecvInvite) (Ok Ringing))
+        (_ (Err InvalidTransition))))
+    ((Calling)
+      (match event
+        ((RecvProvisional) (Ok Proceeding))
+        ((RecvRinging) (Ok Ringing))
+        ;; Real, honest, deliberately allowed shortcut: some real UAs send a bare 200 OK with no
+        ;; 180 Ringing at all (auto-answer/voicemail-style endpoints) -- going straight to
+        ;; Established from Calling is real, correct behavior, not a gap in this state machine.
+        ((RecvOk) (Ok Established))
+        ((RecvFailure) (Ok Terminated))
+        ((SendCancel) (Ok Terminated))
+        (_ (Err InvalidTransition))))
+    ((Proceeding)
+      (match event
+        ((RecvRinging) (Ok Ringing))
+        ((RecvOk) (Ok Established))
+        ((RecvFailure) (Ok Terminated))
+        ((SendCancel) (Ok Terminated))
+        (_ (Err InvalidTransition))))
+    ((Ringing)
+      (match event
+        ((RecvOk) (Ok Established))      ;; outbound: far end answered
+        ((Answer) (Ok Established))      ;; inbound: local user accepted
+        ((Reject) (Ok Terminated))       ;; inbound: local user declined
+        ((RecvFailure) (Ok Terminated))  ;; outbound: far end sent a final error instead of answering
+        ((SendCancel) (Ok Terminated))   ;; outbound: local user gave up before an answer
+        ((RecvCancel) (Ok Terminated))   ;; inbound: far end gave up before local user answered
+        (_ (Err InvalidTransition))))
+    ((Established)
+      (match event
+        ((SendBye) (Ok Terminated))
+        ((RecvBye) (Ok Terminated))
+        (_ (Err InvalidTransition))))
+    ((Terminated)
+      ;; Real, honest, deliberate: NO event is ever valid once Terminated -- a caller that sends
+      ;; one has a real bug (double-hangup, a stray retransmission handled wrong), not something
+      ;; this state machine should silently swallow by staying Terminated.
+      (Err InvalidTransition))))
