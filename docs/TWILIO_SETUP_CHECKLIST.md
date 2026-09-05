@@ -1,6 +1,25 @@
 # Twilio Elastic SIP Trunk — real setup checklist
 
-## Real, live-found blocker (2026-09-05) — read this first
+## Status: LIVE (2026-09-05, kanban TWILLIO-OPS-12433, "TWILLIO COMPLIANCE PROFILE CREATED")
+
+Once the Trust Hub compliance profile below was approved, the entire trunk was provisioned for
+real via the Twilio API (no manual Console clicking needed — same endpoints this doc's own
+checklist describes, just called directly):
+
+- **Trunk**: `carepyre.pstn.twilio.com` (SID `TK26beb46d6ae9c91ea0d0adef35eaa753`)
+- **IP ACL**: this box's own real static IP (`198.58.107.85`) — attached to the trunk
+- **Origination URI**: `sip:198.58.107.85:5060` (priority 10, weight 10) — routes real inbound
+  PSTN calls to this box
+- **Phone number**: `+17855315546` ("CarePyre Main Line", $1.15/mo real recurring cost) —
+  assigned to the trunk
+
+The real domain is baked directly into `ops/asterisk/pjsip_twilio_trunk.conf` (no more
+`__TWILIO_TRUNK_DOMAIN__` placeholder) — `sudo-queue/52-carepyre-asterisk-plumbing-deploy.sh`
+wires it into this box's real Asterisk instance once run (needs real root, not yet run as of
+this doc's own last edit — check the script's own state before assuming this is live end to
+end).
+
+## Real, live-found blocker (2026-09-05) — RESOLVED, kept for the record
 
 A real Twilio API Key was wired up and tested live against the real account
 ("My First Twilio Account", $20.00 USD balance, a real "Full" — not trial — account; the real
