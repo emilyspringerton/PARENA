@@ -1,4 +1,12 @@
 ## 2026-09-05
+- feat(pbx): TWILLIO-OPS-12433 ("TWILLIO COMPLIANCE PROFILE CREATED") — real Twilio Elastic SIP
+  Trunk provisioned end to end via the API once Trust Hub compliance cleared: trunk
+  `carepyre.pstn.twilio.com` (`TK26beb46d6ae9c91ea0d0adef35eaa753`), a real IP ACL for this
+  box's own static IP, a real Origination URI, and a real phone number (`+17855315546`,
+  $1.15/mo) assigned to the trunk. `ops/asterisk/pjsip_twilio_trunk.conf` now has the real
+  domain baked in directly (no more placeholder) — `sudo-queue/52-...` is a complete, one-shot
+  deploy. Apple #17945.
+
 - feat(pbx): "do all the plumbing while i sign up for twillio" — real, deployable Asterisk PJSIP
   config (`ops/asterisk/`) connecting the CarePyre SIP Phone extension to a real Twilio Elastic
   SIP Trunk: `pjsip_carepyre_phone.conf` (extension 1000), `pjsip_twilio_trunk.conf` (IP-ACL
