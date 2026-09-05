@@ -1,4 +1,14 @@
 ## 2026-09-05
+- feat(pbx): PBX-SRE-124533 — Phase 3 of `PBX_ASTERISK_NORTHSTAR.md` shipped: real AMI action
+  builders `build-originate-action` (Channel/Context/Exten/Priority dialplan form),
+  `build-hangup-action`, `build-queue-status-action` in `stdlib/pbx/ami.prn`, following
+  `build-login-action`'s own established shape and Asterisk's own real, documented wire
+  formats. Real event parsing needed zero new code — the same `parse-message` from Phase 1
+  already handles Events, now proven against a real `OriginateResponse` sample in
+  `tests/test_ami.c`. `make test-ami` passes; `make test` 345/345, zero regressions. Picked as
+  the real "next unblocked step" since Phase 2's live round-trip is still blocked on
+  `sudo-queue/50-install-asterisk-pbx.sh` not yet being run.
+
 - docs(pbx): PBX-SRE-12442 — real SRE install decision for a live Asterisk instance. Founder
   real-time: "what is the proper SRE way to get Asterisk running... gotta go on our same IDUNA
   box... do you just wanna yolo install it until we dev our own?" Answer: yes, the plain
