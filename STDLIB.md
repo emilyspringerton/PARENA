@@ -3896,3 +3896,43 @@ the E-bit and volume fields), a real honest `TooShort` error, the full real digi
 (0-9, `*`, `#`, A-D, plus an out-of-range miss on both sides), and two real build+round-trip cases
 — one deliberately all-zero-field (digit '0', volume 0) proving the `inline-c` path isn't
 truncated, one fully-populated. `make test`: 345/345, zero regressions.
+
+## sip/g711 — real G.711 μ-law/A-law audio codec (2026-09-05)
+
+Real, direct answer to CarePyre SIP Phone Phase 4's audio-codec half (`CarePyre/docs/
+SIP_PHONE_ANDROID_NORTHSTAR.md`: "G.711 μ-law is the simplest real option — pure arithmetic, no
+license issues, no external library"). `stdlib/sip/g711.prn`: `linear2ulaw`/`ulaw2linear`/
+`linear2alaw`/`alaw2linear`, a real, direct, byte-for-byte port of the canonical public-domain
+reference implementation (Craig Reese, Sun Microsystems/CCITT, 1989 — the same reference SoX,
+FFmpeg, Asterisk, and GNU Radio's own gr-vocoder all trace back to), fetched and verified against
+that real source rather than reconstructed from memory — a subtly wrong companding table would
+produce audio that sounds "off" rather than failing loudly, the one place in this whole SIP phone
+effort where "looks plausible" and "is actually correct" are genuinely easy to conflate.
+
+No `bit-not` primitive exists in this compiler (`src/emit.c`'s own bitwise-operator table has
+`bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` only) — every real `~x` in the reference's own C source is
+exactly emulated as `(bit-xor x 255)`, valid because every value XORed this way is already a known
+8-bit byte, where `~x & 0xFF` and `x ^ 0xFF` are the identical, standard bit identity.
+
+**A real, genuine, previously-undiscovered compiler quirk found live, more subtle than the
+`unbox-i32`/inline-`if` fixes `sip/sdp.prn`/`sip/dtmf.prn` already found this same session**: VS0
+has no int-vs-float distinction at the literal level at all — `src/emit.c`'s own `emit_expr`
+unconditionally types every bare number literal `double` — and a `let`-bound `if`/`cond`
+expression whose branches mix such literals with an already-int value inherits `double` as the
+declared C type of the WHOLE binding. Confirmed live that the `sip/dtmf.prn`-style fix
+(`(bit-or EXPR 0)`) does NOT actually fix this case: the generated VALUE computation comes out
+correct, but the variable's own declared C type stays `double`, so a later genuine bitwise use of
+that variable still fails to compile ("invalid operands... have 'double' and 'int'"). What DOES
+work, matching this file's own already-correctly-typed `seg` bindings (`(seg-search adj)`): a call
+to a function with a real, declared `I32` return type overrides the callee expression's own
+ambiguous typing at the CALL site. Fixed with a new, minimal, file-local identity function,
+`as-i32`, wrapping every `let`-bound branching value in this file (`adj`/`mask` in `linear2ulaw`,
+`pcm-val`/`mask` in `linear2alaw`, `t` in `alaw2linear`) — the same real mechanism, generalized to
+a case where the ambiguous value needs to be named and reused, not just inlined once.
+
+New `make test-g711` target, 9 real assertions, every expected value hand-derived step by step
+against the real reference algorithm (not guessed): μ-law silence (0xFF) and full-scale clipping
+(0x00/0x80) exact fixed points, a real hand-derived mid-range round trip (10000→156→9852), A-law's
+own real non-zero silence decode (0xD5→8, a genuine property of the algorithm's segment-0 offset,
+not a bug), its own mid-range round trip (10000→182→9984), and a sanity check that μ-law and A-law
+produce genuinely different codewords for the same input. `make test`: 345/345, zero regressions.

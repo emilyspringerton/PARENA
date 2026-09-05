@@ -1,0 +1,119 @@
+;; stdlib/sip/g711.prn — real G.711 audio codec (μ-law/PCMU and A-law/PCMA), the last real gap
+;; named in CarePyre/docs/SIP_PHONE_ANDROID_NORTHSTAR.md's own Phase 4 ("G.711 codec + real RTP
+;; send/receive loop... G.711 μ-law is the simplest real option — pure arithmetic, no license
+;; issues, no external library"). μ-law (payload type 0, `codec-pcmu` in `sip/dtmf.prn`) is
+;; Twilio's own recommended codec for trunking per `PARENA/docs/SIP_TWILIO_GATEWAY_NORTHSTAR.md`,
+;; and the codec `PARENA/ops/asterisk/pjsip_carepyre_phone.conf`'s own real extension 1000
+;; actually negotiates (`allow=ulaw,alaw`) — this file is the real audio-sample half CarePyre's
+;; SIP phone needs on both the encode (before sending an RTP packet) and decode (after receiving
+;; one) side of a real call.
+;;
+;; Real, direct, byte-for-byte port of the canonical public-domain reference implementation
+;; (Craig Reese, Sun Microsystems/CCITT, 1989 — the same reference SoX, FFmpeg, Asterisk, and
+;; GNU Radio's own gr-vocoder all trace back to), verified against that real source rather than
+;; reconstructed from memory, specifically because a SUBTLY wrong companding table would produce
+;; audio that sounds "off" rather than failing loudly — the one real place in this whole SIP
+;; phone effort where "looks plausible" and "is actually correct" are genuinely easy to conflate.
+;; `seg-search`'s own 8 fixed segment boundaries (0xFF/0x1FF/.../0x7FFF) are that reference's own
+;; real, exact constants, written here as decimal with their hex meaning commented, matching this
+;; stdlib's own established convention (see `sip/message.prn`'s own `58 ;; ':'` for the same
+;; pattern) rather than assuming hex literal syntax is supported.
+;;
+;; Real, honest v0 scope: sample-at-a-time conversion only (`linear2ulaw`/`ulaw2linear`/
+;; `linear2alaw`/`alaw2linear`), matching the reference's own real per-sample API — a real caller
+;; (the RTP send/receive loop, still separate, unbuilt work) maps this over each 16-bit PCM sample
+;; in a frame. No `bit-not` primitive exists in this compiler (confirmed live, `src/emit.c`'s own
+;; bitwise-operator table has `bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` only) — every `~x` in the
+;; reference's own C source is real, exactly emulated here as `(bit-xor x 255)`, valid precisely
+;; because every real value XORed this way is already known to be an 8-bit byte (0-255): for that
+;; domain, `~x & 0xFF` and `x ^ 0xFF` are the identical, real, standard bit identity.
+(module sip/g711)
+(export linear2ulaw ulaw2linear linear2alaw alaw2linear)
+
+;; seg-search — real, direct port of the reference's own `search()` helper, specialized to its
+;; one real caller shape (always the same 8-entry `seg_end` table) rather than threading a table
+;; parameter through — this stdlib's own established "no real generics" workaround applies here
+;; too, and there's only ever one real table in this file anyway. Returns the real segment index
+;; (0-7) the first boundary `val` is <= to, or 8 if `val` exceeds every real boundary (the
+;; reference's own real "out of range, clip" signal).
+;; as-i32 — real, minimal, file-local fix for a genuine compiler quirk found live: VS0 has no
+;; int-vs-float distinction at the literal level (`src/emit.c`'s own `emit_expr` unconditionally
+;; types every bare number literal `double`), and a `let`-bound `if`/`cond` expression whose
+;; branches mix literals with an already-int value inherits that `double` default for the WHOLE
+;; binding's own declared C type — confirmed live that wrapping the expression in a bitwise op
+;; like `(bit-or EXPR 0)` does NOT fix this (the emitted VALUE computation is correct, but the
+;; declared C variable type stays `double`, so a later real bitwise use of that variable still
+;; fails to compile). What DOES work, matching this file's own already-correct `seg` bindings
+;; (`(seg-search adj)`): a CALL to a function with a real, declared `I32` return type — the
+;; call's own return-type inference overrides the callee expression's own ambiguous typing,
+;; exactly the same mechanism `sip/dtmf.prn`'s own inline-`if`-as-an-operator-argument fix relied
+;; on, generalized here to a case where the value genuinely needs to be named and reused (not
+;; just inlined once). Real, honest, value-preserving identity: `x` in, `x` out, no coercion.
+(defn as-i32 [(x : I32)] : I32 x)
+
+(defn seg-search [(val : I32)] : I32
+  (cond
+    ((<= val 255) 0)     ;; 0xFF
+    ((<= val 511) 1)     ;; 0x1FF
+    ((<= val 1023) 2)    ;; 0x3FF
+    ((<= val 2047) 3)    ;; 0x7FF
+    ((<= val 4095) 4)    ;; 0xFFF
+    ((<= val 8191) 5)    ;; 0x1FFF
+    ((<= val 16383) 6)   ;; 0x3FFF
+    ((<= val 32767) 7)   ;; 0x7FFF
+    (true 8)))
+
+;; linear2ulaw — real, direct port of the reference `linear2ulaw`. BIAS=132 (0x84), the real
+;; μ-law encoder bias added to a sample's own magnitude before segment/mantissa extraction.
+;; `adj`/`mask` are wrapped in `as-i32` -- see that function's own header comment for the real
+;; compiler quirk this works around.
+(defn linear2ulaw [(pcm-val : I32)] : I32
+  (let [neg (< pcm-val 0)]
+    (let [adj (as-i32 (if neg (- 132 pcm-val) (+ pcm-val 132)))
+          mask (as-i32 (if neg 127 255))]     ;; 0x7F / 0xFF
+      (let [seg (seg-search adj)]
+        (if (>= seg 8)
+          (bit-xor 127 mask)          ;; 0x7F ^ mask -- real, honest clip case
+          (bit-xor (bit-or (shl seg 4) (bit-and (shr adj (+ seg 3)) 15)) mask)))))) ;; 15 = 0xF QUANT_MASK
+
+;; ulaw2linear — the real, direct inverse.
+(defn ulaw2linear [(u-val-in : I32)] : I32
+  (let [u-val (bit-xor u-val-in 255)]  ;; real emulation of the reference's own `u_val = ~u_val`
+    (let [t0 (+ (shl (bit-and u-val 15) 3) 132)
+          shift-amt (shr (bit-and u-val 112) 4)]  ;; 112 = 0x70 SEG_MASK, >> 4 = SEG_SHIFT
+      (let [t (shl t0 shift-amt)]
+        (if (= (bit-and u-val 128) 128)  ;; 0x80 SIGN_BIT
+          (- 132 t)
+          (- t 132))))))
+
+;; linear2alaw — real, direct port of the reference `linear2alaw`. A-law's own real, distinct
+;; masks (0xD5 for a non-negative sample, 0x55 for negative) and its own real, distinct
+;; negative-sample adjustment (`-pcm_val - 8`, not the same `BIAS - pcm_val` μ-law uses) are
+;; ported verbatim, not reconciled with μ-law's shape -- the two real encodings genuinely differ
+;; here, not a copy-paste inconsistency.
+;; Same real `as-i32` fix as `linear2ulaw` above, applied to this function's own two `let`-bound
+;; branching values (`pcm-val`, `mask`).
+(defn linear2alaw [(pcm-val-in : I32)] : I32
+  (let [neg (< pcm-val-in 0)]
+    (let [pcm-val (as-i32 (if neg (- (- 0 pcm-val-in) 8) pcm-val-in))
+          mask (as-i32 (if neg 85 213))]  ;; 0x55 / 0xD5
+      (let [seg (seg-search pcm-val)]
+        (if (>= seg 8)
+          (bit-xor 127 mask)  ;; 0x7F ^ mask
+          (let [aval (shl seg 4)]
+            (if (< seg 2)
+              (bit-xor (bit-or aval (bit-and (shr pcm-val 4) 15)) mask)
+              (bit-xor (bit-or aval (bit-and (shr pcm-val (+ seg 3)) 15)) mask))))))))
+
+;; alaw2linear — the real, direct inverse.
+(defn alaw2linear [(a-val-in : I32)] : I32
+  (let [a-val (bit-xor a-val-in 85)]  ;; 0x55, the reference's own `a_val ^= 0x55`
+    (let [seg (shr (bit-and a-val 112) 4)   ;; 112 = 0x70 SEG_MASK, >> 4 = SEG_SHIFT
+          t0 (shl (bit-and a-val 15) 4)]    ;; 15 = 0xF QUANT_MASK
+      (let [t (as-i32 (cond
+                ((= seg 0) (+ t0 8))
+                ((= seg 1) (+ t0 264))     ;; 264 = 0x108
+                (true (shl (+ t0 264) (- seg 1)))))]  ;; same real as-i32 fix, applied to a `cond` this time
+        (if (= (bit-and a-val 128) 128)  ;; 0x80 SIGN_BIT
+          t
+          (- 0 t))))))
