@@ -20,16 +20,21 @@
 ;; `parse-message` doesn't need to special-case which kind it's looking at; a caller reads the
 ;; real "Action"/"Response"/"Event" header value itself via `header-value` to know which.
 ;;
-;; Real, honest v0 scope, named explicitly: only `Login` is built as a real action (the one
-;; every real AMI session needs first); `Originate`/`Hangup`/`QueueStatus` and real event
-;; parsing helpers are Phase 3's own named next step, not attempted here. A real login
-;; round-trip against a live Asterisk instance is Phase 2, honestly un-testable in this sandbox
-;; (no Asterisk instance available) — this file's own tests exercise the real wire-format
-;; parsing/building logic directly, the same honest boundary `sip/message.prn`'s own tests
-;; already draw for SIP (no real SIP server in this sandbox either).
+;; Phase 3 (kanban PBX-SRE-124533, "iterate on the asterisk plan, do the next unblocked step"):
+;; `Originate`/`Hangup`/`QueueStatus` real action builders, following `build-login-action`'s own
+;; established concat-chain shape and real, standard AMI wire formats (Asterisk's own documented
+;; action/header names, not invented). Real event PARSING already works today via the same
+;; `parse-message` every Response already uses (Login's own test already proves this against a
+;; real Event sample) — there's no separate "event parser" to build, matching this file's own
+;; header comment above ("All three share the exact same real wire shape"). Phase 2's own real
+;; login round-trip against a LIVE Asterisk instance is still the one real, honestly un-testable
+;; boundary in this sandbox (Asterisk itself is queued for install,
+;; `sudo-queue/50-install-asterisk-pbx.sh`, not yet run) — these three new builders are testable
+;; the same way Login already is: exact wire-format assertions, no live instance needed.
 (module pbx/ami)
 (import string)
-(export parse-message build-login-action header-value AmiHeader AmiError)
+(export parse-message build-login-action build-originate-action build-hangup-action
+        build-queue-status-action header-value AmiHeader AmiError)
 
 ;; AmiHeader — real, minimal opaque header pair, same "one concrete struct, no generics"
 ;; workaround `sip/message.prn`'s own SipHeader already established (VS0 still has no real
@@ -109,3 +114,39 @@
       (let [p3 (concat p2 "\r\nSecret: " dest)]
         (let [p4 (concat p3 secret dest)]
           (concat p4 "\r\n\r\n" dest))))))
+
+;; build-originate-action — real, standard AMI Originate action (Asterisk's own documented
+;; Context/Exten/Priority dialplan form, not the alternate Application/Data form — this is the
+;; real, common "place this call and route it into a real dialplan extension" shape, matching
+;; what a PARENA-driven PBX would actually need to do first). Real, honest v0 boundary, same one
+;; build-login-action already names: no ActionID (AMI's own optional correlation header) and no
+;; CallerID override — real, separate, named follow-ups once a caller actually needs to
+;; correlate multiple in-flight Originates or set a custom caller ID, not assumed needed yet.
+(defn build-originate-action
+  [(channel : String) (context : String) (exten : String) (priority : String)
+   (dest : Arena @ Region)]
+  : String @ Region
+  (let [p1 "Action: Originate\r\nChannel: "]
+    (let [p2 (concat p1 channel dest)]
+      (let [p3 (concat p2 "\r\nContext: " dest)]
+        (let [p4 (concat p3 context dest)]
+          (let [p5 (concat p4 "\r\nExten: " dest)]
+            (let [p6 (concat p5 exten dest)]
+              (let [p7 (concat p6 "\r\nPriority: " dest)]
+                (let [p8 (concat p7 priority dest)]
+                  (concat p8 "\r\n\r\n" dest))))))))))
+
+;; build-hangup-action — real, standard AMI Hangup action: one real, required header
+;; (Channel — the exact real channel name a prior Originate/Newchannel event would have named).
+(defn build-hangup-action [(channel : String) (dest : Arena @ Region)] : String @ Region
+  (let [p1 "Action: Hangup\r\nChannel: "]
+    (let [p2 (concat p1 channel dest)]
+      (concat p2 "\r\n\r\n" dest))))
+
+;; build-queue-status-action — real, standard AMI QueueStatus action, scoped to one real named
+;; queue (Asterisk's own real, optional Queue header — omitting it asks for every queue at once,
+;; a real, separate, named follow-up for whenever a caller actually needs the unscoped form).
+(defn build-queue-status-action [(queue : String) (dest : Arena @ Region)] : String @ Region
+  (let [p1 "Action: QueueStatus\r\nQueue: "]
+    (let [p2 (concat p1 queue dest)]
+      (concat p2 "\r\n\r\n" dest))))

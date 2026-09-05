@@ -51,6 +51,9 @@ int find_char(char *, int, int, int);
 Result parse_message(char *, Arena *);
 Option header_value(Vec *, char *);
 char * build_login_action(char *, char *, Arena *);
+char * build_originate_action(char *, char *, char *, char *, Arena *);
+char * build_hangup_action(char *, Arena *);
+char * build_queue_status_action(char *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -308,5 +311,29 @@ char * build_login_action(char * username __attribute__((unused)), char * secret
     char *p3 __attribute__((unused)) = concat(p2, "\r\nSecret: ", dest);
     char *p4 __attribute__((unused)) = concat(p3, secret, dest);
     return concat(p4, "\r\n\r\n", dest);
+}
+
+char * build_originate_action(char * channel __attribute__((unused)), char * context __attribute__((unused)), char * exten __attribute__((unused)), char * priority __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *p1 __attribute__((unused)) = "Action: Originate\r\nChannel: ";
+    char *p2 __attribute__((unused)) = concat(p1, channel, dest);
+    char *p3 __attribute__((unused)) = concat(p2, "\r\nContext: ", dest);
+    char *p4 __attribute__((unused)) = concat(p3, context, dest);
+    char *p5 __attribute__((unused)) = concat(p4, "\r\nExten: ", dest);
+    char *p6 __attribute__((unused)) = concat(p5, exten, dest);
+    char *p7 __attribute__((unused)) = concat(p6, "\r\nPriority: ", dest);
+    char *p8 __attribute__((unused)) = concat(p7, priority, dest);
+    return concat(p8, "\r\n\r\n", dest);
+}
+
+char * build_hangup_action(char * channel __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *p1 __attribute__((unused)) = "Action: Hangup\r\nChannel: ";
+    char *p2 __attribute__((unused)) = concat(p1, channel, dest);
+    return concat(p2, "\r\n\r\n", dest);
+}
+
+char * build_queue_status_action(char * queue __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *p1 __attribute__((unused)) = "Action: QueueStatus\r\nQueue: ";
+    char *p2 __attribute__((unused)) = concat(p1, queue, dest);
+    return concat(p2, "\r\n\r\n", dest);
 }
 

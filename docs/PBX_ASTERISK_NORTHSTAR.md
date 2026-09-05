@@ -81,10 +81,19 @@ instance and parses the real `Response: Success`/`Response: Error` reply — the
 this binding actually works end to end, mirroring `net/http.prn`'s own real request/response
 round-trip shape.
 
-**Phase 3 — real event parsing + a small, useful action set.** Parse real, asynchronously-pushed
-Events (not just Action responses) using the same `parse-ami-message` from Phase 1 (AMI doesn't
-distinguish Events from Responses at the wire-format level — real, useful reuse). Real, useful
-first actions beyond Login: `Originate` (place a call), `Hangup`, `QueueStatus`.
+**Phase 3 — SHIPPED (2026-09-05, kanban PBX-SRE-124533, "iterate on the asterisk plan, do the
+next unblocked step").** Real event parsing needed no new code at all — the same `parse-message`
+from Phase 1 already handles Events (AMI doesn't distinguish them from Responses at the
+wire-format level), now proven directly against a real `OriginateResponse` event sample in
+`tests/test_ami.c`, not just asserted true in prose. Three new real action builders, following
+`build-login-action`'s own established concat-chain shape and Asterisk's own real, documented
+wire formats: `build-originate-action` (Channel/Context/Exten/Priority — the real dialplan-routed
+form, not the alternate Application/Data form), `build-hangup-action`, `build-queue-status-action`
+(scoped to one real named queue). `make test-ami`: all real, exact-wire-format assertions pass;
+`make test`: 345/345, zero regressions. Same real, honest boundary as Phase 1: these are
+wire-format assertions, not a live round-trip — Phase 2's own live-Asterisk proof is still
+blocked on `sudo-queue/50-install-asterisk-pbx.sh` actually being run (queued, not yet
+executed).
 
 **Phase 4 (deferred, real, separate, larger work)** — ARI/WebSocket binding, if AMI's own real
 limitations (polling-shaped, no fine-grained per-call media control) ever become a real,
