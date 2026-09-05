@@ -1,4 +1,5 @@
 ## 2026-09-05
+- Added sip/dtmf.prn: real RFC 4733 DTMF telephone-event payload parse/build + digit mapping, CarePyre SIP Phone (CAREPYRE-SIP-4324324). Found 2 compiler bugs (concat truncation on embedded zeros, if-branch double-inference). make test-dtmf 12/12, make test 345/345 (sess-20260905-0720-ec33e7c5)
 - Added sip/transaction.prn: real, pure call-state machine (Idle/Calling/Proceeding/Ringing/Established/Terminated), CarePyre SIP Phone Phase 3 (CAREPYRE-911343). make test-sip-transaction 14/14, make test 345/345 (sess-20260905-0720-ec33e7c5)
 - Added sip/sdp.prn: real SDP body parsing/building (RFC 4566), CarePyre SIP Phone Phase 2 (CAREPYRE-911343). Found+fixed a genuine compiler bug (match returning raw scalar with mixed literal/Ok-bound arms) via new unbox-i32 helper. make test-sip-sdp 7/7, make test 345/345 (sess-20260905-0720-ec33e7c5)
 - feat(pbx): TWILLIO-OPS-12433 ("TWILLIO COMPLIANCE PROFILE CREATED") — real Twilio Elastic SIP
