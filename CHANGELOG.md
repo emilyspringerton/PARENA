@@ -1,3 +1,7 @@
+## 2026-09-07
+
+- Fixed a real C-emitter gap: != had no operator-table entry at all, silently producing invalid C instead of failing at compile time. Added stdlib/papercraft/weapon_mod.prn (PAPERCRAFT's own arsenal weapon-switching gate). (sess-20260905-0720-ec33e7c5)
+
 ## 2026-09-05
 - Added sip/g711.prn: real mu-law/A-law audio codec, direct verified port of the Sun/CCITT reference, CarePyre SIP Phone Phase 4. Found a 3rd compiler bug (let-bound if/cond branching value keeps wrong double type even wrapped in bitor -- needs a real function-call boundary, fixed via new as-i32 helper). make test-g711 9/9, make test 345/345 (sess-20260905-0720-ec33e7c5)
 - Added sip/dtmf.prn: real RFC 4733 DTMF telephone-event payload parse/build + digit mapping, CarePyre SIP Phone (CAREPYRE-SIP-4324324). Found 2 compiler bugs (concat truncation on embedded zeros, if-branch double-inference). make test-dtmf 12/12, make test 345/345 (sess-20260905-0720-ec33e7c5)
