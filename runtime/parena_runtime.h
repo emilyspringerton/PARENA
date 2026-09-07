@@ -38,6 +38,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <time.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -345,6 +346,37 @@ static inline char *string_concat(const char *a, const char *b, Arena *dest) {
  * this runtime targets, and haystack/needle here are real editor-sized
  * strings (grammar keywords, file paths), not a hot path that needs a
  * faster real algorithm. */
+/* ---- stdlib/math/math.prn real host glue (2026-09-07) ----------------
+ * math/random's own body was a real, honest, never-evaluated placeholder
+ * (`0.0`) for the C target -- the TypeScript emitter recognizes the
+ * qualified `math/random` call name directly and lowers it to a real
+ * `Math.random()`, but nothing analogous existed for C. Fixed the real,
+ * established way this stdlib already does host glue for the C target
+ * (see tcp_connect_impl/pty_open_impl above): a real `_impl` function
+ * here, math.prn's own `random` body becomes a one-line
+ * `#target {:c (inline-c "math_random_impl()")}` call to it -- no
+ * compiler (src/emit.c) change needed at all.
+ *
+ * Real, found-live correctness issue fixed here, not left as a known gap:
+ * plain `rand()` with no seed always starts from the SAME internal state
+ * every process run (`srand`'s own documented default is `srand(1)`) --
+ * a real PAPERCRAFT mod calling this for "random" NPC spawn positions
+ * would get the identical sequence on every server restart, indistin-
+ * guishable from a real bug. Seeded lazily, once, on first call via an
+ * ordinary function-local `static` (real C99 statements are fine inside
+ * this REAL function body -- the "inline-c must be a single expression"
+ * constraint datetime.prn's own header documents applies only to the
+ * literal text substituted directly into a PARENA function body, not to
+ * a real, separate runtime function called BY one). */
+static inline double math_random_impl(void) {
+    static int seeded = 0;
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
+    }
+    return (double)rand() / ((double)RAND_MAX + 1.0);
+}
+
 static inline int string_contains_ci_impl(const char *haystack, const char *needle) {
     size_t hlen = strlen(haystack);
     size_t nlen = strlen(needle);

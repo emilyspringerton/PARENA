@@ -112,7 +112,9 @@ static const char *resolve_java_type(Node *type_sym, const char **out_error) {
    stdlib/math/math.prn's own doc comment for each real, matching PARENA-side signature. */
 typedef struct { const char *prn_name; const char *java_fn; int arg_count; } MathPrimEntry;
 static const MathPrimEntry MATH_PRIM_TABLE[] = {
-    {"math/random", "Math.random", 0},
+    /* renamed math/random -> math/random-f64 2026-09-07, same real C-target naming-collision
+     * reason emit_ts.c's own table comment gives -- see stdlib/math/math.prn's doc comment. */
+    {"math/random-f64", "Math.random", 0},
     {"math/floor", "Math.floor", 1},
     {"math/sqrt", "Math.sqrt", 1},
     {"math/log", "Math.log", 1},

@@ -20,11 +20,25 @@
 ;; same real reasoning `random`'s own original doc comment already gave.
 
 (module math/math)
-(export random floor sqrt log cos)
+(export random-f64 floor sqrt log cos)
 
-(defn random [] : F64
-  0.0) ;; real, honest placeholder body -- see this file's own header comment; the TypeScript
-       ;; emitter never evaluates this body at all, it recognizes the qualified call name itself.
+;; random-f64 -- C target FIXED 2026-09-07 (founder real-time, PAPERCRAFT Roblox-parity thread:
+;; "add apis to papercraft mod surface to make skrips like this work"). Renamed from `random` to
+;; `random-f64` in this same pass -- a real, found-live naming collision, not a style choice:
+;; the bare mangled C symbol `random` conflicts with glibc's own `long random(void)` (declared
+;; whenever `_DEFAULT_SOURCE` is active, which runtime/parena_runtime.h's own pty support
+;; already requires) -- `double random(void)` vs. `long random(void)` is a real, hard
+;; "conflicting types" gcc error, confirmed live compiling this exact function for the first
+;; time the C target ever actually exercised it (every previous C build of a `math/random`
+;; caller silently got away with the never-evaluated `0.0` placeholder body instead). The
+;; TypeScript emitter's own qualified-name table (src/emit_ts.c's MATH_PRIM_TABLE) is updated in
+;; the same commit to match this new name -- it still never evaluates this body, it recognizes
+;; the qualified call name and lowers straight to `Math.random()`. #target calls a real, lazily
+;; self-seeded runtime function (runtime/parena_runtime.h's own math_random_impl) -- see that
+;; function's own doc comment for why self-seeding matters (a real PAPERCRAFT mod using this for
+;; NPC spawn positions must not get the identical sequence on every server restart).
+(defn random-f64 [] : F64
+  #target {:c (inline-c "math_random_impl()")})
 
 (defn floor [(x : F64)] : F64
   0.0) ;; real, honest placeholder body, same reasoning as `random` above.

@@ -85,7 +85,7 @@ int main(void) {
         arena_init(&arena);
         const char *src =
             "(defn bezier-interp [(start : F64) (end : F64) (t : F64)] : F64\n"
-            "  (+ (* (- 1 t) start) (* t (+ end (math/random)))))";
+            "  (+ (* (- 1 t) start) (* t (+ end (math/random-f64)))))";
         const char *err = NULL;
         const char *ts = build_ts(&arena, src, &err);
         CHECK(ts != NULL, "F64 params + math/random call emits successfully");
@@ -105,7 +105,7 @@ int main(void) {
         arena_init(&arena);
         const char *src =
             "(defn rand-int [(lo : F64) (hi : F64)] : F64\n"
-            "  (math/floor (+ lo (* (math/random) (+ (- hi lo) 1)))))\n"
+            "  (math/floor (+ lo (* (math/random-f64) (+ (- hi lo) 1)))))\n"
             "(defn full-turn [] : F64 (* 2 math/pi))\n"
             "(defn gauss [(u1 : F64) (u2 : F64)] : F64\n"
             "  (* (math/sqrt (* -2 (math/log u1))) (math/cos (* 2 (* math/pi u2)))))";
