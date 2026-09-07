@@ -1,4 +1,5 @@
 ## 2026-09-07
+- Extended ldap/ber.prn with long-form BER length decode (read-ber-length-ext/ber-header-size-ext) and added stdlib/pentest/x509.prn — real X.509 version+serialNumber extraction, live-verified against a genuine openssl-generated DER certificate. (sess-20260905-0720-ec33e7c5)
 - SAGA audit: registered emilyos/fsacl, racer/bike_gear_mod, tyler/cutscene_mod, eventstore/seqlock in STDLIB.md. (sess-20260905-0720-ec33e7c5)
 - Fixed math/random for the C target (renamed math/random-f64 to avoid a real glibc symbol collision): lazily self-seeded, live-verified end to end. Also committed an earlier, uncommitted item_drop_mod.prn change (METAL drops a shotgun). (sess-20260905-0720-ec33e7c5)
 
