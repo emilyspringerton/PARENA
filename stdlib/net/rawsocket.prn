@@ -1,0 +1,153 @@
+;; stdlib/net/rawsocket.prn — depends on string. Design: STDLIB.md "net/rawsocket" section.
+;;
+;; Real trigger: founder's own pasted proposal (2026-09-07, PARENA cybersecurity-primitives
+;; thread, follow-up to the pcap/x509 pass): "Raw Socket Protocol Overrides (IP_HDRINCL): a
+;; primitive socket option that tells the host operating system kernel: 'Do not auto-generate the
+;; IP header for this payload; the PARENA standard library has manually crafted the raw bytes.'"
+;; Checked reality first: every socket primitive that existed before this file (`net/tcp.prn`,
+;; `net/udp.prn`) lets the KERNEL build the IP header — there was genuinely no way in PARENA to
+;; hand-craft one before this file. `pentest/pcap.prn`/`pentest/dot11.prn` cover the READ side
+;; (capturing/parsing raw frames); this file is the real, missing WRITE side — sending a
+;; caller-crafted packet the kernel will not touch.
+;;
+;; Real, honest v0 boundary, named explicitly: `raw-ip4-open` and `raw-hdrincl-enable` are kept as
+;; two SEPARATE real primitives (matching the founder's own framing: "a primitive socket option,"
+;; not "a socket that always has it on") rather than one fused call — a real caller might open a
+;; raw socket for a protocol that does NOT want kernel IP-header suppression (a raw ICMP *read*
+;; socket, for instance, still wants the kernel-built header on receive). `raw-ip4-send` takes a
+;; buffer the caller has ALREADY fully constructed (IP header included, when IP_HDRINCL is set) —
+;; this file builds no packet bytes itself; `net/wire.prn`'s own byte-field helpers (or a future
+;; `binparse`-style module, a real, separate, still-open gap) are the real way a caller would
+;; construct that buffer.
+;;
+;; Real, standing, unavoidable OS-level limitation, named rather than hidden: opening any
+;; `SOCK_RAW` socket requires `CAP_NET_RAW` (root, or that specific Linux capability) on every
+;; real POSIX kernel — this stdlib cannot lift that gate, and doesn't try to. `tests/
+;; test_net_rawsocket.c` asserts the real, deterministic `PermissionDenied` this sandbox's own
+;; actual, current privilege level produces (this fatbaby user has no `CAP_NET_RAW` and no
+;; passwordless root — confirmed live, not assumed) — the same real, honest "assert what THIS
+;; sandbox's real privilege actually produces, never fake success" convention `pentest/pcap.prn`'s
+;; own test file already established for the identical real OS-level gate.
+;;
+;; Real, honest, standing framing: authorized-testing tooling for EINHORN_INDUSTRIAL's own
+;; infrastructure, matching every other file under `stdlib/pentest/` and this file's own sibling
+;; `net/` primitives.
+
+(module net/rawsocket)
+(import string)
+(export raw-ip4-open raw-hdrincl-enable raw-ip4-open-hdrincl raw-ip4-send raw-ip4-close
+        RawSocket RawSocketError ipproto-icmp ipproto-tcp ipproto-raw)
+
+(defstruct RawSocket
+  (fd : I32))
+
+(defenum RawSocketError
+  (PermissionDenied) ;; EPERM -- no CAP_NET_RAW / not root, the real, expected outcome absent
+                      ;; that real OS-level privilege on any POSIX kernel
+  (OpenFailed)        ;; any other real socket(2) failure (e.g. EPROTONOSUPPORT, EMFILE)
+  (SetOptFailed)      ;; the real IP_HDRINCL setsockopt(2) call itself failed
+  (SendFailed))       ;; the real sendto(2) call failed (includes a real, invalid dest-ip string
+                      ;; that inet_pton(3) itself rejects -- see rawsocket_sendto_impl's own
+                      ;; header comment in parena_runtime.h for the real, named v0 boundary there)
+
+;; ipproto-icmp / ipproto-tcp / ipproto-raw — real, standard IANA protocol-number constants (not
+;; glibc-specific values -- 1/6/255 are the real, portable IANA-assigned numbers), the same
+;; zero-arg-function-as-named-constant convention `pentest/scan.prn`'s own `scan-profile-*`
+;; functions already established.
+(defn ipproto-icmp [] : I32 1)
+(defn ipproto-tcp  [] : I32 6)
+(defn ipproto-raw  [] : I32 255) ;; the real, standard choice when the caller supplies its OWN
+                                  ;; complete IP header (IP_HDRINCL's own real, intended use case)
+
+;; ---- raw host primitives -- the only #target bodies in this file, each a single C expression
+;; against runtime/parena_runtime.h's own rawsocket_*_impl functions, no boxing (the same real
+;; `net/tcp.prn`-established shape: plain scalars here, Result/struct construction in ordinary
+;; PARENA source below).
+
+(defn raw-errno []
+  : I32
+  #target
+  {:c (inline-c "errno")})
+
+(defn raw-open-proto [(proto : I32)]
+  : I32
+  #target
+  {:c (inline-c "rawsocket_open_impl(proto)")})
+
+(defn raw-set-hdrincl [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "rawsocket_hdrincl_impl(fd)")})
+
+(defn raw-sendto [(fd : I32) (data : String @ Region) (data-len : I32) (dest-ip : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "rawsocket_sendto_impl(fd, data, data_len, dest_ip)")})
+
+(defn raw-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "rawsocket_close_impl(fd)")})
+
+;; errno-to-rawsocket-error — EPERM(1) is the real, expected, distinguished outcome (this stdlib's
+;; own header comment names why); every other errno collapses to the real, honest, coarser
+;; `OpenFailed` — matching `net/tcp.prn`'s own already-established "a real, honest coarser signal,
+;; not a fake finer one" precedent for a socket-family error space this narrow enum can't fully
+;; cover.
+(defn errno-to-rawsocket-error [(e : I32)]
+  : RawSocketError
+  (if (= e 1) PermissionDenied OpenFailed))
+
+;; raw-ip4-open — opens a real SOCK_RAW socket for `proto` (one of the ipproto-* constants above),
+;; WITHOUT enabling IP_HDRINCL — the real, separate primitive for a caller that wants a raw socket
+;; but still wants the kernel's own IP header on receive (e.g. a raw ICMP read socket).
+(defn raw-ip4-open [(proto : I32) (dest : Arena @ Region)]
+  : (Result RawSocket RawSocketError) @ Region
+  (let [fd (raw-open-proto proto)]
+    (if (< fd 0)
+      (Err (errno-to-rawsocket-error (raw-errno)))
+      (Ok {:fd fd}))))
+
+;; raw-hdrincl-enable — the literal real primitive the founder's own proposal named directly: the
+;; one `setsockopt(IPPROTO_IP, IP_HDRINCL, 1)` call that tells the kernel "do not auto-generate
+;; the IP header for this payload; the caller has manually crafted the raw bytes." Kept separate
+;; from `raw-ip4-open` (see this file's own header comment for why) so it composes with an
+;; already-open `RawSocket` from either this file's own open call or a future one.
+(defn raw-hdrincl-enable [(!s : &RawSocket) (dest : Arena @ Region)]
+  : (Result Unit RawSocketError) @ Region
+  (if (< (raw-set-hdrincl (get-field !s :fd)) 0)
+    (Err SetOptFailed)
+    (Ok unit)))
+
+;; raw-ip4-open-hdrincl — real, honest convenience wrapper for the overwhelmingly common real
+;; case (open + immediately enable IP_HDRINCL, since crafting your own IP header is the entire
+;; reason to reach for IPPROTO_RAW in the first place) -- composes the two primitives above rather
+;; than duplicating their logic, and closes the fd on a real, honest partial-failure (open
+;; succeeded, setsockopt didn't) so a caller never leaks a real open file descriptor on this path.
+(defn raw-ip4-open-hdrincl [(dest : Arena @ Region)]
+  : (Result RawSocket RawSocketError) @ Region
+  (match (raw-ip4-open (ipproto-raw) dest)
+    ((Err e) (Err e))
+    ((Ok sock)
+      (if (< (raw-set-hdrincl (get-field (deref sock) :fd)) 0)
+        (do (raw-close (get-field (deref sock) :fd)) (Err SetOptFailed))
+        (Ok (deref sock))))))
+
+;; raw-ip4-send — sends `data` (already a real, complete, caller-crafted buffer -- IP header
+;; included when IP_HDRINCL is set) to `dest-ip` (a real dotted-quad string). This file builds no
+;; packet bytes itself; `net/wire.prn`'s own byte-field helpers are the real way a caller
+;; constructs `data` (a real, general declarative struct/`binparse`-style layer is a separate,
+;; still-open gap, not this file's own scope).
+(defn raw-ip4-send [(!s : &RawSocket) (data : String @ Region) (data-len : I32) (dest-ip : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 RawSocketError) @ Region
+  (let [n (raw-sendto (get-field !s :fd) data data-len dest-ip)]
+    (if (< n 0)
+      (Err SendFailed)
+      (Ok n))))
+
+;; raw-ip4-close — real, direct socket teardown.
+(defn raw-ip4-close [(!s : &RawSocket) (dest : Arena @ Region)]
+  : (Result Unit RawSocketError) @ Region
+  (if (< (raw-close (get-field !s :fd)) 0)
+    (Err OpenFailed)
+    (Ok unit)))

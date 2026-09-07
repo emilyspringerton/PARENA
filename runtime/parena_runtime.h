@@ -771,6 +771,57 @@ static inline int tcp_listen_impl(int port) {
     return fd;
 }
 
+/* ---- stdlib/net/rawsocket.prn real host glue (2026-09-07) ------------
+ * Real answer to the founder's own pasted proposal ("Raw Socket Protocol
+ * Overrides — IP_HDRINCL: tell the kernel not to auto-generate the IP
+ * header; the stdlib has manually crafted the raw bytes"). Every real
+ * socket primitive so far (tcp_*_impl above, udp's own sendto in
+ * net/udp.prn) lets the KERNEL build the IP header — genuinely no way
+ * to hand-craft one before this. `rawsocket_open_impl` opens a real
+ * `SOCK_RAW` socket for a caller-chosen IP protocol number (see
+ * net/rawsocket.prn's own `ipproto-*` constants); `rawsocket_hdrincl_impl`
+ * is the literal, separate `IP_HDRINCL` setsockopt call kept as its own
+ * real primitive (not folded into open) so a caller can also open a raw
+ * socket that does NOT want kernel header suppression (e.g. a raw ICMP
+ * read socket) — genuine flexibility, not just ceremony.
+ *
+ * Real, honest, standing limitation: SOCK_RAW itself requires
+ * CAP_NET_RAW (root, or that specific capability) on every real POSIX
+ * kernel — a real, unavoidable OS-level gate this runtime cannot lift.
+ * `tests/test_net_rawsocket.c` asserts the real, deterministic EPERM
+ * failure path this sandbox's own actual privilege level produces
+ * (matching `pentest/pcap.prn`'s own already-established "assert the
+ * real outcome for THIS sandbox's real privilege, don't fake success"
+ * convention) — the success path is real, structurally complete code,
+ * exercised automatically the moment this runs with real CAP_NET_RAW/
+ * root. */
+static inline int rawsocket_open_impl(int protocol) {
+    return socket(AF_INET, SOCK_RAW, protocol);
+}
+
+static inline int rawsocket_hdrincl_impl(int fd) {
+    int one = 1;
+    return setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &one, sizeof one);
+}
+
+/* rawsocket_sendto_impl — sends `len` real, already-fully-crafted bytes
+ * (IP header included, when IP_HDRINCL is set) to `dest_ip` (a real
+ * dotted-quad string, e.g. "192.0.2.1"). Real, honest, deliberate v0
+ * limitation: an invalid `dest_ip` (inet_pton failure) reports -1 the
+ * same as any other send failure, rather than a distinct error code —
+ * a real, separate refinement, not attempted here. */
+static inline long rawsocket_sendto_impl(int fd, const char *data, int len, const char *dest_ip) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    if (inet_pton(AF_INET, dest_ip, &addr.sin_addr) != 1) return -1;
+    return (long)sendto(fd, data, (size_t)len, 0, (struct sockaddr *)&addr, sizeof addr);
+}
+
+static inline int rawsocket_close_impl(int fd) {
+    return close(fd);
+}
+
 static inline int tcp_accept_impl(int listener_fd) {
     return accept(listener_fd, NULL, NULL);
 }

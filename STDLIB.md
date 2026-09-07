@@ -4029,3 +4029,37 @@ system introspection (`process.prn` is real but scoped to fork+exec only — no 
 open-file-descriptor inspection, or ptrace; a genuine, unaddressed gap, not touched this pass);
 structured security encoders (DNS and the ASN.1/BER foundation were already real; X.509 itself now
 has its first real, narrow v0 here).
+
+## net/rawsocket — real IP_HDRINCL raw-socket primitives (2026-09-07)
+
+Real, direct answer to a follow-up founder proposal, same cybersecurity-primitives thread as
+`pentest/x509` above: "Raw Socket Protocol Overrides (IP_HDRINCL): a primitive socket option that
+tells the host operating system kernel: 'Do not auto-generate the IP header for this payload; the
+PARENA standard library has manually crafted the raw bytes.'" Checked reality first: every real
+socket primitive in this stdlib before this file (`net/tcp.prn`, `net/udp.prn`) lets the kernel
+build the IP header — there was genuinely no way in PARENA to hand-craft one before this.
+
+New real host glue in `runtime/parena_runtime.h` (`rawsocket_open_impl`/`rawsocket_hdrincl_impl`/
+`rawsocket_sendto_impl`/`rawsocket_close_impl`), and `stdlib/net/rawsocket.prn` on top: `RawSocket`/
+`RawSocketError`, `ipproto-icmp`/`ipproto-tcp`/`ipproto-raw` constants (real, portable IANA
+protocol numbers), `raw-ip4-open` and `raw-hdrincl-enable` as two SEPARATE real primitives —
+matching the founder's own framing ("a primitive socket option," not "always on") — plus a
+`raw-ip4-open-hdrincl` convenience composing both for the overwhelmingly common real case, and
+`raw-ip4-send`/`raw-ip4-close`. This file builds no packet bytes itself; a caller uses `net/
+wire.prn`'s own byte-field helpers to construct the buffer handed to `raw-ip4-send` (a real,
+general declarative struct/`binparse` layer remains a separate, still-open gap, named in the
+`pentest/x509` section above).
+
+Real, standing, unavoidable OS-level limitation named directly, not hidden: opening any
+`SOCK_RAW` socket requires `CAP_NET_RAW` (root, or that specific Linux capability) on every real
+POSIX kernel — no stdlib can lift that gate. `make test-net-rawsocket` / `tests/
+test_net_rawsocket.c` follows `pentest/pcap.prn`'s own already-established convention exactly:
+live-checks this sandbox's own actual privilege (`geteuid()`), asserts the real, deterministic
+`PermissionDenied` outcome that privilege level genuinely produces (this fatbaby user has no
+`CAP_NET_RAW` and no passwordless root — confirmed live), and also runs a privilege-independent
+check (an invalid dest-ip string is rejected by `inet_pton` before any real send attempt,
+regardless of privilege). The real success path (open+HDRINCL+send+close, including a real,
+hand-crafted 20-byte IPv4 header + 8-byte ICMP echo payload) is written as real, structurally
+complete code in the same test file, gated to run automatically the moment this executes with
+real `CAP_NET_RAW`/root — not exercised by this sandbox's own current run, honestly labeled as
+such rather than skipped silently. `make test`: 348/348, zero regressions.
