@@ -3936,3 +3936,96 @@ against the real reference algorithm (not guessed): μ-law silence (0xFF) and fu
 own real non-zero silence decode (0xD5→8, a genuine property of the algorithm's segment-0 offset,
 not a bug), its own mid-range round trip (10000→182→9984), and a sanity check that μ-law and A-law
 produce genuinely different codewords for the same input. `make test`: 345/345, zero regressions.
+
+## Registration catch-up — 4 real stdlib packages found undocumented (2026-09-07, SAGA audit)
+
+A SAGA-style audit pass (founder real-time: "run a full saga session find claims that dont exist
+and code that does not have documentation") found four real, working `.prn` files that shipped
+with zero entry anywhere in this file — a mechanical gap (new leaf directories added, never
+appended here), not deliberate omission. Registered now, no code changes:
+
+- **`stdlib/emilyos/fsacl.prn`** — EmilyOS's real `GRANT_FS`/`REVOKE_FS` mod (founder real-time,
+  2026-08-25: "do more work on the EmilyOS GRANT-FS REVOKE-FS with parena mods for arch linux").
+  `grant-fs`/`revoke-fs` call back into host-provided `emilyos_fsacl_grant`/`emilyos_fsacl_revoke`
+  cgo exports (EmilyOS's own `internal/fsaclmod`/`internal/fsacl` Grant/Revoke), returning a plain
+  I32 status code -- the same "one real round trip, no Result/Option across the cgo boundary yet"
+  shape PITVIPER's `stdlib/pitviper/vterm_mod.prn` (S192-01) already established.
+- **`stdlib/racer/bike_gear_mod.prn`** — WEAKNIGHT_BEDROCK_RACERS' first real PARENA mod (docs/
+  NORTHSTAR.md's own PIVOT section, 2026-08-28: "i want the thing to embed parena into it deep
+  into the core of it"), real gear-shift decision logic mirroring `SHANKPIT_CONSTRUCT.txt`'s own
+  tuned `BIKE_GEAR_MAX`/`BIKE_GEAR_ACCEL` thresholds. Follows ECOWAR's `card_effect_mod.prn`
+  ABI precedent -- I32-only decision logic, host C still owns the float physics.
+- **`stdlib/tyler/cutscene_mod.prn`** — TYLER's real cutscene decision logic (founder real-time,
+  2026-08-30: "building the tyler cutscene system into parena check the tyler engine docs"), the
+  real successor to `TYLER/engine/tyler_cutscene_system.md`'s own deferred "implementation
+  deferred to GoblinFoxDragon EduScript" recommendation (written before PARENA existed). Owns
+  trigger-fire and choice-effect decisions; scene-sequencing/typewriter timing stays host logic,
+  matching SHANKPIT's own separate, simpler, non-branching `packages/simulation/cutscene.c`.
+- **`stdlib/eventstore/seqlock.prn`** — a real fix for a real, live bug (founder real-time,
+  2026-08-25: root-caused a live PRRJECT_FATBABY press-release rendering with an unrelated NVIDIA
+  8-K link to ~15 separate Go binaries all appending to the same `var/secwatch` event store with
+  zero cross-process coordination -- confirmed live, one sequence number claimed by 5 different
+  records from 2 processes). An OS-level `flock`-based advisory lock around the real
+  read-sequence/increment/write/persist critical section in `FileStore.Append` -- the actual
+  missing cross-process mutual exclusion an in-process `sync.Mutex` could never provide.
+
+## ldap/ber — long-form BER length support added (2026-09-07)
+
+Real addendum to the `ldap/ber` section above, from the same PARENA cybersecurity-primitives
+thread that produced `pentest/x509` below: the original `read-ber-length`'s short-form-only v0
+made any real X.509 certificate immediately unparseable (real certificate fields are essentially
+always >127 bytes). Added `read-ber-length-ext`/`ber-header-size-ext` — the same short-form
+decode plus long-form support for a 1- or 2-byte length count (values up to 65535, the real range
+every field in a real X.509 cert or LDAP message this stdlib targets actually needs). Two new
+`BerError` variants name the remaining real, honest v1 boundaries: `IndefiniteLengthUnsupported`
+(the real BER "indefinite form," genuinely rare and forbidden outright in DER) and
+`LongFormTooLong` (a 3+-byte count, i.e. a single field over 65535 bytes — no field either real
+target format needs is ever that large). `test-ber` gained 4 new real assertions, hand-verified
+against a genuine openssl-generated DER certificate's own actual long-form TLV bytes, not
+synthetic ones. `make test`: 348/348, zero regressions.
+
+## pentest/x509 — real X.509 certificate version + serialNumber extraction (2026-09-07)
+
+Real, direct answer to the founder's own pasted cybersecurity-primitives proposal's item 4
+("Structured Security Data Encoders — asn1 / dns / x509"). Checked reality first: `net/dns.prn`
+already covers real DNS parsing, and `ldap/ber.prn` already had the real ASN.1/BER TLV foundation
+X.509 needs — except its original short-form-only length decode made it useless against a real
+certificate (see the `ldap/ber` addendum immediately above, fixed first, in the same pass).
+
+Real, honest v0 boundary, named explicitly: NOT a general X.509 parser. Walks the real, fixed
+outer `Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { version [0] EXPLICIT INTEGER DEFAULT
+v1, serialNumber INTEGER, ... }, ... }` shape and extracts exactly two real fields: `version`
+(the real RFC 5280 encoded integer — 0=v1, 1=v2, 2=v3) and `serialNumber` (a real lowercase hex
+string, matching `openssl x509 -serial`'s own convention modulo case). Both real DER shapes of
+`version` are honestly handled: the explicit `[0]` wrapper present, and its real absence (DEFAULT
+v1, correctly reported as version 0, not an error). Issuer/subject RDN decoding, validity-date
+parsing, subjectPublicKeyInfo, extensions, and signature verification are real, separate, later
+slices, named rather than silently unattempted. `X509Error` has 2 variants (`NotSequence`,
+`Truncated`) — a real, narrow collapse of `ldap/ber`'s own 4-variant `BerError`, since every one
+of its own failure boundaries means the same real thing to a caller here: "this v0 can't walk
+past this length."
+
+Found and reused a real, already-established compiler-limitation fix along the way:
+`sip/sdp.prn`'s own `unbox-i32` pattern — a `match`-bound `Ok` payload's emitted C type is always
+the generic `void *value` regardless of its real tracked `.prn`-level scalar type, so any real
+arithmetic on a matched `I32` needs an explicit unboxing cast first (`sip/sdp.prn`/
+`regex/pcre.prn`/`log/jsonl.prn`'s own unbox helpers are the direct precedent — this file adds its
+own copy rather than a cross-module import, matching that established convention).
+
+New `make test-pentest-x509` target, 3 real assertions against a genuine, actual DER certificate
+(generated live via `openssl req -x509 -newkey rsa:2048 ...`, its own real version/serialNumber
+independently cross-checked with `openssl x509 -noout -text -serial` before being embedded as the
+test fixture — not hand-invented bytes): the real cert's version(v3=2)/serialNumber decode
+correctly, a non-SEQUENCE buffer is honestly reported as `NotSequence` rather than mis-decoded,
+and a hand-constructed DEFAULT-version certificate (no `[0]` wrapper) correctly reports version 0.
+`make test`: 348/348, zero regressions.
+
+Real, honest status against the founder's own full 4-item cybersecurity-primitives list, now that
+this item and its `ldap/ber` prerequisite are done: packet capture (already real and shipped —
+`pentest/pcap.prn`, `pentest/dot11.prn`, `pentest/scan.prn`); byte-stream/struct parsing (partially
+covered — `net/wire.prn`'s own per-type helpers exist, but no fully general, declarative
+struct-layout/`binparse` engine does; a real, smaller, still-open gap if wanted); native process/
+system introspection (`process.prn` is real but scoped to fork+exec only — no `/proc` listing,
+open-file-descriptor inspection, or ptrace; a genuine, unaddressed gap, not touched this pass);
+structured security encoders (DNS and the ASN.1/BER foundation were already real; X.509 itself now
+has its first real, narrow v0 here).

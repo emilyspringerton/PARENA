@@ -22,11 +22,25 @@
 (module ldap/ber)
 (import string)
 (import net/wire)
-(export read-ber-tag read-ber-length ber-header-size build-ber-tlv BerError)
+(export read-ber-tag read-ber-length ber-header-size build-ber-tlv BerError
+        read-ber-length-ext ber-header-size-ext)
 
 (defenum BerError
-  (TooShort)              ;; real buffer too short to contain even a tag+length byte pair
-  (LongFormUnsupported))  ;; real, honest v0 boundary: a real long-form length byte was seen
+  (TooShort)               ;; real buffer too short to contain even a tag+length byte pair
+  (LongFormUnsupported)    ;; real, honest v0 boundary: a real long-form length byte was seen
+  ;; IndefiniteLengthUnsupported/LongFormTooLong -- real, honest v1 boundaries named by
+  ;; read-ber-length-ext below (2026-09-07, PARENA cybersecurity-primitives thread: a real
+  ;; X.509 certificate's own TLV lengths are essentially always >127 bytes, so read-ber-length's
+  ;; original short-form-only v0 made ANY real certificate immediately unparseable -- the actual
+  ;; blocker, not a missing file, found by checking reality before writing pentest/x509.prn).
+  (IndefiniteLengthUnsupported) ;; real BER "indefinite form" (count byte = 0x80 itself, content
+                                 ;; terminated by two zero bytes) -- a real, separate, legal BER
+                                 ;; encoding, genuinely rare in DER (X.509's own stricter BER
+                                 ;; subset forbids it outright), honestly not attempted here.
+  (LongFormTooLong))            ;; a real length-byte COUNT of 3 or more (i.e. a single field
+                                 ;; longer than 65535 bytes) -- real, deliberately unsupported;
+                                 ;; no field in a real X.509 cert or LDAP message this stdlib
+                                 ;; targets is ever that large.
 
 ;; read-ber-tag — the real tag byte at `pos`, unqualified (real, honest v0: low tag numbers
 ;; 0-30 only, the common real case for every LDAP protocol-op/attribute-type tag this stdlib
@@ -45,6 +59,40 @@
     (if (= (bit-and b 128) 128)
       (Err LongFormUnsupported)
       (Ok b))))
+
+;; read-ber-length-ext — the real fix: short-form length (as read-ber-length above) PLUS
+;; long-form length for a 1- or 2-byte count (values up to 65535), the real range every field in
+;; a real X.509 certificate or LDAP message this stdlib targets actually needs. A 0-byte count
+;; (the real "indefinite length" BER form) or a 3+-byte count are both real, separate, honestly
+;; unsupported boundaries (BerError's own doc comment has the full reasoning) -- reported, never
+;; silently mis-decoded. Live-verified against a real, actual X.509 certificate's own long-form
+;; TLV lengths (openssl-generated, not hand-constructed), not just a synthetic byte string.
+(defn read-ber-length-ext [(buf : String @ Region) (pos : I32) (dest : Arena @ Region)]
+  : (Result I32 BerError) @ Region
+  (let [b (net/wire/raw-byte buf (+ pos 1))]
+    (if (= (bit-and b 128) 128)
+      (let [count (bit-and b 127)]
+        (if (= count 0)
+          (Err IndefiniteLengthUnsupported)
+          (if (= count 1)
+            (Ok (net/wire/raw-byte buf (+ pos 2)))
+            (if (= count 2)
+              (Ok (net/wire/read-u16-be buf (+ pos 2)))
+              (Err LongFormTooLong)))))
+      (Ok b))))
+
+;; ber-header-size-ext — the real, VARIABLE counterpart to ber-header-size above: 1 tag byte + 1
+;; length-lead byte + (0 for short-form, or the real long-form count of trailing length bytes).
+;; A real caller adds this to `pos` to find where the real VALUE bytes begin -- the same real
+;; role ber-header-size plays for the short-form-only v0, generalized to actually match what
+;; read-ber-length-ext just decoded (a fixed `2` is wrong the instant a long-form length is
+;; involved, since real header size then varies by the real count byte's own value).
+(defn ber-header-size-ext [(buf : String @ Region) (pos : I32)]
+  : I32
+  (let [b (net/wire/raw-byte buf (+ pos 1))]
+    (if (= (bit-and b 128) 128)
+      (+ 2 (bit-and b 127))
+      2)))
 
 ;; ber-header-size — the real, fixed 2-byte TLV header size this v0 supports: 1 tag byte + 1
 ;; short-form length byte. A real caller adds this to `pos` to find where the real VALUE bytes

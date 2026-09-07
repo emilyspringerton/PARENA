@@ -31,6 +31,36 @@ int main(void) {
     Result rlong = read_ber_length(longform, 0, &arena);
     assert(rlong.tag == 0);
 
+    /* read_ber_length_ext -- the real fix (2026-09-07, PARENA cybersecurity-primitives thread):
+     * the exact same long-form bytes above, which read_ber_length honestly refuses, now decode
+     * correctly. 0x81 0x05 = "1 length byte follows, value 5" = length 5. */
+    Result rext1 = read_ber_length_ext(longform, 0, &arena);
+    assert(rext1.tag == 1);
+    assert(*(int *)rext1.value == 5);
+    assert(ber_header_size_ext(longform, 0) == 3); /* 1 tag + 1 lead + 1 real length byte */
+
+    /* 2-byte count: 0x82 0x01 0x00 = "2 length bytes follow: 0x01 0x00" = 256, the real, common
+     * shape any X.509 certificate field over 255 bytes actually uses. */
+    char longform2[4] = { 0x30, (char)0x82, 0x01, 0x00 };
+    Result rext2 = read_ber_length_ext(longform2, 0, &arena);
+    assert(rext2.tag == 1);
+    assert(*(int *)rext2.value == 256);
+    assert(ber_header_size_ext(longform2, 0) == 4); /* 1 tag + 1 lead + 2 real length bytes */
+
+    /* Short-form still works unchanged through the _ext path -- one real function correctly
+     * covers both cases, a real caller doesn't need to know in advance which form a given TLV
+     * uses. */
+    Result rext_short = read_ber_length_ext(intbuf, 0, &arena);
+    assert(rext_short.tag == 1);
+    assert(*(int *)rext_short.value == 1);
+    assert(ber_header_size_ext(intbuf, 0) == 2);
+
+    /* Real, honest v1 boundary: indefinite-length form (count byte itself is 0x80) is a real,
+     * separate, legal BER encoding this stdlib still doesn't attempt -- reported, not guessed. */
+    char indefinite[2] = { 0x30, (char)0x80 };
+    Result rindef = read_ber_length_ext(indefinite, 0, &arena);
+    assert(rindef.tag == 0);
+
     /* build-ber-tlv: real round-trip -- encode tag=0x04 (OCTET STRING, LDAP's own real shape
      * for a bind DN/password), value "abc", confirm the exact real wire bytes. */
     char *value = "abc";
