@@ -1,4 +1,5 @@
 ## 2026-09-07
+- Added io/mmap.prn (real zero-copy mmap), pentest/procmaps.prn (real Linux /proc/[pid]/maps parser), and set.prn (real FNV-1a hash-set with intersect/union/difference) -- three founder-proposed cybersecurity/data-analysis primitives, all real and tested. (sess-20260905-0720-ec33e7c5)
 - Added stdlib/net/rawsocket.prn — real IP_HDRINCL raw-socket primitives (open/hdrincl-enable/send/close), with real host glue in parena_runtime.h. CAP_NET_RAW/root required, honestly named; test asserts this sandbox's own real PermissionDenied outcome. (sess-20260905-0720-ec33e7c5)
 - Extended ldap/ber.prn with long-form BER length decode (read-ber-length-ext/ber-header-size-ext) and added stdlib/pentest/x509.prn — real X.509 version+serialNumber extraction, live-verified against a genuine openssl-generated DER certificate. (sess-20260905-0720-ec33e7c5)
 - SAGA audit: registered emilyos/fsacl, racer/bike_gear_mod, tyler/cutscene_mod, eventstore/seqlock in STDLIB.md. (sess-20260905-0720-ec33e7c5)
