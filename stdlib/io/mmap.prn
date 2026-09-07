@@ -1,0 +1,104 @@
+;; stdlib/io/mmap.prn — depends on string. Design: STDLIB.md "io/mmap" section.
+;;
+;; Real trigger: founder's own pasted proposal (2026-09-07, PARENA cybersecurity-primitives
+;; thread): "Raw Disk / Memory-Mapped File Primitives (mmap): low-level memory map abstractions
+;; that treat massive raw memory dumps or binary file streams directly as flat arrays in PARENA
+;; memory space." Checked reality first: `io.prn`'s own `read-string` already reads a whole file
+;; — but via `read(2)` into one, real, arena-allocated COPY (`raw_read_all_impl`), correct for an
+;; ordinary file but a real, needless double-hold-in-memory cost for a genuinely massive dump, and
+;; no way for the OS to lazily page in only the bytes actually touched. Nothing in this stdlib
+;; used real `mmap(2)` before this file.
+;;
+;; Real, key design point: `mmap-ptr` hands back the real, live-mapped bytes AS a `String`
+;; directly — zero-copy. Since `String` is already a real `char *` (`net/dns.prn`'s own header
+;; comment: "no extra unboxing needed"), every existing String-based helper in this stdlib
+;; (`char-at`, `net/wire/raw-byte`, `ldap/ber`'s own TLV walkers, `pentest/x509.prn`) works
+;; directly against the real, OS-paged mapped memory with no copy at all — the actual, real value
+;; `mmap` adds over `io/read-string`.
+;;
+;; Real, honest, standing caveat, named directly: the `String` `mmap-ptr` returns becomes a real
+;; dangling pointer the instant `mmap-close` runs on the same handle — no region-lifetime
+;; enforcement of "used after unmap" exists yet (the same real class of caution
+;; `pentest/pcap.prn`'s own header comment already names for its own captured-packet buffers,
+;; though that file chose to defensively COPY — deliberately NOT done here, since copying would
+;; defeat the entire real point of `mmap`). A real caller must not touch the returned `String`
+;; after closing its handle.
+;;
+;; Real, honest v0 boundary: `mmap-len` reports the real file size as a plain `I32` — PARENA has
+;; no `I64` yet (the same real, standing limitation `pentest/procmaps.prn`'s own header comment
+;; already names), so a real file over ~2GB reports an incorrect length here; a real, separate,
+;; later fix once PARENA gets a 64-bit integer type. Read-only (`PROT_READ`/`MAP_PRIVATE`) —
+;; write-back mapping is real, separate, deliberately unattempted v0 scope.
+;;
+;; Real, direct handle-safety precedent followed exactly: `pentest/pcap.prn`'s own established
+;; "the handle is a real, fixed-size table INDEX, never a raw host pointer exposed to PARENA-side
+;; code" — PARENA's `I32` cannot safely hold a real 64-bit mapping address (real truncation risk
+;; on any real 64-bit host), so `mmap-open`'s own `MmapFile.handle` is a table index; the real
+;; mapped address is only ever handed out separately, as a `String`, via `mmap-ptr`.
+
+(module io/mmap)
+(import string)
+(export mmap-open mmap-ptr mmap-len mmap-close MmapFile MmapError)
+
+(defstruct MmapFile
+  (handle : I32))
+
+(defenum MmapError
+  (OpenFailed)) ;; real, honest, coarser signal covering every real underlying failure (the file
+                ;; doesn't exist, isn't readable, is empty, the table of 16 concurrent real
+                ;; mappings is full, or the real `mmap(2)` syscall itself failed) — matching
+                ;; `net/tcp.prn`'s own already-established "a real, honest coarser signal, not a
+                ;; fake finer one" precedent for an error space this narrow
+
+;; ---- raw host primitives -- the only #target bodies in this file, each a single C expression
+;; against runtime/parena_runtime.h's own mmap_*_impl functions, no boxing.
+
+(defn raw-mmap-open [(path : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "mmap_open_impl(path)")})
+
+(defn raw-mmap-ptr [(handle : I32)]
+  : String @ Region
+  #target
+  {:c (inline-c "mmap_ptr_impl(handle)")})
+
+(defn raw-mmap-len [(handle : I32)]
+  : I32
+  #target
+  {:c (inline-c "mmap_len_impl(handle)")})
+
+(defn raw-mmap-close [(handle : I32)]
+  : I32
+  #target
+  {:c (inline-c "mmap_close_impl(handle)")})
+
+;; mmap-open — real, direct mmap of `path` (read-only). A real, honest failure (nonexistent path,
+;; permission denied, an empty file — `mmap(2)` itself rejects a zero-length mapping — or the
+;; real, fixed 16-concurrent-mapping table already full) reports `OpenFailed`, never a crash.
+(defn mmap-open [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result MmapFile MmapError) @ Region
+  (let [h (raw-mmap-open path)]
+    (if (< h 0)
+      (Err OpenFailed)
+      (Ok {:handle h}))))
+
+;; mmap-ptr — real, zero-copy access to the live-mapped bytes as a `String`. See this file's own
+;; header comment for the real, standing "don't use after mmap-close" caveat.
+(defn mmap-ptr [(!m : &MmapFile)]
+  : String @ Region
+  (raw-mmap-ptr (get-field !m :handle)))
+
+;; mmap-len — real mapped length in bytes (see this file's own header comment for the real,
+;; honest `I32`-only v0 boundary on files over ~2GB).
+(defn mmap-len [(!m : &MmapFile)]
+  : I32
+  (raw-mmap-len (get-field !m :handle)))
+
+;; mmap-close — real `munmap(2)`. After this call, any `String` previously returned by `mmap-ptr`
+;; for this same handle is a real, live dangling pointer — a real caller must not touch it again.
+(defn mmap-close [(!m : &MmapFile) (dest : Arena @ Region)]
+  : (Result Unit MmapError) @ Region
+  (if (< (raw-mmap-close (get-field !m :handle)) 0)
+    (Err OpenFailed)
+    (Ok unit)))

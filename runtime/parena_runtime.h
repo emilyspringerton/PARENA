@@ -67,6 +67,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <strings.h>
+#include <sys/mman.h>
 #if defined(__linux__)
 #include <pty.h>
 #elif defined(__APPLE__)
@@ -820,6 +821,93 @@ static inline long rawsocket_sendto_impl(int fd, const char *data, int len, cons
 
 static inline int rawsocket_close_impl(int fd) {
     return close(fd);
+}
+
+/* ---- stdlib/io/mmap.prn real host glue (2026-09-07) -------------------
+ * Real answer to the founder's own pasted proposal: "Raw Disk / Memory-
+ * Mapped File Primitives (mmap): low-level memory map abstractions that
+ * treat massive raw memory dumps or binary file streams directly as
+ * flat arrays in PARENA memory space." Every real file-reading
+ * primitive before this (`raw_read_all_impl` above) read()s the whole
+ * file into one arena-allocated COPY -- correct for ordinary files, but
+ * a real, needless double-hold-in-memory cost for a genuinely massive
+ * dump, and no way to let the OS lazily page in only the bytes actually
+ * touched. `mmap_open_impl` is the real fix: a real `mmap(2)` call
+ * whose returned pointer is handed back to PARENA-side code AS A
+ * STRING/`char *` directly (zero-copy -- `net/dns.prn`'s own header
+ * comment already establishes "String is already a real char*, no
+ * extra unboxing needed", so every existing String-based helper in
+ * this stdlib -- `char-at`, `net/wire/raw-byte`, `ldap/ber`'s own TLV
+ * walkers, `pentest/x509.prn` -- works directly against the real,
+ * OS-paged mapped bytes with no copy at all).
+ *
+ * Real, deliberate design choice, matching `pentest/pcap.prn`'s own
+ * established "Capture's own handle is a table index, never a raw host
+ * pointer exposed to PARENA-side code" precedent for the HANDLE itself
+ * (`MmapFile`'s own `handle : I32` field): PARENA's `I32` cannot safely
+ * hold a real 64-bit pointer value (real truncation risk on any real
+ * 64-bit host), so `mmap_open_impl` returns a small, fixed table index,
+ * NOT the raw mapping address -- that address is only ever handed out
+ * separately, as a real `char *`, via `mmap_ptr_impl` below.
+ *
+ * Real, honest, standing caveat, named directly rather than hidden: the
+ * `char *` `mmap_ptr_impl` returns becomes a real dangling pointer the
+ * instant `mmap_close_impl` (`munmap(2)`) runs on the same handle -- no
+ * region-lifetime enforcement of "used after unmap" exists (the same
+ * real class of caution `pentest/pcap.prn`'s own header comment already
+ * names for its own captured-packet buffers, though that file chose to
+ * defensively COPY -- deliberately NOT done here, since copying would
+ * defeat the entire real point of `mmap` in the first place). A real
+ * caller must not touch the returned String after closing its handle.
+ *
+ * Real, honest v0 limitation: `mmap_len_impl` returns the real file
+ * size as a plain `I32` -- PARENA has no `I64` yet (the same real,
+ * standing limitation `pentest/procmaps.prn`'s own header comment
+ * already names), so a real file over ~2GB reports a wrapped/incorrect
+ * length here; a real, separate, later fix once PARENA gets a 64-bit
+ * integer type. */
+#define MMAP_MAX_HANDLES 16
+static void *g_mmap_ptrs[MMAP_MAX_HANDLES];
+static long g_mmap_lens[MMAP_MAX_HANDLES];
+static int g_mmap_used[MMAP_MAX_HANDLES];
+
+static inline int mmap_open_impl(const char *path) {
+    int slot = -1;
+    for (int i = 0; i < MMAP_MAX_HANDLES; i++) {
+        if (!g_mmap_used[i]) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return -1; }
+    void *ptr = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd); /* real, standard mmap idiom: the fd itself isn't needed after mmap succeeds --
+                * the mapping stays valid until munmap regardless of the fd's own lifetime. */
+    if (ptr == MAP_FAILED) return -1;
+    g_mmap_ptrs[slot] = ptr;
+    g_mmap_lens[slot] = (long)st.st_size;
+    g_mmap_used[slot] = 1;
+    return slot;
+}
+
+static inline char *mmap_ptr_impl(int handle) {
+    if (handle < 0 || handle >= MMAP_MAX_HANDLES || !g_mmap_used[handle]) return NULL;
+    return (char *)g_mmap_ptrs[handle];
+}
+
+static inline int mmap_len_impl(int handle) {
+    if (handle < 0 || handle >= MMAP_MAX_HANDLES || !g_mmap_used[handle]) return -1;
+    return (int)g_mmap_lens[handle];
+}
+
+static inline int mmap_close_impl(int handle) {
+    if (handle < 0 || handle >= MMAP_MAX_HANDLES || !g_mmap_used[handle]) return -1;
+    int rc = munmap(g_mmap_ptrs[handle], (size_t)g_mmap_lens[handle]);
+    g_mmap_used[handle] = 0;
+    g_mmap_ptrs[handle] = NULL;
+    g_mmap_lens[handle] = 0;
+    return rc;
 }
 
 static inline int tcp_accept_impl(int listener_fd) {
