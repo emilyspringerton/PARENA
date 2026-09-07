@@ -1,0 +1,83 @@
+;; stdlib/papercraft/weapon_mod.prn — real "arsenal" weapon-switching decisions for PAPERCRAFT
+;; (founder real-time, 2026-09-07: "can we build shankpit affordances into papercraft? aresnal
+;; (weapon switching) but based on real entities like not all characters get all aresenals you
+;; have to find a shoddy [shotgun] etc" -> "using native parena" -> "with mods").
+;;
+;; Real, direct port of SHANKPIT's own roster (packages/common/protocol.h's own WPN_KNIFE/MAGNUM/
+;; AR/SHOTGUN/SNIPER/KATANA -- WPN_MISSILE excluded from this first slice, a travelling-projectile
+;; weapon type this sandbox's own combat doesn't have a hit-detection story for yet), but SHANKPIT
+;; itself has NO ownership concept at all -- current_weapon is just an index anyone can switch to
+;; freely (packages/common/protocol.h's own PlayerState, checked directly). This mod is the real,
+;; new part: a player may only switch TO a weapon slot they've actually found in the world
+;; (papercraft_protocol.h's own PC_ITEM_WPN_* entity pickups, real GTA3-style walk-over pickup,
+;; same as PC_ITEM_SCRAP already uses), tracked as a real per-player bitmask
+;; (PlayerSlot.weapons_owned, apps/server/src/main.c) -- "based on real entities... you have to
+;; find a [weapon] etc," not a fixed loadout every character starts with.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-weapon-item-slot when a picked-up item might be
+;; a weapon (deciding which owned-bit, if any, to set), and on-papercraft-weapon-switch-allowed
+;; when a player sends PC_PACKET_WEAPON_SWITCH (deciding whether the requested slot is actually
+;; theirs to switch to).
+
+(module papercraft/weapon-mod)
+(export on-papercraft-weapon-item-slot)
+(export on-papercraft-weapon-switch-allowed)
+
+;; Real weapon-slot constants -- must match packages/common/papercraft_protocol.h's own PC_WPN_*
+;; defines byte-for-byte, same real order SHANKPIT's own WPN_KNIFE.. constants use so a future
+;; real stat-table port (damage/rate-of-fire/spread) lines up index-for-index, not a renumbering.
+(defn weapon-slot-knife [] : I32 0)
+(defn weapon-slot-magnum [] : I32 1)
+(defn weapon-slot-ar [] : I32 2)
+(defn weapon-slot-shotgun [] : I32 3)
+(defn weapon-slot-sniper [] : I32 4)
+(defn weapon-slot-katana [] : I32 5)
+(defn weapon-slot-count [] : I32 6)
+
+;; Real item-id constants -- must match packages/common/papercraft_protocol.h's own PC_ITEM_WPN_*
+;; byte-for-byte. Named with a `weapon-mod-` prefix (not the bare per-weapon names item_drop_mod.
+;; prn/inventory_mod.prn already learned the hard way, via a real link-time "multiple definition"
+;; failure -- VS0 gives every module-private helper plain, non-static linkage today) so a future
+;; mod needing its own copy of these ids never collides with this module's.
+(defn weapon-mod-item-knife [] : I32 2)
+(defn weapon-mod-item-magnum [] : I32 3)
+(defn weapon-mod-item-ar [] : I32 4)
+(defn weapon-mod-item-shotgun [] : I32 5)
+(defn weapon-mod-item-sniper [] : I32 6)
+(defn weapon-mod-item-katana [] : I32 7)
+
+;; on-papercraft-weapon-item-slot: real item-id -> weapon-slot mapping. Returns -1 for any item
+;; that isn't a weapon at all (the host's own real, honest "not a weapon, don't touch
+;; weapons_owned" case) -- this mod owns the ENTIRE real mapping, the host never hardcodes which
+;; item ids are weapons.
+(defn on-papercraft-weapon-item-slot [(item-id : I32)] : I32
+  (if (= item-id (weapon-mod-item-knife))
+    (weapon-slot-knife)
+    (if (= item-id (weapon-mod-item-magnum))
+      (weapon-slot-magnum)
+      (if (= item-id (weapon-mod-item-ar))
+        (weapon-slot-ar)
+        (if (= item-id (weapon-mod-item-shotgun))
+          (weapon-slot-shotgun)
+          (if (= item-id (weapon-mod-item-sniper))
+            (weapon-slot-sniper)
+            (if (= item-id (weapon-mod-item-katana))
+              (weapon-slot-katana)
+              -1)))))))
+
+;; on-papercraft-weapon-switch-allowed: the real "arsenal" gate. requested-slot must either be
+;; the universal starting Knife (real, deliberate baseline every character always has -- "not all
+;; characters get all arsenals" implies SOME baseline everyone shares, matching GTA3/most sandbox
+;; precedent of unarmed-or-melee-always-available, not a genuinely weaponless start with no way to
+;; ever interact) or a real bit already set in owned-mask (that weapon has actually been found and
+;; picked up, packages/common/papercraft_protocol.h's own PC_ITEM_WPN_* entity pickup). An
+;; out-of-range slot is never allowed, regardless of the mask -- a real, defensive floor against a
+;; malformed/malicious PC_PACKET_WEAPON_SWITCH request.
+(defn on-papercraft-weapon-switch-allowed [(owned-mask : I32) (requested-slot : I32)] : Bool
+  (if (< requested-slot 0)
+    false
+    (if (>= requested-slot (weapon-slot-count))
+      false
+      (if (= requested-slot (weapon-slot-knife))
+        true
+        (!= (bit-and owned-mask (shl 1 requested-slot)) 0)))))

@@ -944,6 +944,30 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- `!=` (inequality) -- found live, 2026-09-07, building PAPERCRAFT's own
+     * stdlib/papercraft/weapon_mod.prn: every OTHER comparison (`<`/`>`/`<=`/`>=`/`=`) already
+     * had a real binop_c_symbol() entry, `!=` simply never got added. Without it, `(!= a b)`
+     * silently fell through to being emitted as a plain function CALL named `!=` -- invalid C
+     * (`=(a, b)`) that only failed at gcc time, never at `parena build` time, the exact kind of
+     * gap this test suite exists to catch before it reaches a real .prn author. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn distinct [(a : I32) (b : I32)] : Bool\n"
+            "  (!= a b))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a (!= a b) expression parses fine");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "it emits successfully");
+        if (c_src) {
+            CHECK(strstr(c_src, "(a != b)") != NULL, "!= emits a real C !=, not a bogus '=(a, b)' function call");
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- map-literal struct construction -- STDLIB.md's own gap #2,
      * found blocking firefly.prn's own `run-tests`
      * (`{:passed passed :failed failed :skipped 0}`). Real, structural

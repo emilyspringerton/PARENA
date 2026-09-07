@@ -894,6 +894,13 @@ static const char *binop_c_symbol(const char *sym) {
     if (strcmp(sym, "<=") == 0) return "<=";
     if (strcmp(sym, ">=") == 0) return ">=";
     if (strcmp(sym, "=") == 0) return "==";
+    /* `!=` (2026-09-07, found live building PAPERCRAFT's own stdlib/papercraft/weapon_mod.prn):
+     * a real, previously-missing inequality operator -- every OTHER comparison (`<`/`>`/`<=`/
+     * `>=`/`=`) was already here, this one simply never got added. Without this entry, `(!= a b)`
+     * silently fell through to being treated as a plain function CALL named `!=` (mangled to `!`
+     * plus whatever `=` itself mangles to), emitting invalid C (`=(a, b)`) that only fails at
+     * gcc time, not at `parena build` time -- a real, honest gap, not a deliberate omission. */
+    if (strcmp(sym, "!=") == 0) return "!=";
     if (strcmp(sym, "and") == 0) return "&&";
     if (strcmp(sym, "or") == 0) return "||";
     /* Real, honest new addition (2026-08-20): bitwise operators, needed
