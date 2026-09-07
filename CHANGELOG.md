@@ -1,4 +1,5 @@
 ## 2026-09-07
+- SAGA audit: registered emilyos/fsacl, racer/bike_gear_mod, tyler/cutscene_mod, eventstore/seqlock in STDLIB.md. (sess-20260905-0720-ec33e7c5)
 - Fixed math/random for the C target (renamed math/random-f64 to avoid a real glibc symbol collision): lazily self-seeded, live-verified end to end. Also committed an earlier, uncommitted item_drop_mod.prn change (METAL drops a shotgun). (sess-20260905-0720-ec33e7c5)
 
 - Fixed a real C-emitter gap: != had no operator-table entry at all, silently producing invalid C instead of failing at compile time. Added stdlib/papercraft/weapon_mod.prn (PAPERCRAFT's own arsenal weapon-switching gate). (sess-20260905-0720-ec33e7c5)
