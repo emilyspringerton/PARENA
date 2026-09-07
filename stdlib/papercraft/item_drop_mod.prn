@@ -3,12 +3,20 @@
 ;; entity and inventory system simple but trackable gta3 style stuff drops and you can pick it
 ;; up" / "all parena mod api based developed").
 ;;
-;; Real, bounded first slice: only PAPER_MATERIAL_PAPER objects drop a real item (PC_ITEM_SCRAP)
-;; when destroyed -- the same real restraint every other real mod in this monorepo uses (no
-;; invented drop table for materials this sandbox doesn't have a real use for an item from yet).
-;; Materials match packages/common/paper_mesh.h's own real PAPER_MATERIAL_* order (paper=0,
-;; wood=1, concrete=2, metal=3) -- kept in that exact order here so a future real drop for
-;; wood/concrete/metal is one more real branch, not a renumbering.
+;; Real, bounded first slice: PAPER_MATERIAL_PAPER objects drop a real item (PC_ITEM_SCRAP) when
+;; destroyed -- the same real restraint every other real mod in this monorepo uses (no invented
+;; drop table for materials this sandbox doesn't have a real use for an item from yet). Materials
+;; match packages/common/paper_mesh.h's own real PAPER_MATERIAL_* order (paper=0, wood=1,
+;; concrete=2, metal=3) -- kept in that exact order here so a future real drop for wood/concrete
+;; is one more real branch, not a renumbering.
+;;
+;; METAL now drops a real weapon (2026-09-07, founder real-time: "not all characters get all
+;; aresenals you have to find a [shotgun] etc"), closing the real gap this weapon system would
+;; otherwise have: weapon_mod.prn's own real ownership/switch-allowed gate existed with NO actual
+;; way for a PC_ITEM_WPN_* item to ever enter the world at all before this change. METAL is the
+;; real, deliberate choice -- the toughest material (PAPER_MATERIAL_MAX_HP's own 140, well above
+;; paper's 20) means finding this weapon is a genuine, earned reward for real destruction effort,
+;; not a trivial first-hit drop the way scrap is.
 ;;
 ;; ABI: apps/server/src/main.c calls on-papercraft-item-for-object-destroyed with the destroyed
 ;; object's own real material (packages/common/papercraft_worldobjects.h's own PcWorldObjectDef
@@ -22,6 +30,7 @@
 ;; Real material constants -- must match packages/common/paper_mesh.h's own PAPER_MATERIAL_*
 ;; defines byte-for-byte.
 (defn material-paper [] : I32 0)
+(defn material-metal [] : I32 3)
 
 ;; Real item-id constant -- must match packages/common/papercraft_protocol.h's own PC_ITEM_SCRAP
 ;; byte-for-byte. Named `item-drop-scrap-id`, not the bare `item-scrap` a first pass used --
@@ -33,7 +42,15 @@
 ;; correct workaround, not a bug in either mod's own logic.
 (defn item-drop-scrap-id [] : I32 1)
 
+;; Real item-id constant -- must match packages/common/papercraft_protocol.h's own
+;; PC_ITEM_WPN_SHOTGUN byte-for-byte. Named `item-drop-shotgun-id`, same unique-per-module naming
+;; discipline as `item-drop-scrap-id` above (weapon_mod.prn also needs its own copy of this real
+;; id, under its own `weapon-mod-item-shotgun` name).
+(defn item-drop-shotgun-id [] : I32 5)
+
 (defn on-papercraft-item-for-object-destroyed [(material : I32)] : I32
   (if (= material (material-paper))
     (item-drop-scrap-id)
-    0))
+    (if (= material (material-metal))
+      (item-drop-shotgun-id)
+      0)))
