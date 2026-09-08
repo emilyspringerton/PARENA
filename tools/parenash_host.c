@@ -37,6 +37,7 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #include <ctype.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -140,6 +141,90 @@ static int exec_if_chain(char **words, int start, int end, Arena *expand_arena) 
     int status = (else_idx >= 0) ? exec_range(words, else_idx + 1, fi_idx, expand_arena) : 0;
     if (fi_idx + 1 < end) return exec_range(words, fi_idx + 1, end, expand_arena);
     return status;
+}
+
+/* case_pattern_matches -- real, standard POSIX shell glob matching via the real, already-correct
+ * `fnmatch(3)` (no hand-rolled glob engine) against a real case CLAUSE word (e.g.
+ * `[Yy][Ee][Ss]|[Tt][Rr][Uu][Ee])`, confirmed live as the real shape OpenRC's own
+ * `functions.sh` uses throughout) -- strips the trailing `)` this shell's own tokenizer leaves
+ * attached (no space before it in real syntax), splits on `|` for real pattern alternation, and
+ * matches if ANY alternative matches. */
+static int case_pattern_matches(const char *pattern_clause, const char *word) {
+    size_t len = strlen(pattern_clause);
+    if (len == 0 || pattern_clause[len - 1] != ')') return 0;
+    char *copy = strdup(pattern_clause);
+    copy[len - 1] = '\0';
+    int matched = 0;
+    char *saveptr = NULL;
+    char *alt = strtok_r(copy, "|", &saveptr);
+    while (alt) {
+        if (fnmatch(alt, word, 0) == 0) {
+            matched = 1;
+            break;
+        }
+        alt = strtok_r(NULL, "|", &saveptr);
+    }
+    free(copy);
+    return matched;
+}
+
+static int is_case_pattern_word(const char *w) {
+    size_t len = strlen(w);
+    return len > 0 && w[len - 1] == ')';
+}
+
+/* exec_case -- real `case WORD in PAT1) CMDS1 ;; PAT2) CMDS2 ;; esac` support. words[start] is
+ * "case". Real, honest v0 boundary: `WORD` must be exactly one token (real shells allow multiple
+ * words there after expansion; a real, separate, later extension). Walks clauses between `in`
+ * and `esac`, running only the FIRST matching clause's own commands through the exact same
+ * `exec_range` every other construct uses (real `;;` shape: this shell's own tokenizer already
+ * emits two separate literal `;` tokens back to back for a real `;;`, detected directly rather
+ * than needing any new tokenizer support). */
+static int exec_case(char **words, int start, int end, Arena *expand_arena) {
+    int in_idx = find_keyword(words, start + 1, end, "in");
+    if (in_idx < 0) {
+        fprintf(stderr, "sh: syntax error: expected 'in'\n");
+        return 2;
+    }
+    if (in_idx != start + 2) {
+        fprintf(stderr, "sh: syntax error: 'case' word must be a single token (v0 limitation)\n");
+        return 2;
+    }
+    char *word = expand_word(words[start + 1], expand_arena);
+    int esac_idx = find_keyword(words, in_idx + 1, end, "esac");
+    if (esac_idx < 0) {
+        fprintf(stderr, "sh: syntax error: expected 'esac'\n");
+        return 2;
+    }
+
+    int i = in_idx + 1;
+    int matched_status = 0;
+    int found_match = 0;
+    while (i < esac_idx) {
+        if (!is_case_pattern_word(words[i])) {
+            i++;
+            continue;
+        }
+        int body_start = i + 1;
+        int j = body_start;
+        int clause_end = esac_idx;
+        while (j < esac_idx) {
+            if (strcmp(words[j], ";") == 0 && j + 1 < esac_idx && strcmp(words[j + 1], ";") == 0) {
+                clause_end = j;
+                break;
+            }
+            j++;
+        }
+        if (!found_match && case_pattern_matches(words[i], word)) {
+            found_match = 1;
+            matched_status = exec_range(words, body_start, clause_end, expand_arena);
+        }
+        i = (clause_end < esac_idx) ? clause_end + 2 : esac_idx;
+    }
+    if (esac_idx + 1 < end) {
+        return exec_range(words, esac_idx + 1, end, expand_arena);
+    }
+    return matched_status;
 }
 
 static int exec_simple(char **words, int start, int end, Arena *expand_arena) {
@@ -277,6 +362,9 @@ static int exec_range(char **words, int start, int end, Arena *expand_arena) {
     if (strcmp(words[start], "if") == 0) {
         return exec_if_chain(words, start, end, expand_arena);
     }
+    if (strcmp(words[start], "case") == 0) {
+        return exec_case(words, start, end, expand_arena);
+    }
 
     int brace_idx = func_def_brace_index(words, start, end);
     if (brace_idx >= 0) {
@@ -327,6 +415,7 @@ static int is_balanced(Vec *words) {
     int n = vec_len(words);
     int if_depth = 0;
     int brace_depth = 0;
+    int case_depth = 0;
     char *last_real_word = NULL;
     for (int i = 0; i < n; i++) {
         char *w = (char *)vec_get(words, i);
@@ -334,6 +423,8 @@ static int is_balanced(Vec *words) {
         else if (strcmp(w, "fi") == 0) if_depth--;
         else if (strcmp(w, "{") == 0) brace_depth++;
         else if (strcmp(w, "}") == 0) brace_depth--;
+        else if (strcmp(w, "case") == 0) case_depth++;
+        else if (strcmp(w, "esac") == 0) case_depth--;
         if (strcmp(w, ";") != 0) last_real_word = w;
     }
     if (last_real_word) {
@@ -342,7 +433,7 @@ static int is_balanced(Vec *words) {
             return 0;
         }
     }
-    return if_depth <= 0 && brace_depth <= 0;
+    return if_depth <= 0 && brace_depth <= 0 && case_depth <= 0;
 }
 
 #define ACCUM_SIZE 65536

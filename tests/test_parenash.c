@@ -177,6 +177,25 @@ int main(void) {
           "the REPL execute the bare 'NAME()' header as a bogus command one statement too early) "
           "now defines and runs correctly");
 
+    /* --- real case/esac pattern matching (2026-09-08, Phase 3e) --- */
+    CHECK(strcmp(run_script("VAL=yes\\ncase \\$VAL in\\nyes) echo matched-yes ;;\\nno) echo matched-no ;;\\nesac\\n"),
+                 "matched-yes\n") == 0,
+          "a real case/esac runs the clause matching a real, exact literal pattern");
+    CHECK(strcmp(run_script("VAL=maybe\\ncase \\$VAL in\\nyes) echo matched-yes ;;\\nno) echo matched-no ;;\\nesac\\n"), "") == 0,
+          "a real case/esac with NO matching clause and no '*' fallback produces no output at all");
+    CHECK(strcmp(run_script("VAL=YES\\ncase \\$VAL in\\n[Yy][Ee][Ss]) echo really-yes ;;\\n*) echo fallback ;;\\nesac\\n"),
+                 "really-yes\n") == 0,
+          "a real GLOB pattern (the exact real shape OpenRC's own functions.sh uses throughout, "
+          "e.g. '[Yy][Ee][Ss]') matches correctly via real fnmatch(3), not a hand-rolled matcher");
+    CHECK(strcmp(run_script("VAL=on\\ncase \\$VAL in\\nyes|true|on) echo enabled ;;\\nno|false|off) echo disabled ;;\\nesac\\n"),
+                 "enabled\n") == 0,
+          "a real pipe-alternated pattern ('yes|true|on') matches on any one of its alternatives");
+    CHECK(strcmp(run_script("VAL=xyz\\ncase \\$VAL in\\nyes) echo matched-yes ;;\\n*) echo fallback-star ;;\\nesac\\n"),
+                 "fallback-star\n") == 0,
+          "a real '*' wildcard clause correctly catches anything no earlier clause matched");
+    CHECK(strcmp(run_script("case a in\\na) echo a-matched ;;\\nesac\\necho after-esac\\n"), "a-matched\nafter-esac\n") == 0,
+          "a real command after a real case/esac's own 'esac' still runs");
+
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
 }

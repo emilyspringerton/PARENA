@@ -248,6 +248,35 @@ style, and correctly ignores real comments — but running OpenRC's own real `fu
 end-to-end still needs arithmetic expansion, `case`/`esac`, `local`, and `eval`, each a real,
 separate, later phase, named directly rather than claimed done.
 
+## Phase 3e shipped same day (founder: "dooitttt") — real `case`/`esac` pattern matching
+
+Real `case WORD in PAT1) CMDS1 ;; PAT2) CMDS2 ;; esac`, matching real POSIX shell glob syntax via
+the real, already-correct `fnmatch(3)` (no hand-rolled glob engine) — needed no new tokenizer
+support at all: a case clause's own `PATTERN)` shape is already one real word (no space before
+the `)` in real syntax), and a real `;;` terminator already tokenizes as two literal `;` tokens
+back to back, detected directly. Real pipe-alternation (`yes|true|on)`) splits on `|` and matches
+if any alternative does. Runs only the FIRST matching clause's own commands through the exact
+same `exec_range` every other construct uses; the REPL's own `is_balanced` heuristic extended to
+also track net `case`/`esac` depth, so a real multi-line `case` block is correctly recognized as
+incomplete until its own `esac` arrives, the same real treatment `if`/`fi` and `{`/`}` already
+get. Real, honest v0 boundary: the `case WORD` itself must be exactly one token (no expansion-
+that-produces-multiple-words support).
+
+Live-verified against 6 real scenarios (exact literal match, no-match-no-`*` producing no output,
+a REAL glob pattern in the exact `[Yy][Ee][Ss]`-shaped style `functions.sh` uses throughout,
+pipe-alternation, `*` wildcard fallback, and code after `esac` still running) before writing test
+code. 6 new real end-to-end assertions — all pass, alongside the original 40. `make test`:
+347/347, zero regressions.
+
+**Real, honest further finding, checked live rather than assumed**: `case`/`esac` alone does NOT
+make `functions.sh`'s own real `yesno()` function work — read its actual source directly and
+found it ALSO needs real `&&`/`||` (short-circuit command chaining), real POSITIONAL PARAMETERS
+(`$1`, referenced repeatedly), a real `return` builtin (distinct from `exit` — this shell's own
+`exit` kills the WHOLE process, not just the current function call, a real, meaningful gap for
+any function wanting to return early), plus the already-named `local`/`eval`. `case`/`esac` was a
+real, necessary, independently-useful piece — genuinely used throughout `functions.sh` — but was
+never going to be sufficient alone, named honestly rather than overclaimed.
+
 ## Real phased plan
 
 - **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
@@ -272,11 +301,16 @@ separate, later phase, named directly rather than claimed done.
 - **Phase 3d (v0 done)**: real `source`/`.`, real `#` comments, real brace-on-its-own-line
   function definitions (`name()\n{...}`). Attempted the real target this was for — OpenRC's own
   `/lib/rc/sh/functions.sh` — and found, by reading it directly, it needs `$((arithmetic))`,
-  `case`/`esac`, `local`, and `eval`. **Not yet done**: exactly those four, plus nested `if`,
-  `:=`/`:+`/`#`/`%` parameter-expansion operators, and nested `${...}` inside a default value —
-  real, concrete, now-precisely-named next slices (not guessed at) before this shell could run a
-  real OpenRC script's own `functions.sh` completely end to end. `case`/`esac` and arithmetic are
-  likely the highest-value next two, both real and independently useful beyond just this one file.
+  `case`/`esac`, `local`, and `eval`.
+- **Phase 3e (v0 done: `case`/`esac` shipped)**: real POSIX glob pattern matching via
+  `fnmatch(3)`, pipe-alternation, first-match-wins semantics. Attempted the real `yesno()`
+  function in `functions.sh` next and found it ALSO needs real `&&`/`||`, positional parameters
+  (`$1`), a real `return` builtin (distinct from `exit`), plus the already-named `local`/`eval`.
+  **Not yet done**: exactly those, plus `$((arithmetic))`, nested `if`, `:=`/`:+`/`#`/`%`
+  parameter-expansion operators, and nested `${...}` inside a default value — real, concrete,
+  now-precisely-named next slices (not guessed at) before this shell could run `functions.sh`
+  completely end to end. `&&`/`||` and positional parameters are likely the next highest-value
+  pair — both real, independently useful, and check every real init script would need.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).
