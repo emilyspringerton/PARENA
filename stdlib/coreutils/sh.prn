@@ -79,14 +79,51 @@
   #target
   {:c (inline-c "coreutils_getenv_impl(name)")})
 
-;; expand-word — real, minimal `$VAR` expansion: a word that is ENTIRELY `$` followed by a
-;; variable name (e.g. `$HOME`, `$PATH`) expands to that variable's real environment value. Real,
-;; honest v0 boundary, named directly: no expansion of a `$VAR` occurring MID-word (`foo$BAR`
-;; stays completely literal), no `${VAR}` brace form, no `$1`/`$?`/other special parameters — a
-;; real, separate, later extension of this same function, not silently promised.
+;; find-dash-index — real, tail-recursive scan for the first '-' character in `s`, starting at
+;; `i`. Returns -1 when none is found before `n`. POSIX shell variable names are alnum+underscore
+;; only (never containing '-'), so the first real '-' in a `${...}` body is always the start of a
+;; real default-value operator, never part of a variable name — a real, safe assumption, not a
+;; guess.
+(defn find-dash-index [(s : String @ Region) (i : I32) (n : I32)] : I32
+  (if (>= i n)
+    -1
+    (if (= (string/char-at s i) 45) ;; '-'
+      i
+      (find-dash-index s (+ i 1) n))))
+
+;; expand-param — real, minimal `${VAR:-default}` / `${VAR-default}` parameter expansion (the
+;; body between `${` and `}`, already stripped by `expand-word` below). Real, honest v0
+;; boundary, named directly: this shell's own `raw-getenv` already can't distinguish "unset" from
+;; "set but empty" (its own header comment), so — unlike real POSIX shells — the plain `-` form
+;; is treated IDENTICALLY to `:-` here (default used whenever the value is empty OR unset, not
+;; only when genuinely unset) rather than silently claiming a distinction this shell can't
+;; actually make. No other operators (`:=`, `:+`, `#`, `%`, etc.), and no NESTED `${...}` inside
+;; the default value (`${wipe_tmp:=${WIPE_TMP:-no}}`-shaped, real and found in this session's own
+;; audited `bootmisc` script) — real, separate, later extensions of this same function.
+(defn expand-param [(inner : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [n (string/length inner)
+        dash-idx (find-dash-index inner 0 n)]
+    (if (< dash-idx 0)
+      (raw-getenv inner) ;; plain `${VAR}`, no default operator at all
+      (let [use-colon (and (> dash-idx 0) (= (string/char-at inner (- dash-idx 1)) 58)) ;; ':'
+            name-end (if use-colon (- dash-idx 1) dash-idx)
+            varname (string/substring inner 0 name-end dest)
+            default-val (string/substring inner (+ dash-idx 1) n dest)
+            val (raw-getenv varname)]
+        (if (= (string/length val) 0) default-val val)))))
+
+;; expand-word — real, minimal expansion of a word that is ENTIRELY a `$VAR` or `${VAR[:-default]}`
+;; reference. Real, honest v0 boundary, named directly: no expansion of a `$VAR` occurring
+;; MID-word (`foo$BAR` stays completely literal), no `$1`/`$?`/other special parameters — a real,
+;; separate, later extension of this same function, not silently promised.
 (defn expand-word [(word : String @ Region) (dest : Arena @ Region)] : String @ Region
-  (if (= (string/length word) 0)
-    word
-    (if (= (string/char-at word 0) 36) ;; '$'
-      (raw-getenv (string/substring word 1 (string/length word) dest))
-      word)))
+  (let [n (string/length word)]
+    (if (= n 0)
+      word
+      (if (and (>= n 3) (= (string/char-at word 0) 36) (= (string/char-at word 1) 123)) ;; "${"
+        (if (= (string/char-at word (- n 1)) 125) ;; '}'
+          (expand-param (string/substring word 2 (- n 1) dest) dest)
+          word)
+        (if (= (string/char-at word 0) 36) ;; '$'
+          (raw-getenv (string/substring word 1 n dest))
+          word)))))

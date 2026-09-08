@@ -134,6 +134,32 @@ recursing into an empty range. 5 new real end-to-end assertions in `tests/test_p
 multi-command then-branch) — including one that names the exact bug just fixed and would have
 caught it — all pass, alongside the original 9. `make test`: 347/347, zero regressions.
 
+## Phase 3b continued, same day (founder: "keep working on Emily os busybox and all of that") — real `elif` + `${VAR:-default}`
+
+**`elif`**: `exec_if_chain(words, start, end)` treats a real `elif` identically to a fresh `if`
+(both find their own `then`, then the nearest of `elif`/`else`/`fi` as the branch boundary) —
+when the boundary is another `elif`, it recurses right back into `exec_if_chain` starting at that
+word, correctly sharing the SAME outer `fi` (there is exactly one, closing the whole chain) rather
+than searching for a second one. Live-verified: a taken `elif` runs its own branch, a later
+also-true `elif` never runs once an earlier condition already won, a real multi-`elif` chain
+resolves to the first true condition among them, falling through to `else` when all are false, and
+code after the chain's own `fi` still runs. Real, honest v0 boundary unchanged: still no nesting.
+
+**`${VAR:-default}`/`${VAR-default}`**: real PARENA logic in `stdlib/coreutils/sh.prn` —
+`find-dash-index` (a real, tail-recursive scan for the first `-`, safe because POSIX variable
+names never contain one) plus `expand-param` (splits on that dash into `varname`/`default-val`,
+looks up the real environment value, substitutes the default when empty). Real, honest,
+DELIBERATE simplification named directly: since `raw-getenv` already can't distinguish "unset"
+from "set but empty" (its own pre-existing v0 boundary), the plain `-` form is treated IDENTICALLY
+to `:-` here rather than silently claiming a POSIX distinction this shell can't actually make.
+`expand-word` also grew a plain `${VAR}` (no default operator) passthrough case. Real, honest,
+STILL not attempted: no `:=`/`:+`/`#`/`%` operators, and no NESTED `${...}` inside a default value
+(the real, live shape `${wipe_tmp:=${WIPE_TMP:-no}}` this session's own audited `bootmisc` script
+actually uses) — a real, separate, later extension.
+
+9 new real end-to-end assertions (5 for `elif`, 4 for parameter expansion) — all pass, alongside
+the original 14. `make test`: 347/347, zero regressions.
+
 ## Real phased plan
 
 - **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
@@ -148,12 +174,14 @@ caught it — all pass, alongside the original 9. `make test`: 347/347, zero reg
   direct, already-proven precedent for wrapping a privileged syscall-adjacent operation in PARENA.
 - **Phase 3 (v0 done)**: a real, minimal `sh` — sequential `;`-separated commands, quote-aware
   tokenizing, whole-word `$VAR` expansion, `cd`/`export`/`exit` builtins.
-- **Phase 3b (v0 done, single-level `if`/`then`/`else`/`fi` shipped this pass)**: real
-  conditionals — `test`/`[` already work via the plain `execvp` fallback, confirmed live. **Not
-  yet done**: `elif`, nested `if`, real shell FUNCTIONS (`name() { ... }`), and
-  `${var:-default}`-style parameter expansion — real, concrete, named next slices, sized against
-  this session's own real audit of `/etc/init.d/hostname`/`bootmisc` rather than guessed at, and
-  still the real gate before this shell could run actual OpenRC scripts.
+- **Phase 3b (v0 done: `if`/`then`/`else`/`fi`, `elif`, and `${VAR:-default}` all shipped)**:
+  real conditionals — `test`/`[` already work via the plain `execvp` fallback, confirmed live.
+  **Not yet done**: nested `if`, real shell FUNCTIONS (`name() { ... }`), `:=`/`:+`/`#`/`%`
+  parameter-expansion operators, and nested `${...}` inside a default value — real, concrete,
+  named next slices, sized against this session's own real audit of `/etc/init.d/hostname`/
+  `bootmisc` rather than guessed at. Real shell FUNCTIONS are the single largest remaining piece
+  — both audited real scripts define at least one (`depend() { ... }`) — and still the real gate
+  before this shell could run actual OpenRC scripts.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).

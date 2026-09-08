@@ -4434,3 +4434,23 @@ taking the then-branch regardless of the condition's real result — confirmed l
 meaningful after it now returns the already-computed status directly. 5 new real end-to-end
 assertions (including one naming the exact bug just fixed) — all pass, alongside the original 9.
 `make test`: 347/347, zero regressions.
+
+## coreutils/sh — real `elif` + `${VAR:-default}` (2026-09-08, same day)
+
+Founder: "keep working on Emily os busybox and all of that." `elif`: `exec_if_chain` in
+`tools/parenash_host.c` treats a real `elif` identically to a fresh `if` (both find their own
+`then`, then the nearest of `elif`/`else`/`fi`), recursing into itself when it finds another
+`elif` — correctly shares the SAME outer `fi` (only one exists, closing the whole chain) rather
+than searching for a second. Live-verified: taken/skipped elif branches, multi-elif chains
+resolving to the first true condition, else-fallthrough, and code after the chain's own `fi`.
+
+`${VAR:-default}`/`${VAR-default}`: real PARENA logic in `stdlib/coreutils/sh.prn` —
+`find-dash-index` (real, tail-recursive scan for the first `-`, safe since POSIX variable names
+never contain one) + `expand-param`. Real, honest, deliberate simplification: since `raw-getenv`
+already can't distinguish "unset" from "set but empty," the plain `-` form is treated identically
+to `:-` rather than silently claiming a POSIX distinction this shell can't make. Real, still not
+attempted: `:=`/`:+`/`#`/`%` operators, nested `${...}` inside a default value (the real, live
+`${wipe_tmp:=${WIPE_TMP:-no}}` shape this session's own audited `bootmisc` script actually uses).
+
+9 new real end-to-end assertions (5 elif, 4 parameter expansion) — all pass alongside the
+original 14. `make test`: 347/347, zero regressions.

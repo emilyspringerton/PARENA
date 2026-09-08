@@ -95,42 +95,62 @@ static int exec_simple(char **words, int start, int end, Arena *expand_arena) {
     return 1;
 }
 
+static int exec_range(char **words, int start, int end, Arena *expand_arena);
+
+/* exec_if_chain -- real, recursive-descent handling of `if`/`elif` (words[start] is one of the
+ * two, both treated identically here since real POSIX `elif` is exactly "the same shape as `if`,
+ * chained"). Finds the nearest boundary keyword among `elif`/`else`/`fi` (whichever comes first)
+ * to know where the current branch ends: a real `elif` boundary recurses right back into this
+ * same function treating the `elif` word as a fresh chain-start (it shares the SAME final `fi`
+ * as the outer `if`, so no separate fi-search is needed there); `else`/`fi` are the real, simple
+ * terminal cases already established. Real, honest v0 boundary: no nesting (the first
+ * `elif`/`else`/`fi` found closes the NEAREST enclosing `if`/`elif`, not a real one this v0
+ * tracks depth for). */
+static int exec_if_chain(char **words, int start, int end, Arena *expand_arena) {
+    int then_idx = find_keyword(words, start + 1, end, "then");
+    if (then_idx < 0) {
+        fprintf(stderr, "sh: syntax error: expected 'then'\n");
+        return 2;
+    }
+    int fi_idx = find_keyword(words, then_idx + 1, end, "fi");
+    if (fi_idx < 0) {
+        fprintf(stderr, "sh: syntax error: expected 'fi'\n");
+        return 2;
+    }
+    int elif_idx = find_keyword(words, then_idx + 1, fi_idx, "elif");
+    int else_idx = find_keyword(words, then_idx + 1, fi_idx, "else");
+    int branch_end = fi_idx;
+    int is_elif = 0;
+    if (else_idx >= 0 && else_idx < branch_end) branch_end = else_idx;
+    if (elif_idx >= 0 && elif_idx < branch_end) { branch_end = elif_idx; is_elif = 1; }
+
+    int cond_status = exec_range(words, start + 1, then_idx, expand_arena);
+    if (cond_status == 0) {
+        int status = exec_range(words, then_idx + 1, branch_end, expand_arena);
+        if (fi_idx + 1 < end) return exec_range(words, fi_idx + 1, end, expand_arena);
+        return status;
+    }
+    if (is_elif) {
+        /* The recursive call shares this same outer `fi` and handles "anything after it" too --
+         * nothing further to do here. */
+        return exec_if_chain(words, branch_end, end, expand_arena);
+    }
+    int status = (else_idx >= 0) ? exec_range(words, else_idx + 1, fi_idx, expand_arena) : 0;
+    if (fi_idx + 1 < end) return exec_range(words, fi_idx + 1, end, expand_arena);
+    return status;
+}
+
 /* exec_range -- real, recursive-descent walk over words[start..end): recognizes a real
- * `if COND; then BRANCH1; [else BRANCH2;] fi` structure (COND/BRANCH1/BRANCH2 may themselves
- * contain further `;`-separated commands, handled by recursing back into exec_range), otherwise
- * splits off and runs one simple command up to the next top-level `;` and continues with the
- * remainder. Returns the real exit status of the LAST thing actually run (0 for an empty range).
- */
+ * `if COND; then BRANCH1; [elif COND2; then BRANCH2;]... [else BRANCHN;] fi` structure
+ * (COND/BRANCHes may themselves contain further `;`-separated commands, handled by recursing
+ * back into exec_range), otherwise splits off and runs one simple command up to the next
+ * top-level `;` and continues with the remainder. Returns the real exit status of the LAST thing
+ * actually run (0 for an empty range). */
 static int exec_range(char **words, int start, int end, Arena *expand_arena) {
     if (start >= end) return 0;
 
     if (strcmp(words[start], "if") == 0) {
-        int then_idx = find_keyword(words, start + 1, end, "then");
-        if (then_idx < 0) {
-            fprintf(stderr, "sh: syntax error: expected 'then'\n");
-            return 2;
-        }
-        int fi_idx = find_keyword(words, then_idx + 1, end, "fi");
-        if (fi_idx < 0) {
-            fprintf(stderr, "sh: syntax error: expected 'fi'\n");
-            return 2;
-        }
-        int else_idx = find_keyword(words, then_idx + 1, fi_idx, "else");
-        int branch_end = (else_idx >= 0) ? else_idx : fi_idx;
-
-        int cond_status = exec_range(words, start + 1, then_idx, expand_arena);
-        int status;
-        if (cond_status == 0) {
-            status = exec_range(words, then_idx + 1, branch_end, expand_arena);
-        } else if (else_idx >= 0) {
-            status = exec_range(words, else_idx + 1, fi_idx, expand_arena);
-        } else {
-            status = 0;
-        }
-        if (fi_idx + 1 < end) {
-            return exec_range(words, fi_idx + 1, end, expand_arena);
-        }
-        return status;
+        return exec_if_chain(words, start, end, expand_arena);
     }
 
     int semi = find_keyword(words, start, end, ";");

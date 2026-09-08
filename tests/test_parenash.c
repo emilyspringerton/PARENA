@@ -84,6 +84,28 @@ int main(void) {
     CHECK(strcmp(run_script("if true; then echo a; echo b; fi\\n"), "a\nb\n") == 0,
           "a real then-branch containing MULTIPLE ';'-separated commands runs all of them");
 
+    /* --- real elif support (2026-09-08, Phase 3b continued) --- */
+    CHECK(strcmp(run_script("if false; then echo a; elif true; then echo b; else echo c; fi\\n"), "b\n") == 0,
+          "a real 'elif' clause runs when the first condition is false and the elif condition is true");
+    CHECK(strcmp(run_script("if true; then echo a; elif true; then echo b; else echo c; fi\\n"), "a\n") == 0,
+          "the FIRST true condition wins -- a later (also-true) elif never runs");
+    CHECK(strcmp(run_script("if false; then echo a; elif false; then echo b; else echo c; fi\\n"), "c\n") == 0,
+          "falls through to a real 'else' when every if/elif condition is false");
+    CHECK(strcmp(run_script("if false; then echo a; elif false; then echo b; elif true; then echo c; else echo d; fi\\n"), "c\n") == 0,
+          "a real, CHAINED multiple-elif structure resolves to the first true condition among them");
+    CHECK(strcmp(run_script("if false; then echo a; elif true; then echo b; fi; echo done\\n"), "b\ndone\n") == 0,
+          "a real command after a real elif-chain's own 'fi' still runs");
+
+    /* --- real ${VAR:-default}/${VAR-default} parameter expansion (2026-09-08) --- */
+    CHECK(strcmp(run_script("echo \\${NOPE:-fallback}\\n"), "fallback\n") == 0,
+          "a real '${VAR:-default}' expands to the default when the variable is unset");
+    CHECK(strcmp(run_script("export SET=real\\necho \\${SET:-fallback}\\n"), "real\n") == 0,
+          "a real '${VAR:-default}' expands to the REAL value when the variable IS set");
+    CHECK(strcmp(run_script("echo \\${NOPE-fallback2}\\n"), "fallback2\n") == 0,
+          "the plain '${VAR-default}' form (no colon) also expands correctly");
+    CHECK(strcmp(run_script("export PLAIN=hi\\necho \\${PLAIN}\\n"), "hi\n") == 0,
+          "a plain '${VAR}' brace form with no default operator also expands correctly");
+
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
 }
