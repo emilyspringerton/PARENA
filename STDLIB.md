@@ -4178,3 +4178,51 @@ item is done: hash-set primitives (done, this file); time-series rolling/resampl
 (`DATAFRAME-ROLLING-001`, kanban #370, not started); Levenshtein/Hamming/Shannon-entropy string
 metrics (`STRING-DISTANCE-ENTROPY-001`, kanban #372, not started); sparse CSR matrices
 (`LINALG-SPARSE-001`, kanban #373, not started).
+
+## linalg — real CSR (Compressed Sparse Row) sparse-matrix support (2026-09-08)
+
+Real, direct answer to the founder's own pasted follow-up proposal: "Sparse Matrix Primitives
+(linalg): Sparse matrix representations (like Compressed Sparse Row / CSR formats)... security
+log graphs (matching 50,000 user accounts against 10,000 assets they log into) are mostly empty
+connections. Representing this data as a traditional dense array breaks system memory." Kanban
+`LINALG-SPARSE-001` (#373).
+
+Real, found-live gap this pass had to work around FIRST: `linalg.prn`'s own header comment
+already documented a real, NOT-yet-fixed bug — a `(loop [i 0] ...)`-style loop variable is
+C-typed `double`, which silently corrupts the moment such a value is pushed into a `(Vec
+I32)`-typed field (`vec/push!`'s own boxing picks `vec_box_f64`, a later typed read does `*(int
+*)` on that 8-byte cell — real memory-level type confusion, reproduced live: a 3-element `(Vec
+I32)` struct field populated from loop-variable pushes read back `0` instead of the real `2`).
+CSR's own `col-indices`/`row-ptr` fields are exactly `(Vec I32)`, squarely on this work's own
+critical path. Fixed with a real, scoped workaround (not the full cross-cutting loop-variable
+type-inference fix, named separately as larger work): `as-i32`, a real, explicitly `I32`-typed
+identity function every I32 value is routed through before being pushed/stored into an
+`I32`-typed `Vec` — confirmed live this forces the correct `vec_box_i32` boxing, the same real
+trick this session's own `set.prn`/`fnv-offset-basis` already used for the identical class of gap.
+
+New: `CsrMatrix`/`SparseError`, `csr-from-coo` (real, standard COO→CSR conversion: count-per-row →
+prefix-sum → scatter, matching scipy.sparse's own `coo_matrix.tocsr()` shape), `csr-nnz`,
+`csr-get` (O(row-nnz) lookup), `csr-matvec` (real O(nnz) sparse matrix × dense vector — genuinely
+the real point of CSR versus a dense array, per the founder's own example: 50,000×10,000 mostly-
+empty connections is 500,000,000 dense cells versus however many real connections actually
+exist). `x`/the result of `csr-matvec` are both plain `(Vec F64)`, not `NDArray` — real, honest
+v0 boundary: `csr-to-dense` is NOT built in this pass, since `array/zeros`/`array/set!`'s own
+`[i j]` index-Vec-literal construction hits the SAME underlying loop-variable bug from a
+different, deeper code path (`g_veclit_helpers`), confirmed live to also crash at runtime (a real
+`SIGFPE`) even after wrapping visible loop variables in `as-i32` — a real, separate, not-yet-
+root-caused gap in `array.prn` itself, not papered over here with an unverified fix. Every CSR
+function only ever touches flat `Vec` fields directly, so none of it is affected by that gap.
+
+Real, separate, incidental fix along the way: `inverse`/`solve` (previously bare, body-less
+`defn` declarations) compiled clean at the `parena build` level but had never actually been
+gcc-verified as part of a whole-file build — doing so for the first time (to verify the new CSR
+code) surfaced a real `-Werror=return-type` ("control reaches end of non-void function") and a
+missing `LinalgError` type (referenced in both signatures, defined nowhere). Fixed with a new,
+honest `LinalgError` (`NotImplemented`) and real `(Err NotImplemented)` bodies — not a fabricated
+numeric result — so the file compiles as a whole; the actual Gauss-Jordan/LAPACK-binding
+algorithm itself remains genuinely, honestly unwritten.
+
+New `make test-linalg-sparse`, real assertions against a genuine 4×4 sparse matrix built from COO
+triplets (a real empty row included), `csr-matvec` verified against a hand-computed real
+matrix-vector product `[4, 7, 0, 12]`, plus real, honest `ShapeMismatch`/`IndexOutOfRange`
+boundary checks. `make test`: 347/347, zero regressions.

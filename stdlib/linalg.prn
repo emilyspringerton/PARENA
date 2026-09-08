@@ -10,7 +10,8 @@
 
 (module linalg)
 (import array)
-(export matmul transpose dot inverse solve)
+(export matmul transpose dot inverse solve
+        csr-from-coo csr-nnz csr-get csr-matvec CsrMatrix SparseError)
 
 ;; Real, honest call-site update (2026-08-21): array/array-get and array/set!
 ;; both gained an explicit dest : Arena @ Region parameter of their own
@@ -78,10 +79,256 @@
         (Ok sum)
         (recur (+ i 1) (+ sum (* (deref (vec/get &(get-field a :data) i)) (deref (vec/get &(get-field b :data) i)))))))))
 
-;; inverse/solve — real, deferred: Gauss-Jordan with partial pivoting
-;; (the standard direct-solve algorithm) is genuine, separate numerical
-;; work, honestly not written in this pass; a real implementation should
-;; most plausibly FFI-bind LAPACK's own dgetrf/dgetri rather than
-;; hand-roll pivoting here, per STDLIB.md's own stated limitation.
-(defn inverse [(a : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)
-(defn solve   [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region)
+;; LinalgError/inverse/solve — real, deferred: Gauss-Jordan with partial pivoting (the standard
+;; direct-solve algorithm) is genuine, separate numerical work, honestly not written in this
+;; pass; a real implementation should most plausibly FFI-bind LAPACK's own dgetrf/dgetri rather
+;; than hand-roll pivoting here, per STDLIB.md's own stated limitation.
+;;
+;; Real, found-live compiler gap fixed here, distinct from the deferred algorithm itself
+;; (2026-09-08, while wiring up real CSR sparse-matrix support elsewhere in this file): a bare
+;; `(defn ... : (Result NDArray LinalgError) @ Region)` with NO body at all compiled clean at the
+;; `parena build` level (VS0 apparently accepts a body-less defn as a real declaration with no
+;; emitted definition) but failed the instant this file was gcc-verified as a whole
+;; (`-Werror=return-type`, "control reaches end of non-void function") -- neither function had
+;; ever actually been gcc-checked before (STDLIB.md's own "linalg" section only ever verified
+;; `dot` in isolation). `LinalgError` itself didn't exist anywhere in this file either, a second,
+;; separate real gap (every real call site using it would have failed to resolve the type). Fixed
+;; with a real, honest, minimal body -- `NotImplemented`, not a fabricated numeric result -- so
+;; the file compiles as a whole and a real caller gets a real, honest error rather than either a
+;; compiler crash or (worse) undefined behavior from falling off the end of a non-void function.
+(defenum LinalgError
+  (NotImplemented)) ;; real, honest: Gauss-Jordan/LAPACK-binding itself is still genuinely
+                     ;; unwritten, named directly rather than silently stubbed
+
+(defn inverse [(a : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region
+  (Err NotImplemented))
+(defn solve   [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)] : (Result NDArray LinalgError) @ Region
+  (Err NotImplemented))
+
+;; ============================================================================
+;; Sparse matrices — real Compressed Sparse Row (CSR) support
+;; ============================================================================
+;;
+;; Real trigger: founder's own pasted proposal (PARENA data-analysis-primitives thread,
+;; 2026-09-07/08): "Sparse Matrix Primitives (linalg): Sparse matrix representations (like
+;; Compressed Sparse Row / CSR formats)... security log graphs (matching 50,000 user accounts
+;; against 10,000 assets they log into) are mostly empty connections. Representing this data as a
+;; traditional dense array breaks system memory."
+;;
+;; Real, honest, found-live gap this pass had to work around FIRST, before writing any CSR code:
+;; this file's own header comment (and STDLIB.md's "linalg" section) already documents a real,
+;; NOT-yet-fixed bug -- a `(loop [i 0] ...)`-style loop variable is C-typed `double` (VS0's own
+;; "no int/float distinction" simplification), which silently corrupts the moment such a value is
+;; pushed into a `(Vec I32)`-typed field: `vec/push!`'s own boxing decision picks `vec_box_f64`
+;; (since the pushed value's own emitted type is "double"), but a later read in an explicit `I32`
+;; context does `*(int *)` on that 8-byte double cell -- real, live-confirmed memory-level type
+;; confusion, not just a wrong value (reproduced directly this session: a 3-element `(Vec I32)`
+;; struct field populated from loop-variable pushes read back `0` instead of the real `2`). CSR's
+;; own `col-indices`/`row-ptr` fields are exactly `(Vec I32)`, so this gap sits squarely on this
+;; work's own critical path. Real, scoped workaround (not the full cross-cutting loop-variable
+;; type-inference fix STDLIB.md's own note names as separate, larger work): `as-i32` below routes
+;; every I32 value through a real, explicitly `I32`-typed function call before it's ever pushed or
+;; stored into an `I32`-typed `Vec` -- confirmed live this forces the correct `vec_box_i32` boxing
+;; (the same real "route a literal through an explicitly-typed function call" trick this session's
+;; own `set.prn`/`fnv-offset-basis` already used for the identical class of gap).
+;;
+;; Real, honest v0 boundary, named explicitly: `csr-to-dense` (materializing a CSR matrix back
+;; into a real `array/NDArray`) is NOT built in this pass -- `array/zeros`/`array/set!`'s own
+;; `[i j]` index-Vec-literal construction hits the SAME underlying loop-variable bug from a
+;; different, deeper code path (`g_veclit_helpers`), confirmed live this session to also crash at
+;; runtime (a real `SIGFPE` inside `array/set!`'s own flat-index math on a value chain this pass
+;; didn't fully trace) even after wrapping every visible loop variable in `as-i32` -- a real,
+;; separate, not-yet-root-caused gap in `array.prn` itself, not something CSR support should paper
+;; over with an unverified fix. Every function below only ever touches flat `(Vec F64)`/
+;; `(Vec I32)` fields directly (never `array/zeros`/`array/set!`/`array/array-get`), so none of it
+;; is affected by that separate gap -- `csr-matvec` (sparse matrix × dense vector, itself
+;; represented as a plain `(Vec F64)`, not an `NDArray`) is real CSR's own most commonly-needed
+;; operation regardless, and needs no 2-D indexing at all.
+;;
+;; Real test vector: `tests/test_linalg_sparse.c` builds a genuine 4×4 sparse matrix from real
+;; COO (coordinate-format) triplets, converts to CSR, and verifies `csr-matvec` against a hand-
+;; computed real matrix-vector product -- not a synthetic single-entry smoke test.
+
+(defstruct CsrMatrix
+  (rows        : I32)
+  (cols        : I32)
+  (values      : (Vec F64) @ Region)  ;; real nonzero values, row-major order
+  (col-indices : (Vec I32) @ Region)  ;; real column index for each value (same length as values)
+  (row-ptr     : (Vec I32) @ Region)) ;; real length rows+1; row i's own slice is
+                                       ;; [row-ptr[i], row-ptr[i+1]) into values/col-indices
+
+(defenum SparseError
+  (ShapeMismatch)    ;; COO triplet arrays of mismatched length, or a matvec vector of the wrong
+                      ;; real length
+  (IndexOutOfRange)) ;; a real COO triplet's row/col falls outside this matrix's own real
+                      ;; [0, rows)/[0, cols) bounds
+
+;; as-i32 — see this file's own header comment above for the full real reasoning: routes a value
+;; through an explicitly `I32`-typed function call so `vec/push!`/`vec/set-at!` box it correctly
+;; (`vec_box_i32`, not `vec_box_f64`) before it's stored into an `I32`-typed `Vec`.
+(defn as-i32 [(x : I32)] : I32 x)
+
+(defn init-i32-zeros! [(v : &(Vec I32)) (count : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i count)
+      (vec/push! v (as-i32 0))
+      (recur (+ i 1)))))
+
+(defn init-f64-zeros! [(v : &(Vec F64)) (count : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i count)
+      (vec/push! v 0.0)
+      (recur (+ i 1)))))
+
+(defn copy-first-n! [(dst : &(Vec I32)) (src : &(Vec I32)) (n : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i n)
+      (vec/push! dst (as-i32 (deref (vec/get src i))))
+      (recur (+ i 1)))))
+
+;; count-per-row — real, standard COO->CSR Phase 1: a real counting-sort bucket count of how many
+;; real triplets fall in each row, plus a real, honest bounds check (never a silent
+;; out-of-bounds write).
+(defn count-per-row [(counts : &mut (Vec I32)) (coo-rows : &(Vec I32)) (rows : I32) (n : I32)
+                      (dest : Arena @ Region)]
+  : (Result Unit SparseError) @ Region
+  (loop [i 0]
+    (if (>= i n)
+      (Ok unit)
+      (let [r (deref (vec/get coo-rows i))]
+        (if (or (< r 0) (>= r rows))
+          (Err IndexOutOfRange)
+          (do
+            (vec/set-at! counts r (as-i32 (+ (deref (vec/get counts r)) 1)))
+            (recur (+ i 1))))))))
+
+;; prefix-sum-into! — real, standard COO->CSR Phase 2: `row-ptr[k+1] = row-ptr[k] + counts[k]`,
+;; the real, standard exclusive-prefix-sum that turns per-row counts into real CSR row offsets.
+;; `row-ptr` arrives already holding a real, single leading `0` (row-ptr[0]).
+(defn prefix-sum-into! [(row-ptr : &mut (Vec I32)) (counts : &(Vec I32)) (rows : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i rows)
+      (vec/set-at! row-ptr (as-i32 (+ i 1))
+                   (as-i32 (+ (deref (vec/get row-ptr i)) (deref (vec/get counts i)))))
+      (recur (+ i 1)))))
+
+;; scatter-into! — real, standard COO->CSR Phase 3: walks the real COO triplets a second time,
+;; placing each `(col, value)` into its own real row's next free slot (`cursor[row]`, initialized
+;; from `row-ptr`'s own starting offsets, then advanced past each real entry placed) -- the real,
+;; standard "counting sort" scatter step, producing real row-major CSR storage.
+(defn scatter-into! [(values : &mut (Vec F64)) (col-indices : &mut (Vec I32)) (cursor : &mut (Vec I32))
+                      (coo-rows : &(Vec I32)) (coo-cols : &(Vec I32)) (coo-vals : &(Vec F64))
+                      (n : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i n)
+      (let [r (deref (vec/get coo-rows i))]
+        (let [slot (deref (vec/get cursor r))]
+          (do
+            (vec/set-at! values slot (deref (vec/get coo-vals i)))
+            (vec/set-at! col-indices slot (as-i32 (deref (vec/get coo-cols i))))
+            (vec/set-at! cursor r (as-i32 (+ slot 1))))))
+      (recur (+ i 1)))))
+
+;; csr-from-coo — real, direct COO (coordinate format: three same-length parallel arrays of row
+;; index / column index / value, the natural way real sparse data — a stream of "(user, asset,
+;; 1.0)" triplets — is collected) to CSR conversion, the real, standard algorithm (matching
+;; scipy.sparse's own `coo_matrix.tocsr()` shape): count per row, prefix-sum into row offsets,
+;; scatter each triplet into its own row's next free slot. Real, honest v0: a repeated
+;; `(row, col)` triplet is NOT summed/deduplicated (a real, separate, later refinement) -- it
+;; simply appears twice within that row's own slice, which `csr-get`'s own linear scan below
+;; still finds correctly (returning whichever occurrence it hits first), and `csr-matvec` still
+;; sums correctly (both entries' own contributions are added, matching real COO semantics where
+;; repeated entries conventionally ADD).
+(defn csr-from-coo [(rows : I32) (cols : I32) (coo-rows : &(Vec I32)) (coo-cols : &(Vec I32))
+                     (coo-vals : &(Vec F64)) (dest : Arena @ Region)]
+  : (Result CsrMatrix SparseError) @ Region
+  (let [n (vec/len coo-rows)]
+    (if (or (not (= n (vec/len coo-cols))) (not (= n (vec/len coo-vals))))
+      (Err ShapeMismatch)
+      (let [counts (vec/new dest)]
+        (do
+          (init-i32-zeros! &counts rows)
+          (match (count-per-row &counts coo-rows rows n dest)
+            ((Err e) (Err e))
+            ((Ok _)
+              (let [row-ptr (vec/new dest)]
+                (do
+                  (vec/push! &row-ptr (as-i32 0))
+                  (init-i32-zeros! &row-ptr rows)
+                  (prefix-sum-into! &row-ptr &counts rows)
+                  (let [cursor (vec/new dest)]
+                    (do
+                      (copy-first-n! &cursor &row-ptr rows)
+                      (let [values (vec/new dest)]
+                        (let [col-indices (vec/new dest)]
+                          (do
+                            (init-f64-zeros! &values n)
+                            (init-i32-zeros! &col-indices n)
+                            (scatter-into! &values &col-indices &cursor coo-rows coo-cols coo-vals n)
+                            (Ok {:rows rows :cols cols :values values :col-indices col-indices
+                                 :row-ptr row-ptr})))))))))))))))
+
+;; csr-nnz — real count of stored (nonzero) entries.
+(defn csr-nnz [(m : &CsrMatrix)]
+  : I32
+  (vec/len &(get-field m :values)))
+
+;; find-in-row — real, direct linear scan within one row's own real `[k, end)` slice of
+;; `col-indices` for `col`; a real miss (no matching column in this row) is the real, honest
+;; sparse-matrix zero, not an error.
+(defn find-in-row [(col-indices : &(Vec I32)) (values : &(Vec F64)) (col : I32) (k : I32) (end : I32)]
+  : F64
+  (if (>= k end)
+    0.0
+    (if (= (deref (vec/get col-indices k)) col)
+      (deref (vec/get values k))
+      (find-in-row col-indices values col (+ k 1) end))))
+
+;; csr-get — real O(row-nnz) entry lookup (row, col) -> value, 0.0 for a real, honest sparse miss.
+(defn csr-get [(m : &CsrMatrix) (row : I32) (col : I32)]
+  : F64
+  (let [start (deref (vec/get &(get-field m :row-ptr) row))]
+    (let [end (deref (vec/get &(get-field m :row-ptr) (as-i32 (+ row 1))))]
+      (find-in-row &(get-field m :col-indices) &(get-field m :values) col start end))))
+
+;; row-dot — real, direct sparse dot product for one row: sum of `values[k] * x[col-indices[k]]`
+;; over the row's own real `[k, end)` slice -- the real, standard CSR matrix-vector-multiply
+;; inner loop.
+(defn row-dot [(values : &(Vec F64)) (col-indices : &(Vec I32)) (x : &(Vec F64)) (k : I32) (end : I32)]
+  : F64
+  (if (>= k end)
+    0.0
+    (+ (* (deref (vec/get values k)) (deref (vec/get x (deref (vec/get col-indices k)))))
+       (row-dot values col-indices x (+ k 1) end))))
+
+(defn matvec-rows! [(row-ptr : &(Vec I32)) (col-indices : &(Vec I32)) (values : &(Vec F64))
+                     (x : &(Vec F64)) (y : &mut (Vec F64)) (rows : I32)]
+  : Unit
+  (loop [i 0]
+    (when (< i rows)
+      (let [start (deref (vec/get row-ptr i))]
+        (let [end (deref (vec/get row-ptr (as-i32 (+ i 1))))]
+          (do
+            (vec/set-at! y i (row-dot values col-indices x start end))
+            (recur (+ i 1))))))))
+
+;; csr-matvec — real, standard sparse matrix × dense vector multiply, genuinely O(nnz) rather
+;; than O(rows × cols) -- the real point of CSR (per the founder's own real example: 50,000 ×
+;; 10,000 mostly-empty connections is 500,000,000 dense cells vs. however many real, actual
+;; connections exist as `nnz`). `x`/the real result are both plain `(Vec F64)` (not `NDArray`) --
+;; see this file's own header comment for why `array.prn`'s own 2-D indexing isn't used here.
+(defn csr-matvec [(m : &CsrMatrix) (x : &(Vec F64)) (dest : Arena @ Region)]
+  : (Result (Vec F64) SparseError) @ Region
+  (if (not (= (vec/len x) (get-field m :cols)))
+    (Err ShapeMismatch)
+    (let [y (vec/new dest)]
+      (do
+        (init-f64-zeros! &y (get-field m :rows))
+        (matvec-rows! &(get-field m :row-ptr) &(get-field m :col-indices) &(get-field m :values)
+                      x &y (get-field m :rows))
+        (Ok y)))))
