@@ -1626,11 +1626,26 @@ guess — checked directly, not assumed:
   this (splices the raw C as a bare statement, no `return`-wrapping, advances past both the
   `#target` symbol and its map in one step). Not yet ported here — this session's own real, named
   next step, distinct from the whole-body case just shipped.
-- **No real scalar (`I32`/`F64`) return-type support** — `defn-c-return-type` only understands
-  `Result`/`Option`/an already-registered struct name; every other declared return type
-  (including `I32`/`F64`/`Bool`) silently falls back to `"char * "`, producing real, wrong
-  function signatures for `length`/`char-at`/etc. (their own `#target` BODIES now emit correctly
-  post this session's own fix — the signature itself is the remaining, separate bug).
+- **No real scalar (`I32`/`F64`) return-type support — CLOSED 2026-09-08, for `#target`-bodied
+  defns.** `defn-c-return-type` now recognizes `Unit`/`I32`/`Bool`/`F64` (mapping to `void`/`int`/
+  `int`/`double`, matching the reference compiler's own `resolve_base_type_name` table exactly)
+  — but ONLY when the defn's body is `#target`-shaped, the exact case this gap named
+  (`length`/`char-at`/etc.). Deliberately NOT widened to every I32/F64/Bool-declared defn
+  regardless of body shape: confirmed live that doing so broke `unwrap-or-zero`'s own pre-existing
+  match/deref-bodied test with a real `gcc -Werror=int-conversion` failure — this emitter's own
+  `emit-i32-boxed`/`emit-deref` are still built around a uniform "everything is `char *`"
+  convention outside `#target` bodies (see `emit-i32-boxed`'s own header comment), a real,
+  separate, larger gap not attempted here (would need threading the declared return type into
+  `emit-tail-expr`/`emit-body-forms` generally). Also found and fixed, same pass: a real,
+  previously-dead `(string/str-eq? return-type-c "void")` check in `emit-defn-target-body` that
+  compared against the bare string `"void"`, but `return-type-c` always carries
+  `defn-c-return-type`'s own established trailing space (`"Result "`, `"char * "`, now `"void "`
+  too) — so it never actually matched anything, even once a real Unit-returning `#target`
+  function existed to hit it. New `tests/test_selfhost_emit.c` case (`magic-number`, an
+  `I32`-returning `#target`-bodied defn) + `tests/integration/driver_target_scalar_return.c`, real
+  end-to-end assertion (compiles, links against `extern int magic_number(void)`, runs, returns
+  42) — would have failed to even LINK under the old `char *` default. `make test`: 347/347, every
+  `test-selfhost-*` target re-run clean, zero regressions.
 - **`if` used directly as a defn's own whole body doesn't emit** (`return if(...)` — invalid C) —
   a real, separate gap from `parse-i32`'s own real shape, distinct from S223-02 (that fix landed
   in the REFERENCE compiler's `src/emit.c`, not yet ported to this self-hosted one).

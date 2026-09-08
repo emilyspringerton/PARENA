@@ -2205,7 +2205,7 @@ char * emit_defn_target_body(Node * defn_node __attribute__((unused)), char * re
     int start __attribute__((unused)) = body_start_index(defn_node);
     Node *target_map __attribute__((unused)) = vec_get(&((defn_node)->children), (start + 1));
     char *src_text __attribute__((unused)) = target_map_c_src(target_map, dest);
-    if (str_eq_(return_type_c, "void")) {
+    if (str_eq_(return_type_c, "void ")) {
     return concat("    ", concat(src_text, "\n", dest), dest);
     } else {
     return concat("    return (", concat(src_text, ");\n", dest), dest);
@@ -2278,7 +2278,7 @@ char * defn_declared_return_type_name(Node * defn_node __attribute__((unused))) 
 
 char * defn_c_return_type(Node * defn_node __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *name __attribute__((unused)) = defn_declared_return_type_name(defn_node);
-    return (str_eq_(name, "Result") ? "Result " : (str_eq_(name, "Option") ? "Option " : (vec_contains_string_(known_structs, name, 0) ? concat(name, " ", dest) : "char * ")));
+    return (str_eq_(name, "Result") ? "Result " : (str_eq_(name, "Option") ? "Option " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "Unit")) ? "void " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "I32")) ? "int " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "Bool")) ? "int " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "F64")) ? "double " : (vec_contains_string_(known_structs, name, 0) ? concat(name, " ", dest) : "char * ")))))));
 }
 
 char * int_box_helper_decl(Arena *dest __attribute__((unused))) {

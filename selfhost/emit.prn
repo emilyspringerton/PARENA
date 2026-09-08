@@ -1979,12 +1979,18 @@
 ;; emit-defn-target-body -- real, direct port of emit_target_defn's own real C construction: the
 ;; inline-c source text is trusted VERBATIM as real C (this self-hosted pass has no way to check
 ;; it, the identical trust boundary the reference compiler's own version already crosses).
+;; Real, live-found bug fixed 2026-09-08 (while widening defn-c-return-type to real Unit/I32/Bool/
+;; F64 support, below): this check compared against the bare string "void", but `return-type-c`
+;; ALWAYS carries defn-c-return-type's own established trailing space ("Result ", "char * ", now
+;; "void "/"int "/"double " too) -- so this never actually matched anything, even once a real
+;; Unit-returning #target function existed to hit it. Fixed to compare "void " (with the space),
+;; the same convention every other branch of this file already follows.
 (defn emit-defn-target-body [(defn-node : &Node) (return-type-c : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [start (body-start-index defn-node)
         target-map (vec/get &(get-field defn-node :children) (+ start 1))
         src-text (target-map-c-src target-map dest)]
-    (if (string/str-eq? return-type-c "void")
+    (if (string/str-eq? return-type-c "void ")
       (string/concat "    " (string/concat src-text "\n" dest) dest)
       (string/concat "    return (" (string/concat src-text ");\n" dest) dest))))
 
@@ -2085,11 +2091,41 @@
 ;; ISN'T registered) keeps this file's own pre-existing, uniform
 ;; `char *` default completely unchanged -- still real, honest, narrow
 ;; v0, not a real type-inference pass.
+;; Widened again 2026-09-08 (self-host iteration: closing the real, named "no scalar return-type
+;; support" gap from the bootstrap attempt's own gap list): a `#target`-BODIED defn declaring
+;; `Unit`/`I32`/`Bool`/`F64` now maps to the real C equivalent, matching the reference compiler's
+;; own `resolve_base_type_name` table in `src/emit.c` exactly (`Unit`->`void`, `I32`/`Bool`->
+;; `int`, `F64`->`double`). Needed for the exact real case the gap list named: `stdlib/string.prn`'s
+;; own `length`/`char-at` etc. declare `: I32` with a `#target` body, and that body ALREADY emits
+;; correct, real, typed C (inline-c is trusted verbatim, this session's own earlier fix) — the
+;; function SIGNATURE was the remaining, separate bug, producing a real `char *` vs `int` mismatch.
+;;
+;; Real, live-found reason this is scoped to `#target`-bodied defns ONLY, not every I32/F64/Bool-
+;; declared function regardless of body shape: this file's own `emit-i32-boxed`/`emit-deref` are
+;; explicitly, deliberately built around a "every non-#target value is uniformly `char *`-shaped"
+;; convention (see `emit-i32-boxed`'s own header comment above) — an ordinary PARENA body (match/
+;; deref/binop/etc.) still emits a `(char *)(intptr_t)...`-cast tail value regardless of its own
+;; declared return type. Confirmed live, not guessed: widening this unconditionally broke two
+;; real, pre-existing, previously-passing tests (`unwrap-or-zero`, an `I32`-declared function
+;; whose body is `(match o ((Some x) (deref x)) ((None) 0))`) with a real, confirmed gcc
+;; `-Werror=int-conversion` failure — the signature correctly became `int`, but the body still
+;; returned a `char *`-cast expression, a genuine, deeper mismatch this narrow pass does NOT
+;; attempt to fix (that needs threading the declared return type into `emit-tail-expr`/
+;; `emit-body-forms` generally, a real, separate, larger undertaking). Scoping to `#target`-bodied
+;; defns only avoids that whole class of regression while still closing the literal, named gap.
+;;
+;; `String`/anything else unrecognized, or a NON-`#target`-bodied I32/F64/Bool/Unit-declared defn,
+;; keeps this file's own pre-existing, uniform `char * ` default unchanged — still real, honest
+;; v0, not a general type-inference pass.
 (defn defn-c-return-type [(defn-node : &Node) (known-structs : &(Vec String)) (dest : Arena @ Region)] : String @ Region
   (let [name (defn-declared-return-type-name defn-node)]
     (cond
       ((string/str-eq? name "Result") "Result ")
       ((string/str-eq? name "Option") "Option ")
+      ((and (defn-body-target-shaped? defn-node) (string/str-eq? name "Unit")) "void ")
+      ((and (defn-body-target-shaped? defn-node) (string/str-eq? name "I32")) "int ")
+      ((and (defn-body-target-shaped? defn-node) (string/str-eq? name "Bool")) "int ")
+      ((and (defn-body-target-shaped? defn-node) (string/str-eq? name "F64")) "double ")
       ((vec-contains-string? known-structs name 0) (string/concat name " " dest))
       (true "char * "))))
 

@@ -2367,6 +2367,74 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-08, continuing the same-day self-host iteration): a real
+         * scalar (I32) return type on a #target-bodied defn, closing the "no real I32/F64
+         * scalar return-type support" gap NORTHSTAR.md's own bootstrap-attempt writeup named
+         * directly, alongside whole-body #target above. Real-world shape: stdlib/string.prn's
+         * own `length`/`char-at` (I32-returning, #target-bodied) -- this snippet is a minimal
+         * stand-in.
+         *
+         * Deliberately scoped to #target-bodied defns only, not applied to I32-declared defns
+         * in general: confirmed live that widening unconditionally broke unwrap-or-zero's own
+         * pre-existing match/deref-bodied test (a real gcc -Werror=int-conversion failure --
+         * this file's own emit-i32-boxed/emit-deref are still built around a uniform
+         * "everything is char *" convention outside #target bodies, a real, separate, larger
+         * gap not attempted here). */
+        char *snippet =
+            "(defn magic-number [] : I32\n"
+            "  #target {:c (inline-c \"42\")})";
+        Result pr35 = parse_program(snippet, &a);
+        CHECK(pr35.tag == 1, "a real #target-bodied defn declaring : I32 parses fine");
+        if (pr35.tag == 1) {
+            Node program35 = *(Node *)pr35.value;
+            char *generated35 = emit_program(&program35, &a);
+            CHECK(generated35 != NULL && strstr(generated35, "#error") == NULL,
+                  "no #error is emitted for a real #target-bodied I32-returning defn");
+            CHECK(generated35 != NULL && strstr(generated35, "int magic_number() {") != NULL,
+                  "magic-number's own declared I32 return type is emitted as the real, concrete "
+                  "C 'int' return type -- not the old, wrong 'char *' default that would fail to "
+                  "link against a real 'extern int magic_number(void)' caller");
+            CHECK(generated35 != NULL && strstr(generated35, "return (42);") != NULL,
+                  "magic-number's own body still emits the real inline-c source text verbatim, "
+                  "wrapped in a real return statement -- unchanged by the signature fix");
+
+            if (generated35) {
+                char c_path23[300];
+                snprintf(c_path23, sizeof c_path23, "/tmp/parena_selfhost_emit_target_scalar_test_%d.c",
+                         (int)getpid());
+                FILE *out23 = fopen(c_path23, "w");
+                CHECK(out23 != NULL, "a real temp file opens to write the target-scalar-return generated C into");
+                if (out23) {
+                    fputs(generated35, out23);
+                    fclose(out23);
+
+                    char bin_path23[310];
+                    snprintf(bin_path23, sizeof bin_path23, "%s.bin", c_path23);
+                    char cmd23[1024];
+                    snprintf(cmd23, sizeof cmd23,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_target_scalar_return.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path23, c_path23);
+                    int compile_status23 = system(cmd23);
+                    CHECK(compile_status23 == 0,
+                          "the real target-scalar-return generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern int magic_number(void)' driver -- would fail to link at all "
+                          "under the old 'char *' default");
+                    if (compile_status23 == 0) {
+                        int run_status23 = system(bin_path23);
+                        CHECK(run_status23 == 0,
+                              "the real compiled magic-number genuinely returns the real int "
+                              "value 42, end to end through the self-hosted pipeline");
+                    }
+                    remove(c_path23);
+                    remove(bin_path23);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
