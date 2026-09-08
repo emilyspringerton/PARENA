@@ -122,20 +122,14 @@
 ;; design decision this makes on the source material's behalf. None on a length mismatch, same
 ;; convention as elementwise above.
 ;;
-;; Real, honest, CONFIRMED-NOT-just-suspected bug, same class linalg.prn's own header comment
-;; already documents for matmul/transpose: `acc`'s `0` integer-literal seed makes the loop
-;; variable C-typed `double` (VS0's own real, cross-cutting "no int/float distinction on number
-;; literals" behavior), so `Some acc`'s boxing goes through `double_box`, not an I32 box — verified
-;; directly in `tests/test_base4_vector.c`: a real dot product of 2 reads back as `0` via the
-;; correct `(Option I32)` int-cast, and only recovers the real `2.0` if the caller (wrongly, per
-;; this function's own declared type) reads the payload as a double. **Do not trust `dot`'s return
-;; value from generated C yet** — same real, not-attempted-here fix linalg.prn names (loop-
-;; variable/number-literal type inference is a genuinely cross-cutting compiler change, not a
-;; one-file patch). `vec-xor`/`vec-and`/`vec-or`/`vec-add`/`vec-subtract`/`vec-eq`/`dimlen` above
-;; do NOT hit this — none of them box a loop-seeded scalar through `Some`/`Ok` (`vec-eq`/`dimlen`
-;; return unboxed `Bool`/`I32` directly; the elementwise ops box each element via the real
-;; `base4-*` scalar functions' own I32 return, never the loop counter itself) — all seven are
-;; real, verified end-to-end in `tests/test_base4_vector.c`.
+;; Real, honest history: `acc`'s `0` integer-literal seed used to make the loop variable C-typed
+;; `double` (VS0's real, cross-cutting "no int/float distinction on number literals" behavior),
+;; so `Some acc`'s boxing went through `double_box`, not an I32 box — a real, confirmed bug, same
+;; class `linalg.prn`'s own header comment documented for `matmul`/`transpose`. Fixed for real
+;; 2026-09-08 (EMILY/BACKLOG.md's own "loop-variable I32 boxing bug," the real, cross-cutting
+;; compiler fix): a whole-number literal now correctly reports `int`, and a loop accumulator
+;; keeps that `int` typing across every `recur` update that's provably also an int (`(+ acc ...)`
+;; here) — verified directly in `tests/test_base4_vector.c` against the real, hand-traced value.
 (defn dot [(a : &(Vec I32)) (b : &(Vec I32)) (dest : Arena @ Region)]
   : (Option I32) @ Region
   (if (not (= (vec/len a) (vec/len b)))

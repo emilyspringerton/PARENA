@@ -198,14 +198,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -225,8 +225,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -236,16 +236,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -259,11 +259,11 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
 
 int count_leading_spaces(char * s __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __loop_result_2 __attribute__((unused));
-    double i = 0;
+    int __loop_result_2 __attribute__((unused));
+    int i = 0;
     while (1) {
         if (((i < n) && (char_at(s, i) == 32))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -277,8 +277,8 @@ int count_leading_spaces(char * s __attribute__((unused))) {
 char * strip_comment(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     char * __loop_result_3 __attribute__((unused));
-    double i = 0;
-    double in_quote = 0;
+    int i = 0;
+    int in_quote = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_3 = s;
@@ -289,21 +289,21 @@ char * strip_comment(char * s __attribute__((unused)), Arena *dest __attribute__
         break;
         } else {
         if (((in_quote == 0) && ((char_at(s, i) == 34) || (char_at(s, i) == 39)))) {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = char_at(s, i);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = char_at(s, i);
         i = __recur_tmp_0;
         in_quote = __recur_tmp_1;
         continue;
         } else {
         if (((!((in_quote == 0))) && (char_at(s, i) == in_quote))) {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = 0;
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = 0;
         i = __recur_tmp_0;
         in_quote = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = in_quote;
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = in_quote;
         i = __recur_tmp_0;
         in_quote = __recur_tmp_1;
         continue;
@@ -317,11 +317,11 @@ char * strip_comment(char * s __attribute__((unused)), Arena *dest __attribute__
 
 char * trim(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __let_val_0 __attribute__((unused));
-    double i = 0;
+    int __let_val_0 __attribute__((unused));
+    int i = 0;
     while (1) {
         if (((i < n) && (char_at(s, i) == 32))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -329,7 +329,7 @@ char * trim(char * s __attribute__((unused)), Arena *dest __attribute__((unused)
         break;
         }
     }
-    double start __attribute__((unused)) = __let_val_0;
+    int start __attribute__((unused)) = __let_val_0;
     int __let_val_1 __attribute__((unused));
     int j = n;
     while (1) {
@@ -382,7 +382,7 @@ int looks_numeric_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __let_val_2 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     int found = 0;
     while (1) {
         if ((i >= n)) {
@@ -391,13 +391,13 @@ int looks_numeric_(char * s __attribute__((unused))) {
         } else {
         int c __attribute__((unused)) = char_at(s, i);
         if (is_digit_(c)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = 1;
         i = __recur_tmp_0;
         found = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = found;
         i = __recur_tmp_0;
         found = __recur_tmp_1;
@@ -410,7 +410,7 @@ int looks_numeric_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_5 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_5 = 1;
@@ -418,7 +418,7 @@ int looks_numeric_(char * s __attribute__((unused))) {
         } else {
         int c __attribute__((unused)) = char_at(s, i);
         if ((is_digit_(c) || ((c == 45) || ((c == 43) || (c == 46))))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -458,8 +458,8 @@ int is_seq_item_line_(char * content __attribute__((unused))) {
 
 int find_colon(char * s __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int __loop_result_6 __attribute__((unused));
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_6 = -1;
@@ -469,7 +469,7 @@ int find_colon(char * s __attribute__((unused))) {
         __loop_result_6 = i;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -500,7 +500,7 @@ Result parse_block(Vec * lines __attribute__((unused)), int start __attribute__(
 Result parse_sequence(Vec * lines __attribute__((unused)), int start __attribute__((unused)), int indent __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec items __attribute__((unused)) = vec_new(dest);
     Result __loop_result_7 __attribute__((unused));
-    int i = start;
+    double i = start;
     while (1) {
         int si __attribute__((unused)) = skip_blanks(lines, i, dest);
         if ((si >= vec_len(lines))) {
@@ -525,13 +525,13 @@ Result parse_sequence(Vec * lines __attribute__((unused)), int start __attribute
     else if (__match_tmp_0.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_0.value;
     (void)(vec_push_(&(items), YamlValue_box(dest, ((*((YamlStep *)(step)))).value)));
-        int __recur_tmp_0 = ((*((YamlStep *)(step)))).next;
+        double __recur_tmp_0 = ((*((YamlStep *)(step)))).next;
         i = __recur_tmp_0;
         continue;
     }
         } else {
         (void)(vec_push_(&(items), YamlValue_box(dest, parse_scalar(after_dash, dest))));
-        int __recur_tmp_0 = (si + 1);
+        double __recur_tmp_0 = (si + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -545,7 +545,7 @@ Result parse_mapping(Vec * lines __attribute__((unused)), int start __attribute_
     Vec keys __attribute__((unused)) = vec_new(dest);
     Vec values __attribute__((unused)) = vec_new(dest);
     Result __loop_result_8 __attribute__((unused));
-    int i = start;
+    double i = start;
     while (1) {
         int si __attribute__((unused)) = skip_blanks(lines, i, dest);
         if ((si >= vec_len(lines))) {
@@ -577,14 +577,14 @@ Result parse_mapping(Vec * lines __attribute__((unused)), int start __attribute_
         void *step __attribute__((unused)) = __match_tmp_1.value;
     (void)(vec_push_(&(keys), key));
     (void)(vec_push_(&(values), YamlValue_box(dest, ((*((YamlStep *)(step)))).value)));
-        int __recur_tmp_0 = ((*((YamlStep *)(step)))).next;
+        double __recur_tmp_0 = ((*((YamlStep *)(step)))).next;
         i = __recur_tmp_0;
         continue;
     }
         } else {
         (void)(vec_push_(&(keys), key));
         (void)(vec_push_(&(values), YamlValue_box(dest, parse_scalar(rest, dest))));
-        int __recur_tmp_0 = (si + 1);
+        double __recur_tmp_0 = (si + 1);
         i = __recur_tmp_0;
         continue;
         }

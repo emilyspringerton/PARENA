@@ -228,14 +228,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -255,8 +255,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -266,16 +266,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -571,13 +571,13 @@ int cmp_op_step(PState * p __attribute__((unused)), Arena *dest __attribute__((u
 
 int parse_multiplicative(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_primary(p, dest);
-    int __loop_result_6 __attribute__((unused));
-    int acc = left;
+    double __loop_result_6 __attribute__((unused));
+    double acc = left;
     while (1) {
         if ((tok_is_punct_(p, "*") || tok_is_punct_(p, "/"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        int __recur_tmp_0 = mul_op_step(p, dest, op, acc);
+        double __recur_tmp_0 = mul_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {
@@ -590,13 +590,13 @@ int parse_multiplicative(PState * p __attribute__((unused)), Arena *dest __attri
 
 int parse_additive(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_multiplicative(p, dest);
-    int __loop_result_7 __attribute__((unused));
-    int acc = left;
+    double __loop_result_7 __attribute__((unused));
+    double acc = left;
     while (1) {
         if ((tok_is_punct_(p, "+") || tok_is_punct_(p, "-"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        int __recur_tmp_0 = add_op_step(p, dest, op, acc);
+        double __recur_tmp_0 = add_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {
@@ -609,13 +609,13 @@ int parse_additive(PState * p __attribute__((unused)), Arena *dest __attribute__
 
 int parse_comparison(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_additive(p, dest);
-    int __loop_result_8 __attribute__((unused));
-    int acc = left;
+    double __loop_result_8 __attribute__((unused));
+    double acc = left;
     while (1) {
         if ((tok_is_punct_(p, "<") || tok_is_punct_(p, ">"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        int __recur_tmp_0 = cmp_op_step(p, dest, op, acc);
+        double __recur_tmp_0 = cmp_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {

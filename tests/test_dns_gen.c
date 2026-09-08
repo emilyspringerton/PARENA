@@ -137,14 +137,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -164,8 +164,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -175,16 +175,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -239,15 +239,15 @@ int skip_name(char * buf __attribute__((unused)), int pos __attribute__((unused)
     if (((b0 & 192) == 192)) {
     return (pos + 2);
     } else {
-    int __loop_result_2 __attribute__((unused));
-    int i = pos;
+    double __loop_result_2 __attribute__((unused));
+    double i = pos;
     while (1) {
         int len __attribute__((unused)) = raw_byte(buf, i);
         if ((len == 0)) {
         __loop_result_2 = (i + 1);
         break;
         } else {
-        int __recur_tmp_0 = ((i + 1) + len);
+        double __recur_tmp_0 = ((i + 1) + len);
         i = __recur_tmp_0;
         continue;
         }
@@ -262,25 +262,25 @@ Result parse_dns_response(char * buf __attribute__((unused)), int len __attribut
     } else {
     int qdcount __attribute__((unused)) = read_u16_be(buf, 4);
     int ancount __attribute__((unused)) = read_u16_be(buf, 6);
-    double __let_val_0 __attribute__((unused));
-    double qi = 0;
-    double qpos = 12;
+    int __let_val_0 __attribute__((unused));
+    int qi = 0;
+    int qpos = 12;
     while (1) {
         if ((qi >= qdcount)) {
         __let_val_0 = qpos;
         break;
         } else {
-        double __recur_tmp_0 = (qi + 1);
-        double __recur_tmp_1 = (skip_name(buf, qpos) + 4);
+        int __recur_tmp_0 = (qi + 1);
+        int __recur_tmp_1 = (skip_name(buf, qpos) + 4);
         qi = __recur_tmp_0;
         qpos = __recur_tmp_1;
         continue;
         }
     }
-    double after_question __attribute__((unused)) = __let_val_0;
+    int after_question __attribute__((unused)) = __let_val_0;
     Vec results __attribute__((unused)) = vec_new(dest);
     Result __loop_result_3 __attribute__((unused));
-    double ai = 0;
+    int ai = 0;
     double apos = after_question;
     while (1) {
         if ((ai >= ancount)) {
@@ -298,13 +298,13 @@ Result parse_dns_response(char * buf __attribute__((unused)), int len __attribut
         int rdata_start __attribute__((unused)) = (name_end + 10);
         if (((rtype == 1) && (rdlength == 4))) {
         (void)(vec_push_(&(results), ipv4_to_string(buf, rdata_start, dest)));
-        double __recur_tmp_0 = (ai + 1);
+        int __recur_tmp_0 = (ai + 1);
         double __recur_tmp_1 = (rdata_start + rdlength);
         ai = __recur_tmp_0;
         apos = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (ai + 1);
+        int __recur_tmp_0 = (ai + 1);
         double __recur_tmp_1 = (rdata_start + rdlength);
         ai = __recur_tmp_0;
         apos = __recur_tmp_1;

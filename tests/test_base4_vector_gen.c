@@ -31,8 +31,8 @@ static inline Vec *Vec_box(Arena *dest, Vec v) {
     return p;
 }
 
-static inline double *double_box(Arena *dest, double v) {
-    double *p = (double *)arena_alloc(dest, sizeof(double));
+static inline int *int_box(Arena *dest, int v) {
+    int *p = (int *)arena_alloc(dest, sizeof(int));
     *p = v;
     return p;
 }
@@ -76,14 +76,14 @@ int base4_subtract(int a __attribute__((unused)), int b __attribute__((unused)))
 int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused)), int steps __attribute__((unused))) {
     int __loop_result_0 __attribute__((unused));
     int state = start;
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= steps)) {
         __loop_result_0 = state;
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;
@@ -93,9 +93,9 @@ int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attri
 }
 
 int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused))) {
-    double __loop_result_1 __attribute__((unused));
+    int __loop_result_1 __attribute__((unused));
     int state = op(start, start);
-    double i = 1;
+    int i = 1;
     while (1) {
         if ((state == start)) {
         __loop_result_1 = i;
@@ -106,7 +106,7 @@ int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;
@@ -125,7 +125,7 @@ int vec_eq(Vec * a __attribute__((unused)), Vec * b __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_2 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= vec_len(a))) {
         __loop_result_2 = 1;
@@ -135,7 +135,7 @@ int vec_eq(Vec * a __attribute__((unused)), Vec * b __attribute__((unused))) {
         __loop_result_2 = 0;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -151,11 +151,11 @@ Option vec_xor(Vec * a __attribute__((unused)), Vec * b __attribute__((unused)),
     } else {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(a))) {
     (void)(vec_push_(&(out), vec_box_i32(&(out), base4_xor((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -172,11 +172,11 @@ Option vec_and(Vec * a __attribute__((unused)), Vec * b __attribute__((unused)),
     } else {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(a))) {
     (void)(vec_push_(&(out), vec_box_i32(&(out), base4_and((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -193,11 +193,11 @@ Option vec_or(Vec * a __attribute__((unused)), Vec * b __attribute__((unused)), 
     } else {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_5 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(a))) {
     (void)(vec_push_(&(out), vec_box_i32(&(out), base4_or((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -214,11 +214,11 @@ Option vec_add(Vec * a __attribute__((unused)), Vec * b __attribute__((unused)),
     } else {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(a))) {
     (void)(vec_push_(&(out), vec_box_i32(&(out), base4_add((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -235,11 +235,11 @@ Option vec_subtract(Vec * a __attribute__((unused)), Vec * b __attribute__((unus
     } else {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_7 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(a))) {
     (void)(vec_push_(&(out), vec_box_i32(&(out), base4_subtract((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -255,15 +255,15 @@ Option dot(Vec * a __attribute__((unused)), Vec * b __attribute__((unused)), Are
     return option_none();
     } else {
     Option __loop_result_8 __attribute__((unused));
-    double i = 0;
-    double acc = 0;
+    int i = 0;
+    int acc = 0;
     while (1) {
         if ((i >= vec_len(a))) {
-        __loop_result_8 = option_some(double_box(dest, acc));
+        __loop_result_8 = option_some(int_box(dest, acc));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = base4_add(acc, base4_and((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = base4_add(acc, base4_and((*((int *)(vec_get(a, i)))), (*((int *)(vec_get(b, i))))));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;

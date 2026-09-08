@@ -184,14 +184,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -211,8 +211,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -222,16 +222,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -350,7 +350,7 @@ Result parse_start_line(char * line __attribute__((unused)), Arena *dest __attri
 Result parse_headers(char * raw __attribute__((unused)), int pos __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec headers __attribute__((unused)) = vec_new(dest);
     Result __loop_result_4 __attribute__((unused));
-    int i = pos;
+    double i = pos;
     while (1) {
         int line_end __attribute__((unused)) = find_crlf(raw, i, n);
         if ((i >= n)) {
@@ -369,7 +369,7 @@ Result parse_headers(char * raw __attribute__((unused)), int pos __attribute__((
         char *hname __attribute__((unused)) = substring(raw, i, colon, dest);
         char *hval __attribute__((unused)) = substring(raw, (colon + 2), line_end, dest);
         (void)(vec_push_(&(headers), SipHeader_box(dest, SipHeader_new(hname, hval))));
-        int __recur_tmp_0 = (line_end + 2);
+        double __recur_tmp_0 = (line_end + 2);
         i = __recur_tmp_0;
         continue;
         }
@@ -415,7 +415,7 @@ Result parse_message(char * raw __attribute__((unused)), Arena *dest __attribute
 
 int find_body_start(char * raw __attribute__((unused)), int pos __attribute__((unused)), int n __attribute__((unused))) {
     int __loop_result_5 __attribute__((unused));
-    int i = pos;
+    double i = pos;
     while (1) {
         int line_end __attribute__((unused)) = find_crlf(raw, i, n);
         if ((i >= n)) {
@@ -426,7 +426,7 @@ int find_body_start(char * raw __attribute__((unused)), int pos __attribute__((u
         __loop_result_5 = (i + 2);
         break;
         } else {
-        int __recur_tmp_0 = (line_end + 2);
+        double __recur_tmp_0 = (line_end + 2);
         i = __recur_tmp_0;
         continue;
         }
@@ -437,7 +437,7 @@ int find_body_start(char * raw __attribute__((unused)), int pos __attribute__((u
 
 Option header_value(Vec * headers __attribute__((unused)), char * name __attribute__((unused))) {
     Option __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= vec_len(headers))) {
         __loop_result_6 = option_none();
@@ -448,7 +448,7 @@ Option header_value(Vec * headers __attribute__((unused)), char * name __attribu
         __loop_result_6 = option_some((h)->value);
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }

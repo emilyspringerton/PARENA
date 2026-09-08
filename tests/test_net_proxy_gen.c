@@ -143,12 +143,6 @@ static inline TcpStream *TcpStream_box(Arena *dest, TcpStream v) {
     return p;
 }
 
-static inline double *double_box(Arena *dest, double v) {
-    double *p = (double *)arena_alloc(dest, sizeof(double));
-    *p = v;
-    return p;
-}
-
 static inline HttpResponse *HttpResponse_box(Arena *dest, HttpResponse v) {
     HttpResponse *p = (HttpResponse *)arena_alloc(dest, sizeof(HttpResponse));
     *p = v;
@@ -219,14 +213,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -246,8 +240,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -257,16 +251,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -337,7 +331,7 @@ Result tcp_write(TcpStream * s __attribute__((unused)), char * data __attribute_
     if ((raw_write((s)->fd, data) < 0)) {
     return result_err(NetError_box(dest, NetError_Other()));
     } else {
-    return result_ok(double_box(dest, 0));
+    return result_ok(int_box(dest, 0));
     }
 }
 
@@ -351,8 +345,8 @@ Result tcp_close(TcpStream * s __attribute__((unused)), Arena *dest __attribute_
 
 int find_crlfcrlf(char * s __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __loop_result_2 __attribute__((unused));
-    double i = 0;
+    int __loop_result_2 __attribute__((unused));
+    int i = 0;
     while (1) {
         if (((i + 4) > n)) {
         __loop_result_2 = -1;
@@ -362,7 +356,7 @@ int find_crlfcrlf(char * s __attribute__((unused))) {
         __loop_result_2 = i;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -373,8 +367,8 @@ int find_crlfcrlf(char * s __attribute__((unused))) {
 
 int find_colon(char * s __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __loop_result_3 __attribute__((unused));
-    double i = 0;
+    int __loop_result_3 __attribute__((unused));
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_3 = -1;
@@ -384,7 +378,7 @@ int find_colon(char * s __attribute__((unused))) {
         __loop_result_3 = i;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -453,8 +447,8 @@ HttpResponse parse_http_response(char * raw __attribute__((unused)), Arena *dest
     Vec values __attribute__((unused)) = vec_new(dest);
     int n_lines __attribute__((unused)) = vec_len(&(lines));
     int status __attribute__((unused)) = ((n_lines > 0) ? parse_status_line(trim_trailing_cr(vec_get(&(lines), 0), dest), dest) : 0);
-    double __let_val_0 __attribute__((unused));
-    double i = 1;
+    int __let_val_0 __attribute__((unused));
+    int i = 1;
     while (1) {
         if ((i >= n_lines)) {
         __let_val_0 = 0;
@@ -463,19 +457,19 @@ HttpResponse parse_http_response(char * raw __attribute__((unused)), Arena *dest
         char *line __attribute__((unused)) = trim_trailing_cr(vec_get(&(lines), i), dest);
         int colon __attribute__((unused)) = find_colon(line);
         if ((colon < 0)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
         (void)(vec_push_(&(names), substring(line, 0, colon, dest)));
         (void)(vec_push_(&(values), trim_leading_space(substring(line, (colon + 1), length(line), dest), dest)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
         }
     }
-    double scan __attribute__((unused)) = __let_val_0;
+    int scan __attribute__((unused)) = __let_val_0;
     (void)(scan);
     return HttpResponse_new(status, names, values, body);
 }
@@ -523,7 +517,7 @@ ProxiedRequest parse_request_line(char * line __attribute__((unused)), Arena *de
 
 int parse_headers_into_(Vec * lines __attribute__((unused)), int start __attribute__((unused)), Vec * names __attribute__((unused)), Vec * values __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n_lines __attribute__((unused)) = vec_len(lines);
-    double __loop_result_4 __attribute__((unused));
+    int __loop_result_4 __attribute__((unused));
     int i = start;
     while (1) {
         if ((i >= n_lines)) {

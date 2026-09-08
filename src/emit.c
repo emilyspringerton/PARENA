@@ -2008,7 +2008,26 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
 static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const char **out_type,
                               const char **out_error) {
     if (expr->type == NODE_NUMBER) {
-        *out_type = "double"; /* VS0 has no int-vs-float distinction yet -- a real, honest simplification */
+        /* Real fix (2026-09-08, EMILY/BACKLOG.md's own "loop-variable I32 boxing bug"): a
+         * literal with no '.'/'e'/'E' in its own text is a real, honest whole number -- report
+         * "int", not "double". This does NOT change any already-correct C arithmetic (a bare
+         * literal like `0` was ALWAYS emitted as literal C text, `expr->text` verbatim, so C's
+         * own division/promotion rules already ran on the real literal regardless of what this
+         * `out_type` string claimed) -- it only fixes DOWNSTREAM DECISIONS this compiler itself
+         * makes from `out_type` (which `vec_push_`/`vec_set_at_` box function to call, being the
+         * real, concrete bug this was found from: a `(Vec I32)`-typed field populated from a
+         * loop-variable push read back corrupted, since `vec_box_f64` was chosen for a value
+         * that was always semantically meant to be an `int`). See `loop_binding_is_int_safe()`'s
+         * own comment below for the real, separate, narrower safety check this fix's own
+         * DOWNSTREAM `loop`-BINDING-declaration consumer needs (a loop's own accumulator can be
+         * reassigned via `recur` to a genuinely fractional value even if it STARTS as a whole
+         * number, e.g. `(loop [avg 0] ... (recur (/ (+ avg x) 2.0)))` -- a real, different risk
+         * a plain `let` binding, assigned exactly once, never has). */
+        int looks_integer = 1;
+        for (const char *p = expr->text; *p; p++) {
+            if (*p == '.' || *p == 'e' || *p == 'E') { looks_integer = 0; break; }
+        }
+        *out_type = looks_integer ? "int" : "double";
         return expr->text;
     }
     /* A real, foundational gap found and fixed here (2026-08-20, while
@@ -3546,6 +3565,90 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
     return 1;
 }
 
+/* value_node_is_int_safe / loop_recur_binding_is_int_safe / loop_body_int_safe -- the real
+ * safety net `emit_loop_core`'s own binding setup (below) needs before trusting the new
+ * NODE_NUMBER int/float distinction (see its own header comment) for a LOOP variable
+ * specifically: a `let` binding is assigned exactly once (safe by construction — nothing ever
+ * reassigns it a fractional value later), but a `loop` binding can be reassigned via `recur` on
+ * every iteration, so declaring it a real C `int` the moment its own INIT literal looks like a
+ * whole number is only safe if EVERY real `recur` update for that same binding, across the
+ * loop's own entire body, ALSO provably produces an int -- e.g. `(loop [avg 0] ... (recur (/ (+
+ * avg x) 2.0)))` starts at a whole number but is a real, genuinely fractional accumulator from
+ * the very first `recur`.
+ *
+ * Real, found-live fix to this check's own FIRST draft: a narrow, hand-rolled recognizer (only
+ * trusting a bare literal, a known-int symbol, or `+`/`-`/`*` of two such) rejected real,
+ * already-correct int-typed accumulators using ANY other operator (`bit-xor`/`mod`/a function
+ * call returning `I32`, etc.) -- confirmed live via `make test-set`'s own real regression:
+ * `set.prn`'s `fnv1a-hash` (`h`, explicitly typed `int` via `fnv-offset-basis`, updated via
+ * `(* (bit-xor h ...) 16777619)`) got silently DOWNGRADED back to `double` by the first draft's
+ * own overly-narrow check, breaking already-correct code rather than fixing broken code. Fixed
+ * by reusing the REAL, already-existing `emit_expr` type-inference machinery directly (the same
+ * one every other real type decision in this emitter already uses) instead of a separate,
+ * necessarily-incomplete hand-rolled subset -- correctly recognizes bit ops, `mod`, and any
+ * known function call's own real, declared return type, not just a fixed, narrow arithmetic
+ * shortlist. A throwaway `out_error` is used (a real compile error surfacing during this dry-run
+ * type check gets reported again, correctly, during the real emission pass moments later --
+ * this check's own job is only "what type would this resolve to," not error reporting). */
+static int value_node_is_int_safe(Arena *arena, Node *val, EmitScope *scope) {
+    const char *val_type = NULL;
+    const char *dummy_err = NULL;
+    const char *val_c = emit_expr(arena, val, scope, &val_type, &dummy_err);
+    return val_c != NULL && val_type != NULL && strcmp(val_type, "int") == 0;
+}
+
+static int loop_body_int_safe(Arena *arena, Node **forms, size_t count, size_t binding_index, EmitScope *scope);
+
+static int loop_recur_binding_is_int_safe(Arena *arena, Node *tail, size_t binding_index, EmitScope *scope) {
+    if (is_call_named(tail, "recur")) {
+        size_t arg_idx = binding_index + 1;
+        if (arg_idx >= tail->child_count) return 1; /* a real arity mismatch is reported
+                                                        elsewhere at emission time; vacuously
+                                                        safe here, not this check's own job */
+        return value_node_is_int_safe(arena, tail->children[arg_idx], scope);
+    }
+    if (is_call_named(tail, "if") && tail->child_count == 4) {
+        return loop_recur_binding_is_int_safe(arena, tail->children[2], binding_index, scope) &&
+               loop_recur_binding_is_int_safe(arena, tail->children[3], binding_index, scope);
+    }
+    if (is_call_named(tail, "cond")) {
+        for (size_t i = 1; i < tail->child_count; i++) {
+            Node *clause = tail->children[i];
+            if (clause->type != NODE_LIST || clause->child_count != 2) continue;
+            if (!loop_recur_binding_is_int_safe(arena, clause->children[1], binding_index, scope)) return 0;
+        }
+        return 1;
+    }
+    if (is_call_named(tail, "when") && tail->child_count > 2) {
+        return loop_body_int_safe(arena, tail->children + 2, tail->child_count - 2, binding_index, scope);
+    }
+    if (is_call_named(tail, "do") && tail->child_count > 1) {
+        return loop_body_int_safe(arena, tail->children + 1, tail->child_count - 1, binding_index, scope);
+    }
+    if (is_call_named(tail, "let") && tail->child_count > 2) {
+        return loop_body_int_safe(arena, tail->children + 2, tail->child_count - 2, binding_index, scope);
+    }
+    if (is_call_named(tail, "match")) {
+        for (size_t i = 2; i < tail->child_count; i++) {
+            Node *clause = tail->children[i];
+            if (clause->type != NODE_LIST || clause->child_count < 2) continue;
+            if (!loop_recur_binding_is_int_safe(arena, clause->children[1], binding_index, scope)) return 0;
+        }
+        return 1;
+    }
+    /* A nested `loop`'s own `recur` belongs to ITSELF, not this outer loop -- not descended into.
+     * A plain terminal value (no recur reachable through this branch at all) is vacuously safe:
+     * nothing here reassigns this binding. */
+    return 1;
+}
+
+static int loop_body_int_safe(Arena *arena, Node **forms, size_t count, size_t binding_index, EmitScope *scope) {
+    for (size_t i = 0; i < count; i++) {
+        if (!loop_recur_binding_is_int_safe(arena, forms[i], binding_index, scope)) return 0;
+    }
+    return 1;
+}
+
 /* emit_loop_core -- the real loop machinery (binding-var setup + body
  * statements + tail composition via emit_loop_tail), factored out of
  * emit_loop() itself (2026-08-21, gcc-verifying net/http.prn's own
@@ -3569,6 +3672,7 @@ static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scop
     scope_init(&child, scope);
 
     Local *loop_locals[MAX_LOOP_VARS];
+    const char *loop_init_cs[MAX_LOOP_VARS];
     size_t loop_var_count = 0;
     for (size_t i = 0; i + 1 < bindings->child_count; i += 2) {
         Node *name_node = bindings->children[i];
@@ -3581,10 +3685,18 @@ static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scop
         const char *init_c = emit_expr(arena, init_node, scope, &c_type, out_error);
         if (!init_c) return 0;
         const char *c_name = mangle(arena, name_node->text);
-        sb_appendf(out, "    %s %s = %s;\n", c_type, c_name, init_c);
+        /* Real, deliberate change (2026-09-08): the declaration line itself is no longer
+         * emitted here -- it now waits until AFTER every loop variable is bound (see below),
+         * so `loop_body_int_safe`'s own real "is every recur update for this binding also
+         * provably an int" check has a fully-populated `child` scope to resolve a recur value
+         * that references ANOTHER loop variable by name (a real, common shape -- `(recur j i)`
+         * swapping two loop vars). Binding beyond MAX_LOOP_VARS keeps this same pre-existing,
+         * already-documented limit (a real `recur` call already errors past it anyway). */
         scope_bind(&child, name_node->text, c_name, c_type, 0);
         if (loop_var_count < MAX_LOOP_VARS) {
-            loop_locals[loop_var_count++] = &child.locals[child.count - 1];
+            loop_locals[loop_var_count] = &child.locals[child.count - 1];
+            loop_init_cs[loop_var_count] = init_c;
+            loop_var_count++;
         }
     }
 
@@ -3592,6 +3704,23 @@ static int emit_loop_core(Arena *arena, StrBuf *out, Node *node, EmitScope *scop
     size_t body_count = node->child_count - 2;
     if (body_count == 0) {
         return fail(arena, out_error, "loop: empty body at line %d", node->line) != NULL;
+    }
+
+    /* Real safety pass, the fix EMILY/BACKLOG.md's own "loop-variable I32 boxing bug" needed:
+     * downgrade any "int"-typed binding back to "double" (today's pre-existing, safe default)
+     * unless EVERY real `recur` update for it, anywhere in the loop's own body, is ALSO provably
+     * an int by `loop_body_int_safe`'s own real, conservative, syntactic check. See that
+     * function's own header comment for the full reasoning (a `loop` binding, unlike a `let`
+     * binding, can be reassigned a genuinely fractional value on any later iteration). */
+    for (size_t k = 0; k < loop_var_count; k++) {
+        if (strcmp(loop_locals[k]->c_type, "int") == 0 &&
+            !loop_body_int_safe(arena, body_forms, body_count, k, &child)) {
+            loop_locals[k]->c_type = "double";
+        }
+    }
+    for (size_t k = 0; k < loop_var_count; k++) {
+        sb_appendf(out, "    %s %s = %s;\n", loop_locals[k]->c_type, loop_locals[k]->c_name,
+                   loop_init_cs[k]);
     }
 
     StrBuf body;

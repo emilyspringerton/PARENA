@@ -368,14 +368,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -395,8 +395,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -406,16 +406,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -470,7 +470,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
     int len __attribute__((unused)) = (lx)->len;
     Lexer __loop_result_2 __attribute__((unused));
     int pos = (lx)->pos;
-    int line = (lx)->line;
+    double line = (lx)->line;
     int in_comment = 0;
     while (1) {
         if ((pos >= len)) {
@@ -481,7 +481,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         if (in_comment) {
         if ((c == 10)) {
         int __recur_tmp_0 = pos;
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -489,7 +489,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         continue;
         } else {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -499,7 +499,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if (lx_is_whitespace_(c)) {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -508,7 +508,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if ((c == 59)) {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -649,7 +649,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
     int len __attribute__((unused)) = (lx)->len;
     Result __loop_result_6 __attribute__((unused));
     int pos = ((lx)->pos + 1);
-    int line = start_line;
+    double line = start_line;
     char * acc = "";
     while (1) {
         if ((pos >= len)) {
@@ -669,7 +669,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         int e __attribute__((unused)) = char_at(src, (pos + 1));
         int decoded __attribute__((unused)) = ((e == 110) ? 10 : ((e == 116) ? 9 : ((e == 34) ? 34 : ((e == 92) ? 92 : e))));
         int __recur_tmp_0 = (pos + 2);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         char * __recur_tmp_2 = concat(acc, char_from_code(decoded, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -678,7 +678,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         }
         } else {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         char * __recur_tmp_2 = concat(acc, char_from_code(c, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -734,7 +734,7 @@ Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((u
 }
 
 int kind_code(TokenType k __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused)) = {0};
+    int __match_result_0 __attribute__((unused)) = {0};
     TokenType __match_tmp_2 = k;
     if (__match_tmp_2.tag == 0) {
         __match_result_0 = 0;
@@ -802,14 +802,14 @@ char * close_name(TokenType k __attribute__((unused))) {
 
 char * join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_8 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_8 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, vec_get(parts, i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1026,7 +1026,7 @@ int region_rank_for(char * kw __attribute__((unused))) {
 }
 
 int node_kind_code(NodeType k __attribute__((unused))) {
-    double __match_result_7 __attribute__((unused)) = {0};
+    int __match_result_7 __attribute__((unused)) = {0};
     NodeType __match_tmp_12 = k;
     if (__match_tmp_12.tag == 0) {
         __match_result_7 = 0;
@@ -1081,7 +1081,7 @@ int is_call_named_(Node * n __attribute__((unused)), char * fn_name __attribute_
 
 char * find_keyword_child(Node * n __attribute__((unused))) {
     char * __loop_result_9 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= vec_len(&((n)->children)))) {
         __loop_result_9 = "";
@@ -1092,7 +1092,7 @@ char * find_keyword_child(Node * n __attribute__((unused))) {
         __loop_result_9 = (c)->text;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -1103,14 +1103,14 @@ char * find_keyword_child(Node * n __attribute__((unused))) {
 
 char * region_join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_10 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_10 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, vec_get(parts, i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1162,11 +1162,11 @@ Vec scope_extend(Vec * scope __attribute__((unused)), Binding b __attribute__((u
 Vec scope_copy(Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec copy __attribute__((unused)) = vec_new(dest);
     void * __loop_result_12 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(scope))) {
         (void)(vec_push_(&(copy), Binding_box(dest, (*((Binding *)(vec_get(scope, i)))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -1264,7 +1264,7 @@ Option check_call_escape(Node * call __attribute__((unused)), Vec * scope __attr
         if ((((*((Binding *)(db)))).rank < 0)) {
         __match_result_9 = option_none();
         } else {
-    double i = 2;
+    int i = 2;
     while (1) {
         if ((i >= vec_len(&((call)->children)))) {
         __match_result_9 = option_none();
@@ -1272,13 +1272,13 @@ Option check_call_escape(Node * call __attribute__((unused)), Vec * scope __attr
         } else {
         Node *arg __attribute__((unused)) = vec_get(&((call)->children), i);
         if ((!((node_kind_code((arg)->kind) == 3)))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
     Option __match_tmp_16 = scope_lookup(scope, (arg)->text, dest_arena);
     if (__match_tmp_16.tag == 0) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
     }
@@ -1288,7 +1288,7 @@ Option check_call_escape(Node * call __attribute__((unused)), Vec * scope __attr
         __match_result_9 = option_some(fmt_error(((*((Binding *)(sb)))).region_name, ((*((Binding *)(db)))).region_name, (arg)->line, dest_arena));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -1343,7 +1343,7 @@ char * region_kw_of_expr(Node * expr_node __attribute__((unused)), Vec * scope _
 
 Result walk_let_bindings(Node * bindings __attribute__((unused)), Vec * outer_scope __attribute__((unused)), Arena *dest_arena __attribute__((unused))) {
     Result __loop_result_14 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     Vec acc_scope = scope_copy(outer_scope, dest_arena);
     while (1) {
         if (((i + 1) >= vec_len(&((bindings)->children)))) {
@@ -1353,7 +1353,7 @@ Result walk_let_bindings(Node * bindings __attribute__((unused)), Vec * outer_sc
         Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
         Node *expr_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
         if ((!((node_kind_code((name_node)->kind) == 3)))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         Vec __recur_tmp_1 = acc_scope;
         i = __recur_tmp_0;
         acc_scope = __recur_tmp_1;
@@ -1367,7 +1367,7 @@ Result walk_let_bindings(Node * bindings __attribute__((unused)), Vec * outer_sc
     }
     else if (__match_tmp_18.tag == 0) {
         Binding new_binding __attribute__((unused)) = binding_of((name_node)->text, region_kw_of_expr(expr_node, outer_scope, dest_arena));
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         Vec __recur_tmp_1 = scope_extend(&(acc_scope), new_binding, dest_arena);
         i = __recur_tmp_0;
         acc_scope = __recur_tmp_1;
@@ -1404,7 +1404,7 @@ Option walk_let(Node * node __attribute__((unused)), Vec * scope __attribute__((
 
 Vec build_param_bindings(Node * params __attribute__((unused)), Arena *dest_arena __attribute__((unused))) {
     Vec __loop_result_15 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     Vec acc = vec_new(dest_arena);
     while (1) {
         if ((i >= vec_len(&((params)->children)))) {
@@ -1413,7 +1413,7 @@ Vec build_param_bindings(Node * params __attribute__((unused)), Arena *dest_aren
         } else {
         Node *param __attribute__((unused)) = vec_get(&((params)->children), i);
         if (((!((node_kind_code((param)->kind) == 0))) || (vec_len(&((param)->children)) == 0))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         Vec __recur_tmp_1 = acc;
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1421,7 +1421,7 @@ Vec build_param_bindings(Node * params __attribute__((unused)), Arena *dest_aren
         } else {
         Node *name_node __attribute__((unused)) = vec_get(&((param)->children), 0);
         if ((!((node_kind_code((name_node)->kind) == 3)))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         Vec __recur_tmp_1 = acc;
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1429,7 +1429,7 @@ Vec build_param_bindings(Node * params __attribute__((unused)), Arena *dest_aren
         } else {
         char *region_kw __attribute__((unused)) = find_keyword_child(param);
         Binding new_binding __attribute__((unused)) = binding_of((name_node)->text, region_kw);
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         Vec __recur_tmp_1 = scope_extend(&(acc), new_binding, dest_arena);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1457,7 +1457,7 @@ Option analyze_defn(Node * defn_node __attribute__((unused)), Arena *dest_arena 
 
 Option region_analyze(Node * program __attribute__((unused)), Arena *dest_arena __attribute__((unused))) {
     Option __loop_result_16 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= vec_len(&((program)->children)))) {
         __loop_result_16 = option_none();
@@ -1472,12 +1472,12 @@ Option region_analyze(Node * program __attribute__((unused)), Arena *dest_arena 
         break;
     }
     else if (__match_tmp_20.tag == 0) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
     }
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }

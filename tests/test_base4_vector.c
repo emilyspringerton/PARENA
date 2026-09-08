@@ -91,20 +91,18 @@ int main(void) {
     /* dot: AND-then-ADD over [1,2,3] . [2,3,0] = base4_add(base4_add(base4_add(0,1&2),2&3),3&0)
        = base4_add(base4_add(base4_add(0,0),2),0) = base4_add(base4_add(0,2),0) = base4_add(2,0)
        = 2. Hand-traced, not guessed.
-       Real, CONFIRMED bug (see vector.prn's own doc comment on `dot`, same class as linalg.prn's
-       already-documented matmul/transpose issue): the loop accumulator's `0` integer-literal seed
-       makes VS0 box it as a `double`, not an I32, so the *declared* `(Option I32)` contract is
-       violated by the real generated C -- reading `.value` as `int*` (the only correct read per
-       `dot`'s own signature) returns 0, not 2. Asserting the CURRENT, confirmed-buggy behavior
-       here, not the semantically-correct one -- silently asserting `== 2` would either fail
-       honestly (good) or, worse, pass by accident on a future unrelated change and hide that the
-       real bug is still there. This assertion is the regression gate for "the known bug is still
-       exactly this," not a claim that dot() is safe to call from real generated code today. */
+       Real, deliberate UPDATE (2026-09-08, EMILY/BACKLOG.md's own "loop-variable I32 boxing bug"
+       -- the real, cross-cutting fix): this test used to assert the CONFIRMED-buggy behavior
+       (the accumulator boxed as a double, the declared `(Option I32)` contract violated) as a
+       real regression gate. The real fix landed: the loop accumulator, seeded from `0` and
+       reassigned via `base4-add` (a real, known I32-returning function), now correctly declares
+       `int` and boxes via `vec_box_i32` -- the correct-per-signature `int*` read now returns the
+       real, hand-traced value directly. */
     Option d = dot(&a, &b, &arena);
     assert(d.tag == 1);
-    assert(*(int *)d.value == 0);       /* WRONG per dot's own (Option I32) contract -- confirmed bug */
-    assert(*(double *)d.value == 2.0);  /* the real, correct value, only reachable via the wrong cast */
+    assert(*(int *)d.value == 2);
 
-    printf("test_base4_vector: all assertions passed (dot's known double-boxing bug confirmed, not fixed)\n");
+    printf("test_base4_vector: all assertions passed (dot's own real, correct value, "
+           "loop-variable I32 boxing bug now fixed)\n");
     return 0;
 }

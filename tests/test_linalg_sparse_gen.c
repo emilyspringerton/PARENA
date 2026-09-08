@@ -162,24 +162,24 @@ static inline Vec __veclit_0(Arena *dest, int e0, int e1) {
     return v;
 }
 
-static inline Vec __veclit_1(Arena *dest, double e0, double e1) {
+static inline Vec __veclit_1(Arena *dest, int e0, int e1) {
     Vec v = vec_new(dest);
-    vec_push_(&v, vec_box_f64(&v, e0));
-    vec_push_(&v, vec_box_f64(&v, e1));
+    vec_push_(&v, vec_box_i32(&v, e0));
+    vec_push_(&v, vec_box_i32(&v, e1));
     return v;
 }
 
-static inline Vec __veclit_2(Arena *dest, double e0, double e1) {
+static inline Vec __veclit_2(Arena *dest, int e0, int e1) {
     Vec v = vec_new(dest);
-    vec_push_(&v, vec_box_f64(&v, e0));
-    vec_push_(&v, vec_box_f64(&v, e1));
+    vec_push_(&v, vec_box_i32(&v, e0));
+    vec_push_(&v, vec_box_i32(&v, e1));
     return v;
 }
 
-static inline Vec __veclit_3(Arena *dest, double e0, double e1) {
+static inline Vec __veclit_3(Arena *dest, int e0, int e1) {
     Vec v = vec_new(dest);
-    vec_push_(&v, vec_box_f64(&v, e0));
-    vec_push_(&v, vec_box_f64(&v, e1));
+    vec_push_(&v, vec_box_i32(&v, e0));
+    vec_push_(&v, vec_box_i32(&v, e1));
     return v;
 }
 
@@ -190,17 +190,17 @@ static inline Vec __veclit_4(Arena *dest, int e0, int e1) {
     return v;
 }
 
-static inline Vec __veclit_5(Arena *dest, double e0, double e1) {
+static inline Vec __veclit_5(Arena *dest, int e0, int e1) {
     Vec v = vec_new(dest);
-    vec_push_(&v, vec_box_f64(&v, e0));
-    vec_push_(&v, vec_box_f64(&v, e1));
+    vec_push_(&v, vec_box_i32(&v, e0));
+    vec_push_(&v, vec_box_i32(&v, e1));
     return v;
 }
 
-static inline Vec __veclit_6(Arena *dest, double e0, double e1) {
+static inline Vec __veclit_6(Arena *dest, int e0, int e1) {
     Vec v = vec_new(dest);
-    vec_push_(&v, vec_box_f64(&v, e0));
-    vec_push_(&v, vec_box_f64(&v, e1));
+    vec_push_(&v, vec_box_i32(&v, e0));
+    vec_push_(&v, vec_box_i32(&v, e1));
     return v;
 }
 
@@ -213,16 +213,16 @@ static double __lambda_1(double x, double y) {
 }
 
 int product(Vec * shape __attribute__((unused))) {
-    double __loop_result_0 __attribute__((unused));
-    double i = 0;
-    double acc = 1;
+    int __loop_result_0 __attribute__((unused));
+    int i = 0;
+    int acc = 1;
     while (1) {
         if ((i >= vec_len(shape))) {
         __loop_result_0 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
@@ -236,14 +236,14 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     int total __attribute__((unused)) = product(shape);
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_1 __attribute__((unused));
-    double i = 0;
-    int running = total;
+    int i = 0;
+    double running = total;
     while (1) {
         if ((i < n)) {
-        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
-        double __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = next;
+        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int __recur_tmp_0 = (i + 1);
+        double __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;
@@ -258,11 +258,11 @@ NDArray zeros(Vec shape __attribute__((unused)), Arena *dest __attribute__((unus
     int n __attribute__((unused)) = product(&(shape));
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_2 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(data), vec_box_f64(&(data), 0.0)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -281,16 +281,16 @@ Result from_vec(Vec data __attribute__((unused)), Vec shape __attribute__((unuse
 }
 
 int flat_index(NDArray * a __attribute__((unused)), Vec * idx __attribute__((unused))) {
-    double __loop_result_3 __attribute__((unused));
-    double i = 0;
-    double offset = 0;
+    int __loop_result_3 __attribute__((unused));
+    int i = 0;
+    int offset = 0;
     while (1) {
         if ((i >= vec_len(idx))) {
         __loop_result_3 = offset;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
         i = __recur_tmp_0;
         offset = __recur_tmp_1;
         continue;
@@ -337,11 +337,11 @@ Result elementwise(NDArray * a __attribute__((unused)), NDArray * b __attribute_
     int n __attribute__((unused)) = vec_len(&((a)->data));
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(out), vec_box_f64(&(out), op((*((double *)(vec_get(&((a)->data), i)))), (*((double *)(vec_get(&((b)->data), i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -369,36 +369,36 @@ Result matmul(NDArray * a __attribute__((unused)), NDArray * b __attribute__((un
     } else {
     NDArray out __attribute__((unused)) = zeros(__veclit_0(dest, a_rows, b_cols), dest);
     void * __loop_result_5 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < a_rows)) {
     void * __loop_result_6 __attribute__((unused));
-    double j = 0;
+    int j = 0;
     while (1) {
         if ((j < b_cols)) {
     Result __loop_result_7 __attribute__((unused));
-    double k = 0;
+    int k = 0;
     double sum = 0.0;
     while (1) {
         if ((k >= a_cols)) {
         __loop_result_7 = set_(&(out), __veclit_1(dest, i, j), sum, dest);
         break;
         } else {
-        double __recur_tmp_0 = (k + 1);
+        int __recur_tmp_0 = (k + 1);
         double __recur_tmp_1 = (sum + ((*((double *)(result_unwrap_check(array_get(a, __veclit_2(dest, i, k), dest)).value))) * (*((double *)(result_unwrap_check(array_get(b, __veclit_3(dest, k, j), dest)).value)))));
         k = __recur_tmp_0;
         sum = __recur_tmp_1;
         continue;
         }
     }
-        double __recur_tmp_0 = (j + 1);
+        int __recur_tmp_0 = (j + 1);
         j = __recur_tmp_0;
         continue;
         } else {
             break;
         }
     }
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -414,22 +414,22 @@ NDArray transpose(NDArray * a __attribute__((unused)), Arena *dest __attribute__
     int cols __attribute__((unused)) = (*((int *)(vec_get(&((a)->shape), 1))));
     NDArray out __attribute__((unused)) = zeros(__veclit_4(dest, cols, rows), dest);
     void * __loop_result_8 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < rows)) {
     void * __loop_result_9 __attribute__((unused));
-    double j = 0;
+    int j = 0;
     while (1) {
         if ((j < cols)) {
     (void)(set_(&(out), __veclit_5(dest, j, i), (*((double *)(result_unwrap_check(array_get(a, __veclit_6(dest, i, j), dest)).value))), dest));
-        double __recur_tmp_0 = (j + 1);
+        int __recur_tmp_0 = (j + 1);
         j = __recur_tmp_0;
         continue;
         } else {
             break;
         }
     }
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -444,14 +444,14 @@ Result dot(NDArray * a __attribute__((unused)), NDArray * b __attribute__((unuse
     return result_err(ShapeError_box(dest, ShapeError_new("length mismatch")));
     } else {
     Result __loop_result_10 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     double sum = 0.0;
     while (1) {
         if ((i >= vec_len(&((a)->data)))) {
         __loop_result_10 = result_ok(double_box(dest, sum));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         double __recur_tmp_1 = (sum + ((*((double *)(vec_get(&((a)->data), i)))) * (*((double *)(vec_get(&((b)->data), i))))));
         i = __recur_tmp_0;
         sum = __recur_tmp_1;
@@ -476,11 +476,11 @@ int as_i32(int x __attribute__((unused))) {
 
 void init_i32_zeros_(Vec * v __attribute__((unused)), int count __attribute__((unused))) {
     void * __loop_result_11 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < count)) {
     (void)(vec_push_(v, vec_box_i32(v, as_i32(0))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -491,11 +491,11 @@ void init_i32_zeros_(Vec * v __attribute__((unused)), int count __attribute__((u
 
 void init_f64_zeros_(Vec * v __attribute__((unused)), int count __attribute__((unused))) {
     void * __loop_result_12 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < count)) {
     (void)(vec_push_(v, vec_box_f64(v, 0.0)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -506,11 +506,11 @@ void init_f64_zeros_(Vec * v __attribute__((unused)), int count __attribute__((u
 
 void copy_first_n_(Vec * dst __attribute__((unused)), Vec * src __attribute__((unused)), int n __attribute__((unused))) {
     void * __loop_result_13 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(dst, vec_box_i32(dst, as_i32((*((int *)(vec_get(src, i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -521,7 +521,7 @@ void copy_first_n_(Vec * dst __attribute__((unused)), Vec * src __attribute__((u
 
 Result count_per_row(Vec * counts __attribute__((unused)), Vec * coo_rows __attribute__((unused)), int rows __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Result __loop_result_14 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_14 = result_ok(NULL);
@@ -533,7 +533,7 @@ Result count_per_row(Vec * counts __attribute__((unused)), Vec * coo_rows __attr
         break;
         } else {
         (void)(vec_set_at_(counts, r, vec_box_i32(counts, as_i32(((*((int *)(vec_get(counts, r)))) + 1)))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -544,11 +544,11 @@ Result count_per_row(Vec * counts __attribute__((unused)), Vec * coo_rows __attr
 
 void prefix_sum_into_(Vec * row_ptr __attribute__((unused)), Vec * counts __attribute__((unused)), int rows __attribute__((unused))) {
     void * __loop_result_15 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < rows)) {
     (void)(vec_set_at_(row_ptr, as_i32((i + 1)), vec_box_i32(row_ptr, as_i32(((*((int *)(vec_get(row_ptr, i)))) + (*((int *)(vec_get(counts, i)))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -559,7 +559,7 @@ void prefix_sum_into_(Vec * row_ptr __attribute__((unused)), Vec * counts __attr
 
 void scatter_into_(Vec * values __attribute__((unused)), Vec * col_indices __attribute__((unused)), Vec * cursor __attribute__((unused)), Vec * coo_rows __attribute__((unused)), Vec * coo_cols __attribute__((unused)), Vec * coo_vals __attribute__((unused)), int n __attribute__((unused))) {
     void * __loop_result_16 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     int r __attribute__((unused)) = (*((int *)(vec_get(coo_rows, i))));
@@ -567,7 +567,7 @@ void scatter_into_(Vec * values __attribute__((unused)), Vec * col_indices __att
     (void)(vec_set_at_(values, slot, vec_box_f64(values, (*((double *)(vec_get(coo_vals, i)))))));
     (void)(vec_set_at_(col_indices, slot, vec_box_i32(col_indices, as_i32((*((int *)(vec_get(coo_cols, i))))))));
     (void)(vec_set_at_(cursor, r, vec_box_i32(cursor, as_i32((slot + 1)))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -640,13 +640,13 @@ double row_dot(Vec * values __attribute__((unused)), Vec * col_indices __attribu
 
 void matvec_rows_(Vec * row_ptr __attribute__((unused)), Vec * col_indices __attribute__((unused)), Vec * values __attribute__((unused)), Vec * x __attribute__((unused)), Vec * y __attribute__((unused)), int rows __attribute__((unused))) {
     void * __loop_result_17 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < rows)) {
         int start __attribute__((unused)) = (*((int *)(vec_get(row_ptr, i))));
         int end __attribute__((unused)) = (*((int *)(vec_get(row_ptr, as_i32((i + 1))))));
         (void)(vec_set_at_(y, i, vec_box_f64(y, row_dot(values, col_indices, x, start, end))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {

@@ -81,14 +81,14 @@ int base4_subtract(int a __attribute__((unused)), int b __attribute__((unused)))
 int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused)), int steps __attribute__((unused))) {
     int __loop_result_0 __attribute__((unused));
     int state = start;
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= steps)) {
         __loop_result_0 = state;
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;
@@ -98,9 +98,9 @@ int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attri
 }
 
 int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused))) {
-    double __loop_result_1 __attribute__((unused));
+    int __loop_result_1 __attribute__((unused));
     int state = op(start, start);
-    double i = 1;
+    int i = 1;
     while (1) {
         if ((state == start)) {
         __loop_result_1 = i;
@@ -111,7 +111,7 @@ int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;
@@ -140,11 +140,11 @@ Option stack2(Vec * row0 __attribute__((unused)), Vec * row1 __attribute__((unus
     int n __attribute__((unused)) = vec_len(row0);
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_2 __attribute__((unused));
-    double i0 = 0;
+    int i0 = 0;
     while (1) {
         if ((i0 < n)) {
     (void)(vec_push_(&(data), vec_box_i32(&(data), (*((int *)(vec_get(row0, i0)))))));
-        double __recur_tmp_0 = (i0 + 1);
+        int __recur_tmp_0 = (i0 + 1);
         i0 = __recur_tmp_0;
         continue;
         } else {
@@ -152,11 +152,11 @@ Option stack2(Vec * row0 __attribute__((unused)), Vec * row1 __attribute__((unus
         }
     }
     void * __loop_result_3 __attribute__((unused));
-    double i1 = 0;
+    int i1 = 0;
     while (1) {
         if ((i1 < n)) {
     (void)(vec_push_(&(data), vec_box_i32(&(data), (*((int *)(vec_get(row1, i1)))))));
-        double __recur_tmp_0 = (i1 + 1);
+        int __recur_tmp_0 = (i1 + 1);
         i1 = __recur_tmp_0;
         continue;
         } else {
@@ -173,7 +173,7 @@ int matrix_eq(Base4Matrix * a __attribute__((unused)), Base4Matrix * b __attribu
     } else {
     int n __attribute__((unused)) = vec_len(&((a)->data));
     int __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_4 = 1;
@@ -183,7 +183,7 @@ int matrix_eq(Base4Matrix * a __attribute__((unused)), Base4Matrix * b __attribu
         __loop_result_4 = 0;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -199,38 +199,38 @@ Base4Matrix matmul(Base4Matrix * a __attribute__((unused)), Base4Matrix * b __at
     int inner __attribute__((unused)) = (a)->cols;
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_5 __attribute__((unused));
-    double r = 0;
+    int r = 0;
     while (1) {
         if ((r < out_rows)) {
     void * __loop_result_6 __attribute__((unused));
-    double c = 0;
+    int c = 0;
     while (1) {
         if ((c < out_cols)) {
-    double __let_val_0 __attribute__((unused));
-    double k = 0;
-    double acc = 0;
+    int __let_val_0 __attribute__((unused));
+    int k = 0;
+    int acc = 0;
     while (1) {
         if ((k >= inner)) {
         __let_val_0 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (k + 1);
-        double __recur_tmp_1 = base4_add(acc, base4_and((*((int *)(vec_get(&((a)->data), ((r * inner) + k))))), (*((int *)(vec_get(&((b)->data), ((k * out_cols) + c)))))));
+        int __recur_tmp_0 = (k + 1);
+        int __recur_tmp_1 = base4_add(acc, base4_and((*((int *)(vec_get(&((a)->data), ((r * inner) + k))))), (*((int *)(vec_get(&((b)->data), ((k * out_cols) + c)))))));
         k = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         }
     }
-    double cell __attribute__((unused)) = __let_val_0;
-    (void)(vec_push_(&(out), vec_box_f64(&(out), cell)));
-        double __recur_tmp_0 = (c + 1);
+    int cell __attribute__((unused)) = __let_val_0;
+    (void)(vec_push_(&(out), vec_box_i32(&(out), cell)));
+        int __recur_tmp_0 = (c + 1);
         c = __recur_tmp_0;
         continue;
         } else {
             break;
         }
     }
-        double __recur_tmp_0 = (r + 1);
+        int __recur_tmp_0 = (r + 1);
         r = __recur_tmp_0;
         continue;
         } else {

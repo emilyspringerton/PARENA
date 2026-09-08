@@ -154,11 +154,11 @@ Vec match_elem(PatternElem * elem __attribute__((unused)), Vec * target __attrib
 }
 
 int count_reps(PatternElem * elem __attribute__((unused)), Vec * target __attribute__((unused)), int pos __attribute__((unused))) {
-    double __loop_result_2 __attribute__((unused));
-    double n = 0;
+    int __loop_result_2 __attribute__((unused));
+    int n = 0;
     while (1) {
         if (match_one(elem, target, (pos + n))) {
-        double __recur_tmp_0 = (n + 1);
+        int __recur_tmp_0 = (n + 1);
         n = __recur_tmp_0;
         continue;
         } else {
@@ -174,8 +174,8 @@ int match_seq(Vec * elems __attribute__((unused)), int i __attribute__((unused))
     return pos;
     } else {
     Vec candidates __attribute__((unused)) = match_elem(vec_get(elems, i), target, pos, dest);
-    double __loop_result_3 __attribute__((unused));
-    double ci = 0;
+    int __loop_result_3 __attribute__((unused));
+    int ci = 0;
     while (1) {
         if ((ci >= vec_len(&(candidates)))) {
         __loop_result_3 = -1;
@@ -186,7 +186,7 @@ int match_seq(Vec * elems __attribute__((unused)), int i __attribute__((unused))
         __loop_result_3 = rest;
         break;
         } else {
-        double __recur_tmp_0 = (ci + 1);
+        int __recur_tmp_0 = (ci + 1);
         ci = __recur_tmp_0;
         continue;
         }
@@ -210,7 +210,7 @@ int is_match(Vec * elems __attribute__((unused)), int anchored_start __attribute
     }
     } else {
     int __loop_result_4 __attribute__((unused));
-    double start = 0;
+    int start = 0;
     while (1) {
         if ((start > vec_len(target))) {
         __loop_result_4 = 0;
@@ -218,7 +218,7 @@ int is_match(Vec * elems __attribute__((unused)), int anchored_start __attribute
         } else {
         int end __attribute__((unused)) = match_seq(elems, 0, target, start, dest);
         if ((end < 0)) {
-        double __recur_tmp_0 = (start + 1);
+        int __recur_tmp_0 = (start + 1);
         start = __recur_tmp_0;
         continue;
         } else {

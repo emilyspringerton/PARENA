@@ -1556,15 +1556,15 @@ int main(void) {
               "it emits successfully (previously produced a real gcc type mismatch: double where "
               "void * was expected, since only param/struct-field Vecs got a boxing hint before)");
         if (c_src) {
-            /* Real, pre-existing, unrelated convention confirmed here, not
-             * changed by this fix: a bare numeric literal like `42`
-             * always resolves to "double" (no I32-vs-F64 literal
-             * distinction exists in this compiler), so vec_box_f64 is
-             * the real, correct helper here -- matching what array.prn's
-             * own real strides-for/zeros (gcc-verified separately) also
-             * produce for their own int-looking loop-var pushes. */
-            CHECK(strstr(c_src, "vec_push_(&(s), vec_box_f64(&(s), 42))") != NULL,
-                  "the raw scalar literal is boxed via vec_box_f64 before being stored, decided "
+            /* Real, deliberate UPDATE (2026-09-08, EMILY/BACKLOG.md's own "loop-variable I32
+             * boxing bug" fix): a bare, whole-number numeric literal like `42` now correctly
+             * resolves to "int" (NODE_NUMBER's own real int/float distinction by literal text,
+             * not "always double" any more), so `vec_box_i32` is now the real, correct helper --
+             * this assertion used to check for `vec_box_f64` here, which was the exact bug this
+             * fix closes (a real, decimal-point-only literal like `42.0` still correctly boxes
+             * via `vec_box_f64`, unchanged). */
+            CHECK(strstr(c_src, "vec_push_(&(s), vec_box_i32(&(s), 42))") != NULL,
+                  "the raw scalar literal is boxed via vec_box_i32 before being stored, decided "
                   "from the argument's own resolved type, not a hint lookup on the target");
         }
         arena_free_all(&arena);
@@ -1686,18 +1686,18 @@ int main(void) {
         if (c_src) {
             CHECK(strstr(c_src, "continue;") != NULL,
                   "a clause's own recur becomes a real continue; statement, not a ternary branch");
-            /* Real, pre-existing, unrelated convention confirmed here:
-             * a bare numeric literal always resolves to "double" (no
-             * I32-vs-F64 literal distinction in this compiler), so
-             * that's the real, correct terminal type here -- the actual
-             * bug this test targets is that it resolves to a real type
-             * AT ALL (previously NULL/void*, from only ever consulting
-             * the unrelated LAST clause), not which specific type. */
+            /* Real, deliberate UPDATE (2026-09-08, the same "loop-variable I32 boxing bug" fix):
+             * `count`'s own init (`0`) and every real `recur` update (`count`/`(+ count 1)`,
+             * both provably int-safe by `loop_body_int_safe`'s own check) now correctly resolve
+             * to "int", not "double" -- the actual bug THIS test targets is that a real type
+             * resolves AT ALL (previously NULL/void*, from only ever consulting the unrelated
+             * LAST clause), not which specific type; the specific type itself is a separate,
+             * now-also-fixed improvement. */
             /* __loop_result_N's own number is a process-wide counter
              * (not reset per emit_c() call), so only the prefix is
              * checked here -- the exact number depends on how many
              * other tests' own loops ran earlier in this same process. */
-            CHECK(strstr(c_src, "double __loop_result_") != NULL,
+            CHECK(strstr(c_src, "int __loop_result_") != NULL,
                   "the loop's own result type resolves to the real terminal clause's own resolved "
                   "type, not NULL/void* from the unrelated LAST clause happening to be a recur -- "
                   "the real, self-caught bug in this same fix");

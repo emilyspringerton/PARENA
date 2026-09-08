@@ -231,14 +231,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -258,8 +258,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -269,16 +269,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -291,16 +291,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
 }
 
 int product(Vec * shape __attribute__((unused))) {
-    double __loop_result_2 __attribute__((unused));
-    double i = 0;
-    double acc = 1;
+    int __loop_result_2 __attribute__((unused));
+    int i = 0;
+    int acc = 1;
     while (1) {
         if ((i >= vec_len(shape))) {
         __loop_result_2 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
@@ -314,14 +314,14 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     int total __attribute__((unused)) = product(shape);
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
-    double i = 0;
-    int running = total;
+    int i = 0;
+    double running = total;
     while (1) {
         if ((i < n)) {
-        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
-        double __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = next;
+        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int __recur_tmp_0 = (i + 1);
+        double __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;
@@ -336,11 +336,11 @@ NDArray zeros(Vec shape __attribute__((unused)), Arena *dest __attribute__((unus
     int n __attribute__((unused)) = product(&(shape));
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(data), vec_box_f64(&(data), 0.0)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -359,16 +359,16 @@ Result from_vec(Vec data __attribute__((unused)), Vec shape __attribute__((unuse
 }
 
 int flat_index(NDArray * a __attribute__((unused)), Vec * idx __attribute__((unused))) {
-    double __loop_result_5 __attribute__((unused));
-    double i = 0;
-    double offset = 0;
+    int __loop_result_5 __attribute__((unused));
+    int i = 0;
+    int offset = 0;
     while (1) {
         if ((i >= vec_len(idx))) {
         __loop_result_5 = offset;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
         i = __recur_tmp_0;
         offset = __recur_tmp_1;
         continue;
@@ -415,11 +415,11 @@ Result elementwise(NDArray * a __attribute__((unused)), NDArray * b __attribute_
     int n __attribute__((unused)) = vec_len(&((a)->data));
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(out), vec_box_f64(&(out), op((*((double *)(vec_get(&((a)->data), i)))), (*((double *)(vec_get(&((b)->data), i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -444,14 +444,14 @@ int fnv_offset_basis(void) {
 
 int fnv1a_hash(char * s __attribute__((unused)), int n __attribute__((unused))) {
     int __loop_result_7 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     int h = fnv_offset_basis();
     while (1) {
         if ((i >= n)) {
         __loop_result_7 = h;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = ((h ^ char_at(s, i)) * 16777619);
         i = __recur_tmp_0;
         h = __recur_tmp_1;
@@ -463,11 +463,11 @@ int fnv1a_hash(char * s __attribute__((unused)), int n __attribute__((unused))) 
 
 void init_slots_(Vec * slots __attribute__((unused)), int remaining __attribute__((unused))) {
     void * __loop_result_8 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < remaining)) {
     (void)(vec_push_(slots, ""));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -487,7 +487,7 @@ int find_slot(StringSet * s __attribute__((unused)), char * key __attribute__((u
     int start __attribute__((unused)) = ((fnv1a_hash(key, n) & 2147483647) % capacity);
     int __loop_result_9 __attribute__((unused));
     int i = start;
-    double probes = 0;
+    int probes = 0;
     while (1) {
         char *slot_val __attribute__((unused)) = vec_get(&((s)->slots), i);
         if ((length(slot_val) == 0)) {
@@ -503,7 +503,7 @@ int find_slot(StringSet * s __attribute__((unused)), char * key __attribute__((u
         break;
         } else {
         int __recur_tmp_0 = ((i + 1) % capacity);
-        double __recur_tmp_1 = (probes + 1);
+        int __recur_tmp_1 = (probes + 1);
         i = __recur_tmp_0;
         probes = __recur_tmp_1;
         continue;
@@ -580,11 +580,11 @@ Result maybe_add_if_not_in_(StringSet * out __attribute__((unused)), StringSet *
 Vec set_to_vec(StringSet * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_10 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < (s)->capacity)) {
     (void)(maybe_push_member_(&(out), vec_get(&((s)->slots), i)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -597,11 +597,11 @@ Vec set_to_vec(StringSet * s __attribute__((unused)), Arena *dest __attribute__(
 StringSet set_intersect(StringSet * a __attribute__((unused)), StringSet * b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     StringSet out __attribute__((unused)) = set_new(((a)->count + 1), dest);
     void * __loop_result_11 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < (a)->capacity)) {
     (void)(maybe_add_if_in_(&(out), b, vec_get(&((a)->slots), i), dest));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -614,11 +614,11 @@ StringSet set_intersect(StringSet * a __attribute__((unused)), StringSet * b __a
 StringSet set_union(StringSet * a __attribute__((unused)), StringSet * b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     StringSet out __attribute__((unused)) = set_new((((a)->count + (b)->count) + 1), dest);
     void * __loop_result_12 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < (a)->capacity)) {
     (void)(maybe_add_member_(&(out), vec_get(&((a)->slots), i), dest));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -626,11 +626,11 @@ StringSet set_union(StringSet * a __attribute__((unused)), StringSet * b __attri
         }
     }
     void * __loop_result_13 __attribute__((unused));
-    double j = 0;
+    int j = 0;
     while (1) {
         if ((j < (b)->capacity)) {
     (void)(maybe_add_member_(&(out), vec_get(&((b)->slots), j), dest));
-        double __recur_tmp_0 = (j + 1);
+        int __recur_tmp_0 = (j + 1);
         j = __recur_tmp_0;
         continue;
         } else {
@@ -643,11 +643,11 @@ StringSet set_union(StringSet * a __attribute__((unused)), StringSet * b __attri
 StringSet set_difference(StringSet * a __attribute__((unused)), StringSet * b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     StringSet out __attribute__((unused)) = set_new(((a)->count + 1), dest);
     void * __loop_result_14 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < (a)->capacity)) {
     (void)(maybe_add_if_not_in_(&(out), b, vec_get(&((a)->slots), i), dest));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {

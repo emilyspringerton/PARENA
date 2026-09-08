@@ -67,29 +67,27 @@ int main(void) {
     Base4Matrix C = matmul(A, B, &arena);
     assert(rows(&C) == 2 && cols(&C) == 2);
 
-    /* Real, CONFIRMED bug -- same class as base4/vector.prn's own documented `dot` bug (see
-       matrix.prn's own doc comment on `matmul`): the accumulator loop boxes each output cell as
-       a double (vec_box_f64), not an I32, silently violating the declared (Vec I32) data field.
-       Reading back via the only correct-per-declared-type int* cast returns garbage/0, not the
-       hand-traced values; the real values only recover via the wrong double* cast. Asserting the
-       CURRENT, confirmed-buggy behavior as a real regression gate, not the semantically-correct
-       one -- same discipline test_base4_vector.c already established for `dot`. */
-    int wrong_00 = *(int *)vec_get(&C.data, 0);
-    double right_00 = *(double *)vec_get(&C.data, 0);
-    printf("matmul[0][0] via (wrong, per-signature) int* cast: %d\n", wrong_00);
-    printf("matmul[0][0] via (right, real value) double* cast: %f\n", right_00);
-    assert(right_00 == 2.0);
-    assert(wrong_00 != 2); /* confirms the corruption is real, not a fluke -- would fail loudly
-                               if a future compiler fix silently started producing 2 here without
-                               this test being updated to expect it */
+    /* Real, deliberate UPDATE (2026-09-08, EMILY/BACKLOG.md's own "loop-variable I32 boxing bug"
+       -- the real, cross-cutting fix, not just this file's own narrow workaround): this test
+       used to assert the CONFIRMED-buggy behavior (the accumulator boxed as a double, read back
+       correctly only via the WRONG double* cast, garbage via the correct-per-declared-type int*
+       cast) as a real regression gate. The real fix landed: NODE_NUMBER now distinguishes a
+       whole-number literal from a decimal one, and a loop accumulator seeded from one (`acc`,
+       here reassigned via `base4-add`, itself a real, known I32-returning function) now
+       correctly declares as `int` and boxes via `vec_box_i32` -- confirmed live in the generated
+       C (`int acc = 0;` / `vec_box_i32(&(out), cell)`). The correct-per-declared-type `int*`
+       cast now returns the real, hand-traced values directly. */
+    int cell_00 = *(int *)vec_get(&C.data, 0);
+    int cell_01 = *(int *)vec_get(&C.data, 1);
+    int cell_10 = *(int *)vec_get(&C.data, 2);
+    int cell_11 = *(int *)vec_get(&C.data, 3);
+    printf("matmul: [[%d,%d],[%d,%d]] (expected [[2,3],[0,1]])\n", cell_00, cell_01, cell_10, cell_11);
+    assert(cell_00 == 2);
+    assert(cell_01 == 3);
+    assert(cell_10 == 0);
+    assert(cell_11 == 1);
 
-    double right_01 = *(double *)vec_get(&C.data, 1);
-    double right_10 = *(double *)vec_get(&C.data, 2);
-    double right_11 = *(double *)vec_get(&C.data, 3);
-    assert(right_01 == 3.0);
-    assert(right_10 == 0.0);
-    assert(right_11 == 1.0);
-
-    printf("test_base4_matrix: all assertions passed (matmul's known double-boxing bug confirmed, not fixed)\n");
+    printf("test_base4_matrix: all assertions passed (matmul's own real, correct product, "
+           "loop-variable I32 boxing bug now fixed)\n");
     return 0;
 }

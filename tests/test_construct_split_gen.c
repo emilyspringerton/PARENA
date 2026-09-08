@@ -65,7 +65,7 @@ Vec strides_for(Vec *, Arena *);
 NDArray zeros(Vec, Arena *);
 Result from_vec(Vec, Vec, Arena *);
 int flat_index(NDArray *, Vec *);
-Result get(NDArray *, Vec, Arena *);
+Result array_get(NDArray *, Vec, Arena *);
 Result set_(NDArray *, Vec, double, Arena *);
 Result reshape(NDArray *, Vec, Arena *);
 int same_shape_(NDArray *, NDArray *);
@@ -199,14 +199,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -226,8 +226,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -237,16 +237,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -259,16 +259,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
 }
 
 int product(Vec * shape __attribute__((unused))) {
-    double __loop_result_2 __attribute__((unused));
-    double i = 0;
-    double acc = 1;
+    int __loop_result_2 __attribute__((unused));
+    int i = 0;
+    int acc = 1;
     while (1) {
         if ((i >= vec_len(shape))) {
         __loop_result_2 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
@@ -282,14 +282,14 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     int total __attribute__((unused)) = product(shape);
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
-    double i = 0;
-    int running = total;
+    int i = 0;
+    double running = total;
     while (1) {
         if ((i < n)) {
-        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
-        double __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = next;
+        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int __recur_tmp_0 = (i + 1);
+        double __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;
@@ -304,11 +304,11 @@ NDArray zeros(Vec shape __attribute__((unused)), Arena *dest __attribute__((unus
     int n __attribute__((unused)) = product(&(shape));
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(data), vec_box_f64(&(data), 0.0)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -327,16 +327,16 @@ Result from_vec(Vec data __attribute__((unused)), Vec shape __attribute__((unuse
 }
 
 int flat_index(NDArray * a __attribute__((unused)), Vec * idx __attribute__((unused))) {
-    double __loop_result_5 __attribute__((unused));
-    double i = 0;
-    double offset = 0;
+    int __loop_result_5 __attribute__((unused));
+    int i = 0;
+    int offset = 0;
     while (1) {
         if ((i >= vec_len(idx))) {
         __loop_result_5 = offset;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
         i = __recur_tmp_0;
         offset = __recur_tmp_1;
         continue;
@@ -345,7 +345,7 @@ int flat_index(NDArray * a __attribute__((unused)), Vec * idx __attribute__((unu
     return __loop_result_5;
 }
 
-Result get(NDArray * a __attribute__((unused)), Vec idx __attribute__((unused)), Arena *dest __attribute__((unused))) {
+Result array_get(NDArray * a __attribute__((unused)), Vec idx __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int off __attribute__((unused)) = flat_index(a, &(idx));
     if (((off < 0) || (off >= vec_len(&((a)->data))))) {
     return result_err(IndexError_box(dest, IndexError_new("out of bounds")));
@@ -383,11 +383,11 @@ Result elementwise(NDArray * a __attribute__((unused)), NDArray * b __attribute_
     int n __attribute__((unused)) = vec_len(&((a)->data));
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(out), vec_box_f64(&(out), op((*((double *)(vec_get(&((a)->data), i)))), (*((double *)(vec_get(&((b)->data), i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -425,7 +425,7 @@ int marker_matches_at_(char * text __attribute__((unused)), int pos __attribute_
 int find_marker_from(char * text __attribute__((unused)), char * marker __attribute__((unused)), int start __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int text_len __attribute__((unused)) = length(text);
     int marker_len __attribute__((unused)) = length(marker);
-    double __loop_result_7 __attribute__((unused));
+    int __loop_result_7 __attribute__((unused));
     int i = start;
     while (1) {
         if (((i + marker_len) > text_len)) {
@@ -536,7 +536,7 @@ Vec split_construct(char * text __attribute__((unused)), int chunk_count __attri
     char *header __attribute__((unused)) = substring(text, 0, header_end, dest);
     int text_len __attribute__((unused)) = length(text);
     int content_len __attribute__((unused)) = (text_len - header_end);
-    double real_chunk_count __attribute__((unused)) = ((chunk_count < 1) ? 1 : chunk_count);
+    int real_chunk_count __attribute__((unused)) = ((chunk_count < 1) ? 1 : chunk_count);
     int target __attribute__((unused)) = (content_len / real_chunk_count);
     Vec chunks __attribute__((unused)) = vec_new(dest);
     (void)(build_chunks(text, &(markers), text_len, header, target, real_chunk_count, 0, vec_len(&(markers)), header, 0, &(chunks), dest));

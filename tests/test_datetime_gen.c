@@ -137,14 +137,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -164,8 +164,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -175,16 +175,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -226,14 +226,14 @@ int days_in_month(int year __attribute__((unused)), int month __attribute__((unu
 
 int day_of_year(int year __attribute__((unused)), int month __attribute__((unused)), int day __attribute__((unused))) {
     int __loop_result_2 __attribute__((unused));
-    double m = 1;
+    int m = 1;
     int acc = day;
     while (1) {
         if ((m >= month)) {
         __loop_result_2 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (m + 1);
+        int __recur_tmp_0 = (m + 1);
         int __recur_tmp_1 = (acc + days_in_month(year, m));
         m = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -283,7 +283,7 @@ char * format_go_layout(int epoch_seconds __attribute__((unused)), char * layout
     DateParts parts __attribute__((unused)) = unix_parts(epoch_seconds);
     int n __attribute__((unused)) = length(layout);
     char * __loop_result_3 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= n)) {
@@ -291,48 +291,48 @@ char * format_go_layout(int epoch_seconds __attribute__((unused)), char * layout
         break;
         } else {
         if ((((i + 4) <= n) && str_eq_(substring(layout, i, (i + 4), dest), "2006"))) {
-        double __recur_tmp_0 = (i + 4);
+        int __recur_tmp_0 = (i + 4);
         char * __recur_tmp_1 = concat(acc, i32_to_string((parts).year, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((((i + 2) <= n) && str_eq_(substring(layout, i, (i + 2), dest), "01"))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         char * __recur_tmp_1 = concat(acc, pad2((parts).month, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((((i + 2) <= n) && str_eq_(substring(layout, i, (i + 2), dest), "02"))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         char * __recur_tmp_1 = concat(acc, pad2((parts).day, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((((i + 2) <= n) && str_eq_(substring(layout, i, (i + 2), dest), "15"))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         char * __recur_tmp_1 = concat(acc, pad2((parts).hour, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((((i + 2) <= n) && str_eq_(substring(layout, i, (i + 2), dest), "04"))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         char * __recur_tmp_1 = concat(acc, pad2((parts).minute, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((((i + 2) <= n) && str_eq_(substring(layout, i, (i + 2), dest), "05"))) {
-        double __recur_tmp_0 = (i + 2);
+        int __recur_tmp_0 = (i + 2);
         char * __recur_tmp_1 = concat(acc, pad2((parts).second, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, substring(layout, i, (i + 1), dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;

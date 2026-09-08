@@ -666,14 +666,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -693,8 +693,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -704,16 +704,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -726,16 +726,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
 }
 
 int product(Vec * shape __attribute__((unused))) {
-    double __loop_result_2 __attribute__((unused));
-    double i = 0;
-    double acc = 1;
+    int __loop_result_2 __attribute__((unused));
+    int i = 0;
+    int acc = 1;
     while (1) {
         if ((i >= vec_len(shape))) {
         __loop_result_2 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (acc * (*((int *)(vec_get(shape, i)))));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
@@ -749,14 +749,14 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     int total __attribute__((unused)) = product(shape);
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
-    double i = 0;
-    int running = total;
+    int i = 0;
+    double running = total;
     while (1) {
         if ((i < n)) {
-        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
-        double __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = next;
+        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int __recur_tmp_0 = (i + 1);
+        double __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;
@@ -771,11 +771,11 @@ NDArray zeros(Vec shape __attribute__((unused)), Arena *dest __attribute__((unus
     int n __attribute__((unused)) = product(&(shape));
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(data), vec_box_f64(&(data), 0.0)));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -794,16 +794,16 @@ Result from_vec(Vec data __attribute__((unused)), Vec shape __attribute__((unuse
 }
 
 int flat_index(NDArray * a __attribute__((unused)), Vec * idx __attribute__((unused))) {
-    double __loop_result_5 __attribute__((unused));
-    double i = 0;
-    double offset = 0;
+    int __loop_result_5 __attribute__((unused));
+    int i = 0;
+    int offset = 0;
     while (1) {
         if ((i >= vec_len(idx))) {
         __loop_result_5 = offset;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (offset + ((*((int *)(vec_get(idx, i)))) * (*((int *)(vec_get(&((a)->strides), i))))));
         i = __recur_tmp_0;
         offset = __recur_tmp_1;
         continue;
@@ -850,11 +850,11 @@ Result elementwise(NDArray * a __attribute__((unused)), NDArray * b __attribute_
     int n __attribute__((unused)) = vec_len(&((a)->data));
     Vec out __attribute__((unused)) = vec_new(dest);
     void * __loop_result_6 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
     (void)(vec_push_(&(out), vec_box_f64(&(out), op((*((double *)(vec_get(&((a)->data), i)))), (*((double *)(vec_get(&((b)->data), i))))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -902,7 +902,7 @@ int raw_errno(void) {
 }
 
 int mode_tag_of(OpenMode mode __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused)) = {0};
+    int __match_result_0 __attribute__((unused)) = {0};
     OpenMode __match_tmp_0 = mode;
     if (__match_tmp_0.tag == 0) {
         __match_result_0 = 0;
@@ -985,11 +985,11 @@ double raw_read_f64(int fd __attribute__((unused))) {
 Result read_floats(FileHandle f __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec data __attribute__((unused)) = vec_new(dest);
     void * __loop_result_7 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < n)) {
         (void)(vec_push_(&(data), vec_box_f64(&(data), raw_read_f64((f).fd))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -999,7 +999,7 @@ Result read_floats(FileHandle f __attribute__((unused)), int n __attribute__((un
     Vec shape __attribute__((unused)) = vec_new(dest);
     Vec strides __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(shape), vec_box_i32(&(shape), n)));
-    (void)(vec_push_(&(strides), vec_box_f64(&(strides), 1)));
+    (void)(vec_push_(&(strides), vec_box_i32(&(strides), 1)));
     return result_ok(NDArray_box(dest, NDArray_new(data, shape, strides)));
 }
 
@@ -1034,8 +1034,8 @@ Result parse_alt(char * pattern __attribute__((unused)), int pos __attribute__((
         int plen __attribute__((unused)) = length(pattern);
         Vec branches __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(branches), PatternNode_box(dest, ((*((ParseStep *)(first)))).node)));
-    int p = ((*((ParseStep *)(first)))).next;
-    int nc = ((*((ParseStep *)(first)))).ncap;
+    double p = ((*((ParseStep *)(first)))).next;
+    double nc = ((*((ParseStep *)(first)))).ncap;
     while (1) {
         if (((p < plen) && (char_at(pattern, p) == 124))) {
     Result __match_tmp_3 = parse_concat(pattern, (p + 1), nc, dest);
@@ -1047,8 +1047,8 @@ Result parse_alt(char * pattern __attribute__((unused)), int pos __attribute__((
     else if (__match_tmp_3.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_3.value;
     (void)(vec_push_(&(branches), PatternNode_box(dest, ((*((ParseStep *)(step)))).node)));
-        int __recur_tmp_0 = ((*((ParseStep *)(step)))).next;
-        int __recur_tmp_1 = ((*((ParseStep *)(step)))).ncap;
+        double __recur_tmp_0 = ((*((ParseStep *)(step)))).next;
+        double __recur_tmp_1 = ((*((ParseStep *)(step)))).ncap;
         p = __recur_tmp_0;
         nc = __recur_tmp_1;
         continue;
@@ -1066,8 +1066,8 @@ Result parse_concat(char * pattern __attribute__((unused)), int pos __attribute_
     int plen __attribute__((unused)) = length(pattern);
     Vec parts __attribute__((unused)) = vec_new(dest);
     Result __loop_result_8 __attribute__((unused));
-    int p = pos;
-    int nc = ncap;
+    double p = pos;
+    double nc = ncap;
     while (1) {
         if ((((p >= plen) || (char_at(pattern, p) == 124)) || (char_at(pattern, p) == 41))) {
         __loop_result_8 = result_ok(ParseStep_box(dest, ParseStep_new(PatternNode_Concat(Vec_box(dest, parts)), p, nc)));
@@ -1082,8 +1082,8 @@ Result parse_concat(char * pattern __attribute__((unused)), int pos __attribute_
     else if (__match_tmp_4.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_4.value;
     (void)(vec_push_(&(parts), PatternNode_box(dest, ((*((ParseStep *)(step)))).node)));
-        int __recur_tmp_0 = ((*((ParseStep *)(step)))).next;
-        int __recur_tmp_1 = ((*((ParseStep *)(step)))).ncap;
+        double __recur_tmp_0 = ((*((ParseStep *)(step)))).next;
+        double __recur_tmp_1 = ((*((ParseStep *)(step)))).ncap;
         p = __recur_tmp_0;
         nc = __recur_tmp_1;
         continue;
@@ -1153,7 +1153,7 @@ Result parse_group(char * pattern __attribute__((unused)), int pos __attribute__
 }
 
 int find_class_close(char * pattern __attribute__((unused)), int from __attribute__((unused)), int plen __attribute__((unused))) {
-    double __loop_result_9 __attribute__((unused));
+    int __loop_result_9 __attribute__((unused));
     int j = from;
     while (1) {
         if ((j >= plen)) {
@@ -1407,14 +1407,14 @@ Option alt_literal_scan_root(PatternNode * node __attribute__((unused)), char * 
 
 int literal_matches_at_(char * text __attribute__((unused)), int start __attribute__((unused)), char * needle __attribute__((unused)), int nlen __attribute__((unused))) {
     int __loop_result_11 __attribute__((unused));
-    double j = 0;
+    int j = 0;
     while (1) {
         if ((j >= nlen)) {
         __loop_result_11 = 1;
         break;
         } else {
         if ((char_at(text, (start + j)) == char_at(needle, j))) {
-        double __recur_tmp_0 = (j + 1);
+        int __recur_tmp_0 = (j + 1);
         j = __recur_tmp_0;
         continue;
         } else {
@@ -1433,7 +1433,7 @@ int string_contains_(char * text __attribute__((unused)), char * needle __attrib
     return 0;
     } else {
     int __loop_result_12 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i > (tlen - nlen))) {
         __loop_result_12 = 0;
@@ -1443,7 +1443,7 @@ int string_contains_(char * text __attribute__((unused)), char * needle __attrib
         __loop_result_12 = 1;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -1609,7 +1609,7 @@ Vec match_concat(Vec * parts __attribute__((unused)), int i __attribute__((unuse
     } else {
     Vec candidates __attribute__((unused)) = match_node(vec_get(parts, i), text, pos, steps, budget, dest);
     Vec __loop_result_14 __attribute__((unused));
-    double ci = 0;
+    int ci = 0;
     while (1) {
         if ((ci >= vec_len(&(candidates)))) {
         __loop_result_14 = vec_new(dest);
@@ -1620,7 +1620,7 @@ Vec match_concat(Vec * parts __attribute__((unused)), int i __attribute__((unuse
         __loop_result_14 = rest;
         break;
         } else {
-        double __recur_tmp_0 = (ci + 1);
+        int __recur_tmp_0 = (ci + 1);
         ci = __recur_tmp_0;
         continue;
         }
@@ -1647,14 +1647,14 @@ Vec match_star(PatternNode * inner __attribute__((unused)), int greedy __attribu
     Vec ascending __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), pos)));
     void * __loop_result_15 __attribute__((unused));
-    int cur = pos;
+    double cur = pos;
     while (1) {
         Vec inner_candidates __attribute__((unused)) = match_node(inner, text, cur, steps, budget, dest);
         if ((vec_len(&(inner_candidates)) > 0)) {
         int next_pos __attribute__((unused)) = vec_i32_at(&(inner_candidates), 0);
         if ((next_pos > cur)) {
         (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), next_pos)));
-        int __recur_tmp_0 = next_pos;
+        double __recur_tmp_0 = next_pos;
         cur = __recur_tmp_0;
         continue;
         } else {
@@ -1680,14 +1680,14 @@ Vec match_plus(PatternNode * inner __attribute__((unused)), int greedy __attribu
     Vec ascending __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), first_pos)));
     void * __loop_result_16 __attribute__((unused));
-    int cur = first_pos;
+    double cur = first_pos;
     while (1) {
         Vec inner_candidates __attribute__((unused)) = match_node(inner, text, cur, steps, budget, dest);
         if ((vec_len(&(inner_candidates)) > 0)) {
         int next_pos __attribute__((unused)) = vec_i32_at(&(inner_candidates), 0);
         if ((next_pos > cur)) {
         (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), next_pos)));
-        int __recur_tmp_0 = next_pos;
+        double __recur_tmp_0 = next_pos;
         cur = __recur_tmp_0;
         continue;
         } else {
@@ -1733,7 +1733,7 @@ Result is_match(Regex * re __attribute__((unused)), char * text __attribute__((u
     }
     else if (__match_tmp_17.tag == 0) {
         int steps __attribute__((unused)) = zero_i32();
-    double start = 0;
+    int start = 0;
     while (1) {
         if ((start > length(text))) {
         __match_result_14 = result_ok(int_box(dest, 0));
@@ -1744,7 +1744,7 @@ Result is_match(Regex * re __attribute__((unused)), char * text __attribute__((u
         __match_result_14 = result_ok(int_box(dest, 1));
         break;
         } else {
-        double __recur_tmp_0 = (start + 1);
+        int __recur_tmp_0 = (start + 1);
         start = __recur_tmp_0;
         continue;
         }
@@ -1758,7 +1758,7 @@ Result is_match(Regex * re __attribute__((unused)), char * text __attribute__((u
 Result find(Regex * re __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int steps __attribute__((unused)) = zero_i32();
     Result __loop_result_17 __attribute__((unused));
-    double start = 0;
+    int start = 0;
     while (1) {
         if ((start > length(text))) {
         __loop_result_17 = result_ok(Option_box(dest, option_none()));
@@ -1769,7 +1769,7 @@ Result find(Regex * re __attribute__((unused)), char * text __attribute__((unuse
         __loop_result_17 = result_ok(Option_box(dest, option_some(Match_box(dest, Match_new(start, vec_i32_at(&(candidates), 0), vec_new(dest))))));
         break;
         } else {
-        double __recur_tmp_0 = (start + 1);
+        int __recur_tmp_0 = (start + 1);
         start = __recur_tmp_0;
         continue;
         }
@@ -1828,19 +1828,19 @@ Result find_all(Regex * re __attribute__((unused)), char * text __attribute__((u
 }
 
 char * vec_string_at(Vec * v __attribute__((unused)), int idx __attribute__((unused))) {
-    return (*(char **)vec_get(v, idx));
+    return ((char *)vec_get(v, idx));
 }
 
 char * join_strings(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_19 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_19 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, vec_string_at(parts, i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1868,7 +1868,7 @@ char * replace(Regex * re __attribute__((unused)), char * text __attribute__((un
         if ((n == 0)) {
         __match_result_15 = text;
         } else {
-    double i = 0;
+    int i = 0;
     double pos = 0;
     char * acc = "";
     while (1) {
@@ -1880,7 +1880,7 @@ char * replace(Regex * re __attribute__((unused)), char * text __attribute__((un
         int mend __attribute__((unused)) = vec_match_end_at(matches, i);
         char *before __attribute__((unused)) = substring(text, pos, mstart, dest);
         char *spliced __attribute__((unused)) = concat(concat(acc, before, dest), replacement, dest);
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         double __recur_tmp_1 = mend;
         char * __recur_tmp_2 = spliced;
         i = __recur_tmp_0;
@@ -1910,7 +1910,7 @@ void bindings_set_(Bindings * b __attribute__((unused)), char * key __attribute_
 ExprValue bindings_get(Bindings * b __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = vec_len(&(((*((Bindings *)(b)))).keys));
     ExprValue __loop_result_20 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __loop_result_20 = ExprValue_Num(double_box(dest, 0.0));
@@ -1920,7 +1920,7 @@ ExprValue bindings_get(Bindings * b __attribute__((unused)), char * key __attrib
         __loop_result_20 = (*((ExprValue *)(vec_get(&(((*((Bindings *)(b)))).values), i))));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -2188,7 +2188,7 @@ Result parse_expr_rest(char * src __attribute__((unused)), ExprNode lhs __attrib
 
 Result run(FileHandle f __attribute__((unused)), AwkProgram * program __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Result __loop_result_26 __attribute__((unused));
-    double nr = 1;
+    int nr = 1;
     while (1) {
     Result __match_tmp_27 = read_line(f, dest);
     if (__match_tmp_27.tag == 1) {
@@ -2197,7 +2197,7 @@ Result run(FileHandle f __attribute__((unused)), AwkProgram * program __attribut
     if (__match_tmp_28.tag == 1) {
         void *line __attribute__((unused)) = __match_tmp_28.value;
     (void)(run_rules(&((program)->rules), record_from_line(line, nr, dest), dest));
-        double __recur_tmp_0 = (nr + 1);
+        int __recur_tmp_0 = (nr + 1);
         nr = __recur_tmp_0;
         continue;
     }
@@ -2225,14 +2225,14 @@ char * join_fields(Record rec __attribute__((unused)), Arena *dest __attribute__
     return "";
     } else {
     char * __loop_result_27 __attribute__((unused));
-    double i = 1;
+    int i = 1;
     char * acc = vec_get(&((rec).fields), 0);
     while (1) {
         if ((i >= n)) {
         __loop_result_27 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(concat(acc, " ", dest), vec_get(&((rec).fields), i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -2251,7 +2251,7 @@ char * concat_field_name(int i __attribute__((unused)), Arena *dest __attribute_
 
 void run_rules(Vec * rules __attribute__((unused)), Record rec __attribute__((unused)), Arena *dest __attribute__((unused))) {
     void * __loop_result_28 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(rules))) {
     AwkRule *rule __attribute__((unused)) = vec_get(rules, i);
@@ -2259,7 +2259,7 @@ void run_rules(Vec * rules __attribute__((unused)), Record rec __attribute__((un
     if (rule_matches_(rule, rec, dest)) {
         (void)(eval((rule)->action, &(b), dest));
     }
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -2294,11 +2294,11 @@ Bindings bindings_for(Record rec __attribute__((unused)), Arena *dest __attribut
     (void)(bindings_set_(&(b), "NR", ExprValue_Num(double_box(dest, i32_to_f64((rec).nr))), dest));
     (void)(bindings_set_(&(b), "NF", ExprValue_Num(double_box(dest, i32_to_f64(vec_len(&((rec).fields))))), dest));
     void * __loop_result_29 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(&((rec).fields)))) {
     (void)(bindings_set_(&(b), concat_field_name(i, dest), ExprValue_Str(vec_get(&((rec).fields), i)), dest));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {

@@ -216,14 +216,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -243,8 +243,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -254,16 +254,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -390,7 +390,7 @@ Result json_parse_number(char * s __attribute__((unused)), int pos __attribute__
 
 int find_string_end(char * s __attribute__((unused)), int pos __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
-    double __loop_result_4 __attribute__((unused));
+    int __loop_result_4 __attribute__((unused));
     int p = (pos + 1);
     while (1) {
         if ((p >= n)) {
@@ -441,7 +441,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     else if (__match_tmp_1.tag == 1) {
         void *first __attribute__((unused)) = __match_tmp_1.value;
     (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(first)))).value)));
-    int p = json_skip_ws(s, ((*((JsonStep *)(first)))).next);
+    double p = json_skip_ws(s, ((*((JsonStep *)(first)))).next);
     while (1) {
         if ((p >= n)) {
         __match_result_1 = result_err(JsonError_box(dest, JsonError_new("unterminated array", pos)));
@@ -461,7 +461,7 @@ Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unus
     else if (__match_tmp_2.tag == 1) {
         void *step __attribute__((unused)) = __match_tmp_2.value;
     (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(step)))).value)));
-        int __recur_tmp_0 = json_skip_ws(s, ((*((JsonStep *)(step)))).next);
+        double __recur_tmp_0 = json_skip_ws(s, ((*((JsonStep *)(step)))).next);
         p = __recur_tmp_0;
         continue;
     }
@@ -495,7 +495,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
         void *first __attribute__((unused)) = __match_tmp_3.value;
     (void)(vec_push_(&(keys), ((*((MemberStep *)(first)))).key));
     (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(first)))).value)));
-    int p = json_skip_ws(s, ((*((MemberStep *)(first)))).next);
+    double p = json_skip_ws(s, ((*((MemberStep *)(first)))).next);
     while (1) {
         if ((p >= n)) {
         __match_result_2 = result_err(JsonError_box(dest, JsonError_new("unterminated object", pos)));
@@ -516,7 +516,7 @@ Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unu
         void *step __attribute__((unused)) = __match_tmp_4.value;
     (void)(vec_push_(&(keys), ((*((MemberStep *)(step)))).key));
     (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(step)))).value)));
-        int __recur_tmp_0 = json_skip_ws(s, ((*((MemberStep *)(step)))).next);
+        double __recur_tmp_0 = json_skip_ws(s, ((*((MemberStep *)(step)))).next);
         p = __recur_tmp_0;
         continue;
     }
@@ -570,7 +570,7 @@ Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused
         Vec keys __attribute__((unused)) = __match_payload_6->keys;
         Vec values __attribute__((unused)) = __match_payload_6->values;
         int n __attribute__((unused)) = vec_len(&(keys));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         __match_result_4 = option_none();
@@ -580,7 +580,7 @@ Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused
         __match_result_4 = option_some(vec_get(&(values), i));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }

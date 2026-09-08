@@ -456,14 +456,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -483,8 +483,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -494,16 +494,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -558,7 +558,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
     int len __attribute__((unused)) = (lx)->len;
     Lexer __loop_result_2 __attribute__((unused));
     int pos = (lx)->pos;
-    int line = (lx)->line;
+    double line = (lx)->line;
     int in_comment = 0;
     while (1) {
         if ((pos >= len)) {
@@ -569,7 +569,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         if (in_comment) {
         if ((c == 10)) {
         int __recur_tmp_0 = pos;
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -577,7 +577,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         continue;
         } else {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -587,7 +587,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if (lx_is_whitespace_(c)) {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -596,7 +596,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if ((c == 59)) {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -737,7 +737,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
     int len __attribute__((unused)) = (lx)->len;
     Result __loop_result_6 __attribute__((unused));
     int pos = ((lx)->pos + 1);
-    int line = start_line;
+    double line = start_line;
     char * acc = "";
     while (1) {
         if ((pos >= len)) {
@@ -757,7 +757,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         int e __attribute__((unused)) = char_at(src, (pos + 1));
         int decoded __attribute__((unused)) = ((e == 110) ? 10 : ((e == 116) ? 9 : ((e == 34) ? 34 : ((e == 92) ? 92 : e))));
         int __recur_tmp_0 = (pos + 2);
-        int __recur_tmp_1 = line;
+        double __recur_tmp_1 = line;
         char * __recur_tmp_2 = concat(acc, char_from_code(decoded, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -766,7 +766,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         }
         } else {
         int __recur_tmp_0 = (pos + 1);
-        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         char * __recur_tmp_2 = concat(acc, char_from_code(c, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -822,7 +822,7 @@ Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((u
 }
 
 int kind_code(TokenType k __attribute__((unused))) {
-    double __match_result_0 __attribute__((unused)) = {0};
+    int __match_result_0 __attribute__((unused)) = {0};
     TokenType __match_tmp_2 = k;
     if (__match_tmp_2.tag == 0) {
         __match_result_0 = 0;
@@ -890,14 +890,14 @@ char * close_name(TokenType k __attribute__((unused))) {
 
 char * join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_8 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_8 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, vec_get(parts, i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1110,7 +1110,7 @@ Result parse_program(char * src __attribute__((unused)), Arena *dest __attribute
 }
 
 int emit_node_kind_code(NodeType k __attribute__((unused))) {
-    double __match_result_7 __attribute__((unused)) = {0};
+    int __match_result_7 __attribute__((unused)) = {0};
     NodeType __match_tmp_12 = k;
     if (__match_tmp_12.tag == 0) {
         __match_result_7 = 0;
@@ -1165,14 +1165,14 @@ int emit_is_call_named_(Node * n __attribute__((unused)), char * fn_name __attri
 
 char * emit_join_all(Vec * parts __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_9 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_9 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, vec_get(parts, i), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1188,14 +1188,14 @@ char * join3(char * a __attribute__((unused)), char * b __attribute__((unused)),
 
 char * join_with(Vec * parts __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_10 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= vec_len(parts))) {
         __loop_result_10 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = (str_eq_(acc, "") ? vec_get(parts, i) : join3(acc, sep, vec_get(parts, i), dest));
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1210,16 +1210,16 @@ int mangle_char(int c __attribute__((unused))) {
 }
 
 char * mangle(char * name __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    double start __attribute__((unused)) = (((length(name) > 0) && (char_at(name, 0) == 33)) ? 1 : 0);
+    int start __attribute__((unused)) = (((length(name) > 0) && (char_at(name, 0) == 33)) ? 1 : 0);
     char * __loop_result_11 __attribute__((unused));
-    double i = start;
+    int i = start;
     char * acc = "";
     while (1) {
         if ((i >= length(name))) {
         __loop_result_11 = acc;
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, char_from_code(mangle_char(char_at(name, i)), dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -1254,11 +1254,11 @@ Option arena_scope_lookup(Vec * scope __attribute__((unused)), char * name __att
 Vec arena_scope_extend(Vec * scope __attribute__((unused)), ArenaBinding b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec copy __attribute__((unused)) = vec_new(dest);
     void * __loop_result_13 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i < vec_len(scope))) {
         (void)(vec_push_(&(copy), ArenaBinding_box(dest, (*((ArenaBinding *)(vec_get(scope, i)))))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
@@ -1939,7 +1939,7 @@ char * param_c_type(char * type_name __attribute__((unused)), Vec * known_struct
 
 ParamInfo emit_params(Node * params __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     ParamInfo __loop_result_16 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     Vec pieces = vec_new(dest);
     Vec scope = vec_new(dest);
     while (1) {
@@ -1956,7 +1956,7 @@ ParamInfo emit_params(Node * params __attribute__((unused)), Vec * known_structs
         char *piece __attribute__((unused)) = join3(c_type, c_name, " __attribute__((unused))", dest);
         Vec next_scope __attribute__((unused)) = (str_eq_(type_name, "Arena") ? arena_scope_extend(&(scope), ArenaBinding_new(pname, ArenaKind_PointerArena()), dest) : scope);
         (void)(vec_push_(&(pieces), piece));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         Vec __recur_tmp_1 = pieces;
         Vec __recur_tmp_2 = next_scope;
         i = __recur_tmp_0;
@@ -1976,7 +1976,7 @@ int body_start_index(Node * defn_node __attribute__((unused))) {
     if ((!((emit_node_kind_code((maybe_colon)->kind) == 7)))) {
     return 3;
     } else {
-    double after_type __attribute__((unused)) = (3 + 2);
+    int after_type __attribute__((unused)) = (3 + 2);
     if ((vec_len(&((defn_node)->children)) < (after_type + 1))) {
     return after_type;
     } else {
@@ -2394,7 +2394,7 @@ char * emit_program(Node * program __attribute__((unused)), Arena *dest __attrib
     char *structs_c __attribute__((unused)) = struct_prepass(program, 0, &(known_structs), &(known_struct_nodes), dest);
     char *prototypes_c __attribute__((unused)) = emit_prototypes(program, 0, &(known_structs), dest);
     char * __loop_result_17 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = concat(header, concat(structs_c, prototypes_c, dest), dest);
     while (1) {
         if ((i >= vec_len(&((program)->children)))) {
@@ -2403,13 +2403,13 @@ char * emit_program(Node * program __attribute__((unused)), Arena *dest __attrib
         } else {
         Node *form __attribute__((unused)) = vec_get(&((program)->children), i);
         if (emit_is_call_named_(form, "defn")) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, emit_defn(form, &(known_structs), &(known_struct_nodes), dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = acc;
         i = __recur_tmp_0;
         acc = __recur_tmp_1;

@@ -56,14 +56,14 @@ int base4_subtract(int a __attribute__((unused)), int b __attribute__((unused)))
 int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused)), int steps __attribute__((unused))) {
     int __loop_result_0 __attribute__((unused));
     int state = start;
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= steps)) {
         __loop_result_0 = state;
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;
@@ -73,9 +73,9 @@ int base4_iterate(int start __attribute__((unused)), int (*op)(int, int) __attri
 }
 
 int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __attribute__((unused))) {
-    double __loop_result_1 __attribute__((unused));
+    int __loop_result_1 __attribute__((unused));
     int state = op(start, start);
-    double i = 1;
+    int i = 1;
     while (1) {
         if ((state == start)) {
         __loop_result_1 = i;
@@ -86,7 +86,7 @@ int base4_cycle_length(int start __attribute__((unused)), int (*op)(int, int) __
         break;
         } else {
         int __recur_tmp_0 = op(state, start);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         state = __recur_tmp_0;
         i = __recur_tmp_1;
         continue;

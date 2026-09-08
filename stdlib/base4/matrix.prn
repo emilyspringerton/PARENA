@@ -94,11 +94,13 @@
 ;; material defines matrix multiplication only as "cross-multiply rows and columns" via repeated
 ;; Dot Products, never a concrete base4 formula of its own.
 ;;
-;; Real, honest, CONFIRMED-to-be-at-risk of the exact same class of bug base4/vector.prn's own
-;; `dot` already found and documented (loop-accumulator integer literals boxed as `double`): this
-;; function's own inner accumulator (`acc`) is seeded from `0` the same way `dot`'s was. Not
-;; verified safe here — see this file's own test for the real, direct empirical check, not an
-;; assumption either way.
+;; Real, honest history: this function's own inner accumulator (`acc`, seeded from `0` the same
+;; way `dot`'s own accumulator was) used to be at real, confirmed risk of the loop-accumulator
+;; I32-boxing bug `base4/vector.prn`'s own `dot` first found and documented. Fixed for real
+;; 2026-09-08 (EMILY/BACKLOG.md's own "loop-variable I32 boxing bug," the real, cross-cutting
+;; compiler fix, not a per-file workaround): `acc` now correctly declares `int` and boxes via
+;; `vec_box_i32` — verified directly in this file's own test against the real, hand-traced
+;; matrix product, not just a clean compile.
 (defn matmul [(a : &Base4Matrix) (b : &Base4Matrix) (dest : Arena @ Region)]
   : Base4Matrix @ Region
   (let [out-rows (get-field a :rows)
