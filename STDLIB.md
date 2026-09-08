@@ -4454,3 +4454,32 @@ attempted: `:=`/`:+`/`#`/`%` operators, nested `${...}` inside a default value (
 
 9 new real end-to-end assertions (5 elif, 4 parameter expansion) — all pass alongside the
 original 14. `make test`: 347/347, zero regressions.
+
+## coreutils/sh — real functions + multi-line statements + bare assignment, validated against a real EmilyOS script (2026-09-08, same day)
+
+Founder: "dooittt." Real architectural gap fixed FIRST: this shell used to execute one physical
+line at a time — confirmed live via a real multi-line `if\nthen\n...\nfi` producing three
+nonsensical "not found" errors. Fixed: `tokenize-line` treats a real newline exactly like `;`;
+the host REPL loop accumulates lines into a growing buffer, re-tokenizing after each new line,
+executing only once a real, honest heuristic (`is_balanced` — net `if`/`fi` and `{`/`}` counts)
+confirms nothing is dangling. Named limitation: a literal `if`/`fi`/`{`/`}` word inside a quoted
+string would confuse the count — checked live and confirmed not to affect this session's own two
+audited real scripts.
+
+Real shell functions: `NAME() { BODY }`, stored persistently (a real function table, since the
+per-statement Arena gets freed after each statement), called through the exact same `exec_range`
+every other construct uses, running in the calling process (never forked).
+
+Real bare `NAME=value` assignment (no `export`): found live feeding the real, audited
+`/etc/init.d/hostname` script into `parenash` — its first real line, `description="Sets the
+hostname of the machine."`, was misreported as an unknown command. Fixed via the same real
+`setenv` `export` already uses.
+
+Real, live end-to-end validation: the actual `/etc/init.d/hostname` script now parses and defines
+its own real `depend`/`start` functions with zero errors; invoking `start` runs its real `[ -s
+... ]` test, `${hostname:-localhost}` fallback, and a real `hostname` command with real expanded
+args — failing only on OpenRC's own `ebegin`/`eend` helpers (a real, separate, now precisely
+named gap: a `source`/`.` builtin for OpenRC's own `functions.sh`).
+
+8 new real end-to-end assertions (2 multi-line, 4 functions, 2 bare assignment) — all pass
+alongside the original 23. `make test`: 347/347, zero regressions.

@@ -160,6 +160,54 @@ actually uses) — a real, separate, later extension.
 9 new real end-to-end assertions (5 for `elif`, 4 for parameter expansion) — all pass, alongside
 the original 14. `make test`: 347/347, zero regressions.
 
+## Phase 3c shipped same day (founder: "dooittt") — real shell FUNCTIONS + multi-line statements + bare assignment, live-tested against the real EmilyOS `hostname` script
+
+**Real, live-found architectural gap fixed FIRST, before functions could mean anything real**:
+this shell used to execute one PHYSICAL line at a time — confirmed live via the real, standard
+multi-line form `if true\nthen\necho yes\nfi\n` producing three separate, nonsensical "not found"
+errors instead of running as one real conditional. Real OpenRC scripts (and real function
+definitions) are always written this way, so this had to be fixed before functions were worth
+building. Fixed: `tokenize-line` (PARENA side) now treats a real newline exactly like `;` — both
+are statement separators in real shell syntax; the REPL loop (host side) now ACCUMULATES physical
+lines into a growing buffer, re-tokenizing the whole thing after each new line, and only executes
+once a real, honest HEURISTIC (`is_balanced` — net `if`/`fi` and `{`/`}` counts) confirms nothing
+is left dangling. Real, named limitation: a literal `if`/`fi`/`{`/`}` word inside a quoted string
+would confuse the count — checked live and confirmed NOT to affect this session's own two
+audited real scripts.
+
+**Real shell functions**: `NAME() { BODY }` — `exec_range` recognizes the shape (a word ending in
+the real, unspaced `()`, immediately followed by `{`), finds the matching `}` (no nesting v0),
+and stores the body PERSISTENTLY (a real, separate function table, since the per-statement Arena
+that ordinarily holds a line's own words gets freed right after each statement runs). A function
+CALL executes its stored body through the exact same `exec_range` every other construct in this
+shell already uses — meaning a function body gets real `if`/`elif`/multi-line/assignments for
+free, no separate code path. Runs in the CALLING process, never forked, the same real reason
+`cd`/`export` are builtins: a function must be able to affect the shell's own cwd/environment.
+
+**Real bare `NAME=value` assignment** (no `export` keyword) — found live feeding this session's
+own real, audited `/etc/init.d/hostname` script straight into `parenash`: its very first real
+line, `description="Sets the hostname of the machine."`, was being misreported as an unknown
+command (`sh: description=Sets...: not found`) since this shell had no concept of a bare
+assignment at all, only the explicit `export` builtin. Fixed: a single-word simple command
+matching `IDENTIFIER=value` now does a real `setenv`, same as `export` — the same real, honest
+"no separate shell-variable-vs-environment-variable namespace" simplification `export` already
+made, named directly rather than silently claiming full POSIX scoping semantics.
+
+**Real, live end-to-end validation against the actual EmilyOS rootfs**: fed the real
+`/etc/init.d/hostname` script (comments stripped) straight into `parenash` — it now parses and
+defines its own real `depend`/`start` functions with ZERO errors (previously: multiple). Manually
+invoking `start` afterward runs its real `if [ -s /etc/hostname ]` test, the real
+`${hostname:-localhost}` fallback assignment, and attempts the real `hostname` command with real
+expanded arguments — failing only on `ebegin`/`eend` (OpenRC's OWN helper functions, real and
+genuinely separate: they live in `/lib/rc/sh/functions.sh`, sourced by OpenRC's own
+`/sbin/openrc-run` wrapper before a script's `start`/`stop` ever runs — not something a raw `sh`
+invocation would have without a real `source`/`.` builtin, this shell's own next, now clearly-
+named real gap). This is real, direct, evidence-backed progress against the actual stated goal,
+not just more isolated unit tests.
+
+8 new real end-to-end assertions (2 multi-line, 4 functions, 2 bare assignment) — all pass,
+alongside the original 23. `make test`: 347/347, zero regressions.
+
 ## Real phased plan
 
 - **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
@@ -174,14 +222,20 @@ the original 14. `make test`: 347/347, zero regressions.
   direct, already-proven precedent for wrapping a privileged syscall-adjacent operation in PARENA.
 - **Phase 3 (v0 done)**: a real, minimal `sh` — sequential `;`-separated commands, quote-aware
   tokenizing, whole-word `$VAR` expansion, `cd`/`export`/`exit` builtins.
-- **Phase 3b (v0 done: `if`/`then`/`else`/`fi`, `elif`, and `${VAR:-default}` all shipped)**:
-  real conditionals — `test`/`[` already work via the plain `execvp` fallback, confirmed live.
-  **Not yet done**: nested `if`, real shell FUNCTIONS (`name() { ... }`), `:=`/`:+`/`#`/`%`
-  parameter-expansion operators, and nested `${...}` inside a default value — real, concrete,
-  named next slices, sized against this session's own real audit of `/etc/init.d/hostname`/
-  `bootmisc` rather than guessed at. Real shell FUNCTIONS are the single largest remaining piece
-  — both audited real scripts define at least one (`depend() { ... }`) — and still the real gate
-  before this shell could run actual OpenRC scripts.
+- **Phase 3b (v0 done)**: real conditionals — `if`/`then`/`else`/`fi`, `elif`,
+  `${VAR:-default}` — `test`/`[` already work via the plain `execvp` fallback, confirmed live.
+- **Phase 3c (v0 done)**: real multi-line statement support (the real architectural fix that
+  makes everything below possible), real shell FUNCTIONS (`name() { ... }`, single-level, no
+  nested definitions), and real bare `NAME=value` assignment. Live-validated against the actual
+  EmilyOS `/etc/init.d/hostname` script — it now parses and defines its own functions with zero
+  errors, and `start` runs its real conditional/parameter-expansion/command logic correctly.
+  **Not yet done**: nested `if`, `:=`/`:+`/`#`/`%` parameter-expansion operators, nested `${...}`
+  inside a default value, and a real `source`/`.` builtin — needed for OpenRC's own
+  `ebegin`/`eend`/etc. helpers, which live in a separate real `functions.sh` that OpenRC's own
+  `/sbin/openrc-run` wrapper sources before a script's `start`/`stop` ever runs, confirmed live as
+  the ONLY remaining failure running the real `hostname` script's own `start` function. The real,
+  concrete, now-precisely-named next gate before this shell could run a real OpenRC script
+  completely end to end, sized against live evidence rather than guessed at.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).

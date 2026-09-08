@@ -106,6 +106,43 @@ int main(void) {
     CHECK(strcmp(run_script("export PLAIN=hi\\necho \\${PLAIN}\\n"), "hi\n") == 0,
           "a plain '${VAR}' brace form with no default operator also expands correctly");
 
+    /* --- real multi-line statement support (2026-09-08, Phase 3c) --- */
+    CHECK(strcmp(run_script("if true\\nthen\\necho yes\\nfi\\n"), "yes\n") == 0,
+          "a real MULTI-LINE 'if/then/fi' (the real, standard form actual shell scripts use, "
+          "spanning several physical lines rather than one ';'-joined line) now runs correctly "
+          "(real, live-found architectural gap fixed this pass: this shell used to execute one "
+          "physical line at a time, producing nonsensical 'not found' errors for exactly this "
+          "real, common shape)");
+    CHECK(strcmp(run_script("if false\\nthen\\necho yes\\nelse\\necho no\\nfi\\n"), "no\n") == 0,
+          "a real multi-line if/then/else/fi also runs correctly");
+
+    /* --- real shell functions: name() { ... } (2026-09-08, Phase 3c) --- */
+    CHECK(strcmp(run_script("greet() {\\necho hello\\necho world\\n}\\ngreet\\n"), "hello\nworld\n") == 0,
+          "a real, multi-line function definition followed by a real call to it runs the ENTIRE "
+          "real function body (both lines), not just a stub");
+    CHECK(strcmp(run_script("greet() { echo hi; }\\ngreet\\n"), "hi\n") == 0,
+          "a real SINGLE-LINE function definition also works");
+    {
+        char *out = run_script("goto_tmp() {\\ncd /tmp\\n}\\ngoto_tmp\\npwd\\n");
+        CHECK(strstr(out, "/tmp") != NULL,
+              "a real function body containing a real 'cd' builtin actually changes the CALLING "
+              "shell's own real working directory (proving the function ran in-process, not a "
+              "forked child, the same real reason cd/export are builtins at all)");
+    }
+    CHECK(strcmp(run_script("check() {\\nif true\\nthen\\necho yes-from-fn\\nfi\\n}\\ncheck\\n"), "yes-from-fn\n") == 0,
+          "a real function body containing a real multi-line 'if' conditional runs correctly -- "
+          "function bodies get every other real shell feature this shell has, for free, since "
+          "they execute through the exact same exec_range every other construct uses");
+
+    /* --- real bare NAME=value assignment, no 'export' keyword (2026-09-08, Phase 3c) --- */
+    CHECK(run_script_status("description=\\\"a real assignment\\\"\\n") == 0,
+          "a real, bare 'NAME=value' statement (real, live-found gap: this session's own audited "
+          "/etc/init.d/hostname script's very first real line is exactly this shape) is now "
+          "recognized as an assignment, not misreported as an unknown command");
+    CHECK(strcmp(run_script("GREETING=hi\\necho \\$GREETING\\n"), "hi\n") == 0,
+          "a real bare assignment's own value is genuinely readable back via \\$VAR expansion "
+          "afterward, proving it's a real assignment and not just a silently-ignored no-op");
+
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
 }

@@ -61,7 +61,14 @@
                   (do
                     (if (> (string/length current) 0) (vec/push! &words current) unit)
                     (recur (+ i 1) "" 0))
-                  (if (= c 59) ;; ';'
+                  (if (or (= c 59) (= c 10)) ;; ';' or real newline — a real newline is itself a
+                                              ;; statement separator in real shell syntax, the
+                                              ;; same real role ';' already has; treating both
+                                              ;; identically (emitting the same literal ";" token
+                                              ;; either way) is what lets the host accumulate and
+                                              ;; tokenize a real MULTI-LINE buffer as a single
+                                              ;; logical statement stream, needed for real
+                                              ;; multi-line `if`/`fi` and function bodies.
                     (do
                       (if (> (string/length current) 0) (vec/push! &words current) unit)
                       (vec/push! &words ";")
