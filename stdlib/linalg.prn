@@ -18,19 +18,20 @@
 ;; earlier this session (STDLIB.md's own array-package section); every
 ;; call site here updated to pass matmul's/transpose's own dest through.
 ;;
-;; Real, significant, NOT-yet-fixed gap, found via an actual runtime
-;; harness, not just a clean compile (2026-08-21, see STDLIB.md's own
-;; "linalg" section for the full real reasoning): matmul/transpose
-;; compile real gcc-clean but do NOT yet produce correct numbers -- a
-;; loop variable seeded from an integer literal (`(loop [i 0] ...)`) is
-;; C-typed `double` (VS0's own accepted, whole-language "no int/float
-;; distinction" simplification), which silently corrupts an `[i j]`
-;; index-Vec literal once boxed (boxed as an 8-byte double, later read
-;; back via a 4-byte `int` cast). The real fix touches loop-variable/
-;; number-literal type inference broadly, a genuinely cross-cutting
-;; change not attempted in this pass -- do not treat matmul/transpose
-;; as verified; `dot` below (no index-Vec construction) IS verified,
-;; both gcc-clean and numerically correct.
+;; Real, honest history: matmul/transpose used to compile gcc-clean but NOT produce correct
+;; numbers, root-caused to the real, cross-cutting loop-variable I32 boxing bug (a loop variable
+;; seeded from an integer literal was C-typed `double`, silently corrupting an `[i j]` index-Vec
+;; literal once boxed). Fixed for real 2026-09-08 (EMILY/BACKLOG.md's own "loop-variable I32
+;; boxing bug"), plus one real, SEPARATE bug found and fixed the same day in `array.prn`'s own
+;; `strides-for`: a stride (mathematically always an exact integer — a suffix product of integer
+;; shape dimensions) was computed via real division, and the fix's own first-draft safety-net
+;; check couldn't resolve an interior `let`-bound recur value's own type (a real scope-threading
+;; bug in the check itself, not a numeric one), so it conservatively kept `strides-for`'s own
+;; accumulator `double` even after the main fix landed — fixed the same day by giving that
+;; check's own `let` handling a real, properly-scoped child `EmitScope`. Both `matmul` and
+;; `transpose` are now verified correct end to end: `make test-linalg-matmul`, a genuine 2×3 × 3×2
+;; matrix product and a transpose, both checked against real, hand-computed values. `dot` below
+;; was already verified separately and remains correct.
 (defn matmul [(a : &NDArray) (b : &NDArray) (dest : Arena @ Region)]
   : (Result NDArray ShapeError) @ Region
   (let [a-rows (deref (vec/get &(get-field a :shape) 0))

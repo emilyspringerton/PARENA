@@ -283,13 +283,13 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
     int i = 0;
-    double running = total;
+    int running = total;
     while (1) {
         if ((i < n)) {
-        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
         int __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = next;
+        int __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;

@@ -283,7 +283,7 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
     int n __attribute__((unused)) = length(src);
     Vec toks __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_5 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_eof(), ""))));
@@ -291,21 +291,21 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
         break;
         } else {
         if (is_space_(char_at(src, i))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
         if (is_digit_(char_at(src, i))) {
         int end __attribute__((unused)) = scan_number(src, i, n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_number(), substring(src, i, end, dest)))));
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         } else {
         if (is_alpha_(char_at(src, i))) {
         int end __attribute__((unused)) = scan_ident(src, i, n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_ident(), substring(src, i, end, dest)))));
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         } else {
@@ -313,22 +313,22 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
         int end __attribute__((unused)) = scan_string(src, (i + 1), n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_string(), substring(src, (i + 1), end, dest)))));
         if ((end < n)) {
-        double __recur_tmp_0 = (end + 1);
+        int __recur_tmp_0 = (end + 1);
         i = __recur_tmp_0;
         continue;
         } else {
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         }
         } else {
         if (is_punct_(char_at(src, i))) {
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_punct(), substring(src, i, (i + 1), dest)))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }

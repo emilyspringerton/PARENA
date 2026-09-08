@@ -3625,8 +3625,33 @@ static int loop_recur_binding_is_int_safe(Arena *arena, Node *tail, size_t bindi
     if (is_call_named(tail, "do") && tail->child_count > 1) {
         return loop_body_int_safe(arena, tail->children + 1, tail->child_count - 1, binding_index, scope);
     }
-    if (is_call_named(tail, "let") && tail->child_count > 2) {
-        return loop_body_int_safe(arena, tail->children + 2, tail->child_count - 2, binding_index, scope);
+    if (is_call_named(tail, "let") && tail->child_count > 2 && tail->children[1]->type == NODE_VEC) {
+        /* Real, found-live fix to this check's own SECOND draft: a `recur` value that's a bare
+         * reference to a `let`-bound local (e.g. `(let [next (/ running divisor)] ... (recur (+
+         * i 1) next))`, `array.prn`'s own real `strides-for`) used to be checked against the
+         * OUTER scope only, which has no idea `next` even exists -- `scope_lookup` always missed,
+         * so this always, incorrectly, conservatively reported "not int-safe" for ANY recur value
+         * routed through an interior `let`, even a genuinely int-safe one. Mirrors `emit_let`'s
+         * own real binding loop (type-resolve each binding's init via the same `emit_expr`
+         * `value_node_is_int_safe` already uses, `scope_bind` it into a real child scope) so a
+         * `let`-bound name is actually resolvable by the time its own body gets checked -- a pure
+         * scope-populating dry run, no C text ever kept or emitted. */
+        EmitScope let_child;
+        scope_init(&let_child, scope);
+        Node *let_bindings = tail->children[1];
+        for (size_t i = 0; i + 1 < let_bindings->child_count; i += 2) {
+            Node *name_node = let_bindings->children[i];
+            Node *val_node = let_bindings->children[i + 1];
+            if (name_node->type != NODE_SYMBOL) return 0; /* malformed; the real emitter reports
+                                                              this properly during real emission */
+            const char *val_type = NULL;
+            const char *dummy_err = NULL;
+            const char *val_c = emit_expr(arena, val_node, &let_child, &val_type, &dummy_err);
+            if (!val_c || !val_type) return 0;
+            scope_bind(&let_child, name_node->text, mangle(arena, name_node->text), val_type, 0);
+        }
+        return loop_body_int_safe(arena, tail->children + 2, tail->child_count - 2, binding_index,
+                                   &let_child);
     }
     if (is_call_named(tail, "match")) {
         for (size_t i = 2; i < tail->child_count; i++) {

@@ -415,7 +415,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
     char * origin = "";
     char * sname = "";
     char * caddr = "";
-    int seen_media = 0;
+    double seen_media = 0;
     char * mtype = "";
     double mport = 0;
     char * mproto = "";
@@ -439,7 +439,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -474,7 +474,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -501,7 +501,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = value;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -528,7 +528,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = value;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -555,7 +555,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = parse_conn_addr(value, dest);
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -591,7 +591,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = 1;
+        double __recur_tmp_5 = 1;
         char * __recur_tmp_6 = (d).media_type;
         double __recur_tmp_7 = (d).port;
         char * __recur_tmp_8 = (d).proto;
@@ -623,7 +623,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -650,7 +650,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -677,7 +677,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;
@@ -704,7 +704,7 @@ Result parse_sdp(char * raw __attribute__((unused)), Arena *dest __attribute__((
         char * __recur_tmp_2 = origin;
         char * __recur_tmp_3 = sname;
         char * __recur_tmp_4 = caddr;
-        int __recur_tmp_5 = seen_media;
+        double __recur_tmp_5 = seen_media;
         char * __recur_tmp_6 = mtype;
         double __recur_tmp_7 = mport;
         char * __recur_tmp_8 = mproto;

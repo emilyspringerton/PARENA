@@ -646,6 +646,17 @@ verified numerically correct and should not be treated as done — `dot` (verifi
 `{1,2,3}·{4,5,6} = 32`, no index-Vec construction involved) is the one function in this file
 confirmed both gcc-clean and correct.
 
+**Update 2026-09-08 — FIXED.** Founder: "can we fix the loop-variable I32 boxing bug?" The real,
+cross-cutting fix landed (see this file's own dedicated section below) — `matmul`/`transpose` are
+now BOTH verified numerically correct: `make test-linalg-matmul`, a genuine 2×3 × 3×2 matrix
+product and a transpose, checked against real, hand-computed values, not just a clean compile.
+One additional, separate bug was found and fixed the same day along the way: `array.prn`'s own
+`strides-for` computes each stride via real division (mathematically always exact, since a stride
+is a suffix product of integer shape dimensions), and the main fix's own first-draft safety-net
+check couldn't resolve an interior `let`-bound recur value's type (a scope-threading bug in the
+check itself), so it conservatively kept `strides-for`'s own accumulator `double` even after the
+main fix — fixed by giving that check's own `let` handling a properly-scoped child `EmitScope`.
+
 Founder: "and pandas build pandas into the standard library." The one real thing that makes
 pandas a different tool from numpy, not just numpy-with-more-functions: **heterogeneous, labeled,
 tabular data** — a `DataFrame` column can be numbers or strings, columns have names, rows aren't

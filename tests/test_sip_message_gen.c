@@ -350,7 +350,7 @@ Result parse_start_line(char * line __attribute__((unused)), Arena *dest __attri
 Result parse_headers(char * raw __attribute__((unused)), int pos __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec headers __attribute__((unused)) = vec_new(dest);
     Result __loop_result_4 __attribute__((unused));
-    double i = pos;
+    int i = pos;
     while (1) {
         int line_end __attribute__((unused)) = find_crlf(raw, i, n);
         if ((i >= n)) {
@@ -369,7 +369,7 @@ Result parse_headers(char * raw __attribute__((unused)), int pos __attribute__((
         char *hname __attribute__((unused)) = substring(raw, i, colon, dest);
         char *hval __attribute__((unused)) = substring(raw, (colon + 2), line_end, dest);
         (void)(vec_push_(&(headers), SipHeader_box(dest, SipHeader_new(hname, hval))));
-        double __recur_tmp_0 = (line_end + 2);
+        int __recur_tmp_0 = (line_end + 2);
         i = __recur_tmp_0;
         continue;
         }
@@ -415,7 +415,7 @@ Result parse_message(char * raw __attribute__((unused)), Arena *dest __attribute
 
 int find_body_start(char * raw __attribute__((unused)), int pos __attribute__((unused)), int n __attribute__((unused))) {
     int __loop_result_5 __attribute__((unused));
-    double i = pos;
+    int i = pos;
     while (1) {
         int line_end __attribute__((unused)) = find_crlf(raw, i, n);
         if ((i >= n)) {
@@ -426,7 +426,7 @@ int find_body_start(char * raw __attribute__((unused)), int pos __attribute__((u
         __loop_result_5 = (i + 2);
         break;
         } else {
-        double __recur_tmp_0 = (line_end + 2);
+        int __recur_tmp_0 = (line_end + 2);
         i = __recur_tmp_0;
         continue;
         }

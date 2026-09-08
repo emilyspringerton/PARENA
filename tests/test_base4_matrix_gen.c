@@ -203,7 +203,7 @@ Base4Matrix matmul(Base4Matrix * a __attribute__((unused)), Base4Matrix * b __at
     while (1) {
         if ((r < out_rows)) {
     void * __loop_result_6 __attribute__((unused));
-    int c = 0;
+    double c = 0;
     while (1) {
         if ((c < out_cols)) {
     int __let_val_0 __attribute__((unused));
@@ -223,7 +223,7 @@ Base4Matrix matmul(Base4Matrix * a __attribute__((unused)), Base4Matrix * b __at
     }
     int cell __attribute__((unused)) = __let_val_0;
     (void)(vec_push_(&(out), vec_box_i32(&(out), cell)));
-        int __recur_tmp_0 = (c + 1);
+        double __recur_tmp_0 = (c + 1);
         c = __recur_tmp_0;
         continue;
         } else {

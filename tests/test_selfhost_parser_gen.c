@@ -411,7 +411,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
     int len __attribute__((unused)) = (lx)->len;
     Lexer __loop_result_2 __attribute__((unused));
     int pos = (lx)->pos;
-    double line = (lx)->line;
+    int line = (lx)->line;
     int in_comment = 0;
     while (1) {
         if ((pos >= len)) {
@@ -422,7 +422,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         if (in_comment) {
         if ((c == 10)) {
         int __recur_tmp_0 = pos;
-        double __recur_tmp_1 = line;
+        int __recur_tmp_1 = line;
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -430,7 +430,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         continue;
         } else {
         int __recur_tmp_0 = (pos + 1);
-        double __recur_tmp_1 = line;
+        int __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -440,7 +440,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if (lx_is_whitespace_(c)) {
         int __recur_tmp_0 = (pos + 1);
-        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         int __recur_tmp_2 = 0;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -449,7 +449,7 @@ Lexer lx_skip_ws_and_comments(Lexer * lx __attribute__((unused))) {
         } else {
         if ((c == 59)) {
         int __recur_tmp_0 = (pos + 1);
-        double __recur_tmp_1 = line;
+        int __recur_tmp_1 = line;
         int __recur_tmp_2 = 1;
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -590,7 +590,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
     int len __attribute__((unused)) = (lx)->len;
     Result __loop_result_6 __attribute__((unused));
     int pos = ((lx)->pos + 1);
-    double line = start_line;
+    int line = start_line;
     char * acc = "";
     while (1) {
         if ((pos >= len)) {
@@ -610,7 +610,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         int e __attribute__((unused)) = char_at(src, (pos + 1));
         int decoded __attribute__((unused)) = ((e == 110) ? 10 : ((e == 116) ? 9 : ((e == 34) ? 34 : ((e == 92) ? 92 : e))));
         int __recur_tmp_0 = (pos + 2);
-        double __recur_tmp_1 = line;
+        int __recur_tmp_1 = line;
         char * __recur_tmp_2 = concat(acc, char_from_code(decoded, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;
@@ -619,7 +619,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         }
         } else {
         int __recur_tmp_0 = (pos + 1);
-        double __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
+        int __recur_tmp_1 = ((c == 10) ? (line + 1) : line);
         char * __recur_tmp_2 = concat(acc, char_from_code(c, dest), dest);
         pos = __recur_tmp_0;
         line = __recur_tmp_1;

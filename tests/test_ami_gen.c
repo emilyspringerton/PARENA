@@ -254,7 +254,7 @@ Result parse_message(char * raw __attribute__((unused)), Arena *dest __attribute
     int n __attribute__((unused)) = length(raw);
     Vec headers __attribute__((unused)) = vec_new(dest);
     Result __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         int line_end __attribute__((unused)) = find_crlf(raw, i, n);
         if ((i >= n)) {
@@ -273,7 +273,7 @@ Result parse_message(char * raw __attribute__((unused)), Arena *dest __attribute
         char *hname __attribute__((unused)) = substring(raw, i, colon, dest);
         char *hval __attribute__((unused)) = substring(raw, (colon + 2), line_end, dest);
         (void)(vec_push_(&(headers), AmiHeader_box(dest, AmiHeader_new(hname, hval))));
-        double __recur_tmp_0 = (line_end + 2);
+        int __recur_tmp_0 = (line_end + 2);
         i = __recur_tmp_0;
         continue;
         }

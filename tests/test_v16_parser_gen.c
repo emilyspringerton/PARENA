@@ -375,7 +375,7 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
     int n __attribute__((unused)) = length(src);
     Vec toks __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_5 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     while (1) {
         if ((i >= n)) {
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_eof(), ""))));
@@ -383,21 +383,21 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
         break;
         } else {
         if (is_space_(char_at(src, i))) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
         if (is_digit_(char_at(src, i))) {
         int end __attribute__((unused)) = scan_number(src, i, n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_number(), substring(src, i, end, dest)))));
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         } else {
         if (is_alpha_(char_at(src, i))) {
         int end __attribute__((unused)) = scan_ident(src, i, n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_ident(), substring(src, i, end, dest)))));
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         } else {
@@ -405,22 +405,22 @@ Vec lex(char * src __attribute__((unused)), Arena *dest __attribute__((unused)))
         int end __attribute__((unused)) = scan_string(src, (i + 1), n);
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_string(), substring(src, (i + 1), end, dest)))));
         if ((end < n)) {
-        double __recur_tmp_0 = (end + 1);
+        int __recur_tmp_0 = (end + 1);
         i = __recur_tmp_0;
         continue;
         } else {
-        double __recur_tmp_0 = end;
+        int __recur_tmp_0 = end;
         i = __recur_tmp_0;
         continue;
         }
         } else {
         if (is_punct_(char_at(src, i))) {
         (void)(vec_push_(&(toks), JsToken_box(dest, JsToken_new(tok_punct(), substring(src, i, (i + 1), dest)))));
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         i = __recur_tmp_0;
         continue;
         }
@@ -571,13 +571,13 @@ int cmp_op_step(PState * p __attribute__((unused)), Arena *dest __attribute__((u
 
 int parse_multiplicative(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_primary(p, dest);
-    double __loop_result_6 __attribute__((unused));
-    double acc = left;
+    int __loop_result_6 __attribute__((unused));
+    int acc = left;
     while (1) {
         if ((tok_is_punct_(p, "*") || tok_is_punct_(p, "/"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        double __recur_tmp_0 = mul_op_step(p, dest, op, acc);
+        int __recur_tmp_0 = mul_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {
@@ -590,13 +590,13 @@ int parse_multiplicative(PState * p __attribute__((unused)), Arena *dest __attri
 
 int parse_additive(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_multiplicative(p, dest);
-    double __loop_result_7 __attribute__((unused));
-    double acc = left;
+    int __loop_result_7 __attribute__((unused));
+    int acc = left;
     while (1) {
         if ((tok_is_punct_(p, "+") || tok_is_punct_(p, "-"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        double __recur_tmp_0 = add_op_step(p, dest, op, acc);
+        int __recur_tmp_0 = add_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {
@@ -609,13 +609,13 @@ int parse_additive(PState * p __attribute__((unused)), Arena *dest __attribute__
 
 int parse_comparison(PState * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int left __attribute__((unused)) = parse_additive(p, dest);
-    double __loop_result_8 __attribute__((unused));
-    double acc = left;
+    int __loop_result_8 __attribute__((unused));
+    int acc = left;
     while (1) {
         if ((tok_is_punct_(p, "<") || tok_is_punct_(p, ">"))) {
         char *op __attribute__((unused)) = (cur_tok(p))->text;
         (void)(advance_(p));
-        double __recur_tmp_0 = cmp_op_step(p, dest, op, acc);
+        int __recur_tmp_0 = cmp_op_step(p, dest, op, acc);
         acc = __recur_tmp_0;
         continue;
         } else {

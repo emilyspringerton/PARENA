@@ -239,15 +239,15 @@ int skip_name(char * buf __attribute__((unused)), int pos __attribute__((unused)
     if (((b0 & 192) == 192)) {
     return (pos + 2);
     } else {
-    double __loop_result_2 __attribute__((unused));
-    double i = pos;
+    int __loop_result_2 __attribute__((unused));
+    int i = pos;
     while (1) {
         int len __attribute__((unused)) = raw_byte(buf, i);
         if ((len == 0)) {
         __loop_result_2 = (i + 1);
         break;
         } else {
-        double __recur_tmp_0 = ((i + 1) + len);
+        int __recur_tmp_0 = ((i + 1) + len);
         i = __recur_tmp_0;
         continue;
         }
@@ -281,7 +281,7 @@ Result parse_dns_response(char * buf __attribute__((unused)), int len __attribut
     Vec results __attribute__((unused)) = vec_new(dest);
     Result __loop_result_3 __attribute__((unused));
     int ai = 0;
-    double apos = after_question;
+    int apos = after_question;
     while (1) {
         if ((ai >= ancount)) {
         if ((vec_len(&(results)) == 0)) {
@@ -299,13 +299,13 @@ Result parse_dns_response(char * buf __attribute__((unused)), int len __attribut
         if (((rtype == 1) && (rdlength == 4))) {
         (void)(vec_push_(&(results), ipv4_to_string(buf, rdata_start, dest)));
         int __recur_tmp_0 = (ai + 1);
-        double __recur_tmp_1 = (rdata_start + rdlength);
+        int __recur_tmp_1 = (rdata_start + rdlength);
         ai = __recur_tmp_0;
         apos = __recur_tmp_1;
         continue;
         } else {
         int __recur_tmp_0 = (ai + 1);
-        double __recur_tmp_1 = (rdata_start + rdlength);
+        int __recur_tmp_1 = (rdata_start + rdlength);
         ai = __recur_tmp_0;
         apos = __recur_tmp_1;
         continue;

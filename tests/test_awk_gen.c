@@ -750,13 +750,13 @@ Vec strides_for(Vec * shape __attribute__((unused)), Arena *dest __attribute__((
     Vec s __attribute__((unused)) = vec_new(dest);
     void * __loop_result_3 __attribute__((unused));
     int i = 0;
-    double running = total;
+    int running = total;
     while (1) {
         if ((i < n)) {
-        double next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
-        (void)(vec_push_(&(s), vec_box_f64(&(s), next)));
+        int next __attribute__((unused)) = (running / (*((int *)(vec_get(shape, i)))));
+        (void)(vec_push_(&(s), vec_box_i32(&(s), next)));
         int __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = next;
+        int __recur_tmp_1 = next;
         i = __recur_tmp_0;
         running = __recur_tmp_1;
         continue;
@@ -1647,14 +1647,14 @@ Vec match_star(PatternNode * inner __attribute__((unused)), int greedy __attribu
     Vec ascending __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), pos)));
     void * __loop_result_15 __attribute__((unused));
-    double cur = pos;
+    int cur = pos;
     while (1) {
         Vec inner_candidates __attribute__((unused)) = match_node(inner, text, cur, steps, budget, dest);
         if ((vec_len(&(inner_candidates)) > 0)) {
         int next_pos __attribute__((unused)) = vec_i32_at(&(inner_candidates), 0);
         if ((next_pos > cur)) {
         (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), next_pos)));
-        double __recur_tmp_0 = next_pos;
+        int __recur_tmp_0 = next_pos;
         cur = __recur_tmp_0;
         continue;
         } else {
@@ -1680,14 +1680,14 @@ Vec match_plus(PatternNode * inner __attribute__((unused)), int greedy __attribu
     Vec ascending __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), first_pos)));
     void * __loop_result_16 __attribute__((unused));
-    double cur = first_pos;
+    int cur = first_pos;
     while (1) {
         Vec inner_candidates __attribute__((unused)) = match_node(inner, text, cur, steps, budget, dest);
         if ((vec_len(&(inner_candidates)) > 0)) {
         int next_pos __attribute__((unused)) = vec_i32_at(&(inner_candidates), 0);
         if ((next_pos > cur)) {
         (void)(vec_push_(&(ascending), vec_box_i32(&(ascending), next_pos)));
-        double __recur_tmp_0 = next_pos;
+        int __recur_tmp_0 = next_pos;
         cur = __recur_tmp_0;
         continue;
         } else {
@@ -1869,7 +1869,7 @@ char * replace(Regex * re __attribute__((unused)), char * text __attribute__((un
         __match_result_15 = text;
         } else {
     int i = 0;
-    double pos = 0;
+    int pos = 0;
     char * acc = "";
     while (1) {
         if ((i >= n)) {
@@ -1881,7 +1881,7 @@ char * replace(Regex * re __attribute__((unused)), char * text __attribute__((un
         char *before __attribute__((unused)) = substring(text, pos, mstart, dest);
         char *spliced __attribute__((unused)) = concat(concat(acc, before, dest), replacement, dest);
         int __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = mend;
+        int __recur_tmp_1 = mend;
         char * __recur_tmp_2 = spliced;
         i = __recur_tmp_0;
         pos = __recur_tmp_1;
