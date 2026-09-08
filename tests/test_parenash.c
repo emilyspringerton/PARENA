@@ -69,6 +69,21 @@ int main(void) {
               "in the parent, not a throwaway forked child");
     }
 
+    /* --- real if/then/else/fi conditionals (2026-09-08, Phase 3b) --- */
+    CHECK(strcmp(run_script("if true; then echo yes; fi\\n"), "yes\n") == 0,
+          "a real 'if true; then ...; fi' runs the then-branch");
+    CHECK(strcmp(run_script("if false; then echo yes; fi\\n"), "") == 0,
+          "a real 'if false; then ...; fi' with no else runs NOTHING (real, live-found bug fixed "
+          "here: a trailing ';' in the condition used to silently discard the real exit status "
+          "and always take the then-branch regardless)");
+    CHECK(strcmp(run_script("if false; then echo yes; else echo no; fi\\n"), "no\n") == 0,
+          "a real 'if false; then ...; else ...; fi' correctly runs the else-branch");
+    CHECK(strcmp(run_script("if false; then echo yes; fi; echo after\\n"), "after\n") == 0,
+          "a real command AFTER a real 'fi' still runs, and the skipped then-branch produces no "
+          "output at all");
+    CHECK(strcmp(run_script("if true; then echo a; echo b; fi\\n"), "a\nb\n") == 0,
+          "a real then-branch containing MULTIPLE ';'-separated commands runs all of them");
+
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
 }

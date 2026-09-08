@@ -98,11 +98,41 @@ covering quoting, `;`-sequencing, `$VAR` expansion via a real `export`, all 3 bu
 proving `cd` genuinely mutates the shell's own parent-process cwd, not a throwaway child's), and
 the standard `127` "not found" exit code — all pass. `make test`: 347/347, zero regressions.
 
-Real, honest v0 boundary, named directly: NO pipes, NO redirection, NO functions, NO
-`if`/conditionals/test builtin, NO job control/backgrounding, NO mid-word `$VAR` expansion (only
-a word that's ENTIRELY `$NAME`), NO `${VAR}` brace form. This is a real, useful toy shell — not
-yet capable of running the real OpenRC scripts the audit above found, which is the actual, much
-larger remaining milestone before `sh` could ever be part of a real EmilyOS boot chain.
+Real, honest v0 boundary, named directly: NO pipes, NO redirection, NO functions,
+NO test builtin, NO job control/backgrounding, NO mid-word `$VAR` expansion (only a word that's
+ENTIRELY `$NAME`), NO `${VAR}` brace form. This is a real, useful toy shell — not yet capable of
+running the real OpenRC scripts the audit above found, which is the actual, much larger remaining
+milestone before `sh` could ever be part of a real EmilyOS boot chain.
+
+## Phase 3b shipped same day (founder real-time: "continue") — real `if`/`then`/`else`/`fi`
+
+Real, deliberate architecture choice named directly: control-flow structure recognition
+(`if`/`then`/`else`/`fi`) lives in `tools/parenash_host.c` as a plain recursive-descent walk over
+the already-tokenized word array, NOT in `stdlib/coreutils/sh.prn` — PARENA's own real strength
+in this package is string/token processing (tokenizing, quoting, `$VAR` lookup), and imperative
+control-flow branching is a more natural fit for the same C layer that already does process
+management. `exec_range(words, start, end)` recognizes a single-level `if COND; then BRANCH1;
+[else BRANCH2;] fi` (COND/BRANCH1/BRANCH2 may themselves contain further `;`-separated commands,
+handled by recursing back into `exec_range`), otherwise splits off and runs one simple command up
+to the next top-level `;` and continues with the remainder. Real, honest v0 boundary: no `elif`,
+no nesting (the first `then`/`fi` found closes the nearest-enclosing `if` — correct for the real,
+common non-nested case, a real, named limitation for an `if` nested inside another `if`'s own
+condition or branch).
+
+Confirmed live before shipping that `test`/`[` already work today via the existing plain
+`execvp` fallback (real system binaries, not shell builtins) — `if test -f /etc/passwd; then
+echo has-passwd; else echo missing; fi` runs correctly end to end.
+
+Real, live-found bug caught and fixed before this could ship as broken: a trailing `;` inside the
+condition range (the real, common shape `if false; then ...` produces) fed into an empty tail
+recursion whose own base case returns a fixed `0`, silently DISCARDING the real exit status just
+computed and always taking the then-branch regardless of the condition's real result — confirmed
+live via `if false; then echo yes; fi` wrongly printing `yes`. Fixed: a trailing `;` with nothing
+meaningful after it now returns the already-computed real status directly instead of blindly
+recursing into an empty range. 5 new real end-to-end assertions in `tests/test_parenash.c`
+(covering the then-branch, no-else skip, else-branch, "code after `fi` still runs," and a
+multi-command then-branch) — including one that names the exact bug just fixed and would have
+caught it — all pass, alongside the original 9. `make test`: 347/347, zero regressions.
 
 ## Real phased plan
 
@@ -116,13 +146,14 @@ larger remaining milestone before `sh` could ever be part of a real EmilyOS boot
   root or a real Pi, matching this session's own EmilyOS work's own real constraints.
   `stdlib/emilyos/fsacl.prn`'s own PARENA-mod-backed `setfacl` wrapper (2026-08-25) is real,
   direct, already-proven precedent for wrapping a privileged syscall-adjacent operation in PARENA.
-- **Phase 3 (v0 done, this pass)**: a real, minimal `sh` — sequential `;`-separated commands,
-  quote-aware tokenizing, whole-word `$VAR` expansion, `cd`/`export`/`exit` builtins. Real audit
-  done live (not guessed): `/etc/init.d/hostname`/`bootmisc` need real functions, `if`/`[ ]`
-  conditionals, and `${var:-default}` expansion — genuinely beyond this v0. **Phase 3b, not yet
-  started**: functions, conditionals/test builtin, `${VAR:-default}`-style parameter expansion —
-  the real, concrete next slice actually needed to run real OpenRC scripts, sized against this
-  session's own real audit rather than guessed at.
+- **Phase 3 (v0 done)**: a real, minimal `sh` — sequential `;`-separated commands, quote-aware
+  tokenizing, whole-word `$VAR` expansion, `cd`/`export`/`exit` builtins.
+- **Phase 3b (v0 done, single-level `if`/`then`/`else`/`fi` shipped this pass)**: real
+  conditionals — `test`/`[` already work via the plain `execvp` fallback, confirmed live. **Not
+  yet done**: `elif`, nested `if`, real shell FUNCTIONS (`name() { ... }`), and
+  `${var:-default}`-style parameter expansion — real, concrete, named next slices, sized against
+  this session's own real audit of `/etc/init.d/hostname`/`bootmisc` rather than guessed at, and
+  still the real gate before this shell could run actual OpenRC scripts.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).

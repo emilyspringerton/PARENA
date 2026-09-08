@@ -4413,3 +4413,24 @@ including proving `cd` genuinely mutates the parent process's own cwd, and the s
 "not found" exit code) — all pass. `make test`: 347/347, zero regressions. Real, honest v0
 boundary: no pipes/redirection/functions/conditionals/job control/mid-word `$VAR` expansion —
 a real, useful toy shell, not yet capable of running real OpenRC scripts.
+
+## coreutils/sh Phase 3b — real if/then/else/fi conditionals (2026-09-08)
+
+Same day, founder real-time "continue." Real, deliberate architecture choice: control-flow
+recognition lives in `tools/parenash_host.c` as a plain recursive-descent walk
+(`exec_range(words, start, end)`) over the already-tokenized word array, not in
+`stdlib/coreutils/sh.prn` — PARENA's own real strength here is string/token processing, and
+imperative branching fits the same C layer that already does process management. Recognizes a
+single-level `if COND; then BRANCH1; [else BRANCH2;] fi` (COND/BRANCH1/BRANCH2 may themselves
+contain further `;`-separated commands, handled by recursion); real, honest v0 boundary: no
+`elif`, no nesting. Confirmed live that `test`/`[` already work via the plain `execvp` fallback
+(real system binaries, not builtins) before shipping anything new for them.
+
+Real, live-found bug caught and fixed before this shipped broken: a trailing `;` inside a
+condition (the real, common `if false; then ...` shape) fed into an empty tail recursion whose
+base case returns a fixed `0`, silently discarding the just-computed real exit status and always
+taking the then-branch regardless of the condition's real result — confirmed live via
+`if false; then echo yes; fi` wrongly printing `yes`. Fixed: a trailing `;` with nothing
+meaningful after it now returns the already-computed status directly. 5 new real end-to-end
+assertions (including one naming the exact bug just fixed) — all pass, alongside the original 9.
+`make test`: 347/347, zero regressions.
