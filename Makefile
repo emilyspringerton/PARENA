@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
 
 all: build
 
@@ -393,6 +393,32 @@ Result pentest_scan_ports(char *target, int profile, Arena *dest);' tests/test_p
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_pentest_scan.c \
 		runtime/parena_runtime.c -o /tmp/test_pentest_scan_bin
 	/tmp/test_pentest_scan_bin
+
+# test-pentest-wireless -- real end-to-end verification for stdlib/pentest/wireless.prn's real
+# host-side FFI glue (tools/pentest_wireless_host.c), the Nexmon-targeting thread (2026-09-08):
+# real monitor-mode/channel control via `ip`/`iw`. Real, honest, environment-dependent: this
+# sandbox has no real WiFi hardware, so this verifies real command construction, the real
+# shell-injection guard, and the real, live failure path against a genuinely nonexistent
+# interface -- not a real chipset actually entering monitor mode.
+test-pentest-wireless: build
+	./parena build stdlib/string.prn stdlib/pentest/wireless.prn -o tests/test_pentest_wireless_gen.c
+	sed -i '/^Result set_channel(char \*, int, Arena \*);$$/a\
+Result pentest_wireless_set_monitor_mode(char *iface, Arena *dest);\
+Result pentest_wireless_set_managed_mode(char *iface, Arena *dest);\
+Result pentest_wireless_set_channel(char *iface, int channel, Arena *dest);' tests/test_pentest_wireless_gen.c
+	cat tests/test_pentest_wireless_gen.c tools/pentest_wireless_host.c > /tmp/test_pentest_wireless_full.c
+	cp /tmp/test_pentest_wireless_full.c tests/test_pentest_wireless_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_pentest_wireless.c \
+		runtime/parena_runtime.c -o /tmp/test_pentest_wireless_bin -lm
+	/tmp/test_pentest_wireless_bin
+
+# test-net-l2socket -- real end-to-end verification for stdlib/net/l2socket.prn (Nexmon-targeting
+# thread, 2026-09-08 follow-up): real AF_PACKET link-layer raw socket for 802.11 frame injection.
+test-net-l2socket: build
+	./parena build stdlib/string.prn stdlib/net/l2socket.prn -o tests/test_net_l2socket_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_net_l2socket.c \
+		runtime/parena_runtime.c -o /tmp/test_net_l2socket_bin -lm
+	/tmp/test_net_l2socket_bin
 
 # test-editor-document -- real end-to-end verification for stdlib/editor/document.prn (real
 # document management: editor/buffer.prn + papercraft/note_version_mod.prn tied together).

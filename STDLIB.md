@@ -4279,3 +4279,68 @@ churn working code).
 the bug — a literal now boxes via `vec_box_i32` not `vec_box_f64`; a loop's own result type now
 correctly resolves to `int` not `double`). Every other real, buildable test target re-run clean —
 zero regressions across the full test surface, self-host compiler tests included.
+
+## Nexmon-targeting gap-fill: `pentest/wireless`, `net/l2socket`, `pentest/dot11` build side (2026-09-08)
+
+Founder thread: "ok we want to target nexmon stack what stdlibs are missing from our hipster
+version?" → a real, live-checked 6-point gap list (no monitor-mode/channel control, no general
+ioctl primitive, no link-layer raw TX, no Radiotap/802.11 frame construction, no frame types
+beyond Beacon parsing, no channel hopping) → "ok fill in the gaps". Three real primitives shipped
+this pass, closing gaps #1, #3, and #4/#5 (a general ioctl primitive and channel hopping stay
+real, separate, not-yet-built work).
+
+**`pentest/wireless.prn`** — monitor-mode/managed-mode/channel control. Real, decisive finding
+before writing anything: the PRIOR file was a dead stub — `Handshake`/`WirelessError` were never
+defined and its one `#target` call named a host function that was never implemented anywhere
+(confirmed via a direct `gcc` compile before touching it, not assumed). Replaced entirely.
+Shells out to the real, standard `iw`/`ip link` CLI tools — the same real approach
+`aircrack-ng`'s own `airmon-ng` uses — rather than hand-rolling nl80211 generic-netlink attribute
+encoding, matching `pentest/scan.prn`'s own established "shell out to nmap" pragmatism.
+`tools/pentest_wireless_host.c`: `iface_is_safe()` (alphanumeric + `-`/`_`/`.`, length-bounded to
+real `IFNAMSIZ`=16, the same character-whitelist pattern as `pentest/scan.prn`'s own
+`target_is_safe`), `set-monitor-mode`/`set-managed-mode` (`ip link down && iw ... set type ... &&
+ip link up`), `set-channel` (`iw dev %s set channel %d`, range-checked `[1,196]` before any
+shell-out). `iw` confirmed absent from this sandbox (`ip` present) — queued via
+`sudo-queue/75-install-iw.sh` rather than installed directly (no root). Real, honest test scope:
+this sandbox has no WiFi hardware, so a real chipset entering monitor mode is unverifiable here;
+what IS verified live: the shell-injection guard rejects a malicious interface name before any
+shell command line, and a genuinely nonexistent-but-safe interface name produces the real, live
+`CommandFailed` via the real `ip`/`iw` exit code (the `ip link set <iface> down` step alone
+already fails first for a nonexistent interface, so this is real plumbing, not blocked by `iw`'s
+absence). `make test-pentest-wireless`: all real assertions pass.
+
+**`net/l2socket.prn`** — `AF_PACKET`/`SOCK_RAW` link-layer raw socket, the genuinely different
+LINK-layer complement to `net/rawsocket.prn`'s own network-layer (`IP_HDRINCL`) primitive; real
+802.11 frame injection over a monitor interface needs this, not IPv4 raw sockets. `L2Socket`/
+`L2Error` (`PermissionDenied`/`OpenFailed`/`InterfaceNotFound`/`BindFailed`/`SendFailed`);
+`l2-open`/`l2-bind`/`l2-send`/`l2-close`. Host glue added to `runtime/parena_runtime.h` (guarded
+`#if defined(__linux__)`, matching `net/rawsocket.prn`'s own real, standing Linux-only scope — no
+BSD/macOS equivalent, that world uses BPF devices instead): `l2socket_open_impl`
+(`socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))`), `l2socket_bind_impl` (`if_nametoindex(3)` +
+`bind` against a real `sockaddr_ll`, returning a distinct `-2` for "no such interface" vs. `-1`
+for a genuine bind failure), `l2socket_send_impl` (plain `send()` — a bound `AF_PACKET` socket
+needs no per-call destination, unlike `rawsocket.prn`'s own `sendto`), `l2socket_close_impl`.
+Real, honest test scope: this sandbox has `euid=1000`, no `CAP_NET_RAW`/root, so `l2-open`
+deterministically exercises the real `PermissionDenied` path; `l2-bind`'s own `InterfaceNotFound`
+path needs no privilege at all (`if_nametoindex` itself doesn't) and is exercised directly against
+a real, deliberately-invalid interface name. `make test-net-l2socket`: all real assertions pass.
+
+**`pentest/dot11.prn` build side** — the real, direct complement to this file's own existing
+parse-only side (2026-09-04, above): `build-radiotap-header` (the real, minimal 8-byte
+injection-ready header — version=0, pad=0, length=8 LE, present_flags=0, the same minimal shape
+`aircrack-ng`'s own `osdep/radiotap/radiotap_iter.c` accepts for TX) and `build-deauth-frame` (a
+real, spec-accurate 26-byte 802.11 Deauthentication frame — Frame Control `0xC0 0x00`
+Management/Deauth, Duration, Address1/2/3, Sequence Control, Reason Code — the highest-value real
+target this thread named, matching `aircrack-ng`'s own flagship `aireplay-ng --deauth` use case).
+New `Dot11Error` (`InvalidMacAddress`), plus a real string→bytes MAC parser (`mac-string-valid?`,
+`mac-byte-at`) — the reverse of this file's own pre-existing bytes→string `format-mac`/
+`format-mac-from`, which only went one direction. Real, live-found bug caught and fixed before
+shipping: a first draft built these buffers via nested `string/concat` (matching
+`format-mac-from`'s own bytes→string recursive style) — `concat` is `strcpy`/`strcat` under the
+hood, so it silently truncates at the first embedded zero byte, and a real Radiotap header/802.11
+frame is mostly zero bytes (caught live via a direct byte dump: `build-radiotap-header` came back
+truncated). Fixed by reusing `net/dns.prn`'s own already-established, exact-size `(alloc dest
+String n)` + one real `inline-c` block indexing directly into the buffer — not a new pattern.
+`make test-pentest-dot11`: extended with real byte-for-byte assertions on both new functions plus
+a round-trip through the existing `parse-frame` (confirming a Deauth frame is correctly never
+flagged as a beacon) — all pass; full `make test` re-confirmed clean (347/347).

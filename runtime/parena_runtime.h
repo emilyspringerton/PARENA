@@ -73,6 +73,17 @@
 #elif defined(__APPLE__)
 #include <util.h>
 #endif
+/* AF_PACKET (net/l2socket.prn, 2026-09-08, the Nexmon-targeting thread's own real link-layer
+ * raw-frame-injection primitive) is Linux-specific -- no BSD/macOS equivalent exists (that world
+ * uses BPF devices instead, a real, separate, unattempted API). Real, honest, standing scope: a
+ * real 802.11 monitor-mode interface itself only exists on Linux in this monorepo's own real
+ * target hardware (Raspberry Pi + Nexmon), so this isn't a real capability loss on any platform
+ * this feature actually needs to run on. */
+#if defined(__linux__)
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <net/ethernet.h>
+#endif
 #endif
 /* SDL2 -- built-in, same tier as core (STDLIB.md's own "sdl2" section:
  * "SDL2 is built in... no (import sdl2) line needed"), so its header is
@@ -822,6 +833,52 @@ static inline long rawsocket_sendto_impl(int fd, const char *data, int len, cons
 static inline int rawsocket_close_impl(int fd) {
     return close(fd);
 }
+
+#if defined(__linux__)
+/* ---- stdlib/net/l2socket.prn real host glue (2026-09-08) --------------
+ * Real answer to the Nexmon-targeting thread ("what stdlibs are missing... fill in the gaps"):
+ * `net/rawsocket.prn` above is IPv4/`IP_HDRINCL` -- network layer. Real 802.11 frame injection
+ * over a monitor-mode interface needs a real LINK-layer raw socket (`AF_PACKET`), sending
+ * already-fully-crafted bytes (a real Radiotap header + 802.11 frame, `pentest/dot11.prn`'s own
+ * future build-side counterpart to its existing parse-side) directly onto the wire with the
+ * kernel doing zero interpretation -- the same real primitive `aircrack-ng`'s own `osdep/
+ * linux.c` uses for real packet injection. Linux-only: `AF_PACKET` has no BSD/macOS equivalent
+ * (that world uses BPF devices, a real, separate, unattempted API) -- matches this whole
+ * feature's own real, standing scope (a real 802.11 monitor interface only exists in this
+ * monorepo's own real target hardware, Raspberry Pi + Nexmon, itself Linux-only).
+ *
+ * Real, honest, standing limitation: same as `net/rawsocket.prn` above, `AF_PACKET`/`SOCK_RAW`
+ * itself requires `CAP_NET_RAW`/root on every real Linux kernel -- this runtime cannot lift that
+ * gate. `l2socket_bind_impl`'s own real, distinct `-2` return (vs. a plain `-1`) lets the real
+ * PARENA-level `l2-bind` distinguish "no such interface" (a real, resolvable, honest usage
+ * error) from a genuine `bind(2)` failure (most commonly the same real `CAP_NET_RAW` gate). */
+static inline int l2socket_open_impl(void) {
+    return socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+}
+
+static inline int l2socket_bind_impl(int fd, const char *iface) {
+    unsigned int ifindex = if_nametoindex(iface);
+    if (ifindex == 0) return -2; /* real, distinct "no such interface" signal */
+    struct sockaddr_ll sll;
+    memset(&sll, 0, sizeof sll);
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = htons(ETH_P_ALL);
+    sll.sll_ifindex = (int)ifindex;
+    return bind(fd, (struct sockaddr *)&sll, sizeof sll) < 0 ? -1 : 0;
+}
+
+/* l2socket_send_impl -- a real, already-bound AF_PACKET socket sends directly via send(2), no
+ * per-call destination address needed (unlike rawsocket_sendto_impl's own IPv4 sendto, which
+ * genuinely needs one every call) -- the bind(2) above already fixed this socket's own real,
+ * single destination interface. */
+static inline long l2socket_send_impl(int fd, const char *data, int len) {
+    return (long)send(fd, data, (size_t)len, 0);
+}
+
+static inline int l2socket_close_impl(int fd) {
+    return close(fd);
+}
+#endif
 
 /* ---- stdlib/io/mmap.prn real host glue (2026-09-07) -------------------
  * Real answer to the founder's own pasted proposal: "Raw Disk / Memory-

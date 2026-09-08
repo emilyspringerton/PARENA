@@ -1,0 +1,115 @@
+;; stdlib/net/l2socket.prn — depends on string. Design: STDLIB.md "net/l2socket" section.
+;;
+;; Real trigger: the Nexmon-targeting thread (2026-09-08, "ok we want to target nexmon stack what
+;; stdlibs are missing"). Real, decisive gap found live: `net/rawsocket.prn`'s own `IP_HDRINCL`
+;; work is network-layer (IPv4) — real 802.11 frame injection over a monitor-mode interface needs
+;; a genuinely different, LINK-layer primitive (`AF_PACKET`), sending already-fully-crafted bytes
+;; (a real Radiotap header + 802.11 frame) directly onto the wire with the kernel doing zero
+;; interpretation — the same real primitive `aircrack-ng`'s own `osdep/linux.c` uses.
+;;
+;; Real, standing, unavoidable OS-level limitation, same class `net/rawsocket.prn`'s own header
+;; comment already names: opening `AF_PACKET`/`SOCK_RAW` requires `CAP_NET_RAW`/root on every
+;; real Linux kernel — no stdlib can lift that gate. Linux-only (no BSD/macOS equivalent — that
+;; world uses BPF devices, a real, separate, unattempted API), matching this whole feature's own
+;; real, standing scope: a real 802.11 monitor interface only exists in this monorepo's own real
+;; target hardware (Raspberry Pi + Nexmon), itself Linux-only.
+;;
+;; Real, honest v0 boundary, named directly: this file only sends already-built raw bytes — it
+;; does NOT itself construct a Radiotap header or an 802.11 frame (that's `pentest/dot11.prn`'s
+;; own real, separate, not-yet-built "build" side, the direct complement to its existing "parse"
+;; side). No RX path either — `pentest/pcap.prn`'s own libpcap capture already covers reading
+;; frames off a monitor interface; this file is specifically the missing WRITE half.
+;;
+;; Real, honest, standing framing: authorized-testing tooling for EINHORN_INDUSTRIAL's own
+;; infrastructure, same incidental-tooling role security-adjacent work in this monorepo has had
+;; all along.
+
+(module net/l2socket)
+(import string)
+(export l2-open l2-bind l2-send l2-close L2Socket L2Error)
+
+(defstruct L2Socket
+  (fd : I32))
+
+(defenum L2Error
+  (PermissionDenied)   ;; EPERM -- no CAP_NET_RAW/root, the real, expected outcome absent that
+                        ;; real OS-level privilege on any Linux kernel
+  (OpenFailed)          ;; any other real socket(2) failure
+  (InterfaceNotFound)   ;; a real, resolvable usage error: no such interface (checked via
+                        ;; if_nametoindex(3) before ever attempting bind(2))
+  (BindFailed)          ;; a real bind(2) failure once the interface itself resolved fine (most
+                        ;; commonly the same real CAP_NET_RAW gate, surfaced at bind time instead
+                        ;; of open time on some kernels)
+  (SendFailed))         ;; a real send(2) failure
+
+;; ---- raw host primitives -- the only #target bodies in this file, each a single C expression
+;; against runtime/parena_runtime.h's own l2socket_*_impl functions, no boxing.
+
+(defn raw-errno []
+  : I32
+  #target
+  {:c (inline-c "errno")})
+
+(defn raw-l2-open []
+  : I32
+  #target
+  {:c (inline-c "l2socket_open_impl()")})
+
+(defn raw-l2-bind [(fd : I32) (iface : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "l2socket_bind_impl(fd, iface)")})
+
+(defn raw-l2-send [(fd : I32) (data : String @ Region) (len : I32)]
+  : I32
+  #target
+  {:c (inline-c "l2socket_send_impl(fd, data, len)")})
+
+(defn raw-l2-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "l2socket_close_impl(fd)")})
+
+;; errno-to-l2-error — EPERM(1) is the real, expected, distinguished outcome; every other errno
+;; collapses to the real, honest, coarser `OpenFailed` — matching `net/rawsocket.prn`'s own
+;; already-established "a real, honest coarser signal, not a fake finer one" precedent.
+(defn errno-to-l2-error [(e : I32)]
+  : L2Error
+  (if (= e 1) PermissionDenied OpenFailed))
+
+;; l2-open — opens a real AF_PACKET/SOCK_RAW socket, ready for a subsequent real l2-bind.
+(defn l2-open [(dest : Arena @ Region)]
+  : (Result L2Socket L2Error) @ Region
+  (let [fd (raw-l2-open)]
+    (if (< fd 0)
+      (Err (errno-to-l2-error (raw-errno)))
+      (Ok {:fd fd}))))
+
+;; l2-bind — binds the socket to `iface` (its own real interface name, e.g. "wlan0mon"). Real,
+;; distinct real, honest errors: a real, resolvable "no such interface" (checked via
+;; if_nametoindex(3), a real usage error a caller can fix) is never confused with a genuine
+;; bind(2) failure (most commonly the same real CAP_NET_RAW gate).
+(defn l2-bind [(!s : &L2Socket) (iface : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result Unit L2Error) @ Region
+  (let [rc (raw-l2-bind (get-field !s :fd) iface)]
+    (if (>= rc 0)
+      (Ok unit)
+      (if (= rc -2) (Err InterfaceNotFound) (Err BindFailed)))))
+
+;; l2-send — sends `data` (already a real, complete, caller-crafted buffer — a real Radiotap
+;; header + 802.11 frame, when injecting over a monitor-mode interface) directly onto the
+;; already-bound interface. This file builds no packet bytes itself; `pentest/dot11.prn`'s own
+;; real, separate, not-yet-built "build" side is the real way a caller constructs `data`.
+(defn l2-send [(!s : &L2Socket) (data : String @ Region) (data-len : I32) (dest : Arena @ Region)]
+  : (Result I32 L2Error) @ Region
+  (let [n (raw-l2-send (get-field !s :fd) data data-len)]
+    (if (< n 0)
+      (Err SendFailed)
+      (Ok n))))
+
+;; l2-close — real, direct socket teardown.
+(defn l2-close [(!s : &L2Socket) (dest : Arena @ Region)]
+  : (Result Unit L2Error) @ Region
+  (if (< (raw-l2-close (get-field !s :fd)) 0)
+    (Err SendFailed)
+    (Ok unit)))
