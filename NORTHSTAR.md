@@ -1609,14 +1609,36 @@ pattern written parenthesized (`((None) body...)`, real and common throughout
 structural "no `#error`, and critically, no crash reaching this line" check and a real
 compile+run assertion.
 
-**Real, honest, newly-discovered next frontier**: the self-compiled OUTPUT (`self_compiled.c`,
-1544 real lines) does NOT yet compile clean under `gcc` — `selfhost/emit.prn`'s own real emitter
-has no support yet for `#target`/`inline-c` FFI bodies (`stdlib/string.prn`'s own real
-`length`/`char-at`/etc. all use this — confirmed the REAL `parena-c` compiler handles these
-correctly today, so this is a genuine, separate self-hosted-emitter scope gap, not a regression
-anywhere in production). True bootstrapping (the self-hosted compiler successfully compiling
-ITSELF into a working binary) needs real `#target` emission support in `selfhost/emit.prn` — a
-real, substantial, separate feature, not attempted this pass. Local `bazel build //...`
+**Update 2026-09-08 — the WHOLE-BODY half of that next frontier is shipped.** `selfhost/emit.prn`
+now emits real `#target {:c (inline-c "...")}` function bodies (`defn-body-target-shaped?`/
+`emit-defn-target-body`, a direct port of the reference compiler's own `find_target_c_src`/
+`emit_target_defn`) — `stdlib/math/random-f64`-shaped functions (`#target` as a defn's ENTIRE
+body) now emit and run correctly through the self-hosted pipeline, live-verified end to end (a
+real `parena-selfhost`-compiled `#target` function, gcc-clean under `-pedantic -Werror`, correct
+runtime output). Real attempt at true bootstrapping (self-compiling `parena-selfhost`'s own
+8-file source set) surfaced the REAL, remaining gap list, more precise than the prior entry's own
+guess — checked directly, not assumed:
+
+- **Mid-body `#target` (a real, separate, DIFFERENT shape from whole-body)** — `stdlib/
+  string.prn`'s own `char-from-code`/`substring`/`concat` use `#target` as one STATEMENT inside a
+  `let`'s body (filling an already-allocated buffer for its own side effect), not as the entire
+  function body — the reference compiler's own `emit_body` has a separate, real case for exactly
+  this (splices the raw C as a bare statement, no `return`-wrapping, advances past both the
+  `#target` symbol and its map in one step). Not yet ported here — this session's own real, named
+  next step, distinct from the whole-body case just shipped.
+- **No real scalar (`I32`/`F64`) return-type support** — `defn-c-return-type` only understands
+  `Result`/`Option`/an already-registered struct name; every other declared return type
+  (including `I32`/`F64`/`Bool`) silently falls back to `"char * "`, producing real, wrong
+  function signatures for `length`/`char-at`/etc. (their own `#target` BODIES now emit correctly
+  post this session's own fix — the signature itself is the remaining, separate bug).
+- **`if` used directly as a defn's own whole body doesn't emit** (`return if(...)` — invalid C) —
+  a real, separate gap from `parse-i32`'s own real shape, distinct from S223-02 (that fix landed
+  in the REFERENCE compiler's `src/emit.c`, not yet ported to this self-hosted one).
+- **A narrow struct-literal-shape restriction** (`#error ... unsupported struct-literal shape`)
+  for at least `char-from-code`'s own real shape once mid-body `#target` support exists to reach
+  it.
+
+True bootstrapping needs all of the above, not just `#target`. Local `bazel build //...`
 unverifiable this pass (a pre-existing, local-only permission wall: stale `bazel-*` convenience
 symlinks in this checkout point into a different user account's own cache — a real environment
 quirk, not something CI's own fresh runners would ever hit); the full Makefile suite (342 tests)

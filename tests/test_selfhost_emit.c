@@ -2302,6 +2302,71 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-08): `#target {:c (inline-c "...")}` as a defn's own
+         * ENTIRE body -- the whole-body half of this self-hosted emitter's own "next frontier"
+         * toward true bootstrapping (NORTHSTAR.md's own "Self-hosting" section), a direct port
+         * of the reference compiler's own find_target_c_src/emit_target_defn. Real-world shape:
+         * stdlib/math/random-f64's own `(defn random-f64 [] : F64 #target {:c (inline-c
+         * "math_random_impl()")})` -- this snippet uses a String return instead (this self-hosted
+         * emitter's own defn-c-return-type has no real I32/F64 scalar-return support yet, a
+         * real, separate, already-named gap; String's own "char * " default is the one already-
+         * correct case, keeping this test isolated to JUST the #target feature). */
+        char *snippet =
+            "(defn get-greeting [] : String\n"
+            "  #target {:c (inline-c \"\\\"hello from inline c\\\"\")})";
+        Result pr34 = parse_program(snippet, &a);
+        CHECK(pr34.tag == 1, "a real defn whose entire body is #target {:c (inline-c ...)} "
+                              "parses fine");
+        if (pr34.tag == 1) {
+            Node program34 = *(Node *)pr34.value;
+            char *generated34 = emit_program(&program34, &a);
+            CHECK(generated34 != NULL && strstr(generated34, "#error") == NULL,
+                  "no #error is emitted -- a whole-body #target FFI escape hatch is now a real, "
+                  "supported shape, not silently falling back to the honest-failure path");
+            CHECK(generated34 != NULL &&
+                  strstr(generated34, "return (\"hello from inline c\");") != NULL,
+                  "get-greeting's own body emits the real inline-c source text verbatim, wrapped "
+                  "in a real return statement (not a bare statement -- this defn's own return "
+                  "type isn't void)");
+
+            if (generated34) {
+                char c_path22[300];
+                snprintf(c_path22, sizeof c_path22, "/tmp/parena_selfhost_emit_target_whole_body_test_%d.c",
+                         (int)getpid());
+                FILE *out22 = fopen(c_path22, "w");
+                CHECK(out22 != NULL, "a real temp file opens to write the target-whole-body generated C into");
+                if (out22) {
+                    fputs(generated34, out22);
+                    fclose(out22);
+
+                    char bin_path22[310];
+                    snprintf(bin_path22, sizeof bin_path22, "%s.bin", c_path22);
+                    char cmd22[1024];
+                    snprintf(cmd22, sizeof cmd22,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_target_whole_body.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path22, c_path22);
+                    int compile_status22 = system(cmd22);
+                    CHECK(compile_status22 == 0,
+                          "the real target-whole-body generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_target_whole_body.c");
+                    if (compile_status22 == 0) {
+                        int run_status22 = system(bin_path22);
+                        CHECK(run_status22 == 0,
+                              "the real compiled get-greeting genuinely returns the real inline-C "
+                              "string value, end to end through the self-hosted pipeline -- "
+                              "driver_target_whole_body.c's own internal asserts all pass, not "
+                              "just compiles clean");
+                    }
+                    remove(c_path22);
+                    remove(bin_path22);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

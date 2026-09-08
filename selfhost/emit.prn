@@ -1922,6 +1922,72 @@
 ;; 28) now recognized concretely -- the real function body is assumed
 ;; to be exactly ONE top-level form (examples/valid_only.prn's own real
 ;; shape: one with-arena).
+;; ---- Real `#target {:c (inline-c "...")}` FFI escape-hatch support (2026-09-08) ----
+;;
+;; This self-hosted emitter's own real, named "next frontier" toward true bootstrapping
+;; (EMILY/BACKLOG.md SECTION 236): the self-compiled OUTPUT couldn't compile under `gcc` because
+;; `#target` inline-C bodies -- real, load-bearing throughout this exact stdlib
+;; (`math/random-f64`, `net/tcp`'s own raw syscalls, `ldap/ber`'s own `build-ber-tlv`, dozens
+;; more) -- had no emission support here at all. Real, direct port of `src/emit.c`'s own
+;; `find_target_c_src`/`emit_target_defn`.
+;;
+;; Real, honest, narrow v0 scope, matching the reference compiler's own real, separate two-shape
+;; split: only the WHOLE-BODY shape (`#target {...}` as a defn's ENTIRE body, e.g. `random-f64`
+;; above) is supported here. The reference compiler's own SEPARATE mid-body `#target` STATEMENT
+;; form (a `#target` block used for a real side effect partway through a larger body, e.g.
+;; `string/concat`'s own `strcpy`/`strcat` escape hatch) is real, additional, not-yet-attempted
+;; scope, named directly rather than silently assumed to be the same thing.
+;;
+;; Real, honest, SEPARATE limitation this feature inherits, not introduces: `defn-c-return-type`
+;; above has no real "Unit"/`void` case yet (every non-Result/Option/known-struct return type
+;; falls back to `"char * "`), so the `void`-vs-`return` branch below mirrors the reference
+;; compiler's own real logic exactly but its `void` arm is genuinely unreachable until that
+;; separate gap is closed -- named here so a future reader doesn't mistake "never taken" for
+;; "untested by design."
+
+;; defn-body-target-shaped? -- true exactly when a defn's whole body (starting at
+;; body-start-index) is the two-form sequence `#target <map>` and nothing else: a bare symbol
+;; node with text "#target", immediately followed by (and ending with) an NMap node.
+(defn defn-body-target-shaped? [(defn-node : &Node)] : Bool
+  (let [start (body-start-index defn-node)
+        total (vec/len &(get-field defn-node :children))]
+    (if (not (= (+ start 2) total))
+      false
+      (let [head (vec/get &(get-field defn-node :children) start)
+            tail (vec/get &(get-field defn-node :children) (+ start 1))]
+        (and (emit-is-symbol? head "#target")
+             (= (emit-node-kind-code (get-field tail :kind)) 2))))))
+
+;; target-map-c-src -- real, direct port of find_target_c_src's own `:c (inline-c "...")`
+;; extraction, reusing map-literal-field-value-index (the exact same real key-lookup-by-name
+;; struct-literal fields already use) rather than re-deriving it. Returns "" for any malformed
+;; shape (no :c key, or its value isn't a real `(inline-c "...")` call) -- a real, honest, silent
+;; fallback matching this narrow v0's own error-reporting scope (the reference compiler reports a
+;; real, named parse error here; this self-hosted pass doesn't have that machinery threaded
+;; through yet, the same real, already-accepted gap every other emit-form case in this file
+;; shares).
+(defn target-map-c-src [(target-map : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [value-idx (map-literal-field-value-index target-map "c" 0 dest)]
+    (if (< value-idx 0)
+      ""
+      (let [inline-c-node (vec/get &(get-field target-map :children) value-idx)]
+        (if (not (emit-is-call-named? inline-c-node "inline-c"))
+          ""
+          (let [str-node (vec/get &(get-field inline-c-node :children) 1)]
+            (get-field str-node :text)))))))
+
+;; emit-defn-target-body -- real, direct port of emit_target_defn's own real C construction: the
+;; inline-c source text is trusted VERBATIM as real C (this self-hosted pass has no way to check
+;; it, the identical trust boundary the reference compiler's own version already crosses).
+(defn emit-defn-target-body [(defn-node : &Node) (return-type-c : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [start (body-start-index defn-node)
+        target-map (vec/get &(get-field defn-node :children) (+ start 1))
+        src-text (target-map-c-src target-map dest)]
+    (if (string/str-eq? return-type-c "void")
+      (string/concat "    " (string/concat src-text "\n" dest) dest)
+      (string/concat "    return (" (string/concat src-text ");\n" dest) dest))))
+
 ;; emit-defn-body -- real, extracted helper (a `match` used as a
 ;; non-tail VALUE -- see this file's own header comment, point 1):
 ;; the real 3-way body decision emit-defn itself used to make inline
@@ -1954,7 +2020,9 @@
           (emit-tail-expr
            (emit-get-field (vec/get &(get-field defn-node :children) (body-start-index defn-node)) scope dest)
            dest)
-          (emit-body-forms defn-node (body-start-index defn-node) scope dest))))))
+          (if (defn-body-target-shaped? defn-node)
+            (emit-defn-target-body defn-node return-type-c dest)
+            (emit-body-forms defn-node (body-start-index defn-node) scope dest)))))))
 
 (defn emit-defn [(defn-node : &Node) (known-structs : &(Vec String)) (known-struct-nodes : &(Vec Node)) (dest : Arena @ Region)] : String @ Region
   (let [name-node (vec/get &(get-field defn-node :children) 1)

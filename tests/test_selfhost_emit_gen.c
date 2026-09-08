@@ -312,6 +312,9 @@ char * emit_struct_literal_args(Node *, Node, int, Vec *, Arena *);
 char * defn_param_type_name(Node *, char *, int);
 int defn_body_i32_param_ctor_(Node *, Node *, char *, Arena *);
 char * emit_defn_i32_param_ctor(Node *, Vec *, Arena *);
+int defn_body_target_shaped_(Node *);
+char * target_map_c_src(Node *, Arena *);
+char * emit_defn_target_body(Node *, char *, Arena *);
 char * emit_defn_body(Node *, Node *, char *, Vec *, Vec *, Vec *, Arena *);
 char * emit_defn(Node *, Vec *, Vec *, Arena *);
 char * defn_declared_return_type_name(Node *);
@@ -2171,6 +2174,44 @@ char * emit_defn_i32_param_ctor(Node * defn_node __attribute__((unused)), Vec * 
     return emit_join_all(&(parts), dest);
 }
 
+int defn_body_target_shaped_(Node * defn_node __attribute__((unused))) {
+    int start __attribute__((unused)) = body_start_index(defn_node);
+    int total __attribute__((unused)) = vec_len(&((defn_node)->children));
+    if ((!(((start + 2) == total)))) {
+    return 0;
+    } else {
+    Node *head __attribute__((unused)) = vec_get(&((defn_node)->children), start);
+    Node *tail __attribute__((unused)) = vec_get(&((defn_node)->children), (start + 1));
+    return (emit_is_symbol_(head, "#target") && (emit_node_kind_code((tail)->kind) == 2));
+    }
+}
+
+char * target_map_c_src(Node * target_map __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int value_idx __attribute__((unused)) = map_literal_field_value_index(target_map, "c", 0, dest);
+    if ((value_idx < 0)) {
+    return "";
+    } else {
+    Node *inline_c_node __attribute__((unused)) = vec_get(&((target_map)->children), value_idx);
+    if ((!(emit_is_call_named_(inline_c_node, "inline-c")))) {
+    return "";
+    } else {
+    Node *str_node __attribute__((unused)) = vec_get(&((inline_c_node)->children), 1);
+    return (str_node)->text;
+    }
+    }
+}
+
+char * emit_defn_target_body(Node * defn_node __attribute__((unused)), char * return_type_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int start __attribute__((unused)) = body_start_index(defn_node);
+    Node *target_map __attribute__((unused)) = vec_get(&((defn_node)->children), (start + 1));
+    char *src_text __attribute__((unused)) = target_map_c_src(target_map, dest);
+    if (str_eq_(return_type_c, "void")) {
+    return concat("    ", concat(src_text, "\n", dest), dest);
+    } else {
+    return concat("    return (", concat(src_text, ");\n", dest), dest);
+    }
+}
+
 char * emit_defn_body(Node * defn_node __attribute__((unused)), Node * params __attribute__((unused)), char * return_type_c __attribute__((unused)), Vec * known_structs __attribute__((unused)), Vec * known_struct_nodes __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *return_type_name __attribute__((unused)) = defn_declared_return_type_name(defn_node);
     int struct_idx __attribute__((unused)) = defn_body_struct_literal_index(defn_node, return_type_c, return_type_name, known_structs, known_struct_nodes, dest);
@@ -2193,7 +2234,11 @@ char * emit_defn_body(Node * defn_node __attribute__((unused)), Node * params __
     if (struct_returning_get_field_body_(defn_node, return_type_c, dest)) {
     return emit_tail_expr(emit_get_field(vec_get(&((defn_node)->children), body_start_index(defn_node)), scope, dest), dest);
     } else {
+    if (defn_body_target_shaped_(defn_node)) {
+    return emit_defn_target_body(defn_node, return_type_c, dest);
+    } else {
     return emit_body_forms(defn_node, body_start_index(defn_node), scope, dest);
+    }
     }
     }
     }
