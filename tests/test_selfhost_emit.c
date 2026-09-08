@@ -2507,6 +2507,75 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-08): `alloc`'s own real NON-LITERAL value-argument support,
+         * closing the "necessary companion fix" NORTHSTAR.md's own Self-hosting section named
+         * directly after mid-body #target shipped. Uses stdlib/string.prn's own REAL `length`/
+         * `concat` source VERBATIM (not a synthetic stand-in) -- the exact real, motivating case:
+         * `(alloc dest String (+ (length a) (length b)))`, a binary-op size expression whose own
+         * two arguments are each a NESTED plain call. */
+        char *snippet =
+            "(defn length [(s : String @ Region)]\n"
+            "  : I32\n"
+            "  #target\n"
+            "  {:c (inline-c \"(int32_t)strlen(s)\")})\n"
+            "(defn concat [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)]\n"
+            "  : String @ Region\n"
+            "  (let [out (alloc dest String (+ (length a) (length b)))]\n"
+            "    #target\n"
+            "    {:c (inline-c \"strcpy(out, a); strcat(out, b);\")}\n"
+            "    out))";
+        Result pr37 = parse_program(snippet, &a);
+        CHECK(pr37.tag == 1, "stdlib/string.prn's own real length+concat source parses fine");
+        if (pr37.tag == 1) {
+            Node program37 = *(Node *)pr37.value;
+            char *generated37 = emit_program(&program37, &a);
+            CHECK(generated37 != NULL && strstr(generated37, "#error") == NULL,
+                  "no #error is emitted for concat's own real alloc-with-binary-op-expression value");
+            CHECK(generated37 != NULL &&
+                  strstr(generated37, "arena_alloc(dest, ((length(a) + length(b))) + 1)") != NULL,
+                  "concat's own real alloc call now emits a genuinely, correctly-SIZED "
+                  "allocation -- not the old silent arena_strdup(dest, \"\", 0) that treated the "
+                  "whole non-literal expression as an empty string");
+
+            if (generated37) {
+                char c_path25[300];
+                snprintf(c_path25, sizeof c_path25, "/tmp/parena_selfhost_emit_alloc_expr_test_%d.c",
+                         (int)getpid());
+                FILE *out25 = fopen(c_path25, "w");
+                CHECK(out25 != NULL, "a real temp file opens to write the alloc-expr generated C into");
+                if (out25) {
+                    fputs(generated37, out25);
+                    fclose(out25);
+
+                    char bin_path25[310];
+                    snprintf(bin_path25, sizeof bin_path25, "%s.bin", c_path25);
+                    char cmd25[1024];
+                    snprintf(cmd25, sizeof cmd25,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_alloc_expr.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path25, c_path25);
+                    int compile_status25 = system(cmd25);
+                    CHECK(compile_status25 == 0,
+                          "the real alloc-expr generated C (concat's own real, verbatim source) "
+                          "compiles clean under gcc -std=c99 -Wall -Wextra -pedantic -Werror, "
+                          "linked against a real 'extern char *concat(...)' driver");
+                    if (compile_status25 == 0) {
+                        int run_status25 = system(bin_path25);
+                        CHECK(run_status25 == 0,
+                              "the real, self-compiled concat genuinely allocates a correctly-"
+                              "sized buffer and returns the real concatenated string "
+                              "'hello, world!', end to end through the self-hosted pipeline -- "
+                              "the exact real motivating case for this whole gap, not a "
+                              "synthetic stand-in");
+                    }
+                    remove(c_path25);
+                    remove(bin_path25);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

@@ -235,6 +235,8 @@ char * arena_ref_of(ArenaBinding, char *, Arena *);
 char * resolve_arena_ref(char *, Vec *, Arena *);
 char * arena_scope_any_ref(Vec *, Arena *);
 int alloc_call_shaped_(Node *);
+char * emit_alloc_value_literal(char *, Node *, Arena *);
+char * emit_alloc_value_expr(char *, Node *, Vec *, Arena *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
 char * emit_tail_expr(char *, Arena *);
@@ -1313,10 +1315,7 @@ int alloc_call_shaped_(Node * expr_node __attribute__((unused))) {
     return (emit_is_call_named_(expr_node, "alloc") && (vec_len(&((expr_node)->children)) >= 4));
 }
 
-char * emit_alloc_call(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Node *arena_node __attribute__((unused)) = vec_get(&((call)->children), 1);
-    Node *lit_node __attribute__((unused)) = vec_get(&((call)->children), 3);
-    char *arena_ref __attribute__((unused)) = resolve_arena_ref((arena_node)->text, scope, dest);
+char * emit_alloc_value_literal(char * arena_ref __attribute__((unused)), Node * lit_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *lit_text __attribute__((unused)) = (lit_node)->text;
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "arena_strdup("));
@@ -1327,6 +1326,28 @@ char * emit_alloc_call(Node * call __attribute__((unused)), Vec * scope __attrib
     (void)(vec_push_(&(parts), i32_to_string(length(lit_text), dest)));
     (void)(vec_push_(&(parts), ")"));
     return emit_join_all(&(parts), dest);
+}
+
+char * emit_alloc_value_expr(char * arena_ref __attribute__((unused)), Node * value_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *size_c __attribute__((unused)) = emit_call_arg(value_node, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "(char *)arena_alloc("));
+    (void)(vec_push_(&(parts), arena_ref));
+    (void)(vec_push_(&(parts), ", ("));
+    (void)(vec_push_(&(parts), size_c));
+    (void)(vec_push_(&(parts), ") + 1)"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_alloc_call(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *arena_node __attribute__((unused)) = vec_get(&((call)->children), 1);
+    Node *value_node __attribute__((unused)) = vec_get(&((call)->children), 3);
+    char *arena_ref __attribute__((unused)) = resolve_arena_ref((arena_node)->text, scope, dest);
+    if ((emit_node_kind_code((value_node)->kind) == 5)) {
+    return emit_alloc_value_literal(arena_ref, value_node, dest);
+    } else {
+    return emit_alloc_value_expr(arena_ref, value_node, scope, dest);
+    }
 }
 
 char * emit_tail_symbol(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {

@@ -228,11 +228,11 @@
   (and (emit-is-call-named? expr-node "alloc")
        (>= (vec/len &(get-field expr-node :children)) 4)))
 
-(defn emit-alloc-call [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
-  (let [arena-node (vec/get &(get-field call :children) 1)
-        lit-node (vec/get &(get-field call :children) 3)
-        arena-ref (resolve-arena-ref (get-field arena-node :text) scope dest)
-        lit-text (get-field lit-node :text)
+;; emit-alloc-value-literal -- the pre-existing, real string-literal path: `(alloc dest String
+;; "text")` -> `arena_strdup(dest, "text", 5)`, matching examples/valid_only.prn's own real
+;; generated output for this exact shape.
+(defn emit-alloc-value-literal [(arena-ref : String @ Region) (lit-node : &Node) (dest : Arena @ Region)] : String @ Region
+  (let [lit-text (get-field lit-node :text)
         parts (vec/new dest)]
     (do
       (vec/push! &parts "arena_strdup(")
@@ -243,6 +243,41 @@
       (vec/push! &parts (string/i32-to-string (string/length lit-text) dest))
       (vec/push! &parts ")")
       (emit-join-all &parts dest))))
+
+;; emit-alloc-value-expr -- real gap closed 2026-09-08, direct port of emit_alloc_call's own
+;; real non-literal branch (src/emit.c): `(char *)arena_alloc(arena-expr, (size-expr) + 1)`.
+;; Found live while verifying mid-body #target support against the exact real motivating case,
+;; stdlib/string.prn's own `concat` (`(alloc dest String (+ (length a) (length b)))`) -- before
+;; this fix, ANY non-literal alloc value silently emitted `arena_strdup(dest, "", 0)` (a genuine
+;; zero-byte allocation the following code would then overflow writing into), since the old code
+;; unconditionally treated the 4th child as a string literal with no check at all.
+;;
+;; Reuses emit-call-arg's own already-general, already-recursive expression dispatch (binary-op/
+;; plain-call/get-field/alloc-call/bool-expr/result-option-ctor/bare symbol/number) for the size
+;; expression itself -- no new expression-emission logic needed. Confirmed live, not assumed:
+;; every-call-arg-symbol-or-number? (binary-op-call-shaped?'s own argument-shape guard) already
+;; recurses into plain-call-shaped?, so `(+ (length a) (length b))` -- a binary-op whose own two
+;; arguments are each a NESTED plain call -- already emits correctly as a whole-body expression
+;; today (`(length(a) + length(b))`), with zero changes needed there; only alloc's own literal-
+;; only assumption was the real, isolated gap.
+(defn emit-alloc-value-expr [(arena-ref : String @ Region) (value-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [size-c (emit-call-arg value-node scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(char *)arena_alloc(")
+      (vec/push! &parts arena-ref)
+      (vec/push! &parts ", (")
+      (vec/push! &parts size-c)
+      (vec/push! &parts ") + 1)")
+      (emit-join-all &parts dest))))
+
+(defn emit-alloc-call [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [arena-node (vec/get &(get-field call :children) 1)
+        value-node (vec/get &(get-field call :children) 3)
+        arena-ref (resolve-arena-ref (get-field arena-node :text) scope dest)]
+    (if (= (emit-node-kind-code (get-field value-node :kind)) 5)
+      (emit-alloc-value-literal arena-ref value-node dest)
+      (emit-alloc-value-expr arena-ref value-node scope dest))))
 
 ;; emit-tail-symbol -- a bare symbol in tail position is this narrow
 ;; v0's own only real "return a value" shape (matching real-buf's own

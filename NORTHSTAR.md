@@ -1670,15 +1670,31 @@ guess — checked directly, not assumed:
 - **A narrow struct-literal-shape restriction** (`#error ... unsupported struct-literal shape`)
   for at least `char-from-code`'s own real shape once mid-body `#target` support exists to reach
   it.
-- **`emit-alloc-call` only supports a literal-string size/content argument, not an arbitrary
-  expression** — found live while verifying mid-body `#target` above: `concat`'s own real
-  `(alloc dest String (+ (length a) (length b)))` emits `arena_strdup(dest, "", 0)` (silently
-  treating the whole non-literal 4th child as an empty string), a genuine zero-byte allocation
-  that the following `strcpy`/`strcat` would then overflow — NOT a bug in the mid-body `#target`
-  work itself (verified in isolation with a literal-sized `alloc` instead, see above), but a
-  real, separate, pre-existing gap that means `concat` specifically still isn't SAFE to run
-  through the selfhost pipeline yet, even though it now EMITS structurally correct C. A real,
-  necessary companion fix before `stdlib/string.prn` can genuinely self-host end to end.
+- **`emit-alloc-call` non-literal value-argument support — CLOSED 2026-09-08.** Found live while
+  verifying mid-body `#target` above: `concat`'s own real
+  `(alloc dest String (+ (length a) (length b)))` used to emit `arena_strdup(dest, "", 0)`
+  (silently treating the whole non-literal 4th child as an empty string), a genuine zero-byte
+  allocation the following `strcpy`/`strcat` would overflow. Direct port of `emit_alloc_call`'s
+  own real non-literal branch (`src/emit.c`): new `emit-alloc-value-literal`/
+  `emit-alloc-value-expr` dispatch on the value node's real kind (string literal vs. anything
+  else) — the non-literal path emits `(char *)arena_alloc(arena-expr, (size-expr) + 1)`, reusing
+  `emit-call-arg`'s own already-general, already-recursive expression dispatch for the size
+  expression itself (no new expression-emission logic needed). Confirmed live, not assumed, that
+  a SECOND gap this entry originally worried about (nested calls as binary-op arguments) was
+  ALREADY closed: `every-call-arg-symbol-or-number?` already recurses into `plain-call-shaped?`,
+  so `(+ (length a) (length b))` — a binary-op whose own two arguments are each a nested plain
+  call — already emitted correctly as a whole-body expression before this fix touched anything;
+  only `alloc`'s own literal-only assumption was the real, isolated blocker. Live-verified against
+  the exact real motivating case, not a synthetic stand-in: `stdlib/string.prn`'s own real
+  `length`+`concat` source, self-compiled through `parena-selfhost`, now genuinely allocates a
+  correctly-sized buffer and returns the correct concatenated string end to end (a real
+  compile+run+assert check, not just a structural text match). 6 new tests
+  (`tests/test_selfhost_emit.c` + `tests/integration/driver_alloc_expr.c`). `make test`: 347/347;
+  every `test-selfhost-*` target + `test-selfhost-cli` re-run clean, zero regressions.
+  `stdlib/string.prn`'s own `concat` specifically is now genuinely safe to self-compile end to
+  end — `split` and a few other functions in that same file still hit separate, already-named
+  gaps (`if`-as-whole-body, an I32-typed let-binding value, unsupported let-binding shapes), so
+  the WHOLE FILE doesn't self-compile yet, named honestly rather than overclaimed.
 
 True bootstrapping needs all of the above, not just `#target`. Local `bazel build //...`
 unverifiable this pass (a pre-existing, local-only permission wall: stale `bazel-*` convenience
