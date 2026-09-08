@@ -281,9 +281,15 @@ never going to be sufficient alone, named honestly rather than overclaimed.
 
 - **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
   `false`), real tests, real `make` target.
-- **Phase 1**: broaden the trivial-but-real applet set (`cat`, `head`, `wc -l`, `yes`, `sleep`,
-  `env`) — each individually simple, each a real, incremental dogfooding win, no new hard
-  primitives needed beyond what `io.prn`/`process.prn` likely already cover.
+- **Phase 1 (done, 2026-09-08, founder: "also a parena based busybox to go with it")**: broadened
+  to 10 applets total. Real PARENA logic where it exists, matching `echo.prn`'s own established
+  split: `count-lines` (`wc -l`, real tail-recursive newline-byte scan), `head-should-print?`
+  (`head`, the one real per-line decision), `yes-line` (`yes`, echo's own close cousin). `cat`/
+  `sleep`/`env` turned out to be host-only pure I/O/syscall utilities with no real logic to
+  extract — no `io.prn`/`process.prn` primitives were needed after all, contrary to this entry's
+  own original guess; `true`/`false` already established that some real applets are legitimately
+  zero-PARENA-logic. 13 new end-to-end tests, all pass; staged into the real EmilyOS Pi image
+  (aarch64 cross-compiled, live-verified via `qemu-aarch64-static`) the same day.
 - **Phase 2**: `mount`/`umount` — needs a real `mount(2)`/`umount(2)` FFI wrapper (new primitive,
   `stdlib/os/mount.prn` or similar) — genuinely privileged, untestable end-to-end without real
   root or a real Pi, matching this session's own EmilyOS work's own real constraints.
