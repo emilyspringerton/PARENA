@@ -1,0 +1,27 @@
+;; stdlib/coreutils/wc.prn — depends on string. Design: docs/PARENA_COREUTILS_NORTHSTAR.md Phase
+;; 1 ("broaden the trivial-but-real applet set").
+;;
+;; Real PARENA logic behind `wc -l` — the one real flag this v0 supports, matching this whole
+;; project's own "narrowest real slice" convention (v0 `sh` supported `;`-sequencing before
+;; conditionals, v0 `case` before `&&`/`||`). The C host driver (`tools/parenabusybox_host.c`)
+;; reads the whole file/stdin into one buffer (real I/O concern, stays in the host, same split
+;; echo.prn's own header comment already establishes) and hands it here as one String; this
+;; function does the one piece of real logic `wc -l` actually has — counting newline bytes.
+
+(module coreutils/wc)
+(import string)
+(export count-lines)
+
+;; count-lines — real, tail-recursive scan counting real newline bytes (char code 10), the same
+;; scan shape stdlib/coreutils/sh.prn's own find-newline-index already established for this
+;; project. Matches GNU/busybox `wc -l` semantics exactly: counts NEWLINE BYTES, not "logical
+;; lines" — a file with trailing content and no final newline undercounts that last partial line
+;; by one, the same real, documented behavior every real `wc -l` has.
+(defn count-lines [(s : String @ Region)] : I32
+  (let [n (string/length s)]
+    (loop [i 0 count 0]
+      (if (>= i n)
+        count
+        (if (= (string/char-at s i) 10) ;; real newline
+          (recur (+ i 1) (+ count 1))
+          (recur (+ i 1) count))))))

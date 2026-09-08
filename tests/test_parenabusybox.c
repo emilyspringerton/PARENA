@@ -59,6 +59,42 @@ int main(void) {
           "an unknown applet name reports the real, standard shell 'command not found' exit code "
           "(127), not a crash or a silent 0");
 
+    /* --- Phase 1 applets (docs/PARENA_COREUTILS_NORTHSTAR.md): wc/head/yes/cat/sleep/env --- */
+    CHECK(strcmp(run_capture("printf 'a\\nb\\nc\\n' | /tmp/parenabusybox wc"), "3\n") == 0,
+          "a real 'wc' invocation over stdin counts real newline bytes");
+    {
+        FILE *f = fopen("/tmp/parenabusybox_wc_test.txt", "w");
+        fputs("x\ny\n", f);
+        fclose(f);
+        CHECK(strcmp(run_capture("/tmp/parenabusybox wc /tmp/parenabusybox_wc_test.txt"),
+                     "2 /tmp/parenabusybox_wc_test.txt\n") == 0,
+              "a real 'wc <file>' invocation prints the count AND the real filename");
+    }
+    CHECK(strcmp(run_capture("seq 1 15 | /tmp/parenabusybox head"),
+                 "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n") == 0,
+          "a real 'head' invocation with no -n defaults to the real, standard 10 lines");
+    CHECK(strcmp(run_capture("seq 1 15 | /tmp/parenabusybox head -n 3"), "1\n2\n3\n") == 0,
+          "a real 'head -n 3' invocation stops after exactly 3 lines");
+    CHECK(strcmp(run_capture("/tmp/parenabusybox yes | head -n 3"), "y\ny\ny\n") == 0,
+          "a real 'yes' invocation with no args repeats the real, standard default line 'y' "
+          "forever, until the downstream pipe closes (SIGPIPE)");
+    CHECK(strcmp(run_capture("/tmp/parenabusybox yes hi there | head -n 2"), "hi there\nhi there\n") == 0,
+          "a real 'yes hi there' invocation repeats its own space-joined argument text");
+    CHECK(strcmp(run_capture("printf 'cat-check\\n' | /tmp/parenabusybox cat"), "cat-check\n") == 0,
+          "a real 'cat' invocation with no file args passes stdin straight through");
+    CHECK(strcmp(run_capture("/tmp/parenabusybox cat /tmp/parenabusybox_wc_test.txt"), "x\ny\n") == 0,
+          "a real 'cat <file>' invocation prints the real file's real content");
+    CHECK(system("/tmp/parenabusybox sleep 0") == 0,
+          "a real 'sleep 0' invocation returns real exit code 0 (not testing real timing here, "
+          "just that the applet dispatches and exits cleanly)");
+    {
+        char *env_out = run_capture("/tmp/parenabusybox env");
+        CHECK(strstr(env_out, "=") != NULL,
+              "a real 'env' invocation prints real, actual environment variables (KEY=VALUE "
+              "shaped), not an empty or fake list");
+    }
+    remove("/tmp/parenabusybox_wc_test.txt");
+
     /* --- real multi-call dispatch: invoked THROUGH a real symlink named after the applet,
      * exactly like a real /bin/echo -> busybox symlink on a real system, not just via the
      * 'parenabusybox <applet>' form above. This is the real thing busybox's own multi-call

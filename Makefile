@@ -627,7 +627,8 @@ turbogrep: build
 # own target above already establishes.
 parenabusybox: build
 	./parena build stdlib/string.prn stdlib/coreutils/echo.prn stdlib/coreutils/basename.prn \
-		stdlib/coreutils/pwd.prn -o /tmp/parenabusybox_gen.c
+		stdlib/coreutils/pwd.prn stdlib/coreutils/wc.prn stdlib/coreutils/head.prn \
+		stdlib/coreutils/yes.prn -o /tmp/parenabusybox_gen.c
 	cat /tmp/parenabusybox_gen.c tools/parenabusybox_host.c > /tmp/parenabusybox_full.c
 	$(CC) -std=c99 -O2 -I runtime /tmp/parenabusybox_full.c src/arena.c -o parenabusybox
 

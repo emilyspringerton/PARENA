@@ -18,7 +18,11 @@
  * coreutils output (see Makefile's own `parenabusybox` target).
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+extern char **environ;
 
 static const char *basename_c(const char *path) {
     const char *slash = strrchr(path, '/');
@@ -75,12 +79,152 @@ static int do_pwd(int argc, char **argv) {
     return 0;
 }
 
+/* read_all_fp -- real, plain-C whole-file slurp into a malloc'd, null-terminated buffer. Used by
+ * do_wc/do_cat (both genuinely need the WHOLE content: wc to count newlines across the entire
+ * input, cat to pass it straight through). Not routed through stdlib/io.prn's own raw-read-all --
+ * that function operates on a PARENA FileHandle/Arena, and the host driver here already owns a
+ * plain libc FILE* the same way do_pwd/do_basename already use plain C strings, not PARENA
+ * Strings, for their own host-side argv handling. Caller frees the result. */
+static char *read_all_fp(FILE *fp) {
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)malloc(cap);
+    for (;;) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            buf = (char *)realloc(buf, cap);
+        }
+        size_t n = fread(buf + len, 1, cap - len - 1, fp);
+        len += n;
+        if (n == 0) break;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static int do_wc(int argc, char **argv) {
+    FILE *fp = stdin;
+    const char *name = NULL;
+    if (argc >= 2) {
+        name = argv[1];
+        fp = fopen(name, "r");
+        if (!fp) {
+            fprintf(stderr, "wc: %s: No such file or directory\n", name);
+            return 1;
+        }
+    }
+    char *content = read_all_fp(fp);
+    if (fp != stdin) fclose(fp);
+    int32_t n = count_lines(content);
+    free(content);
+    if (name) {
+        printf("%d %s\n", n, name);
+    } else {
+        printf("%d\n", n);
+    }
+    return 0;
+}
+
+static int do_head(int argc, char **argv) {
+    int n = 10; /* real, standard head default */
+    int i = 1;
+    if (i < argc && strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+        n = atoi(argv[i + 1]);
+        i += 2;
+    }
+    FILE *fp = stdin;
+    if (i < argc) {
+        fp = fopen(argv[i], "r");
+        if (!fp) {
+            fprintf(stderr, "head: %s: No such file or directory\n", argv[i]);
+            return 1;
+        }
+    }
+    char line[4096];
+    int32_t line_number = 0;
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        line_number++;
+        if (!head_should_print_(line_number, n)) break;
+        fputs(line, stdout);
+    }
+    if (fp != stdin) fclose(fp);
+    return 0;
+}
+
+static int do_yes(int argc, char **argv) {
+    Arena arena;
+    arena_init(&arena);
+    char *joined = (char *)"";
+    for (int i = 1; i < argc; i++) {
+        char *with_arg = concat(joined, argv[i], &arena);
+        joined = (i + 1 < argc) ? concat(with_arg, " ", &arena) : with_arg;
+    }
+    char *line = yes_line(joined, &arena);
+    /* Real, standard `yes` behavior: repeat forever. A closed pipe (e.g. `yes | head`) delivers
+     * SIGPIPE, whose default disposition terminates this process -- exactly the correct, real
+     * exit path, not an error this loop needs to detect itself. */
+    for (;;) {
+        fputs(line, stdout);
+    }
+    arena_free_all(&arena); /* unreachable in practice, kept for a clean single exit shape */
+    return 0;
+}
+
+static int do_cat(int argc, char **argv) {
+    if (argc < 2) {
+        char *content = read_all_fp(stdin);
+        fputs(content, stdout);
+        free(content);
+        return 0;
+    }
+    int status = 0;
+    for (int i = 1; i < argc; i++) {
+        FILE *fp = fopen(argv[i], "r");
+        if (!fp) {
+            fprintf(stderr, "cat: %s: No such file or directory\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        char *content = read_all_fp(fp);
+        fclose(fp);
+        fputs(content, stdout);
+        free(content);
+    }
+    return status;
+}
+
+static int do_sleep(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: sleep <seconds>\n");
+        return 2;
+    }
+    /* Real, honest v0 boundary: whole seconds only (atoi truncates, matches sleep(3)'s own
+     * integer-seconds signature) -- real `sleep` supports fractional seconds via a separate
+     * nanosleep(2) path, a later extension, not silently promised here. */
+    sleep((unsigned int)atoi(argv[1]));
+    return 0;
+}
+
+static int do_env(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    for (char **e = environ; *e != NULL; e++) {
+        printf("%s\n", *e);
+    }
+    return 0;
+}
+
 static int dispatch(const char *applet, int argc, char **argv) {
     if (strcmp(applet, "echo") == 0) return do_echo(argc, argv);
     if (strcmp(applet, "basename") == 0) return do_basename(argc, argv);
     if (strcmp(applet, "pwd") == 0) return do_pwd(argc, argv);
     if (strcmp(applet, "true") == 0) return 0;
     if (strcmp(applet, "false") == 0) return 1;
+    if (strcmp(applet, "wc") == 0) return do_wc(argc, argv);
+    if (strcmp(applet, "head") == 0) return do_head(argc, argv);
+    if (strcmp(applet, "yes") == 0) return do_yes(argc, argv);
+    if (strcmp(applet, "cat") == 0) return do_cat(argc, argv);
+    if (strcmp(applet, "sleep") == 0) return do_sleep(argc, argv);
+    if (strcmp(applet, "env") == 0) return do_env(argc, argv);
     fprintf(stderr, "parenabusybox: applet not found: %s\n", applet);
     return 127;
 }
@@ -96,7 +240,7 @@ int main(int argc, char **argv) {
     }
     if (argc < 2) {
         fprintf(stderr, "usage: parenabusybox <applet> [args...]\n"
-                        "applets: echo basename pwd true false\n");
+                        "applets: echo basename pwd true false wc head yes cat sleep env\n");
         return 2;
     }
     return dispatch(argv[1], argc - 1, argv + 1);

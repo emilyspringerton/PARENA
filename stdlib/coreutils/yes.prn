@@ -1,0 +1,20 @@
+;; stdlib/coreutils/yes.prn — depends on string. Design: docs/PARENA_COREUTILS_NORTHSTAR.md
+;; Phase 1.
+;;
+;; Real PARENA logic behind `yes` — the same real "decide the line, host driver does the loop"
+;; split echo.prn's own header comment already establishes for that applet; `yes` is echo's own
+;; close cousin (one formatted line, repeated forever by the host until the pipe closes) rather
+;; than a new shape.
+
+(module coreutils/yes)
+(import string)
+(export yes-line)
+
+;; yes-line — real, standard `yes` semantics: the already-joined argument text (space-joined by
+;; the host driver, same convention echo.prn's own joined-args parameter already uses) plus a
+;; trailing newline, or the real, documented default line "y" when no arguments were given at
+;; all. Unlike echo, real `yes` has no `-n` flag — the trailing newline is unconditional.
+(defn yes-line [(joined-args : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (= (string/length joined-args) 0)
+    "y\n"
+    (string/concat joined-args "\n" dest)))

@@ -1,0 +1,17 @@
+;; stdlib/coreutils/head.prn — no deps. Design: docs/PARENA_COREUTILS_NORTHSTAR.md Phase 1.
+;;
+;; Real PARENA logic behind `head` — real, deliberately minimal v0: the one decision `head`
+;; actually makes, per line, is whether it's still within the requested count. The C host driver
+;; reads lines from stdin/a file one at a time (real I/O loop, stays in the host) and calls this
+;; predicate for each; this function owns the one piece of real logic, matches
+;; stdlib/coreutils/echo.prn's own established "argv-shaped concerns stay in the host, real logic
+;; lives in PARENA" split.
+
+(module coreutils/head)
+(export head-should-print?)
+
+;; head-should-print? — 1-indexed line-number, matching how the host driver counts lines as it
+;; reads them (the first line read is line 1, not 0). Real, standard `head` default is 10 lines
+;; when no `-n` count is given — the host driver supplies that default, not this function.
+(defn head-should-print? [(line-number : I32) (n : I32)] : Bool
+  (<= line-number n))
