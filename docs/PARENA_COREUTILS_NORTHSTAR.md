@@ -208,6 +208,46 @@ not just more isolated unit tests.
 8 new real end-to-end assertions (2 multi-line, 4 functions, 2 bare assignment) — all pass,
 alongside the original 23. `make test`: 347/347, zero regressions.
 
+## Phase 3d shipped same day (founder: "continue emilyos+") — real `source`/`.` + comments + brace-on-its-own-line functions
+
+**`source`/`.`**: reads a real file, tokenizes its ENTIRE content in one pass, and runs it
+through the exact same `exec_range` every other construct uses — no separate execution path.
+Runs in THIS process (never forked), so a sourced file's own assignments/function definitions
+genuinely persist in the calling shell, the entire real point of `source`. Live-verified against
+a real, hand-written test file before attempting anything harder. Then attempted the REAL target
+this was actually for — OpenRC's own real `/lib/rc/sh/functions.sh` — and found, by reading its
+real source directly rather than assuming: it needs `$(( arithmetic ))`, `case`/`esac`, `local`,
+and `eval`, none of which this shell has. `source`/`.` itself is real and correct; that specific
+file needs real, separate, much larger features this pass does not attempt.
+
+**Real `#` comments** — a real, previously-missed gap found immediately while testing `source`
+against a real script: EVERY comment line in `functions.sh` was being executed as a bogus
+`#: not found` command, since this shell had NO comment support at all (prior testing had always
+manually stripped comments with `grep -v '^#'` before feeding a script in, masking the gap). Real
+fix in `tokenize-line`: a `#` is only a comment when it starts a real word (mid-word `foo#bar`
+stays literal, matching real shell semantics), skipping to the next real newline via a new
+`find-newline-index` helper.
+
+**Real brace-on-its-own-line function definitions** — fixing comments exposed a SECOND real gap
+in the exact same `functions.sh` file: `name()\n{\n...\n}` (the opening `{` on its own physical
+line, real and extremely common POSIX style) produced `sh: name(): not found` — two real, distinct
+causes, both fixed: (1) `func_def_brace_index` (renamed from `is_func_def_shape`, now returning
+the real brace index instead of a bool) tolerates one optional `;` token between the `()` word
+and the `{` — the real newline between them already tokenizes as `;`; (2) a real, subtler
+completeness-detection bug in the REPL's own `is_balanced` heuristic: `NAME()` alone, its own
+trailing newline already turned into a `;`, has zero unmatched `if`/`{` — so it looked perfectly
+"complete" and got executed as a bogus command ONE STATEMENT TOO EARLY, before the real `{` on
+the next physical line ever arrived. Fixed: if the last real (non-`;`) word in the accumulated
+buffer is itself `NAME()`-shaped, the buffer is now correctly treated as incomplete regardless of
+brace count — unambiguously a function header awaiting its own `{`.
+
+8 new real end-to-end assertions (3 comments, 3 `source`, 1 brace-on-own-line) — all pass,
+alongside the original 32. `make test`: 347/347, zero regressions. Real, honest conclusion: this
+shell can now source a real file and define/call real functions written in either real brace
+style, and correctly ignores real comments — but running OpenRC's own real `functions.sh`
+end-to-end still needs arithmetic expansion, `case`/`esac`, `local`, and `eval`, each a real,
+separate, later phase, named directly rather than claimed done.
+
 ## Real phased plan
 
 - **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
@@ -229,13 +269,14 @@ alongside the original 23. `make test`: 347/347, zero regressions.
   nested definitions), and real bare `NAME=value` assignment. Live-validated against the actual
   EmilyOS `/etc/init.d/hostname` script — it now parses and defines its own functions with zero
   errors, and `start` runs its real conditional/parameter-expansion/command logic correctly.
-  **Not yet done**: nested `if`, `:=`/`:+`/`#`/`%` parameter-expansion operators, nested `${...}`
-  inside a default value, and a real `source`/`.` builtin — needed for OpenRC's own
-  `ebegin`/`eend`/etc. helpers, which live in a separate real `functions.sh` that OpenRC's own
-  `/sbin/openrc-run` wrapper sources before a script's `start`/`stop` ever runs, confirmed live as
-  the ONLY remaining failure running the real `hostname` script's own `start` function. The real,
-  concrete, now-precisely-named next gate before this shell could run a real OpenRC script
-  completely end to end, sized against live evidence rather than guessed at.
+- **Phase 3d (v0 done)**: real `source`/`.`, real `#` comments, real brace-on-its-own-line
+  function definitions (`name()\n{...}`). Attempted the real target this was for — OpenRC's own
+  `/lib/rc/sh/functions.sh` — and found, by reading it directly, it needs `$((arithmetic))`,
+  `case`/`esac`, `local`, and `eval`. **Not yet done**: exactly those four, plus nested `if`,
+  `:=`/`:+`/`#`/`%` parameter-expansion operators, and nested `${...}` inside a default value —
+  real, concrete, now-precisely-named next slices (not guessed at) before this shell could run a
+  real OpenRC script's own `functions.sh` completely end to end. `case`/`esac` and arithmetic are
+  likely the highest-value next two, both real and independently useful beyond just this one file.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).

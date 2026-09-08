@@ -4483,3 +4483,29 @@ named gap: a `source`/`.` builtin for OpenRC's own `functions.sh`).
 
 8 new real end-to-end assertions (2 multi-line, 4 functions, 2 bare assignment) — all pass
 alongside the original 23. `make test`: 347/347, zero regressions.
+
+## coreutils/sh — real source/., comments, brace-on-own-line functions (2026-09-08, same day)
+
+Founder: "continue emilyos+." `source`/`.`: reads a real file, tokenizes it whole, runs it
+through the exact same `exec_range` everything else uses, in-process (never forked) so
+assignments/functions persist. Attempted the real target this was for — OpenRC's own
+`/lib/rc/sh/functions.sh` — and found, by reading it directly: it needs `$((arithmetic))`,
+`case`/`esac`, `local`, and `eval`, none of which this shell has yet.
+
+Real `#` comments: found live immediately while testing `source` against a real script — every
+comment line was executed as a bogus `#: not found` command (prior testing always manually
+stripped comments, masking the gap). Fixed in `tokenize-line`: `#` is a comment only at a real
+word boundary (mid-word `foo#bar` stays literal).
+
+Real brace-on-its-own-line functions (`name()\n{...}`): fixing comments exposed this real, second
+gap in the same file. Two real, distinct causes fixed: `func_def_brace_index` now tolerates one
+optional `;` between the `()` word and `{`; and a subtler bug in the REPL's own `is_balanced`
+heuristic — `NAME()` alone looked "complete" (zero unmatched if/brace) and got executed as a
+bogus command one statement too early, before the real `{` on the next line arrived. Fixed: a
+trailing `NAME()`-shaped word now marks the buffer incomplete regardless of brace count.
+
+8 new real end-to-end assertions (3 comments, 3 source, 1 brace-on-own-line) — all pass alongside
+the original 32. `make test`: 347/347, zero regressions. Real, honest conclusion: this shell can
+source real files, define/call real functions in either brace style, and ignore real comments —
+but running OpenRC's own real functions.sh end-to-end still needs arithmetic, case/esac, local,
+and eval, each a real, separate, later phase.

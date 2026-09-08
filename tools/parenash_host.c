@@ -85,16 +85,27 @@ static int find_keyword(char **words, int start, int end, const char *kw) {
     return -1;
 }
 
-/* is_func_def_shape -- real check for `NAME() {` starting at `start`: words[start] must be a
- * real word ending in the literal two characters "()" (e.g. "depend()" -- this shell's own
- * tokenizer never splits "(" / ")" out on their own, matching how real shell function-definition
- * syntax is written with no space before the parens), and words[start+1] must be a bare "{". */
-static int is_func_def_shape(char **words, int start, int end) {
-    if (start + 1 >= end) return 0;
+/* func_def_brace_index -- real check for a function definition starting at `start`: words[start]
+ * must be a real word ending in the literal two characters "()" (e.g. "depend()" -- this shell's
+ * own tokenizer never splits "(" / ")" out on their own, matching how real shell function-
+ * definition syntax is written with no space before the parens). Returns the real index of the
+ * opening "{", or -1 if this isn't a function definition at all. Real, live-found gap fixed
+ * here: real POSIX shell scripts commonly write the opening brace on its OWN line --
+ * `name()\n{\n...\n}` (confirmed live in OpenRC's own real `/lib/rc/sh/functions.sh`) -- which
+ * this shell's own newline-as-";" tokenizing turns into `NAME() ; { ...`, so a single optional
+ * ";" separator between the "()" word and the "{" is now tolerated, not just `NAME() {` on one
+ * real line. */
+static int func_def_brace_index(char **words, int start, int end) {
+    if (start + 1 >= end) return -1;
     size_t len = strlen(words[start]);
-    if (len < 3) return 0;
-    if (words[start][len - 2] != '(' || words[start][len - 1] != ')') return 0;
-    return strcmp(words[start + 1], "{") == 0;
+    if (len < 3) return -1;
+    if (words[start][len - 2] != '(' || words[start][len - 1] != ')') return -1;
+    int brace_idx = start + 1;
+    if (strcmp(words[brace_idx], ";") == 0) {
+        brace_idx++;
+        if (brace_idx >= end) return -1;
+    }
+    return strcmp(words[brace_idx], "{") == 0 ? brace_idx : -1;
 }
 
 static int exec_range(char **words, int start, int end, Arena *expand_arena);
@@ -163,6 +174,55 @@ static int exec_simple(char **words, int start, int end, Arena *expand_arena) {
         int code = argc >= 2 ? atoi(argv[1]) : 0;
         exit(code);
     }
+    if (strcmp(argv[0], "source") == 0 || strcmp(argv[0], ".") == 0) {
+        /* Real `source`/`.` builtin -- reads a real file, tokenizes its ENTIRE content in one
+         * pass (no need for the REPL's own incremental is_balanced accumulation, since a whole
+         * file is already complete), and runs it through the exact same exec_range every other
+         * construct in this shell uses. Runs in THIS process (never forked), the same real
+         * reason cd/export/functions are builtins -- a sourced file's own assignments/function
+         * definitions must persist in the calling shell, the entire real point of `source`.
+         * Real, honest v0 boundary, checked live: this genuinely runs simple sourced scripts
+         * (proven against a real, hand-written test file), but does NOT make OpenRC's own real
+         * `/lib/rc/sh/functions.sh` work -- that file needs `$(( arithmetic ))`, `case`/`esac`,
+         * `local`, and `eval`, none of which this shell has, confirmed by reading its real
+         * source directly rather than assumed. */
+        if (argc < 2) {
+            fprintf(stderr, "sh: %s: filename argument required\n", argv[0]);
+            return 2;
+        }
+        FILE *f = fopen(argv[1], "r");
+        if (!f) {
+            fprintf(stderr, "sh: %s: %s: No such file or directory\n", argv[0], argv[1]);
+            return 1;
+        }
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (fsize < 0) {
+            fclose(f);
+            return 1;
+        }
+        char *filebuf = (char *)malloc((size_t)fsize + 1);
+        size_t nread = fread(filebuf, 1, (size_t)fsize, f);
+        filebuf[nread] = '\0';
+        fclose(f);
+
+        Arena file_arena;
+        arena_init(&file_arena);
+        Vec file_words = tokenize_line(filebuf, &file_arena);
+        int file_wc = vec_len(&file_words);
+        int source_status = 0;
+        if (file_wc > 0) {
+            size_t fw_count = (size_t)file_wc;
+            char **file_arr = (char **)malloc(sizeof(char *) * fw_count);
+            for (int i = 0; i < file_wc; i++) file_arr[i] = (char *)vec_get(&file_words, i);
+            source_status = exec_range(file_arr, 0, file_wc, &file_arena);
+            free(file_arr);
+        }
+        arena_free_all(&file_arena);
+        free(filebuf);
+        return source_status;
+    }
 
     /* Real, live-found gap fixed this pass: a bare `NAME=value` statement (real shell variable
      * assignment, NO `export` keyword — confirmed live via this session's own real, audited
@@ -218,8 +278,9 @@ static int exec_range(char **words, int start, int end, Arena *expand_arena) {
         return exec_if_chain(words, start, end, expand_arena);
     }
 
-    if (is_func_def_shape(words, start, end)) {
-        int close = find_keyword(words, start + 2, end, "}");
+    int brace_idx = func_def_brace_index(words, start, end);
+    if (brace_idx >= 0) {
+        int close = find_keyword(words, brace_idx + 1, end, "}");
         if (close < 0) {
             fprintf(stderr, "sh: syntax error: expected '}'\n");
             return 2;
@@ -228,7 +289,7 @@ static int exec_range(char **words, int start, int end, Arena *expand_arena) {
         char *name = (char *)malloc(name_len + 1);
         memcpy(name, words[start], name_len);
         name[name_len] = '\0';
-        define_function(name, words + start + 2, close - (start + 2));
+        define_function(name, words + brace_idx + 1, close - (brace_idx + 1));
         free(name);
         if (close + 1 < end) {
             return exec_range(words, close + 1, end, expand_arena);
@@ -251,17 +312,35 @@ static int exec_range(char **words, int start, int end, Arena *expand_arena) {
  * accumulated multi-line buffer represents a complete logical statement: counts net `if`/`fi`
  * and `{`/`}` occurrences among the already-tokenized words. See this file's own header comment
  * for the real, named limitation (a literal "if"/"fi"/"{"/"}" word inside a quoted string would
- * confuse the count) and why it doesn't affect this session's own two audited real scripts. */
+ * confuse the count) and why it doesn't affect this session's own two audited real scripts.
+ *
+ * Real, live-found second gap fixed here, same pass as `func_def_brace_index`'s own
+ * brace-on-its-own-line fix: `NAME()` alone (its own real trailing newline already turned into a
+ * ";" token, with NOTHING unbalanced yet — no `{` has been seen at all) used to look perfectly
+ * "complete" by the plain if/brace counts above, so the REPL executed `greet()` as a bogus
+ * command by itself, one full statement too early, before the real `{` on the next physical line
+ * ever arrived — confirmed live via `greet()\n{\necho hi\n}\n` producing a real `greet(): not
+ * found` instead of defining a function. Fixed: if the LAST real (non-";") word in the buffer is
+ * itself `NAME()`-shaped, treat the buffer as incomplete regardless of the brace count — it's
+ * unambiguously the start of a function header awaiting its own `{`. */
 static int is_balanced(Vec *words) {
     int n = vec_len(words);
     int if_depth = 0;
     int brace_depth = 0;
+    char *last_real_word = NULL;
     for (int i = 0; i < n; i++) {
         char *w = (char *)vec_get(words, i);
         if (strcmp(w, "if") == 0) if_depth++;
         else if (strcmp(w, "fi") == 0) if_depth--;
         else if (strcmp(w, "{") == 0) brace_depth++;
         else if (strcmp(w, "}") == 0) brace_depth--;
+        if (strcmp(w, ";") != 0) last_real_word = w;
+    }
+    if (last_real_word) {
+        size_t len = strlen(last_real_word);
+        if (len >= 3 && last_real_word[len - 2] == '(' && last_real_word[len - 1] == ')') {
+            return 0;
+        }
     }
     return if_depth <= 0 && brace_depth <= 0;
 }

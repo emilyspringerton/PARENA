@@ -143,6 +143,40 @@ int main(void) {
           "a real bare assignment's own value is genuinely readable back via \\$VAR expansion "
           "afterward, proving it's a real assignment and not just a silently-ignored no-op");
 
+    /* --- real comment support (2026-09-08, Phase 3d) --- */
+    CHECK(strcmp(run_script("# a real comment line\\necho after-comment\\n"), "after-comment\n") == 0,
+          "a real '#'-comment line (real, live-found gap: EVERY real script starts lines with "
+          "these, and they used to be misreported as bogus '#: not found' commands) is now "
+          "correctly skipped to end of line");
+    CHECK(strcmp(run_script("echo hi # trailing comment\\n"), "hi\n") == 0,
+          "a real trailing '#' comment after a genuine command also works");
+    CHECK(strcmp(run_script("echo foo#bar\\n"), "foo#bar\n") == 0,
+          "a real '#' that is NOT at the start of a word (mid-word, e.g. 'foo#bar') is correctly "
+          "NOT treated as a comment -- real shell comments only start at a word boundary");
+
+    /* --- real source/. builtin (2026-09-08, Phase 3d) --- */
+    {
+        FILE *f = fopen("/tmp/test_parenash_source.sh", "w");
+        fputs("greet() {\n\techo hello from sourced function\n}\nexport SOURCED_VAR=yes\n", f);
+        fclose(f);
+        CHECK(strcmp(run_script("source /tmp/test_parenash_source.sh\\necho \\$SOURCED_VAR\\ngreet\\n"),
+                     "yes\nhello from sourced function\n") == 0,
+              "a real 'source' builtin reads a real file, and both its real assignment AND its "
+              "real function definition persist in the CALLING shell afterward");
+        CHECK(strcmp(run_script(". /tmp/test_parenash_source.sh\\ngreet\\n"), "hello from sourced function\n") == 0,
+              "the plain '.' form of the builtin works identically to 'source'");
+        remove("/tmp/test_parenash_source.sh");
+    }
+    CHECK(run_script_status("source /no/such/file.sh\\n") == 1,
+          "sourcing a genuinely nonexistent file reports a real, honest failure, not a crash");
+
+    /* --- real brace-on-its-own-line function definitions (2026-09-08, Phase 3d) --- */
+    CHECK(strcmp(run_script("greet()\\n{\\necho hi-brace-own-line\\n}\\ngreet\\n"), "hi-brace-own-line\n") == 0,
+          "a real function definition with the opening '{' on its OWN line (real, live-found "
+          "gap: OpenRC's own real functions.sh is written exactly this way, and it used to make "
+          "the REPL execute the bare 'NAME()' header as a bogus command one statement too early) "
+          "now defines and runs correctly");
+
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
 }

@@ -39,6 +39,17 @@
 ;; error. Worked around by giving the terminal branch a real, dummy `""` tail value (this
 ;; function's own overall result is `words`, read from the enclosing `let` after the loop, not
 ;; the loop's own value — the dummy string is discarded, never actually used).
+;; find-newline-index — real, tail-recursive scan for the next real newline character starting
+;; at `i`. Returns `n` (not -1) when none remains — real shell comments run to end of LINE, and
+;; "end of line" correctly means "end of input" for a real comment on the last, newline-less line
+;; of a file/buffer too.
+(defn find-newline-index [(s : String @ Region) (i : I32) (n : I32)] : I32
+  (if (>= i n)
+    n
+    (if (= (string/char-at s i) 10) ;; real newline
+      i
+      (find-newline-index s (+ i 1) n))))
+
 (defn tokenize-line [(line : String @ Region) (dest : Arena @ Region)] : (Vec String) @ Region
   (let [words (vec/new dest)
         n (string/length line)]
@@ -55,25 +66,36 @@
               (if (= c quote-char)
                 (recur (+ i 1) current 0)
                 (recur (+ i 1) (string/concat current (string/substring line i (+ i 1) dest) dest) quote-char))
-              (if (or (= c 39) (= c 34)) ;; ' or "
-                (recur (+ i 1) current c)
-                (if (or (= c 32) (= c 9)) ;; space or tab
-                  (do
-                    (if (> (string/length current) 0) (vec/push! &words current) unit)
-                    (recur (+ i 1) "" 0))
-                  (if (or (= c 59) (= c 10)) ;; ';' or real newline — a real newline is itself a
-                                              ;; statement separator in real shell syntax, the
-                                              ;; same real role ';' already has; treating both
-                                              ;; identically (emitting the same literal ";" token
-                                              ;; either way) is what lets the host accumulate and
-                                              ;; tokenize a real MULTI-LINE buffer as a single
-                                              ;; logical statement stream, needed for real
-                                              ;; multi-line `if`/`fi` and function bodies.
+              (if (and (= c 35) (= (string/length current) 0)) ;; '#' at a real word boundary —
+                                                                ;; real shell comments only start
+                                                                ;; at the BEGINNING of a word
+                                                                ;; (`foo#bar` is not a comment),
+                                                                ;; confirmed live as a real,
+                                                                ;; previously-missed gap: every
+                                                                ;; real script's own comment lines
+                                                                ;; were being executed as bogus
+                                                                ;; "#: not found" commands before
+                                                                ;; this fix.
+                (recur (find-newline-index line i n) "" 0)
+                (if (or (= c 39) (= c 34)) ;; ' or "
+                  (recur (+ i 1) current c)
+                  (if (or (= c 32) (= c 9)) ;; space or tab
                     (do
                       (if (> (string/length current) 0) (vec/push! &words current) unit)
-                      (vec/push! &words ";")
                       (recur (+ i 1) "" 0))
-                    (recur (+ i 1) (string/concat current (string/substring line i (+ i 1) dest) dest) 0))))))))
+                    (if (or (= c 59) (= c 10)) ;; ';' or real newline — a real newline is itself a
+                                                ;; statement separator in real shell syntax, the
+                                                ;; same real role ';' already has; treating both
+                                                ;; identically (emitting the same literal ";" token
+                                                ;; either way) is what lets the host accumulate and
+                                                ;; tokenize a real MULTI-LINE buffer as a single
+                                                ;; logical statement stream, needed for real
+                                                ;; multi-line `if`/`fi` and function bodies.
+                      (do
+                        (if (> (string/length current) 0) (vec/push! &words current) unit)
+                        (vec/push! &words ";")
+                        (recur (+ i 1) "" 0))
+                      (recur (+ i 1) (string/concat current (string/substring line i (+ i 1) dest) dest) 0)))))))))
       words)))
 
 ;; raw-getenv — a real getenv(3) call, via a dedicated runtime helper (not a bare inline-c
