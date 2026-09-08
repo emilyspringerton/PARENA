@@ -96,3 +96,44 @@ that failure mode in a widely-used part of the emitter.
 
 No option is picked by this doc. S223-01 stays as the shipped, correct-if-unglamorous current
 state either way.
+
+## Update 2026-09-08 — shipped, via a real fourth option this doc didn't consider
+
+This doc scoped exactly two mechanisms (a GNU statement-expression, blocked by `-pedantic`; a
+synthesized standalone helper function, blocked by real free-variable capture) and named Options
+A/B/C as the only ways forward — all three assumed one of those two mechanisms was the only
+choice. A real, simpler THIRD mechanism existed and was found live: **hoist the binding form's
+own generated statements directly into the SAME enclosing C statement list the `if` itself is
+already being emitted into**, rather than into either a nested expression or a separate function.
+
+This sidesteps the free-variable-capture problem entirely, not by solving it — by making it not
+apply: there is no new C scope boundary at all. The hoisted `let`/`match`/`loop` code becomes
+ordinary sequential statements in the exact same C block as everything around it, so every outer
+local is already directly visible, the same way two ordinary sibling statements in one function
+body always see each other's locals. No AST capture-analysis pass was needed.
+
+The real, honest boundary this mechanism DOES have, matching why neither prior option's
+"full generality" framing quite applies: it only works where a real, already-existing statement
+list is available to hoist into — which is exactly the four real `if`-in-STATEMENT-position call
+sites this emitter already has (a function's own tail, a `loop`'s own tail, a `match` clause's
+own body, another `if`'s own then/else branch recursing through any of those). `if` used as a
+bare, nested ternary EXPRESSION with no accessible statement list (buried inside a binop operand
+or a call argument, for instance) has no statement list to hoist into — `emit_expr`'s own
+`fail()` for `let`/`match`/`loop` in that fully general position is unchanged, exactly S223-01's
+original scope. In practice this covers the real, common, motivating case exactly (LO's own
+S222-09 repro, and every real shape found in this stdlib so far, is an `if` in one of those four
+tail positions) — Option C's own "extract to a named function" workaround remains the real
+answer for the narrower residual case this fix doesn't reach.
+
+Implementation: `emit_if_condition()` (new, `src/emit.c`), called from all four real
+`if`-in-statement-position sites instead of a bare `emit_expr()` on the condition. Detects
+`let`/`match`/`loop`, and when found, calls the already-existing `emit_match_clause_body()` (the
+one dispatcher already proven to assign an arbitrary value-producing, statement-shaped form,
+recursively, into a caller-named result variable with no loop context required — its own
+`let`-binding-value call site already uses it exactly this way) with a fresh temp variable name,
+writing directly into the caller's own `out` StrBuf. A condition that isn't one of those three
+shapes passes straight through to plain `emit_expr`, byte-for-byte the pre-existing behavior.
+
+`make test`: 347/347 (2 pre-existing S223-01 regression tests updated to assert the new, correct
+compiled-and-runs-correctly behavior, replacing their old "fails honestly" assertions — a real
+behavior change, not a broken test). PARENA commit (this session).

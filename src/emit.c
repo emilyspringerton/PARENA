@@ -1247,6 +1247,26 @@ static const char *arena_arg_expr(Arena *arena, Local *b) {
 static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, EmitScope *scope,
                       int return_mode, const char **out_return_type, const char **out_error);
 static Node *find_target_c_src(Arena *arena, Node *target_map, const char **out_error);
+/* Forward-declared so emit_expr's own S223-02 fix (below) can call it directly: a real,
+ * already-general "assign this value-producing, statement-shaped form (if/cond/let/do/match/
+ * loop, recursively) to result_var" dispatcher, already proven safe with a NULL loop context
+ * (loop_locals == NULL) by its own existing `let`-binding-value call sites, which never emits a
+ * `break`/`continue` in that mode (checked directly in its own body, not assumed). */
+static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitScope *scope,
+                                   const char *result_var, Local **loop_locals, size_t loop_var_count,
+                                   const char *result_type_hint, const char **out_result_type,
+                                   const char **out_error);
+/* emit_if_condition -- S223-02's own real, buildable slice (see emit_expr's own header comment,
+ * right where `let`/`match`/`loop` in general expression position is rejected, for the full real
+ * reasoning on why a GNU statement-expression doesn't survive this project's own -pedantic build
+ * discipline). Every real `if`-in-statement-position call site already owns a real StrBuf `out`
+ * it's writing statements into -- this hoists a `let`/`match`/`loop` condition's own real
+ * statements into THAT existing list, assigning into a fresh, named temp variable that becomes
+ * the actual C `if (...)` condition, entirely real ISO C99, no extension needed. A condition
+ * that ISN'T one of those three shapes passes straight through to plain `emit_expr`, unchanged
+ * behavior for every real program that doesn't hit this shape. */
+static const char *emit_if_condition(Arena *arena, StrBuf *out, Node *cond, EmitScope *scope,
+                                      const char **out_error);
 
 /* emit_alloc_call handles the one rank-producing/value-producing call
  * this pass understands: `(alloc arena-expr String value)`, two real
@@ -2726,30 +2746,39 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         *out_type = payload_type;
         return arena_strdup(arena, buf, strlen(buf));
     }
-    /* Real, honest diagnostic, not a fix -- EMILY/BACKLOG.md SECTION 223 (S223-01) tracks the
-     * real fix (synthesizing a GNU C statement-expression around the statement-oriented emitter
-     * below) as separate, larger, not-yet-attempted work. `let`/`match`/`loop` are only handled
-     * in STATEMENT position (a function's own body, a let's own body, a match clause's own body
-     * -- see emit_body/emit_let/emit_match/emit_loop, each with a real `EmitScope child` that
-     * correctly threads new bindings). This function (the plain EXPRESSION dispatcher) has no
-     * case for any of them at all, so without this check one reaching here (because it's nested
-     * inside an `if`'s own condition, or any other expression-position slot, rather than sitting
-     * in a real statement/body position) would silently fall through to the generic call path
-     * just below -- which processes the form's own `[binding value]` bindings-vector as if it
-     * were an ordinary argument list, calling scope_lookup on the bound NAME itself as though it
-     * were a plain variable reference. That's why the resulting error was always the confusing
-     * "unknown identifier '<the bound name>'", never "unknown identifier 'let'" -- this function
-     * was partially, incorrectly processing the form's shape rather than rejecting it outright.
-     * Found live 2026-09-02 (LO's own S222-09, a MATCH used as an `if`'s own condition; minimal
-     * repro: `(if (let [x 1] (= x 1)) 1 0)` fails the identical way). Zero behavior change for
-     * any program that doesn't hit this shape -- it never compiled successfully before this
-     * check existed either, just with a worse error. */
+    /* Real, honest diagnostic, not a fix -- EMILY/BACKLOG.md SECTION 223 (S223-01) named the
+     * general fix as "synthesize a GNU C statement-expression" (S223-02's own original framing).
+     * Found live, checked directly rather than assumed (2026-09-07): a GNU statement-expression
+     * (`({ ...; result; })`) genuinely compiles under plain gcc, but this project's own real,
+     * standing build discipline compiles every generated C file with `-std=c99 -pedantic
+     * -Werror` (every real `make test-*` target) -- `-pedantic` rejects a braced-group-in-
+     * expression outright ("ISO C forbids braced-groups within expressions"), turned into a hard
+     * error by `-Werror`. Confirmed live: an isolated repro compiled clean under
+     * `-std=c99 -Wall -Wextra` alone, then failed exactly that way the instant `-pedantic` was
+     * added. So the GNU-statement-expression approach is not actually usable in THIS codebase's
+     * own real, tested build path, for `let`/`match`/`loop` in a fully general expression
+     * position (a binop operand, a call argument, anywhere no enclosing statement list exists to
+     * hoist into). That general case stays exactly this honest diagnostic, unchanged.
+     *
+     * The real, narrower, buildable slice of S223-02 -- `let`/`match`/`loop` specifically as an
+     * `if`'s own condition, the literal, motivating case this whole gap was found from (LO's own
+     * S222-09) -- IS fixed, via a real, ISO-C99-clean HOISTING approach instead: every real
+     * `if`-in-statement-position call site (emit_if, emit_loop_tail's own `if` case,
+     * emit_match_clause_body's own `if` case, emit_body's own function-tail `if` case) now
+     * routes its own condition through `emit_if_condition()` (below), which detects exactly this
+     * shape and hoists the let/match/loop's own real statements into the ALREADY-REAL enclosing
+     * statement list (each of those four call sites already has one) BEFORE the `if`, assigning
+     * into a real, plain, named temp variable that then becomes the condition -- no GNU
+     * extension needed, since a real statement LIST already exists at every one of those four
+     * call sites (unlike the fully general in-expression case just above, which genuinely has
+     * nowhere real to hoist a statement to). */
     if (is_call_named(expr, "let") || is_call_named(expr, "match") || is_call_named(expr, "loop")) {
         return fail(arena, out_error,
-                    "emit: '%s' at line %d can't be used directly in expression position (e.g. an "
-                    "if's own condition) -- only as a function's own body, a let's own body, or a "
-                    "match clause's own body. Bind its result to a name in an enclosing let first, "
-                    "then reference that name here instead.",
+                    "emit: '%s' at line %d can't be used directly in expression position (e.g. a "
+                    "binop operand or call argument) -- only as a function's own body, a let's own "
+                    "body, a match clause's own body, or (now) an if's own condition. Bind its "
+                    "result to a name in an enclosing let first, then reference that name here "
+                    "instead.",
                     expr->children[0]->text, expr->line);
     }
     if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL) {
@@ -3188,8 +3217,7 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
             return fail(arena, out_error, "loop: if in tail position needs (if cond then else) at line %d",
                         tail->line) != NULL;
         }
-        const char *cond_type = NULL;
-        const char *cond = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        const char *cond = emit_if_condition(arena, out, tail->children[1], scope, out_error);
         if (!cond) return 0;
         sb_appendf(out, "        if (%s) {\n", cond);
         const char *then_type = NULL;
@@ -3791,8 +3819,7 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
             return fail(arena, out_error, "match: if in clause body needs (if cond then else) at line %d",
                         body->line) != NULL;
         }
-        const char *cond_type = NULL;
-        const char *cond_c = emit_expr(arena, body->children[1], scope, &cond_type, out_error);
+        const char *cond_c = emit_if_condition(arena, out, body->children[1], scope, out_error);
         if (!cond_c) return 0;
         sb_appendf(out, "        if (%s) {\n", cond_c);
         const char *then_type = NULL;
@@ -4003,6 +4030,35 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
     }
     if (out_result_type) *out_result_type = clause_type;
     return 1;
+}
+
+/* emit_if_condition -- real definition, see its own forward-declared header comment above
+ * emit_match_clause_body's own forward declaration for the full reasoning. */
+static const char *emit_if_condition(Arena *arena, StrBuf *out, Node *cond, EmitScope *scope,
+                                      const char **out_error) {
+    if (!(is_call_named(cond, "let") || is_call_named(cond, "match") || is_call_named(cond, "loop"))) {
+        const char *cond_type = NULL;
+        return emit_expr(arena, cond, scope, &cond_type, out_error);
+    }
+    static int if_cond_counter = 0;
+    char result_var[64];
+    snprintf(result_var, sizeof(result_var), "__if_cond_%d", if_cond_counter++);
+    /* Same real "build into a scratch buffer first to learn the result type, THEN declare, THEN
+     * append" shape emit_let's own match/loop-binding-value case already uses -- the real
+     * declared C type isn't known until AFTER emit_match_clause_body runs. */
+    StrBuf temp_body;
+    sb_init(&temp_body);
+    const char *result_type = NULL;
+    if (!emit_match_clause_body(arena, &temp_body, cond, scope, result_var, NULL, 0, NULL,
+                                 &result_type, out_error)) {
+        sb_free(&temp_body);
+        return NULL;
+    }
+    const char *decl_type = result_type && strcmp(result_type, "void") != 0 ? result_type : "int";
+    sb_appendf(out, "    %s %s __attribute__((unused));\n", decl_type, result_var);
+    sb_append(out, temp_body.data);
+    sb_free(&temp_body);
+    return arena_strdup(arena, result_var, strlen(result_var));
 }
 
 /* emit_match_core -- the real clause-matching machinery (tmp_var +
@@ -4627,8 +4683,7 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             fail(arena, out_error, "if: expected (if cond then else) at line %d", tail->line);
             return 0;
         }
-        const char *cond_type = NULL;
-        const char *cond_c = emit_expr(arena, tail->children[1], scope, &cond_type, out_error);
+        const char *cond_c = emit_if_condition(arena, out, tail->children[1], scope, out_error);
         if (!cond_c) return 0;
         sb_appendf(out, "    if (%s) {\n", cond_c);
         const char *then_type = NULL;

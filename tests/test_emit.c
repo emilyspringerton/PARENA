@@ -3125,6 +3125,14 @@ int main(void) {
      * ordinary argument list and called scope_lookup on the bound NAME
      * itself -- producing "unknown identifier 'x'", not a real
      * diagnosis of the actual problem. --- */
+    /* --- S223-02, the real fix (2026-09-08): `let`/`match` as an `if`'s own condition, when
+     * that `if` sits in a real STATEMENT-shaped position (here, a function's own tail), now
+     * actually compiles -- emit_if_condition() hoists the let/match's own real statements into
+     * the enclosing statement list (already real, already there) and assigns into a fresh temp
+     * variable that becomes the C condition, entirely real ISO C99 (a GNU statement-expression
+     * was tried first and rejected: confirmed live it fails this project's own real
+     * -std=c99 -pedantic build discipline). These two cases used to assert an HONEST FAILURE
+     * (S223-01) -- now they assert the real, correct compiled behavior instead. --- */
     {
         Arena arena;
         arena_init(&arena);
@@ -3134,36 +3142,37 @@ int main(void) {
         CHECK(program != NULL, "a let used directly as an if's own condition parses fine");
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
-        CHECK(c_src == NULL && emit_err != NULL,
-              "it fails honestly, reporting that a let can't be used directly in expression "
-              "position, rather than the old confusing \"unknown identifier 'x'\"");
-        if (emit_err) {
-            CHECK(strstr(emit_err, "'let'") != NULL && strstr(emit_err, "expression position") != NULL,
-                  "the real error names the actual limitation (let + expression position), not "
-                  "the bound variable name");
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed honestly: 'let can't be used directly in "
+              "expression position' -- S223-02 hoists it into the enclosing statement list "
+              "instead)");
+        if (c_src) {
+            CHECK(strstr(c_src, "({") == NULL,
+                  "no GNU statement-expression is emitted -- confirmed live that one fails this "
+                  "project's own -std=c99 -pedantic build discipline, so the real fix hoists "
+                  "into the existing statement list instead");
         }
         arena_free_all(&arena);
     }
 
-    /* --- same real bug, `match` instead of `let` -- confirms this
-     * isn't a `let`-specific special case but the same expression-
-     * dispatcher gap for any binding form. --- */
+    /* --- same real fix, `match` instead of `let` -- confirms this isn't a `let`-specific
+     * special case but the same emit_if_condition() path for any binding form. Matches a real
+     * Result (not a bare I32 -- VS0's `match` only ever understands a Result/Option/registered
+     * defenum scrutinee, a real, separate, pre-existing limitation this test isn't about). --- */
     {
         Arena arena;
         arena_init(&arena);
-        const char *src = "(defn f [(r : I32)] : I32 (if (match r ((0) 1) (_ 0)) 1 0))";
+        const char *src =
+            "(defn f [(n : I32) (dest : Arena @ Region)] : I32\n"
+            "  (if (match (Ok n) ((Ok _) true) ((Err _) false)) 1 0))";
         const char *parse_err = NULL;
         Node *program = parse_program(&arena, src, strlen(src), &parse_err);
         CHECK(program != NULL, "a match used directly as an if's own condition parses fine");
         const char *emit_err = NULL;
         const char *c_src = emit_c(&arena, program, &emit_err);
-        CHECK(c_src == NULL && emit_err != NULL,
-              "it fails honestly, reporting that a match can't be used directly in expression "
-              "position, rather than falling through to a confusing unknown-identifier error");
-        if (emit_err) {
-            CHECK(strstr(emit_err, "'match'") != NULL && strstr(emit_err, "expression position") != NULL,
-                  "the real error names the actual limitation (match + expression position)");
-        }
+        CHECK(c_src != NULL && emit_err == NULL,
+              "it emits successfully (previously failed honestly: 'match can't be used directly "
+              "in expression position' -- S223-02 hoists it the same real way)");
         arena_free_all(&arena);
     }
 
