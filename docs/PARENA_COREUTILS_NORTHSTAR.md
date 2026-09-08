@@ -314,10 +314,23 @@ never going to be sufficient alone, named honestly rather than overclaimed.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).
-- **Phase 5 (explicitly deferred, a founder call, not decided here)**: whether any of this ever
-  actually replaces Alpine's own real busybox package in the shipped EmilyOS Pi image, matching
-  `turbogrep`/`turbosed`'s own "available, not default" precedent unless/until explicitly
-  approved otherwise.
+- **Phase 5, the founder call made (2026-09-08: "the alpine pi installable parena powered emily
+  os")**: staged into the real EmilyOS Pi image build (`EmilyOS/packaging/scripts/
+  build-pi-image-rootless.sh` step 3b), cross-compiled for aarch64 by reusing that script's own
+  root-less Debian-cross-toolchain bootstrap — PARENA's own compiler still runs NATIVELY (x86_64)
+  to emit portable C; only the final C-to-object compile needs the cross-compiler, the same
+  two-stage shape `src/emit.c`'s C target already has everywhere else. Kept AVAILABLE, NOT
+  DEFAULT as that precedent always intended: parenabusybox's applet symlinks live in their own
+  `/usr/local/parena-coreutils/`, off Alpine's default `$PATH`, not replacing the real coreutils;
+  parenash goes directly into `/usr/local/bin/` (no name collision risk). Real,
+  previously-undiscovered gap found and fixed along the way via actually EXECUTING the
+  cross-compiled binaries under root-lessly-bootstrapped `qemu-user-static` against the real
+  Alpine rootfs (not just checking `file` output for architecture): this cross-toolchain targets
+  GLIBC, but Alpine ships MUSL — an incompatible dynamic-linker ABI that also silently affected
+  the pre-existing `emilyos` Go binary. Fixed via static linking (`-static`); live-verified all 4
+  parenabusybox applets plus a real parenash script execute correctly. See
+  `EmilyOS/docs/NORTHSTAR_DISTRO.md`'s own matching "Phase 1, continued" entry for the full
+  writeup.
 
 ## Related
 
