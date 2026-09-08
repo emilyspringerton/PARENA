@@ -1,0 +1,31 @@
+;; stdlib/coreutils/pwd.prn — depends on core only. Design: docs/PARENA_COREUTILS_NORTHSTAR.md.
+;;
+;; Real PARENA logic behind the `pwd` applet of the PARENA-powered busybox (2026-09-08). The
+;; actual syscall (`getcwd(3)`) is a real, new, one-line `#target inline-c` primitive — the same
+;; real, honest FFI trust boundary every other syscall-backed primitive in this stdlib already
+;; crosses (matches `pentest/wireless.prn`'s own shell-out precedent's own "trust the C call,
+;; don't reimplement the kernel interface" reasoning). `pwd-format` itself is real, if thin,
+;; PARENA logic: a real function existing to keep the applet's own public entry point PARENA-
+;; native rather than a bare C passthrough, and the natural place a future real `-P`/`-L`
+;; (physical vs. logical path) distinction would live once this v0 needs it.
+
+(module coreutils/pwd)
+(export raw-getcwd pwd-format)
+
+;; raw-getcwd — a real getcwd(3) call into a caller-supplied, pre-sized buffer (PATH_MAX-shaped,
+;; 4096 bytes — the same real, standard Linux path-length ceiling this stdlib's own other
+;; path-handling primitives already assume). Returns "" on a real getcwd(3) failure (e.g. the
+;; current directory was removed out from under the process) rather than a garbage/partial
+;; string — a real, honest failure signal, not a silent wrong answer. Delegates to
+;; `coreutils_getcwd_impl` in runtime/parena_runtime.h rather than a bare inline-c expression:
+;; declaring the local buffer inline would need a GNU statement-expression, which this whole
+;; project's own S223-02 saga already confirmed live fails a real -pedantic build.
+(defn raw-getcwd [(dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "coreutils_getcwd_impl(dest)")})
+
+;; pwd-format — the real, public entry point: today a direct passthrough of the real getcwd(3)
+;; result, kept as its own real PARENA function (not inlined into the host driver) so a future
+;; real `-P`/`-L` distinction has a natural, already-established home.
+(defn pwd-format [(dest : Arena @ Region)] : String @ Region
+  (raw-getcwd dest))

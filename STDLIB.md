@@ -4344,3 +4344,40 @@ String n)` + one real `inline-c` block indexing directly into the buffer — not
 `make test-pentest-dot11`: extended with real byte-for-byte assertions on both new functions plus
 a round-trip through the existing `parse-frame` (confirming a Deauth frame is correctly never
 flagged as a beacon) — all pass; full `make test` re-confirmed clean (347/347).
+
+## coreutils — a real PARENA-powered busybox, v0 (2026-09-08)
+
+Founder real-time: "let's write our own parena powered busybox" — directly motivated by the same
+session's EmilyOS/Alpine Raspberry Pi image work (`docs/PARENA_COREUTILS_NORTHSTAR.md`), where
+Alpine's own real busybox `--install` trigger script is the one remaining privileged blocker
+before a first bootable image. Same real "PARENA logic + a C host driver" architecture every
+other real PARENA binary in this repo already uses (`turbogrep`, `editor-demo`, `parena-selfhost`
+itself) — `tools/parenabusybox_host.c` provides `main()` and real busybox-style multi-call
+dispatch (an `argv[0]` basename check, falling back to `parenabusybox <applet> ...` when invoked
+under its own real name — the exact same dual-invocation convention real busybox itself uses),
+real applet LOGIC lives in `stdlib/coreutils/*.prn`.
+
+v0 ships 5 real applets: `echo` (`echo.prn`'s own `echo-line` — real string-joining logic, `-n`
+flag handled in the host), `basename` (`basename.prn` — real, tail-recursive trailing-slash
+strip + last-`/`-index scan + optional suffix strip, built from `string.prn`'s own existing
+`char-at`/`substring` rather than reimplementing string scanning), `pwd` (`pwd.prn` — a real,
+new `getcwd(3)` primitive, `coreutils_getcwd_impl` in `runtime/parena_runtime.h` rather than a
+bare `inline-c` expression — a GNU statement-expression would be needed to declare a local buffer
+inline, and this whole project's own S223-02 saga already confirmed that fails a real `-pedantic`
+build), and `true`/`false` (deliberately trivial — the real, minimal proof multi-call dispatch
+itself works before layering real logic on top).
+
+Real, honest v0 boundary, named directly in the North Star doc: no `sh`/`mount`/`init` yet — the
+three genuinely hard, load-bearing applets a real boot actually depends on, each a real, separate,
+much larger undertaking. Also named directly: `NORTHSTAR_DISTRO.md`'s own existing "GNU tools
+stay for load-bearing infrastructure" guidance is a real, deliberate tension with building
+`init`/`sh`/`mount` replacements at all — not silently glossed over, and whether any of this ever
+actually replaces Alpine's own real busybox in the shipped EmilyOS image stays an explicit,
+later, founder-call decision, matching `turbogrep`/`turbosed`'s own "available, not default"
+precedent.
+
+New `make parenabusybox`/`test-parenabusybox` targets. Real end-to-end test coverage
+(`tests/test_parenabusybox.c`) invokes the actual COMPILED binary via `popen`/`system` — both
+call forms (`parenabusybox <applet>` AND a real symlink named after the applet, e.g. `/tmp/echo`,
+matching how a real system actually uses busybox) — 12 real assertions, all pass. `make test`:
+347/347, zero regressions.

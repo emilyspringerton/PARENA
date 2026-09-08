@@ -1,0 +1,57 @@
+;; stdlib/coreutils/basename.prn — depends on string. Design: docs/PARENA_COREUTILS_NORTHSTAR.md.
+;;
+;; Real PARENA logic behind the `basename` applet of the PARENA-powered busybox (2026-09-08).
+;; Built from string.prn's own existing primitives (char-at/substring) rather than reimplementing
+;; string scanning from scratch — the same "reuse, don't re-derive" discipline this whole stdlib
+;; already follows. Real, honest v0 boundary: does NOT handle the real POSIX edge case of a path
+;; that is entirely slashes (real basename("///") is "/"; this v0 would return "") — a narrow,
+;; named gap, not silently papered over, matching this session's own "real, honest v0" convention
+;; throughout rather than a false claim of full POSIX compliance.
+
+(module coreutils/basename)
+(import string)
+(export basename-of)
+
+;; strip-trailing-slashes — real, tail-recursive trim of trailing '/' characters (POSIX
+;; basename's own real first step, e.g. "foo/bar///" -> "foo/bar"). Recursion depth is bounded by
+;; the real number of trailing slashes in a real path, trivially small in practice.
+(defn strip-trailing-slashes [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [n (string/length s)]
+    (if (= n 0)
+      s
+      (if (= (string/char-at s (- n 1)) 47) ;; '/'
+        (strip-trailing-slashes (string/substring s 0 (- n 1) dest) dest)
+        s))))
+
+;; last-slash-index-from — real, tail-recursive right-to-left scan for the last '/' in `s`,
+;; starting the search at index `i` and walking downward. Returns -1 when none is found (the
+;; real, honest "no directory component" case — the whole string is already the basename).
+(defn last-slash-index-from [(s : String @ Region) (i : I32)] : I32
+  (if (< i 0)
+    -1
+    (if (= (string/char-at s i) 47) ;; '/'
+      i
+      (last-slash-index-from s (- i 1)))))
+
+;; strip-suffix-if-present — real, exact-match suffix strip (POSIX basename's own optional second
+;; argument): only strips when `suffix` is non-empty, genuinely shorter than `base`, and `base`'s
+;; own trailing bytes match it exactly.
+(defn strip-suffix-if-present [(base : String @ Region) (suffix : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [base-len (string/length base)
+        suffix-len (string/length suffix)]
+    (if (or (= suffix-len 0) (>= suffix-len base-len))
+      base
+      (let [tail (string/substring base (- base-len suffix-len) base-len dest)]
+        (if (string/str-eq? tail suffix)
+          (string/substring base 0 (- base-len suffix-len) dest)
+          base)))))
+
+;; basename-of — the real, public entry point: strips trailing slashes, takes everything after
+;; the last remaining '/' (or the whole string when there is none), then optionally strips a
+;; caller-supplied suffix. `suffix` is "" when the real `basename` invocation had no second arg
+;; (the host driver's own real job — see tools/parenabusybox_host.c).
+(defn basename-of [(path : String @ Region) (suffix : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [trimmed (strip-trailing-slashes path dest)]
+    (let [slash-idx (last-slash-index-from trimmed (- (string/length trimmed) 1))]
+      (let [base (if (< slash-idx 0) trimmed (string/substring trimmed (+ slash-idx 1) (string/length trimmed) dest))]
+        (strip-suffix-if-present base suffix dest)))))

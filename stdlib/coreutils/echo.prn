@@ -1,0 +1,25 @@
+;; stdlib/coreutils/echo.prn — depends on string. Design: docs/PARENA_COREUTILS_NORTHSTAR.md.
+;;
+;; Real PARENA logic behind the `echo` applet of the PARENA-powered busybox (2026-09-08, founder
+;; real-time: "let's write our own parena powered busybox"). Real, deliberate split matching this
+;; whole stdlib's own established "argv-shaped concerns stay in the host driver, real logic lives
+;; in PARENA" convention (turbogrep_host.c's own already-proven shape): the C host driver
+;; (`tools/parenabusybox_host.c`) parses busybox echo's own real `-n` flag and joins `argv[1:]`
+;; with a single space (the exact real shape every POSIX echo implementation produces) into ONE
+;; String before calling this function — `echo-line` itself only decides whether to append the
+;; trailing newline, the one piece of real, meaningful logic this applet actually has.
+
+(module coreutils/echo)
+(import string)
+(export echo-line)
+
+;; echo-line — real, minimal echo semantics: the already-joined argument text, plus a trailing
+;; newline unless `suppress-newline?` is true (the real, standard `-n` flag). Matches POSIX
+;; echo's own documented behavior exactly for the no-escape-interpretation case (this v0 does not
+;; attempt `-e`/backslash-escape support — a real, separate, later extension, not silently
+;; promised).
+(defn echo-line [(joined-args : String @ Region) (suppress-newline? : Bool) (dest : Arena @ Region)]
+  : String @ Region
+  (if suppress-newline?
+    joined-args
+    (string/concat joined-args "\n" dest)))

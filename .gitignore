@@ -11,6 +11,7 @@ tools/ci_status_gen.c
 .parena-bootstrap
 turbogrep
 turbosed
+parenabusybox
 editor-demo
 tests/fake_webdriver_server
 var/

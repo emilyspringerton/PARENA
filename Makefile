@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox clean
 
 all: build
 
@@ -620,6 +620,25 @@ turbogrep: build
 		stdlib/regex/pcre.prn stdlib/grep.prn -o /tmp/turbogrep_gen.c
 	cat /tmp/turbogrep_gen.c tools/turbogrep_host.c > /tmp/turbogrep_full.c
 	$(CC) -std=c99 -O2 -I runtime /tmp/turbogrep_full.c src/arena.c -o turbogrep
+
+# parenabusybox -- real PARENA-powered busybox v0 (docs/PARENA_COREUTILS_NORTHSTAR.md,
+# 2026-09-08). Real multi-call dispatch (tools/parenabusybox_host.c provides main(), real applet
+# LOGIC lives in stdlib/coreutils/*.prn) -- same real "PARENA + C host driver" shape turbogrep's
+# own target above already establishes.
+parenabusybox: build
+	./parena build stdlib/string.prn stdlib/coreutils/echo.prn stdlib/coreutils/basename.prn \
+		stdlib/coreutils/pwd.prn -o /tmp/parenabusybox_gen.c
+	cat /tmp/parenabusybox_gen.c tools/parenabusybox_host.c > /tmp/parenabusybox_full.c
+	$(CC) -std=c99 -O2 -I runtime /tmp/parenabusybox_full.c src/arena.c -o parenabusybox
+
+test-parenabusybox: parenabusybox
+	cp parenabusybox /tmp/parenabusybox
+	ln -sf /tmp/parenabusybox /tmp/echo
+	ln -sf /tmp/parenabusybox /tmp/basename
+	ln -sf /tmp/parenabusybox /tmp/true
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime tests/test_parenabusybox.c \
+		-o /tmp/test_parenabusybox_bin
+	/tmp/test_parenabusybox_bin
 
 turbosed: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \

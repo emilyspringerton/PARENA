@@ -880,6 +880,23 @@ static inline int l2socket_close_impl(int fd) {
 }
 #endif
 
+/* ---- stdlib/coreutils/pwd.prn real host glue (2026-09-08) -------------
+ * Real getcwd(3) call for the PARENA-powered busybox's own `pwd` applet
+ * (PARENA_COREUTILS_NORTHSTAR.md). A dedicated helper, not a bare
+ * inline-c expression, for the same real reason every other multi-step
+ * host-glue function in this file is one: a GNU statement-expression
+ * (`({ ... })`) would be needed to declare a local buffer inline, and
+ * this whole project's own S223-02 saga already confirmed live that
+ * GNU statement-expressions fail a real -pedantic build. Returns the
+ * same 4096-byte arena-allocated buffer getcwd(3) itself wrote into on
+ * success, or "" on a real getcwd(3) failure (e.g. the current
+ * directory was removed out from under the process) -- an honest
+ * failure signal, not a garbage/partial string. */
+static inline char *coreutils_getcwd_impl(Arena *dest) {
+    char *buf = (char *)arena_alloc(dest, 4096);
+    return getcwd(buf, 4096) ? buf : "";
+}
+
 /* ---- stdlib/io/mmap.prn real host glue (2026-09-07) -------------------
  * Real answer to the founder's own pasted proposal: "Raw Disk / Memory-
  * Mapped File Primitives (mmap): low-level memory map abstractions that
