@@ -4226,3 +4226,45 @@ New `make test-linalg-sparse`, real assertions against a genuine 4×4 sparse mat
 triplets (a real empty row included), `csr-matvec` verified against a hand-computed real
 matrix-vector product `[4, 7, 0, 12]`, plus real, honest `ShapeMismatch`/`IndexOutOfRange`
 boundary checks. `make test`: 347/347, zero regressions.
+
+## The real, cross-cutting loop-variable I32 boxing bug — FIXED (2026-09-08)
+
+Founder: "can we fix the loop-variable I32 boxing bug?" — the gap this file's own `linalg`
+section (2026-08-21, above) and several `base4/*` doc comments had documented as real, confirmed,
+and "genuinely cross-cutting... not attempted."
+
+Root cause: `NODE_NUMBER` always reported `"double"` for every numeric literal (VS0's own real
+"no int/float distinction" simplification) — so a `loop`/`let` binding seeded from a whole-number
+literal like `0` was C-typed `double`. Silently fine for arithmetic (C's own division/promotion
+rules already ran on the real literal text regardless of this internal type string), but
+`vec_push_`/`vec_set_at_`'s own scalar-boxing decision picks `vec_box_f64` the instant such a
+value is pushed into an `I32`-typed `Vec`, while a later typed read does `*(int *)` on that same
+8-byte cell — real memory-level corruption, confirmed live multiple times this session.
+
+Real fix, two parts: (1) `NODE_NUMBER` now reports `"int"` for a literal with no `.`/`e`/`E` in
+its own text. (2) A `let` binding (assigned exactly once) is immediately safe with just that; a
+`loop` binding can be reassigned via `recur` on every iteration, so it additionally needs
+`loop_body_int_safe()` — after every binding in a loop is known, walk the loop's own body
+(mirroring `emit_loop_tail`'s real `if`/`cond`/`when`/`do`/`let`/`match` traversal, stopping at a
+nested loop) and downgrade an `"int"`-typed binding back to `"double"` (today's pre-existing safe
+default) unless EVERY real `recur` update for it also resolves to `"int"` — via the REAL
+`emit_expr` type inference, not a separate, necessarily-incomplete hand-rolled recognizer (a
+first draft using a narrow `+`/`-`/`*`-only check regressed `set.prn`'s own `fnv1a-hash`, which
+updates its accumulator via `bit-xor`/`*`; reusing the real emitter fixed this by construction,
+correctly recognizing bit ops, `mod`, and any known function call's own declared return type).
+
+Verified: `base4/vector.prn`'s `dot` and `base4/matrix.prn`'s `matmul` — both had their own tests
+asserting the CONFIRMED-buggy behavior as an explicit regression gate — now produce the real,
+hand-traced correct values via the correct `int*` cast; both tests and both files' own doc
+comments updated to match. `linalg.prn`'s own `array/set!`-based `matmul`/`transpose` remain
+separately unverified — live-checked after this fix and still produce wrong numbers, meaning
+`array.prn`'s own `[i j]` index-Vec-literal path (`g_veclit_helpers`) has at least one additional,
+different bug beyond this one — a real, separate, deeper investigation, honestly not claimed
+fixed here. `csr-*`'s own `as-i32` workaround (linalg.prn, above) and `set.prn`'s own identical
+pattern are now technically redundant but left in place (harmless, already-correct, no need to
+churn working code).
+
+`make test`: 347/347 (2 pre-existing tests updated to assert the real, fixed behavior instead of
+the bug — a literal now boxes via `vec_box_i32` not `vec_box_f64`; a loop's own result type now
+correctly resolves to `int` not `double`). Every other real, buildable test target re-run clean —
+zero regressions across the full test surface, self-host compiler tests included.
