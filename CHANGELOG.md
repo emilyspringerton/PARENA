@@ -1,4 +1,5 @@
 ## 2026-09-08
+- Added real CSR (Compressed Sparse Row) sparse-matrix primitives to linalg.prn: csr-from-coo, csr-get, csr-matvec. Also fixed a real gap in inverse/solve (missing LinalgError type, body-less stubs never gcc-verified). (sess-20260905-0720-ec33e7c5)
 
 - Shipped S223-02: let/match/loop can now be used directly as an if's own condition (when the if sits in a real statement position), via a new emit_if_condition() that hoists into the enclosing statement list instead of a blocked GNU statement-expression or a capture-analysis-requiring helper function. (sess-20260905-0720-ec33e7c5)
 
