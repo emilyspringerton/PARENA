@@ -897,6 +897,19 @@ static inline char *coreutils_getcwd_impl(Arena *dest) {
     return getcwd(buf, 4096) ? buf : "";
 }
 
+/* ---- stdlib/coreutils/sh.prn real host glue (2026-09-08) ----------------
+ * Real getenv(3) call for the PARENA-powered busybox's own `sh` applet.
+ * A dedicated helper rather than a bare inline-c expression, same real
+ * reason coreutils_getcwd_impl above already is one: a GNU
+ * statement-expression would be needed otherwise, and this project's
+ * own S223-02 saga already confirmed live that fails a real -pedantic
+ * build. Returns "" (never NULL) for an unset variable, matching real
+ * shell expansion semantics. */
+static inline char *coreutils_getenv_impl(const char *name) {
+    char *v = getenv(name);
+    return v ? v : (char *)"";
+}
+
 /* ---- stdlib/io/mmap.prn real host glue (2026-09-07) -------------------
  * Real answer to the founder's own pasted proposal: "Raw Disk / Memory-
  * Mapped File Primitives (mmap): low-level memory map abstractions that

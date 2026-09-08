@@ -59,16 +59,55 @@ and calls into real PARENA-compiled applet logic in `stdlib/coreutils/*.prn`.
   real, minimal proof that multi-call dispatch itself works correctly for the two simplest real
   busybox applets that exist, before layering real logic on top.
 
-Real, honest v0 boundary: no `sh`, no `mount`, no `init` yet — the three genuinely hard,
-load-bearing applets a real boot depends on, each a real, separate, much larger undertaking
-(a POSIX-ish shell needs a real parser/job-control/redirection/pipe implementation; `mount`/
-`init` need real, privileged syscalls this repo's own sandbox can't even test end-to-end without
-root). Not attempted this pass — named directly as the real next phases, not silently deferred.
+Real, honest v0 boundary: no `mount`, no `init` yet — genuinely hard, load-bearing applets a real
+boot depends on, real, separate, larger undertakings needing privileged syscalls this repo's own
+sandbox can't even test end-to-end without root. Not attempted this pass — named directly as real
+next phases, not silently deferred.
+
+## Phase 3 shipped this pass (same day, founder real-time: "zsh etc build it prn") — a real, minimal `sh`
+
+Real, honest scope decision made BEFORE writing anything, grounded in a real audit rather than a
+guess: read the actual OpenRC scripts in this session's own already-built EmilyOS Alpine rootfs
+(`/etc/init.d/hostname`, `/etc/init.d/bootmisc`) and found they use real shell FUNCTIONS,
+`if`/`[ ]` conditionals, and `${var:-default}` parameter expansion — genuinely closer to a full
+POSIX shell than a "run sequential commands" toy. Running those real scripts is explicitly NOT
+this pass's goal (a real, separate, much later milestone, named honestly rather than oversold);
+this v0 is a real, working, useful minimal shell in its own right.
+
+`stdlib/coreutils/sh.prn` ships real PARENA logic: `tokenize-line` (a real, quote-aware
+word-splitter — single/double quotes suppress whitespace/`;` splitting and are stripped from the
+output word; `;` is itself both a splitter and its own emitted token, letting the host split
+sequential commands) and `expand-word` (real, minimal whole-word `$VAR` expansion via a new
+`getenv(3)`-backed `raw-getenv` primitive). `tools/parenash_host.c` does the real process
+management every actual shell needs: a REPL loop (interactive `$ ` prompt on a real tty, silent
+script-mode otherwise — `parenash < script.sh` works too), `fork`/`execvp`/`waitpid` for real
+external commands, and three real builtins that must run in the PARENT process (a forked child
+could never affect the shell's own cwd/environment) — `cd`, `export NAME=value`, `exit [code]`.
+
+Real, live-found VS0 emitter gap, named directly and worked around rather than silently
+papered over: a `loop` whose own terminal (non-`recur`) branch resolves to `Unit` produces an
+invalid `void __loop_result_N` C local (a real, confirmed `variable ... declared void` gcc
+error) — `tokenize-line`'s own terminal branch gives itself a real, dummy `""` tail value instead
+(the function's real result, `words`, is read from the enclosing `let` after the loop, never the
+loop's own value) — a real, separate emitter bug, not fixed in `src/emit.c` itself this pass.
+
+New `make parenash`/`test-parenash` targets. Real end-to-end test coverage
+(`tests/test_parenash.c`) pipes real script text into the ACTUAL compiled binary via `popen`
+(matching `test_parenabusybox.c`'s own "invoke the real binary" discipline) — 9 real assertions
+covering quoting, `;`-sequencing, `$VAR` expansion via a real `export`, all 3 builtins (including
+proving `cd` genuinely mutates the shell's own parent-process cwd, not a throwaway child's), and
+the standard `127` "not found" exit code — all pass. `make test`: 347/347, zero regressions.
+
+Real, honest v0 boundary, named directly: NO pipes, NO redirection, NO functions, NO
+`if`/conditionals/test builtin, NO job control/backgrounding, NO mid-word `$VAR` expansion (only
+a word that's ENTIRELY `$NAME`), NO `${VAR}` brace form. This is a real, useful toy shell — not
+yet capable of running the real OpenRC scripts the audit above found, which is the actual, much
+larger remaining milestone before `sh` could ever be part of a real EmilyOS boot chain.
 
 ## Real phased plan
 
-- **Phase 0 (this pass, done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/
-  `true`/`false`), real tests, real `make` target.
+- **Phase 0 (done)**: multi-call dispatch + 5 real applets (`echo`/`basename`/`pwd`/`true`/
+  `false`), real tests, real `make` target.
 - **Phase 1**: broaden the trivial-but-real applet set (`cat`, `head`, `wc -l`, `yes`, `sleep`,
   `env`) — each individually simple, each a real, incremental dogfooding win, no new hard
   primitives needed beyond what `io.prn`/`process.prn` likely already cover.
@@ -77,12 +116,13 @@ root). Not attempted this pass — named directly as the real next phases, not s
   root or a real Pi, matching this session's own EmilyOS work's own real constraints.
   `stdlib/emilyos/fsacl.prn`'s own PARENA-mod-backed `setfacl` wrapper (2026-08-25) is real,
   direct, already-proven precedent for wrapping a privileged syscall-adjacent operation in PARENA.
-- **Phase 3**: a real, minimal `sh` — the largest, hardest real phase. Real, honest scope
-  decision needed before starting, not made here: a full POSIX shell (pipes/job control/globbing/
-  here-docs) vs. a genuinely minimal `ash`-lite (sequential command execution, basic `$VAR`
-  expansion, no job control) sized to what `/etc/init.d/*` scripts and `/sbin/init` itself
-  actually need to run OpenRC — likely the latter, but a real audit of what those scripts use
-  should happen before committing to either.
+- **Phase 3 (v0 done, this pass)**: a real, minimal `sh` — sequential `;`-separated commands,
+  quote-aware tokenizing, whole-word `$VAR` expansion, `cd`/`export`/`exit` builtins. Real audit
+  done live (not guessed): `/etc/init.d/hostname`/`bootmisc` need real functions, `if`/`[ ]`
+  conditionals, and `${var:-default}` expansion — genuinely beyond this v0. **Phase 3b, not yet
+  started**: functions, conditionals/test builtin, `${VAR:-default}`-style parameter expansion —
+  the real, concrete next slice actually needed to run real OpenRC scripts, sized against this
+  session's own real audit rather than guessed at.
 - **Phase 4**: `init` — once `sh`/`mount` exist, a real, minimal init (exec openrc, or replace it
   entirely with a PARENA-native service supervisor — a real, separate, much bigger design
   question, not decided here).

@@ -12,6 +12,7 @@ tools/ci_status_gen.c
 turbogrep
 turbosed
 parenabusybox
+parenash
 editor-demo
 tests/fake_webdriver_server
 var/

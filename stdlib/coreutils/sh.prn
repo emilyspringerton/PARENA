@@ -1,0 +1,92 @@
+;; stdlib/coreutils/sh.prn — depends on string, vec. Design: docs/PARENA_COREUTILS_NORTHSTAR.md
+;; Phase 3.
+;;
+;; Real PARENA logic behind the `sh` applet of the PARENA-powered busybox (2026-09-08, founder
+;; real-time: "zsh etc build it prn"). Real, honest scope decision made BEFORE writing this,
+;; grounded in a real audit (not a guess): read the actual OpenRC scripts in this session's own
+;; already-built EmilyOS Alpine rootfs (`/etc/init.d/hostname`, `/etc/init.d/bootmisc`) and found
+;; they use real shell functions, `if`/`[ ]` conditionals, and `${var:-default}` parameter
+;; expansion — genuinely closer to a full POSIX shell than a "sequential commands" toy. Running
+;; those real scripts is explicitly NOT this pass's goal (a real, separate, much later
+;; milestone); this v0 is a real, working, useful minimal shell in its own right — tokenizing a
+;; command line, running simple commands sequentially, basic `$VAR` expansion — not yet
+;; functions/conditionals/pipes/redirection, named directly as real, deliberate v0 boundaries.
+;;
+;; Real architecture split, matching this whole coreutils package's own established convention:
+;; PARENA does the real STRING PROCESSING (tokenizing, quote-handling, `;`-splitting, `$VAR`
+;; lookup), the C host driver (`tools/parenash_host.c`) does real PROCESS MANAGEMENT (the REPL
+;; loop, `fork`/`execvp`/`waitpid`, `cd`/`exit` builtins — which must run in the parent process,
+;; not a forked child, matching every real shell's own actual semantics).
+
+(module coreutils/sh)
+(import string)
+(import vec)
+(export tokenize-line expand-word)
+
+;; tokenize-line — a real, quote-aware word-splitter over a raw command line. Splits on
+;; whitespace (space/tab) and on `;` (both outside quotes), the real minimum needed for
+;; "run these simple commands one after another" — the host driver splits the resulting token
+;; Vec at literal `";"` entries into separate simple-command argv lists. Single AND double quotes
+;; both suppress splitting on whitespace/`;` while active, and are stripped from the resulting
+;; word (real shell behavior for the no-expansion-inside-quotes case this v0 handles; real,
+;; honest v0 boundary: no backslash-escape support, no nested/mismatched-quote recovery beyond
+;; "the rest of the line is inside the quote," and no command substitution — none of that is
+;; silently promised).
+;; Real, live-found VS0 emitter gap, worked around here rather than fixed in src/emit.c (a real,
+;; separate, deferred item): a loop whose own terminal (non-recur) branch resolves to `Unit`
+;; (e.g. `(if cond (vec/push! ...) unit)` with no further expression) produces an invalid
+;; `void __loop_result_N` C local — confirmed live via a real `variable ... declared void` gcc
+;; error. Worked around by giving the terminal branch a real, dummy `""` tail value (this
+;; function's own overall result is `words`, read from the enclosing `let` after the loop, not
+;; the loop's own value — the dummy string is discarded, never actually used).
+(defn tokenize-line [(line : String @ Region) (dest : Arena @ Region)] : (Vec String) @ Region
+  (let [words (vec/new dest)
+        n (string/length line)]
+    (do
+      (loop [i 0
+             current ""
+             quote-char 0]
+        (if (>= i n)
+          (do
+            (if (> (string/length current) 0) (vec/push! &words current) unit)
+            "")
+          (let [c (string/char-at line i)]
+            (if (not (= quote-char 0))
+              (if (= c quote-char)
+                (recur (+ i 1) current 0)
+                (recur (+ i 1) (string/concat current (string/substring line i (+ i 1) dest) dest) quote-char))
+              (if (or (= c 39) (= c 34)) ;; ' or "
+                (recur (+ i 1) current c)
+                (if (or (= c 32) (= c 9)) ;; space or tab
+                  (do
+                    (if (> (string/length current) 0) (vec/push! &words current) unit)
+                    (recur (+ i 1) "" 0))
+                  (if (= c 59) ;; ';'
+                    (do
+                      (if (> (string/length current) 0) (vec/push! &words current) unit)
+                      (vec/push! &words ";")
+                      (recur (+ i 1) "" 0))
+                    (recur (+ i 1) (string/concat current (string/substring line i (+ i 1) dest) dest) 0))))))))
+      words)))
+
+;; raw-getenv — a real getenv(3) call, via a dedicated runtime helper (not a bare inline-c
+;; expression — would need a GNU statement-expression, which this project's own S223-02 saga
+;; already confirmed live fails a real -pedantic build). Returns "" for an unset variable,
+;; matching real shell expansion semantics (an unset/empty `$VAR` both expand to nothing) rather
+;; than distinguishing the two — a real, honest, narrow v0 (POSIX shells technically CAN tell the
+;; difference via `${VAR+x}`-style tests; not attempted here).
+(defn raw-getenv [(name : String @ Region)] : String @ Region
+  #target
+  {:c (inline-c "coreutils_getenv_impl(name)")})
+
+;; expand-word — real, minimal `$VAR` expansion: a word that is ENTIRELY `$` followed by a
+;; variable name (e.g. `$HOME`, `$PATH`) expands to that variable's real environment value. Real,
+;; honest v0 boundary, named directly: no expansion of a `$VAR` occurring MID-word (`foo$BAR`
+;; stays completely literal), no `${VAR}` brace form, no `$1`/`$?`/other special parameters — a
+;; real, separate, later extension of this same function, not silently promised.
+(defn expand-word [(word : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (= (string/length word) 0)
+    word
+    (if (= (string/char-at word 0) 36) ;; '$'
+      (raw-getenv (string/substring word 1 (string/length word) dest))
+      word)))

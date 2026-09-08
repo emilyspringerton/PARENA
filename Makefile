@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash clean
 
 all: build
 
@@ -639,6 +639,24 @@ test-parenabusybox: parenabusybox
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime tests/test_parenabusybox.c \
 		-o /tmp/test_parenabusybox_bin
 	/tmp/test_parenabusybox_bin
+
+# parenash -- the PARENA-powered busybox's own `sh` applet (docs/PARENA_COREUTILS_NORTHSTAR.md
+# Phase 3, 2026-09-08). Real tokenizing/quoting/`;`-splitting/`$VAR` logic in
+# stdlib/coreutils/sh.prn; tools/parenash_host.c does the real REPL loop + fork/execvp/waitpid +
+# cd/exit builtins. Built as its own separate binary (not folded into parenabusybox's own
+# multi-call dispatch) since a real shell needs its own real main()/REPL loop, not a single
+# argv-in-argv-out applet call.
+parenash: build
+	./parena build stdlib/string.prn stdlib/coreutils/sh.prn -o /tmp/parenash_gen.c
+	cat /tmp/parenash_gen.c tools/parenash_host.c > /tmp/parenash_full.c
+	$(CC) -std=c99 -O2 -I runtime /tmp/parenash_full.c src/arena.c -o parenash
+
+test-parenash: parenash
+	cp parenash /tmp/parenash
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime tests/test_parenash.c \
+		-o /tmp/test_parenash_bin
+	/tmp/test_parenash_bin
+
 
 turbosed: build
 	./parena build stdlib/string.prn stdlib/array.prn stdlib/io.prn stdlib/regex/syntax.prn \

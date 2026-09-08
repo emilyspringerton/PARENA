@@ -4381,3 +4381,35 @@ New `make parenabusybox`/`test-parenabusybox` targets. Real end-to-end test cove
 call forms (`parenabusybox <applet>` AND a real symlink named after the applet, e.g. `/tmp/echo`,
 matching how a real system actually uses busybox) — 12 real assertions, all pass. `make test`:
 347/347, zero regressions.
+
+## coreutils/sh — a real, minimal shell v0 (2026-09-08)
+
+Founder real-time same day: "zsh etc build it prn," continuing `docs/PARENA_COREUTILS_NORTHSTAR.md`
+Phase 3. Real, live audit before writing anything: this session's own already-built EmilyOS
+Alpine rootfs's real `/etc/init.d/hostname`/`bootmisc` scripts use real shell functions,
+`if`/`[ ]` conditionals, and `${var:-default}` parameter expansion — genuinely beyond a
+"sequential commands" toy, so running those real scripts is explicitly NOT this pass's goal.
+
+`stdlib/coreutils/sh.prn` ships real PARENA logic: `tokenize-line` (a real, quote-aware
+word-splitter — quotes suppress `;`/whitespace splitting and are stripped from the output; `;`
+is itself both a splitter and its own emitted token) and `expand-word` (real, minimal whole-word
+`$VAR` expansion via a new `getenv(3)`-backed `raw-getenv` primitive — `coreutils_getenv_impl` in
+`runtime/parena_runtime.h`, a dedicated helper rather than a bare `inline-c` expression, same
+real S223-02-driven reason `coreutils_getcwd_impl` already is one). `tools/parenash_host.c` does
+the real process management: a REPL loop (interactive `$ ` prompt on a real tty, silent
+script-mode otherwise), `fork`/`execvp`/`waitpid`, and three real builtins that must run in the
+PARENT process (`cd`, `export NAME=value`, `exit [code]`).
+
+Real, live-found VS0 emitter gap, worked around directly in `tokenize-line` rather than fixed in
+`src/emit.c`: a `loop` whose own terminal (non-`recur`) branch resolves to `Unit` produces an
+invalid `void __loop_result_N` C local (confirmed live via a real `variable ... declared void`
+gcc error) — fixed by giving the terminal branch a real, dummy `""` tail value instead (the
+function's real result, `words`, is read from the enclosing `let`, never the loop's own value).
+
+New `make parenash`/`test-parenash` targets. Real end-to-end test coverage
+(`tests/test_parenash.c`) pipes real script text into the ACTUAL compiled binary via `popen` —
+9 real assertions (quoting, `;`-sequencing, real `$VAR` expansion via `export`, all 3 builtins
+including proving `cd` genuinely mutates the parent process's own cwd, and the standard `127`
+"not found" exit code) — all pass. `make test`: 347/347, zero regressions. Real, honest v0
+boundary: no pipes/redirection/functions/conditionals/job control/mid-word `$VAR` expansion —
+a real, useful toy shell, not yet capable of running real OpenRC scripts.
