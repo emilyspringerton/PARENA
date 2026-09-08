@@ -1,3 +1,7 @@
+## 2026-09-08
+
+- Shipped S223-02: let/match/loop can now be used directly as an if's own condition (when the if sits in a real statement position), via a new emit_if_condition() that hoists into the enclosing statement list instead of a blocked GNU statement-expression or a capture-analysis-requiring helper function. (sess-20260905-0720-ec33e7c5)
+
 ## 2026-09-07
 - Added io/mmap.prn (real zero-copy mmap), pentest/procmaps.prn (real Linux /proc/[pid]/maps parser), and set.prn (real FNV-1a hash-set with intersect/union/difference) -- three founder-proposed cybersecurity/data-analysis primitives, all real and tested. (sess-20260905-0720-ec33e7c5)
 - Added stdlib/net/rawsocket.prn — real IP_HDRINCL raw-socket primitives (open/hdrincl-enable/send/close), with real host glue in parena_runtime.h. CAP_NET_RAW/root required, honestly named; test asserts this sandbox's own real PermissionDenied outcome. (sess-20260905-0720-ec33e7c5)
