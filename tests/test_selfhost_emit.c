@@ -2435,6 +2435,78 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-08): MID-BODY `#target {:c ...}` as a real STATEMENT inside
+         * a let's body, distinct from the whole-body case above -- the "next real, named step"
+         * NORTHSTAR.md's own Self-hosting section flagged directly after that one shipped.
+         * Real-world shape: stdlib/string.prn's own `concat` (`(let [out (alloc ...)] #target
+         * {:c (inline-c "strcpy(out, a); strcat(out, b);")} out)`) -- this snippet is that exact
+         * real shape, with a literal-sized `alloc` (a real, separate, pre-existing, already-
+         * narrow-v0 gap: this emitter's own alloc-call support only handles a literal-string
+         * size argument, not an arbitrary expression like `(+ (length a) (length b))` -- using a
+         * literal here deliberately isolates the mid-body #target feature under test from that
+         * unrelated gap, not working around a bug in THIS feature). */
+        char *snippet =
+            "(defn concat-into-buf [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)]\n"
+            "  : String @ Region\n"
+            "  (let [out (alloc dest String \"0000000000\")]\n"
+            "    #target\n"
+            "    {:c (inline-c \"strcpy(out, a); strcat(out, b);\")}\n"
+            "    out))";
+        Result pr36 = parse_program(snippet, &a);
+        CHECK(pr36.tag == 1, "a real let-body with a mid-body #target statement followed by a "
+              "tail symbol parses fine");
+        if (pr36.tag == 1) {
+            Node program36 = *(Node *)pr36.value;
+            char *generated36 = emit_program(&program36, &a);
+            CHECK(generated36 != NULL && strstr(generated36, "#error") == NULL,
+                  "no #error is emitted for a real mid-body #target statement");
+            CHECK(generated36 != NULL &&
+                  strstr(generated36, "    strcpy(out, a); strcat(out, b);\n") != NULL,
+                  "the mid-body #target's own raw inline-C text is spliced in verbatim as its "
+                  "own real statement, NOT wrapped in a return (unlike the whole-body case)");
+            CHECK(generated36 != NULL && strstr(generated36, "return out;") != NULL,
+                  "the real tail symbol 'out' AFTER the #target statement still emits its own "
+                  "real return, exactly once -- proving the #target+map pair was correctly "
+                  "consumed as a pair (2 children), not leaving a stray child that could produce "
+                  "a second, bogus return");
+
+            if (generated36) {
+                char c_path24[300];
+                snprintf(c_path24, sizeof c_path24, "/tmp/parena_selfhost_emit_target_mid_body_test_%d.c",
+                         (int)getpid());
+                FILE *out24 = fopen(c_path24, "w");
+                CHECK(out24 != NULL, "a real temp file opens to write the target-mid-body generated C into");
+                if (out24) {
+                    fputs(generated36, out24);
+                    fclose(out24);
+
+                    char bin_path24[310];
+                    snprintf(bin_path24, sizeof bin_path24, "%s.bin", c_path24);
+                    char cmd24[1024];
+                    snprintf(cmd24, sizeof cmd24,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_target_mid_body.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path24, c_path24);
+                    int compile_status24 = system(cmd24);
+                    CHECK(compile_status24 == 0,
+                          "the real target-mid-body generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern char *concat_into_buf(...)' driver");
+                    if (compile_status24 == 0) {
+                        int run_status24 = system(bin_path24);
+                        CHECK(run_status24 == 0,
+                              "the real compiled concat-into-buf genuinely performs the real "
+                              "strcpy/strcat side effect AND returns the real resulting string "
+                              "'hithere', end to end through the self-hosted pipeline");
+                    }
+                    remove(c_path24);
+                    remove(bin_path24);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

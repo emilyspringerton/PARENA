@@ -293,6 +293,7 @@ char * emit_plain_call(Node *, Vec *, Arena *);
 int let_value_is_bool_expr_(Node *, Arena *);
 char * emit_let_value(Node *, Vec *, Arena *);
 char * let_value_error_prefix(Node *, Arena *);
+int emit_body_forms_target_statement_shaped_(Node *, int, Arena *);
 char * emit_body_forms(Node *, int, Vec *, Arena *);
 char * emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
@@ -1859,6 +1860,21 @@ char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *d
     }
 }
 
+int emit_body_forms_target_statement_shaped_(Node * node __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec children __attribute__((unused)) = (node)->children;
+    int n __attribute__((unused)) = vec_len(&(children));
+    if (((i + 1) >= n)) {
+    return 0;
+    } else {
+    if ((!(emit_is_symbol_(vec_get(&(children), i), "#target")))) {
+    return 0;
+    } else {
+    Node *tail_node __attribute__((unused)) = vec_get(&(children), (i + 1));
+    return (emit_node_kind_code((tail_node)->kind) == 2);
+    }
+    }
+}
+
 char * emit_body_forms(Node * node __attribute__((unused)), int start __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_15 __attribute__((unused));
     int i = start;
@@ -1868,11 +1884,22 @@ char * emit_body_forms(Node * node __attribute__((unused)), int start __attribut
         __loop_result_15 = acc;
         break;
         } else {
+        if (emit_body_forms_target_statement_shaped_(node, i, dest)) {
+        Node *target_map __attribute__((unused)) = vec_get(&((node)->children), (i + 1));
+        char *src_text __attribute__((unused)) = target_map_c_src(target_map, dest);
+        char *stmt_c __attribute__((unused)) = concat("    ", concat(src_text, "\n", dest), dest);
+        int __recur_tmp_0 = (i + 2);
+        char * __recur_tmp_1 = concat(acc, stmt_c, dest);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        } else {
         int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, emit_form(vec_get(&((node)->children), i), scope, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
+        }
         }
     }
     return __loop_result_15;

@@ -434,6 +434,7 @@ char * emit_plain_call(Node *, Vec *, Arena *);
 int let_value_is_bool_expr_(Node *, Arena *);
 char * emit_let_value(Node *, Vec *, Arena *);
 char * let_value_error_prefix(Node *, Arena *);
+int emit_body_forms_target_statement_shaped_(Node *, int, Arena *);
 char * emit_body_forms(Node *, int, Vec *, Arena *);
 char * emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
@@ -2822,6 +2823,21 @@ char * let_value_error_prefix(Node * expr_node __attribute__((unused)), Arena *d
     }
 }
 
+int emit_body_forms_target_statement_shaped_(Node * node __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec children __attribute__((unused)) = (node)->children;
+    int n __attribute__((unused)) = vec_len(&(children));
+    if (((i + 1) >= n)) {
+    return 0;
+    } else {
+    if ((!(emit_is_symbol_(vec_get(&(children), i), "#target")))) {
+    return 0;
+    } else {
+    Node *tail_node __attribute__((unused)) = vec_get(&(children), (i + 1));
+    return (emit_node_kind_code((tail_node)->kind) == 2);
+    }
+    }
+}
+
 char * emit_body_forms(Node * node __attribute__((unused)), int start __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char * __loop_result_29 __attribute__((unused));
     int i = start;
@@ -2831,11 +2847,22 @@ char * emit_body_forms(Node * node __attribute__((unused)), int start __attribut
         __loop_result_29 = acc;
         break;
         } else {
+        if (emit_body_forms_target_statement_shaped_(node, i, dest)) {
+        Node *target_map __attribute__((unused)) = vec_get(&((node)->children), (i + 1));
+        char *src_text __attribute__((unused)) = target_map_c_src(target_map, dest);
+        char *stmt_c __attribute__((unused)) = concat("    ", concat(src_text, "\n", dest), dest);
+        int __recur_tmp_0 = (i + 2);
+        char * __recur_tmp_1 = concat(acc, stmt_c, dest);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        } else {
         int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, emit_form(vec_get(&((node)->children), i), scope, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
+        }
         }
     }
     return __loop_result_29;
@@ -3168,7 +3195,7 @@ char * emit_defn_target_body(Node * defn_node __attribute__((unused)), char * re
     int start __attribute__((unused)) = body_start_index(defn_node);
     Node *target_map __attribute__((unused)) = vec_get(&((defn_node)->children), (start + 1));
     char *src_text __attribute__((unused)) = target_map_c_src(target_map, dest);
-    if (str_eq_(return_type_c, "void")) {
+    if (str_eq_(return_type_c, "void ")) {
     return concat("    ", concat(src_text, "\n", dest), dest);
     } else {
     return concat("    return (", concat(src_text, ");\n", dest), dest);
@@ -3241,7 +3268,7 @@ char * defn_declared_return_type_name(Node * defn_node __attribute__((unused))) 
 
 char * defn_c_return_type(Node * defn_node __attribute__((unused)), Vec * known_structs __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *name __attribute__((unused)) = defn_declared_return_type_name(defn_node);
-    return (str_eq_(name, "Result") ? "Result " : (str_eq_(name, "Option") ? "Option " : (vec_contains_string_(known_structs, name, 0) ? concat(name, " ", dest) : "char * ")));
+    return (str_eq_(name, "Result") ? "Result " : (str_eq_(name, "Option") ? "Option " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "Unit")) ? "void " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "I32")) ? "int " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "Bool")) ? "int " : ((defn_body_target_shaped_(defn_node) && str_eq_(name, "F64")) ? "double " : (vec_contains_string_(known_structs, name, 0) ? concat(name, " ", dest) : "char * ")))))));
 }
 
 char * int_box_helper_decl(Arena *dest __attribute__((unused))) {

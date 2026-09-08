@@ -1619,13 +1619,31 @@ runtime output). Real attempt at true bootstrapping (self-compiling `parena-self
 8-file source set) surfaced the REAL, remaining gap list, more precise than the prior entry's own
 guess — checked directly, not assumed:
 
-- **Mid-body `#target` (a real, separate, DIFFERENT shape from whole-body)** — `stdlib/
-  string.prn`'s own `char-from-code`/`substring`/`concat` use `#target` as one STATEMENT inside a
-  `let`'s body (filling an already-allocated buffer for its own side effect), not as the entire
-  function body — the reference compiler's own `emit_body` has a separate, real case for exactly
-  this (splices the raw C as a bare statement, no `return`-wrapping, advances past both the
-  `#target` symbol and its map in one step). Not yet ported here — this session's own real, named
-  next step, distinct from the whole-body case just shipped.
+- **Mid-body `#target` — CLOSED 2026-09-08.** `stdlib/string.prn`'s own `char-from-code`/
+  `substring`/`concat` use `#target` as one STATEMENT inside a `let`'s body (filling an
+  already-allocated buffer for its own side effect), not as the entire function body — a real,
+  separate, DIFFERENT shape from whole-body. Direct port of the reference compiler's own
+  `emit_body` mid-body dispatch (`is_symbol(form, "#target") && i + 1 < count`): new
+  `emit-body-forms-target-statement-shaped?`/`emit-body-forms` splice the raw inline-C text in
+  verbatim as its own statement, no `return`-wrapping, advancing past both the `#target` symbol
+  and its `{:c ...}` map together (`i` by 2, not 1) — reusing `target-map-c-src` (the same
+  extraction the whole-body case already uses). Real, live-found bug fixed along the way: an
+  inline `(get-field (vec/get ...) :kind)` — `get-field` applied directly to a nested expression
+  rather than a bound `let` variable — doesn't compile (`vec/get` returns `void *`; this narrow
+  emitter's own `get-field` cast logic only tracks the C type of bound scope variables, not
+  arbitrary nested expressions, the same class `get-field-shaped?`'s own header comment already
+  names). Fixed by binding through a `let` first, matching `defn-body-target-shaped?`'s own
+  already-working pattern. Live-verified against the REAL, exact motivating case: self-compiling
+  `stdlib/string.prn`'s own actual `concat` through `parena-selfhost` now emits
+  `strcpy(out, a); strcat(out, b);\n    return out;` — correct, unwrapped, exactly matching the
+  reference compiler's real output shape (previously this emitted `#error`/garbage). New
+  `tests/test_selfhost_emit.c` case (a minimal, isolated `concat-into-buf` snippet — literal-sized
+  `alloc`, deliberately decoupling this feature from the separate, pre-existing "alloc only
+  supports a literal-string size argument, not an expression" gap named below) +
+  `tests/integration/driver_target_mid_body.c`, real end-to-end assertion (compiles, links,
+  runs, the real `strcpy`/`strcat` side effect genuinely happens, returns the real string
+  `"hithere"`). `make test`: 347/347, every `test-selfhost-*` target (including a full, fresh
+  8-file self-compile) and `test-selfhost-cli` re-run clean, zero regressions.
 - **No real scalar (`I32`/`F64`) return-type support — CLOSED 2026-09-08, for `#target`-bodied
   defns.** `defn-c-return-type` now recognizes `Unit`/`I32`/`Bool`/`F64` (mapping to `void`/`int`/
   `int`/`double`, matching the reference compiler's own `resolve_base_type_name` table exactly)
@@ -1652,6 +1670,15 @@ guess — checked directly, not assumed:
 - **A narrow struct-literal-shape restriction** (`#error ... unsupported struct-literal shape`)
   for at least `char-from-code`'s own real shape once mid-body `#target` support exists to reach
   it.
+- **`emit-alloc-call` only supports a literal-string size/content argument, not an arbitrary
+  expression** — found live while verifying mid-body `#target` above: `concat`'s own real
+  `(alloc dest String (+ (length a) (length b)))` emits `arena_strdup(dest, "", 0)` (silently
+  treating the whole non-literal 4th child as an empty string), a genuine zero-byte allocation
+  that the following `strcpy`/`strcat` would then overflow — NOT a bug in the mid-body `#target`
+  work itself (verified in isolation with a literal-sized `alloc` instead, see above), but a
+  real, separate, pre-existing gap that means `concat` specifically still isn't SAFE to run
+  through the selfhost pipeline yet, even though it now EMITS structurally correct C. A real,
+  necessary companion fix before `stdlib/string.prn` can genuinely self-host end to end.
 
 True bootstrapping needs all of the above, not just `#target`. Local `bazel build //...`
 unverifiable this pass (a pre-existing, local-only permission wall: stale `bazel-*` convenience

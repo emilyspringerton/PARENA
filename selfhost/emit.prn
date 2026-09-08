@@ -1435,12 +1435,52 @@
     ""
     "#error selfhost/emit.prn: unsupported let-binding shape (narrow v0 only supports alloc calls, binary ops, or/and/not, Ok/Err/Some/None construction, a struct-field read, and plain function calls with symbol/number args)\n"))
 
+;; emit-body-forms-target-statement-shaped? -- true when the child at index i is the bare symbol
+;; "#target" immediately followed by a real NMap node (kind code 2) -- the exact mid-body
+;; `#target {:c (inline-c "...")}` STATEMENT shape, real, direct port of the reference compiler's
+;; own emit_body dispatch (src/emit.c: `is_symbol(form, "#target") && i + 1 < count`). Distinct
+;; from the already-shipped WHOLE-BODY case (defn-body-target-shaped?, below) -- that one is
+;; checked at the emit-defn level, before emit-body-forms is ever reached for such a defn, so it
+;; can never collide with this mid-body statement dispatch.
+(defn emit-body-forms-target-statement-shaped? [(node : &Node) (i : I32) (dest : Arena @ Region)] : Bool
+  (let [children (get-field node :children)
+        n (vec/len &children)]
+    (if (>= (+ i 1) n)
+      false
+      (if (not (emit-is-symbol? (vec/get &children i) "#target"))
+        false
+        ;; get-field on a NESTED expression (a bare `(vec/get ...)` call result) is a real,
+        ;; separate, harder case this emitter doesn't support inline -- get-field-shaped?'s own
+        ;; header comment already names this class. Bound to a let-variable first instead,
+        ;; matching defn-body-target-shaped?'s own already-working pattern immediately below.
+        (let [tail-node (vec/get &children (+ i 1))]
+          (= (emit-node-kind-code (get-field tail-node :kind)) 2))))))
+
+;; emit-body-forms -- real, direct port of emit_body's own real mid-body `#target` STATEMENT
+;; handling (2026-09-08, closing the "next real, named step" NORTHSTAR.md's own Self-hosting
+;; section flagged after the whole-body #target case shipped): the raw inline-C text is spliced
+;; in verbatim as its own statement, no return-wrapping (a mid-body #target block is always used
+;; for its own side effect -- string/concat's own real, motivating
+;; `strcpy(out, a); strcat(out, b);` shape), and BOTH the "#target" symbol and its following
+;; {:c ...} map are consumed together (i advances by 2, not 1) -- exactly matching the reference
+;; compiler's own `i++` after emitting. Every other form still goes through emit-form's own real
+;; tail-position dispatch regardless of position, the same pre-existing, narrower-than-the-
+;; reference-compiler architecture this file has always had (no separate statement-vs-tail
+;; distinction outside this one new #target case) -- sufficient because every real, currently-
+;; known multi-form let/with-arena body in this whole stdlib is exactly the 2-form
+;; `#target <map> <tail-expr>` shape (concat/substring/char-from-code), never a longer or
+;; differently-ordered sequence; a real, separate, later generalization if that ever changes.
 (defn emit-body-forms [(node : &Node) (start : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
   (loop [i start acc ""]
     (if (>= i (vec/len &(get-field node :children)))
       acc
-      (recur (+ i 1) (string/concat acc (emit-form (vec/get &(get-field node :children) i) scope dest) dest)))))
+      (if (emit-body-forms-target-statement-shaped? node i dest)
+        (let [target-map (vec/get &(get-field node :children) (+ i 1))
+              src-text (target-map-c-src target-map dest)
+              stmt-c (string/concat "    " (string/concat src-text "\n" dest) dest)]
+          (recur (+ i 2) (string/concat acc stmt-c dest)))
+        (recur (+ i 1) (string/concat acc (emit-form (vec/get &(get-field node :children) i) scope dest) dest))))))
 
 ;; emit-let-bindings -- each binding pair becomes a real
 ;; `char *name __attribute__((unused)) = ...;` line, matching
