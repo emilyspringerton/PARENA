@@ -704,7 +704,19 @@ jobs:
   release:
     name: Tag & Release
     runs-on: ubuntu-latest
-    needs: [build_and_test, build_editor_windows, build_editor_macos]
+    # build_editor_macos DELIBERATELY excluded here, 2026-09-08 (founder real-time: "parena build
+    # is down... failing on mac editor build... maybe we switch that to linux editor build for
+    # now"). Confirmed live via the GitHub Actions API (no admin rights in this sandbox to pull
+    # the actual clang error log, so the exact root cause is NOT diagnosed here): every run since
+    # commit ab2c2786 (2026-09-07) has "Build Editor (macOS)" failing at its own "Build
+    # editor-demo" step, which — because this job used to `needs: [... build_editor_macos]` —
+    # meant `Tag & Release` was silently SKIPPED on every single push since, no new releases
+    # cutting at all. This is a real, temporary decoupling, not a permanent removal:
+    # build_editor_macos itself is UNCHANGED and still runs on every push (real, ongoing signal on
+    # whether/when it's fixed), it just no longer blocks a release. Releases ship Linux + Windows
+    # editor-demo builds only until someone fixes the real macOS build failure and this gets
+    # re-added.
+    needs: [build_and_test, build_editor_windows]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: write
@@ -734,11 +746,9 @@ jobs:
           name: editor-demo-windows-${{ github.run_number }}-${{ github.sha }}
           path: dist-editor/windows
 
-      - name: Download editor-demo (macOS)
-        uses: actions/download-artifact@v4
-        with:
-          name: editor-demo-macos-${{ github.run_number }}-${{ github.sha }}
-          path: dist-editor/macos
+      # macOS download step removed (2026-09-08, see this job's own "needs:" comment above) --
+      # build_editor_macos doesn't run to completion reliably right now, so its artifact often
+      # doesn't exist; this download step would fail the whole release job.
 
       # Founder real-time: "include the construct file in the client
       # artifact so we can identify specific versions if we find them
@@ -759,21 +769,17 @@ jobs:
           set -euo pipefail
           chmod +x dist/parena
           chmod +x dist-editor/linux/editor-demo
-          chmod +x dist-editor/macos/editor-demo
           cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/linux/
-          cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/macos/
           cp dist-construct/PARENA_CONSTRUCT.txt dist-editor/windows/
-          # Linux/macOS: real tar.gz. Both include a real bundled lib/
-          # dir (Linux via patchelf/RPATH, macOS via otool/
-          # install_name_tool/codesign -- see each platform's own real
-          # bundling step earlier in this file), the bundled
-          # JetBrainsMono-Regular.ttf font (real, confirmed-live bug
-          # fix, 2026-08-26 -- see examples/editor_main.c's own
-          # open_font_with_fallback header comment), and now
-          # PARENA_CONSTRUCT.txt itself (see this job's own "Download
-          # Construct Bundle" step comment above).
+          # Linux: real tar.gz, including a real bundled lib/ dir (via
+          # patchelf/RPATH -- see that platform's own real bundling step
+          # earlier in this file), the bundled JetBrainsMono-Regular.ttf
+          # font (real, confirmed-live bug fix, 2026-08-26 -- see
+          # examples/editor_main.c's own open_font_with_fallback header
+          # comment), and PARENA_CONSTRUCT.txt itself (see this job's own
+          # "Download Construct Bundle" step comment above). macOS asset
+          # temporarily dropped, see this job's own "needs:" comment.
           tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt
-          tar -czf editor-demo-macos.tar.gz -C dist-editor/macos editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt
           (cd dist-editor/windows && zip -r ../../editor-demo-windows-x86_64.zip .)
 
       - name: Compute next minor version
@@ -811,6 +817,5 @@ jobs:
             dist/parena \
             editor-demo-linux-x86_64.tar.gz \
             editor-demo-windows-x86_64.zip \
-            editor-demo-macos.tar.gz \
             --title "$NEXT_VERSION" \
             --generate-notes
