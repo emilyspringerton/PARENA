@@ -514,6 +514,69 @@
       (vec/push! &parts (emit-cond-clauses node 1 scope dest))
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow, TAIL-POSITION-ONLY `if` support (2026-09-09) ----
+;;
+;; Closes the real, named gap NORTHSTAR.md's own Self-hosting section
+;; flagged directly: "`if` used directly as a defn's own whole body
+;; doesn't emit (`return if(...)` -- invalid C)" -- distinct from
+;; S223-02 (which fixes `let`/`match`/`loop` as an `if`'s own CONDITION,
+;; a real, separate, later, narrower gap this pass does not attempt).
+;; This is the real, direct port of `src/emit.c`'s own `emit_body`
+;; tail-position `if` dispatch (`is_call_named(tail, "if")`, found and
+;; fixed there 2026-08-21, well before S223-02 existed) -- NOT
+;; `emit_if`'s own separate ternary-expression form (`(cond ? then :
+;; else)`), which is correct for `if` used as an ordinary sub-
+;; expression, a real, separate, wider gap this file doesn't attempt
+;; either (this whole file has no general expression-position `if`
+;; support at all yet, matching its own established, narrow,
+;; tail-position-only scope for `cond`/`match` above).
+;;
+;; `if` in TAIL position is genuinely tractable the identical real way
+;; `cond`'s own clauses already are: each branch is recursively emitted
+;; via `emit-form` itself (the same shared tail-position entry point
+;; `emit-cond-clauses` already reuses), so a branch that's itself a
+;; nested `with-arena`/`let`/`cond`/`match`/binary-op/plain-call/`if`
+;; all just work, for free, with no separate bespoke composer needed --
+;; the same real reasoning `src/emit.c`'s own header comment on this
+;; exact fix already gives ("recursing into emit_body() itself on each
+;; branch... reaches every one of emit_body()'s own tail-dispatch cases
+;; for free"). The condition itself reuses `bool-expr-supported?`/
+;; `emit-bool-expr`, the same real, narrower-than-the-C-reference test
+;; sub-language `cond`'s own test position already established (a
+;; comparison, a bare Bool symbol, `true`, or/and/not, or a predicate
+;; call) -- real, honest, narrower scope than the C reference's fully
+;; general `emit_if_condition`, not attempted here.
+(defn if-tail-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (and (emit-is-call-named? node "if")
+       (and (= (vec/len &(get-field node :children)) 4)
+            (bool-expr-supported? (vec/get &(get-field node :children) 1) dest))))
+
+;; emit-if-tail -- real, direct structural port of `src/emit.c`'s own
+;; `if (%s) {\n<then>    } else {\n<else>    }\n` shape (see this
+;; section's own header comment above for the exact reference call
+;; site). `then-c`/`else-c` are each already a complete, self-contained
+;; `return`-terminated statement (emit-form's own real, established
+;; contract every other tail-position case already relies on), so no
+;; extra wrapping is needed here beyond the real if/else braces
+;; themselves.
+(defn emit-if-tail [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [test-node (vec/get &(get-field node :children) 1)
+        then-node (vec/get &(get-field node :children) 2)
+        else-node (vec/get &(get-field node :children) 3)
+        test-c (emit-bool-expr test-node scope dest)
+        then-c (emit-form then-node scope dest)
+        else-c (emit-form else-node scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "    if (")
+      (vec/push! &parts test-c)
+      (vec/push! &parts ") {\n")
+      (vec/push! &parts then-c)
+      (vec/push! &parts "    } else {\n")
+      (vec/push! &parts else-c)
+      (vec/push! &parts "    }\n")
+      (emit-join-all &parts dest))))
+
 ;; ---- Real, narrow, TAIL-POSITION-ONLY Result/Option `match` support
 ;; (2026-08-28) ----
 ;;
@@ -829,6 +892,13 @@
     ((alloc-call-shaped? node) (emit-tail-expr (emit-alloc-call node scope dest) dest))
     ((binary-op-call-shaped? node dest) (emit-tail-expr (emit-i32-boxed (emit-binary-op node scope dest) dest) dest))
     ((cond-call-shaped? node dest) (emit-cond node scope dest))
+    ;; Real, additive tail-position case (2026-09-09): a real `(if cond
+    ;; then else)` as the WHOLE body -- see if-tail-shaped?'s own
+    ;; section header comment above for the full reasoning (the real,
+    ;; named NORTHSTAR.md gap this closes, and how it's distinct from
+    ;; S223-02). Checked right after cond, its own closest structural
+    ;; sibling.
+    ((if-tail-shaped? node dest) (emit-if-tail node scope dest))
     ;; Real, additive tail-position case (2026-08-28): a real, narrow
     ;; Result/Option `match` (see its own section header comment
     ;; above, right before pattern-tag, for the full real scope).

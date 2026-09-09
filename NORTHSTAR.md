@@ -1664,9 +1664,34 @@ guess — checked directly, not assumed:
   end-to-end assertion (compiles, links against `extern int magic_number(void)`, runs, returns
   42) — would have failed to even LINK under the old `char *` default. `make test`: 347/347, every
   `test-selfhost-*` target re-run clean, zero regressions.
-- **`if` used directly as a defn's own whole body doesn't emit** (`return if(...)` — invalid C) —
-  a real, separate gap from `parse-i32`'s own real shape, distinct from S223-02 (that fix landed
-  in the REFERENCE compiler's `src/emit.c`, not yet ported to this self-hosted one).
+- **`if` used directly as a defn's own whole body — CLOSED 2026-09-09.** Real, direct port of
+  `src/emit.c`'s own `emit_body` tail-position `if` dispatch (found 2026-08-21, well before
+  S223-02 — a separate, real, distinct fix: S223-02 covers `let`/`match`/`loop` as an `if`'s own
+  CONDITION, not attempted here). New `if-tail-shaped?`/`emit-if-tail` in `selfhost/emit.prn`,
+  modeled directly on `emit-cond`/`cond-call-shaped?`'s own already-proven tail-position pattern
+  (a real `if (test) {\n<then>    } else {\n<else>    }\n`, each branch recursively emitted via
+  `emit-form` itself — the same reasoning the reference compiler's own header comment on this
+  exact fix already gives, and the reason a NESTED `if` composes for free with no separate
+  bespoke recursion). Test condition reuses the already-established `bool-expr-supported?`/
+  `emit-bool-expr` test sub-language `cond`'s own test position already uses — real, honest,
+  narrower than the C reference's fully general `emit_if_condition`, not attempted here.
+  8 new tests (`tests/test_selfhost_emit.c` + `tests/integration/driver_if_tail.c`): structural
+  checks (no `#error`, a genuine statement-shaped `if`/`else`, the nested `if` correctly present)
+  plus a real compile+run+assert check — a `sign` function (nested `if`, each branch a bare
+  number literal) self-compiled through `parena-selfhost`, correctly returning 1/-1/0 for
+  positive/negative/zero input. `make test`: 347/347; every `test-selfhost-*` target re-run
+  clean, zero regressions.
+  **Real, honest finding from re-running the self-compile diagnostic against `stdlib/string.prn`
+  after this landed** (not assumed — checked live): the file is now down to exactly ONE genuine
+  `#error` (`split`'s own `(let [result (vec/new dest)] ...)`, blocked by `is-vec-call?`'s own
+  separate, deliberate, permanent exclusion — `vec/`-qualified calls are never disambiguable from
+  a real user function without a registry this narrow emitter doesn't have; unrelated to `if`).
+  `is-valid-i32-text?`'s own real `(if (= n 0) false (loop ...))` now correctly emits the real
+  `if`/`else` structure itself — but its `else` branch (`(loop ...)`) still falls through to the
+  honest-but-silently-empty `emit-tail-symbol` fallback, since `loop`/`recur` support doesn't
+  exist in this file at all yet, a real, separate, much larger gap this fix doesn't claim to
+  close. Named precisely, not overclaimed: this fix closes exactly the `if`-dispatch gap it set
+  out to, nothing more.
 - **A narrow struct-literal-shape restriction** (`#error ... unsupported struct-literal shape`)
   for at least `char-from-code`'s own real shape once mid-body `#target` support exists to reach
   it.

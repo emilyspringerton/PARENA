@@ -252,6 +252,8 @@ int last_clause_is_true_(Node *);
 int cond_call_shaped_(Node *, Arena *);
 char * emit_cond_clauses(Node *, int, Vec *, Arena *);
 char * emit_cond(Node *, Vec *, Arena *);
+int if_tail_shaped_(Node *, Arena *);
+char * emit_if_tail(Node *, Vec *, Arena *);
 int pattern_tag(char *);
 char * match_pattern_name(Node *);
 int match_pattern_has_payload_(Node *);
@@ -1488,6 +1490,28 @@ char * emit_cond(Node * node __attribute__((unused)), Vec * scope __attribute__(
     return emit_join_all(&(parts), dest);
 }
 
+int if_tail_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_call_named_(node, "if") && ((vec_len(&((node)->children)) == 4) && bool_expr_supported_(vec_get(&((node)->children), 1), dest)));
+}
+
+char * emit_if_tail(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *test_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Node *then_node __attribute__((unused)) = vec_get(&((node)->children), 2);
+    Node *else_node __attribute__((unused)) = vec_get(&((node)->children), 3);
+    char *test_c __attribute__((unused)) = emit_bool_expr(test_node, scope, dest);
+    char *then_c __attribute__((unused)) = emit_form(then_node, scope, dest);
+    char *else_c __attribute__((unused)) = emit_form(else_node, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    if ("));
+    (void)(vec_push_(&(parts), test_c));
+    (void)(vec_push_(&(parts), ") {\n"));
+    (void)(vec_push_(&(parts), then_c));
+    (void)(vec_push_(&(parts), "    } else {\n"));
+    (void)(vec_push_(&(parts), else_c));
+    (void)(vec_push_(&(parts), "    }\n"));
+    return emit_join_all(&(parts), dest);
+}
+
 int pattern_tag(char * name __attribute__((unused))) {
     return ((str_eq_(name, "Ok") || str_eq_(name, "Some")) ? 1 : ((str_eq_(name, "Err") || str_eq_(name, "None")) ? 0 : -1));
 }
@@ -1671,7 +1695,7 @@ int none_shaped_(Node * node __attribute__((unused))) {
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (deref_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_deref(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : (map_literal_shaped_(node) ? join3("    #error selfhost/emit.prn: unsupported struct-literal shape (only a defn's ENTIRE body, whose own declared return type is an already-registered struct whose real field set exactly matches this literal's own keys, is supported)\n", "    return 0", ";\n", dest) : emit_tail_symbol(node, dest))))))))))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (if_tail_shaped_(node, dest) ? emit_if_tail(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (deref_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_deref(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : (map_literal_shaped_(node) ? join3("    #error selfhost/emit.prn: unsupported struct-literal shape (only a defn's ENTIRE body, whose own declared return type is an already-registered struct whose real field set exactly matches this literal's own keys, is supported)\n", "    return 0", ";\n", dest) : emit_tail_symbol(node, dest)))))))))))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {

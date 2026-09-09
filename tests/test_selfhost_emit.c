@@ -2576,6 +2576,76 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-09): `if` used directly as a defn's own WHOLE BODY --
+         * closing the real, named gap NORTHSTAR.md's own Self-hosting section flagged directly
+         * after alloc's non-literal fix shipped ("`if` used directly as a defn's own whole body
+         * doesn't emit"). Distinct from S223-02 (let/match/loop as an IF's own CONDITION, a
+         * real, separate, later gap not attempted here). `sign` is real, ordinary PARENA -- a
+         * NESTED `if` (proving the recursive branch-emission composes, the same real reasoning
+         * src/emit.c's own reference fix documents), each branch a bare number literal, the
+         * simplest real shape this feature exists to support. */
+        char *snippet =
+            "(defn sign [(n : I32)]\n"
+            "  : I32\n"
+            "  (if (> n 0)\n"
+            "    1\n"
+            "    (if (< n 0)\n"
+            "      -1\n"
+            "      0)))";
+        Result pr38 = parse_program(snippet, &a);
+        CHECK(pr38.tag == 1, "a real nested if used as a defn's own whole body parses fine");
+        if (pr38.tag == 1) {
+            Node program38 = *(Node *)pr38.value;
+            char *generated38 = emit_program(&program38, &a);
+            CHECK(generated38 != NULL && strstr(generated38, "#error") == NULL,
+                  "no #error is emitted for a real if-as-whole-body defn -- previously silently "
+                  "fell through to a bare, invalid 'return ;'");
+            CHECK(generated38 != NULL && strstr(generated38, "if ((n > 0)) {") != NULL,
+                  "the outer if's own real condition is emitted as a genuine C 'if (...)', "
+                  "statement-shaped, not a ternary expression");
+            CHECK(generated38 != NULL && strstr(generated38, "} else {") != NULL,
+                  "a real 'else' block follows, not just a bare if with no alternative");
+            CHECK(generated38 != NULL && strstr(generated38, "if ((n < 0)) {") != NULL,
+                  "the NESTED if (the else branch's own real body) is itself correctly emitted, "
+                  "proving the recursive branch composition through emit-form works, not just a "
+                  "single flat if");
+
+            if (generated38) {
+                char c_path26[300];
+                snprintf(c_path26, sizeof c_path26, "/tmp/parena_selfhost_emit_if_tail_test_%d.c",
+                         (int)getpid());
+                FILE *out26 = fopen(c_path26, "w");
+                CHECK(out26 != NULL, "a real temp file opens to write the if-tail generated C into");
+                if (out26) {
+                    fputs(generated38, out26);
+                    fclose(out26);
+
+                    char bin_path26[310];
+                    snprintf(bin_path26, sizeof bin_path26, "%s.bin", c_path26);
+                    char cmd26[1024];
+                    snprintf(cmd26, sizeof cmd26,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_if_tail.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path26, c_path26);
+                    int compile_status26 = system(cmd26);
+                    CHECK(compile_status26 == 0,
+                          "the real if-tail generated C compiles clean under gcc -std=c99 -Wall "
+                          "-Wextra -pedantic -Werror, linked against a real 'extern int sign(int)' driver");
+                    if (compile_status26 == 0) {
+                        int run_status26 = system(bin_path26);
+                        CHECK(run_status26 == 0,
+                              "the real, self-compiled sign genuinely returns the correct real "
+                              "value for a positive, negative, and zero input, end to end through "
+                              "the self-hosted pipeline -- not just gcc-clean text");
+                    }
+                    remove(c_path26);
+                    remove(bin_path26);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
