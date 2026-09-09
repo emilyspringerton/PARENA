@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash clean
 
 all: build
 
@@ -508,6 +508,19 @@ test-shell: build
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_shell.c runtime/parena_runtime.c \
 		-o /tmp/test_shell_bin -lm
 	/tmp/test_shell_bin
+
+# test-serial -- real end-to-end verification for stdlib/hw/serial.prn
+# (docs/UART_SERIAL_NORTHSTAR.md, kanban cards HW-001/HW-003). This box
+# has no physical USB-serial device (that doc's own Phase 2 already
+# names this as a real, honest limitation), so this exercises the real
+# open()+termios-configure()+read()+write()+close() sequence against a
+# real BSD pty pair instead -- a genuine termios-configurable tty
+# device, not a mock.
+test-serial: build
+	./parena build stdlib/string.prn stdlib/hw/serial.prn -o tests/test_serial_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_serial.c runtime/parena_runtime.c \
+		-o /tmp/test_serial_bin -lm
+	/tmp/test_serial_bin
 
 # test-sdl2 -- real end-to-end verification for stdlib/sdl2.prn, the
 # first real slice of a PARENA-authored editor shell (founder: "continue

@@ -1314,6 +1314,211 @@ static inline int pty_close_impl(int fd) {
 }
 #endif /* _WIN32 -- end of pty.prn real host glue / Windows stub */
 
+/* ---- stdlib/hw/serial.prn real host glue (2026-09-09) ------------------
+ * Real answer to `docs/UART_SERIAL_NORTHSTAR.md` (kanban cards HW-001/
+ * HW-003, "UART STDLIBS... FOR HARDWARE PLATFORMS ARDUINO EQUIVALENT" /
+ * "SERIAL STDLIBS") -- that doc's own research-and-planning pass named
+ * exactly one genuinely new primitive needed beyond what io.prn already
+ * has (plain open/read/write/close on a device-file fd): a real termios
+ * configuration step, since opening /dev/ttyUSB0 with a bare open() lands
+ * in canonical/echoing mode at whatever baud the device was last left at,
+ * not the raw 8N1 framing and specific baud rate (9600/115200 v0 scope,
+ * covering the large majority of real Arduino-class boards) a real
+ * microcontroller link needs. Own guard, separate from net/tcp.prn/
+ * pty.prn above, same real reason pty.prn got its own (2026-08-27's CI
+ * break comment above): a cross-platform target could pull in
+ * stdlib/hw/serial.prn without pulling in pty.prn or net/tcp.prn, and a
+ * real Windows COM-port backend is a genuinely different API (no
+ * termios, no /dev/ttyUSB*) -- unstarted here, same honest boundary
+ * ConPTY already carries above.
+ *
+ * Real, deliberate departure from the NORTHSTAR doc's own rough API
+ * sketch, found while actually implementing rather than transcribing it
+ * verbatim: that sketch's `serial-read` shape (a plain Result-wrapped
+ * read, no stated blocking behavior) would inherit tcp_read_impl's/
+ * raw_read_all_impl's real "read until the peer closes" contract if
+ * implemented the same way pty_read_impl originally was -- which is
+ * exactly WRONG here, the identical bug class pty_poll_read_impl's own
+ * header comment above already found and fixed for a long-lived
+ * interactive shell: a real, connected microcontroller never closes its
+ * side of the link, so a blocking read would hang forever waiting for an
+ * EOF that isn't coming. serial_read_impl below is written directly as
+ * the non-blocking, poll(2)-gated shape from the start (a literal reuse
+ * of pty_poll_read_impl's own real technique), not the blocking shape
+ * fixed up later after a live hang -- applying that already-learned
+ * lesson up front instead of re-discovering it. */
+#ifndef _WIN32
+
+/* serial_baud_to_speed_impl -- the real, small, named lookup table the
+ * NORTHSTAR doc calls out by name ("baud-to-speed-constant"), mapping
+ * the plain I32 baud rate a caller passes to the real POSIX `speed_t`
+ * constant cfsetispeed/cfsetospeed actually need. Real, deliberate v0
+ * boundary matching that doc exactly: only 9600 and 115200 (the large
+ * majority of real Arduino-class boards) -- extended later only if a
+ * real device needs a baud rate not yet listed here, not every real
+ * POSIX speed_t constant up front. Returns -1 (never a real POSIX speed_t
+ * value) for anything else, so serial_configure_impl below can fail
+ * honestly on an unsupported baud rather than silently picking one. */
+static inline int serial_baud_to_speed_impl(int baud) {
+    switch (baud) {
+        case 9600: return B9600;
+        case 115200: return B115200;
+        default: return -1;
+    }
+}
+
+/* serial_raw_open_impl -- opens the device file with the real, standard
+ * serial-port flags (O_NOCTTY: this fd must never become the process's
+ * controlling terminal, the real reason a plain io.prn raw-open isn't
+ * reused here; O_NDELAY: don't block waiting for the modem control
+ * lines/DCD a real USB-serial adapter may never assert). Deliberately
+ * NOT reusing io.prn's own raw_open_impl -- that function's mode_tag
+ * switch has no case that produces this exact flag combination, and
+ * bending its meaning would blur a file-open call and a serial-port-open
+ * call under the same primitive, the same file/socket line net/tcp.prn's
+ * own NetError header comment already draws for the identical reason. */
+static inline int serial_raw_open_impl(const char *path) {
+    return open(path, O_RDWR | O_NOCTTY | O_NDELAY);
+}
+
+/* serial_configure_impl(fd, baud) -- the one genuinely new runtime
+ * primitive the NORTHSTAR doc named. Real, standard Linux serial-port
+ * termios sequence: tcgetattr to seed a real starting struct (not a
+ * zeroed one -- some fields this doesn't touch, like c_cc entries beyond
+ * VMIN/VTIME, are best left at their real driver-reported defaults),
+ * cfmakeraw to drop canonical/echo/signal-generating mode, explicit 8N1
+ * framing (CS8, no PARENB, no CSTOPB -- the real, standard framing every
+ * Arduino-class board's own default sketch expects), CLOCAL|CREAD to
+ * ignore modem control lines and enable the receiver, VMIN=0/VTIME=0 so
+ * a real blocking read() call against this fd (if one were ever made)
+ * returns immediately with whatever's available rather than waiting for
+ * a fixed byte count -- consistent with serial_read_impl's own
+ * non-blocking, poll-gated design below, not load-bearing for it (poll()
+ * already gates every real read() call this file makes), but real,
+ * correct, and cheap insurance against a future caller adding a direct
+ * read never routed through serial_read_impl. Returns 0 on success, -1
+ * on an unsupported baud rate or any real termios call failing. */
+static inline int serial_configure_impl(int fd, int baud) {
+    int speed = serial_baud_to_speed_impl(baud);
+    if (speed < 0) return -1;
+
+    struct termios tty;
+    if (tcgetattr(fd, &tty) != 0) return -1;
+
+    cfmakeraw(&tty);
+    cfsetispeed(&tty, (speed_t)speed);
+    cfsetospeed(&tty, (speed_t)speed);
+
+    tty.c_cflag |= (CLOCAL | CREAD);
+    tty.c_cflag &= ~PARENB;
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CSIZE;
+    tty.c_cflag |= CS8;
+
+    tty.c_cc[VMIN] = 0;
+    tty.c_cc[VTIME] = 0;
+
+    if (tcsetattr(fd, TCSANOW, &tty) != 0) return -1;
+
+    /* Real, deliberate un-set of the O_NDELAY serial_raw_open_impl opened
+     * with above -- this fd stays in ordinary blocking mode from here on
+     * (matching pty_poll_read_impl's own real fd, which also stays
+     * blocking; poll() with a zero timeout is what actually keeps
+     * serial_read_impl below from ever blocking, not the fd's own
+     * O_NONBLOCK flag). Leaving O_NDELAY set would also make
+     * serial_write_impl's write() calls return EAGAIN under real
+     * backpressure instead of blocking briefly to drain, a real, worse
+     * failure mode this avoids. */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NDELAY);
+
+    return 0;
+}
+
+/* serial_read_impl -- see this section's own opening header comment for
+ * the real reasoning: a literal reuse of pty_poll_read_impl's own
+ * technique (a zero-timeout poll(2) gate before ever calling read()),
+ * not the blocking read-until-close shape tcp_read_impl/pty_read_impl
+ * use, because a real connected microcontroller never closes its side.
+ * Returns a real, valid (often empty) String either way -- "" is the
+ * correct, honest "nothing new since the last read" signal, not an
+ * error, same real contract pty_poll_read_impl's own header comment
+ * already documents. */
+static inline char *serial_read_impl(int fd, Arena *dest) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int pr = poll(&pfd, 1, 0);
+    if (pr <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof buf);
+    if (n <= 0) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    char *out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(out, buf, (size_t)n);
+    out[n] = '\0';
+    return out;
+}
+
+static inline int serial_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, s + written, len - written);
+        if (n < 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int serial_close_impl(int fd) {
+    return close(fd) == 0 ? 0 : -1;
+}
+
+#else /* _WIN32 -- real Windows COM-port backend genuinely not written
+       * yet (no termios, no /dev/ttyUSB* -- a real, separate API this
+       * pass doesn't attempt, same honest boundary pty.prn's own Windows
+       * ConPTY stub already carries above). These stubs exist purely so
+       * a cross-platform target that includes stdlib/hw/serial.prn
+       * compiles and links on Windows; every real caller goes through
+       * serial-open first (stdlib/hw/serial.prn), which turns this -1
+       * into a real Err(OpenFailed) -- never a silent lie or a crash. */
+static inline int serial_raw_open_impl(const char *path) {
+    (void)path;
+    return -1;
+}
+
+static inline int serial_configure_impl(int fd, int baud) {
+    (void)fd; (void)baud;
+    return -1;
+}
+
+static inline char *serial_read_impl(int fd, Arena *dest) {
+    (void)fd;
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline int serial_write_impl(int fd, const char *s) {
+    (void)fd; (void)s;
+    return -1;
+}
+
+static inline int serial_close_impl(int fd) {
+    (void)fd;
+    return -1;
+}
+#endif /* _WIN32 -- end of stdlib/hw/serial.prn real host glue / Windows stub */
+
 /* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
  * A real, direct port of PITVIPER's own shell-resolution policy
  * (internal/pty/pty_windows.go's Open()/isWslStub/findGitBash). Every

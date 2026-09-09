@@ -1,0 +1,129 @@
+;; stdlib/hw/serial.prn — depends on string. Design: docs/UART_SERIAL_NORTHSTAR.md
+;; (kanban cards HW-001/HW-003, "UART STDLIBS... FOR HARDWARE PLATFORMS ARDUINO
+;; EQUIVALENT" / "SERIAL STDLIBS", treated there as one unified ask — UART is
+;; one specific kind of serial communication, not a separate feature). Real,
+;; direct connection to this monorepo's own actual hardware: IDUNA's own
+;; NORTHSTAR_INVENTORY.md names 2x Raspberry Pi, 2x Pi Zero, and an Adafruit
+;; Feather (radio module likely SPI, not UART — genuinely out of scope here,
+;; same as that doc already says).
+;;
+;; That NORTHSTAR pass found exactly one genuinely new primitive needed beyond
+;; what io.prn already has: opening /dev/ttyUSB0/ttyACM0 with a bare open()
+;; lands in canonical/echoing mode at whatever baud the device was last left
+;; at, not the raw 8N1 framing and specific baud rate (9600/115200 v0 scope)
+;; a real Arduino-class board needs. That's `serial_configure_impl` in
+;; runtime/parena_runtime.h — a real termios tcgetattr/cfmakeraw/cfsetispeed/
+;; cfsetospeed/tcsetattr sequence. Structurally this file follows net/tcp.prn/
+;; pty.prn's own already-established shape: the only #target bodies are
+;; genuinely-irreducible raw syscalls returning a plain scalar (an fd, or -1
+;; on failure) or a plain String; every Result/SerialPort value is built with
+;; ordinary (Ok ...)/(Err ...)/{:field val} PARENA syntax, not hand-written
+;; boxing C.
+;;
+;; Real, deliberate departure from the NORTHSTAR doc's own rough API sketch,
+;; found while actually implementing rather than transcribing it verbatim:
+;; that sketch's `serial-read` had no stated blocking behavior, which would
+;; inherit tcp-read's/the original pty-read's real "block until the peer
+;; closes" contract if built the same way — exactly wrong here, the identical
+;; bug class pty.prn's own pty-poll-read already found and fixed for a
+;; long-lived interactive shell. A real, connected microcontroller never
+;; closes its side of the link, so a blocking read would simply hang forever.
+;; serial-read below is written directly as the non-blocking, poll(2)-gated
+;; shape from the start (a literal reuse of pty-poll-read's own technique),
+;; applying that already-learned lesson up front instead of re-discovering it
+;; live against real hardware later.
+;;
+;; Second real, deliberate departure: the NORTHSTAR sketch's `serial-close`
+;; returned bare Unit (no Result). Every other close primitive in this stdlib
+;; (tcp-close, pty-close) is Result-boxed — pty.prn's own header comment
+;; documents fixing exactly this same bare-Unit shape as a real bug once,
+;; not just a style choice. Matched to that established convention instead,
+;; which also means SerialError needs a real CloseFailed variant the
+;; NORTHSTAR sketch's enum didn't name (that sketch had no Result on
+;; serial-close at all, so no close-failure variant was ever needed) —
+;; added rather than dishonestly overloading WriteFailed for a close error.
+
+(module hw/serial)
+(import string)
+(export serial-open serial-read serial-write serial-close SerialPort SerialError)
+
+(defstruct SerialPort
+  (fd : I32))
+
+(defenum SerialError
+  (OpenFailed)
+  (ConfigureFailed)
+  (ReadFailed)
+  (WriteFailed)
+  (CloseFailed))
+
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; serial_*_impl functions, no boxing.
+
+(defn raw-serial-open [(path : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "serial_raw_open_impl(path)")})
+
+(defn raw-serial-configure [(fd : I32) (baud : I32)]
+  : I32
+  #target
+  {:c (inline-c "serial_configure_impl(fd, baud)")})
+
+(defn raw-serial-read [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "serial_read_impl(fd, dest)")})
+
+(defn raw-serial-write [(fd : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "serial_write_impl(fd, data)")})
+
+(defn raw-serial-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "serial_close_impl(fd)")})
+
+;; serial-open -- opens the device file, then runs the real termios
+;; configuration step. A configure failure closes the fd it just opened
+;; before reporting Err — real, deliberate: a caller that gets
+;; Err(ConfigureFailed) should never also be leaking an open fd it can
+;; never reach to close itself (SerialPort is never constructed on this
+;; path).
+(defn serial-open [(path : String @ :region/scratch) (baud : I32) (dest : Arena @ Region)]
+  : (Result SerialPort SerialError) @ Region
+  (let [fd (raw-serial-open path)]
+    (if (< fd 0)
+      (Err OpenFailed)
+      (if (< (raw-serial-configure fd baud) 0)
+        (do (raw-serial-close fd)
+            (Err ConfigureFailed))
+        (Ok {:fd fd})))))
+
+;; serial-read -- real, non-blocking poll-gated read (see this file's own
+;; header comment above). raw-serial-read's own real contract (a literal
+;; reuse of pty-poll-read's technique) never signals failure -- ""  is
+;; the correct, honest "nothing new since the last read" result, not an
+;; error -- so ReadFailed is real, deliberately named for symmetry with
+;; the other three failure modes but currently unreachable through this
+;; path, the same honest unused-variant judgment net/tcp.prn's own
+;; NetError::Timeout already carries.
+(defn serial-read [(!p : &mut SerialPort) (dest : Arena @ Region)]
+  : (Result String SerialError) @ Region
+  (Ok (raw-serial-read (get-field !p :fd) dest)))
+
+(defn serial-write [(!p : &mut SerialPort) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit SerialError) @ Region
+  (if (< (raw-serial-write (get-field !p :fd) data) 0)
+    (Err WriteFailed)
+    (Ok unit)))
+
+;; serial-close -- Result-boxed like tcp-close/pty-close, not the
+;; NORTHSTAR sketch's original bare-Unit shape (see header comment).
+(defn serial-close [(!p : &mut SerialPort) (dest : Arena @ Region)]
+  : (Result Unit SerialError) @ Region
+  (if (< (raw-serial-close (get-field !p :fd)) 0)
+    (Err CloseFailed)
+    (Ok unit)))
