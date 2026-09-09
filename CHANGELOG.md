@@ -1,4 +1,5 @@
 ## 2026-09-09
+- feat(hw/serial): Phase 1 UART/Serial stdlib -- termios-configured serial-open/-read/-write/-close, non-blocking poll-gated reads, 13 real assertions against a real pty device (make test-serial). HW-001/HW-003 Phase 1, Apple #18620. (sess-20260905-0720-ec33e7c5)
 - CI fix confirmed live: v0.254.0 published (first release since v0.253.0, 2026-09-07) with Tag & Release succeeding despite Build Editor (macOS) still failing -- the decoupling works as intended (sess-20260905-0720-ec33e7c5)
 
 - CI: decouple release job from build_editor_macos (temporary). Confirmed via the GitHub Actions API that every run since commit ab2c2786 (2026-09-07) has Build Editor (macOS) failing at its own compile step, which has been silently skipping Tag & Release entirely -- no releases have cut since. build_editor_macos itself stays unchanged and still runs on every push for visibility; releases now ship Linux + Windows editor-demo builds only until the real macOS clang failure is diagnosed and fixed (couldn't pull the actual error log from this sandbox -- no admin rights on the repo) (sess-20260905-0720-ec33e7c5)
