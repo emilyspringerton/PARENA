@@ -4527,3 +4527,39 @@ Real, honest further finding: `case`/`esac` alone does NOT make `functions.sh`'s
 work — it also needs `&&`/`||`, positional parameters (`$1`), a real `return` builtin (distinct
 from `exit`, which kills the whole process), plus the already-named `local`/`eval`. A real,
 necessary, independently-useful piece, never claimed sufficient alone.
+
+## hw/serial — real UART/Serial primitives, Phase 1 of the Arduino-equivalent stdlib (2026-09-09)
+
+Real implementation of `docs/UART_SERIAL_NORTHSTAR.md`'s Phase 1 plan (kanban cards HW-001/
+HW-003). New `runtime/parena_runtime.h` host glue closes the one genuinely new gap that doc
+named: opening `/dev/ttyUSB0` with a bare `open()` lands in canonical/echoing mode at whatever
+baud the device was last left at, not the raw 8N1 framing and specific baud rate a real
+Arduino-class board needs. `serial_configure_impl(fd, baud)` runs the real
+`tcgetattr`/`cfmakeraw`/`cfsetispeed`/`cfsetospeed`/`tcsetattr` sequence against the fd right
+after `serial_raw_open_impl` opens it (a small 9600/115200 v0 lookup table, matching the doc's
+own named boundary). New `stdlib/hw/serial.prn` wraps this into `serial-open`/`-read`/`-write`/
+`-close` over `SerialPort`/`SerialError`, the same raw-primitive-plus-`Result`-boxing shape
+`net/tcp.prn`/`pty.prn` already established.
+
+Two real, deliberate departures from the NORTHSTAR doc's own rough API sketch, found while
+actually implementing it rather than transcribing it verbatim: `serial-read` is a non-blocking,
+`poll(2)`-gated read from the start — a direct reuse of `pty-poll-read`'s own proven technique —
+rather than the blocking read-until-close shape `tcp-read`/the original `pty-read` use, since a
+real connected microcontroller never closes its side of the link and a blocking read would hang
+forever waiting for an EOF that isn't coming (the exact bug class `pty-poll-read` already found
+and fixed once for a long-lived interactive shell — applied here up front instead of
+re-discovering it live against real hardware later). `serial-close` is `Result`-boxed (a new,
+honest `CloseFailed` variant on `SerialError`), matching `tcp-close`/`pty-close`'s own
+established convention instead of the sketch's bare-`Unit` shape.
+
+New `make test-serial` target, 13 real end-to-end assertions against a genuine BSD pty pair — a
+real termios-configurable tty device standing in for the physical USB-serial hardware this
+sandbox doesn't have: real open+configure at 9600 baud, real non-blocking round-trip reads/
+writes in both directions, a real idle-read wall-clock non-blocking proof, and honest failures
+on an unsupported v0 baud rate (4800) and a nonexistent device path. `make test`: 347/347, zero
+regressions.
+
+Real, honest, not done: Phase 2 (a real Arduino echo-sketch round trip over actual hardware)
+remains genuinely blocked — no physical USB-serial device in this sandbox, the same limitation
+class `pentest/pcap.prn`'s own no-`CAP_NET_RAW` gap already names. SPI (the Adafruit Feather's
+own likely radio-module bus) stays real, separate, unscoped, exactly as the NORTHSTAR doc says.

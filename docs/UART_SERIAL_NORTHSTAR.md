@@ -4,7 +4,14 @@ Real, direct answer to two related kanban priority-queue cards, treated as one u
 `HW-001` ("UART STDLIBS and DEPS STDLIBS PLANNING FOR HARDWARE PLATFORMS ARDUINO EQUIVALENT
 etc") and `HW-003` ("SERIAL STDLIBS"). UART is one specific kind of serial communication — the
 two cards are the same real ask at two levels of specificity, not two separate features.
-Research-and-planning only, no code written for this pass.
+
+**Status (2026-09-09): Phase 1 shipped** — `stdlib/hw/serial.prn` + `runtime/parena_runtime.h`'s
+own `serial_*_impl` host glue, real, built, and tested (`make test-serial`, 13 assertions against
+a real pty device). See `STDLIB.md`'s own "hw/serial" section for the full detail, including two
+deliberate departures from this doc's original API sketch found while actually implementing it
+(non-blocking `serial-read`, `Result`-boxed `serial-close`). Phase 2 (below) remains genuinely
+blocked — no physical hardware in this sandbox. This doc's original research-and-planning
+content is kept below unedited as the real record of how Phase 1's design was reached.
 
 ## Real motivation, grounded in this monorepo's own actual hardware
 
