@@ -4597,3 +4597,32 @@ rather than crashing or returning garbage, and real close success/failure. `make
 zero regressions. Real, honest, not done: an actual hardware round-trip against a real SPI
 device remains genuinely blocked, same limitation class as `UART_SERIAL_NORTHSTAR.md`'s own
 Phase 2.
+
+## hw/i2c — real I2C primitives, third real bus in the same day (2026-09-09)
+
+Real, direct continuation of the same hardware-interfaces thread as `hw/serial`/`hw/spi`. Full
+design record in `docs/I2C_NORTHSTAR.md`. New `runtime/parena_runtime.h` host glue over Linux's
+real `i2c-dev(4)` API — `i2c_open_impl` (open + `ioctl(fd, I2C_SLAVE, addr)` to fix the target
+device address for the fd's lifetime, rolling back on failure) and plain `read()`/`write()`
+afterward (`i2c_read_impl`/`i2c_write_impl`) — no transfer-struct ioctl needed the way SPI's
+`SPI_IOC_MESSAGE` was. New `stdlib/hw/i2c.prn` wraps it as `i2c-open`/`i2c-read`/`i2c-write`/
+`i2c-close` over `I2cDevice`/`I2cError`, its own top-level `#if defined(__linux__)` guard
+matching `hw/spi.prn`'s own precedent (i2c-dev is Linux-only too).
+
+Real, structural distinction from `hw/spi.prn`, not an inconsistency: I2C is addressed and
+half-duplex-per-direction (write a register address, then separately read a value), much closer
+to `hw/serial.prn`'s/`net/tcp.prn`'s own `-read`/`-write` shape than SPI's necessarily-
+simultaneous `-transfer` — a correct shape match to the bus, not an arbitrary API choice.
+`i2c-read` takes an explicit length (unlike `serial-read`'s poll-gated "whatever's available"),
+matching how a real I2C read actually works.
+
+Real, found-live testing distinction from SPI: this box has a real, functioning I2C controller
+(`i2c_i801`, `/dev/i2c-0`) — unlike SPI, where no controller exists at all. Deliberately not
+opened or probed anywhere in this work: it's root-owned and a real SMBus commonly carries real
+system battery/thermal/RAM-SPD traffic, a real risk not worth taking for this stdlib pass. What
+WAS honestly testable: i2c-dev's actual data-transfer path is plain POSIX `read()`/`write()` with
+no ioctl involved, so `make test-i2c`'s 14 real assertions include a genuine byte-perfect
+round-trip and real short-read handling against a real temp file fd — stronger real coverage
+than SPI's own ioctl-gated transfer could offer, alongside the same class of honest open-failure
+tests. `make test`: 347/347, zero regressions. Same write-side embedded-NUL limitation as
+`hw/spi.prn`/`hw/serial.prn` carries forward, unfixed for the same real, named reason.

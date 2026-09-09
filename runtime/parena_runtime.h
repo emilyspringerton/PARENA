@@ -97,6 +97,20 @@
 #if defined(__linux__)
 #include <linux/spi/spidev.h>
 #endif
+/* linux/i2c-dev.h (stdlib/hw/i2c.prn, 2026-09-09, same day) -- real,
+ * genuinely Linux-only userspace I2C API, same honest boundary
+ * spidev.h/AF_PACKET above already draw: macOS/BSD have no
+ * `/dev/i2c-N`-equivalent character-device API. This box's own real
+ * `/dev/i2c-0` (Intel SMBus controller, `i2c_i801`) is root-owned
+ * system hardware -- real, deliberately NOT opened/probed by anything
+ * in this runtime or its own tests (see stdlib/hw/i2c.prn's own header
+ * comment): an SMBus commonly carries real battery/thermal/RAM-SPD
+ * traffic, and issuing an unreviewed transaction against it from this
+ * sandbox is a real, unnecessary risk this stdlib work doesn't need to
+ * take to be real and correct. */
+#if defined(__linux__)
+#include <linux/i2c-dev.h>
+#endif
 #endif
 /* SDL2 -- built-in, same tier as core (STDLIB.md's own "sdl2" section:
  * "SDL2 is built in... no (import sdl2) line needed"), so its header is
@@ -1679,6 +1693,116 @@ static inline int spi_close_impl(int fd) {
     return -1;
 }
 #endif /* __linux__ -- end of stdlib/hw/spi.prn real host glue / non-Linux stub */
+
+/* ---- stdlib/hw/i2c.prn real host glue (2026-09-09, same day) ------------
+ * Third real hardware bus in the same session (UART/serial, SPI, now
+ * I2C) -- the third of the three buses any real Arduino-class or
+ * Raspberry-Pi-class hobby sensor overwhelmingly uses. Linux's real
+ * `i2c-dev(4)` userspace API, its own simple/most common convention
+ * (the same one Python's `smbus`/`smbus2` and most simple C I2C
+ * libraries use): `ioctl(fd, I2C_SLAVE, addr)` fixes ONE target device
+ * address for the lifetime of the open fd, after which plain
+ * `read()`/`write()` calls talk to that address -- no per-call address
+ * parameter needed, matching how a real caller actually uses I2C (open
+ * one fd per physical device you're talking to, not per bus).
+ *
+ * Real, structural distinction from SPI, worth naming directly: I2C is
+ * addressed and half-duplex-per-direction (a real caller writes a
+ * register address, then separately reads back a value) -- much closer
+ * to net/tcp.prn's/hw/serial.prn's own `-read`/`-write` stream shape
+ * than to SPI's necessarily-simultaneous `-transfer`. `i2c-read` takes
+ * an explicit length (unlike tcp-read/serial-read's own "whatever's
+ * available" shape) because that's how real I2C reads actually work --
+ * a caller reads a specific, already-known number of bytes for the
+ * register/command it just addressed, not an open-ended stream.
+ *
+ * Real, honest, DELIBERATE non-hardware-verification here, distinct
+ * from "genuinely untestable" (SPI's own real situation): this actual
+ * physical box has a REAL, live `/dev/i2c-0` (an Intel SMBus controller,
+ * confirmed via `lsmod`'s own `i2c_i801` entry) -- unlike SPI, a real
+ * device technically exists to test against. It is root-owned
+ * (`crw------- root root`) and deliberately left untouched by this
+ * runtime and its own tests: an SMBus commonly carries real system
+ * traffic (battery, thermal, RAM SPD), and this stdlib work does not
+ * need to risk an unreviewed real transaction against real system
+ * hardware to be correct -- the same honest write-side embedded-NUL
+ * limitation SPI/serial/tcp already carry (see hw/spi.prn's own header
+ * comment) applies here too, unfixed for the same real reason. */
+#if defined(__linux__)
+
+/* i2c_open_impl -- opens the device file and fixes the target slave
+ * address in one primitive, matching spi_open_impl's own precedent of
+ * combining open+configure behind one raw fd-or-(-1) primitive (there
+ * is no real caller that wants an I2C device file open without a fixed
+ * target address). Rolls back (closes) the fd on a failed I2C_SLAVE
+ * ioctl, same discipline as spi_open_impl. */
+static inline int i2c_open_impl(const char *path, int addr) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return -1;
+    if (ioctl(fd, I2C_SLAVE, addr) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* i2c_read_impl -- real, honest short-read handling: NUL-terminates at
+ * whatever `n` bytes read() actually returned (0 on EOF/error, treated
+ * the same as "nothing available" rather than distinguished -- the same
+ * coarser-signal judgment tcp_read_impl/pty_read_impl/serial_read_impl/
+ * spi_transfer_impl above already make), never blocks trying to fill
+ * the full requested `len`. */
+static inline char *i2c_read_impl(int fd, int len, Arena *dest) {
+    if (len < 0) len = 0;
+    char *buf = (char *)arena_alloc(dest, (size_t)len + 1);
+    ssize_t n = (len > 0) ? read(fd, buf, (size_t)len) : 0;
+    if (n < 0) n = 0;
+    buf[n] = '\0';
+    return buf;
+}
+
+static inline int i2c_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, s + written, len - written);
+        if (n < 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int i2c_close_impl(int fd) {
+    return close(fd) == 0 ? 0 : -1;
+}
+
+#else /* not Linux -- real i2c-dev(4) genuinely does not exist on any
+       * other platform (see this section's own opening header comment).
+       * Real, honest stubs, same shape spi.prn's own non-Linux stub
+       * uses -- every real caller goes through i2c-open first, which
+       * turns this -1 into a real Err(OpenFailed). */
+static inline int i2c_open_impl(const char *path, int addr) {
+    (void)path; (void)addr;
+    return -1;
+}
+
+static inline char *i2c_read_impl(int fd, int len, Arena *dest) {
+    (void)fd; (void)len;
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline int i2c_write_impl(int fd, const char *s) {
+    (void)fd; (void)s;
+    return -1;
+}
+
+static inline int i2c_close_impl(int fd) {
+    (void)fd;
+    return -1;
+}
+#endif /* __linux__ -- end of stdlib/hw/i2c.prn real host glue / non-Linux stub */
 
 /* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
  * A real, direct port of PITVIPER's own shell-resolution policy

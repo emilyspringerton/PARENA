@@ -1,0 +1,114 @@
+;; stdlib/hw/i2c.prn — depends on string. Design: STDLIB.md "hw/i2c" section.
+;; Third real hardware bus in the same session (UART/serial, SPI, now I2C)
+;; — the third of the three buses any real Arduino-class or Raspberry-Pi-
+;; class hobby sensor overwhelmingly uses. Real answer to Linux's
+;; `i2c-dev(4)` userspace API: open a real `/dev/i2c-N` device file, fix
+;; the target slave address once via `ioctl(fd, I2C_SLAVE, addr)`, then
+;; plain `read()`/`write()` calls talk to that address.
+;;
+;; Real, structural distinction from hw/spi.prn's own `-transfer` shape,
+;; not an inconsistency: I2C is addressed and half-duplex-per-direction —
+;; a real caller writes a register address, then separately reads back a
+;; value — much closer to net/tcp.prn's/this-file's own sibling
+;; hw/serial.prn's `-read`/`-write` stream shape than to SPI's necessarily-
+;; simultaneous full-duplex transfer. `i2c-read` takes an explicit length
+;; (unlike tcp-read/serial-read's own "whatever's available" shape)
+;; because that's how a real I2C read actually works — a caller reads a
+;; specific, already-known number of bytes for the register/command it
+;; just addressed, not an open-ended stream.
+;;
+;; Same real, honestly-named write-side limitation hw/spi.prn/
+;; hw/serial.prn/net/tcp.prn already carry: every String-based host
+;; primitive in this runtime is NUL-terminated-C-string-shaped, so a
+;; write payload needing an embedded 0x00 byte cannot round-trip through
+;; `i2c-write` today (see docs/SPI_NORTHSTAR.md for the full reasoning —
+;; the same real, un-derisked core-language gap, not re-solved here).
+;; `i2c-read`'s own explicit length avoids the equivalent read-side
+;; problem for THIS primitive specifically (the returned buffer is
+;; correctly sized even if a real device response happens to contain a
+;; 0x00 byte), though any caller that then treats the result as an
+;; ordinary NUL-terminated String downstream still only sees up to the
+;; first zero — the honest limitation moves, it isn't fully closed.
+;;
+;; Real, deliberate, NOT hardware-verified here: this actual box has a
+;; real, live `/dev/i2c-0` (an Intel SMBus controller) — unlike SPI, a
+;; real device technically exists to test against. It is root-owned and
+;; deliberately left untouched by this file's own tests (an SMBus
+;; commonly carries real system battery/thermal/RAM-SPD traffic; this
+;; stdlib work doesn't need to risk an unreviewed real transaction
+;; against real system hardware to be correct) — see
+;; runtime/parena_runtime.h's own header comment on this section for the
+;; full reasoning.
+
+(module hw/i2c)
+(import string)
+(export i2c-open i2c-read i2c-write i2c-close I2cDevice I2cError)
+
+(defstruct I2cDevice
+  (fd : I32))
+
+(defenum I2cError
+  (OpenFailed)
+  (ReadFailed)
+  (WriteFailed)
+  (CloseFailed))
+
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; i2c_*_impl functions, no boxing.
+
+(defn raw-i2c-open [(path : String @ Region) (addr : I32)]
+  : I32
+  #target
+  {:c (inline-c "i2c_open_impl(path, addr)")})
+
+(defn raw-i2c-read [(fd : I32) (len : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "i2c_read_impl(fd, len, dest)")})
+
+(defn raw-i2c-write [(fd : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "i2c_write_impl(fd, data)")})
+
+(defn raw-i2c-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "i2c_close_impl(fd)")})
+
+;; i2c-open -- addr is the real 7-bit I2C slave address (0x00-0x7F);
+;; fixed for the lifetime of the returned I2cDevice, matching real
+;; caller usage (one open device per physical sensor/chip, not one open
+;; per bus with an address passed on every call).
+(defn i2c-open [(path : String @ :region/scratch) (addr : I32) (dest : Arena @ Region)]
+  : (Result I2cDevice I2cError) @ Region
+  (let [fd (raw-i2c-open path addr)]
+    (if (< fd 0)
+      (Err OpenFailed)
+      (Ok {:fd fd}))))
+
+;; i2c-read -- ReadFailed is real and honestly named for symmetry with
+;; the other three failure modes, but currently unreachable through this
+;; path: raw-i2c-read's own real contract (a short read is honestly
+;; NUL-terminated at whatever byte count it actually got, never an
+;; error) never signals failure, the same class of unreachable-but-named
+;; variant hw/serial.prn's own ReadFailed and net/tcp.prn's own
+;; NetError::Timeout already are.
+(defn i2c-read [(!dev : &mut I2cDevice) (len : I32) (dest : Arena @ Region)]
+  : (Result String I2cError) @ Region
+  (Ok (raw-i2c-read (get-field !dev :fd) len dest)))
+
+(defn i2c-write [(!dev : &mut I2cDevice) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit I2cError) @ Region
+  (if (< (raw-i2c-write (get-field !dev :fd) data) 0)
+    (Err WriteFailed)
+    (Ok unit)))
+
+;; i2c-close -- Result-boxed, matching tcp-close/pty-close/serial-close/
+;; spi-close's own established convention.
+(defn i2c-close [(!dev : &mut I2cDevice) (dest : Arena @ Region)]
+  : (Result Unit I2cError) @ Region
+  (if (< (raw-i2c-close (get-field !dev :fd)) 0)
+    (Err CloseFailed)
+    (Ok unit)))
