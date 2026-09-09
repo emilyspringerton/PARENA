@@ -4672,3 +4672,43 @@ Real, honest, not done: no retrofit of `hw/spi.prn`'s `spi-transfer`/`hw/i2c.prn
 `i2c-read`/`i2c-write`/`hw/serial.prn`'s `serial-read`/`serial-write` to a real `Bytes`-based
 sibling function happened in this pass — the core gap is closed, the hardware-facing consumers of
 it are real, separate, additive follow-up work, named explicitly rather than assumed solved.
+
+## hw/spi, hw/i2c, hw/serial — real Bytes-based siblings, Phase 2 of the same-day retrofit (2026-09-09, same day)
+
+Real completion of the "Phase 2 — not started" item `docs/BYTES_NORTHSTAR.md` named the moment
+`Bytes` itself shipped: retrofitting the three hardware modules that found and named the
+embedded-NUL gap with real, additive siblings built on the new `Bytes` type. Real, deliberate
+design choice, named directly: every existing `String`-based function (`spi-transfer`,
+`i2c-read`/`i2c-write`, `serial-read`/`serial-write`) is **unchanged** — these are new sibling
+functions (`spi-transfer-bytes`, `i2c-read-bytes`/`i2c-write-bytes`,
+`serial-read-bytes`/`serial-write-bytes`), not breaking replacements, exactly as that doc said
+this retrofit would be.
+
+New `runtime/parena_runtime.h` primitives mirror each existing `*_impl` function's real mechanics
+exactly (identical ioctl/poll/read/write logic), differing only in using `Bytes`'s own explicit
+length instead of `strlen`: `spi_transfer_bytes_impl` (same full-duplex `SPI_IOC_MESSAGE` call,
+`tx.len` instead of `strlen(tx)`), `i2c_read_bytes_impl`/`i2c_write_bytes_impl` (same plain
+`read()`/`write()`, with `i2c_read_bytes_impl` reporting the real, actual short-read length via
+`Bytes.len` rather than NUL-terminating), `serial_read_bytes_impl`/`serial_write_bytes_impl` (same
+zero-timeout `poll()`-gated non-blocking technique). Each hardware module's own `.prn` file gained
+one `raw-*-bytes` primitive and one public `*-bytes` wrapper per new function, `(import bytes)`
+added, and the new names added to each file's own `export` list.
+
+Real, byte-perfect end-to-end verification, not just compilation: `hw/serial.prn`'s own test
+(`make test-serial`) round-trips a genuine embedded `0x00` byte through a REAL open pty device in
+BOTH directions (`serial-write-bytes` device-side write confirmed byte-for-byte via a real
+`read()` on the pty master; `serial-read-bytes` polls real device-side output into a `Bytes` whose
+reported length is the real, full byte count, unaffected by the embedded zero) — proving what
+`serial-write`/`serial-read`'s own `String`-based pair genuinely cannot do. `hw/i2c.prn`'s own test
+(`make test-i2c`) does the identical real byte-perfect round trip via `i2c_write_bytes_impl`/
+`i2c_read_bytes_impl` against a real temp file fd (i2c-dev's own data-transfer path is plain POSIX
+I/O, needing no real hardware), plus a real short-read case proving the reported length reflects
+what was actually read even with an embedded zero in the middle. `hw/spi.prn`'s own test
+(`make test-spi`) is scoped to what's honestly possible with no real spidev controller in this
+sandbox — `spi_transfer_bytes_impl` called directly against a non-SPI fd, proving it returns a
+buffer of the exact requested length (not truncated by its own embedded-zero tx payload) and
+zeroes its receive buffer on ioctl failure, same discipline the original `spi_transfer_impl` test
+already established.
+
+`make test`: 347/347 throughout, zero regressions (no compiler changes in this pass — purely
+additive runtime + stdlib work, unlike `Bytes` itself).

@@ -126,6 +126,74 @@ int main(void) {
         close(master_fd);
     }
 
+    /* --- serial-write-bytes/serial-read-bytes: the real, byte-perfect
+     * siblings (docs/BYTES_NORTHSTAR.md's own real Phase 2 retrofit).
+     * The one thing worth proving above everything else: a genuine
+     * embedded 0x00 byte, round-tripped through a real open device in
+     * BOTH directions, survives intact with the length unaffected --
+     * exactly what serial-write/serial-read (String-based) cannot do. */
+    {
+        int master_fd;
+        char path[64];
+        CHECK(open_test_pty(&master_fd, path, sizeof path) == 0,
+              "real pty pair created for serial-write-bytes/serial-read-bytes testing");
+
+        Result r = serial_open(path, 9600, &a);
+        CHECK(r.tag == 1, "serial-open succeeds for the bytes-sibling round-trip test");
+        if (r.tag == 1) {
+            SerialPort p = *(SerialPort *)r.value;
+
+            /* device (pty master) -> serial-read-bytes, with a real
+             * embedded 0x00 in the middle of the payload. */
+            unsigned char tx_raw[7] = {'p', 'r', 'e', 0, 'p', 'o', 's'};
+            CHECK(write(master_fd, tx_raw, sizeof tx_raw) == (ssize_t)sizeof tx_raw,
+                  "writing raw bytes with a genuine embedded 0x00 from the device side succeeds");
+
+            Bytes found = { 0, 0 };
+            for (int attempt = 0; attempt < 40 && found.len == 0; attempt++) {
+                usleep(50000);
+                Result rr = serial_read_bytes(&p, &a);
+                if (rr.tag == 1) {
+                    Bytes chunk = *(Bytes *)rr.value;
+                    if (chunk.len > 0) found = chunk;
+                }
+            }
+            CHECK(found.len == 7,
+                  "serial-read-bytes reports the real, full 7-byte length -- unaffected by the "
+                  "embedded 0x00, unlike serial-read's own strlen-based String");
+            CHECK(bytes_get(found, 3) == 0,
+                  "the real embedded 0x00 byte itself reads back correctly via bytes-get");
+            CHECK(bytes_get(found, 4) == 'p' && bytes_get(found, 6) == 's',
+                  "the bytes AFTER the embedded 0x00 are not lost -- 'pos' survives intact");
+
+            /* serial-write-bytes -> real read from the device (pty
+             * master), same real embedded-0x00 proof in the other
+             * direction. */
+            Bytes tx = bytes_alloc(6, &a);
+            unsigned char tx_payload[6] = {'a', 'b', 0, 'c', 'd', 'e'};
+            for (int i = 0; i < 6; i++) bytes_set_(tx, i, tx_payload[i]);
+
+            Result wr = serial_write_bytes(&p, tx, &a);
+            CHECK(wr.tag == 1, "serial-write-bytes with a genuine embedded 0x00 payload succeeds");
+
+            unsigned char rbuf2[64];
+            memset(rbuf2, 0xAA, sizeof rbuf2); /* a real, non-zero sentinel fill, so a short read is honestly visible below */
+            ssize_t n2 = -1;
+            for (int attempt = 0; attempt < 40 && n2 <= 0; attempt++) {
+                usleep(50000);
+                n2 = read(master_fd, rbuf2, sizeof rbuf2);
+            }
+            CHECK(n2 == 6, "the device side receives the real, full 6 bytes serial-write-bytes sent -- "
+                            "not truncated at the embedded 0x00");
+            CHECK(n2 == 6 && rbuf2[2] == 0 && rbuf2[3] == 'c' && rbuf2[5] == 'e',
+                  "the real embedded 0x00 byte and everything after it arrive on the wire intact");
+
+            Result cr2 = serial_close(&p, &a);
+            CHECK(cr2.tag == 1, "serial-close after the bytes-sibling round trip succeeds");
+        }
+        close(master_fd);
+    }
+
     /* --- serial-open: a real, honest failure on an unsupported v0
      * baud rate (this file's own SerialError comment names this as a
      * deliberate boundary, not an oversight) -- open() itself succeeds

@@ -90,8 +90,10 @@ the equivalent problem for the raw read itself (the returned buffer is correctly
 real device response contains a `0x00`), but any caller that then treats the result as an
 ordinary NUL-terminated String downstream still only sees up to the first zero — the limitation
 moves, it isn't closed. **Update, same day**: a real, second core-language base type now exists
-for this — `docs/BYTES_NORTHSTAR.md`/`stdlib/bytes.prn`. The core gap is closed; retrofitting
-`i2c-read`/`i2c-write` themselves onto it is real, separate, additive follow-up, not done yet.
+for this — `docs/BYTES_NORTHSTAR.md`/`stdlib/bytes.prn`. The core gap is closed. **Second update,
+same day**: the retrofit itself has shipped too — new `i2c-read-bytes`/`i2c-write-bytes` siblings
+(`i2c-read`/`i2c-write` themselves unchanged), with a real, byte-perfect embedded-`0x00`
+round-trip proven end-to-end — see `STDLIB.md`'s own "Phase 2" section.
 
 A real hardware round-trip against a genuine I2C sensor (a BME280/MPU6050-class device wired to a
 real Raspberry Pi's I2C bus) remains genuinely blocked here for the reasons above — not

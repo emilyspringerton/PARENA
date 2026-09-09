@@ -30,6 +30,13 @@
 ;; ordinary NUL-terminated String downstream still only sees up to the
 ;; first zero — the honest limitation moves, it isn't fully closed.
 ;;
+;; Both directions are CLOSED for any caller that uses `i2c-read-bytes`/
+;; `i2c-write-bytes` instead (2026-09-09, same day, the real "Phase 2"
+;; `docs/BYTES_NORTHSTAR.md` named as not-yet-started when `Bytes`
+;; itself shipped): real, additive siblings built on the new `Bytes`
+;; core-language type, NOT breaking changes to `i2c-read`/`i2c-write`
+;; themselves, which stay exactly as they were.
+;;
 ;; Real, deliberate, NOT hardware-verified here: this actual box has a
 ;; real, live `/dev/i2c-0` (an Intel SMBus controller) — unlike SPI, a
 ;; real device technically exists to test against. It is root-owned and
@@ -42,7 +49,8 @@
 
 (module hw/i2c)
 (import string)
-(export i2c-open i2c-read i2c-write i2c-close I2cDevice I2cError)
+(import bytes)
+(export i2c-open i2c-read i2c-read-bytes i2c-write i2c-write-bytes i2c-close I2cDevice I2cError)
 
 (defstruct I2cDevice
   (fd : I32))
@@ -71,6 +79,18 @@
   : I32
   #target
   {:c (inline-c "i2c_write_impl(fd, data)")})
+
+;; raw-i2c-read-bytes/raw-i2c-write-bytes -- the real, byte-perfect
+;; sibling primitives (see this file's own header comment).
+(defn raw-i2c-read-bytes [(fd : I32) (len : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "i2c_read_bytes_impl(fd, len, dest)")})
+
+(defn raw-i2c-write-bytes [(fd : I32) (data : Bytes)]
+  : I32
+  #target
+  {:c (inline-c "i2c_write_bytes_impl(fd, data)")})
 
 (defn raw-i2c-close [(fd : I32)]
   : I32
@@ -102,6 +122,25 @@
 (defn i2c-write [(!dev : &mut I2cDevice) (data : String @ Region) (dest : Arena @ Region)]
   : (Result Unit I2cError) @ Region
   (if (< (raw-i2c-write (get-field !dev :fd) data) 0)
+    (Err WriteFailed)
+    (Ok unit)))
+
+;; i2c-read-bytes -- the real, byte-perfect sibling of i2c-read: the
+;; returned Bytes carries its own explicit length, so a real device
+;; response containing a 0x00 byte is never mistaken for a shorter read
+;; than actually happened. Same real, honestly-unreachable ReadFailed
+;; reasoning as i2c-read above.
+(defn i2c-read-bytes [(!dev : &mut I2cDevice) (len : I32) (dest : Arena @ Region)]
+  : (Result Bytes I2cError) @ Region
+  (Ok (raw-i2c-read-bytes (get-field !dev :fd) len dest)))
+
+;; i2c-write-bytes -- the real, byte-perfect sibling of i2c-write:
+;; writes exactly `data`'s own real length, so a register address of
+;; 0x00 (or any other embedded 0x00 byte in a real command payload)
+;; round-trips onto the wire correctly.
+(defn i2c-write-bytes [(!dev : &mut I2cDevice) (data : Bytes) (dest : Arena @ Region)]
+  : (Result Unit I2cError) @ Region
+  (if (< (raw-i2c-write-bytes (get-field !dev :fd) data) 0)
     (Err WriteFailed)
     (Ok unit)))
 

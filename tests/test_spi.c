@@ -99,6 +99,53 @@ int main(void) {
         }
     }
 
+    /* --- spi_transfer_bytes_impl, the real, byte-perfect sibling of
+     * spi_transfer_impl (docs/BYTES_NORTHSTAR.md's own real Phase 2
+     * retrofit), called directly against the same real non-SPI fd for
+     * the same real reason: no real spidev controller exists in this
+     * sandbox to exercise a genuinely successful transfer against.
+     * What IS real and provable here: it doesn't crash, and the
+     * returned Bytes reports the real, EXACT requested length (a
+     * strictly more precise assertion than the String version could
+     * make, since Bytes carries an explicit length field to check
+     * against directly). */
+    {
+        char path[] = "/tmp/parena_spi_test_XXXXXX";
+        int fd = mkstemp(path);
+        CHECK(fd >= 0, "real temp file opened for direct spi_transfer_bytes_impl testing");
+        if (fd >= 0) {
+            unsigned char tx_raw[4] = {0x01, 0x00, 0x02, 0x00}; /* real, deliberate embedded 0x00 bytes */
+            Bytes tx = bytes_alloc(4, &a);
+            for (int i = 0; i < 4; i++) bytes_set_(tx, i, tx_raw[i]);
+
+            Bytes rx = spi_transfer_bytes_impl(fd, tx, &a);
+            CHECK(bytes_len(rx) == 4,
+                  "spi_transfer_bytes_impl against a non-SPI fd returns a buffer of the exact "
+                  "real requested length, unaffected by the embedded 0x00 bytes in tx");
+            CHECK(bytes_get(rx, 0) == 0 && bytes_get(rx, 1) == 0 && bytes_get(rx, 2) == 0 && bytes_get(rx, 3) == 0,
+                  "spi_transfer_bytes_impl zeroes its own receive buffer rather than returning stale/garbage "
+                  "bytes when the underlying ioctl genuinely fails");
+            close(fd);
+            unlink(path);
+        }
+    }
+
+    /* --- spi_transfer_bytes_impl with a zero-length tx: the real,
+     * honest zero-length edge case. */
+    {
+        char path[] = "/tmp/parena_spi_test_XXXXXX";
+        int fd = mkstemp(path);
+        if (fd >= 0) {
+            Bytes tx = bytes_alloc(0, &a);
+            Bytes rx = spi_transfer_bytes_impl(fd, tx, &a);
+            CHECK(bytes_len(rx) == 0,
+                  "spi_transfer_bytes_impl with a zero-length tx returns a real, zero-length rx, "
+                  "no ioctl attempted");
+            close(fd);
+            unlink(path);
+        }
+    }
+
     /* --- spi-close: real success against a real, independently-opened
      * fd (SpiDevice constructed directly -- there is no real spi-open
      * success path to obtain one from in this sandbox). */

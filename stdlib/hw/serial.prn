@@ -42,10 +42,22 @@
 ;; NORTHSTAR sketch's enum didn't name (that sketch had no Result on
 ;; serial-close at all, so no close-failure variant was ever needed) —
 ;; added rather than dishonestly overloading WriteFailed for a close error.
+;;
+;; Real, third addition, same day (2026-09-09): serial-read/serial-write
+;; both silently carry the same embedded-NUL-byte truncation
+;; `docs/SPI_NORTHSTAR.md`/`docs/I2C_NORTHSTAR.md` found and named for
+;; their own String-based primitives (a real, ordinary case for a
+;; genuine serial device — not every Arduino-class protocol is
+;; ASCII-only). Closed for any caller that uses `serial-read-bytes`/
+;; `serial-write-bytes` instead — real, additive siblings built on the
+;; new `Bytes` core-language type (`docs/BYTES_NORTHSTAR.md`), NOT
+;; breaking changes to `serial-read`/`serial-write` themselves, which
+;; stay exactly as they were.
 
 (module hw/serial)
 (import string)
-(export serial-open serial-read serial-write serial-close SerialPort SerialError)
+(import bytes)
+(export serial-open serial-read serial-read-bytes serial-write serial-write-bytes serial-close SerialPort SerialError)
 
 (defstruct SerialPort
   (fd : I32))
@@ -80,6 +92,18 @@
   : I32
   #target
   {:c (inline-c "serial_write_impl(fd, data)")})
+
+;; raw-serial-read-bytes/raw-serial-write-bytes -- the real, byte-perfect
+;; sibling primitives (see this file's own header comment).
+(defn raw-serial-read-bytes [(fd : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "serial_read_bytes_impl(fd, dest)")})
+
+(defn raw-serial-write-bytes [(fd : I32) (data : Bytes)]
+  : I32
+  #target
+  {:c (inline-c "serial_write_bytes_impl(fd, data)")})
 
 (defn raw-serial-close [(fd : I32)]
   : I32
@@ -117,6 +141,24 @@
 (defn serial-write [(!p : &mut SerialPort) (data : String @ Region) (dest : Arena @ Region)]
   : (Result Unit SerialError) @ Region
   (if (< (raw-serial-write (get-field !p :fd) data) 0)
+    (Err WriteFailed)
+    (Ok unit)))
+
+;; serial-read-bytes -- the real, byte-perfect sibling of serial-read:
+;; identical non-blocking, poll-gated mechanics, but the returned Bytes
+;; carries its own explicit length, so a genuine embedded 0x00 byte
+;; from a real device is never lost. Same real, honestly-unreachable
+;; ReadFailed reasoning as serial-read above.
+(defn serial-read-bytes [(!p : &mut SerialPort) (dest : Arena @ Region)]
+  : (Result Bytes SerialError) @ Region
+  (Ok (raw-serial-read-bytes (get-field !p :fd) dest)))
+
+;; serial-write-bytes -- the real, byte-perfect sibling of serial-write:
+;; writes exactly `data`'s own real length, so a payload with an
+;; embedded 0x00 byte reaches the wire intact.
+(defn serial-write-bytes [(!p : &mut SerialPort) (data : Bytes) (dest : Arena @ Region)]
+  : (Result Unit SerialError) @ Region
+  (if (< (raw-serial-write-bytes (get-field !p :fd) data) 0)
     (Err WriteFailed)
     (Ok unit)))
 

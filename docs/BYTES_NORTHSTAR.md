@@ -121,6 +121,9 @@ verified via `make test-bytes` (18 real assertions, including a genuine embedded
 survive-with-length-intact proof) plus the full existing `make test` (347/347, zero regressions —
 run repeatedly through the compiler-change process, not just once at the end).
 
-**Phase 2 — not started.** Retrofit `hw/spi.prn`/`hw/i2c.prn`/`hw/serial.prn` with real
-`Bytes`-based sibling functions for their raw transfer/read/write paths, closing the actual
-hardware-facing motivation this type was built for.
+**Phase 2 — shipped, same day.** Retrofit `hw/spi.prn`/`hw/i2c.prn`/`hw/serial.prn` with real
+`Bytes`-based sibling functions (`spi-transfer-bytes`, `i2c-read-bytes`/`i2c-write-bytes`,
+`serial-read-bytes`/`serial-write-bytes`) — every existing `String`-based function left
+unchanged, exactly as planned. See `STDLIB.md`'s own "Phase 2" section for the full detail,
+including a real, byte-perfect embedded-`0x00` round-trip proven end-to-end against a real open
+pty device (`hw/serial.prn`) and a real temp-file fd (`hw/i2c.prn`) — not just proven to compile.

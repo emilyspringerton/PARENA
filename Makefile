@@ -517,7 +517,7 @@ test-shell: build
 # real BSD pty pair instead -- a genuine termios-configurable tty
 # device, not a mock.
 test-serial: build
-	./parena build stdlib/string.prn stdlib/hw/serial.prn -o tests/test_serial_gen.c
+	./parena build stdlib/string.prn stdlib/bytes.prn stdlib/hw/serial.prn -o tests/test_serial_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_serial.c runtime/parena_runtime.c \
 		-o /tmp/test_serial_bin -lm
 	/tmp/test_serial_bin
@@ -527,7 +527,7 @@ test-serial: build
 # exists here, and unlike a serial port there's no fakeable pty-style
 # stand-in for one) -- see tests/test_spi.c's own header comment.
 test-spi: build
-	./parena build stdlib/string.prn stdlib/hw/spi.prn -o tests/test_spi_gen.c
+	./parena build stdlib/string.prn stdlib/bytes.prn stdlib/hw/spi.prn -o tests/test_spi_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_spi.c runtime/parena_runtime.c \
 		-o /tmp/test_spi_bin -lm
 	/tmp/test_spi_bin
@@ -540,7 +540,7 @@ test-spi: build
 # for why this box's own real, live, root-owned /dev/i2c-0 is
 # deliberately not touched.
 test-i2c: build
-	./parena build stdlib/string.prn stdlib/hw/i2c.prn -o tests/test_i2c_gen.c
+	./parena build stdlib/string.prn stdlib/bytes.prn stdlib/hw/i2c.prn -o tests/test_i2c_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_i2c.c runtime/parena_runtime.c \
 		-o /tmp/test_i2c_bin -lm
 	/tmp/test_i2c_bin

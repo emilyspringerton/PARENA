@@ -71,8 +71,9 @@ the Feather's own radio module, extendable later if a real multi-device-per-bus 
    `docs/BYTES_NORTHSTAR.md`/`stdlib/bytes.prn`, a real, second core-language base type
    (`compress/lz4.prn`'s own `(Vec I32)` claim turned out to be a stale reference to a
    non-compiling design; the real fix is a genuinely new, non-generic `Bytes` type instead). The
-   core gap is closed; retrofitting `spi-transfer` itself onto it (a new `spi-transfer-bytes`
-   sibling) is real, separate, additive follow-up, not done yet.
+   core gap is closed. **Second update, same day**: the retrofit itself has shipped too — a new
+   `spi-transfer-bytes` sibling function (`spi-transfer` itself unchanged) — see `STDLIB.md`'s own
+   "Phase 2" section.
 2. **A failed transfer ioctl isn't distinguished from "the device returned all zeros."**
    `spi_transfer_impl` zeroes its own receive buffer up front and doesn't branch on the ioctl's
    return value — the same coarser-signal judgment this stdlib already makes for

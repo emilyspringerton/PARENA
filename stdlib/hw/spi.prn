@@ -24,6 +24,16 @@
 ;; "the device returned all zero bytes," the same coarser-signal judgment
 ;; this stdlib already makes for tcp-read/pty-read/serial-read.
 ;;
+;; Limitation (1) is CLOSED for any caller that uses `spi-transfer-bytes`
+;; instead (2026-09-09, same day, the real "Phase 2" `docs/
+;; BYTES_NORTHSTAR.md` named as not-yet-started when `Bytes` itself
+;; shipped): a real, additive sibling built on the new `Bytes` core-
+;; language type (`docs/BYTES_NORTHSTAR.md`), NOT a breaking change to
+;; `spi-transfer` itself, which stays exactly as it was. Real embedded
+;; `0x00` bytes now round-trip correctly on BOTH the tx and rx side via
+;; `spi-transfer-bytes`, since `Bytes` carries its own explicit length
+;; instead of relying on a NUL sentinel.
+;;
 ;; Real, deliberate v0 boundary, named directly, not silently assumed:
 ;; the kernel's own spidev driver toggles the real chip-select GPIO
 ;; automatically once per transfer, keyed by the device file's own
@@ -33,7 +43,8 @@
 
 (module hw/spi)
 (import string)
-(export spi-open spi-transfer spi-close SpiDevice SpiError)
+(import bytes)
+(export spi-open spi-transfer spi-transfer-bytes spi-close SpiDevice SpiError)
 
 (defstruct SpiDevice
   (fd : I32))
@@ -56,6 +67,16 @@
   : String @ Region
   #target
   {:c (inline-c "spi_transfer_impl(fd, tx, dest)")})
+
+;; raw-spi-transfer-bytes -- the real, byte-perfect sibling primitive
+;; (see this file's own header comment). `tx : Bytes` needs no region
+;; annotation the way `String`/`Vec` values usually do here -- `Bytes`
+;; is a plain, non-region-annotated base-type parameter (see
+;; docs/BYTES_NORTHSTAR.md), passed by value like `I32`/`Bool`.
+(defn raw-spi-transfer-bytes [(fd : I32) (tx : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "spi_transfer_bytes_impl(fd, tx, dest)")})
 
 (defn raw-spi-close [(fd : I32)]
   : I32
@@ -85,6 +106,19 @@
 (defn spi-transfer [(!dev : &mut SpiDevice) (tx : String @ Region) (dest : Arena @ Region)]
   : (Result String SpiError) @ Region
   (Ok (raw-spi-transfer (get-field !dev :fd) tx dest)))
+
+;; spi-transfer-bytes -- the real, byte-perfect sibling of spi-transfer
+;; (see this file's own header comment): identical full-duplex
+;; semantics, but both `tx` and the returned `rx` carry their own
+;; explicit length via `Bytes`, so a genuine embedded 0x00 byte on
+;; either side round-trips correctly. Prefer this over spi-transfer for
+;; any real device whose protocol can put a 0x00 byte in the middle of
+;; a real payload (SPI register addressing in general, the RFM9x
+;; specifically) -- spi-transfer itself is unchanged, kept for callers
+;; whose payloads are known ASCII/text-safe.
+(defn spi-transfer-bytes [(!dev : &mut SpiDevice) (tx : Bytes) (dest : Arena @ Region)]
+  : (Result Bytes SpiError) @ Region
+  (Ok (raw-spi-transfer-bytes (get-field !dev :fd) tx dest)))
 
 ;; spi-close -- Result-boxed, matching tcp-close/pty-close/serial-close's
 ;; own established convention.

@@ -48,11 +48,19 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
+Bytes bytes_alloc(int, Arena *);
+int bytes_len(Bytes);
+int bytes_get(Bytes, int);
+void bytes_set_(Bytes, int, int);
+Bytes bytes_from_string(char *, Arena *);
+char * bytes_to_string_lossy(Bytes, Arena *);
 int raw_spi_open(char *, int, int, int);
 char * raw_spi_transfer(int, char *, Arena *);
+Bytes raw_spi_transfer_bytes(int, Bytes, Arena *);
 int raw_spi_close(int);
 Result spi_open(char *, int, int, int, Arena *);
 Result spi_transfer(SpiDevice *, char *, Arena *);
+Result spi_transfer_bytes(SpiDevice *, Bytes, Arena *);
 Result spi_close(SpiDevice *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -75,6 +83,12 @@ static inline SpiError *SpiError_box(Arena *dest, SpiError v) {
 
 static inline SpiDevice *SpiDevice_box(Arena *dest, SpiDevice v) {
     SpiDevice *p = (SpiDevice *)arena_alloc(dest, sizeof(SpiDevice));
+    *p = v;
+    return p;
+}
+
+static inline Bytes *Bytes_box(Arena *dest, Bytes v) {
+    Bytes *p = (Bytes *)arena_alloc(dest, sizeof(Bytes));
     *p = v;
     return p;
 }
@@ -202,12 +216,40 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
+Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_alloc_impl(dest, len));
+}
+
+int bytes_len(Bytes b __attribute__((unused))) {
+    return (bytes_len_impl(b));
+}
+
+int bytes_get(Bytes b __attribute__((unused)), int idx __attribute__((unused))) {
+    return (bytes_get_impl(b, idx));
+}
+
+void bytes_set_(Bytes b __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    bytes_set_impl(b, idx, val);
+}
+
+Bytes bytes_from_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_from_string_impl(dest, s));
+}
+
+char * bytes_to_string_lossy(Bytes b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_to_string_lossy_impl(b, dest));
+}
+
 int raw_spi_open(char * path __attribute__((unused)), int mode __attribute__((unused)), int speed_hz __attribute__((unused)), int bits_per_word __attribute__((unused))) {
     return (spi_open_impl(path, mode, speed_hz, bits_per_word));
 }
 
 char * raw_spi_transfer(int fd __attribute__((unused)), char * tx __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return (spi_transfer_impl(fd, tx, dest));
+}
+
+Bytes raw_spi_transfer_bytes(int fd __attribute__((unused)), Bytes tx __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (spi_transfer_bytes_impl(fd, tx, dest));
 }
 
 int raw_spi_close(int fd __attribute__((unused))) {
@@ -225,6 +267,10 @@ Result spi_open(char * path __attribute__((unused)), int mode __attribute__((unu
 
 Result spi_transfer(SpiDevice * dev __attribute__((unused)), char * tx __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return result_ok(raw_spi_transfer((dev)->fd, tx, dest));
+}
+
+Result spi_transfer_bytes(SpiDevice * dev __attribute__((unused)), Bytes tx __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return result_ok(Bytes_box(dest, raw_spi_transfer_bytes((dev)->fd, tx, dest)));
 }
 
 Result spi_close(SpiDevice * dev __attribute__((unused)), Arena *dest __attribute__((unused))) {

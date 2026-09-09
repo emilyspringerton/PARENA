@@ -96,6 +96,67 @@ int main(void) {
         unlink(path);
     }
 
+    /* --- i2c_write_bytes_impl/i2c_read_bytes_impl, the real,
+     * byte-perfect siblings (docs/BYTES_NORTHSTAR.md's own real Phase 2
+     * retrofit), called directly against a real temp file fd -- same
+     * real reason as the String-based round trip above: the actual
+     * data-transfer mechanics are plain POSIX read()/write(), needing
+     * no real I2C hardware to exercise honestly. The one thing worth
+     * proving above everything else: a genuine embedded 0x00 byte
+     * survives a real write-then-read round trip intact, with the
+     * reported length unaffected -- exactly what the String-based pair
+     * above cannot do. */
+    {
+        char path[] = "/tmp/parena_i2c_test_XXXXXX";
+        int fd = mkstemp(path);
+        CHECK(fd >= 0, "real temp file opened for the bytes-sibling round-trip test");
+        if (fd >= 0) {
+            unsigned char payload[9] = {'r', 'e', 'a', 'l', 0, 'i', '2', 'c', '!'};
+            Bytes tx = bytes_alloc(9, &a);
+            for (int i = 0; i < 9; i++) bytes_set_(tx, i, payload[i]);
+
+            int wr = i2c_write_bytes_impl(fd, tx);
+            CHECK(wr == 0, "i2c_write_bytes_impl writes a real payload with an embedded 0x00 successfully");
+
+            CHECK(lseek(fd, 0, SEEK_SET) == 0, "real fd seeked back to the start for the bytes-sibling readback");
+
+            Bytes rx = i2c_read_bytes_impl(fd, 9, &a);
+            CHECK(bytes_len(rx) == 9,
+                  "i2c_read_bytes_impl reports the real, full 9-byte length -- unaffected by the "
+                  "embedded 0x00, unlike i2c_read_impl's own strlen-based String");
+            CHECK(bytes_get(rx, 4) == 0, "the real embedded 0x00 byte itself reads back correctly");
+            CHECK(bytes_get(rx, 5) == 'i' && bytes_get(rx, 8) == '!',
+                  "the bytes after the embedded 0x00 are not lost -- 'i2c!' survives intact");
+
+            close(fd);
+        }
+        unlink(path);
+    }
+
+    /* --- i2c_read_bytes_impl's own real, honest short-read handling,
+     * matching i2c_read_impl's own established convention: the
+     * REPORTED length reflects what was actually read, not what was
+     * requested. */
+    {
+        char path[] = "/tmp/parena_i2c_test_XXXXXX";
+        int fd = mkstemp(path);
+        if (fd >= 0) {
+            unsigned char short_payload[3] = {1, 0, 2}; /* a real embedded 0x00, still just 3 real bytes */
+            CHECK(write(fd, short_payload, 3) == 3, "real 3-byte file (with an embedded 0x00) written for the short-read test");
+            CHECK(lseek(fd, 0, SEEK_SET) == 0, "real fd seeked back to the start");
+
+            Bytes rx = i2c_read_bytes_impl(fd, 100, &a); /* asks for far more than the file has */
+            CHECK(bytes_len(rx) == 3,
+                  "i2c_read_bytes_impl honestly reports the real, short length actually read, not the "
+                  "100 bytes requested -- and not fooled by the embedded 0x00 into reporting even less");
+            CHECK(bytes_get(rx, 1) == 0 && bytes_get(rx, 2) == 2,
+                  "the short read's own real embedded 0x00 byte and the byte after it both survive intact");
+
+            close(fd);
+        }
+        unlink(path);
+    }
+
     /* --- i2c_read_impl's own real, honest short-read handling: asking
      * for more bytes than the file actually has must return exactly
      * what's available, NUL-terminated there, not hang or error. */

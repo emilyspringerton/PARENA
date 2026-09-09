@@ -50,13 +50,23 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
+Bytes bytes_alloc(int, Arena *);
+int bytes_len(Bytes);
+int bytes_get(Bytes, int);
+void bytes_set_(Bytes, int, int);
+Bytes bytes_from_string(char *, Arena *);
+char * bytes_to_string_lossy(Bytes, Arena *);
 int raw_i2c_open(char *, int);
 char * raw_i2c_read(int, int, Arena *);
 int raw_i2c_write(int, char *);
+Bytes raw_i2c_read_bytes(int, int, Arena *);
+int raw_i2c_write_bytes(int, Bytes);
 int raw_i2c_close(int);
 Result i2c_open(char *, int, Arena *);
 Result i2c_read(I2cDevice *, int, Arena *);
 Result i2c_write(I2cDevice *, char *, Arena *);
+Result i2c_read_bytes(I2cDevice *, int, Arena *);
+Result i2c_write_bytes(I2cDevice *, Bytes, Arena *);
 Result i2c_close(I2cDevice *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -79,6 +89,12 @@ static inline I2cError *I2cError_box(Arena *dest, I2cError v) {
 
 static inline I2cDevice *I2cDevice_box(Arena *dest, I2cDevice v) {
     I2cDevice *p = (I2cDevice *)arena_alloc(dest, sizeof(I2cDevice));
+    *p = v;
+    return p;
+}
+
+static inline Bytes *Bytes_box(Arena *dest, Bytes v) {
+    Bytes *p = (Bytes *)arena_alloc(dest, sizeof(Bytes));
     *p = v;
     return p;
 }
@@ -206,6 +222,30 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
+Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_alloc_impl(dest, len));
+}
+
+int bytes_len(Bytes b __attribute__((unused))) {
+    return (bytes_len_impl(b));
+}
+
+int bytes_get(Bytes b __attribute__((unused)), int idx __attribute__((unused))) {
+    return (bytes_get_impl(b, idx));
+}
+
+void bytes_set_(Bytes b __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    bytes_set_impl(b, idx, val);
+}
+
+Bytes bytes_from_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_from_string_impl(dest, s));
+}
+
+char * bytes_to_string_lossy(Bytes b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_to_string_lossy_impl(b, dest));
+}
+
 int raw_i2c_open(char * path __attribute__((unused)), int addr __attribute__((unused))) {
     return (i2c_open_impl(path, addr));
 }
@@ -216,6 +256,14 @@ char * raw_i2c_read(int fd __attribute__((unused)), int len __attribute__((unuse
 
 int raw_i2c_write(int fd __attribute__((unused)), char * data __attribute__((unused))) {
     return (i2c_write_impl(fd, data));
+}
+
+Bytes raw_i2c_read_bytes(int fd __attribute__((unused)), int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (i2c_read_bytes_impl(fd, len, dest));
+}
+
+int raw_i2c_write_bytes(int fd __attribute__((unused)), Bytes data __attribute__((unused))) {
+    return (i2c_write_bytes_impl(fd, data));
 }
 
 int raw_i2c_close(int fd __attribute__((unused))) {
@@ -237,6 +285,18 @@ Result i2c_read(I2cDevice * dev __attribute__((unused)), int len __attribute__((
 
 Result i2c_write(I2cDevice * dev __attribute__((unused)), char * data __attribute__((unused)), Arena *dest __attribute__((unused))) {
     if ((raw_i2c_write((dev)->fd, data) < 0)) {
+    return result_err(I2cError_box(dest, I2cError_WriteFailed()));
+    } else {
+    return result_ok(NULL);
+    }
+}
+
+Result i2c_read_bytes(I2cDevice * dev __attribute__((unused)), int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return result_ok(Bytes_box(dest, raw_i2c_read_bytes((dev)->fd, len, dest)));
+}
+
+Result i2c_write_bytes(I2cDevice * dev __attribute__((unused)), Bytes data __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((raw_i2c_write_bytes((dev)->fd, data) < 0)) {
     return result_err(I2cError_box(dest, I2cError_WriteFailed()));
     } else {
     return result_ok(NULL);

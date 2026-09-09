@@ -1613,6 +1613,41 @@ static inline int serial_write_impl(int fd, const char *s) {
     return 0;
 }
 
+/* serial_read_bytes_impl/serial_write_bytes_impl -- real, byte-perfect
+ * siblings of serial_read_impl/serial_write_impl above (2026-09-09, the
+ * same real, named Bytes retrofit spi_transfer_bytes_impl/
+ * i2c_read_bytes_impl/i2c_write_bytes_impl do for SPI/I2C). Identical
+ * real poll-gated, non-blocking mechanics to serial_read_impl -- a
+ * genuine embedded `0x00` byte from a real connected device now
+ * round-trips correctly via the returned Bytes's own explicit length,
+ * for any caller that uses this sibling instead of the original
+ * String-based one, which stays unchanged. */
+static inline Bytes serial_read_bytes_impl(int fd, Arena *dest) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int pr = poll(&pfd, 1, 0);
+    if (pr <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        return bytes_alloc_impl(dest, 0);
+    }
+    Bytes b = bytes_alloc_impl(dest, 4096);
+    ssize_t n = read(fd, b.data, 4096);
+    if (n < 0) n = 0;
+    b.len = (int)n;
+    return b;
+}
+
+static inline int serial_write_bytes_impl(int fd, Bytes data) {
+    int written = 0;
+    while (written < data.len) {
+        ssize_t n = write(fd, data.data + written, (size_t)(data.len - written));
+        if (n < 0) return -1;
+        written += (int)n;
+    }
+    return 0;
+}
+
 static inline int serial_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
@@ -1644,6 +1679,16 @@ static inline char *serial_read_impl(int fd, Arena *dest) {
 
 static inline int serial_write_impl(int fd, const char *s) {
     (void)fd; (void)s;
+    return -1;
+}
+
+static inline Bytes serial_read_bytes_impl(int fd, Arena *dest) {
+    (void)fd;
+    return bytes_alloc_impl(dest, 0);
+}
+
+static inline int serial_write_bytes_impl(int fd, Bytes data) {
+    (void)fd; (void)data;
     return -1;
 }
 
@@ -1772,6 +1817,34 @@ static inline char *spi_transfer_impl(int fd, const char *tx, Arena *dest) {
     return rx;
 }
 
+/* spi_transfer_bytes_impl -- real, byte-perfect sibling of
+ * spi_transfer_impl above (2026-09-09, the real, named follow-up
+ * docs/BYTES_NORTHSTAR.md's own "Phase 2 — not started" section
+ * pointed at: retrofitting the actual hardware-facing consumer, not
+ * just the core Bytes type). Identical real ioctl mechanics, but `tx`
+ * carries its own explicit length (`Bytes.len`) instead of `strlen`,
+ * and the returned `rx` is a real `Bytes` of that same exact length --
+ * a genuine embedded `0x00` on EITHER side of a real transfer (a
+ * register address of `0x00`, or a device response byte that happens
+ * to be `0x00`) now round-trips correctly, closing both of
+ * spi_transfer_impl's own real, named limitations (the write-side
+ * truncation AND the read-side truncation) for any caller that uses
+ * this sibling instead. `spi_transfer_impl` itself is UNCHANGED --
+ * this is a real, additive addition, not a breaking replacement,
+ * exactly as `docs/BYTES_NORTHSTAR.md` said this retrofit would be. */
+static inline Bytes spi_transfer_bytes_impl(int fd, Bytes tx, Arena *dest) {
+    Bytes rx = bytes_alloc_impl(dest, tx.len);
+    if (tx.len > 0) {
+        struct spi_ioc_transfer tr;
+        memset(&tr, 0, sizeof tr);
+        tr.tx_buf = (unsigned long)tx.data;
+        tr.rx_buf = (unsigned long)rx.data;
+        tr.len = (__u32)tx.len;
+        ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
+    }
+    return rx;
+}
+
 static inline int spi_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
@@ -1793,6 +1866,11 @@ static inline char *spi_transfer_impl(int fd, const char *tx, Arena *dest) {
     char *out = (char *)arena_alloc(dest, 1);
     out[0] = '\0';
     return out;
+}
+
+static inline Bytes spi_transfer_bytes_impl(int fd, Bytes tx, Arena *dest) {
+    (void)fd; (void)tx;
+    return bytes_alloc_impl(dest, 0);
 }
 
 static inline int spi_close_impl(int fd) {
@@ -1879,6 +1957,31 @@ static inline int i2c_write_impl(int fd, const char *s) {
     return 0;
 }
 
+/* i2c_read_bytes_impl/i2c_write_bytes_impl -- real, byte-perfect
+ * siblings of i2c_read_impl/i2c_write_impl above (2026-09-09, the same
+ * real, named Bytes retrofit spi_transfer_bytes_impl above does for
+ * SPI). A genuine embedded `0x00` register value now round-trips
+ * correctly on both directions for any caller that uses these instead
+ * of the original String-based pair, which stay unchanged. */
+static inline Bytes i2c_read_bytes_impl(int fd, int len, Arena *dest) {
+    if (len < 0) len = 0;
+    Bytes b = bytes_alloc_impl(dest, len);
+    ssize_t n = (len > 0) ? read(fd, b.data, (size_t)len) : 0;
+    if (n < 0) n = 0;
+    b.len = (int)n; /* real, honest short-read length, not the originally requested one */
+    return b;
+}
+
+static inline int i2c_write_bytes_impl(int fd, Bytes data) {
+    int written = 0;
+    while (written < data.len) {
+        ssize_t n = write(fd, data.data + written, (size_t)(data.len - written));
+        if (n < 0) return -1;
+        written += (int)n;
+    }
+    return 0;
+}
+
 static inline int i2c_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
@@ -1902,6 +2005,16 @@ static inline char *i2c_read_impl(int fd, int len, Arena *dest) {
 
 static inline int i2c_write_impl(int fd, const char *s) {
     (void)fd; (void)s;
+    return -1;
+}
+
+static inline Bytes i2c_read_bytes_impl(int fd, int len, Arena *dest) {
+    (void)fd; (void)len;
+    return bytes_alloc_impl(dest, 0);
+}
+
+static inline int i2c_write_bytes_impl(int fd, Bytes data) {
+    (void)fd; (void)data;
     return -1;
 }
 

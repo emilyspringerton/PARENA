@@ -52,14 +52,24 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
+Bytes bytes_alloc(int, Arena *);
+int bytes_len(Bytes);
+int bytes_get(Bytes, int);
+void bytes_set_(Bytes, int, int);
+Bytes bytes_from_string(char *, Arena *);
+char * bytes_to_string_lossy(Bytes, Arena *);
 int raw_serial_open(char *);
 int raw_serial_configure(int, int);
 char * raw_serial_read(int, Arena *);
 int raw_serial_write(int, char *);
+Bytes raw_serial_read_bytes(int, Arena *);
+int raw_serial_write_bytes(int, Bytes);
 int raw_serial_close(int);
 Result serial_open(char *, int, Arena *);
 Result serial_read(SerialPort *, Arena *);
 Result serial_write(SerialPort *, char *, Arena *);
+Result serial_read_bytes(SerialPort *, Arena *);
+Result serial_write_bytes(SerialPort *, Bytes, Arena *);
 Result serial_close(SerialPort *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -82,6 +92,12 @@ static inline SerialError *SerialError_box(Arena *dest, SerialError v) {
 
 static inline SerialPort *SerialPort_box(Arena *dest, SerialPort v) {
     SerialPort *p = (SerialPort *)arena_alloc(dest, sizeof(SerialPort));
+    *p = v;
+    return p;
+}
+
+static inline Bytes *Bytes_box(Arena *dest, Bytes v) {
+    Bytes *p = (Bytes *)arena_alloc(dest, sizeof(Bytes));
     *p = v;
     return p;
 }
@@ -209,6 +225,30 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
+Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_alloc_impl(dest, len));
+}
+
+int bytes_len(Bytes b __attribute__((unused))) {
+    return (bytes_len_impl(b));
+}
+
+int bytes_get(Bytes b __attribute__((unused)), int idx __attribute__((unused))) {
+    return (bytes_get_impl(b, idx));
+}
+
+void bytes_set_(Bytes b __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    bytes_set_impl(b, idx, val);
+}
+
+Bytes bytes_from_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_from_string_impl(dest, s));
+}
+
+char * bytes_to_string_lossy(Bytes b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_to_string_lossy_impl(b, dest));
+}
+
 int raw_serial_open(char * path __attribute__((unused))) {
     return (serial_raw_open_impl(path));
 }
@@ -223,6 +263,14 @@ char * raw_serial_read(int fd __attribute__((unused)), Arena *dest __attribute__
 
 int raw_serial_write(int fd __attribute__((unused)), char * data __attribute__((unused))) {
     return (serial_write_impl(fd, data));
+}
+
+Bytes raw_serial_read_bytes(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (serial_read_bytes_impl(fd, dest));
+}
+
+int raw_serial_write_bytes(int fd __attribute__((unused)), Bytes data __attribute__((unused))) {
+    return (serial_write_bytes_impl(fd, data));
 }
 
 int raw_serial_close(int fd __attribute__((unused))) {
@@ -249,6 +297,18 @@ Result serial_read(SerialPort * p __attribute__((unused)), Arena *dest __attribu
 
 Result serial_write(SerialPort * p __attribute__((unused)), char * data __attribute__((unused)), Arena *dest __attribute__((unused))) {
     if ((raw_serial_write((p)->fd, data) < 0)) {
+    return result_err(SerialError_box(dest, SerialError_WriteFailed()));
+    } else {
+    return result_ok(NULL);
+    }
+}
+
+Result serial_read_bytes(SerialPort * p __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return result_ok(Bytes_box(dest, raw_serial_read_bytes((p)->fd, dest)));
+}
+
+Result serial_write_bytes(SerialPort * p __attribute__((unused)), Bytes data __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((raw_serial_write_bytes((p)->fd, data) < 0)) {
     return result_err(SerialError_box(dest, SerialError_WriteFailed()));
     } else {
     return result_ok(NULL);
