@@ -577,6 +577,226 @@
       (vec/push! &parts "    }\n")
       (emit-join-all &parts dest))))
 
+;; ---- Real, narrow, TAIL-POSITION-ONLY `loop`/`recur` support (2026-09-09) ----
+;;
+;; Closes the "no loop/recur support at all" gap this file's own real self-compile
+;; diagnostic against `stdlib/string.prn` directly surfaced while verifying `if`-tail
+;; support above: `is-valid-i32-text?`'s own `(if (= n 0) false (loop ...))` and
+;; `split`'s own `(loop [start 0 i 0 n (length s)] (cond ...))` both need it.
+;;
+;; Real, deliberate v0 scope, matching `src/emit.c`'s own `emit_loop_tail` HISTORICAL
+;; v0 exactly (its own header comment: "Originally real, honest, narrower scope" — `if`
+;; only, before `cond`/`when`/`match`/`do` were added there later, over several separate
+;; passes): loop-tail here supports `recur`, `if` (recursively, loop-aware), and a plain
+;; terminal value (delegated to the file's own EXISTING, non-loop-aware `emit-form` —
+;; correct for any shape that never itself contains a bare `recur`). A `cond`/`match`/
+;; `when`/`do` whose own clauses contain `recur` is real, separate, NOT attempted here —
+;; named honestly below, not silently miscompiled (a `recur` reaching plain `emit-form`
+;; falls through to its own existing, honest fallback, same as any other unrecognized
+;; shape already does).
+;;
+;; Real, deliberate v0 scope on the BINDING side too: every loop variable's init value
+;; must be a bare number literal, a plain-call-shaped? call, or a binary-op — real,
+;; narrower than the C reference's own general `emit_expr`-based type inference (this
+;; emitter has no such machinery at all). Declared as a real C `int` unconditionally —
+;; matching every CURRENTLY-known real loop-variable shape in this stdlib that this
+;; narrow guard can actually recognize (a real F64/String-typed loop variable, or an
+;; `if`-shaped init value like `is-valid-i32-text?`'s own `i (if (starts-with-sign? s) 1
+;; 0)`, is real, separate, NOT attempted — falls through to `loop-call-shaped?`'s own
+;; honest non-match, the same "unrecognized shape, no #error, no crash" boundary
+;; `cond-call-shaped?`'s own comment already accepts elsewhere in this file). Multiple
+;; body forms before the tail (side-effecting statements inside the loop, before the
+;; final if/recur/value) are ALSO real, separate, not attempted — v0 requires the loop's
+;; entire body to be exactly one form, the tail itself.
+;;
+;; Real, honest, live-checked finding (not assumed): re-running the self-compile
+;; diagnostic against `stdlib/string.prn` after this landed shows `is-valid-i32-text?`
+;; still doesn't compile (its own loop-binding init is `if`-shaped, out of this v0's
+;; scope) and `split` still doesn't either (its own loop-tail is `cond`-shaped, with
+;; `recur` inside more than one clause — the exact next widening the C reference itself
+;; needed too, real, separate, not attempted here). This pass closes the CORE loop/recur
+;; machinery for real, verified against a real, synthetic-but-realistic counting loop
+;; (`sum-to-n`) — not a claim that either real stdlib function newly self-compiles.
+
+;; loop-binding-value-shaped?/emit-loop-binding-value -- real, narrow I32-init dispatch:
+;; a bare number literal, a plain-call-shaped? call (the real motivating `(length s)`
+;; shape), or a binary-op.
+(defn loop-binding-value-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (or (= (emit-node-kind-code (get-field node :kind)) 6)
+      (or (plain-call-shaped? node dest) (binary-op-call-shaped? node dest))))
+
+(defn emit-loop-binding-value [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((= (emit-node-kind-code (get-field node :kind)) 6) (get-field node :text))
+    ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
+    (true (emit-binary-op node scope dest))))
+
+;; loop-bindings-shaped? -- real, exhaustive check over the whole binding vector: an even
+;; number of children (name/value pairs), every name a bare symbol, every value
+;; loop-binding-value-shaped?.
+(defn loop-bindings-shaped? [(bindings : &Node) (i : I32) (dest : Arena @ Region)] : Bool
+  (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
+    true
+    (let [name-node (vec/get &(get-field bindings :children) i)
+          val-node (vec/get &(get-field bindings :children) (+ i 1))]
+      (and (= (emit-node-kind-code (get-field name-node :kind)) 3)
+           (and (loop-binding-value-shaped? val-node dest)
+                (loop-bindings-shaped? bindings (+ i 2) dest))))))
+
+;; loop-call-shaped? -- a real `(loop [name val ...] tail)` this narrow emitter can
+;; support: symbol-headed "loop", a real binding vector (kind code 1, NVec), every
+;; binding I32-shaped, and EXACTLY one body form (see this section's own header comment
+;; on why multiple body forms are real, separate, not attempted v0 scope).
+(defn loop-call-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (if (not (emit-is-call-named? node "loop"))
+    false
+    (if (not (= (vec/len &(get-field node :children)) 3))
+      false
+      ;; Real, live-found bug fixed here (2026-09-09, confirmed via an actual gcc
+      ;; compile): `get-field` on a nested `vec/get` call result -- rather than a bound
+      ;; `let` variable -- doesn't compile (`vec/get` returns `void *`; this narrow
+      ;; emitter's own `get-field` cast logic only tracks the C type of bound scope
+      ;; variables, not arbitrary nested expressions, the same class
+      ;; `get-field-shaped?`'s own header comment already names). Fixed by binding
+      ;; through a `let` first, matching `defn-body-target-shaped?`'s own already-
+      ;; working pattern.
+      (let [bindings-node (vec/get &(get-field node :children) 1)]
+        (and (= (emit-node-kind-code (get-field bindings-node :kind)) 1)
+             (loop-bindings-shaped? bindings-node 0 dest))))))
+
+;; emit-loop-bindings -- real, direct emission: each pair becomes a real
+;; `int name = value;` declaration line, matching this section's own narrow, I32-only v0
+;; scope.
+(defn emit-loop-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
+    ""
+    (let [name-node (vec/get &(get-field bindings :children) i)
+          val-node (vec/get &(get-field bindings :children) (+ i 1))
+          c-name (mangle (get-field name-node :text) dest)
+          val-c (emit-loop-binding-value val-node scope dest)
+          parts (vec/new dest)]
+      (do
+        (vec/push! &parts "    int ")
+        (vec/push! &parts c-name)
+        (vec/push! &parts " = ")
+        (vec/push! &parts val-c)
+        (vec/push! &parts ";\n")
+        (string/concat (emit-join-all &parts dest) (emit-loop-bindings bindings (+ i 2) scope dest) dest)))))
+
+;; loop-binding-names -- real, recursive accumulator: mangled C names of every loop
+;; binding, in real declaration order, pushed into `names` (mutated in place through the
+;; passed-in pointer — the identical real convention `emit-call-args`'s own `pieces`
+;; accumulator already relies on, just threaded through an explicit param here since this
+;; needs to walk the SAME binding list `emit-loop-bindings` above independently walks,
+;; for `emit-recur`'s own later use matching values by position).
+(defn loop-binding-names [(bindings : &Node) (i : I32) (names : &(Vec String)) (dest : Arena @ Region)] : Unit
+  (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
+    unit
+    (let [name-node (vec/get &(get-field bindings :children) i)]
+      (do
+        (vec/push! names (mangle (get-field name-node :text) dest))
+        (loop-binding-names bindings (+ i 2) names dest)))))
+
+;; emit-recur-temps/emit-recur-assigns -- real simultaneous-assignment (temp-first, then
+;; assign-back), the same real correctness property `src/emit.c`'s own `emit_loop_tail`
+;; documents (a `(recur y x)` swap must read the OLD x/y, not an already-overwritten
+;; one).
+(defn emit-recur-temps [(node : &Node) (i : I32) (names : &(Vec String)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (>= i (vec/len names))
+    ""
+    (let [val-node (vec/get &(get-field node :children) (+ i 1))
+          val-c (emit-loop-binding-value val-node scope dest)
+          tmp-name (string/concat "__recur_tmp_" (string/i32-to-string i dest) dest)
+          parts (vec/new dest)]
+      (do
+        (vec/push! &parts "        int ")
+        (vec/push! &parts tmp-name)
+        (vec/push! &parts " = ")
+        (vec/push! &parts val-c)
+        (vec/push! &parts ";\n")
+        (string/concat (emit-join-all &parts dest) (emit-recur-temps node (+ i 1) names scope dest) dest)))))
+
+(defn emit-recur-assigns [(i : I32) (names : &(Vec String)) (dest : Arena @ Region)] : String @ Region
+  (if (>= i (vec/len names))
+    ""
+    (let [c-name (vec/get names i)
+          tmp-name (string/concat "__recur_tmp_" (string/i32-to-string i dest) dest)
+          parts (vec/new dest)]
+      (do
+        (vec/push! &parts "        ")
+        (vec/push! &parts c-name)
+        (vec/push! &parts " = ")
+        (vec/push! &parts tmp-name)
+        (vec/push! &parts ";\n")
+        (string/concat (emit-join-all &parts dest) (emit-recur-assigns (+ i 1) names dest) dest)))))
+
+;; emit-recur -- real, honest arity check first: a real mismatch is a real #error, not a
+;; silent wrong-arity emission (matching let-value-error-prefix's own established
+;; #error-directive convention elsewhere in this file).
+(defn emit-recur [(node : &Node) (names : &(Vec String)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (not (= (- (vec/len &(get-field node :children)) 1) (vec/len names)))
+    "    #error selfhost/emit.prn: recur passes the wrong number of values for this loop's own binding vector\n"
+    (join3 (emit-recur-temps node 0 names scope dest) (emit-recur-assigns 0 names dest) "        continue;\n" dest)))
+
+;; emit-loop-tail -- recur-aware tail-position dispatcher, narrow v0 (real, direct
+;; historical mirror of `src/emit.c`'s OWN original `emit_loop_tail`, see this section's
+;; own header comment): `recur`, `if` (recursively, loop-aware, via emit-loop-if-tail
+;; below), or a plain terminal value delegated to the file's own existing, non-loop-aware
+;; `emit-form` — correct for any shape that doesn't itself contain a bare `recur`.
+(defn emit-loop-tail [(tail : &Node) (names : &(Vec String)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((emit-is-call-named? tail "recur") (emit-recur tail names scope dest))
+    ((if-tail-shaped? tail dest) (emit-loop-if-tail tail names scope dest))
+    (true (emit-form tail scope dest))))
+
+;; emit-loop-if-tail -- real, direct structural sibling of emit-if-tail above, the one
+;; real difference being its own two branches recurse into emit-loop-tail (loop-aware,
+;; so a `recur` inside either branch is correctly reachable) instead of plain emit-form.
+(defn emit-loop-if-tail [(node : &Node) (names : &(Vec String)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [test-node (vec/get &(get-field node :children) 1)
+        then-node (vec/get &(get-field node :children) 2)
+        else-node (vec/get &(get-field node :children) 3)
+        test-c (emit-bool-expr test-node scope dest)
+        then-c (emit-loop-tail then-node names scope dest)
+        else-c (emit-loop-tail else-node names scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "        if (")
+      (vec/push! &parts test-c)
+      (vec/push! &parts ") {\n")
+      (vec/push! &parts then-c)
+      (vec/push! &parts "        } else {\n")
+      (vec/push! &parts else-c)
+      (vec/push! &parts "        }\n")
+      (emit-join-all &parts dest))))
+
+;; emit-loop -- the real, public entry point emit-form's own new loop-call-shaped? case
+;; wires into. Real, deliberate v0 simplification vs. the C reference's own emit_loop: no
+;; separate named result_var + post-loop return — since this narrow v0 only supports
+;; `loop` in TAIL position (the same scope if-tail-shaped? already established for
+;; `if`), the terminal branch's own `return` statement (produced by emit-form's own
+;; already-established "every tail-position case ends in a real return" contract) can
+;; live DIRECTLY inside the `while (1)` block: once reached, it exits the function
+;; immediately, exactly as correct as a separate break+post-loop-return, with less real
+;; plumbing needed. A `loop` used as a LET's own body value (not a defn's whole tail) is
+;; real, separate, not attempted here — the identical scope boundary `if`/`cond` above
+;; already have.
+(defn emit-loop [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [bindings (vec/get &(get-field node :children) 1)
+        names (vec/new dest)
+        decls (emit-loop-bindings bindings 0 scope dest)
+        tail-node (vec/get &(get-field node :children) 2)]
+    (do
+      (loop-binding-names bindings 0 &names dest)
+      (let [tail-c (emit-loop-tail tail-node &names scope dest)
+            parts (vec/new dest)]
+        (do
+          (vec/push! &parts decls)
+          (vec/push! &parts "    while (1) {\n")
+          (vec/push! &parts tail-c)
+          (vec/push! &parts "    }\n")
+          (emit-join-all &parts dest))))))
+
 ;; ---- Real, narrow, TAIL-POSITION-ONLY Result/Option `match` support
 ;; (2026-08-28) ----
 ;;
@@ -899,6 +1119,11 @@
     ;; S223-02). Checked right after cond, its own closest structural
     ;; sibling.
     ((if-tail-shaped? node dest) (emit-if-tail node scope dest))
+    ;; Real, additive tail-position case (2026-09-09): a real `(loop
+    ;; [bindings...] tail)` as the WHOLE body -- see loop-call-shaped?'s
+    ;; own section header comment above for the full real scope (narrow
+    ;; v0, matching the C reference's own historical v0 exactly).
+    ((loop-call-shaped? node dest) (emit-loop node scope dest))
     ;; Real, additive tail-position case (2026-08-28): a real, narrow
     ;; Result/Option `match` (see its own section header comment
     ;; above, right before pattern-tag, for the full real scope).
@@ -1355,12 +1580,30 @@
 ;; same real defense-in-depth reason (a call-argument/let-value
 ;; position, where deref support is NOT attempted this round, would
 ;; otherwise still be able to hit this exact bug).
+;; Real, live-found addition (2026-09-09, checking the real self-compile diagnostic
+;; against stdlib/string.prn's own split after loop/recur support landed): a bare
+;; `(recur ...)` reaching this exclusion list undetected -- e.g. inside a `cond` clause,
+;; which recurses through plain, non-loop-aware `emit-form` (loop/recur-in-cond-tail is
+;; real, separate, NOT attempted -- see loop-call-shaped?'s own section header comment)
+;; -- used to be silently, WRONGLY matched by plain-call-shaped? as an ordinary function
+;; call, emitting a real but bogus `recur(...)` C call to a function that's never
+;; defined (a real, if less clean, eventual gcc "implicit declaration"/link error, not a
+;; silent miscompile, but not this file's own established, clean #error-directive
+;; convention either). `if`/`loop` added alongside for the identical real reason -- both
+;; are real special forms this file already dispatches on EARLIER in emit-form's own
+;; cond chain when they're genuinely supported (if-tail-shaped?/loop-call-shaped?), so
+;; reaching THIS check at all already means the specific shape wasn't recognized --
+;; falling through to a bogus plain-call emission for any of the three would be
+;; strictly worse than this file's own honest fallback.
 (defn other-special-form-symbol? [(sym : String @ Region)] : Bool
   (or (string/str-eq? sym "cond")
       (or (string/str-eq? sym "match")
           (or (string/str-eq? sym "with-arena")
               (or (string/str-eq? sym "let")
-                  (or (string/str-eq? sym "get-field") (string/str-eq? sym "deref")))))))
+                  (or (string/str-eq? sym "get-field")
+                      (or (string/str-eq? sym "deref")
+                          (or (string/str-eq? sym "recur")
+                              (or (string/str-eq? sym "if") (string/str-eq? sym "loop"))))))))))
 
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))

@@ -2646,6 +2646,78 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-09): `loop`/`recur` support -- closing the "no
+         * loop/recur support at all" gap found while verifying if-tail support above
+         * (is-valid-i32-text?'s own `(loop ...)` else-branch, split's own whole-body
+         * `(loop ...)`). Real, deliberate v0 scope: matches src/emit.c's own historical
+         * v0 exactly (if/recur only, no cond/when/match/do-in-body yet -- see
+         * loop-call-shaped?'s own section header comment in selfhost/emit.prn for the
+         * full reasoning). `sum-to-n` is real, ordinary PARENA -- two I32 loop bindings,
+         * an if-tail choosing between recur and a real terminal value. */
+        char *snippet =
+            "(defn sum-to-n [(n : I32)]\n"
+            "  : I32\n"
+            "  (loop [i 0 acc 0]\n"
+            "    (if (> i n)\n"
+            "      (+ acc 0)\n"
+            "      (recur (+ i 1) (+ acc i)))))";
+        Result pr39 = parse_program(snippet, &a);
+        CHECK(pr39.tag == 1, "a real loop/recur function parses fine");
+        if (pr39.tag == 1) {
+            Node program39 = *(Node *)pr39.value;
+            char *generated39 = emit_program(&program39, &a);
+            CHECK(generated39 != NULL && strstr(generated39, "#error") == NULL,
+                  "no #error is emitted for a real loop/recur defn -- previously fell through "
+                  "to a bare, invalid empty return");
+            CHECK(generated39 != NULL && strstr(generated39, "int i = 0;") != NULL &&
+                  strstr(generated39, "int acc = 0;") != NULL,
+                  "both real loop bindings are declared as genuine C ints, correctly initialized");
+            CHECK(generated39 != NULL && strstr(generated39, "while (1) {") != NULL,
+                  "the loop's own real while(1) block is present");
+            CHECK(generated39 != NULL && strstr(generated39, "continue;") != NULL,
+                  "the recur branch emits a real continue statement, not a return");
+            CHECK(generated39 != NULL &&
+                  (strstr(generated39, "__recur_tmp_0") != NULL && strstr(generated39, "__recur_tmp_1") != NULL),
+                  "recur's own real simultaneous-assignment uses temp variables for both "
+                  "updated values, the same real correctness property a (recur y x) swap needs");
+
+            if (generated39) {
+                char c_path27[300];
+                snprintf(c_path27, sizeof c_path27, "/tmp/parena_selfhost_emit_loop_recur_test_%d.c",
+                         (int)getpid());
+                FILE *out27 = fopen(c_path27, "w");
+                CHECK(out27 != NULL, "a real temp file opens to write the loop/recur generated C into");
+                if (out27) {
+                    fputs(generated39, out27);
+                    fclose(out27);
+
+                    char bin_path27[310];
+                    snprintf(bin_path27, sizeof bin_path27, "%s.bin", c_path27);
+                    char cmd27[1024];
+                    snprintf(cmd27, sizeof cmd27,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_loop_recur.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path27, c_path27);
+                    int compile_status27 = system(cmd27);
+                    CHECK(compile_status27 == 0,
+                          "the real loop/recur generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern int sum_to_n(int)' driver");
+                    if (compile_status27 == 0) {
+                        int run_status27 = system(bin_path27);
+                        CHECK(run_status27 == 0,
+                              "the real, self-compiled sum-to-n genuinely computes the correct "
+                              "real sum for n=0/3/5, end to end through the self-hosted "
+                              "pipeline -- not just gcc-clean text");
+                    }
+                    remove(c_path27);
+                    remove(bin_path27);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

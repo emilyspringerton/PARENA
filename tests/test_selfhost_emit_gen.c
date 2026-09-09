@@ -254,6 +254,18 @@ char * emit_cond_clauses(Node *, int, Vec *, Arena *);
 char * emit_cond(Node *, Vec *, Arena *);
 int if_tail_shaped_(Node *, Arena *);
 char * emit_if_tail(Node *, Vec *, Arena *);
+int loop_binding_value_shaped_(Node *, Arena *);
+char * emit_loop_binding_value(Node *, Vec *, Arena *);
+int loop_bindings_shaped_(Node *, int, Arena *);
+int loop_call_shaped_(Node *, Arena *);
+char * emit_loop_bindings(Node *, int, Vec *, Arena *);
+void loop_binding_names(Node *, int, Vec *, Arena *);
+char * emit_recur_temps(Node *, int, Vec *, Vec *, Arena *);
+char * emit_recur_assigns(int, Vec *, Arena *);
+char * emit_recur(Node *, Vec *, Vec *, Arena *);
+char * emit_loop_tail(Node *, Vec *, Vec *, Arena *);
+char * emit_loop_if_tail(Node *, Vec *, Vec *, Arena *);
+char * emit_loop(Node *, Vec *, Arena *);
 int pattern_tag(char *);
 char * match_pattern_name(Node *);
 int match_pattern_has_payload_(Node *);
@@ -1512,6 +1524,143 @@ char * emit_if_tail(Node * node __attribute__((unused)), Vec * scope __attribute
     return emit_join_all(&(parts), dest);
 }
 
+int loop_binding_value_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((emit_node_kind_code((node)->kind) == 6) || (plain_call_shaped_(node, dest) || binary_op_call_shaped_(node, dest)));
+}
+
+char * emit_loop_binding_value(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((emit_node_kind_code((node)->kind) == 6) ? (node)->text : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : emit_binary_op(node, scope, dest)));
+}
+
+int loop_bindings_shaped_(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (((i + 1) >= vec_len(&((bindings)->children)))) {
+    return 1;
+    } else {
+    Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
+    Node *val_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
+    return ((emit_node_kind_code((name_node)->kind) == 3) && (loop_binding_value_shaped_(val_node, dest) && loop_bindings_shaped_(bindings, (i + 2), dest)));
+    }
+}
+
+int loop_call_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(emit_is_call_named_(node, "loop")))) {
+    return 0;
+    } else {
+    if ((!((vec_len(&((node)->children)) == 3)))) {
+    return 0;
+    } else {
+    Node *bindings_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    return ((emit_node_kind_code((bindings_node)->kind) == 1) && loop_bindings_shaped_(bindings_node, 0, dest));
+    }
+    }
+}
+
+char * emit_loop_bindings(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (((i + 1) >= vec_len(&((bindings)->children)))) {
+    return "";
+    } else {
+    Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
+    Node *val_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
+    char *c_name __attribute__((unused)) = mangle((name_node)->text, dest);
+    char *val_c __attribute__((unused)) = emit_loop_binding_value(val_node, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "    int "));
+    (void)(vec_push_(&(parts), c_name));
+    (void)(vec_push_(&(parts), " = "));
+    (void)(vec_push_(&(parts), val_c));
+    (void)(vec_push_(&(parts), ";\n"));
+    return concat(emit_join_all(&(parts), dest), emit_loop_bindings(bindings, (i + 2), scope, dest), dest);
+    }
+}
+
+void loop_binding_names(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Vec * names __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (((i + 1) >= vec_len(&((bindings)->children)))) {
+    (void)(NULL);
+    } else {
+    Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
+    (void)(vec_push_(names, mangle((name_node)->text, dest)));
+    (void)(loop_binding_names(bindings, (i + 2), names, dest));
+    }
+}
+
+char * emit_recur_temps(Node * node __attribute__((unused)), int i __attribute__((unused)), Vec * names __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(names))) {
+    return "";
+    } else {
+    Node *val_node __attribute__((unused)) = vec_get(&((node)->children), (i + 1));
+    char *val_c __attribute__((unused)) = emit_loop_binding_value(val_node, scope, dest);
+    char *tmp_name __attribute__((unused)) = concat("__recur_tmp_", i32_to_string(i, dest), dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "        int "));
+    (void)(vec_push_(&(parts), tmp_name));
+    (void)(vec_push_(&(parts), " = "));
+    (void)(vec_push_(&(parts), val_c));
+    (void)(vec_push_(&(parts), ";\n"));
+    return concat(emit_join_all(&(parts), dest), emit_recur_temps(node, (i + 1), names, scope, dest), dest);
+    }
+}
+
+char * emit_recur_assigns(int i __attribute__((unused)), Vec * names __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((i >= vec_len(names))) {
+    return "";
+    } else {
+    char *c_name __attribute__((unused)) = vec_get(names, i);
+    char *tmp_name __attribute__((unused)) = concat("__recur_tmp_", i32_to_string(i, dest), dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "        "));
+    (void)(vec_push_(&(parts), c_name));
+    (void)(vec_push_(&(parts), " = "));
+    (void)(vec_push_(&(parts), tmp_name));
+    (void)(vec_push_(&(parts), ";\n"));
+    return concat(emit_join_all(&(parts), dest), emit_recur_assigns((i + 1), names, dest), dest);
+    }
+}
+
+char * emit_recur(Node * node __attribute__((unused)), Vec * names __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!(((vec_len(&((node)->children)) - 1) == vec_len(names))))) {
+    return "    #error selfhost/emit.prn: recur passes the wrong number of values for this loop's own binding vector\n";
+    } else {
+    return join3(emit_recur_temps(node, 0, names, scope, dest), emit_recur_assigns(0, names, dest), "        continue;\n", dest);
+    }
+}
+
+char * emit_loop_tail(Node * tail __attribute__((unused)), Vec * names __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_call_named_(tail, "recur") ? emit_recur(tail, names, scope, dest) : (if_tail_shaped_(tail, dest) ? emit_loop_if_tail(tail, names, scope, dest) : emit_form(tail, scope, dest)));
+}
+
+char * emit_loop_if_tail(Node * node __attribute__((unused)), Vec * names __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *test_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Node *then_node __attribute__((unused)) = vec_get(&((node)->children), 2);
+    Node *else_node __attribute__((unused)) = vec_get(&((node)->children), 3);
+    char *test_c __attribute__((unused)) = emit_bool_expr(test_node, scope, dest);
+    char *then_c __attribute__((unused)) = emit_loop_tail(then_node, names, scope, dest);
+    char *else_c __attribute__((unused)) = emit_loop_tail(else_node, names, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "        if ("));
+    (void)(vec_push_(&(parts), test_c));
+    (void)(vec_push_(&(parts), ") {\n"));
+    (void)(vec_push_(&(parts), then_c));
+    (void)(vec_push_(&(parts), "        } else {\n"));
+    (void)(vec_push_(&(parts), else_c));
+    (void)(vec_push_(&(parts), "        }\n"));
+    return emit_join_all(&(parts), dest);
+}
+
+char * emit_loop(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *bindings __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Vec names __attribute__((unused)) = vec_new(dest);
+    char *decls __attribute__((unused)) = emit_loop_bindings(bindings, 0, scope, dest);
+    Node *tail_node __attribute__((unused)) = vec_get(&((node)->children), 2);
+    (void)(loop_binding_names(bindings, 0, &(names), dest));
+    char *tail_c __attribute__((unused)) = emit_loop_tail(tail_node, &(names), scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), decls));
+    (void)(vec_push_(&(parts), "    while (1) {\n"));
+    (void)(vec_push_(&(parts), tail_c));
+    (void)(vec_push_(&(parts), "    }\n"));
+    return emit_join_all(&(parts), dest);
+}
+
 int pattern_tag(char * name __attribute__((unused))) {
     return ((str_eq_(name, "Ok") || str_eq_(name, "Some")) ? 1 : ((str_eq_(name, "Err") || str_eq_(name, "None")) ? 0 : -1));
 }
@@ -1695,7 +1844,7 @@ int none_shaped_(Node * node __attribute__((unused))) {
 }
 
 char * emit_form(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (if_tail_shaped_(node, dest) ? emit_if_tail(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (deref_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_deref(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : (map_literal_shaped_(node) ? join3("    #error selfhost/emit.prn: unsupported struct-literal shape (only a defn's ENTIRE body, whose own declared return type is an already-registered struct whose real field set exactly matches this literal's own keys, is supported)\n", "    return 0", ";\n", dest) : emit_tail_symbol(node, dest)))))))))))))))));
+    return (emit_is_call_named_(node, "with-arena") ? emit_with_arena(node, scope, dest) : (emit_is_call_named_(node, "let") ? emit_let(node, scope, dest) : (alloc_call_shaped_(node) ? emit_tail_expr(emit_alloc_call(node, scope, dest), dest) : (binary_op_call_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_binary_op(node, scope, dest), dest), dest) : (cond_call_shaped_(node, dest) ? emit_cond(node, scope, dest) : (if_tail_shaped_(node, dest) ? emit_if_tail(node, scope, dest) : (loop_call_shaped_(node, dest) ? emit_loop(node, scope, dest) : (result_or_option_match_shaped_(node, dest) ? emit_match(node, scope, dest) : (result_option_ctor_shaped_(node, dest) ? emit_tail_expr(emit_result_option_ctor(node, scope, dest), dest) : (none_shaped_(node) ? emit_tail_expr("option_none()", dest) : (or_and_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (not_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_bool_expr(node, scope, dest), dest), dest) : (get_field_shaped_(node, dest) ? emit_tail_expr(emit_i32_boxed(emit_get_field(node, scope, dest), dest), dest) : (deref_shaped_(node) ? emit_tail_expr(emit_i32_boxed(emit_deref(node, scope, dest), dest), dest) : (plain_call_shaped_(node, dest) ? emit_tail_expr(emit_plain_call(node, scope, dest), dest) : ((emit_node_kind_code((node)->kind) == 6) ? emit_tail_expr(emit_i32_boxed((node)->text, dest), dest) : (map_literal_shaped_(node) ? join3("    #error selfhost/emit.prn: unsupported struct-literal shape (only a defn's ENTIRE body, whose own declared return type is an already-registered struct whose real field set exactly matches this literal's own keys, is supported)\n", "    return 0", ";\n", dest) : emit_tail_symbol(node, dest))))))))))))))))));
 }
 
 int is_vec_call_(char * fn_text __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1821,7 +1970,7 @@ int result_option_ctor_symbol_(char * sym __attribute__((unused))) {
 }
 
 int other_special_form_symbol_(char * sym __attribute__((unused))) {
-    return (str_eq_(sym, "cond") || (str_eq_(sym, "match") || (str_eq_(sym, "with-arena") || (str_eq_(sym, "let") || (str_eq_(sym, "get-field") || str_eq_(sym, "deref"))))));
+    return (str_eq_(sym, "cond") || (str_eq_(sym, "match") || (str_eq_(sym, "with-arena") || (str_eq_(sym, "let") || (str_eq_(sym, "get-field") || (str_eq_(sym, "deref") || (str_eq_(sym, "recur") || (str_eq_(sym, "if") || str_eq_(sym, "loop")))))))));
 }
 
 int plain_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {

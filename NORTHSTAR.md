@@ -1692,6 +1692,48 @@ guess — checked directly, not assumed:
   exist in this file at all yet, a real, separate, much larger gap this fix doesn't claim to
   close. Named precisely, not overclaimed: this fix closes exactly the `if`-dispatch gap it set
   out to, nothing more.
+- **`loop`/`recur` support — CLOSED (narrow v0) 2026-09-09, same day.** Real, deliberate v0 scope,
+  matching `src/emit.c`'s own `emit_loop_tail` HISTORICAL v0 exactly (its own header comment:
+  "Originally real, honest, narrower scope" — `if` only, before `cond`/`when`/`match`/`do` were
+  added there later, over several separate passes): new `loop-call-shaped?`/`emit-loop` in
+  `selfhost/emit.prn`, loop-tail dispatch supporting `recur` (real simultaneous assignment via
+  temp variables, then `continue;`), `if` (recursively, loop-aware, via a new
+  `emit-loop-if-tail`), or a plain terminal value delegated to the file's own existing,
+  non-loop-aware `emit-form`. Real v0 simplification vs. the C reference's own `emit_loop`: no
+  separate named `result_var` + post-loop return — since `loop` here is scoped to TAIL position
+  only (the same boundary `if`-tail support already established), the terminal branch's own
+  `return` (produced by `emit-form`'s own established contract) lives directly inside the
+  `while (1)` block. Loop-binding inits are scoped to a bare number literal, a
+  `plain-call-shaped?` call, or a binary-op — real, narrower than the C reference's own general
+  `emit_expr`-based type inference (this emitter has none); every binding is declared a real C
+  `int` unconditionally.
+  9 new tests (`tests/test_selfhost_emit.c` + `tests/integration/driver_loop_recur.c`): structural
+  checks (no `#error`, real `int` declarations, the real `while(1)` block, `continue` not
+  `return`, both `__recur_tmp_N` temps present) plus a real compile+run+assert check — `sum-to-n`
+  (two I32 loop bindings, an if-tail choosing `recur` vs. a terminal value), self-compiled through
+  `parena-selfhost`, correctly computing 0/6/15 for n=0/3/5. `make test`: 347/347; every
+  `test-selfhost-*` target re-run clean, zero regressions.
+  **Real, live-found bug fixed along the way, confirmed via an actual gcc compile**: `get-field`
+  applied directly to a nested `vec/get` result inside `loop-call-shaped?`'s own first draft (the
+  same class `get-field-shaped?`'s own header comment already names elsewhere) — fixed by binding
+  through a `let` first, matching `defn-body-target-shaped?`'s own already-working pattern.
+  **Real, honest findings from re-running the self-compile diagnostic against `stdlib/string.prn`
+  after this landed, not assumed**: `is-valid-i32-text?` still doesn't compile (its own loop
+  binding init, `i (if (starts-with-sign? s) 1 0)`, is `if`-shaped, out of this v0's binding-value
+  scope). `split` still doesn't either — its own loop-tail is `cond`-shaped with `recur` inside
+  more than one clause, the exact next widening the C reference itself needed too, real,
+  separate, not attempted here — but its own loop BINDINGS now correctly emit as real C ints
+  (`int start = 0; int i = 0; int n = length(s);`), genuine partial progress. A second real,
+  live-found wrinkle from that same check: a bare `(recur ...)` reaching plain, non-loop-aware
+  `emit-form` (e.g. inside `split`'s own `cond` clauses) used to be silently, WRONGLY matched by
+  `plain-call-shaped?` as an ordinary function call, emitting a bogus `recur(...)` C call to a
+  function that's never defined — a real, if less clean, eventual gcc error, not a silent
+  miscompile, but not this file's own established, clean `#error`-directive convention either.
+  Fixed cheaply by adding `recur`/`if`/`loop` to `other-special-form-symbol?`'s own existing
+  exclusion list (the same mechanism `is-vec-call?`'s own `vec/`-prefix exclusion already uses) —
+  verified live: the bogus `recur(...)` call is gone from `split`'s own generated C. This closes
+  the CORE loop/recur machinery for real, verified against a real, synthetic-but-realistic
+  counting loop — not a claim that `is-valid-i32-text?`/`split` newly self-compile.
 - **A narrow struct-literal-shape restriction** (`#error ... unsupported struct-literal shape`)
   for at least `char-from-code`'s own real shape once mid-body `#target` support exists to reach
   it.
