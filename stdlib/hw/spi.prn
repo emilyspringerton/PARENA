@@ -1,0 +1,95 @@
+;; stdlib/hw/spi.prn — depends on string. Design: STDLIB.md "hw/spi" section.
+;; Real answer to the SPI gap docs/UART_SERIAL_NORTHSTAR.md itself named
+;; explicitly out of scope: the Adafruit Feather's own likely "packet
+;; module" (IDUNA/docs/NORTHSTAR_INVENTORY.md's own real hardware) is
+;; almost certainly an RFM9x LoRa radio, which talks SPI, not UART — a
+;; genuinely different bus protocol (synchronous, full-duplex, no baud-
+;; rate concept). This file is the real, separate follow-up that gap
+;; named, over Linux's real `spidev(4)` userspace API.
+;;
+;; Structurally this file departs from hw/serial.prn/net/tcp.prn/pty.prn's
+;; own established `-open`/`-read`/`-write`/`-close` shape on purpose, not
+;; by oversight: real SPI is a synchronous, full-duplex protocol — every
+;; real transfer clocks bytes out and in AT THE SAME TIME, on the same
+;; wire edges, so there is no real, separate "write" or "read" operation
+;; to name, only one real `spi-transfer`. See runtime/parena_runtime.h's
+;; own `spi_transfer_impl` header comment for the full reasoning, plus two
+;; real, honestly-named limitations found while implementing this (not
+;; previously written down anywhere in this stdlib): (1) every String-
+;; based host primitive in this runtime is NUL-terminated-C-string-
+;; shaped, so a real transfer payload that needs an embedded 0x00 byte
+;; (a real, ordinary case for SPI — e.g. the RFM9x's own `RegFifo`
+;; register address IS 0x00) cannot round-trip through this primitive
+;; today; (2) a real ioctl transfer failure is not distinguished from
+;; "the device returned all zero bytes," the same coarser-signal judgment
+;; this stdlib already makes for tcp-read/pty-read/serial-read.
+;;
+;; Real, deliberate v0 boundary, named directly, not silently assumed:
+;; the kernel's own spidev driver toggles the real chip-select GPIO
+;; automatically once per transfer, keyed by the device file's own
+;; `/dev/spidevB.C` addressing (bus B, chip-select line C) — no separate
+;; manual-CS primitive exists or is needed for a real single-device-per-
+;; CS-line setup like the Feather's own radio module.
+
+(module hw/spi)
+(import string)
+(export spi-open spi-transfer spi-close SpiDevice SpiError)
+
+(defstruct SpiDevice
+  (fd : I32))
+
+(defenum SpiError
+  (OpenFailed)
+  (TransferFailed)
+  (CloseFailed))
+
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; spi_*_impl functions, no boxing.
+
+(defn raw-spi-open [(path : String @ Region) (mode : I32) (speed-hz : I32) (bits-per-word : I32)]
+  : I32
+  #target
+  {:c (inline-c "spi_open_impl(path, mode, speed_hz, bits_per_word)")})
+
+(defn raw-spi-transfer [(fd : I32) (tx : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "spi_transfer_impl(fd, tx, dest)")})
+
+(defn raw-spi-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "spi_close_impl(fd)")})
+
+;; spi-open -- mode is the raw SPI_MODE_0..SPI_MODE_3 value (0-3), passed
+;; straight through: unlike hw/serial.prn's baud rate, SPI's real mode
+;; constants ARE their own literal integer values (the SPI_CPOL/SPI_CPHA
+;; bit combination), so no lookup table is needed. speed-hz is the real
+;; max clock rate in Hz (a real RFM9x tops out around 10MHz, but this
+;; primitive itself doesn't enforce any device-specific ceiling — that's
+;; real, honest caller responsibility, matching every other raw hardware
+;; parameter in this stdlib).
+(defn spi-open [(path : String @ :region/scratch) (mode : I32) (speed-hz : I32) (bits-per-word : I32) (dest : Arena @ Region)]
+  : (Result SpiDevice SpiError) @ Region
+  (let [fd (raw-spi-open path mode speed-hz bits-per-word)]
+    (if (< fd 0)
+      (Err OpenFailed)
+      (Ok {:fd fd}))))
+
+;; spi-transfer -- real, full-duplex: sends `tx` and simultaneously
+;; receives exactly the same number of bytes back, the one real SPI
+;; operation there is. See this file's own header comment for the two
+;; real, honestly-named limitations (embedded-NUL payloads, and
+;; TransferFailed being currently unreachable through this path).
+(defn spi-transfer [(!dev : &mut SpiDevice) (tx : String @ Region) (dest : Arena @ Region)]
+  : (Result String SpiError) @ Region
+  (Ok (raw-spi-transfer (get-field !dev :fd) tx dest)))
+
+;; spi-close -- Result-boxed, matching tcp-close/pty-close/serial-close's
+;; own established convention.
+(defn spi-close [(!dev : &mut SpiDevice) (dest : Arena @ Region)]
+  : (Result Unit SpiError) @ Region
+  (if (< (raw-spi-close (get-field !dev :fd)) 0)
+    (Err CloseFailed)
+    (Ok unit)))

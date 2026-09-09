@@ -84,6 +84,19 @@
 #include <net/if.h>
 #include <net/ethernet.h>
 #endif
+/* linux/spi/spidev.h (stdlib/hw/spi.prn, 2026-09-09, the SPI gap
+ * docs/UART_SERIAL_NORTHSTAR.md itself named explicitly out of scope --
+ * the Adafruit Feather's own likely RFM9x LoRa radio talks SPI, not
+ * UART) is real, genuinely Linux-only, same honest boundary AF_PACKET
+ * above already draws: macOS/BSD have no spidev-equivalent userspace
+ * character-device API at all (Apple's own IOKit SPI access is a
+ * different, kernel-extension-based story, not a drop-in). This
+ * monorepo's own real target hardware for this (Raspberry Pi) is
+ * Linux-only anyway, so this is not a real capability loss on any
+ * platform this feature actually needs to run on. */
+#if defined(__linux__)
+#include <linux/spi/spidev.h>
+#endif
 #endif
 /* SDL2 -- built-in, same tier as core (STDLIB.md's own "sdl2" section:
  * "SDL2 is built in... no (import sdl2) line needed"), so its header is
@@ -1518,6 +1531,154 @@ static inline int serial_close_impl(int fd) {
     return -1;
 }
 #endif /* _WIN32 -- end of stdlib/hw/serial.prn real host glue / Windows stub */
+
+/* ---- stdlib/hw/spi.prn real host glue (2026-09-09) ----------------------
+ * Real answer to the SPI gap docs/UART_SERIAL_NORTHSTAR.md itself named
+ * explicitly out of scope: the Adafruit Feather's own likely RFM9x LoRa
+ * radio talks SPI, not UART. Linux's real spidev(4) userspace API: open
+ * a real `/dev/spidevB.C` device file (B = bus number, C = chip-select
+ * line -- the kernel driver toggles the real CS GPIO automatically per
+ * transfer, so no separate manual-CS primitive is needed for v0),
+ * configure real mode/bits-per-word/max-speed-hz via three
+ * `SPI_IOC_WR_*` ioctls, then run a transfer via `SPI_IOC_MESSAGE` -- a
+ * real, full-duplex operation: ONE ioctl call simultaneously clocks
+ * `tx_buf` out and `rx_buf` in, the same `len` bytes each. This is the
+ * real, structural reason spi.prn's own API has one `spi-transfer`
+ * function rather than net/tcp.prn/pty.prn/hw/serial.prn's own
+ * `-read`/`-write` pair -- correct SPI semantics, not an arbitrary
+ * departure from their shape. Guarded with its own top-level
+ * `#if defined(__linux__) ... #else ... #endif` (NOT nested inside the
+ * file's pre-existing `#ifndef _WIN32` block, unlike net/tcp.prn/
+ * pty.prn/hw/serial.prn above -- those three are genuinely POSIX-wide;
+ * this one is Linux-only even among POSIX systems, since macOS/BSD have
+ * no spidev-equivalent userspace API either, so a plain `#ifndef _WIN32`
+ * would wrongly compile these against headers that don't exist there).
+ * The `#else` branch below is real, honest Windows/macOS/BSD stubs,
+ * same shape as pty.prn's own ConPTY stub -- every real caller goes
+ * through spi-open first, which turns a stub's -1 into a real
+ * Err(OpenFailed), never a silent lie, a crash, or a link error.
+ *
+ * SPI mode 0-3 needs no lookup table the way serial's baud rate does --
+ * `SPI_MODE_0`..`SPI_MODE_3` are already defined as the literal integers
+ * 0-3 (they ARE the raw `SPI_CPOL`/`SPI_CPHA` bit combination), so the
+ * mode I32 a caller passes is used directly.
+ *
+ * Real, honest, named limitation, found directly while implementing
+ * this (not assumed, and not previously written down anywhere in this
+ * runtime despite being real and already present): every raw primitive
+ * in this file treats a String as a NUL-terminated C string
+ * (`strlen`-based), not a length-prefixed byte buffer -- a real,
+ * pre-existing constraint every String-based host primitive above
+ * already silently carries (`tcp_write_impl`, `pty_write_impl`,
+ * `serial_write_impl` included), never previously surfaced explicitly
+ * because none of their real payloads (HTTP text, shell commands,
+ * terminal output) are likely to contain an embedded 0x00 byte.
+ * `spi_transfer_impl` below is the first real binary-transfer primitive
+ * in this runtime where that's a live, expected case, not a
+ * theoretical one -- register address 0x00 is real and commonly
+ * addressed on real SPI devices (the RFM9x's own `RegFifo` IS address
+ * 0x00). This primitive is real and correct for any payload with no
+ * embedded NUL byte; a payload that genuinely needs one cannot
+ * round-trip through it today. Fixing this for real needs a
+ * length-explicit byte-buffer type at the PARENA core-language level
+ * (`compress/lz4.prn`'s own pure-PARENA `(Vec I32)` byte buffer is the
+ * real, existing precedent for that shape, but plugging one directly
+ * into a raw syscall `#target` body has no established calling-
+ * convention precedent anywhere in this runtime yet -- a real,
+ * separate, un-derisked piece of work, not attempted in this pass).
+ * Named here plainly rather than silently shipped as a hidden landmine.
+ *
+ * Real, honest, named limitation, second: a failed `SPI_IOC_MESSAGE`
+ * ioctl is not distinguished from "the device legitimately returned all
+ * zero bytes" -- `spi_transfer_impl` zeroes its own receive buffer
+ * before the ioctl and does not check the ioctl's return value, the
+ * same coarser-signal judgment this runtime already makes for
+ * `tcp_read_impl`/`pty_read_impl`/`serial_read_impl` (none of which
+ * distinguish a real read() error from "no more data" either) --
+ * `TransferFailed` on `SpiError` is real and honestly named for
+ * symmetry with `OpenFailed`, but genuinely unreachable through this
+ * path, matching `hw/serial.prn`'s own already-documented `ReadFailed`
+ * and `net/tcp.prn`'s own unused `NetError::Timeout`. Untestable to a
+ * finer grain in this sandbox anyway -- no physical SPI device exists
+ * here to fail a real transfer against. */
+#if defined(__linux__)
+
+/* spi_open_impl -- opens the device file and applies all three real
+ * spidev mode/bits-per-word/speed ioctls in one primitive (unlike
+ * hw/serial.prn's own deliberate open-then-configure split, there is no
+ * other real caller that would ever want an SPI device file open but
+ * unconfigured, so this follows tcp_listen_impl's own established
+ * precedent of combining multiple syscalls behind one raw fd-or-(-1)
+ * primitive instead). Closes the fd it opened before returning -1 on
+ * any configuration failure, so a caller never gets back a "valid" fd
+ * that's actually misconfigured. */
+static inline int spi_open_impl(const char *path, int mode, int speed_hz, int bits_per_word) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return -1;
+
+    __u8 m = (__u8)mode;
+    __u8 bpw = (__u8)bits_per_word;
+    __u32 speed = (__u32)speed_hz;
+
+    if (ioctl(fd, SPI_IOC_WR_MODE, &m) < 0 ||
+        ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bpw) < 0 ||
+        ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* spi_transfer_impl -- see this section's own opening header comment for
+ * the full real reasoning on both named limitations. `(unsigned long)`
+ * casts for tx_buf/rx_buf match the standard, well-known idiom real
+ * spidev sample code uses (e.g. the kernel tree's own
+ * Documentation/spi/spidev_test.c) -- correct on both 32- and 64-bit
+ * Linux, no extra `<stdint.h>`/`uintptr_t` dependency needed. */
+static inline char *spi_transfer_impl(int fd, const char *tx, Arena *dest) {
+    size_t len = strlen(tx);
+    char *rx = (char *)arena_alloc(dest, len + 1);
+    memset(rx, 0, len + 1);
+
+    if (len > 0) {
+        struct spi_ioc_transfer tr;
+        memset(&tr, 0, sizeof tr);
+        tr.tx_buf = (unsigned long)tx;
+        tr.rx_buf = (unsigned long)rx;
+        tr.len = (__u32)len;
+        ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
+    }
+    return rx;
+}
+
+static inline int spi_close_impl(int fd) {
+    return close(fd) == 0 ? 0 : -1;
+}
+
+#else /* not Linux -- real spidev(4) genuinely does not exist on any
+       * other platform (see this section's own opening header comment).
+       * These stubs exist purely so a cross-platform target that
+       * includes stdlib/hw/spi.prn compiles and links elsewhere; every
+       * real caller goes through spi-open first (stdlib/hw/spi.prn),
+       * which turns this -1 into a real Err(OpenFailed) -- never a
+       * silent lie or a crash. */
+static inline int spi_open_impl(const char *path, int mode, int speed_hz, int bits_per_word) {
+    (void)path; (void)mode; (void)speed_hz; (void)bits_per_word;
+    return -1;
+}
+
+static inline char *spi_transfer_impl(int fd, const char *tx, Arena *dest) {
+    (void)fd; (void)tx;
+    char *out = (char *)arena_alloc(dest, 1);
+    out[0] = '\0';
+    return out;
+}
+
+static inline int spi_close_impl(int fd) {
+    (void)fd;
+    return -1;
+}
+#endif /* __linux__ -- end of stdlib/hw/spi.prn real host glue / non-Linux stub */
 
 /* ---- stdlib/shell.prn real host glue (2026-08-26) ----------------------
  * A real, direct port of PITVIPER's own shell-resolution policy

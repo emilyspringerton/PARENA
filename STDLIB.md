@@ -4563,3 +4563,37 @@ Real, honest, not done: Phase 2 (a real Arduino echo-sketch round trip over actu
 remains genuinely blocked — no physical USB-serial device in this sandbox, the same limitation
 class `pentest/pcap.prn`'s own no-`CAP_NET_RAW` gap already names. SPI (the Adafruit Feather's
 own likely radio-module bus) stays real, separate, unscoped, exactly as the NORTHSTAR doc says.
+
+## hw/spi — real SPI primitives, answering UART's own named-out-of-scope gap (2026-09-09, same day)
+
+Real, direct follow-up to `hw/serial`'s own header comment, which named the Adafruit Feather's
+likely RFM9x LoRa radio module as SPI, not UART, and explicitly left it unscoped. Full design
+record in `docs/SPI_NORTHSTAR.md`. New `runtime/parena_runtime.h` host glue over Linux's real
+`spidev(4)` userspace API — `spi_open_impl` (open + `SPI_IOC_WR_MODE`/`SPI_IOC_WR_BITS_PER_WORD`/
+`SPI_IOC_WR_MAX_SPEED_HZ`, rolling back the fd on any configure failure) and `spi_transfer_impl`
+(`SPI_IOC_MESSAGE`, a real full-duplex transfer). New `stdlib/hw/spi.prn` wraps it as
+`spi-open`/`spi-transfer`/`spi-close` over `SpiDevice`/`SpiError`. Its own guard is a top-level
+`#if defined(__linux__)`, NOT nested inside the file's shared `#ifndef _WIN32` block the way
+`net/tcp.prn`/`pty.prn`/`hw/serial.prn` are — spidev is Linux-only even among POSIX systems (no
+macOS/BSD equivalent), so those three files' own POSIX-wide guard would be wrong here; a real,
+honest stub covers Windows/macOS/BSD alike.
+
+Real, structural departure from `hw/serial.prn`/`net/tcp.prn`/`pty.prn`'s own `-read`/`-write`
+pair, not an oversight: SPI is synchronous and full-duplex — one real transfer clocks bytes out
+and in on the same clock edges, so there's only one real operation, `spi-transfer`, not a
+read/write pair. Two real, honestly-named limitations found while implementing this (see
+`SPI_NORTHSTAR.md` for the full reasoning): every String-based host primitive in this runtime is
+NUL-terminated-C-string-shaped, so a payload needing an embedded `0x00` byte (a real, ordinary
+case for SPI register addressing — the RFM9x's own `RegFifo` IS address `0x00`) cannot round-trip
+through it today; and a failed transfer ioctl isn't distinguished from "the device returned all
+zeros," the same coarser-signal judgment `tcp-read`/`pty-read`/`serial-read` already make.
+
+New `make test-spi` target, 9 real assertions scoped to what's genuinely testable with no real
+SPI controller in this sandbox and no fakeable pty-style stand-in for one (unlike `hw/serial`'s
+own pty-based test): real open failures against a nonexistent path and a real-but-wrong-type
+device file (`/dev/null`, proving the configure-then-rollback-on-failure path actually runs), a
+direct `spi_transfer_impl` call against a non-SPI fd proving it returns a real zeroed buffer
+rather than crashing or returning garbage, and real close success/failure. `make test`: 347/347,
+zero regressions. Real, honest, not done: an actual hardware round-trip against a real SPI
+device remains genuinely blocked, same limitation class as `UART_SERIAL_NORTHSTAR.md`'s own
+Phase 2.
