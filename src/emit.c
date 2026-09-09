@@ -4956,6 +4956,20 @@ static const char *resolve_base_type_name(Node *type_node) {
     if (is_symbol(type_node, "Bool")) return "int";
     if (is_symbol(type_node, "F64")) return "double";
     if (is_symbol(type_node, "String")) return "char *";
+    /* `Bytes` -- a real, second core-language base type alongside
+     * `String` (2026-09-09, closing the embedded-NUL-byte gap
+     * `hw/spi.prn`/`hw/i2c.prn`/`hw/serial.prn` all independently found
+     * and named the same day). Maps to `runtime/parena_runtime.h`'s own
+     * real `Bytes` struct (a pointer + explicit length), NOT a pointer
+     * itself -- unlike `String` above, this deliberately does NOT `end
+     * in '*'`, so `is_pointer_c_type`/`ensure_box_helper` treat it
+     * exactly like any other real struct-by-value type (`SpiDevice`,
+     * `SerialPort`) needing a generated box helper for `(Result Bytes
+     * E)`/`(Option Bytes)`, not like `String`'s own already-a-pointer
+     * shortcut. Confirmed live, not assumed: `ensure_box_helper` needs
+     * no `Bytes`-specific code at all, since it already works generically
+     * off any non-pointer C type string. */
+    if (is_symbol(type_node, "Bytes")) return "Bytes";
     /* Bare `Arena` (no `@ region`) -- found genuinely missing
      * (2026-08-21, gcc-verifying net/http.prn's own real `serve`,
      * whose `handler` parameter type is `(Fn [&HttpRequest Arena]
@@ -5025,7 +5039,7 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
             if (!base) {
                 return fail(arena, out_error,
                             "defn: unsupported reference target type '%s' at line %d (VS0's "
-                            "emitter only understands &Any/&Unit/&I32/&Bool/&F64/&String/a "
+                            "emitter only understands &Any/&Unit/&I32/&Bool/&F64/&String/&Bytes/a "
                             "registered defenum-or-defstruct name so far)",
                             inner_name, type_node->line);
             }
@@ -5037,7 +5051,7 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
         if (base) return base;
         return fail(arena, out_error,
                     "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
-                    "understands Unit/I32/Bool/F64/String/a registered defenum/defstruct name so far)",
+                    "understands Unit/I32/Bool/F64/String/Bytes/a registered defenum/defstruct name so far)",
                     type_node->text ? type_node->text : "?", type_node->line);
     }
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
@@ -5156,7 +5170,7 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
     }
     return fail(arena, out_error,
                 "defn: unsupported return type form at line %d (VS0's emitter only understands "
-                "Unit/I32/String/(Result ..)/(Option ..)/(Vec ..)/(Fn [..] ..) so far)",
+                "Unit/I32/String/Bytes/(Result ..)/(Option ..)/(Vec ..)/(Fn [..] ..) so far)",
                 type_node->line);
 }
 
@@ -5431,9 +5445,16 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL &&
                    (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
-                    is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String"))) {
-            /* A plain, non-region-annotated `I32`/`Bool`/`F64`/`String`
-             * parameter -- the real shape stdlib/editor's own mod-surface
+                    is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String") ||
+                    is_symbol(param->children[2], "Bytes"))) {
+            /* A plain, non-region-annotated `I32`/`Bool`/`F64`/`String`/
+             * `Bytes` parameter -- `Bytes` joins this branch for the same
+             * real reason `String` is already here: a real, plain,
+             * pass-by-value parameter with no arena/region involved in
+             * naming the PARAMETER itself (the `Bytes` struct's own
+             * `data` field still points into whatever arena originally
+             * allocated it, same as `String`'s own `char *` already
+             * does implicitly). The real shape stdlib/editor's own mod-surface
              * files actually use for things like a gutter line number or
              * an x/y pixel coordinate (editor/ui.prn's set-gutter-marker/
              * show-popup), or gfd.prn's own `on : Bool` / `x : F64`
@@ -5826,7 +5847,8 @@ static const char *resolve_param_prototype_type(Arena *arena, Node *param) {
     if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
         param->children[2]->type == NODE_SYMBOL &&
         (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
-         is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String"))) {
+         is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String") ||
+         is_symbol(param->children[2], "Bytes"))) {
         return resolve_declared_type(arena, param->children[2], &dummy_err);
     }
     if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&

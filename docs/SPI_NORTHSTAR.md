@@ -67,10 +67,12 @@ the Feather's own radio module, extendable later if a real multi-device-per-bus 
    first real binary-transfer module in this stdlib where that's a live, expected case — a real
    register address of `0x00` is completely ordinary on real SPI devices (the RFM9x's own
    `RegFifo` register IS address `0x00`). A real fix needs a length-explicit byte-buffer type at
-   the PARENA core-language level; `compress/lz4.prn`'s own pure-PARENA `(Vec I32)` byte buffer
-   is the real, existing precedent for that *shape*, but plugging one directly into a raw
-   syscall `#target` body has no established calling-convention precedent anywhere in this
-   runtime yet — a real, separate, un-derisked piece of work, not attempted in this pass.
+   the PARENA core-language level. **Update, same day**: that type now exists —
+   `docs/BYTES_NORTHSTAR.md`/`stdlib/bytes.prn`, a real, second core-language base type
+   (`compress/lz4.prn`'s own `(Vec I32)` claim turned out to be a stale reference to a
+   non-compiling design; the real fix is a genuinely new, non-generic `Bytes` type instead). The
+   core gap is closed; retrofitting `spi-transfer` itself onto it (a new `spi-transfer-bytes`
+   sibling) is real, separate, additive follow-up, not done yet.
 2. **A failed transfer ioctl isn't distinguished from "the device returned all zeros."**
    `spi_transfer_impl` zeroes its own receive buffer up front and doesn't branch on the ioctl's
    return value — the same coarser-signal judgment this stdlib already makes for

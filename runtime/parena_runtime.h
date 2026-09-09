@@ -354,6 +354,113 @@ static inline void *vec_box_f64(Vec *v, double value) {
     return cell;
 }
 
+/* Bytes -- a real, second core-language base type alongside String,
+ * added 2026-09-09 to close the embedded-NUL-byte gap `hw/spi.prn`/
+ * `hw/i2c.prn`/`hw/serial.prn` all independently found and named the
+ * same day: every raw host primitive that speaks `String` treats it as
+ * a NUL-terminated C string (`strlen`-based), so a binary payload with
+ * a real, ordinary embedded `0x00` (an SPI/I2C register address of
+ * `0x00` is completely normal — the RFM9x's own `RegFifo` register IS
+ * address `0x00`) silently truncates. `Bytes` is the same real idea as
+ * `String` (a real, non-generic, always-there base type recognized
+ * directly by `resolve_base_type_name` in `src/emit.c`, exactly like
+ * `String`/`Arena` already are — NOT a user `defstruct`, and NOT
+ * `Vec`'s own generic, per-element-boxed machinery, which is real
+ * overkill for a fixed-element-type byte buffer and would cost one
+ * `arena_alloc` per byte) but carries its own explicit length instead
+ * of relying on a sentinel byte, so a `0x00` in the middle of real data
+ * is just data.
+ *
+ * Real, deliberate v0 scope, matching every other base type this
+ * runtime added the same day: allocate/length/indexed get/set and
+ * String interop (`bytes_from_string_impl`/`bytes_to_string_lossy_impl`, the
+ * latter honestly named — converting BACK to a NUL-terminated String
+ * still truncates at the first embedded `0x00`, exactly the same
+ * limitation this type exists to let real binary DATA avoid, just not
+ * pretended away when a caller genuinely needs a `String` on the other
+ * end). No slicing/concat/comparison operations yet — real, separate,
+ * additive follow-up if a real caller needs them, matching this
+ * runtime's own established "close the gap that's actually blocking
+ * something, name the rest honestly" discipline (`hw/serial.prn`'s own
+ * unused `ReadFailed` variant is the same judgment call in miniature).
+ *
+ * `ensure_box_helper` in `src/emit.c` needs no `Bytes`-specific code at
+ * all to box this into a `(Result Bytes SomeError)`/`(Option Bytes)`
+ * payload — confirmed by reading that function directly before writing
+ * this: it already works generically off any C type STRING that
+ * doesn't end in `*` (real struct-by-value boxing, `*p = v; return
+ * p;`), the exact same generic path `SpiDevice`/`SerialPort`/
+ * `I2cDevice` (real `defstruct`s, not base types) already go through
+ * successfully. `Bytes` needs its own `resolve_base_type_name` entry
+ * for the same real reason `Arena` has one (a base type with no
+ * `defstruct` registration behind it), nothing more. */
+typedef struct {
+    unsigned char *data;
+    int len;
+} Bytes;
+
+/* bytes_alloc_impl -- a real, honest zero-length buffer for a negative or
+ * zero request (never a NULL `data` pointer -- `arena_alloc(dest, 1)`
+ * for a zero-length buffer keeps `bytes_get_impl`'s own out-of-bounds check
+ * the only thing callers need, not a separate NULL check first). */
+static inline Bytes bytes_alloc_impl(Arena *dest, int len) {
+    Bytes b;
+    b.len = len > 0 ? len : 0;
+    b.data = (unsigned char *)arena_alloc(dest, (size_t)(b.len > 0 ? b.len : 1));
+    return b;
+}
+
+static inline int bytes_len_impl(Bytes b) {
+    return b.len;
+}
+
+/* bytes_get_impl/bytes_set_impl -- same real, honest out-of-bounds discipline
+ * vec_get/vec_set_at_ above already establish (silently return a
+ * sentinel / silently no-op, no abort, no real error-reporting channel
+ * a scalar-returning or void-returning runtime function has to use
+ * here). `-1` is a real, valid sentinel specifically because it can
+ * never be a genuine byte value (0-255), unlike vec_get's own NULL
+ * (which works there because Vec's items are already pointers). */
+static inline int bytes_get_impl(Bytes b, int idx) {
+    if (idx < 0 || idx >= b.len) return -1;
+    return (int)b.data[idx];
+}
+
+static inline void bytes_set_impl(Bytes b, int idx, int value) {
+    if (idx < 0 || idx >= b.len) return;
+    b.data[idx] = (unsigned char)value;
+}
+
+/* bytes_from_string_impl -- real, byte-perfect copy of a String's own
+ * current bytes (via strlen, so a String that's ALREADY been truncated
+ * upstream by some other NUL-terminated primitive stays truncated --
+ * this only helps once the data enters the system as real Bytes from
+ * the start, e.g. a future spi-transfer-bytes/i2c-write-bytes sibling,
+ * not un-truncate something already lost). Real, honest, named
+ * boundary, not silently assumed solved. */
+static inline Bytes bytes_from_string_impl(Arena *dest, const char *s) {
+    size_t len = strlen(s);
+    Bytes b = bytes_alloc_impl(dest, (int)len);
+    if (len > 0) memcpy(b.data, s, len);
+    return b;
+}
+
+/* bytes_to_string_lossy_impl -- real, honestly-named conversion back to a
+ * NUL-terminated String: stops at the first embedded 0x00 byte (or at
+ * `len`, whichever comes first) -- the exact same real limitation this
+ * whole type exists to let real binary DATA avoid, surfaced plainly in
+ * the function's own name rather than called a plain `bytes_to_string`
+ * that would quietly re-introduce it for any caller who round-trips
+ * through this. */
+static inline char *bytes_to_string_lossy_impl(Bytes b, Arena *dest) {
+    int n = 0;
+    while (n < b.len && b.data[n] != 0) n++;
+    char *out = (char *)arena_alloc(dest, (size_t)n + 1);
+    if (n > 0) memcpy(out, b.data, (size_t)n);
+    out[n] = '\0';
+    return out;
+}
+
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
  * (not just designed) while getting firefly.prn's own `skip` to

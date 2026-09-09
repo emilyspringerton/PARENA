@@ -4626,3 +4626,49 @@ round-trip and real short-read handling against a real temp file fd — stronger
 than SPI's own ioctl-gated transfer could offer, alongside the same class of honest open-failure
 tests. `make test`: 347/347, zero regressions. Same write-side embedded-NUL limitation as
 `hw/spi.prn`/`hw/serial.prn` carries forward, unfixed for the same real, named reason.
+
+## bytes — a real, second core-language base type, closing the embedded-NUL gap 3 stdlib files named (2026-09-09, same day)
+
+Real, direct follow-up to the same-day `hw/spi`/`hw/i2c` sections above, both of which found and
+named the same real gap: every raw host primitive that speaks `String` treats it as a
+NUL-terminated C string, so a binary payload with an ordinary embedded `0x00` byte (an SPI/I2C
+register address of `0x00` is completely normal) silently truncates. Full investigation and design
+record in `docs/BYTES_NORTHSTAR.md` — written AFTER the investigation that proved it tractable,
+not before, since it overturned an initial assumption that this would need a large,
+multi-subsystem compiler change.
+
+Real, checked-not-assumed finding: `stdlib/vec.prn`'s own `(Raw T)`-based design does not compile
+against the real compiler at all (`"unsupported return type form"`) — `compress/lz4.prn`'s own
+header comment pointing to it as "the real, existing precedent" is stale; the `Vec` that actually
+works is a separate, hand-written, fully built-in runtime type. That distinction is what made
+`Bytes` tractable as a small, additive change rather than a `Vec`-scale one: `Vec`'s own real
+complexity comes from being generic over element type, which a fixed-always-a-byte buffer doesn't
+need — `Bytes` is structurally closer to `String`/`Arena`'s own simple, non-generic base-type
+shape. New `resolve_base_type_name` entry in `src/emit.c` (plus two more allowlists found only by
+actually testing: `emit_defn`'s own parameter-type table and `resolve_param_prototype_type`'s
+forward-declaration table) is the entire real compiler change — `ensure_box_helper` needed zero
+`Bytes`-specific code, confirmed by reading it directly before writing anything: it already boxes
+any non-pointer C type string generically, the same path real `defstruct` types already use.
+
+New `runtime/parena_runtime.h` `Bytes` struct (`unsigned char *data; int len;`) plus
+`bytes_alloc_impl`/`bytes_len_impl`/`bytes_get_impl`/`bytes_set_impl`/`bytes_from_string_impl`/
+`bytes_to_string_lossy_impl`. Real, live bug found and fixed while implementing, not just
+designing (caught by actually gcc-compiling, not by trusting `parena build`'s own success): a
+first draft omitted the `_impl` suffix, reasoning by (wrong) analogy to `arena_alloc`/`vec_new` —
+`stdlib/bytes.prn`'s own `bytes-alloc` mangles to the bare C name `bytes_alloc`, colliding with
+the runtime primitive of the identical name (the exact class `net/tcp.prn`/`pty.prn`'s own header
+comments already document and the exact reason those files' own runtime primitives all carry
+`_impl`). Fixed by renaming every runtime `Bytes` function the same way.
+
+New `stdlib/bytes.prn`: `bytes-alloc`/`bytes-len`/`bytes-get`/`bytes-set!`/`bytes-from-string`/
+`bytes-to-string-lossy`. `make test-bytes`: 18 real assertions, including a genuine embedded-`0x00`
+survives-with-length-intact proof (the entire real point of this type), honest out-of-bounds
+handling matching `vec-get`/`vec-set-at!`'s own convention, and both real, honestly-named `String`
+interop boundaries (`bytes-from-string` inherits a C string literal's own pre-existing truncation;
+`bytes-to-string-lossy` truncates on the way back out, named plainly in its own function name).
+`make test`: 347/347, checked repeatedly through the compiler-change process, zero regressions.
+
+Real, honest, not done: no retrofit of `hw/spi.prn`'s `spi-transfer`/`hw/i2c.prn`'s
+`i2c-read`/`i2c-write`/`hw/serial.prn`'s `serial-read`/`serial-write` to a real `Bytes`-based
+sibling function happened in this pass — the core gap is closed, the hardware-facing consumers of
+it are real, separate, additive follow-up work, named explicitly rather than assumed solved.

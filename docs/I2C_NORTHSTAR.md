@@ -89,9 +89,9 @@ cannot send a payload containing a literal `0x00` byte. `i2c-read`'s own explici
 the equivalent problem for the raw read itself (the returned buffer is correctly sized even if a
 real device response contains a `0x00`), but any caller that then treats the result as an
 ordinary NUL-terminated String downstream still only sees up to the first zero — the limitation
-moves, it isn't closed. A real fix needs a length-explicit byte-buffer type at the PARENA
-core-language level, real, separate, un-derisked, not attempted in this pass (same conclusion
-`SPI_NORTHSTAR.md` already reached).
+moves, it isn't closed. **Update, same day**: a real, second core-language base type now exists
+for this — `docs/BYTES_NORTHSTAR.md`/`stdlib/bytes.prn`. The core gap is closed; retrofitting
+`i2c-read`/`i2c-write` themselves onto it is real, separate, additive follow-up, not done yet.
 
 A real hardware round-trip against a genuine I2C sensor (a BME280/MPU6050-class device wired to a
 real Raspberry Pi's I2C bus) remains genuinely blocked here for the reasons above — not

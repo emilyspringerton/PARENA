@@ -1,0 +1,112 @@
+;; stdlib/bytes.prn — no dependencies. Design: STDLIB.md "bytes" section.
+;; Real, direct answer to the embedded-NUL-byte gap `hw/spi.prn`/
+;; `hw/i2c.prn`/`hw/serial.prn` all independently found and named the same
+;; day (2026-09-09): every raw host primitive that speaks `String` treats
+;; it as a NUL-terminated C string (`strlen`-based), so a binary payload
+;; with a real, ordinary embedded `0x00` byte (an SPI/I2C register
+;; address of `0x00` is completely normal — the RFM9x's own `RegFifo`
+;; register IS address `0x00`) silently truncates. `Bytes` is a real,
+;; second core-language base type alongside `String` — NOT a `defstruct`,
+;; NOT `Vec`'s own generic, per-element-boxed machinery (real overkill
+;; for a fixed-element-type byte buffer, one `arena_alloc` per byte) —
+;; recognized directly by `resolve_base_type_name` in `src/emit.c`, the
+;; same way `String`/`Arena` already are. See `runtime/parena_runtime.h`'s
+;; own header comment on the `Bytes` struct for the full real reasoning,
+;; and `docs/BYTES_NORTHSTAR.md` for the design record (investigated
+;; first, then built the same day — the ordinary UART-style
+;; northstar-then-build split didn't apply here since the real
+;; investigation itself is what proved this was tractable).
+;;
+;; This file is deliberately narrow v0: allocate/length/indexed get/set
+;; plus honest String interop. No slicing/concat/comparison/hex-encoding
+;; yet — real, separate, additive follow-up if a real caller needs them,
+;; matching every other real "close the gap that's actually blocking
+;; something" scope decision in this stdlib. Retrofitting `hw/spi.prn`'s
+;; `spi-transfer`/`hw/i2c.prn`'s `i2c-write`/`i2c-read`/`hw/serial.prn`'s
+;; `serial-write` to accept `Bytes` (a real sibling function, e.g.
+;; `spi-transfer-bytes`, not a breaking signature change to the existing
+;; `String`-based ones) is real, separate, NOT done in this pass either —
+;; named explicitly, not silently assumed.
+
+(module bytes)
+(export bytes-alloc bytes-len bytes-get bytes-set! bytes-from-string bytes-to-string-lossy)
+
+;; ---- primitives -- the only #target bodies in this file, each a
+;; single C expression/statement against runtime/parena_runtime.h's own
+;; bytes_*_impl functions. Real, live bug found and fixed while first
+;; writing this file (caught by actually gcc-compiling the emitted C,
+;; not by trusting `parena build`'s own success, which doesn't validate
+;; inline-c content): VS0 emits a top-level `defn`'s name as a bare,
+;; unprefixed C identifier, so a PARENA-level wrapper literally named
+;; `bytes-alloc` collides with a same-named runtime primitive
+;; `bytes_alloc` — the exact real symbol-collision class net/tcp.prn's/
+;; pty.prn's own header comments already document, and the exact real
+;; reason every runtime primitive THOSE files call carries an `_impl`
+;; suffix (`tcp_connect_impl`, `pty_open_impl`, etc.) precisely to avoid
+;; this. The runtime's own `Bytes`-related functions are named with that
+;; same `_impl` suffix for the identical reason (a first draft of this
+;; file omitted it, reasoning by analogy to `arena_alloc`/`vec_new`
+;; instead — a real, different, unrelated naming convention that
+;; doesn't apply here since those two are never ALSO the name of a
+;; PARENA-level wrapper function).
+
+(defn bytes-alloc [(len : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "bytes_alloc_impl(dest, len)")})
+
+(defn bytes-len [(b : Bytes)]
+  : I32
+  #target
+  {:c (inline-c "bytes_len_impl(b)")})
+
+;; bytes-get -- returns -1 (never a real byte value, which is always
+;; 0-255) on an out-of-bounds index, the same honest, non-crashing,
+;; non-error-reporting-channel convention `vec-get`'s own NULL return
+;; already establishes for the identical real situation.
+(defn bytes-get [(b : Bytes) (idx : I32)]
+  : I32
+  #target
+  {:c (inline-c "bytes_get_impl(b, idx)")})
+
+;; bytes-set! -- real, honest silent no-op on an out-of-bounds index,
+;; matching `vec-set-at!`'s own identical real convention. `Bytes` is
+;; passed BY VALUE here (not `&mut Bytes`) — correct and sufficient,
+;; not a mistake: only its own `data` POINTER field is copied, and that
+;; copy still addresses the exact same backing bytes, so a mutation
+;; through it is real and visible to every other holder of the same
+;; `Bytes` value, the identical reasoning `Vec`'s own by-value parameter
+;; shape already relies on for `vec-push!`'s own backing-array growth to
+;; be visible everywhere (though `vec-push!` itself is a `&mut` param
+;; for the separate reason that growing can also change `data` itself
+;; — `bytes-set!` never reallocates, so no `&mut` is needed here).
+(defn bytes-set! [(b : Bytes) (idx : I32) (val : I32)]
+  : Unit
+  #target
+  {:c (inline-c "bytes_set_impl(b, idx, val);")})
+
+;; bytes-from-string -- real, byte-perfect copy of a String's own
+;; CURRENT bytes (via strlen). Real, honest, named boundary: a String
+;; that's already been truncated upstream by some other NUL-terminated
+;; primitive (e.g. today's real `tcp-read`/`serial-read`/`spi-transfer`)
+;; stays truncated — this closes the gap for data that enters the
+;; system as real Bytes FROM THE START (a future `spi-transfer-bytes`/
+;; `i2c-read-bytes` sibling, not attempted in this pass), not for
+;; un-truncating something already lost through an existing String-only
+;; primitive.
+(defn bytes-from-string [(s : String @ Region) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "bytes_from_string_impl(dest, s)")})
+
+;; bytes-to-string-lossy -- real, honestly-named conversion back to a
+;; NUL-terminated String: stops at the first embedded 0x00 byte (or at
+;; the buffer's own length, whichever comes first) — the exact real
+;; limitation `Bytes` exists to let real binary DATA avoid, surfaced
+;; plainly in this function's own name (not a plain `bytes-to-string`
+;; that would quietly re-introduce the same truncation for any caller
+;; who round-trips through it without reading this comment).
+(defn bytes-to-string-lossy [(b : Bytes) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "bytes_to_string_lossy_impl(b, dest)")})
