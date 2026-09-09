@@ -1,4 +1,5 @@
 ## 2026-09-09
+- feat(hw/spi): real SPI primitives (spi-open/spi-transfer/spi-close) over Linux spidev(4) -- full-duplex transfer, own Linux-only guard, 9 real assertions (make test-spi). Direct follow-up to hw/serial.prn's named SPI gap. Apple #18625. (sess-20260905-0720-ec33e7c5)
 - feat(hw/serial): Phase 1 UART/Serial stdlib -- termios-configured serial-open/-read/-write/-close, non-blocking poll-gated reads, 13 real assertions against a real pty device (make test-serial). HW-001/HW-003 Phase 1, Apple #18620. (sess-20260905-0720-ec33e7c5)
 - CI fix confirmed live: v0.254.0 published (first release since v0.253.0, 2026-09-07) with Tag & Release succeeding despite Build Editor (macOS) still failing -- the decoupling works as intended (sess-20260905-0720-ec33e7c5)
 
