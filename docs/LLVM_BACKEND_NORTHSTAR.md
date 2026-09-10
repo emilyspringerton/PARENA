@@ -149,7 +149,7 @@ program — a real, non-trivial build-system and portability change in its own r
 C-emission architecture — a design decision here has a real, direct downstream consequence there
 that isn't scoped in this doc).
 
-## Real, phased plan (Phase 0/1 shipped, nothing beyond that attempted)
+## Real, phased plan (Phase 0/1/3-v0 shipped, Phase 2 not started)
 
 - **Phase 0** (shipped 2026-09-10): close the two found clang/avr-libc gaps — a real
   `_exit` resolution (via avr-gcc's own real `libgcc.a`) and switching `examples/avr/blink_main.c`'s
@@ -164,17 +164,69 @@ that isn't scoped in this doc).
 - **Phase 2** (not started): verify the identical clang + `avr-ld` path on a real Windows CI
   runner — genuinely unchecked here; binutils-avr's `avr-ld` would need its own Windows-native or
   MinGW-cross build, which is a separate, not-yet-investigated acquisition problem of its own.
-- **Phase 3** (the literal ask, by far the largest): scope a real `libLLVM`-linked `parena` — a
-  proper design pass (IR generation strategy, target-triple selection, build-system/portability
-  impact, the `BURROW` interaction named above) BEFORE any code, matching this repo's own standing
-  "scope big asks for real before writing code" discipline.
+- **Phase 3, v0 shipped same day (2026-09-10)**: real, live "the literal ask" for the narrow scope
+  this whole example already covers — `src/emit_llvm.c` is a new, real emitter (`parena build
+  input.prn -o output.ll`, same real "dispatch by output extension" convention `emit_ts`/
+  `emit_java` already established, zero new CLI flags) that walks the AST and emits genuine LLVM
+  IR text directly — no C representation of the decision logic exists anywhere in this path.
+  `examples/avr/blink.prn`'s own `next-led-state` compiles through it to real, correct LLVM IR
+  (`define i1 @next_led_state(i1 %current) { entry: %0 = xor i1 %current, true ret i1 %0 }`), which
+  `llc -mtriple=avr -mcpu=atmega328p -filetype=obj` lowers STRAIGHT to real AVR machine code —
+  disassembly confirmed byte-for-byte sensible (`ldi r25,1` / `eor r24,r25` / `ret`, a correct,
+  minimal, single-register implementation of boolean negation). Linked against a new host
+  (`examples/avr/blink_main_llvm.c`, an `extern` declaration only — no `#include`, since the real
+  function body lives in a separately-compiled object file) via `avr-ld` + avr-gcc's own real
+  `libgcc.a` (same real `_exit`-resolution technique Phase 0 already established) into a
+  genuinely correct, complete `blink_llvm.elf` — real vector table, real crt startup, `main`/
+  `next_led_state`/`_exit` all present and correctly linked. New Makefile targets
+  `avr-blink-hex-llvm`/`avr-blink-upload-llvm`, verified end to end via `make
+  avr-blink-upload-llvm`, failing only at the same expected `avrdude` port-open step every other
+  AVR target in this repo already does.
+
+  Real, load-bearing detail found by actually disassembling the output, not assumed: `Bool` lowers
+  to LLVM's `i1`, and AVR's default C calling convention passes/returns an `i1` value in exactly
+  ONE 8-bit register (`r24`) — so the host's own `extern` declaration must be `unsigned char
+  next_led_state(unsigned char)`, NOT `int next_led_state(int)` (which would wrongly expect a
+  16-bit `r24:r25` pair) — a real, concrete ABI detail this emitter's own consumers need to get
+  right, not a hypothetical concern.
+
+  Real, honest v0 scope, named directly: scalar (I32/F64/Bool) params/returns only, no String (LLVM
+  string constants need global declarations + pointer types — real, separate, not-attempted scope);
+  `if` lowers to a real `select` instruction (not branch/phi — correct and simpler for this v0's
+  pure, side-effect-free scope); `and`/`or` are honestly non-short-circuiting LLVM bitwise ops
+  (observably identical for pure scalar values, named as a real semantic difference from every
+  other backend's own short-circuiting `&&`/`||`); a call's own argument types are not independently
+  re-verified against the callee's declared parameter types (the same real, narrow limitation
+  `emit_java.c`/`emit_ts.c` already carry in spirit). 22 new real assertions
+  (`tests/test_emit_llvm.c`, run via both `make test-emit-llvm` and real Bazel
+  `bazelisk test //tests:test_emit_llvm`), covering successful emission (constants, Bool/`not`,
+  if/select, F64 vs. I32 arithmetic opcode splits, forward-referencing calls via a real two-pass
+  signature table) AND real, honest error paths (undeclared symbols, a float literal in I32
+  context, mismatched `if`-branch types from a call's own real return type) — never silently-wrong
+  IR. `make test`: 347/347, zero regressions; `editor-demo` still builds and smoke-tests clean.
+
+  This closes "our compiler supports LLVM directly" for real, for the scope it was actually proven
+  against — it is NOT the same as libLLVM linked in-process (no `libLLVM` C API usage at all here;
+  `parena` still just writes a `.ll` text file, same "generate source text a separate real tool
+  consumes" shape every other emitter in this repo already uses, just targeting IR text instead of
+  Java/TS/C source text), and it does not yet cover the full PARENA language (Vec/Result/Region/
+  String/pattern-matching are all real, separate, not-yet-attempted scope for this emitter
+  specifically). The much larger, ORIGINALLY-scoped Phase 3 (`libLLVM` linked directly into
+  `parena`, full language coverage, no external `llc`/`clang` needed at all) remains real,
+  separate, unstarted work — this v0 is deliberately narrower, matching the exact same "one real
+  scalar-function slice, not full language coverage" precedent SPIDERBEETLE's Java emitter and this
+  repo's own TypeScript emitter both already established for their own first real target.
 
 ## Honest bottom line
 
-LLVM's AVR backend is real, present, and no-sudo-fetchable — a genuinely working direction, not
-just a promising one. Phase 0/1 are shipped: clang + `avr-ld` now genuinely produce a correct,
-verified AVR binary for `examples/avr/blink.prn`, coexisting with the original avr-gcc path via
-real, parallel Makefile targets. It is still not a Windows story on its own (Phase 2, unstarted —
-`avr-ld` itself would need a Windows-native build), and it does not by itself deliver "our compiler
-supports LLVM directly" — that specific ask is Phase 3, a real, separate, monumental undertaking
-with its own design questions this doc deliberately does not answer yet.
+Both plans the founder asked for are real and shipped, at least in v0 form. LLVM's AVR backend is
+real, present, and no-sudo-fetchable. Phase 0/1 (the "clang route"): clang + `avr-ld` genuinely
+produce a correct, verified AVR binary for `examples/avr/blink.prn`, coexisting with the original
+avr-gcc path. Phase 3-v0 (the "direct AVR route" — the literal "our compiler supports LLVM
+directly" ask): `parena` itself now has a real `src/emit_llvm.c` backend that emits genuine LLVM
+IR text with zero C involved in the decision logic, which `llc` lowers straight to real, correct,
+disassembly-verified AVR machine code. Both remain real, honest v0s, not final forms: Phase 2
+(Windows) is unstarted — `avr-ld` itself would need a Windows-native build regardless of which
+route is used — and the LLVM emitter covers only PARENA's own narrow scalar-function slice, not
+the full language, and does not (yet) mean `parena` links `libLLVM` in-process; it still writes a
+`.ll` text file for a separate real tool to consume, same shape every other emitter here uses.

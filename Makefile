@@ -7,10 +7,10 @@
 CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 
-SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
+SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang host-led-blink-build clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -853,6 +853,46 @@ avr-blink-upload-clang: avr-blink-hex-clang
 		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
 		-U flash:w:examples/avr/blink_clang.hex:i
 
+# avr-blink-hex-llvm / avr-blink-upload-llvm -- the real "direct AVR
+# route" (2026-09-10, docs/LLVM_BACKEND_NORTHSTAR.md's own Phase 3 v0):
+# `parena` itself emits real LLVM IR (`src/emit_llvm.c`, `-o output.ll`)
+# for examples/avr/blink.prn's own next-led-state -- there is NO C
+# representation of that decision logic anywhere in this path, unlike
+# avr-blink-hex(-clang) above (both of which still go through
+# examples/avr/blink_gen.c, plain C text). `llc` (from
+# LLVM_TOOLCHAIN_ROOT, the same toolchain the clang route already uses)
+# lowers that IR straight to a real AVR object file. The C host
+# (examples/avr/blink_main_llvm.c, distinct from blink_main.c -- see
+# its own header comment for the real, load-bearing ABI reason: LLVM's
+# i1 needs an `unsigned char` extern, not `int`) is still compiled by
+# clang, since hand-emitting IR for register/hardware access is real,
+# separate, not-attempted scope -- this closes the "our compiler emits
+# LLVM directly" ask for the DECISION LOGIC specifically, not the whole
+# program.
+avr-blink-hex-llvm: build
+	./parena build examples/avr/blink.prn -o examples/avr/blink.ll
+	LD_LIBRARY_PATH=$(LLVM_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/lib:$$LD_LIBRARY_PATH \
+		$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/bin/llc -mtriple=avr -mcpu=$(AVR_MCU) -filetype=obj \
+		examples/avr/blink.ll -o examples/avr/blink_llvm_logic.o
+	LD_LIBRARY_PATH=$(LLVM_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/lib:$$LD_LIBRARY_PATH \
+		$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/bin/clang-18 -target avr -mmcu=$(AVR_MCU) -DF_CPU=$(AVR_F_CPU) -Os \
+		-isystem $(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/include \
+		-c examples/avr/blink_main_llvm.c -o examples/avr/blink_llvm_host.o
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-ld -o examples/avr/blink_llvm.elf --gc-sections -m$(AVR_GCC_ARCH) \
+		$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib/$(AVR_GCC_ARCH)/$(AVR_CRT) \
+		examples/avr/blink_llvm_host.o examples/avr/blink_llvm_logic.o \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib/$(AVR_GCC_ARCH) \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/gcc/avr/7.3.0/$(AVR_GCC_ARCH) \
+		-l$(AVR_MCU) -lc -lgcc
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-objcopy -O ihex -R .eeprom examples/avr/blink_llvm.elf examples/avr/blink_llvm.hex
+
+avr-blink-upload-llvm: avr-blink-hex-llvm
+	LD_LIBRARY_PATH=$(AVR_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH \
+		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
+		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
+		-U flash:w:examples/avr/blink_llvm.hex:i
+
 # host-led-blink-build -- real follow-up (2026-09-10, founder real-time:
 # "we need the led on the board to actually flash (there's one built in
 # you can make blink)"). No physical Arduino exists in this sandbox
@@ -1050,9 +1090,13 @@ test-emit-java: tests/test_emit_java.c $(OBJ)
 	$(CC) $(CFLAGS) -Werror -o tests/test_emit_java tests/test_emit_java.c $(OBJ)
 	./tests/test_emit_java
 
+test-emit-llvm: tests/test_emit_llvm.c $(OBJ)
+	$(CC) $(CFLAGS) -Werror -o tests/test_emit_llvm tests/test_emit_llvm.c $(OBJ)
+	./tests/test_emit_llvm
+
 clean:
 	rm -f parena .parena-bootstrap tests/test_lexer_parser tests/test_region tests/test_emit \
-		tests/test_emit_ts tests/test_emit_java src/*.o tools/ci_status_gen.c
+		tests/test_emit_ts tests/test_emit_java tests/test_emit_llvm src/*.o tools/ci_status_gen.c
 
 # test-rtp -- real end-to-end verification for stdlib/sip/rtp.prn (kanban priority-queue card
 # PBX-001, "narrow scope parena PBX primitives... close to the metal like what does asterisk need").

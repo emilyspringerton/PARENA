@@ -80,6 +80,17 @@ cc_library(
 )
 
 cc_library(
+    name = "emit_llvm",
+    srcs = ["emit_llvm.c"],
+    hdrs = ["emit_llvm.h"],
+    deps = [
+        ":arena",
+        ":ast",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "fmt",
     srcs = ["fmt.c"],
     hdrs = ["fmt.h"],
@@ -95,6 +106,7 @@ cc_binary(
         ":ast",
         ":emit",
         ":emit_java",
+        ":emit_llvm",
         ":emit_ts",
         ":fmt",
         ":parser",

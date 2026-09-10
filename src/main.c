@@ -10,6 +10,7 @@
 #include "ast.h"
 #include "emit.h"
 #include "emit_java.h"
+#include "emit_llvm.h"
 #include "emit_ts.h"
 #include "fmt.h"
 #include "parser.h"
@@ -275,12 +276,15 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
     }
     /* Real, minimal target dispatch by output extension -- `-o output.ts` routes to the real v0
        TypeScript emitter (emit_ts.h's own doc comment has the full real scope statement), `-o
-       output.java` routes to the real v0 Java emitter (emit_java.h's own doc comment), any other
-       extension keeps the existing, default, unchanged C emitter path. No new subcommand/flag
-       needed; every existing `-o output.c` caller is completely unaffected. */
+       output.java` routes to the real v0 Java emitter (emit_java.h's own doc comment), `-o
+       output.ll` routes to the real v0 LLVM IR emitter (emit_llvm.h's own doc comment -- the
+       "direct AVR route" from docs/LLVM_BACKEND_NORTHSTAR.md, 2026-09-10), any other extension
+       keeps the existing, default, unchanged C emitter path. No new subcommand/flag needed; every
+       existing `-o output.c` caller is completely unaffected. */
     size_t out_path_len = strlen(out_path);
     int is_ts_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ts") == 0;
     int is_java_target = out_path_len >= 5 && strcmp(out_path + out_path_len - 5, ".java") == 0;
+    int is_llvm_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ll") == 0;
 
     const char *emit_err = NULL;
     const char *emitted_source;
@@ -290,6 +294,8 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         const char *class_name = java_class_name_from_path(&arena, out_path);
         const char *package_name = java_package_name_from_path(&arena, out_path);
         emitted_source = emit_java(&arena, program, class_name, package_name, &emit_err);
+    } else if (is_llvm_target) {
+        emitted_source = emit_llvm(&arena, program, &emit_err);
     } else {
         emitted_source = emit_c(&arena, program, &emit_err);
     }

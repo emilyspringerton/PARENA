@@ -14,6 +14,12 @@ examples/avr/blink.hex
 examples/avr/blink_clang.o
 examples/avr/blink_clang.elf
 examples/avr/blink_clang.hex
+examples/avr/blink.ll
+examples/avr/blink_llvm_logic.o
+examples/avr/blink_llvm_host.o
+examples/avr/blink_llvm.elf
+examples/avr/blink_llvm.hex
+tests/test_emit_llvm
 examples/host_led/blink_gen.c
 examples/host_led/led_blink
 .parena-bootstrap
