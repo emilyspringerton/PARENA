@@ -515,6 +515,18 @@ jobs:
     name: Build Editor (macOS)
     runs-on: macos-latest
     needs: build_and_test
+    # Disabled (2026-09-10, founder real-time: "can you please disable the
+    # mac editor builds i dont like seeing the red in the ci"). Real,
+    # confirmed-live failing since commit ab2c2786 (2026-09-07) at its own
+    # compile step -- see the release job's own "build_editor_macos
+    # DELIBERATELY excluded" comment below for the prior decoupling and
+    # CHANGELOG.md's 2026-09-09 entry for the diagnosis attempt (blocked:
+    # no admin rights on this repo from this sandbox to pull the actual
+    # error log). `if: false` keeps the job definition intact (steps,
+    # comments, the real "why this scope" reasoning above) rather than
+    # deleting it -- flip this back to remove `if: false` once the real
+    # macOS clang failure is actually diagnosed and fixed.
+    if: false
     permissions:
       contents: read
     steps:
