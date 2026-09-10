@@ -7,11 +7,17 @@
  * shipped), this is the version that actually makes `parena` itself "support LLVM directly."
  *
  * Real, honest, narrow v0 scope — the SAME real narrow slice `emit_ts.h`/`emit_java.h` already
- * document (not repeated in full here): a `defn` with zero or more scalar (I32/F64/Bool)
- * parameters, no Arena/region annotations, a body that is a single real expression. NO String
- * support in this v0 (LLVM string constants need global declarations + pointer types, a real,
- * separate, not-yet-attempted piece of scope — every other emitter in this repo supports String,
- * this one deliberately doesn't yet).
+ * document (not repeated in full here): a `defn` with zero or more scalar (I32/F64/Bool/String)
+ * parameters, no Arena/region annotations, a body that is a single real expression. String support
+ * (added 2026-09-10, same day as the rest of this file) lowers to LLVM's opaque `ptr` type — a
+ * literal becomes a real, private, module-level global constant
+ * (`@.str.N = private unnamed_addr constant [LEN x i8] c"...\00"`, hex-escaped per LLVM's own real
+ * `c"..."` syntax, NUL-terminated matching this repo's own established "C-string-shaped String"
+ * convention), referenced directly by the global's own name — no `getelementptr` decay needed,
+ * since LLVM's opaque pointers (default since LLVM 14+) mean a global array's own name already
+ * IS a plain `ptr` value, verified live against real `llc 18`, not assumed from older
+ * typed-pointer-era LLVM IR examples. Still no Vec/Result/Region/pattern-matching in this v0 —
+ * real, separate, not-yet-attempted scope.
  *
  * Real, LLVM-specific structural difference from every other emitter in this repo (the genuinely
  * new part, not a mechanical find-replace): LLVM IR is SSA-register-based, not a nested-expression

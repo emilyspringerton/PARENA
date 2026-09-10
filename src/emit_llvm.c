@@ -75,10 +75,11 @@ static const char *mangle_name(Arena *arena, const char *kebab) {
     return out;
 }
 
-/* resolve_llvm_type: the real, narrow I32/F64/Bool/Unit -> LLVM type mapping this v0 understands.
-   No String (see emit_llvm.h's own header comment on why that's real, separate, not-yet-attempted
-   scope) -- any other type name, String included, is a real, honest "unsupported" error, same
-   real boundary every other emitter's own resolve_*_type draws. */
+/* resolve_llvm_type: the real I32/F64/Bool/String/Unit -> LLVM type mapping this v0 understands.
+   String -> `ptr` (2026-09-10, real String support -- see the NODE_STRING case in
+   emit_llvm_expr's own doc comment for the real, opaque-pointer-era reasoning behind that
+   mapping). Any other type name is a real, honest "unsupported" error, same real boundary every
+   other emitter's own resolve_*_type draws. */
 static const char *resolve_llvm_type(Node *type_sym, const char **out_error) {
     if (!type_sym || type_sym->type != NODE_SYMBOL) {
         *out_error = "emit_llvm: expected a type symbol";
@@ -87,8 +88,9 @@ static const char *resolve_llvm_type(Node *type_sym, const char **out_error) {
     if (strcmp(type_sym->text, "I32") == 0) return "i32";
     if (strcmp(type_sym->text, "F64") == 0) return "double";
     if (strcmp(type_sym->text, "Bool") == 0) return "i1";
+    if (strcmp(type_sym->text, "String") == 0) return "ptr";
     if (strcmp(type_sym->text, "Unit") == 0) return "void";
-    *out_error = "emit_llvm: unsupported parameter/return type (v0 only understands I32/F64/Bool/Unit -- no String yet)";
+    *out_error = "emit_llvm: unsupported parameter/return type (v0 only understands I32/F64/Bool/String/Unit)";
     return NULL;
 }
 
@@ -132,6 +134,20 @@ typedef struct {
 
 #define LLVM_MAX_FNS 64
 
+/* LlvmModule -- real, whole-compile-unit state, threaded through every recursive call instead of
+   the two separate (sigs, sig_count) parameters this file started with (the real, minimal
+   refactor String support below needed: string literals need a real, SHARED, module-level place
+   to accumulate their own global constant declarations, the same real scope every LLVM global
+   lives at, not per-function like everything else this emitter tracks). `strings`/`next_str` are
+   real and new (2026-09-10, real String support); `sigs`/`sig_count` are the same real two-pass
+   forward-reference table this file already had. */
+typedef struct {
+    LlvmFnSig *sigs;
+    size_t sig_count;
+    LlvmBuf strings;   /* accumulated `@.str.N = ...` global constant lines */
+    int next_str;      /* next fresh string-global suffix */
+} LlvmModule;
+
 static const char *lookup_local_type(LlvmFn *fn, const char *mangled_name) {
     for (size_t i = 0; i < fn->local_count; i++) {
         if (strcmp(fn->locals[i].name, mangled_name) == 0) return fn->locals[i].type;
@@ -139,9 +155,9 @@ static const char *lookup_local_type(LlvmFn *fn, const char *mangled_name) {
     return NULL;
 }
 
-static const char *lookup_fn_ret_type(LlvmFnSig *sigs, size_t sig_count, const char *mangled_name) {
-    for (size_t i = 0; i < sig_count; i++) {
-        if (strcmp(sigs[i].name, mangled_name) == 0) return sigs[i].ret_type;
+static const char *lookup_fn_ret_type(LlvmModule *mod, const char *mangled_name) {
+    for (size_t i = 0; i < mod->sig_count; i++) {
+        if (strcmp(mod->sigs[i].name, mangled_name) == 0) return mod->sigs[i].ret_type;
     }
     return NULL;
 }
@@ -162,7 +178,7 @@ typedef struct {
 } LlvmVal;
 
 static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *expected_type,
-                               LlvmFnSig *sigs, size_t sig_count, const char **out_error);
+                               LlvmModule *mod, const char **out_error);
 
 /* BINOP_TABLE -- real, narrow arithmetic operator set. Each entry names the real LLVM opcode for
    an i32 operand and, separately, for a double operand (LLVM has genuinely distinct integer vs.
@@ -221,7 +237,7 @@ static LlvmVal llvm_val_err(void) {
    comment for the full real "why" behind this structural difference and this file's own
    top-down-for-literals-only / bottom-up-everywhere-else type-inference rule. */
 static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *expected_type,
-                               LlvmFnSig *sigs, size_t sig_count, const char **out_error) {
+                               LlvmModule *mod, const char **out_error) {
     if (!expr) {
         *out_error = "emit_llvm: null expression";
         return llvm_val_err();
@@ -254,6 +270,51 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: numeric literal used where a non-numeric type was expected";
             return llvm_val_err();
         }
+        return v;
+    }
+
+    /* Real String literal support (2026-09-10) -- `expr->text`/`expr->text_len` are the real,
+       already-unescaped raw bytes the lexer decoded (a real embedded newline byte, not the two
+       characters `\` and `n` -- see emit.c's own NODE_STRING doc comment, which this file's own
+       RE-escaping loop mirrors for LLVM's own real `c"...\XX..."` constant syntax instead of C's
+       `"...\n..."`). Every byte outside printable ASCII, plus `"`/`\` themselves, is hex-escaped
+       (`\XX`, two uppercase hex digits) -- LLVM's own real, exact requirement, stricter than C's
+       (which allows named escapes like `\n`). A real, required trailing `\00` NUL terminator is
+       appended, matching this repo's own already-established "NUL-terminated-C-string-shaped
+       String" convention (see `hw/serial.prn`'s own doc comment).
+
+       The literal itself becomes a real, private, module-level global constant
+       (`@.str.N = private unnamed_addr constant [LEN x i8] c"...\00"`, accumulated into
+       `mod->strings` rather than emitted inline -- LLVM globals live at module scope, never inside
+       a function body). Real, load-bearing detail, verified live against real `llc 18`, not
+       assumed from older typed-pointer-era LLVM IR examples: with LLVM's OPAQUE pointers (the
+       default since LLVM 14+, definitely default in 18), a global array's own name IS already a
+       plain `ptr` value -- no `getelementptr` decay/indexing instruction is needed the way older,
+       typed-pointer LLVM IR required (`[N x i8]* -> i8*`). So this literal's own bottom-up type is
+       simply `ptr`, and its `ref` is the global's own name, usable directly in any operand
+       position exactly like an SSA register would be. */
+    if (expr->type == NODE_STRING) {
+        LlvmBuf escaped;
+        lb_init(&escaped);
+        for (size_t i = 0; i < expr->text_len; i++) {
+            unsigned char c = (unsigned char)expr->text[i];
+            if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+                char ch[2] = { (char)c, '\0' };
+                lb_append(&escaped, ch);
+            } else {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "\\%02X", c);
+                lb_append(&escaped, hex);
+            }
+        }
+        char gname[32];
+        snprintf(gname, sizeof(gname), "@.str.%d", mod->next_str++);
+        lb_appendf(&mod->strings, "%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n",
+                   gname, expr->text_len + 1, escaped.data);
+        lb_free(&escaped);
+        LlvmVal v;
+        v.type = "ptr";
+        v.ref = arena_strdup(arena, gname, strlen(gname));
         return v;
     }
 
@@ -300,15 +361,15 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: if requires exactly (if cond then else)";
             return llvm_val_err();
         }
-        LlvmVal cond = emit_llvm_expr(arena, fn, expr->children[1], "i1", sigs, sig_count, out_error);
+        LlvmVal cond = emit_llvm_expr(arena, fn, expr->children[1], "i1", mod, out_error);
         if (!cond.ref) return llvm_val_err();
         if (strcmp(cond.type, "i1") != 0) {
             *out_error = "emit_llvm: if condition must be Bool (i1)";
             return llvm_val_err();
         }
-        LlvmVal then_v = emit_llvm_expr(arena, fn, expr->children[2], expected_type, sigs, sig_count, out_error);
+        LlvmVal then_v = emit_llvm_expr(arena, fn, expr->children[2], expected_type, mod, out_error);
         if (!then_v.ref) return llvm_val_err();
-        LlvmVal else_v = emit_llvm_expr(arena, fn, expr->children[3], then_v.type, sigs, sig_count, out_error);
+        LlvmVal else_v = emit_llvm_expr(arena, fn, expr->children[3], then_v.type, mod, out_error);
         if (!else_v.ref) return llvm_val_err();
         if (strcmp(then_v.type, else_v.type) != 0) {
             *out_error = "emit_llvm: if branches have mismatched types";
@@ -331,7 +392,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: not requires exactly 1 operand";
             return llvm_val_err();
         }
-        LlvmVal inner = emit_llvm_expr(arena, fn, expr->children[1], "i1", sigs, sig_count, out_error);
+        LlvmVal inner = emit_llvm_expr(arena, fn, expr->children[1], "i1", mod, out_error);
         if (!inner.ref) return llvm_val_err();
         if (strcmp(inner.type, "i1") != 0) {
             *out_error = "emit_llvm: not requires a Bool (i1) operand";
@@ -357,9 +418,9 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: comparison operator requires exactly 2 operands";
             return llvm_val_err();
         }
-        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", sigs, sig_count, out_error);
+        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", mod, out_error);
         if (!lhs.ref) return llvm_val_err();
-        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, sigs, sig_count, out_error);
+        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, mod, out_error);
         if (!rhs.ref) return llvm_val_err();
         if (strcmp(lhs.type, rhs.type) != 0) {
             *out_error = "emit_llvm: comparison operands have mismatched types";
@@ -385,9 +446,9 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: arithmetic operator requires exactly 2 operands (v0 has no variadic +)";
             return llvm_val_err();
         }
-        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", sigs, sig_count, out_error);
+        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", mod, out_error);
         if (!lhs.ref) return llvm_val_err();
-        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, sigs, sig_count, out_error);
+        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, mod, out_error);
         if (!rhs.ref) return llvm_val_err();
         if (strcmp(lhs.type, rhs.type) != 0) {
             *out_error = "emit_llvm: arithmetic operands have mismatched types";
@@ -410,13 +471,13 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: and/or requires exactly 2 operands (v0 has no variadic and/or)";
             return llvm_val_err();
         }
-        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i1", sigs, sig_count, out_error);
+        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i1", mod, out_error);
         if (!lhs.ref) return llvm_val_err();
         if (strcmp(lhs.type, "i1") != 0) {
             *out_error = "emit_llvm: and/or requires Bool (i1) operands";
             return llvm_val_err();
         }
-        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], "i1", sigs, sig_count, out_error);
+        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], "i1", mod, out_error);
         if (!rhs.ref) return llvm_val_err();
         if (strcmp(rhs.type, "i1") != 0) {
             *out_error = "emit_llvm: and/or requires Bool (i1) operands";
@@ -437,7 +498,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
        argument types are NOT independently re-verified against the callee's own declared
        parameter types in this v0. */
     const char *mangled_callee = mangle_name(arena, head);
-    const char *ret_type = lookup_fn_ret_type(sigs, sig_count, mangled_callee);
+    const char *ret_type = lookup_fn_ret_type(mod, mangled_callee);
     if (!ret_type) {
         *out_error = "emit_llvm: call to an unrecognized function (v0 has no external FFI/math-primitive table yet)";
         return llvm_val_err();
@@ -452,7 +513,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
            error rather than silently guessing. Not exercised by any real call site this v0 has
            been run against yet (every real call site passes symbol/call arguments, never a bare
            literal). */
-        LlvmVal arg = emit_llvm_expr(arena, fn, expr->children[i], NULL, sigs, sig_count, out_error);
+        LlvmVal arg = emit_llvm_expr(arena, fn, expr->children[i], NULL, mod, out_error);
         if (!arg.ref) {
             lb_free(&arglist);
             return llvm_val_err();
@@ -476,7 +537,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
 /* emit_llvm_defn -- one top-level (defn name [(param : Type) ...] : RetType body) -> one real
    `define <ret_type> @<name>(<params>) { entry: ...instructions... ret <ret_type> <value> }`
    function definition, appended into `out`. */
-static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmFnSig *sigs, size_t sig_count,
+static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mod,
                            const char **out_error) {
     if (defn->child_count < 3 || defn->children[1]->type != NODE_SYMBOL || defn->children[2]->type != NODE_VEC) {
         *out_error = "emit_llvm: defn: malformed function definition";
@@ -534,7 +595,7 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmFnSig *sig
         lb_free(&fn.body);
         return 0;
     }
-    LlvmVal body_val = emit_llvm_expr(arena, &fn, defn->children[5], ret_type, sigs, sig_count, out_error);
+    LlvmVal body_val = emit_llvm_expr(arena, &fn, defn->children[5], ret_type, mod, out_error);
     if (!body_val.ref) {
         lb_free(&param_list);
         lb_free(&fn.body);
@@ -580,9 +641,17 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
         sig_count++;
     }
 
+    LlvmModule mod;
+    mod.sigs = sigs;
+    mod.sig_count = sig_count;
+    lb_init(&mod.strings);
+    mod.next_str = 0;
+
+    /* `out` accumulates only the real function definitions -- the header comment and any real
+       string-global constants are prepended once, after this loop, into `final_out` below (needs
+       to happen after, since string literals are only discovered while emitting bodies). */
     LlvmBuf out;
     lb_init(&out);
-    lb_append(&out, "; Generated by parena build (LLVM target) -- VS0-for-LLVM v0, do not edit by hand.\n\n");
 
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
@@ -592,18 +661,37 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
             continue;
         }
         if (is_call_named(form, "defn")) {
-            if (!emit_llvm_defn(arena, &out, form, sigs, sig_count, out_error)) {
+            if (!emit_llvm_defn(arena, &out, form, &mod, out_error)) {
+                lb_free(&mod.strings);
                 lb_free(&out);
                 return NULL;
             }
             continue;
         }
         *out_error = "emit_llvm: unsupported top-level form (v0 only understands defn, module, export, import)";
+        lb_free(&mod.strings);
         lb_free(&out);
         return NULL;
     }
 
-    const char *result = arena_strdup(arena, out.data, out.len);
+    /* Real string-global constants (if any were collected above) go BEFORE the function
+       definitions -- LLVM IR doesn't strictly require this ordering (globals are resolved
+       module-wide regardless of declaration order), but it's the real, conventional, more
+       readable placement every real-world .ll file uses. Only discoverable AFTER the loop above
+       (string literals are found while emitting bodies), so the header + strings + function defs
+       are assembled here, in that final real order. */
+    LlvmBuf final_out;
+    lb_init(&final_out);
+    lb_append(&final_out, "; Generated by parena build (LLVM target) -- VS0-for-LLVM v0, do not edit by hand.\n\n");
+    if (mod.strings.len > 0) {
+        lb_append(&final_out, mod.strings.data);
+        lb_append(&final_out, "\n");
+    }
+    lb_append(&final_out, out.data);
+
+    const char *result = arena_strdup(arena, final_out.data, final_out.len);
+    lb_free(&mod.strings);
     lb_free(&out);
+    lb_free(&final_out);
     return result;
 }

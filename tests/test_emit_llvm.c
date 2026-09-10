@@ -148,6 +148,60 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real String support: a global constant + a plain `ptr` return, opaque-pointer style --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn greeting [] : String \"hi\")";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "String literal return emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "@.str.0 = private unnamed_addr constant [3 x i8] c\"hi\\00\"") != NULL,
+                  "String literal becomes a real global constant with the correct byte length (2 chars + real trailing NUL)");
+            CHECK(strstr(ir, "define ptr @greeting() {") != NULL, "String return type lowers to ptr (opaque pointer)");
+            CHECK(strstr(ir, "ret ptr @.str.0") != NULL,
+                  "the global's own name is used directly as the ptr value -- no getelementptr decay needed under opaque pointers");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real String escaping: embedded quote, backslash, and newline all hex-escape correctly --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn tricky [] : String \"a\\\"b\\\\c\\nd\")";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "String with embedded quote/backslash/newline emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "c\"a\\22b\\5Cc\\0Ad\\00\"") != NULL,
+                  "every special byte hex-escapes to LLVM's own real \\XX syntax (not C's \\\" / \\\\ / \\n)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real String parameter passed straight through (no operations on it needed in this v0) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn identity-str [(s : String)] : String s)";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "String parameter emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "define ptr @identity_str(ptr %s) {") != NULL, "String param lowers to ptr");
+            CHECK(strstr(ir, "ret ptr %s") != NULL, "parameter reference returned directly, no global involved");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest error path: an i32-expected literal that looks like a float --- */
     {
         Arena arena;

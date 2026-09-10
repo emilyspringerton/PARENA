@@ -190,10 +190,9 @@ that isn't scoped in this doc).
   16-bit `r24:r25` pair) — a real, concrete ABI detail this emitter's own consumers need to get
   right, not a hypothetical concern.
 
-  Real, honest v0 scope, named directly: scalar (I32/F64/Bool) params/returns only, no String (LLVM
-  string constants need global declarations + pointer types — real, separate, not-attempted scope);
-  `if` lowers to a real `select` instruction (not branch/phi — correct and simpler for this v0's
-  pure, side-effect-free scope); `and`/`or` are honestly non-short-circuiting LLVM bitwise ops
+  Real, honest v0 scope, named directly: scalar I32/F64/Bool/String params/returns only; `if`
+  lowers to a real `select` instruction (not branch/phi — correct and simpler for this v0's pure,
+  side-effect-free scope); `and`/`or` are honestly non-short-circuiting LLVM bitwise ops
   (observably identical for pure scalar values, named as a real semantic difference from every
   other backend's own short-circuiting `&&`/`||`); a call's own argument types are not independently
   re-verified against the callee's declared parameter types (the same real, narrow limitation
@@ -205,13 +204,25 @@ that isn't scoped in this doc).
   context, mismatched `if`-branch types from a call's own real return type) — never silently-wrong
   IR. `make test`: 347/347, zero regressions; `editor-demo` still builds and smoke-tests clean.
 
+  **Same-day follow-up: real String support added.** A `LlvmModule` refactor (replacing the two
+  separate `sigs`/`sig_count` parameters threaded through every function with one shared struct)
+  gave string literals a real, module-level place to accumulate their own global constant
+  declarations. `String` lowers to LLVM's opaque `ptr` type; a literal becomes a real, private,
+  hex-escaped, NUL-terminated global constant (`@.str.N = private unnamed_addr constant [LEN x i8]
+  c"...\00"`), referenced directly by the global's own name — no `getelementptr` decay instruction
+  needed, since LLVM's opaque pointers (default since LLVM 14+) mean a global array's own name
+  already IS a plain `ptr` value, verified live against real `llc 18` (compiled a real
+  quote/backslash/newline-containing string end to end, confirmed the correct bytes land in the
+  resulting object file's own string data). 9 more real assertions added (31 total). `make test`:
+  still 347/347; `editor-demo`, the clang route, and the direct-AVR route all still build clean.
+
   This closes "our compiler supports LLVM directly" for real, for the scope it was actually proven
   against — it is NOT the same as libLLVM linked in-process (no `libLLVM` C API usage at all here;
   `parena` still just writes a `.ll` text file, same "generate source text a separate real tool
   consumes" shape every other emitter in this repo already uses, just targeting IR text instead of
   Java/TS/C source text), and it does not yet cover the full PARENA language (Vec/Result/Region/
-  String/pattern-matching are all real, separate, not-yet-attempted scope for this emitter
-  specifically). The much larger, ORIGINALLY-scoped Phase 3 (`libLLVM` linked directly into
+  pattern-matching remain real, separate, not-yet-attempted scope for this emitter specifically —
+  String, at least, is now real and shipped). The much larger, ORIGINALLY-scoped Phase 3 (`libLLVM` linked directly into
   `parena`, full language coverage, no external `llc`/`clang` needed at all) remains real,
   separate, unstarted work — this v0 is deliberately narrower, matching the exact same "one real
   scalar-function slice, not full language coverage" precedent SPIDERBEETLE's Java emitter and this
