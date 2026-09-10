@@ -1835,6 +1835,52 @@ fix independent of them), nothing more claimed. `split` (the file's own other re
 holdout) is unaffected by any of this — still blocked by its own separate, permanent
 `vec/`-qualified-call-as-a-let-value exclusion, named in the prior entry above.
 
+**Real eighth step (2026-09-10, same "continue on parena llvm and selfhost" session, immediate
+follow-up): both of the two honestly-named remaining gaps above closed for real, plus a second
+real, live-found bug caught by directly compiling the output rather than trusting the self-compile
+diagnostic's own "no `#error`" bar.**
+
+- **`if` as a binary-op comparison OPERAND** (the `(and ok (> n (if (starts-with-sign? s) 1 0)))`
+  base-case tail value, traced through `emit-loop-tail`'s own `or-and-shaped?` case →
+  `bool-expr-supported?` → `binary-op-call-shaped?` → `every-call-arg-symbol-or-number?`, which had
+  no `if-value-shaped?` case at all, silently falling through the whole chain to a bare, invalid
+  `return ;`). Fixed by widening both `every-call-arg-symbol-or-number?` (the checker) and
+  `emit-call-arg` (the emitter, via `emit-if-value`) — the same real function `if-value-shaped?`
+  loop bindings already use, just reused as a call-argument shape too.
+- **A bare `true`/`false` literal in a defn's own TAIL position.** First fix attempt (hardcoded
+  `"return 1;\n"`/`"return 0;\n"` C strings in `emit-tail-symbol`) looked correct against the
+  self-compile diagnostic — `stdlib/string.prn` only ever exercises the `false` case in real tail
+  position (`is-valid-i32-text?`'s own top-level `(if (= n 0) false ...)` is itself an if-VALUE,
+  not a defn tail) — but was never actually proven for `true`. Directly compiling a minimal,
+  standalone `true`-in-tail-position snippet with the project's own real, strict flags (`gcc
+  -std=c99 -Wall -Wextra -pedantic -Werror`) caught a real, genuine bug: `return 1;` from a
+  `char *`-declared function (this emitter's own uniform return-type convention outside `#target`
+  bodies) fails to compile under `-Werror=int-conversion` — only `0` is a real null-pointer
+  constant in C, `1` is not. Fixed by routing both literals through `(emit-tail-expr (emit-i32-boxed
+  "1"/"0" dest) dest)`, the same `(char *)(intptr_t)(...)` boxing convention every other raw-int
+  tail-position value in this file already uses — required extracting the original bare-symbol
+  logic into a new `emit-tail-bare-symbol` helper first, since PARENA's own real `cond`-clause-body
+  restriction (a `let` isn't legal directly in expression position — only a function's own body, a
+  `let`'s own body, a `match` clause's own body, or an `if`'s own condition) rejected an inlined
+  `let` attempt with a real, honest compiler error.
+
+4 new tests (`tests/test_selfhost_emit.c` + `tests/integration/driver_tail_bool_literal.c` +
+`tests/integration/driver_if_comparison_operand.c`), each isolating its own gap into a minimal,
+dedicated defn rather than only re-checking `string.prn`'s own shape: structural checks (the real
+boxed `(char *)(intptr_t)1`/`0` return text, a real ternary nested inside a comparison, no leftover
+`return ;`) plus real compile+run+assert checks against the project's own strict `gcc` flags —
+`always_true`/`always_false` (proving the exact int-conversion failure class the first, broken fix
+would have hit) and `check` (four flag/n combinations, proving the ternary operand is actually
+evaluated at runtime, not just present as unexercised text). `make test`: 347/347; every
+`test-selfhost-*` target clean, zero regressions.
+
+**Real, live-checked picture after this eighth step, re-running the self-compile diagnostic against
+`stdlib/string.prn` end to end**: `is-valid-i32-text?` now compiles with genuinely correct,
+gcc-verified C for its ENTIRE body — both loop bindings, the recur-argument boolean composition,
+and the base-case tail comparison, all previously named as open gaps, all closed. `split` remains
+the file's own only real remaining holdout, still blocked by its own separate, permanent
+`vec/`-qualified-call-as-a-let-value exclusion (unrelated to any of this session's fixes).
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression

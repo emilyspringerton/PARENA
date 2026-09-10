@@ -238,6 +238,7 @@ int alloc_call_shaped_(Node *);
 char * emit_alloc_value_literal(char *, Node *, Arena *);
 char * emit_alloc_value_expr(char *, Node *, Vec *, Arena *);
 char * emit_alloc_call(Node *, Vec *, Arena *);
+char * emit_tail_bare_symbol(Node *, Arena *);
 char * emit_tail_symbol(Node *, Arena *);
 char * emit_tail_expr(char *, Arena *);
 int bool_expr_supported_(Node *, Arena *);
@@ -1366,12 +1367,16 @@ char * emit_alloc_call(Node * call __attribute__((unused)), Vec * scope __attrib
     }
 }
 
-char * emit_tail_symbol(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+char * emit_tail_bare_symbol(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "    return "));
     (void)(vec_push_(&(parts), mangle((node)->text, dest)));
     (void)(vec_push_(&(parts), ";\n"));
     return emit_join_all(&(parts), dest);
+}
+
+char * emit_tail_symbol(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_symbol_(node, "true") ? emit_tail_expr(emit_i32_boxed("1", dest), dest) : (emit_is_symbol_(node, "false") ? emit_tail_expr(emit_i32_boxed("0", dest), dest) : emit_tail_bare_symbol(node, dest)));
 }
 
 char * emit_tail_expr(char * expr_c __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1912,7 +1917,7 @@ int every_call_arg_symbol_or_number_(Node * call __attribute__((unused)), int i 
     } else {
     Node *arg_node __attribute__((unused)) = vec_get(&((call)->children), i);
     int k __attribute__((unused)) = emit_node_kind_code((arg_node)->kind);
-    if (((((((k == 3) || (k == 6)) || (k == 5)) || get_field_shaped_(arg_node, dest)) || (plain_call_shaped_(arg_node, dest) || binary_op_call_shaped_(arg_node, dest))) || (alloc_call_shaped_(arg_node) || (or_and_shaped_(arg_node, dest) || (not_shaped_(arg_node, dest) || result_option_ctor_shaped_(arg_node, dest)))))) {
+    if (((((((k == 3) || (k == 6)) || (k == 5)) || get_field_shaped_(arg_node, dest)) || (plain_call_shaped_(arg_node, dest) || binary_op_call_shaped_(arg_node, dest))) || (alloc_call_shaped_(arg_node) || (or_and_shaped_(arg_node, dest) || (not_shaped_(arg_node, dest) || (result_option_ctor_shaped_(arg_node, dest) || if_value_shaped_(arg_node, dest))))))) {
     return every_call_arg_symbol_or_number_(call, (i + 1), dest);
     } else {
     return 0;
@@ -2029,7 +2034,7 @@ char * emit_string_literal(Node * node __attribute__((unused)), Arena *dest __at
 }
 
 char * emit_call_arg(Node * arg_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (get_field_shaped_(arg_node, dest) ? emit_get_field(arg_node, scope, dest) : (plain_call_shaped_(arg_node, dest) ? emit_plain_call(arg_node, scope, dest) : (binary_op_call_shaped_(arg_node, dest) ? emit_binary_op(arg_node, scope, dest) : (alloc_call_shaped_(arg_node) ? emit_alloc_call(arg_node, scope, dest) : ((emit_node_kind_code((arg_node)->kind) == 5) ? emit_string_literal(arg_node, dest) : ((or_and_shaped_(arg_node, dest) || not_shaped_(arg_node, dest)) ? emit_bool_expr(arg_node, scope, dest) : (result_option_ctor_shaped_(arg_node, dest) ? emit_result_option_ctor(arg_node, scope, dest) : (none_shaped_(arg_node) ? "option_none()" : resolve_arena_ref((arg_node)->text, scope, dest)))))))));
+    return (get_field_shaped_(arg_node, dest) ? emit_get_field(arg_node, scope, dest) : (plain_call_shaped_(arg_node, dest) ? emit_plain_call(arg_node, scope, dest) : (binary_op_call_shaped_(arg_node, dest) ? emit_binary_op(arg_node, scope, dest) : (alloc_call_shaped_(arg_node) ? emit_alloc_call(arg_node, scope, dest) : ((emit_node_kind_code((arg_node)->kind) == 5) ? emit_string_literal(arg_node, dest) : ((or_and_shaped_(arg_node, dest) || not_shaped_(arg_node, dest)) ? emit_bool_expr(arg_node, scope, dest) : (result_option_ctor_shaped_(arg_node, dest) ? emit_result_option_ctor(arg_node, scope, dest) : (none_shaped_(arg_node) ? "option_none()" : (if_value_shaped_(arg_node, dest) ? emit_if_value(arg_node, scope, dest) : resolve_arena_ref((arg_node)->text, scope, dest))))))))));
 }
 
 char * emit_call_args(Node * call __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {

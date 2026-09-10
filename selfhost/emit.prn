@@ -282,13 +282,48 @@
 ;; emit-tail-symbol -- a bare symbol in tail position is this narrow
 ;; v0's own only real "return a value" shape (matching real-buf's own
 ;; real role in examples/valid_only.prn).
-(defn emit-tail-symbol [(node : &Node) (dest : Arena @ Region)] : String @ Region
+;;
+;; Real, live-found bug fixed here (2026-09-10, found re-running the self-compile
+;; diagnostic against `stdlib/string.prn`'s own `is-valid-i32-text?`): `true`/`false` in
+;; TAIL position used to fall through to the generic bare-symbol case below, emitting the
+;; literal, undefined C identifiers `return true;`/`return false;` -- neither is ever
+;; `#define`d anywhere in `runtime/parena_runtime.h`, so this genuinely doesn't compile.
+;; Every OTHER real place `true`/`false` gets handled in this codebase (the reference
+;; compiler's own `src/emit.c`'s `resolve_declared_type`, this file's own
+;; `emit-bool-expr`, and `emit-loop-binding-value`'s own `true`/`false` cases just above)
+;; already maps them to the real, literal ints `1`/`0` -- this closes the one real place
+;; that convention was missing.
+;;
+;; Real, SECOND live-found bug in this same fix, caught by actually gcc-compiling a
+;; minimal real case rather than trusting the generated text alone (this whole codebase's
+;; own established discipline): a bare, unboxed `return 1;`/`return 0;` in a function
+;; declared to return `char *` (this emitter's own uniform value-boundary type outside
+;; `#target` bodies) does NOT compile under `-Werror=int-conversion` for `1` — only `0` is
+;; a real null-pointer constant in C, silently accepted; `1` is a hard, real gcc error.
+;; Fixed by routing both through `emit-tail-expr`/`emit-i32-boxed`, the exact same real
+;; `(char *)(intptr_t)(...)` boxing every other raw-int tail-position value in this file
+;; (a bare number literal, a binary-op/or/and/not result, a get-field/deref read) already
+;; goes through.
+;; emit-tail-bare-symbol -- real, plain function call, not inlined directly into
+;; emit-tail-symbol's own cond below: a `let` isn't a legal cond-clause BODY shape in this
+;; narrow v0 (only a function's own body, a let's own body, a match clause's own body, or
+;; an if's own condition -- confirmed live, the exact real boundary S223-02's own fix
+;; already documents), so the pre-existing `let`-based emission here has to stay a real,
+;; separate function `emit-tail-symbol` merely calls, a plain call being a genuinely legal
+;; cond-clause body.
+(defn emit-tail-bare-symbol [(node : &Node) (dest : Arena @ Region)] : String @ Region
   (let [parts (vec/new dest)]
     (do
       (vec/push! &parts "    return ")
       (vec/push! &parts (mangle (get-field node :text) dest))
       (vec/push! &parts ";\n")
       (emit-join-all &parts dest))))
+
+(defn emit-tail-symbol [(node : &Node) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((emit-is-symbol? node "true") (emit-tail-expr (emit-i32-boxed "1" dest) dest))
+    ((emit-is-symbol? node "false") (emit-tail-expr (emit-i32-boxed "0" dest) dest))
+    (true (emit-tail-bare-symbol node dest))))
 
 ;; emit-tail-expr -- wraps an already-emitted C EXPRESSION (from
 ;; emit-alloc-call/emit-plain-call, both real, existing let-binding-
@@ -1477,7 +1512,19 @@
                   (or (plain-call-shaped? arg-node dest) (binary-op-call-shaped? arg-node dest)))
               (or (alloc-call-shaped? arg-node)
                   (or (or-and-shaped? arg-node dest)
-                      (or (not-shaped? arg-node dest) (result-option-ctor-shaped? arg-node dest)))))
+                      (or (not-shaped? arg-node dest)
+                          (or (result-option-ctor-shaped? arg-node dest)
+                              ;; Real, additive case (2026-09-10): `if` as a comparison
+                              ;; OPERAND -- see emit-call-arg's own matching new case
+                              ;; just below for the full real motivating case
+                              ;; (`(> n (if ...))`). Recognized here too so a
+                              ;; binary-op-call-shaped? comparison whose own operand is
+                              ;; if-value-shaped? is itself correctly recognized as
+                              ;; binary-op-call-shaped? in the first place -- without
+                              ;; this, `binary-op-call-shaped?`'s own check on such a
+                              ;; comparison would keep failing regardless of
+                              ;; emit-call-arg's own new emission support.
+                              (if-value-shaped? arg-node dest))))))
         (every-call-arg-symbol-or-number? call (+ i 1) dest)
         false))))
 
@@ -1785,6 +1832,13 @@
     ;; variable reference instead of the real `option_none()` builtin.
     ((result-option-ctor-shaped? arg-node dest) (emit-result-option-ctor arg-node scope dest))
     ((none-shaped? arg-node) "option_none()")
+    ;; Real, additive case (2026-09-10, found live re-running the self-compile diagnostic
+    ;; against stdlib/string.prn: `(> n (if (starts-with-sign? s) 1 0))` -- an `if`
+    ;; expression used as a plain comparison OPERAND, a real, different shape from
+    ;; if-value-shaped?'s own original motivating case (a loop-binding value)). Reuses
+    ;; emit-if-value directly -- a plain C ternary is exactly as valid in a call-argument
+    ;; position as it is in a loop-binding initializer.
+    ((if-value-shaped? arg-node dest) (emit-if-value arg-node scope dest))
     (true (resolve-arena-ref (get-field arg-node :text) scope dest))))
 
 (defn emit-call-args [(call : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]

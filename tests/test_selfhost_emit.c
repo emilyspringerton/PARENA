@@ -2784,6 +2784,144 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-10): a bare true/false literal in a defn's
+         * own TAIL position. Never previously exercised end-to-end -- the self-
+         * compile diagnostic against stdlib/string.prn only ever hits the false
+         * literal (is-valid-i32-text?'s own `(if (= n 0) false ...)` is itself
+         * an if-VALUE, not a defn tail), so a real, genuinely broken first fix
+         * (bare `return 1;`/`return 0;` strings) went unnoticed until a direct
+         * minimal gcc compile of the generated C caught it: `return 1;` from a
+         * `char *`-declared function fails under -Werror=int-conversion (only
+         * 0 is a real null-pointer constant in C). The fix routes both literals
+         * through emit-tail-expr/emit-i32-boxed, the same (char *)(intptr_t)(...)
+         * convention every other raw-int tail value in this file already uses. */
+        char *snippet =
+            "(defn always-true [(x : I32)]\n"
+            "  : Bool\n"
+            "  true)\n"
+            "(defn always-false [(x : I32)]\n"
+            "  : Bool\n"
+            "  false)";
+        Result pr41 = parse_program(snippet, &a);
+        CHECK(pr41.tag == 1, "a real defn whose own tail is a bare true/false literal parses fine");
+        if (pr41.tag == 1) {
+            Node program41 = *(Node *)pr41.value;
+            char *generated41 = emit_program(&program41, &a);
+            CHECK(generated41 != NULL && strstr(generated41, "#error") == NULL,
+                  "no #error is emitted for a bare true/false tail literal");
+            CHECK(generated41 != NULL &&
+                      strstr(generated41, "return (char *)(intptr_t)1;") != NULL,
+                  "a bare 'true' tail literal emits a genuine boxed (char *)(intptr_t)1 "
+                  "return, not a bare 'return 1;' -- which fails to compile under "
+                  "-Werror=int-conversion from a char*-declared function");
+            CHECK(generated41 != NULL &&
+                      strstr(generated41, "return (char *)(intptr_t)0;") != NULL,
+                  "a bare 'false' tail literal emits a genuine boxed (char *)(intptr_t)0 return");
+
+            if (generated41) {
+                char c_path29[300];
+                snprintf(c_path29, sizeof c_path29, "/tmp/parena_selfhost_emit_tail_bool_test_%d.c",
+                         (int)getpid());
+                FILE *out29 = fopen(c_path29, "w");
+                CHECK(out29 != NULL, "a real temp file opens to write the tail-bool generated C into");
+                if (out29) {
+                    fputs(generated41, out29);
+                    fclose(out29);
+
+                    char bin_path29[310];
+                    snprintf(bin_path29, sizeof bin_path29, "%s.bin", c_path29);
+                    char cmd29[1024];
+                    snprintf(cmd29, sizeof cmd29,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_tail_bool_literal.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path29, c_path29);
+                    int compile_status29 = system(cmd29);
+                    CHECK(compile_status29 == 0,
+                          "the real tail-bool generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern char *always_true/always_false(int)' driver -- this is the "
+                          "real check the first, broken fix would have failed");
+                    if (compile_status29 == 0) {
+                        int run_status29 = system(bin_path29);
+                        CHECK(run_status29 == 0,
+                              "the real, self-compiled always-true/always-false genuinely "
+                              "return the correct boxed 1/0 values at runtime");
+                    }
+                    remove(c_path29);
+                    remove(bin_path29);
+                }
+            }
+        }
+    }
+
+    {
+        /* real, new feature (2026-09-10): `if` used directly as a binary-op
+         * comparison OPERAND (not just a loop-binding init). Traced through
+         * emit-loop-tail's own or-and-shaped? tail case -> bool-expr-supported?
+         * -> binary-op-call-shaped? -> every-call-arg-symbol-or-number?, which
+         * did not recognize if-value-shaped? at all, silently falling through
+         * to an empty `return ;`. Fixed by widening both
+         * every-call-arg-symbol-or-number? (the checker) and emit-call-arg
+         * (the emitter, via emit-if-value). This is the same real shape
+         * is-valid-i32-text?'s own `(> n (if (starts-with-sign? s) 1 0))`
+         * needs, isolated into its own minimal, dedicated defn. */
+        char *snippet =
+            "(defn check [(flag : I32) (n : I32)]\n"
+            "  : Bool\n"
+            "  (> n (if (> flag 0) 1 0)))";
+        Result pr42 = parse_program(snippet, &a);
+        CHECK(pr42.tag == 1, "a real defn comparing against an if-value-shaped operand parses fine");
+        if (pr42.tag == 1) {
+            Node program42 = *(Node *)pr42.value;
+            char *generated42 = emit_program(&program42, &a);
+            CHECK(generated42 != NULL && strstr(generated42, "#error") == NULL,
+                  "no #error is emitted for an if-value-shaped comparison operand");
+            CHECK(generated42 != NULL && strstr(generated42, "return ;") == NULL,
+                  "no empty 'return ;' is emitted either -- the real, previously-silent "
+                  "failure mode this whole gap actually produced");
+            CHECK(generated42 != NULL &&
+                      strstr(generated42, "(n > ((flag > 0) ? 1 : 0))") != NULL,
+                  "the if-value operand emits a genuine C ternary nested inside the "
+                  "comparison, not a statement or a dropped operand");
+
+            if (generated42) {
+                char c_path30[300];
+                snprintf(c_path30, sizeof c_path30, "/tmp/parena_selfhost_emit_if_operand_test_%d.c",
+                         (int)getpid());
+                FILE *out30 = fopen(c_path30, "w");
+                CHECK(out30 != NULL, "a real temp file opens to write the if-operand generated C into");
+                if (out30) {
+                    fputs(generated42, out30);
+                    fclose(out30);
+
+                    char bin_path30[310];
+                    snprintf(bin_path30, sizeof bin_path30, "%s.bin", c_path30);
+                    char cmd30[1024];
+                    snprintf(cmd30, sizeof cmd30,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_if_comparison_operand.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path30, c_path30);
+                    int compile_status30 = system(cmd30);
+                    CHECK(compile_status30 == 0,
+                          "the real if-operand generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern char *check(int, int)' driver");
+                    if (compile_status30 == 0) {
+                        int run_status30 = system(bin_path30);
+                        CHECK(run_status30 == 0,
+                              "the real, self-compiled check genuinely takes different runtime "
+                              "comparison paths depending on the if-value's own chosen branch, "
+                              "for all four flag/n combinations -- not just gcc-clean text with "
+                              "an unexercised ternary");
+                    }
+                    remove(c_path30);
+                    remove(bin_path30);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
