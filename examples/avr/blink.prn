@@ -1,0 +1,20 @@
+;; examples/avr/blink.prn — PARENA's real first AVR-targeted program
+;; (founder real-time, 2026-09-10: "lets update parena so that it can
+;; run on an arduino... start with making the onboard led blink").
+;;
+;; Deliberately pure, scalar decision logic -- no I/O, no Region/Arena
+;; machinery -- same real "PARENA emits the decision, a thin hand-written
+;; native host wires it to the real platform" shape SPIDERBEETLE's own
+;; stdlib/android/battery_ui.prn already established for a different
+;; native target (Java/Android). AVR needs its own real host
+;; (examples/avr/blink_main.c) because this repo's shared runtime/
+;; parena_runtime.h is Linux-syscall-heavy (sockets, pty, mmap, SPI/I2C
+;; device files) and cannot compile under avr-gcc's freestanding
+;; environment -- confirmed directly, not assumed. next-led-state carries
+;; zero platform assumptions: an ordinary Bool -> Bool toggle, testable
+;; on the host build the exact same way any other PARENA function is.
+(module avr/blink)
+(export next-led-state)
+
+(defn next-led-state [(current : Bool)] : Bool
+  (not current))

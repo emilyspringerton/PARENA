@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload clean
 
 all: build
 
@@ -755,6 +755,51 @@ editor-demo: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime /tmp/editor_demo_full.c runtime/parena_runtime.c \
 		/tmp/pf_bridge.o /tmp/pf_arena.o /tmp/pf_fmt.o \
 		-o editor-demo -lSDL2 -lSDL2_ttf -lm
+
+# avr-blink-hex / avr-blink-upload -- real AVR target (2026-09-10, founder
+# real-time: "lets update parena so that it can run on an arduino... start
+# with making the onboard led blink"). Uses a real, no-sudo-acquired avr-gcc/
+# avrdude toolchain (apt-get download gcc-avr avr-libc avrdude binutils-avr
+# libftdi1 libhidapi-libusb0 libusb-0.1-4, then dpkg -x each .deb into a
+# real, user-owned directory -- no root, no system-wide install; see
+# docs/AVR_ARDUINO_NORTHSTAR.md for the full, reproducible recipe).
+# AVR_TOOLCHAIN_ROOT/AVR_PORT are real overridable variables, not hardcoded
+# assumptions -- a different box's toolchain location or serial port just
+# overrides them on the command line (`make avr-blink-upload AVR_PORT=/dev/ttyUSB0`).
+#
+# examples/avr/blink.prn compiles through the SAME `parena build` -> C
+# pipeline every other target uses; examples/avr/blink_gen.c's own quoted
+# `#include "parena_runtime.h"` resolves to examples/avr/parena_runtime.h
+# (a real, minimal AVR-safe stub, NOT the shared Linux-syscall-heavy
+# runtime/parena_runtime.h, which does not compile under avr-gcc's
+# freestanding environment) purely because that stub lives in the same
+# directory as the generated file -- no -I trickery, no emit_c.c changes.
+AVR_TOOLCHAIN_ROOT ?= /home/fatbaby/.local/opt/avr-toolchain
+AVR_MCU ?= atmega328p
+AVR_F_CPU ?= 16000000UL
+AVR_PORT ?= /dev/ttyACM0
+AVR_BAUD ?= 115200
+AVR_PROGRAMMER ?= arduino
+
+avr-blink-hex: build
+	./parena build examples/avr/blink.prn -o examples/avr/blink_gen.c
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-gcc -Wall -Os -DF_CPU=$(AVR_F_CPU) -mmcu=$(AVR_MCU) \
+		examples/avr/blink_main.c -o examples/avr/blink.elf
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-objcopy -O ihex -R .eeprom examples/avr/blink.elf examples/avr/blink.hex
+
+# Real, honest v0 constraint (same one docs/UART_SERIAL_NORTHSTAR.md's own
+# Phase 2 already names): no physical Arduino exists in this sandbox, so
+# this target's own avrdude invocation is verified to correctly build the
+# real .hex and correctly ATTEMPT the flash (failing only at port-open,
+# never at compile/link/avrdude-invocation) -- not verified against real
+# hardware. LD_LIBRARY_PATH is set inline because avrdude's own libftdi1/
+# libhidapi-libusb0/libusb-0.1-4 shared-library deps were fetched the same
+# no-sudo way and live under AVR_TOOLCHAIN_ROOT, not system-wide.
+avr-blink-upload: avr-blink-hex
+	LD_LIBRARY_PATH=$(AVR_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH \
+		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
+		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
+		-U flash:w:examples/avr/blink.hex:i
 
 # test-editor-io -- real end-to-end verification of the editor's own
 # real save/load path (stdlib/io.prn's file-open/write-string/

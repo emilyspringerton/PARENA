@@ -182,6 +182,15 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * by-default sidebar is a real, visible, honest tradeoff, not a silent
  * bug. */
 #define COMPILE_BUTTON_HEIGHT 28
+/* UPLOAD_BUTTON_HEIGHT -- a second reserved strip, same shape as
+ * COMPILE_BUTTON_HEIGHT, stacked directly above it (2026-09-10, founder
+ * real-time: "we need to update the arduino editor to be able to upload
+ * to an arduino with a button... clicking the button compiles the parena
+ * code and uploads it to the arduino"). See compile_and_upload_avr's own
+ * header comment for the real, honest v0 scope (always builds+flashes
+ * examples/avr/blink.prn via `make avr-blink-upload`, not yet the
+ * currently-open file). */
+#define UPLOAD_BUTTON_HEIGHT 28
 #define SAVE_BUTTON_WIDTH 140
 #define FILE_TREE_ROW_HEIGHT 20
 
@@ -647,6 +656,45 @@ static void compile_and_relaunch(const char *exe_path, const char *current_file)
     }
     fprintf(stderr, "editor: compile succeeded, relaunching\n");
     spawn_new_instance(exe_path, current_file);
+}
+
+/* compile_and_upload_avr -- the real action behind the new right
+ * sidebar's Upload button (2026-09-10, founder real-time: "lets update
+ * parena so that it can run on an arduino... we need to update the
+ * arduino editor to be able to upload to an arduino with a button...
+ * clicking the button compiles the parena code and uploads it to the
+ * arduino... start with making the onboard led blink"). Same real,
+ * honest, blocking `system()` shape compile_and_relaunch already
+ * establishes just above (no threading anywhere in this codebase) --
+ * shells out to `make avr-blink-upload`, which itself real-compiles
+ * examples/avr/blink.prn through the normal `parena build` pipeline,
+ * avr-gcc/avr-objcopy's a real .hex, and invokes avrdude against a real,
+ * no-sudo-acquired AVR toolchain (see Makefile's own avr-blink-upload
+ * target and docs/AVR_ARDUINO_NORTHSTAR.md for the full recipe).
+ *
+ * Real, honest v0 scope, named not hidden: unlike Compile (which acts on
+ * whatever file this window has open), Upload always targets
+ * examples/avr/blink.prn regardless of current_file -- making the button
+ * respect the currently-open .prn file is real, separate follow-up work,
+ * not yet done. No relaunch afterward (unlike Compile): a firmware
+ * upload doesn't change anything about the running editor process
+ * itself, so there is nothing to hot-reload.
+ *
+ * Real, accepted, already-documented limitation this call inherits, not
+ * a new one: this sandbox has no physical Arduino attached, so a real
+ * run here compiles+links+builds a real .hex successfully and then
+ * fails at avrdude's own port-open step -- the exact same "no physical
+ * hardware in this sandbox" constraint docs/UART_SERIAL_NORTHSTAR.md's
+ * own Phase 2 already names and accepts. On a real box with a real
+ * board plugged into AVR_PORT, this same call flashes it for real. */
+static void compile_and_upload_avr(void) {
+    fprintf(stderr, "editor: building + uploading AVR blink example (make avr-blink-upload)...\n");
+    int rc = system("make avr-blink-upload");
+    if (rc != 0) {
+        fprintf(stderr, "editor: avr upload failed (make avr-blink-upload exited %d) -- if this box has no Arduino attached, this is the expected \"no physical hardware\" failure, not a new bug\n", rc);
+        return;
+    }
+    fprintf(stderr, "editor: avr upload succeeded\n");
 }
 
 /* open_font_with_fallback -- real, confirmed-live bug fix (2026-08-26,
@@ -1656,9 +1704,13 @@ int main(int argc, char **argv) {
                      * reserved UI chrome, not a navigable row -- checked
                      * FIRST so a click there triggers Compile instead of
                      * falling through to row-index math that was never
-                     * meant to cover it. */
+                     * meant to cover it. UPLOAD_BUTTON_HEIGHT is a second
+                     * such reserved strip stacked directly above it
+                     * (2026-09-10) -- checked next, same reasoning. */
                     if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT) {
                         compile_and_relaunch(exe_path, path);
+                    } else if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT - UPLOAD_BUTTON_HEIGHT) {
+                        compile_and_upload_avr();
                     } else {
                         int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
                         int entry_idx = row_idx - 1 + editor_source_scroll_offset;
@@ -2185,11 +2237,13 @@ int main(int argc, char **argv) {
         /* Real RIGHT sidebar render (2026-08-27) -- same real shape the
          * left file-tree's own render block just above already
          * establishes, mirrored at the right edge (SIDEBAR_RIGHT_X),
-         * with a real, reserved COMPILE_BUTTON_HEIGHT strip at its own
-         * bottom for the Compile control instead of a navigable row. */
+         * with a real, reserved COMPILE_BUTTON_HEIGHT strip (plus a
+         * second UPLOAD_BUTTON_HEIGHT strip stacked directly above it,
+         * 2026-09-10) at its own bottom for the Compile/Upload controls
+         * instead of a navigable row. */
         if (toggle_on_(&editor_source_toggle)) {
 #define SIDEBAR_RIGHT_X (WINDOW_WIDTH - SIDEBAR_WIDTH)
-            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT;
+            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT - UPLOAD_BUTTON_HEIGHT;
             Result esbg = set_draw_color(&ren, 32, 32, 38, 255, &frame_arena);
             (void)esbg;
             render_fill_rect(&ren, SIDEBAR_RIGHT_X, 0, SIDEBAR_WIDTH, right_tree_h, &frame_arena);
@@ -2211,15 +2265,29 @@ int main(int argc, char **argv) {
                     : render_text(&ren, &font, entry_name2, SIDEBAR_RIGHT_X + 8, ey, 190, 190, 205, &frame_arena);
                 (void)er;
             }
+            /* Real Upload button, reserved strip directly above Compile's
+             * own strip (2026-09-10) -- same real "fixed-position
+             * hand-rolled click region" shape Compile/the Settings
+             * panel's own Zoom -/+ buttons already use, not a
+             * Toggle-typed widget (Upload is a momentary ACTION, same as
+             * Compile). Distinct color (blue-ish, not Compile's green)
+             * so the two are visually distinguishable at a glance. */
+            Result ubtnbg = set_draw_color(&ren, 40, 55, 75, 255, &frame_arena);
+            (void)ubtnbg;
+            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, UPLOAD_BUTTON_HEIGHT, &frame_arena);
+            Result ubtntxt = render_text(&ren, &font, "> Upload", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 190, 215, 235, &frame_arena);
+            (void)ubtntxt;
+
             /* Real Compile button, reserved bottom strip -- same real
              * "fixed-position hand-rolled click region" shape the
              * Settings panel's own Zoom -/+ buttons already use, not a
              * Toggle-typed widget (Compile is a momentary ACTION, not
              * an on/off state). */
+            int compile_strip_y = right_tree_h + UPLOAD_BUTTON_HEIGHT;
             Result cbtnbg = set_draw_color(&ren, 45, 65, 45, 255, &frame_arena);
             (void)cbtnbg;
-            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
-            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 200, 235, 200, &frame_arena);
+            render_fill_rect(&ren, SIDEBAR_RIGHT_X, compile_strip_y, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
+            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, compile_strip_y + 6, 200, 235, 200, &frame_arena);
             (void)cbtntxt;
         }
 
