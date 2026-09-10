@@ -162,26 +162,45 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * source" -> "i guess the compile button can be at the bottom of the
  * right nerd tree") -- same real, honest v0 shape the left file-tree
  * sidebar above already establishes (one flat level, fixed real screen
- * width, click-to-navigate/click-to-open via spawn_new_instance),
- * mirrored on the RIGHT edge instead of the left, with its own fully
- * independent navigation state (editor_source_dir/_entries/
- * _scroll_offset) -- both sidebars can be open at once. Defaults to
- * real CWD at startup, same convention file_tree_dir already uses;
- * "the editor's own source" in practice just means launching this dev
- * build the normal way (from the PARENA repo root), not a hardcoded
- * path guess. Reserves a real, fixed COMPILE_BUTTON_HEIGHT strip at
- * its own bottom for the Compile control (real, honest v0: rebuilds
- * the editor via `make editor-demo` and spawns the fresh binary into a
- * new window via the already-real spawn_new_instance path -- the
- * "hot reload compile into a new window" idea raised earlier this
- * same session). Real, honest, accepted limitation: this sidebar
- * draws OVER whatever code content happens to be at its own x-range
- * (no horizontal-scroll/text-reflow mechanism exists in this editor to
+ * width, click-to-navigate), mirrored on the RIGHT edge instead of the
+ * left, with its own fully independent navigation state
+ * (editor_source_dir/_entries/_scroll_offset) -- both sidebars can be
+ * open at once. Defaults to real CWD at startup, same convention
+ * file_tree_dir already uses; "the editor's own source" in practice
+ * just means launching this dev build the normal way (from the PARENA
+ * repo root), not a hardcoded path guess -- so this tree browses the
+ * ENTIRE shipped PARENA repo (compiler, stdlib, examples/avr's own real
+ * Arduino blink program included) by default, closing the founder's own
+ * "originally we wanted to ship all the parena code with the editor so
+ * you could hack on the code easily i want that to happen" ask.
+ *
+ * Real, deliberate DIVERGENCE from the left tree (2026-09-10, founder
+ * real-time: "the code tree to the right currently duplicates the one
+ * to the left. the one to the right should be for opening up the file
+ * in the tree in the current editor") -- clicking a file here loads it
+ * directly into the CURRENT buffer (same real in-place-load shape the
+ * Spotlight overlay's own File-result activation already establishes:
+ * load_from_file + reset undo/redo), never a new window. The LEFT tree
+ * keeps its own real, founder-confirmed new-window behavior unchanged
+ * (see that click handler's own header comment on why new-window is the
+ * real, wanted behavior there). Two trees, two real, distinct jobs: LEFT
+ * opens a file to work on it standalone; RIGHT quickly loads shipped
+ * PARENA source into the buffer you're already looking at -- e.g. find
+ * examples/avr/blink.prn or examples/host_led/led_main.c here, load it
+ * into the current buffer, edit it, hit Compile/Upload (the top-bar
+ * buttons just below), watch the real LED blink -- a real, working
+ * Arduino dev environment inside this same editor.
+ *
+ * The Compile control used to live in a reserved bottom strip of this
+ * sidebar; moved to the top bar (2026-09-10, same founder real-time
+ * message) next to Save/Upload -- see COMPILE_TOP_BUTTON_WIDTH's own
+ * header comment. Real, honest, accepted limitation: this sidebar draws
+ * OVER whatever code content happens to be at its own x-range (no
+ * horizontal-scroll/text-reflow mechanism exists in this editor to
  * genuinely reserve space the way the LEFT sidebar's own text_x_origin
  * shift does) -- acceptable since long lines running under a hidden-
  * by-default sidebar is a real, visible, honest tradeoff, not a silent
  * bug. */
-#define COMPILE_BUTTON_HEIGHT 28
 /* UPLOAD_TOP_BUTTON_WIDTH -- the Upload control's own width, sitting
  * directly next to the top-left hover-reveal Save button (2026-09-10,
  * founder real-time: "i cant see the button move it to next to the save
@@ -190,8 +209,20 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * miss; moved here instead, same real hover-reveal visibility Save
  * already has). See compile_and_upload_avr's own header comment for the
  * real, honest v0 scope (always builds+flashes examples/avr/blink.prn
- * via `make avr-blink-upload`, not yet the currently-open file). */
+ * via `make avr-blink-upload`, not yet the currently-open file -- a real
+ * gap the new right-tree in-place-open still closes in practice, since
+ * that target rebuilds examples/avr/blink.prn fresh from disk every
+ * single Upload click, so editing+saving it through the right tree DOES
+ * change what gets flashed next). */
 #define UPLOAD_TOP_BUTTON_WIDTH 120
+/* COMPILE_TOP_BUTTON_WIDTH -- Compile's own top-bar width, sitting
+ * directly next to Upload (2026-09-10, founder real-time: "we need the
+ * compile button to move up to next to save and upload"). Same real
+ * hover-reveal visibility Save/Upload already have; unchanged real
+ * action (compile_and_relaunch -- rebuilds THIS editor via
+ * `make editor-demo` and hot-reloads into a new window), just relocated
+ * out of the right sidebar's own former bottom strip. */
+#define COMPILE_TOP_BUTTON_WIDTH 120
 #define SAVE_BUTTON_WIDTH 140
 #define FILE_TREE_ROW_HEIGHT 20
 
@@ -1704,35 +1735,57 @@ int main(int argc, char **argv) {
                      * shape the LEFT file-tree sidebar's own click
                      * handler just above already establishes, mirrored
                      * at the right edge with its own independent
-                     * editor_source_dir/_entries/_scroll_offset state.
-                     * The bottom COMPILE_BUTTON_HEIGHT strip is real,
-                     * reserved UI chrome, not a navigable row -- checked
-                     * FIRST so a click there triggers Compile instead of
-                     * falling through to row-index math that was never
-                     * meant to cover it. */
-                    if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT) {
-                        compile_and_relaunch(exe_path, path);
-                    } else {
-                        int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
-                        int entry_idx = row_idx - 1 + editor_source_scroll_offset;
-                        if (row_idx == 0) {
-                            editor_source_dir = parent_dir_of(editor_source_dir, &a);
+                     * editor_source_dir/_entries/_scroll_offset state. No
+                     * reserved bottom strip anymore -- Compile moved to
+                     * the top bar (2026-09-10), so this sidebar is a
+                     * plain, full-height navigable tree, same real shape
+                     * the LEFT tree already has. */
+                    int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
+                    int entry_idx = row_idx - 1 + editor_source_scroll_offset;
+                    if (row_idx == 0) {
+                        editor_source_dir = parent_dir_of(editor_source_dir, &a);
+                        editor_source_entries = list_dir(editor_source_dir, &a);
+                        editor_source_scroll_offset = 0;
+                    } else if (row_idx >= 1 && entry_idx < vec_len(&editor_source_entries)) {
+                        char *name = (char *)vec_get(&editor_source_entries, entry_idx);
+                        char full_path2[4096];
+                        snprintf(full_path2, sizeof full_path2, "%s/%s", editor_source_dir, name);
+                        if (is_dir_(full_path2)) {
+                            size_t plen2 = strlen(full_path2) + 1;
+                            char *dir_copy2 = (char *)arena_alloc(&a, plen2);
+                            memcpy(dir_copy2, full_path2, plen2);
+                            editor_source_dir = dir_copy2;
                             editor_source_entries = list_dir(editor_source_dir, &a);
                             editor_source_scroll_offset = 0;
-                        } else if (row_idx >= 1 && entry_idx < vec_len(&editor_source_entries)) {
-                            char *name = (char *)vec_get(&editor_source_entries, entry_idx);
-                            char full_path2[4096];
-                            snprintf(full_path2, sizeof full_path2, "%s/%s", editor_source_dir, name);
-                            if (is_dir_(full_path2)) {
-                                size_t plen2 = strlen(full_path2) + 1;
-                                char *dir_copy2 = (char *)arena_alloc(&a, plen2);
-                                memcpy(dir_copy2, full_path2, plen2);
-                                editor_source_dir = dir_copy2;
-                                editor_source_entries = list_dir(editor_source_dir, &a);
-                                editor_source_scroll_offset = 0;
-                            } else {
-                                spawn_new_instance(exe_path, full_path2);
-                            }
+                        } else {
+                            /* Real, deliberate divergence from the LEFT
+                             * tree's own new-window behavior (2026-09-10,
+                             * founder real-time: "the code tree to the
+                             * right currently duplicates the one to the
+                             * left. the one to the right should be for
+                             * opening up the file in the tree in the
+                             * current editor") -- loads directly into
+                             * the CURRENT buffer, same real in-place-load
+                             * shape the Spotlight overlay's own
+                             * File-result activation already establishes
+                             * (load_from_file + reset undo/redo), plus
+                             * updating path/is_markdown so Save/F3-reload
+                             * and syntax highlighting track the
+                             * newly-opened file, not whatever this
+                             * window originally launched with. This is
+                             * the real affordance behind "find
+                             * examples/avr/blink.prn here, load it, edit
+                             * it, hit Compile/Upload, watch the LED
+                             * blink" -- a real Arduino dev environment
+                             * inside this same editor. */
+                            size_t fplen2 = strlen(full_path2) + 1;
+                            char *loaded_path = (char *)arena_alloc(&a, fplen2);
+                            memcpy(loaded_path, full_path2, fplen2);
+                            buf = load_from_file(loaded_path, &a);
+                            path = loaded_path;
+                            is_markdown = path_has_suffix(path, ".md");
+                            undo_count = 0;
+                            redo_count = 0;
                         }
                     }
                 } else if (last_mouse_y <= HOVER_REVEAL_ZONE && raw_mx >= 0 && raw_mx < SAVE_BUTTON_WIDTH
@@ -1759,6 +1812,19 @@ int main(int argc, char **argv) {
                      * for the full "moved here from the right sidebar"
                      * story. */
                     compile_and_upload_avr();
+                } else if (last_mouse_y <= HOVER_REVEAL_ZONE
+                           && raw_mx >= SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH
+                           && raw_mx < SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH + COMPILE_TOP_BUTTON_WIDTH
+                           && raw_my >= 0 && raw_my < STATUS_BAR_HEIGHT) {
+                    /* Real top-bar Compile button click (2026-09-10,
+                     * founder real-time: "we need the compile button to
+                     * move up to next to save and upload") -- same real
+                     * hover-reveal gate Save/Upload just above already
+                     * use, sitting directly to Upload's right. Same real
+                     * action as before (compile_and_relaunch), just
+                     * relocated out of the right sidebar's own former
+                     * bottom strip. */
+                    compile_and_relaunch(exe_path, path);
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
                 } else if (bar_visible_now && toggle_hit_(&file_tree_toggle, raw_mx, raw_my)) {
@@ -2247,12 +2313,15 @@ int main(int argc, char **argv) {
 
         /* Real RIGHT sidebar render (2026-08-27) -- same real shape the
          * left file-tree's own render block just above already
-         * establishes, mirrored at the right edge (SIDEBAR_RIGHT_X),
-         * with a real, reserved COMPILE_BUTTON_HEIGHT strip at its own
-         * bottom for the Compile control instead of a navigable row. */
+         * establishes, mirrored at the right edge (SIDEBAR_RIGHT_X). No
+         * reserved bottom strip anymore -- Compile moved to the top bar
+         * (2026-09-10), so this is a plain, full-height navigable tree
+         * whose click behavior now diverges from the LEFT tree's own
+         * (loads into the current buffer instead of a new window -- see
+         * that click handler's own header comment for the full story). */
         if (toggle_on_(&editor_source_toggle)) {
 #define SIDEBAR_RIGHT_X (WINDOW_WIDTH - SIDEBAR_WIDTH)
-            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT;
+            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT;
             Result esbg = set_draw_color(&ren, 32, 32, 38, 255, &frame_arena);
             (void)esbg;
             render_fill_rect(&ren, SIDEBAR_RIGHT_X, 0, SIDEBAR_WIDTH, right_tree_h, &frame_arena);
@@ -2274,16 +2343,6 @@ int main(int argc, char **argv) {
                     : render_text(&ren, &font, entry_name2, SIDEBAR_RIGHT_X + 8, ey, 190, 190, 205, &frame_arena);
                 (void)er;
             }
-            /* Real Compile button, reserved bottom strip -- same real
-             * "fixed-position hand-rolled click region" shape the
-             * Settings panel's own Zoom -/+ buttons already use, not a
-             * Toggle-typed widget (Compile is a momentary ACTION, not
-             * an on/off state). */
-            Result cbtnbg = set_draw_color(&ren, 45, 65, 45, 255, &frame_arena);
-            (void)cbtnbg;
-            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
-            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 200, 235, 200, &frame_arena);
-            (void)cbtntxt;
         }
 
         /* Real top-left hover-reveal Save button (2026-08-27, founder
@@ -2316,6 +2375,21 @@ int main(int argc, char **argv) {
             render_fill_rect(&ren, SAVE_BUTTON_WIDTH, 0, UPLOAD_TOP_BUTTON_WIDTH, STATUS_BAR_HEIGHT, &frame_arena);
             Result uploadtxt = render_text(&ren, &font, "Upload", SAVE_BUTTON_WIDTH + 8, 6, 190, 215, 235, &frame_arena);
             (void)uploadtxt;
+
+            /* Real top-bar Compile button, directly to Upload's right
+             * (2026-09-10, founder real-time: "we need the compile
+             * button to move up to next to save and upload") -- moved
+             * here from the right sidebar's own former bottom strip,
+             * same hover-reveal visibility Save/Upload already have,
+             * own distinct color (green, matching its original
+             * right-sidebar color) so all three read as separate
+             * controls at a glance. */
+            int compile_top_x = SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH;
+            Result cbarbg = set_draw_color(&ren, 45, 65, 45, 255, &frame_arena);
+            (void)cbarbg;
+            render_fill_rect(&ren, compile_top_x, 0, COMPILE_TOP_BUTTON_WIDTH, STATUS_BAR_HEIGHT, &frame_arena);
+            Result compiletxt = render_text(&ren, &font, "Compile", compile_top_x + 8, 6, 200, 235, 200, &frame_arena);
+            (void)compiletxt;
         }
 
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {

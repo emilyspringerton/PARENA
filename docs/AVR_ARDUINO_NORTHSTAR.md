@@ -93,7 +93,7 @@ overridable `make` variables (defaults match this sandbox + a stock Arduino Uno 
 `/dev/ttyACM0`) — a different box just overrides them, e.g.
 `make avr-blink-upload AVR_PORT=/dev/ttyUSB0`.
 
-## The real Upload button
+## The real Upload button (and Compile, now beside it)
 
 First placed as a right-sidebar strip mirroring the existing "Compile" button (a momentary
 action, not a `Toggle`-typed widget — see `compile_and_relaunch`). Moved same day per founder
@@ -104,10 +104,48 @@ visibility mechanic, own color (blue vs. Save's neutral) so the two are visually
 Clicking it calls `compile_and_upload_avr()`, a real, blocking `system("make avr-blink-upload")`
 call (same no-threading tradeoff `compile_and_relaunch` already accepts and documents).
 
-**Real, honest, named v0 scope limitation**: Upload always targets `examples/avr/blink.prn`
-regardless of the file currently open in the editor — unlike Compile, which rebuilds whatever
-the editor has open. Making Upload respect the currently-open `.prn` file is real, separate
-follow-up work, not done here.
+A second follow-up the same day moved the pre-existing "Compile" button (the editor's own
+hot-reload control, unrelated to AVR — rebuilds this editor itself via `make editor-demo`) out of
+the right sidebar's former bottom strip to sit directly next to Upload, per founder real-time:
+"we need the compile button to move up to next to save and upload." All three real controls —
+Save, Upload, Compile — now live together in the same top-left hover-reveal bar.
+
+**Real, honest, named v0 scope limitation, partially closed by the tree change below**: Upload
+always targets `examples/avr/blink.prn` regardless of the file currently open in the editor —
+unlike Compile, which rebuilds whatever the editor has open. In practice this matters less than
+it sounds: `make avr-blink-upload` regenerates `examples/avr/blink_gen.c` fresh from
+`examples/avr/blink.prn` on disk on every single click, so opening that exact file (now easy via
+the right tree, see below), editing it, saving it, and clicking Upload DOES flash your edit —
+Upload doesn't need to know what's "currently open" for that one file to work as a real dev loop.
+Making it target an arbitrary currently-open `.prn` file (with no matching hand-written host)
+remains real, unscoped, not-done follow-up work.
+
+## The right tree now opens files in-place, and ships the whole PARENA repo
+
+Founder real-time: "originally we wanted to ship all the parena code with the editor so you
+could hack on the code easily i want that to happen" + "the code tree to the right currently
+duplicates the one to the left. the one to the right should be for opening up the file in the
+tree in the current editor."
+
+The right sidebar (`editor_source_dir`, added 2026-08-27) already defaulted to the real process
+CWD — launching this dev build the normal way (from the PARENA repo root) means it was already
+browsing the entire shipped PARENA repo, compiler/stdlib/examples included. What was genuinely
+broken: clicking a file there did the exact same thing as the LEFT tree (`spawn_new_instance`,
+opening a new window) — a real, confirmed duplicate, not a distinct tool.
+
+Fixed by giving the two trees two real, different jobs: the LEFT tree keeps its own real,
+founder-confirmed new-window behavior (see that click handler's own header comment on why
+new-window is the deliberately correct choice there). The RIGHT tree now loads a clicked file
+directly into the CURRENT buffer instead — the same real in-place-load shape the Spotlight
+overlay's own File-result activation already used (`load_from_file` + reset undo/redo), plus
+updating `path`/`is_markdown` so Save, F3-reload, and syntax highlighting all correctly track
+whatever was just opened.
+
+This is the real, concrete Arduino dev-environment affordance the founder asked for: open the
+right sidebar, navigate to `examples/avr/blink.prn` (or `examples/host_led/led_main.c`), click it
+to load it into the buffer you're already looking at, edit it, hit Compile or Upload (now right
+there in the same top bar), and watch the real LED blink — without ever leaving this editor or
+juggling a second window.
 
 ## Real proof the LED actually flashes (no physical Arduino needed)
 
