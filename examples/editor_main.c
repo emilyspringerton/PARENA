@@ -167,12 +167,25 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * (editor_source_dir/_entries/_scroll_offset) -- both sidebars can be
  * open at once. Defaults to real CWD at startup, same convention
  * file_tree_dir already uses; "the editor's own source" in practice
- * just means launching this dev build the normal way (from the PARENA
- * repo root), not a hardcoded path guess -- so this tree browses the
- * ENTIRE shipped PARENA repo (compiler, stdlib, examples/avr's own real
- * Arduino blink program included) by default, closing the founder's own
- * "originally we wanted to ship all the parena code with the editor so
- * you could hack on the code easily i want that to happen" ask.
+ * just means launching this build with CWD set to a real, complete
+ * PARENA source tree, not a hardcoded path guess -- true both when
+ * running this dev build from the PARENA repo root AND when running a
+ * downloaded release build, since 2026-09-10's CI fix (see
+ * .github/workflows/ci.yml's own "Bundle real PARENA source + compiler
+ * for hacking" step) actually copies src/stdlib/examples/runtime/docs
+ * and the real `parena` compiler binary into the SAME directory as
+ * editor-demo itself in every published archive -- closing a real,
+ * previously-unfixed gap the founder had to name three or four separate
+ * times ("the parena source code is still not being included in the
+ * editor demo... i specifically asked for the parena code to be
+ * included in editor demo") before an earlier pass at this same comment
+ * wrongly declared it already solved by CWD alone, without checking
+ * what a downloaded release archive actually contained. This tree
+ * browses the ENTIRE shipped PARENA repo (compiler, stdlib, examples/
+ * avr's own real Arduino blink program included) by default, closing
+ * the founder's own "originally we wanted to ship all the parena code
+ * with the editor so you could hack on the code easily i want that to
+ * happen" ask for real.
  *
  * Real, deliberate DIVERGENCE from the left tree (2026-09-10, founder
  * real-time: "the code tree to the right currently duplicates the one

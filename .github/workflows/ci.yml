@@ -776,6 +776,42 @@ jobs:
           name: PARENA_Construct_${{ github.run_number }}_${{ github.sha }}
           path: dist-construct
 
+      # Real fix (2026-09-10, founder real-time, repeated 3-4 times across
+      # sessions: "the parena source code is still not being included in
+      # the editor demo... i specifically asked for the parena code to be
+      # included in editor demo"). Root cause, found by actually reading
+      # this step's own tar/zip commands below rather than assuming: the
+      # downloadable editor-demo-linux-x86_64.tar.gz/editor-demo-windows-
+      # x86_64.zip NEVER contained any real PARENA source at all -- just
+      # the editor-demo binary, its bundled SDL2 libs, a font, and
+      # PARENA_CONSTRUCT.txt (a build-identifying snapshot, not source). A
+      # user who downloads and extracts one of those archives has nothing
+      # for the editor's own right-sidebar source tree to browse (it
+      # defaults to real CWD, see examples/editor_main.c's own header
+      # comment) -- examples/avr/blink.prn genuinely isn't there, so the
+      # real "open blink.prn, hit Compile, hit Upload" workflow was never
+      # actually possible from a downloaded release, only from a full git
+      # checkout. This job already does a full `actions/checkout@v4`
+      # above, so the real source is sitting right here -- this step
+      # copies it straight into both platform directories before they're
+      # archived below. Linux additionally gets the real `parena` compiler
+      # binary itself (already downloaded as dist/parena above) so
+      # `make avr-blink-upload`'s own `./parena build ...` step actually
+      # has something to run; Windows does NOT get a parena binary because
+      # none is ever cross/native-compiled for Windows anywhere in this
+      # CI (build_editor_windows only compiles editor-demo.exe from
+      # already-generated C, never the compiler itself) -- a real, named,
+      # not-yet-solved gap, not silently pretended to work.
+      - name: Bundle real PARENA source + compiler for hacking
+        run: |
+          set -euo pipefail
+          for d in dist-editor/linux dist-editor/windows; do
+            cp -r src stdlib examples runtime docs "$d/"
+            cp Makefile STDLIB.md NORTHSTAR.md README.md "$d/"
+          done
+          cp dist/parena dist-editor/linux/parena
+          chmod +x dist-editor/linux/parena
+
       - name: Package release assets
         run: |
           set -euo pipefail
@@ -788,10 +824,19 @@ jobs:
           # earlier in this file), the bundled JetBrainsMono-Regular.ttf
           # font (real, confirmed-live bug fix, 2026-08-26 -- see
           # examples/editor_main.c's own open_font_with_fallback header
-          # comment), and PARENA_CONSTRUCT.txt itself (see this job's own
-          # "Download Construct Bundle" step comment above). macOS asset
-          # temporarily dropped, see this job's own "needs:" comment.
-          tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt
+          # comment), PARENA_CONSTRUCT.txt itself (see this job's own
+          # "Download Construct Bundle" step comment above), and -- as of
+          # this same commit -- the real PARENA source tree (src/stdlib/
+          # examples/runtime/docs + Makefile/STDLIB.md/NORTHSTAR.md/
+          # README.md) plus the real `parena` compiler binary, both copied
+          # in by "Bundle real PARENA source + compiler for hacking" just
+          # above, so a downloaded, extracted archive is a genuinely
+          # self-contained PARENA dev environment, not just a viewer.
+          # macOS asset temporarily dropped, see this job's own "needs:"
+          # comment. Windows zip (below) already includes everything in
+          # dist-editor/windows/ via `zip -r`, no separate file list to
+          # keep in sync here.
+          tar -czf editor-demo-linux-x86_64.tar.gz -C dist-editor/linux editor-demo lib JetBrainsMono-Regular.ttf PARENA_CONSTRUCT.txt parena src stdlib examples runtime docs Makefile STDLIB.md NORTHSTAR.md README.md
           (cd dist-editor/windows && zip -r ../../editor-demo-windows-x86_64.zip .)
 
       - name: Compute next minor version
