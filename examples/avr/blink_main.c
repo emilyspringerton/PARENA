@@ -17,9 +17,21 @@
  * directory has its own stub instead of using the shared
  * runtime/parena_runtime.h (Linux-syscall-heavy, doesn't compile under
  * avr-gcc).
- */
+ *
+ * Uses `<util/delay_basic.h>`'s `_delay_loop_2` rather than
+ * `<util/delay.h>`'s `_delay_ms` (2026-09-10, real LLVM-backend scoping
+ * work, `docs/LLVM_BACKEND_NORTHSTAR.md`): `_delay_ms` expands through
+ * `__builtin_avr_delay_cycles`, a GCC-only compiler builtin clang's AVR
+ * frontend does not implement ("undefined reference to
+ * '__builtin_avr_delay_cycles'" at link time, confirmed live) — while
+ * `_delay_loop_2` is an ordinary inline-asm `static inline` function,
+ * real and portable under both avr-gcc and clang. Kept as ONE shared
+ * host file compiled by both `avr-blink-hex` (avr-gcc) and
+ * `avr-blink-hex-clang` (clang, see that Makefile target's own header
+ * comment) rather than forking a second, clang-only copy — real,
+ * deliberate, single-source-of-truth choice. */
 #include <avr/io.h>
-#include <util/delay.h>
+#include <util/delay_basic.h>
 #include "blink_gen.c"
 
 int main(void) {
@@ -35,7 +47,15 @@ int main(void) {
         } else {
             PORTB &= (uint8_t)~(1 << PB5);
         }
-        _delay_ms(500);
+        /* ~500ms at 16MHz: _delay_loop_2's own real, documented formula
+         * is 4 cycles per iteration, so 100 * 60000 * 4 / 16e6 ≈ 1.5s --
+         * an intentionally-visible, slow blink, not tuned to an exact
+         * value (same "visibly slow, not a flicker" real intent
+         * examples/host_led/led_main.c's own TOGGLE_DELAY_US already
+         * states). */
+        for (int i = 0; i < 100; i++) {
+            _delay_loop_2(60000);
+        }
     }
     return 0;
 }

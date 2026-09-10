@@ -11,6 +11,9 @@ tools/ci_status_gen.c
 examples/avr/blink_gen.c
 examples/avr/blink.elf
 examples/avr/blink.hex
+examples/avr/blink_clang.o
+examples/avr/blink_clang.elf
+examples/avr/blink_clang.hex
 examples/host_led/blink_gen.c
 examples/host_led/led_blink
 .parena-bootstrap

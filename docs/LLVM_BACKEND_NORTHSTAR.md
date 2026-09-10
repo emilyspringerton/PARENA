@@ -30,7 +30,21 @@ not a toolchain swap.
 **LLVM/clang is fetchable no-sudo, same technique as the AVR toolchain.** `apt-get download
 clang-18 llvm-18 libllvm18 libclang-cpp18 libclang1-18 libclang-common-18-dev` fetched ~75MB of
 real `.deb`s, extracted via `dpkg -x` into a user-owned directory, no root needed — the same real
-recipe `docs/AVR_ARDUINO_NORTHSTAR.md` already established for `gcc-avr`/`avrdude`.
+recipe `docs/AVR_ARDUINO_NORTHSTAR.md` already established for `gcc-avr`/`avrdude`. Full,
+reproducible recipe (matches `Makefile`'s own `LLVM_TOOLCHAIN_ROOT` default):
+
+```bash
+mkdir -p /tmp/llvm-deb && cd /tmp/llvm-deb
+apt-get download clang-18 llvm-18 libllvm18 libclang-cpp18 libclang1-18 libclang-common-18-dev
+
+mkdir -p ~/.local/opt/llvm-toolchain
+for f in *.deb; do dpkg -x "$f" ~/.local/opt/llvm-toolchain; done
+```
+
+`libclang-common-18-dev` is a real, easy-to-miss dependency: it's the package that ships clang's
+own resource-dir headers (`stddef.h` etc, under `lib/clang/18/include/`) — omitting it produces a
+real `fatal error: 'stddef.h' file not found` even though the compiler itself runs fine, since
+those aren't part of `clang-18` proper.
 
 **This build's LLVM genuinely includes a working AVR backend.** `llc-18 --version`'s own
 "Registered Targets" list includes `avr - Atmel AVR Microcontroller` — not an assumption, the
@@ -76,9 +90,35 @@ at the real include dir and invoking `avr-ld` manually with the correct crt obje
    `main` loop never legitimately reaches it anyway), or link with `-nostartfiles` and a fully
    custom minimal crt0 that never calls `exit` at all.
 
-Neither gap was fully closed in this pass — a genuinely clean, zero-undefined-symbol clang-built
-`blink.elf` was not produced yet. Both are real, scoped, small follow-up items (Phase 0 below), not
-open-ended unknowns.
+**Both gaps closed same day, Phase 0/1 shipped (2026-09-10, founder real-time: "continue working on
+LLVM we want to do both plans first the clang rout then the direct AVR route start the clang
+work").** `_delay_loop_2` (from `<util/delay_basic.h>`, an ordinary inline-asm function, not a GCC
+builtin) replaced `_delay_ms` in `examples/avr/blink_main.c` — real, portable under both avr-gcc
+and clang, kept as ONE shared host file rather than forking a clang-only copy. The `_exit` gap
+closed by simply also linking against avr-gcc's own real `libgcc.a` (already present in
+`AVR_TOOLCHAIN_ROOT` — no hand-rolled stub needed, confirmed live that `libgcc.a` genuinely defines
+`_exit`, not just declares it). Result: a genuinely clean, zero-undefined-symbol `blink_clang.elf`
+via `clang -target avr` + `avr-ld` alone (no avr-gcc invoked for compilation) — `avr-size` reports
+224 bytes / 0.7% of an atmega328p (vs. avr-gcc's own 194 bytes for the identical program — a real,
+small code-size difference, not investigated further here), and `avr-nm`/`avr-objdump` confirm a
+real interrupt vector table, `main`, `next_led_state`, and `_exit` all correctly present and
+resolved — the same real verification bar the avr-gcc build already met.
+
+New Makefile targets `avr-blink-hex-clang`/`avr-blink-upload-clang` (Phase 1), coexisting with the
+original avr-gcc-based `avr-blink-hex`/`avr-blink-upload` — real, parallel, not a replacement.
+`LLVM_TOOLCHAIN_ROOT` (a new, persistent, no-sudo-acquired install at
+`~/.local/opt/llvm-toolchain`, same real convention `AVR_TOOLCHAIN_ROOT` already established) plus
+`AVR_GCC_ARCH`/`AVR_CRT` (real, separate, overridable variables for the crt/libc-arch selection
+this manual link line needs — unlike avr-gcc's own `-mmcu` flag, this doesn't auto-derive from
+`AVR_MCU`; a real, named, not-yet-automated limitation). Full run of
+`make avr-blink-upload-clang` verified end to end: compiles, links, converts to `.hex`, and
+correctly attempts the real serial port — failing only at the same expected port-open step
+(`/dev/ttyACM0: No such file or directory`) the avr-gcc path already does. `editor-demo` still
+builds clean and `make test` stays 347/347 after the `blink_main.c` change.
+
+**Not yet done**: CI does not run either AVR/LLVM path (neither did before this work — a real,
+pre-existing, honestly-named gap, not introduced here); adding it means CI would need to
+apt-get-download both toolchains fresh on every run, a real added cost not decided on yet.
 
 ## What (1) — "clang instead of gcc" — would actually solve
 
@@ -109,19 +149,21 @@ program — a real, non-trivial build-system and portability change in its own r
 C-emission architecture — a design decision here has a real, direct downstream consequence there
 that isn't scoped in this doc).
 
-## Real, phased plan (nothing beyond Phase 0 attempted)
+## Real, phased plan (Phase 0/1 shipped, nothing beyond that attempted)
 
-- **Phase 0** (small, concrete, not yet done): close the two found clang/avr-libc gaps — a real
-  `_exit` stub (or `-nostartfiles` + custom crt0) and switching `examples/avr/blink_main.c`'s delay
-  call to `_delay_loop_2`. Produce a genuinely clean, zero-undefined-symbol `blink.elf` via
-  clang + `avr-ld` alone, and confirm (via `avr-objdump`/`avr-size`, matching the existing avr-gcc
-  build's own real verification bar) it's a correct, equivalent program.
-- **Phase 1**: teach `PARENA/Makefile`'s `avr-blink-hex`/`avr-blink-upload` targets to optionally
-  use clang + `avr-ld` instead of avr-gcc (both real toolchains coexisting, not one replacing the
-  other outright) on Linux, where this is now mostly proven.
-- **Phase 2**: verify the identical clang + `avr-ld` path on a real Windows CI runner — genuinely
-  unchecked here; binutils-avr's `avr-ld` would need its own Windows-native or MinGW-cross build,
-  which is a separate, not-yet-investigated acquisition problem of its own.
+- **Phase 0** (shipped 2026-09-10): close the two found clang/avr-libc gaps — a real
+  `_exit` resolution (via avr-gcc's own real `libgcc.a`) and switching `examples/avr/blink_main.c`'s
+  delay call to `_delay_loop_2`. Produced a genuinely clean, zero-undefined-symbol `blink_clang.elf`
+  via clang + `avr-ld` alone, confirmed (via `avr-objdump`/`avr-nm`/`avr-size`, matching the existing
+  avr-gcc build's own real verification bar) a correct, equivalent program.
+- **Phase 1** (shipped 2026-09-10): `PARENA/Makefile`'s new `avr-blink-hex-clang`/
+  `avr-blink-upload-clang` targets, real and parallel to the original `avr-blink-hex`/
+  `avr-blink-upload` (both real toolchains coexisting, avr-gcc not replaced), on Linux — verified
+  end to end with `make avr-blink-upload-clang`, failing only at the same expected port-open step
+  the avr-gcc path already does.
+- **Phase 2** (not started): verify the identical clang + `avr-ld` path on a real Windows CI
+  runner — genuinely unchecked here; binutils-avr's `avr-ld` would need its own Windows-native or
+  MinGW-cross build, which is a separate, not-yet-investigated acquisition problem of its own.
 - **Phase 3** (the literal ask, by far the largest): scope a real `libLLVM`-linked `parena` — a
   proper design pass (IR generation strategy, target-triple selection, build-system/portability
   impact, the `BURROW` interaction named above) BEFORE any code, matching this repo's own standing
@@ -129,8 +171,10 @@ that isn't scoped in this doc).
 
 ## Honest bottom line
 
-LLVM's AVR backend is real, present, and no-sudo-fetchable — a genuinely promising direction, not
-a dead end. It is not, today, a working drop-in replacement for avr-gcc (two real, small gaps
-found, not yet closed), and it does not by itself deliver "our compiler supports LLVM directly" —
-that specific ask is Phase 3, a real, separate, monumental undertaking with its own design
-questions this doc deliberately does not answer yet.
+LLVM's AVR backend is real, present, and no-sudo-fetchable — a genuinely working direction, not
+just a promising one. Phase 0/1 are shipped: clang + `avr-ld` now genuinely produce a correct,
+verified AVR binary for `examples/avr/blink.prn`, coexisting with the original avr-gcc path via
+real, parallel Makefile targets. It is still not a Windows story on its own (Phase 2, unstarted —
+`avr-ld` itself would need a Windows-native build), and it does not by itself deliver "our compiler
+supports LLVM directly" — that specific ask is Phase 3, a real, separate, monumental undertaking
+with its own design questions this doc deliberately does not answer yet.

@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload host-led-blink-build clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang host-led-blink-build clean
 
 all: build
 
@@ -800,6 +800,58 @@ avr-blink-upload: avr-blink-hex
 		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
 		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
 		-U flash:w:examples/avr/blink.hex:i
+
+# avr-blink-hex-clang / avr-blink-upload-clang -- real, alternate AVR
+# target using clang instead of avr-gcc (2026-09-10, founder real-time:
+# "continue working on LLVM we want to do both plans first the clang
+# rout then the direct AVR route start the clang work" -- this is the
+# real "clang route" Phase 0/1 from docs/LLVM_BACKEND_NORTHSTAR.md).
+# Coexists with avr-blink-hex/avr-blink-upload above -- avr-gcc is NOT
+# replaced, this is a real, separate, parallel path proving clang can
+# do the same job. Uses LLVM_TOOLCHAIN_ROOT, a real, no-sudo-acquired
+# clang/LLVM install (`apt-get download clang-18 llvm-18 libllvm18
+# libclang-cpp18 libclang1-18 libclang-common-18-dev`, then `dpkg -x`
+# each .deb into a user-owned directory -- same real recipe
+# AVR_TOOLCHAIN_ROOT itself used, see docs/LLVM_BACKEND_NORTHSTAR.md for
+# the full reproduction steps). Still genuinely needs avr-ld (from
+# AVR_TOOLCHAIN_ROOT's own binutils-avr) -- clang does not eliminate
+# that dependency, confirmed live; nor does it eliminate avr-libc
+# (headers + crt startup + per-MCU libc.a) or avr-gcc's own libgcc.a
+# (real, provides `_exit`, which clang has no equivalent for -- reusing
+# avr-gcc's real libgcc.a here rather than hand-rolling a stub, found
+# and verified live). AVR_GCC_ARCH/AVR_CRT are real, separate,
+# overridable variables (not derived from AVR_MCU automatically, unlike
+# avr-gcc's own `-mmcu` flag) -- must be kept in sync with AVR_MCU by
+# hand if that's ever changed; a real, named, not-yet-automated
+# limitation of this manual link-line approach.
+LLVM_TOOLCHAIN_ROOT ?= /home/fatbaby/.local/opt/llvm-toolchain
+AVR_GCC_ARCH ?= avr5
+AVR_CRT ?= crtatmega328p.o
+
+avr-blink-hex-clang: build
+	./parena build examples/avr/blink.prn -o examples/avr/blink_gen.c
+	LD_LIBRARY_PATH=$(LLVM_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/lib:$$LD_LIBRARY_PATH \
+		$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/bin/clang-18 -target avr -mmcu=$(AVR_MCU) -DF_CPU=$(AVR_F_CPU) -Os \
+		-isystem $(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/include \
+		-c examples/avr/blink_main.c -o examples/avr/blink_clang.o
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-ld -o examples/avr/blink_clang.elf --gc-sections -m$(AVR_GCC_ARCH) \
+		$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib/$(AVR_GCC_ARCH)/$(AVR_CRT) \
+		examples/avr/blink_clang.o \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib/$(AVR_GCC_ARCH) \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/avr/lib \
+		-L$(AVR_TOOLCHAIN_ROOT)/usr/lib/gcc/avr/7.3.0/$(AVR_GCC_ARCH) \
+		-l$(AVR_MCU) -lc -lgcc
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-objcopy -O ihex -R .eeprom examples/avr/blink_clang.elf examples/avr/blink_clang.hex
+
+# Real, honest v0 constraint, same as avr-blink-upload above: no
+# physical Arduino exists in this sandbox, so avrdude can only be
+# verified to correctly build+attempt the flash, not to succeed against
+# real hardware.
+avr-blink-upload-clang: avr-blink-hex-clang
+	LD_LIBRARY_PATH=$(AVR_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH \
+		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
+		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
+		-U flash:w:examples/avr/blink_clang.hex:i
 
 # host-led-blink-build -- real follow-up (2026-09-10, founder real-time:
 # "we need the led on the board to actually flash (there's one built in
