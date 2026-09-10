@@ -254,3 +254,12 @@ disassembly-verified AVR machine code. Both remain real, honest v0s, not final f
 route is used — and the LLVM emitter covers only PARENA's own narrow scalar-function slice, not
 the full language, and does not (yet) mean `parena` links `libLLVM` in-process; it still writes a
 `.ll` text file for a separate real tool to consume, same shape every other emitter here uses.
+
+**Same-day follow-up (2026-09-10): real CI coverage added.** Found live: `test_emit_llvm` (and,
+pre-existing, `test_emit_ts`/`test_emit_java`) were only ever COMPILE-checked by CI's own
+`bazel build //...` step — no `bazel test` invocation ever actually RAN any of the three narrow
+emitters' own real assertions. Closed for `test_emit_llvm` specifically (the target this whole
+session's own work has been on) via a new `bazel test //tests:test_emit_llvm --test_output=all`
+CI step, verified locally before trusting it in CI. The same real gap for
+`test_emit_ts`/`test_emit_java` is honest, pre-existing, and named directly here rather than
+silently fixed alongside — not this pass's own scope.

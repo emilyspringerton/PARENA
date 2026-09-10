@@ -52,6 +52,16 @@ jobs:
       - name: Test (DoD domain 3 — C emitter)
         run: bazel test //tests:test_emit --test_output=all
 
+      # Real, found-live gap closed 2026-09-10 (founder real-time: "continue on parena llvm and
+      # selfhost"): test_emit_llvm (and, pre-existing, test_emit_ts/test_emit_java) were only ever
+      # COMPILE-checked by `bazel build //...` above, never actually RUN in CI to verify their own
+      # real assertions pass — `bazel test` was never invoked for any of the three narrow-target
+      # emitters. Closing this for the LLVM backend specifically here, since that's the target
+      # this session's own work has been on; the same real gap for test_emit_ts/test_emit_java is
+      # honest, pre-existing, and NOT touched in this pass.
+      - name: Test (LLVM IR emitter — src/emit_llvm.c, real "direct AVR route" backend)
+        run: bazel test //tests:test_emit_llvm --test_output=all
+
       - name: AddressSanitizer + UndefinedBehaviorSanitizer
         run: |
           bazel test --config=asan //tests:test_lexer_parser --test_output=all
