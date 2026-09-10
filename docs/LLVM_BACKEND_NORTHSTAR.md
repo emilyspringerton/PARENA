@@ -194,9 +194,7 @@ that isn't scoped in this doc).
   lowers to a real `select` instruction (not branch/phi — correct and simpler for this v0's pure,
   side-effect-free scope); `and`/`or` are honestly non-short-circuiting LLVM bitwise ops
   (observably identical for pure scalar values, named as a real semantic difference from every
-  other backend's own short-circuiting `&&`/`||`); a call's own argument types are not independently
-  re-verified against the callee's declared parameter types (the same real, narrow limitation
-  `emit_java.c`/`emit_ts.c` already carry in spirit). 22 new real assertions
+  other backend's own short-circuiting `&&`/`||`). 22 new real assertions
   (`tests/test_emit_llvm.c`, run via both `make test-emit-llvm` and real Bazel
   `bazelisk test //tests:test_emit_llvm`), covering successful emission (constants, Bool/`not`,
   if/select, F64 vs. I32 arithmetic opcode splits, forward-referencing calls via a real two-pass
@@ -215,6 +213,21 @@ that isn't scoped in this doc).
   quote/backslash/newline-containing string end to end, confirmed the correct bytes land in the
   resulting object file's own string data). 9 more real assertions added (31 total). `make test`:
   still 347/347; `editor-demo`, the clang route, and the direct-AVR route all still build clean.
+
+  **Same-day follow-up: real call argument-count/type validation added**, closing the previously-
+  named "a call's own argument types are not independently re-verified against the callee's
+  declared parameter types" v0 limitation — and a real, separate, previously-UNNAMED latent gap
+  found while closing it: argument COUNT was never checked either, so a wrong-arity call would
+  have silently emitted a malformed `call` instruction rather than a real, honest error.
+  `LlvmFnSig` now records every declared parameter's own type, not just the return type; a real
+  call site checks both count and each argument's own real type against that signature. This also
+  closes the OTHER previously-named limitation for free: each argument is now emitted using the
+  callee's own declared parameter type as its real `expected_type` hint, so a bare numeric literal
+  argument (which used to fail with "no type context to disambiguate I32 vs F64") now correctly
+  picks up the right type — verified with a real `(add-one 5)`-shaped call, confirming the emitted
+  `call i32 @add_one(i32 5)` is correctly typed. 4 more real assertions added (35 total). `make
+  test`: still 347/347; `editor-demo`, the clang route, and the direct-AVR route all still build
+  and link clean (re-verified end to end, not just re-compiled).
 
   This closes "our compiler supports LLVM directly" for real, for the scope it was actually proven
   against — it is NOT the same as libLLVM linked in-process (no `libLLVM` C API usage at all here;

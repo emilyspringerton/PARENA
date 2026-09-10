@@ -48,12 +48,13 @@
  * difference named here rather than silently assumed equivalent — a future stateful/effectful
  * PARENA feature would need real short-circuit branches here, not attempted in this v0.
  *
- * A call to another top-level defn ASSUMES (does not independently re-verify) that its own real
- * return type matches the calling expression's own real type context — a real, narrow, honest v0
- * limitation named directly, not hidden: this file's own `LlvmFnSig` table records each defn's
- * declared return type precisely so a call site emits the CORRECT `call <type> @name(...)`
- * instruction, but does not independently re-check argument types against the callee's own
- * declared parameter types the way a real type checker would.
+ * A call to another top-level defn's own `LlvmFnSig` (2026-09-10, real follow-up) now records
+ * every declared parameter's own type, not just the return type — a real call site independently
+ * checks both argument COUNT and each argument's own real type against the callee's declared
+ * signature, a real, honest compile error on either mismatch rather than a silently malformed
+ * `call` instruction. This also means a bare numeric literal argument now correctly picks up the
+ * callee's own declared parameter type as its `expected_type` hint, closing what was previously a
+ * real, separate "no type context" failure for that shape.
  */
 #ifndef PARENA_EMIT_LLVM_H
 #define PARENA_EMIT_LLVM_H

@@ -136,6 +136,53 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real, follow-up: a call's own real argument type/count are validated against the
+       callee's declared signature (2026-09-10), also closing "bare literal call argument fails
+       with no type context" for free (the literal now picks up the real declared param type) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn add-one [(x : I32)] : I32 (+ x 1))\n"
+            "(defn call-it [] : I32 (add-one 5))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "a bare literal call argument now works (picks up the callee's own declared param type)");
+        if (ir) {
+            CHECK(strstr(ir, "call i32 @add_one(i32 5)") != NULL,
+                  "the literal argument is correctly typed i32 in the emitted call instruction");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest error path: wrong argument count --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn add-one [(x : I32)] : I32 (+ x 1))\n"
+            "(defn broken [] : I32 (add-one 1 2))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir == NULL, "a call with the wrong argument count is a real, honest compile error, not a malformed call instruction");
+        arena_free_all(&arena);
+    }
+
+    /* --- real, honest error path: wrong argument type --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn takes-bool [(b : Bool)] : Bool b)\n"
+            "(defn broken [(x : I32)] : Bool (takes-bool x))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir == NULL, "a call argument whose real type doesn't match the callee's declared parameter type is a real, honest compile error");
+        arena_free_all(&arena);
+    }
+
     /* --- real, honest error path: undeclared symbol reference --- */
     {
         Arena arena;

@@ -127,9 +127,18 @@ typedef struct {
     size_t local_count;
 } LlvmFn;
 
+/* LlvmFnSig -- 2026-09-10, real follow-up: now records each defn's own real, declared parameter
+   types too, not just its return type, closing a real, previously-named v0 limitation ("a call's
+   own argument types are not independently re-verified against the callee's declared parameter
+   types") AND a real, separate, previously-UNNAMED latent gap found while closing it: argument
+   COUNT was never checked either -- calling a 1-parameter function with 3 arguments (or 0) would
+   have silently emitted a malformed `call` instruction rather than a real, honest error. Both are
+   checked now, at the real call site below, not just documented as a known gap. */
 typedef struct {
     const char *name;      /* mangled */
     const char *ret_type;  /* llvm return type */
+    const char *param_types[LLVM_MAX_LOCALS];
+    size_t param_count;
 } LlvmFnSig;
 
 #define LLVM_MAX_FNS 64
@@ -155,9 +164,9 @@ static const char *lookup_local_type(LlvmFn *fn, const char *mangled_name) {
     return NULL;
 }
 
-static const char *lookup_fn_ret_type(LlvmModule *mod, const char *mangled_name) {
+static LlvmFnSig *lookup_fn_sig(LlvmModule *mod, const char *mangled_name) {
     for (size_t i = 0; i < mod->sig_count; i++) {
-        if (strcmp(mod->sigs[i].name, mangled_name) == 0) return mod->sigs[i].ret_type;
+        if (strcmp(mod->sigs[i].name, mangled_name) == 0) return &mod->sigs[i];
     }
     return NULL;
 }
@@ -494,42 +503,52 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
 
     /* Otherwise: a real call to another top-level defn in the same module. Its own real return
        type comes from the sig table built by emit_llvm() below (bottom-up, independent of
-       expected_type) -- see emit_llvm.h's own header comment on the real, named limitation that
-       argument types are NOT independently re-verified against the callee's own declared
-       parameter types in this v0. */
+       expected_type). 2026-09-10, real follow-up: argument COUNT and each argument's own real
+       type are now independently checked against the callee's own declared signature -- closing
+       both the previously-named "no argument-type re-verification" v0 limitation AND a separate,
+       previously-unnamed latent gap (a wrong argument count would have silently produced a
+       malformed `call` instruction). This also closes the OTHER previously-named limitation for
+       free: each argument is now emitted with the callee's own declared parameter type as its
+       real `expected_type` hint, so a bare numeric literal argument (which used to fail with "no
+       type context") now correctly picks up the right type. */
     const char *mangled_callee = mangle_name(arena, head);
-    const char *ret_type = lookup_fn_ret_type(mod, mangled_callee);
-    if (!ret_type) {
+    LlvmFnSig *sig = lookup_fn_sig(mod, mangled_callee);
+    if (!sig) {
         *out_error = "emit_llvm: call to an unrecognized function (v0 has no external FFI/math-primitive table yet)";
+        return llvm_val_err();
+    }
+    size_t got_args = expr->child_count - 1;
+    if (got_args != sig->param_count) {
+        *out_error = "emit_llvm: call has the wrong number of arguments for the callee's own declared signature";
         return llvm_val_err();
     }
     LlvmBuf arglist;
     lb_init(&arglist);
     for (size_t i = 1; i < expr->child_count; i++) {
         if (i > 1) lb_append(&arglist, ", ");
-        /* Real, narrow v0 limitation named directly: each argument is emitted with NO expected
-           type hint (NULL) unless it's a symbol/call (which compute their own type regardless) --
-           a bare numeric literal argument would fail here with a real, honest "no type context"
-           error rather than silently guessing. Not exercised by any real call site this v0 has
-           been run against yet (every real call site passes symbol/call arguments, never a bare
-           literal). */
-        LlvmVal arg = emit_llvm_expr(arena, fn, expr->children[i], NULL, mod, out_error);
+        const char *param_type = sig->param_types[i - 1];
+        LlvmVal arg = emit_llvm_expr(arena, fn, expr->children[i], param_type, mod, out_error);
         if (!arg.ref) {
+            lb_free(&arglist);
+            return llvm_val_err();
+        }
+        if (strcmp(arg.type, param_type) != 0) {
+            *out_error = "emit_llvm: call argument's own real type does not match the callee's declared parameter type";
             lb_free(&arglist);
             return llvm_val_err();
         }
         lb_appendf(&arglist, "%s %s", arg.type, arg.ref);
     }
     const char *reg = NULL;
-    if (strcmp(ret_type, "void") == 0) {
+    if (strcmp(sig->ret_type, "void") == 0) {
         lb_appendf(&fn->body, "  call void @%s(%s)\n", mangled_callee, arglist.data);
     } else {
         reg = fresh_reg(arena, fn);
-        lb_appendf(&fn->body, "  %s = call %s @%s(%s)\n", reg, ret_type, mangled_callee, arglist.data);
+        lb_appendf(&fn->body, "  %s = call %s @%s(%s)\n", reg, sig->ret_type, mangled_callee, arglist.data);
     }
     lb_free(&arglist);
     LlvmVal v;
-    v.type = ret_type;
+    v.type = sig->ret_type;
     v.ref = reg ? reg : "undef"; /* void-returning calls used in value position: real, honest gap, not reached by any current real .prn source */
     return v;
 }
@@ -626,7 +645,8 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
         if (!is_call_named(form, "defn")) continue;
-        if (form->child_count != 6 || form->children[1]->type != NODE_SYMBOL || form->children[3]->type != NODE_COLON) {
+        if (form->child_count != 6 || form->children[1]->type != NODE_SYMBOL ||
+            form->children[2]->type != NODE_VEC || form->children[3]->type != NODE_COLON) {
             continue; /* real, honest: a malformed defn is reported properly by emit_llvm_defn's own second pass below, not here */
         }
         const char *ret_type_err = NULL;
@@ -636,8 +656,39 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
             *out_error = "emit_llvm: too many top-level defns (v0 has a fixed, small real limit)";
             return NULL;
         }
+        /* Real, second follow-up (2026-09-10): also collect each param's own real, declared type
+           here, so a real call site elsewhere in the module can independently validate argument
+           count/types against this callee's own signature (see emit_llvm_expr's own call-handling
+           comment for the full real rationale). Same real "malformed -> skip, reported properly
+           below" reasoning as ret_type above -- a param this pre-scan can't resolve just means
+           this sig entry is incomplete, not that the whole pass should abort; emit_llvm_defn's own
+           real, full validation catches it for real when this defn's own body gets emitted. */
+        Node *params = form->children[2];
+        size_t param_count = 0;
+        int params_ok = 1;
+        const char *param_types[LLVM_MAX_LOCALS];
+        for (size_t p = 0; p < params->child_count && p < LLVM_MAX_LOCALS; p++) {
+            Node *param = params->children[p];
+            if (param->type != NODE_LIST || param->child_count != 3 || param->children[2]->type != NODE_SYMBOL) {
+                params_ok = 0;
+                break;
+            }
+            const char *p_err = NULL;
+            const char *p_type = resolve_llvm_type(param->children[2], &p_err);
+            if (!p_type) {
+                params_ok = 0;
+                break;
+            }
+            param_types[param_count++] = p_type;
+        }
+        if (!params_ok || params->child_count > LLVM_MAX_LOCALS) continue; /* reported properly below */
+
         sigs[sig_count].name = mangle_name(arena, form->children[1]->text);
         sigs[sig_count].ret_type = ret_type;
+        sigs[sig_count].param_count = param_count;
+        for (size_t p = 0; p < param_count; p++) {
+            sigs[sig_count].param_types[p] = param_types[p];
+        }
         sig_count++;
     }
 
