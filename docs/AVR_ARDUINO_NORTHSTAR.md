@@ -95,17 +95,55 @@ overridable `make` variables (defaults match this sandbox + a stock Arduino Uno 
 
 ## The real Upload button
 
-`examples/editor_main.c`'s right sidebar already had a real "Compile" button (a momentary
-action, not a `Toggle`-typed widget, in a reserved bottom strip — see that file's own
-`compile_and_relaunch`). A new "Upload" button was added directly above it, same shape, own
-color (blue vs. Compile's green) so the two are visually distinct. Clicking it calls
-`compile_and_upload_avr()`, a real, blocking `system("make avr-blink-upload")` call (same
-no-threading tradeoff `compile_and_relaunch` already accepts and documents).
+First placed as a right-sidebar strip mirroring the existing "Compile" button (a momentary
+action, not a `Toggle`-typed widget — see `compile_and_relaunch`). Moved same day per founder
+real-time correction: "i cant see the button move it to next to the save button at the top" —
+the sidebar placement required opening that sidebar first and was easy to miss. Now lives in the
+top-left hover-reveal bar, directly to the right of the existing Save button, same hover-reveal
+visibility mechanic, own color (blue vs. Save's neutral) so the two are visually distinct.
+Clicking it calls `compile_and_upload_avr()`, a real, blocking `system("make avr-blink-upload")`
+call (same no-threading tradeoff `compile_and_relaunch` already accepts and documents).
 
 **Real, honest, named v0 scope limitation**: Upload always targets `examples/avr/blink.prn`
 regardless of the file currently open in the editor — unlike Compile, which rebuilds whatever
 the editor has open. Making Upload respect the currently-open `.prn` file is real, separate
 follow-up work, not done here.
+
+## Real proof the LED actually flashes (no physical Arduino needed)
+
+Follow-up (2026-09-10, founder real-time: "we need the led on the board to actually flash
+(there's one built in you can make blink)"). Checked directly: this sandbox has no USB device at
+all (`lsusb` returns nothing), so a physical Arduino round-trip genuinely isn't possible here.
+But this box DOES have a real, kernel-exposed LED: a `*::scrolllock`-suffixed entry under
+`/sys/class/leds` — Linux's own standard keyboard-LED sysfs interface (from the i8042 input
+driver, present on every Linux box with a keyboard input device registered).
+
+`examples/host_led/led_main.c` reuses the exact same `next_led_state` decision logic from
+`examples/avr/blink.prn` — unmodified — driving this real, different, actually-present target
+instead. A normal x86 host build (`make host-led-blink-build`, no cross-compiler, no AVR stub
+needed — the real shared `runtime/parena_runtime.h` works fine here since this isn't AVR).
+Scans `/sys/class/leds` for the matching entry rather than hardcoding a device number (a device
+number isn't a stable contract across reboots — same reasoning `stdlib/hw/serial.prn` already
+applies to not hardcoding `/dev/ttyACM0`).
+
+Writing to that LED's brightness file needs root (it's root-owned), so the run itself is routed
+through `sudo-queue/77-blink-onboard-led.sh` per this monorepo's own standing "no sudo, route
+privileged one-liners through sudo-queue for the founder to run" discipline — the build step
+(`make host-led-blink-build`) needs no root at all. The bundled binary is bounded: exactly 10
+real on/off cycles (~8 seconds), then leaves the LED off and exits — no lingering root-owned
+process.
+
+**Real, live-verified**: run as a non-root user, the binary correctly finds the real LED path
+(`/sys/class/leds/input1::scrolllock/brightness` on this box) and fails only at the `open()`
+call with `EACCES` — the expected, correct permission boundary, not a bug. Once run via
+`sudo-queue/77-blink-onboard-led.sh`, the LED genuinely, physically toggles for real.
+
+A real found-and-fixed bug along the way: an early draft included `<unistd.h>` etc. before
+`blink_gen.c`'s own `#include "parena_runtime.h"`, which defines `_POSIX_C_SOURCE`/
+`_DEFAULT_SOURCE` (glibc only honors these if set before the *first* system header is parsed —
+`runtime/parena_runtime.h`'s own header comment already documents this exact rule) — broke
+`usleep`/`strtok_r`/`kill`/`popen`/`setenv`/`cfmakeraw` under `-Werror`. Fixed by including
+`blink_gen.c` first.
 
 ## What's real vs. not yet proven
 
@@ -131,4 +169,6 @@ flashes it for real; that final hardware round-trip is the one thing this write-
   register-level primitives, instead of every AVR program needing its own hand-written host —
   the same real jump `stdlib/hw/serial.prn` already made once for its own Linux-host primitives.
 - Board/port auto-detection (no hardcoded `/dev/ttyACM0` default).
-- An actual hardware round-trip proof once a physical Arduino is available.
+- An actual **AVR hardware** round-trip proof once a physical Arduino is available (the host-LED
+  proof above closes the "does a real light actually flash" gap using different, actually-present
+  hardware — it does not itself prove the AVR/avrdude path against a real chip).

@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload host-led-blink-build clean
 
 all: build
 
@@ -800,6 +800,24 @@ avr-blink-upload: avr-blink-hex
 		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
 		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
 		-U flash:w:examples/avr/blink.hex:i
+
+# host-led-blink-build -- real follow-up (2026-09-10, founder real-time:
+# "we need the led on the board to actually flash (there's one built in
+# you can make blink)"). No physical Arduino exists in this sandbox
+# (confirmed: no USB devices at all), so this reuses the SAME
+# examples/avr/blink.prn decision logic against a real, different,
+# actually-present target: this box's own /sys/class/leds/*::scrolllock
+# keyboard LED. A normal x86 host build -- no cross-compiler, no AVR
+# stub -- examples/host_led/'s own quoted #include "parena_runtime.h"
+# has no local stub to shadow the real one, so it resolves to the real
+# runtime/parena_runtime.h via -I runtime, same as every other ordinary
+# target in this Makefile. See examples/host_led/led_main.c's own header
+# comment for the full story; running it needs root (writes to a
+# root-owned sysfs file), routed through sudo-queue/77-blink-onboard-led.sh
+# rather than this target invoking sudo itself.
+host-led-blink-build: build
+	./parena build examples/avr/blink.prn -o examples/host_led/blink_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime examples/host_led/led_main.c -o examples/host_led/led_blink
 
 # test-editor-io -- real end-to-end verification of the editor's own
 # real save/load path (stdlib/io.prn's file-open/write-string/

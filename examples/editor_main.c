@@ -182,15 +182,16 @@ char *prnfmt_format_and_copy(const char *src, size_t len);
  * by-default sidebar is a real, visible, honest tradeoff, not a silent
  * bug. */
 #define COMPILE_BUTTON_HEIGHT 28
-/* UPLOAD_BUTTON_HEIGHT -- a second reserved strip, same shape as
- * COMPILE_BUTTON_HEIGHT, stacked directly above it (2026-09-10, founder
- * real-time: "we need to update the arduino editor to be able to upload
- * to an arduino with a button... clicking the button compiles the parena
- * code and uploads it to the arduino"). See compile_and_upload_avr's own
- * header comment for the real, honest v0 scope (always builds+flashes
- * examples/avr/blink.prn via `make avr-blink-upload`, not yet the
- * currently-open file). */
-#define UPLOAD_BUTTON_HEIGHT 28
+/* UPLOAD_TOP_BUTTON_WIDTH -- the Upload control's own width, sitting
+ * directly next to the top-left hover-reveal Save button (2026-09-10,
+ * founder real-time: "i cant see the button move it to next to the save
+ * button at the top" -- the first placement, a right-sidebar strip
+ * mirroring Compile, required opening that sidebar first and was easy to
+ * miss; moved here instead, same real hover-reveal visibility Save
+ * already has). See compile_and_upload_avr's own header comment for the
+ * real, honest v0 scope (always builds+flashes examples/avr/blink.prn
+ * via `make avr-blink-upload`, not yet the currently-open file). */
+#define UPLOAD_TOP_BUTTON_WIDTH 120
 #define SAVE_BUTTON_WIDTH 140
 #define FILE_TREE_ROW_HEIGHT 20
 
@@ -658,14 +659,18 @@ static void compile_and_relaunch(const char *exe_path, const char *current_file)
     spawn_new_instance(exe_path, current_file);
 }
 
-/* compile_and_upload_avr -- the real action behind the new right
- * sidebar's Upload button (2026-09-10, founder real-time: "lets update
+/* compile_and_upload_avr -- the real action behind the top-bar Upload
+ * button, next to Save (2026-09-10, founder real-time: "lets update
  * parena so that it can run on an arduino... we need to update the
  * arduino editor to be able to upload to an arduino with a button...
  * clicking the button compiles the parena code and uploads it to the
- * arduino... start with making the onboard led blink"). Same real,
- * honest, blocking `system()` shape compile_and_relaunch already
- * establishes just above (no threading anywhere in this codebase) --
+ * arduino... start with making the onboard led blink" -> initially
+ * placed as a right-sidebar strip mirroring Compile, then moved here
+ * per "i cant see the button move it to next to the save button at the
+ * top" -- the sidebar placement required opening that sidebar first and
+ * was easy to miss). Same real, honest, blocking `system()` shape
+ * compile_and_relaunch already establishes just above (no threading
+ * anywhere in this codebase) --
  * shells out to `make avr-blink-upload`, which itself real-compiles
  * examples/avr/blink.prn through the normal `parena build` pipeline,
  * avr-gcc/avr-objcopy's a real .hex, and invokes avrdude against a real,
@@ -1704,13 +1709,9 @@ int main(int argc, char **argv) {
                      * reserved UI chrome, not a navigable row -- checked
                      * FIRST so a click there triggers Compile instead of
                      * falling through to row-index math that was never
-                     * meant to cover it. UPLOAD_BUTTON_HEIGHT is a second
-                     * such reserved strip stacked directly above it
-                     * (2026-09-10) -- checked next, same reasoning. */
+                     * meant to cover it. */
                     if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT) {
                         compile_and_relaunch(exe_path, path);
-                    } else if (raw_my >= WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT - UPLOAD_BUTTON_HEIGHT) {
-                        compile_and_upload_avr();
                     } else {
                         int row_idx = (raw_my - 4) / FILE_TREE_ROW_HEIGHT;
                         int entry_idx = row_idx - 1 + editor_source_scroll_offset;
@@ -1748,6 +1749,16 @@ int main(int argc, char **argv) {
                      * control -- no real need for a second named flag
                      * yet. */
                     do_save(&buf, path, is_markdown, &a);
+                } else if (last_mouse_y <= HOVER_REVEAL_ZONE && raw_mx >= SAVE_BUTTON_WIDTH
+                           && raw_mx < SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH
+                           && raw_my >= 0 && raw_my < STATUS_BAR_HEIGHT) {
+                    /* Real top-bar Upload button click (2026-09-10) --
+                     * same real hover-reveal gate the Save button just
+                     * above already uses, sitting directly to its right.
+                     * See compile_and_upload_avr's own header comment
+                     * for the full "moved here from the right sidebar"
+                     * story. */
+                    compile_and_upload_avr();
                 } else if (bar_visible_now && toggle_hit_(&auto_indent_toggle, raw_mx, raw_my)) {
                     auto_indent_toggle = toggle_flip(&auto_indent_toggle, &a);
                 } else if (bar_visible_now && toggle_hit_(&file_tree_toggle, raw_mx, raw_my)) {
@@ -2237,13 +2248,11 @@ int main(int argc, char **argv) {
         /* Real RIGHT sidebar render (2026-08-27) -- same real shape the
          * left file-tree's own render block just above already
          * establishes, mirrored at the right edge (SIDEBAR_RIGHT_X),
-         * with a real, reserved COMPILE_BUTTON_HEIGHT strip (plus a
-         * second UPLOAD_BUTTON_HEIGHT strip stacked directly above it,
-         * 2026-09-10) at its own bottom for the Compile/Upload controls
-         * instead of a navigable row. */
+         * with a real, reserved COMPILE_BUTTON_HEIGHT strip at its own
+         * bottom for the Compile control instead of a navigable row. */
         if (toggle_on_(&editor_source_toggle)) {
 #define SIDEBAR_RIGHT_X (WINDOW_WIDTH - SIDEBAR_WIDTH)
-            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT - UPLOAD_BUTTON_HEIGHT;
+            int right_tree_h = WINDOW_HEIGHT - STATUS_BAR_HEIGHT - COMPILE_BUTTON_HEIGHT;
             Result esbg = set_draw_color(&ren, 32, 32, 38, 255, &frame_arena);
             (void)esbg;
             render_fill_rect(&ren, SIDEBAR_RIGHT_X, 0, SIDEBAR_WIDTH, right_tree_h, &frame_arena);
@@ -2265,29 +2274,15 @@ int main(int argc, char **argv) {
                     : render_text(&ren, &font, entry_name2, SIDEBAR_RIGHT_X + 8, ey, 190, 190, 205, &frame_arena);
                 (void)er;
             }
-            /* Real Upload button, reserved strip directly above Compile's
-             * own strip (2026-09-10) -- same real "fixed-position
-             * hand-rolled click region" shape Compile/the Settings
-             * panel's own Zoom -/+ buttons already use, not a
-             * Toggle-typed widget (Upload is a momentary ACTION, same as
-             * Compile). Distinct color (blue-ish, not Compile's green)
-             * so the two are visually distinguishable at a glance. */
-            Result ubtnbg = set_draw_color(&ren, 40, 55, 75, 255, &frame_arena);
-            (void)ubtnbg;
-            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, UPLOAD_BUTTON_HEIGHT, &frame_arena);
-            Result ubtntxt = render_text(&ren, &font, "> Upload", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 190, 215, 235, &frame_arena);
-            (void)ubtntxt;
-
             /* Real Compile button, reserved bottom strip -- same real
              * "fixed-position hand-rolled click region" shape the
              * Settings panel's own Zoom -/+ buttons already use, not a
              * Toggle-typed widget (Compile is a momentary ACTION, not
              * an on/off state). */
-            int compile_strip_y = right_tree_h + UPLOAD_BUTTON_HEIGHT;
             Result cbtnbg = set_draw_color(&ren, 45, 65, 45, 255, &frame_arena);
             (void)cbtnbg;
-            render_fill_rect(&ren, SIDEBAR_RIGHT_X, compile_strip_y, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
-            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, compile_strip_y + 6, 200, 235, 200, &frame_arena);
+            render_fill_rect(&ren, SIDEBAR_RIGHT_X, right_tree_h, SIDEBAR_WIDTH, COMPILE_BUTTON_HEIGHT, &frame_arena);
+            Result cbtntxt = render_text(&ren, &font, "> Compile", SIDEBAR_RIGHT_X + 8, right_tree_h + 6, 200, 235, 200, &frame_arena);
             (void)cbtntxt;
         }
 
@@ -2309,6 +2304,18 @@ int main(int argc, char **argv) {
             render_fill_rect(&ren, 0, 0, SAVE_BUTTON_WIDTH, STATUS_BAR_HEIGHT, &frame_arena);
             Result savetxt = render_text(&ren, &font, "Save (F2)", 8, 6, 200, 220, 235, &frame_arena);
             (void)savetxt;
+
+            /* Real top-bar Upload button, directly to Save's right
+             * (2026-09-10, moved here from an earlier right-sidebar
+             * placement per "i cant see the button move it to next to
+             * the save button at the top") -- same hover-reveal
+             * visibility Save already has, own distinct color (blue vs.
+             * Save's neutral) so the two are visually distinguishable. */
+            Result ubarbg = set_draw_color(&ren, 40, 55, 75, 255, &frame_arena);
+            (void)ubarbg;
+            render_fill_rect(&ren, SAVE_BUTTON_WIDTH, 0, UPLOAD_TOP_BUTTON_WIDTH, STATUS_BAR_HEIGHT, &frame_arena);
+            Result uploadtxt = render_text(&ren, &font, "Upload", SAVE_BUTTON_WIDTH + 8, 6, 190, 215, 235, &frame_arena);
+            (void)uploadtxt;
         }
 
         if (last_mouse_y >= WINDOW_HEIGHT - HOVER_REVEAL_ZONE) {

@@ -11,6 +11,8 @@ tools/ci_status_gen.c
 examples/avr/blink_gen.c
 examples/avr/blink.elf
 examples/avr/blink.hex
+examples/host_led/blink_gen.c
+examples/host_led/led_blink
 .parena-bootstrap
 turbogrep
 turbosed
