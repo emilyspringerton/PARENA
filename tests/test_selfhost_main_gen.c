@@ -395,6 +395,8 @@ char * emit_cond_clauses(Node *, int, Vec *, Arena *);
 char * emit_cond(Node *, Vec *, Arena *);
 int if_tail_shaped_(Node *, Arena *);
 char * emit_if_tail(Node *, Vec *, Arena *);
+int if_value_shaped_(Node *, Arena *);
+char * emit_if_value(Node *, Vec *, Arena *);
 int loop_binding_value_shaped_(Node *, Arena *);
 char * emit_loop_binding_value(Node *, Vec *, Arena *);
 int loop_bindings_shaped_(Node *, int, Arena *);
@@ -2487,12 +2489,34 @@ char * emit_if_tail(Node * node __attribute__((unused)), Vec * scope __attribute
     return emit_join_all(&(parts), dest);
 }
 
+int if_value_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (emit_is_call_named_(node, "if") && ((vec_len(&((node)->children)) == 4) && (bool_expr_supported_(vec_get(&((node)->children), 1), dest) && (loop_binding_value_shaped_(vec_get(&((node)->children), 2), dest) && loop_binding_value_shaped_(vec_get(&((node)->children), 3), dest)))));
+}
+
+char * emit_if_value(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Node *test_node __attribute__((unused)) = vec_get(&((node)->children), 1);
+    Node *then_node __attribute__((unused)) = vec_get(&((node)->children), 2);
+    Node *else_node __attribute__((unused)) = vec_get(&((node)->children), 3);
+    char *test_c __attribute__((unused)) = emit_bool_expr(test_node, scope, dest);
+    char *then_c __attribute__((unused)) = emit_loop_binding_value(then_node, scope, dest);
+    char *else_c __attribute__((unused)) = emit_loop_binding_value(else_node, scope, dest);
+    Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), "("));
+    (void)(vec_push_(&(parts), test_c));
+    (void)(vec_push_(&(parts), " ? "));
+    (void)(vec_push_(&(parts), then_c));
+    (void)(vec_push_(&(parts), " : "));
+    (void)(vec_push_(&(parts), else_c));
+    (void)(vec_push_(&(parts), ")"));
+    return emit_join_all(&(parts), dest);
+}
+
 int loop_binding_value_shaped_(Node * node __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return ((emit_node_kind_code((node)->kind) == 6) || (plain_call_shaped_(node, dest) || binary_op_call_shaped_(node, dest)));
+    return ((emit_node_kind_code((node)->kind) == 6) || (emit_is_symbol_(node, "true") || (emit_is_symbol_(node, "false") || (plain_call_shaped_(node, dest) || (binary_op_call_shaped_(node, dest) || (if_value_shaped_(node, dest) || (or_and_shaped_(node, dest) || not_shaped_(node, dest))))))));
 }
 
 char * emit_loop_binding_value(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return ((emit_node_kind_code((node)->kind) == 6) ? (node)->text : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : emit_binary_op(node, scope, dest)));
+    return ((emit_node_kind_code((node)->kind) == 6) ? (node)->text : (emit_is_symbol_(node, "true") ? "1" : (emit_is_symbol_(node, "false") ? "0" : (plain_call_shaped_(node, dest) ? emit_plain_call(node, scope, dest) : (binary_op_call_shaped_(node, dest) ? emit_binary_op(node, scope, dest) : ((or_and_shaped_(node, dest) || not_shaped_(node, dest)) ? emit_bool_expr(node, scope, dest) : emit_if_value(node, scope, dest)))))));
 }
 
 int loop_bindings_shaped_(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2551,9 +2575,12 @@ char * emit_recur_temps(Node * node __attribute__((unused)), int i __attribute__
     return "";
     } else {
     Node *val_node __attribute__((unused)) = vec_get(&((node)->children), (i + 1));
-    char *val_c __attribute__((unused)) = emit_loop_binding_value(val_node, scope, dest);
+    int shaped __attribute__((unused)) = loop_binding_value_shaped_(val_node, dest);
+    char *val_c __attribute__((unused)) = (shaped ? emit_loop_binding_value(val_node, scope, dest) : "0");
+    char *err_c __attribute__((unused)) = (shaped ? "" : "        #error selfhost/emit.prn: unsupported recur argument shape (narrow v0 only supports the same real shapes loop-binding-value-shaped? recognizes for loop bindings themselves)\n");
     char *tmp_name __attribute__((unused)) = concat("__recur_tmp_", i32_to_string(i, dest), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
+    (void)(vec_push_(&(parts), err_c));
     (void)(vec_push_(&(parts), "        int "));
     (void)(vec_push_(&(parts), tmp_name));
     (void)(vec_push_(&(parts), " = "));

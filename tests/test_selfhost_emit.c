@@ -2718,6 +2718,72 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        /* real, new feature (2026-09-10): if-as-loop-binding-value support -- closing the real,
+         * previously-named gap loop-binding-value-shaped?'s own header comment already flagged:
+         * `is-valid-i32-text?`'s own real `i (if (starts-with-sign? s) 1 0)` loop-binding init.
+         * `count-from` is real, ordinary PARENA -- one loop binding initialized by a real
+         * if-value ternary, a second, plain-literal-initialized loop binding, an if-tail
+         * choosing between recur and a real terminal value (the exact same overall shape
+         * sum-to-n above already proves for the non-if-binding case). */
+        char *snippet =
+            "(defn count-from [(start-flag : I32) (n : I32)]\n"
+            "  : I32\n"
+            "  (loop [i (if (> start-flag 0) 1 0) count 0]\n"
+            "    (if (> i n)\n"
+            "      (+ count 0)\n"
+            "      (recur (+ i 1) (+ count 1)))))";
+        Result pr40 = parse_program(snippet, &a);
+        CHECK(pr40.tag == 1, "a real loop whose own first binding is if-value-shaped parses fine");
+        if (pr40.tag == 1) {
+            Node program40 = *(Node *)pr40.value;
+            char *generated40 = emit_program(&program40, &a);
+            CHECK(generated40 != NULL && strstr(generated40, "#error") == NULL,
+                  "no #error is emitted for a real if-value-shaped loop-binding init -- "
+                  "previously fell through to loop-call-shaped?'s own honest non-match");
+            CHECK(generated40 != NULL && strstr(generated40, "int i = ((start_flag > 0) ? 1 : 0);") != NULL,
+                  "the if-value binding emits a genuine C ternary initializer, not a statement");
+            CHECK(generated40 != NULL && strstr(generated40, "int count = 0;") != NULL,
+                  "the second, plain-literal loop binding still emits correctly alongside the "
+                  "new if-value one -- proving mixed binding kinds in one loop work");
+
+            if (generated40) {
+                char c_path28[300];
+                snprintf(c_path28, sizeof c_path28, "/tmp/parena_selfhost_emit_if_loop_binding_test_%d.c",
+                         (int)getpid());
+                FILE *out28 = fopen(c_path28, "w");
+                CHECK(out28 != NULL, "a real temp file opens to write the if-loop-binding generated C into");
+                if (out28) {
+                    fputs(generated40, out28);
+                    fclose(out28);
+
+                    char bin_path28[310];
+                    snprintf(bin_path28, sizeof bin_path28, "%s.bin", c_path28);
+                    char cmd28[1024];
+                    snprintf(cmd28, sizeof cmd28,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_if_loop_binding.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path28, c_path28);
+                    int compile_status28 = system(cmd28);
+                    CHECK(compile_status28 == 0,
+                          "the real if-loop-binding generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against a real "
+                          "'extern int count_from(int, int)' driver");
+                    if (compile_status28 == 0) {
+                        int run_status28 = system(bin_path28);
+                        CHECK(run_status28 == 0,
+                              "the real, self-compiled count-from genuinely takes different "
+                              "runtime paths depending on the if-value's own chosen branch -- "
+                              "3 iterations when i starts at 1, 4 when i starts at 0 -- not just "
+                              "gcc-clean text with an unexercised ternary");
+                    }
+                    remove(c_path28);
+                    remove(bin_path28);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

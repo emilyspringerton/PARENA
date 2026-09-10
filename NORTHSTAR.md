@@ -1769,6 +1769,72 @@ symlinks in this checkout point into a different user account's own cache — a 
 quirk, not something CI's own fresh runners would ever hit); the full Makefile suite (342 tests)
 and all `test-selfhost-*` targets are clean.
 
+**Real seventh step (2026-09-10, "continue on parena llvm and selfhost"): `if`/`true`/`false`/
+`or`/`and`/`not`-shaped loop-binding VALUES, and a real, live crash fixed along the way.** Closed
+the real, previously-named gap `loop-binding-value-shaped?`'s own header comment already flagged
+after the `loop`/`recur` v0 landed: `is-valid-i32-text?`'s own real `i (if (starts-with-sign? s)
+1 0)` loop-binding init. New `if-value-shaped?`/`emit-if-value` — a real, VALUE-producing sibling
+of `if-tail-shaped?`/`emit-if-tail`, emitting a genuine C ternary instead of an if/else statement,
+with both branches explicitly required to themselves be `loop-binding-value-shaped?` (real, mutual
+recursion between the two, so a nested `if` composes for free — narrower than `if-tail-shaped?`'s
+own scope only because a loop binding's own real value shapes are themselves a strict subset of a
+tail position's).
+
+Re-running the self-compile diagnostic against `stdlib/string.prn` immediately after landing that
+fix surfaced two more real, concrete blockers, found live, not assumed:
+
+- `ok true` — `is-valid-i32-text?`'s own SECOND loop binding is a bare boolean symbol, not
+  covered by any prior case (not a number literal, call, binop, or `if`). Closed by adding
+  `true`/`false` symbol recognition to `loop-binding-value-shaped?`/`emit-loop-binding-value`,
+  emitting the same real `1`/`0` literal mapping `emit-bool-expr` already establishes elsewhere
+  in this file.
+- **A real, live SEGFAULT**, found via `gdb` the moment `if-value-shaped?`'s own new catch-all
+  path actually got exercised for real: `emit-recur-temps` — the function that emits `recur`'s
+  own simultaneous-assignment temp variables — had ALWAYS called `emit-loop-binding-value`
+  UNCONDITIONALLY on every real recur argument, with NO `loop-binding-value-shaped?` gate at all
+  (a real, pre-existing gap in the same "shaped? check before the matching emit-* call"
+  discipline every other real dispatch in this file already holds itself to;
+  `loop-bindings-shaped?` gates the loop's own INIT values this exact same way, recur's own
+  ARGUMENTS were simply never gated). `is-valid-i32-text?`'s own real
+  `(recur (+ i 1) (and ok (is-digit? (char-at s i))))` passes an `and`-shaped second argument —
+  not `loop-binding-value-shaped?` at all — straight into `emit-loop-binding-value`, whose own
+  new catch-all (`emit-if-value`) then unconditionally indexed `:children` assuming a real `if`
+  shape, walked off the end of a 3-child `and` node, and dereferenced the resulting NULL `Node`.
+  Fixed with a real, direct `loop-binding-value-shaped?` gate in `emit-recur-temps`, computed
+  once via `let` (not called twice) — an unsupported recur-argument shape now emits a real, clean
+  `#error` line instead of crashing the compiler process, the same real bar `alloc-call-shaped?`'s
+  own guard already set for let-bindings. Then closed the actual gap that error was naming:
+  `or-and-shaped?`/`not-shaped?` added to `loop-binding-value-shaped?`/
+  `emit-loop-binding-value`, delegating straight to the already-correct, already-tested
+  `emit-bool-expr` for real `||`/`&&`/`!` composition.
+
+8 new tests (`tests/test_selfhost_emit.c` + `tests/integration/driver_if_loop_binding.c`):
+structural checks (a genuine C ternary initializer, mixed binding kinds in one loop) plus a real
+compile+run+assert check — `count-from` (an `if`-shaped loop-binding init genuinely taking
+different runtime paths: 3 iterations when its own chosen branch starts `i` at 1, 4 when it
+starts at 0), not just gcc-clean text with an unexercised ternary. `make test`: 347/347; every
+`test-selfhost-*` target clean, zero regressions.
+
+**Real, live-checked picture after all three fixes, re-running the self-compile diagnostic against
+`stdlib/string.prn` end to end**: `is-valid-i32-text?` now has ZERO `#error` directives anywhere in
+its own generated C — the `while(1)` loop, both bindings' own real inits (`i`'s ternary, `ok`'s
+`1`), and the real recur-argument boolean composition (`ok && is_digit_(char_at(s, i))`) all now
+emit correctly. One real, separate, NOT-yet-attempted gap remains, found honestly by actually
+reading the resulting C, not assumed: the function's own base-case tail value,
+`(and ok (> n (if (starts-with-sign? s) 1 0)))`, still emits a bare, invalid `return ;` — a real,
+different gap from everything fixed above (this is `emit-loop-tail`'s own PLAIN-TERMINAL-VALUE
+fallback, a different code path from `emit-loop-binding-value`, and it doesn't yet know how to
+emit a boxed boolean expression as a tail-position return value). A real, SEPARATE, pre-existing
+gap also surfaced by this same check, unrelated to loop/recur at all: this function's own
+`Bool`-typed early-return branch emits a bare `return false;`, but neither `true` nor `false` is
+ever `#define`d anywhere in `runtime/parena_runtime.h` — a `Bool`-returning defn's own literal
+return value has apparently never been exercised through a real `gcc` compile by any prior test in
+this whole effort. Both named honestly here as real, concrete, not-yet-scoped next steps — this
+pass closes exactly the loop-binding-value gaps it set out to close (plus the crash, a real safety
+fix independent of them), nothing more claimed. `split` (the file's own other real remaining
+holdout) is unaffected by any of this — still blocked by its own separate, permanent
+`vec/`-qualified-call-as-a-let-value exclusion, named in the prior entry above.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression

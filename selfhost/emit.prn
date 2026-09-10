@@ -618,18 +618,87 @@
 ;; machinery for real, verified against a real, synthetic-but-realistic counting loop
 ;; (`sum-to-n`) — not a claim that either real stdlib function newly self-compiles.
 
+;; if-value-shaped?/emit-if-value -- real, narrow if-as-loop-binding-value support
+;; (2026-09-10), closing the real, previously-named gap loop-binding-value-shaped?'s
+;; own header comment above already flagged: `is-valid-i32-text?`'s own real
+;; `i (if (starts-with-sign? s) 1 0)` loop-binding init. A real, VALUE-producing
+;; sibling of if-tail-shaped?/emit-if-tail elsewhere in this file -- same real
+;; bool-expr-supported? condition sub-language, but emits a real C ternary
+;; (`(cond ? then : else)`) instead of an if/else statement, since a binding-value
+;; position needs a plain expression, not a statement. Real, deliberate structural
+;; difference from if-tail-shaped? (which does NOT shape-check its own then/else
+;; branches, relying on emit-form's own general recursive dispatch and its honest
+;; #error fallback instead): a loop-binding VALUE position has no such fallback
+;; convention to lean on, so both branches are explicitly required to themselves be
+;; loop-binding-value-shaped? (real, mutual recursion between this pair and that
+;; function below -- so a nested if composes for free, narrower than if-tail-shaped?'s
+;; own scope only because loop-binding-value-shaped?'s own real, currently-known value
+;; shapes are themselves a strict subset of a tail position's).
+(defn if-value-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
+  (and (emit-is-call-named? node "if")
+       (and (= (vec/len &(get-field node :children)) 4)
+            (and (bool-expr-supported? (vec/get &(get-field node :children) 1) dest)
+                 (and (loop-binding-value-shaped? (vec/get &(get-field node :children) 2) dest)
+                      (loop-binding-value-shaped? (vec/get &(get-field node :children) 3) dest))))))
+
+(defn emit-if-value [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (let [test-node (vec/get &(get-field node :children) 1)
+        then-node (vec/get &(get-field node :children) 2)
+        else-node (vec/get &(get-field node :children) 3)
+        test-c (emit-bool-expr test-node scope dest)
+        then-c (emit-loop-binding-value then-node scope dest)
+        else-c (emit-loop-binding-value else-node scope dest)
+        parts (vec/new dest)]
+    (do
+      (vec/push! &parts "(")
+      (vec/push! &parts test-c)
+      (vec/push! &parts " ? ")
+      (vec/push! &parts then-c)
+      (vec/push! &parts " : ")
+      (vec/push! &parts else-c)
+      (vec/push! &parts ")")
+      (emit-join-all &parts dest))))
+
 ;; loop-binding-value-shaped?/emit-loop-binding-value -- real, narrow I32-init dispatch:
-;; a bare number literal, a plain-call-shaped? call (the real motivating `(length s)`
-;; shape), or a binary-op.
+;; a bare number literal, a bare `true`/`false` symbol (2026-09-10, found live re-running
+;; the self-compile diagnostic against `stdlib/string.prn` right after if-value-shaped?
+;; landed above: `is-valid-i32-text?`'s own SECOND loop binding, `ok true`, is a bare
+;; boolean symbol, not covered by any prior case -- without this, the whole
+;; `loop-bindings-shaped?` check still failed even with `i`'s own if-value init now
+;; supported, since every binding must be shaped), a plain-call-shaped? call (the real
+;; motivating `(length s)` shape), a binary-op, or an if-value-shaped? ternary. Emits the
+;; same real `1`/`0` literal mapping `emit-bool-expr` already establishes elsewhere in
+;; this file (no `<stdbool.h>`, every loop binding is a real C `int` regardless of its
+;; own PARENA-level Bool/I32 type -- see this section's own original header comment).
 (defn loop-binding-value-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
   (or (= (emit-node-kind-code (get-field node :kind)) 6)
-      (or (plain-call-shaped? node dest) (binary-op-call-shaped? node dest))))
+      (or (emit-is-symbol? node "true")
+          (or (emit-is-symbol? node "false")
+              (or (plain-call-shaped? node dest)
+                  (or (binary-op-call-shaped? node dest)
+                      (or (if-value-shaped? node dest)
+                          (or (or-and-shaped? node dest) (not-shaped? node dest)))))))))
 
+;; Real, additive case (2026-09-10, found live re-running the self-compile diagnostic
+;; immediately after the emit-recur-temps crash fix above): `or-and-shaped?`/`not-shaped?`
+;; -- the exact real shape `is-valid-i32-text?`'s own recur argument,
+;; `(and ok (is-digit? (char-at s i)))`, needs. Delegates straight to `emit-bool-expr`
+;; (already correct, already-tested elsewhere in this file for real `||`/`&&`/`!`
+;; composition) rather than re-deriving the same logic here -- a real boolean-valued
+;; loop binding/recur argument is declared/assigned as a real C `int` either way, the
+;; same convention `true`/`false`'s own `1`/`0` literal cases just above already
+;; establish, so `emit-bool-expr`'s own output (never boxed to `char *`, unlike this
+;; emitter's ordinary value-position convention) is exactly the right shape here with no
+;; extra wrapping needed.
 (defn emit-loop-binding-value [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((= (emit-node-kind-code (get-field node :kind)) 6) (get-field node :text))
+    ((emit-is-symbol? node "true") "1")
+    ((emit-is-symbol? node "false") "0")
     ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
-    (true (emit-binary-op node scope dest))))
+    ((binary-op-call-shaped? node dest) (emit-binary-op node scope dest))
+    ((or (or-and-shaped? node dest) (not-shaped? node dest)) (emit-bool-expr node scope dest))
+    (true (emit-if-value node scope dest))))
 
 ;; loop-bindings-shaped? -- real, exhaustive check over the whole binding vector: an even
 ;; number of children (name/value pairs), every name a bare symbol, every value
@@ -701,14 +770,36 @@
 ;; assign-back), the same real correctness property `src/emit.c`'s own `emit_loop_tail`
 ;; documents (a `(recur y x)` swap must read the OLD x/y, not an already-overwritten
 ;; one).
+;;
+;; Real, live-found crash fixed here (2026-09-10, found the moment if-value-shaped?
+;; above started actually getting exercised): this function used to call
+;; `emit-loop-binding-value` UNCONDITIONALLY on every real recur argument, with NO
+;; `loop-binding-value-shaped?` gate at all -- a genuine, pre-existing gap in the SAME
+;; "shaped? check before the matching emit-* call" discipline every other real dispatch
+;; in this file already holds itself to (`loop-bindings-shaped?` gates the loop's own
+;; INIT values this exact same way; recur's own ARGUMENTS were simply never gated).
+;; Confirmed live via `gdb`: `is-valid-i32-text?`'s own real
+;; `(recur (+ i 1) (and ok (is-digit? (char-at s i))))` passes an `and`-shaped second
+;; argument -- not loop-binding-value-shaped? at all -- straight into
+;; `emit-loop-binding-value`, whose own catch-all (`emit-if-value`) then unconditionally
+;; indexed `:children` assuming a real `if`-call shape, walked off the end of a 3-child
+;; `and` node, and dereferenced the resulting NULL `Node`. Fixed with a real, direct
+;; `loop-binding-value-shaped?` gate, computed once via `let` (not called twice) --
+;; matching `param-type-name`'s own already-established "bind the shape check through a
+;; let first" pattern elsewhere in this file. An unsupported recur-argument shape now
+;; emits a real, clean `#error` line instead of crashing the compiler process, the same
+;; real bar `alloc-call-shaped?`'s own guard already set for let-bindings.
 (defn emit-recur-temps [(node : &Node) (i : I32) (names : &(Vec String)) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (if (>= i (vec/len names))
     ""
     (let [val-node (vec/get &(get-field node :children) (+ i 1))
-          val-c (emit-loop-binding-value val-node scope dest)
+          shaped (loop-binding-value-shaped? val-node dest)
+          val-c (if shaped (emit-loop-binding-value val-node scope dest) "0")
+          err-c (if shaped "" "        #error selfhost/emit.prn: unsupported recur argument shape (narrow v0 only supports the same real shapes loop-binding-value-shaped? recognizes for loop bindings themselves)\n")
           tmp-name (string/concat "__recur_tmp_" (string/i32-to-string i dest) dest)
           parts (vec/new dest)]
       (do
+        (vec/push! &parts err-c)
         (vec/push! &parts "        int ")
         (vec/push! &parts tmp-name)
         (vec/push! &parts " = ")
