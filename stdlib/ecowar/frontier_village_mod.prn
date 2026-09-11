@@ -1,0 +1,45 @@
+;; stdlib/ecowar/frontier_village_mod.prn — real PARENA decision logic for ECOWAR's Living Map
+;; Frontier Village town type (EMILY/BACKLOG.md SECTION 377, ECOWAR/docs/NORTHSTAR_LIVING_MAP.md).
+;;
+;; Founder real-time: "add towns - start with the entire map is divided into cells (hex grid) ...
+;; start with the frontier village" + "PARENA MODS FIRST — should plug into all of these
+;; entrypoints." Frontier Village's own real, named behavior: "Spawns peasants -> militia. Avoids
+;; conflict. Converts easily." This mod computes the actual I32 decisions behind that behavior --
+;; same "real decision logic in PARENA, host C does the rest" split ecowar/card_effect_mod.prn
+;; already established (ECOWAR's own first case of that pattern) -- population/militia counts and
+;; spawn timers stay plain I32 the whole way, so nothing here needs a struct/Vec/F32 crossing the
+;; #target boundary VS0 still can't do.
+;;
+;; ABI: packages/livingmap/town.c's town_tick/town_attempt_convert call these three functions
+;; directly by name (on-frontier-village-spawn-interval-ms -> on_frontier_village_spawn_interval_ms,
+;; etc), same call-by-name convention (not a dynamic registration table -- VS0 has no function
+;; pointers/closures yet, see NORTHSTAR_LIVING_MAP.md's own "Mod event model, honestly" section)
+;; every existing ECOWAR/REDGARDEN mod already uses.
+
+(module ecowar/frontier-village-mod)
+(export on-frontier-village-spawn-interval-ms on-frontier-village-should-raise-militia on-frontier-village-convert-resistance)
+
+;; Spawn cadence speeds up as the village grows (a real, tunable acceleration curve, not a flat
+;; timer) -- a bigger village has more hands, so a new peasant/militia arrives faster. Floors at
+;; 2000ms so growth never becomes instant even at very high population.
+(defn on-frontier-village-spawn-interval-ms [(population : I32) (militia : I32)] : I32
+  (let [total (+ population militia)]
+    (let [interval (- 8000 (* total 150))]
+      (if (< interval 2000) 2000 interval))))
+
+;; "Spawns peasants -> militia": once a village reaches 5 peasants, roughly every third spawn
+;; tick raises one into militia instead of adding a new peasant. Gated on POPULATION's own count
+;; mod 3 (not militia's) deliberately -- militia only ever changes as a RESULT of this same
+;; function returning true, so gating on militia's own value would make the very first raise
+;; unreachable (militia starts at 0, `(mod 0 3)` is 0, never 2, so it could never fire even
+;; once). Population, by contrast, keeps moving every tick regardless of which branch fires, so
+;; it's a real, deterministic pacing clock this function can actually observe ticking forward.
+(defn on-frontier-village-should-raise-militia [(population : I32) (militia : I32)] : Bool
+  (and (>= population 5) (= (mod population 3) 2)))
+
+;; "Converts easily": resistance starts low (20, always >0 since militia can't be negative) and
+;; only grows a little per militia defender -- the whole point of this town type versus Walled
+;; Hamlet's real, later, much higher baseline. population doesn't affect resistance at all here
+;; (unarmed peasants don't make a village harder to flip) -- only militia does.
+(defn on-frontier-village-convert-resistance [(population : I32) (militia : I32)] : I32
+  (+ 20 (* militia 4)))
