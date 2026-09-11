@@ -1,0 +1,33 @@
+;; stdlib/ecowar/allcap_mod.prn — ALLCAP, the real win-condition mod (EMILY/BACKLOG.md SECTION
+;; 381). Founder real-time: "even the win con should be mods - capping a base should work as a mod
+;; or a collection of mods and the wincon mod should interface with that mod via the ALLCAP mod or
+;; something like that."
+;;
+;; Real architecture: ALLCAP is REFLUX's second real subscriber (bloodflower_hostile_spawner_mod
+;; was the first) -- it never imports, includes, or calls ecowar/town_cap_mod.prn, the mod that
+;; announces a capture; the only real connection is the shared REFLUX log
+;; (REFLUX_ACTION_TOWN_CAPPED). This is the real "wincon mod interfaces with the capping mod via
+;; REFLUX" shape the founder asked for, not a direct function call between the two.
+;;
+;; Real, checked-first constraint on scope: actually COUNTING how many of a faction's towns exist
+;; (town_registry_owned_count, packages/livingmap/town.c) needs a real loop over structured
+;; TownRegistry data -- something VS0's own scalar-only ABI genuinely cannot do (no struct/array
+;; params, see docs/NORTHSTAR_LIVING_MAP.md's own "Mod event model, honestly" section). That
+;; counting stays real host C, called from ecowar_tick_allcap_win_check (arena_game.c) once per
+;; real REFLUX_ACTION_TOWN_CAPPED event. What IS real, pure PARENA logic here, needing no #target
+;; escape at all: the actual WIN RULE itself -- does owned_count equal total_count. A small rule,
+;; but a real, named, mod-owned one instead of a bare host-C `==` buried in arena_game.c.
+;;
+;; ABI: ecowar_tick_allcap_win_check calls on-allcap-check(owned_count, total_count) once per real
+;; TOWN_CAPPED action found in the shared REFLUX log; if it returns true, the host itself dispatches
+;; REFLUX_ACTION_ALLCAP_WIN(winning_faction) -- arena_update/arena_update_teams poll for THAT
+;; action (their own separate, real cursor) to decide arena_state.winner, never calling
+;; town_registry_faction_has_full_control directly anymore for the live match path (that function
+;; still exists, real and tested, for direct/test use -- see living_map_bridge.h's own doc
+;; comment).
+
+(module ecowar/allcap-mod)
+(export on-allcap-check)
+
+(defn on-allcap-check [(owned-count : I32) (total-count : I32)] : Bool
+  (and (> total-count 0) (= owned-count total-count)))
