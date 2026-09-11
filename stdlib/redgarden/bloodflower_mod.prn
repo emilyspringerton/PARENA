@@ -28,10 +28,20 @@
 ;; operations don't) — this file was written directly to its real
 ;; destination, PARENA/stdlib/redgarden/bloodflower_mod.prn, but still
 ;; needs `git add`/commit/push by whoever has git access to this repo.
+;;
+;; REFLUX (2026-09-11, EMILY/BACKLOG.md SECTION 380): on-moon-zenith now ALSO calls
+;; reflux_dispatch(REFLUX_ACTION_BLOODFLOWER_TRIGGERED, x, z, 0) -- REFLUX's own real, generic,
+;; per-match action log (stdlib/reflux/reflux.prn, packages/simulation/reflux_runtime.c). A
+;; SEPARATE mod (ecowar/bloodflower_hostile_spawner_mod.prn) polls that same shared log and reacts
+;; by spawning hostile Living Map creeps -- this mod never calls it, includes it, or knows it
+;; exists, real decoupled pub/sub, not a second hardcoded call site bolted on here. Called via the
+;; same plain inline-c FFI-escape as redgarden_host_spawn_bloodflower just below -- reflux_dispatch
+;; is a real, linkable C function (generated from reflux.prn into the same binary), not a PARENA
+;; cross-module import; no (import reflux/reflux) needed for a pure FFI call.
 
 (module redgarden/bloodflower-mod)
 (export on-moon-zenith)
 
 (defn on-moon-zenith [(x : I32) (z : I32)] : Unit
   #target
-  {:c (inline-c "redgarden_host_spawn_bloodflower(x, z);")})
+  {:c (inline-c "redgarden_host_spawn_bloodflower(x, z); reflux_dispatch(REFLUX_ACTION_BLOODFLOWER_TRIGGERED, x, z, 0);")})

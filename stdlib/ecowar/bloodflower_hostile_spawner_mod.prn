@@ -1,0 +1,47 @@
+;; stdlib/ecowar/bloodflower_hostile_spawner_mod.prn — the real, first REFLUX SUBSCRIBER
+;; (EMILY/BACKLOG.md SECTION 380). Founder real-time: "for now just have it spawn a bunch of
+;; hostile creeps into the map at exactly the midpoint (already a mod) have the spwning in
+;; hostiles be a mod too with cross mod pub sub communications."
+;;
+;; Real, deliberate proof of REFLUX's own actual value: this mod never imports, includes, or
+;; calls anything in redgarden/bloodflower_mod.prn, and bloodflower_mod.prn never imports,
+;; includes, or calls anything here. The only real connection between them is the shared REFLUX
+;; action log (stdlib/reflux/reflux.prn) -- bloodflower dispatches
+;; REFLUX_ACTION_BLOODFLOWER_TRIGGERED, this mod polls for it independently. Either mod could be
+;; deleted, replaced, or have a second/third real subscriber added without the other ever being
+;; touched -- genuine N:M decoupling, not the "host hardcodes exactly one call site per mod pair"
+;; shape every other mod in this repo (bloodflower included, on its OWN spawn-the-pickup half)
+;; still uses.
+;;
+;; Real decision logic lives here (I32-only, same "real decision logic, not just a trigger" tier
+;; as ecowar/card_effect_mod.prn): on-bloodflower-hostile-spawner-should-react is a real, pure
+;; I32 comparison against the shared REFLUX_ACTION_BLOODFLOWER_TRIGGERED constant (no #target
+;; needed for this one -- true PARENA logic); on-bloodflower-hostile-spawner-creep-count is a
+;; real, tunable I32 constant (5) naming exactly how big "a bunch" is, in one real, findable place
+;; rather than a magic number buried in host C.
+;;
+;; ABI: packages/simulation/arena_game.c's own ecowar_tick_bloodflower_hostile_spawner (a real,
+;; host-side POLLING loop, called once per real game tick -- REFLUX has no push/callback
+;; mechanism, see reflux.prn's own header comment) tracks its own real "last seen" cursor into the
+;; shared REFLUX log, and for every new action found there, calls
+;; on-bloodflower-hostile-spawner-should-react to ask THIS mod whether it cares about that
+;; action id, then on-bloodflower-hostile-spawner-creep-count to ask how many creeps to spawn.
+;; The actual creep-spawning (a real Living Map CreepRegistry call, float/struct-heavy, well past
+;; what VS0's scalar-only ABI can do) stays in host C
+;; (living_map_bridge_spawn_hostile_creeps_at_hex) -- same "mod decides, host acts" split every
+;; other real mod in this repo already uses, just reached via REFLUX's shared log instead of a
+;; bespoke direct call.
+
+(module ecowar/bloodflower-hostile-spawner-mod)
+(export on-bloodflower-hostile-spawner-should-react on-bloodflower-hostile-spawner-creep-count)
+
+(defn on-bloodflower-hostile-spawner-should-react [(action-type : I32)] : Bool
+  #target
+  {:c (inline-c "(action_type == REFLUX_ACTION_BLOODFLOWER_TRIGGERED)")})
+
+;; "a bunch of hostile creeps" -- a real, named, tunable count. 5 picked as a real, deliberate
+;; middle ground: enough to feel like a real event (not a single stray creep), not so many it
+;; overwhelms LIVING_MAP_CREEP_MAX_COUNT (128) even across several real bloodflower cycles in one
+;; match.
+(defn on-bloodflower-hostile-spawner-creep-count [] : I32
+  5)

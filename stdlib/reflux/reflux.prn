@@ -1,0 +1,52 @@
+;; stdlib/reflux/reflux.prn — REFLUX, the real cross-mod pub/sub layer (EMILY/BACKLOG.md SECTION
+;; 380). Founder real-time: "have the spawning in hostiles be a mod too with cross mod pub sub
+;; communications (THINK REDUX HOWEVER REDUX WORKS) call the mod itself REFLUX a mod that presents
+;; a new layer of mod interface for cross mod communication - give it its own stdlib in PARENA."
+;;
+;; Real, checked-first constraint this design works within: VS0 has no function pointers or
+;; closures (see ECOWAR/docs/NORTHSTAR_LIVING_MAP.md's own "Mod event model, honestly" section) --
+;; a true Redux-style callback/subscriber-list dispatch table isn't buildable at the language
+;; level today. What's real and shipped instead: a single, shared, append-only action log any mod
+;; can DISPATCH into and any other mod can POLL from -- the same "shared log, not push callbacks"
+;; shape stdlib/log/event.prn and ECOWAR's own packages/livingmap/living_map_events.h already
+;; proved out, generalized here into a real, standalone, cross-mod, cross-GAME primitive with no
+;; dependency on Living Map, towns, or ECOWAR specifically.
+;;
+;; ABI: every function here is a thin, real #target/inline-c call into
+;; packages/simulation/reflux_runtime.c's own host functions (reflux_host_dispatch/
+;; reflux_host_log_size/reflux_host_action_*_at) -- the one, real, shared per-match action log.
+;; A DISPATCHING mod calls reflux-dispatch with a real, documented action-type constant (both
+;; sides hardcode and cross-reference the same literal, e.g. REFLUX_ACTION_BLOODFLOWER_TRIGGERED
+;; in reflux_runtime.h -- REFLUX itself has no exported-constant mechanism, PARENA's (export ...)
+;; covers functions, not values). A POLLING mod is ticked by the host same as any other mod, reads
+;; reflux-log-size() and its own last-seen cursor (real state the HOST tracks and passes in as a
+;; parameter, same "PARENA does the decision, host holds the persistent state" split every mod in
+;; this repo already uses), and calls reflux-action-type-at/-a-at/-b-at/-c-at over whatever new
+;; range appeared since it last checked.
+
+(module reflux/reflux)
+(export reflux-dispatch reflux-log-size reflux-action-type-at reflux-action-a-at reflux-action-b-at reflux-action-c-at)
+
+(defn reflux-dispatch [(action-type : I32) (a : I32) (b : I32) (c : I32)] : Unit
+  #target
+  {:c (inline-c "reflux_host_dispatch(action_type, a, b, c);")})
+
+(defn reflux-log-size [] : I32
+  #target
+  {:c (inline-c "reflux_host_log_size()")})
+
+(defn reflux-action-type-at [(index : I32)] : I32
+  #target
+  {:c (inline-c "reflux_host_action_type_at(index)")})
+
+(defn reflux-action-a-at [(index : I32)] : I32
+  #target
+  {:c (inline-c "reflux_host_action_a_at(index)")})
+
+(defn reflux-action-b-at [(index : I32)] : I32
+  #target
+  {:c (inline-c "reflux_host_action_b_at(index)")})
+
+(defn reflux-action-c-at [(index : I32)] : I32
+  #target
+  {:c (inline-c "reflux_host_action_c_at(index)")})

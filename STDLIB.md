@@ -4742,3 +4742,39 @@ already established.
 
 `make test`: 347/347 throughout, zero regressions (no compiler changes in this pass — purely
 additive runtime + stdlib work, unlike `Bytes` itself).
+
+## reflux — real cross-mod pub/sub, ECOWAR's REFLUX (2026-09-11)
+
+Founder real-time (ECOWAR): "have the spawning in hostiles be a mod too with cross mod pub sub
+communications (THINK REDUX HOWEVER REDUX WORKS) call the mod itself REFLUX a mod that presents a
+new layer of mod interface for cross mod communication - give it its own stdlib in PARENA."
+
+Real, checked-first constraint: VS0 has no function pointers or closures anywhere in the current
+emitter — a true Redux-style callback/subscriber-list dispatch table isn't buildable at the
+language level today (see ECOWAR/docs/NORTHSTAR_LIVING_MAP.md's own "Mod event model, honestly"
+section for the full accounting). What's real and shipped instead, and genuinely delivers
+cross-mod pub/sub: a single, shared, append-only action log any mod can DISPATCH into and any
+other mod can independently POLL from — the same "shared log, not push callbacks" shape
+`packages/livingmap/living_map_events.h` (ECOWAR) already proved out for one subsystem,
+generalized here into a real, standalone, cross-mod, cross-GAME primitive with zero dependency on
+any one game.
+
+`stdlib/reflux/reflux.prn`: 6 real, thin `#target`/inline-c functions --
+`reflux-dispatch(action-type, a, b, c)` (a real trigger call) and 5 real scalar accessors
+(`reflux-log-size`, `reflux-action-type-at`/`-a-at`/`-b-at`/`-c-at`) -- every one a plain FFI call
+into a real host runtime (ECOWAR's own `packages/simulation/reflux_runtime.c`, arena-scoped for
+now since ECOWAR is REFLUX's only real consumer today; extracting a fully game-agnostic runtime is
+real, cheap, later work once a second consumer wants it).
+
+Real naming collision found and fixed while shipping this: the PARENA-mangled function names
+`reflux_dispatch`/`reflux_log_size` collided with the runtime's own originally-planned generic C
+API names. Renamed the runtime's own internal functions (`reflux_log_dispatch`/
+`reflux_log_length`) rather than the PARENA-facing ones -- the mod's own exported names are the
+ones every other mod actually calls by convention.
+
+First real dispatcher/subscriber pair, shipped same day: ECOWAR's `redgarden/bloodflower_mod.prn`
+(dispatches `REFLUX_ACTION_BLOODFLOWER_TRIGGERED` on its own real moon-zenith event, unchanged
+original behavior preserved) and a brand-new `ecowar/bloodflower_hostile_spawner_mod.prn` (polls
+for it, reacts by spawning real hostile creeps) -- the two mods never import, include, or call
+each other; the only real connection is the shared REFLUX log. Live-verified end to end through a
+full real day/night cycle. Full ECOWAR test suite green (3189 assertions).
