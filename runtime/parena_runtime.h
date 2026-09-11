@@ -917,13 +917,91 @@ static inline int tcp_listen_impl(int port) {
     return fd;
 }
 
+/* ---- stdlib/net/udp.prn real host glue (2026-09-11) -------------------
+ * Real BSD UDP sockets -- closes the same real "FFI declared, host
+ * implementation not written yet" gap class tcp_*_impl above already
+ * closed once for TCP, found here live (gcc-compiling net/udp.prn's own
+ * generated C for the first time, `udp_bind`/`udp_recv_from` were
+ * referenced but never defined anywhere in this runtime -- see
+ * net/udp.prn's own header comment for the full, real bug list this
+ * rewrite fixes, not just the missing symbols).
+ *
+ * udp_send_to_impl takes plain host/port scalars and builds a real
+ * `struct sockaddr_in` itself via `inet_pton` -- the real fix for the
+ * genuine FFI-representation mismatch net/udp.prn's own prior version
+ * left unresolved (casting a PARENA `SocketAddr` struct directly to
+ * `struct sockaddr*`, which is not the same memory layout). Same real
+ * "the host builds the real OS struct, PARENA only ever sees plain
+ * scalars" discipline tcp_connect_impl already uses via getaddrinfo.
+ *
+ * udp_recv_from_impl deliberately takes `char **out_host, int *out_port`
+ * rather than a `SocketAddr *` -- this header is `#include`d at the TOP
+ * of every generated .c file, before that file's own PARENA-emitted
+ * struct typedefs exist yet (confirmed live against a real generated
+ * file), so a function defined HERE can never reference a PARENA
+ * `defstruct` type by name. Plain `char**`/`int*` sidesteps that
+ * ordering problem entirely; net/udp.prn's own PARENA-side wrapper
+ * passes `&(get-field !out-addr :host)`/`&(get-field !out-addr :port)`,
+ * the same real field-address-of convention `stdlib/set.prn`'s own
+ * `maybe-insert!` already establishes for "write into a field the
+ * caller owns." */
+static inline int udp_bind_impl(int port) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static inline int udp_send_to_impl(int fd, const char *host, int port, const char *data) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) return -1;
+    ssize_t n = sendto(fd, data, strlen(data), 0, (struct sockaddr *)&addr, sizeof addr);
+    return (n < 0) ? -1 : (int)n;
+}
+
+/* udp_recv_from_impl -- blocks; a real server owns its own poll loop
+ * around this, same as arena_server's own real recvfrom loop (and
+ * tcp_read_impl's own doc comment above, same reasoning). Fills
+ * out_addr->host (arena-allocated) / out_addr->port on success, NULL on
+ * error/timeout -- see net/udp.prn's own header comment (findings #4 and
+ * the "still open" section) for why the sender's address is an
+ * out-parameter here instead of part of a Result tuple, and for the
+ * real, accepted zero-length-datagram-vs-error ambiguity this leaves. */
+static inline char *udp_recv_from_impl(int fd, Arena *dest, char **out_host, int *out_port) {
+    char buf[65536];
+    struct sockaddr_in src;
+    socklen_t src_len = sizeof src;
+    ssize_t n = recvfrom(fd, buf, sizeof buf, 0, (struct sockaddr *)&src, &src_len);
+    if (n < 0) return NULL;
+    char ipbuf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &src.sin_addr, ipbuf, sizeof ipbuf);
+    char *host_out = (char *)arena_alloc(dest, strlen(ipbuf) + 1);
+    strcpy(host_out, ipbuf);
+    *out_host = host_out;
+    *out_port = ntohs(src.sin_port);
+    char *data_out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(data_out, buf, (size_t)n);
+    data_out[n] = '\0';
+    return data_out;
+}
+
 /* ---- stdlib/net/rawsocket.prn real host glue (2026-09-07) ------------
  * Real answer to the founder's own pasted proposal ("Raw Socket Protocol
  * Overrides — IP_HDRINCL: tell the kernel not to auto-generate the IP
  * header; the stdlib has manually crafted the raw bytes"). Every real
- * socket primitive so far (tcp_*_impl above, udp's own sendto in
- * net/udp.prn) lets the KERNEL build the IP header — genuinely no way
- * to hand-craft one before this. `rawsocket_open_impl` opens a real
+ * socket primitive so far (tcp_*_impl above, udp_send_to_impl above)
+ * lets the KERNEL build the IP header — genuinely no way to hand-craft
+ * one before this. `rawsocket_open_impl` opens a real
  * `SOCK_RAW` socket for a caller-chosen IP protocol number (see
  * net/rawsocket.prn's own `ipproto-*` constants); `rawsocket_hdrincl_impl`
  * is the literal, separate `IP_HDRINCL` setsockopt call kept as its own

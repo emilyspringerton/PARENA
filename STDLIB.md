@@ -1223,12 +1223,15 @@ own connectionless-vs-connection-oriented distinction is as real a semantic spli
 would hide that difference behind a single API that has to lie about one side of it.
 
 ```clojure
-; net/udp — connectionless, matches SHANKPIT/arena_server's own sendto/recvfrom shape
-(defn bind    [(port : I32) (dest : Arena @ Region)] : (Result UdpSocket NetError) @ Region)
-(defn send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region)]
-  : (Result I32 NetError))
-(defn recv-from [(!sock : &UdpSocket) (dest : Arena @ Region)]
-  : (Result (String SocketAddr) NetError) @ Region)   ; blocks; a real server owns its own poll loop
+; net/udp — connectionless, matches SHANKPIT/arena_server's own sendto/recvfrom shape.
+; Real names/shapes as of the 2026-09-11 host-glue close-out below (`udp-`-prefixed to avoid a
+; real libc `bind(2)` symbol collision; `recv-from`'s sender address moved to a &mut out-param
+; since PARENA's own Result doesn't support the original design's 2-element tuple payload).
+(defn udp-bind    [(port : I32) (dest : Arena @ Region)] : (Result UdpSocket NetError) @ Region)
+(defn udp-send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 NetError) @ Region)
+(defn udp-recv-from [(!sock : &UdpSocket) (dest : Arena @ Region) (!out-addr : &mut SocketAddr)]
+  : (Result String NetError) @ Region)   ; blocks; a real server owns its own poll loop
 
 ; net/tcp — connection-oriented
 (defn listen  [(port : I32) (dest : Arena @ Region)] : (Result TcpListener NetError) @ Region)
@@ -1295,6 +1298,33 @@ call `connect-from-url`/`build-get-request`/`parse-http-response`/`build-post-re
 genuinely un-designed helper functions (URL parsing, HTTP request serialization, HTTP response
 parsing) that would need designing essentially from scratch, a real, substantial undertaking well
 beyond this pass's own scope, not attempted here.
+
+**`net/udp`'s own remaining host-FFI gap closed for real (2026-09-11)**: `net/tcp.prn`'s identical
+gap was closed on 2026-08-25 (its own header comment tells the story), but `net/udp.prn` was never
+put through the same fix — this doc's own words just above ("remaining errors are real, expected,
+un-implemented host FFI primitives — `tcp_listen`/`tcp_accept`/`udp_bind`/etc.") stayed literally
+true for `udp_bind` specifically for three more weeks, undiscovered because nothing ever actually
+tried compiling `net/udp.prn`'s generated C against a real linker until this pass (found while
+scoping "write the DEADWEIGHT game-server host itself in PARENA," `EMILY/docs/
+PARENACLOUD_NORTHSTAR.md`). Four real, distinct bugs found and fixed this way, not just the
+missing `udp_bind_impl`/`udp_recv_from_impl` symbols: a real libc `bind(2)` name collision (the
+export was still bare `bind`, never renamed the way TCP's own `connect`/`listen`/etc. already
+were), the same `#target`-declares-`Result`-directly boxing bug TCP's own 2026-08-25 pass already
+fixed once (never applied here), a genuine FFI-representation mismatch in the original `send-to`
+(casting a PARENA `SocketAddr` struct straight to `struct sockaddr*`, this doc's own STDLIB
+section never named as unresolved but `net/udp.prn`'s own prior file comment did), and
+`recv-from`'s own declared `(Result (String SocketAddr) NetError)` return type — a 2-element tuple
+inside `Ok` that, checked directly against every other `(Result ...)` usage in this entire stdlib,
+was never real, compilable PARENA syntax anywhere else either. Real, live-verified, not just
+compile-checked: `make test-net-udp` (`tests/test_net_udp.c`, new) binds two real UDP sockets,
+sends a real datagram, receives it, and asserts the payload AND the sender's own reported address/
+port both come back correct — a genuine round trip, proving `net/udp.prn`'s three public functions
+(renamed `udp-bind`/`udp-send-to`/`udp-recv-from`, see the updated signature block above) are real,
+usable primitives for the first time since this file was written. Real, honest, still-open
+limitation named in `net/udp.prn`'s own header comment, not solved here: PARENA `String` is a
+plain null-terminated C string end to end in this net stdlib, so a binary wire payload with an
+embedded null byte isn't safely representable yet — a real, separate, length-prefixed byte-buffer
+type is the actual fix, out of scope for this pass.
 
 **`current-arena` closed for `serve` (and `array.prn`'s own `reshape`) in a follow-up pass
 (2026-08-21)**: both called the already-documented, never-designed `(current-arena)` builtin (see

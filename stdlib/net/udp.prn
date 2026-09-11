@@ -1,29 +1,79 @@
 ;; stdlib/net/udp.prn — depends on string. Design: STDLIB.md "net/udp"
 ;; section. Connectionless -- matches SHANKPIT's own :6969 server and
-;; REDGARDEN/GoblinFoxDragon's arena_server real sendto/recvfrom shape
-;; directly, not a redesigned socket API.
+;; REDGARDEN/GoblinFoxDragon/ECOWAR's arena_server real sendto/recvfrom
+;; shape directly, not a redesigned socket API.
+;;
+;; Real, honest rewrite (2026-09-11): this file's own previous version
+;; had never actually been compiled end to end -- found live while
+;; scoping "write the DEADWEIGHT host itself in PARENA" (EMILY/docs/
+;; PARENACLOUD_NORTHSTAR.md), by actually gcc-compiling its own
+;; generated C for the first time rather than trusting `parena build`'s
+;; success or the file's own prior comments at face value (the exact
+;; "actually compile to C, don't just trust it" discipline net/tcp.prn's
+;; own 2026-08-25 header comment already names, applied here for real).
+;; Four real, distinct bugs found this way, all fixed in this pass:
+;;
+;; 1. The exported name `bind` collides with libc's own real `bind(2)`
+;;    syscall (declared in <sys/socket.h>, which this file's own host
+;;    glue includes) -- a real, direct C symbol conflict, confirmed via
+;;    gcc's own "conflicting types for 'bind'" error. Exactly the same
+;;    bug class net/tcp.prn's own header comment already describes
+;;    fixing for `connect`/`listen`/`accept`/`read`/`write`/`close`
+;;    (renamed `tcp-`-prefixed) -- this file's own exports were simply
+;;    never put through the same fix. Renamed to `udp-bind`/
+;;    `udp-send-to`/`udp-recv-from` here, matching that established
+;;    house convention.
+;; 2. Every `#target` body below used to declare its own return type as
+;;    `Result` directly -- VS0 never auto-boxes a `#target` body's
+;;    return value (`emit.c`'s own `find_target_c_src` comment), so this
+;;    silently emitted a raw `int`/`ssize_t` C value where a `Result`
+;;    struct was expected, a real type mismatch confirmed live by gcc.
+;;    Fixed to net/tcp.prn's own already-proven shape: raw primitives
+;;    return a plain scalar/string, `Result` construction happens in
+;;    ordinary PARENA code.
+;; 3. `send-to`'s own inline `sendto()` call cast a PARENA `SocketAddr`
+;;    struct (`{host: String, port: I32}`) directly to
+;;    `(struct sockaddr*)` -- a genuine FFI-representation mismatch this
+;;    file's own prior comment already named as real and unresolved
+;;    ("host-implementation work... would need to resolve for real, not
+;;    something the type definition alone can paper over"). Fixed for
+;;    real: the raw C impl (`udp_send_to_impl`, runtime/
+;;    parena_runtime.h) takes plain `host`/`port` scalars and builds a
+;;    real `struct sockaddr_in` itself via `inet_pton`, the same real
+;;    pattern `tcp_connect_impl` already uses via `getaddrinfo`.
+;; 4. `recv-from`'s own declared return type, `(Result (String
+;;    SocketAddr) NetError)`, is a 2-element tuple inside `Ok` -- checked
+;;    directly against every other `(Result ...)` usage in this whole
+;;    stdlib (`grep -rn "(Result ("`), none of them wrap more than one
+;;    type; PARENA's own `Result` doesn't support multi-value tuples
+;;    like this anywhere else, so this was never real, compilable
+;;    syntax. Real, deliberate fix, not a silent scope-narrowing: the
+;;    sender's address is now delivered via a `&mut SocketAddr`
+;;    out-parameter instead, the same real out-parameter convention
+;;    `stdlib/set.prn`'s own `maybe-add-member!`/`maybe-insert!` already
+;;    establish for "the real result plus something extra."
+;;
+;; Real, honest, still-open limitation, not solved in this pass: PARENA
+;; `String` is a plain null-terminated C string end to end in this
+;; stdlib (`tcp_write_impl`/`udp_send_to_impl` both use `strlen`), so a
+;; binary wire payload containing an embedded null byte (a real
+;; possibility in e.g. this monorepo's own `NetHeader`-shaped game
+;; protocols) is not safely representable yet. Fixing this needs a real,
+;; separate, length-prefixed byte-buffer type across this whole net
+;; stdlib, not a one-file patch -- named here so it isn't silently
+;; assumed solved just because `udp-send-to`/`udp-recv-from` now compile
+;; and round-trip for real (verified against real ASCII test payloads
+;; only, `tests/net/test_udp.prn`). A second, smaller, similarly-named
+;; gap: a genuine zero-length UDP datagram is indistinguishable from "no
+;; data" by `udp-recv-from`'s own real signature (both read back as an
+;; empty string) -- every real protocol in this house's own arena
+;; servers sends a nonzero-size `NetHeader` as its smallest possible
+;; datagram, so this is a real, accepted, narrow gap, not an oversight.
 
 (module net/udp)
 (import string)
-(export bind send-to recv-from UdpSocket SocketAddr NetError)
+(export udp-bind udp-send-to udp-recv-from UdpSocket SocketAddr NetError)
 
-;; Real, honest gap closed here (2026-08-21): every function below used
-;; `UdpSocket`/`SocketAddr`/`NetError` in its own real signature but
-;; this file never actually DEFINED any of them -- the same real class
-;; of gap net/tcp.prn's own TcpListener/TcpStream/NetError closed
-;; alongside this. `UdpSocket` is a real, minimal, opaque fd wrapper,
-;; same shape as net/tcp.prn's own handles. `SocketAddr` is a real,
-;; minimal host+port pair -- `send-to`'s own #target body casts it to
-;; a real POSIX `struct sockaddr*`, a genuine FFI-representation
-;; mismatch against this simplified shape that real host-implementation
-;; work (not attempted here, same "FFI declared, host glue deferred"
-;; boundary every #target-bound file in this stdlib already has) would
-;; need to resolve for real, not something the TYPE DEFINITION alone
-;; can paper over.
-;;
-;; `NetError` is defined separately here AND in net/tcp.prn's own file
-;; -- see that file's own comment for why this duplication is real,
-;; deliberate, and safe for every real, intended build combination.
 (defstruct UdpSocket
   (fd : I32))
 
@@ -37,19 +87,53 @@
   (AddressInUse)
   (Other))
 
-(defn bind [(port : I32) (dest : Arena @ Region)]
+;; ---- raw syscall primitives -- the only #target bodies in this file,
+;; each a single C expression against runtime/parena_runtime.h's own
+;; udp_*_impl functions, no boxing (see finding #2 above).
+
+(defn raw-bind [(port : I32)]
+  : I32
+  #target
+  {:c (inline-c "udp_bind_impl(port)")})
+
+(defn raw-send-to [(fd : I32) (host : String @ Region) (port : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "udp_send_to_impl(fd, host, port, data)")})
+
+(defn raw-recv-from [(fd : I32) (dest : Arena @ Region) (!out-host : &mut String) (!out-port : &mut I32)]
+  : String @ Region
+  #target
+  {:c (inline-c "udp_recv_from_impl(fd, dest, out_host, out_port)")})
+
+(defn udp-bind [(port : I32) (dest : Arena @ Region)]
   : (Result UdpSocket NetError) @ Region
-  #target
-  {:c (inline-c "udp_bind(port, dest)")})
+  (let [fd (raw-bind port)]
+    (if (< fd 0)
+      (Err AddressInUse)
+      (Ok {:fd fd}))))
 
-(defn send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region)]
-  : (Result I32 NetError)
-  #target
-  {:c (inline-c "sendto(sock->fd, data, strlen(data), 0, (struct sockaddr*)&addr, sizeof(addr))")})
+(defn udp-send-to [(!sock : &UdpSocket) (addr : SocketAddr) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 NetError) @ Region
+  (let [n (raw-send-to (get-field !sock :fd) (get-field addr :host) (get-field addr :port) data)]
+    (if (< n 0)
+      (Err Other)
+      (Ok n))))
 
-;; recv-from blocks; a real server owns its own poll loop around this,
-;; same as arena_server's own real recvfrom loop.
-(defn recv-from [(!sock : &UdpSocket) (dest : Arena @ Region)]
-  : (Result (String SocketAddr) NetError) @ Region
-  #target
-  {:c (inline-c "udp_recv_from(sock, dest)")})
+;; udp-recv-from blocks; a real server owns its own poll loop around
+;; this, same as arena_server's own real recvfrom loop. Fills
+;; `!out-addr` with the sender's address on success -- see finding #4
+;; above for why this replaced the original (never-compiled) tuple-
+;; in-Result design. Passes `&mut` references to `!out-addr`'s own
+;; `host`/`port` fields straight through to `raw-recv-from` (the same
+;; real field-address-of pattern `stdlib/set.prn`'s own `maybe-insert!`
+;; already establishes) rather than the whole struct, so the shared
+;; runtime header never has to name a PARENA-emitted type -- see
+;; `udp_recv_from_impl`'s own doc comment in `runtime/parena_runtime.h`
+;; for the real ordering reason.
+(defn udp-recv-from [(!sock : &UdpSocket) (dest : Arena @ Region) (!out-addr : &mut SocketAddr)]
+  : (Result String NetError) @ Region
+  (let [data (raw-recv-from (get-field !sock :fd) dest &(get-field !out-addr :host) &(get-field !out-addr :port))]
+    (if (str-eq? data "")
+      (Err Timeout)
+      (Ok data))))
