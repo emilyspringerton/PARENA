@@ -1,0 +1,52 @@
+;; stdlib/ecowar/walled_hamlet_mod.prn — real PARENA decision logic for ECOWAR's Living Map
+;; Walled Hamlet town type (EMILY/BACKLOG.md SECTION 377 Phase 2, ECOWAR/docs/NORTHSTAR_LIVING_MAP.md).
+;;
+;; Founder's own named behavior: "Defensive bias. Shoots hostile creeps. Slow to flip." Same real
+;; "decision logic in PARENA, host C does the rest" split as ecowar/frontier_village_mod.prn --
+;; every value here stays plain I32, no struct/Vec/F32 crossing the #target boundary.
+;;
+;; ABI: packages/livingmap/town.c calls all 5 functions directly by name, same call-by-name
+;; convention every mod in this repo already uses (see docs/NORTHSTAR_LIVING_MAP.md's own "Mod
+;; event model, honestly" section for why this isn't a dynamic registration table).
+;;
+;; Design, contrasted directly against frontier_village_mod.prn (same Town.population/militia
+;; fields, different formulas -- "militia" here means garrison soldiers, not peasant defenders):
+;;   - Spawn cadence is SLOWER (base 10000ms vs Frontier's 8000ms, floors at 4000ms vs 2000ms) --
+;;     "defensive bias" trades economy speed for the resistance/defense values below.
+;;   - Garrison threshold is LOWER (population >= 3 vs Frontier's >= 5) and fires more often
+;;     (population mod 2 == 1, a 1-in-2 pace vs Frontier's 1-in-3) -- a defensive town builds up
+;;     its garrison faster, proportionally, than a Frontier Village raises militia.
+;;   - Convert resistance baseline is MUCH higher (60 vs Frontier's 20) -- "slow to flip" is the
+;;     whole point of this type.
+;;   - defense-range/defense-damage are genuinely new (Frontier Village has no analog): "shoots
+;;     hostile creeps" is a real, stationary ranged attack scaling with garrison size, resolved by
+;;     packages/livingmap/town.c's own town_tick_with_creeps against the real CreepRegistry.
+
+(module ecowar/walled-hamlet-mod)
+(export on-walled-hamlet-spawn-interval-ms on-walled-hamlet-should-raise-militia on-walled-hamlet-convert-resistance on-walled-hamlet-defense-range on-walled-hamlet-defense-damage)
+
+(defn on-walled-hamlet-spawn-interval-ms [(population : I32) (militia : I32)] : I32
+  (let [total (+ population militia)]
+    (let [interval (- 10000 (* total 100))]
+      (if (< interval 4000) 4000 interval))))
+
+;; Gated on POPULATION's own mod-2 count, same real reason frontier_village_mod.prn gates on
+;; population rather than militia: militia only ever changes as a RESULT of this function
+;; returning true, so gating on militia's own value would make the very first raise unreachable.
+(defn on-walled-hamlet-should-raise-militia [(population : I32) (militia : I32)] : Bool
+  (and (>= population 3) (= (mod population 2) 1)))
+
+;; "Slow to flip": a much higher baseline (60, vs Frontier Village's 20) plus the same real
+;; per-garrison-soldier scaling shape.
+(defn on-walled-hamlet-convert-resistance [(population : I32) (militia : I32)] : I32
+  (+ 60 (* militia 8)))
+
+;; "Shoots hostile creeps": how far the hamlet's own stationary defense reaches, in real hex
+;; distance -- 1 (adjacent) at zero garrison, +1 for every 3 garrison soldiers.
+(defn on-walled-hamlet-defense-range [(militia : I32)] : I32
+  (+ 1 (/ militia 3)))
+
+;; Damage per real defensive shot, scaling with garrison size -- an empty hamlet still gets a
+;; token defense (5), a well-garrisoned one hits much harder.
+(defn on-walled-hamlet-defense-damage [(militia : I32)] : I32
+  (+ 5 (* militia 2)))
