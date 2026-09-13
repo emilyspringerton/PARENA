@@ -1,0 +1,63 @@
+;; stdlib/brawlpit/commander_mod.prn — real PARENA decision logic for BRAWLPIT's "fractal
+;; commander" layer (EMILY/BACKLOG.md SECTION 419, REDGARDEN/NORTHSTAR.md §26.3's own real,
+;; rule-based-first precedent: "Built instead: a real, rule-based (not learned) team-wide
+;; 'Commander' signal that genuinely changes individual squad decisions, not just a spec.").
+;;
+;; Founder real-time: build a packet-level RL training pipeline for BRAWLPIT, applying
+;; autocurriculum/league doctrine (REDGARDEN NORTHSTAR §25.4/§25.4.1) and the "fractal commander"
+;; hierarchy (§26.3) but explicitly WITHOUT the squad-coordination layer (§26.3's own
+;; "commander-soldier"/multi-agent nesting) -- BRAWLPIT has no teams to coordinate. This module is
+;; the single-agent commander half of that hierarchy: a real, honest, rule-based posture signal
+;; computed from real wire-level state (the exact fields BRAWLPIT/packages/common/protocol.h's
+;; own NetPlayer struct carries), same scope discipline §26.3's own first real step used --
+;; nothing here is a learned policy, it's the deterministic strategic-directive layer a low-level
+;; PPO "soldier" policy conditions on, matching the doc's own "smaller in scope than the full
+;; commander/soldier hierarchy... a genuine structural step in the same direction" framing.
+;;
+;; I32-only the whole way (no F32/struct/Vec crossing the #target boundary VS0 still can't do --
+;; same real constraint stdlib/ecowar/frontier_village_mod.prn's own header names) -- damage/
+;; stocks are already integer-shaped on the wire (NetPlayer.damage is a real unsigned short
+;; percent, stocks a real unsigned char), and edge distance is passed pre-rounded to the nearest
+;; world-unit integer by the caller (a coarse platform-fighter strategic decision doesn't need
+;; sub-unit precision).
+;;
+;; ABI: called directly by name (commander_posture -> commander_posture) from both
+;; scripts/rl_env_packet.py (via ctypes on the compiled libbrawlpit_commander.so, appending the
+;; returned posture as an extra observation feature for the low-level RL policy) and, later, any
+;; hand-authored/hybrid in-game bot that wants the same real strategic signal a training run saw
+;; -- one real decision function, two real consumers, matching this monorepo's own standing "same
+;; shape trains as ships" discipline.
+
+(module brawlpit/commander-mod)
+(export commander-posture)
+
+;; Posture enum -- kept here as plain documented I32 constants (VS0 has no enum-to-FFI-boundary
+;; story beyond int yet) rather than invented ad hoc at each call site:
+;;   0 NEUTRAL   -- no strong signal either way, play it straight
+;;   1 AGGRESSIVE -- meaningfully behind on stocks/damage, can't afford to sit back
+;;   2 PATIENT   -- meaningfully ahead, protect the lead rather than take a risky trade
+;;   3 EDGEGUARD -- opponent is off-stage/near the ledge and vulnerable, and we are safe to press
+;;   4 RECOVER   -- we are ourselves off-stage/near the ledge -- survival overrides everything else
+
+;; edge-safety checks take priority over the stock/damage read (a stock lead means nothing if
+;; you're about to die off-stage, and a stock deficit means nothing if the OPPONENT is the one
+;; about to die) -- this ordering is the real, deliberate strategic hierarchy a platform-fighter
+;; "commander" needs that a MOBA's own lane-based posture signal never had to consider.
+(defn commander-posture
+    [(own-stocks : I32) (opp-stocks : I32)
+     (own-damage-pct : I32) (opp-damage-pct : I32)
+     (own-edge-dist : I32) (opp-edge-dist : I32)
+     (edge-danger-threshold : I32)] : I32
+  (if (< own-edge-dist edge-danger-threshold)
+    4
+    (if (< opp-edge-dist edge-danger-threshold)
+      3
+      (if (> own-stocks opp-stocks)
+        2
+        (if (< own-stocks opp-stocks)
+          1
+          (if (< own-damage-pct opp-damage-pct)
+            2
+            (if (> own-damage-pct opp-damage-pct)
+              1
+              0)))))))
