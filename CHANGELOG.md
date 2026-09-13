@@ -1,3 +1,7 @@
+## 2026-09-13
+
+- feat(stdlib): brawlpit/commander_mod.prn -- real, pure, rule-based fractal-commander posture decision logic for BRAWLPIT's RL training pipeline (S419), I32-only FFI boundary. Commit df66ffe. (sess-20260905-0720-ec33e7c5)
+
 ## 2026-09-11
 
 - net/udp real host-glue close-out: fixed 4 real bugs (libc bind() name collision, #target-declares-Result-directly boxing bug, SocketAddr-to-sockaddr FFI mismatch in send-to, a never-valid tuple-in-Result return type in recv-from) found by actually gcc-compiling this file's generated C for the first time. Live-verified round trip: udp-bind/udp-send-to/udp-recv-from now work for real (tests/test_net_udp.c, make test-net-udp). Found while scoping 'write the DEADWEIGHT host itself in PARENA' (EMILY/docs/PARENACLOUD_NORTHSTAR.md). Commit 95e560d. (sess-20260905-0720-ec33e7c5)
