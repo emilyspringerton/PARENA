@@ -1,4 +1,5 @@
 ## 2026-09-14
+- fix(compress): real root cause found and fixed for the inflate() dynamic-Huffman hang/corruption (Vec box-type confusion from a downgraded loop-var type); feat(image): real PNG decoder (chunk parsing + defilter, all 4 filter types) (sess-20260905-0720-ec33e7c5)
 
 - Added stdlib/compress/inflate.prn: a real RFC 1951 DEFLATE decompressor (puff.c-style canonical Huffman, all 3 block types). Compiles clean, passes 4/5 real zlib-generated test vectors; one dynamic-Huffman case hangs on a real VS0 codegen bug (isolated via a Python reference port -- algorithm itself verified correct). Not yet wired into SHANKPIT. Commit 1fc82ae (sess-20260905-0720-ec33e7c5)
 
