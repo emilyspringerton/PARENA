@@ -1,0 +1,234 @@
+;; stdlib/image/png.prn — depends on bytes, compress/inflate. Design: STDLIB.md "image/png"
+;; section (new, added alongside this file). Founder real-time, 2026-09-14: "finish the png thingy
+;; for the sprays do it in parena" — this is the second, final half of that ask
+;; (`compress/inflate.prn` decompresses the raw DEFLATE stream; this file parses the real PNG
+;; container around it and reconstructs real pixels). SHANKPIT's own `spray_registry.h` and
+;; `S459-16`'s material texture overrides both currently render a real, honest placeholder (a flat
+;; hash-derived color) because no native PNG decoder existed — this closes that gap.
+;;
+;; Real, honest, deliberate v0 scope: 8-bit-depth, non-interlaced PNG only, color type 2
+;; (truecolor RGB) or 6 (truecolor RGBA) — the overwhelmingly common shape for a real uploaded
+;; spray/texture PNG (any normal export from a browser canvas, GIMP, Photoshop, ImageMagick
+;; defaults to one of these). Paletted (color type 3), grayscale (0/4), 16-bit depth, and Adam7
+;; interlacing are real, named, NOT handled — `png-decode` returns `:ok 0` for any of them rather
+;; than guessing or corrupting output, so a caller can fall back to the existing placeholder
+;; instead of showing garbage. Same real "correct first, narrow honestly, widen later" judgment
+;; call `compress/inflate.prn` itself already documents.
+;;
+;; zlib wrapper: PNG's IDAT stream is a zlib stream (RFC 1950), not a bare RFC 1951 DEFLATE
+;; stream — a 2-byte header (CMF/FLG) followed by the real DEFLATE payload `inflate` (this stdlib's
+;; own compress/inflate.prn) already decodes, followed by a 4-byte Adler-32 trailer. The header and
+;; trailer are stripped, NOT validated (same real, honest v0 narrowing `inflate-stored-block`'s own
+;; un-verified NLEN already established for its own two-pass-checksum field) — a corrupt Adler-32
+;; would still decode (or fail) exactly as if this checked it, just without the extra diagnostic.
+;;
+;; Two-pass IDAT assembly: `Bytes` has no growth operation (fixed-length, allocated once) — the
+;; same real reason `compress/inflate.prn`'s own dynamic Huffman tables get built via
+;; count-then-fill instead of push-as-you-go. `png-scan-header` makes one real pass over every
+;; chunk, summing total IDAT length (a PNG may split its compressed stream across many IDAT
+;; chunks) and capturing IHDR's own real fields; `png-copy-idat` makes a second real pass copying
+;; each IDAT chunk's bytes into one, correctly-pre-sized `Bytes` buffer.
+
+(module image/png)
+(import bytes)
+(import compress/inflate)
+(export png-decode)
+
+(defn read-u32-be [(data : Bytes) (pos : I32)]
+  : I32
+  (let [b0 (bytes/bytes-get data pos)
+        b1 (bytes/bytes-get data (+ pos 1))
+        b2 (bytes/bytes-get data (+ pos 2))
+        b3 (bytes/bytes-get data (+ pos 3))]
+    (+ (shl b0 24) (+ (shl b1 16) (+ (shl b2 8) b3)))))
+
+;; chunk-is -- real, direct byte comparison against a 4-ASCII-char chunk type ("IHDR"/"IDAT"/
+;; "IEND") rather than a String equality check — Bytes has no such operation, and four `bytes-get`
+;; comparisons is the smallest real thing that works, matching this stdlib's own established
+;; "smallest real thing" discipline throughout.
+(defn chunk-is [(data : Bytes) (pos : I32) (c0 : I32) (c1 : I32) (c2 : I32) (c3 : I32)]
+  : Bool
+  (and (= (bytes/bytes-get data pos) c0)
+    (and (= (bytes/bytes-get data (+ pos 1)) c1)
+      (and (= (bytes/bytes-get data (+ pos 2)) c2)
+        (= (bytes/bytes-get data (+ pos 3)) c3)))))
+
+(defstruct PngHeader
+  (width      : I32)
+  (height     : I32)
+  (bit-depth  : I32)
+  (color-type : I32)
+  (interlace  : I32)
+  (idat-total : I32)
+  (ok         : I32))
+
+;; png-scan-header -- one real pass over every chunk starting right after the 8-byte PNG
+;; signature. IHDR (always the first chunk, per the real PNG spec) supplies width/height/bit-
+;; depth/color-type/interlace; every IDAT chunk's own length is summed into `idat-total`; IEND
+;; stops the scan. `ok` is 0 if IHDR was never seen (not a real PNG) — checked by the caller before
+;; trusting any other field.
+(defn png-scan-header [(data : Bytes)]
+  : PngHeader
+  (loop [pos 8 width 0 height 0 bit-depth 0 color-type 0 interlace 0 idat-total 0 saw-ihdr 0]
+    (if (>= pos (bytes/bytes-len data))
+      {:width width :height height :bit-depth bit-depth :color-type color-type
+       :interlace interlace :idat-total idat-total :ok saw-ihdr}
+      (let [clen (read-u32-be data pos)]
+        (cond
+          ((chunk-is data (+ pos 4) 73 69 78 68) ;; "IEND"
+            {:width width :height height :bit-depth bit-depth :color-type color-type
+             :interlace interlace :idat-total idat-total :ok saw-ihdr})
+          ((chunk-is data (+ pos 4) 73 72 68 82) ;; "IHDR"
+            (let [dpos (+ pos 8)]
+              (recur (+ pos (+ 12 clen))
+                (read-u32-be data dpos) (read-u32-be data (+ dpos 4))
+                (bytes/bytes-get data (+ dpos 8)) (bytes/bytes-get data (+ dpos 9))
+                (bytes/bytes-get data (+ dpos 12)) idat-total 1)))
+          ((chunk-is data (+ pos 4) 73 68 65 84) ;; "IDAT"
+            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace
+              (+ idat-total clen) saw-ihdr))
+          (true
+            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace idat-total saw-ihdr)))))))
+
+;; png-copy-idat -- second real pass, copying each IDAT chunk's own payload bytes into one
+;; correctly-pre-sized `Bytes` buffer (sized by png-scan-header's own real idat-total).
+(defn png-copy-idat [(data : Bytes) (total : I32) (dest : Arena @ Region)]
+  : Bytes
+  (let [out (bytes/bytes-alloc total dest)]
+    (let [final-out
+           (loop [pos 8 opos 0]
+             (if (>= pos (bytes/bytes-len data))
+               out
+               (let [clen (read-u32-be data pos)]
+                 (cond
+                   ((chunk-is data (+ pos 4) 73 69 78 68) out) ;; "IEND"
+                   ((chunk-is data (+ pos 4) 73 68 65 84) ;; "IDAT"
+                     (let [copied
+                            (loop [k 0]
+                              (when (< k clen)
+                                (bytes/bytes-set! out (+ opos k) (bytes/bytes-get data (+ pos (+ 8 k))))
+                                (recur (+ k 1))))]
+                       (recur (+ pos (+ 12 clen)) (+ opos clen))))
+                   (true (recur (+ pos (+ 12 clen)) opos))))))]
+      final-out)))
+
+;; png-strip-zlib-wrapper -- PNG's IDAT stream is a zlib (RFC 1950) stream: strip the 2-byte
+;; header and 4-byte Adler-32 trailer (neither validated, see this file's own header comment),
+;; leaving just the real RFC 1951 DEFLATE payload `inflate` expects. A real, separate top-level
+;; function (not inlined as a nested `let` value) -- a `let` can't be used directly as another
+;; `let`'s own VALUE (only as a function's own body), the same real emitter restriction
+;; `compress/inflate.prn`'s own header comment documents for `loop`.
+(defn png-strip-zlib-wrapper [(idat : Bytes) (deflate-len : I32) (dest : Arena @ Region)]
+  : Bytes
+  (let [dp (bytes/bytes-alloc deflate-len dest)]
+    (let [copied
+           (loop [k 0]
+             (when (< k deflate-len)
+               (bytes/bytes-set! dp k (bytes/bytes-get idat (+ k 2)))
+               (recur (+ k 1))))]
+      dp)))
+
+;; abs-i32 / paeth-predictor -- the real, standard PNG "Paeth" filter predictor (PNG spec §9.4),
+;; picking whichever of the left/above/upper-left already-reconstructed neighbor bytes is closest
+;; (by simple linear estimate) to the true value.
+(defn abs-i32 [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+
+(defn paeth-predictor [(a : I32) (b : I32) (c : I32)]
+  : I32
+  (let [p (- (+ a b) c)]
+    (let [pa (abs-i32 (- p a)) pb (abs-i32 (- p b)) pc (abs-i32 (- p c))]
+      (if (and (<= pa pb) (<= pa pc))
+        a
+        (if (<= pb pc) b c)))))
+
+;; defilter-byte -- reconstructs one real byte per PNG spec §9.3 (types 0=None, 1=Sub, 2=Up,
+;; 3=Average, 4=Paeth), given the raw filtered byte and its three already-reconstructed neighbors
+;; (0 for any neighbor that falls before the start of a row/column, per spec).
+(defn defilter-byte [(ftype : I32) (raw : I32) (a : I32) (b : I32) (c : I32)]
+  : I32
+  (mod
+    (+ raw
+      (cond
+        ((= ftype 1) a)
+        ((= ftype 2) b)
+        ((= ftype 3) (/ (+ a b) 2))
+        ((= ftype 4) (paeth-predictor a b c))
+        (true 0)))
+    256))
+
+;; png-defilter -- walks every scanline of `raw` (filter-type byte + `stride` filtered bytes per
+;; row, `height` rows total — exactly what `inflate` produces from a PNG's own IDAT stream) and
+;; writes the real, defiltered pixel bytes into a fresh `stride * height` Bytes buffer.
+(defn png-defilter [(raw : Bytes) (width : I32) (height : I32) (bpp : I32) (dest : Arena @ Region)]
+  : Bytes
+  (let [stride (* width bpp)]
+    (let [rowlen (+ 1 stride)]
+      (let [recon (bytes/bytes-alloc (* stride height) dest)]
+        (let [filled
+               (loop [r 0]
+                 (when (< r height)
+                   (let [ftype (bytes/bytes-get raw (* r rowlen))]
+                     (let [filled-row
+                            (loop [x 0]
+                              (when (< x stride)
+                                (let [rawb (bytes/bytes-get raw (+ (* r rowlen) (+ 1 x)))]
+                                  (let [a (if (>= x bpp) (bytes/bytes-get recon (+ (* r stride) (- x bpp))) 0)]
+                                    (let [b (if (> r 0) (bytes/bytes-get recon (+ (* (- r 1) stride) x)) 0)]
+                                      (let [c (if (and (> r 0) (>= x bpp))
+                                                (bytes/bytes-get recon (+ (* (- r 1) stride) (- x bpp)))
+                                                0)]
+                                        (bytes/bytes-set! recon (+ (* r stride) x) (defilter-byte ftype rawb a b c))
+                                        (recur (+ x 1))))))))]
+                     (recur (+ r 1))))))]
+          recon)))))
+
+(defstruct PngImage
+  (width  : I32)
+  (height : I32)
+  (pixels : Bytes)
+  (ok     : I32))
+
+;; png-decode -- the real, top-level entry point: real PNG bytes in, real RGBA pixels out
+;; (upconverting RGB to RGBA with a solid 255 alpha when the source has no alpha channel, so every
+;; caller only ever deals with one real pixel shape). `ok 0` on anything outside this file's own
+;; named v0 scope (not IHDR-first, unsupported bit-depth/color-type/interlace, or an inflate length
+;; mismatch) — a real, honest failure a caller can fall back on, never garbage pixels.
+(defn png-decode [(data : Bytes) (dest : Arena @ Region)]
+  : PngImage
+  (let [hdr (png-scan-header data)]
+    (if (= (get-field hdr :ok) 0)
+      {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
+      (if (not (= (get-field hdr :bit-depth) 8))
+        {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
+        (if (not (= (get-field hdr :interlace) 0))
+          {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
+          (let [color-type (get-field hdr :color-type)]
+            (if (not (or (= color-type 2) (= color-type 6)))
+              {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
+              (let [width (get-field hdr :width) height (get-field hdr :height)]
+                (let [bpp (if (= color-type 6) 4 3)]
+                  (let [idat (png-copy-idat data (get-field hdr :idat-total) dest)]
+                    (let [deflate-len (- (bytes/bytes-len idat) 6)]
+                      (let [deflate-payload (png-strip-zlib-wrapper idat deflate-len dest)]
+                        (let [stride (* width bpp)]
+                          (let [rowlen (+ 1 stride)]
+                            (let [raw-len (* rowlen height)]
+                              (let [raw (bytes/bytes-alloc raw-len dest)]
+                                (let [n (inflate deflate-payload raw dest)]
+                                  (if (not (= n raw-len))
+                                    {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
+                                    (let [recon (png-defilter raw width height bpp dest)]
+                                      (let [rgba (bytes/bytes-alloc (* width (* height 4)) dest)]
+                                        (let [filled
+                                               (loop [i 0]
+                                                 (when (< i (* width height))
+                                                   (let [rb (bytes/bytes-get recon (* i bpp))
+                                                         gb (bytes/bytes-get recon (+ (* i bpp) 1))
+                                                         bb (bytes/bytes-get recon (+ (* i bpp) 2))
+                                                         ab (if (= bpp 4) (bytes/bytes-get recon (+ (* i bpp) 3)) 255)]
+                                                     (bytes/bytes-set! rgba (* i 4) rb)
+                                                     (bytes/bytes-set! rgba (+ (* i 4) 1) gb)
+                                                     (bytes/bytes-set! rgba (+ (* i 4) 2) bb)
+                                                     (bytes/bytes-set! rgba (+ (* i 4) 3) ab)
+                                                     (recur (+ i 1)))))]
+                                          {:width width :height height :pixels rgba :ok 1})))))))))))))))))))))
