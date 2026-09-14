@@ -20,21 +20,27 @@
 ;; O(one exact bit-count per symbol), not O(1) the way a real tree/table lookup would give, a real,
 ;; honest, deliberate v0 narrowing given `Vec`'s real current shape.
 ;;
-;; REAL, HONEST, NOT YET WORKING (2026-09-14): this compiles cleanly (both `parena build` and the
-;; emitted C, gcc-verified) and DOES correctly decode real, gcc-compiled, zlib-generated test
-;; vectors for stored blocks, fixed-Huffman blocks, one dynamic-Huffman block, and long-back-
-;; reference repeats -- confirmed via a real test harness (`test_inflate.c` + `test_vectors.h`,
-;; generated from Python's own `zlib.compressobj` at multiple real compression levels, not
-;; hand-crafted bitstreams). One further real dynamic-Huffman test case (natural-language text,
-;; zlib level 9) hangs -- root-caused as far as: a standalone Python port of this EXACT algorithm
-;; (bit reader, canonical Huffman construct/decode, block dispatch -- same logic, line for line)
-;; decodes that same failing case CORRECTLY, so the bug is a real, still-unfound VS0 C-emitter
-;; codegen issue (not this algorithm), most likely connected to `inflate-huffman-block`'s own loop
-;; state (`pos`/`opos`) getting inferred as C `double` instead of `I32` despite both being
-;; initialized from plain `I32` parameters -- confirmed live in the emitted C, not yet confirmed as
-;; the actual root cause of the hang (every other loop in this file infers `int` correctly for the
-;; identical shape). NOT wired into SHANKPIT yet -- that integration is real, deliberate follow-up
-;; once this last bug is found, not attempted while inflate() can still hang on real input.
+;; REAL, WORKING (2026-09-14, root cause found and fixed): the one remaining dynamic-Huffman
+;; failure (natural-language text, zlib level 9 -- a Python differential port of this exact
+;; algorithm decoded the same bitstream correctly, proving the bug was in codegen, not the
+;; algorithm) is fixed. Real root cause, confirmed live in the emitted C, not just suspected:
+;; `loop_body_int_safe` (`src/emit.c`) conservatively infers a loop variable as C `double` instead
+;; of `I32` whenever it can't prove every `recur` path is provably int-safe -- `read-code-lengths`'
+;; own `pos`/`prev` loop bindings hit this (both threaded through `get-field` results the checker
+;; doesn't see through). That alone is harmless for pure arithmetic (doubles stay exact at these
+;; magnitudes) -- but `vec/push!` picks its box function (`vec_box_i32` vs `vec_box_f64`) from the
+;; PUSHED EXPRESSION's own inferred type, while every reader in this file (`vec-i32-at`) always
+;; unboxes as `int *`. Pushing the double-typed `prev` therefore boxed it via `vec_box_f64` while
+;; every read unboxed via `vec_box_i32` -- a real, live type-confused box read (not a precision
+;; issue) that silently corrupted `read-code-lengths`' own output vector on some inputs. Fixed via
+;; a new `as-i32` helper (same real workaround shape as `vec-i32-at` below -- routing through an
+;; explicitly `I32`-typed function forces the emitter's own type inference at that call site)
+;; wrapping the one push call that carried the double-typed `prev` forward. Verified against 7 real
+;; zlib-generated test vectors (stored/fixed/2 distinct dynamic-Huffman natural-language cases
+;; including the original failing one/long-backref/random-binary stress/tiny), all byte-for-byte
+;; correct, `gcc -std=c99 -Wall -Wextra -pedantic` clean. NOT YET wired into SHANKPIT -- that
+;; integration (calling this from the native client's PNG loader) is real, separate follow-up work,
+;; not attempted in this same pass.
 
 (module compress/inflate)
 (import bytes)
@@ -89,6 +95,24 @@
 (defn vec-i32-at [(v : &(Vec I32)) (idx : I32)]
   : I32
   (deref (vec/get v idx)))
+
+;; as-i32 -- a second, narrower instance of the same real trick as vec-i32-at above, for the
+;; OPPOSITE direction: forcing an I32 value INTO a Vec instead of out of one. `loop_body_int_safe`
+;; (src/emit.c) conservatively downgrades a loop variable to C `double` whenever it can't prove
+;; every recur path is provably int-safe -- confirmed live here for `read-code-lengths`'s own
+;; `pos`/`prev` loop bindings (both threaded through `get-field` results the checker doesn't see
+;; through). For a loop var used only in ARITHMETIC that downgrade is harmless (doubles stay exact
+;; for these magnitudes) -- but `vec/push!` picks its box function (`vec_box_i32` vs `vec_box_f64`)
+;; from the PUSHED EXPRESSION'S inferred type, and every reader in this file (`vec-i32-at`) always
+;; unboxes as `int *`. Pushing a double-typed `prev` therefore boxed it via `vec_box_f64` while
+;; every read unboxed via `vec_box_i32` -- a real, confirmed-live type-confused box read (not a
+;; precision issue) that silently corrupted `read-code-lengths`' own output vector and was this
+;; file's real, previously-unfound "one dynamic-Huffman case hangs/decodes wrong" bug. Routing the
+;; pushed value through this explicitly-`I32`-typed identity function forces the push call's own
+;; argument type back to I32 (the implicit double->int C conversion this incurs is exact for the
+;; 0-15 code-length magnitudes involved), the same real workaround shape `vec-i32-at` already
+;; established for the read side.
+(defn as-i32 [(x : I32)] : I32 x)
 
 (defn count-length [(lengths : &(Vec I32)) (n : I32) (target-len : I32)]
   : I32
@@ -246,7 +270,7 @@
               ((= sym 16)
                 (let [ex (read-bits data p1 2)]
                   (let [rep (+ 3 (get-field ex :value))]
-                    (let [filled (loop [k 0] (when (< k rep) (vec/push! &out prev) (recur (+ k 1))))]
+                    (let [filled (loop [k 0] (when (< k rep) (vec/push! &out (as-i32 prev)) (recur (+ k 1))))]
                       (recur (get-field ex :next) prev)))))
               ((= sym 17)
                 (let [ex (read-bits data p1 3)]
