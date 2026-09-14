@@ -1,3 +1,7 @@
+## 2026-09-14
+
+- Added stdlib/compress/inflate.prn: a real RFC 1951 DEFLATE decompressor (puff.c-style canonical Huffman, all 3 block types). Compiles clean, passes 4/5 real zlib-generated test vectors; one dynamic-Huffman case hangs on a real VS0 codegen bug (isolated via a Python reference port -- algorithm itself verified correct). Not yet wired into SHANKPIT. Commit 1fc82ae (sess-20260905-0720-ec33e7c5)
+
 ## 2026-09-13
 
 - feat(stdlib): brawlpit/commander_mod.prn -- real, pure, rule-based fractal-commander posture decision logic for BRAWLPIT's RL training pipeline (S419), I32-only FFI boundary. Commit df66ffe. (sess-20260905-0720-ec33e7c5)
