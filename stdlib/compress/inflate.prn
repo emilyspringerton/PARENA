@@ -1,0 +1,431 @@
+;; stdlib/compress/inflate.prn — depends on bytes, vec. Design: STDLIB.md "compress/inflate"
+;; section (new, added alongside this file -- see that doc's own entry for the real rationale).
+;;
+;; Founder real-time, 2026-09-14: "finish the png thingy for the sprays do it in parena" -- a
+;; real, RFC 1951 DEFLATE decompressor (all three real block types: stored, fixed Huffman, dynamic
+;; Huffman), the missing piece SHANKPIT's own native client needs to decode a real PNG's IDAT
+;; stream instead of rendering flat-color placeholders (S459-16/S459-23's own named, deferred gap).
+;;
+;; Real, honest scope: a correct, RFC-1951-compliant INFLATE (decompress-only -- no DEFLATE
+;; compressor here, this stdlib's own compress/lz4.prn already covers the "we need SOME real
+;; compressor" need for other callers). Canonical Huffman decode follows the real, standard
+;; "puff.c" reference-decoder algorithm (Mark Adler's own minimal, public-domain inflate,
+;; zlib/contrib/puff) -- table-free, bit-at-a-time canonical decode via (counts, sorted-symbols)
+;; arrays, deliberately chosen over building an explicit pointer-based Huffman tree because this
+;; language's own `Vec` has no indexed `set!` (only `push!`/`get`/`len`) -- puff's algorithm needs
+;; only sequential appends to build its tables, never a backpatch-by-index, so it's a genuine fit
+;; for this language's real, current capability, not just "the simplest algorithm we could find."
+;; Same real "correct first, fast later" judgment call this whole stdlib already uses throughout
+;; (lz4.prn's own naive O(n^2) match finder, sort.prn's own insertion sort) -- decode cost here is
+;; O(one exact bit-count per symbol), not O(1) the way a real tree/table lookup would give, a real,
+;; honest, deliberate v0 narrowing given `Vec`'s real current shape.
+;;
+;; REAL, HONEST, NOT YET WORKING (2026-09-14): this compiles cleanly (both `parena build` and the
+;; emitted C, gcc-verified) and DOES correctly decode real, gcc-compiled, zlib-generated test
+;; vectors for stored blocks, fixed-Huffman blocks, one dynamic-Huffman block, and long-back-
+;; reference repeats -- confirmed via a real test harness (`test_inflate.c` + `test_vectors.h`,
+;; generated from Python's own `zlib.compressobj` at multiple real compression levels, not
+;; hand-crafted bitstreams). One further real dynamic-Huffman test case (natural-language text,
+;; zlib level 9) hangs -- root-caused as far as: a standalone Python port of this EXACT algorithm
+;; (bit reader, canonical Huffman construct/decode, block dispatch -- same logic, line for line)
+;; decodes that same failing case CORRECTLY, so the bug is a real, still-unfound VS0 C-emitter
+;; codegen issue (not this algorithm), most likely connected to `inflate-huffman-block`'s own loop
+;; state (`pos`/`opos`) getting inferred as C `double` instead of `I32` despite both being
+;; initialized from plain `I32` parameters -- confirmed live in the emitted C, not yet confirmed as
+;; the actual root cause of the hang (every other loop in this file infers `int` correctly for the
+;; identical shape). NOT wired into SHANKPIT yet -- that integration is real, deliberate follow-up
+;; once this last bug is found, not attempted while inflate() can still hang on real input.
+
+(module compress/inflate)
+(import bytes)
+(import vec)
+(export inflate)
+
+;; ---- bit reading -- LSB-first within each byte (RFC 1951 §3.1.1: "packed starting with the
+;; least-significant bit of the byte"). `bitpos` is a plain I32 count of bits consumed from the
+;; start of `data` -- explicit state-threading via loop/recur, the same real "no mutable cursor
+;; object" convention json.prn's own JsonStep/parse-* functions already establish for this exact
+;; situation.
+
+(defstruct BitStep
+  (value : I32)
+  (next  : I32))
+
+(defn read-bit [(data : Bytes) (bitpos : I32)]
+  : BitStep
+  (let [byte-idx (/ bitpos 8) bit-idx (mod bitpos 8)]
+    (let [b (bytes/bytes-get data byte-idx)]
+      {:value (bit-and (shr b bit-idx) 1) :next (+ bitpos 1)})))
+
+;; read-bits -- reads n bits LSB-first and combines them so the FIRST bit read becomes the
+;; LOW-order bit of the result (RFC 1951 §3.1.1: "data elements other than Huffman codes are
+;; packed starting with the least-significant bit" -- the opposite packing order from Huffman
+;; codes themselves, which decode-huffman below reads MSB-first; this real asymmetry is the spec's
+;; own, not a bug).
+(defn read-bits [(data : Bytes) (bitpos : I32) (n : I32)]
+  : BitStep
+  (loop [i 0 pos bitpos acc 0]
+    (if (>= i n)
+      {:value acc :next pos}
+      (let [step (read-bit data pos)]
+        (recur (+ i 1) (get-field step :next) (bit-or acc (shl (get-field step :value) i)))))))
+
+;; ---- canonical Huffman construction + decode (puff.c's real algorithm, see this file's own
+;; header for why). `lengths`: a Vec I32 of one code length per symbol (0 = symbol unused).
+;; `counts` (returned separately from `symbols` below, built by two independent scans -- see this
+;; file's own header on why `Vec` push!-only forces this shape): counts[i] = how many symbols have
+;; code length (i+1), for i = 0..maxbits-1.
+
+;; vec-i32-at -- a real, narrow workaround: `(deref (vec/get v i))` needs VS0's own boxed-value
+;; cast to know the concrete element type it's unboxing, and that inference genuinely doesn't see
+;; through a `get-field` (a Vec pulled out of a defstruct field, e.g. LenReadStep's own `lengths`
+;; field below) the same way it does an explicitly `&(Vec I32)`-typed function PARAMETER (like
+;; `lengths` above) -- confirmed live, gcc-compiling the emitted C: `count-length`'s own direct
+;; parameter usage casts correctly, but the same `deref (vec/get ...)` pattern on a struct-field-
+;; derived local emitted a bare, uncast `void *` deref instead, a real, genuine type error. Routing
+;; through this one small helper (whose own PARAMETER carries the explicit `&(Vec I32)` type) gives
+;; the compiler the same real information a direct parameter would, without waiting on a deeper
+;; compiler fix.
+(defn vec-i32-at [(v : &(Vec I32)) (idx : I32)]
+  : I32
+  (deref (vec/get v idx)))
+
+(defn count-length [(lengths : &(Vec I32)) (n : I32) (target-len : I32)]
+  : I32
+  (loop [i 0 c 0]
+    (if (>= i n)
+      c
+      (recur (+ i 1) (+ c (if (= (deref (vec/get lengths i)) target-len) 1 0))))))
+
+(defn build-counts [(lengths : &(Vec I32)) (n : I32) (maxbits : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [counts (vec/new dest)]
+    (loop [len 1]
+      (when (<= len maxbits)
+        (vec/push! &counts (count-length lengths n len))
+        (recur (+ len 1))))
+    counts))
+
+;; build-symbols -- symbols sorted by (code length, then original symbol index) -- exactly the
+;; order canonical Huffman code assignment visits them in, built via two nested scans using ONLY
+;; push! (never an indexed write): for each length 1..maxbits, scan every symbol 0..n-1 in order
+;; and append the ones with that length. O(n * maxbits) -- real, small, fine (n <= 288, maxbits
+;; <= 15 for every real table this file ever builds).
+(defn build-symbols [(lengths : &(Vec I32)) (n : I32) (maxbits : I32) (dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [symbols (vec/new dest)]
+    (loop [len 1]
+      (when (<= len maxbits)
+        (loop [i 0]
+          (when (< i n)
+            (when (= (deref (vec/get lengths i)) len)
+              (vec/push! &symbols i))
+            (recur (+ i 1))))
+        (recur (+ len 1))))
+    symbols))
+
+(defstruct DecodeStep
+  (symbol : I32)
+  (next   : I32))
+
+;; decode-huffman -- reads one symbol's worth of bits (MSB-first, a real, deliberate asymmetry
+;; from read-bits above -- see this file's own header comment on read-bits) against the real
+;; canonical (counts, symbols) tables. Returns symbol = -1 on a genuinely malformed stream (ran
+;; past maxbits with no match) -- the same honest sentinel-not-abort convention bytes-get/vec-get
+;; already establish elsewhere in this stdlib.
+(defn decode-huffman [(data : Bytes) (bitpos : I32) (counts : &(Vec I32)) (symbols : &(Vec I32)) (maxbits : I32)]
+  : DecodeStep
+  (loop [len 1 pos bitpos code 0 first 0 index 0]
+    (if (> len maxbits)
+      {:symbol -1 :next pos}
+      (let [bstep (read-bit data pos)]
+        (let [code2 (bit-or code (get-field bstep :value))]
+          (let [count (deref (vec/get counts (- len 1)))]
+            (if (< (- code2 first) count)
+              {:symbol (deref (vec/get symbols (+ index (- code2 first)))) :next (get-field bstep :next)}
+              (recur (+ len 1) (get-field bstep :next) (shl code2 1) (shl (+ first count) 1) (+ index count)))))))))
+
+;; ---- fixed Huffman tables (RFC 1951 §3.2.6 -- the one real, fixed-by-spec length assignment,
+;; used whenever a block's own BTYPE is 01).
+(defn fixed-lit-lengths [(dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [v (vec/new dest)]
+    (loop [i0 0]
+      (when (< i0 144) (vec/push! &v 8) (recur (+ i0 1))))
+    (loop [i1 144]
+      (when (< i1 256) (vec/push! &v 9) (recur (+ i1 1))))
+    (loop [i2 256]
+      (when (< i2 280) (vec/push! &v 7) (recur (+ i2 1))))
+    (loop [i3 280]
+      (when (< i3 288) (vec/push! &v 8) (recur (+ i3 1))))
+    v))
+
+(defn fixed-dist-lengths [(dest : Arena @ Region)]
+  : (Vec I32) @ Region
+  (let [v (vec/new dest)]
+    (loop [i 0]
+      (when (< i 30) (vec/push! &v 5) (recur (+ i 1))))
+    v))
+
+;; ---- length/distance extra-bit tables (RFC 1951 §3.2.5). Real, honest, plain lookup functions
+;; (not Vec-built tables) -- these are small, static, and this reads far more directly than
+;; building+indexing three more Vecs for what's really a fixed 29/30-entry spec table.
+(defn length-base [(code : I32)]
+  : I32
+  (cond
+    ((< code 8) (+ 3 (- code 0)))
+    ((= code 8) 11) ((= code 9) 13) ((= code 10) 15) ((= code 11) 17)
+    ((= code 12) 19) ((= code 13) 23) ((= code 14) 27) ((= code 15) 31)
+    ((= code 16) 35) ((= code 17) 43) ((= code 18) 51) ((= code 19) 59)
+    ((= code 20) 67) ((= code 21) 83) ((= code 22) 99) ((= code 23) 115)
+    ((= code 24) 131) ((= code 25) 163) ((= code 26) 195) ((= code 27) 227)
+    (true 258)))
+
+(defn length-extra-bits [(code : I32)]
+  : I32
+  (cond
+    ((< code 8) 0)
+    ((< code 12) 1) ((< code 16) 2) ((< code 20) 3) ((< code 24) 4)
+    ((< code 28) 5)
+    (true 0)))
+
+(defn dist-base [(code : I32)]
+  : I32
+  (cond
+    ((= code 0) 1) ((= code 1) 2) ((= code 2) 3) ((= code 3) 4)
+    ((= code 4) 5) ((= code 5) 7) ((= code 6) 9) ((= code 7) 13)
+    ((= code 8) 17) ((= code 9) 25) ((= code 10) 33) ((= code 11) 49)
+    ((= code 12) 65) ((= code 13) 97) ((= code 14) 129) ((= code 15) 193)
+    ((= code 16) 257) ((= code 17) 385) ((= code 18) 513) ((= code 19) 769)
+    ((= code 20) 1025) ((= code 21) 1537) ((= code 22) 2049) ((= code 23) 3073)
+    ((= code 24) 4097) ((= code 25) 6145) ((= code 26) 8193) ((= code 27) 12289)
+    ((= code 28) 16385) (true 24577)))
+
+(defn dist-extra-bits [(code : I32)]
+  : I32
+  (cond
+    ((< code 4) 0)
+    ((< code 6) 1) ((< code 8) 2) ((< code 10) 3) ((< code 12) 4)
+    ((< code 14) 5) ((< code 16) 6) ((< code 18) 7) ((< code 20) 8)
+    ((< code 22) 9) ((< code 24) 10) ((< code 26) 11) ((< code 28) 12)
+    (true 13)))
+
+;; code-length code order (RFC 1951 §3.2.7) -- the order the 19 real "code length code" lengths
+;; themselves are transmitted in for a dynamic-Huffman block, itself a real, fixed spec table.
+(defn clc-order [(i : I32)]
+  : I32
+  (cond
+    ((= i 0) 16) ((= i 1) 17) ((= i 2) 18) ((= i 3) 0) ((= i 4) 8)
+    ((= i 5) 7) ((= i 6) 9) ((= i 7) 6) ((= i 8) 10) ((= i 9) 5)
+    ((= i 10) 11) ((= i 11) 4) ((= i 12) 12) ((= i 13) 3) ((= i 14) 13)
+    ((= i 15) 2) ((= i 16) 14) ((= i 17) 1) (true 15)))
+
+(defstruct LenReadStep
+  (lengths : (Vec I32) @ Region)
+  (next    : I32))
+
+;; read-code-lengths -- decodes `total` real code lengths (HLIT+257 literal/length lengths
+;; followed immediately by HDIST+1 distance lengths, per RFC 1951 §3.2.7) using the already-built
+;; code-length Huffman table. Symbols 0-15 are a literal length value; 16 repeats the PREVIOUS
+;; length 3-6 times (2 extra bits); 17 repeats a length of 0 for 3-10 times (3 extra bits); 18
+;; repeats a length of 0 for 11-138 times (7 extra bits).
+(defn read-code-lengths [(data : Bytes) (bitpos : I32) (total : I32)
+                          (clc-counts : &(Vec I32)) (clc-symbols : &(Vec I32)) (dest : Arena @ Region)]
+  : LenReadStep
+  (let [out (vec/new dest)]
+    (loop [pos bitpos prev 0]
+      (if (>= (vec/len &out) total)
+        {:lengths out :next pos}
+        (let [dstep (decode-huffman data pos clc-counts clc-symbols 7)]
+          (let [sym (get-field dstep :symbol) p1 (get-field dstep :next)]
+            (cond
+              ((< sym 16)
+                (let [seq 0]
+                  (vec/push! &out sym)
+                  (recur p1 sym)))
+              ((= sym 16)
+                (let [ex (read-bits data p1 2)]
+                  (let [rep (+ 3 (get-field ex :value))]
+                    (let [filled (loop [k 0] (when (< k rep) (vec/push! &out prev) (recur (+ k 1))))]
+                      (recur (get-field ex :next) prev)))))
+              ((= sym 17)
+                (let [ex (read-bits data p1 3)]
+                  (let [rep (+ 3 (get-field ex :value))]
+                    (let [filled (loop [k 0] (when (< k rep) (vec/push! &out 0) (recur (+ k 1))))]
+                      (recur (get-field ex :next) 0)))))
+              (true
+                (let [ex (read-bits data p1 7)]
+                  (let [rep (+ 11 (get-field ex :value))]
+                    (let [filled (loop [k 0] (when (< k rep) (vec/push! &out 0) (recur (+ k 1))))]
+                      (recur (get-field ex :next) 0))))))))))))
+
+(defstruct HuffTables
+  (lit-counts   : (Vec I32) @ Region)
+  (lit-symbols  : (Vec I32) @ Region)
+  (lit-maxbits  : I32)
+  (dist-counts  : (Vec I32) @ Region)
+  (dist-symbols : (Vec I32) @ Region)
+  (dist-maxbits : I32)
+  (next         : I32))
+
+;; clc-value-for-symbol -- the code-length-code lengths arrive in the real, fixed clc-order
+;; TRANSMISSION order (position i -> symbol clc-order(i)), not symbol order, and `Vec` has no
+;; indexed `set!` to place value i directly at index clc-order(i) (see this file's own header).
+;; Built instead via a real, honest linear scan over the (small, <=19-entry) transmitted-order
+;; values: for symbol `target`, find the transmission position i where clc-order(i)==target and
+;; return its value, or 0 if hclen never covered that position (RFC 1951's own real default for an
+;; omitted code-length-code length).
+(defn clc-value-for-symbol [(raw-values : &(Vec I32)) (hclen : I32) (target : I32)]
+  : I32
+  (loop [i 0]
+    (if (>= i hclen)
+      0
+      (if (= (clc-order i) target)
+        (deref (vec/get raw-values i))
+        (recur (+ i 1))))))
+
+(defn read-dynamic-tables [(data : Bytes) (bitpos : I32) (dest : Arena @ Region)]
+  : HuffTables
+  (let [hlit-s (read-bits data bitpos 5)]
+    (let [hlit (+ 257 (get-field hlit-s :value))]
+      (let [hdist-s (read-bits data (get-field hlit-s :next) 5)]
+        (let [hdist (+ 1 (get-field hdist-s :value))]
+          (let [hclen-s (read-bits data (get-field hdist-s :next) 4)]
+            (let [hclen (+ 4 (get-field hclen-s :value))]
+              (let [raw-values (vec/new dest)]
+                (let [final-pos
+                       (loop [i 0 pos (get-field hclen-s :next)]
+                         (if (>= i hclen)
+                           pos
+                           (let [vs (read-bits data pos 3)]
+                             (vec/push! &raw-values (get-field vs :value))
+                             (recur (+ i 1) (get-field vs :next)))))]
+                  (let [clc-raw (vec/new dest)]
+                    (loop [s 0]
+                      (when (< s 19)
+                        (vec/push! &clc-raw (clc-value-for-symbol &raw-values hclen s))
+                        (recur (+ s 1))))
+                  (let [clc-counts (build-counts &clc-raw 19 7 dest)]
+                    (let [clc-symbols (build-symbols &clc-raw 19 7 dest)]
+                      (let [lens-step (read-code-lengths data final-pos (+ hlit hdist) &clc-counts &clc-symbols dest)]
+                        (let [all-lens (get-field lens-step :lengths)]
+                          (let [lit-lens (vec/new dest)]
+                            (loop [li 0] (when (< li hlit) (vec/push! &lit-lens (vec-i32-at &all-lens li)) (recur (+ li 1))))
+                            (let [dist-lens (vec/new dest)]
+                              (loop [di 0] (when (< di hdist) (vec/push! &dist-lens (vec-i32-at &all-lens (+ hlit di))) (recur (+ di 1))))
+                              {:lit-counts (build-counts &lit-lens hlit 15 dest)
+                               :lit-symbols (build-symbols &lit-lens hlit 15 dest)
+                               :lit-maxbits 15
+                               :dist-counts (build-counts &dist-lens hdist 15 dest)
+                               :dist-symbols (build-symbols &dist-lens hdist 15 dest)
+                               :dist-maxbits 15
+                               :next (get-field lens-step :next)}))))))))))))))))
+
+(defstruct InflateStep
+  (pos : I32)
+  (out : I32))
+
+;; inflate-huffman-block -- decodes a symbol stream (fixed OR dynamic -- both are just a
+;; (counts, symbols, maxbits) table pair by the time this runs) into `output` starting at
+;; `out-pos`, stopping at the real end-of-block symbol (256). LZ77 back-references copy directly
+;; out of `output` itself (always copying from EARLIER, already-written positions to the current
+;; append point -- byte-by-byte, which is real and required for the common case where the match
+;; distance is SHORTER than the match length, e.g. run-length-style repeats).
+(defn inflate-huffman-block [(data : Bytes) (bitpos : I32) (output : Bytes) (out-pos : I32)
+                              (lit-counts : &(Vec I32)) (lit-symbols : &(Vec I32)) (lit-maxbits : I32)
+                              (dist-counts : &(Vec I32)) (dist-symbols : &(Vec I32)) (dist-maxbits : I32)]
+  : InflateStep
+  (loop [pos bitpos opos out-pos]
+    (let [dstep (decode-huffman data pos lit-counts lit-symbols lit-maxbits)]
+      (let [sym (get-field dstep :symbol) p1 (get-field dstep :next)]
+        (cond
+          ((= sym 256) {:pos p1 :out opos})
+          ((< sym 256)
+            (let [seq 0]
+              (bytes/bytes-set! output opos sym)
+              (recur p1 (+ opos 1))))
+          (true
+            (let [lcode (- sym 257)]
+              (let [lex (read-bits data p1 (length-extra-bits lcode))]
+                (let [match-len (+ (length-base lcode) (get-field lex :value))]
+                  (let [ddstep (decode-huffman data (get-field lex :next) dist-counts dist-symbols dist-maxbits)]
+                    (let [dcode (get-field ddstep :symbol) p2 (get-field ddstep :next)]
+                      (let [dex (read-bits data p2 (dist-extra-bits dcode))]
+                        (let [dist (+ (dist-base dcode) (get-field dex :value))]
+                          (let [copy-src (- opos dist)]
+                            (let [copied
+                                   (loop [k 0]
+                                     (when (< k match-len)
+                                       (bytes/bytes-set! output (+ opos k) (bytes/bytes-get output (+ copy-src k)))
+                                       (recur (+ k 1))))]
+                              (recur (get-field dex :next) (+ opos match-len)))))))))))))))))
+
+;; inflate-stored-block -- BTYPE 00: byte-align (discard any partial bits left in the current
+;; byte -- RFC 1951 §3.2.4: "any bits of input up to the next byte boundary are ignored"), then
+;; LEN (2 bytes) + NLEN (2 bytes, ~LEN, NOT verified here -- a real, honest v0 narrowing, this
+;; decoder trusts its own input rather than re-validating every real integrity check a
+;; from-scratch DEFLATE stream COULD carry), then LEN literal bytes copied straight through.
+;; Real, deliberate reuse of InflateStep (not its own StoredStep) -- tried a separate,
+;; identically-shaped struct first and found VS0's own struct-literal inference picks a matching
+;; defstruct by field-name SHAPE, not by the caller's own expected return type, so two structs
+;; with the same {:pos :out} shape are genuinely ambiguous to it. One shared struct sidesteps the
+;; ambiguity outright instead of fighting it.
+(defn inflate-stored-block [(data : Bytes) (bitpos : I32) (output : Bytes) (out-pos : I32)]
+  : InflateStep
+  (let [aligned (* 8 (/ (+ bitpos 7) 8))]
+    (let [start-byte (/ aligned 8)]
+      (let [len-lo (bytes/bytes-get data start-byte) len-hi (bytes/bytes-get data (+ start-byte 1))]
+        (let [len (bit-or len-lo (shl len-hi 8))]
+          (let [data-start (+ start-byte 4)]
+            (loop [k 0]
+              (when (< k len)
+                (bytes/bytes-set! output (+ out-pos k) (bytes/bytes-get data (+ data-start k)))
+                (recur (+ k 1))))
+            {:pos (* 8 (+ data-start len)) :out (+ out-pos len)}))))))
+
+;; inflate -- top-level entry. `data`: the raw DEFLATE bit stream (the caller strips the real
+;; 2-byte zlib header/4-byte Adler32 trailer first -- see stdlib/image/png.prn's own real zlib
+;; unwrap). `output`: a Bytes buffer the CALLER pre-allocates to the exact real expected
+;; decompressed size (PNG's own IHDR gives this exactly -- width/height/bit-depth/color-type fully
+;; determine it before decoding a single byte, the real reason this decoder doesn't need a
+;; growable output buffer at all, unlike a general-purpose gzip decompressor with no such
+;; a-priori bound).
+;; finish-inflate-block -- real, deliberate duplication (not factored into a shared branch) of
+;; the "was this the final block? return the byte count written so far, else loop again" tail
+;; every BTYPE branch needs -- `recur` is lexically bound to `inflate`'s own loop, so it can't be
+;; factored into a plain called function the way the rest of this decode logic is; and binding a
+;; `cond`'s own result to a name via an enclosing `let` (tried first) doesn't count as one of
+;; VS0's real allowed expression positions for a nested `let`/`loop` inside that cond -- see this
+;; function's own git history for the version that hit that error. Three real, short, identical
+;; tails is the honest trade-off, not a design preference.
+(defn inflate [(data : Bytes) (output : Bytes) (dest : Arena @ Region)]
+  : I32
+  (loop [pos 0 opos 0]
+    (let [bfinal-s (read-bit data pos)]
+      (let [btype-s (read-bits data (get-field bfinal-s :next) 2)]
+        (let [btype (get-field btype-s :value) p1 (get-field btype-s :next) bfinal (get-field bfinal-s :value)]
+          (if (= btype 0)
+            (let [s (inflate-stored-block data p1 output opos)]
+              (if (= bfinal 1)
+                (get-field s :out)
+                (recur (get-field s :pos) (get-field s :out))))
+            (if (= btype 1)
+              (let [litl (fixed-lit-lengths dest)]
+                (let [distl (fixed-dist-lengths dest)]
+                  (let [lit-counts (build-counts &litl 288 15 dest)]
+                    (let [lit-symbols (build-symbols &litl 288 15 dest)]
+                      (let [dist-counts (build-counts &distl 30 15 dest)]
+                        (let [dist-symbols (build-symbols &distl 30 15 dest)]
+                          (let [r (inflate-huffman-block data p1 output opos
+                                    &lit-counts &lit-symbols 15
+                                    &dist-counts &dist-symbols 15)]
+                            (if (= bfinal 1)
+                              (get-field r :out)
+                              (recur (get-field r :pos) (get-field r :out))))))))))
+              (let [tabs (read-dynamic-tables data p1 dest)]
+                (let [r (inflate-huffman-block data (get-field tabs :next) output opos
+                          &(get-field tabs :lit-counts) &(get-field tabs :lit-symbols) (get-field tabs :lit-maxbits)
+                          &(get-field tabs :dist-counts) &(get-field tabs :dist-symbols) (get-field tabs :dist-maxbits))]
+                  (if (= bfinal 1)
+                    (get-field r :out)
+                    (recur (get-field r :pos) (get-field r :out))))))))))))
