@@ -212,6 +212,69 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real, additive (2026-09-18, S501 continuation): bit-and/bit-or/bit-xor/shl/shr,
+       previously entirely missing from ARITH_TABLE -- a real parity gap with src/emit.c's own
+       binary-op table (that one added these 2026-08-20 for stdlib/compress/lz4.prn's own
+       byte-level token-header packing) found live by comparing the two tables directly, the
+       same discipline that already found mod/!= missing. Real, honest, deliberately
+       INTEGER-ONLY: unlike mod/!=, bitwise ops have no real float counterpart on any real ISA --
+       a double operand is a real, honest compile error (checked explicitly, not a crash or a
+       garbage opcode string from a silently-NULL f64_op). */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn pack [(x : I32) (y : I32)] : I32 "
+                           "(bit-or (shl x 4) (bit-and y 15)))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "bit-or/shl/bit-and on i32 operands emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= shl i32 %x, 4") != NULL,
+                  "shl lowers to the real LLVM shl instruction (not a fabricated call)");
+            CHECK(strstr(ir, "= and i32 %y, 15") != NULL,
+                  "bit-and lowers to the real LLVM and instruction, distinct from the boolean "
+                  "and's own bitwise-but-different-arity dispatch above");
+            CHECK(strstr(ir, "= or i32") != NULL,
+                  "bit-or lowers to the real LLVM or instruction, composing correctly with the "
+                  "nested shl/bit-and results");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn unpack-hi [(x : I32)] : I32 (shr (bit-xor x -1) 4))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "bit-xor/shr on i32 operands emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= xor i32 %x, -1") != NULL,
+                  "bit-xor lowers to the real LLVM xor instruction");
+            CHECK(strstr(ir, "= ashr i32") != NULL,
+                  "shr lowers to ashr (arithmetic, sign-preserving right shift -- matching this "
+                  "v0's own signed I32 semantics, the same real choice sdiv/srem already made "
+                  "over their unsigned counterparts), not lshr");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn bad-bit-and [(x : F64)] : F64 (bit-and x 1.0))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir == NULL, "bit-and on double operands is a real, honest compile error, not "
+                           "invalid/garbage IR");
+        CHECK(err != NULL && strstr(err, "bitwise") != NULL,
+              "the error message names the real problem (bitwise operators need integer "
+              "operands), not a generic failure");
+        arena_free_all(&arena);
+    }
+
     /* --- real, follow-up: a call's own real argument type/count are validated against the
        callee's declared signature (2026-09-10), also closing "bare literal call argument fails
        with no type context" for free (the literal now picks up the real declared param type) --- */

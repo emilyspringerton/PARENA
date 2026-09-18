@@ -207,6 +207,22 @@ static const ArithEntry ARITH_TABLE[] = {
        other arithmetic entry here already uses -- no new dispatch logic needed, purely a missing
        table row. */
     {"mod", "srem", "frem"},
+    /* `bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` (2026-09-18, S501) -- real, previously-missing
+       bitwise operators, closing a real parity gap with src/emit.c's own binary-op table (that
+       one added these 2026-08-20, needed by stdlib/compress/lz4.prn's own byte-level token-header
+       packing). Genuinely, honestly INTEGER-ONLY -- LLVM (like every real ISA) has no bitwise-AND/
+       OR/XOR/shift instruction over a floating-point bit pattern, unlike `mod`/`!=` above, which
+       both have real, distinct float counterparts. `f64_op` is a real NULL sentinel here, checked
+       explicitly below (not silently passed to a %s format) -- a double operand to a bitwise op
+       is a real, honest compile error, matching this whole emitter's own "never silently-wrong
+       IR" discipline, not a crash or garbage opcode string. `shl`/`ashr` (arithmetic right shift,
+       sign-preserving) match this v0's own signed I32 semantics -- the same real, deliberate
+       choice `sdiv`/`srem` above already made over their real unsigned counterparts. */
+    {"bit-and", "and", NULL},
+    {"bit-or", "or", NULL},
+    {"bit-xor", "xor", NULL},
+    {"shl", "shl", NULL},
+    {"shr", "ashr", NULL},
 };
 #define ARITH_TABLE_COUNT (sizeof(ARITH_TABLE) / sizeof(ARITH_TABLE[0]))
 
@@ -481,7 +497,12 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: arithmetic operands have mismatched types";
             return llvm_val_err();
         }
-        const char *opcode = (strcmp(lhs.type, "double") == 0) ? arith->f64_op : arith->i32_op;
+        int is_double = strcmp(lhs.type, "double") == 0;
+        if (is_double && !arith->f64_op) {
+            *out_error = "emit_llvm: bitwise operators require integer operands, not double";
+            return llvm_val_err();
+        }
+        const char *opcode = is_double ? arith->f64_op : arith->i32_op;
         const char *reg = fresh_reg(arena, fn);
         lb_appendf(&fn->body, "  %s = %s %s %s, %s\n", reg, opcode, lhs.type, lhs.ref, rhs.ref);
         LlvmVal v;

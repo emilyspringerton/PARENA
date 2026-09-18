@@ -278,6 +278,25 @@ correct C-style truncating remainder semantics for a negative operand), `differs
 four new cases (i32/f64 × mod/!=). `make test-emit-llvm`: 43/43. `make build`/`make test`: clean,
 zero regressions.
 
+## Real, additive: `bit-and`/`bit-or`/`bit-xor`/`shl`/`shr` parity closed (2026-09-18, S501 cont.)
+
+Same "check the two tables directly against each other" discipline that already found `mod`/`!=`
+missing: `src/emit.c`'s own binary-op table has five real bitwise operators (added 2026-08-20 for
+`stdlib/compress/lz4.prn`'s own byte-level token-header packing) that `src/emit_llvm.c`'s
+`ARITH_TABLE` never had at all. Added `{"bit-and","and",NULL}`, `{"bit-or","or",NULL}`,
+`{"bit-xor","xor",NULL}`, `{"shl","shl",NULL}`, `{"shr","ashr",NULL}` — genuinely, honestly
+INTEGER-ONLY, unlike `mod`/`!=` (which both have real, distinct float instructions): no real ISA
+has a bitwise-AND/OR/XOR/shift instruction over a floating-point bit pattern. `f64_op` is a real
+`NULL` sentinel, checked EXPLICITLY at the dispatch site (a double operand to a bitwise op is now
+a real, honest `emit_llvm: bitwise operators require integer operands, not double` compile error)
+— not silently passed to a `%s` format string, which would have been undefined behavior. `shr`
+lowers to `ashr` (arithmetic/sign-preserving right shift), matching this v0's own signed I32
+semantics, the same real choice `sdiv`/`srem` already made over their unsigned counterparts.
+
+Verified the same way as `mod`/`!=`: real `llc-18` lowering to x86_64 assembly, then linked and
+RAN (`pack(x,y) = (x<<4) | (y&15)`, confirmed correct against real bit-twiddled expected values).
+6 new assertions (52 total in `tests/test_emit_llvm.c`). `make test-emit-llvm`: 52/52.
+
 ## Honest bottom line
 
 Both plans the founder asked for are real and shipped, at least in v0 form. LLVM's AVR backend is
