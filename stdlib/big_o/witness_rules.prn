@@ -46,16 +46,19 @@
 (defn escalation-rank [(s : I32)] : I32
   (if (or (= s 3) (= s 5)) 3 (if (or (= s 1) (= s 4)) 1 0)))
 
-;; COMPROMISED is absorbing; SILENCING/ENGAGE never step down while witnesses remain.
-(defn npc-next-state [(prev : I32) (count : I32) (arrogance : I32) (compromised : I32) (zombie-event : I32)] : I32
+;; COMPROMISED is absorbing. SILENCING/ENGAGE persist while `resolved` = 0 EVEN IF count reaches 0 (losing line of sight
+;; does not end a hunt). They release only when the host reports resolution: resolved 1 = a cleanup crew's Memory Methylation
+;; wipe was applied (-> DENIAL); resolved 2 = the attributed target is eliminated/gone (-> UNAWARE).
+(defn npc-next-state [(prev : I32) (count : I32) (arrogance : I32) (compromised : I32) (zombie-event : I32) (resolved : I32)] : I32
   (if (= prev 2) 2
     (if (= compromised 1) 2
-      (if (and (or (= prev 3) (= prev 5)) (> count 0)) prev
+      (if (or (= prev 3) (= prev 5))
+        (if (= resolved 1) 1 (if (= resolved 2) 0 prev))
         (witness-state count arrogance 0 zombie-event)))))
 
 (defn is-legal-transition [(from : I32) (to : I32)] : Bool
   (if (= from 2) (= to 2)
-    (if (or (= from 3) (= from 5)) (or (= to from) (or (= to 0) (= to 2))) true)))
+    (if (or (= from 3) (= from 5)) (or (= to from) (or (= to 0) (or (= to 1) (= to 2)))) true)))
 
 ;; over-confident engagement: 0 = no effect (not confident enough), 1 = citizen annihilated, 2 = zombie destroyed.
 (defn engage-outcome [(arrogance : I32) (tier : I32)] : I32
