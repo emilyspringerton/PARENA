@@ -705,6 +705,13 @@
 ;; same real `1`/`0` literal mapping `emit-bool-expr` already establishes elsewhere in
 ;; this file (no `<stdbool.h>`, every loop binding is a real C `int` regardless of its
 ;; own PARENA-level Bool/I32 type -- see this section's own original header comment).
+;; Widened 2026-09-18 (S501 continuation, real motivating case: selfhost/lexer.prn's own
+;; `lx-advance`, `:line (if (= c 10) (+ (get-field lx :line) 1) (get-field lx :line))` -- the ELSE
+;; branch is a bare get-field call) to ALSO accept get-field-shaped? -- needed so if-value-
+;; shaped?'s own recursive branch check (both branches must be loop-binding-value-shaped?, see
+;; that function's own header) doesn't reject an if whose branch is simply a struct-field read,
+;; the same real "already produces the right, unboxed type, no boxing needed here" property every
+;; other entry in this function already relies on.
 (defn loop-binding-value-shaped? [(node : &Node) (dest : Arena @ Region)] : Bool
   (or (= (emit-node-kind-code (get-field node :kind)) 6)
       (or (emit-is-symbol? node "true")
@@ -712,7 +719,8 @@
               (or (plain-call-shaped? node dest)
                   (or (binary-op-call-shaped? node dest)
                       (or (if-value-shaped? node dest)
-                          (or (or-and-shaped? node dest) (not-shaped? node dest)))))))))
+                          (or (or-and-shaped? node dest)
+                              (or (not-shaped? node dest) (get-field-shaped? node dest))))))))))
 
 ;; Real, additive case (2026-09-10, found live re-running the self-compile diagnostic
 ;; immediately after the emit-recur-temps crash fix above): `or-and-shaped?`/`not-shaped?`
@@ -733,6 +741,7 @@
     ((plain-call-shaped? node dest) (emit-plain-call node scope dest))
     ((binary-op-call-shaped? node dest) (emit-binary-op node scope dest))
     ((or (or-and-shaped? node dest) (not-shaped? node dest)) (emit-bool-expr node scope dest))
+    ((get-field-shaped? node dest) (emit-get-field node scope dest))
     (true (emit-if-value node scope dest))))
 
 ;; loop-bindings-shaped? -- real, exhaustive check over the whole binding vector: an even
@@ -1581,6 +1590,19 @@
            (and (= (vec/len &(get-field expr-node :children)) 3)
                 (every-call-arg-symbol-or-number? expr-node 1 dest))))))
 
+;; Real, honest, NOT-yet-fixed gap, found live 2026-09-18 (S501) verifying `selfhost/lexer.prn`'s
+;; own `lx-advance` end to end: this function emits its operands via plain emit-call-arg with NO
+;; unboxing -- correct when an operand is an I32 PARAMETER or loop binding (this file's own
+;; established `int`-typed shapes) but a real, confirmed `-Werror=comparison between pointer and
+;; integer`/`-Werror=int-conversion` failure when an operand is a LET-BOUND I32 (boxed `char *`
+;; per emit-i32-boxed's own uniform convention elsewhere in this file). This emitter has no
+;; binding-kind scope tracking WHICH bare-symbol names are boxed (only ArenaBinding/arena-kind
+;; scope exists, a different concern) -- a real, precisely-named, moderate-sized next step, not
+;; attempted here. Confirmed to independently affect stdlib/string.prn's own parse-i32/
+;; is-valid-i32-text?/split too, not just lx-advance -- see NORTHSTAR.md's own Self-hosting
+;; section, tenth step, for the full real accounting (227 real gcc errors found compiling the
+;; whole selfhost/lexer.prn self-compile output, vs. the narrower 3-`#error`-directive count this
+;; effort's own diagnostic had been tracking as its primary metric).
 (defn emit-binary-op [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [fn-node (vec/get &(get-field call :children) 0)
         op-c (c-operator-text (get-field fn-node :text))
@@ -2347,6 +2369,14 @@
 ;; real Arena in scope to box into, the SAME honest, self-documenting-
 ;; invalid-identifier fallback arena-scope-any-ref's own header
 ;; comment already establishes for every other real I32-boxing site.
+;; Widened again 2026-09-18 (S501 continuation, real motivating case: selfhost/lexer.prn's own
+;; `lx-advance`, `:line (if (= c 10) (+ (get-field lx :line) 1) (get-field lx :line))`) to ALSO
+;; accept if-value-shaped? -- the exact same real, free widening class every prior addition to
+;; this function already was: emit-call-arg (what emit-struct-literal-args actually calls to emit
+;; each field's own value) already dispatches if-value-shaped? correctly via emit-if-value (added
+;; 2026-09-10 for loop-binding/call-argument positions), producing a genuine, unboxed C ternary --
+;; exactly the shape a struct field's own position needs (same as binary-op/bool-expr/get-field
+;; above, this position never boxes). Only the GUARD needed widening, not new emission logic.
 (defn struct-literal-field-value-supported? [(node : &Node) (dest : Arena @ Region)] : Bool
   (let [k (emit-node-kind-code (get-field node :kind))]
     (or (or (or (or (= k 3) (= k 6)) (= k 5)) (get-field-shaped? node dest))
@@ -2354,7 +2384,8 @@
             (or (alloc-call-shaped? node)
                 (or (or-and-shaped? node dest)
                     (or (not-shaped? node dest)
-                        (or (result-option-ctor-shaped? node dest) (none-shaped? node)))))))))
+                        (or (result-option-ctor-shaped? node dest)
+                            (or (none-shaped? node) (if-value-shaped? node dest))))))))))
 
 ;; all-struct-literal-fields-match? -- real, exhaustive check: every
 ;; ONE of struct-node's own real declared fields (walked in DECLARED
@@ -2375,6 +2406,28 @@
             (all-struct-literal-fields-match? map-node struct-node (+ i 1) dest)
             false))))))
 
+;; let-wrapped-struct-literal-body? -- real, narrow widening (2026-09-18, S501 continuation):
+;; recognizes `(let [bindings...] <struct-literal>)` as a defn's own whole body -- the exact real
+;; shape `lx-advance` (selfhost/lexer.prn) and `zeros` (stdlib/array.prn) both need, previously
+;; unsupported since the original struct-literal check only ever looked at whether the RAW body
+;; node itself was directly map-literal-shaped, never one wrapped in a single-form `let`. Real,
+;; deliberately narrow scope: only a let with EXACTLY one body form (3 children total: the `let`
+;; symbol, the bindings vector, one tail form) is recognized -- a multi-form let body is a real,
+;; separate, not-attempted widening (would need do-block-shaped sequencing, itself unsupported).
+(defn let-wrapped-struct-literal-body? [(body-node : &Node)] : Bool
+  (and (emit-is-call-named? body-node "let")
+       (= (vec/len &(get-field body-node :children)) 3)))
+
+;; struct-literal-candidate-node -- resolves to the REAL node to treat as the struct literal:
+;; body-node itself (unwrapped case, unchanged real behavior) or, when let-wrapped-struct-
+;; literal-body? is true, the let's own inner tail form (index 2) instead -- every downstream
+;; caller (the field-match check below, and emit-defn-body's own real construction) uses this
+;; resolved node uniformly, so neither needs its own separate wrapped-vs-unwrapped branch.
+(defn struct-literal-candidate-node [(body-node : &Node)] : Node
+  (if (let-wrapped-struct-literal-body? body-node)
+    (deref (vec/get &(get-field body-node :children) 2))
+    (deref body-node)))
+
 ;; defn-body-struct-literal-index -- real, top-level check: return-
 ;; type-c names an already-registered struct (found via find-struct-
 ;; node-index-by-name against the struct's own real NAME, not return-
@@ -2393,18 +2446,19 @@
     (let [start (body-start-index defn-node)]
       (if (>= start (vec/len &(get-field defn-node :children)))
         -1
-        (let [body-node (vec/get &(get-field defn-node :children) start)]
-          (if (not (map-literal-shaped? body-node))
+        (let [body-node (vec/get &(get-field defn-node :children) start)
+              candidate (struct-literal-candidate-node body-node)]
+          (if (not (map-literal-shaped? &candidate))
             -1
             (let [struct-idx (find-struct-node-index-by-name defn-return-type-name known-structs 0)]
               (if (< struct-idx 0)
                 -1
                 (let [struct-node (vec/get known-struct-nodes struct-idx)
                       field-count (- (vec/len &(get-field (deref struct-node) :children)) 2)
-                      pair-count (/ (vec/len &(get-field body-node :children)) 2)]
+                      pair-count (/ (vec/len &(get-field candidate :children)) 2)]
                   (if (not (= field-count pair-count))
                     -1
-                    (if (all-struct-literal-fields-match? body-node (deref struct-node) 2 dest)
+                    (if (all-struct-literal-fields-match? &candidate (deref struct-node) 2 dest)
                       struct-idx
                       -1)))))))))))
 
@@ -2607,10 +2661,20 @@
     (if (>= struct-idx 0)
       (let [start (body-start-index defn-node)
             body-node (vec/get &(get-field defn-node :children) start)
+            candidate (struct-literal-candidate-node body-node)
             struct-node (vec/get known-struct-nodes struct-idx)
-            args-c (emit-struct-literal-args body-node (deref struct-node) 2 scope dest)
+            ;; Real, additive (2026-09-18, S501): when the struct literal is wrapped in a real
+            ;; `let` (lx-advance/zeros's own real shape), that let's own bindings must be emitted
+            ;; as real C declarations FIRST -- the struct-literal field values (e.g. lx-advance's
+            ;; own `:line` field, `(if (= c 10) ...)`) reference them by name, and C requires a
+            ;; local to be declared before it's referenced within the same block.
+            bindings-c (if (let-wrapped-struct-literal-body? body-node)
+                         (emit-let-bindings (vec/get &(get-field body-node :children) 1) 0 scope dest)
+                         "")
+            args-c (emit-struct-literal-args &candidate (deref struct-node) 2 scope dest)
             parts (vec/new dest)]
         (do
+          (vec/push! &parts bindings-c)
           (vec/push! &parts "    return (")
           (vec/push! &parts return-type-name)
           (vec/push! &parts "){")

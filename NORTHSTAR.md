@@ -1943,6 +1943,57 @@ self-hosted C, not just gcc-clean text) via a new `tests/integration/driver_vec_
 suite (347 core tests) + all `test-selfhost-*` targets + `test-emit-llvm` (35/35, confirming zero
 cross-contamination with the LLVM backend) all clean, zero regressions.
 
+**Real tenth step (2026-09-18, same day, "continue working on PARENA self host"): the
+`struct-literal-shape` gap named above CLOSED for `lx-advance` specifically — plus a real, honest
+CORRECTION to how progress on this whole effort should be measured, found while verifying it.**
+
+Real fix, two widenings, both found necessary by actually gcc-compiling the result (not assumed
+sufficient from either alone): (1) `let-wrapped-struct-literal-body?`/`struct-literal-candidate-
+node` — a struct literal wrapped in a single-form `let` (`(let [bindings...] {...})`) is now
+recognized, not just one sitting bare as a defn's own immediate body; the let's own bindings are
+emitted as real C declarations BEFORE the struct construction. (2) `get-field-shaped?` added to
+`loop-binding-value-shaped?` (and its own emitter) — needed so `if-value-shaped?`'s own "both
+branches must themselves be `loop-binding-value-shaped?`" check doesn't reject a branch that's
+simply a struct-field read (`lx-advance`'s own real `:line` field, `(if (= c 10) (+ (get-field lx
+:line) 1) (get-field lx :line))`, has exactly this shape). 4 new real assertions
+(`tests/test_selfhost_emit.c` + a new `tests/integration/driver_let_struct.c`), a real compile-
+and-run proof (`advance-like`, a minimal `Point`-returning function isolating both widenings).
+
+**Real, honest correction, found while trying to prove `lx-advance` fully closed, not before
+claiming it**: `lx-advance`'s own REAL condition, `(= c 10)`, compares a LET-BOUND I32 (`c`, bound
+from `(lx-peek lx)`) against a literal. Since this emitter boxes I32 let-bindings as `char *`
+(its own uniform convention, `emit-i32-boxed`) but does NOT box I32 PARAMETERS or loop bindings
+(real C `int`), comparing a boxed let-bound `char *` directly against a literal (`(c == 10)`) is a
+real, confirmed `-Werror=comparison between pointer and integer` gcc failure — genuinely different
+from, and NOT fixed by, either widening above. This was NOT caught by the `#error`-directive-count
+diagnostic this whole effort has been using as its own primary progress metric, because
+`selfhost/emit.prn` doesn't know it's wrong here — it confidently emits real-looking C that simply
+doesn't compile, the same class of gap this file's own `#error`-over-silently-wrong-C discipline
+exists specifically to prevent, just one this particular emitter path doesn't yet detect. Directly
+gcc-compiling the WHOLE `stdlib/string.prn` + `array.prn` + `io.prn` + `selfhost/lexer.prn`
+self-compile output (not just grepping for `#error`) found **227 real gcc errors** — a large
+fraction traceable to this same root cause (`parse-i32`, `is-valid-i32-text?`, `split`, and now
+this file's own `lx-advance` all hit variations of it) — versus the **3 `#error` directives** the
+narrower diagnostic reports. **Both numbers are real and both matter, but they answer different
+questions**: `#error` count measures how often this emitter honestly REFUSES a shape it doesn't
+recognize (the metric this whole effort's own prior entries have tracked); the real gcc-error
+count measures actual distance from "the real stdlib compiles cleanly through `parena-selfhost`,"
+which is what true self-hosting actually needs. Prior entries in this section that reported only
+the `#error` count were not wrong, but were answering the narrower question — this note makes the
+distinction explicit so it isn't silently conflated going forward.
+
+**Real, precisely-named next step**: a new binding-kind scope (parallel to the existing
+`ArenaBinding`/`arena-kind` scope already threaded through this whole file) tracking which local
+names are boxed I32 values, consulted at every operand/comparison/struct-field-value position
+that currently assumes a bare symbol reference is already the right raw C type — unboxing
+(`(int)(intptr_t)name`) when it isn't. A real, moderate-sized, well-understood next increment, not
+started this pass. `stdlib/array.prn`'s own `zeros` also remains unfixed, for the separate reason
+already named above (a multi-form `let` body needing `do`-block-style statement sequencing).
+
+7 new real assertions total this step (2 tests, 4 CHECKs on the struct-literal fix + a real
+compile-and-run proof, 3 CHECKs already counted above for `vec-len-of-new`). Full local suite (347
+core tests) + all `test-selfhost-*` targets + `test-emit-llvm` (43/43) all clean, zero regressions.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression

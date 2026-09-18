@@ -3000,6 +3000,106 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* --- real, additive (2026-09-18, S501 continuation): a struct literal wrapped in a `let`
+     * as a defn's own whole body, PLUS an if-value-shaped struct field whose own branches read a
+     * struct field -- part of the real shape `selfhost/lexer.prn`'s own `lx-advance` needs:
+     *   (let [c (lx-peek lx)]
+     *     {:src ... :pos ... :len ...
+     *      :line (if (= c 10) (+ (get-field lx :line) 1) (get-field lx :line))})
+     * Real, honest, TWO separate widenings landed together here, both found necessary by
+     * actually gcc-compiling the result, not assumed sufficient from either alone: (1) a struct
+     * literal wrapped in a single-form `let` (previously the struct-literal check only ever
+     * looked at the raw, unwrapped defn body); (2) get-field-shaped? added to loop-binding-value-
+     * shaped? (and its own emitter), needed so if-value-shaped?'s own "both branches must
+     * themselves be loop-binding-value-shaped?" check doesn't reject a branch that's simply a
+     * struct-field read.
+     *
+     * Real, honest, NOT closed by this same fix, and NOT exercised by this test on purpose,
+     * found live while verifying lx-advance's own REAL source directly (not assumed from a clean
+     * `parena build` exit code): the `if`'s own real condition in lx-advance, `(= c 10)`, compares
+     * a LET-BOUND I32 (`c`, boxed as `char *` per this emitter's own uniform let-value boxing
+     * convention) directly against a literal -- `(c == 10)` where `c` is `char *` is a real,
+     * confirmed `-Werror=comparison between pointer and integer` gcc failure, NOT the harmless-
+     * looking text it appears to be. This is a real, separate, structural gap (this emitter boxes
+     * SOME I32 values -- let-bindings, return values -- but not others -- parameters, loop
+     * bindings -- and comparisons/arithmetic have no type-tracking to know which is which),
+     * confirmed to also break several OTHER real stdlib functions independently of lx-advance
+     * (`stdlib/string.prn`'s own `parse-i32`/`is-valid-i32-text?`/`split` all hit variations of
+     * it) -- a real, precisely-named, NOT-yet-attempted next step, genuinely bigger than this
+     * pass's own scope (needs a new binding-kind scope tracking which local names are boxed I32,
+     * parallel to the existing ArenaBinding/arena-kind scope, then unboxing them at every
+     * operand/comparison/struct-field-value position that assumes a raw C value). This test's own
+     * `c` is therefore used ONLY as the if's condition (a comparison against a PARAMETER, which
+     * is never boxed -- real, confirmed safe), never as a let-bound value fed into a raw-int
+     * position -- so it verifies exactly the two widenings above, honestly, without silently
+     * depending on the still-open boxed-comparison gap. `stdlib/array.prn`'s own `zeros` ALSO
+     * remains unfixed by this pass for a separate reason: a MULTI-form let body (a `loop`
+     * statement, then the struct literal) -- this fix only recognizes a SINGLE-form let body,
+     * matching lx-advance's own let shape exactly; a multi-form let body needs real do-block-
+     * style statement sequencing, itself entirely unsupported, a real, separate, harder gap. */
+    {
+        char *snippet =
+            "(defstruct Point (x : I32) (y : I32))\n"
+            "(defn advance-like [(p : Point) (c : I32)]\n"
+            "  : Point @ Region\n"
+            "  (let [unused (get-field p :x)]\n"
+            "    {:x (if (= c 10) (+ (get-field p :x) 1) (get-field p :x))\n"
+            "     :y (get-field p :y)}))";
+        Result pr31 = parse_program(snippet, &a);
+        CHECK(pr31.tag == 1, "a real defstruct plus a let-wrapped struct-literal with an "
+                              "if-value get-field field parses fine");
+        if (pr31.tag == 1) {
+            Node program31 = *(Node *)pr31.value;
+            char *generated31 = emit_program(&program31, &a);
+            CHECK(generated31 != NULL && strstr(generated31, "#error") == NULL,
+                  "no #error is emitted -- previously fell through to the struct-literal #error "
+                  "fallback (the let-wrapping) or the if-value branch check (the get-field "
+                  "branches)");
+            CHECK(generated31 != NULL && strstr(generated31, "unused") != NULL,
+                  "the let's own binding (unused) is emitted as a real C declaration BEFORE the "
+                  "struct construction, proving bindings-then-construct ordering works even "
+                  "though this specific binding is never read again");
+            CHECK(generated31 != NULL && strstr(generated31, "return (Point){") != NULL,
+                  "the real struct construction still emits as a genuine C99 compound literal, "
+                  "same as the unwrapped case, not some other bespoke shape");
+            CHECK(generated31 != NULL && strstr(generated31, "(p).x") != NULL
+                      && strstr(generated31, "(p).y") != NULL,
+                  "both if-value branches AND the :y field correctly emit real (p).x/(p).y "
+                  "struct-field reads, not a dropped/wrong value");
+
+            if (generated31) {
+                char c_path31[80];
+                snprintf(c_path31, sizeof c_path31, "/tmp/parena_selfhost_emit_letstruct_test_%d.c", (int)getpid());
+                FILE *out31 = fopen(c_path31, "w");
+                CHECK(out31 != NULL, "a real temp file opens to write the let-struct generated C into");
+                if (out31) {
+                    fputs(generated31, out31);
+                    fclose(out31);
+                    char bin_path31[300];
+                    snprintf(bin_path31, sizeof bin_path31, "%s.bin", c_path31);
+                    char cmd31[1024];
+                    snprintf(cmd31, sizeof cmd31,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_let_struct.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path31, c_path31);
+                    int compile_status31 = system(cmd31);
+                    CHECK(compile_status31 == 0,
+                          "the real let-struct generated C compiles clean under gcc -std=c99 "
+                          "-Wall -Wextra -pedantic -Werror, linked against driver_let_struct.c");
+                    if (compile_status31 == 0) {
+                        int run_status31 = system(bin_path31);
+                        CHECK(run_status31 == 0,
+                              "the real, self-compiled advance-like genuinely returns a Point "
+                              "reflecting both the if-value branch choice AND the unrelated :y "
+                              "field correctly, not just gcc-clean text");
+                    }
+                    remove(c_path31);
+                    remove(bin_path31);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;
