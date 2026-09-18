@@ -1,0 +1,60 @@
+;; stdlib/deadweight/card_rules.prn -- DEADWEIGHT card-mode (VS0) rules, the single source of truth.
+;; EMILY/BACKLOG.md S503-03; rules spec: DEADWEIGHT/docs/CARD_MODE_RULES.md.
+;;
+;; Scalar-only ON PURPOSE: every defn is I32/Bool params, one expression, if/arithmetic/comparison
+;; and calls between defns -- the exact subset BOTH the C emitter (server, Windows, bots, training)
+;; and the Java emitter (Android) accept. One .prn, two targets, zero FFI (founder firm constraint:
+;; nothing is added to PARENA's Java target to make this work). Cross-target agreement is proven by
+;; DEADWEIGHT's generated parity vectors, checked by a C test and a plain-JVM Java test.
+;;
+;; Card id = kind*3 + tier.  kind: 0 BURST, 1 TANK, 2 SHIELD.  tier: 0..2.  id -1 = pass.
+;; Triangle: BURST > TANK > SHIELD > BURST.
+(module deadweight/card-rules)
+(export start-hull start-energy max-rounds hand-size num-cards energy-cap
+        card-kind card-tier card-cost card-power kind-beats is-legal-play
+        damage-dealt round-start-energy energy-after-play round-winner-by-hull match-decided)
+
+(defn start-hull [] : I32 20)
+(defn start-energy [] : I32 2)
+(defn max-rounds [] : I32 8)
+(defn hand-size [] : I32 4)
+(defn num-cards [] : I32 9)
+
+(defn energy-cap [(e : I32)] : I32 (if (> e 6) 6 e))
+
+(defn card-kind [(id : I32)] : I32 (/ id 3))
+(defn card-tier [(id : I32)] : I32 (- id (* (/ id 3) 3)))
+(defn card-cost [(id : I32)] : I32
+  (if (= (card-tier id) 0) 1 (if (= (card-tier id) 1) 2 4)))
+(defn card-power [(id : I32)] : I32
+  (if (= (card-tier id) 0) 3 (if (= (card-tier id) 1) 6 10)))
+
+;; a beats b iff b is the next kind up the triangle (0->1, 1->2, 2->0).
+(defn kind-beats [(a : I32) (b : I32)] : Bool
+  (= b (if (= a 2) 0 (+ a 1))))
+
+(defn is-legal-play [(id : I32) (energy : I32)] : Bool
+  (and (>= id 0) (and (<= id 8) (<= (card-cost id) energy))))
+
+;; hull damage that play `a` deals to the opponent when they play `b` (either may be -1 = pass).
+(defn damage-dealt [(a : I32) (b : I32)] : I32
+  (if (< a 0) 0
+    (if (< b 0)
+      (if (= (card-kind a) 2) 0 (card-power a))
+      (if (= (card-kind a) (card-kind b))
+        (if (= (card-kind a) 0) (card-power a)
+          (if (= (card-kind a) 1) (/ (card-power a) 2) 0))
+        (if (kind-beats (card-kind a) (card-kind b)) (card-power a) 0)))))
+
+(defn round-start-energy [(e : I32)] : I32 (energy-cap (+ e 2)))
+
+;; energy after locking `played` (-1 = pass banks +1).
+(defn energy-after-play [(e : I32) (played : I32)] : I32
+  (if (< played 0) (energy-cap (+ e 1)) (- e (card-cost played))))
+
+;; 0 = seat 0 ahead, 1 = seat 1 ahead, 2 = draw.
+(defn round-winner-by-hull [(h0 : I32) (h1 : I32)] : I32
+  (if (> h0 h1) 0 (if (< h0 h1) 1 2)))
+
+(defn match-decided [(h0 : I32) (h1 : I32)] : Bool
+  (or (<= h0 0) (<= h1 0)))
