@@ -241,6 +241,43 @@ that isn't scoped in this doc).
   scalar-function slice, not full language coverage" precedent SPIDERBEETLE's Java emitter and this
   repo's own TypeScript emitter both already established for their own first real target.
 
+## Real, additive: `mod`/`!=` operator parity closed (2026-09-18, S501)
+
+Founder real-time: "work on PARENA self host and PARENA LLVM." Checked `src/emit_llvm.c`'s own
+`ARITH_TABLE`/`CMP_TABLE` directly against `src/emit.c`'s own real, full binary-op set
+(`+ - * / < > <= >= = != and or bit-and bit-or bit-xor shl shr mod`) rather than assuming parity —
+found two real, previously entirely-missing operators: `mod` (integer/float remainder) and `!=`
+(inequality). Before this fix, `(mod x 2)`/`(!= x y)` in real `.prn` source fell through the whole
+dispatch chain and hit `emit_llvm`'s own generic "call to an unrecognized function" error — the
+same real gap class `src/emit.c`'s own header comment already documented finding for `!=` back on
+2026-09-07 (building PAPERCRAFT's `weapon_mod.prn`) and `mod` on 2026-08-20 (`firefly.prn`'s own
+continue-vs-recur exploration) — this LLVM backend just hadn't been checked against either fix.
+
+Real, minimal fix: two new table rows — `{"mod", "srem", "frem"}` (LLVM's own distinct signed-
+integer-remainder vs. float-remainder instructions) and `{"!=", "ne", "one"}` (`icmp ne` for
+integer/bool operands, `fcmp one` — "ordered not-equal" — for float, matching this table's own
+existing `o*`-prefixed IEEE-754-aware convention for every other float comparison). Zero new
+dispatch logic needed — both tables were already fully generic, resolved by the same bottom-up
+operand-type inference every other arithmetic/comparison entry already uses.
+
+**Real, independent verification beyond the C test suite**, obtained a real `llc-18` binary in
+this sandbox without root (`apt-get download llvm-18` + `dpkg-deb -x`, the same technique this
+doc's own earlier work used for `avr-gcc`/`clang`): fed the actual generated `.ll` IR text through
+`llc -mtriple=x86_64-pc-linux-gnu`, confirmed it lowers to real, valid, sane x86_64 assembly
+(`mod`'s own `srem` compiles to a real shift/and/sub sequence, LLVM's own standard optimization for
+remainder-by-a-power-of-2, not garbage; `!=` compiles to a real `cmpl`/`setne` pair) — then linked
+the resulting object file against a real C driver and RAN it. Found and fixed a real, honest driver
+bug in the SAME class this doc's own AVR work already documented (`Bool` lowers to `i1`, which the
+x86_64 System V ABI returns in `AL` with the upper register bits left unspecified — a C driver
+declaring `int differs(...)` instead of `unsigned char differs(...)` reads garbage from those
+unspecified upper bits): once fixed, `is-even(7)==1`, `is-even(8)==0`, `is-even(-7)==-1` (real,
+correct C-style truncating remainder semantics for a negative operand), `differs(3,5)==1`,
+`differs(5,5)==0` — all genuinely correct, executed, not just plausible-looking IR text.
+
+8 new real assertions in `tests/test_emit_llvm.c` (43 total), structural IR-text checks for all
+four new cases (i32/f64 × mod/!=). `make test-emit-llvm`: 43/43. `make build`/`make test`: clean,
+zero regressions.
+
 ## Honest bottom line
 
 Both plans the founder asked for are real and shipped, at least in v0 form. LLVM's AVR backend is

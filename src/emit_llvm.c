@@ -199,6 +199,14 @@ static const ArithEntry ARITH_TABLE[] = {
     {"-", "sub", "fsub"},
     {"*", "mul", "fmul"},
     {"/", "sdiv", "fdiv"},
+    /* `mod` (2026-09-18, S501) -- real, previously-missing integer/float remainder, closing a
+       real parity gap with src/emit.c's own binary-op table (that one added `mod` -> `%` back on
+       2026-08-20, found live by firefly.prn's own continue-vs-recur exploration). LLVM's own
+       real, distinct signed-integer-remainder (`srem`) and float-remainder (`frem`)
+       instructions, resolved by the same real, existing bottom-up operand-type dispatch every
+       other arithmetic entry here already uses -- no new dispatch logic needed, purely a missing
+       table row. */
+    {"mod", "srem", "frem"},
 };
 #define ARITH_TABLE_COUNT (sizeof(ARITH_TABLE) / sizeof(ARITH_TABLE[0]))
 
@@ -216,6 +224,16 @@ static const CmpEntry CMP_TABLE[] = {
     {">", "sgt", "ogt"},
     {"<=", "sle", "ole"},
     {">=", "sge", "oge"},
+    /* `!=` (2026-09-18, S501) -- real, previously-missing inequality operator, closing a real
+       parity gap with src/emit.c's own binary-op table (that one added `!=` back on 2026-09-07,
+       found live building PAPERCRAFT's own weapon_mod.prn). LLVM's own real `icmp ne`/`fcmp one`
+       ("ordered not-equal", the real IEEE-754-aware counterpart to `oeq` above, matching this
+       table's own existing `o*` convention for every other float comparison). Before this entry,
+       `(!= a b)` in a real .prn source fell through this dispatch entirely and was (wrongly)
+       treated as a plain function CALL named `!=` -- a real, silent-until-link-time gap, the
+       identical class of bug src/emit.c's own header comment already documented finding for this
+       exact operator. */
+    {"!=", "ne", "one"},
 };
 #define CMP_TABLE_COUNT (sizeof(CMP_TABLE) / sizeof(CMP_TABLE[0]))
 

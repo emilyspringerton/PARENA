@@ -136,6 +136,82 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real, additive (2026-09-18, S501): `mod`, previously entirely missing from
+       ARITH_TABLE -- a real parity gap with src/emit.c's own binary-op table found live by
+       comparing the two tables directly. LLVM has genuinely distinct signed-integer (`srem`) and
+       float (`frem`) remainder instructions, resolved via the identical bottom-up operand-type
+       dispatch every other arithmetic entry already uses. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn is-even [(x : I32)] : I32 (mod x 2))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "mod on i32 operands emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= srem i32 %x, 2") != NULL,
+                  "mod on i32 operands lowers to srem (the real signed-integer-remainder opcode, "
+                  "not a fabricated %% token)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn remainder [(x : F64)] : F64 (mod x 2.5))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "mod on double operands emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= frem double %x, 2.5") != NULL,
+                  "mod on double operands lowers to frem (the real, distinct float-remainder "
+                  "opcode, not the integer srem)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- real, additive (2026-09-18, S501): `!=`, previously entirely missing from CMP_TABLE --
+       the identical real class of gap src/emit.c's own header comment already documented finding
+       for this exact operator (found live building PAPERCRAFT's own weapon_mod.prn there).
+       Before this entry, `(!= a b)` fell through this dispatch and was wrongly treated as a call
+       to a function literally named `!=`. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn differs [(x : I32) (y : I32)] : Bool (!= x y))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "!= on i32 operands emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= icmp ne i32 %x, %y") != NULL,
+                  "!= on i32 operands lowers to a real icmp ne (not a fabricated call to a "
+                  "function named !=)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn differs-f [(x : F64) (y : F64)] : Bool (!= x y))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "!= on double operands emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "= fcmp one double %x, %y") != NULL,
+                  "!= on double operands lowers to fcmp one (\"ordered not-equal\", matching this "
+                  "table's own existing o* IEEE-754-aware convention, not the integer icmp ne)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- real, follow-up: a call's own real argument type/count are validated against the
        callee's declared signature (2026-09-10), also closing "bare literal call argument fails
        with no type context" for free (the literal now picks up the real declared param type) --- */
