@@ -1,0 +1,80 @@
+;; stdlib/deadweight/bot_brain.prn -- DEADWEIGHT bot brain (S503-14b): a hand-written MLP forward pass + heuristic
+;; prior + masked argmax blend, in PARENA, emitted to C (core/bot_brain.c). Founder: "hand written neural net and
+;; heuristic hybrid would be best... parena if possible".
+;;
+;; What is PARENA here: the whole decision math -- dense layers over (Vec F64), a pure-PARENA tanh approximation
+;; (Lambert continued fraction, |err| < 1e-3 on |x|<5, clamped to +-1 beyond; NO libm/FFI, nothing added to any
+;; emitter), the 3-layer forward pass, the archetype heuristic prior, the blend and the masked argmax.
+;; What stays hand-written C (core/brain.c): reading the weight blob into Vecs, assembling the 58-float observation
+;; (layout owned by training/dw_env.py), seeded exploration noise, and calling into this file.
+;;
+;; C-target only (uses Vec/Arena); the card RULES stay in card_rules.prn (scalar, dual-target). Weights are data in
+;; the BPMW v1 blob (same byte format as BRAWLPIT's export_policy_weights.py), architecture is code: 3 dense layers,
+;; act = 1 tanh / 0 linear, hidden widths supplied by the blob header.
+(module deadweight/bot-brain)
+(import deadweight/card-rules)
+(export tanh-approx dense-layer mlp-forward3 heuristic-prior blend mask-score pick5)
+
+;; Lambert continued-fraction tanh, degree (6,6); exact enough for a policy and fully deterministic.
+(defn tanh-approx [(x : F64)] : F64
+  (if (>= x 5.0) 1.0
+    (if (<= x -5.0) -1.0
+      (let [x2 (* x x) x4 (* x2 x2) x6 (* x4 x2)]
+        (/ (* x (+ 135135.0 (+ (* 17325.0 x2) (+ (* 378.0 x4) x6))))
+           (+ 135135.0 (+ (* 62370.0 x2) (+ (* 3150.0 x4) (* 28.0 x6)))))))))
+
+;; One dense layer: w is row-major out x in (PyTorch nn.Linear layout), act 1 = tanh, 0 = linear.
+(defn dense-layer [(w : &(Vec F64)) (b : &(Vec F64)) (x : &(Vec F64)) (n-in : I32) (n-out : I32) (act : I32) (dest : Arena @ Region)]
+  : (Vec F64) @ Region
+  (let [out (vec/new dest)]
+    (loop [row 0]
+      (when (< row n-out)
+        (let [s (loop [i 0 acc (deref (vec/get b row))]
+                  (if (< i n-in)
+                    (recur (+ i 1) (+ acc (* (deref (vec/get w (+ (* row n-in) i))) (deref (vec/get x i)))))
+                    acc))]
+          (vec/push! &out (if (= act 1) (tanh-approx s) s)))
+        (recur (+ row 1))))
+    out))
+
+;; tanh, tanh, linear. n0 = obs width, n3 = action logits (5).
+(defn mlp-forward3 [(w0 : &(Vec F64)) (b0 : &(Vec F64)) (w1 : &(Vec F64)) (b1 : &(Vec F64)) (w2 : &(Vec F64)) (b2 : &(Vec F64))
+                    (x : &(Vec F64)) (n0 : I32) (n1 : I32) (n2 : I32) (n3 : I32) (dest : Arena @ Region)]
+  : (Vec F64) @ Region
+  (let [h1 (dense-layer w0 b0 x n0 n1 1 dest)
+        h2 (dense-layer w1 b1 &h1 n1 n2 1 dest)]
+    (dense-layer w2 b2 &h2 n2 n3 0 dest)))
+
+;; Heuristic prior for playing `card` (-1 = pass): the existing hand-written archetypes as scores, ~[0,3.1].
+;; arch 0 ripper (Burst-heavy, banks for a tier-2 Burst when `bank` = 1), 1 wall (Tank > Shield > Burst),
+;; 2 mirror (prefers the kind that beats the opponent's last kind; last-kind < 0 = none yet).
+(defn heuristic-prior [(arch : I32) (card : I32) (last-kind : I32) (bank : I32)] : F64
+  (if (< card 0)
+    (if (and (= arch 0) (= bank 1)) 3.0 0.0)
+    (if (= arch 0)
+      (if (= (card-kind card) 0) (+ 2.0 (* 0.01 (card-power card))) (+ 1.0 (* 0.01 (card-power card))))
+      (if (= arch 1)
+        (if (= (card-kind card) 1) (+ 3.0 (* 0.01 (card-power card)))
+          (if (= (card-kind card) 2) (+ 2.0 (* 0.01 (card-power card))) (+ 1.0 (* 0.01 (card-power card)))))
+        (if (and (>= last-kind 0) (kind-beats (card-kind card) last-kind))
+          (+ 3.0 (* 0.01 (card-power card)))
+          (+ 1.0 (* 0.01 (card-power card))))))))
+
+;; score = w-h * prior + w-n * net logit
+(defn blend [(prior : F64) (logit : F64) (w-h : F64) (w-n : F64)] : F64
+  (+ (* w-h prior) (* w-n logit)))
+
+;; illegal actions can never win the argmax
+(defn mask-score [(s : F64) (legal : I32)] : F64
+  (if (= legal 1) s -1000000.0))
+
+;; masked argmax over the 4 hand slots + pass; ties go to the lower slot; pass wins only if strictly better.
+;; returns 0..3 = play that slot, -1 = pass.
+(defn pick5 [(m0 : F64) (m1 : F64) (m2 : F64) (m3 : F64) (mp : F64)] : I32
+  (let [a (if (>= m0 m1) 0 1)
+        ma (if (>= m0 m1) m0 m1)
+        b (if (>= m2 m3) 2 3)
+        mb (if (>= m2 m3) m2 m3)
+        c (if (>= ma mb) a b)
+        mc (if (>= ma mb) ma mb)]
+    (if (>= mc mp) c -1)))
