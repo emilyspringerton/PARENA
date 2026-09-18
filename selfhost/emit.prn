@@ -1331,16 +1331,31 @@
             "    return 0" ";\n" dest))
     (true (emit-tail-symbol node dest))))
 
-;; is-vec-call? -- the one real exclusion plain-call-shaped? makes,
-;; the same real reason src/emit.c's own mangle_call_name excludes
-;; `vec/`-qualified calls from its own bare-name resolution: `vec` is
-;; a real, hardcoded RUNTIME pseudo-module (parena_runtime.h's own
-;; comment -- its function names were deliberately chosen to already
-;; match `mangle`'s own full-text output), not a real, registered
-;; `.prn` module this narrow emitter could ever disambiguate from a
-;; real user-defined bare name the way the C reference's own
-;; find_defn_return_type registry does. Left unsupported here rather
-;; than risk emitting a wrong call.
+;; is-vec-call? -- real, narrow port of src/emit.c's own `strncmp(text,
+;; "vec/", 4) == 0` check in `mangle_call_name`. CLOSED 2026-09-18 (S501,
+;; founder real-time: "work on PARENA self host and PARENA LLVM"): this
+;; function's own PRIOR header comment claimed `vec/`-qualified calls
+;; were permanently unsupported here for lack of a `find_defn_return_
+;; type`-backed disambiguation registry -- checked directly against the
+;; REAL C reference and found to be a real, honest OVER-conservatism,
+;; not an actual architectural requirement: `mangle_call_name` doesn't
+;; disambiguate `vec/` from a real user module at all -- it doesn't need
+;; to, because `vec` is a real, hardcoded RUNTIME pseudo-module with no
+;; corresponding `.prn` file whose own exported names could ever collide
+;; with it (confirmed directly: no `vec.prn` exists in this stdlib).
+;; `mangle_call_name` just special-cases `vec/`-prefixed names to skip
+;; its own bare-last-segment-stripping fallback (the thing that WOULD
+;; need a registry, for OTHER qualified names) and mangle the FULL text
+;; instead (`vec/new` -> `vec_new`), which `runtime/parena_runtime.h`
+;; already provides real, matching functions for (`vec_new`, `vec_get`,
+;; `vec_len`, `vec_push_`, `vec_set_at_`, ...) -- this narrow emitter's
+;; own `mangle`/`mangle-char` already handle `/` identically to the C
+;; reference (checked directly, not assumed: `mangle-char`'s own `(= c
+;; 47) 95` case already exists), so ONCE `mangle-call-name` below is
+;; taught the same real vec/-skips-stripping special case, treating a
+;; `vec/`-qualified call as an ordinary plain call is genuinely safe --
+;; still used here (not deleted) to keep that special case named and
+;; testable in one place, not because vec/ calls are excluded anymore.
 (defn is-vec-call? [(fn-text : String @ Region) (dest : Arena @ Region)] : Bool
   (and (>= (string/length fn-text) 4)
        (string/str-eq? (string/substring fn-text 0 4 dest) "vec/")))
@@ -1743,38 +1758,51 @@
                           (or (string/str-eq? sym "recur")
                               (or (string/str-eq? sym "if") (string/str-eq? sym "loop"))))))))))
 
+;; Real, additive case (2026-09-18, S501): `vec/`-qualified calls used to be
+;; excluded here entirely (`is-vec-call?`'s own PRIOR behavior) -- now they're
+;; explicitly ALLOWED through to the same `every-call-arg-symbol-or-number?`
+;; argument check every other plain call gets, since `mangle-call-name` (below)
+;; now knows the real, correct, non-stripping mangle for them. `is-vec-call?`
+;; is no longer used as an EXCLUSION here at all -- it now only distinguishes
+;; the two real name-mangling shapes inside `mangle-call-name` itself.
 (defn plain-call-shaped? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (if (not (emit-is-symbol-headed-list? expr-node))
     false
     (let [fn-node (vec/get &(get-field expr-node :children) 0)
           fn-text (get-field fn-node :text)]
       (and (not (string/str-eq? fn-text "alloc"))
-           (and (not (is-vec-call? fn-text dest))
-                (and (not (binary-op-symbol? fn-text))
-                     (and (not (bool-op-symbol? fn-text))
-                          (and (not (result-option-ctor-symbol? fn-text))
-                               (and (not (other-special-form-symbol? fn-text))
-                                    (every-call-arg-symbol-or-number? expr-node 1 dest))))))))))
+           (and (not (binary-op-symbol? fn-text))
+                (and (not (bool-op-symbol? fn-text))
+                     (and (not (result-option-ctor-symbol? fn-text))
+                          (and (not (other-special-form-symbol? fn-text))
+                               (every-call-arg-symbol-or-number? expr-node 1 dest)))))))))
 
 ;; mangle-call-name -- real, narrow port of src/emit.c's own
-;; mangle_call_name for the one real shape this narrow emitter
-;; supports: strip a `/`-qualified call name (`selfhost/lexer/
-;; new-lexer`) down to its own real final segment (`new-lexer`),
-;; matching how the full C compiler's own generated top-level defn
-;; names are never module-prefixed in the emitted C (confirmed live:
-;; grepping the real generated C for `new_lexer` finds a bare
-;; `char * new_lexer(...)`, not `selfhost_lexer_new_lexer`), then runs
-;; the normal hyphen-only `mangle` on that segment. Real, honest,
-;; narrower than the C reference: no find_defn_return_type-backed
+;; mangle_call_name for the two real shapes this narrow emitter
+;; supports: (1) a `vec/`-qualified call -- CLOSED 2026-09-18 (S501) --
+;; mangles the FULL text (`vec/new` -> `vec_new`), matching a real,
+;; hardcoded runtime function this emitter never needs to disambiguate
+;; from anything (see is-vec-call?'s own updated header comment for the
+;; full reasoning); (2) any OTHER `/`-qualified call name
+;; (`selfhost/lexer/new-lexer`) strips down to its own real final
+;; segment (`new-lexer`), matching how the full C compiler's own
+;; generated top-level defn names are never module-prefixed in the
+;; emitted C (confirmed live: grepping the real generated C for
+;; `new_lexer` finds a bare `char * new_lexer(...)`, not
+;; `selfhost_lexer_new_lexer`). Real, honest, narrower than the C
+;; reference for case (2) only: no find_defn_return_type-backed
 ;; disambiguation (this narrow emitter has no such registry) -- safe
-;; here because plain-call-shaped? already excludes the one real
-;; collision risk (`vec/`) the C reference itself guards against.
+;; only because `vec/` (the one real collision risk the C reference
+;; itself guards against) is now handled as its own separate, correct
+;; case instead of falling through to this stripping logic.
 (defn mangle-call-name [(fn-text : String @ Region) (dest : Arena @ Region)] : String @ Region
-  (let [parts (string/split fn-text "/" dest)
-        n (vec/len &parts)]
-    (if (<= n 1)
-      (mangle fn-text dest)
-      (mangle (vec/get &parts (- n 1)) dest))))
+  (if (is-vec-call? fn-text dest)
+    (mangle fn-text dest)
+    (let [parts (string/split fn-text "/" dest)
+          n (vec/len &parts)]
+      (if (<= n 1)
+        (mangle fn-text dest)
+        (mangle (vec/get &parts (- n 1)) dest)))))
 
 ;; emit-string-literal -- real, narrow `"lit"` -> `"lit"` re-wrap
 ;; (2026-08-28), the SAME real, honest, no-re-escaping convention
@@ -1884,9 +1912,31 @@
 (defn let-value-is-bool-expr? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
   (or (or-and-shaped? expr-node dest) (not-shaped? expr-node dest)))
 
+;; plain-call-fn-text-is? -- real, small helper (2026-09-18, S501): true when expr-node is
+;; plain-call-shaped? AND its own head symbol's text exactly matches fn-name. Used below to give
+;; `vec/new`/`vec/len` their own real, correct treatment distinct from an ordinary plain call --
+;; unlike a real user-defined PARENA function (which always returns this emitter's own uniform
+;; boxed `char *` at its OWN definition, needing no per-call-site special-casing), `vec/new`/
+;; `vec/len` are real runtime primitives (runtime/parena_runtime.h's own `Vec vec_new(Arena*)`/
+;; `int vec_len(Vec*)`) with fixed, real C signatures this emitter has no control over and no
+;; registry to look up generically -- so the two real, concrete cases that actually need different
+;; treatment are named explicitly here rather than solved with new general infrastructure.
+(defn plain-call-fn-text-is? [(expr-node : &Node) (fn-name : String @ Region) (dest : Arena @ Region)] : Bool
+  (if (not (plain-call-shaped? expr-node dest))
+    false
+    (let [fn-node (vec/get &(get-field expr-node :children) 0)]
+      (string/str-eq? (get-field fn-node :text) fn-name))))
+
 (defn emit-let-value [(expr-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
+    ;; Real, additive case (2026-09-18, S501): `vec/len` returns a real, raw C `int`
+    ;; (runtime/parena_runtime.h's own `int vec_len(Vec*)`) -- needs the SAME real
+    ;; emit-i32-boxed treatment as any other raw-int-producing expression (binary-op, bool-expr),
+    ;; checked BEFORE the generic plain-call-shaped? case below since that one assumes NO boxing
+    ;; is needed (true for a real user-defined defn, whose own return value is ALREADY boxed at
+    ;; ITS OWN definition -- not true for this one specific runtime primitive).
+    ((plain-call-fn-text-is? expr-node "vec/len" dest) (emit-i32-boxed (emit-plain-call expr-node scope dest) dest))
     ((binary-op-call-shaped? expr-node dest) (emit-i32-boxed (emit-binary-op expr-node scope dest) dest))
     ((let-value-is-bool-expr? expr-node dest) (emit-i32-boxed (emit-bool-expr expr-node scope dest) dest))
     ;; Real, additive cases (2026-08-28, same Ok/Err/Some/None
@@ -1982,6 +2032,19 @@
 ;; header comment names the real 3-way dispatch (alloc call / plain
 ;; function call / #error) -- src/emit.c's own real, current version
 ;; handles far more arbitrary let-binding exprs; not attempted here.
+;; let-binding-c-type-prefix -- real, narrow special case (2026-09-18, S501): `vec/new` returns a
+;; real `Vec` STRUCT BY VALUE (runtime/parena_runtime.h's own `Vec vec_new(Arena*)`), never a
+;; pointer at all -- declaring its own let-bound local as this file's own otherwise-uniform
+;; `char *` would be a real, genuine C type mismatch (a struct assigned to a pointer), not merely
+;; a style inconsistency. Every other let-value shape (including the now-boxed `vec/len` case
+;; above, and `vec/get`'s own real `void *` return, implicitly pointer-compatible with `char *`
+;; under plain C's own conversion rules with no cast needed) keeps the existing, correct `char *`
+;; default.
+(defn let-binding-c-type-prefix [(expr-node : &Node) (dest : Arena @ Region)] : String @ Region
+  (if (plain-call-fn-text-is? expr-node "vec/new" dest)
+    "    Vec "
+    "    char *"))
+
 (defn emit-let-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
   : String @ Region
   (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
@@ -1991,11 +2054,12 @@
           c-name (mangle (get-field name-node :text) dest)
           expr-c (emit-let-value expr-node scope dest)
           error-prefix (let-value-error-prefix expr-node dest)
+          type-prefix (let-binding-c-type-prefix expr-node dest)
           rest-c (emit-let-bindings bindings (+ i 2) scope dest)
           parts (vec/new dest)]
       (do
         (vec/push! &parts error-prefix)
-        (vec/push! &parts "    char *")
+        (vec/push! &parts type-prefix)
         (vec/push! &parts c-name)
         (vec/push! &parts " __attribute__((unused)) = ")
         (vec/push! &parts expr-c)

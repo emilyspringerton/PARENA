@@ -85,7 +85,21 @@ int main(int argc, char **argv) {
      * this repo's own real -std=c99 -Wall -Wextra -pedantic -Werror
      * DoD bar), links against the SAME real driver_valid_only.c domain
      * 4's own check already uses, and actually runs the result. --- */
-    char c_path[] = "/tmp/parena_selfhost_emit_test_XXXXXX.c";
+    /* Real, live-found bug fixed here (2026-09-18, S501): this buffer used to be
+     * `char c_path[] = "/tmp/parena_selfhost_emit_test_XXXXXX.c"` -- sized to fit the literal
+     * 6-'X' template at COMPILE time, silently assuming getpid() would never need more than 6
+     * digits. Linux PIDs can genuinely reach 7 digits (default pid_max is 4194304) -- confirmed
+     * live: this exact process's own real PID was 7 digits, so snprintf below truncated the
+     * LAST character of the real path to fit the too-small buffer, silently dropping the
+     * trailing "c" of ".c" and leaving a real file named "..._2672293." (no extension) on disk.
+     * gcc can't infer a language from an extensionless file, so it fell through to the linker,
+     * which then failed with a real, confusing "file format not recognized; treating as linker
+     * script" error -- not a logic bug in anything this test was actually checking, a real,
+     * environment-dependent buffer-sizing bug in the test harness itself. Fixed by sizing every
+     * one of this file's 8 identical `c_pathN` buffers generously (80 bytes -- this file's own
+     * longest real path prefix is ~41 chars, leaving room for any realistic PID) instead of
+     * exact-fitting a fixed literal. */
+    char c_path[80];
     /* mkstemps-style: mkstemp needs a fixed-length suffix-free
      * template, so build the path by hand instead (real, simple,
      * avoids a second temp-file API this repo doesn't use elsewhere). */
@@ -591,10 +605,15 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* --- real, honest exclusion coverage: a `vec/`-qualified call as
-     * a let-binding value stays a real, clean #error (is-vec-call?'s
-     * own header comment explains the real collision-risk reasoning
-     * this deliberately, permanently excludes, not a temporary gap). */
+    /* --- real, positive coverage (S501, 2026-09-18): a `vec/`-qualified call as a
+     * let-binding value now EMITS REAL, CORRECT C, closing what this test used to assert was a
+     * deliberate, permanent exclusion. Checked directly against the real C reference
+     * (src/emit.c's own mangle_call_name): `vec` is a hardcoded runtime pseudo-module with real,
+     * matching functions (vec_new/vec_get/vec_len/vec_push_/...) already provided by
+     * runtime/parena_runtime.h -- there was never a real disambiguation-registry requirement for
+     * this specific prefix the way there is for an arbitrary /-qualified user-module call, only
+     * an over-conservative exclusion in this narrow emitter's own first draft. See
+     * is-vec-call?'s own updated header comment in selfhost/emit.prn for the full reasoning. */
     {
         char *snippet =
             "(defn f [(a : Arena @ :region/buffer)]\n"
@@ -605,9 +624,68 @@ int main(int argc, char **argv) {
         if (pr8.tag == 1) {
             Node program8 = *(Node *)pr8.value;
             char *generated8 = emit_program(&program8, &a);
-            CHECK(generated8 != NULL && strstr(generated8, "#error") != NULL,
-                  "a real vec/-qualified let-binding is deliberately, permanently left as a clean #error, "
-                  "not guessed at");
+            CHECK(generated8 != NULL && strstr(generated8, "#error") == NULL
+                      && strstr(generated8, "vec_new(a)") != NULL,
+                  "a real vec/-qualified let-binding now emits a real, correctly-mangled "
+                  "vec_new(a) call, not a #error");
+        }
+    }
+
+    /* --- real, live compile+run proof that the vec/ fix above is genuinely correct, not just
+     * gcc-clean text: `stdlib/array.prn`'s own real, original motivating case (found via the
+     * self-compile diagnostic run against selfhost/lexer.prn's own real dependency chain) is
+     * `(let [n (vec/len shape) total (product shape) ...] ...)`-shaped -- TWO chained vec/
+     * let-bindings, the second depending on the Vec the first produced. Real, honest scope,
+     * NOT overclaimed: this does not also exercise `vec/push!`/`vec/get` sequencing, since that
+     * needs a `do` block as a let-body, and `do` is a real, separate, pre-existing gap this
+     * narrow emitter doesn't support at all yet (checked directly: no "do" handling exists
+     * anywhere in this file) -- unrelated to this fix, not attempted here. */
+    {
+        char *snippet =
+            "(defn vec-len-of-new [(dest : Arena @ Region)]\n"
+            "  : I32\n"
+            "  (let [v (vec/new dest) n (vec/len &v)]\n"
+            "    n))";
+        Result pr9 = parse_program(snippet, &a);
+        CHECK(pr9.tag == 1, "a real chained vec/new + vec/len let-binding function body parses fine");
+        if (pr9.tag == 1) {
+            Node program9 = *(Node *)pr9.value;
+            char *generated9 = emit_program(&program9, &a);
+            CHECK(generated9 != NULL && strstr(generated9, "#error") == NULL
+                      && strstr(generated9, "vec_new(dest)") != NULL
+                      && strstr(generated9, "vec_len(&v)") != NULL,
+                  "vec-len-of-new's own real generated C calls vec_new(dest) then vec_len(&v), "
+                  "no #error anywhere");
+
+            char c_path9[80];
+            snprintf(c_path9, sizeof c_path9, "/tmp/parena_selfhost_emit_vec_test_%d.c", (int)getpid());
+            FILE *out9 = fopen(c_path9, "w");
+            CHECK(out9 != NULL, "a real temp file opens to write the vec generated C into");
+            if (out9) {
+                fputs(generated9, out9);
+                fclose(out9);
+                char bin_path9[256];
+                snprintf(bin_path9, sizeof bin_path9, "%s.bin", c_path9);
+                char cmd9[1024];
+                snprintf(cmd9, sizeof cmd9,
+                         "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                         "tests/integration/driver_vec_let.c %s runtime/parena_runtime.c 2>&1",
+                         bin_path9, c_path9);
+                int compile_status9 = system(cmd9);
+                CHECK(compile_status9 == 0,
+                      "the real vec generated C compiles clean under gcc -std=c99 -Wall -Wextra "
+                      "-pedantic -Werror, linked against driver_vec_let.c");
+                if (compile_status9 == 0) {
+                    int run_status9 = system(bin_path9);
+                    CHECK(run_status9 == 0,
+                          "the real, self-compiled vec-len-of-new genuinely returns 0 (a freshly "
+                          "vec/new'd Vec's real length), proving vec/new -> vec/len round-trips "
+                          "correctly through real, self-hosted C -- not just gcc-clean, "
+                          "unexercised text");
+                }
+                remove(c_path9);
+                remove(bin_path9);
+            }
         }
     }
 
@@ -785,7 +863,7 @@ int main(int argc, char **argv) {
             Node program10 = *(Node *)pr10.value;
             char *generated10 = emit_program(&program10, &a);
             if (generated10) {
-                char c_path2[] = "/tmp/parena_selfhost_emit_arith_test_XXXXXX.c";
+                char c_path2[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path2, sizeof c_path2, "/tmp/parena_selfhost_emit_arith_test_%d.c", (int)getpid());
                 FILE *out2 = fopen(c_path2, "w");
                 CHECK(out2 != NULL, "a real temp file opens to write the binary-op generated C into");
@@ -850,7 +928,7 @@ int main(int argc, char **argv) {
                   "condition check, and its own literal result is correctly boxed");
 
             if (generated11) {
-                char c_path3[] = "/tmp/parena_selfhost_emit_cond_test_XXXXXX.c";
+                char c_path3[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path3, sizeof c_path3, "/tmp/parena_selfhost_emit_cond_test_%d.c", (int)getpid());
                 FILE *out3 = fopen(c_path3, "w");
                 CHECK(out3 != NULL, "a real temp file opens to write the cond generated C into");
@@ -944,7 +1022,7 @@ int main(int argc, char **argv) {
                   "a real 'not' test emits real C '!', its own operand a real comparison");
 
             if (generated13) {
-                char c_path4[] = "/tmp/parena_selfhost_emit_boolexpr_test_XXXXXX.c";
+                char c_path4[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path4, sizeof c_path4, "/tmp/parena_selfhost_emit_boolexpr_test_%d.c", (int)getpid());
                 FILE *out4 = fopen(c_path4, "w");
                 CHECK(out4 != NULL, "a real temp file opens to write the or/and/not generated C into");
@@ -1009,7 +1087,7 @@ int main(int argc, char **argv) {
                   "call site");
 
             if (generated14) {
-                char c_path5[] = "/tmp/parena_selfhost_emit_predcond_test_XXXXXX.c";
+                char c_path5[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path5, sizeof c_path5, "/tmp/parena_selfhost_emit_predcond_test_%d.c", (int)getpid());
                 FILE *out5 = fopen(c_path5, "w");
                 CHECK(out5 != NULL, "a real temp file opens to write the predicate-cond generated C into");
@@ -1092,7 +1170,7 @@ int main(int argc, char **argv) {
                   "position alone");
 
             if (generated15) {
-                char c_path6[] = "/tmp/parena_selfhost_emit_defstruct_test_XXXXXX.c";
+                char c_path6[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path6, sizeof c_path6, "/tmp/parena_selfhost_emit_defstruct_test_%d.c", (int)getpid());
                 FILE *out6 = fopen(c_path6, "w");
                 CHECK(out6 != NULL, "a real temp file opens to write the defstruct generated C into");
@@ -1165,7 +1243,7 @@ int main(int argc, char **argv) {
                   "real, boxed C, not a clean #error");
 
             if (generated16) {
-                char c_path7[] = "/tmp/parena_selfhost_emit_boolbody_test_XXXXXX.c";
+                char c_path7[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path7, sizeof c_path7, "/tmp/parena_selfhost_emit_boolbody_test_%d.c", (int)getpid());
                 FILE *out7 = fopen(c_path7, "w");
                 CHECK(out7 != NULL, "a real temp file opens to write the bool-body generated C into");
@@ -1245,7 +1323,7 @@ int main(int argc, char **argv) {
                   "the Err clause's own payload binding 'e' is a real, block-scoped 'void *' local");
 
             if (generated17) {
-                char c_path8[] = "/tmp/parena_selfhost_emit_match_test_XXXXXX.c";
+                char c_path8[80]; /* S501: widened from an exact-fit literal, see c_path\'s own header comment above */
                 snprintf(c_path8, sizeof c_path8, "/tmp/parena_selfhost_emit_match_test_%d.c",
                          (int)getpid());
                 FILE *out8 = fopen(c_path8, "w");

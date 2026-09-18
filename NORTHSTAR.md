@@ -1881,6 +1881,68 @@ and the base-case tail comparison, all previously named as open gaps, all closed
 the file's own only real remaining holdout, still blocked by its own separate, permanent
 `vec/`-qualified-call-as-a-let-value exclusion (unrelated to any of this session's fixes).
 
+**Real ninth step (2026-09-18, S501, founder real-time: "work on PARENA self host and PARENA
+LLVM") — the "permanent" `vec/`-qualified-call exclusion above turned out to be a real, honest
+OVER-conservatism, not an actual architectural requirement, and is now CLOSED.** Checked directly
+against the real C reference (`src/emit.c`'s own `mangle_call_name`) rather than trusting this
+file's own prior header comments: the C reference does NOT need a `find_defn_return_type`-backed
+registry to handle `vec/`-qualified calls safely — it just skips its own bare-last-segment-
+stripping fallback for them (the thing that WOULD need a registry, for genuinely ambiguous
+qualified names) and mangles the FULL text instead (`vec/new` → `vec_new`), trusting that `vec` is
+a real, hardcoded runtime pseudo-module with no corresponding `.prn` file whose own exported names
+could ever collide with it. This narrow emitter's own `mangle`/`mangle-char` already handle `/`
+identically to the C reference (confirmed directly, not assumed). Found live via the real true-
+bootstrap test (`parena-selfhost build`-ing `selfhost/lexer.prn` and its own real dependency chain
+— `stdlib/string.prn`/`array.prn`/`io.prn` — THROUGH `parena-selfhost` itself, not just the
+original C compiler): `stdlib/array.prn`'s real `product`/`zeros`/`strides-for` and
+`stdlib/string.prn`'s own `split` were the dominant remaining blockers, ALL let-binding
+`(vec/new ...)`/`(vec/len ...)` calls.
+
+Real fix, three parts: (1) `mangle-call-name` now special-cases `vec/`-prefixed names to skip
+bare-segment stripping (mirroring `mangle_call_name` exactly); (2) `plain-call-shaped?`'s own
+`is-vec-call?` exclusion removed — `vec/`-qualified calls are now real, ordinary plain calls,
+subject to the same argument-shape checks as any other; (3) two real, narrow, ADDITIONAL fixes
+found necessary by actually compiling the result, not assumed sufficient from (1)+(2) alone: a
+plain call to `vec/len` now gets the same `emit-i32-boxed` treatment binary-ops/bool-exprs already
+get as a let-value (its real C return is a raw `int`, unlike a user-defined PARENA function whose
+own return is already boxed `char *` at ITS OWN definition — the assumption every other plain-call
+let-value already relied on, which doesn't hold for this one real runtime primitive), and a
+let-binding whose value is `(vec/new ...)` now declares its own local as a real `Vec` (a genuine
+struct-by-value return, runtime/parena_runtime.h's own `Vec vec_new(Arena*)`) instead of this
+file's otherwise-uniform `char *` — a real, genuine C type-mismatch this file's own generic
+plain-call path would otherwise silently produce, caught by actually gcc-compiling the result, not
+trusted on the strength of a clean `parena build` exit code alone. `vec/get`'s own real `void *`
+return needed no special case (implicitly pointer-compatible with `char *` under plain C's own
+conversion rules). `vec/push!`/`vec/set-at!` (void-returning) as a LET-VALUE specifically remain a
+real, narrow, honestly-named, NOT-yet-guarded gap — not hit by any currently-real case (their own
+real use is always a bare, sequenced statement, which needs `do`-block support this narrow emitter
+doesn't have at all yet, a real, separate, pre-existing gap unrelated to this fix).
+
+**Real, live-found, independent bug in the test HARNESS itself, found and fixed along the way**:
+`tests/test_selfhost_emit.c`'s own 8 compile+run helpers each declared their temp-file path with
+`char c_pathN[] = "/tmp/..._XXXXXX.c"` — sized EXACTLY to fit the literal at compile time, silently
+assuming `getpid()` would never need more than 6 digits. This session's own real process PID was 7
+digits (Linux's default `pid_max` allows up to 7), so `snprintf` truncated the LAST character of
+every one of these 8 paths to fit the too-small buffer — silently dropping the trailing `c` of
+`.c` and leaving a real file named e.g. `..._2672293.` (no extension) on disk. `gcc` can't infer a
+language from an extensionless file, so it fell through to the linker, which failed with a real,
+initially-confusing `file format not recognized; treating as linker script` error — a real,
+environment-dependent test-harness bug, confirmed via `git stash` to reproduce identically on the
+UNMODIFIED baseline (proving it was pre-existing, not caused by this session's own vec/ fix).
+Fixed by widening all 8 buffers to a generously-sized `char c_pathN[80]` instead of an exact-fit
+literal.
+
+Real, measured progress via the same true-bootstrap self-compile diagnostic used to find this gap
+(`./parena-selfhost build stdlib/string.prn stdlib/array.prn stdlib/io.prn selfhost/lexer.prn`):
+real `#error` directive count dropped from **11 to 3**. The 3 remaining are a real, separate,
+already-named struct-literal-shape gap (`lx-advance`'s own `Lexer`-construction) and one more
+distinct let-binding shape inside `tokenize` — real, honest, not attempted in this pass. 3 new
+real assertions in `tests/test_selfhost_emit.c` (a structural check plus a real compile-and-run
+proof — `vec-len-of-new`, chaining `vec/new` into `vec/len`, genuinely returns 0 through real,
+self-hosted C, not just gcc-clean text) via a new `tests/integration/driver_vec_let.c`. Full local
+suite (347 core tests) + all `test-selfhost-*` targets + `test-emit-llvm` (35/35, confirming zero
+cross-contamination with the LLVM backend) all clean, zero regressions.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression
