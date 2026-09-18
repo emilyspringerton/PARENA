@@ -60,6 +60,7 @@
 #ifndef _WIN32
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -1042,6 +1043,35 @@ static inline long rawsocket_sendto_impl(int fd, const char *data, int len, cons
     return (long)sendto(fd, data, (size_t)len, 0, (struct sockaddr *)&addr, sizeof addr);
 }
 
+/* rawsocket_recvfrom_impl -- (S498, founder real-time: "double down on all the unix socket stuff
+ * and raw socket stuff") the real, missing READ side of a SOCK_RAW socket this SAME process
+ * already opened/sent from -- distinct from `pentest/pcap.prn`'s own promiscuous capture (a
+ * SEPARATE listening path over a whole interface); this is the ordinary "read back whatever the
+ * kernel delivered on MY OWN raw socket" call a raw ICMP ping primitive genuinely needs to read
+ * its own echo reply. Blocks; same real "caller owns its own poll loop" contract
+ * `udp_recv_from_impl` above already established, mirrored here rather than shared since a raw
+ * IPv4 socket's payload already includes the kernel-prepended IP header on receive (even when
+ * IP_HDRINCL suppressed it on SEND -- HDRINCL only ever affects outbound framing, a real, easy-to-
+ * miss asymmetry named here explicitly), which UDP's own payload never has. Fills out_src_ip
+ * (arena-allocated dotted-quad) on success, NULL on error -- same real, accepted
+ * zero-length-datagram-vs-error ambiguity `udp_recv_from_impl` already names. */
+static inline char *rawsocket_recvfrom_impl(int fd, Arena *dest, char **out_src_ip) {
+    char buf[65536];
+    struct sockaddr_in src;
+    socklen_t src_len = sizeof src;
+    ssize_t n = recvfrom(fd, buf, sizeof buf, 0, (struct sockaddr *)&src, &src_len);
+    if (n < 0) return NULL;
+    char ipbuf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &src.sin_addr, ipbuf, sizeof ipbuf);
+    char *ip_out = (char *)arena_alloc(dest, strlen(ipbuf) + 1);
+    strcpy(ip_out, ipbuf);
+    *out_src_ip = ip_out;
+    char *data_out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(data_out, buf, (size_t)n);
+    data_out[n] = '\0';
+    return data_out;
+}
+
 static inline int rawsocket_close_impl(int fd) {
     return close(fd);
 }
@@ -1087,10 +1117,109 @@ static inline long l2socket_send_impl(int fd, const char *data, int len) {
     return (long)send(fd, data, (size_t)len, 0);
 }
 
+/* l2socket_recv_impl -- (S498) the real, missing READ side of an already-open/bound AF_PACKET
+ * socket, same real gap class as rawsocket_recvfrom_impl above, one link layer down: a raw
+ * 802.11/Ethernet frame this socket's own bind(2) interface delivers, no sender-address
+ * out-parameter needed (unlike rawsocket_recvfrom_impl's IPv4 sendto/recvfrom pairing, a bound
+ * AF_PACKET socket's own recv(2) needs no per-call source the way IPv4 does -- the full raw frame
+ * bytes it returns already carry both MAC addresses in their own header, if the caller wants
+ * them). Blocks; same caller-owns-its-own-poll-loop contract as every other *_recv_impl here. */
+static inline char *l2socket_recv_impl(int fd, Arena *dest) {
+    char buf[65536];
+    ssize_t n = recv(fd, buf, sizeof buf, 0);
+    if (n < 0) return NULL;
+    char *data_out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(data_out, buf, (size_t)n);
+    data_out[n] = '\0';
+    return data_out;
+}
+
 static inline int l2socket_close_impl(int fd) {
     return close(fd);
 }
 #endif
+
+/* ---- stdlib/net/unixsocket.prn real host glue (2026-09-18, S498) ------
+ * Founder real-time: "double down on all the unix socket stuff and raw socket stuff." Checked
+ * reality first: this runtime had `AF_INET`-only stream/datagram sockets (`net/tcp.prn`,
+ * `net/udp.prn`) plus `AF_INET`/`AF_PACKET` raw sockets (`net/rawsocket.prn`/`net/l2socket.prn`)
+ * -- genuinely zero `AF_UNIX` support anywhere, a real, clean gap, not a partial one. Stream-only
+ * (`SOCK_STREAM`) v0, mirroring `net/tcp.prn`'s own already-established connect/listen/accept/
+ * read/write/close shape exactly -- `SOCK_DGRAM` AF_UNIX is a real, separate, still-open v1 gap,
+ * named rather than silently added on top (the read/write side would need `udp.prn`'s own
+ * sendto/recvfrom shape instead of this file's plain send/recv, a genuinely different API).
+ *
+ * unixsocket_listen_impl deliberately does NOT unconditionally unlink(path) before bind(2) --
+ * that would silently steal the path out from under a real, live, already-listening peer process.
+ * A first draft tried to actively PROBE whether an existing socket file was stale (connect(2) to
+ * it; ECONNREFUSED means no live listener owns it, safe to unlink and retry) -- found live, by
+ * this file's own real end-to-end test, to have a genuinely worse real bug than the one it was
+ * solving: if the path IS live, that probe's own connect(2) call itself creates a real, completed
+ * connection sitting in the LIVE listener's own accept(2) backlog queue, immediately abandoned
+ * (the probe closes right after) -- the live listener's next real accept(2) call gets this
+ * spurious, instant-EOF connection instead of (or ahead of) a genuine client's, corrupting real
+ * FIFO accept order for a process this runtime has no business ever touching. There is no way to
+ * check "is anything listening on this Unix domain path" without EITHER unlinking blind (steals a
+ * live path) OR forming a real connection as a side effect (pollutes a live listener's backlog) --
+ * genuinely not solvable cleanly at this layer. Real, honest, deliberately SIMPLER v0 instead:
+ * bind(2) either succeeds or it doesn't; on EADDRINUSE this just fails, honestly, as
+ * AddressInUse. A caller that KNOWS a path is stale (e.g. its own prior clean-shutdown left the
+ * file behind) is responsible for unlink(path)-ing it itself before calling unix-listen again --
+ * a real, named, deliberate scope cut, not a silently-missing feature. */
+static inline int unixsocket_connect_impl(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(addr.sun_path)) { close(fd); return -1; }
+    strcpy(addr.sun_path, path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static inline int unixsocket_listen_impl(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(addr.sun_path)) { close(fd); return -1; }
+    strcpy(addr.sun_path, path);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
+    if (listen(fd, 16) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static inline int unixsocket_accept_impl(int listener_fd) {
+    return accept(listener_fd, NULL, NULL);
+}
+
+/* unixsocket_read_impl -- deliberately the SAME simple, one-shot-recv-up-to-64KB shape
+ * `udp_recv_from_impl` above uses, NOT `tcp_read_impl`'s own read-until-EOF-or-Content-Length
+ * loop -- a Unix domain stream socket is byte-stream-shaped like TCP, but this v0's real intended
+ * use (a local IPC control/request-response channel, the standard real reason to reach for
+ * AF_UNIX over AF_INET loopback) doesn't need HTTP-style framing awareness, and reusing tcp_read_
+ * impl's own HTTP-specific Content-Length parsing here would be actively wrong for a non-HTTP
+ * payload. A real, honest v1 gap for a caller that needs multi-recv-call message reassembly,
+ * named rather than silently assumed away. */
+static inline char *unixsocket_read_impl(int fd, Arena *dest) {
+    char buf[65536];
+    ssize_t n = recv(fd, buf, sizeof buf, 0);
+    if (n < 0) return NULL;
+    char *data_out = (char *)arena_alloc(dest, (size_t)n + 1);
+    memcpy(data_out, buf, (size_t)n);
+    data_out[n] = '\0';
+    return data_out;
+}
+
+static inline long unixsocket_write_impl(int fd, const char *data) {
+    return (long)send(fd, data, strlen(data), 0);
+}
+
+static inline int unixsocket_close_impl(int fd) {
+    return close(fd);
+}
 
 /* ---- stdlib/coreutils/pwd.prn real host glue (2026-09-08) -------------
  * Real getcwd(3) call for the PARENA-powered busybox's own `pwd` applet

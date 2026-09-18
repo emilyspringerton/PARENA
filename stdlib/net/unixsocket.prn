@@ -1,0 +1,113 @@
+;; stdlib/net/unixsocket.prn — depends on string. Design: STDLIB.md "net/unixsocket" section.
+;;
+;; Real trigger (S498, 2026-09-18): founder real-time, "we need to put in PARENA primatives for
+;; MSSQL and double down on all the unix socket stuff and raw socket stuff." Checked reality
+;; first: `net/tcp.prn`/`net/udp.prn` are AF_INET-only, `net/rawsocket.prn`/`net/l2socket.prn` are
+;; AF_INET/AF_PACKET raw sockets — genuinely zero AF_UNIX support anywhere in this stdlib before
+;; this file, a real, clean gap. This is the real, missing local-IPC primitive: a Unix domain
+;; stream socket, the standard choice for same-host process-to-process control/request-response
+;; channels (no network stack overhead, filesystem-permission-gated instead of port-gated).
+;;
+;; Deliberately mirrors `net/tcp.prn`'s own already-established connect/listen/accept/read/write/
+;; close shape exactly, same `-`-prefixed public-name convention (avoiding the exact same real
+;; libc-identifier collision `net/tcp.prn`'s own header comment already documents for bare
+;; `connect`/`listen`/`accept`/`read`/`write`/`close`).
+;;
+;; Real, honest v0 boundary, named explicitly: `SOCK_STREAM` only. `SOCK_DGRAM` AF_UNIX (a real,
+;; genuinely different API shape — send-to/recv-from a path, no connect/accept) is a separate, not
+;; yet built v1 gap. `unix-read` is a single recv(2) call per invocation (same simple shape
+;; `net/udp.prn`'s own `udp-recv-from` already uses), NOT `net/tcp.prn`'s own HTTP-aware
+;; Content-Length-tracking read loop — reusing that here would be actively wrong for a non-HTTP
+;; local IPC payload. A caller needing multi-message reassembly across several `unix-read` calls
+;; is a real, separate, not-yet-solved need.
+
+(module net/unixsocket)
+(import string)
+(export unix-listen unix-accept unix-connect unix-read unix-write unix-close
+        UnixListener UnixStream UnixSocketError)
+
+(defstruct UnixListener
+  (fd : I32))
+
+(defstruct UnixStream
+  (fd : I32))
+
+(defenum UnixSocketError
+  (ConnectionRefused) ;; no listener at that path (ENOENT/ECONNREFUSED)
+  (AddressInUse)       ;; a real, live listener already owns that path
+  (Other))
+
+;; ---- raw syscall primitives -- the only #target bodies in this file, each a single C
+;; expression against runtime/parena_runtime.h's own unixsocket_*_impl functions, no boxing --
+;; same real shape net/tcp.prn's own raw-* primitives already established.
+
+(defn raw-connect [(path : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "unixsocket_connect_impl(path)")})
+
+(defn raw-listen [(path : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "unixsocket_listen_impl(path)")})
+
+(defn raw-accept [(listener-fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "unixsocket_accept_impl(listener_fd)")})
+
+(defn raw-read [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "unixsocket_read_impl(fd, dest)")})
+
+(defn raw-write [(fd : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "unixsocket_write_impl(fd, data)")})
+
+(defn raw-close [(fd : I32)]
+  : I32
+  #target
+  {:c (inline-c "unixsocket_close_impl(fd)")})
+
+;; unix-connect -- errno isn't inspected here (same real, honest, coarser-signal choice
+;; net/tcp.prn's own tcp-connect already made for the identical real reason: a plain connect(2)
+;; failure against a Unix socket path collapses ENOENT/ECONNREFUSED into one real, honest
+;; ConnectionRefused, not a fake finer distinction).
+(defn unix-connect [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result UnixStream UnixSocketError) @ Region
+  (let [fd (raw-connect path)]
+    (if (< fd 0)
+      (Err ConnectionRefused)
+      (Ok {:fd fd}))))
+
+(defn unix-listen [(path : String @ :region/scratch) (dest : Arena @ Region)]
+  : (Result UnixListener UnixSocketError) @ Region
+  (let [fd (raw-listen path)]
+    (if (< fd 0)
+      (Err AddressInUse)
+      (Ok {:fd fd}))))
+
+(defn unix-accept [(!l : &UnixListener) (dest : Arena @ Region)]
+  : (Result UnixStream UnixSocketError) @ Region
+  (let [fd (raw-accept (get-field !l :fd))]
+    (if (< fd 0)
+      (Err Other)
+      (Ok {:fd fd}))))
+
+(defn unix-read [(!s : &mut UnixStream) (dest : Arena @ Region)]
+  : (Result String UnixSocketError) @ Region
+  (Ok (raw-read (get-field !s :fd) dest)))
+
+(defn unix-write [(!s : &mut UnixStream) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 UnixSocketError) @ Region
+  (if (< (raw-write (get-field !s :fd) data) 0)
+    (Err Other)
+    (Ok 0)))
+
+(defn unix-close [(!s : &mut UnixStream) (dest : Arena @ Region)]
+  : (Result Unit UnixSocketError) @ Region
+  (if (< (raw-close (get-field !s :fd)) 0)
+    (Err Other)
+    (Ok unit)))

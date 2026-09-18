@@ -23,17 +23,28 @@ static inline __attribute__((unused)) RawSocket RawSocket_new(int fd) {
     return v;
 }
 
+typedef struct {
+    char * host;
+} RawSocketAddr;
+static inline __attribute__((unused)) RawSocketAddr RawSocketAddr_new(char * host) {
+    RawSocketAddr v;
+    v.host = host;
+    return v;
+}
+
 typedef enum {
     RawSocketError_TAG_PermissionDenied,
     RawSocketError_TAG_OpenFailed,
     RawSocketError_TAG_SetOptFailed,
     RawSocketError_TAG_SendFailed,
+    RawSocketError_TAG_RecvFailed,
 } RawSocketError_Tag;
 typedef struct { RawSocketError_Tag tag; void *value; } RawSocketError;
 static inline __attribute__((unused)) RawSocketError RawSocketError_PermissionDenied(void) { RawSocketError v; v.tag = RawSocketError_TAG_PermissionDenied; v.value = NULL; return v; }
 static inline __attribute__((unused)) RawSocketError RawSocketError_OpenFailed(void) { RawSocketError v; v.tag = RawSocketError_TAG_OpenFailed; v.value = NULL; return v; }
 static inline __attribute__((unused)) RawSocketError RawSocketError_SetOptFailed(void) { RawSocketError v; v.tag = RawSocketError_TAG_SetOptFailed; v.value = NULL; return v; }
 static inline __attribute__((unused)) RawSocketError RawSocketError_SendFailed(void) { RawSocketError v; v.tag = RawSocketError_TAG_SendFailed; v.value = NULL; return v; }
+static inline __attribute__((unused)) RawSocketError RawSocketError_RecvFailed(void) { RawSocketError v; v.tag = RawSocketError_TAG_RecvFailed; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);
@@ -57,12 +68,14 @@ int raw_errno();
 int raw_open_proto(int);
 int raw_set_hdrincl(int);
 int raw_sendto(int, char *, int, char *);
+char * raw_recvfrom(int, Arena *, char * *);
 int raw_close(int);
 RawSocketError errno_to_rawsocket_error(int);
 Result raw_ip4_open(int, Arena *);
 Result raw_hdrincl_enable(RawSocket *, Arena *);
 Result raw_ip4_open_hdrincl(Arena *);
 Result raw_ip4_send(RawSocket *, char *, int, char *, Arena *);
+Result raw_ip4_recv(RawSocket *, Arena *, RawSocketAddr *);
 Result raw_ip4_close(RawSocket *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
@@ -240,6 +253,10 @@ int raw_sendto(int fd __attribute__((unused)), char * data __attribute__((unused
     return (rawsocket_sendto_impl(fd, data, data_len, dest_ip));
 }
 
+char * raw_recvfrom(int fd __attribute__((unused)), Arena *dest __attribute__((unused)), char * * out_src_ip __attribute__((unused))) {
+    return (rawsocket_recvfrom_impl(fd, dest, out_src_ip));
+}
+
 int raw_close(int fd __attribute__((unused))) {
     return (rawsocket_close_impl(fd));
 }
@@ -294,6 +311,15 @@ Result raw_ip4_send(RawSocket * s __attribute__((unused)), char * data __attribu
     return result_err(RawSocketError_box(dest, RawSocketError_SendFailed()));
     } else {
     return result_ok(int_box(dest, n));
+    }
+}
+
+Result raw_ip4_recv(RawSocket * s __attribute__((unused)), Arena *dest __attribute__((unused)), RawSocketAddr * out_addr __attribute__((unused))) {
+    char *data __attribute__((unused)) = raw_recvfrom((s)->fd, dest, &((out_addr)->host));
+    if (str_eq_(data, "")) {
+    return result_err(RawSocketError_box(dest, RawSocketError_RecvFailed()));
+    } else {
+    return result_ok(data);
     }
 }
 

@@ -77,6 +77,15 @@ int main(void) {
     printf("PASS: a real, invalid dest-ip string is rejected before any real send attempt, "
            "regardless of privilege\n");
 
+    /* S498 (founder real-time: "double down on all the unix socket stuff and raw socket
+     * stuff") -- raw-ip4-recv's own real, privilege-independent failure path: recvfrom(2)
+     * against a genuinely invalid fd always fails, regardless of CAP_NET_RAW. */
+    char *bad_src_ip = NULL;
+    char *bad_recv = rawsocket_recvfrom_impl(-1, &arena, &bad_src_ip);
+    assert(bad_recv == NULL);
+    printf("PASS: rawsocket_recvfrom_impl correctly reports failure on an invalid fd, "
+           "independent of any real socket privilege\n");
+
     printf("test_net_rawsocket: all real assertions passed\n");
     return 0;
 }

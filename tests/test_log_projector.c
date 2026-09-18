@@ -8,6 +8,9 @@
  * a real, live shell round trip through project-sqlite!/project-mysql! themselves -- shimmed via
  * a real, temporary PATH directory holding stand-in `sqlite3`/`mysql` scripts, so the exact real
  * command construction (`sqlite3 <db> "<sql>"`) is exercised end-to-end, not just its own text.
+ *
+ * S498 (2026-09-18) added the same real, stub-shell round trip for project-mssql! (a stand-in
+ * `tsql`, piped via stdin instead of an argument -- see log/projector.prn's own header comment).
  */
 #include "parena_runtime.h"
 #include <assert.h>
@@ -125,6 +128,73 @@ int main(void) {
 
     setenv("PATH", old_path, 1);
     unlink(out_path);
+
+    /* ---- MSSQL (S498, 2026-09-18, founder real-time: "we need to put in PARENA primatives for
+     * MSSQL and double down on all the unix socket stuff and raw socket stuff") -- real T-SQL DDL
+     * text, real shell-quoted tsql connect command, and a real live stub-`tsql`-via-stdin round
+     * trip, same technique as the sqlite3/mysql checks above but through run-sql-via-stdin
+     * instead of run-sql-via (tsql has no -e/-c one-shot-SQL flag -- see log/projector.prn's own
+     * header comment for the full real reasoning). */
+    assert(strcmp(events_table_ddl_mssql(),
+        "IF OBJECT_ID('events', 'U') IS NULL CREATE TABLE events (kind VARCHAR(MAX) NOT NULL, "
+        "id VARCHAR(MAX) NOT NULL, op VARCHAR(MAX) NOT NULL, fields VARCHAR(MAX) NOT NULL, "
+        "ts INTEGER NOT NULL);") == 0);
+    printf("PASS: real T-SQL DDL text is correct (no CREATE TABLE IF NOT EXISTS -- T-SQL has no "
+           "such syntax, a real dialect difference from the shared events_table_ddl above)\n");
+
+    char *mssql_prefix = tsql_connect_prefix((char *)"sqlhost", 1433, (char *)"sa",
+                                              (char *)"p@ss'word", (char *)"shithub", &arena);
+    assert(strstr(mssql_prefix, "tsql -S 'sqlhost'") != NULL);
+    assert(strstr(mssql_prefix, "-p 1433") != NULL);
+    assert(strstr(mssql_prefix, "-U 'sa'") != NULL);
+    assert(strstr(mssql_prefix, "-P 'p@ss'\\''word'") != NULL); /* embedded quote shell-escaped */
+    assert(strstr(mssql_prefix, "-D 'shithub'") != NULL);
+    printf("PASS: tsql-connect-prefix builds a correctly shell-quoted command\n");
+
+    const char *mssql_bindir = "/tmp/test_log_projector_mssql_stubs";
+    mkdir(mssql_bindir, 0755);
+    const char *mssql_out_path = "/tmp/test_log_projector_mssql_stub_out.txt";
+    unlink(mssql_out_path);
+
+    char mssql_stub_path[256];
+    snprintf(mssql_stub_path, sizeof(mssql_stub_path), "%s/tsql", mssql_bindir);
+    char mssql_stub_body[512];
+    snprintf(mssql_stub_body, sizeof(mssql_stub_body), "#!/bin/sh\ncat > %s\nexit 0\n",
+             mssql_out_path);
+    write_stub(mssql_stub_path, mssql_stub_body);
+
+    char mssql_new_path[8192 + 64];
+    snprintf(mssql_new_path, sizeof(mssql_new_path), "%s:%s", mssql_bindir, old_path);
+    setenv("PATH", mssql_new_path, 1);
+
+    Result mr = project_mssql_((char *)"127.0.0.1", 1433, (char *)"sa", (char *)"pw",
+                                (char *)"shithub", &e1, &arena);
+    assert(mr.tag == 1);
+
+    FILE *mssql_out = fopen(mssql_out_path, "r");
+    assert(mssql_out != NULL);
+    char mssql_buf[4096];
+    size_t mssql_n = fread(mssql_buf, 1, sizeof(mssql_buf) - 1, mssql_out);
+    mssql_buf[mssql_n] = '\0';
+    fclose(mssql_out);
+    /* Proves the SQL was piped via stdin (not passed as a CLI argument the way the other three
+     * backends receive it), and that a real T-SQL GO batch terminator is present. */
+    assert(strstr(mssql_buf, "IF OBJECT_ID('events', 'U') IS NULL") != NULL);
+    assert(strstr(mssql_buf, "INSERT INTO events") != NULL);
+    assert(strstr(mssql_buf, "repo-1") != NULL);
+    assert(strstr(mssql_buf, "\nGO\n") != NULL);
+    printf("PASS: project-mssql! pipes real SQL (DDL+INSERT+GO) via stdin to tsql, not as an "
+           "argument\n");
+
+    write_stub(mssql_stub_path, "#!/bin/sh\ncat > /dev/null\nexit 1\n");
+    Result mr2 = project_mssql_((char *)"127.0.0.1", 1433, (char *)"sa", (char *)"pw",
+                                 (char *)"shithub", &e1, &arena);
+    assert(mr2.tag == 0);
+    printf("PASS: a real, nonzero tsql exit code is correctly reported as Err\n");
+
+    setenv("PATH", old_path, 1);
+    unlink(mssql_out_path);
+
     printf("test_log_projector: all assertions passed\n");
     return 0;
 }

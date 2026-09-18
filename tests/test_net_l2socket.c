@@ -56,6 +56,14 @@ int main(void) {
     printf("PASS: l2socket_bind_impl's own real, distinct -2 'no such interface' signal fires "
            "correctly, independent of any real socket privilege\n");
 
+    /* S498 (founder real-time: "double down on all the unix socket stuff and raw socket
+     * stuff") -- l2-recv's own real, privilege-independent failure path: recv(2) against a
+     * genuinely invalid fd always fails, regardless of CAP_NET_RAW. */
+    char *bad_recv = l2socket_recv_impl(-1, &arena);
+    assert(bad_recv == NULL);
+    printf("PASS: l2socket_recv_impl correctly reports failure on an invalid fd, independent "
+           "of any real socket privilege\n");
+
     printf("test_net_l2socket: all real assertions passed\n");
     return 0;
 }

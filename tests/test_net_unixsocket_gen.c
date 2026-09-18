@@ -16,28 +16,31 @@ static inline __attribute__((unused)) ParseError ParseError_new(char * message) 
 
 typedef struct {
     int fd;
-} L2Socket;
-static inline __attribute__((unused)) L2Socket L2Socket_new(int fd) {
-    L2Socket v;
+} UnixListener;
+static inline __attribute__((unused)) UnixListener UnixListener_new(int fd) {
+    UnixListener v;
+    v.fd = fd;
+    return v;
+}
+
+typedef struct {
+    int fd;
+} UnixStream;
+static inline __attribute__((unused)) UnixStream UnixStream_new(int fd) {
+    UnixStream v;
     v.fd = fd;
     return v;
 }
 
 typedef enum {
-    L2Error_TAG_PermissionDenied,
-    L2Error_TAG_OpenFailed,
-    L2Error_TAG_InterfaceNotFound,
-    L2Error_TAG_BindFailed,
-    L2Error_TAG_SendFailed,
-    L2Error_TAG_RecvFailed,
-} L2Error_Tag;
-typedef struct { L2Error_Tag tag; void *value; } L2Error;
-static inline __attribute__((unused)) L2Error L2Error_PermissionDenied(void) { L2Error v; v.tag = L2Error_TAG_PermissionDenied; v.value = NULL; return v; }
-static inline __attribute__((unused)) L2Error L2Error_OpenFailed(void) { L2Error v; v.tag = L2Error_TAG_OpenFailed; v.value = NULL; return v; }
-static inline __attribute__((unused)) L2Error L2Error_InterfaceNotFound(void) { L2Error v; v.tag = L2Error_TAG_InterfaceNotFound; v.value = NULL; return v; }
-static inline __attribute__((unused)) L2Error L2Error_BindFailed(void) { L2Error v; v.tag = L2Error_TAG_BindFailed; v.value = NULL; return v; }
-static inline __attribute__((unused)) L2Error L2Error_SendFailed(void) { L2Error v; v.tag = L2Error_TAG_SendFailed; v.value = NULL; return v; }
-static inline __attribute__((unused)) L2Error L2Error_RecvFailed(void) { L2Error v; v.tag = L2Error_TAG_RecvFailed; v.value = NULL; return v; }
+    UnixSocketError_TAG_ConnectionRefused,
+    UnixSocketError_TAG_AddressInUse,
+    UnixSocketError_TAG_Other,
+} UnixSocketError_Tag;
+typedef struct { UnixSocketError_Tag tag; void *value; } UnixSocketError;
+static inline __attribute__((unused)) UnixSocketError UnixSocketError_ConnectionRefused(void) { UnixSocketError v; v.tag = UnixSocketError_TAG_ConnectionRefused; v.value = NULL; return v; }
+static inline __attribute__((unused)) UnixSocketError UnixSocketError_AddressInUse(void) { UnixSocketError v; v.tag = UnixSocketError_TAG_AddressInUse; v.value = NULL; return v; }
+static inline __attribute__((unused)) UnixSocketError UnixSocketError_Other(void) { UnixSocketError v; v.tag = UnixSocketError_TAG_Other; v.value = NULL; return v; }
 
 int length(char *);
 int char_at(char *, int);
@@ -54,18 +57,18 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
-int raw_errno();
-int raw_l2_open();
-int raw_l2_bind(int, char *);
-int raw_l2_send(int, char *, int);
-char * raw_l2_recv(int, Arena *);
-int raw_l2_close(int);
-L2Error errno_to_l2_error(int);
-Result l2_open(Arena *);
-Result l2_bind(L2Socket *, char *, Arena *);
-Result l2_send(L2Socket *, char *, int, Arena *);
-Result l2_recv(L2Socket *, Arena *);
-Result l2_close(L2Socket *, Arena *);
+int raw_connect(char *);
+int raw_listen(char *);
+int raw_accept(int);
+char * raw_read(int, Arena *);
+int raw_write(int, char *);
+int raw_close(int);
+Result unix_connect(char *, Arena *);
+Result unix_listen(char *, Arena *);
+Result unix_accept(UnixListener *, Arena *);
+Result unix_read(UnixStream *, Arena *);
+Result unix_write(UnixStream *, char *, Arena *);
+Result unix_close(UnixStream *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -79,14 +82,14 @@ static inline ParseError *ParseError_box(Arena *dest, ParseError v) {
     return p;
 }
 
-static inline L2Error *L2Error_box(Arena *dest, L2Error v) {
-    L2Error *p = (L2Error *)arena_alloc(dest, sizeof(L2Error));
+static inline UnixSocketError *UnixSocketError_box(Arena *dest, UnixSocketError v) {
+    UnixSocketError *p = (UnixSocketError *)arena_alloc(dest, sizeof(UnixSocketError));
     *p = v;
     return p;
 }
 
-static inline L2Socket *L2Socket_box(Arena *dest, L2Socket v) {
-    L2Socket *p = (L2Socket *)arena_alloc(dest, sizeof(L2Socket));
+static inline UnixStream *UnixStream_box(Arena *dest, UnixStream v) {
+    UnixStream *p = (UnixStream *)arena_alloc(dest, sizeof(UnixStream));
     *p = v;
     return p;
 }
@@ -214,81 +217,72 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
-int raw_errno(void) {
-    return (errno);
+int raw_connect(char * path __attribute__((unused))) {
+    return (unixsocket_connect_impl(path));
 }
 
-int raw_l2_open(void) {
-    return (l2socket_open_impl());
+int raw_listen(char * path __attribute__((unused))) {
+    return (unixsocket_listen_impl(path));
 }
 
-int raw_l2_bind(int fd __attribute__((unused)), char * iface __attribute__((unused))) {
-    return (l2socket_bind_impl(fd, iface));
+int raw_accept(int listener_fd __attribute__((unused))) {
+    return (unixsocket_accept_impl(listener_fd));
 }
 
-int raw_l2_send(int fd __attribute__((unused)), char * data __attribute__((unused)), int len __attribute__((unused))) {
-    return (l2socket_send_impl(fd, data, len));
+char * raw_read(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (unixsocket_read_impl(fd, dest));
 }
 
-char * raw_l2_recv(int fd __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    return (l2socket_recv_impl(fd, dest));
+int raw_write(int fd __attribute__((unused)), char * data __attribute__((unused))) {
+    return (unixsocket_write_impl(fd, data));
 }
 
-int raw_l2_close(int fd __attribute__((unused))) {
-    return (l2socket_close_impl(fd));
+int raw_close(int fd __attribute__((unused))) {
+    return (unixsocket_close_impl(fd));
 }
 
-L2Error errno_to_l2_error(int e __attribute__((unused))) {
-    if ((e == 1)) {
-    return L2Error_PermissionDenied();
-    } else {
-    return L2Error_OpenFailed();
-    }
-}
-
-Result l2_open(Arena *dest __attribute__((unused))) {
-    int fd __attribute__((unused)) = raw_l2_open();
+Result unix_connect(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int fd __attribute__((unused)) = raw_connect(path);
     if ((fd < 0)) {
-    return result_err(L2Error_box(dest, errno_to_l2_error(raw_errno())));
+    return result_err(UnixSocketError_box(dest, UnixSocketError_ConnectionRefused()));
     } else {
-    return result_ok(L2Socket_box(dest, L2Socket_new(fd)));
+    return result_ok(UnixStream_box(dest, UnixStream_new(fd)));
     }
 }
 
-Result l2_bind(L2Socket * s __attribute__((unused)), char * iface __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int rc __attribute__((unused)) = raw_l2_bind((s)->fd, iface);
-    if ((rc >= 0)) {
-    return result_ok(NULL);
+Result unix_listen(char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int fd __attribute__((unused)) = raw_listen(path);
+    if ((fd < 0)) {
+    return result_err(UnixSocketError_box(dest, UnixSocketError_AddressInUse()));
     } else {
-    if ((rc == -2)) {
-    return result_err(L2Error_box(dest, L2Error_InterfaceNotFound()));
-    } else {
-    return result_err(L2Error_box(dest, L2Error_BindFailed()));
-    }
+    return result_ok(UnixStream_box(dest, UnixStream_new(fd)));
     }
 }
 
-Result l2_send(L2Socket * s __attribute__((unused)), char * data __attribute__((unused)), int data_len __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int n __attribute__((unused)) = raw_l2_send((s)->fd, data, data_len);
-    if ((n < 0)) {
-    return result_err(L2Error_box(dest, L2Error_SendFailed()));
+Result unix_accept(UnixListener * l __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int fd __attribute__((unused)) = raw_accept((l)->fd);
+    if ((fd < 0)) {
+    return result_err(UnixSocketError_box(dest, UnixSocketError_Other()));
     } else {
-    return result_ok(int_box(dest, n));
+    return result_ok(UnixStream_box(dest, UnixStream_new(fd)));
     }
 }
 
-Result l2_recv(L2Socket * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *data __attribute__((unused)) = raw_l2_recv((s)->fd, dest);
-    if (str_eq_(data, "")) {
-    return result_err(L2Error_box(dest, L2Error_RecvFailed()));
+Result unix_read(UnixStream * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return result_ok(raw_read((s)->fd, dest));
+}
+
+Result unix_write(UnixStream * s __attribute__((unused)), char * data __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((raw_write((s)->fd, data) < 0)) {
+    return result_err(UnixSocketError_box(dest, UnixSocketError_Other()));
     } else {
-    return result_ok(data);
+    return result_ok(int_box(dest, 0));
     }
 }
 
-Result l2_close(L2Socket * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    if ((raw_l2_close((s)->fd) < 0)) {
-    return result_err(L2Error_box(dest, L2Error_SendFailed()));
+Result unix_close(UnixStream * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((raw_close((s)->fd) < 0)) {
+    return result_err(UnixSocketError_box(dest, UnixSocketError_Other()));
     } else {
     return result_ok(NULL);
     }

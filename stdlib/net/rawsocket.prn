@@ -35,20 +35,30 @@
 
 (module net/rawsocket)
 (import string)
-(export raw-ip4-open raw-hdrincl-enable raw-ip4-open-hdrincl raw-ip4-send raw-ip4-close
-        RawSocket RawSocketError ipproto-icmp ipproto-tcp ipproto-raw)
+(export raw-ip4-open raw-hdrincl-enable raw-ip4-open-hdrincl raw-ip4-send raw-ip4-recv
+        raw-ip4-close RawSocket RawSocketError RawSocketAddr ipproto-icmp ipproto-tcp ipproto-raw)
 
 (defstruct RawSocket
   (fd : I32))
+
+;; RawSocketAddr -- a real, minimal out-param struct for raw-ip4-recv's sender address, IP-only
+;; (no port -- raw IP has no port concept, unlike net/udp.prn's own two-field SocketAddr, which
+;; this deliberately does NOT reuse/import, keeping net/rawsocket.prn's own real dependency
+;; footprint unchanged rather than pulling in an unrelated sibling module for one field).
+(defstruct RawSocketAddr
+  (host : String))
 
 (defenum RawSocketError
   (PermissionDenied) ;; EPERM -- no CAP_NET_RAW / not root, the real, expected outcome absent
                       ;; that real OS-level privilege on any POSIX kernel
   (OpenFailed)        ;; any other real socket(2) failure (e.g. EPROTONOSUPPORT, EMFILE)
   (SetOptFailed)      ;; the real IP_HDRINCL setsockopt(2) call itself failed
-  (SendFailed))       ;; the real sendto(2) call failed (includes a real, invalid dest-ip string
+  (SendFailed)        ;; the real sendto(2) call failed (includes a real, invalid dest-ip string
                       ;; that inet_pton(3) itself rejects -- see rawsocket_sendto_impl's own
                       ;; header comment in parena_runtime.h for the real, named v0 boundary there)
+  (RecvFailed))       ;; the real recvfrom(2) call itself failed -- S498, real read-side companion
+                      ;; to SendFailed above, same real zero-length-vs-error ambiguity
+                      ;; rawsocket_recvfrom_impl's own header comment names
 
 ;; ipproto-icmp / ipproto-tcp / ipproto-raw — real, standard IANA protocol-number constants (not
 ;; glibc-specific values -- 1/6/255 are the real, portable IANA-assigned numbers), the same
@@ -83,6 +93,11 @@
   : I32
   #target
   {:c (inline-c "rawsocket_sendto_impl(fd, data, data_len, dest_ip)")})
+
+(defn raw-recvfrom [(fd : I32) (dest : Arena @ Region) (!out-src-ip : &mut String)]
+  : String @ Region
+  #target
+  {:c (inline-c "rawsocket_recvfrom_impl(fd, dest, out_src_ip)")})
 
 (defn raw-close [(fd : I32)]
   : I32
@@ -144,6 +159,21 @@
     (if (< n 0)
       (Err SendFailed)
       (Ok n))))
+
+;; raw-ip4-recv -- (S498, founder real-time: "double down on all the unix socket stuff and raw
+;; socket stuff") the real, missing READ side of a raw socket THIS process already opened -- e.g.
+;; reading back an ICMP echo REPLY after raw-ip4-send wrote a caller-crafted echo REQUEST.
+;; Distinct from `pentest/pcap.prn`'s own promiscuous interface capture (a separate primitive
+;; entirely). Blocks -- same caller-owns-its-own-poll-loop contract raw-ip4-send's own sibling
+;; `net/udp.prn` `udp-recv-from` already established; fills `!out-addr`'s own `host` field with
+;; the sender's dotted-quad IP on success, same real field-address-of out-param pattern
+;; `udp-recv-from` already uses.
+(defn raw-ip4-recv [(!s : &RawSocket) (dest : Arena @ Region) (!out-addr : &mut RawSocketAddr)]
+  : (Result String RawSocketError) @ Region
+  (let [data (raw-recvfrom (get-field !s :fd) dest &(get-field !out-addr :host))]
+    (if (str-eq? data "")
+      (Err RecvFailed)
+      (Ok data))))
 
 ;; raw-ip4-close — real, direct socket teardown.
 (defn raw-ip4-close [(!s : &RawSocket) (dest : Arena @ Region)]

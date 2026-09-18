@@ -17,8 +17,14 @@
 ;; Real, honest v0 boundary, named directly: this file only sends already-built raw bytes — it
 ;; does NOT itself construct a Radiotap header or an 802.11 frame (that's `pentest/dot11.prn`'s
 ;; own real, separate, not-yet-built "build" side, the direct complement to its existing "parse"
-;; side). No RX path either — `pentest/pcap.prn`'s own libpcap capture already covers reading
-;; frames off a monitor interface; this file is specifically the missing WRITE half.
+;; side).
+;;
+;; l2-recv added S498 (2026-09-18, founder real-time: "double down on all the unix socket stuff
+;; and raw socket stuff") — reads back on THIS SAME already-bound socket, distinct from
+;; `pentest/pcap.prn`'s own separate libpcap-based promiscuous capture path (a different
+;; primitive, a different fd, real for a different real use case). This file's own send/recv pair
+;; on one bound AF_PACKET socket is the real, standard shape a request/response-style link-layer
+;; tool (not just fire-and-forget injection) actually needs.
 ;;
 ;; Real, honest, standing framing: authorized-testing tooling for EINHORN_INDUSTRIAL's own
 ;; infrastructure, same incidental-tooling role security-adjacent work in this monorepo has had
@@ -26,7 +32,7 @@
 
 (module net/l2socket)
 (import string)
-(export l2-open l2-bind l2-send l2-close L2Socket L2Error)
+(export l2-open l2-bind l2-send l2-recv l2-close L2Socket L2Error)
 
 (defstruct L2Socket
   (fd : I32))
@@ -40,7 +46,8 @@
   (BindFailed)          ;; a real bind(2) failure once the interface itself resolved fine (most
                         ;; commonly the same real CAP_NET_RAW gate, surfaced at bind time instead
                         ;; of open time on some kernels)
-  (SendFailed))         ;; a real send(2) failure
+  (SendFailed)          ;; a real send(2) failure
+  (RecvFailed))         ;; a real recv(2) failure -- S498, real read-side companion to SendFailed
 
 ;; ---- raw host primitives -- the only #target bodies in this file, each a single C expression
 ;; against runtime/parena_runtime.h's own l2socket_*_impl functions, no boxing.
@@ -64,6 +71,11 @@
   : I32
   #target
   {:c (inline-c "l2socket_send_impl(fd, data, len)")})
+
+(defn raw-l2-recv [(fd : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "l2socket_recv_impl(fd, dest)")})
 
 (defn raw-l2-close [(fd : I32)]
   : I32
@@ -106,6 +118,18 @@
     (if (< n 0)
       (Err SendFailed)
       (Ok n))))
+
+;; l2-recv — reads a real, raw frame back off this already-bound socket. Blocks; same real
+;; caller-owns-its-own-poll-loop contract every other *-recv primitive in this stdlib (net/udp.prn
+;; udp-recv-from, net/rawsocket.prn raw-ip4-recv) already established. No sender-address out-param
+;; needed — the real frame bytes returned already carry both MAC addresses in their own header,
+;; unlike net/rawsocket.prn's own IPv4 recvfrom, which genuinely needs one per call.
+(defn l2-recv [(!s : &L2Socket) (dest : Arena @ Region)]
+  : (Result String L2Error) @ Region
+  (let [data (raw-l2-recv (get-field !s :fd) dest)]
+    (if (str-eq? data "")
+      (Err RecvFailed)
+      (Ok data))))
 
 ;; l2-close — real, direct socket teardown.
 (defn l2-close [(!s : &L2Socket) (dest : Arena @ Region)]

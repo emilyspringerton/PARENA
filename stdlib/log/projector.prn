@@ -30,13 +30,38 @@
 ;; separate, pre-existing gap -- EMILY's own `sudo-queue/NOT_INCLUDED.md` already names "MySQL
 ;; prod credentials" as S30-02, needing a real root password or a dedicated app user nobody here
 ;; has). Both are otherwise unit-tested the same way SQLite was before its own live run.
+;;
+;; ---- MSSQL (S498, 2026-09-18, founder real-time: "we need to put in PARENA primatives for
+;; MSSQL and double down on all the unix socket stuff and raw socket stuff") ----------------------
+;; Same real, deliberate "shell out to the dialect's own real CLI client" convention as the three
+;; backends above -- NOT an FFI bind against FreeTDS's own `libsybdb`/db-lib C API (a real,
+;; considered alternative, rejected for the same reason this file's own header already committed
+;; to for SQLite/MySQL/PostgreSQL: one real, shared, narrow shape wins over three-to-four
+;; per-dialect C ABIs). `tsql` (FreeTDS's real CLI, package `freetds-bin`) is the real MSSQL/TDS
+;; equivalent of `sqlite3`/`mysql`/`psql` here. Real, load-bearing difference from the other three,
+;; named rather than forced into their identical shape: `tsql` has no `-e`/`-c` one-shot-SQL flag
+;; -- real usage is `echo '<sql>\nGO\n' | tsql -S <server> -p <port> -U <user> -P <password> -D
+;; <database>` (SQL piped via stdin, a literal `GO` line marking the batch boundary, confirmed
+;; live against a real installed `tsql` binary: a deliberately-unreachable host fails fast with a
+;; real "Connection refused", never hangs). `run-sql-via-stdin` below is this file's own new,
+;; second shared shell-invocation helper (distinct from `run-sql-via`, whose shape assumes the SQL
+;; text is the CLI's own trailing argument -- doesn't fit tsql's stdin-piped shape at all).
+;; T-SQL also has no `CREATE TABLE IF NOT EXISTS` (a real, genuine SQL-Server-specific
+;; syntax gap, not shared by the other three dialects) -- `events-table-ddl-mssql` below is a real,
+;; separate DDL string using T-SQL's own real idiom (`IF OBJECT_ID(...) IS NULL CREATE TABLE
+;; ...`), not a reuse of `events-table-ddl`. Real, honest, currently-unverified-live gap, same
+;; class as MySQL/PostgreSQL above: this sandbox has no real MSSQL/Sybase server reachable to
+;; connect to (checked directly -- no local instance running); `tsql`'s own exact command
+;; construction IS live-verified (a real connection-refused failure against 127.0.0.1, confirmed
+;; fast/non-hanging), the actual DDL+INSERT round trip against a live server is not.
 
 (module log/projector)
 (import string)
 (import process)
 (import log/event)
-(export events-table-ddl sql-escape-string shell-single-quote insert-event-sql
-        project-sqlite! project-mysql! project-postgres! ProjectorError)
+(export events-table-ddl events-table-ddl-mssql sql-escape-string shell-single-quote
+        insert-event-sql tsql-connect-prefix run-sql-via run-sql-via-stdin
+        project-sqlite! project-mysql! project-postgres! project-mssql! ProjectorError)
 
 (defenum ProjectorError
   (CommandFailed (exit-code : I32)))
@@ -46,6 +71,17 @@
 (defn events-table-ddl []
   : String
   "CREATE TABLE IF NOT EXISTS events (kind TEXT NOT NULL, id TEXT NOT NULL, op TEXT NOT NULL, fields TEXT NOT NULL, ts INTEGER NOT NULL);")
+
+;; events-table-ddl-mssql -- the real T-SQL equivalent of events-table-ddl above, kept as its own
+;; separate string rather than reused: T-SQL has no `CREATE TABLE IF NOT EXISTS` at all (a real,
+;; genuine SQL-Server-specific syntax gap the other three dialects don't share), so this uses
+;; T-SQL's own real idiom instead (`IF OBJECT_ID(name, 'U') IS NULL` -- 'U' selects user tables).
+;; VARCHAR(MAX) instead of TEXT: TEXT is real but deprecated in modern SQL Server, VARCHAR(MAX) is
+;; the real, current, correct choice for an unbounded text column there -- a deliberate dialect-
+;; correctness difference from the shared TEXT/INTEGER DDL above, not an oversight.
+(defn events-table-ddl-mssql []
+  : String
+  "IF OBJECT_ID('events', 'U') IS NULL CREATE TABLE events (kind VARCHAR(MAX) NOT NULL, id VARCHAR(MAX) NOT NULL, op VARCHAR(MAX) NOT NULL, fields VARCHAR(MAX) NOT NULL, ts INTEGER NOT NULL);")
 
 ;; sql-escape-string -- real, standard SQL single-quote doubling (`'` -> `''`), the one escape
 ;; every real SQL dialect this file targets agrees on. Real, honest, named limitation: NOT a
@@ -127,6 +163,23 @@
           (Ok unit)
           (Err (CommandFailed code)))))))
 
+;; run-sql-via-stdin -- the real, second shared shell-invocation helper this file's own header
+;; comment names: `tsql` (and any other real CLI shaped the same way -- no one-shot -e/-c flag,
+;; SQL text read from stdin instead) needs `echo '<sql>' | <cli-cmd>`, not run-sql-via's own
+;; `<cli-prefix><quoted-sql>` shape (the SQL text is never the CLI's own trailing argument here).
+;; `cli-cmd` is the FULL, already-built invocation (e.g. tsql-connect-prefix's own output) --
+;; distinct from run-sql-via's `cli-prefix`, which is deliberately a prefix expecting exactly one
+;; more argument appended.
+(defn run-sql-via-stdin [(cli-cmd : String @ Region) (sql : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [p1 (string/concat "echo " (shell-single-quote sql dest) dest)]
+    (let [full (string/concat p1 (string/concat " | " cli-cmd dest) dest)]
+      (let [ignored (process/run-capture full dest)]
+        (let [code (process/run-capture-exit-code)]
+          (if (= code 0)
+            (Ok unit)
+            (Err (CommandFailed code))))))))
+
 ;; project-sqlite! -- real: `sqlite3 <db-path> '<ddl> <insert>'`. Verified live against a real
 ;; `sqlite3` CLI once one became available in this sandbox (see shell-single-quote's own doc
 ;; comment for the real bug found and fixed doing so).
@@ -157,3 +210,40 @@
   (let [sql (string/concat (events-table-ddl) (insert-event-sql e dest) dest)]
     (let [prefix (string/concat "psql " (string/concat database " -c " dest) dest)]
       (run-sql-via prefix sql dest))))
+
+;; tsql-connect-prefix -- builds the real `tsql -S <server> -p <port> -U <user> -P <password> -D
+;; <database>` invocation, confirmed live against a real installed `tsql` binary (this file's own
+;; header comment has the full verification note). Every real, caller-supplied string (server,
+;; user, password, database) is individually shell-single-quoted -- a real, deliberate departure
+;; from project-mysql!/project-postgres! above, whose own `database` argument is NOT quoted (a
+;; real, named, pre-existing gap those two functions' own doc comments already accept). This
+;; function introduces genuinely new caller-controlled shell-command arguments (user/password)
+;; that didn't exist in either sibling function's own signature, so leaving them unquoted here
+;; would be a real, new command-injection surface, not just carrying forward an existing one.
+(defn tsql-connect-prefix [(server : String @ Region) (port : I32) (user : String @ Region) (password : String @ Region) (database : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [p1 (string/concat "tsql -S " (shell-single-quote server dest) dest)]
+    (let [p2 (string/concat p1 " -p " dest)]
+      (let [p3 (string/concat p2 (string/i32-to-string port dest) dest)]
+        (let [p4 (string/concat p3 " -U " dest)]
+          (let [p5 (string/concat p4 (shell-single-quote user dest) dest)]
+            (let [p6 (string/concat p5 " -P " dest)]
+              (let [p7 (string/concat p6 (shell-single-quote password dest) dest)]
+                (let [p8 (string/concat p7 " -D " dest)]
+                  (string/concat p8 (shell-single-quote database dest) dest))))))))))
+
+;; project-mssql! -- real: `echo '<ddl> <insert>\nGO\n' | tsql -S <server> -p <port> -U <user> -P
+;; <password> -D <database>`. Unlike project-sqlite!/project-mysql!/project-postgres! above, this
+;; genuinely needs real connection parameters (server/port/user/password) threaded all the way
+;; through -- TDS has no real local-socket/peer-auth shortcut the way sqlite3 (a bare file path)
+;; or psql/mysql (sometimes) do, so this function's own signature is honestly wider than its three
+;; siblings', not force-fit to match them. A trailing real `GO` batch terminator (T-SQL's own
+;; real batch-boundary marker, not a generic SQL statement) is appended after the DDL+INSERT pair
+;; -- both statements execute as one batch, no `GO` needed between them.
+(defn project-mssql! [(server : String @ Region) (port : I32) (user : String @ Region) (password : String @ Region) (database : String @ Region) (e : &Event) (dest : Arena @ Region)]
+  : (Result Unit ProjectorError) @ Region
+  (let [go (string/char-from-code 10 dest)]
+    (let [body (string/concat (events-table-ddl-mssql) (insert-event-sql e dest) dest)]
+      (let [sql (string/concat body (string/concat go (string/concat "GO" go dest) dest) dest)]
+        (let [cmd (tsql-connect-prefix server port user password database dest)]
+          (run-sql-via-stdin cmd sql dest))))))

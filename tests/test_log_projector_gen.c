@@ -69,13 +69,17 @@ int run_capture_exit_code();
 char * json_escape_string(char *, Arena *);
 char * event_encode(Event *, Arena *);
 char * events_table_ddl();
+char * events_table_ddl_mssql();
 char * sql_escape_string(char *, Arena *);
 char * shell_single_quote(char *, Arena *);
 char * insert_event_sql(Event *, Arena *);
 Result run_sql_via(char *, char *, Arena *);
+Result run_sql_via_stdin(char *, char *, Arena *);
 Result project_sqlite_(char *, Event *, Arena *);
 Result project_mysql_(char *, Event *, Arena *);
 Result project_postgres_(char *, Event *, Arena *);
+char * tsql_connect_prefix(char *, int, char *, char *, char *, Arena *);
+Result project_mssql_(char *, int, char *, char *, char *, Event *, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -165,14 +169,14 @@ int is_valid_i32_text_(char * s __attribute__((unused))) {
     return 0;
     } else {
     int __loop_result_0 __attribute__((unused));
-    double i = (starts_with_sign_(s) ? 1 : 0);
+    int i = (starts_with_sign_(s) ? 1 : 0);
     int ok = 1;
     while (1) {
         if ((i >= n)) {
         __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
         break;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
         i = __recur_tmp_0;
         ok = __recur_tmp_1;
@@ -192,8 +196,8 @@ char * concat(char * a __attribute__((unused)), char * b __attribute__((unused))
 Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec result __attribute__((unused)) = vec_new(dest);
     Vec __loop_result_1 __attribute__((unused));
-    double start = 0;
-    double i = 0;
+    int start = 0;
+    int i = 0;
     int n = length(s);
     while (1) {
         if ((i >= n)) {
@@ -203,16 +207,16 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         } else {
         if ((char_at(s, i) == char_at(sep, 0))) {
         (void)(vec_push_(&(result), substring(s, start, i, dest)));
-        double __recur_tmp_0 = (i + 1);
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
         n = __recur_tmp_2;
         continue;
         } else {
-        double __recur_tmp_0 = start;
-        double __recur_tmp_1 = (i + 1);
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
         int __recur_tmp_2 = n;
         start = __recur_tmp_0;
         i = __recur_tmp_1;
@@ -260,7 +264,7 @@ int run_capture_exit_code(void) {
 char * json_escape_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     char * __loop_result_2 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= n)) {
@@ -269,34 +273,34 @@ char * json_escape_string(char * s __attribute__((unused)), Arena *dest __attrib
         } else {
         int c __attribute__((unused)) = char_at(s, i);
         if ((c == 34)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "\\\"", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((c == 92)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "\\\\", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((c == 10)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "\\n", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
         if ((c == 9)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "\\t", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, char_from_code(c, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -331,10 +335,14 @@ char * events_table_ddl(void) {
     return "CREATE TABLE IF NOT EXISTS events (kind TEXT NOT NULL, id TEXT NOT NULL, op TEXT NOT NULL, fields TEXT NOT NULL, ts INTEGER NOT NULL);";
 }
 
+char * events_table_ddl_mssql(void) {
+    return "IF OBJECT_ID('events', 'U') IS NULL CREATE TABLE events (kind VARCHAR(MAX) NOT NULL, id VARCHAR(MAX) NOT NULL, op VARCHAR(MAX) NOT NULL, fields VARCHAR(MAX) NOT NULL, ts INTEGER NOT NULL);";
+}
+
 char * sql_escape_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     char * __loop_result_3 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "";
     while (1) {
         if ((i >= n)) {
@@ -343,13 +351,13 @@ char * sql_escape_string(char * s __attribute__((unused)), Arena *dest __attribu
         } else {
         int c __attribute__((unused)) = char_at(s, i);
         if ((c == 39)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "''", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, char_from_code(c, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -363,7 +371,7 @@ char * sql_escape_string(char * s __attribute__((unused)), Arena *dest __attribu
 char * shell_single_quote(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = length(s);
     char * __loop_result_4 __attribute__((unused));
-    double i = 0;
+    int i = 0;
     char * acc = "'";
     while (1) {
         if ((i >= n)) {
@@ -372,13 +380,13 @@ char * shell_single_quote(char * s __attribute__((unused)), Arena *dest __attrib
         } else {
         int c __attribute__((unused)) = char_at(s, i);
         if ((c == 39)) {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, "'\\''", dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
         continue;
         } else {
-        double __recur_tmp_0 = (i + 1);
+        int __recur_tmp_0 = (i + 1);
         char * __recur_tmp_1 = concat(acc, char_from_code(c, dest), dest);
         i = __recur_tmp_0;
         acc = __recur_tmp_1;
@@ -418,6 +426,18 @@ Result run_sql_via(char * cli_prefix __attribute__((unused)), char * sql __attri
     }
 }
 
+Result run_sql_via_stdin(char * cli_cmd __attribute__((unused)), char * sql __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *p1 __attribute__((unused)) = concat("echo ", shell_single_quote(sql, dest), dest);
+    char *full __attribute__((unused)) = concat(p1, concat(" | ", cli_cmd, dest), dest);
+    char *ignored __attribute__((unused)) = run_capture(full, dest);
+    int code __attribute__((unused)) = run_capture_exit_code();
+    if ((code == 0)) {
+    return result_ok(NULL);
+    } else {
+    return result_err(ProjectorError_box(dest, ProjectorError_CommandFailed(int_box(dest, code))));
+    }
+}
+
 Result project_sqlite_(char * db_path __attribute__((unused)), Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *sql __attribute__((unused)) = concat(events_table_ddl(), insert_event_sql(e, dest), dest);
     char *prefix __attribute__((unused)) = concat("sqlite3 ", concat(db_path, " ", dest), dest);
@@ -434,5 +454,25 @@ Result project_postgres_(char * database __attribute__((unused)), Event * e __at
     char *sql __attribute__((unused)) = concat(events_table_ddl(), insert_event_sql(e, dest), dest);
     char *prefix __attribute__((unused)) = concat("psql ", concat(database, " -c ", dest), dest);
     return run_sql_via(prefix, sql, dest);
+}
+
+char * tsql_connect_prefix(char * server __attribute__((unused)), int port __attribute__((unused)), char * user __attribute__((unused)), char * password __attribute__((unused)), char * database __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *p1 __attribute__((unused)) = concat("tsql -S ", shell_single_quote(server, dest), dest);
+    char *p2 __attribute__((unused)) = concat(p1, " -p ", dest);
+    char *p3 __attribute__((unused)) = concat(p2, i32_to_string(port, dest), dest);
+    char *p4 __attribute__((unused)) = concat(p3, " -U ", dest);
+    char *p5 __attribute__((unused)) = concat(p4, shell_single_quote(user, dest), dest);
+    char *p6 __attribute__((unused)) = concat(p5, " -P ", dest);
+    char *p7 __attribute__((unused)) = concat(p6, shell_single_quote(password, dest), dest);
+    char *p8 __attribute__((unused)) = concat(p7, " -D ", dest);
+    return concat(p8, shell_single_quote(database, dest), dest);
+}
+
+Result project_mssql_(char * server __attribute__((unused)), int port __attribute__((unused)), char * user __attribute__((unused)), char * password __attribute__((unused)), char * database __attribute__((unused)), Event * e __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *go __attribute__((unused)) = char_from_code(10, dest);
+    char *body __attribute__((unused)) = concat(events_table_ddl_mssql(), insert_event_sql(e, dest), dest);
+    char *sql __attribute__((unused)) = concat(body, concat(go, concat("GO", go, dest), dest), dest);
+    char *cmd __attribute__((unused)) = tsql_connect_prefix(server, port, user, password, database, dest);
+    return run_sql_via_stdin(cmd, sql, dest);
 }
 
