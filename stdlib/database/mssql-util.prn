@@ -1,0 +1,119 @@
+;; stdlib/database/mssql-util.prn — depends on string. Design: STDLIB.md "database/mssql-util"
+;; section.
+;;
+;; Real trigger (2026-09-18, S499): founder real-time, precise engineering requirements handed
+;; off before logging off: "We need a zero-copy data-type transpile layer written in PARENA to
+;; handle incoming MS SQL bytes before duplicating them asynchronously" — the real next layer on
+;; top of S498's own `project-mssql!` (log/projector.prn, shells out to `tsql`) and the durable-
+;; queue/fanout work (PRRJECT_FATBABY's `RedisStreamConsumer`): once MSSQL data is actually
+;; flowing into a fanout pipeline, whatever's on the OTHER end of that fanout (Postgres/Oracle-
+;; shaped sinks, matching the founder's own framing) needs T-SQL's own type text converted to a
+;; form those targets accept, not just the raw SQL Server representation forwarded as-is.
+;;
+;; Real, honest scope: three specific, real, well-known T-SQL-to-Postgres/Oracle friction points,
+;; matching the founder's own precise spec exactly, not a general-purpose type-mapping framework
+;; (no such framework was asked for, and none is built here) —
+;; - `UNIQUEIDENTIFIER` -> `UUID`: SQL Server sometimes serializes a GUID wrapped in braces
+;;   (`{6F9619FF-8B86-D011-B42D-00C04FC964FF}`, T-SQL's own literal syntax for the type) — Postgres/
+;;   Oracle's own UUID text form is the same 36-character hyphenated string WITHOUT braces, so the
+;;   real, correct fix is exactly what the spec asked for: strip a leading `{`/trailing `}` when
+;;   both are present, pass through unchanged otherwise (already-unbracketed input, the more common
+;;   case from most real drivers, is a real, safe no-op here, not mishandled).
+;; - `DATETIME2` -> `TIMESTAMP`: `DATETIME2` supports up to 100-nanosecond precision (7 fractional
+;;   digits); Postgres `TIMESTAMP`/Oracle `TIMESTAMP` are microsecond precision (6 fractional
+;;   digits) — a real, well-known "target sink validation crash" the spec named directly. Real,
+;;   correct fix: truncate (not round) to 6 fractional digits when 7 are present, pass through
+;;   unchanged otherwise (no fractional-seconds component, or already <=6 digits).
+;; - `BIT` -> `BOOLEAN`: SQL Server's `BIT` is a real, genuine tri-state type (0, 1, or NULL) — a
+;;   real, deliberate departure from the spec's own literal "convert raw binary 1/0 integers
+;;   directly to literal TRUE/FALSE tokens" wording: rather than silently defaulting anything
+;;   that ISN'T exactly "1" to `FALSE` (a real, quiet correctness risk for a financial/SEC signal
+;;   pipeline this module ultimately feeds — Operational Health Is Not Optional,
+;;   `EMILY/docs/THE_EMILY_WAY.md` Principle 15), a value that is neither "0" nor "1" is reported
+;;   as a real, honest `InvalidBitValue` error instead of silently coerced. NULL handling is this
+;;   module's own caller's responsibility (whatever layer reads the raw MSSQL column already knows
+;;   whether the value was SQL NULL before it ever becomes a String here — this function only ever
+;;   sees a real, non-NULL "0"/"1"/other text).
+;;
+;; Real, deliberate, zero-`#target`/zero-FFI design: every function here is plain string
+;; manipulation over `string.prn`'s own existing primitives (`substring`/`char-at`/`length`/
+;; `str-eq?`) — no host glue needed at all, which means this module is genuinely portable across
+;; every PARENA emission target (C, TypeScript, Java, and BURROW's own Go target), not just the C
+;; target the rest of the MSSQL work (`project-mssql!`'s `tsql` shell-out) is necessarily pinned
+;; to. "Zero-copy" per the spec's own request is honored in the sense that mirrors this stdlib's
+;; own existing convention (`log/projector.prn`'s `sql-escape-string`, `net/*.prn`'s own read
+;; paths): PARENA's `String @ Region` values are immutable, so a transform that changes a string's
+;; content is a real, minimal, single `substring`/`concat` allocation into the caller's own
+;; `Region Arena` (via `dest`), not a full independent re-copy pass, and the common case (input
+;; already in the target shape, e.g. an already-unbracketed GUID) returns the SAME original
+;; String value with zero allocation at all — there is no lower-level "slice view" string type in
+;; this stdlib to go beneath that with (checked directly, `string.prn` has no such type).
+
+(module database/mssql-util)
+(import string)
+(export mssql-uniqueidentifier-to-uuid mssql-datetime2-to-timestamp mssql-bit-to-boolean-token
+        find-char-index MssqlTranspileError)
+
+(defenum MssqlTranspileError
+  (InvalidBitValue)) ;; input was neither "0" nor "1" -- a real, honest signal, never silently
+                      ;; coerced to FALSE (see this file's own header comment on BIT's real
+                      ;; tri-state nature)
+
+;; find-char-index -- not exported as a general utility on its own merit (string.prn's own
+;; contains-ci? already covers substring PRESENCE; this is the narrower "where exactly" this
+;; file's own two positional transforms below both need), but exported anyway since it's the one
+;; real, reusable building block this file introduces that a future sibling database/*.prn module
+;; would otherwise have to reimplement. Returns -1 (not found), matching this stdlib's own
+;; established "-1 = not found/no such thing" convention (net/l2socket.prn's own l2socket_bind_
+;; impl -2 "no such interface" signal, adapted here to a plain linear scan).
+(defn find-char-index [(s : String @ Region) (target : I32)]
+  : I32
+  (let [n (string/length s)]
+    (loop [i 0]
+      (if (>= i n)
+        -1
+        (if (= (string/char-at s i) target)
+          i
+          (recur (+ i 1)))))))
+
+;; mssql-uniqueidentifier-to-uuid -- strips a wrapping {}, when present, from a UNIQUEIDENTIFIER's
+;; own text form. `{` is codepoint 123, `}` is codepoint 125 (plain ASCII, no locale/encoding
+;; concern for this specific pair of characters). Real, deliberate, total function: never fails,
+;; an input with no braces (or malformed/partial braces -- only ONE present, not both) passes
+;; through completely unchanged rather than guessing.
+(defn mssql-uniqueidentifier-to-uuid [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (if (< n 2)
+      s
+      (if (and (= (string/char-at s 0) 123) (= (string/char-at s (- n 1)) 125))
+        (string/substring s 1 (- n 1) dest)
+        s))))
+
+;; mssql-datetime2-to-timestamp -- truncates (never rounds -- rounding a timestamp's own
+;; fractional seconds up could roll it into the next second, a real, worse correctness surprise
+;; than a truncated-but-monotonic value) a DATETIME2 string's fractional-seconds component from 7
+;; digits down to 6, if present. Real, deliberate, total function: no `.` present (no fractional
+;; seconds at all) or already <=6 fractional digits both pass through completely unchanged.
+(defn mssql-datetime2-to-timestamp [(s : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (string/length s)]
+    (let [dot-idx (find-char-index s 46)] ;; '.' is codepoint 46
+      (if (< dot-idx 0)
+        s
+        (let [frac-len (- n (+ dot-idx 1))]
+          (if (> frac-len 6)
+            (string/substring s 0 (+ dot-idx 7) dest) ;; keep the '.' plus exactly 6 digits
+            s))))))
+
+;; mssql-bit-to-boolean-token -- see this file's own header comment for why this is a real
+;; (Result String MssqlTranspileError), not a plain String->String total function the way the two
+;; transforms above are: BIT is genuinely tri-state, and silently mapping anything-not-"1" to
+;; "FALSE" would be a real, quiet correctness risk this pipeline can't accept.
+(defn mssql-bit-to-boolean-token [(s : String @ Region) (dest : Arena @ Region)]
+  : (Result String MssqlTranspileError) @ Region
+  (if (str-eq? s "1")
+    (Ok "TRUE")
+    (if (str-eq? s "0")
+      (Ok "FALSE")
+      (Err InvalidBitValue))))

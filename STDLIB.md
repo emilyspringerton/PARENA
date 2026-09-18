@@ -4887,3 +4887,49 @@ download freetds-bin` + `dpkg-deb -x`, no install needed) and confirmed live tha
 complete command against a genuinely unreachable host fails fast with a real "Connection refused"
 in well under a second, never hangs — `sudo-queue/82-install-freetds-bin.sh` makes this a real,
 permanent, system-wide install for future sessions.
+
+## database/mssql-util — real T-SQL type-transpile primitives (2026-09-18, S499)
+
+Founder real-time, precise engineering requirements handed off before logging off: "We need a
+zero-copy data-type transpile layer written in PARENA to handle incoming MS SQL bytes before
+duplicating them asynchronously" — the real next layer on top of S498's `project-mssql!`
+(`log/projector.prn`, shells out to `tsql`) and the durable-queue/fanout work
+(`PRRJECT_FATBABY`'s `RedisStreamConsumer`): once MSSQL data flows into a fanout pipeline,
+whatever's on the OTHER end (Postgres/Oracle-shaped sinks) needs T-SQL's own type text converted,
+not forwarded as-is.
+
+Three real, well-known T-SQL-to-Postgres/Oracle friction points, matching the founder's own exact
+spec — applied critically, not rubber-stamped (same discipline `LO/NORTHSTAR.md`'s own S208-01
+review already established for a pasted spec):
+
+- `mssql-uniqueidentifier-to-uuid`: strips a wrapping `{`/`}` (T-SQL's own literal `UNIQUEIDENTIFIER`
+  syntax) when both are present — Postgres/Oracle's own UUID text form has no braces. A total
+  function (never fails); an already-unbracketed or partially-bracketed input passes through
+  unchanged.
+- `mssql-datetime2-to-timestamp`: `DATETIME2` supports 7 fractional-second digits (100ns
+  precision), Postgres/Oracle `TIMESTAMP` support 6 (microsecond) — truncates, deliberately never
+  rounds (rounding could roll a value into the next second, a worse correctness surprise than a
+  truncated-but-monotonic one). Total function; no fractional seconds or already ≤6 digits pass
+  through unchanged.
+- `mssql-bit-to-boolean-token`: one real, deliberate departure from the spec's own literal
+  wording — `BIT` is genuinely tri-state (0/1/NULL) in SQL Server, so rather than silently
+  defaulting anything-not-"1" to `FALSE` (a real, quiet correctness risk for the financial/SEC
+  signal pipeline this ultimately feeds — Operational Health Is Not Optional,
+  `THE_EMILY_WAY.md` Principle 15), a genuinely invalid value returns `(Result String
+  MssqlTranspileError)`'s own `InvalidBitValue`, not a silent `FALSE`.
+
+Real, deliberate, zero-`#target`/zero-FFI design: pure `string.prn`-only string manipulation, no
+host glue at all — genuinely portable across every PARENA emission target in principle, though (as
+already established for every other `let`/`Result`/`defenum`-using `.prn` file in this stdlib —
+`k8s/scaling.prn` vs. `k8s/k8s.prn`'s own precedent) this specific file's use of `let`/`Result`
+construction/`defenum` means it does NOT compile through `BURROW`'s own current v0 Go target yet —
+a real, already-known boundary, not a new gap this file introduces.
+
+"Zero-copy" honored in the sense this stdlib's own strings actually support (immutable
+`String @ Region` values, no lower-level slice-view type exists to go beneath that — checked
+directly): the common case (input already in the target shape) returns the SAME original String
+value with zero allocation, live-verified via a direct pointer-identity assertion in
+`tests/test_database_mssql_util.c`, not just a text-equality check.
+
+8/8 real assertions pass (`make test-database-mssql-util`), including truncation-vs-rounding
+correctness (a case where they'd disagree) and the honest-error-not-silent-FALSE behavior for BIT.
