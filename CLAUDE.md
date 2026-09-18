@@ -64,6 +64,12 @@ emily changelog add PARENA "<what changed>"
 # or manually: append a dated bullet under ## YYYY-MM-DD in PARENA/CHANGELOG.md
 ```
 
+## CONSTRUCT File Generation (standing instruction, monorepo Principle 21)
+
+PARENA auto-generates CONSTRUCT files on each release via CI (see `.github/workflows/ci.yml` or equivalent). A CONSTRUCT is a deterministic plaintext snapshot of all repo source code, sorted in canonical order with clear file delimiters — used for reproducible builds, audit trails, and offline source access. 
+
+See the main `CLAUDE.md`'s "Principle 21: CONSTRUCT Files" section for the full rationale and shared implementation patterns across the monorepo. The generation is automatic in CI; no manual work needed. For local testing/verification, use the git ls-files approach documented there.
+
 ## README Reality — SAGA reconciliation (standing instruction, monorepo-wide)
 
 Founder real-time, 2026-09-18: if a change of yours **substantially changes the claim of this project's core README**,
