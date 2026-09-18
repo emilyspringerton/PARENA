@@ -3100,6 +3100,71 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* --- real, additive (2026-09-18, S501 continuation): a LET-BOUND I32 (boxed `char *` per
+     * this file's own uniform emit-i32-boxed convention) now correctly UNBOXES when used as a
+     * binary-op/comparison operand -- the real fix for the `-Werror=comparison between pointer
+     * and integer` gap found live verifying `selfhost/lexer.prn`'s own `lx-advance`. Real, honest
+     * scope, NOT overclaimed: this covers exactly the let-value shapes `let-value-is-boxed-i32?`
+     * can be CERTAIN are boxed (a binary-op, an or/and/not boolean expression, a scalar
+     * struct-field read, or `vec/len`) -- `lx-advance`'s own actual `c` (bound from
+     * `(lx-peek lx)`, a PLAIN CALL to a user-defined I32-returning function) is deliberately NOT
+     * covered, since a plain call's own real return representation depends on the callee's real
+     * return type, which this narrow emitter has no registry to check generically (a real,
+     * separate, wider gap, named honestly, not attempted here -- `lx-advance` itself still does
+     * NOT fully compile after this fix). This test isolates the narrower, real, CLOSED case: a
+     * binary-op-shaped let value compared against a literal. */
+    {
+        char *snippet =
+            "(defn classify [(a : I32)] : I32\n"
+            "  (let [c (* a 2)]\n"
+            "    (if (= c 10) 1 0)))";
+        Result pr32 = parse_program(snippet, &a);
+        CHECK(pr32.tag == 1, "a real binary-op-shaped let-binding compared against a literal parses fine");
+        if (pr32.tag == 1) {
+            Node program32 = *(Node *)pr32.value;
+            char *generated32 = emit_program(&program32, &a);
+            CHECK(generated32 != NULL && strstr(generated32, "#error") == NULL,
+                  "no #error is emitted");
+            CHECK(generated32 != NULL && strstr(generated32, "(int)(intptr_t)c == 10") != NULL,
+                  "the boxed let-bound 'c' is correctly UNBOXED before comparison -- previously "
+                  "emitted a real, confirmed -Werror=comparison-between-pointer-and-integer "
+                  "failure ('(c == 10)' where c is char *)");
+
+            if (generated32) {
+                char c_path32[80];
+                snprintf(c_path32, sizeof c_path32, "/tmp/parena_selfhost_emit_boxedcmp_test_%d.c", (int)getpid());
+                FILE *out32 = fopen(c_path32, "w");
+                CHECK(out32 != NULL, "a real temp file opens to write the boxed-comparison generated C into");
+                if (out32) {
+                    fputs(generated32, out32);
+                    fclose(out32);
+                    char bin_path32[300];
+                    snprintf(bin_path32, sizeof bin_path32, "%s.bin", c_path32);
+                    char cmd32[1024];
+                    snprintf(cmd32, sizeof cmd32,
+                             "gcc -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -o %s "
+                             "tests/integration/driver_boxed_binop.c %s runtime/parena_runtime.c 2>&1",
+                             bin_path32, c_path32);
+                    int compile_status32 = system(cmd32);
+                    CHECK(compile_status32 == 0,
+                          "the real boxed-comparison generated C compiles clean under gcc "
+                          "-std=c99 -Wall -Wextra -pedantic -Werror, linked against "
+                          "driver_boxed_binop.c -- this is the real check the unboxing fix "
+                          "would have failed without");
+                    if (compile_status32 == 0) {
+                        int run_status32 = system(bin_path32);
+                        CHECK(run_status32 == 0,
+                              "the real, self-compiled classify genuinely returns 1 only when "
+                              "a==5 (c==10) and 0 otherwise, proving the unboxed comparison is "
+                              "semantically correct at runtime, not just gcc-clean text");
+                    }
+                    remove(c_path32);
+                    remove(bin_path32);
+                }
+            }
+        }
+    }
+
     arena_free_all(&a);
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");
     return failures == 0 ? 0 : 1;

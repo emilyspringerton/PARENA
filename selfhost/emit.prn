@@ -52,7 +52,20 @@
 (import selfhost/parser)
 (export emit-program)
 
-(defenum ArenaKind (LocalArena) (PointerArena))
+;; BoxedI32 (2026-09-18, S501 continuation): real, additive third kind, reusing this SAME
+;; already-everywhere-threaded scope mechanism rather than adding a whole new parameter to dozens
+;; of function signatures. Tracks a let-bound name whose own declared C type is this file's
+;; uniform boxed `char *` (via emit-i32-boxed) even though it semantically holds a raw I32 --
+;; needed so a later bare reference to that name in a RAW-INT-EXPECTING position (a binary-op/
+;; comparison operand -- see emit-binary-op's own real fix below) can unbox it
+;; ((int)(intptr_t)name) instead of comparing/arithmetic-ing a pointer bit-pattern directly, a
+;; real, confirmed `-Werror` failure found live verifying selfhost/lexer.prn's own lx-advance.
+;; `arena-ref-of` (below) deliberately does NOT get a BoxedI32 case -- resolve-arena-ref's own
+;; broader set of callers (general call arguments, Ok/Err/Some payloads, struct-literal field
+;; values) genuinely WANT the boxed pointer representation as-is in those positions (Result/
+;; Option's own runtime already expects a boxed scalar there); only emit-binary-op's own operand
+;; position needs unboxing, so that's the one place this new kind is actually consulted.
+(defenum ArenaKind (LocalArena) (PointerArena) (BoxedI32))
 
 (defstruct ArenaBinding
   (name : String @ Region)
@@ -167,7 +180,12 @@
 (defn arena-ref-of [(b : ArenaBinding) (c-name : String @ Region) (dest : Arena @ Region)] : String @ Region
   (match (get-field b :kind)
     ((LocalArena) (string/concat "&" c-name dest))
-    ((PointerArena) c-name)))
+    ((PointerArena) c-name)
+    ;; BoxedI32 -- deliberately the SAME as PointerArena here (bare, boxed reference): this
+    ;; general-purpose lookup is used by contexts that genuinely want the boxed pointer form
+    ;; as-is (Ok/Err/Some payloads, general call arguments, struct-literal field values). Only
+    ;; emit-binary-op's own dedicated operand lookup (below) unboxes.
+    ((BoxedI32) c-name)))
 
 ;; resolve-arena-ref -- real, small extracted helper (a `match` used as
 ;; a non-tail VALUE -- see this file's own header comment, point 1):
@@ -1590,24 +1608,59 @@
            (and (= (vec/len &(get-field expr-node :children)) 3)
                 (every-call-arg-symbol-or-number? expr-node 1 dest))))))
 
-;; Real, honest, NOT-yet-fixed gap, found live 2026-09-18 (S501) verifying `selfhost/lexer.prn`'s
-;; own `lx-advance` end to end: this function emits its operands via plain emit-call-arg with NO
-;; unboxing -- correct when an operand is an I32 PARAMETER or loop binding (this file's own
-;; established `int`-typed shapes) but a real, confirmed `-Werror=comparison between pointer and
-;; integer`/`-Werror=int-conversion` failure when an operand is a LET-BOUND I32 (boxed `char *`
-;; per emit-i32-boxed's own uniform convention elsewhere in this file). This emitter has no
-;; binding-kind scope tracking WHICH bare-symbol names are boxed (only ArenaBinding/arena-kind
-;; scope exists, a different concern) -- a real, precisely-named, moderate-sized next step, not
-;; attempted here. Confirmed to independently affect stdlib/string.prn's own parse-i32/
-;; is-valid-i32-text?/split too, not just lx-advance -- see NORTHSTAR.md's own Self-hosting
-;; section, tenth step, for the full real accounting (227 real gcc errors found compiling the
-;; whole selfhost/lexer.prn self-compile output, vs. the narrower 3-`#error`-directive count this
-;; effort's own diagnostic had been tracking as its primary metric).
+;; arena-kind-is-boxed-i32? -- real, tiny helper, extracted to its own top-level defn (a match
+;; used as a non-tail value inside an if/cond branch doesn't compile in this file -- the same
+;; real, established gap-class this file's own header comment already documents; this real,
+;; separate function's own body IS the match's tail position, the proven-safe shape).
+(defn arena-kind-is-boxed-i32? [(k : ArenaKind)] : Bool
+  (match k
+    ((BoxedI32) true)
+    ((LocalArena) false)
+    ((PointerArena) false)))
+
+;; emit-binary-op-operand -- CLOSES the real gap named below (2026-09-18, S501 continuation):
+;; identical to emit-call-arg for every existing shape EXCEPT a bare symbol registered as
+;; BoxedI32 in scope (emit-let-bindings' own new real registration, see its own header comment),
+;; which gets unboxed (`(int)(intptr_t)name)`) instead of passed through raw -- the real fix for
+;; the confirmed `-Werror=comparison between pointer and integer` failure found live verifying
+;; `selfhost/lexer.prn`'s own `lx-advance` (`(= c 10)`, `c` bound from a real plain-call-shaped
+;; let value). Only a BARE SYMBOL is checked (kind code 3) -- every other operand shape (get-field,
+;; a nested plain-call/binary-op, a number literal, ...) already produces the right raw
+;; representation on its own, matching emit-call-arg's own already-correct dispatch for those.
+(defn emit-binary-op-operand [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
+  (if (not (= (emit-node-kind-code (get-field node :kind)) 3))
+    (emit-call-arg node scope dest)
+    (let [text (get-field node :text)]
+      ;; Real, found-live fix: matches DIRECTLY on the arena-scope-lookup call expression itself
+      ;; (not a `let`-bound intermediate) -- the same real shape resolve-arena-ref's own proven-
+      ;; working match already uses. Storing the Option in a `let` first breaks this narrow
+      ;; emitter's own type-hint resolution for the Some payload (confirmed live: a real
+      ;; `get-field: 'void' isn't a registered defstruct type` compiler error the moment this was
+      ;; tried), the same real "Ok/Some payload type only resolves against a known function
+      ;; return type at the match's own direct scrutinee position" limitation this file's own
+      ;; unwrap-support header comment already documents elsewhere.
+      (match (arena-scope-lookup scope text dest)
+        ((None) (emit-call-arg node scope dest))
+        ((Some b)
+          (if (arena-kind-is-boxed-i32? (get-field (deref b) :kind))
+            (string/concat "(int)(intptr_t)" (mangle text dest) dest)
+            (emit-call-arg node scope dest)))))))
+
+;; Real fix landed 2026-09-18 (S501 continuation), closing the gap named when this was first
+;; found live verifying `selfhost/lexer.prn`'s own `lx-advance` end to end: both operands now go
+;; through emit-binary-op-operand above instead of plain emit-call-arg, correctly unboxing a
+;; LET-BOUND I32 operand (boxed `char *`) while leaving an I32 PARAMETER/loop binding (already a
+;; real, raw C `int`) and every other existing shape completely unchanged. Confirmed to
+;; independently affect `stdlib/string.prn`'s own `parse-i32`/`is-valid-i32-text?`/`split` too,
+;; not just `lx-advance` -- see `NORTHSTAR.md`'s own Self-hosting section for the full real
+;; accounting (227 real gcc errors found compiling the whole `selfhost/lexer.prn` self-compile
+;; output, vs. the narrower `#error`-directive count this effort's own diagnostic had been
+;; tracking as its primary metric).
 (defn emit-binary-op [(call : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [fn-node (vec/get &(get-field call :children) 0)
         op-c (c-operator-text (get-field fn-node :text))
-        lhs (emit-call-arg (vec/get &(get-field call :children) 1) scope dest)
-        rhs (emit-call-arg (vec/get &(get-field call :children) 2) scope dest)
+        lhs (emit-binary-op-operand (vec/get &(get-field call :children) 1) scope dest)
+        rhs (emit-binary-op-operand (vec/get &(get-field call :children) 2) scope dest)
         parts (vec/new dest)]
     (do
       (vec/push! &parts "(")
@@ -1949,6 +2002,20 @@
     (let [fn-node (vec/get &(get-field expr-node :children) 0)]
       (string/str-eq? (get-field fn-node :text) fn-name))))
 
+;; let-value-is-boxed-i32? -- real, narrow (2026-09-18, S501 continuation): true for exactly the
+;; real `emit-let-value` branches that call `emit-i32-boxed` -- `vec/len` (this file's own special
+;; case above), a binary-op, an or/and/not boolean expression, or a scalar struct-field read.
+;; Deliberately does NOT include `plain-call-shaped?` in general: a plain call's own real return
+;; representation depends on the callee's own real type (a user I32-returning defn IS boxed at
+;; its own definition, matching this file's uniform convention -- but `vec/new`/a struct-returning
+;; function like `new-lexer` are NOT, and this narrow emitter has no return-type registry to tell
+;; them apart generically) -- a real, separate, wider gap, not attempted here. Named precisely so
+;; only the cases this file can be CERTAIN are boxed get registered, never a guess.
+(defn let-value-is-boxed-i32? [(expr-node : &Node) (dest : Arena @ Region)] : Bool
+  (or (plain-call-fn-text-is? expr-node "vec/len" dest)
+      (or (binary-op-call-shaped? expr-node dest)
+          (or (let-value-is-bool-expr? expr-node dest) (get-field-shaped? expr-node dest)))))
+
 (defn emit-let-value [(expr-node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (cond
     ((alloc-call-shaped? expr-node) (emit-alloc-call expr-node scope dest))
@@ -2067,17 +2134,47 @@
     "    Vec "
     "    char *"))
 
+;; LetBindingsResult -- real, named-struct tuple-return stand-in (the same real pattern
+;; LexStep/ParseStep already establish elsewhere in this file), needed here (2026-09-18, S501
+;; continuation) since emit-let-bindings now has TWO real things to hand back to its own caller:
+;; the emitted C text (unchanged), and the real, GROWN scope (each boxed-I32 binding registered
+;; along the way) so emit-let's own body-c and this function's own recursive rest-c both see every
+;; earlier sibling binding's real boxed-ness, not just the caller's original scope.
+;;
+;; Real, live-found compiler bug worked around here, not fixed (a real, separate, pre-existing,
+;; already-documented PARENA compiler bug -- see EMILY/BACKLOG.md S498's own "struct-literal
+;; codegen picks the wrong struct type" finding): this struct's fields were ORIGINALLY named
+;; `text`/`scope`, structurally IDENTICAL to the pre-existing `ParamInfo` struct (same two field
+;; names, same two field types) -- confirmed live, a real `{:text ... :scope ...}` literal here
+;; got silently miscompiled as a `ParamInfo` construction instead (a real gcc "incompatible types"
+;; error, not a silent wrong-value bug, but still a real, confirmed compiler defect). Fields
+;; renamed to `bindings-text`/`binding-scope` specifically to make this struct's own shape
+;; structurally DISTINCT from `ParamInfo`, sidestepping the compiler bug rather than fixing it
+;; (a real, separate, larger undertaking in emit.c's own struct-literal type inference, out of
+;; scope for this pass).
+(defstruct LetBindingsResult
+  (bindings-text  : String @ Region)
+  (binding-scope : (Vec ArenaBinding) @ Region))
+
 (defn emit-let-bindings [(bindings : &Node) (i : I32) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)]
-  : String @ Region
+  : LetBindingsResult @ Region
   (if (>= (+ i 1) (vec/len &(get-field bindings :children)))
-    ""
+    {:bindings-text "" :binding-scope (deref scope)}
     (let [name-node (vec/get &(get-field bindings :children) i)
           expr-node (vec/get &(get-field bindings :children) (+ i 1))
           c-name (mangle (get-field name-node :text) dest)
           expr-c (emit-let-value expr-node scope dest)
           error-prefix (let-value-error-prefix expr-node dest)
           type-prefix (let-binding-c-type-prefix expr-node dest)
-          rest-c (emit-let-bindings bindings (+ i 2) scope dest)
+          ;; Real, additive (S501 continuation): register this binding as BoxedI32 for every
+          ;; sibling binding AFTER it, and the let's own body, when emit-let-value just boxed it.
+          ;; Real name matches resolve-arena-ref's own real lookup key: the RAW, unmangled source
+          ;; text (arena-scope-lookup mangles internally at lookup time, same as every other
+          ;; existing ArenaBinding registration in this file, e.g. emit-with-arena's own pname).
+          grown-scope (if (let-value-is-boxed-i32? expr-node dest)
+                        (arena-scope-extend scope {:name (get-field name-node :text) :kind BoxedI32} dest)
+                        (deref scope))
+          rest (emit-let-bindings bindings (+ i 2) &grown-scope dest)
           parts (vec/new dest)]
       (do
         (vec/push! &parts error-prefix)
@@ -2086,14 +2183,15 @@
         (vec/push! &parts " __attribute__((unused)) = ")
         (vec/push! &parts expr-c)
         (vec/push! &parts ";\n")
-        (vec/push! &parts rest-c)
-        (emit-join-all &parts dest)))))
+        (vec/push! &parts (get-field rest :bindings-text))
+        {:bindings-text (emit-join-all &parts dest) :binding-scope (get-field rest :binding-scope)}))))
 
 (defn emit-let [(node : &Node) (scope : &(Vec ArenaBinding)) (dest : Arena @ Region)] : String @ Region
   (let [bindings (vec/get &(get-field node :children) 1)
-        bindings-c (emit-let-bindings bindings 0 scope dest)
-        body-c (emit-body-forms node 2 scope dest)]
-    (string/concat bindings-c body-c dest)))
+        result (emit-let-bindings bindings 0 scope dest)
+        final-scope (get-field result :binding-scope)
+        body-c (emit-body-forms node 2 &final-scope dest)]
+    (string/concat (get-field result :bindings-text) body-c dest)))
 
 ;; emit-with-arena -- `(with-arena [name region-kw size] body...)` ->
 ;; a real C block declaring a real, cleanup-attributed local `Arena`
@@ -2667,11 +2765,16 @@
             ;; `let` (lx-advance/zeros's own real shape), that let's own bindings must be emitted
             ;; as real C declarations FIRST -- the struct-literal field values (e.g. lx-advance's
             ;; own `:line` field, `(if (= c 10) ...)`) reference them by name, and C requires a
-            ;; local to be declared before it's referenced within the same block.
-            bindings-c (if (let-wrapped-struct-literal-body? body-node)
-                         (emit-let-bindings (vec/get &(get-field body-node :children) 1) 0 scope dest)
-                         "")
-            args-c (emit-struct-literal-args &candidate (deref struct-node) 2 scope dest)
+            ;; local to be declared before it's referenced within the same block. Real, additive
+            ;; (S501 continuation): also threads the let's own real GROWN scope (any boxed-I32
+            ;; bindings it registered) into the struct-literal field emission below, the same
+            ;; real reason emit-let threads it into its own body-c.
+            bindings-result (if (let-wrapped-struct-literal-body? body-node)
+                              (emit-let-bindings (vec/get &(get-field body-node :children) 1) 0 scope dest)
+                              {:bindings-text "" :binding-scope (deref scope)})
+            bindings-c (get-field bindings-result :bindings-text)
+            struct-scope (get-field bindings-result :binding-scope)
+            args-c (emit-struct-literal-args &candidate (deref struct-node) 2 &struct-scope dest)
             parts (vec/new dest)]
         (do
           (vec/push! &parts bindings-c)

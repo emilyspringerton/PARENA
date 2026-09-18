@@ -150,10 +150,12 @@ static inline __attribute__((unused)) ParseStep ParseStep_new(Node node, Lexer l
 typedef enum {
     ArenaKind_TAG_LocalArena,
     ArenaKind_TAG_PointerArena,
+    ArenaKind_TAG_BoxedI32,
 } ArenaKind_Tag;
 typedef struct { ArenaKind_Tag tag; void *value; } ArenaKind;
 static inline __attribute__((unused)) ArenaKind ArenaKind_LocalArena(void) { ArenaKind v; v.tag = ArenaKind_TAG_LocalArena; v.value = NULL; return v; }
 static inline __attribute__((unused)) ArenaKind ArenaKind_PointerArena(void) { ArenaKind v; v.tag = ArenaKind_TAG_PointerArena; v.value = NULL; return v; }
+static inline __attribute__((unused)) ArenaKind ArenaKind_BoxedI32(void) { ArenaKind v; v.tag = ArenaKind_TAG_BoxedI32; v.value = NULL; return v; }
 
 typedef struct {
     char * name;
@@ -163,6 +165,17 @@ static inline __attribute__((unused)) ArenaBinding ArenaBinding_new(char * name,
     ArenaBinding v;
     v.name = name;
     v.kind = kind;
+    return v;
+}
+
+typedef struct {
+    char * bindings_text;
+    Vec binding_scope;
+} LetBindingsResult;
+static inline __attribute__((unused)) LetBindingsResult LetBindingsResult_new(char * bindings_text, Vec binding_scope) {
+    LetBindingsResult v;
+    v.bindings_text = bindings_text;
+    v.binding_scope = binding_scope;
     return v;
 }
 
@@ -296,6 +309,8 @@ int every_call_arg_symbol_or_number_(Node *, int, Arena *);
 int binary_op_symbol_(char *);
 char * c_operator_text(char *);
 int binary_op_call_shaped_(Node *, Arena *);
+int arena_kind_is_boxed_i32_(ArenaKind);
+char * emit_binary_op_operand(Node *, Vec *, Arena *);
 char * emit_binary_op(Node *, Vec *, Arena *);
 char * emit_i32_boxed(char *, Arena *);
 int deref_shaped_(Node *);
@@ -311,12 +326,13 @@ char * emit_call_args(Node *, int, Vec *, Arena *);
 char * emit_plain_call(Node *, Vec *, Arena *);
 int let_value_is_bool_expr_(Node *, Arena *);
 int plain_call_fn_text_is_(Node *, char *, Arena *);
+int let_value_is_boxed_i32_(Node *, Arena *);
 char * emit_let_value(Node *, Vec *, Arena *);
 char * let_value_error_prefix(Node *, Arena *);
 int emit_body_forms_target_statement_shaped_(Node *, int, Arena *);
 char * emit_body_forms(Node *, int, Vec *, Arena *);
 char * let_binding_c_type_prefix(Node *, Arena *);
-char * emit_let_bindings(Node *, int, Vec *, Arena *);
+LetBindingsResult emit_let_bindings(Node *, int, Vec *, Arena *);
 char * emit_let(Node *, Vec *, Arena *);
 char * emit_with_arena(Node *, Vec *, Arena *);
 char * param_type_name(Node *);
@@ -1305,6 +1321,9 @@ char * arena_ref_of(ArenaBinding b __attribute__((unused)), char * c_name __attr
     else if (__match_tmp_13.tag == 1) {
         __match_result_8 = c_name;
     }
+    else if (__match_tmp_13.tag == 2) {
+        __match_result_8 = c_name;
+    }
     return __match_result_8;
 }
 
@@ -1951,11 +1970,48 @@ int binary_op_call_shaped_(Node * expr_node __attribute__((unused)), Arena *dest
     }
 }
 
+int arena_kind_is_boxed_i32_(ArenaKind k __attribute__((unused))) {
+    int __match_result_10 __attribute__((unused)) = {0};
+    ArenaKind __match_tmp_15 = k;
+    if (__match_tmp_15.tag == 2) {
+        __match_result_10 = 1;
+    }
+    else if (__match_tmp_15.tag == 0) {
+        __match_result_10 = 0;
+    }
+    else if (__match_tmp_15.tag == 1) {
+        __match_result_10 = 0;
+    }
+    return __match_result_10;
+}
+
+char * emit_binary_op_operand(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if ((!((emit_node_kind_code((node)->kind) == 3)))) {
+    return emit_call_arg(node, scope, dest);
+    } else {
+    char *text __attribute__((unused)) = (node)->text;
+    char * __match_result_11 __attribute__((unused)) = {0};
+    Option __match_tmp_16 = arena_scope_lookup(scope, text, dest);
+    if (__match_tmp_16.tag == 0) {
+        __match_result_11 = emit_call_arg(node, scope, dest);
+    }
+    else if (__match_tmp_16.tag == 1) {
+        void *b __attribute__((unused)) = __match_tmp_16.value;
+        if (arena_kind_is_boxed_i32_(((*((ArenaBinding *)(b)))).kind)) {
+        __match_result_11 = concat("(int)(intptr_t)", mangle(text, dest), dest);
+        } else {
+        __match_result_11 = emit_call_arg(node, scope, dest);
+        }
+    }
+    return __match_result_11;
+    }
+}
+
 char * emit_binary_op(Node * call __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *fn_node __attribute__((unused)) = vec_get(&((call)->children), 0);
     char *op_c __attribute__((unused)) = c_operator_text((fn_node)->text);
-    char *lhs __attribute__((unused)) = emit_call_arg(vec_get(&((call)->children), 1), scope, dest);
-    char *rhs __attribute__((unused)) = emit_call_arg(vec_get(&((call)->children), 2), scope, dest);
+    char *lhs __attribute__((unused)) = emit_binary_op_operand(vec_get(&((call)->children), 1), scope, dest);
+    char *rhs __attribute__((unused)) = emit_binary_op_operand(vec_get(&((call)->children), 2), scope, dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), "("));
     (void)(vec_push_(&(parts), lhs));
@@ -2091,6 +2147,10 @@ int plain_call_fn_text_is_(Node * expr_node __attribute__((unused)), char * fn_n
     }
 }
 
+int let_value_is_boxed_i32_(Node * expr_node __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (plain_call_fn_text_is_(expr_node, "vec/len", dest) || (binary_op_call_shaped_(expr_node, dest) || (let_value_is_bool_expr_(expr_node, dest) || get_field_shaped_(expr_node, dest))));
+}
+
 char * emit_let_value(Node * expr_node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return (alloc_call_shaped_(expr_node) ? emit_alloc_call(expr_node, scope, dest) : (plain_call_fn_text_is_(expr_node, "vec/len", dest) ? emit_i32_boxed(emit_plain_call(expr_node, scope, dest), dest) : (binary_op_call_shaped_(expr_node, dest) ? emit_i32_boxed(emit_binary_op(expr_node, scope, dest), dest) : (let_value_is_bool_expr_(expr_node, dest) ? emit_i32_boxed(emit_bool_expr(expr_node, scope, dest), dest) : (result_option_ctor_shaped_(expr_node, dest) ? emit_result_option_ctor(expr_node, scope, dest) : (none_shaped_(expr_node) ? "option_none()" : (get_field_shaped_(expr_node, dest) ? emit_i32_boxed(emit_get_field(expr_node, scope, dest), dest) : (plain_call_shaped_(expr_node, dest) ? emit_plain_call(expr_node, scope, dest) : "0 /* see #error above */"))))))));
 }
@@ -2156,9 +2216,9 @@ char * let_binding_c_type_prefix(Node * expr_node __attribute__((unused)), Arena
     }
 }
 
-char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
+LetBindingsResult emit_let_bindings(Node * bindings __attribute__((unused)), int i __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     if (((i + 1) >= vec_len(&((bindings)->children)))) {
-    return "";
+    return LetBindingsResult_new("", (*((Vec *)(scope))));
     } else {
     Node *name_node __attribute__((unused)) = vec_get(&((bindings)->children), i);
     Node *expr_node __attribute__((unused)) = vec_get(&((bindings)->children), (i + 1));
@@ -2166,7 +2226,8 @@ char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attrib
     char *expr_c __attribute__((unused)) = emit_let_value(expr_node, scope, dest);
     char *error_prefix __attribute__((unused)) = let_value_error_prefix(expr_node, dest);
     char *type_prefix __attribute__((unused)) = let_binding_c_type_prefix(expr_node, dest);
-    char *rest_c __attribute__((unused)) = emit_let_bindings(bindings, (i + 2), scope, dest);
+    Vec grown_scope __attribute__((unused)) = (let_value_is_boxed_i32_(expr_node, dest) ? arena_scope_extend(scope, ArenaBinding_new((name_node)->text, ArenaKind_BoxedI32()), dest) : (*((Vec *)(scope))));
+    LetBindingsResult rest __attribute__((unused)) = emit_let_bindings(bindings, (i + 2), &(grown_scope), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), error_prefix));
     (void)(vec_push_(&(parts), type_prefix));
@@ -2174,16 +2235,17 @@ char * emit_let_bindings(Node * bindings __attribute__((unused)), int i __attrib
     (void)(vec_push_(&(parts), " __attribute__((unused)) = "));
     (void)(vec_push_(&(parts), expr_c));
     (void)(vec_push_(&(parts), ";\n"));
-    (void)(vec_push_(&(parts), rest_c));
-    return emit_join_all(&(parts), dest);
+    (void)(vec_push_(&(parts), (rest).bindings_text));
+    return LetBindingsResult_new(emit_join_all(&(parts), dest), (rest).binding_scope);
     }
 }
 
 char * emit_let(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Node *bindings __attribute__((unused)) = vec_get(&((node)->children), 1);
-    char *bindings_c __attribute__((unused)) = emit_let_bindings(bindings, 0, scope, dest);
-    char *body_c __attribute__((unused)) = emit_body_forms(node, 2, scope, dest);
-    return concat(bindings_c, body_c, dest);
+    LetBindingsResult result __attribute__((unused)) = emit_let_bindings(bindings, 0, scope, dest);
+    Vec final_scope __attribute__((unused)) = (result).binding_scope;
+    char *body_c __attribute__((unused)) = emit_body_forms(node, 2, &(final_scope), dest);
+    return concat((result).bindings_text, body_c, dest);
 }
 
 char * emit_with_arena(Node * node __attribute__((unused)), Vec * scope __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2512,8 +2574,10 @@ char * emit_defn_body(Node * defn_node __attribute__((unused)), Node * params __
     Node *body_node __attribute__((unused)) = vec_get(&((defn_node)->children), start);
     Node candidate __attribute__((unused)) = struct_literal_candidate_node(body_node);
     Node *struct_node __attribute__((unused)) = vec_get(known_struct_nodes, struct_idx);
-    char *bindings_c __attribute__((unused)) = (let_wrapped_struct_literal_body_(body_node) ? emit_let_bindings(vec_get(&((body_node)->children), 1), 0, scope, dest) : "");
-    char *args_c __attribute__((unused)) = emit_struct_literal_args(&(candidate), (*((Node *)(struct_node))), 2, scope, dest);
+    LetBindingsResult bindings_result __attribute__((unused)) = (let_wrapped_struct_literal_body_(body_node) ? emit_let_bindings(vec_get(&((body_node)->children), 1), 0, scope, dest) : LetBindingsResult_new("", (*((Vec *)(scope)))));
+    char *bindings_c __attribute__((unused)) = (bindings_result).bindings_text;
+    Vec struct_scope __attribute__((unused)) = (bindings_result).binding_scope;
+    char *args_c __attribute__((unused)) = emit_struct_literal_args(&(candidate), (*((Node *)(struct_node))), 2, &(struct_scope), dest);
     Vec parts __attribute__((unused)) = vec_new(dest);
     (void)(vec_push_(&(parts), bindings_c));
     (void)(vec_push_(&(parts), "    return ("));

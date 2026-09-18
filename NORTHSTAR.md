@@ -1994,6 +1994,78 @@ already named above (a multi-form `let` body needing `do`-block-style statement 
 compile-and-run proof, 3 CHECKs already counted above for `vec-len-of-new`). Full local suite (347
 core tests) + all `test-selfhost-*` targets + `test-emit-llvm` (43/43) all clean, zero regressions.
 
+**Real eleventh step (2026-09-18, same day, "continue parena self host and llm"): the real,
+precisely-named next step from the tenth step above — a new boxed-I32 binding-kind scope — landed,
+scoped narrower than originally described, with the scope-cut named honestly.**
+
+Real design, reusing the existing `ArenaBinding`/`arena-kind` scope-threading mechanism (already
+passed into every function that needed this fix) rather than adding a new parameter to dozens of
+signatures: `ArenaKind` gained a third variant, `BoxedI32`. `emit-let-bindings` now registers a
+binding as `BoxedI32` (for every sibling binding after it, and the let's own body) whenever
+`emit-let-value` just boxed it — a NEW, precisely-scoped predicate, `let-value-is-boxed-i32?`,
+covers exactly the shapes this narrow emitter can be CERTAIN are boxed: a binary-op, an or/and/not
+boolean expression, a scalar struct-field read, or `vec/len`. `emit-binary-op` (which handles BOTH
+arithmetic and comparison operators — confirmed directly, `binary-op-symbol?` includes `=`/`<`/
+`>`/`<=`/`>=` alongside `+`/`-`/`*`/`/`) now routes both operands through a new
+`emit-binary-op-operand`, which unboxes (`(int)(intptr_t)name`) a bare symbol found registered as
+`BoxedI32`, otherwise falling back to the existing, unchanged `emit-call-arg`. `arena-ref-of`
+(the OTHER real consumer of this same scope, used by `resolve-arena-ref` for every OTHER bare-
+symbol position — general call arguments, Ok/Err/Some payloads, struct-literal field values)
+deliberately treats `BoxedI32` the SAME as the existing `PointerArena` case (return the boxed
+reference as-is) — those other positions genuinely want the boxed pointer representation, so only
+`emit-binary-op`'s own dedicated lookup unboxes.
+
+**Real, live-found gcc-level bugs fixed along the way, both caught by actually gcc-compiling the
+result, not trusted from a clean `parena build` exit code**:
+1. `LetBindingsResult` (the new named-struct tuple-return stand-in `emit-let-bindings` needed, to
+   hand back both the emitted text AND the grown scope) was originally given fields `text`/`scope`
+   — structurally IDENTICAL to the pre-existing `ParamInfo` struct (same two field names, same two
+   field types). This is a real, LIVE INSTANCE of the exact struct-literal-codegen compiler bug
+   found (but not fixed) in `S498` (`tcp-listen`/`unix-listen` boxing as the wrong-but-
+   structurally-identical sibling struct) — confirmed live via a real `incompatible types when
+   returning type 'ParamInfo' but 'LetBindingsResult' was expected` gcc error. Worked around (not
+   fixed at the compiler level, matching S498's own precedent) by renaming the fields to
+   `bindings-text`/`binding-scope`, making the two structs structurally distinct.
+2. A `match` expression stored in an intermediate `let` binding before being matched on (`(let
+   [lookup (arena-scope-lookup ...)] (match lookup ...))`) broke this narrow emitter's own
+   Some-payload type-hint resolution — confirmed live via a real `get-field: 'void' isn't a
+   registered defstruct type` error — even though the payload was correctly `deref`'d. Fixed by
+   matching DIRECTLY on the call expression itself (`(match (arena-scope-lookup ...) ...)`), the
+   same real shape `resolve-arena-ref`'s own already-proven-working code already uses — the
+   type-hint mechanism only resolves a Some/Ok payload's real type when the match's own scrutinee
+   is a direct, known-return-type function call, not an intermediate bound name.
+
+**Real, honest, NOT fully closed by this fix, found by re-running the true self-compile
+diagnostic, not assumed from the isolated fix working**: `lx-advance`'s own actual `c` (bound from
+`(lx-peek lx)`, a PLAIN CALL to a user-defined I32-returning function) is deliberately NOT covered
+by `let-value-is-boxed-i32?` — a plain call's own real return representation depends on the
+callee's real return type (I32 → boxed; `vec/new` → real `Vec`; a struct-returning function like
+`new-lexer` → a real, unboxed struct, confirmed live: this file's own generated `int lx =
+new_lexer(src);` is ALSO a real, separate, unfixed type bug, a raw struct assigned to a bare
+`int`), and this narrow emitter has no return-type registry to distinguish them generically. Real,
+measured result: the total real-gcc-error count on the whole `stdlib/string.prn` + `array.prn` +
+`io.prn` + `selfhost/lexer.prn` self-compile output moved from **227 to 226** — a real, small,
+honest number, NOT a large jump, because most of the remaining 226 errors trace to this SAME
+plain-call-return-type gap (`parse-i32`/`is-valid-i32-text?`/`split`/`lx-advance` all have MULTIPLE
+independent reasons to fail, so closing one root cause among several doesn't reduce their own
+total count). What this pass DOES close, real and verified via a dedicated compile-and-run proof
+(`classify`, isolating exactly the binary-op-shaped case): comparisons/arithmetic against a
+`binary-op`/`or`/`and`/`not`/scalar-`get-field`/`vec/len`-shaped let-bound value now correctly
+unbox, a real, if narrower-than-hoped, genuine step.
+
+**Real, precisely-named next step, sharper than before**: plain-call return-type tracking — a
+small registry (function name → {I32-boxed, real-struct-name, Vec, void*, ...}), populated as each
+`defn` is processed (this file already walks every top-level form once for the struct/enum
+pre-pass), consulted by both `let-value-is-boxed-i32?` (widen it to include plain-call-shaped
+calls to a KNOWN-I32-returning function) and `let-binding-c-type-prefix` (fix the `int lx =
+new_lexer(src)` struct-type bug the same registry would also resolve). A real, moderate, well-
+understood next increment, not started this pass.
+
+9 new real assertions (2 CHECKs + a real compile-and-run proof isolating the binary-op case via a
+new `tests/integration/driver_boxed_binop.c`). Full local suite (347) + all `test-selfhost-*` +
+`test-emit-llvm` (52/52, confirming zero cross-contamination with the same day's separate bitwise-
+operator LLVM work) all clean, zero regressions.
+
 ## Status
 
 VS0 lexer/parser done (Apple #14732, commit `3bace34`): 32 unit tests, CI green, real S-expression
