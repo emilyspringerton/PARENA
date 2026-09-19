@@ -6,8 +6,14 @@
 ;; defns -- the exact subset BOTH the C emitter (server, Windows, bots, training) and the Java emitter (Android)
 ;; accept. One .prn, two targets, zero FFI. Cross-target agreement is proven by DEADWEIGHT's generated parity vectors.
 ;;
-;; Card id = kind*3 + tier for ids 0-8 (kind 0 BURST, 1 TANK, 2 SHIELD; tier 0..2). Ids 9-72 are the Guild cards:
-;;   9-30 BURST, 31-51 TANK, 52-72 SHIELD.  id -1 = pass.   Triangle: BURST > TANK > SHIELD > BURST.
+;; KINDS (the tactical triangle): 0 OFFENSE (Red), 1 OPERATIONS (Yellow), 2 DEFENSE (Blue).
+;;   OFFENSE > OPERATIONS > DEFENSE > OFFENSE   (kind-beats: a beats b iff b is the next kind up: 0->1, 1->2, 2->0).
+;; Ids 0-8 are the base line: kind = id/3 (0-2 Offense, 3-5 Operations, 6-8 Defense), tier = id%3. Ids 9-104 are the rest of the
+;; catalog; their kind is a packed digit table (card-kind) because the three colours are interleaved by id, not contiguous.
+;; id -1 = pass.
+;; OPERATIONS keywords (card-keyword): every Operations card carries exactly one -- 1 LOCK (precision targeting: pierce/bypass
+;; defenses), 2 SABOTAGE (system hacks: burns, cancels, disabled cards, hand theft), 3 FLANK (strike a passed/defending ship),
+;; 4 SCAN (intel: bonuses that read the enemy's hull/energy/credits/card), 5 SIPHON (drain or steal the enemy's energy/credits).
 ;;
 ;; EFFECT ENGINE. A card is (kind, cost, power, credit-cost) plus up to two packed effect words (card-fx-a / card-fx-b).
 ;; A word is decimal CCNNPPMAA:  CC channel (what changes), NN condition, PP condition parameter, M amount mode, AA amount.
@@ -20,7 +26,7 @@
 ;;   07 CANCEL opp's card is treated as a pass                  08 COPY play the opp's declared card instead   09 HALVE all damage this round
 ;;   20 HEAL  21 SELFDMG  22 TRUE (unblockable to opp)  23 ENERGY (self +)  24 OENERGY (opp -)  25 NEXTE (self next round +)
 ;;   26 NEXTL (self next round -)  27 ONEXTL (opp next round -)  28 ARMOR  29 VAULT (+)  30 SPEND (self credits -)
-;;   31 OSPEND (opp credits -)  32 BURN opp (AA = dmg*16 + rounds)  33 REGEN self (AA = heal*16 + rounds)  34 LOCK opp hand slots next round
+;;   31 OSPEND (opp credits -)  32 BURN opp (AA = dmg*16 + rounds)  33 REGEN self (AA = heal*16 + rounds)  34 DISABLE opp hand slots next round
 ;;   35 BLIND (hide my energy/armor/credits from opp for AA rounds)  36 SWAP hands  37 REDRAW my hand  38 DISCARD opp cards
 ;;   39 EQUALIZE hulls  40 CHRONO restore hull to start of last round  41 CONVERT energy->armor  42 CLEANSE burn  43 DEBTFREE credits to >=0
 ;; Conditions (NN, param PP):  00 always  01 landed  02 hit  03 countered  04 opp played a card  05 opp passed  06 opp kind == PP
@@ -31,7 +37,7 @@
 ;;   7 dealt*AA/10  8 AA*(20-my hull)/4  9 AA*max(my credits,0)/2
 (module deadweight/card-rules)
 (export start-hull start-energy start-vault max-rounds hand-size num-cards energy-cap
-        card-kind card-tier card-cost card-power card-credit kind-beats is-legal-play
+        card-kind card-keyword card-tier card-cost card-power card-credit kind-beats is-legal-play
         damage-dealt round-start-energy round-start-vault energy-after-play round-winner-by-hull round-winner match-decided
         bankrupt card-substitute card-fx-a card-fx-b fx-ch fx-phase fx-amount)
 
@@ -40,12 +46,27 @@
 (defn start-vault [] : I32 3)
 (defn max-rounds [] : I32 100)
 (defn hand-size [] : I32 4)
-(defn num-cards [] : I32 73)
+(defn num-cards [] : I32 105)
 
 (defn energy-cap [(e : I32)] : I32 (if (> e 6) 6 e))
 
+;; ---- card kind / keyword tables (ids >= 9): packed base-3 / base-6 digit words, 16 / 10 ids per word ----
+(defn pow3 [(n : I32)] : I32
+  (if (= n 0) 1 (if (= n 1) 3 (if (= n 2) 9 (if (= n 3) 27 (if (= n 4) 81 (if (= n 5) 243 (if (= n 6) 729 (if (= n 7) 2187 (if (= n 8) 6561 (if (= n 9) 19683 (if (= n 10) 59049 (if (= n 11) 177147 (if (= n 12) 531441 (if (= n 13) 1594323 (if (= n 14) 4782969 14348907))))))))))))))))
+(defn kind-chunk [(c : I32)] : I32
+  (if (= c 0) 14545359 (if (= c 1) 30373336 (if (= c 2) 38256857 (if (= c 3) 43046683 (if (= c 4) 21525884 (if (= c 5) 202 (if (= c 6) 0 0))))))))
+(defn mod3 [(x : I32)] : I32 (- x (* (/ x 3) 3)))
 (defn card-kind [(id : I32)] : I32
-  (if (< id 9) (/ id 3) (if (< id 31) 0 (if (< id 52) 1 2))))
+  (if (< id 9) (/ id 3) (mod3 (/ (kind-chunk (/ id 16)) (pow3 (- id (* (/ id 16) 16)))))))
+
+(defn pow6 [(n : I32)] : I32
+  (if (= n 0) 1 (if (= n 1) 6 (if (= n 2) 36 (if (= n 3) 216 (if (= n 4) 1296 (if (= n 5) 7776 (if (= n 6) 46656 (if (= n 7) 279936 (if (= n 8) 1679616 10077696))))))))))
+(defn kw-chunk [(c : I32)] : I32
+  (if (= c 0) 27864 (if (= c 1) 47231430 (if (= c 2) 50583558 (if (= c 3) 1215648 (if (= c 4) 3592514 (if (= c 5) 29 (if (= c 6) 1399680 (if (= c 7) 35607998 (if (= c 8) 1179 (if (= c 9) 0 (if (= c 10) 0 0))))))))))))
+(defn mod6 [(x : I32)] : I32 (- x (* (/ x 6) 6)))
+;; Operations keyword: 0 none (Offense/Defense), 1 Lock, 2 Sabotage, 3 Flank, 4 Scan, 5 Siphon.
+(defn card-keyword [(id : I32)] : I32
+  (if (< id 0) 0 (mod6 (/ (kw-chunk (/ id 10)) (pow6 (- id (* (/ id 10) 10)))))))
 
 (defn tier-of-cost [(c : I32)] : I32 (if (<= c 1) 0 (if (<= c 3) 1 2)))
 
@@ -72,7 +93,7 @@
 (defn card-cost [(id : I32)] : I32
   (if (< id 0) 0
     (if (< id 9) (if (= (card-tier id) 0) 1 (if (= (card-tier id) 1) 2 4))
-      (if (< id 25) (cost-lo id) (if (< id 41) (cost-mid id) (if (< id 57) (cost-hi id) (cost-top id)))))))
+      (if (< id 25) (cost-lo id) (if (< id 41) (cost-mid id) (if (< id 57) (cost-hi id) (if (< id 73) (cost-top id) (if (< id 89) (cost-n1 id) (cost-n2 id)))))))))
 
 (defn power-lo [(id : I32)] : I32
   (if (= id 9) 4 (if (= id 10) 8 (if (= id 11) 8 (if (= id 12) 3 (if (= id 13) 5 (if (= id 14) 3 (if (= id 15) 2 (if (= id 16) 2
@@ -94,18 +115,18 @@
 (defn card-power [(id : I32)] : I32
   (if (< id 0) 0
     (if (< id 9) (if (= (card-tier id) 0) 3 (if (= (card-tier id) 1) 6 10))
-      (if (< id 25) (power-lo id) (if (< id 41) (power-mid id) (if (< id 57) (power-hi id) (power-top id)))))))
+      (if (< id 25) (power-lo id) (if (< id 41) (power-mid id) (if (< id 57) (power-hi id) (if (< id 73) (power-top id) (if (< id 89) (power-n1 id) (power-n2 id)))))))))
 
 ;; Black Market cards also cost credits (in addition to energy).
 (defn card-credit [(id : I32)] : I32
-  (if (= id 13) 2 (if (= id 30) 2 (if (= id 51) 3 (if (= id 59) 2 0)))))
+  (if (= id 13) 2 (if (= id 30) 2 (if (= id 51) 3 (if (= id 59) 2 (if (= id 100) 3 0))))))
 
 ;; a beats b iff b is the next kind up the triangle (0->1, 1->2, 2->0).
 (defn kind-beats [(a : I32) (b : I32)] : Bool
   (= b (if (= a 2) 0 (+ a 1))))
 
 (defn is-legal-play [(id : I32) (energy : I32) (vault : I32)] : Bool
-  (and (>= id 0) (and (< id 73) (and (<= (card-cost id) energy) (or (= (card-credit id) 0) (<= (card-credit id) vault))))))
+  (and (>= id 0) (and (< id (num-cards)) (and (<= (card-cost id) energy) (or (= (card-credit id) 0) (<= (card-credit id) vault))))))
 
 ;; hull damage that play `a` deals to the opponent when they play `b` (either may be -1 = pass). Triangle only;
 ;; per-card riders are the fx words below.
@@ -146,14 +167,14 @@
 (defn fx [(ch : I32) (nn : I32) (pp : I32) (m : I32) (a : I32)] : I32
   (+ (* ch 10000000) (+ (* nn 100000) (+ (* pp 1000) (+ (* m 100) a)))))
 
-;; BURST 9-24
+;; cards 9-24
 (defn fxa-lo [(id : I32)] : I32
   (if (= id 9) (fx 23 1 0 0 1)          ;; Call Option: if it lands +1 energy
   (if (= id 10) (fx 21 0 0 0 4)         ;; Overclock: you take 4
   (if (= id 11) (fx 3 0 0 0 4)          ;; Infinity Edge: bypass, at least 4 lands
   (if (= id 12) (fx 1 1 0 3 1)          ;; Rageblade: +1 per two rounds
   (if (= id 13) (fx 22 17 3 0 6)        ;; Kraken Slayer: every 3rd round +6 unblockable
-  (if (= id 14) (fx 1 6 1 0 3)          ;; Statikk Shiv: +3 vs Tank
+  (if (= id 14) (fx 1 6 1 0 3)          ;; Statikk Shiv: +3 vs Operations
   (if (= id 15) (fx 32 1 0 0 35)        ;; Liandry's Torment: burn 2/round x3 if it lands
   (if (= id 16) (fx 1 9 10 0 8)         ;; Death Mark: +8 if opp hull <= 10
   (if (= id 17) (fx 21 0 0 0 4)         ;; Final Spark: you take 4
@@ -168,7 +189,7 @@
   (if (= id 21) (fx 31 0 0 0 2)         ;; Flash Crash: opp loses 2 credits
   (if (= id 22) (fx 21 21 50 0 3)       ;; Yolo Roll: else you take 3
   0)))
-;; BURST 25-30, TANK 31-40
+;; cards 25-40
 (defn fxa-mid [(id : I32)] : I32
   (if (= id 25) (fx 2 0 0 0 1)          ;; Piercing Round: ignore armor
   (if (= id 26) (fx 1 9 8 0 8)          ;; Executioner: +8 if opp hull <= 8
@@ -189,7 +210,7 @@
   (if (= id 35) (fx 21 2 0 0 5)         ;; Naked Short: if you're hit, take 5 more (default)
   (if (= id 36) (fx 8 0 0 0 1)          ;; Hostile Takeover: play their card yourself
   0)))
-;; TANK 41-51, SHIELD 52-56
+;; cards 41-56
 (defn fxa-hi [(id : I32)] : I32
   (if (= id 41) (fx 23 0 0 0 1)         ;; Quartermaster: +1 energy (a staple)
   (if (= id 42) (fx 20 0 0 0 2)         ;; Field Cleric: heal 2 (a staple)
@@ -198,7 +219,7 @@
   (if (= id 45) (fx 23 0 0 0 4)         ;; Bailout Loan: +4 energy
   (if (= id 46) (fx 31 0 0 0 3)         ;; Volatility: opp loses 3 credits
   (if (= id 47) (fx 35 0 0 0 3)         ;; Merkle Blindness: hide my meters 3 rounds
-  (if (= id 48) (fx 34 0 0 0 1)         ;; Corrosion: lock 1 opp slot next round
+  (if (= id 48) (fx 34 0 0 0 1)         ;; Corrosion: disable 1 opp slot next round
   (if (= id 49) (fx 37 0 0 0 1)         ;; Fire Sale: redraw your hand
   (if (= id 50) (fx 7 0 0 0 1)          ;; Total Blackout: cancel opp's card
   (if (= id 51) (fx 36 0 0 0 1)         ;; Realm Warp: swap hands
@@ -213,11 +234,11 @@
   (if (= id 50) (fx 24 0 0 0 6)         ;; Total Blackout: opp loses all energy
   (if (= id 54) (fx 21 16 6 0 4)        ;; Underwrite: liability, hit for 6+ -> take 4 more
   0)))))
-;; SHIELD 57-72
+;; cards 57-72
 (defn fxa-top [(id : I32)] : I32
-  (if (= id 57) (fx 23 6 0 0 2)         ;; Credit Default Swap: stops a Burst -> +2 energy
+  (if (= id 57) (fx 23 6 0 0 2)         ;; Credit Default Swap: stops an Offense card -> +2 energy
   (if (= id 58) (fx 4 0 0 0 1)          ;; Reinsurance Bundle: immune this round
-  (if (= id 59) (fx 5 0 0 0 1)          ;; Immortal Shieldbow: survive lethal at 1
+  (if (= id 59) (fx 5 0 0 0 1)          ;; Immortal Aegisbow: survive lethal at 1
   (if (= id 60) (fx 4 0 0 0 1)          ;; Zhonya's Hourglass: immune this round
   (if (= id 61) (fx 28 0 0 0 4)         ;; Seraph's Embrace: +4 armor
   (if (= id 62) (fx 28 0 0 0 2)         ;; Dead Squares: +2 armor
@@ -226,9 +247,9 @@
   (if (= id 65) (fx 20 0 0 0 6)         ;; Wish: heal 6
   (if (= id 66) (fx 20 0 0 0 8)         ;; Bailout Package: heal 8
   (if (= id 67) (fx 24 7 3 0 2)         ;; Cold Steel: opp played cost 3+ -> opp loses 2 energy
-  (if (= id 68) (fx 41 0 0 0 4)         ;; Mana Shield: up to 4 energy -> armor
+  (if (= id 68) (fx 41 0 0 0 4)         ;; Mana Ward: up to 4 energy -> armor
   (if (= id 69) (fx 39 0 0 0 1)         ;; Corporate Merger: equalize hulls
-  (if (= id 70) (fx 34 0 0 0 2)         ;; Glacial Prison: lock 2 opp slots next round
+  (if (= id 70) (fx 34 0 0 0 2)         ;; Glacial Prison: disable 2 opp slots next round
   (if (= id 71) (fx 40 0 0 0 1)         ;; Chronobreak: restore hull to last round's start
   (fx 29 0 0 0 2)))))))))))))))))       ;; Hush Money: +2 credits
 (defn fxb-top [(id : I32)] : I32
@@ -240,12 +261,66 @@
   (if (= id 72) (fx 31 0 0 0 2)         ;; Hush Money: opp loses 2 credits
   0)))))))
 
+;; ---- cards 73-104 (operations keyword cards + offense/defense fillers) ----
+(defn cost-n1 [(id : I32)] : I32
+  (if (= id 73) 1 (if (= id 74) 3 (if (= id 75) 4 (if (= id 76) 2
+  (if (= id 77) 5 (if (= id 78) 2 (if (= id 79) 3 (if (= id 80) 1
+  (if (= id 81) 2 (if (= id 82) 3 (if (= id 83) 2 (if (= id 84) 3
+  (if (= id 85) 3 (if (= id 86) 2 (if (= id 87) 4 (if (= id 88) 3
+  0)))))))))))))))))
+(defn cost-n2 [(id : I32)] : I32
+  (if (= id 89) 1 (if (= id 90) 2 (if (= id 91) 2 (if (= id 92) 2
+  (if (= id 93) 6 (if (= id 94) 2 (if (= id 95) 3 (if (= id 96) 1
+  (if (= id 97) 1 (if (= id 98) 3 (if (= id 99) 4 (if (= id 100) 5
+  (if (= id 101) 3 (if (= id 102) 1 (if (= id 103) 3 (if (= id 104) 2
+  0)))))))))))))))))
+(defn power-n1 [(id : I32)] : I32
+  (if (= id 73) 3 (if (= id 74) 6 (if (= id 75) 7 (if (= id 76) 4
+  (if (= id 77) 9 (if (= id 78) 3 (if (= id 79) 5 (if (= id 80) 1
+  (if (= id 81) 1 (if (= id 82) 2 (if (= id 83) 2 (if (= id 84) 4
+  (if (= id 85) 4 (if (= id 86) 2 (if (= id 87) 8 (if (= id 88) 8
+  0)))))))))))))))))
+(defn power-n2 [(id : I32)] : I32
+  (if (= id 89) 6 (if (= id 90) 3 (if (= id 91) 4 (if (= id 92) 3
+  (if (= id 93) 14 (if (= id 94) 3 (if (= id 95) 5 (if (= id 96) 3
+  (if (= id 97) 3 (if (= id 98) 8 (if (= id 99) 8 (if (= id 100) 10
+  (if (= id 101) 9 (if (= id 102) 1 (if (= id 103) 6 (if (= id 104) 5
+  0)))))))))))))))))
+(defn fxa-n1 [(id : I32)] : I32
+  (if (= id 73) 20000001 (if (= id 74) 10602004 (if (= id 75) 20000001 (if (= id 76) 10703003
+  (if (= id 77) 20000001 (if (= id 78) 10500005 (if (= id 79) 30000004 (if (= id 80) 10602006
+  (if (= id 81) 10400202 (if (= id 82) 320100050 (if (= id 83) 240100002 (if (= id 84) 60000603
+  (if (= id 85) 10000401 (if (= id 86) 220100003 (if (= id 87) 220100004 (if (= id 88) 210000002
+  0)))))))))))))))))
+(defn fxa-n2 [(id : I32)] : I32
+  (if (= id 89) 210000003 (if (= id 90) 10400003 (if (= id 91) 290100001 (if (= id 92) 11104003
+  (if (= id 93) 220100006 (if (= id 94) 11840007 (if (= id 95) 10000901 (if (= id 96) 11003004
+  (if (= id 97) 11702004 (if (= id 98) 230000001 (if (= id 99) 10601004 (if (= id 100) 10100008
+  (if (= id 101) 210200003 (if (= id 102) 11850005 (if (= id 103) 10500003 (if (= id 104) 210000001
+  0)))))))))))))))))
+(defn fxb-n1 [(id : I32)] : I32
+  (if (= id 73) 0 (if (= id 74) 0 (if (= id 75) 30000003 (if (= id 76) 0
+  (if (= id 77) 10910005 (if (= id 78) 10602002 (if (= id 79) 0 (if (= id 80) 0
+  (if (= id 81) 0 (if (= id 82) 0 (if (= id 83) 230100002 (if (= id 84) 280000003
+  (if (= id 85) 0 (if (= id 86) 0 (if (= id 87) 0 (if (= id 88) 0
+  0)))))))))))))))))
+(defn fxb-n2 [(id : I32)] : I32
+  (if (= id 89) 0 (if (= id 90) 0 (if (= id 91) 0 (if (= id 92) 0
+  (if (= id 93) 0 (if (= id 94) 12140001 (if (= id 95) 0 (if (= id 96) 0
+  (if (= id 97) 0 (if (= id 98) 0 (if (= id 99) 0 (if (= id 100) 0
+  (if (= id 101) 0 (if (= id 102) 0 (if (= id 103) 0 (if (= id 104) 0
+  0)))))))))))))))))
+
+;; Base Operations line (ids 3-5) carries the Flank rider: +1 / +2 / +3 damage against a Defense card.
+(defn base-fx [(id : I32)] : I32
+  (if (= id 3) (fx 1 6 2 0 1) (if (= id 4) (fx 1 6 2 0 2) (if (= id 5) (fx 1 6 2 0 3) 0))))
+
 (defn card-fx-a [(id : I32)] : I32
-  (if (< id 9) 0
-    (if (< id 25) (fxa-lo id) (if (< id 41) (fxa-mid id) (if (< id 57) (fxa-hi id) (fxa-top id))))))
+  (if (< id 9) (base-fx id)
+    (if (< id 25) (fxa-lo id) (if (< id 41) (fxa-mid id) (if (< id 57) (fxa-hi id) (if (< id 73) (fxa-top id) (if (< id 89) (fxa-n1 id) (fxa-n2 id))))))))
 (defn card-fx-b [(id : I32)] : I32
   (if (< id 21) 0
-    (if (< id 25) (fxb-lo id) (if (< id 41) (fxb-mid id) (if (< id 57) (fxb-hi id) (fxb-top id))))))
+    (if (< id 25) (fxb-lo id) (if (< id 41) (fxb-mid id) (if (< id 57) (fxb-hi id) (if (< id 73) (fxb-top id) (if (< id 89) (fxb-n1 id) (fxb-n2 id))))))))
 
 (defn fx-ch [(x : I32)] : I32 (/ x 10000000))
 (defn fx-nn [(x : I32)] : I32 (- (/ x 100000) (* (/ x 10000000) 100)))

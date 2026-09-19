@@ -46,7 +46,7 @@
     (dense-layer w2 b2 &h2 n2 n3 0 dest)))
 
 ;; Heuristic prior for playing `card` (-1 = pass): the existing hand-written archetypes as scores, ~[0,3.1].
-;; arch 0 ripper (Burst-heavy, banks for a tier-2 Burst when `bank` = 1), 1 wall (Tank > Shield > Burst),
+;; arch 0 ripper (Offense-heavy, banks for a tier-2 Offense card when `bank` = 1), 1 wall (Operations > Defense > Offense; the name is historical),
 ;; 2 mirror (prefers the kind that beats the opponent's last kind; last-kind < 0 = none yet).
 (defn heuristic-prior [(arch : I32) (card : I32) (last-kind : I32) (bank : I32)] : F64
   (if (< card 0)
