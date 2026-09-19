@@ -1,0 +1,57 @@
+;; stdlib/big_o/world_rules.prn -- BIG_O world rules: the day/night clock, weather (ported from GFD's MUD weather engine,
+;; GoblinFoxDragon/server/weather/weather.go), and the daytime zombie population. Spec: BIG_O/docs/B2_WORLD.md.
+;; Scalar-only I32/Bool, one expression per defn (same discipline as witness_rules.prn): no RNG (the host pre-rolls
+;; integers 0..99), no state (the host holds the clock/weather/zombies), so every decision is pure and every number a mod
+;; maker might want to retune lives in ONE named defn here. The host announces what happened through REFLUX
+;; (BIG_O/core/reflux_runtime.h); other mods (world_alerts_mod.prn is the worked example) react by polling that log.
+;;
+;;   phase   : 0 DAWN 1 DAY 2 DUSK 3 NIGHT        (minute-of-day 0..1439; 1 sim tick = 1 minute)
+;;   weather : 0 CLEAR 1 OVERCAST 2 RAIN 3 STORM   (fixed cycle, exactly GFD's phaseOrder)
+;;   area    : 0 WASTELAND 1 NEXTOWN 2 OFFICE 3 PARK 4 BASEMENT
+;;   tier    : 0 scavenger 1 hound 2 brute
+(module big-o/world-rules)
+(export phase-for-minute weather-next weather-duration weather-min-minutes weather-max-minutes
+        weather-zombie-pct weather-sight-pct weather-mob-damage-bonus
+        day-cap night-cap area-cap spawn-period-minutes spawn-tier)
+
+;; ---- clock: DAWN 05-07, DAY 07-19, DUSK 19-21, NIGHT 21-05 ----
+(defn phase-for-minute [(minute : I32)] : I32
+  (if (and (>= minute 300) (< minute 420)) 0
+    (if (and (>= minute 420) (< minute 1140)) 1
+      (if (and (>= minute 1140) (< minute 1260)) 2 3))))
+
+;; ---- weather (GFD: Clear -> Overcast -> Rain -> Storm -> Clear, random duration per phase) ----
+(defn weather-next [(w : I32)] : I32 (mod (+ w 1) 4))
+
+;; GFD durations are real seconds (Clear 300-720, Overcast 180-480, Rain 120-360, Storm 60-240); here they are sim minutes,
+;; same ordering (Clear longest, Storm shortest) [invented scale].
+(defn weather-min-minutes [(w : I32)] : I32
+  (if (= w 0) 90 (if (= w 1) 60 (if (= w 2) 45 20))))
+(defn weather-max-minutes [(w : I32)] : I32
+  (if (= w 0) 240 (if (= w 1) 180 (if (= w 2) 150 90))))
+(defn weather-duration [(w : I32) (roll : I32)] : I32
+  (+ (weather-min-minutes w) (/ (* (- (weather-max-minutes w) (weather-min-minutes w)) roll) 99)))
+
+;; Modifiers. mob damage bonus is GFD's own (Storm +3, Rain +1) [taken]; zombie density and outdoor sight are invented.
+(defn weather-zombie-pct [(w : I32)] : I32
+  (if (= w 0) 100 (if (= w 1) 110 (if (= w 2) 125 150))))
+(defn weather-sight-pct [(w : I32)] : I32
+  (if (= w 0) 100 (if (= w 1) 90 (if (= w 2) 75 50))))
+(defn weather-mob-damage-bonus [(w : I32)] : I32
+  (if (= w 3) 3 (if (= w 2) 1 0)))
+
+;; ---- zombie population ----
+(defn day-cap [(area : I32)] : I32
+  (if (= area 0) 12 (if (= area 1) 4 (if (= area 3) 2 0))))
+(defn night-cap [(area : I32)] : I32
+  (if (= area 0) 3 0))
+;; Full daylight cap scaled by weather; thin (a third) at dawn/dusk; at night only the wasteland's permanent residents.
+(defn area-cap [(area : I32) (phase : I32) (weather : I32)] : I32
+  (if (= phase 3) (night-cap area)
+    (if (= phase 1)
+      (/ (* (day-cap area) (weather-zombie-pct weather)) 100)
+      (/ (* (/ (day-cap area) 3) (weather-zombie-pct weather)) 100))))
+
+(defn spawn-period-minutes [] : I32 10)
+(defn spawn-tier [(roll : I32)] : I32
+  (if (< roll 75) 0 (if (< roll 95) 1 2)))
