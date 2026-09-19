@@ -38,7 +38,7 @@
 (defn start-hull [] : I32 20)
 (defn start-energy [] : I32 2)
 (defn start-vault [] : I32 3)
-(defn max-rounds [] : I32 8)
+(defn max-rounds [] : I32 100)
 (defn hand-size [] : I32 4)
 (defn num-cards [] : I32 73)
 
