@@ -41,13 +41,21 @@ static void jb_append(JavaBuf *b, const char *s) {
     b->len += add_len;
 }
 
+/* Formats into an exactly-sized heap buffer. This used to be a fixed char[512], which silently TRUNCATED any expression
+   longer than 511 chars (a long `if` ladder such as DEADWEIGHT's card-definition tables) into invalid Java. */
 static void jb_appendf(JavaBuf *b, const char *fmt, ...) {
-    char tmp[512];
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
+    if (n < 0) { va_end(ap2); return; }
+    char *tmp = malloc((size_t)n + 1);
+    if (!tmp) { va_end(ap2); return; }
+    vsnprintf(tmp, (size_t)n + 1, fmt, ap2);
+    va_end(ap2);
     jb_append(b, tmp);
+    free(tmp);
 }
 
 /* --- small AST helpers, same real shape emit.c's and emit_ts.c's own is_symbol/is_call_named

@@ -1,42 +1,114 @@
-;; stdlib/deadweight/card_rules.prn -- DEADWEIGHT card-mode (VS0) rules, the single source of truth.
-;; EMILY/BACKLOG.md S503-03; rules spec: DEADWEIGHT/docs/CARD_MODE_RULES.md.
+;; stdlib/deadweight/card_rules.prn -- DEADWEIGHT card-mode rules, the single source of truth.
+;; EMILY/BACKLOG.md S503-03 (base 9 cards) + S503-16 (64 new cards: Underwriters' Guild expansion, founder: "ship 64 cards").
+;; Rules spec: DEADWEIGHT/docs/CARD_MODE_RULES.md.
 ;;
-;; Scalar-only ON PURPOSE: every defn is I32/Bool params, one expression, if/arithmetic/comparison
-;; and calls between defns -- the exact subset BOTH the C emitter (server, Windows, bots, training)
-;; and the Java emitter (Android) accept. One .prn, two targets, zero FFI (founder firm constraint:
-;; nothing is added to PARENA's Java target to make this work). Cross-target agreement is proven by
-;; DEADWEIGHT's generated parity vectors, checked by a C test and a plain-JVM Java test.
+;; Scalar-only ON PURPOSE: every defn is I32/Bool params, one expression, if/arithmetic/comparison and calls between
+;; defns -- the exact subset BOTH the C emitter (server, Windows, bots, training) and the Java emitter (Android)
+;; accept. One .prn, two targets, zero FFI. Cross-target agreement is proven by DEADWEIGHT's generated parity vectors.
 ;;
-;; Card id = kind*3 + tier.  kind: 0 BURST, 1 TANK, 2 SHIELD.  tier: 0..2.  id -1 = pass.
-;; Triangle: BURST > TANK > SHIELD > BURST.
+;; Card id = kind*3 + tier for ids 0-8 (kind 0 BURST, 1 TANK, 2 SHIELD; tier 0..2). Ids 9-72 are the Guild cards:
+;;   9-30 BURST, 31-51 TANK, 52-72 SHIELD.  id -1 = pass.   Triangle: BURST > TANK > SHIELD > BURST.
+;;
+;; EFFECT ENGINE. A card is (kind, cost, power, credit-cost) plus up to two packed effect words (card-fx-a / card-fx-b).
+;; A word is decimal CCNNPPMAA:  CC channel (what changes), NN condition, PP condition parameter, M amount mode, AA amount.
+;; The host (core/match.c) owns *sequencing*; this file owns every number and every condition:
+;;   fx-amount(word, context...) -> the integer amount to apply on the word's channel (0 when the condition fails).
+;;
+;; Channels (CC).  Phase 1 (<20) modify the damage exchange; phase 2 (>=20) apply after it.
+;;   01 BONUS extra damage (zeroed if this card is countered)   02 PIERCE ignore armor   03 BYPASS at least AA lands, no counter-reflect
+;;   04 IMMUNE take no attack damage                            05 LIFELINE survive lethal at 1 hull   06 REFLECT return amount as damage
+;;   07 CANCEL opp's card is treated as a pass                  08 COPY play the opp's declared card instead   09 HALVE all damage this round
+;;   20 HEAL  21 SELFDMG  22 TRUE (unblockable to opp)  23 ENERGY (self +)  24 OENERGY (opp -)  25 NEXTE (self next round +)
+;;   26 NEXTL (self next round -)  27 ONEXTL (opp next round -)  28 ARMOR  29 VAULT (+)  30 SPEND (self credits -)
+;;   31 OSPEND (opp credits -)  32 BURN opp (AA = dmg*16 + rounds)  33 REGEN self (AA = heal*16 + rounds)  34 LOCK opp hand slots next round
+;;   35 BLIND (hide my energy/armor/credits from opp for AA rounds)  36 SWAP hands  37 REDRAW my hand  38 DISCARD opp cards
+;;   39 EQUALIZE hulls  40 CHRONO restore hull to start of last round  41 CONVERT energy->armor  42 CLEANSE burn  43 DEBTFREE credits to >=0
+;; Conditions (NN, param PP):  00 always  01 landed  02 hit  03 countered  04 opp played a card  05 opp passed  06 opp kind == PP
+;;   07 opp cost >= PP  08 my hull <= PP  09 opp hull <= PP  10 energy left >= PP  11 opp energy >= PP  12 my credits >= PP
+;;   13 my credits < PP  14 opp credits < PP  15 standoff (nobody hurt)  16 damage taken >= PP  17 round divisible by PP
+;;   18 roll < PP  19 damage dealt >= PP  20 opp kind != PP  21 roll >= PP
+;; Modes (M):  0 AA  1 AA*opp energy  2 AA*opp card cost  3 AA*round/2  4 AA*energy left  5 min(AA,taken)  6 taken*AA/10
+;;   7 dealt*AA/10  8 AA*(20-my hull)/4  9 AA*max(my credits,0)/2
 (module deadweight/card-rules)
-(export start-hull start-energy max-rounds hand-size num-cards energy-cap
-        card-kind card-tier card-cost card-power kind-beats is-legal-play
-        damage-dealt round-start-energy energy-after-play round-winner-by-hull match-decided)
+(export start-hull start-energy start-vault max-rounds hand-size num-cards energy-cap
+        card-kind card-tier card-cost card-power card-credit kind-beats is-legal-play
+        damage-dealt round-start-energy round-start-vault energy-after-play round-winner-by-hull round-winner match-decided
+        bankrupt card-substitute card-fx-a card-fx-b fx-ch fx-phase fx-amount)
 
 (defn start-hull [] : I32 20)
 (defn start-energy [] : I32 2)
+(defn start-vault [] : I32 3)
 (defn max-rounds [] : I32 8)
 (defn hand-size [] : I32 4)
-(defn num-cards [] : I32 9)
+(defn num-cards [] : I32 73)
 
 (defn energy-cap [(e : I32)] : I32 (if (> e 6) 6 e))
 
-(defn card-kind [(id : I32)] : I32 (/ id 3))
-(defn card-tier [(id : I32)] : I32 (- id (* (/ id 3) 3)))
+(defn card-kind [(id : I32)] : I32
+  (if (< id 9) (/ id 3) (if (< id 31) 0 (if (< id 52) 1 2))))
+
+(defn tier-of-cost [(c : I32)] : I32 (if (<= c 1) 0 (if (<= c 3) 1 2)))
+
+(defn card-tier [(id : I32)] : I32
+  (if (< id 9) (- id (* (/ id 3) 3)) (tier-of-cost (card-cost id))))
+
+(defn cost-lo [(id : I32)] : I32
+  (if (= id 9) 2 (if (= id 10) 1 (if (= id 11) 4 (if (= id 12) 3 (if (= id 13) 2 (if (= id 14) 2 (if (= id 15) 3 (if (= id 16) 2
+  (if (= id 17) 5 (if (= id 18) 2 (if (= id 19) 3 (if (= id 20) 2 (if (= id 21) 3 (if (= id 22) 1 (if (= id 23) 1 (if (= id 24) 1
+  1)))))))))))))))))
+(defn cost-mid [(id : I32)] : I32
+  (if (= id 25) 3 (if (= id 26) 4 (if (= id 27) 3 (if (= id 28) 2 (if (= id 29) 2 (if (= id 30) 1 (if (= id 31) 1 (if (= id 32) 2
+  (if (= id 33) 4 (if (= id 34) 2 (if (= id 35) 1 (if (= id 36) 5 (if (= id 37) 3 (if (= id 38) 1 (if (= id 39) 2 (if (= id 40) 3
+  3)))))))))))))))))
+(defn cost-hi [(id : I32)] : I32
+  (if (= id 41) 1 (if (= id 42) 2 (if (= id 43) 2 (if (= id 44) 2 (if (= id 45) 1 (if (= id 46) 2 (if (= id 47) 2 (if (= id 48) 2
+  (if (= id 49) 3 (if (= id 50) 6 (if (= id 51) 4 (if (= id 52) 2 (if (= id 53) 3 (if (= id 54) 1 (if (= id 55) 2 (if (= id 56) 2
+  2)))))))))))))))))
+(defn cost-top [(id : I32)] : I32
+  (if (= id 57) 2 (if (= id 58) 3 (if (= id 59) 3 (if (= id 60) 3 (if (= id 61) 3 (if (= id 62) 1 (if (= id 63) 2 (if (= id 64) 4
+  (if (= id 65) 3 (if (= id 66) 5 (if (= id 67) 2 (if (= id 68) 2 (if (= id 69) 4 (if (= id 70) 4 (if (= id 71) 4 (if (= id 72) 2
+  2)))))))))))))))))
+
 (defn card-cost [(id : I32)] : I32
-  (if (= (card-tier id) 0) 1 (if (= (card-tier id) 1) 2 4)))
+  (if (< id 0) 0
+    (if (< id 9) (if (= (card-tier id) 0) 1 (if (= (card-tier id) 1) 2 4))
+      (if (< id 25) (cost-lo id) (if (< id 41) (cost-mid id) (if (< id 57) (cost-hi id) (cost-top id)))))))
+
+(defn power-lo [(id : I32)] : I32
+  (if (= id 9) 4 (if (= id 10) 8 (if (= id 11) 8 (if (= id 12) 3 (if (= id 13) 5 (if (= id 14) 3 (if (= id 15) 2 (if (= id 16) 2
+  (if (= id 17) 14 (if (= id 18) 1 (if (= id 19) 3 (if (= id 20) 12 (if (= id 21) 3 (if (= id 22) 0 (if (= id 23) 2 (if (= id 24) 9
+  0)))))))))))))))))
+(defn power-mid [(id : I32)] : I32
+  (if (= id 25) 5 (if (= id 26) 6 (if (= id 27) 3 (if (= id 28) 6 (if (= id 29) 3 (if (= id 30) 6 (if (= id 31) 2 (if (= id 32) 4
+  (if (= id 33) 3 (if (= id 34) 0 (if (= id 35) 0 (if (= id 36) 0 (if (= id 37) 0 (if (= id 38) 0 (if (= id 39) 0 (if (= id 40) 2
+  0)))))))))))))))))
+(defn power-hi [(id : I32)] : I32
+  (if (= id 41) 3 (if (= id 42) 4 (if (= id 43) 0 (if (= id 44) 2 (if (= id 45) 0 (if (= id 46) 1 (if (= id 47) 2 (if (= id 48) 0
+  (if (= id 49) 0 (if (= id 50) 0 (if (= id 51) 0 (if (= id 52) 4 (if (= id 53) 3 (if (= id 54) 0 (if (= id 55) 2 (if (= id 56) 2
+  0)))))))))))))))))
+(defn power-top [(id : I32)] : I32
+  (if (= id 57) 3 (if (= id 58) 0 (if (= id 59) 4 (if (= id 60) 0 (if (= id 61) 3 (if (= id 62) 0 (if (= id 63) 5 (if (= id 64) 4
+  (if (= id 65) 0 (if (= id 66) 0 (if (= id 67) 3 (if (= id 68) 1 (if (= id 69) 0 (if (= id 70) 2 (if (= id 71) 0 (if (= id 72) 1
+  0)))))))))))))))))
+
 (defn card-power [(id : I32)] : I32
-  (if (= (card-tier id) 0) 3 (if (= (card-tier id) 1) 6 10)))
+  (if (< id 0) 0
+    (if (< id 9) (if (= (card-tier id) 0) 3 (if (= (card-tier id) 1) 6 10))
+      (if (< id 25) (power-lo id) (if (< id 41) (power-mid id) (if (< id 57) (power-hi id) (power-top id)))))))
+
+;; Black Market cards also cost credits (in addition to energy).
+(defn card-credit [(id : I32)] : I32
+  (if (= id 13) 2 (if (= id 30) 2 (if (= id 51) 3 (if (= id 59) 2 0)))))
 
 ;; a beats b iff b is the next kind up the triangle (0->1, 1->2, 2->0).
 (defn kind-beats [(a : I32) (b : I32)] : Bool
   (= b (if (= a 2) 0 (+ a 1))))
 
-(defn is-legal-play [(id : I32) (energy : I32)] : Bool
-  (and (>= id 0) (and (<= id 8) (<= (card-cost id) energy))))
+(defn is-legal-play [(id : I32) (energy : I32) (vault : I32)] : Bool
+  (and (>= id 0) (and (< id 73) (and (<= (card-cost id) energy) (or (= (card-credit id) 0) (<= (card-credit id) vault))))))
 
-;; hull damage that play `a` deals to the opponent when they play `b` (either may be -1 = pass).
+;; hull damage that play `a` deals to the opponent when they play `b` (either may be -1 = pass). Triangle only;
+;; per-card riders are the fx words below.
 (defn damage-dealt [(a : I32) (b : I32)] : I32
   (if (< a 0) 0
     (if (< b 0)
@@ -47,14 +119,184 @@
         (if (kind-beats (card-kind a) (card-kind b)) (card-power a) 0)))))
 
 (defn round-start-energy [(e : I32)] : I32 (energy-cap (+ e 2)))
+;; Underwriters' stipend: +1 credit every round (capped so an i8 on the wire can't overflow).
+(defn round-start-vault [(v : I32)] : I32 (if (> v 98) 99 (+ v 1)))
 
-;; energy after locking `played` (-1 = pass banks +1).
+;; energy after locking `played` (-1 = pass banks +1); effect energy is applied by the host on top.
 (defn energy-after-play [(e : I32) (played : I32)] : I32
   (if (< played 0) (energy-cap (+ e 1)) (- e (card-cost played))))
 
 ;; 0 = seat 0 ahead, 1 = seat 1 ahead, 2 = draw.
 (defn round-winner-by-hull [(h0 : I32) (h1 : I32)] : I32
   (if (> h0 h1) 0 (if (< h0 h1) 1 2)))
+;; hull first, then credits are the tiebreak (cash is a scoring tiebreak only, never a way to win outright).
+(defn round-winner [(h0 : I32) (h1 : I32) (v0 : I32) (v1 : I32)] : I32
+  (if (> h0 h1) 0 (if (< h0 h1) 1 (if (> v0 v1) 0 (if (< v0 v1) 1 2)))))
 
 (defn match-decided [(h0 : I32) (h1 : I32)] : Bool
   (or (<= h0 0) (<= h1 0)))
+;; Bankruptcy: credits below -6 = asset-stripped, an immediate loss.
+(defn bankrupt [(v : I32)] : Bool (< v (- 0 6)))
+
+;; Dark Pool becomes one of four exotics at reveal: Naked Short (35), Flash Crash (21), Pump & Dump (20), Hostile Takeover (36).
+(defn card-substitute [(id : I32) (roll : I32)] : I32
+  (if (= id 34) (if (< roll 25) 35 (if (< roll 50) 21 (if (< roll 75) 20 36))) id))
+
+;; ---- effect words ----
+(defn fx [(ch : I32) (nn : I32) (pp : I32) (m : I32) (a : I32)] : I32
+  (+ (* ch 10000000) (+ (* nn 100000) (+ (* pp 1000) (+ (* m 100) a)))))
+
+;; BURST 9-24
+(defn fxa-lo [(id : I32)] : I32
+  (if (= id 9) (fx 23 1 0 0 1)          ;; Call Option: if it lands +1 energy
+  (if (= id 10) (fx 21 0 0 0 4)         ;; Overclock: you take 4
+  (if (= id 11) (fx 3 0 0 0 4)          ;; Infinity Edge: bypass, at least 4 lands
+  (if (= id 12) (fx 1 1 0 3 1)          ;; Rageblade: +1 per two rounds
+  (if (= id 13) (fx 22 17 3 0 6)        ;; Kraken Slayer: every 3rd round +6 unblockable
+  (if (= id 14) (fx 1 6 1 0 3)          ;; Statikk Shiv: +3 vs Tank
+  (if (= id 15) (fx 32 1 0 0 35)        ;; Liandry's Torment: burn 2/round x3 if it lands
+  (if (= id 16) (fx 1 9 10 0 8)         ;; Death Mark: +8 if opp hull <= 10
+  (if (= id 17) (fx 21 0 0 0 4)         ;; Final Spark: you take 4
+  (if (= id 18) (fx 1 0 0 1 1)          ;; Short Squeeze: +1 per opp energy
+  (if (= id 19) (fx 1 14 1 0 8)         ;; Margin Call: +8 if opp has no credits
+  (if (= id 20) (fx 21 0 0 0 6)         ;; Pump & Dump: you take 6
+  (if (= id 21) (fx 9 0 0 0 1)          ;; Flash Crash: all damage halved
+  (if (= id 22) (fx 1 18 50 0 9)        ;; Yolo Roll: 50% +9
+  (if (= id 23) (fx 1 5 0 0 4)          ;; Quick Draw: +4 if opp passed
+  (fx 21 2 0 0 5)))))))))))))))))       ;; Glass Cannon: if hit, take 5 more
+(defn fxb-lo [(id : I32)] : I32
+  (if (= id 21) (fx 31 0 0 0 2)         ;; Flash Crash: opp loses 2 credits
+  (if (= id 22) (fx 21 21 50 0 3)       ;; Yolo Roll: else you take 3
+  0)))
+;; BURST 25-30, TANK 31-40
+(defn fxa-mid [(id : I32)] : I32
+  (if (= id 25) (fx 2 0 0 0 1)          ;; Piercing Round: ignore armor
+  (if (= id 26) (fx 1 9 8 0 8)          ;; Executioner: +8 if opp hull <= 8
+  (if (= id 27) (fx 1 8 6 0 11)         ;; Hail Mary: +11 if my hull <= 6
+  (if (= id 28) (fx 1 0 0 0 2)          ;; Iron Dwarf: +2 always
+  (if (= id 29) (fx 24 1 0 0 1)         ;; Pressure: if it lands opp loses 1 energy
+  (if (= id 31) (fx 23 10 3 0 1)        ;; Yield Contract: 3+ energy left -> +1 energy
+  (if (= id 32) (fx 6 2 0 6 5)          ;; Thornmail: reflect half of damage taken
+  (if (= id 33) (fx 28 2 0 6 5)         ;; Heartsteel: armor = half of damage taken
+  (if (= id 35) (fx 23 0 0 0 3)         ;; Naked Short: +3 energy
+  (if (= id 36) (fx 7 0 0 0 1)          ;; Hostile Takeover: cancel opp's card
+  (if (= id 37) (fx 22 4 0 2 2)         ;; Corporate Espionage: opp takes 2x their cost, unblockable
+  (if (= id 38) (fx 23 15 0 0 3)        ;; Synthetic Short: +3 energy on a standoff
+  (if (= id 39) (fx 33 0 0 0 36)        ;; Xeno-Biomass: regen 2/round x4
+  (if (= id 40) (fx 32 0 0 0 21)        ;; Sunfire Aegis: burn 1/round x5
+  0)))))))))))))))
+(defn fxb-mid [(id : I32)] : I32
+  (if (= id 35) (fx 21 2 0 0 5)         ;; Naked Short: if you're hit, take 5 more (default)
+  (if (= id 36) (fx 8 0 0 0 1)          ;; Hostile Takeover: play their card yourself
+  0)))
+;; TANK 41-51, SHIELD 52-56
+(defn fxa-hi [(id : I32)] : I32
+  (if (= id 41) (fx 23 0 0 0 1)         ;; Quartermaster: +1 energy (a staple)
+  (if (= id 42) (fx 20 0 0 0 2)         ;; Field Cleric: heal 2 (a staple)
+  (if (= id 43) (fx 23 0 0 0 2)         ;; Capacitor: gain 2 energy (a trap: you paid 2)
+  (if (= id 44) (fx 29 0 0 0 2)         ;; Dividend Stock: +2 credits
+  (if (= id 45) (fx 23 0 0 0 4)         ;; Bailout Loan: +4 energy
+  (if (= id 46) (fx 31 0 0 0 3)         ;; Volatility: opp loses 3 credits
+  (if (= id 47) (fx 35 0 0 0 3)         ;; Merkle Blindness: hide my meters 3 rounds
+  (if (= id 48) (fx 34 0 0 0 1)         ;; Corrosion: lock 1 opp slot next round
+  (if (= id 49) (fx 37 0 0 0 1)         ;; Fire Sale: redraw your hand
+  (if (= id 50) (fx 7 0 0 0 1)          ;; Total Blackout: cancel opp's card
+  (if (= id 51) (fx 36 0 0 0 1)         ;; Realm Warp: swap hands
+  (if (= id 52) (fx 20 2 0 5 3)         ;; Put Option: heal min(3, taken)
+  (if (= id 53) (fx 4 8 6 0 1)          ;; Stasis Frame: immune if hull <= 6
+  (if (= id 54) (fx 23 0 0 0 1)         ;; Underwrite: +1 energy
+  (if (= id 55) (fx 20 8 8 0 4)         ;; Parametric Policy: heal 4 if hull <= 8
+  (fx 28 2 0 0 3)))))))))))))))))        ;; Replacement Cost Indemnity: if hit, +3 armor
+(defn fxb-hi [(id : I32)] : I32
+  (if (= id 45) (fx 30 0 0 0 4)         ;; Bailout Loan: spend 4 credits (debt)
+  (if (= id 49) (fx 29 0 0 0 2)         ;; Fire Sale: +2 credits
+  (if (= id 50) (fx 24 0 0 0 6)         ;; Total Blackout: opp loses all energy
+  (if (= id 54) (fx 21 16 6 0 4)        ;; Underwrite: liability, hit for 6+ -> take 4 more
+  0)))))
+;; SHIELD 57-72
+(defn fxa-top [(id : I32)] : I32
+  (if (= id 57) (fx 23 6 0 0 2)         ;; Credit Default Swap: stops a Burst -> +2 energy
+  (if (= id 58) (fx 4 0 0 0 1)          ;; Reinsurance Bundle: immune this round
+  (if (= id 59) (fx 5 0 0 0 1)          ;; Immortal Shieldbow: survive lethal at 1
+  (if (= id 60) (fx 4 0 0 0 1)          ;; Zhonya's Hourglass: immune this round
+  (if (= id 61) (fx 28 0 0 0 4)         ;; Seraph's Embrace: +4 armor
+  (if (= id 62) (fx 28 0 0 0 2)         ;; Dead Squares: +2 armor
+  (if (= id 63) (fx 28 0 0 0 2)         ;; Aegis Defender: +2 armor (a staple)
+  (if (= id 64) (fx 6 0 0 6 10)         ;; Monsoon: reflect all damage taken
+  (if (= id 65) (fx 20 0 0 0 6)         ;; Wish: heal 6
+  (if (= id 66) (fx 20 0 0 0 8)         ;; Bailout Package: heal 8
+  (if (= id 67) (fx 24 7 3 0 2)         ;; Cold Steel: opp played cost 3+ -> opp loses 2 energy
+  (if (= id 68) (fx 41 0 0 0 4)         ;; Mana Shield: up to 4 energy -> armor
+  (if (= id 69) (fx 39 0 0 0 1)         ;; Corporate Merger: equalize hulls
+  (if (= id 70) (fx 34 0 0 0 2)         ;; Glacial Prison: lock 2 opp slots next round
+  (if (= id 71) (fx 40 0 0 0 1)         ;; Chronobreak: restore hull to last round's start
+  (fx 29 0 0 0 2)))))))))))))))))       ;; Hush Money: +2 credits
+(defn fxb-top [(id : I32)] : I32
+  (if (= id 57) (fx 29 6 0 0 1)         ;; Credit Default Swap: +1 credit
+  (if (= id 58) (fx 26 0 0 0 2)         ;; Reinsurance Bundle: next round -2 energy
+  (if (= id 60) (fx 26 0 0 0 1)         ;; Zhonya's Hourglass: next round -1 energy
+  (if (= id 64) (fx 42 0 0 0 1)         ;; Monsoon: cleanse burn
+  (if (= id 66) (fx 43 0 0 0 1)         ;; Bailout Package: erase debt
+  (if (= id 72) (fx 31 0 0 0 2)         ;; Hush Money: opp loses 2 credits
+  0)))))))
+
+(defn card-fx-a [(id : I32)] : I32
+  (if (< id 9) 0
+    (if (< id 25) (fxa-lo id) (if (< id 41) (fxa-mid id) (if (< id 57) (fxa-hi id) (fxa-top id))))))
+(defn card-fx-b [(id : I32)] : I32
+  (if (< id 21) 0
+    (if (< id 25) (fxb-lo id) (if (< id 41) (fxb-mid id) (if (< id 57) (fxb-hi id) (fxb-top id))))))
+
+(defn fx-ch [(x : I32)] : I32 (/ x 10000000))
+(defn fx-nn [(x : I32)] : I32 (- (/ x 100000) (* (/ x 10000000) 100)))
+(defn fx-pp [(x : I32)] : I32 (- (/ x 1000) (* (/ x 100000) 100)))
+(defn fx-m [(x : I32)] : I32 (- (/ x 100) (* (/ x 1000) 10)))
+(defn fx-aa [(x : I32)] : I32 (- x (* (/ x 100) 100)))
+(defn fx-phase [(ch : I32)] : I32 (if (< ch 20) 1 2))
+
+;; Context for conditions/amounts: dealt = damage I deal (pre-armor), taken = damage I take (pre-armor),
+;; mk/ok = my/opp card kind (ok -1 = opp passed), oc = opp card cost, mh/oh = my/opp hull, el = my energy left after paying,
+;; oe = opp energy, mv/ov = my/opp credits, rnd = round, roll = this round's 0-99 roll.
+(defn fx-cond-ok [(x : I32) (dealt : I32) (taken : I32) (mk : I32) (ok : I32) (oc : I32) (mh : I32) (oh : I32) (el : I32)
+                  (oe : I32) (mv : I32) (ov : I32) (rnd : I32) (roll : I32)] : Bool
+  (if (= (fx-nn x) 0) (>= x 0)
+  (if (= (fx-nn x) 1) (> dealt 0)
+  (if (= (fx-nn x) 2) (> taken 0)
+  (if (= (fx-nn x) 3) (and (>= ok 0) (kind-beats ok mk))
+  (if (= (fx-nn x) 4) (>= ok 0)
+  (if (= (fx-nn x) 5) (< ok 0)
+  (if (= (fx-nn x) 6) (= ok (fx-pp x))
+  (if (= (fx-nn x) 7) (and (>= ok 0) (>= oc (fx-pp x)))
+  (if (= (fx-nn x) 8) (<= mh (fx-pp x))
+  (if (= (fx-nn x) 9) (<= oh (fx-pp x))
+  (if (= (fx-nn x) 10) (>= el (fx-pp x))
+  (if (= (fx-nn x) 11) (>= oe (fx-pp x))
+  (if (= (fx-nn x) 12) (>= mv (fx-pp x))
+  (if (= (fx-nn x) 13) (< mv (fx-pp x))
+  (if (= (fx-nn x) 14) (< ov (fx-pp x))
+  (if (= (fx-nn x) 15) (and (<= dealt 0) (<= taken 0))
+  (if (= (fx-nn x) 16) (>= taken (fx-pp x))
+  (if (= (fx-nn x) 17) (and (> (fx-pp x) 0) (= (- rnd (* (/ rnd (fx-pp x)) (fx-pp x))) 0))
+  (if (= (fx-nn x) 18) (< roll (fx-pp x))
+  (if (= (fx-nn x) 19) (>= dealt (fx-pp x))
+  (if (= (fx-nn x) 20) (not (= ok (fx-pp x)))
+  (>= roll (fx-pp x))))))))))))))))))))))))
+
+(defn fx-scale [(x : I32) (dealt : I32) (taken : I32) (oc : I32) (mh : I32) (el : I32) (oe : I32) (mv : I32) (rnd : I32)] : I32
+  (if (= (fx-m x) 0) (fx-aa x)
+  (if (= (fx-m x) 1) (* (fx-aa x) oe)
+  (if (= (fx-m x) 2) (* (fx-aa x) oc)
+  (if (= (fx-m x) 3) (/ (* (fx-aa x) rnd) 2)
+  (if (= (fx-m x) 4) (* (fx-aa x) el)
+  (if (= (fx-m x) 5) (if (< taken (fx-aa x)) taken (fx-aa x))
+  (if (= (fx-m x) 6) (/ (* taken (fx-aa x)) 10)
+  (if (= (fx-m x) 7) (/ (* dealt (fx-aa x)) 10)
+  (if (= (fx-m x) 8) (/ (* (fx-aa x) (- 20 mh)) 4)
+  (/ (* (fx-aa x) (if (< mv 0) 0 mv)) 2)))))))))))
+
+(defn fx-amount [(x : I32) (dealt : I32) (taken : I32) (mk : I32) (ok : I32) (oc : I32) (mh : I32) (oh : I32) (el : I32)
+                 (oe : I32) (mv : I32) (ov : I32) (rnd : I32) (roll : I32)] : I32
+  (if (= x 0) 0
+    (if (fx-cond-ok x dealt taken mk ok oc mh oh el oe mv ov rnd roll)
+      (fx-scale x dealt taken oc mh el oe mv rnd)
+      0)))

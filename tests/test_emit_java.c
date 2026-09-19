@@ -218,6 +218,31 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- long `if` ladder: the emitter used to format through a fixed char[512] and silently TRUNCATED any expression
+       past ~511 chars into invalid Java (found live: DEADWEIGHT's 64-card definition tables). The whole ladder, including
+       its last else-value and every closing paren, must survive. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        char src[8192]; size_t n = 0;
+        n += (size_t)snprintf(src + n, sizeof src - n, "(defn ladder [(id : I32)] : I32 ");
+        for (int i = 0; i < 120; i++) n += (size_t)snprintf(src + n, sizeof src - n, "(if (= id %d) %d ", i, i * 7);
+        n += (size_t)snprintf(src + n, sizeof src - n, "4242");
+        for (int i = 0; i < 120; i++) n += (size_t)snprintf(src + n, sizeof src - n, ")");
+        n += (size_t)snprintf(src + n, sizeof src - n, ")");
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "Ladder", &err);
+        CHECK(java != NULL, "a 120-branch if ladder emits successfully");
+        if (java) {
+            CHECK(strstr(java, "4242") != NULL, "the ladder's final else value is present (not truncated away)");
+            CHECK(strstr(java, "(id == 119) ? 833") != NULL, "the last branch condition/value is present");
+            int open = 0, close = 0;
+            for (const char *c = java; *c; c++) { if (*c == '(') open++; else if (*c == ')') close++; }
+            CHECK(open == close, "parentheses are balanced in the emitted Java");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }
