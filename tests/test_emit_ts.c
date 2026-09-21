@@ -161,6 +161,33 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real regression: true/false literals must be recognized (boolean type, not silently
+       mis-typed I32 via the generic param-lookup fallback) -- found live writing fx_rules.prn's
+       own fx-is-crit (2026-09-21), the same real gap the C emitter already closed for
+       firefly.prn's own `(set! (get-field !t :failed) true)`. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn always-false [] : Bool false)";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "a bare `false` literal body emits successfully");
+        CHECK(ts && strstr(ts, "return false;") != NULL, "false lowers to TypeScript's own false, not a mangled identifier");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        /* if this ever regresses to typing true/false as I32, a division using one as an operand
+           would wrongly gain a Math.trunc() it shouldn't. */
+        const char *src = "(defn pick [(a : F64) (b : F64)] : F64 (if true (/ a b) 0.0))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "true used as an if-condition emits successfully");
+        CHECK(ts && strstr(ts, "Math.trunc") == NULL, "a bool literal is never mistaken for an I32 operand in a division truncation decision");
+        arena_free_all(&arena);
+    }
+
     /* --- real regression: `(not x)` must lower to TypeScript's `!`, not a bogus call to a
        never-defined `not(...)` function -- the same real gap already fixed in emit.c/emit_java.c/
        BURROW, found here live dogfooding against card_rules.prn's own fx-cond-ok. --- */

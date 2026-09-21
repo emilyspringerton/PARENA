@@ -234,6 +234,19 @@ static const char *emit_ts_expr(Arena *arena, Node *expr, const TsTypeCtx *ctx, 
             *out_type = "F64";
             return "Math.PI";
         }
+        /* true/false -- a real, latent gap found live writing fx_rules.prn's own fx-is-crit
+           (2026-09-21): the C emitter has recognized these literals since "firefly.prn's own
+           real (set! (get-field !t :failed) true)" (see emit.c's own comment), but this target
+           never had one until now. Without this, "true"/"false" fell through to the generic
+           param-lookup fallback below -- it happened to still emit valid-looking TypeScript
+           (camel_case("true") == "true", a coincidence: TS's own `true` keyword matches), but
+           *out_type was wrongly reported "I32" instead of "boolean", a real latent type-tracking
+           bug waiting to corrupt a future `/` truncation decision the moment a bool literal ever
+           reached one. */
+        if (strcmp(expr->text, "true") == 0 || strcmp(expr->text, "false") == 0) {
+            *out_type = "boolean";
+            return expr->text;
+        }
         const char *p_type = lookup_param_type(ctx, expr->text);
         *out_type = p_type ? p_type : "I32"; /* only reachable for a real param in this v0's grammar */
         return camel_case(arena, expr->text);

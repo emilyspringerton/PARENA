@@ -2804,6 +2804,21 @@ plain `node`, no `tsc`/`ts-node` available in this sandbox) against all 105 card
 (0 mismatches). `DEADWEIGHT/web/`'s own browser client is the first real, live consumer of this
 target beyond MISHRI — see that repo's own `CLAUDE.md`/`README.md`.
 
+**A third real, load-bearing bug (same session, continued dogfooding, founder real-time: "use
+parena to unify the windows and TS versions... dogfood it, eat more of the app")**: `true`/`false`
+symbol literals were never recognized at all — they fell through to the generic param-lookup
+fallback, which happened to still emit *syntactically* valid TypeScript (`camel_case("true") ==
+"true"`, a coincidence: TypeScript's own `true` keyword matches) but wrongly reported the
+expression's type as `"I32"` instead of `"boolean"`, a real latent bug that would have corrupted
+a future `/` truncation decision the moment a bool literal ever reached one directly. Found
+writing `DEADWEIGHT/stdlib/deadweight/fx_rules.prn`'s own `fx-is-crit` (its final `false` branch).
+Fixed the same way the C emitter already recognizes these literals (`src/emit.c`'s own comment:
+"found blocking firefly.prn's own real `(set! (get-field !t :failed) true)`"). `test_emit_ts.c`
+now 34 assertions. `fx_rules.prn` itself is a second, larger real proof of this target: the exact
+scenario/winner/critical/timeline decision logic `DEADWEIGHT/apps/gui/fx.c` (Windows, canonical)
+now calls instead of hand-deriving, dual-compiled to C and TypeScript so the browser client makes
+identical decisions — see `DEADWEIGHT/docs/ANIMATION_AND_AUDIO.md` for the full account.
+
 ### `math` — new package, depends on `core` only
 
 ```clojure

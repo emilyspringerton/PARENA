@@ -1,0 +1,164 @@
+;; stdlib/deadweight/fx_rules.prn -- DEADWEIGHT's round-resolution animation/audio DECISION layer,
+;; the single source of truth for "what scenario is this round, who won, was it a critical, and
+;; when does each stage of the timeline start" -- the exact logic apps/gui/fx.c's fx_begin() and
+;; begin_stages() used to hand-duplicate in C only. Founder real-time (2026-09-21): "use parena to
+;; unify the windows and TS versions, windows is canonical, TS should copy it exactly... dogfood
+;; it, eat more of the app."
+;;
+;; Scalar-only, same discipline as card_rules.prn: every defn is I32/Bool params, one expression,
+;; compiled to C (apps/gui/fx.c now CALLS these instead of re-deriving them) and TypeScript
+;; (web/src/fx.ts calls the exact same functions) via `parena build card_rules.prn fx_rules.prn -o
+;; <target>` -- both files compiled together into one unit so these functions can call card-kind/
+;; card-power/card-cost/kind-beats/card-keyword directly, zero duplication.
+;;
+;; What stays hand-written per platform, on purpose (same "PARENA is the decision, host renders"
+;; idiom every other DEADWEIGHT/PAPERCRAFT/REDGARDEN mod already follows): actually drawing ships/
+;; shields/particles/labels (SDL2 rectangles vs. Canvas2D), actually synthesizing audio (the C
+;; software synth vs. Web Audio oscillators), and decoding ROUND_RESULT's bitmask `flags` fields
+;; into individual 0/1 ints before calling in here (bitwise ops are host-side prep, not part of
+;; this scalar rule set).
+;;
+;; SCENARIO ids (fx-scenario's return value) -- matches apps/gui/fx.c's own `Scenario` enum order
+;; exactly, so C can keep using it as a plain int/cast and the docs/ANIMATION_AND_AUDIO.md names
+;; line up: 0 NONE, 1 BLITZ, 2 BLOCK, 3 BYPASS, 4 MIRROR_OFFENSE, 5 MIRROR_OPERATIONS,
+;; 6 MIRROR_DEFENSE, 7 UNOPPOSED, 8 HOLD_SHIELD, 9 BOTH_PASS, 10 CANCEL.
+;;
+;; CUE ids (fx-clash-cue's return value) -- matches apps/gui/sfx.h's own SfxCue enum order exactly
+;; (0 SFX_BLITZ .. 16 SFX_IMMUNE); the browser keeps its own separate cue NAME table (Web Audio
+;; can't share C's software-synth voices) but indexes it with these same real, shared ids.
+
+;; fx-card-id: the card id that actually resolved for a seat, matching fx.c's own
+;; `S.cardid[s] = eff>=0 ? eff : (cancelled ? declared : -1)`.
+(defn fx-card-id [(eff : I32) (declared : I32) (cancelled : I32)] : I32
+  (if (>= eff 0) eff (if (= cancelled 1) declared -1)))
+
+;; fx-kind-of: -1 for "no card" (pass/fully-cancelled-with-no-declared-card), else card-kind(id).
+(defn fx-kind-of [(id : I32)] : I32
+  (if (< id 0) -1 (card-kind id)))
+
+;; fx-scenario: the real classification apps/gui/fx.c's fx_begin() switch used to inline. The
+;; winning KIND (not just whether a beats b) decides the family -- 0 Offense -> BLITZ, 2 Defense
+;; -> BLOCK, 1 Operations -> BYPASS -- so both the kind-beats-true and kind-beats-false branches
+;; need the same three-way check, just against whichever side's kind actually won. (First
+;; written wrong -- hardcoded BLITZ for the kind-beats-true branch -- caught by a real 64-case
+;; cross-check against the original hand-written C logic before this ever reached fx.c; see
+;; PARENA/CHANGELOG.md 2026-09-21.)
+(defn fx-scenario [(kind-a : I32) (kind-b : I32) (cancelled-a : I32) (cancelled-b : I32)] : I32
+  (if (or (= cancelled-a 1) (= cancelled-b 1)) 10
+    (if (and (< kind-a 0) (< kind-b 0)) 9
+      (if (or (< kind-a 0) (< kind-b 0))
+        (if (= (if (>= kind-a 0) kind-a kind-b) 2) 8 7)
+        (if (= kind-a kind-b) (if (= kind-a 0) 4 (if (= kind-a 1) 5 6))
+          (if (kind-beats kind-a kind-b)
+            (if (= kind-a 0) 1 (if (= kind-a 2) 2 3))
+            (if (= kind-b 0) 1 (if (= kind-b 2) 2 3))))))))
+
+;; fx-winner-seat: 0 or 1, or -1 when there is no real winner (mirror, both-pass, cancel, or one
+;; side fully cancelled). Matches fx.c's own `S.win` (left at -1 unless a real clash/unopposed
+;; hit happened).
+(defn fx-winner-seat [(kind-a : I32) (kind-b : I32) (cancelled-a : I32) (cancelled-b : I32)] : I32
+  (if (or (= cancelled-a 1) (= cancelled-b 1)) -1
+    (if (and (< kind-a 0) (< kind-b 0)) -1
+      (if (< kind-a 0) 1
+        (if (< kind-b 0) 0
+          (if (= kind-a kind-b) -1
+            (if (kind-beats kind-a kind-b) 0 1)))))))
+
+;; fx-is-crit: the "did the winner win BIG" check, one rule per scenario family. dmg-lose/
+;; power-win/power-lose/cost-win are precomputed by the host (it already has card-power/card-cost
+;; for the resolved winner/loser ids via the very same card_rules functions).
+(defn fx-is-crit [(scenario : I32) (dmg-lose : I32) (power-win : I32) (power-lose : I32) (cost-win : I32)] : Bool
+  (if (= scenario 1) (>= dmg-lose 8)
+    (if (= scenario 2) (>= (- power-win power-lose) 3)
+      (if (= scenario 3) (or (>= dmg-lose 8) (>= cost-win 5))
+        false))))
+
+;; fx-clash-duration-ms: the clash-phase length, by scenario + crit -- apps/gui/fx.c's own
+;; begin_stages() switch.
+(defn fx-clash-duration-ms [(scenario : I32) (crit : Bool)] : I32
+  (if (= scenario 1) (if crit 1900 1500)
+    (if (= scenario 2) (if crit 2000 1700)
+      (if (= scenario 3) (if crit 2200 2000)
+        (if (= scenario 4) 1400
+          (if (= scenario 5) 1400
+            (if (= scenario 6) 1400
+              (if (= scenario 7) 1200
+                (if (= scenario 8) 1000
+                  (if (= scenario 9) 700
+                    (if (= scenario 10) 1100 1400)))))))))))
+
+;; fx-clash-cue: which SfxCue (by index, matching sfx.h's enum order) plays as the clash stinger.
+;; kw is card-keyword of the winning card (only meaningful when scenario = 3, BYPASS).
+(defn fx-clash-cue [(scenario : I32) (crit : Bool) (kw : I32)] : I32
+  (if (= scenario 1) (if crit 1 0)
+    (if (= scenario 2) (if crit 3 2)
+      (if (= scenario 3)
+        (if crit 9 (if (= kw 1) 4 (if (= kw 2) 5 (if (= kw 3) 6 (if (= kw 4) 7 8)))))
+        (if (= scenario 4) 10
+          (if (= scenario 5) 11
+            (if (= scenario 6) 12
+              (if (= scenario 7) 13
+                (if (= scenario 8) 16
+                  (if (= scenario 9) 14
+                    (if (= scenario 10) 15 14)))))))))))
+
+;; --- timeline stage start times (ms), strictly sequential, matching begin_stages()'s own
+;; running-total layout exactly. has-hull/has-armor/has-econ/has-stat are I32 0/1 (not Bool --
+;; used arithmetically as a stage-duration multiplier, same convention card_rules.prn already
+;; uses for its own 0/1 flag params). ---
+
+(defn fx-clash0 [] : I32 600)
+
+(defn fx-clash1 [(clash-dur : I32)] : I32
+  (+ (fx-clash0) clash-dur))
+
+(defn fx-hull0 [(clash-dur : I32)] : I32
+  (+ (fx-clash1 clash-dur) 220))
+
+(defn fx-hull1 [(clash-dur : I32) (has-hull : I32)] : I32
+  (+ (fx-hull0 clash-dur) (* has-hull 950)))
+
+(defn fx-armor0 [(clash-dur : I32) (has-hull : I32)] : I32
+  (+ (fx-hull1 clash-dur has-hull) (* has-hull 120)))
+
+(defn fx-armor1 [(clash-dur : I32) (has-hull : I32) (has-armor : I32)] : I32
+  (+ (fx-armor0 clash-dur has-hull) (* has-armor 850)))
+
+(defn fx-econ0 [(clash-dur : I32) (has-hull : I32) (has-armor : I32)] : I32
+  (+ (fx-armor1 clash-dur has-hull has-armor) (* has-armor 100)))
+
+(defn fx-econ1 [(clash-dur : I32) (has-hull : I32) (has-armor : I32) (has-econ : I32)] : I32
+  (+ (fx-econ0 clash-dur has-hull has-armor) (* has-econ 950)))
+
+(defn fx-stat0 [(clash-dur : I32) (has-hull : I32) (has-armor : I32) (has-econ : I32)] : I32
+  (+ (fx-econ1 clash-dur has-hull has-armor has-econ) (* has-econ 100)))
+
+(defn fx-stat1 [(clash-dur : I32) (has-hull : I32) (has-armor : I32) (has-econ : I32) (has-stat : I32)] : I32
+  (+ (fx-stat0 clash-dur has-hull has-armor has-econ) (* has-stat 750)))
+
+(defn fx-settle0 [(clash-dur : I32) (has-hull : I32) (has-armor : I32) (has-econ : I32) (has-stat : I32)] : I32
+  (fx-stat1 clash-dur has-hull has-armor has-econ has-stat))
+
+(defn fx-timeline-total-ms [(clash-dur : I32) (has-hull : I32) (has-armor : I32) (has-econ : I32) (has-stat : I32)] : I32
+  (min-i32 (+ (fx-settle0 clash-dur has-hull has-armor has-econ has-stat) 320) 9000))
+
+(defn min-i32 [(a : I32) (b : I32)] : I32
+  (if (< a b) a b))
+
+;; --- "does this stage exist" (has-hull/has-armor/has-econ/has-stat above are computed by the
+;; host from these, as an I32 0/1 -- kept here as the same real classification rule, not
+;; duplicated ad hoc, so C and TypeScript agree on exactly when a stage fires. energy-delta-*
+;; is 0 when unknown (the host already resolves the FX_UNKNOWN sentinel before calling in); vault
+;; deltas are 0 when either side is hidden (the host already resolves the -128 sentinel too). ---
+
+(defn fx-has-hull [(dmg-you : I32) (dmg-opp : I32) (heal-you : I32) (heal-opp : I32)] : Bool
+  (or (> dmg-you 0) (or (> dmg-opp 0) (or (> heal-you 0) (> heal-opp 0)))))
+
+(defn fx-has-armor [(armor-before-you : I32) (armor-after-you : I32) (armor-before-opp : I32) (armor-after-opp : I32)] : Bool
+  (or (not (= armor-after-you armor-before-you)) (not (= armor-after-opp armor-before-opp))))
+
+(defn fx-has-econ [(energy-delta-you : I32) (energy-delta-opp : I32) (vault-delta-you : I32) (vault-delta-opp : I32)] : Bool
+  (or (not (= energy-delta-you 0)) (or (not (= energy-delta-opp 0)) (or (not (= vault-delta-you 0)) (not (= vault-delta-opp 0))))))
+
+(defn fx-has-stat [(new-status-you : I32) (new-status-opp : I32) (disabled-you : I32) (disabled-opp : I32) (swapped : I32)] : Bool
+  (or (not (= new-status-you 0)) (or (not (= new-status-opp 0)) (or (not (= disabled-you 0)) (or (not (= disabled-opp 0)) (not (= swapped 0)))))))
