@@ -18,8 +18,17 @@
  * Found for real (not assumed) getting stdlib/net/tcp.prn's new
  * tcp_connect_impl to actually gcc-compile -- a plain #include
  * <netdb.h> alone was not enough. 200112L = POSIX.1-2001, the version
- * that defines getaddrinfo. */
+ * that defines getaddrinfo.
+ *
+ * Guarded with #ifndef (S508e, found live): a host program that already defines
+ * _POSIX_C_SOURCE to something else before including this header (DEADWEIGHT's own core/net.h
+ * defines 200809L, a real, higher POSIX version and strict superset of 200112L's own surface,
+ * before core/http.c pulls this header in) would otherwise get it silently clobbered to this
+ * lower value, tripping glibc's own "_POSIX_C_SOURCE redefined" hard error under -Werror. Only
+ * define it here if nothing already has. */
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200112L
+#endif
 /* _DEFAULT_SOURCE alongside _POSIX_C_SOURCE (both may coexist under glibc,
  * unlike _POSIX_C_SOURCE alone) -- needed for pty_open_impl below:
  * forkpty/openpty are a real glibc/BSD extension declared in <pty.h>, not
@@ -28,7 +37,9 @@
  * actually see forkpty's declaration, the same "define the feature-test
  * macro before any system header, verify by actually compiling" discipline
  * tcp_connect_impl's own header comment above already documents. */
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
 #include <stddef.h>
 #include <string.h>
@@ -1603,6 +1614,25 @@ static inline char *tls_read_impl(int handle, Arena *dest) {
     if (n < 0) n = 0;
     buf[n] = '\0';
     return (char *)buf;
+}
+
+/* tls_read_into_impl -- buffer-oriented sibling of tls_read_impl above, for a real C host (like
+ * DEADWEIGHT's own core/http.c) that wants raw TLS I/O without pulling in PARENA's Arena/String
+ * machinery -- same "take only the real FFI primitive, not the rest of the runtime" discipline
+ * PARENA_NO_GRAPHICS already establishes for SDL2 elsewhere in this file. Writes up to cap-1
+ * bytes into buf (NUL-terminated), returns bytes read, 0 on timeout/idle, -1 on a real error. */
+static inline int tls_read_into_impl(int handle, char *buf, size_t cap) {
+    if (handle < 0 || handle >= TLS_MAX_HANDLES || !g_parena_tls_handles[handle].in_use) return -1;
+    ParenaTlsHandle *h = &g_parena_tls_handles[handle];
+    struct pollfd pfd;
+    pfd.fd = h->net.fd;
+    pfd.events = POLLIN;
+    int pr = poll(&pfd, 1, 30000);
+    if (pr <= 0) return 0;
+    int n = mbedtls_ssl_read(&h->ssl, (unsigned char *)buf, cap - 1);
+    if (n < 0) return (n == MBEDTLS_ERR_SSL_TIMEOUT || n == MBEDTLS_ERR_SSL_WANT_READ) ? 0 : -1;
+    buf[n] = '\0';
+    return n;
 }
 
 static inline int tls_write_impl(int handle, const char *s) {
