@@ -273,6 +273,31 @@ static const char *emit_ts_expr(Arena *arena, Node *expr, const TsTypeCtx *ctx, 
         return result;
     }
 
+    /* `(not x)` -- real, genuine gap found live dogfooding this emitter against
+       card_rules.prn's own fx-cond-ok (2026-09-21) -- the SAME real gap already found and fixed
+       for src/emit.c (2026-08-21), src/emit_java.c (SPIDERBEETLE, 2026-08-30's own kanban card
+       32445324) and BURROW/emit_c.go+emit_go.go, this target had simply never hit a real .prn
+       using `not` yet either. `not` is a real, distinct 1-argument form, not a 2-argument binop,
+       so without this it fell through into the generic call fallback below, mangling into a
+       bogus call to a never-defined TypeScript function `not(...)`. TypeScript's `!` is the exact
+       real equivalent. */
+    if (strcmp(head, "not") == 0) {
+        if (expr->child_count != 2) {
+            *out_error = "emit_ts: not requires exactly 1 operand";
+            return NULL;
+        }
+        const char *inner_type;
+        const char *inner = emit_ts_expr(arena, expr->children[1], ctx, out_error, &inner_type);
+        if (!inner) return NULL;
+        *out_type = "boolean";
+        TsBuf b;
+        tb_init(&b);
+        tb_appendf(&b, "(!(%s))", inner);
+        const char *result = arena_strdup(arena, b.data, b.len);
+        tb_free(&b);
+        return result;
+    }
+
     /* real, narrow binop set -- exactly 2 operands, matching every real call site this mirrors. */
     const char *ts_op = find_binop(head);
     if (ts_op) {

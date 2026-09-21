@@ -161,6 +161,20 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- real regression: `(not x)` must lower to TypeScript's `!`, not a bogus call to a
+       never-defined `not(...)` function -- the same real gap already fixed in emit.c/emit_java.c/
+       BURROW, found here live dogfooding against card_rules.prn's own fx-cond-ok. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn negate [(a : Bool)] : Bool (not a))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "(not x) emits successfully");
+        CHECK(ts && strstr(ts, "(!(a))") != NULL, "(not x) lowers to TypeScript's ! negation, not a bogus not(...) call");
+        arena_free_all(&arena);
+    }
+
     /* --- real regression: I32/I32 division must truncate toward zero (Math.trunc), matching
        C's and Java's own `/` on int operands -- found live dogfooding this emitter against
        DEADWEIGHT's card_rules.prn (2026-09-21), whose packed-bitfield decode chain silently broke
