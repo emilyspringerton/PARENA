@@ -1,0 +1,88 @@
+;; stdlib/net/tls.prn — depends on string. Real, audited-library FFI binding to mbedTLS
+;; (runtime/parena_runtime.h's own PARENA_WITH_TLS block, S508e) — never a hand-rolled crypto
+;; implementation. Founder real-time pushback accepted directly: "never hand-roll TLS crypto in
+;; an immature DSL with no cryptographic primitives" -- this file is thin FFI glue over a real,
+;; independently-verified TLS stack, the same real "wrap it, never reimplement it" discipline
+;; net/tcp.prn's own raw-syscall wrappers already establish for plain sockets.
+;;
+;; Opt-in: a consumer must compile with PARENA_WITH_TLS defined (see runtime/parena_runtime.h's
+;; own header comment on this file for why it's opt-in, unlike sockets/SDL2). Requires
+;; libmbedtls-dev at build time and a real CA bundle at runtime
+;; (PARENA_TLS_CA_BUNDLE_PATH, default /etc/ssl/certs/ca-certificates.crt -- Linux-only for now,
+;; see the runtime header's own note on the real, separate Windows CA-loading gap).
+;;
+;; Handle shape: tls-connect returns a TlsStream wrapping a small I32 handle (an index into the
+;; runtime's own fixed-size context table), not a raw OS fd the way TcpStream's fd is -- PARENA
+;; has no I64/pointer scalar type yet (STDLIB.md's own documented gap), and a real TLS session
+;; needs more state alive together (net context, ssl context, config, RNG) than a bare fd can
+;; represent. Certificate verification is hardcoded REQUIRED in the runtime glue, not a caller-
+;; controlled parameter here -- there is no way to construct a TlsStream with verification
+;; disabled through this API.
+
+(module net/tls)
+(import string)
+(export tls-connect tls-read tls-write tls-close TlsStream TlsError)
+
+(defstruct TlsStream
+  (handle : I32))
+
+(defenum TlsError
+  (ConnectionFailed)   ;; TCP connect, TLS config, or handshake itself failed
+  (CertificateInvalid) ;; connected and handshook, but certificate/hostname verification failed
+  (Other))
+
+;; ---- raw FFI primitives -- the only #target bodies in this file, each a single C expression
+;; against runtime/parena_runtime.h's own tls_*_impl functions, no boxing (same discipline
+;; net/tcp.prn's own header comment documents finding the hard way: #target is trusted verbatim
+;; with no auto-boxing, so every Result/struct here is built in ordinary PARENA syntax around
+;; these raw calls, never returned directly from a #target body).
+
+(defn raw-tls-connect [(host : String @ Region) (port : I32)]
+  : I32
+  #target
+  {:c (inline-c "tls_connect_impl(host, port)")})
+
+(defn raw-tls-read [(handle : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "tls_read_impl(handle, dest)")})
+
+(defn raw-tls-write [(handle : I32) (data : String @ Region)]
+  : I32
+  #target
+  {:c (inline-c "tls_write_impl(handle, data)")})
+
+(defn raw-tls-close [(handle : I32)]
+  : I32
+  #target
+  {:c (inline-c "tls_close_impl(handle)")})
+
+;; tls-connect -- the runtime glue's own tls_connect_impl collapses every real failure mode
+;; (TCP connect, TLS config, handshake, AND certificate verification) into a single -1 return, the
+;; same coarse-but-honest signal net/tcp.prn's own tcp-connect doc comment already accepts for
+;; getaddrinfo's own richer error space. A caller that specifically needs to distinguish "server
+;; unreachable" from "certificate is wrong" needs a real, separate runtime-side signal -- not
+;; built here, named as a real, honest limitation rather than a fabricated CertificateInvalid
+;; that this API can never actually produce today.
+(defn tls-connect [(host : String @ :region/scratch) (port : I32) (dest : Arena @ Region)]
+  : (Result TlsStream TlsError) @ Region
+  (let [handle (raw-tls-connect host port)]
+    (if (< handle 0)
+      (Err ConnectionFailed)
+      (Ok {:handle handle}))))
+
+(defn tls-read [(!s : &mut TlsStream) (dest : Arena @ Region)]
+  : (Result String TlsError) @ Region
+  (Ok (raw-tls-read (get-field !s :handle) dest)))
+
+(defn tls-write [(!s : &mut TlsStream) (data : String @ Region) (dest : Arena @ Region)]
+  : (Result I32 TlsError) @ Region
+  (if (< (raw-tls-write (get-field !s :handle) data) 0)
+    (Err Other)
+    (Ok 0)))
+
+(defn tls-close [(!s : &mut TlsStream) (dest : Arena @ Region)]
+  : (Result Unit TlsError) @ Region
+  (if (< (raw-tls-close (get-field !s :handle)) 0)
+    (Err Other)
+    (Ok unit)))

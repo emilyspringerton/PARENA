@@ -333,6 +333,20 @@ test-net-udp: build
 		runtime/parena_runtime.c -o /tmp/test_net_udp_bin -lm
 	/tmp/test_net_udp_bin
 
+# test-net-tls -- real end-to-end verification of stdlib/net/tls.prn (S508e), mbedTLS via FFI.
+# Requires libmbedtls-dev (sudo-queue/ has the permanent system-wide install script) and real
+# network access to a real HTTPS server (defaults to https://okemily.com -- TLS_TEST_HOST/
+# TLS_TEST_PORT env vars override). MBEDTLS_CFLAGS/MBEDTLS_LDFLAGS follow this Makefile's own
+# AVR_TOOLCHAIN_ROOT-style ?= override convention -- defaults assume a standard system install.
+MBEDTLS_CFLAGS ?=
+MBEDTLS_LDFLAGS ?= -lmbedtls -lmbedx509 -lmbedcrypto
+test-net-tls: build
+	./parena build stdlib/string.prn stdlib/net/tls.prn -o tests/test_net_tls_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -DPARENA_WITH_TLS -DPARENA_NO_GRAPHICS \
+		-I runtime -I tests $(MBEDTLS_CFLAGS) tests/test_net_tls.c \
+		runtime/parena_runtime.c -o /tmp/test_net_tls_bin -lm $(MBEDTLS_LDFLAGS)
+	/tmp/test_net_tls_bin
+
 # test-pentest-dot11 -- real end-to-end verification of stdlib/pentest/dot11.prn (KISMET_WIRELESS
 # _NORTHSTAR.md's own real Phase 1: a native PARENA Radiotap+802.11 Beacon frame parser, kanban
 # PENT-0011). Real, native PARENA (no FFI/host-glue needed, unlike pcap/scan above) -- tests

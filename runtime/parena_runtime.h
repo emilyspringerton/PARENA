@@ -145,6 +145,26 @@
 #include <SDL2/SDL_ttf.h>
 #endif /* PARENA_NO_GRAPHICS */
 
+/* net/tls.prn's own real host glue (S508e, 2026-09-21) -- mbedTLS, opt-IN via PARENA_WITH_TLS
+ * (the inverse of PARENA_NO_GRAPHICS's opt-out shape above, deliberately): unlike sockets
+ * (always in libc) or SDL2 (already established as "unconditionally available, harmless if
+ * unused" on this box), mbedTLS is a real, heavier third-party dependency most PARENA consumers
+ * (BIG_O/SPIDERBEETLE/etc.'s own scalar game-logic .prn files, which never touch the network at
+ * all) have no reason to pull in just to compile. A consumer that DOES want TLS (DEADWEIGHT's
+ * own client, talking to IDUNA over the public internet) defines PARENA_WITH_TLS before
+ * including this header. Requires libmbedtls-dev (Debian/Ubuntu package name; real, present on
+ * this box, extracted without root via `apt-get download` + `dpkg-deb -x` for this session's own
+ * live verification -- see sudo-queue/ for the permanent system-wide install). */
+#ifdef PARENA_WITH_TLS
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/error.h>
+#include <poll.h>
+#endif /* PARENA_WITH_TLS */
+
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
     size_t used;
@@ -1457,6 +1477,163 @@ static inline int tcp_write_impl(int fd, const char *s) {
 static inline int tcp_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
+
+#ifdef PARENA_WITH_TLS
+/* net/tls.prn real host glue (S508e, 2026-09-21) -- founder real-time, DEADWEIGHT's C client had
+ * zero TLS support and defaulted to a plaintext IDUNA URL, a real shipping bug for a client that
+ * has to reach the public internet. Explicit, deliberate pushback given and accepted before this
+ * was written: never hand-roll TLS crypto in an immature DSL with no cryptographic primitives --
+ * this FFI-binds the real, audited mbedTLS library instead (same "wrap a real library via FFI,
+ * never reimplement it" discipline this monorepo already applies elsewhere, e.g. MIXFORGE's own
+ * planned FFI-bound libsqlite3 rather than a hand-rolled SQL engine).
+ *
+ * Live-verified end to end against the real production server (https://okemily.com, real
+ * ECDSA/TLS1.2 handshake, real Strict-Transport-Security response) BEFORE this code was written,
+ * via a standalone throwaway C harness -- confirmed both that a valid handshake succeeds AND that
+ * verification genuinely rejects a wrong hostname (verify_flags nonzero), not just that "a
+ * handshake completed."
+ *
+ * Handle shape: PARENA has no I64/pointer scalar type (STDLIB.md's own documented gap), so unlike
+ * tcp_connect_impl's bare OS fd, tls_connect_impl returns a small I32 INDEX into a fixed-size
+ * table of heap-resident mbedTLS context bundles here in the runtime -- the same "opaque small
+ * integer handle, not a raw pointer" shape a real OS file descriptor already is, just
+ * runtime-managed instead of kernel-managed. TLS_MAX_HANDLES=64 is a real, deliberate cap (a game
+ * client needs at most a small handful of concurrent HTTPS calls to IDUNA), not a load-bearing
+ * production server limit -- a long-running multi-tenant service embedding this would need a
+ * dynamically-grown table, real, separate, not-yet-needed scope.
+ *
+ * The CA trust store is loaded ONCE, lazily, shared read-only across every handle (parsing the
+ * ~180KB system bundle on every single connect would be real, wasteful, avoidable work) -- never
+ * skip verification (MBEDTLS_SSL_VERIFY_REQUIRED is hardcoded, not a caller-controlled parameter)
+ * to make this impossible to accidentally ship without cert checking. */
+#define TLS_MAX_HANDLES 64
+typedef struct {
+    int in_use;
+    mbedtls_net_context net;
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_entropy_context entropy;
+} ParenaTlsHandle;
+static ParenaTlsHandle g_parena_tls_handles[TLS_MAX_HANDLES];
+static mbedtls_x509_crt g_parena_tls_cacert;
+static int g_parena_tls_cacert_loaded = 0;
+
+/* CA bundle path is a real, honest Linux-only assumption (Debian/Ubuntu's own
+ * ca-certificates package convention) -- Windows has no equivalent single-file bundle at a
+ * fixed path; the mingw cross-build needs its own real, separate CA-loading strategy (embed a
+ * bundle, or use Windows' own certificate store via CryptoAPI), named as real, scoped,
+ * not-yet-done follow-up work rather than silently assumed to work cross-platform. */
+#ifndef PARENA_TLS_CA_BUNDLE_PATH
+#define PARENA_TLS_CA_BUNDLE_PATH "/etc/ssl/certs/ca-certificates.crt"
+#endif
+
+static inline int tls_connect_impl(const char *host, int port) {
+    int slot = -1;
+    for (int i = 0; i < TLS_MAX_HANDLES; i++) if (!g_parena_tls_handles[i].in_use) { slot = i; break; }
+    if (slot < 0) return -1; /* table full */
+    ParenaTlsHandle *h = &g_parena_tls_handles[slot];
+    mbedtls_net_init(&h->net);
+    mbedtls_ssl_init(&h->ssl);
+    mbedtls_ssl_config_init(&h->conf);
+    mbedtls_ctr_drbg_init(&h->ctr_drbg);
+    mbedtls_entropy_init(&h->entropy);
+
+    const char *pers = "parena_tls";
+    if (mbedtls_ctr_drbg_seed(&h->ctr_drbg, mbedtls_entropy_func, &h->entropy,
+                               (const unsigned char *)pers, strlen(pers)) != 0) {
+        return -1;
+    }
+    if (!g_parena_tls_cacert_loaded) {
+        mbedtls_x509_crt_init(&g_parena_tls_cacert);
+        if (mbedtls_x509_crt_parse_file(&g_parena_tls_cacert, PARENA_TLS_CA_BUNDLE_PATH) < 0) {
+            return -1; /* CA bundle missing/unreadable -- fail closed, never connect without it */
+        }
+        g_parena_tls_cacert_loaded = 1;
+    }
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (mbedtls_net_connect(&h->net, host, portstr, MBEDTLS_NET_PROTO_TCP) != 0) return -1;
+    if (mbedtls_ssl_config_defaults(&h->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                     MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+        return -1;
+    }
+    mbedtls_ssl_conf_ca_chain(&h->conf, &g_parena_tls_cacert, NULL);
+    mbedtls_ssl_conf_authmode(&h->conf, MBEDTLS_SSL_VERIFY_REQUIRED); /* hardcoded, not optional */
+    mbedtls_ssl_conf_rng(&h->conf, mbedtls_ctr_drbg_random, &h->ctr_drbg);
+    if (mbedtls_ssl_setup(&h->ssl, &h->conf) != 0) return -1;
+    if (mbedtls_ssl_set_hostname(&h->ssl, host) != 0) return -1; /* also drives SNI */
+    mbedtls_ssl_set_bio(&h->ssl, &h->net, mbedtls_net_send, mbedtls_net_recv, NULL);
+
+    int ret;
+    while ((ret = mbedtls_ssl_handshake(&h->ssl)) != 0) {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) return -1;
+    }
+    if (mbedtls_ssl_get_verify_result(&h->ssl) != 0) return -1; /* real cert/hostname check */
+    h->in_use = 1;
+    return slot;
+}
+
+/* tls_read_impl -- deliberately narrower than tcp_read_impl's own Content-Length-aware parsing:
+ * this returns whatever is available up to a single mbedtls_ssl_read() call per invocation
+ * (poll-gated with the same 30s idle timeout tcp_read_impl uses, on the real underlying socket
+ * fd via h->net.fd), leaving HTTP framing (Content-Length, chunked, connection-close) to the
+ * PARENA-side net/tls.prn caller to loop on -- tcp_read_impl's own single-shot-to-EOF shape
+ * doesn't apply here since a TLS record boundary and an HTTP body boundary are unrelated; looping
+ * belongs one layer up, not baked into this primitive. */
+static inline char *tls_read_impl(int handle, Arena *dest) {
+    if (handle < 0 || handle >= TLS_MAX_HANDLES || !g_parena_tls_handles[handle].in_use) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    ParenaTlsHandle *h = &g_parena_tls_handles[handle];
+    struct pollfd pfd;
+    pfd.fd = h->net.fd;
+    pfd.events = POLLIN;
+    int pr = poll(&pfd, 1, 30000);
+    if (pr <= 0) {
+        char *out = (char *)arena_alloc(dest, 1);
+        out[0] = '\0';
+        return out;
+    }
+    size_t cap = 4096;
+    unsigned char *buf = (unsigned char *)arena_alloc(dest, cap);
+    int n = mbedtls_ssl_read(&h->ssl, buf, cap - 1);
+    if (n < 0) n = 0;
+    buf[n] = '\0';
+    return (char *)buf;
+}
+
+static inline int tls_write_impl(int handle, const char *s) {
+    if (handle < 0 || handle >= TLS_MAX_HANDLES || !g_parena_tls_handles[handle].in_use) return -1;
+    ParenaTlsHandle *h = &g_parena_tls_handles[handle];
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        int n = mbedtls_ssl_write(&h->ssl, (const unsigned char *)s + written, len - written);
+        if (n < 0) {
+            if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            return -1;
+        }
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int tls_close_impl(int handle) {
+    if (handle < 0 || handle >= TLS_MAX_HANDLES || !g_parena_tls_handles[handle].in_use) return -1;
+    ParenaTlsHandle *h = &g_parena_tls_handles[handle];
+    mbedtls_ssl_close_notify(&h->ssl);
+    mbedtls_net_free(&h->net);
+    mbedtls_ssl_free(&h->ssl);
+    mbedtls_ssl_config_free(&h->conf);
+    mbedtls_ctr_drbg_free(&h->ctr_drbg);
+    mbedtls_entropy_free(&h->entropy);
+    h->in_use = 0;
+    return 0;
+}
+#endif /* PARENA_WITH_TLS */
 
 #endif /* !_WIN32 -- end of net/tcp.prn real host glue. Nothing
         * cross-platform currently includes net/tcp.prn (editor-demo's
