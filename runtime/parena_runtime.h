@@ -173,7 +173,12 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/error.h>
-#include <poll.h>
+/* Deliberately NOT <poll.h> here -- unlike the tcp.prn/udp.prn socket block elsewhere in this
+ * file (real, pre-existing, Linux/macOS-only by design, guarded under #ifndef _WIN32), this TLS
+ * block is meant to also build for the Windows/mingw cross-target (S508f) where <poll.h> doesn't
+ * exist at all. mbedtls_net_poll (declared in net_sockets.h above) is mbedTLS's own real,
+ * already-cross-platform idle-wait primitive -- wrapping select()/WSAPoll internally per
+ * platform -- used below instead of a raw POSIX poll() call. */
 #endif /* PARENA_WITH_TLS */
 
 typedef struct ParenaArenaBlock {
@@ -1489,6 +1494,11 @@ static inline int tcp_close_impl(int fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
+#endif /* !_WIN32 -- end of net/tcp.prn real host glue. Nothing
+        * cross-platform currently includes net/tcp.prn (editor-demo's
+        * own file list never has), so it stays exactly as it was --
+        * genuinely absent on Windows, not stubbed. */
+
 #ifdef PARENA_WITH_TLS
 /* net/tls.prn real host glue (S508e, 2026-09-21) -- founder real-time, DEADWEIGHT's C client had
  * zero TLS support and defaulted to a plaintext IDUNA URL, a real shipping bug for a client that
@@ -1530,13 +1540,27 @@ static ParenaTlsHandle g_parena_tls_handles[TLS_MAX_HANDLES];
 static mbedtls_x509_crt g_parena_tls_cacert;
 static int g_parena_tls_cacert_loaded = 0;
 
-/* CA bundle path is a real, honest Linux-only assumption (Debian/Ubuntu's own
- * ca-certificates package convention) -- Windows has no equivalent single-file bundle at a
- * fixed path; the mingw cross-build needs its own real, separate CA-loading strategy (embed a
- * bundle, or use Windows' own certificate store via CryptoAPI), named as real, scoped,
- * not-yet-done follow-up work rather than silently assumed to work cross-platform. */
+/* CA bundle loading: two real strategies, chosen at compile time.
+ *
+ * Default (Linux/macOS): load from a file path (Debian/Ubuntu's own ca-certificates package
+ * convention). PARENA_TLS_CA_BUNDLE_PATH overridable below.
+ *
+ * PARENA_TLS_CA_BUNDLE_EMBEDDED (S508f): Windows has no equivalent single-file CA bundle at a
+ * fixed path, so a consumer targeting Windows instead defines this macro AND provides two real
+ * symbols before including this header: `dw_ca_bundle_data` (a `const unsigned char[]`) and
+ * `dw_ca_bundle_len` (its length, INCLUDING the trailing NUL mbedtls_x509_crt_parse's own buffer
+ * form requires) -- DEADWEIGHT's own scripts/gen_ca_bundle.sh generates exactly this shape from a
+ * real system CA bundle (core/runtime/ca_bundle_data.h, checked in, same "generated file, checked
+ * in" convention core/card_rules.c already establishes) for the mingw cross-build specifically --
+ * the native Linux build keeps using the file-path strategy below, unaffected. */
+#ifdef PARENA_TLS_CA_BUNDLE_EMBEDDED
+/* dw_ca_bundle_data/dw_ca_bundle_len must already be declared by the consumer (via #include
+ * before this header) when this macro is defined -- no fallback declaration here, a missing one
+ * is a real, loud link/compile error rather than a silently-empty trust store. */
+#else
 #ifndef PARENA_TLS_CA_BUNDLE_PATH
 #define PARENA_TLS_CA_BUNDLE_PATH "/etc/ssl/certs/ca-certificates.crt"
+#endif
 #endif
 
 static inline int tls_connect_impl(const char *host, int port) {
@@ -1557,9 +1581,15 @@ static inline int tls_connect_impl(const char *host, int port) {
     }
     if (!g_parena_tls_cacert_loaded) {
         mbedtls_x509_crt_init(&g_parena_tls_cacert);
+#ifdef PARENA_TLS_CA_BUNDLE_EMBEDDED
+        if (mbedtls_x509_crt_parse(&g_parena_tls_cacert, dw_ca_bundle_data, dw_ca_bundle_len) < 0) {
+            return -1;
+        }
+#else
         if (mbedtls_x509_crt_parse_file(&g_parena_tls_cacert, PARENA_TLS_CA_BUNDLE_PATH) < 0) {
             return -1; /* CA bundle missing/unreadable -- fail closed, never connect without it */
         }
+#endif
         g_parena_tls_cacert_loaded = 1;
     }
     char portstr[16];
@@ -1599,10 +1629,7 @@ static inline char *tls_read_impl(int handle, Arena *dest) {
         return out;
     }
     ParenaTlsHandle *h = &g_parena_tls_handles[handle];
-    struct pollfd pfd;
-    pfd.fd = h->net.fd;
-    pfd.events = POLLIN;
-    int pr = poll(&pfd, 1, 30000);
+    int pr = mbedtls_net_poll(&h->net, MBEDTLS_NET_POLL_READ, 30000);
     if (pr <= 0) {
         char *out = (char *)arena_alloc(dest, 1);
         out[0] = '\0';
@@ -1624,10 +1651,7 @@ static inline char *tls_read_impl(int handle, Arena *dest) {
 static inline int tls_read_into_impl(int handle, char *buf, size_t cap) {
     if (handle < 0 || handle >= TLS_MAX_HANDLES || !g_parena_tls_handles[handle].in_use) return -1;
     ParenaTlsHandle *h = &g_parena_tls_handles[handle];
-    struct pollfd pfd;
-    pfd.fd = h->net.fd;
-    pfd.events = POLLIN;
-    int pr = poll(&pfd, 1, 30000);
+    int pr = mbedtls_net_poll(&h->net, MBEDTLS_NET_POLL_READ, 30000);
     if (pr <= 0) return 0;
     int n = mbedtls_ssl_read(&h->ssl, (unsigned char *)buf, cap - 1);
     if (n < 0) return (n == MBEDTLS_ERR_SSL_TIMEOUT || n == MBEDTLS_ERR_SSL_WANT_READ) ? 0 : -1;
@@ -1664,11 +1688,6 @@ static inline int tls_close_impl(int handle) {
     return 0;
 }
 #endif /* PARENA_WITH_TLS */
-
-#endif /* !_WIN32 -- end of net/tcp.prn real host glue. Nothing
-        * cross-platform currently includes net/tcp.prn (editor-demo's
-        * own file list never has), so it stays exactly as it was --
-        * genuinely absent on Windows, not stubbed. */
 
 /* pty.prn gets its OWN guard, separate from net/tcp.prn's above
  * (2026-08-27, real CI break found live: the editor's new terminal-
