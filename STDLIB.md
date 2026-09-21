@@ -2774,6 +2774,36 @@ generated bodies run against the same mocked `Math.random()` value per trial, ac
 `bezierInterp()`-specific test assertions (already in `tests/humanness.test.ts`, unmodified) still
 pass, along with all 84 of MISHRI's own test assertions total.
 
+**Two real bugs found and fixed dogfooding this emitter against DEADWEIGHT's `card_rules.prn`
+(2026-09-21, founder real-time: "DOGFOOD THE TS WASM SHIT")** — the first real, non-toy stress
+test of this v0 target against something bigger than `bezier_interp.prn`'s single expression:
+
+1. **`/` lowered to TypeScript's `/` unconditionally** — always real-number division, silently
+   wrong for `I32`/`I32` division (C's and Java's own `/` both truncate toward zero; `card_rules.prn`'s
+   packed-bitfield decode chain — `(/ id 16)`, `(/ x 3)`, `(/ x 6)` — depends on that truncation for
+   every single card lookup). `bezier_interp.prn`'s own real, live `F64` division needed to stay
+   untouched. Fixed with a real, minimal two-pass type inference (collect every `defn`'s declared
+   return type first so forward calls resolve, then thread the current `defn`'s param types through
+   the expression walk) — `I32`/`I32` division now lowers to `Math.trunc(a / b)` (not `Math.floor`,
+   which disagrees with C/Java's toward-zero truncation on negative inputs); every other operand
+   combination is untouched. Verified against all 2808 `fx-amount` parity vectors (the same file
+   `tests/parity_vectors.txt` already verifies the C and Java targets against) — 0 mismatches.
+2. **`tb_appendf`'s fixed 512-byte stack buffer silently truncated any single format call over 511
+   characters** — the exact same bug already found and fixed in `emit_java.c`'s own `jb_appendf`
+   (commit `8141f8f`), never ported to `emit_ts.c`. `card_rules.prn`'s deeply nested `fx-amount`
+   ternary chains blow past 511 characters routinely; the truncated output silently spliced into
+   the *next* emitted function, producing syntactically broken TypeScript that still "succeeded"
+   (no error, no crash) — this repo's own `test_emit_ts.c` never exercised an expression anywhere
+   near that size, so it never caught it. Fixed with the same measure-then-allocate `vsnprintf`
+   pattern `jb_appendf` already uses.
+
+Both fixes verified live: `tests/test_emit_ts.c` (21 assertions, all pass, no regressions) plus a
+real Node.js execution of the regenerated `CardRules.ts` (type annotations stripped, run under
+plain `node`, no `tsc`/`ts-node` available in this sandbox) against all 105 cards' `cardKind`/
+`cardKeyword` (bit-for-bit match against the C build) and all 2808 `fx-amount` parity vectors
+(0 mismatches). `DEADWEIGHT/web/`'s own browser client is the first real, live consumer of this
+target beyond MISHRI — see that repo's own `CLAUDE.md`/`README.md`.
+
 ### `math` — new package, depends on `core` only
 
 ```clojure

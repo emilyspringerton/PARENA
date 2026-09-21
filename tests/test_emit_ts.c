@@ -14,6 +14,7 @@
 #include "../src/parser.h"
 #include "../src/region.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_pass = 0;
@@ -157,6 +158,62 @@ int main(void) {
         const char *err = NULL;
         const char *ts = build_ts(&arena, src, &err);
         CHECK(ts == NULL, "a let-block body is a real, honest unsupported error, not silently guessed");
+        arena_free_all(&arena);
+    }
+
+    /* --- real regression: I32/I32 division must truncate toward zero (Math.trunc), matching
+       C's and Java's own `/` on int operands -- found live dogfooding this emitter against
+       DEADWEIGHT's card_rules.prn (2026-09-21), whose packed-bitfield decode chain silently broke
+       without this. F64 division must stay plain `/` (bezier_interp.prn's own real, live use). */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn div-i32 [(a : I32) (b : I32)] : I32 (/ a b))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "I32/I32 division emits successfully");
+        CHECK(ts && strstr(ts, "Math.trunc(a / b)") != NULL, "I32/I32 division lowers to Math.trunc, not bare / (matches C/Java toward-zero truncation)");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn div-f64 [(a : F64) (b : F64)] : F64 (/ a b))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "F64/F64 division emits successfully");
+        CHECK(ts && strstr(ts, "Math.trunc") == NULL, "F64/F64 division stays plain real-number division, no Math.trunc");
+        arena_free_all(&arena);
+    }
+
+    /* --- real regression: a single expression whose emitted text exceeds 511 characters must not
+       be silently truncated -- found live the same session (2026-09-21), the exact same bug
+       already found and fixed in emit_java.c's own jb_appendf (PARENA 8141f8f) but never ported
+       here. A long chain of nested `if`s (card_rules.prn's own fx-amount shape) reproduces it. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        char *src = malloc(8192);
+        size_t off = (size_t)snprintf(src, 8192, "(defn long-chain [(id : I32)] : I32 ");
+        for (int i = 0; i < 40; i++) {
+            off += (size_t)snprintf(src + off, 8192 - off, "(if (= id %d) %d ", i, i * 1000 + 7);
+        }
+        off += (size_t)snprintf(src + off, 8192 - off, "-1");
+        for (int i = 0; i < 40; i++) {
+            off += (size_t)snprintf(src + off, 8192 - off, ")");
+        }
+        off += (size_t)snprintf(src + off, 8192 - off, ")");
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "a long (>511 char) nested expression emits successfully, not a parse/emit error");
+        /* The real symptom of the truncation bug: the export keyword for this defn (or the whole
+           function) goes missing/garbled because a prior tb_appendf call silently cut off mid-string
+           and the next append landed on top of it. A clean, complete function has both its own
+           `export function longChain` header AND its closing `}\n\n` -- both survive truncation
+           corruption checks that substring search alone might miss individually. */
+        CHECK(ts && strstr(ts, "export function longChain") != NULL, "long-expression defn's own function header is intact, not corrupted by buffer truncation");
+        CHECK(ts && strlen(ts) > 600, "emitted output is not silently truncated to (or near) the old 512-byte buffer bound");
+        free(src);
         arena_free_all(&arena);
     }
 
