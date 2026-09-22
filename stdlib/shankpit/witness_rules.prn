@@ -1,0 +1,120 @@
+;; stdlib/shankpit/witness_rules.prn -- SHANKPIT attention/witness rules (B1, EMILY/BACKLOG.md S504-03). Spec: BIG_O/docs/B1_WITNESS_RULES.md.
+;; Scalar-only ON PURPOSE (I32/Bool, one expression per defn, if/arithmetic/comparison, calls between defns): the subset
+;; both the C and Java emitters accept, same discipline as stdlib/deadweight/card_rules.prn. No FFI. No RNG: the host
+;; pre-rolls integers (vigilance rolls) and passes them in, so every function is a pure, deterministic decision.
+;;
+;; Enumerations (kept as documented I32 constants; the host mirrors them in core/witness_rules.h):
+;;   witness state : 0 UNAWARE 1 DENIAL 2 COMPROMISED 3 SILENCING 4 PANIC 5 ENGAGE
+;;   decorum action: 0 SMALL_TALK 1 SAY_APOCALYPSE 2 CARRY_GEAR 3 WRONG_COSTUME_NOTICED 4 ATTRIBUTED_EVENT 5 QUIET_TICK
+;;   decorum band  : 0 OK 1 SUSPICION 2 HYSTERIC 3 CANCELLED
+;;   costume       : 0 SUIT 1 LAB_SMOCK 2 JANITOR 3 STREET
+;;   zone          : 0 PUBLIC 1 LAB 2 EXEC 3 GENERATOR 4 VAULT
+;;   terrain tag   : 0 DIRT 1 CONCRETE 2 REINFORCED
+;;   zombie state  : 0 PASSIVE_HEEL 1 SUBTERRANEAN_SWIM 2 WALL_BREACH 3 SURFACE_SURGE 4 BLOCKED
+(module shankpit/witness-rules)
+(export silence-threshold panic-arrogance-max engage-arrogance-min decorum-start decorum-cap
+        suspicion-below hysteric-below wall-hp-concrete breach-dps-super
+        witness-state escalation-rank npc-next-state is-legal-transition effective-witnesses
+        engage-outcome silence-target-mask
+        clamp-decorum decorum-delta decorum-after decorum-band
+        zone-access conspicuousness noticed
+        move-speed-pct wall-max-hp breach-dps wall-hp-after zombie-next-state)
+
+;; ---- tunable constants (the ONE place; docs/B1_WITNESS_RULES.md marks transcript-sourced vs invented) ----
+(defn silence-threshold [] : I32 5)
+(defn panic-arrogance-max [] : I32 15)
+(defn engage-arrogance-min [] : I32 70)
+(defn decorum-start [] : I32 80)
+(defn decorum-cap [] : I32 100)
+(defn suspicion-below [] : I32 60)
+(defn hysteric-below [] : I32 30)
+(defn wall-hp-concrete [] : I32 500)
+(defn breach-dps-super [] : I32 50)
+
+;; ---- witness reactions ----
+;; count = hostile witnesses of ONE event (compromised accomplices excluded by the host via effective-witnesses).
+(defn effective-witnesses [(total : I32) (accomplices : I32)] : I32
+  (if (< (- total accomplices) 0) 0 (- total accomplices)))
+
+(defn witness-state [(count : I32) (arrogance : I32) (compromised : I32) (zombie-event : I32)] : I32
+  (if (= compromised 1) 2
+    (if (<= count 0) 0
+      (if (<= arrogance (panic-arrogance-max)) 4
+        (if (< count (silence-threshold)) 1
+          (if (and (= zombie-event 1) (>= arrogance (engage-arrogance-min))) 5 3))))))
+
+(defn escalation-rank [(s : I32)] : I32
+  (if (or (= s 3) (= s 5)) 3 (if (or (= s 1) (= s 4)) 1 0)))
+
+;; COMPROMISED is absorbing. SILENCING/ENGAGE persist while `resolved` = 0 EVEN IF count reaches 0 (losing line of sight
+;; does not end a hunt). They release only when the host reports resolution: resolved 1 = a cleanup crew's Memory Methylation
+;; wipe was applied (-> DENIAL); resolved 2 = the attributed target is eliminated/gone (-> UNAWARE).
+(defn npc-next-state [(prev : I32) (count : I32) (arrogance : I32) (compromised : I32) (zombie-event : I32) (resolved : I32)] : I32
+  (if (= prev 2) 2
+    (if (= compromised 1) 2
+      (if (or (= prev 3) (= prev 5))
+        (if (= resolved 1) 1 (if (= resolved 2) 0 prev))
+        (witness-state count arrogance 0 zombie-event)))))
+
+(defn is-legal-transition [(from : I32) (to : I32)] : Bool
+  (if (= from 2) (= to 2)
+    (if (or (= from 3) (= from 5)) (or (= to from) (or (= to 0) (or (= to 1) (= to 2)))) true)))
+
+;; over-confident engagement: 0 = no effect (not confident enough), 1 = citizen annihilated, 2 = zombie destroyed.
+(defn engage-outcome [(arrogance : I32) (tier : I32)] : I32
+  (if (< arrogance (engage-arrogance-min)) 0 (if (>= tier 1) 1 2)))
+
+;; who the silencing pack targets: the attributed player, or the whole crew if seen acting together.
+;; players are 0..2, masks are bit0/bit1/bit2.
+(defn silence-target-mask [(attributed : I32) (seen-together : I32) (crew-mask : I32)] : I32
+  (if (= seen-together 1) crew-mask
+    (if (= attributed 0) 1 (if (= attributed 1) 2 4))))
+
+;; ---- decorum (per player, 0..cap; HIGHER = better standing) ----
+(defn clamp-decorum [(d : I32)] : I32
+  (if (< d 0) 0 (if (> d (decorum-cap)) (decorum-cap) d)))
+
+(defn decorum-delta [(action : I32)] : I32
+  (if (= action 0) 5
+    (if (= action 1) (- 0 25)
+      (if (= action 2) (- 0 15)
+        (if (= action 3) (- 0 20)
+          (if (= action 4) (- 0 40)
+            (if (= action 5) 1 0)))))))
+
+(defn decorum-after [(d : I32) (action : I32)] : I32
+  (clamp-decorum (+ d (decorum-delta action))))
+
+(defn decorum-band [(d : I32)] : I32
+  (if (<= d 0) 3 (if (< d (hysteric-below)) 2 (if (< d (suspicion-below)) 1 0))))
+
+;; ---- costume x zone access (1 = allowed, 0 = trespass). Vault needs a stolen token AND a non-street costume. ----
+(defn zone-access [(costume : I32) (zone : I32) (token : I32)] : I32
+  (if (= costume 3) 0
+    (if (= zone 4) (if (> token 0) 1 0)
+      (if (= zone 0) 1
+        (if (= zone 1) (if (= costume 1) 1 0)
+          (if (= zone 2) (if (= costume 0) 1 0)
+            (if (= costume 2) 1 0)))))))
+
+(defn conspicuousness [(allowed : I32) (gear : I32)] : I32
+  (+ (if (= allowed 1) 0 40) (if (= gear 1) 20 0)))
+
+;; noticed iff the host's pre-rolled 0..99 roll falls under vigilance+conspicuousness (capped at 100).
+(defn noticed [(vigilance : I32) (conspicuous : I32) (roll : I32)] : Bool
+  (< roll (if (> (+ vigilance conspicuous) 100) 100 (+ vigilance conspicuous))))
+
+;; ---- terrain / zombie movement (transcript: dirt fast, concrete 500 HP, super-zombies 50 dmg/s, reinforced never) ----
+(defn move-speed-pct [(tag : I32)] : I32 (if (= tag 0) 100 0))
+(defn wall-max-hp [(tag : I32)] : I32 (if (= tag 1) (wall-hp-concrete) 0))
+(defn breach-dps [(tag : I32) (tier : I32)] : I32
+  (if (= tag 1) (if (>= tier 1) (breach-dps-super) 0) 0))
+(defn wall-hp-after [(hp : I32) (dps : I32) (secs : I32)] : I32
+  (if (< (- hp (* dps secs)) 0) 0 (- hp (* dps secs))))
+
+;; the transcript's pathfinding tree. tag = terrain ahead of the zombie; wall-hp = remaining HP of a concrete wall in the way.
+(defn zombie-next-state [(state : I32) (has-target : I32) (tag : I32) (tier : I32) (wall-hp : I32) (at-edge : I32)] : I32
+  (if (<= has-target 0) 0
+    (if (= state 3) 3
+      (if (= tag 0) (if (= at-edge 1) 3 1)
+        (if (= tag 1) (if (>= tier 1) (if (<= wall-hp 0) 3 2) 4) 4)))))
