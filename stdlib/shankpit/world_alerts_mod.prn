@@ -1,0 +1,20 @@
+;; stdlib/shankpit/world_alerts_mod.prn -- worked example of a REFLUX SUBSCRIBER for SHANKPIT world events. It never imports or
+;; calls world_rules.prn or the host's world code; the only link is the shared REFLUX action log (see BIG_O/core/reflux_runtime.h):
+;;   101 PHASE_CHANGED   a=old phase  b=new phase  c=day number
+;;   102 WEATHER_CHANGED a=old        b=new        c=zombie density pct
+;;   103 ZOMBIE_SPAWNED  a=area       b=tier       c=zombie id
+;;   104 ZOMBIE_HARVESTED a=area      b=tier       c=player
+;; The host polls the log with its own cursor and asks this mod (per new action) whether to raise a phone message and which one
+;; (message ids are the phone Messages table in the client: 2 nightfall, 3 daybreak, 4 storm, 5 brute sighted). 0 = say nothing.
+;; A mod maker adds behaviour by writing another mod like this one -- no host change to react to what already gets dispatched.
+(module shankpit/world-alerts-mod)
+(export alert-should-react alert-message-id)
+
+(defn alert-should-react [(action-type : I32)] : Bool
+  (and (>= action-type 101) (<= action-type 103)))
+
+(defn alert-message-id [(action-type : I32) (a : I32) (b : I32)] : I32
+  (if (and (= action-type 101) (= b 3)) 2
+    (if (and (= action-type 101) (= b 1)) 3
+      (if (and (= action-type 102) (= b 3)) 4
+        (if (and (= action-type 103) (= b 2)) 5 0)))))
