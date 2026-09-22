@@ -1,0 +1,44 @@
+;; stdlib/shankpit/ai_brain_rules.prn -- SHANKPIT AI-brain attention formulas (BIG_O engine merge
+;; phase 3, EMILY/BACKLOG.md SECTION 536). Ported in from BIG_O's core/npc_archetype.c
+;; (npc_brain_effective_vigilance) and core/zombie_values.c (zombie_effective_alertness) --
+;; those two functions are pure scalar decision formulas (an attention/alertness NUMBER derived
+;; from a few inputs), the same "designer-tunable decision logic" shape witness_rules.prn already
+;; holds, so per the founder's own "use parena duh" they move here rather than staying inline C.
+;;
+;; Everything else in npc_archetype.c/zombie_values.c (HumannessState/ZombieState mood ticking,
+;; RNG-jittered timers, Box-Muller reaction-delay/lunge-noise sampling) stays host C -- matches
+;; humanness.c's own already-established precedent in this exact codebase (SHANKPIT's own
+;; humanness_tick_mood is plain C, not PARENA, because it's stateful/time-driven, not a pure
+;; decision). Only the two pure formulas move.
+;;
+;; Scalar-only I32 (no FFI, no RNG), one expression per defn, same discipline as witness_rules.prn.
+;; Floats from the host (fatigue/energy 0.0-1.0, hunger/aggression 0.0-1.0) are passed in as
+;; percentages 0..100 -- the host does the float->int scaling, this module stays pure-integer.
+;;
+;;   npc mood flags : startled/tired are 0 or 1 (mutually exclusive in practice, not enforced here)
+;;   zombie mood    : 0 DORMANT 1 AGITATED 2 HUNTING 3 FRENZIED (matches core/zombie_values.h's ZombieMood)
+(module shankpit/ai-brain-rules)
+(export npc-effective-vigilance zombie-alertness-formula)
+
+;; npc_brain_effective_vigilance's own real formula: base + STARTLED(+25) + TIRED(-15)
+;; - fatigue*20 - (1-energy)*15, clamped 0..100. fatigue-pct/energy-deficit-pct are already 0..100
+;; scaled (the host multiplies its own 0.0-1.0 floats by 100 before calling).
+(defn npc-vigilance-raw [(base : I32) (startled : I32) (tired : I32) (fatigue-pct : I32) (energy-deficit-pct : I32)] : I32
+  (- (+ base (if (= startled 1) 25 0))
+     (+ (if (= tired 1) 15 0) (+ (/ (* fatigue-pct 20) 100) (/ (* energy-deficit-pct 15) 100)))))
+
+(defn npc-effective-vigilance [(base : I32) (startled : I32) (tired : I32) (fatigue-pct : I32) (energy-deficit-pct : I32)] : I32
+  (if (< (npc-vigilance-raw base startled tired fatigue-pct energy-deficit-pct) 0) 0
+    (if (> (npc-vigilance-raw base startled tired fatigue-pct energy-deficit-pct) 100) 100
+      (npc-vigilance-raw base startled tired fatigue-pct energy-deficit-pct))))
+
+;; zombie_effective_alertness's own real formula: a per-mood baseline (DORMANT 10, AGITATED 40,
+;; HUNTING 70, FRENZIED 95) plus hunger*10 + aggression*10, clamped 0..100.
+(defn zombie-alertness-raw [(mood : I32) (hunger-pct : I32) (aggression-pct : I32)] : I32
+  (+ (if (= mood 0) 10 (if (= mood 1) 40 (if (= mood 2) 70 95)))
+     (+ (/ (* hunger-pct 10) 100) (/ (* aggression-pct 10) 100))))
+
+(defn zombie-alertness-formula [(mood : I32) (hunger-pct : I32) (aggression-pct : I32)] : I32
+  (if (< (zombie-alertness-raw mood hunger-pct aggression-pct) 0) 0
+    (if (> (zombie-alertness-raw mood hunger-pct aggression-pct) 100) 100
+      (zombie-alertness-raw mood hunger-pct aggression-pct))))
