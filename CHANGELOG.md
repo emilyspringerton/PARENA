@@ -1,4 +1,5 @@
 ## 2026-09-22
+- Add stdlib/shankpit/world_alerts_mod.prn -- BIG_O engine merge phase 6 (f17b4eb) (sess-20260920-1908-24cb3558)
 - Add stdlib/shankpit/ai_brain_rules.prn -- BIG_O engine merge phase 3 (7c34d18) (sess-20260920-1908-24cb3558)
 - Add stdlib/shankpit/witness_rules.prn -- BIG_O engine merge phase 2 (e729a72) (sess-20260920-1908-24cb3558)
 - Add stdlib/shankpit/world_rules.prn -- SHANKPIT's own stdlib domain for the BIG_O engine merge (d360756) (sess-20260920-1908-24cb3558)
