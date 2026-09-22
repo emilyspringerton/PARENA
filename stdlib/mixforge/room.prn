@@ -1,0 +1,36 @@
+;; stdlib/mixforge/room.prn -- real DJ-room turn-order/seat logic, the first slice of MIXFORGE/
+;; NORTHSTAR.md's own "Pivot: the multiplayer DJ room" addendum (founder real-time: "lets pivot
+;; the mixforge app into that... build it with parena wasm"). Deliberately pure, scalar decision
+;; logic -- no I/O, no Region/Arena machinery -- same real shape `examples/wasm/clamp.prn`
+;; already proved reaches WASM with zero new compiler code (PARENA/docs/LLVM_BACKEND_NORTHSTAR.md
+;; "WebAssembly: real, live, and free"). This is the real, smallest buildable slice of the room
+;; pivot: "go around the room queueing songs" is a real, tiny modular-arithmetic turn-order rule,
+;; buildable and WASM-live TODAY, ahead of (and independent from) the much larger, still-gated
+;; synchronized room-audio streaming work (Phase 5, stdlib/media/stream.prn, design-only).
+;;
+;; Room/seat multiplayer STATE (who is actually sitting where, network sync) is explicitly NOT
+;; this file's job -- that's real, separate, server-side work (a room server, not scoped here).
+;; This file is the pure, stateless RULE a room server (or, for this v0 proof, a browser tab)
+;; can call: given a current seat and how many seats exist, which seat goes next; is a given
+;; seat index even valid for this room size.
+(module mixforge/room)
+(export next-seat)
+(export is-valid-seat)
+
+;; MAX_SEATS -- founder real-time: "up to 4 djs in a room". A real, fixed room-size constant,
+;; not yet a per-room-configurable value (real, deliberate v0 scope limit, same as every other
+;; "smallest real slice" cut this pivot's own NORTHSTAR addendum names).
+(defn max-seats [] : I32 4)
+
+;; next-seat -- "go around the room queueing songs": real, wrapping turn order. current is the
+;; seat index whose DJ just finished queueing; returns the next seat index to prompt, wrapping
+;; back to 0 after the last seat. Does not know or care whether that next seat is occupied --
+;; occupancy is real room-server state, not this pure function's concern.
+(defn next-seat [(current : I32) (seat-count : I32)] : I32
+  (mod (+ current 1) seat-count))
+
+;; is-valid-seat -- a real, honest bounds check (0 <= seat < seat-count), the same "structural
+;; validation lives in a real, checkable function, not left implicit" discipline every other
+;; stdlib validator in this repo already follows.
+(defn is-valid-seat [(seat : I32) (seat-count : I32)] : Bool
+  (and (>= seat 0) (< seat seat-count)))
