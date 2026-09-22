@@ -193,6 +193,18 @@ test-process: build
 		runtime/parena_runtime.c -o /tmp/test_process_bin -lm
 	/tmp/test_process_bin
 
+# test-pitviper-gpg-mod -- real end-to-end verification for stdlib/pitviper/gpg_mod.prn's
+# is-safe-key-field?/generate-key (founder real-time, 2026-09-22: "build in the gpg key
+# generation affordances ... PARENA POWERED"). Validator accept/reject + Err-short-circuit only --
+# the real gpg happy path is hand-verified out of band (scratch GNUPGHOME), not run here, so a
+# test run never writes into whatever real keyring CI's own GNUPGHOME might point at.
+test-pitviper-gpg-mod: build
+	./parena build stdlib/string.prn stdlib/process.prn stdlib/pitviper/gpg_mod.prn \
+		-o tests/test_pitviper_gpg_mod_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_pitviper_gpg_mod.c \
+		runtime/parena_runtime.c -o /tmp/test_pitviper_gpg_mod_bin -lm
+	/tmp/test_pitviper_gpg_mod_bin
+
 # test-log-jsonl -- real end-to-end verification for stdlib/log/event.prn + stdlib/log/jsonl.prn
 # (LO FRAMEWORK_NORTHSTAR.md's own event-sourcing extension: the append-only JSONL log SQL
 # projectors will replay). array.prn is a real, required sibling of io.prn (io.prn's own

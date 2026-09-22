@@ -105,10 +105,14 @@ binding, not a language primitive).
     `pitviper/protocol`'s own `net/tcp`-based client)
 57. `pitviper/expand` — depends on `string`, `map`
 58. `pitviper/tiling` — depends on `vec` only
+59. `pitviper/gpg-mod` — depends on `process`, `string` (founder real-time, 2026-09-22: "build in
+    the gpg key generation affordances ... PARENA POWERED" — shells out to the real `gpg`
+    binary via `process/run-capture` rather than reimplementing OpenPGP; see its own header
+    comment for the full reasoning and `PITVIPER/docs/NORTHSTAR.md` Milestone 6 for status)
 
 **Founder: "again we need the cli to systematize i say over and over plan those deps - whatever
 makes sense - plan the deps etc"** — the list above is the full, current re-sort across every
-package this document now designs (57 entries, up from the last full re-sort's 38) — topological
+package this document now designs (58 entries, up from the last full re-sort's 38) — topological
 by `import`, same rule as every earlier pass: a package appears only after everything it actually
 depends on.
 
