@@ -1,4 +1,5 @@
 ## 2026-09-22
+- Add stdlib/shankpit/witness_rules.prn -- BIG_O engine merge phase 2 (e729a72) (sess-20260920-1908-24cb3558)
 - Add stdlib/shankpit/world_rules.prn -- SHANKPIT's own stdlib domain for the BIG_O engine merge (d360756) (sess-20260920-1908-24cb3558)
 
 - feat: stdlib/pitviper/gpg_mod.prn -- PARENA-powered GPG key generation, shells out to real gpg binary with a fail-closed shell-injection guard (sess-20260920-1908-24cb3558)
