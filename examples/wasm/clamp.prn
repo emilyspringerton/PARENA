@@ -1,0 +1,5 @@
+(module wasmtest/clamp)
+(export clamp-f64)
+
+(defn clamp-f64 [(x : F64) (lo : F64) (hi : F64)] : F64
+  (if (< x lo) lo (if (> x hi) hi x)))

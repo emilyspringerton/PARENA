@@ -319,3 +319,40 @@ session's own work has been on) via a new `bazel test //tests:test_emit_llvm --t
 CI step, verified locally before trusting it in CI. The same real gap for
 `test_emit_ts`/`test_emit_java` is honest, pre-existing, and named directly here rather than
 silently fixed alongside — not this pass's own scope.
+
+## WebAssembly: real, live, and free (2026-09-22)
+
+Founder real-time: "we can go full wasm with parena we need to dog food that anyways" (direct
+follow-up to `SHANKPIT/docs2/specs/CAPTCHA_FPS_PHYSICS_DOGFOOD_NORTHSTAR.md`'s own Phase 1, which
+had named `emit_ts.c` as the compiler work needed before any browser target could carry real
+SHANKPIT physics content).
+
+**Checked directly, not assumed: `llc`'s own `--version` output already lists `wasm32`/`wasm64`
+as registered targets** — the exact same LLVM install already proven against `avr` above. This
+means WebAssembly output needed **zero new PARENA compiler code** to prove live, right now: the
+entire delta versus the already-working AVR route is `-mtriple=wasm32-unknown-unknown` instead of
+`-mtriple=avr`, plus `wasm-ld` (from the same `lld-18` package as `llc-18`, fetched the identical
+no-sudo `apt-get download` + `dpkg-deb -x` way, now living in `LLVM_TOOLCHAIN_ROOT` alongside it)
+in place of `avr-ld`. New `make wasm-smoke` target: compiles `examples/wasm/clamp.prn` (real F64
+scalar clamp — the exact class of arithmetic SHANKPIT's own `physics.h` leans on constantly, not
+a trivial Bool toggle) through `parena build` → `llc -mtriple=wasm32-unknown-unknown` → `wasm-ld`
+→ a real `.wasm` module, then **actually executes it** in plain Node.js
+(`WebAssembly.instantiate`, no flags needed) and asserts real, correct F64 results — not a
+structural/bytes check. Verified clean from a fresh build, checked in
+(`examples/wasm/clamp.prn`, `examples/wasm/run_clamp_smoke.mjs`).
+
+**What this changes for the CAPTCHA-FPS dogfooding plan, concretely:** `CAPTCHA_FPS_PHYSICS_
+DOGFOOD_NORTHSTAR.md`'s own Phase 1 (add `defstruct`/fixed-array support before any real physics
+content can compile) should target **`emit_llvm.c`, not `emit_ts.c`** — one compiler investment
+reaches native (already proven: AVR, x86_64) AND `wasm32`/`wasm64` simultaneously, since they're
+all just different `-mtriple` values against the same IR. `emit_ts.c` stays real and useful for
+its own already-proven lane (DEADWEIGHT's scalar decision logic, browser-side) but is no longer
+the load-bearing path for a real in-browser physics engine.
+
+**Real, honest, not yet true:** this is still PARENA's own narrow scalar-function slice (I32/F64/
+Bool/String, no structs/arrays/loops) — the actual physics-porting work named in the CAPTCHA doc's
+own Phase 1/2 is unstarted. `wasm-smoke` proves the TARGET is real and free; it does not yet prove
+any STRUCT-shaped content (a `Vec2`, a `PlayerState`) can reach it. `wasm-ld`'s own real output
+here also carries no memory/table imports beyond what a trivial scalar function needs — a real
+game loop calling back into JS (input, timing, rendering) is real, separate, not-yet-designed
+follow-up work, not solved by this milestone alone.

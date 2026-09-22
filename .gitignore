@@ -22,6 +22,9 @@ examples/avr/blink_llvm.hex
 tests/test_emit_llvm
 examples/host_led/blink_gen.c
 examples/host_led/led_blink
+examples/wasm/clamp.ll
+examples/wasm/clamp.o
+examples/wasm/clamp.wasm
 .parena-bootstrap
 turbogrep
 turbosed

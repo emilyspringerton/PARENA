@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -947,6 +947,33 @@ avr-blink-upload-llvm: avr-blink-hex-llvm
 		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
 		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
 		-U flash:w:examples/avr/blink_llvm.hex:i
+
+# wasm-smoke -- real, live proof (2026-09-22, founder real-time: "we can go full wasm with
+# parena we need to dog food that anyways") that the SAME LLVM backend already proven against
+# AVR above reaches WebAssembly with ZERO new compiler code: `llc` already registers wasm32/
+# wasm64 as real targets (confirmed via `llc --version`'s own "Registered Targets" list), so
+# `-mtriple=wasm32-unknown-unknown` is the entire delta versus the AVR route's `-mtriple=avr`.
+# `wasm-ld` (from the same lld-18 package as llc-18, extracted into LLVM_TOOLCHAIN_ROOT the same
+# no-sudo `apt-get download` + `dpkg-deb -x` way avr-blink-hex-llvm's own toolchain already was)
+# links the object into a real .wasm module; `node --experimental-wasm-*`-free plain
+# WebAssembly.instantiate (Node 18+, no flags needed) executes it for real. examples/wasm/
+# clamp.prn is real F64 scalar math (a clamp -- the exact class of operation SHANKPIT's own
+# physics.h leans on constantly), not the AVR route's own trivial Bool toggle, proving this on
+# something closer to real physics content. This is the real, live validation behind retargeting
+# CAPTCHA_FPS_PHYSICS_DOGFOOD_NORTHSTAR.md's own Phase 1 at `emit_llvm.c` (add defstruct/array
+# support there) instead of `emit_ts.c` -- one compiler investment reaches native AND wasm32/
+# wasm64, not just one target. Scalar-only today, same real v0 boundary this whole LLVM backend
+# already has (see docs/LLVM_BACKEND_NORTHSTAR.md) -- structs/arrays/loops are real, separate,
+# not-yet-built compiler work, not solved by this target switch alone.
+wasm-smoke: build
+	./parena build examples/wasm/clamp.prn -o examples/wasm/clamp.ll
+	LD_LIBRARY_PATH=$(LLVM_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/lib:$$LD_LIBRARY_PATH \
+		$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/bin/llc -mtriple=wasm32-unknown-unknown -filetype=obj \
+		examples/wasm/clamp.ll -o examples/wasm/clamp.o
+	LD_LIBRARY_PATH=$(LLVM_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/lib:$$LD_LIBRARY_PATH \
+		$(LLVM_TOOLCHAIN_ROOT)/usr/lib/llvm-18/bin/wasm-ld --no-entry --export-all --allow-undefined \
+		-o examples/wasm/clamp.wasm examples/wasm/clamp.o
+	node examples/wasm/run_clamp_smoke.mjs
 
 # host-led-blink-build -- real follow-up (2026-09-10, founder real-time:
 # "we need the led on the board to actually flash (there's one built in
