@@ -1,0 +1,47 @@
+;; stdlib/big_o/inventory_mod.prn — real inventory-slot decisions, forked from
+;; PARENA/stdlib/papercraft/inventory_mod.prn for the same real reason
+;; PARENA/stdlib/big_o/item_drop_mod.prn forked its own PAPERCRAFT original (EMILY/BACKLOG.md
+;; SECTION 536 follow-up, 2026-09-23): editing the shared PAPERCRAFT copy in place would have
+;; silently changed PAPERCRAFT's own stacking rules too, a cross-repo side effect nobody asked
+;; for. `on-papercraft-inventory-can-stack`'s own rule (same item id, non-empty) is already fully
+;; generic -- unchanged, byte-for-byte identical to the original. The real addition is in
+;; `on-papercraft-inventory-stack-max`: food items (PC_ITEM_FOOD_BASE..+16, papercraft_protocol.h)
+;; now get a real, bounded 20-per-slot cap, matching PC_INVENTORY_SLOTS' own real 8-slot ceiling
+;; (day/packages/common/papercraft_protocol.h) -- without this, each picked-up food item would
+;; take its own whole slot (the real, honest fallback for any item id this mod doesn't recognize),
+;; and 8 slots would fill after 8 pickups.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-inventory-stack-max when it needs to know a
+;; real item's own max stack size (deciding whether an existing slot has room for one more), and
+;; on-papercraft-inventory-can-stack when deciding whether a picked-up item may merge into an
+;; already-occupied slot at all (same item id) versus needing its own fresh empty slot.
+
+(module big-o/inventory-mod)
+(export on-papercraft-inventory-stack-max)
+(export on-papercraft-inventory-can-stack)
+
+;; Real item-id constants -- must match packages/common/papercraft_protocol.h's own PC_ITEM_*
+;; byte-for-byte.
+(defn inventory-scrap-id [] : I32 1)
+(defn inventory-food-base [] : I32 8)
+(defn inventory-food-count [] : I32 17)
+
+;; Real, bounded max stack per item id. 99 for scrap (unchanged from the PAPERCRAFT original). 20
+;; for any real food item id -- real, deliberately smaller than scrap's junk-material cap, chosen
+;; to fit multiple distinct food types across PC_INVENTORY_SLOTS' own real 8-slot ceiling rather
+;; than one giant stack of a single type. Any item id this mod doesn't yet recognize returns 0
+;; (not stackable at all -- the host's own real, honest fallback is "always needs its own slot").
+(defn on-papercraft-inventory-stack-max [(item-id : I32)] : I32
+  (if (= item-id (inventory-scrap-id))
+    99
+    (if (and (>= item-id (inventory-food-base))
+             (< item-id (+ (inventory-food-base) (inventory-food-count))))
+      20
+      0)))
+
+;; Real merge rule: two items can only share one real slot if they're the exact same real item id,
+;; and that id is a real, valid, non-empty item (PC_ITEM_NONE, 0, never merges with anything --
+;; an empty slot is a destination for a NEW stack, not something to "merge" into). Unchanged,
+;; already fully generic across every item id including the new food ones.
+(defn on-papercraft-inventory-can-stack [(existing-item-id : I32) (incoming-item-id : I32)] : Bool
+  (and (= existing-item-id incoming-item-id) (> existing-item-id 0)))

@@ -1,0 +1,61 @@
+;; stdlib/big_o/item_drop_mod.prn — real item-drop decision for BIG_O's own reverse-port of
+;; SHANKPIT's food/cargo system (EMILY/BACKLOG.md SECTION 536 follow-up, 2026-09-23).
+;;
+;; Forked from PARENA/stdlib/papercraft/item_drop_mod.prn, NOT a shared edit of it -- same real
+;; "renamed into this repo's own module namespace" precedent walkie_rules.prn and
+;; giant_bug_brain.prn already established for this exact reverse-port thread (BIG_O/NORTHSTAR.md
+;; §12/§13). Editing the shared PAPERCRAFT copy in place would have silently made PAPERCRAFT's own
+;; world start dropping food items too, a cross-repo side effect nobody asked for.
+;;
+;; PAPER/METAL branches are byte-for-byte unchanged from the PAPERCRAFT original (PC_ITEM_SCRAP,
+;; PC_ITEM_WPN_SHOTGUN). The real, new addition: WOOD material -- previously a real, named,
+;; deliberate "no drop yet" gap (papercraft's own item_drop_mod.prn doc comment: "no invented drop
+;; table for materials this sandbox doesn't have a real use for an item from yet") -- now drops a
+;; real food item, reusing the EXISTING GTA3-style destruction-drop pipeline as-is (NORTHSTAR.md
+;; §12 item 1's own named option, not the "new hand-authored spawn mechanism" alternative).
+;;
+;; Real, small, justified ABI extension: this function now takes a SECOND input, the destroyed
+;; object's own stable world-index (apps/server/src/main.c's own `target`, an index into
+;; g_wo_file.objects[] -- stable per-object identity, not a per-tick value). object-index modulo
+;; FOOD_ITEM_COUNT (17, day/packages/common/bigo_food_items.h) picks WHICH of the 17 real food
+;; items drops -- deterministic and testable, no RNG, same "pure decision function" discipline
+;; every other real mod in this monorepo uses. Without this second input there would be no way to
+;; get real 17-item variety without inventing a whole separate hand-authored spawn table.
+;;
+;; ABI: apps/server/src/main.c calls on-papercraft-item-for-object-destroyed with the destroyed
+;; object's own real material (packages/common/papercraft_worldobjects.h's own PcWorldObjectDef
+;; material field) AND its own world-index, at the exact same real "object fully destroyed"
+;; trigger point xp_award_mod/phone_mod already hook. A real 0 (PC_ITEM_NONE) means this event
+;; drops nothing -- the host does not spawn a real entity in that case.
+
+(module big-o/item-drop-mod)
+(export on-papercraft-item-for-object-destroyed)
+
+;; Real material constants -- must match packages/common/paper_mesh.h's own PAPER_MATERIAL_*
+;; defines byte-for-byte.
+(defn material-paper [] : I32 0)
+(defn material-wood [] : I32 1)
+(defn material-metal [] : I32 3)
+
+;; Real item-id constants -- must match packages/common/papercraft_protocol.h's own PC_ITEM_*
+;; byte-for-byte. Named `item-drop-*-id`, not bare names -- VS0's generated C gives every
+;; module-private helper plain, non-static linkage, so a same-named helper elsewhere would collide
+;; at link time (the exact real bug item_drop_mod.prn's own PAPERCRAFT original already found and
+;; documented).
+(defn item-drop-scrap-id [] : I32 1)
+(defn item-drop-shotgun-id [] : I32 5)
+
+;; Real food item-id base -- must match papercraft_protocol.h's own PC_ITEM_FOOD_BASE (8) byte-for-
+;; byte. The 17 real food items occupy ids 8..24 in that exact order (FOOD_CHERRY=0 -> id 8,
+;; ..., FOOD_CAKE=16 -> id 24), matching bigo_food_items.h's own FoodItemId enum order.
+(defn item-drop-food-base [] : I32 8)
+(defn item-drop-food-count [] : I32 17)
+
+(defn on-papercraft-item-for-object-destroyed [(material : I32) (object-index : I32)] : I32
+  (if (= material (material-paper))
+    (item-drop-scrap-id)
+    (if (= material (material-metal))
+      (item-drop-shotgun-id)
+      (if (= material (material-wood))
+        (+ (item-drop-food-base) (mod object-index (item-drop-food-count)))
+        0))))
