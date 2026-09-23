@@ -1,0 +1,37 @@
+;; stdlib/big_o/walkie_rules.prn -- BIG_O walkie-talkie channel/hearing decision logic. Ported back
+;; from SHANKPIT (EMILY/BACKLOG.md SECTION 536, "bring SHANKPIT stuff back into BIG_O" follow-up),
+;; where it was originally built native during the BIG_O engine merge, founder real-time,
+;; 2026-09-23: "add walkie talkie voice coms asterisk based (we have a real asterisk server) parena
+;; powered". Logic identical to SHANKPIT's own PARENA/stdlib/shankpit/walkie_rules.prn -- module
+;; renamed into this repo's own big-o/ namespace, same "copied from BIG_O's own, logic identical"
+;; precedent world_rules.prn/witness_rules.prn already established in reverse.
+;;
+;; Real, honest scope: this module is the PURE DECISION HALF only -- which channel a team should
+;; transmit on, and whether a given listener should hear a given transmission. It does NOT touch
+;; audio. BIG_O has no microphone capture, codec, or SIP/RTP client anywhere -- building a real
+;; voice transport is a separate, much larger, not-yet-started follow-up, same real gap SHANKPIT's
+;; own version named. This module's own real host consumer is
+;; day/packages/common/bigo_walkie_talkie.h.
+;;
+;; Same discipline as witness_rules.prn/ai_brain_rules.prn: scalar-only I32, no FFI, no RNG, one
+;; expression per defn.
+(module big-o/walkie-rules)
+(export walkie-team-channel-ext walkie-can-hear)
+
+;; Each team gets its own dedicated voice-channel extension, base 3000 + team_id (team_id 0..8 ->
+;; extensions 3000..3008). team_id < 0 (no team / spectator) maps to a shared "local chatter"
+;; channel at 2999. Same real numbering SHANKPIT's own live Asterisk dialplan already uses
+;; (PARENA/ops/asterisk/extensions_shankpit_walkie.conf) -- BIG_O has no deployed dialplan of its
+;; own yet, so this stays a pure channel-id decision until BIG_O gets its own real ops pass.
+(defn walkie-team-channel-ext [(team-id : I32)] : I32
+  (if (< team-id 0) 2999
+    (+ 3000 team-id)))
+
+;; A transmission is heard when: same team (always, regardless of distance -- tuned to the same
+;; frequency doesn't attenuate), OR different team but genuinely close enough to be real, in-
+;; fiction "overheard chatter" (a walkie-talkie speaker leaking sound into the physical world) --
+;; within bigo_walkie_talkie.h's own real WALKIE_OVERHEAR_RADIUS_M. distance-cm is the host's own
+;; real float distance * 100 (this module stays pure-integer).
+(defn walkie-can-hear [(listener-team : I32) (speaker-team : I32) (distance-cm : I32)] : I32
+  (if (= listener-team speaker-team) 1
+    (if (< distance-cm 800) 1 0)))
