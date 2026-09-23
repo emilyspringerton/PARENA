@@ -1,4 +1,5 @@
 ## 2026-09-23
+- feat(big_o): giant zombie bug decision network (stdlib/big_o/giant_bug_brain.prn), ported back from SHANKPIT's own native version — EMILY/BACKLOG.md SECTION 536 reverse-port phase 2 (sess-20260923-1030-4a526255)
 
 - feat(big_o): walkie-talkie channel/hearing rules (stdlib/big_o/walkie_rules.prn), ported back from SHANKPIT's own native version — EMILY/BACKLOG.md SECTION 536 reverse-port follow-up (sess-20260920-1908-24cb3558)
 
