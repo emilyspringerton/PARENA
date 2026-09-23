@@ -1,0 +1,34 @@
+;; stdlib/shankpit/walkie_rules.prn -- SHANKPIT walkie-talkie channel/hearing decision logic
+;; (BIG_O engine merge SECTION 536 follow-up, founder real-time, 2026-09-23: "add walkie talkie
+;; voice coms asterisk based (we have a real asterisk server) parena powered").
+;;
+;; Real, honest scope: this module is the PURE DECISION HALF only -- which Asterisk extension a
+;; team should transmit on, and whether a given listener should hear a given transmission. It does
+;; NOT touch audio. SHANKPIT's C client has no microphone capture, codec, or SIP/RTP client
+;; anywhere today (packages/audio/audio.c is playback-only, procedural SFX synthesis) -- building
+;; a real voice transport is a separate, much larger, not-yet-started follow-up. This module's own
+;; real host consumer is packages/simulation/walkie_talkie.c.
+;;
+;; Same discipline as ai_brain_rules.prn/witness_rules.prn: scalar-only I32, no FFI, no RNG, one
+;; expression per defn.
+(module shankpit/walkie-rules)
+(export walkie-team-channel-ext walkie-can-hear)
+
+;; Each team gets its own dedicated Asterisk ConfBridge extension, base 3000 + team_id (team_id
+;; 0..8 -> extensions 3000..3008; matches PARENA/ops/asterisk/extensions_shankpit_walkie.conf's
+;; own real range, deliberately far from CarePyre's own extension 1000/Twilio trunk numbers so the
+;; two systems can never collide). team_id < 0 (no team / spectator) maps to a shared "local
+;; chatter" bridge at 2999.
+(defn walkie-team-channel-ext [(team-id : I32)] : I32
+  (if (< team-id 0) 2999
+    (+ 3000 team-id)))
+
+;; A transmission is heard when: same team (always, regardless of distance -- a walkie-talkie
+;; doesn't attenuate with distance once you're tuned to the same frequency), OR different team but
+;; genuinely close enough to be real, in-fiction "overheard chatter" (a walkie-talkie speaker
+;; leaking sound into the physical world, not a radio pickup) -- within walkie_talkie.h's own real
+;; WALKIE_OVERHEAR_RADIUS_M. distance-cm is the host's own real float distance * 100 (this module
+;; stays pure-integer, same pattern ai_brain_rules.prn's own pct-scaling already establishes).
+(defn walkie-can-hear [(listener-team : I32) (speaker-team : I32) (distance-cm : I32)] : I32
+  (if (= listener-team speaker-team) 1
+    (if (< distance-cm 800) 1 0)))
