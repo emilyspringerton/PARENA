@@ -1,3 +1,7 @@
+## 2026-09-23
+
+- feat(big_o): walkie-talkie channel/hearing rules (stdlib/big_o/walkie_rules.prn), ported back from SHANKPIT's own native version — EMILY/BACKLOG.md SECTION 536 reverse-port follow-up (sess-20260920-1908-24cb3558)
+
 ## 2026-09-22
 - Add stdlib/shankpit/world_alerts_mod.prn -- BIG_O engine merge phase 6 (f17b4eb) (sess-20260920-1908-24cb3558)
 - Add stdlib/shankpit/ai_brain_rules.prn -- BIG_O engine merge phase 3 (7c34d18) (sess-20260920-1908-24cb3558)
