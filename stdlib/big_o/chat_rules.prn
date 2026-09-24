@@ -1,0 +1,47 @@
+;; stdlib/big_o/chat_rules.prn -- BIG_O chat/socials pure decision logic. EMILY/BACKLOG.md SECTION
+;; 536 follow-up, founder real-time (2026-09-24): "integrate GFD subsystem affordances for economy
+;; and socials" -> "the GFD subsystem affordances should be via the GFD app on the BIG_O phone
+;; (mini terminal interface)". Reverse-ported from GoblinFoxDragon's own real, already-shipped
+;; server/chat/chat.go (DragonsNShit's Router: say/tell/yell/guild channels) -- decision rules
+;; only, faithfully matching that file's own real "say" behavior:
+;;   - say is a radius broadcast: any session (including the sender) within sayRadius of the
+;;     sender's own position receives it -- chat.go's own real inRadius() check, distPos(...) <=
+;;     radius, self included (distance to self is always 0).
+;;   - a message must be non-empty and <= 200 bytes (chat.go's own real Deliver() guard).
+;;
+;; Real, honest, deliberate v1 scope cut, not guessed at: chat.go also models tell (direct, by
+;; name), yell (whole scene) and guild (linkshell) channels as genuinely separate real concerns.
+;; BIG_O has no player-name registry or guild system today (checked), and only "say" maps cleanly
+;; onto BIG_O's own existing int-slot/position model without inventing either -- so only say ships
+;; this pass. tell/yell/guild are real, separate, bigger scope, named as follow-ups rather than
+;; folded in blind (BIG_O/NORTHSTAR.md's own queued-scope section names this explicitly).
+;;
+;; Range-checking is a pure per-pair scalar decision; iterating every connected player and
+;; building the actual recipient list is genuinely stateful array work, same real split every
+;; other BIG_O PARENA module in this repo already draws -- this module is ONLY the pure, per-call
+;; eligibility/validation decisions; day/packages/common/bigo_chat.h (the real host consumer)
+;; owns the actual player-loop and the fixed-size text buffer.
+;;
+;; Same discipline as party_rules.prn/witness_rules.prn: scalar-only I32/Bool, no FFI, no RNG, one
+;; expression per defn, calls between defns only.
+(module big-o/chat-rules)
+(export chat-say-radius-cm chat-max-len
+        chat-in-range chat-msg-len-ok)
+
+;; ---- constants ----
+;; Real BIG_O distance convention: pure PARENA modules stay integer-only, so real float distances
+;; become "cm" values at the host boundary (same pattern bigo_walkie_talkie.h/bigo_party.h already
+;; establish). 40.0 world units say-radius, matching BIGO_PARTY_XP_RANGE_UNITS's own real, chosen
+;; in-range scale for a shared small-crew map.
+(defn chat-say-radius-cm [] : I32 4000)
+(defn chat-max-len [] : I32 200) ;; chat.go's own real Deliver() cap, verbatim
+
+;; chat-in-range -- chat.go's own real inRadius() check: distance-cm <= radius-cm. Self-inclusion
+;; falls out for free -- the host always passes 0 for the sender's own distance to itself.
+(defn chat-in-range [(distance-cm : I32) (radius-cm : I32)] : Bool
+  (<= distance-cm radius-cm))
+
+;; chat-msg-len-ok -- chat.go's own real Deliver() guard: msg must be non-empty and <= 200 bytes.
+(defn chat-msg-len-ok [(len : I32)] : Bool
+  (if (<= len 0) false
+    (<= len (chat-max-len))))
