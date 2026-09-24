@@ -17,10 +17,10 @@
 ;; Real, small, justified ABI extension: this function now takes a SECOND input, the destroyed
 ;; object's own stable world-index (apps/server/src/main.c's own `target`, an index into
 ;; g_wo_file.objects[] -- stable per-object identity, not a per-tick value). object-index modulo
-;; FOOD_ITEM_COUNT (17, day/packages/common/bigo_food_items.h) picks WHICH of the 17 real food
+;; FOOD_ITEM_COUNT (18, day/packages/common/bigo_food_items.h) picks WHICH of the 18 real food
 ;; items drops -- deterministic and testable, no RNG, same "pure decision function" discipline
 ;; every other real mod in this monorepo uses. Without this second input there would be no way to
-;; get real 17-item variety without inventing a whole separate hand-authored spawn table.
+;; get real 18-item variety without inventing a whole separate hand-authored spawn table.
 ;;
 ;; ABI: apps/server/src/main.c calls on-papercraft-item-for-object-destroyed with the destroyed
 ;; object's own real material (packages/common/papercraft_worldobjects.h's own PcWorldObjectDef
@@ -46,10 +46,10 @@
 (defn item-drop-shotgun-id [] : I32 5)
 
 ;; Real food item-id base -- must match papercraft_protocol.h's own PC_ITEM_FOOD_BASE (8) byte-for-
-;; byte. The 17 real food items occupy ids 8..24 in that exact order (FOOD_CHERRY=0 -> id 8,
-;; ..., FOOD_CAKE=16 -> id 24), matching bigo_food_items.h's own FoodItemId enum order.
+;; byte. The 18 real food items occupy ids 8..25 in that exact order (FOOD_CHERRY=0 -> id 8,
+;; ..., FOOD_MINESTRONE=17 -> id 25), matching bigo_food_items.h's own FoodItemId enum order.
 (defn item-drop-food-base [] : I32 8)
-(defn item-drop-food-count [] : I32 17)
+(defn item-drop-food-count [] : I32 18)
 
 (defn on-papercraft-item-for-object-destroyed [(material : I32) (object-index : I32)] : I32
   (if (= material (material-paper))
