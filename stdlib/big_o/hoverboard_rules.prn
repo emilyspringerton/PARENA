@@ -1,0 +1,82 @@
+;; stdlib/big_o/hoverboard_rules.prn -- BIG_O hover-skateboard ("air ship") per-board physics
+;; tuning. EMILY/BACKLOG.md SECTION 536 follow-up, founder real-time (2026-09-24): "add air ships
+;; like wedge shaped hover skateboards they have different physics per board and they can be
+;; programmed in parena friction and gravity etc can be tuned".
+;;
+;; Real, own design (no external source to reverse-port from -- this is a new BIG_O mechanic, not
+;; a GFD/SHANKPIT-construct port). Three real, genuinely different-feeling board types, each a pure
+;; per-board lookup of four tuned constants: acceleration, friction (per-second velocity
+;; retention), top speed, and gravity scale. Fixed-point (x100 for speeds/accel, x1000 for the
+;; two ratios),
+;; same convention `gear_max_x100` (WEAKNIGHT_BEDROCK_RACERS' own real per-vehicle physics tuning
+;; precedent, PARENA/stdlib/racer/bike_gear_mod.prn) and `party-xp-share`/`chat-in-range` (this
+;; repo's own fixed-point-cm distance convention) already establish -- VS0 is I32/Bool-scalar-only,
+;; no F32 params yet.
+;;
+;; Board identity (1=SPEEDSTER, 2=TANK, 3=GLIDER; 0 is reserved by the host for "no board
+;; mounted", never passed in here):
+;;   SPEEDSTER -- fast, slippery (high friction retention -- coasts a long way), floaty jump.
+;;   TANK      -- snappy accel but a low top speed, grippy (decays fast), hugs the ground.
+;;   GLIDER    -- gentle accel, true hover -- the real "air ship" of the three, gravity scaled way
+;;                down for long airtime over gaps, matching the founder's own "air ships" framing.
+;;
+;; board-friction-x1000 is a real per-SECOND velocity retention fraction (900 = keep 90% of speed
+;; after one full real second), not a per-tick one -- the host (bigo_hoverboard.h's own
+;; bigo_hoverboard_tick) applies it via powf(friction, dt), frame-rate independent. An earlier v1
+;; draft treated it as a flat per-tick multiply instead; at 60Hz that decays to almost nothing per
+;; real second regardless of the tuned constant, so every board converged far below its own
+;; max-speed cap -- caught live by day/packages/simulation/bigo_hoverboard_test.c's own real
+;; convergence assertion, fixed on the host side (this module's own constants didn't need to
+;; change, only how the host interprets them).
+;;
+;; Same discipline as every other BIG_O module: scalar-only I32/Bool, no FFI, no RNG, one
+;; expression per defn, calls between defns only.
+(module big-o/hoverboard-rules)
+(export board-count
+        board-speedster board-tank board-glider
+        board-is-valid
+        board-accel-x100 board-friction-x1000 board-max-speed-x100 board-gravity-x1000)
+
+(defn board-count [] : I32 3)
+(defn board-speedster [] : I32 1)
+(defn board-tank [] : I32 2)
+(defn board-glider [] : I32 3)
+
+(defn board-is-valid [(board-type : I32)] : Bool
+  (if (< board-type (board-speedster)) false
+    (<= board-type (board-count))))
+
+;; board-accel-x100 -- world units/sec^2 * 100. TANK snaps off the line fastest (heavy motor,
+;; short glide); GLIDER is the gentlest (built for float, not launch).
+(defn board-accel-x100 [(board-type : I32)] : I32
+  (if (= board-type (board-speedster)) 1600
+    (if (= board-type (board-tank)) 2400
+      (if (= board-type (board-glider)) 1000
+        0))))
+
+;; board-friction-x1000 -- per-SECOND velocity RETENTION factor * 1000 (1000 = no drag at all,
+;; lower = decays faster). SPEEDSTER is the slipperiest (coasts a long way once moving); TANK is the
+;; grippiest (stops almost as fast as it starts, matching its own low top speed).
+(defn board-friction-x1000 [(board-type : I32)] : I32
+  (if (= board-type (board-speedster)) 900
+    (if (= board-type (board-tank)) 600
+      (if (= board-type (board-glider)) 850
+        0))))
+
+;; board-max-speed-x100 -- top horizontal speed, world units/sec * 100. SPEEDSTER is the fastest;
+;; TANK is deliberately the slowest (its own real tradeoff for the snappiest accel + grippiest
+;; stop); GLIDER sits in between -- its own real identity is airtime, not top speed.
+(defn board-max-speed-x100 [(board-type : I32)] : I32
+  (if (= board-type (board-speedster)) 3500
+    (if (= board-type (board-tank)) 1200
+      (if (= board-type (board-glider)) 2000
+        0))))
+
+;; board-gravity-x1000 -- gravity scale relative to normal (PC_GRAVITY) * 1000. GLIDER is the real
+;; "air ship" of the three -- 30% of normal gravity, long hang time over gaps. SPEEDSTER is
+;; moderately floaty (70%). TANK hugs the ground at full, unscaled gravity.
+(defn board-gravity-x1000 [(board-type : I32)] : I32
+  (if (= board-type (board-speedster)) 700
+    (if (= board-type (board-tank)) 1000
+      (if (= board-type (board-glider)) 300
+        1000))))
