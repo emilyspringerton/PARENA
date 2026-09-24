@@ -1,0 +1,60 @@
+;; stdlib/big_o/walkie_callsign.prn -- real, minimal "which canned radio call does The Men's
+;; walkie say" decision. EMILY/BACKLOG.md SECTION 536 follow-up, founder real-time (2026-09-24):
+;; "ensure walkies function somehow, make it unit tested -- The Men should have their own channel,
+;; robot speak via a very fast tts generator built in parena".
+;;
+;; Real, checked-not-guessed scope cut: VS0 is I32/Bool-scalar-only -- no strings, no audio, no
+;; FFI (PARENA/STDLIB.md's own real capability list) -- so an actual text-to-speech GENERATOR
+;; cannot be written in PARENA itself, and BIG_O's own day/apps/client has zero audio subsystem
+;; of any kind today (checked directly: no SDL_mixer, no SDL_OpenAudio, nothing -- confirmed via a
+;; real grep, not assumed), so real synthesized speech is a genuinely large, separate follow-up,
+;; not attempted here (see day/packages/common/bigo_walkie_talkie.h's own doc comment for the
+;; fuller "REAL, HONEST, NAMED GAP #1" this already carries, and BIG_O/NORTHSTAR.md's own §28 for
+;; the real phased path if this is ever picked up -- SHANKPIT's own real `packages/audio/audio.c`,
+;; a live, in-repo, no-external-file procedural PCM wavetable synthesizer already proven in this
+;; exact codebase family, is the closest real precedent for a buildable "robotic tone" version,
+;; not literal word-for-word speech).
+;;
+;; What PARENA genuinely CAN own, and does here: the real DECISION of which canned callsign line
+;; a Man's radio call represents, given the real event phase and the real witness_state of the
+;; hunt they're responding to -- the same "mods first everything" split every other real decision
+;; in this repo already draws (chat-rules decides who hears a say, this decides WHAT The Men's
+;; radio call actually is). The host (bigo_walkie_talkie.h's own live consumer,
+;; day/apps/server/src/main.c's server_tick_dispatch) owns printing/eventually-playing the actual
+;; line; this only ever returns a real, stable line-id.
+;;
+;; Real event-phase constants, matching server_tick_dispatch's own two real, distinct radio
+;; moments (a real third "arrived, not yet resolved" phase doesn't exist in the current dispatch
+;; state machine -- arrival and resolution happen in the same tick, checked directly against
+;; main.c, not invented here to pad this module out).
+(module big-o/walkie-callsign)
+(export event-dispatched event-resolved
+        callsign-none callsign-responding-quiet callsign-responding-code-red callsign-resolved
+        walkie-callsign-for-event)
+
+(defn event-dispatched [] : I32 1)
+(defn event-resolved [] : I32 2)
+
+;; Real callsign line-ids -- day/apps/server/src/main.c owns the actual English text per id (a
+;; real, small, host-side lookup table, same "PARENA returns an id, host owns display text"
+;; convention on_papercraft_phone_message_for_event's own real call site already establishes).
+(defn callsign-none [] : I32 0)
+(defn callsign-responding-quiet [] : I32 1)      ;; dispatched while the hunt is still WS_SILENCING
+(defn callsign-responding-code-red [] : I32 2)   ;; dispatched while the hunt has escalated to WS_ENGAGE
+(defn callsign-resolved [] : I32 3)              ;; hunt resolved, Man stands down
+
+;; walkie-callsign-for-event -- real decision: dispatched-while-quiet gets a different real
+;; callsign than dispatched-while-engaged (a genuinely different in-fiction urgency, not a
+;; cosmetic-only distinction -- WS_ENGAGE is the hunt's own most severe live state,
+;; core/witness_rules.h), resolved always gets the same real all-clear line regardless of which
+;; state it resolved from. witness_state is the real, live WS_* enum value
+;; (core/witness_rules.h) at the moment of the event -- an out-of-range/unrecognized value
+;; degrades to callsign-none rather than guessing, same honest-degrade convention
+;; resolveEquipEntry/board-is-valid already established elsewhere in this monorepo.
+(defn walkie-callsign-for-event [(event : I32) (witness-state : I32)] : I32
+  (if (= event (event-resolved)) (callsign-resolved)
+    (if (= event (event-dispatched))
+      (if (= witness-state 5) (callsign-responding-code-red)  ;; WS_ENGAGE
+        (if (= witness-state 3) (callsign-responding-quiet)   ;; WS_SILENCING
+          (callsign-none)))
+      (callsign-none))))
