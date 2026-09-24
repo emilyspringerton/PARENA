@@ -127,6 +127,41 @@ int main(void) {
               "function name, not silently lossy under an innocent-looking name");
     }
 
+    /* --- bytes-slice (2026-09-24, crypto/mldsa.prn's own real need: split
+     * a concatenated pubkey||seckey blob back into two real halves). */
+    {
+        Bytes b = bytes_alloc(6, &a);
+        for (int i = 0; i < 6; i++) bytes_set_(b, i, i + 10); /* 10,11,12,13,14,15 */
+
+        Bytes mid = bytes_slice(b, 2, 4, &a);
+        CHECK(bytes_len(mid) == 2, "bytes-slice returns a buffer of exactly end-start length");
+        CHECK(bytes_get(mid, 0) == 12 && bytes_get(mid, 1) == 13,
+              "bytes-slice copies the real, correct bytes from the source range");
+
+        Bytes whole = bytes_slice(b, 0, 6, &a);
+        CHECK(bytes_len(whole) == 6, "bytes-slice across the full range returns the full length");
+        CHECK(bytes_get(whole, 0) == 10 && bytes_get(whole, 5) == 15,
+              "bytes-slice across the full range preserves the first and last real bytes");
+
+        Bytes empty = bytes_slice(b, 3, 3, &a);
+        CHECK(bytes_len(empty) == 0, "bytes-slice with start == end returns an honest zero-length buffer");
+
+        Bytes clamped_end = bytes_slice(b, 4, 999, &a);
+        CHECK(bytes_len(clamped_end) == 2,
+              "bytes-slice honestly clamps an end past the source length instead of reading out of bounds");
+
+        Bytes clamped_start = bytes_slice(b, -5, 3, &a);
+        CHECK(bytes_len(clamped_start) == 3 && bytes_get(clamped_start, 0) == 10,
+              "bytes-slice honestly clamps a negative start to 0 instead of reading out of bounds");
+
+        /* mutating the slice's own copy must not alter the source --
+         * bytes-slice is a real copy, not a view, matching bytes_slice_impl's
+         * own memcpy-based implementation. */
+        bytes_set_(mid, 0, 99);
+        CHECK(bytes_get(b, 2) == 12,
+              "bytes-slice returns an independent copy -- mutating it never touches the source buffer");
+    }
+
     arena_free_all(&a);
 
     printf("\n%s\n", failures == 0 ? "ALL PASS" : "SOME FAILED");

@@ -1,3 +1,7 @@
+## 2026-09-24
+
+- feat(stdlib/crypto): crypto/mldsa.prn -- real, working, end-to-end-verified post-quantum ML-DSA-44 (FIPS 204) keygen/sign/verify, FFI-bound to a vendored, independently-verified copy of the official pq-crystals/dilithium reference (runtime/mldsa/, CC0). PARENA's first actually-working crypto binding (crypto/ed25519.prn is a design-only stub). bytes-slice added to bytes.prn as the real, additive primitive needed to split ML-DSA keygen's concatenated pubkey+seckey blob. make test-mldsa (tests/test_mldsa.c): 12 real assertions through the actual generated PARENA call chain, ASan/UBSan clean. (sess-20260923-1030-4a526255)
+
 ## 2026-09-23
 - Fork item_drop_mod/inventory_mod into stdlib/big_o/ for BIG_O's own food-item drops (SECTION 536 reverse-port phase 5) (sess-20260923-1030-4a526255)
 - feat(big_o): giant zombie bug decision network (stdlib/big_o/giant_bug_brain.prn), ported back from SHANKPIT's own native version — EMILY/BACKLOG.md SECTION 536 reverse-port phase 2 (sess-20260923-1030-4a526255)

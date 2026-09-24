@@ -17,11 +17,17 @@
 ;; northstar-then-build split didn't apply here since the real
 ;; investigation itself is what proved this was tractable).
 ;;
-;; This file is deliberately narrow v0: allocate/length/indexed get/set
-;; plus honest String interop. No slicing/concat/comparison/hex-encoding
-;; yet — real, separate, additive follow-up if a real caller needs them,
-;; matching every other real "close the gap that's actually blocking
-;; something" scope decision in this stdlib. Retrofitting `hw/spi.prn`'s
+;; This file was deliberately narrow v0: allocate/length/indexed get/set
+;; plus honest String interop, no slicing/concat/comparison/hex-encoding
+;; yet — real, separate, additive follow-up if a real caller needed them.
+;; `bytes-slice` (2026-09-24) is the first such real follow-up:
+;; crypto/mldsa.prn's own real need (a matched keypair from one
+;; underlying call, returned as a single concatenated Bytes blob, split
+;; back into two real halves by ordinary PARENA code). Concat/comparison
+;; still don't exist — real, separate, additive follow-up if a real
+;; caller needs them, matching every other real "close the gap that's
+;; actually blocking something" scope decision in this stdlib.
+;; Retrofitting `hw/spi.prn`'s
 ;; `spi-transfer`/`hw/i2c.prn`'s `i2c-write`/`i2c-read`/`hw/serial.prn`'s
 ;; `serial-write` to accept `Bytes` (a real sibling function, e.g.
 ;; `spi-transfer-bytes`, not a breaking signature change to the existing
@@ -29,7 +35,7 @@
 ;; named explicitly, not silently assumed.
 
 (module bytes)
-(export bytes-alloc bytes-len bytes-get bytes-set! bytes-from-string bytes-to-string-lossy)
+(export bytes-alloc bytes-len bytes-get bytes-set! bytes-from-string bytes-to-string-lossy bytes-slice)
 
 ;; ---- primitives -- the only #target bodies in this file, each a
 ;; single C expression/statement against runtime/parena_runtime.h's own
@@ -110,3 +116,14 @@
   : String @ Region
   #target
   {:c (inline-c "bytes_to_string_lossy_impl(b, dest)")})
+
+;; bytes-slice -- real, additive extension (2026-09-24, crypto/mldsa.prn's own real need: ML-DSA
+;; keygen produces a matched pubkey+seckey pair from ONE underlying call, returned as a single
+;; concatenated Bytes blob since a #target body can only return one value -- ordinary PARENA code
+;; needs a real way to split it back into two real halves). Same real, honest clamping discipline
+;; bytes-get/bytes-set! already establish: start/end outside [0, bytes-len b] clamp rather than
+;; reading out of bounds.
+(defn bytes-slice [(b : Bytes) (start : I32) (end : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "bytes_slice_impl(b, start, end, dest)")})

@@ -173,7 +173,8 @@ stdlib itself — `vec_test.prn`, `map_test.prn`, `world_test.prn` so far.
 | `pty` | Spawn a subprocess on a pseudo-console, generalized from PITVIPER's own ConPTY/openpty code |
 | `shell` | The actual shell-resolution policy — direct port of PITVIPER's `isWslStub`/`findGitBash` fix |
 | `ssh` | `connect`/`exec`/`open-pty`, FFI-bound to libssh2 |
-| `crypto/hash` `crypto/aes` `crypto/ed25519` | FFI-bound to OpenSSL/libsodium — no from-scratch cryptography |
+| `crypto/hash` `crypto/aes` `crypto/ed25519` | Design only — `crypto/ed25519.prn` exists but is a non-working stub (no libsodium linked) |
+| `crypto/mldsa` | **Real, working, verified** (`make test-mldsa`) — post-quantum ML-DSA-44/FIPS 204 keygen/sign/verify, FFI-bound to a vendored, independently-verified copy of the official pq-crystals/dilithium reference (opt-in via `PARENA_WITH_MLDSA`). PARENA's first actually-working crypto binding. No live SSH-auth consumer yet — see `stdlib/crypto/mldsa.prn`'s own header comment |
 
 ### Editor/plugin API — shell resolved: a PARENA-authored, SDL2-based vim-like editor, hosted by PITVIPER
 

@@ -181,6 +181,21 @@
  * platform -- used below instead of a raw POSIX poll() call. */
 #endif /* PARENA_WITH_TLS */
 
+/* Post-quantum ML-DSA-44 (FIPS 204) support -- EMILY/BACKLOG.md SECTION 536 follow-up, BIG_O/
+ * NORTHSTAR.md §29. Same real opt-in shape PARENA_WITH_TLS already establishes just above: a
+ * consumer that wants crypto/mldsa.prn defines PARENA_WITH_MLDSA before including this header,
+ * AND compiles+links every runtime/mldsa .c file (excluding nistkat/ and test/, real NIST-KAT/
+ * self-test harnesses, not part of the real library) into its own final binary -- these are real .c
+ * translation units (the vendored CRYSTALS-Dilithium reference), not header-only static inline
+ * functions like the rest of this runtime, so they can't just live entirely in this one header.
+ * See runtime/mldsa/'s own attribution header for full provenance (CC0/public domain, vendored
+ * byte-for-byte from pq-crystals/dilithium). Consumers who don't need post-quantum crypto (the
+ * overwhelming majority of PARENA's own scalar game-logic .prn files) pay nothing. */
+#ifdef PARENA_WITH_MLDSA
+#include "mldsa/api.h"
+#include "mldsa/sign.h"
+#endif /* PARENA_WITH_MLDSA */
+
 typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
     size_t used;
@@ -497,6 +512,70 @@ static inline char *bytes_to_string_lossy_impl(Bytes b, Arena *dest) {
     out[n] = '\0';
     return out;
 }
+
+/* bytes_slice_impl -- real, additive extension to bytes.prn's own v0 (that file's own doc
+ * comment explicitly names "No slicing/concat/comparison operations yet -- real, separate,
+ * additive follow-up if a real caller needs them" -- crypto/mldsa.prn is that real caller,
+ * EMILY/BACKLOG.md SECTION 536 follow-up, BIG_O/NORTHSTAR.md §29: ML-DSA keygen produces a real,
+ * matched pubkey+seckey pair from ONE underlying call -- see this file's own mldsa_keygen_impl
+ * below -- and a `#target` inline-c body can only return one plain scalar/String/Bytes value
+ * (pty.prn's own 2026-08-26 rewrite established this same real rule for String; it applies
+ * identically to Bytes), so splitting the real, single concatenated output into two real halves
+ * has to happen in ordinary PARENA code, which needs a real slice primitive to do it with). Same
+ * real, honest out-of-bounds discipline bytes_get_impl/bytes_set_impl already establish: a
+ * request outside [0, b.len] clamps rather than reading/writing out of bounds, never aborts. */
+static inline Bytes bytes_slice_impl(Bytes b, int start, int end, Arena *dest) {
+    if (start < 0) start = 0;
+    if (end > b.len) end = b.len;
+    int n = end > start ? end - start : 0;
+    Bytes out = bytes_alloc_impl(dest, n);
+    if (n > 0) memcpy(out.data, b.data + start, (size_t)n);
+    return out;
+}
+
+#ifdef PARENA_WITH_MLDSA
+/* mldsa_keygen_impl/mldsa_sign_impl/mldsa_verify_impl -- real host glue for crypto/mldsa.prn,
+ * calling straight into the vendored, unmodified (except for attribution) CRYSTALS-Dilithium
+ * reference (runtime/mldsa/sign.c's own real crypto_sign_keypair/crypto_sign_signature/
+ * crypto_sign_verify, mode 2 = ML-DSA-44). EMILY/BACKLOG.md SECTION 536 follow-up, BIG_O/
+ * NORTHSTAR.md §29.
+ *
+ * mldsa_keygen_impl returns pubkey||seckey concatenated as ONE real Bytes value (real, checked
+ * fixed sizes: CRYPTO_PUBLICKEYBYTES=1312, CRYPTO_SECRETKEYBYTES=2560, from runtime/mldsa/
+ * params.h) -- a #target inline-c body can only return one plain scalar/String/Bytes value
+ * (pty.prn's own 2026-08-26 rewrite established this rule for String; identical for Bytes), and a
+ * real ML-DSA keypair is genuinely ONE matched pair from ONE underlying call, not independently
+ * derivable by calling twice. crypto/mldsa.prn's own real mldsa-keygen splits this back into two
+ * real halves via bytes-slice (bytes.prn, extended in this same pass for exactly this need). */
+static inline Bytes mldsa_keygen_impl(Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, CRYPTO_PUBLICKEYBYTES + CRYPTO_SECRETKEYBYTES);
+    crypto_sign_keypair(out.data, out.data + CRYPTO_PUBLICKEYBYTES);
+    return out;
+}
+
+/* mldsa_sign_impl -- real ML-DSA-44 signature over msg's own real bytes (msg.len, not strlen --
+ * Bytes carries its own explicit length, so an embedded 0x00 in a real message is genuinely fine,
+ * unlike this runtime's own String-based primitives). Hedged/randomized signing
+ * (DILITHIUM_RANDOMIZED_SIGNING, runtime/mldsa/config.h's own real default, unchanged from
+ * upstream) -- two real signatures over the same message under the same key are NOT byte-
+ * identical, by design. No application context string (crypto_sign_signature's own real ctx/
+ * ctxlen params passed as NULL/0) -- a real, deliberately-narrow v0, same scope PARENA's own
+ * pty/tcp primitives already keep. Real, checked, fixed real output size (CRYPTO_BYTES=2420) --
+ * observed fixed in practice across a real 10000-round self-test, not just an upper bound. */
+static inline Bytes mldsa_sign_impl(Bytes msg, Bytes seckey, Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, CRYPTO_BYTES);
+    size_t siglen = 0;
+    crypto_sign_signature(out.data, &siglen, msg.data, (size_t)msg.len, NULL, 0, seckey.data);
+    out.len = (int)siglen;
+    return out;
+}
+
+/* mldsa_verify_impl -- 0 = real, valid signature; nonzero = real, honest reject. Mirrors the
+ * vendored crypto_sign_verify's own real contract exactly, no reinterpretation. */
+static inline int mldsa_verify_impl(Bytes sig, Bytes msg, Bytes pubkey) {
+    return crypto_sign_verify(sig.data, (size_t)sig.len, msg.data, (size_t)msg.len, NULL, 0, pubkey.data);
+}
+#endif /* PARENA_WITH_MLDSA */
 
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing

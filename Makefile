@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -609,6 +609,20 @@ test-bytes: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -I runtime -I tests tests/test_bytes.c runtime/parena_runtime.c \
 		-o /tmp/test_bytes_bin -lm
 	/tmp/test_bytes_bin
+
+# test-mldsa -- real end-to-end verification for stdlib/crypto/mldsa.prn (EMILY/BACKLOG.md
+# SECTION 536 follow-up, BIG_O/NORTHSTAR.md §29), PARENA's first real, working crypto binding.
+# -DPARENA_WITH_MLDSA is the real, deliberate opt-in (matching PARENA_WITH_TLS's own established
+# shape) -- most PARENA consumers never define it and pay nothing. runtime/mldsa/*.c is the
+# vendored, independently-verified CRYSTALS-Dilithium reference (see that directory's own
+# attribution header); no -pedantic here since the vendored reference code isn't guaranteed
+# pedantic-C99-clean, matching test-shell's own plain -std=c99 -Wall -Wextra scope.
+test-mldsa: build
+	./parena build stdlib/string.prn stdlib/bytes.prn stdlib/crypto/mldsa.prn -o tests/test_mldsa_gen.c
+	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests -DPARENA_WITH_MLDSA \
+		tests/test_mldsa.c runtime/parena_runtime.c runtime/mldsa/*.c \
+		-o /tmp/test_mldsa_bin -lm
+	/tmp/test_mldsa_bin
 
 # test-sdl2 -- real end-to-end verification for stdlib/sdl2.prn, the
 # first real slice of a PARENA-authored editor shell (founder: "continue

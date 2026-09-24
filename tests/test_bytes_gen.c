@@ -11,6 +11,7 @@ int bytes_get(Bytes, int);
 void bytes_set_(Bytes, int, int);
 Bytes bytes_from_string(char *, Arena *);
 char * bytes_to_string_lossy(Bytes, Arena *);
+Bytes bytes_slice(Bytes, int, int, Arena *);
 
 Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return (bytes_alloc_impl(dest, len));
@@ -34,5 +35,9 @@ Bytes bytes_from_string(char * s __attribute__((unused)), Arena *dest __attribut
 
 char * bytes_to_string_lossy(Bytes b __attribute__((unused)), Arena *dest __attribute__((unused))) {
     return (bytes_to_string_lossy_impl(b, dest));
+}
+
+Bytes bytes_slice(Bytes b __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_slice_impl(b, start, end, dest));
 }
 

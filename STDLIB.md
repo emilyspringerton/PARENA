@@ -1910,6 +1910,24 @@ introduce real, serious vulnerabilities, so this explicitly does not attempt it)
   : Bool)
 ```
 
+**Real status, checked 2026-09-24:** the block above is still design-only — `crypto/ed25519.prn`
+exists in the repo but is a non-working stub (`#target` calls `sodium_ed25519_keygen`, never
+implemented anywhere, no libsodium linked; its own shape also violates the real `#target`
+scalar/String/Bytes-only rule below). **`crypto/mldsa.prn` is PARENA's first real, actually-
+working crypto binding** (EMILY/BACKLOG.md SECTION 536 follow-up, BIG_O/NORTHSTAR.md §29,
+post-quantum ML-DSA-44/FIPS 204/Dilithium mode 2) — same judgment as this section's own stated
+policy (FFI-bound to a real, independently-verified implementation, not hand-rolled), but FFI-
+bound directly to a vendored copy of the official pq-crystals/dilithium reference
+(`runtime/mldsa/`, CC0/public domain, byte-for-byte, opt-in via `PARENA_WITH_MLDSA`) rather than
+OpenSSL/libsodium, since neither library has ML-DSA support yet. Uses `Bytes`, not `String` (key/
+signature material is high-entropy binary data that would silently truncate at an embedded
+`0x00` under `String`'s own `strlen`-based contract). Verified end to end via `make test-mldsa`
+(`tests/test_mldsa.c`) — real keygen/sign/verify through the actual generated PARENA call chain,
+tamper/cross-key rejection, ASan/UBSan clean. No live consumer wired to SSH auth yet (no post-
+quantum public-key algorithm exists in the SSH protocol as GoblinFoxDragon's server implements
+it) — a real, working primitive, honestly not yet consumed by anything, see `crypto/mldsa.prn`'s
+own header comment for the full account.
+
 ### `ncurses` — real, kept narrow
 
 Founder: "i guess ncurses needs to be added to stdlib," immediately followed by "all in on PARENA
