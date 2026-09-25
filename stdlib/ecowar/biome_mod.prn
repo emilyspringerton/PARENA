@@ -1,0 +1,28 @@
+;; stdlib/ecowar/biome_mod.prn — real per-biome gameplay modifiers (EMILY/BACKLOG.md SECTION 382).
+;; Founder shared a 4-biome map design (Verdant Wilds/jungle, Ash Barrens/high-risk-decay, Frozen
+;; Reach/defensive, Blighted Grid/chaos) and asked for critique before building -- see
+;; ECOWAR/docs/NORTHSTAR_BIOMES.md for the full critique (renamed away from the reference design's
+;; own Minecraft-specific "Pillager"/"Dragon" terminology, which has no real connection to
+;; ECOWAR's own established vocabulary).
+;;
+;; Real, pure PARENA logic -- no #target/inline-c needed at all, same "real decision rule, no FFI
+;; escape" shape ecowar/allcap_mod.prn already established. Biome ids match HexBiome
+;; (packages/livingmap/hex_grid.h): 0=Verdant Wilds, 1=Ash Barrens, 2=Frozen Reach,
+;; 3=Blighted Grid.
+;;
+;; on-biome-convert-resistance-multiplier-pct: real, named numbers for "villages flip often"
+;; (Verdant Wilds, founder's own reference design) and "cells stabilize longer"/"structures harder
+;; to destroy" (Frozen Reach) -- the two biomes whose own described mechanics map directly onto
+;; the ALREADY-BUILT town convert-resistance system (town.c's town_attempt_convert already reads
+;; a per-town-type resistance from frontier_village_mod.prn/walled_hamlet_mod.prn; this multiplies
+;; that real value by the town's own real biome). Ash Barrens and Blighted Grid return the neutral
+;; 100 here -- their own real mechanics (faster corruption growth, the corruption-driven neutral-
+;; cell flip) are handled by hex_grid_tick_corruption (hex_grid.c) instead, not resistance at all.
+
+(module ecowar/biome-mod)
+(export on-biome-convert-resistance-multiplier-pct)
+
+(defn on-biome-convert-resistance-multiplier-pct [(biome : I32)] : I32
+  (if (= biome 0) 70   ;; Verdant Wilds -- "villages flip often": 30% easier to convert
+    (if (= biome 2) 140  ;; Frozen Reach -- "cells stabilize longer": 40% harder to convert
+      100)))              ;; Ash Barrens / Blighted Grid -- neutral here, see this file's own header comment
