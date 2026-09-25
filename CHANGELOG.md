@@ -1,3 +1,7 @@
+## 2026-09-25
+
+- new stdlib/deadweight/account_rules.prn (display-name validation, C target verified) + found a real TS-emitter gap: string.prn can't be emitted to TS at all (region-annotated params hard-rejected, contradicting emit_ts_defn's own doc comment that they should be a no-op) (sess-20260923-1030-4a526255)
+
 ## 2026-09-24
 
 - fix(stdlib/big_o): `item_drop_mod.prn`'s `item-drop-food-count` bumped 17->18 (MINESTRONE, BIG_O's own mirror of SHANKPIT's same-day food-item addition) -- regenerated `BIG_O/day/packages/simulation/item_drop_mod.c` via `parena build`, a minimal one-line diff (the WOOD-drop modulo formula itself is already item-count-generic). (sess-20260923-1030-4a526255)
