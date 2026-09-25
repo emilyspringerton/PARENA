@@ -1,0 +1,42 @@
+;; stdlib/deadweight/account_rules.prn -- display-name validation, the client-side half of IDUNA's
+;; own cleanDisplayName (IDUNA/internal/http/handlers/game_online.go): 1-16 characters, no control
+;; characters. Real, live-found need (founder real-time, 2026-09-25, "also it should let me create
+;; a deadweight account right there with a button... port it right into TS with PARENA (abstract
+;; into parena if not already)"): the DEADWEIGHT web client's new Create Account page (web/src/
+;; account.ts's registerAndClaim) wants live, client-side feedback on a chosen display name before
+;; it ever reaches the server, matching card_rules.prn/fx_rules.prn's own "PARENA is the decision
+;; layer, host does the work" convention rather than hand-rolling the check again in TypeScript.
+;;
+;; Honest scope: this is a best-effort, ASCII-byte-level control-character check (rejects bytes <
+;; 32 and 127), not a full Unicode-category-aware port of Go's unicode.IsControl (which also flags
+;; some non-ASCII control code points) -- IDUNA's own server-side check stays authoritative and
+;; always re-validates on register; this is client-side UX feedback, not a security boundary.
+;; String is a C/TS-only concern here (no Java target -- DEADWEIGHT's Android client is shelved,
+;; see DEADWEIGHT/CLAUDE.md's own S513 platform correction), so this module doesn't need card_
+;; rules.prn's own scalar-only Java-compatibility constraint.
+
+(module deadweight/account-rules)
+(import string)
+(export max-display-name-len is-control-byte is-valid-display-name)
+
+(defn max-display-name-len [] : I32 16)
+
+(defn is-control-byte [(b : I32)] : Bool
+  (or (< b 32) (= b 127)))
+
+;; is-valid-display-name -- mirrors cleanDisplayName exactly: 1-16 characters (the caller is
+;; expected to have already trimmed leading/trailing whitespace, matching Go's strings.TrimSpace --
+;; this function does not trim on its own, same "host does surrounding I/O, PARENA decides" split
+;; count-lines in stdlib/coreutils/wc.prn already establishes), none of them a control byte.
+(defn is-valid-display-name [(s : String @ Region)] : Bool
+  (let [n (string/length s)]
+    (if (< n 1)
+      false
+      (if (> n (max-display-name-len))
+        false
+        (loop [i 0]
+          (if (>= i n)
+            true
+            (if (is-control-byte (string/char-at s i))
+              false
+              (recur (+ i 1)))))))))
