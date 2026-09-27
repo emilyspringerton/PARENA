@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PARENA nn_train</title>
+<style>
+  :root { --bg: #fdf6e3; --fg: #073642; --muted: #657b83; --line: #d9d2bd; --ok: #2f7d32; --bad: #b3261e; --accent: #268bd2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #002b36; --fg: #eee8d5; --muted: #93a1a1; --line: #0f4a57; --ok: #7cc67f; --bad: #ff8a80; --accent: #6cb6f0; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 20px; }
+  section { border-top: 1px solid var(--line); padding: 14px 0; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  canvas { width: 100%; height: 140px; display: block; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td, th { padding: 2px 12px 2px 0; text-align: left; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>PARENA nn_train in the browser</h1>
+  <p class="lede">A 2-4-1 network trained on XOR by PARENA-generated C compiled to WebAssembly, plus a hand-written WGSL matmul checked against the same PARENA code.</p>
+
+  <section>
+    <h2>1 · Train (WebAssembly, CPU, f64)</h2>
+    <canvas id="curve" width="600" height="140"></canvas>
+    <div id="train-status" class="muted">loading…</div>
+    <table id="preds"></table>
+    <p><button id="retrain">Retrain with a new seed</button></p>
+  </section>
+
+  <section>
+    <h2>2 · WebGPU first-layer matmul vs the PARENA CPU reference</h2>
+    <div id="gpu-status" class="muted">waiting for training…</div>
+  </section>
+</main>
+<script type="module">
+import createModule from "./nn_train.mjs";
+import { setup, getParams, XOR_X, XOR_Y, N_IN, HIDDEN } from "./xor.mjs";
+import { getDevice, gpuMatmul, firstLayerOperands } from "./webgpu_matmul.mjs";
+
+const results = (window.__results = { train: null, gpu: null });
+const M = await createModule();
+const $ = (id) => document.getElementById(id);
+
+function drawCurve(losses) {
+  const cv = $("curve"), g = cv.getContext("2d"), css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, cv.width, cv.height);
+  const max = Math.max(...losses, 0.8);
+  g.strokeStyle = css.getPropertyValue("--line"); g.beginPath(); g.moveTo(0, cv.height - 1); g.lineTo(cv.width, cv.height - 1); g.stroke();
+  g.strokeStyle = css.getPropertyValue("--accent"); g.lineWidth = 2; g.beginPath();
+  losses.forEach((l, i) => {
+    const x = (i / Math.max(1, losses.length - 1)) * cv.width, y = cv.height - 4 - (l / max) * (cv.height - 8);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+}
+
+async function train(seed) {
+  setup(M, { seed });
+  const losses = [M._nt_loss()];
+  const t0 = performance.now();
+  for (let chunk = 0; chunk < 60; chunk++) {
+    M._nt_train(50, 0.5);
+    losses.push(M._nt_loss());
+    drawCurve(losses);
+    $("train-status").textContent = `seed ${seed} · epoch ${(chunk + 1) * 50} · loss ${losses.at(-1).toFixed(4)}`;
+    await new Promise(requestAnimationFrame);
+  }
+  const ms = performance.now() - t0;
+  const preds = XOR_Y.map((_, r) => M._nt_predict(r));
+  const correct = preds.every((p, r) => (p > 0.5) === (XOR_Y[r] > 0.5));
+  $("preds").innerHTML = "<tr><th>x</th><th>output</th><th>want</th></tr>" + preds.map((p, r) =>
+    `<tr><td>${XOR_X[2 * r]}, ${XOR_X[2 * r + 1]}</td><td class="${(p > 0.5) === (XOR_Y[r] > 0.5) ? "ok" : "bad"}">${p.toFixed(4)}</td><td>${XOR_Y[r]}</td></tr>`).join("");
+  $("train-status").innerHTML = `seed ${seed} · 3000 epochs in ${ms.toFixed(0)} ms · final loss ${losses.at(-1).toFixed(4)} · ` +
+    (correct ? '<span class="ok">XOR learned</span>' : '<span class="bad">stuck in a local minimum — try another seed</span>');
+  return { seed, first: losses[0], last: losses.at(-1), preds, correct, ms };
+}
+
+// gpuCheck -- a bigger random network (256 rows x 16 inputs x 32 hidden = 8192 outputs) so the
+// kernel does real work; every GPU output is compared with the PARENA hidden-pre on the CPU.
+async function gpuCheck() {
+  const device = await getDevice();
+  if (!device) {
+    $("gpu-status").innerHTML = '<span class="bad">WebGPU is not available in this browser.</span> Training above still ran on the CPU.';
+    return { available: false };
+  }
+  const rows = 256, nIn = 16, h = 32;
+  let s = 12345;
+  const rand = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648) * 2 - 1;
+  const xs = Array.from({ length: rows * nIn }, rand);
+  const n = setup(M, { seed: 3, xs, ys: new Array(rows).fill(0), nIn, hidden: h });
+  const params = getParams(M, n);
+  const { a, b, bias } = firstLayerOperands(params, xs, rows, nIn, h);
+  const t0 = performance.now();
+  const out = await gpuMatmul(device, a, b, bias, rows, nIn, h);
+  const ms = performance.now() - t0;
+  let worst = 0;
+  for (let r = 0; r < rows; r++) for (let j = 0; j < h; j++) {
+    const ref = M._nt_hidden_pre(r, j);
+    worst = Math.max(worst, Math.abs(out[r * h + j] - ref) / Math.max(1, Math.abs(ref)));
+  }
+  const pass = worst < 1e-5;
+  $("gpu-status").innerHTML = `${rows}×${nIn} · ${nIn}×${h} on the GPU in ${ms.toFixed(1)} ms · max rel error vs PARENA f64 ${worst.toExponential(2)} · ` +
+    (pass ? '<span class="ok">match</span>' : '<span class="bad">MISMATCH</span>');
+  return { available: true, worst, pass, ms, outputs: rows * h };
+}
+
+results.train = await train(7);
+results.gpu = await gpuCheck();
+$("retrain").onclick = async () => { results.train = await train(Math.floor(Math.random() * 1000)); };
+</script>
+</body>
+</html>

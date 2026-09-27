@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-nn-train wasm-train test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -1284,6 +1284,34 @@ test-linalg-matmul: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_linalg_matmul.c \
 		runtime/parena_runtime.c -o /tmp/test_linalg_matmul_bin -lm
 	/tmp/test_linalg_matmul_bin
+
+# test-nn-train -- stdlib/nn_train.prn's backward pass: a finite-difference gradient check over
+# every parameter, XOR learned end to end, and bit-identical determinism (tests/test_nn_train.c).
+test-nn-train: build
+	./parena build stdlib/nn_train.prn -o tests/test_nn_train_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_nn_train.c \
+		runtime/parena_runtime.c -o /tmp/test_nn_train_bin -lm
+	/tmp/test_nn_train_bin
+
+# wasm-train -- steps 2 and 3 of the Python-free training path (examples/wasm_train/README.md).
+# Builds stdlib/nn_train.prn's generated C twice from one glue file: natively with $(CC) and to
+# WebAssembly with Emscripten ($(EMCC), default `emcc` on PATH -- install via emsdk), then trains
+# XOR in Node under WebAssembly and requires every parameter to match the native run to 1e-9.
+# The in-browser + WebGPU half needs a served directory and Playwright:
+#   (cd examples/wasm_train && npx http-server -p 8765 -s .) &
+#   node examples/wasm_train/run_browser_check.mjs
+EMCC ?= emcc
+WASM_TRAIN := examples/wasm_train
+wasm-train: build
+	./parena build stdlib/nn_train.prn -o $(WASM_TRAIN)/nn_train_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -DPARENA_NO_GRAPHICS -I runtime -I $(WASM_TRAIN) \
+		$(WASM_TRAIN)/train_glue.c runtime/parena_runtime.c -o /tmp/wasm_train_native -lm
+	/tmp/wasm_train_native > /tmp/wasm_train_native_params.txt
+	$(EMCC) -O2 -std=c99 -Wall -Wextra -Werror -DPARENA_NO_GRAPHICS -I runtime -I $(WASM_TRAIN) \
+		$(WASM_TRAIN)/train_glue.c runtime/parena_runtime.c -o $(WASM_TRAIN)/nn_train.mjs \
+		-sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node -sALLOW_MEMORY_GROWTH \
+		-sEXPORTED_FUNCTIONS=_malloc,_free -sEXPORTED_RUNTIME_METHODS=HEAPF64
+	cd $(WASM_TRAIN) && node run_train_smoke.mjs /tmp/wasm_train_native_params.txt
 
 test-linalg-sparse: build
 	./parena build stdlib/array.prn stdlib/linalg.prn -o tests/test_linalg_sparse_gen.c

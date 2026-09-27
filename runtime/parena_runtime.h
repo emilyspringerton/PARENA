@@ -1811,6 +1811,14 @@ static inline int pty_open_impl(const char *shell, int cols, int rows) {
     ws.ws_col = (unsigned short)cols;
     ws.ws_row = (unsigned short)rows;
     int master_fd;
+#ifdef __EMSCRIPTEN__
+    /* No processes or ptys under WebAssembly: fail the same way a real forkpty failure does
+     * (-1) instead of breaking the whole runtime's compile. Found live 2026-09-27 building
+     * stdlib/nn_train.prn under Emscripten (examples/wasm_train/); previously worked around
+     * downstream by pinning an old 41-line runtime copy (GoblinFoxDragon). */
+    (void)shell; (void)ws; (void)master_fd;
+    return -1;
+#else
     pid_t pid = forkpty(&master_fd, NULL, NULL, &ws);
     if (pid < 0) return -1;
     if (pid == 0) {
@@ -1819,6 +1827,7 @@ static inline int pty_open_impl(const char *shell, int cols, int rows) {
         _exit(127);
     }
     return master_fd;
+#endif
 }
 
 /* Same grow-by-4096-and-copy shape as tcp_read_impl above, kept as its

@@ -1,0 +1,166 @@
+;; stdlib/nn_train.prn -- no dependencies. The backward pass stdlib/nn.prn never had: a real,
+;; trainable 2-layer MLP (n-in -> h tanh hidden units -> 1 sigmoid output), binary
+;; cross-entropy loss, plain per-sample SGD. Founder real-time, 2026-09-27: "do all of it" --
+;; step 1 of the Python-free training path (PARENA nn with a hand-written backward pass,
+;; verified in C; step 2 is the same C under Emscripten in a browser, step 3 a WGSL matmul
+;; kernel checked against a CPU reference -- see examples/wasm_train/).
+;;
+;; Deliberately NOT built on nn.prn's NDArray: training mutates every parameter every step,
+;; and NDArray's index path (a boxed index Vec + Result per element read) allocates on every
+;; access. Instead all parameters live in ONE flat (Vec F64), updated in place with
+;; vec/set-at!, and the dataset is a flat row-major (Vec F64) of n-rows * n-in inputs plus a
+;; (Vec F64) of 0/1 targets -- a sample is addressed by row index, so a training step
+;; allocates nothing but the boxed cells vec/set-at! writes (see "limits" below).
+;;
+;; Flat parameter layout (param-count = h*n-in + 2h + 1):
+;;   W1[j][k]  at  j*n-in + k            (h rows of n-in input weights)
+;;   b1[j]     at  off-b1 + j            (off-b1 = h*n-in)
+;;   W2[j]     at  off-w2 + j            (off-w2 = h*n-in + h)
+;;   b2        at  off-b2                (off-b2 = h*n-in + 2h)
+;;
+;; Gradients (sigmoid output + BCE makes the output delta exactly out - y):
+;;   d      = out - y
+;;   dW2[j] = d * a[j]           a[j] = tanh(W1[j].x + b1[j])
+;;   db2    = d
+;;   dh[j]  = d * W2[j] * (1 - a[j]^2)
+;;   dW1[j][k] = dh[j] * x[k],   db1[j] = dh[j]
+;; Every gradient for row j is computed from pre-update values (a[j] and W2[j] are read before
+;; row j is written; no other row's update feeds row j), so this is exact per-sample SGD.
+;;
+;; Limits, named: one hidden layer, one output, SGD only (no momentum/Adam), no minibatching.
+;; vec/set-at! on an F64 Vec boxes a fresh arena cell per write (runtime vec_box_f64), so a
+;; long run grows its arena by ~16 bytes per parameter per step -- fine for small models
+;; (XOR: 17 params), a real reason to move to an unboxed F64 buffer before large ones.
+
+(module nn-train)
+(export param-count off-b1 off-w2 off-b2 init-weight init-params! hidden-pre predict
+        sample-loss sgd-step! train-epoch! dataset-loss)
+
+;; libm escape hatches -- prefixed so they can't collide with nn.prn's exp-of/tanh-of or gcc
+;; builtins when combined in one `parena build`.
+(defn nt-exp [(x : F64)] : F64
+  #target
+  {:c (inline-c "exp(x)")})
+
+(defn nt-tanh [(x : F64)] : F64
+  #target
+  {:c (inline-c "tanh(x)")})
+
+(defn nt-log [(x : F64)] : F64
+  #target
+  {:c (inline-c "log(x)")})
+
+(defn nt-to-f64 [(x : I32)] : F64
+  #target
+  {:c (inline-c "(double)x")})
+
+(defn nt-sigmoid [(z : F64)] : F64
+  (/ 1.0 (+ 1.0 (nt-exp (- 0.0 z)))))
+
+(defn param-count [(n-in : I32) (h : I32)] : I32
+  (+ (+ (* h n-in) (* 2 h)) 1))
+
+(defn off-b1 [(n-in : I32) (h : I32)] : I32 (* h n-in))
+(defn off-w2 [(n-in : I32) (h : I32)] : I32 (+ (* h n-in) h))
+(defn off-b2 [(n-in : I32) (h : I32)] : I32 (+ (* h n-in) (* 2 h)))
+
+;; init-weight -- deterministic, dependency-free init in [-1, 1): the product of two
+;; different affine hashes of (i, seed), each reduced mod a prime first so nothing overflows I32
+;; (both factors < 1013, product < 1.1M). A single affine hash is an arithmetic progression mod
+;; p -- found live: that init left every hidden unit's weight row collinear and XOR stuck at
+;; the ln 2 saddle for all seeds. The product breaks the progression. Not a statistically strong
+;; RNG; its job is breaking symmetry between hidden units reproducibly.
+(defn init-weight [(i : I32) (seed : I32)] : F64
+  (let [a (mod (+ (* (+ i 1) 7919) (* (mod seed 1009) 104)) 1009)
+        b (mod (+ (* (+ i 3) 31) (* (mod seed 1013) 7)) 1013)]
+    (- (/ (nt-to-f64 (mod (* a b) 1009)) 504.5) 1.0)))
+
+(defn init-params! [(p : &mut (Vec F64)) (n-in : I32) (h : I32) (seed : I32)] : Unit
+  (loop [i 0]
+    (when (< i (param-count n-in h))
+      (vec/push! p (init-weight i seed))
+      (recur (+ i 1)))))
+
+;; hidden-pre -- W1[j] . x[row] + b1[j], before the tanh.
+(defn hidden-pre [(p : &(Vec F64)) (xs : &(Vec F64)) (row : I32) (n-in : I32) (h : I32) (j : I32)]
+  : F64
+  (loop [k 0 acc (deref (vec/get p (+ (off-b1 n-in h) j)))]
+    (if (>= k n-in)
+      acc
+      (recur (+ k 1)
+             (+ acc (* (deref (vec/get p (+ (* j n-in) k)))
+                       (deref (vec/get xs (+ (* row n-in) k)))))))))
+
+(defn output-pre [(p : &(Vec F64)) (xs : &(Vec F64)) (row : I32) (n-in : I32) (h : I32)] : F64
+  (loop [j 0 acc (deref (vec/get p (off-b2 n-in h)))]
+    (if (>= j h)
+      acc
+      (recur (+ j 1)
+             (+ acc (* (deref (vec/get p (+ (off-w2 n-in h) j)))
+                       (nt-tanh (hidden-pre p xs row n-in h j))))))))
+
+;; predict -- the forward pass: probability in (0, 1) that sample `row` is class 1.
+(defn predict [(p : &(Vec F64)) (xs : &(Vec F64)) (row : I32) (n-in : I32) (h : I32)] : F64
+  (nt-sigmoid (output-pre p xs row n-in h)))
+
+;; bce -- binary cross-entropy, output clamped away from 0/1 so log never sees 0.
+(defn bce [(out : F64) (y : F64)] : F64
+  (let [o (if (< out 0.0000001) 0.0000001 (if (> out 0.9999999) 0.9999999 out))]
+    (- 0.0 (+ (* y (nt-log o)) (* (- 1.0 y) (nt-log (- 1.0 o)))))))
+
+(defn sample-loss [(p : &(Vec F64)) (xs : &(Vec F64)) (ys : &(Vec F64)) (row : I32)
+                   (n-in : I32) (h : I32)] : F64
+  (bce (predict p xs row n-in h) (deref (vec/get ys row))))
+
+(defn update-w1-row! [(p : &mut (Vec F64)) (xs : &(Vec F64)) (row : I32) (n-in : I32) (j : I32)
+                      (dh : F64) (lr : F64)] : Unit
+  (loop [k 0]
+    (when (< k n-in)
+      (let [idx (+ (* j n-in) k)
+            xk (deref (vec/get xs (+ (* row n-in) k)))]
+        (vec/set-at! p idx (- (deref (vec/get p idx)) (* lr (* dh xk)))))
+      (recur (+ k 1)))))
+
+(defn backprop-hidden! [(p : &mut (Vec F64)) (xs : &(Vec F64)) (row : I32) (n-in : I32) (h : I32)
+                        (d : F64) (lr : F64)] : Unit
+  (loop [j 0]
+    (when (< j h)
+      (let [a (nt-tanh (hidden-pre p xs row n-in h j))
+            w2-idx (+ (off-w2 n-in h) j)
+            b1-idx (+ (off-b1 n-in h) j)
+            w2 (deref (vec/get p w2-idx))
+            dh (* (* d w2) (- 1.0 (* a a)))]
+        (do
+          (update-w1-row! p xs row n-in j dh lr)
+          (vec/set-at! p b1-idx (- (deref (vec/get p b1-idx)) (* lr dh)))
+          (vec/set-at! p w2-idx (- w2 (* lr (* d a))))))
+      (recur (+ j 1)))))
+
+;; sgd-step! -- one forward + backward + update on sample `row`; returns that sample's loss
+;; measured BEFORE the update.
+(defn sgd-step! [(p : &mut (Vec F64)) (xs : &(Vec F64)) (ys : &(Vec F64)) (row : I32)
+                 (n-in : I32) (h : I32) (lr : F64)] : F64
+  (let [out (predict p xs row n-in h)
+        y (deref (vec/get ys row))
+        d (- out y)
+        b2-idx (off-b2 n-in h)]
+    (do
+      (backprop-hidden! p xs row n-in h d lr)
+      (vec/set-at! p b2-idx (- (deref (vec/get p b2-idx)) (* lr d)))
+      (bce out y))))
+
+;; train-epoch! -- one SGD pass over rows 0..n-rows in order; returns the mean pre-update loss.
+(defn train-epoch! [(p : &mut (Vec F64)) (xs : &(Vec F64)) (ys : &(Vec F64)) (n-rows : I32)
+                    (n-in : I32) (h : I32) (lr : F64)] : F64
+  (loop [r 0 acc 0.0]
+    (if (>= r n-rows)
+      (/ acc (nt-to-f64 n-rows))
+      (recur (+ r 1) (+ acc (sgd-step! p xs ys r n-in h lr))))))
+
+;; dataset-loss -- mean BCE over the whole dataset with the current parameters (no update).
+(defn dataset-loss [(p : &(Vec F64)) (xs : &(Vec F64)) (ys : &(Vec F64)) (n-rows : I32)
+                    (n-in : I32) (h : I32)] : F64
+  (loop [r 0 acc 0.0]
+    (if (>= r n-rows)
+      (/ acc (nt-to-f64 n-rows))
+      (recur (+ r 1) (+ acc (sample-loss p xs ys r n-in h))))))

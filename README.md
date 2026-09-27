@@ -34,7 +34,7 @@ standard library links and runs.
 **Real source exists today** (`stdlib/`) for: `vec`, `map`, `string`, `log`, `buffer`, `io`,
 `thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg` (matmul/transpose/dot;
 inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/filter/group-by deferred),
-`nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`, `regex/nfa` (signatures
+`nn`, `nn_train` (backprop + SGD, gradient-checked), `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`, `regex/nfa` (signatures
 only), `regex/pcre` (a real, working backtracking matcher), `regex/posix`, `regex/glob`, `expr`,
 `grep`, `sed`, `awk`, `gfd` (compiles completely, zero warnings), `csv` (the LONGMA port —
 `split`/`generate`, pure PARENA except the real file-I/O gap every stdlib package still shares),
@@ -88,6 +88,7 @@ the source of truth for signatures, grounding, and honestly-stated limitations.
 | `stats` | `mean`/`std`/`sum`/`min`/`max` |
 | `dataframe` | Heterogeneous labeled tabular data — `read-csv`/`column`/`select`/`filter`/`group-by` |
 | `nn` | `layernorm`/`gelu`/`softmax` — the 3 primitives `gpt2-alpine-c` actually calls |
+| `nn_train` | **Working, tested:** trainable 2-layer MLP with hand-written backprop + SGD (gradient-checked, learns XOR); also runs in WebAssembly and a browser, with a WGSL matmul checked against it — see `examples/wasm_train/README.md` for how to run it and its limits |
 | `tokenizer` | Real BPE — `load`/`encode`/`decode`, matches `gpt2-alpine-c`'s own 3-function shape |
 | `sort` | Generic `sort-by`/`top-k` |
 

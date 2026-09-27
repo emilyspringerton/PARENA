@@ -1,3 +1,9 @@
+## 2026-09-27
+
+- feat(stdlib): `nn_train.prn` -- the backward pass `nn.prn` never had: a 2-layer MLP (tanh hidden, sigmoid out, BCE) with hand-written backprop and per-sample SGD over one flat `(Vec F64)` of parameters, deterministic init. `make test-nn-train` (new CI step): finite-difference gradient check on every parameter, XOR learned, bit-identical reruns. Found live: a single affine init hash is an arithmetic progression and left XOR stuck at the ln 2 saddle for every seed -- init is now a product of two hashes. (EMILY SECTION 555, sess-20260927-cloud-01ND3qA5)
+- feat(examples/wasm_train): the same generated C built with Emscripten (`make wasm-train`) trains XOR in WebAssembly and matches the gcc build to 6e-15; a browser page adds a hand-written WGSL matmul (first layer `X*W1^T + b1`) checked against PARENA's `hidden-pre` (8192 outputs, max rel err 4.6e-7 in headless Chromium/SwiftShader). Not tested on iPhone; GPU not in the training loop yet. README.md updated. (sess-20260927-cloud-01ND3qA5)
+- fix(runtime): `pty_open_impl` no longer breaks Emscripten builds -- `forkpty` is compiled out under `__EMSCRIPTEN__` (returns -1), so PARENA C output builds for the web without GoblinFoxDragon's pinned-old-runtime workaround. (sess-20260927-cloud-01ND3qA5)
+
 ## 2026-09-25
 
 - new stdlib/deadweight/account_rules.prn (display-name validation, C target verified) + found a real TS-emitter gap: string.prn can't be emitted to TS at all (region-annotated params hard-rejected, contradicting emit_ts_defn's own doc comment that they should be a no-op) (sess-20260923-1030-4a526255)
