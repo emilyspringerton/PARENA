@@ -409,6 +409,20 @@ static const char *emit_ts_expr(Arena *arena, Node *expr, const TsTypeCtx *ctx, 
     return result;
 }
 
+/* ts_symbol_used: does `name` appear as a symbol anywhere in `node`? Used to give never-read
+   parameters a `_` prefix -- the TypeScript equivalent of the C target's own
+   __attribute__((unused)) -- so generated modules type-check under a consumer's
+   noUnusedParameters (found live 2026-09-27: IDUNA NOCK's strict tsconfig rejected
+   stdlib/audio/dsp.prn's bq-raw-b1/bq-raw-a1, whose `q` only some biquad kinds read). */
+static int ts_symbol_used(Node *node, const char *name) {
+    if (!node) return 0;
+    if (node->type == NODE_SYMBOL && node->text && strcmp(node->text, name) == 0) return 1;
+    for (size_t i = 0; i < node->child_count; i++) {
+        if (ts_symbol_used(node->children[i], name)) return 1;
+    }
+    return 0;
+}
+
 /* emit_ts_defn: one top-level (defn name [(param : Type) ...] : RetType body) -> one exported
    TypeScript function. Real, narrow scope: every parameter must be a plain, non-region-annotated
    I32/F64/Bool/String (resolve_ts_type's own real, honest boundary) -- an Arena/region-annotated
@@ -443,7 +457,10 @@ static int emit_ts_defn(Arena *arena, TsBuf *out, Node *defn, const TsTypeCtx *f
             return 0;
         }
         if (i > 0) tb_append(&param_list, ", ");
-        tb_appendf(&param_list, "%s: %s", camel_case(arena, param->children[0]->text), p_type);
+        {
+            int used = defn->child_count == 6 && ts_symbol_used(defn->children[5], param->children[0]->text);
+            tb_appendf(&param_list, "%s%s: %s", used ? "" : "_", camel_case(arena, param->children[0]->text), p_type);
+        }
         /* Original (kebab-case) name here, matching what emit_ts_expr looks up by -- the source
            .prn text, not the camelCased TS identifier. Declared param type name (I32/F64/...),
            not the resolved TS type ("number"), so the division-truncation check above can tell
