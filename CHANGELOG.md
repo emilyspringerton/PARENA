@@ -1,3 +1,7 @@
+## 2026-09-27
+
+- stdlib/big_o/witness_rules.prn: decorum action 6 CAUGHT_SNOOPING (-30), snoop-penalty (15), snoop-conspicuousness -- BIG_O NORTHSTAR.md §39 (shoulder-surfing becomes a real stealth risk); regenerated into BIG_O/core/witness_rules.c
+
 ## 2026-09-25
 
 - new stdlib/deadweight/account_rules.prn (display-name validation, C target verified) + found a real TS-emitter gap: string.prn can't be emitted to TS at all (region-annotated params hard-rejected, contradicting emit_ts_defn's own doc comment that they should be a no-op) (sess-20260923-1030-4a526255)
