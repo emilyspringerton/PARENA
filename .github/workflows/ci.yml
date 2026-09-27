@@ -181,6 +181,14 @@ jobs:
           make build
           make test-construct-split
 
+      # stdlib/nn_train.prn -- the backward pass (gradient check + XOR + determinism). Pure C,
+      # no display needed.
+      - name: "nn_train -- backprop gradient check + XOR training"
+        run: |
+          set -euo pipefail
+          make build
+          make test-nn-train
+
       # Founder real-time: "where are the build artifacts?" / "wheres my
       # compiler." Every other repo in this monorepo's CI (PITVIPER,
       # GoblinFoxDragon, BRAWLPIT, SHANKPIT) uploads its built binary via
@@ -703,6 +711,26 @@ jobs:
           name: editor-demo-macos-${{ github.run_number }}-${{ github.sha }}
           path: dist-editor-macos/
           if-no-files-found: error
+
+  # stdlib/nn_train.prn under Emscripten (examples/wasm_train/README.md): trains XOR in
+  # WebAssembly under Node and requires every parameter to match the native gcc build. Separate
+  # job so an emsdk hiccup never masks the main build/test results. The browser + WebGPU check
+  # (run_browser_check.mjs) is not run here -- it needs Playwright's Chromium.
+  wasm_train:
+    name: nn_train in WebAssembly (Emscripten)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 + SDL2_ttf dev headers (needed to build the parena compiler itself)
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev
+      - uses: mymindstorm/setup-emsdk@v14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: make wasm-train
+        run: make wasm-train
 
   # Founder real-time, 2026-08-21: "whenever a build passes release it
   # as a minor version" -> "like a . bump" -> "i will handle big bumps
