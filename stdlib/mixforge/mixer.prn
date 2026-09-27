@@ -1,0 +1,145 @@
+;; stdlib/mixforge/mixer.prn -- the real 4-track DJ mixer DSP, in PARENA (founder real-time,
+;; 2026-09-27: "continue building MIXFORGE DJ game in PARENA primatives the actual dj game should
+;; have real 4 track mixing and midi sampling"). Every per-sample decision a 4-channel DJ mixer
+;; makes lives here: fader taper, trim, equal-power pan, mute/solo, the 3-way crossfader
+;; assignment (A / THRU / B), a one-knob DJ filter (low-pass left, high-pass right), pitch-fader
+;; tempo, and the final summing + soft clipper. Compiled to WebAssembly (parena build -> LLVM IR ->
+;; llc wasm32 -> wasm-ld, MIXFORGE/scripts/build_mixer_wasm.sh) and called per sample from the
+;; browser AudioWorklet (MIXFORGE/web/engine.mjs). The host owns buffers and state (play
+;; positions, the filter's one float of memory); this file owns the math.
+;;
+;; Written against the LLVM backend's real v0 boundary (docs/LLVM_BACKEND_NORTHSTAR.md): scalar
+;; I32/F64/Bool params, one-expression bodies, no let, and `if` lowers to `select` (BOTH branches
+;; are evaluated -- so nothing here recurses, and every branch is cheap and total). There is no
+;; libm on this target, so sin/cos come from a polynomial (quarter-cos below), checked against
+;; Math.cos to < 3e-5 by MIXFORGE/web/mixer_test.mjs.
+
+(module mixforge/mixer)
+(export clamp01)
+(export clamp-bi)
+(export fader-gain)
+(export quarter-cos)
+(export pan-left)
+(export pan-right)
+(export channel-audible)
+(export xfade-gain)
+(export channel-gain)
+(export filter-alpha-lp)
+(export filter-alpha-hp)
+(export filter-lp-next)
+(export filter-output)
+(export soft-clip)
+(export mix4)
+(export tempo-rate)
+(export beatmatch-rate)
+(export level-meter-decay)
+
+(defn clamp01 [(x : F64)] : F64
+  (if (< x 0.0) 0.0 (if (> x 1.0) 1.0 x)))
+
+(defn clamp-bi [(x : F64)] : F64
+  (if (< x -1.0) -1.0 (if (> x 1.0) 1.0 x)))
+
+;; fader-gain -- channel fader position (0..1) -> linear gain, cubic "audio taper": 0.5 on the
+;; fader is 0.125 (-18 dB), which is how a real DJ channel fader feels (most of the throw is in
+;; the top half), rather than a linear slider where the bottom half is all "loud".
+(defn fader-gain [(pos : F64)] : F64
+  (* (clamp01 pos) (* (clamp01 pos) (clamp01 pos))))
+
+;; quarter-cos -- cos(pi*x/2) for x in [0,1], the curve every equal-power pan and crossfade is
+;; built from. Taylor series in x^2 through the x^8 term (Horner form); worst-case error at x=1
+;; is ~2.5e-5, inaudible for a gain curve. Input is clamped, so it is total.
+(defn quarter-cos [(x : F64)] : F64
+  (+ 1.0
+     (* (* (clamp01 x) (clamp01 x))
+        (+ -1.2337005501361697
+           (* (* (clamp01 x) (clamp01 x))
+              (+ 0.25366950790104797
+                 (* (* (clamp01 x) (clamp01 x))
+                    (+ -0.020863480763352960
+                       (* (* (clamp01 x) (clamp01 x)) 0.00091926027483942658)))))))))
+
+;; Equal-power pan, pan in [-1 (hard left), 1 (hard right)]. Centre is 0.7071 on each side, so a
+;; mono source keeps the same loudness wherever it is panned.
+(defn pan-left [(pan : F64)] : F64
+  (quarter-cos (/ (+ (clamp-bi pan) 1.0) 2.0)))
+
+(defn pan-right [(pan : F64)] : F64
+  (quarter-cos (- 1.0 (/ (+ (clamp-bi pan) 1.0) 2.0))))
+
+;; channel-audible -- mute/solo: a muted channel is silent; if ANY channel is soloed, only the
+;; soloed channels are heard. Mute beats solo (same as a hardware desk).
+(defn channel-audible [(muted : Bool) (soloed : Bool) (any-solo : Bool)] : Bool
+  (and (not muted) (or soloed (not any-solo))))
+
+;; xfade-gain -- the 3-way crossfader assign switch on every channel of a 4-deck DJ mixer.
+;; assign: 0 = A side, 1 = THRU (ignores the crossfader), 2 = B side. xf in [0 (full A), 1 (full
+;; B)]. Equal-power: at centre both sides sit at 0.7071.
+(defn xfade-gain [(assign : I32) (xf : F64)] : F64
+  (if (= assign 0)
+      (quarter-cos (clamp01 xf))
+      (if (= assign 2)
+          (quarter-cos (- 1.0 (clamp01 xf)))
+          1.0)))
+
+;; channel-gain -- everything between a deck's output and the summing bus, in one number: trim
+;; (0..2, the gain knob), fader taper, mute/solo, crossfader assign.
+(defn channel-gain [(trim : F64) (fader : F64) (muted : Bool) (soloed : Bool) (any-solo : Bool)
+                    (assign : I32) (xf : F64)] : F64
+  (if (channel-audible muted soloed any-solo)
+      (* (* (if (< trim 0.0) 0.0 (if (> trim 2.0) 2.0 trim)) (fader-gain fader)) (xfade-gain assign xf))
+      0.0))
+
+;; The one-knob DJ filter (knob in [-1,1], 0 = bypass). Left of centre closes a one-pole
+;; low-pass, right of centre opens a one-pole high-pass. The host keeps one float of state per
+;; channel side (the low-pass memory `lp`) and calls:
+;;   lp'  = (filter-lp-next x lp knob)
+;;   out  = (filter-output  x lp' knob)
+;; alpha is the one-pole smoothing coefficient: 1 = pass everything, -> 0 = only DC gets through.
+(defn filter-alpha-lp [(knob : F64)] : F64
+  (if (< knob 0.0)
+      (+ 0.002 (* 0.998 (* (+ 1.0 knob) (* (+ 1.0 knob) (+ 1.0 knob)))))
+      1.0))
+
+(defn filter-alpha-hp [(knob : F64)] : F64
+  (if (> knob 0.0)
+      (* 0.5 (* knob (* knob knob)))
+      0.0))
+
+(defn filter-lp-next [(x : F64) (lp : F64) (knob : F64)] : F64
+  (if (< knob 0.0)
+      (+ lp (* (filter-alpha-lp (clamp-bi knob)) (- x lp)))
+      (+ lp (* (filter-alpha-hp (clamp-bi knob)) (- x lp)))))
+
+(defn filter-output [(x : F64) (lp : F64) (knob : F64)] : F64
+  (if (< knob 0.0) lp (if (> knob 0.0) (- x lp) x)))
+
+;; soft-clip -- rational tanh approximation (Pade 3/2), exact 0 at 0, slope 1 near 0, meets +-1
+;; smoothly at +-3. The summing bus of four hot decks needs this; a hard clip would crackle.
+(defn soft-clip [(x : F64)] : F64
+  (if (> x 3.0)
+      1.0
+      (if (< x -3.0)
+          -1.0
+          (/ (* x (+ 27.0 (* x x))) (+ 27.0 (* 9.0 (* x x)))))))
+
+;; mix4 -- the summing bus for one output side: four already-gained channel samples, master
+;; gain, soft clip.
+(defn mix4 [(a : F64) (b : F64) (c : F64) (d : F64) (master : F64)] : F64
+  (soft-clip (* (+ (+ a b) (+ c d)) master)))
+
+;; tempo-rate -- pitch fader in [-1,1] with a +-range (0.08 = the classic +-8%) -> playback
+;; rate multiplier. Varispeed (tempo and pitch move together) -- real keylock needs a time
+;; stretcher, which is NORTHSTAR Phase 4, not this.
+(defn tempo-rate [(pitch : F64) (range : F64)] : F64
+  (+ 1.0 (* (clamp-bi pitch) range)))
+
+;; beatmatch-rate -- the rate a deck at source-bpm must play at to land on target-bpm. Returns 1
+;; for a non-positive source BPM rather than dividing by zero.
+(defn beatmatch-rate [(source-bpm : F64) (target-bpm : F64)] : F64
+  (if (> source-bpm 0.0) (/ target-bpm source-bpm) 1.0))
+
+;; level-meter-decay -- peak meter ballistics: jump up instantly to a louder peak, fall back by
+;; `fall` per block otherwise.
+(defn level-meter-decay [(current : F64) (peak : F64) (fall : F64)] : F64
+  (if (> peak current) peak (if (> (- current fall) 0.0) (- current fall) 0.0)))

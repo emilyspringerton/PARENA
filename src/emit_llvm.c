@@ -41,13 +41,26 @@ static void lb_append(LlvmBuf *b, const char *s) {
     b->len += add_len;
 }
 
+/* Sized dynamically: a fixed 512-byte scratch buffer used to live here and silently truncated any
+   formatted chunk longer than that -- including a whole function body spliced in via "%s" --
+   producing IR with no `ret` (found live compiling stdlib/mixforge/mixer.prn, 2026-09-27). */
 static void lb_appendf(LlvmBuf *b, const char *fmt, ...) {
-    char tmp[512];
+    char small[512];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    int n = vsnprintf(small, sizeof(small), fmt, ap);
     va_end(ap);
-    lb_append(b, tmp);
+    if (n < 0) return;
+    if ((size_t)n < sizeof(small)) {
+        lb_append(b, small);
+        return;
+    }
+    char *big = malloc((size_t)n + 1);
+    va_start(ap, fmt);
+    vsnprintf(big, (size_t)n + 1, fmt, ap);
+    va_end(ap);
+    lb_append(b, big);
+    free(big);
 }
 
 /* --- small AST helpers, same real shape every other emitter's own is_symbol/is_call_named
@@ -279,6 +292,29 @@ static LlvmVal llvm_val_err(void) {
    may append real instruction lines to `fn->body` along the way -- see emit_llvm.h's own header
    comment for the full real "why" behind this structural difference and this file's own
    top-down-for-literals-only / bottom-up-everywhere-else type-inference rule. */
+/* emit_llvm_operand_pair -- emits both operands of a binary arithmetic/comparison form so they
+   agree on one type. Normally the lhs goes first (seeded with `hint`) and the rhs takes the lhs's
+   own real type; but when the lhs is a bare number literal and the rhs is not, the literal alone
+   cannot know whether it is I32 or F64 (`(< 0.0 x)`, `(- 1.0 x)`), so the rhs is emitted first
+   and the literal takes ITS type. Order of emission is unobservable here: every v0 expression is
+   pure. */
+static int emit_llvm_operand_pair(Arena *arena, LlvmFn *fn, Node *expr, const char *hint,
+                                  LlvmModule *mod, const char **out_error,
+                                  LlvmVal *lhs, LlvmVal *rhs) {
+    Node *l = expr->children[1];
+    Node *r = expr->children[2];
+    if (l->type == NODE_NUMBER && r->type != NODE_NUMBER) {
+        *rhs = emit_llvm_expr(arena, fn, r, hint, mod, out_error);
+        if (!rhs->ref) return 0;
+        *lhs = emit_llvm_expr(arena, fn, l, rhs->type, mod, out_error);
+        return lhs->ref != NULL;
+    }
+    *lhs = emit_llvm_expr(arena, fn, l, hint, mod, out_error);
+    if (!lhs->ref) return 0;
+    *rhs = emit_llvm_expr(arena, fn, r, lhs->type, mod, out_error);
+    return rhs->ref != NULL;
+}
+
 static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *expected_type,
                                LlvmModule *mod, const char **out_error) {
     if (!expr) {
@@ -461,10 +497,9 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: comparison operator requires exactly 2 operands";
             return llvm_val_err();
         }
-        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", mod, out_error);
-        if (!lhs.ref) return llvm_val_err();
-        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, mod, out_error);
-        if (!rhs.ref) return llvm_val_err();
+        LlvmVal lhs, rhs;
+        if (!emit_llvm_operand_pair(arena, fn, expr, "i32", mod, out_error, &lhs, &rhs))
+            return llvm_val_err();
         if (strcmp(lhs.type, rhs.type) != 0) {
             *out_error = "emit_llvm: comparison operands have mismatched types";
             return llvm_val_err();
@@ -489,10 +524,16 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: arithmetic operator requires exactly 2 operands (v0 has no variadic +)";
             return llvm_val_err();
         }
-        LlvmVal lhs = emit_llvm_expr(arena, fn, expr->children[1], "i32", mod, out_error);
-        if (!lhs.ref) return llvm_val_err();
-        LlvmVal rhs = emit_llvm_expr(arena, fn, expr->children[2], lhs.type, mod, out_error);
-        if (!rhs.ref) return llvm_val_err();
+        /* The operand hint follows the surrounding expected type when that is numeric, so a
+           literal lhs inside an F64 context (`(+ 1.0 knob)` in a `: F64` defn) is read as a
+           double -- previously the hint was always "i32", a real bug found by
+           stdlib/mixforge/mixer.prn (2026-09-27). */
+        const char *hint = (expected_type && (strcmp(expected_type, "double") == 0 ||
+                                              strcmp(expected_type, "i32") == 0))
+                               ? expected_type : "i32";
+        LlvmVal lhs, rhs;
+        if (!emit_llvm_operand_pair(arena, fn, expr, hint, mod, out_error, &lhs, &rhs))
+            return llvm_val_err();
         if (strcmp(lhs.type, rhs.type) != 0) {
             *out_error = "emit_llvm: arithmetic operands have mismatched types";
             return llvm_val_err();

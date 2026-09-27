@@ -1,0 +1,200 @@
+;; stdlib/mixforge/sampler.prn -- the real MIDI sampler for MIXFORGE's DJ game (founder
+;; real-time, 2026-09-27: "the actual dj game should have real 4 track mixing and midi
+;; sampling"). Companion to mixer.prn; same WASM pipeline, same v0 LLVM-backend constraints
+;; (scalar only, no let, `if` is a `select` so nothing recurses).
+;;
+;; What lives here:
+;;   * MIDI 1.0 channel-voice message decoding from raw status/data bytes (note on/off -- including
+;;     the running-status "note-on with velocity 0 means note-off" rule -- control change, pitch
+;;     bend), exactly as the Web MIDI API hands them to the browser.
+;;   * The MPC-style pad map: 16 pads on consecutive notes from a base note (36 = C1, the General
+;;     MIDI kick, is where every pad controller starts).
+;;   * Chromatic pitch: note -> playback-rate ratio in exact 12-tone equal temperament, via an
+;;     exact 12-entry semitone table times an exact power-of-two octave table -- no libm, no pow.
+;;   * Velocity curve, pitch-bend range, the MIDI-CC -> mixer-parameter map (so a hardware
+;;     controller drives the 4-track mixer), linear-interpolated sample read, and an ADSR envelope.
+;;   * Beat-synced capture length: "sample N beats off the playing deck into a pad" needs the
+;;     frame count for N beats at the deck's BPM and the output sample rate.
+;;
+;; The host (MIXFORGE/web/engine.mjs) owns sample buffers, voice slots and time; every decision
+;; about what a MIDI byte means and how a voice sounds is made here.
+
+(module mixforge/sampler)
+(export midi-kind)
+(export midi-channel)
+(export is-note-on)
+(export is-note-off)
+(export is-control-change)
+(export is-pitch-bend)
+(export pitch-bend-value)
+(export pad-for-note)
+(export semitone-ratio)
+(export octave-ratio)
+(export floor-div12)
+(export note-rate)
+(export bend-semis)
+(export bend-rate)
+(export velocity-gain)
+(export cc-unit)
+(export cc-bipolar)
+(export cc-mixer-param)
+(export lerp-sample)
+(export env-held)
+(export env-release)
+(export capture-frames)
+(export pad-count)
+(export default-pad-base)
+
+(defn pad-count [] : I32 16)
+(defn default-pad-base [] : I32 36)
+
+;; --- MIDI byte decoding -------------------------------------------------------------------
+
+;; midi-kind -- the high nibble of a status byte: 8 note-off, 9 note-on, 11 (0xB) control
+;; change, 14 (0xE) pitch bend, ...
+(defn midi-kind [(status : I32)] : I32
+  (shr (bit-and status 240) 4))
+
+;; midi-channel -- the low nibble, 0..15. MIXFORGE maps MIDI channels 0-3 to decks 0-3.
+(defn midi-channel [(status : I32)] : I32
+  (bit-and status 15))
+
+(defn is-note-on [(status : I32) (velocity : I32)] : Bool
+  (and (= (midi-kind status) 9) (> velocity 0)))
+
+;; is-note-off -- a real 0x8n note-off, OR a 0x9n note-on with velocity 0 (what most keyboards
+;; actually send, because it lets them stay in running status).
+(defn is-note-off [(status : I32) (velocity : I32)] : Bool
+  (or (= (midi-kind status) 8) (and (= (midi-kind status) 9) (= velocity 0))))
+
+(defn is-control-change [(status : I32)] : Bool
+  (= (midi-kind status) 11))
+
+(defn is-pitch-bend [(status : I32)] : Bool
+  (= (midi-kind status) 14))
+
+;; pitch-bend-value -- 14-bit bend from its two 7-bit data bytes (LSB first), centred: -8192..8191.
+(defn pitch-bend-value [(lsb : I32) (msb : I32)] : I32
+  (- (bit-or (shl (bit-and msb 127) 7) (bit-and lsb 127)) 8192))
+
+;; pad-for-note -- which of the 16 pads a note hits, or -1 if it is outside the pad bank.
+(defn pad-for-note [(note : I32) (base : I32)] : I32
+  (if (and (>= (- note base) 0) (< (- note base) 16)) (- note base) -1))
+
+;; --- pitch ----------------------------------------------------------------------------------
+
+;; semitone-ratio -- 2^(r/12) for r in 0..11, exact to double precision. Out of range -> 1.
+(defn semitone-ratio [(r : I32)] : F64
+  (if (= r 0) 1.0
+  (if (= r 1) 1.0594630943592953
+  (if (= r 2) 1.122462048309373
+  (if (= r 3) 1.189207115002721
+  (if (= r 4) 1.2599210498948732
+  (if (= r 5) 1.3348398541700344
+  (if (= r 6) 1.4142135623730951
+  (if (= r 7) 1.4983070768766815
+  (if (= r 8) 1.5874010519681994
+  (if (= r 9) 1.681792830507429
+  (if (= r 10) 1.7817974362806785
+  (if (= r 11) 1.887748625363387
+      1.0)))))))))))))
+
+;; octave-ratio -- 2^o for o in -8..8 (clamped), exact.
+(defn octave-ratio [(o : I32)] : F64
+  (if (<= o -8) 0.00390625
+  (if (= o -7) 0.0078125
+  (if (= o -6) 0.015625
+  (if (= o -5) 0.03125
+  (if (= o -4) 0.0625
+  (if (= o -3) 0.125
+  (if (= o -2) 0.25
+  (if (= o -1) 0.5
+  (if (= o 0) 1.0
+  (if (= o 1) 2.0
+  (if (= o 2) 4.0
+  (if (= o 3) 8.0
+  (if (= o 4) 16.0
+  (if (= o 5) 32.0
+  (if (= o 6) 64.0
+  (if (= o 7) 128.0
+      256.0)))))))))))))))))
+
+;; floor-div12 -- floor(d / 12), correct for negative d (sdiv truncates toward zero).
+(defn floor-div12 [(d : I32)] : I32
+  (if (< d 0) (- (/ (+ d 1) 12) 1) (/ d 12)))
+
+;; note-rate -- playback-rate multiplier for playing a sample recorded at `root` as `note`:
+;; 2^((note-root)/12), split into octave x semitone so both tables stay exact.
+(defn note-rate [(note : I32) (root : I32)] : F64
+  (* (octave-ratio (floor-div12 (- note root)))
+     (semitone-ratio (- (- note root) (* 12 (floor-div12 (- note root)))))))
+
+;; bend-semis -- a centred 14-bit bend value (-8192..8191, passed as F64 -- the host converts
+;; pitch-bend-value's I32) to semitones at the MIDI-default +-2 semitone range.
+(defn bend-semis [(bend : F64)] : F64
+  (if (< bend -8192.0) -2.0 (if (> bend 8192.0) 2.0 (/ bend 4096.0))))
+
+;; bend-rate -- pitch-bend to a rate multiplier. Piecewise-linear through the exact ratios at
+;; -2, -1, 0, +1, +2 semitones; worst-case error against 2^(s/12) is under 1 cent (checked by
+;; MIXFORGE/web/mixer_test.mjs).
+(defn bend-rate [(bend : F64)] : F64
+  (if (>= (bend-semis bend) 1.0)
+      (+ 1.0594630943592953 (* (- (bend-semis bend) 1.0) 0.06299895395007771))
+  (if (>= (bend-semis bend) 0.0)
+      (+ 1.0 (* (bend-semis bend) 0.0594630943592953))
+  (if (>= (bend-semis bend) -1.0)
+      (+ 1.0 (* (bend-semis bend) 0.05612568731830647))
+      (+ 0.9438743126816935 (* (+ (bend-semis bend) 1.0) 0.052975594541354254))))))
+
+;; velocity-gain -- MIDI velocity (0..127, passed as F64) -> gain, square law: soft hits are
+;; genuinely quiet, which is what makes finger drumming feel dynamic.
+(defn velocity-gain [(velocity : F64)] : F64
+  (if (<= velocity 0.0) 0.0
+      (if (>= velocity 127.0) 1.0 (* (/ velocity 127.0) (/ velocity 127.0)))))
+
+;; cc-unit / cc-bipolar -- a 7-bit CC value (0..127, as F64) to 0..1 and to -1..1 (64 = centre).
+(defn cc-unit [(value : F64)] : F64
+  (if (<= value 0.0) 0.0 (if (>= value 127.0) 1.0 (/ value 127.0))))
+
+(defn cc-bipolar [(value : F64)] : F64
+  (if (<= value 0.0) -1.0 (if (>= value 127.0) 1.0 (/ (- value 64.0) 63.0))))
+
+;; cc-mixer-param -- the controller map. Which mixer parameter a CC number drives on the deck
+;; picked by the MIDI channel (0-3):
+;;   7  (Channel Volume)  -> 0 fader        10 (Pan)            -> 1 pan
+;;   74 (Brightness)      -> 2 filter       8  (Balance)        -> 3 crossfader (global)
+;;   1  (Mod Wheel)       -> 4 pitch fader  2  (Breath)         -> 5 trim
+;;   -1 = not mapped.
+(defn cc-mixer-param [(cc : I32)] : I32
+  (if (= cc 7) 0
+  (if (= cc 10) 1
+  (if (= cc 74) 2
+  (if (= cc 8) 3
+  (if (= cc 1) 4
+  (if (= cc 2) 5
+      -1)))))))
+
+;; --- voice rendering ------------------------------------------------------------------------
+
+;; lerp-sample -- linear interpolation between adjacent sample frames at a fractional position.
+(defn lerp-sample [(s0 : F64) (s1 : F64) (frac : F64)] : F64
+  (+ s0 (* (- s1 s0) frac)))
+
+;; env-held -- ADSR level while the key is held, t seconds after note-on. attack/decay in seconds,
+;; sustain as a level 0..1. A zero-length attack or decay is a jump, never a divide by zero.
+(defn env-held [(t : F64) (attack : F64) (decay : F64) (sustain : F64)] : F64
+  (if (< t attack)
+      (/ t (if (> attack 0.0) attack 1.0))
+      (if (< t (+ attack decay))
+          (- 1.0 (* (- 1.0 sustain) (/ (- t attack) (if (> decay 0.0) decay 1.0))))
+          sustain)))
+
+;; env-release -- level rt seconds after note-off, falling linearly from the level the envelope
+;; was at when the key came up. Reaches exactly 0 at rt >= release; the host frees the voice then.
+(defn env-release [(rt : F64) (release : F64) (from : F64)] : F64
+  (if (>= rt release) 0.0 (* from (- 1.0 (/ rt (if (> release 0.0) release 1.0))))))
+
+;; capture-frames -- how many frames `beats` beats last at `bpm` and `sample-rate`, for a
+;; beat-synced grab off a playing deck into a pad. Non-positive BPM falls back to 120.
+(defn capture-frames [(beats : F64) (bpm : F64) (sample-rate : F64)] : F64
+  (/ (* (* beats 60.0) sample-rate) (if (> bpm 0.0) bpm 120.0)))

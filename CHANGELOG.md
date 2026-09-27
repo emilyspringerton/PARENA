@@ -1,5 +1,7 @@
 ## 2026-09-27
 
+- feat(stdlib/mixforge): mixer.prn (4-channel DJ mixer DSP: fader taper, equal-power pan/crossfader via polynomial quarter-cosine, mute/solo, A/Thru/B assign, one-knob LP/HP DJ filter, tempo/beatmatch rate, soft-clip bus) + sampler.prn (MIDI 1.0 decode incl. velocity-0 note-off and 14-bit bend, 16-pad map, exact 12-TET note->rate, bend rate, velocity curve, CC->mixer map, ADSR, beat-synced capture length). Built to WASM for MIXFORGE's web/dj.html; `make test-mixforge-dsp` checks the C target against libm (12 checks).
+- fix(emit_llvm): a float literal on the LEFT of an arithmetic/comparison op in F64 context was hinted I32 and rejected (`(- 1.0 x)`); now takes the other operand's / surrounding type. And lb_appendf's fixed 512-byte scratch buffer silently truncated any longer chunk, including whole function bodies (IR with no `ret`); now sized dynamically. Both found compiling mixer.prn; regression tests in tests/test_emit_llvm.c (fail on the old code, 59/59 pass now).
 - stdlib/big_o/witness_rules.prn: decorum action 6 CAUGHT_SNOOPING (-30), snoop-penalty (15), snoop-conspicuousness -- BIG_O NORTHSTAR.md §39 (shoulder-surfing becomes a real stealth risk); regenerated into BIG_O/core/witness_rules.c
 
 ## 2026-09-25
