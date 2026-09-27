@@ -136,6 +136,15 @@ static const MathPrimEntry MATH_PRIM_TABLE[] = {
     {"math/sqrt", "Math.sqrt", 1},
     {"math/log", "Math.log", 1},
     {"math/cos", "Math.cos", 1},
+    /* 2026-09-27: sound-engineering primitives (stdlib/audio/ .prn files) -- dB<->linear needs
+     * exp/pow/log10, RBJ biquad design needs sin/cos/tan, envelope followers need abs. Mirrored
+     * entry-for-entry in emit.c's own C_MATH_PRIM_TABLE (libm) and the other host target. */
+    {"math/sin", "Math.sin", 1},
+    {"math/tan", "Math.tan", 1},
+    {"math/exp", "Math.exp", 1},
+    {"math/log10", "Math.log10", 1},
+    {"math/abs", "Math.abs", 1},
+    {"math/pow", "Math.pow", 2},
 };
 #define MATH_PRIM_TABLE_COUNT (sizeof(MATH_PRIM_TABLE) / sizeof(MATH_PRIM_TABLE[0]))
 

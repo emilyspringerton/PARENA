@@ -31,6 +31,22 @@ sections) rather than a blanket "not implemented yet." "Built out in Parena" mea
 source exists*, checked per-file against the current compiler — not a claim that the whole
 standard library links and runs.
 
+**`stdlib/audio` — sound engineering (2026-09-27):** `audio/dsp` (dB/linear, RBJ biquads in
+TDF-II, soft-knee compressor/expander/limiter/de-esser gain computers, envelope followers,
+BS.1770/EBU R128 K-weighting + gating), `audio/mixer4` (4-channel DJM-style mixer curves:
+trim, 3-band isolator EQ, bipolar color filter, 3 fader curves, crossfader assign/curves, cue
+mix, meters), `audio/deck` (CDJ-style decks: tempo ranges, sync, Hermite resampling, jog
+bend/scratch, cue logic, quantize, seamless beat loops, key lock), `audio/sampler` (MPC-style
+pads: 4 banks x 16, velocity, 960 PPQN swing/quantize/note repeat, choke groups, ADSR, voice
+steal) and `audio/jive_rules` (jivetalking's adaptive podcast-mastering rules). All scalar, so
+the same files compile to **C, TypeScript and Java**; `make test-audio-dsp test-audio-dj
+test-audio-jive-rules` verify them (published BS.1770 coefficients, real sine sweeps through
+the filters, a pitched deck resampling under -60 dBFS error, and 18,000 golden vectors from
+jivetalking's original Go). The host owns buffers and runs the sample loop; PARENA is the math.
+Consumers: jivetalking fork (C via cgo), IDUNA NOCK's sound console and Booth (TS), SHANKPIT
+(C). Math primitives `math/{sin,tan,exp,pow,log10,abs}` were added for this and now lower to
+libm on the C target (previously only TS/Java lowered `math/*`).
+
 **Real source exists today** (`stdlib/`) for: `vec`, `map`, `string`, `log`, `buffer`, `io`,
 `thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg` (matmul/transpose/dot;
 inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/filter/group-by deferred),

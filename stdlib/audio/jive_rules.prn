@@ -1,0 +1,290 @@
+;; stdlib/audio/jive_rules.prn -- jivetalking's adaptive "measure, then tune every filter" brain,
+;; PARENA-ified. Founder real-time (2026-09-27): "we have a fork of jivetalking PARENAIFY our
+;; fork BAZEL first then eat it with PARENA into NOCK all of it."
+;;
+;; Source: emilyspringerton/jivetalking internal/processor/adaptive.go (fork of
+;; linuxmatters/jivetalking, GPL-3.0). Every function below is a line-for-line port of one
+;; scalar leaf of that file -- same constants, same branch ORDER (Go `switch` is first-match, so
+;; the nested `if` chains here preserve evaluation order exactly), same clamps. The fork now
+;; CALLS the C this file compiles to (internal/parena, cgo) instead of its own Go bodies, and its
+;; original Go bodies live on as a randomized parity oracle (internal/processor/
+;; parena_parity_test.go) -- so "the port is faithful" is a test that runs, not a claim.
+;;
+;; Presence flags: Go's `measurements.NoiseProfile != nil` / `SpeechProfile != nil` become plain
+;; I32 0/1 params (`has-noise`, `has-speech`), since the shared scalar subset has no Option.
+;; Where Go leaves a config field untouched on an early return, the function takes the field's
+;; `current` value and returns it unchanged on that path.
+;;
+;; Enum returns (I32): content type 0 SPEECH 1 MUSIC 2 MIXED (adaptive.go's ContentType iota
+;; order); gate detection 0 RMS 1 PEAK.
+;;
+;; Same scalar-only discipline as dsp.prn, so NOCK's browser side (TypeScript target) can run the
+;; exact same auto-tune over a recording's measured stats and pre-fill a filter chain.
+
+(module audio/jive_rules)
+(import audio/dsp)
+(export jive-lufs-gap jive-content-type jive-hp-freq jive-hp-width jive-hp-mix jive-hp-poles
+        jive-lp-enabled jive-lp-freq jive-lp-mix jive-nr-threshold jive-nr-expansion
+        jive-deess-intensity jive-gate-aggression jive-gate-ratio jive-gate-attack
+        jive-gate-release jive-gate-range-db jive-gate-knee jive-gate-detection
+        jive-gate-threshold-db jive-gate-threshold jive-gate-lufs-gap jive-gate-gentle
+        jive-la2a-attack jive-la2a-release jive-la2a-ratio jive-la2a-threshold jive-la2a-knee
+        jive-la2a-mix)
+
+(defn max-f64 [(a : F64) (b : F64)] : F64 (if (> a b) a b))
+(defn min-f64 [(a : F64) (b : F64)] : F64 (if (< a b) a b))
+
+;; preferSpeechMetric
+(defn jive-prefer [(full : F64) (speech : F64) (has-speech : I32)] : F64
+  (if (and (= has-speech 1) (> speech 0.0)) speech full))
+
+;; calculateLUFSGap
+(defn jive-lufs-gap [(target : F64) (input : F64)] : F64
+  (if (= input 0.0) 0.0 (- target input)))
+
+;; ---------------------------------------------------------------------------------------------
+;; detectContentType -- 0 speech, 1 music, 2 mixed. Music only scores when the speech test for
+;; that metric failed (Go's `if ... else if`).
+;; ---------------------------------------------------------------------------------------------
+(defn jive-speech-score [(kurt : F64) (flat : F64) (flux : F64) (crest : F64)] : I32
+  (+ (+ (if (> kurt 6.0) 1 0) (if (< flat 0.45) 1 0))
+     (+ (if (< flux 0.003) 1 0) (if (> crest 30.0) 1 0))))
+
+(defn jive-music-score [(kurt : F64) (flat : F64) (flux : F64) (crest : F64)] : I32
+  (+ (+ (if (> kurt 6.0) 0 (if (< kurt 5.0) 1 0)) (if (< flat 0.45) 0 (if (> flat 0.55) 1 0)))
+     (+ (if (< flux 0.003) 0 (if (> flux 0.005) 1 0)) (if (> crest 30.0) 0 (if (< crest 25.0) 1 0)))))
+
+(defn jive-content-type [(kurt : F64) (flat : F64) (flux : F64) (crest : F64)] : I32
+  (if (>= (jive-speech-score kurt flat flux crest) 3) 0
+    (if (>= (jive-music-score kurt flat flux crest) 3) 1 2)))
+
+;; ---------------------------------------------------------------------------------------------
+;; tuneDS201HighPass
+;; ---------------------------------------------------------------------------------------------
+(defn jive-hp-base [(centroid : F64)] : F64
+  (if (> centroid 4000.0) 100.0 (if (> centroid 2500.0) 80.0 60.0)))
+
+;; Boost only for broadband (entropy >= 0.30) silence noise.
+(defn jive-hp-boost [(has-noise : I32) (floor : F64) (entropy : F64)] : F64
+  (if (and (= has-noise 1) (>= entropy 0.30))
+    (if (> floor -55.0) 20.0 (if (> floor -70.0) 10.0 0.0))
+    0.0))
+
+(defn jive-hp-freq [(current : F64) (centroid : F64) (decrease : F64) (skew : F64)
+                    (has-noise : I32) (floor : F64) (entropy : F64)] : F64
+  (if (<= centroid 0.0)
+    current
+    (min-f64 120.0
+      (if (< decrease -0.10) 60.0
+        (if (> skew 1.0) 70.0
+          (if (< decrease -0.05)
+            (min-f64 80.0 (+ (jive-hp-base centroid) (jive-hp-boost has-noise floor entropy)))
+            (+ (jive-hp-base centroid) (jive-hp-boost has-noise floor entropy))))))))
+
+(defn jive-hp-width [(current : F64) (centroid : F64) (decrease : F64) (skew : F64)] : F64
+  (if (<= centroid 0.0) current
+    (if (< decrease -0.10) 0.5 (if (> skew 1.0) 0.5 current))))
+
+(defn jive-hp-mix [(current : F64) (centroid : F64) (decrease : F64) (skew : F64)] : F64
+  (if (<= centroid 0.0) current
+    (if (< decrease -0.10) 0.8 (if (> skew 1.0) 0.9 current))))
+
+(defn jive-hp-poles [(current : I32) (centroid : F64) (decrease : F64) (skew : F64)] : I32
+  (if (<= centroid 0.0) current
+    (if (or (or (< decrease -0.10) (> skew 1.0)) (< decrease -0.05)) 1 current)))
+
+;; ---------------------------------------------------------------------------------------------
+;; tuneDS201LowPass / tuneDS201LowPassForSpeech
+;; ---------------------------------------------------------------------------------------------
+(defn jive-lp-enabled [(content : I32) (rolloff : F64) (zcr : F64) (centroid : F64)] : I32
+  (if (not (= content 0)) 0
+    (if (< rolloff 8000.0) 0
+      (if (> rolloff 14000.0) 1
+        (if (and (> zcr 0.10) (< centroid 4000.0)) 1 0)))))
+
+(defn jive-lp-freq [(content : I32) (rolloff : F64) (zcr : F64) (centroid : F64)] : F64
+  (if (not (= content 0)) 16000.0
+    (if (< rolloff 8000.0) 16000.0
+      (if (> rolloff 14000.0) (min-f64 20000.0 (+ rolloff 2000.0))
+        (if (and (> zcr 0.10) (< centroid 4000.0)) 12000.0 16000.0)))))
+
+;; Music/mixed leave the mix untouched; speech resets it to 1.0 except the ZCR (HF-noise) case.
+(defn jive-lp-mix [(current : F64) (content : I32) (rolloff : F64) (zcr : F64) (centroid : F64)] : F64
+  (if (not (= content 0)) current
+    (if (< rolloff 8000.0) 1.0
+      (if (> rolloff 14000.0) 1.0
+        (if (and (> zcr 0.10) (< centroid 4000.0)) 0.8 1.0)))))
+
+;; ---------------------------------------------------------------------------------------------
+;; tuneNoiseRemove / scaleExpansion (host skips the call when NoiseRemoveEnabled is false)
+;; ---------------------------------------------------------------------------------------------
+(defn jive-nr-threshold [(has-noise : I32) (floor : F64)] : F64
+  (if (and (= has-noise 1) (< floor 0.0)) (clamp-f64 (+ floor 5.0) -70.0 -40.0) -55.0))
+
+(defn jive-nr-expansion [(has-noise : I32) (floor : F64)] : F64
+  (if (and (= has-noise 1) (< floor 0.0))
+    (if (> floor -45.0) 12.0 (if (> floor -55.0) 8.0 (if (> floor -65.0) 6.0 4.0)))
+    6.0))
+
+;; ---------------------------------------------------------------------------------------------
+;; tuneDeesser (Full / CentroidOnly)
+;; ---------------------------------------------------------------------------------------------
+(defn jive-deess-base [(centroid : F64)] : F64
+  (if (> centroid 6000.0) 0.6 (if (> centroid 4000.0) 0.5 0.4)))
+
+(defn jive-deess-full [(c : F64) (r : F64)] : F64
+  (if (< r 4000.0) 0.0
+    (if (< r 8000.0)
+      (if (< (* (jive-deess-base c) 0.7) 0.3) 0.0 (* (jive-deess-base c) 0.7))
+      (if (> r 12000.0) (min-f64 (* (jive-deess-base c) 1.2) 0.8) (jive-deess-base c)))))
+
+(defn jive-deess-intensity [(current : F64) (centroid : F64) (rolloff : F64)
+                            (has-speech : I32) (speech-centroid : F64) (speech-rolloff : F64)] : F64
+  (if (and (> centroid 0.0) (> rolloff 0.0))
+    (jive-deess-full (jive-prefer centroid speech-centroid has-speech) (jive-prefer rolloff speech-rolloff has-speech))
+    (if (> centroid 0.0) (jive-deess-base centroid) current)))
+
+;; ---------------------------------------------------------------------------------------------
+;; DS201 gate: calculateAggression / Ratio / Attack / Release / RangeDB / Knee / Detection /
+;; Threshold(+Legacy), plus tuneDS201Gate's own gentle-mode override
+;; ---------------------------------------------------------------------------------------------
+(defn jive-gate-aggression [(separation : F64) (lra : F64)] : F64
+  (clamp-f64
+    (- (if (< separation 10.0) 0.30
+         (if (< separation 15.0) (+ 0.35 (* (- separation 10.0) 0.02))
+           (if (< separation 20.0) (+ 0.45 (* (- separation 15.0) 0.02)) 0.55)))
+       (if (> lra 12.0) (* (- lra 12.0) 0.015) 0.0))
+    0.25 0.60))
+
+(defn jive-gate-ratio [(lra : F64)] : F64
+  (if (> lra 15.0) 1.5 (if (> lra 10.0) 2.0 2.5)))
+
+(defn jive-gate-attack-base [(max-diff-pct : F64) (crest : F64)] : F64
+  (if (or (> max-diff-pct 40.0) (> crest 40.0)) 10.0
+    (if (or (> max-diff-pct 25.0) (> crest 30.0)) 10.0
+      (if (> max-diff-pct 10.0) 12.0 17.0))))
+
+(defn jive-gate-attack [(max-diff : F64) (flux : F64) (crest : F64)] : F64
+  (clamp-f64
+    (if (> flux 0.05)
+      (* (jive-gate-attack-base (* max-diff 100.0) crest) 0.8)
+      (jive-gate-attack-base (* max-diff 100.0) crest))
+    10.0 25.0))
+
+(defn jive-gate-release-base [(flux : F64) (zcr : F64)] : F64
+  (+ (if (and (< flux 0.01) (< zcr 0.08)) 300.0 (if (> flux 0.05) 180.0 250.0)) 50.0))
+
+(defn jive-gate-release-entropy [(entropy : F64)] : F64
+  (if (< entropy 0.10) 75.0
+    (if (< entropy 0.12) (* 75.0 0.7)
+      (if (< entropy 0.16) (- 0.0 (* 100.0 0.3)) -100.0))))
+
+(defn jive-gate-release-lra [(lra : F64)] : F64
+  (if (< lra 8.0) 150.0
+    (if (< lra 10.0) (* 100.0 (/ (- 10.0 lra) (- 10.0 8.0))) 0.0)))
+
+(defn jive-gate-release [(flux : F64) (zcr : F64) (entropy : F64) (lra : F64)] : F64
+  (clamp-f64
+    (+ (+ (jive-gate-release-base flux zcr) (jive-gate-release-entropy entropy)) (jive-gate-release-lra lra))
+    150.0 600.0))
+
+;; Returns the already-clamped range (tuneDS201Gate clamps to [-36, -12] before DbToLinear).
+(defn jive-gate-range-db [(entropy : F64) (noise-floor : F64)] : F64
+  (clamp-f64
+    (+ (if (< entropy 0.3) -16.0 (if (< entropy 0.6) -21.0 -27.0))
+       (if (< noise-floor -70.0) -6.0 0.0))
+    -36.0 -12.0))
+
+(defn jive-gate-knee [(spectral-crest : F64)] : F64
+  (if (> spectral-crest 35.0) 5.0 (if (> spectral-crest 20.0) 3.0 2.0)))
+
+(defn jive-gate-detection [(entropy : F64) (silence-crest : F64)] : I32
+  (if (or (< entropy 0.3) (> silence-crest 25.0)) 0
+    (if (and (> entropy 0.7) (< silence-crest 15.0)) 1 0)))
+
+(defn jive-gate-threshold-legacy-db [(noise-floor : F64) (silence-peak : F64) (silence-crest : F64)
+                                     (ratio : F64) (lufs-gap : F64)] : F64
+  (clamp-f64
+    (if (and (and (> silence-crest 20.0) (not (= silence-peak 0.0))) (< lufs-gap 25.0))
+      (+ silence-peak 3.0)
+      (max-f64 (+ noise-floor (/ 12.0 (- 1.0 (/ 1.0 ratio)))) -40.0))
+    -80.0 -25.0))
+
+(defn jive-gate-threshold-speech-db [(noise-floor : F64) (lra : F64) (speech-rms : F64) (speech-crest : F64)] : F64
+  (clamp-f64
+    (if (< (+ (- speech-rms speech-crest)
+              (* speech-crest (jive-gate-aggression (- (- speech-rms speech-crest) noise-floor) lra)))
+           (+ noise-floor 5.0))
+      (+ noise-floor 5.0)
+      (min-f64 (- speech-rms 10.0)
+               (+ (- speech-rms speech-crest)
+                  (* speech-crest (jive-gate-aggression (- (- speech-rms speech-crest) noise-floor) lra)))))
+    -80.0 -25.0))
+
+;; calculateDS201GateThreshold, in dB.
+(defn jive-gate-threshold-db [(noise-floor : F64) (silence-peak : F64) (silence-crest : F64)
+                              (ratio : F64) (lufs-gap : F64) (lra : F64)
+                              (speech-rms : F64) (speech-crest : F64)] : F64
+  (if (and (and (< speech-rms 0.0) (> speech-crest 0.0))
+           (>= (- (- speech-rms speech-crest) noise-floor) 5.0))
+    (jive-gate-threshold-speech-db noise-floor lra speech-rms speech-crest)
+    (jive-gate-threshold-legacy-db noise-floor silence-peak silence-crest ratio lufs-gap)))
+
+;; calculateDS201GateThreshold, linear (what FFmpeg's agate threshold takes).
+(defn jive-gate-threshold [(noise-floor : F64) (silence-peak : F64) (silence-crest : F64)
+                           (ratio : F64) (lufs-gap : F64) (lra : F64)
+                           (speech-rms : F64) (speech-crest : F64)] : F64
+  (db-to-linear (jive-gate-threshold-db noise-floor silence-peak silence-crest ratio lufs-gap lra speech-rms speech-crest)))
+
+;; tuneDS201Gate's own gap (TargetI - InputI, floored at 0 -- NOT calculateLUFSGap).
+(defn jive-gate-lufs-gap [(target : F64) (input : F64)] : F64
+  (max-f64 0.0 (- target input)))
+
+;; Gentle mode (ratio 1.2, knee 2.0) for very quiet + uniform recordings.
+(defn jive-gate-gentle [(lufs-gap : F64) (lra : F64)] : I32
+  (if (and (>= lufs-gap 25.0) (< lra 10.0)) 1 0))
+
+;; ---------------------------------------------------------------------------------------------
+;; LA-2A compressor tuning
+;; ---------------------------------------------------------------------------------------------
+;; max-diff is RAW sample units (0-32768), exactly as tuneLA2AAttack reads it.
+(defn jive-la2a-attack [(max-diff : F64)] : F64
+  (if (> (/ max-diff 32768.0) 0.0)
+    (if (> (/ max-diff 32768.0) 0.25) 8.0 (if (< (/ max-diff 32768.0) 0.10) 12.0 10.0))
+    10.0))
+
+(defn jive-la2a-release-lra [(lra : F64)] : F64
+  (if (> lra 14.0) 300.0 (if (< lra 8.0) 150.0 200.0)))
+
+(defn jive-la2a-release-flux [(r : F64) (flux : F64)] : F64
+  (if (> flux 0.0)
+    (if (> flux 0.025) (max-f64 r 300.0) (if (< flux 0.008) (min-f64 r 150.0) r))
+    r))
+
+(defn jive-la2a-release [(lra : F64) (flux : F64) (has-speech : I32) (speech-flux : F64)
+                         (skew : F64) (input-i : F64)] : F64
+  (+ (+ (jive-la2a-release-flux (jive-la2a-release-lra lra) (jive-prefer flux speech-flux has-speech))
+        (if (> skew 1.5) 30.0 0.0))
+     (if (and (< input-i 0.0) (> (- -18.0 input-i) 16.0)) 50.0 0.0)))
+
+(defn jive-la2a-ratio [(kurt : F64) (has-speech : I32) (speech-kurt : F64) (dynamic-range : F64)] : F64
+  (clamp-f64
+    (+ (if (> (jive-prefer kurt speech-kurt has-speech) 0.0)
+         (if (> (jive-prefer kurt speech-kurt has-speech) 10.0) 2.5
+           (if (< (jive-prefer kurt speech-kurt has-speech) 5.0) 3.5 3.0))
+         3.0)
+       (if (> dynamic-range 35.0) 0.5 0.0))
+    2.0 5.0))
+
+(defn jive-la2a-threshold [(peak : F64) (dynamic-range : F64)] : F64
+  (if (= peak 0.0) -18.0
+    (clamp-f64 (- peak (if (> dynamic-range 30.0) 20.0 (if (> dynamic-range 20.0) 15.0 10.0))) -40.0 -12.0)))
+
+(defn jive-la2a-knee [(centroid : F64) (skew : F64)] : F64
+  (clamp-f64
+    (+ (if (> centroid 0.0) (if (< centroid 4000.0) 5.0 (if (> centroid 6000.0) 3.5 4.0)) 4.0)
+       (if (> skew 1.5) 0.5 0.0))
+    1.0 8.0))
+
+(defn jive-la2a-mix [(noise-floor : F64)] : F64
+  (if (> noise-floor -45.0) 0.85 (if (> noise-floor -65.0) 0.93 1.0)))

@@ -1,0 +1,122 @@
+;; stdlib/audio/deck.prn -- a CDJ-style media deck (four of them in a booth). Founder real-time
+;; (2026-09-27): "it needs to emulate an MPC and a pioneer mixer and 4 CDJS". Scalar rules only
+;; (see audio/dsp.prn's header for why): the host keeps each deck's decoded track buffer and
+;; its small state record {pos, rate, playing, cue, loop-in, loop-out, loop-on, hot-cues[8]} and
+;; asks these functions what to do with it every sample / every button press.
+;;
+;; Positions are in SOURCE samples (F64, fractional -- the playhead sits between samples while
+;; pitched); rates are playback-speed multipliers (1.0 = 0%).
+;;
+;; Tempo range selector ids: 0 = +/-6%, 1 = +/-10%, 2 = +/-16%, 3 = WIDE (+/-100%).
+;; Cue-button action ids (deck-cue-press): 1 SET cue here (paused), 2 JUMP back to cue and pause
+;; (pressed while playing), 3 PREVIEW from cue while held (paused, already at cue).
+
+(module audio/deck)
+(import audio/dsp)
+(export deck-tempo-range-pct deck-rate deck-pitch-pct deck-bpm deck-sync-rate
+        deck-advance deck-hermite deck-jog-bend deck-scratch-rate deck-brake-rate
+        deck-cue-press deck-beat-len deck-beat-phase deck-quantize-pos
+        deck-loop-out deck-loop-wrap deck-loop-halve deck-loop-double deck-key-ratio
+        deck-at-end deck-reverse-rate)
+
+(defn deck-tempo-range-pct [(sel : I32)] : F64
+  (if (= sel 0) 6.0 (if (= sel 1) 10.0 (if (= sel 2) 16.0 100.0))))
+
+;; Tempo fader -1..1 (DJM/CDJ convention: pulling the fader TOWARD you is +). `range-sel` above.
+(defn deck-pitch-pct [(fader : F64) (range-sel : I32)] : F64
+  (* (clamp-f64 fader -1.0 1.0) (deck-tempo-range-pct range-sel)))
+
+(defn deck-rate [(fader : F64) (range-sel : I32)] : F64
+  (+ 1.0 (/ (deck-pitch-pct fader range-sel) 100.0)))
+
+(defn deck-bpm [(track-bpm : F64) (rate : F64)] : F64
+  (* track-bpm rate))
+
+;; BEAT SYNC: the rate that makes this deck's BPM match the master's, clamped to the selected
+;; tempo range (a CDJ can't sync past its fader range).
+(defn deck-sync-rate [(master-bpm : F64) (track-bpm : F64) (range-sel : I32)] : F64
+  (if (<= track-bpm 0.0) 1.0
+    (clamp-f64 (/ master-bpm track-bpm)
+               (- 1.0 (/ (deck-tempo-range-pct range-sel) 100.0))
+               (+ 1.0 (/ (deck-tempo-range-pct range-sel) 100.0)))))
+
+;; Playhead advance for one OUTPUT sample: rate times the source/output sample-rate ratio
+;; (a 44.1 kHz track on a 48 kHz device advances 0.91875 source samples per output sample).
+(defn deck-advance [(pos : F64) (rate : F64) (src-sr : F64) (out-sr : F64)] : F64
+  (+ pos (* rate (/ src-sr out-sr))))
+
+;; 4-point, 3rd-order Hermite interpolation (x-form) -- the resampler that makes a pitched
+;; deck sound clean. x0..x3 are the source samples at floor(pos)-1 .. floor(pos)+2, t = frac.
+(defn deck-hermite [(x0 : F64) (x1 : F64) (x2 : F64) (x3 : F64) (t : F64)] : F64
+  (+ (* (+ (* (+ (* (+ (- (* 0.5 (- x3 x0)) (* 1.5 (- x2 x1))) 0.0) t)
+                 (+ (- (+ x0 (* 2.0 x2)) (* 2.5 x1)) (* -0.5 x3))) t)
+           (* 0.5 (- x2 x0))) t)
+     x1))
+
+;; JOG WHEEL, outer ring / "pitch bend" while playing: temporarily bend the rate by the jog's
+;; angular velocity (revolutions/second), +/-50% max so a hard spin can't run away.
+(defn deck-jog-bend [(rate : F64) (jog-rev-per-sec : F64)] : F64
+  (* rate (+ 1.0 (clamp-f64 (* jog-rev-per-sec 0.25) -0.5 0.5))))
+
+;; JOG in VINYL mode, top touched: the platter IS the record. 33 1/3 rpm = 0.5556 rev/s, so the
+;; playback rate is the hand's rev/s over that (negative = backwards scratch).
+(defn deck-scratch-rate [(jog-rev-per-sec : F64)] : F64
+  (/ jog-rev-per-sec 0.5555555555555556))
+
+;; Vinyl brake/"stop time": per-sample exponential spin-down toward 0 with coef from
+;; dsp time-coef(stop-ms, sr); snaps to 0 below 0.1% so the deck actually stops.
+(defn deck-brake-rate [(rate : F64) (coef : F64)] : F64
+  (if (< (math/abs (- rate (* rate coef))) 0.001) 0.0 (- rate (* rate coef))))
+
+;; REVERSE: the direction lever just flips the sign of the rate.
+(defn deck-reverse-rate [(rate : F64) (reverse : I32)] : F64
+  (if (= reverse 1) (- 0.0 rate) rate))
+
+;; CUE button (the CDJ's default "cue" behaviour).
+(defn deck-cue-press [(playing : I32) (pos : F64) (cue-pos : F64)] : I32
+  (if (= playing 1) 2
+    (if (< (math/abs (- pos cue-pos)) 1.0) 3 1)))
+
+;; Beat grid. beat-len in source samples; grid-offset = the sample position of beat 1.
+(defn deck-beat-len [(bpm : F64) (src-sr : F64)] : F64
+  (if (<= bpm 0.0) 0.0 (* (/ 60.0 bpm) src-sr)))
+
+;; 0..1 phase within the current beat (the phase meter above the waveform).
+(defn deck-beat-phase [(pos : F64) (grid-offset : F64) (beat-len : F64)] : F64
+  (if (<= beat-len 0.0) 0.0
+    (- (/ (- pos grid-offset) beat-len)
+       (math/floor (/ (- pos grid-offset) beat-len)))))
+
+;; QUANTIZE: snap a hot cue / loop-in / cue point to the nearest beat (quantize on = 1).
+(defn deck-quantize-pos [(pos : F64) (grid-offset : F64) (beat-len : F64) (quantize : I32)] : F64
+  (if (or (= quantize 0) (<= beat-len 0.0)) pos
+    (+ grid-offset (* beat-len (math/floor (+ (/ (- pos grid-offset) beat-len) 0.5))))))
+
+;; BEAT LOOP: loop-out for a loop of `beats` beats starting at loop-in.
+(defn deck-loop-out [(loop-in : F64) (beats : F64) (beat-len : F64)] : F64
+  (+ loop-in (* beats beat-len)))
+
+;; Seamless loop: when the playhead crosses loop-out it wraps to loop-in plus the overshoot
+;; (so a fractional pitched step doesn't drift the loop). Reverse play wraps the other way.
+(defn deck-loop-wrap [(pos : F64) (loop-in : F64) (loop-out : F64) (active : I32)] : F64
+  (if (or (= active 0) (<= loop-out loop-in)) pos
+    (if (>= pos loop-out) (+ loop-in (- pos loop-out))
+      (if (< pos loop-in) (- loop-out (- loop-in pos)) pos))))
+
+;; LOOP 1/2X and 2X buttons: 1/32 .. 32 beats.
+(defn deck-loop-halve [(beats : F64)] : F64 (max-beats (/ beats 2.0) 0.03125))
+(defn deck-loop-double [(beats : F64)] : F64 (min-beats (* beats 2.0) 32.0))
+(defn max-beats [(a : F64) (b : F64)] : F64 (if (> a b) a b))
+(defn min-beats [(a : F64) (b : F64)] : F64 (if (< a b) a b))
+
+;; MASTER TEMPO (key lock): the pitch-shift ratio a time-stretcher must apply to undo the speed
+;; change (1.0 when key lock is off -- pitch follows tempo like vinyl). KEY SHIFT adds
+;; `semitones` on top.
+(defn deck-key-ratio [(rate : F64) (master-tempo : I32) (semitones : F64)] : F64
+  (* (if (and (= master-tempo 1) (> (math/abs rate) 0.0)) (/ 1.0 (math/abs rate)) 1.0)
+     (math/pow 2.0 (/ semitones 12.0))))
+
+;; End of track (or start, when playing in reverse): 1 means the host should stop the deck.
+(defn deck-at-end [(pos : F64) (length : F64) (rate : F64)] : I32
+  (if (and (> rate 0.0) (>= pos (- length 2.0))) 1
+    (if (and (< rate 0.0) (<= pos 1.0)) 1 0)))

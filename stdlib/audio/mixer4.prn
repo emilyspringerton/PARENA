@@ -1,0 +1,126 @@
+;; stdlib/audio/mixer4.prn -- a 4-channel club DJ mixer, modelled on the Pioneer DJM-900-class
+;; layout. Founder real-time (2026-09-27): "it needs to emulate an MPC and a pioneer mixer and 4
+;; CDJS". Same scalar-only, compiles-to-C/TS/Java discipline as audio/dsp.prn (see its header):
+;; PARENA is every knob-to-number curve and routing decision, the host owns the sample buffers
+;; and runs the per-sample loop (IDUNA NOCK's Booth AudioWorklet in the browser; SHANKPIT's C
+;; mixer in-engine).
+;;
+;; Per-channel signal flow (the DJM order):
+;;   input -> TRIM -> 3-band EQ (LOW/MID/HI) -> COLOR filter -> CHANNEL FADER -> CROSSFADER
+;;   assign -> MASTER;  pre-fader tap -> CUE -> headphone CUE/MASTER mix
+;;
+;; Knob conventions (so NOCK UI, MIDI mapping and engine agree): every rotary is 0..1 with 0.5 =
+;; 12 o'clock, except the COLOR filter which is bipolar -1..1 (0 = off). Faders are 0..1.
+;; Crossfader 0 = full A side, 1 = full B side. Assign ids: 0 = A, 1 = THRU, 2 = B.
+;; Curve ids: channel fader 0 = slow-start, 1 = standard, 2 = fast (DJM's three fader curves);
+;; crossfader 0 = smooth (constant power), 1 = mid, 2 = sharp (scratch cut).
+
+(module audio/mixer4)
+(import audio/dsp)
+(export mixer-trim-db mixer-eq-db mixer-eq-low-hz mixer-eq-mid-hz mixer-eq-hi-hz
+        mixer-eq-mid-q mixer-filter-kind mixer-filter-freq mixer-filter-q
+        mixer-fader-gain mixer-xfader-gain mixer-channel-gain mixer-headphone
+        mixer-meter-segments mixer-meter-segment mixer-peak-hold mixer-master-limit)
+
+;; TRIM: -inf .. 0 dB .. +9 dB. Below 12 o'clock the left half sweeps -30..0 dB with the bottom
+;; end fully closed (-200 = "-inf" in this stdlib's convention, see dsp.prn linear-to-db).
+(defn mixer-trim-db [(knob : F64)] : F64
+  (if (<= knob 0.0) -200.0
+    (if (< knob 0.5) (* -30.0 (- 1.0 (* 2.0 knob)))
+      (* 9.0 (* 2.0 (- knob 0.5))))))
+
+;; 3-band EQ: -26 dB .. 0 .. +6 dB per band (DJM range). Fully counter-clockwise is a kill
+;; (-200), matching how DJs use the EQ as a band isolator.
+(defn mixer-eq-db [(knob : F64)] : F64
+  (if (<= knob 0.0) -200.0
+    (if (< knob 0.5) (* -26.0 (- 1.0 (* 2.0 knob)))
+      (* 6.0 (* 2.0 (- knob 0.5))))))
+
+;; Band centres (DJM-900NXS2 spec sheet: LOW 70 Hz, MID 1 kHz, HI 13 kHz). Hosts build LOW as a
+;; dsp LOWSHELF (kind 5), MID as PEAK (kind 4), HI as HIGHSHELF (kind 6) with gain from
+;; mixer-eq-db. A kill (-200 dB) is applied by the host as a band gain of 0 in its isolator
+;; split rather than a -200 dB shelf.
+(defn mixer-eq-low-hz [] : F64 70.0)
+(defn mixer-eq-mid-hz [] : F64 1000.0)
+(defn mixer-eq-hi-hz [] : F64 13000.0)
+(defn mixer-eq-mid-q [] : F64 0.7)
+
+;; COLOR filter (Sound Color FX "FILTER"): one bipolar knob. Left of centre sweeps a resonant
+;; LOWPASS down from 20 kHz to 60 Hz; right sweeps a HIGHPASS up from 20 Hz to 8 kHz. A small
+;; dead zone around centre bypasses the filter so a resting knob is truly flat.
+;; mixer-filter-kind: -1 bypass, 0 LOWPASS, 1 HIGHPASS (dsp.prn biquad kind ids).
+(defn mixer-filter-kind [(knob : F64)] : I32
+  (if (< knob -0.03) 0 (if (> knob 0.03) 1 -1)))
+
+;; Exponential (log-frequency) sweep, so equal knob travel is equal musical interval.
+(defn mixer-filter-freq [(knob : F64)] : F64
+  (if (< knob -0.03)
+    (* 20000.0 (math/pow (/ 60.0 20000.0) (/ (- (math/abs knob) 0.03) 0.97)))
+    (if (> knob 0.03)
+      (* 20.0 (math/pow (/ 8000.0 20.0) (/ (- knob 0.03) 0.97)))
+      20000.0)))
+
+;; Resonance rises with depth, like the DJM's filter (gentle at the edges of the dead zone,
+;; peaky at the extremes).
+(defn mixer-filter-q [(knob : F64)] : F64
+  (+ 0.707 (* 1.8 (math/abs knob))))
+
+;; CHANNEL FADER: position 0..1 -> linear gain. 0 slow-start (x^3, most travel near the top),
+;; 1 standard (x^2, audio taper), 2 fast (sqrt, loud early).
+(defn mixer-fader-gain [(pos : F64) (curve : I32)] : F64
+  (if (<= pos 0.0) 0.0
+    (if (>= pos 1.0) 1.0
+      (if (= curve 0) (* (* pos pos) pos)
+        (if (= curve 2) (math/sqrt pos) (* pos pos))))))
+
+;; CROSSFADER gain for a channel assigned to A (0), THRU (1) or B (2) at crossfader position
+;; `pos` (0 = full A). Smooth = constant-power cos/sin law (no dip in the middle); mid = linear;
+;; sharp = full level across the throw, cutting to silence inside the last 3% at the far end
+;; (the scratch curve).
+(defn xf-side-gain [(dist : F64) (curve : I32)] : F64
+  ;; dist = 0 when the crossfader is fully on this channel's side, 1 when fully on the other.
+  (if (= curve 0) (math/cos (* dist 1.5707963267948966))
+    (if (= curve 1) (- 1.0 dist)
+      (if (>= dist 0.97) 0.0 1.0))))
+
+(defn mixer-xfader-gain [(assign : I32) (pos : F64) (curve : I32)] : F64
+  (if (= assign 1) 1.0
+    (if (= assign 0)
+      (xf-side-gain (clamp-f64 pos 0.0 1.0) curve)
+      (xf-side-gain (- 1.0 (clamp-f64 pos 0.0 1.0)) curve))))
+
+;; Everything static on the channel strip multiplied into one linear gain (EQ/filter are
+;; frequency-dependent and applied by the host with biquads).
+(defn mixer-channel-gain [(trim-knob : F64) (fader-pos : F64) (fader-curve : I32)
+                          (assign : I32) (xf-pos : F64) (xf-curve : I32)] : F64
+  (* (* (db-to-linear (mixer-trim-db trim-knob)) (mixer-fader-gain fader-pos fader-curve))
+     (mixer-xfader-gain assign xf-pos xf-curve)))
+
+;; HEADPHONES MIXING knob: 0 = all CUE bus, 1 = all MASTER, constant power in between, times
+;; the headphone LEVEL fader gain.
+(defn mixer-headphone [(cue : F64) (master : F64) (mix : F64) (level : F64)] : F64
+  (* level (+ (* cue (math/cos (* mix 1.5707963267948966)))
+              (* master (math/sin (* mix 1.5707963267948966))))))
+
+;; Channel LED meter: 15 segments spanning -24 dBFS .. +3 dBFS (roughly the DJM's scale, 0 dB
+;; mark at segment 12). Returns how many segments are lit.
+(defn mixer-meter-segments [] : I32 15)
+(defn mixer-meter-segment [(level-db : F64)] : I32
+  (if (< level-db -24.0) 0
+    (if (>= level-db 3.0) 15
+      (+ 1 (mixer-meter-floor-i32 (* (/ (+ level-db 24.0) 27.0) 14.0))))))
+
+;; floor for a non-negative F64 known to be < 15, as I32 without a cast primitive: count down.
+(defn mixer-meter-floor-i32 [(x : F64)] : I32
+  (if (>= x 14.0) 14 (if (>= x 13.0) 13 (if (>= x 12.0) 12 (if (>= x 11.0) 11
+  (if (>= x 10.0) 10 (if (>= x 9.0) 9 (if (>= x 8.0) 8 (if (>= x 7.0) 7
+  (if (>= x 6.0) 6 (if (>= x 5.0) 5 (if (>= x 4.0) 4 (if (>= x 3.0) 3
+  (if (>= x 2.0) 2 (if (>= x 1.0) 1 0)))))))))))))))
+
+;; Peak-hold for the meter: holds the max, decays `fall-db` per call once released.
+(defn mixer-peak-hold [(held-db : F64) (level-db : F64) (fall-db : F64)] : F64
+  (if (> level-db held-db) level-db (- held-db fall-db)))
+
+;; Master out protection: a clip limiter gain (dB) so the booth never passes `ceiling-db`.
+(defn mixer-master-limit [(level-db : F64) (ceiling-db : F64)] : F64
+  (limiter-gain-db level-db ceiling-db))

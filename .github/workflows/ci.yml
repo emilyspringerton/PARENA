@@ -107,6 +107,17 @@ jobs:
           make build
           make test-domain5
 
+      # stdlib/audio (2026-09-27): sound-engineering primitives + the DJ booth (DJM-style mixer,
+      # CDJ-style decks, MPC-style sampler) + jivetalking's adaptive rules replayed against
+      # golden vectors from jivetalking's original Go. Each target also emits TS/Java.
+      - name: "stdlib/audio -- DSP, DJ booth, jivetalking rule parity"
+        run: |
+          set -euo pipefail
+          make build
+          make test-audio-dsp
+          make test-audio-dj
+          make test-audio-jive-rules
+
       - name: "Multi-file build (parena build a.prn b.prn -o out.c real cross-file resolution)"
         run: |
           set -euo pipefail

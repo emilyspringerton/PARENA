@@ -1,0 +1,85 @@
+;; stdlib/audio/sampler.prn -- an MPC-style pad sampler/sequencer. Founder real-time
+;; (2026-09-27): "it needs to emulate an MPC and a pioneer mixer and 4 CDJS". Scalar rules only
+;; (see audio/dsp.prn's header): the host holds the pad samples and voice list; PARENA decides
+;; note mapping, velocity response, swing/quantize timing, note repeat, choke groups, tuning and
+;; the amp envelope.
+;;
+;; Layout: 4 BANKS (A-D) x 16 PADS (0-15, bottom-left = 0 like an MPC), timing at the MPC's
+;; 960 PPQN. Swing is the MPC's 50%..75% on the chosen grid.
+
+(module audio/sampler)
+(import audio/dsp)
+(export mpc-pad-note mpc-velocity-gain mpc-ppqn mpc-ticks-per-sample mpc-grid-ticks
+        mpc-swing-tick mpc-quantize-tick mpc-repeat-due mpc-choke mpc-tune-ratio
+        mpc-adsr-level mpc-release-level mpc-16-levels mpc-voice-steal-score)
+
+;; MIDI note for bank (0-3) / pad (0-15): chromatic from C1 = 36 (General MIDI kick on A01).
+(defn mpc-pad-note [(bank : I32) (pad : I32)] : I32
+  (+ 36 (+ (* bank 16) pad)))
+
+;; Velocity -> linear gain. FULL LEVEL (full = 1) ignores velocity like the MPC button;
+;; otherwise a gentle power curve so light taps are audible but still dynamic.
+(defn mpc-velocity-gain [(velocity : I32) (full : I32)] : F64
+  (if (= full 1) 1.0
+    (if (<= velocity 0) 0.0
+      (math/pow (/ (* 1.0 (if (> velocity 127) 127 velocity)) 127.0) 1.6))))
+
+(defn mpc-ppqn [] : F64 960.0)
+
+(defn mpc-ticks-per-sample [(bpm : F64) (sr : F64)] : F64
+  (/ (* bpm 960.0) (* 60.0 sr)))
+
+;; Timing-correct grid ids -> ticks: 0 = 1/8, 1 = 1/8T, 2 = 1/16, 3 = 1/16T, 4 = 1/32, 5 = 1/32T.
+(defn mpc-grid-ticks [(grid : I32)] : F64
+  (if (= grid 0) 480.0 (if (= grid 1) 320.0 (if (= grid 2) 240.0
+    (if (= grid 3) 160.0 (if (= grid 4) 120.0 80.0))))))
+
+;; SWING: every second grid step is pushed late. The pair spans 2 steps; the off-beat lands at
+;; swing% of the pair (50% = straight, 66% = triplet feel). `tick` is an on-grid tick.
+(defn mpc-swing-tick [(tick : F64) (grid-ticks : F64) (swing-pct : F64)] : F64
+  (if (= (math/floor (/ tick grid-ticks))
+         (* 2.0 (math/floor (/ tick (* 2.0 grid-ticks)))))
+    tick
+    (+ tick (* grid-ticks (- (* 2.0 (/ (clamp-f64 swing-pct 50.0 75.0) 100.0)) 1.0)))))
+
+;; TIMING CORRECT: move a played tick toward the nearest grid line by `strength` % (100 = hard).
+(defn mpc-quantize-tick [(tick : F64) (grid-ticks : F64) (strength-pct : F64)] : F64
+  (+ tick (* (/ strength-pct 100.0)
+             (- (* grid-ticks (math/floor (+ (/ tick grid-ticks) 0.5))) tick))))
+
+;; NOTE REPEAT: 1 if a repeat should fire between prev-tick (exclusive) and tick (inclusive)
+;; -- i.e. a grid line was crossed this block.
+(defn mpc-repeat-due [(prev-tick : F64) (tick : F64) (grid-ticks : F64)] : I32
+  (if (> (math/floor (/ tick grid-ticks)) (math/floor (/ prev-tick grid-ticks))) 1 0))
+
+;; CHOKE / MUTE GROUPS: a new hit in group g (1-32) silences a playing voice in the same group
+;; (open hat choked by closed hat). Group 0 = none.
+(defn mpc-choke [(new-group : I32) (voice-group : I32)] : I32
+  (if (and (> new-group 0) (= new-group voice-group)) 1 0))
+
+;; TUNE: semitones (+ fine cents/100) -> playback rate.
+(defn mpc-tune-ratio [(semitones : F64)] : F64
+  (math/pow 2.0 (/ semitones 12.0)))
+
+;; AMP ENVELOPE while the pad is held (ms since note-on): linear attack to 1, exponential-ish
+;; (linear-in-dB) decay to sustain. One-shot pads pass sustain = 0 and never release early.
+(defn mpc-adsr-level [(t-ms : F64) (attack-ms : F64) (decay-ms : F64) (sustain : F64)] : F64
+  (if (< t-ms attack-ms) (/ t-ms attack-ms)
+    (if (< (- t-ms attack-ms) decay-ms)
+      (+ sustain (* (- 1.0 sustain) (- 1.0 (/ (- t-ms attack-ms) decay-ms))))
+      sustain)))
+
+;; After release: linear fade from the level at release to 0 over release-ms.
+(defn mpc-release-level [(t-since-off-ms : F64) (level-at-off : F64) (release-ms : F64)] : F64
+  (if (>= t-since-off-ms release-ms) 0.0
+    (* level-at-off (- 1.0 (/ t-since-off-ms release-ms)))))
+
+;; 16 LEVELS: spread one parameter across the 16 pads (pad 0 = lo, pad 15 = hi) -- e.g. 16
+;; tunings of one sample.
+(defn mpc-16-levels [(pad : I32) (lo : F64) (hi : F64)] : F64
+  (+ lo (* (/ (* 1.0 pad) 15.0) (- hi lo))))
+
+;; Polyphony: when out of voices, steal the voice with the LOWEST score (released voices first,
+;; then quietest, then oldest).
+(defn mpc-voice-steal-score [(released : I32) (level : F64) (age-ms : F64)] : F64
+  (- (+ (if (= released 1) 0.0 10.0) level) (/ age-ms 100000.0)))

@@ -1,0 +1,299 @@
+;; stdlib/audio/dsp.prn -- sound-engineering primitives, one source for every engine that makes
+;; noise. Founder real-time (2026-09-27): "nock and shankpit engine need sound engineering
+;; primatives we need a way to upload and record in nock as well as pass filters around we have
+;; a fork of jivetalking PARENAIFY our fork BAZEL first then eat it with PARENA into NOCK all of
+;; it."
+;;
+;; Scalar-only on purpose -- the same discipline stdlib/deadweight/card_rules.prn and
+;; fx_rules.prn already proved: every defn is F64/I32 params, one expression, `if`/binops/calls/
+;; `math/*` only. That is the exact subset all three real emitters share today, so this ONE file
+;; compiles to:
+;;   - C          (`parena build`)              -> SHANKPIT's engine mixer, jivetalking via cgo
+;;   - TypeScript (`parena build -o x.ts`)      -> NOCK's browser-side filter preview/render
+;;   - Java       (`parena build -o X.java`)    -> any JVM host
+;; and all three compute the same numbers (tests/audio/ checks C against hand-derived values;
+;; the TS output is diffed against the same vectors by IDUNA's NOCK sound tests).
+;;
+;; "PARENA is the math, host owns the buffers" -- the same split every other PARENA mod already
+;; uses. There is no Vec/F32 array in the shared subset, so filter STATE (biquad s1/s2, envelope
+;; level, smoothed gain) lives in the host's own per-voice struct and is threaded through these
+;; step functions one sample at a time. A host's loop is literally:
+;;
+;;   y   = biquad-tdf2-y  b0 x s1
+;;   s1' = biquad-tdf2-s1 b1 a1 x y s2
+;;   s2' = biquad-tdf2-s2 b2 a2 x y
+;;
+;; Transposed Direct Form II is chosen deliberately: it is the form jivetalking's own highpass
+;; asks FFmpeg for (`DS201HPTransform = "tdii"`, "best floating-point accuracy"), so the PARENA
+;; path and the FFmpeg path it replaces agree on numerics, not just on topology.
+;;
+;; Filter kind ids (biquad-* `kind` param) -- shared by C/TS/Java hosts and NOCK's filter-chain
+;; JSON ("type" field), so a chain authored in NOCK means the same thing in SHANKPIT:
+;;   0 LOWPASS  1 HIGHPASS  2 BANDPASS (0 dB peak)  3 NOTCH  4 PEAK (EQ bell)
+;;   5 LOWSHELF 6 HIGHSHELF
+;; Coefficients are the RBJ "Audio EQ Cookbook" formulas (Robert Bristow-Johnson), normalised by
+;; a0 so a host never divides per sample.
+
+(module audio/dsp)
+(export db-to-linear linear-to-db clamp-f64 lerp mix-dry-wet time-coef one-pole-step
+        env-follow biquad-b0 biquad-b1 biquad-b2 biquad-a1 biquad-a2
+        biquad-tdf2-y biquad-tdf2-s1 biquad-tdf2-s2 one-pole-lp-coef one-pole-hp-step
+        comp-gain-db expander-gain-db limiter-gain-db gain-smooth deess-gain-db
+        kweight-shelf-b0 kweight-shelf-b1 kweight-shelf-b2 kweight-shelf-a1 kweight-shelf-a2
+        kweight-hp-a1 kweight-hp-a2 lufs-from-mean-square lufs-relative-gate lufs-absolute-gate
+        loudnorm-gain-db sample-to-pcm16-scale pcm16-to-sample)
+
+;; ---------------------------------------------------------------------------------------------
+;; Units
+;; ---------------------------------------------------------------------------------------------
+
+;; db-to-linear: 20*log10 amplitude convention (jivetalking's DbToLinear, FFmpeg's own).
+(defn db-to-linear [(db : F64)] : F64
+  (math/pow 10.0 (/ db 20.0)))
+
+;; linear-to-db: silence floors at -200 dB rather than -Inf, so every host can store the result
+;; in a plain float without a NaN/Inf special case (jivetalking's sanitizeFloat exists purely to
+;; clean up after an Inf leaking out of exactly this conversion).
+(defn linear-to-db [(lin : F64)] : F64
+  (if (<= (math/abs lin) 0.00000000001) -200.0 (* 20.0 (math/log10 (math/abs lin)))))
+
+(defn clamp-f64 [(x : F64) (lo : F64) (hi : F64)] : F64
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+(defn lerp [(a : F64) (b : F64) (t : F64)] : F64
+  (+ a (* (- b a) t)))
+
+;; mix-dry-wet: `amount` 1.0 = fully processed. jivetalking's DS201HPMix/LA2AMix semantics.
+(defn mix-dry-wet [(dry : F64) (wet : F64) (amount : F64)] : F64
+  (+ (* dry (- 1.0 amount)) (* wet amount)))
+
+;; ---------------------------------------------------------------------------------------------
+;; Time constants and envelopes
+;; ---------------------------------------------------------------------------------------------
+
+;; time-coef: one-pole smoothing coefficient for a time constant in milliseconds at sample rate
+;; `sr` (reaches ~63% of a step in `ms`). 0 ms (or less) means "instant" -> 1.0.
+(defn time-coef [(ms : F64) (sr : F64)] : F64
+  (if (<= ms 0.0) 1.0 (- 1.0 (math/exp (/ -1.0 (* (* ms 0.001) sr))))))
+
+(defn one-pole-step [(prev : F64) (x : F64) (coef : F64)] : F64
+  (+ prev (* coef (- x prev))))
+
+;; env-follow: peak envelope follower; attack coef while rising, release coef while falling.
+(defn env-follow [(env : F64) (x : F64) (attack-coef : F64) (release-coef : F64)] : F64
+  (if (> (math/abs x) env)
+    (one-pole-step env (math/abs x) attack-coef)
+    (one-pole-step env (math/abs x) release-coef)))
+
+;; ---------------------------------------------------------------------------------------------
+;; RBJ biquad design
+;; ---------------------------------------------------------------------------------------------
+
+(defn bq-w0 [(freq : F64) (sr : F64)] : F64
+  (/ (* 6.283185307179586 freq) sr))
+
+(defn bq-cos [(freq : F64) (sr : F64)] : F64
+  (math/cos (bq-w0 freq sr)))
+
+(defn bq-alpha [(freq : F64) (q : F64) (sr : F64)] : F64
+  (/ (math/sin (bq-w0 freq sr)) (* 2.0 q)))
+
+;; bq-amp: RBJ's A = 10^(gain/40) (shelf/peak only; 1.0 for the gain-less kinds is harmless).
+(defn bq-amp [(gain-db : F64)] : F64
+  (math/pow 10.0 (/ gain-db 40.0)))
+
+;; bq-shelf-term: 2*sqrt(A)*alpha, shared by both shelves.
+(defn bq-shelf-term [(freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (* (* 2.0 (math/sqrt (bq-amp gain-db))) (bq-alpha freq q sr)))
+
+;; Raw (un-normalised) a0 for every kind.
+(defn bq-a0 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 4)
+    (+ 1.0 (/ (bq-alpha freq q sr) (bq-amp gain-db)))
+    (if (= kind 5)
+      (+ (+ (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))
+      (if (= kind 6)
+        (+ (- (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))
+        (+ 1.0 (bq-alpha freq q sr))))))
+
+(defn bq-raw-b0 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 0) (/ (- 1.0 (bq-cos freq sr)) 2.0)
+    (if (= kind 1) (/ (+ 1.0 (bq-cos freq sr)) 2.0)
+      (if (= kind 2) (bq-alpha freq q sr)
+        (if (= kind 3) 1.0
+          (if (= kind 4) (+ 1.0 (* (bq-alpha freq q sr) (bq-amp gain-db)))
+            (if (= kind 5)
+              (* (bq-amp gain-db) (+ (- (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr)))
+              (* (bq-amp gain-db) (+ (+ (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))))))))))
+
+(defn bq-raw-b1 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 0) (- 1.0 (bq-cos freq sr))
+    (if (= kind 1) (- 0.0 (+ 1.0 (bq-cos freq sr)))
+      (if (= kind 2) 0.0
+        (if (or (= kind 3) (= kind 4)) (* -2.0 (bq-cos freq sr))
+          (if (= kind 5)
+            (* (* 2.0 (bq-amp gain-db)) (- (- (bq-amp gain-db) 1.0) (* (+ (bq-amp gain-db) 1.0) (bq-cos freq sr))))
+            (* (* -2.0 (bq-amp gain-db)) (+ (- (bq-amp gain-db) 1.0) (* (+ (bq-amp gain-db) 1.0) (bq-cos freq sr))))))))))
+
+(defn bq-raw-b2 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 0) (/ (- 1.0 (bq-cos freq sr)) 2.0)
+    (if (= kind 1) (/ (+ 1.0 (bq-cos freq sr)) 2.0)
+      (if (= kind 2) (- 0.0 (bq-alpha freq q sr))
+        (if (= kind 3) 1.0
+          (if (= kind 4) (- 1.0 (* (bq-alpha freq q sr) (bq-amp gain-db)))
+            (if (= kind 5)
+              (* (bq-amp gain-db) (- (- (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr)))
+              (* (bq-amp gain-db) (- (+ (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))))))))))
+
+(defn bq-raw-a1 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 5)
+    (* -2.0 (+ (- (bq-amp gain-db) 1.0) (* (+ (bq-amp gain-db) 1.0) (bq-cos freq sr))))
+    (if (= kind 6)
+      (* 2.0 (- (- (bq-amp gain-db) 1.0) (* (+ (bq-amp gain-db) 1.0) (bq-cos freq sr))))
+      (* -2.0 (bq-cos freq sr)))))
+
+(defn bq-raw-a2 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (if (= kind 4)
+    (- 1.0 (/ (bq-alpha freq q sr) (bq-amp gain-db)))
+    (if (= kind 5)
+      (- (+ (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))
+      (if (= kind 6)
+        (- (- (+ (bq-amp gain-db) 1.0) (* (- (bq-amp gain-db) 1.0) (bq-cos freq sr))) (bq-shelf-term freq q gain-db sr))
+        (- 1.0 (bq-alpha freq q sr))))))
+
+;; Normalised coefficients -- what a host actually stores per filter instance (computed once
+;; when a NOCK filter-chain param changes, never per sample).
+(defn biquad-b0 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (/ (bq-raw-b0 kind freq q gain-db sr) (bq-a0 kind freq q gain-db sr)))
+(defn biquad-b1 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (/ (bq-raw-b1 kind freq q gain-db sr) (bq-a0 kind freq q gain-db sr)))
+(defn biquad-b2 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (/ (bq-raw-b2 kind freq q gain-db sr) (bq-a0 kind freq q gain-db sr)))
+(defn biquad-a1 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (/ (bq-raw-a1 kind freq q gain-db sr) (bq-a0 kind freq q gain-db sr)))
+(defn biquad-a2 [(kind : I32) (freq : F64) (q : F64) (gain-db : F64) (sr : F64)] : F64
+  (/ (bq-raw-a2 kind freq q gain-db sr) (bq-a0 kind freq q gain-db sr)))
+
+;; Transposed Direct Form II step, split into its three outputs (see header).
+(defn biquad-tdf2-y [(b0 : F64) (x : F64) (s1 : F64)] : F64
+  (+ (* b0 x) s1))
+(defn biquad-tdf2-s1 [(b1 : F64) (a1 : F64) (x : F64) (y : F64) (s2 : F64)] : F64
+  (+ (- (* b1 x) (* a1 y)) s2))
+(defn biquad-tdf2-s2 [(b2 : F64) (a2 : F64) (x : F64) (y : F64)] : F64
+  (- (* b2 x) (* a2 y)))
+
+;; One-pole (6 dB/oct) filters -- jivetalking's DS201 `poles=1` gentle slopes.
+;; one-pole-lp-coef: the lowpass coefficient for one-pole-step at cutoff `freq`.
+(defn one-pole-lp-coef [(freq : F64) (sr : F64)] : F64
+  (- 1.0 (math/exp (/ (* -6.283185307179586 freq) sr))))
+;; one-pole-hp-step: highpass output = input minus the lowpassed state (host keeps `lp-state`,
+;; updated with one-pole-step using the same coef).
+(defn one-pole-hp-step [(x : F64) (lp-state : F64)] : F64
+  (- x lp-state))
+
+;; ---------------------------------------------------------------------------------------------
+;; Dynamics gain computers (dB in, gain-change dB out; <= 0 means attenuation)
+;; Soft-knee forms from Giannoulis, Massberg & Reiss, "Digital Dynamic Range Compressor Design"
+;; (JAES 2012) -- the textbook FFmpeg's acompressor/agate knees approximate.
+;; ---------------------------------------------------------------------------------------------
+
+;; comp-gain-db: downward compressor. knee-db 0 = hard knee.
+(defn comp-gain-db [(level-db : F64) (threshold-db : F64) (ratio : F64) (knee-db : F64)] : F64
+  (if (< (* 2.0 (- level-db threshold-db)) (- 0.0 knee-db))
+    0.0
+    (if (and (> knee-db 0.0) (<= (* 2.0 (math/abs (- level-db threshold-db))) knee-db))
+      (/ (* (- (/ 1.0 ratio) 1.0) (math/pow (+ (- level-db threshold-db) (/ knee-db 2.0)) 2.0)) (* 2.0 knee-db))
+      (* (- (/ 1.0 ratio) 1.0) (- level-db threshold-db)))))
+
+;; expander-gain-db: downward expander / soft gate (jivetalking's DS201 agate). Below threshold
+;; the level falls `ratio` times faster, bottoming out at `range-db` (negative, e.g. -27).
+(defn expander-gain-db [(level-db : F64) (threshold-db : F64) (ratio : F64) (knee-db : F64) (range-db : F64)] : F64
+  (clamp-f64
+    (if (> (* 2.0 (- level-db threshold-db)) knee-db)
+      0.0
+      (if (and (> knee-db 0.0) (<= (* 2.0 (math/abs (- level-db threshold-db))) knee-db))
+        (/ (* (- ratio 1.0) (math/pow (- (- level-db threshold-db) (/ knee-db 2.0)) 2.0)) (* -2.0 knee-db))
+        (* (- ratio 1.0) (- level-db threshold-db))))
+    range-db 0.0))
+
+;; limiter-gain-db: brickwall ceiling (jivetalking's Volumax-inspired alimiter stage).
+(defn limiter-gain-db [(level-db : F64) (ceiling-db : F64)] : F64
+  (if (> level-db ceiling-db) (- ceiling-db level-db) 0.0))
+
+;; gain-smooth: ballistics on a gain-change signal (dB). Falling gain (more reduction) uses the
+;; attack coef, recovering gain uses release -- the standard "smooth the gain, not the level"
+;; detector topology.
+(defn gain-smooth [(prev-db : F64) (target-db : F64) (attack-coef : F64) (release-coef : F64)] : F64
+  (if (< target-db prev-db)
+    (one-pole-step prev-db target-db attack-coef)
+    (one-pole-step prev-db target-db release-coef)))
+
+;; deess-gain-db: split-band de-esser decision. `sib-db` is the level of the sidechain band
+;; (host: highpass/bandpass ~5.5-8 kHz through biquad-*), `full-db` the broadband level.
+;; Sibilance is the band poking above (full - 6 dB); `intensity` (0..1, jivetalking's
+;; DeessIntensity, 0 = off) scales how much of the excess is taken away, capped at -12 dB.
+(defn deess-gain-db [(sib-db : F64) (full-db : F64) (intensity : F64)] : F64
+  (if (<= intensity 0.0)
+    0.0
+    (clamp-f64 (* (- 0.0 intensity) (- sib-db (- full-db 6.0))) -12.0 0.0)))
+
+;; ---------------------------------------------------------------------------------------------
+;; EBU R128 / ITU-R BS.1770 loudness (jivetalking Pass 1/3 measure this via FFmpeg ebur128)
+;; K-weighting coefficients for ANY sample rate, same closed form libebur128 uses: a high-shelf
+;; pre-filter (stage 1) then an RLB highpass (stage 2, b = [1 -2 1]).
+;; ---------------------------------------------------------------------------------------------
+
+(defn kw-k1 [(sr : F64)] : F64 (math/tan (/ (* 3.141592653589793 1681.974450955533) sr)))
+(defn kw-vh [] : F64 (math/pow 10.0 (/ 3.999843853973347 20.0)))
+(defn kw-vb [] : F64 (math/pow (kw-vh) 0.4996667741545416))
+(defn kw-a0 [(sr : F64)] : F64
+  (+ (+ 1.0 (/ (kw-k1 sr) 0.7071752369554196)) (* (kw-k1 sr) (kw-k1 sr))))
+
+(defn kweight-shelf-b0 [(sr : F64)] : F64
+  (/ (+ (+ (kw-vh) (/ (* (kw-vb) (kw-k1 sr)) 0.7071752369554196)) (* (kw-k1 sr) (kw-k1 sr))) (kw-a0 sr)))
+(defn kweight-shelf-b1 [(sr : F64)] : F64
+  (/ (* 2.0 (- (* (kw-k1 sr) (kw-k1 sr)) (kw-vh))) (kw-a0 sr)))
+(defn kweight-shelf-b2 [(sr : F64)] : F64
+  (/ (+ (- (kw-vh) (/ (* (kw-vb) (kw-k1 sr)) 0.7071752369554196)) (* (kw-k1 sr) (kw-k1 sr))) (kw-a0 sr)))
+(defn kweight-shelf-a1 [(sr : F64)] : F64
+  (/ (* 2.0 (- (* (kw-k1 sr) (kw-k1 sr)) 1.0)) (kw-a0 sr)))
+(defn kweight-shelf-a2 [(sr : F64)] : F64
+  (/ (+ (- 1.0 (/ (kw-k1 sr) 0.7071752369554196)) (* (kw-k1 sr) (kw-k1 sr))) (kw-a0 sr)))
+
+(defn kw-k2 [(sr : F64)] : F64 (math/tan (/ (* 3.141592653589793 38.13547087602444) sr)))
+(defn kw-hp-den [(sr : F64)] : F64
+  (+ (+ 1.0 (/ (kw-k2 sr) 0.5003270373238773)) (* (kw-k2 sr) (kw-k2 sr))))
+(defn kweight-hp-a1 [(sr : F64)] : F64
+  (/ (* 2.0 (- (* (kw-k2 sr) (kw-k2 sr)) 1.0)) (kw-hp-den sr)))
+(defn kweight-hp-a2 [(sr : F64)] : F64
+  (/ (+ (- 1.0 (/ (kw-k2 sr) 0.5003270373238773)) (* (kw-k2 sr) (kw-k2 sr))) (kw-hp-den sr)))
+
+;; lufs-from-mean-square: BS.1770 block loudness from the channel-summed mean square of the
+;; K-weighted signal.
+(defn lufs-from-mean-square [(ms : F64)] : F64
+  (if (<= ms 0.0) -200.0 (+ -0.691 (* 10.0 (math/log10 ms)))))
+
+;; Gating (EBU R128): blocks below -70 LUFS never count; then blocks more than 10 LU below the
+;; ungated mean are dropped. Returns 1 if the block is kept.
+(defn lufs-absolute-gate [(block-lufs : F64)] : I32
+  (if (> block-lufs -70.0) 1 0))
+(defn lufs-relative-gate [(block-lufs : F64) (ungated-lufs : F64)] : I32
+  (if (> block-lufs (- ungated-lufs 10.0)) 1 0))
+
+;; loudnorm-gain-db: jivetalking Pass 4's linear-mode normalisation -- a single static gain to hit
+;; `target-lufs`, reduced if applying it would push the measured true peak past `ceiling-db`
+;; (that reduction is exactly why jivetalking runs its limiter first).
+(defn loudnorm-gain-db [(target-lufs : F64) (measured-lufs : F64) (true-peak-db : F64) (ceiling-db : F64)] : F64
+  (if (> (+ true-peak-db (- target-lufs measured-lufs)) ceiling-db)
+    (- ceiling-db true-peak-db)
+    (- target-lufs measured-lufs)))
+
+;; ---------------------------------------------------------------------------------------------
+;; PCM helpers (recording/upload path: MediaRecorder / SDL capture hand the host int16 or float)
+;; ---------------------------------------------------------------------------------------------
+
+;; sample-to-pcm16-scale: float sample -> int16 range, clamped (host truncates to its int type).
+(defn sample-to-pcm16-scale [(x : F64)] : F64
+  (* (clamp-f64 x -1.0 1.0) 32767.0))
+(defn pcm16-to-sample [(s : I32)] : F64
+  (/ (* 1.0 s) 32768.0))

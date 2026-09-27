@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-audio-dsp test-audio-jive-rules test-audio-dj test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -304,6 +304,35 @@ test-sip-transaction: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_sip_transaction.c \
 		runtime/parena_runtime.c -o /tmp/test_sip_transaction_bin -lm
 	/tmp/test_sip_transaction_bin
+
+# test-audio-dsp -- stdlib/audio/dsp.prn (sound-engineering primitives for SHANKPIT/NOCK/jivetalking,
+# founder real-time 2026-09-27): BS.1770 published coefficients + real sine-sweep filter response.
+test-audio-dsp: build
+	./parena build stdlib/audio/dsp.prn -o tests/test_audio_dsp_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_audio_dsp.c \
+		runtime/parena_runtime.c -o /tmp/test_audio_dsp_bin -lm
+	/tmp/test_audio_dsp_bin
+	./parena build stdlib/audio/dsp.prn -o /tmp/audio_dsp_check.ts
+	./parena build stdlib/audio/dsp.prn -o /tmp/AudioDspCheck.java
+
+# test-audio-dj -- stdlib/audio/{mixer4,deck,sampler}.prn: DJM-style 4ch mixer, CDJ-style decks,
+# MPC-style sampler (founder real-time 2026-09-27: "emulate an MPC and a pioneer mixer and 4 CDJS").
+AUDIO_DJ_SRCS = stdlib/audio/dsp.prn stdlib/audio/mixer4.prn stdlib/audio/deck.prn stdlib/audio/sampler.prn
+test-audio-dj: build
+	./parena build $(AUDIO_DJ_SRCS) -o tests/test_audio_dj_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_audio_dj.c \
+		runtime/parena_runtime.c -o /tmp/test_audio_dj_bin -lm
+	/tmp/test_audio_dj_bin
+	./parena build $(AUDIO_DJ_SRCS) -o /tmp/audio_dj_check.ts
+	./parena build $(AUDIO_DJ_SRCS) -o /tmp/AudioDjCheck.java
+
+# test-audio-jive-rules -- stdlib/audio/jive_rules.prn (jivetalking's adaptive tuning, PARENA-ified):
+# parity vectors emitted by jivetalking's own Go implementation (tests/audio_jive_vectors.txt).
+test-audio-jive-rules: build
+	./parena build stdlib/audio/dsp.prn stdlib/audio/jive_rules.prn -o tests/test_audio_jive_rules_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_audio_jive_rules.c \
+		runtime/parena_runtime.c -o /tmp/test_audio_jive_rules_bin -lm
+	/tmp/test_audio_jive_rules_bin tests/audio_jive_vectors.txt
 
 # test-dtmf -- real end-to-end verification for stdlib/sip/dtmf.prn (CarePyre SIP Phone, kanban
 # priority-queue card CAREPYRE-SIP-4324324): real RFC 4733 telephone-event payload parse/build,

@@ -1601,9 +1601,64 @@ static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *sc
     return target_text ? find_vec_elem_hint(target_text) : NULL;
 }
 
+/* C_MATH_PRIM_TABLE -- the C target's own lowering of the recognized
+ * `math/` host primitives straight to libm (<math.h> is already
+ * included unconditionally, see emit_c()'s own header comment), the
+ * real, previously-named-but-unstarted follow-up stdlib/math/math.prn's
+ * own doc comment called out ("the C emitter has no equivalent mapping
+ * registered yet"). Mirrors emit_ts.c/emit_java.c's own MATH_PRIM_TABLE
+ * entry-for-entry so one scalar .prn file (stdlib/audio/ .prn files, 2026-09-27,
+ * founder real-time: "nock and shankpit engine need sound engineering
+ * primatives") computes the same numbers on every target. Checked BEFORE
+ * mangle_call_name(): a qualified `math/floor` call must never resolve to
+ * math.prn's own placeholder-bodied bare `floor` defn (which would also
+ * collide with libm's own `floor`). math/random-f64 is deliberately NOT
+ * here -- it already has a real #target body (math_random_impl). */
+typedef struct { const char *prn_name; const char *c_fn; size_t arg_count; } CMathPrimEntry;
+static const CMathPrimEntry C_MATH_PRIM_TABLE[] = {
+    {"math/floor", "floor", 1}, {"math/sqrt", "sqrt", 1}, {"math/log", "log", 1},
+    {"math/cos", "cos", 1},     {"math/sin", "sin", 1},   {"math/tan", "tan", 1},
+    {"math/exp", "exp", 1},     {"math/log10", "log10", 1}, {"math/abs", "fabs", 1},
+    {"math/pow", "pow", 2},
+};
+
+static const char *emit_c_math_prim(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
+                                    const char **out_error, int *handled) {
+    *handled = 0;
+    if (call->children[0]->type != NODE_SYMBOL) return NULL;
+    const CMathPrimEntry *e = NULL;
+    for (size_t i = 0; i < sizeof(C_MATH_PRIM_TABLE) / sizeof(C_MATH_PRIM_TABLE[0]); i++) {
+        if (strcmp(C_MATH_PRIM_TABLE[i].prn_name, call->children[0]->text) == 0) e = &C_MATH_PRIM_TABLE[i];
+    }
+    if (!e) return NULL;
+    *handled = 1;
+    if (call->child_count - 1 != e->arg_count) {
+        return fail(arena, out_error, "%s: expected %zu argument(s) at line %d", e->prn_name, e->arg_count, call->line);
+    }
+    char buf[4096];
+    size_t n = (size_t)snprintf(buf, sizeof(buf), "%s(", e->c_fn);
+    for (size_t i = 1; i < call->child_count; i++) {
+        const char *arg_type = NULL;
+        const char *arg = emit_expr(arena, call->children[i], scope, &arg_type, out_error);
+        if (!arg) return NULL;
+        /* (double) cast: an I32 argument (e.g. `(math/pow 10.0 n)`) is promoted explicitly so the
+           emitted C never depends on implicit int->double conversion rules at a libm boundary. */
+        n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s(double)(%s)", i > 1 ? ", " : "", arg);
+        if (n >= sizeof(buf)) return fail(arena, out_error, "%s: expression too long at line %d", e->prn_name, call->line);
+    }
+    n += (size_t)snprintf(buf + n, sizeof(buf) - n, ")");
+    *out_type = "double";
+    return arena_strdup(arena, buf, strlen(buf));
+}
+
 static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                               const char **out_error) {
     const char *fn_name = mangle_call_name(arena, call->children[0]->text);
+    {
+        int math_handled = 0;
+        const char *math_out = emit_c_math_prim(arena, call, scope, out_type, out_error, &math_handled);
+        if (math_handled) return math_out;
+    }
     /* vec-eq? -- see g_veceq_types/g_veceq_helpers' own declaration
      * comment for the full real reasoning. Handled entirely separately
      * from the generic argument loop below (like vec_push_/vec_set_at_'s

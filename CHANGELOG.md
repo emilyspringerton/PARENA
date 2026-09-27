@@ -1,3 +1,8 @@
+## 2026-09-27
+
+- feat(stdlib/audio): sound-engineering primitives for NOCK + SHANKPIT (founder real-time: "nock and shankpit engine need sound engineering primatives ... PARENAIFY our fork [jivetalking] ... it needs to emulate an MPC and a pioneer mixer and 4 CDJS"). New audio/dsp.prn (RBJ biquads/TDF-II, dynamics gain computers, BS.1770 K-weighting + R128 gating, loudnorm gain), audio/mixer4.prn (DJM-style 4ch mixer), audio/deck.prn (CDJ-style decks), audio/sampler.prn (MPC-style pads), audio/jive_rules.prn (jivetalking adaptive.go ported line-for-line). Scalar-only: every file compiles to C, TS and Java. Tests: make test-audio-dsp (BS.1770 published 48 kHz coefficients to 1e-9, sine-sweep filter response), test-audio-dj (hand-worked + pitched-deck resample + constant-power crossfader), test-audio-jive-rules (18,000 golden vectors emitted by jivetalking's original Go rules, 0 mismatches). Added to CI.
+- feat(emit): math/sin, math/tan, math/exp, math/log10, math/abs, math/pow in all three emitters; the C target now lowers every math/* prim (incl. floor/sqrt/log/cos) straight to libm (C_MATH_PRIM_TABLE) instead of math.prn's placeholder bodies — closing the follow-up math.prn's own doc comment named. (sess-20260927-1020-014j5hnh)
+
 ## 2026-09-25
 
 - new stdlib/deadweight/account_rules.prn (display-name validation, C target verified) + found a real TS-emitter gap: string.prn can't be emitted to TS at all (region-annotated params hard-rejected, contradicting emit_ts_defn's own doc comment that they should be a no-op) (sess-20260923-1030-4a526255)
