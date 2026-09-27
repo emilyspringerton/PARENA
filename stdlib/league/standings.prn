@@ -1,0 +1,32 @@
+;; stdlib/league/standings.prn — a real, native-PARENA stdlib module: print
+;; the current RL-league standings (newest checkpoints per role, with ELO)
+;; for any game in IDUNA's game-scoped checkpoint registry
+;; (`GET /api/v1/game-checkpoints/<game>` -- public, metadata only, no
+;; weights downloaded, no auth). Founder real-time (2026-09-27, "all of
+;; it"): the grounded version of "print current ELO standings before
+;; training starts" -- previously only reachable through
+;; DEADWEIGHT/training/colab_train.py's own Python `rl_registry.
+;; list_checkpoints` call.
+;;
+;; Real, honest scope, identical in shape to stdlib/ci/status.prn (the
+;; precedent this deliberately copies): the ONE `#target` function below
+;; delegates to a hand-written host implementation (tools/standings_host.c)
+;; that runs the real, already-installed `curl` and does a small, narrow
+;; scan of this one registry's own flat JSON array -- NOT a general JSON
+;; library (this stdlib still has none) and NOT a TLS client (curl is).
+;; The host rejects any game name / base URL containing shell
+;; metacharacters before it ever builds a command line.
+;;
+;; Return codes (a real CLI exit-code convention, same as ci/status):
+;;   0 = standings printed (at least one checkpoint)
+;;   1 = the registry answered, but holds no checkpoints for this game yet
+;;   3 = the request failed, or the response wasn't a checkpoint list
+;;   4 = rejected input (game or base URL failed validation)
+
+(module league/standings)
+(export league-standings)
+
+(defn league-standings [(base-url : String @ Region) (game : String @ Region) (top : I32)]
+  : I32
+  #target
+  {:c (inline-c "standings_print_c(base_url, game, top)")})

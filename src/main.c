@@ -36,6 +36,9 @@
  * call. */
 #ifdef PARENA_HAS_CI_STATUS
 extern int check(char *repo, char *sha, char *token);
+/* league_standings -- stdlib/league/standings.prn's own compiled entry
+ * point, linked in by the same stage-2 build as check() above. */
+extern int league_standings(char *base_url, char *game, int top);
 #endif
 
 static char *read_file(const char *path, size_t *out_len) {
@@ -649,6 +652,40 @@ static int cmd_ci_status(const char *repo, const char *sha) {
     }
     return code;
 }
+
+/* cmd_standings -- `parena standings <game> [--top N] [--base-url URL]`:
+ * prints the RL league's newest checkpoints per role (with ELO) from
+ * IDUNA's public game-scoped checkpoint registry, via
+ * stdlib/league/standings.prn. Base URL precedence: --base-url, then
+ * IDUNA_BASE_URL (the same env var DEADWEIGHT/training/colab_train.py
+ * reads), then https://okemily.com. */
+static int cmd_standings(int argc, char **argv) {
+    const char *game = NULL;
+    const char *base_url = getenv("IDUNA_BASE_URL");
+    int top = 5;
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--top") == 0 && i + 1 < argc) {
+            top = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--base-url") == 0 && i + 1 < argc) {
+            base_url = argv[++i];
+        } else if (!game && argv[i][0] != '-') {
+            game = argv[i];
+        } else {
+            fprintf(stderr, "usage: parena standings <game> [--top N] [--base-url URL]\n");
+            return 4;
+        }
+    }
+    if (!game) {
+        fprintf(stderr, "usage: parena standings <game> [--top N] [--base-url URL]\n");
+        return 4;
+    }
+    if (!base_url || !*base_url) base_url = "https://okemily.com";
+    int code = league_standings((char *)base_url, (char *)game, top);
+    if (code == 3) {
+        fprintf(stderr, "parena: standings: %s: request failed, or the response was not a checkpoint list\n", game);
+    }
+    return code;
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -664,6 +701,9 @@ int main(int argc, char **argv) {
 #ifdef PARENA_HAS_CI_STATUS
                          "       parena ci-status <owner/repo> <sha>                (GITHUB_TOKEN env var required; "
                          "exit 0=all green, 1=pending, 2=failed, 3=not found/error)\n"
+                         "       parena standings <game> [--top N] [--base-url URL]  (RL league ELO standings "
+                         "from IDUNA's public checkpoint registry; IDUNA_BASE_URL env var, default "
+                         "https://okemily.com; exit 0=printed, 1=empty, 3=request failed, 4=bad input)\n"
 #endif
                          "       parena new <name>                                  (real, \"batteries included\" "
                          "scaffold: a starter .prn file, a real C host main.c + a local copy of runtime/"
@@ -690,6 +730,9 @@ int main(int argc, char **argv) {
 #ifdef PARENA_HAS_CI_STATUS
     if (strcmp(argv[1], "ci-status") == 0 && argc >= 4) {
         return cmd_ci_status(argv[2], argv[3]);
+    }
+    if (strcmp(argv[1], "standings") == 0) {
+        return cmd_standings(argc - 2, argv + 2);
     }
 #endif
     if (strcmp(argv[1], "fmt") == 0) {

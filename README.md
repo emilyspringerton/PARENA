@@ -226,6 +226,42 @@ small-scale, working instance of PARENA dogfooding itself — not the full self-
 NORTHSTAR's own longer-term plan describes, but a genuine, verified, checked-in first step in
 that direction.
 
+### `parena standings` — RL league ELO standings from the checkpoint registry
+
+`parena standings <game> [--top N] [--base-url URL]` prints the newest checkpoints per league
+role (`main`, `main_exploiter`, `league_exploiter`, then any other role), with ELO, from IDUNA's
+public, metadata-only `GET /api/v1/game-checkpoints/<game>` (no auth, no weights downloaded). Base
+URL: `--base-url`, else `IDUNA_BASE_URL`, else `https://okemily.com`. Exit codes: `0` printed, `1`
+registry empty for that game, `3` request failed / not a checkpoint list, `4` bad input.
+
+```
+$ parena standings deadweight --top 2 --base-url http://127.0.0.1:18766   # tests/fixtures/standings
+-- league standings: deadweight at http://127.0.0.1:18766 (5 checkpoints, newest 2 per role) --
+  id=   7  main               gen=  9  elo= 1103.2  main-g9  [local]
+  id=   3  main               gen=  2  elo= 1012.5  main-g2 "quoted" {x}  [colab]
+  id=   5  main_exploiter     gen=  4  elo=  987.0  me-g4  [colab]
+  id=   6  league_exploiter   gen=  4  elo= 1001.0  le-g4
+  id=   8  scout              gen=  1  elo=  900.0  odd
+```
+
+Same shape and same two-stage build as `ci-status`: `stdlib/league/standings.prn` (module
+`league/standings`) declares the `#target` boundary, `tools/standings_host.c` runs `curl` and scans
+this one flat JSON array shape. Unlike `ci-status`'s substring grep, it does track string and nesting
+boundaries, but it is still not a general JSON library. The game name and base URL go through a
+strict character allowlist before any command line is built. **Status:** `make test-standings`
+(also in CI) runs it end to end against a local fake registry, including the injection
+rejections. It has **not** been run against the live `okemily.com` registry yet: the sandbox it
+was built in blocks that host.
+
+### `jewel/display` — plots under a JEWEL notebook cell
+
+`stdlib/jewel/display.prn` gives JEWEL (the PARENA Jupyter kernel) cells a way to show output
+other than text. `save-file` writes a string to a file, and `line-plot-svg` renders a `(Vec I32)`
+series as a minimal auto-scaled SVG polyline. JEWEL displays any `.png`/`.jpg`/`.gif`/`.svg`/`.html`
+file a cell writes to its working directory. Limits: I32 series only (the stdlib has no
+float-to-string yet, so scale an F64 loss curve to integers first), and no axes, ticks or legend.
+`ringo.prn` is still the separate SDL plotting story.
+
 ## Self-hosting dogfooding: turbogrep/turbosed/turboawk
 
 Three real CLI tools, each PARENA-compiled `stdlib/regex/pcre.prn` + `stdlib/{grep,sed,awk}.prn`

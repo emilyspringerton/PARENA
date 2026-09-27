@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-standings test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -36,9 +36,22 @@ build: parena
 tools/ci_status_gen.c: .parena-bootstrap stdlib/ci/status.prn
 	./.parena-bootstrap build stdlib/ci/status.prn -o tools/ci_status_gen.c
 
-parena: src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c tools/ci_status.h
+# `parena standings` (2026-09-27) rides the exact same stage-2 link as
+# ci-status: stdlib/league/standings.prn is compiled by the bootstrap stage,
+# then linked with its own host implementation (tools/standings_host.c).
+tools/standings_gen.c: .parena-bootstrap stdlib/league/standings.prn
+	./.parena-bootstrap build stdlib/league/standings.prn -o tools/standings_gen.c
+
+parena: src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c tools/ci_status.h \
+		tools/standings_gen.c tools/standings_host.c tools/standings.h
 	$(CC) $(CFLAGS) -DPARENA_HAS_CI_STATUS -I runtime -I tools -include tools/ci_status.h \
-		-o parena src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c
+		-include tools/standings.h \
+		-o parena src/main.c $(OBJ) tools/ci_status_gen.c tools/ci_status_host.c \
+		tools/standings_gen.c tools/standings_host.c
+
+# test-standings -- end-to-end `parena standings` against a local fake registry.
+test-standings: parena
+	bash tests/test_standings.sh
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -1192,7 +1205,7 @@ test-emit-llvm: tests/test_emit_llvm.c $(OBJ)
 
 clean:
 	rm -f parena .parena-bootstrap tests/test_lexer_parser tests/test_region tests/test_emit \
-		tests/test_emit_ts tests/test_emit_java tests/test_emit_llvm src/*.o tools/ci_status_gen.c
+		tests/test_emit_ts tests/test_emit_java tests/test_emit_llvm src/*.o tools/ci_status_gen.c tools/standings_gen.c
 
 # test-rtp -- real end-to-end verification for stdlib/sip/rtp.prn (kanban priority-queue card
 # PBX-001, "narrow scope parena PBX primitives... close to the metal like what does asterisk need").

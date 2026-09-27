@@ -8,6 +8,7 @@ tests/test_emit_java
 src/*.o
 bazel-*
 tools/ci_status_gen.c
+tools/standings_gen.c
 examples/avr/blink_gen.c
 examples/avr/blink.elf
 examples/avr/blink.hex

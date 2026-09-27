@@ -1,3 +1,9 @@
+## 2026-09-27
+
+- feat(cli): `parena standings <game>` -- RL league ELO standings from IDUNA's public game-checkpoint registry (stdlib/league/standings.prn + tools/standings_host.c, same two-stage build as ci-status; input allowlisted before any shell command). `make test-standings` (new, in CI) runs it end to end against a local fake registry; not yet run against live okemily.com (sandbox blocks it). README updated. (sess-20260927-1032-6afa7ade)
+- feat(stdlib): jewel/display.prn -- `save-file` + `line-plot-svg` so JEWEL notebook cells can emit plots (JEWEL now ships any image/SVG/HTML file a cell writes as Jupyter display_data). Verified through a real Jupyter kernel session. README updated. (sess-20260927-1032-6afa7ade)
+- fix(stdlib/io): declare `(import array)` -- read-floats builds array's NDArray, a dependency every Makefile build already satisfied by hand but JEWEL's import resolver couldn't see. (sess-20260927-1032-6afa7ade)
+
 ## 2026-09-25
 
 - new stdlib/deadweight/account_rules.prn (display-name validation, C target verified) + found a real TS-emitter gap: string.prn can't be emitted to TS at all (region-annotated params hard-rejected, contradicting emit_ts_defn's own doc comment that they should be a no-op) (sess-20260923-1030-4a526255)

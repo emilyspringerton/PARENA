@@ -1,0 +1,5 @@
+[{"id":3,"game":"deadweight","name":"main-g2 \"quoted\" {x}","role":"main","generation":2,"elo":1012.5,"source_location":"colab","filename":"a.zip","sha256":"x","size_bytes":10,"is_active_opponent":true,"meta":{"role":"league_exploiter","n":[1,2]}},
+ {"id":7,"name":"main-g9","role":"main","generation":9,"elo":1103.25,"source_location":"local","has_weights":true},
+ {"id":5,"name":"me-g4","role":"main_exploiter","generation":4,"elo":987,"source_location":"colab"},
+ {"id":6,"name":"le-g4","role":"league_exploiter","generation":4,"elo":1001.0},
+ {"id":8,"name":"odd","role":"scout","generation":1,"elo":900}]

@@ -35,6 +35,9 @@
 (module io)
 (import string)
 (import vec)
+;; array: read-floats below constructs array's own NDArray -- a real dependency every Makefile
+;; build already satisfied by hand (string array io ...), now declared (2026-09-27).
+(import array)
 (export file-open file-close path-exists? list-dir is-dir? write-string read-string read-line read-floats FileHandle IoError OpenMode)
 
 (defstruct FileHandle

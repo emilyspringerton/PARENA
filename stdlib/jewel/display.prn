@@ -1,0 +1,89 @@
+;; stdlib/jewel/display.prn — rich output for JEWEL notebook cells (the PARENA
+;; Jupyter kernel, github.com/emilyspringerton/JEWEL). Founder real-time
+;; (2026-09-27, "all of it"): plots under a notebook cell, done the
+;; grounded way -- a cell writes an image file, the kernel ships it back as
+;; a Jupyter display_data message.
+;;
+;; Contract (JEWEL/jewel_kernel.py): a cell's program runs with its working
+;; directory set to a fresh output directory; every .png/.jpg/.gif/.svg/.html
+;; file it writes there is displayed under the cell, in filename order. So a
+;; plain relative name ("loss.svg") is all `save-file` needs.
+;;
+;; Real, honest scope:
+;;   save-file      -- write a string to a file (create/truncate). Exists
+;;                     mostly to hide the FileHandle unboxing workaround every
+;;                     real io/file-open caller needs today (log/jsonl.prn's
+;;                     own unbox-filehandle is the precedent, same reason).
+;;   line-plot-svg  -- a minimal SVG polyline of a (Vec I32) series, y-axis
+;;                     auto-scaled to the series' own min/max, with a min/max
+;;                     label. I32 only: this stdlib has no float-to-string yet,
+;;                     so an F64 series (a loss curve) has to be scaled to
+;;                     integers first (e.g. loss * 1000). No axes/ticks/legend.
+;;                     ringo.prn (SDL-window plotting) is the separate, bigger
+;;                     plotting story; this is the notebook-sized one.
+
+(module jewel/display)
+(import string)
+(import io)
+(export save-file line-plot-svg)
+
+(defn display-unbox-filehandle [(v : &Any)] : FileHandle
+  #target
+  {:c (inline-c "*(FileHandle *)v")})
+
+(defn save-file [(name : String @ Region) (content : String @ Region) (dest : Arena @ Region)]
+  : (Result Unit IoError) @ Region
+  (match (io/file-open name Write dest)
+    ((Ok !fh)
+      (let [f (display-unbox-filehandle !fh)]
+        (match (io/write-string f content dest)
+          ((Ok _) (io/file-close f dest))
+          ((Err werr) (Err werr)))))
+    ((Err oerr) (Err oerr))))
+
+(defn series-min [(ys : &(Vec I32))]
+  : I32
+  (loop [i 1 acc (deref (vec/get ys 0))]
+    (if (>= i (vec/len ys)) acc
+      (recur (+ i 1) (if (< (deref (vec/get ys i)) acc) (deref (vec/get ys i)) acc)))))
+
+(defn series-max [(ys : &(Vec I32))]
+  : I32
+  (loop [i 1 acc (deref (vec/get ys 0))]
+    (if (>= i (vec/len ys)) acc
+      (recur (+ i 1) (if (> (deref (vec/get ys i)) acc) (deref (vec/get ys i)) acc)))))
+
+;; One "x,y " pair per sample: x spread evenly across `w`, y flipped (SVG's
+;; origin is top-left) and scaled so min sits at the bottom edge (4px inset)
+;; and max at y=16 -- the top 16px are the min/max label's own strip, so the
+;; label never overlaps the line. A flat series (max = min) draws mid-plot.
+(defn plot-points [(ys : &(Vec I32)) (w : I32) (h : I32) (lo : I32) (hi : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [n (vec/len ys)
+        span (if (> hi lo) (- hi lo) 1)
+        xstep-den (if (> n 1) (- n 1) 1)]
+    (loop [i 0 acc ""]
+      (if (>= i n) acc
+        (let [x (/ (* i (- w 8)) xstep-den)
+              y (if (> hi lo)
+                  (- (- h 4) (/ (* (- (deref (vec/get ys i)) lo) (- h 20)) span))
+                  (/ (+ h 12) 2))]
+          (recur (+ i 1)
+            (string/concat acc
+              (string/concat (string/i32-to-string (+ x 4) dest)
+                (string/concat "," (string/concat (string/i32-to-string y dest) " " dest) dest) dest) dest)))))))
+
+(defn line-plot-svg [(ys : &(Vec I32)) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (if (< (vec/len ys) 1)
+    (string/concat "<svg xmlns='http://www.w3.org/2000/svg' width='" (string/concat (string/i32-to-string w dest)
+      (string/concat "' height='" (string/concat (string/i32-to-string h dest) "'><text x='4' y='14' font-size='12'>(empty series)</text></svg>" dest) dest) dest) dest)
+    (let [lo (series-min ys)
+          hi (series-max ys)
+          pts (plot-points ys w h lo hi dest)
+          head (string/concat "<svg xmlns='http://www.w3.org/2000/svg' width='" (string/concat (string/i32-to-string w dest)
+                 (string/concat "' height='" (string/concat (string/i32-to-string h dest) "'>" dest) dest) dest) dest)
+          line (string/concat "<polyline fill='none' stroke='black' stroke-width='1.5' points='" (string/concat pts "'/>" dest) dest)
+          label (string/concat "<text x='4' y='12' font-size='10' font-family='monospace'>max " (string/concat (string/i32-to-string hi dest)
+                  (string/concat " / min " (string/concat (string/i32-to-string lo dest) "</text>" dest) dest) dest) dest)]
+      (string/concat head (string/concat line (string/concat label "</svg>" dest) dest) dest))))
