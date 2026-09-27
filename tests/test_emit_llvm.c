@@ -415,6 +415,48 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- 2026-09-27 regression (stdlib/mixforge/mixer.prn): a float literal on the LEFT of an
+       arithmetic/comparison op in F64 context used to be hinted I32 and rejected --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn inv [(x : F64)] : F64 (- 1.0 x))\n"
+            "(defn pos? [(x : F64)] : Bool (< 0.0 x))\n"
+            "(defn nest [(k : F64)] : F64 (* 0.5 (+ 1.0 k)))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "float literal as lhs operand in F64 context emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "fsub double 1.0, %x") != NULL, "(- 1.0 x) lowers to fsub double");
+            CHECK(strstr(ir, "fcmp olt double 0.0, %x") != NULL, "(< 0.0 x) lowers to fcmp double");
+            CHECK(strstr(ir, "fadd double 1.0, %k") != NULL, "nested (+ 1.0 k) lowers to fadd double");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- 2026-09-27 regression: a function body longer than lb_appendf's old 512-byte scratch
+       buffer was silently truncated (no `ret`, invalid IR) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sq [(x : F64)] : F64 (* x x))\n"
+            "(defn long [(x : F64)] : F64 (+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) "
+            "(+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) (+ (sq x) (sq x))))))))))))))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "long function body emits successfully");
+        if (ir) {
+            const char *def = strstr(ir, "define double @long(");
+            CHECK(def != NULL && strlen(def) > 512, "long function body really exceeds the old 512-byte buffer");
+            CHECK(def != NULL && strstr(def, "  ret double %") != NULL, "long function body keeps its ret (not truncated)");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
