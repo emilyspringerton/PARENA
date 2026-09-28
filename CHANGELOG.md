@@ -1,4 +1,5 @@
 ## 2026-09-28
+- stdlib: split DEADWEIGHT account_rules.prn's scalar half (max-display-name-len, is-control-byte) into new account_rules_scalar.prn, plus a new min-password-len/is-valid-password-length pair -- now targetable to Java and TypeScript, not just C. Confirmed the Java emitter hard-rejects @Region-annotated params the same way the TS emitter already did. (sess-20260923-1030-4a526255)
 
 - stdlib/video/nle.prn: non-linear-editing DSP for NOCK's MIXFORGE EDITOR video editor -- equal-power crossfade curves (mirroring mixforge/mixer.prn's own quarter-cos pan construction), a per-clip fade-in/fade-out envelope, and time-based MPC pad-capture window math. Compiled to wasm via the same pipeline MIXFORGE/scripts/build_dsp_wasm.sh established; verified with a real 14/14 kernel test in IDUNA/frontend/nock. (sess-20260923-1030-4a526255)
 
