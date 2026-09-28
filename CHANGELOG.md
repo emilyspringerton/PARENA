@@ -1,3 +1,7 @@
+## 2026-09-28
+
+- stdlib/video/nle.prn: non-linear-editing DSP for NOCK's MIXFORGE EDITOR video editor -- equal-power crossfade curves (mirroring mixforge/mixer.prn's own quarter-cos pan construction), a per-clip fade-in/fade-out envelope, and time-based MPC pad-capture window math. Compiled to wasm via the same pipeline MIXFORGE/scripts/build_dsp_wasm.sh established; verified with a real 14/14 kernel test in IDUNA/frontend/nock. (sess-20260923-1030-4a526255)
+
 ## 2026-09-27
 
 - feat(stdlib/mixforge): mixer.prn (4-channel DJ mixer DSP: fader taper, equal-power pan/crossfader via polynomial quarter-cosine, mute/solo, A/Thru/B assign, one-knob LP/HP DJ filter, tempo/beatmatch rate, soft-clip bus) + sampler.prn (MIDI 1.0 decode incl. velocity-0 note-off and 14-bit bend, 16-pad map, exact 12-TET note->rate, bend rate, velocity curve, CC->mixer map, ADSR, beat-synced capture length). Built to WASM for MIXFORGE's web/dj.html; `make test-mixforge-dsp` checks the C target against libm (12 checks).

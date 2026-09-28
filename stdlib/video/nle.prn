@@ -1,0 +1,104 @@
+;; stdlib/video/nle.prn -- non-linear-editing DSP for NOCK's "MIXFORGE EDITOR" (founder real-time:
+;; "ensure NOCK tools video editor is PARENA wasm powered and shares components with MIXFORGE's
+;; shared components... ensure we have full non linear video editing for the video and audio clips
+;; via nock tools we need a full documentary editing booth"). Same real division of labour
+;; MIXFORGE's own stdlib/mixforge/{mixer,sampler}.prn already establish: every per-instant DSP
+;; DECISION lives here, compiled to WebAssembly (parena build -> LLVM IR -> llc wasm32 -> wasm-ld,
+;; IDUNA/frontend/nock/scripts/build_nle_wasm.sh); the host (frontend/nock/src/video/nleEngine.ts,
+;; ported from MIXFORGE/web/engine.mjs's own instantiateDsp) owns buffers, video elements, and the
+;; frame loop.
+;;
+;; What lives here:
+;;   * Equal-power crossfade curves between two adjacent timeline segments (same quarter-cos
+;;     construction mixer.prn's own pan-left/pan-right already use for equal-power pan -- no
+;;     cross-module import between mixforge/mixer and this module, same "each module is complete
+;;     on its own" precedent mixer.prn/sampler.prn already set for each other).
+;;   * A per-clip fade-in/fade-out envelope, independent of any adjacent transition (a documentary
+;;     clip that should fade from black/silence at its own start even with no crossfade).
+;;   * MPC-style pad-capture window math: press-to-release wall-clock time -> a clip's [in, out),
+;;     with a minimum length so a too-quick tap still yields something. Time-based, not
+;;     beat-synced like sampler.prn's own capture-frames -- documentary footage has no BPM grid.
+;;
+;; Written against the same LLVM backend v0 boundary as mixer.prn/sampler.prn
+;; (docs/LLVM_BACKEND_NORTHSTAR.md): scalar F64 params, one-expression bodies, no let, `if` lowers
+;; to `select` (both branches evaluated) -- so nothing here recurses, and every branch is total.
+;; Which timeline segment is "active" at a given global time is a small array scan the host does
+;; in TS (PARENA's scalar-only wasm target has no dynamic arrays) -- this module only answers "how
+;; much of each thing is present" once the host has already picked the segment(s).
+
+(module video/nle)
+(export clamp01)
+(export quarter-cos)
+(export xfade-progress)
+(export xfade-out-gain)
+(export xfade-in-gain)
+(export fade-envelope)
+(export pad-capture-in)
+(export pad-capture-out)
+(export default-preroll-seconds)
+(export default-min-clip-seconds)
+
+(defn clamp01 [(x : F64)] : F64
+  (if (< x 0.0) 0.0 (if (> x 1.0) 1.0 x)))
+
+;; quarter-cos -- cos(pi*x/2) for x in [0,1], identical construction to mixer.prn's own (this
+;; module doesn't import that one -- see header comment). Worst-case error ~2.5e-5 at x=1,
+;; inaudible/invisible for a gain or opacity curve.
+(defn quarter-cos [(x : F64)] : F64
+  (+ 1.0
+     (* (* (clamp01 x) (clamp01 x))
+        (+ -1.2337005501361697
+           (* (* (clamp01 x) (clamp01 x))
+              (+ 0.25366950790104797
+                 (* (* (clamp01 x) (clamp01 x))
+                    (+ -0.020863480763352960
+                       (* (* (clamp01 x) (clamp01 x)) 0.00091926027483942658)))))))))
+
+;; xfade-progress -- how far into a transition of length `dur` seconds we are at local time `t`
+;; seconds (0 at the transition's start, 1 at its end). dur <= 0 means "no transition" -- treated
+;; as already fully progressed so xfade-out-gain/xfade-in-gain resolve to the hard-cut values (0
+;; and 1) rather than dividing by zero.
+(defn xfade-progress [(t : F64) (dur : F64)] : F64
+  (if (<= dur 0.0) 1.0 (clamp01 (/ t dur))))
+
+;; xfade-out-gain / xfade-in-gain -- the outgoing (previous) and incoming (current) segment's
+;; gain/opacity during a crossfade, equal-power, mirroring mixer.prn's pan-left/pan-right shape
+;; exactly: 1->0 and 0->1, summing to constant perceived power throughout the transition.
+(defn xfade-out-gain [(t : F64) (dur : F64)] : F64
+  (quarter-cos (xfade-progress t dur)))
+
+(defn xfade-in-gain [(t : F64) (dur : F64)] : F64
+  (quarter-cos (- 1.0 (xfade-progress t dur))))
+
+;; fade-envelope -- a clip's own fade in/out, independent of any adjacent transition. t is local
+;; seconds since the clip's own trimmed start; clip-dur is its trimmed length; fade-in/fade-out are
+;; each <= 0 to disable. Ramps via quarter-cos (equal-power, matching the crossfade curve above so
+;; a clip that both fades in AND crossfades in doesn't audibly/visibly double-dip); holds at 1.0
+;; between the two ramps, and when both are disabled.
+(defn fade-envelope [(t : F64) (clip-dur : F64) (fade-in : F64) (fade-out : F64)] : F64
+  (if (and (> fade-in 0.0) (< t fade-in))
+      (quarter-cos (- 1.0 (clamp01 (/ t fade-in))))
+      (if (and (> fade-out 0.0) (> t (- clip-dur fade-out)))
+          (quarter-cos (clamp01 (/ (- t (- clip-dur fade-out)) fade-out)))
+          1.0)))
+
+;; --- MPC-style pad capture off a playing video stream --------------------------------------
+;; Founder real-time: "the mpc should work off of video streams to pull clips in addition to the
+;; traditional import and manual snip workflow." A pad press marks the in-point (with an optional
+;; pre-roll, since noticing "that was good" always lands a beat after the good part started); pad
+;; release marks the out-point, extended to a minimum length so a too-quick tap still yields a
+;; usable clip instead of a near-zero-length one.
+
+(defn default-preroll-seconds [] : F64 1.0)
+(defn default-min-clip-seconds [] : F64 1.0)
+
+;; pad-capture-in -- clip start time, `preroll` seconds before the press, clamped to the source's
+;; own start (0).
+(defn pad-capture-in [(press-t : F64) (preroll : F64)] : F64
+  (if (> (- press-t preroll) 0.0) (- press-t preroll) 0.0))
+
+;; pad-capture-out -- clip end time: the release time, unless the press-to-release gap is shorter
+;; than `min-dur`, in which case the clip is extended forward from the press to guarantee that
+;; minimum length.
+(defn pad-capture-out [(press-t : F64) (release-t : F64) (min-dur : F64)] : F64
+  (if (> (- release-t press-t) min-dur) release-t (+ press-t min-dur)))
