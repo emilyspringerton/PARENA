@@ -1,0 +1,37 @@
+;; stdlib/deadweight/account_rules_scalar.prn -- the pure-scalar (no String/@Region params) half
+;; of DEADWEIGHT's account-field validation rules: I32-in, Bool-out, zero dependency on
+;; stdlib/string.prn's region-typed length/char-at. Split out of account_rules.prn (2026-09-28,
+;; founder real-time: "eat more with parena" on the Android client) so these rules can ALSO
+;; target Java and TypeScript, not just C -- account_rules.prn's own is-valid-display-name needs
+;; a `String @ Region` parameter for the C target's real region-safety verification, and PARENA's
+;; Java/TS emitters both hard-reject any region-annotated parameter shape (confirmed directly:
+;; `parena build stdlib/string.prn stdlib/deadweight/account_rules.prn -o X.java` fails with
+;; "emit_java: defn: unsupported parameter shape (v0 only understands plain (name : I32|F64|
+;; Bool|String) params -- no Arena/region annotations)" -- the same real, previously-named PARENA
+;; compiler gap `web/src/account.ts`'s own `isValidDisplayName` doc comment already describes for
+;; the TS emitter, now confirmed to hit the Java emitter identically). This file's own two
+;; functions were ALREADY plain-scalar (no region annotation ever needed them) -- moving them out
+;; is a pure reorganization, not a rewrite; account_rules.prn keeps calling them via
+;; `(import deadweight/account-rules-scalar)`, same cross-module-import shape bot_brain.prn
+;; already uses for `(import deadweight/card-rules)`.
+;;
+;; New in this file (not previously anywhere): min-password-len / is-valid-password-length.
+;; Real, found-live duplication: the "password needs 8+ characters" rule was hand-duplicated,
+;; identically, in THREE places with zero shared source -- apps/gui/main.c's `strlen(A.link_pass)
+;; < 8`, android's MainActivity.java `pass.length() < 8`, and web/src/account.ts's own claim-flow
+;; check -- a real drift risk (change the number in two places, miss the third, ship an
+;; inconsistent client). This is the first genuinely NEW rule this file adds, not just a port of
+;; an existing one.
+
+(module deadweight/account-rules-scalar)
+(export max-display-name-len is-control-byte min-password-len is-valid-password-length)
+
+(defn max-display-name-len [] : I32 16)
+
+(defn is-control-byte [(b : I32)] : Bool
+  (or (< b 32) (= b 127)))
+
+(defn min-password-len [] : I32 8)
+
+(defn is-valid-password-length [(len : I32)] : Bool
+  (>= len (min-password-len)))

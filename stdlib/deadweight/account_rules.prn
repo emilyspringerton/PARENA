@@ -11,18 +11,27 @@
 ;; 32 and 127), not a full Unicode-category-aware port of Go's unicode.IsControl (which also flags
 ;; some non-ASCII control code points) -- IDUNA's own server-side check stays authoritative and
 ;; always re-validates on register; this is client-side UX feedback, not a security boundary.
-;; String is a C/TS-only concern here (no Java target -- DEADWEIGHT's Android client is shelved,
-;; see DEADWEIGHT/CLAUDE.md's own S513 platform correction), so this module doesn't need card_
-;; rules.prn's own scalar-only Java-compatibility constraint.
+;;
+;; is-valid-display-name itself needs `String @ Region` (needed for the C target's real
+;; region-safety verification), which PARENA's Java AND TypeScript emitters both hard-reject on
+;; ANY parameter shape beyond plain scalars/`String` (confirmed directly against both emitters,
+;; 2026-09-28) -- a real, previously-undiscovered-on-the-Java-side instance of the same compiler
+;; gap `web/src/account.ts`'s own doc comment already named for the TS emitter (EMILY/BACKLOG.md
+;; SECTION 544; this repo's own DEADWEIGHT/CLAUDE.md S513 platform-correction note this file used
+;; to carry, "Android is shelved," was itself the actual reason no one had checked Java yet --
+;; that correction was reversed by S555, this file's own note was stale). Not a DEADWEIGHT- or
+;; account-rules-specific bug; a real PARENA compiler gap, out of scope to fix here.
+;;
+;; The two genuinely scalar rules this file used to also define (max-display-name-len,
+;; is-control-byte -- neither ever needed the region annotation) moved to the sibling
+;; account_rules_scalar.prn (2026-09-28) so they can ALSO target Java/TypeScript; imported back
+;; here for is-valid-display-name's own C-target use, same cross-module-import shape
+;; bot_brain.prn already uses for `(import deadweight/card-rules)`.
 
 (module deadweight/account-rules)
 (import string)
-(export max-display-name-len is-control-byte is-valid-display-name)
-
-(defn max-display-name-len [] : I32 16)
-
-(defn is-control-byte [(b : I32)] : Bool
-  (or (< b 32) (= b 127)))
+(import deadweight/account-rules-scalar)
+(export is-valid-display-name)
 
 ;; is-valid-display-name -- mirrors cleanDisplayName exactly: 1-16 characters (the caller is
 ;; expected to have already trimmed leading/trailing whitespace, matching Go's strings.TrimSpace --
