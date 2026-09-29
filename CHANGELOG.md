@@ -1,4 +1,20 @@
 ## 2026-09-29
+- AVR: real, named per-board upload profiles for EDGE.GAME's three real boards (Uno/new-Nano,
+  old-bootloader Nano, Adafruit Feather 32u4) -- confirmed via avrdude's own `-c`/`-p` listings,
+  not assumed: the 32u4 needs `avr109`+57600 baud+a real "1200-baud touch" reset (new
+  `tools/avr_touch_reset.py`, verified against a real pty) that the classic-bootloader boards
+  don't. Caught and fixed a real, distinct bug before it shipped: blinking the Feather with the
+  Uno/Nano's own `blink_main.c` unmodified would have toggled the wrong pin (PB5 vs. the 32u4's
+  real PC7) at the wrong timing (16MHz-tuned delay math vs. the Feather's real 8MHz clock) --
+  confirmed via `avr-objdump` disassembly, not just re-reading the C. New `AVR_PRN_SOURCE`
+  Makefile variable + editor `compile_and_upload_avr` fix: the Upload button always flashed the
+  hardcoded `examples/avr/blink.prn` regardless of what file the editor had open -- now passes
+  the real open file through (shell-quoted, unit-tested against spaces/embedded-quotes via a real
+  shell round-trip) and reads `EDGE_AVR_UPLOAD_TARGET` for board selection. Found, named, not
+  fixed: `EDITOR.GAME`'s own forked copy of this same bug is actually worse (zero `avr-*`
+  Makefile targets at all -- a hard failure, not just the wrong file). `make editor-demo-smoke`
+  (real Xvfb run) still boots clean; `-Wall -Wextra -pedantic -Werror` throughout.
+
 - stdlib/edge_game/traffic_router.prn: real routing decision logic for EDGE.GAME's arcade-cabinet
   hardware fan-out (Windows PC hub <-> Raspberry Pi + Arduino Nano, S584). Corrected from a pasted
   AI-tutorial draft that used invalid syntax throughout (comma-separated param lists, `Void`

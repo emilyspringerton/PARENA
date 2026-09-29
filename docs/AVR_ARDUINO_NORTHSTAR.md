@@ -202,7 +202,8 @@ flashes it for real; that final hardware round-trip is the one thing this write-
 
 ## Real, not-yet-done follow-up work
 
-- Upload button targeting the currently-open `.prn` file instead of always `blink.prn`.
+- ~~Upload button targeting the currently-open `.prn` file instead of always `blink.prn`~~ —
+  **closed 2026-09-29 (EDGE.GAME S584)**, see below.
 - A general AVR GPIO stdlib module (`stdlib/hw/avr_gpio.prn`-shaped) with real `#target`
   register-level primitives, instead of every AVR program needing its own hand-written host —
   the same real jump `stdlib/hw/serial.prn` already made once for its own Linux-host primitives.
@@ -210,3 +211,69 @@ flashes it for real; that final hardware round-trip is the one thing this write-
 - An actual **AVR hardware** round-trip proof once a physical Arduino is available (the host-LED
   proof above closes the "does a real light actually flash" gap using different, actually-present
   hardware — it does not itself prove the AVR/avrdude path against a real chip).
+
+## Real, named per-board profiles + Upload-button fix (2026-09-29, EDGE.GAME S584)
+
+Founder real-time: EDGE.GAME needs to control three real, different boards — an Adafruit
+Feather 32u4, an Arduino Nano, and "a regular arduino" (assumed Uno, unconfirmed) — and named a
+real, concrete gotcha directly: "the different usb speeds needs to be accounted for."
+
+**Confirmed, not assumed** (via `avrdude -c '?'`/`-p '?'` and a real `avr-gcc -mmcu=atmega32u4`
+compile): three genuinely distinct profiles, not just three baud rates —
+
+- **Arduino Uno / Nano (new bootloader, optiboot)**: `atmega328p`, `arduino` (STK500v1), 115200
+  baud, no reset step — `avr-blink-upload`'s own existing default, unchanged.
+- **Arduino Nano (OLD bootloader)**: same chip/hex as above, 57600 baud — a real, common gotcha
+  (flashing at 115200 against an old-bootloader Nano just times out, easy to mistake for a
+  wiring/driver problem). New `avr-nano-old-bootloader-upload` target.
+- **Adafruit Feather 32u4 (Caterina bootloader)**: `atmega32u4`, `avr109` (AVR109 AppNote
+  protocol), 57600 baud, clocked at 8MHz per Adafruit's own published board spec (not the
+  16MHz/5V Uno/Nano clock), and genuinely REQUIRES a "1200-baud touch" reset first — opening the
+  port at 1200 baud and closing it again, the same thing the Arduino IDE does invisibly before
+  ever invoking avrdude; there's no avrdude flag for this. New `tools/avr_touch_reset.py` (plain
+  termios, no pyserial dependency, verified against a real pty) + `avr-touch-reset` Makefile
+  target + new `avr-feather-blink-hex`/`avr-feather-blink-upload` targets.
+
+**Real, distinct bug caught before it shipped**: initially reused `blink_main.c` unmodified for
+the Feather target. It compiled clean (avr-gcc doesn't know or care about pin semantics) but was
+WRONG on two counts, confirmed via `avr-objdump` disassembly, not just re-reading the C: an
+ATmega32u4-class board (Leonardo/Micro/Feather 32u4 all share this core pin mapping) wires its
+onboard/pin-13 LED to **PC7**, not the ATmega328p's PB5 blink_main.c hardcodes — so the original
+attempt would have toggled the wrong, disconnected pin; and the delay-loop constant tuned for
+16MHz would run at double the intended real-world duration at the Feather's real 8MHz clock. New
+`examples/avr/blink_main_feather.c` fixes both (PC7, a recalculated delay constant) —
+`avr-objdump` confirms the compiled code emits `sbi`/`cbi` against I/O address `0x08` (PORTC),
+not `0x05` (PORTB).
+
+**The Upload button's own real, separate bug, now fixed**: `compile_and_upload_avr` in
+`examples/editor_main.c` always shelled out to a bare `make avr-blink-upload`, which itself
+hardcoded `examples/avr/blink.prn` as ITS OWN source — editing a copy, or any other `.prn` file,
+and hitting Upload silently re-read and flashed the unmodified original from disk, never
+reflecting what was actually on screen. Fixed two ways: (1) all three `*-hex`/`*-upload`
+Makefile targets now read a real, overridable `AVR_PRN_SOURCE` variable (default: `examples/
+avr/blink.prn`, preserving old behavior for a bare `make avr-blink-upload` invocation) instead of
+a literal path; (2) `compile_and_upload_avr(Arena *, const char *current_file)` now passes the
+editor's own open-file path through as `AVR_PRN_SOURCE`, shell-quoted (a new `shell_quote_single`
+helper, unit-tested against spaces/embedded-quotes via a real shell round-trip — the first place
+in this file that interpolates a variable path into a `system()` call), and reads
+`EDGE_AVR_UPLOAD_TARGET` (one of the three Makefile target names above) to pick the board
+profile — a real dropdown/toggle UI for this belongs to EDGE.GAME's own larger reskin, not
+invented here as a one-off widget. Real, unchanged contract: whatever `.prn` file is open must
+still export a `next-led-state : Bool -> Bool` function, the same shape `blink.prn` itself
+defines — a richer firmware contract is real, separate, future work.
+
+**Real, found-live, more severe version of the same bug in `EDITOR.GAME`'s own fork**: that
+repo's own copy of `editor_main.c` has the identical (pre-fix) `compile_and_upload_avr`, but its
+own `Makefile` has ZERO `avr-*` targets at all — clicking Upload there doesn't just flash the
+wrong file, it hard-fails with `make: *** No rule to make target 'avr-blink-upload'`. Not fixed
+in this pass (EDGE.GAME, not EDITOR.GAME, is the repo actually being built toward real cabinet
+hardware control — see `EDGE.GAME/NORTHSTAR.md`) — named so it isn't silently rediscovered later.
+
+`make test-traffic-router`-style hermetic testing doesn't apply here (this is host-CLI/UI
+plumbing, not a `.prn` kernel) — verified instead via: a real content-differing
+`AVR_PRN_SOURCE` override producing genuinely different compiled C (confirmed by diffing the
+generated function body); a real `avr-objdump` disassembly check that the Feather binary
+touches PORTC, not PORTB; a real shell round-trip test of `shell_quote_single` against 4 cases
+including embedded quotes and spaces; and a full `make editor-demo-smoke` (real Xvfb headless
+run) confirming the whole editor still boots and runs its event loop cleanly with the new code
+wired in. `-Wall -Wextra -pedantic -Werror` clean throughout.

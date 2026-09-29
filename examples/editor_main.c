@@ -703,6 +703,34 @@ static void compile_and_relaunch(const char *exe_path, const char *current_file)
     spawn_new_instance(exe_path, current_file);
 }
 
+/* shell_quote_single -- wraps `s` in single quotes for safe interpolation into a system() shell
+ * command string, escaping any embedded single quote the standard `'\''` way. Written for
+ * compile_and_upload_avr below: the FIRST place in this file that interpolates a variable path
+ * (current_file, chosen via this same editor's own file tree/open dialog -- a local path the
+ * same local user picked, not untrusted network input, but worth doing properly regardless of
+ * how low the real stakes are here). Returns a newly arena-allocated string. */
+static char *shell_quote_single(Arena *a, const char *s) {
+    size_t len = strlen(s);
+    /* Worst case: every char is a quote, each expanding to 4 chars ('\''), plus the two
+     * wrapping quotes and a NUL. */
+    char *out = (char *)arena_alloc(a, len * 4 + 3);
+    size_t w = 0;
+    out[w++] = '\'';
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '\'') {
+            out[w++] = '\'';
+            out[w++] = '\\';
+            out[w++] = '\'';
+            out[w++] = '\'';
+        } else {
+            out[w++] = s[i];
+        }
+    }
+    out[w++] = '\'';
+    out[w] = '\0';
+    return out;
+}
+
 /* compile_and_upload_avr -- the real action behind the top-bar Upload
  * button, next to Save (2026-09-10, founder real-time: "lets update
  * parena so that it can run on an arduino... we need to update the
@@ -714,33 +742,68 @@ static void compile_and_relaunch(const char *exe_path, const char *current_file)
  * top" -- the sidebar placement required opening that sidebar first and
  * was easy to miss). Same real, honest, blocking `system()` shape
  * compile_and_relaunch already establishes just above (no threading
- * anywhere in this codebase) --
- * shells out to `make avr-blink-upload`, which itself real-compiles
- * examples/avr/blink.prn through the normal `parena build` pipeline,
- * avr-gcc/avr-objcopy's a real .hex, and invokes avrdude against a real,
- * no-sudo-acquired AVR toolchain (see Makefile's own avr-blink-upload
- * target and docs/AVR_ARDUINO_NORTHSTAR.md for the full recipe).
+ * anywhere in this codebase).
  *
- * Real, honest v0 scope, named not hidden: unlike Compile (which acts on
- * whatever file this window has open), Upload always targets
- * examples/avr/blink.prn regardless of current_file -- making the button
- * respect the currently-open .prn file is real, separate follow-up work,
- * not yet done. No relaunch afterward (unlike Compile): a firmware
- * upload doesn't change anything about the running editor process
- * itself, so there is nothing to hot-reload.
+ * Real, found-live bug fixed here (EDGE.GAME S584, founder real-time:
+ * "a code thingy a compile an upload - its already there but it doesnt
+ * work"): this used to always shell out to a bare `make avr-blink-upload`,
+ * which hardcodes `examples/avr/blink.prn` as its OWN source regardless of
+ * what file this editor window actually has open -- editing a copy, or any
+ * other .prn file, and hitting Upload silently re-read and flashed the
+ * unmodified original from disk instead of what was on screen. Fixed by
+ * passing `current_file` through as the Makefile's own new `AVR_PRN_SOURCE`
+ * override (see Makefile's own avr-blink-hex/avr-feather-blink-hex header
+ * comment) -- same real contract as before (the open file must export a
+ * `next-led-state : Bool -> Bool` function, exactly what blink.prn itself
+ * defines; blink_main.c/blink_main_feather.c's own hand-written host only
+ * ever calls that one function name, so a drop-in replacement has to match
+ * its shape -- a richer firmware contract is real, separate follow-up
+ * work, not this fix's scope).
  *
- * Real, accepted, already-documented limitation this call inherits, not
- * a new one: this sandbox has no physical Arduino attached, so a real
- * run here compiles+links+builds a real .hex successfully and then
+ * Real, new, minimal board-profile selection (EDGE.GAME now has three real
+ * boards -- an Uno/new-bootloader Nano, an old-bootloader Nano, and an
+ * Adafruit Feather 32u4 -- that do NOT share one avrdude profile, see
+ * Makefile's own header comment on avr-nano-old-bootloader-upload/
+ * avr-feather-blink-upload for the concrete "different usb speeds" reasons
+ * why): reads EDGE_AVR_UPLOAD_TARGET (one of "avr-blink-upload" [default],
+ * "avr-nano-old-bootloader-upload", "avr-feather-blink-upload") rather than
+ * hardcoding a single board. A real dropdown/toggle UI for this belongs to
+ * the larger SHANKPIT-OS-style EDGE.GAME reskin, not invented here as a
+ * one-off widget in an otherwise-unrelated fix.
+ *
+ * No relaunch afterward (unlike Compile): a firmware upload doesn't change
+ * anything about the running editor process itself, so there is nothing to
+ * hot-reload.
+ *
+ * Real, accepted, already-documented limitation this call inherits, not a
+ * new one: this sandbox has no physical Arduino/Feather attached, so a
+ * real run here compiles+links+builds a real .hex successfully and then
  * fails at avrdude's own port-open step -- the exact same "no physical
- * hardware in this sandbox" constraint docs/UART_SERIAL_NORTHSTAR.md's
- * own Phase 2 already names and accepts. On a real box with a real
- * board plugged into AVR_PORT, this same call flashes it for real. */
-static void compile_and_upload_avr(void) {
-    fprintf(stderr, "editor: building + uploading AVR blink example (make avr-blink-upload)...\n");
-    int rc = system("make avr-blink-upload");
+ * hardware in this sandbox" constraint docs/UART_SERIAL_NORTHSTAR.md's own
+ * Phase 2 already names and accepts. On a real box with a real board
+ * plugged into AVR_PORT, this same call flashes it for real. */
+static void compile_and_upload_avr(Arena *a, const char *current_file) {
+    if (!current_file || !path_has_suffix(current_file, ".prn")) {
+        fprintf(stderr, "editor: upload skipped -- no .prn file is open (got %s); Upload compiles "
+                        "and flashes whatever .prn file this window currently has open\n",
+                current_file ? current_file : "(none)");
+        return;
+    }
+    const char *target = getenv("EDGE_AVR_UPLOAD_TARGET");
+    if (!target || !*target) target = "avr-blink-upload";
+
+    char *quoted_file = shell_quote_single(a, current_file);
+    char cmd[4352];
+    int n = snprintf(cmd, sizeof cmd, "make %s AVR_PRN_SOURCE=%s", target, quoted_file);
+    if (n < 0 || (size_t)n >= sizeof cmd) {
+        fprintf(stderr, "editor: upload skipped -- file path too long to build a command from\n");
+        return;
+    }
+
+    fprintf(stderr, "editor: building + uploading %s via `%s`...\n", current_file, cmd);
+    int rc = system(cmd);
     if (rc != 0) {
-        fprintf(stderr, "editor: avr upload failed (make avr-blink-upload exited %d) -- if this box has no Arduino attached, this is the expected \"no physical hardware\" failure, not a new bug\n", rc);
+        fprintf(stderr, "editor: avr upload failed (%s exited %d) -- if this box has no board attached, this is the expected \"no physical hardware\" failure, not a new bug\n", cmd, rc);
         return;
     }
     fprintf(stderr, "editor: avr upload succeeded\n");
@@ -1823,8 +1886,9 @@ int main(int argc, char **argv) {
                      * above already uses, sitting directly to its right.
                      * See compile_and_upload_avr's own header comment
                      * for the full "moved here from the right sidebar"
-                     * story. */
-                    compile_and_upload_avr();
+                     * story, and for the real current-file/board-profile
+                     * fix it now carries. */
+                    compile_and_upload_avr(&a, path);
                 } else if (last_mouse_y <= HOVER_REVEAL_ZONE
                            && raw_mx >= SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH
                            && raw_mx < SAVE_BUTTON_WIDTH + UPLOAD_TOP_BUTTON_WIDTH + COMPILE_TOP_BUTTON_WIDTH

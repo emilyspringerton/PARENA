@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -859,9 +859,15 @@ AVR_F_CPU ?= 16000000UL
 AVR_PORT ?= /dev/ttyACM0
 AVR_BAUD ?= 115200
 AVR_PROGRAMMER ?= arduino
+# Real, overridable source file (EDGE.GAME S584, editor_main.c's own Upload button now passes
+# this explicitly instead of the previous hardcoded assumption) -- must export a
+# `next-led-state : Bool -> Bool` function, the same real contract blink.prn itself establishes;
+# blink_main.c/blink_main_feather.c's #include "blink_gen.c" only ever calls that one function
+# name, so any drop-in replacement source needs to match it, same as blink.prn's own real shape.
+AVR_PRN_SOURCE ?= examples/avr/blink.prn
 
 avr-blink-hex: build
-	./parena build examples/avr/blink.prn -o examples/avr/blink_gen.c
+	./parena build $(AVR_PRN_SOURCE) -o examples/avr/blink_gen.c
 	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-gcc -Wall -Os -DF_CPU=$(AVR_F_CPU) -mmcu=$(AVR_MCU) \
 		examples/avr/blink_main.c -o examples/avr/blink.elf
 	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-objcopy -O ihex -R .eeprom examples/avr/blink.elf examples/avr/blink.hex
@@ -879,6 +885,54 @@ avr-blink-upload: avr-blink-hex
 		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
 		-p $(AVR_MCU) -c $(AVR_PROGRAMMER) -P $(AVR_PORT) -b $(AVR_BAUD) \
 		-U flash:w:examples/avr/blink.hex:i
+
+# Real, named per-board profiles (EDGE.GAME S584, founder real-time: "feather 32u4 we are going
+# to need to be able to control that and the nano - there is a regular arduino around here too so
+# the different usb speeds needs to be accounted for"). avr-blink-upload's own AVR_MCU/AVR_PORT/
+# AVR_BAUD/AVR_PROGRAMMER were already real, overridable variables -- but nothing named the actual
+# values for each real board, and a single avrdude call (no reset step) genuinely does not work
+# for the 32u4: its Caterina bootloader needs a real "1200-baud touch" reset FIRST (open the port
+# at 1200 baud, close it, wait out its short bootloader window) -- the Arduino IDE does this
+# invisibly; avrdude itself has no equivalent flag. Three distinct real profiles, confirmed against
+# avrdude's own `-c '?'`/`-p '?'` listings and avr-gcc's own `-mmcu=atmega32u4` acceptance, not
+# assumed:
+#   - Arduino Uno / Nano (NEW bootloader, optiboot): atmega328p, "arduino" (STK500v1), 115200 baud,
+#     no touch-reset -- this is exactly avr-blink-upload's own existing default, unchanged.
+#   - Arduino Nano (OLD bootloader): the SAME atmega328p chip and hex as above -- only the upload
+#     baud differs (57600, not 115200). A real, common gotcha: flashing an old-bootloader Nano at
+#     115200 just times out with no useful error, easy to mistake for a wiring/driver problem.
+#   - Adafruit Feather 32u4 (Caterina bootloader): atmega32u4, "avr109" (AVR109 AppNote protocol),
+#     57600 baud, clocked at 8MHz (Adafruit's own published board spec -- 3.3V logic, not the
+#     16MHz/5V Uno/Nano clock -- matters for `_delay_ms` timing in AVR-libc), and REQUIRES the
+#     touch-reset below before avrdude can connect at all.
+AVR_TOUCH_RESET_BAUD ?= 1200
+
+avr-touch-reset:
+	python3 tools/avr_touch_reset.py $(AVR_PORT) $(AVR_TOUCH_RESET_BAUD)
+	sleep 2
+
+avr-nano-old-bootloader-upload: avr-blink-hex
+	LD_LIBRARY_PATH=$(AVR_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH \
+		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
+		-p atmega328p -c arduino -P $(AVR_PORT) -b 57600 \
+		-U flash:w:examples/avr/blink.hex:i
+
+avr-feather-blink-hex: build
+	./parena build $(AVR_PRN_SOURCE) -o examples/avr/blink_gen.c
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-gcc -Wall -Os -DF_CPU=8000000UL -mmcu=atmega32u4 \
+		examples/avr/blink_main_feather.c -o examples/avr/blink_feather.elf
+	$(AVR_TOOLCHAIN_ROOT)/usr/bin/avr-objcopy -O ihex -R .eeprom examples/avr/blink_feather.elf examples/avr/blink_feather.hex
+
+# Real, honest v0 constraint, same as avr-blink-upload above: no physical Feather exists in this
+# sandbox, so avr-touch-reset is verified against a real pty (tools/avr_touch_reset.py's own
+# header comment), and this target is verified to correctly build the real .hex and correctly
+# ATTEMPT the touch-reset + flash (failing only at port-open, never at compile/link/avrdude
+# invocation) -- not verified against a real 32u4's own USB-CDC enumeration.
+avr-feather-blink-upload: avr-feather-blink-hex avr-touch-reset
+	LD_LIBRARY_PATH=$(AVR_TOOLCHAIN_ROOT)/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH \
+		$(AVR_TOOLCHAIN_ROOT)/usr/bin/avrdude -C $(AVR_TOOLCHAIN_ROOT)/etc/avrdude.conf \
+		-p atmega32u4 -c avr109 -P $(AVR_PORT) -b 57600 \
+		-U flash:w:examples/avr/blink_feather.hex:i
 
 # avr-blink-hex-clang / avr-blink-upload-clang -- real, alternate AVR
 # target using clang instead of avr-gcc (2026-09-10, founder real-time:
