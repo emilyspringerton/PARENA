@@ -1,3 +1,15 @@
+## 2026-09-29
+- stdlib/edge_game/traffic_router.prn: real routing decision logic for EDGE.GAME's arcade-cabinet
+  hardware fan-out (Windows PC hub <-> Raspberry Pi + Arduino Nano, S584). Corrected from a pasted
+  AI-tutorial draft that used invalid syntax throughout (comma-separated param lists, `Void`
+  instead of `Unit`, `(get msg source)` instead of `(get-field msg :source)`, `==` instead of `=`,
+  and a misused `io/write-string`) before it ever reached the compiler. Also found, live, a real
+  minor compiler DX gap: a zero-field `defenum` variant must construct as a bare symbol, not a
+  zero-arg call form -- `src/emit.c`'s call-form dispatch has no `field_count == 0` branch, so
+  `(ToWindows)` silently falls through to generic function-call emission and fails late with a
+  confusing C error instead of a clear PARENA one (named, not fixed -- out of scope here). 4/4 real
+  assertions pass (`make test-traffic-router`), strict-clean (`-Wall -Wextra -pedantic -Werror`).
+
 ## 2026-09-28
 - stdlib: split DEADWEIGHT account_rules.prn's scalar half (max-display-name-len, is-control-byte) into new account_rules_scalar.prn, plus a new min-password-len/is-valid-password-length pair -- now targetable to Java and TypeScript, not just C. Confirmed the Java emitter hard-rejects @Region-annotated params the same way the TS emitter already did. (sess-20260923-1030-4a526255)
 

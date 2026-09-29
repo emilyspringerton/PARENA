@@ -1,0 +1,57 @@
+;; stdlib/edge_game/traffic_router.prn -- EDGE.GAME's arcade-cabinet hardware fan-out (S584).
+;;
+;; Real topology: a Windows PC (the game host, running EDGE.GAME) talks over USB-serial to a
+;; Raspberry Pi and an Arduino Nano, each driving a different set of the cabinet's physical
+;; lights. The Nano sits behind a logic-level shifter (its 5V lines stepped down to the Pi's/
+;; Feather's 3.3V side); see EDGE.GAME/NORTHSTAR.md for the full wiring plan. This module is
+;; pure routing DECISION logic only -- it says which board(s) a message should go to, never how
+;; to actually write bytes to a serial port. That split is deliberate, not a missing feature:
+;; PARENA's own stdlib/hw/serial.prn (the real, shipped UART primitive) is POSIX-only (termios/
+;; poll against /dev/ttyUSB0-style paths) -- there is no Win32 COM-port story anywhere in this
+;; stdlib yet, so the actual serial I/O has to live in EDGE.GAME's own hand-written Windows C
+;; host regardless. Keeping this module pure (no I/O at all) also makes it trivially unit-testable
+;; with zero real hardware attached -- see PARENA/tests/test_traffic_router.c.
+;;
+;; Corrected from an initial, ungrounded draft before it ever reached the compiler: a pasted
+;; tutorial's version used a comma-separated flat param list (real syntax needs one paren pair per
+;; parameter, no commas), `Void` as a return type (the real no-value type is `Unit` -- `Void`
+;; appears zero times anywhere in this stdlib), `(get msg source)` for struct field access (the
+;; real accessor is `(get-field msg :source)` -- `get` is the Map/BSTree lookup function, a
+;; different thing entirely), `==` for equality (the real operator is bare `=`), and
+;; `io/write-string` as if it were a console-print call (its real signature writes to an open
+;; FileHandle and takes an explicit `dest : Arena @ Region` -- it's file I/O, not console output,
+;; and this module doesn't do any I/O of its own besides).
+;;
+;; One more, found only by actually running the real compiler (not just reading stdlib examples):
+;; a zero-field defenum variant constructs as a BARE symbol (`ToWindows`), never a zero-arg call
+;; form (`(ToWindows)`). The emitter's zero-field-variant-call branch genuinely doesn't exist
+;; (checked directly in src/emit.c: the call-form dispatch only handles field_count >= 1), so
+;; `(ToWindows)` silently falls through to generic function-call emission and produces a real
+;; C compile error, `implicit declaration of function 'ToWindows'` -- confirmed with a minimal
+;; two-line repro before touching this file. Named here, not filed as a compiler fix: PARENA does
+;; still correctly refuse the bad program (just late, at the C-compile stage, with a confusing
+;; error) rather than emitting silently-wrong output, so this is a real but minor DX rough edge,
+;; not a correctness bug -- out of scope for this module to go fix.
+
+(module traffic_router)
+(export Message RouteTarget route-for-source route-message)
+
+(defstruct Message
+  (source  : I32)
+  (payload : String @ Region))
+
+;; Sources, matching EDGE.GAME's own real wire protocol: 1 = Windows PC, 2 = Arduino Nano,
+;; 3 = Raspberry Pi.
+(defenum RouteTarget
+  (ToWindows)
+  (ToPi)
+  (ToNano)
+  (ToPiAndNano))
+
+(defn route-for-source [(source : I32)] : RouteTarget
+  (if (= source 1)
+      ToPiAndNano
+      ToWindows))
+
+(defn route-message [(msg : &Message)] : RouteTarget
+  (route-for-source (get-field (deref msg) :source)))

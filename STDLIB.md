@@ -5000,3 +5000,36 @@ value with zero allocation, live-verified via a direct pointer-identity assertio
 
 8/8 real assertions pass (`make test-database-mssql-util`), including truncation-vs-rounding
 correctness (a case where they'd disagree) and the honest-error-not-silent-FALSE behavior for BIT.
+
+## edge_game/traffic_router — real routing decision logic for EDGE.GAME's cabinet hub (2026-09-29, S584)
+
+`stdlib/edge_game/traffic_router.prn` — the arcade-cabinet hardware fan-out for EDGE.GAME: a
+Windows PC (the game host) talks over USB-serial to a Raspberry Pi and an Arduino Nano, each
+driving a different set of the cabinet's physical lights. `route-for-source`/`route-message`
+decide WHERE a message should go (`RouteTarget`: `ToWindows`/`ToPi`/`ToNano`/`ToPiAndNano`) and do
+no I/O at all — the actual serial writes are EDGE.GAME's own hand-written Windows C host's job,
+since `hw/serial.prn` (this stdlib's real, shipped UART primitive) is POSIX-only and has no
+Win32 COM-port story. Same real `k8s.prn`-vs-`scaling.prn` split this stdlib already established
+elsewhere: keep the syscall-needing half hand-written, let PARENA own the pure decision logic.
+
+Corrected from an initial pasted-tutorial draft before it reached the compiler at all: a flat
+comma-separated param list (real syntax needs one paren pair per parameter), `Void` as a return
+type (the real no-value type is `Unit` — `Void` appears zero times anywhere in this stdlib),
+`(get msg source)` for struct field access (the real accessor is `(get-field msg :source)` — `get`
+is the Map/BSTree lookup function, unrelated), `==` for equality (the real operator is bare `=`),
+and `io/write-string` as a console-print call (it writes to an open `FileHandle` with an explicit
+`dest : Arena @ Region`, real file I/O, not console output — this module does no I/O of its own).
+
+One more found only by actually running the compiler: a zero-field `defenum` variant constructs as
+a bare symbol (`ToWindows`), never a zero-arg call form (`(ToWindows)`) — checked directly in
+`src/emit.c`: the call-form dispatch (`is_call_named`-style path around the `find_enum_variant`
+lookup) only has branches for `field_count >= 1`, so a zero-arg call form silently falls through to
+generic function-call emission and produces a real, if confusing, C compile error
+(`implicit declaration of function 'ToWindows'`) rather than a clear PARENA-level one. Reproduced
+with a minimal 2-function isolated test before touching this file; named here as a real, minor DX
+rough edge (PARENA still correctly refuses the bad program, just late and unclearly), not filed as
+a fix — out of scope for this module.
+
+4/4 real assertions pass (`make test-traffic-router`), a real, hermetic, zero-hardware-dependency
+test (this module is pure decision logic, unlike `hw/serial.prn`'s own real-pty-required tests) —
+verified strict-clean (`-Wall -Wextra -pedantic -Werror`) on the emitted C, not just "it ran".
