@@ -1,4 +1,16 @@
 ## 2026-09-29
+- src/emit_java.c: new `#target {:java (inline-java "...")}` FFI escape hatch (founder real-time,
+  EDGE.GAME: "usb to serial code goes in parena"), mirroring the C emitter's long-standing `:c`
+  hatch exactly -- checked directly first: the Java emitter had zero FFI mechanism of any kind
+  before this, only a hardcoded `java.lang.Math` table, so calling any real external Java API
+  (Android's `UsbManager` or anything else) was categorically impossible on this target. 8 new
+  assertions in `tests/test_emit_java.c` (43/43 total pass). New `stdlib/hw/usb_serial.prn`
+  (`usb-serial-is-connected`/`-write-byte`/`-read-byte`/`-baud-for-board`) is the first real
+  consumer -- verified via the real `parena build` CLI + a real `javac`
+  (`EINHORN_SURVIVAL/jdk25`, this sandbox has none on PATH) compiling the emitted Java against a
+  hand-written stub standing in for the real `usb-serial-for-android` library (no Android SDK
+  here, same gap SPIDERBEETLE/MJOLNIR already name), 8/8 runtime assertions pass.
+
 - AVR: real, named per-board upload profiles for EDGE.GAME's three real boards (Uno/new-Nano,
   old-bootloader Nano, Adafruit Feather 32u4) -- confirmed via avrdude's own `-c`/`-p` listings,
   not assumed: the 32u4 needs `avr109`+57600 baud+a real "1200-baud touch" reset (new

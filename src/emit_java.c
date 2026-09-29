@@ -301,11 +301,68 @@ static const char *emit_java_expr(Arena *arena, Node *expr, const char **out_err
     return result;
 }
 
+/* find_target_java_src -- `:java (inline-java "...")` extraction from a `#target {...}` map, the
+   exact same real shape emit.c's own find_target_c_src() already establishes for `:c`
+   (deliberately not shared code -- see this file's own "no cross-target sharing" discipline noted
+   throughout). Real, direct motivation (founder real-time, EDGE.GAME, 2026-09-29: "usb to serial
+   code goes in parena"): the Android production client needs to call real Android system APIs
+   (UsbManager et al.) that this v0 Java emitter has no other way to reach -- the same real gap
+   stdlib/editor/plugin.prn's own `:c (inline-c ...)` escape hatch already exists to solve for the
+   C target. */
+static Node *find_target_java_src(Node *target_map, const char **out_error) {
+    if (target_map->child_count % 2 != 0) {
+        *out_error = "emit_java: #target map has an odd number of forms (expected key/value pairs)";
+        return NULL;
+    }
+    Node *java_value = NULL;
+    for (size_t i = 0; i + 1 < target_map->child_count; i += 2) {
+        Node *key = target_map->children[i];
+        if (key->type == NODE_KEYWORD && key->text && strcmp(key->text, ":java") == 0) {
+            java_value = target_map->children[i + 1];
+            break;
+        }
+    }
+    if (!java_value) {
+        *out_error = "emit_java: #target map has no :java key";
+        return NULL;
+    }
+    if (java_value->type != NODE_LIST || java_value->child_count != 2 ||
+        java_value->children[0]->type != NODE_SYMBOL || !is_symbol(java_value->children[0], "inline-java") ||
+        java_value->children[1]->type != NODE_STRING) {
+        *out_error = "emit_java: #target :java value must be (inline-java \"...\")";
+        return NULL;
+    }
+    return java_value->children[1];
+}
+
+/* emit_target_java_defn -- emits a `#target {:java (inline-java "...")}` function body verbatim,
+   the same real trust boundary emit.c's own emit_target_defn() already crosses for `:c`: this v0
+   has no way to check arbitrary Java text, so it is trusted exactly like alloc's own literal
+   string argument already is elsewhere in this codebase. A `void` return emits the string as a
+   bare statement (the real source's own convention supplies its own trailing `;`, matching
+   emit.c's own `:c` convention); any other return type wraps it as `return (...);`. */
+static int emit_target_java_defn(JavaBuf *out, Node *target_map, const char *fn_name,
+                                  const char *param_list, const char *return_type, const char **out_error) {
+    Node *src = find_target_java_src(target_map, out_error);
+    if (!src) return 0;
+    if (strcmp(return_type, "void") == 0) {
+        jb_appendf(out, "    public static %s %s(%s) {\n        %.*s\n    }\n\n", return_type, fn_name, param_list,
+                   (int)src->text_len, src->text);
+    } else {
+        jb_appendf(out, "    public static %s %s(%s) {\n        return (%.*s);\n    }\n\n", return_type, fn_name,
+                   param_list, (int)src->text_len, src->text);
+    }
+    return 1;
+}
+
 /* emit_java_defn: one top-level (defn name [(param : Type) ...] : RetType body) -> one real
    `public static <RetType> <camelName>(<params>) { return <expr>; }` method body line, appended
    into `out` (the caller wraps everything already appended by the time it emits into one real
    class -- see emit_java's own doc comment below). Real, narrow scope identical to emit_ts.c's own
-   emit_ts_defn (see that file's own doc comment for the full real rationale). */
+   emit_ts_defn (see that file's own doc comment for the full real rationale). A body of
+   `#target {:java (inline-java "...")}` instead of a plain expression routes to
+   emit_target_java_defn() above -- the real FFI escape hatch, same shape the C target already
+   has. */
 static int emit_java_defn(Arena *arena, JavaBuf *out, Node *defn, const char **out_error) {
     if (defn->child_count < 3 || defn->children[1]->type != NODE_SYMBOL || defn->children[2]->type != NODE_VEC) {
         *out_error = "emit_java: defn: malformed function definition";
@@ -338,14 +395,36 @@ static int emit_java_defn(Arena *arena, JavaBuf *out, Node *defn, const char **o
 
     /* Return type + body: same real (defn name [params] : RetType body) 6-child shape emit_ts.c's
        own emit_ts_defn already validates -- see that file's own doc comment for the full real
-       rationale, not repeated here. */
-    if (defn->child_count != 6 || defn->children[3]->type != NODE_COLON) {
-        *out_error = "emit_java: defn: expected (defn name [params] : RetType body) with exactly one body expression";
+       rationale, not repeated here. A `#target {...}` body (real FFI escape hatch, see
+       emit_target_java_defn's own doc comment above) is TWO extra children instead of one --
+       the bare `#target` symbol, then the map -- so it's checked as its own 7-child shape rather
+       than folded into the plain-expression case. */
+    if (defn->child_count < 6 || defn->children[3]->type != NODE_COLON) {
+        *out_error = "emit_java: defn: expected (defn name [params] : RetType body) with exactly one "
+                     "body expression, or a #target {...} FFI body";
         jb_free(&param_list);
         return 0;
     }
     const char *ret_type = resolve_java_type(defn->children[4], out_error);
     if (!ret_type) {
+        jb_free(&param_list);
+        return 0;
+    }
+
+    if (defn->child_count == 7 && is_symbol(defn->children[5], "#target")) {
+        if (defn->children[6]->type != NODE_MAP) {
+            *out_error = "emit_java: defn: #target must be followed by a {...} map";
+            jb_free(&param_list);
+            return 0;
+        }
+        int ok = emit_target_java_defn(out, defn->children[6], fn_name, param_list.data, ret_type, out_error);
+        jb_free(&param_list);
+        return ok;
+    }
+
+    if (defn->child_count != 6) {
+        *out_error = "emit_java: defn: expected (defn name [params] : RetType body) with exactly one "
+                     "body expression, or a #target {...} FFI body";
         jb_free(&param_list);
         return 0;
     }
