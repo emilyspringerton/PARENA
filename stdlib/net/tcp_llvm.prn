@@ -1,0 +1,50 @@
+;; stdlib/net/tcp_llvm.prn -- real, pure-scalar TCP listen/accept/close primitives for the LLVM
+;; target (EDGE.GAME S584 cont., founder real-time: "parena really needs to just emit the fucking
+;; llvm code for the server... we eat that tech debt" -- server is a native PARENA-compiled binary,
+;; client stays C: "obviously the windows client is C").
+;;
+;; NOT the same functions as net/tcp.prn's own raw-listen/raw-accept/raw-connect/raw-read/
+;; raw-write/raw-close -- those exist to back tcp.prn's own higher-level String/Result/Arena-typed
+;; wrappers (tcp-listen, tcp-accept, tcp-read, ...), and most of THOSE wrapper functions use types
+;; (String @ Region, Arena, (Result T NetError), struct construction) that src/emit_llvm.c's v0
+;; genuinely cannot express yet (no Region/Arena params, no struct/enum construction, no String
+;; operations beyond opaque pass-through -- confirmed directly against emit_llvm_defn's own
+;; parameter-shape validation and resolve_llvm_type's own scalar-only type list). This file exists
+;; because net/tcp.prn as a WHOLE cannot compile through the LLVM target at all (the very first
+;; Result/struct-returning defn the emitter reaches is a real, honest compile error) -- rather than
+;; teach the LLVM backend structs/Region/String-handling just to unblock three pure-fd functions,
+;; this is a small, separate, LLVM-target-only module with its own real, narrow scope: raw file
+;; descriptors in, raw file descriptors out, nothing else. Actual byte I/O (reading/writing NDJSON
+;; lines) stays hand-written C in the server's own host (server/relay_main.c) -- the exact same
+;; "PARENA owns the scalar decision, hand-written C owns raw buffer/syscall plumbing" split every
+;; other AVR/Java FFI island in this monorepo already uses (blink.prn+blink_main.c,
+;; hw/usb_serial.prn+the Android app's own UsbManager ceremony).
+;;
+;; Reuses net/tcp.prn's own real, already-implemented, already-working C impl functions
+;; (tcp_listen_impl/tcp_accept_impl/tcp_close_impl, runtime/parena_runtime.h) rather than
+;; reimplementing BSD socket syscalls a second time -- both this file's :llvm bodies and
+;; net/tcp.prn's own :c bodies call the exact same underlying C functions, just through two
+;; different PARENA emitters' own FFI hatches.
+
+(module net/tcp-llvm)
+(export tcp-listen-raw tcp-accept-raw tcp-close-raw)
+
+(llvm-extern "declare i32 @tcp_listen_impl(i32)")
+(llvm-extern "declare i32 @tcp_accept_impl(i32)")
+(llvm-extern "declare i32 @tcp_close_impl(i32)")
+
+;; tcp-listen-raw -- opens a listening socket on `port`. Returns the real fd, or a negative value
+;; on failure (matches tcp_listen_impl's own real, existing contract -- see net/tcp.prn's own
+;; raw-listen for the identical convention on the C target).
+(defn tcp-listen-raw [(port : I32)] : I32
+  #target {:llvm (inline-llvm "call i32 @tcp_listen_impl(i32 %port)")})
+
+;; tcp-accept-raw -- blocks until a client connects to `listener-fd`, returns the new connection's
+;; own real fd (or negative on failure).
+(defn tcp-accept-raw [(listener-fd : I32)] : I32
+  #target {:llvm (inline-llvm "call i32 @tcp_accept_impl(i32 %listener_fd)")})
+
+;; tcp-close-raw -- closes `fd`. Returns 0 on success, negative on failure (matches close(2)'s own
+;; real return convention, which tcp_close_impl passes through verbatim).
+(defn tcp-close-raw [(fd : I32)] : I32
+  #target {:llvm (inline-llvm "call i32 @tcp_close_impl(i32 %fd)")})

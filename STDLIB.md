@@ -4846,6 +4846,42 @@ for it, reacts by spawning real hostile creeps) -- the two mods never import, in
 each other; the only real connection is the shared REFLUX log. Live-verified end to end through a
 full real day/night cycle. Full ECOWAR test suite green (3189 assertions).
 
+**`:llvm` key added (2026-09-29, EDGE.GAME S584 cont.)** -- founder real-time: "make sure we are
+using REFLUX for the pub sub" (for EDGE.GAME's own relay server, being rebuilt off Node onto real
+PARENA). Every function in this file was already pure I32/Unit scalar, so reaching PARENA's new
+LLVM target (`docs/LLVM_BACKEND_NORTHSTAR.md`'s own new `#target {:llvm ...}` FFI hatch section)
+needed zero redesign -- just a second `:llvm` key alongside each function's existing `:c` one,
+plus 6 new `(llvm-extern "declare ...")` lines at the top of the file for the same real
+`reflux_host_*` functions the `:c` path already calls (each repo brings its own runtime
+implementation + own action-type constants, same "own copy, own log" convention SHANKPIT's own
+port already established -- see EDGE.GAME/`server/reflux_runtime.c` for that repo's own copy).
+Real, verified: `parena build stdlib/reflux/reflux.prn` still succeeds on the C target, now also
+succeeds on the LLVM target (`-o reflux.ll`), and the resulting IR was lowered via real `llc` and
+linked into EDGE.GAME's own live, tested `build/edge_relay` binary.
+
+## net/tcp-llvm -- raw listen/accept/close for the LLVM target (2026-09-29, EDGE.GAME S584 cont.)
+
+Same real thread as reflux.prn's `:llvm` key above. `net/tcp.prn`'s own higher-level
+`tcp-listen`/`tcp-accept`/`tcp-read`/`tcp-write`/`tcp-close` all use `String @ Region`/`Arena`
+params and/or construct `Result`/struct values -- none of which `src/emit_llvm.c`'s v0 can express
+(no Region/Arena parameter shape, no struct/enum construction, confirmed directly against
+`emit_llvm_defn`'s own parameter-shape validation and `resolve_llvm_type`'s scalar-only type list).
+Rather than teach the LLVM backend structs/Region/String-handling just to unblock three pure-fd
+functions, `stdlib/net/tcp_llvm.prn` is a new, small, LLVM-target-only module with a deliberately
+narrow real scope: `tcp-listen-raw(port) -> I32`, `tcp-accept-raw(listener-fd) -> I32`,
+`tcp-close-raw(fd) -> I32` -- raw file descriptors in, raw file descriptors out, nothing else.
+Reuses `net/tcp.prn`'s own real, already-working C impl functions
+(`tcp_listen_impl`/`tcp_accept_impl`/`tcp_close_impl`, `runtime/parena_runtime.h`) via
+`llvm-extern` declarations rather than reimplementing BSD socket syscalls a second time -- both
+this file's `:llvm` bodies and `net/tcp.prn`'s own `:c` bodies call the exact same underlying C
+functions, just through two different PARENA emitters' own FFI hatches. Real, honest, deliberate
+boundary: actual byte I/O (reading/writing NDJSON lines) stays hand-written C in the consuming
+host (EDGE.GAME's `server/relay_main.c`) -- the same "PARENA owns the scalar decision, hand-written
+C owns raw buffer/syscall plumbing" split every other AVR/Java FFI island in this monorepo already
+uses. Real, verified end to end: compiled through `parena build` -> real `llc
+-mtriple=x86_64-pc-linux-gnu` -> real object code -> linked into EDGE.GAME's `build/edge_relay`,
+which genuinely calls all three functions in its own live `make test-e2e` run (12/12 checks pass).
+
 ## net/unixsocket — real Unix domain stream socket primitives (2026-09-18, S498)
 
 Founder real-time: "we need to put in PARENA primatives for MSSQL and double down on all the unix

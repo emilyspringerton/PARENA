@@ -1,4 +1,27 @@
 ## 2026-09-29
+- src/emit_llvm.c: new `#target {:llvm (inline-llvm "...")}` FFI escape hatch + a new top-level
+  `(llvm-extern "declare ...")` form (founder real-time, EDGE.GAME's relay was accidentally built
+  in Node.js: "write it in PARENA in what world are we using node for any part of this stack?" ->
+  "parena really needs to just emit the fucking llvm code for the server... we eat that tech
+  debt") -- checked directly first: the LLVM emitter had ZERO FFI mechanism of any kind before
+  this (confirmed in its own error text, "v0 has no external FFI/math-primitive table yet"), so a
+  pure scalar-arithmetic-only target could never power a real server. Real, minimal, SSA-aware
+  convention (distinct from `:c`/`:java`'s own arbitrary-statement hatches): the inline text is one
+  instruction's own right-hand side for a non-void return (prefixed with `%result = `, followed by
+  a real `ret`), or a bare statement for void. `#target` maps can now carry `:c` and `:llvm` keys
+  at once, multi-targeting one `defn` with no duplication. `emit_java.c`/`emit_ts.c` also fixed to
+  skip `llvm-extern` at the top level (both previously hard-errored on it) rather than break any
+  file that carries both. 19 new assertions in `tests/test_emit_llvm.c` (71/71). `make test`:
+  347/347, zero regressions. Real, live, end-to-end proof beyond structural checks: a hand-written
+  `.prn` calling libc's real `abs()` compiled through `parena build` -> real `llc
+  -mtriple=x86_64-pc-linux-gnu` -> linked via `clang` against a C driver -> executed, correct
+  result. `stdlib/reflux/reflux.prn` got a second `:llvm` key (zero redesign needed, already pure
+  scalar); new `stdlib/net/tcp_llvm.prn` provides raw `tcp-listen-raw`/`tcp-accept-raw`/
+  `tcp-close-raw` for this target (`net/tcp.prn`'s own String/Result/Arena-typed wrappers still
+  can't reach LLVM v0). Both link into EDGE.GAME's own new, real, native `build/edge_relay` binary
+  -- see `docs/LLVM_BACKEND_NORTHSTAR.md`'s own new dated section and EDGE.GAME/NORTHSTAR.md's
+  "Phase 1.5" for the full server-side story.
+
 - src/emit_java.c: new `#target {:java (inline-java "...")}` FFI escape hatch (founder real-time,
   EDGE.GAME: "usb to serial code goes in parena"), mirroring the C emitter's long-standing `:c`
   hatch exactly -- checked directly first: the Java emitter had zero FFI mechanism of any kind

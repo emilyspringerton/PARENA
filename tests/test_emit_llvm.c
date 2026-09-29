@@ -457,6 +457,86 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- 2026-09-29, the new #target {:llvm (inline-llvm "...")} FFI hatch (founder real-time:
+       "parena really needs to just emit the fucking llvm code for the server... we eat that tech
+       debt") -- same real shape emit_java.c's own :java hatch tests already establish, adapted for
+       LLVM's SSA-return convention (see emit_target_llvm_defn's own header comment). --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(llvm-extern \"declare i32 @abs(i32)\")\n"
+            "(defn abs-via-ffi [(x : I32)] : I32\n  #target {:llvm (inline-llvm \"call i32 @abs(i32 %x)\")})";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "non-void :llvm FFI body emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "declare i32 @abs(i32)") != NULL, "llvm-extern's declare line appears verbatim in the module");
+            CHECK(strstr(ir, "%result = call i32 @abs(i32 %x)") != NULL,
+                  "inline-llvm text is prefixed with %result = , not spliced as a bare expression");
+            CHECK(strstr(ir, "ret i32 %result") != NULL, "the wrapper's own ret references %result, matching the prefix above");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- void-returning :llvm FFI body -- no %result prefix, no assignment, just ret void --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(llvm-extern \"declare void @tcp_close_impl(i32)\")\n"
+            "(defn close-fd [(fd : I32)] : Unit\n  #target {:llvm (inline-llvm \"call void @tcp_close_impl(i32 %fd)\")})";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "void :llvm FFI body emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "call void @tcp_close_impl(i32 %fd)") != NULL,
+                  "void inline-llvm text is spliced as a bare statement, no %result assignment");
+            CHECK(strstr(ir, "%result = call void") == NULL, "void FFI body never gets a %result prefix");
+            CHECK(strstr(ir, "ret void") != NULL, "void FFI body still gets a real ret void");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a #target map with no :llvm key is a real, honest compile error, not a silent fallback
+       to another target's key or a malformed splice --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn c-only [] : I32\n  #target {:c (inline-c \"1\")})";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir == NULL, "a #target map with only a :c key (no :llvm) is a real compile error on the LLVM target");
+        CHECK(err != NULL && strstr(err, ":llvm") != NULL, "the error names the missing :llvm key specifically");
+        arena_free_all(&arena);
+    }
+
+    /* --- a forward-referencing call to an FFI-bodied function still resolves its real signature --
+       closes the same real "sig table must see #target defns too" gap the child_count==7 fix in
+       both the pre-scan pass and emit_llvm_defn's own validation exists to close. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(llvm-extern \"declare i32 @abs(i32)\")\n"
+            "(defn caller [(x : I32)] : I32 (callee x))\n"
+            "(defn callee [(x : I32)] : I32\n  #target {:llvm (inline-llvm \"call i32 @abs(i32 %x)\")})";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "a plain defn can forward-call an FFI-bodied defn declared later in the file");
+        if (ir) {
+            CHECK(strstr(ir, "call i32 @callee(i32 %x)") != NULL,
+                  "the forward call resolves callee's real signature (i32 -> i32), not a fabricated one");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

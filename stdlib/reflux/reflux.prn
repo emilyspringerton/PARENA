@@ -24,29 +24,52 @@
 ;; this repo already uses), and calls reflux-action-type-at/-a-at/-b-at/-c-at over whatever new
 ;; range appeared since it last checked.
 
+;; :llvm keys added 2026-09-29 (EDGE.GAME S584 cont., founder real-time: "make sure we are using
+;; REFLUX for the pub sub" -> "parena really needs to just emit the fucking llvm code for the
+;; server... we eat that tech debt") -- this file's own every function is already pure I32/Unit
+;; scalar (no String/Result/struct anywhere), so it needed zero redesign to reach the new LLVM
+;; target, just a second #target key alongside the existing :c one (src/emit_llvm.c's own
+;; find_target_llvm_src, like emit_java.c's find_target_java_src, only ever looks for ITS OWN key
+;; in the map and ignores the rest -- one #target form genuinely serves both backends at once, no
+;; file fork needed). The llvm-extern declarations below are consumed only by the LLVM target;
+;; emit.c's own :c path keeps linking against reflux_host_* the ordinary way, via a plain C
+;; function prototype in whatever host header includes this module's generated C output.
+(llvm-extern "declare void @reflux_host_dispatch(i32, i32, i32, i32)")
+(llvm-extern "declare i32 @reflux_host_log_size()")
+(llvm-extern "declare i32 @reflux_host_action_type_at(i32)")
+(llvm-extern "declare i32 @reflux_host_action_a_at(i32)")
+(llvm-extern "declare i32 @reflux_host_action_b_at(i32)")
+(llvm-extern "declare i32 @reflux_host_action_c_at(i32)")
+
 (module reflux/reflux)
 (export reflux-dispatch reflux-log-size reflux-action-type-at reflux-action-a-at reflux-action-b-at reflux-action-c-at)
 
 (defn reflux-dispatch [(action-type : I32) (a : I32) (b : I32) (c : I32)] : Unit
   #target
-  {:c (inline-c "reflux_host_dispatch(action_type, a, b, c);")})
+  {:c (inline-c "reflux_host_dispatch(action_type, a, b, c);")
+   :llvm (inline-llvm "call void @reflux_host_dispatch(i32 %action_type, i32 %a, i32 %b, i32 %c)")})
 
 (defn reflux-log-size [] : I32
   #target
-  {:c (inline-c "reflux_host_log_size()")})
+  {:c (inline-c "reflux_host_log_size()")
+   :llvm (inline-llvm "call i32 @reflux_host_log_size()")})
 
 (defn reflux-action-type-at [(index : I32)] : I32
   #target
-  {:c (inline-c "reflux_host_action_type_at(index)")})
+  {:c (inline-c "reflux_host_action_type_at(index)")
+   :llvm (inline-llvm "call i32 @reflux_host_action_type_at(i32 %index)")})
 
 (defn reflux-action-a-at [(index : I32)] : I32
   #target
-  {:c (inline-c "reflux_host_action_a_at(index)")})
+  {:c (inline-c "reflux_host_action_a_at(index)")
+   :llvm (inline-llvm "call i32 @reflux_host_action_a_at(i32 %index)")})
 
 (defn reflux-action-b-at [(index : I32)] : I32
   #target
-  {:c (inline-c "reflux_host_action_b_at(index)")})
+  {:c (inline-c "reflux_host_action_b_at(index)")
+   :llvm (inline-llvm "call i32 @reflux_host_action_b_at(i32 %index)")})
 
 (defn reflux-action-c-at [(index : I32)] : I32
   #target
-  {:c (inline-c "reflux_host_action_c_at(index)")})
+  {:c (inline-c "reflux_host_action_c_at(index)")
+   :llvm (inline-llvm "call i32 @reflux_host_action_c_at(i32 %index)")})

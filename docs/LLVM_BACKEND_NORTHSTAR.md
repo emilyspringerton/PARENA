@@ -349,10 +349,82 @@ all just different `-mtriple` values against the same IR. `emit_ts.c` stays real
 its own already-proven lane (DEADWEIGHT's scalar decision logic, browser-side) but is no longer
 the load-bearing path for a real in-browser physics engine.
 
-**Real, honest, not yet true:** this is still PARENA's own narrow scalar-function slice (I32/F64/
-Bool/String, no structs/arrays/loops) — the actual physics-porting work named in the CAPTCHA doc's
-own Phase 1/2 is unstarted. `wasm-smoke` proves the TARGET is real and free; it does not yet prove
-any STRUCT-shaped content (a `Vec2`, a `PlayerState`) can reach it. `wasm-ld`'s own real output
-here also carries no memory/table imports beyond what a trivial scalar function needs — a real
-game loop calling back into JS (input, timing, rendering) is real, separate, not-yet-designed
+**Real, honest, not yet true (as of 2026-09-22):** this is still PARENA's own narrow scalar-function
+slice (I32/F64/Bool/String, no structs/arrays/loops) — the actual physics-porting work named in the
+CAPTCHA doc's own Phase 1/2 is unstarted. `wasm-smoke` proves the TARGET is real and free; it does
+not yet prove any STRUCT-shaped content (a `Vec2`, a `PlayerState`) can reach it. `wasm-ld`'s own
+real output here also carries no memory/table imports beyond what a trivial scalar function needs —
+a real game loop calling back into JS (input, timing, rendering) is real, separate, not-yet-designed
 follow-up work, not solved by this milestone alone.
+
+## Real FFI at last: `#target {:llvm (inline-llvm "...")}` + `llvm-extern` (2026-09-29, EDGE.GAME S584 cont.)
+
+Founder real-time, EDGE.GAME's relay server was accidentally built in Node.js (a real mistake,
+corrected here) — corrected in three real-time steps: "write it in PARENA in what world are we
+using node for any part of this stack?" → "all of the node stuff gets ported to PARENA" → "parena
+really needs to just emit the fucking llvm code for the server... i think we eat that tech debt...
+obviously the windows client is C." This section closes the real, load-bearing gap named directly
+in this doc's own earlier "Honest bottom line": the LLVM backend covered "only PARENA's own narrow
+scalar-function slice," full stop — **zero FFI mechanism existed at all**, confirmed live in the
+compiler's own error text (`emit_llvm.c`'s call-dispatch: "v0 has no external FFI/math-primitive
+table yet"). A pure scalar-arithmetic language with no way to call outside itself cannot power a
+real server — this was the actual blocker, not a nice-to-have.
+
+**The real design problem this hatch solves, distinct from `:c`'s/`:java`'s own hatches:** LLVM IR
+is SSA — a function body is a sequence of named-register-producing instructions, not an expression
+tree with an implicit "whatever the last expression evaluated to" rule the way C/Java source text
+is. `:c`'s `inline-c` and `:java`'s `inline-java` can splice an arbitrary statement or expression
+verbatim because their host languages tolerate that shape; LLVM IR cannot. Real, minimal, honest v0
+convention instead: for a non-void return, the inline text must be exactly one instruction's own
+right-hand side (e.g. `"call i32 @tcp_listen_impl(i32 %port)"`) — `emit_target_llvm_defn` prefixes
+it with `"%result = "` and appends `"ret <type> %result"`; for void, the inline text is a bare
+statement, spliced verbatim, followed by `"ret void"`. A function's own parameters are already
+real, directly-referenceable SSA registers at this point (the same `%<mangled-name>` convention
+`emit_llvm_expr` already uses to resolve a plain symbol) — the inline text reads them with zero
+extra plumbing.
+
+**External declarations**: a new top-level form, `(llvm-extern "declare i32 @tcp_listen_impl(i32)")`
+— exactly one string literal, spliced verbatim into the module's own real `declare` block. Same
+trust boundary as the inline hatch itself (not independently parsed or validated as real LLVM
+syntax — `llc` catches a malformed splice, the same real division of responsibility `:c`'s own
+`inline-c` already has with the C compiler). `#target` maps can carry BOTH a `:c` key and a `:llvm`
+key at once (`{:c (inline-c "...") :llvm (inline-llvm "...")}`) — each emitter's own
+`find_target_*_src` only ever looks for its own key and ignores the rest, so one `.prn` source can
+genuinely multi-target without duplicating the `defn`. `llvm-extern` forms are real no-ops on the
+C/Java/TS emitters (skipped the same way `module`/`export`/`import` already are) — this needed a
+real, small fix to `emit_java.c`/`emit_ts.c`'s own top-level dispatch, both of which previously
+hard-errored on any unrecognized top-level form; TS separately still cannot compile a `#target`-
+bodied `defn` AT ALL (it has no defn-level FFI hatch of its own yet, a real, pre-existing,
+unrelated gap this pass did not attempt to close).
+
+**Real, live, end-to-end proof, not just structural IR-text checks:** a hand-written smoke-test
+`.prn` (`(llvm-extern "declare i32 @abs(i32)") (defn add-via-ffi [(x : I32)] : I32 #target {:llvm
+(inline-llvm "call i32 @abs(i32 %x)")})`) compiled through `parena build` → real IR → real
+`llc -mtriple=x86_64-pc-linux-gnu -filetype=obj` → linked via `clang` against a hand-written C
+driver calling `add_via_ffi(-42)` → **executed**, returned `42` (libc's own real `abs()`), exit
+code 0. Not a toy example either: `stdlib/reflux/reflux.prn` (PARENA's real, existing, multi-repo
+REFLUX pub/sub log — already pure I32/Unit scalar, needed zero redesign) got a second `:llvm` key
+added to each of its existing `#target` maps, and a new, narrow, LLVM-target-only module
+(`stdlib/net/tcp_llvm.prn`) provides `tcp-listen-raw`/`tcp-accept-raw`/`tcp-close-raw` (raw fd
+lifecycle only — `net/tcp.prn`'s own higher-level String/Result/Arena-typed wrappers still cannot
+reach this target, no Region/struct/String-operation support exists in LLVM v0). Both compile
+clean and link into EDGE.GAME's own real `build/edge_relay` binary — see that repo's
+`server/relay_main.c` for the full consumer, and its own `NORTHSTAR.md`'s "Phase 1.5" section for
+the end-to-end server story this unlocked.
+
+19 new real assertions in `tests/test_emit_llvm.c` (71 total): non-void and void FFI bodies, the
+`llvm-extern` declare line appearing verbatim, a `#target` map missing the `:llvm` key being a real
+honest compile error naming the missing key, and a forward-referencing call to an FFI-bodied
+`defn` correctly resolving its real signature (closing a real, adjacent gap: the pre-scan signature
+pass previously only recognized plain 6-child `defn` forms, silently skipping any 7-child
+`#target`-bodied one, which would have broken forward/mutual recursion into an FFI function).
+`make test-emit-llvm`: 71/71. `make test`: 347/347, zero regressions across the whole compiler.
+
+**Real, honest, still not true:** this does not touch `libLLVM` in-process (same "still just writes
+a `.ll` text file for a separate real tool to consume" shape every emitter here already has); it
+does not add struct/array/Region support to the LLVM target (EDGE.GAME's relay works around this
+by keeping the LLVM-compiled surface to pure scalars and doing all buffer/struct work in
+hand-written C, the same split every AVR/Java FFI island in this monorepo already uses); and the
+inline-llvm convention only supports "one call, optionally producing `%result`" — a genuinely
+narrower hatch than `:c`'s arbitrary-statement `inline-c`, a deliberate, honest v0 boundary, not an
+oversight.

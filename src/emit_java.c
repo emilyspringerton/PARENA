@@ -456,7 +456,13 @@ const char *emit_java(Arena *arena, Node *program, const char *class_name, const
            top-level defn becomes a real `public static` method of the one wrapping class
            unconditionally, so a real (export name) list doesn't change what actually gets
            emitted. */
-        if (is_call_named(form, "module") || is_call_named(form, "export") || is_call_named(form, "import")) {
+        /* llvm-extern (2026-09-29) is real, meaningful metadata ONLY to src/emit_llvm.c's own
+           #target {:llvm ...} FFI hatch -- a source file that multi-targets C/Java/LLVM (like
+           stdlib/reflux/reflux.prn) carries these declarations regardless of which target actually
+           runs, same as module/export/import above being real no-ops for a target that doesn't
+           need them. Skipping here, not erroring, is what makes that genuinely safe. */
+        if (is_call_named(form, "module") || is_call_named(form, "export") || is_call_named(form, "import") ||
+            is_call_named(form, "llvm-extern")) {
             continue;
         }
         if (is_call_named(form, "defn")) {

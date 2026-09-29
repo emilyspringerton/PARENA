@@ -168,6 +168,7 @@ typedef struct {
     size_t sig_count;
     LlvmBuf strings;   /* accumulated `@.str.N = ...` global constant lines */
     int next_str;      /* next fresh string-global suffix */
+    LlvmBuf externs;   /* accumulated `declare ...` lines -- see llvm-extern's own handling below */
 } LlvmModule;
 
 static const char *lookup_local_type(LlvmFn *fn, const char *mangled_name) {
@@ -633,6 +634,63 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
     return v;
 }
 
+/* find_target_llvm_src -- mirrors find_target_java_src (src/emit_java.c) exactly, just scanning
+   for the ":llvm" key instead of ":java". A #target map may carry several target keys at once
+   (e.g. {:c (inline-c "...") :llvm (inline-llvm "...")}) -- each emitter picks its own key and
+   ignores the rest, so one .prn source can genuinely multi-target without duplicating the defn. */
+static Node *find_target_llvm_src(Node *target_map, const char **out_error) {
+    if (target_map->child_count % 2 != 0) {
+        *out_error = "emit_llvm: #target map has an odd number of forms (expected key/value pairs)";
+        return NULL;
+    }
+    Node *llvm_value = NULL;
+    for (size_t i = 0; i + 1 < target_map->child_count; i += 2) {
+        Node *key = target_map->children[i];
+        if (key->type == NODE_KEYWORD && key->text && strcmp(key->text, ":llvm") == 0) {
+            llvm_value = target_map->children[i + 1];
+            break;
+        }
+    }
+    if (!llvm_value) {
+        *out_error = "emit_llvm: #target map has no :llvm key";
+        return NULL;
+    }
+    if (llvm_value->type != NODE_LIST || llvm_value->child_count != 2 ||
+        llvm_value->children[0]->type != NODE_SYMBOL || !is_symbol(llvm_value->children[0], "inline-llvm") ||
+        llvm_value->children[1]->type != NODE_STRING) {
+        *out_error = "emit_llvm: #target :llvm value must be (inline-llvm \"...\")";
+        return NULL;
+    }
+    return llvm_value->children[1];
+}
+
+/* emit_target_llvm_defn -- the real :llvm FFI hatch (founder real-time, 2026-09-29: "parena really
+   needs to just emit the fucking llvm code for the server... i think we eat that tech debt"). Every
+   other target's own FFI hatch (:c's inline-c, :java's inline-java) splices an arbitrary STATEMENT
+   or EXPRESSION verbatim -- LLVM IR can't work that way, it's SSA: a function body is a sequence of
+   named-register-producing instructions, not an expression tree with an implicit "last value wins"
+   rule. Real, minimal, deliberate convention, matching this whole emitter's own narrow-but-honest
+   v0 scope: for a non-void return, the inline text must be exactly one instruction's own
+   right-hand side (e.g. "call i32 @tcp_listen_impl(i32 %port)") -- this function prefixes it with
+   "%result = " and appends "ret <type> %result"; for void, the inline text is a bare statement
+   (e.g. "call void @tcp_close_impl(i32 %fd)"), spliced verbatim, followed by "ret void". A
+   function's own parameters are already real, directly-referenceable SSA registers by this point
+   (emit_llvm_defn's own `%<mangled-name>` convention, identical to how emit_llvm_expr resolves a
+   plain symbol reference) -- the inline text can read them with no extra plumbing. */
+static int emit_target_llvm_defn(LlvmBuf *out, Node *target_map, const char *fn_name,
+                                  const char *param_list, const char *ret_type, const char **out_error) {
+    Node *src = find_target_llvm_src(target_map, out_error);
+    if (!src) return 0;
+    if (strcmp(ret_type, "void") == 0) {
+        lb_appendf(out, "define void @%s(%s) {\nentry:\n  %.*s\n  ret void\n}\n\n",
+                   fn_name, param_list, (int)src->text_len, src->text);
+    } else {
+        lb_appendf(out, "define %s @%s(%s) {\nentry:\n  %%result = %.*s\n  ret %s %%result\n}\n\n",
+                   ret_type, fn_name, param_list, (int)src->text_len, src->text, ret_type);
+    }
+    return 1;
+}
+
 /* emit_llvm_defn -- one top-level (defn name [(param : Type) ...] : RetType body) -> one real
    `define <ret_type> @<name>(<params>) { entry: ...instructions... ret <ret_type> <value> }`
    function definition, appended into `out`. */
@@ -682,14 +740,35 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
         lb_appendf(&param_list, "%s %%%s", p_type, p_mangled);
     }
 
-    if (defn->child_count != 6 || defn->children[3]->type != NODE_COLON) {
-        *out_error = "emit_llvm: defn: expected (defn name [params] : RetType body) with exactly one body expression";
+    if ((defn->child_count != 6 && defn->child_count != 7) || defn->children[3]->type != NODE_COLON) {
+        *out_error = "emit_llvm: defn: expected (defn name [params] : RetType body) with exactly one "
+                     "body expression, or a #target {...} FFI body";
         lb_free(&param_list);
         lb_free(&fn.body);
         return 0;
     }
     const char *ret_type = resolve_llvm_type(defn->children[4], out_error);
     if (!ret_type) {
+        lb_free(&param_list);
+        lb_free(&fn.body);
+        return 0;
+    }
+
+    if (defn->child_count == 7 && is_symbol(defn->children[5], "#target")) {
+        if (defn->children[6]->type != NODE_MAP) {
+            *out_error = "emit_llvm: defn: #target must be followed by a {...} map";
+            lb_free(&param_list);
+            lb_free(&fn.body);
+            return 0;
+        }
+        int ok = emit_target_llvm_defn(out, defn->children[6], fn_name, param_list.data, ret_type, out_error);
+        lb_free(&param_list);
+        lb_free(&fn.body);
+        return ok;
+    }
+    if (defn->child_count != 6) {
+        *out_error = "emit_llvm: defn: expected (defn name [params] : RetType body) with exactly one "
+                     "body expression, or a #target {...} FFI body";
         lb_free(&param_list);
         lb_free(&fn.body);
         return 0;
@@ -725,7 +804,10 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
         if (!is_call_named(form, "defn")) continue;
-        if (form->child_count != 6 || form->children[1]->type != NODE_SYMBOL ||
+        /* child_count 7 covers a #target {...} FFI defn (name/params/:/RetType are at the same
+           indices either way -- only what follows index 4 differs) -- accepted here too so a
+           forward-referencing call to an FFI-bodied function still resolves its signature. */
+        if ((form->child_count != 6 && form->child_count != 7) || form->children[1]->type != NODE_SYMBOL ||
             form->children[2]->type != NODE_VEC || form->children[3]->type != NODE_COLON) {
             continue; /* real, honest: a malformed defn is reported properly by emit_llvm_defn's own second pass below, not here */
         }
@@ -777,6 +859,7 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     mod.sig_count = sig_count;
     lb_init(&mod.strings);
     mod.next_str = 0;
+    lb_init(&mod.externs);
 
     /* `out` accumulates only the real function definitions -- the header comment and any real
        string-global constants are prepended once, after this loop, into `final_out` below (needs
@@ -791,16 +874,38 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
         if (is_call_named(form, "module") || is_call_named(form, "export") || is_call_named(form, "import")) {
             continue;
         }
+        /* llvm-extern -- the real, new (2026-09-29) way a .prn source declares an external,
+           already-compiled C-ABI function this file's own #target {:llvm ...} FFI bodies call into
+           (e.g. (llvm-extern "declare i32 @tcp_listen_impl(i32)")). Exactly one string-literal
+           argument, spliced verbatim into the module's own real `declare` block -- same trust
+           boundary as :llvm's inline-llvm itself (see emit_target_llvm_defn's own header comment),
+           not independently parsed or validated as real LLVM syntax here (llc does that, same as
+           :c's inline-c relies on the real C compiler to catch a malformed splice). */
+        if (is_call_named(form, "llvm-extern")) {
+            if (form->child_count != 2 || form->children[1]->type != NODE_STRING) {
+                *out_error = "emit_llvm: llvm-extern requires exactly one string literal argument";
+                lb_free(&mod.strings);
+                lb_free(&mod.externs);
+                lb_free(&out);
+                return NULL;
+            }
+            Node *decl = form->children[1];
+            lb_appendf(&mod.externs, "%.*s\n", (int)decl->text_len, decl->text);
+            continue;
+        }
         if (is_call_named(form, "defn")) {
             if (!emit_llvm_defn(arena, &out, form, &mod, out_error)) {
                 lb_free(&mod.strings);
+                lb_free(&mod.externs);
                 lb_free(&out);
                 return NULL;
             }
             continue;
         }
-        *out_error = "emit_llvm: unsupported top-level form (v0 only understands defn, module, export, import)";
+        *out_error = "emit_llvm: unsupported top-level form (v0 only understands defn, module, export, "
+                     "import, llvm-extern)";
         lb_free(&mod.strings);
+        lb_free(&mod.externs);
         lb_free(&out);
         return NULL;
     }
@@ -814,6 +919,10 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     LlvmBuf final_out;
     lb_init(&final_out);
     lb_append(&final_out, "; Generated by parena build (LLVM target) -- VS0-for-LLVM v0, do not edit by hand.\n\n");
+    if (mod.externs.len > 0) {
+        lb_append(&final_out, mod.externs.data);
+        lb_append(&final_out, "\n");
+    }
     if (mod.strings.len > 0) {
         lb_append(&final_out, mod.strings.data);
         lb_append(&final_out, "\n");
@@ -822,6 +931,7 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
 
     const char *result = arena_strdup(arena, final_out.data, final_out.len);
     lb_free(&mod.strings);
+    lb_free(&mod.externs);
     lb_free(&out);
     lb_free(&final_out);
     return result;

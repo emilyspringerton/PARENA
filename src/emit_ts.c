@@ -509,7 +509,12 @@ const char *emit_ts(Arena *arena, Node *program, const char **out_error) {
            real precedent cmd_build's own header comment already establishes for the C build path
            -- every top-level defn is exported unconditionally (a single generated module file),
            so a real (export name) list doesn't change what actually gets emitted. */
-        if (is_call_named(form, "module") || is_call_named(form, "export") || is_call_named(form, "import")) {
+        /* llvm-extern (2026-09-29) is real, meaningful metadata ONLY to src/emit_llvm.c's own
+           #target {:llvm ...} FFI hatch -- skipped here the same way module/export/import already
+           are, so a source file that multi-targets C/TS/LLVM (like stdlib/reflux/reflux.prn) can
+           carry these declarations without breaking a target that doesn't need them. */
+        if (is_call_named(form, "module") || is_call_named(form, "export") || is_call_named(form, "import") ||
+            is_call_named(form, "llvm-extern")) {
             continue;
         }
         if (is_call_named(form, "defn")) {
