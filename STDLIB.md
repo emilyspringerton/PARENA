@@ -5033,3 +5033,46 @@ a fix — out of scope for this module.
 4/4 real assertions pass (`make test-traffic-router`), a real, hermetic, zero-hardware-dependency
 test (this module is pure decision logic, unlike `hw/serial.prn`'s own real-pty-required tests) —
 verified strict-clean (`-Wall -Wextra -pedantic -Werror`) on the emitted C, not just "it ran".
+
+## The Java emitter's new `:java` FFI escape hatch + hw/usb-serial (2026-09-29)
+
+Founder real-time, EDGE.GAME: "usb to serial code goes in parena" — directing that the Android
+production arm's USB-serial code (see `EDGE.GAME/NORTHSTAR.md`'s own "Production topology"
+section, added the same day) must be written in PARENA, not hand-rolled Kotlin, matching the same
+decision-logic-in-PARENA split the Windows/Nano/Feather arm already follows.
+
+Checked directly before writing anything: `src/emit_java.c` had **no FFI mechanism of any kind**
+— no `#target` handling at all, only a hardcoded `MATH_PRIM_TABLE` for a handful of
+`java.lang.Math` methods. Calling any real external Java API (Android's `UsbManager` or
+anything else) was categorically impossible on this target before today, unlike the C emitter's
+own long-standing `#target {:c (inline-c "...")}` hatch (`find_target_c_src`/`emit_target_defn`
+in `src/emit.c`).
+
+Fixed by adding the exact same real mechanism to the Java target: `find_target_java_src`/
+`emit_target_java_defn` in `src/emit_java.c`, recognizing `#target {:java (inline-java "...")}`
+as a function body — a `void` return emits the trusted-verbatim string as a bare statement (the
+source supplies its own `;`, matching the C target's own convention), any other return type wraps
+it as `return (...);`. 8 new real assertions in `tests/test_emit_java.c` (43/43 total pass),
+including the honest failure case: a `#target` map with only a `:c` key (no `:java`) is a real,
+named compile error, not a silent fallthrough.
+
+`stdlib/hw/usb_serial.prn` is the first real consumer: `usb-serial-is-connected`/
+`-write-byte`/`-read-byte` (real `:java` FFI calls against a static `UsbSerialBridge.port` field
+the surrounding hand-written Android app sets after its own real, stateful permission/open
+ceremony — that ceremony itself is genuinely inexpressible in this v0's scalar-only,
+single-expression-body scope, the same real "PARENA owns decisions, a hand-written host owns
+platform ceremony it can't express" split `client/hardware/win_serial.c` already follows on the
+Windows arm) plus `usb-serial-baud-for-board` (a real, pure scalar decision, no FFI needed — the
+same per-board baud table `docs/AVR_ARDUINO_NORTHSTAR.md` already established, needed again here
+since the Feather's connection is dual-mode: USB to Windows or USB-OTG to Android).
+
+Real, honest, narrow v0 scope: single bytes only (I32 0-255, or -1 for error/timeout), not a
+byte-array transfer — this Java emitter has no array/Bytes parameter support at all yet. Real,
+honest, NOT verified against the real Android SDK or the real `usb-serial-for-android` library
+(this sandbox has neither — the same gap `SPIDERBEETLE`/`MJOLNIR` already name for every Android
+build in this monorepo). Verified instead with a real, hand-written `UsbSerialBridge` stub
+standing in for the real library's shape, compiled and run with a real JDK
+(`/home/fatbaby/EINHORN_SURVIVAL/jdk25`, since this sandbox has no `javac` on `PATH`): the real
+`parena build` CLI emits the expected `UsbSerial.java`, `javac` accepts it against the stub, and
+8/8 hand-written assertions pass at runtime — proves the FFI plumbing end to end, not the real
+Android library types.

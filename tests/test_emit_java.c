@@ -243,6 +243,58 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- #target {:java (inline-java "...")} -- the new real FFI escape hatch (founder real-time,
+       EDGE.GAME, 2026-09-29: "usb to serial code goes in parena"), mirroring emit.c's own
+       `:c (inline-c ...)` exactly. Non-void return wraps as `return (...);`. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn read-byte [] : I32 #target {:java (inline-java \"1\")})";
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "Serial", &err);
+        CHECK(java != NULL, "#target :java FFI body emits successfully");
+        if (java) {
+            CHECK(strstr(java, "public static int readByte() {") != NULL,
+                  "FFI defn still gets the normal signature (name/type/params unaffected)");
+            CHECK(strstr(java, "return (1);") != NULL,
+                  "non-void FFI body is wrapped as a return statement, trusted verbatim");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        /* void return -- the source's own text supplies its own trailing ';', same real
+           convention emit.c's own :c target already uses. */
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn close-port [] : Unit #target {:java (inline-java \"port.close();\")})";
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "Serial", &err);
+        CHECK(java != NULL, "#target :java FFI body with Unit return emits successfully");
+        if (java) {
+            CHECK(strstr(java, "public static void closePort() {") != NULL,
+                  "Unit return type lowers to void, same as a plain-expression defn");
+            CHECK(strstr(java, "port.close();") != NULL,
+                  "void FFI body is emitted as a bare statement, not wrapped in return(...)");
+        }
+        arena_free_all(&arena);
+    }
+    {
+        /* real, honest failure case: a #target map with no :java key at all (e.g. only :c, as
+           every existing stdlib FFI declaration has) must fail clearly, not silently emit nothing
+           or fall through to the generic call-emission path. */
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn f [] : I32 #target {:c (inline-c \"1\")})";
+        const char *err = NULL;
+        const char *java = build_java(&arena, src, "F", &err);
+        CHECK(java == NULL, "a #target map with no :java key is a real, clear compile error");
+        CHECK(err != NULL && strstr(err, ":java") != NULL, "the error names the missing :java key");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }

@@ -32,4 +32,5 @@ parenabusybox
 parenash
 editor-demo
 tests/fake_webdriver_server
+tests/usb_serial_java/
 var/

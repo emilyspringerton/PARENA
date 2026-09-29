@@ -1,0 +1,64 @@
+;; stdlib/hw/usb_serial.prn -- real, v0 Android/Java-target USB-serial primitives (founder
+;; real-time, EDGE.GAME, 2026-09-29: "usb to serial code goes in parena"). This is the Android
+;; production arm's own analogue to hw/serial.prn's POSIX/:c primitives -- the same real
+;; "PARENA owns the decision/action layer, hand-written host owns the platform ceremony it
+;; genuinely cannot express" split named throughout EDGE.GAME/NORTHSTAR.md's own "Real, existing
+;; capability audit": Android's real USB device-permission broadcast dance and the
+;; UsbManager/UsbDeviceConnection open sequence are stateful, callback-driven platform ceremony
+;; this v0 Java emitter's scalar-only, single-expression-body scope (emit_java.h's own real,
+;; narrow scope statement) cannot express at all -- no object references, no callbacks. That
+;; ceremony stays real, hand-written Kotlin in the surrounding Android app (the same shape
+;; EDGE.GAME's own client/hardware/win_serial.c stays real, hand-written C on the Windows arm).
+;;
+;; The real, concrete library this targets: `usb-serial-for-android` (com.hoho.android.usbserial,
+;; real and widely used -- not yet vetted beyond being named here), via a package-private static
+;; field (`UsbSerialBridge.port`) the app sets once, after its own real permission/open ceremony
+;; succeeds. Every function below is a real `#target {:java (inline-java "...")}` FFI call
+;; against that static field -- the new escape hatch this same session added to src/emit_java.c
+;; (mirroring emit.c's own long-standing `:c` hatch) specifically to make this file possible;
+;; before that, this v0 emitter had no way to call any external Java API at all beyond the
+;; hardcoded java.lang.Math table.
+;;
+;; Real, honest, narrow v0 scope, matching hw/serial.prn's own original (pre-Bytes) shape: single
+;; bytes only (an I32 in 0-255, or -1 for error/timeout/not-connected) -- not a general
+;; byte-buffer/array transfer, since this v0 Java emitter has no array or Bytes-typed parameter
+;; support at all (I32/F64/Bool/String only, per emit_java.h's own real, narrow scope statement).
+;; A real, separate, later widening if throughput needs it -- named, not silently promised here.
+;;
+;; Real, honest, NOT verified against a real Android SDK: this sandbox has no android.jar and no
+;; com.hoho.android.usbserial jar to javac against (the same real gap SPIDERBEETLE/MJOLNIR's own
+;; CLAUDE.md rows already name for every Android build in this monorepo) -- verified here only as
+;; far as `parena build` itself emitting the expected Java text (a real UsbSerialBridge stub,
+;; compiled with a plain javac, proves the FFI plumbing itself, not the real library types).
+
+(module hw/usb-serial)
+(export usb-serial-is-connected usb-serial-write-byte usb-serial-read-byte usb-serial-baud-for-board)
+
+;; usb-serial-is-connected -- real, minimal liveness check against the static bridge field the
+;; app's own real permission/open ceremony sets.
+(defn usb-serial-is-connected [] : Bool
+  #target {:java (inline-java "UsbSerialBridge.port != null")})
+
+;; usb-serial-write-byte -- writes one byte (0-255) to the currently-open port. Returns 1 on
+;; success, -1 if no port is open or the underlying write threw (a real, narrow contract -- this
+;; v0 has no exception/Result machinery on the Java target, so a boolean-shaped int is the honest
+;; scalar substitute, same convention raw-spawn/raw-kill already use on the C target).
+(defn usb-serial-write-byte [(b : I32)] : I32
+  #target {:java (inline-java "UsbSerialBridge.writeByte(b)")})
+
+;; usb-serial-read-byte -- reads one byte with a bounded timeout (the bridge's own real, fixed
+;; internal timeout -- not parameterized here, matching this v0's own narrow scope). Returns the
+;; byte value (0-255) on success, -1 on timeout/error/not-connected -- the same real
+;; "-1 means nothing sensible came back" convention hw/serial.prn's own POSIX primitives use.
+(defn usb-serial-read-byte [] : I32
+  #target {:java (inline-java "UsbSerialBridge.readByte()")})
+
+;; usb-serial-baud-for-board -- real, pure scalar decision, no FFI needed: the same real
+;; per-board baud table docs/AVR_ARDUINO_NORTHSTAR.md already established for the Windows/avrdude
+;; arm (board-id 0 = Uno/new-bootloader Nano @ 115200, 1 = old-bootloader Nano @ 57600, 2 =
+;; Feather 32u4/Caterina @ 57600) -- needed again here because the Feather's connection is
+;; dual-mode (USB to Windows OR USB-OTG to Android, see EDGE.GAME/NORTHSTAR.md's own "Production
+;; topology" section), so whichever host is currently driving it needs the same real
+;; board-profile facts.
+(defn usb-serial-baud-for-board [(board-id : I32)] : I32
+  (if (= board-id 0) 115200 (if (= board-id 1) 57600 57600)))
