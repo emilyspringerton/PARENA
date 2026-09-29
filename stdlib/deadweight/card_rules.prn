@@ -335,7 +335,16 @@
 (defn fx-cond-ok [(x : I32) (dealt : I32) (taken : I32) (mk : I32) (ok : I32) (oc : I32) (mh : I32) (oh : I32) (el : I32)
                   (oe : I32) (mv : I32) (ov : I32) (rnd : I32) (roll : I32)] : Bool
   (if (= (fx-nn x) 0) (>= x 0)
-  (if (= (fx-nn x) 1) (> dealt 0)
+  ;; "landed" = a genuine triangle win (my kind beats opp's) or an unopposed hit (opp passed and
+  ;; I'm not Defense) -- NOT a same-kind mirror. damage-dealt gives Offense-mirror full power and
+  ;; Operations-mirror half power as a "jam" exchange, which used to satisfy the old `dealt > 0`
+  ;; check here too: a Sabotage card mirrored into another Operations card would "land" its jam hit
+  ;; and fire an "if it lands" burn/bonus rider it was never meant to (found live, 2026-09-29 --
+  ;; founder: "blue vs blue usually does no damage" after a Defense mirror's own 0-damage clash
+  ;; coincided with an unrelated burn DOT that Logic Bomb had incorrectly landed two rounds earlier
+  ;; via an Operations mirror jam hit). Mirrors are their own SC_MIRROR_* scenario in fx.c, distinct
+  ;; from SC_UNOPPOSED/the triangle win -- "landed" now matches that same distinction exactly.
+  (if (= (fx-nn x) 1) (and (> dealt 0) (or (and (>= ok 0) (kind-beats mk ok)) (and (< ok 0) (not (= mk 2)))))
   (if (= (fx-nn x) 2) (> taken 0)
   (if (= (fx-nn x) 3) (and (>= ok 0) (kind-beats ok mk))
   (if (= (fx-nn x) 4) (>= ok 0)
