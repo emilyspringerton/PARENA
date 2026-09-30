@@ -1,0 +1,81 @@
+(module gentexture)
+(import math)
+
+;; institutional_tile — a cold, scaled-down floor/wall tile for windowless institutional interiors
+;; (server rooms, lab corridors, the Jiangshi Syndicate's own field stations). TYLER/VALHANNA's
+;; VH01 cold open (episodes/vh01_valhanna_coldopen.md) needs a 1986 Iceland server-room floor and
+;; wall material; this doubles as general-purpose institutional set dressing anywhere else in the
+;; monorepo that wants the same "corporate basement" read (BIG_O's lab facility is the next real
+;; candidate, per its own core/lab_sim.c). Founder real-time: "some would be good institutional
+;; tiles if scaled down maybe" — tile-count is the one real tweakable knob (see tiles-per-side),
+;; matching bullet_hole.prn's own "one real knob" convention rather than exposing everything.
+
+;; tiles-per-side — how many grid tiles fit across the canvas. Higher = smaller, denser tiles
+;; ("scaled down"). 8.0 gives visibly separated, wall-scale tiles; go higher (12-16) for a
+;; floor meant to be seen from further away.
+(defn tiles-per-side [] : F64 10.0)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+;; grid-line — 1.0 deep inside a tile, dipping toward 0.0 within the last ~6% of the tile
+;; approaching a seam on either axis. frac-coord is a single axis's position within [0,1) after
+;; being scaled by tiles-per-side (see tile-u/tile-v below) — this function doesn't care which
+;; axis it's given.
+(defn frac-coord [(scaled : F64)] : F64
+  (- scaled (math/floor scaled)))
+
+;; abs64 — math/abs does not exist on this target (MATH_PRIM_TABLE in src/emit_java.c only
+;; recognizes floor/sqrt/log/cos/random-f64) — a plain conditional negation instead.
+(defn abs64 [(v : F64)] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+(defn grid-line [(scaled : F64)] : F64
+  (clamp01 (/ (abs64 (- (frac-coord scaled) 0.5)) 0.44)))
+
+(defn tile-u [(x : F64) (w : F64)] : F64
+  (* (/ x w) (tiles-per-side)))
+
+(defn tile-v [(y : F64) (h : F64)] : F64
+  (* (/ y h) (tiles-per-side)))
+
+;; max64/cube64 — math/max and math/pow don't exist on this target either (same MATH_PRIM_TABLE
+;; limit) — a plain conditional and repeated multiplication instead. max64, not min64: seam
+;; should read high (dark grout) whenever EITHER axis alone is near ITS OWN boundary -- a
+;; continuous grid line -- not only where both axes are near a boundary simultaneously (which
+;; would only darken the four corner-points of each tile, an earlier, wrong first draft of this
+;; function, caught by actually looking at the rendered PNG before wiring it into a level).
+(defn max64 [(a : F64) (b : F64)] : F64
+  (if (> a b) a b))
+
+(defn cube64 [(v : F64)] : F64
+  (* v (* v v)))
+
+;; seam — how close this pixel is to a grout line on either axis, sharpened so seams read as a
+;; few crisp pixels rather than a soft gradient across the whole tile.
+(defn seam [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (cube64 (max64 (grid-line (tile-u x w)) (grid-line (tile-v y h)))))
+
+;; per-tile-id — a cheap, deterministic per-tile hash (which whole tile this pixel is inside),
+;; used only to jitter shade slightly tile-to-tile so the floor doesn't look like one repeating
+;; stamp. Not math/random-f64 on purpose — same "re-renders pixel-identical until the one real
+;; parameter changes" discipline bullet_hole.prn already established.
+(defn per-tile-id [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (frac-coord (+ (* (math/floor (tile-u x w)) 12.9898) (* (math/floor (tile-v y h)) 78.233))))
+
+(defn tile-shade [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ 0.82 (* 0.10 (- (per-tile-id x y w h) 0.5))))
+
+;; base-value — the tile's own institutional grey-green (cold fluorescent-lit concrete/composite
+;; flooring), darkened toward near-black at grout seams.
+(defn base-value [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tile-shade x y w h) (- 1.0 (* 0.9 (seam x y w h)))))
+
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.58 (base-value x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.64 (base-value x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.60 (base-value x y w h)))

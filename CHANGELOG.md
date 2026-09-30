@@ -1,3 +1,14 @@
+## 2026-09-30
+- `stdlib/shankpit/textures/institutional_tile.prn` + `ecs_screen_glow.prn` (S536 MODE_TYLER demo,
+  SHANKPIT/docs2/specs/TYLER_VALHANNA_MODE_NORTHSTAR.md): two new procedural texture sources for
+  IDUNA's real NOCK texture-generation pipeline (`gentexture` module, Java target only --
+  `math/abs`/`pow`/`min` don't exist on this target, checked directly against
+  `src/emit_java.c`'s own `MATH_PRIM_TABLE` before writing these, worked around with plain
+  conditionals/repeated multiplication instead of assuming they existed). Compiled and rendered
+  real, non-trivial 256x256 PNGs through the actual pipeline (NOCK texture ids 25/26) -- one real
+  bug caught by looking at the rendered image, not just "it compiled": the tile's own seam
+  function used `min` where it needed `max`, producing corner-dots instead of a continuous grid.
+
 ## 2026-09-29
 - src/emit_llvm.c: new `#target {:llvm (inline-llvm "...")}` FFI escape hatch + a new top-level
   `(llvm-extern "declare ...")` form (founder real-time, EDGE.GAME's relay was accidentally built

@@ -1,0 +1,52 @@
+(module gentexture)
+(import math)
+
+;; ecs_screen_glow — a CRT terminal glow for VH01's in-world "ECS" brand monitor prop (TYLER
+;; VALHANNA cold open, episodes/vh01_valhanna_coldopen.md): the printer/terminal Tyler and Hana
+;; wake up next to in the 1986 Iceland server room. Phosphor-green scanline glow, brighter toward
+;; the vertical center (a soft CRT vignette), with horizontal scanlines — not a real text
+;; renderer (subtitle text is drawn as a separate 2D overlay anchored to this prop's world
+;; position, see packages/simulation/tyler_coldopen.c), just the screen's own idle glow material.
+
+;; scanline-count — how many horizontal scanlines fit down the canvas. The one real tweakable
+;; knob, same "one real knob" convention bullet_hole.prn/institutional_tile.prn already use.
+(defn scanline-count [] : F64 48.0)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn abs64 [(v : F64)] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+;; vignette — 1.0 at vertical/horizontal center, fading toward the edges (a CRT tube's own real
+;; brightness falloff), computed axis-independently and multiplied together.
+(defn center-falloff [(coord : F64) (extent : F64)] : F64
+  (- 1.0 (* 0.85 (abs64 (- (/ coord extent) 0.5)))))
+
+(defn vignette [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01 (* (center-falloff x w) (center-falloff y h))))
+
+;; scanline — a repeating horizontal dark band every canvas-height/scanline-count pixels, using
+;; math/cos as a cheap periodic function (no modulo operator on this target's own real BINOP_TABLE
+;; — checked directly, src/emit_java.c only recognizes + - * / = < > <= >= and/or).
+(defn scanline [(y : F64) (h : F64)] : F64
+  (+ 0.72 (* 0.28 (math/cos (* y (/ (* (scanline-count) 6.283185) h))))))
+
+;; flicker-hash — a fixed, deterministic per-pixel dither (same sin/cos-hash idiom
+;; bullet_hole.prn's speckle already uses) so the glow doesn't read as a perfectly flat gradient.
+(defn flicker-hash [(x : F64) (y : F64)] : F64
+  (* 0.04 (math/cos (+ (* x 3.1) (* y 1.9)))))
+
+(defn glow [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01 (+ (* (vignette x y w h) (scanline y h)) (flicker-hash x y))))
+
+;; Phosphor green (ECS's own house terminal color, VH01's set-dressing choice) — near-black at
+;; the screen edges, bright cold green at center, scanlines darkening every few rows.
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.08 (glow x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.92 (glow x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.30 (glow x y w h)))
