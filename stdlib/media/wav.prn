@@ -1,0 +1,72 @@
+;; stdlib/media/wav.prn -- PCM16 mono WAV encode/decode over Bytes. First dep of the PARENA-native
+;; TTS stack (EMILY/BACKLOG.md S585), per the standing "core deps are PARENA-first" rule
+;; (founder, 2026-10-01). Replaces the WAV writing Piper's own Python did for MODE_TYLER.
+;; Layout: 44-byte canonical header, then little-endian signed 16-bit samples.
+;; Pure integer logic (mod/div/bit ops), no I/O; the caller writes the Bytes with whatever host
+;; file/socket primitive it has. v0 scope: mono PCM16 only.
+
+(module media/wav)
+(import bytes)
+(export wav-alloc wav-set-sample! wav-get-sample wav-sample-count wav-sample-rate wav-valid?)
+
+(defn wav-put-le16 [(b : Bytes) (off : I32) (v : I32)] : I32
+  (do (bytes-set! b off (mod v 256))
+      (bytes-set! b (+ off 1) (mod (/ v 256) 256))
+      0))
+
+(defn wav-put-le32 [(b : Bytes) (off : I32) (v : I32)] : I32
+  (do (wav-put-le16 b off (mod v 65536))
+      (wav-put-le16 b (+ off 2) (/ v 65536))
+      0))
+
+(defn wav-get-le16 [(b : Bytes) (off : I32)] : I32
+  (+ (bytes-get b off) (* (bytes-get b (+ off 1)) 256)))
+
+(defn wav-get-le32 [(b : Bytes) (off : I32)] : I32
+  (+ (wav-get-le16 b off) (* (wav-get-le16 b (+ off 2)) 65536)))
+
+;; Header fill takes the buffer as a typed Bytes PARAMETER, not a let-bound local: a let-bound
+;; Bytes currently degrades to `void *` in the emitted C (found live 2026-10-01, named not fixed).
+(defn wav-fill-header [(b : Bytes) (n-samples : I32) (sample-rate : I32)] : Bytes
+    (do (bytes-set! b 0 82) (bytes-set! b 1 73) (bytes-set! b 2 70) (bytes-set! b 3 70)     ;; "RIFF"
+        (wav-put-le32 b 4 (+ 36 (* n-samples 2)))
+        (bytes-set! b 8 87) (bytes-set! b 9 65) (bytes-set! b 10 86) (bytes-set! b 11 69)   ;; "WAVE"
+        (bytes-set! b 12 102) (bytes-set! b 13 109) (bytes-set! b 14 116) (bytes-set! b 15 32) ;; "fmt "
+        (wav-put-le32 b 16 16)
+        (wav-put-le16 b 20 1)                 ;; PCM
+        (wav-put-le16 b 22 1)                 ;; mono
+        (wav-put-le32 b 24 sample-rate)
+        (wav-put-le32 b 28 (* sample-rate 2))
+        (wav-put-le16 b 32 2)
+        (wav-put-le16 b 34 16)
+        (bytes-set! b 36 100) (bytes-set! b 37 97) (bytes-set! b 38 116) (bytes-set! b 39 97) ;; "data"
+        (wav-put-le32 b 40 (* n-samples 2))
+        b))
+
+;; Allocate a silent mono PCM16 WAV of n-samples at sample-rate, header filled in.
+(defn wav-alloc [(n-samples : I32) (sample-rate : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (wav-fill-header (bytes-alloc (+ 44 (* n-samples 2)) dest) n-samples sample-rate))
+
+;; Signed sample -32768..32767 (out-of-range values clamp).
+(defn wav-set-sample! [(b : Bytes) (idx : I32) (s : I32)] : I32
+  (let [c (if (> s 32767) 32767 (if (< s -32768) -32768 s))
+        u (if (< c 0) (+ c 65536) c)]
+    (do (wav-put-le16 b (+ 44 (* idx 2)) u) 0)))
+
+(defn wav-get-sample [(b : Bytes) (idx : I32)] : I32
+  (let [u (wav-get-le16 b (+ 44 (* idx 2)))]
+    (if (> u 32767) (- u 65536) u)))
+
+(defn wav-sample-count [(b : Bytes)] : I32
+  (/ (wav-get-le32 b 40) 2))
+
+(defn wav-sample-rate [(b : Bytes)] : I32
+  (wav-get-le32 b 24))
+
+;; Structural check: RIFF/WAVE magic, PCM mono 16-bit, data length consistent with buffer length.
+(defn wav-valid? [(b : Bytes)] : Bool
+  (and (>= (bytes-len b) 44)
+       (and (= (bytes-get b 0) 82) (and (= (bytes-get b 8) 87)
+       (and (= (wav-get-le16 b 20) 1) (and (= (wav-get-le16 b 22) 1)
+       (and (= (wav-get-le16 b 34) 16)
+            (= (+ 44 (wav-get-le32 b 40)) (bytes-len b)))))))))
