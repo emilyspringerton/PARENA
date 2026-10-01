@@ -13,6 +13,10 @@ int on_tyler_voice_clip_fits(int, int);
 int on_tyler_voice_speedup_permille(int, int);
 int on_tyler_voice_plan(int, int, int);
 int on_tyler_voice_stretched_hold_ms(int, int, int);
+int on_tyler_voice_line_state(int, int, int);
+int on_tyler_voice_seek_ms(int, int);
+int on_tyler_duck_target_permille(int, int);
+int on_tyler_duck_step_permille(int, int, int, int, int);
 
 int voice_plan_as_is(void) {
     return 0;
@@ -59,6 +63,56 @@ int on_tyler_voice_stretched_hold_ms(int clip_ms __attribute__((unused)), int ho
     return (clip_ms + pad_ms);
     } else {
     return hold_ms;
+    }
+}
+
+int on_tyler_voice_line_state(int elapsed_ms __attribute__((unused)), int offset_ms __attribute__((unused)), int dur_ms __attribute__((unused))) {
+    if ((elapsed_ms < offset_ms)) {
+    return 0;
+    } else {
+    if ((elapsed_ms >= (offset_ms + dur_ms))) {
+    return 2;
+    } else {
+    return 1;
+    }
+    }
+}
+
+int on_tyler_voice_seek_ms(int elapsed_ms __attribute__((unused)), int offset_ms __attribute__((unused))) {
+    if ((elapsed_ms > offset_ms)) {
+    return (elapsed_ms - offset_ms);
+    } else {
+    return 0;
+    }
+}
+
+int on_tyler_duck_target_permille(int voices_active __attribute__((unused)), int duck_permille __attribute__((unused))) {
+    if ((voices_active > 0)) {
+    return duck_permille;
+    } else {
+    return 1000;
+    }
+}
+
+int on_tyler_duck_step_permille(int cur __attribute__((unused)), int target __attribute__((unused)), int dt_ms __attribute__((unused)), int attack_ms __attribute__((unused)), int release_ms __attribute__((unused))) {
+    if ((cur > target)) {
+    int step __attribute__((unused)) = ((dt_ms * 1000) / attack_ms);
+    if (((cur - target) < step)) {
+    return target;
+    } else {
+    return (cur - step);
+    }
+    } else {
+    if ((cur < target)) {
+    int step __attribute__((unused)) = ((dt_ms * 1000) / release_ms);
+    if (((target - cur) < step)) {
+    return target;
+    } else {
+    return (cur + step);
+    }
+    } else {
+    return cur;
+    }
     }
 }
 

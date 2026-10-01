@@ -4069,6 +4069,16 @@ appended here), not deliberate omission. Registered now, no code changes:
   deferred to GoblinFoxDragon EduScript" recommendation (written before PARENA existed). Owns
   trigger-fire and choice-effect decisions; scene-sequencing/typewriter timing stays host logic,
   matching SHANKPIT's own separate, simpler, non-branching `packages/simulation/cutscene.c`.
+- **`stdlib/tyler/voice_mod.prn`** — MODE_TYLER's voiced cold open (SHANKPIT, founder real-time
+  2026-10-01: "VALHANNA voices via TTS"). Two halves, all I32 decision logic, `make test-tyler-voice`:
+  beat-hold sizing around a clip (`on-tyler-voice-stretched-hold-ms`/`-plan`/`-speedup-permille`) and
+  the playback decisions the host calls every frame (`on-tyler-voice-line-state` pending/playing/over,
+  `on-tyler-voice-seek-ms` for late joiners and lost-packet recovery, `on-tyler-duck-target-permille`
+  and `on-tyler-duck-step-permille`, the linear-ramp SFX ducking that keeps the dialogue audible).
+  SHANKPIT's `packages/simulation/tyler_voice_mod.c` is this file's `parena build` output
+  (`scripts/gen_tyler_voice_mod.sh`); the host owns clocks, files and the mixer. The Piper clips the
+  host plays are a LABELED STOPGAP (PARENA-native synthesis is the real work) -- these decisions do
+  not depend on how the audio was produced.
 - **`stdlib/eventstore/seqlock.prn`** — a real fix for a real, live bug (founder real-time,
   2026-08-25: root-caused a live PRRJECT_FATBABY press-release rendering with an unrelated NVIDIA
   8-K link to ~15 separate Go binaries all appending to the same `var/secwatch` event store with
