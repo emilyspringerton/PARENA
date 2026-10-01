@@ -1,0 +1,205 @@
+;; stdlib/tensor/conv.prn -- 1-D convolution, depthwise convolution, transposed convolution and matmul over F32 buffers
+;; (stdlib/tensor/f32.prn). The kernels a HiFi-GAN/VITS-style neural vocoder is made of, written as ordinary PARENA
+;; loop/recur code whose innermost loop is the fused f32-axpy! primitive (docs/TTS_VITS_PORT_PLAN.md).
+;;
+;; Layouts (row-major, channel-first, all offsets in floats):
+;;   x   [cin][lp]        input, ALREADY padded along time by the caller (lp >= l + (k-1)*dil for conv1d)
+;;   w   [cout][cin][k]   conv weights;   depthwise: w [c][k];   transposed: w [cin][cout][k] (PyTorch ConvTranspose1d)
+;;   b   [cout]           bias; pass a zero-length buffer for "no bias" (reads of an empty buffer are 0.0)
+;;   out [cout][l]
+;; Shape validation: every kernel first proves that the buffers it was handed are large enough for the shape it was asked to
+;; compute (overflow-safe: only divisions, never an unchecked product) and returns -1 -- touching nothing -- when they are not,
+;; so a hostile or corrupt shape costs O(1), can neither fault nor spin for billions of iterations. 0 = computed.
+;; Same-padding is the caller's job (build x with the zero margin once; it is the cheap part), which keeps these kernels
+;; free of per-tap bounds branches. Every size is a parameter; the underlying primitives validate all ranges and no-op on
+;; anything out of bounds, so a bad shape yields zeros, never a fault.
+(module tensor/conv)
+(import tensor/f32)
+(export conv1d conv1d-depthwise convt1d convt1d-out-len matmul fits2 fits3)
+
+;; ---- overflow-safe shape guards. fits2: a*b <= len (a,b >= 0); fits3: a*b*c <= len ----
+(defn fits2 [(a : I32) (b : I32) (len : I32)] : Bool
+  (and (>= a 0) (and (>= b 0) (or (= b 0) (<= a (/ len b))))))
+(defn fits3 [(a : I32) (b : I32) (c : I32) (len : I32)] : Bool
+  (and (fits2 b c len) (or (or (= b 0) (= c 0)) (fits2 a (* b c) len))))
+
+
+;; ---------------- conv1d:  out[o][t] = b[o] + sum_{c,j} w[o][c][j] * x[c][t + j*dil] ----------------
+(defn conv1d-taps [(x : Bytes) (w : Bytes) (out : Bytes) (o : I32) (c : I32) (cin : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (loop [j 0]
+    (if (>= j k)
+      0
+      (do (f32-axpy! out (* o l) x (+ (* c lp) (* j dil)) (f32-get w (+ (* (+ (* o cin) c) k) j)) l)
+          (recur (+ j 1))))))
+
+(defn conv1d-chans [(x : Bytes) (w : Bytes) (out : Bytes) (o : I32) (cin : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (loop [c 0]
+    (if (>= c cin)
+      0
+      (do (conv1d-taps x w out o c cin k dil lp l)
+          (recur (+ c 1))))))
+
+(defn conv1d-run [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (cin : I32) (cout : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (loop [o 0]
+    (if (>= o cout)
+      0
+      (do (f32-fill! out (* o l) l (f32-get b o))
+          (conv1d-chans x w out o cin k dil lp l)
+          (recur (+ o 1))))))
+
+;; x is [cin][lp] with lp >= l + (k-1)*dil. Returns 0, or -1 if any buffer is too small for the shape.
+(defn conv1d [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (cin : I32) (cout : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (if (and (and (> cin 0) (> cout 0)) (and (and (> k 0) (> dil 0)) (and (> l 0) (>= lp l))))
+    (if (and (<= (- k 1) (/ (- lp l) dil))
+             (and (fits2 cin lp (f32-len x))
+                  (and (fits3 cout cin k (f32-len w))
+                       (and (fits2 cout l (f32-len out))
+                            (or (= (f32-len b) 0) (<= cout (f32-len b)))))))
+      (conv1d-run x w b out cin cout k dil lp l)
+      -1)
+    -1))
+
+;; ---------------- depthwise:  out[c][t] = b[c] + sum_j w[c][j] * x[c][t + j*dil] ----------------
+(defn dw-taps [(x : Bytes) (w : Bytes) (out : Bytes) (c : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (loop [j 0]
+    (if (>= j k)
+      0
+      (do (f32-axpy! out (* c l) x (+ (* c lp) (* j dil)) (f32-get w (+ (* c k) j)) l)
+          (recur (+ j 1))))))
+
+(defn dw-run [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (ch : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (loop [c 0]
+    (if (>= c ch)
+      0
+      (do (f32-fill! out (* c l) l (f32-get b c))
+          (dw-taps x w out c k dil lp l)
+          (recur (+ c 1))))))
+
+;; x is [ch][lp] with lp >= l + (k-1)*dil. Returns 0, or -1 if any buffer is too small for the shape.
+(defn conv1d-depthwise [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (ch : I32) (k : I32) (dil : I32) (lp : I32) (l : I32)]
+  : I32
+  (if (and (and (> ch 0) (> k 0)) (and (and (> dil 0) (> l 0)) (>= lp l)))
+    (if (and (<= (- k 1) (/ (- lp l) dil))
+             (and (fits2 ch lp (f32-len x))
+                  (and (fits2 ch k (f32-len w))
+                       (and (fits2 ch l (f32-len out))
+                            (or (= (f32-len b) 0) (<= ch (f32-len b)))))))
+      (dw-run x w b out ch k dil lp l)
+      -1)
+    -1))
+
+;; ---------------- transposed conv:  out[o][t*s + j - p] += w[c][o][j] * x[c][t] ----------------
+;; length of the output for input length lin, kernel k, stride s, padding p (no output padding)
+(defn convt1d-out-len [(lin : I32) (k : I32) (s : I32) (p : I32)]
+  : I32
+  (+ (- (* (- lin 1) s) (* 2 p)) k))
+
+;; first input position that lands on output index >= 0 for tap j:  ceil((p - j) / s), at least 0
+(defn convt-tmin [(j : I32) (s : I32) (p : I32)]
+  : I32
+  (if (<= (- p j) 0) 0 (/ (+ (- p j) (- s 1)) s)))
+
+;; last input position that lands on output index <= lout-1 for tap j, capped at lin-1; -1 when none
+(defn convt-tmax [(j : I32) (s : I32) (p : I32) (lin : I32) (lout : I32)]
+  : I32
+  (if (< (+ (- (- lout 1) j) p) 0)
+    -1
+    (if (> (/ (+ (- (- lout 1) j) p) s) (- lin 1)) (- lin 1) (/ (+ (- (- lout 1) j) p) s))))
+
+(defn convt-tap [(x : Bytes) (w : Bytes) (out : Bytes) (c : I32) (o : I32) (cout : I32) (j : I32) (k : I32) (s : I32) (p : I32) (lin : I32) (lout : I32)]
+  : I32
+  (let [t0 (convt-tmin j s p)
+        t1 (convt-tmax j s p lin lout)]
+    (if (> t0 t1)
+      0
+      (do (f32-axpy-strided! out (+ (* o lout) (- (+ (* t0 s) j) p)) s x (+ (* c lin) t0)
+                             (f32-get w (+ (* (+ (* c cout) o) k) j)) (+ (- t1 t0) 1))
+          0))))
+
+;; all taps j of one (c, o) pair
+(defn convt-taps [(x : Bytes) (w : Bytes) (out : Bytes) (c : I32) (o : I32) (cout : I32) (k : I32) (s : I32) (p : I32) (lin : I32) (lout : I32)]
+  : I32
+  (loop [j 0]
+    (if (>= j k)
+      0
+      (do (convt-tap x w out c o cout j k s p lin lout)
+          (recur (+ j 1))))))
+
+(defn convt-outs [(x : Bytes) (w : Bytes) (out : Bytes) (c : I32) (cout : I32) (k : I32) (s : I32) (p : I32) (lin : I32) (lout : I32)]
+  : I32
+  (loop [o 0]
+    (if (>= o cout)
+      0
+      (do (convt-taps x w out c o cout k s p lin lout)
+          (recur (+ o 1))))))
+
+(defn convt-bias [(b : Bytes) (out : Bytes) (cout : I32) (lout : I32)]
+  : I32
+  (loop [o 0]
+    (if (>= o cout)
+      0
+      (do (f32-fill! out (* o lout) lout (f32-get b o))
+          (recur (+ o 1))))))
+
+(defn convt-chans [(x : Bytes) (w : Bytes) (out : Bytes) (cin : I32) (cout : I32) (k : I32) (s : I32) (p : I32) (lin : I32) (lout : I32)]
+  : I32
+  (loop [c 0]
+    (if (>= c cin)
+      0
+      (do (convt-outs x w out c cout k s p lin lout)
+          (recur (+ c 1))))))
+
+(defn convt1d-run [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (cin : I32) (cout : I32) (k : I32) (s : I32) (p : I32) (lin : I32)]
+  : I32
+  (let [lout (convt1d-out-len lin k s p)]
+    (do (convt-bias b out cout lout)
+        (convt-chans x w out cin cout k s p lin lout)
+        lout)))
+
+;; out [cout][lout] with lout = convt1d-out-len; the caller sizes `out`. Bias is added first. Returns lout, or -1 if any
+;; buffer is too small for the shape or a parameter is outside the supported range (k <= 65536, s <= 4096, p <= 65536,
+;; lin <= 262144 -- the bounds keep every intermediate product inside I32).
+(defn convt1d [(x : Bytes) (w : Bytes) (b : Bytes) (out : Bytes) (cin : I32) (cout : I32) (k : I32) (s : I32) (p : I32) (lin : I32)]
+  : I32
+  (if (and (and (> cin 0) (> cout 0)) (and (and (> k 0) (<= k 65536)) (and (and (> s 0) (<= s 4096)) (and (and (>= p 0) (<= p 65536)) (and (> lin 0) (<= lin 262144))))))
+    (if (and (> (convt1d-out-len lin k s p) 0)
+             (and (fits2 cin lin (f32-len x))
+                  (and (fits3 cin cout k (f32-len w))
+                       (and (fits2 cout (convt1d-out-len lin k s p) (f32-len out))
+                            (or (= (f32-len b) 0) (<= cout (f32-len b)))))))
+      (convt1d-run x w b out cin cout k s p lin)
+      -1)
+    -1))
+
+;; ---------------- matmul:  C[m][n] = A[m][kk] * B[kk][n]  (row-major) ----------------
+(defn matmul-row [(a : Bytes) (bm : Bytes) (c : Bytes) (i : I32) (kk : I32) (n : I32)]
+  : I32
+  (loop [q 0]
+    (if (>= q kk)
+      0
+      (do (f32-axpy! c (* i n) bm (* q n) (f32-get a (+ (* i kk) q)) n)
+          (recur (+ q 1))))))
+
+(defn matmul-run [(a : Bytes) (bm : Bytes) (c : Bytes) (m : I32) (kk : I32) (n : I32)]
+  : I32
+  (loop [i 0]
+    (if (>= i m)
+      0
+      (do (f32-fill! c (* i n) n 0.0)
+          (matmul-row a bm c i kk n)
+          (recur (+ i 1))))))
+
+;; C[m][n] = A[m][kk] * B[kk][n]. Returns 0, or -1 if any buffer is too small for the shape.
+(defn matmul [(a : Bytes) (bm : Bytes) (c : Bytes) (m : I32) (kk : I32) (n : I32)]
+  : I32
+  (if (and (and (> m 0) (> kk 0)) (> n 0))
+    (if (and (fits2 m kk (f32-len a)) (and (fits2 kk n (f32-len bm)) (fits2 m n (f32-len c))))
+      (matmul-run a bm c m kk n)
+      -1)
+    -1))

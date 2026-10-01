@@ -1,0 +1,83 @@
+;; stdlib/tensor/f32.prn -- packed float32 buffers: the numeric substrate for neural inference in PARENA.
+;;
+;; Founder real-time, 2026-10-01: "dive into the TTS stuff with parena some kind of edge tts model", and the standing
+;; rule "always implement core deps in PARENA first". PARENA's scalar float is F64 and its Vec boxes every element, so a
+;; 15.6M-parameter VITS voice (docs/TTS_VITS_PORT_PLAN.md) cannot live in either. This module is the missing substrate:
+;; an F32 buffer is a `Bytes` (the existing core base type) read and written as host-order float32, with fused bulk
+;; primitives (axpy / strided axpy / dot / scale / fill / copy) for the inner loops, and a portable little-endian loader
+;; for weights files. Everything above it -- conv, matmul, norms, activations, the VITS blocks -- is ordinary PARENA
+;; loop/recur code over these (stdlib/tensor/conv.prn, and the nn/vits modules that follow).
+;;
+;; Contract (runtime/parena_runtime.h, "F32 buffers"): offsets and counts are in FLOATS; every range is validated once;
+;; anything out of range is a silent no-op / reads 0.0, never a fault. Deterministic: no fast-math, fixed accumulation
+;; order; build with -ffp-contract=off to be bit-reproducible across compilers. Speed (tests/bench_tensor_conv.c,
+;; `make bench-tensor`): the PARENA-driven conv kernel is within about 2x of hand-written C (parity on an idle machine in an
+;; earlier run, ~half on a loaded one) -- enough for offline neural-vocoder rendering, not claimed as a BLAS replacement.
+;;
+;; Naming: the runtime primitives carry an `_impl` suffix so they never collide with these wrappers (see bytes.prn).
+(module tensor/f32)
+(export f32-alloc f32-len f32-get f32-set! f32-fill! f32-copy! f32-axpy! f32-axpy-strided! f32-dot f32-scale!
+        f32-load-le)
+
+(defn f32-alloc [(n : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "f32_alloc_impl(dest, n)")})
+
+(defn f32-len [(b : Bytes)]
+  : I32
+  #target
+  {:c (inline-c "f32_len_impl(b)")})
+
+(defn f32-get [(b : Bytes) (i : I32)]
+  : F64
+  #target
+  {:c (inline-c "f32_get_impl(b, i)")})
+
+(defn f32-set! [(b : Bytes) (i : I32) (v : F64)]
+  : Unit
+  #target
+  {:c (inline-c "f32_set_impl(b, i, v);")})
+
+;; fill n floats starting at off with v
+(defn f32-fill! [(b : Bytes) (off : I32) (n : I32) (v : F64)]
+  : Unit
+  #target
+  {:c (inline-c "f32_fill_impl(b, off, n, v);")})
+
+;; dst[doff..doff+n) <- src[soff..soff+n)  (memmove semantics: overlap is fine)
+(defn f32-copy! [(dst : Bytes) (doff : I32) (src : Bytes) (soff : I32) (n : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_copy_impl(dst, doff, src, soff, n);")})
+
+;; y[yo+i] += a * x[xo+i] for i in [0,n)  -- THE inner loop of conv and matmul
+(defn f32-axpy! [(y : Bytes) (yo : I32) (x : Bytes) (xo : I32) (a : F64) (n : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_axpy_impl(y, yo, x, xo, a, n);")})
+
+;; y[yo + i*ys] += a * x[xo+i] for i in [0,n)  -- the transposed-convolution scatter
+(defn f32-axpy-strided! [(y : Bytes) (yo : I32) (ys : I32) (x : Bytes) (xo : I32) (a : F64) (n : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_axpy_strided_impl(y, yo, ys, x, xo, a, n);")})
+
+;; sum_i x[xo+i]*y[yo+i], eight fixed partial sums (deterministic order)
+(defn f32-dot [(x : Bytes) (xo : I32) (y : Bytes) (yo : I32) (n : I32)]
+  : F64
+  #target
+  {:c (inline-c "f32_dot_impl(x, xo, y, yo, n)")})
+
+;; y[yo+i] *= a
+(defn f32-scale! [(y : Bytes) (yo : I32) (n : I32) (a : F64)]
+  : Unit
+  #target
+  {:c (inline-c "f32_scale_impl(y, yo, n, a);")})
+
+;; decode n little-endian float32s from `src` (a String over mmap'd bytes -- see io/mmap.prn; the caller passes the real
+;; byte length because a weights file contains NUL bytes) starting at byte offset `byte-off`. Portable across host byte order.
+(defn f32-load-le [(src : String @ Region) (src-len : I32) (byte-off : I32) (n : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "f32_load_le_impl(dest, src, src_len, byte_off, n)")})

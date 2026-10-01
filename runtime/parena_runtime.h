@@ -533,6 +533,162 @@ static inline Bytes bytes_slice_impl(Bytes b, int start, int end, Arena *dest) {
     return out;
 }
 
+/* ---- F32 buffers (stdlib/tensor/f32.prn, stdlib/tensor/conv.prn) -----------------------------------
+ *
+ * Founder real-time, 2026-10-01: "dive into the TTS stuff with parena some kind of edge tts model" +
+ * the standing rule "always implement core deps in PARENA first". A neural-inference engine (the
+ * Piper/VITS port, docs/TTS_VITS_PORT_PLAN.md) needs packed float32 tensors and a few hot bulk
+ * kernels; PARENA's scalar type is F64 and its Vec is per-element boxed, so the substrate is a plain
+ * `Bytes` buffer read/written as float32 (4 bytes/element, host byte order -- see f32_load_le_impl
+ * for the portable file reader) plus a handful of FUSED primitives for the inner loops. The outer
+ * loops (channels, taps, time) stay ordinary PARENA loop/recur. Measured (tests/bench_tensor_conv.c,
+ * conv1d 64x64 k=7 L=4096, `make bench-tensor`): with the innermost axpy as one primitive the PARENA-driven
+ * kernel ran at parity with hand-written C on an idle machine (~2.9 GMAC/s, an earlier prototype run) and at
+ * ~2.2 vs ~4.7 GMAC/s (about half) on a heavily loaded one -- so treat "within 2x of hand-written C" as the
+ * honest claim and re-measure on an idle box before quoting a number.
+ *
+ * Contract (same honest discipline as bytes_get_impl/bytes_set_impl): every index/range is validated
+ * ONCE up front; anything outside the buffers makes the call a silent no-op (reads return 0), it
+ * never reads or writes out of bounds and never aborts. Element offsets are in FLOATS, not bytes.
+ * Determinism: no fast-math, fixed accumulation order (the dot product uses 8 fixed partial sums);
+ * build with -ffp-contract=off for bit-reproducibility across machines/compilers (an FMA changes
+ * rounding). Misaligned buffers fall back to a memcpy path, so a Bytes slice is always safe. */
+static inline int f32_len_impl(Bytes b) { return b.len / 4; }
+
+static inline Bytes f32_alloc_impl(Arena *dest, int n) {
+    if (n <= 0 || n > 0x1FFFFFFF) return bytes_alloc_impl(dest, 0);
+    Bytes b = bytes_alloc_impl(dest, n * 4);
+    memset(b.data, 0, (size_t)b.len);
+    return b;
+}
+
+static inline double f32_get_impl(Bytes b, int i) {
+    if (i < 0 || i >= b.len / 4) return 0.0;
+    float v;
+    memcpy(&v, b.data + (size_t)i * 4u, 4);
+    return (double)v;
+}
+
+static inline void f32_set_impl(Bytes b, int i, double v) {
+    if (i < 0 || i >= b.len / 4) return;
+    float f = (float)v;
+    memcpy(b.data + (size_t)i * 4u, &f, 4);
+}
+
+static inline int f32_range_ok_(Bytes b, int off, int n) {
+    return n > 0 && off >= 0 && off <= b.len / 4 && n <= b.len / 4 - off;
+}
+
+static inline int f32_aligned_(Bytes b) { return (((size_t)b.data) & 3u) == 0; }
+
+static inline void f32_fill_impl(Bytes b, int off, int n, double v) {
+    if (!f32_range_ok_(b, off, n)) return;
+    float f = (float)v;
+    for (int i = 0; i < n; i++) memcpy(b.data + ((size_t)off + (size_t)i) * 4u, &f, 4);
+}
+
+static inline void f32_copy_impl(Bytes dst, int doff, Bytes src, int soff, int n) {
+    if (!f32_range_ok_(dst, doff, n) || !f32_range_ok_(src, soff, n)) return;
+    memmove(dst.data + (size_t)doff * 4u, src.data + (size_t)soff * 4u, (size_t)n * 4u);
+}
+
+/* y[yo+i] += a * x[xo+i]  -- the conv/matmul inner loop. y and x may be the same buffer only if the
+ * ranges do not overlap. */
+/* The -O2 "very-cheap" vectorizer cost model refuses loops whose trip count is unknown (it would need an
+ * epilogue); this one is THE hot loop of every conv/matmul, so ask for the full vectorizer on it. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define PARENA_F32_HOT __attribute__((optimize("O3")))
+#else
+#define PARENA_F32_HOT
+#endif
+PARENA_F32_HOT
+static inline void f32_axpy_impl(Bytes y, int yo, Bytes x, int xo, double a, int n) {
+    if (!f32_range_ok_(y, yo, n) || !f32_range_ok_(x, xo, n)) return;
+    const float av = (float)a;
+    if (f32_aligned_(y) && f32_aligned_(x)) {
+        float *restrict yp = (float *)y.data + yo;          /* restrict: the contract above forbids overlap, and it is what */
+        const float *restrict xp = (const float *)x.data + xo; /* lets the compiler vectorize this loop */
+        for (int i = 0; i < n; i++) yp[i] += av * xp[i];
+    } else {
+        for (int i = 0; i < n; i++) {
+            float yv, xv;
+            memcpy(&yv, y.data + ((size_t)yo + (size_t)i) * 4u, 4);
+            memcpy(&xv, x.data + ((size_t)xo + (size_t)i) * 4u, 4);
+            yv += av * xv;
+            memcpy(y.data + ((size_t)yo + (size_t)i) * 4u, &yv, 4);
+        }
+    }
+}
+
+/* y[yo + i*ys] += a * x[xo+i], i in [0,n): the transposed-convolution scatter. ys may be any positive
+ * stride; the whole strided range is validated first. */
+static inline void f32_axpy_strided_impl(Bytes y, int yo, int ys, Bytes x, int xo, double a, int n) {
+    if (ys <= 0 || n <= 0 || !f32_range_ok_(x, xo, n)) return;
+    long last = (long)yo + (long)(n - 1) * (long)ys;
+    if (yo < 0 || last >= (long)(y.len / 4)) return;
+    const float av = (float)a;
+    for (int i = 0; i < n; i++) {
+        float yv, xv;
+        memcpy(&yv, y.data + ((size_t)yo + (size_t)i * (size_t)ys) * 4u, 4);
+        memcpy(&xv, x.data + ((size_t)xo + (size_t)i) * 4u, 4);
+        yv += av * xv;
+        memcpy(y.data + ((size_t)yo + (size_t)i * (size_t)ys) * 4u, &yv, 4);
+    }
+}
+
+/* sum_i x[xo+i] * y[yo+i], eight fixed partial sums combined in a fixed order (deterministic, and
+ * wide enough for the compiler to keep the lanes busy without fast-math). Accumulates in float32 like
+ * the reference runtime does; the final value is returned as F64. */
+static inline double f32_dot_impl(Bytes x, int xo, Bytes y, int yo, int n) {
+    if (!f32_range_ok_(x, xo, n) || !f32_range_ok_(y, yo, n)) return 0.0;
+    float acc[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        for (int l = 0; l < 8; l++) {
+            float xv, yv;
+            memcpy(&xv, x.data + ((size_t)xo + (size_t)(i + l)) * 4u, 4);
+            memcpy(&yv, y.data + ((size_t)yo + (size_t)(i + l)) * 4u, 4);
+            acc[l] += xv * yv;
+        }
+    }
+    float tail = 0.0f;
+    for (; i < n; i++) {
+        float xv, yv;
+        memcpy(&xv, x.data + ((size_t)xo + (size_t)i) * 4u, 4);
+        memcpy(&yv, y.data + ((size_t)yo + (size_t)i) * 4u, 4);
+        tail += xv * yv;
+    }
+    return (double)(((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7])) + tail);
+}
+
+/* y[yo+i] *= a, i in [0,n) */
+static inline void f32_scale_impl(Bytes y, int yo, int n, double a) {
+    if (!f32_range_ok_(y, yo, n)) return;
+    const float av = (float)a;
+    for (int i = 0; i < n; i++) {
+        float v; memcpy(&v, y.data + ((size_t)yo + (size_t)i) * 4u, 4);
+        v *= av; memcpy(y.data + ((size_t)yo + (size_t)i) * 4u, &v, 4);
+    }
+}
+
+/* f32_load_le_impl -- decode `n` little-endian IEEE-754 float32 values starting at byte `byte_off` of a
+ * NUL-agnostic byte source (a String over an mmap'd weights file, see io/mmap.prn: strlen is never
+ * used, the caller passes the real length) into a fresh F32 buffer. Portable: assembles each float from
+ * four bytes, so it is correct on any host byte order. Out-of-range requests clamp to what exists. */
+static inline Bytes f32_load_le_impl(Arena *dest, const char *src, int src_len, int byte_off, int n) {
+    if (!src || n <= 0 || byte_off < 0 || byte_off > src_len) return bytes_alloc_impl(dest, 0);
+    int avail = (src_len - byte_off) / 4;
+    if (n > avail) n = avail;
+    Bytes b = f32_alloc_impl(dest, n);
+    for (int i = 0; i < n; i++) {
+        const unsigned char *p = (const unsigned char *)src + byte_off + (size_t)i * 4u;
+        unsigned int u = (unsigned int)p[0] | ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+        float f; memcpy(&f, &u, 4);
+        memcpy(b.data + (size_t)i * 4u, &f, 4);
+    }
+    return b;
+}
+
 #ifdef PARENA_WITH_MLDSA
 /* mldsa_keygen_impl/mldsa_sign_impl/mldsa_verify_impl -- real host glue for crypto/mldsa.prn,
  * calling straight into the vendored, unmodified (except for attribution) CRYSTALS-Dilithium
