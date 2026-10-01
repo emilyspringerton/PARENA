@@ -15,7 +15,7 @@ int main(void) {
     assert(on_brick_weapon_damage(3, 16) == 16);
     assert(on_brick_weapon_damage(4, 101) == 126);   /* 101 + 101/4 (=25) */
     assert(on_brick_weapon_damage(5, 40) == 0);
-    assert(on_brick_weapon_damage(6, 130) == 390);
+    assert(on_brick_weapon_damage(6, 130) == 650);
     assert(on_brick_weapon_damage(7, 0) == 0);
 
     /* debris: only worsening changes throw anything */
@@ -50,13 +50,14 @@ int main(void) {
     assert(on_paper_fragment_state_for_hp(19, 80) == 2);
     assert(on_paper_fragment_state_for_hp(0, 80) == 3);
 
-    /* a missile at its blast centre: 390 -> 195 effective, gone in one hit; 3 units out of a 6
-       radius (500 permille): 390*500/1000=195 -> 97 effective, still gone; at the rim (1000): 0 */
+    /* a missile (x5 = 650): at its blast centre 650 -> 325 effective, gone in one hit; 500 permille:
+       650*500/1000 = 325 -> 163, gone; at the rim (1000 permille): 0 damage, 80 HP left;
+       800 permille: 650*200/1000 = 130 -> 65 effective -> 15 HP left (TORN) */
     assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 0)) == 0);
     assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 500)) == 0);
     assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 1000)) == 80);
-    /* 800 permille: 390*200/1000 = 78 -> 39 effective -> 41 HP left (CRACKED) */
-    assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 800)) == 41);
+    assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 800)) == 15);
+    assert(on_paper_fragment_state_for_hp(15, 80) == 2);
 
     printf("test_brick_rules: all assertions passed\n");
     return 0;

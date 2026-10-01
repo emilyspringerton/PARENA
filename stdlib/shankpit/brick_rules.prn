@@ -23,11 +23,11 @@
 ;; Weapon ids are SHANKPIT's own (packages/common/protocol.h):
 ;;   0 KNIFE  1 MAGNUM  2 AR  3 SHOTGUN (per-pellet damage)  4 SNIPER  5 KATANA  6 MISSILE
 ;;   7 FLASHLIGHT
-;; Blades and a flashlight do not chip masonry. Explosives demolish it (x3). The sniper's round
-;; punches (x1.25). Everything else counts at face value.
+;; Blades and a flashlight do not chip masonry. Explosives demolish it (x5: one rocket opens a
+;; player-sized hole). The sniper's round punches (x1.25). Everything else counts at face value.
 (defn on-brick-weapon-damage [(weapon : I32) (base-damage : I32)] : I32
   (if (= weapon 6)
-    (* base-damage 3)
+    (* base-damage 5)
     (if (= weapon 4)
       (+ base-damage (/ base-damage 4))
       (if (= weapon 0)

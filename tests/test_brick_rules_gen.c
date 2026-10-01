@@ -62,7 +62,7 @@ int on_papercraft_interact_damage_falloff(int base_damage __attribute__((unused)
 
 int on_brick_weapon_damage(int weapon __attribute__((unused)), int base_damage __attribute__((unused))) {
     if ((weapon == 6)) {
-    return (base_damage * 3);
+    return (base_damage * 5);
     } else {
     if ((weapon == 4)) {
     return (base_damage + (base_damage / 4));
