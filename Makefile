@@ -1402,3 +1402,7 @@ test-linalg-sparse: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_linalg_sparse.c \
 		runtime/parena_runtime.c -o /tmp/test_linalg_sparse_bin -lm
 	/tmp/test_linalg_sparse_bin
+
+# Per-package build fragments (parallel-work convention, 2026-10-01): each work package adds its own
+# mk/<pkg>.mk with its own test targets instead of editing this file.
+-include mk/*.mk
