@@ -1,0 +1,91 @@
+;; stdlib/big_o/harvest_rules.prn -- BIG_O DAY-phase foraging economy and the stain/evidence bookkeeping that carries
+;; into NIGHT (ship-plan package W3). Pure game arithmetic: integers, tables, clamps. Founder real-time, 2026-10-01: "fully
+;; ship BIG_O ... build all deps in PARENA first".
+;;
+;; The loop in one paragraph. By day the player runs a foraging sortie in a ruined level and downs foes. Standing over a downed
+;; foe for a few seconds EXTRACTS tokens from it: how many, and of what grade, depends on the foe kind, how precisely it was
+;; downed, and whether the carried haul is a clean single kind or a mixed (contaminated) lot. Extraction is noisy: it adds
+;; STAINS (a visible-evidence counter). Stains are carried to the night hub, where the player must get rid of them (disposal
+;; sites) before the society's witnesses notice; the weight a witness gives to what they see scales with the stain count.
+;; Everything is scalar I32, one expression per defn, args clamped before use (inputs originate in packets / RL policies),
+;; every exported name prefixed `harvest-`, no state, no RNG, no wall clock -- the same subset ragdoll_rules.prn uses.
+;;
+;; Enumerations (the host mirrors them):
+;;   foe kind : 0 SHAMBLER (common)  1 BRUTE  2 SPITTER  3 CRAWLER  4 HOUND  5 GIANT (rare)
+;;   disposal site : 0 STREET (drop in public)  1 ALLEY  2 INCINERATOR (the hub's expensive, safe option)
+;; Units: precision and time-left in permille (0..1000); durations in 64 Hz ticks; grade 0..9; stains 0..100.
+(module big-o/harvest-rules)
+(export harvest-clamp harvest-kind harvest-foe-count
+        harvest-base-tokens harvest-base-grade harvest-extract-ticks harvest-extract-stain
+        harvest-precision-bonus harvest-contamination-penalty harvest-grade harvest-tokens
+        harvest-extract-ticks-adjusted harvest-stain-gain
+        harvest-disposal-decay harvest-disposal-cost-ticks harvest-witness-weight-pm
+        harvest-extraction-bonus harvest-apply-stains)
+
+(defn harvest-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+(defn harvest-foe-count [] : I32 6)
+(defn harvest-kind [(k : I32)] : I32 (harvest-clamp k 0 5))
+
+;; ---- per-kind tables ----
+(defn harvest-base-tokens [(k : I32)] : I32
+  (if (= (harvest-kind k) 0) 2 (if (= (harvest-kind k) 1) 5 (if (= (harvest-kind k) 2) 4 (if (= (harvest-kind k) 3) 2 (if (= (harvest-kind k) 4) 3 12))))))
+
+(defn harvest-base-grade [(k : I32)] : I32
+  (if (= (harvest-kind k) 0) 3 (if (= (harvest-kind k) 1) 5 (if (= (harvest-kind k) 2) 4 (if (= (harvest-kind k) 3) 2 (if (= (harvest-kind k) 4) 4 8))))))
+
+;; ticks the player must stand over the body to finish extraction (96 = 1.5 s)
+(defn harvest-extract-ticks [(k : I32)] : I32
+  (if (= (harvest-kind k) 0) 96 (if (= (harvest-kind k) 1) 160 (if (= (harvest-kind k) 2) 128 (if (= (harvest-kind k) 3) 64 (if (= (harvest-kind k) 4) 96 320))))))
+
+;; stains one extraction adds at a calm pace
+(defn harvest-extract-stain [(k : I32)] : I32
+  (if (= (harvest-kind k) 0) 2 (if (= (harvest-kind k) 1) 4 (if (= (harvest-kind k) 2) 3 (if (= (harvest-kind k) 3) 1 (if (= (harvest-kind k) 4) 2 9))))))
+
+;; ---- grade ----
+;; A clean kill (precision 1000 = dead-centre every shot) is worth up to +4 grades: precision/250 truncated.
+(defn harvest-precision-bonus [(precision-pm : I32)] : I32
+  (/ (harvest-clamp precision-pm 0 1000) 250))
+
+;; Carrying a mixed lot spoils it: every distinct kind beyond the first costs one grade.
+(defn harvest-contamination-penalty [(distinct-kinds-carried : I32)] : I32
+  (harvest-clamp (- (harvest-clamp distinct-kinds-carried 1 6) 1) 0 5))
+
+(defn harvest-grade [(k : I32) (precision-pm : I32) (distinct-kinds-carried : I32)] : I32
+  (harvest-clamp (- (+ (harvest-base-grade k) (harvest-precision-bonus precision-pm)) (harvest-contamination-penalty distinct-kinds-carried)) 0 9))
+
+;; tokens = base * (10 + grade) / 10, integer division (so a grade-0 haul is the base amount, a grade-9 haul is 1.9x)
+(defn harvest-tokens [(k : I32) (grade : I32)] : I32
+  (/ (* (harvest-base-tokens k) (+ 10 (harvest-clamp grade 0 9))) 10))
+
+;; ---- pacing ----
+;; Rushing (rush = 1) halves the standing time but doubles the noise: the player's risk/reward dial.
+(defn harvest-extract-ticks-adjusted [(k : I32) (rush : I32)] : I32
+  (if (= rush 1) (/ (harvest-extract-ticks k) 2) (harvest-extract-ticks k)))
+
+(defn harvest-stain-gain [(k : I32) (rush : I32)] : I32
+  (if (= rush 1) (* (harvest-extract-stain k) 2) (harvest-extract-stain k)))
+
+;; stains added to the running total, clamped 0..100 (100 = fully exposed)
+(defn harvest-apply-stains [(stains : I32) (gain : I32)] : I32
+  (harvest-clamp (+ (harvest-clamp stains 0 100) (harvest-clamp gain 0 100)) 0 100))
+
+;; ---- night hub: getting rid of the evidence ----
+;; stains removed by one disposal at a site, and the ticks it takes (the longer, the more visible the player is while doing it)
+(defn harvest-disposal-decay [(site : I32)] : I32
+  (if (= (harvest-clamp site 0 2) 0) 2 (if (= (harvest-clamp site 0 2) 1) 5 12)))
+
+(defn harvest-disposal-cost-ticks [(site : I32)] : I32
+  (if (= (harvest-clamp site 0 2) 0) 64 (if (= (harvest-clamp site 0 2) 1) 192 480)))
+
+;; How much weight (permille, 100 = a witness sees nothing unusual) a witness gives to what they observe about the player,
+;; as a function of the stains still carried: 100 + 8 per stain, capped at 1000.
+(defn harvest-witness-weight-pm [(stains : I32)] : I32
+  (harvest-clamp (+ 100 (* 8 (harvest-clamp stains 0 100))) 100 1000))
+
+;; ---- the sortie's end ----
+;; Reaching the extraction zone with the haul: a bonus of 1 token per 5 carried, scaled by how much of the sortie clock was
+;; left (time-left-pm 0..1000), integer division.
+(defn harvest-extraction-bonus [(tokens-carried : I32) (time-left-pm : I32)] : I32
+  (/ (* (/ (harvest-clamp tokens-carried 0 9999) 5) (harvest-clamp time-left-pm 0 1000)) 1000))
