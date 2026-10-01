@@ -43,6 +43,7 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <math.h>   /* F32 elementwise primitives (tensor/nn.prn) */
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -687,6 +688,119 @@ static inline Bytes f32_load_le_impl(Arena *dest, const char *src, int src_len, 
         memcpy(b.data + (size_t)i * 4u, &f, 4);
     }
     return b;
+}
+
+/* ---- F32 elementwise / normalisation primitives (stdlib/tensor/nn.prn) -----------------------------------
+ * Same contract as the F32 block above: float offsets, ranges validated once, out-of-range = silent no-op.
+ * f32_unary_impl kinds: 0 RELU  1 LEAKY_RELU(p = negative slope)  2 TANH  3 SIGMOID  4 GELU_ERF (exact erf form,
+ * x * 0.5 * (1 + erf(x/sqrt 2)) -- NOT the tanh approximation, which moves a duration-predictor logit enough to flip a
+ * ceil)  5 EXP  6 NEG  7 SQRT  8 SOFTPLUS  9 RECIP  10 ADD_CONST(p)  11 MUL_CONST(p)  12 CLAMP_ABS(p = bound)
+ * Transcendentals come from libm (exp/tanh/erf): correct to ~1 ulp but not bit-identical across libm versions; bit-exact
+ * cross-machine audio would need PARENA-native replacements (tracked in docs/TTS_VITS_PORT_PLAN.md). */
+static inline void f32_unary_impl(Bytes y, int yo, int n, int kind, double p) {
+    if (!f32_range_ok_(y, yo, n)) return;
+    for (int i = 0; i < n; i++) {
+        float f; memcpy(&f, y.data + ((size_t)yo + (size_t)i) * 4u, 4);
+        double v = (double)f, r;
+        switch (kind) {
+            case 0: r = v > 0.0 ? v : 0.0; break;
+            case 1: r = v > 0.0 ? v : v * p; break;
+            case 2: r = tanh(v); break;
+            case 3: r = 1.0 / (1.0 + exp(-v)); break;
+            case 4: r = v * 0.5 * (1.0 + erf(v * 0.70710678118654752440)); break;
+            case 5: r = exp(v); break;
+            case 6: r = -v; break;
+            case 7: r = v > 0.0 ? sqrt(v) : 0.0; break;
+            case 8: r = v > 20.0 ? v : log(1.0 + exp(v)); break;
+            case 9: r = v != 0.0 ? 1.0 / v : 0.0; break;
+            case 10: r = v + p; break;
+            case 11: r = v * p; break;
+            case 12: r = v > p ? p : (v < -p ? -p : v); break;
+            default: return;
+        }
+        f = (float)r;
+        memcpy(y.data + ((size_t)yo + (size_t)i) * 4u, &f, 4);
+    }
+}
+
+/* y[yo+i] *= x[xo+i] */
+static inline void f32_mul_impl(Bytes y, int yo, Bytes x, int xo, int n) {
+    if (!f32_range_ok_(y, yo, n) || !f32_range_ok_(x, xo, n)) return;
+    for (int i = 0; i < n; i++) {
+        float a, b;
+        memcpy(&a, y.data + ((size_t)yo + (size_t)i) * 4u, 4);
+        memcpy(&b, x.data + ((size_t)xo + (size_t)i) * 4u, 4);
+        a *= b;
+        memcpy(y.data + ((size_t)yo + (size_t)i) * 4u, &a, 4);
+    }
+}
+
+/* In-place softmax over each of `rows` rows of length `cols` starting at float offset `off` (max-subtracted, so large
+ * logits cannot overflow). */
+static inline void f32_softmax_rows_impl(Bytes y, int off, int rows, int cols) {
+    if (rows <= 0 || cols <= 0 || off < 0 || off > y.len / 4 || (long)rows * (long)cols > (long)(y.len / 4 - off)) return;
+    for (int r = 0; r < rows; r++) {
+        size_t base = ((size_t)off + (size_t)r * (size_t)cols) * 4u;
+        float mx = -3.402823466e38f;
+        for (int c = 0; c < cols; c++) { float v; memcpy(&v, y.data + base + (size_t)c * 4u, 4); if (v > mx) mx = v; }
+        double sum = 0.0;
+        for (int c = 0; c < cols; c++) {
+            float v; memcpy(&v, y.data + base + (size_t)c * 4u, 4);
+            double e = exp((double)v - (double)mx); sum += e;
+            float ef = (float)e; memcpy(y.data + base + (size_t)c * 4u, &ef, 4);
+        }
+        for (int c = 0; c < cols; c++) {
+            float v; memcpy(&v, y.data + base + (size_t)c * 4u, 4);
+            v = (float)((double)v / sum); memcpy(y.data + base + (size_t)c * 4u, &v, 4);
+        }
+    }
+}
+
+/* Channel LayerNorm on a channel-first tensor x[C][T] (what a VITS/HiFi-GAN stack stores): for every time step t,
+ * normalise over the C channels with a biased variance, then scale by gamma[c] and shift by beta[c]:
+ *   y[c][t] = (x[c][t] - mean_t) / sqrt(var_t + eps) * gamma[c] + beta[c]
+ * (the form VITS uses for all its LayerNorms; "not nn.prn's whole-array layernorm"). Accumulates in double. */
+static inline void f32_layernorm_ct_impl(Bytes x, int off, int channels, int t_len, Bytes gamma, Bytes beta, double eps) {
+    if (channels <= 0 || t_len <= 0 || off < 0 || off > x.len / 4 || (long)channels * (long)t_len > (long)(x.len / 4 - off)) return;
+    if (gamma.len / 4 < channels || beta.len / 4 < channels) return;
+    for (int t = 0; t < t_len; t++) {
+        double mean = 0.0, var = 0.0;
+        for (int c = 0; c < channels; c++) { float v; memcpy(&v, x.data + ((size_t)off + (size_t)c * (size_t)t_len + (size_t)t) * 4u, 4); mean += (double)v; }
+        mean /= (double)channels;
+        for (int c = 0; c < channels; c++) { float v; memcpy(&v, x.data + ((size_t)off + (size_t)c * (size_t)t_len + (size_t)t) * 4u, 4); double d = (double)v - mean; var += d * d; }
+        var /= (double)channels;
+        double inv = 1.0 / sqrt(var + eps);
+        for (int c = 0; c < channels; c++) {
+            size_t pos = ((size_t)off + (size_t)c * (size_t)t_len + (size_t)t) * 4u;
+            float v, g, b; memcpy(&v, x.data + pos, 4); memcpy(&g, gamma.data + (size_t)c * 4u, 4); memcpy(&b, beta.data + (size_t)c * 4u, 4);
+            v = (float)(((double)v - mean) * inv * (double)g + (double)b);
+            memcpy(x.data + pos, &v, 4);
+        }
+    }
+}
+
+/* y[yo+i] = sum_{j<=i} x[xo+j]  (inclusive prefix sum, accumulated in double) */
+static inline void f32_cumsum_impl(Bytes y, int yo, Bytes x, int xo, int n) {
+    if (!f32_range_ok_(y, yo, n) || !f32_range_ok_(x, xo, n)) return;
+    double acc = 0.0;
+    for (int i = 0; i < n; i++) {
+        float v; memcpy(&v, x.data + ((size_t)xo + (size_t)i) * 4u, 4);
+        acc += (double)v;
+        float f = (float)acc; memcpy(y.data + ((size_t)yo + (size_t)i) * 4u, &f, 4);
+    }
+}
+
+/* Same-padding helper: dst[c][pad_l + t] = src[c][t], zeros elsewhere, for `channels` rows of length `t_len`, into rows of
+ * length t_len + pad_l + pad_r. dst must hold channels*(t_len+pad_l+pad_r) floats. */
+static inline void f32_pad_rows_impl(Bytes dst, Bytes src, int channels, int t_len, int pad_l, int pad_r) {
+    if (channels <= 0 || t_len <= 0 || pad_l < 0 || pad_r < 0) return;
+    long lp = (long)t_len + pad_l + pad_r;
+    if (lp > 0x7fffffffL || (long)channels * lp > (long)(dst.len / 4) || (long)channels * (long)t_len > (long)(src.len / 4)) return;
+    for (int c = 0; c < channels; c++) {
+        size_t db = (size_t)c * (size_t)lp * 4u;
+        memset(dst.data + db, 0, (size_t)lp * 4u);
+        memcpy(dst.data + db + (size_t)pad_l * 4u, src.data + (size_t)c * (size_t)t_len * 4u, (size_t)t_len * 4u);
+    }
 }
 
 #ifdef PARENA_WITH_MLDSA

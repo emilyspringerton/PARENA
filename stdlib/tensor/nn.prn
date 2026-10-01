@@ -1,0 +1,70 @@
+;; stdlib/tensor/nn.prn -- the neural-network building blocks above the F32 substrate (stdlib/tensor/f32.prn): activations,
+;; elementwise ops, softmax, channel LayerNorm, cumulative sum and same-padding, for channel-first tensors x[C][T].
+;; Everything a VITS / HiFi-GAN stack needs between its convolutions (docs/TTS_VITS_PORT_PLAN.md).
+;;
+;; Founder real-time, 2026-10-01: PARENA-native TTS, core deps in PARENA first. The unary maps are one runtime primitive
+;; (f32_unary_impl, a `kind` switch) wrapped here by a named defn per op so callers read as the model does.
+;; Same contract as f32.prn: offsets/counts are floats, ranges validated once, out-of-range = silent no-op.
+;; Honest limit: exp/tanh/erf come from libm (accurate to ~1 ulp, not bit-identical across libm versions); a PARENA-native
+;; implementation for bit-exact cross-machine audio is a tracked follow-up.
+(module tensor/nn)
+(import tensor/f32)
+(export nn-relu! nn-leaky-relu! nn-tanh! nn-sigmoid! nn-gelu! nn-exp! nn-neg! nn-sqrt! nn-softplus! nn-recip!
+        nn-add-const! nn-mul-const! nn-clamp! nn-mul! nn-add!
+        nn-softmax-rows! nn-layernorm-ct! nn-cumsum! nn-pad-rows!)
+
+(defn raw-unary [(y : Bytes) (yo : I32) (n : I32) (kind : I32) (p : F64)]
+  : Unit
+  #target
+  {:c (inline-c "f32_unary_impl(y, yo, n, kind, p);")})
+
+(defn nn-relu!       [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 0 0.0))
+(defn nn-leaky-relu! [(y : Bytes) (yo : I32) (n : I32) (slope : F64)] : Unit (raw-unary y yo n 1 slope))
+(defn nn-tanh!       [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 2 0.0))
+(defn nn-sigmoid!    [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 3 0.0))
+;; exact erf-form GELU
+(defn nn-gelu!       [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 4 0.0))
+(defn nn-exp!        [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 5 0.0))
+(defn nn-neg!        [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 6 0.0))
+(defn nn-sqrt!       [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 7 0.0))
+(defn nn-softplus!   [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 8 0.0))
+(defn nn-recip!      [(y : Bytes) (yo : I32) (n : I32)] : Unit (raw-unary y yo n 9 0.0))
+(defn nn-add-const!  [(y : Bytes) (yo : I32) (n : I32) (c : F64)] : Unit (raw-unary y yo n 10 c))
+(defn nn-mul-const!  [(y : Bytes) (yo : I32) (n : I32) (c : F64)] : Unit (raw-unary y yo n 11 c))
+(defn nn-clamp!      [(y : Bytes) (yo : I32) (n : I32) (bound : F64)] : Unit (raw-unary y yo n 12 bound))
+
+;; y[yo+i] *= x[xo+i]
+(defn nn-mul! [(y : Bytes) (yo : I32) (x : Bytes) (xo : I32) (n : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_mul_impl(y, yo, x, xo, n);")})
+
+;; y[yo+i] += x[xo+i]
+(defn nn-add! [(y : Bytes) (yo : I32) (x : Bytes) (xo : I32) (n : I32)]
+  : Unit
+  (f32-axpy! y yo x xo 1.0 n))
+
+;; softmax over each of `rows` rows of `cols` floats starting at float offset `off`
+(defn nn-softmax-rows! [(y : Bytes) (off : I32) (rows : I32) (cols : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_softmax_rows_impl(y, off, rows, cols);")})
+
+;; channel LayerNorm of x[C][T] at float offset `off`: per time step, normalise over the C channels (biased variance, eps),
+;; then gamma[c] * . + beta[c]
+(defn nn-layernorm-ct! [(x : Bytes) (off : I32) (channels : I32) (t-len : I32) (gamma : Bytes) (beta : Bytes) (eps : F64)]
+  : Unit
+  #target
+  {:c (inline-c "f32_layernorm_ct_impl(x, off, channels, t_len, gamma, beta, eps);")})
+
+;; y[yo+i] = x[xo] + ... + x[xo+i]  (inclusive prefix sum)
+(defn nn-cumsum! [(y : Bytes) (yo : I32) (x : Bytes) (xo : I32) (n : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_cumsum_impl(y, yo, x, xo, n);")})
+
+;; dst[c][pad-l + t] = src[c][t], zeros elsewhere; dst rows are t-len + pad-l + pad-r long
+(defn nn-pad-rows! [(dst : Bytes) (src : Bytes) (channels : I32) (t-len : I32) (pad-l : I32) (pad-r : I32)]
+  : Unit
+  #target
+  {:c (inline-c "f32_pad_rows_impl(dst, src, channels, t_len, pad_l, pad_r);")})
