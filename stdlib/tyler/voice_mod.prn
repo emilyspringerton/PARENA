@@ -1,0 +1,49 @@
+;; stdlib/tyler/voice_mod.prn -- MODE_TYLER voice-line fit decisions, real PARENA mod.
+;; Founder real-time (2026-10-01): "dive into the TTS stuff with parena some kind of edge tts
+;; model" -> "in terms of SHANKPIT TYLER mode". Real finding that motivated this mod: rendering
+;; VH01's eight beats with Piper (local ONNX TTS, TYLER/tts/render_vh01.py) showed 4 of 8 clips
+;; overrun their beat's hold_ms in SHANKPIT/packages/simulation/tyler_coldopen.c (beat 0 packs
+;; two spoken lines into a 3000ms hold; beat 4's line is ~5.9s against 3000ms). This mod owns the
+;; DECISION (does the clip fit; speed it up or stretch the beat), the host owns clocks and audio.
+;; Same "mods first" split as cutscene_mod.prn. All times integer ms; speed in permille.
+;; Not yet wired into a live host -- compiled + tested only.
+
+(module tyler/voice-mod)
+(export on-tyler-voice-required-hold-ms)
+(export on-tyler-voice-clip-fits)
+(export on-tyler-voice-speedup-permille)
+(export on-tyler-voice-plan)
+(export on-tyler-voice-stretched-hold-ms)
+
+;; Plan codes (host switches on these).
+(defn voice-plan-as-is [] : I32 0)
+(defn voice-plan-speed-up [] : I32 1)
+(defn voice-plan-stretch-hold [] : I32 2)
+
+;; Beat must cover lead-in silence + clip + tail pause before the next beat's first line.
+(defn on-tyler-voice-required-hold-ms [(clip-ms : I32) (lead-ms : I32) (tail-ms : I32)] : I32
+  (+ (+ clip-ms lead-ms) tail-ms))
+
+(defn on-tyler-voice-clip-fits [(clip-ms : I32) (hold-ms : I32)] : Bool
+  (<= clip-ms hold-ms))
+
+;; Speed multiplier (permille, 1000 = unchanged) needed to squeeze clip-ms into hold-ms.
+(defn on-tyler-voice-speedup-permille [(clip-ms : I32) (hold-ms : I32)] : I32
+  (if (<= clip-ms hold-ms)
+    1000
+    (/ (* clip-ms 1000) hold-ms)))
+
+;; Fits -> as-is; needs <= max-speedup-permille (speech stays intelligible, e.g. 1250) -> speed up
+;; (Piper --length-scale = 1/speed); otherwise -> stretch the beat's hold instead.
+(defn on-tyler-voice-plan [(clip-ms : I32) (hold-ms : I32) (max-speedup-permille : I32)] : I32
+  (if (<= clip-ms hold-ms)
+    (voice-plan-as-is)
+    (if (<= (on-tyler-voice-speedup-permille clip-ms hold-ms) max-speedup-permille)
+      (voice-plan-speed-up)
+      (voice-plan-stretch-hold))))
+
+;; New hold for the stretch plan: clip + pad, never shorter than the authored hold.
+(defn on-tyler-voice-stretched-hold-ms [(clip-ms : I32) (hold-ms : I32) (pad-ms : I32)] : I32
+  (if (> (+ clip-ms pad-ms) hold-ms)
+    (+ clip-ms pad-ms)
+    hold-ms))
