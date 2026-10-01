@@ -1,0 +1,105 @@
+(module gentexture)
+(import math)
+
+;; bullet_hole_shotgun -- SHANKPIT's per-gun bullet-hole decal for the shotgun (founder real-time,
+;; 2026-10-01: "shooting a wall causes a bullet hole, different per gun ... like half life ...
+;; using the nock tools parena texture generator and database"). Authored in PARENA, rendered by
+;; NOCK's procedural texture pipeline, stored in NOCK's texture library as
+;; `bullet-hole-shotgun` (see IDUNA cmd/nock_gen_textures), fetched by the SHANKPIT client.
+;; Same look family as IDUNA/internal/nock/examples/bullet_hole.prn (the founder's original
+;; one-knob asymmetric hole); this file gives each weapon its own character through five knobs:
+;;   asym-seed     -- shape of the wobble (distinct per gun, so no two guns share a silhouette)
+;;   core-radius   -- the black punched-through hole (normalized, 1.0 = canvas edge)
+;;   halo-radius   -- outer extent of the scorch / chipped-plaster halo
+;;   halo-strength -- how dark the halo gets (0 = none, 1 = as dark as the core)
+;;   grit          -- chip/crack speckle strength inside the halo
+;; Background is pure white on purpose: draw with a MULTIPLY blend (glBlendFunc(GL_DST_COLOR,
+;; GL_ZERO)) so white vanishes on any wall -- NOCK's pipeline has no alpha channel (see the
+;; bullet_hole.prn example README). Only the Java-target-safe math/* subset is used
+;; (floor/sqrt/log/cos), no atan2 or math/abs -- angular structure instead comes from cos/sin of
+;; the angle written as polynomials in (x/r, y/r) (Chebyshev identities), which needs only sqrt.
+
+(defn asym-seed [] : F64 0.85)
+(defn core-radius [] : F64 0.07)
+(defn halo-radius [] : F64 0.16)
+(defn halo-strength [] : F64 0.50)
+(defn grit [] : F64 0.70)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn smooth-ramp [(v : F64) (lo : F64) (hi : F64)] : F64
+  (clamp01 (/ (- v lo) (- hi lo))))
+
+(defn lerp [(a : F64) (b : F64) (t : F64)] : F64
+  (+ a (* t (- b a))))
+
+(defn norm-dx [(x : F64) (w : F64)] : F64
+  (/ (- x (/ w 2.0)) (/ w 2.0)))
+
+(defn norm-dy [(y : F64) (h : F64)] : F64
+  (/ (- y (/ h 2.0)) (/ h 2.0)))
+
+(defn raw-radius [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (math/sqrt (+ (* (norm-dx x w) (norm-dx x w)) (* (norm-dy y h) (norm-dy y h)))))
+
+;; cos/sin of the pixel's angle about the center, with no atan2: x/r and y/r. At the exact
+;; center the angle is undefined -- (1, 0) there; every user of it is also gated by radius, so
+;; the choice is invisible.
+(defn cos-t [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (if (< (raw-radius x y w h) 0.0001) 1.0 (/ (norm-dx x w) (raw-radius x y w h))))
+
+(defn sin-t [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (if (< (raw-radius x y w h) 0.0001) 0.0 (/ (norm-dy y h) (raw-radius x y w h))))
+
+;; Chebyshev identities: cos(2t), sin(2t), cos(3t), cos(5t) from c = cos t, s = sin t.
+(defn cos2 [(c : F64) (s : F64)] : F64 (- (* c c) (* s s)))
+(defn sin2 [(c : F64) (s : F64)] : F64 (* 2.0 (* c s)))
+(defn cos3 [(c : F64)] : F64 (- (* 4.0 (* c (* c c))) (* 3.0 c)))
+(defn cos5 [(c : F64)] : F64
+  (+ (- (* 16.0 (* c (* c (* c (* c c))))) (* 20.0 (* c (* c c)))) (* 5.0 c)))
+
+;; Relative edge irregularity: three angular harmonics whose weights shift with asym-seed, so each
+;; gun's hole has a different lopsided silhouette. Applied multiplicatively (see radius) so the
+;; exact center stays at radius 0.
+(defn wobble [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.16
+     (+ (* (+ 0.6 (asym-seed)) (cos3 (cos-t x y w h)))
+        (+ (* (- 0.7 (asym-seed)) (sin2 (cos-t x y w h) (sin-t x y w h)))
+           (* 0.4 (cos2 (cos-t x y w h) (sin-t x y w h)))))))
+
+(defn radius [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (raw-radius x y w h) (+ 1.0 (wobble x y w h))))
+
+;; Radiating crack/spall spokes: cos(5t)^4 is ~1 on five narrow angular lobes and ~0 between them.
+;; The seed rotates which half of the lobes dominates, so cracks are lopsided per gun.
+(defn spokes [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (* (cos5 (cos-t x y w h)) (cos5 (cos-t x y w h)))
+     (* (cos5 (cos-t x y w h)) (cos5 (cos-t x y w h)))))
+
+;; Halo reaches further along the spokes (cracks), by grit.
+(defn halo-reach [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (halo-radius) (+ 1.0 (* (grit) (* 0.5 (spokes x y w h))))))
+
+;; Fine deterministic flaking inside the halo -- cosines of radius and angle, not random-f64, so
+;; the decal re-renders identical until a knob changes.
+(defn flake [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01 (+ 0.55 (* 0.45 (* (math/cos (* (raw-radius x y w h) 31.0))
+                              (math/cos (+ (* (cos-t x y w h) 9.0) (* (sin-t x y w h) 7.0))))))))
+
+;; Near-black punched core + a scorch/spall halo that fades out, streaked by the spokes and
+;; broken up by flaking.
+(defn darkness [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01
+    (+ (* 0.96 (- 1.0 (smooth-ramp (radius x y w h) (* (core-radius) 0.55) (core-radius))))
+       (* (* (halo-strength) (- 1.0 (smooth-ramp (radius x y w h) (core-radius) (halo-reach x y w h))))
+          (- 1.0 (* (grit) (* 0.8 (flake x y w h))))))))
+
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (lerp 1.0 0.07 (darkness x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (lerp 1.0 0.06 (darkness x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (lerp 1.0 0.055 (darkness x y w h)))

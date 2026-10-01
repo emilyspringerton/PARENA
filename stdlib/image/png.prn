@@ -9,7 +9,10 @@
 ;; Real, honest, deliberate v0 scope: 8-bit-depth, non-interlaced PNG only, color type 2
 ;; (truecolor RGB) or 6 (truecolor RGBA) — the overwhelmingly common shape for a real uploaded
 ;; spray/texture PNG (any normal export from a browser canvas, GIMP, Photoshop, ImageMagick
-;; defaults to one of these). Paletted (color type 3), grayscale (0/4), 16-bit depth, and Adam7
+;; defaults to one of these). Paletted 8-bit (color type 3, with optional tRNS alpha) is ALSO
+;; handled as of 2026-10-01 -- ImageMagick (hence NOCK's procedural texture pipeline) palettizes any
+;; image with <=256 distinct colors, e.g. SHANKPIT's per-gun bullet-hole decals, so the narrow
+;; RGB/RGBA-only scope was a real gap, found live. Grayscale (0/4), 1/2/4/16-bit depth, and Adam7
 ;; interlacing are real, named, NOT handled — `png-decode` returns `:ok 0` for any of them rather
 ;; than guessing or corrupting output, so a caller can fall back to the existing placeholder
 ;; instead of showing garbage. Same real "correct first, narrow honestly, widen later" judgment
@@ -60,6 +63,9 @@
   (color-type : I32)
   (interlace  : I32)
   (idat-total : I32)
+  (plte-pos   : I32)  ;; data offset of PLTE payload (3 bytes per entry), 0 if none
+  (trns-pos   : I32)  ;; data offset of tRNS payload (1 alpha byte per entry), 0 if none
+  (trns-len   : I32)
   (ok         : I32))
 
 ;; png-scan-header -- one real pass over every chunk starting right after the 8-byte PNG
@@ -69,26 +75,34 @@
 ;; trusting any other field.
 (defn png-scan-header [(data : Bytes)]
   : PngHeader
-  (loop [pos 8 width 0 height 0 bit-depth 0 color-type 0 interlace 0 idat-total 0 saw-ihdr 0]
+  (loop [pos 8 width 0 height 0 bit-depth 0 color-type 0 interlace 0 idat-total 0 plte-pos 0 trns-pos 0 trns-len 0 saw-ihdr 0]
     (if (>= pos (bytes/bytes-len data))
       {:width width :height height :bit-depth bit-depth :color-type color-type
-       :interlace interlace :idat-total idat-total :ok saw-ihdr}
+       :interlace interlace :idat-total idat-total :plte-pos plte-pos :trns-pos trns-pos
+       :trns-len trns-len :ok saw-ihdr}
       (let [clen (read-u32-be data pos)]
         (cond
           ((chunk-is data (+ pos 4) 73 69 78 68) ;; "IEND"
             {:width width :height height :bit-depth bit-depth :color-type color-type
-             :interlace interlace :idat-total idat-total :ok saw-ihdr})
+             :interlace interlace :idat-total idat-total :plte-pos plte-pos :trns-pos trns-pos
+             :trns-len trns-len :ok saw-ihdr})
           ((chunk-is data (+ pos 4) 73 72 68 82) ;; "IHDR"
             (let [dpos (+ pos 8)]
               (recur (+ pos (+ 12 clen))
                 (read-u32-be data dpos) (read-u32-be data (+ dpos 4))
                 (bytes/bytes-get data (+ dpos 8)) (bytes/bytes-get data (+ dpos 9))
-                (bytes/bytes-get data (+ dpos 12)) idat-total 1)))
+                (bytes/bytes-get data (+ dpos 12)) idat-total plte-pos trns-pos trns-len 1)))
           ((chunk-is data (+ pos 4) 73 68 65 84) ;; "IDAT"
             (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace
-              (+ idat-total clen) saw-ihdr))
+              (+ idat-total clen) plte-pos trns-pos trns-len saw-ihdr))
+          ((chunk-is data (+ pos 4) 80 76 84 69) ;; "PLTE"
+            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace
+              idat-total (+ pos 8) trns-pos trns-len saw-ihdr))
+          ((chunk-is data (+ pos 4) 116 82 78 83) ;; "tRNS"
+            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace
+              idat-total plte-pos (+ pos 8) clen saw-ihdr))
           (true
-            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace idat-total saw-ihdr)))))))
+            (recur (+ pos (+ 12 clen)) width height bit-depth color-type interlace idat-total plte-pos trns-pos trns-len saw-ihdr)))))))
 
 ;; png-copy-idat -- second real pass, copying each IDAT chunk's own payload bytes into one
 ;; correctly-pre-sized `Bytes` buffer (sized by png-scan-header's own real idat-total).
@@ -203,10 +217,10 @@
         (if (not (= (get-field hdr :interlace) 0))
           {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
           (let [color-type (get-field hdr :color-type)]
-            (if (not (or (= color-type 2) (= color-type 6)))
+            (if (not (or (= color-type 2) (or (= color-type 3) (= color-type 6))))
               {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
               (let [width (get-field hdr :width) height (get-field hdr :height)]
-                (let [bpp (if (= color-type 6) 4 3)]
+                (let [bpp (if (= color-type 6) 4 (if (= color-type 3) 1 3))]
                   (let [idat (png-copy-idat data (get-field hdr :idat-total) dest)]
                     (let [deflate-len (- (bytes/bytes-len idat) 6)]
                       (let [deflate-payload (png-strip-zlib-wrapper idat deflate-len dest)]
@@ -219,13 +233,20 @@
                                     {:width 0 :height 0 :pixels (bytes/bytes-alloc 0 dest) :ok 0}
                                     (let [recon (png-defilter raw width height bpp dest)]
                                       (let [rgba (bytes/bytes-alloc (* width (* height 4)) dest)]
-                                        (let [filled
+                                        (let [plte-pos (get-field hdr :plte-pos)
+                                              trns-pos (get-field hdr :trns-pos)
+                                              trns-len (get-field hdr :trns-len)
+                                              filled
                                                (loop [i 0]
                                                  (when (< i (* width height))
-                                                   (let [rb (bytes/bytes-get recon (* i bpp))
-                                                         gb (bytes/bytes-get recon (+ (* i bpp) 1))
-                                                         bb (bytes/bytes-get recon (+ (* i bpp) 2))
-                                                         ab (if (= bpp 4) (bytes/bytes-get recon (+ (* i bpp) 3)) 255)]
+                                                   (let [idx (if (= bpp 1) (bytes/bytes-get recon i) 0)
+                                                         rb (if (= bpp 1) (bytes/bytes-get data (+ plte-pos (* idx 3))) (bytes/bytes-get recon (* i bpp)))
+                                                         gb (if (= bpp 1) (bytes/bytes-get data (+ plte-pos (+ (* idx 3) 1))) (bytes/bytes-get recon (+ (* i bpp) 1)))
+                                                         bb (if (= bpp 1) (bytes/bytes-get data (+ plte-pos (+ (* idx 3) 2))) (bytes/bytes-get recon (+ (* i bpp) 2)))
+                                                         ab (if (= bpp 4) (bytes/bytes-get recon (+ (* i bpp) 3))
+                                                              (if (and (= bpp 1) (and (> trns-pos 0) (< idx trns-len)))
+                                                                (bytes/bytes-get data (+ trns-pos idx))
+                                                                255))]
                                                      (bytes/bytes-set! rgba (* i 4) rb)
                                                      (bytes/bytes-set! rgba (+ (* i 4) 1) gb)
                                                      (bytes/bytes-set! rgba (+ (* i 4) 2) bb)

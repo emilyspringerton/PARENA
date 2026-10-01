@@ -1,3 +1,7 @@
+## 2026-10-01
+
+- `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
+
 ## 2026-09-30
 - `stdlib/shankpit/textures/institutional_tile.prn` + `ecs_screen_glow.prn` (S536 MODE_TYLER demo,
   SHANKPIT/docs2/specs/TYLER_VALHANNA_MODE_NORTHSTAR.md): two new procedural texture sources for
