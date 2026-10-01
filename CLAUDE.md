@@ -100,3 +100,22 @@ the literal task asked for still happens every time.
 Always commit and push completed work immediately — don't wait to be asked. This is the default for every repo in this monorepo.
 
 Every commit — human-written or produced by automated code paths (git-commit helpers in emily-agent, emily.cli, IDUNA handlers, etc.) — must carry the active `emily session` fingerprint as a `session: <tag>` trailer (blank line, then the trailer). This was silently missing from several independently-implemented automated commit helpers across the monorepo until an audit on 2026-08-10 (founder, real-time: "where in the fuck is my llm session id anywhere"). If you add a new automated git-commit code path anywhere, wire in the session tag the same way — don't assume an existing helper already does it.
+
+## Core Deps Are PARENA-First (standing, monorepo-wide)
+
+Founder real-time, 2026-10-01: *"always implement core deps in PARENA — when core deps are missing
+always implement the core deps in PARENA first."*
+
+- **When a core dependency is missing** (a codec, a protocol client, an inference engine, a
+  parser, a data structure — anything this repo's own functionality stands on), implement it in
+  PARENA (`PARENA/stdlib/...`) **first**, before building the feature that needs it. Deps first,
+  feature second.
+- **If PARENA itself can't express the dep yet**, that gap is the real first task: fix or extend
+  PARENA (compiler, emitter, or stdlib), with tests, then build the dep on top. Don't route around it.
+- **Third-party tools/binaries are stopgaps, not the answer.** Shelling out to or FFI-binding an
+  existing tool is allowed only to unblock a demo, and must be labeled as a stopgap in the code and
+  in `EMILY/BACKLOG.md` with a PARENA replacement item. (Example: Piper via subprocess for
+  MODE_TYLER TTS, 2026-10-01 — stopgap; the PARENA-native synthesis stack is the real work.)
+- **Not a license to reimplement the OS.** Core deps = what the product's own behavior depends on.
+  Compilers, kernels, system libraries and the like stay as-is; a repo's own CLAUDE.md may record a
+  considered, specific exception (same standard as the LZ4 compression convention).
