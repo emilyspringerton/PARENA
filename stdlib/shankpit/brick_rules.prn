@@ -1,0 +1,62 @@
+;; stdlib/shankpit/brick_rules.prn -- the decision layer for SHANKPIT's destructible brick
+;; (founder real-time, 2026-10-01: "get papercraft tech shipped to shankpit i want brick to be
+;; destructable"). It composes with PAPERCRAFT's real Paper Engine decisions instead of
+;; re-deriving them: papercraft/paper_fragment_mod.prn (material resistance + HP tiers) and
+;; papercraft/interact_falloff_mod.prn (distance falloff) are compiled in alongside this file
+;; (see SHANKPIT/scripts/gen_brick_mod.sh); this module only adds the two decisions that are
+;; specific to SHANKPIT's weapons and brick:
+;;   * how much a given weapon's damage counts against brick  (on-brick-weapon-damage)
+;;   * how much debris a cell state change throws              (on-brick-debris-count)
+;;   * which paper material / how many HP a brick cell has     (on-brick-paper-material,
+;;                                                              on-brick-cell-max-hp)
+;;
+;; Same ABI as every other mod in the monorepo (ECOWAR/docs/ARENA_API.md): I32 in, I32 out, no
+;; struct/F32/Vec across the boundary. Host C (SHANKPIT packages/world/brick_fracture.h) owns the
+;; cell grid, the F32 geometry and the collision/render consequence of a cell being gone.
+
+(module shankpit/brick-rules)
+(export on-brick-weapon-damage)
+(export on-brick-debris-count)
+(export on-brick-paper-material)
+(export on-brick-cell-max-hp)
+
+;; Weapon ids are SHANKPIT's own (packages/common/protocol.h):
+;;   0 KNIFE  1 MAGNUM  2 AR  3 SHOTGUN (per-pellet damage)  4 SNIPER  5 KATANA  6 MISSILE
+;;   7 FLASHLIGHT
+;; Blades and a flashlight do not chip masonry. Explosives demolish it (x3). The sniper's round
+;; punches (x1.25). Everything else counts at face value.
+(defn on-brick-weapon-damage [(weapon : I32) (base-damage : I32)] : I32
+  (if (= weapon 6)
+    (* base-damage 3)
+    (if (= weapon 4)
+      (+ base-damage (/ base-damage 4))
+      (if (= weapon 0)
+        0
+        (if (= weapon 5)
+          0
+          (if (= weapon 7)
+            0
+            base-damage))))))
+
+;; Debris thrown when a cell changes state (states are PAPER_STATE_*: 0 intact, 1 cracked,
+;; 2 torn, 3 gone). Only a worsening change throws anything; a cell that is gone throws the most.
+(defn on-brick-debris-count [(prev-state : I32) (new-state : I32)] : I32
+  (if (<= new-state prev-state)
+    0
+    (if (= new-state 3)
+      4
+      (if (= new-state 2)
+        2
+        (if (= new-state 1)
+          1
+          0)))))
+
+;; Brick is PAPER_MATERIAL_CONCRETE (2) as far as paper_fragment_mod's resistance table goes
+;; (50 percent of every hit is absorbed); the argument keeps the door open for other masonry.
+(defn on-brick-paper-material [(brick-kind : I32)] : I32
+  (if (= brick-kind 0) 2 2))
+
+;; PAPER_MATERIAL_MAX_HP[CONCRETE] in packages/common/paper_mesh.h is 80; brick cells use it
+;; unchanged so a SHANKPIT brick cell and a PAPERCRAFT concrete fragment are the same toughness.
+(defn on-brick-cell-max-hp [(brick-kind : I32)] : I32
+  (if (= brick-kind 0) 80 80))
