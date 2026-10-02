@@ -1419,3 +1419,9 @@ parena-gitops: build stdlib/k8s/gitops.prn tools/gitops_host.c
 	./parena build stdlib/string.prn stdlib/k8s/gitops.prn -o tools/gitops_gen.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -D_POSIX_C_SOURCE=200809L -I runtime -I tools tools/gitops_host.c \
 		runtime/parena_runtime.c -o parena-gitops -lm
+
+# parena-k8s-render -- print Deployment+Service(+Ingress) for one app (feeds the GitOps repo).
+parena-k8s-render: build stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn tools/k8s_render_host.c
+	./parena build stdlib/string.prn stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn -o tools/render_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tools tools/k8s_render_host.c \
+		runtime/parena_runtime.c -o parena-k8s-render -lm

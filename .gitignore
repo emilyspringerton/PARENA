@@ -37,3 +37,5 @@ var/
 parena-gitops
 tools/gitops_gen.c
 tests/test_k8s_gitops_gen.c
+parena-k8s-render
+tools/render_gen.c
