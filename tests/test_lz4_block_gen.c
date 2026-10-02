@@ -14,23 +14,23 @@ char * bytes_to_string_lossy(Bytes, Arena *);
 Bytes bytes_slice(Bytes, int, int, Arena *);
 int lz4_max_input();
 int lz4_compress_bound(int);
-int hash4(Bytes, int);
-int table_get(Bytes, int);
-int table_put_(Bytes, int, int);
-int zero_fill_(Bytes, int);
-int put_byte_(Bytes, int, int);
-int put_le16_(Bytes, int, int);
-int put_ext_(Bytes, int, int);
-int copy_bytes_(Bytes, int, Bytes, int, int);
-int emit_seq_(Bytes, int, Bytes, int, int, int, int);
-int emit_last_(Bytes, int, Bytes, int, int);
-int match_extend(Bytes, int, int, int);
-int same4_(Bytes, int, int);
+int lz4b_hash4(Bytes, int);
+int lz4b_table_get(Bytes, int);
+int lz4b_table_put_(Bytes, int, int);
+int lz4b_zero_fill_(Bytes, int);
+int lz4b_put_byte_(Bytes, int, int);
+int lz4b_put_le16_(Bytes, int, int);
+int lz4b_put_ext_(Bytes, int, int);
+int lz4b_copy_bytes_(Bytes, int, Bytes, int, int);
+int lz4b_emit_seq_(Bytes, int, Bytes, int, int, int, int);
+int lz4b_emit_last_(Bytes, int, Bytes, int, int);
+int lz4b_match_extend(Bytes, int, int, int);
+int lz4b_same4_(Bytes, int, int);
 Bytes lz4_compress_block(Bytes, Arena *);
-int ext_sum(Bytes, int, int);
-int ext_end(Bytes, int);
-int copy_match_(Bytes, int, int, int);
-int decode_loop(Bytes, int, Bytes, int);
+int lz4b_ext_sum(Bytes, int, int);
+int lz4b_ext_end(Bytes, int);
+int lz4b_copy_match_(Bytes, int, int, int);
+int lz4b_decode_loop(Bytes, int, Bytes, int);
 Bytes lz4_decompress_block(Bytes, int, Arena *);
 
 Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -69,15 +69,15 @@ int lz4_compress_bound(int n __attribute__((unused))) {
     return (n + ((n / 255) + 16));
 }
 
-int hash4(Bytes src __attribute__((unused)), int p __attribute__((unused))) {
+int lz4b_hash4(Bytes src __attribute__((unused)), int p __attribute__((unused))) {
     return (((bytes_get(src, p) * 31) + ((bytes_get(src, (p + 1)) * 131) + ((bytes_get(src, (p + 2)) * 257) + (bytes_get(src, (p + 3)) * 521)))) % 4096);
 }
 
-int table_get(Bytes t __attribute__((unused)), int h __attribute__((unused))) {
+int lz4b_table_get(Bytes t __attribute__((unused)), int h __attribute__((unused))) {
     return ((bytes_get(t, (h * 2)) + (bytes_get(t, ((h * 2) + 1)) * 256)) - 1);
 }
 
-int table_put_(Bytes t __attribute__((unused)), int h __attribute__((unused)), int pos __attribute__((unused))) {
+int lz4b_table_put_(Bytes t __attribute__((unused)), int h __attribute__((unused)), int pos __attribute__((unused))) {
     if ((pos < 65535)) {
     (void)(bytes_set_(t, (h * 2), ((pos + 1) % 256)));
     (void)(bytes_set_(t, ((h * 2) + 1), ((pos + 1) / 256)));
@@ -87,7 +87,7 @@ int table_put_(Bytes t __attribute__((unused)), int h __attribute__((unused)), i
     }
 }
 
-int zero_fill_(Bytes b __attribute__((unused)), int n __attribute__((unused))) {
+int lz4b_zero_fill_(Bytes b __attribute__((unused)), int n __attribute__((unused))) {
     int __loop_result_0 __attribute__((unused));
     int i = 0;
     while (1) {
@@ -104,18 +104,18 @@ int zero_fill_(Bytes b __attribute__((unused)), int n __attribute__((unused))) {
     return __loop_result_0;
 }
 
-int put_byte_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int v __attribute__((unused))) {
+int lz4b_put_byte_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int v __attribute__((unused))) {
     (void)(bytes_set_(out, op, v));
     return (op + 1);
 }
 
-int put_le16_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int v __attribute__((unused))) {
+int lz4b_put_le16_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int v __attribute__((unused))) {
     (void)(bytes_set_(out, op, (v % 256)));
     (void)(bytes_set_(out, (op + 1), (v / 256)));
     return (op + 2);
 }
 
-int put_ext_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int rem __attribute__((unused))) {
+int lz4b_put_ext_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int rem __attribute__((unused))) {
     int __loop_result_1 __attribute__((unused));
     int o = op;
     int r = rem;
@@ -136,7 +136,7 @@ int put_ext_(Bytes out __attribute__((unused)), int op __attribute__((unused)), 
     return __loop_result_1;
 }
 
-int copy_bytes_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int from __attribute__((unused)), int cnt __attribute__((unused))) {
+int lz4b_copy_bytes_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int from __attribute__((unused)), int cnt __attribute__((unused))) {
     int __loop_result_2 __attribute__((unused));
     int i = 0;
     while (1) {
@@ -153,29 +153,29 @@ int copy_bytes_(Bytes out __attribute__((unused)), int op __attribute__((unused)
     return __loop_result_2;
 }
 
-int emit_seq_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int anchor __attribute__((unused)), int pos __attribute__((unused)), int offset __attribute__((unused)), int ml __attribute__((unused))) {
+int lz4b_emit_seq_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int anchor __attribute__((unused)), int pos __attribute__((unused)), int offset __attribute__((unused)), int ml __attribute__((unused))) {
     int ll __attribute__((unused)) = (pos - anchor);
     int mlx __attribute__((unused)) = (ml - 4);
     int tok __attribute__((unused)) = ((((ll >= 15) ? 15 : ll) * 16) + ((mlx >= 15) ? 15 : mlx));
-    int o1 __attribute__((unused)) = put_byte_(out, op, tok);
-    int o2 __attribute__((unused)) = ((ll >= 15) ? put_ext_(out, o1, (ll - 15)) : o1);
-    int o3 __attribute__((unused)) = copy_bytes_(out, o2, src, anchor, ll);
-    int o4 __attribute__((unused)) = put_le16_(out, o3, offset);
+    int o1 __attribute__((unused)) = lz4b_put_byte_(out, op, tok);
+    int o2 __attribute__((unused)) = ((ll >= 15) ? lz4b_put_ext_(out, o1, (ll - 15)) : o1);
+    int o3 __attribute__((unused)) = lz4b_copy_bytes_(out, o2, src, anchor, ll);
+    int o4 __attribute__((unused)) = lz4b_put_le16_(out, o3, offset);
     if ((mlx >= 15)) {
-    return put_ext_(out, o4, (mlx - 15));
+    return lz4b_put_ext_(out, o4, (mlx - 15));
     } else {
     return o4;
     }
 }
 
-int emit_last_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int anchor __attribute__((unused)), int n __attribute__((unused))) {
+int lz4b_emit_last_(Bytes out __attribute__((unused)), int op __attribute__((unused)), Bytes src __attribute__((unused)), int anchor __attribute__((unused)), int n __attribute__((unused))) {
     int ll __attribute__((unused)) = (n - anchor);
-    int o1 __attribute__((unused)) = put_byte_(out, op, (((ll >= 15) ? 15 : ll) * 16));
-    int o2 __attribute__((unused)) = ((ll >= 15) ? put_ext_(out, o1, (ll - 15)) : o1);
-    return copy_bytes_(out, o2, src, anchor, ll);
+    int o1 __attribute__((unused)) = lz4b_put_byte_(out, op, (((ll >= 15) ? 15 : ll) * 16));
+    int o2 __attribute__((unused)) = ((ll >= 15) ? lz4b_put_ext_(out, o1, (ll - 15)) : o1);
+    return lz4b_copy_bytes_(out, o2, src, anchor, ll);
 }
 
-int match_extend(Bytes src __attribute__((unused)), int cand __attribute__((unused)), int pos __attribute__((unused)), int limit __attribute__((unused))) {
+int lz4b_match_extend(Bytes src __attribute__((unused)), int cand __attribute__((unused)), int pos __attribute__((unused)), int limit __attribute__((unused))) {
     int __loop_result_3 __attribute__((unused));
     int l = 4;
     while (1) {
@@ -196,7 +196,7 @@ int match_extend(Bytes src __attribute__((unused)), int cand __attribute__((unus
     return __loop_result_3;
 }
 
-int same4_(Bytes src __attribute__((unused)), int a __attribute__((unused)), int b __attribute__((unused))) {
+int lz4b_same4_(Bytes src __attribute__((unused)), int a __attribute__((unused)), int b __attribute__((unused))) {
     return ((bytes_get(src, a) == bytes_get(src, b)) && ((bytes_get(src, (a + 1)) == bytes_get(src, (b + 1))) && ((bytes_get(src, (a + 2)) == bytes_get(src, (b + 2))) && (bytes_get(src, (a + 3)) == bytes_get(src, (b + 3))))));
 }
 
@@ -207,7 +207,7 @@ Bytes lz4_compress_block(Bytes src __attribute__((unused)), Arena *dest __attrib
     } else {
     Bytes out __attribute__((unused)) = bytes_alloc(lz4_compress_bound(n), dest);
     Bytes table __attribute__((unused)) = bytes_alloc(8192, dest);
-    int z __attribute__((unused)) = zero_fill_(table, 8192);
+    int z __attribute__((unused)) = lz4b_zero_fill_(table, 8192);
     int last_match_start __attribute__((unused)) = (n - 12);
     int match_limit __attribute__((unused)) = (n - 5);
     Bytes __loop_result_4 __attribute__((unused));
@@ -216,15 +216,15 @@ Bytes lz4_compress_block(Bytes src __attribute__((unused)), Arena *dest __attrib
     int op = 0;
     while (1) {
         if ((pos > last_match_start)) {
-        __loop_result_4 = bytes_slice(out, 0, emit_last_(out, op, src, anchor, n), dest);
+        __loop_result_4 = bytes_slice(out, 0, lz4b_emit_last_(out, op, src, anchor, n), dest);
         break;
         } else {
-        int h __attribute__((unused)) = hash4(src, pos);
-        int cand __attribute__((unused)) = table_get(table, h);
-        int z2 __attribute__((unused)) = table_put_(table, h, pos);
-        if (((cand >= 0) && (((pos - cand) <= 65535) && same4_(src, cand, pos)))) {
-        int ml __attribute__((unused)) = match_extend(src, cand, pos, match_limit);
-        int op2 __attribute__((unused)) = emit_seq_(out, op, src, anchor, pos, (pos - cand), ml);
+        int h __attribute__((unused)) = lz4b_hash4(src, pos);
+        int cand __attribute__((unused)) = lz4b_table_get(table, h);
+        int z2 __attribute__((unused)) = lz4b_table_put_(table, h, pos);
+        if (((cand >= 0) && (((pos - cand) <= 65535) && lz4b_same4_(src, cand, pos)))) {
+        int ml __attribute__((unused)) = lz4b_match_extend(src, cand, pos, match_limit);
+        int op2 __attribute__((unused)) = lz4b_emit_seq_(out, op, src, anchor, pos, (pos - cand), ml);
         int __recur_tmp_0 = (pos + ml);
         int __recur_tmp_1 = (pos + ml);
         int __recur_tmp_2 = op2;
@@ -247,7 +247,7 @@ Bytes lz4_compress_block(Bytes src __attribute__((unused)), Arena *dest __attrib
     }
 }
 
-int ext_sum(Bytes src __attribute__((unused)), int ip __attribute__((unused)), int n __attribute__((unused))) {
+int lz4b_ext_sum(Bytes src __attribute__((unused)), int ip __attribute__((unused)), int n __attribute__((unused))) {
     int __loop_result_5 __attribute__((unused));
     int i = ip;
     int acc = 0;
@@ -272,7 +272,7 @@ int ext_sum(Bytes src __attribute__((unused)), int ip __attribute__((unused)), i
     return __loop_result_5;
 }
 
-int ext_end(Bytes src __attribute__((unused)), int ip __attribute__((unused))) {
+int lz4b_ext_end(Bytes src __attribute__((unused)), int ip __attribute__((unused))) {
     int __loop_result_6 __attribute__((unused));
     int i = ip;
     while (1) {
@@ -288,7 +288,7 @@ int ext_end(Bytes src __attribute__((unused)), int ip __attribute__((unused))) {
     return __loop_result_6;
 }
 
-int copy_match_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int offset __attribute__((unused)), int ml __attribute__((unused))) {
+int lz4b_copy_match_(Bytes out __attribute__((unused)), int op __attribute__((unused)), int offset __attribute__((unused)), int ml __attribute__((unused))) {
     int __loop_result_7 __attribute__((unused));
     int i = 0;
     while (1) {
@@ -305,7 +305,7 @@ int copy_match_(Bytes out __attribute__((unused)), int op __attribute__((unused)
     return __loop_result_7;
 }
 
-int decode_loop(Bytes src __attribute__((unused)), int n __attribute__((unused)), Bytes out __attribute__((unused)), int olen __attribute__((unused))) {
+int lz4b_decode_loop(Bytes src __attribute__((unused)), int n __attribute__((unused)), Bytes out __attribute__((unused)), int olen __attribute__((unused))) {
     int __loop_result_8 __attribute__((unused));
     int ip = 0;
     int op = 0;
@@ -317,18 +317,18 @@ int decode_loop(Bytes src __attribute__((unused)), int n __attribute__((unused))
         int tok __attribute__((unused)) = bytes_get(src, ip);
         int ll0 __attribute__((unused)) = (tok / 16);
         int ip1 __attribute__((unused)) = (ip + 1);
-        int llx __attribute__((unused)) = ((ll0 == 15) ? ext_sum(src, ip1, n) : 0);
+        int llx __attribute__((unused)) = ((ll0 == 15) ? lz4b_ext_sum(src, ip1, n) : 0);
         if ((llx < 0)) {
         __loop_result_8 = -1;
         break;
         } else {
         int ll __attribute__((unused)) = (ll0 + llx);
-        int ip2 __attribute__((unused)) = ((ll0 == 15) ? ext_end(src, ip1) : ip1);
+        int ip2 __attribute__((unused)) = ((ll0 == 15) ? lz4b_ext_end(src, ip1) : ip1);
         if ((((ip2 + ll) > n) || ((op + ll) > olen))) {
         __loop_result_8 = -1;
         break;
         } else {
-        int op1 __attribute__((unused)) = copy_bytes_(out, op, src, ip2, ll);
+        int op1 __attribute__((unused)) = lz4b_copy_bytes_(out, op, src, ip2, ll);
         int ip3 __attribute__((unused)) = (ip2 + ll);
         if ((ip3 == n)) {
         __loop_result_8 = op1;
@@ -341,19 +341,19 @@ int decode_loop(Bytes src __attribute__((unused)), int n __attribute__((unused))
         int offset __attribute__((unused)) = (bytes_get(src, ip3) + (bytes_get(src, (ip3 + 1)) * 256));
         int ip4 __attribute__((unused)) = (ip3 + 2);
         int ml0 __attribute__((unused)) = (tok % 16);
-        int mlx __attribute__((unused)) = ((ml0 == 15) ? ext_sum(src, ip4, n) : 0);
+        int mlx __attribute__((unused)) = ((ml0 == 15) ? lz4b_ext_sum(src, ip4, n) : 0);
         if (((mlx < 0) || ((offset == 0) || (offset > op1)))) {
         __loop_result_8 = -1;
         break;
         } else {
         int ml __attribute__((unused)) = ((ml0 + mlx) + 4);
-        int ip5 __attribute__((unused)) = ((ml0 == 15) ? ext_end(src, ip4) : ip4);
+        int ip5 __attribute__((unused)) = ((ml0 == 15) ? lz4b_ext_end(src, ip4) : ip4);
         if (((op1 + ml) > olen)) {
         __loop_result_8 = -1;
         break;
         } else {
         int __recur_tmp_0 = ip5;
-        int __recur_tmp_1 = copy_match_(out, op1, offset, ml);
+        int __recur_tmp_1 = lz4b_copy_match_(out, op1, offset, ml);
         ip = __recur_tmp_0;
         op = __recur_tmp_1;
         continue;
@@ -374,7 +374,7 @@ Bytes lz4_decompress_block(Bytes src __attribute__((unused)), int out_len __attr
     return bytes_alloc(0, dest);
     } else {
     Bytes out __attribute__((unused)) = bytes_alloc(out_len, dest);
-    int end __attribute__((unused)) = decode_loop(src, n, out, out_len);
+    int end __attribute__((unused)) = lz4b_decode_loop(src, n, out, out_len);
     if ((end == out_len)) {
     return out;
     } else {

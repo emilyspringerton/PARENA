@@ -1,0 +1,128 @@
+;; stdlib/net/secure_channel.prn -- EDGE.GAME's encrypted, compressed wire frames (card #490;
+;; founder real-time 2026-10-02: "ensure we are using lz4 and the new encryption we added to
+;; parena"). Pure functions over Bytes, transport-agnostic: the host (relay/client C code) owns the
+;; socket and the two frame counters, PARENA owns every byte-level decision.
+;;
+;; Handshake (post-quantum, one round trip; the host moves the bytes):
+;;   server: (crypto/mlkem/mlkem-keygen) once; publishes ek (1184 B). Clients PIN sc-fingerprint(ek)
+;;           out of band (printed at relay startup) -- that pin is the server authentication.
+;;   client: checks fingerprint(ek) == pin, (mlkem-encaps ek) -> ct (1088 B) + ss (32 B), sends ct.
+;;   server: (mlkem-decaps ct dk) -> same ss.  (A wrong ct yields a DIFFERENT ss -- ML-KEM implicit
+;;           rejection -- so the first AEAD frame simply fails to open; no oracle.)
+;;   both:   k_c2s = sc-derive-key(ss, "edge-c2s"), k_s2c = sc-derive-key(ss, "edge-s2c").
+;;   Client authentication is the existing hello token, sent as the first (encrypted) frame.
+;;
+;; Frame (wire):  [ctr LE32][ AEAD-XChaCha20-Poly1305( [flag][rawlen LE32][body] ) ]
+;;   flag 1 = body is an LZ4 block (compress/lz4_block) of the message, flag 0 = stored raw (used
+;;   when LZ4 doesn't shrink it). Nonce (24 B) = [direction][0 x19][ctr LE32]; associated data = the
+;;   5 bytes [direction][ctr LE32]. The receiver demands ctr == its next expected value, so replayed,
+;;   reordered, dropped or cross-direction frames fail (TCP delivers in order, so the strict check
+;;   costs nothing). Counters must never wrap: hosts re-handshake before 2^31 frames.
+;;
+;; Compress-then-encrypt leaks plaintext LENGTH (and via it, compressibility) -- inherent to the
+;; "LZ4 + encryption" requirement. CRIME-style attacks need an attacker who both injects chosen
+;; text next to a secret in the same frame and can observe sizes; the relay protocol puts the auth
+;; token in its own frame, never mixed with attacker-influenced data. Named, not hidden.
+;;
+;; Limits: 1..60000 byte messages (empty is rejected: AEAD cannot distinguish an empty plaintext
+;; from failure). Failure -> zero-length Bytes.
+(module net/secure_channel)
+(import bytes)
+(import crypto/aead)
+(import compress/lz4_block)
+(export sc-derive-key sc-fingerprint sc-frame-seal sc-frame-open sc-max-message sc-dir-c2s sc-dir-s2c)
+
+(defn sc-max-message [] : I32 60000)
+(defn sc-dir-c2s [] : I32 1)
+(defn sc-dir-s2c [] : I32 2)
+
+(defn sc-label [(dir : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [b (bytes-alloc 8 dest)]
+    (do (bytes-set! b 0 101) (bytes-set! b 1 100) (bytes-set! b 2 103) (bytes-set! b 3 101)  ;; "edge"
+        (bytes-set! b 4 45) (bytes-set! b 5 (if (= dir 1) 99 115)) (bytes-set! b 6 50)         ;; "-c2" / "-s2"
+        (bytes-set! b 7 (if (= dir 1) 115 99))                                                    ;; ...s / ...c
+        b)))
+
+;; sc-derive-key -- per-direction 32-byte key from the ML-KEM shared secret. dir 1 = client->server.
+(defn sc-derive-key [(shared-secret : Bytes) (dir : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (crypto/aead/aead-kdf shared-secret (sc-label dir dest) dest))
+
+;; sc-fingerprint -- 32-byte pin of a server's ML-KEM encapsulation key.
+(defn sc-fingerprint [(ek : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [tag (bytes-alloc 4 dest)]
+    (do (bytes-set! tag 0 112) (bytes-set! tag 1 105) (bytes-set! tag 2 110) (bytes-set! tag 3 49) ;; "pin1"
+        (crypto/aead/aead-kdf ek tag dest))))
+
+(defn sc-put-byte! [(b : Bytes) (off : I32) (v : I32)] : I32
+  (do (bytes-set! b off v) 0))
+
+(defn sc-put-le32! [(b : Bytes) (off : I32) (v : I32)] : I32
+  (do (bytes-set! b off (mod v 256))
+      (bytes-set! b (+ off 1) (mod (/ v 256) 256))
+      (bytes-set! b (+ off 2) (mod (/ v 65536) 256))
+      (bytes-set! b (+ off 3) (mod (/ v 16777216) 256))
+      0))
+
+(defn sc-get-le32 [(b : Bytes) (off : I32)] : I32
+  (+ (bytes-get b off)
+     (+ (* (bytes-get b (+ off 1)) 256)
+        (+ (* (bytes-get b (+ off 2)) 65536)
+           (* (bytes-get b (+ off 3)) 16777216)))))
+
+(defn sc-zero! [(b : Bytes) (n : I32)] : I32
+  (loop [i 0] (if (>= i n) 0 (do (bytes-set! b i 0) (recur (+ i 1))))))
+
+(defn sc-copy-into! [(out : Bytes) (op : I32) (src : Bytes) (cnt : I32)] : I32
+  (loop [i 0]
+    (if (>= i cnt) (+ op cnt) (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1))))))
+
+(defn sc-make-nonce [(dir : I32) (ctr : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (bytes-alloc 24 dest)
+        z (sc-zero! n 24)]
+    (do (bytes-set! n 0 dir) (sc-put-le32! n 20 ctr) n)))
+
+(defn sc-make-ad [(dir : I32) (ctr : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [a (bytes-alloc 5 dest)]
+    (do (bytes-set! a 0 dir) (sc-put-le32! a 1 ctr) a)))
+
+;; sc-frame-seal -- wire frame for msg under key at counter ctr in direction dir; zero-length on
+;; bad key size / empty / oversize message / ctr out of range.
+(defn sc-frame-seal [(key : Bytes) (dir : I32) (ctr : I32) (msg : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (bytes-len msg)]
+    (if (or (< n 1) (or (> n (sc-max-message)) (or (< ctr 0) (not (= (bytes-len key) 32)))))
+      (bytes-alloc 0 dest)
+      (let [lz (compress/lz4_block/lz4-compress-block msg dest)
+            use-lz (and (> (bytes-len lz) 0) (< (bytes-len lz) n))
+            blen (if use-lz (bytes-len lz) n)
+            plain (bytes-alloc (+ 5 blen) dest)
+            z (sc-put-byte! plain 0 (if use-lz 1 0))
+            z2 (sc-put-le32! plain 1 n)
+            z3 (sc-copy-into! plain 5 (if use-lz lz msg) blen)
+            sealed (crypto/aead/aead-seal key (sc-make-nonce dir ctr dest) (sc-make-ad dir ctr dest) plain dest)]
+        (if (= (bytes-len sealed) 0)
+          sealed
+          (let [wire (bytes-alloc (+ 4 (bytes-len sealed)) dest)
+                w1 (sc-put-le32! wire 0 ctr)
+                w2 (sc-copy-into! wire 4 sealed (bytes-len sealed))]
+            wire))))))
+
+;; sc-frame-open -- the message, or zero-length on ANY failure: wrong/replayed/out-of-order counter,
+;; failed authentication, short frame, bad flag, declared length out of range, LZ4 corruption.
+(defn sc-frame-open [(key : Bytes) (dir : I32) (expect-ctr : I32) (wire : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (if (or (< (bytes-len wire) 22) (or (not (= (bytes-len key) 32)) (not (= (sc-get-le32 wire 0) expect-ctr))))
+    (bytes-alloc 0 dest)
+    (let [sealed (bytes-slice wire 4 (bytes-len wire) dest)
+          plain (crypto/aead/aead-open key (sc-make-nonce dir expect-ctr dest) (sc-make-ad dir expect-ctr dest) sealed dest)
+          pl (bytes-len plain)]
+      (if (< pl 6)
+        (bytes-alloc 0 dest)
+        (let [flag (bytes-get plain 0)
+              rawlen (sc-get-le32 plain 1)
+              body (bytes-slice plain 5 pl dest)]
+          (if (or (< rawlen 1) (> rawlen (sc-max-message)))
+            (bytes-alloc 0 dest)
+            (if (= flag 0)
+              (if (= (bytes-len body) rawlen) body (bytes-alloc 0 dest))
+              (if (= flag 1)
+                (compress/lz4_block/lz4-decompress-block body rawlen dest)
+                (bytes-alloc 0 dest)))))))))

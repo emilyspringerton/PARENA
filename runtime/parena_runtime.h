@@ -923,6 +923,18 @@ static inline Bytes aead_open_impl(Bytes key, Bytes nonce, Bytes ad, Bytes seale
         return bytes_alloc_impl(dest, 0);
     return out;
 }
+/* aead_kdf_impl -- 32-byte BLAKE2b of secret||label (Monocypher). Domain-separated key derivation
+ * for the secure channel: one ML-KEM shared secret -> an independent key per direction. The
+ * secret is already uniformly random (ML-KEM output), so a plain hash is a sound KDF here;
+ * label must be distinct per use. Also used as the 32-byte key fingerprint. */
+static inline Bytes aead_kdf_impl(Bytes secret, Bytes label, Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, 32);
+    Bytes buf = bytes_alloc_impl(dest, secret.len + label.len);
+    if (secret.len) memcpy(buf.data, secret.data, (size_t)secret.len);
+    if (label.len) memcpy(buf.data + secret.len, label.data, (size_t)label.len);
+    crypto_blake2b(out.data, 32, buf.data, (size_t)buf.len);
+    return out;
+}
 #endif /* PARENA_WITH_AEAD */
 
 /* string_concat -- real, minimal `string/concat` implementation
