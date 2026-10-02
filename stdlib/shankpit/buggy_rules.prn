@@ -1,0 +1,44 @@
+;; stdlib/shankpit/buggy_rules.prn -- SHANKPIT buggy handling as a PARENA mod (card #468, #464: "the buggy should be PARENA
+;; programmable"). The physics (packages/common/physics.h simulate_buggy_state) keeps the integration, collision and
+;; wheel-support; every number that decides how the buggy FEELS comes from here: the transmission torque curve, top speeds,
+;; steering rate/authority and lateral grip. Retune a number or rewrite a curve, `make regen-buggy-rules` in SHANKPIT, and
+;; the server and every client drive the new buggy. The defaults reproduce the previous built-in constants exactly.
+;;
+;; Scalar-only I32, fixed point: speed/abs-norm are permille of top speed (0..1000), results are permille (force
+;; multipliers, steering authority, grip) or milli-units (speeds in units/tick x 1000, turn rate in degrees/tick x 1000).
+;; The host converts with * 0.001 and clamps its inputs, so these are pure, total functions.
+(module shankpit/buggy-rules)
+(export buggy-top-speed-milli buggy-reverse-top-speed-milli buggy-drive-force-permille
+        buggy-turn-rate-milli buggy-steer-authority-permille buggy-lateral-grip-permille)
+
+(defn buggy-top-speed-milli [] : I32 6240)
+(defn buggy-reverse-top-speed-milli [] : I32 1800)
+
+;; Straight line from a (at lo) to b (at hi), x in [lo, hi], all permille.
+(defn lerp-permille [(a : I32) (b : I32) (x : I32) (lo : I32) (hi : I32)] : I32
+  (+ a (/ (* (- b a) (- x lo)) (- hi lo))))
+
+;; The 4-band "gearbox": strong off the line, a dip through the mid band, a second wind, then a smoothstep taper to a whisper
+;; at top speed. Bands end at 0.22 / 0.52 / 0.78 of top speed. Multiplies the base drive force (0.0364/tick).
+(defn buggy-drive-force-permille [(speed : I32)] : I32
+  (if (< speed 0) 1300
+    (if (< speed 220) (lerp-permille 1300 920 speed 0 220)
+      (if (< speed 520) (lerp-permille 920 620 speed 220 520)
+        (if (< speed 780) (lerp-permille 620 840 speed 520 780)
+          (if (< speed 1000)
+            ;; smoothstep taper: t = (speed-780)/220, s = t*t*(3-2t); staged so nothing overflows I32
+            (- 840 (/ (* 780 (/ (* (/ (* (/ (* (- speed 780) 1000) 220) (/ (* (- speed 780) 1000) 220)) 1000)
+                                       (- 3000 (* 2 (/ (* (- speed 780) 1000) 220)))) 1000)) 1000))
+            60))))))
+
+;; Degrees/tick x 1000: quick at a crawl (3.1), lazy at speed (0.9).
+(defn buggy-turn-rate-milli [(abs-norm : I32)] : I32
+  (lerp-permille 3100 900 (if (> abs-norm 1000) 1000 (if (< abs-norm 0) 0 abs-norm)) 0 1000))
+
+;; Steering authority grows with speed: 0.38 standing, 1.0 flat out.
+(defn buggy-steer-authority-permille [(abs-norm : I32)] : I32
+  (lerp-permille 380 1000 (if (> abs-norm 1000) 1000 (if (< abs-norm 0) 0 abs-norm)) 0 1000))
+
+;; Lateral grip per tick: 0.12 x (0.62 + 0.68 x speed) -- the faster, the more the tyres bite.
+(defn buggy-lateral-grip-permille [(abs-norm : I32)] : I32
+  (/ (* 120 (lerp-permille 620 1300 (if (> abs-norm 1000) 1000 (if (< abs-norm 0) 0 abs-norm)) 0 1000)) 1000))

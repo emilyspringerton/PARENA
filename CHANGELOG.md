@@ -3,6 +3,7 @@
 - `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
 
 ## 2026-10-02
+- feat(shankpit): stdlib/shankpit/buggy_rules.prn — buggy handling (transmission curve, top speeds, steering rate/authority, lateral grip) as a PARENA mod, fixed-point permille; defaults reproduce SHANKPIT's built-in constants. make test-buggy-rules (hand-derived). (sess-20260923-1030-4a526255)
 - feat(shankpit): stdlib/shankpit/ambient_rules.prn -- ambient-light slider rules (level clamp/step, level->fill-light permille) for SHANKPIT's pause-menu slider; make test-ambient-rules (sess-20260923-1030-4a526255)
 - feat(k8s): `stdlib/k8s/gitops.prn` (single-Ingress emitter, doc joiner, reconcile decision + backoff) and `parena-gitops` (`tools/gitops_host.c`), a pull-based GitOps reconciler; `make test-k8s-gitops`. End-to-end verified with a fake kubectl: apply, no-op, backoff, hold after 6 failures, a new commit breaks out of hold. Shells out to git/kubectl (labeled stopgap).
 
