@@ -1,0 +1,29 @@
+;; stdlib/shankpit/chest_rules.prn -- SHANKPIT destructible loot chests as a PARENA mod (card #528: "chests that are destructable
+;; and drop weapons ... make scriptable in PARENA"). The host (packages/simulation/chests.c) owns the pool, hit tests and
+;; drawing; every number that decides what a chest IS comes from here: how tough each tier is, how rare each tier is, and which
+;; weapon a smashed chest of a given tier drops for a given 0..99 roll.
+;; Tiers: 0 wooden, 1 reinforced, 2 rare (the WOTAN-visible tier). Weapon ids are SHANKPIT's WPN_* (protocol.h):
+;; 1 magnum, 2 AR, 3 shotgun, 4 sniper, 5 katana, 6 missile launcher.
+;; Scalar-only, pure, total: out-of-range inputs clamp, never trap.
+(module shankpit/chest-rules)
+(export chest-max-hp chest-tier-for-roll chest-loot-weapon chest-damage-permille)
+
+;; Hit points per tier (an AR round does 20, a magnum 45, a sniper 101, a missile 130).
+(defn chest-max-hp [(tier : I32)] : I32
+  (if (<= tier 0) 100 (if (= tier 1) 240 420)))
+
+;; Which tier a naturally-spawned chest is: 70% wooden, 23% reinforced, 7% rare.
+(defn chest-tier-for-roll [(roll : I32)] : I32
+  (if (< roll 70) 0 (if (< roll 93) 1 2)))
+
+;; The weapon a smashed chest drops. Better tiers shift the table toward the heavy weapons.
+(defn chest-loot-weapon [(tier : I32) (roll : I32)] : I32
+  (if (<= tier 0)
+    (if (< roll 40) 1 (if (< roll 75) 2 3))
+    (if (= tier 1)
+      (if (< roll 30) 3 (if (< roll 55) 5 (if (< roll 80) 4 2)))
+      (if (< roll 40) 4 (if (< roll 80) 6 5)))))
+
+;; Damage multiplier (permille) a weapon does to a chest: blades chop wood well, bullets are normal, blasts are devastating.
+(defn chest-damage-permille [(weapon : I32)] : I32
+  (if (= weapon 5) 1500 (if (= weapon 6) 2000 (if (= weapon 0) 1200 1000))))
