@@ -1,0 +1,70 @@
+;; stdlib/shankpit/camera_rules.prn -- the brains of SHANKPIT's broadcast cameras (cards #456/#457/#458: "realistic
+;; cameras ... realistic programmed cameramen ... a director environment ... cameras serialize ... replace OBS").
+;; A camera operator is not a teleporting crosshair: it lags the action by a human reaction time, leads a moving
+;; subject so there is room to move into, zooms in on distant action, shakes a little, and a director does not cut
+;; to a new shot every frame. Every one of those is a pure decision here; the host (packages/render/camera_rig.h)
+;; owns the world, the cameras and the per-frame plumbing. Retune a number, regenerate, and every rig changes.
+;;
+;; Scalar-only I32, fixed point so the result is deterministic and a recorded director session replays exactly:
+;;   *-milli     world units x 1000 (positions, distances, offsets)        *-permille  0..1000 fractions
+;;   *-ms        milliseconds                                               *-deg-milli degrees x 1000
+;;   skill-permille: 0 = a rookie on their first day, 1000 = a veteran sports-broadcast operator.
+(module shankpit/camera-rules)
+(export cam-reaction-ms cam-smooth-step cam-lead-milli cam-action-score cam-should-cut
+        cam-tri cam-shake-milli cam-orbit-angle-milli cam-fov-milli)
+
+;; ---- the operator ----------------------------------------------------------------------------------------------
+;; How far behind the action the operator's framing trails (the smoothing time constant). Rookie 700 ms, veteran 120 ms.
+(defn cam-reaction-ms [(skill-permille : I32)] : I32
+  (- 700 (/ (* 580 (if (< skill-permille 0) 0 (if (> skill-permille 1000) 1000 skill-permille))) 1000)))
+
+;; One frame of lagged tracking: move `pos` toward `target` by dt/(tau+dt) of the gap (exponential smoothing; stable for
+;; any dt, never overshoots). All in milli-units except the times.
+(defn cam-smooth-step [(pos : I32) (target : I32) (dt-ms : I32) (tau-ms : I32)] : I32
+  (+ pos (/ (* (- target pos) dt-ms) (+ tau-ms dt-ms))))
+
+;; Lead room: aim ahead of a moving subject by `lead-ms` of travel. velocity is milli-units per second.
+(defn cam-lead-milli [(velocity : I32) (lead-ms : I32)] : I32
+  (/ (* velocity lead-ms) 1000))
+
+;; ---- the director ----------------------------------------------------------------------------------------------
+;; How interesting a player is to watch right now, 0..~1650. Close to an enemy, moving fast, just got (or made) a kill,
+;; shooting, and low on health all raise it. dist to the nearest enemy and speed in milli-units(/s); since-kill-ms is
+;; time since this player's last kill (large = never); shooting is 0/1; health is 0..100.
+(defn cam-action-score [(dist-enemy : I32) (speed : I32) (since-kill-ms : I32) (shooting : I32) (health : I32)] : I32
+  (+ (+ (if (< dist-enemy 50000) (- 1000 (/ dist-enemy 50)) 0)
+        (if (< (/ speed 20) 300) (/ speed 20) 300))
+     (+ (if (< since-kill-ms 4000) (/ (* 600 (- 4000 since-kill-ms)) 4000) 0)
+        (+ (if (> shooting 0) 250 0)
+           (/ (* 150 (- 100 (if (< health 0) 0 (if (> health 100) 100 health)))) 100)))))
+
+;; Cut to the candidate shot? Never before the current shot has held `min-hold-ms`, and only when the candidate is
+;; better than the current one by `hysteresis-permille` (so two similar shots do not ping-pong). A candidate at least
+;; twice as good justifies cutting after a third of the hold -- a kill should not wait out a boring shot.
+(defn cam-should-cut [(current : I32) (candidate : I32) (ms-on-shot : I32) (min-hold-ms : I32) (hysteresis-permille : I32)] : I32
+  (if (< ms-on-shot (if (>= candidate (* current 2)) (/ min-hold-ms 3) min-hold-ms))
+    0
+    (if (> (* candidate 1000) (* current (+ 1000 hysteresis-permille))) 1 0)))
+
+;; ---- the lens and the hands --------------------------------------------------------------------------------------
+;; Triangle wave, -1000..1000, one full cycle per `period-ms` (cheap, deterministic stand-in for a sine).
+(defn cam-tri [(t-ms : I32) (period-ms : I32)] : I32
+  (if (< (mod t-ms period-ms) (/ period-ms 2))
+    (- (/ (* 4000 (mod t-ms period-ms)) period-ms) 1000)
+    (- 3000 (/ (* 4000 (mod t-ms period-ms)) period-ms))))
+
+;; Handheld shake offset in milli-units: two incommensurate triangle waves (130 ms and 77 ms) so it never looks like a
+;; metronome; intensity 0 = tripod, 1000 = a shoulder-cam in a firefight (about +-1 world unit... scaled by the host).
+(defn cam-shake-milli [(t-ms : I32) (intensity-permille : I32)] : I32
+  (/ (* intensity-permille (+ (* 2 (cam-tri t-ms 130)) (cam-tri (+ t-ms 31) 77))) 3000))
+
+;; Orbit cameras: angle in degrees x 1000 after t-ms of a `period-ms` lap. Resolution 0.1 degree (staged so a
+;; lap of up to ~9 minutes cannot overflow I32).
+(defn cam-orbit-angle-milli [(t-ms : I32) (period-ms : I32)] : I32
+  (* (/ (* (mod t-ms period-ms) 3600) period-ms) 100))
+
+;; Zoom operator: wide (70 deg) on close action, tightening to 40 deg by 80 world units out. dist in milli-units.
+(defn cam-fov-milli [(dist : I32)] : I32
+  (if (< dist 15000) 70000
+    (if (> dist 80000) 40000
+      (- 70000 (/ (* 30000 (- dist 15000)) 65000)))))
