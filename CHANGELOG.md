@@ -3,6 +3,7 @@
 - `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
 
 ## 2026-10-02
+- stdlib/shankpit/eduvm.prn: PARENA bindings for SHANKPIT's EduVM (compile/run slots, machine state, Architect Trial rule) + make test-eduvm (card #494). (sess-20260923-1030-4a526255)
 - ui/menu: submenu path stack (menu-path-push/pop/leaf/enter/depth), card #497 (sess-20260923-1030-4a526255)
 - stdlib/ui/menu: shared grid-menu logic (nav, hit-test, double-click timing) ported from SHANKPIT's lobby, differential-tested against it (card #483) (sess-20260923-1030-4a526255)
 - net/secure_channel.prn: ML-KEM handshake + LZ4 + XChaCha20-Poly1305 frames; aead-kdf; make test-secure-channel (#490) (sess-20260923-1030-4a526255)
