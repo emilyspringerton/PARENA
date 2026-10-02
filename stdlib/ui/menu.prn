@@ -1,0 +1,90 @@
+;; stdlib/ui/menu.prn -- shared grid-menu logic for the games (card #483, "build out shared
+;; components for the ui with PARENA"; EOSUI-NORTH's Option C direction: PARENA-native UI building
+;; blocks instead of every game hand-rolling its own).
+;;
+;; First slice, and deliberately the part that was copy-pasted most: SHANKPIT's lobby grid
+;; (apps/lobby/src/main.c lobby_button_pos / lobby_nav_move / lobby_hit_test and its double-click
+;; timing in the SDL_MOUSEBUTTONDOWN handler). Ported function-for-function with the same
+;; semantics, so SHANKPIT can swap its C bodies for these one at a time, and EDITOR.GAME / IDUNA.GAME /
+;; DEADWEIGHT menus get the same behaviour for free. Pure decision logic, no drawing, no SDL:
+;; the host keeps rendering (draw_lobby_buttons etc.), this decides WHICH cell and WHAT the click means.
+;;
+;; Scalar-only on purpose (I32/F64 in, I32 out, no structs): it reaches burrow and the Java/TS
+;; emitters as well as the C one, the same boundary stdlib/math/math.prn's harmonics keep.
+;;
+;; Grid model: cells are numbered row-major, `cols` per row, cell 0 top-left. Cell (col,row) has its
+;; bottom-left corner at (menu-x + col_w*col, menu-y - row_gap*row) -- y DECREASES down the screen
+;; because SHANKPIT's menu is drawn in an origin-bottom-left ortho projection -- and is `icon`
+;; units square.
+
+(module ui/menu)
+(export menu-col menu-row menu-rows menu-cell-x menu-cell-y menu-nav-move menu-hit-test
+        menu-click-kind menu-cycle)
+
+(defn menu-col [(idx : I32) (cols : I32)] : I32 (mod idx cols))
+(defn menu-row [(idx : I32) (cols : I32)] : I32 (/ idx cols))
+;; menu-rows -- number of rows needed for `count` cells (ceil(count / cols)).
+(defn menu-rows [(count : I32) (cols : I32)] : I32 (/ (+ count (- cols 1)) cols))
+
+;; menu-times-f64 -- a * n for a small non-negative whole n, by repeated addition. There is no scalar
+;; I32->F64 conversion in the language (the stdlib's to-f64/i32-to-f64 are inline-c FFI and would
+;; cost this module its burrow/Java/TS reach); menu indices are tiny, so the loop is free.
+(defn menu-times-f64 [(a : F64) (n : I32)] : F64
+  (loop [i 0 acc 0.0]
+    (if (>= i n) acc (recur (+ i 1) (+ acc a)))))
+
+(defn menu-cell-x [(idx : I32) (cols : I32) (menu-x : F64) (col-w : F64)] : F64
+  (+ menu-x (menu-times-f64 col-w (menu-col idx cols))))
+(defn menu-cell-y [(idx : I32) (cols : I32) (menu-y : F64) (row-gap : F64)] : F64
+  (- menu-y (menu-times-f64 row-gap (menu-row idx cols))))
+
+;; menu-nav-move -- keyboard/gamepad navigation. dx moves across columns (wrapping), dy down/up rows
+;; (wrapping). Uneven last rows snap to the nearest valid cell rather than landing on nothing: a
+;; horizontal move into a missing cell goes to the row's first cell, a vertical move into one goes to
+;; the last cell. Exactly lobby_nav_move. No move (dx = dy = 0) returns the selection unchanged;
+;; an empty menu returns 0.
+(defn menu-nav-move [(sel : I32) (count : I32) (cols : I32) (dx : I32) (dy : I32)] : I32
+  (if (<= count 0)
+    0
+    (if (not (= dx 0))
+      (let [idx (+ (* (menu-row sel cols) cols) (mod (+ (+ (menu-col sel cols) dx) cols) cols))]
+        (if (>= idx count)
+          (if (>= (* (menu-row sel cols) cols) count)
+            (- count 1)
+            (* (menu-row sel cols) cols))
+          idx))
+      (if (not (= dy 0))
+        (let [rows (menu-rows count cols)
+              idx (+ (* (mod (+ (+ (menu-row sel cols) dy) rows) rows) cols) (menu-col sel cols))]
+          (if (>= idx count) (- count 1) idx))
+        sel))))
+
+;; menu-hit-test -- which cell is the pointer over? -1 for none. Edges are inclusive (a click exactly
+;; on a button's border counts), first matching cell wins -- exactly lobby_hit_test.
+(defn menu-hit-test [(mx : F64) (my : F64) (count : I32) (cols : I32)
+                      (menu-x : F64) (menu-y : F64) (col-w : F64) (row-gap : F64) (icon : F64)] : I32
+  (loop [i 0]
+    (if (>= i count)
+      -1
+      (let [x (menu-cell-x i cols menu-x col-w)
+            y (menu-cell-y i cols menu-y row-gap)]
+        (if (and (and (>= mx x) (<= mx (+ x icon))) (and (>= my y) (<= my (+ y icon))))
+          i
+          (recur (+ i 1)))))))
+
+;; menu-click-kind -- what does this click mean? Same-cell double-click timing from the lobby:
+;;   0 = just remember it (first click, a different cell, or too slow)
+;;   1 = ACTIVATE (second click on the same cell within 250 ms)
+;;   2 = SECONDARY (second click 251..700 ms later -- the lobby uses it to rename a tile, or to
+;;       activate on pages that cannot be renamed; the host decides)
+;; last-idx < 0 or last-ms = 0 means "no previous click". Callers store (idx, now) themselves
+;; after a 0, and clear both after a 1 or 2.
+(defn menu-click-kind [(last-idx : I32) (last-ms : I32) (idx : I32) (now : I32)] : I32
+  (if (and (= last-idx idx) (> last-ms 0))
+    (if (<= (- now last-ms) 250)
+      1
+      (if (<= (- now last-ms) 700) 2 0))
+    0))
+
+;; menu-cycle -- step an option through `n` values (a multi-state toggle: OFF/AUTO/MANUAL...), wrapping.
+(defn menu-cycle [(cur : I32) (n : I32)] : I32 (mod (+ cur 1) n))
