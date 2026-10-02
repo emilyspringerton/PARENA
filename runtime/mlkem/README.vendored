@@ -1,0 +1,5 @@
+Vendored, unmodified, from https://github.com/pq-crystals/kyber branch `standard` (the FIPS 203
+ML-KEM reference), `ref/` directory, commit d5b791c. CC0 / Apache-2.0 (see LICENSE). Excluded:
+nistkat/, test/, Makefile. Built here as ML-KEM-768 (KYBER_K=3, the params.h default).
+Cross-verified against Go crypto/mlkem: tests/mlkem_interop/. Glue: runtime/parena_runtime.h
+(PARENA_WITH_MLKEM). Note: randombytes.c duplicates mldsa/randombytes.c's `randombytes` symbol.

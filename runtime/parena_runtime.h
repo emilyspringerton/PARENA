@@ -847,6 +847,51 @@ static inline int mldsa_verify_impl(Bytes sig, Bytes msg, Bytes pubkey) {
 }
 #endif /* PARENA_WITH_MLDSA */
 
+#ifdef PARENA_WITH_MLKEM
+/* mlkem_*_impl -- real host glue for crypto/mlkem.prn: ML-KEM-768 (FIPS 203), calling straight into
+ * the vendored, unmodified pq-crystals/kyber `standard` branch reference (runtime/mlkem/, CC0 /
+ * Apache-2.0). Cross-verified against Go's independent crypto/mlkem in both directions
+ * (100 rounds + implicit-rejection check; see tests/mlkem_interop/).
+ *
+ * Prototypes are declared here, NOT via mlkem/api.h: that header shares the `API_H` include guard
+ * with mldsa/api.h, so including both would silently drop one. Link note: mlkem/randombytes.c and
+ * mldsa/randombytes.c both define plain `randombytes` with identical signatures -- a consumer
+ * linking both libraries must compile only one of them.
+ *
+ * Fixed ML-KEM-768 sizes (FIPS 203): ek 1184, dk 2400, ct 1088, shared secret 32. Every impl
+ * validates input lengths and returns a zero-length Bytes on a mismatch (never reads out of bounds
+ * on a short caller-supplied buffer). */
+extern int pqcrystals_kyber768_ref_keypair(uint8_t *pk, uint8_t *sk);
+extern int pqcrystals_kyber768_ref_enc(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
+extern int pqcrystals_kyber768_ref_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
+#define MLKEM768_PK_BYTES 1184
+#define MLKEM768_SK_BYTES 2400
+#define MLKEM768_CT_BYTES 1088
+#define MLKEM768_SS_BYTES 32
+
+/* ek||dk as ONE Bytes (a #target body returns one value; same shape as mldsa_keygen_impl). */
+static inline Bytes mlkem_keygen_impl(Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, MLKEM768_PK_BYTES + MLKEM768_SK_BYTES);
+    pqcrystals_kyber768_ref_keypair(out.data, out.data + MLKEM768_PK_BYTES);
+    return out;
+}
+/* ct||ss, or zero-length if ek is not exactly 1184 bytes. */
+static inline Bytes mlkem_encaps_impl(Bytes ek, Arena *dest) {
+    if (ek.len != MLKEM768_PK_BYTES) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, MLKEM768_CT_BYTES + MLKEM768_SS_BYTES);
+    pqcrystals_kyber768_ref_enc(out.data, out.data + MLKEM768_CT_BYTES, ek.data);
+    return out;
+}
+/* ss (32 bytes), or zero-length on wrong-sized ct/dk. A well-sized but tampered ct does NOT fail:
+ * FIPS 203 implicit rejection returns a pseudorandom secret, so the two sides simply disagree. */
+static inline Bytes mlkem_decaps_impl(Bytes ct, Bytes dk, Arena *dest) {
+    if (ct.len != MLKEM768_CT_BYTES || dk.len != MLKEM768_SK_BYTES) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, MLKEM768_SS_BYTES);
+    pqcrystals_kyber768_ref_dec(out.data, ct.data, dk.data);
+    return out;
+}
+#endif /* PARENA_WITH_MLKEM */
+
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
  * (not just designed) while getting firefly.prn's own `skip` to

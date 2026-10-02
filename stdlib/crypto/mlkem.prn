@@ -1,0 +1,69 @@
+;; stdlib/crypto/mlkem.prn -- ML-KEM-768 (post-quantum key encapsulation, FIPS 203), real PARENA
+;; binding. Founder real-time, 2026-10-02: the k8s-migration APIs will cross the internet and
+;; need post-quantum key exchange ("maybe we can use the post quantum encryption stuff in
+;; PARENA?"); PARENA had ML-DSA (signatures) but no KEM, so key exchange had nothing to stand on.
+;; Core Deps Are PARENA-First: this is the dep, built before the secure channel that needs it.
+;;
+;; Same design judgment as crypto/mldsa.prn: hand-rolled lattice crypto is a well-known way to
+;; introduce real vulnerabilities, so this is FFI glue over the vendored, unmodified pq-crystals
+;; reference (runtime/mlkem/, `standard` branch = the FIPS 203 final, CC0/Apache-2.0).
+;;
+;; VERIFIED two ways: (1) tests/test_mlkem.c drives this file's generated call chain;
+;; (2) tests/mlkem_interop/ cross-checks the same vendored C against Go's independent
+;; crypto/mlkem: C key -> Go encapsulates -> C decapsulates, Go key -> C encapsulates -> Go
+;; decapsulates, 50 rounds each, plus a tampered-ciphertext implicit-rejection check.
+;;
+;; Requires PARENA_WITH_MLKEM and linking runtime/mlkem/*.c (see parena_runtime.h's glue comment,
+;; including the randombytes.c note when also linking mldsa). Bytes everywhere, never String
+;; (key material contains 0x00).
+;;
+;; Failure shape: wrong-sized input yields a zero-length Bytes (check with bytes-len). A tampered
+;; but well-sized ciphertext does NOT error -- FIPS 203 implicit rejection returns a pseudorandom
+;; secret, so the peers' secrets simply differ and the channel's key-confirmation step fails.
+(module crypto/mlkem)
+(import bytes)
+(export mlkem-keygen mlkem-encaps mlkem-decaps KemKeyPair KemEncaps
+        mlkem-ek-bytes mlkem-dk-bytes mlkem-ct-bytes mlkem-ss-bytes)
+
+(defstruct KemKeyPair (encapsulation-key : Bytes @ Region) (decapsulation-key : Bytes @ Region))
+(defstruct KemEncaps (ciphertext : Bytes @ Region) (shared-secret : Bytes @ Region))
+
+(defn mlkem-ek-bytes [] : I32 1184)
+(defn mlkem-dk-bytes [] : I32 2400)
+(defn mlkem-ct-bytes [] : I32 1088)
+(defn mlkem-ss-bytes [] : I32 32)
+
+(defn mlkem-raw-keygen [(dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "mlkem_keygen_impl(dest)")})
+
+(defn mlkem-raw-encaps [(ek : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "mlkem_encaps_impl(ek, dest)")})
+
+(defn mlkem-raw-decaps [(ct : Bytes) (dk : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "mlkem_decaps_impl(ct, dk, dest)")})
+
+(defn mlkem-keygen [(dest : Arena @ Region)]
+  : KemKeyPair @ Region
+  (let [blob (mlkem-raw-keygen dest)]
+    {:encapsulation-key (bytes-slice blob 0 (mlkem-ek-bytes) dest)
+     :decapsulation-key (bytes-slice blob (mlkem-ek-bytes) (+ (mlkem-ek-bytes) (mlkem-dk-bytes)) dest)}))
+
+;; mlkem-encaps -- both fields are zero-length if ek is not exactly 1184 bytes.
+(defn mlkem-encaps [(ek : Bytes) (dest : Arena @ Region)]
+  : KemEncaps @ Region
+  (let [blob (mlkem-raw-encaps ek dest)]
+    (if (= (bytes-len blob) 0)
+      {:ciphertext blob :shared-secret blob}
+      {:ciphertext (bytes-slice blob 0 (mlkem-ct-bytes) dest)
+       :shared-secret (bytes-slice blob (mlkem-ct-bytes) (+ (mlkem-ct-bytes) (mlkem-ss-bytes)) dest)})))
+
+;; mlkem-decaps -- zero-length if ct/dk are wrongly sized.
+(defn mlkem-decaps [(ct : Bytes) (dk : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (mlkem-raw-decaps ct dk dest))
