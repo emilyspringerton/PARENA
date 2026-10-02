@@ -3,6 +3,7 @@
 - `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
 
 ## 2026-10-02
+- crypto/aead.prn: XChaCha20-Poly1305 over Bytes via vendored Monocypher; Go x/crypto known-answer test; make test-aead (#489) (sess-20260923-1030-4a526255)
 - math: pure-PARENA angular harmonics cos-2t/sin-2t/cos-3t/cos-5t (from SHANKPIT bullet-hole textures, #446); make test-math-harmonics (sess-20260923-1030-4a526255)
 - feat(shankpit): stdlib/shankpit/camera_rules.prn (#456a/#469) — broadcast-camera brains as pure fixed-point rules: operator reaction/lag by skill, exponential smoothing, lead room, shot-interest score, cut decision with hold + hysteresis (+fast cut for a much better shot), handheld shake, orbit angle, zoom-operator FOV. make test-camera-rules (hand-derived). (sess-20260923-1030-4a526255)
 - feat(shankpit): brick_rules.prn — weapon 8 (HAMMER) counts x3 against masonry (the demolition tool); test updated. (sess-20260923-1030-4a526255)
