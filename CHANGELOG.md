@@ -3,6 +3,7 @@
 - `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
 
 ## 2026-10-02
+- stdlib/ui/menu: shared grid-menu logic (nav, hit-test, double-click timing) ported from SHANKPIT's lobby, differential-tested against it (card #483) (sess-20260923-1030-4a526255)
 - net/secure_channel.prn: ML-KEM handshake + LZ4 + XChaCha20-Poly1305 frames; aead-kdf; make test-secure-channel (#490) (sess-20260923-1030-4a526255)
 - compress/lz4_block.prn: real LZ4 block format over Bytes (pure PARENA), cross-verified vs liblz4 in both directions; make test-lz4-block (#490) (sess-20260923-1030-4a526255)
 - crypto/aead.prn: XChaCha20-Poly1305 over Bytes via vendored Monocypher; Go x/crypto known-answer test; make test-aead (#489) (sess-20260923-1030-4a526255)
