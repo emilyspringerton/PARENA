@@ -1,0 +1,56 @@
+;; stdlib/big_o/lab_station_rules.prn -- BIG_O / SHANKPIT LAB station interaction rules (SECTION 592, card #507).
+;; Founder real-time, 2026-10-02: "add the LAB affordances in the game to the level INTERIOR -- clone that level into LAB and
+;; start building out the lab using PARENA and BIGO and SHANKPIT WIDGETS". The LAB level (IDUNA cmd/shankpit-lab-builder) carries
+;; interactive stations as widget tiles named lab_<kind>; the host (apps/lobby) finds the nearest one and asks THIS file what
+;; pressing E there does to the phone's LAB state (3 sample counts, a clone count). Host owns proximity, UI and the actual
+;; counters; this file owns every rule and number. Scalar I32/Bool only, one expression per defn, every argument clamped.
+;;
+;; station kind : 0 SPLICE bench  1 CENTRIFUGE  2 PCR thermocycler  3 CLONE VAT  4 SAMPLE FRIDGE  5 CONSOLE
+;; base         : 0..2 (the sample type the player works on, the phone LAB app's base cursor)
+;;   SPLICE     : 1 sample of `base`  -> +1 clone            (needs a free clone slot)
+;;   CENTRIFUGE : 2 samples of `base` -> 1 sample of the NEXT base (refine; needs 2)
+;;   PCR        : 1 sample of `base`  -> 2 samples (amplify; needs room under the sample cap)
+;;   CLONE VAT  : 1 clone -> heals the player 25 (decant)
+;;   FRIDGE     : read-out only      CONSOLE : opens the phone's LAB app
+(module big-o/lab-station-rules)
+(export labst-clamp labst-max-samples labst-max-clones labst-reach-tenths labst-kind-ok labst-base-ok
+        labst-can-use labst-sample-delta labst-target-delta labst-clone-delta labst-refine-base
+        labst-heal labst-opens-phone)
+
+(defn labst-max-samples [] : I32 9)
+(defn labst-max-clones [] : I32 8)
+(defn labst-reach-tenths [] : I32 40)   ;; how close (in tenths of a world unit) the player must be: 4.0
+
+(defn labst-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+(defn labst-kind-ok [(k : I32)] : Bool (and (>= k 0) (<= k 5)))
+(defn labst-base-ok [(b : I32)] : Bool (and (>= b 0) (<= b 2)))
+
+(defn labst-can-use [(kind : I32) (base : I32) (samples : I32) (clones : I32)] : Bool
+  (and (labst-kind-ok kind)
+    (and (labst-base-ok base)
+      (if (= kind 0) (and (>= (labst-clamp samples 0 9) 1) (< (labst-clamp clones 0 8) 8))
+        (if (= kind 1) (>= (labst-clamp samples 0 9) 2)
+          (if (= kind 2) (and (>= (labst-clamp samples 0 9) 1) (< (labst-clamp samples 0 9) 9))
+            (if (= kind 3) (>= (labst-clamp clones 0 8) 1)
+              true)))))))
+
+;; change to the worked-on base's sample count
+(defn labst-sample-delta [(kind : I32)] : I32
+  (if (= kind 0) -1 (if (= kind 1) -2 (if (= kind 2) 1 0))))
+
+;; change to the NEXT base's sample count (centrifuge refines up the ladder)
+(defn labst-target-delta [(kind : I32)] : I32
+  (if (= kind 1) 1 0))
+
+(defn labst-clone-delta [(kind : I32)] : I32
+  (if (= kind 0) 1 (if (= kind 3) -1 0)))
+
+(defn labst-refine-base [(b : I32)] : I32
+  (- (+ (labst-clamp b 0 2) 1) (* 3 (/ (+ (labst-clamp b 0 2) 1) 3))))
+
+(defn labst-heal [(kind : I32)] : I32
+  (if (= kind 3) 25 0))
+
+(defn labst-opens-phone [(kind : I32)] : Bool (= kind 5))
