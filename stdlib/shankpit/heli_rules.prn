@@ -1,0 +1,49 @@
+;; stdlib/shankpit/heli_rules.prn -- SHANKPIT helicopter flight model as a PARENA mod (card #542: "more realistic helicopter
+;; controls via parena simulation"). Same split as buggy_rules.prn: packages/common/net_sim.h heli_simulate_step keeps the
+;; integration + collision, every number that decides how the helicopter FLIES comes from here.
+;;
+;; The model (a real, if simplified, rotorcraft -- not an arcade "push the box" mover):
+;;   * COLLECTIVE is a lever with a position (0..1000 permille). Space raises it, Ctrl lowers it, released it drifts back to
+;;     the hover setting. Rotor thrust = lift(collective), as permille of gravity, so hover is a lever setting, not free.
+;;   * CYCLIC (W/S pitch, Q/E roll) tilts the rotor disc. The airframe attitude lags the stick (heli-attitude-step-milli) and
+;;     horizontal acceleration is the TILTED thrust vector's horizontal component -- the helicopter has to lean to go
+;;     anywhere, and leaning costs vertical lift (cos tilt), so a hard bank sags unless you pull collective.
+;;   * PEDALS (A/D) command a yaw RATE; the real rate lags the pedal (heli-yaw-step-milli).
+;;   * Fuselage drag grows with speed; there is a small rotor-wash vertical damping so it does not oscillate.
+;; Scalar-only I32 fixed point. Attitude angles are milli-degrees, yaw rate is milli-degrees/tick, speeds are milli-units/tick,
+;; the rest permille. Pure, total functions; the host clamps its inputs.
+(module shankpit/heli-rules)
+(export heli-hover-collective-permille heli-collective-step-permille heli-lift-permille heli-cyclic-target-milli
+        heli-attitude-step-milli heli-yaw-target-milli heli-yaw-step-milli heli-drag-permille
+        heli-vertical-damp-permille heli-max-hspeed-milli heli-max-vspeed-up-milli heli-max-vspeed-down-milli)
+
+(defn heli-hover-collective-permille [] : I32 500)
+
+;; One tick of the lever. Raise/lower move 9 permille/tick (~0.9 s full travel); released it relaxes 3/tick toward hover.
+(defn heli-collective-step-permille [(cur : I32) (up : I32) (down : I32)] : I32
+  (if (> up 0) (if (> (+ cur 9) 1000) 1000 (+ cur 9))
+    (if (> down 0) (if (< (- cur 9) 0) 0 (- cur 9))
+      (if (> cur 500) (if (< (- cur 3) 500) 500 (- cur 3))
+        (if (< (+ cur 3) 500) (+ cur 3) 500)))))
+
+;; Total rotor thrust as permille of gravity: lever 500 = exactly 1 g (hover), 1000 = 2 g.
+(defn heli-lift-permille [(collective : I32)] : I32 (* 2 collective))
+
+;; Stick (-1000..1000) -> commanded airframe tilt in milli-degrees (max 24 deg).
+(defn heli-cyclic-target-milli [(input-permille : I32)] : I32 (* input-permille 24))
+
+;; The airframe leans toward the commanded tilt, closing a tenth of the gap per tick.
+(defn heli-attitude-step-milli [(cur : I32) (target : I32)] : I32 (+ cur (/ (- target cur) 10)))
+
+;; Pedal (-1000..1000) -> commanded yaw rate in milli-degrees/tick (max 2 deg/tick = 120 deg/s).
+(defn heli-yaw-target-milli [(pedal-permille : I32)] : I32 (* pedal-permille 2))
+(defn heli-yaw-step-milli [(cur : I32) (target : I32)] : I32 (+ cur (/ (- target cur) 7)))
+
+;; Fuselage drag as permille of velocity shed per tick: 0.3% standing, 1.4% at 2.0 units/tick (speed in milli-units).
+(defn heli-drag-permille [(speed-milli : I32)] : I32 (+ 3 (/ (* 11 speed-milli) 2000)))
+
+(defn heli-vertical-damp-permille [] : I32 25)
+
+(defn heli-max-hspeed-milli [] : I32 2400)
+(defn heli-max-vspeed-up-milli [] : I32 550)
+(defn heli-max-vspeed-down-milli [] : I32 700)
