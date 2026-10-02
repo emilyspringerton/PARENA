@@ -8,7 +8,7 @@
 #include "test_brick_rules_gen.c"
 
 int main(void) {
-    /* weapon multipliers: knife 0, magnum 1, ar 2, shotgun 3, sniper 4, katana 5, missile 6, flash 7 */
+    /* weapon multipliers: knife 0, magnum 1, ar 2, shotgun 3, sniper 4, katana 5, missile 6, flash 7, hammer 8 */
     assert(on_brick_weapon_damage(0, 200) == 0);
     assert(on_brick_weapon_damage(1, 45) == 45);
     assert(on_brick_weapon_damage(2, 20) == 20);
@@ -17,6 +17,8 @@ int main(void) {
     assert(on_brick_weapon_damage(5, 40) == 0);
     assert(on_brick_weapon_damage(6, 130) == 650);
     assert(on_brick_weapon_damage(7, 0) == 0);
+    assert(on_brick_weapon_damage(8, 70) == 210);   /* hammer x3 */
+    assert(on_brick_weapon_damage(8, 0) == 0);
 
     /* debris: only worsening changes throw anything */
     assert(on_brick_debris_count(0, 0) == 0);

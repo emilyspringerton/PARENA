@@ -23,21 +23,25 @@
 
 ;; Weapon ids are SHANKPIT's own (packages/common/protocol.h):
 ;;   0 KNIFE  1 MAGNUM  2 AR  3 SHOTGUN (per-pellet damage)  4 SNIPER  5 KATANA  6 MISSILE
-;;   7 FLASHLIGHT
+;;   7 FLASHLIGHT  8 HAMMER
 ;; Blades and a flashlight do not chip masonry. Explosives demolish it (x5: one rocket opens a
-;; player-sized hole). The sniper's round punches (x1.25). Everything else counts at face value.
+;; player-sized hole). The hammer is the demolition tool (x3 per swing -- slow, so a wall takes a
+;; few honest swings, not a burst). The sniper's round punches (x1.25). Everything else counts at
+;; face value.
 (defn on-brick-weapon-damage [(weapon : I32) (base-damage : I32)] : I32
   (if (= weapon 6)
     (* base-damage 5)
-    (if (= weapon 4)
-      (+ base-damage (/ base-damage 4))
-      (if (= weapon 0)
-        0
-        (if (= weapon 5)
+    (if (= weapon 8)
+      (* base-damage 3)
+      (if (= weapon 4)
+        (+ base-damage (/ base-damage 4))
+        (if (= weapon 0)
           0
-          (if (= weapon 7)
+          (if (= weapon 5)
             0
-            base-damage))))))
+            (if (= weapon 7)
+              0
+              base-damage)))))))
 
 ;; Debris thrown when a cell changes state (states are PAPER_STATE_*: 0 intact, 1 cracked,
 ;; 2 torn, 3 gone). Only a worsening change throws anything; a cell that is gone throws the most.

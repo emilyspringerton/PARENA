@@ -69,6 +69,9 @@ int on_brick_weapon_damage(int weapon __attribute__((unused)), int base_damage _
     if ((weapon == 6)) {
     return (base_damage * 5);
     } else {
+    if ((weapon == 8)) {
+    return (base_damage * 3);
+    } else {
     if ((weapon == 4)) {
     return (base_damage + (base_damage / 4));
     } else {
@@ -82,6 +85,7 @@ int on_brick_weapon_damage(int weapon __attribute__((unused)), int base_damage _
     return 0;
     } else {
     return base_damage;
+    }
     }
     }
     }
