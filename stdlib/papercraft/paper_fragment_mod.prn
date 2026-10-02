@@ -26,7 +26,8 @@
   (if (= material 0) 0    ;; PAPER -- no resistance, full damage always applies
   (if (= material 1) 20   ;; WOOD
   (if (= material 2) 50   ;; CONCRETE
-    75))))                ;; METAL (material 3)
+  (if (= material 3) 75   ;; METAL
+    0)))))                ;; GLASS (material 4) -- no resistance, shatters on first real hit
 
 ;; on-paper-fragment-damage: real branching over material tiers (mirrors card_effect_mod.prn's
 ;; own is-mythic-card? split exactly), not a bare subtraction -- the same real material-aware

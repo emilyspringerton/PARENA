@@ -59,6 +59,27 @@ int main(void) {
     assert(on_paper_fragment_damage(mat, 80, on_papercraft_interact_damage_falloff(on_brick_weapon_damage(6, 130), 800)) == 15);
     assert(on_paper_fragment_state_for_hp(15, 80) == 2);
 
+    /* destructible kinds: 0 brick, 1 concrete, 2 wood, 3 glass */
+    assert(on_brick_paper_material(0) == 2 && on_brick_paper_material(1) == 2);
+    assert(on_brick_paper_material(2) == 1);   /* wood */
+    assert(on_brick_paper_material(3) == 4);   /* glass */
+    assert(on_brick_cell_max_hp(1) == 120 && on_brick_cell_max_hp(2) == 60 && on_brick_cell_max_hp(3) == 10);
+    /* resistance by material: wood 20, concrete 50, metal 75, glass 0 (explicit, not the fallthrough) */
+    assert(material_resist_pct(1) == 20 && material_resist_pct(2) == 50);
+    assert(material_resist_pct(3) == 75 && material_resist_pct(4) == 0);
+    /* an AR round (20) vs one cell, hand-derived: wood 20 -> 16 effective, 60 HP -> 4 shots (60,44,28,12,0);
+       concrete 20 -> 10, 120 HP -> 12 shots; glass 20 -> 20 >= 10 HP, gone on the first round */
+    {
+        int kinds[3] = {2, 1, 3}, want[3] = {4, 12, 1};
+        for (int k = 0; k < 3; k++) {
+            int hp = on_brick_cell_max_hp(kinds[k]), n = 0;
+            while (hp > 0) { hp = on_paper_fragment_damage(on_brick_paper_material(kinds[k]), hp, 20); n++; assert(n <= 20); }
+            assert(n == want[k]);
+        }
+    }
+    /* glass tint: slight cyan, low alpha */
+    assert(on_glass_tint(0) == 150 && on_glass_tint(1) == 225 && on_glass_tint(2) == 235 && on_glass_tint(3) == 70);
+
     printf("test_brick_rules: all assertions passed\n");
     return 0;
 }

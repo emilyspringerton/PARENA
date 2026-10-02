@@ -19,6 +19,7 @@
 (export on-brick-debris-count)
 (export on-brick-paper-material)
 (export on-brick-cell-max-hp)
+(export on-glass-tint)
 
 ;; Weapon ids are SHANKPIT's own (packages/common/protocol.h):
 ;;   0 KNIFE  1 MAGNUM  2 AR  3 SHOTGUN (per-pellet damage)  4 SNIPER  5 KATANA  6 MISSILE
@@ -51,12 +52,26 @@
           1
           0)))))
 
-;; Brick is PAPER_MATERIAL_CONCRETE (2) as far as paper_fragment_mod's resistance table goes
-;; (50 percent of every hit is absorbed); the argument keeps the door open for other masonry.
+;; Destructible kinds (host: packages/world/brick_fracture.h BF_KIND_*, chosen from the level box's
+;; material NAME): 0 brick, 1 concrete, 2 wood, 3 glass (founder real-time, 2026-10-02: "add
+;; papercraft destructability to concrete and wood and add a new one for glass").
+;; Brick and concrete share PAPER_MATERIAL_CONCRETE (2, 50 percent of every hit absorbed); wood is
+;; PAPER_MATERIAL_WOOD (1, 20 percent); glass is PAPER_MATERIAL_GLASS (4, absorbs nothing).
 (defn on-brick-paper-material [(brick-kind : I32)] : I32
-  (if (= brick-kind 0) 2 2))
+  (if (= brick-kind 2) 1
+    (if (= brick-kind 3) 4 2)))
 
-;; PAPER_MATERIAL_MAX_HP[CONCRETE] in packages/common/paper_mesh.h is 80; brick cells use it
-;; unchanged so a SHANKPIT brick cell and a PAPERCRAFT concrete fragment are the same toughness.
+;; Cell HP. Brick keeps 80 (same as PAPER_MATERIAL_MAX_HP[CONCRETE]); poured concrete is tougher,
+;; wood a little under it, glass a single real hit (any shot, one cell).
 (defn on-brick-cell-max-hp [(brick-kind : I32)] : I32
-  (if (= brick-kind 0) 80 80))
+  (if (= brick-kind 1) 120
+    (if (= brick-kind 2) 60
+      (if (= brick-kind 3) 10 80))))
+
+;; Glass tint, the PARENA-programmable knob: channel 0 R, 1 G, 2 B, 3 A (each 0-255). Default is a
+;; slight cyan tint at low alpha; edit these four numbers and re-run scripts/gen_brick_mod.sh to
+;; retint every glass box in SHANKPIT without touching host C or the shader.
+(defn on-glass-tint [(channel : I32)] : I32
+  (if (= channel 0) 150
+    (if (= channel 1) 225
+      (if (= channel 2) 235 70))))

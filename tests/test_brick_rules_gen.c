@@ -13,6 +13,7 @@ int on_brick_weapon_damage(int, int);
 int on_brick_debris_count(int, int);
 int on_brick_paper_material(int);
 int on_brick_cell_max_hp(int);
+int on_glass_tint(int);
 
 int material_resist_pct(int material __attribute__((unused))) {
     if ((material == 0)) {
@@ -24,7 +25,11 @@ int material_resist_pct(int material __attribute__((unused))) {
     if ((material == 2)) {
     return 50;
     } else {
+    if ((material == 3)) {
     return 75;
+    } else {
+    return 0;
+    }
     }
     }
     }
@@ -105,18 +110,46 @@ int on_brick_debris_count(int prev_state __attribute__((unused)), int new_state 
 }
 
 int on_brick_paper_material(int brick_kind __attribute__((unused))) {
-    if ((brick_kind == 0)) {
-    return 2;
+    if ((brick_kind == 2)) {
+    return 1;
+    } else {
+    if ((brick_kind == 3)) {
+    return 4;
     } else {
     return 2;
+    }
     }
 }
 
 int on_brick_cell_max_hp(int brick_kind __attribute__((unused))) {
-    if ((brick_kind == 0)) {
-    return 80;
+    if ((brick_kind == 1)) {
+    return 120;
+    } else {
+    if ((brick_kind == 2)) {
+    return 60;
+    } else {
+    if ((brick_kind == 3)) {
+    return 10;
     } else {
     return 80;
+    }
+    }
+    }
+}
+
+int on_glass_tint(int channel __attribute__((unused))) {
+    if ((channel == 0)) {
+    return 150;
+    } else {
+    if ((channel == 1)) {
+    return 225;
+    } else {
+    if ((channel == 2)) {
+    return 235;
+    } else {
+    return 70;
+    }
+    }
     }
 }
 
