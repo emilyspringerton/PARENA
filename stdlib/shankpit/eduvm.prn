@@ -1,0 +1,49 @@
+;; stdlib/shankpit/eduvm.prn -- PARENA mod bindings for EduVM, the Architect's Orb scripting VM (card #494).
+;; EduVM (lexer -> parser -> bytecode -> stack VM, packages/education/ in SHANKPIT, ported from the
+;; GFD/SHANKPIT lineage) stays C: it is the interpreter. This mod is the seam a PARENA mod uses to DRIVE it
+;; and READ the world it mutates -- compile/run a script slot, seed a slot from a preset, and read the
+;; machine state (gate, bridge, portal, crate) the scripts change -- plus the one real piece of decision
+;; logic: when the Architect Trial counts as complete.
+;;
+;; Same split as stdlib/reflux/reflux.prn: PARENA does the deciding, the host (packages/education/
+;; eduvm_host.c) holds the persistent state. Scalar I32 only (reaches burrow/Java/TS as well as C).
+;; Every host call below is a stopgap-free thin inline-c wrapper over eduvm_host_*.
+(module shankpit/eduvm)
+(export edu-slot-count edu-seed-slot edu-compile-slot edu-run-slot edu-slot-compiled
+        edu-gate-open edu-bridge-raised edu-portal-open edu-portal-stability edu-crate-x edu-last-print
+        edu-reset-world edu-trial-complete edu-trial-step)
+
+(defn edu-slot-count [] : I32
+  #target {:c (inline-c "eduvm_host_slot_count()")})
+;; preset: 0 Architect Trial, 1 Orb Scan, 2 Legacy Motion, 3 Bubble Sort (array demo), 4 empty
+(defn edu-seed-slot [(slot : I32) (preset : I32)] : I32
+  #target {:c (inline-c "eduvm_host_seed_slot(slot, preset)")})
+;; compile/run return 1 on success, 0 on failure (the host keeps the message for the overlay)
+(defn edu-compile-slot [(slot : I32)] : I32
+  #target {:c (inline-c "eduvm_host_compile_slot(slot)")})
+(defn edu-run-slot [(slot : I32)] : I32
+  #target {:c (inline-c "eduvm_host_run_slot(slot)")})
+(defn edu-slot-compiled [(slot : I32)] : I32
+  #target {:c (inline-c "eduvm_host_slot_compiled(slot)")})
+
+(defn edu-gate-open [] : I32 #target {:c (inline-c "eduvm_host_world(0)")})
+(defn edu-bridge-raised [] : I32 #target {:c (inline-c "eduvm_host_world(1)")})
+(defn edu-portal-open [] : I32 #target {:c (inline-c "eduvm_host_world(2)")})
+(defn edu-portal-stability [] : I32 #target {:c (inline-c "eduvm_host_world(3)")})
+(defn edu-crate-x [] : I32 #target {:c (inline-c "eduvm_host_world(4)")})
+(defn edu-last-print [] : I32 #target {:c (inline-c "eduvm_host_world(5)")})
+(defn edu-reset-world [] : Unit #target {:c (inline-c "eduvm_host_reset_world();")})
+
+;; edu-trial-complete -- the Architect Trial is solved when the portal is stable (>= 100), the portal is
+;; open, the bridge is raised and the gate is open. Pure, total.
+(defn edu-trial-complete [(gate : I32) (bridge : I32) (portal-open : I32) (stability : I32)] : I32
+  (if (and (and (= gate 1) (= bridge 1)) (and (= portal-open 1) (>= stability 100))) 1 0))
+
+;; edu-trial-step -- one mod tick: compile+run a slot and report 1 if that run solved the trial. A PARENA
+;; mod calls this from its own tick to auto-run a slot (e.g. on a REFLUX event) without knowing the host.
+(defn edu-trial-step [(slot : I32)] : I32
+  (if (= (edu-compile-slot slot) 1)
+    (if (= (edu-run-slot slot) 1)
+      (edu-trial-complete (edu-gate-open) (edu-bridge-raised) (edu-portal-open) (edu-portal-stability))
+      0)
+    0))
