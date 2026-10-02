@@ -40,4 +40,4 @@ tests/test_k8s_gitops_gen.c
 parena-k8s-render
 tools/render_gen.c
 tests/test_mlkem_gen.c
-tests/mlkem_interop/cli
+tests/mlkem_interop/c/cli

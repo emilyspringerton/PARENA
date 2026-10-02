@@ -10,7 +10,7 @@ import (
 )
 
 func c(t *testing.T, args ...string) []string {
-	out, err := exec.Command("./cli", args...).Output()
+	out, err := exec.Command("./c/cli", args...).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
