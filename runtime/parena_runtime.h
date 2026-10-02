@@ -892,6 +892,39 @@ static inline Bytes mlkem_decaps_impl(Bytes ct, Bytes dk, Arena *dest) {
 }
 #endif /* PARENA_WITH_MLKEM */
 
+#ifdef PARENA_WITH_AEAD
+/* aead_*_impl -- real host glue for crypto/aead.prn: XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha,
+ * 24-byte nonce so random nonces are safe), via the vendored, unmodified Monocypher 4.0.2
+ * (runtime/aead/, CC0 / BSD-2). Same design judgment as crypto/mlkem.prn: no hand-rolled crypto.
+ * Independently cross-checked against Go golang.org/x/crypto/chacha20poly1305 (tests/test_aead.c's
+ * known-answer vector was produced by Go's NewX).
+ * Wire shape: seal -> ciphertext||mac(16); open takes that same shape. Key 32, nonce 24 bytes
+ * (wrong sizes -> zero-length Bytes, no OOB). open failing (bad tag / too short) -> zero-length
+ * Bytes, so a legitimately EMPTY plaintext is indistinguishable from failure: callers must not
+ * seal empty payloads (secure_channel frames always carry a header byte). */
+#include "aead/monocypher.h"
+#define AEAD_KEY_BYTES 32
+#define AEAD_NONCE_BYTES 24
+#define AEAD_MAC_BYTES 16
+static inline Bytes aead_seal_impl(Bytes key, Bytes nonce, Bytes ad, Bytes plain, Arena *dest) {
+    if (key.len != AEAD_KEY_BYTES || nonce.len != AEAD_NONCE_BYTES) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, plain.len + AEAD_MAC_BYTES);
+    crypto_aead_lock(out.data, out.data + plain.len, key.data, nonce.data,
+                     ad.data, (size_t)ad.len, plain.data, (size_t)plain.len);
+    return out;
+}
+static inline Bytes aead_open_impl(Bytes key, Bytes nonce, Bytes ad, Bytes sealed, Arena *dest) {
+    if (key.len != AEAD_KEY_BYTES || nonce.len != AEAD_NONCE_BYTES || sealed.len <= AEAD_MAC_BYTES)
+        return bytes_alloc_impl(dest, 0);
+    int n = sealed.len - AEAD_MAC_BYTES;
+    Bytes out = bytes_alloc_impl(dest, n);
+    if (crypto_aead_unlock(out.data, sealed.data + n, key.data, nonce.data,
+                           ad.data, (size_t)ad.len, sealed.data, (size_t)n) != 0)
+        return bytes_alloc_impl(dest, 0);
+    return out;
+}
+#endif /* PARENA_WITH_AEAD */
+
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
  * (not just designed) while getting firefly.prn's own `skip` to

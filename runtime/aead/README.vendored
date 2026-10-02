@@ -1,0 +1,4 @@
+Vendored, unmodified, from https://github.com/LoupVaillant/Monocypher tag 4.0.2 (src/monocypher.c,
+src/monocypher.h, LICENCE.md). Dual CC0 / BSD-2-Clause. Used only for crypto_aead_lock/unlock
+(XChaCha20-Poly1305). Glue: runtime/parena_runtime.h (PARENA_WITH_AEAD). Cross-checked against
+Go golang.org/x/crypto/chacha20poly1305 NewX via tests/test_aead.c's known-answer vector.

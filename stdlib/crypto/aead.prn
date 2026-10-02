@@ -1,0 +1,30 @@
+;; stdlib/crypto/aead.prn -- XChaCha20-Poly1305 authenticated encryption over Bytes (binary-safe,
+;; 0x00 fine), card #489 (EDGE.GAME secure channel; founder real-time 2026-10-02: "ensure we are
+;; using lz4 and the new encryption we added to parena"). Core Deps Are PARENA-First: this is the
+;; symmetric half that crypto/mlkem.prn's 32-byte shared secret feeds. Why not crypto/aes.prn: that is
+;; openssl + String (not NUL-safe) and absent on mingw, where the Windows client must build.
+;;
+;; STOPGAP-NOTE: FFI glue over vendored Monocypher 4.0.2 (runtime/aead/), same stance as mlkem/mldsa
+;; (hand-rolled AEAD is a classic vulnerability source); a pure-PARENA implementation is a deliberate
+;; non-goal unless PARENA's integer semantics grow unsigned-32 ops. Requires PARENA_WITH_AEAD and
+;; linking runtime/aead/monocypher.c.
+;;
+;; Key 32 bytes, nonce 24 bytes (random nonces are safe). seal -> ciphertext||mac(16 bytes).
+;; Failure (wrong sizes, bad tag, truncated) -> zero-length Bytes; do not seal empty payloads.
+(module crypto/aead)
+(import bytes)
+(export aead-seal aead-open aead-key-bytes aead-nonce-bytes aead-mac-bytes)
+
+(defn aead-key-bytes [] : I32 32)
+(defn aead-nonce-bytes [] : I32 24)
+(defn aead-mac-bytes [] : I32 16)
+
+(defn aead-seal [(key : Bytes) (nonce : Bytes) (ad : Bytes) (plain : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "aead_seal_impl(key, nonce, ad, plain, dest)")})
+
+(defn aead-open [(key : Bytes) (nonce : Bytes) (ad : Bytes) (sealed : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "aead_open_impl(key, nonce, ad, sealed, dest)")})
