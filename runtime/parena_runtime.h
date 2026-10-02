@@ -848,6 +848,7 @@ static inline int mldsa_verify_impl(Bytes sig, Bytes msg, Bytes pubkey) {
 #endif /* PARENA_WITH_MLDSA */
 
 #ifdef PARENA_WITH_MLKEM
+#include <stdint.h> /* uint8_t in the prototypes below; not guaranteed by earlier includes on mingw */
 /* mlkem_*_impl -- real host glue for crypto/mlkem.prn: ML-KEM-768 (FIPS 203), calling straight into
  * the vendored, unmodified pq-crystals/kyber `standard` branch reference (runtime/mlkem/, CC0 /
  * Apache-2.0). Cross-verified against Go's independent crypto/mlkem in both directions
@@ -893,6 +894,7 @@ static inline Bytes mlkem_decaps_impl(Bytes ct, Bytes dk, Arena *dest) {
 #endif /* PARENA_WITH_MLKEM */
 
 #ifdef PARENA_WITH_AEAD
+#include <stdint.h>
 /* aead_*_impl -- real host glue for crypto/aead.prn: XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha,
  * 24-byte nonce so random nonces are safe), via the vendored, unmodified Monocypher 4.0.2
  * (runtime/aead/, CC0 / BSD-2). Same design judgment as crypto/mlkem.prn: no hand-rolled crypto.
