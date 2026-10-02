@@ -20,7 +20,7 @@
 ;; same real reasoning `random`'s own original doc comment already gave.
 
 (module math/math)
-(export random-f64 floor sqrt log cos)
+(export random-f64 floor sqrt log cos cos-2t sin-2t cos-3t cos-5t)
 
 ;; random-f64 -- C target FIXED 2026-09-07 (founder real-time, PAPERCRAFT Roblox-parity thread:
 ;; "add apis to papercraft mod surface to make skrips like this work"). Renamed from `random` to
@@ -59,3 +59,16 @@
 ;; TypeScript emitter's own symbol-lowering logic. Documented here, not silently undiscoverable,
 ;; since this file is the real, canonical place a modder writing against the `math` package would
 ;; look for it.
+
+;; Angular harmonics without trig -- real, pure-PARENA (no host call, same result on every target)
+;; Chebyshev identities: given c = cos t and s = sin t of some angle t, the multiple-angle
+;; cosines/sines are plain polynomials in c and s. Promoted here from SHANKPIT's per-gun bullet-hole
+;; textures (stdlib/shankpit/textures/bullet_hole_*.prn, card #446, founder real-time: "look at that
+;; texture cos sin cos 1 cos 2 cos 3 whatever add to PARENA math"), where each gun's hole gets its
+;; lopsided silhouette from cos 2t / sin 2t / cos 3t / cos 5t of the pixel's angle, computed from
+;; (x/r, y/r) so no atan2 (not in the Java-safe math subset) is ever needed.
+(defn cos-2t [(c : F64) (s : F64)] : F64 (- (* c c) (* s s)))
+(defn sin-2t [(c : F64) (s : F64)] : F64 (* 2.0 (* c s)))
+(defn cos-3t [(c : F64)] : F64 (- (* 4.0 (* c (* c c))) (* 3.0 c)))
+(defn cos-5t [(c : F64)] : F64
+  (+ (- (* 16.0 (* c (* c (* c (* c c))))) (* 20.0 (* c (* c c)))) (* 5.0 c)))
