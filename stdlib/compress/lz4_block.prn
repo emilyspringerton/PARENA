@@ -1,0 +1,188 @@
+;; stdlib/compress/lz4_block.prn -- REAL LZ4 block format (the actual wire format of liblz4's
+;; LZ4_compress_default / LZ4_decompress_safe) over Bytes, pure PARENA. Card #490 (EDGE.GAME secure
+;; channel; founder: "continue fixing LZ4"). Why a second file: compress/lz4.prn is PARENA's own
+;; token-struct scheme (Vec I32 in, Vec Token out; brute-force matching) -- not the LZ4 bitstream,
+;; not byte-addressable, so it cannot go on a wire or interoperate. This one emits/reads the
+;; standard block format, verified against the reference implementation (Python `lz4.block`; see
+;; tests/test_lz4_block.c's known-answer vectors) in BOTH directions.
+;;
+;; Format: sequences of [token][literal-len ext][literals][offset LE16][match-len ext]; token hi
+;; nibble = literal length (15 => extension bytes of 255s), lo nibble = match length - 4 (same ext
+;; rule); the final sequence is literals only. Encoder rules honored so the reference decoder
+;; accepts the output: last match starts >= 12 bytes before the end and ends >= 5 bytes before it.
+;;
+;; Compressor: greedy, one hash-table probe per position (4096 slots stored in a Bytes as LE16
+;; position+1, so inputs are limited to 65535 bytes -- positions past that are simply not indexed;
+;; fine for network frames). Ratio is below liblz4's tuned heuristics on some inputs (no skip
+;; acceleration, no lazy matching); correctness and format are the contract, not parity of ratio.
+;;
+;; API: lz4-compress-block src dest -> Bytes (zero-length iff src is empty or longer than 65535).
+;;      lz4-decompress-block src out-len dest -> Bytes of exactly out-len, or zero-length on ANY
+;;      malformed/truncated/overlong input (every read and write is bounds-checked). The caller
+;;      carries out-len (secure_channel frames do); LZ4 blocks don't store it. out-len 0 -> zero-length.
+(module compress/lz4_block)
+(import bytes)
+(export lz4-compress-block lz4-decompress-block lz4-max-input lz4-compress-bound)
+
+(defn lz4-max-input [] : I32 65535)
+(defn lz4-compress-bound [(n : I32)] : I32 (+ n (+ (/ n 255) 16)))
+
+;; ---- encoder helpers -----------------------------------------------------------------------
+
+(defn hash4 [(src : Bytes) (p : I32)] : I32
+  (mod (+ (* (bytes-get src p) 31)
+          (+ (* (bytes-get src (+ p 1)) 131)
+             (+ (* (bytes-get src (+ p 2)) 257)
+                (* (bytes-get src (+ p 3)) 521))))
+       4096))
+
+(defn table-get [(t : Bytes) (h : I32)] : I32
+  (- (+ (bytes-get t (* h 2)) (* (bytes-get t (+ (* h 2) 1)) 256)) 1))
+
+(defn table-put! [(t : Bytes) (h : I32) (pos : I32)] : I32
+  (if (< pos 65535)
+    (do (bytes-set! t (* h 2) (mod (+ pos 1) 256))
+        (bytes-set! t (+ (* h 2) 1) (/ (+ pos 1) 256))
+        0)
+    0))
+
+(defn zero-fill! [(b : Bytes) (n : I32)] : I32
+  (loop [i 0]
+    (if (>= i n)
+      0
+      (do (bytes-set! b i 0) (recur (+ i 1))))))
+
+;; `do` is not usable as a let-binding value in the C emitter (found live: emitted as a call to a
+;; nonexistent do()), so single-byte/LE16 writes are small helpers that RETURN the new write position.
+(defn put-byte! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (do (bytes-set! out op v) (+ op 1)))
+
+(defn put-le16! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (do (bytes-set! out op (mod v 256)) (bytes-set! out (+ op 1) (/ v 256)) (+ op 2)))
+
+;; write a length extension (the value beyond the 15 held in the token nibble): 255s then remainder
+(defn put-ext! [(out : Bytes) (op : I32) (rem : I32)] : I32
+  (loop [o op r rem]
+    (if (>= r 255)
+      (do (bytes-set! out o 255) (recur (+ o 1) (- r 255)))
+      (do (bytes-set! out o r) (+ o 1)))))
+
+(defn copy-bytes! [(out : Bytes) (op : I32) (src : Bytes) (from : I32) (cnt : I32)] : I32
+  (loop [i 0]
+    (if (>= i cnt)
+      (+ op cnt)
+      (do (bytes-set! out (+ op i) (bytes-get src (+ from i))) (recur (+ i 1))))))
+
+;; one sequence: literals [anchor,pos) then a match (offset, ml>=4). returns the new write pos.
+(defn emit-seq! [(out : Bytes) (op : I32) (src : Bytes) (anchor : I32) (pos : I32) (offset : I32) (ml : I32)] : I32
+  (let [ll (- pos anchor)
+        mlx (- ml 4)
+        tok (+ (* (if (>= ll 15) 15 ll) 16) (if (>= mlx 15) 15 mlx))
+        o1 (put-byte! out op tok)
+        o2 (if (>= ll 15) (put-ext! out o1 (- ll 15)) o1)
+        o3 (copy-bytes! out o2 src anchor ll)
+        o4 (put-le16! out o3 offset)]
+    (if (>= mlx 15) (put-ext! out o4 (- mlx 15)) o4)))
+
+(defn emit-last! [(out : Bytes) (op : I32) (src : Bytes) (anchor : I32) (n : I32)] : I32
+  (let [ll (- n anchor)
+        o1 (put-byte! out op (* (if (>= ll 15) 15 ll) 16))
+        o2 (if (>= ll 15) (put-ext! out o1 (- ll 15)) o1)]
+    (copy-bytes! out o2 src anchor ll)))
+
+(defn match-extend [(src : Bytes) (cand : I32) (pos : I32) (limit : I32)] : I32
+  (loop [l 4]
+    (if (>= (+ pos l) limit)
+      l
+      (if (= (bytes-get src (+ cand l)) (bytes-get src (+ pos l)))
+        (recur (+ l 1))
+        l))))
+
+(defn same4? [(src : Bytes) (a : I32) (b : I32)] : Bool
+  (and (= (bytes-get src a) (bytes-get src b))
+       (and (= (bytes-get src (+ a 1)) (bytes-get src (+ b 1)))
+            (and (= (bytes-get src (+ a 2)) (bytes-get src (+ b 2)))
+                 (= (bytes-get src (+ a 3)) (bytes-get src (+ b 3)))))))
+
+(defn lz4-compress-block [(src : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (bytes-len src)]
+    (if (or (= n 0) (> n 65535))
+      (bytes-alloc 0 dest)
+      (let [out (bytes-alloc (lz4-compress-bound n) dest)
+            table (bytes-alloc 8192 dest)
+            z (zero-fill! table 8192)
+            last-match-start (- n 12)
+            match-limit (- n 5)]
+        (loop [pos 0 anchor 0 op 0]
+          (if (> pos last-match-start)
+            (bytes-slice out 0 (emit-last! out op src anchor n) dest)
+            (let [h (hash4 src pos)
+                  cand (table-get table h)
+                  z2 (table-put! table h pos)]
+              (if (and (>= cand 0) (and (<= (- pos cand) 65535) (same4? src cand pos)))
+                (let [ml (match-extend src cand pos match-limit)
+                      op2 (emit-seq! out op src anchor pos (- pos cand) ml)]
+                  (recur (+ pos ml) (+ pos ml) op2))
+                (recur (+ pos 1) anchor op)))))))))
+
+;; ---- decoder -------------------------------------------------------------------------------
+
+;; read a length extension starting at ip: returns (extra * 1) packed as extra + (new-ip * 2^20)
+;; would be fragile; instead two small scans: ext-sum then ext-end.
+(defn ext-sum [(src : Bytes) (ip : I32) (n : I32)] : I32
+  (loop [i ip acc 0]
+    (if (>= i n)
+      -1
+      (let [b (bytes-get src i)]
+        (if (= b 255) (recur (+ i 1) (+ acc 255)) (+ acc b))))))
+
+(defn ext-end [(src : Bytes) (ip : I32)] : I32
+  (loop [i ip]
+    (if (= (bytes-get src i) 255) (recur (+ i 1)) (+ i 1))))
+
+(defn copy-match! [(out : Bytes) (op : I32) (offset : I32) (ml : I32)] : I32
+  (loop [i 0]
+    (if (>= i ml)
+      (+ op ml)
+      (do (bytes-set! out (+ op i) (bytes-get out (- (+ op i) offset))) (recur (+ i 1))))))
+
+;; returns the final write position, or -1 if the block is malformed.
+(defn decode-loop [(src : Bytes) (n : I32) (out : Bytes) (olen : I32)] : I32
+  (loop [ip 0 op 0]
+    (if (>= ip n)
+      -1
+      (let [tok (bytes-get src ip)
+            ll0 (/ tok 16)
+            ip1 (+ ip 1)
+            llx (if (= ll0 15) (ext-sum src ip1 n) 0)]
+        (if (< llx 0)
+          -1
+          (let [ll (+ ll0 llx)
+                ip2 (if (= ll0 15) (ext-end src ip1) ip1)]
+            (if (or (> (+ ip2 ll) n) (> (+ op ll) olen))
+              -1
+              (let [op1 (copy-bytes! out op src ip2 ll)
+                    ip3 (+ ip2 ll)]
+                (if (= ip3 n)
+                  op1
+                  (if (> (+ ip3 2) n)
+                    -1
+                    (let [offset (+ (bytes-get src ip3) (* (bytes-get src (+ ip3 1)) 256))
+                          ip4 (+ ip3 2)
+                          ml0 (mod tok 16)
+                          mlx (if (= ml0 15) (ext-sum src ip4 n) 0)]
+                      (if (or (< mlx 0) (or (= offset 0) (> offset op1)))
+                        -1
+                        (let [ml (+ (+ ml0 mlx) 4)
+                              ip5 (if (= ml0 15) (ext-end src ip4) ip4)]
+                          (if (> (+ op1 ml) olen)
+                            -1
+                            (recur ip5 (copy-match! out op1 offset ml))))))))))))))))
+
+(defn lz4-decompress-block [(src : Bytes) (out-len : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (bytes-len src)]
+    (if (or (<= out-len 0) (or (= n 0) (> out-len 4194304)))
+      (bytes-alloc 0 dest)
+      (let [out (bytes-alloc out-len dest)
+            end (decode-loop src n out out-len)]
+        (if (= end out-len) out (bytes-alloc 0 dest))))))
