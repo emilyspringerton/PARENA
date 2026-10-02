@@ -19,7 +19,9 @@
 
 (module ui/menu)
 (export menu-col menu-row menu-rows menu-cell-x menu-cell-y menu-nav-move menu-hit-test
-        menu-click-kind menu-cycle)
+        menu-click-kind menu-cycle
+        menu-path-depth menu-path-push menu-path-pop menu-path-leaf menu-path-max-depth
+        menu-path-enter menu-path-parent-sel)
 
 (defn menu-col [(idx : I32) (cols : I32)] : I32 (mod idx cols))
 (defn menu-row [(idx : I32) (cols : I32)] : I32 (/ idx cols))
@@ -88,3 +90,32 @@
 
 ;; menu-cycle -- step an option through `n` values (a multi-state toggle: OFF/AUTO/MANUAL...), wrapping.
 (defn menu-cycle [(cur : I32) (n : I32)] : I32 (mod (+ cur 1) n))
+
+;; ---- submenus (card #497, "sub menu top level affordance added to linen ui") ----
+;; A submenu is just a menu whose cells are chosen by where you are in the tree, so the shared piece is
+;; the PATH: which cell was entered at each level, packed into one I32 so it stays scalar (same
+;; burrow/Java/TS reach as everything above). 7 bits per level, newest level in the low bits, each
+;; stored as cell+1 so 0 means "no level": path 0 is the root menu. Max 4 levels (28 bits), cells
+;; 0..126. The host owns the tree (which cell is a folder, what a level shows); this owns the stack.
+;;   e.g. root -> cell 3 -> cell 0:  path = (3+1)*128 + (0+1) = 513 ; depth 2, leaf 0, parent-sel 3.
+(defn menu-path-max-depth [] : I32 4)
+(defn menu-path-depth [(path : I32)] : I32
+  (loop [p path n 0]
+    (if (<= p 0) n (recur (/ p 128) (+ n 1)))))
+;; menu-path-push -- descend into `cell`. Refused (path unchanged) when already at max depth or the
+;; cell is out of 0..126, so a runaway host can never corrupt the packing.
+(defn menu-path-push [(path : I32) (cell : I32)] : I32
+  (if (or (or (< cell 0) (> cell 126)) (>= (menu-path-depth path) 4))
+    path
+    (+ (* path 128) (+ cell 1))))
+;; menu-path-pop -- the Back / Escape action. Popping the root is a no-op (stays 0).
+(defn menu-path-pop [(path : I32)] : I32 (if (<= path 0) 0 (/ path 128)))
+;; menu-path-leaf -- the cell entered at the deepest level, -1 at the root.
+(defn menu-path-leaf [(path : I32)] : I32 (if (<= path 0) -1 (- (mod path 128) 1)))
+;; menu-path-parent-sel -- the cell to re-select after Back (the folder you just left), -1 at root.
+;; Equal to the leaf of the path BEFORE popping; provided so hosts don't re-derive it.
+(defn menu-path-parent-sel [(path : I32)] : I32 (menu-path-leaf path))
+;; menu-path-enter -- activating a cell: a folder (is-sub = 1) descends, a leaf action leaves the path
+;; alone (the host runs it). Returns the new path.
+(defn menu-path-enter [(path : I32) (cell : I32) (is-sub : I32)] : I32
+  (if (= is-sub 1) (menu-path-push path cell) path))

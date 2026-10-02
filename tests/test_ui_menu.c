@@ -119,6 +119,29 @@ int main(void) {
     CHECK(click_bad == 0, "click timing matches the lobby's thresholds on a dense sweep");
     printf("      (%d click cases)\n", click_n);
 
+    /* ---- submenu path (card #497), hand-derived ---- */
+    CHECK(menu_path_depth(0) == 0 && menu_path_leaf(0) == -1, "root: depth 0, leaf -1");
+    CHECK(menu_path_push(0, 3) == 4 && menu_path_depth(4) == 1 && menu_path_leaf(4) == 3, "push 3 from root = 4, depth 1, leaf 3");
+    CHECK(menu_path_push(4, 0) == 513 && menu_path_depth(513) == 2 && menu_path_leaf(513) == 0, "root->3->0 packs to 513");
+    CHECK(menu_path_pop(513) == 4 && menu_path_pop(4) == 0 && menu_path_pop(0) == 0, "pop unwinds, root pop is a no-op");
+    CHECK(menu_path_parent_sel(513) == 0 && menu_path_parent_sel(menu_path_pop(513)) == 3, "re-select the folder just left");
+    CHECK(menu_path_push(0, -1) == 0 && menu_path_push(0, 127) == 0 && menu_path_push(0, 126) == 127, "out-of-range cells refused, 126 is the max");
+    {
+        int p = 0; for (int i = 0; i < 4; i++) p = menu_path_push(p, 126);
+        CHECK(menu_path_depth(p) == 4 && p > 0, "4 levels of max cell stay positive (28 bits)");
+        CHECK(menu_path_push(p, 1) == p, "5th level refused");
+    }
+    CHECK(menu_path_enter(0, 2, 1) == 3 && menu_path_enter(0, 2, 0) == 0, "folder descends, action leaves path alone");
+    {   /* push/pop round trip over every cell at every depth <= 3 */
+        int bad = 0;
+        for (int a = 0; a <= 126; a++) for (int b = 0; b <= 126; b += 7) for (int d = 0; d <= 126; d += 31) {
+            int p = menu_path_push(menu_path_push(menu_path_push(0, a), b), d);
+            if (menu_path_depth(p) != 3 || menu_path_leaf(p) != d || menu_path_leaf(menu_path_pop(p)) != b
+                || menu_path_leaf(menu_path_pop(menu_path_pop(p))) != a || menu_path_pop(menu_path_pop(menu_path_pop(p))) != 0) bad++;
+        }
+        CHECK(bad == 0, "push/pop round trip across the whole cell range");
+    }
+
     printf(failures ? "\n%d FAILED\n" : "\nAll ui/menu checks passed.\n", failures);
     return failures ? 1 : 0;
 }
