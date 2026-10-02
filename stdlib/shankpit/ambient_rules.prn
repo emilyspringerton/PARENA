@@ -1,0 +1,26 @@
+;; stdlib/shankpit/ambient_rules.prn -- SHANKPIT's ambient-light slider (pause menu, persisted in shankpit_display.cfg).
+;; Founder real-time (card #460): "the ambient lighting just needs to be adjusted -- give us a slider in the menu (it should
+;; persist to a settings file) use parena; the wall lighting is working as the sun goes up and down but too dark".
+;; The sun/moon cycle stays exactly as it is; the slider adds a flat fill light on top of every surface's ambient term, so
+;; shaded walls stop crushing to black without flattening the day/night swing. Scalar-only, one expression per defn: the
+;; host (apps/lobby) owns the stored level and the key handling, every number a modder might retune lives here.
+;;
+;;   level : 0..10 (0 = the original look, 10 = strong fill)
+(module shankpit/ambient-rules)
+(export ambient-level-max ambient-level-default ambient-clamp ambient-step ambient-boost-permille)
+
+(defn ambient-level-max [] : I32 10)
+
+;; Default is 3, a mild lift: the founder's report was "too dark", so a fresh install should not need the slider.
+(defn ambient-level-default [] : I32 3)
+
+(defn ambient-clamp [(level : I32)] : I32
+  (if (< level 0) 0 (if (> level 10) 10 level)))
+
+;; One left/right press. dir is -1 or +1; the slider stops at both ends (no wrap), unlike the on/off toggles.
+(defn ambient-step [(level : I32) (dir : I32)] : I32
+  (ambient-clamp (+ level dir)))
+
+;; Fill light added to each colour channel of the surface ambient term, in thousandths: 0.000 at level 0 up to 0.400 at 10.
+(defn ambient-boost-permille [(level : I32)] : I32
+  (* (ambient-clamp level) 40))
