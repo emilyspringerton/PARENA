@@ -1406,3 +1406,16 @@ test-linalg-sparse: build
 # Per-package build fragments (parallel-work convention, 2026-10-01): each work package adds its own
 # mk/<pkg>.mk with its own test targets instead of editing this file.
 -include mk/*.mk
+
+# test-k8s-gitops -- stdlib/k8s/gitops.prn (single Ingress, doc joiner, reconcile decision table).
+test-k8s-gitops: build
+	./parena build stdlib/string.prn stdlib/k8s/gitops.prn -o tests/test_k8s_gitops_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_k8s_gitops.c \
+		runtime/parena_runtime.c -o /tmp/test_k8s_gitops_bin -lm
+	/tmp/test_k8s_gitops_bin
+
+# parena-gitops -- pull-based GitOps reconciler (stdlib/k8s/gitops.prn decides; tools/gitops_host.c plumbs).
+parena-gitops: build stdlib/k8s/gitops.prn tools/gitops_host.c
+	./parena build stdlib/string.prn stdlib/k8s/gitops.prn -o tools/gitops_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -D_POSIX_C_SOURCE=200809L -I runtime -I tools tools/gitops_host.c \
+		runtime/parena_runtime.c -o parena-gitops -lm

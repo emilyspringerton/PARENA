@@ -34,3 +34,6 @@ editor-demo
 tests/fake_webdriver_server
 tests/usb_serial_java/
 var/
+parena-gitops
+tools/gitops_gen.c
+tests/test_k8s_gitops_gen.c

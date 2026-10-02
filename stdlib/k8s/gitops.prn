@@ -1,0 +1,79 @@
+;; stdlib/k8s/gitops.prn — GitOps primitives: the pieces `parena-gitops` (tools/gitops_host.c)
+;; needs that k8s.prn does not have. Founder real-time, 2026-10-02: "use the helm parena stuff to
+;; set up git ops, build our own tooling into whatever makes sense" -> "the parena tool would be
+;; fine i think?". Pull-based model: a git repo holds rendered manifests; a reconciler pulls it
+;; and applies when the revision changed. The decision logic lives here (pure, testable); the
+;; process/argv/kubectl plumbing lives in the thin C host, the same split coreutils/*.prn use.
+;;
+;; Networking cost rule (KUBERNETES_SERVICE_MIGRATION_NORTHSTAR.md): every Service is ClusterIP
+;; (k8s.prn already does this) and there is exactly ONE Ingress for the whole cluster, so only one
+;; external load balancer is ever billed. `ingress-yaml` therefore emits a single host-routed
+;; Ingress per call and the caller is expected to call it once per host, not once per service.
+
+(module k8s/gitops)
+(import string)
+(export ingress-yaml join-docs gitops-decide gitops-requeue-seconds)
+
+;; ingress-yaml — networking.k8s.io/v1 Ingress, GCE class (GKE's single external HTTP(S) LB),
+;; one host, path "/" (Prefix) routed to a ClusterIP Service.
+(defn ingress-yaml [(name : String @ Region) (namespace : String @ Region) (host : String @ Region) (service : String @ Region) (port : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [port-s (string/i32-to-string port dest)]
+    (string/concat
+      "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: "
+      (string/concat name
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\n  annotations:\n    kubernetes.io/ingress.class: gce\nspec:\n  rules:\n    - host: "
+              (string/concat host
+                (string/concat "\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: "
+                  (string/concat service
+                    (string/concat "\n                port:\n                  number: "
+                      (string/concat port-s "\n" dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; join-docs — concatenate two YAML documents with the standard "---" separator, so a rendered
+;; app (Deployment + Service + Ingress) is one `kubectl apply -f` file.
+(defn join-docs [(a : String @ Region) (b : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat a (string/concat "---\n" b dest) dest))
+
+;; gitops-decide — the reconcile decision for one tick.
+;;   inputs:  git-rev-changed (HEAD differs from last successfully applied revision),
+;;            last-apply-ok   (previous apply attempt, if any, succeeded),
+;;            attempt         (consecutive failed applies so far)
+;;   output:  0 = nothing to do        (synced)
+;;            1 = apply                (new revision — ALWAYS, even out of a HOLD: a fix commit must be tried)
+;;            2 = retry after backoff  (same revision failed before; attempt < 6)
+;;            3 = hold & alert         (failed 6+ times: stop hammering the cluster, page a human)
+(defn gitops-decide [(git-rev-changed : Bool) (last-apply-ok : Bool) (attempt : I32)] : I32
+  (if (and (not git-rev-changed) last-apply-ok)
+    0
+    (if git-rev-changed
+      1
+      (if (>= attempt 6)
+        3
+        2))))
+
+;; gitops-requeue-seconds — how long until the next tick (poll interval is the only knob; a pull
+;; model costs nothing in egress because the repo is fetched, not pushed, and `git fetch` is a
+;; no-op when unchanged). Failures back off exponentially up to max-seconds.
+(defn gitops-requeue-seconds [(action : I32) (poll-seconds : I32) (attempt : I32) (max-seconds : I32)] : I32
+  (if (= action 2)
+    (let [capped (if (> attempt 6) 6 attempt)]
+      (let [computed (* poll-seconds (pow2 capped))]
+        (if (> computed max-seconds) max-seconds computed)))
+    poll-seconds))
+
+(defn pow2 [(n : I32)] : I32
+  (if (<= n 0)
+    1
+    (* 2 (pow2 (- n 1)))))
