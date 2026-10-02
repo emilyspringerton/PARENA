@@ -13,7 +13,7 @@
 
 int main(int argc, char **argv) {
     const char *name = NULL, *image = NULL, *ns = "default", *host = NULL;
-    int port = 0, replicas = 1;
+    int port = 0, replicas = 1, cpu = 100, mem = 128;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--name")) name = argv[i + 1];
         else if (!strcmp(argv[i], "--image")) image = argv[i + 1];
@@ -21,11 +21,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--namespace")) ns = argv[i + 1];
         else if (!strcmp(argv[i], "--replicas")) replicas = atoi(argv[i + 1]);
         else if (!strcmp(argv[i], "--host")) host = argv[i + 1];
+        else if (!strcmp(argv[i], "--cpu-milli")) cpu = atoi(argv[i + 1]);
+        else if (!strcmp(argv[i], "--memory-mi")) mem = atoi(argv[i + 1]);
         else { fprintf(stderr, "unknown flag %s\n", argv[i]); return 2; }
     }
-    if (!name || !image || port <= 0) { fprintf(stderr, "usage: parena-k8s-render --name N --image I --port P [--namespace NS] [--replicas R] [--host H]\n"); return 2; }
+    if (!name || !image || port <= 0) { fprintf(stderr, "usage: parena-k8s-render --name N --image I --port P [--namespace NS] [--replicas R] [--host H] [--cpu-milli 100] [--memory-mi 128]\n"); return 2; }
     Arena a; arena_init(&a);
-    char *out = deployment_yaml(Deployment_new((char *)name, (char *)ns, replicas, Container_new((char *)name, (char *)image, port)), &a);
+    char *out = deployment_yaml(Deployment_new((char *)name, (char *)ns, replicas, Container_new((char *)name, (char *)image, port, cpu, mem)), &a);
     out = join_docs(out, service_yaml(ServiceSpec_new((char *)name, (char *)ns, port, port), &a), &a);
     if (host) out = join_docs(out, ingress_yaml((char *)name, (char *)ns, (char *)host, (char *)name, port, &a), &a);
     fputs(out, stdout);

@@ -34,6 +34,13 @@ int main(void) {
     assert(gitops_requeue_seconds(2, 30, 3, 300) == 240);
     assert(gitops_requeue_seconds(2, 30, 4, 300) == 300);
 
+    /* resources: requests == limits, so Autopilot bills a fixed, small amount */
+    char *dep = deployment_yaml(Deployment_new("a", "ns", 2, Container_new("a", "img:1", 80, 250, 256)), &a);
+    assert(strstr(dep, "requests:\n              cpu: 250m\n              memory: 256Mi"));
+    assert(strstr(dep, "limits:\n              cpu: 250m\n              memory: 256Mi"));
+    assert(strstr(dep, "replicas: 2"));
+    assert(strcmp(namespace_yaml("emily", &a), "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: emily\n") == 0);
+
     puts("test_k8s_gitops: OK");
     return 0;
 }

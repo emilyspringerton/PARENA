@@ -28,12 +28,16 @@
 
 (module k8s)
 (import string)
-(export Container Deployment ServiceSpec PVCSpec deployment-yaml service-yaml pvc-yaml)
+(export Container Deployment ServiceSpec PVCSpec deployment-yaml service-yaml pvc-yaml namespace-yaml)
 
 (defstruct Container
   (name  : String @ Region)
   (image : String @ Region)
-  (port  : I32))
+  (port  : I32)
+  ;; Resource requests == limits. GKE Autopilot bills per requested vCPU/memory, so an explicit,
+  ;; small, non-bursting value is the cost control (omitting it bills Autopilot's larger defaults).
+  (cpu-milli : I32)
+  (memory-mi : I32))
 
 ;; One container per Deployment — see this file's own header for why that's a real, deliberate
 ;; v0 scope cut, not an oversight.
@@ -63,7 +67,17 @@
   : String @ Region
   (let [c (get-field d :container)
         replicas-s (string/i32-to-string (get-field d :replicas) dest)
-        port-s (string/i32-to-string (get-field c :port) dest)]
+        port-s (string/i32-to-string (get-field c :port) dest)
+        cpu-s (string/i32-to-string (get-field c :cpu-milli) dest)
+        mem-s (string/i32-to-string (get-field c :memory-mi) dest)
+        res (string/concat "\n          resources:\n            requests:\n              cpu: "
+              (string/concat cpu-s
+                (string/concat "m\n              memory: "
+                  (string/concat mem-s
+                    (string/concat "Mi\n            limits:\n              cpu: "
+                      (string/concat cpu-s
+                        (string/concat "m\n              memory: "
+                          (string/concat mem-s "Mi\n" dest) dest) dest) dest) dest) dest) dest) dest)]
     (string/concat
       "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: "
       (string/concat (get-field d :name)
@@ -80,7 +94,7 @@
                             (string/concat "\n          image: "
                               (string/concat (get-field c :image)
                                 (string/concat "\n          ports:\n            - containerPort: "
-                                  (string/concat port-s "\n"
+                                  (string/concat port-s res
                                     dest)
                                   dest)
                                 dest)
@@ -145,3 +159,8 @@
           dest)
         dest)
       dest)))
+
+;; namespace-yaml — a Namespace, so the GitOps repo can create the namespaces its apps reference.
+(defn namespace-yaml [(name : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " (string/concat name "\n" dest) dest))

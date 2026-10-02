@@ -1409,7 +1409,7 @@ test-linalg-sparse: build
 
 # test-k8s-gitops -- stdlib/k8s/gitops.prn (single Ingress, doc joiner, reconcile decision table).
 test-k8s-gitops: build
-	./parena build stdlib/string.prn stdlib/k8s/gitops.prn -o tests/test_k8s_gitops_gen.c
+	./parena build stdlib/string.prn stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn -o tests/test_k8s_gitops_gen.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_k8s_gitops.c \
 		runtime/parena_runtime.c -o /tmp/test_k8s_gitops_bin -lm
 	/tmp/test_k8s_gitops_bin
