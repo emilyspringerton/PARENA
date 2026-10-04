@@ -1442,6 +1442,19 @@ parena-k8s-render: build stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn tools/k8s_rend
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tools tools/k8s_render_host.c \
 		runtime/parena_runtime.c -o parena-k8s-render -lm
 
+# parena-pod-render -- multi-container Pod (+PVC/Service/Ingress) from a spec file (k8s/pod.prn).
+parena-pod-render: build stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn stdlib/k8s/pod.prn tools/pod_render_host.c
+	./parena build stdlib/string.prn stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn stdlib/k8s/pod.prn -o tools/pod_render_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -D_POSIX_C_SOURCE=200809L -I runtime -I tools tools/pod_render_host.c \
+		runtime/parena_runtime.c -o parena-pod-render -lm
+
+# test-k8s-pod -- stdlib/k8s/pod.prn fragments + the rendered core-pod shape (sockets volume, Recreate, no LB).
+test-k8s-pod: build
+	./parena build stdlib/string.prn stdlib/k8s/k8s.prn stdlib/k8s/gitops.prn stdlib/k8s/pod.prn -o tests/test_k8s_pod_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_k8s_pod.c \
+		runtime/parena_runtime.c -o /tmp/test_k8s_pod_bin -lm
+	/tmp/test_k8s_pod_bin
+
 # test-aead -- crypto/aead.prn (XChaCha20-Poly1305, vendored Monocypher 4.0.2) incl. a Go x/crypto KAT.
 test-aead: build
 	./parena build stdlib/bytes.prn stdlib/crypto/aead.prn -o tests/test_aead_gen.c

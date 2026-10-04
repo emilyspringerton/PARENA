@@ -1,0 +1,218 @@
+;; stdlib/k8s/pod.prn — multi-container Pod Deployments with a shared unix-socket volume.
+;; Founder real-time, 2026-10-04: move PRRJECT_FATBABY into Kubernetes, same-node IPC over unix
+;; domain sockets, "use whatever we were using for the GOLDEN DOCS service ... GITOPS etc." —
+;; golden docs ships via parena-k8s-render -> manifests repo -> parena-gitops, but k8s.prn's
+;; `Deployment` is one container only. Sockets only connect containers that share a volume, so the
+;; FatBaby processors must live in ONE pod; this module is the missing renderer piece
+;; (docs: PRRJECT_FATBABY/docs/northstar/FATBABY_K8S_UDS_NORTHSTAR.md).
+;;
+;; Shape: a Deployment whose pod mounts two volumes into every container —
+;;   var  (PersistentVolumeClaim, ReadWriteOnce)  the shared event store
+;;   run  (emptyDir)                              unix sockets + notify datagrams
+;; Because the PVC is ReadWriteOnce the Deployment uses strategy Recreate (a rolling update would
+;; start the new pod while the old one still holds the volume and hang). Composition is by
+;; fragments so the C host (tools/pod_render_host.c) loops over a spec file: one pod-head, N
+;; pod-container, one pod-tail. Container args are a comma-separated string (no commas/quotes
+;; inside an arg). Requests == limits, same Autopilot cost rule as k8s.prn.
+
+(module k8s/pod)
+(import string)
+(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-ingress-yaml)
+
+;; args-yaml — "a,b" -> block list lines at `indent`, each arg double-quoted. "" -> "".
+(defn args-yaml [(csv : String @ Region) (indent : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (if (= (string/length csv) 0)
+    ""
+    (let [parts (string/split csv "," dest)]
+      (loop [i 0 acc ""]
+        (if (>= i (vec/len &parts))
+          acc
+          (recur (+ i 1)
+            (string/concat acc
+              (string/concat indent
+                (string/concat "- \""
+                  (string/concat (vec/get &parts i) "\"\n" dest)
+                  dest)
+                dest)
+              dest)))))))
+
+;; pod-head-yaml — Deployment header through `containers:`. fsGroup 65532 = distroless nonroot,
+;; so the PVC and emptyDir are writable by the containers.
+(defn pod-head-yaml [(name : String @ Region) (namespace : String @ Region) (replicas : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat
+    "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: "
+    (string/concat name
+      (string/concat "\n  namespace: "
+        (string/concat namespace
+          (string/concat "\nspec:\n  replicas: "
+            (string/concat (string/i32-to-string replicas dest)
+              (string/concat "\n  strategy:\n    type: Recreate\n  selector:\n    matchLabels:\n      app: "
+                (string/concat name
+                  (string/concat "\n  template:\n    metadata:\n      labels:\n        app: "
+                    (string/concat name "\n    spec:\n      securityContext:\n        fsGroup: 65532\n      containers:\n" dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)
+    dest))
+
+;; port-block-yaml — ports + tcpSocket readiness probe, or "" when port is 0.
+(defn port-block-yaml [(port : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (if (> port 0)
+    (let [p (string/i32-to-string port dest)]
+      (string/concat "          ports:\n            - containerPort: "
+        (string/concat p
+          (string/concat "\n          readinessProbe:\n            tcpSocket:\n              port: "
+            (string/concat p "\n" dest)
+            dest)
+          dest)
+        dest))
+    ""))
+
+;; pod-container-yaml — one container: command + args, optional TCP port with readiness probe
+;; (port 0 = no listener reachable from outside the pod, e.g. a socket-only process, so no probe),
+;; envFrom a Secret, both shared volumes mounted, FATBABY_NOTIFY_DIR pointing at <run-path>/notify.
+(defn pod-container-yaml [(name : String @ Region) (image : String @ Region) (command : String @ Region)
+                          (args-csv : String @ Region) (port : I32) (cpu-milli : I32) (memory-mi : I32)
+                          (secret : String @ Region) (var-path : String @ Region) (run-path : String @ Region)
+                          (dest : Arena @ Region)]
+  : String @ Region
+  (let [cpu-s (string/i32-to-string cpu-milli dest)
+        mem-s (string/i32-to-string memory-mi dest)
+        port-block (port-block-yaml port dest)]
+    (string/concat "        - name: "
+      (string/concat name
+        (string/concat "\n          image: "
+          (string/concat image
+            (string/concat "\n          command:\n            - "
+              (string/concat command
+                (string/concat "\n"
+                  (string/concat (if (= (string/length args-csv) 0) "" "          args:\n")
+                    (string/concat (args-yaml args-csv "            " dest)
+                      (string/concat port-block
+                        (string/concat "          env:\n            - name: FATBABY_NOTIFY_DIR\n              value: "
+                          (string/concat run-path
+                            (string/concat "/notify\n          envFrom:\n            - secretRef:\n                name: "
+                              (string/concat secret
+                                (string/concat "\n          volumeMounts:\n            - name: var\n              mountPath: "
+                                  (string/concat var-path
+                                    (string/concat "\n            - name: run\n              mountPath: "
+                                      (string/concat run-path
+                                        (string/concat "\n          resources:\n            requests:\n              cpu: "
+                                          (string/concat cpu-s
+                                            (string/concat "m\n              memory: "
+                                              (string/concat mem-s
+                                                (string/concat "Mi\n            limits:\n              cpu: "
+                                                  (string/concat cpu-s
+                                                    (string/concat "m\n              memory: "
+                                                      (string/concat mem-s "Mi\n" dest)
+                                                      dest)
+                                                    dest)
+                                                  dest)
+                                                dest)
+                                              dest)
+                                            dest)
+                                          dest)
+                                        dest)
+                                      dest)
+                                    dest)
+                                  dest)
+                                dest)
+                              dest)
+                            dest)
+                          dest)
+                        dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; pod-tail-yaml — the two shared volumes.
+(defn pod-tail-yaml [(pvc : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "      volumes:\n        - name: var\n          persistentVolumeClaim:\n            claimName: "
+    (string/concat pvc "\n        - name: run\n          emptyDir: {}\n" dest)
+    dest))
+
+;; port-entry-yaml — one Service port list item.
+(defn port-entry-yaml [(p : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "    - name: p"
+    (string/concat p
+      (string/concat "\n      port: "
+        (string/concat p
+          (string/concat "\n      targetPort: " (string/concat p "\n" dest) dest)
+          dest)
+        dest)
+      dest)
+    dest))
+
+;; pod-service-yaml — ONE ClusterIP Service for the pod exposing several ports (ports-csv "8082,9091";
+;; targetPort == port). Never LoadBalancer: the single shared Ingress is the only external entry.
+(defn pod-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (string/split ports-csv "," dest)
+        ports (loop [i 0 acc ""]
+                (if (>= i (vec/len &parts))
+                  acc
+                  (recur (+ i 1) (string/concat acc (port-entry-yaml (vec/get &parts i) dest) dest))))]
+    (string/concat "apiVersion: v1\nkind: Service\nmetadata:\n  name: "
+      (string/concat name
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\nspec:\n  selector:\n    app: "
+              (string/concat name
+                (string/concat "\n  ports:\n" (string/concat ports "  type: ClusterIP\n" dest) dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; rule-yaml — one Ingress host rule: "host@port" routed to `service`.
+(defn rule-yaml [(rule : String @ Region) (service : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [hp (string/split rule "@" dest)]
+    (string/concat "    - host: "
+      (string/concat (vec/get &hp 0)
+        (string/concat "\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: "
+          (string/concat service
+            (string/concat "\n                port:\n                  number: "
+              (string/concat (vec/get &hp 1) "\n" dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; pod-ingress-yaml — the cluster's ONE Ingress (GCE class = one external HTTP(S) LB), several host
+;; rules (rules-csv "fatbaby.io@8082,api.fatbaby.io@9091") all routed to the pod's Service.
+(defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (string/split rules-csv "," dest)
+        rules (loop [i 0 acc ""]
+                (if (>= i (vec/len &parts))
+                  acc
+                  (recur (+ i 1) (string/concat acc (rule-yaml (vec/get &parts i) name dest) dest))))]
+    (string/concat "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: "
+      (string/concat name
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\n  annotations:\n    kubernetes.io/ingress.class: gce\nspec:\n  rules:\n" (string/concat rules "" dest) dest)
+            dest)
+          dest)
+        dest)
+      dest)))

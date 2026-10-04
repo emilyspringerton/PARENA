@@ -37,13 +37,44 @@ static void sb_append(StrBuf *sb, const char *s) {
     sb->len += slen;
 }
 
+/* sb_appendf never truncates: a fixed 1024-byte buffer here once silently cut any emitted
+ * fragment over 1023 bytes (found 2026-10-04: a deeply nested string/concat chain in
+ * stdlib/k8s/pod.prn came out as C that ended mid-token, "de;"). Measure first, heap-allocate
+ * when the stack buffer is too small. */
 static void sb_appendf(StrBuf *sb, const char *fmt, ...) {
     char buf[1024];
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_copy(ap2, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    if (n >= 0 && (size_t)n >= sizeof(buf)) {
+        char *big = (char *)malloc((size_t)n + 1);
+        if (big) {
+            vsnprintf(big, (size_t)n + 1, fmt, ap2);
+            sb_append(sb, big);
+            free(big);
+            va_end(ap2);
+            return;
+        }
+    }
+    va_end(ap2);
     sb_append(sb, buf);
+}
+
+/* xfmt: malloc'd, never-truncating snprintf for emitted expression text. The compiler is a
+ * short-lived process, so the (small) leak is deliberate. */
+static char *xfmt(const char *fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    char *out = (char *)malloc((size_t)(n < 0 ? 0 : n) + 1);
+    if (!out) { va_end(ap2); abort(); }
+    vsnprintf(out, (size_t)(n < 0 ? 0 : n) + 1, fmt, ap2);
+    va_end(ap2);
+    return out;
 }
 
 /* sb_append_decl appends a real C variable/field declaration for
@@ -1652,8 +1683,7 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
                         call->line);
         }
         const char *eq_fn = ensure_veceq_helper(arena, hint->elem_type);
-        char buf[1024];
-        snprintf(buf, sizeof(buf), "%s(%s%s%s, %s%s%s)", eq_fn,
+        char *buf = xfmt("%s(%s%s%s, %s%s%s)", eq_fn,
                  a_ref ? "&(" : "", a_text, a_ref ? ")" : "",
                  b_ref ? "&(" : "", b_text, b_ref ? ")" : "");
         *out_type = "int";
@@ -1733,8 +1763,8 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
             (is_symbol(call->children[1], "&") || is_symbol(call->children[1], "&mut") ||
              (call->children[1]->text && call->children[1]->text[0] == '&' &&
               strcmp(call->children[1]->text, "&mut") != 0 && strlen(call->children[1]->text) > 1))) {
-            char buf[512];
-            snprintf(buf, sizeof(buf), "&(%s)", target_text);
+            char *buf;
+            buf = xfmt("&(%s)", target_text);
             box_vec_arg = arena_strdup(arena, buf, strlen(buf));
         } else {
             box_vec_arg = target_text;
@@ -1869,8 +1899,7 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
             sb_append(&args, arg_c);
         }
     }
-    char buf[1024];
-    snprintf(buf, sizeof(buf), "%s(%s)", fn_name, args.data);
+    char *buf = xfmt("%s(%s)", fn_name, args.data);
     sb_free(&args);
     /* Real, honest, narrow exception to the generic "assume void *"
      * fallback below: parena_runtime.h's own Vec functions have real,
@@ -2241,16 +2270,16 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                       inner_c);
             inner_c = arena_strdup(arena, boxed_buf, strlen(boxed_buf));
         }
-        char buf[512];
+        char *buf;
         if (is_symbol(expr->children[0], "Ok")) {
             *out_type = "Result";
-            snprintf(buf, sizeof(buf), "result_ok(%s)", inner_c);
+            buf = xfmt("result_ok(%s)", inner_c);
         } else if (is_symbol(expr->children[0], "Err")) {
             *out_type = "Result";
-            snprintf(buf, sizeof(buf), "result_err(%s)", inner_c);
+            buf = xfmt("result_err(%s)", inner_c);
         } else {
             *out_type = "Option";
-            snprintf(buf, sizeof(buf), "option_some(%s)", inner_c);
+            buf = xfmt("option_some(%s)", inner_c);
         }
         return arena_strdup(arena, buf, strlen(buf));
     }
@@ -2292,8 +2321,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 sb_append(&args, arg_c);
             }
             *out_type = owner->name;
-            char buf[512];
-            snprintf(buf, sizeof(buf), "%s_%s(%s)", owner->name, variant->name, args.data);
+            char *buf = xfmt("%s_%s(%s)", owner->name, variant->name, args.data);
             sb_free(&args);
             return arena_strdup(arena, buf, strlen(buf));
         }
@@ -2327,8 +2355,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 inner_c = arena_strdup(arena, boxed_buf, strlen(boxed_buf));
             }
             *out_type = owner->name;
-            char buf[512];
-            snprintf(buf, sizeof(buf), "%s_%s(%s)", owner->name, variant->name, inner_c);
+            char *buf = xfmt("%s_%s(%s)", owner->name, variant->name, inner_c);
             return arena_strdup(arena, buf, strlen(buf));
         }
     }
@@ -2363,8 +2390,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 sb_append(&args, arg_c);
             }
             *out_type = sinfo->name;
-            char buf[512];
-            snprintf(buf, sizeof(buf), "%s_new(%s)", sinfo->name, args.data);
+            char *buf = xfmt("%s_new(%s)", sinfo->name, args.data);
             sb_free(&args);
             return arena_strdup(arena, buf, strlen(buf));
         }
@@ -2414,8 +2440,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
             if (!rhs_c) return NULL;
             *out_type = "void";
-            char buf[512];
-            snprintf(buf, sizeof(buf), "(%s = %s)", lhs_c, rhs_c);
+            char *buf = xfmt("(%s = %s)", lhs_c, rhs_c);
             return arena_strdup(arena, buf, strlen(buf));
         }
         if (expr->children[1]->type == NODE_SYMBOL) {
@@ -2427,8 +2452,7 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                     const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
                     if (!rhs_c) return NULL;
                     *out_type = "void";
-                    char buf[512];
-                    snprintf(buf, sizeof(buf), "(*(%s) = %s)", target->c_name, rhs_c);
+                    char *buf = xfmt("(*(%s) = %s)", target->c_name, rhs_c);
                     return arena_strdup(arena, buf, strlen(buf));
                 }
             }
@@ -2475,8 +2499,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
          * real, valid C whether `expr`'s own actual declared C type was
          * already `TestCase *` (a harmless redundant cast) or generic
          * `void *` (the cast is load-bearing there). */
-        char buf[512];
-        snprintf(buf, sizeof(buf), "(*((%s *)(%s)))", type_buf, inner_c);
+        char *buf;
+        buf = xfmt("(*((%s *)(%s)))", type_buf, inner_c);
         return arena_strdup(arena, buf, strlen(buf));
     }
     if (is_call_named(expr, "get-field")) {
@@ -2524,8 +2548,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
              * comment on why unmangled hyphens are invalid C). */
             if (strcmp(sinfo->fields[i].name, field_name) == 0) {
                 *out_type = sinfo->fields[i].c_type;
-                char buf[512];
-                snprintf(buf, sizeof(buf), is_ref ? "(%s)->%s" : "(%s).%s", struct_c, sinfo->fields[i].c_name);
+                char *buf;
+                buf = xfmt(is_ref ? "(%s)->%s" : "(%s).%s", struct_c, sinfo->fields[i].c_name);
                 const char *result = arena_strdup(arena, buf, strlen(buf));
                 /* Register a g_vec_elem_hints entry for THIS exact field
                  * access if process_defstruct() recorded a real element
@@ -2717,8 +2741,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
         if (!inner_c) return NULL;
         *out_type = "int";
-        char buf[512];
-        snprintf(buf, sizeof(buf), "(!(%s))", inner_c);
+        char *buf;
+        buf = xfmt("(!(%s))", inner_c);
         return arena_strdup(arena, buf, strlen(buf));
     }
     /* `(unwrap expr)` -- real, honest, narrow scope, found genuinely
@@ -2760,8 +2784,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         const char *inner_c = emit_expr(arena, inner, scope, &inner_type, out_error);
         if (!inner_c) return NULL;
         const char *check_fn = strcmp(ret_kind, "Result") == 0 ? "result_unwrap_check" : "option_unwrap_check";
-        char buf[1024];
-        snprintf(buf, sizeof(buf), "(*((%s *)(%s(%s).value)))", payload_type, check_fn, inner_c);
+        char *buf;
+        buf = xfmt("(*((%s *)(%s(%s).value)))", payload_type, check_fn, inner_c);
         *out_type = payload_type;
         return arena_strdup(arena, buf, strlen(buf));
     }
@@ -2852,8 +2876,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             if (i > 1) sb_append(&args, ", ");
             sb_append(&args, arg_c);
         }
-        char buf[1024];
-        snprintf(buf, sizeof(buf), "(%s)(%s)", callee_c, args.data);
+        char *buf;
+        buf = xfmt("(%s)(%s)", callee_c, args.data);
         sb_free(&args);
         *out_type = "void *"; /* same real, honest "no function-signature table yet" fallback emit_call() itself uses */
         return arena_strdup(arena, buf, strlen(buf));
@@ -2980,8 +3004,8 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
             sb_append(&args, val_c);
         }
         *out_type = match->name;
-        char buf[512];
-        snprintf(buf, sizeof(buf), "%s_new(%s)", match->name, args.data);
+        char *buf;
+        buf = xfmt("%s_new(%s)", match->name, args.data);
         sb_free(&args);
         return arena_strdup(arena, buf, strlen(buf));
     }

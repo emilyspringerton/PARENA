@@ -41,3 +41,6 @@ parena-k8s-render
 tools/render_gen.c
 tests/test_mlkem_gen.c
 tests/mlkem_interop/c/cli
+parena-pod-render
+tools/pod_render_gen.c
+tests/test_k8s_pod_gen.c
