@@ -78,7 +78,7 @@
 
 ;; pod-container-yaml — one container: command + args, optional TCP port with readiness probe
 ;; (port 0 = no listener reachable from outside the pod, e.g. a socket-only process, so no probe),
-;; envFrom a Secret, both shared volumes mounted, FATBABY_NOTIFY_DIR pointing at <run-path>/notify.
+;; envFrom an OPTIONAL Secret (the pipeline runs fine with none; a missing Secret must not wedge the pod), both shared volumes mounted, FATBABY_NOTIFY_DIR pointing at <run-path>/notify.
 (defn pod-container-yaml [(name : String @ Region) (image : String @ Region) (command : String @ Region)
                           (args-csv : String @ Region) (port : I32) (cpu-milli : I32) (memory-mi : I32)
                           (secret : String @ Region) (var-path : String @ Region) (run-path : String @ Region)
@@ -99,7 +99,7 @@
                       (string/concat port-block
                         (string/concat "          env:\n            - name: FATBABY_NOTIFY_DIR\n              value: "
                           (string/concat run-path
-                            (string/concat "/notify\n          envFrom:\n            - secretRef:\n                name: "
+                            (string/concat "/notify\n          envFrom:\n            - secretRef:\n                optional: true\n                name: "
                               (string/concat secret
                                 (string/concat "\n          volumeMounts:\n            - name: var\n              mountPath: "
                                   (string/concat var-path

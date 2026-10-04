@@ -28,7 +28,7 @@ int main(void) {
     assert(strstr(c, "- \"unix:///run/fatbaby/signalapi.sock\""));
     assert(!strstr(c, "ports:") && !strstr(c, "readinessProbe"));   /* socket-only: no TCP probe */
     assert(strstr(c, "value: /run/fatbaby/notify"));
-    assert(strstr(c, "name: fatbaby-env"));
+    assert(strstr(c, "name: fatbaby-env") && strstr(c, "optional: true"));
     assert(strstr(c, "mountPath: /app/var") && strstr(c, "mountPath: /run/fatbaby"));
     assert(strstr(c, "requests:\n              cpu: 100m\n              memory: 128Mi"));
     assert(strstr(c, "limits:\n              cpu: 100m\n              memory: 128Mi"));
