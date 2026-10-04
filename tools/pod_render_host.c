@@ -6,9 +6,10 @@
  *
  * spec (one directive per line, `key=value` tokens, '#' comments, no spaces inside values):
  *   pod name=N namespace=NS image=IMG pvc=CLAIM pvc-gb=20 secret=SECRET var=/app/var run=/run/fatbaby [replicas=1]
- *   container name=C command=/app/bin/x [args=a,b,c] [port=8082] cpu=100 mem=128
+ *   container name=C command=/app/bin/x [args=a,b,c] [port=8082] [image=OVERRIDE] cpu=100 mem=128
  *   service ports=8082,9091           # ONE ClusterIP Service named after the pod, selecting it
  *   service-udp ports=8778,8300,8301 [ip=34.x.x.x]   # UDP LoadBalancer Service <pod>-udp (game servers; HTTP Ingress can't carry UDP)
+ *   service-tcp ports=2323,2222 [ip=34.x.x.x]   # TCP LoadBalancer Service <pod>-tcp (telnet/ssh MUD)
  *   backendconfig name=N timeout=3600   # BackendConfig; attach to the pod's ClusterIP Service with service ... backend-config=N
  *   gateway name=G namespace=NS certmap=MAP ip-name=GLOBAL_ADDR routes=H@svc@8081 [timeout=3600]   # stand-alone Gateway API HTTPS gateway w/ Certificate Manager cert map (+HTTPRoute/GCPBackendPolicy per route)
  *   ingress name=edge namespace=NS rules=H@svc@8082,H2@svc2@9091 [ip-name=GLOBAL_ADDR]   # the cluster's ONE Ingress (host@service@port); may stand alone, no pod needed
@@ -45,7 +46,7 @@ int main(int argc, char **argv) {
     Arena a; arena_init(&a);
     char line[4096];
     int lineno = 0, have_pod = 0, replicas = 1, pvc_gb = 0, ncont = 0;
-    char name[128] = "", ns[128] = "", image[256] = "", pvc[128] = "", secret[128] = "", var[128] = "", run[128] = "", svc_ports[128] = "", udp_ports[1024] = "", udp_ip[64] = "", ing_rules[1024] = "", ing_name[128] = "", ing_ns[128] = "", gw_name[128] = "", gw_ns[128] = "", gw_certmap[128] = "", gw_ip[128] = "", gw_routes[1024] = "", gw_timeout[16] = "", ing_ip[128] = "", bc_name[128] = "", bc_timeout[16] = "", svc_bc[128] = "";
+    char name[128] = "", ns[128] = "", image[256] = "", pvc[128] = "", secret[128] = "", var[128] = "", run[128] = "", svc_ports[128] = "", udp_ports[1024] = "", udp_ip[64] = "", tcp_ports[1024] = "", tcp_ip[64] = "", ing_rules[1024] = "", ing_name[128] = "", ing_ns[128] = "", gw_name[128] = "", gw_ns[128] = "", gw_certmap[128] = "", gw_ip[128] = "", gw_routes[1024] = "", gw_timeout[16] = "", ing_ip[128] = "", bc_name[128] = "", bc_timeout[16] = "", svc_bc[128] = "";
     /* containers are rendered while reading, but the head must come first: buffer them. */
     char *containers = strdup("");
     while (fgets(line, sizeof line, f)) {
@@ -72,7 +73,7 @@ int main(int argc, char **argv) {
             pvc_gb = atoi(get(&kv, "pvc-gb", "20", lineno));
         } else if (!strcmp(kind, "container")) {
             if (!have_pod) { fprintf(stderr, "spec:%d: container before pod\n", lineno); return 2; }
-            char *y = pod_container_yaml((char *)get(&kv, "name", NULL, lineno), image,
+            char *y = pod_container_yaml((char *)get(&kv, "name", NULL, lineno), (char *)get(&kv, "image", image, lineno),
                 (char *)get(&kv, "command", NULL, lineno), (char *)get(&kv, "args", "", lineno),
                 atoi(get(&kv, "port", "0", lineno)), atoi(get(&kv, "cpu", "100", lineno)),
                 atoi(get(&kv, "mem", "128", lineno)), secret, var, run, &a);
@@ -85,6 +86,9 @@ int main(int argc, char **argv) {
         } else if (!strcmp(kind, "service-udp")) {
             snprintf(udp_ports, sizeof udp_ports, "%s", get(&kv, "ports", NULL, lineno));
             snprintf(udp_ip, sizeof udp_ip, "%s", get(&kv, "ip", "", lineno));
+        } else if (!strcmp(kind, "service-tcp")) {
+            snprintf(tcp_ports, sizeof tcp_ports, "%s", get(&kv, "ports", NULL, lineno));
+            snprintf(tcp_ip, sizeof tcp_ip, "%s", get(&kv, "ip", "", lineno));
         } else if (!strcmp(kind, "backendconfig")) {
             snprintf(bc_name, sizeof bc_name, "%s", get(&kv, "name", NULL, lineno));
             snprintf(bc_timeout, sizeof bc_timeout, "%s", get(&kv, "timeout", "3600", lineno));
@@ -121,6 +125,7 @@ int main(int argc, char **argv) {
     if (svc_ports[0]) out = join_docs(out, pod_service_yaml(name, ns, svc_ports, svc_bc, &a), &a);
     if (bc_name[0]) out = join_docs(out, pod_backendconfig_yaml(bc_name, ns, bc_timeout, &a), &a);
     if (udp_ports[0]) out = join_docs(out, pod_udp_service_yaml(name, ns, udp_ports, udp_ip, &a), &a);
+    if (tcp_ports[0]) out = join_docs(out, pod_tcp_service_yaml(name, ns, tcp_ports, tcp_ip, &a), &a);
     if (ing_rules[0]) out = join_docs(out, pod_ingress_yaml(ing_name[0] ? ing_name : name, ing_ns[0] ? ing_ns : ns, ing_rules, "", ing_ip, &a), &a);
     fputs(out, stdout);
     return 0;

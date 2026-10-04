@@ -17,7 +17,7 @@
 
 (module k8s/pod)
 (import string)
-(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-backendconfig-yaml pod-gateway-yaml pod-ingress-yaml)
+(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-tcp-service-yaml pod-backendconfig-yaml pod-gateway-yaml pod-ingress-yaml)
 
 ;; args-yaml — "a,b" -> block list lines at `indent`, each arg double-quoted. "" -> "".
 (defn args-yaml [(csv : String @ Region) (indent : String @ Region) (dest : Arena @ Region)]
@@ -209,11 +209,11 @@
     dest))
 
 ;; udp-port-entry-yaml — one UDP Service port list item (name must be unique: u<port>).
-(defn udp-port-entry-yaml [(p : String @ Region) (dest : Arena @ Region)]
+(defn udp-port-entry-yaml [(p : String @ Region) (proto : I32) (dest : Arena @ Region)]
   : String @ Region
-  (string/concat "    - name: u"
+  (string/concat (if (= proto 1) "    - name: u" "    - name: t")
     (string/concat p
-      (string/concat "\n      protocol: UDP\n      port: "
+      (string/concat (if (= proto 1) "\n      protocol: UDP\n      port: " "\n      protocol: TCP\n      port: ")
         (string/concat p
           (string/concat "\n      targetPort: " (string/concat p "\n" dest) dest)
           dest)
@@ -226,16 +226,16 @@
 ;; "<name>-udp" bound to a pre-reserved regional static IP (ip, so DNS can point at it before and
 ;; after redeploys). ports-csv is the explicit port list ("8778,8300,8301"). Local traffic policy
 ;; keeps the client source address intact for the matchmaker's per-client reply routing.
-(defn pod-udp-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (ip : String @ Region) (dest : Arena @ Region)]
+(defn pod-lb-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (ip : String @ Region) (proto : I32) (dest : Arena @ Region)]
   : String @ Region
   (let [parts (string/split ports-csv "," dest)
         ports (loop [i 0 acc ""]
                 (if (>= i (vec/len &parts))
                   acc
-                  (recur (+ i 1) (string/concat acc (udp-port-entry-yaml (vec/get &parts i) dest) dest))))]
+                  (recur (+ i 1) (string/concat acc (udp-port-entry-yaml (vec/get &parts i) proto dest) dest))))]
     (string/concat "apiVersion: v1\nkind: Service\nmetadata:\n  name: "
       (string/concat name
-        (string/concat "-udp\n  namespace: "
+        (string/concat (if (= proto 1) "-udp\n  namespace: " "-tcp\n  namespace: ")
           (string/concat namespace
             (string/concat "\nspec:\n  type: LoadBalancer\n  externalTrafficPolicy: Local\n"
               (string/concat (if (= (string/length ip) 0) "" (string/concat "  loadBalancerIP: " (string/concat ip "\n" dest) dest))
@@ -250,6 +250,15 @@
           dest)
         dest)
       dest)))
+
+;; pod-udp-service-yaml / pod-tcp-service-yaml — the UDP (game protocol) and TCP (telnet/ssh MUD) flavours.
+(defn pod-udp-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (ip : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (pod-lb-service-yaml name namespace ports-csv ip 1 dest))
+
+(defn pod-tcp-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (ip : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (pod-lb-service-yaml name namespace ports-csv ip 2 dest))
 
 ;; route-yaml — one HTTPRoute + one GCPBackendPolicy for "host@service@port"; name is gw-<service>.
 (defn route-yaml [(gw : String @ Region) (namespace : String @ Region) (rule : String @ Region) (timeout : String @ Region) (dest : Arena @ Region)]

@@ -59,6 +59,7 @@ int main(void) {
     assert(strstr(u, "- name: u8300\n      protocol: UDP\n      port: 8300\n      targetPort: 8300\n"));
     assert(strstr(u, "selector:\n    app: redgarden-stable"));
     assert(!strstr(pod_udp_service_yaml("x", "n", "1", "", &a), "loadBalancerIP"));
+    { char *t = pod_tcp_service_yaml("m", "emily", "2323,2222", "34.9.9.9", &a); assert(strstr(t, "name: m-tcp") && strstr(t, "protocol: TCP") && strstr(t, "name: t2323") && !strstr(t, "UDP")); }
 
     char *bs = pod_service_yaml("w", "n", "8081", "ws-timeout", &a);
     assert(strstr(bs, "cloud.google.com/backend-config: '{\"default\": \"ws-timeout\"}'") && strstr(bs, "type: ClusterIP"));
