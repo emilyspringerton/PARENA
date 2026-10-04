@@ -49,6 +49,17 @@ int main(void) {
     assert(strstr(svc, "- name: p9091\n      port: 9091\n      targetPort: 9091\n"));
     assert(strstr(svc, "selector:\n    app: fatbaby-core"));
 
+    char *tl = pod_tail_yaml("", &a);
+    assert(!strstr(tl, "persistentVolumeClaim") && strstr(tl, "name: var\n          emptyDir: {}"));
+
+    char *u = pod_udp_service_yaml("redgarden-stable", "emily", "8778,8300", "34.1.2.3", &a);
+    assert(strstr(u, "name: redgarden-stable-udp") && strstr(u, "type: LoadBalancer"));
+    assert(strstr(u, "loadBalancerIP: 34.1.2.3") && strstr(u, "externalTrafficPolicy: Local"));
+    assert(strstr(u, "- name: u8778\n      protocol: UDP\n      port: 8778\n      targetPort: 8778\n"));
+    assert(strstr(u, "- name: u8300\n      protocol: UDP\n      port: 8300\n      targetPort: 8300\n"));
+    assert(strstr(u, "selector:\n    app: redgarden-stable"));
+    assert(!strstr(pod_udp_service_yaml("x", "n", "1", "", &a), "loadBalancerIP"));
+
     char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@fatbaby-core@8082,api.fatbaby.io@fatbaby-core@9091,golden.okemily.com@collections-server@8087", &a);
     assert(strstr(ing, "kind: Ingress") && strstr(ing, "kubernetes.io/ingress.class: gce"));
     assert(strstr(ing, "host: fatbaby.io") && strstr(ing, "number: 8082"));
