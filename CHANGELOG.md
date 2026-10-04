@@ -1,3 +1,7 @@
+## 2026-10-04
+
+- k8s pod renderer: stateless pods, UDP LoadBalancer service-udp, Gateway API gateway with Certificate Manager certmap + HTTPRoute + GCPBackendPolicy (sess-20260923-1030-4a526255)
+
 ## 2026-10-01
 
 - `stdlib/image/png.prn`: 8-bit paletted PNG (color type 3, PLTE + optional tRNS alpha) now decodes -- ImageMagick (hence NOCK's procedural pipeline) palettizes <=256-colour images, so the RGB/RGBA-only scope was a real gap found live (SHANKPIT bullet-hole decals). New `make test-png` (first tests this decoder ever had; real ImageMagick RGB/RGBA/paletted/paletted+tRNS fixtures). Plus four NOCK-gentexture sources `stdlib/shankpit/textures/bullet_hole_{magnum,ar,shotgun,sniper}.prn` (angular petals/cracks via Chebyshev cos/sin polynomials -- Java-target-safe, no atan2).
