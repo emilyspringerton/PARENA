@@ -109,10 +109,10 @@
                                           (string/concat cpu-s
                                             (string/concat "m\n              memory: "
                                               (string/concat mem-s
-                                                (string/concat "Mi\n            limits:\n              cpu: "
+                                                (string/concat "Mi\n              ephemeral-storage: 256Mi\n            limits:\n              cpu: "
                                                   (string/concat cpu-s
                                                     (string/concat "m\n              memory: "
-                                                      (string/concat mem-s "Mi\n" dest)
+                                                      (string/concat mem-s "Mi\n              ephemeral-storage: 256Mi\n" dest)
                                                       dest)
                                                     dest)
                                                   dest)

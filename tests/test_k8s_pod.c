@@ -32,6 +32,8 @@ int main(void) {
     assert(strstr(c, "mountPath: /app/var") && strstr(c, "mountPath: /run/fatbaby"));
     assert(strstr(c, "requests:\n              cpu: 100m\n              memory: 128Mi"));
     assert(strstr(c, "limits:\n              cpu: 100m\n              memory: 128Mi"));
+    /* Autopilot caps a pod at 10Gi ephemeral and defaults each container to 1Gi: must be explicit */
+    assert(strstr(c, "memory: 128Mi\n              ephemeral-storage: 256Mi\n            limits:"));
 
     char *n = pod_container_yaml("newssite", "img:1", "/app/bin/newssite", "", 8082, 250, 256, "s", "/app/var", "/run/fatbaby", &a);
     assert(strstr(n, "containerPort: 8082") && strstr(n, "tcpSocket:\n              port: 8082"));
