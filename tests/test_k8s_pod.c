@@ -47,10 +47,11 @@ int main(void) {
     assert(strstr(svc, "- name: p9091\n      port: 9091\n      targetPort: 9091\n"));
     assert(strstr(svc, "selector:\n    app: fatbaby-core"));
 
-    char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@8082,api.fatbaby.io@9091", &a);
+    char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@fatbaby-core@8082,api.fatbaby.io@fatbaby-core@9091,golden.okemily.com@collections-server@8087", &a);
     assert(strstr(ing, "kind: Ingress") && strstr(ing, "kubernetes.io/ingress.class: gce"));
     assert(strstr(ing, "host: fatbaby.io") && strstr(ing, "number: 8082"));
     assert(strstr(ing, "host: api.fatbaby.io") && strstr(ing, "number: 9091"));
+    assert(strstr(ing, "host: golden.okemily.com") && strstr(ing, "name: collections-server") && strstr(ing, "number: 8087"));
     {   /* exactly ONE Ingress document => one external LB */
         int n = 0; for (const char *q = ing; (q = strstr(q, "kind: Ingress")); q++) n++;
         assert(n == 1);

@@ -182,31 +182,33 @@
         dest)
       dest)))
 
-;; rule-yaml — one Ingress host rule: "host@port" routed to `service`.
-(defn rule-yaml [(rule : String @ Region) (service : String @ Region) (dest : Arena @ Region)]
+;; rule-yaml — one Ingress host rule: "host@service@port".
+(defn rule-yaml [(rule : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [hp (string/split rule "@" dest)]
     (string/concat "    - host: "
       (string/concat (vec/get &hp 0)
         (string/concat "\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: "
-          (string/concat service
+          (string/concat (vec/get &hp 1)
             (string/concat "\n                port:\n                  number: "
-              (string/concat (vec/get &hp 1) "\n" dest)
+              (string/concat (vec/get &hp 2) "\n" dest)
               dest)
             dest)
           dest)
         dest)
       dest)))
 
-;; pod-ingress-yaml — the cluster's ONE Ingress (GCE class = one external HTTP(S) LB), several host
-;; rules (rules-csv "fatbaby.io@8082,api.fatbaby.io@9091") all routed to the pod's Service.
+;; pod-ingress-yaml — the cluster's ONE Ingress (GCE class = one external HTTP(S) LB; every extra
+;; Ingress object is another billed LB). Several host rules (rules-csv
+;; "fatbaby.io@fatbaby-core@8082,golden.okemily.com@collections-server@8087"); backends must be
+;; Services in the same namespace, so every app behind the edge lives in that namespace.
 (defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [parts (string/split rules-csv "," dest)
         rules (loop [i 0 acc ""]
                 (if (>= i (vec/len &parts))
                   acc
-                  (recur (+ i 1) (string/concat acc (rule-yaml (vec/get &parts i) name dest) dest))))]
+                  (recur (+ i 1) (string/concat acc (rule-yaml (vec/get &parts i) dest) dest))))]
     (string/concat "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: "
       (string/concat name
         (string/concat "\n  namespace: "
