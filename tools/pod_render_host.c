@@ -10,7 +10,8 @@
  *   service ports=8082,9091           # ONE ClusterIP Service named after the pod, selecting it
  *   service-udp ports=8778,8300,8301 [ip=34.x.x.x]   # UDP LoadBalancer Service <pod>-udp (game servers; HTTP Ingress can't carry UDP)
  *   backendconfig name=N timeout=3600   # BackendConfig; attach to the pod's ClusterIP Service with service ... backend-config=N
- *   ingress name=edge namespace=NS rules=H@svc@8082,H2@svc2@9091 [certmap=MAP] [ip-name=GLOBAL_ADDR]   # the cluster's ONE Ingress (host@service@port); may stand alone, no pod needed
+ *   gateway name=G namespace=NS certmap=MAP ip-name=GLOBAL_ADDR routes=H@svc@8081 [timeout=3600]   # stand-alone Gateway API HTTPS gateway w/ Certificate Manager cert map (+HTTPRoute/GCPBackendPolicy per route)
+ *   ingress name=edge namespace=NS rules=H@svc@8082,H2@svc2@9091 [ip-name=GLOBAL_ADDR]   # the cluster's ONE Ingress (host@service@port); may stand alone, no pod needed
  *
  * usage: parena-pod-render SPEC
  */
@@ -44,7 +45,7 @@ int main(int argc, char **argv) {
     Arena a; arena_init(&a);
     char line[4096];
     int lineno = 0, have_pod = 0, replicas = 1, pvc_gb = 0, ncont = 0;
-    char name[128] = "", ns[128] = "", image[256] = "", pvc[128] = "", secret[128] = "", var[128] = "", run[128] = "", svc_ports[128] = "", udp_ports[1024] = "", udp_ip[64] = "", ing_rules[1024] = "", ing_name[128] = "", ing_ns[128] = "", ing_certmap[128] = "", ing_ip[128] = "", bc_name[128] = "", bc_timeout[16] = "", svc_bc[128] = "";
+    char name[128] = "", ns[128] = "", image[256] = "", pvc[128] = "", secret[128] = "", var[128] = "", run[128] = "", svc_ports[128] = "", udp_ports[1024] = "", udp_ip[64] = "", ing_rules[1024] = "", ing_name[128] = "", ing_ns[128] = "", gw_name[128] = "", gw_ns[128] = "", gw_certmap[128] = "", gw_ip[128] = "", gw_routes[1024] = "", gw_timeout[16] = "", ing_ip[128] = "", bc_name[128] = "", bc_timeout[16] = "", svc_bc[128] = "";
     /* containers are rendered while reading, but the head must come first: buffer them. */
     char *containers = strdup("");
     while (fgets(line, sizeof line, f)) {
@@ -87,8 +88,14 @@ int main(int argc, char **argv) {
         } else if (!strcmp(kind, "backendconfig")) {
             snprintf(bc_name, sizeof bc_name, "%s", get(&kv, "name", NULL, lineno));
             snprintf(bc_timeout, sizeof bc_timeout, "%s", get(&kv, "timeout", "3600", lineno));
+        } else if (!strcmp(kind, "gateway")) {
+            snprintf(gw_name, sizeof gw_name, "%s", get(&kv, "name", NULL, lineno));
+            snprintf(gw_ns, sizeof gw_ns, "%s", get(&kv, "namespace", NULL, lineno));
+            snprintf(gw_certmap, sizeof gw_certmap, "%s", get(&kv, "certmap", NULL, lineno));
+            snprintf(gw_ip, sizeof gw_ip, "%s", get(&kv, "ip-name", NULL, lineno));
+            snprintf(gw_routes, sizeof gw_routes, "%s", get(&kv, "routes", NULL, lineno));
+            snprintf(gw_timeout, sizeof gw_timeout, "%s", get(&kv, "timeout", "3600", lineno));
         } else if (!strcmp(kind, "ingress")) {
-            snprintf(ing_certmap, sizeof ing_certmap, "%s", get(&kv, "certmap", "", lineno));
             snprintf(ing_ip, sizeof ing_ip, "%s", get(&kv, "ip-name", "", lineno));
             snprintf(ing_rules, sizeof ing_rules, "%s", get(&kv, "rules", NULL, lineno));
             snprintf(ing_name, sizeof ing_name, "%s", get(&kv, "name", "", lineno));
@@ -96,9 +103,13 @@ int main(int argc, char **argv) {
         } else { fprintf(stderr, "spec:%d: unknown directive '%s'\n", lineno, kind); return 2; }
     }
     fclose(f);
+    if (!have_pod && gw_name[0]) {   /* stand-alone Gateway */
+        fputs(pod_gateway_yaml(gw_name, gw_ns, gw_certmap, gw_ip, gw_routes, gw_timeout, &a), stdout);
+        return 0;
+    }
     if (!have_pod && ing_rules[0]) {   /* stand-alone shared Ingress */
         if (!ing_name[0] || !ing_ns[0]) { fprintf(stderr, "spec: stand-alone ingress needs name= and namespace=\n"); return 2; }
-        fputs(pod_ingress_yaml(ing_name, ing_ns, ing_rules, ing_certmap, ing_ip, &a), stdout);
+        fputs(pod_ingress_yaml(ing_name, ing_ns, ing_rules, "", ing_ip, &a), stdout);
         return 0;
     }
     if (!have_pod || ncont == 0) { fprintf(stderr, "spec: need a pod and at least one container\n"); return 2; }
@@ -110,7 +121,7 @@ int main(int argc, char **argv) {
     if (svc_ports[0]) out = join_docs(out, pod_service_yaml(name, ns, svc_ports, svc_bc, &a), &a);
     if (bc_name[0]) out = join_docs(out, pod_backendconfig_yaml(bc_name, ns, bc_timeout, &a), &a);
     if (udp_ports[0]) out = join_docs(out, pod_udp_service_yaml(name, ns, udp_ports, udp_ip, &a), &a);
-    if (ing_rules[0]) out = join_docs(out, pod_ingress_yaml(ing_name[0] ? ing_name : name, ing_ns[0] ? ing_ns : ns, ing_rules, ing_certmap, ing_ip, &a), &a);
+    if (ing_rules[0]) out = join_docs(out, pod_ingress_yaml(ing_name[0] ? ing_name : name, ing_ns[0] ? ing_ns : ns, ing_rules, "", ing_ip, &a), &a);
     fputs(out, stdout);
     return 0;
 }

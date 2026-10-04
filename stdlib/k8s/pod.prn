@@ -17,7 +17,7 @@
 
 (module k8s/pod)
 (import string)
-(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-backendconfig-yaml pod-ingress-yaml)
+(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-backendconfig-yaml pod-gateway-yaml pod-ingress-yaml)
 
 ;; args-yaml — "a,b" -> block list lines at `indent`, each arg double-quoted. "" -> "".
 (defn args-yaml [(csv : String @ Region) (indent : String @ Region) (dest : Arena @ Region)]
@@ -251,6 +251,78 @@
         dest)
       dest)))
 
+;; route-yaml — one HTTPRoute + one GCPBackendPolicy for "host@service@port"; name is gw-<service>.
+(defn route-yaml [(gw : String @ Region) (namespace : String @ Region) (rule : String @ Region) (timeout : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [hp (string/split rule "@" dest)
+        host (vec/get &hp 0)
+        svc (vec/get &hp 1)
+        port (vec/get &hp 2)]
+    (string/concat "---\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata:\n  name: "
+      (string/concat svc
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\nspec:\n  parentRefs:\n    - name: "
+              (string/concat gw
+                (string/concat "\n  hostnames:\n    - "
+                  (string/concat host
+                    (string/concat "\n  rules:\n    - backendRefs:\n        - name: "
+                      (string/concat svc
+                        (string/concat "\n          port: "
+                          (string/concat port
+                            (string/concat "\n---\napiVersion: networking.gke.io/v1\nkind: GCPBackendPolicy\nmetadata:\n  name: "
+                              (string/concat svc
+                                (string/concat "\n  namespace: "
+                                  (string/concat namespace
+                                    (string/concat "\nspec:\n  default:\n    timeoutSec: "
+                                      (string/concat timeout
+                                        (string/concat "\n  targetRef:\n    group: \"\"\n    kind: Service\n    name: " (string/concat svc "\n" dest) dest)
+                                        dest)
+                                      dest)
+                                    dest)
+                                  dest)
+                                dest)
+                              dest)
+                            dest)
+                          dest)
+                        dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; pod-gateway-yaml — a Gateway API external HTTPS gateway (class gke-l7-global-external-managed) whose TLS is a
+;; Certificate Manager cert map (annotation networking.gke.io/certmap — wildcard certs; GCE *Ingress* cannot use
+;; Certificate Manager), on a reserved global static IP (ip-name), plus an HTTPRoute and a GCPBackendPolicy per
+;; "host@service@port" route (timeout seconds lifts the LB's 30s default so WebSockets survive).
+(defn pod-gateway-yaml [(name : String @ Region) (namespace : String @ Region) (certmap : String @ Region) (ip-name : String @ Region) (routes-csv : String @ Region) (timeout : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (string/split routes-csv "," dest)
+        routes (loop [i 0 acc ""]
+                 (if (>= i (vec/len &parts))
+                   acc
+                   (recur (+ i 1) (string/concat acc (route-yaml name namespace (vec/get &parts i) timeout dest) dest))))]
+    (string/concat "apiVersion: gateway.networking.k8s.io/v1\nkind: Gateway\nmetadata:\n  name: "
+      (string/concat name
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\n  annotations:\n    networking.gke.io/certmap: "
+              (string/concat certmap
+                (string/concat "\nspec:\n  gatewayClassName: gke-l7-global-external-managed\n  listeners:\n    - name: https\n      protocol: HTTPS\n      port: 443\n      allowedRoutes:\n        kinds:\n          - kind: HTTPRoute\n  addresses:\n    - type: NamedAddress\n      value: "
+                  (string/concat ip-name (string/concat "\n" (string/concat routes "" dest) dest) dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
 ;; rule-yaml — one Ingress host rule: "host@service@port".
 (defn rule-yaml [(rule : String @ Region) (dest : Arena @ Region)]
   : String @ Region
@@ -267,12 +339,12 @@
         dest)
       dest)))
 
-;; certmap/ip-name ("" = omit): Certificate Manager cert map (networking.gke.io/certmap) and reserved global IP.
+;; frontend-config/ip-name ("" = omit): name of a FrontendConfig (pod-frontendconfig-yaml, carries the Certificate Manager cert map) and a reserved global IP.
 ;; pod-ingress-yaml — the cluster's ONE Ingress (GCE class = one external HTTP(S) LB; every extra
 ;; Ingress object is another billed LB). Several host rules (rules-csv
 ;; "fatbaby.io@fatbaby-core@8082,golden.okemily.com@collections-server@8087"); backends must be
 ;; Services in the same namespace, so every app behind the edge lives in that namespace.
-(defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (certmap : String @ Region) (ip-name : String @ Region) (dest : Arena @ Region)]
+(defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (frontend-config : String @ Region) (ip-name : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [parts (string/split rules-csv "," dest)
         rules (loop [i 0 acc ""]
@@ -284,7 +356,7 @@
         (string/concat "\n  namespace: "
           (string/concat namespace
             (string/concat "\n  annotations:\n    kubernetes.io/ingress.class: gce\n"
-              (string/concat (if (= (string/length certmap) 0) "" (string/concat "    networking.gke.io/certmap: " (string/concat certmap "\n" dest) dest))
+              (string/concat (if (= (string/length frontend-config) 0) "" (string/concat "    networking.gke.io/certmap: " (string/concat frontend-config "\n" dest) dest))
                 (string/concat (if (= (string/length ip-name) 0) "" (string/concat "    kubernetes.io/ingress.global-static-ip-name: " (string/concat ip-name "\n" dest) dest))
                   (string/concat "spec:\n  rules:\n" (string/concat rules "" dest) dest)
                   dest)

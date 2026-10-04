@@ -68,6 +68,11 @@ int main(void) {
     char *ci = pod_ingress_yaml("edge", "emily", "a.io@s@80", "edge-certs", "edge-ip", &a);
     assert(strstr(ci, "networking.gke.io/certmap: edge-certs") && strstr(ci, "global-static-ip-name: edge-ip") && strstr(ci, "spec:\n  rules:"));
     assert(!strstr(pod_ingress_yaml("edge", "emily", "a.io@s@80", "", "", &a), "certmap"));
+    char *gw = pod_gateway_yaml("edge-gw", "emily", "edge-certs", "gw-ip", "ws.x.io@relay@8081", "3600", &a);
+    assert(strstr(gw, "kind: Gateway") && strstr(gw, "networking.gke.io/certmap: edge-certs"));
+    assert(strstr(gw, "gatewayClassName: gke-l7-global-external-managed") && strstr(gw, "type: NamedAddress\n      value: gw-ip"));
+    assert(strstr(gw, "kind: HTTPRoute") && strstr(gw, "- ws.x.io") && strstr(gw, "name: relay\n          port: 8081"));
+    assert(strstr(gw, "kind: GCPBackendPolicy") && strstr(gw, "timeoutSec: 3600") && strstr(gw, "kind: Service\n    name: relay"));
 
     char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@fatbaby-core@8082,api.fatbaby.io@fatbaby-core@9091,golden.okemily.com@collections-server@8087", "", "", &a);
     assert(strstr(ing, "kind: Ingress") && strstr(ing, "kubernetes.io/ingress.class: gce"));
