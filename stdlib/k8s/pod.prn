@@ -17,7 +17,7 @@
 
 (module k8s/pod)
 (import string)
-(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-ingress-yaml)
+(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-backendconfig-yaml pod-ingress-yaml)
 
 ;; args-yaml — "a,b" -> block list lines at `indent`, each arg double-quoted. "" -> "".
 (defn args-yaml [(csv : String @ Region) (indent : String @ Region) (dest : Arena @ Region)]
@@ -164,26 +164,49 @@
 
 ;; pod-service-yaml — ONE ClusterIP Service for the pod exposing several ports (ports-csv "8082,9091";
 ;; targetPort == port). Never LoadBalancer: the single shared Ingress is the only external entry.
-(defn pod-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (dest : Arena @ Region)]
+;; backend-config ("" = none) names a BackendConfig (pod-backendconfig-yaml) attached via the GKE annotation.
+(defn pod-service-yaml [(name : String @ Region) (namespace : String @ Region) (ports-csv : String @ Region) (backend-config : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [parts (string/split ports-csv "," dest)
         ports (loop [i 0 acc ""]
                 (if (>= i (vec/len &parts))
                   acc
-                  (recur (+ i 1) (string/concat acc (port-entry-yaml (vec/get &parts i) dest) dest))))]
+                  (recur (+ i 1) (string/concat acc (port-entry-yaml (vec/get &parts i) dest) dest))))
+        ann (if (= (string/length backend-config) 0)
+              ""
+              (string/concat "  annotations:\n    cloud.google.com/backend-config: '{\"default\": \""
+                (string/concat backend-config "\"}'\n" dest)
+                dest))]
     (string/concat "apiVersion: v1\nkind: Service\nmetadata:\n  name: "
       (string/concat name
         (string/concat "\n  namespace: "
           (string/concat namespace
-            (string/concat "\nspec:\n  selector:\n    app: "
-              (string/concat name
-                (string/concat "\n  ports:\n" (string/concat ports "  type: ClusterIP\n" dest) dest)
+            (string/concat "\n"
+              (string/concat ann
+                (string/concat "spec:\n  selector:\n    app: "
+                  (string/concat name
+                    (string/concat "\n  ports:\n" (string/concat ports "  type: ClusterIP\n" dest) dest)
+                    dest)
+                  dest)
                 dest)
               dest)
             dest)
           dest)
         dest)
       dest)))
+
+;; pod-backendconfig-yaml — GKE BackendConfig: LB timeout in seconds (WebSockets need > the 30s default).
+(defn pod-backendconfig-yaml [(name : String @ Region) (namespace : String @ Region) (timeout : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "apiVersion: cloud.google.com/v1\nkind: BackendConfig\nmetadata:\n  name: "
+    (string/concat name
+      (string/concat "\n  namespace: "
+        (string/concat namespace
+          (string/concat "\nspec:\n  timeoutSec: " (string/concat timeout "\n" dest) dest)
+          dest)
+        dest)
+      dest)
+    dest))
 
 ;; udp-port-entry-yaml — one UDP Service port list item (name must be unique: u<port>).
 (defn udp-port-entry-yaml [(p : String @ Region) (dest : Arena @ Region)]
@@ -244,11 +267,12 @@
         dest)
       dest)))
 
+;; certmap/ip-name ("" = omit): Certificate Manager cert map (networking.gke.io/certmap) and reserved global IP.
 ;; pod-ingress-yaml — the cluster's ONE Ingress (GCE class = one external HTTP(S) LB; every extra
 ;; Ingress object is another billed LB). Several host rules (rules-csv
 ;; "fatbaby.io@fatbaby-core@8082,golden.okemily.com@collections-server@8087"); backends must be
 ;; Services in the same namespace, so every app behind the edge lives in that namespace.
-(defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (dest : Arena @ Region)]
+(defn pod-ingress-yaml [(name : String @ Region) (namespace : String @ Region) (rules-csv : String @ Region) (certmap : String @ Region) (ip-name : String @ Region) (dest : Arena @ Region)]
   : String @ Region
   (let [parts (string/split rules-csv "," dest)
         rules (loop [i 0 acc ""]
@@ -259,7 +283,13 @@
       (string/concat name
         (string/concat "\n  namespace: "
           (string/concat namespace
-            (string/concat "\n  annotations:\n    kubernetes.io/ingress.class: gce\nspec:\n  rules:\n" (string/concat rules "" dest) dest)
+            (string/concat "\n  annotations:\n    kubernetes.io/ingress.class: gce\n"
+              (string/concat (if (= (string/length certmap) 0) "" (string/concat "    networking.gke.io/certmap: " (string/concat certmap "\n" dest) dest))
+                (string/concat (if (= (string/length ip-name) 0) "" (string/concat "    kubernetes.io/ingress.global-static-ip-name: " (string/concat ip-name "\n" dest) dest))
+                  (string/concat "spec:\n  rules:\n" (string/concat rules "" dest) dest)
+                  dest)
+                dest)
+              dest)
             dest)
           dest)
         dest)

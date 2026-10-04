@@ -43,7 +43,7 @@ int main(void) {
     assert(strstr(t, "claimName: fatbaby-var") && strstr(t, "emptyDir: {}"));
     assert(!strstr(t, "hostPath"));                 /* Autopilot forbids hostPath */
 
-    char *svc = pod_service_yaml("fatbaby-core", "fatbaby", "8082,9091", &a);
+    char *svc = pod_service_yaml("fatbaby-core", "fatbaby", "8082,9091", "", &a);
     assert(strstr(svc, "kind: Service") && strstr(svc, "type: ClusterIP") && !strstr(svc, "LoadBalancer"));
     assert(strstr(svc, "- name: p8082\n      port: 8082\n      targetPort: 8082\n"));
     assert(strstr(svc, "- name: p9091\n      port: 9091\n      targetPort: 9091\n"));
@@ -60,7 +60,16 @@ int main(void) {
     assert(strstr(u, "selector:\n    app: redgarden-stable"));
     assert(!strstr(pod_udp_service_yaml("x", "n", "1", "", &a), "loadBalancerIP"));
 
-    char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@fatbaby-core@8082,api.fatbaby.io@fatbaby-core@9091,golden.okemily.com@collections-server@8087", &a);
+    char *bs = pod_service_yaml("w", "n", "8081", "ws-timeout", &a);
+    assert(strstr(bs, "cloud.google.com/backend-config: '{\"default\": \"ws-timeout\"}'") && strstr(bs, "type: ClusterIP"));
+    assert(!strstr(pod_service_yaml("w", "n", "8081", "", &a), "annotations"));
+    char *bc = pod_backendconfig_yaml("ws-timeout", "emily", "3600", &a);
+    assert(strstr(bc, "kind: BackendConfig") && strstr(bc, "timeoutSec: 3600"));
+    char *ci = pod_ingress_yaml("edge", "emily", "a.io@s@80", "edge-certs", "edge-ip", &a);
+    assert(strstr(ci, "networking.gke.io/certmap: edge-certs") && strstr(ci, "global-static-ip-name: edge-ip") && strstr(ci, "spec:\n  rules:"));
+    assert(!strstr(pod_ingress_yaml("edge", "emily", "a.io@s@80", "", "", &a), "certmap"));
+
+    char *ing = pod_ingress_yaml("fatbaby-core", "fatbaby", "fatbaby.io@fatbaby-core@8082,api.fatbaby.io@fatbaby-core@9091,golden.okemily.com@collections-server@8087", "", "", &a);
     assert(strstr(ing, "kind: Ingress") && strstr(ing, "kubernetes.io/ingress.class: gce"));
     assert(strstr(ing, "host: fatbaby.io") && strstr(ing, "number: 8082"));
     assert(strstr(ing, "host: api.fatbaby.io") && strstr(ing, "number: 9091"));
