@@ -1,0 +1,92 @@
+;; stdlib/big_o/shadow_war.prn -- SHANKPIT basement shadow war: deterministic battle rules
+;; (BIG_O engine merge follow-up, EMILY/BACKLOG.md SECTION 536 follow-up -- "continue full game").
+;;
+;; BIG_O/NORTHSTAR.md Sec.1/4: the basement loop is "splice, breed, deploy, command via
+;; pheromones" ending in an async, server-simulated, deterministic shadow war between two
+;; players' vector armies (bot opponent available in v0, Elo-tracked). BIG_O/docs/SHIP_PLAN.md
+;; W1 named this exact system at this exact path.
+;;
+;; Lives under stdlib/big_o/, not stdlib/shankpit/, despite BIGO_ENGINE_MERGE_NORTHSTAR.md Sec.4's
+;; own "future ports... land [in stdlib/shankpit], not as a cross-repo import from stdlib/big_o/"
+;; -- checked against the real, more recent precedent before picking a path: lab_station_rules.prn
+;; (2026-10-02, two weeks after that Sec.4 note) is itself genuinely new BIG_O-flavored content
+;; with no BIG_O-side predecessor to port from, and it still lives here, under
+;; `(module big-o/lab-station-rules)`. Read together, Sec.4's rule is narrower than "every new
+;; SHANKPIT-side module" -- it governs PORTS of an already-existing BIG_O-side file becoming
+;; SHANKPIT's own first-class copy. Genuinely new BIG_O-domain game content (lab equipment,
+;; this file) keeps living here, matching that real precedent and SHIP_PLAN.md's own path, not a
+;; narrower, superseded reading of Sec.4.
+;;
+;; Units are base(3) x trait(3), matching the BIG_O phone's own real LAB roster
+;; (packages/common/phone.h: BP_BASES SCAVENGER/HOUND/BRUTE, BP_TRAITS SPEED/ARMOR/SCENT,
+;; Phone.clones[]/clone_traits[]) -- NOT invented fresh. A third dimension, "quality", is named
+;; in SHIP_PLAN.md's own W1 row but has no real source anywhere in the lab yet (no amplification/
+;; tiering mechanic exists on a clone once spliced) -- left out of this v0 on purpose rather than
+;; guessed at; shadow-war-unit-power's own 3x3 table is the full input space for now.
+;;
+;; Per-tick combat math is deterministic and integer-only by design (no RNG anywhere in this
+;; file): the same two armies issuing the same commands must replay identically, the same bar
+;; card_effect_mod.prn/witness_rules.prn already hold for their own domains, and the one this
+;; system needs most since a real match might be resolved long after either player is online.
+;; Any variety in a real match comes from the *choice* of command/army, not from dice -- same
+;; "deterministic resolution, player choices are the variance" shape DEADWEIGHT's own card battles
+;; use (NORTHSTAR's own named precedent for this system, BIG_O/NORTHSTAR.md Sec.7).
+;;
+;; Elo itself is NOT in this file -- it needs real exponentiation (pow(10, x/400)), which doesn't
+;; fit this module's I32/Bool/no-FFI scalar model any more than lab_sim.c's own float curves did.
+;; Same named, deliberate judgment call lab_sim.c already made (see SHANKPIT docs2/specs/
+;; BIGO_ENGINE_MERGE_NORTHSTAR.md Sec.2f) -- Elo is a fixed external standard formula, not
+;; mod-author-tunable game-balance content, so it stays plain host C in shadow_war_host.c.
+;;
+;; All tuning numbers below are invented v1 values (same "[M]" marked-invented convention
+;; witness_rules.prn's own CAUGHT_SNOOPING pass used) -- real, playable, not yet live-tuned.
+;;
+;;   base  : 0 SCAVENGER  1 HOUND  2 BRUTE     (BP_BASES)
+;;   trait : 0 SPEED      1 ARMOR  2 SCENT     (BP_TRAITS)
+;;   cmd   : 0 ADVANCE    1 HOLD   2 SCATTER   (the basement's pheromone army orders)
+(module big-o/shadow-war)
+(export shadow-war-base-ok shadow-war-trait-ok shadow-war-command-ok shadow-war-unit-power
+        shadow-war-attack-mult-tenths shadow-war-defense-mult-tenths shadow-war-tick-damage
+        shadow-war-side-eliminated shadow-war-can-deploy shadow-war-max-ticks)
+
+(defn shadow-war-base-ok [(base : I32)] : Bool (and (>= base 0) (<= base 2)))
+(defn shadow-war-trait-ok [(trait : I32)] : Bool (and (>= trait 0) (<= trait 2)))
+(defn shadow-war-command-ok [(cmd : I32)] : Bool (and (>= cmd 0) (<= cmd 2)))
+
+;; [M] invented 3x3 power table. BRUTE > HOUND > SCAVENGER at every trait (base always dominates --
+;; the "balance sanity" property a test can state in one line). Trait ranking flips by base: SPEED
+;; is the better trait for SCAVENGER/HOUND (quick opportunists), ARMOR is the better trait for
+;; BRUTE (a slow juggernaut is where armor pays off most) -- a real, deliberate non-linear
+;; interaction, not a flat per-trait bonus added on top of a flat per-base bonus.
+(defn shadow-war-unit-power [(base : I32) (trait : I32)] : I32
+  (if (= base 0)
+    (if (= trait 0) 9  (if (= trait 1) 7  8))
+    (if (= base 1)
+      (if (= trait 0) 11 (if (= trait 1) 9  10))
+      (if (= trait 0) 13 (if (= trait 1) 16 14)))))
+
+;; [M] x10 fixed-point multipliers so the host stays integer-only. ADVANCE trades defense for
+;; attack, HOLD trades attack for defense, SCATTER gives up power on both to avoid commitment
+;; (a real stalemate/disengage tool, not a strictly-worse third option: see shadow_war_test.c's
+;; own SCATTER-vs-SCATTER mutual-attrition check).
+(defn shadow-war-attack-mult-tenths [(cmd : I32)] : I32 (if (= cmd 0) 14 (if (= cmd 1) 10 7)))
+(defn shadow-war-defense-mult-tenths [(cmd : I32)] : I32 (if (= cmd 0) 7 (if (= cmd 1) 14 11)))
+
+;; One tick's casualties dealt BY the attack side TO the defense side (host calls this twice per
+;; tick, once per direction, from the same pre-tick power snapshot so damage is simultaneous --
+;; required for mirror-army battles to resolve as a real draw, not an order-dependent win).
+;; Floored at 1 (a defended line still bleeds a little) so every battle provably terminates within
+;; shadow-war-max-ticks even at HOLD/HOLD. A net advantage of 1-2 still only chips for 1; real
+;; damage needs a clear edge (>=3), scaled down /2.
+(defn shadow-war-tick-damage [(attack : I32) (defense : I32)] : I32
+  (if (<= attack defense) 1
+    (if (<= (- attack defense) 2) 1
+      (/ (- attack defense) 2))))
+
+(defn shadow-war-side-eliminated [(remaining-power : I32)] : Bool (<= remaining-power 0))
+
+;; Deploying sends every current clone to war (win or lose, none return this version -- a real,
+;; named v1 simplification, see shadow_war_host.h). Needs at least one body to send.
+(defn shadow-war-can-deploy [(clone-count : I32)] : Bool (>= clone-count 1))
+
+(defn shadow-war-max-ticks [] : I32 20)
