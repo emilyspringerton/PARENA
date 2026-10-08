@@ -24,7 +24,7 @@
 ;; tier-scaled magnitude to actually apply.
 
 (module ecowar/card-effect-mod)
-(export on-ecowar-resolve-card-magnitude)
+(export on-ecowar-resolve-card-magnitude on-ecowar-resolve-card-faction on-ecowar-card-decorum-action)
 
 ;; The 11 MYTHIC-tier cards, by id (0-indexed into ECOWAR_CARDS, arena_game.c): 3 (He Sees You),
 ;; 6 (Wren-3), 7 (Stolas), 8 (Amon), 9 (Andrealphus), 10 (Bael), 11 (Furfur), 12 (Astaroth),
@@ -37,3 +37,19 @@
   (if (is-mythic-card? card-id)
     (+ base-magnitude (/ base-magnitude 2))
     base-magnitude))
+
+;; ---- BIG_O faction bridge (EMPIRE NORTHSTAR §3.1, kanban #576) ----
+;; `band` is the CASTER's BIG_O decorum band (0 OK, 1 SUSPICION, 2 HYSTERIC, 3 CANCELLED), computed by the host
+;; from BIG_O's own decorum_band() (core/witness_rules.c, vendored into packages/simulation). CANCELLED is BIG_O's
+;; fail state ("canceled = fail state"), so a cancelled faction can't play a card at all. Otherwise the magnitude is
+;; exactly the MUNDANE/MYTHIC scaling above -- the band gates casting, it does not dilute the card.
+(defn on-ecowar-resolve-card-faction [(card-id : I32) (base-magnitude : I32) (band : I32)] : I32
+  (if (= band 3) 0 (on-ecowar-resolve-card-magnitude card-id base-magnitude)))
+
+;; The decorum write-back for a successful cast, as a BIG_O decorum action id (witness_rules.prn's own enum: 4 =
+;; ATTRIBUTED_EVENT, 5 = QUIET_TICK, 1 = SAY_APOCALYPSE). The host feeds it to BIG_O's decorum_after() so the delta
+;; numbers stay owned by BIG_O. INVENTED v1 MAPPING, flagged for founder sign-off: a MYTHIC cast is a visible
+;; supernatural act, so it spends decorum like saying the apocalypse out loud (action 1, -25); a MUNDANE cast is
+;; quiet and earns the ordinary +1 tick (action 5).
+(defn on-ecowar-card-decorum-action [(card-id : I32)] : I32
+  (if (is-mythic-card? card-id) 1 5))
