@@ -1,3 +1,7 @@
+## 2026-10-08
+
+- `stdlib/shankpit/zombies_awareness_rules.prn`: new worked-example REFLUX subscriber for SHANKPIT's MODE_ZOMBIES/MODE_SURVIVAL population (BIG_O engine merge continuation, EMILY/BACKLOG.md #4450) -- `zombies-awareness-should-ping`/`zombies-awareness-severity` decide which of 5 REFLUX action types (zombie mood escalation, witness escalation, Giant Zombie Bug feeding, The Men dispatch/resolve) deserve a HUD ping and how severe. Same shape as the sibling `world_alerts_mod.prn`, scalar-only (no FFI), compiles clean to C via `parena build ... -o packages/simulation/zombies_awareness_rules.c`. Consumed by SHANKPIT's new `packages/simulation/zombies_hud_bridge.c` -- see SHANKPIT/CHANGELOG.md for the full account. (session: sess-20261008-0123-53e30776)
+
 ## 2026-10-04
 
 - k8s pod renderer: stateless pods, UDP LoadBalancer service-udp, Gateway API gateway with Certificate Manager certmap + HTTPRoute + GCPBackendPolicy (sess-20260923-1030-4a526255)
