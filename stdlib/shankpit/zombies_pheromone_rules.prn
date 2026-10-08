@@ -1,0 +1,29 @@
+;; stdlib/shankpit/zombies_pheromone_rules.prn -- REFLUX subscriber's sibling: the real DECISION
+;; this time isn't about a HUD ping, it's the zombie AI's own targeting priority (packages/
+;; simulation/witness_ai.c's MODE_ZOMBIES/MODE_SURVIVAL zombie tick). Per root CLAUDE.md's
+;; standing "Core Deps Are PARENA-First" rule, this one real branching decision -- does a zombie
+;; steer toward a thrown pheromone marker, or keep its current hero-target -- goes through PARENA,
+;; even though it is small; the surrounding marker geometry (nearest-marker search, steer-toward
+;; vector math in packages/common/pheromone.h) stays plain C per that same standing rule's own
+;; "pure math/geometry can stay plain C" carve-out.
+;;
+;; The rule itself, ported from BIG_O's own pheromone-command design (BIG_O/NORTHSTAR.md section
+;; 10, "tactical pheromone arrays... paint a target; clones enter enraged pursuit") but a genuinely
+;; new decision BIG_O's own v0 never had to make: BIG_O's zombie_tick had no independent hero-sense
+;; yet when its pheromone work landed (a thrown marker was the ONLY targeting source), so there was
+;; no real priority question to answer. SHANKPIT's witness_ai.c already has independent hero
+;; perception (WITNESS_AI_ZOMBIE_SENSE_BASE, closed 2026-09-25) by the time this module exists, so
+;; the two targeting sources can now genuinely conflict on the same tick -- this is that tie-break.
+;;
+;; Resolved in favor of whichever the hero is ALREADY locked onto: a directly-sensed hero (real,
+;; immediate danger/food) always keeps a zombie that's already chasing it, matching this engine's
+;; own established "a hunt doesn't get cheaply interrupted" instinct (the same reasoning
+;; witness_ai.h's own doc comment gives for The Men's dispatch loop and the hero sense-lock-memory
+;; window). A marker only ever recruits a zombie that currently has NO hero lock -- exactly the
+;; fiction's own framing: a pheromone lure works on the undirected swarm, not on something already
+;; biting at your heels.
+(module shankpit/zombies-pheromone-rules)
+(export zombies-pheromone-should-steer-to-marker)
+
+(defn zombies-pheromone-should-steer-to-marker [(hero-has-target : I32)] : Bool
+  (= hero-has-target 0))
