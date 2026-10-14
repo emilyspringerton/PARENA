@@ -2111,6 +2111,8 @@ now that its own gating condition is met.
 
 ## Related
 
+- `plugins/static_analysis/NORTHSTAR.md` — the reverse engineer's workbench: affordances (hex view first), honest today/gap per section.
+
 - `GoblinFoxDragon/docs2/MOD_SURFACE_NORTHSTAR.md` — the mod-surface scripting-language decision
   PARENA is deliberately not resolving yet, per the founder's own "build it pure" sequencing.
 - `Building Your Own Integrated Development Environment.docx` (this repo) — the full source
