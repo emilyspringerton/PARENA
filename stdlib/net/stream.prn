@@ -1,0 +1,79 @@
+;; stdlib/net/stream.prn -- cross-platform TCP client streaming + a small line-input buffer.
+;; Added 2026-10-14 for PELLEGRINO ("actual product": fetch a URL and paint bytes as they land).
+;; Design/limits: see the "net/stream" section comment in runtime/parena_runtime.h. Plain scalar
+;; returns (no Result boxing), like io.prn's raw primitives. Works on Linux/macOS and Windows
+;; (winsock2). No TLS (net/tls is separate), one stream at a time.
+
+(module net/stream)
+(export stream-connect stream-send stream-pull stream-buf stream-len stream-reset stream-close
+        linebuf-append linebuf-backspace linebuf-clear linebuf-get linebuf-len
+        cururl-set cururl-get slot-get slot-set)
+
+;; fd >= 0 on success, -1 on DNS/connect failure (5 s connect timeout)
+(defn stream-connect [(host : String @ Region) (port : I32)] : I32
+  #target
+  {:c (inline-c "stream_connect_impl(host, port)")})
+
+;; 0 ok, -1 failure
+(defn stream-send [(fd : I32) (data : String @ Region)] : I32
+  #target
+  {:c (inline-c "stream_send_impl(fd, data)")})
+
+;; n>0 bytes appended to the stream buffer; 0 = nothing yet; -1 = closed/error; -2 = buffer full
+(defn stream-pull [(fd : I32)] : I32
+  #target
+  {:c (inline-c "stream_pull_impl(fd)")})
+
+;; The received bytes so far (one static NUL-terminated buffer; valid until stream-reset)
+(defn stream-buf [] : String
+  #target
+  {:c (inline-c "stream_buf_impl()")})
+
+(defn stream-len [] : I32
+  #target
+  {:c (inline-c "stream_len_impl()")})
+
+(defn stream-reset [] : I32
+  #target
+  {:c (inline-c "(stream_reset_impl(), 0)")})
+
+(defn stream-close [(fd : I32)] : I32
+  #target
+  {:c (inline-c "stream_close_impl(fd)")})
+
+(defn linebuf-append [(s : String @ Region)] : I32
+  #target
+  {:c (inline-c "(linebuf_append_impl(s), 0)")})
+
+(defn linebuf-backspace [] : I32
+  #target
+  {:c (inline-c "(linebuf_backspace_impl(), 0)")})
+
+(defn linebuf-clear [] : I32
+  #target
+  {:c (inline-c "(linebuf_clear_impl(), 0)")})
+
+(defn linebuf-get [] : String
+  #target
+  {:c (inline-c "linebuf_get_impl()")})
+
+(defn linebuf-len [] : I32
+  #target
+  {:c (inline-c "linebuf_len_impl()")})
+
+;; slot-get / slot-set -- 32 static int cells of mutable program state (see runtime comment).
+(defn slot-get [(k : I32)] : I32
+  #target
+  {:c (inline-c "slot_get_impl(k)")})
+
+(defn slot-set [(k : I32) (v : I32)] : I32
+  #target
+  {:c (inline-c "slot_set_impl(k, v)")})
+
+(defn cururl-set [(s : String @ Region)] : I32
+  #target
+  {:c (inline-c "cururl_set_impl(s)")})
+
+(defn cururl-get [] : String
+  #target
+  {:c (inline-c "cururl_get_impl()")})

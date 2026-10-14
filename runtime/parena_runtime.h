@@ -41,6 +41,13 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 #include <stddef.h>
 #include <string.h>
 #include <math.h>   /* F32 elementwise primitives (tensor/nn.prn) */
@@ -3730,6 +3737,174 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
 }
 #endif /* PARENA_NO_TTF */
 #endif /* PARENA_NO_GRAPHICS */
+
+/* ---- net/stream: cross-platform TCP *client* streaming primitives (2026-10-14, PELLEGRINO) -----
+ * What net/tcp.prn's own tcp_read_impl is not: incremental. That one blocks until the peer closes
+ * (or Content-Length is satisfied); a browser that wants to paint bytes AS THEY ARRIVE needs
+ * "give me whatever has landed, don't wait". Also Windows: net/tcp's host glue above is
+ * POSIX-only (#ifndef _WIN32); this section is the winsock2 + BSD-socket common subset, so a
+ * Windows PARENA program can open a TCP connection at all.
+ *
+ * Shape (deliberately primitive, no Result boxing -- plain scalars like io.prn's raw_* functions):
+ *   stream_connect_impl(host, port) -> fd >= 0, or -1   (non-blocking after connect; 5 s connect timeout)
+ *   stream_send_impl(fd, s)         -> 0 or -1
+ *   stream_pull_impl(fd)            -> n>0 bytes appended, 0 nothing yet, -1 closed/error, -2 buffer full
+ *   stream_buf_impl()/stream_len_impl()/stream_reset_impl() -- the received bytes live in ONE static,
+ *     NUL-terminated buffer (PARENA_STREAM_MAX, default 16 MiB, in BSS: no malloc), so PARENA code can
+ *     read it as an ordinary String while it keeps growing.
+ *   stream_close_impl(fd)
+ * Plus a small static line-input buffer (linebuf_*) for address-bar style text entry, since PARENA
+ * Strings are immutable. Honest limits: blocking getaddrinfo (DNS), one stream at a time, no TLS. */
+#ifdef _WIN32
+typedef SOCKET parena_sock_t;
+#define PARENA_BAD_SOCK INVALID_SOCKET
+#define parena_sock_close closesocket
+#else
+typedef int parena_sock_t;
+#define PARENA_BAD_SOCK (-1)
+#define parena_sock_close close
+#endif
+#ifndef PARENA_STREAM_MAX
+#define PARENA_STREAM_MAX (16u * 1024u * 1024u)
+#endif
+static char g_stream_buf[PARENA_STREAM_MAX + 1];
+static size_t g_stream_len = 0;
+
+static inline int stream_set_nonblocking(parena_sock_t s) {
+#ifdef _WIN32
+    u_long mode = 1;
+    return ioctlsocket(s, FIONBIO, &mode) == 0 ? 0 : -1;
+#else
+    int fl = fcntl(s, F_GETFL, 0);
+    return (fl >= 0 && fcntl(s, F_SETFL, fl | O_NONBLOCK) == 0) ? 0 : -1;
+#endif
+}
+
+static inline int stream_connect_impl(const char *host, int port) {
+#ifdef _WIN32
+    static int wsa_ready = 0;
+    if (!wsa_ready) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+        wsa_ready = 1;
+    }
+#endif
+    struct addrinfo hints, *res = NULL, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || res == NULL) return -1;
+    parena_sock_t sock = PARENA_BAD_SOCK;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sock == PARENA_BAD_SOCK) continue;
+        if (stream_set_nonblocking(sock) != 0) { parena_sock_close(sock); sock = PARENA_BAD_SOCK; continue; }
+        int c = connect(sock, rp->ai_addr, (int)rp->ai_addrlen);
+        int ok = (c == 0);
+        if (!ok) {
+#ifdef _WIN32
+            int inprog = (WSAGetLastError() == WSAEWOULDBLOCK);
+#else
+            int inprog = (errno == EINPROGRESS);
+#endif
+            if (inprog) {
+                fd_set wf;
+                FD_ZERO(&wf);
+                FD_SET(sock, &wf);
+                struct timeval tv;
+                tv.tv_sec = 5;
+                tv.tv_usec = 0;
+                if (select((int)sock + 1, NULL, &wf, NULL, &tv) > 0) {
+                    int err = 0;
+                    socklen_t el = (socklen_t)sizeof err;
+                    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0) ok = 1;
+                }
+            }
+        }
+        if (ok) break;
+        parena_sock_close(sock);
+        sock = PARENA_BAD_SOCK;
+    }
+    freeaddrinfo(res);
+    return sock == PARENA_BAD_SOCK ? -1 : (int)sock;
+}
+
+static inline int stream_send_impl(int fd, const char *s) {
+    size_t len = strlen(s), off = 0;
+    int spins = 0;
+    while (off < len) {
+        int n = (int)send((parena_sock_t)fd, s + off, (int)(len - off), 0);
+        if (n > 0) { off += (size_t)n; spins = 0; continue; }
+        if (++spins > 2000) return -1; /* ~2 s of EWOULDBLOCK on a fresh connection: give up */
+        fd_set wf;
+        FD_ZERO(&wf);
+        FD_SET((parena_sock_t)fd, &wf);
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 1000;
+        select(fd + 1, NULL, &wf, NULL, &tv);
+    }
+    return 0;
+}
+
+static inline int stream_pull_impl(int fd) {
+    if (g_stream_len >= PARENA_STREAM_MAX) return -2;
+    fd_set rf;
+    FD_ZERO(&rf);
+    FD_SET((parena_sock_t)fd, &rf);
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    int r = select(fd + 1, &rf, NULL, NULL, &tv);
+    if (r < 0) return -1;
+    if (r == 0) return 0;
+    size_t room = PARENA_STREAM_MAX - g_stream_len;
+    if (room > 65536) room = 65536;
+    int n = (int)recv((parena_sock_t)fd, g_stream_buf + g_stream_len, (int)room, 0);
+    if (n <= 0) return -1;
+    g_stream_len += (size_t)n;
+    g_stream_buf[g_stream_len] = '\0';
+    return n;
+}
+
+static inline char *stream_buf_impl(void) { return g_stream_buf; }
+static inline int stream_len_impl(void) { return (int)g_stream_len; }
+static inline void stream_reset_impl(void) { g_stream_len = 0; g_stream_buf[0] = '\0'; }
+static inline int stream_close_impl(int fd) { return parena_sock_close((parena_sock_t)fd) == 0 ? 0 : -1; }
+
+/* linebuf -- one small static line-input buffer (address bar / command bar). */
+#define PARENA_LINEBUF_MAX 1024
+static char g_linebuf[PARENA_LINEBUF_MAX];
+static int g_linebuf_len = 0;
+static inline void linebuf_append_impl(const char *s) {
+    while (*s && g_linebuf_len < PARENA_LINEBUF_MAX - 1) g_linebuf[g_linebuf_len++] = *s++;
+    g_linebuf[g_linebuf_len] = '\0';
+}
+static inline void linebuf_backspace_impl(void) {
+    if (g_linebuf_len > 0) g_linebuf[--g_linebuf_len] = '\0';
+}
+static inline void linebuf_clear_impl(void) { g_linebuf_len = 0; g_linebuf[0] = '\0'; }
+static inline char *linebuf_get_impl(void) { return g_linebuf; }
+static inline int linebuf_len_impl(void) { return g_linebuf_len; }
+
+/* cururl -- one static "current URL" string (set by the program, read back for display/redirects). */
+static char g_cururl[PARENA_LINEBUF_MAX];
+static inline int cururl_set_impl(const char *s) {
+    size_t n = strlen(s);
+    if (n >= sizeof g_cururl) n = sizeof g_cururl - 1;
+    memcpy(g_cururl, s, n);
+    g_cururl[n] = '\0';
+    return 0;
+}
+static inline char *cururl_get_impl(void) { return g_cururl; }
+
+/* slots -- 32 static int cells: tiny mutable UI/navigation state for PARENA programs (loop/recur
+ * can't carry a dozen values through function calls, and PARENA functions return one scalar). */
+static int g_slots[32];
+static inline int slot_get_impl(int k) { return (k >= 0 && k < 32) ? g_slots[k] : 0; }
+static inline int slot_set_impl(int k, int v) { if (k >= 0 && k < 32) g_slots[k] = v; return v; }
 
 /* ---- stdlib/json.prn's own real host-glue forward declaration (2026-08-28) --------------
  * json.prn's own json-unescape #target body calls host_json_unescape -- a real, per-HOST-
