@@ -1,0 +1,245 @@
+;; movement.prn -- PARENA port, tranche 2 of SHANKPIT packages/common/physics.h:
+;;   apply_friction / apply_friction_2d / accelerate        (Quake-style ground + air movement)
+;;   norm_yaw_deg / clamp_pitch_deg / angle_diff            (angle utilities)
+;;   reflect_vector / katana_forward_dir                    (vector helpers used by weapons)
+;;   phys_sample_ground_height (box layer)                  -> ground-height
+;;   phys_store_history / phys_resolve_rewind               -> lag-store! / lag-rewind
+;;                                                             (+ lag-rewind-lerp, NEW, see below)
+;;
+;; Same ABI rules as physics.prn: scalars are F64, every aggregate is a caller-owned
+;; `(Vec F64)` in a caller-supplied `Arena @ Region`, mutation goes through `vec-set-at!`
+;; (inline slot write -- no allocation), nothing here dispatches events.
+;;
+;; Player layout, `make-player` (14 slots, F64):
+;;   [0]x [1]y [2]z [3]vx [4]vy [5]vz [6]prev-y [7]pw [8]ph [9]on-ground
+;;   [10]crouching [11]in-vehicle [12]dash-timer [13]ground-friction
+;; (slots 0-9 are identical to physics.prn's `make-state`, so one Vec serves both modules.)
+;;
+;; Lag history, `make-history`: clients * 64 slots * 5 F64 [active ts x y z]; slot
+;; (client * 64 + (now / 16) mod 64) -- exactly physics.h's LAG_HISTORY ring.
+;;
+;; Not ported (needs struct-in-struct / OBB / terrain, see physics.prn header): oriented-box
+;; ground sampling, terrain heightfield sampling beyond the caller-supplied `terrain-h`.
+
+(module physics/movement)
+(export make-player make-history apply-friction apply-friction-2d accelerate
+        norm-yaw clamp-pitch angle-diff reflect-vector katana-forward-dir
+        ground-height lag-store! lag-rewind lag-rewind-lerp)
+
+;; ---- constants (physics.h) ------------------------------------------------------------------
+;; STOP_SPEED 0.15  SLIDE_FRICTION 0.01  CROUCH_SPEED 0.35  MAX_SPEED 0.95
+;; KATANA_DASH_UPWARD_LIMIT 0.35  LAG_HISTORY 64
+
+(defn mv-fsqrt [(x : F64)] : F64 #target {:c (inline-c "sqrt(x)")})
+(defn mv-fsin  [(x : F64)] : F64 #target {:c (inline-c "sin(x)")})
+(defn mv-fcos  [(x : F64)] : F64 #target {:c (inline-c "cos(x)")})
+(defn mv-ffloor [(x : F64)] : F64 #target {:c (inline-c "floor(x)")})
+(defn mv-ffmod [(a : F64) (b : F64)] : F64 #target {:c (inline-c "fmod(a, b)")})
+(defn mv-f2i [(x : F64)] : I32 #target {:c (inline-c "(int)(x)")})
+
+(defn mv-minf [(a : F64) (b : F64)] : F64 (if (< a b) a b))
+(defn mv-maxf [(a : F64) (b : F64)] : F64 (if (> a b) a b))
+(defn mv-at [(v : &(Vec F64)) (i : I32)] : F64 (deref (vec/get v i)))
+
+;; ---- constructors ---------------------------------------------------------------------------
+
+(defn make-player [(x : F64) (y : F64) (z : F64) (vx : F64) (vy : F64) (vz : F64)
+                   (pw : F64) (ph : F64) (on-ground : F64) (crouching : F64)
+                   (in-vehicle : F64) (dash-timer : F64) (ground-friction : F64)
+                   (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [v (vec/new dest)]
+    (do (vec/reserve &mut v 14)
+        (vec/push! &mut v x) (vec/push! &mut v y) (vec/push! &mut v z)
+        (vec/push! &mut v vx) (vec/push! &mut v vy) (vec/push! &mut v vz)
+        (vec/push! &mut v (- y vy)) (vec/push! &mut v pw) (vec/push! &mut v ph)
+        (vec/push! &mut v on-ground)
+        (vec/push! &mut v crouching) (vec/push! &mut v in-vehicle)
+        (vec/push! &mut v dash-timer) (vec/push! &mut v ground-friction)
+        v)))
+
+(defn make-history [(clients : I32) (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [v (vec/new dest)
+        n (* (* clients 64) 5)]
+    (do (vec/reserve &mut v n)
+        (loop [i 0]
+          (when (< i n)
+            (do (vec/push! &mut v 0.0) (recur (+ i 1)))))
+        v)))
+
+;; ---- friction / acceleration ----------------------------------------------------------------
+
+;; Scales (vx, vz) by `ratio`.
+(defn scale-vxz! [(p : &mut (Vec F64)) (ratio : F64)] : Unit
+  (do (vec-set-at! p 3 (* (mv-at p 3) ratio))
+      (vec-set-at! p 5 (* (mv-at p 5) ratio))))
+
+;; Port of apply_friction. `ground-friction` (slot 13) is the per-tick resolved value
+;; resolve_collision already computes; slot 12 > 0 (dashing) skips friction entirely.
+(defn friction-drop [(p : &(Vec F64)) (speed : F64)] : F64
+  (if (and (= (mv-at p 11) 0.0) (> (mv-at p 9) 0.5))
+    (if (> (mv-at p 10) 0.5)
+      (if (> speed 0.75)
+        (* speed 0.01)
+        (* speed (* (mv-at p 13) 3.0)))
+      (* (if (< speed 0.15) 0.15 speed) (mv-at p 13)))
+    0.0))
+
+(defn apply-friction [(p : &mut (Vec F64))] : Unit
+  (if (> (mv-at p 12) 0.0)
+    unit
+    (let [vx (mv-at p 3) vz (mv-at p 5)
+          speed (mv-fsqrt (+ (* vx vx) (* vz vz)))]
+      (if (< speed 0.001)
+        (do (vec-set-at! p 3 0.0) (vec-set-at! p 5 0.0))
+        (let [drop (friction-drop p speed)
+              newspeed (mv-maxf 0.0 (- speed drop))]
+          (scale-vxz! p (/ newspeed speed)))))))
+
+;; Port of apply_friction_2d on a 2-slot (Vec F64) [x y]. Returns Unit; mutates in place.
+(defn apply-friction-2d [(vel : &mut (Vec F64)) (friction : F64) (dt : F64)] : Unit
+  (let [x (mv-at vel 0) y (mv-at vel 1)
+        speed (mv-fsqrt (+ (* x x) (* y y)))]
+    (if (<= speed 0.0001)
+      unit
+      (let [newspeed (mv-maxf 0.0 (- speed (* (* speed friction) dt)))
+            ratio (/ newspeed speed)]
+        (do (vec-set-at! vel 0 (* x ratio))
+            (vec-set-at! vel 1 (* y ratio)))))))
+
+;; wish speed after the crouch cap physics.h applies on the ground.
+(defn capped-wish [(p : &(Vec F64)) (speed : F64) (wish-speed : F64)] : F64
+  (if (and (> (mv-at p 10) 0.5) (and (> (mv-at p 9) 0.5) (and (< speed 0.75) (> wish-speed 0.35))))
+    0.35
+    wish-speed))
+
+;; Port of accelerate.
+(defn accelerate [(p : &mut (Vec F64)) (wish-x : F64) (wish-z : F64)
+                  (wish-speed : F64) (accel : F64)] : Unit
+  (let [vx (mv-at p 3) vz (mv-at p 5)
+        speed (mv-fsqrt (+ (* vx vx) (* vz vz)))]
+    (if (and (> (mv-at p 10) 0.5) (and (> speed 0.75) (> (mv-at p 9) 0.5)))
+      unit
+      (let [ws (capped-wish p speed wish-speed)
+            current (+ (* vx wish-x) (* vz wish-z))
+            add-speed (- ws current)]
+        (if (<= add-speed 0.0)
+          unit
+          (let [acc (mv-minf (* accel 0.95) add-speed)]
+            (do (vec-set-at! p 3 (+ vx (* acc wish-x)))
+                (vec-set-at! p 5 (+ vz (* acc wish-z))))))))))
+
+;; ---- angles & vectors -----------------------------------------------------------------------
+
+(defn norm-yaw [(yaw : F64)] : F64
+  (let [m (mv-ffmod yaw 360.0)]
+    (if (< m 0.0) (+ m 360.0) m)))
+
+(defn clamp-pitch [(pitch : F64)] : F64
+  (mv-maxf -89.0 (mv-minf 89.0 pitch)))
+
+(defn angle-diff [(a : F64) (b : F64)] : F64
+  (let [m (mv-ffmod (- a b) 360.0)]
+    (if (> m 180.0) (- m 360.0) (if (< m -180.0) (+ m 360.0) m))))
+
+;; Port of reflect_vector on a 3-slot (Vec F64) [vx vy vz].
+(defn reflect-vector [(v : &mut (Vec F64)) (nx : F64) (ny : F64) (nz : F64)] : Unit
+  (let [vx (mv-at v 0) vy (mv-at v 1) vz (mv-at v 2)
+        d2 (* 2.0 (+ (* vx nx) (+ (* vy ny) (* vz nz))))]
+    (do (vec-set-at! v 0 (- vx (* d2 nx)))
+        (vec-set-at! v 1 (- vy (* d2 ny)))
+        (vec-set-at! v 2 (- vz (* d2 nz))))))
+
+;; Port of katana_forward_dir -> out [dx dy dz].
+(defn katana-forward-dir [(yaw-deg : F64) (pitch-deg : F64) (out : &mut (Vec F64))] : Unit
+  (let [r (* (- 0.0 yaw-deg) 0.0174533)
+        rp (* pitch-deg 0.0174533)
+        dx (* (mv-fsin r) (mv-fcos rp))
+        dy (mv-maxf -0.35 (mv-minf 0.35 (mv-fsin rp)))
+        dz (* (- 0.0 (mv-fcos r)) (mv-fcos rp))
+        len (mv-fsqrt (+ (* dx dx) (+ (* dy dy) (* dz dz))))]
+    (if (< len 0.0001)
+      (do (vec-set-at! out 0 0.0) (vec-set-at! out 1 0.0) (vec-set-at! out 2 -1.0))
+      (do (vec-set-at! out 0 (/ dx len))
+          (vec-set-at! out 1 (/ dy len))
+          (vec-set-at! out 2 (/ dz len))))))
+
+;; ---- ground height --------------------------------------------------------------------------
+;; Port of phys_sample_ground_height's plain-box branch. `terrain-ok` (1/0) + `terrain-h`
+;; stand in for the heightfield sample the host already computed. Faithful to the original's
+;; quirk: with no terrain under the point (source flag 0), the LAST overlapping box wins even
+;; if a lower one -- `top > h || !source_terrain`. Returns the source flag (1 = terrain);
+;; the height is written to out[0].
+(defn ground-height [(boxes : &(Vec F64)) (first : I32) (x : F64) (z : F64)
+                     (terrain-ok : I32) (terrain-h : F64) (out : &mut (Vec F64))] : I32
+  (let [n (/ (vec/len boxes) 6)]
+    (loop [i first h (if (= terrain-ok 1) terrain-h 0.0) src terrain-ok]
+      (if (>= i n)
+        (do (vec-set-at! out 0 h) src)
+        (let [b (* i 6)
+              bx (mv-at boxes (+ b 0)) by (mv-at boxes (+ b 1)) bz (mv-at boxes (+ b 2))
+              hw (/ (mv-at boxes (+ b 3)) 2.0) hh (/ (mv-at boxes (+ b 4)) 2.0)
+              hd (/ (mv-at boxes (+ b 5)) 2.0)
+              top (+ by hh)]
+          (if (and (> x (- bx hw)) (and (< x (+ bx hw)) (and (> z (- bz hd)) (< z (+ bz hd)))))
+            (if (or (> top h) (= src 0))
+              (recur (+ i 1) top 0)
+              (recur (+ i 1) h src))
+            (recur (+ i 1) h src)))))))
+
+;; ---- lag compensation -----------------------------------------------------------------------
+
+(defn hist-base [(client : I32) (now : F64)] : I32
+  (* (+ (* client 64) (mv-f2i (mv-ffmod (mv-ffloor (/ now 16.0)) 64.0))) 5))
+
+;; Port of phys_store_history.
+(defn lag-store! [(hist : &mut (Vec F64)) (client : I32) (now : F64)
+                  (x : F64) (y : F64) (z : F64)] : Unit
+  (let [b (hist-base client now)]
+    (do (vec-set-at! hist b 1.0)
+        (vec-set-at! hist (+ b 1) now)
+        (vec-set-at! hist (+ b 2) x)
+        (vec-set-at! hist (+ b 3) y)
+        (vec-set-at! hist (+ b 4) z))))
+
+;; Port of phys_resolve_rewind: exact-timestamp match across the client's 64 slots.
+;; Position goes to out[0..2]; returns 1/0.
+(defn lag-rewind [(hist : &(Vec F64)) (client : I32) (target : F64) (out : &mut (Vec F64))] : I32
+  (loop [i 0]
+    (if (>= i 64)
+      0
+      (let [b (* (+ (* client 64) i) 5)]
+        (if (and (> (mv-at hist b) 0.5) (= (mv-at hist (+ b 1)) target))
+          (do (vec-set-at! out 0 (mv-at hist (+ b 2)))
+              (vec-set-at! out 1 (mv-at hist (+ b 3)))
+              (vec-set-at! out 2 (mv-at hist (+ b 4)))
+              1)
+          (recur (+ i 1)))))))
+
+;; NEW (not in physics.h): when no sample has exactly `target`, interpolate between the two
+;; active samples that bracket it (nearest older + nearest newer). Frame timestamps rarely
+;; land on a 16 ms boundary, so exact match misses most real lookups. Returns 1 on success.
+(defn lag-rewind-lerp [(hist : &(Vec F64)) (client : I32) (target : F64) (out : &mut (Vec F64))] : I32
+  (loop [i 0 lo-i -1 lo-t -1000000000000.0 hi-i -1 hi-t 1000000000000.0]
+    (if (>= i 64)
+      (if (and (>= lo-i 0) (>= hi-i 0))
+        (let [lb (* (+ (* client 64) lo-i) 5)
+              hb (* (+ (* client 64) hi-i) 5)
+              span (- hi-t lo-t)
+              f (if (> span 0.0) (/ (- target lo-t) span) 0.0)]
+          (do (vec-set-at! out 0 (+ (mv-at hist (+ lb 2)) (* f (- (mv-at hist (+ hb 2)) (mv-at hist (+ lb 2))))))
+              (vec-set-at! out 1 (+ (mv-at hist (+ lb 3)) (* f (- (mv-at hist (+ hb 3)) (mv-at hist (+ lb 3))))))
+              (vec-set-at! out 2 (+ (mv-at hist (+ lb 4)) (* f (- (mv-at hist (+ hb 4)) (mv-at hist (+ lb 4))))))
+              1))
+        0)
+      (let [b (* (+ (* client 64) i) 5)
+            t (mv-at hist (+ b 1))
+            act (> (mv-at hist b) 0.5)]
+        (if (and act (<= t target))
+          (if (> t lo-t)
+            (recur (+ i 1) i t hi-i hi-t)
+            (recur (+ i 1) lo-i lo-t hi-i hi-t))
+          (if (and act (> t target))
+            (if (< t hi-t)
+              (recur (+ i 1) lo-i lo-t i t)
+              (recur (+ i 1) lo-i lo-t hi-i hi-t))
+            (recur (+ i 1) lo-i lo-t hi-i hi-t)))))))

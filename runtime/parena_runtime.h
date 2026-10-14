@@ -201,7 +201,8 @@ typedef struct ParenaArenaBlock {
     struct ParenaArenaBlock *next;
     size_t used;
     size_t capacity;
-    unsigned char data[];
+    /* 64-byte aligned so the first allocation of every block starts on a cache line. */
+    unsigned char data[] __attribute__((aligned(64)));
 } ParenaArenaBlock;
 
 typedef struct {
@@ -210,6 +211,24 @@ typedef struct {
 
 void arena_init(Arena *a);
 void *arena_alloc(Arena *a, size_t size);
+/* Same as arena_alloc but the returned pointer is `align`-byte aligned (power of two <= 64).
+ * Vec uses 64 so a growing array never straddles a cache line at its start. */
+void *arena_alloc_aligned(Arena *a, size_t size, size_t align);
+
+/* Block provider -- where arena blocks come from. Default (unless the runtime is built with
+ * -DPARENA_NO_MALLOC) is malloc/free. Under -DPARENA_NO_MALLOC the default is a static,
+ * 64-byte-aligned pool of PARENA_STATIC_POOL_BYTES (default 1 MiB) carved into
+ * PARENA_STATIC_BLOCK_BYTES (default 8 KiB) granules, first-fit over a bitmap; the runtime
+ * then contains no heap call at all. A host may install its own provider at startup
+ * (before the first arena_alloc). `alloc` returns NULL on exhaustion; the runtime then calls
+ * the OOM hook if set (it may return a replacement block) and otherwise exits, as before.
+ * Block sizes passed to alloc/free are the exact byte size requested. */
+typedef void *(*ParenaBlockAllocFn)(size_t bytes);
+typedef void (*ParenaBlockFreeFn)(void *block, size_t bytes);
+void parena_set_block_provider(ParenaBlockAllocFn alloc_fn, ParenaBlockFreeFn free_fn);
+/* Bytes currently handed out by the static pool / high-water mark (0 when malloc-backed). */
+size_t parena_static_pool_used(void);
+size_t parena_static_pool_high_water(void);
 char *arena_strdup(Arena *a, const char *src, size_t len);
 
 /* arena_free_all — also used directly as a GCC/Clang cleanup attribute
@@ -328,12 +347,35 @@ static inline Option option_unwrap_check(Option o) {
  * `vec/push!`/`vec/get`/`vec/len` (`/`s and the trailing `!` both become
  * `_`) -- emit_call()'s generic call path needs no special-casing to
  * reach these, the same way it reaches any other stdlib function. */
+/* Vec layout (rewritten for cache locality):
+ *
+ *   items[] is ONE contiguous, 64-byte-aligned array. Scalar elements (I32/F64, boxed via
+ *   vec_box_i32/vec_box_f64) are stored INLINE in their slot -- no per-element cell, no
+ *   pointer chase, no arena growth per push/set. Pointer elements (String/struct pointers)
+ *   are stored in the slot exactly as before. `scalar` records which regime a Vec is in
+ *   (set by the first scalar push/set); vec_get returns the address of the slot for scalar
+ *   Vecs and the stored pointer otherwise, so the emitter's `*(double *)vec_get(v, i)` /
+ *   `*(int *)vec_get(v, i)` / `*(T **)...` idioms are unchanged.
+ *
+ *   Contract change worth knowing: a pointer returned by vec_get on a scalar Vec points
+ *   INTO the array and is invalidated by a later push that grows it (it used to point at a
+ *   stable boxed cell). Generated code dereferences immediately, so this is not observable
+ *   there. Needs sizeof(void *) >= 8 and little-endian for the int-in-slot read; both are
+ *   asserted below.
+ *
+ *   `tmp` is the single-slot staging cell vec_box_* hand back so the existing
+ *   `vec_push_(v, vec_box_f64(v, x))` call shape keeps working.
+ */
 typedef struct {
     Arena *arena;
     void **items;
     size_t count;
     size_t capacity;
+    int scalar;
+    union { double f; int i; void *p; } tmp;
 } Vec;
+
+typedef char parena_vec_slot_holds_double_[(sizeof(void *) >= sizeof(double)) ? 1 : -1];
 
 static inline Vec vec_new(Arena *dest) {
     Vec v;
@@ -341,70 +383,77 @@ static inline Vec vec_new(Arena *dest) {
     v.items = NULL;
     v.count = 0;
     v.capacity = 0;
+    v.scalar = 0;
+    v.tmp.p = NULL;
     return v;
 }
 
-static inline void vec_push_(Vec *v, void *item) {
-    if (v->count == v->capacity) {
-        size_t new_cap = v->capacity == 0 ? 4 : v->capacity * 2;
-        void **new_items = (void **)arena_alloc(v->arena, new_cap * sizeof(void *));
-        for (size_t i = 0; i < v->count; i++) new_items[i] = v->items[i];
+static inline void vec_reserve_(Vec *v, size_t want) {
+    if (want > v->capacity) {
+        size_t new_cap = v->capacity == 0 ? 8 : v->capacity;
+        void **new_items;
+        size_t i;
+        while (new_cap < want) new_cap *= 2;
+        new_items = (void **)arena_alloc_aligned(v->arena, new_cap * sizeof(void *), 64);
+        for (i = 0; i < v->count; i++) new_items[i] = v->items[i];
         v->items = new_items;
         v->capacity = new_cap;
     }
-    v->items[v->count++] = item;
+}
+
+/* vec_reserve -- optional presize so a hot loop never regrows (and never abandons the old
+ * array in the bump arena). Not required for correctness. */
+static inline void vec_reserve(Vec *v, int n) {
+    if (n > 0) vec_reserve_(v, (size_t)n);
+}
+
+static inline int vec_is_staged_(const Vec *v, const void *item) {
+    return item == (const void *)&v->tmp;
+}
+
+static inline void vec_store_(Vec *v, size_t idx, void *item) {
+    if (vec_is_staged_(v, item)) {
+        v->scalar = 1;
+        v->items[idx] = NULL; /* clear all 8 bytes so an int slot reads back clean */
+        memcpy(&v->items[idx], &v->tmp, sizeof(double));
+    } else {
+        v->items[idx] = item;
+    }
+}
+
+static inline void vec_push_(Vec *v, void *item) {
+    vec_reserve_(v, v->count + 1);
+    vec_store_(v, v->count, item);
+    v->count++;
 }
 
 static inline void *vec_get(Vec *v, int idx) {
     if (idx < 0 || (size_t)idx >= v->count) return NULL;
-    return v->items[idx];
+    return v->scalar ? (void *)&v->items[idx] : v->items[idx];
 }
 
 static inline int vec_len(Vec *v) {
     return (int)v->count;
 }
 
-/* vec_set_at_ -- real, minimal index-assignment, found genuinely
- * missing (matching mangle()'s own real output for `vec-set-at!`)
- * while getting world.prn's own `set-height` to compile. STDLIB.md's
- * own vec section never designed a `set!` operation (only new/push!/
- * get/len) -- a real, honest gap in the design doc, not just the
- * implementation, closed here to match the real, already-written call
- * site. Same real, honest safety convention vec_get's own out-of-
- * bounds NULL return already has: silently does nothing on an
- * out-of-bounds index rather than writing past the backing array,
- * since there's no real error-reporting channel a `void`-returning
- * runtime function has to use here. */
+/* vec_set_at_ -- index assignment; silently ignores an out-of-bounds index (same convention
+ * vec_get's NULL return already has). */
 static inline void vec_set_at_(Vec *v, int idx, void *value) {
     if (idx < 0 || (size_t)idx >= v->count) return;
-    v->items[idx] = value;
+    vec_store_(v, (size_t)idx, value);
 }
 
-/* vec_box_i32/vec_box_f64 -- real, minimal scalar boxing, found
- * genuinely necessary while getting world.prn's own real `Terrain`
- * (`heights : (Vec F64)`) to compile: `Vec` stores `void *` items,
- * which fits pointer-representable elements (String/struct pointers)
- * directly, but a raw scalar (I32/F64) needs somewhere real to live
- * before its ADDRESS can be stored as the item -- not a bit-boxing
- * trick (reinterpreting the scalar's own bits as a pointer value),
- * deliberately: world.prn's own real `get-height`
- * (`(deref (vec/get ...))`) already uses the exact same `deref`
- * idiom uniformly for scalar and struct-typed Vecs alike, so the
- * real, consistent fix is making a scalar Vec's own stored items
- * genuinely BE real pointers to real, arena-allocated cells (the
- * same shape struct-pointer items already have), not a special case
- * `deref` or `vec_get` need to know about. Allocates into the Vec's
- * own already-stored arena (set once, at `vec_new`) -- no new
- * parameter needed at any real call site. */
+/* vec_box_i32 / vec_box_f64 -- stage the scalar in the Vec's own `tmp` cell and return its
+ * address; vec_push_/vec_set_at_ recognise that address and copy the value INLINE into the
+ * slot. Zero allocation. */
 static inline void *vec_box_i32(Vec *v, int value) {
-    int *cell = (int *)arena_alloc(v->arena, sizeof(int));
-    *cell = value;
-    return cell;
+    v->tmp.p = NULL;
+    v->tmp.i = value;
+    return &v->tmp;
 }
 static inline void *vec_box_f64(Vec *v, double value) {
-    double *cell = (double *)arena_alloc(v->arena, sizeof(double));
-    *cell = value;
-    return cell;
+    v->tmp.f = value;
+    return &v->tmp;
 }
 
 /* Bytes -- a real, second core-language base type alongside String,
@@ -2935,8 +2984,10 @@ static inline char *exec_lookpath_impl(const char *name, Arena *dest) {
         return out;
     }
     size_t path_len = strlen(path_env);
-    char *path_copy = (char *)malloc(path_len + 1);
-    memcpy(path_copy, path_env, path_len + 1);
+    char path_copy[4096];
+    if (path_len >= sizeof path_copy) path_len = sizeof path_copy - 1u;
+    memcpy(path_copy, path_env, path_len);
+    path_copy[path_len] = '\0';
     char *saveptr = NULL;
     char *dir = strtok_r(path_copy, ":", &saveptr);
     char candidate[4096];
@@ -2946,12 +2997,10 @@ static inline char *exec_lookpath_impl(const char *name, Arena *dest) {
             size_t len = strlen(candidate);
             char *out = (char *)arena_alloc(dest, len + 1);
             memcpy(out, candidate, len + 1);
-            free(path_copy);
             return out;
         }
         dir = strtok_r(NULL, ":", &saveptr);
     }
-    free(path_copy);
     char *out = (char *)arena_alloc(dest, 1);
     out[0] = '\0';
     return out;

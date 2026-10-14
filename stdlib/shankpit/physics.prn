@@ -1,0 +1,340 @@
+;; physics.prn -- PARENA port of the SHANKPIT physics hot paths (packages/common/physics.h):
+;;   * trace_map_boxes         -> trace-segment      (segment vs plain AABB list, first hit + normal)
+;;   * resolve_collision       -> resolve-player     (plain-box landing + side push-out + y=0 floor)
+;;   * check_hit_location      -> hit-location       (head sphere / body sphere, 2 = head, 1 = body)
+;;   * (new, same box layer)   -> sphere-sweep       (moving sphere vs boxes, Minkowski-inflated)
+;;   * (new, same capsule use) -> ray-capsule        (ray vs Y-aligned capsule: cylinder + 2 caps)
+;;
+;; Scope, stated honestly: oriented boxes (BoxOrient/OBB), terrain heightfields, vehicle bodies,
+;; custom-level materials and the lag-compensation rewind system are NOT ported here. They need
+;; struct-in-struct/Vec-of-struct fields the C emitter does not support yet (NORTHSTAR.md
+;; "defstruct fields typed as another struct/Vec/enum").
+;;
+;; Memory model: no function here allocates on its own. Every growable structure is a
+;; `(Vec ...)` that lives in a caller-supplied `Arena @ Region`; the one local lifetime
+;; (`resolve-player`'s overlap candidate list) is a `with-arena` block. Collision events are
+;; written to a flat I32 scratchpad `(Vec I32)` -- stride 4: kind, a, b, c -- that the HOST
+;; drains after the step. Nothing in this file publishes, subscribes or dispatches (REFLUX's
+;; shared-log shape: PARENA decides, host holds the log).
+;;
+;; Data layout (all `(Vec F64)` unless noted):
+;;   boxes   : stride 6 = x y z w h d (centre + full extents, same as `Box` in physics.h)
+;;   state   : [0]x [1]y [2]z [3]vx [4]vy [5]vz [6]prev-y [7]pw [8]ph  -> [9]on-ground (0/1)
+;;   out     : trace/sweep result, 8 slots = hit-x hit-y hit-z nx ny nz t box-index
+;;   events  : (Vec I32), stride 4
+;;
+;; Event kinds: 1 = LAND (a = box index), 2 = WALL_X (a = box index), 3 = WALL_Z (a = box index),
+;;              4 = FLOOR (a = 0), 5 = SWEEP_HIT (a = box index, b = t * 1000 truncated)
+
+(module physics/physics)
+(export trace-segment sphere-sweep ray-capsule hit-location resolve-player
+        make-out make-state)
+
+;; ---- scalar helpers -------------------------------------------------------------------------
+
+(defn fsqrt [(x : F64)] : F64
+  #target
+  {:c (inline-c "sqrt(x)")})
+
+(defn f2i [(x : F64)] : I32
+  #target
+  {:c (inline-c "(int)(x)")})
+
+;; Routes an I32 through an explicitly I32-typed call so vec/push! boxes it as an int
+;; (the same workaround stdlib/linalg.prn's own as-i32 documents for the loop-variable bug).
+(defn as-i32 [(x : I32)] : I32 x)
+
+(defn absf [(x : F64)] : F64
+  (if (< x 0.0) (- 0.0 x) x))
+
+(defn maxf [(a : F64) (b : F64)] : F64
+  (if (> a b) a b))
+
+(defn minf [(a : F64) (b : F64)] : F64
+  (if (< a b) a b))
+
+;; ---- constructors (arena-allocated, caller-owned) -------------------------------------------
+
+(defn make-out [(dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [v (vec/new dest)]
+    (do (vec/push! &mut v 0.0) (vec/push! &mut v 0.0) (vec/push! &mut v 0.0)
+        (vec/push! &mut v 0.0) (vec/push! &mut v 0.0) (vec/push! &mut v 0.0)
+        (vec/push! &mut v 1.0) (vec/push! &mut v -1.0)
+        v)))
+
+(defn make-state [(x : F64) (y : F64) (z : F64) (vx : F64) (vy : F64) (vz : F64)
+                  (pw : F64) (ph : F64) (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [v (vec/new dest)]
+    (do (vec/push! &mut v x) (vec/push! &mut v y) (vec/push! &mut v z)
+        (vec/push! &mut v vx) (vec/push! &mut v vy) (vec/push! &mut v vz)
+        (vec/push! &mut v (- y vy))      ;; frame-start y, captured once (physics.h frame_prev_y)
+        (vec/push! &mut v pw) (vec/push! &mut v ph)
+        (vec/push! &mut v 0.0)           ;; on-ground
+        v)))
+
+(defn bget [(boxes : &(Vec F64)) (base : I32) (k : I32)] : F64
+  (deref (vec/get boxes (+ base k))))
+
+;; ---- slab test pieces (per axis) -----------------------------------------------------------
+;; Entry/exit parameter of the ray o + t*d against the slab [lo, hi].
+;; Parallel ray (|d| < eps): inside the slab -> (-inf, +inf); outside -> entry = +inf (miss).
+
+(defn slab-near [(o : F64) (d : F64) (lo : F64) (hi : F64)] : F64
+  (if (< (absf d) 0.000001)
+    (if (and (>= o lo) (<= o hi)) -1000000000.0 1000000000.0)
+    (minf (/ (- lo o) d) (/ (- hi o) d))))
+
+(defn slab-far [(o : F64) (d : F64) (lo : F64) (hi : F64)] : F64
+  (if (< (absf d) 0.000001)
+    1000000000.0
+    (maxf (/ (- lo o) d) (/ (- hi o) d))))
+
+;; Entry t of segment (o, d) into box centred (cx cy cz) with half-extents (hx hy hz); 2.0 = miss.
+(defn seg-box-t [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                 (cx : F64) (cy : F64) (cz : F64) (hx : F64) (hy : F64) (hz : F64)] : F64
+  (let [nx (slab-near ox dx (- cx hx) (+ cx hx))
+        ny (slab-near oy dy (- cy hy) (+ cy hy))
+        nz (slab-near oz dz (- cz hz) (+ cz hz))
+        fx (slab-far ox dx (- cx hx) (+ cx hx))
+        fy (slab-far oy dy (- cy hy) (+ cy hy))
+        fz (slab-far oz dz (- cz hz) (+ cz hz))
+        tmin (maxf nx (maxf ny nz))
+        tmax (minf fx (minf fy fz))]
+    (if (and (<= tmin tmax) (>= tmin 0.0) (< tmin 1.0)) tmin 2.0)))
+
+;; Which axis the entry came through: 0 = x, 1 = y, 2 = z (ties resolve x, then y, then z).
+(defn entry-axis [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                  (cx : F64) (cy : F64) (cz : F64) (hx : F64) (hy : F64) (hz : F64)] : I32
+  (let [nx (slab-near ox dx (- cx hx) (+ cx hx))
+        ny (slab-near oy dy (- cy hy) (+ cy hy))
+        nz (slab-near oz dz (- cz hz) (+ cz hz))]
+    (if (and (>= nx ny) (>= nx nz)) 0 (if (>= ny nz) 1 2))))
+
+(defn neg-sign [(d : F64)] : F64
+  (if (> d 0.0) -1.0 1.0))
+
+;; ---- trace-segment --------------------------------------------------------------------------
+;; First box hit by the segment (x1 y1 z1) -> (x2 y2 z2). Boxes index from 1 in physics.h
+;; (slot 0 is the sentinel); here `first` is the first box index to test, so a caller porting
+;; map_geo[1..] passes first = 1 with the same stride-6 packing. Returns 1 on hit and fills
+;; `out`, else tests the y = 0 floor exactly like trace_map_boxes' tail (hit at y2 < 0 ->
+;; point (x2, 0.1, z2), normal +Y) and returns 1/0.
+(defn trace-segment [(boxes : &(Vec F64)) (first : I32)
+                     (x1 : F64) (y1 : F64) (z1 : F64) (x2 : F64) (y2 : F64) (z2 : F64)
+                     (out : &mut (Vec F64))] : I32
+  (let [dx (- x2 x1) dy (- y2 y1) dz (- z2 z1)
+        n (/ (vec/len boxes) 6)]
+    (loop [i first best 1.0 bidx -1]
+      (if (>= i n)
+        (if (>= bidx 0)
+          (let [base (* bidx 6)
+                cx (bget boxes base 0) cy (bget boxes base 1) cz (bget boxes base 2)
+                hx (/ (bget boxes base 3) 2.0) hy (/ (bget boxes base 4) 2.0) hz (/ (bget boxes base 5) 2.0)
+                ax (entry-axis x1 y1 z1 dx dy dz cx cy cz hx hy hz)]
+            (do (vec-set-at! out 0 (+ x1 (* dx best)))
+                (vec-set-at! out 1 (+ y1 (* dy best)))
+                (vec-set-at! out 2 (+ z1 (* dz best)))
+                (vec-set-at! out 3 (if (= ax 0) (neg-sign dx) 0.0))
+                (vec-set-at! out 4 (if (= ax 1) (neg-sign dy) 0.0))
+                (vec-set-at! out 5 (if (= ax 2) (neg-sign dz) 0.0))
+                (vec-set-at! out 6 best)
+                (vec-set-at! out 7 (+ 0.0 bidx))
+                1))
+          (if (< y2 0.0)
+            (do (vec-set-at! out 0 x2) (vec-set-at! out 1 0.1) (vec-set-at! out 2 z2)
+                (vec-set-at! out 3 0.0) (vec-set-at! out 4 1.0) (vec-set-at! out 5 0.0)
+                (vec-set-at! out 6 1.0) (vec-set-at! out 7 -1.0)
+                1)
+            0))
+        (let [base (* i 6)
+              t (seg-box-t x1 y1 z1 dx dy dz
+                           (bget boxes base 0) (bget boxes base 1) (bget boxes base 2)
+                           (/ (bget boxes base 3) 2.0) (/ (bget boxes base 4) 2.0) (/ (bget boxes base 5) 2.0))]
+          (if (< t best)
+            (recur (+ i 1) t i)
+            (recur (+ i 1) best bidx)))))))
+
+;; ---- sphere-sweep ---------------------------------------------------------------------------
+;; Moving sphere of radius r from (ox oy oz) by (dx dy dz) against every box from `first`.
+;; Minkowski sum of an AABB and a sphere is the AABB inflated by r on each axis plus rounded
+;; edges/corners; the inflated-AABB test below is the standard conservative sweep (exact on
+;; face hits, conservative on edge/corner regions) -- the same fidelity the player capsule uses
+;; against plain boxes in resolve_collision (pw is a square half-width there, too).
+;; Result in `out` as in trace-segment (hit point = sphere centre at contact).
+(defn sphere-sweep [(boxes : &(Vec F64)) (first : I32) (r : F64)
+                    (ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                    (out : &mut (Vec F64))] : I32
+  (let [n (/ (vec/len boxes) 6)]
+    (loop [i first best 1.0 bidx -1]
+      (if (>= i n)
+        (if (>= bidx 0)
+          (let [base (* bidx 6)
+                cx (bget boxes base 0) cy (bget boxes base 1) cz (bget boxes base 2)
+                hx (+ (/ (bget boxes base 3) 2.0) r)
+                hy (+ (/ (bget boxes base 4) 2.0) r)
+                hz (+ (/ (bget boxes base 5) 2.0) r)
+                ax (entry-axis ox oy oz dx dy dz cx cy cz hx hy hz)]
+            (do (vec-set-at! out 0 (+ ox (* dx best)))
+                (vec-set-at! out 1 (+ oy (* dy best)))
+                (vec-set-at! out 2 (+ oz (* dz best)))
+                (vec-set-at! out 3 (if (= ax 0) (neg-sign dx) 0.0))
+                (vec-set-at! out 4 (if (= ax 1) (neg-sign dy) 0.0))
+                (vec-set-at! out 5 (if (= ax 2) (neg-sign dz) 0.0))
+                (vec-set-at! out 6 best)
+                (vec-set-at! out 7 (+ 0.0 bidx))
+                1))
+          0)
+        (let [base (* i 6)
+              t (seg-box-t ox oy oz dx dy dz
+                           (bget boxes base 0) (bget boxes base 1) (bget boxes base 2)
+                           (+ (/ (bget boxes base 3) 2.0) r)
+                           (+ (/ (bget boxes base 4) 2.0) r)
+                           (+ (/ (bget boxes base 5) 2.0) r))]
+          (if (< t best)
+            (recur (+ i 1) t i)
+            (recur (+ i 1) best bidx)))))))
+
+;; ---- ray-capsule ----------------------------------------------------------------------------
+;; Ray (o + t*d, |d| = 1, t >= 0) vs a Y-aligned capsule: bottom cap centre (px, py, pz),
+;; cylinder height `h` between the two cap centres, radius `r`. Returns the smallest t >= 0
+;; or -1.0 on a miss.  Pieces: infinite cylinder (quadratic in x/z) clipped to [py, py + h],
+;; then the two end spheres (quadratic in 3D); the minimum valid root wins.
+
+;; Smallest root >= 0 of a*t^2 + 2*b*t + c = 0 (half-b form); -1.0 if none.
+(defn quad-root [(a : F64) (b : F64) (c : F64)] : F64
+  (let [disc (- (* b b) (* a c))]
+    (if (or (< disc 0.0) (< (absf a) 0.0000001))
+      -1.0
+      (let [s (fsqrt disc)
+            t0 (/ (- (- 0.0 b) s) a)
+            t1 (/ (+ (- 0.0 b) s) a)]
+        (if (>= t0 0.0) t0 (if (>= t1 0.0) t1 -1.0))))))
+
+(defn pick-min [(a : F64) (b : F64)] : F64
+  (if (< a 0.0) b (if (< b 0.0) a (minf a b))))
+
+(defn sphere-t [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                (cx : F64) (cy : F64) (cz : F64) (r : F64)] : F64
+  (let [mx (- ox cx) my (- oy cy) mz (- oz cz)]
+    (quad-root (+ (* dx dx) (+ (* dy dy) (* dz dz)))
+               (+ (* mx dx) (+ (* my dy) (* mz dz)))
+               (- (+ (* mx mx) (+ (* my my) (* mz mz))) (* r r)))))
+
+(defn ray-capsule [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                   (px : F64) (py : F64) (pz : F64) (h : F64) (r : F64)] : F64
+  (let [mx (- ox px) mz (- oz pz)
+        tc (quad-root (+ (* dx dx) (* dz dz))
+                      (+ (* mx dx) (* mz dz))
+                      (- (+ (* mx mx) (* mz mz)) (* r r)))
+        yc (+ oy (* dy tc))
+        t-cyl (if (and (>= tc 0.0) (>= yc py) (<= yc (+ py h))) tc -1.0)
+        t-bot (sphere-t ox oy oz dx dy dz px py pz r)
+        t-top (sphere-t ox oy oz dx dy dz px (+ py h) pz r)]
+    (pick-min t-cyl (pick-min t-bot t-top))))
+
+;; ---- hit-location ---------------------------------------------------------------------------
+;; Port of check_hit_location: closest-approach-to-sphere test, head first.
+;; Returns 2 = head, 1 = body, 0 = miss. (tx, tz) target feet position, ty its y.
+(defn closest-sq [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                  (sx : F64) (sy : F64) (sz : F64)] : F64
+  (let [vx (- sx ox) vy (- sy oy) vz (- sz oz)
+        t (+ (* vx dx) (+ (* vy dy) (* vz dz)))]
+    (if (> t 0.0)
+      (let [cx (+ ox (* dx t)) cy (+ oy (* dy t)) cz (+ oz (* dz t))]
+        (+ (* (- sx cx) (- sx cx)) (+ (* (- sy cy) (- sy cy)) (* (- sz cz) (- sz cz)))))
+      -1.0)))
+
+(defn hit-location [(ox : F64) (oy : F64) (oz : F64) (dx : F64) (dy : F64) (dz : F64)
+                    (tx : F64) (ty : F64) (tz : F64) (active : I32) (in-vehicle : I32)] : I32
+  (if (= active 0)
+    0
+    (let [h-size (if (= in-vehicle 0) 1.94 4.0)
+          h-off  (if (= in-vehicle 0) 2.42 2.0)
+          head-sq (closest-sq ox oy oz dx dy dz tx (+ ty h-off) tz)
+          body-sq (closest-sq ox oy oz dx dy dz tx (+ ty 2.0) tz)]
+      (if (and (>= head-sq 0.0) (< head-sq (* h-size h-size)))
+        2
+        (if (and (>= body-sq 0.0) (< body-sq 7.2)) 1 0)))))
+
+;; ---- resolve-player -------------------------------------------------------------------------
+;; Port of resolve_collision's plain-box pass (y = 0 floor, landing, side push-out). Operates on
+;; `state` in place and pushes events into the caller's scratchpad `events`.
+;; The overlap candidate list lives in a `with-arena` scratch region and dies with the call;
+;; only the (Vec F64)/(Vec I32) the caller owns outlive it.
+
+(defn overlaps? [(boxes : &(Vec F64)) (base : I32) (x : F64) (z : F64) (pw : F64)] : Bool
+  (let [bx (bget boxes base 0) bz (bget boxes base 2)
+        hw (/ (bget boxes base 3) 2.0) hd (/ (bget boxes base 5) 2.0)]
+    (and (> (+ x pw) (- bx hw)) (and (< (- x pw) (+ bx hw))
+         (and (> (+ z pw) (- bz hd)) (< (- z pw) (+ bz hd)))))))
+
+(defn push-event! [(events : &mut (Vec I32)) (kind : I32) (a : I32) (b : I32) (c : I32)] : Unit
+  (do (vec/push! events (as-i32 kind)) (vec/push! events (as-i32 a))
+      (vec/push! events (as-i32 b)) (vec/push! events (as-i32 c))))
+
+(defn resolve-one [(boxes : &(Vec F64)) (idx : I32) (state : &mut (Vec F64))
+                   (events : &mut (Vec I32))] : Unit
+  (let [base (* idx 6)
+        x (deref (vec/get state 0)) y (deref (vec/get state 1)) z (deref (vec/get state 2))
+        prev-y (deref (vec/get state 6))
+        pw (deref (vec/get state 7)) ph (deref (vec/get state 8))
+        bx (bget boxes base 0) by (bget boxes base 1) bz (bget boxes base 2)
+        bw (bget boxes base 3) bh (bget boxes base 4) bd (bget boxes base 5)
+        top (+ by (/ bh 2.0)) bot (- by (/ bh 2.0))]
+    (if (and (< y top) (> (+ y ph) bot))
+      (if (>= prev-y top)
+        (do (vec-set-at! state 1 top)
+            (vec-set-at! state 4 0.0)
+            (vec-set-at! state 9 1.0)
+            (push-event! events 1 idx 0 0))
+        (let [ddx (- x bx) ddz (- z bz)
+              w (if (> bw 0.1) bw 1.0)
+              d (if (> bd 0.1) bd 1.0)]
+          (if (> (/ (absf ddx) w) (/ (absf ddz) d))
+            (do (vec-set-at! state 3 0.0)
+                (vec-set-at! state 0 (if (> ddx 0.0) (+ bx (+ (/ bw 2.0) pw)) (- bx (+ (/ bw 2.0) pw))))
+                (push-event! events 2 idx 0 0))
+            (do (vec-set-at! state 5 0.0)
+                (vec-set-at! state 2 (if (> ddz 0.0) (+ bz (+ (/ bd 2.0) pw)) (- bz (+ (/ bd 2.0) pw))))
+                (push-event! events 3 idx 0 0)))))
+      unit)))
+
+;; Tail-position `if` so the emitter produces a real if/else block (a non-tail `if`/`when`
+;; containing `do` is emitted as an expression and does not compile -- found live).
+(defn floor-clamp! [(state : &mut (Vec F64)) (events : &mut (Vec I32))] : Unit
+  (if (< (deref (vec/get state 1)) 0.0)
+    (do (vec-set-at! state 1 0.0)
+        (vec-set-at! state 4 0.0)
+        (vec-set-at! state 9 1.0)
+        (push-event! events 4 0 0 0))
+    unit))
+
+(defn note-touch! [(cand : &mut (Vec I32)) (i : I32) (hit : I32)] : Unit
+  (if (= hit 1) (vec/push! cand (as-i32 i)) unit))
+
+;; Re-tests the footprint against the CURRENT x/z every time (physics.h's loop does: an earlier
+;; box's push-out changes which later boxes overlap). Returns 1 when the footprint overlapped.
+(defn resolve-if-overlap [(boxes : &(Vec F64)) (i : I32) (state : &mut (Vec F64))
+                          (events : &mut (Vec I32))] : I32
+  (if (overlaps? boxes (* i 6) (deref (vec/get state 0)) (deref (vec/get state 2))
+                 (deref (vec/get state 7)))
+    (do (resolve-one boxes i state events) 1)
+    0))
+
+(defn resolve-player [(boxes : &(Vec F64)) (first : I32) (state : &mut (Vec F64))
+                      (events : &mut (Vec I32)) (dest : Arena @ Region)] : I32 @ Region
+  (do
+    (vec-set-at! state 9 0.0)
+    (vec-set-at! state 13 0.3)   ;; ground_friction baseline (FRICTION); no-op on a 10-slot state
+    (floor-clamp! state events)
+    ;; `touched` is a purely local record of which boxes' footprints the player overlapped this
+    ;; call; it lives in a with-arena region and dies here -- only its length escapes.
+    (with-arena [scratch :region/scratch 8192]
+      (let [touched (vec/new &mut scratch)
+            n (/ (vec/len boxes) 6)]
+        (do
+          (loop [i first]
+            (when (< i n)
+              (do (note-touch! &mut touched i (resolve-if-overlap boxes i state events))
+                  (recur (+ i 1)))))
+          (vec/len &touched))))))
