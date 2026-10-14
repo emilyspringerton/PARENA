@@ -315,6 +315,16 @@ argv[0]) — a real, more portable fix is separate, later work. Live-verified vi
 `tests/integration/run_new_check.sh` (`make test-new`): a real scaffold builds, runs, prints the
 correct output, and a second `parena new` on the same name correctly refuses to overwrite it.
 
+## `plugins/static_analysis` — multi-tier IR lifter + SSA (Python)
+
+Headless binary analysis: `Lifter.open(path)` (ELF64 / PE32+ / raw x86-64) indexes functions and gives each
+one `llil` -> `mlil` -> `ssa` / `optimized_ssa` -> `hlil`. SSA has φ-nodes, versioned `vars_read`/`vars_written`
+and def-use maps; `optimize()` does constant propagation/folding, branch folding and dead-code elimination.
+Run the tests with `python3 -m unittest plugins.static_analysis.test_static_analysis -v`.
+**Status:** tested on hand-assembled snippets, hand-built ELF/PE images and gcc -O0/-O2 output. **Limits:** x86-64
+integer subset only (SSE/x87/string ops/adc/sbb/mul are reported as `unimplemented`, never guessed); no jump-table
+recovery or type inference; cross-block flag reuse is handled only through single-predecessor chains.
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan
