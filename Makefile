@@ -516,6 +516,14 @@ test-yaml: build
 		-o /tmp/test_yaml_bin -lm
 	/tmp/test_yaml_bin
 
+# stdlib/editor/hexview.prn -- the reverse-engineering workbench's hex view (row formatting,
+# embedded-NUL safety, offset<->cell geometry). Headless (PARENA_NO_GRAPHICS).
+test-hexview: build
+	./parena build stdlib/string.prn stdlib/editor/hexview.prn -o tests/test_hexview_gen.c
+	$(CC) -std=c99 -DPARENA_NO_GRAPHICS -Wall -Wextra -I runtime -I tests tests/test_hexview.c \
+		runtime/parena_runtime.c -o /tmp/test_hexview_bin -lm
+	/tmp/test_hexview_bin
+
 # test-awk -- real end-to-end verification for stdlib/expr.prn (the
 # arithmetic/string/variable-binding expression evaluator) and
 # stdlib/awk.prn's own read-split-match-evaluate pipeline, same

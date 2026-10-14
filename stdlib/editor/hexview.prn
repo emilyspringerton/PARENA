@@ -1,0 +1,111 @@
+;; stdlib/editor/hexview.prn — the "see the hexes" layer of the reverse-engineering
+;; workbench (plugins/static_analysis/NORTHSTAR.md §1). Founder real-time, 2026-10-14:
+;; "obviously we need to see the hexes ... all of the plumbing in PARENA of course."
+;;
+;; Pure PARENA, no inline-c beyond what stdlib/string.prn already provides: row/column
+;; geometry, hex formatting and the offset <-> screen-cell mapping the editor's linked
+;; selection needs. Data is a raw byte pointer + explicit length (strlen-based helpers
+;; would stop at the first 0x00 byte, which binaries are full of); char-at reads by index
+;; so embedded NULs are fine.
+;;
+;; Honest scope (v0): formatting + geometry only. No SDL drawing here yet (editor_main.c
+;; will call hex-row per visible row), no editing/patching, no UTF-16 side panel, no
+;; instruction-encoding breakdown — see NORTHSTAR §1 "Today".
+
+(module editor/hexview)
+(import string)
+(export byte-at hex-digit-code hex-byte hex-offset printable-code hex-row hex-dump
+        row-of col-of cell-x ascii-x rows-for)
+
+;; Byte at index i as 0..255 (char-at sign-extends on this target).
+(defn byte-at [(data : String @ Region) (i : I32)]
+  : I32
+  (bit-and (char-at data i) 255))
+
+;; 0..15 -> ASCII code of lowercase hex digit.
+(defn hex-digit-code [(n : I32)]
+  : I32
+  (if (< n 10) (+ 48 n) (+ 87 n)))
+
+;; Two lowercase hex digits for the byte at index i.
+(defn hex-byte [(data : String @ Region) (i : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (let [b (byte-at data i)
+        hi (char-from-code (hex-digit-code (/ b 16)) dest)
+        lo (char-from-code (hex-digit-code (mod b 16)) dest)]
+    (concat hi lo dest)))
+
+;; Eight lowercase hex digits (zero padded) for an offset.
+(defn hex-offset [(off : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (loop [shift 7
+         acc ""]
+    (if (< shift 0)
+      acc
+      (recur (- shift 1)
+             (concat acc
+                     (char-from-code
+                       (hex-digit-code (mod (/ off (hex-pow16 shift)) 16))
+                       dest)
+                     dest)))))
+
+(defn hex-pow16 [(n : I32)]
+  : I32
+  (loop [i 0
+         acc 1]
+    (if (>= i n) acc (recur (+ i 1) (* acc 16)))))
+
+;; Printable ASCII passes through, everything else shows as '.'.
+(defn printable-code [(b : I32)]
+  : I32
+  (if (and (>= b 32) (< b 127)) b 46))
+
+;; One dump row: "OOOOOOOO  hh hh ... hh  |ascii|", `width` bytes per row, short last row
+;; padded so the ASCII column stays aligned. `start` is the row's first byte index.
+(defn hex-row [(data : String @ Region) (len : I32) (start : I32) (width : I32)
+               (dest : Arena @ Region)]
+  : String @ Region
+  ;; NB: the two loops use distinct binding names (i/acc vs j/aacc) -- the C emitter hoists
+  ;; loop vars to function scope, so reusing a name in one let redefines it.
+  (let [hexpart (loop [i 0
+                       acc ""]
+                  (if (>= i width)
+                    acc
+                    (recur (+ i 1)
+                           (if (< (+ start i) len)
+                             (concat (concat acc (hex-byte data (+ start i) dest) dest) " " dest)
+                             (concat acc "   " dest)))))
+        asc (loop [j 0
+                   aacc ""]
+              (if (or (>= j width) (>= (+ start j) len))
+                aacc
+                (recur (+ j 1)
+                       (concat aacc
+                               (char-from-code (printable-code (byte-at data (+ start j))) dest)
+                               dest))))]
+    (concat (concat (concat (hex-offset start dest) "  " dest) hexpart dest)
+            (concat (concat " |" asc dest) "|" dest)
+            dest)))
+
+;; Whole buffer, one row per line, '\n' separated (no trailing newline).
+(defn hex-dump [(data : String @ Region) (len : I32) (width : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (loop [start 0
+         acc ""]
+    (if (>= start len)
+      acc
+      (recur (+ start width)
+             (concat (if (= start 0) acc (concat acc "\n" dest))
+                     (hex-row data len start width dest)
+                     dest)))))
+
+;; ---- geometry: byte offset <-> grid cell (what linked selection needs) ----
+
+(defn row-of [(off : I32) (width : I32)] : I32 (/ off width))
+(defn col-of [(off : I32) (width : I32)] : I32 (mod off width))
+(defn rows-for [(len : I32) (width : I32)] : I32 (/ (+ len (- width 1)) width))
+
+;; Character column of byte `col` within a row string: 8 offset digits + 2 spaces, then 3/byte.
+(defn cell-x [(col : I32)] : I32 (+ 10 (* col 3)))
+;; Character column of the ASCII glyph for byte `col`: after the hex block, " |".
+(defn ascii-x [(col : I32) (width : I32)] : I32 (+ (+ 10 (* width 3)) (+ 2 col)))
