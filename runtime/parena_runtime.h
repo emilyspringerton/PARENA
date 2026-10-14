@@ -3763,11 +3763,17 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
  * handle, so the caller's read loop is identical for http and https. Certificate verification is
  * REQUIRED and hostname-checked, always: there is no switch that turns it off. CA roots come from
  * SSL_CERT_FILE, else the system bundle, else a cacert.pem next to the executable (the shipped
- * bundle; Windows has no system file). With -DPARENA_TLS_STATIC_HEAP mbedTLS allocates from one
+ * bundle; Windows has no system file) -- never the current directory. With -DPARENA_TLS_STATIC_HEAP mbedTLS allocates from one
  * static buffer (PARENA_TLS_HEAP_BYTES) via its own buffer allocator, so a NO_MALLOC build stays
  * heap-free (requires MBEDTLS_MEMORY_BUFFER_ALLOC_C + MBEDTLS_PLATFORM_MEMORY in the mbedTLS
  * config). Failures are classified: stream_tls_code_impl() -> 1 connect, 2 handshake, 3 certificate
- * untrusted/mismatched, 4 no CA bundle; stream_tls_error_impl() -> short human text. */
+ * untrusted/mismatched, 4 no CA bundle; stream_tls_error_impl() -> short human text.
+ * A TLS handle is NOT a raw descriptor number: it carries PARENA_TLS_HANDLE_BIT plus a per-session
+ * generation, so a closed or superseded handle can never alias a descriptor that reuses the
+ * number -- send/pull/close on a stale handle just return -1 and touch nothing.
+ * stream_pull on TLS ends with -1 after an authenticated close_notify, or -3 when the stream ended
+ * WITHOUT one (TCP EOF, reset, alert): the body may be truncated. Connect and handshake waits run
+ * against a monotonic deadline (5 s TCP, PARENA_TLS_HANDSHAKE_MS TLS), not a count of timeouts. */
 #ifdef _WIN32
 typedef SOCKET parena_sock_t;
 #define PARENA_BAD_SOCK INVALID_SOCKET
@@ -3792,6 +3798,33 @@ static inline int stream_set_nonblocking(parena_sock_t s) {
     return (fl >= 0 && fcntl(s, F_SETFL, fl | O_NONBLOCK) == 0) ? 0 : -1;
 #endif
 }
+
+/* monotonic milliseconds: waits are bounded by a wall-clock deadline, so a peer that trickles a
+ * byte at a time (select() keeps returning ready) cannot stretch a wait past its budget */
+static inline long long stream_now_ms(void) {
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + (long long)(ts.tv_nsec / 1000000);
+#endif
+}
+
+/* a descriptor select()/FD_SET can address. Negative, or >= FD_SETSIZE on POSIX, would index
+ * outside the fd_set (glibc aborts under fortify, a stack write without). */
+static inline int stream_fd_ok(int fd) {
+#ifdef _WIN32
+    return fd >= 0;
+#else
+    return fd >= 0 && fd < FD_SETSIZE;
+#endif
+}
+
+/* TLS handles: PARENA_TLS_HANDLE_BIT | generation << 16 | descriptor. Plain descriptors are < 1024
+ * (FD_SETSIZE) so they can never carry the bit. */
+#define PARENA_TLS_HANDLE_BIT 0x40000000
+static inline int stream_tls_is_handle(int h) { return h >= 0 && (h & PARENA_TLS_HANDLE_BIT) != 0; }
 
 static inline int stream_connect_impl(const char *host, int port) {
 #ifdef _WIN32
@@ -3820,7 +3853,11 @@ static inline int stream_connect_impl(const char *host, int port) {
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sock == PARENA_BAD_SOCK) continue;
-        if (stream_set_nonblocking(sock) != 0) { parena_sock_close(sock); sock = PARENA_BAD_SOCK; continue; }
+        if (!stream_fd_ok((int)sock) || stream_set_nonblocking(sock) != 0) {
+            parena_sock_close(sock);
+            sock = PARENA_BAD_SOCK;
+            continue;
+        }
         int c = connect(sock, rp->ai_addr, (int)rp->ai_addrlen);
         int ok = (c == 0);
         if (!ok) {
@@ -3830,16 +3867,26 @@ static inline int stream_connect_impl(const char *host, int port) {
             int inprog = (errno == EINPROGRESS);
 #endif
             if (inprog) {
-                fd_set wf;
-                FD_ZERO(&wf);
-                FD_SET(sock, &wf);
-                struct timeval tv;
-                tv.tv_sec = 5;
-                tv.tv_usec = 0;
-                if (select((int)sock + 1, NULL, &wf, NULL, &tv) > 0) {
-                    int err = 0;
-                    socklen_t el = (socklen_t)sizeof err;
-                    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0) ok = 1;
+                long long deadline = stream_now_ms() + 5000;
+                for (;;) {
+                    long long left = deadline - stream_now_ms();
+                    if (left <= 0) break;
+                    fd_set wf;
+                    FD_ZERO(&wf);
+                    FD_SET(sock, &wf);
+                    struct timeval tv;
+                    tv.tv_sec = (long)(left / 1000);
+                    tv.tv_usec = (long)((left % 1000) * 1000);
+                    int sr = select((int)sock + 1, NULL, &wf, NULL, &tv);
+#ifndef _WIN32
+                    if (sr < 0 && errno == EINTR) continue; /* a signal is not a failed connect */
+#endif
+                    if (sr > 0) {
+                        int err = 0;
+                        socklen_t el = (socklen_t)sizeof err;
+                        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0) ok = 1;
+                    }
+                    break;
                 }
             }
         }
@@ -3868,7 +3915,8 @@ static inline int stream_connect_impl(const char *host, int port) {
 
 typedef struct {
     int active;
-    int fd;
+    int fd;     /* the raw descriptor, private to the runtime */
+    int handle; /* what the caller holds: PARENA_TLS_HANDLE_BIT | generation << 16 | fd */
     mbedtls_net_context net;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
@@ -3878,6 +3926,7 @@ static mbedtls_ctr_drbg_context g_stream_tls_drbg;
 static mbedtls_entropy_context g_stream_tls_entropy;
 static mbedtls_x509_crt g_stream_tls_ca;
 static int g_stream_tls_ready = 0;
+static int g_stream_tls_gen = 0;
 static int g_stream_tls_code = 0;
 static char g_stream_tls_err[256];
 #ifdef PARENA_TLS_STATIC_HEAP
@@ -3922,7 +3971,9 @@ static inline int stream_tls_load_ca(void) {
             return stream_tls_fail(4, "CA bundle does not fit the TLS heap (raise PARENA_TLS_HEAP_BYTES)");
         return stream_tls_fail(4, "SSL_CERT_FILE is set but not a readable certificate bundle");
     }
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_TLS_SKIP_SYSTEM_BUNDLES)
+    /* PARENA_TLS_SKIP_SYSTEM_BUNDLES only ever NARROWS trust (tests use it to simulate a machine
+     * with no system store, e.g. Windows); it cannot weaken verification. */
     static const char *sys[] = {
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/pki/tls/certs/ca-bundle.crt",
@@ -3950,7 +4001,8 @@ static inline int stream_tls_load_ca(void) {
         snprintf(cand, sizeof cand, "%scacert.pem", exe);
         if (stream_tls_try_ca(cand) == 0) return 0;
     }
-    if (stream_tls_try_ca("cacert.pem") == 0) return 0;
+    /* deliberately NOT the current directory: anyone who can drop a file there would become a
+     * trusted root for every site. Fail closed instead. */
     if (g_stream_tls_ca_rc == MBEDTLS_ERR_X509_ALLOC_FAILED || g_stream_tls_ca_rc == MBEDTLS_ERR_PK_ALLOC_FAILED)
         return stream_tls_fail(4, "CA bundle does not fit the TLS heap (raise PARENA_TLS_HEAP_BYTES)");
     return stream_tls_fail(4, "no CA bundle found (set SSL_CERT_FILE, or put cacert.pem next to the program)");
@@ -3980,6 +4032,7 @@ static inline int stream_tls_global_init(void) {
 }
 
 static inline int stream_tls_wait(int fd, int want_write, int ms) {
+    if (!stream_fd_ok(fd)) return -1;
     fd_set f;
     FD_ZERO(&f);
     FD_SET((parena_sock_t)fd, &f);
@@ -3997,6 +4050,7 @@ static inline void stream_tls_teardown(void) {
     mbedtls_ssl_config_free(&g_stream_tls.conf);
     g_stream_tls.active = 0;
     g_stream_tls.fd = -1;
+    g_stream_tls.handle = -1;
 }
 
 static inline int stream_connect_tls_impl(const char *host, int port) {
@@ -4006,6 +4060,10 @@ static inline int stream_connect_tls_impl(const char *host, int port) {
     if (stream_tls_global_init() != 0) return -1;
     int fd = stream_connect_impl(host, port);
     if (fd < 0) return stream_tls_fail(1, "could not connect (DNS or TCP, 5 s timeout)");
+    if (fd > 0xFFFF) { /* would not fit the handle encoding */
+        parena_sock_close((parena_sock_t)fd);
+        return stream_tls_fail(1, "socket descriptor out of range");
+    }
     mbedtls_net_init(&g_stream_tls.net);
     mbedtls_ssl_init(&g_stream_tls.ssl);
     mbedtls_ssl_config_init(&g_stream_tls.conf);
@@ -4023,18 +4081,23 @@ static inline int stream_connect_tls_impl(const char *host, int port) {
     if (rc != 0) { stream_tls_fail_rc(2, "TLS hostname", rc); goto fail; }
     mbedtls_ssl_set_bio(&g_stream_tls.ssl, &g_stream_tls.net, mbedtls_net_send, mbedtls_net_recv, NULL);
     {
-        int waited = 0;
+        /* a wall-clock deadline: charged on every wait, so a peer dripping a byte every few ms
+         * cannot keep the (single-threaded, UI-blocking) handshake alive past the budget */
+        long long deadline = stream_now_ms() + PARENA_TLS_HANDSHAKE_MS;
         for (;;) {
             rc = mbedtls_ssl_handshake(&g_stream_tls.ssl);
             if (rc == 0) break;
             if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) {
-                if (waited >= PARENA_TLS_HANDSHAKE_MS) {
+                long long left = deadline - stream_now_ms();
+                if (left <= 0) {
                     stream_tls_fail(2, "TLS handshake timed out");
                     goto fail;
                 }
-                int w = stream_tls_wait(fd, rc == MBEDTLS_ERR_SSL_WANT_WRITE, 50);
+                int w = stream_tls_wait(fd, rc == MBEDTLS_ERR_SSL_WANT_WRITE, left > 50 ? 50 : (int)left);
+#ifndef _WIN32
+                if (w < 0 && errno == EINTR) continue; /* a signal is not a failed handshake */
+#endif
                 if (w < 0) { stream_tls_fail(2, "TLS handshake: socket error"); goto fail; }
-                if (w == 0) waited += 50;
                 continue;
             }
             if (rc == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
@@ -4061,14 +4124,17 @@ static inline int stream_connect_tls_impl(const char *host, int port) {
             goto fail;
         }
     }
+    g_stream_tls_gen = (g_stream_tls_gen + 1) & 0x3FFF;
+    g_stream_tls.handle = PARENA_TLS_HANDLE_BIT | (g_stream_tls_gen << 16) | fd;
     g_stream_tls.active = 1;
-    return fd;
+    return g_stream_tls.handle;
 fail:
     stream_tls_teardown();
     return -1;
 }
 
-static inline int stream_tls_owns(int fd) { return g_stream_tls.active && g_stream_tls.fd == fd; }
+/* is `h` the handle of the live session (a tagged but stale handle is NOT, and is never a descriptor) */
+static inline int stream_tls_owns(int h) { return g_stream_tls.active && g_stream_tls.handle == h; }
 
 /* "TLSv1.3 TLS1-3-AES-256-GCM-SHA384" for the live session, "" otherwise (static, valid until next call) */
 static inline char *stream_tls_info_impl(void) {
@@ -4113,13 +4179,14 @@ static inline int stream_tls_pull(void) {
 #ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
         if (n == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue; /* TLS 1.3 post-handshake */
 #endif
-        return -1; /* close_notify (0 / PEER_CLOSE_NOTIFY), peer reset or EOF: the stream is over */
+        if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return -1; /* authenticated end of data */
+        return -3; /* TCP EOF (0 / CONN_EOF), reset or alert without a close_notify: may be truncated */
     }
     return 0;
 }
 #else /* !PARENA_WITH_TLS */
 static inline int stream_connect_tls_impl(const char *host, int port) { (void)host; (void)port; return -1; }
-static inline int stream_tls_owns(int fd) { (void)fd; return 0; }
+static inline int stream_tls_owns(int h) { (void)h; return 0; }
 static inline char *stream_tls_info_impl(void) { return ""; }
 static inline int stream_tls_send(const char *s) { (void)s; return -1; }
 static inline int stream_tls_pull(void) { return -1; }
@@ -4174,7 +4241,8 @@ static inline int stream_tls_heap_peak_impl(void) {
 }
 
 static inline int stream_send_impl(int fd, const char *s) {
-    if (stream_tls_owns(fd)) return stream_tls_send(s);
+    if (stream_tls_is_handle(fd)) return stream_tls_owns(fd) ? stream_tls_send(s) : -1;
+    if (!stream_fd_ok(fd)) return -1;
     size_t len = strlen(s), off = 0;
     int spins = 0;
     while (off < len) {
@@ -4193,7 +4261,8 @@ static inline int stream_send_impl(int fd, const char *s) {
 }
 
 static inline int stream_pull_impl(int fd) {
-    if (stream_tls_owns(fd)) return stream_tls_pull();
+    if (stream_tls_is_handle(fd)) return stream_tls_owns(fd) ? stream_tls_pull() : -1;
+    if (!stream_fd_ok(fd)) return -1;
     if (g_stream_len >= PARENA_STREAM_MAX) return -2;
     fd_set rf;
     FD_ZERO(&rf);
@@ -4217,7 +4286,13 @@ static inline char *stream_buf_impl(void) { return g_stream_buf; }
 static inline int stream_len_impl(void) { return (int)g_stream_len; }
 static inline void stream_reset_impl(void) { g_stream_len = 0; g_stream_buf[0] = '\0'; }
 static inline int stream_close_impl(int fd) {
-    if (stream_tls_owns(fd)) { stream_tls_teardown(); return 0; } /* also closes the socket */
+    if (stream_tls_is_handle(fd)) {
+        if (!stream_tls_owns(fd)) return -1; /* stale (closed or superseded): nothing to close, and
+                                              * crucially no close() of a descriptor that reuses the number */
+        stream_tls_teardown(); /* also closes the socket */
+        return 0;
+    }
+    if (fd < 0) return -1;
     return parena_sock_close((parena_sock_t)fd) == 0 ? 0 : -1;
 }
 

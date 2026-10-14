@@ -5130,15 +5130,23 @@ read-to-EOF is not: *incremental* — a browser paints bytes as they land. Plain
 Result boxing), one stream at a time, 16 MiB static receive buffer (BSS — works under
 `-DPARENA_NO_MALLOC`). Cross-platform: Linux/macOS (BSD sockets) and Windows (winsock2, link `-lws2_32`).
 
-- `stream-connect host port` → fd or -1 (5 s connect timeout; DNS is blocking `getaddrinfo`).
+- `stream-connect host port` → fd or -1 (5 s connect deadline, monotonic and EINTR-safe; DNS is
+  blocking `getaddrinfo`; descriptors ≥ `FD_SETSIZE` are refused rather than overrun the `fd_set`).
 - `stream-connect-tls host port` → handle or -1; **HTTPS** over mbedTLS, opt-in `-DPARENA_WITH_TLS`.
   Chain + hostname are always verified (no switch to disable). CA roots: `SSL_CERT_FILE` (an explicit
   override that cannot be read fails closed), else the system bundle, else `cacert.pem` next to the
-  executable (Windows ships one). `-DPARENA_TLS_STATIC_HEAP` makes mbedTLS allocate from one static
+  executable (Windows ships one) — never the current directory. A TLS handle is **not** a raw
+  descriptor: it is tagged and carries a per-session generation, so a closed or superseded handle can
+  never alias a descriptor that reuses the number (`send`/`pull`/`close` on a stale handle return -1 and
+  touch nothing); one TLS session at a time, a new connect invalidates the previous handle.
+  The handshake runs against a wall-clock deadline (`PARENA_TLS_HANDSHAKE_MS`, 10 s) that a
+  byte-dripping peer cannot stretch. `-DPARENA_TLS_STATIC_HEAP` makes mbedTLS allocate from one static
   buffer (`PARENA_TLS_HEAP_BYTES`, default 2 MiB; needs `MBEDTLS_MEMORY_BUFFER_ALLOC_C` +
   `MBEDTLS_PLATFORM_MEMORY` in the mbedTLS config) so a NO_MALLOC build stays heap-free.
 - `stream-send` / `stream-pull` / `stream-close` work on either kind of handle. `stream-pull`: n>0 bytes
-  appended, 0 nothing yet, -1 closed/error, -2 buffer full. `stream-buf`/`stream-len`/`stream-reset`.
+  appended, 0 nothing yet, -1 closed (TLS: an authenticated close_notify) or error, -2 buffer full,
+  **-3 TLS stream ended without a close_notify** (TCP EOF, reset or alert — the body may be
+  truncated; callers should say so rather than present it as complete). `stream-buf`/`stream-len`/`stream-reset`.
 - `stream-tls-code` (1 connect, 2 handshake, 3 certificate rejected, 4 no CA bundle, 5 no TLS in this
   build), `stream-tls-error`, `stream-tls-page` (ready-made HTML), `stream-tls-info` ("TLSv1.3 <suite>"),
   `stream-tls-heap-peak` (needs `-DPARENA_TLS_HEAP_STATS` + `MBEDTLS_MEMORY_DEBUG`).
@@ -5147,5 +5155,8 @@ Result boxing), one stream at a time, 16 MiB static receive buffer (BSS — work
 Honest limits: blocking DNS and TLS handshake (10 s cap); one stream; no ALPN/HTTP/2 yet; TLS 1.3
 session tickets are accepted and ignored (no resumption). Tests: `make test-net-stream` (hermetic
 loopback), `make test-net-stream-tls` (local `openssl s_server`: trusted → response, untrusted /
-wrong-host → code 3, unreadable bundle → code 4).
+wrong-host → code 3, unreadable bundle → code 4; plus stale/superseded handles, fd guards, a cwd
+`cacert.pem` never trusted, exe-dir bundle used, truncation vs close_notify, handshake deadline vs a
+silent and a dripping peer, a SIGALRM storm). `-DPARENA_TLS_SKIP_SYSTEM_BUNDLES` (tests / locked-down
+builds) only narrows trust.
 

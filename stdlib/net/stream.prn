@@ -54,7 +54,9 @@
   #target
   {:c (inline-c "stream_send_impl(fd, data)")})
 
-;; n>0 bytes appended to the stream buffer; 0 = nothing yet; -1 = closed/error; -2 = buffer full
+;; n>0 bytes appended to the stream buffer; 0 = nothing yet; -1 = closed (for TLS: an authenticated
+;; close_notify) or error; -2 = buffer full; -3 = TLS stream ended WITHOUT a close_notify (TCP EOF, reset
+;; or alert) -- the body may be truncated
 (defn stream-pull [(fd : I32)] : I32
   #target
   {:c (inline-c "stream_pull_impl(fd)")})

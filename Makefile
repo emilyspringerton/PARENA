@@ -371,11 +371,16 @@ test-net-stream: build
 
 # test-net-stream-tls -- the HTTPS half of net/stream against a local `openssl s_server`: trusted
 # certificate -> response; untrusted certificate and wrong hostname -> refused with code 3; unreadable
-# SSL_CERT_FILE -> code 4 (fails closed). Needs the openssl CLI and mbedTLS dev headers/libs
-# (MBEDTLS_CFLAGS / MBEDTLS_LDFLAGS as for test-net-tls). Skips cleanly when openssl is missing.
+# SSL_CERT_FILE -> code 4 (fails closed); plus the hardening cases (stale/superseded handles, fd
+# guards, cwd bundle never trusted, exe-dir bundle used, truncation vs close_notify, handshake
+# deadline vs a silent/dripping peer, EINTR). Needs the openssl CLI (python3 for the hostile-server
+# cases) and mbedTLS dev headers/libs (MBEDTLS_CFLAGS / MBEDTLS_LDFLAGS as for test-net-tls). Skips
+# cleanly when openssl is missing. -DPARENA_TLS_SKIP_SYSTEM_BUNDLES narrows trust to simulate a
+# machine with no system store; the short handshake cap keeps the deadline cases fast.
 test-net-stream-tls: build
 	./parena build stdlib/string.prn stdlib/net/stream.prn -o tests/test_net_stream_tls_gen.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -Wno-unused-function -Wno-unused-variable -DPARENA_WITH_TLS -DPARENA_NO_GRAPHICS \
+		-DPARENA_TLS_SKIP_SYSTEM_BUNDLES -DPARENA_TLS_HANDSHAKE_MS=1500 \
 		-I runtime -I tests $(MBEDTLS_CFLAGS) tests/test_net_stream_tls.c \
 		runtime/parena_runtime.c -o /tmp/test_net_stream_tls_bin -lm $(MBEDTLS_LDFLAGS)
 	/tmp/test_net_stream_tls_bin
