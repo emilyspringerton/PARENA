@@ -5130,12 +5130,14 @@ read-to-EOF is not: *incremental* — a browser paints bytes as they land. Plain
 Result boxing), one stream at a time, 16 MiB static receive buffer (BSS — works under
 `-DPARENA_NO_MALLOC`). Cross-platform: Linux/macOS (BSD sockets) and Windows (winsock2, link `-lws2_32`).
 
-- `stream-connect host port` → fd or -1 (5 s connect deadline, monotonic and EINTR-safe; DNS is
+- `stream-connect host port` → fd or -1 (5 s connect deadline, monotonic and EINTR-safe; a refused
+  connect fails at once on both BSD sockets and Winsock — Winsock signals it through `exceptfds`; DNS is
   blocking `getaddrinfo`; descriptors ≥ `FD_SETSIZE` are refused rather than overrun the `fd_set`).
 - `stream-connect-tls host port` → handle or -1; **HTTPS** over mbedTLS, opt-in `-DPARENA_WITH_TLS`.
   Chain + hostname are always verified (no switch to disable). CA roots: `SSL_CERT_FILE` (an explicit
   override that cannot be read fails closed), else the system bundle, else `cacert.pem` next to the
-  executable (Windows ships one) — never the current directory. A TLS handle is **not** a raw
+  executable (Windows ships one; found via the UTF-16 module path, so any install directory works) —
+  never the current directory. A TLS handle is **not** a raw
   descriptor: it is tagged and carries a per-session generation, so a closed or superseded handle can
   never alias a descriptor that reuses the number (`send`/`pull`/`close` on a stale handle return -1 and
   touch nothing); one TLS session at a time, a new connect invalidates the previous handle.

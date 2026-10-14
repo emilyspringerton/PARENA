@@ -3871,20 +3871,27 @@ static inline int stream_connect_impl(const char *host, int port) {
                 for (;;) {
                     long long left = deadline - stream_now_ms();
                     if (left <= 0) break;
-                    fd_set wf;
+                    /* Winsock reports a FAILED non-blocking connect through exceptfds, not writefds
+                     * (POSIX marks the socket writable and sets SO_ERROR): without watching it a
+                     * refused or unreachable address would cost the whole 5 s on Windows. */
+                    fd_set wf, ef;
                     FD_ZERO(&wf);
+                    FD_ZERO(&ef);
                     FD_SET(sock, &wf);
+                    FD_SET(sock, &ef);
                     struct timeval tv;
                     tv.tv_sec = (long)(left / 1000);
                     tv.tv_usec = (long)((left % 1000) * 1000);
-                    int sr = select((int)sock + 1, NULL, &wf, NULL, &tv);
+                    int sr = select((int)sock + 1, NULL, &wf, &ef, &tv);
 #ifndef _WIN32
                     if (sr < 0 && errno == EINTR) continue; /* a signal is not a failed connect */
 #endif
                     if (sr > 0) {
                         int err = 0;
                         socklen_t el = (socklen_t)sizeof err;
-                        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0) ok = 1;
+                        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0 &&
+                            FD_ISSET(sock, &wf))
+                            ok = 1;
                     }
                     break;
                 }
@@ -3962,6 +3969,31 @@ static inline int stream_tls_try_ca(const char *path) {
     return 0;
 }
 
+#ifdef _WIN32
+#ifndef PARENA_TLS_CA_FILE_BYTES
+#define PARENA_TLS_CA_FILE_BYTES (1024u * 1024u) /* largest CA bundle file read on Windows */
+#endif
+static unsigned char g_stream_tls_cabuf[PARENA_TLS_CA_FILE_BYTES];
+/* like stream_tls_try_ca, but the path is UTF-16: the file is read with _wfopen and parsed from memory */
+static inline int stream_tls_try_ca_w(const wchar_t *wpath) {
+    FILE *f = _wfopen(wpath, L"rb");
+    if (f == NULL) return -1;
+    size_t n = fread(g_stream_tls_cabuf, 1, sizeof g_stream_tls_cabuf - 1, f);
+    int more = (fgetc(f) != EOF); /* did not fit: refuse rather than trust half a bundle */
+    fclose(f);
+    if (n == 0 || more) return -1;
+    g_stream_tls_cabuf[n] = '\0'; /* PEM is parsed as text: length includes the NUL */
+    mbedtls_x509_crt_free(&g_stream_tls_ca);
+    mbedtls_x509_crt_init(&g_stream_tls_ca);
+    int r = mbedtls_x509_crt_parse(&g_stream_tls_ca, g_stream_tls_cabuf, n + 1);
+    if (r < 0 || g_stream_tls_ca.raw.p == NULL) {
+        if (r == MBEDTLS_ERR_X509_ALLOC_FAILED || r == MBEDTLS_ERR_PK_ALLOC_FAILED) g_stream_tls_ca_rc = r;
+        return -1;
+    }
+    return 0;
+}
+#endif
+
 static inline int stream_tls_load_ca(void) {
     const char *env = getenv("SSL_CERT_FILE");
     if (env != NULL && env[0] != '\0') {
@@ -3984,23 +4016,37 @@ static inline int stream_tls_load_ca(void) {
         if (stream_tls_try_ca(sys[i]) == 0) return 0;
     }
 #endif
-    char exe[1024];
-    exe[0] = '\0';
 #ifdef _WIN32
-    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
-    if (n == 0 || n >= sizeof exe) exe[0] = '\0';
-#else
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (n > 0) exe[n] = '\0';
-#endif
-    char *slash = NULL;
-    for (char *c = exe; *c; c++) if (*c == '/' || *c == '\\') slash = c;
-    if (slash != NULL) {
-        slash[1] = '\0';
-        char cand[1100];
-        snprintf(cand, sizeof cand, "%scacert.pem", exe);
-        if (stream_tls_try_ca(cand) == 0) return 0;
+    {
+        wchar_t wexe[1024];
+        DWORD wn = GetModuleFileNameW(NULL, wexe, (DWORD)(sizeof wexe / sizeof wexe[0]));
+        if (wn > 0 && wn < sizeof wexe / sizeof wexe[0]) {
+            wchar_t *wslash = NULL;
+            for (wchar_t *c = wexe; *c; c++) if (*c == L'\\' || *c == L'/') wslash = c;
+            static const wchar_t name[] = L"cacert.pem";
+            if (wslash != NULL && (size_t)(wslash - wexe) + 1 + (sizeof name / sizeof name[0]) <=
+                                      sizeof wexe / sizeof wexe[0]) {
+                memcpy(wslash + 1, name, sizeof name);
+                if (stream_tls_try_ca_w(wexe) == 0) return 0;
+            }
+        }
     }
+#else
+    {
+        char exe[1024];
+        exe[0] = '\0';
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        if (n > 0) exe[n] = '\0';
+        char *slash = NULL;
+        for (char *c = exe; *c; c++) if (*c == '/') slash = c;
+        if (slash != NULL) {
+            slash[1] = '\0';
+            char cand[1100];
+            snprintf(cand, sizeof cand, "%scacert.pem", exe);
+            if (stream_tls_try_ca(cand) == 0) return 0;
+        }
+    }
+#endif
     /* deliberately NOT the current directory: anyone who can drop a file there would become a
      * trusted root for every site. Fail closed instead. */
     if (g_stream_tls_ca_rc == MBEDTLS_ERR_X509_ALLOC_FAILED || g_stream_tls_ca_rc == MBEDTLS_ERR_PK_ALLOC_FAILED)

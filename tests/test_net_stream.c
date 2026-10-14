@@ -108,7 +108,9 @@ int main(void) {
     /* 3. refused connection fails fast (a port nothing listens on) */
     int ls2 = listen_loopback(&port);
     close(ls2);
+    long long t0 = stream_now_ms();
     assert(stream_connect("127.0.0.1", port) == -1);
+    assert(stream_now_ms() - t0 < 2000 && "a refused connect must not wait out the 5 s connect timeout");
 
     /* 4. line buffer */
     linebuf_clear();
