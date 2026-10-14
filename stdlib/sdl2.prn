@@ -54,7 +54,7 @@
 ;; moves off the list above.
 
 (module sdl2)
-(export init quit create-window destroy-window create-renderer destroy-renderer
+(export init quit create-window create-window-borderless destroy-window create-renderer destroy-renderer
         set-draw-color render-clear render-fill-rect render-present render-set-scale
         poll-event get-ticks delay start-text-input stop-text-input
         key-backspace key-return key-left key-right key-up key-down key-home key-end key-delete key-tab key-f2 key-f3
@@ -141,6 +141,11 @@
   #target
   {:c (inline-c "sdl2_create_window_impl(title, w, h)")})
 
+(defn sdl2-raw-create-window-borderless [(title : String @ Region) (w : I32) (h : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_create_window_borderless_impl(title, w, h)")})
+
 (defn sdl2-raw-destroy-window [(handle : I32)]
   : Unit
   #target
@@ -223,6 +228,13 @@
 (defn create-window [(title : String @ Region) (w : I32) (h : I32) (dest : Arena @ Region)]
   : (Result Window Sdl2Error) @ Region
   (let [handle (sdl2-raw-create-window title w h)]
+    (if (< handle 0)
+      (Err WindowFailed)
+      (Ok {:handle handle}))))
+
+(defn create-window-borderless [(title : String @ Region) (w : I32) (h : I32) (dest : Arena @ Region)]
+  : (Result Window Sdl2Error) @ Region
+  (let [handle (sdl2-raw-create-window-borderless title w h)]
     (if (< handle 0)
       (Err WindowFailed)
       (Ok {:handle handle}))))

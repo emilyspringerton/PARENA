@@ -154,7 +154,10 @@
  * "the next real extension once an editor loop actually needs to render
  * text." Same "unconditionally available, harmless if unused" reasoning
  * as SDL2 itself above -- confirmed libsdl2-ttf-dev present on this box. */
+#ifndef PARENA_NO_TTF
 #include <SDL2/SDL_ttf.h>
+#endif /* PARENA_NO_TTF -- define to build against SDL2 only (no SDL2_ttf headers/DLL); the font
+        * entry points below become stubs returning -1. Added 2026-10-14 for PELLEGRINO. */
 #endif /* PARENA_NO_GRAPHICS */
 
 /* net/tls.prn's own real host glue (S508e, 2026-09-21) -- mbedTLS, opt-IN via PARENA_WITH_TLS
@@ -3284,6 +3287,19 @@ static inline int sdl2_create_window_impl(const char *title, int w, int h) {
     return handle;
 }
 
+/* sdl2_create_window_borderless_impl -- same as sdl2_create_window_impl but SDL_WINDOW_BORDERLESS
+ * (no title bar/frame, shows on the glass without waiting on window-manager decoration). Added
+ * 2026-10-14 for PELLEGRINO's v0 ("WE NEED v0 WITH THE BORDERLESS SDL"). */
+static inline int sdl2_create_window_borderless_impl(const char *title, int w, int h) {
+    if (g_sdl2_window_count >= SDL2_MAX_WINDOWS) return -1;
+    SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                                        w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS);
+    if (win == NULL) return -1;
+    int handle = g_sdl2_window_count++;
+    g_sdl2_windows[handle] = win;
+    return handle;
+}
+
 static inline void sdl2_destroy_window_impl(int handle) {
     if (handle >= 0 && handle < g_sdl2_window_count && g_sdl2_windows[handle] != NULL) {
         SDL_DestroyWindow(g_sdl2_windows[handle]);
@@ -3623,6 +3639,18 @@ static inline void sdl2_quit_impl(void) {
  * editor loop's own frame budget actually needs per-glyph texture
  * caching (PITVIPER's own buildGlyphAtlas is the real precedent for
  * that, not attempted here). */
+#ifdef PARENA_NO_TTF
+static inline int sdl2_ttf_init_impl(void) { return -1; }
+static inline void sdl2_ttf_quit_impl(void) {}
+static inline int sdl2_open_font_impl(const char *path, int point_size) { (void)path; (void)point_size; return -1; }
+static inline void sdl2_close_font_impl(int handle) { (void)handle; }
+static inline int sdl2_render_text_impl(int renderer_handle, int font_handle, const char *text,
+                                         int x, int y, int r, int g, int b) {
+    (void)renderer_handle; (void)font_handle; (void)text; (void)x; (void)y; (void)r; (void)g; (void)b; return -1;
+}
+static inline int sdl2_measure_text_width_impl(int font_handle, const char *text) { (void)font_handle; (void)text; return -1; }
+static inline int sdl2_measure_text_height_impl(int font_handle, const char *text) { (void)font_handle; (void)text; return -1; }
+#else
 #define SDL2_MAX_FONTS 8
 static TTF_Font *g_sdl2_fonts[SDL2_MAX_FONTS];
 static int g_sdl2_font_count = 0;
@@ -3700,6 +3728,7 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
     if (TTF_SizeUTF8(g_sdl2_fonts[font_handle], text, &w, &h) != 0) return -1;
     return h;
 }
+#endif /* PARENA_NO_TTF */
 #endif /* PARENA_NO_GRAPHICS */
 
 /* ---- stdlib/json.prn's own real host-glue forward declaration (2026-08-28) --------------
