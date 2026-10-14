@@ -29,7 +29,7 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
-int byte_at(char *, int);
+int raw_byte_at(char *, int);
 int hex_digit_code(int);
 char * hex_byte(char *, int, Arena *);
 char * hex_offset(int, Arena *);
@@ -178,7 +178,7 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
     return __loop_result_1;
 }
 
-int byte_at(char * data __attribute__((unused)), int i __attribute__((unused))) {
+int raw_byte_at(char * data __attribute__((unused)), int i __attribute__((unused))) {
     return (char_at(data, i) & 255);
 }
 
@@ -191,7 +191,7 @@ int hex_digit_code(int n __attribute__((unused))) {
 }
 
 char * hex_byte(char * data __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int b __attribute__((unused)) = byte_at(data, i);
+    int b __attribute__((unused)) = raw_byte_at(data, i);
     char *hi __attribute__((unused)) = char_from_code(hex_digit_code((b / 16)), dest);
     char *lo __attribute__((unused)) = char_from_code(hex_digit_code((b % 16)), dest);
     return concat(hi, lo, dest);
@@ -269,7 +269,7 @@ char * hex_row(char * data __attribute__((unused)), int len __attribute__((unuse
         break;
         } else {
         int __recur_tmp_0 = (j + 1);
-        char * __recur_tmp_1 = concat(aacc, char_from_code(printable_code(byte_at(data, (start + j))), dest), dest);
+        char * __recur_tmp_1 = concat(aacc, char_from_code(printable_code(raw_byte_at(data, (start + j))), dest), dest);
         j = __recur_tmp_0;
         aacc = __recur_tmp_1;
         continue;

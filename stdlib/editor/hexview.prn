@@ -14,11 +14,11 @@
 
 (module editor/hexview)
 (import string)
-(export byte-at hex-digit-code hex-byte hex-offset printable-code hex-row hex-dump
+(export raw-byte-at hex-digit-code hex-byte hex-offset printable-code hex-row hex-dump
         row-of col-of cell-x ascii-x rows-for)
 
 ;; Byte at index i as 0..255 (char-at sign-extends on this target).
-(defn byte-at [(data : String @ Region) (i : I32)]
+(defn raw-byte-at [(data : String @ Region) (i : I32)]
   : I32
   (bit-and (char-at data i) 255))
 
@@ -30,7 +30,7 @@
 ;; Two lowercase hex digits for the byte at index i.
 (defn hex-byte [(data : String @ Region) (i : I32) (dest : Arena @ Region)]
   : String @ Region
-  (let [b (byte-at data i)
+  (let [b (raw-byte-at data i)
         hi (char-from-code (hex-digit-code (/ b 16)) dest)
         lo (char-from-code (hex-digit-code (mod b 16)) dest)]
     (concat hi lo dest)))
@@ -81,7 +81,7 @@
                 aacc
                 (recur (+ j 1)
                        (concat aacc
-                               (char-from-code (printable-code (byte-at data (+ start j))) dest)
+                               (char-from-code (printable-code (raw-byte-at data (+ start j))) dest)
                                dest))))]
     (concat (concat (concat (hex-offset start dest) "  " dest) hexpart dest)
             (concat (concat " |" asc dest) "|" dest)

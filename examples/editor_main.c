@@ -318,7 +318,51 @@ static int looks_like_binary(const char *path, const char *text) {
     return (size_t)st.st_size != strlen(text);
 }
 
+/* Hex view (2026-10-14, founder real-time: "obviously we need to see the hexes" -- the
+ * reverse-engineering workbench's first affordance, plugins/static_analysis/NORTHSTAR.md §1).
+ * A file that looks_like_binary no longer gets a dead-end placeholder: its REAL bytes are read
+ * (read_string stops at the first NUL, so this reads raw via stdio) and rendered through
+ * stdlib/editor/hexview.prn's hex_dump -- all row formatting is PARENA, this is only the
+ * file-read plumbing. The dump goes into the ordinary text buffer, so scrolling, selection and
+ * copy already work; the buffer is READ-ONLY by construction -- do_save refuses while
+ * g_hexview_active is set, so the binary can never be overwritten by its own dump.
+ * Honest v0 limits: first HEXVIEW_MAX_BYTES only, fixed 16-byte rows, no patching, no
+ * byte<->instruction linking yet. */
+#define HEXVIEW_MAX_BYTES (256 * 1024)
+#define HEXVIEW_WIDTH 16
+static int g_hexview_active = 0;
+
+static char *read_raw_prefix(const char *path, int max_bytes, int *out_len, int *out_total, Arena *a) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char *buf = (char *)arena_alloc(a, (size_t)max_bytes + 1);
+    size_t n = fread(buf, 1, (size_t)max_bytes, f);
+    buf[n] = '\0';
+    fseek(f, 0, SEEK_END);
+    long total = ftell(f);
+    fclose(f);
+    *out_len = (int)n;
+    *out_total = total < 0 ? (int)n : (int)total;
+    return buf;
+}
+
+static Buffer hexview_buffer(const char *path, Arena *a) {
+    int len = 0, total = 0;
+    char *raw = read_raw_prefix(path, HEXVIEW_MAX_BYTES, &len, &total, a);
+    if (!raw) return from_text("(could not read file bytes for hex view)\n");
+    char *dump = hex_dump(raw, len, HEXVIEW_WIDTH, a);
+    char header[160];
+    snprintf(header, sizeof(header), "-- hex view (read-only): %d of %d bytes, %d per row --\n",
+             len, total, HEXVIEW_WIDTH);
+    char *out = (char *)arena_alloc(a, strlen(header) + strlen(dump) + 1);
+    strcpy(out, header);
+    strcat(out, dump);
+    g_hexview_active = 1;
+    return from_text(out);
+}
+
 static Buffer load_from_file(const char *path, Arena *a) {
+    g_hexview_active = 0;
     if (!path_exists_((char *)path)) return new(a);
     Result openr = file_open((char *)path, OpenMode_Read(), a);
     if (openr.tag != 1) { fprintf(stderr, "editor: load failed (could not open %s)\n", path); return new(a); }
@@ -332,8 +376,8 @@ static Buffer load_from_file(const char *path, Arena *a) {
     if (rr.tag != 1) { fprintf(stderr, "editor: load failed (read error)\n"); return new(a); }
     char *text = (char *)rr.value;
     if (looks_like_binary(path, text)) {
-        fprintf(stderr, "editor: %s looks like a binary file -- not opening it as text\n", path);
-        return from_text("(this looks like a binary file -- PARENA editor does not open binary files)\n");
+        fprintf(stderr, "editor: %s looks like a binary file -- opening read-only hex view\n", path);
+        return hexview_buffer(path, a);
     }
     fprintf(stderr, "editor: loaded from %s\n", path);
     return from_text(text);
@@ -949,6 +993,10 @@ static Buffer pop_redo(Buffer fallback) {
  * since this real function needs to REASSIGN the caller's own buffer
  * on a successful reformat, not just read it. */
 static void do_save(Buffer *buf, const char *path, int is_markdown, Arena *a) {
+    if (g_hexview_active) {
+        fprintf(stderr, "editor: hex view is read-only -- not saving (would overwrite %s with its dump)\n", path);
+        return;
+    }
     if (!is_markdown) {
         char *whole = active_text(buf);
         char *formatted = prnfmt_format_and_copy(whole, strlen(whole));

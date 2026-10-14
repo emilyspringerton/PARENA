@@ -19,3 +19,4 @@ stdlib/editor/render.prn
 stdlib/editor/widget.prn
 stdlib/editor/construct_split.prn
 stdlib/editor/spotlight.prn
+stdlib/editor/hexview.prn
