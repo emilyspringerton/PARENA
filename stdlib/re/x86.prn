@@ -1,0 +1,243 @@
+;; stdlib/re/x86.prn — x86-64 instruction ENCODING layout: the first PARENA-native slice of the
+;; reverse-engineering workbench's decoder (plugins/static_analysis/NORTHSTAR.md §1 "decoded
+;; instruction shows its raw encoding broken into prefix / opcode / ModRM / SIB / disp / imm",
+;; §3 disassembly). Founder real-time 2026-10-14: "all of the plumbing in PARENA of course."
+;;
+;; Mirrors the integer subset plugins/static_analysis/lifter.py's `decode` accepts, so the
+;; two can be cross-checked; the Python lifter stays the reference until this reaches LLIL.
+;;
+;; Shape: PARENA structs are immutable and there are no tuple returns, so the layout is a set of
+;; small pure functions of (data, len, off) -- each field is derived from the earlier ones, and
+;; every one returns -1 for "not decodable / truncated". `x86-length` composes them.
+;;
+;; Honest scope: length + field boundaries + mnemonic names only. No operands yet, no LLIL,
+;; no SSE/x87/string ops (-1), no 0F 38/3A maps.
+
+(module re/x86)
+(import string)
+(export x86-u8 x86-prefix-len x86-rex-len x86-opcode-off x86-opcode x86-opcode-len
+        x86-has-modrm? x86-modrm-off x86-modrm-byte x86-sib-len x86-disp-len
+        x86-imm-len x86-length x86-mnemonic)
+
+(defn x86-u8 [(data : String @ Region) (i : I32)]
+  : I32
+  (bit-and (char-at data i) 255))
+
+(defn x86-legacy-prefix? [(b : I32)]
+  : Bool
+  (or (or (= b 102) (= b 242))
+      (or (or (= b 243) (= b 100))
+          (or (or (= b 101) (= b 46)) (or (= b 62) (= b 240))))))
+
+;; Number of legacy prefix bytes (66 F2 F3 64 65 2E 3E F0) at off (max 4 like real decoders).
+(defn x86-prefix-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (loop [n 0]
+    (if (and (< n 4) (and (< (+ off n) len) (x86-legacy-prefix? (x86-u8 data (+ off n)))))
+      (recur (+ n 1))
+      n)))
+
+(defn x86-rex-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [p (+ off (x86-prefix-len data len off))]
+    (if (and (< p len) (and (>= (x86-u8 data p) 64) (<= (x86-u8 data p) 79))) 1 0)))
+
+(defn x86-opcode-off [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (+ (+ off (x86-prefix-len data len off)) (x86-rex-len data len off)))
+
+;; 1 for one-byte opcodes, 2 for the 0F map, -1 if truncated.
+(defn x86-opcode-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [o (x86-opcode-off data len off)]
+    (if (>= o len) -1
+        (if (= (x86-u8 data o) 15)
+          (if (< (+ o 1) len) 2 -1)
+          1))))
+
+;; Opcode value: one-byte as is, 0F map as 256 + second byte. -1 if truncated.
+(defn x86-opcode [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [o (x86-opcode-off data len off)
+        n (x86-opcode-len data len off)]
+    (if (< n 0) -1
+        (if (= n 2) (+ 256 (x86-u8 data (+ o 1))) (x86-u8 data o)))))
+
+(defn x86-in? [(op : I32) (lo : I32) (hi : I32)]
+  : Bool
+  (and (>= op lo) (<= op hi)))
+
+(defn x86-alu-form? [(op : I32)]
+  : Bool
+  (and (< op 64) (and (< (bit-and op 7) 6) (not (= op 15)))))
+
+(defn x86-has-modrm? [(op : I32)]
+  : Bool
+  (cond
+    ((and (x86-alu-form? op) (< (bit-and op 7) 4)) true)
+    ((or (= op 99) (= op 105)) true)
+    ((or (= op 107) (x86-in? op 128 129)) true)
+    ((or (= op 131) (x86-in? op 132 139)) true)
+    ((= op 141) true)
+    ((or (= op 192) (= op 193)) true)
+    ((or (= op 198) (= op 199)) true)
+    ((x86-in? op 208 211) true)
+    ((or (= op 246) (= op 247)) true)
+    ((or (= op 254) (= op 255)) true)
+    ((x86-in? op 286 287) true)
+    ((x86-in? op 320 335) true)
+    ((x86-in? op 400 415) true)
+    ((or (= op 431) (x86-in? op 438 439)) true)
+    ((x86-in? op 446 447) true)
+    (true false)))
+
+(defn x86-modrm-off [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (+ (x86-opcode-off data len off) (x86-opcode-len data len off)))
+
+;; ModRM byte value, or -1 if this opcode has none / truncated.
+(defn x86-modrm-byte [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [op (x86-opcode data len off)
+        m (x86-modrm-off data len off)]
+    (cond
+      ((< op 0) -1)
+      ((not (x86-has-modrm? op)) -1)
+      ((>= m len) -1)
+      (true (x86-u8 data m)))))
+
+;; 1 if a SIB byte follows the ModRM byte, else 0.
+(defn x86-sib-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [mr (x86-modrm-byte data len off)]
+    (cond
+      ((< mr 0) 0)
+      ((= (/ mr 64) 3) 0)
+      ((= (bit-and mr 7) 4) 1)
+      (true 0))))
+
+;; Displacement size in bytes (0, 1 or 4).
+(defn x86-disp-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [mr (x86-modrm-byte data len off)
+        sib (x86-sib-len data len off)
+        m (x86-modrm-off data len off)
+        md (/ mr 64)
+        rm (bit-and mr 7)]
+    (cond
+      ((< mr 0) 0)
+      ((= md 1) 1)
+      ((= md 2) 4)
+      ((and (= md 0) (= rm 5)) 4)
+      ((and (= md 0) (and (= sib 1) (< (+ m 1) len)))
+       (if (= (bit-and (x86-u8 data (+ m 1)) 7) 5) 4 0))
+      (true 0))))
+
+(defn x86-has-66? [(data : String @ Region) (len : I32) (off : I32)]
+  : Bool
+  (let [p (x86-prefix-len data len off)]
+    (loop [k 0]
+      (if (>= k p)
+        false
+        (if (= (x86-u8 data (+ off k)) 102) true (recur (+ k 1)))))))
+
+;; Immediate size in bytes. REX.W and the 66 prefix select 2/4/8-byte forms like lifter.py.
+(defn x86-imm-len [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [op (x86-opcode data len off)
+        mr (x86-modrm-byte data len off)
+        reg (bit-and (/ mr 8) 7)
+        p (x86-prefix-len data len off)
+        rexb (if (= (x86-rex-len data len off) 1) (x86-u8 data (+ off p)) 0)
+        w (/ (bit-and rexb 8) 8)
+        iz (if (x86-has-66? data len off) 2 4)]
+    (cond
+      ((< op 0) -1)
+      ((and (x86-alu-form? op) (< (bit-and op 7) 4)) 0)
+      ((and (x86-alu-form? op) (= (bit-and op 7) 4)) 1)
+      ((x86-alu-form? op) iz)
+      ((or (= op 104) (or (= op 232) (= op 233))) 4)
+      ((or (= op 106) (or (= op 107) (or (= op 235) (x86-in? op 112 127)))) 1)
+      ((= op 105) iz)
+      ((or (= op 128) (= op 131)) 1)
+      ((= op 129) iz)
+      ((= op 168) 1)
+      ((= op 169) iz)
+      ((x86-in? op 176 183) 1)
+      ((x86-in? op 184 191) (if (= w 1) 8 iz))
+      ((or (= op 192) (= op 193)) 1)
+      ((= op 198) 1)
+      ((= op 199) iz)
+      ((or (= op 246) (= op 247))
+       (if (< reg 2) (if (= op 246) 1 iz) 0))
+      ((x86-in? op 384 399) 4)
+      (true 0))))
+
+;; Opcodes this slice knows the shape of (mirrors lifter.py decode()).
+(defn x86-known? [(op : I32)]
+  : Bool
+  (cond
+    ((x86-has-modrm? op) true)
+    ((x86-alu-form? op) true)
+    ((x86-in? op 80 95) true)
+    ((or (= op 104) (= op 106)) true)
+    ((x86-in? op 112 127) true)
+    ((or (= op 144) (or (= op 152) (= op 153))) true)
+    ((or (= op 168) (= op 169)) true)
+    ((x86-in? op 176 191) true)
+    ((or (= op 195) (or (= op 201) (= op 204))) true)
+    ((or (= op 232) (or (= op 233) (or (= op 235) (= op 244)))) true)
+    ((or (= op 261) (or (= op 267) (x86-in? op 384 399))) true)
+    (true false)))
+
+;; Total encoded length, or -1 if the bytes are not a supported/complete instruction.
+(defn x86-length [(data : String @ Region) (len : I32) (off : I32)]
+  : I32
+  (let [op (x86-opcode data len off)]
+    (if (or (< op 0) (not (x86-known? op)))
+      -1
+      (let [end (+ (+ (+ (x86-modrm-off data len off) (if (x86-has-modrm? op) 1 0))
+                      (x86-sib-len data len off))
+                   (+ (x86-disp-len data len off) (x86-imm-len data len off)))]
+        (if (> end len) -1 (- end off))))))
+
+(defn x86-alu-name [(i : I32)]
+  : String @ Region
+  (cond
+    ((= i 0) "add") ((= i 1) "or") ((= i 2) "adc") ((= i 3) "sbb")
+    ((= i 4) "and") ((= i 5) "sub") ((= i 6) "xor")
+    (true "cmp")))
+
+;; Mnemonic family (group opcodes use the ModRM reg field).
+(defn x86-mnemonic [(data : String @ Region) (len : I32) (off : I32)]
+  : String @ Region
+  (let [op (x86-opcode data len off)
+        mr (x86-modrm-byte data len off)
+        reg (bit-and (/ mr 8) 7)]
+    (cond
+      ((< op 0) "(truncated)")
+      ((x86-alu-form? op) (x86-alu-name (/ op 8)))
+      ((x86-in? op 80 87) "push")
+      ((x86-in? op 88 95) "pop")
+      ((or (= op 104) (= op 106)) "push")
+      ((x86-in? op 112 127) "jcc")
+      ((or (= op 128) (or (= op 129) (= op 131))) (x86-alu-name reg))
+      ((or (= op 132) (= op 133)) "test")
+      ((x86-in? op 136 139) "mov")
+      ((= op 141) "lea")
+      ((= op 144) "nop")
+      ((= op 195) "ret")
+      ((= op 201) "leave")
+      ((= op 204) "int3")
+      ((= op 232) "call")
+      ((or (= op 233) (= op 235)) "jmp")
+      ((= op 244) "hlt")
+      ((x86-in? op 176 191) "mov")
+      ((or (= op 198) (= op 199)) "mov")
+      ((= op 255) (cond ((= reg 0) "inc") ((= reg 1) "dec") ((= reg 2) "call")
+                        ((= reg 4) "jmp") ((= reg 6) "push") (true "(bad ff)")))
+      ((= op 261) "syscall")
+      ((= op 267) "ud2")
+      ((= op 431) "imul")
+      ((x86-in? op 384 399) "jcc")
+      (true "(opcode)"))))

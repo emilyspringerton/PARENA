@@ -516,6 +516,15 @@ test-yaml: build
 		-o /tmp/test_yaml_bin -lm
 	/tmp/test_yaml_bin
 
+# stdlib/re/x86.prn -- x86-64 encoding-layout decoder (RE workbench, PARENA-native port of the
+# lifter.py decode() length/field logic). Headless. Differentially checked against the Python
+# decoder (48,672 instructions, 0 mismatches, 2026-10-14) -- see the CHANGELOG.
+test-x86: build
+	./parena build stdlib/string.prn stdlib/re/x86.prn -o tests/test_x86_gen.c
+	$(CC) -std=c99 -DPARENA_NO_GRAPHICS -Wall -Wextra -I runtime -I tests tests/test_x86.c \
+		runtime/parena_runtime.c -o /tmp/test_x86_bin -lm
+	/tmp/test_x86_bin
+
 # stdlib/editor/hexview.prn -- the reverse-engineering workbench's hex view (row formatting,
 # embedded-NUL safety, offset<->cell geometry). Headless (PARENA_NO_GRAPHICS).
 test-hexview: build
