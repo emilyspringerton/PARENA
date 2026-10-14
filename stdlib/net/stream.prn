@@ -2,10 +2,13 @@
 ;; Added 2026-10-14 for PELLEGRINO ("actual product": fetch a URL and paint bytes as they land).
 ;; Design/limits: see the "net/stream" section comment in runtime/parena_runtime.h. Plain scalar
 ;; returns (no Result boxing), like io.prn's raw primitives. Works on Linux/macOS and Windows
-;; (winsock2). No TLS (net/tls is separate), one stream at a time.
+;; (winsock2). One stream at a time. HTTPS: stream-connect-tls (mbedTLS, opt-in PARENA_WITH_TLS --
+;; see the runtime's net/stream comment) returns the same kind of handle; stream-send/pull/close
+;; then work on it unchanged. Certificate verification is always on.
 
 (module net/stream)
-(export stream-connect stream-send stream-pull stream-buf stream-len stream-reset stream-close
+(export stream-connect stream-connect-tls stream-tls-code stream-tls-error stream-tls-page stream-tls-info stream-tls-heap-peak
+        stream-send stream-pull stream-buf stream-len stream-reset stream-close
         linebuf-append linebuf-backspace linebuf-clear linebuf-get linebuf-len
         cururl-set cururl-get slot-get slot-set)
 
@@ -13,6 +16,38 @@
 (defn stream-connect [(host : String @ Region) (port : I32)] : I32
   #target
   {:c (inline-c "stream_connect_impl(host, port)")})
+
+;; Like stream-connect, but TLS: handle >= 0 on a verified handshake, -1 otherwise (then see
+;; stream-tls-code / stream-tls-error). Hostname + chain are always verified.
+(defn stream-connect-tls [(host : String @ Region) (port : I32)] : I32
+  #target
+  {:c (inline-c "stream_connect_tls_impl(host, port)")})
+
+;; why the last stream-connect-tls failed: 0 none, 1 connect, 2 handshake, 3 certificate rejected,
+;; 4 no CA bundle, 5 this build has no TLS
+(defn stream-tls-code [] : I32
+  #target
+  {:c (inline-c "stream_tls_code_impl()")})
+
+;; short human-readable reason for the last failure ("" if none); valid until the next connect
+(defn stream-tls-error [] : String
+  #target
+  {:c (inline-c "stream_tls_error_impl()")})
+
+;; the last TLS failure as a small ready-to-render HTML page (headline + reason)
+(defn stream-tls-page [] : String
+  #target
+  {:c (inline-c "stream_tls_page_impl()")})
+
+;; negotiated "TLSv1.3 <ciphersuite>" of the live TLS session, "" if none
+(defn stream-tls-info [] : String
+  #target
+  {:c (inline-c "stream_tls_info_impl()")})
+
+;; high-water mark (bytes) of the static TLS heap; 0 if this build uses the system allocator
+(defn stream-tls-heap-peak [] : I32
+  #target
+  {:c (inline-c "stream_tls_heap_peak_impl()")})
 
 ;; 0 ok, -1 failure
 (defn stream-send [(fd : I32) (data : String @ Region)] : I32

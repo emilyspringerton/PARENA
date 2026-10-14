@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -358,6 +358,27 @@ test-net-tls: build
 		-I runtime -I tests $(MBEDTLS_CFLAGS) tests/test_net_tls.c \
 		runtime/parena_runtime.c -o /tmp/test_net_tls_bin -lm $(MBEDTLS_LDFLAGS)
 	/tmp/test_net_tls_bin
+
+# test-net-stream -- real, hermetic (loopback only, no TLS library) verification of
+# stdlib/net/stream.prn, PELLEGRINO's incremental TCP client: forks a one-shot server, asserts bytes
+# are readable before the peer closes, final buffer exact, refused connect fails fast, line buffer,
+# slots, and that a build without PARENA_WITH_TLS reports TLS as unavailable (never a fake success).
+test-net-stream: build
+	./parena build stdlib/string.prn stdlib/net/stream.prn -o tests/test_net_stream_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -Wno-unused-function -Wno-unused-variable -DPARENA_NO_GRAPHICS -I runtime -I tests tests/test_net_stream.c \
+		runtime/parena_runtime.c -o /tmp/test_net_stream_bin -lm
+	/tmp/test_net_stream_bin
+
+# test-net-stream-tls -- the HTTPS half of net/stream against a local `openssl s_server`: trusted
+# certificate -> response; untrusted certificate and wrong hostname -> refused with code 3; unreadable
+# SSL_CERT_FILE -> code 4 (fails closed). Needs the openssl CLI and mbedTLS dev headers/libs
+# (MBEDTLS_CFLAGS / MBEDTLS_LDFLAGS as for test-net-tls). Skips cleanly when openssl is missing.
+test-net-stream-tls: build
+	./parena build stdlib/string.prn stdlib/net/stream.prn -o tests/test_net_stream_tls_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -Wno-unused-function -Wno-unused-variable -DPARENA_WITH_TLS -DPARENA_NO_GRAPHICS \
+		-I runtime -I tests $(MBEDTLS_CFLAGS) tests/test_net_stream_tls.c \
+		runtime/parena_runtime.c -o /tmp/test_net_stream_tls_bin -lm $(MBEDTLS_LDFLAGS)
+	/tmp/test_net_stream_tls_bin
 
 # test-pentest-dot11 -- real end-to-end verification of stdlib/pentest/dot11.prn (KISMET_WIRELESS
 # _NORTHSTAR.md's own real Phase 1: a native PARENA Radiotap+802.11 Beacon frame parser, kanban

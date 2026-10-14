@@ -3754,7 +3754,20 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
  *     read it as an ordinary String while it keeps growing.
  *   stream_close_impl(fd)
  * Plus a small static line-input buffer (linebuf_*) for address-bar style text entry, since PARENA
- * Strings are immutable. Honest limits: blocking getaddrinfo (DNS), one stream at a time, no TLS. */
+ * Strings are immutable. Honest limits: blocking getaddrinfo (DNS) and blocking TLS handshake,
+ * one stream at a time.
+ *
+ * HTTPS (2026-10-14): stream_connect_tls_impl(host, port) opens the same kind of handle but speaks
+ * TLS (mbedTLS, opt-in via PARENA_WITH_TLS -- see net/tls.prn's own header for why FFI to an
+ * audited library and never hand-rolled crypto). stream_send/pull/close then dispatch on the
+ * handle, so the caller's read loop is identical for http and https. Certificate verification is
+ * REQUIRED and hostname-checked, always: there is no switch that turns it off. CA roots come from
+ * SSL_CERT_FILE, else the system bundle, else a cacert.pem next to the executable (the shipped
+ * bundle; Windows has no system file). With -DPARENA_TLS_STATIC_HEAP mbedTLS allocates from one
+ * static buffer (PARENA_TLS_HEAP_BYTES) via its own buffer allocator, so a NO_MALLOC build stays
+ * heap-free (requires MBEDTLS_MEMORY_BUFFER_ALLOC_C + MBEDTLS_PLATFORM_MEMORY in the mbedTLS
+ * config). Failures are classified: stream_tls_code_impl() -> 1 connect, 2 handshake, 3 certificate
+ * untrusted/mismatched, 4 no CA bundle; stream_tls_error_impl() -> short human text. */
 #ifdef _WIN32
 typedef SOCKET parena_sock_t;
 #define PARENA_BAD_SOCK INVALID_SOCKET
@@ -3787,6 +3800,13 @@ static inline int stream_connect_impl(const char *host, int port) {
         WSADATA wsa;
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
         wsa_ready = 1;
+    }
+#else
+    /* a peer that closes mid-write must not kill the whole browser with SIGPIPE */
+    static int sigpipe_ignored = 0;
+    if (!sigpipe_ignored) {
+        signal(SIGPIPE, SIG_IGN);
+        sigpipe_ignored = 1;
     }
 #endif
     struct addrinfo hints, *res = NULL, *rp;
@@ -3831,7 +3851,330 @@ static inline int stream_connect_impl(const char *host, int port) {
     return sock == PARENA_BAD_SOCK ? -1 : (int)sock;
 }
 
+/* ---- TLS half of net/stream (see the header comment above) ---------------------------------- */
+#ifdef PARENA_WITH_TLS
+#ifdef PARENA_TLS_STATIC_HEAP
+#include <mbedtls/memory_buffer_alloc.h>
+#endif
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+#include <psa/crypto.h>
+#endif
+#ifndef PARENA_TLS_HEAP_BYTES
+#define PARENA_TLS_HEAP_BYTES (2u * 1024u * 1024u)
+#endif
+#ifndef PARENA_TLS_HANDSHAKE_MS
+#define PARENA_TLS_HANDSHAKE_MS 10000
+#endif
+
+typedef struct {
+    int active;
+    int fd;
+    mbedtls_net_context net;
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+} ParenaStreamTls;
+static ParenaStreamTls g_stream_tls;
+static mbedtls_ctr_drbg_context g_stream_tls_drbg;
+static mbedtls_entropy_context g_stream_tls_entropy;
+static mbedtls_x509_crt g_stream_tls_ca;
+static int g_stream_tls_ready = 0;
+static int g_stream_tls_code = 0;
+static char g_stream_tls_err[256];
+#ifdef PARENA_TLS_STATIC_HEAP
+static unsigned char g_stream_tls_heap[PARENA_TLS_HEAP_BYTES] __attribute__((aligned(16)));
+#endif
+
+static inline int stream_tls_fail(int code, const char *msg) {
+    g_stream_tls_code = code;
+    snprintf(g_stream_tls_err, sizeof g_stream_tls_err, "%s", msg);
+    return -1;
+}
+
+static inline int stream_tls_fail_rc(int code, const char *what, int rc) {
+    char em[128];
+    mbedtls_strerror(rc, em, sizeof em);
+    snprintf(g_stream_tls_err, sizeof g_stream_tls_err, "%s: %s (-0x%04x)", what, em, (unsigned)-rc);
+    g_stream_tls_code = code;
+    return -1;
+}
+
+static int g_stream_tls_ca_rc = 0; /* set once a CA parse ran out of heap: tells "heap too small" from "no file" */
+
+static inline int stream_tls_try_ca(const char *path) {
+    if (path == NULL || path[0] == '\0') return -1;
+    mbedtls_x509_crt_free(&g_stream_tls_ca);
+    mbedtls_x509_crt_init(&g_stream_tls_ca);
+    int r = mbedtls_x509_crt_parse_file(&g_stream_tls_ca, path);
+    /* >0 means some certificates in the file did not parse; usable as long as one did */
+    if (r < 0 || g_stream_tls_ca.raw.p == NULL) {
+        if (r == MBEDTLS_ERR_X509_ALLOC_FAILED || r == MBEDTLS_ERR_PK_ALLOC_FAILED) g_stream_tls_ca_rc = r;
+        return -1;
+    }
+    return 0;
+}
+
+static inline int stream_tls_load_ca(void) {
+    const char *env = getenv("SSL_CERT_FILE");
+    if (env != NULL && env[0] != '\0') {
+        /* an explicit override that cannot be loaded fails closed -- never silently falls back */
+        if (stream_tls_try_ca(env) == 0) return 0;
+        if (g_stream_tls_ca_rc == MBEDTLS_ERR_X509_ALLOC_FAILED || g_stream_tls_ca_rc == MBEDTLS_ERR_PK_ALLOC_FAILED)
+            return stream_tls_fail(4, "CA bundle does not fit the TLS heap (raise PARENA_TLS_HEAP_BYTES)");
+        return stream_tls_fail(4, "SSL_CERT_FILE is set but not a readable certificate bundle");
+    }
+#ifndef _WIN32
+    static const char *sys[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+        NULL};
+    for (int i = 0; sys[i] != NULL; i++) {
+        if (stream_tls_try_ca(sys[i]) == 0) return 0;
+    }
+#endif
+    char exe[1024];
+    exe[0] = '\0';
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
+    if (n == 0 || n >= sizeof exe) exe[0] = '\0';
+#else
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) exe[n] = '\0';
+#endif
+    char *slash = NULL;
+    for (char *c = exe; *c; c++) if (*c == '/' || *c == '\\') slash = c;
+    if (slash != NULL) {
+        slash[1] = '\0';
+        char cand[1100];
+        snprintf(cand, sizeof cand, "%scacert.pem", exe);
+        if (stream_tls_try_ca(cand) == 0) return 0;
+    }
+    if (stream_tls_try_ca("cacert.pem") == 0) return 0;
+    if (g_stream_tls_ca_rc == MBEDTLS_ERR_X509_ALLOC_FAILED || g_stream_tls_ca_rc == MBEDTLS_ERR_PK_ALLOC_FAILED)
+        return stream_tls_fail(4, "CA bundle does not fit the TLS heap (raise PARENA_TLS_HEAP_BYTES)");
+    return stream_tls_fail(4, "no CA bundle found (set SSL_CERT_FILE, or put cacert.pem next to the program)");
+}
+
+static inline int stream_tls_global_init(void) {
+    if (g_stream_tls_ready) return 0;
+#ifdef PARENA_TLS_STATIC_HEAP
+    mbedtls_memory_buffer_alloc_init(g_stream_tls_heap, sizeof g_stream_tls_heap);
+#endif
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+    {
+        psa_status_t ps = psa_crypto_init();
+        if (ps != PSA_SUCCESS) return stream_tls_fail(2, "psa_crypto_init failed");
+    }
+#endif
+    mbedtls_entropy_init(&g_stream_tls_entropy);
+    mbedtls_ctr_drbg_init(&g_stream_tls_drbg);
+    static const char pers[] = "parena_stream_tls";
+    int rc = mbedtls_ctr_drbg_seed(&g_stream_tls_drbg, mbedtls_entropy_func, &g_stream_tls_entropy,
+                                   (const unsigned char *)pers, sizeof pers - 1);
+    if (rc != 0) return stream_tls_fail_rc(2, "random generator seed failed", rc);
+    mbedtls_x509_crt_init(&g_stream_tls_ca);
+    if (stream_tls_load_ca() != 0) return -1;
+    g_stream_tls_ready = 1;
+    return 0;
+}
+
+static inline int stream_tls_wait(int fd, int want_write, int ms) {
+    fd_set f;
+    FD_ZERO(&f);
+    FD_SET((parena_sock_t)fd, &f);
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    return select(fd + 1, want_write ? NULL : &f, want_write ? &f : NULL, NULL, &tv);
+}
+
+/* free the live session (idempotent). mbedtls_net_free also shuts down and closes the socket. */
+static inline void stream_tls_teardown(void) {
+    if (g_stream_tls.active) mbedtls_ssl_close_notify(&g_stream_tls.ssl);
+    mbedtls_net_free(&g_stream_tls.net);
+    mbedtls_ssl_free(&g_stream_tls.ssl);
+    mbedtls_ssl_config_free(&g_stream_tls.conf);
+    g_stream_tls.active = 0;
+    g_stream_tls.fd = -1;
+}
+
+static inline int stream_connect_tls_impl(const char *host, int port) {
+    g_stream_tls_code = 0;
+    g_stream_tls_err[0] = '\0';
+    if (g_stream_tls.active) stream_tls_teardown();
+    if (stream_tls_global_init() != 0) return -1;
+    int fd = stream_connect_impl(host, port);
+    if (fd < 0) return stream_tls_fail(1, "could not connect (DNS or TCP, 5 s timeout)");
+    mbedtls_net_init(&g_stream_tls.net);
+    mbedtls_ssl_init(&g_stream_tls.ssl);
+    mbedtls_ssl_config_init(&g_stream_tls.conf);
+    g_stream_tls.net.fd = fd;
+    g_stream_tls.fd = fd;
+    int rc = mbedtls_ssl_config_defaults(&g_stream_tls.conf, MBEDTLS_SSL_IS_CLIENT,
+                                         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
+    if (rc != 0) { stream_tls_fail_rc(2, "TLS config", rc); goto fail; }
+    mbedtls_ssl_conf_authmode(&g_stream_tls.conf, MBEDTLS_SSL_VERIFY_REQUIRED); /* never optional */
+    mbedtls_ssl_conf_ca_chain(&g_stream_tls.conf, &g_stream_tls_ca, NULL);
+    mbedtls_ssl_conf_rng(&g_stream_tls.conf, mbedtls_ctr_drbg_random, &g_stream_tls_drbg);
+    rc = mbedtls_ssl_setup(&g_stream_tls.ssl, &g_stream_tls.conf);
+    if (rc != 0) { stream_tls_fail_rc(2, "TLS setup", rc); goto fail; }
+    rc = mbedtls_ssl_set_hostname(&g_stream_tls.ssl, host); /* SNI and the verified name */
+    if (rc != 0) { stream_tls_fail_rc(2, "TLS hostname", rc); goto fail; }
+    mbedtls_ssl_set_bio(&g_stream_tls.ssl, &g_stream_tls.net, mbedtls_net_send, mbedtls_net_recv, NULL);
+    {
+        int waited = 0;
+        for (;;) {
+            rc = mbedtls_ssl_handshake(&g_stream_tls.ssl);
+            if (rc == 0) break;
+            if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                if (waited >= PARENA_TLS_HANDSHAKE_MS) {
+                    stream_tls_fail(2, "TLS handshake timed out");
+                    goto fail;
+                }
+                int w = stream_tls_wait(fd, rc == MBEDTLS_ERR_SSL_WANT_WRITE, 50);
+                if (w < 0) { stream_tls_fail(2, "TLS handshake: socket error"); goto fail; }
+                if (w == 0) waited += 50;
+                continue;
+            }
+            if (rc == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+                uint32_t flags = mbedtls_ssl_get_verify_result(&g_stream_tls.ssl);
+                char vi[200];
+                vi[0] = '\0';
+                mbedtls_x509_crt_verify_info(vi, sizeof vi, "", flags);
+                /* verify_info lines end in '\n'; flatten to one short line */
+                for (char *c = vi; *c; c++) if (*c == '\n') *c = ' ';
+                snprintf(g_stream_tls_err, sizeof g_stream_tls_err, "certificate rejected: %s", vi);
+                g_stream_tls_code = 3;
+                goto fail;
+            }
+            stream_tls_fail_rc(2, "TLS handshake failed", rc);
+            goto fail;
+        }
+    }
+    /* belt and braces: VERIFY_REQUIRED already aborts the handshake, but never trust a flag we can
+     * re-check for free */
+    {
+        uint32_t flags = mbedtls_ssl_get_verify_result(&g_stream_tls.ssl);
+        if (flags != 0) {
+            stream_tls_fail(3, "certificate rejected after handshake");
+            goto fail;
+        }
+    }
+    g_stream_tls.active = 1;
+    return fd;
+fail:
+    stream_tls_teardown();
+    return -1;
+}
+
+static inline int stream_tls_owns(int fd) { return g_stream_tls.active && g_stream_tls.fd == fd; }
+
+/* "TLSv1.3 TLS1-3-AES-256-GCM-SHA384" for the live session, "" otherwise (static, valid until next call) */
+static inline char *stream_tls_info_impl(void) {
+    static char info[128];
+    info[0] = '\0';
+    if (g_stream_tls.active)
+        snprintf(info, sizeof info, "%s %s", mbedtls_ssl_get_version(&g_stream_tls.ssl),
+                 mbedtls_ssl_get_ciphersuite(&g_stream_tls.ssl));
+    return info;
+}
+
+static inline int stream_tls_send(const char *s) {
+    size_t len = strlen(s), off = 0;
+    int spins = 0;
+    while (off < len) {
+        int n = mbedtls_ssl_write(&g_stream_tls.ssl, (const unsigned char *)s + off, len - off);
+        if (n > 0) { off += (size_t)n; spins = 0; continue; }
+        if (n != MBEDTLS_ERR_SSL_WANT_WRITE && n != MBEDTLS_ERR_SSL_WANT_READ) return -1;
+        if (++spins > 2000) return -1;
+        stream_tls_wait(g_stream_tls.fd, n == MBEDTLS_ERR_SSL_WANT_WRITE, 1);
+    }
+    return 0;
+}
+
+static inline int stream_tls_pull(void) {
+    if (g_stream_len >= PARENA_STREAM_MAX) return -2;
+    if (mbedtls_ssl_get_bytes_avail(&g_stream_tls.ssl) == 0) {
+        int r = stream_tls_wait(g_stream_tls.fd, 0, 0);
+        if (r < 0) return -1;
+        if (r == 0) return 0;
+    }
+    size_t room = PARENA_STREAM_MAX - g_stream_len;
+    if (room > 16384) room = 16384; /* one TLS record */
+    for (int tries = 0; tries < 4; tries++) {
+        int n = mbedtls_ssl_read(&g_stream_tls.ssl, (unsigned char *)g_stream_buf + g_stream_len, room);
+        if (n > 0) {
+            g_stream_len += (size_t)n;
+            g_stream_buf[g_stream_len] = '\0';
+            return n;
+        }
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
+#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+        if (n == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue; /* TLS 1.3 post-handshake */
+#endif
+        return -1; /* close_notify (0 / PEER_CLOSE_NOTIFY), peer reset or EOF: the stream is over */
+    }
+    return 0;
+}
+#else /* !PARENA_WITH_TLS */
+static inline int stream_connect_tls_impl(const char *host, int port) { (void)host; (void)port; return -1; }
+static inline int stream_tls_owns(int fd) { (void)fd; return 0; }
+static inline char *stream_tls_info_impl(void) { return ""; }
+static inline int stream_tls_send(const char *s) { (void)s; return -1; }
+static inline int stream_tls_pull(void) { return -1; }
+static inline void stream_tls_teardown(void) {}
+#endif /* PARENA_WITH_TLS */
+
+static inline int stream_tls_code_impl(void) {
+#ifdef PARENA_WITH_TLS
+    return g_stream_tls_code;
+#else
+    return 5; /* this build has no TLS */
+#endif
+}
+
+static inline char *stream_tls_error_impl(void) {
+#ifdef PARENA_WITH_TLS
+    return g_stream_tls_err;
+#else
+    return (char *)"this build has no TLS support";
+#endif
+}
+
+/* A ready-to-render HTML error page (static buffer) for the last TLS failure: headline by class,
+ * then the specific reason. PELLEGRINO draws it in place of the page. */
+static inline char *stream_tls_page_impl(void) {
+    static char page[704];
+    const char *title;
+    switch (stream_tls_code_impl()) {
+        case 1: title = "could not connect"; break;
+        case 3: title = "certificate rejected"; break;
+        case 4: title = "no trusted certificate authorities"; break;
+        case 5: title = "https is not available in this build"; break;
+        default: title = "secure connection failed"; break;
+    }
+    snprintf(page, sizeof page,
+             "<h1>%s</h1>\n<p>%s</p>\n<p>Certificates and hostnames are always verified; there is no "
+             "override. Press : and type another URL.</p>\n",
+             title, stream_tls_error_impl());
+    return page;
+}
+
+/* bytes of the static TLS heap that have ever been in use at once. 0 unless the consumer defines
+ * PARENA_TLS_HEAP_STATS (and builds mbedTLS with MBEDTLS_MEMORY_DEBUG, which exposes the mark). */
+static inline int stream_tls_heap_peak_impl(void) {
+#if defined(PARENA_WITH_TLS) && defined(PARENA_TLS_STATIC_HEAP) && defined(PARENA_TLS_HEAP_STATS)
+    size_t max_used = 0, max_blocks = 0;
+    mbedtls_memory_buffer_alloc_max_get(&max_used, &max_blocks);
+    return (int)max_used;
+#else
+    return 0;
+#endif
+}
+
 static inline int stream_send_impl(int fd, const char *s) {
+    if (stream_tls_owns(fd)) return stream_tls_send(s);
     size_t len = strlen(s), off = 0;
     int spins = 0;
     while (off < len) {
@@ -3850,6 +4193,7 @@ static inline int stream_send_impl(int fd, const char *s) {
 }
 
 static inline int stream_pull_impl(int fd) {
+    if (stream_tls_owns(fd)) return stream_tls_pull();
     if (g_stream_len >= PARENA_STREAM_MAX) return -2;
     fd_set rf;
     FD_ZERO(&rf);
@@ -3872,7 +4216,10 @@ static inline int stream_pull_impl(int fd) {
 static inline char *stream_buf_impl(void) { return g_stream_buf; }
 static inline int stream_len_impl(void) { return (int)g_stream_len; }
 static inline void stream_reset_impl(void) { g_stream_len = 0; g_stream_buf[0] = '\0'; }
-static inline int stream_close_impl(int fd) { return parena_sock_close((parena_sock_t)fd) == 0 ? 0 : -1; }
+static inline int stream_close_impl(int fd) {
+    if (stream_tls_owns(fd)) { stream_tls_teardown(); return 0; } /* also closes the socket */
+    return parena_sock_close((parena_sock_t)fd) == 0 ? 0 : -1;
+}
 
 /* linebuf -- one small static line-input buffer (address bar / command bar). */
 #define PARENA_LINEBUF_MAX 1024
