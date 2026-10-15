@@ -66,6 +66,26 @@ static Token make_punct(TokenType type, int line) {
     return t;
 }
 
+static int hex_val(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+/* Strict UTF-8 encode of one scalar value (caller has validated range); returns byte count. */
+static int utf8_encode_cp(unsigned int cp, unsigned char *out) {
+    if (cp < 0x80) { out[0] = (unsigned char)cp; return 1; }
+    if (cp < 0x800) { out[0] = (unsigned char)(0xC0 | (cp >> 6)); out[1] = (unsigned char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) {
+        out[0] = (unsigned char)(0xE0 | (cp >> 12)); out[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (unsigned char)(0x80 | (cp & 0x3F)); return 3;
+    }
+    out[0] = (unsigned char)(0xF0 | (cp >> 18)); out[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (unsigned char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 static Token lex_string(Lexer *lx, const char **out_error) {
     int start_line = lx->line;
     advance(lx); /* opening quote */
@@ -108,6 +128,54 @@ static Token lex_string(Lexer *lx, const char **out_error) {
                 case 'r': c = '\r'; break;
                 case '"': c = '"'; break;
                 case '\\': c = '\\'; break;
+                /* \u{H..H} -- a Unicode scalar value (1-6 hex digits), appended to the literal
+                   as strict UTF-8 (founder real-time 2026-10-15, "full unicode support ...
+                   PARENA first"). Surrogates and values above U+10FFFF are a lex error, never
+                   silently encoded as invalid UTF-8. \xHH -- one raw byte (two hex digits), the
+                   escape hatch for non-UTF-8 byte strings. */
+                case 'u': {
+                    unsigned long cp = 0;
+                    int digits = 0, ok = 0;
+                    if (!at_end(lx) && peek(lx) == '{') {
+                        advance(lx);
+                        while (!at_end(lx) && hex_val(peek(lx)) >= 0 && digits < 7) {
+                            cp = cp * 16 + (unsigned long)hex_val(advance(lx));
+                            digits++;
+                        }
+                        if (!at_end(lx) && peek(lx) == '}') { advance(lx); ok = 1; }
+                    }
+                    if (!ok || digits < 1 || digits > 6 || cp == 0 || cp > 0x10FFFFul ||
+                        (cp >= 0xD800ul && cp < 0xE000ul)) {
+                        if (out_error) {
+                            const char *m = "invalid \\u{...} escape (need 1-6 hex digits, a nonzero Unicode scalar value: not a surrogate, at most 10FFFF)";
+                            *out_error = arena_strdup(lx->arena, m, strlen(m));
+                        }
+                        return make_punct(TOK_EOF, lx->line);
+                    }
+                    unsigned char enc[4];
+                    int el = utf8_encode_cp((unsigned int)cp, enc);
+                    for (int k = 0; k < el; k++)
+                        if (n < sizeof(buf) - 1) buf[n++] = (char)enc[k];
+                    continue;
+                }
+                case 'x': {
+                    int h1 = at_end(lx) ? -1 : hex_val(peek(lx));
+                    int h2 = -1;
+                    if (h1 >= 0) {
+                        advance(lx);
+                        h2 = at_end(lx) ? -1 : hex_val(peek(lx));
+                    }
+                    if (h1 < 0 || h2 < 0 || (h1 == 0 && h2 == 0)) {
+                        if (out_error) {
+                            const char *m = "invalid \\xHH escape (need exactly two hex digits, not 00: a String cannot hold NUL)";
+                            *out_error = arena_strdup(lx->arena, m, strlen(m));
+                        }
+                        return make_punct(TOK_EOF, lx->line);
+                    }
+                    advance(lx);
+                    c = (char)(h1 * 16 + h2);
+                    break;
+                }
                 default: c = e; break;
             }
         }

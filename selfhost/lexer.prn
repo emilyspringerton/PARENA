@@ -245,6 +245,70 @@
     (Ok {:token {:kind TNumber :text text :line line}
          :lexer {:src src :pos end :len (get-field lx :len) :line line}})))
 
+;; ---- \u{H..H} / \xHH escape helpers (mirror src/lexer.c: strict scalar value, nonzero) -------
+(defn lx-hex-digit [(c : I32)] : I32
+  (cond
+    ((and (>= c 48) (<= c 57)) (- c 48))
+    ((and (>= c 97) (<= c 102)) (- c 87))
+    ((and (>= c 65) (<= c 70)) (- c 55))
+    (true -1)))
+
+;; end (exclusive) of the run of hex digits starting at p
+(defn lx-hex-end [(src : String @ Region) (p : I32) (len : I32)] : I32
+  (loop [i p]
+    (if (and (< i len) (>= (lx-hex-digit (string/char-at src i)) 0))
+      (recur (+ i 1))
+      i)))
+
+(defn lx-hex-value [(src : String @ Region) (p : I32) (e : I32)] : I32
+  (loop [i p acc 0]
+    (if (>= i e) acc
+      (recur (+ i 1) (+ (* acc 16) (lx-hex-digit (string/char-at src i)))))))
+
+;; after "\u": p is the position of '{'. Returns the codepoint, or -1 if malformed/not a nonzero
+;; scalar value. 7+ digits are rejected before accumulation so I32 cannot overflow.
+(defn lx-u-cp [(src : String @ Region) (p : I32) (len : I32)] : I32
+  (if (and (< p len) (= (string/char-at src p) 123))
+    (lx-u-cp-check src (+ p 1) (lx-hex-end src (+ p 1) len) len)
+    -1))
+
+(defn lx-u-cp-check [(src : String @ Region) (hs : I32) (he : I32) (len : I32)] : I32
+  (if (and (< he len) (and (= (string/char-at src he) 125) (and (>= (- he hs) 1) (<= (- he hs) 6))))
+    (lx-u-scalar (lx-hex-value src hs he))
+    -1))
+
+(defn lx-u-scalar [(cp : I32)] : I32
+  (if (or (< cp 1) (or (> cp 1114111) (and (>= cp 55296) (< cp 57344)))) -1 cp))
+
+;; position just past the closing '}' (only meaningful when lx-u-cp succeeded)
+(defn lx-u-end [(src : String @ Region) (p : I32) (len : I32)] : I32
+  (+ (lx-hex-end src (+ p 1) len) 1))
+
+;; after "\x": p is the first hex digit. Returns the byte value, or -1 if not exactly two digits.
+(defn lx-x-val [(src : String @ Region) (p : I32) (len : I32)] : I32
+  (if (and (< (+ p 1) len)
+           (and (>= (lx-hex-digit (string/char-at src p)) 0)
+                (>= (lx-hex-digit (string/char-at src (+ p 1))) 0)))
+    (+ (* (lx-hex-digit (string/char-at src p)) 16) (lx-hex-digit (string/char-at src (+ p 1))))
+    -1))
+
+;; strict UTF-8 text for one scalar value (cp already validated)
+(defn lx-utf8 [(cp : I32) (dest : Arena @ Region)] : String @ Region
+  (cond
+    ((< cp 128) (string/char-from-code cp dest))
+    ((< cp 2048)
+      (string/concat (string/char-from-code (+ 192 (/ cp 64)) dest)
+                     (string/char-from-code (+ 128 (mod cp 64)) dest) dest))
+    ((< cp 65536)
+      (string/concat (string/char-from-code (+ 224 (/ cp 4096)) dest)
+                     (string/concat (string/char-from-code (+ 128 (mod (/ cp 64) 64)) dest)
+                                    (string/char-from-code (+ 128 (mod cp 64)) dest) dest) dest))
+    (true
+      (string/concat (string/char-from-code (+ 240 (/ cp 262144)) dest)
+                     (string/concat (string/char-from-code (+ 128 (mod (/ cp 4096) 64)) dest)
+                                    (string/concat (string/char-from-code (+ 128 (mod (/ cp 64) 64)) dest)
+                                                   (string/char-from-code (+ 128 (mod cp 64)) dest) dest) dest) dest))))
+
 ;; lex-string -- real port of C's own lex_string, including real escape
 ;; decoding (\n \t \" \\ -> their real single-byte form, matching
 ;; C's own switch exactly; any OTHER char after a backslash passes
@@ -276,13 +340,28 @@
               (if (>= (+ pos 1) len)
                 (Err (UnterminatedString start-line))
                 (let [e (string/char-at src (+ pos 1))
+                      ucp (if (= e 117) (lx-u-cp src (+ pos 2) len) -1)
+                      uend (if (= e 117) (lx-u-end src (+ pos 2) len) pos)
+                      xv (if (= e 120) (lx-x-val src (+ pos 2) len) -1)
                       decoded (cond
                                 ((= e 110) 10)  ;; \n
                                 ((= e 116) 9)   ;; \t
+                                ((= e 114) 13)  ;; \r
                                 ((= e 34) 34)   ;; \"
                                 ((= e 92) 92)   ;; \\
                                 (true e))]
-                  (recur (+ pos 2) line (string/concat acc (string/char-from-code decoded dest) dest)))))
+                  (cond
+                    ;; \u{H..H}: bad escape is reported as UnexpectedChar at the string's own
+                    ;; opening line (no new LexError variant: selfhost/parser.prn matches the
+                    ;; enum exhaustively and C's own lexer also just reports a parse error).
+                    ((and (= e 117) (< ucp 0)) (Err (UnexpectedChar start-line)))
+                    ((= e 117)
+                      (recur uend line (string/concat acc (lx-utf8 ucp dest) dest)))
+                    ((and (= e 120) (< xv 1)) (Err (UnexpectedChar start-line)))
+                    ((= e 120)
+                      (recur (+ pos 4) line (string/concat acc (string/char-from-code xv dest) dest)))
+                    (true
+                      (recur (+ pos 2) line (string/concat acc (string/char-from-code decoded dest) dest)))))))
             (true
               (recur (+ pos 1) (if (= c 10) (+ line 1) line)
                      (string/concat acc (string/char-from-code c dest) dest)))))))))

@@ -151,6 +151,25 @@ int main(int argc, char **argv) {
     }
 
     {
+        /* \u{...} and \xHH escapes (mirrors src/lexer.c): e-acute, CJK, emoji as strict UTF-8,
+         * plus a raw byte; bad forms are an Err, never silently mis-encoded. */
+        Result r = tokenize("\"\\u{e9}\\u{65E5}\\u{1F600}\\x41\"", &a);
+        CHECK(r.tag == 1, "tokenize succeeds on \\u{} / \\x escapes");
+        if (r.tag == 1) {
+            Vec toks = *(Vec *)r.value;
+            Token tok0 = *(Token *)vec_get(&toks, 0);
+            CHECK(strcmp(tok0.text, "\xc3\xa9\xe6\x97\xa5\xf0\x9f\x98\x80" "A") == 0,
+                  "\\u{e9}\\u{65E5}\\u{1F600}\\x41 decode to 2/3/4-byte UTF-8 then 'A'");
+        }
+        char *bad[] = { "\"\\u{0}\"", "\"\\u{D800}\"", "\"\\u{110000}\"", "\"\\u{}\"",
+                              "\"\\u41\"", "\"\\x4\"", "\"\\x00\"", "\"\\u{41\"" };
+        for (int i = 0; i < 8; i++) {
+            Result rb = tokenize(bad[i], &a);
+            CHECK(rb.tag == 0, "malformed \\u/\\x escape is a real Err");
+        }
+    }
+
+    {
         /* Real unterminated string -- reports the real line it OPENED
          * on, matching src/lexer.c's own start_line convention. */
         Result r = tokenize("(f \"never closed", &a);

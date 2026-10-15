@@ -31,7 +31,7 @@ sections) rather than a blanket "not implemented yet." "Built out in Parena" mea
 source exists*, checked per-file against the current compiler — not a claim that the whole
 standard library links and runs.
 
-**Real source exists today** (`stdlib/`) for: `vec`, `map`, `string`, `log`, `buffer`, `io`,
+**Real source exists today** (`stdlib/`) for: `vec`, `map`, `string`, `unicode` (strict UTF-8 codec, Unicode 15.1 properties/simple case mapping/width; `\u{...}` string escapes), `log`, `buffer`, `io`,
 `thread`, `sdl2`, `net/tcp`, `net/udp`, `net/http`, `array`, `linalg` (matmul/transpose/dot;
 inverse/solve deferred), `stats`, `dataframe` (column/select; read-csv/filter/group-by deferred),
 `nn`, `tokenizer` (load; encode/decode deferred), `sort`, `regex/syntax`, `regex/nfa` (signatures

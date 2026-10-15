@@ -122,6 +122,15 @@ int lx_scan_number_end(Lexer *);
 Result lex_symbol(Lexer *, Arena *);
 Result lex_keyword(Lexer *, Arena *);
 Result lex_number(Lexer *, Arena *);
+int lx_hex_digit(int);
+int lx_hex_end(char *, int, int);
+int lx_hex_value(char *, int, int);
+int lx_u_cp(char *, int, int);
+int lx_u_cp_check(char *, int, int, int);
+int lx_u_scalar(int);
+int lx_u_end(char *, int, int);
+int lx_x_val(char *, int, int);
+char * lx_utf8(int, Arena *);
 Result lex_string(Lexer *, Arena *);
 Result lexer_next(Lexer *, Arena *);
 Result tokenize(char *, Arena *);
@@ -501,31 +510,139 @@ Result lex_number(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
     return result_ok(LexStep_box(dest, LexStep_new(Token_new(TokenType_TNumber(), text, line), Lexer_new(src, end, (lx)->len, line))));
 }
 
+int lx_hex_digit(int c __attribute__((unused))) {
+    return (((c >= 48) && (c <= 57)) ? (c - 48) : (((c >= 97) && (c <= 102)) ? (c - 87) : (((c >= 65) && (c <= 70)) ? (c - 55) : -1)));
+}
+
+int lx_hex_end(char * src __attribute__((unused)), int p __attribute__((unused)), int len __attribute__((unused))) {
+    int __loop_result_6 __attribute__((unused));
+    int i = p;
+    while (1) {
+        if (((i < len) && (lx_hex_digit(char_at(src, i)) >= 0))) {
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+        __loop_result_6 = i;
+        break;
+        }
+    }
+    return __loop_result_6;
+}
+
+int lx_hex_value(char * src __attribute__((unused)), int p __attribute__((unused)), int e __attribute__((unused))) {
+    int __loop_result_7 __attribute__((unused));
+    int i = p;
+    int acc = 0;
+    while (1) {
+        if ((i >= e)) {
+        __loop_result_7 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = ((acc * 16) + lx_hex_digit(char_at(src, i)));
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_7;
+}
+
+int lx_u_cp(char * src __attribute__((unused)), int p __attribute__((unused)), int len __attribute__((unused))) {
+    if (((p < len) && (char_at(src, p) == 123))) {
+    return lx_u_cp_check(src, (p + 1), lx_hex_end(src, (p + 1), len), len);
+    } else {
+    return -1;
+    }
+}
+
+int lx_u_cp_check(char * src __attribute__((unused)), int hs __attribute__((unused)), int he __attribute__((unused)), int len __attribute__((unused))) {
+    if (((he < len) && ((char_at(src, he) == 125) && (((he - hs) >= 1) && ((he - hs) <= 6))))) {
+    return lx_u_scalar(lx_hex_value(src, hs, he));
+    } else {
+    return -1;
+    }
+}
+
+int lx_u_scalar(int cp __attribute__((unused))) {
+    if (((cp < 1) || ((cp > 1114111) || ((cp >= 55296) && (cp < 57344))))) {
+    return -1;
+    } else {
+    return cp;
+    }
+}
+
+int lx_u_end(char * src __attribute__((unused)), int p __attribute__((unused)), int len __attribute__((unused))) {
+    return (lx_hex_end(src, (p + 1), len) + 1);
+}
+
+int lx_x_val(char * src __attribute__((unused)), int p __attribute__((unused)), int len __attribute__((unused))) {
+    if ((((p + 1) < len) && ((lx_hex_digit(char_at(src, p)) >= 0) && (lx_hex_digit(char_at(src, (p + 1))) >= 0)))) {
+    return ((lx_hex_digit(char_at(src, p)) * 16) + lx_hex_digit(char_at(src, (p + 1))));
+    } else {
+    return -1;
+    }
+}
+
+char * lx_utf8(int cp __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return ((cp < 128) ? char_from_code(cp, dest) : ((cp < 2048) ? concat(char_from_code((192 + (cp / 64)), dest), char_from_code((128 + (cp % 64)), dest), dest) : ((cp < 65536) ? concat(char_from_code((224 + (cp / 4096)), dest), concat(char_from_code((128 + ((cp / 64) % 64)), dest), char_from_code((128 + (cp % 64)), dest), dest), dest) : concat(char_from_code((240 + (cp / 262144)), dest), concat(char_from_code((128 + ((cp / 4096) % 64)), dest), concat(char_from_code((128 + ((cp / 64) % 64)), dest), char_from_code((128 + (cp % 64)), dest), dest), dest), dest))));
+}
+
 Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int start_line __attribute__((unused)) = (lx)->line;
     char *src __attribute__((unused)) = (lx)->src;
     int len __attribute__((unused)) = (lx)->len;
-    Result __loop_result_6 __attribute__((unused));
+    Result __loop_result_8 __attribute__((unused));
     int pos = ((lx)->pos + 1);
     int line = start_line;
     char * acc = "";
     while (1) {
         if ((pos >= len)) {
-        __loop_result_6 = result_err(LexError_box(dest, LexError_UnterminatedString(int_box(dest, start_line))));
+        __loop_result_8 = result_err(LexError_box(dest, LexError_UnterminatedString(int_box(dest, start_line))));
         break;
         } else {
         int c __attribute__((unused)) = char_at(src, pos);
         if ((c == 34)) {
-        __loop_result_6 = result_ok(LexStep_box(dest, LexStep_new(Token_new(TokenType_TString(), acc, start_line), Lexer_new(src, (pos + 1), len, line))));
+        __loop_result_8 = result_ok(LexStep_box(dest, LexStep_new(Token_new(TokenType_TString(), acc, start_line), Lexer_new(src, (pos + 1), len, line))));
         break;
         } else {
         if ((c == 92)) {
         if (((pos + 1) >= len)) {
-        __loop_result_6 = result_err(LexError_box(dest, LexError_UnterminatedString(int_box(dest, start_line))));
+        __loop_result_8 = result_err(LexError_box(dest, LexError_UnterminatedString(int_box(dest, start_line))));
         break;
         } else {
         int e __attribute__((unused)) = char_at(src, (pos + 1));
-        int decoded __attribute__((unused)) = ((e == 110) ? 10 : ((e == 116) ? 9 : ((e == 34) ? 34 : ((e == 92) ? 92 : e))));
+        int ucp __attribute__((unused)) = ((e == 117) ? lx_u_cp(src, (pos + 2), len) : -1);
+        int uend __attribute__((unused)) = ((e == 117) ? lx_u_end(src, (pos + 2), len) : pos);
+        int xv __attribute__((unused)) = ((e == 120) ? lx_x_val(src, (pos + 2), len) : -1);
+        int decoded __attribute__((unused)) = ((e == 110) ? 10 : ((e == 116) ? 9 : ((e == 114) ? 13 : ((e == 34) ? 34 : ((e == 92) ? 92 : e)))));
+        if (((e == 117) && (ucp < 0))) {
+        __loop_result_8 = result_err(LexError_box(dest, LexError_UnexpectedChar(int_box(dest, start_line))));
+        break;
+        } else {
+        if ((e == 117)) {
+        int __recur_tmp_0 = uend;
+        int __recur_tmp_1 = line;
+        char * __recur_tmp_2 = concat(acc, lx_utf8(ucp, dest), dest);
+        pos = __recur_tmp_0;
+        line = __recur_tmp_1;
+        acc = __recur_tmp_2;
+        continue;
+        } else {
+        if (((e == 120) && (xv < 1))) {
+        __loop_result_8 = result_err(LexError_box(dest, LexError_UnexpectedChar(int_box(dest, start_line))));
+        break;
+        } else {
+        if ((e == 120)) {
+        int __recur_tmp_0 = (pos + 4);
+        int __recur_tmp_1 = line;
+        char * __recur_tmp_2 = concat(acc, char_from_code(xv, dest), dest);
+        pos = __recur_tmp_0;
+        line = __recur_tmp_1;
+        acc = __recur_tmp_2;
+        continue;
+        } else {
         int __recur_tmp_0 = (pos + 2);
         int __recur_tmp_1 = line;
         char * __recur_tmp_2 = concat(acc, char_from_code(decoded, dest), dest);
@@ -533,6 +650,10 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         line = __recur_tmp_1;
         acc = __recur_tmp_2;
         continue;
+        }
+        }
+        }
+        }
         }
         } else {
         int __recur_tmp_0 = (pos + 1);
@@ -546,7 +667,7 @@ Result lex_string(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
         }
         }
     }
-    return __loop_result_6;
+    return __loop_result_8;
 }
 
 Result lexer_next(Lexer * lx __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -562,13 +683,13 @@ Result lexer_next(Lexer * lx __attribute__((unused)), Arena *dest __attribute__(
 
 Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Vec out __attribute__((unused)) = vec_new(dest);
-    Result __loop_result_7 __attribute__((unused));
+    Result __loop_result_9 __attribute__((unused));
     Lexer lx = new_lexer(src);
     while (1) {
     Result __match_tmp_0 = lexer_next(&(lx), dest);
     if (__match_tmp_0.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_0.value;
-        __loop_result_7 = result_err(e);
+        __loop_result_9 = result_err(e);
         break;
     }
     else if (__match_tmp_0.tag == 1) {
@@ -578,7 +699,7 @@ Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((u
     (void)(vec_push_(&(out), Token_box(dest, tok)));
     TokenType __match_tmp_1 = (tok).kind;
     if (__match_tmp_1.tag == 12) {
-        __loop_result_7 = result_ok(Vec_box(dest, out));
+        __loop_result_9 = result_ok(Vec_box(dest, out));
         break;
     }
     else if (1) {
@@ -588,6 +709,6 @@ Result tokenize(char * src __attribute__((unused)), Arena *dest __attribute__((u
     }
     }
     }
-    return __loop_result_7;
+    return __loop_result_9;
 }
 
