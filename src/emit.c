@@ -62,15 +62,21 @@ static void sb_appendf(StrBuf *sb, const char *fmt, ...) {
     sb_append(sb, buf);
 }
 
-/* xfmt: malloc'd, never-truncating snprintf for emitted expression text. The compiler is a
- * short-lived process, so the (small) leak is deliberate. */
+/* xfmt: never-truncating snprintf for emitted expression text. Allocated from the arena of the
+ * emit_c() call in progress (g_xfmt_arena), like every other string the emitter hands around, so
+ * it is reclaimed with that arena. (It used to be a deliberate malloc leak "because the compiler
+ * is short-lived", which made LeakSanitizer fail `bazel test --config=asan //tests:test_emit` --
+ * the CI's ASan step was red for that reason alone; 2026-10-15.) */
+static Arena *g_xfmt_arena = NULL;
+
 static char *xfmt(const char *fmt, ...) {
     va_list ap, ap2;
     va_start(ap, fmt);
     va_copy(ap2, ap);
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
-    char *out = (char *)malloc((size_t)(n < 0 ? 0 : n) + 1);
+    size_t need = (size_t)(n < 0 ? 0 : n) + 1;
+    char *out = (char *)(g_xfmt_arena ? arena_alloc(g_xfmt_arena, need) : malloc(need));
     if (!out) { va_end(ap2); abort(); }
     vsnprintf(out, (size_t)(n < 0 ? 0 : n) + 1, fmt, ap2);
     va_end(ap2);
@@ -6087,6 +6093,7 @@ static int process_defs(Arena *arena, StrBuf *out_decls, StrBuf *out_init, Node 
 
 const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     *out_error = NULL;
+    g_xfmt_arena = arena;
     scope_init(&g_globals, NULL);
     /* g_enums is reset per emit_c() call, not just per process: the test
      * suite calls emit_c() many times in the same process (one per test
