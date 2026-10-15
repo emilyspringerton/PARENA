@@ -9,6 +9,7 @@
 (module net/stream)
 (export stream-connect stream-connect-tls stream-tls-code stream-tls-error stream-tls-page stream-tls-info stream-tls-heap-peak
         stream-send stream-pull stream-buf stream-len stream-reset stream-close stream-bank stream-copy-bytes
+        css-append css-buf css-len css-reset
         linebuf-append linebuf-backspace linebuf-clear linebuf-get linebuf-len
         cururl-set cururl-get slot-get slot-set)
 
@@ -88,6 +89,26 @@
 (defn stream-copy-bytes [(off : I32) (dest : Arena @ Region)] : Bytes @ Region
   #target
   {:c (inline-c "stream_copy_bytes_impl(dest, off)")})
+
+;; Static stylesheet text store (256 KiB, no malloc): css-append copies the SELECTED bank from byte `off` to its end
+;; (at most `maxlen` bytes, -1 for no limit; plus a newline) and returns where the copy starts in the store, or -1
+;; when the store is full. css-buf is the
+;; whole store as a String (grows; earlier offsets stay valid), css-len its length, css-reset empties it.
+(defn css-append [(off : I32) (maxlen : I32)] : I32
+  #target
+  {:c (inline-c "css_append_impl(off, maxlen)")})
+
+(defn css-buf [] : String
+  #target
+  {:c (inline-c "css_buf_impl()")})
+
+(defn css-len [] : I32
+  #target
+  {:c (inline-c "css_len_impl()")})
+
+(defn css-reset [] : I32
+  #target
+  {:c (inline-c "(css_reset_impl(), 0)")})
 
 (defn linebuf-append [(s : String @ Region)] : I32
   #target

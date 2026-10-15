@@ -1,5 +1,7 @@
 /* tests/test_img_store.c -- runtime image store (image/store.prn) and the stream module's second receive
- * bank (net/stream.prn stream-bank / stream-copy-bytes), both added 2026-10-15 for PELLEGRINO's <img>. */
+ * bank (net/stream.prn stream-bank / stream-copy-bytes), both added 2026-10-15 for PELLEGRINO's <img>; plus the
+ * static stylesheet text store (css-append / css-buf / css-len / css-reset), added the same day for its
+ * external <link rel=stylesheet> / @import support. */
 #include "parena_runtime.h"
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +48,47 @@ int main(void) {
     CHECK(stream_copy_bytes_impl(&a, 9).len == 0, "copy out of range is empty");
     CHECK(stream_bank_impl(0) == 1, "switch back returns bank 1");
     CHECK(stream_len_impl() == 4 && memcmp(stream_buf_impl(), "page", 4) == 0, "page bytes untouched");
+
+    /* css store: appended text outlives the bank it came from; offsets stay valid as the store grows */
+    stream_bank_impl(1);
+    stream_reset_impl();
+    memcpy(stream_cur_buf(), "HDR\r\n\r\na{color:red}", 19);
+    stream_cur_set_len(19);
+    css_reset_impl();
+    CHECK(css_len_impl() == 0 && css_buf_impl()[0] == 0, "css store starts empty");
+    int s1 = css_append_impl(7, -1);
+    CHECK(s1 == 0 && css_len_impl() == 13, "first append starts at 0 and adds a newline");
+    CHECK(memcmp(css_buf_impl(), "a{color:red}\n", 13) == 0 && css_buf_impl()[13] == 0, "text is copied, NUL-terminated");
+    stream_reset_impl();
+    memcpy(stream_cur_buf(), "XXb{x:y}", 8);
+    stream_cur_set_len(8);
+    int s2 = css_append_impl(2, 4);
+    CHECK(s2 == 13 && css_len_impl() == 13 + 4 + 1, "second append lands after the first, capped by maxlen");
+    CHECK(memcmp(css_buf_impl() + s2, "b{x:\n", 5) == 0, "capped copy is the first maxlen bytes");
+    CHECK(css_append_impl(9, -1) == -1 && css_append_impl(-1, -1) == -1, "bad offsets are refused");
+    CHECK(memcmp(css_buf_impl(), "a{color:red}\n", 13) == 0, "earlier text untouched");
+    stream_reset_impl();
+    css_reset_impl();
+    CHECK(css_len_impl() == 0, "reset empties the store");
+    /* the cap: a store that cannot take more says -1, never overruns */
+    {
+        static char big[1024];
+        memset(big, 'x', sizeof big);
+        stream_bank_impl(1);
+        int guard = 0;
+        int last = 0;
+        while (guard++ < 100000) {
+            memcpy(stream_cur_buf(), big, sizeof big);
+            stream_cur_set_len(sizeof big);
+            last = css_append_impl(0, -1);
+            if (last < 0) break;
+        }
+        CHECK(last == -1 && css_len_impl() <= (int)PARENA_CSS_MAX && css_buf_impl()[css_len_impl()] == 0,
+              "store is bounded and stays NUL-terminated");
+        css_reset_impl();
+        stream_reset_impl();
+    }
+    stream_bank_impl(0);
 
     arena_free_all(&a);
     printf(failures ? "%d FAILED\n" : "all passed\n", failures);

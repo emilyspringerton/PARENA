@@ -42,6 +42,12 @@ char * stream_buf();
 int stream_len();
 int stream_reset();
 int stream_close(int);
+int stream_bank(int);
+Bytes stream_copy_bytes(int, Arena *);
+int css_append(int, int);
+char * css_buf();
+int css_len();
+int css_reset();
 int linebuf_append(char *);
 int linebuf_backspace();
 int linebuf_clear();
@@ -237,6 +243,30 @@ int stream_reset(void) {
 
 int stream_close(int fd __attribute__((unused))) {
     return (stream_close_impl(fd));
+}
+
+int stream_bank(int b __attribute__((unused))) {
+    return (stream_bank_impl(b));
+}
+
+Bytes stream_copy_bytes(int off __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (stream_copy_bytes_impl(dest, off));
+}
+
+int css_append(int off __attribute__((unused)), int maxlen __attribute__((unused))) {
+    return (css_append_impl(off, maxlen));
+}
+
+char * css_buf(void) {
+    return (css_buf_impl());
+}
+
+int css_len(void) {
+    return (css_len_impl());
+}
+
+int css_reset(void) {
+    return ((css_reset_impl(), 0));
 }
 
 int linebuf_append(char * s __attribute__((unused))) {

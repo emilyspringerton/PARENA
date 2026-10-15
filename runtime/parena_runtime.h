@@ -4393,6 +4393,35 @@ static inline Bytes stream_copy_bytes_impl(Arena *dest, int off) {
     return b;
 }
 
+/* ---- css store (2026-10-15, PELLEGRINO external stylesheets): fetched <link rel=stylesheet> / @import text must outlive
+ * the shared image bank it arrived in (the next <img> fetch resets that), so it is appended here: one static,
+ * NUL-terminated buffer (PARENA_CSS_MAX, default 256 KiB, BSS: no malloc) that PARENA code reads as an ordinary String.
+ * css_append_impl(off, maxlen) copies the SELECTED stream bank from byte `off` to its end (at most `maxlen` bytes;
+ * -1 = no limit), followed by a newline, and returns the start offset of the copy in the store (the copy is silently
+ * truncated at either cap, and -1 is returned when the store is full already); css_len_impl() is the store's length; css_reset_impl() empties it. */
+#ifndef PARENA_CSS_MAX
+#define PARENA_CSS_MAX (256u * 1024u)
+#endif
+static char g_css_buf[PARENA_CSS_MAX + 1];
+static size_t g_css_len = 0;
+static inline int css_append_impl(int off, int maxlen) {
+    size_t n = stream_cur_len();
+    if (off < 0 || (size_t)off > n) return -1;
+    size_t take = n - (size_t)off;
+    if (maxlen >= 0 && take > (size_t)maxlen) take = (size_t)maxlen;
+    if (g_css_len + 1 >= PARENA_CSS_MAX) return -1;
+    if (g_css_len + take + 1 > PARENA_CSS_MAX) take = PARENA_CSS_MAX - g_css_len - 1;
+    int start = (int)g_css_len;
+    memcpy(g_css_buf + g_css_len, stream_cur_buf() + off, take);
+    g_css_len += take;
+    g_css_buf[g_css_len++] = '\n';
+    g_css_buf[g_css_len] = '\0';
+    return start;
+}
+static inline char *css_buf_impl(void) { return g_css_buf; }
+static inline int css_len_impl(void) { return (int)g_css_len; }
+static inline void css_reset_impl(void) { g_css_len = 0; g_css_buf[0] = '\0'; }
+
 /* ---- image store (2026-10-15, PELLEGRINO <img>): decoded RGBA pixels that must outlive the arena they were
  * decoded in. One static pool + a small id table; ids are plain ints so they fit a slot. No malloc.
  * img_px_impl returns 0xRRGGBB, or -1 for a (mostly) transparent pixel / out of range. */
@@ -4466,11 +4495,11 @@ static inline int cururl_set_impl(const char *s) {
 }
 static inline char *cururl_get_impl(void) { return g_cururl; }
 
-/* slots -- PARENA_SLOTS static int cells (default 2048; was 32, then 1024, as PELLEGRINO's CSS rule table, style
+/* slots -- PARENA_SLOTS static int cells (default 4096; was 32, 1024, then 2048, as PELLEGRINO's CSS rule table, style
  * stack, images and form fields needed room): tiny mutable UI/navigation state for PARENA programs (loop/recur can't carry a dozen
  * values through function calls, and PARENA functions return one scalar). Out-of-range reads are 0. */
 #ifndef PARENA_SLOTS
-#define PARENA_SLOTS 2048
+#define PARENA_SLOTS 4096
 #endif
 static int g_slots[PARENA_SLOTS];
 static inline int slot_get_impl(int k) { return (k >= 0 && k < PARENA_SLOTS) ? g_slots[k] : 0; }

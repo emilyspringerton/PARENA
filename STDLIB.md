@@ -5254,3 +5254,10 @@ builds) only narrows trust.
 default; 1 image bank, `PARENA_IMAGE_MAX` 2 MiB); `stream-copy-bytes [off dest] -> Bytes` is the binary-safe way to
 get a response body out (a PNG contains NULs; `stream-buf` is a C string). Still one connection / one TLS session at
 a time: fetch the sub-resource only after the page stream closed. Test: `make test-img-store`.
+
+`net/stream` stylesheet store (2026-10-15, PELLEGRINO external `<link rel=stylesheet>` / `@import`): `css-append [off maxlen]
+-> start | -1` copies the *selected* bank from byte `off` to its end (at most `maxlen` bytes, -1 = no limit; plus a
+newline) into one static, NUL-terminated store (`PARENA_CSS_MAX`, 256 KiB, no malloc) and returns where the copy begins;
+`css-buf` is the whole store as a `String` (offsets stay valid as it grows), `css-len` its length, `css-reset` empties
+it. Needed because the image bank is reset by the next sub-resource fetch while stylesheet text must outlive it.
+`PARENA_SLOTS` default 2048 -> 4096 (rule/ancestor/sheet/custom-property tables). Test: `make test-img-store`.
