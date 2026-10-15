@@ -1124,6 +1124,22 @@ static inline Bytes quic_random_impl(int n, Arena *dest) {
     return out;
 }
 #endif /* !PARENA_WITH_TLS */
+#endif /* PARENA_WITH_QUIC_CRYPTO */
+
+/* Hosts that embed PELLEGRINO's generated code (SHANKPIT's lobby, tests) without HTTP/3 support compile and link
+ * unchanged: without PARENA_WITH_QUIC_CRYPTO every primitive below reports failure (zero-length Bytes), so a
+ * QUIC connection attempt fails at its first step instead of the build breaking. Nothing here weakens a check. */
+#ifndef PARENA_WITH_QUIC_CRYPTO
+static inline Bytes quic_hmac_sha256_impl(Bytes key, Bytes data, Arena *dest) { (void)key; (void)data; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_aes128gcm_seal_impl(Bytes key, Bytes iv, Bytes ad, Bytes plain, Arena *dest) { (void)key; (void)iv; (void)ad; (void)plain; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_aes128gcm_open_impl(Bytes key, Bytes iv, Bytes ad, Bytes sealed, Arena *dest) { (void)key; (void)iv; (void)ad; (void)sealed; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_aes128_ecb_impl(Bytes key, Bytes block, Arena *dest) { (void)key; (void)block; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_sha256_impl(Bytes data, Arena *dest) { (void)data; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_x25519_public_impl(Bytes secret, Arena *dest) { (void)secret; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_x25519_shared_impl(Bytes secret, Bytes peer, Arena *dest) { (void)secret; (void)peer; return bytes_alloc_impl(dest, 0); }
+static inline Bytes quic_random_impl(int n, Arena *dest) { (void)n; return bytes_alloc_impl(dest, 0); }
+#endif /* !PARENA_WITH_QUIC_CRYPTO */
+
 /* One static connection block for hosts that run under -DPARENA_NO_MALLOC (PELLEGRINO): a page stream is a
  * single connection at a time, so net/quic_client's `quic-connect-static` lays its state block over this
  * instead of an arena (an arena block would never be freed and a few navigations would exhaust the pool).
@@ -1145,7 +1161,6 @@ static inline Bytes quic_static_current_impl(void) {
     Bytes b; b.data = g_quic_static_len ? g_quic_static : NULL; b.len = g_quic_static_len; return b;
 }
 static inline int quic_static_capacity_impl(void) { return (int)PARENA_QUIC_STATIC_BYTES; }
-#endif /* PARENA_WITH_QUIC_CRYPTO */
 
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
@@ -4585,6 +4600,11 @@ out:
     return rc;
 }
 #endif /* PARENA_WITH_TLS && PARENA_WITH_QUIC_CRYPTO */
+#if !(defined(PARENA_WITH_TLS) && defined(PARENA_WITH_QUIC_CRYPTO))
+/* no TLS / no QUIC crypto in this build: a certificate can never be accepted (fail closed). */
+static inline int quic_cert_chain_verify_impl(Bytes chain, const char *host) { (void)chain; (void)host; return 1; }
+static inline int quic_cert_sig_verify_impl(Bytes chain, int scheme, Bytes content, Bytes sig) { (void)chain; (void)scheme; (void)content; (void)sig; return 1; }
+#endif
 
 static inline int stream_tls_code_impl(void) {
 #ifdef PARENA_WITH_TLS
