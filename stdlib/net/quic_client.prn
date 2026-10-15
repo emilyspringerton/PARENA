@@ -1,0 +1,744 @@
+;; stdlib/net/quic_client.prn -- QUIC v1 (RFC 9000/9001/9002 subset) + HTTP/3 GET client engine, written in
+;; PARENA over net/quic_wire, crypto/quic_crypto, net/quic_tls and net/h3_wire. Kanban #654 (PELLEGRINO
+;; HTTP/3 H3-5). Non-blocking by construction: quic-connect starts the handshake, quic-pump is called from
+;; the host's frame loop and never waits (it returns 0 while in flight), so the window keeps repainting.
+;;
+;; State model: ONE Bytes block holds the whole connection (scalar slots, secrets, keys, ids, retransmit
+;; buffers, transcript, reassembly buffers, response). Offsets are fixed constants below, so a connection
+;; needs a single allocation and no heap beyond it (PELLEGRINO is -DPARENA_NO_MALLOC). Per-pump temporaries
+;; live in a with-arena scratch that dies at the end of the call.
+;;
+;; What it does: 1-RTT-after-handshake HTTP/3 GET on bidi stream 0 with control + QPACK uni streams,
+;; full certificate/hostname verification, ACK generation (with ranges), CRYPTO + STREAM reassembly of
+;; out-of-order data (16 segments), probe-timeout retransmission of the last flight with backoff.
+;; What it deliberately does NOT do (named, not hidden): Retry / Version Negotiation (fails -5), 0-RTT,
+;; resumption, key update, connection migration, congestion control / pacing (a GET's request is a few
+;; hundred bytes; the response side is the server's congestion controller), server push, QPACK dynamic
+;; table, flow-control credit extension past the initial window (set to the body capacity), Huffman
+;; ENCODING (decoding is full).
+;;
+;; Status codes from quic-status: 0 in progress, 1 response complete, -1 timeout, -2 TLS/handshake
+;; failure, -3 certificate rejected, -4 closed by peer, -5 protocol error / unsupported, -6 local error.
+;;
+;; Slot table (I32 slots at byte 4*i; zeroed block = all 0; values -16..-1 are stored as 2^30+v):
+;;  0 status        1 tls-stage     2 udp fd        3-5 tx pn[space]     6-8 rx largest[space] (-1 none)
+;;  9-11 rx mask[space]   12-14 ack pending[space]  15-17 keys-ready[space]   18/19 crypto have[0/1]
+;;  20/21 crypto tls-pos[0/1]   22 transcript len   23 last send ms   24 pto ms   25 retries
+;;  26 peer dcid len   27 s0 have   28 s0 fin-at (-1)   29 h3 pos   30 body len   31 hdrs len
+;;  32 http status   33 hs confirmed   34 app flight sent   35 deadline ms   36 got-handshake-pkt
+;;  37 body cap   38 cert msg pos (rel CIN1)   39 progress flag   40-42 rtx len[space]
+;;  43 got-1rtt-pkt   44 server-saw-initial (peer dcid adopted)   64.. segment tables (3 x 16 x 2)
+
+(module net/quic_client)
+(import bytes string net/quic_wire net/h3_wire crypto/quic_crypto net/quic_tls)
+(export quic-connect quic-pump quic-status quic-http-status quic-body-off quic-body-len
+        quic-headers-off quic-headers-len quic-close quic-conn-size)
+
+;; ---- FFI (datagram socket + clock) ---------------------------------------------------------------
+
+(defn qcn-udp-open [(host : String @ Region) (port : I32)] : I32
+  #target
+  {:c (inline-c "quic_udp_open_impl(host, port)")})
+(defn qcn-udp-send [(fd : I32) (data : Bytes)] : I32
+  #target
+  {:c (inline-c "quic_udp_send_impl(fd, data)")})
+(defn qcn-udp-recv [(fd : I32) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "quic_udp_recv_impl(fd, dest)")})
+(defn qcn-udp-close [(fd : I32)] : I32
+  #target
+  {:c (inline-c "(quic_udp_close_impl(fd), 0)")})
+(defn qcn-now [] : I32
+  #target
+  {:c (inline-c "quic_now_ms_impl()")})
+
+;; ---- layout ----------------------------------------------------------------------------------------
+
+(defn qcn-o-sec [] : I32 2048)      ;; 8 x 32: 0 early 1 hs 2 c_hs 3 s_hs 4 master 5 c_ap 6 s_ap 7 x25519 secret
+(defn qcn-o-keys [] : I32 4096)     ;; 6 x 48: (space*2+dir): key16 iv12 hp16
+(defn qcn-o-ids [] : I32 5120)      ;; 0..19 original dcid, 32..39 our scid, 48..67 peer dcid
+(defn qcn-o-rtx [] : I32 6144)      ;; 3 x 2048
+(defn qcn-o-hdrs [] : I32 12288)    ;; 8192
+(defn qcn-o-tr [] : I32 20480)      ;; 32768 transcript
+(defn qcn-o-cin0 [] : I32 53248)    ;; 16384 Initial CRYPTO in
+(defn qcn-o-cin1 [] : I32 69632)    ;; 32768 Handshake CRYPTO in
+(defn qcn-o-rx0 [] : I32 102400)    ;; response stream, cap bytes
+(defn qcn-hdrs-cap [] : I32 8192)
+(defn qcn-tr-cap [] : I32 32768)
+(defn qcn-cin0-cap [] : I32 16384)
+(defn qcn-cin1-cap [] : I32 32768)
+
+(defn quic-conn-size [(body-cap : I32)] : I32 (+ 102400 (* 2 body-cap)))
+;; body lives after the raw stream region
+(defn qcn-o-body [(c : Bytes)] : I32 (+ 102400 (/ (- (bytes-len c) 102400) 2)))
+
+;; ---- slot access -----------------------------------------------------------------------------------
+
+(defn cget [(c : Bytes) (i : I32)] : I32
+  (let [o (* i 4)
+        x (+ (bytes-get c o)
+             (+ (* (bytes-get c (+ o 1)) 256)
+                (+ (* (bytes-get c (+ o 2)) 65536) (* (bytes-get c (+ o 3)) 16777216))))]
+    (if (>= x 1073741808) (- x 1073741824) x)))
+
+(defn cset! [(c : Bytes) (i : I32) (v : I32)] : I32
+  (let [o (* i 4) x (if (< v 0) (+ v 1073741824) v)]
+    (do (bytes-set! c o (bit-and x 255)) (bytes-set! c (+ o 1) (bit-and (shr x 8) 255))
+        (bytes-set! c (+ o 2) (bit-and (shr x 16) 255)) (bytes-set! c (+ o 3) (bit-and (shr x 24) 63))
+        0)))
+
+(defn cput! [(c : Bytes) (off : I32) (src : Bytes) (so : I32) (n : I32)] : I32
+  (loop [i 0]
+    (if (>= i n) (+ off n)
+      (do (bytes-set! c (+ off i) (bytes-get src (+ so i))) (recur (+ i 1))))))
+
+(defn csl [(c : Bytes) (off : I32) (n : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (bytes-slice c off (+ off n) dest))
+
+(defn qcn-fail! [(c : Bytes) (code : I32)] : I32
+  (if (= (cget c 0) 0) (cset! c 0 code) 0))
+
+;; ---- keys --------------------------------------------------------------------------------------------
+
+(defn qcn-key-off [(space : I32) (dir : I32)] : I32 (+ 4096 (* (+ (* space 2) dir) 48)))
+
+(defn qcn-install! [(c : Bytes) (space : I32) (dir : I32) (secret : Bytes) (dest : Arena @ Region)] : I32
+  (let [o (qcn-key-off space dir)
+        k (quic-key-from-secret secret dest)
+        iv (quic-iv-from-secret secret dest)
+        hp (quic-hp-from-secret secret dest)]
+    (do (cput! c o k 0 16) (cput! c (+ o 16) iv 0 12) (cput! c (+ o 28) hp 0 16) 0)))
+
+(defn qcn-key [(c : Bytes) (space : I32) (dir : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (csl c (qcn-key-off space dir) 16 dest))
+(defn qcn-iv [(c : Bytes) (space : I32) (dir : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (csl c (+ (qcn-key-off space dir) 16) 12 dest))
+(defn qcn-hp [(c : Bytes) (space : I32) (dir : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (csl c (+ (qcn-key-off space dir) 28) 16 dest))
+
+;; ---- sending -----------------------------------------------------------------------------------------
+
+;; Build, protect and transmit one packet carrying `frames` in `space`. Initial datagrams are padded to
+;; 1200 bytes (RFC 9000 s14.1). Returns 0, or -1 if it could not be built/sent.
+(defn qcn-send [(c : Bytes) (space : I32) (frames : Bytes) (dest : Arena @ Region)] : I32
+  (if (= (cget c (+ 15 space)) 0) -1
+    (let [pn (cget c (+ 3 space))
+          dl (cget c 26)
+          dcid (if (= space 0) (if (= (cget c 44) 1) (csl c (+ 5120 48) dl dest) (csl c 5120 8 dest))
+                               (csl c (+ 5120 48) dl dest))
+          scid (csl c (+ 5120 32) 8 dest)
+          fl (bytes-len frames)
+          ;; long header = 1+4+1+dl+1+8 (+token len 1 for Initial) + length(2) + pn(4)
+          hdr-fixed (if (= space 0) (+ (+ 22 dl) 0) (+ (+ 21 dl) 0))
+          want (if (= space 0) (if (< (+ (+ hdr-fixed fl) 16) 1200) (- (- 1200 hdr-fixed) 16) fl) fl)
+          payload (if (= want fl) frames (bytes-alloc want dest))
+          z (if (= want fl) 0 (qcn-pad-copy! payload frames fl want))]
+      (if (= space 2)
+        ;; short header: 0x43 | dcid | pn(4)
+        (let [h (bytes-alloc (+ (+ 1 dl) 4) dest)]
+          (do (bytes-set! h 0 67)
+              (cput! h 1 dcid 0 dl)
+              (let [po (+ 1 dl)]
+                (do (bytes-set! h po (bit-and (shr pn 24) 255)) (bytes-set! h (+ po 1) (bit-and (shr pn 16) 255))
+                    (bytes-set! h (+ po 2) (bit-and (shr pn 8) 255)) (bytes-set! h (+ po 3) (bit-and pn 255))
+                    (let [pkt (quic-protect (qcn-key c 2 0 dest) (qcn-iv c 2 0 dest) (qcn-hp c 2 0 dest) h po pn payload dest)]
+                      (if (= (bytes-len pkt) 0) -1
+                        (do (cset! c (+ 3 space) (+ pn 1))
+                            (qcn-udp-send (cget c 2) pkt))))))))
+        ;; long header
+        (let [h (bytes-alloc 64 dest)
+              first (if (= space 0) 195 227)               ;; Initial 0xC3 / Handshake 0xE3 (pn len 4)
+              p1 (quic-put-long-header! h 0 first 1 dcid scid)
+              p2 (if (= space 0) (quic-varint-put! h p1 0) p1)
+              plen (+ (bytes-len payload) (+ 4 16))
+              p3 (quic-varint-put! h p2 plen)]
+          (do (bytes-set! h p3 (bit-and (shr pn 24) 255)) (bytes-set! h (+ p3 1) (bit-and (shr pn 16) 255))
+              (bytes-set! h (+ p3 2) (bit-and (shr pn 8) 255)) (bytes-set! h (+ p3 3) (bit-and pn 255))
+              (let [hdr (bytes-slice h 0 (+ p3 4) dest)
+                    pkt (quic-protect (qcn-key c space 0 dest) (qcn-iv c space 0 dest) (qcn-hp c space 0 dest)
+                                      hdr p3 pn payload dest)]
+                (if (= (bytes-len pkt) 0) -1
+                  (do (cset! c (+ 3 space) (+ pn 1))
+                      (qcn-udp-send (cget c 2) pkt))))))))))
+
+;; ACK frame for what we have received in `space`: largest, delay 0, ranges decoded from the 28-bit mask.
+(defn qcn-ack-frame [(c : Bytes) (space : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [largest (cget c (+ 6 space))
+        mask (cget c (+ 9 space))
+        out (bytes-alloc 96 dest)]
+    (if (< largest 0) (bytes-alloc 0 dest)
+      (let [run0 (qcn-run-ones mask 0)
+            ;; collect up to 6 more (gap,len) ranges
+            nranges (qcn-count-ranges mask run0 0 0)
+            p0 (quic-put-ack! out 0 largest 0 run0)]
+        ;; quic-put-ack! wrote range-count 0; patch it and append ranges when present
+        (if (= nranges 0) (bytes-slice out 0 p0 dest)
+          (let [pp (qcn-write-ack-ranges out largest run0 mask nranges dest)]
+            (bytes-slice out 0 pp dest)))))))
+
+;; number of consecutive 1 bits in mask starting at bit `from`
+(defn qcn-run-ones [(mask : I32) (from : I32)] : I32
+  (loop [i from n 0]
+    (if (or (>= i 28) (= (bit-and (shr mask i) 1) 0)) n (recur (+ i 1) (+ n 1)))))
+
+(defn qcn-run-zeros [(mask : I32) (from : I32)] : I32
+  (loop [i from n 0]
+    (if (or (>= i 28) (= (bit-and (shr mask i) 1) 1)) n (recur (+ i 1) (+ n 1)))))
+
+;; how many additional (gap,len) pairs follow the first run (max 6)
+(defn qcn-count-ranges [(mask : I32) (pos : I32) (n : I32) (guard : I32)] : I32
+  (if (or (>= n 6) (>= pos 28)) n
+    (let [z (qcn-run-zeros mask pos)
+          r (qcn-run-ones mask (+ pos z))]
+      (if (or (= r 0) (>= (+ pos z) 28)) n
+        (qcn-count-ranges mask (+ (+ pos z) r) (+ n 1) guard)))))
+
+(defn qcn-write-ack-ranges [(out : Bytes) (largest : I32) (run0 : I32) (mask : I32) (n : I32) (dest : Arena @ Region)] : I32
+  ;; rewrite the whole frame: type 2, largest, delay 0, count n, first range run0, then pairs
+  (let [p1 (quic-varint-put! out 1 largest)
+        p2 (quic-varint-put! out p1 0)
+        p3 (quic-varint-put! out p2 n)
+        p4 (quic-varint-put! out p3 run0)]
+    (loop [k 0 pos run0 op p4]
+      (if (>= k n) op
+        (let [z (qcn-run-zeros mask pos)
+              r (qcn-run-ones mask (+ pos z))
+              o1 (quic-varint-put! out op (- z 1))
+              o2 (quic-varint-put! out o1 (- r 1))]
+          (recur (+ k 1) (+ (+ pos z) r) o2))))))
+
+;; copy frames then explicitly zero the padding tail (arena memory is NOT zeroed; stale bytes would be
+;; parsed by the peer as unknown frame types)
+(defn qcn-pad-copy! [(payload : Bytes) (frames : Bytes) (fl : I32) (want : I32)] : I32
+  (do (cput! payload 0 frames 0 fl)
+      (loop [i fl] (if (>= i want) 0 (do (bytes-set! payload i 0) (recur (+ i 1)))))))
+
+;; Send pending ACKs (one ACK-only packet per space that has something to acknowledge).
+(defn qcn-flush-one [(c : Bytes) (s : I32) (dest : Arena @ Region)] : I32
+  (let [f (qcn-ack-frame c s dest)]
+    (if (> (bytes-len f) 0)
+      (do (qcn-send c s f dest) (cset! c (+ 12 s) 0))
+      0)))
+
+(defn qcn-flush-acks [(c : Bytes) (dest : Arena @ Region)] : I32
+  (loop [s 0]
+    (if (>= s 3) 0
+      (do (if (and (= (cget c (+ 12 s)) 1) (= (cget c (+ 15 s)) 1))
+            (qcn-flush-one c s dest)
+            0)
+          (recur (+ s 1))))))
+
+;; ---- receive bookkeeping --------------------------------------------------------------------------
+
+(defn qcn-note-rx! [(c : Bytes) (space : I32) (pn : I32)] : I32
+  (let [L (cget c (+ 6 space)) m (cget c (+ 9 space))]
+    (if (< L 0)
+      (do (cset! c (+ 6 space) pn) (cset! c (+ 9 space) 0) 0)
+      (if (> pn L)
+        (let [d (- pn L)]
+          (do (cset! c (+ 9 space)
+                     (if (> d 28) 0
+                       (bit-or (shl (bit-and m (shr 268435455 d)) d) (shl 1 (- d 1)))))
+              (cset! c (+ 6 space) pn)
+              0))
+        (if (< pn L)
+          (let [i (- (- L 1) pn)]
+            (if (< i 28) (cset! c (+ 9 space) (bit-or m (shl 1 i))) 0))
+          0)))))
+
+;; ---- segment reassembly -----------------------------------------------------------------------------
+;; list 0/1 = Initial/Handshake CRYPTO, 2 = response stream. `have` slot per list: 18, 19, 27.
+
+(defn qcn-have-slot [(list : I32)] : I32 (if (= list 2) 27 (+ 18 list)))
+
+;; Record [off, off+len) as received; advance the contiguous prefix and absorb pending segments.
+(defn qcn-seg-add! [(c : Bytes) (list : I32) (off : I32) (len : I32)] : I32
+  (let [hs (qcn-have-slot list)
+        have (cget c hs)
+        base (+ 64 (* list 32))
+        e (+ off len)]
+    (if (<= len 0) 0
+      (if (<= off have)
+        (do (cset! c hs (if (> e have) e have))
+            (qcn-seg-absorb! c list 0))
+        (qcn-seg-stash! c base off e 0)))))
+
+(defn qcn-seg-stash! [(c : Bytes) (base : I32) (s : I32) (e : I32) (i : I32)] : I32
+  (if (>= i 16) 0
+    (if (= (cget c (+ (+ base (* i 2)) 1)) 0)
+      (do (cset! c (+ base (* i 2)) s) (cset! c (+ (+ base (* i 2)) 1) e) 0)
+      (qcn-seg-stash! c base s e (+ i 1)))))
+
+(defn qcn-seg-absorb! [(c : Bytes) (list : I32) (round : I32)] : I32
+  (if (>= round 17) 0
+    (let [hs (qcn-have-slot list)
+          base (+ 64 (* list 32))
+          changed (qcn-seg-pass! c hs base 0 0)]
+      (if (= changed 1) (qcn-seg-absorb! c list (+ round 1)) 0))))
+
+(defn qcn-seg-pass! [(c : Bytes) (hs : I32) (base : I32) (i : I32) (changed : I32)] : I32
+  (if (>= i 16) changed
+    (let [s (cget c (+ base (* i 2))) e (cget c (+ (+ base (* i 2)) 1)) have (cget c hs)]
+      (if (and (> e 0) (<= s have))
+        (do (cset! c hs (if (> e have) e have))
+            (cset! c (+ base (* i 2)) 0) (cset! c (+ (+ base (* i 2)) 1) 0)
+            (qcn-seg-pass! c hs base (+ i 1) 1))
+        (qcn-seg-pass! c hs base (+ i 1) changed)))))
+
+;; ---- frame processing ------------------------------------------------------------------------------
+
+(defn qcn-crypto-in! [(c : Bytes) (space : I32) (p : Bytes) (off : I32) (doff : I32) (len : I32)] : I32
+  (let [base (if (= space 0) (qcn-o-cin0) (qcn-o-cin1))
+        cap (if (= space 0) (qcn-cin0-cap) (qcn-cin1-cap))]
+    (if (or (= space 2) (< off 0) (< len 0) (> (+ off len) cap)) 0
+      (do (cput! c (+ base off) p doff len)
+          (qcn-seg-add! c space off len)
+          (cset! c 39 1)
+          0))))
+
+(defn qcn-stream-in! [(c : Bytes) (p : Bytes) (pos : I32)] : I32
+  (let [id (quic-stream-id p pos)]
+    (if (not (= id 0)) 0
+      (let [off (quic-stream-offset p pos)
+            doff (quic-stream-data-off p pos)
+            len (quic-stream-data-len p pos)
+            cap (cget c 37)]
+        (if (or (< off 0) (or (< doff 0) (or (< len 0) (> (+ off len) cap)))) (qcn-fail! c -5)
+          (do (cput! c (+ (qcn-o-rx0) off) p doff len)
+              (qcn-seg-add! c 2 off len)
+              (if (quic-stream-fin? p pos) (cset! c 28 (+ off len)) 0)
+              (cset! c 39 1)
+              0))))))
+
+;; Walk the frames of one decrypted packet payload.
+(defn qcn-frames! [(c : Bytes) (space : I32) (p : Bytes) (dest : Arena @ Region)] : I32
+  (loop [pos 0 elicit 0]
+    (if (>= pos (bytes-len p))
+      (do (if (= elicit 1) (cset! c (+ 12 space) 1) 0) 0)
+      (let [t (quic-frame-type p pos)
+            end (quic-frame-end p pos)]
+        (if (or (< t 0) (< end 0)) (qcn-fail! c -5)
+          (if (= t 0) (recur end elicit)
+            (if (or (= t 2) (= t 3)) (do (cset! c 39 1) (recur end elicit))
+              (if (= t 6)
+                (do (qcn-crypto-in! c space p (quic-crypto-offset p pos) (quic-crypto-data-off p pos) (quic-crypto-data-len p pos))
+                    (recur end 1))
+                (if (and (>= t 8) (<= t 15))
+                  (do (qcn-stream-in! c p pos) (recur end 1))
+                  (if (= t 30)
+                    (do (cset! c 33 1) (recur end 1))
+                    (if (or (= t 28) (= t 29))
+                      (qcn-fail! c -4)
+                      (recur end 1)))))))))))) 
+
+;; ---- TLS driver ---------------------------------------------------------------------------------------
+
+(defn qcn-tr-append! [(c : Bytes) (src-abs : I32) (n : I32)] : I32
+  (let [tl (cget c 22)]
+    (if (> (+ tl n) (qcn-tr-cap)) (qcn-fail! c -2)
+      (do (cput! c (+ (qcn-o-tr) tl) c src-abs n)
+          (cset! c 22 (+ tl n))
+          0))))
+
+(defn qcn-tr-hash [(c : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (qt-sha256 (csl c (qcn-o-tr) (cget c 22) dest) dest))
+
+;; one handshake message available at (space, tls-pos)? returns message length incl. header or 0
+(defn qcn-msg-avail [(c : Bytes) (space : I32)] : I32
+  (let [base (if (= space 0) (qcn-o-cin0) (qcn-o-cin1))
+        pos (cget c (+ 20 space))
+        have (cget c (+ 18 space))]
+    (if (< (- have pos) 4) 0
+      (let [l (qt-hs-len c (+ base pos))]
+        (if (or (< l 0) (> (+ l 4) (- have pos))) 0 (+ l 4))))))
+
+(defn qcn-on-server-hello! [(c : Bytes) (abs : I32) (n : I32) (dest : Arena @ Region)] : I32
+  (if (not (qt-sh-valid? c abs dest)) (qcn-fail! c -2)
+    (let [ko (qt-sh-keyshare-off c abs)
+          priv (csl c (+ 2048 (* 7 32)) 32 dest)
+          shared (qt-x25519-shared priv (csl c ko 32 dest) dest)]
+      (if (= (bytes-len shared) 0) (qcn-fail! c -2)
+        (do (qcn-tr-append! c abs n)
+            (let [h (qcn-tr-hash c dest)
+                  early (qt-early-secret dest)
+                  hs (qt-handshake-secret early shared dest)
+                  chs (qt-traffic-secret hs "c hs traffic" h dest)
+                  shs (qt-traffic-secret hs "s hs traffic" h dest)
+                  master (qt-master-secret hs dest)]
+              (do (cput! c (+ 2048 32) hs 0 32)
+                  (cput! c (+ 2048 64) chs 0 32)
+                  (cput! c (+ 2048 96) shs 0 32)
+                  (cput! c (+ 2048 128) master 0 32)
+                  (qcn-install! c 1 0 chs dest)
+                  (qcn-install! c 1 1 shs dest)
+                  (cset! c 16 1)
+                  (cset! c 1 1)
+                  0)))))))
+
+(defn qcn-ee-ok? [(c : Bytes) (abs : I32) (n : I32)] : Bool
+  (let [es (+ abs 6) ee (+ abs n)
+        alpn (qt-ext-off c es ee 16)
+        tp (qt-ext-off c es ee 57)]
+    (and (>= alpn 0) (and (>= tp 0)
+         ;; ALPN: list len(2) name len(1)=2 'h' '3'
+         (and (= (qt-ext-len c es ee 16) 5)
+              (and (= (bytes-get c (+ alpn 2)) 2) (and (= (bytes-get c (+ alpn 3)) 104) (= (bytes-get c (+ alpn 4)) 51))))))))
+
+(defn qcn-bytes-eq-c? [(c : Bytes) (a : I32) (b : Bytes) (n : I32)] : Bool
+  (loop [i 0] (if (>= i n) true (if (= (bytes-get c (+ a i)) (bytes-get b i)) (recur (+ i 1)) false))))
+
+;; Process one Handshake-space message at absolute offset `abs`, length n. host is the SNI/verify name.
+(defn qcn-on-hs-msg! [(c : Bytes) (abs : I32) (n : I32) (host : String @ Region) (dest : Arena @ Region)] : I32
+  (let [t (qt-hs-type c abs) stage (cget c 1)]
+    (if (= t 8)
+      (if (and (= stage 1) (qcn-ee-ok? c abs n))
+        (do (qcn-tr-append! c abs n) (cset! c 1 2) 0)
+        (qcn-fail! c -2))
+      (if (= t 11)
+        (if (= stage 2)
+          (let [chain (qt-chain-from-certificate c abs dest)]
+            (if (or (= (bytes-len chain) 0) (not (= (qt-chain-verify chain host) 0))) (qcn-fail! c -3)
+              (do (cset! c 38 (- abs (qcn-o-cin1)))
+                  (qcn-tr-append! c abs n)
+                  (cset! c 1 3)
+                  0)))
+          (qcn-fail! c -2))
+        (if (= t 15)
+          (if (= stage 3)
+            (let [chain (qt-chain-from-certificate c (+ (qcn-o-cin1) (cget c 38)) dest)
+                  h (qcn-tr-hash c dest)]
+              (if (not (= (qt-cv-verify c abs chain h dest) 0)) (qcn-fail! c -3)
+                (do (qcn-tr-append! c abs n) (cset! c 1 4) 0)))
+            (qcn-fail! c -2))
+          (if (= t 20)
+            (if (and (= stage 4) (= n 36))
+              (let [shs (csl c (+ 2048 96) 32 dest)
+                    h (qcn-tr-hash c dest)
+                    want (qt-finished-verify-data shs h dest)]
+                (if (not (qcn-bytes-eq-c? c (+ abs 4) want 32)) (qcn-fail! c -2)
+                  (do (qcn-tr-append! c abs n)
+                      (qcn-finish-handshake! c dest))))
+              (qcn-fail! c -2))
+            (qcn-fail! c -2)))))))
+
+;; Server Finished verified and in the transcript: derive application keys, answer with our Finished.
+(defn qcn-finish-handshake! [(c : Bytes) (dest : Arena @ Region)] : I32
+  (let [h (qcn-tr-hash c dest)
+        master (csl c (+ 2048 128) 32 dest)
+        cap (qt-traffic-secret master "c ap traffic" h dest)
+        sap (qt-traffic-secret master "s ap traffic" h dest)
+        chs (csl c (+ 2048 64) 32 dest)
+        fin (qt-build-finished (qt-finished-verify-data chs h dest) dest)]
+    (do (cput! c (+ 2048 160) cap 0 32)
+        (cput! c (+ 2048 192) sap 0 32)
+        (qcn-install! c 2 0 cap dest)
+        (qcn-install! c 2 1 sap dest)
+        (cset! c 17 1)
+        (cset! c 1 5)
+        ;; Handshake packet: ACK (everything we got) + CRYPTO(0, client Finished)
+        (let [out (bytes-alloc 256 dest)
+              ack (qcn-ack-frame c 1 dest)
+              p1 (qcn-cput-ack out ack)
+              p2 (quic-put-crypto! out p1 0 fin)
+              frames (bytes-slice out 0 p2 dest)]
+          (do (cput! c (+ (qcn-o-rtx) 2048) frames 0 p2)
+              (cset! c 41 p2)
+              (cset! c 12 0) (cset! c 13 0)
+              (qcn-send c 1 frames dest)
+              (cset! c 23 (qcn-now))
+              0)))))
+
+(defn qcn-cput-ack [(out : Bytes) (ack : Bytes)] : I32
+  (let [n (bytes-len ack)]
+    (loop [i 0] (if (>= i n) n (do (bytes-set! out i (bytes-get ack i)) (recur (+ i 1)))))))
+
+;; Drive the TLS machine as far as buffered handshake data allows.
+(defn qcn-tls-step! [(c : Bytes) (host : String @ Region) (dest : Arena @ Region)] : I32
+  (loop [guard 0]
+    (if (or (> guard 12) (not (= (cget c 0) 0)) (>= (cget c 1) 5)) 0
+      (let [stage (cget c 1)
+            space (if (= stage 0) 0 1)
+            n (qcn-msg-avail c space)]
+        (if (= n 0) 0
+          (let [base (if (= space 0) (qcn-o-cin0) (qcn-o-cin1))
+                pos (cget c (+ 20 space))
+                abs (+ base pos)]
+            (do (if (= stage 0)
+                  (if (= (qt-hs-type c abs) 2) (qcn-on-server-hello! c abs n dest) (qcn-fail! c -2))
+                  (qcn-on-hs-msg! c abs n host dest))
+                (cset! c (+ 20 space) (+ pos n))
+                (recur (+ guard 1)))))))))
+
+;; ---- application flight ------------------------------------------------------------------------------
+
+;; Control stream (id 2) with SETTINGS, QPACK encoder (6) and decoder (10) stream types, then the
+;; request on bidi stream 0 with FIN.
+(defn qcn-app-flight [(c : Bytes) (host : String @ Region) (path : String @ Region) (dest : Arena @ Region)] : Bytes @ Region
+  (let [out (bytes-alloc 1500 dest)
+        ctl (bytes-alloc 16 dest)
+        c1 (qt-b! ctl 0 0)
+        c2 (h3-put-settings! ctl c1)
+        ctl-b (bytes-slice ctl 0 c2 dest)
+        one (bytes-alloc 1 dest)
+        hb (bytes-alloc 1024 dest)
+        hdr-end (qpack-put-get-request! hb 4 (bytes-from-string host dest) (bytes-from-string path dest)
+                                        (bytes-from-string "user-agent" dest) (bytes-from-string "pellegrino-h3" dest))
+        plen (- hdr-end 4)
+        ;; frame header = type(1) + varint(len): place it immediately before the field section at 4
+        start (- 4 (+ 1 (quic-varint-size plen)))
+        hl (h3-put-headers-frame-header! hb start plen)
+        req (bytes-slice hb start hdr-end dest)
+        one2 (bytes-alloc 1 dest)
+        one3 (bytes-alloc 1 dest)
+        z1 (qt-b! one2 0 2)
+        enc (bytes-slice one2 0 1 dest)
+        z2 (qt-b! one3 0 3)
+        decb (bytes-slice one3 0 1 dest)
+        p1 (quic-put-stream! out 0 2 0 ctl-b false)
+        p2 (quic-put-stream! out p1 6 0 enc false)
+        p3 (quic-put-stream! out p2 10 0 decb false)
+        p4 (quic-put-stream! out p3 0 0 req true)]
+    (bytes-slice out 0 p4 dest)))
+
+;; ---- datagram receive ------------------------------------------------------------------------------
+
+(defn qcn-space-of [(dg : Bytes)] : I32
+  (if (quic-pkt-long? dg)
+    (let [t (quic-long-type dg)] (if (= t 0) 0 (if (= t 2) 1 -1)))
+    2))
+
+;; Handle one packet starting at `pos` inside datagram dg; returns the position of the next coalesced
+;; packet (or the end), -1 to stop (drop the rest).
+;; a long-header packet ends at pn-off + Length; trim trailing coalesced packets off
+(defn qcn-trim-pkt [(dg : Bytes) (pn-off : I32) (space : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (if (>= space 2) dg
+    (let [l (quic-long-length dg)]
+      (if (or (< l 0) (> (+ pn-off l) (bytes-len dg))) dg (bytes-slice dg 0 (+ pn-off l) dest)))))
+
+(defn qcn-adopt-scid! [(c : Bytes) (pkt : Bytes)] : I32
+  (let [sl (quic-long-scid-len pkt) so (quic-long-scid-off pkt)]
+    (if (and (>= sl 0) (<= sl 20))
+      (do (cput! c (+ 5120 48) pkt so sl) (cset! c 26 sl) (cset! c 44 1) 0)
+      0)))
+
+(defn qcn-packet! [(c : Bytes) (dg : Bytes) (host : String @ Region) (dest : Arena @ Region)] : I32
+  (let [space (qcn-space-of dg)]
+    (if (< space 0) 0
+      (if (= (cget c (+ 15 space)) 0) 0
+        (let [long? (= space 0)
+              pn-off (if (< space 2) (quic-long-pn-off dg) (quic-short-pn-off 8))
+              ver-ok (if (< space 2) (= (quic-long-version dg) 1) true)]
+          (if (or (< pn-off 0) (not ver-ok)) 0
+            (let [largest (cget c (+ 6 space))
+                  pkt (qcn-trim-pkt dg pn-off space dest)
+                  hp (qcn-hp c space 1 dest)
+                  pn (quic-unprotect-pn pkt pn-off hp largest dest)
+                  pl (if (< pn 0) (bytes-alloc 0 dest)
+                       (quic-unprotect pkt pn-off (qcn-key c space 1 dest) (qcn-iv c space 1 dest) hp largest dest))]
+              (if (= (bytes-len pl) 0) 0
+                (do (qcn-note-rx! c space pn)
+                    ;; adopt the server's chosen connection id from its first Initial
+                    (if (and (= space 0) (= (cget c 44) 0)) (qcn-adopt-scid! c pkt) 0)
+                    (if (= space 1) (cset! c 36 1) 0)
+                    (if (= space 2) (cset! c 43 1) 0)
+                    (qcn-frames! c space pl dest)
+                    (if (< space 2) (+ pn-off (quic-long-length pkt)) (bytes-len dg))))))))))) 
+
+(defn qcn-datagram! [(c : Bytes) (dg : Bytes) (host : String @ Region) (dest : Arena @ Region)] : I32
+  (loop [pos 0 guard 0]
+    (if (or (>= pos (bytes-len dg)) (> guard 4)) 0
+      (let [rest (if (= pos 0) dg (bytes-slice dg pos (bytes-len dg) dest))
+            n (qcn-packet! c rest host dest)]
+        (if (<= n 0) 0 (recur (+ pos n) (+ guard 1)))))))
+
+;; ---- H3 response parsing -------------------------------------------------------------------------
+
+(defn qcn-status-from-headers [(hb : Bytes) (n : I32)] : I32
+  ;; ":status: NNN\n" -- first line
+  (if (and (>= n 12) (= (bytes-get hb 0) 58))
+    (+ (* (- (bytes-get hb 9) 48) 100) (+ (* (- (bytes-get hb 10) 48) 10) (- (bytes-get hb 11) 48)))
+    0))
+
+(defn qcn-h3-headers! [(c : Bytes) (po : I32) (end : I32) (dest : Arena @ Region)] : I32
+  (if (not (= (cget c 32) 0)) 0
+    (let [tmp (bytes-alloc 8192 dest)
+          n (qpack-decode-section c po end tmp)]
+      (if (< n 0) (qcn-fail! c -5)
+        (do (cput! c (qcn-o-hdrs) tmp 0 (if (> n 8192) 8192 n))
+            (cset! c 31 n)
+            (qcn-set-status! c (qcn-status-from-headers tmp n)))))))
+
+(defn qcn-set-status! [(c : Bytes) (st : I32)] : I32
+  (if (and (>= st 200) (< st 1000)) (cset! c 32 st) 0))
+
+(defn qcn-h3-data! [(c : Bytes) (po : I32) (len : I32)] : I32
+  (let [bl (cget c 30) bo (qcn-o-body c)]
+    (if (> (+ bl len) (cget c 37)) (qcn-fail! c -5)
+      (do (cput! c (+ bo bl) c po len) (cset! c 30 (+ bl len)) 0))))
+
+(defn qcn-h3-frame! [(c : Bytes) (rx : I32) (pos : I32) (end : I32) (dest : Arena @ Region)] : I32
+  (let [t (h3-frame-type c (+ rx pos))
+        po (h3-frame-payload-off c (+ rx pos))
+        len (h3-frame-len c (+ rx pos))]
+    (if (= t 1) (qcn-h3-headers! c po end dest)
+      (if (= t 0) (qcn-h3-data! c po len) 0))))
+
+(defn qcn-h3-parse! [(c : Bytes) (dest : Arena @ Region)] : I32
+  (loop [guard 0]
+    (if (> guard 64) 0
+      (let [pos (cget c 29)
+            have (cget c 27)
+            rx (qcn-o-rx0)]
+        (if (>= pos have) 0
+          (let [end (h3-frame-end c (+ rx pos))]
+            (if (or (< end 0) (> (- end rx) have)) 0
+              (do (qcn-h3-frame! c rx pos end dest)
+                  (cset! c 29 (- end rx))
+                  (recur (+ guard 1))))))))))
+
+;; ---- public API ------------------------------------------------------------------------------------
+
+(defn quic-status [(c : Bytes)] : I32 (cget c 0))
+(defn quic-http-status [(c : Bytes)] : I32 (cget c 32))
+(defn quic-body-off [(c : Bytes)] : I32 (qcn-o-body c))
+(defn quic-body-len [(c : Bytes)] : I32 (cget c 30))
+(defn quic-headers-off [(c : Bytes)] : I32 (qcn-o-hdrs))
+(defn quic-headers-len [(c : Bytes)] : I32 (let [n (cget c 31)] (if (> n 8192) 8192 n)))
+
+;; transport parameter: id varint, length varint, value varint
+(defn qcn-tp-num! [(out : Bytes) (op : I32) (id : I32) (v : I32)] : I32
+  (let [p1 (quic-varint-put! out op id)
+        p2 (quic-varint-put! out p1 (quic-varint-size v))]
+    (quic-varint-put! out p2 v)))
+
+(defn qcn-transport-params [(c : Bytes) (body-cap : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [out (bytes-alloc 160 dest)
+        p1 (qcn-tp-num! out 0 1 30000)
+        p2 (qcn-tp-num! out p1 3 1472)
+        p3 (qcn-tp-num! out p2 4 (+ body-cap 65536))
+        p4 (qcn-tp-num! out p3 5 body-cap)
+        p5 (qcn-tp-num! out p4 6 0)
+        p6 (qcn-tp-num! out p5 7 65536)
+        p7 (qcn-tp-num! out p6 8 0)
+        p8 (qcn-tp-num! out p7 9 16)
+        p9 (qcn-tp-num! out p8 14 2)
+        p10 (quic-varint-put! out p9 15)
+        p11 (quic-varint-put! out p10 8)
+        p12 (cput! out p11 c (+ 5120 32) 8)]
+    (bytes-slice out 0 p12 dest)))
+
+;; Start a connection and send the ClientHello. Returns the connection block (zero-length on failure
+;; to open the socket / gather randomness). host doubles as SNI, certificate name and :authority;
+;; body-cap bounds the response body (and the advertised flow-control window); timeout-ms is the overall
+;; deadline. Drive it with quic-pump(c, host, path).
+(defn quic-connect [(host : String @ Region) (port : I32) (body-cap : I32) (timeout-ms : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (let [c (bytes-alloc (quic-conn-size body-cap) dest)
+        fd (qcn-udp-open host port)]
+    (if (< fd 0) (bytes-alloc 0 dest)
+      (let [rnd (qt-random 96 dest)]
+        (if (< (bytes-len rnd) 96) (bytes-alloc 0 dest)
+          (let [z0 (loop [i 0] (if (>= i (bytes-len c)) 0 (do (bytes-set! c i 0) (recur (+ i 1)))))
+                z1 (cput! c 5120 rnd 0 8)                  ;; original dcid
+                z2 (cput! c (+ 5120 32) rnd 8 8)           ;; our scid
+                z3 (cput! c (+ 5120 48) rnd 0 8)           ;; peer dcid starts as the original
+                z4 (cset! c 26 8)
+                secret (bytes-slice rnd 16 48 dest)
+                pub (qt-x25519-public secret dest)
+                z5 (cput! c (+ 2048 224) secret 0 32)
+                z6 (cset! c 2 fd)
+                z7 (cset! c 37 body-cap)
+                z8 (cset! c 28 -1)
+                z9 (cset! c 6 -1)
+                z10 (cset! c 7 -1)
+                z11 (cset! c 8 -1)
+                z12 (cset! c 24 300)
+                z13 (cset! c 35 (+ (qcn-now) timeout-ms))
+                dcid (csl c 5120 8 dest)
+                z14 (qcn-install! c 0 0 (quic-initial-client-secret dcid dest) dest)
+                z15 (qcn-install! c 0 1 (quic-initial-server-secret dcid dest) dest)
+                z16 (cset! c 15 1)
+                tp (qcn-transport-params c body-cap dest)
+                ch (qt-build-client-hello (bytes-slice rnd 48 80 dest) pub host "h3" tp dest)
+                fr (bytes-alloc 2048 dest)
+                fe (quic-put-crypto! fr 0 0 ch)
+                frames (bytes-slice fr 0 fe dest)
+                z17 (cput! c (qcn-o-tr) ch 0 (bytes-len ch))
+                z18 (cset! c 22 (bytes-len ch))
+                z19 (cput! c (qcn-o-rtx) frames 0 fe)
+                z20 (cset! c 40 fe)
+                sent (qcn-send c 0 frames dest)
+                z21 (cset! c 23 (qcn-now))]
+            c))))))
+
+;; send the request once 1-RTT keys exist and it has not been sent
+(defn qcn-send-app! [(c : Bytes) (host : String @ Region) (path : String @ Region) (t : Arena @ Region)] : I32
+  (let [fl (qcn-app-flight c host path t)]
+    (do (cput! c (+ (qcn-o-rtx) 4096) fl 0 (bytes-len fl))
+        (cset! c 42 (bytes-len fl))
+        (cset! c 34 1)
+        (qcn-send c 2 fl t)
+        (cset! c 23 (qcn-now))
+        0)))
+
+(defn qcn-retransmit! [(c : Bytes) (now : I32) (t : Arena @ Region)] : I32
+  (do (if (and (> (cget c 40) 0) (= (cget c 36) 0))
+        (qcn-send c 0 (csl c (qcn-o-rtx) (cget c 40) t) t) 0)
+      (if (and (> (cget c 41) 0) (and (= (cget c 43) 0) (= (cget c 33) 0)))
+        (qcn-send c 1 (csl c (+ (qcn-o-rtx) 2048) (cget c 41) t) t) 0)
+      (if (and (> (cget c 42) 0) (= (cget c 27) 0))
+        (qcn-send c 2 (csl c (+ (qcn-o-rtx) 4096) (cget c 42) t) t) 0)
+      (cset! c 23 now)
+      (cset! c 24 (* (cget c 24) 2))
+      (cset! c 25 (+ (cget c 25) 1))
+      (if (> (cget c 25) 8) (qcn-fail! c -1) 0)))
+
+(defn qcn-timers! [(c : Bytes) (t : Arena @ Region)] : I32
+  (let [now (qcn-now)]
+    (if (> now (cget c 35)) (qcn-fail! c -1)
+      (if (= (cget c 39) 1)
+        (do (cset! c 39 0) (cset! c 23 now) (cset! c 24 300) 0)
+        (if (and (= (cget c 0) 0) (> (- now (cget c 23)) (cget c 24)))
+          (qcn-retransmit! c now t)
+          0)))))
+
+(defn qcn-drain! [(c : Bytes) (host : String @ Region) (t : Arena @ Region)] : I32
+  (loop [n 0]
+    (if (>= n 32) 0
+      (let [dg (qcn-udp-recv (cget c 2) t)]
+        (if (= (bytes-len dg) 0) 0
+          (do (qcn-datagram! c dg host t) (recur (+ n 1))))))))
+
+(defn qcn-complete? [(c : Bytes)] : Bool
+  (and (>= (cget c 28) 0) (and (>= (cget c 27) (cget c 28)) (= (cget c 29) (cget c 28)))))
+
+;; Advance the connection. Never blocks. Returns the status (0 in progress, 1 done, <0 failed).
+(defn quic-pump [(c : Bytes) (host : String @ Region) (path : String @ Region)] : I32
+  (if (not (= (cget c 0) 0)) (cget c 0)
+    (with-arena [t :region/scratch 65536]
+      (do (qcn-drain! c host &mut t)
+          (qcn-tls-step! c host &mut t)
+          (if (and (= (cget c 0) 0) (and (= (cget c 34) 0) (= (cget c 17) 1)))
+            (qcn-send-app! c host path &mut t)
+            0)
+          (if (= (cget c 0) 0) (qcn-h3-parse! c &mut t) 0)
+          (if (and (= (cget c 0) 0) (qcn-complete? c))
+            (if (> (cget c 32) 0) (cset! c 0 1) (qcn-fail! c -5))
+            0)
+          (qcn-flush-acks c &mut t)
+          (qcn-timers! c &mut t)
+          (cget c 0)))))
+
+;; Best-effort CONNECTION_CLOSE (application, code 0) and socket close. Safe to call more than once.
+(defn qcn-send-close! [(c : Bytes) (t : Arena @ Region)] : I32
+  (let [o (bytes-alloc 16 t)
+        e (quic-put-connection-close! o 0 0 0 (bytes-alloc 0 t))]
+    (qcn-send c 2 (bytes-slice o 0 e t) t)))
+
+(defn quic-close [(c : Bytes)] : I32
+  (if (< (cget c 2) 0) 0
+    (with-arena [t :region/scratch 4096]
+      (do (if (= (cget c 17) 1) (qcn-send-close! c &mut t) 0)
+          (qcn-udp-close (cget c 2))
+          (cset! c 2 -1)
+          0))))

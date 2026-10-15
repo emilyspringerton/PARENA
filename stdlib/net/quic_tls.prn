@@ -1,0 +1,308 @@
+;; stdlib/net/quic_tls.prn -- TLS 1.3 client handshake messages + key schedule for QUIC (RFC 8446 +
+;; RFC 9001 s4/s8). Kanban #653 (PELLEGRINO HTTP/3 H3-4). Why this exists: mbedTLS has no QUIC hooks (its
+;; record layer cannot be bypassed), so the handshake runs here, as plain messages carried in QUIC CRYPTO
+;; frames. Every cryptographic primitive is still the audited library's (SHA-256, HMAC, X25519, x509 chain
+;; + signature verification via the quic_*_impl glue in runtime/parena_runtime.h) -- only the protocol
+;; state machine and key schedule are PARENA, per Core Deps Are PARENA-First.
+;;
+;; Scope (honest): one suite (TLS_AES_128_GCM_SHA256, 0x1301), one group (x25519), no PSK/0-RTT/resumption,
+;; no client certificates, no HelloRetryRequest (reported as an error), no key update. Certificate chain
+;; verification + hostname check and the CertificateVerify signature are ALWAYS enforced -- there is no
+;; switch. Requires PARENA_WITH_QUIC_CRYPTO + PARENA_WITH_TLS at link time (cert verification).
+;;
+;; Style: stateless functions over Bytes; the caller (net/quic_client.prn) owns the transcript buffer.
+
+(module net/quic_tls)
+(import bytes string crypto/quic_crypto)
+(export qt-b! qt-sha256 qt-random qt-x25519-public qt-x25519-shared
+        qt-build-client-hello qt-hs-type qt-hs-len qt-hs-end
+        qt-sh-valid? qt-sh-keyshare-off
+        qt-ext-off qt-ext-len
+        qt-chain-from-certificate qt-chain-verify qt-cv-scheme qt-cv-sig-off qt-cv-sig-len qt-cv-verify
+        qt-early-secret qt-handshake-secret qt-master-secret qt-traffic-secret
+        qt-finished-key qt-finished-verify-data qt-build-finished
+        qt-transport-params-ext)
+
+;; ---- FFI primitives -----------------------------------------------------------------------------
+
+(defn qt-sha256 [(data : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "quic_sha256_impl(data, dest)")})
+
+(defn qt-random [(n : I32) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "quic_random_impl(n, dest)")})
+
+(defn qt-x25519-public [(secret : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "quic_x25519_public_impl(secret, dest)")})
+
+(defn qt-x25519-shared [(secret : Bytes) (peer : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "quic_x25519_shared_impl(secret, peer, dest)")})
+
+(defn qt-raw-chain-verify [(chain : Bytes) (host : String @ Region)] : I32
+  #target
+  {:c (inline-c "quic_cert_chain_verify_impl(chain, host)")})
+
+(defn qt-raw-sig-verify [(chain : Bytes) (scheme : I32) (content : Bytes) (sig : Bytes)] : I32
+  #target
+  {:c (inline-c "quic_cert_sig_verify_impl(chain, scheme, content, sig)")})
+
+;; ---- byte helpers --------------------------------------------------------------------------------
+
+(defn qt-get16 [(b : Bytes) (p : I32)] : I32
+  (+ (* (bytes-get b p) 256) (bytes-get b (+ p 1))))
+
+(defn qt-get24 [(b : Bytes) (p : I32)] : I32
+  (+ (* (bytes-get b p) 65536) (+ (* (bytes-get b (+ p 1)) 256) (bytes-get b (+ p 2)))))
+
+(defn qt-put16! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (do (bytes-set! out op (bit-and (shr v 8) 255)) (bytes-set! out (+ op 1) (bit-and v 255)) (+ op 2)))
+
+(defn qt-put24! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (do (bytes-set! out op (bit-and (shr v 16) 255)) (bytes-set! out (+ op 1) (bit-and (shr v 8) 255))
+      (bytes-set! out (+ op 2) (bit-and v 255)) (+ op 3)))
+
+(defn qt-put-bytes! [(out : Bytes) (op : I32) (src : Bytes)] : I32
+  (let [n (bytes-len src)]
+    (loop [i 0]
+      (if (>= i n) (+ op n)
+        (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1)))))))
+
+(defn qt-put-str! [(out : Bytes) (op : I32) (s : String @ Region)] : I32
+  (let [n (length s)]
+    (loop [i 0]
+      (if (>= i n) (+ op n)
+        (do (bytes-set! out (+ op i) (bit-and (char-at s i) 255)) (recur (+ i 1)))))))
+
+;; set one byte, return the next position (bytes-set! itself is void, so it cannot be a let binding)
+(defn qt-b! [(out : Bytes) (p : I32) (v : I32)] : I32
+  (do (bytes-set! out p v) (+ p 1)))
+
+;; ---- messages --------------------------------------------------------------------------------------
+
+;; Handshake message header: type(1) length(3). These read a message at pos in a buffer.
+(defn qt-hs-type [(b : Bytes) (pos : I32)] : I32 (bytes-get b pos))
+(defn qt-hs-len [(b : Bytes) (pos : I32)] : I32
+  (if (> (+ pos 4) (bytes-len b)) -1 (qt-get24 b (+ pos 1))))
+;; Position after the whole message, or -1 if it is not fully buffered.
+(defn qt-hs-end [(b : Bytes) (pos : I32)] : I32
+  (let [l (qt-hs-len b pos)]
+    (if (or (< l 0) (> (+ (+ pos 4) l) (bytes-len b))) -1 (+ (+ pos 4) l))))
+
+;; quic_transport_parameters extension code point (RFC 9001 s8.2).
+(defn qt-transport-params-ext [] : I32 57)
+
+;; ClientHello (RFC 8446 s4.1.2) with the QUIC-required shape: empty legacy_session_id, one cipher suite,
+;; TLS 1.3 only, x25519 key share, ALPN, SNI, quic_transport_parameters. Returns the framed message
+;; (type 1, u24 length, body).
+(defn qt-build-client-hello [(random : Bytes) (pub : Bytes) (host : String @ Region) (alpn : String @ Region)
+                             (params : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [hl (length host)
+        al (length alpn)
+        pl (bytes-len params)
+        buf (bytes-alloc (+ 256 (+ hl (+ al pl))) dest)
+        ;; body starts at 4 (message header filled in after)
+        p0 4
+        p1 (qt-put16! buf p0 771)                         ;; legacy_version 0x0303
+        p2 (qt-put-bytes! buf p1 random)                  ;; random(32)
+        p2b (qt-b! buf p2 0)                              ;; legacy_session_id length 0
+        p3 (qt-put16! buf p2b 2)                          ;; cipher_suites length
+        p4 (qt-put16! buf p3 4865)                        ;; TLS_AES_128_GCM_SHA256
+        p4b (qt-b! buf p4 1)                              ;; compression methods: 1
+        p4c (qt-b! buf p4b 0)                             ;; null
+        ext-len-at p4c
+        e0 (+ ext-len-at 2)
+        ;; server_name (0)
+        e1 (qt-put16! buf e0 0)
+        e2 (qt-put16! buf e1 (+ hl 5))
+        e3 (qt-put16! buf e2 (+ hl 3))
+        e3b (qt-b! buf e3 0)
+        e4 (qt-put16! buf e3b hl)
+        e5 (qt-put-str! buf e4 host)
+        ;; supported_groups (10): x25519
+        e6 (qt-put16! buf e5 10)
+        e7 (qt-put16! buf e6 4)
+        e8 (qt-put16! buf e7 2)
+        e9 (qt-put16! buf e8 29)
+        ;; signature_algorithms (13): ecdsa_p256_sha256, rsa_pss_rsae_sha256/384, ecdsa_p384_sha384
+        e10 (qt-put16! buf e9 13)
+        e11 (qt-put16! buf e10 10)
+        e12 (qt-put16! buf e11 8)
+        e13 (qt-put16! buf e12 1027)
+        e14 (qt-put16! buf e13 2052)
+        e15 (qt-put16! buf e14 2053)
+        e16 (qt-put16! buf e15 1283)
+        ;; supported_versions (43): TLS 1.3
+        e17 (qt-put16! buf e16 43)
+        e18 (qt-put16! buf e17 3)
+        e18b (qt-b! buf e18 2)
+        e19 (qt-put16! buf e18b 772)
+        ;; key_share (51): one x25519 share
+        e20 (qt-put16! buf e19 51)
+        e21 (qt-put16! buf e20 38)
+        e22 (qt-put16! buf e21 36)
+        e23 (qt-put16! buf e22 29)
+        e24 (qt-put16! buf e23 32)
+        e25 (qt-put-bytes! buf e24 pub)
+        ;; ALPN (16)
+        e26 (qt-put16! buf e25 16)
+        e27 (qt-put16! buf e26 (+ al 3))
+        e28 (qt-put16! buf e27 (+ al 1))
+        e28b (qt-b! buf e28 al)
+        e29 (qt-put-str! buf e28b alpn)
+        ;; quic_transport_parameters (0x39)
+        e30 (qt-put16! buf e29 57)
+        e31 (qt-put16! buf e30 pl)
+        e32 (qt-put-bytes! buf e31 params)
+        z7 (qt-put16! buf ext-len-at (- e32 e0))
+        z8 (qt-b! buf 0 1)
+        z9 (qt-put24! buf 1 (- e32 4))]
+    (bytes-slice buf 0 e32 dest)))
+
+;; ---- ServerHello -------------------------------------------------------------------------------------
+
+;; RFC 8446 s4.1.3: HelloRetryRequest is a ServerHello with this fixed random. We do not support it.
+(defn qt-hrr-random [(dest : Arena @ Region)] : Bytes @ Region
+  (quic-from-hex "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c" dest))
+
+(defn qt-bytes-eq? [(a : Bytes) (ao : I32) (b : Bytes) (n : I32)] : Bool
+  (loop [i 0]
+    (if (>= i n) true
+      (if (= (bytes-get a (+ ao i)) (bytes-get b i)) (recur (+ i 1)) false))))
+
+;; Offset of extension `t` inside the extension block [pos, end); -1 if absent / malformed.
+(defn qt-ext-off [(b : Bytes) (pos : I32) (end : I32) (t : I32)] : I32
+  (loop [p pos]
+    (if (> (+ p 4) end) -1
+      (let [et (qt-get16 b p) el (qt-get16 b (+ p 2))]
+        (if (> (+ (+ p 4) el) end) -1
+          (if (= et t) (+ p 4) (recur (+ (+ p 4) el))))))))
+
+(defn qt-ext-len [(b : Bytes) (pos : I32) (end : I32) (t : I32)] : I32
+  (let [o (qt-ext-off b pos end t)] (if (< o 0) -1 (qt-get16 b (- o 2)))))
+
+;; ServerHello body starts at pos+4 (after the handshake header) inside buffer b.
+;; Layout: version(2) random(32) sid_len(1) sid cipher(2) comp(1) ext_len(2) exts.
+(defn qt-sh-exts-start [(b : Bytes) (pos : I32)] : I32
+  (let [bp (+ pos 4)]
+    (if (> (+ bp 35) (bytes-len b)) -1
+      (let [sl (bytes-get b (+ bp 34))
+            p (+ (+ bp 35) sl)]
+        (if (> (+ p 5) (bytes-len b)) -1 (+ p 5))))))
+
+;; True if this is a TLS 1.3 ServerHello choosing TLS_AES_128_GCM_SHA256 with a negotiated TLS 1.3
+;; supported_versions and an x25519 key_share, and is not a HelloRetryRequest.
+(defn qt-sh-valid? [(b : Bytes) (pos : I32) (dest : Arena @ Region)] : Bool
+  (let [bp (+ pos 4) es (qt-sh-exts-start b pos)]
+    (if (or (< es 0) (not (= (bytes-get b pos) 2))) false
+      (let [sl (bytes-get b (+ bp 34))
+            cs (qt-get16 b (+ (+ bp 35) sl))
+            ee (+ (+ bp 3) (qt-get24 b (+ pos 1)))
+            sv (qt-ext-off b es ee 43)
+            ks (qt-ext-off b es ee 51)]
+        (and (not (qt-bytes-eq? b (+ bp 2) (qt-hrr-random dest) 32))
+             (and (= cs 4865)
+                  (and (>= sv 0) (and (= (qt-get16 b sv) 772)
+                       (and (>= ks 0) (and (= (qt-get16 b ks) 29) (= (qt-get16 b (+ ks 2)) 32)))))))))))
+
+;; Offset of the server's 32-byte x25519 public key in the ServerHello, or -1.
+(defn qt-sh-keyshare-off [(b : Bytes) (pos : I32)] : I32
+  (let [bp (+ pos 4) es (qt-sh-exts-start b pos)]
+    (if (< es 0) -1
+      (let [ee (+ (+ bp 3) (qt-get24 b (+ pos 1)))
+            ks (qt-ext-off b es ee 51)]
+        (if (< ks 0) -1 (+ ks 4))))))
+
+;; ---- Certificate / CertificateVerify / Finished ----------------------------------------------------
+
+;; Certificate message at pos (framed) -> chain in the glue's format: repeated [u24 len][DER], leaf first,
+;; per-entry extensions stripped. Zero-length on malformed input or an empty chain.
+(defn qt-chain-from-certificate [(b : Bytes) (pos : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [bp (+ pos 4)
+        mend (+ bp (qt-get24 b (+ pos 1)))
+        ctx (bytes-get b bp)
+        lp (+ (+ bp 1) ctx)]
+    (if (or (> mend (bytes-len b)) (> (+ lp 3) mend)) (bytes-alloc 0 dest)
+      (let [lend (+ (+ lp 3) (qt-get24 b lp))
+            out (bytes-alloc (+ (- lend lp) 8) dest)]
+        (if (> lend mend) (bytes-alloc 0 dest)
+          (loop [p (+ lp 3) op 0]
+            (if (>= p lend) (bytes-slice out 0 op dest)
+              (if (> (+ p 3) lend) (bytes-alloc 0 dest)
+                (let [cl (qt-get24 b p)
+                      el-at (+ (+ p 3) cl)]
+                  (if (or (<= cl 0) (> (+ el-at 2) lend)) (bytes-alloc 0 dest)
+                    (let [op1 (qt-put24! out op cl)
+                          op2 (loop [i 0]
+                                (if (>= i cl) (+ op1 cl)
+                                  (do (bytes-set! out (+ op1 i) (bytes-get b (+ (+ p 3) i))) (recur (+ i 1)))))]
+                      (recur (+ (+ el-at 2) (qt-get16 b el-at)) op2))))))))))))
+
+;; 0 iff the chain verifies to a trusted root and matches `host`.
+(defn qt-chain-verify [(chain : Bytes) (host : String @ Region)] : I32
+  (qt-raw-chain-verify chain host))
+
+(defn qt-cv-scheme [(b : Bytes) (pos : I32)] : I32 (qt-get16 b (+ pos 4)))
+(defn qt-cv-sig-len [(b : Bytes) (pos : I32)] : I32 (qt-get16 b (+ pos 6)))
+(defn qt-cv-sig-off [(b : Bytes) (pos : I32)] : I32 (+ pos 8))
+
+;; CertificateVerify's signed content (RFC 8446 s4.4.3): 64 spaces || context string || 0x00 || H(transcript).
+(defn qt-cv-content [(transcript-hash : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [out (bytes-alloc (+ (+ 64 33) (+ 1 (bytes-len transcript-hash))) dest)]
+    (do (loop [i 0] (if (>= i 64) 0 (do (bytes-set! out i 32) (recur (+ i 1)))))
+        (let [p (qt-put-str! out 64 "TLS 1.3, server CertificateVerify")]
+          (do (bytes-set! out p 0)
+              (qt-put-bytes! out (+ p 1) transcript-hash)
+              out)))))
+
+;; 0 iff the CertificateVerify message at pos (framed) is a valid signature by the chain's leaf over the
+;; transcript hash H(ClientHello..Certificate).
+(defn qt-cv-verify [(b : Bytes) (pos : I32) (chain : Bytes) (transcript-hash : Bytes) (dest : Arena @ Region)] : I32
+  (let [sl (qt-cv-sig-len b pos) so (qt-cv-sig-off b pos)]
+    (if (or (< sl 1) (> (+ so sl) (bytes-len b))) 1
+      (qt-raw-sig-verify chain (qt-cv-scheme b pos) (qt-cv-content transcript-hash dest)
+                         (bytes-slice b so (+ so sl) dest)))))
+
+;; ---- key schedule (RFC 8446 s7.1), SHA-256 ---------------------------------------------------------
+
+(defn qt-zeros [(n : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [z (bytes-alloc n dest)]
+    (do (loop [i 0] (if (>= i n) 0 (do (bytes-set! z i 0) (recur (+ i 1))))) z)))
+
+;; Early Secret with no PSK: HKDF-Extract(0^32 salt, 0^32 ikm).
+(defn qt-early-secret [(dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-extract (qt-zeros 32 dest) (qt-zeros 32 dest) dest))
+
+;; Handshake Secret = Extract(Derive-Secret(early,"derived",""), ECDHE).
+(defn qt-handshake-secret [(early : Bytes) (ecdhe : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [empty-hash (qt-sha256 (bytes-alloc 0 dest) dest)
+        derived (quic-hkdf-expand-label early "derived" empty-hash 32 dest)]
+    (quic-hkdf-extract derived ecdhe dest)))
+
+;; Master Secret = Extract(Derive-Secret(handshake,"derived",""), 0^32).
+(defn qt-master-secret [(hs : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [empty-hash (qt-sha256 (bytes-alloc 0 dest) dest)
+        derived (quic-hkdf-expand-label hs "derived" empty-hash 32 dest)]
+    (quic-hkdf-extract derived (qt-zeros 32 dest) dest)))
+
+;; Derive-Secret(secret, label, transcript-hash): label is e.g. "c hs traffic" / "s hs traffic" /
+;; "c ap traffic" / "s ap traffic".
+(defn qt-traffic-secret [(secret : Bytes) (label : String @ Region) (transcript-hash : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-expand-label secret label transcript-hash 32 dest))
+
+(defn qt-finished-key [(traffic-secret : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-expand-label traffic-secret "finished" (bytes-alloc 0 dest) 32 dest))
+
+;; verify_data = HMAC(finished_key, transcript-hash).
+(defn qt-finished-verify-data [(traffic-secret : Bytes) (transcript-hash : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hmac-sha256 (qt-finished-key traffic-secret dest) transcript-hash dest))
+
+;; Framed Finished message: 0x14, u24 32, verify_data.
+(defn qt-build-finished [(verify-data : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [out (bytes-alloc 36 dest)]
+    (do (bytes-set! out 0 20)
+        (qt-put24! out 1 32)
+        (qt-put-bytes! out 4 verify-data)
+        out)))

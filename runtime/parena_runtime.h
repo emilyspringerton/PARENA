@@ -1080,6 +1080,44 @@ static inline Bytes quic_aes128_ecb_impl(Bytes key, Bytes block, Arena *dest) {
     mbedtls_aes_free(&c);
     return rc == 0 ? out : bytes_alloc_impl(dest, 0);
 }
+/* SHA-256(data) -> 32 bytes (TLS 1.3 transcript hash). */
+static inline Bytes quic_sha256_impl(Bytes data, Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, 32);
+    const mbedtls_md_info_t *mi = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!mi || mbedtls_md(mi, data.data, (size_t)data.len, out.data) != 0) return bytes_alloc_impl(dest, 0);
+    return out;
+}
+/* X25519 via the vendored Monocypher (runtime/aead/, link monocypher.c): public key from a 32-byte
+ * secret, and the ECDH shared secret. A low-order peer point (all-zero result) -> zero-length. */
+#include "aead/monocypher.h"
+static inline Bytes quic_x25519_public_impl(Bytes secret, Arena *dest) {
+    if (secret.len != 32) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, 32);
+    crypto_x25519_public_key(out.data, secret.data);
+    return out;
+}
+static inline Bytes quic_x25519_shared_impl(Bytes secret, Bytes peer, Arena *dest) {
+    if (secret.len != 32 || peer.len != 32) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, 32);
+    crypto_x25519(out.data, secret.data, peer.data);
+    unsigned char acc = 0;
+    for (int i = 0; i < 32; i++) acc |= out.data[i];
+    return acc ? out : bytes_alloc_impl(dest, 0);
+}
+/* n cryptographically random bytes (mbedTLS entropy: getrandom / BCryptGenRandom). n <= 4096. */
+#include <mbedtls/entropy.h>
+static inline Bytes quic_random_impl(int n, Arena *dest) {
+    static mbedtls_entropy_context ent;
+    static int ent_ready = 0;
+    if (n < 0 || n > 4096) return bytes_alloc_impl(dest, 0);
+    if (!ent_ready) { mbedtls_entropy_init(&ent); ent_ready = 1; }
+    Bytes out = bytes_alloc_impl(dest, n);
+    for (int off = 0; off < n; off += 32) {
+        size_t c = (size_t)(n - off) < 32 ? (size_t)(n - off) : 32;
+        if (mbedtls_entropy_func(&ent, out.data + off, c) != 0) return bytes_alloc_impl(dest, 0);
+    }
+    return out;
+}
 #endif /* PARENA_WITH_QUIC_CRYPTO */
 
 /* string_concat -- real, minimal `string/concat` implementation
@@ -4041,6 +4079,63 @@ static inline int stream_connect_impl(const char *host, int port) {
     return sock == PARENA_BAD_SOCK ? -1 : (int)sock;
 }
 
+/* ---- QUIC client datagram socket (binary-safe, non-blocking, connected UDP) -------------------
+ * crypto/quic_crypto + net/quic_client talk through these. Unlike udp_*_impl above, payloads are Bytes
+ * (embedded NULs are the norm in QUIC) and nothing here ever blocks except quic_udp_wait_impl. */
+static inline int quic_udp_open_impl(const char *host, int port) {
+#ifdef _WIN32
+    { static int wsa_up = 0; if (!wsa_up) { WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return -1; wsa_up = 1; } }
+#endif
+    struct addrinfo hints, *res = NULL, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || res == NULL) return -1;
+    parena_sock_t sock = PARENA_BAD_SOCK;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sock == PARENA_BAD_SOCK) continue;
+        if (!stream_fd_ok((int)sock) || stream_set_nonblocking(sock) != 0 ||
+            connect(sock, rp->ai_addr, (int)rp->ai_addrlen) != 0) {
+            parena_sock_close(sock);
+            sock = PARENA_BAD_SOCK;
+            continue;
+        }
+        break;
+    }
+    freeaddrinfo(res);
+    return sock == PARENA_BAD_SOCK ? -1 : (int)sock;
+}
+static inline int quic_udp_send_impl(int fd, Bytes data) {
+    if (!stream_fd_ok(fd) || data.len <= 0) return -1;
+    return (int)send((parena_sock_t)fd, (const char *)data.data, (size_t)data.len, 0);
+}
+/* One datagram, or zero-length Bytes if none is pending (or on error). */
+static inline Bytes quic_udp_recv_impl(int fd, Arena *dest) {
+    unsigned char buf[2048];
+    if (!stream_fd_ok(fd)) return bytes_alloc_impl(dest, 0);
+    int n = (int)recv((parena_sock_t)fd, (char *)buf, sizeof buf, 0);
+    if (n <= 0) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, n);
+    memcpy(out.data, buf, (size_t)n);
+    return out;
+}
+/* 1 if a datagram is readable within ms milliseconds, else 0. */
+static inline int quic_udp_wait_impl(int fd, int ms) {
+    if (!stream_fd_ok(fd)) return 0;
+    fd_set f;
+    FD_ZERO(&f);
+    FD_SET((parena_sock_t)fd, &f);
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    return select(fd + 1, &f, NULL, NULL, &tv) > 0 ? 1 : 0;
+}
+static inline void quic_udp_close_impl(int fd) { if (stream_fd_ok(fd)) parena_sock_close((parena_sock_t)fd); }
+static inline int quic_now_ms_impl(void) { return (int)(stream_now_ms() & 0x3fffffff); }
+
 /* ---- TLS half of net/stream (see the header comment above) ---------------------------------- */
 #ifdef PARENA_WITH_TLS
 #ifdef PARENA_TLS_STATIC_HEAP
@@ -4373,6 +4468,77 @@ static inline int stream_tls_send(const char *s) { (void)s; return -1; }
 static inline int stream_tls_pull(void) { return -1; }
 static inline void stream_tls_teardown(void) {}
 #endif /* PARENA_WITH_TLS */
+
+#if defined(PARENA_WITH_TLS) && defined(PARENA_WITH_QUIC_CRYPTO)
+/* QUIC's TLS 1.3 handshake runs in PARENA (net/quic_tls.prn); only certificate-chain validation and the
+ * CertificateVerify signature check are delegated to mbedTLS x509/pk -- never hand-rolled. Trust roots,
+ * heap and entropy are exactly net/stream's TLS half's (SSL_CERT_FILE / system bundle / cacert.pem next to
+ * the exe); verification and hostname checking are always on, there is no switch. */
+#include <mbedtls/pk.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/rsa.h>
+/* chain = repeated [u24 big-endian length][DER certificate], leaf first. Returns 0 only for a chain that
+ * verifies to a trusted root AND matches `host`. Non-zero otherwise (never an exception to fail open). */
+static inline int quic_cert_chain_verify_impl(Bytes chain, const char *host) {
+    if (stream_tls_global_init() != 0) return 1;
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int p = 0, n = 0, rc = 1;
+    while (p + 3 <= chain.len) {
+        int l = (chain.data[p] << 16) | (chain.data[p + 1] << 8) | chain.data[p + 2];
+        p += 3;
+        if (l <= 0 || p + l > chain.len) { rc = 2; goto out; }
+        if (mbedtls_x509_crt_parse_der(&crt, chain.data + p, (size_t)l) != 0) { rc = 3; goto out; }
+        p += l;
+        n++;
+    }
+    if (n == 0 || p != chain.len || host == NULL || host[0] == '\0') { rc = 4; goto out; }
+    {
+        uint32_t flags = 0;
+        rc = mbedtls_x509_crt_verify(&crt, &g_stream_tls_ca, NULL, host, &flags, NULL, NULL) == 0 && flags == 0 ? 0 : 5;
+    }
+out:
+    mbedtls_x509_crt_free(&crt);
+    return rc;
+}
+/* Verifies a TLS 1.3 CertificateVerify signature by the leaf of `chain` over `content`.
+ * schemes: 0x0403 ecdsa_secp256r1_sha256, 0x0503 ecdsa_secp384r1_sha384, 0x0804 rsa_pss_rsae_sha256,
+ * 0x0805 rsa_pss_rsae_sha384. Anything else -> failure. Returns 0 if the signature is valid. */
+static inline int quic_cert_sig_verify_impl(Bytes chain, int scheme, Bytes content, Bytes sig) {
+    if (chain.len < 4) return 1;
+    int l = (chain.data[0] << 16) | (chain.data[1] << 8) | chain.data[2];
+    if (l <= 0 || 3 + l > chain.len) return 1;
+    mbedtls_md_type_t md;
+    int pss;
+    switch (scheme) {
+        case 0x0403: md = MBEDTLS_MD_SHA256; pss = 0; break;
+        case 0x0503: md = MBEDTLS_MD_SHA384; pss = 0; break;
+        case 0x0804: md = MBEDTLS_MD_SHA256; pss = 1; break;
+        case 0x0805: md = MBEDTLS_MD_SHA384; pss = 1; break;
+        default: return 1;
+    }
+    const mbedtls_md_info_t *mi = mbedtls_md_info_from_type(md);
+    unsigned char h[64];
+    if (!mi || mbedtls_md(mi, content.data, (size_t)content.len, h) != 0) return 1;
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int rc = 1;
+    if (mbedtls_x509_crt_parse_der(&crt, chain.data + 3, (size_t)l) != 0) goto out;
+    if (pss) {
+        mbedtls_pk_rsassa_pss_options o;
+        o.mgf1_hash_id = md;
+        o.expected_salt_len = (int)mbedtls_md_get_size(mi);
+        rc = mbedtls_pk_verify_ext(MBEDTLS_PK_RSASSA_PSS, &o, &crt.pk, md, h, mbedtls_md_get_size(mi),
+                                   sig.data, (size_t)sig.len) == 0 ? 0 : 1;
+    } else {
+        rc = mbedtls_pk_can_do(&crt.pk, MBEDTLS_PK_ECDSA) &&
+             mbedtls_pk_verify(&crt.pk, md, h, mbedtls_md_get_size(mi), sig.data, (size_t)sig.len) == 0 ? 0 : 1;
+    }
+out:
+    mbedtls_x509_crt_free(&crt);
+    return rc;
+}
+#endif /* PARENA_WITH_TLS && PARENA_WITH_QUIC_CRYPTO */
 
 static inline int stream_tls_code_impl(void) {
 #ifdef PARENA_WITH_TLS

@@ -5261,3 +5261,17 @@ newline) into one static, NUL-terminated store (`PARENA_CSS_MAX`, 256 KiB, no ma
 `css-buf` is the whole store as a `String` (offsets stay valid as it grows), `css-len` its length, `css-reset` empties
 it. Needed because the image bank is reset by the next sub-resource fetch while stylesheet text must outlive it.
 `PARENA_SLOTS` default 2048 -> 4096 (rule/ancestor/sheet/custom-property tables). Test: `make test-img-store`.
+
+## net/quic_wire, net/h3_wire, crypto/quic_crypto, net/quic_tls, net/quic_client -- HTTP/3 (2026-10-15)
+
+Built for PELLEGRINO (kanban #650-#654; Core Deps Are PARENA-First). Layering, bottom up:
+
+| module | what | verified against |
+|---|---|---|
+| `net/quic_wire` | QUIC v1 varints, header fields, frame walk/build | RFC 9000 A.1, RFC 9001 A.2/A.3 |
+| `net/h3_wire` | HTTP/3 frames, QPACK static codec + Huffman decode | RFC 7541, pylsqpack (both directions) |
+| `crypto/quic_crypto` | HKDF-Expand-Label, Initial keys, nonce, header protection, packet protect/unprotect | RFC 9001 A.1, aioquic byte-for-byte |
+| `net/quic_tls` | TLS 1.3 client messages + key schedule (one suite, x25519) | aioquic server (full handshake) |
+| `net/quic_client` | non-blocking connection engine + HTTP/3 GET | aioquic server: loss, reorder, bad certs |
+
+Build flags: `PARENA_WITH_QUIC_CRYPTO` (+ `PARENA_WITH_TLS` for certificate validation), link mbedcrypto/mbedx509 and `runtime/aead/monocypher.c`. Public API: `quic-connect(host, port, body-cap, timeout-ms, dest) -> conn`, `quic-pump(conn, host, path) -> 0 | 1 | <0`, then `quic-http-status`, `quic-body-off/-len`, `quic-headers-off/-len` (offsets into the conn block), `quic-close`. Status codes are documented at the top of `net/quic_client.prn`, along with everything deliberately not built. Tests: `make test-quic-wire test-h3-wire test-quic-crypto test-quic-client` (the last two need `MBEDTLS_DIR`/`MBEDTLS_LIB`; the last also python3 + aioquic + openssl).
