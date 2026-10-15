@@ -1,0 +1,320 @@
+;; stdlib/net/h3_wire.prn -- HTTP/3 (RFC 9114) frame codec + QPACK (RFC 9204) field-section codec, static
+;; table only (QPACK_MAX_TABLE_CAPACITY = 0, QPACK_BLOCKED_STREAMS = 0: we advertise no dynamic table, so a
+;; conforming peer never references one -- a dynamic reference is reported as an error, never guessed at).
+;; Pure PARENA over Bytes, no FFI. Kanban #651 (PELLEGRINO HTTP/3 H3-2). Depends on bytes.
+;;
+;; Tables are not hand-typed: the 99-entry QPACK static table and the 257 Huffman code lengths were
+;; extracted programmatically from independent implementations (pylsqpack / python-hpack) and the Huffman
+;; code was verified canonical, which is why decode needs only the code lengths (RFC 7541 Appendix B).
+;;
+;; Honest limits: encoder never Huffman-codes (H=0 literals are valid and legal); no dynamic table, no
+;; PUSH_PROMISE handling beyond skipping frames; decode buffers are caller-provided and bounds-checked.
+
+(module net/h3_wire)
+(import bytes)
+(export h3-put-frame-header! h3-frame-type h3-frame-len h3-frame-payload-off h3-frame-end
+        h3-put-settings! h3-put-data-frame! h3-put-headers-frame-header!
+        qpack-int-read qpack-int-len qpack-put-int!
+        qpack-put-section-prefix! qpack-put-indexed-static! qpack-put-literal-nameref! qpack-put-literal!
+        qpack-put-get-request! qpack-decode-section qpack-huffman-decode qpack-static-name-len
+        h3-static-count)
+
+;; ---- HTTP/3 frames: type varint, length varint, payload (RFC 9114 s7) --------------------------
+;; DATA 0x0, HEADERS 0x1, CANCEL_PUSH 0x3, SETTINGS 0x4, PUSH_PROMISE 0x5, GOAWAY 0x7, MAX_PUSH_ID 0xd.
+;; Unidirectional stream types: control 0x00, push 0x01, QPACK encoder 0x02, QPACK decoder 0x03.
+
+;; local varint helpers (same wire format as net/quic_wire; duplicated so this module stands alone)
+(defn h3w-vlen [(b : Bytes) (pos : I32)] : I32
+  (let [f (bytes-get b pos)]
+    (if (< f 0) -1
+      (let [n (shl 1 (shr f 6))] (if (> (+ pos n) (bytes-len b)) -1 n)))))
+
+(defn h3w-vacc [(b : Bytes) (i : I32) (end : I32) (acc : I32)] : I32
+  (if (>= i end) acc
+    (if (> acc 8388607) -1 (h3w-vacc b (+ i 1) end (+ (* acc 256) (bytes-get b i))))))
+
+(defn h3w-vread [(b : Bytes) (pos : I32)] : I32
+  (let [n (h3w-vlen b pos)]
+    (if (< n 0) -1
+      (let [first (bit-and (bytes-get b pos) 63)]
+        (if (= n 1) first (h3w-vacc b (+ pos 1) (+ pos n) first))))))
+
+(defn h3w-vput! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (if (or (< v 0) (> (+ op 4) (bytes-len out))) -1
+    (if (< v 64) (do (bytes-set! out op v) (+ op 1))
+      (if (< v 16384)
+        (do (bytes-set! out op (bit-or 64 (shr v 8))) (bytes-set! out (+ op 1) (bit-and v 255)) (+ op 2))
+        (if (< v 1073741824)
+          (do (bytes-set! out op (bit-or 128 (bit-and (shr v 24) 63)))
+              (bytes-set! out (+ op 1) (bit-and (shr v 16) 255))
+              (bytes-set! out (+ op 2) (bit-and (shr v 8) 255))
+              (bytes-set! out (+ op 3) (bit-and v 255))
+              (+ op 4))
+          -1)))))
+
+(defn h3-put-frame-header! [(out : Bytes) (op : I32) (type : I32) (len : I32)] : I32
+  (let [p (h3w-vput! out op type)]
+    (if (< p 0) -1 (h3w-vput! out p len))))
+
+(defn h3-frame-type [(b : Bytes) (pos : I32)] : I32 (h3w-vread b pos))
+
+(defn h3-frame-len [(b : Bytes) (pos : I32)] : I32
+  (let [n (h3w-vlen b pos)] (if (< n 0) -1 (h3w-vread b (+ pos n)))))
+
+(defn h3-frame-payload-off [(b : Bytes) (pos : I32)] : I32
+  (let [n (h3w-vlen b pos)]
+    (if (< n 0) -1
+      (let [m (h3w-vlen b (+ pos n))] (if (< m 0) -1 (+ pos (+ n m)))))))
+
+;; Position after the whole frame, or -1 if the payload is not fully present.
+(defn h3-frame-end [(b : Bytes) (pos : I32)] : I32
+  (let [po (h3-frame-payload-off b pos) l (h3-frame-len b pos)]
+    (if (or (< po 0) (or (< l 0) (> (+ po l) (bytes-len b)))) -1 (+ po l))))
+
+;; SETTINGS frame advertising QPACK_MAX_TABLE_CAPACITY (0x01) = 0 and QPACK_BLOCKED_STREAMS (0x07) = 0.
+(defn h3-put-settings! [(out : Bytes) (op : I32)] : I32
+  (let [p (h3-put-frame-header! out op 4 4)]
+    (if (or (< p 0) (> (+ p 4) (bytes-len out))) -1
+      (do (bytes-set! out p 1) (bytes-set! out (+ p 1) 0)
+          (bytes-set! out (+ p 2) 7) (bytes-set! out (+ p 3) 0)
+          (+ p 4)))))
+
+(defn h3-put-headers-frame-header! [(out : Bytes) (op : I32) (len : I32)] : I32
+  (h3-put-frame-header! out op 1 len))
+
+(defn h3w-copy! [(out : Bytes) (op : I32) (src : Bytes) (cnt : I32)] : I32
+  (if (or (< op 0) (> (+ op cnt) (bytes-len out))) -1
+    (loop [i 0]
+      (if (>= i cnt) (+ op cnt)
+        (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1)))))))
+
+(defn h3-put-data-frame! [(out : Bytes) (op : I32) (data : Bytes)] : I32
+  (let [p (h3-put-frame-header! out op 0 (bytes-len data))]
+    (if (< p 0) -1 (h3w-copy! out p data (bytes-len data)))))
+
+;; ---- QPACK prefix integers (RFC 7541 s5.1 / RFC 9204 s4.1.1) -----------------------------------
+
+(defn h3q-ext [(b : Bytes) (i : I32) (acc : I32) (m : I32)] : I32
+  (let [x (bytes-get b i)]
+    (if (or (< x 0) (> m 21)) -1
+      (let [acc2 (+ acc (shl (bit-and x 127) m))]
+        (if (< acc2 0) -1
+          (if (>= x 128) (h3q-ext b (+ i 1) acc2 (+ m 7)) acc2))))))
+
+(defn h3q-ext-end [(b : Bytes) (i : I32)] : I32
+  (let [x (bytes-get b i)]
+    (if (< x 0) -1 (if (>= x 128) (h3q-ext-end b (+ i 1)) (+ i 1)))))
+
+;; Value of the prefix integer at pos with `prefix` low bits in the first byte; -1 if bad/truncated.
+(defn qpack-int-read [(b : Bytes) (pos : I32) (prefix : I32)] : I32
+  (let [f (bytes-get b pos) mask (- (shl 1 prefix) 1)]
+    (if (< f 0) -1
+      (if (< (bit-and f mask) mask) (bit-and f mask)
+        (h3q-ext b (+ pos 1) mask 0)))))
+
+;; Bytes consumed by that integer; -1 if truncated.
+(defn qpack-int-len [(b : Bytes) (pos : I32) (prefix : I32)] : I32
+  (let [f (bytes-get b pos) mask (- (shl 1 prefix) 1)]
+    (if (< f 0) -1
+      (if (< (bit-and f mask) mask) 1
+        (let [e (h3q-ext-end b (+ pos 1))] (if (< e 0) -1 (- e pos)))))))
+
+(defn h3q-put-ext! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (if (>= op (bytes-len out)) -1
+    (if (< v 128) (do (bytes-set! out op v) (+ op 1))
+      (do (bytes-set! out op (bit-or (bit-and v 127) 128)) (h3q-put-ext! out (+ op 1) (shr v 7))))))
+
+;; Writes `flags` (the high bits above the prefix) | integer with `prefix` bits. Returns new op or -1.
+(defn qpack-put-int! [(out : Bytes) (op : I32) (flags : I32) (prefix : I32) (v : I32)] : I32
+  (let [mask (- (shl 1 prefix) 1)]
+    (if (or (< v 0) (>= op (bytes-len out))) -1
+      (if (< v mask) (do (bytes-set! out op (bit-or flags v)) (+ op 1))
+        (do (bytes-set! out op (bit-or flags mask)) (h3q-put-ext! out (+ op 1) (- v mask)))))))
+
+;; ---- static table (RFC 9204 Appendix A): 99 entries, "name|value|" pairs -----------------------
+
+(defn h3-static-count [] : I32 99)
+
+(defn h3q-static [] : String
+  ":authority||:path|/|age|0|content-disposition||content-length|0|cookie||date||etag||if-modified-since||if-none-match||last-modified||link||location||referer||set-cookie||:method|CONNECT|:method|DELETE|:method|GET|:method|HEAD|:method|OPTIONS|:method|POST|:method|PUT|:scheme|http|:scheme|https|:status|103|:status|200|:status|304|:status|404|:status|503|accept|*/*|accept|application/dns-message|accept-encoding|gzip, deflate, br|accept-ranges|bytes|access-control-allow-headers|cache-control|access-control-allow-headers|content-type|access-control-allow-origin|*|cache-control|max-age=0|cache-control|max-age=2592000|cache-control|max-age=604800|cache-control|no-cache|cache-control|no-store|cache-control|public, max-age=31536000|content-encoding|br|content-encoding|gzip|content-type|application/dns-message|content-type|application/javascript|content-type|application/json|content-type|application/x-www-form-urlencoded|content-type|image/gif|content-type|image/jpeg|content-type|image/png|content-type|text/css|content-type|text/html; charset=utf-8|content-type|text/plain|content-type|text/plain;charset=utf-8|range|bytes=0-|strict-transport-security|max-age=31536000|strict-transport-security|max-age=31536000; includesubdomains|strict-transport-security|max-age=31536000; includesubdomains; preload|vary|accept-encoding|vary|origin|x-content-type-options|nosniff|x-xss-protection|1; mode=block|:status|100|:status|204|:status|206|:status|302|:status|400|:status|403|:status|421|:status|425|:status|500|accept-language||access-control-allow-credentials|FALSE|access-control-allow-credentials|TRUE|access-control-allow-headers|*|access-control-allow-methods|get|access-control-allow-methods|get, post, options|access-control-allow-methods|options|access-control-expose-headers|content-length|access-control-request-headers|content-type|access-control-request-method|get|access-control-request-method|post|alt-svc|clear|authorization||content-security-policy|script-src 'none'; object-src 'none'; base-uri 'none'|early-data|1|expect-ct||forwarded||if-range||origin||purpose|prefetch|server||timing-allow-origin|*|upgrade-insecure-requests|1|user-agent||x-forwarded-for||x-frame-options|deny|x-frame-options|sameorigin|")
+
+;; Huffman code length of each of the 257 symbols as chr(48+len) (RFC 7541 Appendix B).
+(defn h3q-hlen [] : String
+  "=GLLLLLLLHNLLNLLLLLLLLNLLLLLLLLL6::<=68;::8;8666555666666678?6<:=67777777777777777777777878=C=>6?56565666577666567655677777?;>=LDFDDFFFGFGGGGGHGHHFGHGGGGEFGFGGHFEDFFGGEGFFHEFGGEEFEGFGGDFFFGFFGJJDCFGFIJJJKKJHICEJKKJKHEEJJLKKKDHDEFEEGFFIIHHJGJKJJKKKKKLKKKKKJN")
+
+(defn h3q-sfield-start [(f : I32)] : I32
+  (let [s (h3q-static)]
+    (loop [i 0 seen 0]
+      (if (= seen f) i (recur (+ i 1) (if (= (char-at s i) 124) (+ seen 1) seen))))))
+
+(defn h3q-sfield-end [(start : I32)] : I32
+  (let [s (h3q-static)]
+    (loop [i start] (if (= (char-at s i) 124) i (recur (+ i 1))))))
+
+;; Length of static entry idx's name (0..98); -1 if out of range. (Used by callers sizing buffers.)
+(defn qpack-static-name-len [(idx : I32)] : I32
+  (if (or (< idx 0) (> idx 98)) -1
+    (let [st (h3q-sfield-start (* idx 2))] (- (h3q-sfield-end st) st))))
+
+;; Copy static field (idx, which 0=name 1=value) into out at op. Returns new op or -1.
+(defn h3q-put-sfield! [(out : Bytes) (op : I32) (idx : I32) (which : I32)] : I32
+  (let [st (h3q-sfield-start (+ (* idx 2) which))
+        en (h3q-sfield-end st)
+        s (h3q-static)]
+    (if (> (+ op (- en st)) (bytes-len out)) -1
+      (loop [i st o op]
+        (if (>= i en) o
+          (do (bytes-set! out o (bit-and (char-at s i) 255)) (recur (+ i 1) (+ o 1))))))))
+
+;; ---- encoder (static refs + raw literals only) -------------------------------------------------
+
+;; Encoded field section prefix: Required Insert Count 0, Delta Base 0.
+(defn qpack-put-section-prefix! [(out : Bytes) (op : I32)] : I32
+  (if (> (+ op 2) (bytes-len out)) -1
+    (do (bytes-set! out op 0) (bytes-set! out (+ op 1) 0) (+ op 2))))
+
+;; Indexed field line, static: 1 1 xxxxxx (6-bit prefix).
+(defn qpack-put-indexed-static! [(out : Bytes) (op : I32) (idx : I32)]
+  : I32
+  (qpack-put-int! out op 192 6 idx))
+
+(defn h3q-put-str! [(out : Bytes) (op : I32) (v : Bytes) (flags : I32) (prefix : I32)] : I32
+  (let [p (qpack-put-int! out op flags prefix (bytes-len v))]
+    (if (< p 0) -1 (h3w-copy! out p v (bytes-len v)))))
+
+;; Literal field line with static name reference: 0 1 N=0 T=1 xxxx (4-bit prefix), then raw value.
+(defn qpack-put-literal-nameref! [(out : Bytes) (op : I32) (idx : I32) (value : Bytes)] : I32
+  (let [p (qpack-put-int! out op 80 4 idx)]
+    (if (< p 0) -1 (h3q-put-str! out p value 0 7))))
+
+;; Literal field line with literal name: 0 0 1 N=0 H=0 xxx (3-bit prefix), raw name, then raw value.
+(defn qpack-put-literal! [(out : Bytes) (op : I32) (name : Bytes) (value : Bytes)] : I32
+  (let [p (h3q-put-str! out op name 32 3)]
+    (if (< p 0) -1 (h3q-put-str! out p value 0 7))))
+
+;; A complete GET field section: :method GET, :scheme https, :authority, :path, plus any extra literal
+;; pair (pass zero-length name to skip). Static refs: 17 :method GET, 23 :scheme https, 0 :authority, 1 :path.
+(defn qpack-put-get-request! [(out : Bytes) (op : I32) (authority : Bytes) (path : Bytes) (xname : Bytes) (xvalue : Bytes)] : I32
+  (let [p0 (qpack-put-section-prefix! out op)
+        p1 (if (< p0 0) -1 (qpack-put-indexed-static! out p0 17))
+        p2 (if (< p1 0) -1 (qpack-put-indexed-static! out p1 23))
+        p3 (if (< p2 0) -1 (qpack-put-literal-nameref! out p2 0 authority))
+        p4 (if (< p3 0) -1 (qpack-put-literal-nameref! out p3 1 path))]
+    (if (or (< p4 0) (= (bytes-len xname) 0)) p4
+      (qpack-put-literal! out p4 xname xvalue))))
+
+;; ---- Huffman decode (canonical, RFC 7541 Appendix B) -------------------------------------------
+
+;; How many symbols (0..256) have code length l.
+(defn h3q-count-len [(l : I32)] : I32
+  (let [s (h3q-hlen) want (+ 48 l)]
+    (loop [i 0 n 0]
+      (if (>= i 257) n (recur (+ i 1) (if (= (char-at s i) want) (+ n 1) n))))))
+
+;; The j-th (0-based, ascending symbol) symbol whose code length is l; -1 if none.
+(defn h3q-nth-sym [(l : I32) (j : I32)] : I32
+  (let [s (h3q-hlen) want (+ 48 l)]
+    (loop [i 0 k 0]
+      (if (>= i 257) -1
+        (if (= (char-at s i) want)
+          (if (= k j) i (recur (+ i 1) (+ k 1)))
+          (recur (+ i 1) k))))))
+
+;; Resolve `code` of bit-length `len`: walk lengths 1..len tracking the canonical first code.
+;; Returns the symbol, or -1 if no code of exactly this length matches.
+(defn h3q-resolve [(code : I32) (len : I32)] : I32
+  (loop [l 1 first 0]
+    (if (> l len) -1
+      (let [c (h3q-count-len l)]
+        (if (= l len)
+          (if (and (>= code first) (< (- code first) c)) (h3q-nth-sym l (- code first)) -1)
+          (recur (+ l 1) (shl (+ first c) 1)))))))
+
+;; Decode `n` Huffman-coded bytes at pos into out at op. Returns the new op, or -1 on invalid input
+;; (EOS in data, code > 30 bits, padding longer than 7 bits or not all ones, output overflow).
+(defn qpack-huffman-decode [(b : Bytes) (pos : I32) (n : I32) (out : Bytes) (op : I32)] : I32
+  (if (or (< pos 0) (> (+ pos n) (bytes-len b))) -1
+    (loop [bit 0 code 0 len 0 o op]
+      (if (>= bit (* n 8))
+        (if (and (<= len 7) (= code (- (shl 1 len) 1))) o -1)
+        (let [byte (bytes-get b (+ pos (shr bit 3)))
+              v (bit-and (shr byte (- 7 (bit-and bit 7))) 1)
+              code2 (bit-or (shl code 1) v)
+              len2 (+ len 1)]
+          (if (> len2 30) -1
+            (let [sym (if (>= len2 5) (h3q-resolve code2 len2) -1)]
+              (if (< sym 0) (recur (+ bit 1) code2 len2 o)
+                (if (or (= sym 256) (>= o (bytes-len out))) -1
+                  (do (bytes-set! out o sym) (recur (+ bit 1) 0 0 (+ o 1))))))))))))
+
+;; ---- field section decode ----------------------------------------------------------------------
+
+(defn h3q-put-lit! [(out : Bytes) (op : I32) (s : String)] : I32
+  (let [n (length s)]
+    (if (or (< op 0) (> (+ op n) (bytes-len out))) -1
+      (loop [i 0]
+        (if (>= i n) (+ op n)
+          (do (bytes-set! out (+ op i) (bit-and (char-at s i) 255)) (recur (+ i 1))))))))
+
+;; String at pos whose length integer has `prefix` bits and Huffman flag at bit `hbit` of the first byte.
+;; Appends the decoded bytes to out at op; returns (new-op) and the new input position via h3q-str-next.
+(defn h3q-read-str! [(b : Bytes) (pos : I32) (prefix : I32) (end : I32) (out : Bytes) (op : I32)] : I32
+  (let [len (qpack-int-read b pos prefix)
+        il (qpack-int-len b pos prefix)
+        huff (= (bit-and (bytes-get b pos) (shl 1 prefix)) (shl 1 prefix))]
+    (if (or (< len 0) (or (< il 0) (> (+ (+ pos il) len) end))) -1
+      (if huff
+        (qpack-huffman-decode b (+ pos il) len out op)
+        (if (> (+ op len) (bytes-len out)) -1
+          (loop [i 0]
+            (if (>= i len) (+ op len)
+              (do (bytes-set! out (+ op i) (bytes-get b (+ (+ pos il) i))) (recur (+ i 1))))))))))
+
+(defn h3q-str-end [(b : Bytes) (pos : I32) (prefix : I32)] : I32
+  (+ (+ pos (qpack-int-len b pos prefix)) (qpack-int-read b pos prefix)))
+
+;; Decode the encoded field section in b[start, end) into out as "name: value\n" lines.
+;; Returns the number of bytes written, or -1 on any error, including a non-zero Required Insert Count
+;; or any dynamic-table reference (we advertise capacity 0, so a conforming peer sends none).
+(defn qpack-decode-section [(b : Bytes) (start : I32) (end : I32) (out : Bytes)] : I32
+  (let [ric (qpack-int-read b start 8)
+        p1 (+ start (qpack-int-len b start 8))
+        dbl (if (< p1 end) (qpack-int-len b p1 7) -1)]
+    (if (or (< ric 0) (or (> ric 0) (or (< dbl 0) (> end (bytes-len b))))) -1
+      (h3q-lines b (+ p1 dbl) end out 0))))
+
+(defn h3q-lines [(b : Bytes) (pos : I32) (end : I32) (out : Bytes) (op : I32)] : I32
+  (if (< op 0) -1
+    (if (>= pos end) op
+      (let [f (bytes-get b pos)]
+        (if (>= f 128)
+          ;; indexed field line: bit6 T=1 static only
+          (if (= (bit-and f 64) 0) -1
+            (let [idx (qpack-int-read b pos 6) il (qpack-int-len b pos 6)]
+              (if (or (< idx 0) (or (< il 0) (> idx 98))) -1
+                (let [o1 (h3q-put-sfield! out op idx 0)
+                      o2 (if (< o1 0) -1 (h3q-put-lit! out o1 ": "))
+                      o3 (if (< o2 0) -1 (h3q-put-sfield! out o2 idx 1))
+                      o4 (if (< o3 0) -1 (h3q-put-lit! out o3 "\n"))]
+                  (h3q-lines b (+ pos il) end out o4)))))
+          (if (>= f 64)
+            ;; literal with name reference: 0 1 N T idx(4)
+            (if (= (bit-and f 16) 0) -1
+              (let [idx (qpack-int-read b pos 4) il (qpack-int-len b pos 4)]
+                (if (or (< idx 0) (or (< il 0) (> idx 98))) -1
+                  (let [o1 (h3q-put-sfield! out op idx 0)
+                        o2 (if (< o1 0) -1 (h3q-put-lit! out o1 ": "))
+                        vpos (+ pos il)
+                        o3 (if (or (< o2 0) (>= vpos end)) -1 (h3q-read-str! b vpos 7 end out o2))
+                        o4 (if (< o3 0) -1 (h3q-put-lit! out o3 "\n"))]
+                    (if (< o4 0) -1 (h3q-lines b (h3q-str-end b vpos 7) end out o4))))))
+            (if (>= f 32)
+              ;; literal with literal name: 0 0 1 N H nlen(3)
+              (let [npos pos
+                    o1 (h3q-read-str! b npos 3 end out op)
+                    nend (if (< o1 0) -1 (h3q-str-end b npos 3))
+                    o2 (if (< o1 0) -1 (h3q-put-lit! out o1 ": "))
+                    o3 (if (or (< o2 0) (>= nend end)) -1 (h3q-read-str! b nend 7 end out o2))
+                    o4 (if (< o3 0) -1 (h3q-put-lit! out o3 "\n"))]
+                (if (< o4 0) -1 (h3q-lines b (h3q-str-end b nend 7) end out o4)))
+              -1)))))))
