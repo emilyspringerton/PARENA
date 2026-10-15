@@ -1,0 +1,336 @@
+;; stdlib/net/quic_wire.prn -- QUIC v1 (RFC 9000) wire codec: variable-length integers, long/short
+;; packet header fields, and the frame set an HTTP/3 client needs. Pure PARENA over Bytes, no FFI, no
+;; crypto (packet protection is crypto/quic_crypto.prn). Kanban #650 (PELLEGRINO HTTP/3 H3-1).
+;; Core Deps Are PARENA-First: PELLEGRINO's HTTP/3 rung stands on this.
+;;
+;; Honest limits:
+;;   * PARENA has no unsigned/64-bit ints. A varint decodes to a non-negative I32; a value >= 2^31 reads
+;;     as -1 (malformed/unsupported). That covers every real HTTP GET (stream ids, offsets, lengths,
+;;     flow-control credits up to 2 GiB); put-side encodes any non-negative I32 (1/2/4/8-byte forms).
+;;   * Version fields read as signed I32 (0xff00001d is negative); v1 = 1.
+;;   * Decoders never trust lengths: every read is bounds-checked and returns -1 on truncation.
+;;   * Functions that walk a frame take (b : Bytes) (pos : I32) where pos is the frame's first byte.
+
+(module net/quic_wire)
+(import bytes)
+(export quic-varint-size quic-varint-len-at quic-varint-read quic-varint-put!
+        quic-pkt-long? quic-long-type quic-long-version quic-long-dcid-len quic-long-dcid-off
+        quic-long-scid-len quic-long-scid-off quic-initial-token-len quic-initial-token-off
+        quic-long-length-off quic-long-length quic-long-pn-off quic-pkt-pn-len
+        quic-short-pn-off quic-put-long-header!
+        quic-frame-type quic-frame-end
+        quic-stream-id quic-stream-offset quic-stream-data-off quic-stream-data-len quic-stream-fin?
+        quic-crypto-offset quic-crypto-data-off quic-crypto-data-len
+        quic-ack-largest quic-ack-delay quic-ack-range-count quic-ack-first-range
+        quic-put-padding! quic-put-ping! quic-put-crypto! quic-put-stream! quic-put-ack!
+        quic-put-max-data! quic-put-max-stream-data! quic-put-max-streams!
+        quic-put-handshake-done! quic-put-connection-close!)
+
+;; ---- varints (RFC 9000 s16) -------------------------------------------------------------------
+
+;; Encoded size of a value: 1 (<64), 2 (<16384), 4 (<2^30), else 8. Negative -> -1.
+(defn quic-varint-size [(v : I32)] : I32
+  (if (< v 0) -1
+    (if (< v 64) 1
+      (if (< v 16384) 2
+        (if (< v 1073741824) 4 8)))))
+
+;; Length (1/2/4/8) announced by the byte at pos; -1 if pos is out of bounds or the bytes don't fit.
+(defn quic-varint-len-at [(b : Bytes) (pos : I32)] : I32
+  (let [f (bytes-get b pos)]
+    (if (< f 0) -1
+      (let [n (shl 1 (shr f 6))]
+        (if (> (+ pos n) (bytes-len b)) -1 n)))))
+
+(defn qw-varint-acc [(b : Bytes) (i : I32) (end : I32) (acc : I32)] : I32
+  (if (>= i end) acc
+    (if (> acc 8388607) -1
+      (qw-varint-acc b (+ i 1) end (+ (* acc 256) (bytes-get b i))))))
+
+;; Value at pos, or -1 (truncated / does not fit a non-negative I32).
+(defn quic-varint-read [(b : Bytes) (pos : I32)] : I32
+  (let [n (quic-varint-len-at b pos)]
+    (if (< n 0) -1
+      (let [first (bit-and (bytes-get b pos) 63)]
+        (if (= n 1) first
+          (qw-varint-acc b (+ pos 1) (+ pos n) first))))))
+
+(defn qw-put-be! [(out : Bytes) (op : I32) (v : I32) (n : I32)] : I32
+  (loop [i 0]
+    (if (>= i n) (+ op n)
+      (do (bytes-set! out (+ op i) (bit-and (shr v (* 8 (- (- n 1) i))) 255))
+          (recur (+ i 1))))))
+
+;; Writes v at op (shortest form); returns the new op, or -1 if v < 0 or it will not fit in out.
+(defn quic-varint-put! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (let [n (quic-varint-size v)]
+    (if (or (< n 0) (> (+ op n) (bytes-len out))) -1
+      (if (= n 1) (do (bytes-set! out op v) (+ op 1))
+        (if (= n 2) (do (qw-put-be! out op (bit-or v 16384) 2))
+          (if (= n 4) (do (qw-put-be! out op (bit-or v -2147483648) 4))
+            ;; 8-byte form: top 4 bytes are 0xC0 0 0 0 (value < 2^31 so they carry no data).
+            (do (bytes-set! out op 192) (bytes-set! out (+ op 1) 0)
+                (bytes-set! out (+ op 2) 0) (bytes-set! out (+ op 3) 0)
+                (qw-put-be! out (+ op 4) v 4))))))))
+
+;; ---- packet headers (RFC 9000 s17) ------------------------------------------------------------
+
+(defn qw-be32 [(b : Bytes) (p : I32)] : I32
+  (bit-or (bit-or (shl (bytes-get b p) 24) (shl (bytes-get b (+ p 1)) 16))
+          (bit-or (shl (bytes-get b (+ p 2)) 8) (bytes-get b (+ p 3)))))
+
+;; Header form bit: long header (1) vs short (0). False on an empty buffer.
+(defn quic-pkt-long? [(b : Bytes)] : Bool
+  (and (> (bytes-len b) 0) (>= (bytes-get b 0) 128)))
+
+;; 0 Initial, 1 0-RTT, 2 Handshake, 3 Retry (long headers only); -1 otherwise.
+(defn quic-long-type [(b : Bytes)] : I32
+  (if (quic-pkt-long? b) (bit-and (shr (bytes-get b 0) 4) 3) -1))
+
+(defn quic-long-version [(b : Bytes)] : I32
+  (if (and (quic-pkt-long? b) (>= (bytes-len b) 5)) (qw-be32 b 1) 0))
+
+;; DCID length (byte 5); -1 if absent or > 20 (the v1 maximum; larger is invalid for v1).
+(defn quic-long-dcid-len [(b : Bytes)] : I32
+  (if (and (quic-pkt-long? b) (>= (bytes-len b) 6))
+    (let [l (bytes-get b 5)] (if (> l 20) -1 l))
+    -1))
+
+(defn quic-long-dcid-off [(b : Bytes)] : I32 6)
+
+(defn quic-long-scid-len [(b : Bytes)] : I32
+  (let [dl (quic-long-dcid-len b)]
+    (if (< dl 0) -1
+      (if (>= (+ 6 dl) (bytes-len b)) -1
+        (let [l (bytes-get b (+ 6 dl))] (if (> l 20) -1 l))))))
+
+(defn quic-long-scid-off [(b : Bytes)] : I32
+  (let [dl (quic-long-dcid-len b)] (if (< dl 0) -1 (+ 7 dl))))
+
+;; Initial only: token length varint, and the token's offset. -1 for other types / truncation.
+(defn quic-initial-token-len [(b : Bytes)] : I32
+  (let [sl (quic-long-scid-len b)]
+    (if (or (< sl 0) (not (= (quic-long-type b) 0))) -1
+      (quic-varint-read b (+ (quic-long-scid-off b) sl)))))
+
+(defn quic-initial-token-off [(b : Bytes)] : I32
+  (let [sl (quic-long-scid-len b)
+        p (+ (quic-long-scid-off b) sl)
+        n (if (< sl 0) -1 (quic-varint-len-at b p))]
+    (if (or (< n 0) (not (= (quic-long-type b) 0))) -1 (+ p n))))
+
+;; Offset of the Length varint (Initial / 0-RTT / Handshake). -1 for Retry, short, or truncation.
+(defn quic-long-length-off [(b : Bytes)] : I32
+  (let [t (quic-long-type b)]
+    (if (or (< t 0) (= t 3)) -1
+      (if (= t 0)
+        (let [tl (quic-initial-token-len b) to (quic-initial-token-off b)]
+          (if (or (< tl 0) (< to 0)) -1 (+ to tl)))
+        (let [sl (quic-long-scid-len b)]
+          (if (< sl 0) -1 (+ (quic-long-scid-off b) sl)))))))
+
+;; The Length field value: bytes covered from the packet number to the end of this packet.
+(defn quic-long-length [(b : Bytes)] : I32
+  (let [o (quic-long-length-off b)] (if (< o 0) -1 (quic-varint-read b o))))
+
+;; Offset of the (still protected) packet number field of a long-header packet.
+(defn quic-long-pn-off [(b : Bytes)] : I32
+  (let [o (quic-long-length-off b)]
+    (if (< o 0) -1
+      (let [n (quic-varint-len-at b o)] (if (< n 0) -1 (+ o n))))))
+
+;; Short header: 1 flags byte + the connection's own DCID (length is connection state, not on the wire).
+(defn quic-short-pn-off [(dcid-len : I32)] : I32 (+ 1 dcid-len))
+
+;; Packet-number length from an UNPROTECTED first byte (low 2 bits + 1).
+(defn quic-pkt-pn-len [(first : I32)] : I32 (+ (bit-and first 3) 1))
+
+(defn qw-copy! [(out : Bytes) (op : I32) (src : Bytes) (from : I32) (cnt : I32)] : I32
+  (loop [i 0]
+    (if (>= i cnt) (+ op cnt)
+      (do (bytes-set! out (+ op i) (bytes-get src (+ from i))) (recur (+ i 1))))))
+
+;; Writes flags(first) | version | dcid-len dcid | scid-len scid. `first` carries every bit the caller
+;; wants (form/fixed/type/reserved/pn-len); returns the new op, or -1 if it would overflow out.
+(defn quic-put-long-header! [(out : Bytes) (op : I32) (first : I32) (version : I32) (dcid : Bytes) (scid : Bytes)] : I32
+  (let [dl (bytes-len dcid) sl (bytes-len scid)]
+    (if (or (> dl 20) (or (> sl 20) (> (+ op (+ 7 (+ dl sl))) (bytes-len out)))) -1
+      (do (bytes-set! out op first)
+          (qw-put-be! out (+ op 1) version 4)
+          (bytes-set! out (+ op 5) dl)
+          (let [p1 (qw-copy! out (+ op 6) dcid 0 dl)]
+            (do (bytes-set! out p1 sl)
+                (qw-copy! out (+ p1 1) scid 0 sl)))))))
+
+;; ---- frames (RFC 9000 s19) --------------------------------------------------------------------
+
+(defn quic-frame-type [(b : Bytes) (pos : I32)] : I32 (quic-varint-read b pos))
+
+;; Skip k consecutive varints starting at p; returns the position after them or -1.
+(defn qw-skip-varints [(b : Bytes) (p : I32) (k : I32)] : I32
+  (if (or (< p 0) (= k 0)) p
+    (let [n (quic-varint-len-at b p)]
+      (if (< n 0) -1 (qw-skip-varints b (+ p n) (- k 1))))))
+
+;; Position after `len` data bytes starting at p; -1 if they run past the buffer.
+(defn qw-after-data [(b : Bytes) (p : I32) (len : I32)] : I32
+  (if (or (< p 0) (< len 0) (> (+ p len) (bytes-len b))) -1 (+ p len)))
+
+;; After (varint len)(len bytes) at p.
+(defn qw-after-lp [(b : Bytes) (p : I32)] : I32
+  (if (< p 0) -1
+    (let [l (quic-varint-read b p)]
+      (if (< l 0) -1 (qw-after-data b (+ p (quic-varint-len-at b p)) l)))))
+
+;; End of the ACK frame body: largest, delay, range-count, first-range, then count x (gap, length),
+;; then 3 ECN varints if type 0x03.
+(defn qw-ack-end [(b : Bytes) (pos : I32) (type : I32)] : I32
+  (let [p1 (+ pos (quic-varint-len-at b pos))
+        cnt (quic-varint-read b (qw-skip-varints b p1 2))
+        p2 (qw-skip-varints b p1 4)]
+    (if (or (< p2 0) (< cnt 0)) -1
+      (let [p3 (qw-skip-varints b p2 (* 2 cnt))]
+        (if (= type 3) (qw-skip-varints b p3 3) p3)))))
+
+;; Position of the byte after the frame at pos, or -1 if malformed/truncated/unknown type.
+;; PADDING (0x00) is one byte per call; callers loop to coalesce.
+(defn quic-frame-end [(b : Bytes) (pos : I32)] : I32
+  (let [t (quic-varint-read b pos)]
+    (if (< t 0) -1
+      (let [p (+ pos (quic-varint-len-at b pos))]
+        (if (or (= t 0) (or (= t 1) (= t 30))) p                        ;; PADDING / PING / HANDSHAKE_DONE
+          (if (or (= t 2) (= t 3)) (qw-ack-end b pos t)
+            (if (= t 4) (qw-skip-varints b p 3)                          ;; RESET_STREAM
+              (if (= t 5) (qw-skip-varints b p 2)                        ;; STOP_SENDING
+                (if (= t 6) (qw-after-lp b (qw-skip-varints b p 1))      ;; CRYPTO: offset, len, data
+                  (if (= t 7) (qw-after-lp b p)                          ;; NEW_TOKEN
+                    (if (and (>= t 8) (<= t 15)) (qw-stream-end b pos t)
+                      (if (or (= t 16) (or (= t 18) (or (= t 19) (or (= t 20) (or (= t 22) (= t 23))))))
+                        (qw-skip-varints b p 1)                          ;; MAX_DATA/MAX_STREAMS/DATA_BLOCKED/STREAMS_BLOCKED
+                        (if (or (= t 17) (= t 21)) (qw-skip-varints b p 2)   ;; MAX_STREAM_DATA / STREAM_DATA_BLOCKED
+                          (if (= t 24) (qw-new-cid-end b p)              ;; NEW_CONNECTION_ID
+                            (if (= t 25) (qw-skip-varints b p 1)         ;; RETIRE_CONNECTION_ID
+                              (if (or (= t 26) (= t 27)) (qw-after-data b p 8)  ;; PATH_CHALLENGE/RESPONSE
+                                (if (= t 28) (qw-after-lp b (qw-skip-varints b p 2))  ;; CONNECTION_CLOSE (transport)
+                                  (if (= t 29) (qw-after-lp b (qw-skip-varints b p 1)) ;; CONNECTION_CLOSE (application)
+                                    -1))))))))))))))))))
+
+;; STREAM 0x08..0x0f: bit0 FIN, bit1 LEN, bit2 OFF. Without LEN the data runs to the end of the packet.
+(defn qw-stream-end [(b : Bytes) (pos : I32) (t : I32)] : I32
+  (let [p1 (+ pos 1)
+        p2 (qw-skip-varints b p1 1)                        ;; after stream id
+        p3 (if (= (bit-and t 4) 4) (qw-skip-varints b p2 1) p2)]  ;; after offset
+    (if (< p3 0) -1
+      (if (= (bit-and t 2) 2) (qw-after-lp b p3) (bytes-len b)))))
+
+;; NEW_CONNECTION_ID: seq, retire-prior, len(1) cid(len) token(16).
+(defn qw-new-cid-end [(b : Bytes) (p : I32)] : I32
+  (let [p1 (qw-skip-varints b p 2)]
+    (if (< p1 0) -1
+      (let [l (bytes-get b p1)]
+        (if (or (< l 1) (> l 20)) -1 (qw-after-data b (+ p1 1) (+ l 16)))))))
+
+;; -- STREAM accessors (pos = frame start; type byte is one byte for 0x08..0x0f) --
+(defn quic-stream-id [(b : Bytes) (pos : I32)] : I32 (quic-varint-read b (+ pos 1)))
+
+(defn qw-stream-after-id [(b : Bytes) (pos : I32)] : I32 (qw-skip-varints b (+ pos 1) 1))
+
+(defn quic-stream-offset [(b : Bytes) (pos : I32)] : I32
+  (if (= (bit-and (bytes-get b pos) 4) 4) (quic-varint-read b (qw-stream-after-id b pos)) 0))
+
+(defn qw-stream-data-start [(b : Bytes) (pos : I32)] : I32
+  (let [t (bytes-get b pos)
+        p (qw-stream-after-id b pos)
+        p2 (if (= (bit-and t 4) 4) (qw-skip-varints b p 1) p)]
+    (if (and (>= p2 0) (= (bit-and t 2) 2)) (qw-skip-varints b p2 1) p2)))
+
+(defn quic-stream-data-off [(b : Bytes) (pos : I32)] : I32 (qw-stream-data-start b pos))
+
+(defn quic-stream-data-len [(b : Bytes) (pos : I32)] : I32
+  (let [t (bytes-get b pos)
+        p (qw-stream-after-id b pos)
+        p2 (if (= (bit-and t 4) 4) (qw-skip-varints b p 1) p)]
+    (if (< p2 0) -1
+      (if (= (bit-and t 2) 2) (quic-varint-read b p2) (- (bytes-len b) (qw-stream-data-start b pos))))))
+
+(defn quic-stream-fin? [(b : Bytes) (pos : I32)] : Bool (= (bit-and (bytes-get b pos) 1) 1))
+
+;; -- CRYPTO accessors --
+(defn quic-crypto-offset [(b : Bytes) (pos : I32)] : I32 (quic-varint-read b (+ pos 1)))
+(defn quic-crypto-data-len [(b : Bytes) (pos : I32)] : I32
+  (quic-varint-read b (qw-skip-varints b (+ pos 1) 1)))
+(defn quic-crypto-data-off [(b : Bytes) (pos : I32)] : I32
+  (qw-skip-varints b (+ pos 1) 2))
+
+;; -- ACK accessors (type 0x02/0x03) --
+(defn quic-ack-largest [(b : Bytes) (pos : I32)] : I32 (quic-varint-read b (+ pos 1)))
+(defn quic-ack-delay [(b : Bytes) (pos : I32)] : I32
+  (quic-varint-read b (qw-skip-varints b (+ pos 1) 1)))
+(defn quic-ack-range-count [(b : Bytes) (pos : I32)] : I32
+  (quic-varint-read b (qw-skip-varints b (+ pos 1) 2)))
+(defn quic-ack-first-range [(b : Bytes) (pos : I32)] : I32
+  (quic-varint-read b (qw-skip-varints b (+ pos 1) 3)))
+
+;; ---- frame builders: each returns the new op, or -1 on overflow/invalid value ------------------
+
+(defn quic-put-padding! [(out : Bytes) (op : I32) (n : I32)] : I32
+  (if (> (+ op n) (bytes-len out)) -1
+    (loop [i 0]
+      (if (>= i n) (+ op n) (do (bytes-set! out (+ op i) 0) (recur (+ i 1)))))))
+
+(defn quic-put-ping! [(out : Bytes) (op : I32)] : I32
+  (if (>= op (bytes-len out)) -1 (do (bytes-set! out op 1) (+ op 1))))
+
+(defn quic-put-handshake-done! [(out : Bytes) (op : I32)] : I32
+  (if (>= op (bytes-len out)) -1 (do (bytes-set! out op 30) (+ op 1))))
+
+(defn qw-put-data! [(out : Bytes) (op : I32) (data : Bytes)] : I32
+  (if (or (< op 0) (> (+ op (bytes-len data)) (bytes-len out))) -1
+    (qw-copy! out op data 0 (bytes-len data))))
+
+;; CRYPTO: 0x06, offset, length, data.
+(defn quic-put-crypto! [(out : Bytes) (op : I32) (offset : I32) (data : Bytes)] : I32
+  (if (>= op (bytes-len out)) -1
+    (do (bytes-set! out op 6)
+        (let [p1 (quic-varint-put! out (+ op 1) offset)
+              p2 (if (< p1 0) -1 (quic-varint-put! out p1 (bytes-len data)))]
+          (if (< p2 0) -1 (qw-put-data! out p2 data))))))
+
+;; STREAM with explicit OFF and LEN bits always set (0x0e) | FIN (0x0f).
+(defn quic-put-stream! [(out : Bytes) (op : I32) (id : I32) (offset : I32) (data : Bytes) (fin : Bool)] : I32
+  (if (>= op (bytes-len out)) -1
+    (do (bytes-set! out op (if fin 15 14))
+        (let [p1 (quic-varint-put! out (+ op 1) id)
+              p2 (if (< p1 0) -1 (quic-varint-put! out p1 offset))
+              p3 (if (< p2 0) -1 (quic-varint-put! out p2 (bytes-len data)))]
+          (if (< p3 0) -1 (qw-put-data! out p3 data))))))
+
+;; ACK (0x02) with a single range: largest, delay, 0 additional ranges, first-range length.
+(defn quic-put-ack! [(out : Bytes) (op : I32) (largest : I32) (delay : I32) (first-range : I32)] : I32
+  (if (>= op (bytes-len out)) -1
+    (do (bytes-set! out op 2)
+        (let [p1 (quic-varint-put! out (+ op 1) largest)
+              p2 (if (< p1 0) -1 (quic-varint-put! out p1 delay))
+              p3 (if (< p2 0) -1 (quic-varint-put! out p2 0))]
+          (if (< p3 0) -1 (quic-varint-put! out p3 first-range))))))
+
+(defn qw-put-type-v! [(out : Bytes) (op : I32) (t : I32) (v : I32)] : I32
+  (if (>= op (bytes-len out)) -1
+    (do (bytes-set! out op t) (quic-varint-put! out (+ op 1) v))))
+
+(defn quic-put-max-data! [(out : Bytes) (op : I32) (v : I32)] : I32 (qw-put-type-v! out op 16 v))
+
+(defn quic-put-max-stream-data! [(out : Bytes) (op : I32) (id : I32) (v : I32)] : I32
+  (let [p (qw-put-type-v! out op 17 id)]
+    (if (< p 0) -1 (quic-varint-put! out p v))))
+
+;; bidi=true -> 0x12, else 0x13.
+(defn quic-put-max-streams! [(out : Bytes) (op : I32) (bidi : Bool) (v : I32)] : I32
+  (qw-put-type-v! out op (if bidi 18 19) v))
+
+;; CONNECTION_CLOSE (transport, 0x1c): error code, offending frame type, reason phrase.
+(defn quic-put-connection-close! [(out : Bytes) (op : I32) (code : I32) (frame-type : I32) (reason : Bytes)] : I32
+  (let [p0 (qw-put-type-v! out op 28 code)
+        p1 (if (< p0 0) -1 (quic-varint-put! out p0 frame-type))
+        p2 (if (< p1 0) -1 (quic-varint-put! out p1 (bytes-len reason)))]
+    (if (< p2 0) -1 (qw-put-data! out p2 reason))))
