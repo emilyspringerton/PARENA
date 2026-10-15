@@ -227,17 +227,23 @@ Bytes qcn_key(Bytes, int, int, Arena *);
 Bytes qcn_iv(Bytes, int, int, Arena *);
 Bytes qcn_hp(Bytes, int, int, Arena *);
 int qcn_send(Bytes, int, Bytes, Arena *);
-Bytes qcn_ack_frame(Bytes, int, Arena *);
-int qcn_run_ones(int, int);
-int qcn_run_zeros(int, int);
-int qcn_count_ranges(int, int, int, int);
-int qcn_write_ack_ranges(Bytes, int, int, int, int, Arena *);
 int qcn_pad_copy_(Bytes, Bytes, int, int);
+int qcn_rg_base(int);
+int qcn_rg_s(Bytes, int, int);
+int qcn_rg_e(Bytes, int, int);
+int qcn_rg_put_(Bytes, int, int, int, int);
+int qcn_rg_insert_(Bytes, int, int, int, int, int, int);
+int qcn_rg_remove_(Bytes, int, int, int, int);
+int qcn_rg_note_(Bytes, int, int, int, int);
+int qcn_note_rx_(Bytes, int, int);
+Bytes qcn_ack_frame(Bytes, int, Arena *);
+int qcn_b_(Bytes, int, int);
+int qcn_ack_pairs_(Bytes, int, Bytes, int, int, int, int);
 int qcn_flush_one(Bytes, int, Arena *);
 int qcn_flush_acks(Bytes, Arena *);
-int qcn_note_rx_(Bytes, int, int);
 int qcn_have_slot(int);
 int qcn_seg_add_(Bytes, int, int, int);
+int qcn_seg_merge_(Bytes, int, int, int, int);
 int qcn_seg_stash_(Bytes, int, int, int, int);
 int qcn_seg_absorb_(Bytes, int, int);
 int qcn_seg_pass_(Bytes, int, int, int, int);
@@ -2713,114 +2719,13 @@ int qcn_send(Bytes c __attribute__((unused)), int space __attribute__((unused)),
     }
 }
 
-Bytes qcn_ack_frame(Bytes c __attribute__((unused)), int space __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int largest __attribute__((unused)) = cget(c, (6 + space));
-    int mask __attribute__((unused)) = cget(c, (9 + space));
-    Bytes out __attribute__((unused)) = bytes_alloc(96, dest);
-    if ((largest < 0)) {
-    return bytes_alloc(0, dest);
-    } else {
-    int run0 __attribute__((unused)) = qcn_run_ones(mask, 0);
-    int nranges __attribute__((unused)) = qcn_count_ranges(mask, run0, 0, 0);
-    int p0 __attribute__((unused)) = quic_put_ack_(out, 0, largest, 0, run0);
-    if ((nranges == 0)) {
-    return bytes_slice(out, 0, p0, dest);
-    } else {
-    int pp __attribute__((unused)) = qcn_write_ack_ranges(out, largest, run0, mask, nranges, dest);
-    return bytes_slice(out, 0, pp, dest);
-    }
-    }
-}
-
-int qcn_run_ones(int mask __attribute__((unused)), int from __attribute__((unused))) {
-    int __loop_result_29 __attribute__((unused));
-    int i = from;
-    int n = 0;
-    while (1) {
-        if (((i >= 28) || (((mask >> i) & 1) == 0))) {
-        __loop_result_29 = n;
-        break;
-        } else {
-        int __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = (n + 1);
-        i = __recur_tmp_0;
-        n = __recur_tmp_1;
-        continue;
-        }
-    }
-    return __loop_result_29;
-}
-
-int qcn_run_zeros(int mask __attribute__((unused)), int from __attribute__((unused))) {
-    int __loop_result_30 __attribute__((unused));
-    int i = from;
-    int n = 0;
-    while (1) {
-        if (((i >= 28) || (((mask >> i) & 1) == 1))) {
-        __loop_result_30 = n;
-        break;
-        } else {
-        int __recur_tmp_0 = (i + 1);
-        int __recur_tmp_1 = (n + 1);
-        i = __recur_tmp_0;
-        n = __recur_tmp_1;
-        continue;
-        }
-    }
-    return __loop_result_30;
-}
-
-int qcn_count_ranges(int mask __attribute__((unused)), int pos __attribute__((unused)), int n __attribute__((unused)), int guard __attribute__((unused))) {
-    if (((n >= 6) || (pos >= 28))) {
-    return n;
-    } else {
-    int z __attribute__((unused)) = qcn_run_zeros(mask, pos);
-    int r __attribute__((unused)) = qcn_run_ones(mask, (pos + z));
-    if (((r == 0) || ((pos + z) >= 28))) {
-    return n;
-    } else {
-    return qcn_count_ranges(mask, ((pos + z) + r), (n + 1), guard);
-    }
-    }
-}
-
-int qcn_write_ack_ranges(Bytes out __attribute__((unused)), int largest __attribute__((unused)), int run0 __attribute__((unused)), int mask __attribute__((unused)), int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    int p1 __attribute__((unused)) = quic_varint_put_(out, 1, largest);
-    int p2 __attribute__((unused)) = quic_varint_put_(out, p1, 0);
-    int p3 __attribute__((unused)) = quic_varint_put_(out, p2, n);
-    int p4 __attribute__((unused)) = quic_varint_put_(out, p3, run0);
-    int __loop_result_31 __attribute__((unused));
-    int k = 0;
-    int pos = run0;
-    int op = p4;
-    while (1) {
-        if ((k >= n)) {
-        __loop_result_31 = op;
-        break;
-        } else {
-        int z __attribute__((unused)) = qcn_run_zeros(mask, pos);
-        int r __attribute__((unused)) = qcn_run_ones(mask, (pos + z));
-        int o1 __attribute__((unused)) = quic_varint_put_(out, op, (z - 1));
-        int o2 __attribute__((unused)) = quic_varint_put_(out, o1, (r - 1));
-        int __recur_tmp_0 = (k + 1);
-        int __recur_tmp_1 = ((pos + z) + r);
-        int __recur_tmp_2 = o2;
-        k = __recur_tmp_0;
-        pos = __recur_tmp_1;
-        op = __recur_tmp_2;
-        continue;
-        }
-    }
-    return __loop_result_31;
-}
-
 int qcn_pad_copy_(Bytes payload __attribute__((unused)), Bytes frames __attribute__((unused)), int fl __attribute__((unused)), int want __attribute__((unused))) {
     (void)(cput_(payload, 0, frames, 0, fl));
-    int __loop_result_32 __attribute__((unused));
+    int __loop_result_29 __attribute__((unused));
     int i = fl;
     while (1) {
         if ((i >= want)) {
-        __loop_result_32 = 0;
+        __loop_result_29 = 0;
         break;
         } else {
         (void)(bytes_set_(payload, i, 0));
@@ -2829,7 +2734,158 @@ int qcn_pad_copy_(Bytes payload __attribute__((unused)), Bytes frames __attribut
         continue;
         }
     }
+    return __loop_result_29;
+}
+
+int qcn_rg_base(int space __attribute__((unused))) {
+    return (300 + (space * 48));
+}
+
+int qcn_rg_s(Bytes c __attribute__((unused)), int base __attribute__((unused)), int i __attribute__((unused))) {
+    return cget(c, (base + (i * 2)));
+}
+
+int qcn_rg_e(Bytes c __attribute__((unused)), int base __attribute__((unused)), int i __attribute__((unused))) {
+    return cget(c, ((base + (i * 2)) + 1));
+}
+
+int qcn_rg_put_(Bytes c __attribute__((unused)), int base __attribute__((unused)), int i __attribute__((unused)), int s __attribute__((unused)), int e __attribute__((unused))) {
+    (void)(cset_(c, (base + (i * 2)), s));
+    (void)(cset_(c, ((base + (i * 2)) + 1), e));
+    return 0;
+}
+
+int qcn_rg_insert_(Bytes c __attribute__((unused)), int space __attribute__((unused)), int base __attribute__((unused)), int n __attribute__((unused)), int i __attribute__((unused)), int s __attribute__((unused)), int e __attribute__((unused))) {
+    int last __attribute__((unused)) = ((n >= 24) ? 23 : n);
+    int __loop_result_30 __attribute__((unused));
+    int k = last;
+    while (1) {
+        if ((k <= i)) {
+        __loop_result_30 = 0;
+        break;
+        } else {
+        (void)(qcn_rg_put_(c, base, k, qcn_rg_s(c, base, (k - 1)), qcn_rg_e(c, base, (k - 1))));
+        int __recur_tmp_0 = (k - 1);
+        k = __recur_tmp_0;
+        continue;
+        }
+    }
+    (void)(qcn_rg_put_(c, base, i, s, e));
+    return cset_(c, (9 + space), ((n >= 24) ? 24 : (n + 1)));
+}
+
+int qcn_rg_remove_(Bytes c __attribute__((unused)), int space __attribute__((unused)), int base __attribute__((unused)), int n __attribute__((unused)), int i __attribute__((unused))) {
+    int __loop_result_31 __attribute__((unused));
+    int k = i;
+    while (1) {
+        if ((k >= (n - 1))) {
+        __loop_result_31 = 0;
+        break;
+        } else {
+        (void)(qcn_rg_put_(c, base, k, qcn_rg_s(c, base, (k + 1)), qcn_rg_e(c, base, (k + 1))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        }
+    }
+    return cset_(c, (9 + space), (n - 1));
+}
+
+int qcn_rg_note_(Bytes c __attribute__((unused)), int space __attribute__((unused)), int base __attribute__((unused)), int n __attribute__((unused)), int pn __attribute__((unused))) {
+    int __loop_result_32 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i >= n)) {
+        if ((n < 24)) {
+        __loop_result_32 = qcn_rg_insert_(c, space, base, n, n, pn, pn);
+        break;
+        } else {
+        __loop_result_32 = 0;
+        break;
+        }
+        } else {
+        int s __attribute__((unused)) = qcn_rg_s(c, base, i);
+        int e __attribute__((unused)) = qcn_rg_e(c, base, i);
+        if (((pn >= s) && (pn <= e))) {
+        __loop_result_32 = 0;
+        break;
+        } else {
+        if ((pn == (e + 1))) {
+        if (((i > 0) && (qcn_rg_s(c, base, (i - 1)) == (pn + 1)))) {
+        (void)(qcn_rg_put_(c, base, (i - 1), s, qcn_rg_e(c, base, (i - 1))));
+        __loop_result_32 = qcn_rg_remove_(c, space, base, n, i);
+        break;
+        } else {
+        __loop_result_32 = qcn_rg_put_(c, base, i, s, pn);
+        break;
+        }
+        } else {
+        if ((pn == (s - 1))) {
+        if ((((i + 1) < n) && (qcn_rg_e(c, base, (i + 1)) == (pn - 1)))) {
+        (void)(qcn_rg_put_(c, base, i, qcn_rg_s(c, base, (i + 1)), e));
+        __loop_result_32 = qcn_rg_remove_(c, space, base, n, (i + 1));
+        break;
+        } else {
+        __loop_result_32 = qcn_rg_put_(c, base, i, pn, e);
+        break;
+        }
+        } else {
+        if ((pn > e)) {
+        __loop_result_32 = qcn_rg_insert_(c, space, base, n, i, pn, pn);
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+        }
+        }
+        }
+    }
     return __loop_result_32;
+}
+
+int qcn_note_rx_(Bytes c __attribute__((unused)), int space __attribute__((unused)), int pn __attribute__((unused))) {
+    (void)(((pn > cget(c, (6 + space))) ? cset_(c, (6 + space), pn) : 0));
+    return qcn_rg_note_(c, space, qcn_rg_base(space), cget(c, (9 + space)), pn);
+}
+
+Bytes qcn_ack_frame(Bytes c __attribute__((unused)), int space __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = cget(c, (9 + space));
+    int base __attribute__((unused)) = qcn_rg_base(space);
+    if ((n == 0)) {
+    return bytes_alloc(0, dest);
+    } else {
+    int m __attribute__((unused)) = ((n > 20) ? 20 : n);
+    Bytes out __attribute__((unused)) = bytes_alloc((16 + (m * 8)), dest);
+    int e0 __attribute__((unused)) = qcn_rg_e(c, base, 0);
+    int s0 __attribute__((unused)) = qcn_rg_s(c, base, 0);
+    int p0 __attribute__((unused)) = qcn_b_(out, 0, 2);
+    int p1 __attribute__((unused)) = quic_varint_put_(out, p0, e0);
+    int p2 __attribute__((unused)) = quic_varint_put_(out, p1, 0);
+    int p3 __attribute__((unused)) = quic_varint_put_(out, p2, (m - 1));
+    int p4 __attribute__((unused)) = quic_varint_put_(out, p3, (e0 - s0));
+    int pe __attribute__((unused)) = qcn_ack_pairs_(c, base, out, p4, 1, m, s0);
+    return bytes_slice(out, 0, pe, dest);
+    }
+}
+
+int qcn_b_(Bytes out __attribute__((unused)), int p __attribute__((unused)), int v __attribute__((unused))) {
+    (void)(bytes_set_(out, p, v));
+    return (p + 1);
+}
+
+int qcn_ack_pairs_(Bytes c __attribute__((unused)), int base __attribute__((unused)), Bytes out __attribute__((unused)), int op __attribute__((unused)), int i __attribute__((unused)), int m __attribute__((unused)), int prev_s __attribute__((unused))) {
+    if ((i >= m)) {
+    return op;
+    } else {
+    int s __attribute__((unused)) = qcn_rg_s(c, base, i);
+    int e __attribute__((unused)) = qcn_rg_e(c, base, i);
+    int o1 __attribute__((unused)) = quic_varint_put_(out, op, ((prev_s - e) - 2));
+    int o2 __attribute__((unused)) = quic_varint_put_(out, o1, (e - s));
+    return qcn_ack_pairs_(c, base, out, o2, (i + 1), m, s);
+    }
 }
 
 int qcn_flush_one(Bytes c __attribute__((unused)), int s __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2859,34 +2915,6 @@ int qcn_flush_acks(Bytes c __attribute__((unused)), Arena *dest __attribute__((u
     return __loop_result_33;
 }
 
-int qcn_note_rx_(Bytes c __attribute__((unused)), int space __attribute__((unused)), int pn __attribute__((unused))) {
-    int L __attribute__((unused)) = cget(c, (6 + space));
-    int m __attribute__((unused)) = cget(c, (9 + space));
-    if ((L < 0)) {
-    (void)(cset_(c, (6 + space), pn));
-    (void)(cset_(c, (9 + space), 0));
-    return 0;
-    } else {
-    if ((pn > L)) {
-    int d __attribute__((unused)) = (pn - L);
-    (void)(cset_(c, (9 + space), ((d > 28) ? 0 : (((m & (268435455 >> d)) << d) | (1 << (d - 1))))));
-    (void)(cset_(c, (6 + space), pn));
-    return 0;
-    } else {
-    if ((pn < L)) {
-    int i __attribute__((unused)) = ((L - 1) - pn);
-    if ((i < 28)) {
-    return cset_(c, (9 + space), (m | (1 << i)));
-    } else {
-    return 0;
-    }
-    } else {
-    return 0;
-    }
-    }
-    }
-}
-
 int qcn_have_slot(int list __attribute__((unused))) {
     if ((list == 2)) {
     return 27;
@@ -2898,7 +2926,7 @@ int qcn_have_slot(int list __attribute__((unused))) {
 int qcn_seg_add_(Bytes c __attribute__((unused)), int list __attribute__((unused)), int off __attribute__((unused)), int len __attribute__((unused))) {
     int hs __attribute__((unused)) = qcn_have_slot(list);
     int have __attribute__((unused)) = cget(c, hs);
-    int base __attribute__((unused)) = (64 + (list * 32));
+    int base __attribute__((unused)) = (64 + (list * 64));
     int e __attribute__((unused)) = (off + len);
     if ((len <= 0)) {
     return 0;
@@ -2907,19 +2935,43 @@ int qcn_seg_add_(Bytes c __attribute__((unused)), int list __attribute__((unused
     (void)(cset_(c, hs, ((e > have) ? e : have)));
     return qcn_seg_absorb_(c, list, 0);
     } else {
-    return qcn_seg_stash_(c, base, off, e, 0);
+    if ((qcn_seg_merge_(c, base, off, e, 0) == 1)) {
+    return 0;
+    } else {
+    if ((qcn_seg_stash_(c, base, off, e, 0) == 1)) {
+    return 0;
+    } else {
+    return cset_(c, 480, 1);
+    }
+    }
+    }
+    }
+}
+
+int qcn_seg_merge_(Bytes c __attribute__((unused)), int base __attribute__((unused)), int s __attribute__((unused)), int e __attribute__((unused)), int i __attribute__((unused))) {
+    if ((i >= 32)) {
+    return 0;
+    } else {
+    int bs __attribute__((unused)) = cget(c, (base + (i * 2)));
+    int be __attribute__((unused)) = cget(c, ((base + (i * 2)) + 1));
+    if (((be > 0) && ((s <= be) && (e >= bs)))) {
+    (void)(cset_(c, (base + (i * 2)), ((s < bs) ? s : bs)));
+    (void)(cset_(c, ((base + (i * 2)) + 1), ((e > be) ? e : be)));
+    return 1;
+    } else {
+    return qcn_seg_merge_(c, base, s, e, (i + 1));
     }
     }
 }
 
 int qcn_seg_stash_(Bytes c __attribute__((unused)), int base __attribute__((unused)), int s __attribute__((unused)), int e __attribute__((unused)), int i __attribute__((unused))) {
-    if ((i >= 16)) {
+    if ((i >= 32)) {
     return 0;
     } else {
     if ((cget(c, ((base + (i * 2)) + 1)) == 0)) {
     (void)(cset_(c, (base + (i * 2)), s));
     (void)(cset_(c, ((base + (i * 2)) + 1), e));
-    return 0;
+    return 1;
     } else {
     return qcn_seg_stash_(c, base, s, e, (i + 1));
     }
@@ -2927,11 +2979,11 @@ int qcn_seg_stash_(Bytes c __attribute__((unused)), int base __attribute__((unus
 }
 
 int qcn_seg_absorb_(Bytes c __attribute__((unused)), int list __attribute__((unused)), int round __attribute__((unused))) {
-    if ((round >= 17)) {
+    if ((round >= 40)) {
     return 0;
     } else {
     int hs __attribute__((unused)) = qcn_have_slot(list);
-    int base __attribute__((unused)) = (64 + (list * 32));
+    int base __attribute__((unused)) = (64 + (list * 64));
     int changed __attribute__((unused)) = qcn_seg_pass_(c, hs, base, 0, 0);
     if ((changed == 1)) {
     return qcn_seg_absorb_(c, list, (round + 1));
@@ -2942,7 +2994,7 @@ int qcn_seg_absorb_(Bytes c __attribute__((unused)), int list __attribute__((unu
 }
 
 int qcn_seg_pass_(Bytes c __attribute__((unused)), int hs __attribute__((unused)), int base __attribute__((unused)), int i __attribute__((unused)), int changed __attribute__((unused))) {
-    if ((i >= 16)) {
+    if ((i >= 32)) {
     return changed;
     } else {
     int s __attribute__((unused)) = cget(c, (base + (i * 2)));
@@ -2982,6 +3034,7 @@ int qcn_stream_in_(Bytes c __attribute__((unused)), Bytes p __attribute__((unuse
     int len __attribute__((unused)) = quic_stream_data_len(p, pos);
     int cap __attribute__((unused)) = cget(c, 37);
     if (((off < 0) || ((doff < 0) || ((len < 0) || ((off + len) > cap))))) {
+    (void)(cset_(c, 482, 2000));
     return qcn_fail_(c, -5);
     } else {
     (void)(cput_(c, (qcn_o_rx0() + off), p, doff, len));
@@ -3006,6 +3059,8 @@ int qcn_frames_(Bytes c __attribute__((unused)), int space __attribute__((unused
         int t __attribute__((unused)) = quic_frame_type(p, pos);
         int end __attribute__((unused)) = quic_frame_end(p, pos);
         if (((t < 0) || (end < 0))) {
+        (void)(cset_(c, 482, (1000 + t)));
+        (void)(cset_(c, 483, pos));
         __loop_result_34 = qcn_fail_(c, -5);
         break;
         } else {
@@ -3388,11 +3443,12 @@ int qcn_packet_(Bytes c __attribute__((unused)), Bytes dg __attribute__((unused)
     if ((bytes_len(pl) == 0)) {
     return 0;
     } else {
-    (void)(qcn_note_rx_(c, space, pn));
+    (void)(cset_(c, 480, 0));
     (void)((((space == 0) && (cget(c, 44) == 0)) ? qcn_adopt_scid_(c, pkt) : 0));
     (void)(((space == 1) ? cset_(c, 36, 1) : 0));
     (void)(((space == 2) ? cset_(c, 43, 1) : 0));
     (void)(qcn_frames_(c, space, pl, dest));
+    (void)(((cget(c, 480) == 0) ? qcn_note_rx_(c, space, pn) : 0));
     if ((space < 2)) {
     return (pn_off + quic_long_length(pkt));
     } else {
@@ -3442,9 +3498,10 @@ int qcn_h3_headers_(Bytes c __attribute__((unused)), int po __attribute__((unuse
     if ((!((cget(c, 32) == 0)))) {
     return 0;
     } else {
-    Bytes tmp __attribute__((unused)) = bytes_alloc(8192, dest);
+    Bytes tmp __attribute__((unused)) = bytes_alloc(32768, dest);
     int n __attribute__((unused)) = qpack_decode_section(c, po, end, tmp);
     if ((n < 0)) {
+    (void)(cset_(c, 482, 3000));
     return qcn_fail_(c, -5);
     } else {
     (void)(cput_(c, qcn_o_hdrs(), tmp, 0, ((n > 8192) ? 8192 : n)));
@@ -3466,6 +3523,7 @@ int qcn_h3_data_(Bytes c __attribute__((unused)), int po __attribute__((unused))
     int bl __attribute__((unused)) = cget(c, 30);
     int bo __attribute__((unused)) = qcn_o_body(c);
     if (((bl + len) > cget(c, 37))) {
+    (void)(cset_(c, 482, 4000));
     return qcn_fail_(c, -5);
     } else {
     (void)(cput_(c, (bo + bl), c, po, len));
@@ -3665,6 +3723,7 @@ int qcn_timers_(Bytes c __attribute__((unused)), Arena *t __attribute__((unused)
     (void)(cset_(c, 39, 0));
     (void)(cset_(c, 23, now));
     (void)(cset_(c, 24, 300));
+    (void)(cset_(c, 25, 0));
     return 0;
     } else {
     if (((cget(c, 0) == 0) && ((now - cget(c, 23)) > cget(c, 24)))) {
@@ -3714,7 +3773,16 @@ int quic_pump(Bytes c __attribute__((unused)), char * host __attribute__((unused
     (void)(qcn_tls_step_(c, host, &(t)));
     (void)((((cget(c, 0) == 0) && ((cget(c, 34) == 0) && (cget(c, 17) == 1))) ? qcn_send_app_(c, host, path, &(t)) : 0));
     (void)(((cget(c, 0) == 0) ? qcn_h3_parse_(c, &(t)) : 0));
-    (void)((((cget(c, 0) == 0) && qcn_complete_(c)) ? ((cget(c, 32) > 0) ? cset_(c, 0, 1) : qcn_fail_(c, -5)) : 0));
+    if (((cget(c, 0) == 0) && qcn_complete_(c))) {
+    if ((cget(c, 32) > 0)) {
+    (void)(cset_(c, 0, 1));
+    } else {
+    (void)(cset_(c, 482, 5000));
+    (void)(qcn_fail_(c, -5));
+    }
+    } else {
+    (void)(0);
+    }
     (void)(qcn_flush_acks(c, &(t)));
     (void)(qcn_timers_(c, &(t)));
     return cget(c, 0);

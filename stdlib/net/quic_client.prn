@@ -27,7 +27,8 @@
 ;;  26 peer dcid len   27 s0 have   28 s0 fin-at (-1)   29 h3 pos   30 body len   31 hdrs len
 ;;  32 http status   33 hs confirmed   34 app flight sent   35 deadline ms   36 got-handshake-pkt
 ;;  37 body cap   38 cert msg pos (rel CIN1)   39 progress flag   40-42 rtx len[space]
-;;  43 got-1rtt-pkt   44 server-saw-initial (peer dcid adopted)   64.. segment tables (3 x 16 x 2)
+;;  43 got-1rtt-pkt   44 server-saw-initial (peer dcid adopted)   64.. reassembly intervals (3 x 32 x 2)
+;;  9-11 rx range count[space]   300.. rx ranges: 3 x 24 x (start,end)   480 reassembly-overflow flag   482/483 last protocol-error reason/position
 
 (module net/quic_client)
 (import bytes string net/quic_wire net/h3_wire crypto/quic_crypto net/quic_tls)
@@ -161,57 +162,91 @@
                   (do (cset! c (+ 3 space) (+ pn 1))
                       (qcn-udp-send (cget c 2) pkt))))))))))
 
-;; ACK frame for what we have received in `space`: largest, delay 0, ranges decoded from the 28-bit mask.
-(defn qcn-ack-frame [(c : Bytes) (space : I32) (dest : Arena @ Region)] : Bytes @ Region
-  (let [largest (cget c (+ 6 space))
-        mask (cget c (+ 9 space))
-        out (bytes-alloc 96 dest)]
-    (if (< largest 0) (bytes-alloc 0 dest)
-      (let [run0 (qcn-run-ones mask 0)
-            ;; collect up to 6 more (gap,len) ranges
-            nranges (qcn-count-ranges mask run0 0 0)
-            p0 (quic-put-ack! out 0 largest 0 run0)]
-        ;; quic-put-ack! wrote range-count 0; patch it and append ranges when present
-        (if (= nranges 0) (bytes-slice out 0 p0 dest)
-          (let [pp (qcn-write-ack-ranges out largest run0 mask nranges dest)]
-            (bytes-slice out 0 pp dest)))))))
-
-;; number of consecutive 1 bits in mask starting at bit `from`
-(defn qcn-run-ones [(mask : I32) (from : I32)] : I32
-  (loop [i from n 0]
-    (if (or (>= i 28) (= (bit-and (shr mask i) 1) 0)) n (recur (+ i 1) (+ n 1)))))
-
-(defn qcn-run-zeros [(mask : I32) (from : I32)] : I32
-  (loop [i from n 0]
-    (if (or (>= i 28) (= (bit-and (shr mask i) 1) 1)) n (recur (+ i 1) (+ n 1)))))
-
-;; how many additional (gap,len) pairs follow the first run (max 6)
-(defn qcn-count-ranges [(mask : I32) (pos : I32) (n : I32) (guard : I32)] : I32
-  (if (or (>= n 6) (>= pos 28)) n
-    (let [z (qcn-run-zeros mask pos)
-          r (qcn-run-ones mask (+ pos z))]
-      (if (or (= r 0) (>= (+ pos z) 28)) n
-        (qcn-count-ranges mask (+ (+ pos z) r) (+ n 1) guard)))))
-
-(defn qcn-write-ack-ranges [(out : Bytes) (largest : I32) (run0 : I32) (mask : I32) (n : I32) (dest : Arena @ Region)] : I32
-  ;; rewrite the whole frame: type 2, largest, delay 0, count n, first range run0, then pairs
-  (let [p1 (quic-varint-put! out 1 largest)
-        p2 (quic-varint-put! out p1 0)
-        p3 (quic-varint-put! out p2 n)
-        p4 (quic-varint-put! out p3 run0)]
-    (loop [k 0 pos run0 op p4]
-      (if (>= k n) op
-        (let [z (qcn-run-zeros mask pos)
-              r (qcn-run-ones mask (+ pos z))
-              o1 (quic-varint-put! out op (- z 1))
-              o2 (quic-varint-put! out o1 (- r 1))]
-          (recur (+ k 1) (+ (+ pos z) r) o2))))))
-
 ;; copy frames then explicitly zero the padding tail (arena memory is NOT zeroed; stale bytes would be
 ;; parsed by the peer as unknown frame types)
 (defn qcn-pad-copy! [(payload : Bytes) (frames : Bytes) (fl : I32) (want : I32)] : I32
   (do (cput! payload 0 frames 0 fl)
       (loop [i fl] (if (>= i want) 0 (do (bytes-set! payload i 0) (recur (+ i 1)))))))
+
+;; ---- received-packet ranges (what ACK frames are built from) ----------------------------------------
+;; Per space: up to 24 disjoint [start,end] ranges kept sorted by descending end, in slots 200 + space*48
+;; (range i = start at +2i, end at +2i+1); the count lives in slot 9+space. Adjacent ranges are merged, so a
+;; long transfer keeps acknowledging every packet it ever received (a fixed bitmask window would stop
+;; acknowledging old packets, the peer would call them lost, retransmit, and collapse its own cwnd).
+
+(defn qcn-rg-base [(space : I32)] : I32 (+ 300 (* space 48)))
+(defn qcn-rg-s [(c : Bytes) (base : I32) (i : I32)] : I32 (cget c (+ base (* i 2))))
+(defn qcn-rg-e [(c : Bytes) (base : I32) (i : I32)] : I32 (cget c (+ (+ base (* i 2)) 1)))
+(defn qcn-rg-put! [(c : Bytes) (base : I32) (i : I32) (s : I32) (e : I32)] : I32
+  (do (cset! c (+ base (* i 2)) s) (cset! c (+ (+ base (* i 2)) 1) e) 0))
+
+;; insert (s,e) at index i, shifting later ranges down; the lowest range falls off when full
+(defn qcn-rg-insert! [(c : Bytes) (space : I32) (base : I32) (n : I32) (i : I32) (s : I32) (e : I32)] : I32
+  (let [last (if (>= n 24) 23 n)]
+    (do (loop [k last]
+          (if (<= k i) 0
+            (do (qcn-rg-put! c base k (qcn-rg-s c base (- k 1)) (qcn-rg-e c base (- k 1)))
+                (recur (- k 1)))))
+        (qcn-rg-put! c base i s e)
+        (cset! c (+ 9 space) (if (>= n 24) 24 (+ n 1))))))
+
+;; remove range i, shifting later ranges up
+(defn qcn-rg-remove! [(c : Bytes) (space : I32) (base : I32) (n : I32) (i : I32)] : I32
+  (do (loop [k i]
+        (if (>= k (- n 1)) 0
+          (do (qcn-rg-put! c base k (qcn-rg-s c base (+ k 1)) (qcn-rg-e c base (+ k 1)))
+              (recur (+ k 1)))))
+      (cset! c (+ 9 space) (- n 1))))
+
+(defn qcn-rg-note! [(c : Bytes) (space : I32) (base : I32) (n : I32) (pn : I32)] : I32
+  (loop [i 0]
+    (if (>= i n)
+      (if (< n 24) (qcn-rg-insert! c space base n n pn pn) 0)
+      (let [s (qcn-rg-s c base i) e (qcn-rg-e c base i)]
+        (if (and (>= pn s) (<= pn e)) 0
+          (if (= pn (+ e 1))
+            (if (and (> i 0) (= (qcn-rg-s c base (- i 1)) (+ pn 1)))
+              (do (qcn-rg-put! c base (- i 1) s (qcn-rg-e c base (- i 1)))
+                  (qcn-rg-remove! c space base n i))
+              (qcn-rg-put! c base i s pn))
+            (if (= pn (- s 1))
+              (if (and (< (+ i 1) n) (= (qcn-rg-e c base (+ i 1)) (- pn 1)))
+                (do (qcn-rg-put! c base i (qcn-rg-s c base (+ i 1)) e)
+                    (qcn-rg-remove! c space base n (+ i 1)))
+                (qcn-rg-put! c base i pn e))
+              (if (> pn e)
+                (qcn-rg-insert! c space base n i pn pn)
+                (recur (+ i 1))))))))))
+
+(defn qcn-note-rx! [(c : Bytes) (space : I32) (pn : I32)] : I32
+  (do (if (> pn (cget c (+ 6 space))) (cset! c (+ 6 space) pn) 0)
+      (qcn-rg-note! c space (qcn-rg-base space) (cget c (+ 9 space)) pn)))
+
+;; ACK frame (type 0x02) for everything received in `space`, up to 20 ranges, delay 0.
+(defn qcn-ack-frame [(c : Bytes) (space : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (cget c (+ 9 space))
+        base (qcn-rg-base space)]
+    (if (= n 0) (bytes-alloc 0 dest)
+      (let [m (if (> n 20) 20 n)
+            out (bytes-alloc (+ 16 (* m 8)) dest)
+            e0 (qcn-rg-e c base 0)
+            s0 (qcn-rg-s c base 0)
+            p0 (qcn-b! out 0 2)
+            p1 (quic-varint-put! out p0 e0)
+            p2 (quic-varint-put! out p1 0)
+            p3 (quic-varint-put! out p2 (- m 1))
+            p4 (quic-varint-put! out p3 (- e0 s0))
+            pe (qcn-ack-pairs! c base out p4 1 m s0)]
+        (bytes-slice out 0 pe dest)))))
+
+(defn qcn-b! [(out : Bytes) (p : I32) (v : I32)] : I32 (do (bytes-set! out p v) (+ p 1)))
+
+(defn qcn-ack-pairs! [(c : Bytes) (base : I32) (out : Bytes) (op : I32) (i : I32) (m : I32) (prev-s : I32)] : I32
+  (if (>= i m) op
+    (let [s (qcn-rg-s c base i) e (qcn-rg-e c base i)
+          o1 (quic-varint-put! out op (- (- prev-s e) 2))
+          o2 (quic-varint-put! out o1 (- e s))]
+      (qcn-ack-pairs! c base out o2 (+ i 1) m s))))
 
 ;; Send pending ACKs (one ACK-only packet per space that has something to acknowledge).
 (defn qcn-flush-one [(c : Bytes) (s : I32) (dest : Arena @ Region)] : I32
@@ -228,56 +263,54 @@
             0)
           (recur (+ s 1))))))
 
-;; ---- receive bookkeeping --------------------------------------------------------------------------
-
-(defn qcn-note-rx! [(c : Bytes) (space : I32) (pn : I32)] : I32
-  (let [L (cget c (+ 6 space)) m (cget c (+ 9 space))]
-    (if (< L 0)
-      (do (cset! c (+ 6 space) pn) (cset! c (+ 9 space) 0) 0)
-      (if (> pn L)
-        (let [d (- pn L)]
-          (do (cset! c (+ 9 space)
-                     (if (> d 28) 0
-                       (bit-or (shl (bit-and m (shr 268435455 d)) d) (shl 1 (- d 1)))))
-              (cset! c (+ 6 space) pn)
-              0))
-        (if (< pn L)
-          (let [i (- (- L 1) pn)]
-            (if (< i 28) (cset! c (+ 9 space) (bit-or m (shl 1 i))) 0))
-          0)))))
-
 ;; ---- segment reassembly -----------------------------------------------------------------------------
-;; list 0/1 = Initial/Handshake CRYPTO, 2 = response stream. `have` slot per list: 18, 19, 27.
+;; list 0/1 = Initial/Handshake CRYPTO, 2 = response stream. `have` slot per list: 18, 19, 27. Data is written
+;; at its absolute offset; this only tracks WHICH bytes are present: a contiguous prefix `have` plus up to 32
+;; pending intervals beyond it (slots 64 + list*64), merged when they touch. If the interval table is full
+;; the data is still unrecorded -- slot 480 is raised so the packet is NOT acknowledged and the peer resends
+;; (acknowledging it would punch a permanent hole in the stream).
 
 (defn qcn-have-slot [(list : I32)] : I32 (if (= list 2) 27 (+ 18 list)))
 
-;; Record [off, off+len) as received; advance the contiguous prefix and absorb pending segments.
 (defn qcn-seg-add! [(c : Bytes) (list : I32) (off : I32) (len : I32)] : I32
   (let [hs (qcn-have-slot list)
         have (cget c hs)
-        base (+ 64 (* list 32))
+        base (+ 64 (* list 64))
         e (+ off len)]
     (if (<= len 0) 0
       (if (<= off have)
         (do (cset! c hs (if (> e have) e have))
             (qcn-seg-absorb! c list 0))
-        (qcn-seg-stash! c base off e 0)))))
+        (if (= (qcn-seg-merge! c base off e 0) 1) 0
+          (if (= (qcn-seg-stash! c base off e 0) 1) 0 (cset! c 480 1)))))))
 
+;; fold [s,e) into an existing pending interval it overlaps or touches; 1 if done
+(defn qcn-seg-merge! [(c : Bytes) (base : I32) (s : I32) (e : I32) (i : I32)] : I32
+  (if (>= i 32) 0
+    (let [bs (cget c (+ base (* i 2))) be (cget c (+ (+ base (* i 2)) 1))]
+      (if (and (> be 0) (and (<= s be) (>= e bs)))
+        (do (cset! c (+ base (* i 2)) (if (< s bs) s bs))
+            (cset! c (+ (+ base (* i 2)) 1) (if (> e be) e be))
+            1)
+        (qcn-seg-merge! c base s e (+ i 1))))))
+
+;; put [s,e) in the first free interval slot; 1 if stored, 0 if the table is full
 (defn qcn-seg-stash! [(c : Bytes) (base : I32) (s : I32) (e : I32) (i : I32)] : I32
-  (if (>= i 16) 0
+  (if (>= i 32) 0
     (if (= (cget c (+ (+ base (* i 2)) 1)) 0)
-      (do (cset! c (+ base (* i 2)) s) (cset! c (+ (+ base (* i 2)) 1) e) 0)
+      (do (cset! c (+ base (* i 2)) s) (cset! c (+ (+ base (* i 2)) 1) e) 1)
       (qcn-seg-stash! c base s e (+ i 1)))))
 
+;; pending intervals that now touch the prefix extend it (repeat while anything changes)
 (defn qcn-seg-absorb! [(c : Bytes) (list : I32) (round : I32)] : I32
-  (if (>= round 17) 0
+  (if (>= round 40) 0
     (let [hs (qcn-have-slot list)
-          base (+ 64 (* list 32))
+          base (+ 64 (* list 64))
           changed (qcn-seg-pass! c hs base 0 0)]
       (if (= changed 1) (qcn-seg-absorb! c list (+ round 1)) 0))))
 
 (defn qcn-seg-pass! [(c : Bytes) (hs : I32) (base : I32) (i : I32) (changed : I32)] : I32
-  (if (>= i 16) changed
+  (if (>= i 32) changed
     (let [s (cget c (+ base (* i 2))) e (cget c (+ (+ base (* i 2)) 1)) have (cget c hs)]
       (if (and (> e 0) (<= s have))
         (do (cset! c hs (if (> e have) e have))
@@ -303,7 +336,7 @@
             doff (quic-stream-data-off p pos)
             len (quic-stream-data-len p pos)
             cap (cget c 37)]
-        (if (or (< off 0) (or (< doff 0) (or (< len 0) (> (+ off len) cap)))) (qcn-fail! c -5)
+        (if (or (< off 0) (or (< doff 0) (or (< len 0) (> (+ off len) cap)))) (do (cset! c 482 2000) (qcn-fail! c -5))
           (do (cput! c (+ (qcn-o-rx0) off) p doff len)
               (qcn-seg-add! c 2 off len)
               (if (quic-stream-fin? p pos) (cset! c 28 (+ off len)) 0)
@@ -317,7 +350,7 @@
       (do (if (= elicit 1) (cset! c (+ 12 space) 1) 0) 0)
       (let [t (quic-frame-type p pos)
             end (quic-frame-end p pos)]
-        (if (or (< t 0) (< end 0)) (qcn-fail! c -5)
+        (if (or (< t 0) (< end 0)) (do (cset! c 482 (+ 1000 t)) (cset! c 483 pos) (qcn-fail! c -5))
           (if (= t 0) (recur end elicit)
             (if (or (= t 2) (= t 3)) (do (cset! c 39 1) (recur end elicit))
               (if (= t 6)
@@ -536,12 +569,13 @@
                   pl (if (< pn 0) (bytes-alloc 0 dest)
                        (quic-unprotect pkt pn-off (qcn-key c space 1 dest) (qcn-iv c space 1 dest) hp largest dest))]
               (if (= (bytes-len pl) 0) 0
-                (do (qcn-note-rx! c space pn)
+                (do (cset! c 480 0)
                     ;; adopt the server's chosen connection id from its first Initial
                     (if (and (= space 0) (= (cget c 44) 0)) (qcn-adopt-scid! c pkt) 0)
                     (if (= space 1) (cset! c 36 1) 0)
                     (if (= space 2) (cset! c 43 1) 0)
                     (qcn-frames! c space pl dest)
+                    (if (= (cget c 480) 0) (qcn-note-rx! c space pn) 0)
                     (if (< space 2) (+ pn-off (quic-long-length pkt)) (bytes-len dg))))))))))) 
 
 (defn qcn-datagram! [(c : Bytes) (dg : Bytes) (host : String @ Region) (dest : Arena @ Region)] : I32
@@ -561,9 +595,9 @@
 
 (defn qcn-h3-headers! [(c : Bytes) (po : I32) (end : I32) (dest : Arena @ Region)] : I32
   (if (not (= (cget c 32) 0)) 0
-    (let [tmp (bytes-alloc 8192 dest)
+    (let [tmp (bytes-alloc 32768 dest)
           n (qpack-decode-section c po end tmp)]
-      (if (< n 0) (qcn-fail! c -5)
+      (if (< n 0) (do (cset! c 482 3000) (qcn-fail! c -5))
         (do (cput! c (qcn-o-hdrs) tmp 0 (if (> n 8192) 8192 n))
             (cset! c 31 n)
             (qcn-set-status! c (qcn-status-from-headers tmp n)))))))
@@ -573,7 +607,7 @@
 
 (defn qcn-h3-data! [(c : Bytes) (po : I32) (len : I32)] : I32
   (let [bl (cget c 30) bo (qcn-o-body c)]
-    (if (> (+ bl len) (cget c 37)) (qcn-fail! c -5)
+    (if (> (+ bl len) (cget c 37)) (do (cset! c 482 4000) (qcn-fail! c -5))
       (do (cput! c (+ bo bl) c po len) (cset! c 30 (+ bl len)) 0))))
 
 (defn qcn-h3-frame! [(c : Bytes) (rx : I32) (pos : I32) (end : I32) (dest : Arena @ Region)] : I32
@@ -697,7 +731,7 @@
   (let [now (qcn-now)]
     (if (> now (cget c 35)) (qcn-fail! c -1)
       (if (= (cget c 39) 1)
-        (do (cset! c 39 0) (cset! c 23 now) (cset! c 24 300) 0)
+        (do (cset! c 39 0) (cset! c 23 now) (cset! c 24 300) (cset! c 25 0) 0)
         (if (and (= (cget c 0) 0) (> (- now (cget c 23)) (cget c 24)))
           (qcn-retransmit! c now t)
           0)))))
@@ -723,7 +757,7 @@
             0)
           (if (= (cget c 0) 0) (qcn-h3-parse! c &mut t) 0)
           (if (and (= (cget c 0) 0) (qcn-complete? c))
-            (if (> (cget c 32) 0) (cset! c 0 1) (qcn-fail! c -5))
+            (if (> (cget c 32) 0) (cset! c 0 1) (do (cset! c 482 5000) (qcn-fail! c -5)))
             0)
           (qcn-flush-acks c &mut t)
           (qcn-timers! c &mut t)
