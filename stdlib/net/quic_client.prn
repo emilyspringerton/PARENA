@@ -745,9 +745,17 @@
         p2 (qt-b! out p1 (+ 48 (mod (/ st 10) 10)))
         p3 (qt-b! out p2 (+ 48 (mod st 10)))
         p4 (qt-put-str! out p3 " H3\r\n")
-        p5 (qcn-hdr-lines! c out p4 0 hl true)
+        p5a (qcn-hdr-lines! c out p4 0 hl true)
+        p5 (qcn-trim-partial out p4 p5a)
         p6 (qt-put-str! out p5 "\r\n")]
     (bytes-slice out 0 p6 dest)))
+
+;; the headers region is capped (8 KiB): a header block that did not fit ends mid-line -- drop the partial line
+;; so the block still ends with a complete CRLF and the blank line that terminates it parses
+(defn qcn-trim-partial [(out : Bytes) (floor : I32) (end : I32)] : I32
+  (loop [j end]
+    (if (<= j floor) floor
+      (if (= (bytes-get out (- j 1)) 10) j (recur (- j 1))))))
 
 ;; copy "name: value\n" lines from the headers region as CRLF lines, skipping ":pseudo" ones
 (defn qcn-hdr-lines! [(c : Bytes) (out : Bytes) (op : I32) (i : I32) (hl : I32) (line-start : Bool)] : I32

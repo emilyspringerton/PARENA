@@ -1104,8 +1104,13 @@ static inline Bytes quic_x25519_shared_impl(Bytes secret, Bytes peer, Arena *des
     for (int i = 0; i < 32; i++) acc |= out.data[i];
     return acc ? out : bytes_alloc_impl(dest, 0);
 }
-/* n cryptographically random bytes (mbedTLS entropy: getrandom / BCryptGenRandom). n <= 4096. */
+/* n cryptographically random bytes (mbedTLS entropy: getrandom / BCryptGenRandom). n <= 4096.
+ * With PARENA_WITH_TLS the generator is net/stream's own CTR_DRBG (defined below, after its statics): a
+ * second, independently initialised entropy context must not exist, because under the static-heap
+ * allocator (PARENA_TLS_STATIC_HEAP) anything initialised before the heap is installed and freed after
+ * it dies with "mbedtls_free() outside of managed space". */
 #include <mbedtls/entropy.h>
+#ifndef PARENA_WITH_TLS
 static inline Bytes quic_random_impl(int n, Arena *dest) {
     static mbedtls_entropy_context ent;
     static int ent_ready = 0;
@@ -1118,6 +1123,7 @@ static inline Bytes quic_random_impl(int n, Arena *dest) {
     }
     return out;
 }
+#endif /* !PARENA_WITH_TLS */
 /* One static connection block for hosts that run under -DPARENA_NO_MALLOC (PELLEGRINO): a page stream is a
  * single connection at a time, so net/quic_client's `quic-connect-static` lays its state block over this
  * instead of an arena (an arena block would never be freed and a few navigations would exhaust the pool).
@@ -4502,6 +4508,14 @@ static inline void stream_tls_teardown(void) {}
 #endif /* PARENA_WITH_TLS */
 
 #if defined(PARENA_WITH_TLS) && defined(PARENA_WITH_QUIC_CRYPTO)
+#include <mbedtls/ctr_drbg.h>
+static inline Bytes quic_random_impl(int n, Arena *dest) {
+    if (n < 0 || n > 4096) return bytes_alloc_impl(dest, 0);
+    if (stream_tls_global_init() != 0) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, n);
+    if (n > 0 && mbedtls_ctr_drbg_random(&g_stream_tls_drbg, out.data, (size_t)n) != 0) return bytes_alloc_impl(dest, 0);
+    return out;
+}
 /* QUIC's TLS 1.3 handshake runs in PARENA (net/quic_tls.prn); only certificate-chain validation and the
  * CertificateVerify signature check are delegated to mbedTLS x509/pk -- never hand-rolled. Trust roots,
  * heap and entropy are exactly net/stream's TLS half's (SSL_CERT_FILE / system bundle / cacert.pem next to

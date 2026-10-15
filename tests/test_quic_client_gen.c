@@ -289,6 +289,7 @@ int qcn_zero_(Bytes);
 Bytes quic_connect(char *, int, int, int, Arena *);
 Bytes quic_connect_static(char *, int, int, int, Arena *);
 Bytes quic_headers_http1(Bytes, Arena *);
+int qcn_trim_partial(Bytes, int, int);
 int qcn_hdr_lines_(Bytes, Bytes, int, int, int, int);
 int qcn_skip_line(Bytes, int, int);
 int qcn_send_app_(Bytes, char *, char *, Arena *);
@@ -3742,9 +3743,31 @@ Bytes quic_headers_http1(Bytes c __attribute__((unused)), Arena *dest __attribut
     int p2 __attribute__((unused)) = qt_b_(out, p1, (48 + ((st / 10) % 10)));
     int p3 __attribute__((unused)) = qt_b_(out, p2, (48 + (st % 10)));
     int p4 __attribute__((unused)) = qt_put_str_(out, p3, " H3\r\n");
-    int p5 __attribute__((unused)) = qcn_hdr_lines_(c, out, p4, 0, hl, 1);
+    int p5a __attribute__((unused)) = qcn_hdr_lines_(c, out, p4, 0, hl, 1);
+    int p5 __attribute__((unused)) = qcn_trim_partial(out, p4, p5a);
     int p6 __attribute__((unused)) = qt_put_str_(out, p5, "\r\n");
     return bytes_slice(out, 0, p6, dest);
+}
+
+int qcn_trim_partial(Bytes out __attribute__((unused)), int floor __attribute__((unused)), int end __attribute__((unused))) {
+    int __loop_result_41 __attribute__((unused));
+    int j = end;
+    while (1) {
+        if ((j <= floor)) {
+        __loop_result_41 = floor;
+        break;
+        } else {
+        if ((bytes_get(out, (j - 1)) == 10)) {
+        __loop_result_41 = j;
+        break;
+        } else {
+        int __recur_tmp_0 = (j - 1);
+        j = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    return __loop_result_41;
 }
 
 int qcn_hdr_lines_(Bytes c __attribute__((unused)), Bytes out __attribute__((unused)), int op __attribute__((unused)), int i __attribute__((unused)), int hl __attribute__((unused)), int line_start __attribute__((unused))) {
@@ -3768,15 +3791,15 @@ int qcn_hdr_lines_(Bytes c __attribute__((unused)), Bytes out __attribute__((unu
 }
 
 int qcn_skip_line(Bytes c __attribute__((unused)), int i __attribute__((unused)), int hl __attribute__((unused))) {
-    int __loop_result_41 __attribute__((unused));
+    int __loop_result_42 __attribute__((unused));
     int k = i;
     while (1) {
         if ((k >= hl)) {
-        __loop_result_41 = hl;
+        __loop_result_42 = hl;
         break;
         } else {
         if ((bytes_get(c, (qcn_o_hdrs() + k)) == 10)) {
-        __loop_result_41 = (k + 1);
+        __loop_result_42 = (k + 1);
         break;
         } else {
         int __recur_tmp_0 = (k + 1);
@@ -3785,7 +3808,7 @@ int qcn_skip_line(Bytes c __attribute__((unused)), int i __attribute__((unused))
         }
         }
     }
-    return __loop_result_41;
+    return __loop_result_42;
 }
 
 int qcn_send_app_(Bytes c __attribute__((unused)), char * host __attribute__((unused)), char * path __attribute__((unused)), Arena *t __attribute__((unused))) {
@@ -3834,16 +3857,16 @@ int qcn_timers_(Bytes c __attribute__((unused)), Arena *t __attribute__((unused)
 }
 
 int qcn_drain_(Bytes c __attribute__((unused)), char * host __attribute__((unused)), Arena *t __attribute__((unused))) {
-    int __loop_result_42 __attribute__((unused));
+    int __loop_result_43 __attribute__((unused));
     int n = 0;
     while (1) {
         if ((n >= 32)) {
-        __loop_result_42 = 0;
+        __loop_result_43 = 0;
         break;
         } else {
         Bytes dg __attribute__((unused)) = qcn_udp_recv(cget(c, 2), t);
         if ((bytes_len(dg) == 0)) {
-        __loop_result_42 = 0;
+        __loop_result_43 = 0;
         break;
         } else {
         (void)(qcn_datagram_(c, dg, host, t));

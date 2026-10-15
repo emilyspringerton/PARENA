@@ -84,6 +84,19 @@ int main(int argc, char **argv) {
         char tmp[2048]; int n = h1.len < 2047 ? h1.len : 2047; memcpy(tmp, h1.data, (size_t)n); tmp[n] = 0;
         CHECK(strstr(tmp, "content-type: text/plain\r\n") != NULL && strstr(tmp, ":status") == NULL, "http1 head has headers, no pseudo-headers");
         CHECK(n >= 4 && memcmp(tmp + n - 4, "\r\n\r\n", 4) == 0, "http1 head ends with a blank line");
+        /* a header block that hit the 8 KiB region cap ends mid-line: the head must still be terminated */
+        { Bytes tc = quic_static_conn();
+          int hoff = quic_headers_off(tc);
+          for (int i = 0; i < 8192; i++) tc.data[hoff + i] = (unsigned char)('a' + (i % 20) == 'a' + 3 ? '-' : 'a' + (i % 20));
+          tc.data[hoff + 0] = 'x'; tc.data[hoff + 1] = ':'; tc.data[hoff + 2] = ' '; tc.data[hoff + 3] = 'v'; tc.data[hoff + 4] = '\n';
+          /* line 1 complete, line 2 runs to the cap with no newline; pretend the block was 9000 bytes long */
+          unsigned char *hl = tc.data + 31 * 4;
+          hl[0] = (unsigned char)(9000 & 255); hl[1] = (unsigned char)(9000 >> 8); hl[2] = 0; hl[3] = 0;
+          Bytes t = quic_headers_http1(tc, &a);
+          CHECK(t.len >= 4 && memcmp(t.data + t.len - 4, "\r\n\r\n", 4) == 0, "oversized header block: head still ends with a blank line");
+          char *tcopy = malloc((size_t)t.len + 1); memcpy(tcopy, t.data, (size_t)t.len); tcopy[t.len] = 0;
+          CHECK(strstr(tcopy, "x: v\r\n") != NULL, "oversized header block: complete lines kept");
+          free(tcopy); }
         stream_reset_impl();
         int ap = stream_append_bytes_impl(h1, 0, h1.len);
         int ap2 = stream_append_bytes_impl(sc, quic_body_off(sc), quic_body_len(sc));
