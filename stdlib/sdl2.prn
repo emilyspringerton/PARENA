@@ -161,6 +161,11 @@
   #target
   {:c (inline-c "sdl2_create_renderer_impl(window_handle)")})
 
+(defn sdl2-raw-create-surface-renderer [(w : I32) (h : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_create_surface_renderer_impl(w, h)")})
+
 (defn sdl2-raw-destroy-renderer [(handle : I32)]
   : Unit
   #target

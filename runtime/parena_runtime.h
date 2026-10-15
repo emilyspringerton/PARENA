@@ -3263,6 +3263,7 @@ static SDL_Window *g_sdl2_windows[SDL2_MAX_WINDOWS];
 static int g_sdl2_window_count = 0;
 static SDL_Renderer *g_sdl2_renderers[SDL2_MAX_RENDERERS];
 static int g_sdl2_renderer_count = 0;
+static SDL_Surface *g_sdl2_renderer_surfaces[SDL2_MAX_RENDERERS]; /* non-NULL = offscreen software renderer (embed use) */
 
 static inline int sdl2_init_impl(void) {
     /* Real, confirmed-live bug fix (2026-08-27, founder real-time,
@@ -3370,10 +3371,34 @@ static inline int sdl2_create_renderer_impl(int window_handle) {
     return handle;
 }
 
+/* Offscreen software renderer (2026-10-15, PELLEGRINO embed / SHANKPIT OS menu): a renderer that draws into
+ * a w*h ARGB8888 SDL_Surface instead of a window, for hosts that own their own window and GL context (the
+ * lobby is fixed-function OpenGL, so a second SDL_Renderer cannot share its window). The host reads the
+ * pixels back with sdl2_surface_renderer_pixels_impl and uploads them however it likes. Returns a renderer
+ * handle usable with every sdl2_*_impl draw call, or -1. */
+static inline int sdl2_create_surface_renderer_impl(int w, int h) {
+    if (w <= 0 || h <= 0 || g_sdl2_renderer_count >= SDL2_MAX_RENDERERS) return -1;
+    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (surf == NULL) return -1;
+    SDL_Renderer *ren = SDL_CreateSoftwareRenderer(surf);
+    if (ren == NULL) { SDL_FreeSurface(surf); return -1; }
+    int handle = g_sdl2_renderer_count++;
+    g_sdl2_renderers[handle] = ren;
+    g_sdl2_renderer_surfaces[handle] = surf;
+    return handle;
+}
+
+/* Pixel base (w*h 32-bit ARGB8888, pitch = w*4) of a surface renderer, or NULL for any other handle. */
+static inline void *sdl2_surface_renderer_pixels_impl(int handle) {
+    if (handle < 0 || handle >= g_sdl2_renderer_count || g_sdl2_renderer_surfaces[handle] == NULL) return NULL;
+    return g_sdl2_renderer_surfaces[handle]->pixels;
+}
+
 static inline void sdl2_destroy_renderer_impl(int handle) {
     if (handle >= 0 && handle < g_sdl2_renderer_count && g_sdl2_renderers[handle] != NULL) {
         SDL_DestroyRenderer(g_sdl2_renderers[handle]);
         g_sdl2_renderers[handle] = NULL;
+        if (g_sdl2_renderer_surfaces[handle] != NULL) { SDL_FreeSurface(g_sdl2_renderer_surfaces[handle]); g_sdl2_renderer_surfaces[handle] = NULL; }
     }
 }
 
