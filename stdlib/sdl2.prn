@@ -146,6 +146,11 @@
   #target
   {:c (inline-c "sdl2_create_window_borderless_impl(title, w, h)")})
 
+(defn sdl2-raw-move-window [(handle : I32) (dx : I32) (dy : I32)]
+  : I32
+  #target
+  {:c (inline-c "sdl2_move_window_impl(handle, dx, dy)")})
+
 (defn sdl2-raw-destroy-window [(handle : I32)]
   : Unit
   #target

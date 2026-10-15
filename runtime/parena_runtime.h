@@ -3335,6 +3335,16 @@ static inline int sdl2_create_window_borderless_impl(const char *title, int w, i
     return handle;
 }
 
+/* sdl2_move_window_impl -- shift a window by (dx, dy) pixels from where it is now (PELLEGRINO's
+ * Shift+J/K/L/I: a borderless window has no title bar to drag). Returns 0, or -1 for a bad handle. */
+static inline int sdl2_move_window_impl(int handle, int dx, int dy) {
+    int x = 0, y = 0;
+    if (handle < 0 || handle >= g_sdl2_window_count || g_sdl2_windows[handle] == NULL) return -1;
+    SDL_GetWindowPosition(g_sdl2_windows[handle], &x, &y);
+    SDL_SetWindowPosition(g_sdl2_windows[handle], x + dx, y + dy);
+    return 0;
+}
+
 static inline void sdl2_destroy_window_impl(int handle) {
     if (handle >= 0 && handle < g_sdl2_window_count && g_sdl2_windows[handle] != NULL) {
         SDL_DestroyWindow(g_sdl2_windows[handle]);
@@ -4456,11 +4466,11 @@ static inline int cururl_set_impl(const char *s) {
 }
 static inline char *cururl_get_impl(void) { return g_cururl; }
 
-/* slots -- PARENA_SLOTS static int cells (default 1024; was 32 until PELLEGRINO's CSS rule table and style
- * stack needed room): tiny mutable UI/navigation state for PARENA programs (loop/recur can't carry a dozen
+/* slots -- PARENA_SLOTS static int cells (default 2048; was 32, then 1024, as PELLEGRINO's CSS rule table, style
+ * stack, images and form fields needed room): tiny mutable UI/navigation state for PARENA programs (loop/recur can't carry a dozen
  * values through function calls, and PARENA functions return one scalar). Out-of-range reads are 0. */
 #ifndef PARENA_SLOTS
-#define PARENA_SLOTS 1024
+#define PARENA_SLOTS 2048
 #endif
 static int g_slots[PARENA_SLOTS];
 static inline int slot_get_impl(int k) { return (k >= 0 && k < PARENA_SLOTS) ? g_slots[k] : 0; }
