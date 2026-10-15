@@ -1118,6 +1118,27 @@ static inline Bytes quic_random_impl(int n, Arena *dest) {
     }
     return out;
 }
+/* One static connection block for hosts that run under -DPARENA_NO_MALLOC (PELLEGRINO): a page stream is a
+ * single connection at a time, so net/quic_client's `quic-connect-static` lays its state block over this
+ * instead of an arena (an arena block would never be freed and a few navigations would exhaust the pool).
+ * 100 KiB of fixed state + 2 x body-cap; default fits a 4 MiB body. Zeroed on every connect. */
+#ifndef PARENA_QUIC_STATIC_BYTES
+#define PARENA_QUIC_STATIC_BYTES (9u * 1024u * 1024u)
+#endif
+static unsigned char g_quic_static[PARENA_QUIC_STATIC_BYTES] __attribute__((aligned(16)));
+static int g_quic_static_len = 0;
+static inline Bytes quic_static_block_impl(int size) {
+    Bytes b;
+    if (size <= 0 || (unsigned)size > PARENA_QUIC_STATIC_BYTES) { b.data = NULL; b.len = 0; g_quic_static_len = 0; return b; }
+    memset(g_quic_static, 0, (size_t)size);
+    g_quic_static_len = size;
+    b.data = g_quic_static; b.len = size;
+    return b;
+}
+static inline Bytes quic_static_current_impl(void) {
+    Bytes b; b.data = g_quic_static_len ? g_quic_static : NULL; b.len = g_quic_static_len; return b;
+}
+static inline int quic_static_capacity_impl(void) { return (int)PARENA_QUIC_STATIC_BYTES; }
 #endif /* PARENA_WITH_QUIC_CRYPTO */
 
 /* string_concat -- real, minimal `string/concat` implementation
@@ -4631,6 +4652,17 @@ static inline int stream_pull_impl(int fd) {
 static inline char *stream_buf_impl(void) { return stream_cur_buf(); }
 static inline int stream_len_impl(void) { return (int)stream_cur_len(); }
 static inline void stream_reset_impl(void) { stream_cur_set_len(0); }
+/* Append src[off, off+n) to the selected bank's received bytes (no partial append: -1 and nothing written if it
+ * would not fit or the range is bad). Lets a non-socket transport (HTTP/3, net/quic_client) hand its response
+ * to the same page pipeline the TCP/TLS path fills. Returns n, or -1. */
+static inline int stream_append_bytes_impl(Bytes src, int off, int n) {
+    if (off < 0 || n < 0 || off > src.len || n > src.len - off) return -1;
+    size_t cur = stream_cur_len();
+    if (cur + (size_t)n > stream_cur_max()) return -1;
+    if (n > 0) memcpy(stream_cur_buf() + cur, src.data + off, (size_t)n);
+    stream_cur_set_len(cur + (size_t)n);
+    return n;
+}
 /* Bytes copy of the selected bank from `off` to its current length (binary-safe; zero-length when out of range). */
 static inline Bytes stream_copy_bytes_impl(Arena *dest, int off) {
     size_t n = stream_cur_len();

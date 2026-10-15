@@ -32,7 +32,7 @@
 
 (module net/quic_client)
 (import bytes string net/quic_wire net/h3_wire crypto/quic_crypto net/quic_tls)
-(export quic-connect quic-pump quic-status quic-http-status quic-body-off quic-body-len
+(export quic-connect quic-connect-static quic-static-conn quic-static-capacity quic-headers-http1 quic-pump quic-status quic-http-status quic-body-off quic-body-len
         quic-headers-off quic-headers-len quic-close quic-conn-size)
 
 ;; ---- FFI (datagram socket + clock) ---------------------------------------------------------------
@@ -49,6 +49,15 @@
 (defn qcn-udp-close [(fd : I32)] : I32
   #target
   {:c (inline-c "(quic_udp_close_impl(fd), 0)")})
+(defn qcn-static-block [(size : I32)] : Bytes
+  #target
+  {:c (inline-c "quic_static_block_impl(size)")})
+(defn quic-static-conn [] : Bytes
+  #target
+  {:c (inline-c "quic_static_current_impl()")})
+(defn quic-static-capacity [] : I32
+  #target
+  {:c (inline-c "quic_static_capacity_impl()")})
 (defn qcn-now [] : I32
   #target
   {:c (inline-c "quic_now_ms_impl()")})
@@ -661,19 +670,15 @@
         p12 (cput! out p11 c (+ 5120 32) 8)]
     (bytes-slice out 0 p12 dest)))
 
-;; Start a connection and send the ClientHello. Returns the connection block (zero-length on failure
-;; to open the socket / gather randomness). host doubles as SNI, certificate name and :authority;
-;; body-cap bounds the response body (and the advertised flow-control window); timeout-ms is the overall
-;; deadline. Drive it with quic-pump(c, host, path).
-(defn quic-connect [(host : String @ Region) (port : I32) (body-cap : I32) (timeout-ms : I32) (dest : Arena @ Region)]
+;; Start a connection inside the caller-supplied, ZEROED block `c` (size from quic-conn-size) and send the
+;; ClientHello. Returns c, or a zero-length Bytes if the socket could not be opened / no randomness.
+(defn qcn-begin [(c : Bytes) (host : String @ Region) (port : I32) (body-cap : I32) (timeout-ms : I32) (dest : Arena @ Region)]
   : Bytes @ Region
-  (let [c (bytes-alloc (quic-conn-size body-cap) dest)
-        fd (qcn-udp-open host port)]
+  (let [fd (qcn-udp-open host port)]
     (if (< fd 0) (bytes-alloc 0 dest)
       (let [rnd (qt-random 96 dest)]
         (if (< (bytes-len rnd) 96) (bytes-alloc 0 dest)
-          (let [z0 (loop [i 0] (if (>= i (bytes-len c)) 0 (do (bytes-set! c i 0) (recur (+ i 1)))))
-                z1 (cput! c 5120 rnd 0 8)                  ;; original dcid
+          (let [z1 (cput! c 5120 rnd 0 8)                  ;; original dcid
                 z2 (cput! c (+ 5120 32) rnd 8 8)           ;; our scid
                 z3 (cput! c (+ 5120 48) rnd 0 8)           ;; peer dcid starts as the original
                 z4 (cset! c 26 8)
@@ -704,6 +709,58 @@
                 sent (qcn-send c 0 frames dest)
                 z21 (cset! c 23 (qcn-now))]
             c))))))
+
+(defn qcn-zero! [(c : Bytes)] : I32
+  (loop [i 0] (if (>= i (bytes-len c)) 0 (do (bytes-set! c i 0) (recur (+ i 1))))))
+
+;; Start a connection (state block from `dest`). host doubles as SNI, certificate name and :authority;
+;; body-cap bounds the response body (and the advertised flow-control window); timeout-ms is the overall
+;; deadline. Returns zero-length on failure. Drive it with quic-pump(c, host, path).
+(defn quic-connect [(host : String @ Region) (port : I32) (body-cap : I32) (timeout-ms : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (let [c (bytes-alloc (quic-conn-size body-cap) dest)
+        z (qcn-zero! c)]
+    (qcn-begin c host port body-cap timeout-ms dest)))
+
+;; Same, but the state block is the runtime's single static one (PARENA_QUIC_STATIC_BYTES): no arena
+;; growth per navigation, for -DPARENA_NO_MALLOC hosts. Get the same handle later with quic-static-conn.
+;; Zero-length if body-cap does not fit the static block (see quic-static-capacity).
+(defn quic-connect-static [(host : String @ Region) (port : I32) (body-cap : I32) (timeout-ms : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (let [c (qcn-static-block (quic-conn-size body-cap))]
+    (if (= (bytes-len c) 0) (bytes-alloc 0 dest)
+      (qcn-begin c host port body-cap timeout-ms dest))))
+
+;; The response head as an HTTP/1.1 header block, "HTTP/1.1 NNN H3\r\nname: value\r\n...\r\n\r\n" (pseudo
+;; headers dropped), so a host whose page pipeline speaks HTTP/1 can consume an HTTP/3 response unchanged.
+(defn quic-headers-http1 [(c : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [hl (quic-headers-len c)
+        out (bytes-alloc (+ 40 (* hl 2)) dest)
+        st (cget c 32)
+        p0 (qt-put-str! out 0 "HTTP/1.1 ")
+        p1 (qt-b! out p0 (+ 48 (/ st 100)))
+        p2 (qt-b! out p1 (+ 48 (mod (/ st 10) 10)))
+        p3 (qt-b! out p2 (+ 48 (mod st 10)))
+        p4 (qt-put-str! out p3 " H3\r\n")
+        p5 (qcn-hdr-lines! c out p4 0 hl true)
+        p6 (qt-put-str! out p5 "\r\n")]
+    (bytes-slice out 0 p6 dest)))
+
+;; copy "name: value\n" lines from the headers region as CRLF lines, skipping ":pseudo" ones
+(defn qcn-hdr-lines! [(c : Bytes) (out : Bytes) (op : I32) (i : I32) (hl : I32) (line-start : Bool)] : I32
+  (if (>= i hl) op
+    (let [b (bytes-get c (+ (qcn-o-hdrs) i))]
+      (if (and line-start (= b 58))
+        (qcn-hdr-lines! c out op (qcn-skip-line c i hl) hl true)
+        (if (= b 10)
+          (do (bytes-set! out op 13) (bytes-set! out (+ op 1) 10)
+              (qcn-hdr-lines! c out (+ op 2) (+ i 1) hl true))
+          (do (bytes-set! out op b)
+              (qcn-hdr-lines! c out (+ op 1) (+ i 1) hl false)))))))
+
+(defn qcn-skip-line [(c : Bytes) (i : I32) (hl : I32)] : I32
+  (loop [k i]
+    (if (>= k hl) hl (if (= (bytes-get c (+ (qcn-o-hdrs) k)) 10) (+ k 1) (recur (+ k 1))))))
 
 ;; send the request once 1-RTT keys exist and it has not been sent
 (defn qcn-send-app! [(c : Bytes) (host : String @ Region) (path : String @ Region) (t : Arena @ Region)] : I32

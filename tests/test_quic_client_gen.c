@@ -200,6 +200,9 @@ int qcn_udp_open(char *, int);
 int qcn_udp_send(int, Bytes);
 Bytes qcn_udp_recv(int, Arena *);
 int qcn_udp_close(int);
+Bytes qcn_static_block(int);
+Bytes quic_static_conn();
+int quic_static_capacity();
 int qcn_now();
 int qcn_o_sec();
 int qcn_o_keys();
@@ -280,7 +283,13 @@ int quic_headers_off(Bytes);
 int quic_headers_len(Bytes);
 int qcn_tp_num_(Bytes, int, int, int);
 Bytes qcn_transport_params(Bytes, int, Arena *);
+Bytes qcn_begin(Bytes, char *, int, int, int, Arena *);
+int qcn_zero_(Bytes);
 Bytes quic_connect(char *, int, int, int, Arena *);
+Bytes quic_connect_static(char *, int, int, int, Arena *);
+Bytes quic_headers_http1(Bytes, Arena *);
+int qcn_hdr_lines_(Bytes, Bytes, int, int, int, int);
+int qcn_skip_line(Bytes, int, int);
 int qcn_send_app_(Bytes, char *, char *, Arena *);
 int qcn_retransmit_(Bytes, int, Arena *);
 int qcn_timers_(Bytes, Arena *);
@@ -2527,6 +2536,18 @@ int qcn_udp_close(int fd __attribute__((unused))) {
     return ((quic_udp_close_impl(fd), 0));
 }
 
+Bytes qcn_static_block(int size __attribute__((unused))) {
+    return (quic_static_block_impl(size));
+}
+
+Bytes quic_static_conn(void) {
+    return (quic_static_current_impl());
+}
+
+int quic_static_capacity(void) {
+    return (quic_static_capacity_impl());
+}
+
 int qcn_now(void) {
     return (quic_now_ms_impl());
 }
@@ -3631,8 +3652,7 @@ Bytes qcn_transport_params(Bytes c __attribute__((unused)), int body_cap __attri
     return bytes_slice(out, 0, p12, dest);
 }
 
-Bytes quic_connect(char * host __attribute__((unused)), int port __attribute__((unused)), int body_cap __attribute__((unused)), int timeout_ms __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Bytes c __attribute__((unused)) = bytes_alloc(quic_conn_size(body_cap), dest);
+Bytes qcn_begin(Bytes c __attribute__((unused)), char * host __attribute__((unused)), int port __attribute__((unused)), int body_cap __attribute__((unused)), int timeout_ms __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int fd __attribute__((unused)) = qcn_udp_open(host, port);
     if ((fd < 0)) {
     return bytes_alloc(0, dest);
@@ -3641,20 +3661,6 @@ Bytes quic_connect(char * host __attribute__((unused)), int port __attribute__((
     if ((bytes_len(rnd) < 96)) {
     return bytes_alloc(0, dest);
     } else {
-    int __let_val_0 __attribute__((unused));
-    int i = 0;
-    while (1) {
-        if ((i >= bytes_len(c))) {
-        __let_val_0 = 0;
-        break;
-        } else {
-        (void)(bytes_set_(c, i, 0));
-        int __recur_tmp_0 = (i + 1);
-        i = __recur_tmp_0;
-        continue;
-        }
-    }
-    int z0 __attribute__((unused)) = __let_val_0;
     int z1 __attribute__((unused)) = cput_(c, 5120, rnd, 0, 8);
     int z2 __attribute__((unused)) = cput_(c, (5120 + 32), rnd, 8, 8);
     int z3 __attribute__((unused)) = cput_(c, (5120 + 48), rnd, 0, 8);
@@ -3688,6 +3694,93 @@ Bytes quic_connect(char * host __attribute__((unused)), int port __attribute__((
     return c;
     }
     }
+}
+
+int qcn_zero_(Bytes c __attribute__((unused))) {
+    int __loop_result_40 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i >= bytes_len(c))) {
+        __loop_result_40 = 0;
+        break;
+        } else {
+        (void)(bytes_set_(c, i, 0));
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+    }
+    return __loop_result_40;
+}
+
+Bytes quic_connect(char * host __attribute__((unused)), int port __attribute__((unused)), int body_cap __attribute__((unused)), int timeout_ms __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Bytes c __attribute__((unused)) = bytes_alloc(quic_conn_size(body_cap), dest);
+    int z __attribute__((unused)) = qcn_zero_(c);
+    return qcn_begin(c, host, port, body_cap, timeout_ms, dest);
+}
+
+Bytes quic_connect_static(char * host __attribute__((unused)), int port __attribute__((unused)), int body_cap __attribute__((unused)), int timeout_ms __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Bytes c __attribute__((unused)) = qcn_static_block(quic_conn_size(body_cap));
+    if ((bytes_len(c) == 0)) {
+    return bytes_alloc(0, dest);
+    } else {
+    return qcn_begin(c, host, port, body_cap, timeout_ms, dest);
+    }
+}
+
+Bytes quic_headers_http1(Bytes c __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int hl __attribute__((unused)) = quic_headers_len(c);
+    Bytes out __attribute__((unused)) = bytes_alloc((40 + (hl * 2)), dest);
+    int st __attribute__((unused)) = cget(c, 32);
+    int p0 __attribute__((unused)) = qt_put_str_(out, 0, "HTTP/1.1 ");
+    int p1 __attribute__((unused)) = qt_b_(out, p0, (48 + (st / 100)));
+    int p2 __attribute__((unused)) = qt_b_(out, p1, (48 + ((st / 10) % 10)));
+    int p3 __attribute__((unused)) = qt_b_(out, p2, (48 + (st % 10)));
+    int p4 __attribute__((unused)) = qt_put_str_(out, p3, " H3\r\n");
+    int p5 __attribute__((unused)) = qcn_hdr_lines_(c, out, p4, 0, hl, 1);
+    int p6 __attribute__((unused)) = qt_put_str_(out, p5, "\r\n");
+    return bytes_slice(out, 0, p6, dest);
+}
+
+int qcn_hdr_lines_(Bytes c __attribute__((unused)), Bytes out __attribute__((unused)), int op __attribute__((unused)), int i __attribute__((unused)), int hl __attribute__((unused)), int line_start __attribute__((unused))) {
+    if ((i >= hl)) {
+    return op;
+    } else {
+    int b __attribute__((unused)) = bytes_get(c, (qcn_o_hdrs() + i));
+    if ((line_start && (b == 58))) {
+    return qcn_hdr_lines_(c, out, op, qcn_skip_line(c, i, hl), hl, 1);
+    } else {
+    if ((b == 10)) {
+    (void)(bytes_set_(out, op, 13));
+    (void)(bytes_set_(out, (op + 1), 10));
+    return qcn_hdr_lines_(c, out, (op + 2), (i + 1), hl, 1);
+    } else {
+    (void)(bytes_set_(out, op, b));
+    return qcn_hdr_lines_(c, out, (op + 1), (i + 1), hl, 0);
+    }
+    }
+    }
+}
+
+int qcn_skip_line(Bytes c __attribute__((unused)), int i __attribute__((unused)), int hl __attribute__((unused))) {
+    int __loop_result_41 __attribute__((unused));
+    int k = i;
+    while (1) {
+        if ((k >= hl)) {
+        __loop_result_41 = hl;
+        break;
+        } else {
+        if ((bytes_get(c, (qcn_o_hdrs() + k)) == 10)) {
+        __loop_result_41 = (k + 1);
+        break;
+        } else {
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    return __loop_result_41;
 }
 
 int qcn_send_app_(Bytes c __attribute__((unused)), char * host __attribute__((unused)), char * path __attribute__((unused)), Arena *t __attribute__((unused))) {
@@ -3736,16 +3829,16 @@ int qcn_timers_(Bytes c __attribute__((unused)), Arena *t __attribute__((unused)
 }
 
 int qcn_drain_(Bytes c __attribute__((unused)), char * host __attribute__((unused)), Arena *t __attribute__((unused))) {
-    int __loop_result_40 __attribute__((unused));
+    int __loop_result_42 __attribute__((unused));
     int n = 0;
     while (1) {
         if ((n >= 32)) {
-        __loop_result_40 = 0;
+        __loop_result_42 = 0;
         break;
         } else {
         Bytes dg __attribute__((unused)) = qcn_udp_recv(cget(c, 2), t);
         if ((bytes_len(dg) == 0)) {
-        __loop_result_40 = 0;
+        __loop_result_42 = 0;
         break;
         } else {
         (void)(qcn_datagram_(c, dg, host, t));
@@ -3755,7 +3848,7 @@ int qcn_drain_(Bytes c __attribute__((unused)), char * host __attribute__((unuse
         }
         }
     }
-    return __loop_result_40;
+    return __loop_result_42;
 }
 
 int qcn_complete_(Bytes c __attribute__((unused))) {

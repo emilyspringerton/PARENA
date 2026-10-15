@@ -14,7 +14,7 @@
 
 (module net/quic_tls)
 (import bytes string crypto/quic_crypto)
-(export qt-b! qt-sha256 qt-random qt-x25519-public qt-x25519-shared
+(export qt-b! qt-put-str! qt-sha256 qt-random qt-x25519-public qt-x25519-shared
         qt-build-client-hello qt-hs-type qt-hs-len qt-hs-end
         qt-sh-valid? qt-sh-keyshare-off
         qt-ext-off qt-ext-len

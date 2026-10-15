@@ -59,6 +59,28 @@ int main(int argc, char **argv) {
       CHECK(strstr(h, "content-type: text/plain") != NULL && strstr(h, "server: aioquic-test") != NULL, "response headers decoded (QPACK)"); }
     quic_close(c);
 
+    /* the static-block connection (NO_MALLOC hosts) and the HTTP/1.1 head a page pipeline can consume */
+    {
+        Bytes sc = quic_connect_static((char *)host, port, 65536, 8000, &a);
+        CHECK(sc.len > 0, "quic-connect-static yields a block");
+        int s2 = 0;
+        for (int i = 0; i < 4000 && s2 == 0; i++) { s2 = quic_pump(sc, (char *)host, (char *)"/"); if (!s2) { struct timespec ts = {0, 2000000}; nanosleep(&ts, NULL); } }
+        CHECK(s2 == 1 && quic_body_len(sc) == 21, "static-block GET completes");
+        Bytes cur = quic_static_conn();
+        CHECK(cur.data == sc.data && cur.len == sc.len, "quic-static-conn returns the same handle");
+        Bytes h1 = quic_headers_http1(sc, &a);
+        CHECK(h1.len > 20 && memcmp(h1.data, "HTTP/1.1 200 H3\r\n", 17) == 0, "http1 head starts HTTP/1.1 200");
+        char tmp[2048]; int n = h1.len < 2047 ? h1.len : 2047; memcpy(tmp, h1.data, (size_t)n); tmp[n] = 0;
+        CHECK(strstr(tmp, "content-type: text/plain\r\n") != NULL && strstr(tmp, ":status") == NULL, "http1 head has headers, no pseudo-headers");
+        CHECK(n >= 4 && memcmp(tmp + n - 4, "\r\n\r\n", 4) == 0, "http1 head ends with a blank line");
+        stream_reset_impl();
+        int ap = stream_append_bytes_impl(h1, 0, h1.len);
+        int ap2 = stream_append_bytes_impl(sc, quic_body_off(sc), quic_body_len(sc));
+        CHECK(ap == h1.len && ap2 == 21 && (int)stream_len_impl() == h1.len + 21, "head + body appended to the page stream buffer");
+        CHECK(stream_append_bytes_impl(sc, -1, 4) == -1 && stream_append_bytes_impl(sc, 0, sc.len + 1) == -1, "bad append ranges refused");
+        quic_close(sc);
+    }
+
     st = get(&a, host, port, "/echo-ua", 65536, &http, &c);
     CHECK(st == 1 && quic_body_len(c) == 13 && memcmp(c.data + quic_body_off(c), "pellegrino-h3", 13) == 0, "server saw our user-agent (request QPACK encoding is valid)");
     quic_close(c);
