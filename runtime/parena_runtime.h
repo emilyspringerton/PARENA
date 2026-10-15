@@ -3817,6 +3817,22 @@ typedef int parena_sock_t;
 #endif
 static char g_stream_buf[PARENA_STREAM_MAX + 1];
 static size_t g_stream_len = 0;
+/* Bank 1 (stream_bank_impl(1)): a second, smaller receive buffer so a sub-resource (an <img>) can be fetched
+ * after the page stream closed without clobbering the page bytes. pull/buf/len/reset act on the selected bank. */
+#ifndef PARENA_IMAGE_MAX
+#define PARENA_IMAGE_MAX (2u * 1024u * 1024u)
+#endif
+static char g_stream_img_buf[PARENA_IMAGE_MAX + 1];
+static size_t g_stream_img_len = 0;
+static int g_stream_bank = 0;
+static inline char *stream_cur_buf(void) { return g_stream_bank ? g_stream_img_buf : g_stream_buf; }
+static inline size_t stream_cur_len(void) { return g_stream_bank ? g_stream_img_len : g_stream_len; }
+static inline size_t stream_cur_max(void) { return g_stream_bank ? (size_t)PARENA_IMAGE_MAX : (size_t)PARENA_STREAM_MAX; }
+static inline void stream_cur_set_len(size_t n) {
+    if (g_stream_bank) { g_stream_img_len = n; g_stream_img_buf[n] = '\0'; }
+    else { g_stream_len = n; g_stream_buf[n] = '\0'; }
+}
+static inline int stream_bank_impl(int b) { int old = g_stream_bank; g_stream_bank = b ? 1 : 0; return old; }
 
 static inline int stream_set_nonblocking(parena_sock_t s) {
 #ifdef _WIN32
@@ -4235,19 +4251,18 @@ static inline int stream_tls_send(const char *s) {
 }
 
 static inline int stream_tls_pull(void) {
-    if (g_stream_len >= PARENA_STREAM_MAX) return -2;
+    if (stream_cur_len() >= stream_cur_max()) return -2;
     if (mbedtls_ssl_get_bytes_avail(&g_stream_tls.ssl) == 0) {
         int r = stream_tls_wait(g_stream_tls.fd, 0, 0);
         if (r < 0) return -1;
         if (r == 0) return 0;
     }
-    size_t room = PARENA_STREAM_MAX - g_stream_len;
+    size_t room = stream_cur_max() - stream_cur_len();
     if (room > 16384) room = 16384; /* one TLS record */
     for (int tries = 0; tries < 4; tries++) {
-        int n = mbedtls_ssl_read(&g_stream_tls.ssl, (unsigned char *)g_stream_buf + g_stream_len, room);
+        int n = mbedtls_ssl_read(&g_stream_tls.ssl, (unsigned char *)stream_cur_buf() + stream_cur_len(), room);
         if (n > 0) {
-            g_stream_len += (size_t)n;
-            g_stream_buf[g_stream_len] = '\0';
+            stream_cur_set_len(stream_cur_len() + (size_t)n);
             return n;
         }
         if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) return 0;
@@ -4338,7 +4353,7 @@ static inline int stream_send_impl(int fd, const char *s) {
 static inline int stream_pull_impl(int fd) {
     if (stream_tls_is_handle(fd)) return stream_tls_owns(fd) ? stream_tls_pull() : -1;
     if (!stream_fd_ok(fd)) return -1;
-    if (g_stream_len >= PARENA_STREAM_MAX) return -2;
+    if (stream_cur_len() >= stream_cur_max()) return -2;
     fd_set rf;
     FD_ZERO(&rf);
     FD_SET((parena_sock_t)fd, &rf);
@@ -4348,18 +4363,60 @@ static inline int stream_pull_impl(int fd) {
     int r = select(fd + 1, &rf, NULL, NULL, &tv);
     if (r < 0) return -1;
     if (r == 0) return 0;
-    size_t room = PARENA_STREAM_MAX - g_stream_len;
+    size_t room = stream_cur_max() - stream_cur_len();
     if (room > 65536) room = 65536;
-    int n = (int)recv((parena_sock_t)fd, g_stream_buf + g_stream_len, (int)room, 0);
+    int n = (int)recv((parena_sock_t)fd, stream_cur_buf() + stream_cur_len(), (int)room, 0);
     if (n <= 0) return -1;
-    g_stream_len += (size_t)n;
-    g_stream_buf[g_stream_len] = '\0';
+    stream_cur_set_len(stream_cur_len() + (size_t)n);
     return n;
 }
 
-static inline char *stream_buf_impl(void) { return g_stream_buf; }
-static inline int stream_len_impl(void) { return (int)g_stream_len; }
-static inline void stream_reset_impl(void) { g_stream_len = 0; g_stream_buf[0] = '\0'; }
+static inline char *stream_buf_impl(void) { return stream_cur_buf(); }
+static inline int stream_len_impl(void) { return (int)stream_cur_len(); }
+static inline void stream_reset_impl(void) { stream_cur_set_len(0); }
+/* Bytes copy of the selected bank from `off` to its current length (binary-safe; zero-length when out of range). */
+static inline Bytes stream_copy_bytes_impl(Arena *dest, int off) {
+    size_t n = stream_cur_len();
+    if (off < 0 || (size_t)off > n) return bytes_alloc_impl(dest, 0);
+    Bytes b = bytes_alloc_impl(dest, (int)(n - (size_t)off));
+    if (b.len > 0) memcpy(b.data, stream_cur_buf() + off, (size_t)b.len);
+    return b;
+}
+
+/* ---- image store (2026-10-15, PELLEGRINO <img>): decoded RGBA pixels that must outlive the arena they were
+ * decoded in. One static pool + a small id table; ids are plain ints so they fit a slot. No malloc.
+ * img_px_impl returns 0xRRGGBB, or -1 for a (mostly) transparent pixel / out of range. */
+#ifndef PARENA_IMG_STORE_BYTES
+#define PARENA_IMG_STORE_BYTES (8u * 1024u * 1024u)
+#endif
+#define PARENA_IMG_MAX_IDS 32
+static unsigned char g_img_pool[PARENA_IMG_STORE_BYTES];
+static size_t g_img_used = 0;
+static struct { size_t off; int w, h; } g_img_tab[PARENA_IMG_MAX_IDS];
+static int g_img_n = 0;
+static inline int img_store_impl(Bytes rgba, int w, int h) {
+    if (w <= 0 || h <= 0 || g_img_n >= PARENA_IMG_MAX_IDS) return -1;
+    if ((long long)w * h > 0x1FFFFFFF / 4) return -1;
+    size_t need = (size_t)w * (size_t)h * 4u;
+    if ((size_t)rgba.len < need || g_img_used + need > PARENA_IMG_STORE_BYTES) return -1;
+    memcpy(g_img_pool + g_img_used, rgba.data, need);
+    g_img_tab[g_img_n].off = g_img_used;
+    g_img_tab[g_img_n].w = w;
+    g_img_tab[g_img_n].h = h;
+    g_img_used += need;
+    return g_img_n++;
+}
+static inline int img_w_impl(int id) { return (id >= 0 && id < g_img_n) ? g_img_tab[id].w : 0; }
+static inline int img_h_impl(int id) { return (id >= 0 && id < g_img_n) ? g_img_tab[id].h : 0; }
+static inline int img_px_impl(int id, int x, int y) {
+    if (id < 0 || id >= g_img_n) return -1;
+    if (x < 0 || y < 0 || x >= g_img_tab[id].w || y >= g_img_tab[id].h) return -1;
+    const unsigned char *p = g_img_pool + g_img_tab[id].off + ((size_t)y * (size_t)g_img_tab[id].w + (size_t)x) * 4u;
+    if (p[3] < 128) return -1;
+    return (p[0] << 16) | (p[1] << 8) | p[2];
+}
+static inline int img_reset_impl(void) { g_img_n = 0; g_img_used = 0; return 0; }
+
 static inline int stream_close_impl(int fd) {
     if (stream_tls_is_handle(fd)) {
         if (!stream_tls_owns(fd)) return -1; /* stale (closed or superseded): nothing to close, and

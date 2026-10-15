@@ -8,7 +8,7 @@
 
 (module net/stream)
 (export stream-connect stream-connect-tls stream-tls-code stream-tls-error stream-tls-page stream-tls-info stream-tls-heap-peak
-        stream-send stream-pull stream-buf stream-len stream-reset stream-close
+        stream-send stream-pull stream-buf stream-len stream-reset stream-close stream-bank stream-copy-bytes
         linebuf-append linebuf-backspace linebuf-clear linebuf-get linebuf-len
         cururl-set cururl-get slot-get slot-set)
 
@@ -77,6 +77,17 @@
 (defn stream-close [(fd : I32)] : I32
   #target
   {:c (inline-c "stream_close_impl(fd)")})
+
+;; select the receive buffer stream-pull/buf/len/reset act on: 0 = page (default, PARENA_STREAM_MAX),
+;; 1 = image bank (PARENA_IMAGE_MAX, 2 MiB). Returns the previously selected bank.
+(defn stream-bank [(b : I32)] : I32
+  #target
+  {:c (inline-c "stream_bank_impl(b)")})
+
+;; binary-safe copy of the selected bank from byte `off` to its end
+(defn stream-copy-bytes [(off : I32) (dest : Arena @ Region)] : Bytes @ Region
+  #target
+  {:c (inline-c "stream_copy_bytes_impl(dest, off)")})
 
 (defn linebuf-append [(s : String @ Region)] : I32
   #target

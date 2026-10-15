@@ -5212,3 +5212,14 @@ wrong-host → code 3, unreadable bundle → code 4; plus stale/superseded handl
 silent and a dripping peer, a SIGALRM storm). `-DPARENA_TLS_SKIP_SYSTEM_BUNDLES` (tests / locked-down
 builds) only narrows trust.
 
+
+
+## image/store + net/stream banks (2026-10-15, PELLEGRINO `<img>`)
+
+`(import image/store)` -- `img-store [rgba : Bytes, w, h] -> id | -1` copies decoded RGBA pixels into a static pool
+(`PARENA_IMG_STORE_BYTES`, 8 MiB; at most 32 ids) so they outlive the arena `png-decode` ran in; `img-w`, `img-h`,
+`img-px [id x y] -> 0xRRGGBB | -1` (transparent, alpha < 128, or out of range), `img-reset`. No blending.
+`net/stream` additions: `stream-bank [b] -> old bank` selects what `stream-pull/buf/len/reset` act on (0 page,
+default; 1 image bank, `PARENA_IMAGE_MAX` 2 MiB); `stream-copy-bytes [off dest] -> Bytes` is the binary-safe way to
+get a response body out (a PNG contains NULs; `stream-buf` is a C string). Still one connection / one TLS session at
+a time: fetch the sub-resource only after the page stream closed. Test: `make test-img-store`.

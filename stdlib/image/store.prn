@@ -1,0 +1,30 @@
+;; stdlib/image/store.prn -- decoded-pixel store: keeps RGBA pixels alive past the arena they were decoded in
+;; (image/png decodes into a caller arena that is gone by the next frame). Added 2026-10-15 for
+;; PELLEGRINO's <img>. One static pool in the runtime (PARENA_IMG_STORE_BYTES, default 8 MiB, no malloc),
+;; ids are small ints (max 32) so they fit a slot. img-px returns 0xRRGGBB, or -1 for a transparent
+;; (alpha < 128) or out-of-range pixel -- there is no alpha blending, a pixel is drawn or skipped.
+
+(module image/store)
+(export img-store img-w img-h img-px img-reset)
+
+;; copy w*h RGBA pixels (4 bytes each, row-major) in; id >= 0, or -1 when full / malformed
+(defn img-store [(rgba : Bytes @ Region) (w : I32) (h : I32)] : I32
+  #target
+  {:c (inline-c "img_store_impl(rgba, w, h)")})
+
+(defn img-w [(id : I32)] : I32
+  #target
+  {:c (inline-c "img_w_impl(id)")})
+
+(defn img-h [(id : I32)] : I32
+  #target
+  {:c (inline-c "img_h_impl(id)")})
+
+(defn img-px [(id : I32) (x : I32) (y : I32)] : I32
+  #target
+  {:c (inline-c "img_px_impl(id, x, y)")})
+
+;; forget every stored image (a new page was navigated to)
+(defn img-reset [] : I32
+  #target
+  {:c (inline-c "img_reset_impl()")})
