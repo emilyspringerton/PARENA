@@ -187,7 +187,7 @@ jobs:
       # freestanding WebAssembly module (zero imports) and run under wasmtime. The wasm leg needs
       # a wasm32 C compiler + runtime: `pip install ziglang wasmtime` (what the Makefile default
       # uses; override V16_WASM_CC for a clang+wasi-sysroot setup).
-      - name: "V16 JS engine — native corpus (19 programs + limits)"
+      - name: "V16 JS engine — native corpus (20 programs + limits)"
         run: |
           set -euo pipefail
           make build

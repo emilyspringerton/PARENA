@@ -33,7 +33,7 @@
 ;;     declarations + expressions + arrows, return, if/else, while, do-while, for(;;), for-of (arrays,
 ;;     strings), for-in (object keys), switch (default must be last), break, continue, try/catch,
 ;;     throw, blocks. Optional semicolons.
-;;   - expressions: literals, array/object literals, + - * / %, comparison, == != === !==, && ||,
+;;   - expressions: literals, array/object literals, + - * / % **, comparison, == != === !==, && ||,
 ;;     !, unary -/+, typeof, ?:, = += -= *= /= ++ -- on variables and members, calls, .prop, [index],
 ;;     obj.method(...), `new Error(...)` (builtin Error family only).
 ;;   - closures: real, with shared captured variables (Lua-style upvalues, arena-allocated cells).
@@ -89,7 +89,7 @@
 (defn p-pluseq [] : I32 29)  (defn p-minuseq [] : I32 30)
 (defn p-stareq [] : I32 31)  (defn p-slasheq [] : I32 32)
 (defn p-incr [] : I32 33)    (defn p-decr [] : I32 34)
-(defn p-arrow [] : I32 35)
+(defn p-arrow [] : I32 35)  (defn p-pow [] : I32 36)
 
 (defn w-var [] : I32 1)      (defn w-let [] : I32 2)
 (defn w-const [] : I32 3)    (defn w-function [] : I32 4)
@@ -133,7 +133,7 @@
 (defn o-getidxk [] : I32 50) (defn o-loadup [] : I32 51)
 (defn o-storeup [] : I32 52)
 (defn o-try [] : I32 53)     (defn o-endtry [] : I32 54)
-(defn o-throw [] : I32 55)
+(defn o-throw [] : I32 55)   (defn o-pow [] : I32 56)
 
 (defn t-undef [] : I32 0)    (defn t-null [] : I32 1)
 (defn t-bool [] : I32 2)     (defn t-num [] : I32 3)
@@ -547,6 +547,7 @@
       ((= a 124) (if (= b 124) (op! c (p-or) i 2) (fail! c "SyntaxError: unexpected character '|'")))
       ((= a 43) (cond ((= b 43) (op! c (p-incr) i 2)) ((= b 61) (op! c (p-pluseq) i 2)) (true (op! c (p-plus) i 1))))
       ((= a 45) (cond ((= b 45) (op! c (p-decr) i 2)) ((= b 61) (op! c (p-minuseq) i 2)) (true (op! c (p-minus) i 1))))
+      ((and (= a 42) (= b 42)) (op! c (p-pow) i 2))
       ((= a 42) (op-pair! c i b 61 (p-star) (p-stareq)))
       ((= a 47) (op-pair! c i b 61 (p-slash) (p-slasheq)))
       (true (fail! c "SyntaxError: unexpected character")))))
@@ -1197,6 +1198,7 @@
         ((or (= t (p-lt)) (or (= t (p-gt)) (or (= t (p-le)) (= t (p-ge))))) 4)
         ((or (= t (p-plus)) (= t (p-minus))) 5)
         ((or (= t (p-star)) (or (= t (p-slash)) (= t (p-pct)))) 6)
+        ((= t (p-pow)) 7)
         (true 0)))
     0))
 
@@ -1214,6 +1216,7 @@
     ((= t (p-eq)) (o-eq))
     ((= t (p-ne)) (o-ne))
     ((= t (p-seq)) (o-seq))
+    ((= t (p-pow)) (o-pow))
     (true (o-sne))))
 
 (defn parse-binary! [(c : &mut Js) (min : I32) (dest : Arena @ Region)] : Unit
@@ -1234,6 +1237,7 @@
       (cond
         ((= t (p-and)) (logic-rhs! c (o-jfk) prec dest))
         ((= t (p-or)) (logic-rhs! c (o-jtk) prec dest))
+        ((= t (p-pow)) (do (parse-binary! c prec dest) (emit! c (bin-opcode t))))
         (true (do (parse-binary! c (+ prec 1) dest) (emit! c (bin-opcode t)))))
       (binary-rest! c 1 dest))))
 
@@ -2100,6 +2104,7 @@
           ((= op (o-sub)) (- a b))
           ((= op (o-mul)) (* a b))
           ((= op (o-div)) (/ a b))
+          ((= op (o-pow)) (num-pow a b))
           (true (num-mod a b)))))))
 
 (defn op-add! [(m : &mut Js) (a : Arena @ Region)] : Unit
@@ -3516,7 +3521,7 @@
     ((= op (o-loadgq)) (op-load-global! m true a))
     ((= op (o-storeg)) (op-store-global! m))
     ((= op (o-add)) (op-add! m a))
-    ((or (= op (o-sub)) (or (= op (o-mul)) (or (= op (o-div)) (= op (o-mod))))) (bin-num! m op))
+    ((or (= op (o-sub)) (or (= op (o-mul)) (or (= op (o-div)) (or (= op (o-mod)) (= op (o-pow)))))) (bin-num! m op))
     ((= op (o-neg)) (op-neg! m))
     ((= op (o-not)) (op-not! m))
     (true (dispatch-b! m op a))))

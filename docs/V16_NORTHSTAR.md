@@ -18,7 +18,7 @@ alternative is a strict superset of this document's scope; the JS engine is one 
 ## The 2026-10-15 spike: a JS engine in PARENA that runs in WebAssembly, all arenas
 
 **What exists** (all of it checked by `make test-v16-engine` natively and `make test-v16-wasm`
-against the compiled module — 19 corpus programs + limit checks; ASan/UBSan clean; ~3,000 mutated
+against the compiled module — 20 corpus programs + limit checks; ASan/UBSan clean; ~3,000 mutated
 programs fuzzed with zero crashes/hangs):
 
 - `stdlib/v16/engine.prn` (~3,500 lines of PARENA, one module): a pull lexer, a single-pass

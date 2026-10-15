@@ -3520,7 +3520,7 @@ there. The two older files (`v16/lexer`, `v16/parser`) are untouched.
   **untested in a real browser** (no browser on the build box); the ABI itself is what
   `run_wasm.py` exercises.
 - **Native test:** `make test-v16-engine` (`tests/test_v16_engine.c`, `-Wall -Wextra -pedantic
-  -Werror`): 19 corpus programs (`tests/v16/cases/*.js` + expected `.out`) and the limit checks.
+  -Werror`): 20 corpus programs (`tests/v16/cases/*.js` + expected `.out`) and the limit checks.
   Also run clean under ASan+UBSan and against ~3,000 randomly mutated corpus programs.
 - **`runtime/parena_runtime.h` gained a freestanding mode** (`PARENA_FREESTANDING`, on automatically
   for `__wasm__`): sockets/pty/serial/process/mmap/TLS/SDL glue is compiled out; arena exhaustion is

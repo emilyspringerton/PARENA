@@ -280,6 +280,7 @@ int p_slasheq();
 int p_incr();
 int p_decr();
 int p_arrow();
+int p_pow();
 int w_var();
 int w_let();
 int w_const();
@@ -361,6 +362,7 @@ int o_storeup();
 int o_try();
 int o_endtry();
 int o_throw();
+int o_pow();
 int t_undef();
 int t_null();
 int t_bool();
@@ -1140,6 +1142,10 @@ int p_arrow(void) {
     return 35;
 }
 
+int p_pow(void) {
+    return 36;
+}
+
 int w_var(void) {
     return 1;
 }
@@ -1462,6 +1468,10 @@ int o_endtry(void) {
 
 int o_throw(void) {
     return 55;
+}
+
+int o_pow(void) {
+    return 56;
 }
 
 int t_undef(void) {
@@ -2012,7 +2022,7 @@ void lex_op_(Js * c __attribute__((unused)), char * src __attribute__((unused)),
     int a __attribute__((unused)) = char_at(src, i);
     int b __attribute__((unused)) = peek_at(src, (i + 1), n);
     int d __attribute__((unused)) = peek_at(src, (i + 2), n);
-    (void)(((a == 40) ? op_(c, p_lparen(), i, 1) : ((a == 41) ? op_(c, p_rparen(), i, 1) : ((a == 123) ? op_(c, p_lbrace(), i, 1) : ((a == 125) ? op_(c, p_rbrace(), i, 1) : ((a == 91) ? op_(c, p_lbrack(), i, 1) : ((a == 93) ? op_(c, p_rbrack(), i, 1) : ((a == 59) ? op_(c, p_semi(), i, 1) : ((a == 44) ? op_(c, p_comma(), i, 1) : ((a == 46) ? op_(c, p_dot(), i, 1) : ((a == 63) ? op_(c, p_qmark(), i, 1) : ((a == 58) ? op_(c, p_colon(), i, 1) : ((a == 37) ? op_(c, p_pct(), i, 1) : ((a == 60) ? op_pair_(c, i, b, 61, p_lt(), p_le()) : ((a == 62) ? op_pair_(c, i, b, 61, p_gt(), p_ge()) : (((a == 61) && (b == 62)) ? op_(c, p_arrow(), i, 2) : ((a == 61) ? op_eq_family_(c, i, b, d, p_assign(), p_eq(), p_seq()) : ((a == 33) ? op_eq_family_(c, i, b, d, p_not(), p_ne(), p_sne()) : ((a == 38) ? ((b == 38) ? op_(c, p_and(), i, 2) : fail_(c, "SyntaxError: unexpected character '&'")) : ((a == 124) ? ((b == 124) ? op_(c, p_or(), i, 2) : fail_(c, "SyntaxError: unexpected character '|'")) : ((a == 43) ? ((b == 43) ? op_(c, p_incr(), i, 2) : ((b == 61) ? op_(c, p_pluseq(), i, 2) : op_(c, p_plus(), i, 1))) : ((a == 45) ? ((b == 45) ? op_(c, p_decr(), i, 2) : ((b == 61) ? op_(c, p_minuseq(), i, 2) : op_(c, p_minus(), i, 1))) : ((a == 42) ? op_pair_(c, i, b, 61, p_star(), p_stareq()) : ((a == 47) ? op_pair_(c, i, b, 61, p_slash(), p_slasheq()) : fail_(c, "SyntaxError: unexpected character")))))))))))))))))))))))));
+    (void)(((a == 40) ? op_(c, p_lparen(), i, 1) : ((a == 41) ? op_(c, p_rparen(), i, 1) : ((a == 123) ? op_(c, p_lbrace(), i, 1) : ((a == 125) ? op_(c, p_rbrace(), i, 1) : ((a == 91) ? op_(c, p_lbrack(), i, 1) : ((a == 93) ? op_(c, p_rbrack(), i, 1) : ((a == 59) ? op_(c, p_semi(), i, 1) : ((a == 44) ? op_(c, p_comma(), i, 1) : ((a == 46) ? op_(c, p_dot(), i, 1) : ((a == 63) ? op_(c, p_qmark(), i, 1) : ((a == 58) ? op_(c, p_colon(), i, 1) : ((a == 37) ? op_(c, p_pct(), i, 1) : ((a == 60) ? op_pair_(c, i, b, 61, p_lt(), p_le()) : ((a == 62) ? op_pair_(c, i, b, 61, p_gt(), p_ge()) : (((a == 61) && (b == 62)) ? op_(c, p_arrow(), i, 2) : ((a == 61) ? op_eq_family_(c, i, b, d, p_assign(), p_eq(), p_seq()) : ((a == 33) ? op_eq_family_(c, i, b, d, p_not(), p_ne(), p_sne()) : ((a == 38) ? ((b == 38) ? op_(c, p_and(), i, 2) : fail_(c, "SyntaxError: unexpected character '&'")) : ((a == 124) ? ((b == 124) ? op_(c, p_or(), i, 2) : fail_(c, "SyntaxError: unexpected character '|'")) : ((a == 43) ? ((b == 43) ? op_(c, p_incr(), i, 2) : ((b == 61) ? op_(c, p_pluseq(), i, 2) : op_(c, p_plus(), i, 1))) : ((a == 45) ? ((b == 45) ? op_(c, p_decr(), i, 2) : ((b == 61) ? op_(c, p_minuseq(), i, 2) : op_(c, p_minus(), i, 1))) : (((a == 42) && (b == 42)) ? op_(c, p_pow(), i, 2) : ((a == 42) ? op_pair_(c, i, b, 61, p_star(), p_stareq()) : ((a == 47) ? op_pair_(c, i, b, 61, p_slash(), p_slasheq()) : fail_(c, "SyntaxError: unexpected character"))))))))))))))))))))))))));
 }
 
 void lex_at_(Js * c __attribute__((unused)), char * src __attribute__((unused)), int i __attribute__((unused)), int n __attribute__((unused))) {
@@ -2804,14 +2814,14 @@ void parse_unary_(Js * c __attribute__((unused)), Arena *dest __attribute__((unu
 int bin_prec(Js * c __attribute__((unused))) {
     if (((c)->tk == k_op())) {
     int t __attribute__((unused)) = (c)->tc;
-    return ((t == p_or()) ? 1 : ((t == p_and()) ? 2 : (((t == p_eq()) || ((t == p_ne()) || ((t == p_seq()) || (t == p_sne())))) ? 3 : (((t == p_lt()) || ((t == p_gt()) || ((t == p_le()) || (t == p_ge())))) ? 4 : (((t == p_plus()) || (t == p_minus())) ? 5 : (((t == p_star()) || ((t == p_slash()) || (t == p_pct()))) ? 6 : 0))))));
+    return ((t == p_or()) ? 1 : ((t == p_and()) ? 2 : (((t == p_eq()) || ((t == p_ne()) || ((t == p_seq()) || (t == p_sne())))) ? 3 : (((t == p_lt()) || ((t == p_gt()) || ((t == p_le()) || (t == p_ge())))) ? 4 : (((t == p_plus()) || (t == p_minus())) ? 5 : (((t == p_star()) || ((t == p_slash()) || (t == p_pct()))) ? 6 : ((t == p_pow()) ? 7 : 0)))))));
     } else {
     return 0;
     }
 }
 
 int bin_opcode(int t __attribute__((unused))) {
-    return ((t == p_plus()) ? o_add() : ((t == p_minus()) ? o_sub() : ((t == p_star()) ? o_mul() : ((t == p_slash()) ? o_div() : ((t == p_pct()) ? o_mod() : ((t == p_lt()) ? o_lt() : ((t == p_gt()) ? o_gt() : ((t == p_le()) ? o_le() : ((t == p_ge()) ? o_ge() : ((t == p_eq()) ? o_eq() : ((t == p_ne()) ? o_ne() : ((t == p_seq()) ? o_seq() : o_sne()))))))))))));
+    return ((t == p_plus()) ? o_add() : ((t == p_minus()) ? o_sub() : ((t == p_star()) ? o_mul() : ((t == p_slash()) ? o_div() : ((t == p_pct()) ? o_mod() : ((t == p_lt()) ? o_lt() : ((t == p_gt()) ? o_gt() : ((t == p_le()) ? o_le() : ((t == p_ge()) ? o_ge() : ((t == p_eq()) ? o_eq() : ((t == p_ne()) ? o_ne() : ((t == p_seq()) ? o_seq() : ((t == p_pow()) ? o_pow() : o_sne())))))))))))));
 }
 
 void parse_binary_(Js * c __attribute__((unused)), int min __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -2837,8 +2847,13 @@ void binary_step_(Js * c __attribute__((unused)), int prec __attribute__((unused
     if ((t == p_or())) {
     (void)(logic_rhs_(c, o_jtk(), prec, dest));
     } else {
+    if ((t == p_pow())) {
+    (void)(parse_binary_(c, prec, dest));
+    (void)(emit_(c, bin_opcode(t)));
+    } else {
     (void)(parse_binary_(c, (prec + 1), dest));
     (void)(emit_(c, bin_opcode(t)));
+    }
     }
     }
     (void)(binary_rest_(c, 1, dest));
@@ -3840,7 +3855,7 @@ void bin_num_(Js * m __attribute__((unused)), int op __attribute__((unused))) {
     double a __attribute__((unused)) = elem_number(m, tag_at(m, (sp - 2)), val_at(m, (sp - 2)));
     double b __attribute__((unused)) = elem_number(m, tag_at(m, (sp - 1)), val_at(m, (sp - 1)));
     (void)(pop_to_(m, 2));
-    (void)(push_(m, t_num(), ((op == o_sub()) ? (a - b) : ((op == o_mul()) ? (a * b) : ((op == o_div()) ? (a / b) : num_mod(a, b))))));
+    (void)(push_(m, t_num(), ((op == o_sub()) ? (a - b) : ((op == o_mul()) ? (a * b) : ((op == o_div()) ? (a / b) : ((op == o_pow()) ? num_pow(a, b) : num_mod(a, b)))))));
 }
 
 void op_add_(Js * m __attribute__((unused)), Arena *a __attribute__((unused))) {
@@ -5864,7 +5879,7 @@ void dispatch_a_(Js * m __attribute__((unused)), int op __attribute__((unused)),
     if ((op == o_add())) {
     (void)(op_add_(m, a));
     } else {
-    if (((op == o_sub()) || ((op == o_mul()) || ((op == o_div()) || (op == o_mod()))))) {
+    if (((op == o_sub()) || ((op == o_mul()) || ((op == o_div()) || ((op == o_mod()) || (op == o_pow())))))) {
     (void)(bin_num_(m, op));
     } else {
     if ((op == o_neg())) {
