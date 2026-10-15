@@ -1,23 +1,83 @@
 # NORTHSTAR — V16 (a native-PARENA JavaScript engine)
 
-**Status (2026-09-04): Phase 1 (the generics/representation decision), Phase 2a (a real, tested
-JS lexer, `stdlib/v16/lexer.prn`), and Phase 2b (a real, tested JS expression parser,
-`stdlib/v16/parser.prn`) are shipped — see "Real, phased plan" below. Everything past that
-(statements, interpreter, GC strategy, stdlib slice) remains real, unstarted, honestly scoped
-work; this document still exists so the real overall size of this ask stays written down
-honestly, not silently deferred.**
+**Status (2026-10-15): a working, tested engine exists and runs as WebAssembly.** Phases 1-2 (the
+generics decision, a JS lexer, an expression parser) shipped 2026-09-03/04; Phases 3-5 (interpreter,
+memory strategy, stdlib slice) were taken as ONE narrow vertical spike on 2026-10-15, founder
+real-time: *"spike out the v16 js execution engine it must run in WASM totally parena powered all
+arenas"* -> `stdlib/v16/engine.prn`, `examples/v16_wasm/`, `tests/v16/`. See "The 2026-10-15 spike"
+below for what it is, what it proves and, in particular, what it deliberately is not. Everything
+below that section is the original scoping text, kept because the size comparison and the
+out-of-scope list are still true.
 
 **Founder real-time (2026-09-04): "continue that work to develop a full webview alternative
-(iterate)" → corrected "i mean webkit alternative".** Real, honest scope note: this reframes
+(iterate)" -> corrected "i mean webkit alternative".** Real, honest scope note: this reframes
 V16's own eventual real destination (a full WebKit-class engine — HTML/CSS/layout/rendering, not
-just a JS runtime) but does NOT change the real, incremental phased plan already written down
-below, which stays the correct path there. A full WebKit alternative is a strict superset of this
-document's own already-enormous scope (see "Explicitly out of scope for any v0/v1" — DOM/browser
-APIs were already named as out of scope for the JS *engine* specifically; a real HTML/CSS
-layout+render pipeline is separate, additional, unscoped work on top of everything below, not
-covered by this document). Continuing to iterate through this document's own real phases (Phase
-2b shipped this pass) is the real, correct next step either way — the destination changed, the
-path to it did not.
+just a JS runtime) but does NOT change the real, incremental phased plan below. A full WebKit
+alternative is a strict superset of this document's scope; the JS engine is one component of it.
+
+## The 2026-10-15 spike: a JS engine in PARENA that runs in WebAssembly, all arenas
+
+**What exists** (all of it checked by `make test-v16-engine` natively and `make test-v16-wasm`
+against the compiled module — 19 corpus programs + limit checks; ASan/UBSan clean; ~3,000 mutated
+programs fuzzed with zero crashes/hangs):
+
+- `stdlib/v16/engine.prn` (~3,500 lines of PARENA, one module): a pull lexer, a single-pass
+  Pratt-style compiler straight to bytecode (no AST), and a stack VM. Language: var/let/const with
+  real block scoping, functions + arrows + **closures** (shared captured variables via Lua-style
+  open/closed upvalue cells), if/while/do-while/for/for-of/for-in/switch/break/continue,
+  try/catch/throw with real unwinding (including across callbacks), arrays, objects, strings,
+  `console.log` with node-style array/object printing, and a builtin slice (`Math`, `JSON.stringify`,
+  `Object.keys`, `parseInt`, `Error` family, array and string methods incl. callback methods
+  `forEach/map/filter/reduce/some/every/find/sort`).
+- **Totally PARENA, all arenas.** No malloc, no GC, no free anywhere: every token, constant,
+  value-stack slot, string, array, object, closure and the console output buffer is bump-allocated
+  from the single `Arena` the host passes in. JS values are `(tag, payload)` pairs in two parallel
+  scalar `Vec`s, so the stack never allocates per push. A run is one region; the host drops the
+  arena when the script ends. The only C in the engine path is one-liners behind `#target`
+  (`snprintf`/`strtod` number formatting, `floor`/`pow`/`sin`..., a couple of buffer fills) —
+  the same escape hatch every stdlib file uses — plus the 50-line host (`examples/v16_wasm/v16_host.c`)
+  that owns the input buffer and the arena.
+- **Runs in WebAssembly.** `make v16-wasm` -> `build/v16.wasm`, ~130 KB, **zero imports** (no WASI
+  shim needed), five exports (`v16_input`, `v16_input_capacity`, `v16_run`, `v16_output`,
+  `v16_arena_used`). Path: PARENA -> C (the normal emitter) -> any wasm32 C compiler
+  (`python3 -m ziglang cc` by default). Verified under wasmtime: every corpus program, in a fresh
+  instance and replayed in one shared instance.
+- **Hard limits, not hangs:** an instruction budget, an **arena byte budget** (a RangeError
+  *before* the pool runs dry), a 1024-frame call stack, 64 nested try blocks — a hostile script
+  gets an ordinary `Uncaught ...` line.
+
+**The NORTHSTAR "GC question" (Phase 4), as answered by the spike:** region-per-run, no collector.
+A script cannot free memory mid-run; a long-lived embedding needs either short scripts or a
+per-call/per-request region discipline. Escape analysis for closures is trivial here because
+captured variables live in arena cells that outlive their frame by construction. What this does
+*not* give you is bounded memory for a long-running loop that churns strings — it gets stopped by
+the budget. Real compaction/reclamation (a per-call frame arena with copy-out, or a real tracing GC
+confined to the engine's heap) is the honest next step if a consumer needs long-lived scripts.
+
+**Not built (named, not hidden):** `this`/prototypes/classes/user constructors, `finally`,
+generators, async/Promise, regex, template literals, destructuring/spread, getters/setters,
+`JSON.parse`, `Date`/`Math.random` (no host clock/entropy is wired — the module has zero imports),
+UTF-16/Unicode semantics, per-iteration `let` binding in `for` loops, function hoisting,
+labelled statements, `with`, tail calls, a JIT. It is **not** spec-conformant (not run against
+test262), numbers print via `%.17g`-roundtrip rather than the ECMAScript algorithm (so a few edge
+cases such as very large/small exponents may differ), and the dispatcher is a plain comparison
+chain — fib(27) takes ~0.35 s natively at `-O2` on this box (informal, one run, not a benchmark
+harness; do not quote it).
+
+**What it cost the compiler (PARENA itself gained):** (1) a statement-level lowering for `cond`/
+`if` whose clause bodies are `do`/`let`/`loop`/`when`/`set!`/`unit` — the long-standing "a `cond`
+clause body can't be a `let`/`do`" VS0 restriction is gone (plain-expression `cond`s keep their exact
+ternary lowering); (2) `vec/truncate!`; (3) a loop that ends in `unit` no longer emits
+`return __loop_result;` from a void function; (4) a **freestanding runtime mode**
+(`PARENA_FREESTANDING`, automatic under `__wasm__`): OS glue is compiled out, `Vec` slots are 8
+bytes everywhere (the old layout silently assumed 64-bit pointers), arena exhaustion traps instead
+of calling `exit`.
+
+**Next, in order of value:** (1) `this`/prototype objects + user `new` (needed for most real
+libraries); (2) per-call frame regions with copy-out, to make long scripts safe; (3) `Date`/
+`Math.random` as an explicit, optional host import; (4) a real number-to-string (shortest
+round-trip, ECMAScript formatting) in PARENA instead of `snprintf`; (5) template literals,
+destructuring, spread; (6) DOM is still out of scope — see below.
 
 ## What this is
 
@@ -134,13 +194,16 @@ real phases first, in writing, before committing to any implementation pass.**
    (`void x = f();`) regardless of where that let sits, fixed by never naming a Unit result at
    all. 8 real end-to-end assertions in `tests/test_v16_parser.c`, all pass; `make test`: 345/345
    core compiler tests, zero regressions.
-3. **Tree-walking interpreter** over the AST — no bytecode compilation yet, correctness over
-   speed, matching VS0's own historical "get a real reference interpreter working before
-   optimizing" discipline.
-4. **GC or GC-substitute strategy**, chosen and proven on a real, minimal closures-and-objects
-   stress case before the interpreter is trusted with arbitrary real-world JS input.
-5. **Minimal stdlib slice**: `console.log`-equivalent output, `Array`/`Object`/`String`/`Math`
-   basics only — enough to run genuinely useful small real-world scripts, not spec completeness.
+3. **Interpreter — SHIPPED as a spike (2026-10-15)**, but as a single-pass bytecode compiler + stack
+   VM (`stdlib/v16/engine.prn`), not the tree-walker this plan originally named: the existing AST
+   parser (Phase 2b) was expression-only and the VM was both simpler to write under VS0's quirks
+   and faster. `lexer.prn`/`parser.prn` are untouched and still tested.
+4. **GC or GC-substitute strategy — answered for the spike:** one arena per run, a byte budget, no
+   collector (see "The 2026-10-15 spike"). Proven on closures-with-shared-state, callbacks that
+   throw across native frames, and doubling-string/array-growth stress cases; NOT proven for
+   long-lived embeddings.
+5. **Minimal stdlib slice — SHIPPED (spike):** console.log, Math, JSON.stringify, Object.keys,
+   Array/String methods, Error family. Not spec completeness.
 6. **Re-evaluate against a real target consumer** (most likely PAPERCRAFT/GoblinFoxDragon mod
    scripting, or DUNG's own "v16 renderer" framing) before investing further — this whole
    engine's real value depends on which consumer actually needs it and what subset of JS that

@@ -1914,7 +1914,8 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
      * build`'s own exit code). Not a general function-signature table --
      * VS0 still doesn't have one -- just these four real, fixed runtime
      * names. */
-    if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0) {
+    if (strcmp(fn_name, "vec_push_") == 0 || strcmp(fn_name, "vec_set_at_") == 0 ||
+        strcmp(fn_name, "vec_truncate_") == 0 || strcmp(fn_name, "vec_reserve") == 0) {
         *out_type = "void";
     } else if (strcmp(fn_name, "vec_new") == 0) {
         *out_type = "Vec";
@@ -3585,7 +3586,11 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
     if (!val_c) return 0;
     sb_appendf(out, "        %s = %s;\n", result_var, val_c);
     sb_append(out, "        break;\n");
-    if (out_result_type) *out_result_type = val_type;
+    /* A bare `unit` terminal ("this loop is done, no value") reports NO result type -- exactly the
+     * "never produced one" signal emit_loop's return_mode already honors by skipping the `return`,
+     * so a Unit-returning function ending in such a loop is clean ISO C instead of
+     * `return __loop_result;` from a void function (2026-10-15, V16 engine). */
+    if (out_result_type) *out_result_type = is_symbol(tail, "unit") ? NULL : val_type;
     return 1;
 }
 
@@ -4677,6 +4682,34 @@ static int emit_match(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, i
     return 1;
 }
 
+/* needs_statement_form -- does this value-position form contain (anywhere below an `if`/`cond`
+ * chain) a construct that only exists at statement level: `do`/`let`/`loop`/`match`/`with-arena`/
+ * `when`? A `cond`/`if` containing one cannot be a C ternary and is emitted as an if/else chain
+ * instead (2026-10-15, V16 engine); every `cond`/`if` WITHOUT one keeps the exact ternary
+ * lowering it always had, so no existing program's emitted C changes shape. */
+static int needs_statement_form(Node *n) {
+    /* a bare `unit` arm or a `set!` arm is a void/side-effect form: it cannot share a C ternary
+     * with value-typed arms (ISO C: "conditional expr with only one void side") */
+    if (n && n->type == NODE_SYMBOL && is_symbol(n, "unit")) return 1;
+    if (n && is_call_named(n, "set!")) return 1;
+    if (!n || n->type != NODE_LIST || n->child_count == 0) return 0;
+    if (is_call_named(n, "do") || is_call_named(n, "let") || is_call_named(n, "loop") ||
+        is_call_named(n, "match") || is_call_named(n, "with-arena") || is_call_named(n, "when")) {
+        return 1;
+    }
+    if (is_call_named(n, "if") || is_call_named(n, "cond")) {
+        for (size_t i = 1; i < n->child_count; i++) {
+            Node *c = n->children[i];
+            if (is_call_named(n, "cond") && c->type == NODE_LIST && c->child_count == 2) {
+                if (needs_statement_form(c->children[1])) return 1;
+            } else if (needs_statement_form(c)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, EmitScope *scope,
                       int return_mode, const char **out_return_type, const char **out_error) {
     if (count == 0) return 1;
@@ -4708,6 +4741,14 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
             if (!emit_body(arena, out, form->children + 1, form->child_count - 1, scope, 0, NULL, out_error)) {
                 return 0;
             }
+        } else if ((is_call_named(form, "cond") || is_call_named(form, "if")) &&
+                   needs_statement_form(form)) {
+            /* A non-tail `if`/`cond` (a statement whose value is discarded): lowered at statement
+             * level by treating it as a one-form body in non-return mode, which reaches the
+             * statement-level `if`/`cond` composition in the tail dispatch below. Previously these
+             * went through the generic `(void)(<ternary>)` fallback, where a `do`/`let`/`loop` in
+             * a branch emitted the literal, invalid `do(...)` (2026-10-15, V16 engine). */
+            if (!emit_body(arena, out, &forms[i], 1, scope, 0, NULL, out_error)) return 0;
         } else if (is_call_named(form, "when")) {
             /* `(when cond expr)` -- a real, common Lisp single-branch
              * conditional, found missing while getting world.prn's own
@@ -4829,6 +4870,49 @@ static int emit_body(Arena *arena, StrBuf *out, Node **forms, size_t count, Emit
     if (is_call_named(tail, "do")) {
         return emit_body(arena, out, tail->children + 1, tail->child_count - 1, scope, return_mode,
                           out_return_type, out_error);
+    }
+    if (is_call_named(tail, "cond") && tail->child_count >= 2 && needs_statement_form(tail)) {
+        /* `cond` in tail position -- statement-level composition, the N-ary generalisation of the
+         * `if` case just below (2026-10-15, found writing stdlib/v16/engine.prn: a `cond` clause
+         * body that is a `do`/`let`/`loop`/nested `cond` used to be rejected because every `cond`
+         * not inside a loop tail was lowered to a C ternary, where only plain expressions fit --
+         * every v16/parser.prn clause had to be hand-extracted into its own helper function for
+         * exactly this reason). Each clause but the last opens `if (test) { <body> } else {`; the
+         * last clause's body is the unconditional base case (same "last clause is the base case"
+         * rule emit_cond() documents); every opened `else {` closes at the end. Bodies go through
+         * emit_body() one form at a time, so let/do/loop/match/nested cond all work and
+         * return_mode threads through exactly like `if`. A `cond` in expression position (an
+         * argument, a binop operand) still lowers to the ternary chain. */
+        for (size_t i = 1; i < tail->child_count; i++) {
+            Node *clause = tail->children[i];
+            if (clause->type != NODE_LIST || clause->child_count != 2) {
+                fail(arena, out_error, "cond: clause must be (test result) at line %d", clause->line);
+                return 0;
+            }
+        }
+        size_t last = tail->child_count - 1;
+        const char *resolved_type = NULL;
+        for (size_t i = 1; i < last; i++) {
+            Node *clause = tail->children[i];
+            const char *test_c = emit_if_condition(arena, out, clause->children[0], scope, out_error);
+            if (!test_c) return 0;
+            sb_appendf(out, "    if (%s) {\n", test_c);
+            const char *branch_type = NULL;
+            if (!emit_body(arena, out, clause->children + 1, 1, scope, return_mode, &branch_type,
+                           out_error)) {
+                return 0;
+            }
+            if (!resolved_type) resolved_type = branch_type;
+            sb_append(out, "    } else {\n");
+        }
+        const char *last_type = NULL;
+        if (!emit_body(arena, out, tail->children[last]->children + 1, 1, scope, return_mode,
+                       &last_type, out_error)) {
+            return 0;
+        }
+        for (size_t i = 1; i < last; i++) sb_append(out, "    }\n");
+        if (return_mode && out_return_type) *out_return_type = resolved_type ? resolved_type : last_type;
+        return 1;
     }
     if (is_call_named(tail, "if")) {
         /* `if` in tail position, real, statement-level composition --

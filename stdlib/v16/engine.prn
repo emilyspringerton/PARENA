@@ -1,0 +1,3667 @@
+;; stdlib/v16/engine.prn -- V16 JS engine, SPIKE: a complete (small) JavaScript execution engine in
+;; pure PARENA -- single-pass source->bytecode compiler + stack VM -- whose every allocation comes
+;; from an Arena, and which compiles (via the C emitter + any wasm32 C compiler) to a freestanding
+;; WebAssembly module. Founder real-time (2026-10-15): "spike out the v16 js execution engine it
+;; must run in WASM totally parena powered all arenas". docs/V16_NORTHSTAR.md's Phases 3-5
+;; (interpreter, GC strategy, stdlib slice) in one narrow vertical cut; lexer.prn/parser.prn (the
+;; Phase 2 expression-only front end) are left untouched and tested -- this file has its own,
+;; complete front end because a statement grammar needs keywords, multi-character operators and
+;; comments, which that lexer deliberately does not have.
+;;
+;; MEMORY MODEL (the "all arenas" answer to NORTHSTAR's Phase 4 GC question, for this spike):
+;;   - there is NO malloc, NO GC, NO free. Every byte the engine touches -- tokens, bytecode,
+;;     constants, the value stack, strings produced at run time, arrays, objects, output text --
+;;     is bump-allocated from the Arena the host passes to `v16-eval`.
+;;   - a run is one region: the host resets/drops that arena when the script is done. This is the
+;;     honest GC substitute: nothing is collected mid-run. A script that allocates without bound is
+;;     stopped by the per-run ARENA BUDGET (a RangeError, charged before each string/array/object/
+;;     closure allocation) long before the pool itself runs dry, so the host never traps on a
+;;     hostile script; the budget is a parameter (`v16-eval-bounded`).
+;;   - compile-time-only tables (name tables, break/continue patch lists, upvalue descriptors) live
+;;     in the same arena in this version; splitting them into a scratch region is a follow-up.
+;;
+;; VALUE REPRESENTATION: no boxed values. A JS value is a (tag, payload) pair held in two parallel
+;; scalar Vecs (an I32 tag Vec and an F64 payload Vec) so the value stack never allocates per push.
+;; tag 0 undefined, 1 null, 2 bool (payload 0/1), 3 number, 4 string (payload = index into the
+;; string table), 5 function (payload = closure id: function + captured upvalue cells), 6 builtin
+;; (builtin id), 7 array / 8 object (index into the object table); 15 is the internal "global
+;; never assigned" marker that turns a read into a ReferenceError.
+;;
+;; REAL, HONEST SCOPE (a spike -- see docs/V16_NORTHSTAR.md for the rest of the road):
+;;   - numbers are IEEE doubles; strings are byte strings (no UTF-16 semantics, no Unicode escapes).
+;;   - statements: var/let/const (let/const are block-scoped, var function-scoped), function
+;;     declarations + expressions + arrows, return, if/else, while, do-while, for(;;), for-of (arrays,
+;;     strings), for-in (object keys), switch (default must be last), break, continue, try/catch,
+;;     throw, blocks. Optional semicolons.
+;;   - expressions: literals, array/object literals, + - * / %, comparison, == != === !==, && ||,
+;;     !, unary -/+, typeof, ?:, = += -= *= /= ++ -- on variables and members, calls, .prop, [index],
+;;     obj.method(...), `new Error(...)` (builtin Error family only).
+;;   - closures: real, with shared captured variables (Lua-style upvalues, arena-allocated cells).
+;;   - builtins: console.log (+ error/warn/info/debug), Math.{floor,ceil,round,trunc,abs,sqrt,pow,
+;;     max,min,sin,cos,log,exp,PI,E}, parseInt/parseFloat/Number/String/Boolean/isNaN,
+;;     Object.keys, Array.isArray, JSON.stringify, Error/TypeError/RangeError/ReferenceError/
+;;     SyntaxError; array push/pop/shift/join/length/indexOf/includes/slice/concat/reverse/sort/
+;;     forEach/map/filter/reduce/some/every/find/findIndex; string length/charAt/charCodeAt/
+;;     substring/slice/indexOf/includes/startsWith/split/trim/toUpperCase/toLowerCase/repeat.
+;;   - NOT yet: `this`/prototypes/classes/user `new`, finally, getters/setters, generators, async/
+;;     Promise, regex, template literals, destructuring/spread/default params, labelled
+;;     statements, Date/Math.random, JSON.parse, Unicode, per-iteration `let` binding in for loops
+;;     (closures in a loop share one variable, like `var`), hoisting of function declarations
+;;     (declare before the first call EXECUTES; a call inside another function body is fine),
+;;     a garbage collector.
+;;   - hard limits per run, all reported as ordinary errors, never a hang or a host crash: an
+;;     instruction budget, an arena byte budget, a 1024-frame call stack, 64 nested try blocks.
+;;
+;; VS0 quirks respected (all rediscovered, see STDLIB.md "v16/parser"): no `let` inside `do`, no
+;; variadic `+`/`or`, no struct field literally named `v` (collides with the generated
+;; constructor's local), loop-tail values of Unit calls need a trailing `unit`, the arguments of
+;; a call are evaluated in unspecified order (so two `(fetch! m)` in one call would be a bug --
+;; they are bound in a `let` first).
+
+(module v16/engine)
+(import string)
+(import vec)
+(export v16-eval v16-eval-limited v16-eval-bounded)
+
+;; ------------------------------------------------------------------------------------------------
+;; constants: token kinds, operator ids, keyword ids, opcodes (zero-arg fns, the stdlib convention)
+;; ------------------------------------------------------------------------------------------------
+(defn k-eof [] : I32 0)
+(defn k-num [] : I32 1)
+(defn k-str [] : I32 2)
+(defn k-id [] : I32 3)
+(defn k-op [] : I32 4)
+
+(defn p-lparen [] : I32 1)   (defn p-rparen [] : I32 2)
+(defn p-lbrace [] : I32 3)   (defn p-rbrace [] : I32 4)
+(defn p-lbrack [] : I32 5)   (defn p-rbrack [] : I32 6)
+(defn p-semi [] : I32 7)     (defn p-comma [] : I32 8)
+(defn p-dot [] : I32 9)      (defn p-qmark [] : I32 10)
+(defn p-colon [] : I32 11)   (defn p-plus [] : I32 12)
+(defn p-minus [] : I32 13)   (defn p-star [] : I32 14)
+(defn p-slash [] : I32 15)   (defn p-pct [] : I32 16)
+(defn p-assign [] : I32 17)  (defn p-eq [] : I32 18)
+(defn p-ne [] : I32 19)      (defn p-seq [] : I32 20)
+(defn p-sne [] : I32 21)     (defn p-lt [] : I32 22)
+(defn p-gt [] : I32 23)      (defn p-le [] : I32 24)
+(defn p-ge [] : I32 25)      (defn p-not [] : I32 26)
+(defn p-and [] : I32 27)     (defn p-or [] : I32 28)
+(defn p-pluseq [] : I32 29)  (defn p-minuseq [] : I32 30)
+(defn p-stareq [] : I32 31)  (defn p-slasheq [] : I32 32)
+(defn p-incr [] : I32 33)    (defn p-decr [] : I32 34)
+(defn p-arrow [] : I32 35)
+
+(defn w-var [] : I32 1)      (defn w-let [] : I32 2)
+(defn w-const [] : I32 3)    (defn w-function [] : I32 4)
+(defn w-return [] : I32 5)   (defn w-if [] : I32 6)
+(defn w-else [] : I32 7)     (defn w-while [] : I32 8)
+(defn w-for [] : I32 9)      (defn w-true [] : I32 10)
+(defn w-false [] : I32 11)   (defn w-null [] : I32 12)
+(defn w-undefined [] : I32 13) (defn w-typeof [] : I32 14)
+(defn w-break [] : I32 15)   (defn w-continue [] : I32 16)
+(defn w-new [] : I32 17)     (defn w-try [] : I32 18)
+(defn w-catch [] : I32 19)   (defn w-throw [] : I32 20)
+(defn w-finally [] : I32 21)
+(defn w-switch [] : I32 22)  (defn w-case [] : I32 23)
+(defn w-default [] : I32 24) (defn w-do [] : I32 25)
+
+(defn o-halt [] : I32 0)     (defn o-num [] : I32 1)
+(defn o-str [] : I32 2)      (defn o-undef [] : I32 3)
+(defn o-null [] : I32 4)     (defn o-true [] : I32 5)
+(defn o-false [] : I32 6)    (defn o-pop [] : I32 7)
+(defn o-loadl [] : I32 8)    (defn o-storel [] : I32 9)
+(defn o-loadg [] : I32 10)   (defn o-storeg [] : I32 11)
+(defn o-add [] : I32 12)     (defn o-sub [] : I32 13)
+(defn o-mul [] : I32 14)     (defn o-div [] : I32 15)
+(defn o-mod [] : I32 16)     (defn o-neg [] : I32 17)
+(defn o-not [] : I32 18)     (defn o-lt [] : I32 19)
+(defn o-gt [] : I32 20)      (defn o-le [] : I32 21)
+(defn o-ge [] : I32 22)      (defn o-eq [] : I32 23)
+(defn o-ne [] : I32 24)      (defn o-seq [] : I32 25)
+(defn o-sne [] : I32 26)     (defn o-jmp [] : I32 27)
+(defn o-jf [] : I32 28)      (defn o-jt [] : I32 29)
+(defn o-jfk [] : I32 30)     (defn o-jtk [] : I32 31)
+(defn o-call [] : I32 32)    (defn o-ret [] : I32 33)
+(defn o-mkfn [] : I32 34)    (defn o-dup [] : I32 35)
+(defn o-typeof [] : I32 36)  (defn o-builtin [] : I32 37)
+(defn o-newarr [] : I32 38)  (defn o-newobj [] : I32 39)
+(defn o-append [] : I32 40)  (defn o-initprop [] : I32 41)
+(defn o-getidx [] : I32 42)  (defn o-setidx [] : I32 43)
+(defn o-getprop [] : I32 44) (defn o-setprop [] : I32 45)
+(defn o-callm [] : I32 46)   (defn o-nop [] : I32 47)
+(defn o-loadgq [] : I32 48)  (defn o-getpropk [] : I32 49)
+(defn o-getidxk [] : I32 50) (defn o-loadup [] : I32 51)
+(defn o-storeup [] : I32 52)
+(defn o-try [] : I32 53)     (defn o-endtry [] : I32 54)
+(defn o-throw [] : I32 55)
+
+(defn t-undef [] : I32 0)    (defn t-null [] : I32 1)
+(defn t-bool [] : I32 2)     (defn t-num [] : I32 3)
+(defn t-str [] : I32 4)      (defn t-fn [] : I32 5)
+(defn t-builtin [] : I32 6)  (defn t-arr [] : I32 7)
+(defn t-obj [] : I32 8)
+(defn t-uninit [] : I32 15)
+
+(defn b-log [] : I32 0)      (defn b-floor [] : I32 1)
+(defn b-abs [] : I32 2)      (defn b-sqrt [] : I32 3)
+(defn b-max [] : I32 4)      (defn b-min [] : I32 5)
+(defn b-ceil [] : I32 6)     (defn b-pow [] : I32 7)
+(defn b-parseint [] : I32 8) (defn b-parsefloat [] : I32 9)
+(defn b-number [] : I32 10)  (defn b-string [] : I32 11)
+(defn b-isnan [] : I32 12)   (defn b-round [] : I32 13)
+(defn b-trunc [] : I32 14)   (defn b-keys [] : I32 15)
+(defn b-isarray [] : I32 16) (defn b-boolean [] : I32 17)
+(defn b-sin [] : I32 18)     (defn b-cos [] : I32 19)
+(defn b-mlog [] : I32 20)    (defn b-exp [] : I32 21)
+(defn b-jsonstr [] : I32 22)
+(defn b-error [] : I32 30)
+
+;; ------------------------------------------------------------------------------------------------
+;; state
+;; ------------------------------------------------------------------------------------------------
+(defstruct JsObj
+  (kind : I32)                  ;; 7 array, 8 object
+  (keys : (Vec String) @ Region)
+  (otags : (Vec I32) @ Region)
+  (ovals : (Vec F64) @ Region))
+
+;; per-function compile state: the upvalue (captured variable) descriptors a closure needs, plus
+;; the enclosing function's table windows to restore when this function ends
+(defstruct FnCg
+  (base : I32)
+  (upnames : (Vec String) @ Region)
+  (upfrom : (Vec I32) @ Region)
+  (upidx : (Vec I32) @ Region)
+  (stop : I32)
+  (sbase : I32)
+  (smax : I32)
+  (sbd : I32)
+  (sisvar : I32)
+  (stry : I32)
+  (sld : I32)
+  (jover : I32)
+  (fid : I32))
+
+(defstruct Js
+  ;; lexer
+  (src : String @ Region)
+  (len : I32)
+  (pos : I32)
+  (tk : I32)
+  (tc : I32)
+  (ts : I32)
+  (te : I32)
+  (tn : F64)
+  ;; program
+  (code : (Vec I32) @ Region)
+  (nums : (Vec F64) @ Region)
+  (strs : (Vec String) @ Region)
+  (fpc : (Vec I32) @ Region)
+  (fnp : (Vec I32) @ Region)
+  (fnl : (Vec I32) @ Region)
+  ;; compile-time tables
+  (gnames : (Vec String) @ Region)
+  (fcs : (Vec FnCg) @ Region)
+  (fstack : (Vec I32) @ Region)
+  (lnames : (Vec String) @ Region)
+  (lslot : (Vec I32) @ Region)
+  (lvar : (Vec I32) @ Region)
+  (isvar : I32)
+  (bdepth : I32)
+  (quiet : I32)
+  (ltop : I32)
+  (lbase : I32)
+  (lmax : I32)
+  (fdepth : I32)
+  (brk : (Vec I32) @ Region)
+  (brktop : I32)
+  (cnt : (Vec I32) @ Region)
+  (cnttop : I32)
+  (lastget : I32)
+  (lastkind : I32)
+  (trydepth : I32)
+  (ldepth : I32)
+  (ltry : (Vec I32) @ Region)
+  (ltrytop : I32)
+  (err : String @ Region)
+  ;; run time
+  (stags : (Vec I32) @ Region)
+  (svals : (Vec F64) @ Region)
+  (gtags : (Vec I32) @ Region)
+  (gvals : (Vec F64) @ Region)
+  (fret : (Vec I32) @ Region)
+  (ffp : (Vec I32) @ Region)
+  (objs : (Vec JsObj) @ Region)
+  (clfid : (Vec I32) @ Region)
+  (clstart : (Vec I32) @ Region)
+  (clups : (Vec I32) @ Region)
+  (upslot : (Vec I32) @ Region)
+  (uptag : (Vec I32) @ Region)
+  (upval : (Vec F64) @ Region)
+  (openup : (Vec I32) @ Region)
+  (nopen : I32)
+  (cur : I32)
+  (fclo : (Vec I32) @ Region)
+  (hpc : (Vec I32) @ Region)
+  (hsp : (Vec I32) @ Region)
+  (hfp : (Vec I32) @ Region)
+  (hcd : (Vec I32) @ Region)
+  (hclo : (Vec I32) @ Region)
+  (hnest : (Vec I32) @ Region)
+  (hn : I32)
+  (exc : I32)
+  (exct : I32)
+  (excv : F64)
+  (nest : I32)
+  (escape : I32)
+  (sp : I32)
+  (fp : I32)
+  (pc : I32)
+  (cd : I32)
+  (halt : I32)
+  (steps : I32)
+  (limit : I32)
+  (budget : I32)
+  (obuf : String @ Region)
+  (olen : I32)
+  (ocap : I32))
+
+(defn stack-cap [] : I32 16384)
+(defn frame-cap [] : I32 1024)
+(defn out-cap [] : I32 262144)
+
+;; ------------------------------------------------------------------------------------------------
+;; small string helpers
+;; ------------------------------------------------------------------------------------------------
+(defn peek-at [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (if (< i n) (char-at src i) 0))
+
+(defn range-eq? [(src : String @ Region) (s : I32) (e : I32) (kw : String @ Region)] : Bool
+  (if (= (- e s) (length kw))
+    (loop [k 0]
+      (if (>= k (- e s))
+        true
+        (if (= (char-at src (+ s k)) (char-at kw k)) (recur (+ k 1)) false)))
+    false))
+
+(defn is-alpha? [(ch : I32)] : Bool
+  (or (and (>= ch 65) (<= ch 90)) (or (and (>= ch 97) (<= ch 122)) (or (= ch 95) (= ch 36)))))
+
+(defn is-idch? [(ch : I32)] : Bool
+  (or (is-alpha? ch) (and (>= ch 48) (<= ch 57))))
+
+(defn digit? [(ch : I32)] : Bool
+  (and (>= ch 48) (<= ch 57)))
+
+;; decode-lit -- decode a string literal body src[s,e) (escapes \n \t \r \0 \\ \' \" and \<any>)
+;; into a fresh arena string. Pure byte loop; the only C is the buffer fill.
+(defn decode-lit [(src : String @ Region) (s : I32) (e : I32) (dest : Arena @ Region)] : String @ Region
+  (let [out (alloc dest String (+ (- e s) 1))]
+    #target
+    {:c (inline-c "int j = 0; int i; for (i = s; i < e; i++) { char c = src[i]; if (c == '\\\\' && i + 1 < e) { i++; c = src[i]; if (c == 'n') c = '\\n'; else if (c == 't') c = '\\t'; else if (c == 'r') c = '\\r'; else if (c == '0') c = '\\0'; } out[j++] = c; } out[j] = '\\0';")}
+    out))
+
+;; ToNumber of a string: optional whitespace, optional sign, a decimal literal, optional whitespace,
+;; end of string -- anything else is NaN; "" and all-whitespace are 0. Validation is plain PARENA;
+;; only the final decimal->double conversion is a one-expression strtod (see parse-num-at).
+(defn ws? [(ch : I32)] : Bool
+  (or (= ch 32) (or (= ch 9) (or (= ch 10) (= ch 13)))))
+
+(defn skip-spaces [(s : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (and (< j n) (ws? (char-at s j))) (recur (+ j 1)) j)))
+
+(defn str-to-num [(s : String @ Region)] : F64
+  (let [n (length s)
+        i (skip-spaces s 0 n)]
+    (if (>= i n)
+      0.0
+      (str-to-num-signed s i n))))
+
+(defn str-to-num-signed [(s : String @ Region) (i : I32) (n : I32)] : F64
+  (let [neg (= (char-at s i) 45)
+        d (if (or (= (char-at s i) 45) (= (char-at s i) 43)) (+ i 1) i)
+        e (scan-number s d n)]
+    (if (and (> e d) (or (digit? (char-at s d)) (digit? (peek-at s (+ d 1) n))))
+      (if (>= (skip-spaces s e n) n)
+        (if neg (- 0.0 (parse-num-at s d)) (parse-num-at s d))
+        (/ 0.0 0.0))
+      (/ 0.0 0.0))))
+
+(defn parse-num-at [(src : String @ Region) (i : I32)] : F64
+  #target
+  {:c (inline-c "strtod(src + i, NULL)")})
+
+(defn fmt-num [(x : F64) (dest : Arena @ Region)] : String @ Region
+  (let [out (alloc dest String 40)]
+    #target
+    {:c (inline-c "if (x != x) { memcpy(out, \"NaN\", 4); } else if (x > 1.7976931348623157e308) { memcpy(out, \"Infinity\", 9); } else if (x < -1.7976931348623157e308) { memcpy(out, \"-Infinity\", 10); } else if (x == 0) { memcpy(out, \"0\", 2); } else if (x == floor(x) && x < 1e21 && x > -1e21) { snprintf(out, 40, \"%.0f\", x); } else { int pr; char *e; for (pr = 1; pr <= 17; pr++) { snprintf(out, 40, \"%.*g\", pr, x); if (strtod(out, NULL) == x) break; } e = strchr(out, 101); if (e) { char *d = e + 2; while (d[0] == 48 && d[1] != 0) { memmove(d, d + 1, strlen(d)); } } }")}
+    out))
+
+(defn num-floor [(x : F64)] : F64
+  #target
+  {:c (inline-c "floor(x)")})
+
+(defn num-ceil [(x : F64)] : F64
+  #target
+  {:c (inline-c "ceil(x)")})
+
+(defn num-sqrt [(x : F64)] : F64
+  #target
+  {:c (inline-c "sqrt(x)")})
+
+(defn num-pow [(x : F64) (y : F64)] : F64
+  #target
+  {:c (inline-c "pow(x, y)")})
+
+(defn num-mod [(x : F64) (y : F64)] : F64
+  #target
+  {:c (inline-c "fmod(x, y)")})
+
+(defn num-nan? [(x : F64)] : Bool
+  (not (= x x)))
+
+(defn num-infinite? [(x : F64)] : Bool
+  (or (= x (/ 1.0 0.0)) (= x (- 0.0 (/ 1.0 0.0)))))
+
+(defn str-cmp [(a : String @ Region) (b : String @ Region)] : I32
+  #target
+  {:c (inline-c "strcmp(a, b)")})
+
+;; index of needle in hay starting at byte `from`, or -1
+(defn match-at? [(hay : String @ Region) (needle : String @ Region) (i : I32) (nl : I32)] : Bool
+  (loop [k 0]
+    (if (>= k nl)
+      true
+      (if (= (char-at hay (+ i k)) (char-at needle k)) (recur (+ k 1)) false))))
+
+(defn str-index-of [(hay : String @ Region) (needle : String @ Region) (from : I32)] : I32
+  (let [hl (length hay)
+        nl (length needle)]
+    (loop [i (if (< from 0) 0 from)]
+      (cond
+        ((> (+ i nl) hl) -1)
+        ((match-at? hay needle i nl) i)
+        (true (recur (+ i 1)))))))
+
+;; ------------------------------------------------------------------------------------------------
+;; lexer (pull-style, one token of lookahead lives in the Js struct)
+;; ------------------------------------------------------------------------------------------------
+(defn fail! [(c : &mut Js) (msg : String @ Region)] : Unit
+  (do
+    (when (= (length (get-field c :err)) 0)
+      (set! (get-field c :err) msg))
+    (set! (get-field c :pos) (get-field c :len))
+    (set! (get-field c :tk) 0)))
+
+(defn tok-set! [(c : &mut Js) (kind : I32) (code : I32) (s : I32) (e : I32)] : Unit
+  (do
+    (set! (get-field c :tk) kind)
+    (set! (get-field c :tc) code)
+    (set! (get-field c :ts) s)
+    (set! (get-field c :te) e)))
+
+(defn line-comment-end [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (or (>= j n) (= (char-at src j) 10)) j (recur (+ j 1)))))
+
+(defn block-comment-end [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (>= j n)
+      n
+      (if (and (= (char-at src j) 42) (= (peek-at src (+ j 1) n) 47)) (+ j 2) (recur (+ j 1))))))
+
+(defn skip-ws [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (>= j n)
+      j
+      (cond
+        ((or (= (char-at src j) 32) (or (= (char-at src j) 9) (or (= (char-at src j) 10) (= (char-at src j) 13))))
+          (recur (+ j 1)))
+        ((and (= (char-at src j) 47) (= (peek-at src (+ j 1) n) 47))
+          (recur (line-comment-end src j n)))
+        ((and (= (char-at src j) 47) (= (peek-at src (+ j 1) n) 42))
+          (recur (block-comment-end src (+ j 2) n)))
+        (true j)))))
+
+(defn scan-digits [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (and (< j n) (digit? (char-at src j))) (recur (+ j 1)) j)))
+
+(defn scan-exp [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (if (or (= (peek-at src i n) 101) (= (peek-at src i n) 69))
+    (if (or (= (peek-at src (+ i 1) n) 43) (= (peek-at src (+ i 1) n) 45))
+      (scan-digits src (+ i 2) n)
+      (scan-digits src (+ i 1) n))
+    i))
+
+(defn scan-number [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (let [a (scan-digits src i n)]
+    (if (= (peek-at src a n) 46)
+      (scan-exp src (scan-digits src (+ a 1) n) n)
+      (scan-exp src a n))))
+
+(defn scan-ident [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (loop [j i]
+    (if (and (< j n) (is-idch? (char-at src j))) (recur (+ j 1)) j)))
+
+;; end index of the closing quote of the string starting at quote index i (or n if unterminated)
+(defn scan-string [(src : String @ Region) (i : I32) (n : I32)] : I32
+  (let [q (char-at src i)]
+    (loop [j (+ i 1)]
+      (cond
+        ((>= j n) n)
+        ((= (char-at src j) 92) (recur (+ j 2)))
+        ((= (char-at src j) q) j)
+        (true (recur (+ j 1)))))))
+
+(defn kw-code [(src : String @ Region) (s : I32) (e : I32)] : I32
+  (cond
+    ((range-eq? src s e "var") (w-var))
+    ((range-eq? src s e "let") (w-let))
+    ((range-eq? src s e "const") (w-const))
+    ((range-eq? src s e "function") (w-function))
+    ((range-eq? src s e "return") (w-return))
+    ((range-eq? src s e "if") (w-if))
+    ((range-eq? src s e "else") (w-else))
+    ((range-eq? src s e "while") (w-while))
+    ((range-eq? src s e "for") (w-for))
+    ((range-eq? src s e "true") (w-true))
+    ((range-eq? src s e "false") (w-false))
+    ((range-eq? src s e "null") (w-null))
+    ((range-eq? src s e "undefined") (w-undefined))
+    ((range-eq? src s e "typeof") (w-typeof))
+    ((range-eq? src s e "break") (w-break))
+    ((range-eq? src s e "continue") (w-continue))
+    ((range-eq? src s e "new") (w-new))
+    ((range-eq? src s e "try") (w-try))
+    ((range-eq? src s e "catch") (w-catch))
+    ((range-eq? src s e "throw") (w-throw))
+    ((range-eq? src s e "finally") (w-finally))
+    ((range-eq? src s e "switch") (w-switch))
+    ((range-eq? src s e "case") (w-case))
+    ((range-eq? src s e "default") (w-default))
+    ((range-eq? src s e "do") (w-do))
+    (true 0)))
+
+(defn lex-number! [(c : &mut Js) (src : String @ Region) (i : I32) (n : I32)] : Unit
+  (let [e (scan-number src i n)]
+    (do
+      (set! (get-field c :tn) (parse-num-at src i))
+      (tok-set! c (k-num) 0 i e)
+      (set! (get-field c :pos) e))))
+
+(defn lex-ident! [(c : &mut Js) (src : String @ Region) (i : I32) (n : I32)] : Unit
+  (let [e (scan-ident src i n)]
+    (do
+      (tok-set! c (k-id) (kw-code src i e) i e)
+      (set! (get-field c :pos) e))))
+
+(defn lex-string! [(c : &mut Js) (src : String @ Region) (i : I32) (n : I32)] : Unit
+  (let [e (scan-string src i n)]
+    (if (>= e n)
+      (fail! c "SyntaxError: unterminated string literal")
+      (do
+        (tok-set! c (k-str) 0 (+ i 1) e)
+        (set! (get-field c :pos) (+ e 1))))))
+
+(defn op! [(c : &mut Js) (code : I32) (i : I32) (w : I32)] : Unit
+  (do
+    (tok-set! c (k-op) code i (+ i w))
+    (set! (get-field c :pos) (+ i w))))
+
+(defn op-eq-family! [(c : &mut Js) (i : I32) (b : I32) (d : I32)
+                     (plain : I32) (eq2 : I32) (eq3 : I32)] : Unit
+  (cond
+    ((and (= b 61) (= d 61)) (op! c eq3 i 3))
+    ((= b 61) (op! c eq2 i 2))
+    (true (op! c plain i 1))))
+
+(defn op-pair! [(c : &mut Js) (i : I32) (b : I32) (second : I32)
+                (plain : I32) (paired : I32)] : Unit
+  (if (= b second) (op! c paired i 2) (op! c plain i 1)))
+
+(defn lex-op! [(c : &mut Js) (src : String @ Region) (i : I32) (n : I32)] : Unit
+  (let [a (char-at src i)
+        b (peek-at src (+ i 1) n)
+        d (peek-at src (+ i 2) n)]
+    (cond
+      ((= a 40) (op! c (p-lparen) i 1))
+      ((= a 41) (op! c (p-rparen) i 1))
+      ((= a 123) (op! c (p-lbrace) i 1))
+      ((= a 125) (op! c (p-rbrace) i 1))
+      ((= a 91) (op! c (p-lbrack) i 1))
+      ((= a 93) (op! c (p-rbrack) i 1))
+      ((= a 59) (op! c (p-semi) i 1))
+      ((= a 44) (op! c (p-comma) i 1))
+      ((= a 46) (op! c (p-dot) i 1))
+      ((= a 63) (op! c (p-qmark) i 1))
+      ((= a 58) (op! c (p-colon) i 1))
+      ((= a 37) (op! c (p-pct) i 1))
+      ((= a 60) (op-pair! c i b 61 (p-lt) (p-le)))
+      ((= a 62) (op-pair! c i b 61 (p-gt) (p-ge)))
+      ((and (= a 61) (= b 62)) (op! c (p-arrow) i 2))
+      ((= a 61) (op-eq-family! c i b d (p-assign) (p-eq) (p-seq)))
+      ((= a 33) (op-eq-family! c i b d (p-not) (p-ne) (p-sne)))
+      ((= a 38) (if (= b 38) (op! c (p-and) i 2) (fail! c "SyntaxError: unexpected character '&'")))
+      ((= a 124) (if (= b 124) (op! c (p-or) i 2) (fail! c "SyntaxError: unexpected character '|'")))
+      ((= a 43) (cond ((= b 43) (op! c (p-incr) i 2)) ((= b 61) (op! c (p-pluseq) i 2)) (true (op! c (p-plus) i 1))))
+      ((= a 45) (cond ((= b 45) (op! c (p-decr) i 2)) ((= b 61) (op! c (p-minuseq) i 2)) (true (op! c (p-minus) i 1))))
+      ((= a 42) (op-pair! c i b 61 (p-star) (p-stareq)))
+      ((= a 47) (op-pair! c i b 61 (p-slash) (p-slasheq)))
+      (true (fail! c "SyntaxError: unexpected character")))))
+
+(defn lex-at! [(c : &mut Js) (src : String @ Region) (i : I32) (n : I32)] : Unit
+  (let [ch (char-at src i)]
+    (cond
+      ((digit? ch) (lex-number! c src i n))
+      ((is-alpha? ch) (lex-ident! c src i n))
+      ((or (= ch 34) (= ch 39)) (lex-string! c src i n))
+      (true (lex-op! c src i n)))))
+
+(defn next-token! [(c : &mut Js)] : Unit
+  (let [src (get-field c :src)
+        n (get-field c :len)
+        i (skip-ws src (get-field c :pos) n)]
+    (if (>= i n)
+      (do (tok-set! c (k-eof) 0 i i) (set! (get-field c :pos) i))
+      (lex-at! c src i n))))
+
+;; ------------------------------------------------------------------------------------------------
+;; parser helpers
+;; ------------------------------------------------------------------------------------------------
+(defn at-op? [(c : &Js) (code : I32)] : Bool
+  (and (= (get-field c :tk) (k-op)) (= (get-field c :tc) code)))
+
+(defn at-kw? [(c : &Js) (code : I32)] : Bool
+  (and (= (get-field c :tk) (k-id)) (= (get-field c :tc) code)))
+
+(defn adv-true! [(c : &mut Js)] : Bool
+  (do (next-token! c) true))
+
+(defn accept-op! [(c : &mut Js) (code : I32)] : Bool
+  (if (at-op? c code) (adv-true! c) false))
+
+(defn skip-semi! [(c : &mut Js)] : Unit
+  (when (at-op? c (p-semi)) (next-token! c)))
+
+(defn accept-kw! [(c : &mut Js) (code : I32)] : Bool
+  (if (at-kw? c code) (adv-true! c) false))
+
+(defn expect-op! [(c : &mut Js) (code : I32) (msg : String @ Region)] : Unit
+  (if (at-op? c code) (next-token! c) (fail! c msg)))
+
+;; emit helpers ------------------------------------------------------------------------------------
+(defn code-len [(c : &Js)] : I32
+  (vec/len &(get-field c :code)))
+
+(defn emit! [(c : &mut Js) (op : I32)] : Unit
+  (vec/push! &mut (get-field c :code) op))
+
+(defn emit2! [(c : &mut Js) (op : I32) (arg : I32)] : Unit
+  (do
+    (vec/push! &mut (get-field c :code) op)
+    (vec/push! &mut (get-field c :code) arg)))
+
+;; emit a jump with a placeholder target; returns the index of the operand to patch
+(defn emit-jump! [(c : &mut Js) (op : I32)] : I32
+  (do
+    (emit2! c op 0)
+    (- (code-len c) 1)))
+
+(defn patch! [(c : &mut Js) (at : I32) (target : I32)] : Unit
+  (vec/set-at! &mut (get-field c :code) at target))
+
+(defn patch-here! [(c : &mut Js) (at : I32)] : Unit
+  (patch! c at (code-len c)))
+
+(defn add-num-const! [(c : &mut Js) (x : F64)] : I32
+  (let [k (vec/len &(get-field c :nums))]
+    (do (vec/push! &mut (get-field c :nums) x) k)))
+
+(defn add-str-const! [(c : &mut Js) (s : String @ Region)] : I32
+  (let [k (vec/len &(get-field c :strs))]
+    (do (vec/push! &mut (get-field c :strs) s) k)))
+
+(defn tok-text [(c : &Js) (dest : Arena @ Region)] : String @ Region
+  (substring (get-field c :src) (get-field c :ts) (get-field c :te) dest))
+
+;; name tables: linear search from the end (innermost/latest wins) -------------------------------
+(defn name-at [(names : &(Vec String)) (i : I32)] : String @ Region
+  (let [p (vec/get names i)] p))
+
+(defn find-name [(names : &(Vec String)) (lo : I32) (hi : I32) (s : String @ Region)] : I32
+  (loop [i (- hi 1)]
+    (cond
+      ((< i lo) -1)
+      ((str-eq? (name-at names i) s) i)
+      (true (recur (- i 1))))))
+
+;; A name-table entry maps a source name to where it lives: slot >= 0 is a frame slot of the function
+;; being compiled; slot < 0 is the global slot (-slot - 1) of a block-scoped top-level binding.
+(defn find-entry [(c : &Js) (s : String @ Region)] : I32
+  (find-name &(get-field c :lnames) (get-field c :lbase) (get-field c :ltop) s))
+
+(defn entry-slot [(c : &Js) (at : I32)] : I32
+  (deref (vec/get &(get-field c :lslot) at)))
+
+(defn entry-var [(c : &Js) (at : I32)] : I32
+  (deref (vec/get &(get-field c :lvar) at)))
+
+(defn global-slot! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : I32
+  (let [at (find-name &(get-field c :gnames) 0 (vec/len &(get-field c :gnames)) s)]
+    (if (>= at 0)
+      at
+      (let [k (vec/len &(get-field c :gnames))]
+        (do (vec/push! &mut (get-field c :gnames) s) k)))))
+
+(defn put-i32! [(v : &mut (Vec I32)) (at : I32) (x : I32)] : Unit
+  (if (< at (vec/len v)) (vec/set-at! v at x) (vec/push! v x)))
+
+(defn put-str! [(v : &mut (Vec String)) (at : I32) (x : String @ Region)] : Unit
+  (if (< at (vec/len v)) (vec/set-at! v at x) (vec/push! v x)))
+
+(defn declare-entry! [(c : &mut Js) (s : String @ Region) (slot : I32) (isvar : I32)] : Unit
+  (let [at (get-field c :ltop)]
+    (do
+      (put-str! &mut (get-field c :lnames) at s)
+      (put-i32! &mut (get-field c :lslot) at slot)
+      (put-i32! &mut (get-field c :lvar) at isvar)
+      (set! (get-field c :ltop) (+ at 1)))))
+
+;; a new frame slot in the function being compiled
+(defn declare-local! [(c : &mut Js) (s : String @ Region) (isvar : I32)] : I32
+  (let [slot (get-field c :lmax)]
+    (do
+      (set! (get-field c :lmax) (+ slot 1))
+      (declare-entry! c s slot isvar)
+      slot)))
+
+;; a block-scoped top-level let/const: a fresh, anonymous global slot (the "" name never matches)
+(defn declare-scoped-global! [(c : &mut Js) (s : String @ Region)] : I32
+  (let [g (vec/len &(get-field c :gnames))]
+    (do
+      (vec/push! &mut (get-field c :gnames) "")
+      (declare-entry! c s (- 0 (+ g 1)) 0)
+      g)))
+
+;; leaving a block: drop its let/const entries, keep its `var` entries (function-scoped) by
+;; compacting them down to the block's mark. Slots are never reused, so emitted code stays valid.
+(defn restore-scope! [(c : &mut Js) (mark : I32)] : Unit
+  (let [top (get-field c :ltop)]
+    (set! (get-field c :ltop) (persist-vars! c mark top))))
+
+(defn copy-entry! [(c : &mut Js) (from : I32) (to : I32)] : Unit
+  (do
+    (put-str! &mut (get-field c :lnames) to (name-at &(get-field c :lnames) from))
+    (put-i32! &mut (get-field c :lslot) to (entry-slot c from))
+    (put-i32! &mut (get-field c :lvar) to 1)))
+
+(defn persist-vars! [(c : &mut Js) (mark : I32) (top : I32)] : I32
+  (loop [i mark w mark]
+    (cond
+      ((>= i top) w)
+      ((= (entry-var c i) 1) (do (copy-entry! c i w) (recur (+ i 1) (+ w 1))))
+      (true (recur (+ i 1) w)))))
+
+;; ------------------------------------------------------------------------------------------------
+;; expression compiler (precedence climbing)
+;; ------------------------------------------------------------------------------------------------
+(defn load-global-name! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (let [bid (global-builtin-id s)]
+    (if (and (>= bid 0) (< (find-name &(get-field c :gnames) 0 (vec/len &(get-field c :gnames)) s) 0))
+      (emit2! c (o-builtin) bid)
+      (emit2! c (if (= (get-field c :quiet) 1) (o-loadgq) (o-loadg)) (global-slot! c s dest)))))
+
+;; ---- resolving a name across nested functions ----------------------------------------------------
+;; Level 0 is the program, level N the N-deep function being compiled. A function's name-table window
+;; is [its base, the next level's base) (or [base, ltop) for the innermost one).
+(defn fn-pidx [(c : &Js) (level : I32)] : I32
+  (deref (vec/get &(get-field c :fstack) (- level 1))))
+
+(defn fn-base [(c : &Js) (level : I32)] : I32
+  (if (= level 0)
+    0
+    (let [fc (vec/get &(get-field c :fcs) (fn-pidx c level))]
+      (get-field fc :base))))
+
+(defn window-hi [(c : &Js) (level : I32)] : I32
+  (if (= level (get-field c :fdepth))
+    (get-field c :ltop)
+    (fn-base c (+ level 1))))
+
+(defn fc-at [(c : &Js) (level : I32)] : &FnCg
+  (let [fc (vec/get &(get-field c :fcs) (fn-pidx c level))]
+    fc))
+
+(defn up-add! [(fc : &mut FnCg) (name : String @ Region) (from : I32) (idx : I32)] : I32
+  (let [k (vec/len &(get-field fc :upnames))]
+    (do
+      (vec/push! &mut (get-field fc :upnames) name)
+      (vec/push! &mut (get-field fc :upfrom) from)
+      (vec/push! &mut (get-field fc :upidx) idx)
+      k)))
+
+;; the upvalue index of `name` in the function at `level` (capturing it from the enclosing functions
+;; as needed); -1 = not a captured local at all (a plain global by name); <= -2 = a block-scoped
+;; top-level binding, global slot (-2 - r)
+(defn capture! [(c : &mut Js) (level : I32) (name : String @ Region)] : I32
+  (let [fc (fc-at c level)
+        have (find-name &(get-field fc :upnames) 0 (vec/len &(get-field fc :upnames)) name)]
+    (if (>= have 0)
+      have
+      (capture-from-parent! c level fc name))))
+
+(defn capture-from-parent! [(c : &mut Js) (level : I32) (fc : &mut FnCg) (name : String @ Region)] : I32
+  (let [plevel (- level 1)
+        at (find-name &(get-field c :lnames) (fn-base c plevel) (fn-base c level) name)]
+    (cond
+      ((>= at 0) (capture-entry! fc name (entry-slot c at)))
+      ((= plevel 0) -1)
+      (true (capture-via-parent! fc name (capture! c plevel name))))))
+
+(defn capture-entry! [(fc : &mut FnCg) (name : String @ Region) (slot : I32)] : I32
+  (if (>= slot 0)
+    (up-add! fc name 1 slot)
+    (- slot 1)))
+
+(defn capture-via-parent! [(fc : &mut FnCg) (name : String @ Region) (p : I32)] : I32
+  (if (>= p 0)
+    (up-add! fc name 0 p)
+    p))
+
+(defn load-var! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (let [at (find-entry c s)]
+    (if (>= at 0)
+      (load-entry! c (entry-slot c at))
+      (load-outer! c s dest))))
+
+(defn load-outer! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (if (> (get-field c :fdepth) 0)
+    (load-captured! c (capture! c (get-field c :fdepth) s) s dest)
+    (load-global-name! c s dest)))
+
+(defn load-captured! [(c : &mut Js) (r : I32) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (cond
+    ((>= r 0) (emit2! c (o-loadup) r))
+    ((= r -1) (load-global-name! c s dest))
+    (true (emit2! c (o-loadg) (- 0 (+ r 2))))))
+
+(defn load-entry! [(c : &mut Js) (slot : I32)] : Unit
+  (if (>= slot 0)
+    (emit2! c (o-loadl) slot)
+    (emit2! c (o-loadg) (- 0 (+ slot 1)))))
+
+(defn store-var! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (let [at (find-entry c s)]
+    (if (>= at 0)
+      (store-entry! c (entry-slot c at))
+      (store-outer! c s dest))))
+
+(defn store-outer! [(c : &mut Js) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (if (> (get-field c :fdepth) 0)
+    (store-captured! c (capture! c (get-field c :fdepth) s) s dest)
+    (emit2! c (o-storeg) (global-slot! c s dest))))
+
+(defn store-captured! [(c : &mut Js) (r : I32) (s : String @ Region) (dest : Arena @ Region)] : Unit
+  (cond
+    ((>= r 0) (emit2! c (o-storeup) r))
+    ((= r -1) (emit2! c (o-storeg) (global-slot! c s dest)))
+    (true (emit2! c (o-storeg) (- 0 (+ r 2))))))
+
+(defn store-entry! [(c : &mut Js) (slot : I32)] : Unit
+  (if (>= slot 0)
+    (emit2! c (o-storel) slot)
+    (emit2! c (o-storeg) (- 0 (+ slot 1)))))
+
+(defn push-num-const! [(c : &mut Js) (x : F64)] : Unit
+  (emit2! c (o-num) (add-num-const! c x)))
+
+(defn arith-of-assign [(code : I32)] : I32
+  (cond
+    ((= code (p-pluseq)) (o-add))
+    ((= code (p-minuseq)) (o-sub))
+    ((= code (p-stareq)) (o-mul))
+    (true (o-div))))
+
+(defn assign-op? [(c : &Js)] : Bool
+  (and (= (get-field c :tk) (k-op))
+       (or (= (get-field c :tc) (p-assign))
+           (or (= (get-field c :tc) (p-pluseq))
+               (or (= (get-field c :tc) (p-minuseq))
+                   (or (= (get-field c :tc) (p-stareq)) (= (get-field c :tc) (p-slasheq))))))))
+
+;; identifier followed by (maybe) an assignment / ++ / --; the identifier token is already consumed
+(defn ident-tail! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-assign))
+      (do (next-token! c) (parse-assign! c dest) (store-var! c name dest)))
+    ((assign-op? c) (compound-assign! c name (arith-of-assign (get-field c :tc)) dest))
+    ((at-op? c (p-incr)) (post-step! c name (o-add) dest))
+    ((at-op? c (p-decr)) (post-step! c name (o-sub) dest))
+    (true (load-var! c name dest))))
+
+(defn compound-assign! [(c : &mut Js) (name : String @ Region) (op : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (load-var! c name dest)
+    (next-token! c)
+    (parse-assign! c dest)
+    (emit! c op)
+    (store-var! c name dest)))
+
+;; x++ / x-- as an expression: leaves the OLD value
+(defn post-step! [(c : &mut Js) (name : String @ Region) (op : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (load-var! c name dest)
+    (emit! c (o-dup))
+    (push-num-const! c 1.0)
+    (emit! c op)
+    (store-var! c name dest)
+    (emit! c (o-pop))))
+
+;; ++x / --x: leaves the NEW value
+(defn pre-step! [(c : &mut Js) (op : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (pre-step-ident! c op dest)))
+
+(defn pre-step-ident! [(c : &mut Js) (op : I32) (dest : Arena @ Region)] : Unit
+  (if (= (get-field c :tk) (k-id))
+    (let [name (tok-text c dest)]
+      (do
+        (next-token! c)
+        (load-var! c name dest)
+        (push-num-const! c 1.0)
+        (emit! c op)
+        (store-var! c name dest)))
+    (fail! c "SyntaxError: invalid increment operand")))
+
+(defn math-builtin-id [(name : String @ Region)] : I32
+  (cond
+    ((str-eq? name "floor") (b-floor))
+    ((str-eq? name "ceil") (b-ceil))
+    ((str-eq? name "abs") (b-abs))
+    ((str-eq? name "sqrt") (b-sqrt))
+    ((str-eq? name "max") (b-max))
+    ((str-eq? name "min") (b-min))
+    ((str-eq? name "pow") (b-pow))
+    ((str-eq? name "round") (b-round))
+    ((str-eq? name "trunc") (b-trunc))
+    ((str-eq? name "sin") (b-sin))
+    ((str-eq? name "cos") (b-cos))
+    ((str-eq? name "log") (b-mlog))
+    ((str-eq? name "exp") (b-exp))
+    (true -1)))
+
+(defn builtin-id [(obj : String @ Region) (name : String @ Region)] : I32
+  (cond
+    ((str-eq? obj "console")
+      (if (or (str-eq? name "log") (or (str-eq? name "error") (or (str-eq? name "warn") (or (str-eq? name "info") (str-eq? name "debug")))))
+        (b-log)
+        -1))
+    ((str-eq? obj "Math") (math-builtin-id name))
+    ((str-eq? obj "Object") (if (str-eq? name "keys") (b-keys) -1))
+    ((str-eq? obj "Array") (if (str-eq? name "isArray") (b-isarray) -1))
+    ((str-eq? obj "JSON") (if (str-eq? name "stringify") (b-jsonstr) -1))
+    (true -1)))
+
+;; bare global functions (resolved only when no program binding of that name exists)
+(defn global-builtin-id [(name : String @ Region)] : I32
+  (cond
+    ((str-eq? name "parseInt") (b-parseint))
+    ((str-eq? name "parseFloat") (b-parsefloat))
+    ((str-eq? name "Number") (b-number))
+    ((str-eq? name "String") (b-string))
+    ((str-eq? name "isNaN") (b-isnan))
+    ((str-eq? name "Boolean") (b-boolean))
+    ((str-eq? name "Error") (b-error))
+    ((str-eq? name "TypeError") (+ (b-error) 1))
+    ((str-eq? name "RangeError") (+ (b-error) 2))
+    ((str-eq? name "ReferenceError") (+ (b-error) 3))
+    ((str-eq? name "SyntaxError") (+ (b-error) 4))
+    (true -1)))
+
+;; `console.log` / `Math.floor` ... : the ident token is consumed, current token is '.'
+(defn builtin-ref! [(c : &mut Js) (obj : String @ Region) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (builtin-ref-name! c obj dest)))
+
+(defn builtin-ref-name! [(c : &mut Js) (obj : String @ Region) (dest : Arena @ Region)] : Unit
+  (if (= (get-field c :tk) (k-id))
+    (let [name (tok-text c dest)
+          id (builtin-id obj name)]
+      (cond
+        ((>= id 0) (do (next-token! c) (emit2! c (o-builtin) id)))
+        ((and (str-eq? obj "Math") (str-eq? name "PI")) (do (next-token! c) (push-num-const! c 3.141592653589793)))
+        ((and (str-eq? obj "Math") (str-eq? name "E")) (do (next-token! c) (push-num-const! c 2.718281828459045)))
+        (true (fail! c "ReferenceError: unknown builtin"))))
+    (fail! c "SyntaxError: expected property name")))
+
+(defn global-builtin-obj? [(c : &Js) (s : String @ Region)] : Bool
+  (and (or (str-eq? s "console") (or (str-eq? s "Math") (or (str-eq? s "Object") (or (str-eq? s "Array") (str-eq? s "JSON")))))
+       (< (find-entry c s) 0)))
+
+(defn parse-ident-primary! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [name (tok-text c dest)]
+    (do
+      (next-token! c)
+      (cond
+        ((at-op? c (p-arrow)) (compile-arrow-single! c name dest))
+        ((and (global-builtin-obj? c name) (at-op? c (p-dot))) (builtin-ref! c name dest))
+        ((and (str-eq? name "NaN") (< (find-entry c name) 0)) (push-num-const! c (/ 0.0 0.0)))
+        ((and (str-eq? name "Infinity") (< (find-entry c name) 0)) (push-num-const! c (/ 1.0 0.0)))
+        (true (ident-tail! c name dest))))))
+
+(defn parse-array-lit! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (emit! c (o-newarr))
+    (parse-array-items! c dest)))
+
+(defn parse-array-items! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-rbrack)) (next-token! c))
+    ((= (get-field c :tk) (k-eof)) (fail! c "SyntaxError: unterminated array literal"))
+    (true (array-item! c dest))))
+
+(defn array-item! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-assign! c dest)
+    (emit! c (o-append))
+    (when (at-op? c (p-comma)) (next-token! c))
+    (parse-array-items! c dest)))
+
+(defn parse-object-lit! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (emit! c (o-newobj))
+    (parse-object-items! c dest)))
+
+(defn parse-object-items! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-rbrace)) (next-token! c))
+    ((= (get-field c :tk) (k-eof)) (fail! c "SyntaxError: unterminated object literal"))
+    ((or (= (get-field c :tk) (k-id)) (= (get-field c :tk) (k-str)))
+      (object-item! c dest))
+    (true (fail! c "SyntaxError: bad object literal key"))))
+
+(defn object-item! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [key (key-text c dest)]
+    (do
+      (next-token! c)
+      (expect-op! c (p-colon) "SyntaxError: expected ':' in object literal")
+      (parse-assign! c dest)
+      (emit2! c (o-initprop) (add-str-const! c key))
+      (when (at-op? c (p-comma)) (next-token! c))
+      (parse-object-items! c dest))))
+
+;; key token text: identifier text, or the decoded string literal body
+(defn key-text [(c : &Js) (dest : Arena @ Region)] : String @ Region
+  (if (= (get-field c :tk) (k-str))
+    (decode-lit (get-field c :src) (get-field c :ts) (get-field c :te) dest)
+    (tok-text c dest)))
+
+(defn parse-function-expr! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (when (= (get-field c :tk) (k-id)) (next-token! c))
+    (compile-function! c dest)))
+
+(defn parse-paren! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (arrow-scan (get-field c :src) (get-field c :te) (get-field c :len))
+    (do (next-token! c) (compile-arrow-parens! c dest))
+    (do
+      (next-token! c)
+      (parse-expr! c dest)
+      (expect-op! c (p-rparen) "SyntaxError: expected ')'"))))
+
+(defn parse-primary! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [k (get-field c :tk)]
+    (cond
+      ((= k (k-num))
+        (do (push-num-const! c (get-field c :tn)) (next-token! c)))
+      ((= k (k-str))
+        (do (emit2! c (o-str) (add-str-const! c (decode-lit (get-field c :src) (get-field c :ts) (get-field c :te) dest)))
+            (next-token! c)))
+      ((= k (k-id)) (parse-ident-or-kw! c dest))
+      ((at-op? c (p-lparen)) (parse-paren! c dest))
+      ((at-op? c (p-lbrack)) (do (next-token! c) (parse-array-lit! c dest)))
+      ((at-op? c (p-lbrace)) (do (next-token! c) (parse-object-lit! c dest)))
+      ((= k (k-eof)) (fail! c "SyntaxError: unexpected end of input"))
+      (true (fail! c "SyntaxError: unexpected token")))))
+
+(defn kw-literal! [(c : &mut Js) (op : I32)] : Unit
+  (do (emit! c op) (next-token! c)))
+
+(defn parse-ident-or-kw! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [w (get-field c :tc)]
+    (cond
+      ((= w 0) (parse-ident-primary! c dest))
+      ((= w (w-true)) (kw-literal! c (o-true)))
+      ((= w (w-false)) (kw-literal! c (o-false)))
+      ((= w (w-null)) (kw-literal! c (o-null)))
+      ((= w (w-undefined)) (kw-literal! c (o-undef)))
+      ((= w (w-function)) (parse-function-expr! c dest))
+      ((= w (w-new)) (parse-new! c dest))
+      (true (fail! c "SyntaxError: unexpected keyword")))))
+
+;; call arguments after '(' ; returns argc
+(defn parse-args! [(c : &mut Js) (dest : Arena @ Region)] : I32
+  (if (accept-op! c (p-rparen))
+    0
+    (parse-args-rest! c dest 0)))
+
+(defn parse-args-rest! [(c : &mut Js) (dest : Arena @ Region) (n : I32)] : I32
+  (do
+    (parse-assign! c dest)
+    (cond
+      ((accept-op! c (p-comma)) (parse-args-rest! c dest (+ n 1)))
+      ((accept-op! c (p-rparen)) (+ n 1))
+      (true (do (fail! c "SyntaxError: expected ',' or ')' in arguments") (+ n 1))))))
+
+;; postfix chain: .name / .name(args) / [expr] / (args)  -- then maybe member assignment
+(defn parse-postfix! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (set! (get-field c :lastget) -1)
+    (parse-primary! c dest)
+    (postfix-loop! c dest)))
+
+(defn postfix-loop! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-dot)) (do (next-token! c) (postfix-member! c dest)))
+    ((at-op? c (p-lbrack)) (do (next-token! c) (postfix-index! c dest)))
+    ((at-op? c (p-lparen))
+      (do (next-token! c)
+          (emit2! c (o-call) (parse-args! c dest))
+          (set! (get-field c :lastget) -1)
+          (postfix-loop! c dest)))
+    ((assign-op? c) (member-assign! c dest))
+    ((or (at-op? c (p-incr)) (at-op? c (p-decr))) (member-step! c dest))
+    (true unit)))
+
+(defn postfix-member! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (= (get-field c :tk) (k-id))
+    (let [k (add-str-const! c (tok-text c dest))]
+      (do
+        (next-token! c)
+        (if (at-op? c (p-lparen))
+          (do (next-token! c)
+              (emit-callm! c k (parse-args! c dest))
+              (set! (get-field c :lastget) -1)
+              (postfix-loop! c dest))
+          (do (set! (get-field c :lastget) (code-len c))
+              (set! (get-field c :lastkind) 1)
+              (emit2! c (o-getprop) k)
+              (postfix-loop! c dest)))))
+    (fail! c "SyntaxError: expected property name after '.'")))
+
+(defn emit-callm! [(c : &mut Js) (k : I32) (argc : I32)] : Unit
+  (do
+    (emit! c (o-callm))
+    (emit! c k)
+    (emit! c argc)))
+
+(defn postfix-index! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-expr! c dest)
+    (expect-op! c (p-rbrack) "SyntaxError: expected ']'")
+    (set! (get-field c :lastget) (code-len c))
+    (set! (get-field c :lastkind) 2)
+    (emit! c (o-getidx))
+    (postfix-loop! c dest)))
+
+;; `<chain> = value` / `<chain> += value`: the chain's last emitted op is the get. Plain `=` turns it
+;; into a no-op and emits the matching set after the value; a compound op turns it into the
+;; "keep the object (and key) on the stack" read, applies the arithmetic, then sets.
+(defn member-assign! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [at (get-field c :lastget)
+        kind (get-field c :lastkind)]
+    (cond
+      ((< at 0) (fail! c "SyntaxError: invalid assignment target"))
+      ((at-op? c (p-assign))
+        (if (= kind 1) (set-prop-tail! c at dest) (set-idx-tail! c at dest)))
+      (true (member-compound! c at kind (arith-of-assign (get-field c :tc)) dest)))))
+
+(defn member-compound! [(c : &mut Js) (at : I32) (kind : I32) (op : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (member-read-keep! c at kind)
+    (parse-assign! c dest)
+    (emit! c op)
+    (member-write! c at kind)))
+
+;; o.x++ / a[i]-- : v0 gives the NEW value (pre-increment semantics) -- exact for statement use
+(defn member-step! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [at (get-field c :lastget)
+        kind (get-field c :lastkind)
+        op (if (at-op? c (p-incr)) (o-add) (o-sub))]
+    (if (< at 0)
+      (fail! c "SyntaxError: invalid increment operand")
+      (do
+        (next-token! c)
+        (member-read-keep! c at kind)
+        (push-num-const! c 1.0)
+        (emit! c op)
+        (member-write! c at kind)))))
+
+(defn member-read-keep! [(c : &mut Js) (at : I32) (kind : I32)] : Unit
+  (vec/set-at! &mut (get-field c :code) at (if (= kind 1) (o-getpropk) (o-getidxk))))
+
+(defn member-write! [(c : &mut Js) (at : I32) (kind : I32)] : Unit
+  (if (= kind 1)
+    (emit2! c (o-setprop) (deref (vec/get &(get-field c :code) (+ at 1))))
+    (emit! c (o-setidx))))
+
+(defn set-prop-tail! [(c : &mut Js) (at : I32) (dest : Arena @ Region)] : Unit
+  (let [k (deref (vec/get &(get-field c :code) (+ at 1)))]
+    (do
+      (vec/set-at! &mut (get-field c :code) at (o-nop))
+      (vec/set-at! &mut (get-field c :code) (+ at 1) (o-nop))
+      (next-token! c)
+      (parse-assign! c dest)
+      (emit2! c (o-setprop) k))))
+
+(defn set-idx-tail! [(c : &mut Js) (at : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (vec/set-at! &mut (get-field c :code) at (o-nop))
+    (next-token! c)
+    (parse-assign! c dest)
+    (emit! c (o-setidx))))
+
+(defn typeof-expr! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (set! (get-field c :quiet) 1)
+    (parse-unary! c dest)
+    (set! (get-field c :quiet) 0)
+    (emit! c (o-typeof))))
+
+(defn parse-unary! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-minus)) (do (next-token! c) (parse-unary! c dest) (emit! c (o-neg))))
+    ((at-op? c (p-plus)) (do (next-token! c) (parse-unary! c dest)))
+    ((at-op? c (p-not)) (do (next-token! c) (parse-unary! c dest) (emit! c (o-not))))
+    ((at-kw? c (w-typeof)) (typeof-expr! c dest))
+    ((at-op? c (p-incr)) (pre-step! c (o-add) dest))
+    ((at-op? c (p-decr)) (pre-step! c (o-sub) dest))
+    (true (parse-postfix! c dest))))
+
+;; binary operator table: precedence (0 = not a binary operator)
+(defn bin-prec [(c : &Js)] : I32
+  (if (= (get-field c :tk) (k-op))
+    (let [t (get-field c :tc)]
+      (cond
+        ((= t (p-or)) 1)
+        ((= t (p-and)) 2)
+        ((or (= t (p-eq)) (or (= t (p-ne)) (or (= t (p-seq)) (= t (p-sne))))) 3)
+        ((or (= t (p-lt)) (or (= t (p-gt)) (or (= t (p-le)) (= t (p-ge))))) 4)
+        ((or (= t (p-plus)) (= t (p-minus))) 5)
+        ((or (= t (p-star)) (or (= t (p-slash)) (= t (p-pct)))) 6)
+        (true 0)))
+    0))
+
+(defn bin-opcode [(t : I32)] : I32
+  (cond
+    ((= t (p-plus)) (o-add))
+    ((= t (p-minus)) (o-sub))
+    ((= t (p-star)) (o-mul))
+    ((= t (p-slash)) (o-div))
+    ((= t (p-pct)) (o-mod))
+    ((= t (p-lt)) (o-lt))
+    ((= t (p-gt)) (o-gt))
+    ((= t (p-le)) (o-le))
+    ((= t (p-ge)) (o-ge))
+    ((= t (p-eq)) (o-eq))
+    ((= t (p-ne)) (o-ne))
+    ((= t (p-seq)) (o-seq))
+    (true (o-sne))))
+
+(defn parse-binary! [(c : &mut Js) (min : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-unary! c dest)
+    (binary-rest! c min dest)))
+
+(defn binary-rest! [(c : &mut Js) (min : I32) (dest : Arena @ Region)] : Unit
+  (let [prec (bin-prec c)]
+    (if (and (> prec 0) (>= prec min))
+      (binary-step! c prec dest)
+      unit)))
+
+(defn binary-step! [(c : &mut Js) (prec : I32) (dest : Arena @ Region)] : Unit
+  (let [t (get-field c :tc)]
+    (do
+      (next-token! c)
+      (cond
+        ((= t (p-and)) (logic-rhs! c (o-jfk) prec dest))
+        ((= t (p-or)) (logic-rhs! c (o-jtk) prec dest))
+        (true (do (parse-binary! c (+ prec 1) dest) (emit! c (bin-opcode t)))))
+      (binary-rest! c 1 dest))))
+
+(defn logic-rhs! [(c : &mut Js) (jop : I32) (prec : I32) (dest : Arena @ Region)] : Unit
+  (let [at (emit-jump! c jop)]
+    (do
+      (parse-binary! c (+ prec 1) dest)
+      (patch-here! c at))))
+
+(defn parse-ternary! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-binary! c 1 dest)
+    (when (at-op? c (p-qmark)) (ternary-tail! c dest))))
+
+(defn ternary-tail! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [jelse (emit-jump! c (o-jf))]
+    (do
+      (next-token! c)
+      (parse-assign! c dest)
+      (ternary-else! c jelse dest))))
+
+(defn ternary-else! [(c : &mut Js) (jelse : I32) (dest : Arena @ Region)] : Unit
+  (let [jend (emit-jump! c (o-jmp))]
+    (do
+      (patch-here! c jelse)
+      (expect-op! c (p-colon) "SyntaxError: expected ':' in conditional")
+      (parse-assign! c dest)
+      (patch-here! c jend))))
+
+(defn parse-assign! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (parse-ternary! c dest))
+
+(defn parse-expr! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (parse-assign! c dest))
+
+;; ------------------------------------------------------------------------------------------------
+;; statements
+;; ------------------------------------------------------------------------------------------------
+(defn parse-statement! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [k (get-field c :tk)]
+    (cond
+      ((= k (k-eof)) unit)
+      ((at-op? c (p-lbrace)) (do (next-token! c) (parse-block! c dest)))
+      ((at-op? c (p-semi)) (next-token! c))
+      ((= k (k-id)) (parse-kw-statement! c dest))
+      (true (expr-statement! c dest)))))
+
+(defn expr-statement! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-expr! c dest)
+    (emit! c (o-pop))
+    (skip-semi! c)))
+
+(defn parse-kw-statement! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [w (get-field c :tc)]
+    (cond
+      ((or (= w (w-var)) (or (= w (w-let)) (= w (w-const)))) (begin-decl! c w dest))
+      ((= w (w-function)) (function-decl! c dest))
+      ((= w (w-return)) (return-stmt! c dest))
+      ((= w (w-if)) (if-stmt! c dest))
+      ((= w (w-while)) (while-stmt! c dest))
+      ((= w (w-for)) (for-stmt! c dest))
+      ((= w (w-do)) (do-while-stmt! c dest))
+      ((= w (w-switch)) (switch-stmt! c dest))
+      ((= w (w-try)) (try-stmt! c dest))
+      ((= w (w-throw)) (throw-stmt! c dest))
+      ((= w (w-break)) (break-stmt! c))
+      ((= w (w-continue)) (continue-stmt! c))
+      (true (expr-statement! c dest)))))
+
+;; block body after '{' : statements until '}' ; a block is one lexical scope for let/const
+(defn parse-block! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [mark (get-field c :ltop)]
+    (do
+      (set! (get-field c :bdepth) (+ (get-field c :bdepth) 1))
+      (block-items! c dest)
+      (set! (get-field c :bdepth) (- (get-field c :bdepth) 1))
+      (restore-scope! c mark))))
+
+(defn block-items! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-rbrace)) (next-token! c))
+    ((= (get-field c :tk) (k-eof)) (fail! c "SyntaxError: expected '}'"))
+    (true (do (parse-statement! c dest) (block-items! c dest)))))
+
+;; one binding, then ',' more | end. Top level (fdepth 0) declares globals; inside a function, locals.
+(defn parse-decls! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (= (get-field c :tk) (k-id))
+    (let [name (tok-text c dest)]
+      (do
+        (next-token! c)
+        (decl-binding! c name dest)))
+    (fail! c "SyntaxError: expected a variable name")))
+
+(defn decl-binding! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : Unit
+  (do
+    (if (accept-op! c (p-assign))
+      (parse-assign! c dest)
+      (emit! c (o-undef)))
+    (declare-store! c name dest)
+    (emit! c (o-pop))
+    (if (accept-op! c (p-comma))
+      (parse-decls! c dest)
+      (skip-semi! c))))
+
+(defn begin-decl! [(c : &mut Js) (w : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (set! (get-field c :isvar) (if (= w (w-var)) 1 0))
+    (next-token! c)
+    (parse-decls! c dest)))
+
+;; where a declaration lives: function locals inside functions; at top level a plain named global,
+;; except a block-scoped let/const, which gets its own anonymous global slot
+(defn declare-target! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : I32
+  (cond
+    ((> (get-field c :fdepth) 0) (declare-local! c name (get-field c :isvar)))
+    ((and (> (get-field c :bdepth) 0) (= (get-field c :isvar) 0))
+      (- 0 (+ (declare-scoped-global! c name) 1)))
+    (true (- 0 (+ (global-slot! c name dest) 1)))))
+
+(defn declare-store! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : Unit
+  (store-entry! c (declare-target! c name dest)))
+
+(defn return-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (if (> (get-field c :fdepth) 0)
+      (do
+        (if (or (at-op? c (p-semi)) (or (at-op? c (p-rbrace)) (= (get-field c :tk) (k-eof))))
+          (emit! c (o-undef))
+          (parse-expr! c dest))
+        (emit! c (o-ret))
+        (skip-semi! c))
+      (fail! c "SyntaxError: Illegal return statement"))))
+
+(defn paren-cond! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (expect-op! c (p-lparen) "SyntaxError: expected '('")
+    (parse-expr! c dest)
+    (expect-op! c (p-rparen) "SyntaxError: expected ')'")))
+
+(defn if-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (paren-cond! c dest)
+    (if-body! c (emit-jump! c (o-jf)) dest)))
+
+(defn if-body! [(c : &mut Js) (jelse : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (parse-statement! c dest)
+    (if (at-kw? c (w-else))
+      (if-else! c jelse dest)
+      (patch-here! c jelse))))
+
+(defn if-else! [(c : &mut Js) (jelse : I32) (dest : Arena @ Region)] : Unit
+  (let [jend (emit-jump! c (o-jmp))]
+    (do
+      (patch-here! c jelse)
+      (next-token! c)
+      (parse-statement! c dest)
+      (patch-here! c jend))))
+
+;; loops: break/continue patch lists live in two logical stacks (Vec + top counter)
+(defn push-patch! [(v : &mut (Vec I32)) (top : I32) (x : I32)] : Unit
+  (if (< top (vec/len v))
+    (vec/set-at! v top x)
+    (vec/push! v x)))
+
+(defn patch-brk! [(c : &mut Js) (from : I32) (to : I32) (target : I32)] : Unit
+  (loop [i from]
+    (if (>= i to)
+      unit
+      (let [at (deref (vec/get &(get-field c :brk) i))]
+        (do (patch! c at target) (recur (+ i 1)))))))
+
+(defn patch-cnt! [(c : &mut Js) (from : I32) (to : I32) (target : I32)] : Unit
+  (loop [i from]
+    (if (>= i to)
+      unit
+      (let [at (deref (vec/get &(get-field c :cnt) i))]
+        (do (patch! c at target) (recur (+ i 1)))))))
+
+(defn while-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [top (code-len c)]
+    (do
+      (next-token! c)
+      (paren-cond! c dest)
+      (while-body! c top (emit-jump! c (o-jf)) dest))))
+
+(defn enter-loop! [(c : &mut Js)] : Unit
+  (do
+    (put-i32! &mut (get-field c :ltry) (get-field c :ltrytop) (get-field c :trydepth))
+    (set! (get-field c :ltrytop) (+ (get-field c :ltrytop) 1))
+    (set! (get-field c :ldepth) (+ (get-field c :ldepth) 1))))
+
+(defn leave-loop! [(c : &mut Js)] : Unit
+  (do
+    (set! (get-field c :ltrytop) (- (get-field c :ltrytop) 1))
+    (set! (get-field c :ldepth) (- (get-field c :ldepth) 1))))
+
+;; break/continue leave any try blocks opened inside the loop body: pop their handlers first
+(defn emit-endtrys! [(c : &mut Js)] : Unit
+  (let [n (- (get-field c :trydepth)
+             (deref (vec/get &(get-field c :ltry) (- (get-field c :ltrytop) 1))))]
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (emit! c (o-endtry)) (recur (+ i 1)))))))
+
+(defn while-body! [(c : &mut Js) (top : I32) (jexit : I32) (dest : Arena @ Region)] : Unit
+  (let [b0 (get-field c :brktop)
+        c0 (get-field c :cnttop)]
+    (do
+      (enter-loop! c)
+      (parse-statement! c dest)
+      (leave-loop! c)
+      (emit2! c (o-jmp) top)
+      (patch-here! c jexit)
+      (patch-brk! c b0 (get-field c :brktop) (code-len c))
+      (patch-cnt! c c0 (get-field c :cnttop) top)
+      (set! (get-field c :brktop) b0)
+      (set! (get-field c :cnttop) c0))))
+
+;; for (init; cond; update) body  ==  init; top: cond; jf exit; jmp body; upd: update; jmp top; body: ...; jmp upd
+(defn for-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [mark (get-field c :ltop)]
+    (do
+      (next-token! c)
+      (set! (get-field c :bdepth) (+ (get-field c :bdepth) 1))
+      (expect-op! c (p-lparen) "SyntaxError: expected '('")
+      (if (= (for-init! c dest) 1)
+        unit
+        (for-cond! c dest))
+      (set! (get-field c :bdepth) (- (get-field c :bdepth) 1))
+      (restore-scope! c mark))))
+
+(defn at-word? [(c : &Js) (w : String @ Region)] : Bool
+  (and (= (get-field c :tk) (k-id)) (range-eq? (get-field c :src) (get-field c :ts) (get-field c :te) w)))
+
+;; returns 1 when the whole loop was a for-of / for-in (already compiled), else 0
+(defn for-init! [(c : &mut Js) (dest : Arena @ Region)] : I32
+  (cond
+    ((at-op? c (p-semi)) (do (next-token! c) 0))
+    ((or (at-kw? c (w-var)) (or (at-kw? c (w-let)) (at-kw? c (w-const))))
+      (for-decl! c dest))
+    (true (do (expr-statement! c dest) 0))))
+
+(defn for-decl! [(c : &mut Js) (dest : Arena @ Region)] : I32
+  (do
+    (set! (get-field c :isvar) (if (at-kw? c (w-var)) 1 0))
+    (next-token! c)
+    (if (= (get-field c :tk) (k-id))
+      (for-decl-name! c (tok-text c dest) dest)
+      (do (fail! c "SyntaxError: expected a variable name") 0))))
+
+(defn for-decl-name! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : I32
+  (do
+    (next-token! c)
+    (cond
+      ((at-word? c "of") (do (for-each! c name false dest) 1))
+      ((at-word? c "in") (do (for-each! c name true dest) 1))
+      (true (do (decl-binding! c name dest) 0)))))
+
+;; for (x of expr) / for (k in expr): iterate an array / string (of) or an object's keys (in)
+(defn for-each! [(c : &mut Js) (name : String @ Region) (keys : Bool) (dest : Arena @ Region)] : Unit
+  (let [arrc (declare-hidden! c dest)
+        idxc (declare-hidden! c dest)]
+    (do
+      (next-token! c)
+      (if keys (emit2! c (o-builtin) (b-keys)) unit)
+      (parse-expr! c dest)
+      (if keys (emit2! c (o-call) 1) unit)
+      (expect-op! c (p-rparen) "SyntaxError: expected ')' after for-of / for-in")
+      (store-entry! c arrc)
+      (emit! c (o-pop))
+      (push-num-const! c 0.0)
+      (store-entry! c idxc)
+      (emit! c (o-pop))
+      (for-each-loop! c name arrc idxc dest))))
+
+(defn declare-hidden! [(c : &mut Js) (dest : Arena @ Region)] : I32
+  (let [save (get-field c :isvar)]
+    (do
+      (set! (get-field c :isvar) 0)
+      (declare-target! c " hidden" dest))))
+
+(defn for-each-loop! [(c : &mut Js) (name : String @ Region) (arrc : I32) (idxc : I32) (dest : Arena @ Region)] : Unit
+  (let [top (code-len c)]
+    (do
+      (load-entry! c idxc)
+      (load-entry! c arrc)
+      (emit2! c (o-getprop) (add-str-const! c "length"))
+      (emit! c (o-lt))
+      (for-each-body! c top arrc idxc (emit-jump! c (o-jf)) name dest))))
+
+(defn for-each-body! [(c : &mut Js) (top : I32) (arrc : I32) (idxc : I32) (jexit : I32) (name : String @ Region) (dest : Arena @ Region)] : Unit
+  (let [b0 (get-field c :brktop)
+        c0 (get-field c :cnttop)]
+    (do
+      (load-entry! c arrc)
+      (load-entry! c idxc)
+      (emit! c (o-getidx))
+      (set! (get-field c :isvar) 0)
+      (declare-store! c name dest)
+      (emit! c (o-pop))
+      (enter-loop! c)
+      (parse-statement! c dest)
+      (leave-loop! c)
+      (for-each-step! c top idxc b0 c0 jexit))))
+
+(defn for-each-step! [(c : &mut Js) (top : I32) (idxc : I32) (b0 : I32) (c0 : I32) (jexit : I32)] : Unit
+  (let [upd (code-len c)]
+    (do
+      (load-entry! c idxc)
+      (push-num-const! c 1.0)
+      (emit! c (o-add))
+      (store-entry! c idxc)
+      (emit! c (o-pop))
+      (emit2! c (o-jmp) top)
+      (patch-here! c jexit)
+      (patch-brk! c b0 (get-field c :brktop) (code-len c))
+      (patch-cnt! c c0 (get-field c :cnttop) upd)
+      (set! (get-field c :brktop) b0)
+      (set! (get-field c :cnttop) c0))))
+
+;; do stmt while (cond);   ==  top: body; cond; jt top
+(defn do-while-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [top (code-len c)
+        b0 (get-field c :brktop)
+        c0 (get-field c :cnttop)]
+    (do
+      (next-token! c)
+      (enter-loop! c)
+      (parse-statement! c dest)
+      (leave-loop! c)
+      (if (accept-kw! c (w-while))
+        (do-while-tail! c top b0 c0 dest)
+        (fail! c "SyntaxError: expected 'while' after do body")))))
+
+(defn do-while-tail! [(c : &mut Js) (top : I32) (b0 : I32) (c0 : I32) (dest : Arena @ Region)] : Unit
+  (let [condpos (code-len c)]
+    (do
+      (paren-cond! c dest)
+      (emit2! c (o-jt) top)
+      (skip-semi! c)
+      (patch-brk! c b0 (get-field c :brktop) (code-len c))
+      (patch-cnt! c c0 (get-field c :cnttop) condpos)
+      (set! (get-field c :brktop) b0)
+      (set! (get-field c :cnttop) c0))))
+
+;; switch (e) { case a: ... break; default: ... }   -- `default` must be the last clause in v0
+(defn switch-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [mark (get-field c :ltop)
+        discc (declare-hidden! c dest)
+        matchc (declare-hidden! c dest)]
+    (do
+      (next-token! c)
+      (paren-cond! c dest)
+      (store-entry! c discc)
+      (emit! c (o-pop))
+      (emit! c (o-false))
+      (store-entry! c matchc)
+      (emit! c (o-pop))
+      (expect-op! c (p-lbrace) "SyntaxError: expected '{' after switch")
+      (set! (get-field c :bdepth) (+ (get-field c :bdepth) 1))
+      (switch-body! c discc matchc dest)
+      (set! (get-field c :bdepth) (- (get-field c :bdepth) 1))
+      (restore-scope! c mark))))
+
+(defn switch-body! [(c : &mut Js) (discc : I32) (matchc : I32) (dest : Arena @ Region)] : Unit
+  (let [b0 (get-field c :brktop)]
+    (do
+      (enter-loop! c)
+      (switch-clauses! c discc matchc dest)
+      (leave-loop! c)
+      (patch-brk! c b0 (get-field c :brktop) (code-len c))
+      (set! (get-field c :brktop) b0))))
+
+(defn switch-clauses! [(c : &mut Js) (discc : I32) (matchc : I32) (dest : Arena @ Region)] : Unit
+  (cond
+    ((at-op? c (p-rbrace)) (next-token! c))
+    ((= (get-field c :tk) (k-eof)) (fail! c "SyntaxError: expected '}' to close switch"))
+    ((at-kw? c (w-case)) (do (next-token! c) (switch-case! c discc matchc dest)))
+    ((at-kw? c (w-default)) (do (next-token! c) (switch-default! c discc matchc dest)))
+    (true (fail! c "SyntaxError: expected 'case' or 'default'"))))
+
+;; case X:  if (matched || disc === X) { matched = true; <body until next label> }
+(defn switch-case! [(c : &mut Js) (discc : I32) (matchc : I32) (dest : Arena @ Region)] : Unit
+  (let [jbody (do-matched-jump! c matchc)]
+    (do
+      (load-entry! c discc)
+      (parse-expr! c dest)
+      (expect-op! c (p-colon) "SyntaxError: expected ':' after case")
+      (emit! c (o-seq))
+      (switch-case-body! c jbody (emit-jump! c (o-jf)) discc matchc dest))))
+
+(defn do-matched-jump! [(c : &mut Js) (matchc : I32)] : I32
+  (do
+    (load-entry! c matchc)
+    (emit-jump! c (o-jt))))
+
+(defn switch-case-body! [(c : &mut Js) (jbody : I32) (jskip : I32) (discc : I32) (matchc : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (patch-here! c jbody)
+    (emit! c (o-true))
+    (store-entry! c matchc)
+    (emit! c (o-pop))
+    (case-statements! c dest)
+    (patch-here! c jskip)
+    (switch-clauses! c discc matchc dest)))
+
+(defn case-statements! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (or (at-kw? c (w-case)) (or (at-kw? c (w-default)) (or (at-op? c (p-rbrace)) (= (get-field c :tk) (k-eof)))))
+    unit
+    (do (parse-statement! c dest) (case-statements! c dest))))
+
+(defn switch-default! [(c : &mut Js) (discc : I32) (matchc : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (expect-op! c (p-colon) "SyntaxError: expected ':' after default")
+    (case-statements! c dest)
+    (if (at-kw? c (w-case))
+      (fail! c "SyntaxError: default must be the last clause in a switch (v0)")
+      (switch-clauses! c discc matchc dest))))
+
+(defn for-cond! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [top (code-len c)]
+    (if (at-op? c (p-semi))
+      (do (next-token! c) (for-update! c top -1 dest))
+      (do
+        (parse-expr! c dest)
+        (expect-op! c (p-semi) "SyntaxError: expected ';' in for")
+        (for-update! c top (emit-jump! c (o-jf)) dest)))))
+
+(defn for-update! [(c : &mut Js) (top : I32) (jexit : I32) (dest : Arena @ Region)] : Unit
+  (let [jbody (emit-jump! c (o-jmp))
+        upd (code-len c)]
+    (do
+      (if (at-op? c (p-rparen))
+        (next-token! c)
+        (do
+          (parse-expr! c dest)
+          (emit! c (o-pop))
+          (expect-op! c (p-rparen) "SyntaxError: expected ')'")))
+      (emit2! c (o-jmp) top)
+      (patch-here! c jbody)
+      (for-body! c upd jexit dest))))
+
+(defn for-body! [(c : &mut Js) (upd : I32) (jexit : I32) (dest : Arena @ Region)] : Unit
+  (let [b0 (get-field c :brktop)
+        c0 (get-field c :cnttop)]
+    (do
+      (enter-loop! c)
+      (parse-statement! c dest)
+      (leave-loop! c)
+      (emit2! c (o-jmp) upd)
+      (when (>= jexit 0) (patch-here! c jexit))
+      (patch-brk! c b0 (get-field c :brktop) (code-len c))
+      (patch-cnt! c c0 (get-field c :cnttop) upd)
+      (set! (get-field c :brktop) b0)
+      (set! (get-field c :cnttop) c0))))
+
+(defn throw-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (parse-expr! c dest)
+    (emit! c (o-throw))
+    (skip-semi! c)))
+
+;; try { } catch (e) { }   (no `finally` in v0 -- a SyntaxError, never silently ignored)
+(defn try-stmt! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (try-body! c (emit-jump! c (o-try)) dest)))
+
+(defn try-body! [(c : &mut Js) (jtry : I32) (dest : Arena @ Region)] : Unit
+  (if (at-op? c (p-lbrace))
+    (do
+      (next-token! c)
+      (set! (get-field c :trydepth) (+ (get-field c :trydepth) 1))
+      (parse-block! c dest)
+      (set! (get-field c :trydepth) (- (get-field c :trydepth) 1))
+      (emit! c (o-endtry))
+      (try-catch! c jtry (emit-jump! c (o-jmp)) dest))
+    (fail! c "SyntaxError: expected '{' after try")))
+
+(defn try-catch! [(c : &mut Js) (jtry : I32) (jend : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (patch-here! c jtry)
+    (if (accept-kw! c (w-catch))
+      (catch-clause! c dest)
+      (fail! c "SyntaxError: try needs a catch block (finally is not supported in v0)"))
+    (patch-here! c jend)))
+
+;; the thrown value is on the stack at the catch target: bind it (or drop it), then the block
+(defn catch-clause! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [mark (get-field c :ltop)]
+    (do
+      (set! (get-field c :bdepth) (+ (get-field c :bdepth) 1))
+      (set! (get-field c :isvar) 0)
+      (catch-binding! c dest)
+      (if (at-op? c (p-lbrace))
+        (do (next-token! c) (parse-block! c dest))
+        (fail! c "SyntaxError: expected '{' after catch"))
+      (set! (get-field c :bdepth) (- (get-field c :bdepth) 1))
+      (restore-scope! c mark))))
+
+(defn catch-binding! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (accept-op! c (p-lparen))
+    (if (= (get-field c :tk) (k-id))
+      (let [name (tok-text c dest)]
+        (do
+          (next-token! c)
+          (declare-store! c name dest)
+          (emit! c (o-pop))
+          (expect-op! c (p-rparen) "SyntaxError: expected ')' after catch binding")))
+      (fail! c "SyntaxError: bad catch binding"))
+    (emit! c (o-pop))))
+
+;; `new Ctor(args)` -- v0: no user constructors/prototypes; this is the call form, which is exactly
+;; right for the builtin Error family
+(defn parse-new! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (parse-unary! c dest)))
+
+(defn break-stmt! [(c : &mut Js)] : Unit
+  (if (= (get-field c :ldepth) 0)
+    (fail! c "SyntaxError: Illegal break statement")
+    (do (emit-endtrys! c) (break-jump! c))))
+
+(defn break-jump! [(c : &mut Js)] : Unit
+  (let [at (emit-jump! c (o-jmp))]
+    (do
+      (push-patch! &mut (get-field c :brk) (get-field c :brktop) at)
+      (set! (get-field c :brktop) (+ (get-field c :brktop) 1))
+      (next-token! c)
+      (skip-semi! c))))
+
+(defn continue-stmt! [(c : &mut Js)] : Unit
+  (if (= (get-field c :ldepth) 0)
+    (fail! c "SyntaxError: Illegal continue statement")
+    (do (emit-endtrys! c) (continue-jump! c))))
+
+(defn continue-jump! [(c : &mut Js)] : Unit
+  (let [at (emit-jump! c (o-jmp))]
+    (do
+      (push-patch! &mut (get-field c :cnt) (get-field c :cnttop) at)
+      (set! (get-field c :cnttop) (+ (get-field c :cnttop) 1))
+      (next-token! c)
+      (skip-semi! c))))
+
+;; function declaration: `function name(params) { body }` binds name like a `let`
+(defn function-decl! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (if (= (get-field c :tk) (k-id))
+      (function-decl-named! c (tok-text c dest) dest)
+      (fail! c "SyntaxError: function statement requires a name"))))
+
+(defn function-decl-named! [(c : &mut Js) (name : String @ Region) (dest : Arena @ Region)] : Unit
+  (do
+    (next-token! c)
+    (set! (get-field c :isvar) 1)
+    (function-decl-body! c (declare-target! c name dest) dest)))
+
+;; the name is declared BEFORE the body is compiled so the body can refer to itself (recursion)
+(defn function-decl-body! [(c : &mut Js) (code : I32) (dest : Arena @ Region)] : Unit
+  (do
+    (compile-function! c dest)
+    (store-entry! c code)
+    (emit! c (o-pop))))
+
+;; ( params ) { body } -- emits  jmp over; <body>; undef ret; over: mkfn id nup (from idx)*
+(defn cur-fc [(c : &Js)] : &FnCg
+  (fc-at c (get-field c :fdepth)))
+
+(defn fn-begin! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (let [jover (emit-jump! c (o-jmp))
+        fid (vec/len &(get-field c :fpc))
+        pi (vec/len &(get-field c :fcs))]
+    (do
+      (vec/push! &mut (get-field c :fpc) (code-len c))
+      (vec/push! &mut (get-field c :fnp) 0)
+      (vec/push! &mut (get-field c :fnl) 0)
+      (vec/push! &mut (get-field c :fcs)
+                 {:base (get-field c :ltop) :upnames (vec/new dest) :upfrom (vec/new dest) :upidx (vec/new dest)
+                  :stop (get-field c :ltop) :sbase (get-field c :lbase) :smax (get-field c :lmax)
+                  :sbd (get-field c :bdepth) :sisvar (get-field c :isvar)
+                  :stry (get-field c :trydepth) :sld (get-field c :ldepth) :jover jover :fid fid})
+      (put-i32! &mut (get-field c :fstack) (get-field c :fdepth) pi)
+      (set! (get-field c :lbase) (get-field c :ltop))
+      (set! (get-field c :lmax) 0)
+      (set! (get-field c :bdepth) 0)
+      (set! (get-field c :isvar) 0)
+      (set! (get-field c :trydepth) 0)
+      (set! (get-field c :ldepth) 0)
+      (set! (get-field c :fdepth) (+ (get-field c :fdepth) 1)))))
+
+(defn fn-end! [(c : &mut Js)] : Unit
+  (let [level (get-field c :fdepth)
+        pi (fn-pidx c level)
+        fc (vec/get &(get-field c :fcs) pi)
+        fid (get-field fc :fid)
+        jover (get-field fc :jover)]
+    (do
+      (emit! c (o-undef))
+      (emit! c (o-ret))
+      (vec/set-at! &mut (get-field c :fnl) fid (get-field c :lmax))
+      (set! (get-field c :fdepth) (- level 1))
+      (set! (get-field c :ltop) (get-field fc :stop))
+      (set! (get-field c :lbase) (get-field fc :sbase))
+      (set! (get-field c :lmax) (get-field fc :smax))
+      (set! (get-field c :bdepth) (get-field fc :sbd))
+      (set! (get-field c :isvar) (get-field fc :sisvar))
+      (set! (get-field c :trydepth) (get-field fc :stry))
+      (set! (get-field c :ldepth) (get-field fc :sld))
+      (patch-here! c jover)
+      (emit-mkfn! c fid pi))))
+
+(defn emit-mkfn! [(c : &mut Js) (fid : I32) (pi : I32)] : Unit
+  (let [fc (vec/get &(get-field c :fcs) pi)
+        n (vec/len &(get-field fc :upnames))]
+    (do
+      (emit2! c (o-mkfn) fid)
+      (emit! c n)
+      (emit-ups! c fc n))))
+
+(defn emit-ups! [(c : &mut Js) (fc : &FnCg) (n : I32)] : Unit
+  (loop [k 0]
+    (if (>= k n)
+      unit
+      (do
+        (emit! c (deref (vec/get &(get-field fc :upfrom) k)))
+        (emit! c (deref (vec/get &(get-field fc :upidx) k)))
+        (recur (+ k 1))))))
+
+(defn compile-function! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (fn-begin! c dest)
+    (expect-op! c (p-lparen) "SyntaxError: expected '(' after function name")
+    (function-params! c (get-field (cur-fc c) :fid) dest)
+    (function-body! c dest)
+    (fn-end! c)))
+
+;; arrow functions: `x => body`, `(a, b) => body`, `() => body` ; body is a block or one expression
+(defn arrow-body! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (expect-op! c (p-arrow) "SyntaxError: expected '=>'")
+    (if (at-op? c (p-lbrace))
+      (function-body! c dest)
+      (do (parse-assign! c dest) (emit! c (o-ret))))))
+
+(defn compile-arrow-parens! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (do
+    (fn-begin! c dest)
+    (function-params! c (get-field (cur-fc c) :fid) dest)
+    (arrow-body! c dest)
+    (fn-end! c)))
+
+(defn compile-arrow-single! [(c : &mut Js) (param : String @ Region) (dest : Arena @ Region)] : Unit
+  (do
+    (fn-begin! c dest)
+    (declare-local! c param 0)
+    (set-fnp! c 1)
+    (arrow-body! c dest)
+    (fn-end! c)))
+
+(defn set-fnp! [(c : &mut Js) (n : I32)] : Unit
+  (vec/set-at! &mut (get-field c :fnp) (get-field (cur-fc c) :fid) n))
+
+;; is the '(' at the current token the start of an arrow parameter list?  ( ident , ident ) =>
+(defn arrow-scan [(src : String @ Region) (i : I32) (n : I32)] : Bool
+  (loop [j i]
+    (cond
+      ((>= j n) false)
+      ((= (char-at src j) 41) (arrow-after-close src (+ j 1) n))
+      ((or (is-idch? (char-at src j)) (or (= (char-at src j) 44) (ws? (char-at src j)))) (recur (+ j 1)))
+      (true false))))
+
+(defn arrow-after-close [(src : String @ Region) (i : I32) (n : I32)] : Bool
+  (let [j (skip-spaces src i n)]
+    (and (= (peek-at src j n) 61) (= (peek-at src (+ j 1) n) 62))))
+
+(defn function-params! [(c : &mut Js) (fid : I32) (dest : Arena @ Region)] : Unit
+  (cond
+    ((accept-op! c (p-rparen)) unit)
+    ((= (get-field c :tk) (k-id))
+      (do
+        (declare-local! c (tok-text c dest) 0)
+        (vec/set-at! &mut (get-field c :fnp) fid (+ (deref (vec/get &(get-field c :fnp) fid)) 1))
+        (next-token! c)
+        (accept-op! c (p-comma))
+        (function-params! c fid dest)))
+    (true (fail! c "SyntaxError: bad parameter list"))))
+
+(defn function-body! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (at-op? c (p-lbrace))
+    (do (next-token! c) (block-items! c dest))
+    (fail! c "SyntaxError: expected '{' before function body")))
+
+(defn parse-program! [(c : &mut Js) (dest : Arena @ Region)] : Unit
+  (if (= (get-field c :tk) (k-eof))
+    (emit! c (o-halt))
+    (do (parse-statement! c dest) (parse-program! c dest))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: value stack
+;; ------------------------------------------------------------------------------------------------
+(defn tag-at [(m : &Js) (i : I32)] : I32
+  (if (< i 0)
+    0
+    (let [p (vec/get &(get-field m :stags) i)] (deref p))))
+
+(defn val-at [(m : &Js) (i : I32)] : F64
+  (if (< i 0)
+    0.0
+    (let [p (vec/get &(get-field m :svals) i)] (deref p))))
+
+(defn put-slot! [(m : &mut Js) (i : I32) (tag : I32) (x : F64)] : Unit
+  (do
+    (vec/set-at! &mut (get-field m :stags) i tag)
+    (vec/set-at! &mut (get-field m :svals) i x)))
+
+;; fatal, uncatchable (host limits: steps, arena budget): stops the run
+(defn halt-fail! [(m : &mut Js) (msg : String @ Region)] : Unit
+  (do
+    (when (= (length (get-field m :err)) 0)
+      (set! (get-field m :err) msg))
+    (set! (get-field m :halt) 1)))
+
+;; a catchable runtime error ("TypeError: ..."): becomes a pending exception that the dispatch loop
+;; unwinds at a safe point (turned into an Error object only then)
+(defn rt-fail! [(m : &mut Js) (msg : String @ Region)] : Unit
+  (when (= (get-field m :exc) 0)
+    (set-pending! m 2 (t-str) (new-str! m msg))))
+
+(defn set-pending! [(m : &mut Js) (kind : I32) (tag : I32) (x : F64)] : Unit
+  (do
+    (set! (get-field m :exc) kind)
+    (set! (get-field m :exct) tag)
+    (set! (get-field m :excv) x)))
+
+;; native work is fuel too: a builtin that scans n things costs ~n/16 VM steps, so the instruction
+;; limit also bounds the time a hostile script can spend inside indexOf/join/key lookups/concat
+(defn fuel! [(m : &mut Js) (n : I32)] : Unit
+  (set! (get-field m :steps) (+ (get-field m :steps) (/ n 16))))
+
+;; charge `bytes` against the run's arena budget; false (and a RangeError) when it is exhausted.
+;; Checked BEFORE the allocation, so a doubling `s = s + s` stops one step short of the cliff.
+(defn charge! [(m : &mut Js) (bytes : I32)] : Bool
+  (let [left (- (get-field m :budget) bytes)]
+    (if (< left 0)
+      (do (halt-fail! m "RangeError: out of memory (arena budget exhausted)") false)
+      (do (set! (get-field m :budget) left) true))))
+
+(defn budget-room? [(m : &mut Js) (bytes : I32)] : Bool
+  (if (> bytes (get-field m :budget))
+    (do (halt-fail! m "RangeError: out of memory (arena budget exhausted)") false)
+    true))
+
+(defn push! [(m : &mut Js) (tag : I32) (x : F64)] : Unit
+  (let [sp (get-field m :sp)]
+    (if (>= sp (stack-cap))
+      (rt-fail! m "RangeError: Maximum call stack size exceeded")
+      (do
+        (put-slot! m sp tag x)
+        (set! (get-field m :sp) (+ sp 1))))))
+
+(defn pop-to! [(m : &mut Js) (n : I32)] : Unit
+  (set! (get-field m :sp) (- (get-field m :sp) n)))
+
+(defn code-at [(m : &Js) (i : I32)] : I32
+  (let [p (vec/get &(get-field m :code) i)] (deref p)))
+
+(defn fetch! [(m : &mut Js)] : I32
+  (let [pc (get-field m :pc)]
+    (do
+      (set! (get-field m :pc) (+ pc 1))
+      (code-at m pc))))
+
+(defn str-of [(m : &Js) (id : I32)] : String @ Region
+  (let [p (vec/get &(get-field m :strs) id)] p))
+
+(defn new-str! [(m : &mut Js) (s : String @ Region)] : F64
+  (let [id (vec/len &(get-field m :strs))]
+    (do
+      (vec/push! &mut (get-field m :strs) s)
+      (to-f64 id))))
+
+(defn to-f64 [(x : I32)] : F64
+  #target
+  {:c (inline-c "(double)(x)")})
+
+(defn f64-to-i32 [(x : F64)] : I32
+  #target
+  {:c (inline-c "(int)(x)")})
+
+(defn push-str! [(m : &mut Js) (s : String @ Region)] : Unit
+  (do
+    (charge! m (+ (length s) 25))
+    (fuel! m (length s))
+    (push! m (t-str) (new-str! m s))))
+
+(defn truthy? [(tag : I32) (x : F64) (m : &Js)] : Bool
+  (cond
+    ((or (= tag (t-undef)) (= tag (t-null))) false)
+    ((= tag (t-bool)) (not (= x 0.0)))
+    ((= tag (t-num)) (and (not (= x 0.0)) (not (num-nan? x))))
+    ((= tag (t-str)) (> (length (str-of m (f64-to-i32 x))) 0))
+    (true true)))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: conversions
+;; ------------------------------------------------------------------------------------------------
+(defn obj-at [(m : &mut Js) (id : I32)] : &JsObj
+  (let [p (vec/get &mut (get-field m :objs) id)] p))
+
+(defn arr-join [(m : &mut Js) (id : I32) (sep : String @ Region) (a : Arena @ Region)] : String @ Region
+  (let [o (obj-at m id)
+        n (vec/len &(get-field o :otags))]
+    (loop [i 0 acc ""]
+      (if (>= i n)
+        acc
+        (recur (+ i 1)
+               (string/concat
+                 (if (= i 0) acc (string/concat acc sep a))
+                 (elem-string m (deref (vec/get &(get-field o :otags) i)) (deref (vec/get &(get-field o :ovals) i)) a)
+                 a))))))
+
+;; JS ToString of a (tag, payload) pair
+(defn elem-string [(m : &mut Js) (tag : I32) (x : F64) (a : Arena @ Region)] : String @ Region
+  (cond
+    ((= tag (t-undef)) "undefined")
+    ((= tag (t-null)) "null")
+    ((= tag (t-bool)) (if (= x 0.0) "false" "true"))
+    ((= tag (t-num)) (fmt-num x a))
+    ((= tag (t-str)) (str-of m (f64-to-i32 x)))
+    ((= tag (t-fn)) "function")
+    ((= tag (t-builtin)) "function")
+    ((= tag (t-arr)) (arr-join m (f64-to-i32 x) "," a))
+    (true "[object Object]")))
+
+;; JS ToNumber
+(defn elem-number [(m : &Js) (tag : I32) (x : F64)] : F64
+  (cond
+    ((= tag (t-undef)) (/ 0.0 0.0))
+    ((= tag (t-null)) 0.0)
+    ((= tag (t-bool)) x)
+    ((= tag (t-num)) x)
+    ((= tag (t-str)) (str-to-num (str-of m (f64-to-i32 x))))
+    (true (/ 0.0 0.0))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: operators
+;; ------------------------------------------------------------------------------------------------
+(defn bin-num! [(m : &mut Js) (op : I32)] : Unit
+  (let [sp (get-field m :sp)
+        a (elem-number m (tag-at m (- sp 2)) (val-at m (- sp 2)))
+        b (elem-number m (tag-at m (- sp 1)) (val-at m (- sp 1)))]
+    (do
+      (pop-to! m 2)
+      (push! m (t-num)
+        (cond
+          ((= op (o-sub)) (- a b))
+          ((= op (o-mul)) (* a b))
+          ((= op (o-div)) (/ a b))
+          (true (num-mod a b)))))))
+
+(defn op-add! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [sp (get-field m :sp)
+        ta (tag-at m (- sp 2))
+        tb (tag-at m (- sp 1))]
+    (if (or (= ta (t-str)) (or (= tb (t-str)) (or (= ta (t-arr)) (= tb (t-arr)))))
+      (add-strings! m ta (val-at m (- sp 2)) tb (val-at m (- sp 1)) a)
+      (bin-add-num! m ta (val-at m (- sp 2)) tb (val-at m (- sp 1))))))
+
+(defn bin-add-num! [(m : &mut Js) (ta : I32) (xa : F64) (tb : I32) (xb : F64)] : Unit
+  (let [r (+ (elem-number m ta xa) (elem-number m tb xb))]
+    (do (pop-to! m 2) (push! m (t-num) r))))
+
+(defn add-strings! [(m : &mut Js) (ta : I32) (xa : F64) (tb : I32) (xb : F64) (a : Arena @ Region)] : Unit
+  (let [l (elem-string m ta xa a)
+        r (elem-string m tb xb a)]
+    (if (budget-room? m (+ (+ (length l) (length r)) 25))
+      (let [s (string/concat l r a)]
+        (do (pop-to! m 2) (push-str! m s)))
+      (pop-to! m 2))))
+
+(defn strict-eq? [(m : &Js) (ta : I32) (xa : F64) (tb : I32) (xb : F64)] : Bool
+  (cond
+    ((not (= ta tb)) false)
+    ((= ta (t-str)) (str-eq? (str-of m (f64-to-i32 xa)) (str-of m (f64-to-i32 xb))))
+    ((or (= ta (t-undef)) (= ta (t-null))) true)
+    (true (= xa xb))))
+
+(defn nullish? [(t : I32)] : Bool
+  (or (= t (t-undef)) (= t (t-null))))
+
+(defn loose-eq? [(m : &Js) (ta : I32) (xa : F64) (tb : I32) (xb : F64)] : Bool
+  (cond
+    ((= ta tb) (strict-eq? m ta xa tb xb))
+    ((and (nullish? ta) (nullish? tb)) true)
+    ((or (nullish? ta) (nullish? tb)) false)
+    ((or (or (= ta (t-fn)) (= ta (t-obj))) (or (= tb (t-fn)) (= tb (t-obj)))) false)
+    (true (= (elem-number m ta xa) (elem-number m tb xb)))))
+
+(defn op-eq! [(m : &mut Js) (op : I32)] : Unit
+  (let [sp (get-field m :sp)
+        ta (tag-at m (- sp 2))
+        xa (val-at m (- sp 2))
+        tb (tag-at m (- sp 1))
+        xb (val-at m (- sp 1))
+        strict (or (= op (o-seq)) (= op (o-sne)))
+        neg (or (= op (o-ne)) (= op (o-sne)))
+        r (if strict (strict-eq? m ta xa tb xb) (loose-eq? m ta xa tb xb))]
+    (do
+      (pop-to! m 2)
+      (push! m (t-bool) (if (= r neg) 0.0 1.0)))))
+
+(defn cmp-result [(op : I32) (lt : Bool) (gt : Bool) (eq : Bool)] : Bool
+  (cond
+    ((= op (o-lt)) lt)
+    ((= op (o-gt)) gt)
+    ((= op (o-le)) (or lt eq))
+    (true (or gt eq))))
+
+(defn op-cmp! [(m : &mut Js) (op : I32)] : Unit
+  (let [sp (get-field m :sp)
+        ta (tag-at m (- sp 2))
+        xa (val-at m (- sp 2))
+        tb (tag-at m (- sp 1))
+        xb (val-at m (- sp 1))]
+    (if (and (= ta (t-str)) (= tb (t-str)))
+      (let [c (str-cmp (str-of m (f64-to-i32 xa)) (str-of m (f64-to-i32 xb)))]
+        (finish-cmp! m (cmp-result op (< c 0) (> c 0) (= c 0))))
+      (let [na (elem-number m ta xa)
+            nb (elem-number m tb xb)]
+        (finish-cmp! m (cmp-result op (< na nb) (> na nb) (= na nb)))))))
+
+(defn finish-cmp! [(m : &mut Js) (r : Bool)] : Unit
+  (do (pop-to! m 2) (push! m (t-bool) (if r 1.0 0.0))))
+
+(defn type-name [(tag : I32)] : String @ Region
+  (cond
+    ((= tag (t-undef)) "undefined")
+    ((= tag (t-num)) "number")
+    ((= tag (t-str)) "string")
+    ((= tag (t-bool)) "boolean")
+    ((or (= tag (t-fn)) (= tag (t-builtin))) "function")
+    (true "object")))
+
+(defn op-typeof! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)
+        name (type-name (tag-at m (- sp 1)))]
+    (do (pop-to! m 1) (push-str! m name))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: objects and arrays
+;; ------------------------------------------------------------------------------------------------
+(defn new-obj! [(m : &mut Js) (kind : I32) (a : Arena @ Region)] : Unit
+  (let [id (vec/len &(get-field m :objs))]
+    (do
+      (charge! m 256)
+      (vec/push! &mut (get-field m :objs)
+                 {:kind kind :keys (vec/new a) :otags (vec/new a) :ovals (vec/new a)})
+      (push! m kind (to-f64 id)))))
+
+(defn append-val! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [sp (get-field m :sp)
+        t (tag-at m (- sp 1))
+        x (val-at m (- sp 1))
+        o (obj-at m (f64-to-i32 (val-at m (- sp 2))))]
+    (do
+      (charge! m 32)
+      (vec/push! &mut (get-field o :otags) t)
+      (vec/push! &mut (get-field o :ovals) x)
+      (pop-to! m 1))))
+
+(defn find-key [(o : &JsObj) (key : String @ Region)] : I32
+  (let [n (vec/len &(get-field o :keys))]
+    (loop [i 0]
+      (cond
+        ((>= i n) -1)
+        ((str-eq? (name-at &(get-field o :keys) i) key) i)
+        (true (recur (+ i 1)))))))
+
+(defn set-key! [(o : &mut JsObj) (key : String @ Region) (t : I32) (x : F64)] : Unit
+  (let [at (find-key o key)]
+    (if (>= at 0)
+      (do (vec/set-at! &mut (get-field o :otags) at t)
+          (vec/set-at! &mut (get-field o :ovals) at x))
+      (do (vec/push! &mut (get-field o :keys) key)
+          (vec/push! &mut (get-field o :otags) t)
+          (vec/push! &mut (get-field o :ovals) x)))))
+
+(defn set-key-m! [(m : &mut Js) (o : &mut JsObj) (key : String @ Region) (t : I32) (x : F64)] : Unit
+  (do
+    (charge! m 48)
+    (fuel! m (* (vec/len &(get-field o :keys)) 8))
+    (set-key! o key t x)))
+
+(defn op-initprop! [(m : &mut Js)] : Unit
+  (let [k (fetch! m)
+        sp (get-field m :sp)
+        t (tag-at m (- sp 1))
+        x (val-at m (- sp 1))
+        o (obj-at m (f64-to-i32 (val-at m (- sp 2))))]
+    (do
+      (set-key-m! m o (str-of m k) t x)
+      (pop-to! m 1))))
+
+;; read element/property into the stack in place of obj (+ key)
+(defn push-elem! [(m : &mut Js) (o : &JsObj) (i : I32)] : Unit
+  (if (and (>= i 0) (< i (vec/len &(get-field o :otags))))
+    (push! m (deref (vec/get &(get-field o :otags) i)) (deref (vec/get &(get-field o :ovals) i)))
+    (push! m (t-undef) 0.0)))
+
+(defn get-string-index! [(m : &mut Js) (s : String @ Region) (i : I32) (a : Arena @ Region)] : Unit
+  (if (and (>= i 0) (< i (length s)))
+    (push-str! m (substring s i (+ i 1) a))
+    (push! m (t-undef) 0.0)))
+
+(defn push-idx! [(m : &mut Js) (ot : I32) (ox : F64) (kt : I32) (kx : F64) (a : Arena @ Region)] : Unit
+  (cond
+    ((nullish? ot) (nullish-fail! m ot "read" (string/concat "reading '" (string/concat (elem-string m kt kx a) "'" a) a) a))
+    ((= ot (t-arr)) (push-elem! m (obj-at m (f64-to-i32 ox)) (f64-to-i32 (elem-number m kt kx))))
+    ((= ot (t-obj)) (push-keyed! m (obj-at m (f64-to-i32 ox)) (elem-string m kt kx a)))
+    ((= ot (t-str)) (get-string-index! m (str-of m (f64-to-i32 ox)) (f64-to-i32 (elem-number m kt kx)) a))
+    (true (push! m (t-undef) 0.0))))
+
+(defn op-getidx! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [sp (get-field m :sp)
+        ot (tag-at m (- sp 2))
+        ox (val-at m (- sp 2))
+        kt (tag-at m (- sp 1))
+        kx (val-at m (- sp 1))]
+    (do
+      (pop-to! m 2)
+      (push-idx! m ot ox kt kx a))))
+
+;; [obj, key] -> [obj, key, value]
+(defn op-getidxk! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [sp (get-field m :sp)]
+    (push-idx! m (tag-at m (- sp 2)) (val-at m (- sp 2)) (tag-at m (- sp 1)) (val-at m (- sp 1)) a)))
+
+(defn push-keyed! [(m : &mut Js) (o : &JsObj) (key : String @ Region)] : Unit
+  (do
+    (fuel! m (* (vec/len &(get-field o :keys)) 8))
+    (push-elem! m o (find-key o key))))
+
+(defn nullish-fail! [(m : &mut Js) (t : I32) (what : String @ Region) (key : String @ Region) (a : Arena @ Region)] : Unit
+  (rt-fail! m
+    (string/concat
+      (string/concat
+        (string/concat (string/concat "TypeError: Cannot " what a) (if (= t (t-null)) " properties of null (" " properties of undefined (") a)
+        key a)
+      ")" a)))
+
+(defn push-prop! [(m : &mut Js) (ot : I32) (ox : F64) (key : String @ Region) (a : Arena @ Region)] : Unit
+  (cond
+    ((nullish? ot) (nullish-fail! m ot "read" (string/concat "reading '" (string/concat key "'" a) a) a))
+    ((and (= ot (t-arr)) (str-eq? key "length"))
+      (push! m (t-num) (to-f64 (vec/len &(get-field (obj-at m (f64-to-i32 ox)) :otags)))))
+    ((and (= ot (t-str)) (str-eq? key "length"))
+      (push! m (t-num) (to-f64 (length (str-of m (f64-to-i32 ox))))))
+    ((= ot (t-obj)) (push-keyed! m (obj-at m (f64-to-i32 ox)) key))
+    (true (push! m (t-undef) 0.0))))
+
+(defn op-getprop! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [k (fetch! m)
+        sp (get-field m :sp)
+        ot (tag-at m (- sp 1))
+        ox (val-at m (- sp 1))]
+    (do
+      (pop-to! m 1)
+      (push-prop! m ot ox (str-of m k) a))))
+
+;; [obj] -> [obj, value]
+(defn op-getpropk! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [k (fetch! m)
+        sp (get-field m :sp)]
+    (push-prop! m (tag-at m (- sp 1)) (val-at m (- sp 1)) (str-of m k) a)))
+
+(defn op-setidx! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [sp (get-field m :sp)
+        ot (tag-at m (- sp 3))
+        ox (val-at m (- sp 3))
+        kt (tag-at m (- sp 2))
+        kx (val-at m (- sp 2))
+        vt (tag-at m (- sp 1))
+        vx (val-at m (- sp 1))]
+    (do
+      (cond
+        ((= ot (t-arr)) (set-array-elem! m (obj-at m (f64-to-i32 ox)) (f64-to-i32 (elem-number m kt kx)) vt vx))
+        ((= ot (t-obj)) (set-key-m! m (obj-at m (f64-to-i32 ox)) (elem-string m kt kx a) vt vx))
+        ((nullish? ot) (nullish-fail! m ot "set" (string/concat "setting '" (string/concat (elem-string m kt kx a) "'" a) a) a))
+        (true unit))
+      (pop-to! m 3)
+      (push! m vt vx))))
+
+(defn set-array-elem! [(m : &mut Js) (o : &mut JsObj) (i : I32) (t : I32) (x : F64)] : Unit
+  (let [n (vec/len &(get-field o :otags))]
+    (cond
+      ((and (>= i 0) (< i n))
+        (do (vec/set-at! &mut (get-field o :otags) i t)
+            (vec/set-at! &mut (get-field o :ovals) i x)))
+      ((= i n)
+        (do (vec/push! &mut (get-field o :otags) t)
+            (vec/push! &mut (get-field o :ovals) x)))
+      (true unit))))
+
+(defn op-setprop! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [k (fetch! m)
+        sp (get-field m :sp)
+        ot (tag-at m (- sp 2))
+        ox (val-at m (- sp 2))
+        vt (tag-at m (- sp 1))
+        vx (val-at m (- sp 1))]
+    (do
+      (when (= ot (t-obj))
+        (set-key-m! m (obj-at m (f64-to-i32 ox)) (str-of m k) vt vx))
+      (when (nullish? ot)
+        (nullish-fail! m ot "set" (string/concat "setting '" (string/concat (str-of m k) "'" a) a) a))
+      (pop-to! m 2)
+      (push! m vt vx))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: calls
+;; ------------------------------------------------------------------------------------------------
+(defn out-append! [(m : &mut Js) (s : String @ Region)] : Unit
+  #target
+  {:c (inline-c "{ size_t n = strlen(s); if ((size_t)m->olen + n + 1 < (size_t)m->ocap) { memcpy(m->obuf + m->olen, s, n); m->olen += (int)n; m->obuf[m->olen] = '\\0'; } }")})
+
+(defn log-sep! [(m : &mut Js) (i : I32)] : Unit
+  (when (> i 0) (out-append! m " ")))
+
+;; node-style console.log formatting for arrays/objects: [ 1, 2, 3 ] / { a: 1, b: 'x' } ; nested
+;; strings are quoted, nesting deeper than 2 collapses to [Array]/[Object]
+(defn quote-str [(s : String @ Region) (a : Arena @ Region)] : String @ Region
+  (string/concat (string/concat "'" s a) "'" a))
+
+(defn inspect [(m : &mut Js) (tag : I32) (x : F64) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (cond
+    ((= tag (t-str)) (quote-str (str-of m (f64-to-i32 x)) a))
+    ((= tag (t-arr)) (if (> depth 2) "[Array]" (inspect-obj m (f64-to-i32 x) depth a)))
+    ((= tag (t-obj)) (if (> depth 2) "[Object]" (inspect-obj m (f64-to-i32 x) depth a)))
+    ((= tag (t-fn)) "[Function]")
+    ((= tag (t-builtin)) "[Function]")
+    (true (elem-string m tag x a))))
+
+(defn inspect-obj [(m : &mut Js) (id : I32) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (let [o (obj-at m id)
+        n (vec/len &(get-field o :otags))
+        arr (= (get-field o :kind) (t-arr))]
+    (if (= n 0)
+      (if arr "[]" "{}")
+      (string/concat
+        (string/concat (if arr "[ " "{ ") (inspect-items m o n arr depth a) a)
+        (if arr " ]" " }") a))))
+
+(defn inspect-items [(m : &mut Js) (o : &JsObj) (n : I32) (arr : Bool) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i n)
+      acc
+      (recur (+ i 1)
+             (string/concat
+               (if (= i 0) acc (string/concat acc ", " a))
+               (inspect-item m o i arr depth a)
+               a)))))
+
+(defn ident-like? [(s : String @ Region)] : Bool
+  (let [n (length s)]
+    (if (= n 0)
+      false
+      (loop [i 0]
+        (cond
+          ((>= i n) true)
+          ((is-idch? (char-at s i)) (recur (+ i 1)))
+          (true false))))))
+
+(defn key-label [(k : String @ Region) (a : Arena @ Region)] : String @ Region
+  (if (and (ident-like? k) (not (digit? (char-at k 0)))) k (quote-str k a)))
+
+(defn inspect-item [(m : &mut Js) (o : &JsObj) (i : I32) (arr : Bool) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (let [v (inspect m (deref (vec/get &(get-field o :otags) i)) (deref (vec/get &(get-field o :ovals) i)) (+ depth 1) a)]
+    (if arr
+      v
+      (string/concat (string/concat (key-label (name-at &(get-field o :keys) i) a) ": " a) v a))))
+
+;; one console.log argument: strings/numbers/... as ToString, arrays/objects inspected
+(defn log-text [(m : &mut Js) (tag : I32) (x : F64) (a : Arena @ Region)] : String @ Region
+  (if (or (= tag (t-arr)) (= tag (t-obj)))
+    (inspect m tag x 0 a)
+    (elem-string m tag x a)))
+
+(defn log-args! [(m : &mut Js) (first : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (do
+    (loop [i 0]
+      (if (>= i argc)
+        unit
+        (do
+          (log-sep! m i)
+          (out-append! m (log-text m (tag-at m (+ first i)) (val-at m (+ first i)) a))
+          (recur (+ i 1)))))
+    (out-append! m "\n")))
+
+(defn arg-num [(m : &Js) (first : I32) (argc : I32) (i : I32)] : F64
+  (if (< i argc)
+    (elem-number m (tag-at m (+ first i)) (val-at m (+ first i)))
+    (/ 0.0 0.0)))
+
+(defn fold-minmax [(m : &Js) (first : I32) (argc : I32) (want-max : Bool)] : F64
+  (if (= argc 0)
+    (if want-max (/ -1.0 0.0) (/ 1.0 0.0))
+    (loop [i 1 best (arg-num m first argc 0)]
+      (if (>= i argc)
+        best
+        (let [x (arg-num m first argc i)]
+          (recur (+ i 1)
+                 (cond
+                   ((num-nan? x) x)
+                   ((num-nan? best) best)
+                   (want-max (if (> x best) x best))
+                   (true (if (< x best) x best)))))))))
+
+(defn math-result [(m : &Js) (id : I32) (first : I32) (argc : I32)] : F64
+  (cond
+    ((= id (b-floor)) (num-floor (arg-num m first argc 0)))
+    ((= id (b-ceil)) (num-ceil (arg-num m first argc 0)))
+    ((= id (b-abs)) (let [x (arg-num m first argc 0)] (if (< x 0.0) (- 0.0 x) x)))
+    ((= id (b-sqrt)) (num-sqrt (arg-num m first argc 0)))
+    ((= id (b-pow)) (num-pow (arg-num m first argc 0) (arg-num m first argc 1)))
+    ((= id (b-max)) (fold-minmax m first argc true))
+    (true (fold-minmax m first argc false))))
+
+;; call a builtin with args at [first, first+argc); result pushed after dropping callee+args
+(defn call-builtin! [(m : &mut Js) (id : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [first (- (get-field m :sp) argc)]
+    (cond
+      ((= id (b-log)) (do (log-args! m first argc a) (finish-call! m argc (t-undef) 0.0)))
+      ((< id 8) (finish-call! m argc (t-num) (math-result m id first argc)))
+      (true (call-builtin2! m id first argc a)))))
+
+(defn math2-result [(m : &Js) (id : I32) (first : I32) (argc : I32)] : F64
+  (let [x (arg-num m first argc 0)]
+    (cond
+      ((= id (b-round)) (num-floor (+ x 0.5)))
+      ((= id (b-trunc)) (if (< x 0.0) (num-ceil x) (num-floor x)))
+      ((= id (b-sin)) (num-sin x))
+      ((= id (b-cos)) (num-cos x))
+      ((= id (b-mlog)) (num-log x))
+      (true (num-exp x)))))
+
+(defn num-sin [(x : F64)] : F64
+  #target
+  {:c (inline-c "sin(x)")})
+
+(defn num-cos [(x : F64)] : F64
+  #target
+  {:c (inline-c "cos(x)")})
+
+(defn num-log [(x : F64)] : F64
+  #target
+  {:c (inline-c "log(x)")})
+
+(defn num-exp [(x : F64)] : F64
+  #target
+  {:c (inline-c "exp(x)")})
+
+(defn call-builtin2! [(m : &mut Js) (id : I32) (first : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((or (= id (b-round)) (or (= id (b-trunc)) (or (= id (b-sin)) (or (= id (b-cos)) (or (= id (b-mlog)) (= id (b-exp)))))))
+      (finish-call! m argc (t-num) (math2-result m id first argc)))
+    ((= id (b-parseint)) (finish-call! m argc (t-num) (parse-int-val (arg-str m first argc 0 a) (arg-num m first argc 1))))
+    ((= id (b-parsefloat)) (finish-call! m argc (t-num) (parse-float-val (arg-str m first argc 0 a))))
+    ((= id (b-number))
+      (finish-call! m argc (t-num) (if (= argc 0) 0.0 (elem-number m (tag-at m first) (val-at m first)))))
+    ((= id (b-isnan))
+      (finish-call! m argc (t-bool) (if (num-nan? (arg-num m first argc 0)) 1.0 0.0)))
+    ((= id (b-boolean))
+      (finish-call! m argc (t-bool)
+        (if (and (> argc 0) (truthy? (tag-at m first) (val-at m first) m)) 1.0 0.0)))
+    ((= id (b-isarray))
+      (finish-call! m argc (t-bool) (if (= (arg-tag m first argc 0) (t-arr)) 1.0 0.0)))
+    (true (call-builtin3! m id first argc a))))
+
+(defn call-builtin3! [(m : &mut Js) (id : I32) (first : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((= id (b-string))
+      (let [r (if (= argc 0) "" (log-str m (tag-at m first) (val-at m first) a))]
+        (do (pop-to! m (+ argc 1)) (push-str! m r))))
+    ((= id (b-keys)) (builtin-keys! m first argc a))
+    ((= id (b-jsonstr))
+      (let [r (json-value m (arg-tag m first argc 0) (arg-val m first argc 0) 0 a)]
+        (do (pop-to! m (+ argc 1)) (push-str! m r))))
+    ((>= id (b-error)) (builtin-error! m id first argc a))
+    (true (rt-fail! m "TypeError: unknown builtin"))))
+
+;; String(x): like ToString (arrays join, objects "[object Object]")
+(defn log-str [(m : &mut Js) (t : I32) (x : F64) (a : Arena @ Region)] : String @ Region
+  (elem-string m t x a))
+
+(defn builtin-keys! [(m : &mut Js) (first : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [t (arg-tag m first argc 0)
+        rid (new-obj-id! m (t-arr) a)]
+    (do
+      (when (= t (t-obj))
+        (keys-into! m (f64-to-i32 (arg-val m first argc 0)) rid))
+      (when (= t (t-arr))
+        (indices-into! m (f64-to-i32 (arg-val m first argc 0)) rid a))
+      (finish-call! m argc (t-arr) (to-f64 rid)))))
+
+(defn keys-into! [(m : &mut Js) (id : I32) (rid : I32)] : Unit
+  (let [o (obj-at m id)
+        n (vec/len &(get-field o :keys))]
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (arr-push! m rid (t-str) (new-str! m (name-at &(get-field o :keys) i))) (recur (+ i 1)))))))
+
+(defn indices-into! [(m : &mut Js) (id : I32) (rid : I32) (a : Arena @ Region)] : Unit
+  (let [n (arr-len m id)]
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (arr-push! m rid (t-str) (new-str! m (string/i32-to-string i a))) (recur (+ i 1)))))))
+
+(defn error-name [(id : I32)] : String @ Region
+  (cond
+    ((= id (b-error)) "Error")
+    ((= id (+ (b-error) 1)) "TypeError")
+    ((= id (+ (b-error) 2)) "RangeError")
+    ((= id (+ (b-error) 3)) "ReferenceError")
+    (true "SyntaxError")))
+
+(defn builtin-error! [(m : &mut Js) (id : I32) (first : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [msg (if (= argc 0) "" (arg-str m first argc 0 a))
+        v (make-error! m (error-name id) msg a)]
+    (finish-call! m argc (t-obj) v)))
+
+(defn parse-int-val [(s : String @ Region) (radix : F64)] : F64
+  (let [n (length s)
+        i (skip-spaces s 0 n)
+        neg (= (peek-at s i n) 45)
+        j (if (or (= (peek-at s i n) 45) (= (peek-at s i n) 43)) (+ i 1) i)
+        hex (or (= (f64-to-i32 radix) 16)
+                (and (= (peek-at s j n) 48) (or (= (peek-at s (+ j 1) n) 120) (= (peek-at s (+ j 1) n) 88))))
+        k (if (and hex (= (peek-at s j n) 48) (or (= (peek-at s (+ j 1) n) 120) (= (peek-at s (+ j 1) n) 88))) (+ j 2) j)
+        base (if hex 16.0 (if (and (> (f64-to-i32 radix) 1) (<= (f64-to-i32 radix) 36)) radix 10.0))]
+    (parse-digits s k n base neg)))
+
+(defn digit-value [(ch : I32)] : I32
+  (cond
+    ((and (>= ch 48) (<= ch 57)) (- ch 48))
+    ((and (>= ch 97) (<= ch 122)) (- ch 87))
+    ((and (>= ch 65) (<= ch 90)) (- ch 55))
+    (true 99)))
+
+(defn parse-digits [(s : String @ Region) (k : I32) (n : I32) (base : F64) (neg : Bool)] : F64
+  (loop [p k acc 0.0 any false]
+    (if (and (< p n) (< (digit-value (char-at s p)) (f64-to-i32 base)))
+      (recur (+ p 1) (+ (* acc base) (to-f64 (digit-value (char-at s p)))) true)
+      (if any (if neg (- 0.0 acc) acc) (/ 0.0 0.0)))))
+
+(defn parse-float-val [(s : String @ Region)] : F64
+  (let [n (length s)
+        i (skip-spaces s 0 n)
+        neg (= (peek-at s i n) 45)
+        d (if (or (= (peek-at s i n) 45) (= (peek-at s i n) 43)) (+ i 1) i)
+        e (scan-number s d n)]
+    (if (and (> e d) (or (digit? (peek-at s d n)) (digit? (peek-at s (+ d 1) n))))
+      (if neg (- 0.0 (parse-num-at s d)) (parse-num-at s d))
+      (/ 0.0 0.0))))
+
+;; drop `argc` args plus the callee slot below them, push the result
+(defn finish-call! [(m : &mut Js) (argc : I32) (tag : I32) (x : F64)] : Unit
+  (do
+    (pop-to! m (+ argc 1))
+    (push! m tag x)))
+
+(defn fn-prep-locals! [(m : &mut Js) (from : I32) (to : I32) (base : I32)] : Unit
+  (loop [i from]
+    (if (>= i to)
+      unit
+      (do (put-slot! m (+ base i) (t-undef) 0.0) (recur (+ i 1))))))
+
+(defn call-fn! [(m : &mut Js) (cid : I32) (argc : I32)] : Unit
+  (let [fid (deref (vec/get &(get-field m :clfid) cid))
+        np (deref (vec/get &(get-field m :fnp) fid))
+        nl (deref (vec/get &(get-field m :fnl) fid))
+        base (- (get-field m :sp) argc)
+        cd (get-field m :cd)]
+    (if (or (>= cd (frame-cap)) (>= (+ base nl) (stack-cap)))
+      (rt-fail! m "RangeError: Maximum call stack size exceeded")
+      (do
+        (vec/set-at! &mut (get-field m :fret) cd (get-field m :pc))
+        (vec/set-at! &mut (get-field m :ffp) cd (get-field m :fp))
+        (vec/set-at! &mut (get-field m :fclo) cd (get-field m :cur))
+        (set! (get-field m :cd) (+ cd 1))
+        (set! (get-field m :cur) cid)
+        (fn-prep-locals! m (if (< argc np) argc np) nl base)
+        (set! (get-field m :fp) base)
+        (set! (get-field m :sp) (+ base nl))
+        (set! (get-field m :pc) (deref (vec/get &(get-field m :fpc) fid)))))))
+
+;; ---- closures: open/closed upvalues, all in the arena ----------------------------------------------
+;; An upvalue is a (slot, tag, value) cell. While its function's frame lives it is OPEN (slot = the
+;; absolute stack index, reads/writes go straight to the stack so sibling closures share the
+;; variable); when the frame returns it is CLOSED (slot = -1, the value copied into the cell).
+(defn find-open [(m : &Js) (abs : I32)] : I32
+  (loop [i 0]
+    (if (>= i (get-field m :nopen))
+      -1
+      (let [uid (deref (vec/get &(get-field m :openup) i))]
+        (if (= (deref (vec/get &(get-field m :upslot) uid)) abs)
+          uid
+          (recur (+ i 1)))))))
+
+(defn new-upvalue! [(m : &mut Js) (abs : I32)] : I32
+  (let [uid (vec/len &(get-field m :upslot))]
+    (do
+      (charge! m 48)
+      (vec/push! &mut (get-field m :upslot) abs)
+      (vec/push! &mut (get-field m :uptag) 0)
+      (vec/push! &mut (get-field m :upval) 0.0)
+      (put-i32! &mut (get-field m :openup) (get-field m :nopen) uid)
+      (set! (get-field m :nopen) (+ (get-field m :nopen) 1))
+      uid)))
+
+(defn open-upvalue! [(m : &mut Js) (abs : I32)] : I32
+  (let [found (find-open m abs)]
+    (if (>= found 0) found (new-upvalue! m abs))))
+
+(defn close-one! [(m : &mut Js) (uid : I32) (slot : I32)] : Unit
+  (do
+    (vec/set-at! &mut (get-field m :uptag) uid (tag-at m slot))
+    (vec/set-at! &mut (get-field m :upval) uid (val-at m slot))
+    (vec/set-at! &mut (get-field m :upslot) uid -1)))
+
+;; close every open upvalue whose stack slot is >= from (a frame returning / an exception unwinding)
+(defn close-upvalues! [(m : &mut Js) (from : I32)] : Unit
+  (loop [i 0 w 0]
+    (if (>= i (get-field m :nopen))
+      (do (set! (get-field m :nopen) w) unit)
+      (let [uid (deref (vec/get &(get-field m :openup) i))
+            slot (deref (vec/get &(get-field m :upslot) uid))]
+        (if (>= slot from)
+          (do (close-one! m uid slot) (recur (+ i 1) w))
+          (do (put-i32! &mut (get-field m :openup) w uid) (recur (+ i 1) (+ w 1))))))))
+
+(defn up-id [(m : &Js) (i : I32)] : I32
+  (let [start (deref (vec/get &(get-field m :clstart) (get-field m :cur)))]
+    (deref (vec/get &(get-field m :clups) (+ start i)))))
+
+(defn op-loadup! [(m : &mut Js)] : Unit
+  (let [uid (up-id m (fetch! m))
+        slot (deref (vec/get &(get-field m :upslot) uid))]
+    (if (>= slot 0)
+      (push! m (tag-at m slot) (val-at m slot))
+      (push! m (deref (vec/get &(get-field m :uptag) uid)) (deref (vec/get &(get-field m :upval) uid))))))
+
+(defn op-storeup! [(m : &mut Js)] : Unit
+  (let [uid (up-id m (fetch! m))
+        slot (deref (vec/get &(get-field m :upslot) uid))
+        sp (get-field m :sp)]
+    (if (>= slot 0)
+      (put-slot! m slot (tag-at m (- sp 1)) (val-at m (- sp 1)))
+      (do
+        (vec/set-at! &mut (get-field m :uptag) uid (tag-at m (- sp 1)))
+        (vec/set-at! &mut (get-field m :upval) uid (val-at m (- sp 1)))))))
+
+(defn capture-next! [(m : &mut Js)] : Unit
+  (let [from (fetch! m)
+        idx (fetch! m)
+        uid (if (= from 1) (open-upvalue! m (+ (get-field m :fp) idx)) (up-id m idx))]
+    (vec/push! &mut (get-field m :clups) uid)))
+
+(defn capture-ups! [(m : &mut Js) (n : I32)] : Unit
+  (loop [k 0]
+    (if (>= k n)
+      unit
+      (do (capture-next! m) (recur (+ k 1))))))
+
+(defn op-mkfn! [(m : &mut Js)] : Unit
+  (let [fid (fetch! m)
+        n (fetch! m)
+        cid (vec/len &(get-field m :clfid))]
+    (do
+      (charge! m (+ 48 (* n 16)))
+      (vec/push! &mut (get-field m :clfid) fid)
+      (vec/push! &mut (get-field m :clstart) (vec/len &(get-field m :clups)))
+      (capture-ups! m n)
+      (push! m (t-fn) (to-f64 cid)))))
+
+(defn op-call! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [argc (fetch! m)
+        at (- (- (get-field m :sp) argc) 1)
+        t (tag-at m at)
+        x (val-at m at)]
+    (cond
+      ((= t (t-fn)) (call-fn! m (f64-to-i32 x) argc))
+      ((= t (t-builtin)) (call-builtin! m (f64-to-i32 x) argc a))
+      (true (rt-fail! m "TypeError: value is not a function")))))
+
+;; a returning frame abandons any try handlers it still has open (`return` inside a try block)
+(defn pop-handlers! [(m : &mut Js) (frame-cd : I32)] : Unit
+  (loop [h (get-field m :hn)]
+    (if (and (> h 0) (>= (deref (vec/get &(get-field m :hcd) (- h 1))) frame-cd))
+      (recur (- h 1))
+      (do (set! (get-field m :hn) h) unit))))
+
+(defn op-ret! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)
+        t (tag-at m (- sp 1))
+        x (val-at m (- sp 1))
+        cd (- (get-field m :cd) 1)
+        fp (get-field m :fp)]
+    (do
+      (close-upvalues! m fp)
+      (pop-handlers! m (+ cd 1))
+      (set! (get-field m :pc) (deref (vec/get &(get-field m :fret) cd)))
+      (set! (get-field m :fp) (deref (vec/get &(get-field m :ffp) cd)))
+      (set! (get-field m :cur) (deref (vec/get &(get-field m :fclo) cd)))
+      (set! (get-field m :cd) cd)
+      (set! (get-field m :sp) (- fp 1))
+      (push! m t x))))
+
+;; obj.method(args): stack [obj, args...]
+(defn op-callm! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [k (fetch! m)
+        argc (fetch! m)
+        at (- (- (get-field m :sp) argc) 1)]
+    (call-method! m (str-of m k) at argc a)))
+
+(defn call-method! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [ot (tag-at m at)]
+    (do
+      (fuel! m (receiver-size m ot (val-at m at)))
+      (dispatch-method! m ot name at argc a))))
+
+(defn receiver-size [(m : &mut Js) (ot : I32) (ox : F64)] : I32
+  (cond
+    ((= ot (t-arr)) (arr-len m (f64-to-i32 ox)))
+    ((= ot (t-str)) (length (str-of m (f64-to-i32 ox))))
+    (true 0)))
+
+(defn dispatch-method! [(m : &mut Js) (ot : I32) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (do
+    (cond
+      ((= ot (t-arr)) (array-method! m name at argc a))
+      ((= ot (t-str)) (string-method! m name at argc a))
+      ((= ot (t-obj)) (object-method! m name at argc))
+      ((nullish? ot) (nullish-fail! m ot "read" (string/concat "reading '" (string/concat name "'" a) a) a))
+      (true (rt-fail! m (string/concat (string/concat "TypeError: " name a) " is not a function" a))))))
+
+;; the call result replaces obj+args
+(defn finish-method! [(m : &mut Js) (argc : I32) (tag : I32) (x : F64)] : Unit
+  (finish-call! m argc tag x))
+
+(defn array-method! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [o (obj-at m (f64-to-i32 (val-at m at)))]
+    (cond
+      ((str-eq? name "push")
+        (do
+          (array-push-args! m o (+ at 1) argc)
+          (finish-method! m argc (t-num) (to-f64 (vec/len &(get-field o :otags))))))
+      ((str-eq? name "pop") (array-pop! m o argc))
+      ((str-eq? name "join") (array-join-method! m at argc a))
+      (true (array-method2! m name at argc a)))))
+
+(defn array-join-method! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [sep (if (> argc 0) (elem-string m (tag-at m (+ at 1)) (val-at m (+ at 1)) a) ",")
+        s (arr-join m (f64-to-i32 (val-at m at)) sep a)]
+    (do (pop-to! m (+ argc 1)) (push-str! m s))))
+
+(defn array-method2! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((str-eq? name "forEach") (am-foreach! m at argc a))
+    ((str-eq? name "map") (am-map! m at argc a))
+    ((str-eq? name "filter") (am-filter! m at argc a))
+    ((str-eq? name "reduce") (am-reduce! m at argc a))
+    ((str-eq? name "some") (am-scan! m at argc 0 a))
+    ((str-eq? name "every") (am-scan! m at argc 1 a))
+    ((str-eq? name "find") (am-scan! m at argc 2 a))
+    ((str-eq? name "findIndex") (am-scan! m at argc 3 a))
+    (true (array-method3! m name at argc a))))
+
+(defn array-method3! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((str-eq? name "indexOf")
+      (finish-method! m argc (t-num)
+        (to-f64 (arr-index-of m (arr-id m at) (arg-tag m (+ at 1) argc 0) (arg-val m (+ at 1) argc 0)))))
+    ((str-eq? name "includes")
+      (finish-method! m argc (t-bool)
+        (if (>= (arr-index-of m (arr-id m at) (arg-tag m (+ at 1) argc 0) (arg-val m (+ at 1) argc 0)) 0) 1.0 0.0)))
+    ((str-eq? name "slice") (am-slice! m at argc a))
+    ((str-eq? name "concat") (am-concat! m at argc a))
+    ((str-eq? name "reverse") (do (arr-reverse! m (arr-id m at)) (finish-method-self! m at argc)))
+    ((str-eq? name "sort") (am-sort! m at argc a))
+    ((str-eq? name "shift") (am-shift! m at argc))
+    (true (rt-fail! m (string/concat "TypeError: array has no method " name a)))))
+
+;; result is the receiver itself (reverse/sort return the same array)
+(defn finish-method-self! [(m : &mut Js) (at : I32) (argc : I32)] : Unit
+  (finish-method! m argc (t-arr) (val-at m at)))
+
+(defn am-foreach! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (if (foreach-loop! m (arr-id m at) (tag-at m (+ at 1)) (val-at m (+ at 1)) a)
+    (finish-method! m argc (t-undef) 0.0)
+    unit))
+
+(defn am-map! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [rid (new-obj-id! m (t-arr) a)]
+    (if (map-loop! m (arr-id m at) rid (tag-at m (+ at 1)) (val-at m (+ at 1)) a)
+      (finish-method! m argc (t-arr) (to-f64 rid))
+      unit)))
+
+(defn am-filter! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [rid (new-obj-id! m (t-arr) a)]
+    (if (filter-loop! m (arr-id m at) rid (tag-at m (+ at 1)) (val-at m (+ at 1)) a)
+      (finish-method! m argc (t-arr) (to-f64 rid))
+      unit)))
+
+(defn am-reduce! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [id (arr-id m at)]
+    (cond
+      ((>= argc 2)
+        (am-reduce-run! m id at argc 0 (tag-at m (+ at 2)) (val-at m (+ at 2)) a))
+      ((> (arr-len m id) 0)
+        (am-reduce-run! m id at argc 1 (arr-tag m id 0) (arr-val m id 0) a))
+      (true (rt-fail! m "TypeError: reduce of empty array with no initial value")))))
+
+(defn am-reduce-run! [(m : &mut Js) (id : I32) (at : I32) (argc : I32) (i0 : I32) (t : I32) (x : F64) (a : Arena @ Region)] : Unit
+  (if (reduce-loop! m id (tag-at m (+ at 1)) (val-at m (+ at 1)) i0 t x a)
+    (let [rt (top-tag m)
+          rx (top-val m)]
+      (do (pop-to! m 1) (finish-method! m argc rt rx)))
+    unit))
+
+;; the scan helpers leave their result (not the callback value) on the stack top
+(defn am-scan! [(m : &mut Js) (at : I32) (argc : I32) (mode : I32) (a : Arena @ Region)] : Unit
+  (if (scan-loop! m (arr-id m at) (tag-at m (+ at 1)) (val-at m (+ at 1)) mode a)
+    (let [rt (top-tag m)
+          rx (top-val m)]
+      (do (pop-to! m 1) (finish-method! m argc rt rx)))
+    unit))
+
+(defn clamp-index [(i : I32) (n : I32)] : I32
+  (cond ((< i 0) (if (< (+ n i) 0) 0 (+ n i))) ((> i n) n) (true i)))
+
+(defn am-slice! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [id (arr-id m at)
+        n (arr-len m id)
+        b (clamp-index (f64-to-i32 (arg-num m (+ at 1) argc 0)) n)
+        e (if (> argc 1) (clamp-index (f64-to-i32 (arg-num m (+ at 1) argc 1)) n) n)
+        rid (new-obj-id! m (t-arr) a)]
+    (do
+      (arr-slice-into! m id rid (if (< argc 1) 0 b) e)
+      (finish-method! m argc (t-arr) (to-f64 rid)))))
+
+(defn concat-arg! [(m : &mut Js) (rid : I32) (t : I32) (x : F64)] : Unit
+  (if (= t (t-arr))
+    (arr-slice-into! m (f64-to-i32 x) rid 0 (arr-len m (f64-to-i32 x)))
+    (arr-push! m rid t x)))
+
+(defn am-concat! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [rid (new-obj-id! m (t-arr) a)]
+    (do
+      (arr-slice-into! m (arr-id m at) rid 0 (arr-len m (arr-id m at)))
+      (loop [i 0]
+        (if (>= i argc)
+          unit
+          (do (concat-arg! m rid (tag-at m (+ at (+ i 1))) (val-at m (+ at (+ i 1)))) (recur (+ i 1)))))
+      (finish-method! m argc (t-arr) (to-f64 rid)))))
+
+(defn am-sort! [(m : &mut Js) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [ft (if (> argc 0) (tag-at m (+ at 1)) (t-undef))
+        fx (if (> argc 0) (val-at m (+ at 1)) 0.0)]
+    (if (sort-arr! m (arr-id m at) ft fx a)
+      (finish-method-self! m at argc)
+      unit)))
+
+(defn am-shift! [(m : &mut Js) (at : I32) (argc : I32)] : Unit
+  (let [id (arr-id m at)
+        n (arr-len m id)]
+    (if (= n 0)
+      (finish-method! m argc (t-undef) 0.0)
+      (let [ft (arr-tag m id 0)
+            fx (arr-val m id 0)]
+        (do
+          (loop [i 1]
+            (if (>= i n)
+              unit
+              (do (arr-set! m id (- i 1) (arr-tag m id i) (arr-val m id i)) (recur (+ i 1)))))
+          (set-array-len! (obj-at m id) (- n 1))
+          (finish-method! m argc ft fx))))))
+
+(defn array-push-args! [(m : &mut Js) (o : &mut JsObj) (first : I32) (argc : I32)] : Unit
+  (loop [i 0]
+    (if (>= i argc)
+      unit
+      (do
+        (charge! m 32)
+        (vec/push! &mut (get-field o :otags) (tag-at m (+ first i)))
+        (vec/push! &mut (get-field o :ovals) (val-at m (+ first i)))
+        (recur (+ i 1))))))
+
+(defn array-pop! [(m : &mut Js) (o : &mut JsObj) (argc : I32)] : Unit
+  (let [n (vec/len &(get-field o :otags))]
+    (if (= n 0)
+      (finish-method! m argc (t-undef) 0.0)
+      (let [t (deref (vec/get &(get-field o :otags) (- n 1)))
+            x (deref (vec/get &(get-field o :ovals) (- n 1)))]
+        (do
+          (set-array-len! o (- n 1))
+          (finish-method! m argc t x))))))
+
+(defn set-array-len! [(o : &mut JsObj) (n : I32)] : Unit
+  (do
+    (vec/truncate! &mut (get-field o :otags) n)
+    (vec/truncate! &mut (get-field o :ovals) n)))
+
+(defn upper-str [(s : String @ Region) (up : Bool) (a : Arena @ Region)] : String @ Region
+  (let [out (alloc a String (+ (length s) 1))]
+    #target
+    {:c (inline-c "{ int i; for (i = 0; s[i]; i++) { char ch = s[i]; if (up && ch >= 'a' && ch <= 'z') ch = (char)(ch - 32); else if (!up && ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32); out[i] = ch; } out[i] = '\\0'; }")}
+    out))
+
+(defn trim-str [(s : String @ Region) (a : Arena @ Region)] : String @ Region
+  (let [n (length s)
+        b (skip-spaces s 0 n)
+        e (loop [j n] (if (and (> j b) (ws? (char-at s (- j 1)))) (recur (- j 1)) j))]
+    (substring s b e a)))
+
+;; push a JS array of the pieces of `s` split on `sep` ("" splits into single characters)
+(defn split-into! [(m : &mut Js) (rid : I32) (s : String @ Region) (sep : String @ Region) (a : Arena @ Region)] : Unit
+  (if (= (length sep) 0)
+    (loop [i 0]
+      (if (>= i (length s))
+        unit
+        (do (arr-push! m rid (t-str) (new-str! m (substring s i (+ i 1) a))) (recur (+ i 1)))))
+    (loop [from 0]
+      (let [hit (str-index-of s sep from)]
+        (if (< hit 0)
+          (do (arr-push! m rid (t-str) (new-str! m (substring s from (length s) a))) unit)
+          (do
+            (arr-push! m rid (t-str) (new-str! m (substring s from hit a)))
+            (recur (+ hit (length sep)))))))))
+
+(defn repeat-str [(m : &mut Js) (s : String @ Region) (n : I32) (a : Arena @ Region)] : String @ Region
+  (if (or (<= n 0) (not (budget-room? m (+ (* (length s) n) 9))))
+    ""
+    (loop [i 0 acc ""]
+      (if (>= i n) acc (recur (+ i 1) (string/concat acc s a))))))
+
+(defn string-method! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [s (str-of m (f64-to-i32 (val-at m at)))]
+    (cond
+      ((str-eq? name "charAt")
+        (let [i (f64-to-i32 (arg-num m (+ at 1) argc 0))
+              r (if (and (>= i 0) (< i (length s))) (substring s i (+ i 1) a) "")]
+          (do (pop-to! m (+ argc 1)) (push-str! m r))))
+      ((str-eq? name "charCodeAt")
+        (let [i (f64-to-i32 (arg-num m (+ at 1) argc 0))]
+          (finish-method! m argc (t-num)
+            (if (and (>= i 0) (< i (length s))) (to-f64 (char-at s i)) (/ 0.0 0.0)))))
+      ((str-eq? name "substring")
+        (let [n (length s)
+              b (clamp-idx (f64-to-i32 (arg-num m (+ at 1) argc 0)) n)
+              e (if (> argc 1) (clamp-idx (f64-to-i32 (arg-num m (+ at 1) argc 1)) n) n)
+              r (if (< b e) (substring s b e a) "")]
+          (do (pop-to! m (+ argc 1)) (push-str! m r))))
+      ((str-eq? name "indexOf")
+        (finish-method! m argc (t-num) (to-f64 (str-index-of s (arg-str m (+ at 1) argc 0 a) 0))))
+      (true (string-method2! m name s at argc a)))))
+
+(defn string-method2! [(m : &mut Js) (name : String @ Region) (s : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((str-eq? name "toUpperCase") (do (pop-to! m (+ argc 1)) (push-str! m (upper-str s true a))))
+    ((str-eq? name "toLowerCase") (do (pop-to! m (+ argc 1)) (push-str! m (upper-str s false a))))
+    ((str-eq? name "trim") (do (pop-to! m (+ argc 1)) (push-str! m (trim-str s a))))
+    ((str-eq? name "includes")
+      (finish-method! m argc (t-bool)
+        (if (>= (str-index-of s (arg-str m (+ at 1) argc 0 a) 0) 0) 1.0 0.0)))
+    ((str-eq? name "startsWith")
+      (finish-method! m argc (t-bool)
+        (if (= (str-index-of s (arg-str m (+ at 1) argc 0 a) 0) 0) 1.0 0.0)))
+    ((str-eq? name "slice") (string-slice! m s at argc a))
+    ((str-eq? name "split") (string-split! m s at argc a))
+    ((str-eq? name "repeat")
+      (let [r (repeat-str m s (f64-to-i32 (arg-num m (+ at 1) argc 0)) a)]
+        (do (pop-to! m (+ argc 1)) (push-str! m r))))
+    (true (rt-fail! m (string/concat "TypeError: string has no method " name a)))))
+
+(defn string-slice! [(m : &mut Js) (s : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [n (length s)
+        b (clamp-index (f64-to-i32 (arg-num m (+ at 1) argc 0)) n)
+        e (if (> argc 1) (clamp-index (f64-to-i32 (arg-num m (+ at 1) argc 1)) n) n)
+        r (if (< b e) (substring s b e a) "")]
+    (do (pop-to! m (+ argc 1)) (push-str! m r))))
+
+(defn string-split! [(m : &mut Js) (s : String @ Region) (at : I32) (argc : I32) (a : Arena @ Region)] : Unit
+  (let [rid (new-obj-id! m (t-arr) a)]
+    (do
+      (if (= argc 0)
+        (arr-push! m rid (t-str) (new-str! m s))
+        (split-into! m rid s (arg-str m (+ at 1) argc 0 a) a))
+      (finish-method! m argc (t-arr) (to-f64 rid)))))
+
+(defn clamp-idx [(i : I32) (n : I32)] : I32
+  (cond ((< i 0) 0) ((> i n) n) (true i)))
+
+;; obj.f(args) where f is a function-valued property: call it (no `this` in v0)
+(defn object-method! [(m : &mut Js) (name : String @ Region) (at : I32) (argc : I32)] : Unit
+  (let [o (obj-at m (f64-to-i32 (val-at m at)))
+        i (find-key o name)]
+    (if (< i 0)
+      (rt-fail! m "TypeError: method is not a function")
+      (do
+        (put-slot! m at (deref (vec/get &(get-field o :otags) i)) (deref (vec/get &(get-field o :ovals) i)))
+        (call-value! m (tag-at m at) (val-at m at) argc)))))
+
+(defn call-value! [(m : &mut Js) (t : I32) (x : F64) (argc : I32)] : Unit
+  (if (= t (t-fn))
+    (call-fn! m (f64-to-i32 x) argc)
+    (rt-fail! m "TypeError: value is not a function")))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: exceptions (try / catch / throw), Error objects
+;; ------------------------------------------------------------------------------------------------
+(defn new-obj-id! [(m : &mut Js) (kind : I32) (a : Arena @ Region)] : I32
+  (let [id (vec/len &(get-field m :objs))]
+    (do
+      (charge! m 256)
+      (vec/push! &mut (get-field m :objs)
+                 {:kind kind :keys (vec/new a) :otags (vec/new a) :ovals (vec/new a)})
+      id)))
+
+(defn make-error! [(m : &mut Js) (name : String @ Region) (msg : String @ Region) (a : Arena @ Region)] : F64
+  (let [id (new-obj-id! m (t-obj) a)
+        o (obj-at m id)]
+    (do
+      (set-key! o "name" (t-str) (new-str! m name))
+      (set-key! o "message" (t-str) (new-str! m msg))
+      (to-f64 id))))
+
+;; "TypeError: boom" -> ("TypeError", "boom"); no ": " -> ("Error", whole text)
+(defn split-at-colon [(s : String @ Region)] : I32
+  (str-index-of s ": " 0))
+
+(defn rt-error-value! [(m : &mut Js) (text : String @ Region) (a : Arena @ Region)] : F64
+  (let [i (split-at-colon text)]
+    (if (< i 0)
+      (make-error! m "Error" text a)
+      (make-error! m (substring text 0 i a) (substring text (+ i 2) (length text) a) a))))
+
+(defn op-try! [(m : &mut Js)] : Unit
+  (let [catchpc (fetch! m)
+        h (get-field m :hn)]
+    (if (>= h 64)
+      (rt-fail! m "RangeError: too many nested try blocks")
+      (do
+        (vec/set-at! &mut (get-field m :hpc) h catchpc)
+        (vec/set-at! &mut (get-field m :hsp) h (get-field m :sp))
+        (vec/set-at! &mut (get-field m :hfp) h (get-field m :fp))
+        (vec/set-at! &mut (get-field m :hcd) h (get-field m :cd))
+        (vec/set-at! &mut (get-field m :hclo) h (get-field m :cur))
+        (vec/set-at! &mut (get-field m :hnest) h (get-field m :nest))
+        (set! (get-field m :hn) (+ h 1))))))
+
+(defn op-throw! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)
+        t (tag-at m (- sp 1))
+        x (val-at m (- sp 1))]
+    (do
+      (pop-to! m 1)
+      (set-pending! m 1 t x))))
+
+;; uncaught: the error text the host sees ("TypeError: x is not a function", or String(value))
+(defn uncaught-text [(m : &mut Js) (t : I32) (x : F64) (a : Arena @ Region)] : String @ Region
+  (if (= t (t-obj))
+    (let [o (obj-at m (f64-to-i32 x))
+          ni (find-key o "name")
+          mi (find-key o "message")]
+      (if (and (>= ni 0) (>= mi 0))
+        (string/concat
+          (string/concat (elem-string m (deref (vec/get &(get-field o :otags) ni)) (deref (vec/get &(get-field o :ovals) ni)) a) ": " a)
+          (elem-string m (deref (vec/get &(get-field o :otags) mi)) (deref (vec/get &(get-field o :ovals) mi)) a) a)
+        (inspect m t x 0 a)))
+    (log-text m t x a)))
+
+(defn unwind! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [kind (get-field m :exc)
+        t (get-field m :exct)
+        x (get-field m :excv)]
+    (if (= kind 2)
+      (do
+        (set! (get-field m :excv) (rt-error-value! m (str-of m (f64-to-i32 x)) a))
+        (set! (get-field m :exct) (t-obj))
+        (set! (get-field m :exc) 1)
+        (unwind-to-handler! m a))
+      (unwind-to-handler! m a))))
+
+(defn unwind-to-handler! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (let [t (get-field m :exct)
+        x (get-field m :excv)
+        h (- (get-field m :hn) 1)]
+    (if (< h 0)
+      (do
+        (set! (get-field m :exc) 0)
+        (halt-fail! m (uncaught-text m t x a)))
+      (resume-at-handler! m h t x))))
+
+(defn resume-at-handler! [(m : &mut Js) (h : I32) (t : I32) (x : F64)] : Unit
+  (let [hsp (deref (vec/get &(get-field m :hsp) h))
+        hnest (deref (vec/get &(get-field m :hnest) h))]
+    (do
+      (close-upvalues! m hsp)
+      (set! (get-field m :hn) h)
+      (set! (get-field m :pc) (deref (vec/get &(get-field m :hpc) h)))
+      (set! (get-field m :sp) hsp)
+      (set! (get-field m :fp) (deref (vec/get &(get-field m :hfp) h)))
+      (set! (get-field m :cd) (deref (vec/get &(get-field m :hcd) h)))
+      (set! (get-field m :cur) (deref (vec/get &(get-field m :hclo) h)))
+      (set! (get-field m :exc) 0)
+      (set! (get-field m :escape) (if (> (get-field m :nest) hnest) (- (get-field m :nest) hnest) 0))
+      (push! m t x))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: calling JS functions from builtins (callbacks), array/string methods, more builtins
+;; ------------------------------------------------------------------------------------------------
+(defn call-any! [(m : &mut Js) (t : I32) (x : F64) (argc : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((= t (t-fn)) (call-fn! m (f64-to-i32 x) argc))
+    ((= t (t-builtin)) (call-builtin! m (f64-to-i32 x) argc a))
+    (true (rt-fail! m "TypeError: callback is not a function"))))
+
+(defn nested-loop! [(m : &mut Js) (target : I32) (a : Arena @ Region)] : Unit
+  (loop [n 0]
+    (cond
+      ((not (= (get-field m :halt) 0)) unit)
+      ((> (get-field m :escape) 0) unit)
+      ((<= (get-field m :cd) target) unit)
+      ((>= (get-field m :steps) (get-field m :limit))
+        (do (halt-fail! m "Error: execution step limit exceeded") unit))
+      (true (do (step! m a) (recur (+ n 1)))))))
+
+(defn run-nested! [(m : &mut Js) (target : I32) (a : Arena @ Region)] : Unit
+  (do
+    (set! (get-field m :nest) (+ (get-field m :nest) 1))
+    (nested-loop! m target a)
+    (set! (get-field m :nest) (- (get-field m :nest) 1))))
+
+;; did the callback return normally?  An exception that unwound past this native frame consumes one
+;; `escape` level per frame it crosses and makes every enclosing builtin stop touching the stack.
+(defn cb-ok! [(m : &mut Js)] : Bool
+  (if (> (get-field m :escape) 0)
+    (do (set! (get-field m :escape) (- (get-field m :escape) 1)) false)
+    (and (= (get-field m :halt) 0) (= (get-field m :exc) 0))))
+
+;; callee + args are already on the stack; on success the result is the top slot
+(defn call-cb! [(m : &mut Js) (ft : I32) (fx : F64) (argc : I32) (a : Arena @ Region)] : Bool
+  (let [target (get-field m :cd)]
+    (do
+      (call-any! m ft fx argc a)
+      (run-nested! m target a)
+      (cb-ok! m))))
+
+(defn cb1! [(m : &mut Js) (ft : I32) (fx : F64) (t1 : I32) (x1 : F64) (a : Arena @ Region)] : Bool
+  (do
+    (push! m ft fx)
+    (push! m t1 x1)
+    (call-cb! m ft fx 1 a)))
+
+(defn cb2! [(m : &mut Js) (ft : I32) (fx : F64) (t1 : I32) (x1 : F64) (t2 : I32) (x2 : F64) (a : Arena @ Region)] : Bool
+  (do
+    (push! m ft fx)
+    (push! m t1 x1)
+    (push! m t2 x2)
+    (call-cb! m ft fx 2 a)))
+
+(defn cb3! [(m : &mut Js) (ft : I32) (fx : F64) (t1 : I32) (x1 : F64) (t2 : I32) (x2 : F64) (t3 : I32) (x3 : F64) (a : Arena @ Region)] : Bool
+  (do
+    (push! m ft fx)
+    (push! m t1 x1)
+    (push! m t2 x2)
+    (push! m t3 x3)
+    (call-cb! m ft fx 3 a)))
+
+;; ---- array helpers
+(defn arr-id [(m : &Js) (at : I32)] : I32
+  (f64-to-i32 (val-at m at)))
+
+(defn arr-len [(m : &mut Js) (id : I32)] : I32
+  (vec/len &(get-field (obj-at m id) :otags)))
+
+(defn arr-tag [(m : &mut Js) (id : I32) (i : I32)] : I32
+  (deref (vec/get &(get-field (obj-at m id) :otags) i)))
+
+(defn arr-val [(m : &mut Js) (id : I32) (i : I32)] : F64
+  (deref (vec/get &(get-field (obj-at m id) :ovals) i)))
+
+(defn arr-push! [(m : &mut Js) (id : I32) (t : I32) (x : F64)] : Unit
+  (let [o (obj-at m id)]
+    (do
+      (charge! m 32)
+      (vec/push! &mut (get-field o :otags) t)
+      (vec/push! &mut (get-field o :ovals) x))))
+
+(defn top-tag [(m : &Js)] : I32 (tag-at m (- (get-field m :sp) 1)))
+(defn top-val [(m : &Js)] : F64 (val-at m (- (get-field m :sp) 1)))
+
+(defn arg-tag [(m : &Js) (first : I32) (argc : I32) (i : I32)] : I32
+  (if (< i argc) (tag-at m (+ first i)) (t-undef)))
+
+(defn arg-val [(m : &Js) (first : I32) (argc : I32) (i : I32)] : F64
+  (if (< i argc) (val-at m (+ first i)) 0.0))
+
+(defn arg-str [(m : &mut Js) (first : I32) (argc : I32) (i : I32) (a : Arena @ Region)] : String @ Region
+  (elem-string m (arg-tag m first argc i) (arg-val m first argc i) a))
+
+;; ---- forEach / map / filter
+(defn foreach-loop! [(m : &mut Js) (id : I32) (ft : I32) (fx : F64) (a : Arena @ Region)] : Bool
+  (loop [i 0]
+    (cond
+      ((>= i (arr-len m id)) true)
+      ((cb2! m ft fx (arr-tag m id i) (arr-val m id i) (t-num) (to-f64 i) a)
+        (do (pop-to! m 1) (recur (+ i 1))))
+      (true false))))
+
+(defn map-loop! [(m : &mut Js) (id : I32) (rid : I32) (ft : I32) (fx : F64) (a : Arena @ Region)] : Bool
+  (loop [i 0]
+    (cond
+      ((>= i (arr-len m id)) true)
+      ((cb2! m ft fx (arr-tag m id i) (arr-val m id i) (t-num) (to-f64 i) a)
+        (do (arr-push! m rid (top-tag m) (top-val m)) (pop-to! m 1) (recur (+ i 1))))
+      (true false))))
+
+(defn filter-step! [(m : &mut Js) (id : I32) (rid : I32) (i : I32)] : Unit
+  (do
+    (when (truthy? (top-tag m) (top-val m) m)
+      (arr-push! m rid (arr-tag m id i) (arr-val m id i)))
+    (pop-to! m 1)))
+
+(defn filter-loop! [(m : &mut Js) (id : I32) (rid : I32) (ft : I32) (fx : F64) (a : Arena @ Region)] : Bool
+  (loop [i 0]
+    (cond
+      ((>= i (arr-len m id)) true)
+      ((cb2! m ft fx (arr-tag m id i) (arr-val m id i) (t-num) (to-f64 i) a)
+        (do (filter-step! m id rid i) (recur (+ i 1))))
+      (true false))))
+
+;; reduce(fn, init): acc is carried in locals; each step calls fn(acc, elem, index)
+(defn reduce-loop! [(m : &mut Js) (id : I32) (ft : I32) (fx : F64) (i0 : I32) (t0 : I32) (x0 : F64) (a : Arena @ Region)] : Bool
+  (loop [i i0 accT t0 accX x0]
+    (cond
+      ((>= i (arr-len m id))
+        (do (push! m accT accX) true))
+      ((cb3! m ft fx accT accX (arr-tag m id i) (arr-val m id i) (t-num) (to-f64 i) a)
+        (let [nt (top-tag m)
+              nx (top-val m)]
+          (do (pop-to! m 1) (recur (+ i 1) nt nx))))
+      (true false))))
+
+;; some / every / find / findIndex share one scan: mode 0 some, 1 every, 2 find, 3 findIndex
+(defn scan-loop! [(m : &mut Js) (id : I32) (ft : I32) (fx : F64) (mode : I32) (a : Arena @ Region)] : Bool
+  (loop [i 0]
+    (cond
+      ((>= i (arr-len m id)) (do (scan-default! m mode) true))
+      ((cb2! m ft fx (arr-tag m id i) (arr-val m id i) (t-num) (to-f64 i) a)
+        (if (scan-hit? m mode)
+          (do (scan-found! m id i mode) true)
+          (do (pop-to! m 1) (recur (+ i 1)))))
+      (true false))))
+
+;; does this callback result end the scan?  (some/find/findIndex: truthy ends; every: falsy ends)
+(defn scan-hit? [(m : &Js) (mode : I32)] : Bool
+  (let [truth (truthy? (top-tag m) (top-val m) m)]
+    (if (= mode 1) (not truth) truth)))
+
+(defn scan-found! [(m : &mut Js) (id : I32) (i : I32) (mode : I32)] : Unit
+  (do
+    (pop-to! m 1)
+    (cond
+      ((= mode 0) (push! m (t-bool) 1.0))
+      ((= mode 1) (push! m (t-bool) 0.0))
+      ((= mode 2) (push! m (arr-tag m id i) (arr-val m id i)))
+      (true (push! m (t-num) (to-f64 i))))))
+
+(defn scan-default! [(m : &mut Js) (mode : I32)] : Unit
+  (cond
+    ((= mode 0) (push! m (t-bool) 0.0))
+    ((= mode 1) (push! m (t-bool) 1.0))
+    ((= mode 2) (push! m (t-undef) 0.0))
+    (true (push! m (t-num) -1.0))))
+
+;; ---- indexOf / includes / slice / concat / reverse / sort
+(defn arr-index-of [(m : &mut Js) (id : I32) (t : I32) (x : F64)] : I32
+  (loop [i 0]
+    (cond
+      ((>= i (arr-len m id)) -1)
+      ((strict-eq? m (arr-tag m id i) (arr-val m id i) t x) i)
+      (true (recur (+ i 1))))))
+
+(defn arr-slice-into! [(m : &mut Js) (id : I32) (rid : I32) (from : I32) (to : I32)] : Unit
+  (loop [i from]
+    (if (>= i to)
+      unit
+      (do (arr-push! m rid (arr-tag m id i) (arr-val m id i)) (recur (+ i 1))))))
+
+(defn arr-reverse! [(m : &mut Js) (id : I32)] : Unit
+  (let [n (arr-len m id)
+        o (obj-at m id)]
+    (loop [i 0]
+      (if (>= i (/ n 2))
+        unit
+        (let [j (- (- n 1) i)
+              ti (arr-tag m id i)
+              xi (arr-val m id i)
+              tj (arr-tag m id j)
+              xj (arr-val m id j)]
+          (do
+            (vec/set-at! &mut (get-field o :otags) i tj)
+            (vec/set-at! &mut (get-field o :ovals) i xj)
+            (vec/set-at! &mut (get-field o :otags) j ti)
+            (vec/set-at! &mut (get-field o :ovals) j xi)
+            (recur (+ i 1))))))))
+
+;; 1 if a < b under the default order (compare as strings) or the comparator's numeric result,
+;; 0 if not, -1 if the comparator threw/aborted
+(defn sort-less? [(m : &mut Js) (ft : I32) (fx : F64) (t1 : I32) (x1 : F64) (t2 : I32) (x2 : F64) (a : Arena @ Region)] : I32
+  (if (= ft (t-undef))
+    (if (< (str-cmp (elem-string m t1 x1 a) (elem-string m t2 x2 a)) 0) 1 0)
+    (if (cb2! m ft fx t1 x1 t2 x2 a)
+      (let [r (elem-number m (top-tag m) (top-val m))]
+        (do (pop-to! m 1) (if (< r 0.0) 1 0)))
+      -1)))
+
+(defn arr-set! [(m : &mut Js) (id : I32) (i : I32) (t : I32) (x : F64)] : Unit
+  (let [o (obj-at m id)]
+    (do
+      (vec/set-at! &mut (get-field o :otags) i t)
+      (vec/set-at! &mut (get-field o :ovals) i x))))
+
+(defn insert-one! [(m : &mut Js) (id : I32) (i : I32) (ft : I32) (fx : F64) (a : Arena @ Region)] : Bool
+  (let [kt (arr-tag m id i)
+        kx (arr-val m id i)]
+    (loop [j (- i 1)]
+      (if (< j 0)
+        (do (arr-set! m id 0 kt kx) true)
+        (let [r (sort-less? m ft fx kt kx (arr-tag m id j) (arr-val m id j) a)]
+          (cond
+            ((< r 0) false)
+            ((= r 1) (do (arr-set! m id (+ j 1) (arr-tag m id j) (arr-val m id j)) (recur (- j 1))))
+            (true (do (arr-set! m id (+ j 1) kt kx) true))))))))
+
+;; stable insertion sort (O(n^2); v0)
+(defn sort-arr! [(m : &mut Js) (id : I32) (ft : I32) (fx : F64) (a : Arena @ Region)] : Bool
+  (loop [i 1]
+    (cond
+      ((>= i (arr-len m id)) true)
+      ((insert-one! m id i ft fx a) (recur (+ i 1)))
+      (true false))))
+
+;; ---- JSON.stringify (numbers, strings, bool, null, arrays, objects; undefined/functions -> null)
+(defn json-quote [(s : String @ Region) (a : Arena @ Region)] : String @ Region
+  (let [out (alloc a String (+ (* (length s) 2) 3))]
+    #target
+    {:c (inline-c "{ int j = 0; int i; out[j++] = '\"'; for (i = 0; s[i]; i++) { char ch = s[i]; if (ch == '\"' || ch == '\\\\') { out[j++] = '\\\\'; out[j++] = ch; } else if (ch == '\\n') { out[j++] = '\\\\'; out[j++] = 'n'; } else if (ch == '\\t') { out[j++] = '\\\\'; out[j++] = 't'; } else if (ch == '\\r') { out[j++] = '\\\\'; out[j++] = 'r'; } else { out[j++] = ch; } } out[j++] = '\"'; out[j] = '\\0'; }")}
+    out))
+
+(defn json-value [(m : &mut Js) (t : I32) (x : F64) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (cond
+    ((= t (t-str)) (json-quote (str-of m (f64-to-i32 x)) a))
+    ((= t (t-num)) (if (or (num-nan? x) (num-infinite? x)) "null" (fmt-num x a)))
+    ((= t (t-bool)) (if (= x 0.0) "false" "true"))
+    ((= t (t-null)) "null")
+    ((or (= t (t-arr)) (= t (t-obj))) (if (> depth 8) "null" (json-container m (f64-to-i32 x) depth a)))
+    (true "null")))
+
+(defn json-container [(m : &mut Js) (id : I32) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (let [o (obj-at m id)
+        arr (= (get-field o :kind) (t-arr))
+        n (vec/len &(get-field o :otags))]
+    (string/concat
+      (string/concat (if arr "[" "{") (json-items m o n arr depth a) a)
+      (if arr "]" "}") a)))
+
+(defn json-items [(m : &mut Js) (o : &JsObj) (n : I32) (arr : Bool) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (loop [i 0 acc ""]
+    (if (>= i n)
+      acc
+      (recur (+ i 1)
+             (string/concat (if (= i 0) acc (string/concat acc "," a)) (json-item m o i arr depth a) a)))))
+
+(defn json-item [(m : &mut Js) (o : &JsObj) (i : I32) (arr : Bool) (depth : I32) (a : Arena @ Region)] : String @ Region
+  (let [v (json-value m (deref (vec/get &(get-field o :otags) i)) (deref (vec/get &(get-field o :ovals) i)) (+ depth 1) a)]
+    (if arr
+      v
+      (string/concat (string/concat (json-quote (name-at &(get-field o :keys) i) a) ":" a) v a))))
+
+;; ------------------------------------------------------------------------------------------------
+;; runtime: dispatch loop
+;; ------------------------------------------------------------------------------------------------
+(defn jump-if! [(m : &mut Js) (want : Bool) (keep : Bool)] : Unit
+  (let [target (fetch! m)
+        sp (get-field m :sp)
+        t (tag-at m (- sp 1))
+        x (val-at m (- sp 1))
+        truth (truthy? t x m)]
+    (if (= truth want)
+      (do (set! (get-field m :pc) target)
+          (when (not keep) (pop-to! m 1)))
+      (pop-to! m 1))))
+
+;; plain (non-keep) conditional jumps pop either way
+(defn jump-pop! [(m : &mut Js) (want : Bool)] : Unit
+  (let [target (fetch! m)
+        sp (get-field m :sp)
+        truth (truthy? (tag-at m (- sp 1)) (val-at m (- sp 1)) m)]
+    (do
+      (pop-to! m 1)
+      (when (= truth want) (set! (get-field m :pc) target)))))
+
+(defn op-load-local! [(m : &mut Js)] : Unit
+  (let [i (+ (get-field m :fp) (fetch! m))]
+    (push! m (tag-at m i) (val-at m i))))
+
+(defn op-store-local! [(m : &mut Js)] : Unit
+  (let [i (+ (get-field m :fp) (fetch! m))
+        sp (get-field m :sp)]
+    (put-slot! m i (tag-at m (- sp 1)) (val-at m (- sp 1)))))
+
+(defn op-load-global! [(m : &mut Js) (quiet : Bool) (a : Arena @ Region)] : Unit
+  (let [i (fetch! m)
+        t (deref (vec/get &(get-field m :gtags) i))]
+    (cond
+      ((not (= t (t-uninit))) (push! m t (deref (vec/get &(get-field m :gvals) i))))
+      (quiet (push! m (t-undef) 0.0))
+      (true (rt-fail! m (string/concat (string/concat "ReferenceError: " (name-at &(get-field m :gnames) i) a) " is not defined" a))))))
+
+(defn op-store-global! [(m : &mut Js)] : Unit
+  (let [i (fetch! m)
+        sp (get-field m :sp)]
+    (do
+      (vec/set-at! &mut (get-field m :gtags) i (tag-at m (- sp 1)))
+      (vec/set-at! &mut (get-field m :gvals) i (val-at m (- sp 1))))))
+
+(defn op-neg! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)
+        x (elem-number m (tag-at m (- sp 1)) (val-at m (- sp 1)))]
+    (do (pop-to! m 1) (push! m (t-num) (- 0.0 x)))))
+
+(defn op-not! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)
+        truth (truthy? (tag-at m (- sp 1)) (val-at m (- sp 1)) m)]
+    (do (pop-to! m 1) (push! m (t-bool) (if truth 0.0 1.0)))))
+
+(defn op-dup! [(m : &mut Js)] : Unit
+  (let [sp (get-field m :sp)]
+    (push! m (tag-at m (- sp 1)) (val-at m (- sp 1)))))
+
+(defn op-num! [(m : &mut Js)] : Unit
+  (let [k (fetch! m)]
+    (push! m (t-num) (deref (vec/get &(get-field m :nums) k)))))
+
+(defn dispatch-a! [(m : &mut Js) (op : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((= op (o-halt)) (set! (get-field m :halt) 1))
+    ((= op (o-num)) (op-num! m))
+    ((= op (o-str)) (push! m (t-str) (to-f64 (fetch! m))))
+    ((= op (o-undef)) (push! m (t-undef) 0.0))
+    ((= op (o-null)) (push! m (t-null) 0.0))
+    ((= op (o-true)) (push! m (t-bool) 1.0))
+    ((= op (o-false)) (push! m (t-bool) 0.0))
+    ((= op (o-pop)) (pop-to! m 1))
+    ((= op (o-loadl)) (op-load-local! m))
+    ((= op (o-storel)) (op-store-local! m))
+    ((= op (o-loadg)) (op-load-global! m false a))
+    ((= op (o-loadgq)) (op-load-global! m true a))
+    ((= op (o-storeg)) (op-store-global! m))
+    ((= op (o-add)) (op-add! m a))
+    ((or (= op (o-sub)) (or (= op (o-mul)) (or (= op (o-div)) (= op (o-mod))))) (bin-num! m op))
+    ((= op (o-neg)) (op-neg! m))
+    ((= op (o-not)) (op-not! m))
+    (true (dispatch-b! m op a))))
+
+(defn dispatch-b! [(m : &mut Js) (op : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((or (= op (o-lt)) (or (= op (o-gt)) (or (= op (o-le)) (= op (o-ge))))) (op-cmp! m op))
+    ((or (= op (o-eq)) (or (= op (o-ne)) (or (= op (o-seq)) (= op (o-sne))))) (op-eq! m op))
+    ((= op (o-jmp)) (set! (get-field m :pc) (fetch! m)))
+    ((= op (o-jf)) (jump-pop! m false))
+    ((= op (o-jt)) (jump-pop! m true))
+    ((= op (o-jfk)) (jump-if! m false true))
+    ((= op (o-jtk)) (jump-if! m true true))
+    ((= op (o-call)) (op-call! m a))
+    ((= op (o-ret)) (op-ret! m))
+    ((= op (o-mkfn)) (op-mkfn! m))
+    ((= op (o-loadup)) (op-loadup! m))
+    ((= op (o-storeup)) (op-storeup! m))
+    ((= op (o-dup)) (op-dup! m))
+    ((= op (o-typeof)) (op-typeof! m))
+    ((= op (o-builtin)) (push! m (t-builtin) (to-f64 (fetch! m))))
+    (true (dispatch-c! m op a))))
+
+(defn dispatch-c! [(m : &mut Js) (op : I32) (a : Arena @ Region)] : Unit
+  (cond
+    ((= op (o-getpropk)) (op-getpropk! m a))
+    ((= op (o-getidxk)) (op-getidxk! m a))
+    ((= op (o-newarr)) (new-obj! m (t-arr) a))
+    ((= op (o-newobj)) (new-obj! m (t-obj) a))
+    ((= op (o-append)) (append-val! m a))
+    ((= op (o-initprop)) (op-initprop! m))
+    ((= op (o-getidx)) (op-getidx! m a))
+    ((= op (o-setidx)) (op-setidx! m a))
+    ((= op (o-getprop)) (op-getprop! m a))
+    ((= op (o-setprop)) (op-setprop! m a))
+    ((= op (o-callm)) (op-callm! m a))
+    ((= op (o-nop)) unit)
+    ((= op (o-try)) (op-try! m))
+    ((= op (o-endtry)) (set! (get-field m :hn) (- (get-field m :hn) 1)))
+    ((= op (o-throw)) (op-throw! m))
+    (true (halt-fail! m "internal error: bad opcode"))))
+
+(defn step! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (do
+    (set! (get-field m :steps) (+ (get-field m :steps) 1))
+    (dispatch-a! m (fetch! m) a)
+    (when (> (get-field m :exc) 0) (unwind! m a))))
+
+(defn exec! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (loop [n 0]
+    (cond
+      ((not (= (get-field m :halt) 0)) unit)
+      ((>= (get-field m :steps) (get-field m :limit))
+        (do (halt-fail! m "Error: execution step limit exceeded") unit))
+      (true (do (step! m a) (recur (+ n 1)))))))
+
+;; ------------------------------------------------------------------------------------------------
+;; driver
+;; ------------------------------------------------------------------------------------------------
+(defn fill-undef! [(tags : &mut (Vec I32)) (vals : &mut (Vec F64)) (n : I32)] : Unit
+  (do
+    (vec/reserve tags n)
+    (vec/reserve vals n)
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (vec/push! tags 0) (vec/push! vals 0.0) (recur (+ i 1)))))))
+
+(defn fill-globals! [(tags : &mut (Vec I32)) (vals : &mut (Vec F64)) (n : I32)] : Unit
+  (do
+    (vec/reserve tags n)
+    (vec/reserve vals n)
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (vec/push! tags (t-uninit)) (vec/push! vals 0.0) (recur (+ i 1)))))))
+
+(defn fill-i32! [(v : &mut (Vec I32)) (n : I32)] : Unit
+  (do
+    (vec/reserve v n)
+    (loop [i 0]
+      (if (>= i n)
+        unit
+        (do (vec/push! v 0) (recur (+ i 1)))))))
+
+(defn js-new [(src : String @ Region) (limit : I32) (budget : I32) (a : Arena @ Region)] : Js @ Region
+  {:src src :len (length src) :pos 0 :tk 0 :tc 0 :ts 0 :te 0 :tn 0.0
+   :code (vec/new a) :nums (vec/new a) :strs (vec/new a)
+   :fpc (vec/new a) :fnp (vec/new a) :fnl (vec/new a)
+   :gnames (vec/new a) :fcs (vec/new a) :fstack (vec/new a) :lnames (vec/new a) :lslot (vec/new a) :lvar (vec/new a) :isvar 0 :bdepth 0 :quiet 0 :ltop 0 :lbase 0 :lmax 0 :fdepth 0
+   :brk (vec/new a) :brktop 0 :cnt (vec/new a) :cnttop 0
+   :lastget -1 :lastkind 0 :trydepth 0 :ldepth 0 :ltry (vec/new a) :ltrytop 0 :err ""
+   :stags (vec/new a) :svals (vec/new a) :gtags (vec/new a) :gvals (vec/new a)
+   :fret (vec/new a) :ffp (vec/new a) :objs (vec/new a)
+   :clfid (vec/new a) :clstart (vec/new a) :clups (vec/new a) :upslot (vec/new a) :uptag (vec/new a)
+   :upval (vec/new a) :openup (vec/new a) :nopen 0 :cur -1 :fclo (vec/new a)
+   :hpc (vec/new a) :hsp (vec/new a) :hfp (vec/new a) :hcd (vec/new a) :hclo (vec/new a) :hnest (vec/new a)
+   :hn 0 :exc 0 :exct 0 :excv 0.0 :nest 0 :escape 0
+   :sp 0 :fp 0 :pc 0 :cd 0 :halt 0 :steps 0 :limit limit :budget budget
+   :obuf (alloc a String (out-cap)) :olen 0 :ocap (out-cap)})
+
+(defn reset-out! [(m : &mut Js)] : Unit
+  #target
+  {:c (inline-c "m->obuf[0] = '\\0'; m->olen = 0;")})
+
+(defn run-compiled! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (do
+    (fill-undef! &mut (get-field m :stags) &mut (get-field m :svals) (stack-cap))
+    (fill-globals! &mut (get-field m :gtags) &mut (get-field m :gvals) (vec/len &(get-field m :gnames)))
+    (fill-i32! &mut (get-field m :fret) (frame-cap))
+    (fill-i32! &mut (get-field m :ffp) (frame-cap))
+    (fill-i32! &mut (get-field m :fclo) (frame-cap))
+    (fill-i32! &mut (get-field m :hpc) 64)
+    (fill-i32! &mut (get-field m :hsp) 64)
+    (fill-i32! &mut (get-field m :hfp) 64)
+    (fill-i32! &mut (get-field m :hcd) 64)
+    (fill-i32! &mut (get-field m :hclo) 64)
+    (fill-i32! &mut (get-field m :hnest) 64)
+    (exec! m a)))
+
+;; the outcome text: program output, then (if any) "Uncaught <error>"
+(defn finish-text [(m : &mut Js) (a : Arena @ Region)] : String @ Region
+  (if (> (length (get-field m :err)) 0)
+    (string/concat (string/concat (string/concat (get-field m :obuf) "Uncaught " a) (get-field m :err) a) "\n" a)
+    (get-field m :obuf)))
+
+(defn compile-run! [(m : &mut Js) (a : Arena @ Region)] : Unit
+  (do
+    (next-token! m)
+    (parse-program! m a)
+    (if (> (length (get-field m :err)) 0)
+      unit
+      (run-compiled! m a))))
+
+;; v16-eval -- compile + run `src`; returns console output followed by "Uncaught <error>" if the
+;; script (or its syntax) failed. `dest` is the ONLY memory the engine uses.
+(defn v16-eval-bounded [(src : String @ Region) (limit : I32) (budget : I32) (dest : Arena @ Region)] : String @ Region
+  (let [m (js-new src limit budget dest)]
+    (do
+      (reset-out! &mut m)
+      (compile-run! &mut m dest)
+      (finish-text &mut m dest))))
+
+(defn v16-eval-limited [(src : String @ Region) (limit : I32) (dest : Arena @ Region)] : String @ Region
+  (v16-eval-bounded src limit 33554432 dest))
+
+(defn v16-eval [(src : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (v16-eval-limited src 20000000 dest))

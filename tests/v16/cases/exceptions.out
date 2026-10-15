@@ -1,0 +1,10 @@
+1 RangeError/too big: 5
+[ 'a', 'TypeError' ]
+ReferenceError notDefinedAnywhere is not defined
+TypeError
+7
+bottom
+[ 3, 'four' ]
+tried tried
+before uncaught
+Uncaught TypeError: final

@@ -24,7 +24,7 @@
 #define PARENA_ARENA_BLOCK_MIN_CAPACITY (PARENA_STATIC_BLOCK_BYTES - 64u)
 
 static unsigned char g_pool[PARENA_STATIC_POOL_BYTES] __attribute__((aligned(64)));
-static unsigned char g_pool_run[PARENA_STATIC_NBLOCKS]; /* run length at run start, else 0 */
+static unsigned short g_pool_run[PARENA_STATIC_NBLOCKS]; /* run length at run start, else 0 */
 static unsigned char g_pool_used[PARENA_STATIC_NBLOCKS];
 static size_t g_pool_in_use;
 static size_t g_pool_high;
@@ -32,13 +32,14 @@ static size_t g_pool_high;
 static void *static_alloc(size_t bytes) {
     size_t need = (bytes + PARENA_STATIC_BLOCK_BYTES - 1u) / PARENA_STATIC_BLOCK_BYTES;
     size_t i, run = 0;
-    if (need == 0 || need > 255u) return NULL; /* run length is stored in a byte */
+    if (need == 0 || need > 65535u) return NULL; /* run length is stored in a 16-bit cell (was 8-bit: a
+                                                    * single allocation could never exceed 255 blocks = 2 MiB) */
     for (i = 0; i < PARENA_STATIC_NBLOCKS; i++) {
         if (g_pool_used[i]) { run = 0; continue; }
         if (++run == need) {
             size_t first = i + 1u - need, j;
             for (j = first; j <= i; j++) g_pool_used[j] = 1;
-            g_pool_run[first] = (unsigned char)need;
+            g_pool_run[first] = (unsigned short)need;
             g_pool_in_use += need * PARENA_STATIC_BLOCK_BYTES;
             if (g_pool_in_use > g_pool_high) g_pool_high = g_pool_in_use;
             return g_pool + first * PARENA_STATIC_BLOCK_BYTES;
@@ -99,8 +100,14 @@ static ParenaArenaBlock *arena_new_block(size_t min_capacity) {
                            : PARENA_ARENA_BLOCK_MIN_CAPACITY;
     ParenaArenaBlock *b = (ParenaArenaBlock *)g_block_alloc(sizeof(ParenaArenaBlock) + capacity);
     if (!b) {
+#ifdef PARENA_FREESTANDING
+        /* No stdio/exit in a freestanding (wasm) module: an exhausted pool is a trap the embedder
+         * sees as a WebAssembly RuntimeError ("unreachable"), never a silent wrong answer. */
+        __builtin_trap();
+#else
         fprintf(stderr, "parena runtime: out of memory (arena block alloc failed)\n");
         exit(1);
+#endif
     }
     b->next = NULL;
     b->used = 0;

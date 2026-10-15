@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>V16 in WebAssembly</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; }
+  textarea { width: 100%; height: 14rem; font: 13px/1.4 ui-monospace, monospace; }
+  pre { background: #111; color: #9f9; padding: .75rem; min-height: 4rem; white-space: pre-wrap; }
+  #meta { color: #666; }
+</style>
+<h1>V16 &mdash; a JavaScript engine written in PARENA, running as WebAssembly</h1>
+<p>The engine is <code>stdlib/v16/engine.prn</code> compiled PARENA &rarr; C &rarr; <code>v16.wasm</code>
+(zero imports, no malloc, no GC: every byte comes from one arena). Build it with
+<code>make v16-wasm</code> and serve this directory next to <code>build/v16.wasm</code>.</p>
+<textarea id="src">function fib(n) { return n &lt; 2 ? n : fib(n - 1) + fib(n - 2); }
+var counter = (function () { var n = 0; return function () { return ++n; }; })();
+console.log(fib(20), counter(), counter());
+console.log([3, 1, 2].sort().map(x =&gt; x * 10), { ok: true });</textarea>
+<p><button id="run">Run</button> <span id="meta"></span></p>
+<pre id="out"></pre>
+<script>
+// The embedder ABI is five exports; see examples/v16_wasm/v16_host.c. No WASI shim is needed.
+(async () => {
+  const url = new URLSearchParams(location.search).get("wasm") || "../../build/v16.wasm";
+  const { instance } = await WebAssembly.instantiateStreaming(fetch(url), {});
+  const x = instance.exports;
+  if (x._initialize) x._initialize();
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  function run(source) {
+    const bytes = enc.encode(source);
+    if (bytes.length > x.v16_input_capacity()) throw new Error("script too large");
+    new Uint8Array(x.memory.buffer, x.v16_input(), bytes.length).set(bytes);
+    const n = x.v16_run(bytes.length);
+    return dec.decode(new Uint8Array(x.memory.buffer, x.v16_output(), n));
+  }
+  const out = document.getElementById("out"), meta = document.getElementById("meta");
+  document.getElementById("run").onclick = () => {
+    const t0 = performance.now();
+    out.textContent = run(document.getElementById("src").value);
+    meta.textContent = (performance.now() - t0).toFixed(1) + " ms, arena high-water "
+      + x.v16_arena_used() + " bytes";
+  };
+  document.getElementById("run").click();
+})();
+</script>

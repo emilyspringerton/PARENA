@@ -3491,6 +3491,56 @@ Real, honest, unstarted: statements/assignment/`if`/blocks (needs a real keyword
 the tree-walking interpreter (`V16_NORTHSTAR.md`'s own Phase 3), and everything else that
 document's own real 6-phase plan names.
 
+## v16/engine — a JavaScript execution engine in PARENA, running as WebAssembly (2026-10-15)
+
+Founder real-time: *"spike out the v16 js execution engine it must run in WASM totally parena
+powered all arenas."* `stdlib/v16/engine.prn` (one module, `(import string)`/`(import vec)`; build
+with `stdlib/string.prn stdlib/v16/engine.prn` in the same `parena build` call) is a complete small
+JS engine — lexer, single-pass compiler to bytecode, stack VM, closures, exceptions, a builtin
+slice — whose every allocation is an `Arena` allocation. It is the Phase 3-5 spike of
+`docs/V16_NORTHSTAR.md`; the full account of scope, limits and what it cost the compiler lives
+there. The two older files (`v16/lexer`, `v16/parser`) are untouched.
+
+```
+(v16-eval src arena)                          ; -> String: console output (+ "Uncaught <error>\n")
+(v16-eval-limited src steps arena)
+(v16-eval-bounded src steps arena-budget-bytes arena)
+```
+
+- **Memory:** no malloc/GC/free. JS values are `(tag, payload)` pairs in two parallel scalar
+  `Vec`s (I32 tags, F64 payloads); strings/arrays/objects/closures are arena entries addressed by
+  index. One run == one region; `arena-budget-bytes` is charged before each allocation so a runaway
+  script gets a `RangeError`, not a trap. No collector — see NORTHSTAR for why that is the honest
+  boundary.
+- **WebAssembly:** `make v16-wasm` builds `build/v16.wasm` (~130 KB, **zero imports**, exports
+  `v16_input`/`v16_input_capacity`/`v16_run`/`v16_output`/`v16_arena_used`) from the generated C with
+  `python3 -m ziglang cc -target wasm32-wasi -mexec-model=reactor` (override `V16_WASM_CC`).
+  `make test-v16-wasm` replays `tests/v16/cases` through wasmtime (`pip install wasmtime`; skips
+  with a message if absent). `examples/v16_wasm/index.html` is a browser loader for the same ABI —
+  **untested in a real browser** (no browser on the build box); the ABI itself is what
+  `run_wasm.py` exercises.
+- **Native test:** `make test-v16-engine` (`tests/test_v16_engine.c`, `-Wall -Wextra -pedantic
+  -Werror`): 19 corpus programs (`tests/v16/cases/*.js` + expected `.out`) and the limit checks.
+  Also run clean under ASan+UBSan and against ~3,000 randomly mutated corpus programs.
+- **`runtime/parena_runtime.h` gained a freestanding mode** (`PARENA_FREESTANDING`, on automatically
+  for `__wasm__`): sockets/pty/serial/process/mmap/TLS/SDL glue is compiled out; arena exhaustion is
+  `__builtin_trap()`; and `Vec` slots are now an 8-byte union (`ParenaVecSlot`) instead of
+  `void *`, which silently assumed a 64-bit pointer wide enough to hold an `F64` — byte-identical on
+  64-bit hosts, correct on wasm32. `vec/truncate!` was added.
+- **Compiler (`src/emit.c`) changes this needed**, each with a regression in `tests/test_emit.c`:
+  a `cond`/`if` whose clause bodies are `do`/`let`/`loop`/`when`/`set!`/`unit` is lowered to an
+  if/else chain (tail position and as a discarded mid-body statement) instead of a C ternary —
+  **this removes the quirk documented under "v16/parser" above that a `cond` clause body cannot be
+  a `let`/`do`** (plain-expression `cond`s keep their ternary lowering byte for byte);
+  a `loop` whose terminal value is bare `unit` no longer emits `return __loop_result;` from a void
+  function; `vec_truncate_`/`vec_reserve` are known-void.
+- **Quirks found writing 3,600 lines of PARENA, new ones only:** a struct field named `v` collides
+  with the generated constructor's own local; `(or a b c)` is variadic and rejected (nest it);
+  a float literal with an exponent (`1.7e308`) lexes as two tokens (compute infinity as `(/ 1.0
+  0.0)`); the arguments of one call are evaluated in unspecified C order, so two `(fetch! m)` in
+  one call is a bug (bind them in a `let` first); a loop that ends in a `Unit` call needs a trailing
+  `unit`; a `loop` variable must not share a name with a function parameter.
+
 ## pentest/dot11 — a real, native Radiotap+802.11 Beacon frame parser (2026-09-04)
 
 Kismet-class wireless scanning research, `KISMET_WIRELESS_NORTHSTAR.md`'s own Phase 1 (kanban

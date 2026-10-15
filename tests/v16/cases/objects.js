@@ -1,0 +1,13 @@
+var o = { name: "v16", n: 2, "quoted key": 1 };
+console.log(o.name, o.n, o["quoted key"], o.missing);
+o.n = o.n + 40;
+o.extra = [1, 2];
+o["dyn"] = "x";
+console.log(o.n, o.extra.length, o.dyn);
+o.n += 5; o.n++;
+console.log(o.n);
+console.log(o);
+console.log({}, { a: {} }, { a: { b: { c: { d: 1 } } } });
+var counter = { count: 0, bump: function () { return 7; } };
+console.log(counter.bump(), counter.count);
+console.log("" + [1, 2, 3], "" + {}, [1, 2] + [3]);

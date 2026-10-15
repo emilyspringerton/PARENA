@@ -11,6 +11,18 @@
 #ifndef PARENA_RUNTIME_H
 #define PARENA_RUNTIME_H
 
+/* PARENA_FREESTANDING (auto-on for any __wasm__ target, 2026-10-15, V16 WASM spike): the
+ * host-glue families that need a real OS -- BSD sockets/net-stream, pty, serial, process, signals,
+ * mmap -- are compiled out, leaving arena/Vec/Bytes/F32/string/slot cores plus the WASI-safe file
+ * helpers. A freestanding build also drops the 64-bit-pointer assumption Vec used to make (see
+ * ParenaVecSlot below). */
+#if defined(__wasm__) && !defined(PARENA_FREESTANDING)
+#define PARENA_FREESTANDING 1
+#endif
+#if defined(PARENA_FREESTANDING) && !defined(PARENA_NO_GRAPHICS)
+#define PARENA_NO_GRAPHICS 1 /* no SDL2 in a freestanding build */
+#endif
+
 /* _POSIX_C_SOURCE must be defined before any system header is
  * included: under -std=c99 (this project's own strict ISO build
  * flag, not -std=gnu99), glibc hides getaddrinfo/struct addrinfo and
@@ -61,7 +73,9 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifndef PARENA_FREESTANDING
 #include <signal.h>
+#endif
 /* Real cross-platform split (2026-08-26, founder: "ensure editor
  * binaries for windows linux and mac are released"): everything below
  * this point -- BSD sockets (net/tcp.prn), POSIX ptys (pty.prn),
@@ -76,7 +90,7 @@
  * header comment already documented Windows ConPTY as real, separate,
  * unstarted work; this doesn't change that, just stops it from ALSO
  * blocking unrelated Windows builds). */
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_FREESTANDING)
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -370,22 +384,27 @@ static inline Option option_unwrap_check(Option o) {
  *   Contract change worth knowing: a pointer returned by vec_get on a scalar Vec points
  *   INTO the array and is invalidated by a later push that grows it (it used to point at a
  *   stable boxed cell). Generated code dereferences immediately, so this is not observable
- *   there. Needs sizeof(void *) >= 8 and little-endian for the int-in-slot read; both are
- *   asserted below.
+ *   there. Needs a little-endian target for the int-in-slot read (slots are 8 bytes
+ *   everywhere, wasm32 included).
  *
  *   `tmp` is the single-slot staging cell vec_box_* hand back so the existing
  *   `vec_push_(v, vec_box_f64(v, x))` call shape keeps working.
  */
+/* One Vec slot is always 8 bytes wide (pointer, F64 or I32), NOT sizeof(void *): on wasm32 a
+ * pointer is 4 bytes, so a pointer-sized slot could not hold a scalar F64 element. On the 64-bit
+ * hosts this is byte-for-byte the old layout. */
+typedef union { void *p; double f; int i; } ParenaVecSlot;
+
 typedef struct {
     Arena *arena;
-    void **items;
+    ParenaVecSlot *items;
     size_t count;
     size_t capacity;
     int scalar;
     union { double f; int i; void *p; } tmp;
 } Vec;
 
-typedef char parena_vec_slot_holds_double_[(sizeof(void *) >= sizeof(double)) ? 1 : -1];
+typedef char parena_vec_slot_holds_double_[(sizeof(ParenaVecSlot) >= sizeof(double)) ? 1 : -1];
 
 static inline Vec vec_new(Arena *dest) {
     Vec v;
@@ -401,10 +420,10 @@ static inline Vec vec_new(Arena *dest) {
 static inline void vec_reserve_(Vec *v, size_t want) {
     if (want > v->capacity) {
         size_t new_cap = v->capacity == 0 ? 8 : v->capacity;
-        void **new_items;
+        ParenaVecSlot *new_items;
         size_t i;
         while (new_cap < want) new_cap *= 2;
-        new_items = (void **)arena_alloc_aligned(v->arena, new_cap * sizeof(void *), 64);
+        new_items = (ParenaVecSlot *)arena_alloc_aligned(v->arena, new_cap * sizeof(ParenaVecSlot), 64);
         for (i = 0; i < v->count; i++) new_items[i] = v->items[i];
         v->items = new_items;
         v->capacity = new_cap;
@@ -424,10 +443,11 @@ static inline int vec_is_staged_(const Vec *v, const void *item) {
 static inline void vec_store_(Vec *v, size_t idx, void *item) {
     if (vec_is_staged_(v, item)) {
         v->scalar = 1;
-        v->items[idx] = NULL; /* clear all 8 bytes so an int slot reads back clean */
+        memset(&v->items[idx], 0, sizeof(ParenaVecSlot)); /* clear all 8 bytes so an int slot reads back clean */
         memcpy(&v->items[idx], &v->tmp, sizeof(double));
     } else {
-        v->items[idx] = item;
+        memset(&v->items[idx], 0, sizeof(ParenaVecSlot));
+        v->items[idx].p = item;
     }
 }
 
@@ -439,7 +459,7 @@ static inline void vec_push_(Vec *v, void *item) {
 
 static inline void *vec_get(Vec *v, int idx) {
     if (idx < 0 || (size_t)idx >= v->count) return NULL;
-    return v->scalar ? (void *)&v->items[idx] : v->items[idx];
+    return v->scalar ? (void *)&v->items[idx] : v->items[idx].p;
 }
 
 static inline int vec_len(Vec *v) {
@@ -464,6 +484,14 @@ static inline void *vec_box_i32(Vec *v, int value) {
 static inline void *vec_box_f64(Vec *v, double value) {
     v->tmp.f = value;
     return &v->tmp;
+}
+
+/* vec_truncate_ -- shrink a Vec's logical length (never grows; capacity and the arena bytes are
+ * untouched, exactly like every other Vec operation never returning memory). Added 2026-10-15 for
+ * the V16 engine's Array.prototype.pop. Name matches mangle("vec/truncate!"). */
+static inline void vec_truncate_(Vec *v, int n) {
+    if (n < 0) n = 0;
+    if ((size_t)n < v->count) v->count = (size_t)n;
 }
 
 /* Bytes -- a real, second core-language base type alongside String,
@@ -1390,7 +1418,7 @@ static inline double raw_read_f64_impl(int fd) {
  * file header comment on the include split for the full reasoning),
  * guarded so a program that doesn't need either (editor-demo) can
  * still build clean there. */
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_FREESTANDING)
 
 /* ---- stdlib/net/tcp.prn real host glue (2026-08-25) ------------------
  * Real BSD sockets -- net/tcp.prn's own #target bodies previously
@@ -2204,7 +2232,7 @@ static inline int tls_close_impl(int handle) {
  * shows as "(terminal not spawned...)", not a silent lie or a crash)
  * rather than breaking the whole cross-platform editor build over one
  * genuinely POSIX-only backend. */
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_FREESTANDING)
 
 /* ---- stdlib/pty.prn real host glue (2026-08-26) ------------------------
  * The concrete "PARENA eats PITVIPER" dogfooding step NORTHSTAR.md's own
@@ -2414,7 +2442,7 @@ static inline int pty_close_impl(int fd) {
  * of pty_poll_read_impl's own real technique), not the blocking shape
  * fixed up later after a live hang -- applying that already-learned
  * lesson up front instead of re-discovering it. */
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_FREESTANDING)
 
 /* serial_baud_to_speed_impl -- the real, small, named lookup table the
  * NORTHSTAR doc calls out by name ("baud-to-speed-constant"), mapping
@@ -3110,7 +3138,7 @@ static inline int is_dir_impl(const char *path) {
  * unstarted port, not attempted here since editor-demo (the real
  * Windows build this guard exists for) doesn't need process.prn at
  * all. */
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PARENA_FREESTANDING)
 static int g_run_capture_last_exit_code = 0;
 
 static inline int spawn_detached_impl(const char *path, const char *arg1) {
@@ -3738,6 +3766,7 @@ static inline int sdl2_measure_text_height_impl(int font_handle, const char *tex
 #endif /* PARENA_NO_TTF */
 #endif /* PARENA_NO_GRAPHICS */
 
+#ifndef PARENA_FREESTANDING /* sockets/TLS: no wasm story (see PARENA_FREESTANDING) */
 /* ---- net/stream: cross-platform TCP *client* streaming primitives (2026-10-14, PELLEGRINO) -----
  * What net/tcp.prn's own tcp_read_impl is not: incremental. That one blocks until the peer closes
  * (or Content-Length is satisfied); a browser that wants to paint bytes AS THEY ARRIVE needs
@@ -4341,6 +4370,8 @@ static inline int stream_close_impl(int fd) {
     if (fd < 0) return -1;
     return parena_sock_close((parena_sock_t)fd) == 0 ? 0 : -1;
 }
+
+#endif /* !PARENA_FREESTANDING -- end of net/stream */
 
 /* linebuf -- one small static line-input buffer (address bar / command bar). */
 #define PARENA_LINEBUF_MAX 1024

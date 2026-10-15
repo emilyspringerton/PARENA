@@ -1,0 +1,23 @@
+0 5
+1 3
+2 8
+3 1
+[ 10, 6, 16, 2 ] [ 5, 3, 8 ] 17 17
+true false 5 0 undefined
+2 -1 true [ 3, 8 ] [ 8, 1 ] [ 5, 3, 8, 1, 9, 10, 11 ]
+[ 3, 5, 8 ] [ 3, 5, 8 ] [ 3, 5, 8 ] 1 [ 3, 5, 8 ]
+[ 1, 10, 9 ] [ 'a', 'b', 'c' ]
+HELLO WORLD hello pad| [ 'a', 'b', 'c' ] [ 'a', 'b', 'c' ] yz yz
+true true ababab 65
+42 31 255 NaN 3.14 12 0 NaN 12 true false true
+[ 'a', 'b' ] true false {"a":[1,"two",null,true],"b":{"c":"q\"t"}}
+3 -2 -3 3.141592653589793
+caught TypeError Cannot read properties of null (reading 'x')
+ReferenceError: undefinedFn is not defined
+boom Error
+plain
+from TypeError deep
+RangeError in callback
+[ 1, 'two', 3 ]
+after
+Uncaught Error: uncaught!

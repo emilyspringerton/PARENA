@@ -1,0 +1,17 @@
+var a = [3, 1, 2];
+console.log(a.length, a[0], a[2], a[5]);
+a.push(4);
+a.push(5, 6);
+console.log(a.length, a.join("-"), a.join());
+console.log(a.pop(), a.length);
+a[1] = 10;
+a[a.length] = 99;
+console.log(a);
+var sum = 0;
+for (var i = 0; i < a.length; i++) sum += a[i];
+console.log(sum);
+a[0] += 100; a[1]--;
+console.log(a[0], a[1]);
+console.log([], [[]], [1, [2, [3, [4]]]]);
+var empty = [];
+console.log(empty.pop(), empty.length);

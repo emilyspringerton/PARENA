@@ -1,0 +1,7 @@
+v16 2 1 undefined
+42 2 x
+48
+{ name: 'v16', n: 48, 'quoted key': 1, extra: [ 1, 2 ], dyn: 'x' }
+{} { a: {} } { a: { b: { c: [Object] } } }
+7 0
+1,2,3 [object Object] 1,23

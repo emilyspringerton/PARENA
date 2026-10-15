@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_llvm.c src/fmt.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-emit-ts test-emit-java test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-emit-ts test-emit-java test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-v16-engine v16-wasm test-v16-wasm test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -276,6 +276,34 @@ test-v16-parser: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_v16_parser.c \
 		runtime/parena_runtime.c -o /tmp/test_v16_parser_bin -lm
 	/tmp/test_v16_parser_bin
+
+# test-v16-engine -- end-to-end verification for stdlib/v16/engine.prn, the V16 JS execution engine
+# spike (founder real-time 2026-10-15: "spike out the v16 js execution engine it must run in WASM
+# totally parena powered all arenas"). Runs the tests/v16/cases corpus natively.
+test-v16-engine: build
+	./parena build stdlib/string.prn stdlib/v16/engine.prn -o tests/test_v16_engine_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -DPARENA_NO_GRAPHICS -I runtime -I tests \
+		tests/test_v16_engine.c runtime/parena_runtime.c -o /tmp/test_v16_engine_bin -lm
+	/tmp/test_v16_engine_bin tests/v16/cases
+
+# v16-wasm -- compile the V16 engine to a freestanding WebAssembly module (build/v16.wasm, zero
+# imports). Needs any wasm32-wasi C compiler: by default `python3 -m ziglang cc` (pip install
+# ziglang); override with V16_WASM_CC="clang --target=wasm32-wasi --sysroot=...". The engine is
+# PARENA -> C via the normal emitter; the runtime's no-malloc static pool is the module's heap.
+V16_WASM_CC ?= python3 -m ziglang cc -target wasm32-wasi
+V16_WASM_POOL ?= 16777216
+v16-wasm: build
+	mkdir -p build
+	./parena build stdlib/string.prn stdlib/v16/engine.prn -o build/v16_engine_gen.c
+	$(V16_WASM_CC) -mexec-model=reactor -Oz -s -std=c99 -Wno-parentheses-equality -DPARENA_NO_MALLOC \
+		-DPARENA_STATIC_POOL_BYTES=$(V16_WASM_POOL) -DV16_BUDGET=4194304 \
+		-DV16_ENGINE_GEN='"build/v16_engine_gen.c"' -I runtime -I . \
+		examples/v16_wasm/v16_host.c runtime/parena_runtime.c -o build/v16.wasm
+	@ls -l build/v16.wasm
+
+# test-v16-wasm -- run the same corpus against build/v16.wasm through wasmtime (python module).
+test-v16-wasm: v16-wasm
+	python3 tests/v16/run_wasm.py build/v16.wasm tests/v16/cases
 
 # test-sip-message -- real end-to-end verification for stdlib/sip/message.prn (kanban
 # priority-queue card 3124213, "SIP phone primitives in parena stdlib"): real request/response

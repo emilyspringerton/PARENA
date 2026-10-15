@@ -315,6 +315,27 @@ argv[0]) — a real, more portable fix is separate, later work. Live-verified vi
 `tests/integration/run_new_check.sh` (`make test-new`): a real scaffold builds, runs, prints the
 correct output, and a second `parena new` on the same name correctly refuses to overwrite it.
 
+## V16 — a JavaScript engine written in PARENA, running as WebAssembly (spike, 2026-10-15)
+
+`stdlib/v16/engine.prn` is a small but real JavaScript execution engine (closures, arrow functions,
+try/catch, for-of, switch, arrays/objects, `console.log`, `JSON.stringify`, `Math`, array/string
+methods) written entirely in PARENA — no malloc, no GC: every token, bytecode word, value, string,
+closure and the output buffer is bump-allocated from one `Arena`, and a per-run byte budget turns a
+runaway script into a `RangeError`. It compiles PARENA → C → WebAssembly:
+
+```bash
+pip install ziglang wasmtime           # any wasm32 C compiler works; these two are the default
+make test-v16-engine                   # corpus natively, -Wall -Wextra -pedantic -Werror
+make v16-wasm                          # build/v16.wasm  (~130 KB, zero imports, 5 exports)
+make test-v16-wasm                     # same corpus through wasmtime
+```
+
+**Honest status:** a spike, not a conformant engine — no `this`/prototypes/classes, `finally`,
+generators, async, regex, template literals, destructuring, `JSON.parse`, `Date`/`Math.random`,
+Unicode semantics or GC; not run against test262; the browser loader
+(`examples/v16_wasm/index.html`) is untested in a real browser. Full account, limits and the
+road ahead: `docs/V16_NORTHSTAR.md`; API and build details: `STDLIB.md` "v16/engine".
+
 ## `plugins/static_analysis` — multi-tier IR lifter + SSA (Python)
 
 Headless binary analysis: `Lifter.open(path)` (ELF64 / PE32+ / raw x86-64) indexes functions and gives each

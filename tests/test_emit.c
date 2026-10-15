@@ -3176,6 +3176,44 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- statement-level `cond`/`if` (2026-10-15, V16 engine): a clause/branch body that is a
+     * `do`/`let`/`loop`/`when` used to be unrepresentable inside the C ternary a function-tail
+     * `cond` lowered to (the emitter produced the literal, invalid `do(...)` call). Such a
+     * `cond` -- in tail position OR as a discarded mid-body statement -- is now an if/else
+     * chain; a `cond` with only plain-expression clauses keeps its exact ternary lowering. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defstruct Box (n : I32))\n"
+            "(defn bump! [(b : &mut Box)] : Unit (set! (get-field b :n) (+ (get-field b :n) 1)))\n"
+            "(defn tail-cond! [(b : &mut Box) (x : I32)] : Unit\n"
+            "  (cond\n"
+            "    ((= x 1) (do (bump! b) (bump! b)))\n"
+            "    ((= x 2) (let [y (+ x 1)] (do (bump! b) (set! (get-field b :n) (+ (get-field b :n) y)))))\n"
+            "    (true (bump! b))))\n"
+            "(defn mid-if! [(b : &mut Box) (x : I32)] : Unit\n"
+            "  (do\n"
+            "    (if (= x 0) (do (bump! b) (bump! b)) (bump! b))\n"
+            "    (cond ((= x 5) (do (bump! b) (bump! b))) (true (bump! b)))\n"
+            "    (bump! b)))\n"
+            "(defn plain [(n : I32)] : I32\n"
+            "  (cond ((< n 0) -1) ((= n 0) 0) (true 1)))\n";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "statement-level cond/if program parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "a tail cond with do/let clause bodies emits (previously: invalid `do(...)` call)");
+        if (c_src) {
+            CHECK(strstr(c_src, "do(") == NULL, "no literal do(...) call anywhere in the emitted C");
+            CHECK(strstr(c_src, "((n < 0) ? -1 : ((n == 0) ? 0 : 1))") != NULL,
+                  "a plain-expression cond keeps its exact ternary lowering");
+        }
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
