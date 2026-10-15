@@ -17,3 +17,14 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
 )
+
+# Vendored Monocypher 4.0.2 (CC0 / BSD-2). Needed by anything built with -DPARENA_WITH_AEAD (crypto/aead.prn)
+# or -DPARENA_WITH_QUIC_CRYPTO (X25519 for net/quic_tls.prn). includes=["."] so the runtime header's
+# `#include "aead/monocypher.h"` resolves for every dependent.
+cc_library(
+    name = "monocypher",
+    srcs = ["aead/monocypher.c"],
+    hdrs = ["aead/monocypher.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
