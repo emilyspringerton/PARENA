@@ -32,6 +32,17 @@ int main(int argc, char **argv) {
     Arena a; arena_init(&a);
     int http = 0; Bytes c;
 
+    if (!strcmp(mode, "refused")) {           /* nothing listens: ICMP unreachable must fail in well under the deadline */
+        struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+        int st = get(&a, host, port, "/", 65536, &http, &c);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        CHECK(st == -6, "closed UDP port -> status -6");
+        CHECK(ms < 1500.0, "fails fast (not the 8 s deadline)");
+        quic_close(c); arena_free_all(&a);
+        printf("%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
+        return failures ? 1 : 0;
+    }
     if (!strcmp(mode, "reject")) {            /* certificate must be refused: bad CA trust or wrong name */
         int st = get(&a, host, port, "/", 65536, &http, &c);
         CHECK(st == -3, "untrusted/mismatched certificate -> status -3, no response");

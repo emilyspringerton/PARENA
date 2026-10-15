@@ -203,6 +203,7 @@ int qcn_udp_close(int);
 Bytes qcn_static_block(int);
 Bytes quic_static_conn();
 int quic_static_capacity();
+int qcn_udp_refused();
 int qcn_now();
 int qcn_o_sec();
 int qcn_o_keys();
@@ -2548,6 +2549,10 @@ int quic_static_capacity(void) {
     return (quic_static_capacity_impl());
 }
 
+int qcn_udp_refused(void) {
+    return (quic_udp_refused_impl());
+}
+
 int qcn_now(void) {
     return (quic_now_ms_impl());
 }
@@ -3848,7 +3853,11 @@ int qcn_drain_(Bytes c __attribute__((unused)), char * host __attribute__((unuse
         }
         }
     }
-    return __loop_result_42;
+    if (((qcn_udp_refused() == 1) && (cget(c, 6) < 0))) {
+    return qcn_fail_(c, -6);
+    } else {
+    return 0;
+    }
 }
 
 int qcn_complete_(Bytes c __attribute__((unused))) {

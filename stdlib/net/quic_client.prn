@@ -58,6 +58,9 @@
 (defn quic-static-capacity [] : I32
   #target
   {:c (inline-c "quic_static_capacity_impl()")})
+(defn qcn-udp-refused [] : I32
+  #target
+  {:c (inline-c "quic_udp_refused_impl()")})
 (defn qcn-now [] : I32
   #target
   {:c (inline-c "quic_now_ms_impl()")})
@@ -794,11 +797,13 @@
           0)))))
 
 (defn qcn-drain! [(c : Bytes) (host : String @ Region) (t : Arena @ Region)] : I32
-  (loop [n 0]
-    (if (>= n 32) 0
-      (let [dg (qcn-udp-recv (cget c 2) t)]
-        (if (= (bytes-len dg) 0) 0
-          (do (qcn-datagram! c dg host t) (recur (+ n 1))))))))
+  (do (loop [n 0]
+        (if (>= n 32) 0
+          (let [dg (qcn-udp-recv (cget c 2) t)]
+            (if (= (bytes-len dg) 0) 0
+              (do (qcn-datagram! c dg host t) (recur (+ n 1)))))))
+      ;; nothing listens there (ICMP port unreachable) and we never heard back: fail now, not at the deadline
+      (if (and (= (qcn-udp-refused) 1) (< (cget c 6) 0)) (qcn-fail! c -6) 0)))
 
 (defn qcn-complete? [(c : Bytes)] : Bool
   (and (>= (cget c 28) 0) (and (>= (cget c 27) (cget c 28)) (= (cget c 29) (cget c 28)))))

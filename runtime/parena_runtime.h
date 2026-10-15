@@ -4133,11 +4133,20 @@ static inline int quic_udp_send_impl(int fd, Bytes data) {
     if (!stream_fd_ok(fd) || data.len <= 0) return -1;
     return (int)send((parena_sock_t)fd, (const char *)data.data, (size_t)data.len, 0);
 }
+/* An ICMP "port unreachable" surfaces on a connected UDP socket as ECONNREFUSED (POSIX) / WSAECONNRESET
+ * (Winsock) on the next recv: remembered here so the engine can fail in milliseconds instead of waiting out
+ * its deadline when nothing listens on the QUIC port (e.g. a stale Alt-Svc). */
+static int g_quic_udp_refused = 0;
 /* One datagram, or zero-length Bytes if none is pending (or on error). */
 static inline Bytes quic_udp_recv_impl(int fd, Arena *dest) {
     unsigned char buf[2048];
     if (!stream_fd_ok(fd)) return bytes_alloc_impl(dest, 0);
     int n = (int)recv((parena_sock_t)fd, (char *)buf, sizeof buf, 0);
+#ifdef _WIN32
+    if (n < 0 && WSAGetLastError() == WSAECONNRESET) g_quic_udp_refused = 1;
+#else
+    if (n < 0 && errno == ECONNREFUSED) g_quic_udp_refused = 1;
+#endif
     if (n <= 0) return bytes_alloc_impl(dest, 0);
     Bytes out = bytes_alloc_impl(dest, n);
     memcpy(out.data, buf, (size_t)n);
@@ -4155,6 +4164,8 @@ static inline int quic_udp_wait_impl(int fd, int ms) {
     return select(fd + 1, &f, NULL, NULL, &tv) > 0 ? 1 : 0;
 }
 static inline void quic_udp_close_impl(int fd) { if (stream_fd_ok(fd)) parena_sock_close((parena_sock_t)fd); }
+/* 1 once an ICMP port-unreachable was seen on the QUIC socket; the flag is cleared on read. */
+static inline int quic_udp_refused_impl(void) { int r = g_quic_udp_refused; g_quic_udp_refused = 0; return r; }
 static inline int quic_now_ms_impl(void) { return (int)(stream_now_ms() & 0x3fffffff); }
 
 /* ---- TLS half of net/stream (see the header comment above) ---------------------------------- */

@@ -31,4 +31,5 @@ echo "== wrong certificate name must be rejected";           "$BIN" 127.0.0.1 $(
 echo "== untrusted CA must be rejected"; SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt "$BIN" 127.0.0.1 $base reject || rc=1
 echo "== first Initial dropped + every 7th server datagram dropped"; "$BIN" 127.0.0.1 $((base+2)) lossy || rc=1
 echo "== server datagrams reordered pairwise";               "$BIN" 127.0.0.1 $((base+3)) lossy || rc=1
+echo "== closed UDP port fails fast (ICMP unreachable)";    "$BIN" 127.0.0.1 $((base+9)) refused || rc=1
 exit $rc
