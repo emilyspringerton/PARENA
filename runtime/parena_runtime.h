@@ -4368,11 +4368,15 @@ static inline int cururl_set_impl(const char *s) {
 }
 static inline char *cururl_get_impl(void) { return g_cururl; }
 
-/* slots -- 32 static int cells: tiny mutable UI/navigation state for PARENA programs (loop/recur
- * can't carry a dozen values through function calls, and PARENA functions return one scalar). */
-static int g_slots[32];
-static inline int slot_get_impl(int k) { return (k >= 0 && k < 32) ? g_slots[k] : 0; }
-static inline int slot_set_impl(int k, int v) { if (k >= 0 && k < 32) g_slots[k] = v; return v; }
+/* slots -- PARENA_SLOTS static int cells (default 1024; was 32 until PELLEGRINO's CSS rule table and style
+ * stack needed room): tiny mutable UI/navigation state for PARENA programs (loop/recur can't carry a dozen
+ * values through function calls, and PARENA functions return one scalar). Out-of-range reads are 0. */
+#ifndef PARENA_SLOTS
+#define PARENA_SLOTS 1024
+#endif
+static int g_slots[PARENA_SLOTS];
+static inline int slot_get_impl(int k) { return (k >= 0 && k < PARENA_SLOTS) ? g_slots[k] : 0; }
+static inline int slot_set_impl(int k, int v) { if (k >= 0 && k < PARENA_SLOTS) g_slots[k] = v; return v; }
 
 /* ---- stdlib/json.prn's own real host-glue forward declaration (2026-08-28) --------------
  * json.prn's own json-unescape #target body calls host_json_unescape -- a real, per-HOST-

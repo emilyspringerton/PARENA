@@ -126,6 +126,9 @@ int main(void) {
     /* 5. slots + current url */
     slot_set(7, 42);
     assert(slot_get(7) == 42);
+    slot_set(1023, 99);                 /* 1024 cells since PELLEGRINO's style stack */
+    assert(slot_get(1023) == 99);
+    assert(slot_set(1024, 5) == 5 && slot_get(1024) == 0);   /* out of range: ignored, reads 0 */
     cururl_set("http://example.test/x");
     assert(strcmp(cururl_get(), "http://example.test/x") == 0);
 

@@ -98,7 +98,7 @@
   #target
   {:c (inline-c "linebuf_len_impl()")})
 
-;; slot-get / slot-set -- 32 static int cells of mutable program state (see runtime comment).
+;; slot-get / slot-set -- 1024 (PARENA_SLOTS) static int cells of mutable program state (see runtime comment).
 (defn slot-get [(k : I32)] : I32
   #target
   {:c (inline-c "slot_get_impl(k)")})

@@ -5152,7 +5152,7 @@ Result boxing), one stream at a time, 16 MiB static receive buffer (BSS — work
 - `stream-tls-code` (1 connect, 2 handshake, 3 certificate rejected, 4 no CA bundle, 5 no TLS in this
   build), `stream-tls-error`, `stream-tls-page` (ready-made HTML), `stream-tls-info` ("TLSv1.3 <suite>"),
   `stream-tls-heap-peak` (needs `-DPARENA_TLS_HEAP_STATS` + `MBEDTLS_MEMORY_DEBUG`).
-- `linebuf-*` (one static line-input buffer), `slot-get`/`slot-set` (32 static int cells), `cururl-*`.
+- `linebuf-*` (one static line-input buffer), `slot-get`/`slot-set` (1024 static int cells, `PARENA_SLOTS`), `cururl-*`.
 
 Honest limits: blocking DNS and TLS handshake (10 s cap); one stream; no ALPN/HTTP/2 yet; TLS 1.3
 session tickets are accepted and ignored (no resumption). Tests: `make test-net-stream` (hermetic
