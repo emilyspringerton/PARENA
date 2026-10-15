@@ -1,0 +1,206 @@
+;; stdlib/crypto/quic_crypto.prn -- QUIC v1 packet protection (RFC 9001): Initial secrets, HKDF-Expand-Label,
+;; per-packet nonce, AES-128-GCM AEAD, AES-based header protection. Kanban #652 (PELLEGRINO HTTP/3 H3-3).
+;;
+;; Layering: three FFI primitives (HMAC-SHA256, AES-128-GCM seal/open, AES-128-ECB block) over mbedTLS --
+;; STOPGAP-NOTE, hand-rolled crypto is a known vulnerability source and PARENA has no unsigned-32 ops -- and
+;; everything protocol-shaped (HKDF-Extract/Expand-Label, key schedule labels, nonce, header protection,
+;; packet-number recovery, packet assembly) is PARENA. Requires PARENA_WITH_QUIC_CRYPTO and linking
+;; mbedcrypto. HKDF-Expand needs only one HMAC block because every QUIC output here is <= 32 bytes.
+;;
+;; Failure convention: zero-length Bytes (bad tag, wrong sizes, packet too short to sample). Never OOB.
+;; Covers v1 AES-128-GCM suites (TLS_AES_128_GCM_SHA256), which is what Initial packets always use;
+;; ChaCha20 header protection and AES-256 suites are named, not built.
+
+(module crypto/quic_crypto)
+(import bytes string)
+(export quic-from-hex quic-initial-salt-v1 quic-hkdf-extract quic-hkdf-expand-label
+        quic-initial-client-secret quic-initial-server-secret
+        quic-key-from-secret quic-iv-from-secret quic-hp-from-secret
+        quic-nonce quic-hp-mask quic-decode-pn quic-protect quic-unprotect quic-unprotect-pn
+        quic-hmac-sha256)
+
+(defn quic-hmac-sha256 [(key : Bytes) (data : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "quic_hmac_sha256_impl(key, data, dest)")})
+
+(defn qc-gcm-seal [(key : Bytes) (iv : Bytes) (ad : Bytes) (plain : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "quic_aes128gcm_seal_impl(key, iv, ad, plain, dest)")})
+
+(defn qc-gcm-open [(key : Bytes) (iv : Bytes) (ad : Bytes) (sealed : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "quic_aes128gcm_open_impl(key, iv, ad, sealed, dest)")})
+
+(defn qc-ecb [(key : Bytes) (block : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  #target
+  {:c (inline-c "quic_aes128_ecb_impl(key, block, dest)")})
+
+;; ---- helpers -----------------------------------------------------------------------------------
+
+(defn qc-hexval [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) (- c 48)
+    (if (and (>= c 97) (<= c 102)) (- c 87)
+      (if (and (>= c 65) (<= c 70)) (- c 55) -1))))
+
+;; Hex string -> Bytes (odd length / non-hex -> zero-length).
+(defn quic-from-hex [(h : String @ Region) (dest : Arena @ Region)] : Bytes @ Region
+  (let [n (length h)]
+    (if (not (= (mod n 2) 0)) (bytes-alloc 0 dest)
+      (let [out (bytes-alloc (/ n 2) dest)]
+        (loop [i 0]
+          (if (>= i (/ n 2)) out
+            (let [hi (qc-hexval (char-at h (* i 2))) lo (qc-hexval (char-at h (+ (* i 2) 1)))]
+              (if (or (< hi 0) (< lo 0)) (bytes-alloc 0 dest)
+                (do (bytes-set! out i (+ (* hi 16) lo)) (recur (+ i 1)))))))))))
+
+;; RFC 9001 s5.2: initial_salt for QUIC v1.
+(defn quic-initial-salt-v1 [(dest : Arena @ Region)] : Bytes @ Region
+  (quic-from-hex "38762cf7f55934b34d179ae6a4c80cadccbb7f0a" dest))
+
+(defn qc-copy! [(out : Bytes) (op : I32) (src : Bytes) (cnt : I32)] : I32
+  (loop [i 0]
+    (if (>= i cnt) (+ op cnt)
+      (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1))))))
+
+(defn qc-copy-str! [(out : Bytes) (op : I32) (s : String @ Region)] : I32
+  (let [n (length s)]
+    (loop [i 0]
+      (if (>= i n) (+ op n)
+        (do (bytes-set! out (+ op i) (bit-and (char-at s i) 255)) (recur (+ i 1)))))))
+
+;; HKDF-Extract(salt, ikm) = HMAC-SHA256(salt, ikm).
+(defn quic-hkdf-extract [(salt : Bytes) (ikm : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hmac-sha256 salt ikm dest))
+
+;; HKDF-Expand-Label(secret, label, context, len) per RFC 8446 s7.1 with the "tls13 " prefix
+;; (RFC 9001 s5.1). len <= 32 (one HMAC block); larger -> zero-length.
+(defn quic-hkdf-expand-label [(secret : Bytes) (label : String @ Region) (ctx : Bytes) (len : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (if (or (< len 1) (> len 32)) (bytes-alloc 0 dest)
+    (let [ll (+ 6 (length label))
+          cl (bytes-len ctx)
+          info (bytes-alloc (+ (+ (+ 2 1) (+ ll 1)) (+ cl 1)) dest)]
+      (do (bytes-set! info 0 (shr len 8))
+          (bytes-set! info 1 (bit-and len 255))
+          (bytes-set! info 2 ll)
+          (let [p (qc-copy-str! info 3 "tls13 ")
+                p2 (qc-copy-str! info p label)]
+            (do (bytes-set! info p2 cl)
+                (let [p3 (qc-copy! info (+ p2 1) ctx cl)]
+                  (do (bytes-set! info p3 1)
+                      (let [t (quic-hmac-sha256 secret info dest)]
+                        (if (= (bytes-len t) 0) t (bytes-slice t 0 len dest)))))))))))
+
+;; RFC 9001 s5.2: client_initial_secret / server_initial_secret from the client's first DCID.
+(defn quic-initial-client-secret [(dcid : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [init (quic-hkdf-extract (quic-initial-salt-v1 dest) dcid dest)]
+    (quic-hkdf-expand-label init "client in" (bytes-alloc 0 dest) 32 dest)))
+
+(defn quic-initial-server-secret [(dcid : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [init (quic-hkdf-extract (quic-initial-salt-v1 dest) dcid dest)]
+    (quic-hkdf-expand-label init "server in" (bytes-alloc 0 dest) 32 dest)))
+
+;; RFC 9001 s5.1: packet protection key (16), IV (12), header protection key (16) from a traffic secret.
+(defn quic-key-from-secret [(secret : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-expand-label secret "quic key" (bytes-alloc 0 dest) 16 dest))
+(defn quic-iv-from-secret [(secret : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-expand-label secret "quic iv" (bytes-alloc 0 dest) 12 dest))
+(defn quic-hp-from-secret [(secret : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (quic-hkdf-expand-label secret "quic hp" (bytes-alloc 0 dest) 16 dest))
+
+;; RFC 9001 s5.3: the AEAD nonce is the IV XOR the packet number, left-padded to 12 bytes, big-endian.
+(defn quic-nonce [(iv : Bytes) (pn : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (if (not (= (bytes-len iv) 12)) (bytes-alloc 0 dest)
+    (let [n (bytes-alloc 12 dest)
+          z (qc-copy! n 0 iv 12)]
+      (do (bytes-set! n 8 (bit-xor (bytes-get n 8) (bit-and (shr pn 24) 255)))
+          (bytes-set! n 9 (bit-xor (bytes-get n 9) (bit-and (shr pn 16) 255)))
+          (bytes-set! n 10 (bit-xor (bytes-get n 10) (bit-and (shr pn 8) 255)))
+          (bytes-set! n 11 (bit-xor (bytes-get n 11) (bit-and pn 255)))
+          n))))
+
+;; RFC 9001 s5.4.3: mask = AES-ECB(hp_key, sample[0..16]); first 5 bytes are used.
+(defn quic-hp-mask [(hp : Bytes) (pkt : Bytes) (sample-off : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (if (or (< sample-off 0) (> (+ sample-off 16) (bytes-len pkt))) (bytes-alloc 0 dest)
+    (qc-ecb hp (bytes-slice pkt sample-off (+ sample-off 16) dest) dest)))
+
+;; RFC 9000 A.3: recover the full packet number from its truncated form.
+(defn quic-decode-pn [(largest : I32) (truncated : I32) (nbits : I32)] : I32
+  (let [expected (+ largest 1)
+        win (shl 1 (if (>= nbits 31) 30 nbits))
+        hwin (shr win 1)
+        mask (- win 1)
+        cand (bit-or (bit-and expected (bit-xor mask -1)) truncated)]
+    (if (>= nbits 31) truncated
+    (if (and (<= cand (- expected hwin)) (< cand (- 1073741824 win))) (+ cand win)
+      (if (and (> cand (+ expected hwin)) (>= cand win)) (- cand win) cand)))))
+
+;; ---- packet protection -------------------------------------------------------------------------
+
+;; header = the UNPROTECTED header through the packet-number bytes (length pn-off + pn-len), first byte
+;; carrying the pn-length bits. Returns the protected packet (header with first byte/pn masked ++
+;; ciphertext ++ tag), or zero-length on failure (key sizes, payload too short for the 16-byte sample).
+(defn quic-protect [(key : Bytes) (iv : Bytes) (hp : Bytes) (header : Bytes) (pn-off : I32) (pn : I32)
+                    (payload : Bytes) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (let [hl (bytes-len header)
+        pnlen (+ (bit-and (bytes-get header 0) 3) 1)]
+    (if (not (= hl (+ pn-off pnlen))) (bytes-alloc 0 dest)
+      (let [ct (qc-gcm-seal key (quic-nonce iv pn dest) header payload dest)]
+        (if (= (bytes-len ct) 0) ct
+          (let [total (+ hl (bytes-len ct))
+                out (bytes-alloc total dest)
+                a (qc-copy! out 0 header hl)
+                b (qc-copy! out hl ct (bytes-len ct))
+                mask (quic-hp-mask hp out (+ pn-off 4) dest)]
+            (if (= (bytes-len mask) 0) mask
+              (let [long? (>= (bytes-get header 0) 128)
+                    m0 (bit-and (bytes-get mask 0) (if long? 15 31))]
+                (do (bytes-set! out 0 (bit-xor (bytes-get out 0) m0))
+                    (loop [i 0]
+                      (if (>= i pnlen) out
+                        (do (bytes-set! out (+ pn-off i)
+                                        (bit-xor (bytes-get out (+ pn-off i)) (bytes-get mask (+ i 1))))
+                            (recur (+ i 1))))))))))))))
+
+;; The full packet number of a protected packet, or -1. `largest` = largest pn received so far in this
+;; space (use -1 before any). pkt[pn-off..] is the protected pn field.
+(defn quic-unprotect-pn [(pkt : Bytes) (pn-off : I32) (hp : Bytes) (largest : I32) (dest : Arena @ Region)] : I32
+  (let [mask (quic-hp-mask hp pkt (+ pn-off 4) dest)]
+    (if (= (bytes-len mask) 0) -1
+      (let [long? (>= (bytes-get pkt 0) 128)
+            first (bit-xor (bytes-get pkt 0) (bit-and (bytes-get mask 0) (if long? 15 31)))
+            pnlen (+ (bit-and first 3) 1)]
+        (if (> (+ pn-off pnlen) (bytes-len pkt)) -1
+          (loop [i 0 v 0]
+            (if (>= i pnlen) (quic-decode-pn largest v (* 8 pnlen))
+              (if (> v 8388607) -1
+                (recur (+ i 1) (+ (* v 256) (bit-xor (bytes-get pkt (+ pn-off i)) (bytes-get mask (+ i 1)))))))))))))
+
+;; Removes header protection and decrypts. Returns the plaintext payload (frames), or zero-length if
+;; the packet is too short, the tag fails, or sizes are wrong. The caller gets the pn from
+;; quic-unprotect-pn (same inputs) -- it is needed for the nonce, which this function recomputes.
+(defn quic-unprotect [(pkt : Bytes) (pn-off : I32) (key : Bytes) (iv : Bytes) (hp : Bytes) (largest : I32) (dest : Arena @ Region)]
+  : Bytes @ Region
+  (let [mask (quic-hp-mask hp pkt (+ pn-off 4) dest)]
+    (if (= (bytes-len mask) 0) mask
+      (let [long? (>= (bytes-get pkt 0) 128)
+            first (bit-xor (bytes-get pkt 0) (bit-and (bytes-get mask 0) (if long? 15 31)))
+            pnlen (+ (bit-and first 3) 1)
+            hl (+ pn-off pnlen)]
+        (if (>= hl (bytes-len pkt)) (bytes-alloc 0 dest)
+          (let [hdr (bytes-alloc hl dest)
+                a (qc-copy! hdr 0 pkt hl)]
+            (do (bytes-set! hdr 0 first)
+                (loop [i 0]
+                  (if (>= i pnlen)
+                    (let [pn (quic-unprotect-pn pkt pn-off hp largest dest)
+                          sealed (bytes-slice pkt hl (bytes-len pkt) dest)]
+                      (if (< pn 0) (bytes-alloc 0 dest)
+                        (qc-gcm-open key (quic-nonce iv pn dest) hdr sealed dest)))
+                    (do (bytes-set! hdr (+ pn-off i) (bit-xor (bytes-get pkt (+ pn-off i)) (bytes-get mask (+ i 1))))
+                        (recur (+ i 1))))))))))))

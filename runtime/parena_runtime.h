@@ -1026,6 +1026,62 @@ static inline Bytes aead_kdf_impl(Bytes secret, Bytes label, Arena *dest) {
 }
 #endif /* PARENA_WITH_AEAD */
 
+#ifdef PARENA_WITH_QUIC_CRYPTO
+/* quic_*_impl -- host glue for crypto/quic_crypto.prn: exactly the three primitives QUIC v1 packet
+ * protection (RFC 9001) needs, over mbedTLS (the same audited library net/tls.prn and PELLEGRINO already
+ * link; no hand-rolled crypto). Everything else (HKDF-Expand-Label, nonce, header protection, packet
+ * assembly) is PARENA on top of these. STOPGAP-NOTE: SHA-256/AES are FFI, same stance as crypto/hash.prn;
+ * a PARENA-native implementation is blocked on unsigned-32 integer ops (see crypto/aead.prn).
+ * Failure -> zero-length Bytes (wrong key/iv sizes, bad tag), never OOB. Link mbedcrypto. */
+#include <mbedtls/md.h>
+#include <mbedtls/gcm.h>
+#include <mbedtls/aes.h>
+/* HMAC-SHA256(key, data) -> 32 bytes. */
+static inline Bytes quic_hmac_sha256_impl(Bytes key, Bytes data, Arena *dest) {
+    Bytes out = bytes_alloc_impl(dest, 32);
+    const mbedtls_md_info_t *mi = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!mi || mbedtls_md_hmac(mi, key.data, (size_t)key.len, data.data, (size_t)data.len, out.data) != 0)
+        return bytes_alloc_impl(dest, 0);
+    return out;
+}
+/* AES-128-GCM seal: key 16, iv 12 -> ciphertext||tag(16). */
+static inline Bytes quic_aes128gcm_seal_impl(Bytes key, Bytes iv, Bytes ad, Bytes plain, Arena *dest) {
+    if (key.len != 16 || iv.len != 12) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, plain.len + 16);
+    mbedtls_gcm_context g; mbedtls_gcm_init(&g);
+    int rc = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, key.data, 128);
+    if (rc == 0)
+        rc = mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_ENCRYPT, (size_t)plain.len, iv.data, 12,
+                                       ad.data, (size_t)ad.len, plain.data, out.data, 16, out.data + plain.len);
+    mbedtls_gcm_free(&g);
+    return rc == 0 ? out : bytes_alloc_impl(dest, 0);
+}
+/* AES-128-GCM open: ciphertext||tag -> plaintext; bad tag / too short -> zero-length (so a legitimately
+ * empty plaintext is indistinguishable from failure; QUIC packets always carry >= 1 frame byte). */
+static inline Bytes quic_aes128gcm_open_impl(Bytes key, Bytes iv, Bytes ad, Bytes sealed, Arena *dest) {
+    if (key.len != 16 || iv.len != 12 || sealed.len <= 16) return bytes_alloc_impl(dest, 0);
+    int n = sealed.len - 16;
+    Bytes out = bytes_alloc_impl(dest, n);
+    mbedtls_gcm_context g; mbedtls_gcm_init(&g);
+    int rc = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, key.data, 128);
+    if (rc == 0)
+        rc = mbedtls_gcm_auth_decrypt(&g, (size_t)n, iv.data, 12, ad.data, (size_t)ad.len,
+                                      sealed.data + n, 16, sealed.data, out.data);
+    mbedtls_gcm_free(&g);
+    return rc == 0 ? out : bytes_alloc_impl(dest, 0);
+}
+/* AES-128-ECB on one 16-byte block (the header-protection mask primitive, RFC 9001 s5.4.3). */
+static inline Bytes quic_aes128_ecb_impl(Bytes key, Bytes block, Arena *dest) {
+    if (key.len != 16 || block.len != 16) return bytes_alloc_impl(dest, 0);
+    Bytes out = bytes_alloc_impl(dest, 16);
+    mbedtls_aes_context c; mbedtls_aes_init(&c);
+    int rc = mbedtls_aes_setkey_enc(&c, key.data, 128);
+    if (rc == 0) rc = mbedtls_aes_crypt_ecb(&c, MBEDTLS_AES_ENCRYPT, block.data, out.data);
+    mbedtls_aes_free(&c);
+    return rc == 0 ? out : bytes_alloc_impl(dest, 0);
+}
+#endif /* PARENA_WITH_QUIC_CRYPTO */
+
 /* string_concat -- real, minimal `string/concat` implementation
  * (STDLIB.md's own "string" package design), found genuinely missing
  * (not just designed) while getting firefly.prn's own `skip` to
