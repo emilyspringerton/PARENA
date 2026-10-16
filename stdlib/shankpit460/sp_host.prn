@@ -241,6 +241,11 @@
   (do
     (when (js/defined? "getIdunaSession")
       (set! session (js/call-fn (js/global "getIdunaSession"))))
+    ;; the engine learns who is playing straight away (the title screen says so), not only when a socket opens
+    (if (js/null? session)
+        (do (js/call wasm "sp_token_set" 0) (js/call wasm "sp_name_set" 0))
+        (do (js/call wasm "sp_token_set" (put-ascii! (js/get session "token") (js/call wasm "sp_token_addr") 2000))
+            (js/call wasm "sp_name_set" (put-ascii! (js/get session "displayName") (js/call wasm "sp_name_addr") 24))))
     (sync-who!)))
 
 ;; "playing as ..." under the canvas: a guest is invited to sign in, a signed-in player is greeted by name
@@ -291,10 +296,6 @@
 (defn on-open [(e : Any)] : Unit
   (do
     (load-session!)
-    (if (js/null? session)
-        (do (js/call wasm "sp_token_set" 0) (js/call wasm "sp_name_set" 0))
-        (do (js/call wasm "sp_token_set" (put-ascii! (js/get session "token") (js/call wasm "sp_token_addr") 2000))
-            (js/call wasm "sp_name_set" (put-ascii! (js/get session "displayName") (js/call wasm "sp_name_addr") 24))))
     (js/call wasm "sp_net_socket" 2)))
 
 (defn on-message [(e : Any)] : Unit

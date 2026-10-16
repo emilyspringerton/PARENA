@@ -141,3 +141,14 @@
       (set-p-vx! p 0.0) (set-p-vy! p 0.0) (set-p-vz! p 0.0)
       (set-p-yaw! p yaw) (set-p-pitch! p pitch)
       (when (= p (gi (g-me))) (gf! (g-cam-yaw) yaw) (gf! (g-cam-pitch) pitch))))
+
+;; end the current match (tests / screenshots)
+(defn sp-t-end-match [(winner : I32) (reason : I32)] : Unit (end-match! winner reason))
+
+;; profiling hook: run one stage of the frame (0 sky, 1 z-clear, 2 arena, 3 players+fx)
+(defn sp-t-bench [(what : I32)] : Unit
+  (case what
+    0 (draw-sky!)
+    1 (clear-zbuf!)
+    2 (draw-arena!)
+    (do (draw-players! 1.0) (draw-projectiles!) (draw-particles!) (draw-tracers!))))

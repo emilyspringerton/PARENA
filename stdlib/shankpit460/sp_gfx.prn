@@ -13,11 +13,11 @@
 (defn col-g [(c : I32)] : I32 (bit-and (shr c 8) 255))
 (defn col-b [(c : I32)] : I32 (bit-and (shr c 16) 255))
 
-;; mix(c1, c2, t) with t in 0..255 (0 = c1)
+;; mix(c1, c2, t) with t in 0..256 (0 = c1, 256 = c2); shifts instead of divides, this is the hot path of the fog
 (defn mix [(c1 : I32) (c2 : I32) (t : I32)] : I32
-  (rgb (+ (col-r c1) (/ (* (- (col-r c2) (col-r c1)) t) 255))
-       (+ (col-g c1) (/ (* (- (col-g c2) (col-g c1)) t) 255))
-       (+ (col-b c1) (/ (* (- (col-b c2) (col-b c1)) t) 255))))
+  (rgb (+ (col-r c1) (shr (* (- (col-r c2) (col-r c1)) t) 8))
+       (+ (col-g c1) (shr (* (- (col-g c2) (col-g c1)) t) 8))
+       (+ (col-b c1) (shr (* (- (col-b c2) (col-b c1)) t) 8))))
 ;; scale brightness: k in 0..256 (256 = unchanged)
 (defn shade [(c : I32) (k : I32)] : I32
   (rgb (min-i 255 (shr (* (col-r c) k) 8)) (min-i 255 (shr (* (col-g c) k) 8)) (min-i 255 (shr (* (col-b c) k) 8))))

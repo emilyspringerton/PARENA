@@ -14,14 +14,14 @@
   (let [hover (or hot (in-rect? x y w h))]
     (card x y w h (if primary (rgb 232 190 112) (slate)) (if primary (if hover 245 215) (if hover 200 140))
           (if primary (rgb 255 244 214) (rgb 255 250 240)) (if hover 150 70))
-    (draw-text-c label (+ x (/ w 2)) (+ y (- (/ h 2) (if primary 7 4))) (if primary 2 1) (if primary (rgb 54 44 30) (ink)))))
+    (draw-text-c label (+ x (/ w 2)) (+ y (/ (- h (if primary 32 16)) 2)) (if primary 2 1) (if primary (rgb 54 44 30) (ink)))))
 
 ;; title layout
 (defn play-x [] : I32 250) (defn play-y [] : I32 188) (defn play-w [] : I32 140) (defn play-h [] : I32 32)
 (defn chip-x [(i : I32)] : I32 (+ 232 (* i 62)))
 (defn chip-y [] : I32 250)
 ;; end layout
-(defn rq-x [] : I32 240) (defn rq-y [] : I32 258) (defn rq-w [] : I32 160) (defn rq-h [] : I32 30)
+(defn rq-x [] : I32 240) (defn rq-y [] : I32 246) (defn rq-w [] : I32 160) (defn rq-h [] : I32 30)
 
 ;; ---- starting a session -----------------------------------------------------------------------------------------
 (defn start-bot-match! [] : Unit
@@ -83,7 +83,7 @@
 
 ;; ---- cameras -----------------------------------------------------------------------------------------------------------
 (defn setup-fog! [] : Unit
-  (do (gi! (g-fog) (sky-horizon)) (gf! (g-fog-near) 90.0) (gf! (g-fog-far) 560.0) (gf! (g-pe) 0.45)))
+  (do (gi! (g-fog) (sky-horizon)) (gf! (g-fog-near) 90.0) (gf! (g-fog-far) 560.0) (gf! (g-fog-inv) (/ 1.0 470.0)) (gf! (g-pe) 0.45)))
 
 (defn game-camera! [(alpha : F32)] : Unit
   (let [me (gi (g-me))
@@ -170,18 +170,24 @@
     (draw-text-c "shankpit-460" 320 70 4 (ink))
     (draw-text-c "a small, quick arena shooter" 320 146 1 (ink-dim))
     (button (play-x) (play-y) (play-w) (play-h) "PLAY" true false)
-    (draw-text-c "BOTS" 320 234 1 (ink-faint))
+    (draw-text-c "BOTS" 320 230 1 (ink-faint))
     (dotimes [i 3]
       (let [on (= (+ i 1) (gi (g-bot-level)))]
         (card (chip-x i) (chip-y) 58 18 (if on (rgb 232 190 112) (slate)) (if on 220 130) (rgb 255 250 240) (if (in-rect? (chip-x i) (chip-y) 58 18) 140 56))
-        (draw-text-c (case i 0 "EASY" 1 "NORMAL" "HARD") (+ (chip-x i) 29) (+ (chip-y) 5) 1 (if on (rgb 54 44 30) (ink)))))
-    (draw-text-c (if (!= (gi (g-signed-in)) 0) "signed in - your name goes in the lobby" "playing as a guest") 320 288 1 (ink-faint))
+        (draw-text-c (case i 0 "EASY" 1 "NORMAL" "HARD") (+ (chip-x i) 29) (+ (chip-y) 1) 1 (if on (rgb 54 44 30) (ink)))))
+    (if (and (!= (gi (g-signed-in)) 0) (> (gi (g-name-len)) 0))
+        (let [w (+ (+ (* 12 7) 7) (text-width-at (name-buf) 1))
+              x0 (- 320 (/ w 2))]
+          (draw-text "signed in as" x0 284 1 (ink-faint))
+          (draw-text-at (name-buf) (+ x0 (+ (* 12 7) 7)) 284 1 (ink)))
+        (draw-text-c "playing as a guest" 320 284 1 (ink-faint)))
     (draw-text-c "WASD  mouse  click to fire  1-6 weapons  Tab scores" 320 328 1 (ink-faint))))
 
 ;; ---- end -----------------------------------------------------------------------------------------------------------------------------
 (defn end-headline [] : String
   (cond (= (gi (g-end-reason)) 3) "MATCH CLOSED"
         (= (gi (g-winner)) (gi (g-me))) "VICTORY"
+        (< (gi (g-winner)) 0) "A DRAW"
         :else "MATCH OVER"))
 
 (defn render-end! [(alpha : F32)] : Unit
@@ -190,17 +196,23 @@
     (game-camera! alpha)
     (render-world! alpha)
     (fill-rect-a 0 0 640 360 (rgb 24 22 32) 150)
-    (panel 160 40 320 262)
-    (draw-text-c (end-headline) 320 52 3 (if (= w me) (amber) (ink)))
-    (if (>= w 0)
-        (do (draw-text-at-c (name-addr w) 300 86 1 (player-hue (p-color w)))
-            (draw-text (if (= (gi (g-end-reason)) 1) "reached the kill limit" "led when time ran out") (+ 308 (/ (text-width-at (name-addr w) 1) 2)) 86 1 (ink-faint)))
-        (draw-text-c "no winner" 320 86 1 (ink-faint)))
-    (draw-board! me 176 106 288)
+    (panel 150 26 340 308)
+    (draw-text-c (end-headline) 320 34 2 (if (= w me) (amber) (ink)))
+    (cond
+      (>= w 0)
+        (let [who (name-addr w)
+              tail (if (= (gi (g-end-reason)) 1) "reached the kill limit" "led when time ran out")
+              total (+ (text-width-at who 1) (+ 8 (text-width tail 1)))
+              x0 (- 320 (/ total 2))]
+          (draw-text-at who x0 76 1 (player-hue (p-color w)))
+          (draw-text tail (+ x0 (+ (text-width-at who 1) 8)) 76 1 (ink-faint)))
+      (= (gi (g-end-reason)) 3) (draw-text-c "the other players left" 320 76 1 (ink-faint))
+      :else (draw-text-c "time ran out with nobody ahead" 320 76 1 (ink-faint)))
+    (draw-board! me 166 100 308)
     (button (rq-x) (rq-y) (rq-w) (rq-h) "REQUEUE" true (> (gi (g-end-t)) 20))
-    (draw-text-c "Enter  -  or Esc for the title" 320 290 1 (ink-faint))
+    (draw-text-c "Enter to requeue   Esc for the title" 320 (+ (rq-y) 36) 1 (ink-faint))
     (when (!= (gi (g-want-queue)) 0)
-      (draw-text-c "still searching for a human match" 320 300 1 (ink-faint)))))
+      (draw-text-c "still searching for a human match" 320 (+ (rq-y) 52) 1 (ink-faint)))))
 
 ;; ---- frame --------------------------------------------------------------------------------------------------------------------------
 (defn alpha-now [] : F32 (clamp-f (/ (gf (g-clock-acc)) (tick-ms)) 0.0 1.0))

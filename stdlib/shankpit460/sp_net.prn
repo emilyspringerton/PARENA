@@ -354,9 +354,10 @@
         (when (and (< slot (max-players)) (= (gi (g-rd-bad)) 0))
           (set-p-kills! slot kills)
           (set-p-deaths! slot deaths))))
-    (gi! (g-in-match) 0)
-    (gi! (g-q-state) 0)
-    (end-match! (if (= winner 255) -1 winner) reason)))
+    (when (= (gi (g-rd-bad)) 0)
+      (gi! (g-in-match) 0)
+      (gi! (g-q-state) 0)
+      (end-match! (if (= winner 255) -1 winner) reason))))
 
 ;; ---- dispatch ------------------------------------------------------------------------------------------------------------------
 (defn net-recv! [(len : I32)] : Unit
@@ -386,7 +387,7 @@
         (= typ 132) (when (= (gi (g-in-match)) 1) (net-on-snap!))
         (= typ 133) (when (= (gi (g-in-match)) 1) (net-on-event!))
         (= typ 134) (when (= (gi (g-in-match)) 1) (read-roster! (gi (g-me))))
-        (= typ 135) (net-on-end!)
+        (= typ 135) (when (= (gi (g-in-match)) 1) (net-on-end!))
         (= typ 136) (let [t (rd32!)] (gi! (g-ping-ms) (- (gi (g-ticker)) t)))
         (= typ 143) (gi! (g-net-err) (rd8!))
         :else unit))))
@@ -421,6 +422,8 @@
 (defn sp-token-addr [] : I32 (token-base))
 (defn sp-token-set [(len : I32)] : Unit (do (gi! (g-token-len) (clamp-i len 0 2000)) (gi! (g-signed-in) (b2i (> len 0)))))
 (defn sp-name-addr [] : I32 (name-buf))
-(defn sp-name-set [(len : I32)] : Unit (gi! (g-name-len) (clamp-i len 0 24)))
+(defn sp-name-set [(len : I32)] : Unit
+  (do (gi! (g-name-len) (clamp-i len 0 24))
+      (when (= (gi (g-mode)) 0) (name-local! (gi (g-me))))))
 (defn sp-net-status [] : I32 (gi (g-q-state)))
 (defn sp-ping-ms [] : I32 (gi (g-ping-ms)))

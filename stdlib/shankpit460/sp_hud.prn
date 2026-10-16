@@ -10,7 +10,7 @@
 (defn sky-blue [] : I32 (rgb 142 178 230))
 
 (defn panel [(x : I32) (y : I32) (w : I32) (h : I32)] : Unit
-  (card x y w h (slate) 150 (rgb 255 250 240) 46))
+  (card x y w h (slate) 178 (rgb 255 250 240) 46))
 
 (defn name-addr-of [(p : I32)] : I32 (name-addr p))
 
@@ -110,12 +110,16 @@
 
 (defn draw-scorebar! [(me : I32)] : Unit
   (do
-    (panel 246 6 148 40)
-    (draw-clock-c (secs-left) 320 9 2 (if (< (secs-left) 30) (coral) (ink)))
-    (draw-text "YOU" 254 30 1 (ink-faint))
-    (draw-int (p-kills me) 280 30 1 (ink))
-    (draw-int-r (top-score me) 386 30 1 (ink))
-    (draw-text-r (if (> (top-score me) (p-kills me)) "LEAD" "NEXT") 362 30 1 (ink-faint))))
+    ;; the clock, big and alone
+    (panel 268 6 104 30)
+    (draw-clock-c (secs-left) 320 3 2 (if (< (secs-left) 30) (coral) (ink)))
+    ;; under it, how the score stands
+    (panel 214 40 212 19)
+    (draw-text "YOU" 222 42 1 (ink-faint))
+    (draw-int (p-kills me) 253 42 1 (ink))
+    (draw-text-c (if (= (gi (g-mode)) 1) "first to 16" "first to 13") 320 42 1 (ink-faint))
+    (draw-int-r (top-score me) 418 42 1 (ink))
+    (draw-text-r (if (> (top-score me) (p-kills me)) "LEAD" "NEXT") 396 42 1 (ink-faint))))
 
 (defn draw-feed! [(me : I32)] : Unit
   (let [row 0]
@@ -126,18 +130,18 @@
           (when (> ttl 0)
             (let [att (load32 a) vic (load32 (+ a 4)) w (load32 (+ a 8))
                   mine (or (= att me) (= vic me))
-                  y (+ 8 (* row 15))
+                  y (+ 8 (* row 16))
                   wn (if (>= w 6) "STORM" (wpn-name w))
                   wa (text-width-at (name-addr att) 1)
                   ww (text-width wn 1)
                   wv (text-width-at (name-addr vic) 1)
                   tw (+ (+ (+ wa ww) wv) 24)
                   x0 (- 632 tw)]
-              (fill-rect-a x0 y tw 13 (slate) (if mine 200 120))
-              (when mine (rect-outline-a x0 y tw 13 (amber) 120))
-              (draw-text-at (name-addr att) (+ x0 4) (+ y 3) 1 (player-hue (p-color att)))
-              (draw-text wn (+ (+ x0 4) (+ wa 6)) (+ y 3) 1 (ink-faint))
-              (draw-text-at (name-addr vic) (+ (+ x0 4) (+ (+ wa ww) 12)) (+ y 3) 1 (player-hue (p-color vic)))
+              (fill-rect-a x0 (+ y 2) tw 13 (slate) (if mine 200 120))
+              (when mine (rect-outline-a x0 (+ y 2) tw 13 (amber) 120))
+              (draw-text-at (name-addr att) (+ x0 4) y 1 (player-hue (p-color att)))
+              (draw-text wn (+ (+ x0 4) (+ wa 6)) y 1 (ink-faint))
+              (draw-text-at (name-addr vic) (+ (+ x0 4) (+ (+ wa ww) 12)) y 1 (player-hue (p-color vic)))
               (set! row (+ row 1)))))
         (recur (+ k 1))))))
 
@@ -173,10 +177,10 @@
     (let [t (gi (g-banner-t))
           a (min-i 255 (* t 8))
           v (gi (g-kill-msg-victim))
-          y 96]
-      (fill-rect-a 220 (- y 6) 200 26 (slate) (/ (* a 150) 255))
+          y 92]
+      (fill-rect-a 230 (- y 4) 180 38 (slate) (/ (* a 150) 255))
       (draw-text-c (if (= (gi (g-banner-id)) 2) "CHAINED" "ELIMINATED") 320 y 1 (amber))
-      (draw-text-at-c (name-addr v) 320 (+ y 12) 1 (ink)))))
+      (draw-text-at-c (name-addr v) 320 (+ y 14) 1 (ink)))))
 
 (defn draw-death! [(me : I32)] : Unit
   (when (not (alive? me))
@@ -193,21 +197,25 @@
   (when (> (gi (g-countdown)) 0)
     (let [s (countdown-secs)]
       (fill-rect-a 0 0 640 360 (rgb 24 22 30) 70)
-      (draw-text-c "GET READY" 320 118 2 (ink-dim))
+      (draw-text-c "GET READY" 320 148 2 (ink-dim))
       (if (<= s 3)
-          (draw-int-c s 320 142 8 (ink))
-          (draw-text-c (if (= (gi (g-mode)) 1) "first to 16 - or six minutes" "first to 13 - or five minutes") 320 150 1 (ink-faint))))))
+          (draw-int-c s 320 176 5 (ink))
+          (draw-text-c (if (= (gi (g-mode)) 1) "first to 16 - or six minutes" "first to 13 - or five minutes") 320 186 1 (ink-faint))))))
 
 (defn draw-found! [] : Unit
   (when (> (gi (g-found-t)) 0)
     (let [a (min-i 255 (* (gi (g-found-t)) 8))]
       (fill-rect-a 0 0 640 360 (rgb 24 22 30) (/ (* a 90) 255))
-      (panel 176 104 288 76)
-      (draw-text-c "MATCH FOUND" 320 114 2 (amber))
-      (draw-text-c "free for all" 320 142 1 (ink))
-      (draw-int (gi (g-roster-n)) 270 160 1 (ink))
-      (draw-text "players  -  first to" 282 160 1 (ink-faint))
-      (draw-int (gi (g-kill-limit)) 410 160 1 (ink)))))
+      (panel 176 66 288 74)
+      (draw-text-c "MATCH FOUND" 320 64 2 (amber))
+      (draw-text-c "free for all" 320 98 1 (ink))
+      (let [n (gi (g-roster-n))
+            lim (gi (g-kill-limit))
+            w (+ (+ (num-width n 1) 8) (+ (* 20 7) (+ 8 (num-width lim 1))))
+            x0 (- 320 (/ w 2))]
+        (draw-int n x0 116 1 (ink))
+        (draw-text "players  -  first to" (+ x0 (+ (num-width n 1) 8)) 116 1 (ink-faint))
+        (draw-int lim (+ x0 (+ (+ (num-width n 1) 8) (+ (* 20 7) 8))) 116 1 (ink))))))
 
 (defn draw-damage! [] : Unit
   (when (> (gi (g-dmg-flash)) 0)
@@ -227,7 +235,7 @@
 (defn draw-board! [(me : I32) (x : I32) (y : I32) (w : I32)] : Unit
   (do
     (build-board!)
-    (let [n (min-i (gi (g-end-n)) 10)]
+    (let [n (min-i (gi (g-end-n)) 8)]
       (draw-text "PLAYER" (+ x 34) y 1 (ink-faint))
       (draw-text-r "K" (+ x (- w 44)) y 1 (ink-faint))
       (draw-text-r "D" (+ x (- w 12)) y 1 (ink-faint))

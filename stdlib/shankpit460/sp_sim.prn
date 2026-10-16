@@ -53,6 +53,13 @@
       (set-p-spawn-prot! p 0)
       (face-center! p)))
 
+(defn name-local! [(p : I32)] : Unit
+  (if (> (gi (g-name-len)) 0)
+      (let [a (name-addr p)]
+        (dotimes [i (gi (g-name-len))] (store8! (+ a i) (load8 (+ (name-buf) i))))
+        (store8! (+ a (gi (g-name-len))) 0))
+      (put-name! p "You")))
+
 ;; one human (slot 0) and seven bots, free-for-all, first to 13 kills or five minutes
 (defn setup-bot-match! [(level : I32)] : Unit
   (do
@@ -75,6 +82,7 @@
     (gi! (g-match-no) (+ (gi (g-match-no)) 1))
     (gi! (g-tmp0) (rnd (spawn-count)))
     (place-at-spawn! 0 (gi (g-tmp0)))
+    (name-local! 0)
     (gf! (g-cam-yaw) (p-yaw 0))
     (gf! (g-cam-pitch) 0.0)
     ;; the bots take the other spawns, round the table

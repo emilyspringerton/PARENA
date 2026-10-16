@@ -25,7 +25,8 @@
 (defn g-tri-b [] : I32 160)
 (defn g-tri-c [] : I32 161)
 (defn g-pe [] : I32 162)       ; F32 edge half-width in world units for panel kinds
-(defn g-ax [] : I32 195)       ; scratch: scanline intersections (2 x 4 floats)
+(defn g-ax [] : I32 195)
+(defn g-fog-inv [] : I32 205)  ; F32: 1 / (far - near)       ; scratch: scanline intersections (2 x 4 floats)
 
 (defn near-plane [] : F32 0.15)
 (defn half-w [] : F32 320.0)
@@ -106,17 +107,21 @@
   (let [base (gi (g-pc))
         kind (gi (g-pk))]
     (cond
-      ;; the floor: faint 40-unit tiles, a stronger line every 200
+      ;; the floor: faint 40-unit tiles, a stronger line every 200 (reciprocals, no divides in the per-pixel path)
       (= kind 0)
-        (let [(fu : F32) (fract (/ u 40.0))
-              (fv : F32) (fract (/ v 40.0))
+        (let [(su : F32) (* u 0.025)
+              (sv : F32) (* v 0.025)
+              (iu : F32) (floor su)
+              (iv : F32) (floor sv)
+              (fu : F32) (- su iu)
+              (fv : F32) (- sv iv)
               (e : F32) (+ 0.012 (* z 0.00004))
               line (or (or (< fu e) (> fu (- 1.0 e))) (or (< fv e) (> fv (- 1.0 e))))
-              (mu : F32) (fract (/ u 200.0))
-              (mv : F32) (fract (/ v 200.0))
+              (mu : F32) (fract (* u 0.005))
+              (mv : F32) (fract (* v 0.005))
               (me : F32) (+ 0.0035 (* z 0.00001))
               major (or (or (< mu me) (> mu (- 1.0 me))) (or (< mv me) (> mv (- 1.0 me))))
-              chk (bit-and (+ (i32 (floor (/ u 40.0))) (i32 (floor (/ v 40.0)))) 1)]
+              chk (bit-and (+ (i32 iu) (i32 iv)) 1)]
           (cond major (shade base 196)
                 line (shade base 226)
                 (= chk 1) (shade base 250)
@@ -127,7 +132,7 @@
               (h : F32) (gf (g-ph))
               (e : F32) (+ (gf (g-pe)) (* z 0.0016))
               (d : F32) (fmin2 (fmin2 u (- w u)) (fmin2 v (- h v)))
-              (band : F32) (fract (/ v 7.0))]
+              (band : F32) (fract (* v 0.142857))]
           (cond (< d e) (shade base 288)
                 (< band 0.07) (shade base 236)
                 :else base))
@@ -138,8 +143,9 @@
         (far : F32) (gf (g-fog-far))]
     (if (<= z near)
         c
-        (let [(t : F32) (clamp-f (/ (- z near) (- far near)) 0.0 1.0)]
-          (mix c (gi (g-fog)) (i32 (* (* t t) 255.0)))))))
+        (let [(t : F32) (clamp-f (* (- z near) (gf (g-fog-inv))) 0.0 1.0)
+              k (i32 (* (* t t) 256.0))]
+          (if (= k 0) c (mix c (gi (g-fog)) k))))))
 
 (defn plot! [(x : I32) (y : I32) (iz : F32) (uz : F32) (vz : F32)] : Unit
   (let [zi (+ (zb-base) (shl (+ (* y 640) x) 2))]

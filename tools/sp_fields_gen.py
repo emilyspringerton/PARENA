@@ -46,6 +46,8 @@ PLAYER = [
     ("s1x", "f"), ("s1y", "f"), ("s1z", "f"), ("s1yaw", "f"), ("s1pitch", "f"), ("s1t", "i"),
     ("rx", "f"), ("ry", "f"), ("rz", "f"), ("ryaw", "f"), ("rpitch", "f"),   # the pose we draw / hit-test
     ("net-flags", "i"),
+    ("px", "f"), ("py", "f"), ("pz", "f"),   # position at the start of the last tick (render interpolation)
+    ("pyaw", "f"),
     # bot brain
     ("bot-level", "i"), ("bot-target", "i"), ("bot-think", "i"),
     ("bot-aim-yaw", "f"), ("bot-aim-pitch", "f"), ("bot-yaw-vel", "f"), ("bot-pitch-vel", "f"),
