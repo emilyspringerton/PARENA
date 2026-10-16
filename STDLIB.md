@@ -5297,6 +5297,9 @@ Host contract (exports): `bp_init`, `bp_frame(t)`, `bp_key(id, down)`, `bp_blur`
 `bp_pad_gone`, `bp_pointer(x, y, down)`, `bp_fb_addr/w/h`, `bp_hat_addr/set`, `bp_sprite_addr/set`, `bp_hatname_addr`.
 No malloc: nothing is allocated, nothing is freed; the linked module has no imports and an 8 MB memory with initial == maximum.
 Physics parity with the C engine is bit-exact (`tests/brawlpit_parity_*`); the F32 backend is what makes that possible.
+The equipped Hat Store hat is worn by default: `bp_hat_set(0, 1)` (slot 0 = the store hat) makes it player 1's hat unless the
+player picked one by hand (`g-hat-touched`); `bp_host.prn` decodes curated hats' HTML-entity art (`&#127914;`) into a glyph and
+fits its ink box onto the head, and falls back to a gold monogram so an equipped hat is never silently missing.
 
 TypeScript target surface (`src/emit_ts.c`, 2026-10-16): see the `emit_ts.h` header comment; `(callback name)` passes a named
 top-level defn as a closure, `(def ...)` state is what callbacks close over, `js/*` forms are the bridge.

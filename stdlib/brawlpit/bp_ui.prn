@@ -27,6 +27,24 @@
 (defn hat-label [(h : I32)] : String
   (case h -1 "NO HAT" 0 "WOTAN HAT" 8 "BLUE HAT" 9 "RED HAT" "GREEN HAT"))
 
+;; The equipped Hat Store hat is worn by default (founder 2026-10-16: "the hat store hat thats
+;; equipped should be worn by the player in brawlpit"). The page decodes it after a network round
+;; trip and then calls bp_hat_set(0, 1), so this runs at any time: on a menu, or mid-match. Picking
+;; P1's hat by hand (up / down on the select screen) takes the choice away from the store hat for
+;; good -- it will not come back over a deliberate NO HAT.
+(defn store-hat-changed! [(loaded : Bool)] : Unit
+  (if loaded
+      (when (= (gi (g-hat-touched)) 0)
+        (gi! (g-hat-p1) 0)
+        ;; a match that started before the hat arrived: put it on the fighter now
+        (when (and (not (= (p-active 0) 0)) (= (p-hat 0) -1))
+          (set-p-hat! 0 0)))
+      ;; the hat went away: nobody can wear it
+      (do
+        (when (= (gi (g-hat-p1)) 0) (gi! (g-hat-p1) -1))
+        (when (= (gi (g-hat-p2)) 0) (gi! (g-hat-p2) -1))
+        (dotimes [i 8] (when (= (p-hat i) 0) (set-p-hat! i -1))))))
+
 ;; ---- pointer helpers -------------------------------------------------------------------------
 (defn hit? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
   (and (and (>= (pointer-x) x) (< (pointer-x) (+ x w))) (and (>= (pointer-y) y) (< (pointer-y) (+ y h)))))
@@ -245,6 +263,7 @@
 
 (defn hat-move! [(who : I32) (dir : I32)] : Unit
   (let [slot (if (= who 0) (g-hat-p1) (g-hat-p2))]
+    (when (= who 0) (gi! (g-hat-touched) 1))
     (gi! slot (hat-cycle (gi slot) dir))))
 
 (defn select-update! [(e : I32)] : Unit
@@ -509,7 +528,8 @@
     (gi! (g-mode) 0)
     (gi! (g-sel-p1) 3)
     (gi! (g-sel-p2) 0)
-    (gi! (g-hat-p1) -1)
+    (gi! (g-hat-touched) 0)
+    (gi! (g-hat-p1) (if (wotan-hat-loaded?) 0 -1))     ; the store hat, once there is one
     (gi! (g-hat-p2) -1)
     (gi! (g-stage-sel) 0)
     (gi! (g-ai-sel) 2)

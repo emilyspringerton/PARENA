@@ -10,8 +10,10 @@
 ;;   1. fetch + instantiate the wasm                          (boot, on-response, on-bytes, on-instance)
 ;;   2. copy the framebuffer the wasm painted onto a canvas   (tick: putImageData of a view onto wasm memory)
 ;;   3. forward keyboard / pointer / gamepad state            (on-keydown ... poll-pads -> bp_key/bp_pointer/bp_pad)
-;;   4. decode the player's equipped hat image (PNG) to RGBA  (load-hat ... on-bitmap -> bp_hat_addr)
-;;   5. keep the page's own DOM labels in step                (status pill, controller line, footer stats)
+;;   4. turn the player's equipped Hat Store hat into RGBA    (load-hat ... on-bitmap / rasterize-text! -> bp_hat_addr):
+;;      a pixel hat's PNG is decoded by the browser; a curated hat is an HTML-entity glyph
+;;      ("&#127914;") that only a browser has the emoji font to draw. The wasm then wears it.
+;;   5. keep the page's own DOM labels in step                (status pill, controller line, hat line, footer stats)
 
 ;; ---- module state --------------------------------------------------------------------------------
 (def canvas null)
@@ -237,7 +239,15 @@
         (dotimes [t 8] (copy-tile! data t))
         (dotimes [t 8] (js/call wasm "bp_sprite_set" (+ t 2) 1))))))
 
-;; ---- 4. the equipped hat: IDUNA -> PNG -> RGBA bytes in wasm memory --------------------------------
+;; ---- 4. the equipped hat: IDUNA -> pixels in wasm memory ---------------------------------------------
+;; The player's equipped Hat Store hat is worn in matches by default (the wasm draws it, and puts it
+;; on player 1 as soon as slot 0 is loaded). This section only fetches the art and hands 32x32 RGBA
+;; to bp_hat_addr(0), then bp_hat_set(0, 1). There are two kinds of hat:
+;;   * pixel hats (Hat Studio, limited editions): image_url is a PNG, decoded by the browser;
+;;   * the curated catalogue: no PNG, and image_asset is an HTML-entity string such as "&#127914;"
+;;     (IDUNA's seed data stores entities, not characters). decode-entities turns it into the glyph,
+;;     and the browser draws the glyph, because only a browser has the emoji font.
+;; The line under the canvas says what happened: signed out, nothing equipped, or the error.
 (defn encode [(s : Any)] : Any (js/call-fn (js/global "encodeURIComponent") s))
 
 (defn json-or-fail [(r : Any)] : Any
@@ -253,17 +263,79 @@
 
 (defn ignore! [(e : Any)] : Unit unit)
 
-;; sign-in is optional: signed out, no character yet, or no hat equipped just leaves "no hat"
+;; ---- the status line ----------------------------------------------------------------------------------
+(defn sign-in-url [] : Any
+  (if (js/defined? "buildSsoURL") (js/call-fn (js/global "buildSsoURL")) "/store.html"))
+
+(defn hat-status! [(msg : Any) (link-text : Any) (link-href : Any)] : Unit
+  (do
+    (set-text! "bp-hat-msg" msg)
+    (let [a (el "bp-hat-link")]
+      (when (not (js/null? a))
+        (js/set! a "textContent" link-text)
+        (js/set! a "href" link-href)
+        (js/set! a "hidden" (= link-text ""))))))
+
+;; ---- HTML entities: "&#127914;" and "&#x1F3AA;" -> the character; anything else passes through -----------
+(defn digit-value [(c : I32)] : I32
+  (cond
+    (and (>= c 48) (<= c 57)) (- c 48)
+    (and (>= c 97) (<= c 102)) (- c 87)
+    (and (>= c 65) (<= c 70)) (- c 55)
+    :else -1))
+
+;; index of the ';' closing the entity that starts at `from`, or -1 (numeric references are short)
+(defn entity-end [(s : Any) (from : I32)] : I32
+  (let [n (js/get s "length")]
+    (loop [j (+ from 2)]
+      (cond
+        (>= j n) -1
+        (> (- j from) 10) -1
+        (= (js/call s "charCodeAt" j) 59) j
+        :else (recur (+ j 1))))))
+
+;; the code point of the numeric reference spanning [from, end], or -1 when it is not one
+(defn entity-code [(s : Any) (from : I32) (end : I32)] : I32
+  (let [x (js/call s "charCodeAt" (+ from 2))
+        hex (or (= x 120) (= x 88))
+        radix (if hex 16 10)
+        start (if hex (+ from 3) (+ from 2))]
+    (if (>= start end)
+        -1
+        (loop [j start v 0]
+          (if (< j end)
+              (let [d (digit-value (js/call s "charCodeAt" j))]
+                (if (or (< d 0) (>= d radix)) -1 (recur (+ j 1) (+ (* v radix) d))))
+              (if (> v 1114111) -1 v))))))
+
+(defn decode-entities [(s : Any)] : Any
+  (let [n (js/get s "length")]
+    (loop [i 0 out ""]
+      (if (>= i n)
+          out
+          (let [amp (and (= (js/call s "charCodeAt" i) 38)
+                         (and (< (+ i 2) n) (= (js/call s "charCodeAt" (+ i 1)) 35)))
+                end (if amp (entity-end s i) -1)
+                cp (if (>= end 0) (entity-code s i end) -1)]
+            (if (>= cp 0)
+                (recur (+ end 1) (str out (js/call (js/global "String") "fromCodePoint" cp)))
+                (recur (+ i 1) (str out (js/call s "charAt" i)))))))))
+
+;; ---- finding the equipped hat ---------------------------------------------------------------------------
+;; sign-in is optional: signed out, no character yet, or no hat equipped all just mean "no hat"
 (defn load-hat [] : Unit
   (when (js/defined? "getIdunaSession")
     (set! session (js/call-fn (js/global "getIdunaSession")))
-    (when (not (js/null? session))
-      (js/call
-        (js/call
-          (js/call (api-get (str "/characters/by-player/" (encode (js/get session "playerID"))))
-                   "then" (callback on-character))
-          "then" (callback on-hats))
-        "catch" (callback ignore!)))))
+    (if (js/null? session)
+        (hat-status! "You are not signed in, so there is no hat to wear." "Sign in with IDUNA" (sign-in-url))
+        (do
+          (hat-status! "Looking up your equipped hat..." "" "")
+          (js/call
+            (js/call
+              (js/call (api-get (str "/characters/by-player/" (encode (js/get session "playerID"))))
+                       "then" (callback on-character))
+              "then" (callback on-hats))
+            "catch" (callback on-hat-error))))))
 
 (defn on-character [(c : Any)] : Any
   (api-get (str "/characters/" (encode (js/get c "character_id")) "/hats")))
@@ -274,14 +346,30 @@
     (js/get owned "hats") (js/get owned "hats")
     :else (js/get owned "items")))
 
+(defn equipped-hat [(list : Any)] : Any
+  (if (js/null? list)
+      null
+      (loop [i 0]
+        (if (< i (js/get list "length"))
+            (let [h (js/aget list i)]
+              (if (js/get h "equipped") h (recur (+ i 1))))
+            null))))
+
 (defn on-hats [(owned : Any)] : Unit
-  (let [list (hat-list owned)]
-    (loop [i 0]
-      (when (and (not (js/null? list)) (< i (js/get list "length")))
-        (let [h (js/aget list i)]
-          (if (js/get h "equipped")
-              (use-hat h)
-              (recur (+ i 1))))))))
+  (let [h (equipped-hat (hat-list owned))]
+    (if (js/null? h)
+        (hat-status! "You have no hat equipped yet." "Pick one in the Hat Store" "/store.html")
+        (use-hat h))))
+
+(defn on-hat-error [(e : Any)] : Unit
+  (let [why (str e)]
+    (cond
+      (= why "HTTP 404")
+        (hat-status! "This account has no BRAWLPIT character yet, so there is no hat to wear." "Open the Hat Store" "/store.html")
+      (or (= why "HTTP 401") (= why "HTTP 403"))
+        (hat-status! "Your sign-in has expired, so your hat could not be loaded." "Sign in with IDUNA" (sign-in-url))
+      :else
+        (hat-status! (str "Could not load your equipped hat (" why ").") "" ""))))
 
 ;; the hat's name goes into wasm memory (NUL-terminated ASCII) for the select screen
 (defn put-hat-name! [(name : Any)] : Unit
@@ -295,23 +383,23 @@
   (do
     (set! hat-name (js/get h "name"))
     (put-hat-name! hat-name)
-    (cond
-      (js/get h "image_url")
-        (do (let [img (el "bp-hat-img")]
-              (when (not (js/null? img)) (js/set! img "src" (js/get h "image_url"))))
-            (set-hidden! "bp-hat" false)
+    (if (js/get h "image_url")
+        (js/call
+          (js/call
             (js/call
-              (js/call
-                (js/call
-                  (js/call (js/call-fn (js/global "fetch") (js/get h "image_url")) "then" (callback blob-of))
-                  "then" (callback decode-bitmap))
-                "then" (callback on-bitmap))
-              "catch" (callback ignore!)))
-      (js/get h "image_asset")
-        (rasterize-emoji (js/get h "image_asset"))
-      :else unit)))
+              (js/call (js/call-fn (js/global "fetch") (js/get h "image_url")) "then" (callback blob-of))
+              "then" (callback decode-bitmap))
+            "then" (callback on-bitmap))
+          "catch" (callback on-hat-image-error))
+        (rasterize-art! h))))
 
-(defn blob-of [(r : Any)] : Any (js/call r "blob"))
+(defn on-hat-image-error [(e : Any)] : Unit
+  (hat-status! (str "Could not load the image for " hat-name " (" e ").") "" ""))
+
+(defn blob-of [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "blob")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
 (defn decode-bitmap [(blob : Any)] : Any (js/call-fn (js/global "createImageBitmap") blob))
 
 (defn small-canvas [] : Any
@@ -320,12 +408,23 @@
     (js/set! c "height" 32)
     c))
 
-;; copy a 32x32 RGBA surface into hat slot 0 of the wasm atlas and tell the engine it is ready
+;; the header badge shows exactly what the wasm wears: the 32x32 surface, as a data URL
+(defn show-badge! [(c2 : Any)] : Unit
+  (let [img (el "bp-hat-img")
+        box (el "bp-hat")]
+    (when (not (js/null? img)) (js/set! img "src" (js/call c2 "toDataURL")))
+    (when (not (js/null? box)) (js/set! box "title" (str "Wearing: " hat-name)))
+    (set-hidden! "bp-hat" false)))
+
+;; copy a 32x32 RGBA surface into hat slot 0 of the wasm atlas and tell the engine it is ready; the
+;; engine puts it on player 1 (bp_hat_set -> store-hat-changed!)
 (defn publish-hat! [(c2 : Any)] : Unit
   (let [data (js/get (js/call (js/call c2 "getContext" "2d") "getImageData" 0 0 32 32) "data")
         dst (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "bp_hat_addr" 0) 4096)]
     (js/call dst "set" data)
-    (js/call wasm "bp_hat_set" 0 1)))
+    (js/call wasm "bp_hat_set" 0 1)
+    (show-badge! c2)
+    (hat-status! (str "Wearing your Hat Store hat: " hat-name ".") "Change hat" "/store.html")))
 
 (defn on-bitmap [(bmp : Any)] : Unit
   (let [c2 (small-canvas)
@@ -334,14 +433,46 @@
     (js/call g "drawImage" bmp 0 0 32 32)
     (publish-hat! c2)))
 
-;; curated hats are an emoji in image_asset; rasterize it the same way
-(defn rasterize-emoji [(emoji : Any)] : Unit
+;; ---- hats with no PNG: the catalogue's glyph, fitted onto the head --------------------------------------
+(defn monogram [(name : Any)] : Any
+  (if (and (not (js/null? name)) (> (js/get name "length") 0))
+      (js/call (js/call name "charAt" 0) "toUpperCase")
+      "?"))
+
+(defn art-glyph [(h : Any)] : Any
+  (let [raw (js/get h "image_asset")]
+    (if (= (js/typeof raw) "string") (decode-entities raw) "")))
+
+;; a symbol or emoji, as opposed to a plain word
+(defn glyph? [(s : Any)] : Bool
+  (and (> (js/get s "length") 0) (> (js/call s "codePointAt" 0) 127)))
+
+;; Draw `text` large, measure its ink box, and fit that box into 22x22 pixels standing on the head (the
+;; bottom of the box at row 30 of the 32x32 sprite, centred), like a hand-drawn hat. The engine draws a
+;; sprite the same way for every kind of hat, so a glyph needs no special case there.
+(defn rasterize-text! [(text : Any) (font : String) (fill : String)] : Unit
   (let [c2 (small-canvas)
         g (js/call c2 "getContext" "2d")]
-    (js/set! g "font" "26px serif")
-    (js/set! g "textAlign" "center")
-    (js/set! g "textBaseline" "middle")
-    (js/call g "fillText" emoji 16 18)
+    (js/set! g "font" font)
+    (js/set! g "textAlign" "left")
+    (js/set! g "textBaseline" "alphabetic")
+    (js/set! g "fillStyle" fill)
+    (let [m (js/call g "measureText" text)
+          l (js/get m "actualBoundingBoxLeft")
+          r (js/get m "actualBoundingBoxRight")
+          a (js/get m "actualBoundingBoxAscent")
+          d (js/get m "actualBoundingBoxDescent")
+          span (math/max (+ l r) (+ a d))
+          k (if (> span 0.0) (/ 22.0 span) 0.2)]
+      (js/call g "translate" (- 16.0 (/ (* k (- r l)) 2.0)) (- 30.0 (* k d)))
+      (js/call g "scale" k k)
+      (js/call g "fillText" text 0 0))
     (publish-hat! c2)))
+
+(defn rasterize-art! [(h : Any)] : Unit
+  (let [glyph (art-glyph h)]
+    (if (glyph? glyph)
+        (rasterize-text! glyph "100px serif" "#d8b463")      ; colour emoji ignore the fill; a plain symbol must show on the dark stage
+        (rasterize-text! (monogram (js/get h "name")) "bold 100px sans-serif" "#d8b463"))))
 
 (start (boot "bp-canvas" "brawlpit.wasm"))

@@ -52,10 +52,13 @@
 (defn bp-fb-w [] : I32 (fb-w))
 (defn bp-fb-h [] : I32 (fb-h))
 (defn bp-hat-addr [(slot : I32)] : I32 (+ (hats-base) (* (clamp-i slot 0 7) 4096)))
+;; slot 0 is the player's equipped Hat Store hat: when it lands, player 1 puts it on
 (defn bp-hat-set [(slot : I32) (loaded : I32)] : Unit
-  (let [bit (shl 1 (clamp-i slot 0 7))]
+  (let [s (clamp-i slot 0 7)
+        bit (shl 1 s)]
     (gi! (g-hat-mask)
-         (if (!= loaded 0) (bit-or (gi (g-hat-mask)) bit) (bit-and (gi (g-hat-mask)) (bit-xor bit -1))))))
+         (if (!= loaded 0) (bit-or (gi (g-hat-mask)) bit) (bit-and (gi (g-hat-mask)) (bit-xor bit -1))))
+    (when (= s 0) (store-hat-changed! (!= loaded 0)))))
 (defn bp-hatname-addr [] : I32 (hatname-base))
 
 ;; character portraits: slot = character id, 128x128 RGBA each (64 KB apart in the sprite region)

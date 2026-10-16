@@ -344,7 +344,7 @@ CPU fighters, the menus, and a software renderer into a 960x540 RGBA framebuffer
 record is a fixed-address array in linear memory, the module imports nothing and its 8 MB memory cannot
 grow (the build fails if an allocator symbol, an undefined symbol, a `memory.grow`, or any import appears).
 The browser page needs JavaScript only for what a browser alone can do (instantiate the wasm, blit the
-framebuffer, forward keys / gamepad / pointer, decode a hat PNG), and that host code, `bp_host.prn`, is
+framebuffer, forward keys / gamepad / pointer, turn the equipped hat into pixels), and that host code, `bp_host.prn`, is
 PARENA compiled to **TypeScript** by `emit_ts` and type-stripped to JS -- nothing hand-written.
 
 ```bash
@@ -358,10 +358,16 @@ make test-brawlpit                          # build + every test below (needs no
   spam, restarts) and requires every player word and projectile equal after every one of 174,600 ticks, comparing
   floats as raw bits; a coverage check fails the run unless KOs, high-percent launches, shield breaks, parries,
   every character's special and both Duck projectiles were reached.
-* **engine / host** -- 69 + 38 assertions: module hygiene (0 imports, no allocator export, fixed memory), menus and
+* **engine / host** -- 88 + 61 assertions: module hygiene (0 imports, no allocator export, fixed memory), menus and
   match flow by key events only, 2P / free-for-all / practice rules, hats and portraits drawn by the wasm,
   determinism, the CPU brain; and the generated `bp-host.js` driving the real wasm under a DOM stub.
-  `WOTAN/scripts/brawlpit-browser-test.mjs` does the same in headless Chromium (13 checks).
+  `WOTAN/scripts/brawlpit-browser-test.mjs` does the same in headless Chromium (26 checks).
+* **hats** -- the player's equipped Hat Store hat is **worn by default**: when the page calls `bp_hat_set(0, 1)` the
+  engine makes it player 1's hat (on the select screen, or mid-match if it lands late); only a hand-picked NO HAT /
+  colour hat overrides it, and the CPU and player 2 never wear it. A pixel hat is a PNG (`image_url`); a curated
+  catalogue hat has none and IDUNA stores its art as an HTML-entity string (`&#127914;`), which `bp_host.prn`
+  decodes (numeric references, in PARENA -> TypeScript, no `innerHTML`), draws as a glyph, and fits onto the head.
+  Honest limit: the glyph path was exercised here with a text symbol -- this build machine has no emoji font.
 * **compiler work this needed** (the "if PARENA can't express it, that is the first task" rule): the LLVM backend
   gained `F32`, float memory ops, `f32/f64/i32` conversions (saturating, never trapping), `sqrt/fabs/floor`
   intrinsics, typed `let` binders and `cond/case/dotimes/inc!/...` sugar; the TypeScript backend gained statements,

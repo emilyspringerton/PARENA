@@ -27,15 +27,15 @@ const mkEl = (id) => ({ id, textContent: '', hidden: false, disabled: false, src
   getBoundingClientRect: () => ({ left: 100, top: 50, width: 480, height: 270 }),
   getContext() { return ctx; } });
 const ctx = { puts: [], putImageData(img, x, y) { this.puts.push({ img, x, y }); } };
-for (const id of ['bp-canvas', 'bp-stage', 'bp-pill', 'bp-load', 'bp-load-msg', 'bp-stat', 'bp-pad-status', 'b-fullscreen', 'bp-hat', 'bp-hat-img'])
-  els[id] = mkEl(id);
+const IDS = ['bp-canvas', 'bp-stage', 'bp-pill', 'bp-load', 'bp-load-msg', 'bp-stat', 'bp-pad-status', 'b-fullscreen', 'bp-hat', 'bp-hat-img', 'bp-hat-msg', 'bp-hat-link'];
+for (const id of IDS) els[id] = mkEl(id);
 els['bp-canvas'].hidden = true;
 const winL = {};
 let rafCb = null;
 globalThis.window = { addEventListener(t, f) { (winL[t] ||= []).push(f); }, requestAnimationFrame(cb) { rafCb = cb; } };
 let activeEl = null;
 globalThis.document = { getElementById: (id) => els[id] || null, get activeElement() { return activeEl; }, body: { tag: 'body' },
-  createElement() { return { width: 0, height: 0, getContext() { return { set imageSmoothingEnabled(v) {}, drawImage() {}, fillText() {}, set font(v) {}, set textAlign(v) {}, set textBaseline(v) {},
+  createElement() { return { width: 0, height: 0, toDataURL: () => 'data:image/png;base64,STUB', getContext() { return { set imageSmoothingEnabled(v) {}, drawImage() {}, fillText() {}, set font(v) {}, set textAlign(v) {}, set textBaseline(v) {},
     getImageData(x, y, w, h) {
       const d = new Uint8ClampedArray(w * h * 4);
       if (w === 32) { for (let i = 0; i < 1024; i++) { d[i * 4] = 200; d[i * 4 + 1] = i % 256; d[i * 4 + 2] = 40; d[i * 4 + 3] = i < 512 ? 255 : 0; } }
@@ -60,7 +60,7 @@ let captured = null;
 const realInstantiate = WebAssembly.instantiate.bind(WebAssembly);
 WebAssembly.instantiate = async (bytes, imports) => { const r = await realInstantiate(bytes, imports); captured = r; return r; };
 
-await import(pathToFileURL(path.join(dir, 'bp-host.js')).href);
+const host = await import(pathToFileURL(path.join(dir, 'bp-host.js')).href);
 await waitFor(() => rafCb !== null);
 await settle(20);
 
@@ -149,7 +149,10 @@ pads = [null, null, null, null];
 const authed = apiCalls.filter((c) => c.url.startsWith('/api/v1/characters/'));
 ok(authed.length >= 2 && authed.every((c) => c.opts && c.opts.headers && c.opts.headers.Authorization === 'Bearer tok123'),
    'IDUNA API calls carry the shared session token');
-ok(els['bp-hat-img'].src === '/api/v1/hats/h1/image' && els['bp-hat'].hidden === false, 'header badge shows the equipped hat');
+ok(/^data:image\/png/.test(els['bp-hat-img'].src) && els['bp-hat'].hidden === false && els['bp-hat'].title === 'Wearing: Pixel Crown',
+   'header badge shows the hat the wasm wears (the decoded 32x32 surface)');
+ok(els['bp-hat-msg'].textContent === 'Wearing your Hat Store hat: Pixel Crown.' && els['bp-hat-link'].hidden === false && els['bp-hat-link'].href === '/store.html',
+   'the status line under the canvas says the store hat is being worn');
 const hatAddr = x.bp_hat_addr(0);
 const hatBytes = new Uint8Array(x.memory.buffer, hatAddr, 4096);
 ok(hatBytes[0] === 200 && hatBytes[1] === 0 && hatBytes[5] === 1 && hatBytes[3] === 255 && hatBytes[4 * 600 + 3] === 0,
@@ -164,9 +167,10 @@ ok(Array.from(sp(2, 0, 0)).join() === '1,0,0,255', 'atlas tile 0 lands in charac
 ok(Array.from(sp(5, 5, 3)).join() === '4,133,3,255', 'atlas tile 3 (x=384..511) lands in character 5\'s slot, pixel (5,3) intact');
 ok(Array.from(sp(9, 127, 127)).join() === '8,255,255,255', 'the last tile\'s last pixel arrives intact (every row of every tile copied)');
 
-// the wasm draws the hat on the fighter: toggle P1's hat in select and compare pixels is overkill;
-// check the engine accepted the hat slot
+// the wasm wears the hat by itself: nobody pressed anything on the select screen, and the engine has
+// already made it player 1's hat (the pixels it draws are checked by brawlpit_engine_test.mjs)
 ok((view.getInt32(135168 + 30 * 4, true) & 1) === 1, 'engine knows hat slot 0 is loaded');
+ok(view.getInt32(135168 + 48 * 4, true) === 0, 'the equipped store hat is player 1\'s default hat -- the page never has to ask the player to pick it');
 
 // ---- blur releases keys ------------------------------------------------------------------------------------
 keydown(68);
@@ -180,6 +184,123 @@ ok(Math.abs(f32(PL + 16) - xs) < 3.5, 'window blur releases held keys (no stuck 
 const before = ctx.puts.length;
 for (let i = 0; i < 600; i++) { if (i % 17 === 0) tap(74, 1); frame(1); }
 ok(ctx.puts.length - before === 600 + Math.floor(600 / 17 + 1) * 2 + 0 || ctx.puts.length - before >= 600, 'ran 600+ more frames with no trap');
+
+// ---- hat scenarios: each one loads a FRESH instance of the generated host against its own stubs ------------------------
+// (the cases that matter in production: a curated hat whose art is an HTML-entity string, a signed-out visitor,
+// nothing equipped, an expired sign-in, a missing image, a hat with no art at all)
+const J = (v) => ({ ok: true, json: async () => v });
+const S = (n) => ({ ok: false, status: n });
+const B = () => ({ ok: true, blob: async () => ({ blob: true }) });
+const SSO = 'https://iam.test/?redirect_uri=wotan';
+let scenarioNo = 0;
+async function scenario(session, routes) {
+  const E = {}, canvases = [], fetches = [], L = {};
+  for (const id of IDS) E[id] = { id, textContent: '', hidden: id === 'bp-hat' || id === 'bp-hat-link', disabled: false, src: '', href: '', title: '', listeners: {},
+    addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }, focus() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 960, height: 540 }), getContext: () => ({ putImageData() {} }) };
+  let raf = null, inst = null, now = 1000;
+  globalThis.window = { addEventListener(t, f) { (L[t] ||= []).push(f); }, requestAnimationFrame(cb) { raf = cb; } };
+  globalThis.document = { getElementById: (id) => E[id] || null, activeElement: null, body: {},
+    createElement() {
+      const c = { width: 0, height: 0, calls: [], toDataURL: () => 'data:image/png;base64,STUB' };
+      const g = { font: '', fillStyle: '', set imageSmoothingEnabled(v) {}, set textAlign(v) {}, set textBaseline(v) {},
+        drawImage() { c.calls.push(['drawImage']); },
+        measureText() { return { actualBoundingBoxLeft: 5, actualBoundingBoxRight: 95, actualBoundingBoxAscent: 80, actualBoundingBoxDescent: 20 }; },
+        translate(x, y) { c.calls.push(['translate', x, y]); }, scale(a, b) { c.calls.push(['scale', a, b]); },
+        fillText(t) { c.calls.push(['fillText', t, g.font, g.fillStyle]); },
+        getImageData(x, y, w, h) {
+          const d = new Uint8ClampedArray(w * h * 4);
+          if (w === 32) for (let i = 0; i < 1024; i++) { d[i * 4] = 200; d[i * 4 + 1] = 30; d[i * 4 + 2] = 40; d[i * 4 + 3] = 255; }
+          return { data: d };
+        } };
+      c.getContext = () => g;
+      canvases.push(c);
+      return c;
+    } };
+  globalThis.getIdunaSession = () => session;
+  globalThis.buildSsoURL = () => SSO;
+  globalThis.fetch = async (url) => {
+    fetches.push(url);
+    if (url.endsWith('brawlpit.wasm')) return { ok: true, arrayBuffer: async () => wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength) };
+    if (url === 'sprites.png') return B();
+    return routes[url] || S(404);
+  };
+  WebAssembly.instantiate = async (bytes, imports) => { inst = await realInstantiate(bytes, imports); return inst; };
+  const mod = await import(pathToFileURL(path.join(dir, 'bp-host.js')).href + '?s=' + (++scenarioNo));
+  await waitFor(() => raf !== null);
+  await settle(40);
+  const xx = inst.instance.exports;
+  const dv = () => new DataView(xx.memory.buffer);
+  const frame2 = (n = 1) => { for (let i = 0; i < n; i++) { now += 16.667; const cb = raf; raf = null; cb(now); } };
+  const key = (code, down) => { for (const f of L[down ? 'keydown' : 'keyup']) f({ keyCode: code, location: 0, preventDefault() {} }); };
+  const tap2 = (code) => { key(code, true); frame2(3); key(code, false); frame2(2); };
+  return { E, mod, canvases, fetches, x: xx, frame: frame2, tap: tap2,
+    G: (k) => dv().getInt32(135168 + k * 4, true), P1hat: () => dv().getInt32(139264 + 59 * 4, true),
+    glyph: () => canvases.flatMap((c) => c.calls).find((k) => k[0] === 'fillText'),
+    calls: (name) => canvases.flatMap((c) => c.calls).filter((k) => k[0] === name) };
+}
+const HATS = '/api/v1/characters/c-1/hats';
+const player = { token: 'tok', playerID: 'p-1' };
+const mine = { '/api/v1/characters/by-player/p-1': J({ character_id: 'c-1' }) };
+
+{ // the curated catalogue: image_asset is the entity string IDUNA stores, there is no PNG
+  const A = await scenario(player, { ...mine, [HATS]: J([
+    { name: 'Joystick Cap', equipped: false, image_asset: '&#127905;' },
+    { name: 'Top Hat, Second Casting', equipped: true, image_asset: '&#127914;' }]) });
+  const ft = A.glyph();
+  ok(!!ft && ft[1] === '\u{1F3AA}', 'curated hat: the entity string "&#127914;" is decoded to the real glyph before it is drawn (never drawn as literal text)');
+  ok(ft && ft[2] === '100px serif' && ft[3] === '#d8b463', 'curated hat: drawn large in the page\'s serif/emoji font (gold, so a plain symbol shows on the dark stage), then fitted');
+  const tr = A.calls('translate')[0], sc = A.calls('scale')[0];
+  ok(tr && sc && Math.abs(sc[1] - 0.22) < 1e-9 && Math.abs(tr[1] - 6.1) < 1e-9 && Math.abs(tr[2] - 25.6) < 1e-9,
+     'curated hat: the glyph\'s ink box is scaled to 22 px, centred on x=16, standing on row 30 (the head)');
+  ok((A.G(30) & 1) === 1 && A.G(48) === 0, 'curated hat: the engine has it in slot 0 and made it player 1\'s default hat');
+  const px = new Uint8Array(A.x.memory.buffer, A.x.bp_hat_addr(0), 8);
+  ok(px[0] === 200 && px[1] === 30 && px[3] === 255, 'curated hat: the rasterized 32x32 surface is in wasm memory');
+  ok(A.E['bp-hat'].hidden === false && /^data:image\/png/.test(A.E['bp-hat-img'].src) && A.E['bp-hat'].title === 'Wearing: Top Hat, Second Casting', 'curated hat: the header badge shows what is worn');
+  ok(A.E['bp-hat-msg'].textContent === 'Wearing your Hat Store hat: Top Hat, Second Casting.', 'curated hat: the status line names the hat');
+  // end to end through the generated host: practice match, lock in, fight -- no hat key is ever pressed
+  A.tap(52); A.tap(13); A.tap(13); A.frame(220);
+  ok(A.x.bp_phase() === 2 && A.P1hat() === 0, 'curated hat: in a match played through the host, player 1 wears it without being asked to pick it');
+}
+{ // a pixel hat, with the list wrapped in an object (the page accepts the bare array or {hats:[...]})
+  const A = await scenario(player, { ...mine, [HATS]: J({ hats: [{ name: 'Crown', equipped: true, image_url: '/api/v1/hats/h1/image' }] }), '/api/v1/hats/h1/image': B() });
+  ok((A.G(30) & 1) === 1 && A.G(48) === 0 && A.glyph() === undefined, 'pixel hat in a {hats:[...]} reply: worn, and no text is drawn for it');
+}
+{ // signed out
+  const A = await scenario(null, {});
+  ok(!A.fetches.some((u) => u.startsWith('/api/')), 'signed out: no IDUNA call is made');
+  ok(/not signed in/.test(A.E['bp-hat-msg'].textContent) && A.E['bp-hat-link'].hidden === false && A.E['bp-hat-link'].href === SSO && A.E['bp-hat-link'].textContent === 'Sign in with IDUNA',
+     'signed out: the status line says so and links to the IDUNA sign-in');
+  ok(A.G(30) === 0 && A.G(48) === -1 && A.E['bp-hat'].hidden === true, 'signed out: no hat, and the badge stays hidden');
+}
+{ // signed in, nothing equipped
+  const A = await scenario(player, { ...mine, [HATS]: J([{ name: 'Top Hat', equipped: false, image_asset: '&#127914;' }]) });
+  ok(/no hat equipped/.test(A.E['bp-hat-msg'].textContent) && A.E['bp-hat-link'].href === '/store.html', 'nothing equipped: the status line points at the Hat Store');
+  ok(A.G(30) === 0 && A.G(48) === -1 && A.glyph() === undefined, 'nothing equipped: no hat is loaded or drawn');
+}
+{ // the sign-in has expired
+  const A = await scenario(player, { '/api/v1/characters/by-player/p-1': S(401) });
+  ok(/expired/.test(A.E['bp-hat-msg'].textContent) && A.E['bp-hat-link'].href === SSO, 'HTTP 401: "your sign-in has expired", with a link to sign in again');
+}
+{ // no character
+  const A = await scenario(player, { '/api/v1/characters/by-player/p-1': S(404) });
+  ok(/no BRAWLPIT character/.test(A.E['bp-hat-msg'].textContent), 'HTTP 404 on the character: the status line says there is no character yet');
+}
+{ // the hat image is gone
+  const A = await scenario(player, { ...mine, [HATS]: J([{ name: 'Pixel Crown', equipped: true, image_url: '/api/v1/hats/h9/image' }]) });
+  ok(/Could not load the image for Pixel Crown \(HTTP 404\)/.test(A.E['bp-hat-msg'].textContent) && A.G(30) === 0, 'a missing hat image is reported as such (not as "no character"), and no half-hat is worn');
+}
+{ // a hat with no art at all: the monogram, so an equipped hat is never silently missing
+  const A = await scenario(player, { ...mine, [HATS]: J([{ name: 'wizard hat', equipped: true, image_asset: 'hat_wizard' }]) });
+  const ft = A.glyph();
+  ok(!!ft && ft[1] === 'W' && ft[2] === 'bold 100px sans-serif' && ft[3] === '#d8b463' && A.G(48) === 0, 'no PNG and no glyph: a gold monogram of the hat\'s name is worn instead of nothing');
+}
+{ // the entity decoder itself
+  const d = (await scenario(null, {})).mod.decodeEntities;
+  ok(d('&#127914;') === '\u{1F3AA}' && d('&#x1F3AA;') === '\u{1F3AA}' && d('&#X1f3aa;') === '\u{1F3AA}', 'decodeEntities: decimal and hex numeric references');
+  ok(d('a&#38;b') === 'a&b' && d('x&#65;&#66;y') === 'xABy' && d('plain') === 'plain' && d('') === '', 'decodeEntities: mixed text, several references, plain text, empty');
+  ok(d('&#zz;') === '&#zz;' && d('&#123') === '&#123' && d('&#;') === '&#;' && d('&#99999999;') === '&#99999999;' && d('&amp;') === '&amp;' && d('&#') === '&#',
+     'decodeEntities: malformed, unterminated, empty, out-of-range and named references pass through untouched');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

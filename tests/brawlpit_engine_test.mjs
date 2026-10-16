@@ -197,24 +197,85 @@ async function startMatch(mode = 0, extra = () => {}) {
 }
 
 // ---- 6. portraits and hats are drawn by the wasm ---------------------------------------------------------------
-{
-  const g = await startMatch(3, (gg) => { gg.tap(K.LEFT); gg.tap(K.LEFT); gg.tap(K.LEFT); });   // practice, rosie(3) -> char 0 (Petalia)
-  g.frame(200);
-  const flatBefore = countRGB(g, 255, 115, 219);
-  // upload a hat: 32x32 solid pure red, opaque, into slot 0
+// The equipped Hat Store hat is worn BY DEFAULT: the page decodes it (a network round trip after boot) and
+// calls bp_hat_set(0, 1); nothing needs to be picked on the select screen. (Founder, 2026-10-16: "the hat
+// store hat thats equipped should be worn by the player in brawlpit" -- it used to be opt-in via up / down.)
+const uploadHat = (g, r = 250, gr = 5, b = 5) => {          // a 32x32 solid colour, opaque, into hat slot 0
   const hat = new Uint8Array(g.x.memory.buffer, g.x.bp_hat_addr(0), 4096);
-  for (let i = 0; i < 1024; i++) { hat[i * 4] = 250; hat[i * 4 + 1] = 5; hat[i * 4 + 2] = 5; hat[i * 4 + 3] = 255; }
+  for (let i = 0; i < 1024; i++) { hat[i * 4] = r; hat[i * 4 + 1] = gr; hat[i * 4 + 2] = b; hat[i * 4 + 3] = 255; }
   g.x.bp_hat_set(0, 1);
-  const redBefore = countRGB(g, 250, 5, 5);
-  const gg = g;
-  gg.x.bp_key(K.ESC, 1); gg.frame(2); gg.x.bp_key(K.ESC, 0); gg.frame(2);
-  gg.tap(81);                         // quit to title
-  gg.tap(49 + 3);                     // practice again
-  gg.tap(K.UP);                       // hat: none -> WOTAN hat (now available)
-  gg.tap(K.ENTER); gg.tap(K.ENTER);
-  gg.frame(220);
-  ok(pi(gg, 0, P.hat) === 0, 'the hat chosen on the select screen is worn by P1 (slot 0)');
-  ok(countRGB(gg, 250, 5, 5) > redBefore + 200, 'the uploaded hat pixels are blitted onto the fighter by the wasm');
+};
+const toSelect = async (hatFirst) => {                       // boot, optionally with the store hat already in, open practice's select
+  const g = await load(wasmPath);
+  g.frame(5);
+  if (hatFirst) uploadHat(g);
+  g.tap(49 + 3);                                             // practice (hotkey 4)
+  g.frame(2);
+  return g;
+};
+const fight = (g) => { g.tap(K.ENTER); g.tap(K.ENTER); g.frame(220); };   // lock in the fighter, stage -> FIGHT, past the countdown
+let redNoHat = 0;
+{
+  const g = await toSelect(false);
+  ok(gi(g, 48) === -1, 'no store hat loaded: player 1 defaults to NO HAT');
+  fight(g);
+  ok(pi(g, 0, P.hat) === -1, 'no store hat loaded: the fighter wears nothing');
+  redNoHat = countRGB(g, 250, 5, 5);
+}
+{
+  const g = await toSelect(true);
+  ok(gi(g, 48) === 0 && gi(g, 59) === 0, 'a loaded store hat is player 1\'s default hat, with no key pressed');
+  fight(g);                                                  // no UP / DOWN anywhere
+  ok(pi(g, 0, P.hat) === 0, 'the equipped store hat is worn by player 1 without being picked');
+  ok(pi(g, 1, P.hat) === -1, 'the CPU opponent does not wear the player\'s store hat');
+  ok(countRGB(g, 250, 5, 5) > redNoHat + 200, 'the hat\'s pixels are blitted onto the fighter by the wasm');
+}
+{
+  const g = await toSelect(false);                           // the hat lands while the select screen is open
+  ok(gi(g, 48) === -1, 'before the hat arrives: NO HAT');
+  uploadHat(g);
+  ok(gi(g, 48) === 0, 'a store hat that arrives late (select screen open) becomes the default');
+  fight(g);
+  ok(pi(g, 0, P.hat) === 0, '...and is worn in the match');
+}
+{
+  const g = await toSelect(false);                           // the hat lands after the fight has begun
+  fight(g);
+  ok(pi(g, 0, P.hat) === -1 && g.x.bp_phase() === 2, 'a match that started before the hat arrived: bare-headed');
+  uploadHat(g);
+  ok(pi(g, 0, P.hat) === 0, 'the hat arrives mid-match: player 1 puts it on at once');
+  g.frame(4);
+  ok(countRGB(g, 250, 5, 5) > redNoHat + 200, '...and it is drawn on the next frame');
+  g.x.bp_hat_set(0, 0);
+  ok(pi(g, 0, P.hat) === -1, 'the hat going away takes it off the fighter');
+}
+{
+  const g = await toSelect(true);                            // the player deliberately goes bare-headed
+  g.tap(K.DOWN);                                             // WOTAN HAT -> NO HAT
+  ok(gi(g, 48) === -1 && gi(g, 59) === 1, 'down on the select screen: NO HAT, and the choice is marked as made by hand');
+  uploadHat(g);                                              // the page announces the hat again
+  ok(gi(g, 48) === -1, 'a hat announced after a deliberate NO HAT does not override the choice');
+  fight(g);
+  ok(pi(g, 0, P.hat) === -1 && countRGB(g, 250, 5, 5) <= redNoHat + 5, 'a deliberate NO HAT is respected in the match');
+}
+{
+  const g = await toSelect(true);                            // the colour hats are still there to pick
+  g.tap(K.UP);                                               // WOTAN HAT -> BLUE HAT
+  ok(gi(g, 48) === 8, 'up from the store hat: BLUE HAT');
+  g.tap(K.UP); g.tap(K.UP);
+  ok(gi(g, 48) === 10, 'RED, then GREEN');
+  g.tap(K.UP);
+  ok(gi(g, 48) === -1, 'then round to NO HAT');
+  g.tap(K.UP);
+  ok(gi(g, 48) === 0, 'and back to the store hat');
+}
+{
+  const g = await load(wasmPath);                            // local 2-player: the store hat is the signed-in player's, not P2's
+  g.frame(5);
+  uploadHat(g);
+  g.tap(49 + 1); g.frame(2);                                 // 2 PLAYERS
+  g.tap(K.ENTER); g.tap(K.ENTER); g.tap(K.ENTER); g.frame(220);
+  ok(pi(g, 0, P.hat) === 0 && pi(g, 1, P.hat) === -1 && gi(g, 49) === -1, 'local 2P: player 1 wears the store hat, player 2 does not');
 }
 {
   const g = await load(wasmPath);

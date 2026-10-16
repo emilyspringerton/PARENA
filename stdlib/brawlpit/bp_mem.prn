@@ -118,6 +118,7 @@
 (defn g-quit-req [] : I32 56)
 (defn g-ai-mode [] : I32 57)       ; CPU brain: 0 classic (the C bot), 1 easy, 2 normal, 3 hard
 (defn g-ai-sel [] : I32 58)        ; the level chosen on the select screen
+(defn g-hat-touched [] : I32 59)   ; 1 once the player has picked P1's hat by hand (a late store hat then stays out of it)
 
 ;; ---- tiny integer / float helpers -------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))
