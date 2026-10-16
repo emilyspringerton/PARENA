@@ -1,0 +1,419 @@
+;; stdlib/shankpit460/sp_host.prn -- the shankpit-460 web page's host code. PARENA, compiled to TypeScript
+;; (parena build sp_host.prn -o sp_host.ts), then type-stripped to the .js the page loads.
+;;
+;; Same rule as BRAWLPIT web (founder, 2026-10-16: "make sure its actually wasm not faked with a bunch of garbage
+;; js; whatever we do need to use js for use parena into TS"): this is the ONLY JavaScript on the page and it is
+;; generated from this file. It contains no game logic. The game -- simulation, bots, the 3D renderer, the menus and
+;; the matchmaking protocol -- is shankpit460.wasm (stdlib/shankpit460/sp_*.prn); the module imports nothing, so the
+;; browser has to do exactly the things below because only a browser can:
+;;   1. fetch + instantiate the wasm                        (boot ... on-instance)
+;;   2. copy the framebuffer the wasm painted onto a canvas (tick: putImageData of a view onto wasm memory)
+;;   3. forward keyboard / mouse / pointer-lock / gamepad   (on-keydown ... poll-pads -> sp_key / sp_mouse / sp_pad ...)
+;;   4. own the WebSocket to IDUNA's matchmaker             (ensure-socket!, pump-out!: frames in and out of wasm memory)
+;;   5. turn the engine's sound events into WebAudio blips  (play-sound!)
+;;   6. keep the page's own DOM labels in step              (status pill, footer)
+
+;; ---- module state ---------------------------------------------------------------------------------------
+(def canvas null)
+(def ctx null)
+(def image null)          ; ImageData viewing the wasm framebuffer in place
+(def wasm null)           ; the instance's exports
+(def memory null)
+(def view null)           ; DataView over wasm memory
+(def sock null)
+(def next-try 0.0)        ; performance.now() before which no new socket is opened
+(def idle-since 0.0)
+(def session null)
+(def wasm-bytes 0)
+(def wasm-imports 0)
+(def snd-seen 0)
+(def actx null)
+(def noise-buf null)
+(def muted false)
+(def last-phase -1)
+
+;; ---- DOM helpers --------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+(defn now [] : F64 (js/call (js/global "performance") "now"))
+
+(defn set-text! [(id : String) (text : String)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "textContent" text))))
+
+(defn set-hidden! [(id : String) (hidden : Bool)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "hidden" hidden))))
+
+(defn fail! [(msg : Any)] : Unit
+  (do (set-text! "sp-pill" "Could not start")
+      (set-text! "sp-load-msg" (str "shankpit-460 could not start: " msg))
+      (js/call (js/global "console") "error" msg)))
+
+(defn ignore! [(e : Any)] : Unit unit)
+
+;; ---- 1. fetch + instantiate the wasm --------------------------------------------------------------------------
+(defn boot [(canvas-id : String) (wasm-url : String)] : Unit
+  (do
+    (set! canvas (el canvas-id))
+    (set! ctx (js/call canvas "getContext" "2d"))
+    (set-text! "sp-pill" "Loading wasm...")
+    (js/call
+      (js/call
+        (js/call
+          (js/call (js/call-fn (js/global "fetch") wasm-url) "then" (callback on-response))
+          "then" (callback on-bytes))
+        "then" (callback on-instance))
+      "catch" (callback fail!))))
+
+(defn on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "shankpit460.wasm: HTTP " (js/get r "status")))))
+
+(defn on-bytes [(bytes : Any)] : Any
+  (do (set! wasm-bytes (js/get bytes "byteLength"))
+      ;; the module takes NO imports: no allocator, no libc, no JS callbacks
+      (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj))))
+
+(defn on-instance [(result : Any)] : Unit
+  (do
+    (set! wasm (js/get (js/get result "instance") "exports"))
+    (set! memory (js/get wasm "memory"))
+    (set! view (js/new "DataView" (js/get memory "buffer")))
+    (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
+    (js/call wasm "sp_init")
+    (set! image
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "sp_fb_addr")
+                          (* (* (js/call wasm "sp_fb_w") (js/call wasm "sp_fb_h")) 4))
+                  (js/call wasm "sp_fb_w") (js/call wasm "sp_fb_h")))
+    (load-session!)
+    (install-listeners)
+    (set-hidden! "sp-load" true)
+    (set-hidden! "sp-canvas" false)
+    (set-text! "sp-pill" "Running in WebAssembly")
+    (set-text! "sp-stat" (str "shankpit460.wasm " (math/round (/ wasm-bytes 1024)) " KB  -  "
+                              wasm-imports " imports  -  "
+                              (/ (js/get (js/get memory "buffer") "byteLength") 1048576) " MB fixed memory, no allocator  -  PARENA"))
+    (let [b (el "sp-fullscreen")]
+      (when (not (js/null? b))
+        (js/set! b "disabled" false)
+        (js/call b "addEventListener" "click" (callback on-fullscreen))))
+    (let [b (el "sp-mute")]
+      (when (not (js/null? b))
+        (js/call b "addEventListener" "click" (callback on-mute-click))))
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+;; ---- 2. the frame loop ---------------------------------------------------------------------------------------------
+(defn tick [(t : F64)] : Unit
+  (do
+    (poll-pads)
+    (ensure-socket!)
+    (js/call wasm "sp_frame" t)
+    (pump-out!)
+    (js/call ctx "putImageData" image 0 0)
+    (play-sounds!)
+    (sync-lock!)
+    (sync-labels!)
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+(defn on-fullscreen [(e : Any)] : Unit
+  (js/call (el "sp-stage") "requestFullscreen"))
+
+;; ---- 3. input forwarding --------------------------------------------------------------------------------------------
+(defn game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")]
+    (or (and (>= k 37) (<= k 40)) (or (= k 32) (= k 9)))))
+
+;; keys belong to the game while the canvas has focus or the pointer is captured (or nothing has focus)
+(defn game-focused? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (or (js/null? a) (or (= a canvas) (or (= a (js/get (doc) "body")) (not (js/null? (js/get (doc) "pointerLockElement"))))))))
+
+(defn locked? [] : Bool (not (js/null? (js/get (doc) "pointerLockElement"))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (game-focused?)
+    (let [k (js/get e "keyCode")]
+      (if (and (= k 77) (not (js/get e "repeat")))
+          (toggle-mute!)
+          (js/call wasm "sp_key" k 1))
+      (when (game-key? e) (js/call e "preventDefault")))))
+
+(defn on-keyup [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "sp_key" (js/get e "keyCode") 0)))
+
+(defn on-blur [(e : Any)] : Unit (js/call wasm "sp_blur"))
+
+;; pointer position mapped from CSS pixels to the 640x360 framebuffer (only meaningful on the menus)
+(defn on-mousemove [(e : Any)] : Unit
+  (if (locked?)
+      (js/call wasm "sp_mouse" (js/get e "movementX") (js/get e "movementY"))
+      (let [rect (js/call canvas "getBoundingClientRect")
+            x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call wasm "sp_fb_w")) (js/get rect "width"))
+            y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "sp_fb_h")) (js/get rect "height"))]
+        (js/call wasm "sp_pointer" (math/floor x) (math/floor y)))))
+
+;; a click is handled inside the wasm synchronously (it may start a match), and in the SAME gesture the page asks
+;; for pointer lock if the engine now wants it -- browsers only grant it from a user gesture
+(defn on-mousedown [(e : Any)] : Unit
+  (do
+    (ensure-audio!)
+    (when (not (locked?)) (on-mousemove e))
+    (js/call wasm "sp_button" (js/get e "button") 1)
+    (when (and (= (js/get e "button") 0) (= (js/call wasm "sp_wants_lock") 1) (not (locked?)))
+      (let [r (js/call canvas "requestPointerLock")]
+        (when (= (js/typeof r) "object") (js/call r "catch" (callback ignore!)))))
+    (js/call e "preventDefault")))
+
+(defn on-mouseup [(e : Any)] : Unit
+  (js/call wasm "sp_button" (js/get e "button") 0))
+
+(defn on-wheel [(e : Any)] : Unit
+  (do (js/call wasm "sp_wheel" (if (> (js/get e "deltaY") 0.0) 1 -1))
+      (when (locked?) (js/call e "preventDefault"))))
+
+(defn on-contextmenu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+(defn on-lock-change [(e : Any)] : Unit
+  (js/call wasm "sp_lock" (if (locked?) 1 0)))
+
+;; the engine leaves the menus -> lock, back to them -> let go
+(defn sync-lock! [] : Unit
+  (do
+    (let [ph (js/call wasm "sp_phase")]
+      (when (and (!= ph last-phase) (!= ph 1) (locked?))
+        (js/call (doc) "exitPointerLock"))
+      (set! last-phase ph))))
+
+(defn install-listeners [] : Unit
+  (let [w (js/global "window")]
+    (js/call w "addEventListener" "keydown" (callback on-keydown))
+    (js/call w "addEventListener" "keyup" (callback on-keyup))
+    (js/call w "addEventListener" "blur" (callback on-blur))
+    (js/call w "addEventListener" "mousemove" (callback on-mousemove))
+    (js/call w "addEventListener" "mouseup" (callback on-mouseup))
+    (js/call (doc) "addEventListener" "pointerlockchange" (callback on-lock-change))
+    (js/call canvas "addEventListener" "mousedown" (callback on-mousedown))
+    (js/call canvas "addEventListener" "wheel" (callback on-wheel))
+    (js/call canvas "addEventListener" "contextmenu" (callback on-contextmenu))))
+
+;; ---- gamepads: poll every frame (the Gamepad API has no change events for sticks/buttons) ----------------------------
+(defn pad-api? [] : Bool
+  (and (js/defined? "navigator")
+       (= (js/typeof (js/get (js/global "navigator") "getGamepads")) "function")))
+
+(defn pad-mask [(gp : Any)] : I32
+  (let [buttons (js/get gp "buttons")
+        n (math/min 16 (js/get buttons "length"))]
+    (loop [i 0 m 0]
+      (if (< i n)
+          (recur (+ i 1) (if (js/get (js/aget buttons i) "pressed") (bit-or m (shl 1 i)) m))
+          m))))
+
+(defn pad-value [(gp : Any) (i : I32)] : F64
+  (let [b (js/aget (js/get gp "buttons") i)]
+    (if (js/null? b) 0.0 (js/get b "value"))))
+
+(defn send-pad [(i : I32) (gp : Any)] : Unit
+  (let [axes (js/get gp "axes")]
+    (js/call wasm "sp_pad" i
+             (js/aget axes 0) (js/aget axes 1) (js/aget axes 2) (js/aget axes 3)
+             (pad-value gp 6) (pad-value gp 7) (pad-mask gp))))
+
+(defn poll-pads [] : Unit
+  (when (pad-api?)
+    (let [pads (js/call (js/global "navigator") "getGamepads")]
+      (dotimes [i 4]
+        (let [gp (js/aget pads i)]
+          (if (js/null? gp)
+              (js/call wasm "sp_pad_gone" i)
+              (send-pad i gp)))))))
+
+;; ---- 4. the matchmaking socket ----------------------------------------------------------------------------------------
+;; The engine says whether it wants a socket (sp_net_wanted) and speaks the protocol through two memory buffers; this
+;; opens and closes the WebSocket and moves bytes.
+(defn load-session! [] : Unit
+  (when (js/defined? "getIdunaSession")
+    (set! session (js/call-fn (js/global "getIdunaSession")))))
+
+(defn socket-url [] : String
+  (str (if (= (js/get (js/get (js/global "window") "location") "protocol") "https:") "wss://" "ws://")
+       (js/get (js/get (js/global "window") "location") "host")
+       "/api/v1/shankpit460/play"))
+
+;; a JS string as ASCII bytes in wasm memory, NUL-free; returns the length written (clamped to `cap`)
+(defn put-ascii! [(s : Any) (addr : I32) (cap : I32)] : I32
+  (let [u8 (js/new "Uint8Array" (js/get memory "buffer") addr cap)
+        n (math/min cap (js/get s "length"))]
+    (dotimes [i n]
+      (js/aset! u8 i (math/min 126 (js/call s "charCodeAt" i))))
+    n))
+
+(defn on-open [(e : Any)] : Unit
+  (do
+    (load-session!)
+    (if (js/null? session)
+        (do (js/call wasm "sp_token_set" 0) (js/call wasm "sp_name_set" 0))
+        (do (js/call wasm "sp_token_set" (put-ascii! (js/get session "token") (js/call wasm "sp_token_addr") 2000))
+            (js/call wasm "sp_name_set" (put-ascii! (js/get session "displayName") (js/call wasm "sp_name_addr") 24))))
+    (js/call wasm "sp_net_socket" 2)))
+
+(defn on-message [(e : Any)] : Unit
+  (let [data (js/get e "data")
+        len (js/get data "byteLength")]
+    (when (<= len 8000)
+      (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "sp_net_in_addr") len)
+               "set" (js/new "Uint8Array" data))
+      (js/call wasm "sp_net_recv" len))))
+
+(defn on-close [(e : Any)] : Unit
+  (do (set! sock null)
+      (set! next-try (+ (now) 8000.0))
+      (js/call wasm "sp_net_socket" 3)))
+
+(defn open-socket! [] : Unit
+  (do
+    (js/call wasm "sp_net_socket" 1)
+    (set! sock (js/new "WebSocket" (socket-url)))
+    (js/set! sock "binaryType" "arraybuffer")
+    (js/call sock "addEventListener" "open" (callback on-open))
+    (js/call sock "addEventListener" "message" (callback on-message))
+    (js/call sock "addEventListener" "close" (callback on-close))
+    (js/call sock "addEventListener" "error" (callback on-close))))
+
+(defn ensure-socket! [] : Unit
+  (let [t (now)]
+    (if (= (js/call wasm "sp_net_wanted") 1)
+        (do (set! idle-since t)
+            (when (and (js/null? sock) (>= t next-try)) (open-socket!)))
+        ;; nobody wants it any more: let an idle socket go after a while
+        (when (and (not (js/null? sock)) (> (- t idle-since) 20000.0))
+          (js/call sock "close")))))
+
+;; frames the engine queued: [u16 len][bytes]...
+(defn pump-out! [] : Unit
+  (let [total (js/call wasm "sp_net_out_len")]
+    (when (> total 0)
+      (let [open (and (not (js/null? sock)) (= (js/get sock "readyState") 1))
+            base (js/call wasm "sp_net_out_addr")]
+        (when open
+          (loop [off 0]
+            (when (< (+ off 2) total)
+              (let [len (+ (js/call view "getUint8" (+ base off)) (* 256 (js/call view "getUint8" (+ base (+ off 1)))))]
+                (js/call sock "send" (js/new "Uint8Array" (js/get memory "buffer") (+ base (+ off 2)) len))
+                (recur (+ off (+ 2 len)))))))
+        (js/call wasm "sp_net_out_clear")))))
+
+;; ---- 5. sound ---------------------------------------------------------------------------------------------------------
+;; The engine appends {id, gain, pan, pitch} records to a ring; each becomes a few short WebAudio blips. Nothing here is
+;; sampled: oscillators and filtered noise, quiet by design.
+(defn ensure-audio! [] : Unit
+  (when (and (js/null? actx) (js/defined? "AudioContext"))
+    (set! actx (js/new "AudioContext"))
+    (let [rate (js/get actx "sampleRate")
+          buf (js/call actx "createBuffer" 1 rate rate)
+          ch (js/call buf "getChannelData" 0)]
+      (dotimes [i rate]
+        (js/aset! ch i (- (* 2.0 (js/call (js/global "Math") "random")) 1.0)))
+      (set! noise-buf buf))))
+
+(defn audio-ready? [] : Bool
+  (and (not muted) (and (not (js/null? actx)) (= (js/get actx "state") "running"))))
+
+;; chain: source -> gain -> (pan) -> destination
+(defn out-node [(gain : F64) (pan : F64) (t : F64) (dur : F64)] : Any
+  (let [g (js/call actx "createGain")
+        p (js/call actx "createStereoPanner")]
+    (js/call (js/get g "gain") "setValueAtTime" gain t)
+    (js/call (js/get g "gain") "exponentialRampToValueAtTime" 0.0001 (+ t dur))
+    (js/set! (js/get p "pan") "value" pan)
+    (js/call g "connect" p)
+    (js/call p "connect" (js/get actx "destination"))
+    g))
+
+(defn blip! [(f0 : F64) (f1 : F64) (dur : F64) (gain : F64) (pan : F64) (kind : String) (delay : F64)] : Unit
+  (let [t (+ (js/get actx "currentTime") delay)
+        o (js/call actx "createOscillator")]
+    (js/set! o "type" kind)
+    (js/call (js/get o "frequency") "setValueAtTime" f0 t)
+    (js/call (js/get o "frequency") "exponentialRampToValueAtTime" f1 (+ t dur))
+    (js/call o "connect" (out-node gain pan t dur))
+    (js/call o "start" t)
+    (js/call o "stop" (+ t (+ dur 0.03)))))
+
+(defn noise! [(dur : F64) (gain : F64) (pan : F64) (cutoff : F64) (kind : String)] : Unit
+  (let [t (js/get actx "currentTime")
+        s (js/call actx "createBufferSource")
+        f (js/call actx "createBiquadFilter")]
+    (js/set! s "buffer" noise-buf)
+    (js/set! f "type" kind)
+    (js/call (js/get f "frequency") "setValueAtTime" cutoff t)
+    (js/call s "connect" f)
+    (js/call f "connect" (out-node gain pan t dur))
+    (js/call s "start" t)
+    (js/call s "stop" (+ t (+ dur 0.03)))))
+
+(defn play-sound! [(id : I32) (gain0 : F64) (pan : F64) (pitch : F64)] : Unit
+  (let [g (* gain0 0.22)]
+    (cond
+      (= id 0) (do (blip! (* 190.0 pitch) 55.0 0.13 g pan "sine" 0.0) (noise! 0.06 (* g 0.7) pan 1800.0 "lowpass"))
+      (= id 1) (do (blip! (* 240.0 pitch) 90.0 0.07 (* g 0.8) pan "triangle" 0.0) (noise! 0.04 (* g 0.5) pan 2600.0 "lowpass"))
+      (= id 2) (do (noise! 0.2 g pan 900.0 "lowpass") (blip! (* 120.0 pitch) 40.0 0.18 g pan "sine" 0.0))
+      (= id 3) (do (blip! (* 150.0 pitch) 38.0 0.34 g pan "sine" 0.0) (noise! 0.12 (* g 0.8) pan 1400.0 "lowpass"))
+      (= id 4) (blip! (* 700.0 pitch) 180.0 0.16 (* g 0.7) pan "sawtooth" 0.0)
+      (= id 5) (do (blip! 900.0 700.0 0.03 (* g 0.5) pan "square" 0.0) (blip! 700.0 500.0 0.03 (* g 0.5) pan "square" 0.28))
+      (= id 6) (noise! 0.14 (* g 0.7) pan 2200.0 "highpass")
+      (= id 7) (blip! 220.0 880.0 0.28 (* g 0.6) pan "sine" 0.0)
+      (= id 8) (blip! 1200.0 1000.0 0.018 (* g 0.5) pan "square" 0.0)
+      (= id 9) (blip! 900.0 860.0 0.05 (* g 1.1) pan "sine" 0.0)
+      (= id 10) (do (blip! 1320.0 1300.0 0.07 (* g 1.1) pan "sine" 0.0) (blip! 1760.0 1740.0 0.09 (* g 1.1) pan "sine" 0.05))
+      (= id 11) (do (blip! 660.0 700.0 0.09 g pan "triangle" 0.0) (blip! 990.0 1000.0 0.14 g pan "triangle" 0.08))
+      (= id 12) (blip! 160.0 110.0 0.14 (* g 1.3) pan "sine" 0.0)
+      (= id 13) (blip! (* 230.0 pitch) 55.0 0.45 (* g 1.2) pan "sine" 0.0)
+      (= id 14) (blip! 400.0 800.0 0.2 (* g 0.7) pan "sine" 0.0)
+      (= id 15) (blip! 700.0 760.0 0.04 (* g 0.8) pan "sine" 0.0)
+      (= id 16) (do (blip! 520.0 524.0 0.12 g pan "triangle" 0.0) (blip! 660.0 664.0 0.12 g pan "triangle" 0.11) (blip! 880.0 884.0 0.2 g pan "triangle" 0.22))
+      (= id 17) (blip! 520.0 520.0 0.06 (* g 0.8) pan "sine" 0.0)
+      (= id 18) (blip! 880.0 884.0 0.18 g pan "sine" 0.0)
+      (= id 19) (do (blip! 523.0 526.0 0.14 g pan "triangle" 0.0) (blip! 659.0 662.0 0.14 g pan "triangle" 0.14) (blip! 784.0 788.0 0.3 g pan "triangle" 0.28))
+      (= id 20) (do (blip! 440.0 436.0 0.18 g pan "triangle" 0.0) (blip! 330.0 326.0 0.34 g pan "triangle" 0.18))
+      :else unit)))
+
+(defn play-sounds! [] : Unit
+  (let [head (js/call wasm "sp_snd_head")
+        base (js/call wasm "sp_snd_addr")]
+    ;; never replay more than the ring holds
+    (when (> (- head snd-seen) 64) (set! snd-seen (- head 64)))
+    (loop [i snd-seen]
+      (when (< i head)
+        (when (audio-ready?)
+          (let [a (+ base (* (bit-and i 63) 16))]
+            (play-sound! (js/call view "getInt32" a true)
+                         (js/call view "getFloat32" (+ a 4) true)
+                         (js/call view "getFloat32" (+ a 8) true)
+                         (js/call view "getFloat32" (+ a 12) true))))
+        (recur (+ i 1))))
+    (set! snd-seen head)))
+
+(defn toggle-mute! [] : Unit
+  (do (set! muted (not muted))
+      (set-text! "sp-mute" (if muted "Sound off" "Sound on"))))
+(defn on-mute-click [(e : Any)] : Unit (toggle-mute!))
+
+;; ---- 6. the page's own labels ---------------------------------------------------------------------------------------------
+(defn sync-labels! [] : Unit
+  (let [ph (js/call wasm "sp_phase")
+        q (js/call wasm "sp_net_status")]
+    (set-text! "sp-pill"
+               (cond
+                 (and (= ph 1) (= q 3)) "In a free-for-all"
+                 (and (= ph 1) (= q 2)) "Match found"
+                 (and (= ph 1) (= q 1)) "Searching for a match"
+                 (= ph 1) "Bot match"
+                 (= ph 2) "Match over"
+                 :else "Ready"))))
+
+(start (boot "sp-canvas" "shankpit460.wasm"))

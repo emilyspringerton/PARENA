@@ -1,6 +1,101 @@
 ;; stdlib/shankpit460/sp_main.prn -- the exports the page calls (and the test hooks).
 
-;; ---- test hooks: drive the simulation without the menus, bots or clock (tests/shankpit460_*) -------------
+;; ---- fixed-timestep driver ------------------------------------------------------------------------------
+(defn clock-slot [] : I32 (+ (g-base) 2000))   ; F64: the previous sp_frame timestamp
+
+(defn sp-init [] : Unit
+  (do
+    (load-font)
+    (init-map!)
+    (clear-world!)
+    (sp-seed! 460)
+    (gi! (g-rng2) 9001)
+    (gf! (g-fov) 75.0)
+    (gf! (g-sens) 1.0)
+    (gi! (g-bot-level) 2)
+    (gi! (g-phase) 0)
+    (gi! (g-me) 0)
+    (gi! (g-view-slot) 0)
+    (gi! (g-winner) -1)
+    (gi! (want-weapon) 1)
+    (gf! (g-pe) 0.45)
+    (storef64! (clock-slot) 0.0)
+    (gf! (g-clock-acc) 0.0)))
+
+(defn capture-prev! [] : Unit
+  (dotimes [i (max-players)]
+    (set-p-px! i (p-x i)) (set-p-py! i (p-y i)) (set-p-pz! i (p-z i))))
+
+(defn step-once! [] : Unit
+  (do
+    (when (= (gi (g-phase)) 1)
+      (when (= (gi (g-paused)) 0)
+        (capture-prev!)
+        (gather-cmd!)
+        (sim-tick!)
+        (net-tick!)
+        (animate-steps!)))
+    (net-idle-tick!)
+    (when (!= (gi (g-phase)) 1) (ui-keys!))
+    (when (= (gi (g-phase)) 2) (gi! (g-end-t) (+ (gi (g-end-t)) 1)))
+    (end-input-tick!)))
+
+;; the walk cycle advances with ground speed
+(defn animate-steps! [] : Unit
+  (dotimes [i (max-players)]
+    (set-p-step-phase! i (+ (p-step-phase i) (* (len2 (p-vx i) (p-vz i)) 0.55)))))
+
+;; one animation frame: advance the sim by however many 16 ms ticks real time owes, then draw
+(defn sp-frame [(now : F64)] : Unit
+  (let [(last : F64) (loadf64 (clock-slot))
+        (dt : F32) (if (> last 0.0) (f32 (- now last)) 16.0)]
+    (storef64! (clock-slot) now)
+    (gi! (g-ticker) (i32 now))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (gf! (g-clock-acc) (+ (gf (g-clock-acc)) (clamp-f dt 0.0 100.0)))
+    (loop [steps 0]
+      (when (and (>= (gf (g-clock-acc)) (tick-ms)) (< steps 6))
+        (step-once!)
+        (gf! (g-clock-acc) (- (gf (g-clock-acc)) (tick-ms)))
+        (recur (+ steps 1))))
+    (when (> (gf (g-clock-acc)) (tick-ms)) (gf! (g-clock-acc) (tick-ms)))
+    (ui-render!)))
+
+;; ---- input forwarding ----------------------------------------------------------------------------------------
+(defn sp-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn sp-blur [] : Unit (in-clear-keys!))
+(defn sp-mouse [(dx : F32) (dy : F32)] : Unit (in-mouse! dx dy))
+(defn sp-pointer [(x : I32) (y : I32)] : Unit (in-pointer! x y))
+(defn sp-button [(b : I32) (down : I32)] : Unit
+  (do (in-button! b down)
+      (when (and (= b 0) (!= down 0))
+        (ui-click!))))
+(defn sp-wheel [(dir : I32)] : Unit (when (= (gi (g-phase)) 1) (cycle-weapon! dir)))
+(defn sp-pad [(slot : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (in-pad! slot lx ly rx ry lt rt buttons))
+(defn sp-pad-gone [(slot : I32)] : Unit (in-pad-gone! slot))
+(defn sp-lock [(on : I32)] : Unit
+  (do (gi! (g-locked) on)
+      ;; a bot match waits for you; a human match cannot
+      (when (and (= (gi (g-phase)) 1) (= (gi (g-mode)) 0))
+        (gi! (g-paused) (if (= on 0) 1 0)))))
+(defn sp-sens [(s : F32)] : Unit (gf! (g-sens) s))
+
+;; does the engine want the pointer captured right now (playing), or free (menus)?
+(defn sp-wants-lock [] : I32 (if (= (gi (g-phase)) 1) 1 0))
+;; is a UI click over something that needs the cursor?
+(defn sp-phase [] : I32 (gi (g-phase)))
+
+;; ---- memory the page reads / writes ----------------------------------------------------------------------------
+(defn sp-fb-addr [] : I32 (fb-base))
+(defn sp-fb-w [] : I32 640)
+(defn sp-fb-h [] : I32 360)
+
+;; ---- introspection (page footer + tests) -------------------------------------------------------------------------
+(defn sp-ticks [] : I32 (gi (g-tick)))
+(defn sp-mem-bytes [] : I32 8388608)
+
+;; ---- test hooks: drive the simulation without the menus, bots or clock (tests/shankpit460_*) -----------------------
 (defn sp-t-reset [] : Unit
   (do (init-map!) (clear-world!) (gi! (g-mode) 0) (gi! (g-me) 0) (gi! (g-tick) 0) (gi! (g-countdown) 0)
       (gi! (g-phase) 1) (sp-seed! 1)))
@@ -16,5 +111,25 @@
 (defn sp-t-step [(n : I32)] : Unit
   (dotimes [i n] (world-step!)))
 (defn sp-player-addr [(p : I32)] : I32 (pl-base p))
-(defn sp-field-index [(name : I32)] : I32 name)
+(defn sp-g [(k : I32)] : I32 (gi k))
+(defn sp-gf [(k : I32)] : F32 (gf k))
 (defn sp-t-tick-ms [] : I32 (now-ms))
+(defn sp-t-begin-bot-match [(level : I32)] : Unit
+  (do (gi! (g-bot-level) level) (begin-session!)))
+;; render only the 3D world from a given eye (test / screenshot hook)
+(defn sp-t-render-world [(x : F32) (y : F32) (z : F32) (yaw : F32) (pitch : F32)] : Unit
+  (do (set-camera! x y z yaw pitch 75.0) (render-world! 1.0)))
+
+;; a bots-only arena (all eight slots are bots) for the AI soak tests; `ticks` of it can be run with sp_t_play
+(defn sp-t-bot-arena [(level : I32)] : Unit
+  (do (setup-bot-match! level)
+      (set-p-is-bot! 0 1) (bot-init! 0 level) (put-name! 0 "Zed")
+      (gi! (g-countdown) 0)
+      (gi! (g-kill-limit) 1000) (gi! (g-match-total) 100000000) (gi! (g-match-left) 100000000)))
+(defn sp-t-play [(n : I32)] : Unit
+  (dotimes [i n] (sim-tick!)))
+(defn sp-t-poke [(k : I32) (v : I32)] : Unit (gi! k v))
+
+;; sound events: the page plays them (sp_host.prn)
+(defn sp-snd-addr [] : I32 (snd-base))
+(defn sp-snd-head [] : I32 (gi (g-snd-head)))

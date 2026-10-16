@@ -89,13 +89,13 @@
 ;; sp_input.prn fills the g-cmd words each frame from the keyboard / mouse / pad; the tick applies them.
 (defn apply-local-cmd! [] : Unit
   (let [me (gi (g-me))]
-    (when (and (alive? me) (= (gi (g-countdown)) 0))
+    (when (and (alive? me) (and (= (gi (g-countdown)) 0) (= (p-is-bot me) 0)))
       (apply-usercmd! me (gf (g-cmd-fwd)) (gf (g-cmd-str)) (gf (g-cam-yaw)) (gf (g-cam-pitch))
                       (!= (gi (g-cmd-jump)) 0) (!= (gi (g-cmd-fire)) 0) (!= (gi (g-cmd-crouch)) 0)
                       (!= (gi (g-cmd-reload)) 0) (!= (gi (g-cmd-ability)) 0))
       (when (>= (gi (g-cmd-weapon)) 0)
         (set-p-weapon! me (clamp-i (gi (g-cmd-weapon)) 0 5))))
-    (when (not (alive? me))
+    (when (and (not (alive? me)) (= (p-is-bot me) 0))
       (apply-usercmd! me 0.0 0.0 (p-yaw me) (p-pitch me) false false false false false))))
 
 ;; ---- one tick ----------------------------------------------------------------------------------------------

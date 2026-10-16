@@ -1,3 +1,426 @@
-;; stub (replaced below)
-(defn net-claim-hit! [(tgt : I32) (w : I32) (head : I32)] : Unit unit)
-(defn net-send-fire! [(w : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit unit)
+;; stdlib/shankpit460/sp_net.prn -- the matchmaking wire protocol, spoken from inside the wasm.
+;;
+;; The module has no imports, so it cannot touch a socket. The page host (sp_host.prn) owns the WebSocket and does
+;; exactly two things with it: it copies every received frame to NETIN and calls sp_net_recv(len), and it sends
+;; whatever the engine left in NETOUT (frames, each preceded by a u16 length) and calls sp_net_out_clear().
+;; Everything else -- what to say, when, what an answer means -- is here. The protocol is documented in
+;; IDUNA/internal/shankpit460/proto.go; this file is its client.
+;;
+;; Authority: in a human match the server owns the clock, health, shields, kills, deaths and respawns; this engine
+;; simulates only the local player (the same physics as the bot match) and draws everyone else from snapshots,
+;; interpolated 100 ms behind. A shot is sent as a claim and the server checks it.
+
+;; ---- buffers -----------------------------------------------------------------------------------------------
+(defn g-out-cur [] : I32 260) (defn g-out-skip [] : I32 261) (defn g-out-start [] : I32 262)
+(defn g-rd [] : I32 263) (defn g-rd-bad [] : I32 264)
+(defn g-welcomed [] : I32 265) (defn g-auth [] : I32 266)
+(defn g-room-id [] : I32 267) (defn g-in-match [] : I32 268)
+(defn g-ping-t [] : I32 269) (defn g-state-t [] : I32 270)
+(defn g-found-slot [] : I32 271)
+(defn name-buf [] : I32 194560)      ; the local display name (page-written, NUL-free ASCII, g-name-len bytes)
+(defn snap-delay [] : I32 100)       ; ms remote players are shown behind the newest snapshot
+
+(defn put8! [(v : I32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (store8! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 1))))
+(defn put16! [(v : I32)] : Unit (do (put8! (bit-and v 255)) (put8! (bit-and (shr v 8) 255))))
+(defn put32! [(v : I32)] : Unit (do (put16! (bit-and v 65535)) (put16! (bit-and (ushr v 16) 65535))))
+(defn putf! [(v : F32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (storef32! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 4))))
+
+(defn out-begin! [] : Unit
+  (let [o (gi (g-out-len))]
+    (gi! (g-out-start) o)
+    (gi! (g-out-skip) (if (> o 7400) 1 0))
+    (gi! (g-out-cur) (+ o 2))))
+(defn out-end! [] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (let [o (gi (g-out-start))
+          len (- (gi (g-out-cur)) (+ o 2))]
+      (store8! (+ (netout-base) o) (bit-and len 255))
+      (store8! (+ (netout-base) (+ o 1)) (bit-and (shr len 8) 255))
+      (gi! (g-out-len) (gi (g-out-cur))))))
+
+;; ---- reading ---------------------------------------------------------------------------------------------------
+(defn rd-need [(n : I32)] : Bool
+  (if (> (+ (gi (g-rd)) n) (gi (g-in-len)))
+      (do (gi! (g-rd-bad) 1) false)
+      true))
+(defn rd8! [] : I32
+  (if (rd-need 1)
+      (let [v (load8 (+ (netin-base) (gi (g-rd))))]
+        (gi! (g-rd) (+ (gi (g-rd)) 1))
+        v)
+      0))
+(defn rd16! [] : I32 (let [lo (rd8!) hi (rd8!)] (+ lo (shl hi 8))))
+(defn rd32! [] : I32 (let [lo (rd16!) hi (rd16!)] (+ lo (shl hi 16))))
+(defn rdf! [] : F32
+  (if (rd-need 4)
+      (let [(v : F32) (loadf32 (+ (netin-base) (gi (g-rd))))]
+        (gi! (g-rd) (+ (gi (g-rd)) 4))
+        v)
+      0.0))
+
+;; a length-prefixed ASCII string into a player's name slot
+(defn rd-name! [(slot : I32)] : Unit
+  (let [n (rd8!)
+        a (name-addr slot)]
+    (dotimes [i n]
+      (let [c (rd8!)]
+        (when (< i 30) (store8! (+ a i) (if (and (>= c 32) (< c 127)) c 63)))))
+    (store8! (+ a (min-i n 30)) 0)))
+
+;; ---- outgoing messages ---------------------------------------------------------------------------------------------
+(defn net-send-hello! [] : Unit
+  (do
+    (out-begin!)
+    (put8! 1) (put8! 1)
+    (put16! (gi (g-token-len)))
+    (dotimes [i (gi (g-token-len))] (put8! (load8 (+ (token-base) i))))
+    (put8! (gi (g-name-len)))
+    (dotimes [i (gi (g-name-len))] (put8! (load8 (+ (name-buf) i))))
+    (out-end!)
+    (gi! (g-net-hello) 1)))
+
+(defn net-send-queue! [] : Unit
+  (do (out-begin!) (put8! 2) (out-end!)
+      (gi! (g-q-state) 1)
+      (gi! (g-q-elapsed) 0)))
+
+(defn net-send-leave! [] : Unit (do (out-begin!) (put8! 3) (out-end!)))
+
+(defn net-send-ping! [] : Unit
+  (do (out-begin!) (put8! 19) (put32! (gi (g-ticker))) (out-end!)
+      (gi! (g-ping-sent) (gi (g-ticker)))))
+
+(defn net-send-state! [] : Unit
+  (let [me (gi (g-me))]
+    (when (alive? me)
+      (gi! (g-net-seq) (+ (gi (g-net-seq)) 1))
+      (out-begin!)
+      (put8! 16)
+      (put16! (bit-and (gi (g-net-seq)) 65535))
+      (putf! (p-x me)) (putf! (p-y me)) (putf! (p-z me)) (putf! (p-yaw me)) (putf! (p-pitch me))
+      (put8! (p-weapon me))
+      (put8! (bit-or (bit-or (b2i (!= (p-crouching me) 0)) (shl (b2i (> (p-is-shooting me) 0)) 1))
+                     (bit-or (shl (b2i (!= (p-on-ground me) 0)) 2) (shl (b2i (> (p-dash-timer me) 0)) 3))))
+      (out-end!))))
+
+;; a shot, for everyone else's tracers and sound
+(defn net-send-fire! [(w : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
+  (do (out-begin!) (put8! 17) (put8! w)
+      (putf! ox) (putf! oy) (putf! oz) (putf! dx) (putf! dy) (putf! dz)
+      (out-end!)))
+
+;; a hit claim: the server checks it and moves the health
+(defn net-claim-hit! [(tgt : I32) (w : I32) (head : I32)] : Unit
+  (do (out-begin!) (put8! 18) (put8! tgt) (put8! w) (put8! head) (out-end!)))
+
+;; ---- what the engine wants from the network -------------------------------------------------------------------------
+(defn net-want-queue! [] : Unit
+  (do
+    (gi! (g-want-queue) 1)
+    (when (and (= (gi (g-net-state)) 2) (!= (gi (g-welcomed)) 0) (= (gi (g-in-match)) 0))
+      (net-send-queue!))))
+
+(defn net-leave-room! [] : Unit
+  (do
+    (when (and (= (gi (g-net-state)) 2) (!= (gi (g-welcomed)) 0))
+      (net-send-leave!))
+    (gi! (g-in-match) 0)
+    (gi! (g-q-state) 0)))
+
+;; the page asks: should a socket exist?
+(defn net-wanted [] : I32 (b2i (or (!= (gi (g-want-queue)) 0) (!= (gi (g-in-match)) 0))))
+
+;; the page reports the socket: 1 connecting, 2 open, 3 closed or failed
+(defn net-socket! [(s : I32)] : Unit
+  (do
+    (gi! (g-net-state) s)
+    (cond
+      (= s 2) (do (gi! (g-welcomed) 0) (gi! (g-net-hello) 0) (net-send-hello!) (net-send-ping!))
+      (= s 3) (do (gi! (g-welcomed) 0)
+                  (gi! (g-q-state) 0)
+                  (when (!= (gi (g-in-match)) 0)
+                    (gi! (g-in-match) 0)
+                    (end-match! -1 3)))
+      :else unit)))
+
+;; ---- starting a human match -------------------------------------------------------------------------------------------
+(defn mark-remote! [(p : I32) (remote : I32)] : Unit
+  (do (set-p-net-slot! p remote)
+      (set-p-s0t! p (gi (g-ticker))) (set-p-s1t! p (gi (g-ticker)))))
+
+(defn pose-snap! [(p : I32)] : Unit
+  (do (set-p-s0x! p (p-x p)) (set-p-s0y! p (p-y p)) (set-p-s0z! p (p-z p)) (set-p-s0yaw! p (p-yaw p)) (set-p-s0pitch! p (p-pitch p))
+      (set-p-s1x! p (p-x p)) (set-p-s1y! p (p-y p)) (set-p-s1z! p (p-z p)) (set-p-s1yaw! p (p-yaw p)) (set-p-s1pitch! p (p-pitch p))
+      (set-p-s0t! p (gi (g-ticker))) (set-p-s1t! p (gi (g-ticker)))
+      (set-p-px! p (p-x p)) (set-p-py! p (p-y p)) (set-p-pz! p (p-z p))))
+
+;; roster = n | n x {slot, color, name, spawn x y z yaw}. Players absent from it are removed.
+(defn read-roster! [(me : I32)] : Unit
+  (let [n (rd8!)]
+    (gi! (g-roster-n) n)
+    (dotimes [i (max-players)] (set-p-flags-keep! i 0))
+    (dotimes [k n]
+      (let [slot (rd8!)
+            color (rd8!)]
+        (when (< slot (max-players))
+          (let [was (p-active slot)]
+            (set-p-active! slot 1)
+            (set-p-color! slot color)
+            (set-p-id! slot slot)
+            (rd-name! slot)
+            (let [(sx : F32) (rdf!) (sy : F32) (rdf!) (sz : F32) (rdf!) (syaw : F32) (rdf!)]
+              (when (= was 0)
+                ;; a new arrival: stand them at the spawn the server gave them
+                (respawn-at! slot sx sy sz)
+                (set-p-yaw! slot syaw)
+                (set-p-spawn-prot! slot 0)
+                (mark-remote! slot (if (= slot me) 0 1))
+                (pose-snap! slot)
+                (set-p-reload-timer! slot 0))
+              (pi! slot (k-bot-heard) 1))))))
+    ;; anyone not named in the roster has left
+    (dotimes [i (max-players)]
+      (when (and (!= (p-active i) 0) (= (pi i (k-bot-heard)) 0) (!= i me))
+        (set-p-active! i 0)))))
+
+(defn set-p-flags-keep! [(p : I32) (v : I32)] : Unit (pi! p (k-bot-heard) v)) ; "named in the latest roster" marker
+
+;; MATCH: roomId u32 | slot | killLimit | durationSec u16 | phase | msToStart u16 | msLeft u32 | roster
+(defn net-on-match! [] : Unit
+  (let [room (rd32!)
+        slot (rd8!)
+        limit (rd8!)
+        dur (rd16!)
+        phase (rd8!)
+        to-start (rd16!)
+        left (rd32!)]
+    (when (not (= (gi (g-rd-bad)) 1))
+      (clear-world!)
+      (zero-words! (feed-base) 32)
+      (gi! (g-mode) 1)
+      (gi! (g-me) slot)
+      (gi! (g-view-slot) slot)
+      (gi! (g-room-id) room)
+      (gi! (g-in-match) 1)
+      (gi! (g-kill-limit) limit)
+      (gi! (g-match-total) (* dur 62))
+      (gi! (g-match-left) (/ (* left 5) 80))
+      (gi! (g-winner) -1)
+      (gi! (g-end-reason) 0)
+      (gi! (g-tick) 0)
+      (gi! (g-countdown) (if (= phase 1) (/ (* to-start 5) 80) 0))
+      (gi! (g-streak) 0)
+      (gi! (g-death-cam) 0)
+      (gi! (g-feed-head) 0)
+      (gi! (g-q-state) 2)
+      (gi! (g-found-t) 150)
+      (gi! (g-phase) 1)
+      (gi! (g-paused) 0)
+      (gi! (g-match-no) (+ (gi (g-match-no)) 1))
+      (gi! (want-weapon) 1)
+      (read-roster! slot)
+      (gf! (g-cam-yaw) (p-yaw slot))
+      (gf! (g-cam-pitch) 0.0)
+      (snd-ui! 16))))
+
+;; ---- snapshots ------------------------------------------------------------------------------------------------------------
+;; SNAP: msLeft u32 | n | n x {slot, x y z yaw pitch, weapon, flags, health, shield, kills, deaths, state}
+(defn net-on-snap! [] : Unit
+  (let [left (rd32!)
+        n (rd8!)
+        me (gi (g-me))
+        now (gi (g-ticker))]
+    (gi! (g-match-left) (/ (* left 5) 80))
+    (dotimes [k n]
+      (let [slot (rd8!)
+            (x : F32) (rdf!) (y : F32) (rdf!) (z : F32) (rdf!) (yaw : F32) (rdf!) (pitch : F32) (rdf!)
+            weapon (rd8!)
+            flags (rd8!)
+            hp (rd8!)
+            sh (rd8!)
+            kills (rd8!)
+            deaths (rd8!)
+            st (rd8!)]
+        (when (and (< slot (max-players)) (!= (p-active slot) 0) (= (gi (g-rd-bad)) 0))
+          (set-p-health! slot hp)
+          (set-p-shield! slot sh)
+          (set-p-kills! slot kills)
+          (set-p-deaths! slot deaths)
+          (when (!= slot me)
+            (set-p-weapon! slot (min-i weapon 5))
+            (set-p-crouching! slot (bit-and flags 1))
+            (set-p-on-ground! slot (bit-and (shr flags 2) 1))
+            (set-p-state! slot (if (= st 0) (state-alive) (state-dead)))
+            ;; two snapshots to blend between
+            (set-p-s0x! slot (p-s1x slot)) (set-p-s0y! slot (p-s1y slot)) (set-p-s0z! slot (p-s1z slot))
+            (set-p-s0yaw! slot (p-s1yaw slot)) (set-p-s0pitch! slot (p-s1pitch slot)) (set-p-s0t! slot (p-s1t slot))
+            (set-p-s1x! slot x) (set-p-s1y! slot y) (set-p-s1z! slot z)
+            (set-p-s1yaw! slot yaw) (set-p-s1pitch! slot pitch) (set-p-s1t! slot now)
+            (when (> (bit-and (shr flags 1) 1) 0) (set-p-is-shooting! slot 3))))))))
+
+;; blend remote players toward the newest snapshot, `snap-delay` ms behind it
+(defn net-interp! [] : Unit
+  (let [now (- (gi (g-ticker)) (snap-delay))
+        me (gi (g-me))]
+    (dotimes [i (max-players)]
+      (when (and (!= (p-active i) 0) (!= i me) (!= (p-net-slot i) 0))
+        (let [t0 (p-s0t i)
+              t1 (p-s1t i)
+              (f : F32) (if (<= t1 t0) 1.0 (clamp-f (/ (f32 (- now t0)) (f32 (- t1 t0))) 0.0 1.25))
+              (ox : F32) (p-x i)
+              (oz : F32) (p-z i)]
+          (set-p-x! i (lerp (p-s0x i) (p-s1x i) f))
+          (set-p-y! i (lerp (p-s0y i) (p-s1y i) f))
+          (set-p-z! i (lerp (p-s0z i) (p-s1z i) f))
+          (set-p-yaw! i (norm-yaw (+ (p-s0yaw i) (* (angle-diff (p-s1yaw i) (p-s0yaw i)) f))))
+          (set-p-pitch! i (lerp (p-s0pitch i) (p-s1pitch i) f))
+          (set-p-vx! i (- (p-x i) ox))
+          (set-p-vz! i (- (p-z i) oz))
+          (when (> (p-is-shooting i) 0) (set-p-is-shooting! i (- (p-is-shooting i) 1)))
+          (when (> (p-recoil-anim i) 0.0) (set-p-recoil-anim! i (- (p-recoil-anim i) 0.1))))))))
+
+;; ---- events ----------------------------------------------------------------------------------------------------------------
+;; DAMAGE victim attacker amount health shield head weapon | KILL attacker victim weapon |
+;; RESPAWN slot x y z yaw | FIRE shooter weapon origin dir | LIVE msLeft
+(defn net-on-event! [] : Unit
+  (let [sub (rd8!)
+        me (gi (g-me))]
+    (cond
+      (= sub 1)
+        (let [v (rd8!) a (rd8!) amount (rd8!) hp (rd8!) sh (rd8!) head (rd8!) w (rd8!)]
+          (when (and (< v (max-players)) (< a (max-players)) (= (gi (g-rd-bad)) 0))
+            (set-p-health! v hp)
+            (set-p-shield! v sh)
+            (set-p-hit-feedback! a (if (!= head 0) 20 10))
+            (set-p-last-damager! v a)
+            (set-p-flash! v 8)
+            (on-damaged! a v amount w)))
+      (= sub 2)
+        (let [a (rd8!) v (rd8!) w (rd8!)]
+          (when (and (< v (max-players)) (< a (max-players)) (= (gi (g-rd-bad)) 0))
+            (set-p-state! v (state-dead))
+            (set-p-health! v 0)
+            (set-p-respawn-ticks! v (c-respawn-delay))
+            (set-p-last-damager! v a)
+            (on-killed! a v w)))
+      (= sub 3)
+        (let [s (rd8!) (x : F32) (rdf!) (y : F32) (rdf!) (z : F32) (rdf!) (yaw : F32) (rdf!)]
+          (when (and (< s (max-players)) (= (gi (g-rd-bad)) 0))
+            (respawn-at! s x y z)
+            (set-p-yaw! s yaw)
+            (set-p-spawn-prot! s (c-spawn-prot))
+            (pose-snap! s)
+            (set-p-active! s 1)
+            (set-p-net-slot! s (if (= s me) 0 1))
+            (when (= s me) (on-respawned! s))))
+      (= sub 4)
+        (let [s (rd8!) w (rd8!)
+              (ox : F32) (rdf!) (oy : F32) (rdf!) (oz : F32) (rdf!)
+              (dx : F32) (rdf!) (dy : F32) (rdf!) (dz : F32) (rdf!)]
+          (when (and (< s (max-players)) (= (gi (g-rd-bad)) 0) (!= s me))
+            (set-p-is-shooting! s 5)
+            (set-p-recoil-anim! s 1.0)
+            (remote-shot-fx! s w ox oy oz dx dy dz)))
+      (= sub 5)
+        (do (gi! (g-countdown) 0) (gi! (g-found-t) 0) (gi! (g-q-state) 3) (snd-ui! 18))
+      :else unit)))
+
+;; another player's shot: a tracer to the first solid, the sound, a few sparks where it lands
+(defn remote-shot-fx! [(s : I32) (w : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
+  (let [(len : F32) (len3 dx dy dz)]
+    (when (> len 0.0001)
+      (let [(ux : F32) (/ dx len) (uy : F32) (/ dy len) (uz : F32) (/ dz len)
+            (t : F32) (ray-world ox oy oz ux uy uz 600.0)]
+        (snd-at! (case w 0 6 1 0 2 1 3 2 4 3 6) ox oy oz)
+        (when (not (wpn-melee? w))
+          (fx-tracer! (+ ox (* ux 1.6)) (- (+ oy (* uy 1.6)) 0.5) (+ oz (* uz 1.6))
+                      (+ ox (* ux t)) (+ oy (* uy t)) (+ oz (* uz t)) (if (= w 3) 1 0)))
+        (when (< t 599.0)
+          (fx-sparks! (+ ox (* ux (- t 0.2))) (+ oy (* uy (- t 0.2))) (+ oz (* uz (- t 0.2))) 0 3))))))
+
+;; END: reason | winner | n | n x {slot, kills, deaths}
+(defn net-on-end! [] : Unit
+  (let [reason (rd8!)
+        winner (rd8!)
+        n (rd8!)]
+    (dotimes [k n]
+      (let [slot (rd8!) kills (rd8!) deaths (rd8!)]
+        (when (and (< slot (max-players)) (= (gi (g-rd-bad)) 0))
+          (set-p-kills! slot kills)
+          (set-p-deaths! slot deaths))))
+    (gi! (g-in-match) 0)
+    (gi! (g-q-state) 0)
+    (end-match! (if (= winner 255) -1 winner) reason)))
+
+;; ---- dispatch ------------------------------------------------------------------------------------------------------------------
+(defn net-recv! [(len : I32)] : Unit
+  (do
+    (gi! (g-in-len) len)
+    (gi! (g-rd) 0)
+    (gi! (g-rd-bad) 0)
+    (let [typ (rd8!)]
+      (cond
+        ;; WELCOME ver auth nameLen name online
+        (= typ 129)
+          (let [ver (rd8!) auth (rd8!)]
+            (gi! (g-auth) auth)
+            (let [nl (rd8!)]
+              (gi! (g-rd) (+ (gi (g-rd)) nl))
+              (gi! (g-q-online) (rd16!)))
+            (gi! (g-welcomed) 1)
+            (when (and (!= (gi (g-want-queue)) 0) (= (gi (g-in-match)) 0)) (net-send-queue!)))
+        ;; STATUS qstate searching online elapsed
+        (= typ 130)
+          (let [qs (rd8!) searching (rd8!) online (rd16!) el (rd16!)]
+            (gi! (g-q-count) searching)
+            (gi! (g-q-online) online)
+            (gi! (g-q-elapsed) el)
+            (when (and (= (gi (g-in-match)) 0) (= (gi (g-mode)) 0)) (gi! (g-q-state) qs)))
+        (= typ 131) (net-on-match!)
+        (= typ 132) (when (= (gi (g-in-match)) 1) (net-on-snap!))
+        (= typ 133) (when (= (gi (g-in-match)) 1) (net-on-event!))
+        (= typ 134) (when (= (gi (g-in-match)) 1) (read-roster! (gi (g-me))))
+        (= typ 135) (net-on-end!)
+        (= typ 136) (let [t (rd32!)] (gi! (g-ping-ms) (- (gi (g-ticker)) t)))
+        (= typ 143) (gi! (g-net-err) (rd8!))
+        :else unit))))
+
+;; ---- per tick --------------------------------------------------------------------------------------------------------------------
+(defn net-tick! [] : Unit
+  (when (and (= (gi (g-mode)) 1) (!= (gi (g-in-match)) 0))
+    (net-interp!)
+    ;; the local player's state, ~31 Hz
+    (gi! (g-state-t) (+ (gi (g-state-t)) 1))
+    (when (>= (gi (g-state-t)) 2)
+      (gi! (g-state-t) 0)
+      (net-send-state!))
+    (when (> (gi (g-found-t)) 0) (gi! (g-found-t) (- (gi (g-found-t)) 1)))))
+
+;; every step, on every screen: a heartbeat so an idle socket is not reaped, and the searching clock
+(defn net-idle-tick! [] : Unit
+  (do
+    (gi! (g-ping-t) (+ (gi (g-ping-t)) 1))
+    (when (>= (gi (g-ping-t)) 250)
+      (gi! (g-ping-t) 0)
+      (when (= (gi (g-net-state)) 2) (net-send-ping!)))))
+
+;; ---- exports the host calls ---------------------------------------------------------------------------------------------------
+(defn sp-net-wanted [] : I32 (net-wanted))
+(defn sp-net-socket [(s : I32)] : Unit (net-socket! s))
+(defn sp-net-in-addr [] : I32 (netin-base))
+(defn sp-net-recv [(len : I32)] : Unit (net-recv! len))
+(defn sp-net-out-addr [] : I32 (netout-base))
+(defn sp-net-out-len [] : I32 (gi (g-out-len)))
+(defn sp-net-out-clear [] : Unit (do (gi! (g-out-len) 0) (gi! (g-out-skip) 0)))
+(defn sp-token-addr [] : I32 (token-base))
+(defn sp-token-set [(len : I32)] : Unit (do (gi! (g-token-len) (clamp-i len 0 2000)) (gi! (g-signed-in) (b2i (> len 0)))))
+(defn sp-name-addr [] : I32 (name-buf))
+(defn sp-name-set [(len : I32)] : Unit (gi! (g-name-len) (clamp-i len 0 24)))
+(defn sp-net-status [] : I32 (gi (g-q-state)))
+(defn sp-ping-ms [] : I32 (gi (g-ping-ms)))

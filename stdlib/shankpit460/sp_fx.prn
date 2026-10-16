@@ -116,6 +116,7 @@
 
 (defn on-killed! [(att : I32) (tgt : I32) (w : I32)] : Unit
   (do
+    (gi! (+ 300 (clamp-i w 0 7)) (+ (gi (+ 300 (clamp-i w 0 7))) 1))   ; kills by weapon (soak telemetry)
     (feed-push! att tgt w)
     (fx-sparks! (p-x tgt) (+ (p-y tgt) 2.0) (p-z tgt) 4 18)
     (snd-at! 13 (p-x tgt) (p-y tgt) (p-z tgt))

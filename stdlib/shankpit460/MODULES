@@ -7,6 +7,12 @@ stdlib/shankpit460/sp_phys.prn
 stdlib/shankpit460/sp_fx.prn
 stdlib/shankpit460/sp_net.prn
 stdlib/shankpit460/sp_ai.prn
+stdlib/shankpit460/sp_gfx.prn
+stdlib/shankpit460/sp_3d.prn
+stdlib/shankpit460/sp_view.prn
+stdlib/shankpit460/sp_input.prn
+stdlib/shankpit460/sp_hud.prn
 stdlib/shankpit460/sp_sim.prn
 stdlib/shankpit460/sp_rules.prn
+stdlib/shankpit460/sp_ui.prn
 stdlib/shankpit460/sp_main.prn

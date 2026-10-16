@@ -1,0 +1,156 @@
+;; stdlib/shankpit460/sp_input.prn -- keyboard, mouse and gamepad.
+;;
+;; The page's host only *forwards* raw device state:  sp_key(code, down)  sp_mouse(dx, dy)  sp_button(b, down)
+;; sp_wheel(dir)  sp_pointer(x, y)  sp_pad(...)  sp_lock(0|1).  What a key MEANS lives here, in PARENA: the
+;; native client's scheme (WASD, Space, Ctrl, R, E, 1-6, Tab, left mouse fires, right mouse zooms the sniper,
+;; 0.15 deg per pixel -- 0.05 zoomed), plus Shift/C to crouch because browsers keep Ctrl.
+
+;; ---- CTL layout ----------------------------------------------------------------------------------------
+;;   +0    keys[512]    1 = held
+;;   +512  hit[512]     1 = went down since the last tick
+;;   +1024 pointer: x y, left-down, clicked(edge), right-down
+;;   +1280 pads: 4 x 64 bytes: connected lx ly rx ry buttons prev-buttons lt rt
+(defn key-down? [(id : I32)] : Bool (not (= (load8 (+ (ctl-base) (bit-and id 511))) 0)))
+(defn key-hit? [(id : I32)] : Bool (not (= (load8 (+ (+ (ctl-base) 512) (bit-and id 511))) 0)))
+
+(defn in-key! [(id : I32) (down : I32)] : Unit
+  (let [i (bit-and id 511)]
+    (when (and (not (= down 0)) (= (load8 (+ (ctl-base) i)) 0))
+      (store8! (+ (+ (ctl-base) 512) i) 1))
+    (store8! (+ (ctl-base) i) (if (!= down 0) 1 0))
+    (gi! (g-last-input) 0)))
+
+(defn in-clear-keys! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (ctl-base) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1032) 0)
+      (store32! (+ (ctl-base) 1044) 0)))
+
+(defn end-input-tick! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (+ (ctl-base) 512) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1036) 0)))
+
+(defn pointer-x [] : I32 (load32 (+ (ctl-base) 1024)))
+(defn pointer-y [] : I32 (load32 (+ (ctl-base) 1028)))
+(defn left-down? [] : Bool (not (= (load32 (+ (ctl-base) 1032)) 0)))
+(defn right-down? [] : Bool (not (= (load32 (+ (ctl-base) 1044)) 0)))
+(defn clicked? [] : Bool (not (= (load32 (+ (ctl-base) 1036)) 0)))
+
+(defn in-pointer! [(x : I32) (y : I32)] : Unit
+  (do (store32! (+ (ctl-base) 1024) x) (store32! (+ (ctl-base) 1028) y)))
+(defn in-button! [(b : I32) (down : I32)] : Unit
+  (cond
+    (= b 0) (let [was (load32 (+ (ctl-base) 1032))]
+              (store32! (+ (ctl-base) 1032) (if (!= down 0) 1 0))
+              (when (and (= was 0) (!= down 0)) (store32! (+ (ctl-base) 1036) 1)))
+    (= b 2) (store32! (+ (ctl-base) 1044) (if (!= down 0) 1 0))
+    :else unit))
+
+;; gamepads
+(defn pad-addr [(s : I32) (k : I32)] : I32 (+ (+ (ctl-base) 1280) (+ (* s 64) (shl k 2))))
+(defn pad-connected? [(s : I32)] : Bool (not (= (load32 (pad-addr s 0)) 0)))
+(defn pad-f [(s : I32) (k : I32)] : F32 (loadf32 (pad-addr s k)))
+(defn pad-btn? [(s : I32) (bit : I32)] : Bool
+  (not (= (bit-and (load32 (pad-addr s 5)) (shl 1 bit)) 0)))
+(defn pad-hit? [(s : I32) (bit : I32)] : Bool
+  (and (pad-btn? s bit) (= (bit-and (load32 (pad-addr s 6)) (shl 1 bit)) 0)))
+
+(defn in-pad! [(s : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (store32! (pad-addr s 6) (load32 (pad-addr s 5)))
+    (store32! (pad-addr s 0) 1)
+    (storef32! (pad-addr s 1) lx) (storef32! (pad-addr s 2) ly)
+    (storef32! (pad-addr s 3) rx) (storef32! (pad-addr s 4) ry)
+    (store32! (pad-addr s 5) buttons)
+    (storef32! (pad-addr s 7) lt) (storef32! (pad-addr s 8) rt)
+    (gi! (g-last-input) 1)))
+(defn in-pad-gone! [(s : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (dotimes [k 16] (store32! (pad-addr s k) 0))))
+(defn pad-count [] : I32
+  (+ (+ (b2i (pad-connected? 0)) (b2i (pad-connected? 1))) (+ (b2i (pad-connected? 2)) (b2i (pad-connected? 3)))))
+
+;; standard-mapping buttons
+(defn pb-a [] : I32 0) (defn pb-b [] : I32 1) (defn pb-x [] : I32 2) (defn pb-y [] : I32 3)
+(defn pb-lb [] : I32 4) (defn pb-rb [] : I32 5) (defn pb-start [] : I32 9)
+(defn pb-up [] : I32 12) (defn pb-down [] : I32 13)
+
+;; ---- key ids (KeyboardEvent.keyCode) -----------------------------------------------------------------------
+(defn kc-enter [] : I32 13) (defn kc-esc [] : I32 27) (defn kc-space [] : I32 32) (defn kc-tab [] : I32 9)
+(defn kc-ctrl [] : I32 17) (defn kc-shift [] : I32 16) (defn kc-c [] : I32 67)
+(defn kc-w [] : I32 87) (defn kc-a [] : I32 65) (defn kc-s [] : I32 83) (defn kc-d [] : I32 68)
+(defn kc-r [] : I32 82) (defn kc-e [] : I32 69) (defn kc-q [] : I32 81) (defn kc-f [] : I32 70)
+(defn kc-up [] : I32 38) (defn kc-down [] : I32 40) (defn kc-left [] : I32 37) (defn kc-right [] : I32 39)
+(defn kc-1 [] : I32 49)
+
+;; pad stick -> -1..1 with a 0.2 dead zone (SHANK_STICK_DEADZONE)
+(defn dz [(v : F32)] : F32 (if (> (fabs v) 0.2) v 0.0))
+(defn any-pad-axis [(k : I32)] : F32
+  (let [(best : F32) 0.0]
+    (dotimes [s 4]
+      (when (pad-connected? s)
+        (let [(v : F32) (dz (pad-f s k))]
+          (when (> (fabs v) (fabs best)) (set! best v)))))
+    best))
+(defn any-pad-btn? [(bit : I32)] : Bool
+  (or (and (pad-connected? 0) (pad-btn? 0 bit))
+      (or (and (pad-connected? 1) (pad-btn? 1 bit))
+          (or (and (pad-connected? 2) (pad-btn? 2 bit)) (and (pad-connected? 3) (pad-btn? 3 bit))))))
+(defn any-pad-hit? [(bit : I32)] : Bool
+  (or (and (pad-connected? 0) (pad-hit? 0 bit))
+      (or (and (pad-connected? 1) (pad-hit? 1 bit))
+          (or (and (pad-connected? 2) (pad-hit? 2 bit)) (and (pad-connected? 3) (pad-hit? 3 bit))))))
+(defn any-trigger [(k : I32)] : F32
+  (let [(best : F32) 0.0]
+    (dotimes [s 4]
+      (when (pad-connected? s)
+        (when (> (pad-f s k) best) (set! best (pad-f s k)))))
+    best))
+
+;; ---- mouse look -----------------------------------------------------------------------------------------------
+;; the native client: cam_yaw -= xrel * sens; cam_pitch -= yrel * sens; sens 0.15 (0.05 when the fov is under 50)
+(defn look-sens [] : F32 (* (if (< (gf (g-fov)) 50.0) 0.05 0.15) (gf (g-sens))))
+(defn look! [(dyaw : F32) (dpitch : F32)] : Unit
+  (do
+    (gf! (g-cam-yaw) (norm-yaw (- (gf (g-cam-yaw)) dyaw)))
+    (gf! (g-cam-pitch) (clamp-pitch (- (gf (g-cam-pitch)) dpitch)))))
+(defn in-mouse! [(dx : F32) (dy : F32)] : Unit
+  (when (and (!= (gi (g-locked)) 0) (= (gi (g-phase)) 1))
+    (look! (* dx (look-sens)) (* dy (look-sens)))))
+
+;; wheel / bumpers cycle the weapon
+(defn want-weapon [] : I32 245)    ; G index: the weapon the player wants
+(defn cycle-weapon! [(dir : I32)] : Unit
+  (gi! (want-weapon) (mod (+ (+ (gi (want-weapon)) dir) 6) 6)))
+
+;; ---- the command for the next tick -------------------------------------------------------------------------------
+(defn bool-f [(c : Bool)] : F32 (if c 1.0 0.0))
+
+(defn gather-cmd! [] : Unit
+  (let [(pfwd : F32) (- 0.0 (any-pad-axis 2))
+        (pstr : F32) (any-pad-axis 1)
+        (kf : F32) (- (bool-f (key-down? (kc-w))) (bool-f (key-down? (kc-s))))
+        (ks : F32) (- (bool-f (key-down? (kc-d))) (bool-f (key-down? (kc-a))))
+        (fwd : F32) (clamp-f (+ kf pfwd) -1.0 1.0)
+        (str : F32) (clamp-f (+ ks pstr) -1.0 1.0)
+        fire (or (left-down?) (> (any-trigger 8) 0.25))]
+    (gf! (g-cmd-fwd) fwd)
+    (gf! (g-cmd-str) str)
+    (gi! (g-cmd-jump) (b2i (or (key-down? (kc-space)) (any-pad-btn? (pb-a)))))
+    (gi! (g-cmd-crouch) (b2i (or (key-down? (kc-ctrl)) (or (key-down? (kc-c)) (or (key-down? (kc-shift)) (any-pad-btn? (pb-b)))))))
+    (gi! (g-cmd-reload) (b2i (or (key-down? (kc-r)) (any-pad-btn? (pb-x)))))
+    (gi! (g-cmd-ability) (b2i (or (key-down? (kc-e)) (or (> (any-trigger 7) 0.25) (any-pad-btn? (pb-rb))))))
+    (gi! (g-cmd-fire) (b2i (and fire (!= (gi (g-locked)) 0))))
+    ;; digits pick a weapon outright
+    (dotimes [w 6]
+      (when (key-hit? (+ (kc-1) w)) (gi! (want-weapon) w)))
+    (when (any-pad-hit? (pb-rb)) (cycle-weapon! 1))
+    (when (any-pad-hit? (pb-lb)) (cycle-weapon! -1))
+    (gi! (g-cmd-weapon) (gi (want-weapon)))
+    ;; right stick looks (3 degrees per tick at full deflection, as the native client does)
+    (let [(rx : F32) (any-pad-axis 3)
+          (ry : F32) (any-pad-axis 4)]
+      (when (!= (gi (g-locked)) 0)
+        (look! (* rx 3.0) (* ry 3.0))))
+    ;; right mouse zooms the sniper
+    (gi! (g-zoom) (b2i (and (right-down?) (= (gi (want-weapon)) 4))))
+    (gi! (g-score-open) (b2i (key-down? (kc-tab))))))

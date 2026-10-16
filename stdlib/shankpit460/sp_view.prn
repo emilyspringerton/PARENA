@@ -1,0 +1,232 @@
+;; stdlib/shankpit460/sp_view.prn -- drawing the arena and the people in it.
+;;
+;; The look is deliberately quiet: a pale concrete arena under a warm dusk sky, soft fog, thin lit rims on
+;; every edge, and ten muted player hues. Nothing flashes; the loudest thing on screen is a muzzle.
+
+;; ---- palette -----------------------------------------------------------------------------------------
+(defn sky-top [] : I32 (rgb 126 150 188))
+(defn sky-mid [] : I32 (rgb 188 190 204))
+(defn sky-horizon [] : I32 (rgb 232 218 200))
+(defn floor-color [] : I32 (rgb 198 190 176))
+(defn wall-color [] : I32 (rgb 120 128 146))
+
+;; ten player hues, soft but distinct against pale concrete
+(defn player-hue [(c : I32)] : I32
+  (case (mod c 10)
+    0 (rgb 208 104 88)    ; coral
+    1 (rgb 214 164 70)    ; amber
+    2 (rgb 118 168 116)   ; sage
+    3 (rgb 74 158 160)    ; teal
+    4 (rgb 90 130 196)    ; blue
+    5 (rgb 143 119 194)   ; violet
+    6 (rgb 196 112 154)   ; rose
+    7 (rgb 128 140 160)   ; slate
+    8 (rgb 168 164 90)    ; olive
+    (rgb 196 176 138)))   ; sand
+
+;; the arena's own colours, by box index in v0_shankpit.map: 0 floor, 1-4 perimeter, 5-10 north base,
+;; 11-16 south base, 17-21 mid tower, the rest rocks
+(defn box-color [(i : I32)] : I32
+  (cond
+    (<= i 4) (wall-color)
+    (<= i 10) (rgb 214 206 192)
+    (<= i 16) (rgb 210 200 186)
+    (= i 17) (rgb 190 182 168)
+    (= i 18) (rgb 200 192 176)
+    (= i 19) (rgb 214 204 184)
+    (<= i 21) (rgb 184 176 164)
+    :else (case (mod i 3) 0 (rgb 166 150 130) 1 (rgb 140 156 140) (rgb 156 146 150))))
+
+;; ---- sky -----------------------------------------------------------------------------------------------
+(defn draw-sky! [] : Unit
+  (let [(sc : F32) (gf (g-proj-scale))
+        (tp : F32) (/ (gf (g-cam-sp)) (gf (g-cam-cp)))]
+    (dotimes [y 360]
+      (let [(m : F32) (/ (- 180.0 (f32 y)) sc)
+            (den : F32) (- 1.0 (* m tp))
+            (e : F32) (if (> (fabs den) 0.05) (/ (+ m tp) den) (if (> m 0.0) 20.0 -20.0))
+            (t : F32) (clamp-f (* e 1.3) 0.0 1.0)
+            c (if (< t 0.35)
+                  (mix (sky-horizon) (sky-mid) (i32 (* (/ t 0.35) 255.0)))
+                  (mix (sky-mid) (sky-top) (i32 (* (/ (- t 0.35) 0.65) 255.0))))]
+        (loop [x 0]
+          (when (< x 640) (store32! (px-addr x y) c) (recur (+ x 1))))))))
+
+;; ---- the arena ---------------------------------------------------------------------------------------------
+(defn draw-arena! [] : Unit
+  (do
+    ;; floor: one big tile field under everything (the slab at index 0 is never drawn as a box)
+    (set-surface! (floor-color) 0 0.0 0.0)
+    (gi! (g-pa) 255)
+    (pv-set! 0 -900.0 0.0 -900.0 -900.0 -900.0)
+    (pv-set! 1 900.0 0.0 -900.0 900.0 -900.0)
+    (pv-set! 2 900.0 0.0 900.0 900.0 900.0)
+    (pv-set! 3 -900.0 0.0 900.0 -900.0 900.0)
+    (draw-poly! 4)
+    (gf! (g-pe) 0.45)
+    (loop [i 1]
+      (when (< i (map-count))
+        (let [(dx : F32) (- (bx i) (gf (g-cam-x)))
+              (dy : F32) (- (by i) (gf (g-cam-y)))
+              (dz : F32) (- (bz i) (gf (g-cam-z)))
+              (rad : F32) (* 0.5 (len3 (bw i) (bh i) (bd i)))
+              ;; in front of the camera at all?  forward = (sy*cp, sp, -cy*cp)
+              (fd : F32) (+ (+ (* dx (* (gf (g-cam-sy)) (gf (g-cam-cp)))) (* dy (gf (g-cam-sp))))
+                            (* dz (* (- 0.0 (gf (g-cam-cy))) (gf (g-cam-cp)))))]
+          (when (> (+ fd rad) 0.0)
+            (draw-aabb! (bx i) (by i) (bz i) (bw i) (bh i) (bd i) (box-color i) 1)))
+        (recur (+ i 1))))))
+
+;; ---- a player ------------------------------------------------------------------------------------------------
+;; part! places a box in the player's own frame (right, up, forward-horizontal) and draws it
+(defn part! [(x : F32) (y : F32) (z : F32) (yaw : F32) (ox : F32) (oy : F32) (oz : F32)
+             (hw : F32) (hh : F32) (hd : F32) (color : I32)] : Unit
+  (let [(r : F32) (* (- 0.0 yaw) 0.0174533)
+        (c : F32) (cosf r)
+        (s : F32) (sinf r)]
+    (draw-ybox! (+ (+ x (* c ox)) (* s oz)) (+ y oy) (+ (+ z (* s ox)) (* (- 0.0 c) oz)) yaw hw hh hd color 2)))
+
+(defn weapon-color [(w : I32)] : I32
+  (case w 0 (rgb 200 202 212) 1 (rgb 96 98 108) 2 (rgb 72 92 76) 3 (rgb 128 86 64) 4 (rgb 50 54 70) (rgb 70 190 210)))
+
+;; render position: the last tick blended toward this one
+(defn lerp-pos [(p : I32) (k : I32) (alpha : F32)] : F32
+  (case k
+    0 (lerp (p-px p) (p-x p) alpha)
+    1 (lerp (p-py p) (p-y p) alpha)
+    (lerp (p-pz p) (p-z p) alpha)))
+
+(defn draw-player! [(p : I32) (alpha : F32)] : Unit
+  (let [(x : F32) (lerp-pos p 0 alpha)
+        (y : F32) (lerp-pos p 1 alpha)
+        (z : F32) (lerp-pos p 2 alpha)
+        (yaw : F32) (p-yaw p)
+        hue (player-hue (p-color p))
+        crouch (!= (p-crouching p) 0)
+        (sink : F32) (if crouch -1.2 0.0)
+        (speed : F32) (len2 (p-vx p) (p-vz p))
+        (swing : F32) (* (sinf (* (p-step-phase p) 1.0)) (fmin2 0.9 (* speed 1.1)))
+        hurt (> (p-flash p) 0)
+        body (if hurt (mix hue (rgb 255 250 245) 150) hue)]
+    ;; legs
+    (part! x y z yaw -0.55 (+ 0.55 (* sink 0.5)) (* swing 0.5) 0.42 0.55 0.42 (shade hue 190))
+    (part! x y z yaw 0.55 (+ 0.55 (* sink 0.5)) (* swing -0.5) 0.42 0.55 0.42 (shade hue 190))
+    ;; torso
+    (part! x y z yaw 0.0 (+ 1.8 sink) 0.0 1.0 0.7 0.55 body)
+    ;; head and visor (so you can see where they are looking)
+    (part! x y z yaw 0.0 (+ 3.15 sink) 0.0 0.8 0.8 0.8 (mix body (rgb 255 250 240) 60))
+    (part! x y z yaw 0.0 (+ 3.2 sink) 0.78 0.55 0.2 0.06 (rgb 40 42 54))
+    ;; the weapon in the right hand, pointing where they aim
+    (let [w (p-weapon p)
+          (long : F32) (case w 0 0.35 1 0.5 2 0.8 3 0.9 4 1.2 1.1)]
+      (part! x y z yaw 0.95 (+ 2.0 sink) (+ 0.4 long) 0.14 0.16 long (weapon-color w))
+      (when (> (p-is-shooting p) 3)
+        (part! x y z yaw 0.95 (+ 2.0 sink) (+ (+ 0.8 (* long 2.0)) 0.3) 0.3 0.3 0.25 (rgb 255 232 170))))))
+
+(defn draw-players! [(alpha : F32)] : Unit
+  (dotimes [i (max-players)]
+    (when (and (alive? i) (!= i (gi (g-view-slot))))
+      (when (or (= (p-spawn-prot i) 0) (= (bit-and (gi (g-frame)) 4) 0))
+        (draw-player! i alpha)))))
+
+;; ---- world effects -----------------------------------------------------------------------------------------------
+(defn draw-projectiles! [] : Unit
+  (dotimes [i (max-proj)]
+    (when (!= (q-active i) 0)
+      (draw-aabb! (q-x i) (q-y i) (q-z i) 0.9 0.9 0.9 (rgb 255 240 200) 2))))
+
+(defn draw-particles! [] : Unit
+  (dotimes [i (max-parts)]
+    (when (> (f-ttl i) 0)
+      (let [(z : F32) (project-point (f-x i) (f-y i) (f-z i))]
+        (when (> z (near-plane))
+          (let [sx (i32 (gf (g-sx)))
+                sy (i32 (gf (g-sy)))]
+            (when (inside? sx sy)
+              (when (> (/ 1.0 z) (loadf32 (+ (zb-base) (shl (+ (* sy 640) sx) 2))))
+                (let [k (f-color i)
+                      c (case k 0 (rgb 214 204 190) 1 (rgb 255 214 120) 2 (rgb 255 250 240) 3 (rgb 170 240 255) (rgb 255 190 150))
+                      sz (max-i 1 (i32 (/ (* (f32 (f-size i)) 40.0) (+ z 8.0))))]
+                  (fill-rect-a (- sx (/ sz 2)) (- sy (/ sz 2)) sz sz c (min-i 255 (* (f-ttl i) 22))))))))))))
+
+(defn draw-tracers! [] : Unit
+  (dotimes [i (max-tracers)]
+    (when (> (t-ttl i) 0)
+      (let [(za : F32) (project-point (t-x0 i) (t-y0 i) (t-z0 i))
+            ax (i32 (gf (g-sx))) ay (i32 (gf (g-sy)))
+            (zb : F32) (project-point (t-x1 i) (t-y1 i) (t-z1 i))
+            bx2 (i32 (gf (g-sx))) by2 (i32 (gf (g-sy)))]
+        (when (and (> za (near-plane)) (> zb (near-plane)))
+          (when (and (< (abs-i (- ax bx2)) 2000) (< (abs-i (- ay by2)) 2000))
+            (line-a ax ay bx2 by2 (if (= (t-kind i) 1) (rgb 255 220 160) (rgb 255 244 214))
+                    (/ (* 200 (t-ttl i)) (max-i 1 (t-life i))))))))))
+
+;; ---- first-person weapon -----------------------------------------------------------------------------------------
+;; Built in camera space (right, up, forward) and drawn after clearing the lower-right of the depth buffer, so a
+;; wall at arm's length can't swallow it.
+(defn g-vm-sa [] : I32 210) (defn g-vm-ca [] : I32 211) (defn g-vm-sb [] : I32 212) (defn g-vm-cb [] : I32 213)
+(defn g-vm-ox [] : I32 214) (defn g-vm-oy [] : I32 215) (defn g-vm-oz [] : I32 216)
+
+;; rotate (x,y,z) about X by a then about Z by b (scratch sines in g-vm-*), result in g-tmp slots 217..219
+(defn vm-rot! [(x : F32) (y : F32) (z : F32)] : Unit
+  (let [(sa : F32) (gf (g-vm-sa)) (ca : F32) (gf (g-vm-ca))
+        (sb : F32) (gf (g-vm-sb)) (cb : F32) (gf (g-vm-cb))
+        (y1 : F32) (- (* y ca) (* z sa))
+        (z1 : F32) (+ (* y sa) (* z ca))]
+    (gf! 217 (- (* x cb) (* y1 sb)))
+    (gf! 218 (+ (* x sb) (* y1 cb)))
+    (gf! 219 z1)))
+
+(defn vm-part! [(ox : F32) (oy : F32) (oz : F32) (hw : F32) (hh : F32) (hd : F32) (color : I32)] : Unit
+  (do
+    (vm-rot! ox oy oz)
+    (gf! (o-cx) (+ (gf (g-vm-ox)) (gf 217)))
+    (gf! (o-cy) (+ (gf (g-vm-oy)) (gf 218)))
+    (gf! (o-cz) (+ (gf (g-vm-oz)) (gf 219)))
+    (vm-rot! 1.0 0.0 0.0) (gf! (o-xx) (gf 217)) (gf! (o-xy) (gf 218)) (gf! (o-xz) (gf 219))
+    (vm-rot! 0.0 1.0 0.0) (gf! (o-yx) (gf 217)) (gf! (o-yy) (gf 218)) (gf! (o-yz) (gf 219))
+    (vm-rot! 0.0 0.0 1.0) (gf! (o-zx) (gf 217)) (gf! (o-zy) (gf 218)) (gf! (o-zz) (gf 219))
+    (gf! (o-hw) hw) (gf! (o-hh) hh) (gf! (o-hd) hd)
+    (gi! (o-col) color) (gi! (o-kind) 2)
+    (draw-obox!)))
+
+(defn clear-zbuf-region! [(x0 : I32) (y0 : I32) (x1 : I32) (y1 : I32)] : Unit
+  (loop [y y0]
+    (when (< y y1)
+      (loop [x x0]
+        (when (< x x1) (storef32! (+ (zb-base) (shl (+ (* y 640) x) 2)) 0.0) (recur (+ x 1))))
+      (recur (+ y 1)))))
+
+(defn draw-viewmodel! [(p : I32)] : Unit
+  (let [w (p-weapon p)
+        (kick : F32) (* (p-recoil-anim p) 0.14)
+        (dip : F32) (if (> (p-reload-timer p) 0) (- (* (sinf (* (f32 (p-reload-timer p)) 0.2)) 0.3) 0.3) 0.0)
+        (slash : F32) (if (and (= w 5) (> (p-katana-slash-timer p) 0)) (/ (f32 (p-katana-slash-timer p)) 6.0) 0.0)
+        (push : F32) (if (and (= w 5) (> (p-dash-timer p) 0)) 0.2 0.0)
+        (spd : F32) (len2 (p-vx p) (p-vz p))
+        (bob : F32) (* (sinf (* (f32 (gi (g-ticker))) 0.012)) (* spd 0.06))
+        (pitch : F32) (+ (* (p-recoil-anim p) -0.16) (* slash -1.1))
+        (roll : F32) (* slash -0.7)]
+    (gi! (g-cs) 1)
+    (gi! (g-pa) 255)
+    (clear-zbuf-region! 260 150 640 360)
+    (gf! (g-vm-sa) (sinf pitch)) (gf! (g-vm-ca) (cosf pitch))
+    (gf! (g-vm-sb) (sinf roll)) (gf! (g-vm-cb) (cosf roll))
+    (gf! (g-vm-ox) (+ (if (= w 5) 0.55 0.42) (* slash 0.16)))
+    (gf! (g-vm-oy) (+ (+ -0.4 (+ kick dip)) (* bob 0.5)))
+    (gf! (g-vm-oz) (+ (- (+ 1.0 bob) push) (* kick -0.5)))
+    (let [steel (weapon-color w)
+          dark (rgb 44 46 56)]
+      (case w
+        0 (do (vm-part! 0.0 0.0 0.0 0.05 0.05 0.2 dark) (vm-part! 0.0 0.02 0.4 0.02 0.07 0.24 steel))
+        1 (do (vm-part! 0.0 0.0 0.25 0.06 0.08 0.3 steel) (vm-part! 0.0 -0.13 0.08 0.05 0.12 0.06 dark))
+        2 (do (vm-part! 0.0 0.0 0.35 0.06 0.08 0.5 steel) (vm-part! 0.0 -0.15 0.2 0.04 0.1 0.06 dark)
+              (vm-part! 0.0 0.0 -0.2 0.05 0.07 0.2 dark))
+        3 (do (vm-part! 0.0 0.02 0.42 0.07 0.06 0.55 steel) (vm-part! 0.0 -0.05 0.3 0.09 0.06 0.16 (rgb 96 66 50)))
+        4 (do (vm-part! 0.0 0.0 0.5 0.045 0.05 0.7 steel) (vm-part! 0.0 0.09 0.25 0.05 0.05 0.2 dark)
+              (vm-part! 0.0 -0.08 -0.1 0.05 0.12 0.1 dark))
+        (do (vm-part! 0.0 0.0 0.0 0.05 0.05 0.16 dark) (vm-part! 0.0 0.0 0.62 0.014 0.055 0.5 steel)))
+      (when (> (p-is-shooting p) 3)
+        (when (not (= w 5))
+          (vm-part! 0.0 0.02 (case w 3 1.05 4 1.25 2 0.95 0.7) 0.08 0.08 0.06 (rgb 255 236 180)))))
+    (gi! (g-cs) 0)))

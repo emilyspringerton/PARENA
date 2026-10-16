@@ -1,0 +1,269 @@
+;; stdlib/shankpit460/sp_hud.prn -- the heads-up display: quiet, small, cream ink on slate cards.
+
+(defn ink [] : I32 (rgb 246 241 230))
+(defn ink-dim [] : I32 (rgb 205 200 190))
+(defn ink-faint [] : I32 (rgb 160 158 156))
+(defn slate [] : I32 (rgb 36 38 50))
+(defn amber [] : I32 (rgb 232 190 112))
+(defn sage [] : I32 (rgb 150 198 150))
+(defn coral [] : I32 (rgb 226 120 100))
+(defn sky-blue [] : I32 (rgb 142 178 230))
+
+(defn panel [(x : I32) (y : I32) (w : I32) (h : I32)] : Unit
+  (card x y w h (slate) 150 (rgb 255 250 240) 46))
+
+(defn name-addr-of [(p : I32)] : I32 (name-addr p))
+
+;; ---- the crosshair ----------------------------------------------------------------------------------
+(defn draw-crosshair! [(me : I32)] : Unit
+  (let [cx 320 cy 180
+        (spd : F32) (len2 (p-vx me) (p-vz me))
+        gap (+ (+ 3 (i32 (* spd 5.0))) (i32 (* (p-recoil-anim me) 5.0)))
+        c (if (> (gi (g-hitmark)) 0) (rgb 255 255 255) (ink))
+        a 210]
+    (when (not (and (!= (gi (g-zoom)) 0) (< (gf (g-fov)) 40.0)))
+      (put-px-a cx cy c 255)
+      (fill-rect-a (- cx (+ gap 5)) cy 5 1 c a)
+      (fill-rect-a (+ cx gap) cy 5 1 c a)
+      (fill-rect-a cx (- cy (+ gap 5)) 1 5 c a)
+      (fill-rect-a cx (+ cy gap) 1 5 c a))
+    ;; hit marker: four diagonal ticks, gold for a headshot
+    (when (> (gi (g-hitmark)) 0)
+      (let [hc (if (> (gi (g-hitmark)) 10) (amber) (rgb 255 255 255))
+            ha (min-i 255 (* (gi (g-hitmark)) 40))]
+        (line-a (- cx 9) (- cy 9) (- cx 4) (- cy 4) hc ha)
+        (line-a (+ cx 9) (- cy 9) (+ cx 4) (- cy 4) hc ha)
+        (line-a (- cx 9) (+ cy 9) (- cx 4) (+ cy 4) hc ha)
+        (line-a (+ cx 9) (+ cy 9) (+ cx 4) (+ cy 4) hc ha)))))
+
+;; the sniper's scope: everything outside a circle goes dark, with hairlines through the middle
+(defn draw-scope! [] : Unit
+  (do
+    (dotimes [y 360]
+      (let [dy (- y 180)
+            (w2 : F32) (f32 (- (* 150 150) (* dy dy)))]
+        (if (< w2 0.0)
+            (fill-rect-a 0 y 640 1 (rgb 14 14 18) 244)
+            (let [hw (i32 (sqrt w2))]
+              (fill-rect-a 0 y (- 320 hw) 1 (rgb 14 14 18) 244)
+              (fill-rect-a (+ 320 hw) y (- 320 hw) 1 (rgb 14 14 18) 244)))))
+    (circle-outline-a 320 180 150 (rgb 14 14 18) 255)
+    (fill-rect-a 170 180 300 1 (rgb 20 20 26) 200)
+    (fill-rect-a 320 30 1 300 (rgb 20 20 26) 200)
+    (put-px 320 180 (rgb 232 80 70))))
+
+;; ---- vitals and ammo ------------------------------------------------------------------------------------
+(defn bar [(x : I32) (y : I32) (w : I32) (h : I32) (frac : F32) (color : I32)] : Unit
+  (do (fill-rect-a x y w h (rgb 12 12 18) 150)
+      (fill-rect x y (i32 (* (f32 w) (clamp-f frac 0.0 1.0))) h color)))
+
+(defn health-color [(hp : I32)] : I32 (cond (> hp 50) (sage) (> hp 25) (amber) :else (coral)))
+
+(defn draw-vitals! [(me : I32)] : Unit
+  (let [hp (max-i 0 (p-health me))
+        sh (max-i 0 (p-shield me))]
+    (panel 10 302 152 54)
+    (draw-text "HEALTH" 18 308 1 (ink-dim))
+    (draw-int-r hp 154 306 2 (health-color hp))
+    (bar 18 328 136 4 (/ (f32 hp) 100.0) (health-color hp))
+    (draw-text "SHIELD" 18 337 1 (ink-faint))
+    (draw-int-r sh 154 337 1 (sky-blue))
+    (bar 18 351 136 2 (/ (f32 sh) 100.0) (sky-blue))))
+
+(defn draw-ammo! [(me : I32)] : Unit
+  (let [w (p-weapon me)
+        melee (wpn-melee? w)]
+    (panel 472 308 158 44)
+    (draw-text (wpn-name w) 480 314 1 (ink-dim))
+    (if melee
+        (draw-text-r "MELEE" 622 324 2 (ink))
+        (do (draw-int-r (ammo me w) 586 322 3 (if (<= (ammo me w) (/ (wpn-ammo-max w) 4)) (coral) (ink)))
+            (draw-text "/" 590 330 1 (ink-faint))
+            (draw-int (wpn-ammo-max w) 598 330 1 (ink-faint))))
+    ;; reload progress, then the ability: storm pips for the sniper family, the dash for the katana
+    (when (> (p-reload-timer me) 0)
+      (bar 480 340 142 3 (- 1.0 (/ (f32 (p-reload-timer me)) 60.0)) (amber)))
+    (when (and (= (p-reload-timer me) 0) (or (= w 4) (= w 5)))
+      (if (= w 5)
+          (bar 480 340 142 3 (if (> (p-ability-cooldown me) 0) (- 1.0 (/ (f32 (p-ability-cooldown me)) 420.0)) 1.0)
+               (if (> (p-ability-cooldown me) 0) (ink-faint) (rgb 110 214 230)))
+          (if (> (p-storm-charges me) 0)
+              (dotimes [i 5] (fill-rect (+ 480 (* i 10)) 340 8 3 (if (< i (p-storm-charges me)) (rgb 170 240 255) (rgb 60 62 76))))
+              (bar 480 340 142 3 (if (> (p-ability-cooldown me) 0) (- 1.0 (/ (f32 (p-ability-cooldown me)) 480.0)) 1.0)
+                   (if (> (p-ability-cooldown me) 0) (ink-faint) (rgb 110 214 230))))))
+    ;; the six slots
+    (dotimes [i 6]
+      (let [x (+ 266 (* i 18))
+            on (= i (gi (want-weapon)))]
+        (fill-rect-a x 342 14 10 (if on (ink) (slate)) (if on 210 110))
+        (draw-int (+ i 1) (+ x 4) 340 1 (if on (slate) (ink-faint)))))))
+
+;; ---- score, clock, feed ------------------------------------------------------------------------------------------
+(defn secs-left [] : I32 (/ (+ (gi (g-match-left)) 61) 62))
+
+(defn top-score [(except : I32)] : I32
+  (let [best -1]
+    (dotimes [i (max-players)]
+      (when (and (!= (p-active i) 0) (!= i except))
+        (when (> (p-kills i) best) (set! best (p-kills i)))))
+    (max-i best 0)))
+
+(defn draw-scorebar! [(me : I32)] : Unit
+  (do
+    (panel 246 6 148 40)
+    (draw-clock-c (secs-left) 320 9 2 (if (< (secs-left) 30) (coral) (ink)))
+    (draw-text "YOU" 254 30 1 (ink-faint))
+    (draw-int (p-kills me) 280 30 1 (ink))
+    (draw-int-r (top-score me) 386 30 1 (ink))
+    (draw-text-r (if (> (top-score me) (p-kills me)) "LEAD" "NEXT") 362 30 1 (ink-faint))))
+
+(defn draw-feed! [(me : I32)] : Unit
+  (let [row 0]
+    (loop [k 0]
+      (when (< k 8)
+        (let [a (feed-addr (+ (gi (g-feed-head)) k))
+              ttl (load32 (+ a 12))]
+          (when (> ttl 0)
+            (let [att (load32 a) vic (load32 (+ a 4)) w (load32 (+ a 8))
+                  mine (or (= att me) (= vic me))
+                  y (+ 8 (* row 15))
+                  wn (if (>= w 6) "STORM" (wpn-name w))
+                  wa (text-width-at (name-addr att) 1)
+                  ww (text-width wn 1)
+                  wv (text-width-at (name-addr vic) 1)
+                  tw (+ (+ (+ wa ww) wv) 24)
+                  x0 (- 632 tw)]
+              (fill-rect-a x0 y tw 13 (slate) (if mine 200 120))
+              (when mine (rect-outline-a x0 y tw 13 (amber) 120))
+              (draw-text-at (name-addr att) (+ x0 4) (+ y 3) 1 (player-hue (p-color att)))
+              (draw-text wn (+ (+ x0 4) (+ wa 6)) (+ y 3) 1 (ink-faint))
+              (draw-text-at (name-addr vic) (+ (+ x0 4) (+ (+ wa ww) 12)) (+ y 3) 1 (player-hue (p-color vic)))
+              (set! row (+ row 1)))))
+        (recur (+ k 1))))))
+
+;; ---- matchmaking pill ----------------------------------------------------------------------------------------------
+(defn spinner! [(x : I32) (y : I32)] : Unit
+  (dotimes [i 3]
+    (let [on (= (mod (/ (gi (g-ticker)) 260) 3) i)]
+      (fill-rect-a (+ x (* i 6)) (+ y (if on 0 2)) 4 4 (if on (amber) (ink-faint)) (if on 255 160)))))
+
+(defn draw-queue-pill! [] : Unit
+  (let [qs (gi (g-q-state))]
+    (cond
+      (and (= (gi (g-mode)) 0) (!= (gi (g-want-queue)) 0) (!= (gi (g-net-state)) 3))
+        (do (panel 10 8 222 22)
+            (spinner! 18 16)
+            (draw-text "SEARCHING FOR MATCH" 40 13 1 (ink))
+            (draw-clock (gi (g-q-elapsed)) 184 13 1 (ink-faint)))
+      (and (= (gi (g-mode)) 0) (!= (gi (g-want-queue)) 0))
+        (do (panel 10 8 190 22)
+            (draw-text "MATCHMAKING OFFLINE - BOTS ONLY" 16 13 1 (ink-faint)))
+      (= (gi (g-mode)) 1)
+        (do (panel 10 8 150 22)
+            (draw-text "FREE FOR ALL" 18 13 1 (ink))
+            (draw-int (gi (g-roster-n)) 124 13 1 (amber))
+            (draw-text "up" 138 13 1 (ink-faint)))
+      :else unit)))
+
+;; ---- centre-of-screen moments ------------------------------------------------------------------------------------------
+(defn countdown-secs [] : I32 (/ (+ (gi (g-countdown)) 61) 62))
+
+(defn draw-banner! [] : Unit
+  (when (> (gi (g-banner-t)) 0)
+    (let [t (gi (g-banner-t))
+          a (min-i 255 (* t 8))
+          v (gi (g-kill-msg-victim))
+          y 96]
+      (fill-rect-a 220 (- y 6) 200 26 (slate) (/ (* a 150) 255))
+      (draw-text-c (if (= (gi (g-banner-id)) 2) "CHAINED" "ELIMINATED") 320 y 1 (amber))
+      (draw-text-at-c (name-addr v) 320 (+ y 12) 1 (ink)))))
+
+(defn draw-death! [(me : I32)] : Unit
+  (when (not (alive? me))
+    (let [k (p-last-damager me)
+          secs (max-i 1 (/ (+ (p-respawn-ticks me) 61) 62))]
+      (fill-rect-a 0 0 640 360 (rgb 24 22 30) 90)
+      (panel 230 128 180 62)
+      (draw-text-c "ELIMINATED" 320 138 2 (ink))
+      (when (>= k 0) (do (draw-text "by" 262 164 1 (ink-faint)) (draw-text-at (name-addr k) 280 164 1 (player-hue (p-color k)))))
+      (draw-text-c "back in" 296 176 1 (ink-faint))
+      (draw-int secs 328 176 1 (amber)))))
+
+(defn draw-countdown! [] : Unit
+  (when (> (gi (g-countdown)) 0)
+    (let [s (countdown-secs)]
+      (fill-rect-a 0 0 640 360 (rgb 24 22 30) 70)
+      (draw-text-c "GET READY" 320 118 2 (ink-dim))
+      (if (<= s 3)
+          (draw-int-c s 320 142 8 (ink))
+          (draw-text-c (if (= (gi (g-mode)) 1) "first to 16 - or six minutes" "first to 13 - or five minutes") 320 150 1 (ink-faint))))))
+
+(defn draw-found! [] : Unit
+  (when (> (gi (g-found-t)) 0)
+    (let [a (min-i 255 (* (gi (g-found-t)) 8))]
+      (fill-rect-a 0 0 640 360 (rgb 24 22 30) (/ (* a 90) 255))
+      (panel 176 104 288 76)
+      (draw-text-c "MATCH FOUND" 320 114 2 (amber))
+      (draw-text-c "free for all" 320 142 1 (ink))
+      (draw-int (gi (g-roster-n)) 270 160 1 (ink))
+      (draw-text "players  -  first to" 282 160 1 (ink-faint))
+      (draw-int (gi (g-kill-limit)) 410 160 1 (ink)))))
+
+(defn draw-damage! [] : Unit
+  (when (> (gi (g-dmg-flash)) 0)
+    (let [a (min-i 150 (* (gi (g-dmg-flash)) 7))
+          c (rgb 214 80 70)]
+      (fill-rect-a 0 0 640 10 c (/ a 2)) (fill-rect-a 0 350 640 10 c (/ a 2))
+      (fill-rect-a 0 0 10 360 c (/ a 2)) (fill-rect-a 630 0 10 360 c (/ a 2))
+      (fill-rect-a 0 0 640 4 c a) (fill-rect-a 0 356 640 4 c a)
+      (fill-rect-a 0 0 4 360 c a) (fill-rect-a 636 0 4 360 c a)
+      ;; where it came from, relative to where we face
+      (let [(rel : F32) (* (- (gf (g-dmg-yaw)) (gf (g-cam-yaw))) 0.0174533)
+            ax (+ 320 (i32 (* (sinf (- 0.0 rel)) 64.0)))
+            ay (- 180 (i32 (* (cosf (- 0.0 rel)) 64.0)))]
+        (fill-rect-a (- ax 3) (- ay 3) 7 7 c (min-i 255 (* a 2)))))))
+
+;; ---- the scoreboard (Tab) ---------------------------------------------------------------------------------------------------
+(defn draw-board! [(me : I32) (x : I32) (y : I32) (w : I32)] : Unit
+  (do
+    (build-board!)
+    (let [n (min-i (gi (g-end-n)) 10)]
+      (draw-text "PLAYER" (+ x 34) y 1 (ink-faint))
+      (draw-text-r "K" (+ x (- w 44)) y 1 (ink-faint))
+      (draw-text-r "D" (+ x (- w 12)) y 1 (ink-faint))
+      (dotimes [i n]
+        (let [s (load32 (board-addr i))
+              ry (+ (+ y 16) (* i 15))
+              mine (= s me)]
+          (when mine (fill-rect-a x (- ry 2) w 14 (rgb 255 250 240) 40))
+          (draw-int (+ i 1) (+ x 6) ry 1 (ink-faint))
+          (fill-rect (+ x 22) (+ ry 2) 6 8 (player-hue (p-color s)))
+          (draw-text-at (name-addr s) (+ x 34) ry 1 (if mine (amber) (ink)))
+          (when (!= (p-is-bot s) 0) (draw-text "bot" (+ (+ x 40) (text-width-at (name-addr s) 1)) ry 1 (ink-faint)))
+          (draw-int-r (p-kills s) (+ x (- w 44)) ry 1 (ink))
+          (draw-int-r (p-deaths s) (+ x (- w 12)) ry 1 (ink-dim)))))))
+
+(defn draw-scoreboard! [(me : I32)] : Unit
+  (when (!= (gi (g-score-open)) 0)
+    (panel 190 70 260 196)
+    (draw-text-c "SCOREBOARD" 320 78 1 (ink-dim))
+    (draw-board! me 202 96 236)))
+
+;; ---- the whole play HUD --------------------------------------------------------------------------------------------------------
+(defn draw-hud! [(me : I32)] : Unit
+  (do
+    (if (and (= (p-weapon me) 4) (and (!= (gi (g-zoom)) 0) (alive? me)))
+        (draw-scope!)
+        (when (alive? me) (draw-crosshair! me)))
+    (draw-damage!)
+    (draw-scorebar! me)
+    (draw-feed! me)
+    (draw-queue-pill!)
+    (when (alive? me)
+      (draw-vitals! me)
+      (draw-ammo! me))
+    (draw-banner!)
+    (draw-death! me)
+    (draw-scoreboard! me)
+    (draw-countdown!)
+    (draw-found!)))

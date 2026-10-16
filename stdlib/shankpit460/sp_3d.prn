@@ -1,0 +1,316 @@
+;; stdlib/shankpit460/sp_3d.prn -- the 3D software rasteriser: camera, clipping, z-buffered perspective-correct
+;; triangles, and the handful of procedural surface looks the arena uses.
+;;
+;; Pipeline per convex polygon: world -> camera space -> clip against the near plane -> project (storing 1/z,
+;; u/z, v/z) -> fan of triangles -> scanline fill with a z-buffer (larger 1/z wins). The pixel shader gets the
+;; surface coordinates (u, v) back by dividing by the interpolated 1/z, so the floor grid and the panel
+;; edges stay straight under perspective.
+
+(defn scr-base [] : I32 208896)       ; 0x33000: scratch for polygons (A: input, B: clipped, C: projected)
+(defn pvA [(i : I32) (k : I32)] : I32 (+ (scr-base) (+ (* i 32) (shl k 2))))
+(defn pvB [(i : I32) (k : I32)] : I32 (+ (scr-base) (+ 512 (+ (* i 32) (shl k 2)))))
+(defn pvC [(i : I32) (k : I32)] : I32 (+ (scr-base) (+ 1024 (+ (* i 32) (shl k 2)))))
+
+;; polygon-wide shading state
+(defn g-pc [] : I32 150)       ; base colour (already lit)
+(defn g-pk [] : I32 151)       ; surface kind: 0 floor grid, 1 panel (edge-lit), 2 flat
+(defn g-pw [] : I32 152)       ; F32 face extent u
+(defn g-ph [] : I32 153)       ; F32 face extent v
+(defn g-cs [] : I32 154)       ; 1 = vertices are already in camera space
+(defn g-fog [] : I32 155)      ; fog colour
+(defn g-fog-near [] : I32 156) ; F32
+(defn g-fog-far [] : I32 157)  ; F32
+(defn g-pa [] : I32 158)       ; alpha 0..255 (255 = opaque)
+(defn g-tri-a [] : I32 159)
+(defn g-tri-b [] : I32 160)
+(defn g-tri-c [] : I32 161)
+(defn g-pe [] : I32 162)       ; F32 edge half-width in world units for panel kinds
+(defn g-ax [] : I32 195)       ; scratch: scanline intersections (2 x 4 floats)
+
+(defn near-plane [] : F32 0.15)
+(defn half-w [] : F32 320.0)
+(defn half-h [] : F32 180.0)
+
+;; ---- camera ----------------------------------------------------------------------------------------
+;; basis for yaw/pitch exactly as the aim vector is built: r = -yaw; forward = (sin r cos p, sin p, -cos r cos p)
+(defn set-camera! [(x : F32) (y : F32) (z : F32) (yaw : F32) (pitch : F32) (fov : F32)] : Unit
+  (let [(r : F32) (* (- 0.0 yaw) 0.0174533)
+        (p : F32) (* pitch 0.0174533)]
+    (gf! (g-cam-x) x) (gf! (g-cam-y) y) (gf! (g-cam-z) z)
+    (gf! (g-cam-sy) (sinf r)) (gf! (g-cam-cy) (cosf r))
+    (gf! (g-cam-sp) (sinf p)) (gf! (g-cam-cp) (cosf p))
+    ;; pixels per unit at depth 1 for a vertical field of view of `fov` degrees over 360 rows
+    (let [(half : F32) (* (* fov 0.5) 0.0174533)]
+      (gf! (g-proj-scale) (/ 180.0 (/ (sinf half) (cosf half)))))))
+
+;; ---- z-buffer ---------------------------------------------------------------------------------------
+(defn clear-zbuf! [] : Unit
+  (loop [i 0] (when (< i 230400) (storef32! (+ (zb-base) (shl i 2)) 0.0) (recur (+ i 1)))))
+
+;; ---- polygon: transform, clip, project ----------------------------------------------------------------
+(defn pv-set! [(i : I32) (x : F32) (y : F32) (z : F32) (u : F32) (v : F32)] : Unit
+  (do (storef32! (pvA i 0) x) (storef32! (pvA i 1) y) (storef32! (pvA i 2) z)
+      (storef32! (pvA i 3) u) (storef32! (pvA i 4) v)))
+
+(defn to-camera! [(n : I32)] : Unit
+  (when (= (gi (g-cs)) 0)
+    (let [(ex : F32) (gf (g-cam-x)) (ey : F32) (gf (g-cam-y)) (ez : F32) (gf (g-cam-z))
+          (sy : F32) (gf (g-cam-sy)) (cy : F32) (gf (g-cam-cy))
+          (sp : F32) (gf (g-cam-sp)) (cp : F32) (gf (g-cam-cp))]
+      (dotimes [i n]
+        (let [(dx : F32) (- (loadf32 (pvA i 0)) ex)
+              (dy : F32) (- (loadf32 (pvA i 1)) ey)
+              (dz : F32) (- (loadf32 (pvA i 2)) ez)]
+          ;; right = (cy, 0, sy); up = (-sy*sp, cp, cy*sp); forward = (sy*cp, sp, -cy*cp)
+          (storef32! (pvA i 0) (+ (* dx cy) (* dz sy)))
+          (storef32! (pvA i 1) (+ (+ (* dx (* (- 0.0 sy) sp)) (* dy cp)) (* dz (* cy sp))))
+          (storef32! (pvA i 2) (+ (+ (* dx (* sy cp)) (* dy sp)) (* dz (* (- 0.0 cy) cp)))))))))
+
+(defn copy-vert! [(src-i : I32) (dst-i : I32)] : Unit
+  (dotimes [k 5] (storef32! (pvB dst-i k) (loadf32 (pvA src-i k)))))
+
+(defn clip-near! [(n : I32)] : I32
+  (let [out 0]
+    (dotimes [i n]
+      (let [j (mod (+ i 1) n)
+            (za : F32) (loadf32 (pvA i 2))
+            (zb : F32) (loadf32 (pvA j 2))
+            ina (>= za (near-plane))
+            inb (>= zb (near-plane))]
+        (when ina (copy-vert! i out) (set! out (+ out 1)))
+        (when (!= (b2i ina) (b2i inb))
+          (let [(t : F32) (/ (- (near-plane) za) (- zb za))]
+            (dotimes [k 5]
+              (let [(a : F32) (loadf32 (pvA i k))
+                    (b : F32) (loadf32 (pvA j k))]
+                (storef32! (pvB out k) (+ a (* (- b a) t)))))
+            (storef32! (pvB out 2) (near-plane))
+            (set! out (+ out 1))))))
+    out))
+
+(defn project! [(n : I32)] : Unit
+  (let [(sc : F32) (gf (g-proj-scale))]
+    (dotimes [i n]
+      (let [(z : F32) (loadf32 (pvB i 2))
+            (iz : F32) (/ 1.0 z)]
+        (storef32! (pvC i 0) (+ (half-w) (* (* (loadf32 (pvB i 0)) iz) sc)))
+        (storef32! (pvC i 1) (- (half-h) (* (* (loadf32 (pvB i 1)) iz) sc)))
+        (storef32! (pvC i 2) iz)
+        (storef32! (pvC i 3) (* (loadf32 (pvB i 3)) iz))
+        (storef32! (pvC i 4) (* (loadf32 (pvB i 4)) iz))))))
+
+;; ---- pixel shader --------------------------------------------------------------------------------------
+(defn fract [(x : F32)] : F32 (- x (floor x)))
+
+(defn surface [(u : F32) (v : F32) (z : F32)] : I32
+  (let [base (gi (g-pc))
+        kind (gi (g-pk))]
+    (cond
+      ;; the floor: faint 40-unit tiles, a stronger line every 200
+      (= kind 0)
+        (let [(fu : F32) (fract (/ u 40.0))
+              (fv : F32) (fract (/ v 40.0))
+              (e : F32) (+ 0.012 (* z 0.00004))
+              line (or (or (< fu e) (> fu (- 1.0 e))) (or (< fv e) (> fv (- 1.0 e))))
+              (mu : F32) (fract (/ u 200.0))
+              (mv : F32) (fract (/ v 200.0))
+              (me : F32) (+ 0.0035 (* z 0.00001))
+              major (or (or (< mu me) (> mu (- 1.0 me))) (or (< mv me) (> mv (- 1.0 me))))
+              chk (bit-and (+ (i32 (floor (/ u 40.0))) (i32 (floor (/ v 40.0)))) 1)]
+          (cond major (shade base 196)
+                line (shade base 226)
+                (= chk 1) (shade base 250)
+                :else base))
+      ;; box faces: a lit rim and a faint band texture
+      (= kind 1)
+        (let [(w : F32) (gf (g-pw))
+              (h : F32) (gf (g-ph))
+              (e : F32) (+ (gf (g-pe)) (* z 0.0016))
+              (d : F32) (fmin2 (fmin2 u (- w u)) (fmin2 v (- h v)))
+              (band : F32) (fract (/ v 7.0))]
+          (cond (< d e) (shade base 288)
+                (< band 0.07) (shade base 236)
+                :else base))
+      :else base)))
+
+(defn fog-mix [(c : I32) (z : F32)] : I32
+  (let [(near : F32) (gf (g-fog-near))
+        (far : F32) (gf (g-fog-far))]
+    (if (<= z near)
+        c
+        (let [(t : F32) (clamp-f (/ (- z near) (- far near)) 0.0 1.0)]
+          (mix c (gi (g-fog)) (i32 (* (* t t) 255.0)))))))
+
+(defn plot! [(x : I32) (y : I32) (iz : F32) (uz : F32) (vz : F32)] : Unit
+  (let [zi (+ (zb-base) (shl (+ (* y 640) x) 2))]
+    (when (> iz (loadf32 zi))
+      (let [(z : F32) (/ 1.0 iz)
+            c (fog-mix (surface (* uz z) (* vz z) z) z)]
+        (if (= (gi (g-pa)) 255)
+            (do (storef32! zi iz) (store32! (px-addr x y) c))
+            (store32! (px-addr x y) (mix (load32 (px-addr x y)) c (gi (g-pa)))))))))
+
+;; ---- triangle fill ---------------------------------------------------------------------------------------
+(defn isect-addr [(side : I32) (k : I32)] : I32 (+ (g-base) (shl (+ (g-ax) (+ (* side 4) k)) 2)))
+
+(defn fill-tri! [(a : I32) (b : I32) (c : I32)] : Unit
+  (let [(y-min : F32) (fmin2 (loadf32 (pvC a 1)) (fmin2 (loadf32 (pvC b 1)) (loadf32 (pvC c 1))))
+        (y-max : F32) (fmax2 (loadf32 (pvC a 1)) (fmax2 (loadf32 (pvC b 1)) (loadf32 (pvC c 1))))
+        y0 (max-i 0 (i32 (ceil-f (- y-min 0.5))))
+        y1 (min-i 359 (i32 (floor (- y-max 0.5))))]
+    (gi! (g-tri-a) a) (gi! (g-tri-b) b) (gi! (g-tri-c) c)
+    (loop [y y0]
+      (when (<= y y1)
+        (let [(yc : F32) (+ (f32 y) 0.5)
+              found 0]
+          (dotimes [e 3]
+            (let [ia (case e 0 (gi (g-tri-a)) 1 (gi (g-tri-b)) (gi (g-tri-c)))
+                  ib (case e 0 (gi (g-tri-b)) 1 (gi (g-tri-c)) (gi (g-tri-a)))
+                  (ya : F32) (loadf32 (pvC ia 1))
+                  (yb : F32) (loadf32 (pvC ib 1))]
+              (when (or (and (<= ya yc) (< yc yb)) (and (<= yb yc) (< yc ya)))
+                (when (< found 2)
+                  (let [(t : F32) (/ (- yc ya) (- yb ya))]
+                    (storef32! (isect-addr found 0) (+ (loadf32 (pvC ia 0)) (* t (- (loadf32 (pvC ib 0)) (loadf32 (pvC ia 0))))))
+                    (storef32! (isect-addr found 1) (+ (loadf32 (pvC ia 2)) (* t (- (loadf32 (pvC ib 2)) (loadf32 (pvC ia 2))))))
+                    (storef32! (isect-addr found 2) (+ (loadf32 (pvC ia 3)) (* t (- (loadf32 (pvC ib 3)) (loadf32 (pvC ia 3))))))
+                    (storef32! (isect-addr found 3) (+ (loadf32 (pvC ia 4)) (* t (- (loadf32 (pvC ib 4)) (loadf32 (pvC ia 4))))))
+                    (set! found (+ found 1)))))))
+          (when (= found 2)
+            (let [swap (> (loadf32 (isect-addr 0 0)) (loadf32 (isect-addr 1 0)))
+                  l (if swap 1 0)
+                  r (if swap 0 1)
+                  (xl : F32) (loadf32 (isect-addr l 0))
+                  (xr : F32) (loadf32 (isect-addr r 0))
+                  (dx : F32) (- xr xl)]
+              (when (> dx 0.0001)
+                (let [(izl : F32) (loadf32 (isect-addr l 1))
+                      (uzl : F32) (loadf32 (isect-addr l 2))
+                      (vzl : F32) (loadf32 (isect-addr l 3))
+                      (dzi : F32) (/ (- (loadf32 (isect-addr r 1)) izl) dx)
+                      (duz : F32) (/ (- (loadf32 (isect-addr r 2)) uzl) dx)
+                      (dvz : F32) (/ (- (loadf32 (isect-addr r 3)) vzl) dx)
+                      x0 (max-i 0 (i32 (ceil-f (- xl 0.5))))
+                      x1 (min-i 639 (i32 (floor (- xr 0.5))))]
+                  (loop [x x0]
+                    (when (<= x x1)
+                      (let [(s : F32) (- (+ (f32 x) 0.5) xl)]
+                        (plot! x y (+ izl (* s dzi)) (+ uzl (* s duz)) (+ vzl (* s dvz))))
+                      (recur (+ x 1)))))))))
+        (recur (+ y 1))))))
+
+(defn ceil-f [(x : F32)] : F32 (- 0.0 (floor (- 0.0 x))))
+
+;; draw the polygon in buffer A (n vertices)
+(defn draw-poly! [(n : I32)] : Unit
+  (do
+    (to-camera! n)
+    (let [m (clip-near! n)]
+      (when (>= m 3)
+        (project! m)
+        (loop [i 1]
+          (when (< (+ i 1) m)
+            (fill-tri! 0 i (+ i 1))
+            (recur (+ i 1))))))))
+
+(defn set-surface! [(color : I32) (kind : I32) (w : F32) (h : F32)] : Unit
+  (do (gi! (g-pc) color) (gi! (g-pk) kind) (gf! (g-pw) w) (gf! (g-ph) h)))
+
+;; a quad given by its four corners (counter-clockwise or not -- the fill does not cull) and the surface
+;; extents; u runs along p0->p1, v along p0->p3
+(defn draw-quad! [(x0 : F32) (y0 : F32) (z0 : F32) (x1 : F32) (y1 : F32) (z1 : F32)
+                  (x2 : F32) (y2 : F32) (z2 : F32) (x3 : F32) (y3 : F32) (z3 : F32)
+                  (w : F32) (h : F32)] : Unit
+  (do (pv-set! 0 x0 y0 z0 0.0 0.0)
+      (pv-set! 1 x1 y1 z1 w 0.0)
+      (pv-set! 2 x2 y2 z2 w h)
+      (pv-set! 3 x3 y3 z3 0.0 h)
+      (draw-poly! 4)))
+
+;; ---- oriented boxes --------------------------------------------------------------------------------------------
+;; Scratch: the box centre and its three axes (unit vectors), half extents.
+(defn o-cx [] : I32 170) (defn o-cy [] : I32 171) (defn o-cz [] : I32 172)
+(defn o-xx [] : I32 173) (defn o-xy [] : I32 174) (defn o-xz [] : I32 175)
+(defn o-yx [] : I32 176) (defn o-yy [] : I32 177) (defn o-yz [] : I32 178)
+(defn o-zx [] : I32 179) (defn o-zy [] : I32 180) (defn o-zz [] : I32 181)
+(defn o-hw [] : I32 182) (defn o-hh [] : I32 183) (defn o-hd [] : I32 184)
+(defn o-col [] : I32 185) (defn o-kind [] : I32 186)
+
+;; the sun: faces are lit by how squarely they face (-0.42, 0.80, 0.43)
+(defn face-light [(nx : F32) (ny : F32) (nz : F32)] : I32
+  (let [(d : F32) (+ (+ (* nx -0.42) (* ny 0.80)) (* nz 0.43))]
+    (i32 (+ 150.0 (* 106.0 (clamp-f (+ 0.35 d) 0.0 1.0))))))
+
+;; one face: centre + n*half-extent, spanned by axes (a1 * h1) and (a2 * h2); culled when it faces away
+(defn draw-face! [(nx : F32) (ny : F32) (nz : F32) (off : F32)
+                  (a1x : F32) (a1y : F32) (a1z : F32) (h1 : F32)
+                  (a2x : F32) (a2y : F32) (a2z : F32) (h2 : F32)] : Unit
+  (let [(fx : F32) (+ (gf (o-cx)) (* nx off))
+        (fy : F32) (+ (gf (o-cy)) (* ny off))
+        (fz : F32) (+ (gf (o-cz)) (* nz off))
+        ;; facing test against the viewer (camera space: the viewer is at the origin)
+        (ex : F32) (if (= (gi (g-cs)) 1) 0.0 (gf (g-cam-x)))
+        (ey : F32) (if (= (gi (g-cs)) 1) 0.0 (gf (g-cam-y)))
+        (ez : F32) (if (= (gi (g-cs)) 1) 0.0 (gf (g-cam-z)))
+        (facing : F32) (+ (+ (* nx (- ex fx)) (* ny (- ey fy))) (* nz (- ez fz)))]
+    (when (> facing 0.0)
+      (set-surface! (shade (gi (o-col)) (face-light nx ny nz)) (gi (o-kind)) (* 2.0 h1) (* 2.0 h2))
+      (draw-quad! (- (- fx (* a1x h1)) (* a2x h2)) (- (- fy (* a1y h1)) (* a2y h2)) (- (- fz (* a1z h1)) (* a2z h2))
+                  (- (+ fx (* a1x h1)) (* a2x h2)) (- (+ fy (* a1y h1)) (* a2y h2)) (- (+ fz (* a1z h1)) (* a2z h2))
+                  (+ (+ fx (* a1x h1)) (* a2x h2)) (+ (+ fy (* a1y h1)) (* a2y h2)) (+ (+ fz (* a1z h1)) (* a2z h2))
+                  (+ (- fx (* a1x h1)) (* a2x h2)) (+ (- fy (* a1y h1)) (* a2y h2)) (+ (- fz (* a1z h1)) (* a2z h2))
+                  (* 2.0 h1) (* 2.0 h2)))))
+
+;; the whole box from the scratch above: top, and the four sides (a box seen from above never shows its bottom)
+(defn draw-obox! [] : Unit
+  (let [(xx : F32) (gf (o-xx)) (xy : F32) (gf (o-xy)) (xz : F32) (gf (o-xz))
+        (yx : F32) (gf (o-yx)) (yy : F32) (gf (o-yy)) (yz : F32) (gf (o-yz))
+        (zx : F32) (gf (o-zx)) (zy : F32) (gf (o-zy)) (zz : F32) (gf (o-zz))
+        (hw : F32) (gf (o-hw)) (hh : F32) (gf (o-hh)) (hd : F32) (gf (o-hd))]
+    (draw-face! yx yy yz hh xx xy xz hw zx zy zz hd)
+    (draw-face! xx xy xz hw zx zy zz hd yx yy yz hh)
+    (draw-face! (- 0.0 xx) (- 0.0 xy) (- 0.0 xz) hw zx zy zz hd yx yy yz hh)
+    (draw-face! zx zy zz hd xx xy xz hw yx yy yz hh)
+    (draw-face! (- 0.0 zx) (- 0.0 zy) (- 0.0 zz) hd xx xy xz hw yx yy yz hh)))
+
+;; an axis-aligned box (centre, full size) -- the map
+(defn draw-aabb! [(x : F32) (y : F32) (z : F32) (w : F32) (h : F32) (d : F32) (color : I32) (kind : I32)] : Unit
+  (do
+    (gf! (o-cx) x) (gf! (o-cy) y) (gf! (o-cz) z)
+    (gf! (o-xx) 1.0) (gf! (o-xy) 0.0) (gf! (o-xz) 0.0)
+    (gf! (o-yx) 0.0) (gf! (o-yy) 1.0) (gf! (o-yz) 0.0)
+    (gf! (o-zx) 0.0) (gf! (o-zy) 0.0) (gf! (o-zz) 1.0)
+    (gf! (o-hw) (/ w 2.0)) (gf! (o-hh) (/ h 2.0)) (gf! (o-hd) (/ d 2.0))
+    (gi! (o-col) color) (gi! (o-kind) kind)
+    (draw-obox!)))
+
+;; a box turned about the vertical axis by `yaw` degrees (a player's body, in world space)
+(defn draw-ybox! [(x : F32) (y : F32) (z : F32) (yaw : F32) (hw : F32) (hh : F32) (hd : F32) (color : I32) (kind : I32)] : Unit
+  (let [(r : F32) (* (- 0.0 yaw) 0.0174533)
+        (c : F32) (cosf r)
+        (s : F32) (sinf r)]
+    (gf! (o-cx) x) (gf! (o-cy) y) (gf! (o-cz) z)
+    ;; right = (cos r, 0, sin r), up = (0,1,0), forward = (sin r, 0, -cos r)
+    (gf! (o-xx) c) (gf! (o-xy) 0.0) (gf! (o-xz) s)
+    (gf! (o-yx) 0.0) (gf! (o-yy) 1.0) (gf! (o-yz) 0.0)
+    (gf! (o-zx) s) (gf! (o-zy) 0.0) (gf! (o-zz) (- 0.0 c))
+    (gf! (o-hw) hw) (gf! (o-hh) hh) (gf! (o-hd) hd)
+    (gi! (o-col) color) (gi! (o-kind) kind)
+    (draw-obox!)))
+
+;; ---- projecting a world point to the screen (HUD tags, tracers, particles) --------------------------------------
+;; returns depth (camera z) and leaves screen x/y in scratch; z <= near-plane means "behind the camera"
+(defn g-sx [] : I32 190) (defn g-sy [] : I32 191)
+(defn project-point [(x : F32) (y : F32) (z : F32)] : F32
+  (let [(dx : F32) (- x (gf (g-cam-x)))
+        (dy : F32) (- y (gf (g-cam-y)))
+        (dz : F32) (- z (gf (g-cam-z)))
+        (sy : F32) (gf (g-cam-sy)) (cy : F32) (gf (g-cam-cy))
+        (sp : F32) (gf (g-cam-sp)) (cp : F32) (gf (g-cam-cp))
+        (cx : F32) (+ (* dx cy) (* dz sy))
+        (cyy : F32) (+ (+ (* dx (* (- 0.0 sy) sp)) (* dy cp)) (* dz (* cy sp)))
+        (cz : F32) (+ (+ (* dx (* sy cp)) (* dy sp)) (* dz (* (- 0.0 cy) cp)))]
+    (when (> cz (near-plane))
+      (gf! (g-sx) (+ (half-w) (* (/ cx cz) (gf (g-proj-scale)))))
+      (gf! (g-sy) (- (half-h) (* (/ cyy cz) (gf (g-proj-scale))))))
+    cz))

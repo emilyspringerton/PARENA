@@ -1,3 +1,389 @@
-;; stub (replaced below)
-(defn bot-init! [(p : I32) (level : I32)] : Unit (set-p-bot-level! p level))
-(defn bot-think! [(p : I32)] : Unit unit)
+;; stdlib/shankpit460/sp_ai.prn -- the bots.
+;;
+;; The C engine's bot_think (local_game.h) charges the nearest player in a straight line, turns at a fixed
+;; rate and holds the trigger down; the bot pool on the live server (apps2/emily-bot) is a test client that
+;; aims at the nearest peer. Neither can see a wall. These bots play the game the way a person does -- and
+;; they only ever write what a person writes: forward/strafe, yaw/pitch, and the jump / fire / crouch /
+;; reload / ability buttons, through the same apply_usercmd path, so they obey the same physics and the same
+;; weapon rules as the player.
+;;
+;;   perception   a target must be inside the view cone (or very close), inside the level's range, and in line
+;;                of sight; a fresh sighting costs the level's reaction time before the first shot; losing
+;;                sight leaves a memory of where it was, which the bot hunts toward and then scans
+;;   aim          a spring that chases the head (or the body while a shield is up), turn rate capped per
+;;                level, with noise that grows with how fast the target crosses the view and shrinks with
+;;                the bot's own skill roll; a shot is only taken once the error is inside the target's
+;;                angular size, so a fast turn is a miss, not a laser
+;;   weapons      range bands: knife up close (one hit kills), shotgun, magnum when a head shot would finish
+;;                it, AR at mid range, sniper far -- with the sniper's storm charges at HARD; reload when out
+;;                or when nobody is in view
+;;   movement     strafe cycles, range keeping per weapon, dodge jumps, retreat to cover below the level's
+;;                health line, goal-driven roaming (spawns, the crown, the rocks) with whisker avoidance, ledge
+;;                hops and stuck recovery
+;; Levels: 1 EASY, 2 NORMAL, 3 HARD. Not part of the parity-tested simulation: it lives behind bot-think!.
+
+;; ---- level knobs --------------------------------------------------------------------------------------------
+(defn lv [(easy : I32) (normal : I32) (hard : I32)] : I32
+  (case (gi (g-bot-level)) 1 easy 2 normal hard))
+(defn lvf [(easy : F32) (normal : F32) (hard : F32)] : F32
+  (case (gi (g-bot-level)) 1 easy 2 normal hard))
+
+(defn lv-react [] : I32 (lv 55 30 9))                    ; ticks before the first shot at a fresh sighting
+(defn lv-range [] : F32 (lvf 200.0 330.0 700.0))
+(defn lv-turn [] : F32 (lvf 2.0 3.8 8.5))                ; max degrees per tick
+(defn lv-spring [] : F32 (lvf 0.08 0.13 0.27))
+(defn lv-noise [] : F32 (lvf 7.0 3.4 0.8))               ; degrees
+(defn lv-cone [] : F32 (lvf 1.5 1.1 0.85))               ; fire when error < head angle * this
+(defn lv-burst [] : I32 (lv 7 12 20))
+(defn lv-pause [] : I32 (lv 22 12 5))
+(defn lv-dodge [] : I32 (lv 2 6 10))                      ; per-mille chance per tick of a dodge jump
+(defn lv-retreat [] : I32 (lv 22 28 36))
+(defn lv-strafe-min [] : I32 (lv 34 22 12))
+(defn lv-strafe-span [] : I32 (lv 40 30 24))
+(defn lv-knife [] : F32 (lvf 5.0 9.0 14.5))             ; knife range (the engine allows 16.5)
+(defn lv-memory [] : I32 (lv 70 130 220))
+(defn lv-trigger [] : I32 (lv 30 65 100))                ; percent chance per tick to pull a ready trigger
+
+(defn bot-init! [(p : I32) (level : I32)] : Unit
+  (do
+    (set-p-bot-level! p level)
+    (set-p-bot-target! p -1)
+    (set-p-bot-think! p (rnd 20))
+    (set-p-bot-aim-yaw! p 0.0) (set-p-bot-aim-pitch! p 0.0)
+    (set-p-bot-yaw-vel! p 0.0) (set-p-bot-pitch-vel! p 0.0)
+    (set-p-bot-strafe! p (if (chance 50) 1.0 -1.0))
+    (set-p-bot-strafe-t! p (+ 10 (rnd 40)))
+    (set-p-bot-goal-t! p 0)
+    (set-p-bot-stuck-t! p 0)
+    (set-p-bot-last-x! p (p-x p)) (set-p-bot-last-z! p (p-z p))
+    (set-p-bot-react! p 0)
+    (set-p-bot-seen-t! p 0)
+    (set-p-bot-wpn-t! p 0)
+    (set-p-bot-jump-t! p 0)
+    (set-p-bot-retreat! p 0)
+    (set-p-bot-burst! p 0)
+    (set-p-bot-heard! p 0)
+    (set-p-bot-skill! p (+ 0.85 (* (rand-unit) 0.3)))))
+
+;; ---- geometry helpers ----------------------------------------------------------------------------------------------
+(defn yaw-to [(dx : F32) (dz : F32)] : F32
+  (norm-yaw (- 0.0 (* (atan2f dx (- 0.0 dz)) (rad2deg)))))
+(defn pitch-to [(dy : F32) (horiz : F32)] : F32 (* (atan2f dy horiz) (rad2deg)))
+(defn eye-y [(p : I32)] : F32 (+ (p-y p) (c-eye-height)))
+
+(defn dist-xz [(a : I32) (b : I32)] : F32 (len2 (- (p-x b) (p-x a)) (- (p-z b) (p-z a))))
+
+;; the point a bot wants its crosshair on: the head once the shield is gone, the chest while it holds
+(defn aim-px [(t : I32)] : F32 (p-x t))
+(defn aim-py [(t : I32)] : F32 (+ (p-y t) (if (<= (p-shield t) 0) (+ (c-head-offset) 0.1) 2.0)))
+(defn aim-pz [(t : I32)] : F32 (p-z t))
+
+;; is `t` seen by `p`: alive, in range, in the view cone (or close), and nothing solid between the eyes
+(defn bot-sees? [(p : I32) (t : I32)] : Bool
+  (if (not (alive? t))
+      false
+      (let [(d : F32) (dist-xz p t)
+            (dyaw : F32) (fabs (angle-diff (yaw-to (- (p-x t) (p-x p)) (- (p-z t) (p-z p))) (p-yaw p)))
+            tracking (= (p-bot-target p) t)]
+        (if (> d (lv-range))
+            false
+            (if (not (or (< d 40.0) (or tracking (< dyaw 105.0))))
+                false
+                (line-clear? (p-x p) (eye-y p) (p-z p) (p-x t) (+ (p-y t) 2.3) (p-z t)))))))
+
+;; pick the target: the closest visible opponent, favouring the hurt, and sticking with the current one
+(defn bot-pick-target! [(p : I32)] : Unit
+  (let [cur (p-bot-target p)
+        (best : F32) 1000000.0
+        pick -1]
+    (dotimes [t (max-players)]
+      (when (and (!= t p) (bot-sees? p t))
+        (let [(d : F32) (dist-xz p t)
+              (score : F32) (- (+ d (* (f32 (p-health t)) 0.25)) (if (= t cur) (* d 0.3) 0.0))]
+          (when (< score best) (set! best score) (set! pick t)))))
+    (when (!= pick cur)
+      ;; a fresh sighting: the reaction clock starts
+      (set-p-bot-react! p (+ (lv-react) (rnd 6)))
+      (set-p-bot-target! p pick))
+    (if (>= pick 0)
+        (do (set-p-bot-seen-t! p (lv-memory))
+            (set-p-bot-last-seen-x! p (p-x pick))
+            (set-p-bot-last-seen-z! p (p-z pick)))
+        (when (> (p-bot-seen-t p) 0) (set-p-bot-seen-t! p (- (p-bot-seen-t p) 1))))))
+
+;; ---- weapons ----------------------------------------------------------------------------------------------------------
+(defn has-ammo? [(p : I32) (w : I32)] : Bool (or (wpn-melee? w) (> (ammo p w) 0)))
+
+(defn bot-choose-weapon [(p : I32) (t : I32) (d : F32)] : I32
+  (let [naked (<= (p-shield t) 0)
+        lvl (gi (g-bot-level))
+        want (cond
+               (< d (lv-knife)) 0
+               (< d (lvf 18.0 24.0 24.0)) 3
+               (and naked (and (< d 130.0) (>= lvl 2))) 1
+               (< d (lvf 130.0 120.0 105.0)) 2
+               (>= lvl 3) 4
+               (and (>= lvl 2) (>= d 170.0)) 4
+               :else 2)]
+    ;; fall back down the list when the wanted gun is empty
+    (cond (has-ammo? p want) want
+          (has-ammo? p 2) 2
+          (has-ammo? p 1) 1
+          (has-ammo? p 3) 3
+          (has-ammo? p 4) 4
+          :else 0)))
+
+(defn bot-pref-range [(w : I32)] : F32
+  (case w 0 7.0 3 14.0 1 55.0 2 42.0 4 130.0 8.0))
+
+;; ---- movement ------------------------------------------------------------------------------------------------------------
+;; walk toward a world direction while looking wherever the aim says: project it onto the bot's own axes
+(defn g-bm-f [] : I32 232) (defn g-bm-s [] : I32 233)
+(defn move-world! [(p : I32) (dx : F32) (dz : F32) (amount : F32)] : Unit
+  (let [(l : F32) (len2 dx dz)]
+    (if (< l 0.001)
+        (do (gf! (g-bm-f) 0.0) (gf! (g-bm-s) 0.0))
+        (let [(nx : F32) (/ dx l) (nz : F32) (/ dz l)
+              (yaw : F32) (p-yaw p)]
+          (gf! (g-bm-f) (* amount (+ (* nx (fwd-x yaw)) (* nz (fwd-z yaw)))))
+          (gf! (g-bm-s) (* amount (+ (* nx (right-x yaw)) (* nz (right-z yaw)))))))))
+
+;; whisker: how far can the bot walk along (dx, dz) at knee and head height before a solid stops it
+(defn whisker [(p : I32) (dx : F32) (dz : F32) (reach : F32) (h : F32)] : F32
+  (let [(l : F32) (len2 dx dz)]
+    (if (< l 0.001)
+        reach
+        (ray-world (p-x p) (+ (p-y p) h) (p-z p) (/ dx l) 0.0 (/ dz l) reach))))
+
+;; steer a wanted direction around what is in the way; returns the direction in g-bs-x/z and sets jump when a
+;; low ledge is all that blocks the path
+(defn g-bs-x [] : I32 234) (defn g-bs-z [] : I32 235) (defn g-bs-jump [] : I32 236)
+(defn steer! [(p : I32) (dx : F32) (dz : F32)] : Unit
+  (let [(l : F32) (len2 dx dz)
+        (ux : F32) (if (> l 0.001) (/ dx l) 0.0)
+        (uz : F32) (if (> l 0.001) (/ dz l) 0.0)
+        (reach : F32) 9.0
+        (low : F32) (whisker p ux uz reach 1.2)]
+    (gi! (g-bs-jump) 0)
+    (gf! (g-bs-x) ux) (gf! (g-bs-z) uz)
+    (when (< low reach)
+      ;; blocked low: a short ledge is a jump (the high whisker clears it), anything else is a detour
+      (let [(high : F32) (whisker p ux uz reach 8.4)]
+        (if (>= high reach)
+            (gi! (g-bs-jump) 1)
+            (let [(side : F32) (if (>= (p-bot-strafe p) 0.0) 1.0 -1.0)
+                  (ax : F32) (- (* ux 0.7) (* (* uz 0.7) side))
+                  (az : F32) (+ (* uz 0.7) (* (* ux 0.7) side))
+                  (bx : F32) (+ (* ux 0.7) (* (* uz 0.7) side))
+                  (bz : F32) (- (* uz 0.7) (* (* ux 0.7) side))]
+              (cond
+                (>= (whisker p ax az reach 1.2) reach) (do (gf! (g-bs-x) ax) (gf! (g-bs-z) az))
+                (>= (whisker p bx bz reach 1.2) reach) (do (gf! (g-bs-x) bx) (gf! (g-bs-z) bz))
+                (>= (whisker p (- 0.0 uz) ux reach 1.2) reach) (do (gf! (g-bs-x) (- 0.0 uz)) (gf! (g-bs-z) ux))
+                (>= (whisker p uz (- 0.0 ux) reach 1.2) reach) (do (gf! (g-bs-x) uz) (gf! (g-bs-z) (- 0.0 ux)))
+                :else (do (gf! (g-bs-x) (- 0.0 ux)) (gf! (g-bs-z) (- 0.0 uz))))))))))
+
+;; a place to go: the spawns, the crown of the middle tower, or the lee of a rock
+(defn bot-new-goal! [(p : I32)] : Unit
+  (let [k (rnd 10)]
+    (cond
+      (< k 4) (let [s (rnd (spawn-count))] (set-p-bot-goal-x! p (spawn-x s)) (set-p-bot-goal-z! p (spawn-z s)))
+      (< k 6) (do (set-p-bot-goal-x! p (gf (g-crown-x))) (set-p-bot-goal-z! p (gf (g-crown-z))))
+      :else (let [i (+ 22 (rnd (max-i 1 (- (map-count) 22))))]
+              (set-p-bot-goal-x! p (+ (bx i) (* (phys-rand-f) 12.0)))
+              (set-p-bot-goal-z! p (+ (bz i) (* (phys-rand-f) 12.0)))))
+    (set-p-bot-goal-t! p (+ 300 (rnd 500)))))
+
+;; the nearest big solid between the bot and the threat to hide behind: a point on the far side of a box
+(defn bot-cover-from! [(p : I32) (tx : F32) (tz : F32)] : Unit
+  (let [(best : F32) 1000000.0]
+    (set-p-bot-goal-x! p (- (p-x p) (- tx (p-x p))))
+    (set-p-bot-goal-z! p (- (p-z p) (- tz (p-z p))))
+    (loop [i 1]
+      (when (< i (map-count))
+        (when (> (bh i) 5.0)
+          (let [(dx : F32) (- (bx i) (p-x p))
+                (dz : F32) (- (bz i) (p-z p))
+                (d : F32) (len2 dx dz)
+                ;; the point behind the box as seen from the threat
+                (ex : F32) (- (bx i) tx)
+                (ez : F32) (- (bz i) tz)
+                (el : F32) (len2 ex ez)]
+            (when (and (< d 90.0) (< d best) (> el 0.1))
+              (set! best d)
+              (set-p-bot-goal-x! p (+ (bx i) (* (/ ex el) (+ (/ (fmax2 (bw i) (bd i)) 2.0) 4.0))))
+              (set-p-bot-goal-z! p (+ (bz i) (* (/ ez el) (+ (/ (fmax2 (bw i) (bd i)) 2.0) 4.0)))))))
+        (recur (+ i 1))))))
+
+;; ---- aiming -------------------------------------------------------------------------------------------------------------
+(defn g-ba-yaw [] : I32 237) (defn g-ba-pitch [] : I32 238) (defn g-ba-err [] : I32 239)
+(defn bot-aim-at! [(p : I32) (ax : F32) (ay : F32) (az : F32) (speed-cross : F32)] : Unit
+  (let [(dx : F32) (- ax (p-x p))
+        (dz : F32) (- az (p-z p))
+        (dy : F32) (- ay (eye-y p))
+        (h : F32) (len2 dx dz)
+        (want-yaw : F32) (yaw-to dx dz)
+        (want-pitch : F32) (pitch-to dy (fmax2 h 0.5))
+        ;; a noise offset, re-rolled on a timer; wider when the target is crossing fast, tighter with skill
+        (amp : F32) (* (* (lv-noise) (+ 1.0 (* speed-cross 1.6))) (- 1.3 (p-bot-skill p)))]
+    (when (<= (p-bot-think p) 0)
+      (set-p-bot-aim-yaw! p (* (phys-rand-f) amp))
+      (set-p-bot-aim-pitch! p (* (phys-rand-f) (* amp 0.6)))
+      (set-p-bot-think! p (+ (lv 14 12 9) (rnd 6))))
+    (set-p-bot-think! p (- (p-bot-think p) 1))
+    (let [(ey : F32) (angle-diff (+ want-yaw (p-bot-aim-yaw p)) (p-yaw p))
+          (ep : F32) (- (+ want-pitch (p-bot-aim-pitch p)) (p-pitch p))
+          (dy-step : F32) (clamp-f (* ey (lv-spring)) (- 0.0 (lv-turn)) (lv-turn))
+          (dp-step : F32) (clamp-f (* ep (lv-spring)) (- 0.0 (lv-turn)) (lv-turn))]
+      (set-p-yaw! p (norm-yaw (+ (p-yaw p) dy-step)))
+      (set-p-pitch! p (clamp-pitch (+ (p-pitch p) dp-step)))
+      ;; the remaining error against the true aim point (no noise): what decides whether a shot is taken
+      (gf! (g-ba-yaw) (fabs (angle-diff want-yaw (p-yaw p))))
+      (gf! (g-ba-pitch) (fabs (- want-pitch (p-pitch p)))))))
+
+;; ---- the think -------------------------------------------------------------------------------------------------------------
+(defn bot-combat! [(p : I32) (t : I32)] : Unit
+  (let [(d : F32) (dist-xz p t)
+        (cross : F32) (clamp-f (/ (fabs (+ (* (p-vx t) (fwd-z (p-yaw p))) (* (p-vz t) (- 0.0 (fwd-x (p-yaw p)))))) 0.95) 0.0 1.0)
+        ;; weapon, with hysteresis so a bot does not flicker between two guns at a band edge
+        want (if (> (p-bot-wpn-t p) 0) (p-weapon p) (bot-choose-weapon p t d))
+        w (if (has-ammo? p want) want (bot-choose-weapon p t d))]
+    (when (!= w (p-weapon p))
+      (set-p-weapon! p w)
+      (set-p-bot-wpn-t! p (+ 40 (rnd 40))))
+    (when (> (p-bot-wpn-t p) 0) (set-p-bot-wpn-t! p (- (p-bot-wpn-t p) 1)))
+    ;; aim: lead the storm projectile, otherwise the head / chest
+    (let [(lead : F32) (if (and (= w 4) (> (p-storm-charges p) 0)) (/ d 6.0) 0.0)]
+      (bot-aim-at! p (+ (aim-px t) (* (p-vx t) lead)) (aim-py t) (+ (aim-pz t) (* (p-vz t) lead)) cross))
+    ;; the storm: HARD charges it at range with the sniper in hand
+    (when (and (>= (gi (g-bot-level)) 3) (and (= w 4) (and (= (p-ability-cooldown p) 0) (and (= (p-storm-charges p) 0) (> d 50.0)))))
+      (set-p-in-ability! p 1))
+    ;; trigger: reaction elapsed, line clear, and the crosshair inside the target's angular size
+    (when (> (p-bot-react p) 0) (set-p-bot-react! p (- (p-bot-react p) 1)))
+    (let [(cone : F32) (fmax2 0.6 (* (* (atan2f 1.5 (fmax2 d 4.0)) (rad2deg)) (lv-cone)))
+          on-target (and (< (gf (g-ba-yaw)) cone) (< (gf (g-ba-pitch)) (* cone 1.2)))
+          in-range (case w 0 (< d (+ (lv-knife) 2.0)) 3 (< d 44.0) true)
+          ready (and (<= (p-bot-react p) 0) (and on-target (and in-range (or (= w 0) (chance (lv-trigger))))))]
+      (if (and ready (<= (p-reload-timer p) 0))
+          (if (and (or (= w 2) (= w 1)) (> (p-bot-burst p) (lv-burst)))
+              ;; a trigger discipline pause between bursts
+              (do (set-p-bot-burst! p (- 0 (lv-pause)))
+                  (set-p-in-shoot! p 0))
+              (do (set-p-in-shoot! p 1)
+                  (set-p-bot-burst! p (+ (p-bot-burst p) 1))))
+          (do (set-p-in-shoot! p 0)
+              (when (> (p-bot-burst p) 0) (set-p-bot-burst! p 0))))
+      (when (< (p-bot-burst p) 0) (set-p-bot-burst! p (+ (p-bot-burst p) 1)) (set-p-in-shoot! p 0)))
+    ;; movement: keep the weapon's range, strafe, dodge-jump, run for cover when hurt
+    (set-p-bot-strafe-t! p (- (p-bot-strafe-t p) 1))
+    (when (or (<= (p-bot-strafe-t p) 0) (and (> (p-flash p) 0) (chance 6)))
+      (set-p-bot-strafe! p (if (chance 50) 1.0 -1.0))
+      (set-p-bot-strafe-t! p (+ (lv-strafe-min) (rnd (lv-strafe-span)))))
+    (let [(pref : F32) (bot-pref-range w)
+          hurt (and (<= (p-shield p) 0) (< (p-health p) (lv-retreat)))
+          (tx : F32) (- (p-x t) (p-x p))
+          (tz : F32) (- (p-z t) (p-z p))
+          (ux : F32) (/ tx (fmax2 d 0.01))
+          (uz : F32) (/ tz (fmax2 d 0.01))
+          ;; sideways relative to the target
+          (sx : F32) (* (- 0.0 uz) (p-bot-strafe p))
+          (sz : F32) (* ux (p-bot-strafe p))
+          (closing : F32) (cond (> d (* pref 1.3)) 1.0 (< d (* pref 0.55)) -1.0 :else 0.0)
+          (still : F32) (if (and (= w 4) (< (gf (g-ba-yaw)) 6.0)) 0.15 1.0)]
+      (when hurt (set-p-bot-retreat! p 90))
+      (if (> (p-bot-retreat p) 0)
+          (do (set-p-bot-retreat! p (- (p-bot-retreat p) 1))
+              (bot-cover-from! p (p-x t) (p-z t))
+              (steer! p (- (p-bot-goal-x p) (p-x p)) (- (p-bot-goal-z p) (p-z p)))
+              (move-world! p (+ (gf (g-bs-x)) (* sx 0.35)) (+ (gf (g-bs-z)) (* sz 0.35)) 1.0))
+          (do
+            (steer! p (+ (* ux closing) (* sx still)) (+ (* uz closing) (* sz still)))
+            (move-world! p (gf (g-bs-x)) (gf (g-bs-z)) 1.0)))
+      (set-p-in-fwd! p (gf (g-bm-f)))
+      (set-p-in-strafe! p (gf (g-bm-s)))
+      (when (!= (gi (g-bs-jump)) 0) (set-p-bot-jump-t! p 14))
+      (when (and (> d 12.0) (< (rnd 1000) (lv-dodge))) (set-p-bot-jump-t! p (+ 10 (rnd 16)))))))
+
+;; go where the bot last saw someone, then look around
+(defn bot-hunt! [(p : I32)] : Unit
+  (let [(dx : F32) (- (p-bot-last-seen-x p) (p-x p))
+        (dz : F32) (- (p-bot-last-seen-z p) (p-z p))
+        (d : F32) (len2 dx dz)]
+    (set-p-bot-seen-t! p (- (p-bot-seen-t p) 1))
+    (if (< d 14.0)
+        ;; arrived: scan
+        (do (set-p-yaw! p (norm-yaw (+ (p-yaw p) (* (p-bot-strafe p) 2.2))))
+            (set-p-in-fwd! p 0.0) (set-p-in-strafe! p 0.0))
+        (do (bot-aim-at! p (p-bot-last-seen-x p) (+ (p-y p) 2.6) (p-bot-last-seen-z p) 0.0)
+            (steer! p dx dz)
+            (move-world! p (gf (g-bs-x)) (gf (g-bs-z)) 1.0)
+            (set-p-in-fwd! p (gf (g-bm-f)))
+            (set-p-in-strafe! p (gf (g-bm-s)))
+            (when (!= (gi (g-bs-jump)) 0) (set-p-bot-jump-t! p 14))))))
+
+(defn bot-roam! [(p : I32)] : Unit
+  (do
+    (set-p-bot-goal-t! p (- (p-bot-goal-t p) 1))
+    (let [(dx : F32) (- (p-bot-goal-x p) (p-x p))
+          (dz : F32) (- (p-bot-goal-z p) (p-z p))]
+      (when (or (<= (p-bot-goal-t p) 0) (< (len2 dx dz) 12.0)) (bot-new-goal! p))
+      (steer! p (- (p-bot-goal-x p) (p-x p)) (- (p-bot-goal-z p) (p-z p)))
+      ;; look where we are going, with a gentle scan; the head leans toward the horizon
+      (let [(want : F32) (yaw-to (gf (g-bs-x)) (gf (g-bs-z)))
+            (wob : F32) (* (sinf (* (f32 (gi (g-tick))) 0.04)) 14.0)]
+        (set-p-yaw! p (norm-yaw (+ (p-yaw p) (clamp-f (angle-diff (+ want wob) (p-yaw p)) -4.0 4.0))))
+        (set-p-pitch! p (+ (p-pitch p) (* (- 0.0 (p-pitch p)) 0.1))))
+      (move-world! p (gf (g-bs-x)) (gf (g-bs-z)) 1.0)
+      (set-p-in-fwd! p (gf (g-bm-f)))
+      (set-p-in-strafe! p (gf (g-bm-s)))
+      (when (!= (gi (g-bs-jump)) 0) (set-p-bot-jump-t! p 14)))))
+
+;; unseen damage: face the attacker and go look
+(defn bot-hear! [(p : I32)] : Unit
+  (let [k (p-last-damager p)]
+    (when (and (>= k 0) (and (> (p-flash p) 0) (and (< (p-bot-target p) 0) (<= (p-bot-seen-t p) 0))))
+      (set-p-bot-last-seen-x! p (p-x k))
+      (set-p-bot-last-seen-z! p (p-z k))
+      (set-p-bot-seen-t! p (lv-memory)))))
+
+;; stuck: barely moved in half a second while trying to
+(defn bot-unstick! [(p : I32)] : Unit
+  (when (= (mod (gi (g-tick)) 30) (mod (p-id p) 30))
+    (let [(moved : F32) (len2 (- (p-x p) (p-bot-last-x p)) (- (p-z p) (p-bot-last-z p)))
+          trying (> (+ (fabs (p-in-fwd p)) (fabs (p-in-strafe p))) 0.4)]
+      (if (and trying (< moved 2.0))
+          (do (set-p-bot-stuck-t! p (+ (p-bot-stuck-t p) 1))
+              (when (>= (p-bot-stuck-t p) 2)
+                (set-p-bot-stuck-t! p 0)
+                (set-p-bot-strafe! p (if (chance 50) 1.0 -1.0))
+                (set-p-bot-jump-t! p (+ 8 (rnd 10)))
+                (bot-new-goal! p)))
+          (set-p-bot-stuck-t! p 0))
+      (set-p-bot-last-x! p (p-x p))
+      (set-p-bot-last-z! p (p-z p)))))
+
+(defn bot-think! [(p : I32)] : Unit
+  (when (alive? p)
+    (set-p-in-fwd! p 0.0) (set-p-in-strafe! p 0.0)
+    (set-p-in-jump! p 0) (set-p-in-shoot! p 0) (set-p-in-reload! p 0) (set-p-crouching! p 0) (set-p-in-ability! p 0)
+    (bot-pick-target! p)
+    (bot-hear! p)
+    (let [t (p-bot-target p)]
+      (cond
+        (>= t 0) (bot-combat! p t)
+        (> (p-bot-seen-t p) 0) (bot-hunt! p)
+        :else (bot-roam! p)))
+    (bot-unstick! p)
+    ;; hops: hold jump through the arc (a held jump rises three times as high as a tap)
+    (when (> (p-bot-jump-t p) 0)
+      (set-p-bot-jump-t! p (- (p-bot-jump-t p) 1))
+      (set-p-in-jump! p 1))
+    ;; out of ammo, or nobody in sight and the magazine is low: reload
+    (let [w (p-weapon p)]
+      (when (and (not (wpn-melee? w)) (< (ammo p w) (wpn-ammo-max w)))
+        (when (or (<= (ammo p w) 0) (and (< (p-bot-target p) 0) (< (ammo p w) (/ (wpn-ammo-max w) 2))))
+          (set-p-in-reload! p 1))))
+    ;; hand everything to the same input path a human's command takes
+    (apply-usercmd! p (p-in-fwd p) (p-in-strafe p) (p-yaw p) (p-pitch p)
+                    (!= (p-in-jump p) 0) (!= (p-in-shoot p) 0) (!= (p-crouching p) 0)
+                    (!= (p-in-reload p) 0) (!= (p-in-ability p) 0))))
