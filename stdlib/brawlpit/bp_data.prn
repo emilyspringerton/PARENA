@@ -1,0 +1,142 @@
+;; stdlib/brawlpit/bp_data.prn -- BRAWLPIT web engine: fighter table, stage geometry, blast zones.
+;; Ported from BRAWLPIT/packages/common/characters.h (g_fighters) and physics.h (stage_*_geo,
+;; BLAST_*). Everything is written into fixed linear-memory tables at init -- nothing is allocated.
+
+;; ---- characters.h: FighterDef ------------------------------------------------------------
+;; 12 F32 per fighter at fighters-base + id*64:
+;;   0..2 body rgb, 3..5 accent rgb, 6 gravity_mul, 7 air_speed_mul, 8 ground_speed_mul,
+;;   9 jump_mul, 10 attack_damage_mul, 11 projectile_speed_mul
+(defn character-count [] : I32 10)
+
+(defn char-petalia [] : I32 0)
+(defn char-vexar [] : I32 1)
+(defn char-understudy [] : I32 2)
+(defn char-rosie [] : I32 3)
+(defn char-sunlit-draw [] : I32 4)
+(defn char-sequel-duck [] : I32 5)
+(defn char-medusa [] : I32 6)
+(defn char-raccoon [] : I32 7)
+(defn char-second-tree [] : I32 8)
+(defn char-uncrowned [] : I32 9)
+
+(defn fd-addr [(id : I32) (k : I32)] : I32
+  (+ (fighters-base) (+ (* (clamp-i id 0 9) 64) (shl k 2))))
+(defn fd [(id : I32) (k : I32)] : F32 (loadf32 (fd-addr id k)))
+(defn fd-body-r [] : I32 0)
+(defn fd-accent-r [] : I32 3)
+(defn fd-gravity-mul [] : I32 6)
+(defn fd-air-speed-mul [] : I32 7)
+(defn fd-ground-speed-mul [] : I32 8)
+(defn fd-jump-mul [] : I32 9)
+(defn fd-attack-damage-mul [] : I32 10)
+
+(defn set-fd! [(id : I32) (br : F32) (bg : F32) (bb : F32) (ar : F32) (ag : F32) (ab : F32)
+               (gm : F32) (am : F32) (sm : F32) (jm : F32) (dm : F32) (pm : F32)] : Unit
+  (do
+    (storef32! (fd-addr id 0) br) (storef32! (fd-addr id 1) bg) (storef32! (fd-addr id 2) bb)
+    (storef32! (fd-addr id 3) ar) (storef32! (fd-addr id 4) ag) (storef32! (fd-addr id 5) ab)
+    (storef32! (fd-addr id 6) gm) (storef32! (fd-addr id 7) am) (storef32! (fd-addr id 8) sm)
+    (storef32! (fd-addr id 9) jm) (storef32! (fd-addr id 10) dm) (storef32! (fd-addr id 11) pm)))
+
+(defn init-fighters [] : Unit
+  (do
+    (set-fd! 0 1.00 0.45 0.86  1.00 0.80 0.95  0.85 0.95 0.95 1.10 0.95 0.90)
+    (set-fd! 1 0.34 0.38 0.43  0.12 0.95 1.00  1.08 1.20 1.15 0.95 1.12 1.20)
+    (set-fd! 2 0.85 0.20 0.30  0.90 0.75 0.80  0.75 1.25 0.85 1.20 0.85 1.00)
+    (set-fd! 3 0.95 0.55 0.15  1.00 0.20 0.55  1.00 1.05 1.10 1.00 1.00 1.05)
+    (set-fd! 4 0.15 0.75 0.85  1.00 0.80 0.10  1.15 0.80 1.05 0.90 1.15 0.90)
+    (set-fd! 5 0.10 0.10 0.12  0.85 0.65 0.15  0.70 1.10 0.90 1.05 0.90 1.25)
+    (set-fd! 6 0.20 0.55 0.35  0.85 0.65 0.10  1.05 0.90 0.90 0.95 1.20 1.00)
+    (set-fd! 7 0.45 0.42 0.40  0.55 0.35 0.15  0.90 1.20 1.25 1.10 0.85 1.05)
+    (set-fd! 8 0.35 0.55 0.20  0.55 0.80 0.30  1.20 0.75 0.80 0.85 1.25 0.85)
+    (set-fd! 9 0.75 0.65 0.15  0.85 0.15 0.15  1.00 1.00 1.00 1.00 1.00 1.00)))
+
+(defn fighter-name [(id : I32)] : String
+  (case id
+    0 "PETALIA" 1 "VEXAR" 2 "UNDERSTUDY" 3 "ROSIE" 4 "SUNLIT DRAW"
+    5 "SEQUEL DUCK" 6 "MEDUSA" 7 "RACCOON" 8 "SECOND TREE" 9 "UNCROWNED" "?"))
+
+(defn fighter-blurb [(id : I32)] : String
+  (case id
+    0 "SKY BLOOM DUELIST" 1 "COSMIC RELIC HUNTER" 2 "THE ARABESQUE UNDERSTUDY"
+    3 "ROSIE OF THE UNCLAIMED ARCADE CABINET" 4 "THE SUNLIT DRAW"
+    5 "THE TUXEDO DUCK, SECOND CASTING" 6 "THE MOST-SUMMONED" 7 "OFF THE CLOCK"
+    8 "NOT THE ONE FROM FACTION 10" 9 "MAYBE THE WORLD IS YOURS" "?"))
+
+(defn fighter-special-a [(id : I32)] : String
+  (case id
+    0 "PARASOL RISE / TURNIP" 1 "RELIC WARP / TURNIP" 2 "TURNIP / UMBRELLA" 3 "INSERT COIN / HIGH SCORE RUSH"
+    4 "BRACING STANCE / SUNBREAK" 5 "HAT TRICK / BOW TOSS" 6 "PETRIFY GAZE / SERPENT GRASP"
+    7 "SCAVENGER DASH / PLAY DEAD" 8 "GROUND SLAM / REGROWTH" 9 "CLAIM / CAST DOUBT" "?"))
+
+;; ---- physics.h: stage geometry -----------------------------------------------------------
+;; STAGE region: +0 count (I32), +4..+19 blast left/right/top/bottom (F32), +32 platform[i]:
+;; x y w h (F32) type (I32), 20 bytes each. Up to 64 platforms (MAX_LEVEL_PLATFORMS).
+(defn stage-count [] : I32 (load32 (stage-base)))
+(defn set-stage-count! [(n : I32)] : Unit (store32! (stage-base) n))
+(defn blast-left [] : F32 (loadf32 (+ (stage-base) 4)))
+(defn blast-right [] : F32 (loadf32 (+ (stage-base) 8)))
+(defn blast-top [] : F32 (loadf32 (+ (stage-base) 12)))
+(defn blast-bottom [] : F32 (loadf32 (+ (stage-base) 16)))
+(defn set-blast! [(l : F32) (r : F32) (t : F32) (b : F32)] : Unit
+  (do (storef32! (+ (stage-base) 4) l) (storef32! (+ (stage-base) 8) r)
+      (storef32! (+ (stage-base) 12) t) (storef32! (+ (stage-base) 16) b)))
+(defn plat-addr [(i : I32)] : I32 (+ (stage-base) (+ 32 (* i 20))))
+(defn plat-x [(i : I32)] : F32 (loadf32 (plat-addr i)))
+(defn plat-y [(i : I32)] : F32 (loadf32 (+ (plat-addr i) 4)))
+(defn plat-w [(i : I32)] : F32 (loadf32 (+ (plat-addr i) 8)))
+(defn plat-h [(i : I32)] : F32 (loadf32 (+ (plat-addr i) 12)))
+(defn plat-type [(i : I32)] : I32 (load32 (+ (plat-addr i) 16)))
+
+(defn add-plat! [(x : F32) (y : F32) (w : F32) (h : F32) (ty : I32)] : Unit
+  (let [i (stage-count)]
+    (when (< i 64)
+      (storef32! (plat-addr i) x)
+      (storef32! (+ (plat-addr i) 4) y)
+      (storef32! (+ (plat-addr i) 8) w)
+      (storef32! (+ (plat-addr i) 12) h)
+      (store32! (+ (plat-addr i) 16) ty)
+      (set-stage-count! (+ i 1)))))
+
+(defn stage-fd [] : I32 0)
+(defn stage-timeline [] : I32 1)
+(defn stage-tipjar [] : I32 4)
+
+;; BLAST_LEFT/RIGHT/TOP/BOTTOM: the original tuned zone (physics.h), reset before every stage.
+(defn default-blast! [] : Unit (set-blast! -60.0 60.0 60.0 -40.0))
+
+;; stage_set_active: STAGE_FD / STAGE_TIMELINE / STAGE_TIPJAR (the compiled-in arrays, which are
+;; byte-identical to data/levels/*.json -- tests/brawlpit_parity_ref.c loads those files).
+(defn stage-set-active [(id : I32)] : Unit
+  (do
+    (default-blast!)
+    (set-stage-count! 0)
+    (cond
+      (= id 1)
+        (do
+          (add-plat! 0.0 -8.0 52.0 4.0 0)
+          (add-plat! -18.0 2.0 18.0 1.0 1) (add-plat! 18.0 2.0 18.0 1.0 1)
+          (add-plat! 0.0 10.0 16.0 1.0 1)
+          (add-plat! -20.0 16.0 16.0 1.0 1) (add-plat! 20.0 16.0 16.0 1.0 1)
+          (add-plat! 0.0 24.0 20.0 1.0 1)
+          (add-plat! -28.0 -2.0 6.0 1.0 1) (add-plat! -24.0 2.0 6.0 1.0 1) (add-plat! -20.0 6.0 6.0 1.0 1)
+          (add-plat! 28.0 -2.0 6.0 1.0 1) (add-plat! 24.0 2.0 6.0 1.0 1) (add-plat! 20.0 6.0 6.0 1.0 1))
+      (= id 4)
+        (do
+          (add-plat! -34.0 -1.0 52.0 2.0 0) (add-plat! 34.0 -1.0 52.0 2.0 0)
+          (add-plat! -34.0 23.0 52.0 2.0 0) (add-plat! 34.0 23.0 52.0 2.0 0)
+          (add-plat! 0.0 -27.0 120.0 6.0 0)
+          (add-plat! 0.0 -16.0 14.0 1.0 1) (add-plat! 0.0 -8.0 14.0 1.0 1)
+          (add-plat! 0.0 8.0 14.0 1.0 1) (add-plat! 0.0 16.0 14.0 1.0 1)
+          (add-plat! -50.0 8.0 12.0 1.0 1) (add-plat! 50.0 8.0 12.0 1.0 1)
+          (add-plat! -50.0 32.0 12.0 1.0 1) (add-plat! 50.0 32.0 12.0 1.0 1)
+          ;; tipjar.json carries width 160 / height 100: blast = -0.75w, +0.75w, +1.0h, -0.5h
+          (set-blast! -120.0 120.0 100.0 -50.0))
+      :else
+        (do
+          (add-plat! 0.0 -5.0 60.0 10.0 0)
+          (add-plat! -15.0 8.0 12.0 1.0 1) (add-plat! 15.0 8.0 12.0 1.0 1)
+          (add-plat! 0.0 18.0 12.0 1.0 1)))))
+
+(defn stage-name [(id : I32)] : String
+  (case id 0 "FINAL DESTINATION" 1 "TIMELINE" 4 "TIPJAR BAR" "CUSTOM"))

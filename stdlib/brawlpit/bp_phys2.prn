@@ -1,0 +1,205 @@
+;; stdlib/brawlpit/bp_phys2.prn -- BRAWLPIT physics, part 2: projectiles, the ten characters'
+;; special moves, dispatch_special_move and update_entity. Port of physics.h (see bp_phys1.prn).
+
+;; a live opponent of p: another slot that is active and not dead
+(defn target? [(p : I32) (t : I32)] : Bool
+  (and (not (= t p)) (and (not (= (p-active t) 0)) (not (= (p-state t) (st-dead))))))
+
+(defn dir-of [(dx : F32)] : F32 (if (>= dx 0.0) 1.0 -1.0))
+
+;; ---- projectiles ---------------------------------------------------------------------------
+(defn find-free-turnip [] : I32
+  (loop [i 0]
+    (if (>= i (max-turnips)) -1
+        (if (= (t-active i) 0) i (recur (+ i 1))))))
+
+;; spawn_turnip / special_bow_toss / special_hat_trick / special_insert_coin all share this shape
+(defn launch-turnip [(p : I32) (ox : F32) (oy : F32) (vx : F32) (vy : F32) (style : I32)] : Unit
+  (let [i (find-free-turnip)]
+    (when (>= i 0)
+      (set-t-active! i 1)
+      (set-t-owner-id! i (p-id p))
+      (set-t-x! i (+ (p-x p) (* (f32 (p-facing p)) ox)))
+      (set-t-y! i (+ (p-y p) oy))
+      (set-t-vx! i vx)
+      (set-t-vy! i vy)
+      (set-t-ttl-frames! i (c-turnip-ttl))
+      (set-t-style! i style))))
+
+(defn spawn-turnip [(p : I32)] : Unit
+  (launch-turnip p 1.5 2.0 (* (f32 (p-facing p)) (c-turnip-speed)) (c-turnip-up) (p-character-id p)))
+
+(defn special-bow-toss [(p : I32)] : Unit
+  (launch-turnip p 1.5 1.4 (* (f32 (p-facing p)) (* (c-turnip-speed) 1.8)) 0.15 (c-style-bow)))
+
+(defn special-hat-trick [(p : I32)] : Unit
+  (launch-turnip p 1.5 2.0 (* (* (f32 (p-facing p)) (c-turnip-speed)) 0.5) (* (c-turnip-up) 1.9) (c-style-hat)))
+
+(defn special-insert-coin [(p : I32)] : Unit
+  (do
+    (launch-turnip p 1.5 2.0 (* (f32 (p-facing p)) (c-turnip-speed)) (c-turnip-up) (p-character-id p))
+    (launch-turnip p 1.5 2.0 (* (f32 (p-facing p)) (c-turnip-speed)) (* (c-turnip-up) 1.6) (p-character-id p))))
+
+;; ---- the specials --------------------------------------------------------------------------
+(defn special-petrify-gaze [(p : I32)] : Unit
+  (when (not (= (gi (g-game-mode)) (mode-sandbox)))
+    (dotimes [t 8]
+      (when (target? p t)
+        (let [(dx : F32) (- (p-x t) (p-x p))]
+          (when (and (> (* (f32 (p-facing p)) dx) 0.0)
+                     (and (<= (fabs dx) (c-petrify-range)) (<= (fabs (- (p-y t) (p-y p))) 1.4)))
+            (set-p-hitstun-frames! t (c-petrify-stun))
+            (set-p-state! t (st-stunned))))))))
+
+(defn special-serpents-grasp [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))]
+        (when (and (<= (fabs dx) (c-grasp-range)) (<= (fabs (- (p-y t) (p-y p))) 1.4))
+          (apply-knockback t (c-grasp-damage) (* (dir-of dx) 0.5) 0.45))))))
+
+(defn special-scavenger-dash [(p : I32)] : Unit
+  (let [(dir : F32) (if (> (fabs (p-in-x p)) 0.01) (p-in-x p) (f32 (p-facing p)))]
+    (set-p-vx! p (* (* dir (c-scav-dash-speed)) 10.0))
+    (set-p-wavedash-frames! p (c-wavedash-frames))
+    (set-p-state! p (st-wavedash))))
+
+(defn special-play-dead [(p : I32)] : Unit
+  (do
+    (set-p-vx! p 0.0)
+    (when (< (p-invuln-frames p) (c-playdead-invuln)) (set-p-invuln-frames! p (c-playdead-invuln)))))
+
+(defn special-petalia-parasol-hit [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))
+            (dy : F32) (- (p-y t) (p-y p))]
+        (when (<= (+ (* dx dx) (* dy dy)) (* (c-parasol-range) (c-parasol-range)))
+          (apply-knockback t (c-parasol-damage) (* (dir-of dx) 0.35) 0.3))))))
+
+(defn special-ground-slam [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))
+            (dy : F32) (- (p-y t) (p-y p))]
+        (when (<= (+ (* dx dx) (* dy dy)) (* (c-slam-range) (c-slam-range)))
+          (apply-knockback t 10.0 (* (dir-of dx) 0.7) 0.55))))))
+
+(defn special-regrowth [(p : I32)] : Unit
+  (do
+    (set-p-damage-percent! p (- (p-damage-percent p) (c-regrowth-heal)))
+    (when (< (p-damage-percent p) 0.0) (set-p-damage-percent! p 0.0))))
+
+(defn special-uncrowned-claim [(p : I32)] : Unit
+  (do
+    (set-p-shield-health! p (+ (p-shield-health p) (c-claim-shield)))
+    (when (> (p-shield-health p) (c-shield-max)) (set-p-shield-health! p (c-shield-max)))))
+
+(defn special-cast-doubt [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))
+            (dy : F32) (- (p-y t) (p-y p))]
+        (when (<= (+ (* dx dx) (* dy dy)) (* (c-doubt-range) (c-doubt-range)))
+          (set-p-shield-health! t (- (p-shield-health t) (c-doubt-shield-damage)))
+          (when (< (p-shield-health t) 0.0) (set-p-shield-health! t 0.0)))))))
+
+(defn special-relic-warp [(p : I32)] : Unit
+  (let [(dir : F32) (if (> (fabs (p-in-x p)) 0.01) (p-in-x p) (f32 (p-facing p)))]
+    (set-p-x! p (+ (p-x p) (* dir (c-relic-warp))))))
+
+(defn special-bracing-stance [(p : I32)] : Unit
+  (do
+    (set-p-vx! p 0.0)
+    (when (< (p-invuln-frames p) (c-brace-invuln)) (set-p-invuln-frames! p (c-brace-invuln)))))
+
+(defn special-sunbreak-slam [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))]
+        (when (and (> (* (f32 (p-facing p)) dx) 0.0)
+                   (and (<= (fabs dx) (c-sunbreak-range)) (<= (fabs (- (p-y t) (p-y p))) 1.4)))
+          (apply-knockback t (c-sunbreak-damage) (* (dir-of dx) 0.75) 0.5))))))
+
+(defn special-high-score-rush-hit [(p : I32)] : Unit
+  (dotimes [t 8]
+    (when (target? p t)
+      (let [(dx : F32) (- (p-x t) (p-x p))
+            (dy : F32) (- (p-y t) (p-y p))]
+        (when (<= (+ (* dx dx) (* dy dy)) (* (c-rosie-dash-range) (c-rosie-dash-range)))
+          (apply-knockback t (c-rosie-dash-damage) (* (dir-of dx) 0.7) 0.55))))))
+
+;; ---- dispatch_special_move -----------------------------------------------------------------
+;; Arms are in physics.h order; every C branch returned, so first-match cond is equivalent.
+(defn dispatch-special-move [(p : I32)] : Unit
+  (let [cid (p-character-id p)
+        air (= (p-on-ground p) 0)
+        up (> (p-in-y p) 0.5)
+        down (< (p-in-y p) -0.5)
+        cd0 (= (p-special-b-cooldown p) 0)]
+    (cond
+      (and air (and (> (p-in-y p) 0.55) (not (= (p-state p) (st-upb)))))
+        (do (set-p-state! p (st-upb)) (set-p-umbrella-open! p 1) (set-p-upb-frame! p 0)
+            (set-p-parasol-rehit-timer! p 0)
+            (if (= cid (char-vexar))
+                (do (set-p-vy! p (fmax2 (p-vy p) 2.2))
+                    (set-p-vx! p (+ (p-vx p) (* (f32 (p-facing p)) 0.35))))
+                (do (set-p-vy! p (fmax2 (p-vy p) 1.8))
+                    (set-p-vx! p (* (p-vx p) 0.6)))))
+      (and air (and down (and (= cid (char-vexar)) cd0)))
+        (do (special-relic-warp p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and air (and down (and (or (= cid (char-rosie)) (= cid (char-petalia))) cd0)))
+        (do (if (= cid (char-rosie)) (special-insert-coin p) (spawn-turnip p))
+            (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      air
+        (set-p-umbrella-open! p (b2i (= (p-umbrella-open p) 0)))
+      (and up (and (= cid (char-medusa)) cd0))
+        (do (special-petrify-gaze p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-medusa)) cd0))
+        (do (special-serpents-grasp p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and up (and (= cid (char-raccoon)) (= (p-dash-cooldown p) 0)))
+        (do (special-scavenger-dash p) (set-p-dash-cooldown! p (c-dodge-cooldown)))
+      (and down (and (= cid (char-raccoon)) (= (p-dash-cooldown p) 0)))
+        (do (special-play-dead p) (set-p-dash-cooldown! p (c-dodge-cooldown)))
+      (and up (and (= cid (char-second-tree)) cd0))
+        (do (special-ground-slam p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-second-tree)) cd0))
+        (do (special-regrowth p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and up (and (= cid (char-uncrowned)) cd0))
+        (do (special-uncrowned-claim p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-uncrowned)) cd0))
+        (do (special-cast-doubt p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-vexar)) cd0))
+        (do (special-relic-warp p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and up (and (= cid (char-sunlit-draw)) cd0))
+        (do (special-bracing-stance p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-sunlit-draw)) cd0))
+        (do (special-sunbreak-slam p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and up (and (= cid (char-sequel-duck)) cd0))
+        (do (special-hat-trick p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (= cid (char-sequel-duck)) cd0))
+        (do (special-bow-toss p) (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      (and down (and (or (= cid (char-rosie)) (= cid (char-petalia))) cd0))
+        (do (if (= cid (char-rosie)) (special-insert-coin p) (spawn-turnip p))
+            (set-p-special-b-cooldown! p (c-turnip-cooldown)))
+      ;; fallback overhead throw: only Vexar and Understudy have no dedicated grounded up-special
+      (and up (and cd0 (or (= cid (char-vexar)) (= cid (char-understudy)))))
+        (do (spawn-turnip p)
+            (set-p-special-b-cooldown! p (if (= cid (char-vexar)) (- (c-turnip-cooldown) 10) (c-turnip-cooldown))))
+      ;; a held up/down special press never falls back to a wavedash
+      (or up down) unit
+      (and (not (= (p-btn-shield p) 0)) (= (p-dash-cooldown p) 0))
+        (let [(dir : F32) (if (> (fabs (p-in-x p)) 0.01) (p-in-x p) (f32 (p-facing p)))]
+          (set-p-vx! p (* dir (c-wavedash-ground)))
+          (when air
+            (set-p-vx! p (* dir (c-wavedash-air)))
+            (set-p-vy! p (- 0.0 (c-wavedash-drop))))
+          (set-p-wavedash-frames! p (c-wavedash-frames))
+          (set-p-state! p (st-wavedash))
+          (set-p-dash-cooldown! p (c-dodge-cooldown)))
+      (= (p-dash-cooldown p) 0)
+        (let [(dir : F32) (if (> (fabs (p-in-x p)) 0.01) (p-in-x p) (f32 (p-facing p)))]
+          (set-p-vx! p (* dir (c-wavedash-ground)))
+          (set-p-wavedash-frames! p (c-wavedash-frames))
+          (set-p-state! p (st-wavedash))
+          (set-p-dash-cooldown! p (c-dodge-cooldown))))))

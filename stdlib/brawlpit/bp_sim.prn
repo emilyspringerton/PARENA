@@ -1,0 +1,115 @@
+;; stdlib/brawlpit/bp_sim.prn -- BRAWLPIT simulation driver: the tick, the CPU fighter, match setup.
+;; Port of BRAWLPIT/packages/simulation/local_game.h (local_update, bot_think, local_init_match,
+;; local_set_player_input). The only intended difference from the C is the PRNG: C's bot calls
+;; rand(); this engine has no libc, so bp-rand below is the classic LCG, and the parity harness
+;; (tests/brawlpit_parity_ref.c) maps rand() onto the same generator.
+
+;; ---- PRNG (glibc TYPE_0 LCG: next = next*1103515245 + 12345, output bits 16..30) ------------
+(defn bp-seed! [(s : I32)] : Unit (gi! (g-rng) s))
+(defn bp-rand [] : I32
+  (let [s (+ (* (gi (g-rng)) 1103515245) 12345)]
+    (gi! (g-rng) s)
+    (bit-and (ushr s 16) 32767)))
+
+;; ---- local_set_player_input ------------------------------------------------------------------
+(defn sim-set-input! [(pid : I32) (sx : F32) (sy : F32) (jump : I32) (attack : I32)
+                      (shield : I32) (special : I32)] : Unit
+  (when (and (>= pid 0) (< pid 8))
+    (set-p-in-x! pid sx)
+    (set-p-in-y! pid sy)
+    (set-p-btn-jump! pid (if (!= jump 0) 1 0))
+    (set-p-btn-attack! pid attack)
+    (set-p-btn-shield! pid shield)
+    (set-p-btn-special! pid special)))
+
+;; ---- bot_think: the CPU fighter ("simple chase and smash") -----------------------------------
+(defn bot-nearest [(id : I32)] : I32
+  (let [(min-d : F32) 9999.0
+        best -1]
+    (dotimes [i 8]
+      (when (and (not (= i id)) (and (not (= (p-active i) 0)) (not (= (p-state i) (st-dead)))))
+        (let [(d : F32) (fabs (- (p-x i) (p-x id)))]
+          (when (< d min-d) (set! min-d d) (set! best i)))))
+    best))
+
+(defn bot-think [(id : I32)] : Unit
+  (when (and (not (= (p-state id) (st-dead))) (not (= (p-state id) (st-stunned))))
+    (set-p-btn-jump! id 0)
+    (set-p-btn-attack! id 0)
+    (set-p-btn-shield! id 0)
+    (set-p-btn-special! id 0)
+    (let [target (bot-nearest id)]
+      (if (!= target -1)
+          (let [(dx : F32) (- (p-x target) (p-x id))
+                (dy : F32) (- (p-y target) (p-y id))]
+            (set-p-in-x! id (if (> dx 0.0) 1.0 -1.0))
+            (when (or (> dy 5.0) (< (p-y id) 0.0))
+              (when (< (mod (bp-rand) 100) 5) (set-p-btn-jump! id 1)))
+            (when (and (< (fabs dx) 4.0) (< (fabs dy) 3.0))
+              (when (< (mod (bp-rand) 100) 10) (set-p-btn-attack! id 1))))
+          (cond
+            (< (p-x id) -5.0) (set-p-in-x! id 1.0)
+            (> (p-x id) 5.0) (set-p-in-x! id -1.0)
+            :else (set-p-in-x! id 0.0))))))
+
+;; ---- local_update (input already applied by sim-set-input!) -----------------------------------
+(defn sim-step [] : Unit
+  (if (not (= (gi (g-match-over)) 0))
+      (update-edge-ko-effects)
+      (do
+        (dotimes [i 8]
+          (when (not (= (p-active i) 0))
+            (when (and (> i 0) (not (= (p-is-bot i) 0))) (bot-think i))
+            (when (and (= (p-state i) (st-attack))
+                       (or (> (p-attack-timer i) 0) (> (p-smash-active-timer i) 0)))
+              (dotimes [j 8] (when (not (= i j)) (check-attack-hitbox i j))))
+            (when (= (p-state i) (st-upb))
+              (dotimes [j 8] (when (not (= i j)) (check-attack-hitbox i j))))
+            (update-entity i (c-dt))))
+        (update-turnips)
+        (update-edge-ko-effects)
+        (dotimes [i 8]
+          (when (and (not (= (p-active i) 0))
+                     (and (= (p-stocks i) 0) (= (p-state i) (st-dead))))
+            (gi! (g-match-over) 1)))
+        (gi! (g-server-tick) (+ (gi (g-server-tick)) 1)))))
+
+;; ---- local_init_match -------------------------------------------------------------------------
+;; memset(&local_state, 0, ...): players, turnips and edge-KO effects. A plain store loop; the
+;; build script asserts the linked module still has zero imports (no memset libcall sneaks in).
+(defn zero-words! [(addr : I32) (n : I32)] : Unit
+  (dotimes [i n] (store32! (+ addr (shl i 2)) 0)))
+
+(defn sim-clear! [] : Unit
+  (do
+    (zero-words! (players-base) 1024)
+    (zero-words! (turnips-base) 128)
+    (zero-words! (edgeko-base) 128)
+    (gi! (g-server-tick) 0)
+    (gi! (g-match-over) 0)))
+
+;; characters per slot live at G[g-slot-char0 + slot]; slot 0 is the human, 1.. the others
+(defn slot-char [(i : I32)] : I32 (gi (+ (g-slot-char0) i)))
+(defn set-slot-char! [(i : I32) (c : I32)] : Unit (gi! (+ (g-slot-char0) i) c))
+
+(defn sim-init-match [(num-players : I32) (mode : I32) (stage-id : I32)] : Unit
+  (do
+    (sim-clear!)
+    (stage-set-active stage-id)
+    (gi! (g-stage-id) stage-id)
+    (gi! (g-game-mode) mode)
+    (gi! (g-match-over) 0)
+    (gi! (g-num-players) num-players)
+    (dotimes [i num-players]
+      (set-p-active! i 1)
+      (set-p-id! i i)
+      (set-p-stocks! i (c-stock-count))
+      (set-p-shield-health! i (c-shield-max))
+      (set-p-is-bot! i (b2i (> i 0)))
+      (set-p-ground-platform-type! i -1)
+      (set-p-character-id! i (slot-char i))
+      (phys-respawn i)
+      (set-p-x! i (if (= (mod i 2) 0) -10.0 10.0))
+      (set-p-hat! i -1)
+      (set-p-pad! i -1)
+      (set-p-last-hit-by! i -1))))

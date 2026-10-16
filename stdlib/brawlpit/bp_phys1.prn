@@ -1,0 +1,326 @@
+;; stdlib/brawlpit/bp_phys1.prn -- BRAWLPIT physics, part 1: constants, respawn, hit resolution,
+;; platform collision. A line-for-line port of BRAWLPIT/packages/common/physics.h to PARENA
+;; (F32 throughout, evaluation order preserved) so the wasm engine is bit-identical to the C one:
+;; tests/brawlpit_parity_ref.c + tests/brawlpit_parity_test.mjs run both side by side.
+;; player ids/states are the protocol.h ones: STATE_IDLE 0 RUN 1 AIR 2 ATTACK 3 STUNNED 4 SHIELD 5
+;; DEAD 6 RESPAWN 7 WAVEDASH 13 UPB 14 ROSIE_DASH 15.
+
+;; ---- states ------------------------------------------------------------------------------
+(defn st-idle [] : I32 0)
+(defn st-attack [] : I32 3)
+(defn st-stunned [] : I32 4)
+(defn st-shield [] : I32 5)
+(defn st-dead [] : I32 6)
+(defn st-respawn [] : I32 7)
+(defn st-wavedash [] : I32 13)
+(defn st-upb [] : I32 14)
+(defn st-rosie-dash [] : I32 15)
+(defn st-air [] : I32 2)
+
+(defn mode-stock [] : I32 0)
+(defn mode-time [] : I32 1)
+(defn mode-sandbox [] : I32 2)
+
+;; ---- tuning constants (physics.h #defines) ------------------------------------------------
+(defn c-attack-cooldown [] : I32 10)
+(defn c-smash-cooldown [] : I32 28)
+(defn c-shield-break-stun [] : I32 300)
+(defn c-high-percent [] : F32 91.0)
+(defn c-high-percent-delay [] : I32 22)
+(defn c-kb-scaling [] : F32 0.04)
+(defn c-attack-active [] : I32 12)
+(defn c-smash-active [] : I32 16)
+(defn c-gravity [] : F32 0.08)
+(defn c-fast-fall [] : F32 0.14)
+(defn c-terminal [] : F32 2.8)
+(defn c-ground-accel [] : F32 0.18)
+(defn c-air-accel [] : F32 0.08)
+(defn c-ground-max [] : F32 1.2)
+(defn c-air-max [] : F32 1.0)
+(defn c-ground-friction [] : F32 0.10)
+(defn c-air-friction [] : F32 0.02)
+(defn c-jump-force [] : F32 1.6)
+(defn c-dodge-cooldown [] : I32 30)
+(defn c-wavedash-frames [] : I32 12)
+(defn c-wavedash-ground [] : F32 1.6)
+(defn c-wavedash-air [] : F32 1.4)
+(defn c-wavedash-drop [] : F32 0.6)
+(defn c-wavedash-max [] : F32 1.8)
+(defn c-parry-window [] : I32 4)
+(defn c-shield-drain [] : F32 0.28)
+(defn c-shield-regen [] : F32 0.17)
+(defn c-shield-drop-lag [] : I32 11)
+(defn c-shield-windup [] : I32 16)
+(defn c-shield-overpowered [] : I32 16)
+(defn c-op-counter-damage [] : F32 6.0)
+(defn c-op-counter-stun [] : I32 8)
+(defn c-op-counter-kb [] : F32 1.0)
+(defn c-unc-counter-damage [] : F32 10.0)
+(defn c-unc-counter-stun [] : I32 14)
+(defn c-unc-counter-kb [] : F32 1.6)
+(defn c-shield-max-pushback [] : F32 0.35)
+(defn c-shield-max-stun [] : I32 20)
+(defn c-smash-charge [] : I32 44)
+(defn c-smash-release-delay [] : I32 7)
+(defn c-smash-flash [] : I32 7)
+(defn c-turnip-cooldown [] : I32 45)
+(defn c-turnip-speed [] : F32 1.0)
+(defn c-turnip-up [] : F32 1.1)
+(defn c-umbrella-gravity [] : F32 0.02)
+(defn c-umbrella-fall [] : F32 0.6)
+(defn c-respawn-delay [] : I32 90)
+(defn c-drop-through [] : I32 10)
+(defn c-turnip-gravity [] : F32 0.04)
+(defn c-turnip-ttl [] : I32 240)
+(defn c-respawn-invuln [] : I32 120)
+(defn c-shield-max [] : F32 60.0)
+(defn c-max-jumps [] : I32 2)
+(defn c-stock-count [] : I32 4)
+(defn c-dt [] : F32 0.016)
+
+;; special-move tuning
+(defn c-rosie-dash-total [] : I32 18)
+(defn c-rosie-dash-speed [] : F32 0.22)
+(defn c-rosie-dash-range [] : F32 2.2)
+(defn c-rosie-dash-damage [] : F32 6.0)
+(defn c-rosie-invuln-start [] : I32 4)
+(defn c-rosie-invuln-end [] : I32 14)
+(defn c-parasol-range [] : F32 2.0)
+(defn c-parasol-damage [] : F32 4.0)
+(defn c-parasol-rehit [] : I32 12)
+(defn c-regrowth-heal [] : F32 15.0)
+(defn c-doubt-range [] : F32 2.2)
+(defn c-doubt-shield-damage [] : F32 20.0)
+(defn c-relic-warp [] : F32 28.4)
+(defn c-petrify-range [] : F32 2.2)
+(defn c-petrify-stun [] : I32 40)
+(defn c-grasp-range [] : F32 1.5)
+(defn c-grasp-damage [] : F32 9.0)
+(defn c-slam-range [] : F32 2.6)
+(defn c-scav-dash-speed [] : F32 0.16)
+(defn c-playdead-invuln [] : I32 20)
+(defn c-claim-shield [] : F32 15.0)
+(defn c-coin-damage [] : F32 5.0)
+(defn c-brace-invuln [] : I32 25)
+(defn c-sunbreak-range [] : F32 1.6)
+(defn c-sunbreak-damage [] : F32 13.0)
+(defn c-style-bow [] : I32 10)
+(defn c-style-hat [] : I32 11)
+(defn c-bow-damage [] : F32 7.0)
+(defn c-hat-damage [] : F32 6.0)
+
+;; ---- phys_respawn --------------------------------------------------------------------------
+(defn phys-respawn [(p : I32)] : Unit
+  (if (<= (p-stocks p) 0)
+      (do (set-p-state! p (st-dead)) (set-p-x! p 0.0) (set-p-y! p 1000.0))
+      (do
+        (set-p-state! p (st-idle))
+        (set-p-damage-percent! p 0.0)
+        (set-p-x! p 0.0) (set-p-y! p 30.0)
+        (set-p-vx! p 0.0) (set-p-vy! p 0.0)
+        (set-p-in-x! p 0.0) (set-p-in-y! p 0.0)
+        (set-p-btn-jump! p 0) (set-p-btn-jump-prev! p 0)
+        (set-p-btn-attack! p 0) (set-p-btn-attack-prev! p 0)
+        (set-p-btn-shield! p 0) (set-p-btn-shield-prev! p 0)
+        (set-p-btn-special! p 0) (set-p-btn-special-prev! p 0)
+        (set-p-on-ground! p 0)
+        (set-p-hitstun-frames! p 0)
+        (set-p-attack-cooldown! p 0) (set-p-attack-timer! p 0) (set-p-parry-timer! p 0)
+        (set-p-smash-active-timer! p 0) (set-p-smash-charge-timer! p 0)
+        (set-p-smash-release-timer! p 0) (set-p-smash-flash-timer! p 0)
+        (set-p-smash-charge-level! p 0.0)
+        (set-p-shield-stun-frames! p 0) (set-p-shield-drop-timer! p 0) (set-p-shield-regen-timer! p 0)
+        (set-p-shield-windup-frames! p 0) (set-p-shield-overpowered-frames! p 0)
+        (set-p-shield-health! p (c-shield-max))
+        (set-p-invuln-frames! p (c-respawn-invuln))
+        (set-p-respawn-timer! p 0)
+        (set-p-launch-delay-frames! p 0)
+        (set-p-pending-kb-x! p 0.0) (set-p-pending-kb-y! p 0.0)
+        (set-p-ground-platform-type! p -1)
+        (set-p-drop-through-timer! p 0)
+        (set-p-wavedash-frames! p 0)
+        (set-p-rosie-dash-frame! p 0)
+        (set-p-dash-cooldown! p 0)
+        (set-p-umbrella-open! p 0)
+        (set-p-upb-frame! p 0) (set-p-upb-landing-lag! p 0)
+        (set-p-parasol-rehit-timer! p 0)
+        (set-p-hitlag-frames! p 0) (set-p-hit-flash-timer! p 0) (set-p-hit-flash-multihit! p 0)
+        (set-p-special-b-cooldown! p 0)
+        (set-p-jumps-remaining! p (c-max-jumps)))))
+
+;; phys_start_respawn: the stock is spent here (a blast-zone exit). MODE_SANDBOX never costs one.
+(defn phys-start-respawn [(p : I32)] : Unit
+  (when (and (not (= (p-state p) (st-dead))) (<= (p-respawn-timer p) 0))
+    (let [sandbox (= (gi (g-game-mode)) (mode-sandbox))]
+      (when (and (not sandbox) (> (p-stocks p) 0))
+        (set-p-stocks! p (- (p-stocks p) 1)))
+      (if (and (not sandbox) (<= (p-stocks p) 0))
+          (do (set-p-stocks! p 0) (set-p-state! p (st-dead)) (set-p-respawn-timer! p 0)
+              (set-p-x! p 0.0) (set-p-y! p 1000.0))
+          (do (set-p-state! p (st-respawn))
+              (set-p-respawn-timer! p (c-respawn-delay))
+              (set-p-vx! p 0.0) (set-p-vy! p 0.0)
+              (set-p-launch-delay-frames! p 0) (set-p-hitlag-frames! p 0)
+              (set-p-attack-timer! p 0) (set-p-smash-active-timer! p 0)
+              (set-p-smash-charge-timer! p 0) (set-p-smash-release-timer! p 0)
+              (set-p-wavedash-frames! p 0) (set-p-rosie-dash-frame! p 0)
+              (set-p-umbrella-open! p 0))))))
+
+;; ---- check_aabb / apply_knockback ---------------------------------------------------------
+(defn check-aabb [(x1 : F32) (y1 : F32) (w1 : F32) (h1 : F32)
+                  (x2 : F32) (y2 : F32) (w2 : F32) (h2 : F32)] : Bool
+  (and (and (< x1 (+ x2 w2)) (> (+ x1 w1) x2))
+       (and (< y1 (+ y2 h2)) (> (+ y1 h1) y2))))
+
+;; The single choke point for every hit's damage / knockback / hitstun (physics.h apply_knockback).
+(defn apply-knockback [(target : I32) (dmg : F32) (kbx : F32) (kby : F32)] : Unit
+  (when (not (= (gi (g-game-mode)) (mode-sandbox)))
+    (set-p-damage-percent! target (+ (p-damage-percent target) dmg))
+    (when (< (p-damage-percent target) 0.0) (set-p-damage-percent! target 0.0))
+    (when (> (p-damage-percent target) 999.0) (set-p-damage-percent! target 999.0))
+    (let [(scaling : F32) (+ 1.0 (* (p-damage-percent target) (c-kb-scaling)))
+          (fkx : F32) (* kbx scaling)
+          (fky : F32) (* kby scaling)]
+      (if (>= (p-damage-percent target) (c-high-percent))
+          (do (set-p-launch-delay-frames! target (c-high-percent-delay))
+              (set-p-pending-kb-x! target fkx)
+              (set-p-pending-kb-y! target fky)
+              (set-p-vx! target 0.0)
+              (set-p-vy! target 0.0))
+          (do (set-p-vx! target fkx)
+              (set-p-vy! target fky)))
+      (set-p-hitstun-frames! target (i32 (* (* (sqrt (+ (* kbx kbx) (* kby kby))) 5.0) scaling)))
+      (set-p-state! target (st-stunned)))))
+
+;; ---- resolve_platform_collisions ---------------------------------------------------------
+(defn platform-overlaps-x? [(p : I32) (i : I32)] : Bool
+  (and (> (+ (p-x p) (/ 2.0 2.0)) (- (plat-x i) (/ (plat-w i) 2.0)))
+       (< (- (p-x p) (/ 2.0 2.0)) (+ (plat-x i) (/ (plat-w i) 2.0)))))
+
+(defn resolve-platform-collisions [(p : I32) (prev-y : F32)] : Unit
+  (do
+    (set-p-on-ground! p 0)
+    (if (> (p-vy p) 0.0)
+        (set-p-ground-platform-type! p -1)
+        (loop [i 0]
+          (if (>= i (stage-count))
+              (set-p-ground-platform-type! p -1)
+              (let [(top : F32) (+ (plat-y i) (/ (plat-h i) 2.0))
+                    ty (plat-type i)]
+                (cond
+                  (and (= ty 1) (> (p-drop-through-timer p) 0)) (recur (+ i 1))
+                  (not (platform-overlaps-x? p i)) (recur (+ i 1))
+                  (not (and (>= prev-y top) (<= (p-y p) top))) (recur (+ i 1))
+                  ;; TECH CHECK: hitting the ground fast while stunned bounces
+                  (and (= (p-state p) (st-stunned)) (< (p-vy p) -1.8))
+                    (do (set-p-y! p (+ top 0.1))
+                        (set-p-vy! p (* (p-vy p) -0.7))
+                        (set-p-vx! p (* (p-vx p) 0.5)))
+                  (and (= ty 1) (< (p-in-y p) -0.6)) (recur (+ i 1))
+                  :else
+                    (do (set-p-y! p top)
+                        (set-p-vy! p 0.0)
+                        (set-p-on-ground! p 1)
+                        (set-p-jumps-remaining! p (c-max-jumps))
+                        (set-p-ground-platform-type! p ty)))))))))
+
+;; ---- check_attack_hitbox -------------------------------------------------------------------
+;; Shield interplay (BPSW-1212..1217): windup is NOT handled here (an unshielded hit); overpowered
+;; punishes the attacker; normal shield takes bounded pushback/stun.
+(defn shield-resolve [(attacker : I32) (target : I32) (damage : F32) (sandbox : Bool)] : Unit
+  (cond
+    (> (p-parry-timer target) 0)
+      (do (set-p-parry-timer! target 0)
+          (set-p-vx! target 0.0) (set-p-vy! target 0.0)
+          (when (not sandbox)
+            (set-p-vx! attacker (* (f32 (- 0 (p-facing attacker))) 1.4))
+            (set-p-vy! attacker 0.6)
+            (set-p-hitstun-frames! attacker 18)
+            (set-p-state! attacker (st-stunned))))
+    (> (p-shield-overpowered-frames target) 0)
+      (when (not sandbox)
+        (if (= (p-character-id target) (char-uncrowned))
+            (do (set-p-damage-percent! attacker (+ (p-damage-percent attacker) (c-unc-counter-damage)))
+                (set-p-hitstun-frames! attacker (c-unc-counter-stun))
+                (set-p-vx! attacker (* (f32 (- 0 (p-facing attacker))) (c-unc-counter-kb))))
+            (do (set-p-damage-percent! attacker (+ (p-damage-percent attacker) (c-op-counter-damage)))
+                (set-p-hitstun-frames! attacker (c-op-counter-stun))
+                (set-p-vx! attacker (* (f32 (- 0 (p-facing attacker))) (c-op-counter-kb)))))
+        (set-p-state! attacker (st-stunned)))
+    :else
+      (do
+        (set-p-shield-health! target (- (p-shield-health target) damage))
+        (set-p-shield-regen-timer! target 60)
+        (let [real-stun (i32 (* damage 5.0))
+              (real-push : F32) (* 0.08 damage)]
+          (set-p-shield-stun-frames! target (if (> real-stun (c-shield-max-stun)) (c-shield-max-stun) real-stun))
+          (set-p-vx! target (+ (p-vx target)
+                               (* (f32 (p-facing attacker)) (if (> real-push (c-shield-max-pushback)) (c-shield-max-pushback) real-push))))
+          (set-p-vx! attacker (- (p-vx attacker) (* (* (f32 (p-facing attacker)) 0.05) damage))))
+        (when (<= (p-shield-health target) 0.0)
+          (set-p-state! target (st-stunned))
+          (when (not sandbox) (set-p-hitstun-frames! target (c-shield-break-stun)))
+          (set-p-shield-health! target 0.0))
+        (when (> (p-shield-health target) (c-shield-max))
+          (set-p-shield-health! target (c-shield-max))))))
+
+(defn check-attack-hitbox [(attacker : I32) (target : I32)] : Unit
+  (when (and (or (> (p-attack-timer attacker) 0) (> (p-smash-active-timer attacker) 0))
+             (and (<= (p-invuln-frames target) 0) (not (= (p-state target) (st-dead)))))
+    (let [(hx : F32) (+ (p-x attacker) (* (f32 (p-facing attacker)) 2.0))
+          (hy : F32) (+ (p-y attacker) 1.0)
+          (hw : F32) 3.5
+          (hh : F32) 2.5
+          (tx : F32) (p-x target)
+          (ty : F32) (+ (p-y target) 2.0)
+          (tw : F32) 2.0
+          (th : F32) 4.0]
+      (when (check-aabb (- hx (/ hw 2.0)) (- hy (/ hh 2.0)) hw hh
+                        (- tx (/ tw 2.0)) (- ty (/ th 2.0)) tw th)
+        (let [(kb-x : F32) (* (f32 (p-facing attacker)) 1.0)
+              (kb-y : F32) 0.8
+              (damage : F32) (* 12.0 (fd (p-character-id attacker) (fd-attack-damage-mul)))
+              heavy 0
+              sandbox (= (gi (g-game-mode)) (mode-sandbox))]
+          (cond
+            (> (p-smash-active-timer attacker) 0)
+              (let [(charge : F32) (p-smash-charge-level attacker)]
+                (set! damage (+ 14.0 (* 12.0 charge)))
+                (set! kb-x (* (f32 (p-facing attacker)) (+ 1.0 (* 1.2 charge))))
+                (set! kb-y (+ 0.9 (* 0.9 charge)))
+                (set! heavy 1))
+            (= (p-on-ground attacker) 0)
+              (cond
+                (> (* (p-in-x attacker) (f32 (p-facing attacker))) 0.1)
+                  (do (set! damage 14.0)
+                      (set! kb-x (* (f32 (p-facing attacker)) 0.6))
+                      (set! kb-y -1.6)
+                      (set! heavy 1))
+                (< (* (p-in-x attacker) (f32 (p-facing attacker))) -0.1)
+                  (do (set! damage 15.0)
+                      (set! kb-x (* (f32 (p-facing attacker)) 1.6))
+                      (set! kb-y 0.8)
+                      (set! heavy 1))
+                :else
+                  (do (set! damage 9.0)
+                      (set! kb-x (* (f32 (p-facing attacker)) 1.1))
+                      (set! kb-y 0.5)))
+            :else
+              (cond
+                (> (p-in-y attacker) 0.5) (do (set! kb-y 1.5) (set! kb-x (* kb-x 0.2)))
+                (< (p-in-y attacker) -0.5) (do (set! kb-y -0.5) (set! kb-x (* kb-x 1.2)))))
+          (if (and (= (p-state target) (st-shield)) (= (p-shield-windup-frames target) 0))
+              (shield-resolve attacker target damage sandbox)
+              (do
+                (when (> (p-damage-percent target) 50.0)
+                  (set! kb-x (+ kb-x (* (p-in-x target) 0.4)))
+                  (set! kb-y (+ kb-y (* (p-in-y target) 0.4))))
+                (apply-knockback target damage kb-x kb-y)
+                (when (= heavy 1)
+                  (let [freeze (+ 6 (i32 (* damage 0.5)))]
+                    (set-p-hitlag-frames! attacker freeze)
+                    (set-p-hitlag-frames! target freeze)
+                    (set-p-hit-flash-timer! target 10)))
+                (if (> (p-smash-active-timer attacker) 0)
+                    (set-p-attack-cooldown! attacker (c-smash-cooldown))
+                    (set-p-attack-cooldown! attacker (c-attack-cooldown))))))))))
