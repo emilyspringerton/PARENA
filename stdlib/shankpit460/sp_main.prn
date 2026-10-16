@@ -133,3 +133,11 @@
 ;; sound events: the page plays them (sp_host.prn)
 (defn sp-snd-addr [] : I32 (snd-base))
 (defn sp-snd-head [] : I32 (gi (g-snd-head)))
+
+;; put a player somewhere, as the next tick's starting point (tests that need exact geometry)
+(defn sp-t-place [(p : I32) (x : F32) (y : F32) (z : F32) (yaw : F32) (pitch : F32)] : Unit
+  (do (set-p-x! p x) (set-p-y! p y) (set-p-z! p z)
+      (set-p-px! p x) (set-p-py! p y) (set-p-pz! p z)
+      (set-p-vx! p 0.0) (set-p-vy! p 0.0) (set-p-vz! p 0.0)
+      (set-p-yaw! p yaw) (set-p-pitch! p pitch)
+      (when (= p (gi (g-me))) (gf! (g-cam-yaw) yaw) (gf! (g-cam-pitch) pitch))))

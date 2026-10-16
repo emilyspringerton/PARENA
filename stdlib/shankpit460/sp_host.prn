@@ -103,6 +103,8 @@
     (let [b (el "sp-mute")]
       (when (not (js/null? b))
         (js/call b "addEventListener" "click" (callback on-mute-click))))
+    (refresh-status-quiet!)
+    (js/call-fn (js/global "setInterval") (callback refresh-status-quiet!) 15000)
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
 ;; ---- 2. the frame loop ---------------------------------------------------------------------------------------------
@@ -236,8 +238,42 @@
 ;; The engine says whether it wants a socket (sp_net_wanted) and speaks the protocol through two memory buffers; this
 ;; opens and closes the WebSocket and moves bytes.
 (defn load-session! [] : Unit
-  (when (js/defined? "getIdunaSession")
-    (set! session (js/call-fn (js/global "getIdunaSession")))))
+  (do
+    (when (js/defined? "getIdunaSession")
+      (set! session (js/call-fn (js/global "getIdunaSession"))))
+    (sync-who!)))
+
+;; "playing as ..." under the canvas: a guest is invited to sign in, a signed-in player is greeted by name
+(defn sign-in-url [] : Any
+  (if (js/defined? "buildSsoURL") (js/call-fn (js/global "buildSsoURL")) "/account/"))
+
+(defn sync-who! [] : Unit
+  (if (js/null? session)
+      (do (set-text! "sp-who-msg" "You are playing as a guest. Your name in a lobby is random.")
+          (let [a (el "sp-who-link")]
+            (when (not (js/null? a))
+              (js/set! a "textContent" "Sign in with IDUNA")
+              (js/set! a "href" (sign-in-url))
+              (js/set! a "hidden" false))))
+      (do (set-text! "sp-who-msg" (str "Signed in as " (js/get session "displayName") ". That is the name in a lobby."))
+          (set-hidden! "sp-who-link" true))))
+
+;; how many people are about, from IDUNA's public status route
+(defn on-status [(j : Any)] : Unit
+  (set-text! "sp-online"
+             (str (js/get j "online") " online  -  " (js/get j "searching") " searching  -  " (js/get j "playing") " in a match")))
+
+(defn json-or-fail [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
+
+(defn refresh-status-quiet! [] : Unit
+  (js/call
+    (js/call
+      (js/call (js/call-fn (js/global "fetch") "/api/v1/shankpit460/status") "then" (callback json-or-fail))
+      "then" (callback on-status))
+    "catch" (callback ignore!)))
 
 (defn socket-url [] : String
   (str (if (= (js/get (js/get (js/global "window") "location") "protocol") "https:") "wss://" "ws://")
