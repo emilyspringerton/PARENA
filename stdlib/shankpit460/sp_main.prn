@@ -1,0 +1,20 @@
+;; stdlib/shankpit460/sp_main.prn -- the exports the page calls (and the test hooks).
+
+;; ---- test hooks: drive the simulation without the menus, bots or clock (tests/shankpit460_*) -------------
+(defn sp-t-reset [] : Unit
+  (do (init-map!) (clear-world!) (gi! (g-mode) 0) (gi! (g-me) 0) (gi! (g-tick) 0) (gi! (g-countdown) 0)
+      (gi! (g-phase) 1) (sp-seed! 1)))
+(defn sp-t-seed [(s : I32)] : Unit (sp-seed! s))
+(defn sp-t-spawn [(p : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (do (respawn-at! p x y z) (set-p-spawn-prot! p 0)))
+;; buttons: 1 jump, 2 attack, 4 crouch, 8 reload, 32 ability (protocol.h BTN_*)
+(defn sp-t-cmd [(p : I32) (fwd : F32) (str : F32) (yaw : F32) (pitch : F32) (buttons : I32) (weapon : I32)] : Unit
+  (do (apply-usercmd! p fwd str yaw pitch
+                      (!= (bit-and buttons 1) 0) (!= (bit-and buttons 2) 0) (!= (bit-and buttons 4) 0)
+                      (!= (bit-and buttons 8) 0) (!= (bit-and buttons 32) 0))
+      (when (>= weapon 0) (set-p-weapon! p weapon))))
+(defn sp-t-step [(n : I32)] : Unit
+  (dotimes [i n] (world-step!)))
+(defn sp-player-addr [(p : I32)] : I32 (pl-base p))
+(defn sp-field-index [(name : I32)] : I32 name)
+(defn sp-t-tick-ms [] : I32 (now-ms))

@@ -1,0 +1,85 @@
+;; stdlib/shankpit460/sp_map.prn -- the arena: boxes, spawns, and the ray tests the rest of the engine uses.
+;;
+;; The geometry is shankpit-460's own maps/v0_shankpit.map (generated into sp_map_data.prn by
+;; tools/sp_map_gen.py, parsed the way packages/common/map_loader.h does). Box i is stored as six F32
+;; (centre x y z, full size w h d) in 32-byte slots; slot 0 is the floor slab, which -- exactly as in the C
+;; engine -- collision and tracing skip: ground contact is the y < 0 test.
+
+(defn mb-addr [(i : I32) (k : I32)] : I32 (+ (map-base) (+ (* i 32) (shl k 2))))
+(defn mb [(i : I32) (k : I32)] : F32 (loadf32 (mb-addr i k)))
+(defn bx [(i : I32)] : F32 (mb i 0))
+(defn by [(i : I32)] : F32 (mb i 1))
+(defn bz [(i : I32)] : F32 (mb i 2))
+(defn bw [(i : I32)] : F32 (mb i 3))
+(defn bh [(i : I32)] : F32 (mb i 4))
+(defn bd [(i : I32)] : F32 (mb i 5))
+
+(defn map-set-box! [(i : I32) (x : F32) (y : F32) (z : F32) (w : F32) (h : F32) (d : F32)] : Unit
+  (do (storef32! (mb-addr i 0) x) (storef32! (mb-addr i 1) y) (storef32! (mb-addr i 2) z)
+      (storef32! (mb-addr i 3) w) (storef32! (mb-addr i 4) h) (storef32! (mb-addr i 5) d)))
+(defn map-set-spawn! [(i : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (let [a (+ (spawn-base) (* i 16))]
+    (do (storef32! a x) (storef32! (+ a 4) y) (storef32! (+ a 8) z))))
+(defn map-set-counts! [(nb : I32) (ns : I32)] : Unit (do (gi! (g-box-n) nb) (gi! (g-spawn-n) ns)))
+(defn map-set-crown! [(x : F32) (y : F32) (z : F32)] : Unit
+  (do (gf! (g-crown-x) x) (gf! (g-crown-y) y) (gf! (g-crown-z) z)))
+
+(defn map-count [] : I32 (gi (g-box-n)))
+(defn spawn-count [] : I32 (max-i 1 (gi (g-spawn-n))))
+(defn spawn-x [(i : I32)] : F32 (loadf32 (+ (spawn-base) (* (mod i (spawn-count)) 16))))
+(defn spawn-y [(i : I32)] : F32 (loadf32 (+ (spawn-base) (+ (* (mod i (spawn-count)) 16) 4))))
+(defn spawn-z [(i : I32)] : F32 (loadf32 (+ (spawn-base) (+ (* (mod i (spawn-count)) 16) 8))))
+
+;; ---- the stadium envelope (physics.h STADIUM_*) --------------------------------------------
+(defn stadium-kill-y [] : F32 -80.0)
+(defn stadium-bounds [] : F32 420.0)
+
+;; ---- ray vs. axis-aligned box (slab method) ----------------------------------------------------
+;; The tnear / tfar of the slab walk live in two scratch globals; a ray parallel to a slab and outside it
+;; pushes tnear past everything.
+(defn g-sl-n [] : I32 132)
+(defn g-sl-f [] : I32 133)
+
+(defn slab! [(o : F32) (d : F32) (lo : F32) (hi : F32)] : Unit
+  (if (< (fabs d) 0.000001)
+      (when (or (< o lo) (> o hi)) (gf! (g-sl-n) 1000000000.0))
+      (let [(t1 : F32) (/ (- lo o) d)
+            (t2 : F32) (/ (- hi o) d)
+            (tn : F32) (fmin2 t1 t2)
+            (tf : F32) (fmax2 t1 t2)]
+        (when (> tn (gf (g-sl-n))) (gf! (g-sl-n) tn))
+        (when (< tf (gf (g-sl-f))) (gf! (g-sl-f) tf)))))
+
+;; distance along the ray to box i, or a huge number when it is not hit within maxt
+(defn ray-box [(i : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32) (maxt : F32)] : F32
+  (do
+    (gf! (g-sl-n) 0.0001)
+    (gf! (g-sl-f) maxt)
+    (slab! ox dx (- (bx i) (/ (bw i) 2.0)) (+ (bx i) (/ (bw i) 2.0)))
+    (slab! oy dy (- (by i) (/ (bh i) 2.0)) (+ (by i) (/ (bh i) 2.0)))
+    (slab! oz dz (- (bz i) (/ (bd i) 2.0)) (+ (bz i) (/ (bd i) 2.0)))
+    (if (<= (gf (g-sl-n)) (gf (g-sl-f))) (gf (g-sl-n)) 1000000000.0)))
+
+;; the nearest solid (a box other than the floor slab, or the ground plane y = 0) along the ray; maxt if none
+(defn ray-world [(ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32) (maxt : F32)] : F32
+  (let [(best : F32) maxt]
+    (when (and (< dy -0.000001) (> oy 0.0))
+      (let [(tg : F32) (/ (- 0.0 oy) dy)]
+        (when (< tg best) (set! best tg))))
+    (loop [i 1]
+      (when (< i (map-count))
+        (let [(t : F32) (ray-box i ox oy oz dx dy dz best)]
+          (when (< t best) (set! best t)))
+        (recur (+ i 1))))
+    best))
+
+;; is the straight line between two points clear of the arena's solids?
+(defn line-clear? [(x0 : F32) (y0 : F32) (z0 : F32) (x1 : F32) (y1 : F32) (z1 : F32)] : Bool
+  (let [(dx : F32) (- x1 x0)
+        (dy : F32) (- y1 y0)
+        (dz : F32) (- z1 z0)
+        (dist : F32) (len3 dx dy dz)]
+    (if (< dist 0.01)
+        true
+        (let [(t : F32) (ray-world x0 y0 z0 (/ dx dist) (/ dy dist) (/ dz dist) dist)]
+          (>= t (- dist 0.05))))))

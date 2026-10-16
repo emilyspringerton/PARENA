@@ -1,0 +1,286 @@
+;; stdlib/shankpit460/sp_mem.prn -- shankpit-460 web engine: linear-memory map, accessors, math.
+;;
+;; Founder real-time 2026-10-16: "ADD SHANKPIT 460 as a first class citizen to WOTAN ... THE GAME IS PORTED
+;; TO WASM AND TYPESCRIPT VIA PARENA, SAME THING WE JUST DID FOR BRAWLPIT WEB". Same shape as BRAWLPIT web:
+;; the whole game -- simulation, bots, 3D software renderer, menus, the matchmaking wire protocol -- is PARENA
+;; compiled to wasm32 (scripts/build_shankpit460_wasm.sh: parena build -> opt -> llc -> wasm-ld, no
+;; Emscripten). The page host (sp_host.prn, PARENA -> TypeScript) only does what a browser alone can do.
+;;
+;; NO MALLOC: no allocator, no imports, memory never grows. Every record has a fixed address below.
+;;
+;; Memory map (byte addresses; module linked with 8 MB, fixed):
+;;   0x020000 CTL      input: key table, mouse, pad slots               (sp_input.prn)
+;;   0x021000 G        global state words                               (g-* below)
+;;   0x022000 PLAYERS  10 x 512 bytes, 128 words each                   (sp_fields.prn)
+;;   0x024000 PROJ     64 x 64 bytes                                    (storm-sniper projectiles)
+;;   0x025000 TRACERS  32 x 64 bytes                                    (hitscan tracer lines)
+;;   0x026000 PARTS    128 x 64 bytes                                   (impact sparks)
+;;   0x028000 MAP      64 boxes x 32 bytes, then 16 spawns x 16 bytes   (sp_map.prn)
+;;   0x02A000 NAMES    10 x 32 bytes, NUL-terminated ASCII
+;;   0x02B000 NETIN    8 KB   messages from the matchmaking server      (sp_net.prn)
+;;   0x02D000 NETOUT   8 KB   messages for the server
+;;   0x02F000 TOKEN    2 KB   the IDUNA bearer token, written by the page
+;;   0x030000 FONT     255 glyphs x 16 rows
+;;   0x031000 FEED     8 kill-feed lines x 64 bytes
+;;   0x032000 BOARD    scoreboard rows built for the end screen
+;;   0x100000 FB       640 x 360 RGBA framebuffer
+;;   0x200000 ZB       640 x 360 F32 depth buffer
+;;   0x300000 SND      sound event ring (page plays them)
+
+(module shankpit460/engine)
+
+;; ---- region bases -----------------------------------------------------------------------
+(defn ctl-base [] : I32 131072)
+(defn g-base [] : I32 135168)
+(defn players-base [] : I32 139264)
+(defn proj-base [] : I32 147456)
+(defn tracer-base [] : I32 151552)
+(defn part-base [] : I32 155648)
+(defn map-base [] : I32 163840)
+(defn spawn-base [] : I32 165888)
+(defn names-base [] : I32 172032)
+(defn netin-base [] : I32 176128)
+(defn netout-base [] : I32 184320)
+(defn token-base [] : I32 192512)
+(defn font-base [] : I32 196608)
+(defn feed-base [] : I32 200704)
+(defn board-base [] : I32 204800)
+(defn snd-base [] : I32 3145728)
+(defn fb-base [] : I32 1048576)
+(defn zb-base [] : I32 2097152)
+
+(defn fb-w [] : I32 640)
+(defn fb-h [] : I32 360)
+
+(defn max-players [] : I32 10)
+(defn max-proj [] : I32 64)
+(defn max-tracers [] : I32 32)
+(defn max-parts [] : I32 128)
+
+(defn pl-base [(p : I32)] : I32 (+ (players-base) (* p 512)))
+(defn pj-base [(q : I32)] : I32 (+ (proj-base) (* q 64)))
+(defn tr-base [(t : I32)] : I32 (+ (tracer-base) (* t 64)))
+(defn pa-base [(f : I32)] : I32 (+ (part-base) (* f 64)))
+(defn name-addr [(p : I32)] : I32 (+ (names-base) (* (clamp-i p 0 9) 32)))
+
+;; generic by-index word access (for helpers that take a field index)
+(defn pi [(p : I32) (k : I32)] : I32 (load32 (+ (pl-base p) (shl k 2))))
+(defn pi! [(p : I32) (k : I32) (v : I32)] : Unit (store32! (+ (pl-base p) (shl k 2)) v))
+
+;; ---- global state words ------------------------------------------------------------------
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+(defn gf [(k : I32)] : F32 (loadf32 (+ (g-base) (shl k 2))))
+(defn gf! [(k : I32) (v : F32)] : Unit (storef32! (+ (g-base) (shl k 2)) v))
+
+;; simulation
+(defn g-tick [] : I32 0)           ; server_tick: sim ticks since match start
+(defn g-rng [] : I32 1)
+(defn g-me [] : I32 2)             ; the local human's slot
+(defn g-mode [] : I32 3)           ; 0 bot match (local sim authority), 1 human FFA (server authority)
+(defn g-match-left [] : I32 4)     ; ticks of match time left
+(defn g-match-total [] : I32 5)
+(defn g-kill-limit [] : I32 6)
+(defn g-winner [] : I32 7)         ; slot, or -1
+(defn g-end-reason [] : I32 8)     ; 1 kills, 2 time, 3 abandoned
+(defn g-bot-level [] : I32 9)      ; 1 easy, 2 normal, 3 hard
+(defn g-match-no [] : I32 10)      ; matches started this session
+(defn g-countdown [] : I32 11)     ; ticks of READY/3/2/1 before the sim runs
+(defn g-sim-frozen [] : I32 12)
+;; session / screens
+(defn g-phase [] : I32 16)         ; 0 title, 1 playing, 2 match end, 3 match found (interstitial)
+(defn g-frame [] : I32 17)
+(defn g-clock-acc [] : I32 18)     ; F32 ms owed to the fixed-step sim
+(defn g-ticker [] : I32 19)        ; wall-clock ms as I32 (animation only, never sim)
+(defn g-locked [] : I32 20)        ; 1 = pointer is captured by the canvas
+(defn g-paused [] : I32 21)
+(defn g-ui-t [] : I32 22)          ; frames in the current screen
+(defn g-hover [] : I32 23)
+(defn g-last-input [] : I32 24)
+(defn g-notice-t [] : I32 25)
+(defn g-notice-id [] : I32 26)
+(defn g-score-open [] : I32 27)    ; TAB held
+(defn g-hitmark [] : I32 28)       ; ticks of hit marker left (+ head flag in bit 8)
+(defn g-dmg-flash [] : I32 29)     ; ticks of screen damage tint
+(defn g-dmg-dir [] : I32 30)       ; F32 bits unused; direction stored in g-dmg-yaw
+(defn g-dmg-yaw [] : I32 31)       ; F32: world yaw the last hit came from
+(defn g-death-cam [] : I32 32)
+(defn g-shake [] : I32 33)
+(defn g-streak [] : I32 34)
+(defn g-banner-t [] : I32 35)      ; ticks of the big center banner
+(defn g-banner-id [] : I32 36)
+(defn g-stat-first [] : I32 37)
+(defn g-kill-msg-t [] : I32 38)
+(defn g-kill-msg-victim [] : I32 39)
+(defn g-tab-prev [] : I32 40)
+(defn g-nav-prev [] : I32 41)
+(defn g-click-prev [] : I32 42)
+(defn g-last-kill-tick [] : I32 43)
+(defn g-multi [] : I32 44)
+;; camera and view
+(defn g-cam-yaw [] : I32 48)       ; F32 degrees
+(defn g-cam-pitch [] : I32 49)     ; F32
+(defn g-fov [] : I32 50)           ; F32 current vertical-ish fov degrees
+(defn g-zoom [] : I32 51)          ; right mouse held
+(defn g-was-jump [] : I32 52)
+(defn g-bob [] : I32 53)           ; F32
+(defn g-cam-x [] : I32 54)         ; F32 view origin (set per frame)
+(defn g-cam-y [] : I32 55)
+(defn g-cam-z [] : I32 56)
+(defn g-cam-sy [] : I32 57)        ; F32 sin/cos of view yaw / pitch (per frame)
+(defn g-cam-cy [] : I32 58)
+(defn g-cam-sp [] : I32 59)
+(defn g-cam-cp [] : I32 60)
+(defn g-proj-scale [] : I32 61)    ; F32 pixels per unit at z=1
+(defn g-sens [] : I32 62)          ; F32 mouse sensitivity multiplier (page setting)
+(defn g-view-slot [] : I32 63)     ; whose eyes we are looking through (self, or the killer while dead)
+;; net
+(defn g-net-state [] : I32 64)     ; 0 off, 1 connecting, 2 open, 3 failed/closed
+(defn g-q-state [] : I32 65)       ; 0 idle, 1 searching, 2 match found, 3 in a human match
+(defn g-q-count [] : I32 66)       ; humans searching, as the server reports it
+(defn g-q-elapsed [] : I32 67)     ; seconds spent searching
+(defn g-q-online [] : I32 68)      ; humans online
+(defn g-token-len [] : I32 69)
+(defn g-name-len [] : I32 70)
+(defn g-signed-in [] : I32 71)
+(defn g-in-len [] : I32 72)
+(defn g-out-len [] : I32 73)
+(defn g-net-seq [] : I32 74)
+(defn g-net-room [] : I32 75)
+(defn g-net-hello [] : I32 76)     ; 1 once the hello went out
+(defn g-want-queue [] : I32 77)    ; 1 = the player wants to be searching
+(defn g-net-clock [] : I32 78)     ; server ms of the last snapshot
+(defn g-net-offset [] : I32 79)    ; local ticker - server ms
+(defn g-net-pending [] : I32 80)   ; 1 = a queue request is waiting for the socket to open
+(defn g-send-acc [] : I32 81)
+(defn g-roster-n [] : I32 82)
+(defn g-match-start-ms [] : I32 83)
+(defn g-ping-ms [] : I32 84)
+(defn g-ping-sent [] : I32 85)
+(defn g-net-err [] : I32 86)       ; last server error code
+(defn g-found-t [] : I32 87)       ; ticks left in the MATCH FOUND interstitial
+(defn g-late-join [] : I32 88)
+(defn g-snd-head [] : I32 90)
+(defn g-snd-seen [] : I32 91)
+(defn g-end-t [] : I32 92)         ; frames on the end screen
+(defn g-end-mode [] : I32 93)      ; the mode of the match that just ended
+(defn g-end-n [] : I32 94)         ; scoreboard rows
+(defn g-end-me [] : I32 95)
+(defn g-end-requeue [] : I32 96)
+(defn g-feed-head [] : I32 97)
+(defn g-online-ok [] : I32 98)     ; the page says matchmaking is reachable (set on socket open)
+(defn g-cmd-fwd [] : I32 100)       ; F32: the local player's command for the next tick
+(defn g-cmd-str [] : I32 101)       ; F32
+(defn g-cmd-jump [] : I32 102)
+(defn g-cmd-fire [] : I32 103)
+(defn g-cmd-crouch [] : I32 104)
+(defn g-cmd-reload [] : I32 105)
+(defn g-cmd-ability [] : I32 106)
+(defn g-cmd-weapon [] : I32 107)    ; -1 = no change
+(defn g-tmp0 [] : I32 120)
+(defn g-tmp1 [] : I32 121)
+(defn g-tmp2 [] : I32 122)
+(defn g-hit-x [] : I32 123)        ; F32 scratch: last ray-hit point
+(defn g-hit-y [] : I32 124)
+(defn g-hit-z [] : I32 125)
+(defn g-hit-t [] : I32 126)        ; F32 scratch: last ray-hit distance
+(defn g-box-n [] : I32 127)        ; map box count
+(defn g-spawn-n [] : I32 128)
+(defn g-crown-x [] : I32 129)
+(defn g-crown-y [] : I32 130)
+(defn g-crown-z [] : I32 131)
+
+;; ---- tiny integer / float helpers ---------------------------------------------------------
+(defn b2i [(c : Bool)] : I32 (if c 1 0))
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn clamp-i [(x : I32) (lo : I32) (hi : I32)] : I32 (max-i lo (min-i x hi)))
+(defn abs-i [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+(defn fmax2 [(a : F32) (b : F32)] : F32 (if (> a b) a b))
+(defn fmin2 [(a : F32) (b : F32)] : F32 (if (< a b) a b))
+(defn clamp-f [(x : F32) (lo : F32) (hi : F32)] : F32 (fmax2 lo (fmin2 x hi)))
+(defn sq [(x : F32)] : F32 (* x x))
+(defn lerp [(a : F32) (b : F32) (t : F32)] : F32 (+ a (* (- b a) t)))
+
+;; ---- PRNG: glibc TYPE_0 LCG, output bits 16..30 (what rand() % 1000 would see) --------------
+(defn sp-seed! [(s : I32)] : Unit (gi! (g-rng) s))
+(defn sp-rand [] : I32
+  (let [s (+ (* (gi (g-rng)) 1103515245) 12345)]
+    (gi! (g-rng) s)
+    (bit-and (ushr s 16) 32767)))
+(defn rnd [(n : I32)] : I32 (mod (sp-rand) (max-i n 1)))
+(defn chance [(pct : I32)] : Bool (< (rnd 100) pct))
+;; phys_rand_f(): ((float)(rand()%1000)/500.0f) - 1.0f
+(defn phys-rand-f [] : F32 (- (/ (f32 (mod (sp-rand) 1000)) 500.0) 1.0))
+(defn rand-unit [] : F32 (/ (f32 (mod (sp-rand) 10000)) 10000.0))
+;; cosmetics (sparks, sound pitch, camera jitter) draw from their OWN generator, so what the player sees and
+;; hears can never change what the simulation rolls
+(defn g-rng2 [] : I32 134)
+(defn fx-rand [] : I32
+  (let [s (+ (* (gi (g-rng2)) 1103515245) 12345)]
+    (gi! (g-rng2) s)
+    (bit-and (ushr s 16) 32767)))
+(defn fx-rnd [(n : I32)] : I32 (mod (fx-rand) (max-i n 1)))
+(defn fx-rand-f [] : F32 (- (/ (f32 (mod (fx-rand) 1000)) 500.0) 1.0))
+(defn fx-rand-unit [] : F32 (/ (f32 (mod (fx-rand) 10000)) 10000.0))
+
+;; ---- math without libm ---------------------------------------------------------------------
+;; sin/cos are evaluated in F64 (range reduction + a Taylor series good to ~1e-10) and rounded to F32,
+;; so the result is the correctly rounded float in all but the rarest cases -- the same value glibc's
+;; sinf gives -- and the C engine's trig matches to the last bit almost everywhere.
+(defn pi-f64 [] : F64 3.141592653589793)
+(defn sin64 [(x : F64)] : F64
+  (let [(k : F64) (floor (+ (/ x 6.283185307179586) 0.5))
+        (r0 : F64) (- x (* k 6.283185307179586))
+        (r : F64) (cond (> r0 1.5707963267948966) (- 3.141592653589793 r0)
+                        (< r0 -1.5707963267948966) (- -3.141592653589793 r0)
+                        :else r0)
+        (r2 : F64) (* r r)]
+    (* r (+ 1.0 (* r2 (+ -0.16666666666666666
+                         (* r2 (+ 0.008333333333333333
+                                  (* r2 (+ -0.0001984126984126984
+                                           (* r2 (+ 0.0000027557319223985893
+                                                    (* r2 (+ -0.00000002505210838544172
+                                                             (* r2 0.00000000016059043836821613)))))))))))))))
+(defn sinf [(x : F32)] : F32 (f32 (sin64 (f64 x))))
+(defn cosf [(x : F32)] : F32 (f32 (sin64 (+ (f64 x) 1.5707963267948966))))
+
+;; atan2 (radians) via the F64 series on the reduced octant; only the bots and the HUD use it
+(defn atan64 [(z : F64)] : F64
+  ;; |z| <= 1: minimax-quality odd polynomial
+  (let [(z2 : F64) (* z z)]
+    (* z (+ 0.9998660 (* z2 (+ -0.3302995 (* z2 (+ 0.1801410 (* z2 (+ -0.0851330 (* z2 0.0208351)))))))))))
+(defn atan2f [(y : F32) (x : F32)] : F32
+  (let [(ay : F64) (f64 (fabs y))
+        (ax : F64) (f64 (fabs x))
+        (a : F64) (if (and (< ax 0.0000001) (< ay 0.0000001))
+                      0.0
+                      (if (>= ax ay)
+                          (atan64 (/ ay ax))
+                          (- 1.5707963267948966 (atan64 (/ ax ay)))))
+        (b : F64) (if (< x 0.0) (- 3.141592653589793 a) a)]
+    (f32 (if (< y 0.0) (- 0.0 b) b))))
+
+(defn deg2rad [] : F32 0.0174533)           ; the literal physics.h writes inline
+(defn rad2deg [] : F32 57.29578)
+
+;; vector length helpers
+(defn len2 [(x : F32) (z : F32)] : F32 (sqrt (+ (* x x) (* z z))))
+(defn len3 [(x : F32) (y : F32) (z : F32)] : F32 (sqrt (+ (+ (* x x) (* y y)) (* z z))))
+
+;; angle_diff(a, b): a - b wrapped to [-180, 180]
+(defn angle-diff [(a : F32) (b : F32)] : F32
+  (let [(d : F32) (- a b)]
+    (loop [(v : F32) d g 0]
+      (cond (and (< v -180.0) (< g 8)) (recur (+ v 360.0) (+ g 1))
+            (and (> v 180.0) (< g 8)) (recur (- v 360.0) (+ g 1))
+            :else v))))
+
+;; norm_yaw_deg / clamp_pitch_deg (physics.h)
+(defn norm-yaw [(yaw : F32)] : F32
+  (loop [(v : F32) yaw g 0]
+    (cond (and (>= v 360.0) (< g 16)) (recur (- v 360.0) (+ g 1))
+          (and (< v 0.0) (< g 16)) (recur (+ v 360.0) (+ g 1))
+          :else v)))
+(defn clamp-pitch [(p : F32)] : F32
+  (cond (> p 89.0) 89.0 (< p -89.0) -89.0 :else p))

@@ -1,0 +1,12 @@
+# the wasm engine's source files, in build order (scripts/build_shankpit460_wasm.sh)
+stdlib/shankpit460/sp_mem.prn
+stdlib/shankpit460/sp_fields.prn
+stdlib/shankpit460/sp_map.prn
+stdlib/shankpit460/sp_map_data.prn
+stdlib/shankpit460/sp_phys.prn
+stdlib/shankpit460/sp_fx.prn
+stdlib/shankpit460/sp_net.prn
+stdlib/shankpit460/sp_ai.prn
+stdlib/shankpit460/sp_sim.prn
+stdlib/shankpit460/sp_rules.prn
+stdlib/shankpit460/sp_main.prn

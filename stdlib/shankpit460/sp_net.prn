@@ -1,0 +1,3 @@
+;; stub (replaced below)
+(defn net-claim-hit! [(tgt : I32) (w : I32) (head : I32)] : Unit unit)
+(defn net-send-fire! [(w : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit unit)

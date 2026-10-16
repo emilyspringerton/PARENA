@@ -1,0 +1,161 @@
+;; stdlib/shankpit460/sp_sim.prn -- the simulation driver: match setup, the 16 ms tick, rules.
+;;
+;; The tick is the server's main loop (apps/server/src/main.c): every active, living player runs
+;; shankpit_simulate_movement_tick, everyone else update_entity, then update_projectiles; the win check
+;; (first to N kills, or the clock) follows. Two authorities share this code:
+;;   mode 0  BOT MATCH   this engine is the authority: bots think here, damage and respawns are applied here;
+;;   mode 1  HUMAN FFA   the matchmaking server is the authority for health, deaths, respawns and the
+;;                       score; this engine simulates only the local player and draws everyone else from
+;;                       snapshots (sp_net.prn).
+
+(defn ticks-per-minute [] : I32 3750)          ; 60000 / 16
+(defn bot-match-kills [] : I32 13)             ; the live pool's DEATHMATCH_WIN_KILLS
+(defn bot-match-minutes [] : I32 5)
+(defn human-match-kills [] : I32 16)           ; founder 2026-10-16: "human matches are first to 16 or they end at 6 minutes"
+(defn human-match-minutes [] : I32 6)
+(defn bot-count [] : I32 7)
+
+;; ---- clearing ---------------------------------------------------------------------------------------
+(defn zero-words! [(addr : I32) (n : I32)] : Unit
+  (loop [i 0] (when (< i n) (store32! (+ addr (shl i 2)) 0) (recur (+ i 1)))))
+
+(defn clear-world! [] : Unit
+  (do
+    (zero-words! (players-base) (* (max-players) 128))
+    (zero-words! (proj-base) (* (max-proj) 16))
+    (zero-words! (tracer-base) (* (max-tracers) 16))
+    (zero-words! (part-base) (* (max-parts) 16))
+    (dotimes [i (max-players)] (set-p-id! i i) (set-p-last-damager! i -1) (set-p-color! i i))))
+
+(defn init-map! [] : Unit (map-init-data!))
+
+;; ---- names -------------------------------------------------------------------------------------------
+(defn put-name! [(p : I32) (s : String)] : Unit
+  (let [a (name-addr p)
+        src (str-addr s)]
+    (loop [i 0]
+      (let [ch (load8 (+ src i))]
+        (if (and (!= ch 0) (< i 30))
+            (do (store8! (+ a i) ch) (recur (+ i 1)))
+            (store8! (+ a i) 0))))))
+
+(defn bot-name [(i : I32)] : String
+  (case i 1 "Ada" 2 "Bram" 3 "Cleo" 4 "Dov" 5 "Edda" 6 "Finn" 7 "Gwen" 8 "Hale" 9 "Iris" "Juno"))
+
+;; ---- match setup ---------------------------------------------------------------------------------------
+(defn face-center! [(p : I32)] : Unit
+  (let [(dx : F32) (- 0.0 (p-x p))
+        (dz : F32) (- 0.0 (p-z p))]
+    (set-p-yaw! p (norm-yaw (- 0.0 (* (atan2f dx (- 0.0 dz)) (rad2deg)))))))
+
+(defn place-at-spawn! [(p : I32) (s : I32)] : Unit
+  (do (respawn-at! p (spawn-x s) (spawn-y s) (spawn-z s))
+      (set-p-spawn-prot! p 0)
+      (face-center! p)))
+
+;; one human (slot 0) and seven bots, free-for-all, first to 13 kills or five minutes
+(defn setup-bot-match! [(level : I32)] : Unit
+  (do
+    (clear-world!)
+    (gi! (g-mode) 0)
+    (gi! (g-me) 0)
+    (gi! (g-view-slot) 0)
+    (gi! (g-bot-level) level)
+    (gi! (g-tick) 0)
+    (gi! (g-kill-limit) (bot-match-kills))
+    (gi! (g-match-total) (* (bot-match-minutes) (ticks-per-minute)))
+    (gi! (g-match-left) (gi (g-match-total)))
+    (gi! (g-winner) -1)
+    (gi! (g-end-reason) 0)
+    (gi! (g-countdown) 190)
+    (gi! (g-death-cam) 0)
+    (gi! (g-streak) 0)
+    (gi! (g-feed-head) 0)
+    (zero-words! (feed-base) 32)
+    (gi! (g-match-no) (+ (gi (g-match-no)) 1))
+    (gi! (g-tmp0) (rnd (spawn-count)))
+    (place-at-spawn! 0 (gi (g-tmp0)))
+    (gf! (g-cam-yaw) (p-yaw 0))
+    (gf! (g-cam-pitch) 0.0)
+    ;; the bots take the other spawns, round the table
+    (dotimes [b (bot-count)]
+      (let [slot (+ b 1)]
+        (set-p-is-bot! slot 1)
+        (place-at-spawn! slot (mod (+ (gi (g-tmp0)) slot) (spawn-count)))
+        (bot-init! slot level)
+        (put-name! slot (bot-name slot))))))
+
+;; ---- the local player's command ------------------------------------------------------------------------
+;; sp_input.prn fills the g-cmd words each frame from the keyboard / mouse / pad; the tick applies them.
+(defn apply-local-cmd! [] : Unit
+  (let [me (gi (g-me))]
+    (when (and (alive? me) (= (gi (g-countdown)) 0))
+      (apply-usercmd! me (gf (g-cmd-fwd)) (gf (g-cmd-str)) (gf (g-cam-yaw)) (gf (g-cam-pitch))
+                      (!= (gi (g-cmd-jump)) 0) (!= (gi (g-cmd-fire)) 0) (!= (gi (g-cmd-crouch)) 0)
+                      (!= (gi (g-cmd-reload)) 0) (!= (gi (g-cmd-ability)) 0))
+      (when (>= (gi (g-cmd-weapon)) 0)
+        (set-p-weapon! me (clamp-i (gi (g-cmd-weapon)) 0 5))))
+    (when (not (alive? me))
+      (apply-usercmd! me 0.0 0.0 (p-yaw me) (p-pitch me) false false false false false))))
+
+;; ---- one tick ----------------------------------------------------------------------------------------------
+(defn tick-timers! [] : Unit
+  (do
+    (dotimes [i (max-players)]
+      (when (> (p-spawn-prot i) 0) (set-p-spawn-prot! i (- (p-spawn-prot i) 1)))
+      (when (> (p-flash i) 0) (set-p-flash! i (- (p-flash i) 1))))
+    (when (> (gi (g-hitmark)) 0) (gi! (g-hitmark) (- (gi (g-hitmark)) 1)))
+    (when (> (gi (g-dmg-flash)) 0) (gi! (g-dmg-flash) (- (gi (g-dmg-flash)) 1)))
+    (when (> (gi (g-shake)) 0) (gi! (g-shake) (- (gi (g-shake)) 1)))
+    (when (> (gi (g-banner-t)) 0) (gi! (g-banner-t) (- (gi (g-banner-t)) 1)))
+    (when (> (gi (g-kill-msg-t)) 0) (gi! (g-kill-msg-t) (- (gi (g-kill-msg-t)) 1)))
+    (tick-tracers!)
+    (tick-particles!)
+    (tick-feed!)))
+
+;; the core of the server's main loop, with no clock logic: used by the match and by the parity tests
+(defn world-step! [] : Unit
+  (do
+    (dotimes [i (max-players)]
+      (when (!= (p-active i) 0)
+        (if (!= (p-net-slot i) 0)
+            unit
+            (if (= (p-state i) (state-dead))
+                (update-entity! i)
+                (simulate-movement-tick! i)))))
+    (update-projectiles!)
+    (gi! (g-tick) (+ (gi (g-tick)) 1))))
+
+(defn leader [] : I32
+  (let [best -1 bk -1 bd 0]
+    (dotimes [i (max-players)]
+      (when (!= (p-active i) 0)
+        (when (or (> (p-kills i) bk) (and (= (p-kills i) bk) (< (p-deaths i) bd)))
+          (set! best i) (set! bk (p-kills i)) (set! bd (p-deaths i)))))
+    best))
+
+;; the bot match's own win test (apps/server/src/main.c: DEATHMATCH_WIN_KILLS, then the round clock)
+(defn check-bot-match-end! [] : Unit
+  (let [l (leader)]
+    (cond
+      (and (>= l 0) (>= (p-kills l) (gi (g-kill-limit)))) (end-match! l 1)
+      (<= (gi (g-match-left)) 0) (end-match! l 2)
+      :else unit)))
+
+(defn sim-tick! [] : Unit
+  (cond
+    (= (gi (g-countdown)) 0)
+      (do
+        (apply-local-cmd!)
+        (dotimes [i (max-players)]
+          (when (and (!= (p-is-bot i) 0) (alive? i)) (bot-think! i)))
+        (world-step!)
+        (tick-timers!)
+        (when (> (gi (g-match-left)) 0) (gi! (g-match-left) (- (gi (g-match-left)) 1)))
+        (when (= (gi (g-mode)) 0) (check-bot-match-end!)))
+    :else
+      (do
+        (gi! (g-countdown) (- (gi (g-countdown)) 1))
+        (when (= (mod (gi (g-countdown)) 60) 59) (snd-ui! 17))
+        (when (= (gi (g-countdown)) 0) (snd-ui! 18))
+        (tick-timers!))))

@@ -1,0 +1,43 @@
+;; stdlib/shankpit460/sp_rules.prn -- how a match ends, and what the end screen is built from.
+
+;; the final standings, best first: kills descending, then deaths ascending, then slot. Written to the BOARD
+;; region as {slot, kills, deaths, is-bot} words; the end screen and the page footer read them.
+(defn board-addr [(i : I32)] : I32 (+ (board-base) (* i 16)))
+(defn board-better? [(a : I32) (b : I32)] : Bool
+  (or (> (p-kills a) (p-kills b))
+      (and (= (p-kills a) (p-kills b))
+           (or (< (p-deaths a) (p-deaths b)) (and (= (p-deaths a) (p-deaths b)) (< a b))))))
+
+(defn build-board! [] : Unit
+  (let [n 0]
+    (dotimes [i (max-players)]
+      (when (!= (p-active i) 0)
+        (store32! (board-addr n) i)
+        (set! n (+ n 1))))
+    ;; insertion sort on the slot list
+    (loop [i 1]
+      (when (< i n)
+        (let [key (load32 (board-addr i))]
+          (loop [j (- i 1)]
+            (if (and (>= j 0) (board-better? key (load32 (board-addr j))))
+                (do (store32! (board-addr (+ j 1)) (load32 (board-addr j))) (recur (- j 1)))
+                (store32! (board-addr (+ j 1)) key))))
+        (recur (+ i 1))))
+    (gi! (g-end-n) n)
+    (dotimes [i n]
+      (let [s (load32 (board-addr i))]
+        (store32! (+ (board-addr i) 4) (p-kills s))
+        (store32! (+ (board-addr i) 8) (p-deaths s))
+        (store32! (+ (board-addr i) 12) (p-is-bot s))))))
+
+;; reason: 1 first to the kill limit, 2 the clock, 3 the room closed under you
+(defn end-match! [(winner : I32) (reason : I32)] : Unit
+  (when (!= (gi (g-phase)) 2)
+    (gi! (g-winner) winner)
+    (gi! (g-end-reason) reason)
+    (gi! (g-end-mode) (gi (g-mode)))
+    (gi! (g-end-t) 0)
+    (gi! (g-phase) 2)
+    (gi! (g-score-open) 0)
+    (build-board!)
+    (snd-ui! (if (= winner (gi (g-me))) 19 20))))

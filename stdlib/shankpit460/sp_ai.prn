@@ -1,0 +1,3 @@
+;; stub (replaced below)
+(defn bot-init! [(p : I32) (level : I32)] : Unit (set-p-bot-level! p level))
+(defn bot-think! [(p : I32)] : Unit unit)

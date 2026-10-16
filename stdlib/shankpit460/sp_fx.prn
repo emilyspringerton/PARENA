@@ -1,0 +1,142 @@
+;; stdlib/shankpit460/sp_fx.prn -- effects: tracers, impact sparks, the kill feed, and the sound-event ring.
+;;
+;; Sound: the wasm has no audio device. It appends {id, gain, pan, pitch} records to a ring at snd-base and
+;; the page (sp_host.prn) turns them into short WebAudio blips -- the same split as the native client's
+;; SoundEngine vtable (play_weapon / play_footstep ...): the engine says WHAT happened and WHERE, the host
+;; decides how it sounds. Ids: 0 magnum 1 AR 2 shotgun 3 sniper 4 storm 5 reload 6 swing 7 charge 8 click
+;; 9 hit 10 headshot 11 kill 12 hurt 13 death 14 respawn 15 ui 16 match-found 17 tick 18 go 19 win 20 lose.
+
+;; ---- sound ring -----------------------------------------------------------------------------------
+(defn snd-slot [(i : I32)] : I32 (+ (snd-base) (* (bit-and i 63) 16)))
+(defn snd! [(id : I32) (gain : F32) (pan : F32) (pitch : F32)] : Unit
+  (let [h (gi (g-snd-head))
+        a (snd-slot h)]
+    (store32! a id)
+    (storef32! (+ a 4) gain)
+    (storef32! (+ a 8) pan)
+    (storef32! (+ a 12) pitch)
+    (gi! (g-snd-head) (+ h 1))))
+(defn snd-ui! [(id : I32)] : Unit (snd! id 1.0 0.0 1.0))
+
+;; a sound in the world: gain falls off with distance from the camera, pan follows the bearing
+(defn snd-at! [(id : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (let [(dx : F32) (- x (gf (g-cam-x)))
+        (dz : F32) (- z (gf (g-cam-z)))
+        (d : F32) (sqrt (+ (* dx dx) (* dz dz)))
+        (gain : F32) (/ 1.0 (+ 1.0 (/ d 70.0)))
+        (right : F32) (+ (* dx (gf (g-cam-cy))) (* dz (gf (g-cam-sy))))
+        (pan : F32) (if (> d 0.5) (clamp-f (/ right d) -1.0 1.0) 0.0)]
+    (when (> gain 0.04)
+      (snd! id gain pan (+ 0.94 (* (fx-rand-unit) 0.12))))))
+
+;; ---- tracers ----------------------------------------------------------------------------------------
+(defn fx-tracer! [(x0 : F32) (y0 : F32) (z0 : F32) (x1 : F32) (y1 : F32) (z1 : F32) (kind : I32)] : Unit
+  (let [(slot : I32) (loop [i 0] (cond (>= i (max-tracers)) 0 (<= (t-ttl i) 0) i :else (recur (+ i 1))))]
+    (set-t-ttl! slot 7)
+    (set-t-life! slot 7)
+    (set-t-kind! slot kind)
+    (set-t-x0! slot x0) (set-t-y0! slot y0) (set-t-z0! slot z0)
+    (set-t-x1! slot x1) (set-t-y1! slot y1) (set-t-z1! slot z1)))
+
+(defn tick-tracers! [] : Unit
+  (dotimes [i (max-tracers)] (when (> (t-ttl i) 0) (set-t-ttl! i (- (t-ttl i) 1)))))
+
+;; a shot leaves the eye of its shooter: a tracer to the first solid (or 600 units), a sound, and -- for the
+;; local player in a human match -- the FIRE message that lets everyone else draw and hear it
+(defn fx-shot! [(p : I32) (w : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
+  (let [(len : F32) (len3 dx dy dz)]
+    (when (> len 0.0001)
+      (let [(ux : F32) (/ dx len)
+            (uy : F32) (/ dy len)
+            (uz : F32) (/ dz len)
+            (t : F32) (ray-world ox oy oz ux uy uz 600.0)]
+        (snd-at! (case w 0 6 1 0 2 1 3 2 4 3 6) ox oy oz)
+        (when (not (wpn-melee? w))
+          ;; the muzzle sits a little low and to the right of the eye, as the first-person model does
+          (fx-tracer! (+ (+ ox (* ux 1.6)) (* (right-x (p-yaw p)) 0.5))
+                      (- (+ oy (* uy 1.6)) 0.5)
+                      (+ (+ oz (* uz 1.6)) (* (right-z (p-yaw p)) 0.5))
+                      (+ ox (* ux t)) (+ oy (* uy t)) (+ oz (* uz t))
+                      (if (= w 3) 1 0)))
+        (when (> t 0.0)
+          (when (< t 599.0) (fx-sparks! (+ ox (* ux (- t 0.2))) (+ oy (* uy (- t 0.2))) (+ oz (* uz (- t 0.2))) 0 3)))
+        (when (and (net-match?) (mine? p))
+          (net-send-fire! w ox oy oz ux uy uz))))))
+
+;; ---- particles ---------------------------------------------------------------------------------------
+;; kind: 0 wall dust, 1 head spark, 2 body spark, 3 storm, 4 death burst
+(defn fx-sparks! [(x : F32) (y : F32) (z : F32) (kind : I32) (n : I32)] : Unit
+  (dotimes [k n]
+    (let [(slot : I32) (loop [i 0] (cond (>= i (max-parts)) -1 (<= (f-ttl i) 0) i :else (recur (+ i 1))))]
+      (when (>= slot 0)
+        (set-f-ttl! slot (+ 14 (fx-rnd 14)))
+        (set-f-x! slot x) (set-f-y! slot y) (set-f-z! slot z)
+        (set-f-vx! slot (* (fx-rand-f) 0.35))
+        (set-f-vy! slot (+ 0.12 (* (fx-rand-unit) 0.3)))
+        (set-f-vz! slot (* (fx-rand-f) 0.35))
+        (set-f-color! slot kind)
+        (set-f-size! slot (if (= kind 4) 3 2))))))
+
+(defn tick-particles! [] : Unit
+  (dotimes [i (max-parts)]
+    (when (> (f-ttl i) 0)
+      (set-f-ttl! i (- (f-ttl i) 1))
+      (set-f-x! i (+ (f-x i) (f-vx i)))
+      (set-f-y! i (+ (f-y i) (f-vy i)))
+      (set-f-z! i (+ (f-z i) (f-vz i)))
+      (set-f-vy! i (- (f-vy i) 0.03))
+      (when (< (f-y i) 0.0) (set-f-y! i 0.0) (set-f-vy! i 0.0)))))
+
+;; ---- kill feed ---------------------------------------------------------------------------------------
+;; 8 entries x 16 bytes: attacker, victim, weapon, ttl (frames)
+(defn feed-addr [(i : I32)] : I32 (+ (feed-base) (* (bit-and i 7) 16)))
+(defn feed-push! [(att : I32) (vic : I32) (w : I32)] : Unit
+  (let [h (gi (g-feed-head))
+        a (feed-addr h)]
+    (store32! a att) (store32! (+ a 4) vic) (store32! (+ a 8) w) (store32! (+ a 12) 420)
+    (gi! (g-feed-head) (+ h 1))))
+(defn tick-feed! [] : Unit
+  (dotimes [i 8]
+    (let [a (+ (feed-addr i) 12)]
+      (when (> (load32 a) 0) (store32! a (- (load32 a) 1))))))
+
+;; ---- the hooks the rules code calls ---------------------------------------------------------------------
+;; the local player was hurt: tint, direction marker, a shove on the camera
+(defn on-damaged! [(att : I32) (tgt : I32) (dmg : I32) (w : I32)] : Unit
+  (do
+    (when (mine? tgt)
+      (gi! (g-dmg-flash) 22)
+      (gi! (g-shake) 8)
+      (when (!= att tgt)
+        (gf! (g-dmg-yaw) (* (atan2f (- (p-x att) (p-x tgt)) (- 0.0 (- (p-z att) (p-z tgt)))) (rad2deg))))
+      (snd! 12 1.0 0.0 1.0))
+    (when (mine? att)
+      (gi! (g-hitmark) (if (>= (p-hit-feedback att) 20) 14 10))
+      (snd! (if (>= (p-hit-feedback att) 20) 10 9) 0.9 0.0 1.0))))
+
+(defn on-killed! [(att : I32) (tgt : I32) (w : I32)] : Unit
+  (do
+    (feed-push! att tgt w)
+    (fx-sparks! (p-x tgt) (+ (p-y tgt) 2.0) (p-z tgt) 4 18)
+    (snd-at! 13 (p-x tgt) (p-y tgt) (p-z tgt))
+    (when (mine? att)
+      (gi! (g-streak) (+ (gi (g-streak)) 1))
+      (gi! (g-kill-msg-t) 150)
+      (gi! (g-kill-msg-victim) tgt)
+      (gi! (g-banner-id) (if (< (- (gi (g-tick)) (gi (g-last-kill-tick))) 220) 2 1))
+      (gi! (g-banner-t) 96)
+      (gi! (g-last-kill-tick) (gi (g-tick)))
+      (snd! 11 1.0 0.0 1.0))
+    (when (mine? tgt)
+      (gi! (g-streak) 0)
+      (gi! (g-death-cam) 1)
+      (gi! (g-view-slot) att)
+      (snd! 13 1.0 0.0 0.8))))
+
+(defn on-respawned! [(p : I32)] : Unit
+  (when (mine? p)
+    (gf! (g-cam-yaw) (p-yaw p))
+    (gf! (g-cam-pitch) 0.0)
+    (gi! (g-death-cam) 0)
+    (gi! (g-view-slot) p)
+    (snd! 14 0.8 0.0 1.0)))

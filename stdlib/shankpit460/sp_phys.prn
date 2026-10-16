@@ -1,0 +1,659 @@
+;; stdlib/shankpit460/sp_phys.prn -- shankpit-460 physics, weapons and projectiles.
+;;
+;; A port of shankpit-460's packages/common/physics.h + net_sim.h + the update_entity / update_projectiles
+;; half of packages/simulation/local_game.h -- the *online* movement path: apply_usercmd_inputs, then
+;; shankpit_simulate_movement_tick, which calls update_entity. F32 throughout and the C evaluation order is
+;; kept, so tests/shankpit460_parity_test.mjs can run both engines side by side. Where this file departs
+;; from the C engine, the departure is marked DEVIATION and listed in stdlib/shankpit460/README.md:
+;;   * hitscan is stopped by walls (the C engine's rays go through every box in the arena);
+;;   * a sniper-storm projectile kill goes through the same delayed death as every other kill (the C
+;;     projectile path respawned the victim in the same tick);
+;;   * a respawn zeroes velocity, and a fresh spawn is protected for a second in free-for-all.
+;; Tick = 16 ms (SHANKPIT_NET_FIXED_DT, the server's usleep(16000)); the sim clock `now_ms` is tick * 16.
+
+;; ---- physics.h / protocol.h constants ---------------------------------------------------------
+(defn c-gravity-float [] : F32 0.025)
+(defn c-gravity-drop [] : F32 0.075)
+(defn c-jump-force [] : F32 0.95)
+(defn c-max-speed [] : F32 0.95)
+(defn c-friction [] : F32 0.15)
+(defn c-accel [] : F32 0.6)
+(defn c-stop-speed [] : F32 0.1)
+(defn c-slide-friction [] : F32 0.01)
+(defn c-crouch-speed [] : F32 0.35)
+(defn c-eye-height [] : F32 2.59)
+(defn c-player-width [] : F32 0.97)
+(defn c-player-height [] : F32 6.47)
+(defn c-head-size [] : F32 1.94)
+(defn c-head-offset [] : F32 2.42)
+(defn c-melee-range-sq [] : F32 250.0)
+(defn c-katana-slash-range [] : F32 2.75)
+(defn c-katana-slash-arc [] : F32 88.0)
+(defn c-katana-slash-damage [] : I32 40)
+(defn c-katana-slash-active [] : I32 6)
+(defn c-katana-dash-speed [] : F32 5.8)
+(defn c-katana-dash-time [] : I32 8)
+(defn c-katana-dash-damage [] : I32 50)
+(defn c-katana-dash-cooldown [] : I32 420)
+(defn c-katana-dash-up-limit [] : F32 0.35)
+(defn c-katana-dash-radius [] : F32 3.3)
+(defn c-respawn-delay [] : I32 180)
+(defn c-reload-full [] : I32 60)
+(defn c-reload-tactical [] : I32 42)
+(defn c-shield-regen-delay [] : I32 180)
+(defn c-tick-ms [] : I32 16)
+(defn c-spawn-prot [] : I32 62)
+
+;; weapon ids and the WPN_STATS table: dmg rof cnt spread ammo_max
+(defn w-knife [] : I32 0)
+(defn w-magnum [] : I32 1)
+(defn w-ar [] : I32 2)
+(defn w-shotgun [] : I32 3)
+(defn w-sniper [] : I32 4)
+(defn w-katana [] : I32 5)
+(defn w-storm [] : I32 6)           ; claim code only: the sniper's storm projectile
+(defn w-dash [] : I32 7)            ; claim code only: the katana dash
+(defn wpn-dmg [(w : I32)] : I32 (case w 0 200 1 45 2 20 3 128 4 101 5 40 6 70 7 50 0))
+(defn wpn-rof [(w : I32)] : I32 (case w 0 20 1 25 2 6 3 17 4 70 5 28 0))
+(defn wpn-spread [(w : I32)] : F32 (case w 2 0.04 3 0.15 0.0))
+(defn wpn-ammo-max [(w : I32)] : I32 (case w 1 6 2 30 3 8 4 5 0))
+(defn wpn-melee? [(w : I32)] : Bool (or (= w 0) (= w 5)))
+(defn wpn-name [(w : I32)] : String
+  (case w 0 "KNIFE" 1 "MAGNUM" 2 "AR" 3 "SHOTGUN" 4 "SNIPER" 5 "KATANA" "?"))
+
+(defn state-alive [] : I32 0)
+(defn state-dead [] : I32 1)
+
+;; ---- per-weapon ammo -----------------------------------------------------------------------
+(defn ammo [(p : I32) (w : I32)] : I32 (pi p (+ (k-ammo0) (clamp-i w 0 5))))
+(defn set-ammo! [(p : I32) (w : I32) (v : I32)] : Unit (pi! p (+ (k-ammo0) (clamp-i w 0 5)) v))
+
+(defn now-ms [] : I32 (* (gi (g-tick)) (c-tick-ms)))
+(defn alive? [(p : I32)] : Bool
+  (and (!= (p-active p) 0) (= (p-state p) (state-alive))))
+(defn net-match? [] : Bool (= (gi (g-mode)) 1))
+(defn mine? [(p : I32)] : Bool (= p (gi (g-me))))
+
+;; ---- shared_movement.h -------------------------------------------------------------------------
+;; the yaw basis: r = -yaw * (PI / 180); forward = (sin r, -cos r), right = (cos r, sin r)
+(defn yaw-r [(yaw : F32)] : F32 (* (- 0.0 yaw) (/ 3.1415927 180.0)))
+(defn fwd-x [(yaw : F32)] : F32 (sinf (yaw-r yaw)))
+(defn fwd-z [(yaw : F32)] : F32 (- 0.0 (cosf (yaw-r yaw))))
+(defn right-x [(yaw : F32)] : F32 (cosf (yaw-r yaw)))
+(defn right-z [(yaw : F32)] : F32 (sinf (yaw-r yaw)))
+
+;; ---- apply_friction / accelerate / resolve_collision -------------------------------------------
+(defn apply-friction! [(p : I32)] : Unit
+  (when (<= (p-dash-timer p) 0)
+    (let [(speed : F32) (sqrt (+ (* (p-vx p) (p-vx p)) (* (p-vz p) (p-vz p))))]
+      (if (< speed 0.001)
+          (do (set-p-vx! p 0.0) (set-p-vz! p 0.0))
+          (let [(drop : F32) 0.0]
+            (when (!= (p-on-ground p) 0)
+              (if (!= (p-crouching p) 0)
+                  (if (> speed 0.75)
+                      (set! drop (* speed (c-slide-friction)))
+                      (set! drop (* speed (* (c-friction) 3.0))))
+                  (let [(control : F32) (if (< speed (c-stop-speed)) (c-stop-speed) speed)]
+                    (set! drop (* control (c-friction))))))
+            (let [(newspeed : F32) (- speed drop)]
+              (when (< newspeed 0.0) (set! newspeed 0.0))
+              (set! newspeed (/ newspeed speed))
+              (set-p-vx! p (* (p-vx p) newspeed))
+              (set-p-vz! p (* (p-vz p) newspeed))))))))
+
+(defn accelerate! [(p : I32) (wish-x : F32) (wish-z : F32) (wish-speed0 : F32) (accel : F32)] : Unit
+  (let [(speed : F32) (sqrt (+ (* (p-vx p) (p-vx p)) (* (p-vz p) (p-vz p))))
+        (wish-speed : F32) wish-speed0
+        skip (and (!= (p-crouching p) 0) (and (> speed 0.75) (!= (p-on-ground p) 0)))]
+    (when (not skip)
+      (when (and (!= (p-crouching p) 0)
+                 (and (!= (p-on-ground p) 0) (and (< speed 0.75) (> wish-speed (c-crouch-speed)))))
+        (set! wish-speed (c-crouch-speed)))
+      (let [(current : F32) (+ (* (p-vx p) wish-x) (* (p-vz p) wish-z))
+            (add-speed : F32) (- wish-speed current)]
+        (when (> add-speed 0.0)
+          (let [(acc : F32) (* accel (c-max-speed))]
+            (when (> acc add-speed) (set! acc add-speed))
+            (set-p-vx! p (+ (p-vx p) (* acc wish-x)))
+            (set-p-vz! p (+ (p-vz p) (* acc wish-z)))))))))
+
+(defn resolve-collision! [(p : I32)] : Unit
+  (let [(pw : F32) (c-player-width)
+        (ph : F32) (if (!= (p-crouching p) 0) (/ (c-player-height) 2.0) (c-player-height))]
+    (set-p-on-ground! p 0)
+    (when (< (p-y p) 0.0)
+      (set-p-y! p 0.0) (set-p-vy! p 0.0) (set-p-on-ground! p 1))
+    (loop [i 1]
+      (when (< i (map-count))
+        (let [(hw : F32) (/ (bw i) 2.0)
+              (hd : F32) (/ (bd i) 2.0)
+              (top : F32) (+ (by i) (/ (bh i) 2.0))
+              (bot : F32) (- (by i) (/ (bh i) 2.0))]
+          (when (and (> (+ (p-x p) pw) (- (bx i) hw)) (< (- (p-x p) pw) (+ (bx i) hw)))
+            (when (and (> (+ (p-z p) pw) (- (bz i) hd)) (< (- (p-z p) pw) (+ (bz i) hd)))
+              (when (and (< (p-y p) top) (> (+ (p-y p) ph) bot))
+                (let [(prev-y : F32) (- (p-y p) (p-vy p))]
+                  (if (>= prev-y top)
+                      (do (set-p-y! p top) (set-p-vy! p 0.0) (set-p-on-ground! p 1))
+                      (let [(dx : F32) (- (p-x p) (bx i))
+                            (dz : F32) (- (p-z p) (bz i))
+                            (w : F32) (if (> (bw i) 0.1) (bw i) 1.0)
+                            (d : F32) (if (> (bd i) 0.1) (bd i) 1.0)]
+                        (if (> (/ (fabs dx) w) (/ (fabs dz) d))
+                            (do (set-p-vx! p 0.0)
+                                (set-p-x! p (if (> dx 0.0) (+ (+ (bx i) hw) pw) (- (- (bx i) hw) pw))))
+                            (do (set-p-vz! p 0.0)
+                                (set-p-z! p (if (> dz 0.0) (+ (+ (bz i) hd) pw) (- (- (bz i) hd) pw))))))))))))
+        (recur (+ i 1))))))
+
+;; trace_map: the first box (other than the floor slab) containing the END point, else the ground
+(defn trace-map [(x1 : F32) (y1 : F32) (z1 : F32) (x2 : F32) (y2 : F32) (z2 : F32)] : Bool
+  (do
+    (gi! (g-tmp2) 0)
+    (loop [i 1]
+      (when (and (< i (map-count)) (= (gi (g-tmp2)) 0))
+        (let [(hw : F32) (/ (bw i) 2.0)
+              (hh : F32) (/ (bh i) 2.0)
+              (hd : F32) (/ (bd i) 2.0)]
+          (when (and (> x2 (- (bx i) hw)) (< x2 (+ (bx i) hw)))
+            (when (and (> z2 (- (bz i) hd)) (< z2 (+ (bz i) hd)))
+              (when (and (> y2 (- (by i) hh)) (< y2 (+ (by i) hh)))
+                (let [(dx : F32) (- x1 (bx i))
+                      (dz : F32) (- z1 (bz i))]
+                  (if (> (/ (fabs dx) (bw i)) (/ (fabs dz) (bd i)))
+                      (do (gf! (g-hit-x) (if (> dx 0.0) (+ (+ (bx i) hw) 0.1) (- (- (bx i) hw) 0.1)))
+                          (gf! (g-hit-y) y2) (gf! (g-hit-z) z2)
+                          (gf! (g-sl-n) (if (> dx 0.0) 1.0 -1.0)) (gf! (g-sl-f) 0.0) (gf! (g-hit-t) 0.0))
+                      (do (gf! (g-hit-x) x2) (gf! (g-hit-y) y2)
+                          (gf! (g-hit-z) (if (> dz 0.0) (+ (+ (bz i) hd) 0.1) (- (- (bz i) hd) 0.1)))
+                          (gf! (g-sl-n) 0.0) (gf! (g-sl-f) (if (> dz 0.0) 1.0 -1.0)) (gf! (g-hit-t) 0.0)))
+                  (gi! (g-tmp2) 1))))))
+        (recur (+ i 1))))
+    (when (and (= (gi (g-tmp2)) 0) (< y2 0.0))
+      (gf! (g-sl-n) 0.0) (gf! (g-sl-f) 0.0) (gf! (g-hit-t) 1.0)
+      (gf! (g-hit-x) x2) (gf! (g-hit-y) 0.1) (gf! (g-hit-z) z2)
+      (gi! (g-tmp2) 1))
+    (!= (gi (g-tmp2)) 0)))
+;; after trace-map: the surface normal is (n-x, n-y, n-z) = (g-sl-n, g-hit-t, g-sl-f) -- x from sl-n, y from hit-t, z from sl-f
+(defn n-x [] : F32 (gf (g-sl-n)))
+(defn n-y [] : F32 (gf (g-hit-t)))
+(defn n-z [] : F32 (gf (g-sl-f)))
+
+;; ---- hit volumes -------------------------------------------------------------------------------
+;; check_hit_location: 2 = head sphere, 1 = body sphere, 0 = miss. The ray is not normalised after a
+;; weapon's spread is added; it is used exactly as C uses it.
+(defn check-hit-location [(ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32) (tgt : I32)] : I32
+  (if (= (p-active tgt) 0)
+      0
+      (let [(tx : F32) (p-x tgt)
+            (tz : F32) (p-z tgt)
+            (head-y : F32) (+ (p-y tgt) (c-head-offset))
+            (vx : F32) (- tx ox)
+            (vy : F32) (- head-y oy)
+            (vz : F32) (- tz oz)
+            (t : F32) (+ (+ (* vx dx) (* vy dy)) (* vz dz))
+            head (if (> t 0.0)
+                     (let [(cx : F32) (+ ox (* dx t))
+                           (cy : F32) (+ oy (* dy t))
+                           (cz : F32) (+ oz (* dz t))
+                           (d2 : F32) (+ (+ (* (- tx cx) (- tx cx)) (* (- head-y cy) (- head-y cy)))
+                                         (* (- tz cz) (- tz cz)))]
+                       (< d2 (* (c-head-size) (c-head-size))))
+                     false)]
+        (if head
+            2
+            (let [(body-y : F32) (+ (p-y tgt) 2.0)
+                  (vy2 : F32) (- body-y oy)
+                  (t2 : F32) (+ (+ (* vx dx) (* vy2 dy)) (* vz dz))]
+              (if (> t2 0.0)
+                  (let [(cx : F32) (+ ox (* dx t2))
+                        (cy : F32) (+ oy (* dy t2))
+                        (cz : F32) (+ oz (* dz t2))
+                        (d2 : F32) (+ (+ (* (- tx cx) (- tx cx)) (* (- body-y cy) (- body-y cy)))
+                                      (* (- tz cz) (- tz cz)))]
+                    (if (< d2 7.2) 1 0))
+                  0))))))
+
+;; DEVIATION (walls stop bullets): is the eye-to-target line clear of the arena's solids? The point tested
+;; is the centre of the volume that was hit.
+(defn shot-clear? [(ox : F32) (oy : F32) (oz : F32) (tgt : I32) (hit : I32)] : Bool
+  (let [(ty : F32) (+ (p-y tgt) (if (= hit 2) (c-head-offset) 2.0))]
+    (line-clear? ox oy oz (p-x tgt) ty (p-z tgt))))
+
+;; ---- damage ------------------------------------------------------------------------------------
+;; katana_apply_damage: shield soaks first, then health; the kill is credited and the victim goes dead for
+;; RESPAWN_DELAY_TICKS (update_entity counts it down).
+(defn kill-feed! [(att : I32) (tgt : I32) (w : I32)] : Unit unit)
+
+(defn apply-damage! [(att : I32) (tgt : I32) (dmg0 : I32) (hit-feedback : I32) (w : I32)] : Unit
+  (when (and (!= (p-active tgt) 0) (!= (p-state tgt) (state-dead)))
+    (when (<= (p-spawn-prot tgt) 0)
+      (let [dmg dmg0]
+        (set-p-shield-regen-timer! tgt (c-shield-regen-delay))
+        (set-p-hit-feedback! att hit-feedback)
+        (set-p-last-damager! tgt att)
+        (set-p-flash! tgt 8)
+        (when (> (p-shield tgt) 0)
+          (if (>= (p-shield tgt) dmg)
+              (do (set-p-shield! tgt (- (p-shield tgt) dmg)) (set! dmg 0))
+              (do (set! dmg (- dmg (p-shield tgt))) (set-p-shield! tgt 0))))
+        (set-p-health! tgt (- (p-health tgt) dmg))
+        (on-damaged! att tgt dmg0 w)
+        (when (<= (p-health tgt) 0)
+          (set-p-kills! att (+ (p-kills att) 1))
+          (set-p-deaths! tgt (+ (p-deaths tgt) 1))
+          (set-p-hit-feedback! att 30)
+          (set-p-health! tgt 0)
+          (set-p-state! tgt (state-dead))
+          (set-p-respawn-ticks! tgt (c-respawn-delay))
+          (on-killed! att tgt w))))))
+
+;; ---- spawns ----------------------------------------------------------------------------------
+;; scene_spawn_point(id) used spawns[id % count]. DEVIATION: a respawn takes the spawn farthest from every
+;; living opponent (a free-for-all with ten players on eight fixed spawn points would otherwise put two
+;; people on one spot). Spawn 0 is still the answer on an empty arena.
+(defn spawn-safety [(p : I32) (s : I32)] : F32
+  (let [(best : F32) 1000000.0]
+    (dotimes [i (max-players)]
+      (when (and (!= i p) (alive? i))
+        (let [(dx : F32) (- (p-x i) (spawn-x s))
+              (dz : F32) (- (p-z i) (spawn-z s))
+              (d : F32) (+ (* dx dx) (* dz dz))]
+          (when (< d best) (set! best d)))))
+    best))
+
+(defn pick-spawn [(p : I32)] : I32
+  (let [(best : F32) -1.0
+        pick 0]
+    (dotimes [s (spawn-count)]
+      (let [(score : F32) (+ (spawn-safety p s) (* (rand-unit) 400.0))]
+        (when (> score best) (set! best score) (set! pick s))))
+    pick))
+
+;; phys_respawn
+(defn respawn-at! [(p : I32) (sx : F32) (sy : F32) (sz : F32)] : Unit
+  (do
+    (set-p-active! p 1)
+    (set-p-state! p (state-alive))
+    (set-p-health! p 100)
+    (set-p-shield! p 100)
+    (set-p-respawn-ticks! p 0)
+    (set-p-katana-slash-timer! p 0)
+    (set-p-dash-timer! p 0)
+    (set-p-dash-vx! p 0.0) (set-p-dash-vy! p 0.0) (set-p-dash-vz! p 0.0)
+    (set-p-dash-hit-count! p 0)
+    (set-p-x! p sx) (set-p-y! p sy) (set-p-z! p sz)
+    (set-p-vx! p 0.0) (set-p-vy! p 0.0) (set-p-vz! p 0.0)
+    (set-p-weapon! p (w-magnum))
+    (dotimes [w 6] (set-ammo! p w (wpn-ammo-max w)))
+    (set-p-storm-charges! p 0)
+    (set-p-ability-cooldown! p 0)
+    (set-p-stunned-until! p 0)
+    (set-p-stun-immune-until! p 0)
+    (set-p-reload-timer! p 0)
+    (set-p-attack-cooldown! p 0)
+    (set-p-last-damager! p -1)
+    (set-p-spawn-prot! p (if (net-match?) (c-spawn-prot) 0))))
+
+(defn phys-respawn! [(p : I32)] : Unit
+  (let [s (pick-spawn p)]
+    (respawn-at! p (spawn-x s) (spawn-y s) (spawn-z s))
+    (set-p-yaw! p (spawn-facing p s))
+    (on-respawned! p)))
+
+;; face the middle of the arena on spawn (the C engine leaves yaw as the last command's)
+(defn spawn-facing [(p : I32) (s : I32)] : F32
+  (let [(dx : F32) (- 0.0 (spawn-x s))
+        (dz : F32) (- 0.0 (spawn-z s))]
+    ;; forward is (sin(-yaw), -cos(-yaw)); yaw such that forward points at the origin
+    (norm-yaw (- 0.0 (* (atan2f dx (- 0.0 dz)) (rad2deg))))))
+
+;; scene_force_spawn + scene_safety_check (stadium)
+(defn safety-check! [(p : I32)] : Unit
+  (let [(x : F32) (p-x p)
+        (y : F32) (p-y p)
+        (z : F32) (p-z p)]
+    (when (or (or (< y (stadium-kill-y)) (< x (- 0.0 (stadium-bounds))))
+              (or (> x (stadium-bounds)) (or (< z (- 0.0 (stadium-bounds))) (> z (stadium-bounds)))))
+      (let [s (mod (p-id p) (spawn-count))]
+        (set-p-x! p (spawn-x s)) (set-p-y! p (spawn-y s)) (set-p-z! p (spawn-z s))
+        (set-p-vx! p 0.0) (set-p-vy! p 0.0) (set-p-vz! p 0.0)))))
+
+;; ---- aim vectors ---------------------------------------------------------------------------------
+(defn aim-x [(yaw : F32) (pitch : F32)] : F32
+  (* (sinf (* (- 0.0 yaw) (deg2rad))) (cosf (* pitch (deg2rad)))))
+(defn aim-y [(pitch : F32)] : F32 (sinf (* pitch (deg2rad))))
+(defn aim-z [(yaw : F32) (pitch : F32)] : F32
+  (* (- 0.0 (cosf (* (- 0.0 yaw) (deg2rad)))) (cosf (* pitch (deg2rad)))))
+
+;; katana_forward_dir: the aim vector with its climb clamped to +-0.35, renormalised
+(defn kat-dx [] : I32 140)
+(defn kat-dy [] : I32 141)
+(defn kat-dz [] : I32 142)
+(defn katana-forward-dir! [(yaw : F32) (pitch : F32)] : Unit
+  (let [(r : F32) (* (- 0.0 yaw) (deg2rad))
+        (rp : F32) (* pitch (deg2rad))
+        (dx : F32) (* (sinf r) (cosf rp))
+        (dy : F32) (sinf rp)
+        (dz : F32) (* (- 0.0 (cosf r)) (cosf rp))]
+    (when (> dy (c-katana-dash-up-limit)) (set! dy (c-katana-dash-up-limit)))
+    (when (< dy (- 0.0 (c-katana-dash-up-limit))) (set! dy (- 0.0 (c-katana-dash-up-limit))))
+    (let [(len : F32) (sqrt (+ (+ (* dx dx) (* dy dy)) (* dz dz)))]
+      (when (< len 0.0001) (set! dx 0.0) (set! dy 0.0) (set! dz -1.0) (set! len 1.0))
+      (gf! (kat-dx) (/ dx len)) (gf! (kat-dy) (/ dy len)) (gf! (kat-dz) (/ dz len)))))
+
+(defn dash-seen? [(p : I32) (id : I32)] : Bool
+  (loop [i 0]
+    (cond (>= i (min-i (p-dash-hit-count p) 8)) false
+          (= (pi p (+ (k-dash-hit0) i)) id) true
+          :else (recur (+ i 1)))))
+(defn dash-remember! [(p : I32) (id : I32)] : Unit
+  (when (< (p-dash-hit-count p) 8)
+    (pi! p (+ (k-dash-hit0) (p-dash-hit-count p)) id)
+    (set-p-dash-hit-count! p (+ (p-dash-hit-count p) 1))))
+
+;; a melee / dash / storm hit is applied here when this engine is the authority (a bot match); in a human
+;; match only the local player's own hits are claimed, and the server applies them.
+(defn deal-hit! [(att : I32) (tgt : I32) (dmg : I32) (fb : I32) (w : I32) (head : Bool)] : Unit
+  (if (net-match?)
+      (when (mine? att)
+        (do (set-p-hit-feedback! att fb)
+            (net-claim-hit! tgt w (b2i head))
+            (gi! (g-hitmark) (if head 14 10))))
+      (apply-damage! att tgt dmg fb w)))
+
+(defn katana-try-slash! [(p : I32)] : Unit
+  (do
+    (katana-forward-dir! (p-yaw p) (p-pitch p))
+    (let [(fx : F32) (gf (kat-dx))
+          (fy : F32) (gf (kat-dy))
+          (fz : F32) (gf (kat-dz))
+          (ox : F32) (p-x p)
+          (oy : F32) (+ (p-y p) 2.0)
+          (oz : F32) (p-z p)
+          (min-dot : F32) (cosf (* (* (c-katana-slash-arc) 0.5) (deg2rad)))]
+      (dotimes [i (max-players)]
+        (when (and (!= i p) (alive? i))
+          (let [(tx : F32) (- (p-x i) ox)
+                (ty : F32) (- (+ (p-y i) 2.0) oy)
+                (tz : F32) (- (p-z i) oz)
+                (d2 : F32) (+ (+ (* tx tx) (* ty ty)) (* tz tz))]
+            (when (<= d2 (* (c-katana-slash-range) (c-katana-slash-range)))
+              (let [(dist : F32) (sqrt d2)]
+                (when (> dist 0.0001)
+                  (let [(inv : F32) (/ 1.0 dist)
+                        (dot : F32) (+ (+ (* fx (* tx inv)) (* fy (* ty inv))) (* fz (* tz inv)))]
+                    (when (>= dot min-dot)
+                      (deal-hit! p i (c-katana-slash-damage) 12 (w-katana) false)
+                      (when (not (net-match?))
+                        (set-p-vx! i (+ (p-vx i) (* fx 0.35)))
+                        (set-p-vz! i (+ (p-vz i) (* fz 0.35)))))))))))))))
+
+(defn katana-try-start-dash! [(p : I32)] : Bool
+  (if (or (!= (p-weapon p) (w-katana)) (or (> (p-ability-cooldown p) 0) (> (p-dash-timer p) 0)))
+      false
+      (do
+        (katana-forward-dir! (p-yaw p) (p-pitch p))
+        (set-p-dash-timer! p (c-katana-dash-time))
+        (set-p-ability-cooldown! p (c-katana-dash-cooldown))
+        (set-p-dash-vx! p (* (gf (kat-dx)) (c-katana-dash-speed)))
+        (set-p-dash-vy! p (* (* (gf (kat-dy)) (c-katana-dash-speed)) 0.45))
+        (set-p-dash-vz! p (* (gf (kat-dz)) (c-katana-dash-speed)))
+        (set-p-dash-hit-count! p 0)
+        (dotimes [i 8] (pi! p (+ (k-dash-hit0) i) -1))
+        (set-p-recoil-anim! p 0.45)
+        (set-p-is-shooting! p 4)
+        (snd-at! 6 (p-x p) (p-y p) (p-z p))
+        true)))
+
+(defn katana-update-dash-damage! [(p : I32)] : Unit
+  (dotimes [i (max-players)]
+    (when (and (!= i p) (alive? i))
+      (when (not (dash-seen? p i))
+        (let [(dx : F32) (- (p-x i) (p-x p))
+              (dy : F32) (- (+ (p-y i) 2.0) (+ (p-y p) 2.0))
+              (dz : F32) (- (p-z i) (p-z p))
+              (d2 : F32) (+ (+ (* dx dx) (* dy dy)) (* dz dz))]
+          (when (<= d2 (* (c-katana-dash-radius) (c-katana-dash-radius)))
+            (dash-remember! p i)
+            (deal-hit! p i (c-katana-dash-damage) 18 (w-dash) false)
+            (when (not (net-match?))
+              (set-p-vx! i (+ (p-vx i) (* (p-dash-vx p) 0.08)))
+              (set-p-vz! i (+ (p-vz i) (* (p-dash-vz p) 0.08))))))))))
+
+;; ---- projectiles (the sniper's storm charges) ------------------------------------------------------
+(defn spawn-projectile! [(p : I32) (dmg : I32) (bounces : I32) (speed-mult : F32)] : Unit
+  (let [(slot : I32) (loop [i 0] (cond (>= i (max-proj)) -1 (= (q-active i) 0) i :else (recur (+ i 1))))]
+    (when (>= slot 0)
+      (let [(r : F32) (* (- 0.0 (p-yaw p)) (deg2rad))
+            (rp : F32) (* (p-pitch p) (deg2rad))
+            (speed : F32) (* 4.0 speed-mult)]
+        (set-q-active! slot 1)
+        (set-q-owner! slot p)
+        (set-q-damage! slot dmg)
+        (set-q-bounces! slot bounces)
+        (set-q-ttl! slot 600)
+        (set-q-vx! slot (* (* (sinf r) (cosf rp)) speed))
+        (set-q-vy! slot (* (sinf rp) speed))
+        (set-q-vz! slot (* (* (- 0.0 (cosf r)) (cosf rp)) speed))
+        (set-q-x! slot (p-x p))
+        (set-q-y! slot (+ (p-y p) (c-eye-height)))
+        (set-q-z! slot (p-z p))))))
+
+;; reflect_vector
+(defn reflect! [(slot : I32) (nx : F32) (ny : F32) (nz : F32)] : Unit
+  (let [(dot : F32) (+ (+ (* (q-vx slot) nx) (* (q-vy slot) ny)) (* (q-vz slot) nz))]
+    (set-q-vx! slot (- (q-vx slot) (* (* 2.0 dot) nx)))
+    (set-q-vy! slot (- (q-vy slot) (* (* 2.0 dot) ny)))
+    (set-q-vz! slot (- (q-vz slot) (* (* 2.0 dot) nz)))))
+
+;; apply_projectile_damage: the shield soaks, the kill is credited (DEVIATION: delayed death like every
+;; other kill), and the target is stunned for 100 ms with 250 ms of stun immunity.
+(defn apply-projectile-damage! [(owner : I32) (tgt : I32) (dmg : I32)] : Unit
+  (if (net-match?)
+      (when (mine? owner)
+        (do (net-claim-hit! tgt (w-storm) 0) (gi! (g-hitmark) 10)))
+      (do
+        (apply-damage! owner tgt dmg 10 (w-storm))
+        (let [now (now-ms)]
+          (when (>= now (p-stun-immune-until tgt))
+            (when (> (+ now 100) (p-stunned-until tgt)) (set-p-stunned-until! tgt (+ now 100)))
+            (set-p-stun-immune-until! tgt (+ now 250)))))))
+
+(defn update-projectiles! [] : Unit
+  (dotimes [i (max-proj)]
+    (when (!= (q-active i) 0)
+      (let [(nx : F32) (+ (q-x i) (q-vx i))
+            (ny : F32) (+ (q-y i) (q-vy i))
+            (nz : F32) (+ (q-z i) (q-vz i))]
+        (set-q-ttl! i (- (q-ttl i) 1))
+        (if (trace-map (q-x i) (q-y i) (q-z i) nx ny nz)
+            (if (> (q-bounces i) 0)
+                (do (reflect! i (n-x) (n-y) (n-z))
+                    (set-q-x! i (gf (g-hit-x))) (set-q-y! i (gf (g-hit-y))) (set-q-z! i (gf (g-hit-z)))
+                    (set-q-bounces! i (- (q-bounces i) 1)))
+                (set-q-active! i 0))
+            (do (set-q-x! i nx) (set-q-y! i ny) (set-q-z! i nz)))
+        (when (!= (q-active i) 0)
+          (loop [t 0]
+            (when (< t (max-players))
+              (if (and (alive? t) (!= t (q-owner i)))
+                  (let [(dx : F32) (- (p-x t) (q-x i))
+                        (dy : F32) (- (+ (p-y t) (c-eye-height)) (q-y i))
+                        (dz : F32) (- (p-z t) (q-z i))
+                        (d2 : F32) (+ (+ (* dx dx) (* dy dy)) (* dz dz))]
+                    (if (< d2 4.0)
+                        (do (apply-projectile-damage! (q-owner i) t (q-damage i))
+                            (fx-sparks! (q-x i) (q-y i) (q-z i) 3 6)
+                            (set-q-active! i 0))
+                        (recur (+ t 1))))
+                  (recur (+ t 1))))))
+        (when (or (or (> (q-x i) 4000.0) (< (q-x i) -4000.0)) (or (> (q-z i) 4000.0) (or (< (q-z i) -4000.0) (> (q-y i) 2000.0))))
+          (set-q-active! i 0))
+        (when (<= (q-ttl i) 0) (set-q-active! i 0))))))
+
+;; ---- update_weapons ------------------------------------------------------------------------------
+(defn fire-hitscan! [(p : I32)] : Unit
+  (let [w (p-weapon p)
+        (r : F32) (* (- 0.0 (p-yaw p)) (deg2rad))
+        (rp : F32) (* (p-pitch p) (deg2rad))
+        (dx : F32) (* (sinf r) (cosf rp))
+        (dy : F32) (sinf rp)
+        (dz : F32) (* (- 0.0 (cosf r)) (cosf rp))
+        (ox : F32) (p-x p)
+        (oy : F32) (+ (p-y p) (c-eye-height))
+        (oz : F32) (p-z p)]
+    (when (> (wpn-spread w) 0.0)
+      (set! dx (+ dx (* (phys-rand-f) (wpn-spread w))))
+      (set! dy (+ dy (* (phys-rand-f) (wpn-spread w))))
+      (set! dz (+ dz (* (phys-rand-f) (wpn-spread w)))))
+    (fx-shot! p w ox oy oz dx dy dz)
+    (dotimes [i (max-players)]
+      (when (and (!= p i) (alive? i))
+        (let [melee-ok (if (= w (w-knife))
+                           (let [(kx : F32) (- (p-x p) (p-x i))
+                                 (ky : F32) (- (p-y p) (p-y i))
+                                 (kz : F32) (- (p-z p) (p-z i))]
+                             (<= (+ (+ (* kx kx) (* ky ky)) (* kz kz)) (+ (c-melee-range-sq) 22.0)))
+                           true)]
+          (when melee-ok
+            (let [hit (check-hit-location ox oy oz dx dy dz i)]
+              (when (and (> hit 0) (shot-clear? ox oy oz i hit))
+                (let [(head : Bool) (and (= hit 2) (<= (p-shield i) 0))
+                      dmg (* (wpn-dmg w) (if head 3 1))
+                      fb (if head 20 10)]
+                  (deal-hit! p i dmg fb w head)
+                  (fx-sparks! (p-x i) (+ (p-y i) (if (= hit 2) (c-head-offset) 2.0)) (p-z i) (if head 1 2) (if head 8 5)))))))))))
+
+(defn update-weapons! [(p : I32) (shoot : Bool) (reload : Bool) (ability : Bool)] : Unit
+  (do
+    (when (> (p-reload-timer p) 0) (set-p-reload-timer! p (- (p-reload-timer p) 1)))
+    (when (> (p-attack-cooldown p) 0) (set-p-attack-cooldown! p (- (p-attack-cooldown p) 1)))
+    (when (> (p-is-shooting p) 0) (set-p-is-shooting! p (- (p-is-shooting p) 1)))
+    (when (> (p-ability-cooldown p) 0) (set-p-ability-cooldown! p (- (p-ability-cooldown p) 1)))
+    (when (> (p-katana-slash-timer p) 0) (set-p-katana-slash-timer! p (- (p-katana-slash-timer p) 1)))
+    (when (> (p-dash-timer p) 0)
+      (set-p-vx! p (p-dash-vx p))
+      (set-p-vy! p (p-dash-vy p))
+      (set-p-vz! p (p-dash-vz p))
+      (katana-update-dash-damage! p)
+      (set-p-dash-timer! p (- (p-dash-timer p) 1))
+      (set-p-is-shooting! p 2)
+      (when (<= (p-dash-timer p) 0)
+        (set-p-dash-timer! p 0)
+        (set-p-dash-vx! p 0.0) (set-p-dash-vy! p 0.0) (set-p-dash-vz! p 0.0)))
+    (let [w (p-weapon p)]
+      (when ability
+        (if (= w (w-katana))
+            (do (katana-try-start-dash! p) unit)
+            (when (and (= (p-ability-cooldown p) 0) (= (p-storm-charges p) 0))
+              (set-p-storm-charges! p 5)
+              (set-p-ability-cooldown! p 480)
+              (snd-at! 7 (p-x p) (p-y p) (p-z p)))))
+      (when (and reload (and (= (p-reload-timer p) 0) (not (wpn-melee? w))))
+        (when (< (ammo p w) (wpn-ammo-max w))
+          (set-p-reload-timer! p (if (> (ammo p w) 0) (c-reload-tactical) (c-reload-full)))
+          (snd-at! 5 (p-x p) (p-y p) (p-z p))))
+      (when (= (p-reload-timer p) 1) (set-ammo! p w (wpn-ammo-max w)))
+      (when (<= (p-dash-timer p) 0)
+        (when (and shoot (and (= (p-attack-cooldown p) 0) (= (p-reload-timer p) 0)))
+          (if (and (> (p-storm-charges p) 0) (= w (w-sniper)))
+              (do (spawn-projectile! p (i32 (* (f32 (wpn-dmg w)) 0.7)) 1 1.5)
+                  (set-p-storm-charges! p (- (p-storm-charges p) 1))
+                  (set-p-attack-cooldown! p 8)
+                  (set-p-recoil-anim! p 0.5)
+                  (snd-at! 4 (p-x p) (p-y p) (p-z p)))
+              (if (and (not (wpn-melee? w)) (<= (ammo p w) 0))
+                  (do (set-p-reload-timer! p (c-reload-full)) (snd-at! 8 (p-x p) (p-y p) (p-z p)))
+                  (do
+                    (set-p-is-shooting! p 5)
+                    (set-p-recoil-anim! p 1.0)
+                    (set-p-attack-cooldown! p (wpn-rof w))
+                    (when (not (wpn-melee? w)) (set-ammo! p w (- (ammo p w) 1)))
+                    (if (= w (w-katana))
+                        (do (set-p-katana-slash-timer! p (c-katana-slash-active))
+                            (set-p-recoil-anim! p 0.35)
+                            (snd-at! 6 (p-x p) (p-y p) (p-z p))
+                            (katana-try-slash! p))
+                        (fire-hitscan! p))))))))))
+
+;; ---- update_entity -----------------------------------------------------------------------------------
+(defn update-entity! [(p : I32)] : Unit
+  (when (!= (p-active p) 0)
+    (if (= (p-state p) (state-dead))
+        (when (> (p-respawn-ticks p) 0)
+          (set-p-respawn-ticks! p (- (p-respawn-ticks p) 1))
+          ;; in a human match the server decides when a player comes back; here the engine does
+          (when (and (<= (p-respawn-ticks p) 0) (not (net-match?)))
+            (phys-respawn! p)))
+        (do
+          (when (< (now-ms) (p-stunned-until p))
+            (set-p-in-fwd! p 0.0) (set-p-in-strafe! p 0.0)
+            (set-p-in-jump! p 0) (set-p-in-shoot! p 0) (set-p-in-reload! p 0) (set-p-in-ability! p 0)
+            (set-p-vx! p 0.0) (set-p-vz! p 0.0))
+          (apply-friction! p)
+          (let [(g : F32) (if (!= (p-in-jump p) 0) (c-gravity-float) (c-gravity-drop))]
+            (when (<= (p-dash-timer p) 0) (set-p-vy! p (- (p-vy p) g))))
+          (set-p-y! p (+ (p-y p) (p-vy p)))
+          (resolve-collision! p)
+          (if (> (p-dash-timer p) 0)
+              (let [(next-x : F32) (+ (p-x p) (p-vx p))
+                    (next-z : F32) (+ (p-z p) (p-vz p))]
+                (if (trace-map (p-x p) (+ (p-y p) 1.0) (p-z p) next-x (+ (p-y p) 1.0) next-z)
+                    (do (set-p-x! p (gf (g-hit-x)))
+                        (set-p-z! p (gf (g-hit-z)))
+                        (set-p-dash-timer! p 0)
+                        (set-p-dash-vx! p 0.0) (set-p-dash-vy! p 0.0) (set-p-dash-vz! p 0.0)
+                        (set-p-vx! p 0.0) (set-p-vy! p 0.0) (set-p-vz! p 0.0))
+                    (do (set-p-x! p next-x) (set-p-z! p next-z))))
+              (do (set-p-x! p (+ (p-x p) (p-vx p)))
+                  (set-p-z! p (+ (p-z p) (p-vz p)))))
+          (when (> (p-recoil-anim p) 0.0) (set-p-recoil-anim! p (- (p-recoil-anim p) 0.1)))
+          (when (< (p-recoil-anim p) 0.0) (set-p-recoil-anim! p 0.0))
+          (when (> (p-hit-feedback p) 0) (set-p-hit-feedback! p (- (p-hit-feedback p) 1)))
+          (update-weapons! p (> (p-in-shoot p) 0) (> (p-in-reload p) 0) (> (p-in-ability p) 0))
+          (safety-check! p)))))
+
+;; ---- net_sim.h: apply_usercmd_inputs + shankpit_simulate_movement_tick -----------------------------------
+;; (the caller has already written in-fwd / in-strafe / yaw / pitch / the button words)
+(defn apply-usercmd! [(p : I32) (fwd : F32) (strafe : F32) (yaw : F32) (pitch : F32)
+                      (jump : Bool) (shoot : Bool) (crouch : Bool) (reload : Bool) (ability : Bool)] : Unit
+  (do
+    (set-p-yaw! p (norm-yaw yaw))
+    (set-p-pitch! p (clamp-pitch pitch))
+    (set-p-in-fwd! p fwd)
+    (set-p-in-strafe! p strafe)
+    (let [(ml : F32) (sqrt (+ (* fwd fwd) (* strafe strafe)))]
+      (when (> ml 1.0)
+        (set-p-in-fwd! p (/ fwd ml))
+        (set-p-in-strafe! p (/ strafe ml))))
+    (set-p-in-jump! p (b2i jump))
+    (set-p-in-shoot! p (b2i shoot))
+    (set-p-crouching! p (b2i crouch))
+    (set-p-in-reload! p (b2i reload))
+    (set-p-in-ability! p (b2i ability))))
+
+(defn simulate-movement-tick! [(p : I32)] : Unit
+  (let [(fwd : F32) (clamp-f (p-in-fwd p) -1.0 1.0)
+        (strafe : F32) (clamp-f (p-in-strafe p) -1.0 1.0)
+        (yaw : F32) (p-yaw p)
+        (x : F32) (+ (* (fwd-x yaw) fwd) (* (right-x yaw) strafe))
+        (z : F32) (+ (* (fwd-z yaw) fwd) (* (right-z yaw) strafe))
+        (l2 : F32) (+ (* x x) (* z z))
+        (dir-x : F32) 0.0
+        (dir-z : F32) 0.0
+        (mag : F32) 0.0]
+    (when (> l2 0.00000001)
+      (let [(len : F32) (sqrt l2)
+            (raw : F32) (sqrt (+ (* fwd fwd) (* strafe strafe)))]
+        (set! dir-x (/ x len))
+        (set! dir-z (/ z len))
+        (set! mag (if (> raw 1.0) 1.0 raw))))
+    (accelerate! p dir-x dir-z (* mag (c-max-speed)) (c-accel))
+    (let [(g : F32) (if (!= (p-in-jump p) 0) (c-gravity-float) (c-gravity-drop))]
+      (set-p-vy! p (- (p-vy p) g)))
+    (when (and (!= (p-in-jump p) 0) (!= (p-on-ground p) 0))
+      (set-p-y! p (+ (p-y p) 0.1))
+      (set-p-vy! p (+ (p-vy p) (c-jump-force))))
+    (update-entity! p)))
