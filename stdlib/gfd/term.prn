@@ -1,0 +1,641 @@
+;; stdlib/gfd/term.prn -- the GoblinFoxDragon web terminal, in PARENA, compiled to wasm32.
+;;
+;; Founder real-time 2026-10-16: a web interface at wotan.okemily.com/GFD, "use wasm and PARENA".
+;; Everything the terminal IS lives here: the UTF-8 + ANSI (CSI/SGR) parser, a scrollback ring of
+;; cells, mouse selection and copy, command history with line tracking, key -> byte translation,
+;; and a software renderer that paints an RGBA framebuffer. The JS page is only glue: it owns the
+;; WebSocket, the IDUNA sign-in, DOM events and blitting the framebuffer to a <canvas>.
+;;
+;; This file is why the LLVM emitter grew let / set! / do / when / loop / recur / branching if and
+;; load8/load32/store8!/store32! (CLAUDE.md: "if PARENA can't express the dep yet, that gap is the
+;; real first task"). Build: scripts/build_gfd_term_wasm.sh (concatenates term_font.prn + this).
+;;
+;; All state lives in wasm linear memory at fixed addresses (no globals in the v0 emitter):
+;;   0x20000 IN (64K)      bytes from the server, JS writes then calls term-feed
+;;   0x30000 OUT (4K)      bytes for the server, term-key returns the count
+;;   0x31000 STATE         32-bit words, indices below
+;;   0x32000 FONT          255 glyphs x 16 rows
+;;   0x34000 HISTORY       64 entries x 256 bytes ([len][bytes])
+;;   0x38000 LINEBUF       the line being typed (for history / backspace replay)
+;;   0x40000 PALETTE       256 x 0x00BBGGRR
+;;   0x100000 GRID         1500 lines x 100 cols x 12 bytes (glyph|flags<<16, fg, bg)
+;;   0x300000 FRAMEBUFFER  800 x 544 RGBA
+;;   0x4B0000 COPY         256K text buffer for term-copy
+;; STATE indices: 0 col, 1 row, 2 top(abs line of screen row 0), 3 view(scrollback offset),
+;;   4 fg, 5 bg, 6 flags(1 bold,2 underline,4 reverse), 7 parser(0 text,1 esc,2 csi,3 osc,4 skip),
+;;   8 last-param-index, 9 private-marker, 10 utf8-bytes-needed, 11 utf8-accumulator, 12 dirty,
+;;   13/14 saved col/row, 15 selection-on, 16/17 anchor(line,col), 18/19 head(line,col),
+;;   20 typed-line-length, 21 history-count, 22 history-steps-back, 23 (spare), 24 dragging,
+;;   25 pending-wrap, 26 cursor-phase, 32..47 CSI params.
+
+(module gfd/term)
+(export term-init term-feed term-key term-render term-mouse term-scroll term-copy)
+
+;; ---- geometry & memory map --------------------------------------------------------------
+(defn cols [] : I32 100)
+(defn rows [] : I32 34)
+(defn nlines [] : I32 1500)
+(defn in-base [] : I32 131072)
+(defn out-base [] : I32 196608)
+(defn st-base [] : I32 200704)
+(defn font-base [] : I32 204800)
+(defn hist-base [] : I32 212992)
+(defn linebuf-base [] : I32 229376)
+(defn pal-base [] : I32 262144)
+(defn grid-base [] : I32 1048576)
+(defn fb-base [] : I32 3145728)
+(defn copy-base [] : I32 4915200)
+
+;; theme (0x00BBGGRR)
+(defn def-fg [] : I32 15918054)
+(defn def-bg [] : I32 1510157)
+(defn sel-color [] : I32 7024443)
+(defn cursor-color [] : I32 4965104)
+
+;; public: where JS finds things
+(defn term-in-addr [] : I32 (in-base))
+(defn term-out-addr [] : I32 (out-base))
+(defn term-copy-addr [] : I32 (copy-base))
+(defn term-fb-addr [] : I32 (fb-base))
+(defn term-fb-w [] : I32 800)
+(defn term-fb-h [] : I32 544)
+(defn term-cols [] : I32 (cols))
+(defn term-rows [] : I32 (rows))
+
+;; ---- small helpers ----------------------------------------------------------------------
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn clamp-i [(x : I32) (lo : I32) (hi : I32)] : I32 (max-i lo (min-i x hi)))
+
+(defn st [(i : I32)] : I32 (load32 (+ (st-base) (shl i 2))))
+(defn set-st [(i : I32) (v : I32)] : Unit (store32! (+ (st-base) (shl i 2)) v))
+
+(defn col [] : I32 (st 0))
+(defn row [] : I32 (st 1))
+(defn top [] : I32 (st 2))
+(defn view [] : I32 (st 3))
+(defn set-col [(v : I32)] : Unit (set-st 0 v))
+(defn set-row [(v : I32)] : Unit (set-st 1 v))
+(defn set-top [(v : I32)] : Unit (set-st 2 v))
+(defn set-view [(v : I32)] : Unit (set-st 3 v))
+(defn dirty [] : Unit (set-st 12 1))
+
+(defn max-view [] : I32 (min-i (top) (- (nlines) (+ (rows) 2))))
+
+;; ---- font + palette init ----------------------------------------------------------------
+(defn nibble [(c : I32)] : I32 (if (>= c 97) (- c 87) (- c 48)))
+
+(defn load-font [] : Unit
+  (let [s (str-addr (font-hex))]
+    (loop [i 0]
+      (when (< i 4080)
+        (store8! (+ (font-base) i)
+                 (bit-or (shl (nibble (load8 (+ s (shl i 1)))) 4)
+                         (nibble (load8 (+ s (+ (shl i 1) 1))))))
+        (recur (+ i 1))))))
+
+(defn cube-level [(x : I32)] : I32 (if (= x 0) 0 (+ 55 (* x 40))))
+
+(defn set-pal [(n : I32) (c : I32)] : Unit (store32! (+ (pal-base) (shl n 2)) c))
+(defn pal [(n : I32)] : I32 (load32 (+ (pal-base) (shl (bit-and n 255) 2))))
+
+(defn load-palette [] : Unit
+  (do
+    (set-pal 0 2365979) (set-pal 1 4936677) (set-pal 2 5942103) (set-pal 3 2527430)
+    (set-pal 4 16096083) (set-pal 5 15762352) (set-pal 6 13616441) (set-pal 7 15063501)
+    (set-pal 8 6839636) (set-pal 9 9081855) (set-pal 10 7193707) (set-pal 11 4172506)
+    (set-pal 12 16758380) (set-pal 13 16498140) (set-pal 14 14537814) (set-pal 15 16447477)
+    (loop [n 16]
+      (when (< n 232)
+        (let [i (- n 16)
+              r (cube-level (/ i 36))
+              g (cube-level (mod (/ i 6) 6))
+              b (cube-level (mod i 6))]
+          (set-pal n (bit-or r (bit-or (shl g 8) (shl b 16)))))
+        (recur (+ n 1))))
+    (loop [n 232]
+      (when (< n 256)
+        (let [v (+ 8 (* 10 (- n 232)))]
+          (set-pal n (bit-or v (bit-or (shl v 8) (shl v 16)))))
+        (recur (+ n 1))))))
+
+;; ---- grid cells -------------------------------------------------------------------------
+(defn cell-addr [(abs : I32) (c : I32)] : I32
+  (+ (grid-base) (* (+ (* (mod abs (nlines)) (cols)) c) 12)))
+
+(defn put-cell [(abs : I32) (c : I32) (g : I32) (fl : I32) (fg : I32) (bg : I32)] : Unit
+  (let [a (cell-addr abs c)]
+    (store32! a (bit-or g (shl fl 16)))
+    (store32! (+ a 4) fg)
+    (store32! (+ a 8) bg)))
+
+(defn blank-range [(abs : I32) (from : I32) (to : I32)] : Unit
+  (loop [c from]
+    (when (< c to)
+      (put-cell abs c 0 0 (st 4) (st 5))
+      (recur (+ c 1)))))
+
+(defn clear-all [] : Unit
+  (loop [l 0]
+    (when (< l (nlines))
+      (loop [c 0]
+        (when (< c (cols))
+          (put-cell l c 0 0 (def-fg) (def-bg))
+          (recur (+ c 1))))
+      (recur (+ l 1)))))
+
+(defn line-feed [] : Unit
+  (do
+    (set-st 25 0)
+    (if (< (row) (- (rows) 1))
+        (set-row (+ (row) 1))
+        (do
+          (set-top (+ (top) 1))
+          (when (> (view) 0) (set-view (min-i (+ (view) 1) (max-view))))
+          (blank-range (+ (top) (- (rows) 1)) 0 (cols))))
+    (dirty)))
+
+(defn glyph-for [(cp : I32)] : I32
+  (if (and (>= cp 32) (<= cp 126)) (- cp 32)
+    (if (and (>= cp 9472) (<= cp 9599)) (+ 95 (- cp 9472))
+      (if (and (>= cp 9600) (<= cp 9631)) (+ 223 (- cp 9600))
+        (if (= cp 160) 0 31)))))
+
+(defn put-glyph [(g : I32)] : Unit
+  (do
+    (when (= (st 25) 1)
+      (set-col 0)
+      (line-feed))
+    (put-cell (+ (top) (row)) (col) g (st 6) (st 4) (st 5))
+    (if (< (col) (- (cols) 1))
+        (set-col (+ (col) 1))
+        (set-st 25 1))
+    (dirty)))
+
+;; ---- parser: text / UTF-8 / controls ----------------------------------------------------
+(defn control [(b : I32)] : Unit
+  (do
+    (when (= b 10) (line-feed))
+    (when (= b 13) (set-col 0) (set-st 25 0))
+    (when (= b 8)
+      (when (> (col) 0) (set-col (- (col) 1)))
+      (set-st 25 0))
+    (when (= b 9)
+      (set-col (min-i (- (cols) 1) (* (+ (/ (col) 8) 1) 8)))
+      (set-st 25 0))
+    (when (= b 27) (set-st 7 1))
+    (dirty)))
+
+(defn utf-lead [(b : I32)] : Unit
+  (if (and (>= b 192) (< b 224))
+      (do (set-st 10 1) (set-st 11 (bit-and b 31)))
+      (if (and (>= b 224) (< b 240))
+          (do (set-st 10 2) (set-st 11 (bit-and b 15)))
+          (if (and (>= b 240) (< b 248))
+              (do (set-st 10 3) (set-st 11 (bit-and b 7)))
+              (put-glyph 31)))))
+
+(defn normal-byte [(b : I32)] : Unit
+  (if (> (st 10) 0)
+      (utf-cont b)
+      (if (< b 32)
+          (control b)
+          (if (< b 128)
+              (put-glyph (glyph-for b))
+              (utf-lead b)))))
+
+(defn utf-cont [(b : I32)] : Unit
+  (if (= (bit-and b 192) 128)
+      (do
+        (set-st 11 (bit-or (shl (st 11) 6) (bit-and b 63)))
+        (set-st 10 (- (st 10) 1))
+        (when (= (st 10) 0) (put-glyph (glyph-for (st 11)))))
+      (do
+        (set-st 10 0)
+        (normal-byte b))))
+
+;; ---- parser: ESC / CSI / OSC ------------------------------------------------------------
+(defn param [(i : I32)] : I32 (st (+ 32 (bit-and i 15))))
+(defn set-param [(i : I32) (v : I32)] : Unit (set-st (+ 32 (bit-and i 15)) v))
+(defn pd [(i : I32) (d : I32)] : I32 (if (= (param i) 0) d (param i)))
+
+(defn csi-start [] : Unit
+  (do
+    (set-st 8 0)
+    (set-st 9 0)
+    (loop [i 0]
+      (when (< i 16)
+        (set-param i 0)
+        (recur (+ i 1))))
+    (set-st 7 2)))
+
+(defn esc-byte [(b : I32)] : Unit
+  (do
+    (set-st 7 0)
+    (when (= b 91) (csi-start))
+    (when (= b 93) (set-st 7 3))
+    (when (or (= b 40) (or (= b 41) (or (= b 42) (= b 43)))) (set-st 7 4))
+    (when (= b 55) (set-st 13 (col)) (set-st 14 (row)))
+    (when (= b 56) (set-col (st 13)) (set-row (st 14)))))
+
+(defn osc-byte [(b : I32)] : Unit
+  (when (or (= b 7) (= b 27))
+    (set-st 7 (if (= b 27) 4 0))))
+
+(defn csi-byte [(b : I32)] : Unit
+  (if (and (>= b 48) (<= b 57))
+      (set-param (st 8) (+ (* (param (st 8)) 10) (- b 48)))
+      (if (= b 59)
+          (do (set-st 8 (min-i (+ (st 8) 1) 15)) (set-param (st 8) 0))
+          (if (and (>= b 60) (<= b 63))
+              (set-st 9 1)
+              (if (and (>= b 64) (<= b 126))
+                  (do (set-st 7 0) (csi-final b))
+                  unit)))))
+
+(defn move-cursor [(r : I32) (c : I32)] : Unit
+  (do
+    (set-row (clamp-i r 0 (- (rows) 1)))
+    (set-col (clamp-i c 0 (- (cols) 1)))
+    (set-st 25 0)))
+
+(defn erase-display [(mode : I32)] : Unit
+  (do
+    (when (= mode 0)
+      (blank-range (+ (top) (row)) (col) (cols))
+      (loop [r (+ (row) 1)]
+        (when (< r (rows))
+          (blank-range (+ (top) r) 0 (cols))
+          (recur (+ r 1)))))
+    (when (= mode 1)
+      (blank-range (+ (top) (row)) 0 (+ (col) 1))
+      (loop [r 0]
+        (when (< r (row))
+          (blank-range (+ (top) r) 0 (cols))
+          (recur (+ r 1)))))
+    (when (> mode 1)
+      (loop [r 0]
+        (when (< r (rows))
+          (blank-range (+ (top) r) 0 (cols))
+          (recur (+ r 1)))))
+    (dirty)))
+
+(defn erase-line [(mode : I32)] : Unit
+  (do
+    (when (= mode 0) (blank-range (+ (top) (row)) (col) (cols)))
+    (when (= mode 1) (blank-range (+ (top) (row)) 0 (+ (col) 1)))
+    (when (= mode 2) (blank-range (+ (top) (row)) 0 (cols)))
+    (dirty)))
+
+(defn reset-attrs [] : Unit
+  (do (set-st 4 (def-fg)) (set-st 5 (def-bg)) (set-st 6 0)))
+
+(defn extended-color [(n : I32) (i : I32)] : I32
+  (let [mode (param (+ i 1))
+        c5 (pal (param (+ i 2)))
+        c2 (bit-or (bit-and (param (+ i 2)) 255)
+                   (bit-or (shl (bit-and (param (+ i 3)) 255) 8)
+                           (shl (bit-and (param (+ i 4)) 255) 16)))]
+    (if (= mode 5)
+        (do (set-st (if (= n 38) 4 5) c5) (+ i 3))
+        (if (= mode 2)
+            (do (set-st (if (= n 38) 4 5) c2) (+ i 5))
+            (+ i 1)))))
+
+(defn sgr-one [(i : I32)] : I32
+  (let [n (param i)]
+    (if (= n 0) (do (reset-attrs) (+ i 1))
+    (if (= n 1) (do (set-st 6 (bit-or (st 6) 1)) (+ i 1))
+    (if (= n 4) (do (set-st 6 (bit-or (st 6) 2)) (+ i 1))
+    (if (= n 7) (do (set-st 6 (bit-or (st 6) 4)) (+ i 1))
+    (if (= n 22) (do (set-st 6 (bit-and (st 6) 6)) (+ i 1))
+    (if (= n 24) (do (set-st 6 (bit-and (st 6) 5)) (+ i 1))
+    (if (= n 27) (do (set-st 6 (bit-and (st 6) 3)) (+ i 1))
+    (if (and (>= n 30) (<= n 37)) (do (set-st 4 (pal (- n 30))) (+ i 1))
+    (if (= n 39) (do (set-st 4 (def-fg)) (+ i 1))
+    (if (and (>= n 40) (<= n 47)) (do (set-st 5 (pal (- n 40))) (+ i 1))
+    (if (= n 49) (do (set-st 5 (def-bg)) (+ i 1))
+    (if (and (>= n 90) (<= n 97)) (do (set-st 4 (pal (+ 8 (- n 90)))) (+ i 1))
+    (if (and (>= n 100) (<= n 107)) (do (set-st 5 (pal (+ 8 (- n 100)))) (+ i 1))
+    (if (or (= n 38) (= n 48)) (extended-color n i)
+        (+ i 1)))))))))))))))))
+
+(defn sgr [] : Unit
+  (loop [i 0]
+    (when (<= i (st 8))
+      (recur (sgr-one i)))))
+
+(defn csi-final [(b : I32)] : Unit
+  (do
+    (when (= b 65) (move-cursor (- (row) (pd 0 1)) (col)))
+    (when (= b 66) (move-cursor (+ (row) (pd 0 1)) (col)))
+    (when (= b 67) (move-cursor (row) (+ (col) (pd 0 1))))
+    (when (= b 68) (move-cursor (row) (- (col) (pd 0 1))))
+    (when (= b 71) (move-cursor (row) (- (pd 0 1) 1)))
+    (when (= b 100) (move-cursor (- (pd 0 1) 1) (col)))
+    (when (or (= b 72) (= b 102)) (move-cursor (- (pd 0 1) 1) (- (pd 1 1) 1)))
+    (when (= b 74) (erase-display (param 0)))
+    (when (= b 75) (erase-line (param 0)))
+    (when (and (= b 109) (= (st 9) 0)) (sgr))
+    (when (= b 115) (set-st 13 (col)) (set-st 14 (row)))
+    (when (= b 117) (move-cursor (st 14) (st 13)))
+    (dirty)))
+
+(defn feed-byte [(b : I32)] : Unit
+  (let [ps (st 7)]
+    (if (= ps 0) (normal-byte b)
+      (if (= ps 1) (esc-byte b)
+        (if (= ps 2) (csi-byte b)
+          (if (= ps 3) (osc-byte b)
+              (set-st 7 0)))))))
+
+(defn term-feed [(n : I32)] : Unit
+  (do
+    (loop [i 0]
+      (when (< i n)
+        (feed-byte (load8 (+ (in-base) i)))
+        (recur (+ i 1))))
+    (dirty)))
+
+;; ---- view / selection -------------------------------------------------------------------
+(defn term-scroll [(delta : I32)] : Unit
+  (do (set-view (clamp-i (+ (view) delta) 0 (max-view))) (dirty)))
+
+(defn is-selected [(abs : I32) (c : I32)] : Bool
+  (if (= (st 15) 0)
+      false
+      (let [k (+ (* abs 100) c)
+            ka (+ (* (st 16) 100) (st 17))
+            kh (+ (* (st 18) 100) (st 19))]
+        (and (>= k (min-i ka kh)) (<= k (max-i ka kh))))))
+
+(defn cell-glyph [(abs : I32) (c : I32)] : I32
+  (bit-and (load32 (cell-addr abs c)) 65535))
+
+(defn term-mouse [(kind : I32) (c0 : I32) (r0 : I32)] : Unit
+  (let [c (clamp-i c0 0 (- (cols) 1))
+        r (clamp-i r0 0 (- (rows) 1))
+        abs (+ (- (top) (view)) r)]
+    (do
+      (when (= kind 0)
+        (set-st 16 abs) (set-st 17 c) (set-st 18 abs) (set-st 19 c)
+        (set-st 15 0) (set-st 24 1))
+      (when (and (= kind 1) (= (st 24) 1))
+        (set-st 18 abs) (set-st 19 c) (set-st 15 1))
+      (when (= kind 2) (set-st 24 0))
+      (when (= kind 3)
+        (set-st 15 1) (set-st 16 abs) (set-st 18 abs)
+        (set-st 17 (word-edge abs c (- 0 1)))
+        (set-st 19 (word-edge abs c 1)))
+      (when (= kind 4) (set-st 15 0))
+      (dirty))))
+
+;; Walk from c in direction dir while cells are non-blank; returns the last non-blank column.
+(defn word-edge [(abs : I32) (c : I32) (dir : I32)] : I32
+  (loop [x c]
+    (let [nx (+ x dir)]
+      (if (or (< nx 0) (or (>= nx (cols)) (= (cell-glyph abs nx) 0)))
+          x
+          (recur nx)))))
+
+;; ---- copy -------------------------------------------------------------------------------
+(defn wbyte [(base : I32) (n : I32) (b : I32)] : I32
+  (do (store8! (+ base n) b) (+ n 1)))
+
+(defn wutf8 [(base : I32) (n : I32) (cp : I32)] : I32
+  (if (< cp 128)
+      (wbyte base n cp)
+      (if (< cp 2048)
+          (wbyte base (wbyte base n (bit-or 192 (shr cp 6))) (bit-or 128 (bit-and cp 63)))
+          (if (< cp 65536)
+              (wbyte base
+                     (wbyte base (wbyte base n (bit-or 224 (shr cp 12)))
+                            (bit-or 128 (bit-and (shr cp 6) 63)))
+                     (bit-or 128 (bit-and cp 63)))
+              (wbyte base
+                     (wbyte base
+                            (wbyte base (wbyte base n (bit-or 240 (shr cp 18)))
+                                   (bit-or 128 (bit-and (shr cp 12) 63)))
+                            (bit-or 128 (bit-and (shr cp 6) 63)))
+                     (bit-or 128 (bit-and cp 63)))))))
+
+(defn glyph-cp [(g : I32)] : I32
+  (if (< g 95) (+ g 32)
+    (if (< g 223) (+ 9472 (- g 95))
+      (+ 9600 (- g 223)))))
+
+(defn last-nonblank [(abs : I32) (from : I32) (to : I32)] : I32
+  (loop [c to]
+    (if (< c from)
+        (- from 1)
+        (if (= (cell-glyph abs c) 0)
+            (recur (- c 1))
+            c))))
+
+(defn copy-line [(abs : I32) (from : I32) (to : I32) (last : Bool) (n : I32)] : I32
+  (let [end (last-nonblank abs from to)
+        n2 (loop [c from n n]
+             (if (> c end)
+                 n
+                 (recur (+ c 1) (wutf8 (copy-base) n (glyph-cp (cell-glyph abs c))))))]
+    (if last n2 (wbyte (copy-base) n2 10))))
+
+(defn term-copy [] : I32
+  (if (= (st 15) 0)
+      0
+      (let [ka (+ (* (st 16) 100) (st 17))
+            kh (+ (* (st 18) 100) (st 19))
+            fwd (<= ka kh)
+            l1 (if fwd (st 16) (st 18))
+            c1 (if fwd (st 17) (st 19))
+            l2 (if fwd (st 18) (st 16))
+            c2 (if fwd (st 19) (st 17))]
+        (loop [l l1 n 0]
+          (if (or (> l l2) (> n 250000))
+              n
+              (recur (+ l 1)
+                     (copy-line l
+                                (if (= l l1) c1 0)
+                                (if (= l l2) c2 (- (cols) 1))
+                                (= l l2)
+                                n)))))))
+
+;; ---- keys, line tracking, history -------------------------------------------------------
+(defn fill-dels [(n : I32)] : I32
+  (do
+    (loop [i 0]
+      (when (< i n)
+        (store8! (+ (out-base) i) 127)
+        (recur (+ i 1))))
+    n))
+
+(defn hist-entry [(idx : I32)] : I32 (+ (hist-base) (* (mod idx 64) 256)))
+
+(defn hist-same-as-last [] : Bool
+  (if (= (st 21) 0)
+      false
+      (let [a (hist-entry (- (st 21) 1))]
+        (if (= (load8 a) (st 20))
+            (loop [i 0]
+              (if (>= i (st 20))
+                  true
+                  (if (= (load8 (+ a (+ 1 i))) (load8 (+ (linebuf-base) i)))
+                      (recur (+ i 1))
+                      false)))
+            false))))
+
+(defn hist-push [] : Unit
+  (when (and (> (st 20) 0) (not (hist-same-as-last)))
+    (let [a (hist-entry (st 21))]
+      (store8! a (st 20))
+      (loop [i 0]
+        (when (< i (st 20))
+          (store8! (+ a (+ 1 i)) (load8 (+ (linebuf-base) i)))
+          (recur (+ i 1))))
+      (set-st 21 (+ (st 21) 1)))))
+
+(defn load-hist-entry [(idx : I32) (n : I32)] : I32
+  (let [a (hist-entry idx)
+        len (load8 a)]
+    (do
+      (loop [i 0]
+        (when (< i len)
+          (store8! (+ (out-base) (+ n i)) (load8 (+ a (+ 1 i))))
+          (store8! (+ (linebuf-base) i) (load8 (+ a (+ 1 i))))
+          (recur (+ i 1))))
+      (set-st 20 len)
+      (+ n len))))
+
+(defn replace-line [(np : I32)] : I32
+  (let [n (fill-dels (st 20))]
+    (do
+      (set-st 20 0)
+      (if (= np 0) n (load-hist-entry (- (st 21) np) n)))))
+
+(defn hist-step [(dir : I32)] : I32
+  (let [np (+ (st 22) dir)]
+    (if (or (< np 0) (> np (min-i (st 21) 64)))
+        0
+        (do (set-st 22 np) (replace-line np)))))
+
+(defn append-line-bytes [(n : I32)] : Unit
+  (loop [i 0]
+    (when (< i n)
+      (when (< (st 20) 250)
+        (store8! (+ (linebuf-base) (st 20)) (load8 (+ (out-base) i)))
+        (set-st 20 (+ (st 20) 1)))
+      (recur (+ i 1)))))
+
+(defn key-char [(code : I32)] : I32
+  (let [n (wutf8 (out-base) 0 code)]
+    (do (append-line-bytes n) (set-st 22 0) n)))
+
+(defn key-enter [] : I32
+  (do (hist-push) (set-st 20 0) (set-st 22 0) (store8! (out-base) 13) 1))
+
+(defn key-backspace [] : I32
+  (if (> (st 20) 0)
+      (do (set-st 20 (- (st 20) 1)) (store8! (out-base) 127) 1)
+      0))
+
+(defn key-clear-line [] : I32
+  (let [n (fill-dels (st 20))]
+    (do (set-st 20 0) (set-st 22 0) n)))
+
+;; Key codes: Unicode scalar values below 0x110000; specials above it (JS maps DOM keys).
+;;   ENTER 1114113  BACKSPACE 1114114  UP 1114115  DOWN 1114116
+;;   PGUP 1114117   PGDN 1114118       TAB 1114119 ESC 1114120
+;; mods bit 1 = ctrl. Returns the number of bytes JS must send from the OUT buffer.
+(defn key-live [(code : I32) (mods : I32)] : I32
+  (if (= code 1114113) (key-enter)
+  (if (= code 1114114) (key-backspace)
+  (if (= code 1114115) (hist-step 1)
+  (if (= code 1114116) (hist-step (- 0 1))
+  (if (= code 1114120) (key-clear-line)
+  (if (>= code 1114112) 0
+  (if (and (= (bit-and mods 1) 1)
+           (and (>= (bit-and code 95) 65) (<= (bit-and code 95) 90)))
+      (do (store8! (out-base) (bit-and code 31)) 1)
+      (key-char code)))))))))
+
+(defn term-key [(code : I32) (mods : I32)] : I32
+  (if (= code 1114117)
+      (do (term-scroll (- (rows) 2)) 0)
+      (if (= code 1114118)
+          (do (term-scroll (- 2 (rows))) 0)
+          (do (set-view 0) (dirty) (key-live code mods)))))
+
+;; ---- rendering --------------------------------------------------------------------------
+(defn glyph-bits [(g : I32) (fl : I32) (y : I32)] : I32
+  (let [b (load8 (+ (font-base) (+ (* g 16) y)))
+        bold (if (= (bit-and fl 1) 1) (bit-or b (shr b 1)) b)]
+    (if (and (= (bit-and fl 2) 2) (= y 15)) 255 bold)))
+
+(defn draw-glyph-row [(x0 : I32) (y : I32) (bits : I32) (fg : I32) (bg : I32)] : Unit
+  (loop [x 0]
+    (when (< x 8)
+      (store32! (+ (fb-base) (shl (+ (* y 800) (+ x0 x)) 2))
+                (bit-or (shl 255 24)
+                        (if (= (bit-and (shr bits (- 7 x)) 1) 1) fg bg)))
+      (recur (+ x 1)))))
+
+(defn draw-cell [(x0 : I32) (y0 : I32) (g : I32) (fl : I32) (fg : I32) (bg : I32)] : Unit
+  (loop [y 0]
+    (when (< y 16)
+      (draw-glyph-row x0 (+ y0 y) (glyph-bits g fl y) fg bg)
+      (recur (+ y 1)))))
+
+(defn render-cell [(r : I32) (c : I32)] : Unit
+  (let [abs (+ (- (top) (view)) r)
+        a (cell-addr abs c)
+        w (load32 a)
+        g (bit-and w 65535)
+        fl (bit-and (shr w 16) 255)
+        fg0 (load32 (+ a 4))
+        bg0 (load32 (+ a 8))
+        rev (= (bit-and fl 4) 4)
+        fg1 (if rev bg0 fg0)
+        bg1 (if rev fg0 bg0)
+        sel (is-selected abs c)
+        cur (and (= (view) 0) (and (= (st 26) 1) (and (= r (row)) (= c (col)))))
+        bg2 (if sel (sel-color) bg1)
+        fg3 (if cur (def-bg) fg1)
+        bg3 (if cur (cursor-color) bg2)]
+    (draw-cell (* c 8) (* r 16) g fl fg3 bg3)))
+
+(defn render-row [(r : I32)] : Unit
+  (loop [c 0]
+    (when (< c (cols))
+      (render-cell r c)
+      (recur (+ c 1)))))
+
+;; Returns 1 if a new frame was painted (JS then uploads the framebuffer), 0 if nothing changed.
+(defn term-render [] : I32
+  (if (= (st 12) 0)
+      0
+      (do
+        (loop [r 0]
+          (when (< r (rows))
+            (render-row r)
+            (recur (+ r 1))))
+        (set-st 12 0)
+        1)))
+
+(defn term-set-cursor [(on : I32)] : Unit
+  (do (set-st 26 on) (dirty)))
+
+(defn term-has-sel [] : I32 (st 15))
+(defn term-view [] : I32 (view))
+
+(defn term-init [] : Unit
+  (do
+    (loop [i 0]
+      (when (< i 64)
+        (set-st i 0)
+        (recur (+ i 1))))
+    (load-font)
+    (load-palette)
+    (reset-attrs)
+    (clear-all)
+    (set-st 26 1)
+    (dirty)))

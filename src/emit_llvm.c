@@ -126,18 +126,41 @@ static const char *format_double_literal(Arena *arena, const char *text) {
 
 /* --- per-function emission state --- */
 
-#define LLVM_MAX_LOCALS 16
+#define LLVM_MAX_LOCALS 64
 
 typedef struct {
     const char *name;   /* mangled */
     const char *type;   /* llvm type */
+    /* slot: NULL for a defn parameter (an immutable SSA value, referenced as %name). Non-NULL for
+       a `let`/`loop` binding: the name of an entry-block `alloca` holding the current value, so
+       `set!` and `recur` can mutate it without phi nodes (2026-10-16, mutable locals + loops for
+       the GFD web terminal). Every reference loads from the slot; LLVM's mem2reg-class passes
+       (opt -O2) turn the slots back into registers. */
+    const char *slot;
 } LlvmLocal;
+
+/* One enclosing `loop`: where `recur` jumps and where a terminal value exits. */
+typedef struct LlvmLoop {
+    const char *head;                 /* label name, no leading % */
+    const char *exit;
+    size_t nvars;
+    const char *slots[LLVM_MAX_LOCALS];
+    const char *types[LLVM_MAX_LOCALS];
+    const char *res_slot;             /* alloca for the loop's value, created at first valued exit */
+    const char *res_type;
+    int exits_unit;                   /* some exit produced no value */
+    struct LlvmLoop *outer;
+} LlvmLoop;
 
 typedef struct {
     LlvmBuf body;                     /* accumulated instruction lines */
+    LlvmBuf allocas;                  /* entry-block allocas for let/loop/if-result slots */
     int next_reg;                     /* next fresh SSA register number */
+    int next_label;                   /* next fresh basic-block label number */
+    int next_slot;                    /* next fresh alloca number */
     LlvmLocal locals[LLVM_MAX_LOCALS];
     size_t local_count;
+    LlvmLoop *loop;                   /* innermost enclosing loop, or NULL */
 } LlvmFn;
 
 /* LlvmFnSig -- 2026-09-10, real follow-up: now records each defn's own real, declared parameter
@@ -154,7 +177,7 @@ typedef struct {
     size_t param_count;
 } LlvmFnSig;
 
-#define LLVM_MAX_FNS 64
+#define LLVM_MAX_FNS 512
 
 /* LlvmModule -- real, whole-compile-unit state, threaded through every recursive call instead of
    the two separate (sigs, sig_count) parameters this file started with (the real, minimal
@@ -171,9 +194,10 @@ typedef struct {
     LlvmBuf externs;   /* accumulated `declare ...` lines -- see llvm-extern's own handling below */
 } LlvmModule;
 
-static const char *lookup_local_type(LlvmFn *fn, const char *mangled_name) {
-    for (size_t i = 0; i < fn->local_count; i++) {
-        if (strcmp(fn->locals[i].name, mangled_name) == 0) return fn->locals[i].type;
+/* Searches newest-first so an inner `let` shadows an outer binding or a parameter. */
+static LlvmLocal *lookup_local(LlvmFn *fn, const char *mangled_name) {
+    for (size_t i = fn->local_count; i > 0; i--) {
+        if (strcmp(fn->locals[i - 1].name, mangled_name) == 0) return &fn->locals[i - 1];
     }
     return NULL;
 }
@@ -286,6 +310,404 @@ static LlvmVal llvm_val_err(void) {
     v.type = NULL;
     v.ref = NULL;
     return v;
+}
+
+
+/* --- statements, mutable locals, branches, loops, linear memory (2026-10-16) --------------------
+   Added so PARENA can express the GFD web terminal (ANSI parser, cell grid, software renderer)
+   and compile it to wasm32. Everything lowers to plain LLVM IR: `let`/`loop` bindings become
+   entry-block allocas, `if` with effects and `when` become real basic blocks, `loop`/`recur`
+   become a header block plus back-edges. "Unit" (no value) is type "void" with an empty ref. */
+
+static LlvmVal unit_val(void) {
+    LlvmVal v;
+    v.type = "void";
+    v.ref = "";
+    return v;
+}
+
+static int is_unit(LlvmVal v) { return v.type && strcmp(v.type, "void") == 0; }
+
+static const char *fresh_label(Arena *arena, LlvmFn *fn) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "L%d", fn->next_label++);
+    return arena_strdup(arena, tmp, strlen(tmp));
+}
+
+static const char *fresh_slot(Arena *arena, LlvmFn *fn, const char *type) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "%%s%d", fn->next_slot++);
+    const char *name = arena_strdup(arena, tmp, strlen(tmp));
+    lb_appendf(&fn->allocas, "  %s = alloca %s\n", name, type);
+    return name;
+}
+
+/* A number literal with no surrounding type context (a let/loop initializer) defaults to I32, or
+   F64 when its text has a decimal point. */
+static const char *literal_hint(Node *n) {
+    if (n && n->type == NODE_NUMBER) {
+        for (size_t i = 0; i < n->text_len; i++) if (n->text[i] == '.') return "double";
+        return "i32";
+    }
+    return NULL;
+}
+
+static int is_arith_or_cmp_head(const char *h) {
+    return find_arith(h) || find_cmp(h) || strcmp(h, "not") == 0 || strcmp(h, "and") == 0 ||
+           strcmp(h, "or") == 0 || strcmp(h, "if") == 0;
+}
+
+/* Pure = no calls, stores, or binding forms anywhere inside, so evaluating it unconditionally (as
+   `select` does) is unobservable. Anything else gets a real branch. */
+static int expr_is_pure(Node *n) {
+    if (!n) return 1;
+    if (n->type == NODE_NUMBER || n->type == NODE_STRING) return 1;
+    if (n->type == NODE_SYMBOL) return 1;
+    if (n->type != NODE_LIST || n->child_count == 0 || n->children[0]->type != NODE_SYMBOL) return 0;
+    if (!is_arith_or_cmp_head(n->children[0]->text)) return 0;
+    for (size_t i = 1; i < n->child_count; i++) if (!expr_is_pure(n->children[i])) return 0;
+    return 1;
+}
+
+/* Evaluates children[from..] in order; the value is the last one's (unit if there are none). */
+static LlvmVal emit_seq(Arena *arena, LlvmFn *fn, Node *list, size_t from, const char *expected,
+                        LlvmModule *mod, const char **out_error) {
+    LlvmVal last = unit_val();
+    for (size_t i = from; i < list->child_count; i++) {
+        int is_last = (i + 1 == list->child_count);
+        Node *c = list->children[i];
+        if (!is_last && c->type == NODE_NUMBER) continue; /* a bare literal statement has no effect */
+        const char *hint = is_last ? expected : NULL;
+        if (!hint) hint = literal_hint(c);
+        last = emit_llvm_expr(arena, fn, c, hint, mod, out_error);
+        if (!last.ref) return last;
+    }
+    return last;
+}
+
+static int bind_local(Arena *arena, LlvmFn *fn, Node *name, Node *init, LlvmModule *mod,
+                      const char **out_error) {
+    if (name->type != NODE_SYMBOL) {
+        *out_error = "emit_llvm: let/loop binding name must be a symbol";
+        return 0;
+    }
+    LlvmVal v = emit_llvm_expr(arena, fn, init, literal_hint(init), mod, out_error);
+    if (!v.ref) return 0;
+    if (is_unit(v)) {
+        *out_error = "emit_llvm: let/loop binding initializer has no value";
+        return 0;
+    }
+    if (fn->local_count >= LLVM_MAX_LOCALS) {
+        *out_error = "emit_llvm: too many locals in one function (v0 fixed limit)";
+        return 0;
+    }
+    const char *slot = fresh_slot(arena, fn, v.type);
+    lb_appendf(&fn->body, "  store %s %s, ptr %s\n", v.type, v.ref, slot);
+    fn->locals[fn->local_count].name = mangle_name(arena, name->text);
+    fn->locals[fn->local_count].type = v.type;
+    fn->locals[fn->local_count].slot = slot;
+    fn->local_count++;
+    return 1;
+}
+
+static LlvmVal emit_let(Arena *arena, LlvmFn *fn, Node *expr, const char *expected, LlvmModule *mod,
+                        const char **out_error) {
+    if (expr->child_count < 2 || expr->children[1]->type != NODE_VEC ||
+        expr->children[1]->child_count % 2 != 0) {
+        *out_error = "emit_llvm: let requires (let [name init ...] body...)";
+        return llvm_val_err();
+    }
+    size_t saved = fn->local_count;
+    Node *vec = expr->children[1];
+    for (size_t i = 0; i < vec->child_count; i += 2) {
+        if (!bind_local(arena, fn, vec->children[i], vec->children[i + 1], mod, out_error))
+            return llvm_val_err();
+    }
+    LlvmVal v = emit_seq(arena, fn, expr, 2, expected, mod, out_error);
+    fn->local_count = saved;
+    return v;
+}
+
+static LlvmVal emit_set(Arena *arena, LlvmFn *fn, Node *expr, LlvmModule *mod, const char **out_error) {
+    if (expr->child_count != 3 || expr->children[1]->type != NODE_SYMBOL) {
+        *out_error = "emit_llvm: set! requires (set! name expr)";
+        return llvm_val_err();
+    }
+    LlvmLocal *local = lookup_local(fn, mangle_name(arena, expr->children[1]->text));
+    if (!local || !local->slot) {
+        *out_error = "emit_llvm: set! target must be a let/loop binding (parameters are immutable)";
+        return llvm_val_err();
+    }
+    LlvmVal v = emit_llvm_expr(arena, fn, expr->children[2], local->type, mod, out_error);
+    if (!v.ref) return v;
+    if (strcmp(v.type, local->type) != 0) {
+        *out_error = "emit_llvm: set! value type does not match the binding's type";
+        return llvm_val_err();
+    }
+    lb_appendf(&fn->body, "  store %s %s, ptr %s\n", v.type, v.ref, local->slot);
+    return unit_val();
+}
+
+static const char *emit_cond(Arena *arena, LlvmFn *fn, Node *c, LlvmModule *mod, const char **out_error) {
+    LlvmVal v = emit_llvm_expr(arena, fn, c, "i1", mod, out_error);
+    if (!v.ref) return NULL;
+    if (strcmp(v.type, "i1") != 0) {
+        *out_error = "emit_llvm: condition must be Bool (i1)";
+        return NULL;
+    }
+    return v.ref;
+}
+
+static LlvmVal emit_when(Arena *arena, LlvmFn *fn, Node *expr, LlvmModule *mod, const char **out_error) {
+    if (expr->child_count < 2) {
+        *out_error = "emit_llvm: when requires (when cond body...)";
+        return llvm_val_err();
+    }
+    const char *c = emit_cond(arena, fn, expr->children[1], mod, out_error);
+    if (!c) return llvm_val_err();
+    const char *lt = fresh_label(arena, fn), *le = fresh_label(arena, fn);
+    lb_appendf(&fn->body, "  br i1 %s, label %%%s, label %%%s\n%s:\n", c, lt, le, lt);
+    LlvmVal v = emit_seq(arena, fn, expr, 2, NULL, mod, out_error);
+    if (!v.ref) return v;
+    lb_appendf(&fn->body, "  br label %%%s\n%s:\n", le, le);
+    return unit_val();
+}
+
+/* `if` with side effects in a branch: real blocks, result carried through a stack slot. */
+static LlvmVal emit_if_branch(Arena *arena, LlvmFn *fn, Node *expr, const char *expected,
+                              LlvmModule *mod, const char **out_error) {
+    const char *c = emit_cond(arena, fn, expr->children[1], mod, out_error);
+    if (!c) return llvm_val_err();
+    const char *lt = fresh_label(arena, fn), *lf = fresh_label(arena, fn), *le = fresh_label(arena, fn);
+    int has_else = expr->child_count == 4;
+    lb_appendf(&fn->body, "  br i1 %s, label %%%s, label %%%s\n%s:\n", c, lt, has_else ? lf : le, lt);
+    LlvmVal tv = emit_llvm_expr(arena, fn, expr->children[2], has_else ? expected : NULL, mod, out_error);
+    if (!tv.ref) return tv;
+    const char *slot = NULL;
+    if (has_else && !is_unit(tv)) {
+        slot = fresh_slot(arena, fn, tv.type);
+        lb_appendf(&fn->body, "  store %s %s, ptr %s\n", tv.type, tv.ref, slot);
+    }
+    lb_appendf(&fn->body, "  br label %%%s\n", le);
+    if (has_else) {
+        lb_appendf(&fn->body, "%s:\n", lf);
+        LlvmVal ev = emit_llvm_expr(arena, fn, expr->children[3], is_unit(tv) ? NULL : tv.type, mod, out_error);
+        if (!ev.ref) return ev;
+        if (is_unit(tv) != is_unit(ev) || (!is_unit(tv) && strcmp(tv.type, ev.type) != 0)) {
+            *out_error = "emit_llvm: if branches have mismatched types";
+            return llvm_val_err();
+        }
+        if (slot) lb_appendf(&fn->body, "  store %s %s, ptr %s\n", ev.type, ev.ref, slot);
+        lb_appendf(&fn->body, "  br label %%%s\n", le);
+    }
+    lb_appendf(&fn->body, "%s:\n", le);
+    if (!slot) return unit_val();
+    const char *reg = fresh_reg(arena, fn);
+    lb_appendf(&fn->body, "  %s = load %s, ptr %s\n", reg, tv.type, slot);
+    LlvmVal v;
+    v.type = tv.type;
+    v.ref = reg;
+    return v;
+}
+
+static int emit_tail(Arena *arena, LlvmFn *fn, Node *n, LlvmLoop *lp, LlvmModule *mod, const char **out_error);
+
+static int loop_exit(Arena *arena, LlvmFn *fn, LlvmLoop *lp, LlvmVal v, const char **out_error) {
+    if (is_unit(v)) {
+        if (lp->res_slot) { *out_error = "emit_llvm: loop exits disagree: some produce a value, some do not"; return 0; }
+        lp->exits_unit = 1;
+    } else {
+        if (lp->exits_unit) { *out_error = "emit_llvm: loop exits disagree: some produce a value, some do not"; return 0; }
+        if (!lp->res_slot) {
+            lp->res_slot = fresh_slot(arena, fn, v.type);
+            lp->res_type = v.type;
+        } else if (strcmp(lp->res_type, v.type) != 0) {
+            *out_error = "emit_llvm: loop exits have mismatched value types";
+            return 0;
+        }
+        lb_appendf(&fn->body, "  store %s %s, ptr %s\n", v.type, v.ref, lp->res_slot);
+    }
+    lb_appendf(&fn->body, "  br label %%%s\n", lp->exit);
+    return 1;
+}
+
+/* Statements of a body followed by a tail-position form (a block that must end in a terminator). */
+static int emit_tail_seq(Arena *arena, LlvmFn *fn, Node *list, size_t from, LlvmLoop *lp,
+                         LlvmModule *mod, const char **out_error) {
+    if (from >= list->child_count) return loop_exit(arena, fn, lp, unit_val(), out_error);
+    for (size_t i = from; i + 1 < list->child_count; i++) {
+        Node *c = list->children[i];
+        if (c->type == NODE_NUMBER) continue;
+        LlvmVal v = emit_llvm_expr(arena, fn, c, literal_hint(c), mod, out_error);
+        if (!v.ref) return 0;
+    }
+    return emit_tail(arena, fn, list->children[list->child_count - 1], lp, mod, out_error);
+}
+
+static int emit_tail(Arena *arena, LlvmFn *fn, Node *n, LlvmLoop *lp, LlvmModule *mod, const char **out_error) {
+    if (n->type == NODE_LIST && n->child_count > 0 && n->children[0]->type == NODE_SYMBOL) {
+        const char *h = n->children[0]->text;
+        if (strcmp(h, "recur") == 0) {
+            if (n->child_count - 1 != lp->nvars) {
+                *out_error = "emit_llvm: recur argument count does not match the loop bindings";
+                return 0;
+            }
+            LlvmVal vals[LLVM_MAX_LOCALS];
+            for (size_t i = 0; i < lp->nvars; i++) { /* all new values first, then all stores */
+                vals[i] = emit_llvm_expr(arena, fn, n->children[i + 1], lp->types[i], mod, out_error);
+                if (!vals[i].ref) return 0;
+                if (strcmp(vals[i].type, lp->types[i]) != 0) {
+                    *out_error = "emit_llvm: recur value type does not match the loop binding";
+                    return 0;
+                }
+            }
+            for (size_t i = 0; i < lp->nvars; i++)
+                lb_appendf(&fn->body, "  store %s %s, ptr %s\n", vals[i].type, vals[i].ref, lp->slots[i]);
+            lb_appendf(&fn->body, "  br label %%%s\n", lp->head);
+            return 1;
+        }
+        if (strcmp(h, "if") == 0 && (n->child_count == 3 || n->child_count == 4)) {
+            const char *c = emit_cond(arena, fn, n->children[1], mod, out_error);
+            if (!c) return 0;
+            const char *lt = fresh_label(arena, fn), *lf = fresh_label(arena, fn);
+            lb_appendf(&fn->body, "  br i1 %s, label %%%s, label %%%s\n%s:\n", c, lt, lf, lt);
+            if (!emit_tail(arena, fn, n->children[2], lp, mod, out_error)) return 0;
+            lb_appendf(&fn->body, "%s:\n", lf);
+            if (n->child_count == 4) return emit_tail(arena, fn, n->children[3], lp, mod, out_error);
+            return loop_exit(arena, fn, lp, unit_val(), out_error);
+        }
+        if (strcmp(h, "when") == 0 && n->child_count >= 2) {
+            const char *c = emit_cond(arena, fn, n->children[1], mod, out_error);
+            if (!c) return 0;
+            const char *lt = fresh_label(arena, fn), *lf = fresh_label(arena, fn);
+            lb_appendf(&fn->body, "  br i1 %s, label %%%s, label %%%s\n%s:\n", c, lt, lf, lt);
+            if (!emit_tail_seq(arena, fn, n, 2, lp, mod, out_error)) return 0;
+            lb_appendf(&fn->body, "%s:\n", lf);
+            return loop_exit(arena, fn, lp, unit_val(), out_error);
+        }
+        if (strcmp(h, "do") == 0) return emit_tail_seq(arena, fn, n, 1, lp, mod, out_error);
+        if (strcmp(h, "let") == 0 && n->child_count >= 2 && n->children[1]->type == NODE_VEC &&
+            n->children[1]->child_count % 2 == 0) {
+            size_t saved = fn->local_count;
+            Node *vec = n->children[1];
+            for (size_t i = 0; i < vec->child_count; i += 2)
+                if (!bind_local(arena, fn, vec->children[i], vec->children[i + 1], mod, out_error)) return 0;
+            int ok = emit_tail_seq(arena, fn, n, 2, lp, mod, out_error);
+            fn->local_count = saved;
+            return ok;
+        }
+    }
+    LlvmVal v = emit_llvm_expr(arena, fn, n, lp->res_type ? lp->res_type : literal_hint(n), mod, out_error);
+    if (!v.ref) return 0;
+    return loop_exit(arena, fn, lp, v, out_error);
+}
+
+static LlvmVal emit_loop(Arena *arena, LlvmFn *fn, Node *expr, LlvmModule *mod, const char **out_error) {
+    if (expr->child_count < 3 || expr->children[1]->type != NODE_VEC ||
+        expr->children[1]->child_count % 2 != 0) {
+        *out_error = "emit_llvm: loop requires (loop [name init ...] body...)";
+        return llvm_val_err();
+    }
+    size_t saved = fn->local_count;
+    Node *vec = expr->children[1];
+    LlvmLoop *lp = arena_alloc(arena, sizeof(LlvmLoop));
+    memset(lp, 0, sizeof(*lp));
+    for (size_t i = 0; i < vec->child_count; i += 2) {
+        if (!bind_local(arena, fn, vec->children[i], vec->children[i + 1], mod, out_error))
+            return llvm_val_err();
+        LlvmLocal *l = &fn->locals[fn->local_count - 1];
+        lp->slots[lp->nvars] = l->slot;
+        lp->types[lp->nvars] = l->type;
+        lp->nvars++;
+    }
+    lp->head = fresh_label(arena, fn);
+    lp->exit = fresh_label(arena, fn);
+    lp->outer = fn->loop;
+    fn->loop = lp;
+    lb_appendf(&fn->body, "  br label %%%s\n%s:\n", lp->head, lp->head);
+    int ok = emit_tail_seq(arena, fn, expr, 2, lp, mod, out_error);
+    fn->loop = lp->outer;
+    fn->local_count = saved;
+    if (!ok) return llvm_val_err();
+    lb_appendf(&fn->body, "%s:\n", lp->exit);
+    if (!lp->res_slot) return unit_val();
+    const char *reg = fresh_reg(arena, fn);
+    lb_appendf(&fn->body, "  %s = load %s, ptr %s\n", reg, lp->res_type, lp->res_slot);
+    LlvmVal v;
+    v.type = lp->res_type;
+    v.ref = reg;
+    return v;
+}
+
+/* Linear-memory access: an address is an I32 (or a String, converted with ptrtoint). wasm32
+   pointers are i32, so inttoptr is free there. */
+static const char *emit_addr(Arena *arena, LlvmFn *fn, Node *n, LlvmModule *mod, const char **out_error) {
+    LlvmVal a = emit_llvm_expr(arena, fn, n, "i32", mod, out_error);
+    if (!a.ref) return NULL;
+    const char *i32ref = a.ref;
+    if (strcmp(a.type, "ptr") == 0) {
+        i32ref = fresh_reg(arena, fn);
+        lb_appendf(&fn->body, "  %s = ptrtoint ptr %s to i32\n", i32ref, a.ref);
+    } else if (strcmp(a.type, "i32") != 0) {
+        *out_error = "emit_llvm: memory address must be I32 or String";
+        return NULL;
+    }
+    const char *p = fresh_reg(arena, fn);
+    lb_appendf(&fn->body, "  %s = inttoptr i32 %s to ptr\n", p, i32ref);
+    return p;
+}
+
+static LlvmVal emit_mem_op(Arena *arena, LlvmFn *fn, Node *expr, const char *head, LlvmModule *mod,
+                           const char **out_error, int *handled) {
+    *handled = 1;
+    if (strcmp(head, "load8") == 0 || strcmp(head, "load32") == 0) {
+        if (expr->child_count != 2) { *out_error = "emit_llvm: load8/load32 take exactly one address"; return llvm_val_err(); }
+        const char *p = emit_addr(arena, fn, expr->children[1], mod, out_error);
+        if (!p) return llvm_val_err();
+        const char *r = fresh_reg(arena, fn);
+        LlvmVal v;
+        v.type = "i32";
+        if (strcmp(head, "load8") == 0) {
+            lb_appendf(&fn->body, "  %s = load i8, ptr %s, align 1\n", r, p);
+            const char *z = fresh_reg(arena, fn);
+            lb_appendf(&fn->body, "  %s = zext i8 %s to i32\n", z, r);
+            v.ref = z;
+        } else {
+            lb_appendf(&fn->body, "  %s = load i32, ptr %s, align 1\n", r, p);
+            v.ref = r;
+        }
+        return v;
+    }
+    if (strcmp(head, "store8!") == 0 || strcmp(head, "store32!") == 0) {
+        if (expr->child_count != 3) { *out_error = "emit_llvm: store8!/store32! take (addr value)"; return llvm_val_err(); }
+        const char *p = emit_addr(arena, fn, expr->children[1], mod, out_error);
+        if (!p) return llvm_val_err();
+        LlvmVal val = emit_llvm_expr(arena, fn, expr->children[2], "i32", mod, out_error);
+        if (!val.ref) return val;
+        if (strcmp(val.type, "i32") != 0) { *out_error = "emit_llvm: stored value must be I32"; return llvm_val_err(); }
+        if (strcmp(head, "store8!") == 0) {
+            const char *t = fresh_reg(arena, fn);
+            lb_appendf(&fn->body, "  %s = trunc i32 %s to i8\n", t, val.ref);
+            lb_appendf(&fn->body, "  store i8 %s, ptr %s, align 1\n", t, p);
+        } else {
+            lb_appendf(&fn->body, "  store i32 %s, ptr %s, align 1\n", val.ref, p);
+        }
+        return unit_val();
+    }
+    if (strcmp(head, "str-addr") == 0) {
+        if (expr->child_count != 2) { *out_error = "emit_llvm: str-addr takes one String"; return llvm_val_err(); }
+        LlvmVal s = emit_llvm_expr(arena, fn, expr->children[1], "ptr", mod, out_error);
+        if (!s.ref) return s;
+        if (strcmp(s.type, "ptr") != 0) { *out_error = "emit_llvm: str-addr requires a String"; return llvm_val_err(); }
+        const char *r = fresh_reg(arena, fn);
+        lb_appendf(&fn->body, "  %s = ptrtoint ptr %s to i32\n", r, s.ref);
+        LlvmVal v;
+        v.type = "i32";
+        v.ref = r;
+        return v;
+    }
+    *handled = 0;
+    return llvm_val_err();
 }
 
 /* emit_llvm_expr -- the real, recursive expression emitter. Unlike emit_java_expr/emit_ts_expr
@@ -412,17 +834,24 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
            parameter list (never from `expected_type`: a symbol's own real type is whatever it was
            declared as, not whatever the calling context hoped for -- a real mismatch here is
            caught by the binop/if/return type-check below, not silently coerced). */
+        if (is_symbol(expr, "unit")) return unit_val();
         const char *mangled = mangle_name(arena, expr->text);
-        const char *local_type = lookup_local_type(fn, mangled);
-        if (!local_type) {
-            *out_error = "emit_llvm: reference to an undeclared symbol (v0 has no let-bindings, only defn parameters)";
+        LlvmLocal *local = lookup_local(fn, mangled);
+        if (!local) {
+            *out_error = "emit_llvm: reference to an undeclared symbol";
             return llvm_val_err();
         }
         LlvmVal v;
-        v.type = local_type;
-        char tmp[64];
-        snprintf(tmp, sizeof(tmp), "%%%s", mangled);
-        v.ref = arena_strdup(arena, tmp, strlen(tmp));
+        v.type = local->type;
+        if (local->slot) {
+            const char *reg = fresh_reg(arena, fn);
+            lb_appendf(&fn->body, "  %s = load %s, ptr %s\n", reg, local->type, local->slot);
+            v.ref = reg;
+        } else {
+            char tmp[64];
+            snprintf(tmp, sizeof(tmp), "%%%s", mangled);
+            v.ref = arena_strdup(arena, tmp, strlen(tmp));
+        }
         return v;
     }
 
@@ -434,8 +863,27 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
 
     const char *head = expr->children[0]->text;
 
-    /* if -- lowers to a real `select` instruction, not a branch/phi pair -- see emit_llvm.h's own
-       header comment for the full real rationale. */
+    if (strcmp(head, "let") == 0) return emit_let(arena, fn, expr, expected_type, mod, out_error);
+    if (strcmp(head, "set!") == 0) return emit_set(arena, fn, expr, mod, out_error);
+    if (strcmp(head, "do") == 0) return emit_seq(arena, fn, expr, 1, expected_type, mod, out_error);
+    if (strcmp(head, "when") == 0) return emit_when(arena, fn, expr, mod, out_error);
+    if (strcmp(head, "loop") == 0) return emit_loop(arena, fn, expr, mod, out_error);
+    if (strcmp(head, "recur") == 0) {
+        *out_error = "emit_llvm: recur is only valid in tail position of a loop";
+        return llvm_val_err();
+    }
+    {
+        int handled = 0;
+        LlvmVal mv = emit_mem_op(arena, fn, expr, head, mod, out_error, &handled);
+        if (handled) return mv;
+    }
+
+    /* if -- a pure `if` lowers to a `select` (see emit_llvm.h); an `if` whose branches have
+       effects (calls, stores, set!, loops) lowers to real basic blocks so only one side runs. */
+    if (strcmp(head, "if") == 0 && (expr->child_count == 3 ||
+        (expr->child_count == 4 && !(expr_is_pure(expr->children[2]) && expr_is_pure(expr->children[3]))))) {
+        return emit_if_branch(arena, fn, expr, expected_type, mod, out_error);
+    }
     if (strcmp(head, "if") == 0) {
         if (expr->child_count != 4) {
             *out_error = "emit_llvm: if requires exactly (if cond then else)";
@@ -630,7 +1078,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
     lb_free(&arglist);
     LlvmVal v;
     v.type = sig->ret_type;
-    v.ref = reg ? reg : "undef"; /* void-returning calls used in value position: real, honest gap, not reached by any current real .prn source */
+    v.ref = reg ? reg : ""; /* void call: unit value (type "void", empty ref) */
     return v;
 }
 
@@ -705,8 +1153,12 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
 
     LlvmFn fn;
     lb_init(&fn.body);
+    lb_init(&fn.allocas);
     fn.next_reg = 0;
+    fn.next_label = 0;
+    fn.next_slot = 0;
     fn.local_count = 0;
+    fn.loop = NULL;
 
     LlvmBuf param_list;
     lb_init(&param_list);
@@ -735,6 +1187,7 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
         }
         fn.locals[fn.local_count].name = p_mangled;
         fn.locals[fn.local_count].type = p_type;
+        fn.locals[fn.local_count].slot = NULL;
         fn.local_count++;
         if (i > 0) lb_append(&param_list, ", ");
         lb_appendf(&param_list, "%s %%%s", p_type, p_mangled);
@@ -775,6 +1228,10 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
     }
     LlvmVal body_val = emit_llvm_expr(arena, &fn, defn->children[5], ret_type, mod, out_error);
     if (!body_val.ref) {
+        /* Name the function in the message: a 500-line module is otherwise a needle hunt. */
+        char *msg = arena_alloc(arena, strlen(*out_error) + strlen(defn->children[1]->text) + 24);
+        sprintf(msg, "%s (in defn %s)", *out_error, defn->children[1]->text);
+        *out_error = msg;
         lb_free(&param_list);
         lb_free(&fn.body);
         return 0;
@@ -786,10 +1243,16 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
         return 0;
     }
 
-    lb_appendf(out, "define %s @%s(%s) {\nentry:\n%s  ret %s %s\n}\n\n",
-               ret_type, fn_name, param_list.data, fn.body.data, ret_type, body_val.ref);
+    if (strcmp(ret_type, "void") == 0) {
+        lb_appendf(out, "define void @%s(%s) {\nentry:\n%s%s  ret void\n}\n\n",
+                   fn_name, param_list.data, fn.allocas.data, fn.body.data);
+    } else {
+        lb_appendf(out, "define %s @%s(%s) {\nentry:\n%s%s  ret %s %s\n}\n\n",
+                   ret_type, fn_name, param_list.data, fn.allocas.data, fn.body.data, ret_type, body_val.ref);
+    }
     lb_free(&param_list);
     lb_free(&fn.body);
+    lb_free(&fn.allocas);
     return 1;
 }
 

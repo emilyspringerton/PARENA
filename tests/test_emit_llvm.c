@@ -537,6 +537,71 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+
+    /* --- 2026-10-16: let / set! / loop / recur / when / memory ops (GFD web terminal) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sum-to [(n : I32)] : I32 (loop [i 0 acc 0] (if (> i n) acc (recur (+ i 1) (+ acc i)))))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "loop/recur with a valued exit emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "alloca i32") != NULL, "loop bindings become entry-block allocas");
+            CHECK(strstr(ir, "br label %L0") != NULL, "recur is a back-edge to the loop header");
+            CHECK(strstr(ir, "select") == NULL, "a loop's tail if is a real branch, not a select");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn put [(p : I32) (v : I32)] : Unit (do (store8! p v) (store32! (+ p 4) v)))"
+            "(defn get [(p : I32)] : I32 (+ (load8 p) (load32 (+ p 4))))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "memory ops emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "define void @put") != NULL && strstr(ir, "ret void") != NULL,
+                  "a Unit-returning defn ends in ret void");
+            CHECK(strstr(ir, "trunc i32") != NULL && strstr(ir, "store i8") != NULL, "store8! truncates to a byte store");
+            CHECK(strstr(ir, "zext i8") != NULL, "load8 zero-extends to i32");
+            CHECK(strstr(ir, "inttoptr i32") != NULL, "addresses are converted with inttoptr");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn f [(n : I32)] : I32 (let [x 1] (set! x (+ x n)) (when (> x 5) (set! x 5)) x))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "let + set! + when emit successfully");
+        if (!ir) printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        CHECK(build_llvm(&arena, "(defn f [(n : I32)] : I32 (do (set! n 3) n))", &err) == NULL,
+              "set! on a parameter is a compile error");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_llvm(&arena, "(defn f [(n : I32)] : I32 (+ (recur 1) n))", &err) == NULL,
+              "recur outside loop tail position is a compile error");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_llvm(&arena, "(defn f [] : I32 (loop [i 0] (if (> i 3) i (recur 1 2))))", &err) == NULL,
+              "recur with the wrong argument count is a compile error");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
