@@ -1,0 +1,301 @@
+;; stdlib/brawlpit/bp_view.prn -- BRAWLPIT web engine: the match renderer (stage, fighters,
+;; projectiles, KO effects, HUD). A port of draw_stage / draw_player / draw_turnips /
+;; draw_edge_ko_effects / draw_hud from BRAWLPIT/apps/lobby/src/main.c onto the software
+;; framebuffer in bp_draw.prn. World units are the engine's own (a fighter is 2.3 wide, 4.2 tall).
+
+;; ---- camera ---------------------------------------------------------------------------------
+(defn cam-x [] : F32 (gf (g-cam-x)))
+(defn cam-y [] : F32 (gf (g-cam-y)))
+(defn cam-zoom [] : F32 (gf (g-cam-zoom)))
+(defn unit-px [] : F32 (/ 270.0 (cam-zoom)))     ; 540 px / (2 * zoom)
+
+;; screen shake: a few px of deterministic wobble for a handful of frames after a KO / big hit
+(defn shake-x [] : I32
+  (if (> (gi (g-shake)) 0) (- (mod (* (gi (g-frame)) 7) 9) 4) 0))
+(defn shake-y [] : I32
+  (if (> (gi (g-shake)) 0) (- (mod (* (gi (g-frame)) 5) 7) 3) 0))
+
+(defn w2sx [(x : F32)] : I32
+  (+ (i32 (floor (+ 480.0 (* (- x (cam-x)) (unit-px))))) (shake-x)))
+(defn w2sy [(y : F32)] : I32
+  (+ (i32 (floor (- 270.0 (* (- y (cam-y)) (unit-px))))) (shake-y)))
+(defn w2sl [(len : F32)] : I32 (max-i 1 (i32 (+ (* len (unit-px)) 0.5))))
+
+;; the native camera: frame every live fighter, zoom from their spread, clamp 30..100
+(defn cam-update! [(snap : Bool)] : Unit
+  (let [(minx : F32) 999.0 (maxx : F32) -999.0 (miny : F32) 999.0 (maxy : F32) -999.0 n 0]
+    (dotimes [i 8]
+      (when (and (not (= (p-active i) 0))
+                 (and (not (= (p-state i) (st-dead))) (<= (p-respawn-timer i) 0)))
+        (when (< (p-x i) minx) (set! minx (p-x i)))
+        (when (> (p-x i) maxx) (set! maxx (p-x i)))
+        (when (< (p-y i) miny) (set! miny (p-y i)))
+        (when (> (p-y i) maxy) (set! maxy (p-y i)))
+        (inc! n)))
+    (when (= n 0)
+      (set! minx -10.0) (set! maxx 10.0) (set! miny -5.0) (set! maxy 10.0))
+    (let [(tx : F32) (/ (+ minx maxx) 2.0)
+          (ty : F32) (/ (+ miny maxy) 2.0)
+          (tz : F32) (clamp-f (fmax2 (* (- maxx minx) 0.8) (* (- maxy miny) 0.7)) 30.0 100.0)]
+      (if snap
+          (do (gf! (g-cam-x) tx) (gf! (g-cam-y) ty) (gf! (g-cam-zoom) tz))
+          (do (gf! (g-cam-x) (+ (cam-x) (* (- tx (cam-x)) 0.14)))
+              (gf! (g-cam-y) (+ (cam-y) (* (- ty (cam-y)) 0.14)))
+              (gf! (g-cam-zoom) (+ (cam-zoom) (* (- tz (cam-zoom)) 0.06))))))))
+
+;; ---- colors ----------------------------------------------------------------------------------
+(defn body-col [(id : I32)] : I32 (rgbf (fd id 0) (fd id 1) (fd id 2)))
+(defn accent-col [(id : I32)] : I32 (rgbf (fd id 3) (fd id 4) (fd id 5)))
+
+(defn slot-color [(i : I32)] : I32
+  (case i
+    0 (rgb 0 230 255) 1 (rgb 255 70 220) 2 (rgb 255 170 40) 3 (rgb 120 255 120)
+    4 (rgb 255 100 100) 5 (rgb 170 140 255) 6 (rgb 255 255 100) (rgb 200 200 200)))
+
+;; ---- background and stage --------------------------------------------------------------------
+(defn draw-background [] : Unit
+  (do
+    (fill-gradient (rgb 14 8 32) (rgb 6 4 16))
+    ;; neon grid that drifts with the camera, so motion reads at any zoom
+    (let [(step : F32) 10.0
+          (u : F32) (unit-px)
+          (x0 : F32) (* (floor (/ (- (cam-x) (* 480.0 (/ 1.0 u))) step)) step)]
+      (dotimes [i 40]
+        (let [(wx : F32) (+ x0 (* (f32 i) step))
+              sx (w2sx wx)]
+          (when (and (>= sx 0) (< sx 960))
+            (fill-rect-a sx 0 1 540 (rgb 120 60 200) 16)))))
+    (let [(step : F32) 10.0
+          (y0 : F32) (* (floor (/ (- (cam-y) (cam-zoom)) step)) step)]
+      (dotimes [i 24]
+        (let [(wy : F32) (+ y0 (* (f32 i) step))
+              sy (w2sy wy)]
+          (when (and (>= sy 0) (< sy 540))
+            (fill-rect-a 0 sy 960 1 (rgb 120 60 200) 16)))))))
+
+(defn draw-stage [] : Unit
+  (do
+    ;; blast zone (the KO boundary), dim red
+    (let [l (w2sx (blast-left)) r (w2sx (blast-right)) t (w2sy (blast-top)) b (w2sy (blast-bottom))]
+      (rect-outline l t (- r l) (- b t) 1 (rgb 90 10 20)))
+    (dotimes [i (stage-count)]
+      (let [x0 (w2sx (- (plat-x i) (/ (plat-w i) 2.0)))
+            y0 (w2sy (+ (plat-y i) (/ (plat-h i) 2.0)))
+            w (w2sl (plat-w i))
+            h (w2sl (plat-h i))
+            solid (= (plat-type i) 0)
+            rim (if solid (rgb 0 255 255) (rgb 255 0 255))]
+        (fill-rect x0 y0 w h (rgb 22 18 40))
+        (fill-rect-a x0 y0 w (max-i 2 (/ h 3)) rim 40)
+        (rect-outline x0 y0 w h 2 rim)))))
+
+;; ---- fighter drawing in local space (origin = feet, x mirrored by facing) -------------------
+(defn lx [(px : I32) (fl : I32) (u : F32) (x : F32)] : I32
+  (i32 (floor (+ (f32 px) (* (* (f32 fl) x) u)))))
+(defn ly [(py : I32) (u : F32) (y : F32)] : I32
+  (i32 (floor (- (f32 py) (* y u)))))
+
+(defn lrect [(px : I32) (py : I32) (fl : I32) (u : F32) (cx : F32) (cy : F32) (w : F32) (h : F32) (c : I32)] : Unit
+  (fill-rect (lx px fl u (- cx (/ w 2.0))) (ly py u (+ cy (/ h 2.0)))
+             (max-i 1 (i32 (+ (* w u) 0.5))) (max-i 1 (i32 (+ (* h u) 0.5))) c))
+
+(defn lrect-a [(px : I32) (py : I32) (fl : I32) (u : F32) (cx : F32) (cy : F32) (w : F32) (h : F32) (c : I32) (a : I32)] : Unit
+  (fill-rect-a (lx px fl u (- cx (/ w 2.0))) (ly py u (+ cy (/ h 2.0)))
+               (max-i 1 (i32 (+ (* w u) 0.5))) (max-i 1 (i32 (+ (* h u) 0.5))) c a))
+
+(defn lrect-outline [(px : I32) (py : I32) (fl : I32) (u : F32) (cx : F32) (cy : F32) (w : F32) (h : F32) (c : I32)] : Unit
+  (rect-outline (lx px fl u (- cx (/ w 2.0))) (ly py u (+ cy (/ h 2.0)))
+                (max-i 1 (i32 (+ (* w u) 0.5))) (max-i 1 (i32 (+ (* h u) 0.5))) 1 c))
+
+(defn lcircle [(px : I32) (py : I32) (fl : I32) (u : F32) (cx : F32) (cy : F32) (r : F32) (c : I32) (filled : Bool)] : Unit
+  (if filled
+      (fill-circle (lx px fl u cx) (ly py u cy) (max-i 1 (i32 (* r u))) c)
+      (circle-outline (lx px fl u cx) (ly py u cy) (max-i 1 (i32 (* r u))) 16 1 c)))
+
+(defn lline [(px : I32) (py : I32) (fl : I32) (u : F32) (x0 : F32) (y0 : F32) (x1 : F32) (y1 : F32) (th : I32) (c : I32)] : Unit
+  (line (lx px fl u x0) (ly py u y0) (lx px fl u x1) (ly py u y1) th c))
+
+;; the flat-colour fighter (what the native client draws for a fighter with no sprite)
+(defn draw-body [(cid : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (col : I32)] : Unit
+  (let [acc (accent-col cid)
+        edge (mix col (rgb 0 0 0) 150)]
+    (if (= cid (char-petalia))
+        (do (lrect px py fl u 0.0 2.0 1.8 3.6 col)
+            (lrect-outline px py fl u 0.0 2.0 1.8 3.6 edge)
+            (lcircle px py fl u 0.0 4.4 1.0 acc false))
+        (do (lrect px py fl u 0.0 2.0 2.3 4.2 col)
+            (lrect-outline px py fl u 0.0 2.0 2.3 4.2 edge)
+            (lrect px py fl u 0.2 3.1 1.0 0.35 (rgb 255 133 26))
+            (lrect-outline px py fl u 1.5 2.2 1.1 0.9 (rgb 217 242 255))))
+    ;; the eye marks which way it faces
+    (lrect px py fl u 0.5 3.0 0.5 0.5 (rgb 0 0 0))))
+
+(defn draw-shield [(p : I32) (px : I32) (py : I32) (u : F32) (col : I32)] : Unit
+  (let [(ratio : F32) (/ (p-shield-health p) (c-shield-max))
+        (r : F32) (fmax2 1.0 (* 3.5 ratio))
+        cx (+ px (i32 (* (* (p-in-x p) 0.6) u)))
+        cy (- py (i32 (* (+ 2.0 (* (p-in-y p) 0.4)) u)))
+        alpha (to255 (+ 0.18 (* 0.2 ratio)))
+        low (and (< (p-shield-health p) 10.0) (= (mod (/ (gi (g-frame)) 4) 2) 0))
+        tint (if low (rgb 255 255 100) col)]
+    (fill-circle-a cx cy (max-i 2 (i32 (* r u))) tint alpha)
+    (cond
+      (> (p-shield-overpowered-frames p) 0)   ; the shiny, untouchable phase
+        (circle-outline cx cy (max-i 2 (i32 (* r u))) 20 2 (rgb 255 255 255))
+      (> (p-shield-windup-frames p) 0)        ; raising it: vulnerable
+        (circle-outline cx cy (max-i 2 (i32 (* r u))) 12 1 (rgb 255 90 90))
+      :else
+        (circle-outline cx cy (max-i 2 (i32 (* r u))) 16 1 tint))))
+
+(defn draw-attack-fx [(p : I32) (px : I32) (py : I32) (fl : I32) (u : F32)] : Unit
+  (do
+    (when (and (= (p-state p) (st-attack)) (> (p-attack-timer p) 0))
+      (let [(progress : F32) (- 1.0 (/ (f32 (p-attack-timer p)) (f32 (c-attack-active))))
+            (punch : F32) (sin-f (* progress 3.1415927))
+            (reach : F32) (+ 2.0 (* punch 2.2))
+            (hx : F32) (+ 1.4 (* punch 1.2))
+            (hh : F32) (+ 1.8 (* punch 0.7))]
+        (lrect-a px py fl u hx 1.0 reach hh (rgb 255 40 40) 70)
+        (lrect-outline px py fl u hx 1.0 reach hh (rgb 255 60 60))))
+    (when (or (> (p-smash-charge-timer p) 0) (> (p-smash-active-timer p) 0))
+      (let [(charge : F32) (p-smash-charge-level p)
+            (pulse : F32) (if (> (p-smash-active-timer p) 0)
+                              (- 1.0 (/ (f32 (p-smash-active-timer p)) (f32 (c-smash-active))))
+                              charge)
+            (radius : F32) (+ 0.8 (* pulse 1.6))
+            (len : F32) (+ 2.5 (* pulse 2.5))]
+        (lcircle px py fl u 2.0 2.5 radius (rgb 51 230 255) false)
+        (lline px py fl u 0.8 2.0 (+ 0.8 len) 2.0 2 (rgb 51 230 255))))
+    (when (> (p-smash-flash-timer p) 0)
+      (lrect px py fl u 0.0 0.5 0.6 0.6 (rgb 255 230 51)))))
+
+(defn draw-recovery-fx [(p : I32) (px : I32) (py : I32) (fl : I32) (u : F32)] : Unit
+  (do
+    (when (and (not (= (p-umbrella-open p) 0)) (= (p-character-id p) (char-petalia)))
+      (lline px py fl u 0.0 4.0 0.0 6.5 2 (rgb 255 102 204))
+      (lcircle px py fl u 0.0 7.0 1.8 (rgb 255 102 204) false))
+    (when (and (= (p-state p) (st-upb)) (= (p-character-id p) (char-vexar)))
+      (lline px py fl u -0.5 -0.5 -0.1 -2.0 2 (rgb 26 255 255))
+      (lline px py fl u 0.5 -0.5 0.1 -2.0 2 (rgb 26 255 255)))))
+
+;; the equipped hat, 32x32 RGBA in the hat atlas slot, sitting on the head
+(defn draw-hat [(p : I32) (px : I32) (py : I32) (fl : I32) (u : F32)] : Unit
+  (let [h (p-hat p)]
+    (cond
+      (< h 0) unit
+      (< h 8)
+        (when (not (= (bit-and (gi (g-hat-mask)) (shl 1 h)) 0))
+          (let [sz (w2sl 2.0)]
+            (blit (+ (hats-base) (* h 4096)) 32 32
+                  (- (lx px fl u 0.0) (/ sz 2)) (- (ly py u 5.0) (/ sz 2)) sz sz (< fl 0) 0)))
+      ;; the three free colour hats (the native client's HAT_BLUE / HAT_RED / HAT_GREEN)
+      :else
+        (let [c (case h 8 (rgb 51 102 255) 9 (rgb 230 38 38) (rgb 51 217 77))]
+          (lrect px py fl u 0.0 4.35 1.3 0.3 c)
+          (lrect px py fl u 0.0 4.9 0.8 0.5 c)))))
+
+(defn draw-player [(p : I32) (frame : I32)] : Unit
+  (when (not (= (p-state p) (st-dead)))
+    (let [u (unit-px)
+          px (w2sx (p-x p))
+          py (w2sy (p-y p))
+          fl (if (< (p-facing p) 0) -1 1)
+          cid (p-character-id p)
+          scol (slot-color p)
+          (col0 : I32) (body-col cid)
+          col (cond
+                (= (p-state p) (st-stunned)) (rgb 255 255 0)
+                (> (p-hit-flash-timer p) 0) (rgb 255 255 255)
+                (and (> (p-invuln-frames p) 0) (= (mod (/ frame 3) 2) 0)) (rgb 128 128 128)
+                :else col0)]
+      (draw-body cid px py fl u col)
+      (when (= (p-state p) (st-shield)) (draw-shield p px py u col0))
+      (draw-attack-fx p px py fl u)
+      (draw-recovery-fx p px py fl u)
+      (draw-hat p px py fl u)
+      ;; name tag
+      (let [lab (p-label p)
+            ty (- py (i32 (* 7.4 u)))]
+        (case lab
+          1 (draw-text-c "P1" px ty 1 scol)
+          2 (draw-text-c "P2" px ty 1 scol)
+          3 (draw-text-c "CPU" px ty 1 scol)
+          unit)))))
+
+(defn draw-turnips [] : Unit
+  (dotimes [i 16]
+    (when (not (= (t-active i) 0))
+      (let [u (unit-px)
+            sx (w2sx (t-x i))
+            sy (w2sy (t-y i))
+            r (max-i 2 (i32 (* 0.6 u)))
+            style (t-style i)]
+        (cond
+          (= style (c-style-bow))
+            (do (fill-rect (- sx r) (- sy (/ r 2)) (* 2 r) r (rgb 255 60 200))
+                (fill-rect (- sx 2) (- sy r) 4 (* 2 r) (rgb 255 120 230)))
+          (= style (c-style-hat))
+            (do (fill-rect (- sx r) (+ sy (/ r 2)) (* 2 r) 3 (rgb 20 20 24))
+                (fill-rect (- sx (/ r 2)) (- sy r) r (+ r (/ r 2)) (rgb 30 30 36)))
+          :else
+            (do (fill-circle sx sy r (if (= style (char-vexar)) (rgb 204 242 255) (rgb 230 204 153)))
+                (line sx (- sy (i32 (* 0.4 u))) sx (- sy (i32 (* 0.8 u))) 2 (rgb 51 179 51))))))))
+
+(defn draw-edge-ko [] : Unit
+  (dotimes [i 16]
+    (when (not (= (e-active i) 0))
+      (let [(life : F32) (fmax2 0.0 (/ (f32 (e-timer i)) 24.0))
+            (radius : F32) (+ (* (* (- 1.0 life) 6.0) (e-intensity i)) 1.5)
+            (size : F32) (+ 0.6 (* (- 1.0 life) 0.4))
+            sz (w2sl size)]
+        (dotimes [j 10]
+          (let [(ang : F32) (+ (/ (* (tau) (f32 j)) 10.0) (* (- 1.0 life) 2.0))
+                sx (w2sx (+ (e-x i) (* (cos-f ang) radius)))
+                sy (w2sy (+ (e-y i) (* (sin-f ang) radius)))]
+            (fill-rect (- sx (/ sz 2)) (- sy (/ sz 2)) sz sz
+                       (if (= (mod j 2) 0) (rgb 255 51 26) (rgb 255 230 26)))))))))
+
+;; ---- HUD -------------------------------------------------------------------------------------
+(defn damage-col [(d : F32)] : I32
+  (rgbf 1.0 (clamp-f (/ (- 100.0 d) 100.0) 0.0 1.0) 0.0))
+
+(defn hud-name [(p : I32)] : String
+  (case (p-label p) 1 "P1" 2 "P2" 3 "CPU" "--"))
+
+(defn draw-hud [] : Unit
+  (let [n (gi (g-num-players))]
+    (when (> n 0)
+      (let [pw (min-i 232 (- (/ 960 n) 12))
+            total (* n (+ pw 12))
+            x0 (/ (- 960 total) 2)]
+        (dotimes [i n]
+          (let [px (+ x0 (+ 6 (* i (+ pw 12))))
+                py 470
+                scol (slot-color i)
+                dead (= (p-state i) (st-dead))]
+            (fill-rect-a px py pw 62 (rgb 8 4 20) 170)
+            (rect-outline px py pw 62 1 (mix scol (rgb 0 0 0) 100))
+            (fill-rect px py 4 62 scol)
+            (draw-text-s (hud-name i) (+ px 12) (+ py 4) 1 scol)
+            (draw-text-s (fighter-name (p-character-id i)) (+ px 40) (+ py 4) 1 (rgb 200 190 230))
+            (if dead
+                (draw-text-s "KO" (+ px 12) (+ py 20) 2 (rgb 255 60 60))
+                (do
+                  (draw-int-s (i32 (p-damage-percent i)) (+ px 12) (+ py 20) 2 (damage-col (p-damage-percent i)))
+                  (draw-text-s "%" (+ px (+ 16 (num-width (i32 (p-damage-percent i)) 2))) (+ py 34) 1 (rgb 220 220 220))))
+            (dotimes [s (p-stocks i)]
+              (fill-circle (+ px (+ 14 (* s 16))) (+ py 53) 4 (rgb 40 235 235)))
+            ;; shield meter
+            (fill-rect (+ px (- pw 62)) (+ py 52) 54 5 (rgb 30 20 50))
+            (fill-rect (+ px (- pw 62)) (+ py 52) (i32 (* 54.0 (clamp-f (/ (p-shield-health i) (c-shield-max)) 0.0 1.0))) 5
+                       (rgb 120 200 255))))))))
+
+(defn draw-world [(frame : I32)] : Unit
+  (do
+    (draw-background)
+    (draw-stage)
+    (draw-turnips)
+    (draw-edge-ko)
+    (dotimes [i 8]
+      (when (not (= (p-active i) 0)) (draw-player i frame)))
+    (draw-hud)))

@@ -40,6 +40,9 @@ PLAYER = [
     ("team-color", "i"),   # 0x00BBGGRR tint that tells identical characters apart
     ("bot-think", "i"),    # frames until the bot re-decides (web bot only)
     ("last-hit-by", "i"),  # slot that last damaged this player, -1 none (kill credit)
+    ("prev-x", "f"), ("prev-y", "f"),   # position before the last tick (KO effect origin)
+    ("prev-stocks", "i"), ("prev-resp", "i"), ("prev-hitlag", "i"),
+    ("label", "i"),        # 0 none, 1 P1, 2 P2, 3 CPU -- name tag above the head
 ]
 
 TURNIP = [

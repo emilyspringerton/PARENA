@@ -1,0 +1,515 @@
+;; stdlib/brawlpit/bp_ui.prn -- BRAWLPIT web engine: the game shell. Title menu, fighter select,
+;; match flow (countdown, pause, KO effects, game end), results and the controls screen. Port of the
+;; native client's lobby / character-select / results states (apps/lobby/src/main.c), drawn with
+;; the software renderer and driven by keyboard, gamepad or pointer. Pure PARENA; the page only
+;; feeds input and blits pixels.
+
+(defn ph-title [] : I32 0)
+(defn ph-select [] : I32 1)
+(defn ph-match [] : I32 2)
+(defn ph-results [] : I32 3)
+(defn ph-help [] : I32 4)
+
+(defn go-phase! [(ph : I32)] : Unit
+  (do (gi! (g-phase) ph) (gi! (g-cursor) 0)))
+
+(defn stage-of [(i : I32)] : I32 (case i 0 0 1 1 4))
+
+;; ---- hat options: none, the WOTAN (store/studio) hat, three free colour hats -----------------
+(defn hat-opt [(k : I32)] : I32 (case k 0 -1 1 0 2 8 3 9 10))
+(defn hat-index [(h : I32)] : I32 (case h -1 0 0 1 8 2 9 3 4))
+(defn wotan-hat-loaded? [] : Bool (not (= (bit-and (gi (g-hat-mask)) 1) 0)))
+(defn hat-available? [(k : I32)] : Bool (or (not (= k 1)) (wotan-hat-loaded?)))
+(defn hat-cycle [(cur : I32) (dir : I32)] : I32
+  (loop [n 0 k2 (hat-index cur)]
+    (let [k3 (mod (+ (+ k2 dir) 5) 5)]
+      (if (or (>= n 5) (hat-available? k3)) (hat-opt k3) (recur (+ n 1) k3)))))
+(defn hat-label [(h : I32)] : String
+  (case h -1 "NO HAT" 0 "WOTAN HAT" 8 "BLUE HAT" 9 "RED HAT" "GREEN HAT"))
+
+;; ---- pointer helpers -------------------------------------------------------------------------
+(defn hit? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
+  (and (and (>= (pointer-x) x) (< (pointer-x) (+ x w))) (and (>= (pointer-y) y) (< (pointer-y) (+ y h)))))
+(defn clicked-in? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
+  (and (pointer-clicked?) (hit? x y w h)))
+
+;; ---- controller discovery --------------------------------------------------------------------
+(defn pad-nth [(k : I32)] : I32
+  (loop [i 0 seen 0]
+    (if (>= i 4) -1
+        (if (pad-connected? i)
+            (if (= seen k) i (recur (+ i 1) (+ seen 1)))
+            (recur (+ i 1) seen)))))
+
+;; ---- starting a match --------------------------------------------------------------------------
+(defn rand-char-not [(avoid : I32)] : I32
+  (let [c (mod (bp-rand) 10)] (if (= c avoid) (mod (+ c 1) 10) c)))
+
+(defn assign-pads! [(n : I32) (two : Bool)] : Unit
+  (do
+    (dotimes [i 8] (set-p-pad! i -1))
+    (if two
+        (if (>= (pad-count) 2)
+            (do (set-p-pad! 0 (pad-nth 0)) (set-p-pad! 1 (pad-nth 1)))
+            (set-p-pad! 1 (pad-nth 0)))      ; one pad: it plays player 2, the keyboard plays player 1
+        (set-p-pad! 0 (pad-nth 0)))))
+
+(defn start-match! [] : Unit
+  (let [mode (gi (g-mode))
+        n (case mode 0 2 1 2 2 4 2)
+        two (= mode 1)]
+    (bp-seed! (+ (gi (g-ticker)) 12345))
+    (set-slot-char! 0 (gi (g-sel-p1)))
+    (set-slot-char! 1 (if two (gi (g-sel-p2)) (rand-char-not (gi (g-sel-p1)))))
+    (set-slot-char! 2 (rand-char-not (slot-char 0)))
+    (set-slot-char! 3 (rand-char-not (slot-char 1)))
+    (sim-init-match n (if (= mode 3) (mode-sandbox) (mode-stock)) (stage-of (gi (g-stage-sel))))
+    (when (> n 2)                       ; four fighters would stack on the two spawn points
+      (set-p-x! 2 -3.0) (set-p-x! 3 3.0))
+    (dotimes [i n]
+      (set-p-facing! i (if (< (p-x i) 0.0) 1 -1))
+      (set-p-label! i (if (= i 0) 1 (if (and two (= i 1)) 2 3)))
+      (set-p-hat! i -1))
+    (set-p-hat! 0 (gi (g-hat-p1)))
+    (when two (set-p-hat! 1 (gi (g-hat-p2))) (set-p-is-bot! 1 0))
+    (assign-pads! n two)
+    (gi! (g-hit-peak) 0)
+    (gi! (g-shake) 0)
+    (gi! (g-end-delay) 0)
+    (gi! (g-paused) 0)
+    (gi! (g-winner) -1)
+    (gi! (g-sim-frames) 0)
+    (gi! (g-countdown) 170)
+    (cam-update! true)
+    (go-phase! (ph-match))))
+
+;; ---- KO effect + shake bookkeeping (web-only; none of it touches the verified sim) ---------------
+(defn spawn-ko-fx! [(x : F32) (y : F32)] : Unit
+  (loop [i 0]
+    (when (< i 16)
+      (if (= (e-active i) 0)
+          (do (set-e-active! i 1)
+              (set-e-x! i (clamp-f x (blast-left) (blast-right)))
+              (set-e-y! i (clamp-f y (blast-bottom) (blast-top)))
+              (set-e-intensity! i 1.0)
+              (set-e-timer! i 24))
+          (recur (+ i 1))))))
+
+(defn snap-prev! [] : Unit
+  (dotimes [i 8]
+    (set-p-prev-stocks! i (p-stocks i))
+    (set-p-prev-resp! i (p-respawn-timer i))
+    (set-p-prev-hitlag! i (p-hitlag-frames i))))
+
+(defn alive-count [] : I32
+  (let [n 0]
+    (dotimes [i 8]
+      (when (and (not (= (p-active i) 0)) (> (p-stocks i) 0)) (inc! n)))
+    n))
+
+(defn post-step! [] : Unit
+  (do
+    (dotimes [i 8]
+      (when (not (= (p-active i) 0))
+        (when (or (< (p-stocks i) (p-prev-stocks i))
+                  (and (> (p-respawn-timer i) 0) (= (p-prev-resp i) 0)))
+          (spawn-ko-fx! (p-x i) (p-y i))
+          (gi! (g-shake) 16))
+        (when (> (p-hitlag-frames i) (p-prev-hitlag i))
+          (gi! (g-shake) (max-i (gi (g-shake)) 8)))))
+    ;; the C engine ends a match when ANY fighter loses their last stock; in a brawl the match
+    ;; should run until one is left standing -- the dead are skipped by the sim, so just don't
+    ;; let the early flag stop it
+    (when (and (> (gi (g-num-players)) 2) (>= (alive-count) 2))
+      (gi! (g-match-over) 0))
+    (when (> (gi (g-shake)) 0) (gi! (g-shake) (- (gi (g-shake)) 1)))))
+
+(defn pick-winner [] : I32
+  (loop [i 0]
+    (if (>= i 8) -1
+        (if (and (not (= (p-active i) 0)) (> (p-stocks i) 0)) i (recur (+ i 1))))))
+
+;; ---- buttons ---------------------------------------------------------------------------------
+(defn draw-button [(label : String) (key : String) (x : I32) (y : I32) (w : I32) (h : I32) (sel : Bool) (col : I32)] : Unit
+  (do
+    (fill-rect-a x y w h (if sel col (rgb 12 8 28)) (if sel 215 200))
+    (rect-outline x y w h 2 (if sel (rgb 255 255 255) col))
+    (fill-rect x y 34 h col)
+    (draw-text-c key (+ x 17) (+ y (/ (- h 16) 2)) 1 (rgb 10 6 24))
+    (draw-text-s label (+ x 48) (+ y (/ (- h 32) 2)) 2 (rgb 255 255 255))))
+
+(defn menu-color [(i : I32)] : I32
+  (case i 0 (rgb 26 204 230) 1 (rgb 77 153 242) 2 (rgb 191 51 191) 3 (rgb 38 191 64) (rgb 153 153 38)))
+
+(defn menu-label [(i : I32)] : String
+  (case i 0 "VS CPU" 1 "LOCAL 2 PLAYER" 2 "FREE FOR ALL (3 CPU)" 3 "PRACTICE (NO DAMAGE)" "CONTROLS"))
+
+;; ---- TITLE -----------------------------------------------------------------------------------
+(defn title-activate! [(i : I32)] : Unit
+  (if (= i 4)
+      (go-phase! (ph-help))
+      (do (gi! (g-mode) i)
+          (gi! (g-step) 0)
+          (go-phase! (ph-select)))))
+
+(defn title-update! [(e : I32)] : Unit
+  (do
+    (when (not (= (bit-and e (nav-bit-up)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 4) 5)))
+    (when (not (= (bit-and e (nav-bit-down)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 1) 5)))
+    (dotimes [i 5]
+      (when (hit? 250 (+ 190 (* i 58)) 460 48) (gi! (g-cursor) i)))
+    (dotimes [i 5]
+      (when (or (clicked-in? 250 (+ 190 (* i 58)) 460 48) (key-hit? (+ 49 i)))
+        (title-activate! i)))
+    (when (not (= (bit-and e (nav-bit-ok)) 0)) (title-activate! (gi (g-cursor))))))
+
+(defn draw-title-backdrop [] : Unit
+  (do
+    (fill-gradient (rgb 16 8 40) (rgb 5 3 14))
+    (let [t (gi (g-frame))]
+      (dotimes [i 31]
+        (fill-rect-a (* i 32) 0 1 540 (rgb 130 60 220) 18))
+      (dotimes [i 20]
+        (let [y (mod (+ (* i 28) (/ t 2)) 560)]
+          (fill-rect-a 0 y 960 1 (rgb 130 60 220) 26))))))
+
+(defn draw-title [] : Unit
+  (do
+    (draw-title-backdrop)
+    (let [t (gi (g-frame))
+          glow (+ 190 (mod (* t 3) 60))]
+      (draw-text-c "BRAWLPIT" 482 32 7 (rgb 20 4 40))
+      (draw-text-c "BRAWLPIT" 480 28 7 (rgb 255 0 255))
+      (draw-text-c "BRAWLPIT" 480 26 7 (rgb 255 glow 255)))
+    (draw-text-c "WHERE MOMENTUM MEETS MAYHEM" 480 148 2 (rgb 160 220 255))
+    (dotimes [i 5]
+      (draw-button (menu-label i) (case i 0 "1" 1 "2" 2 "3" 3 "4" "5") 250 (+ 190 (* i 58)) 460 48
+                   (= i (gi (g-cursor))) (menu-color i)))
+    (draw-text-c "UP/DOWN + ENTER, KEYS 1-5, CLICK, OR A GAMEPAD" 480 492 1 (rgb 170 160 200))
+    (draw-text-c "RUNS ENTIRELY IN WASM  -  PARENA  -  NO MALLOC" 480 516 1 (rgb 120 110 160))))
+
+;; ---- CONTROLS --------------------------------------------------------------------------------
+(defn help-update! [(e : I32)] : Unit
+  (when (or (not (= (bit-and e (nav-bit-ok)) 0)) (not (= (bit-and e (nav-bit-back)) 0)) (pointer-clicked?))
+    (go-phase! (ph-title))))
+
+(defn help-line [(a : String) (b : String) (y : I32)] : Unit
+  (do (draw-text-s a 70 y 1 (rgb 120 230 255))
+      (draw-text-s b 300 y 1 (rgb 230 225 250))))
+
+(defn draw-help [] : Unit
+  (do
+    (draw-title-backdrop)
+    (draw-text-c "CONTROLS" 480 22 4 (rgb 255 0 255))
+    (help-line "PLAYER 1" "A / D MOVE   W / S UP AND DROP-THROUGH   SPACE JUMP" 84)
+    (help-line "" "J ATTACK   LEFT SHIFT SHIELD   K SPECIAL" 104)
+    (help-line "PLAYER 2" "ARROWS MOVE   RIGHT CTRL JUMP   / ATTACK" 132)
+    (help-line "" "RIGHT SHIFT SHIELD   ' SPECIAL" 152)
+    (help-line "ONE PLAYER" "BOTH KEY SETS WORK FOR YOU" 180)
+    (help-line "GAMEPAD" "STICK OR D-PAD MOVE   A JUMP   X OR RT ATTACK" 208)
+    (help-line "" "LB OR LT SHIELD   B OR RB SPECIAL   START PAUSE" 228)
+    (help-line "ONE PAD, 2P" "THE PAD PLAYS PLAYER 2; TWO PADS PLAY ONE EACH" 248)
+    (help-line "SPECIAL + UP" "THE UP SPECIAL (AIRBORNE: PARASOL RISE)" 288)
+    (help-line "SPECIAL + DOWN" "THE DOWN SPECIAL (EACH FIGHTER HAS ITS OWN)" 308)
+    (help-line "SPECIAL ALONE" "DODGE / WAVEDASH (SHIELD + SPECIAL: LONG SLIDE)" 328)
+    (help-line "HOLD SPECIAL" "ON THE GROUND WITH A DIRECTION: CHARGE A SMASH" 348)
+    (help-line "SHIELD" "16 FRAMES OF WINDUP (VULNERABLE), THEN 16 OVERPOWERED" 368)
+    (help-line "" "WHERE ATTACKERS ARE PUNISHED; THEN IT DRAINS AND BREAKS" 388)
+    (help-line "BLAST ZONES" "FLY OUT OF THE RED BOX AND YOU LOSE A STOCK" 416)
+    (draw-text-c "ENTER / ESC / CLICK TO GO BACK" 480 496 1 (rgb 170 160 200))))
+
+;; ---- SELECT ----------------------------------------------------------------------------------
+(defn mode-two? [] : Bool (= (gi (g-mode)) 1))
+
+(defn select-advance! [] : Unit
+  (let [step (gi (g-step))]
+    (cond
+      (and (= step 0) (mode-two?)) (gi! (g-step) 1)
+      (< step 2) (gi! (g-step) 2)
+      :else (start-match!))))
+
+(defn select-back! [] : Unit
+  (let [step (gi (g-step))]
+    (cond
+      (= step 0) (go-phase! (ph-title))
+      (= step 2) (gi! (g-step) (if (mode-two?) 1 0))
+      :else (gi! (g-step) 0))))
+
+(defn sel-move! [(who : I32) (dir : I32)] : Unit
+  (let [slot (if (= who 0) (g-sel-p1) (g-sel-p2))]
+    (gi! slot (mod (+ (gi slot) (+ 10 dir)) 10))))
+
+(defn hat-move! [(who : I32) (dir : I32)] : Unit
+  (let [slot (if (= who 0) (g-hat-p1) (g-hat-p2))]
+    (gi! slot (hat-cycle (gi slot) dir))))
+
+(defn select-update! [(e : I32)] : Unit
+  (let [step (gi (g-step))
+        who (if (= step 1) 1 0)]
+    (if (< step 2)
+        (do
+          (when (not (= (bit-and e (nav-bit-left)) 0)) (sel-move! who -1))
+          (when (not (= (bit-and e (nav-bit-right)) 0)) (sel-move! who 1))
+          (when (not (= (bit-and e (nav-bit-up)) 0)) (hat-move! who 1))
+          (when (not (= (bit-and e (nav-bit-down)) 0)) (hat-move! who -1)))
+        (do
+          (when (not (= (bit-and e (nav-bit-left)) 0)) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 2) 3)))
+          (when (not (= (bit-and e (nav-bit-right)) 0)) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3)))))
+    ;; pointer: arrows beside the fighter, hat arrows, stage arrows, the button
+    (when (< step 2)
+      (let [cx (if (= who 0) 60 520)]
+        (when (clicked-in? cx 190 70 110) (sel-move! who -1))
+        (when (clicked-in? (+ cx 310) 190 70 110) (sel-move! who 1))
+        (when (clicked-in? (+ cx 80) 330 50 30) (hat-move! who -1))
+        (when (clicked-in? (+ cx 250) 330 50 30) (hat-move! who 1))))
+    (when (= step 2)
+      (when (clicked-in? 150 432 90 48) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 2) 3)))
+      (when (clicked-in? 720 432 90 48) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3))))
+    (when (clicked-in? 380 488 200 40) (select-advance!))
+    (when (not (= (bit-and e (nav-bit-ok)) 0)) (select-advance!))
+    (when (not (= (bit-and e (nav-bit-back)) 0)) (select-back!))))
+
+(defn bar [(x : I32) (y : I32) (label : String) (v : F32) (lo : F32) (hi : F32) (col : I32)] : Unit
+  (do
+    (draw-text-s label x y 1 (rgb 190 180 220))
+    (fill-rect (+ x 96) (+ y 4) 120 8 (rgb 30 20 50))
+    (fill-rect (+ x 96) (+ y 4) (i32 (* 120.0 (clamp-f (/ (- v lo) (- hi lo)) 0.05 1.0))) 8 col)))
+
+;; a solid triangle arrow: dir > 0 points right, dir < 0 left; h px tall
+(defn draw-arrow [(x : I32) (y : I32) (h : I32) (dir : I32) (c : I32)] : Unit
+  (dotimes [r h]
+    (let [half (/ h 2)
+          w (* 2 (- half (abs-i (- r half))))]
+      (if (> dir 0)
+          (fill-rect x (+ y r) (+ w 2) 1 c)
+          (fill-rect (- (+ x half) (+ w 2)) (+ y r) (+ w 2) 1 c)))))
+
+(defn draw-fighter-card [(who : I32) (cx : I32) (cid : I32) (hat : I32) (active : Bool) (label : String)] : Unit
+  (let [col (slot-color who)
+        edge (if active col (mix col (rgb 0 0 0) 170))]
+    (fill-rect-a cx 88 380 336 (rgb 10 6 26) 205)
+    (rect-outline cx 88 380 336 (if active 3 1) edge)
+    (draw-text-s label (+ cx 14) 96 2 col)
+    (draw-text-c (fighter-name cid) (+ cx 190) 118 3 (rgb 255 255 255))
+    ;; the fighter, big, standing on a little floor
+    (fill-rect (+ cx 100) 312 180 3 (mix col (rgb 0 0 0) 120))
+    (draw-body cid (+ cx 190) 312 1 22.0 (body-col cid))
+    (when (>= hat 0)
+      (if (< hat 8)
+          (when (wotan-hat-loaded?)
+            (blit (hats-base) 32 32 (+ cx 166) 170 48 48 false 0))
+          (let [c (case hat 8 (rgb 51 102 255) 9 (rgb 230 38 38) (rgb 51 217 77))]
+            (fill-rect (+ cx 168) 210 44 8 c)
+            (fill-rect (+ cx 175) 190 30 20 c))))
+    (draw-text-c (fighter-blurb cid) (+ cx 190) 322 1 (rgb 190 180 220))
+    (draw-text-c (hat-label hat) (+ cx 190) 340 1 (rgb 255 220 120))
+    (bar (+ cx 20) 360 "POWER" (fd cid (fd-attack-damage-mul)) 0.8 1.3 (rgb 255 90 90))
+    (bar (+ cx 20) 374 "RUN" (fd cid (fd-ground-speed-mul)) 0.75 1.3 (rgb 90 255 140))
+    (bar (+ cx 20) 388 "AIR" (fd cid (fd-air-speed-mul)) 0.7 1.3 (rgb 90 200 255))
+    (bar (+ cx 20) 402 "JUMP" (fd cid (fd-jump-mul)) 0.8 1.25 (rgb 255 230 90))
+    (when active
+      (draw-arrow (+ cx 14) 220 40 -1 col)
+      (draw-arrow (+ cx 326) 220 40 1 col)
+      (draw-arrow (+ cx 96) 337 14 -1 (rgb 255 220 120))
+      (draw-arrow (+ cx 272) 337 14 1 (rgb 255 220 120)))))
+
+(defn draw-select [] : Unit
+  (let [step (gi (g-step))
+        two (mode-two?)]
+    (draw-title-backdrop)
+    (draw-text-c "CHOOSE YOUR FIGHTER" 480 14 4 (rgb 255 0 255))
+    (draw-text-c (case step
+                   0 "LEFT / RIGHT: FIGHTER      UP / DOWN: HAT      ENTER: LOCK IN"
+                   1 "PLAYER 2: LEFT / RIGHT FIGHTER      UP / DOWN HAT      ENTER"
+                   "LEFT / RIGHT: STAGE      ENTER: FIGHT") 480 62 1 (rgb 170 160 200))
+    (draw-fighter-card 0 60 (gi (g-sel-p1)) (gi (g-hat-p1)) (= step 0) "PLAYER 1")
+    (if two
+        (draw-fighter-card 1 520 (gi (g-sel-p2)) (gi (g-hat-p2)) (= step 1) "PLAYER 2")
+        (do
+          (fill-rect-a 520 88 380 336 (rgb 10 6 26) 205)
+          (rect-outline 520 88 380 336 1 (rgb 90 60 130))
+          (draw-text-c (if (= (gi (g-mode)) 2) "3 CPU FIGHTERS" "CPU OPPONENT") 710 190 2 (rgb 255 170 40))
+          (draw-text-c "RANDOM FIGHTERS" 710 240 2 (rgb 200 190 230))
+          (draw-text-c (case (gi (g-mode)) 0 "VS ONE CPU" 2 "LAST ONE STANDING WINS" 3 "NO DAMAGE, NO KOS: PRACTICE" "") 710 290 1 (rgb 160 150 190))))
+    ;; stage picker
+    (let [stage (stage-of (gi (g-stage-sel)))
+          on (= step 2)
+          c (if on (rgb 255 255 255) (rgb 170 160 200))
+          ac (if on (rgb 0 230 255) (rgb 100 90 130))]
+      (draw-text-c (stage-name stage) 480 440 2 c)
+      (draw-arrow 170 440 30 -1 ac)
+      (draw-arrow 770 440 30 1 ac))
+    (draw-button (if (= step 2) "FIGHT" "NEXT") "ENT" 380 488 200 40 true (rgb 38 191 64))))
+
+;; ---- MATCH -----------------------------------------------------------------------------------
+(defn read-human-inputs! [] : Unit
+  (let [two (mode-two?)]
+    (dotimes [i 8]
+      (when (and (not (= (p-active i) 0)) (= (p-is-bot i) 0))
+        (read-fighter-input! i (if two (if (= i 0) 0 1) 3) (p-pad i))))))
+
+(defn match-tick! [(e : I32)] : Unit
+  (cond
+    ;; paused
+    (not (= (gi (g-paused)) 0))
+      (do
+        (when (not (= (bit-and e (nav-bit-up)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 2) 3)))
+        (when (not (= (bit-and e (nav-bit-down)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 1) 3)))
+        (dotimes [i 3]
+          (when (hit? 330 (+ 220 (* i 58)) 300 46) (gi! (g-cursor) i)))
+        (let [pick (cond (not (= (bit-and e (nav-bit-ok)) 0)) (gi (g-cursor))
+                         (clicked-in? 330 220 300 46) 0
+                         (clicked-in? 330 278 300 46) 1
+                         (clicked-in? 330 336 300 46) 2
+                         (not (= (bit-and e (nav-bit-pause)) 0)) 0
+                         :else -1)]
+          (case pick
+            0 (gi! (g-paused) 0)
+            1 (start-match!)
+            2 (go-phase! (ph-title))
+            unit)))
+    ;; READY / 3 / 2 / 1: the world is frozen until GO
+    (> (gi (g-countdown)) 30)
+      (do (gi! (g-countdown) (- (gi (g-countdown)) 1))
+          (cam-update! false)
+          (when (not (= (bit-and e (nav-bit-pause)) 0)) (gi! (g-paused) 1) (gi! (g-cursor) 0)))
+    ;; the fight (the GO! banner lingers for its last 30 frames)
+    :else
+      (do
+        (when (> (gi (g-countdown)) 0) (gi! (g-countdown) (- (gi (g-countdown)) 1)))
+        (when (and (not (= (bit-and e (nav-bit-pause)) 0)) (= (gi (g-match-over)) 0))
+          (gi! (g-paused) 1) (gi! (g-cursor) 0))
+        (when (= (gi (g-paused)) 0)
+          (read-human-inputs!)
+          (snap-prev!)
+          (sim-step)
+          (post-step!)
+          (gi! (g-sim-frames) (+ (gi (g-sim-frames)) 1))
+          (cam-update! false)
+          (when (not (= (gi (g-match-over)) 0))
+            (gi! (g-end-delay) (+ (gi (g-end-delay)) 1))
+            (when (= (gi (g-end-delay)) 130)
+              (gi! (g-winner) (pick-winner))
+              (go-phase! (ph-results))
+              (gi! (g-end-delay) 0)))))))
+
+(defn draw-pause [] : Unit
+  (do
+    (fill-rect-a 0 0 960 540 (rgb 4 2 12) 170)
+    (draw-text-c "PAUSED" 480 150 5 (rgb 255 255 255))
+    (dotimes [i 3]
+      (draw-button (case i 0 "RESUME" 1 "RESTART" "QUIT TO MENU") (case i 0 "P" 1 "R" "Q")
+                   330 (+ 220 (* i 58)) 300 46 (= i (gi (g-cursor))) (menu-color i)))))
+
+(defn draw-countdown [] : Unit
+  (let [c (gi (g-countdown))]
+    (when (> c 0)
+      (cond
+        (> c 150) (draw-text-c "READY" 480 200 8 (rgb 255 255 255))
+        (> c 30) (draw-text-c (case (/ (- c 31) 40) 0 "1" 1 "2" "3") 480 190 12 (rgb 255 230 80))
+        :else (draw-text-c "GO!" 480 190 12 (rgb 90 255 140))))))
+
+(defn draw-match-hints [] : Unit
+  (do
+    (draw-text-s (stage-name (gi (g-stage-id))) 12 8 1 (rgb 170 160 200))
+    (draw-text-s "ESC / P: PAUSE" 836 8 1 (rgb 130 120 160))
+    (when (= (gi (g-game-mode)) (mode-sandbox))
+      (draw-text-c "PRACTICE: NOTHING HURTS" 480 8 1 (rgb 120 255 160)))))
+
+(defn draw-match [] : Unit
+  (do
+    (draw-world (gi (g-frame)))
+    (draw-match-hints)
+    (draw-countdown)
+    (when (not (= (gi (g-match-over)) 0))
+      (draw-text-c "GAME!" 480 180 10 (rgb 255 230 80)))
+    (when (not (= (gi (g-paused)) 0)) (draw-pause))))
+
+;; ---- RESULTS ---------------------------------------------------------------------------------
+(defn results-update! [(e0 : I32)] : Unit
+  (let [e (if (> (gi (g-end-delay)) 45) e0 0)]
+    (gi! (g-end-delay) (min-i 1000 (+ (gi (g-end-delay)) 1)))
+    (when (not (= (bit-and e (nav-bit-up)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 2) 3)))
+    (when (not (= (bit-and e (nav-bit-down)) 0)) (gi! (g-cursor) (mod (+ (gi (g-cursor)) 1) 3)))
+    (dotimes [i 3]
+      (when (hit? 330 (+ 360 (* i 52)) 300 44) (gi! (g-cursor) i)))
+    (let [pick (cond (not (= (bit-and e (nav-bit-ok)) 0)) (gi (g-cursor))
+                     (clicked-in? 330 360 300 44) 0
+                     (clicked-in? 330 412 300 44) 1
+                     (clicked-in? 330 464 300 44) 2
+                     :else -1)]
+      (case pick
+        0 (start-match!)
+        1 (do (gi! (g-step) 0) (go-phase! (ph-select)))
+        2 (go-phase! (ph-title))
+        unit))))
+
+(defn winner-label [(w : I32)] : String
+  (cond (< w 0) "DRAW"
+        (= (p-label w) 1) "PLAYER 1 WINS"
+        (= (p-label w) 2) "PLAYER 2 WINS"
+        :else "CPU WINS"))
+
+(defn draw-results [] : Unit
+  (let [w (gi (g-winner))]
+    (draw-title-backdrop)
+    (draw-text-c "GAME!" 480 24 5 (rgb 255 0 255))
+    (draw-text-c (winner-label w) 480 90 5 (if (>= w 0) (slot-color w) (rgb 200 200 200)))
+    (when (>= w 0)
+      (draw-text-c (fighter-name (p-character-id w)) 480 142 2 (rgb 230 225 250))
+      (draw-body (p-character-id w) 480 290 1 24.0 (body-col (p-character-id w)))
+      (when (>= (p-hat w) 0)
+        (if (< (p-hat w) 8)
+            (when (wotan-hat-loaded?) (blit (hats-base) 32 32 450 188 60 60 false 0))
+            (fill-rect 455 190 50 10 (rgb 51 102 255)))))
+    (dotimes [i (gi (g-num-players))]
+      (do
+        (when (< (gi (g-num-players)) 5)
+          (draw-text-s (hud-name i) 60 (+ 200 (* i 22)) 1 (slot-color i))
+          (draw-text-s (fighter-name (p-character-id i)) 110 (+ 200 (* i 22)) 1 (rgb 210 205 235))
+          (draw-text-s "STOCKS" 250 (+ 200 (* i 22)) 1 (rgb 150 140 180))
+          (draw-int-s (p-stocks i) 320 (+ 200 (* i 22)) 1 (rgb 255 255 255))
+          (draw-int-s (i32 (p-damage-percent i)) 372 (+ 200 (* i 22)) 1 (damage-col (p-damage-percent i)))
+          (draw-text-s "%" (+ 376 (num-width (i32 (p-damage-percent i)) 1)) (+ 200 (* i 22)) 1 (rgb 200 200 200)))))
+    (dotimes [i 3]
+      (draw-button (case i 0 "REMATCH" 1 "CHANGE FIGHTERS" "TITLE") (case i 0 "R" 1 "C" "T")
+                   330 (+ 360 (* i 52)) 300 44 (= i (gi (g-cursor))) (menu-color i)))))
+
+;; ---- init + dispatch -------------------------------------------------------------------------
+(defn ui-init! [] : Unit
+  (do
+    (gi! (g-phase) (ph-title))
+    (gi! (g-cursor) 0)
+    (gi! (g-mode) 0)
+    (gi! (g-sel-p1) 3)
+    (gi! (g-sel-p2) 0)
+    (gi! (g-hat-p1) -1)
+    (gi! (g-hat-p2) -1)
+    (gi! (g-stage-sel) 0)
+    (gi! (g-winner) -1)
+    (gi! (g-paused) 0)
+    (gi! (g-countdown) 0)
+    (gf! (g-cam-x) 0.0)
+    (gf! (g-cam-y) 5.0)
+    (gf! (g-cam-zoom) 40.0)
+    (bp-seed! 1)))
+
+(defn ui-tick! [] : Unit
+  (let [e (nav-edges)
+        ph (gi (g-phase))]
+    (cond
+      (= ph (ph-title)) (title-update! e)
+      (= ph (ph-select)) (select-update! e)
+      (= ph (ph-match)) (match-tick! e)
+      (= ph (ph-results)) (results-update! e)
+      :else (help-update! e))
+    (end-input-tick!)))
+
+(defn ui-render! [] : Unit
+  (let [ph (gi (g-phase))]
+    (cond
+      (= ph (ph-title)) (draw-title)
+      (= ph (ph-select)) (draw-select)
+      (= ph (ph-match)) (draw-match)
+      (= ph (ph-results)) (draw-results)
+      :else (draw-help))))

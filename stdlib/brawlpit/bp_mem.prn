@@ -39,6 +39,7 @@
 (defn hats-base [] : I32 262144)
 (defn fb-base [] : I32 1048576)
 (defn sprites-base [] : I32 3145728)
+(defn hatname-base [] : I32 299008)     ; 64 bytes: the page writes the equipped hat's name here
 
 (defn fb-w [] : I32 960)
 (defn fb-h [] : I32 540)
@@ -103,7 +104,18 @@
 (defn g-ticker [] : I32 32)        ; wall-clock ms as I32 (animation only, never sim)
 (defn g-last-input [] : I32 33)    ; 0 keyboard, 1 pad (for on-screen hints)
 (defn g-best-stocks [] : I32 34)
+(defn g-nav-prev [] : I32 35)
+(defn g-nav-rep [] : I32 36)      ; 4 words: repeat counters for up/down/left/right
 (defn g-slot-char0 [] : I32 40)    ; 8 words: character picked per slot for the next match
+(defn g-hat-p1 [] : I32 48)        ; hat option: -1 none, 0 = the WOTAN hat, 8/9/10 = free colour hats
+(defn g-hat-p2 [] : I32 49)
+(defn g-mode [] : I32 50)          ; 0 vs CPU, 1 local 2P, 2 free-for-all, 3 practice
+(defn g-step [] : I32 51)          ; fighter-select step: 0 P1, 1 P2, 2 stage
+(defn g-countdown [] : I32 52)     ; frames of READY/3/2/1/GO before the sim runs
+(defn g-end-delay [] : I32 53)     ; frames of "GAME!" before the results screen
+(defn g-stage-sel [] : I32 54)     ; index into the stage list
+(defn g-hit-peak [] : I32 55)
+(defn g-quit-req [] : I32 56)
 
 ;; ---- tiny integer / float helpers -------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

@@ -1,0 +1,65 @@
+;; stdlib/brawlpit/bp_main.prn -- BRAWLPIT web engine: the exported entry points the page calls.
+;;
+;; This is the whole host contract. The page (stdlib/brawlpit/bp_host.prn, PARENA compiled to
+;; TypeScript) calls bp_init once, then each animation frame calls bp_frame(timestamp) and copies
+;; the framebuffer at bp_fb_addr() to a <canvas>. In between it forwards input events (bp_key,
+;; bp_pad, bp_pointer) and, when it has decoded an image (a hat), copies the RGBA bytes to
+;; bp_hat_addr(slot) and calls bp_hat_set(slot, 1). There is nothing else: no imports, no
+;; allocator, no game logic outside this module.
+
+;; ---- fixed-timestep driver ----------------------------------------------------------------------
+(defn tick-ms [] : F32 16.666666)
+(defn clock-slot [] : I32 (+ (g-base) 512))   ; F64: the previous bp_frame timestamp
+
+(defn bp-init [] : Unit
+  (do
+    (load-font)
+    (init-fighters)
+    (ui-init!)
+    (storef64! (clock-slot) 0.0)
+    (gf! (g-clock-acc) 0.0)
+    (ui-render!)))
+
+(defn step-once! [] : Unit
+  (do (gi! (g-frame) (+ (gi (g-frame)) 1))
+      (ui-tick!)))
+
+;; one animation frame: advance the sim by however many 60 Hz ticks real time owes, then draw
+(defn bp-frame [(now : F64)] : Unit
+  (let [(last : F64) (loadf64 (clock-slot))
+        (dt : F32) (if (> last 0.0) (f32 (- now last)) 16.666666)]
+    (storef64! (clock-slot) now)
+    (gi! (g-ticker) (i32 now))
+    (gf! (g-clock-acc) (+ (gf (g-clock-acc)) (clamp-f dt 0.0 100.0)))
+    (loop [steps 0]
+      (when (and (>= (gf (g-clock-acc)) (tick-ms)) (< steps 5))
+        (step-once!)
+        (gf! (g-clock-acc) (- (gf (g-clock-acc)) (tick-ms)))
+        (recur (+ steps 1))))
+    (when (> (gf (g-clock-acc)) (tick-ms)) (gf! (g-clock-acc) (tick-ms)))
+    (ui-render!)))
+
+;; ---- input forwarding -----------------------------------------------------------------------------
+(defn bp-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn bp-blur [] : Unit (in-clear-keys!))
+(defn bp-pad [(slot : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (in-pad! slot lx ly rx ry lt rt buttons))
+(defn bp-pad-gone [(slot : I32)] : Unit (in-pad-gone! slot))
+(defn bp-pointer [(x : I32) (y : I32) (down : I32)] : Unit (in-pointer! x y down))
+
+;; ---- memory the page reads and writes -----------------------------------------------------------------
+(defn bp-fb-addr [] : I32 (fb-base))
+(defn bp-fb-w [] : I32 (fb-w))
+(defn bp-fb-h [] : I32 (fb-h))
+(defn bp-hat-addr [(slot : I32)] : I32 (+ (hats-base) (* (clamp-i slot 0 7) 4096)))
+(defn bp-hat-set [(slot : I32) (loaded : I32)] : Unit
+  (let [bit (shl 1 (clamp-i slot 0 7))]
+    (gi! (g-hat-mask)
+         (if (!= loaded 0) (bit-or (gi (g-hat-mask)) bit) (bit-and (gi (g-hat-mask)) (bit-xor bit -1))))))
+(defn bp-hatname-addr [] : I32 (hatname-base))
+
+;; ---- introspection (page footer + tests) ---------------------------------------------------------------
+(defn bp-phase [] : I32 (gi (g-phase)))
+(defn bp-sim-frames [] : I32 (gi (g-sim-frames)))
+(defn bp-render-frames [] : I32 (gi (g-frame)))
+(defn bp-mem-bytes [] : I32 8388608)

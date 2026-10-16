@@ -1,0 +1,228 @@
+;; stdlib/brawlpit/bp_input.prn -- BRAWLPIT web engine: keyboard, gamepad and pointer input.
+;;
+;; The page's host code only *forwards* raw device state into the CTL region of linear memory:
+;;   bp_key(id, down)        id = keyCode, +256 for the right-hand Shift/Ctrl/Alt (event.location 2)
+;;   bp_pad(slot, lx, ly, rx, ry, lt, rt, buttons)   standard-mapping gamepad, buttons = bit i of
+;;                           buttons[i].pressed;   bp_pad_gone(slot)
+;;   bp_pointer(x, y, down)  canvas-space pointer in framebuffer pixels
+;; Everything that gives that state meaning -- which key is "attack", stick deadzones and snap,
+;; hysteresis, menu repeat, which pad drives which fighter -- lives here, in PARENA. This is a
+;; port of the control scheme in BRAWLPIT/apps/lobby/src/main.c (WASD / Space / J / LShift / K for
+;; player 1, arrows / RCtrl / / / RShift / ' for player 2; pad: stick or d-pad move, A jump,
+;; X or RT attack, LB or LT shield, B or RB special, Start pause).
+
+;; ---- CTL layout --------------------------------------------------------------------------
+;;   +0    keys[512]      1 = held
+;;   +512  pressed[512]   1 = went down since the last tick (consumed by end-input-tick)
+;;   +1024 pointer: x y down clicked
+;;   +1280 pads: 4 x 64 bytes: connected lx ly rx ry buttons prev-buttons lt rt move-active
+;;   +1600 nav: current bits, previous bits, repeat counters (4)
+(defn key-down? [(id : I32)] : Bool (not (= (load8 (+ (ctl-base) (bit-and id 511))) 0)))
+(defn key-hit? [(id : I32)] : Bool (not (= (load8 (+ (+ (ctl-base) 512) (bit-and id 511))) 0)))
+
+(defn key-on? [(id : I32)] : Bool (or (key-down? id) (key-hit? id)))
+
+(defn in-key! [(id : I32) (down : I32)] : Unit
+  (let [i (bit-and id 511)]
+    (when (and (not (= down 0)) (= (load8 (+ (ctl-base) i)) 0))
+      (store8! (+ (+ (ctl-base) 512) i) 1))
+    (store8! (+ (ctl-base) i) (if (!= down 0) 1 0))
+    (gi! (g-last-input) 0)))
+
+(defn in-clear-keys! [] : Unit
+  (dotimes [i 128] (store32! (+ (ctl-base) (shl i 2)) 0)))
+
+(defn end-input-tick! [] : Unit
+  (do
+    (dotimes [i 128] (store32! (+ (+ (ctl-base) 512) (shl i 2)) 0))
+    (store32! (+ (ctl-base) 1036) 0)))
+
+;; pointer
+(defn in-pointer! [(x : I32) (y : I32) (down : I32)] : Unit
+  (let [was (load32 (+ (ctl-base) 1032))]
+    (store32! (+ (ctl-base) 1024) x)
+    (store32! (+ (ctl-base) 1028) y)
+    (store32! (+ (ctl-base) 1032) (if (!= down 0) 1 0))
+    (when (and (= was 0) (!= down 0)) (store32! (+ (ctl-base) 1036) 1))))
+(defn pointer-x [] : I32 (load32 (+ (ctl-base) 1024)))
+(defn pointer-y [] : I32 (load32 (+ (ctl-base) 1028)))
+(defn pointer-clicked? [] : Bool (not (= (load32 (+ (ctl-base) 1036)) 0)))
+
+;; gamepads
+(defn pad-addr [(s : I32) (k : I32)] : I32 (+ (+ (ctl-base) 1280) (+ (* s 64) (shl k 2))))
+(defn pad-connected? [(s : I32)] : Bool (not (= (load32 (pad-addr s 0)) 0)))
+(defn pad-f [(s : I32) (k : I32)] : F32 (loadf32 (pad-addr s k)))
+(defn pad-btn? [(s : I32) (bit : I32)] : Bool
+  (not (= (bit-and (load32 (pad-addr s 5)) (shl 1 bit)) 0)))
+
+(defn in-pad! [(s : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (store32! (pad-addr s 6) (load32 (pad-addr s 5)))
+    (store32! (pad-addr s 0) 1)
+    (storef32! (pad-addr s 1) lx) (storef32! (pad-addr s 2) ly)
+    (storef32! (pad-addr s 3) rx) (storef32! (pad-addr s 4) ry)
+    (store32! (pad-addr s 5) buttons)
+    (storef32! (pad-addr s 7) lt) (storef32! (pad-addr s 8) rt)
+    (gi! (g-last-input) 1)))
+
+(defn in-pad-gone! [(s : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (dotimes [k 16] (store32! (pad-addr s k) 0))))
+
+(defn pad-count [] : I32
+  (+ (+ (b2i (pad-connected? 0)) (b2i (pad-connected? 1))) (+ (b2i (pad-connected? 2)) (b2i (pad-connected? 3)))))
+
+;; ---- standard-mapping pad buttons -----------------------------------------------------------
+(defn pb-a [] : I32 0)
+(defn pb-b [] : I32 1)
+(defn pb-x [] : I32 2)
+(defn pb-y [] : I32 3)
+(defn pb-lb [] : I32 4)
+(defn pb-rb [] : I32 5)
+(defn pb-back [] : I32 8)
+(defn pb-start [] : I32 9)
+(defn pb-up [] : I32 12)
+(defn pb-down [] : I32 13)
+(defn pb-left [] : I32 14)
+(defn pb-right [] : I32 15)
+
+;; ---- key ids (keyCode; +256 = right-hand variant) -------------------------------------------
+(defn kc-enter [] : I32 13)
+(defn kc-esc [] : I32 27)
+(defn kc-space [] : I32 32)
+(defn kc-left [] : I32 37)
+(defn kc-up [] : I32 38)
+(defn kc-right [] : I32 39)
+(defn kc-down [] : I32 40)
+(defn kc-shift [] : I32 16)
+(defn kc-rshift [] : I32 272)
+(defn kc-rctrl [] : I32 273)
+(defn kc-tab [] : I32 9)
+(defn kc-a [] : I32 65)
+(defn kc-d [] : I32 68)
+(defn kc-w [] : I32 87)
+(defn kc-s [] : I32 83)
+(defn kc-j [] : I32 74)
+(defn kc-k [] : I32 75)
+(defn kc-p [] : I32 80)
+(defn kc-r [] : I32 82)
+(defn kc-slash [] : I32 191)
+(defn kc-quote [] : I32 222)
+(defn kc-backspace [] : I32 8)
+
+;; ---- analog stick -> digital move, as the native client does it -------------------------------
+;; deadzone 0.22; engage at 0.18 / release at 0.14 (hysteresis); snap to +-1 beyond 0.85.
+(defn pad-axis-x [(s : I32)] : F32
+  (if (pad-connected? s)
+      (let [(x : F32) (pad-f s 1)
+            (m : F32) (fabs x)]
+        (cond
+          (pad-btn? s (pb-left)) -1.0
+          (pad-btn? s (pb-right)) 1.0
+          (<= m 0.22) 0.0
+          (>= m 0.85) (if (> x 0.0) 1.0 -1.0)
+          :else x))
+      0.0))
+
+;; stick-up is negative on the Gamepad API's y axis; the game wants up positive
+(defn pad-axis-y [(s : I32)] : F32
+  (if (pad-connected? s)
+      (let [(y : F32) (- 0.0 (pad-f s 2))
+            (m : F32) (fabs y)]
+        (cond
+          (pad-btn? s (pb-up)) 1.0
+          (pad-btn? s (pb-down)) -1.0
+          (<= m 0.22) 0.0
+          (>= m 0.85) (if (> y 0.0) 1.0 -1.0)
+          :else y))
+      0.0))
+
+;; ---- player input: keyboard scheme + pad merged -----------------------------------------------
+;; scheme 0 = player 1 keys, 1 = player 2 keys, 3 = both key sets merged (a lone human may use either)
+(defn kb-x0 [] : F32 (- (f32 (b2i (key-on? (kc-d)))) (f32 (b2i (key-on? (kc-a))))))
+(defn kb-x1 [] : F32 (- (f32 (b2i (key-on? (kc-right)))) (f32 (b2i (key-on? (kc-left))))))
+(defn kb-y0 [] : F32 (- (f32 (b2i (key-on? (kc-w)))) (f32 (b2i (key-on? (kc-s))))))
+(defn kb-y1 [] : F32 (- (f32 (b2i (key-on? (kc-up)))) (f32 (b2i (key-on? (kc-down))))))
+(defn kb-x [(scheme : I32)] : F32
+  (cond (= scheme 0) (kb-x0) (= scheme 1) (kb-x1) (= scheme 3) (pick-axis (kb-x0) (kb-x1)) :else 0.0))
+(defn kb-y [(scheme : I32)] : F32
+  (cond (= scheme 0) (kb-y0) (= scheme 1) (kb-y1) (= scheme 3) (pick-axis (kb-y0) (kb-y1)) :else 0.0))
+(defn kb-jump? [(scheme : I32)] : Bool
+  (or (and (or (= scheme 0) (= scheme 3)) (key-on? (kc-space)))
+      (and (or (= scheme 1) (= scheme 3)) (key-on? (kc-rctrl)))))
+(defn kb-attack? [(scheme : I32)] : Bool
+  (or (and (or (= scheme 0) (= scheme 3)) (key-on? (kc-j)))
+      (and (or (= scheme 1) (= scheme 3)) (key-on? (kc-slash)))))
+(defn kb-shield? [(scheme : I32)] : Bool
+  (or (and (or (= scheme 0) (= scheme 3)) (key-on? (kc-shift)))
+      (and (or (= scheme 1) (= scheme 3)) (key-on? (kc-rshift)))))
+(defn kb-special? [(scheme : I32)] : Bool
+  (or (and (or (= scheme 0) (= scheme 3)) (key-on? (kc-k)))
+      (and (or (= scheme 1) (= scheme 3)) (key-on? (kc-quote)))))
+
+(defn pad-trigger? [(s : I32) (k : I32)] : Bool (and (pad-connected? s) (> (pad-f s k) 0.25)))
+
+(defn pick-axis [(a : F32) (b : F32)] : F32 (if (>= (fabs b) (fabs a)) b a))
+
+;; read one fighter's controls from its keyboard scheme and its pad slot and push them into the sim
+(defn read-fighter-input! [(pid : I32) (scheme : I32) (pad : I32)] : Unit
+  (let [(sx : F32) (pick-axis (kb-x scheme) (pad-axis-x pad))
+        (sy : F32) (pick-axis (kb-y scheme) (pad-axis-y pad))
+        pc (and (>= pad 0) (pad-connected? pad))
+        jump (or (kb-jump? scheme) (and pc (pad-btn? pad (pb-a))))
+        attack (or (kb-attack? scheme)
+                   (and pc (or (pad-btn? pad (pb-x)) (pad-trigger? pad 8))))
+        shield (or (kb-shield? scheme)
+                   (and pc (or (pad-btn? pad (pb-lb)) (pad-trigger? pad 7))))
+        special (or (kb-special? scheme)
+                    (and pc (or (pad-btn? pad (pb-b)) (pad-btn? pad (pb-rb)))))]
+    (sim-set-input! pid sx sy (b2i jump) (b2i attack) (b2i shield) (b2i special))))
+
+;; ---- menu navigation ------------------------------------------------------------------------
+;; nav bits: 1 up 2 down 4 left 8 right 16 confirm 32 back 64 pause 128 (any pad start) 256 tab
+(defn nav-bit-up [] : I32 1)
+(defn nav-bit-down [] : I32 2)
+(defn nav-bit-left [] : I32 4)
+(defn nav-bit-right [] : I32 8)
+(defn nav-bit-ok [] : I32 16)
+(defn nav-bit-back [] : I32 32)
+(defn nav-bit-pause [] : I32 64)
+
+(defn any-pad-btn? [(bit : I32)] : Bool
+  (or (and (pad-connected? 0) (pad-btn? 0 bit))
+      (or (and (pad-connected? 1) (pad-btn? 1 bit))
+          (or (and (pad-connected? 2) (pad-btn? 2 bit)) (and (pad-connected? 3) (pad-btn? 3 bit))))))
+
+(defn any-pad-axis [(k : I32) (sign : F32)] : Bool
+  (or (and (pad-connected? 0) (> (* (pad-f 0 k) sign) 0.6))
+      (or (and (pad-connected? 1) (> (* (pad-f 1 k) sign) 0.6))
+          (or (and (pad-connected? 2) (> (* (pad-f 2 k) sign) 0.6)) (and (pad-connected? 3) (> (* (pad-f 3 k) sign) 0.6))))))
+
+(defn bit-if [(c : Bool) (n : I32)] : I32 (if c n 0))
+
+(defn nav-level [] : I32
+  (bit-or
+    (bit-if (or (key-on? (kc-up)) (or (key-on? (kc-w)) (or (any-pad-btn? (pb-up)) (any-pad-axis 2 -1.0)))) 1)
+    (bit-if (or (key-on? (kc-down)) (or (key-on? (kc-s)) (or (any-pad-btn? (pb-down)) (any-pad-axis 2 1.0)))) 2)
+    (bit-if (or (key-on? (kc-left)) (or (key-on? (kc-a)) (or (any-pad-btn? (pb-left)) (any-pad-axis 1 -1.0)))) 4)
+    (bit-if (or (key-on? (kc-right)) (or (key-on? (kc-d)) (or (any-pad-btn? (pb-right)) (any-pad-axis 1 1.0)))) 8)
+    (bit-if (or (key-on? (kc-enter)) (or (key-on? (kc-space)) (or (key-on? (kc-j)) (any-pad-btn? (pb-a))))) 16)
+    (bit-if (or (key-on? (kc-esc)) (or (key-on? (kc-backspace)) (any-pad-btn? (pb-b)))) 32)
+    (bit-if (or (key-on? (kc-p)) (or (key-on? (kc-esc)) (any-pad-btn? (pb-start)))) 64)))
+
+;; edge bits (newly pressed this tick) with auto-repeat on the four directions
+(defn nav-edges [] : I32
+  (let [cur (nav-level)
+        prev (gi (g-nav-prev))
+        fresh (bit-and cur (bit-xor cur prev))
+        rep 0]
+    (dotimes [d 4]
+      (let [bit (shl 1 d)
+            slot (+ (g-nav-rep) d)]
+        (if (= (bit-and cur bit) 0)
+            (gi! slot 0)
+            (do (gi! slot (+ (gi slot) 1))
+                (when (and (> (gi slot) 22) (= (mod (gi slot) 5) 0))
+                  (set! rep (bit-or rep bit)))))))
+    (gi! (g-nav-prev) cur)
+    (bit-or fresh rep)))

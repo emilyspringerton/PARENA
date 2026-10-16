@@ -1,0 +1,314 @@
+;; stdlib/brawlpit/bp_host.prn -- the BRAWLPIT web page's host code. PARENA, compiled to TypeScript
+;; (parena build bp_host.prn -o bp_host.ts), then type-stripped to the .js the page loads.
+;;
+;; Founder real-time 2026-10-16: "make sure its actually wasm not faked with a bunch of garbage js;
+;; whatever we do need to use js for use parena into TS". So this is the ONLY JavaScript in the
+;; BRAWLPIT page and it is generated from this file. It contains no game logic. The game --
+;; simulation, bots, menus, renderer -- is brawlpit.wasm (stdlib/brawlpit/bp_*.prn); the wasm
+;; module imports nothing, so the browser has to do exactly the things below because only a
+;; browser can:
+;;   1. fetch + instantiate the wasm                          (boot, on-response, on-bytes, on-instance)
+;;   2. copy the framebuffer the wasm painted onto a canvas   (tick: putImageData of a view onto wasm memory)
+;;   3. forward keyboard / pointer / gamepad state            (on-keydown ... poll-pads -> bp_key/bp_pointer/bp_pad)
+;;   4. decode the player's equipped hat image (PNG) to RGBA  (load-hat ... on-bitmap -> bp_hat_addr)
+;;   5. keep the page's own DOM labels in step                (status pill, controller line, footer stats)
+
+;; ---- module state --------------------------------------------------------------------------------
+(def canvas null)
+(def ctx null)
+(def image null)          ; ImageData viewing the wasm framebuffer in place (no copy, no allocation)
+(def wasm null)           ; the instance's exports
+(def memory null)
+(def session null)        ; the shared IDUNA session, when signed in
+(def hat-name "")
+(def wasm-bytes 0)
+(def wasm-imports 0)
+(def pads-seen 0)
+
+;; ---- DOM helpers ----------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+
+(defn set-text! [(id : String) (text : String)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "textContent" text))))
+
+(defn set-hidden! [(id : String) (hidden : Bool)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "hidden" hidden))))
+
+(defn fail! [(msg : Any)] : Unit
+  (do (set-text! "bp-pill" "Could not start")
+      (set-text! "bp-load-msg" (str "BRAWLPIT could not start: " msg))
+      (js/call (js/global "console") "error" msg)))
+
+;; ---- 1. fetch + instantiate the wasm --------------------------------------------------------------
+(defn boot [(canvas-id : String) (wasm-url : String)] : Unit
+  (do
+    (set! canvas (el canvas-id))
+    (set! ctx (js/call canvas "getContext" "2d"))
+    (set-text! "bp-pill" "Loading wasm...")
+    (js/call
+      (js/call
+        (js/call
+          (js/call (js/call-fn (js/global "fetch") wasm-url) "then" (callback on-response))
+          "then" (callback on-bytes))
+        "then" (callback on-instance))
+      "catch" (callback fail!))))
+
+(defn on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "brawlpit.wasm: HTTP " (js/get r "status")))))
+
+(defn on-bytes [(bytes : Any)] : Any
+  (do (set! wasm-bytes (js/get bytes "byteLength"))
+      ;; the module takes NO imports: no allocator, no libc, no JS callbacks
+      (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj))))
+
+(defn on-instance [(result : Any)] : Unit
+  (do
+    (set! wasm (js/get (js/get result "instance") "exports"))
+    (set! memory (js/get wasm "memory"))
+    (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
+    (js/call wasm "bp_init")
+    ;; ImageData over the wasm framebuffer itself: what wasm paints is what putImageData shows
+    (set! image
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "bp_fb_addr")
+                          (* (* (js/call wasm "bp_fb_w") (js/call wasm "bp_fb_h")) 4))
+                  (js/call wasm "bp_fb_w") (js/call wasm "bp_fb_h")))
+    (install-listeners)
+    (set-hidden! "bp-load" true)
+    (set-hidden! "bp-canvas" false)
+    (set-text! "bp-pill" "Running in WebAssembly")
+    (set-text! "bp-stat" (str "brawlpit.wasm " (math/round (/ wasm-bytes 1024)) " KB  -  "
+                              wasm-imports " imports  -  "
+                              (/ (js/get (js/get memory "buffer") "byteLength") 1048576) " MB fixed memory, no allocator  -  PARENA"))
+    (let [b (el "b-fullscreen")]
+      (when (not (js/null? b))
+        (js/set! b "disabled" false)
+        (js/call b "addEventListener" "click" (callback on-fullscreen))))
+    (js/call canvas "focus")
+    (update-pad-label)
+    (load-hat)
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+;; ---- 2. the frame loop ---------------------------------------------------------------------------
+(defn tick [(t : F64)] : Unit
+  (do
+    (poll-pads)
+    (js/call wasm "bp_frame" t)
+    (js/call ctx "putImageData" image 0 0)
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+(defn on-fullscreen [(e : Any)] : Unit
+  (js/call (el "bp-stage") "requestFullscreen"))
+
+;; ---- 3. input forwarding --------------------------------------------------------------------------
+;; key id = keyCode, +256 for the right-hand Shift/Ctrl (KeyboardEvent.location 2). Which key is
+;; "attack" or "jump" is decided inside the wasm; this only reports what is held.
+(defn key-id [(e : Any)] : I32
+  (+ (js/get e "keyCode") (if (= (js/get e "location") 2) 256 0)))
+
+(defn game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")]
+    (or (and (>= k 37) (<= k 40)) (or (= k 32) (= k 9)))))
+
+;; keys belong to the game while the canvas has focus (or nothing does): arrows and space must not scroll
+(defn game-focused? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (or (js/null? a) (or (= a canvas) (= a (js/get (doc) "body"))))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "bp_key" (key-id e) 1)
+    (when (game-key? e) (js/call e "preventDefault"))))
+
+(defn on-keyup [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "bp_key" (key-id e) 0)))
+
+(defn on-blur [(e : Any)] : Unit (js/call wasm "bp_blur"))
+
+;; pointer position mapped from CSS pixels to the 960x540 framebuffer
+(defn on-pointer [(e : Any)] : Unit
+  (let [rect (js/call canvas "getBoundingClientRect")
+        x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call wasm "bp_fb_w")) (js/get rect "width"))
+        y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "bp_fb_h")) (js/get rect "height"))]
+    (js/call wasm "bp_pointer" (math/floor x) (math/floor y) (bit-and (js/get e "buttons") 1))))
+
+(defn on-pad-change [(e : Any)] : Unit (update-pad-label))
+
+(defn install-listeners [] : Unit
+  (let [w (js/global "window")]
+    (js/call w "addEventListener" "keydown" (callback on-keydown))
+    (js/call w "addEventListener" "keyup" (callback on-keyup))
+    (js/call w "addEventListener" "blur" (callback on-blur))
+    (js/call w "addEventListener" "gamepadconnected" (callback on-pad-change))
+    (js/call w "addEventListener" "gamepaddisconnected" (callback on-pad-change))
+    (js/call canvas "addEventListener" "pointerdown" (callback on-pointer))
+    (js/call canvas "addEventListener" "pointermove" (callback on-pointer))
+    (js/call canvas "addEventListener" "pointerup" (callback on-pointer))
+    (js/call canvas "addEventListener" "contextmenu" (callback on-contextmenu))))
+
+(defn on-contextmenu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+;; ---- gamepads: poll every frame (the Gamepad API has no change events for sticks/buttons) ---------
+(defn pad-api? [] : Bool
+  (and (js/defined? "navigator")
+       (= (js/typeof (js/get (js/global "navigator") "getGamepads")) "function")))
+
+;; bit i = buttons[i].pressed (standard mapping: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 8 back, 9 start, 12-15 d-pad)
+(defn pad-mask [(gp : Any)] : I32
+  (let [buttons (js/get gp "buttons")
+        n (math/min 16 (js/get buttons "length"))]
+    (loop [i 0 m 0]
+      (if (< i n)
+          (recur (+ i 1) (if (js/get (js/aget buttons i) "pressed") (bit-or m (shl 1 i)) m))
+          m))))
+
+(defn pad-value [(gp : Any) (i : I32)] : F64
+  (let [b (js/aget (js/get gp "buttons") i)]
+    (if (js/null? b) 0.0 (js/get b "value"))))
+
+(defn send-pad [(i : I32) (gp : Any)] : Unit
+  (let [axes (js/get gp "axes")]
+    (js/call wasm "bp_pad" i
+             (js/aget axes 0) (js/aget axes 1) (js/aget axes 2) (js/aget axes 3)
+             (pad-value gp 6) (pad-value gp 7) (pad-mask gp))))
+
+(defn poll-pads [] : Unit
+  (when (pad-api?)
+    (let [pads (js/call (js/global "navigator") "getGamepads")]
+      (dotimes [i 4]
+        (let [gp (js/aget pads i)]
+          (if (js/null? gp)
+              (js/call wasm "bp_pad_gone" i)
+              (send-pad i gp)))))))
+
+(defn count-pads [] : I32
+  (if (pad-api?)
+      (let [pads (js/call (js/global "navigator") "getGamepads")]
+        (loop [i 0 n 0]
+          (if (< i 4)
+              (recur (+ i 1) (if (js/null? (js/aget pads i)) n (+ n 1)))
+              n)))
+      0))
+
+(defn update-pad-label [] : Unit
+  (let [n (count-pads)]
+    (set! pads-seen n)
+    (set-text! "bp-pad-status"
+               (if (> n 0)
+                   (str "Controller connected (" n ") - it plays, and it drives the menus too")
+                   "No controller detected - plug one in and press a button"))))
+
+;; ---- 4. the equipped hat: IDUNA -> PNG -> RGBA bytes in wasm memory --------------------------------
+(defn encode [(s : Any)] : Any (js/call-fn (js/global "encodeURIComponent") s))
+
+(defn json-or-fail [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
+
+(defn api-get [(path : String)] : Any
+  (js/call
+    (js/call-fn (js/global "fetch") (str "/api/v1" path)
+                (js/obj "headers" (js/obj "Authorization" (str "Bearer " (js/get session "token")))))
+    "then" (callback json-or-fail)))
+
+(defn ignore! [(e : Any)] : Unit unit)
+
+;; sign-in is optional: signed out, no character yet, or no hat equipped just leaves "no hat"
+(defn load-hat [] : Unit
+  (when (js/defined? "getIdunaSession")
+    (set! session (js/call-fn (js/global "getIdunaSession")))
+    (when (not (js/null? session))
+      (js/call
+        (js/call
+          (js/call (api-get (str "/characters/by-player/" (encode (js/get session "playerID"))))
+                   "then" (callback on-character))
+          "then" (callback on-hats))
+        "catch" (callback ignore!)))))
+
+(defn on-character [(c : Any)] : Any
+  (api-get (str "/characters/" (encode (js/get c "character_id")) "/hats")))
+
+(defn hat-list [(owned : Any)] : Any
+  (cond
+    (js/call (js/global "Array") "isArray" owned) owned
+    (js/get owned "hats") (js/get owned "hats")
+    :else (js/get owned "items")))
+
+(defn on-hats [(owned : Any)] : Unit
+  (let [list (hat-list owned)]
+    (loop [i 0]
+      (when (and (not (js/null? list)) (< i (js/get list "length")))
+        (let [h (js/aget list i)]
+          (if (js/get h "equipped")
+              (use-hat h)
+              (recur (+ i 1))))))))
+
+;; the hat's name goes into wasm memory (NUL-terminated ASCII) for the select screen
+(defn put-hat-name! [(name : Any)] : Unit
+  (let [u8 (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "bp_hatname_addr") 64)
+        n (math/min 30 (js/get name "length"))]
+    (dotimes [i n]
+      (js/aset! u8 i (math/min 126 (js/call name "charCodeAt" i))))
+    (js/aset! u8 n 0)))
+
+(defn use-hat [(h : Any)] : Unit
+  (do
+    (set! hat-name (js/get h "name"))
+    (put-hat-name! hat-name)
+    (cond
+      (js/get h "image_url")
+        (do (let [img (el "bp-hat-img")]
+              (when (not (js/null? img)) (js/set! img "src" (js/get h "image_url"))))
+            (set-hidden! "bp-hat" false)
+            (js/call
+              (js/call
+                (js/call
+                  (js/call (js/call-fn (js/global "fetch") (js/get h "image_url")) "then" (callback blob-of))
+                  "then" (callback decode-bitmap))
+                "then" (callback on-bitmap))
+              "catch" (callback ignore!)))
+      (js/get h "image_asset")
+        (rasterize-emoji (js/get h "image_asset"))
+      :else unit)))
+
+(defn blob-of [(r : Any)] : Any (js/call r "blob"))
+(defn decode-bitmap [(blob : Any)] : Any (js/call-fn (js/global "createImageBitmap") blob))
+
+(defn small-canvas [] : Any
+  (let [c (js/call (doc) "createElement" "canvas")]
+    (js/set! c "width" 32)
+    (js/set! c "height" 32)
+    c))
+
+;; copy a 32x32 RGBA surface into hat slot 0 of the wasm atlas and tell the engine it is ready
+(defn publish-hat! [(c2 : Any)] : Unit
+  (let [data (js/get (js/call (js/call c2 "getContext" "2d") "getImageData" 0 0 32 32) "data")
+        dst (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "bp_hat_addr" 0) 4096)]
+    (js/call dst "set" data)
+    (js/call wasm "bp_hat_set" 0 1)))
+
+(defn on-bitmap [(bmp : Any)] : Unit
+  (let [c2 (small-canvas)
+        g (js/call c2 "getContext" "2d")]
+    (js/set! g "imageSmoothingEnabled" false)
+    (js/call g "drawImage" bmp 0 0 32 32)
+    (publish-hat! c2)))
+
+;; curated hats are an emoji in image_asset; rasterize it the same way
+(defn rasterize-emoji [(emoji : Any)] : Unit
+  (let [c2 (small-canvas)
+        g (js/call c2 "getContext" "2d")]
+    (js/set! g "font" "26px serif")
+    (js/set! g "textAlign" "center")
+    (js/set! g "textBaseline" "middle")
+    (js/call g "fillText" emoji 16 18)
+    (publish-hat! c2)))
+
+(start (boot "bp-canvas" "brawlpit.wasm"))
