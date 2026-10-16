@@ -149,6 +149,21 @@
           (draw-glyph (glyph-idx ch) (+ x (* i (* 8 sc))) y sc c)
           (recur (+ i 1)))))))
 
+;; the same, for a NUL-terminated string living in linear memory (the page writes the hat name there)
+(defn str-len-at [(a : I32)] : I32
+  (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1)))))
+
+(defn draw-text-at [(a : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (loop [i 0]
+    (let [ch (load8 (+ a i))]
+      (when (!= ch 0)
+        (draw-glyph (glyph-idx ch) (+ x (+ sc (* i (* 8 sc)))) (+ y sc) sc (opaque))
+        (draw-glyph (glyph-idx ch) (+ x (* i (* 8 sc))) y sc c)
+        (recur (+ i 1))))))
+
+(defn draw-text-at-c [(a : I32) (cx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-text-at a (- cx (/ (* (str-len-at a) (* 8 sc)) 2)) y sc c))
+
 ;; text with a 1-unit drop shadow (native: text_draw_string_shadowed)
 (defn draw-text-s [(s : String) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
   (do (draw-text s (+ x sc) (+ y sc) sc (opaque))

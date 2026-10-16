@@ -211,6 +211,9 @@
 (defn k-label [] : I32 69)
 (defn p-label [(s : I32)] : I32 (load32 (+ (pl-base s) 276)))
 (defn set-p-label! [(s : I32) (v : I32)] : Unit (store32! (+ (pl-base s) 276) v))
+(defn k-bot-shield [] : I32 70)
+(defn p-bot-shield [(s : I32)] : I32 (load32 (+ (pl-base s) 280)))
+(defn set-p-bot-shield! [(s : I32) (v : I32)] : Unit (store32! (+ (pl-base s) 280) v))
 
 (defn k-t-active [] : I32 0)
 (defn t-active [(s : I32)] : I32 (load32 (+ (tn-base s) 0)))
@@ -253,4 +256,4 @@
 (defn e-timer [(s : I32)] : I32 (load32 (+ (ek-base s) 16)))
 (defn set-e-timer! [(s : I32) (v : I32)] : Unit (store32! (+ (ek-base s) 16) v))
 
-(defn player-words [] : I32 70)
+(defn player-words [] : I32 71)

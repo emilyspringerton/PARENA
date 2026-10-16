@@ -59,6 +59,7 @@
         n (case mode 0 2 1 2 2 4 2)
         two (= mode 1)]
     (bp-seed! (+ (gi (g-ticker)) 12345))
+    (gi! (g-ai-mode) (gi (g-ai-sel)))
     (set-slot-char! 0 (gi (g-sel-p1)))
     (set-slot-char! 1 (if two (gi (g-sel-p2)) (rand-char-not (gi (g-sel-p1)))))
     (set-slot-char! 2 (rand-char-not (slot-char 0)))
@@ -68,7 +69,7 @@
       (set-p-x! 2 -3.0) (set-p-x! 3 3.0))
     (dotimes [i n]
       (set-p-facing! i (if (< (p-x i) 0.0) 1 -1))
-      (set-p-label! i (if (= i 0) 1 (if (and two (= i 1)) 2 3)))
+      (set-p-label! i (if (= i 0) 1 (if (and two (= i 1)) 2 (if (= i 1) 3 (+ i 2)))))
       (set-p-hat! i -1))
     (set-p-hat! 0 (gi (g-hat-p1)))
     (when two (set-p-hat! 1 (gi (g-hat-p2))) (set-p-is-bot! 1 0))
@@ -186,7 +187,10 @@
       (draw-button (menu-label i) (case i 0 "1" 1 "2" 2 "3" 3 "4" "5") 250 (+ 190 (* i 58)) 460 48
                    (= i (gi (g-cursor))) (menu-color i)))
     (draw-text-c "UP/DOWN + ENTER, KEYS 1-5, CLICK, OR A GAMEPAD" 480 492 1 (rgb 170 160 200))
-    (draw-text-c "RUNS ENTIRELY IN WASM  -  PARENA  -  NO MALLOC" 480 516 1 (rgb 120 110 160))))
+    (draw-text-c "RUNS ENTIRELY IN WASM  -  PARENA  -  NO MALLOC" 480 516 1 (rgb 120 110 160))
+    (when (and (wotan-hat-loaded?) (!= (load8 (hatname-base)) 0))
+      (draw-text-s "HAT:" 16 516 1 (rgb 255 220 120))
+      (draw-text-at (hatname-base) 56 516 1 (rgb 255 220 120)))))
 
 ;; ---- CONTROLS --------------------------------------------------------------------------------
 (defn help-update! [(e : I32)] : Unit
@@ -254,7 +258,9 @@
           (when (not (= (bit-and e (nav-bit-down)) 0)) (hat-move! who -1)))
         (do
           (when (not (= (bit-and e (nav-bit-left)) 0)) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 2) 3)))
-          (when (not (= (bit-and e (nav-bit-right)) 0)) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3)))))
+          (when (not (= (bit-and e (nav-bit-right)) 0)) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3)))
+          (when (not (= (bit-and e (nav-bit-up)) 0)) (gi! (g-ai-sel) (mod (+ (gi (g-ai-sel)) 1) 4)))
+          (when (not (= (bit-and e (nav-bit-down)) 0)) (gi! (g-ai-sel) (mod (+ (gi (g-ai-sel)) 3) 4)))))
     ;; pointer: arrows beside the fighter, hat arrows, stage arrows, the button
     (when (< step 2)
       (let [cx (if (= who 0) 60 520)]
@@ -264,8 +270,9 @@
         (when (clicked-in? (+ cx 250) 330 50 30) (hat-move! who 1))))
     (when (= step 2)
       (when (clicked-in? 150 432 90 48) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 2) 3)))
-      (when (clicked-in? 720 432 90 48) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3))))
-    (when (clicked-in? 380 488 200 40) (select-advance!))
+      (when (clicked-in? 720 432 90 48) (gi! (g-stage-sel) (mod (+ (gi (g-stage-sel)) 1) 3)))
+      (when (clicked-in? 330 466 300 24) (gi! (g-ai-sel) (mod (+ (gi (g-ai-sel)) 1) 4))))
+    (when (clicked-in? 380 498 200 36) (select-advance!))
     (when (not (= (bit-and e (nav-bit-ok)) 0)) (select-advance!))
     (when (not (= (bit-and e (nav-bit-back)) 0)) (select-back!))))
 
@@ -293,16 +300,18 @@
     (draw-text-c (fighter-name cid) (+ cx 190) 118 3 (rgb 255 255 255))
     ;; the fighter, big, standing on a little floor
     (fill-rect (+ cx 100) 312 180 3 (mix col (rgb 0 0 0) 120))
-    (draw-body cid (+ cx 190) 312 1 22.0 (body-col cid))
+    (draw-body cid (+ cx 190) 314 1 27.0 (body-col cid) 0)
     (when (>= hat 0)
       (if (< hat 8)
           (when (wotan-hat-loaded?)
-            (blit (hats-base) 32 32 (+ cx 166) 170 48 48 false 0))
+            (blit (hats-base) 32 32 (+ cx 160) 150 60 60 false 0))
           (let [c (case hat 8 (rgb 51 102 255) 9 (rgb 230 38 38) (rgb 51 217 77))]
-            (fill-rect (+ cx 168) 210 44 8 c)
-            (fill-rect (+ cx 175) 190 30 20 c))))
+            (fill-rect (+ cx 166) 196 48 9 c)
+            (fill-rect (+ cx 174) 172 32 24 c))))
     (draw-text-c (fighter-blurb cid) (+ cx 190) 322 1 (rgb 190 180 220))
-    (draw-text-c (hat-label hat) (+ cx 190) 340 1 (rgb 255 220 120))
+    (if (and (= hat 0) (wotan-hat-loaded?) (!= (load8 (hatname-base)) 0))
+        (draw-text-at-c (hatname-base) (+ cx 190) 340 1 (rgb 255 220 120))
+        (draw-text-c (hat-label hat) (+ cx 190) 340 1 (rgb 255 220 120)))
     (bar (+ cx 20) 360 "POWER" (fd cid (fd-attack-damage-mul)) 0.8 1.3 (rgb 255 90 90))
     (bar (+ cx 20) 374 "RUN" (fd cid (fd-ground-speed-mul)) 0.75 1.3 (rgb 90 255 140))
     (bar (+ cx 20) 388 "AIR" (fd cid (fd-air-speed-mul)) 0.7 1.3 (rgb 90 200 255))
@@ -317,11 +326,11 @@
   (let [step (gi (g-step))
         two (mode-two?)]
     (draw-title-backdrop)
-    (draw-text-c "CHOOSE YOUR FIGHTER" 480 14 4 (rgb 255 0 255))
+    (draw-text-c "CHOOSE YOUR FIGHTER" 480 10 3 (rgb 255 0 255))
     (draw-text-c (case step
                    0 "LEFT / RIGHT: FIGHTER      UP / DOWN: HAT      ENTER: LOCK IN"
                    1 "PLAYER 2: LEFT / RIGHT FIGHTER      UP / DOWN HAT      ENTER"
-                   "LEFT / RIGHT: STAGE      ENTER: FIGHT") 480 62 1 (rgb 170 160 200))
+                   "LEFT / RIGHT: STAGE      ENTER: FIGHT") 480 64 1 (rgb 170 160 200))
     (draw-fighter-card 0 60 (gi (g-sel-p1)) (gi (g-hat-p1)) (= step 0) "PLAYER 1")
     (if two
         (draw-fighter-card 1 520 (gi (g-sel-p2)) (gi (g-hat-p2)) (= step 1) "PLAYER 2")
@@ -336,10 +345,15 @@
           on (= step 2)
           c (if on (rgb 255 255 255) (rgb 170 160 200))
           ac (if on (rgb 0 230 255) (rgb 100 90 130))]
-      (draw-text-c (stage-name stage) 480 440 2 c)
-      (draw-arrow 170 440 30 -1 ac)
-      (draw-arrow 770 440 30 1 ac))
-    (draw-button (if (= step 2) "FIGHT" "NEXT") "ENT" 380 488 200 40 true (rgb 38 191 64))))
+      (draw-text-c (stage-name stage) 480 432 2 c)
+      (draw-arrow 170 432 30 -1 ac)
+      (draw-arrow 770 432 30 1 ac)
+      (when (not two)
+        (draw-text-c (case (gi (g-ai-sel)) 0 "CPU LEVEL: CLASSIC (THE ORIGINAL C BOT)" 1 "CPU LEVEL: EASY"
+                       2 "CPU LEVEL: NORMAL" "CPU LEVEL: HARD")
+                     480 468 1 (if on (rgb 255 200 90) (rgb 130 120 160)))
+        (when on (draw-text-c "UP / DOWN: CPU LEVEL" 480 482 1 (rgb 110 100 140)))))
+    (draw-button (if (= step 2) "FIGHT" "NEXT") "ENT" 380 498 200 36 true (rgb 38 191 64))))
 
 ;; ---- MATCH -----------------------------------------------------------------------------------
 (defn read-human-inputs! [] : Unit
@@ -361,6 +375,8 @@
                          (clicked-in? 330 220 300 46) 0
                          (clicked-in? 330 278 300 46) 1
                          (clicked-in? 330 336 300 46) 2
+                         (key-hit? (kc-r)) 1
+                         (key-hit? 81) 2
                          (not (= (bit-and e (nav-bit-pause)) 0)) 0
                          :else -1)]
           (case pick
@@ -401,9 +417,17 @@
       (draw-button (case i 0 "RESUME" 1 "RESTART" "QUIT TO MENU") (case i 0 "P" 1 "R" "Q")
                    330 (+ 220 (* i 58)) 300 46 (= i (gi (g-cursor))) (menu-color i)))))
 
+(defn draw-controls-hint [] : Unit
+  (if (= (gi (g-last-input)) 1)
+      (draw-text-c "STICK MOVE   A JUMP   X OR RT ATTACK   LB OR LT SHIELD   B OR RB SPECIAL" 480 440 1 (rgb 190 185 220))
+      (if (= (gi (g-mode)) 1)
+          (draw-text-c "P1: A D W S  SPACE  J  SHIFT  K        P2: ARROWS  RCTRL  /  RSHIFT  '" 480 440 1 (rgb 190 185 220))
+          (draw-text-c "A D MOVE   W S UP/DOWN   SPACE JUMP   J ATTACK   SHIFT SHIELD   K SPECIAL" 480 440 1 (rgb 190 185 220)))))
+
 (defn draw-countdown [] : Unit
   (let [c (gi (g-countdown))]
     (when (> c 0)
+      (draw-controls-hint)
       (cond
         (> c 150) (draw-text-c "READY" 480 200 8 (rgb 255 255 255))
         (> c 30) (draw-text-c (case (/ (- c 31) 40) 0 "1" 1 "2" "3") 480 190 12 (rgb 255 230 80))
@@ -437,6 +461,9 @@
                      (clicked-in? 330 360 300 44) 0
                      (clicked-in? 330 412 300 44) 1
                      (clicked-in? 330 464 300 44) 2
+                     (key-hit? (kc-r)) 0
+                     (key-hit? 67) 1
+                     (key-hit? 84) 2
                      :else -1)]
       (case pick
         0 (start-match!)
@@ -453,24 +480,23 @@
 (defn draw-results [] : Unit
   (let [w (gi (g-winner))]
     (draw-title-backdrop)
-    (draw-text-c "GAME!" 480 24 5 (rgb 255 0 255))
-    (draw-text-c (winner-label w) 480 90 5 (if (>= w 0) (slot-color w) (rgb 200 200 200)))
+    (draw-text-c "GAME!" 480 12 3 (rgb 255 0 255))
+    (draw-text-c (winner-label w) 480 64 5 (if (>= w 0) (slot-color w) (rgb 200 200 200)))
     (when (>= w 0)
-      (draw-text-c (fighter-name (p-character-id w)) 480 142 2 (rgb 230 225 250))
-      (draw-body (p-character-id w) 480 290 1 24.0 (body-col (p-character-id w)))
+      (draw-text-c (fighter-name (p-character-id w)) 480 152 2 (rgb 230 225 250))
+      (draw-body (p-character-id w) 480 312 1 22.0 (body-col (p-character-id w)) 0)
       (when (>= (p-hat w) 0)
         (if (< (p-hat w) 8)
-            (when (wotan-hat-loaded?) (blit (hats-base) 32 32 450 188 60 60 false 0))
-            (fill-rect 455 190 50 10 (rgb 51 102 255)))))
+            (when (wotan-hat-loaded?) (blit (hats-base) 32 32 456 162 48 48 false 0))
+            (fill-rect 459 200 42 8 (rgb 51 102 255)))))
     (dotimes [i (gi (g-num-players))]
-      (do
-        (when (< (gi (g-num-players)) 5)
-          (draw-text-s (hud-name i) 60 (+ 200 (* i 22)) 1 (slot-color i))
-          (draw-text-s (fighter-name (p-character-id i)) 110 (+ 200 (* i 22)) 1 (rgb 210 205 235))
-          (draw-text-s "STOCKS" 250 (+ 200 (* i 22)) 1 (rgb 150 140 180))
-          (draw-int-s (p-stocks i) 320 (+ 200 (* i 22)) 1 (rgb 255 255 255))
-          (draw-int-s (i32 (p-damage-percent i)) 372 (+ 200 (* i 22)) 1 (damage-col (p-damage-percent i)))
-          (draw-text-s "%" (+ 376 (num-width (i32 (p-damage-percent i)) 1)) (+ 200 (* i 22)) 1 (rgb 200 200 200)))))
+      (when (< (gi (g-num-players)) 5)
+        (draw-text-s (hud-name i) 60 (+ 210 (* i 22)) 1 (slot-color i))
+        (draw-text-s (fighter-name (p-character-id i)) 110 (+ 210 (* i 22)) 1 (rgb 210 205 235))
+        (draw-text-s "STOCKS" 250 (+ 210 (* i 22)) 1 (rgb 150 140 180))
+        (draw-int-s (p-stocks i) 320 (+ 210 (* i 22)) 1 (rgb 255 255 255))
+        (draw-int-s (i32 (p-damage-percent i)) 372 (+ 210 (* i 22)) 1 (damage-col (p-damage-percent i)))
+        (draw-text-s "%" (+ 376 (num-width (i32 (p-damage-percent i)) 1)) (+ 210 (* i 22)) 1 (rgb 200 200 200))))
     (dotimes [i 3]
       (draw-button (case i 0 "REMATCH" 1 "CHANGE FIGHTERS" "TITLE") (case i 0 "R" 1 "C" "T")
                    330 (+ 360 (* i 52)) 300 44 (= i (gi (g-cursor))) (menu-color i)))))
@@ -486,6 +512,7 @@
     (gi! (g-hat-p1) -1)
     (gi! (g-hat-p2) -1)
     (gi! (g-stage-sel) 0)
+    (gi! (g-ai-sel) 2)
     (gi! (g-winner) -1)
     (gi! (g-paused) 0)
     (gi! (g-countdown) 0)

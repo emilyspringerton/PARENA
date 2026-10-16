@@ -59,7 +59,8 @@
       (do
         (dotimes [i 8]
           (when (not (= (p-active i) 0))
-            (when (and (> i 0) (not (= (p-is-bot i) 0))) (bot-think i))
+            (when (and (> i 0) (not (= (p-is-bot i) 0)))
+              (if (= (gi (g-ai-mode)) 0) (bot-think i) (bot-think-web i)))
             (when (and (= (p-state i) (st-attack))
                        (or (> (p-attack-timer i) 0) (> (p-smash-active-timer i) 0)))
               (dotimes [j 8] (when (not (= i j)) (check-attack-hitbox i j))))

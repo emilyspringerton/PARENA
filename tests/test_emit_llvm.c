@@ -709,6 +709,20 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn f [(a : I32) (b : I32)] : I32 (let [d (if (< a b) 1 -1)] (* d 7)))"
+            "(defn g [(a : I32)] : F64 (let [w (cond (< a 0) 0.5 (> a 9) 2.5 :else 1.0)] (* w 2.0)))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "a let initializer that is an if/cond over number literals takes its type from the literals");
+        if (ir) CHECK(strstr(ir, "select i1") != NULL && strstr(ir, "i32 1, i32 -1") != NULL, "an I32 literal if as a let binding lowers to a select");
+        else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

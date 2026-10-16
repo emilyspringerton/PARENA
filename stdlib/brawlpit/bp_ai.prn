@@ -1,0 +1,141 @@
+;; stdlib/brawlpit/bp_ai.prn -- the CPU fighter for the web game (levels EASY / NORMAL / HARD).
+;;
+;; The C engine's bot (bot_think in local_game.h, ported verbatim as bot-think in bp_sim.prn and
+;; selectable as CPU level CLASSIC) charges at the nearest fighter forever and walks off the stage
+;; edge doing it, so web matches against it mostly end in self-KOs. This brain keeps the same
+;; interface -- it only ever writes the bot's stick and four buttons, the same inputs a human has --
+;; and adds the things a platform fighter needs: stay on the stage, recover from the blast zone
+;; (double jump, then the up-special), shield against an incoming swing, charge smashes, use
+;; specials, drop through platforms, jump to platforms above. It is not part of the parity-tested
+;; simulation: it lives behind sim-step's `g-ai-mode` switch (0 = the C bot), so the verified path
+;; is untouched.
+
+(defn rnd [(n : I32)] : I32 (mod (bp-rand) n))
+(defn chance [(pct : I32)] : Bool (< (rnd 100) pct))
+(defn sign-f [(v : F32)] : F32 (if (> v 0.0) 1.0 -1.0))
+
+;; the widest solid platform is "the stage": where a bot can safely stand and where recovery aims
+(defn main-plat [] : I32
+  (loop [i 0 best 0 (bw : F32) 0.0]
+    (if (>= i (stage-count)) best
+        (if (and (= (plat-type i) 0) (> (plat-w i) bw))
+            (recur (+ i 1) i (plat-w i))
+            (recur (+ i 1) best bw)))))
+(defn main-left [] : F32 (- (plat-x (main-plat)) (/ (plat-w (main-plat)) 2.0)))
+(defn main-right [] : F32 (+ (plat-x (main-plat)) (/ (plat-w (main-plat)) 2.0)))
+(defn main-top [] : F32 (+ (plat-y (main-plat)) (/ (plat-h (main-plat)) 2.0)))
+
+(defn ai-nearest [(id : I32)] : I32
+  (let [(best : F32) 1000000.0
+        t -1]
+    (dotimes [i 8]
+      (when (and (not (= i id))
+                 (and (not (= (p-active i) 0))
+                      (and (not (= (p-state i) (st-dead))) (<= (p-respawn-timer i) 0))))
+        (let [(dx : F32) (- (p-x i) (p-x id))
+              (dy : F32) (- (p-y i) (p-y id))
+              (d : F32) (+ (* dx dx) (* dy dy))]
+          (when (< d best) (set! best d) (set! t i)))))
+    t))
+
+;; per-level knobs: [react, attack, shield, smash, special, jump] percentages
+(defn lv-react [] : I32 (case (gi (g-ai-mode)) 1 60 2 85 100))
+(defn lv-attack [] : I32 (case (gi (g-ai-mode)) 1 30 2 48 68))
+(defn lv-shield [] : I32 (case (gi (g-ai-mode)) 1 8 2 22 40))
+(defn lv-smash [] : I32 (case (gi (g-ai-mode)) 1 1 2 4 7))
+(defn lv-special [] : I32 (case (gi (g-ai-mode)) 1 2 2 4 7))
+(defn lv-jump [] : I32 (case (gi (g-ai-mode)) 1 6 2 9 14))
+
+(defn ai-release! [(id : I32)] : Unit
+  (do (set-p-btn-jump! id 0) (set-p-btn-attack! id 0) (set-p-btn-shield! id 0)
+      (set-p-btn-special! id 0) (set-p-in-y! id 0.0)))
+
+(defn ai-needs-recovery? [(id : I32)] : Bool
+  (let [(x : F32) (p-x id)
+        (y : F32) (p-y id)]
+    (or (< y (- (main-top) 1.5))
+        (and (or (< x (- (main-left) 0.5)) (> x (+ (main-right) 0.5))) (< y (+ (main-top) 0.5))))))
+
+(defn ai-recover! [(id : I32)] : Unit
+  (let [(toward : F32) (if (< (p-x id) (/ (+ (main-left) (main-right)) 2.0)) 1.0 -1.0)]
+    (set-p-in-x! id toward)
+    (when (and (< (p-vy id) -0.3) (and (> (p-jumps-remaining id) 0) (chance 35)))
+      (set-p-btn-jump! id 1))
+    ;; out of jumps and well below the stage: the up-special (parasol / warp / ...)
+    (when (and (= (p-jumps-remaining id) 0)
+               (and (< (p-y id) (- (main-top) 4.0))
+                    (and (not (= (p-state id) (st-upb))) (chance 22))))
+      (set-p-in-y! id 1.0)
+      (set-p-btn-special! id 1))))
+
+(defn ai-hold-shield! [(id : I32) (t : I32)] : Unit
+  (do (set-p-bot-shield! id (- (p-bot-shield id) 1))
+      (set-p-btn-shield! id 1)
+      (set-p-in-x! id 0.0)))
+
+(defn ai-hold-charge! [(id : I32) (t : I32)] : Unit
+  (let [(dir : F32) (if (>= t 0) (sign-f (- (p-x t) (p-x id))) (f32 (p-facing id)))]
+    (set-p-bot-think! id (- (p-bot-think id) 1))
+    (set-p-btn-special! id 1)
+    (set-p-in-x! id (* dir 0.8))))
+
+(defn ai-idle-center! [(id : I32)] : Unit
+  (let [(mid : F32) (/ (+ (main-left) (main-right)) 2.0)]
+    (set-p-in-x! id (cond (< (p-x id) (- mid 3.0)) 1.0 (> (p-x id) (+ mid 3.0)) -1.0 :else 0.0))))
+
+(defn ai-fight! [(id : I32) (t : I32)] : Unit
+  (let [(dx : F32) (- (p-x t) (p-x id))
+        (dy : F32) (- (p-y t) (p-y id))
+        (adx : F32) (fabs dx)
+        grounded (not (= (p-on-ground id) 0))
+        (dir : F32) (sign-f dx)
+        on-main (and grounded (< (fabs (- (p-y id) (main-top))) 0.6))]
+    ;; approach, but hold position (facing the enemy) when close
+    (set-p-in-x! id (if (> adx 3.0) dir (* dir 0.05)))
+    ;; never walk off the stage edge chasing someone, unless they are below us
+    (when (and on-main (not (and (< dy -2.0) (chance 30))))
+      (let [(nx : F32) (+ (p-x id) (* (p-in-x id) 3.0))]
+        (when (or (< nx (+ (main-left) 0.6)) (> nx (- (main-right) 0.6)))
+          (set-p-in-x! id (* dir 0.05)))))
+    ;; get up to a platform above
+    (when (and grounded (and (> dy 3.5) (chance (lv-jump)))) (set-p-btn-jump! id 1))
+    ;; drop through a soft platform to reach someone below
+    (when (and grounded (and (= (p-ground-platform-type id) 1) (< dy -3.5))) (set-p-in-y! id -1.0))
+    (cond
+      ;; a swing is coming: raise the shield for a few frames
+      (and (< adx 5.5)
+           (and (or (> (p-attack-timer t) 0) (> (p-smash-active-timer t) 0)) (chance (lv-shield))))
+        (do (set-p-bot-shield! id (+ 8 (rnd 14))) (set-p-btn-shield! id 1) (set-p-in-x! id 0.0))
+      ;; charge a smash from mid range
+      (and grounded (and (> adx 2.4) (and (< adx 6.0) (chance (lv-smash)))))
+        (do (set-p-bot-think! id (+ 6 (rnd 30))) (set-p-btn-special! id 1) (set-p-in-x! id (* dir 0.8)))
+      ;; a character special (projectile, slam, dash...) with a still stick so it fires
+      (and grounded (and (< adx 9.0) (chance (lv-special))))
+        (do (set-p-in-x! id 0.0)
+            (set-p-in-y! id (if (chance 50) 1.0 -1.0))
+            (set-p-btn-special! id 1))
+      ;; swing when in range
+      (and (< adx 3.8) (and (< (fabs dy) 2.8) (chance (lv-attack))))
+        (do (set-p-btn-attack! id 1)
+            (when (> dy 1.5) (set-p-in-y! id 1.0))))))
+
+(defn bot-think-web [(id : I32)] : Unit
+  (let [st (p-state id)]
+    (cond
+      (or (= st (st-dead)) (> (p-respawn-timer id) 0)) unit
+      ;; launched: steer back toward the stage (directional influence)
+      (= st (st-stunned))
+        (do (ai-release! id)
+            (set-p-in-x! id (if (< (p-x id) (/ (+ (main-left) (main-right)) 2.0)) 1.0 -1.0))
+            (set-p-in-y! id 1.0))
+      :else
+        (do
+          (ai-release! id)
+          (let [t (ai-nearest id)]
+            (cond
+              (ai-needs-recovery? id) (ai-recover! id)
+              (> (p-bot-shield id) 0) (ai-hold-shield! id t)
+              (> (p-bot-think id) 0) (ai-hold-charge! id t)
+              (< t 0) (ai-idle-center! id)
+              (chance (lv-react)) (ai-fight! id t)
+              :else (set-p-in-x! id 0.0)))))))

@@ -29,16 +29,28 @@ SRC=(
   stdlib/brawlpit/bp_phys3.prn
   stdlib/brawlpit/bp_sim.prn
 )
-# Optional parts appear as they are written; the file list above is the single source of truth.
-for extra in bp_input bp_draw bp_view bp_ui bp_main; do
-  [ -f "stdlib/brawlpit/$extra.prn" ] && SRC+=("stdlib/brawlpit/$extra.prn")
-done
+SRC+=(
+  stdlib/brawlpit/bp_ai.prn
+  stdlib/brawlpit/bp_input.prn
+  stdlib/brawlpit/bp_draw.prn
+  stdlib/brawlpit/bp_view.prn
+  stdlib/brawlpit/bp_ui.prn
+  stdlib/brawlpit/bp_main.prn
+)
 SRC+=(stdlib/gfd/term_font.prn)   # the 8x16 bitmap font (font-hex), shared with the GFD terminal
 
 cat "${SRC[@]}" > "$W/brawlpit_all.prn"
 "$PARENA" build "$W/brawlpit_all.prn" -o "$W/brawlpit.ll"
 "$BIN/opt" -O2 -S "$W/brawlpit.ll" -o "$W/brawlpit.opt.ll"
 "$BIN/llc" -O2 -mtriple=wasm32-unknown-unknown -filetype=obj "$W/brawlpit.opt.ll" -o "$W/brawlpit.o"
+# "No malloc", checked on the object code rather than trusted: no allocator symbol is defined or
+# referenced, and no instruction can grow memory.
+if "$BIN/llvm-nm" "$W/brawlpit.o" | grep -Eqw '(malloc|calloc|realloc|free|sbrk|brk|memalign|posix_memalign|aligned_alloc)'; then
+  echo "FAIL: an allocator symbol is present in the object code" >&2; exit 1
+fi
+if "$BIN/llvm-objdump" -d "$W/brawlpit.o" | grep -Eq 'memory\.grow'; then
+  echo "FAIL: the module contains a memory.grow instruction" >&2; exit 1
+fi
 # 8 MB linear memory, fixed (no growth, ever). Stack stays below 0x20000, below every fixed region.
 "$BIN/wasm-ld" --no-entry --export-all --allow-undefined --export-memory \
   --initial-memory=8388608 --max-memory=8388608 -z stack-size=65536 -o "$OUT" "$W/brawlpit.o"

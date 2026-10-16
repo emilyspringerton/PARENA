@@ -115,20 +115,33 @@
 (defn lline [(px : I32) (py : I32) (fl : I32) (u : F32) (x0 : F32) (y0 : F32) (x1 : F32) (y1 : F32) (th : I32) (c : I32)] : Unit
   (line (lx px fl u x0) (ly py u y0) (lx px fl u x1) (ly py u y1) th c))
 
+;; has this character's portrait been uploaded by the page?
+(defn sprite-loaded? [(cid : I32)] : Bool
+  (not (= (bit-and (gi (g-sprite-mask)) (shl 1 (clamp-i cid 0 9))) 0)))
+
+;; the native client draws a 4.4-unit square portrait centred at local (0, 2.4); fighters without
+;; one (Petalia, Vexar) keep the flat-colour body. mode: 0 as-is, 1 white flash, 2 grey flicker.
+(defn draw-portrait [(cid : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (mode : I32)] : Unit
+  (let [sz (max-i 2 (i32 (+ (* 4.4 u) 0.5)))]
+    (blit (+ (sprites-base) (* cid 65536)) 128 128
+          (- px (/ sz 2)) (ly py u 4.6) sz sz (< fl 0) mode)))
+
 ;; the flat-colour fighter (what the native client draws for a fighter with no sprite)
-(defn draw-body [(cid : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (col : I32)] : Unit
-  (let [acc (accent-col cid)
-        edge (mix col (rgb 0 0 0) 150)]
-    (if (= cid (char-petalia))
-        (do (lrect px py fl u 0.0 2.0 1.8 3.6 col)
-            (lrect-outline px py fl u 0.0 2.0 1.8 3.6 edge)
-            (lcircle px py fl u 0.0 4.4 1.0 acc false))
-        (do (lrect px py fl u 0.0 2.0 2.3 4.2 col)
-            (lrect-outline px py fl u 0.0 2.0 2.3 4.2 edge)
-            (lrect px py fl u 0.2 3.1 1.0 0.35 (rgb 255 133 26))
-            (lrect-outline px py fl u 1.5 2.2 1.1 0.9 (rgb 217 242 255))))
-    ;; the eye marks which way it faces
-    (lrect px py fl u 0.5 3.0 0.5 0.5 (rgb 0 0 0))))
+(defn draw-body [(cid : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (col : I32) (mode : I32)] : Unit
+  (if (sprite-loaded? cid)
+      (draw-portrait cid px py fl u mode)
+      (let [acc (accent-col cid)
+            edge (mix col (rgb 0 0 0) 150)]
+        (if (= cid (char-petalia))
+            (do (lrect px py fl u 0.0 2.0 1.8 3.6 col)
+                (lrect-outline px py fl u 0.0 2.0 1.8 3.6 edge)
+                (lcircle px py fl u 0.0 4.4 1.0 acc false))
+            (do (lrect px py fl u 0.0 2.0 2.3 4.2 col)
+                (lrect-outline px py fl u 0.0 2.0 2.3 4.2 edge)
+                (lrect px py fl u 0.2 3.1 1.0 0.35 (rgb 255 133 26))
+                (lrect-outline px py fl u 1.5 2.2 1.1 0.9 (rgb 217 242 255))))
+        ;; the eye marks which way it faces
+        (lrect px py fl u 0.5 3.0 0.5 0.5 (rgb 0 0 0)))))
 
 (defn draw-shield [(p : I32) (px : I32) (py : I32) (u : F32) (col : I32)] : Unit
   (let [(ratio : F32) (/ (p-shield-health p) (c-shield-max))
@@ -208,7 +221,13 @@
                 (> (p-hit-flash-timer p) 0) (rgb 255 255 255)
                 (and (> (p-invuln-frames p) 0) (= (mod (/ frame 3) 2) 0)) (rgb 128 128 128)
                 :else col0)]
-      (draw-body cid px py fl u col)
+      (draw-body cid px py fl u col
+                 (cond (> (p-hit-flash-timer p) 0) 1
+                       (and (> (p-invuln-frames p) 0) (= (mod (/ frame 3) 2) 0)) 2
+                       :else 0))
+      (when (and (= (p-state p) (st-stunned)) (sprite-loaded? cid))
+        (let [sz (w2sl 4.4)]
+          (rect-outline (- px (/ sz 2)) (ly py u 4.6) sz sz 2 (rgb 255 255 0))))
       (when (= (p-state p) (st-shield)) (draw-shield p px py u col0))
       (draw-attack-fx p px py fl u)
       (draw-recovery-fx p px py fl u)
@@ -217,10 +236,8 @@
       (let [lab (p-label p)
             ty (- py (i32 (* 7.4 u)))]
         (case lab
-          1 (draw-text-c "P1" px ty 1 scol)
-          2 (draw-text-c "P2" px ty 1 scol)
-          3 (draw-text-c "CPU" px ty 1 scol)
-          unit)))))
+          0 unit
+          (draw-text-c (hud-name p) px ty 1 scol))))))
 
 (defn draw-turnips [] : Unit
   (dotimes [i 16]
@@ -260,7 +277,7 @@
   (rgbf 1.0 (clamp-f (/ (- 100.0 d) 100.0) 0.0 1.0) 0.0))
 
 (defn hud-name [(p : I32)] : String
-  (case (p-label p) 1 "P1" 2 "P2" 3 "CPU" "--"))
+  (case (p-label p) 1 "P1" 2 "P2" 3 "CPU" 4 "CPU2" 5 "CPU3" "CPU4"))
 
 (defn draw-hud [] : Unit
   (let [n (gi (g-num-players))]

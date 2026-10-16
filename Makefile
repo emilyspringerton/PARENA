@@ -48,6 +48,11 @@ test: tests/test_lexer_parser tests/test_region tests/test_emit
 	./tests/test_region
 	./tests/test_emit
 
+# BRAWLPIT web game: build from source, then parity / engine / host tests (needs node, gcc, the LLVM
+# toolchain under ~/.local/opt/llvm-toolchain, and a sibling ../BRAWLPIT checkout for the C engine).
+test-brawlpit: .parena-bootstrap
+	bash scripts/test_brawlpit.sh
+
 # VS0 domain 4 -- runs the real emitted program under ASan+UBSan (and
 # Valgrind, if installed), plus a deliberately-broken fixture proving
 # the check has teeth. Not part of the default `test` target since it

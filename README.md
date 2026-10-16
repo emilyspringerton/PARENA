@@ -336,6 +336,44 @@ Unicode semantics or GC; not run against test262; the browser loader
 (`examples/v16_wasm/index.html`) is untested in a real browser. Full account, limits and the
 road ahead: `docs/V16_NORTHSTAR.md`; API and build details: `STDLIB.md` "v16/engine".
 
+## BRAWLPIT in the browser — a whole game as WebAssembly, and the page's JS generated from PARENA (2026-10-16)
+
+`stdlib/brawlpit/bp_*.prn` is BRAWLPIT, the platform fighter, ported to PARENA and compiled to one
+wasm32 module: the ten characters and their specials, shields, smashes, blast zones, projectiles, the
+CPU fighters, the menus, and a software renderer into a 960x540 RGBA framebuffer. **No malloc**: every
+record is a fixed-address array in linear memory, the module imports nothing and its 8 MB memory cannot
+grow (the build fails if an allocator symbol, an undefined symbol, a `memory.grow`, or any import appears).
+The browser page needs JavaScript only for what a browser alone can do (instantiate the wasm, blit the
+framebuffer, forward keys / gamepad / pointer, decode a hat PNG), and that host code, `bp_host.prn`, is
+PARENA compiled to **TypeScript** by `emit_ts` and type-stripped to JS -- nothing hand-written.
+
+```bash
+scripts/build_brawlpit_web.sh out/          # out/brawlpit.wasm + out/bp-host.js (+ the .ts)
+make test-brawlpit                          # build + every test below (needs node, gcc, the LLVM toolchain, ../BRAWLPIT)
+```
+
+* **parity** -- the physics is a line-for-line port of `BRAWLPIT/packages/common/physics.h` + `local_game.h` on the
+  new **F32** wasm backend. `tests/brawlpit_parity_test.mjs` runs the real C engine and the wasm engine over 74
+  scripted scenarios (all 10 characters, 3 stages, 1v1 / 3-way / 4-player / two humans / sandbox, chasers, special
+  spam, restarts) and requires every player word and projectile equal after every one of 174,600 ticks, comparing
+  floats as raw bits; a coverage check fails the run unless KOs, high-percent launches, shield breaks, parries,
+  every character's special and both Duck projectiles were reached.
+* **engine / host** -- 69 + 38 assertions: module hygiene (0 imports, no allocator export, fixed memory), menus and
+  match flow by key events only, 2P / free-for-all / practice rules, hats and portraits drawn by the wasm,
+  determinism, the CPU brain; and the generated `bp-host.js` driving the real wasm under a DOM stub.
+  `WOTAN/scripts/brawlpit-browser-test.mjs` does the same in headless Chromium (13 checks).
+* **compiler work this needed** (the "if PARENA can't express it, that is the first task" rule): the LLVM backend
+  gained `F32`, float memory ops, `f32/f64/i32` conversions (saturating, never trapping), `sqrt/fabs/floor`
+  intrinsics, typed `let` binders and `cond/case/dotimes/inc!/...` sugar; the TypeScript backend gained statements,
+  locals, `loop/recur`, module state (`def`, `start`), `Any` and a typed JS bridge (`js/get`, `js/call`, `js/new`,
+  `callback` ...). Existing TS output (MISHRI, DEADWEIGHT rules) is byte-identical.
+
+**Honest status:** verified in Node and headless Chromium only -- not on Firefox/Safari, not on a phone (there are no
+touch controls), and the keyboard / gamepad paths were driven synthetically, no physical controller was attached.
+No audio. Online play is not built (the page is local: vs CPU, two players on one keyboard / pads, free-for-all,
+practice). The CPU brain levels EASY/NORMAL/HARD are new web code, not part of the parity-tested simulation
+(CLASSIC is the C engine's own bot). Consumer: `WOTAN/BRAWLPIT/`. Details: `STDLIB.md` "brawlpit".
+
 ## `plugins/static_analysis` — multi-tier IR lifter + SSA (Python)
 
 Headless binary analysis: `Lifter.open(path)` (ELF64 / PE32+ / raw x86-64) indexes functions and gives each

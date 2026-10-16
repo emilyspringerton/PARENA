@@ -59,7 +59,7 @@ cc_library(
 
 cc_library(
     name = "emit_ts",
-    srcs = ["emit_ts.c"],
+    srcs = ["emit_ts.c", "ast_sugar.h"],
     hdrs = ["emit_ts.h"],
     deps = [
         ":arena",
@@ -81,7 +81,7 @@ cc_library(
 
 cc_library(
     name = "emit_llvm",
-    srcs = ["emit_llvm.c"],
+    srcs = ["emit_llvm.c", "ast_sugar.h"],
     hdrs = ["emit_llvm.h"],
     deps = [
         ":arena",

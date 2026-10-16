@@ -116,6 +116,8 @@
 (defn g-stage-sel [] : I32 54)     ; index into the stage list
 (defn g-hit-peak [] : I32 55)
 (defn g-quit-req [] : I32 56)
+(defn g-ai-mode [] : I32 57)       ; CPU brain: 0 classic (the C bot), 1 easy, 2 normal, 3 hard
+(defn g-ai-sel [] : I32 58)        ; the level chosen on the select screen
 
 ;; ---- tiny integer / float helpers -------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

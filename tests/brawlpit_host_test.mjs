@@ -36,7 +36,11 @@ globalThis.window = { addEventListener(t, f) { (winL[t] ||= []).push(f); }, requ
 let activeEl = null;
 globalThis.document = { getElementById: (id) => els[id] || null, get activeElement() { return activeEl; }, body: { tag: 'body' },
   createElement() { return { width: 0, height: 0, getContext() { return { set imageSmoothingEnabled(v) {}, drawImage() {}, fillText() {}, set font(v) {}, set textAlign(v) {}, set textBaseline(v) {},
-    getImageData() { const d = new Uint8ClampedArray(4096); for (let i = 0; i < 1024; i++) { d[i * 4] = 200; d[i * 4 + 1] = i % 256; d[i * 4 + 2] = 40; d[i * 4 + 3] = i < 512 ? 255 : 0; } return { data: d }; } }; } }; } };
+    getImageData(x, y, w, h) {
+      const d = new Uint8ClampedArray(w * h * 4);
+      if (w === 32) { for (let i = 0; i < 1024; i++) { d[i * 4] = 200; d[i * 4 + 1] = i % 256; d[i * 4 + 2] = 40; d[i * 4 + 3] = i < 512 ? 255 : 0; } }
+      else { for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) { const o = (py * w + px) * 4; d[o] = Math.floor(px / 128) + 4 * Math.floor(py / 128) + 1; d[o + 1] = px & 255; d[o + 2] = py & 255; d[o + 3] = 255; } }
+      return { data: d }; } }; } }; } };
 let pads = [null, null, null, null];
 Object.defineProperty(globalThis, 'navigator', { value: { getGamepads: () => pads }, configurable: true, writable: true });
 globalThis.ImageData = class { constructor(data, w, h) { this.data = data; this.width = w; this.height = h; } };
@@ -48,7 +52,7 @@ globalThis.fetch = async (url, opts) => {
   if (url.endsWith('brawlpit.wasm')) return { ok: true, arrayBuffer: async () => wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength) };
   if (url.startsWith('/api/v1/characters/by-player/')) return { ok: true, json: async () => ({ character_id: 'c-9' }) };
   if (url === '/api/v1/characters/c-9/hats') return { ok: true, json: async () => ([{ name: 'Top Hat', equipped: false }, { name: 'Pixel Crown', equipped: true, image_url: '/api/v1/hats/h1/image' }]) };
-  if (url === '/api/v1/hats/h1/image') return { ok: true, blob: async () => ({ blob: true }) };
+  if (url === '/api/v1/hats/h1/image' || url === 'sprites.png') return { ok: true, blob: async () => ({ blob: true }) };
   return { ok: false, status: 404 };
 };
 // capture the instance the host creates so the test can read the wasm's memory
@@ -152,6 +156,13 @@ ok(hatBytes[0] === 200 && hatBytes[1] === 0 && hatBytes[5] === 1 && hatBytes[3] 
    'the decoded hat RGBA bytes are in wasm memory (hat atlas slot 0)');
 const nameBytes = new Uint8Array(x.memory.buffer, x.bp_hatname_addr(), 16);
 ok(Buffer.from(nameBytes.slice(0, 11)).toString() === 'Pixel Crown' && nameBytes[11] === 0, 'the hat name is NUL-terminated ASCII in wasm memory');
+
+// ---- character portraits: atlas PNG -> sprite memory ------------------------------------------------
+ok(((new DataView(x.memory.buffer)).getInt32(135168 + 31 * 4, true) & 0b1111111100) === 0b1111111100, 'engine knows portraits for characters 2..9 are loaded');
+const sp = (cid, px, py) => new Uint8Array(x.memory.buffer, x.bp_sprite_addr(cid) + (py * 128 + px) * 4, 4);
+ok(Array.from(sp(2, 0, 0)).join() === '1,0,0,255', 'atlas tile 0 lands in character 2\'s sprite slot (row 0, col 0)');
+ok(Array.from(sp(5, 5, 3)).join() === '4,133,3,255', 'atlas tile 3 (x=384..511) lands in character 5\'s slot, pixel (5,3) intact');
+ok(Array.from(sp(9, 127, 127)).join() === '8,255,255,255', 'the last tile\'s last pixel arrives intact (every row of every tile copied)');
 
 // the wasm draws the hat on the fighter: toggle P1's hat in select and compare pixels is overkill;
 // check the engine accepted the hat slot

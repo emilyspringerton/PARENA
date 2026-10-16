@@ -17,6 +17,23 @@
  * `HumannessLayer.bezierInterp` needs and PARENA's own stdlib has no `math` package for yet --
  * see stdlib/math/random.prn's own doc comment).
  *
+ *
+ * 2026-10-16 (BRAWLPIT web; founder: "whatever we do need to use js for use parena into TS") the v0
+ * scope above was grown, still gap by gap, into a host-code emitter:
+ *   statements   let (block-scoped, typed, `(name : Type)` binders), do, when, if (ternary when pure,
+ *                statement otherwise), loop/recur (while(true)+continue, tail position only), set!,
+ *                dotimes / cond / case / unless / inc! ... (ast_sugar.h, shared with the wasm backend),
+ *                multi-form defn bodies
+ *   module       (def name init) -> a module-level `let`; (start expr) -> run when the module loads
+ *   types        I32 F64 Bool String Unit and `Any`, an opaque JavaScript value
+ *   js bridge    (js/global "name") (js/get o "p") (js/aget a i) (js/set! o "p" v) (js/aset! a i v)
+ *                (js/call o "m" args..) (js/call-fn f args..) (js/new "C" args..) (js/obj "k" v ..)
+ *                (js/array ..) (js/null? x) (js/typeof x) (js/defined? "g") (str a b ..) and
+ *                (callback fn) -- a named top-level defn as the closure (no lambdas in PARENA)
+ *   operators    + - * / (I32 / truncates) mod = != < > <= >= and or not bit-and/or/xor shl shr ushr
+ * A statement form where a value is needed, or an undeclared symbol, is a compile error rather than
+ * silently wrong TypeScript. Output for scalar-expression functions is unchanged from v0.
+ *
  * Deliberately NOT shared code with emit.c's own C backend -- a real, separate, independent
  * module (its own minimal string-builder, its own minimal name-mangling), not a refactor of the
  * existing, hard-won, CI-green C emitter into a multi-target abstraction. That refactor is real,

@@ -38,11 +38,12 @@ PLAYER = [
     ("hat", "i"),          # hat slot 0..7 in the hat atlas, -1 none
     ("pad", "i"),          # controller index driving this slot, -1 none
     ("team-color", "i"),   # 0x00BBGGRR tint that tells identical characters apart
-    ("bot-think", "i"),    # frames until the bot re-decides (web bot only)
+    ("bot-think", "i"),    # smash-charge frames left (web CPU only)
     ("last-hit-by", "i"),  # slot that last damaged this player, -1 none (kill credit)
     ("prev-x", "f"), ("prev-y", "f"),   # position before the last tick (KO effect origin)
     ("prev-stocks", "i"), ("prev-resp", "i"), ("prev-hitlag", "i"),
     ("label", "i"),        # 0 none, 1 P1, 2 P2, 3 CPU -- name tag above the head
+    ("bot-shield", "i"),   # shield frames left to hold (web CPU only)
 ]
 
 TURNIP = [
