@@ -120,15 +120,19 @@
   (let [me (gi (g-me))]
     (dotimes [i (max-players)]
       (when (and (alive? i) (!= i me))
-        (let [(z : F32) (project-point (p-x i) (+ (p-y i) 4.6) (p-z i))]
-          (when (and (> z (near-plane)) (< z 150.0))
+        (let [(z : F32) (project-point (p-x i) (+ (p-y i) 4.3) (p-z i))]
+          (when (and (> z (near-plane)) (< z 100.0))
             (when (line-clear? (gf (g-cam-x)) (gf (g-cam-y)) (gf (g-cam-z)) (p-x i) (+ (p-y i) 2.6) (p-z i))
+              ;; the plate floats ABOVE the head: bar just over it, name over the bar, so it never covers the body.
+              ;; it is fully visible up close, thins out with distance and is gone by 100 units.
               (let [sx (i32 (gf (g-sx))) sy (i32 (gf (g-sy)))
-                    a (- 255 (i32 (* (/ z 150.0) 200.0)))
+                    a (- 255 (i32 (* (fmax2 0.0 (- z 30.0)) 3.6)))
                     w (text-width-at (name-addr i) 1)]
-                (draw-text-at (name-addr i) (+ (- sx (/ w 2)) 1) (+ sy 1) 1 (ink-shadow))
-                (draw-text-at (name-addr i) (- sx (/ w 2)) sy 1 (mix (rgb 120 120 130) (player-hue (p-color i)) (max-i 0 a)))
-                (bar (- sx 14) (+ sy 10) 28 2 (/ (f32 (p-health i)) 100.0) (health-color (p-health i)))))))))))
+                (when (> a 0)
+                  (do
+                    (draw-text-at (name-addr i) (+ (- sx (/ w 2)) 1) (- sy 21) 1 (ink-shadow))
+                    (draw-text-at (name-addr i) (- sx (/ w 2)) (- sy 22) 1 (mix (rgb 120 120 130) (player-hue (p-color i)) (max-i 0 a)))
+                    (bar (- sx 14) (- sy 4) 28 2 (/ (f32 (p-health i)) 100.0) (health-color (p-health i)))))))))))))
 
 (defn render-world! [(alpha : F32)] : Unit
   (do
