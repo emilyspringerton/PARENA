@@ -6,6 +6,7 @@
 ;; Enumerations (kept as documented I32 constants; the host mirrors them in core/witness_rules.h):
 ;;   witness state : 0 UNAWARE 1 DENIAL 2 COMPROMISED 3 SILENCING 4 PANIC 5 ENGAGE
 ;;   decorum action: 0 SMALL_TALK 1 SAY_APOCALYPSE 2 CARRY_GEAR 3 WRONG_COSTUME_NOTICED 4 ATTRIBUTED_EVENT 5 QUIET_TICK
+;;                   6 CAUGHT_SNOOPING (BIG_O NORTHSTAR.md §39: a bystander saw you reading someone's screen)
 ;;   decorum band  : 0 OK 1 SUSPICION 2 HYSTERIC 3 CANCELLED
 ;;   costume       : 0 SUIT 1 LAB_SMOCK 2 JANITOR 3 STREET
 ;;   zone          : 0 PUBLIC 1 LAB 2 EXEC 3 GENERATOR 4 VAULT
@@ -17,7 +18,7 @@
         witness-state escalation-rank npc-next-state is-legal-transition effective-witnesses
         engage-outcome silence-target-mask
         clamp-decorum decorum-delta decorum-after decorum-band
-        zone-access conspicuousness noticed
+        zone-access conspicuousness snoop-conspicuousness noticed
         move-speed-pct wall-max-hp breach-dps wall-hp-after zombie-next-state)
 
 ;; ---- tunable constants (the ONE place; docs/B1_WITNESS_RULES.md marks transcript-sourced vs invented) ----
@@ -30,6 +31,7 @@
 (defn hysteric-below [] : I32 30)
 (defn wall-hp-concrete [] : I32 500)
 (defn breach-dps-super [] : I32 50)
+(defn snoop-penalty [] : I32 15)
 
 ;; ---- witness reactions ----
 ;; count = hostile witnesses of ONE event (compromised accomplices excluded by the host via effective-witnesses).
@@ -80,7 +82,8 @@
       (if (= action 2) (- 0 15)
         (if (= action 3) (- 0 20)
           (if (= action 4) (- 0 40)
-            (if (= action 5) 1 0)))))))
+            (if (= action 5) 1
+              (if (= action 6) (- 0 30) 0))))))))
 
 (defn decorum-after [(d : I32) (action : I32)] : I32
   (clamp-decorum (+ d (decorum-delta action))))
@@ -99,6 +102,11 @@
 
 (defn conspicuousness [(allowed : I32) (gear : I32)] : I32
   (+ (if (= allowed 1) 0 40) (if (= gear 1) 20 0)))
+
+;; leaning over someone's shoulder is itself conspicuous to BYSTANDERS (the target is absorbed in their own screen), on top
+;; of whatever the costume/gear already give away. BIG_O NORTHSTAR.md §39; snoop-penalty is an invented v1 tuning.
+(defn snoop-conspicuousness [(allowed : I32) (gear : I32)] : I32
+  (+ (snoop-penalty) (conspicuousness allowed gear)))
 
 ;; noticed iff the host's pre-rolled 0..99 roll falls under vigilance+conspicuousness (capped at 100).
 (defn noticed [(vigilance : I32) (conspicuous : I32) (roll : I32)] : Bool

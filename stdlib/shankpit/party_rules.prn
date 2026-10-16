@@ -1,0 +1,78 @@
+;; stdlib/big_o/party_rules.prn -- BIG_O party system pure decision logic. EMILY/BACKLOG.md SECTION
+;; 536 follow-up, founder real-time (2026-09-23/24): "add full party system parity use the GFD
+;; server subsystems" -> "PARENA POWER EVERYTHING". Reverse-ported from GoblinFoxDragon's own real,
+;; already-shipped server/party/party.go (DragonsNShit's FFXI-parity 6-player party system, live in
+;; that repo's MUD) -- decision rules only, faithfully matching that file's own real behavior:
+;;   - MaxPartySize = 6 (1 leader + 5 members).
+;;   - Only the leader may invite or kick; the leader cannot kick themselves.
+;;   - XP is split evenly (integer division, remainder discarded) among members within range of the
+;;     kill point; out-of-range members get nothing -- party.go's own real XPSplit rule.
+;;
+;; Real, honest, deliberate v1 scope cut, not guessed at: GFD's party.go also models Alliance (up to
+;; 3 parties, 18 players) and XPChain (consecutive-kill bonus decay) as genuinely separate concerns
+;; -- its own doc comment says so explicitly ("Alliance XP sharing is not handled here"). Neither is
+;; ported in this pass; each is real, separate, bigger scope, named as a follow-up rather than
+;; folded in blind.
+;;
+;; Party membership/roster is inherently array-shaped (up to 6 player slots) and array manipulation
+;; (invite/kick/leave/leadership-transfer as list mutation) is genuinely stateful -- same real split
+;; every other BIG_O PARENA module in this repo already draws (npc_archetype.c/zombie_values.c kept
+;; the pure scalar formulas here, left ticking/RNG/list-mutation to the host). This module is ONLY
+;; the pure, per-call eligibility/math decisions; day/packages/common/bigo_party.h (the real host
+;; consumer) owns the actual roster array and its mutation.
+;;
+;; Same discipline as witness_rules.prn/walkie_rules.prn: scalar-only I32/Bool, no FFI, no RNG, one
+;; expression per defn, calls between defns only.
+(module big-o/party-rules)
+(export party-max-size party-max-members party-full
+        party-ok party-err-not-leader party-err-full party-err-already-in-party
+        party-err-not-in-party party-err-cannot-kick-self
+        party-can-invite party-can-kick
+        party-in-range party-xp-share)
+
+;; ---- constants (party.go's own MaxPartySize = 1 leader + 5 members) ----
+(defn party-max-size [] : I32 6)
+(defn party-max-members [] : I32 5) ;; non-leader slots only
+
+;; ---- error codes (party.go's own named Err* values, as I32 so the host can log/branch on them) ----
+(defn party-ok [] : I32 0)
+(defn party-err-not-leader [] : I32 1)
+(defn party-err-full [] : I32 2)
+(defn party-err-already-in-party [] : I32 3)
+(defn party-err-not-in-party [] : I32 4)
+(defn party-err-cannot-kick-self [] : I32 5)
+
+(defn party-full [(size : I32)] : Bool
+  (>= size (party-max-size)))
+
+;; party-can-invite -- party.go's own real Invite() precondition chain, in the same order (leader
+;; check first, then full, then already-a-member), so the returned error matches which real check
+;; failed. is-caller-leader/is-target-already-in-party are the host's own real, already-known facts
+;; (looked up from the live roster) -- this function makes no assumption about HOW the host knows.
+(defn party-can-invite [(is-caller-leader : Bool) (size : I32) (is-target-already-in-party : Bool)] : I32
+  (if (not is-caller-leader) (party-err-not-leader)
+    (if (party-full size) (party-err-full)
+      (if is-target-already-in-party (party-err-already-in-party)
+        (party-ok)))))
+
+;; party-can-kick -- party.go's own real Kick() precondition chain: leader check, then
+;; cannot-kick-self, then must actually be a member.
+(defn party-can-kick [(is-caller-leader : Bool) (is-target-self : Bool) (is-target-in-party : Bool)] : I32
+  (if (not is-caller-leader) (party-err-not-leader)
+    (if is-target-self (party-err-cannot-kick-self)
+      (if (not is-target-in-party) (party-err-not-in-party)
+        (party-ok)))))
+
+;; party-in-range -- party.go's own real XPSplit rule: a member at or under range-limit-cm from the
+;; kill point counts toward the split; strictly beyond it gets nothing. Distances are the host's own
+;; real integer centimeters (matches walkie_rules.prn's own distance-cm convention, keeping this
+;; module pure-integer).
+(defn party-in-range [(distance-cm : I32) (range-limit-cm : I32)] : Bool
+  (<= distance-cm range-limit-cm))
+
+;; party-xp-share -- integer-divides total-xp among in-range-count members, remainder discarded
+;; (party.go's own real "each := totalXP / inRange" rule, verbatim). Zero in-range members shares
+;; zero, never divides by zero.
+(defn party-xp-share [(total-xp : I32) (in-range-count : I32)] : I32
+  (if (<= in-range-count 0) 0
+    (/ total-xp in-range-count)))
