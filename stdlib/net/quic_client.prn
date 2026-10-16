@@ -817,6 +817,10 @@
   (and (>= (cget c 28) 0) (and (>= (cget c 27) (cget c 28)) (= (cget c 29) (cget c 28)))))
 
 ;; Advance the connection. Never blocks. Returns the status (0 in progress, 1 done, <0 failed).
+;; VS0 quirk: a `do` inside an `if` arm (used for its value) is rejected -- helper fn instead.
+(defn qcn-complete-fail! [(c : Bytes)] : I32
+  (do (cset! c 482 5000) (qcn-fail! c -5)))
+
 (defn quic-pump [(c : Bytes) (host : String @ Region) (path : String @ Region)] : I32
   (if (not (= (cget c 0) 0)) (cget c 0)
     (with-arena [t :region/scratch 65536]
@@ -827,7 +831,7 @@
             0)
           (if (= (cget c 0) 0) (qcn-h3-parse! c &mut t) 0)
           (if (and (= (cget c 0) 0) (qcn-complete? c))
-            (if (> (cget c 32) 0) (cset! c 0 1) (do (cset! c 482 5000) (qcn-fail! c -5)))
+            (if (> (cget c 32) 0) (cset! c 0 1) (qcn-complete-fail! c))
             0)
           (qcn-flush-acks c &mut t)
           (qcn-timers! c &mut t)
