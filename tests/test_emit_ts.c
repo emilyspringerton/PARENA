@@ -148,16 +148,16 @@ int main(void) {
         arena_free_all(&arena);
     }
 
-    /* --- real, honest failure case: a `let`-block body isn't understood by this v0 (single-
-       expression bodies only, matching every real mod call site this emitter has been proven
-       against so far) --- */
+    /* --- a `let` block is a real statement now (2026-10-16): a block scope with a typed local --- */
     {
         Arena arena;
         arena_init(&arena);
         const char *src = "(defn f [] : I32 (let [x 1] x))";
         const char *err = NULL;
         const char *ts = build_ts(&arena, src, &err);
-        CHECK(ts == NULL, "a let-block body is a real, honest unsupported error, not silently guessed");
+        CHECK(ts != NULL, "a let-block body emits real statements");
+        CHECK(ts && strstr(ts, "let x: number = 1;") != NULL, "let binds a typed local inside a block");
+        CHECK(ts && strstr(ts, "return x;") != NULL, "the let body's last form is returned");
         arena_free_all(&arena);
     }
 
@@ -255,6 +255,82 @@ int main(void) {
         CHECK(ts && strstr(ts, "export function longChain") != NULL, "long-expression defn's own function header is intact, not corrupted by buffer truncation");
         CHECK(ts && strlen(ts) > 600, "emitted output is not silently truncated to (or near) the old 512-byte buffer bound");
         free(src);
+        arena_free_all(&arena);
+    }
+
+    /* --- statements, module state, loops, and the JavaScript bridge (2026-10-16, BRAWLPIT web:
+       "whatever we do need JS for, use PARENA into TS") --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(def frames 0)\n"
+            "(def canvas null)\n"
+            "(defn tick [(t : F64)] : Unit\n"
+            "  (do (set! frames (+ frames 1))\n"
+            "      (js/call (js/global \"console\") \"log\" (str \"frame \" frames))\n"
+            "      (js/call (js/global \"window\") \"requestAnimationFrame\" (callback tick))))\n"
+            "(defn boot [(id : String)] : Unit\n"
+            "  (do (set! canvas (js/call (js/global \"document\") \"getElementById\" id))\n"
+            "      (js/set! canvas \"width\" 960)\n"
+            "      (tick 0.0)))\n"
+            "(start (boot \"bp-canvas\"))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "module state + js bridge + callback + start emit successfully");
+        if (ts) {
+            CHECK(strstr(ts, "let frames: number = 0;") != NULL, "(def name init) is module-level `let`");
+            CHECK(strstr(ts, "export function tick(t: number): void {") != NULL, "a Unit defn returns void");
+            CHECK(strstr(ts, "frames = (frames + 1);") != NULL, "set! on module state is an assignment");
+            CHECK(strstr(ts, "console.log((\"\" + \"frame \" + frames));") != NULL, "js/call + js/global + str lower to a method call and concatenation");
+            CHECK(strstr(ts, "window.requestAnimationFrame(tick)") != NULL, "(callback tick) passes the function itself");
+            CHECK(strstr(ts, "canvas.width = 960;") != NULL, "js/set! is a property assignment");
+            CHECK(strstr(ts, "document.getElementById(id)") != NULL, "a string-literal method name is a plain method call");
+            CHECK(strstr(ts, "boot(\"bp-canvas\");") != NULL, "(start expr) runs when the module loads");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn mask [(n : I32)] : I32\n"
+            "  (loop [i 0 acc 0]\n"
+            "    (if (< i n) (recur (+ i 1) (bit-or acc (shl 1 i))) acc)))\n"
+            "(defn spin [(n : I32)] : Unit\n"
+            "  (dotimes [i n] (js/call (js/global \"console\") \"log\" i)))\n"
+            "(defn pick [(c : I32)] : String (case c 0 \"a\" 1 \"b\" \"z\"))\n"
+            "(defn guard [(e : Any)] : Bool (and (not (js/null? e)) (!= (js/get e \"keyCode\") 27)))";
+        const char *err = NULL;
+        const char *ts = build_ts(&arena, src, &err);
+        CHECK(ts != NULL, "loop/recur, dotimes, case and js/null? emit successfully");
+        if (ts) {
+            CHECK(strstr(ts, "while (true) {") != NULL, "loop lowers to while(true)");
+            CHECK(strstr(ts, "continue;") != NULL, "recur is an assignment plus continue");
+            CHECK(strstr(ts, "return acc;") != NULL, "a loop's valued exit returns when the loop is the function result");
+            CHECK(strstr(ts, "(i << ") == NULL && strstr(ts, "<< i)") != NULL, "bit ops lower to JS operators");
+            CHECK(strstr(ts, "(e == null)") != NULL && strstr(ts, "e.keyCode") != NULL, "js/null? and js/get lower to == null and a property read");
+            CHECK(strstr(ts, "!==") != NULL, "!= lowers to !==");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        CHECK(build_ts(&arena, "(defn f [] : I32 (+ 1 (let [x 2] x)))", &err) == NULL,
+              "a statement form where a value is needed is a compile error, not silently wrong code");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_ts(&arena, "(defn f [] : I32 y)", &err) == NULL, "an undeclared symbol is a compile error");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_ts(&arena, "(defn f [] : Unit (js/call (js/global \"a\") 7))", &err) == NULL,
+              "js/call needs a string-literal method name");
         arena_free_all(&arena);
     }
 
