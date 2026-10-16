@@ -602,6 +602,113 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- F32, float memory, conversions, math intrinsics, AST sugar (2026-10-16, BRAWLPIT web) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn lerp [(a : F32) (b : F32) (t : F32)] : F32 (+ a (* (- b a) t)))"
+            "(defn k [] : F32 0.1)"
+            "(defn neg [(x : F32)] : F32 (- x))"
+            "(defn lt [(a : F32) (b : F32)] : Bool (< a b))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "F32 params/returns/literals emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "define float @lerp(float %a, float %b, float %t)") != NULL, "F32 maps to LLVM float");
+            CHECK(strstr(ir, "fsub float %b, %a") != NULL && strstr(ir, "fmul float") != NULL, "F32 arithmetic uses float ops");
+            CHECK(strstr(ir, "ret float 0x3FB99999A0000000") != NULL, "an F32 literal is the float-rounded value in hex (0.1f)");
+            CHECK(strstr(ir, "fneg float %x") != NULL, "unary minus on a float is fneg");
+            CHECK(strstr(ir, "fcmp olt float %a, %b") != NULL, "F32 comparison is fcmp on float");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn put [(a : I32) (v : F32)] : Unit (storef32! a v))"
+            "(defn get [(a : I32)] : F32 (loadf32 a))"
+            "(defn putd [(a : I32) (v : F64)] : Unit (storef64! a v))"
+            "(defn getd [(a : I32)] : F64 (loadf64 a))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "float memory ops emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "store float %v, ptr") != NULL, "storef32! stores a float");
+            CHECK(strstr(ir, "load float, ptr") != NULL, "loadf32 loads a float");
+            CHECK(strstr(ir, "store double %v, ptr") != NULL && strstr(ir, "load double, ptr") != NULL, "storef64!/loadf64 use double");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn a [(x : I32)] : F32 (f32 x))"
+            "(defn b [(x : F32)] : I32 (i32 x))"
+            "(defn c [(x : F64)] : F32 (f32 x))"
+            "(defn d [(x : F32)] : F64 (f64 x))"
+            "(defn e [] : F32 (f32 60))"
+            "(defn f [(x : F32)] : F32 (sqrt x))"
+            "(defn g [(x : F32)] : F32 (fabs x))"
+            "(defn h [(x : F32)] : F32 (floor x))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "numeric conversions and math builtins emit successfully");
+        if (ir) {
+            CHECK(strstr(ir, "sitofp i32 %x to float") != NULL, "(f32 i32) is sitofp");
+            CHECK(strstr(ir, "@llvm.fptosi.sat.i32.f32") != NULL, "(i32 float) is the saturating, non-trapping truncate");
+            CHECK(strstr(ir, "fptrunc double %x to float") != NULL, "(f32 f64) is fptrunc");
+            CHECK(strstr(ir, "fpext float %x to double") != NULL, "(f64 f32) is fpext");
+            CHECK(strstr(ir, "ret float 0x404E000000000000") != NULL, "(f32 60) is a constant, not a conversion");
+            CHECK(strstr(ir, "declare float @llvm.sqrt.f32(float)") != NULL, "sqrt declares its intrinsic once in the header");
+            CHECK(strstr(ir, "call float @llvm.fabs.f32") != NULL && strstr(ir, "call float @llvm.floor.f32") != NULL,
+                  "fabs and floor lower to intrinsics");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        CHECK(build_llvm(&arena, "(defn f [(a : I32) (b : F32)] : F32 (+ a b))", &err) == NULL,
+              "mixing I32 and F32 in one operator is a compile error (no implicit coercion)");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_llvm(&arena, "(defn f [(a : F32)] : F32 (let [(x : I32) a] a))", &err) == NULL,
+              "a typed let binder rejects a mismatched initializer");
+        arena_free_all(&arena);
+        arena_init(&arena);
+        err = NULL;
+        CHECK(build_llvm(&arena, "(defn sqrt [(x : F32)] : F32 x) (defn f [(x : F32)] : F32 (sqrt x))", &err) != NULL,
+              "a user defn named like a builtin shadows it");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn sum4 [(a : I32) (b : I32) (c : I32) (d : I32)] : I32 (+ a b c d))"
+            "(defn pick [(c : I32)] : I32 (case c 0 10 (1 2) 20 99))"
+            "(defn clampi [(x : I32)] : I32 (cond (< x 0) 0 (> x 9) 9 :else x))"
+            "(defn tri [(n : I32)] : I32 (let [s 0] (dotimes [i n] (add! s i)) (inc! s) s))"
+            "(defn guard [(a : I32) (b : I32)] : Bool (and (> a 0) (< b 5) (!= a b)))"
+            "(defn typed [] : F32 (let [(x : F32) 0.5] (mul! x 2.0) x))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "cond/case/dotimes/inc!/add!/variadic sugar emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "add i32 %") != NULL, "variadic + left-folds into binary adds");
+            CHECK(strstr(ir, "icmp eq i32 %c, 0") != NULL && strstr(ir, "icmp eq i32 %c, 2") != NULL,
+                  "case tests each listed value, including grouped alternatives");
+            CHECK(strstr(ir, "@pick") != NULL && strstr(ir, "ret i32 %") != NULL, "case produces a value");
+            CHECK(strstr(ir, "alloca float") != NULL, "a typed let binder makes an F32 slot from a bare literal");
+        } else printf("  error: %s\n", err);
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

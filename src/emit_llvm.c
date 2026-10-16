@@ -4,6 +4,7 @@
  */
 #include "emit_llvm.h"
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -80,11 +81,34 @@ static int is_call_named(Node *n, const char *name) {
    convention). */
 static const char *mangle_name(Arena *arena, const char *kebab) {
     size_t len = strlen(kebab);
-    char *out = arena_alloc(arena, len + 1);
+    /* Worst case every byte becomes "_x" + 2 hex digits. */
+    char *out = arena_alloc(arena, len * 4 + 1);
+    size_t o = 0;
     for (size_t i = 0; i < len; i++) {
-        out[i] = (kebab[i] == '-') ? '_' : kebab[i];
+        unsigned char c = (unsigned char)kebab[i];
+        if (c == '-') { out[o++] = '_'; continue; }
+        /* `!`, `?`, `*` and friends are legal PARENA name characters (`set-hp!`, `alive?`) but not
+           legal in a bare LLVM identifier -- spell them out instead of emitting broken IR. */
+        const char *rep = NULL;
+        switch (c) {
+            case '!': rep = "_bang"; break;
+            case '?': rep = "_p"; break;
+            case '*': rep = "_star"; break;
+            case '<': rep = "_lt"; break;
+            case '>': rep = "_gt"; break;
+            case '=': rep = "_eq"; break;
+            case '+': rep = "_plus"; break;
+            case '/': rep = "_slash"; break;
+            default: break;
+        }
+        if (rep) { size_t rl = strlen(rep); memcpy(out + o, rep, rl); o += rl; continue; }
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.') {
+            out[o++] = (char)c;
+            continue;
+        }
+        o += (size_t)snprintf(out + o, 5, "_x%02X", c);
     }
-    out[len] = '\0';
+    out[o] = '\0';
     return out;
 }
 
@@ -100,11 +124,39 @@ static const char *resolve_llvm_type(Node *type_sym, const char **out_error) {
     }
     if (strcmp(type_sym->text, "I32") == 0) return "i32";
     if (strcmp(type_sym->text, "F64") == 0) return "double";
+    /* F32 (2026-10-16, BRAWLPIT web): single-precision float, so a game engine ported from C
+       `float` code (BRAWLPIT's physics.h) computes bit-identically instead of drifting through
+       double rounding. Same arithmetic/compare/convert surface as F64. */
+    if (strcmp(type_sym->text, "F32") == 0) return "float";
     if (strcmp(type_sym->text, "Bool") == 0) return "i1";
     if (strcmp(type_sym->text, "String") == 0) return "ptr";
     if (strcmp(type_sym->text, "Unit") == 0) return "void";
-    *out_error = "emit_llvm: unsupported parameter/return type (v0 only understands I32/F64/Bool/String/Unit)";
+    *out_error = "emit_llvm: unsupported parameter/return type (v0 only understands I32/F32/F64/Bool/String/Unit)";
     return NULL;
+}
+
+/* is_flt: LLVM floating-point scalar types this emitter produces. */
+static int is_flt(const char *t) {
+    return t && (strcmp(t, "double") == 0 || strcmp(t, "float") == 0);
+}
+
+/* format_float_literal: an F32 constant in LLVM IR must be exactly representable as a float and,
+   for non-trivial values, is written as the 64-bit hex image of the value widened to double
+   (`float 0x3FB99999A0000000`) -- the decimal form `0.1` is rejected for `float` because 0.1 is
+   not exactly a float. Rounds the source text to the nearest float first (what a C compiler does
+   with `0.1f`), then widens, so a PARENA `0.1` in F32 context equals C's `0.1f` bit for bit. */
+static const char *format_float_literal(Arena *arena, const char *text, size_t len) {
+    char buf[64];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, text, len);
+    buf[len] = '\0';
+    float f = (float)strtod(buf, NULL);
+    double d = (double)f;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    char out[32];
+    snprintf(out, sizeof(out), "0x%016llX", (unsigned long long)bits);
+    return arena_strdup(arena, out, strlen(out));
 }
 
 /* format_double_literal: LLVM IR requires a floating-point constant to LOOK like one (a decimal
@@ -192,6 +244,8 @@ typedef struct {
     LlvmBuf strings;   /* accumulated `@.str.N = ...` global constant lines */
     int next_str;      /* next fresh string-global suffix */
     LlvmBuf externs;   /* accumulated `declare ...` lines -- see llvm-extern's own handling below */
+    unsigned long intrinsics; /* bitmask of LLVM intrinsics used, declared once in the header */
+    int next_cs;       /* next fresh `case` temporary suffix (sugar pass) */
 } LlvmModule;
 
 /* Searches newest-first so an inner `let` shadows an outer binding or a parameter. */
@@ -261,6 +315,9 @@ static const ArithEntry ARITH_TABLE[] = {
     {"bit-xor", "xor", NULL},
     {"shl", "shl", NULL},
     {"shr", "ashr", NULL},
+    /* `ushr` -- logical (zero-filling) right shift, for hash/PRNG code that needs the unsigned
+       reading of a 32-bit word (2026-10-16, BRAWLPIT web). `shr` stays arithmetic. */
+    {"ushr", "lshr", NULL},
 };
 #define ARITH_TABLE_COUNT (sizeof(ARITH_TABLE) / sizeof(ARITH_TABLE[0]))
 
@@ -387,14 +444,28 @@ static LlvmVal emit_seq(Arena *arena, LlvmFn *fn, Node *list, size_t from, const
 
 static int bind_local(Arena *arena, LlvmFn *fn, Node *name, Node *init, LlvmModule *mod,
                       const char **out_error) {
+    /* `(name : Type)` binder (2026-10-16): states the binding's type up front, so a numeric literal
+       initializer is read as that type (`(let [(x : F32) 0.5] ...)` is a float, not the double a
+       bare `0.5` defaults to) and a mismatched initializer is a compile error. */
+    const char *forced = NULL;
+    if (name->type == NODE_LIST && name->child_count == 3 && name->children[0]->type == NODE_SYMBOL &&
+        name->children[1]->type == NODE_COLON) {
+        forced = resolve_llvm_type(name->children[2], out_error);
+        if (!forced) return 0;
+        name = name->children[0];
+    }
     if (name->type != NODE_SYMBOL) {
         *out_error = "emit_llvm: let/loop binding name must be a symbol";
         return 0;
     }
-    LlvmVal v = emit_llvm_expr(arena, fn, init, literal_hint(init), mod, out_error);
+    LlvmVal v = emit_llvm_expr(arena, fn, init, forced ? forced : literal_hint(init), mod, out_error);
     if (!v.ref) return 0;
     if (is_unit(v)) {
         *out_error = "emit_llvm: let/loop binding initializer has no value";
+        return 0;
+    }
+    if (forced && strcmp(v.type, forced) != 0) {
+        *out_error = "emit_llvm: let/loop binding initializer does not match its declared type";
         return 0;
     }
     if (fn->local_count >= LLVM_MAX_LOCALS) {
@@ -694,6 +765,31 @@ static LlvmVal emit_mem_op(Arena *arena, LlvmFn *fn, Node *expr, const char *hea
         }
         return unit_val();
     }
+    /* loadf32/loadf64/storef32!/storef64! (2026-10-16, BRAWLPIT web): float fields in linear
+       memory. align 1 like the integer ops above -- wasm tolerates unaligned access, and the
+       engine keeps its words aligned anyway. */
+    if (strcmp(head, "loadf32") == 0 || strcmp(head, "loadf64") == 0) {
+        if (expr->child_count != 2) { *out_error = "emit_llvm: loadf32/loadf64 take exactly one address"; return llvm_val_err(); }
+        const char *p = emit_addr(arena, fn, expr->children[1], mod, out_error);
+        if (!p) return llvm_val_err();
+        const char *r = fresh_reg(arena, fn);
+        LlvmVal v;
+        v.type = (strcmp(head, "loadf32") == 0) ? "float" : "double";
+        lb_appendf(&fn->body, "  %s = load %s, ptr %s, align 1\n", r, v.type, p);
+        v.ref = r;
+        return v;
+    }
+    if (strcmp(head, "storef32!") == 0 || strcmp(head, "storef64!") == 0) {
+        if (expr->child_count != 3) { *out_error = "emit_llvm: storef32!/storef64! take (addr value)"; return llvm_val_err(); }
+        const char *want = (strcmp(head, "storef32!") == 0) ? "float" : "double";
+        const char *p = emit_addr(arena, fn, expr->children[1], mod, out_error);
+        if (!p) return llvm_val_err();
+        LlvmVal val = emit_llvm_expr(arena, fn, expr->children[2], want, mod, out_error);
+        if (!val.ref) return val;
+        if (strcmp(val.type, want) != 0) { *out_error = "emit_llvm: storef32!/storef64! value has the wrong float type"; return llvm_val_err(); }
+        lb_appendf(&fn->body, "  store %s %s, ptr %s, align 1\n", want, val.ref, p);
+        return unit_val();
+    }
     if (strcmp(head, "str-addr") == 0) {
         if (expr->child_count != 2) { *out_error = "emit_llvm: str-addr takes one String"; return llvm_val_err(); }
         LlvmVal s = emit_llvm_expr(arena, fn, expr->children[1], "ptr", mod, out_error);
@@ -705,6 +801,90 @@ static LlvmVal emit_mem_op(Arena *arena, LlvmFn *fn, Node *expr, const char *hea
         v.type = "i32";
         v.ref = r;
         return v;
+    }
+    *handled = 0;
+    return llvm_val_err();
+}
+
+/* --- numeric conversions + math primitives (2026-10-16, BRAWLPIT web) -------------------------
+   (f32 x) (f64 x) (i32 x): explicit conversions between I32, F32 and F64 (and Bool -> I32). PARENA
+   has no implicit numeric coercion -- mixing types in one operator is a compile error -- so a
+   physics port that mixes counters and floats says so out loud. A bare literal argument is read
+   AS the target type, so `(f32 60)` and `(f32 0.5)` are constants, not conversions.
+   (i32 x) from a float uses llvm.fptosi.sat: saturating and NaN-safe, never the trapping
+   truncate a bare fptosi would lower to on wasm -- a bad float must not kill the game frame.
+   (sqrt x) (fabs x) (floor x): LLVM intrinsics, which wasm lowers to single instructions (no libm
+   import, so the module still has zero imports). A user defn with the same name wins. */
+enum {
+    INTR_SQRT_F32 = 1 << 0, INTR_SQRT_F64 = 1 << 1, INTR_FABS_F32 = 1 << 2, INTR_FABS_F64 = 1 << 3,
+    INTR_FLOOR_F32 = 1 << 4, INTR_FLOOR_F64 = 1 << 5, INTR_SAT_F32 = 1 << 6, INTR_SAT_F64 = 1 << 7
+};
+
+static const char *intrinsic_decls(unsigned long mask, LlvmBuf *b) {
+    if (mask & INTR_SQRT_F32) lb_append(b, "declare float @llvm.sqrt.f32(float)\n");
+    if (mask & INTR_SQRT_F64) lb_append(b, "declare double @llvm.sqrt.f64(double)\n");
+    if (mask & INTR_FABS_F32) lb_append(b, "declare float @llvm.fabs.f32(float)\n");
+    if (mask & INTR_FABS_F64) lb_append(b, "declare double @llvm.fabs.f64(double)\n");
+    if (mask & INTR_FLOOR_F32) lb_append(b, "declare float @llvm.floor.f32(float)\n");
+    if (mask & INTR_FLOOR_F64) lb_append(b, "declare double @llvm.floor.f64(double)\n");
+    if (mask & INTR_SAT_F32) lb_append(b, "declare i32 @llvm.fptosi.sat.i32.f32(float)\n");
+    if (mask & INTR_SAT_F64) lb_append(b, "declare i32 @llvm.fptosi.sat.i32.f64(double)\n");
+    return b->data;
+}
+
+static LlvmVal emit_numeric_builtin(Arena *arena, LlvmFn *fn, Node *expr, const char *head,
+                                    const char *expected, LlvmModule *mod, const char **out_error,
+                                    int *handled) {
+    *handled = 1;
+    int to_f32 = strcmp(head, "f32") == 0, to_f64 = strcmp(head, "f64") == 0, to_i32 = strcmp(head, "i32") == 0;
+    if (to_f32 || to_f64 || to_i32) {
+        if (expr->child_count != 2) { *out_error = "emit_llvm: f32/f64/i32 conversions take exactly one operand"; return llvm_val_err(); }
+        const char *target = to_f32 ? "float" : (to_f64 ? "double" : "i32");
+        Node *a = expr->children[1];
+        if (a->type == NODE_NUMBER) return emit_llvm_expr(arena, fn, a, target, mod, out_error);
+        LlvmVal v = emit_llvm_expr(arena, fn, a, NULL, mod, out_error);
+        if (!v.ref) return v;
+        if (strcmp(v.type, target) == 0) return v;
+        LlvmVal r;
+        r.type = target;
+        r.ref = fresh_reg(arena, fn);
+        if (strcmp(v.type, "i32") == 0 && !to_i32) {
+            lb_appendf(&fn->body, "  %s = sitofp i32 %s to %s\n", r.ref, v.ref, target);
+        } else if (strcmp(v.type, "i1") == 0 && to_i32) {
+            lb_appendf(&fn->body, "  %s = zext i1 %s to i32\n", r.ref, v.ref);
+        } else if (strcmp(v.type, "double") == 0 && to_f32) {
+            lb_appendf(&fn->body, "  %s = fptrunc double %s to float\n", r.ref, v.ref);
+        } else if (strcmp(v.type, "float") == 0 && to_f64) {
+            lb_appendf(&fn->body, "  %s = fpext float %s to double\n", r.ref, v.ref);
+        } else if (is_flt(v.type) && to_i32) {
+            int f32 = strcmp(v.type, "float") == 0;
+            mod->intrinsics |= f32 ? INTR_SAT_F32 : INTR_SAT_F64;
+            lb_appendf(&fn->body, "  %s = call i32 @llvm.fptosi.sat.i32.%s(%s %s)\n", r.ref,
+                       f32 ? "f32" : "f64", v.type, v.ref);
+        } else {
+            *out_error = "emit_llvm: unsupported numeric conversion";
+            return llvm_val_err();
+        }
+        return r;
+    }
+    int is_sqrt = strcmp(head, "sqrt") == 0, is_fabs = strcmp(head, "fabs") == 0, is_floor = strcmp(head, "floor") == 0;
+    if (is_sqrt || is_fabs || is_floor) {
+        if (expr->child_count != 2) { *out_error = "emit_llvm: sqrt/fabs/floor take exactly one operand"; return llvm_val_err(); }
+        LlvmVal v = emit_llvm_expr(arena, fn, expr->children[1], is_flt(expected) ? expected : "double", mod, out_error);
+        if (!v.ref) return v;
+        if (!is_flt(v.type)) { *out_error = "emit_llvm: sqrt/fabs/floor require a float operand"; return llvm_val_err(); }
+        int f32 = strcmp(v.type, "float") == 0;
+        const char *name = is_sqrt ? "sqrt" : (is_fabs ? "fabs" : "floor");
+        unsigned long bit = is_sqrt ? (f32 ? INTR_SQRT_F32 : INTR_SQRT_F64)
+                          : is_fabs ? (f32 ? INTR_FABS_F32 : INTR_FABS_F64)
+                                    : (f32 ? INTR_FLOOR_F32 : INTR_FLOOR_F64);
+        mod->intrinsics |= bit;
+        LlvmVal r;
+        r.type = v.type;
+        r.ref = fresh_reg(arena, fn);
+        lb_appendf(&fn->body, "  %s = call %s @llvm.%s.%s(%s %s)\n", r.ref, v.type, name,
+                   f32 ? "f32" : "f64", v.type, v.ref);
+        return r;
     }
     *handled = 0;
     return llvm_val_err();
@@ -757,6 +937,9 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
         if (strcmp(expected_type, "double") == 0) {
             v.type = "double";
             v.ref = format_double_literal(arena, arena_strdup(arena, expr->text, expr->text_len));
+        } else if (strcmp(expected_type, "float") == 0) {
+            v.type = "float";
+            v.ref = format_float_literal(arena, expr->text, expr->text_len);
         } else if (strcmp(expected_type, "i32") == 0) {
             /* Real, honest validation: an i32-typed literal's own source text must not already
                look like a float (a decimal point present) -- LLVM IR has no implicit float ->
@@ -877,6 +1060,11 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
         LlvmVal mv = emit_mem_op(arena, fn, expr, head, mod, out_error, &handled);
         if (handled) return mv;
     }
+    if (!lookup_fn_sig(mod, mangle_name(arena, head))) {
+        int handled = 0;
+        LlvmVal nv = emit_numeric_builtin(arena, fn, expr, head, expected_type, mod, out_error, &handled);
+        if (handled) return nv;
+    }
 
     /* if -- a pure `if` lowers to a `select` (see emit_llvm.h); an `if` whose branches have
        effects (calls, stores, set!, loops) lowers to real basic blocks so only one side runs. */
@@ -954,8 +1142,8 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             return llvm_val_err();
         }
         const char *reg = fresh_reg(arena, fn);
-        if (strcmp(lhs.type, "double") == 0) {
-            lb_appendf(&fn->body, "  %s = fcmp %s double %s, %s\n", reg, cmp->fcmp_cc, lhs.ref, rhs.ref);
+        if (is_flt(lhs.type)) {
+            lb_appendf(&fn->body, "  %s = fcmp %s %s %s, %s\n", reg, cmp->fcmp_cc, lhs.type, lhs.ref, rhs.ref);
         } else {
             lb_appendf(&fn->body, "  %s = icmp %s %s %s, %s\n", reg, cmp->icmp_cc, lhs.type, lhs.ref, rhs.ref);
         }
@@ -968,6 +1156,20 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
     /* Real arithmetic operators -- result type = the (shared, checked) operand type, same real
        "seed lhs with i32, retype rhs from lhs's own real result" approach comparisons use above. */
     const ArithEntry *arith = find_arith(head);
+    /* Unary minus: `(- x)` is a real negation -- `fneg` for floats (so -0.0 survives, as in C),
+       `sub 0, x` for I32. */
+    if (arith && strcmp(head, "-") == 0 && expr->child_count == 2) {
+        LlvmVal v = emit_llvm_expr(arena, fn, expr->children[1], expected_type, mod, out_error);
+        if (!v.ref) return llvm_val_err();
+        const char *reg = fresh_reg(arena, fn);
+        if (is_flt(v.type)) lb_appendf(&fn->body, "  %s = fneg %s %s\n", reg, v.type, v.ref);
+        else if (strcmp(v.type, "i32") == 0) lb_appendf(&fn->body, "  %s = sub i32 0, %s\n", reg, v.ref);
+        else { *out_error = "emit_llvm: unary - requires a numeric operand"; return llvm_val_err(); }
+        LlvmVal r;
+        r.type = v.type;
+        r.ref = reg;
+        return r;
+    }
     if (arith) {
         if (expr->child_count != 3) {
             *out_error = "emit_llvm: arithmetic operator requires exactly 2 operands (v0 has no variadic +)";
@@ -977,7 +1179,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
            literal lhs inside an F64 context (`(+ 1.0 knob)` in a `: F64` defn) is read as a
            double -- previously the hint was always "i32", a real bug found by
            stdlib/mixforge/mixer.prn (2026-09-27). */
-        const char *hint = (expected_type && (strcmp(expected_type, "double") == 0 ||
+        const char *hint = (expected_type && (is_flt(expected_type) ||
                                               strcmp(expected_type, "i32") == 0))
                                ? expected_type : "i32";
         LlvmVal lhs, rhs;
@@ -987,7 +1189,7 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
             *out_error = "emit_llvm: arithmetic operands have mismatched types";
             return llvm_val_err();
         }
-        int is_double = strcmp(lhs.type, "double") == 0;
+        int is_double = is_flt(lhs.type);
         if (is_double && !arith->f64_op) {
             *out_error = "emit_llvm: bitwise operators require integer operands, not double";
             return llvm_val_err();
@@ -1256,13 +1458,206 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
     return 1;
 }
 
+/* --- AST sugar (2026-10-16, BRAWLPIT web) ----------------------------------------------------
+   A ~2k-line game engine written as a single-expression-per-defn S-expression language is only
+   tolerable with a little structure. These forms are pure AST rewrites run once over each defn
+   body before emission; the emitter itself only ever sees the core forms it already understands.
+     (cond t1 e1 t2 e2 ... [:else eN])    nested if            (no :else => statement form)
+     (case x v1 e1 (v2 v3) e2 ... [dflt]) one evaluation of x, then nested if/=
+     (dotimes [i n] body...)              counted loop, n evaluated once
+     (unless c body...)                   (when (not c) body...)
+     (inc! x) (dec! x) (add! x v) (sub! x v) (mul! x v)   compound assignment to a let/loop binding
+     (+ a b c ...) likewise - * and or bit-and bit-or bit-xor    left-folded to binary form        */
+static Node *mk_list(Arena *arena, int line) { return node_new_compound(arena, NODE_LIST, line); }
+static Node *mk_sym(Arena *arena, const char *text, int line) {
+    return node_new_atom(arena, NODE_SYMBOL, text, strlen(text), line);
+}
+static Node *mk_call2(Arena *arena, const char *head, Node *a, Node *b, int line) {
+    Node *n = mk_list(arena, line);
+    node_push_child(arena, n, mk_sym(arena, head, line));
+    node_push_child(arena, n, a);
+    node_push_child(arena, n, b);
+    return n;
+}
+static int g_sugar_counter = 0;
+
+static int is_else_test(Node *t) {
+    return (t->type == NODE_KEYWORD && t->text && strcmp(t->text, ":else") == 0) ||
+           (t->type == NODE_SYMBOL && (strcmp(t->text, "else") == 0 || strcmp(t->text, "true") == 0));
+}
+
+static int is_fold_op(const char *h) {
+    return !strcmp(h, "+") || !strcmp(h, "-") || !strcmp(h, "*") || !strcmp(h, "and") || !strcmp(h, "or") ||
+           !strcmp(h, "bit-and") || !strcmp(h, "bit-or") || !strcmp(h, "bit-xor");
+}
+
+static Node *sugar(Arena *arena, Node *n, const char **out_error) {
+    if (!n || (n->type != NODE_LIST && n->type != NODE_VEC && n->type != NODE_MAP)) return n;
+    for (size_t i = 0; i < n->child_count; i++) {
+        n->children[i] = sugar(arena, n->children[i], out_error);
+        if (*out_error) return n;
+    }
+    if (n->type != NODE_LIST || n->child_count == 0 || n->children[0]->type != NODE_SYMBOL) return n;
+    const char *h = n->children[0]->text;
+    int line = n->line;
+
+    if (is_fold_op(h) && n->child_count > 3) {
+        Node *acc = mk_call2(arena, h, n->children[1], n->children[2], line);
+        for (size_t i = 3; i < n->child_count; i++) acc = mk_call2(arena, h, acc, n->children[i], line);
+        return acc;
+    }
+
+    if (!strcmp(h, "unless") && n->child_count >= 2) {
+        Node *w = mk_list(arena, line);
+        node_push_child(arena, w, mk_sym(arena, "when", line));
+        Node *neg = mk_list(arena, line);
+        node_push_child(arena, neg, mk_sym(arena, "not", line));
+        node_push_child(arena, neg, n->children[1]);
+        node_push_child(arena, w, neg);
+        for (size_t i = 2; i < n->child_count; i++) node_push_child(arena, w, n->children[i]);
+        return w;
+    }
+
+    if ((!strcmp(h, "inc!") || !strcmp(h, "dec!")) && n->child_count == 2 && n->children[1]->type == NODE_SYMBOL) {
+        Node *one = node_new_atom(arena, NODE_NUMBER, "1", 1, line);
+        Node *set = mk_list(arena, line);
+        node_push_child(arena, set, mk_sym(arena, "set!", line));
+        node_push_child(arena, set, n->children[1]);
+        node_push_child(arena, set, mk_call2(arena, !strcmp(h, "inc!") ? "+" : "-", n->children[1], one, line));
+        return set;
+    }
+    if ((!strcmp(h, "add!") || !strcmp(h, "sub!") || !strcmp(h, "mul!")) && n->child_count == 3 &&
+        n->children[1]->type == NODE_SYMBOL) {
+        Node *set = mk_list(arena, line);
+        node_push_child(arena, set, mk_sym(arena, "set!", line));
+        node_push_child(arena, set, n->children[1]);
+        node_push_child(arena, set, mk_call2(arena, !strcmp(h, "add!") ? "+" : (!strcmp(h, "sub!") ? "-" : "*"),
+                                             n->children[1], n->children[2], line));
+        return set;
+    }
+
+    if (!strcmp(h, "cond")) {
+        size_t nforms = n->child_count - 1;
+        Node *rest = NULL;
+        size_t pairs = nforms / 2;
+        if (nforms % 2 == 1) rest = n->children[n->child_count - 1];
+        for (size_t k = pairs; k > 0; k--) {
+            Node *test = n->children[1 + 2 * (k - 1)];
+            Node *expr = n->children[2 + 2 * (k - 1)];
+            if (is_else_test(test)) { rest = expr; continue; }
+            Node *iff = mk_list(arena, line);
+            node_push_child(arena, iff, mk_sym(arena, "if", line));
+            node_push_child(arena, iff, test);
+            node_push_child(arena, iff, expr);
+            if (rest) node_push_child(arena, iff, rest);
+            rest = iff;
+        }
+        return rest ? rest : mk_sym(arena, "unit", line);
+    }
+
+    if (!strcmp(h, "case") && n->child_count >= 2) {
+        Node *subject = n->children[1];
+        char tmpname[32];
+        Node *tmp_ref = subject;
+        int need_tmp = !(subject->type == NODE_SYMBOL || subject->type == NODE_NUMBER);
+        if (need_tmp) {
+            snprintf(tmpname, sizeof(tmpname), "__case%d", g_sugar_counter++);
+            tmp_ref = mk_sym(arena, tmpname, line);
+        }
+        size_t nforms = n->child_count - 2;
+        size_t pairs = nforms / 2;
+        Node *rest = (nforms % 2 == 1) ? n->children[n->child_count - 1] : NULL;
+        for (size_t k = pairs; k > 0; k--) {
+            Node *vals = n->children[2 + 2 * (k - 1)];
+            Node *expr = n->children[3 + 2 * (k - 1)];
+            Node *test = NULL;
+            if (vals->type == NODE_LIST) {
+                for (size_t v = 0; v < vals->child_count; v++) {
+                    Node *eq = mk_call2(arena, "=", tmp_ref, vals->children[v], line);
+                    test = test ? mk_call2(arena, "or", test, eq, line) : eq;
+                }
+            } else {
+                test = mk_call2(arena, "=", tmp_ref, vals, line);
+            }
+            if (!test) { *out_error = "emit_llvm: case clause with an empty value list"; return n; }
+            Node *iff = mk_list(arena, line);
+            node_push_child(arena, iff, mk_sym(arena, "if", line));
+            node_push_child(arena, iff, test);
+            node_push_child(arena, iff, expr);
+            if (rest) node_push_child(arena, iff, rest);
+            rest = iff;
+        }
+        if (!rest) rest = mk_sym(arena, "unit", line);
+        if (!need_tmp) return rest;
+        Node *let = mk_list(arena, line);
+        node_push_child(arena, let, mk_sym(arena, "let", line));
+        Node *bv = node_new_compound(arena, NODE_VEC, line);
+        node_push_child(arena, bv, tmp_ref);
+        node_push_child(arena, bv, subject);
+        node_push_child(arena, let, bv);
+        node_push_child(arena, let, rest);
+        return let;
+    }
+
+    if (!strcmp(h, "dotimes") && n->child_count >= 3 && n->children[1]->type == NODE_VEC &&
+        n->children[1]->child_count == 2 && n->children[1]->children[0]->type == NODE_SYMBOL) {
+        Node *var = n->children[1]->children[0];
+        Node *limit = n->children[1]->children[1];
+        char tmpname[32];
+        Node *limit_ref = limit;
+        int need_tmp = !(limit->type == NODE_SYMBOL || limit->type == NODE_NUMBER);
+        if (need_tmp) {
+            snprintf(tmpname, sizeof(tmpname), "__dn%d", g_sugar_counter++);
+            limit_ref = mk_sym(arena, tmpname, line);
+        }
+        Node *loop = mk_list(arena, line);
+        node_push_child(arena, loop, mk_sym(arena, "loop", line));
+        Node *lv = node_new_compound(arena, NODE_VEC, line);
+        node_push_child(arena, lv, var);
+        node_push_child(arena, lv, node_new_atom(arena, NODE_NUMBER, "0", 1, line));
+        node_push_child(arena, loop, lv);
+        Node *w = mk_list(arena, line);
+        node_push_child(arena, w, mk_sym(arena, "when", line));
+        node_push_child(arena, w, mk_call2(arena, "<", var, limit_ref, line));
+        for (size_t i = 2; i < n->child_count; i++) node_push_child(arena, w, n->children[i]);
+        Node *rec = mk_list(arena, line);
+        node_push_child(arena, rec, mk_sym(arena, "recur", line));
+        node_push_child(arena, rec, mk_call2(arena, "+", var, node_new_atom(arena, NODE_NUMBER, "1", 1, line), line));
+        node_push_child(arena, w, rec);
+        node_push_child(arena, loop, w);
+        if (!need_tmp) return loop;
+        Node *let = mk_list(arena, line);
+        node_push_child(arena, let, mk_sym(arena, "let", line));
+        Node *bv = node_new_compound(arena, NODE_VEC, line);
+        node_push_child(arena, bv, limit_ref);
+        node_push_child(arena, bv, limit);
+        node_push_child(arena, let, bv);
+        node_push_child(arena, let, loop);
+        return let;
+    }
+    return n;
+}
+
 const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
+    *out_error = NULL;
+    g_sugar_counter = 0;
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_call_named(form, "defn")) continue;
+        for (size_t c = 4; c < form->child_count; c++) {
+            form->children[c] = sugar(arena, form->children[c], out_error);
+            if (*out_error) return NULL;
+        }
+    }
     /* Real, first pass: collect every top-level defn's own real, declared return type BEFORE
        emitting any body, so a call to a defn declared LATER in the same file (or a mutually
        recursive pair) still resolves correctly -- the same real two-pass shape a proper compiler
        needs for forward references, not attempted by emit_java.c/emit_ts.c (whose text-based
        target languages don't need a caller to know a callee's type ahead of time). */
-    LlvmFnSig sigs[LLVM_MAX_FNS];
+    size_t defn_total = 0;
+    for (size_t i = 0; i < program->child_count; i++)
+        if (is_call_named(program->children[i], "defn")) defn_total++;
+    LlvmFnSig *sigs = arena_alloc(arena, sizeof(LlvmFnSig) * (defn_total + 1));
     size_t sig_count = 0;
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
@@ -1277,10 +1672,6 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
         const char *ret_type_err = NULL;
         const char *ret_type = resolve_llvm_type(form->children[4], &ret_type_err);
         if (!ret_type) continue; /* same real reasoning -- reported properly below */
-        if (sig_count >= LLVM_MAX_FNS) {
-            *out_error = "emit_llvm: too many top-level defns (v0 has a fixed, small real limit)";
-            return NULL;
-        }
         /* Real, second follow-up (2026-09-10): also collect each param's own real, declared type
            here, so a real call site elsewhere in the module can independently validate argument
            count/types against this callee's own signature (see emit_llvm_expr's own call-handling
@@ -1323,6 +1714,8 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     lb_init(&mod.strings);
     mod.next_str = 0;
     lb_init(&mod.externs);
+    mod.intrinsics = 0;
+    mod.next_cs = 0;
 
     /* `out` accumulates only the real function definitions -- the header comment and any real
        string-global constants are prepended once, after this loop, into `final_out` below (needs
@@ -1385,6 +1778,14 @@ const char *emit_llvm(Arena *arena, Node *program, const char **out_error) {
     if (mod.externs.len > 0) {
         lb_append(&final_out, mod.externs.data);
         lb_append(&final_out, "\n");
+    }
+    if (mod.intrinsics) {
+        LlvmBuf decls;
+        lb_init(&decls);
+        intrinsic_decls(mod.intrinsics, &decls);
+        lb_append(&final_out, decls.data);
+        lb_append(&final_out, "\n");
+        lb_free(&decls);
     }
     if (mod.strings.len > 0) {
         lb_append(&final_out, mod.strings.data);
