@@ -186,6 +186,7 @@
             (cond (= (gi (g-amove)) 1) (gi! (g-amove) 0)
                   (= (gi (g-shop-open)) 1) (gi! (g-shop-open) 0)
                   (= (gi (g-help-open)) 1) (gi! (g-help-open) 0)
+                  (= (gi (g-score-open)) 1) (gi! (g-score-open) 0)
                   :else (gi! (g-leave-ask) 1)))
           (when (key-hit? (kc-b)) (gi! (g-shop-open) (- 1 (gi (g-shop-open)))))
           (when (key-hit? (kc-h)) (gi! (g-help-open) (- 1 (gi (g-help-open)))))
@@ -205,6 +206,7 @@
               (and (left-clicked?) (in-rect? (ab-bx 1) (ab-y) (ab-s) (ab-s))) (when alive (cast! 1))
               (and (left-clicked?) (in-rect? (ab-bx 2) (ab-y) (ab-s) (ab-s))) (when alive (cast! 2))
               (and (left-clicked?) (in-rect? (ab-bx 3) (ab-y) (ab-s) (ab-s))) (when alive (send-active!))
+              (and (left-clicked?) (tool-click!)) unit
               (in-rect? (mm-x) (mm-y) (mm-s) (mm-s)) (when alive (do (send-move! (minimap-world-x) (minimap-world-z)) (order-marker! (minimap-world-x) (minimap-world-z) 0)))
               (over-hud?) unit
               :else (when alive (world-order!))))

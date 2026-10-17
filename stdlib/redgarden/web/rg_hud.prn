@@ -9,6 +9,10 @@
 
 (defn ab-bx [(i : I32)] : I32 (+ (ab-x) (* i (+ (ab-s) (ab-gap)))))
 
+;; three small buttons beside the abilities, for the things the keyboard does with B, Tab and H (and for touch)
+(defn tb-x [] : I32 628) (defn tb-w [] : I32 76) (defn tb-h [] : I32 26)
+(defn tb-y [(i : I32)] : I32 (+ (ab-y) (* i 17)))
+
 (defn match-secs [] : I32
   (if (> (gi (g-live-ms)) 0) (/ (- (gi (g-ticker)) (gi (g-live-ms))) 1000) 0))
 
@@ -119,7 +123,26 @@
       (draw-text-c (if have (if (= cd 0) "ACTIVE" "...") "no item") (+ x (/ s 2)) (+ y (- s 18)) 1 (c-faint))
       (when (and have (> cd 0))
         (fill-rect-a x y s s (c-shadow) 150)
-        (draw-int-c (+ 1 (/ cd 1000)) (+ x (/ s 2)) (+ y 20) 2 (c-ink))))))
+        (draw-int-c (+ 1 (/ cd 1000)) (+ x (/ s 2)) (+ y 20) 2 (c-ink))))
+    (draw-tool-buttons!)))
+
+(defn draw-tool-button! [(i : I32) (label : String) (on : Bool)] : Unit
+  (let [x (tb-x) y (tb-y i) hot (in-rect? x y (tb-w) 16)]
+    (card x y (tb-w) 16 (c-panel) 238 (if on (c-gold) (c-moss)) (if (or on hot) 230 100))
+    (draw-text-c label (+ x (/ (tb-w) 2)) y 1 (if on (c-gold) (c-dim)))))
+
+(defn draw-tool-buttons! [] : Unit
+  (do (draw-tool-button! 0 "SHOP" (= (gi (g-shop-open)) 1))
+      (draw-tool-button! 1 "SCORES" (= (gi (g-score-open)) 1))
+      (draw-tool-button! 2 "HELP" (= (gi (g-help-open)) 1))))
+
+;; 1 when the click was one of the three buttons
+(defn tool-click! [] : Bool
+  (cond
+    (in-rect? (tb-x) (tb-y 0) (tb-w) 16) (do (gi! (g-shop-open) (- 1 (gi (g-shop-open)))) true)
+    (in-rect? (tb-x) (tb-y 1) (tb-w) 16) (do (gi! (g-score-open) (- 1 (gi (g-score-open)))) true)
+    (in-rect? (tb-x) (tb-y 2) (tb-w) 16) (do (gi! (g-help-open) (- 1 (gi (g-help-open)))) true)
+    :else false))
 
 ;; ---- minimap --------------------------------------------------------------------------------------------------------------------------------------
 (defn mmx [(wx : F32)] : F32
@@ -198,7 +221,7 @@
       (draw-text-c "SCOREBOARD" 480 66 2 (c-ink))
       (draw-board-col! (my-team) 164 104 "YOUR TEAM")
       (draw-board-col! (- 1 (my-team)) 496 104 "THE OTHER SIDE")
-      (draw-text-c "release Tab to close" 480 372 1 (c-faint))))
+      (draw-text-c "release Tab, or press SCORES again, to close" 480 372 1 (c-faint))))
 
 ;; ---- the shop -------------------------------------------------------------------------------------------------------------------------------------------
 (defn shop-pages [] : I32 5)
@@ -290,6 +313,7 @@
 (defn over-hud? [] : Bool
   (or (in-rect? (cp-x) (cp-y) (cp-w) (cp-h))
       (or (in-rect? (ab-x) (ab-y) (+ (* 4 (ab-s)) (* 3 (ab-gap))) (ab-s))
+          (in-rect? (tb-x) (tb-y 0) (tb-w) 50)
           (or (in-rect? (mm-x) (mm-y) (mm-s) (mm-s))
               (or (and (= (gi (g-shop-open)) 1) (in-rect? (sh-x) (sh-y) (sh-w) (sh-h)))
                   (in-rect? 290 6 380 56))))))
@@ -305,4 +329,4 @@
     (draw-banner!)
     (when (= (gi (g-shop-open)) 1) (draw-shop!))
     (when (= (gi (g-help-open)) 1) (draw-help!))
-    (when (key-down? (kc-tab)) (draw-scoreboard!))))
+    (when (or (key-down? (kc-tab)) (= (gi (g-score-open)) 1)) (draw-scoreboard!))))
