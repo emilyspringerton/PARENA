@@ -16,14 +16,17 @@
 ;;   0x026840 OPP      32 B   the opponent's name
 ;;   0x027000 SCRATCH  1 KB
 ;;   0x029000 ERR      256 B  the last error text from the gateway
-;;   0x02A000 ITEMS    12 x 128 B the item catalog (d2_rules.prn)
+;;   0x02A000 free (the item catalog lived here until it outgrew it; see items-base)
 ;;   0x02A800 SHAPE    16 x 16 B  a shape being placed (row, col, port, role per cell)
 ;;   0x02B000 STAGE    16 x 8 B   the ship the player is packing: item, row, col, rot, cut, ok        (0x02B400: the opponent's, shown in the fight)
 ;;   0x02C000 MODEL    36 x 8 B   the grid the stage makes: owner, role, port, ruined, burned, powered, cut piece, depth|in
-;;   0x02C400 SIM      weapon charge, flow scratch, loop tracker, gain, shots fired            (0x02C800 MODEL and 0x02CC00 SIM of the opponent)
+;;   0x02C400 free (the first ship's SIM lived here until the circuit parts grew it; see sim-base)
 ;;   0x02D000 ROUNDS   8 x 16 B   what happened at each round break
 ;;   0x02D400 BOLTS    24 x 16 B  shots in flight between the two ships
 ;;   0x02D800 LOG      8 x 16 B   what just happened in the fight
+;;   0x02EC00 ITEMS    19 x 128 B the item catalog (d2_rules.prn)
+;;   0x02F600 EXAMPLES 6 x 128 B  the ships the EXAMPLE button lays down (d2_examples.prn)
+;;   0x02DC00 SIM      2 x 2 KB   per ship: weapon charge, power per cell, stored charge (capacitors, batteries, delayers), gates, loop tracker
 ;; Two ships share one set of functions: g-ship (0 you, 1 the opponent) picks which STAGE / MODEL / SIM / ship globals they read and write.
 ;;   0x030000 FONT     255 glyphs x 16 rows
 ;;   0x100000 FB       960 x 540 RGBA framebuffer
@@ -39,7 +42,7 @@
 (defn opp-base [] : I32 157760)
 (defn scratch-base [] : I32 159744)
 (defn err-base [] : I32 167936)
-(defn items-base [] : I32 172032)
+(defn items-base [] : I32 191488)
 (defn shape-base [] : I32 174080)
 (defn rounds-base [] : I32 184320)
 (defn bolts-base [] : I32 185344)
@@ -66,7 +69,7 @@
 (defn sel-off [] : I32 (* (gi (g-ship)) 200))
 (defn stage-base [] : I32 (+ 176128 (* (gi (g-ship)) 1024)))
 (defn model-base [] : I32 (+ 180224 (* (gi (g-ship)) 2048)))
-(defn sim-base [] : I32 (+ 181248 (* (gi (g-ship)) 2048)))
+(defn sim-base [] : I32 (+ 187392 (* (gi (g-ship)) 2048)))
 
 ;; screens: 0 title, 1 searching, 2 packing, 3 combat, 4 match over, 5 error
 (defn g-screen [] : I32 0)
@@ -153,12 +156,14 @@
 ;; server's numbers are the truth
 (defn g-sim-hull [] : I32 (+ 141 (sel-off))) (defn g-sim-armor [] : I32 (+ 142 (sel-off))) (defn g-sim-amax [] : I32 (+ 143 (sel-off)))
 (defn g-sim-dmg [] : I32 (+ 144 (sel-off)))
+(defn g-sim-budget [] : I32 (+ 150 (sel-off)))     ; hand-offs left this tick (the walk stops at 4096, as the C core does)
 (defn g-sim-fed [] : I32 (+ 145 (sel-off)))      ; menders + aegis emitters fed on the last tick
 (defn g-preview-dps [] : I32 133) (defn g-preview-pierce [] : I32 134) (defn g-preview-mend [] : I32 135) (defn g-preview-regen [] : I32 136)
 (defn g-opp-known [] : I32 137)     ; the server sent the opponent's ship
 (defn g-bolt-n [] : I32 138) (defn g-log-n [] : I32 139) (defn g-pulse [] : I32 140)
 (defn g-fh-ship [] : I32 146) (defn g-fh-cell [] : I32 147)   ; the fight cell under the pointer (ship, cell; -1 none)
 (defn g-hov-item [] : I32 148)      ; the parts-bin entry under the pointer (-1 none)
+(defn g-hl-p [] : I32 152) (defn g-hl-ship [] : I32 153)   ; the placement the pointer is on (-1 none) and which ship's it is: its boost partners light up
 
 ;; ---- tiny helpers -------------------------------------------------------------------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

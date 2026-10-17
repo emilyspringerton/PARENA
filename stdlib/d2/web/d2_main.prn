@@ -97,3 +97,20 @@
 (defn d2-t-cargo [] : I32 (gi (g-preview-cargo)))
 (defn d2-t-st [(i : I32) (f : I32)] : I32 (load8 (+ (st-addr i) f)))
 (defn d2-t-set [(k : I32) (v : I32)] : Unit (gi! k v))
+
+;; stored charge in every capacitor / battery / delayer (hundredths, summed) and the open transistor gates, to compare with the C core each tick
+(defn d2-t-qsum [] : I32
+  (let [(t : F64) 0.0]
+    (dotimes [i 36] (set! t (+ t (f64 (+ (loadf32 (sim-q-addr i)) (loadf32 (sim-q2-addr i)))))))
+    (i32 (+ (* t 100.0) 0.5))))
+(defn d2-t-gates [] : I32
+  (let [(g : I32) 0]
+    (dotimes [i 36] (when (= (load8 (sim-gate-addr i)) 1) (set! g (+ g (shl 1 (mod i 20))))))
+    g))
+
+;; a position-weighted checksum of n bytes at a: the memory-integrity check in the parity test (nothing the fight writes may land on the catalog, the
+;; examples or the font)
+(defn d2-t-sum [(a : I32) (n : I32)] : I32
+  (let [(t : I32) 0]
+    (dotimes [i n] (set! t (+ t (* (load8 (+ a i)) (+ i 1)))))
+    t))

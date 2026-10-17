@@ -104,6 +104,7 @@
 ;; LOG: 8 x 16 B ring, newest last.  +0 used  +1 kind  +2 second  +3.. a b c
 ;; kinds: 0 you hit them (a shots, b their armor lost, c their hull lost)  1 they hit you  2 you mended (a hull)  3 you recharged (a armor)
 ;;        4 they mended  5 they recharged  6 your wire burnt out  7 theirs  8 you cut a part (a item)  9 they cut a part
+;;        11-14 your circuit: 11 a capacitor dumped (a watts)  12 a battery ran dry  13 a transistor gate opened  14 it shut;  21-24 the same for theirs
 (defn log-addr [(k : I32)] : I32 (+ (log-base) (shl (mod k 8) 4)))
 (defn log-add! [(kind : I32) (sec : I32) (a : I32) (b : I32) (c : I32)] : Unit
   (let [k (gi (g-log-n))
@@ -111,6 +112,15 @@
     (gi! (g-log-n) (+ k 1))
     (store8! ad 1) (store8! (+ ad 1) kind) (store8! (+ ad 2) sec)
     (store8! (+ ad 3) (min-i a 255)) (store8! (+ ad 4) (min-i b 255)) (store8! (+ ad 5) (min-i c 255))))
+
+;; the ship g-ship names just ticked: log what its stores of power did (at most two events a second, so the log stays readable)
+(defn log-circuit-events! [(side : I32) (t : I32)] : Unit
+  (let [(n : I32) 0]
+    (dotimes [i 36]
+      (let [ev (load8 (sim-ev-addr i))]
+        (when (and (> ev 0) (< n 2))
+          (do (set! n (+ n 1))
+              (log-add! (+ (if (= side 0) 10 20) ev) t (i32 (+ (loadf32 (sim-em-addr i)) 0.5)) 0 0)))))))
 
 (defn stage-clear! [] : Unit
   (do (gi! (g-stage-n) 0) (model-clear!) (analyze!)))
@@ -155,7 +165,7 @@
       (dotimes [i 16] (store8! (+ (opp-base) i) (let [c (in8 (+ 10 i))] (if (and (>= c 32) (< c 127)) c 0))))
       (store8! (+ (opp-base) 16) 0)
       (gi! (g-m-oppkind) (in8 26))
-      (gi! (g-m-packms) (in16 27))
+      (gi! (g-m-packms) (if (>= (gi (g-in-len)) 31) (in32 27) (in16 27)))
       (gi! (g-m-found-t) (gi (g-ticker)))
       (gi! (g-want-queue) 0)
       (go-screen! (sc-pack))))
@@ -203,6 +213,7 @@
     ;; both ships take the same second: the wiring the server fights with runs here too, so the energy, the shots and the support parts can be drawn
     (gi! (g-ship) 0)
     (let [sy (sim-tick!)]
+      (log-circuit-events! 0 t)
       (when (> sy 0)
         (do (gi! (g-shot-t) (gi (g-ticker)))
             (spawn-bolts! 0 t opp-armored)
@@ -210,6 +221,7 @@
     (when (= (gi (g-opp-known)) 1)
       (do (gi! (g-ship) 1)
           (let [so (sim-tick!)]
+            (log-circuit-events! 1 t)
             (when (> so 0)
               (do (spawn-bolts! 1 t you-armored)
                   (log-add! 1 t so d-ya d-yh))))

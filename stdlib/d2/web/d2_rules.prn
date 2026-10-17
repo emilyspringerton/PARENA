@@ -1,13 +1,14 @@
 ;; stdlib/d2/web/d2_rules.prn -- the D2 item catalog, shape placement, the player's grid and its wiring.
 ;;
-;; A port of the parts of DEADWEIGHT_2's core/ the client needs to show a ship truthfully: core/items.c (the twelve
+;; A port of the parts of DEADWEIGHT_2's core/ the client needs to show a ship truthfully: core/items.c (the nineteen
 ;; items and their authored fragments), dw2_shape_cells (rotation and anchoring), dw2_ship_place / dw2_ship_panic_cut (what is legal)
 ;; and the self half of dw2_ship_tick (energy flowing from generators through wires into weapons, the Back-EMF meltdown of a closed
 ;; loop, weapon charge, Amplifier gain, Mender and Aegis). The server is authoritative and checks everything again; this exists so the
 ;; grid the player builds, and the energy they watch, are exactly what the fight will use. The same functions run the opponent's ship
 ;; (g-ship = 1) once the server has shown it, so both circuits can be drawn working.
 ;;
-;; Roles: 0 none (cargo) 1 generator 2 conductor 3 splitter 4 weapon 5 armor 6 dead square 7 amplifier 8 mender 9 aegis. Ports: N 8, E 4, S 2, W 1.
+;; Roles: 0 none (cargo) 1 generator 2 conductor 3 splitter 4 weapon 5 armor 6 dead square 7 amplifier 8 mender 9 aegis 10 resistor 11 capacitor
+;; 12 battery 13 transistor 14 delayer. Ports: N 8, E 4, S 2, W 1.
 ;; Item record (128 bytes at items-base + 128*i):
 ;;   +0 split class (0 none, 1 halvable, 2 quarterable)  +1 kind (0 offense, 1 operations, 2 defense)  +2 value u16
 ;;   +4 base cell count  +5 fragment cell count  +8 base cells (6 x 4 bytes: dx s8, dy s8, port, role)  +32 fragment cells (8 x 4)
@@ -15,9 +16,10 @@
 (defn r-none [] : I32 0) (defn r-gen [] : I32 1) (defn r-cond [] : I32 2) (defn r-split [] : I32 3)
 (defn r-weapon [] : I32 4) (defn r-armor [] : I32 5) (defn r-dead [] : I32 6)
 (defn r-amp [] : I32 7) (defn r-mender [] : I32 8) (defn r-aegis [] : I32 9)
+(defn r-res [] : I32 10) (defn r-cap [] : I32 11) (defn r-bat [] : I32 12) (defn r-trans [] : I32 13) (defn r-delay [] : I32 14)
 (defn p-n [] : I32 8) (defn p-e [] : I32 4) (defn p-s [] : I32 2) (defn p-w [] : I32 1)
 
-(defn item-count [] : I32 12)
+(defn item-count [] : I32 19)
 (defn item-addr [(i : I32)] : I32 (+ (items-base) (shl i 7)))
 (defn item-split [(i : I32)] : I32 (load8 (item-addr i)))
 (defn item-kind [(i : I32)] : I32 (load8 (+ (item-addr i) 1)))
@@ -70,11 +72,27 @@
     ;; 10 Mender -- fed from the west, mends hull
     (item-head! 10 0 1 200 1 0) (bcell! 10 0 0 0 (p-w) (r-mender))
     ;; 11 Aegis Emitter -- fed from the west, recharges armor
-    (item-head! 11 0 2 220 1 0) (bcell! 11 0 0 0 (p-w) (r-aegis))))
+    (item-head! 11 0 2 220 1 0) (bcell! 11 0 0 0 (p-w) (r-aegis))
+    ;; 12-14 Resistors 1R / 2R / 4R -- a wire that passes 75% / 50% / 25% of the power
+    (item-head! 12 0 1 60 1 0) (bcell! 12 0 0 0 (bit-or (p-w) (p-e)) (r-res))
+    (item-head! 13 0 1 70 1 0) (bcell! 13 0 0 0 (bit-or (p-w) (p-e)) (r-res))
+    (item-head! 14 0 1 80 1 0) (bcell! 14 0 0 0 (bit-or (p-w) (p-e)) (r-res))
+    ;; 15 Capacitor -- banks power, releases it all in one burst at 30
+    (item-head! 15 0 1 140 1 0) (bcell! 15 0 0 0 (bit-or (p-w) (p-e)) (r-cap))
+    ;; 16 Battery -- a reservoir that supplies on its own
+    (item-head! 16 0 1 180 1 0) (bcell! 16 0 0 0 (bit-or (p-w) (p-e)) (r-bat))
+    ;; 17 Transistor -- in from the west, out to the east, gate on the north
+    (item-head! 17 0 1 200 1 0) (bcell! 17 0 0 0 (bit-or (p-w) (bit-or (p-e) (p-n))) (r-trans))
+    ;; 18 Delayer -- what goes in comes out two ticks later
+    (item-head! 18 0 1 160 1 0) (bcell! 18 0 0 0 (bit-or (p-w) (p-e)) (r-delay))))
+
+;; core/combat.c dw2_resistor_factor
+(defn res-factor [(i : I32)] : F32 (case i 12 0.75 13 0.5 14 0.25 1.0))
 
 (defn item-name [(i : I32)] : String
   (case i 0 "Generator" 1 "Conductor" 2 "Splitter" 3 "Railgun" 4 "Bulwark" 5 "Titanium Beam" 6 "Aether Ore"
-    7 "Pulse Laser" 8 "Siege Cannon" 9 "Amplifier" 10 "Mender" "Aegis Emitter"))
+    7 "Pulse Laser" 8 "Siege Cannon" 9 "Amplifier" 10 "Mender" 11 "Aegis Emitter"
+    12 "Resistor 1R" 13 "Resistor 2R" 14 "Resistor 4R" 15 "Capacitor" 16 "Battery" 17 "Transistor" "Delayer"))
 
 ;; what a weapon fires (core/combat.c dw2_weapon_stats): it gains 10 x gain energy a tick and shoots when its charge reaches the threshold
 (defn weapon-thr [(i : I32)] : F32 (case i 3 30.0 7 10.0 8 50.0 0.0))
@@ -83,52 +101,83 @@
 ;; 1.5 ^ lvl: the energy multiplier after lvl Amplifiers (each step is one f32 multiply, as in the C core)
 (defn gain-f [(lvl : I32)] : F32
   (loop [k 0 (g : F32) 1.0] (if (>= k lvl) g (recur (+ k 1) (* g 1.5)))))
+(defn item-short [(i : I32)] : String
+  (case i 0 "Generator" 1 "Conductor" 2 "Splitter" 3 "Railgun" 4 "Bulwark" 5 "Ti Beam" 6 "Ore" 7 "Laser" 8 "Cannon" 9 "Amplifier" 10 "Mender" 11 "Aegis"
+    12 "Resist 1R" 13 "Resist 2R" 14 "Resist 4R" 15 "Capacitor" 16 "Battery" 17 "Transistor" "Delayer"))
+;; the parts bin lists the parts by what they do, not by id: slot k -> item id. Power and timing on the left, weapons / armor / cargo on the right.
+(defn bin-item [(k : I32)] : I32
+  (case k 0 0 1 16 2 15 3 18 4 17 5 1 6 2 7 9 8 12 9 13
+    10 14 11 3 12 7 13 8 14 4 15 11 16 10 17 5 18 6 0))
+(defn bin-slot [(item : I32)] : I32
+  (loop [k 0] (if (>= k 19) 0 (if (= (bin-item k) item) k (recur (+ k 1))))))
 (defn item-kind-name [(i : I32)] : String
   (case (item-kind i) 0 "OFFENSE" 1 "OPERATIONS" "DEFENSE"))
+;; two short lines for the parts bin
 (defn item-line1 [(i : I32)] : String
   (case i
-    0 "Makes 10 energy a tick."
-    1 "A wire. Carries energy through."
-    2 "One in, two out: feeds two parts."
-    3 "Fires at 30 charge for 15 damage."
+    0 "Makes 10 W (5 V x 2 A)."
+    1 "A wire. Carries power through."
+    2 "One in, two out: DIVIDES power."
+    3 "Fires at 30 charge for 15."
     4 "20 armor, and nothing else."
-    5 "Cargo. Cut it: two pieces, 16 armor."
-    6 "Cargo. Cut it: four pieces, 32 armor."
+    5 "Cargo. Boosts touching guns x1.5."
+    6 "Cargo. Boosts touching armor."
     7 "Fires every tick for 3, skips armor."
     8 "Fires every 5th tick for 30."
-    9 "A wire that boosts what follows."
-    10 "Mends 2 hull a second."
-    "Refills 3 armor a second."))
+    9 "A wire that boosts power x1.5."
+    10 "Mends 2 hull per 10 W."
+    11 "Refills 3 armor per 10 W."
+    12 "Resistor: passes 75% of power."
+    13 "Resistor: passes 50% of power."
+    14 "Resistor: passes 25% of power."
+    15 "Banks power, dumps it all at 30."
+    16 "Reservoir: gives up to 15 W."
+    17 "Switch: the stem gates the flow."
+    "Delays power by 2 ticks."))
 (defn item-line2 [(i : I32)] : String
   (case i
-    0 "Output on its east side; turn it."
+    0 "Output on one side; turn it."
     1 "Open on two opposite sides."
-    2 "Takes energy from one side."
-    3 "Takes energy from its west."
+    2 "Takes power from one side."
+    3 "Takes power from its west."
     4 "Needs no wiring."
-    5 "Each piece needs a row of its own."
-    6 "Pieces stack in four rows below."
-    7 "Takes energy from its west."
-    8 "Fed at its back; the barrel is free."
-    9 "Everything downstream gets x1.5."
-    10 "Takes energy from its west."
-    "Takes energy from its west."))
+    5 "Cut: two pieces, +16 armor."
+    6 "Cut: four pieces, +32 armor."
+    7 "Takes power from its west."
+    8 "Fed at its back; barrel is free."
+    9 "Everything downstream gets more."
+    10 "Takes power from its west."
+    11 "Takes power from its west."
+    12 "A wire that cuts the amps."
+    13 "A wire that cuts the amps."
+    14 "Just enough to open a gate."
+    15 "In at the back, burst out front."
+    16 "Starts at 45, recharges."
+    17 "In at back, out front, gate on top."
+    "In at the back, out the front."))
 
 ;; the longer explanation the part card shows: four lines of at most 34 characters
 (defn item-info [(i : I32) (k : I32)] : String
   (case (+ (* i 4) k)
-    0 "Makes the energy: 10 a tick." 1 "Its arrows show which side it" 2 "pushes out of. Every circuit" 3 "starts at one."
-    4 "A wire: energy goes in either" 5 "end and out the other. Use it" 6 "to carry power to a far part." 7 "Never bend it into a ring."
-    8 "One side in, two out. One wire" 9 "can feed two parts. A ring of" 10 "splitters burns out (Back-EMF)," 11 "so keep branches apart."
-    12 "Takes 10 energy a tick at its" 13 "back, fires every 3rd tick for" 14 "15. Armor soaks the hit, so it" 15 "is best against bare hulls."
-    16 "20 armor, no wiring needed." 17 "Armor soaks railgun and cannon" 18 "hits first. Lasers skip it." 19 "The cheap way to stay alive."
-    20 "Cargo worth 180: the tiebreak" 21 "if hulls are level at 30 s." 22 "C cuts it in two 1x3 pieces, a" 23 "dead square each: +16 armor."
-    24 "Cargo worth 220: the tiebreak" 25 "if hulls are level at 30 s." 26 "C cuts it in four 1x2 pieces, a" 27 "dead square each: +32 armor."
-    28 "Takes 10 energy a tick at its" 29 "back: shoots EVERY tick for 3." 30 "The shot skips armor, so it" 31 "beats ships hiding behind it."
-    32 "Two cells, fed at the back end." 33 "50 energy a shot: fires on" 34 "seconds 5, 10, 15... for 30," 35 "just ahead of each round break."
-    36 "A wire with gain: everything" 37 "after it gets x1.5 energy." 38 "A railgun then fires every 2nd" 39 "tick. Two in a row make x2.25."
-    40 "Fed, it mends 2 hull a second," 41 "up to 100. The answer to lasers," 42 "which armor cannot stop." 43 "Needs a wire like a weapon."
-    44 "Fed, it refills 3 armor a" 45 "second, back up to the armor you" 46 "started with. The answer to" 47 "railguns and cannons."
+    0 "Makes power: 5 V x 2 A = 10 W." 1 "The arrow is the side it pushes" 2 "out of. It never runs dry, and" 3 "every circuit starts at one."
+    4 "A wire: power goes in either" 5 "end and out the other, with no" 6 "loss and no delay. Never bend" 7 "one back into a ring (Back-EMF)."
+    8 "One side in, two out. Power is" 9 "DIVIDED: 10 W in is 5 W to each" 10 "branch. An end that touches" 11 "nothing wastes its share."
+    12 "Power charges it: at 30 it fires" 13 "15 damage. Armor soaks the hit." 14 "A Titanium Beam touching it makes" 15 "every shot x1.5."
+    16 "20 armor, no wiring. Armor soaks" 17 "railgun and cannon hits first;" 18 "lasers skip it. Touching Aether" 19 "Ore, each cell is worth 30."
+    20 "Cargo worth 180 (the tiebreak)." 21 "BOOST: weapons touching it deal" 22 "x1.5. C cuts it in two: +16 armor" 23 "but the boost is gone."
+    24 "Cargo worth 220 (the tiebreak)." 25 "BOOST: Bulwarks touching it are" 26 "+10 armor, Aegis x1.5. C cuts it" 27 "in four: +32 armor, boost gone."
+    28 "Fires every tick on 10 W: 3" 29 "damage that SKIPS armor. Beats" 30 "turtles. A Titanium Beam touching" 31 "it makes each shot x1.5."
+    32 "Two cells, fed at the back end." 33 "Fires 30 damage at 50 charge:" 34 "on 10 W that is every 5th tick." 35 "Armor soaks it. Beam: x1.5."
+    36 "A wire with gain: the power after" 37 "it is x1.5 (the volts go up). Two" 38 "in a row make x2.25. A railgun on" 39 "one fires every 2nd tick."
+    40 "Fed, it mends 2 hull per 10 W," 41 "up to 100. The answer to lasers," 42 "which armor cannot stop. Half the" 43 "power, half the mending."
+    44 "Fed, it refills 3 armor per 10 W" 45 "up to what you started with." 46 "The answer to railguns. Touching" 47 "Aether Ore it refills x1.5."
+    48 "A resistor: lets 75% of the" 49 "power through (1 ohm). It cuts" 50 "the amps, not the volts. Use it" 51 "to slow a capacitor's charge."
+    52 "A resistor: lets 50% through" 53 "(2 ohm): 10 W in, 5 W out." 54 "A trickle this size still opens" 55 "a transistor gate."
+    56 "A resistor: lets 25% through" 57 "(4 ohm): 10 W in, 2.5 W out." 58 "Just enough to open a transistor" 59 "gate, which needs 2 W."
+    60 "Banks what it is fed; at 30 it" 61 "lets ALL of it go in one tick." 62 "On 10 W: a 30 W burst every 3rd" 63 "tick. Feed it at the arrow."
+    64 "Starts half charged (45), gives" 65 "up to 15 W a tick and recharges" 66 "from what feeds it. Keeps a gun" 67 "firing when the generator is gone."
+    68 "A switch. Power enters the back" 69 "(arrow in) and leaves the front;" 70 "the stem is the GATE: while it got" 71 "2 W last tick, power flows."
+    72 "What goes in comes out 2 ticks" 73 "later, nothing lost. Fire one" 74 "gun after another, or land a" 75 "shot as a round break ends."
     ""))
 
 ;; ---- shapes -----------------------------------------------------------------------------------------------------------------------
@@ -258,79 +307,206 @@
     bad))
 
 ;; ---- wiring: the self half of dw2_ship_tick ----------------------------------------------------------------------------------
-;; SIM layout (sim-base): +0 weapon charge F32 x 16  +64 activated x 36  +128 path x 40 (I32)  +288 loop hits x 36  +336 loop cells x 36
-;;   +380 gain level x 36  +420 shots fired last tick x 16
+;; Power is in watts (a Generator makes 10 = 5 V x 2 A). It leaves a part by every open port but the one it came in by, DIVIDED equally
+;; between them; every route that reaches a cell adds its share, so two feeds into one wire add up. A stateful part (Capacitor, Battery,
+;; Delayer) ends the walk: what reaches it is banked and appears as its output on a LATER tick. A Transistor's channel conducts only if its gate
+;; was fed on the previous tick. Reaching a cell already on the current route is a closed loop (Back-EMF). Exactly core/combat.c, step for step.
+;;
+;; SIM layout (sim-base): +0 weapon charge F32 x 16  +64 fed x 36  +128 path x 40 (I32)  +288 loop hits x 36  +336 loop cells x 36
+;;   +380 amplifier steps x 36  +420 shots fired last tick x 16  +448 power per cell F32 x 36  +592 banked this tick F32 x 36
+;;   +736 gate feed F32 x 36  +880 stored charge F32 x 36  +1024 older charge F32 x 36  +1168 gate open x 36
+;;   +1216 power a part PUT OUT this tick F32 x 36  +1360 what happened to a part this tick x 36 (1 capacitor burst, 2 battery ran dry, 3 gate opened, 4 gate shut)
+;;   +1396 power summed over the preview's measuring ticks F32 x 36  +1540 fed at any preview tick x 36
 (defn sim-charge-addr [(p : I32)] : I32 (+ (sim-base) (shl p 2)))
 (defn sim-act-addr [(cell : I32)] : I32 (+ (sim-base) (+ 64 cell)))
 (defn sim-path-addr [(k : I32)] : I32 (+ (sim-base) (+ 128 (shl k 2))))
 (defn sim-hit-addr [(cell : I32)] : I32 (+ (sim-base) (+ 288 cell)))
 (defn sim-loopcell-addr [(cell : I32)] : I32 (+ (sim-base) (+ 336 cell)))
-(defn sim-gain-addr [(cell : I32)] : I32 (+ (sim-base) (+ 380 cell)))      ; Amplifiers the energy passed to get here
+(defn sim-gain-addr [(cell : I32)] : I32 (+ (sim-base) (+ 380 cell)))      ; Amplifiers the power passed to get here
 (defn sim-fired-addr [(p : I32)] : I32 (+ (sim-base) (+ 420 p)))           ; shots a placement fired on the last tick
+(defn sim-pin-addr [(cell : I32)] : I32 (+ (sim-base) (+ 448 (shl cell 2))))
+(defn sim-absorb-addr [(cell : I32)] : I32 (+ (sim-base) (+ 592 (shl cell 2))))
+(defn sim-gatein-addr [(cell : I32)] : I32 (+ (sim-base) (+ 736 (shl cell 2))))
+(defn sim-q-addr [(cell : I32)] : I32 (+ (sim-base) (+ 880 (shl cell 2))))
+(defn sim-q2-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1024 (shl cell 2))))
+(defn sim-gate-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1168 cell)))
+(defn sim-em-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1216 (shl cell 2))))
+(defn sim-ev-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1360 cell)))
+(defn sim-psum-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1396 (shl cell 2))))
+(defn sim-fedany-addr [(cell : I32)] : I32 (+ (sim-base) (+ 1540 cell)))
+
+;; readers for the drawing code: watts through a cell this tick, what a stateful part holds, whether a transistor's gate is open
+(defn cell-pin [(r : I32) (c : I32)] : F32 (loadf32 (sim-pin-addr (+ (* r 6) c))))
+(defn cell-q [(r : I32) (c : I32)] : F32 (loadf32 (sim-q-addr (+ (* r 6) c))))
+(defn cell-q2 [(r : I32) (c : I32)] : F32 (loadf32 (sim-q2-addr (+ (* r 6) c))))
+(defn cell-gate-open [(r : I32) (c : I32)] : I32 (load8 (sim-gate-addr (+ (* r 6) c))))
+(defn cell-gate-feed [(r : I32) (c : I32)] : F32 (loadf32 (sim-gatein-addr (+ (* r 6) c))))
+(defn cell-em [(r : I32) (c : I32)] : F32 (loadf32 (sim-em-addr (+ (* r 6) c))))
+(defn cell-ev [(r : I32) (c : I32)] : I32 (load8 (sim-ev-addr (+ (* r 6) c))))
+;; has the part ever been fed (in the preview, or this fight)? a gun behind a Capacitor is fed only on its dump ticks
+(defn cell-fed-any [(r : I32) (c : I32)] : I32 (load8 (sim-fedany-addr (+ (* r 6) c))))
+
+(defn popcount4 [(m : I32)] : I32 (+ (+ (bit-and (shr m 3) 1) (bit-and (shr m 2) 1)) (+ (bit-and (shr m 1) 1) (bit-and m 1))))
+(defn directed? [(role : I32)] : Bool (or (= role (r-cap)) (or (= role (r-bat)) (= role (r-delay)))))
+;; a directed part's sides, turned by the rotation of its placement: in is the west side, out the east, a transistor's gate the north
+(defn in-port-of [(cell : I32)] : I32 (rot-port (p-w) (st-rot (- (cell-owner (/ cell 6) (mod cell 6)) 1))))
+(defn out-port-of [(cell : I32)] : I32 (rot-port (p-e) (st-rot (- (cell-owner (/ cell 6) (mod cell 6)) 1))))
+(defn gate-port-of [(cell : I32)] : I32 (rot-port (p-n) (st-rot (- (cell-owner (/ cell 6) (mod cell 6)) 1))))
+
+;; position is rules: does the cell touch an intact (uncut) placement of `item`?
+(defn nb-is? [(n : I32) (o : I32) (item : I32)] : Bool
+  (let [on (cell-owner (/ n 6) (mod n 6))]
+    (if (or (= on 0) (= on o)) false
+        (and (= (st-item (- on 1)) item) (= (st-cut (- on 1)) 0)))))
+(defn cell-touches? [(cell : I32) (item : I32)] : Bool
+  (let [r (/ cell 6) c (mod cell 6) o (cell-owner r c)]
+    (or (or (and (> r 0) (nb-is? (- cell 6) o item)) (and (< c 5) (nb-is? (+ cell 1) o item)))
+        (or (and (< r 5) (nb-is? (+ cell 6) o item)) (and (> c 0) (nb-is? (- cell 1) o item))))))
+(defn placement-touches? [(p : I32) (item : I32)] : Bool
+  (loop [i 0]
+    (if (>= i 36) false
+        (if (and (= (cell-owner (/ i 6) (mod i 6)) (+ p 1)) (cell-touches? i item)) true (recur (+ i 1))))))
 
 (defn path-index [(cell : I32)] : I32
   (let [n (gi (g-sim-path-n))]
     (loop [k 0] (if (>= k n) -1 (if (= (load32 (sim-path-addr k)) cell) k (recur (+ k 1)))))))
 
-;; energy arriving at `cell` through its `incoming` port, after `lvl` Amplifiers. Recursive, exactly dw2_flow: a wire, amplifier or splitter hands
-;; it on out of every port but the one it came in by; a weapon takes it (10 x 1.5^lvl charge); a Mender or Aegis Emitter just counts as fed; reaching
-;; a cell already on the path is a closed loop; reaching a cell that already carries energy is a second feed into it, which does nothing.
 (defn in-idx [(incoming : I32)] : I32 (cond (= incoming 1) 0 (= incoming 2) 1 (= incoming 4) 2 :else 3))
 
-(defn flow-in! [(cell : I32) (incoming : I32) (lvl : I32)] : Unit
-  (let [r (/ cell 6) c (mod cell 6)
-        a (cell-addr r c)]
-    (when (and (= (load8 (+ a 4)) 0) (!= (load8 a) 0) (!= (bit-and (load8 (+ a 2)) incoming) 0))
-      (let [pi (path-index cell)]
-        (if (>= pi 0)
-            (let [n (gi (g-sim-path-n))]
-              (loop [k pi] (when (< k n) (store8! (sim-hit-addr (load32 (sim-path-addr k))) 1) (recur (+ k 1)))))
-            (when (= (load8 (sim-act-addr cell)) 0)
-              (store8! (sim-act-addr cell) 1)
-              (store8! (+ a 5) 1)
-              (store8! (+ a 7) (bit-or (min-i (gi (g-sim-path-n)) 63) (shl (in-idx incoming) 6)))
-              (store8! (sim-gain-addr cell) lvl)
-              (store32! (sim-path-addr (gi (g-sim-path-n))) cell)
-              (gi! (g-sim-path-n) (+ (gi (g-sim-path-n)) 1))
-              (let [role (load8 (+ a 1))]
-                (when (= role (r-weapon))
-                  (let [p (- (load8 a) 1)]
-                    (storef32! (sim-charge-addr p) (+ (loadf32 (sim-charge-addr p)) (* 10.0 (gain-f lvl))))))
-                (when (or (= role (r-cond)) (or (= role (r-split)) (= role (r-amp))))
-                  (flow-out! cell (bit-and (load8 (+ a 2)) (bit-xor incoming 15)) (if (= role (r-amp)) (+ lvl 1) lvl))))
-              (gi! (g-sim-path-n) (- (gi (g-sim-path-n)) 1))))))))
+;; does the cell take power arriving by `incoming`? It needs a port on that side; a Capacitor / Battery / Delayer takes it only at its input, a
+;; Transistor only at its input or its gate
+(defn accepts? [(cell : I32) (incoming : I32)] : Bool
+  (let [a (cell-addr (/ cell 6) (mod cell 6)) role (load8 (+ a 1))]
+    (if (= (bit-and (load8 (+ a 2)) incoming) 0) false
+        (if (directed? role) (= incoming (in-port-of cell))
+            (if (= role (r-trans)) (or (= incoming (in-port-of cell)) (= incoming (gate-port-of cell))) true)))))
 
-(defn flow-out! [(cell : I32) (ports : I32) (lvl : I32)] : Unit
-  (let [r (/ cell 6) c (mod cell 6)]
-    (when (and (!= (bit-and ports (p-n)) 0) (> r 0)) (flow-in! (- cell 6) (p-s) lvl))
-    (when (and (!= (bit-and ports (p-e)) 0) (< c 5)) (flow-in! (+ cell 1) (p-w) lvl))
-    (when (and (!= (bit-and ports (p-s)) 0) (< r 5)) (flow-in! (+ cell 6) (p-n) lvl))
-    (when (and (!= (bit-and ports (p-w)) 0) (> c 0)) (flow-in! (- cell 1) (p-e) lvl))))
+(defn flow-in! [(cell : I32) (incoming : I32) (power0 : F32) (lvl : I32)] : Unit
+  (let [r (/ cell 6) c (mod cell 6) a (cell-addr r c)]
+    (when (and (>= power0 0.001) (and (= (load8 (+ a 4)) 0) (!= (load8 a) 0)))
+      (when (accepts? cell incoming)
+        (let [pi (path-index cell)]
+          (if (>= pi 0)
+              (let [n (gi (g-sim-path-n))]
+                (loop [k pi] (when (< k n) (store8! (sim-hit-addr (load32 (sim-path-addr k))) 1) (recur (+ k 1)))))
+              (when (> (gi (g-sim-budget)) 0)
+                (do
+                  (gi! (g-sim-budget) (- (gi (g-sim-budget)) 1))
+                  (let [(power : F32) (fmin2 power0 120.0)
+                        role (load8 (+ a 1))
+                        (first : Bool) (= (loadf32 (sim-pin-addr cell)) 0.0)
+                        outp (bit-and (load8 (+ a 2)) (bit-xor incoming 15))]
+                    (storef32! (sim-pin-addr cell) (+ (loadf32 (sim-pin-addr cell)) power))
+                    (store8! (sim-act-addr cell) 1)
+                    (store8! (+ a 5) 1)
+                    (when first
+                      (do (store8! (+ a 7) (bit-or (min-i (gi (g-sim-path-n)) 63) (shl (in-idx incoming) 6)))
+                          (store8! (sim-gain-addr cell) lvl)))
+                    (store32! (sim-path-addr (gi (g-sim-path-n))) cell)
+                    (gi! (g-sim-path-n) (+ (gi (g-sim-path-n)) 1))
+                    (when (= role (r-weapon))
+                      (let [p (- (load8 a) 1)]
+                        (storef32! (sim-charge-addr p) (+ (loadf32 (sim-charge-addr p)) power))))
+                    (when (= role (r-amp)) (flow-out! cell outp (* power 1.5) (+ lvl 1)))
+                    (when (or (= role (r-cond)) (= role (r-split))) (flow-out! cell outp power lvl))
+                    (when (= role (r-res)) (flow-out! cell outp (* power (res-factor (st-item (- (load8 a) 1)))) lvl))
+                    (when (directed? role)
+                      (storef32! (sim-absorb-addr cell) (+ (loadf32 (sim-absorb-addr cell)) power)))
+                    (when (= role (r-trans))
+                      (if (= incoming (gate-port-of cell))
+                          (storef32! (sim-gatein-addr cell) (+ (loadf32 (sim-gatein-addr cell)) power))
+                          (when (= (load8 (sim-gate-addr cell)) 1)
+                            (flow-out! cell (bit-and (load8 (+ a 2)) (bit-xor (bit-or (in-port-of cell) (gate-port-of cell)) 15)) power lvl))))
+                    (gi! (g-sim-path-n) (- (gi (g-sim-path-n)) 1)))))))))))
 
-;; one pass of energy from every generator; returns 1 when some closed loop was found (their cells are marked in the loop-hit bytes)
+(defn flow-out! [(cell : I32) (ports : I32) (power : F32) (lvl : I32)] : Unit
+  (let [n (popcount4 ports) r (/ cell 6) c (mod cell 6)]
+    (when (> n 0)
+      (let [(share : F32) (/ power (f32 n))]
+        (when (and (!= (bit-and ports (p-n)) 0) (> r 0)) (flow-in! (- cell 6) (p-s) share lvl))
+        (when (and (!= (bit-and ports (p-e)) 0) (< c 5)) (flow-in! (+ cell 1) (p-w) share lvl))
+        (when (and (!= (bit-and ports (p-s)) 0) (< r 5)) (flow-in! (+ cell 6) (p-n) share lvl))
+        (when (and (!= (bit-and ports (p-w)) 0) (> c 0)) (flow-in! (- cell 1) (p-e) share lvl))))))
+
+;; a Battery goes into the fight half charged; everything else holds nothing and every transistor gate is shut
+(defn sim-state-init! [] : Unit
+  (dotimes [i 36]
+    (storef32! (sim-q-addr i) 0.0) (storef32! (sim-q2-addr i) 0.0) (store8! (sim-gate-addr i) 0)
+    (let [a (cell-addr (/ i 6) (mod i 6))]
+      (when (and (!= (load8 a) 0) (= (load8 (+ a 1)) (r-bat))) (storef32! (sim-q-addr i) 45.0)))))
+
+;; the sources, in cell order, then the walk. A Generator makes 10; a Battery gives up to 15 of what it holds; a full Capacitor lets go of
+;; everything; a Delayer lets go of what it was fed two ticks ago. Returns 1 when some closed loop was found (their cells are marked in the loop-hit bytes)
+(defn emit! [(i : I32) (power : F32)] : Unit
+  (when (>= power 0.001)
+    (do (gi! (g-sim-path-n) 0)
+        (storef32! (sim-em-addr i) power)
+        (flow-out! i (out-port-of i) power 0))))
+
 (defn flow-pass! [] : I32
   (let [(found : I32) 0]
     (dotimes [i 36]
-      (store8! (sim-act-addr i) 0) (store8! (sim-hit-addr i) 0) (store8! (+ (model-base) (+ (shl i 3) 5)) 0))
+      (store8! (sim-act-addr i) 0) (store8! (sim-hit-addr i) 0) (store8! (+ (model-base) (+ (shl i 3) 5)) 0)
+      (storef32! (sim-pin-addr i) 0.0) (storef32! (sim-absorb-addr i) 0.0) (storef32! (sim-gatein-addr i) 0.0)
+      (storef32! (sim-em-addr i) 0.0) (store8! (sim-ev-addr i) 0))
     (gi! (g-sim-path-n) 0)
+    (gi! (g-sim-budget) 4096)
     (dotimes [i 36]
-      (let [r (/ i 6) c (mod i 6) a (cell-addr r c)]
-        (when (and (= (load8 (+ a 1)) (r-gen)) (!= (load8 a) 0) (= (load8 (+ a 4)) 0))
+      (let [r (/ i 6) c (mod i 6) a (cell-addr r c) role (load8 (+ a 1))]
+        (when (and (!= (load8 a) 0) (= (load8 (+ a 4)) 0))
           (do
-            (store8! (sim-act-addr i) 1) (store8! (+ a 5) 1) (store8! (+ a 7) 0) (store8! (sim-gain-addr i) 0)
-            (store32! (sim-path-addr 0) i) (gi! (g-sim-path-n) 1)
-            (flow-out! i (load8 (+ a 2)) 0)
-            (gi! (g-sim-path-n) 0)))))
+            (when (= role (r-gen))
+              (do
+                (store8! (sim-act-addr i) 1) (store8! (+ a 5) 1) (store8! (+ a 7) 0) (store8! (sim-gain-addr i) 0)
+                (storef32! (sim-pin-addr i) 10.0) (storef32! (sim-em-addr i) 10.0)
+                (store32! (sim-path-addr 0) i) (gi! (g-sim-path-n) 1)
+                (flow-out! i (load8 (+ a 2)) 10.0 0)
+                (gi! (g-sim-path-n) 0)))
+            (when (= role (r-bat))
+              (let [(q : F32) (loadf32 (sim-q-addr i)) (pw : F32) (fmin2 q 15.0)]
+                (storef32! (sim-q-addr i) (- q pw))
+                (store8! (+ a 7) 0) (store8! (sim-gain-addr i) 0)
+                (when (and (>= pw 0.001) (<= (- q pw) 0.001)) (store8! (sim-ev-addr i) 2))
+                (emit! i pw)))
+            (when (= role (r-cap))
+              (let [(q : F32) (loadf32 (sim-q-addr i))]
+                (when (>= q 30.0)
+                  (do (storef32! (sim-q-addr i) 0.0) (store8! (+ a 7) 0) (store8! (sim-gain-addr i) 0) (store8! (sim-ev-addr i) 1) (emit! i q)))))
+            (when (= role (r-delay))
+              (let [(pw : F32) (loadf32 (sim-q2-addr i))]
+                (storef32! (sim-q2-addr i) (loadf32 (sim-q-addr i)))
+                (storef32! (sim-q-addr i) 0.0)
+                (store8! (+ a 7) 0) (store8! (sim-gain-addr i) 0)
+                (emit! i pw)))))))
     (dotimes [i 36]
       (when (!= (load8 (sim-hit-addr i)) 0)
         (do (set! found 1)
             (store8! (+ (model-base) (+ (shl i 3) 5)) 2))))
     found))
 
+;; what the stateful parts were fed this tick is banked (it matters on a later one); a transistor's gate opens if it was fed enough
+(defn bank! [] : Unit
+  (dotimes [i 36]
+    (let [a (cell-addr (/ i 6) (mod i 6)) role (load8 (+ a 1))]
+      (when (!= (load8 a) 0)
+        (do
+          (when (= role (r-bat))
+            (storef32! (sim-q-addr i) (fmin2 90.0 (+ (loadf32 (sim-q-addr i)) (loadf32 (sim-absorb-addr i))))))
+          (when (= role (r-cap))
+            (storef32! (sim-q-addr i) (fmin2 60.0 (+ (loadf32 (sim-q-addr i)) (loadf32 (sim-absorb-addr i))))))
+          (when (= role (r-delay))
+            (storef32! (sim-q-addr i) (+ (loadf32 (sim-q-addr i)) (loadf32 (sim-absorb-addr i)))))
+          (when (= role (r-trans))
+            (let [was (load8 (sim-gate-addr i)) now (b2i (>= (loadf32 (sim-gatein-addr i)) 2.0))]
+              (store8! (sim-gate-addr i) now)
+              (when (!= was now) (store8! (sim-ev-addr i) (if (= now 1) 3 4))))))))))
+
 (defn sim-reset! [] : Unit
   (do
     (dotimes [p 16] (storef32! (sim-charge-addr p) 0.0))
     (dotimes [i 36] (store8! (sim-loopcell-addr i) 0) (store8! (+ (model-base) (+ (shl i 3) 4)) 0))
+    (sim-state-init!)
+    (dotimes [i 36] (store8! (sim-fedany-addr i) 0))
     (gi! (g-sim-loop-on) 0) (gf! (g-sim-phi) 0.0) (gi! (g-sim-shots) 0) (gi! (g-sim-shat) 0)
     (gf! (g-sim-hull) 40.0) (gf! (g-sim-armor) 0.0) (gf! (g-sim-amax) (f32 (gi (g-preview-armor)))) (gi! (g-sim-dmg) 0) (gi! (g-sim-fed) 0)))
 
@@ -339,11 +515,14 @@
     (if (>= i 36) true
         (if (= (b2i (!= (load8 (sim-loopcell-addr i)) 0)) (b2i (!= (load8 (sim-hit-addr i)) 0))) (recur (+ i 1)) false))))
 
-;; one second of the fight for the player's own ship (dw2_ship_tick without the damage to the enemy): energy flows, a closed loop grows
-;; its Back-EMF and burns out past 2.5 generators' worth, every weapon that reached 30 charge fires once. Returns shots fired.
+;; one second of the fight for a ship (dw2_ship_tick without the damage to the enemy): power flows, stateful parts bank it, a closed loop grows
+;; its Back-EMF and burns out past 2.5 generators' worth, every weapon that reached its threshold fires (x1.5 touching an intact Titanium Beam),
+;; and the support parts work. Returns shots fired.
 (defn sim-tick! [] : I32
   (let [(shots : I32) 0
         loops (flow-pass!)]
+    (bank!)
+    (dotimes [i 36] (when (> (loadf32 (sim-pin-addr i)) 0.0) (store8! (sim-fedany-addr i) 1)))
     (if (= loops 1)
         (do
           (when (or (= (gi (g-sim-loop-on)) 0) (not (loop-same?)))
@@ -358,12 +537,13 @@
               (gi! (g-sim-shat) (+ (gi (g-sim-shat)) 1))
               (gi! (g-sim-loop-on) 0))))
         (gi! (g-sim-loop-on) 0))
-    ;; every weapon that reached its threshold fires (more than once if an Amplifier fed it that much); a Pulse Laser's shot skips armor
+    ;; every weapon that reached its threshold fires (more than once if it was fed that much); a Pulse Laser's shot skips armor
     (let [(dmg : F32) 0.0]
       (dotimes [p 16]
         (store8! (sim-fired-addr p) 0)
         (when (< p (gi (g-stage-n)))
-          (let [it (st-item p) (thr : F32) (weapon-thr it) (wd : F32) (weapon-dmg it)]
+          (let [it (st-item p) (thr : F32) (weapon-thr it)
+                (wd : F32) (* (weapon-dmg it) (if (> thr 0.0) (if (placement-touches? p 5) 1.5 1.0) 1.0))]
             (when (> thr 0.0)
               (loop [k 0]
                 (when (>= (loadf32 (sim-charge-addr p)) thr)
@@ -373,55 +553,75 @@
                       (store8! (sim-fired-addr p) (+ (load8 (sim-fired-addr p)) 1))
                       (recur (+ k 1)))))))))
       (gi! (g-sim-dmg) (i32 (+ dmg 0.5))))
-    ;; the support parts, fed this second and not burned out by it: a Mender mends 2 hull, an Aegis Emitter refills 3 armor
+    ;; the support parts, fed this second and not burned out by it: a Mender mends 2 hull per 10 W, an Aegis Emitter refills 3 armor per 10 W (x1.5 touching Aether Ore)
     (gi! (g-sim-fed) 0)
     (when (> (gf (g-sim-hull)) 0.0)
       (dotimes [i 36]
-        (let [a (+ (model-base) (shl i 3))]
-          (when (and (= (load8 (sim-act-addr i)) 1) (= (load8 (+ a 4)) 0) (!= (load8 a) 0))
+        (let [a (+ (model-base) (shl i 3))
+              (pin : F32) (loadf32 (sim-pin-addr i))]
+          (when (and (> pin 0.0) (and (= (load8 (+ a 4)) 0) (!= (load8 a) 0)))
             (let [role (load8 (+ a 1))]
               (when (= role (r-mender))
                 (do (gi! (g-sim-fed) (+ (gi (g-sim-fed)) 1))
-                    (gf! (g-sim-hull) (fmin2 100.0 (+ (gf (g-sim-hull)) 2.0)))))
+                    (gf! (g-sim-hull) (fmin2 100.0 (+ (gf (g-sim-hull)) (* 2.0 (/ pin 10.0)))))))
               (when (and (= role (r-aegis)) (< (gf (g-sim-armor)) (gf (g-sim-amax))))
-                (do (gi! (g-sim-fed) (+ (gi (g-sim-fed)) 1))
-                    (gf! (g-sim-armor) (fmin2 (gf (g-sim-amax)) (+ (gf (g-sim-armor)) 3.0))))))))))
+                (let [(rc : F32) (* 3.0 (/ pin 10.0))]
+                  (gi! (g-sim-fed) (+ (gi (g-sim-fed)) 1))
+                  (gf! (g-sim-armor) (fmin2 (gf (g-sim-amax)) (+ (gf (g-sim-armor)) (if (cell-touches? i 6) (* rc 1.5) rc)))))))))))
     (gi! (g-sim-shots) (+ (gi (g-sim-shots)) shots))
     shots))
 
 ;; ---- what the readout says about a ship --------------------------------------------------------------------------------------
-;; Fills the preview words: weapons, weapons that are fed, closed loops, armor at the start of the fight, cargo value, cells used.
+;; Fills the preview words: weapons, weapons that are fed, closed loops, armor at the start of the fight, cargo value, cells used, damage a second
+;; (tenths), mending and armor refill a second (tenths). The preview RUNS the circuit: six ticks to fill any Capacitor, Battery or Delayer, then twelve
+;; it measures, so a gun fed through a store is "fed" and its damage a second is the average, not the first tick's nothing.
 (defn analyze! [] : Unit
-  (let [loops (flow-pass!)
-        (w : I32) 0 (pw : I32) 0 (arm : I32) 0 (cells : I32) 0
-        (dps : F32) 0.0 (pdps : F32) 0.0 (mend : I32) 0 (regen : I32) 0]
+  (let [(w : I32) 0 (pw : I32) 0 (arm : I32) 0 (cells : I32) 0
+        (dps : F32) 0.0 (pdps : F32) 0.0 (mend : F32) 0.0 (regen : F32) 0.0 (loops : I32) 0]
+    (sim-state-init!)
+    (dotimes [i 36] (storef32! (sim-psum-addr i) 0.0) (store8! (sim-fedany-addr i) 0))
+    (dotimes [k 18]
+      (let [lp (flow-pass!)]
+        (when (= k 0) (set! loops lp))
+        (bank!)
+        (dotimes [i 36]
+          (let [(p : F32) (loadf32 (sim-pin-addr i))]
+            (when (> p 0.0) (store8! (sim-fedany-addr i) 1))
+            (when (>= k 6) (storef32! (sim-psum-addr i) (+ (loadf32 (sim-psum-addr i)) p)))))))
+    ;; what the cells show: fed if they were ever fed, the power the average of the measured ticks
+    (dotimes [i 36]
+      (storef32! (sim-pin-addr i) (/ (loadf32 (sim-psum-addr i)) 12.0))
+      (let [a (+ (model-base) (shl i 3))]
+        (when (and (= (load8 (sim-fedany-addr i)) 1) (= (load8 (+ a 5)) 0)) (store8! (+ a 5) 1))))
     (dotimes [i 36]
       (let [r (/ i 6) c (mod i 6) a (cell-addr r c)
-            role (load8 (+ a 1))]
+            role (load8 (+ a 1))
+            (pin : F32) (loadf32 (sim-pin-addr i))]
         (when (!= (load8 a) 0)
           (do (set! cells (+ cells 1))
               (when (= role (r-weapon))
                 (do (set! w (+ w 1))
-                    (when (= (load8 (+ a 5)) 1)
-                      (do (set! pw (+ pw 1))
-                          ;; damage a second = shots a second x damage = (10 x gain / threshold) x damage
-                          (let [it (st-item (- (load8 a) 1))
-                                (d : F32) (/ (* (* 10.0 (gain-f (load8 (sim-gain-addr i)))) (weapon-dmg it)) (weapon-thr it))]
-                            (set! dps (+ dps d))
-                            (when (weapon-pierce? it) (set! pdps (+ pdps d))))))))
-              (when (and (= role (r-mender)) (= (load8 (+ a 5)) 1)) (set! mend (+ mend 2)))
-              (when (and (= role (r-aegis)) (= (load8 (+ a 5)) 1)) (set! regen (+ regen 3)))
-              (when (= role (r-armor)) (set! arm (+ arm 20)))
+                    (when (= (load8 (+ a 5)) 1) (set! pw (+ pw 1)))
+                    ;; damage a second = shots a second x damage = (watts / threshold) x damage, x1.5 touching a Titanium Beam
+                    (let [p (- (load8 a) 1) it (st-item p)
+                          (d : F32) (* (/ (* pin (weapon-dmg it)) (weapon-thr it)) (if (cell-touches? i 5) 1.5 1.0))]
+                      (set! dps (+ dps d))
+                      (when (weapon-pierce? it) (set! pdps (+ pdps d))))))
+              (when (= role (r-mender)) (set! mend (+ mend (* 2.0 (/ pin 10.0)))))
+              (when (= role (r-aegis))
+                (set! regen (+ regen (* (* 3.0 (/ pin 10.0)) (if (cell-touches? i 6) 1.5 1.0)))))
+              (when (= role (r-armor)) (set! arm (+ arm (if (cell-touches? i 6) 30 20))))
               (when (= role (r-dead)) (set! arm (+ arm 8)))))))
     (gi! (g-preview-weapons) w) (gi! (g-preview-powered) pw) (gi! (g-preview-loops) (if (= loops 1) 1 0))
     (gi! (g-preview-armor) arm) (gi! (g-preview-cells) cells)
     (gi! (g-preview-dps) (i32 (+ (* dps 10.0) 0.5))) (gi! (g-preview-pierce) (i32 (+ (* pdps 10.0) 0.5)))
-    (gi! (g-preview-mend) mend) (gi! (g-preview-regen) regen)
+    (gi! (g-preview-mend) (i32 (+ (* mend 10.0) 0.5))) (gi! (g-preview-regen) (i32 (+ (* regen 10.0) 0.5)))
     (let [(v : I32) 0]
       (dotimes [i (gi (g-stage-n))] (when (= (st-ok i) 1) (set! v (+ v (item-value (st-item i))))))
       (gi! (g-preview-cargo) v))
-    ;; a preview: the energy it counted is not a fight's
-    (dotimes [p 16] (storef32! (sim-charge-addr p) 0.0))))
+    ;; a preview: the power it counted is not a fight's
+    (dotimes [p 16] (storef32! (sim-charge-addr p) 0.0))
+    (sim-state-init!)))
 
 ;; the server accepted a PANIC_CUT on placement idx. While packing the flag and the grid are already set (the commit sent the cuts the
 ;; stage holds); in the fight this is where a live cut lands on the grid the wiring runs over.

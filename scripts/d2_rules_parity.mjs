@@ -6,6 +6,10 @@ const { instance } = await WebAssembly.instantiate(fs.readFileSync(process.argv[
 const e = instance.exports;
 e.d2_init();
 const lines = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n');
+// the catalog, the examples and the font are written once at init: no fight may land on them (the ship simulations are 4 KB each, and a layout
+// change once put a ship's stored charge on top of the examples)
+const REGIONS = { items: [191488, 19 * 128], examples: [194048, 6 * 128], font: [196608, 255 * 16] };
+const sums0 = Object.fromEntries(Object.entries(REGIONS).map(([k, [a, n]]) => [k, e.d2_t_sum(a, n)]));
 let ships = 0, bad = 0, melt = 0, cuts = 0, shotsTotal = 0, dmgTotal = 0, mended = 0, items = new Set();
 for (let i = 0; i < lines.length;) {
   const s = lines[i++].split(' ');
@@ -31,10 +35,31 @@ for (let i = 0; i < lines.length;) {
     if (mask !== BigInt('0x' + T[4])) fail(`tick ${t}: burned ${mask.toString(16)} != ${T[4]}`);
     if (e.d2_t_hull() !== +T[5]) fail(`tick ${t}: hull ${e.d2_t_hull()} != ${T[5]}`);
     if (e.d2_t_sarmor() !== +T[6]) fail(`tick ${t}: armor ${e.d2_t_sarmor()} != ${T[6]}`);
+    if (e.d2_t_qsum() !== +T[7]) fail(`tick ${t}: stored charge ${e.d2_t_qsum()} != ${T[7]}`);
+    if (e.d2_t_gates() !== +T[8]) fail(`tick ${t}: open gates ${e.d2_t_gates()} != ${T[8]}`);
     if (+T[3] > 0 && t === 30) melt++;
     if (t === 30 && +T[5] > 40) mended++;
   }
   ships++;
 }
-console.log(`${ships} ships, ${shotsTotal} shots, ${dmgTotal} damage, ${melt} ships with a meltdown, ${mended} that mended, ${cuts} cut items, ${items.size} of 12 items used: ${bad ? bad + ' MISMATCHES' : 'every tick agrees with the C core'}`);
+// the opponent's ship has its own simulation memory: run the first few hundred ships through it as well
+{
+  e.d2_t_set(132, 1);
+  let k = 0;
+  for (let i = 0; i < lines.length && k < 300;) {
+    const s = lines[i++].split(' ');
+    if (s[0] !== 'S') continue;
+    e.d2_t_clear();
+    for (let q = 0; q < +s[2]; q++) { const [it, r, c, rot, cut] = s[3 + q].split(',').map(Number); e.d2_t_add(it, r, c, rot, cut); }
+    e.d2_t_rebuild();
+    for (let t = 0; t < 30; t++) e.d2_t_tick();
+    k++;
+  }
+  e.d2_t_set(132, 0);
+}
+for (const [k, [a, n]] of Object.entries(REGIONS)) {
+  const now = e.d2_t_sum(a, n);
+  if (now !== sums0[k]) { bad++; console.log(`MEMORY: the ${k} region was overwritten while ships ran (a fight wrote over it)`); }
+}
+console.log(`${ships} ships, ${shotsTotal} shots, ${dmgTotal} damage, ${melt} ships with a meltdown, ${mended} that mended, ${cuts} cut items, ${items.size} of 19 items used: ${bad ? bad + ' MISMATCHES' : 'every tick agrees with the C core'}`);
 process.exit(bad ? 1 : 0);
