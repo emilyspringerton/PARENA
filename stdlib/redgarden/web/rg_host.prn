@@ -32,6 +32,8 @@
 (def ident-name "")
 (def ident-guest true)
 (def ident-id "")
+(def ident-fallback false)  ; this game refused the IDUNA sign-in (the account belongs to another game, or the token expired): playing as a guest
+(def sso-pending null)      ; the SSO identity object waiting for the game to accept it
 (def play-id "")          ; the player id the gateway says the match is recorded against
 
 ;; ---- DOM helpers -------------------------------------------------------------------------------------------------------------
@@ -227,6 +229,25 @@
 (defn sso-session [] : Any
   (if (js/defined? "getIdunaSession") (js/call-fn (js/global "getIdunaSession")) null))
 
+(defn post-auth [(path : String) (token : Any)]  : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! hdrs "Authorization" (str "Bearer " token))
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" "{}")
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn sso-accepted [(r : Any)] : Any
+  (do (js/set! sso-pending "sso" true) sso-pending))
+
+;; a signed-in visitor whose IDUNA account is already tied to a DIFFERENT game (or whose token has lapsed) is refused by the gateway
+;; at HELLO and would be stuck on an error screen: ask the game first (sso-exchange) and fall back to a guest if it says no
+(defn sso-refused [(e : Any)] : Any
+  (do (set! ident-fallback true)
+      (js/call (guest-flow 0) "then" (callback mark-guest))))
+
 (defn identity-flow [(ignored : Any)] : Any
   (let [s (sso-session)]
     (if (and (not (js/null? s)) (not (js/null? (js/get s "token"))))
@@ -234,8 +255,9 @@
           (js/set! o "token" (js/get s "token"))
           (js/set! o "display_name" (js/get s "displayName"))
           (js/set! o "player_id" (js/get s "playerID"))
-          (js/set! o "sso" true)
-          o)
+          (js/set! o "sso" false)
+          (set! sso-pending o)
+          (js/call (js/call (post-auth "/sso-exchange" (js/get s "token")) "then" (callback sso-accepted)) "catch" (callback sso-refused)))
         (js/call (guest-flow ignored) "then" (callback mark-guest)))))
 
 (defn mark-guest [(d : Any)] : Any (do (js/set! d "sso" false) d))
@@ -285,7 +307,9 @@
 (defn sync-who! [] : Unit
   (do
     (if ident-guest
-        (do (set-text! "rg-who-msg" (str "You are playing as " ident-name ", a guest. Your matches are kept in this browser."))
+        (do (set-text! "rg-who-msg" (if ident-fallback
+                                    (str "Your IDUNA account is tied to another game, so you are playing Red Garden as " ident-name ", a guest. Your matches are kept in this browser.")
+                                    (str "You are playing as " ident-name ", a guest. Your matches are kept in this browser.")))
             (let [a (el "rg-who-link")]
               (when (not (js/null? a))
                 (js/set! a "textContent" "Sign in with IDUNA to keep them on your account")
