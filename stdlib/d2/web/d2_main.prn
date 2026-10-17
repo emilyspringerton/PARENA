@@ -15,6 +15,16 @@
     (gi! (g-hull-opp) 100)
     (model-clear!)))
 
+;; how long energy has been travelling: a fight's packets leave the generators when a tick lands and have crossed the ship in under a second; while
+;; packing they loop. A round break is a pause: nothing flows, so nothing is drawn moving.
+(defn set-pulse! [] : Unit
+  (let [sc (gi (g-screen))]
+    (gi! (g-pulse)
+         (cond (= sc (sc-pack)) (mod (gi (g-ticker)) 1700)
+               (and (= sc (sc-fight)) (= (gi (g-rb-on)) 0))
+                 (let [el (- (gi (g-ticker)) (gi (g-tick-t)))] (if (< el 1000) el -1))
+               :else -1))))
+
 ;; one animation frame: act on input, then draw
 (defn d2-frame [(now : F64)] : Unit
   (do
@@ -23,6 +33,7 @@
     (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
     (net-tick!)
     (d2-update!)
+    (set-pulse!)
     (d2-render!)
     (end-input-frame!)))
 
@@ -72,7 +83,7 @@
 (defn d2-t-clear [] : Unit (do (gi! (g-stage-n) 0) (model-clear!)))
 (defn d2-t-add [(item : I32) (row : I32) (col : I32) (rot : I32) (cut : I32)] : Unit
   (do (st-set! (gi (g-stage-n)) item row col rot cut) (gi! (g-stage-n) (+ (gi (g-stage-n)) 1))))
-(defn d2-t-rebuild [] : I32 (let [bad (model-rebuild!)] (do (sim-reset!) (analyze!) bad)))
+(defn d2-t-rebuild [] : I32 (let [bad (model-rebuild!)] (do (analyze!) (sim-reset!) bad)))
 (defn d2-t-tick [] : I32 (sim-tick!))
 (defn d2-t-shat [] : I32 (gi (g-sim-shat)))
 (defn d2-t-burn-lo [] : I32
@@ -80,5 +91,9 @@
 (defn d2-t-burn-hi [] : I32
   (let [(v : I32) 0] (dotimes [i 4] (when (!= (cell-burned (/ (+ i 32) 6) (mod (+ i 32) 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
 (defn d2-t-armor [] : I32 (gi (g-preview-armor)))
+(defn d2-t-dmg [] : I32 (gi (g-sim-dmg)))
+(defn d2-t-hull [] : I32 (i32 (+ (gf (g-sim-hull)) 0.5)))
+(defn d2-t-sarmor [] : I32 (i32 (+ (gf (g-sim-armor)) 0.5)))
 (defn d2-t-cargo [] : I32 (gi (g-preview-cargo)))
 (defn d2-t-st [(i : I32) (f : I32)] : I32 (load8 (+ (st-addr i) f)))
+(defn d2-t-set [(k : I32) (v : I32)] : Unit (gi! k v))

@@ -56,7 +56,7 @@
     (analyze!)))
 
 (defn stage-has-weapon? [] : Bool
-  (loop [i 0] (if (>= i (gi (g-stage-n))) false (if (= (st-item i) 3) true (recur (+ i 1))))))
+  (loop [i 0] (if (>= i (gi (g-stage-n))) false (if (> (weapon-thr (st-item i)) 0.0) true (recur (+ i 1))))))
 
 ;; send the ship and READY. Placement i goes first-to-last so the server's placement index is the stage index.
 (defn commit! [] : Unit
@@ -72,10 +72,12 @@
 (defn play-bx [] : I32 390) (defn play-by [] : I32 336) (defn play-bw [] : I32 180) (defn play-bh [] : I32 44)
 
 (defn draw-parts-strip! [(y : I32)] : Unit
-  (dotimes [k 7]
-    (let [cx (+ 180 (* k 100))]
-      (draw-item-icon! k 0 (- cx (/ (* (shape-w k 0) 18) 2)) (- (+ y 20) (/ (* (shape-h k 0) 18) 2)) 18 255)
-      (draw-text-c (item-name k) cx (+ y 52) 1 (c-faint)))))
+  (dotimes [k 12]
+    (let [cx (+ 90 (* (mod k 6) 156))
+          cy (+ y (* (/ k 6) 54))
+          w (shape-w k 0) h (shape-h k 0)]
+      (draw-item-icon! k 0 (- cx (/ (* w 18) 2)) (- (+ cy 10) (/ (* h 18) 2)) 18 255)
+      (draw-text-c (item-name k) (+ cx 0) (+ cy 34) 1 (c-faint)))))
 
 (defn render-title! [] : Unit
   (do
@@ -84,9 +86,9 @@
     (draw-text-c "HOLD BATTLES" 480 118 1 (c-faint))
     (fill-rect-a 440 142 80 1 (c-gold) 200)
     (draw-text-c "Pack a ship. Wire it. Fight with the ship you built." 480 168 1 (c-dim))
-    (draw-text-c "Sixty seconds to fill a 6x6 hold: generators feed wires, wires feed railguns, the rest is armor." 480 192 1 (c-faint))
-    (draw-text-c "Then thirty seconds of fight, and every five a timing duel with your opponent." 480 212 1 (c-faint))
-    (draw-parts-strip! 236)
+    (draw-text-c "Sixty seconds to fill a 6x6 hold: generators feed wires, wires feed weapons, menders and shields." 480 192 1 (c-faint))
+    (draw-text-c "Then thirty seconds of fight with both ships on show, and every five a timing duel." 480 212 1 (c-faint))
+    (draw-parts-strip! 232)
     (button (play-bx) (play-by) (play-bw) (play-bh) "PLAY" true true)
     (if (> (gi (g-name-len)) 0)
         (let [w (+ 70 (text-width-at (name-base) 1))
@@ -127,7 +129,9 @@
     (cancel-search!)))
 
 ;; ---- packing --------------------------------------------------------------------------------------------------------------------------
-(defn part-y [(k : I32)] : I32 (+ 100 (* k 47)))
+(defn part-y [(k : I32)] : I32 (+ 98 (* k 29)))
+(defn part-key [(k : I32)] : I32 (cond (< k 9) (+ (kc-1) k) (= k 9) 48 (= k 10) 81 :else 87))
+(defn part-key-label [(k : I32)] : String (case k 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "9" 9 "0" 10 "Q" "W"))
 
 (defn hover-cell! [] : Unit
   (let [px (pointer-x) py (pointer-y)
@@ -135,7 +139,9 @@
     (if (and (>= px gx) (< px (+ gx (* s 6))) (>= py gy) (< py (+ gy (* s 6))))
         (do (gi! (g-hov-col) (/ (- px gx) s)) (gi! (g-hov-row) (/ (- py gy) s))
             (gi! (g-hov-pl) (- (cell-owner (gi (g-hov-row)) (gi (g-hov-col))) 1)))
-        (do (gi! (g-hov-col) -1) (gi! (g-hov-row) -1) (gi! (g-hov-pl) -1)))))
+        (do (gi! (g-hov-col) -1) (gi! (g-hov-row) -1) (gi! (g-hov-pl) -1)))
+    (gi! (g-hov-item) -1)
+    (dotimes [k 12] (when (in-rect? 24 (part-y k) 216 27) (gi! (g-hov-item) k)))))
 
 ;; where the selected part lands if the pointer is on cell (hr, hc): centred on the pointer and kept inside the grid
 (defn anchor-row [(hr : I32)] : I32
@@ -143,16 +149,16 @@
 (defn anchor-col [(hc : I32)] : I32
   (clamp-i (- hc (/ (- (shape-w (gi (g-sel-item)) (gi (g-sel-rot))) 1) 2)) 0 (- 6 (shape-w (gi (g-sel-item)) (gi (g-sel-rot))))))
 
-(defn ready-bx [] : I32 736) (defn ready-by [] : I32 458) (defn ready-bw [] : I32 200) (defn ready-bh [] : I32 40)
+(defn ready-bx [] : I32 736) (defn ready-by [] : I32 474) (defn ready-bw [] : I32 200) (defn ready-bh [] : I32 34)
 
 (defn pack-update! [] : Unit
   (let [locked (= (gi (g-committed)) 1)]
     (hover-cell!)
     (when (not locked)
       (do
-        ;; parts: click or 1-7
-        (dotimes [k 7]
-          (when (or (key-hit? (+ (kc-1) k)) (and (left-clicked?) (in-rect? 24 (part-y k) 216 43)))
+        ;; parts: click or the key beside each
+        (dotimes [k 12]
+          (when (or (key-hit? (part-key k)) (and (left-clicked?) (in-rect? 24 (part-y k) 216 27)))
             (do (gi! (g-sel-item) k) (gi! (g-sel-rot) 0))))
         (when (or (key-hit? (kc-r)) (> (wheel-dir) 0)) (gi! (g-sel-rot) (mod (+ (gi (g-sel-rot)) 1) 4)))
         (when (< (wheel-dir) 0) (gi! (g-sel-rot) (mod (+ (gi (g-sel-rot)) 3) 4)))
@@ -191,11 +197,155 @@
         (card kx (- y 2) (if (= (gi (g-m-oppkind)) 1) 36 58) 20 (c-ground2) 255 (c-line) 255)
         (draw-text (if (= (gi (g-m-oppkind)) 1) "BOT" "HUMAN") (+ kx 6) y 1 (if (= (gi (g-m-oppkind)) 1) (c-teal) (c-gold))))))
 
+;; ---- explaining the circuit ------------------------------------------------------------------------------------------------------------
+(defn side-name [(d : I32)] : String (case d 0 "NORTH" 1 "EAST" 2 "SOUTH" "WEST"))
+
+;; why the part at (r, c), which needs energy, has none -- the first thing wrong, looking out of its input side
+(defn unfed-reason [(r : I32) (c : I32)] : String
+  (let [b (cell-port r c)
+        d (port-dir b)
+        nr (+ r (dir-dy d)) nc (+ c (dir-dx d))]
+    (cond
+      (not (in-grid? nr nc)) (case d 0 "Its input faces off the NORTH edge." 1 "Its input faces off the EAST edge." 2 "Its input faces off the SOUTH edge." "Its input faces off the WEST edge.")
+      (= (cell-owner nr nc) 0) (case d 0 "Nothing touches its NORTH side." 1 "Nothing touches its EAST side." 2 "Nothing touches its SOUTH side." "Nothing touches its WEST side.")
+      (= (bit-and (cell-port nr nc) (opposite-port b)) 0)
+        (case d 0 "The part to its NORTH does not face it." 1 "The part to its EAST does not face it." 2 "The part to its SOUTH does not face it." "The part to its WEST does not face it.")
+      (!= (cell-burned nr nc) 0) "The wire feeding it burnt out."
+      :else "The wire beside it gets no energy.")))
+
+;; one line on what a placed part is doing: its state in the circuit
+(defn cell-state-text [(r : I32) (c : I32)] : String
+  (let [role (cell-role r c) pw (cell-power r c)]
+    (cond
+      (!= (cell-burned r c) 0) "BURNT OUT: it conducts no more."
+      (= pw 2) "IN A CLOSED LOOP: it will burn out."
+      (= role (r-gen)) "ENERGY SOURCE: 10 a second."
+      (or (= role (r-cond)) (or (= role (r-split)) (= role (r-amp))))
+        (if (= pw 1) "CARRYING ENERGY." "DEAD WIRE: no generator reaches it.")
+      (= role (r-weapon)) (if (= pw 1) "FED: it is charging." "NOT FED: no energy reaches it.")
+      (= role (r-mender)) (if (= pw 1) "FED: mending the hull." "NOT FED: no energy reaches it.")
+      (= role (r-aegis)) (if (= pw 1) "FED: refilling armor." "NOT FED: no energy reaches it.")
+      (= role (r-armor)) "ARMOR: soaks 20 damage."
+      (= role (r-dead)) "DEAD SQUARE: soaks 8 damage."
+      :else "CARGO: its value breaks ties.")))
+
+(defn state-color [(r : I32) (c : I32)] : I32
+  (let [role (cell-role r c) pw (cell-power r c)
+        needs (or (= role (r-weapon)) (or (= role (r-mender)) (= role (r-aegis))))]
+    (cond (or (!= (cell-burned r c) 0) (= pw 2)) (c-rose)
+          (and needs (= pw 0)) (c-rose)
+          (= pw 1) (c-good)
+          :else (c-dim))))
+
+(defn consumer-role? [(role : I32)] : Bool (or (= role (r-weapon)) (or (= role (r-mender)) (= role (r-aegis)))))
+
+;; how a placed weapon's firing is described: "x1.5 energy: fires every 2nd second"
+(defn draw-weapon-rate! [(r : I32) (c : I32) (item : I32) (x : I32) (y : I32)] : Unit
+  (let [lvl (cell-gain r c)
+        (e : F32) (* 10.0 (gain-f lvl))
+        secs (i32 (floor (+ (/ (weapon-thr item) e) 0.999)))]
+    (draw-text "energy x" x y 1 (c-faint))
+    (draw-text (case lvl 0 "1" 1 "1.5" 2 "2.25" "3.4") (+ x 56) y 1 (c-gold))
+    (draw-text (if (= secs 1) "fires every second" "fires every") (+ x 100) y 1 (c-faint))
+    (when (> secs 1)
+      (do (draw-int secs (+ x 184) y 1 (c-ink))
+          (draw-text (if (= secs 2) "nd s" (if (= secs 3) "rd s" "th s")) (+ x (+ 184 (num-width secs 1))) y 1 (c-faint))))))
+
+;; ---- the hover ghost: the part in hand, where it would go, how it would join the circuit --------------------------------------------
+(defn sh-has? [(n : I32) (r : I32) (c : I32)] : Bool
+  (loop [i 0] (if (>= i n) false (if (and (= (sh-row i) r) (= (sh-col i) c)) true (recur (+ i 1))))))
+
+(defn draw-ghost! [(item : I32) (rot : I32) (ar : I32) (ac : I32)] : Unit
+  (let [n (shape! item 0 rot ar ac)
+        fits (and (shape-in-grid? n) (shape-free? n))
+        s (pg-s) gx (pg-x) gy (pg-y)
+        kind (item-kind item)
+        tint (if fits (c-good) (c-rose))]
+    (dotimes [i n]
+      (when (in-grid? (sh-row i) (sh-col i))
+        (let [x (+ gx (* (sh-col i) s)) y (+ gy (* (sh-row i) s))]
+          (fill-rect x y s s (c-ground))
+          (draw-role! x y s (sh-role i) (sh-port i) kind 0)
+          (fill-rect-a x y s s tint 40)
+          (rect-outline-a x y s s tint 230)
+          (rect-outline-a (+ x 1) (+ y 1) (- s 2) (- s 2) tint 120))))
+    ;; each open side of the part: does it meet something? green dot = joined, hollow ring = open, red x = a neighbour points at a side with no port
+    (dotimes [i n]
+      (let [r (sh-row i) c (sh-col i) port (sh-port i) role (sh-role i)]
+        (when (in-grid? r c)
+          (dotimes [k 4]
+            (let [b (shl 1 k) d (port-dir b)
+                  nr (+ r (dir-dy d)) nc (+ c (dir-dx d))
+                  ex (i32 (edge-x (+ gx (* c s)) s b)) ey (i32 (edge-y (+ gy (* r s)) s b))
+                  mine (!= (bit-and port b) 0)
+                  nb (and (in-grid? nr nc) (and (not (sh-has? n nr nc)) (!= (cell-owner nr nc) 0)))
+                  faces (and nb (!= (bit-and (cell-port nr nc) (opposite-port b)) 0))
+                  f (port-flow role port b)]
+              (cond
+                (and mine faces)
+                  (do (disc (f32 ex) (f32 ey) 9.0 (c-good) 90) (disc (f32 ex) (f32 ey) 5.0 (c-good) 255))
+                (and mine (!= f 3))
+                  (ring (f32 ex) (f32 ey) 8.0 3.0 (if (= f 1) (c-in) (c-rose)) 240)
+                (and (not mine) faces)
+                  (do (line-a (- ex 6) (- ey 6) (+ ex 6) (+ ey 6) (c-rose) 250)
+                      (line-a (+ ex 6) (- ey 6) (- ex 6) (+ ey 6) (c-rose) 250)
+                      (line-a (- ex 6) (- ey 5) (+ ex 6) (+ ey 7) (c-rose) 160)
+                      (line-a (+ ex 6) (- ey 5) (- ex 6) (+ ey 7) (c-rose) 160))
+                :else unit))))))))
+
+;; a placed Titanium Beam / Aether Ore with the pointer on it: where its pieces would go if it were cut
+(defn draw-cut-preview! [(i : I32)] : Unit
+  (let [item (st-item i)
+        n (shape! item 1 (st-rot i) (st-row i) (st-col i))
+        s (pg-s) gx (pg-x) gy (pg-y)
+        (ok : Bool) (shape-in-grid? n)]
+    (dotimes [k n]
+      (when (in-grid? (sh-row k) (sh-col k))
+        (let [o (cell-owner (sh-row k) (sh-col k))]
+          (when (or (and (!= o 0) (!= o (+ i 1))) (!= (cell-ruined (sh-row k) (sh-col k)) 0)) (set! ok false)))))
+    (dotimes [k n]
+      (when (in-grid? (sh-row k) (sh-col k))
+        (let [x (+ gx (* (sh-col k) s)) y (+ gy (* (sh-row k) s))
+              dead (= (sh-role k) (r-dead))]
+          (rect-outline-a (+ x 3) (+ y 3) (- s 6) (- s 6) (if ok (c-teal) (c-rose)) 230)
+          (rect-outline-a (+ x 4) (+ y 4) (- s 8) (- s 8) (if ok (c-teal) (c-rose)) 120)
+          (when dead
+            (do (fill-rect-a (+ x 6) (+ y 6) (- s 12) (- s 12) (if ok (c-kind-def) (c-rose)) 120)
+                (draw-text-c "+8" (+ x (/ s 2)) (+ y (- (/ s 2) 4)) 1 (c-ink)))))))
+    (draw-text-c (if ok "C cuts it into these pieces" "no room: each piece needs a row of its own")
+                 (+ gx (* 3 s)) (+ gy (+ (* 6 s) 14)) 1 (if ok (c-teal) (c-rose)))))
+
+;; ---- the pack screen ---------------------------------------------------------------------------------------------------------------------
+(defn draw-facing! [(item : I32) (rot : I32) (x : I32) (y : I32)] : Unit
+  (let [n (shape! item 0 rot 0 0)
+        p (sh-port 0) role (sh-role 0)]
+    (cond
+      (= role (r-gen))
+        (do (draw-text "energy leaves" x y 1 (c-faint))
+            (draw-text (side-name (port-dir p)) (+ x 98) y 1 (c-out)))
+      (or (= role (r-cond)) (= role (r-amp)))
+        (do (draw-text "runs" x y 1 (c-faint))
+            (draw-text (if (!= (bit-and p 5) 0) "EAST-WEST" "NORTH-SOUTH") (+ x 35) y 1 (c-ink)))
+      (= role (r-split))
+        (let [(inp : I32) 0]
+          (dotimes [k 4] (let [b (shl 1 k)] (when (and (!= (bit-and p b) 0) (= (bit-and p (opposite-port b)) 0)) (set! inp b))))
+          (draw-text "in" x y 1 (c-faint))
+          (draw-text (side-name (port-dir inp)) (+ x 21) y 1 (c-in))
+          (draw-text "out the other two" (+ x (+ 28 (text-width (side-name (port-dir inp)) 1))) y 1 (c-faint)))
+      (consumer-role? role)
+        (do (draw-text "takes energy from" x y 1 (c-faint))
+            (draw-text (side-name (port-dir p)) (+ x 126) y 1 (c-in)))
+      :else unit)))
+
 (defn render-pack! [] : Unit
   (let [locked (= (gi (g-committed)) 1)
         secs (pack-secs-left)
         sel (gi (g-sel-item)) rot (gi (g-sel-rot))
-        hr (gi (g-hov-row)) hc (gi (g-hov-col))]
+        hr (gi (g-hov-row)) hc (gi (g-hov-col))
+        hp (gi (g-hov-pl))
+        hi (gi (g-hov-item))
+        shown (cond (>= hi 0) hi (>= hp 0) (st-item hp) :else sel)
+        shown-rot (if (and (< hi 0) (>= hp 0)) (st-rot hp) rot)]
     (draw-backdrop!)
     ;; top bar
     (draw-text-s "PACK YOUR SHIP" 24 20 2 (c-ink))
@@ -205,74 +355,97 @@
     (meter 560 52 376 4 (/ (f32 (- (gi (g-m-packms)) (- (gi (g-ticker)) (gi (g-m-found-t))))) (f32 (gi (g-m-packms)))) (if (< secs 11) (c-rose) (c-gold)))
     ;; the parts bin
     (section "PARTS" 24 76 216)
-    (dotimes [k 7]
+    (dotimes [k 12]
       (let [y (part-y k) on (= k sel)
-            hot (and (not locked) (in-rect? 24 y 216 43))]
-        (card 24 y 216 43 (if on (c-ground2) (c-panel)) (if on 255 200) (if on (c-gold) (c-line)) (if (or on hot) 255 120))
-        (draw-item-icon! k 0 (+ 32 (- 20 (/ (* (shape-w k 0) 9) 2))) (+ y (- 21 (/ (* (shape-h k 0) 9) 2))) 9 255)
-        (draw-text (item-name k) 78 (+ y 6) 1 (if on (c-ink) (c-dim)))
-        (draw-text (item-kind-name k) 78 (+ y 23) 1 (c-kind (item-kind k)))
-        (draw-text-r (case k 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" "7") 232 (+ y 6) 1 (c-faint))))
+            hot (and (not locked) (= k hi))]
+        (card 24 y 216 27 (if on (c-ground2) (c-panel)) (if on 255 200) (if on (c-gold) (c-line)) (if (or on hot) 255 120))
+        (fill-rect 24 y 3 27 (c-kind (item-kind k)))
+        (let [w (shape-w k 0) h (shape-h k 0)]
+          (draw-item-icon! k 0 (+ 32 (- 14 (/ (* w 6) 2))) (+ y (- 13 (/ (* h 6) 2))) 6 255))
+        (draw-text (item-name k) 66 (+ y 9) 1 (if (or on hot) (c-ink) (c-dim)))
+        (draw-text-r (part-key-label k) 232 (+ y 9) 1 (c-faint))))
     ;; the hold
     (draw-grid! (pg-x) (pg-y) (pg-s) false)
-    (when (and (not locked) (>= hr 0))
-      (let [n (shape! sel 0 rot (anchor-row hr) (anchor-col hc))
-            fits (and (shape-in-grid? n) (shape-free? n))]
-        (dotimes [i n]
-          (when (in-grid? (sh-row i) (sh-col i))
-            (let [x (+ (pg-x) (* (sh-col i) (pg-s))) y (+ (pg-y) (* (sh-row i) (pg-s)))]
-              (fill-rect-a x y (pg-s) (pg-s) (if fits (c-good) (c-rose)) 70)
-              (rect-outline-a x y (pg-s) (pg-s) (if fits (c-good) (c-rose)) 200))))))
-    ;; a piece under the pointer: say what it is
-    (when (and (not locked) (>= (gi (g-hov-pl)) 0))
-      (let [i (gi (g-hov-pl))]
-        (draw-text-c (item-name (st-item i)) (+ (pg-x) (* 3 (pg-s))) (- (pg-y) 30) 1 (c-ink))
-        (draw-text-c (if (> (item-split (st-item i)) 0) "C cuts it   right click removes it" "right click removes it")
-                     (+ (pg-x) (* 3 (pg-s))) (- (pg-y) 14) 1 (c-faint))))
+    (when (not locked)
+      (cond
+        (>= hr 0)
+          (let [fits-here (let [n (shape! sel 0 rot (anchor-row hr) (anchor-col hc))] (and (shape-in-grid? n) (shape-free? n)))]
+            (if (or fits-here (< hp 0))
+                (do (draw-ghost! sel rot (anchor-row hr) (anchor-col hc))
+                    ;; what the part in hand is, above the hold
+                    (draw-text-c (item-name sel) (+ (pg-x) (* 3 (pg-s))) (- (pg-y) 32) 1 (c-ink))
+                    (draw-facing! sel rot (- (+ (pg-x) (* 3 (pg-s))) 70) (- (pg-y) 16)))
+                (do (when (> (item-split (st-item hp)) 0) (draw-cut-preview! hp))
+                    (draw-text-c (item-name (st-item hp)) (+ (pg-x) (* 3 (pg-s))) (- (pg-y) 32) 1 (c-ink))
+                    (draw-text-c (if (> (item-split (st-item hp)) 0) "C cuts it   right click removes it" "right click removes it")
+                                 (+ (pg-x) (* 3 (pg-s))) (- (pg-y) 16) 1 (c-faint)))))
+        :else unit))
     ;; readout
     (let [rx 664 rw 272]
       (section "SHIP" rx 76 rw)
-      (draw-text "Hull" rx 104 1 (c-faint)) (draw-text-r "100" (+ rx rw) 104 1 (c-ink))
-      (draw-text "Armor" rx 126 1 (c-faint)) (draw-int-r (gi (g-preview-armor)) (+ rx rw) 126 1 (c-kind-def))
-      (draw-text "Railguns fed" rx 148 1 (c-faint))
-      (draw-int-r (gi (g-preview-powered)) (- (+ rx rw) (+ 14 (num-width (gi (g-preview-weapons)) 1))) 148 1
+      (draw-text "Hull" rx 100 1 (c-faint)) (draw-text-r "100" (+ rx rw) 100 1 (c-ink))
+      (draw-text "Armor" rx 117 1 (c-faint)) (draw-int-r (gi (g-preview-armor)) (+ rx rw) 117 1 (c-kind-def))
+      (draw-text "Weapons fed" rx 134 1 (c-faint))
+      (draw-int-r (gi (g-preview-powered)) (- (+ rx rw) (+ 14 (num-width (gi (g-preview-weapons)) 1))) 134 1
                   (if (= (gi (g-preview-powered)) (gi (g-preview-weapons))) (c-ink) (c-gold)))
-      (draw-text-r "/" (- (+ rx rw) (num-width (gi (g-preview-weapons)) 1)) 148 1 (c-faint))
-      (draw-int-r (gi (g-preview-weapons)) (+ rx rw) 148 1 (c-faint))
-      (draw-text "Damage a second" rx 170 1 (c-faint)) (draw-int-r (* (gi (g-preview-powered)) 5) (+ rx rw) 170 1 (c-kind-off))
-      (draw-text "Cargo value" rx 192 1 (c-faint)) (draw-int-r (gi (g-preview-cargo)) (+ rx rw) 192 1 (c-dim))
-      (draw-text "Parts" rx 214 1 (c-faint)) (draw-int-r (gi (g-stage-n)) (- (+ rx rw) (+ 14 (num-width 16 1))) 214 1 (c-ink))
-      (draw-text-r "/16" (+ rx rw) 214 1 (c-faint))
+      (draw-text-r "/" (- (+ rx rw) (num-width (gi (g-preview-weapons)) 1)) 134 1 (c-faint))
+      (draw-int-r (gi (g-preview-weapons)) (+ rx rw) 134 1 (c-faint))
+      (draw-text "Damage a second" rx 151 1 (c-faint))
+      (let [d (gi (g-preview-dps))]
+        (draw-int-r (mod d 10) (+ rx rw) 151 1 (c-kind-off))
+        (draw-text-r "." (- (+ rx rw) 7) 151 1 (c-kind-off))
+        (draw-int-r (/ d 10) (- (+ rx rw) 14) 151 1 (c-kind-off)))
+      (draw-text "  of it skipping armor" rx 168 1 (c-faint))
+      (let [d (gi (g-preview-pierce))]
+        (draw-int-r (mod d 10) (+ rx rw) 168 1 (c-dim))
+        (draw-text-r "." (- (+ rx rw) 7) 168 1 (c-dim))
+        (draw-int-r (/ d 10) (- (+ rx rw) 14) 168 1 (c-dim)))
+      (draw-text "Mends hull a second" rx 185 1 (c-faint)) (draw-int-r (gi (g-preview-mend)) (+ rx rw) 185 1 (c-good))
+      (draw-text "Refills armor a second" rx 202 1 (c-faint)) (draw-int-r (gi (g-preview-regen)) (+ rx rw) 202 1 (c-kind-def))
+      (draw-text "Cargo value" rx 219 1 (c-faint)) (draw-int-r (gi (g-preview-cargo)) (+ rx rw) 219 1 (c-dim))
+      (draw-text "Parts" rx 236 1 (c-faint)) (draw-int-r (gi (g-stage-n)) (- (+ rx rw) (+ 14 (num-width 16 1))) 236 1 (c-ink))
+      (draw-text-r "/16" (+ rx rw) 236 1 (c-faint))
       (cond
         (= (gi (g-preview-loops)) 1)
-          (do (draw-text "A closed loop of wire." rx 244 1 (c-rose))
-              (draw-text "It burns out in a few seconds." rx 262 1 (c-faint)))
+          (do (draw-text "A closed loop of wire." rx 258 1 (c-rose))
+              (draw-text "It burns out in a few seconds." rx 274 1 (c-faint)))
         (not (stage-has-weapon?))
-          (do (draw-text "No railgun yet." rx 244 1 (c-gold))
-              (draw-text "Without one you cannot hurt anyone." rx 262 1 (c-faint)))
+          (do (draw-text "No weapon yet." rx 258 1 (c-gold))
+              (draw-text "Without one you cannot hurt anyone." rx 274 1 (c-faint)))
         (< (gi (g-preview-powered)) (gi (g-preview-weapons)))
-          (do (draw-text "A railgun gets no energy." rx 244 1 (c-gold))
-              (draw-text "Wire it to a generator." rx 262 1 (c-faint)))
+          (do (draw-text "A weapon gets no energy." rx 258 1 (c-gold))
+              (draw-text "Follow the red UNFED marks." rx 274 1 (c-faint)))
         :else
-          (draw-text "Wired and ready." rx 244 1 (c-good)))
-      ;; the part in hand
-      (section "IN HAND" rx 290 rw)
-      (card rx 316 rw 112 (c-panel) 220 (c-line) 255)
-      (draw-item-icon! sel rot (+ rx 14) (+ 330 (- 28 (/ (* (shape-h sel rot) 18) 2))) 18 255)
-      (draw-text-s (item-name sel) (+ rx 86) 326 1 (c-ink))
-      (draw-text (item-kind-name sel) (+ rx 86) 344 1 (c-kind (item-kind sel)))
-      (draw-text (item-line1 sel) (+ rx 14) 372 1 (c-dim))
-      (draw-text (item-line2 sel) (+ rx 14) 392 1 (c-faint))
-      (draw-text "R or the wheel turns it" (+ rx 14) 410 1 (c-faint)))
+          (do (draw-text "Wired and ready." rx 258 1 (c-good))
+              (draw-text "Gold dots are energy on the move." rx 274 1 (c-faint))))
+      ;; the part card: the one in the bin under the pointer, else the placed one under the pointer, else the one in hand
+      (section (if (>= hi 0) "THE PART" (if (>= hp 0) "THE PART ON THE GRID" "IN HAND")) rx 296 rw)
+      (card rx 320 rw 148 (c-panel) 220 (c-line) 255)
+      (let [w (shape-w shown shown-rot) h (shape-h shown shown-rot)
+            cs (clamp-i (/ 84 (max-i w h)) 18 40)]
+        (draw-item-icon! shown shown-rot (+ rx (+ 8 (- 46 (/ (* w cs) 2)))) (+ 328 (- 34 (/ (* h cs) 2))) cs 255))
+      (draw-text-s (item-name shown) (+ rx 108) 330 1 (c-ink))
+      (draw-text (item-kind-name shown) (+ rx 108) 346 1 (c-kind (item-kind shown)))
+      (draw-text "value" (+ rx 108) 362 1 (c-faint)) (draw-int (item-value shown) (+ rx 150) 362 1 (c-dim))
+      (draw-facing! shown shown-rot (+ rx 108) 378)
+      (dotimes [k 4] (draw-text (item-info shown k) (+ rx 10) (+ 400 (* k 14)) 1 (if (= k 0) (c-dim) (c-faint))))
+      (if (and (< hi 0) (>= hp 0) (>= hr 0))
+          (draw-text (cell-state-text hr hc) (+ rx 10) 456 1 (state-color hr hc))
+          (draw-text "R or the wheel turns it" (+ rx 10) 456 1 (c-faint))))
+    ;; why a part under the pointer is not fed
+    (when (and (not locked) (>= hp 0) (>= hr 0) (consumer-role? (cell-role hr hc)) (= (cell-power hr hc) 0))
+      (draw-text-c (unfed-reason hr hc) (+ (pg-x) (* 3 (pg-s))) (+ (pg-y) (+ (* 6 (pg-s)) 14)) 1 (c-rose)))
+    (when (and (not locked) (>= hp 0) (>= hr 0) (= (cell-role hr hc) (r-weapon)) (= (cell-power hr hc) 1))
+      (draw-weapon-rate! hr hc (st-item hp) (- (+ (pg-x) (* 3 (pg-s))) 120) (+ (pg-y) (+ (* 6 (pg-s)) 14))))
     ;; actions
     (if locked
         (do (card (ready-bx) (ready-by) (ready-bw) (ready-bh) (c-panel) 235 (c-line) 255)
-            (draw-text-c (if (>= (gi (g-ack-wait)) 1) "sending your ship..." "waiting for the opponent") (+ (ready-bx) (/ (ready-bw) 2)) (+ (ready-by) 12) 1 (c-dim)))
+            (draw-text-c (if (>= (gi (g-ack-wait)) 1) "sending your ship..." "waiting for the opponent") (+ (ready-bx) (/ (ready-bw) 2)) (+ (ready-by) 10) 1 (c-dim)))
         (do (button 24 458 100 30 "EXAMPLE" false true)
             (button 130 458 76 30 "UNDO" false (> (gi (g-stage-n)) 0))
             (button 212 458 76 30 "CLEAR" false (> (gi (g-stage-n)) 0))
             (button (ready-bx) (ready-by) (ready-bw) (ready-bh) "READY" true true)))
-    (draw-text "click places   R turns   right click removes   C cuts   Z undoes" 24 514 1 (c-faint))
+    (draw-text "click places  R turns  right click removes  C cuts  Z undoes  teal arrow in, gold arrow out" 24 514 1 (c-faint))
     (draw-text-r (if locked "your ship is locked in" "sent on READY, or at six seconds") 936 514 1 (c-faint))
     (draw-toast!)))
 
@@ -292,8 +465,20 @@
 (defn rb-line-ms [] : I32 (max-i 40 (- (gi (g-rb-target)) (gi (g-rtt)))))
 (defn rb-local-ms [] : I32 (- (gi (g-ticker)) (gi (g-rb-t0))))
 
+(defn og-x [] : I32 616) (defn og-y [] : I32 108) (defn og-s [] : I32 50)
+
+;; the fight cell under the pointer: ship 0 (yours) or 1 (theirs), cell index; -1 for none
+(defn fight-hover! [] : Unit
+  (let [px (pointer-x) py (pointer-y)]
+    (gi! (g-fh-ship) -1) (gi! (g-fh-cell) -1)
+    (when (and (>= px (fg-x)) (< px (+ (fg-x) (* 6 (fg-s)))) (>= py (fg-y)) (< py (+ (fg-y) (* 6 (fg-s)))))
+      (do (gi! (g-fh-ship) 0) (gi! (g-fh-cell) (+ (* 6 (/ (- py (fg-y)) (fg-s))) (/ (- px (fg-x)) (fg-s))))))
+    (when (and (= (gi (g-opp-known)) 1) (>= px (og-x)) (< px (+ (og-x) (* 6 (og-s)))) (>= py (og-y)) (< py (+ (og-y) (* 6 (og-s)))))
+      (do (gi! (g-fh-ship) 1) (gi! (g-fh-cell) (+ (* 6 (/ (- py (og-y)) (og-s))) (/ (- px (og-x)) (og-s))))))))
+
 (defn fight-update! [] : Unit
   (do
+    (fight-hover!)
     (when (and (= (gi (g-rb-on)) 1) (= (gi (g-rb-call)) 0))
       (let [over (or (key-hit? (kc-o)) (and (left-clicked?) (in-rect? 300 332 170 36)))
             brace (or (key-hit? (kc-b)) (and (left-clicked?) (in-rect? 490 332 170 36)))]
@@ -303,7 +488,7 @@
     (when (= (gi (g-rb-on)) 0)
       (dotimes [k 4]
         (let [i (cut-slot-item k)]
-          (when (and (>= i 0) (or (key-hit? (+ (kc-1) k)) (and (left-clicked?) (in-rect? (+ 160 (* k 74)) 68 70 22))))
+          (when (and (>= i 0) (or (key-hit? (+ (kc-1) k)) (and (left-clicked?) (in-rect? (+ 160 (* k 74)) 76 70 22))))
             (do (send-cut! i) (gi! (g-ack-wait) (+ (gi (g-ack-wait)) 1)))))))
     ;; forfeiting takes two clicks
     (when (and (left-clicked?) (in-rect? 44 506 (if (= (gi (g-leave-ask)) 1) 150 100) 24))
@@ -379,19 +564,6 @@
         (draw-text-c (grade-name (gi (g-rr-ograde))) 595 264 2 (grade-color (gi (g-rr-ograde))))
         (draw-fx! (gi (g-rr-ocall)) (gi (g-rr-ograde)) (gi (g-rr-ofx)) 595 306)))))
 
-;; the opponent's hold is sealed: the protocol gives scalars only, so this is an honest picture of that
-(defn draw-sealed-hold! [(x : I32) (y : I32) (s : I32)] : Unit
-  (let [(t : F32) (f32 (gi (g-ticker)))]
-    (card (- x 8) (- y 8) (+ (* s 6) 16) (+ (* s 6) 16) (c-panel) 235 (c-line) 255)
-    (dotimes [r 6] (dotimes [c 6]
-      (let [cx (+ x (* c s)) cy (+ y (* r s))]
-        (fill-rect cx cy s s (if (= (mod (+ r c) 2) 0) (c-ground) (c-ground2)))
-        (rect-outline-a cx cy s s (c-line) 70))))
-    (let [sy (+ y (mod (i32 (* t 0.04)) (* s 6)))]
-      (fill-rect-a x sy (* s 6) 2 (c-ink) 18))
-    (draw-text-c "SEALED HOLD" (+ x (* 3 s)) (+ y (- (* 3 s) 16)) 1 (c-faint))
-    (draw-text-c "only hull and armor are shared" (+ x (* 3 s)) (+ y (* 3 s)) 1 (c-faint))))
-
 (defn hull-color [(h : I32)] : I32 (if (> h 50) (c-good) (if (> h 25) (c-gold) (c-rose))))
 
 (defn draw-vitals! [(x : I32) (y : I32) (w : I32) (hull : I32) (armor : I32) (armor0 : I32) (name-left : Bool)] : Unit
@@ -402,10 +574,138 @@
       (draw-int-r armor (+ x w) (+ y 40) 1 (c-kind-def))
       (meter x (+ y 58) w 8 (/ (f32 armor) (f32 (max-i armor0 1))) (c-kind-def))))
 
+;; the server did not show the opponent's ship (an older match server): an honest placeholder
+(defn draw-unseen-hold! [(x : I32) (y : I32) (s : I32)] : Unit
+  (do (card (- x 8) (- y 8) (+ (* s 6) 16) (+ (* s 6) 16) (c-panel) 235 (c-line) 255)
+      (dotimes [r 6] (dotimes [c 6]
+        (let [cx (+ x (* c s)) cy (+ y (* r s))]
+          (fill-rect cx cy s s (if (= (mod (+ r c) 2) 0) (c-ground) (c-ground2)))
+          (rect-outline-a cx cy s s (c-line) 70))))
+      (draw-text-c "THEIR SHIP IS NOT SHOWN" (+ x (* 3 s)) (+ y (- (* 3 s) 8)) 1 (c-faint))
+      (draw-text-c "only hull and armor" (+ x (* 3 s)) (+ y (+ (* 3 s) 8)) 1 (c-faint))))
+
+(defn cell-cx [(ship : I32) (cell : I32)] : F32
+  (if (= ship 0)
+      (+ (f32 (fg-x)) (* (f32 (fg-s)) (+ (f32 (mod cell 6)) 0.5)))
+      (+ (f32 (og-x)) (* (f32 (og-s)) (+ (f32 (mod cell 6)) 0.5)))))
+(defn cell-cy [(ship : I32) (cell : I32)] : F32
+  (if (= ship 0)
+      (+ (f32 (fg-y)) (* (f32 (fg-s)) (+ (f32 (/ cell 6)) 0.5)))
+      (+ (f32 (og-y)) (* (f32 (og-s)) (+ (f32 (/ cell 6)) 0.5)))))
+
+;; shots in flight between the two ships: a muzzle flash where the weapon is, a bolt across, an impact on the cell it was aimed at
+(defn render-bolts! [] : Unit
+  (let [now (gi (g-ticker))]
+    (dotimes [k 24]
+      (let [a (bolt-addr k)]
+        (when (= (load8 a) 1)
+          (let [side (load8 (+ a 1)) item (load8 (+ a 3)) src (load8 (+ a 10)) tgt (load8 (+ a 8)) armored (load8 (+ a 9))
+                age (- now (load32 (+ a 4)))
+                flight 380]
+            (when (and (>= age 0) (< age (+ flight 440)))
+              (let [(x0 : F32) (cell-cx side src) (y0 : F32) (cell-cy side src)
+                    (x1 : F32) (cell-cx (- 1 side) tgt) (y1 : F32) (cell-cy (- 1 side) tgt)
+                    (t : F32) (clamp-f (/ (f32 age) (f32 flight)) 0.0 1.0)
+                    (hx : F32) (lerp x0 x1 t) (hy : F32) (lerp y0 y1 t)
+                    col (case item 7 (c-rose) 8 (rgb 255 150 70) (c-gold))]
+                (when (< age 200)
+                  (ring x0 y0 (+ 5.0 (* 0.07 (f32 age))) 2.0 col (- 230 (i32 (* 1.1 (f32 age))))))
+                (when (< age flight)
+                  (let [(tt : F32) (fmax2 0.0 (- t (case item 8 0.3 7 0.12 0.2)))
+                        (tx : F32) (lerp x0 x1 tt) (ty : F32) (lerp y0 y1 tt)]
+                    (line-a (i32 tx) (i32 ty) (i32 hx) (i32 hy) col 230)
+                    (line-a (i32 tx) (+ (i32 ty) 1) (i32 hx) (+ (i32 hy) 1) col 200)
+                    (line-a (i32 tx) (- (i32 ty) 1) (i32 hx) (- (i32 hy) 1) col 120)
+                    (when (!= item 7)
+                      (do (line-a (i32 tx) (+ (i32 ty) 2) (i32 hx) (+ (i32 hy) 2) col 130)
+                          (line-a (i32 tx) (- (i32 ty) 2) (i32 hx) (- (i32 hy) 2) col 70)))
+                    (disc hx hy (case item 8 6.0 7 2.6 4.0) col 255)
+                    (disc hx hy (case item 8 13.0 7 6.0 9.0) col 55)))
+                (when (>= age flight)
+                  (let [(q : F32) (/ (f32 (- age flight)) 440.0)
+                        ic (if (or (= item 7) (= armored 0)) (c-rose) (c-kind-def))]
+                    (ring x1 y1 (+ 4.0 (* 24.0 q)) 3.0 ic (i32 (* 240.0 (- 1.0 q))))
+                    (disc x1 y1 (* 9.0 (- 1.0 q)) (c-ink) (i32 (* 170.0 (- 1.0 q))))))))))))))
+
+;; ---- the log ----------------------------------------------------------------------------------------------------------------------------
+(defn draw-dmg-parts! [(x : I32) (y : I32) (b : I32) (c : I32)] : Unit
+  (if (and (= b 0) (= c 0))
+      (draw-text "no damage" x y 1 (c-faint))
+      (do (when (> b 0)
+            (do (draw-text "-" x y 1 (c-kind-def)) (draw-int b (+ x 7) y 1 (c-kind-def))
+                (draw-text "armor" (+ x (+ 10 (num-width b 1))) y 1 (c-faint))))
+          (let [x2 (+ x (if (> b 0) (+ 54 (num-width b 1)) 0))]
+            (when (> c 0)
+              (do (draw-text "-" x2 y 1 (c-rose)) (draw-int c (+ x2 7) y 1 (c-rose))
+                  (draw-text "hull" (+ x2 (+ 10 (num-width c 1))) y 1 (c-faint))))))))
+
+(defn render-log! [(x : I32) (y : I32)] : Unit
+  (let [n (gi (g-log-n))]
+    (card (- x 8) (- y 8) 252 150 (c-panel) 240 (c-line) 160)
+    (section "WHAT JUST HAPPENED" x y 244)
+    (when (= n 0) (draw-text "nothing yet: the first second" x (+ y 28) 1 (c-faint)))
+    (dotimes [k 7]
+      (when (and (< k n) (< k 8))
+        (let [ad (log-addr (- (- n 1) k))
+              kind (load8 (+ ad 1)) sec (load8 (+ ad 2)) a (load8 (+ ad 3)) b (load8 (+ ad 4)) c (load8 (+ ad 5))
+              ly (+ y (+ 28 (* k 17)))
+              mine (or (= kind 0) (or (= kind 2) (or (= kind 3) (or (= kind 6) (= kind 8)))))]
+          (draw-int sec x ly 1 (c-faint))
+          (draw-text (if mine "YOU" "THEM") (+ x 22) ly 1 (if mine (c-gold) (c-rose)))
+          (let [vx (+ x 60)]
+            (cond
+              (or (= kind 0) (= kind 1))
+                (do (draw-text "hit" vx ly 1 (c-dim)) (draw-dmg-parts! (+ vx 26) ly b c))
+              (or (= kind 2) (= kind 4))
+                (do (draw-text "mended" vx ly 1 (c-good)) (draw-text "+" (+ vx 49) ly 1 (c-good)) (draw-int a (+ vx 56) ly 1 (c-good))
+                    (draw-text "hull" (+ vx (+ 60 (num-width a 1))) ly 1 (c-faint)))
+              (or (= kind 3) (= kind 5))
+                (do (draw-text "recharged" vx ly 1 (c-kind-def)) (draw-text "+" (+ vx 70) ly 1 (c-kind-def)) (draw-int a (+ vx 77) ly 1 (c-kind-def))
+                    (draw-text "armor" (+ vx (+ 81 (num-width a 1))) ly 1 (c-faint)))
+              (or (= kind 6) (= kind 7)) (draw-text "wire burnt out" vx ly 1 (c-rose))
+              :else (do (draw-text "cut" vx ly 1 (c-dim)) (draw-text (item-name a) (+ vx 28) ly 1 (c-ink))))))))))
+
+;; ---- what is under the pointer -----------------------------------------------------------------------------------------------------------
+(defn render-inspect! [] : Unit
+  (let [sh (gi (g-fh-ship)) cell (gi (g-fh-cell))]
+    (when (>= sh 0)
+      (do
+        (gi! (g-ship) sh)
+        (let [r (/ cell 6) c (mod cell 6) o (cell-owner r c)
+              gx (if (= sh 0) (fg-x) (og-x)) gy (if (= sh 0) (fg-y) (og-y)) gs (if (= sh 0) (fg-s) (og-s))]
+          (rect-outline-a (+ gx (* c gs)) (+ gy (* r gs)) gs gs (c-ink) 240)
+          (when (!= o 0)
+            (let [item (st-item (- o 1)) role (cell-role r c)
+                  x 360 y 112]
+              (card x y 240 158 (c-panel) 248 (c-line) 255)
+              (draw-text (item-name item) (+ x 10) (+ y 10) 1 (c-ink))
+              (draw-text-r (if (= sh 0) "yours" "theirs") (+ x 230) (+ y 10) 1 (c-faint))
+              (draw-text (cell-state-text r c) (+ x 10) (+ y 28) 1 (state-color r c))
+              (let [(ly : I32) (+ y 48)]
+                (when (and (= role (r-weapon)) (= (cell-power r c) 1))
+                  (let [(ch : F32) (loadf32 (sim-charge-addr (- o 1)))
+                        (thr : F32) (weapon-thr item)
+                        (e : F32) (* 10.0 (gain-f (cell-gain r c)))
+                        left (i32 (floor (+ (/ (- thr ch) e) 0.999)))]
+                    (draw-weapon-rate! r c item (+ x 10) ly)
+                    (meter (+ x 10) (+ ly 18) 220 8 (/ ch thr) (c-gold))
+                    (draw-text (if (<= left 0) "fires now" "fires in") (+ x 10) (+ ly 32) 1 (c-faint))
+                    (when (> left 0)
+                      (do (draw-int left (+ x 70) (+ ly 32) 1 (c-ink)) (draw-text "s" (+ x (+ 70 (num-width left 1))) (+ ly 32) 1 (c-faint))))
+                    (set! ly (+ ly 54))))
+                (when (and (consumer-role? role) (= (cell-power r c) 0) (= (cell-burned r c) 0))
+                  (do (draw-text (unfed-reason r c) (+ x 10) ly 1 (c-rose)) (set! ly (+ ly 18))))
+                (dotimes [k 4] (when (< (+ ly (* k 14)) (+ y 152)) (draw-text (item-info item k) (+ x 10) (+ ly (* k 14)) 1 (if (= k 0) (c-dim) (c-faint)))))))))
+        (gi! (g-ship) 0)))))
+
+(defn ship-shots [(ship : I32)] : I32
+  (let [(saved : I32) (gi (g-ship))]
+    (gi! (g-ship) ship)
+    (let [v (gi (g-sim-shots))] (do (gi! (g-ship) saved) v))))
+
 (defn render-fight! [] : Unit
   (let [now (gi (g-ticker))
         t (gi (g-tick))
-        sinceShot (- now (gi (g-shot-t)))
         sinceHit (- now (gi (g-hit-t)))
         sinceOHit (- now (gi (g-ohit-t)))
         (frac : F32) (if (= (gi (g-rb-on)) 1) 0.0 (clamp-f (/ (f32 (- now (gi (g-tick-t)))) 1000.0) 0.0 1.0))]
@@ -423,39 +723,40 @@
     (draw-text-r "second" 936 44 1 (c-faint))
     (draw-int-r t 888 44 1 (c-ink))
     ;; you
-    (draw-text "YOUR SHIP" (fg-x) 72 1 (c-dim))
-    (draw-grid! (fg-x) (fg-y) (fg-s) true)
+    (draw-text "YOUR SHIP" (fg-x) 58 1 (c-dim))
+    (draw-ship-grid! 0 (fg-x) (fg-y) (fg-s) true)
     (when (< sinceHit 380)
       (fill-rect-a (- (fg-x) 8) (- (fg-y) 8) (+ (* (fg-s) 6) 16) (+ (* (fg-s) 6) 16) (c-rose) (- 90 (/ (* sinceHit 90) 380))))
     (draw-vitals! (fg-x) 424 300 (gi (g-hull-you)) (gi (g-armor-you)) (gi (g-armor0-you)) true)
-    ;; them
-    (draw-text "OPPONENT" 616 76 1 (c-dim))
-    (draw-sealed-hold! 616 108 50)
+    ;; them: the ship the server showed us, wired and working
+    (draw-text "OPPONENT" (og-x) 58 1 (c-dim))
+    (if (= (gi (g-opp-known)) 1)
+        (draw-ship-grid! 1 (og-x) (og-y) (og-s) true)
+        (draw-unseen-hold! (og-x) (og-y) (og-s)))
     (when (< sinceOHit 380)
-      (fill-rect-a 608 100 316 316 (c-gold) (- 80 (/ (* sinceOHit 80) 380))))
-    (draw-vitals! 616 424 300 (gi (g-hull-opp)) (gi (g-armor-opp)) (max-i (gi (g-armor0-opp)) 1) false)
-    ;; the shot: a pale line across the middle for a moment
-    (when (< sinceShot 420)
-      (let [a (- 220 (/ (* sinceShot 220) 420))
-            y (+ 258 (- 0 (/ sinceShot 40)))]
-        (fill-rect-a 366 y 232 2 (c-gold) a)
-        (disc (f32 (+ 366 (/ (* 232 sinceShot) 420))) (f32 (+ y 1)) 4.0 (c-gold) a)))
-    ;; middle column
-    (draw-text-c "ROUND" 480 150 1 (c-faint))
-    (draw-int-c (+ (/ t 5) 1) 480 168 2 (c-ink))
-    (draw-text-c "SHOTS" 480 214 1 (c-faint))
-    (draw-int-c (gi (g-sim-shots)) 480 232 2 (c-gold))
-    (when (> (gi (g-sim-shat)) 0)
-      (do (draw-text-c "WIRE BURNT OUT" 480 290 1 (c-rose))))
+      (fill-rect-a (- (og-x) 8) (- (og-y) 8) 316 316 (c-gold) (- 80 (/ (* sinceOHit 80) 380))))
+    (draw-vitals! (og-x) 424 300 (gi (g-hull-opp)) (gi (g-armor-opp)) (max-i (gi (g-armor0-opp)) 1) false)
+    ;; cargo breaks a tie at thirty seconds
+    (draw-text "CARGO" 160 510 1 (c-faint)) (draw-int (gi (g-cargo-you)) 210 510 1 (c-dim))
+    (draw-text "CARGO" (og-x) 500 1 (c-faint)) (draw-int (gi (g-cargo-opp)) (+ (og-x) 50) 500 1 (c-dim))
+    (draw-text "most cargo wins a tie at 30 s" 700 500 1 (c-faint))
+    ;; middle column: the round, the shots, the log
+    (draw-text-c "ROUND" 480 58 1 (c-faint))
+    (draw-int-c (+ (/ t 5) 1) 480 74 2 (c-ink))
+    (draw-text-c "SHOTS" 440 100 1 (c-faint)) (draw-int-c (ship-shots 0) 440 112 1 (c-gold))
+    (draw-text-c "SHOTS" 520 100 1 (c-faint)) (draw-int-c (ship-shots 1) 520 112 1 (c-rose))
+    (render-bolts!)
+    (render-log! 360 306)
     ;; panic cut chips
     (let [(chips : I32) 0]
       (dotimes [k 4]
         (let [i (cut-slot-item k)]
           (when (>= i 0)
             (do (set! chips (+ chips 1))
-                (card (+ 160 (* k 74)) 68 70 22 (c-panel) 235 (c-line) 255)
-                (draw-text-c (case (st-item i) 5 "Cut Ti" "Cut Ore") (+ 195 (* k 74)) 71 1 (if (= (gi (g-rb-on)) 0) (c-ink) (c-faint)))))))
-      (when (> chips 0) (draw-text "PANIC CUT" 88 76 1 (c-faint))))
+                (card (+ 160 (* k 74)) 76 70 22 (c-panel) 235 (c-line) 255)
+                (draw-text-c (case (st-item i) 5 "Cut Ti" "Cut Ore") (+ 195 (* k 74)) 79 1 (if (= (gi (g-rb-on)) 0) (c-ink) (c-faint)))))))
+      (when (> chips 0) (draw-text "PANIC CUT" 88 81 1 (c-faint))))
+    (render-inspect!)
     ;; forfeit
     (if (= (gi (g-leave-ask)) 1)
         (do (button 44 506 150 24 "CONFIRM FORFEIT" true true)

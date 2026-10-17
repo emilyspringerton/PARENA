@@ -6,13 +6,13 @@ const { instance } = await WebAssembly.instantiate(fs.readFileSync(process.argv[
 const e = instance.exports;
 e.d2_init();
 const lines = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n');
-let ships = 0, bad = 0, melt = 0, cuts = 0, shotsTotal = 0;
+let ships = 0, bad = 0, melt = 0, cuts = 0, shotsTotal = 0, dmgTotal = 0, mended = 0, items = new Set();
 for (let i = 0; i < lines.length;) {
   const s = lines[i++].split(' ');
   if (s[0] !== 'S') throw new Error('bad line ' + lines[i - 1]);
   const idx = s[1], n = +s[2];
   e.d2_t_clear();
-  for (let k = 0; k < n; k++) { const [it, r, c, rot, cut] = s[3 + k].split(',').map(Number); e.d2_t_add(it, r, c, rot, cut); cuts += cut; }
+  for (let k = 0; k < n; k++) { const [it, r, c, rot, cut] = s[3 + k].split(',').map(Number); e.d2_t_add(it, r, c, rot, cut); cuts += cut; items.add(it); }
   const problems = e.d2_t_rebuild();
   const a = lines[i++].split(' ');
   const fail = (m) => { bad++; if (bad < 8) console.log(`ship ${idx}: ${m}`); };
@@ -23,14 +23,18 @@ for (let i = 0; i < lines.length;) {
     const T = lines[i++].split(' ');
     const shots = e.d2_t_tick();
     shotsTotal += shots;
+    const dmg = e.d2_t_dmg(); dmgTotal += dmg;
     const lo = e.d2_t_burn_lo() >>> 0, hi = e.d2_t_burn_hi() >>> 0;
     const mask = (BigInt(hi) << 32n) | BigInt(lo);
-    if (shots !== +T[2]) fail(`tick ${t}: shots ${shots} != ${T[2]}`);
+    if (dmg !== +T[2]) fail(`tick ${t}: damage dealt ${dmg} != ${T[2]}`);
     if (e.d2_t_shat() !== +T[3]) fail(`tick ${t}: meltdowns ${e.d2_t_shat()} != ${T[3]}`);
     if (mask !== BigInt('0x' + T[4])) fail(`tick ${t}: burned ${mask.toString(16)} != ${T[4]}`);
+    if (e.d2_t_hull() !== +T[5]) fail(`tick ${t}: hull ${e.d2_t_hull()} != ${T[5]}`);
+    if (e.d2_t_sarmor() !== +T[6]) fail(`tick ${t}: armor ${e.d2_t_sarmor()} != ${T[6]}`);
     if (+T[3] > 0 && t === 30) melt++;
+    if (t === 30 && +T[5] > 40) mended++;
   }
   ships++;
 }
-console.log(`${ships} ships, ${shotsTotal} shots, ${melt} ships with a meltdown, ${cuts} cut items: ${bad ? bad + ' MISMATCHES' : 'every tick agrees with the C core'}`);
+console.log(`${ships} ships, ${shotsTotal} shots, ${dmgTotal} damage, ${melt} ships with a meltdown, ${mended} that mended, ${cuts} cut items, ${items.size} of 12 items used: ${bad ? bad + ' MISMATCHES' : 'every tick agrees with the C core'}`);
 process.exit(bad ? 1 : 0);

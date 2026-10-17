@@ -11,6 +11,46 @@
     (when (!= (bit-and port 2) 0) (fill-rect-a (- (+ x h) w) (- (+ y h) w) (* w 2) (+ h w) c a))
     (when (!= (bit-and port 1) 0) (fill-rect-a x (- (+ y h) w) (+ h w) (* w 2) c a))))
 
+;; ---- direction affordances: which way energy goes in and out of a part ----------------------------------------------------------------
+;; port bit -> compass index (0 N, 1 E, 2 S, 3 W)
+(defn port-dir [(b : I32)] : I32 (cond (= b 8) 0 (= b 4) 1 (= b 2) 2 :else 3))
+(defn dir-dx [(d : I32)] : I32 (case d 1 1 3 -1 0))
+(defn dir-dy [(d : I32)] : I32 (case d 0 -1 2 1 0))
+
+;; what one open side of a part does: 1 energy comes IN here, 2 energy goes OUT here, 3 it is a through wire (either way), 0 nothing
+(defn port-flow [(role : I32) (port : I32) (b : I32)] : I32
+  (cond (= role (r-gen)) 2
+        (= role (r-split)) (if (= (bit-and port (opposite-port b)) 0) 1 2)
+        (or (= role (r-weapon)) (or (= role (r-mender)) (= role (r-aegis)))) 1
+        (or (= role (r-cond)) (= role (r-amp))) 3
+        :else 0))
+
+;; a chevron whose tip is at (px, py) pointing along compass direction d
+(defn chevron! [(px : I32) (py : I32) (d : I32) (k : I32) (c : I32) (a : I32)] : Unit
+  (let [dx (dir-dx d) dy (dir-dy d)]
+    ;; the two arms trail back from the tip and open sideways
+    (line-a px py (- (- px (* dx k)) (* dy k)) (- (- py (* dy k)) (* dx k)) c a)
+    (line-a px py (+ (- px (* dx k)) (* dy k)) (+ (- py (* dy k)) (* dx k)) c a)
+    (line-a (+ px dy) (+ py dx) (- (- (+ px dy) (* dx k)) (* dy k)) (- (- (+ py dx) (* dy k)) (* dx k)) c (/ a 2))
+    (line-a (+ px dy) (+ py dx) (+ (- (+ px dy) (* dx k)) (* dy k)) (+ (- (+ py dx) (* dy k)) (* dx k)) c (/ a 2))))
+
+(defn c-in [] : I32 (rgb 110 196 214))      ; energy coming in
+(defn c-out [] : I32 (rgb 238 196 104))     ; energy going out
+
+;; arrows on every open side of a part: teal points IN, gold points OUT, so a rotation can be read at a glance
+(defn draw-port-arrows! [(x : I32) (y : I32) (s : I32) (role : I32) (port : I32)] : Unit
+  (when (>= s 22)
+    (let [cx (+ x (/ s 2)) cy (+ y (/ s 2)) k (max-i 4 (/ s 8))]
+      (dotimes [i 4]
+        (let [b (shl 1 i)]
+          (when (!= (bit-and port b) 0)
+            (let [f (port-flow role port b) d (port-dir b)
+                  ex (+ cx (* (dir-dx d) (- (/ s 2) 8))) ey (+ cy (* (dir-dy d) (- (/ s 2) 8)))]
+              (cond
+                (= f 1) (chevron! (- ex (* (dir-dx d) (+ k 2))) (- ey (* (dir-dy d) (+ k 2))) (mod (+ d 2) 4) k (c-in) 240)
+                (= f 2) (chevron! (+ ex (* (dir-dx d) 1)) (+ ey (* (dir-dy d) 1)) d k (c-out) 245)
+                :else unit))))))))
+
 ;; role art on a cell of side s at (x, y). kind colours it (0 offense, 1 operations, 2 defense).
 (defn draw-role! [(x : I32) (y : I32) (s : I32) (role : I32) (port : I32) (kind : I32) (pulse : I32)] : Unit
   (let [kc (c-kind kind)
@@ -35,6 +75,24 @@
             (draw-ports! x y s port (c-ink) (+ 150 (/ pulse 2)))
             (disc cx cy (* fs 0.18) (c-ink) 235)
             (disc cx cy (* fs 0.08) (c-bg) 255))
+      (= role (r-amp))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 96)
+            (draw-ports! x y s port (c-ink) (+ 170 (/ pulse 2)))
+            (disc cx cy (* fs 0.27) (c-bg) 255)
+            (ring cx cy (* fs 0.27) 2.0 (c-gold) 240)
+            (when (>= s 24) (draw-text-c "x1.5" (i32 cx) (- (i32 cy) 4) 1 (c-gold))))
+      (= role (r-mender))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 100)
+            (draw-ports! x y s port (c-ink) 200)
+            (let [(h : F32) (* fs 0.22) (t : F32) (fmax2 2.0 (* fs 0.07))]
+              (fill-rect (i32 (- cx t)) (i32 (- cy h)) (i32 (* t 2.0)) (i32 (* h 2.0)) (c-good))
+              (fill-rect (i32 (- cx h)) (i32 (- cy t)) (i32 (* h 2.0)) (i32 (* t 2.0)) (c-good))))
+      (= role (r-aegis))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 120)
+            (draw-ports! x y s port (c-ink) 200)
+            (ring cx cy (* fs 0.3) 3.0 (c-kind-def) 255)
+            (ring cx cy (* fs 0.17) 2.0 (c-ink) 200)
+            (disc cx cy (* fs 0.07) (c-ink) 230))
       (= role (r-weapon))
         (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 130)
             (draw-ports! x y s port (c-ink) 200)
@@ -48,9 +106,69 @@
         (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) (c-ground2) 255)
             (dotimes [k (/ s 6)]
               (line-a (+ x 3) (+ y (* k 6) 8) (+ x (+ (* k 6) 8) 0) (+ y 3) kc 90))
-            (rect-outline-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 80)))))
+            (rect-outline-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 80)))
+    (draw-port-arrows! x y s role port)))
 
-;; the cell at grid (r, c) drawn at (x, y), side s: art, piece outline, the wiring's glow, scorch
+;; ---- energy pulses: the circuit working ------------------------------------------------------------------------------------------------
+;; g-pulse is the ms since energy last left the generators (a fight: since the last tick; packing: a free-running loop), -1 when nothing flows.
+;; A packet crosses one cell per hop; a cell d wires from its generator sees it d hops late, so the whole circuit visibly fills from the source.
+(defn pulse-hop [] : I32 (if (= (gi (g-screen)) 3) 80 95))
+
+(defn edge-x [(x : I32) (s : I32) (b : I32)] : F32 (case b 4 (f32 (+ x s)) 1 (f32 x) (+ (f32 x) (/ (f32 s) 2.0))))
+(defn edge-y [(y : I32) (s : I32) (b : I32)] : F32 (case b 2 (f32 (+ y s)) 8 (f32 y) (+ (f32 y) (/ (f32 s) 2.0))))
+
+(defn gain-color [(lvl : I32)] : I32 (case lvl 0 (rgb 255 234 160) 1 (rgb 255 168 72) (rgb 255 96 80)))
+
+(defn packet-dot! [(px : F32) (py : F32) (rr : F32) (c : I32) (a : I32)] : Unit
+  (do (disc px py (* rr 2.4) c (/ a 6)) (disc px py rr c a)))
+
+;; one packet at progress u (0..0.5 from the side it came in by to the middle, 0.5..1 from the middle out of every open output)
+(defn draw-pt! [(x : I32) (y : I32) (s : I32) (inb : I32) (outs : I32) (u : F32) (c : I32) (a : I32) (rr : F32)] : Unit
+  (let [(cx : F32) (+ (f32 x) (/ (f32 s) 2.0)) (cy : F32) (+ (f32 y) (/ (f32 s) 2.0))]
+    (if (< u 0.5)
+        (when (!= inb 0)
+          (let [(t : F32) (* u 2.0)]
+            (packet-dot! (lerp (edge-x x s inb) cx t) (lerp (edge-y y s inb) cy t) rr c a)))
+        (let [(t : F32) (* (- u 0.5) 2.0)]
+          (dotimes [i 4]
+            (let [b (shl 1 i)]
+              (when (!= (bit-and outs b) 0)
+                (packet-dot! (lerp cx (edge-x x s b) t) (lerp cy (edge-y y s b) t) rr c a))))))))
+
+(defn draw-cell-flow! [(r : I32) (c : I32) (x : I32) (y : I32) (s : I32)] : Unit
+  (let [pulse (gi (g-pulse))]
+    (when (and (>= pulse 0) (= (cell-power r c) 1))
+      (let [hop (pulse-hop) d (cell-depth r c) role (cell-role r c) lvl (cell-gain r c)
+            col (gain-color lvl) port (cell-port r c)
+            gen (= role (r-gen))
+            inb (if gen 0 (cell-in-port r c))
+            thru (or (= role (r-cond)) (or (= role (r-split)) (= role (r-amp))))
+            outs (cond gen port thru (bit-and port (bit-xor inb 15)) :else 0)
+            (t : F32) (- (f32 pulse) (f32 (* d hop)))
+            (u : F32) (if gen (+ 0.5 (/ t (* 2.0 (f32 hop)))) (/ t (f32 hop)))
+            (rr : F32) (fmax2 2.5 (/ (f32 s) 11.0))]
+        (when (and (>= u 0.0) (< u 1.7))
+          (do
+            (when (< u 1.0)
+              (dotimes [k 3]
+                (let [(uu : F32) (- u (* 0.13 (f32 k)))]
+                  (when (and (>= uu 0.0) (or (not gen) (>= uu 0.5)))
+                    (draw-pt! x y s inb outs uu col (- 255 (* k 85)) (- rr (* 0.4 (f32 k))))))))
+            ;; a part that takes the energy answers when it lands: weapons spark, a Mender raises a cross, an Aegis Emitter rings
+            (when (and (not thru) (not gen) (>= u 0.5))
+              (let [(q : F32) (clamp-f (/ (- u 0.5) 1.2) 0.0 1.0)
+                    (cx : F32) (+ (f32 x) (/ (f32 s) 2.0)) (cy : F32) (+ (f32 y) (/ (f32 s) 2.0))
+                    al (i32 (* 220.0 (- 1.0 q)))
+                    (rad : F32) (* (f32 s) (+ 0.14 (* 0.3 q)))]
+                (cond
+                  (= role (r-mender))
+                    (do (line-a (i32 cx) (i32 (- cy rad)) (i32 cx) (i32 (+ cy rad)) (c-good) al)
+                        (line-a (i32 (- cx rad)) (i32 cy) (i32 (+ cx rad)) (i32 cy) (c-good) al))
+                  (= role (r-aegis)) (ring cx cy rad 2.0 (c-kind-def) al)
+                  (= role (r-weapon)) (ring cx cy rad 2.0 col al)
+                  :else unit)))))))))
+
+;; the cell at grid (r, c) drawn at (x, y), side s: art, piece outline, the circuit's glow and packets, scorch
 (defn draw-grid-cell! [(r : I32) (c : I32) (x : I32) (y : I32) (s : I32) (live : Bool)] : Unit
   (let [o (cell-owner r c)
         (t : F32) (f32 (gi (g-ticker)))
@@ -61,22 +179,31 @@
           (line-a (+ x 4) (+ y 4) (- (+ x s) 5) (- (+ y s) 5) (c-faint) 120)
           (line-a (- (+ x s) 5) (+ y 4) (+ x 4) (- (+ y s) 5) (c-faint) 120)))
     (when (!= o 0)
-      (let [kind (item-kind (st-item (- o 1)))
+      (let [item (st-item (- o 1))
+            kind (item-kind item)
             role (cell-role r c) port (cell-port r c)
-            pw (cell-power r c)]
-        (draw-role! x y s role port kind (if (= pw 1) (+ 100 ph) 0))
+            pw (cell-power r c)
+            consumer (or (= role (r-weapon)) (or (= role (r-mender)) (= role (r-aegis))))]
+        (draw-role! x y s role port kind (if (= pw 1) (+ 100 (/ ph 3)) 0))
         ;; the piece's outline: a line wherever the neighbour is a different piece
         (let [w 2]
           (when (or (= r 0) (!= (cell-owner (- r 1) c) o)) (fill-rect-a x y s w (c-ink) 120))
           (when (or (= r 5) (!= (cell-owner (+ r 1) c) o)) (fill-rect-a x (- (+ y s) w) s w (c-ink) 120))
           (when (or (= c 0) (!= (cell-owner r (- c 1)) o)) (fill-rect-a x y w s (c-ink) 120))
           (when (or (= c 5) (!= (cell-owner r (+ c 1)) o)) (fill-rect-a (- (+ x s) w) y w s (c-ink) 120)))
-        (when (= pw 1) (fill-rect-a x y s s (c-gold) (+ 30 (/ ph 3))))
+        (when (= pw 1) (fill-rect-a x y s s (c-gold) 22))
         (when (= pw 2) (fill-rect-a x y s s (c-rose) (+ 70 (abs-i ph))))
+        ;; a part that needs energy and gets none says so
+        (when (and consumer (= pw 0) (= (cell-burned r c) 0))
+          (do (rect-outline-a (+ x 1) (+ y 1) (- s 2) (- s 2) (c-rose) (+ 120 (abs-i ph)))
+              (rect-outline-a (+ x 2) (+ y 2) (- s 4) (- s 4) (c-rose) (/ (+ 120 (abs-i ph)) 2))
+              (when (>= s 30) (draw-text-c "UNFED" (+ x (/ s 2)) (+ y (- s 14)) 1 (c-rose)))))
+        (draw-cell-flow! r c x y s)
         (when (and live (= role (r-weapon)))
-          (let [(ch : F32) (loadf32 (sim-charge-addr (- o 1)))]
+          (let [(ch : F32) (loadf32 (sim-charge-addr (- o 1)))
+                (thr : F32) (fmax2 1.0 (weapon-thr item))]
             (fill-rect-a (+ x 4) (- (+ y s) 7) (- s 8) 3 (c-shadow) 200)
-            (fill-rect (+ x 4) (- (+ y s) 7) (i32 (* (f32 (- s 8)) (clamp-f (/ ch 30.0) 0.0 1.0))) 3 (c-gold))))
+            (fill-rect (+ x 4) (- (+ y s) 7) (i32 (* (f32 (- s 8)) (clamp-f (/ ch thr) 0.0 1.0))) 3 (c-gold))))
         (when (!= (cell-burned r c) 0)
           (do (fill-rect-a x y s s (c-shadow) 170)
               (line-a (+ x 5) (+ y 5) (- (+ x s) 6) (- (+ y s) 6) (c-rose) 230)
@@ -86,6 +213,12 @@
 (defn draw-grid! [(x : I32) (y : I32) (s : I32) (live : Bool)] : Unit
   (do (card (- x 8) (- y 8) (+ (* s 6) 16) (+ (* s 6) 16) (c-panel) 235 (c-line) 255)
       (dotimes [r 6] (dotimes [c 6] (draw-grid-cell! r c (+ x (* c s)) (+ y (* r s)) s live)))))
+
+;; the player's grid (ship 0) or the opponent's (ship 1) -- the rules functions read whichever g-ship names
+(defn draw-ship-grid! [(ship : I32) (x : I32) (y : I32) (s : I32) (live : Bool)] : Unit
+  (do (gi! (g-ship) ship)
+      (draw-grid! x y s live)
+      (gi! (g-ship) 0)))
 
 ;; an item's shape (base cells, rotation rot) as a small icon with its top-left at (x, y), cell side s
 (defn draw-item-icon! [(item : I32) (rot : I32) (x : I32) (y : I32) (s : I32) (alpha : I32)] : Unit
