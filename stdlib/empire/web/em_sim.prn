@@ -1,0 +1,652 @@
+;; stdlib/empire/web/em_sim.prn -- the EMPIRE simulation: one deterministic 20 Hz step over a fixed memory region.
+;;
+;; INTEGERS ONLY (the one square root is the exact F64 one): the browser and the server step the same module, so the same commands must give the same
+;; board on both, bit for bit. Everything the step reads or writes lives in the SIM region (sim-base .. +sim-len), so a snapshot is a memcpy and
+;; em_sim_hash() is a hash of that region. Nothing in the step is random: the only random numbers are the two deck shuffles at the start, and the AIs
+;; (em_ai.prn) keep their own generator outside the region. A match is therefore fully described by (seed, decks, factions, [tick, seat, slot, x, y]).
+;;
+;; Seats: 0 holds the bottom of the arena, 1 the top. Positions are 256 to a tile (arena 4608 x 8192). A play's x / y arrive in quarter tiles.
+
+;; ---- the region ------------------------------------------------------------------------------------------------------------------------
+(defn h [(k : I32)] : I32 (load32 (+ (sim-base) (shl k 2))))
+(defn h! [(k : I32) (v : I32)] : Unit (store32! (+ (sim-base) (shl k 2)) v))
+(defn h-tick [] : I32 0) (defn h-over [] : I32 1) (defn h-winner [] : I32 2) (defn h-reason [] : I32 3)
+(defn h-crowns [(s : I32)] : I32 (+ 4 s))
+(defn h-elixir [(s : I32)] : I32 (+ 6 s))
+(defn h-decorum [(s : I32)] : I32 (+ 8 s))
+(defn h-faction [(s : I32)] : I32 (+ 10 s))
+(defn h-next [(s : I32)] : I32 (+ 12 s))
+(defn h-quiet [(s : I32)] : I32 (+ 14 s))
+(defn h-rng [] : I32 16) (defn h-ot [] : I32 17)
+(defn h-last-card [(s : I32)] : I32 (+ 18 s))
+(defn h-last-tick [(s : I32)] : I32 (+ 20 s))
+(defn h-deck [(s : I32) (k : I32)] : I32 (+ 24 (+ (* s 8) k)))
+(defn h-hand [(s : I32) (k : I32)] : I32 (+ 40 (+ (* s 4) k)))
+(defn h-stat [(s : I32) (k : I32)] : I32 (+ 64 (+ (* s 16) k)))
+(defn h-plays [(s : I32) (c : I32)] : I32 (+ 96 (+ (* s 16) c)))
+(defn h-feed [(i : I32) (k : I32)] : I32 (+ 128 (+ (* (bit-and i 7) 4) k)))
+(defn h-feed-n [] : I32 160)
+(defn h-cmdn [] : I32 161)
+(defn h-deploys [] : I32 162)
+
+(defn st-elixir-spent [] : I32 0) (defn st-elixir-wasted [] : I32 1) (defn st-plays [] : I32 2) (defn st-mythic [] : I32 3)
+(defn st-spells [] : I32 4) (defn st-deployed [] : I32 5) (defn st-lost [] : I32 6) (defn st-kills [] : I32 7)
+(defn st-tower-dmg [] : I32 8) (defn st-dmg [] : I32 9) (defn st-cancelled [] : I32 10) (defn st-min-decorum [] : I32 11)
+(defn st-first [] : I32 12) (defn st-pumped [] : I32 13) (defn st-healed [] : I32 14) (defn st-refused [] : I32 15)
+(defn stat+! [(s : I32) (k : I32) (v : I32)] : Unit (h! (h-stat s k) (+ (h (h-stat s k)) v)))
+
+(defn tower-base [] : I32 (+ (sim-base) 1024))
+(defn unit-base [] : I32 (+ (sim-base) 1536))
+(defn fx-base [] : I32 (+ (sim-base) 10752))
+(defn max-units [] : I32 96)
+(defn max-fx [] : I32 24)
+
+(defn tw [(t : I32) (k : I32)] : I32 (load32 (+ (tower-base) (+ (shl t 6) (shl k 2)))))
+(defn tw! [(t : I32) (k : I32) (v : I32)] : Unit (store32! (+ (tower-base) (+ (shl t 6) (shl k 2))) v))
+(defn t-alive [] : I32 0) (defn t-owner [] : I32 1) (defn t-type [] : I32 2) (defn t-x [] : I32 3) (defn t-y [] : I32 4)
+(defn t-hp [] : I32 5) (defn t-maxhp [] : I32 6) (defn t-cd [] : I32 7) (defn t-active [] : I32 8) (defn t-tgt [] : I32 9)
+(defn t-flash [] : I32 10) (defn t-sil [] : I32 11) (defn t-atk [] : I32 12)
+
+(defn un [(i : I32) (k : I32)] : I32 (load32 (+ (unit-base) (+ (* i 96) (shl k 2)))))
+(defn un! [(i : I32) (k : I32) (v : I32)] : Unit (store32! (+ (unit-base) (+ (* i 96) (shl k 2))) v))
+(defn u-alive [] : I32 0) (defn u-owner [] : I32 1) (defn u-card [] : I32 2) (defn u-x [] : I32 3) (defn u-y [] : I32 4)
+(defn u-px [] : I32 5) (defn u-py [] : I32 6) (defn u-hp [] : I32 7) (defn u-maxhp [] : I32 8) (defn u-tgt [] : I32 9)
+(defn u-cd [] : I32 10) (defn u-deploy [] : I32 11) (defn u-slow [] : I32 12) (defn u-slowpct [] : I32 13) (defn u-sil [] : I32 14)
+(defn u-aux [] : I32 15) (defn u-flash [] : I32 16) (defn u-dmgpct [] : I32 17) (defn u-atk [] : I32 18) (defn u-born [] : I32 19)
+(defn u-heal [] : I32 20) (defn u-id [] : I32 21) (defn u-lastby [] : I32 22)
+
+(defn fxw [(e : I32) (k : I32)] : I32 (load32 (+ (fx-base) (+ (shl e 5) (shl k 2)))))
+(defn fxw! [(e : I32) (k : I32) (v : I32)] : Unit (store32! (+ (fx-base) (+ (shl e 5) (shl k 2))) v))
+(defn f-on [] : I32 0) (defn f-kind [] : I32 1) (defn f-owner [] : I32 2) (defn f-x [] : I32 3) (defn f-y [] : I32 4)
+(defn f-r [] : I32 5) (defn f-land [] : I32 6) (defn f-card [] : I32 7)
+
+;; ---- small things ------------------------------------------------------------------------------------------------------------------------
+(defn d2 [(x1 : I32) (y1 : I32) (x2 : I32) (y2 : I32)] : I32
+  (let [dx (- x1 x2) dy (- y1 y2)] (+ (* dx dx) (* dy dy))))
+(defn dist [(x1 : I32) (y1 : I32) (x2 : I32) (y2 : I32)] : I32 (isqrt (d2 x1 y1 x2 y2)))
+
+;; xorshift32 for the two shuffles
+(defn rng-next! [] : I32
+  (let [(x : I32) (h (h-rng))]
+    (set! x (bit-xor x (shl x 13)))
+    (set! x (bit-xor x (ushr x 17)))
+    (set! x (bit-xor x (shl x 5)))
+    (h! (h-rng) x)
+    x))
+(defn rng-below! [(n : I32)] : I32 (mod (ushr (rng-next!) 1) n))
+
+(defn tick-now [] : I32 (h (h-tick)))
+(defn elixir-of [(s : I32)] : I32 (h (h-elixir s)))
+(defn band-of [(s : I32)] : I32 (bo-decorum-band (h (h-decorum s))))
+(defn hand-card [(s : I32) (k : I32)] : I32 (h (h-hand s k)))
+(defn next-card [(s : I32)] : I32 (h (h-deck s (h (h-next s)))))
+(defn crowns-of [(s : I32)] : I32 (h (h-crowns s)))
+(defn match-over? [] : Bool (!= (h (h-over)) 0))
+(defn mythic-hold [(s : I32)] : I32 (fac-spend (h (h-faction s))))
+
+;; ---- starting a match --------------------------------------------------------------------------------------------------------------------
+(defn sim-clear! [] : Unit
+  (let [base (sim-base)]
+    (loop [i 0] (when (< i (/ (sim-len) 4)) (do (store32! (+ base (shl i 2)) 0) (recur (+ i 1)))))))
+
+(defn deck-shuffle! [(s : I32) (deck : I32)] : Unit
+  (do (dotimes [k 8] (h! (h-deck s k) (deck-card deck k)))
+      (loop [i 7]
+        (when (> i 0)
+          (let [j (rng-below! (+ i 1))
+                a (h (h-deck s i))]
+            (h! (h-deck s i) (h (h-deck s j)))
+            (h! (h-deck s j) a)
+            (recur (- i 1)))))
+      (dotimes [k 4] (h! (h-hand s k) (h (h-deck s k))))
+      (h! (h-next s) 4)))
+
+(defn tower-init! [(s : I32) (ty : I32)] : Unit
+  (let [t (+ (* s 3) ty)]
+    (tw! t (t-alive) 1) (tw! t (t-owner) s) (tw! t (t-type) ty)
+    (tw! t (t-x) (tower-x s ty)) (tw! t (t-y) (tower-y s ty))
+    (tw! t (t-hp) (tower-hp0 ty)) (tw! t (t-maxhp) (tower-hp0 ty))
+    (tw! t (t-cd) 24) (tw! t (t-active) (if (= ty 2) 0 1)) (tw! t (t-tgt) -1)))
+
+(defn sim-begin! [(seed : I32) (deck0 : I32) (fac0 : I32) (deck1 : I32) (fac1 : I32)] : Unit
+  (do
+    (sim-clear!)
+    (h! (h-rng) (if (= seed 0) 2463534242 seed))
+    (h! (h-winner) -1)
+    (h! (h-faction 0) (clamp-i fac0 0 2)) (h! (h-faction 1) (clamp-i fac1 0 2))
+    (h! (h-decorum 0) (fac-start (h (h-faction 0)))) (h! (h-decorum 1) (fac-start (h (h-faction 1))))
+    (h! (h-elixir 0) (elixir-start)) (h! (h-elixir 1) (elixir-start))
+    (h! (h-quiet 0) (fac-quiet (h (h-faction 0)))) (h! (h-quiet 1) (fac-quiet (h (h-faction 1))))
+    (h! (h-last-card 0) -1) (h! (h-last-card 1) -1)
+    (stat+! 0 (st-min-decorum) (h (h-decorum 0))) (stat+! 1 (st-min-decorum) (h (h-decorum 1)))
+    (deck-shuffle! 0 deck0) (deck-shuffle! 1 deck1)
+    (dotimes [s 2] (dotimes [ty 3] (tower-init! s ty)))
+    (gi! (g-cmdq-n) 0)))
+
+;; ---- placing ------------------------------------------------------------------------------------------------------------------------------
+(defn in-river? [(x : I32) (y : I32) (body : I32)] : Bool
+  (and (and (> (+ y body) (river-top)) (< (- y body) (river-bot)))
+       (not (or (<= (abs-i (- x (bridge-x 0))) (- (bridge-hw) body))
+                (<= (abs-i (- x (bridge-x 1))) (- (bridge-hw) body))))))
+
+;; may this seat put a troop at (x, y)? Its own half, or the pocket beside the river on a lane whose enemy princess has fallen.
+(defn place-ok? [(s : I32) (x : I32) (y : I32)] : Bool
+  (and (and (>= x 0) (< x (arena-w))) (and (>= y 0) (< y (arena-h)))
+       (if (and (>= y (river-top)) (< y (river-bot)))
+           false
+           (if (= s 0)
+               (or (>= y (river-bot))
+                   (and (>= y (- (river-top) 1280))
+                        (= (tw (+ 3 (if (< x (/ (arena-w) 2)) 0 1)) (t-alive)) 0)))
+               (or (< y (river-top))
+                   (and (< y (+ (river-bot) 1280))
+                        (= (tw (if (< x (/ (arena-w) 2)) 0 1) (t-alive)) 0)))))))
+
+;; ---- units -------------------------------------------------------------------------------------------------------------------------------
+(defn free-unit [] : I32
+  (loop [i 0] (if (>= i (max-units)) -1 (if (= (un i (u-alive)) 0) i (recur (+ i 1))))))
+
+(defn spawn-unit! [(s : I32) (c : I32) (x : I32) (y : I32)] : Unit
+  (let [i (free-unit)]
+    (when (>= i 0)
+      (let [f (h (h-faction s))
+            hp0 (cd c (cw-hp))
+            hp (if (and (= (cd c (cw-mythic)) 0) (> hp0 0)) (/ (* hp0 (fac-hp-pct f)) 100) hp0)]
+        (dotimes [k 24] (un! i k 0))
+        (un! i (u-lastby) -1)
+        (un! i (u-alive) 1) (un! i (u-owner) s) (un! i (u-card) c)
+        (un! i (u-x) (clamp-i x 64 (- (arena-w) 64))) (un! i (u-y) (clamp-i y 64 (- (arena-h) 64)))
+        (un! i (u-px) (un i (u-x))) (un! i (u-py) (un i (u-y)))
+        (un! i (u-hp) hp) (un! i (u-maxhp) hp) (un! i (u-tgt) -1)
+        (un! i (u-cd) 0) (un! i (u-deploy) (cd c (cw-deploy)))
+        (un! i (u-dmgpct) (if (and (= f 1) (= (cd c (cw-mythic)) 1)) 110 100))
+        (un! i (u-born) (tick-now))
+        (un! i (u-aux) (if (= (cd c (cw-fx)) 4)
+                           (/ (* (/ 4000 (max-i 1 (cd c (cw-mag)))) 100) (fac-pump-pct f))
+                           20))
+        (un! i (u-id) (h (h-deploys)))
+        (h! (h-deploys) (+ (h (h-deploys)) 1))
+        (stat+! s (st-deployed) 1)))))
+
+;; where the k-th of n bodies of one play stands
+(defn body-dx [(n : I32) (k : I32)] : I32 (if (= n 1) 0 (if (= k 0) -90 90)))
+
+(defn push-fx! [(kind : I32) (s : I32) (x : I32) (y : I32) (r : I32) (land : I32) (c : I32)] : Unit
+  (let [e (loop [i 0] (if (>= i (max-fx)) -1 (if (= (fxw i (f-on)) 0) i (recur (+ i 1)))))]
+    (when (>= e 0)
+      (fxw! e (f-on) 1) (fxw! e (f-kind) kind) (fxw! e (f-owner) s) (fxw! e (f-x) x) (fxw! e (f-y) y)
+      (fxw! e (f-r) r) (fxw! e (f-land) land) (fxw! e (f-card) c))))
+
+;; ---- hurting / mending ---------------------------------------------------------------------------------------------------------------------
+(defn hurt-unit! [(i : I32) (dmg : I32) (by : I32)] : Unit
+  (when (and (> dmg 0) (= (un i (u-alive)) 1))
+    (let [real (min-i dmg (max-i 0 (un i (u-hp))))]
+      (un! i (u-hp) (- (un i (u-hp)) dmg))
+      (un! i (u-flash) 4)
+      (when (>= by 0) (do (un! i (u-lastby) by) (stat+! by (st-dmg) real))))))
+
+(defn hurt-tower! [(t : I32) (dmg : I32) (by : I32)] : Unit
+  (when (and (> dmg 0) (= (tw t (t-alive)) 1))
+    (let [real (min-i dmg (max-i 0 (tw t (t-hp))))]
+      (tw! t (t-hp) (- (tw t (t-hp)) dmg))
+      (tw! t (t-flash) 4)
+      (tw! t (t-active) 1)
+      (when (>= by 0) (do (stat+! by (st-dmg) real) (stat+! by (st-tower-dmg) real))))))
+
+(defn heal-unit! [(i : I32) (amt : I32) (by : I32)] : Unit
+  (when (= (un i (u-alive)) 1)
+    (let [room (- (un i (u-maxhp)) (un i (u-hp)))
+          got (min-i amt (max-i 0 room))]
+      (when (> got 0)
+        (do (un! i (u-hp) (+ (un i (u-hp)) got))
+            (un! i (u-heal) 6)
+            (when (>= by 0) (stat+! by (st-healed) got)))))))
+
+(defn heal-tower! [(t : I32) (amt : I32) (by : I32)] : Unit
+  (when (= (tw t (t-alive)) 1)
+    (let [room (- (tw t (t-maxhp)) (tw t (t-hp)))
+          got (min-i amt (max-i 0 room))]
+      (when (> got 0)
+        (do (tw! t (t-hp) (+ (tw t (t-hp)) got))
+            (when (>= by 0) (stat+! by (st-healed) got)))))))
+
+(defn silence-unit! [(i : I32) (ticks : I32)] : Unit (when (> ticks (un i (u-sil))) (un! i (u-sil) ticks)))
+(defn slow-unit! [(i : I32) (ticks : I32) (pct : I32)] : Unit
+  (when (or (> ticks (un i (u-slow))) (> pct (un i (u-slowpct))))
+    (do (un! i (u-slow) (max-i ticks (un i (u-slow)))) (un! i (u-slowpct) (max-i pct (un i (u-slowpct)))))))
+
+;; ---- playing a card ------------------------------------------------------------------------------------------------------------------------
+;; why a play is refused: 0 fine, 1 the match is not running, 2 no such slot, 3 not enough elixir, 4 CANCELLED, 5 not there, 6 same tick duplicate
+(defn can-play [(s : I32) (slot : I32) (px : I32) (py : I32)] : I32
+  (if (or (!= (h (h-over)) 0) (= (tick-now) 0)) 1
+      (if (or (< slot 0) (>= slot 4)) 2
+          (let [c (hand-card s slot)]
+            (if (< (elixir-of s) (* (card-cost c) 1000)) 3
+                (if (= (band-of s) 3) 4
+                    (if (and (not (card-spell? c)) (not (place-ok? s px py))) 5 0)))))))
+
+(defn log-cmd! [(s : I32) (slot : I32) (x4 : I32) (y4 : I32)] : Unit
+  (let [n (h (h-cmdn))]
+    (when (< n 4096)
+      (let [a (+ (cmdlog-base) (shl n 3))]
+        (store32! a (tick-now))
+        (store32! (+ a 4) (bit-or s (bit-or (shl slot 4) (bit-or (shl x4 8) (shl y4 16)))))
+        (h! (h-cmdn) (+ n 1))))))
+
+(defn play-card! [(s : I32) (slot : I32) (x4 : I32) (y4 : I32)] : I32
+  (let [px (+ (* x4 64) 32) py (+ (* y4 64) 32)
+        why (can-play s slot px py)]
+    (if (!= why 0)
+        why
+        (let [c (hand-card s slot)
+              f (h (h-faction s))
+              n (cd c (cw-count))]
+          ;; pay
+          (h! (h-elixir s) (- (elixir-of s) (* (card-cost c) 1000)))
+          (stat+! s (st-elixir-spent) (card-cost c))
+          (h! (h-decorum s)
+              (if (is-mythic-card? c)
+                  (bo-clamp-decorum (- (h (h-decorum s)) (fac-spend f)))
+                  (bo-decorum-after (h (h-decorum s)) (on-card-decorum-action c))))
+          (stat+! s (st-plays) 1)
+          (when (is-mythic-card? c) (stat+! s (st-mythic) 1))
+          (when (= (h (h-stat s (st-first))) 0) (h! (h-stat s (st-first)) (tick-now)))
+          (h! (h-plays s c) (+ (h (h-plays s c)) 1))
+          (when (< (h (h-decorum s)) (h (h-stat s (st-min-decorum)))) (h! (h-stat s (st-min-decorum)) (h (h-decorum s))))
+          ;; cycle
+          (h! (h-hand s slot) (h (h-deck s (h (h-next s)))))
+          (h! (h-next s) (mod (+ (h (h-next s)) 1) 8))
+          (h! (h-last-card s) c) (h! (h-last-tick s) (tick-now))
+          (let [fi (h (h-feed-n))]
+            (h! (h-feed fi 0) (tick-now)) (h! (h-feed fi 1) s) (h! (h-feed fi 2) c) (h! (h-feed fi 3) (bit-or x4 (shl y4 8)))
+            (h! (h-feed-n) (+ fi 1)))
+          ;; resolve
+          (if (= (cd c (cw-kind)) 0)
+              (dotimes [k n] (spawn-unit! s c (+ px (body-dx n k)) py))
+              (let [sp (cd c (cw-fx))]
+                (stat+! s (st-spells) 1)
+                (if (= sp 4)
+                    (let [gain (* (/ (cd c (cw-mag)) 15) 1000)
+                          e (+ (elixir-of s) gain)]
+                      (h! (h-elixir s) (min-i e (elixir-max)))
+                      (push-fx! 4 s px py 0 (tick-now) c))
+                    (push-fx! sp s px py (cd c (cw-aoe)) (+ (tick-now) 8) c))))
+          (log-cmd! s slot x4 y4)
+          0))))
+
+;; ---- spells landing ------------------------------------------------------------------------------------------------------------------------
+(defn in-area? [(x : I32) (y : I32) (fx : I32) (fy : I32) (r : I32)] : Bool
+  (<= (d2 x y fx fy) (* r r)))
+
+(defn land-spell! [(e : I32)] : Unit
+  (let [s (fxw e (f-owner)) c (fxw e (f-card))
+        sp (fxw e (f-kind)) x (fxw e (f-x)) y (fxw e (f-y)) r (fxw e (f-r))
+        mag (cd c (cw-mag))
+        foe (- 1 s)]
+    (dotimes [i (max-units)]
+      (when (= (un i (u-alive)) 1)
+        (let [mine (= (un i (u-owner)) s)
+              hit (in-area? (un i (u-x)) (un i (u-y)) x y (+ r (/ (cd (un i (u-card)) (cw-body)) 2)))]
+          (when hit
+            (cond
+              (and (= sp 1) (not mine)) (silence-unit! i (ms-ticks mag))
+              (and (= sp 2) (not mine)) (hurt-unit! i (* mag 32) s)
+              (and (= sp 3) mine) (heal-unit! i (* mag 20) s)
+              (and (= sp 5) (not mine)) (slow-unit! i (ms-ticks mag) 50)
+              (and (= sp 6) (not mine)) (do (slow-unit! i (ms-ticks mag) 85) (hurt-unit! i 120 s))
+              :else unit)))))
+    (dotimes [k 3]
+      (let [t (+ (* foe 3) k) m (+ (* s 3) k)]
+        (when (and (= (tw t (t-alive)) 1) (in-area? (tw t (t-x)) (tw t (t-y)) x y (+ r (tower-r k))))
+          (cond
+            (= sp 1) (when (> (ms-ticks mag) (tw t (t-sil))) (tw! t (t-sil) (ms-ticks mag)))
+            (= sp 2) (hurt-tower! t (/ (* mag 32) 3) s)
+            :else unit))
+        (when (and (= sp 3) (= (tw m (t-alive)) 1) (in-area? (tw m (t-x)) (tw m (t-y)) x y (+ r (tower-r k))))
+          (heal-tower! m (* mag 20) s))))))
+
+;; ---- queued commands --------------------------------------------------------------------------------------------------------------------------
+(defn cmd-push! [(s : I32) (slot : I32) (x4 : I32) (y4 : I32)] : Unit
+  (let [n (gi (g-cmdq-n))]
+    (when (< n 16)
+      (let [a (+ (cmdq-base) (shl n 4))]
+        (store32! a s) (store32! (+ a 4) slot) (store32! (+ a 8) x4) (store32! (+ a 12) y4)
+        (gi! (g-cmdq-n) (+ n 1))))))
+(defn cmds-run! [] : Unit
+  (let [n (gi (g-cmdq-n))]
+    (dotimes [k n]
+      (let [a (+ (cmdq-base) (shl k 4))]
+        (play-card! (load32 a) (load32 (+ a 4)) (load32 (+ a 8)) (load32 (+ a 12)))))
+    (gi! (g-cmdq-n) 0)))
+
+;; ============================================================================================================================================
+;; the world, one tick
+;; ============================================================================================================================================
+(defn ubody [(i : I32)] : I32 (cd (un i (u-card)) (cw-body)))
+(defn ucard [(i : I32) (k : I32)] : I32 (cd (un i (u-card)) k))
+(defn support? [(i : I32)] : Bool (and (= (ucard i (cw-dmg)) 0) (= (ucard i (cw-fx)) 3)))
+(defn stationary? [(i : I32)] : Bool (= (ucard i (cw-speed)) 0))
+(defn unit-speed [(i : I32)] : I32
+  (let [sp (ucard i (cw-speed))
+        pct (if (> (un i (u-slow)) 0) (un i (u-slowpct)) 0)]
+    (/ (* sp (- 100 pct)) 100)))
+
+;; ---- moving: a step toward a point, never into the river except on a bridge ------------------------------------------------------------------
+(defn step-valid? [(x : I32) (y : I32) (body : I32)] : Bool
+  (and (and (>= x body) (<= x (- (arena-w) body))) (and (>= y body) (and (<= y (- (arena-h) body)) (not (in-river? x y body))))))
+
+(defn try-shift! [(i : I32) (nx : I32) (ny : I32)] : Unit
+  (let [x (un i (u-x)) y (un i (u-y)) b (ubody i)]
+    (if (step-valid? nx ny b)
+        (do (un! i (u-x) nx) (un! i (u-y) ny))
+        (if (step-valid? nx y b)
+            (un! i (u-x) nx)
+            (when (step-valid? x ny b) (un! i (u-y) ny))))))
+
+(defn move-toward! [(i : I32) (tx : I32) (ty : I32)] : Unit
+  (let [x (un i (u-x)) y (un i (u-y))
+        dx (- tx x) dy (- ty y)
+        dd (isqrt (+ (* dx dx) (* dy dy)))
+        v (unit-speed i)]
+    (when (and (> dd 0) (> v 0))
+      (let [st (min-i v dd)]
+        (try-shift! i (+ x (div0 (* dx st) dd)) (+ y (div0 (* dy st) dd)))))))
+
+(defn best-bridge [(x : I32) (tx : I32)] : I32
+  (let [c0 (+ (abs-i (- x (bridge-x 0))) (abs-i (- (bridge-x 0) tx)))
+        c1 (+ (abs-i (- x (bridge-x 1))) (abs-i (- (bridge-x 1) tx)))]
+    (if (<= c0 c1) 0 1)))
+
+;; head for (tx, ty); if that is across the river, go by a bridge first
+(defn go-to! [(i : I32) (tx : I32) (ty : I32)] : Unit
+  (let [y (un i (u-y))
+        me (sgn-i (- y (river-mid)))
+        them (sgn-i (- ty (river-mid)))]
+    (if (and (!= me them) (!= them 0) (> (abs-i (- y (river-mid))) 24))
+        (let [b (best-bridge (un i (u-x)) tx)]
+          (move-toward! i (bridge-x b) (river-mid)))
+        (move-toward! i tx ty))))
+
+;; ---- targets -------------------------------------------------------------------------------------------------------------------------------------
+(defn tgt-xy-x [(code : I32)] : I32 (if (>= code 100) (tw (- code 100) (t-x)) (un code (u-x))))
+(defn tgt-xy-y [(code : I32)] : I32 (if (>= code 100) (tw (- code 100) (t-y)) (un code (u-y))))
+(defn tgt-body [(code : I32)] : I32 (if (>= code 100) (tower-r (tw (- code 100) (t-type))) (ubody code)))
+(defn tgt-live? [(code : I32) (s : I32)] : Bool
+  (if (< code 0) false
+      (if (>= code 100)
+          (and (= (tw (- code 100) (t-alive)) 1) (!= (tw (- code 100) (t-owner)) s))
+          (and (= (un code (u-alive)) 1) (!= (un code (u-owner)) s)))))
+
+(defn nearest-enemy-unit [(i : I32) (maxd : I32)] : I32
+  (let [s (un i (u-owner)) x (un i (u-x)) y (un i (u-y))
+        (best : I32) -1 (bd : I32) (+ (* maxd maxd) 1)]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s))
+        (let [dd (d2 x y (un j (u-x)) (un j (u-y)))]
+          (when (< dd bd) (do (set! bd dd) (set! best j))))))
+    best))
+
+(defn nearest-enemy-unit-of [(s : I32) (x : I32) (y : I32) (maxd : I32)] : I32
+  (let [(best : I32) -1 (bd : I32) (+ (* maxd maxd) 1)]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s))
+        (let [dd (d2 x y (un j (u-x)) (un j (u-y)))]
+          (when (< dd bd) (do (set! bd dd) (set! best j))))))
+    best))
+
+(defn nearest-enemy-tower [(s : I32) (x : I32) (y : I32)] : I32
+  (let [foe (- 1 s) (best : I32) -1 (bd : I32) 2000000000]
+    (dotimes [k 3]
+      (let [t (+ (* foe 3) k)]
+        (when (= (tw t (t-alive)) 1)
+          (let [dd (d2 x y (tw t (t-x)) (tw t (t-y)))]
+            (when (< dd bd) (do (set! bd dd) (set! best t)))))))
+    (if (< best 0) -1 (+ 100 best))))
+
+(defn pick-target [(i : I32)] : I32
+  (let [s (un i (u-owner)) c (un i (u-card))
+        sight (cd c (cw-sight))
+        cur (un i (u-tgt))
+        recheck (= (mod (+ (tick-now) (un i (u-id))) 6) 0)
+        keep (and (tgt-live? cur s)
+                  (and (not recheck)
+                       (or (>= cur 100)
+                           (<= (d2 (un i (u-x)) (un i (u-y)) (un cur (u-x)) (un cur (u-y))) (* (/ (* sight 3) 2) (/ (* sight 3) 2))))))]
+    (if keep cur
+        (let [j (nearest-enemy-unit i sight)]
+          (if (>= j 0) j (nearest-enemy-tower s (un i (u-x)) (un i (u-y))))))))
+
+(defn reach-of [(i : I32) (code : I32)] : I32 (+ (+ (ucard i (cw-range)) (ubody i)) (tgt-body code)))
+
+;; ---- the hit ------------------------------------------------------------------------------------------------------------------------------------
+(defn unit-hit! [(i : I32) (code : I32)] : Unit
+  (let [s (un i (u-owner)) c (un i (u-card))
+        dmg (/ (* (cd c (cw-dmg)) (un i (u-dmgpct))) 100)
+        fxk (cd c (cw-fx)) mag (cd c (cw-mag))]
+    (if (>= code 100)
+        (let [t (- code 100)]
+          (hurt-tower! t dmg s)
+          (when (and (= fxk 1) (> (ms-ticks mag) (tw t (t-sil)))) (tw! t (t-sil) (ms-ticks mag))))
+        (do (hurt-unit! code dmg s)
+            (cond
+              (= fxk 1) (silence-unit! code (ms-ticks mag))
+              (= fxk 2) (slow-unit! code (ms-ticks mag) 40)
+              :else unit)))
+    (when (= fxk 5) (heal-unit! i (* mag 5) s))
+    (un! i (u-cd) (cd c (cw-period)))
+    (un! i (u-atk) 5)))
+
+;; ---- abilities on a timer ------------------------------------------------------------------------------------------------------------------------
+(defn aura-pulse! [(i : I32)] : Unit
+  (let [s (un i (u-owner)) c (un i (u-card)) mag (cd c (cw-mag))
+        r (cd c (cw-aoe))
+        amt (if (= c 6) (* mag 3) (* mag 2))
+        x (un i (u-x)) y (un i (u-y))]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (= (un j (u-owner)) s)
+                 (or (!= j i) (= c 8))
+                 (in-area? (un j (u-x)) (un j (u-y)) x y r))
+        (heal-unit! j amt s)))))
+
+(defn deploy-burst! [(i : I32)] : Unit
+  (let [s (un i (u-owner)) c (un i (u-card)) r (cd c (cw-aoe)) tk (ms-ticks (cd c (cw-mag)))
+        x (un i (u-x)) y (un i (u-y))]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s) (in-area? (un j (u-x)) (un j (u-y)) x y r))
+        (silence-unit! j tk)))
+    (dotimes [k 3]
+      (let [t (+ (* (- 1 s) 3) k)]
+        (when (and (= (tw t (t-alive)) 1) (in-area? (tw t (t-x)) (tw t (t-y)) x y (+ r (tower-r k))) (> tk (tw t (t-sil))))
+          (tw! t (t-sil) tk))))
+    (push-fx! 12 s x y r (tick-now) c)))
+
+;; ---- one unit's tick ----------------------------------------------------------------------------------------------------------------------------
+;; a combat unit nearby for a healer to follow
+(defn friend-to-follow [(i : I32)] : I32
+  (let [s (un i (u-owner)) x (un i (u-x)) y (un i (u-y))
+        (best : I32) -1 (bd : I32) (* 2304 2304)]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (= (un j (u-owner)) s) (!= j i)
+                 (> (ucard j (cw-dmg)) 0) (> (ucard j (cw-speed)) 0))
+        (let [dd (d2 x y (un j (u-x)) (un j (u-y)))]
+          (when (< dd bd) (do (set! bd dd) (set! best j))))))
+    best))
+
+(defn unit-tick! [(i : I32)] : Unit
+  (let [c (un i (u-card)) s (un i (u-owner))
+        fxk (cd c (cw-fx))]
+    (un! i (u-px) (un i (u-x))) (un! i (u-py) (un i (u-y)))
+    (when (> (un i (u-flash)) 0) (un! i (u-flash) (- (un i (u-flash)) 1)))
+    (when (> (un i (u-atk)) 0) (un! i (u-atk) (- (un i (u-atk)) 1)))
+    (when (> (un i (u-heal)) 0) (un! i (u-heal) (- (un i (u-heal)) 1)))
+    (when (> (un i (u-slow)) 0) (do (un! i (u-slow) (- (un i (u-slow)) 1)) (when (= (un i (u-slow)) 0) (un! i (u-slowpct) 0))))
+    (when (> (un i (u-sil)) 0) (un! i (u-sil) (- (un i (u-sil)) 1)))
+    (if (> (un i (u-deploy)) 0)
+        (do (un! i (u-deploy) (- (un i (u-deploy)) 1))
+            (when (and (= (un i (u-deploy)) 0) (= fxk 6)) (deploy-burst! i)))
+        (let [silent (> (un i (u-sil)) 0)]
+          (when (> (un i (u-cd)) 0) (un! i (u-cd) (- (un i (u-cd)) 1)))
+          (cond
+            ;; collectors: stand and pay out, and wear away
+            (= fxk 4)
+            (do (when (= (mod (+ (tick-now) (un i (u-id))) 3) 0) (un! i (u-hp) (- (un i (u-hp)) 1)))
+                (when (not silent)
+                  (do (un! i (u-aux) (- (un i (u-aux)) 1))
+                      (when (<= (un i (u-aux)) 0)
+                        (let [e (+ (elixir-of s) 1000)]
+                          (h! (h-elixir s) (min-i e (elixir-max)))
+                          (stat+! s (st-pumped) 1)
+                          (un! i (u-aux) (/ (* (/ 4000 (max-i 1 (cd c (cw-mag)))) 100) (fac-pump-pct (h (h-faction s))))))))))
+            ;; healers: mend on a beat, walk with the line
+            (support? i)
+            (do (when (not silent)
+                  (do (un! i (u-aux) (- (un i (u-aux)) 1))
+                      (when (<= (un i (u-aux)) 0) (do (aura-pulse! i) (un! i (u-aux) 20)))))
+                (let [f (friend-to-follow i)]
+                  (when (>= f 0)
+                    (when (> (d2 (un i (u-x)) (un i (u-y)) (un f (u-x)) (un f (u-y))) (* 384 384))
+                      (go-to! i (un f (u-x)) (un f (u-y)))))))
+            ;; fighters (Amon also mends as he fights)
+            :else
+            (do (when (and (= fxk 3) (not silent))
+                  (do (un! i (u-aux) (- (un i (u-aux)) 1))
+                      (when (<= (un i (u-aux)) 0) (do (aura-pulse! i) (un! i (u-aux) 20)))))
+                (let [tg (pick-target i)]
+                  (un! i (u-tgt) tg)
+                  (when (>= tg 0)
+                    (let [tx (tgt-xy-x tg) ty (tgt-xy-y tg)
+                          dd (d2 (un i (u-x)) (un i (u-y)) tx ty)
+                          reach (reach-of i tg)]
+                      (if (<= dd (* reach reach))
+                          (when (and (= (un i (u-cd)) 0) (not silent)) (unit-hit! i tg))
+                          (go-to! i tx ty)))))))))))
+
+;; ---- towers --------------------------------------------------------------------------------------------------------------------------------------
+(defn tower-tick! [(t : I32)] : Unit
+  (when (= (tw t (t-alive)) 1)
+    (let [s (tw t (t-owner)) ty (tw t (t-type))]
+      (when (> (tw t (t-flash)) 0) (tw! t (t-flash) (- (tw t (t-flash)) 1)))
+      (when (> (tw t (t-atk)) 0) (tw! t (t-atk) (- (tw t (t-atk)) 1)))
+      (when (> (tw t (t-sil)) 0) (tw! t (t-sil) (- (tw t (t-sil)) 1)))
+      (when (and (= ty 2) (or (= (tw (* s 3) (t-alive)) 0) (= (tw (+ (* s 3) 1) (t-alive)) 0))) (tw! t (t-active) 1))
+      (when (> (tw t (t-cd)) 0) (tw! t (t-cd) (- (tw t (t-cd)) 1)))
+      (when (and (= (tw t (t-active)) 1) (= (tw t (t-sil)) 0))
+        (let [x (tw t (t-x)) y (tw t (t-y)) rg (tower-range ty)
+              cur (tw t (t-tgt))
+              keep (and (>= cur 0) (and (= (un cur (u-alive)) 1) (<= (d2 x y (un cur (u-x)) (un cur (u-y))) (* (+ rg (ubody cur)) (+ rg (ubody cur))))))
+              j (if keep cur (nearest-enemy-unit-of s x y (+ rg 100)))]
+          (tw! t (t-tgt) j)
+          (when (and (>= j 0) (= (tw t (t-cd)) 0))
+            (when (<= (d2 x y (un j (u-x)) (un j (u-y))) (* (+ rg (ubody j)) (+ rg (ubody j))))
+              (hurt-unit! j (tower-dmg ty) s)
+              (tw! t (t-atk) 5)
+              (tw! t (t-cd) (tower-period ty)))))))))
+
+;; ---- bodies do not overlap ---------------------------------------------------------------------------------------------------------------------------
+(defn shove! [(i : I32) (dx : I32) (dy : I32)] : Unit
+  (when (not (stationary? i))
+    (try-shift! i (+ (un i (u-x)) dx) (+ (un i (u-y)) dy))))
+
+(defn separate-pair! [(i : I32) (j : I32)] : Unit
+  (let [minsep (+ (ubody i) (ubody j))
+        dx (- (un i (u-x)) (un j (u-x)))
+        dy (- (un i (u-y)) (un j (u-y)))
+        dd (+ (* dx dx) (* dy dy))]
+    (when (< dd (* minsep minsep))
+      (let [dist (isqrt dd)
+            over (- minsep dist)
+            ;; a unit that is hitting something stays; one that is walking gives way. Stationary ones never move.
+            wi (if (stationary? i) 0 (if (> (un i (u-deploy)) 0) 1 2))
+            wj (if (stationary? j) 0 (if (> (un j (u-deploy)) 0) 1 2))
+            wt (+ wi wj)]
+        (when (> wt 0)
+          (let [nx (if (> dist 0) (div0 (* dx 256) dist) (if (= (mod (+ i j) 2) 0) 256 -256))
+                ny (if (> dist 0) (div0 (* dy 256) dist) 0)
+                pi (div0 (* over wi) wt) pj (div0 (* over wj) wt)]
+            (shove! i (/ (* nx pi) 256) (/ (* ny pi) 256))
+            (shove! j (- 0 (/ (* nx pj) 256)) (- 0 (/ (* ny pj) 256)))))))))
+
+(defn separate-all! [] : Unit
+  (dotimes [i (max-units)]
+    (when (= (un i (u-alive)) 1)
+      (loop [j (+ i 1)]
+        (when (< j (max-units))
+          (do (when (= (un j (u-alive)) 1) (separate-pair! i j))
+              (recur (+ j 1))))))))
+
+;; ---- the sweep ---------------------------------------------------------------------------------------------------------------------------------------
+(defn sweep! [] : Unit
+  (do
+    (dotimes [i (max-units)]
+      (when (and (= (un i (u-alive)) 1) (<= (un i (u-hp)) 0))
+        (do (un! i (u-alive) 0)
+            (stat+! (un i (u-owner)) (st-lost) 1)
+            (when (>= (un i (u-lastby)) 0) (stat+! (un i (u-lastby)) (st-kills) 1))
+            (push-fx! 10 (un i (u-owner)) (un i (u-x)) (un i (u-y)) (ubody i) (tick-now) (un i (u-card))))))
+    (dotimes [t 6]
+      (when (and (= (tw t (t-alive)) 1) (<= (tw t (t-hp)) 0))
+        (do (tw! t (t-alive) 0) (tw! t (t-hp) 0)
+            (push-fx! 11 (tw t (t-owner)) (tw t (t-x)) (tw t (t-y)) (tower-r (tw t (t-type))) (tick-now) 0))))))
+
+(defn effects-tick! [] : Unit
+  (dotimes [e (max-fx)]
+    (when (= (fxw e (f-on)) 1)
+      (let [kind (fxw e (f-kind)) land (fxw e (f-land)) now (tick-now)]
+        (when (and (and (>= kind 1) (<= kind 6)) (!= kind 4) (= land now)) (land-spell! e))
+        (when (> now (+ land (if (or (= kind 11) (= kind 12)) 24 14))) (fxw! e (f-on) 0))))))
+
+;; ---- who is ahead / the end ------------------------------------------------------------------------------------------------------------------------------
+(defn alive-count [(s : I32)] : I32
+  (+ (+ (tw (* s 3) (t-alive)) (tw (+ (* s 3) 1) (t-alive))) (tw (+ (* s 3) 2) (t-alive))))
+(defn total-tower-hp [(s : I32)] : I32
+  (+ (+ (tw (* s 3) (t-hp)) (tw (+ (* s 3) 1) (t-hp))) (tw (+ (* s 3) 2) (t-hp))))
+(defn crowns-for [(s : I32)] : I32
+  (let [foe (- 1 s)]
+    (if (= (tw (+ (* foe 3) 2) (t-alive)) 0) 3 (- 2 (+ (tw (* foe 3) (t-alive)) (tw (+ (* foe 3) 1) (t-alive)))))))
+
+(defn finish! [(winner : I32) (reason : I32)] : Unit
+  (do (h! (h-over) 1) (h! (h-winner) winner) (h! (h-reason) reason)))
+
+;; reasons: 1 king fell, 2 more crowns at time, 3 first tower in overtime, 4 more tower health after overtime, 5 level, 6 resigned
+(defn check-end! [] : Unit
+  (let [c0 (crowns-for 0) c1 (crowns-for 1) now (tick-now)]
+    (h! (h-crowns 0) c0) (h! (h-crowns 1) c1)
+    (cond
+      (and (= (tw 2 (t-alive)) 0) (= (tw 5 (t-alive)) 0)) (finish! 2 1)
+      (= (tw 5 (t-alive)) 0) (finish! 0 1)
+      (= (tw 2 (t-alive)) 0) (finish! 1 1)
+      (and (= now (t-regular)) (!= c0 c1)) (finish! (if (> c0 c1) 0 1) 2)
+      (and (>= now (t-regular)) (!= (h (h-ot)) 0) (!= c0 c1)) (finish! (if (> c0 c1) 0 1) 3)
+      (= now (t-regular)) (h! (h-ot) 1)
+      (>= now (+ (t-regular) (t-overtime)))
+      (let [a (total-tower-hp 0) b (total-tower-hp 1)]
+        (if (= a b) (finish! 2 5) (finish! (if (> a b) 0 1) 4)))
+      :else unit)))
+
+(defn resign! [(s : I32)] : Unit (when (= (h (h-over)) 0) (finish! (- 1 s) 6)))
+
+;; ---- one tick, in two halves around the AIs ------------------------------------------------------------------------------------------------------------
+;; sim-pre!: the clock, elixir, standing. The AIs (em_ai.prn) may then queue plays; sim-post! runs the queue and the world.
+(defn sim-pre! [] : Unit
+  (do
+    (h! (h-tick) (+ (h (h-tick)) 1))
+    (dotimes [s 2]
+      (let [e (+ (elixir-of s) (elixir-rate (tick-now)))]
+        (if (> e (elixir-max))
+            (do (stat+! s (st-elixir-wasted) (- e (elixir-max))) (h! (h-elixir s) (elixir-max)))
+            (h! (h-elixir s) e)))
+      (h! (h-quiet s) (- (h (h-quiet s)) 1))
+      (when (<= (h (h-quiet s)) 0)
+        (do (h! (h-decorum s) (bo-decorum-after (h (h-decorum s)) 5))
+            (h! (h-quiet s) (fac-quiet (h (h-faction s))))))
+      (when (= (band-of s) 3) (stat+! s (st-cancelled) 1)))))
+
+(defn sim-post! [] : Unit
+  (do
+    (cmds-run!)
+    (effects-tick!)
+    (dotimes [i (max-units)] (when (= (un i (u-alive)) 1) (unit-tick! i)))
+    (dotimes [t 6] (tower-tick! t))
+    (separate-all!)
+    (sweep!)
+    (check-end!)))

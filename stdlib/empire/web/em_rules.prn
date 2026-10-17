@@ -1,0 +1,159 @@
+;; stdlib/empire/web/em_rules.prn -- EMPIRE's rules that are data: the arena's geometry, BIG_O's decorum rules, the three factions and the sixteen cards.
+;;
+;; Where each piece comes from (NORTHSTAR roles): ECOWAR is the game and supplies the sixteen cards (ids, heroes, effect kinds and BASE magnitudes are
+;; ECOWAR_CARDS verbatim, packages/simulation/arena_game.c); BIG_O is the tech tree / faction sim and supplies decorum (stdlib/big_o/witness_rules.prn,
+;; ported below byte for byte -- tests/test_decorum_parity.mjs in EMPIRE checks every value against the C the repo vendors); the MUNDANE/MYTHIC
+;; tiering and the +50% MYTHIC magnitude are ecowar/card_effect_mod.prn. What the cards DO on a board (a troop, a spell, how hard, how long) is EMPIRE's:
+;; INVENTED v1 TUNING, flagged for founder sign-off like the bridge's -25 / +1 mapping is.
+
+;; ---- geometry: 256 units to a tile, the arena is 18 x 32 tiles --------------------------------------------------------------------------
+(defn tile [] : I32 256)
+(defn arena-w [] : I32 4608)
+(defn arena-h [] : I32 8192)
+(defn river-top [] : I32 3840)
+(defn river-bot [] : I32 4352)
+(defn river-mid [] : I32 4096)
+(defn bridge-x [(b : I32)] : I32 (if (= b 0) 1024 3584))
+(defn bridge-hw [] : I32 384)
+;; towers: index = seat * 3 + type, type 0 = left princess, 1 = right princess, 2 = king. Seat 0 holds the bottom of the screen.
+(defn tower-x [(seat : I32) (ty : I32)] : I32 (case ty 0 896 1 3712 2304))
+(defn tower-y [(seat : I32) (ty : I32)] : I32
+  (let [y (case ty 0 6528 1 6528 7552)] (if (= seat 0) y (- (arena-h) y))))
+(defn tower-r [(ty : I32)] : I32 (if (= ty 2) 410 307))
+(defn tower-hp0 [(ty : I32)] : I32 (if (= ty 2) 2400 1400))
+(defn tower-dmg [(ty : I32)] : I32 (if (= ty 2) 80 60))
+(defn tower-period [(ty : I32)] : I32 (if (= ty 2) 20 16))
+(defn tower-range [(ty : I32)] : I32 (if (= ty 2) 1664 1792))
+
+;; ---- time (20 ticks a second) -----------------------------------------------------------------------------------------------------------
+(defn tps [] : I32 20)
+(defn t-regular [] : I32 3600)      ; 3:00
+(defn t-double [] : I32 2400)       ; elixir doubles for the last minute of regulation
+(defn t-overtime [] : I32 1200)     ; one more minute, first tower wins
+(defn elixir-max [] : I32 10000)
+(defn elixir-start [] : I32 5000)
+(defn elixir-rate [(tick : I32)] : I32 (if (< tick (t-double)) 18 36))   ; milli-elixir per tick: 1.0 a 2.8 s, then 1.0 a 1.4 s
+
+;; ---- BIG_O decorum (stdlib/big_o/witness_rules.prn) -----------------------------------------------------------------------------------------
+;; Per player, 0..cap, HIGHER = better standing. Bands: 0 OK, 1 SUSPICION, 2 HYSTERIC, 3 CANCELLED. Actions: 1 SAY_APOCALYPSE, 5 QUIET_TICK.
+(defn bo-decorum-start [] : I32 80)
+(defn bo-decorum-cap [] : I32 100)
+(defn bo-suspicion-below [] : I32 60)
+(defn bo-hysteric-below [] : I32 30)
+(defn bo-clamp-decorum [(d : I32)] : I32 (if (< d 0) 0 (if (> d (bo-decorum-cap)) (bo-decorum-cap) d)))
+(defn bo-decorum-delta [(action : I32)] : I32
+  (if (= action 0) 5
+    (if (= action 1) (- 0 25)
+      (if (= action 2) (- 0 15)
+        (if (= action 3) (- 0 20)
+          (if (= action 4) (- 0 40)
+            (if (= action 5) 1
+              (if (= action 6) (- 0 30) 0))))))))
+(defn bo-decorum-after [(d : I32) (action : I32)] : I32 (bo-clamp-decorum (+ d (bo-decorum-delta action))))
+(defn bo-decorum-band [(d : I32)] : I32
+  (if (<= d 0) 3 (if (< d (bo-hysteric-below)) 2 (if (< d (bo-suspicion-below)) 1 0))))
+
+;; ---- ECOWAR's MUNDANE / MYTHIC tiers (stdlib/ecowar/card_effect_mod.prn) ----------------------------------------------------------------------
+(defn is-mythic-card? [(card-id : I32)] : Bool
+  (or (= card-id 3) (and (>= card-id 6) (<= card-id 15))))
+(defn on-resolve-magnitude [(card-id : I32) (base : I32)] : I32
+  (if (is-mythic-card? card-id) (+ base (/ base 2)) base))
+;; the decorum action a successful cast feeds BIG_O: a MYTHIC cast is SAY_APOCALYPSE, a MUNDANE one QUIET_TICK
+(defn on-card-decorum-action [(card-id : I32)] : I32 (if (is-mythic-card? card-id) 1 5))
+
+;; ---- the three factions (INVENTED v1: BIG_O has no live faction store yet; EMPIRE README lists the gap) -----------------------------------------
+;; 0 SYNDICATE (the bureaucrats: begin with standing, earn it back quickly), 1 GOETIA (the named ones: little standing, but a cast costs less of it),
+;; 2 ARCHIVE (even, patient: their collectors work harder).
+(defn fac-start [(f : I32)] : I32 (case f 0 90 1 70 80))
+(defn fac-quiet [(f : I32)] : I32 (case f 0 40 1 80 60))        ; ticks between quiet ticks (+1 decorum)
+(defn fac-spend [(f : I32)] : I32 (case f 1 15 25))             ; what a MYTHIC cast takes
+(defn fac-pump-pct [(f : I32)] : I32 (if (= f 2) 125 100))      ; collectors' rate
+(defn fac-hp-pct [(f : I32)] : I32 (if (= f 0) 108 100))        ; SYNDICATE mundane troops
+(defn fac-dmg-pct [(f : I32)] : I32 (if (= f 1) 110 100))       ; GOETIA mythic troops
+
+;; ---- the card table -----------------------------------------------------------------------------------------------------------------------------
+;; word layout, 16 words a card at cards-base + id*64:
+(defn cw-kind [] : I32 0)      ; 0 troop, 1 spell
+(defn cw-cost [] : I32 1)
+(defn cw-count [] : I32 2)     ; bodies per play
+(defn cw-hp [] : I32 3)
+(defn cw-dmg [] : I32 4)       ; per hit (0 = does not attack)
+(defn cw-period [] : I32 5)    ; ticks between hits
+(defn cw-range [] : I32 6)     ; units, edge to edge
+(defn cw-speed [] : I32 7)     ; units a tick (0 = stationary)
+(defn cw-sight [] : I32 8)     ; how far it notices a troop
+(defn cw-fx [] : I32 9)        ; troops: 0 none 1 hit-silence 2 hit-slow 3 heal aura 4 pump 5 lifesteal 6 deploy-silence. spells: 1 silence 2 damage 3 heal 4 elixir 5 slow 6 root
+(defn cw-mag [] : I32 10)      ; the effect's magnitude AFTER the tier scaling
+(defn cw-body [] : I32 11)     ; body radius
+(defn cw-deploy [] : I32 12)   ; ticks before it acts
+(defn cw-mythic [] : I32 13)
+(defn cw-aoe [] : I32 14)      ; spell / aura radius
+(defn cw-base [] : I32 15)     ; ECOWAR's base magnitude, unscaled
+
+(defn cd [(c : I32) (k : I32)] : I32 (load32 (+ (cards-base) (+ (shl c 6) (shl k 2)))))
+(defn cd! [(c : I32) (k : I32) (v : I32)] : Unit (store32! (+ (cards-base) (+ (shl c 6) (shl k 2))) v))
+
+;; one card: id kind cost count hp dmg period range speed sight fx base body deploy aoe -- the magnitude is scaled by ECOWAR's tier rule here
+(defn cdef! [(c : I32) (kind : I32) (cost : I32) (count : I32) (hp : I32) (dmg : I32) (period : I32) (range : I32) (speed : I32)
+             (sight : I32) (fx : I32) (base : I32) (body : I32) (deploy : I32) (aoe : I32)] : Unit
+  (do (dotimes [k 16] (cd! c k 0))
+      (cd! c (cw-kind) kind) (cd! c (cw-cost) cost) (cd! c (cw-count) count) (cd! c (cw-hp) hp) (cd! c (cw-dmg) dmg)
+      (cd! c (cw-period) period) (cd! c (cw-range) range) (cd! c (cw-speed) speed) (cd! c (cw-sight) sight) (cd! c (cw-fx) fx)
+      (cd! c (cw-mag) (on-resolve-magnitude c base)) (cd! c (cw-base) base)
+      (cd! c (cw-body) body) (cd! c (cw-deploy) deploy) (cd! c (cw-mythic) (b2i (is-mythic-card? c))) (cd! c (cw-aoe) aoe)))
+
+;; durations: ECOWAR's magnitudes are milliseconds for SLOW / SILENCE; a tick is 50 ms
+(defn ms-ticks [(ms : I32)] : I32 (/ ms 50))
+
+(defn cards-init! [] : Unit
+  (do
+    ;;   id kind cost n   hp  dmg per range speed sight fx base  body dep aoe
+    (cdef! 0  0 3 1  480  45 24  320 13 1280 1 1500 100 20 0)       ; Duration Is Data -- Archivist: its blows silence
+    (cdef! 1  1 2 1    0   0  0    0  0    0 1 1200   0  0 768)     ; The Dissent -- a silence
+    (cdef! 2  0 2 2  170  36 18  320 19 1280 0   12  80 20 0)       ; One Question -- two clerks, quick
+    (cdef! 3  1 4 1    0   0  0    0  0    0 2   10   0  0 512)     ; He Sees You -- one point, hard
+    (cdef! 4  0 4 1  520   0  0    0  0    0 4   40 110 20 0)       ; Three Coordinates -- a collector
+    (cdef! 5  1 3 1    0   0  0    0  0    0 3   15   0  0 896)     ; The Seal -- mends what it covers
+    (cdef! 6  0 4 1  560   0  0    0 13    0 3   12 100 20 768)     ; Four Centuries -- Wren-3 mends as she walks
+    (cdef! 7  1 1 1    0   0  0    0  0    0 4   30   0  0 0)       ; Deep Time Sees Itself -- elixir back
+    (cdef! 8  0 5 1  900  80 24  320 11 1280 3   10 130 20 640)     ; Reconciliation -- Amon, a slow wall that mends the line
+    (cdef! 9  1 3 1    0   0  0    0  0    0 5 2000   0  0 896)     ; Fold the Circle -- slows a crowd
+    (cdef! 10 0 5 1 1100  90 28  320 10 1280 6 1500 140 20 512)     ; Crown of Dissolution -- Bael, a hush on arrival
+    (cdef! 11 0 4 1  420 105 28 1280 13 1536 0   14 100 20 0)       ; The Truth Requires a Triangle -- Furfur, from afar
+    (cdef! 12 0 6 1  820   0  0    0  0    0 4   60 150 20 0)       ; Unlicensed Ledger -- Astaroth keeps a big book
+    (cdef! 13 0 3 1  560  70 20  320 26 1280 2 2500 100 20 0)       ; The Express Arrives Late On Purpose -- Agares
+    (cdef! 14 0 3 1  620  65 22  320 16 1280 5    8 110 20 0)       ; Twelve Hundred Years -- Marchosias, patient
+    (cdef! 15 1 4 1    0   0  0    0  0    0 6 3000   0  0 768)     ; The Root Remembers -- Nidhogg holds a crowd still
+    ;; derived stats that follow ECOWAR's own numbers (so the base magnitudes stay the single source)
+    (cd! 2 (cw-dmg) (* (cd 2 (cw-base)) 3))                          ; DAMAGE 12 -> 36 a hit
+    (cd! 11 (cw-dmg) (* (cd 11 (cw-mag)) 5))))                       ; DAMAGE 14 (21 as MYTHIC) -> 105 a hit
+
+;; card names, lines and the emblem come from the view; the sim needs only the numbers
+(defn card-cost [(c : I32)] : I32 (cd c (cw-cost)))
+(defn card-spell? [(c : I32)] : Bool (= (cd c (cw-kind)) 1))
+
+;; ---- deck packing: eight card ids in eight nibbles --------------------------------------------------------------------------------------------
+(defn deck-card [(d : I32) (k : I32)] : I32 (bit-and (ushr d (shl k 2)) 15))
+(defn deck-valid? [(d : I32)] : Bool
+  ;; eight different cards
+  (loop [i 0]
+    (if (>= i 8) true
+        (if (loop [j (+ i 1)]
+              (if (>= j 8) false
+                  (if (= (deck-card d i) (deck-card d j)) true (recur (+ j 1)))))
+            false
+            (recur (+ i 1))))))
+(defn deck-has? [(d : I32) (c : I32)] : Bool
+  (loop [i 0] (if (>= i 8) false (if (= (deck-card d i) c) true (recur (+ i 1))))))
+;; a deck from a 16-bit mask of chosen cards, in id order (exactly eight bits must be set)
+(defn deck-from-mask [(m : I32)] : I32
+  (let [(d : I32) 0 (n : I32) 0]
+    (dotimes [c 16]
+      (when (and (!= (bit-and (ushr m c) 1) 0) (< n 8))
+        (do (set! d (bit-or d (shl c (shl n 2))))
+            (set! n (+ n 1)))))
+    (if (= n 8) d 0)))
+(defn deck-mask [(d : I32)] : I32
+  (let [(m : I32) 0]
+    (dotimes [k 8] (set! m (bit-or m (shl 1 (deck-card d k)))))
+    m))

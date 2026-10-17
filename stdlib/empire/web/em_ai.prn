@@ -1,0 +1,262 @@
+;; stdlib/empire/web/em_ai.prn -- the AIs.
+;;
+;; They are part of the module on purpose: IDUNA steps this very wasm headlessly as the referee, so a bot is not a second implementation of the
+;; game -- it asks the real board the same questions a player does (what do I hold, what is coming, what is it worth) and queues plays through the
+;; same door a click uses. A bot has no private knowledge: it reads the same elixir, hands and units the player's screen shows (its own hand, the
+;; opponent's decorum and towers, the units on the board), and it is bound by the same rules (elixir, decorum, where it may place).
+;;
+;; Eight temperaments (1..8; 0 is a person). Each has a faction, a deck, and a handful of habits: how often it looks, how much elixir it keeps back,
+;; when it begins a push, how freely it casts spells, how much decorum it will not go below, and how loosely it places. They share one method.
+;;
+;; The AIs' own state (their generator and plans) lives outside the sim region, so it is not part of a snapshot and a watcher never needs it.
+
+(defn aist [(s : I32) (k : I32)] : I32 (load32 (+ (aist-base) (+ (shl s 9) (shl k 2)))))
+(defn aist! [(s : I32) (k : I32) (v : I32)] : Unit (store32! (+ (aist-base) (+ (shl s 9) (shl k 2))) v))
+(defn a-next [] : I32 0) (defn a-rng [] : I32 1) (defn a-pers [] : I32 2) (defn a-lane [] : I32 3) (defn a-cand [] : I32 16)
+
+(defn ai-rnd! [(s : I32) (n : I32)] : I32
+  (let [(x : I32) (aist s (a-rng))]
+    (set! x (bit-xor x (shl x 13)))
+    (set! x (bit-xor x (ushr x 17)))
+    (set! x (bit-xor x (shl x 5)))
+    (aist! s (a-rng) x)
+    (mod (ushr x 1) (max-i 1 n))))
+
+;; ---- the eight ------------------------------------------------------------------------------------------------------------------------------
+(defn bot-count [] : I32 8)
+(defn bot-name [(p : I32)] : String
+  (case p 1 "Marrow" 2 "Quill" 3 "Sable" 4 "Ledger" 5 "Vesper" 6 "Brindle" 7 "Thorn" 8 "Hush" "Someone"))
+(defn bot-blurb [(p : I32)] : String
+  (case p 1 "quick and bright: small hands, early pressure"
+          2 "patient: lets you come, then answers"
+          3 "builds an economy first, then leans on it"
+          4 "spends standing freely; names go in first"
+          5 "casts well: spells over bodies"
+          6 "steady: nothing clever, nothing wasted"
+          7 "fast pushes at the bridge, again and again"
+          8 "very quiet, very careful: hardly ever wastes a card"
+          "a visitor"))
+;; faction 0 SYNDICATE 1 GOETIA 2 ARCHIVE
+(defn bot-faction [(p : I32)] : I32 (case p 1 0 2 2 3 2 4 1 5 0 6 2 7 1 8 0 0))
+(defn pack-deck [(a : I32) (b : I32) (c : I32) (d : I32) (e : I32) (f : I32) (g : I32) (k : I32)] : I32
+  (bit-or a (bit-or (shl b 4) (bit-or (shl c 8) (bit-or (shl d 12) (bit-or (shl e 16) (bit-or (shl f 20) (bit-or (shl g 24) (shl k 28)))))))))
+(defn bot-deck [(p : I32)] : I32
+  (case p
+    1 (pack-deck 2 0 13 14 1 5 11 3)
+    2 (pack-deck 0 4 5 1 8 6 11 9)
+    3 (pack-deck 4 12 8 10 2 5 9 11)
+    4 (pack-deck 10 11 13 14 15 3 7 9)
+    5 (pack-deck 1 5 3 15 2 0 11 9)
+    6 (pack-deck 0 2 8 6 11 13 5 1)
+    7 (pack-deck 13 14 2 10 11 7 9 15)
+    8 (pack-deck 0 2 5 1 4 8 11 13)
+    (pack-deck 0 1 2 4 5 8 11 13)))
+(defn ai-interval [(p : I32)] : I32 (case p 1 6 2 9 3 8 4 7 5 8 6 7 7 5 8 10 8))
+(defn ai-reserve [(p : I32)] : I32 (case p 1 0 2 2 3 1 4 1 5 2 6 1 7 0 8 3 1))      ; whole elixir kept back off the board
+(defn ai-aggr [(p : I32)] : I32 (case p 1 4 2 8 3 7 4 6 5 6 6 6 7 4 8 9 6))        ; elixir at which it starts a push
+(defn ai-spells [(p : I32)] : I32 (case p 1 70 2 100 3 80 4 80 5 130 6 90 7 70 8 110 80)) ; how freely it casts, percent
+(defn ai-noise [(p : I32)] : I32 (case p 1 160 2 64 3 96 4 128 5 96 6 64 7 192 8 32 96)) ; how loosely it places, units
+(defn ai-style [(p : I32)] : I32 (case p 1 0 2 2 3 1 4 1 5 2 6 1 7 0 8 2 1))        ; 0 at the bridge, 1 on the tower line, 2 behind the tower
+(defn ai-floor [(p : I32)] : I32 (case p 1 10 2 40 3 30 4 0 5 25 6 30 7 5 8 45 20)) ; the decorum it will not spend below unless pressed
+
+(defn ai-set! [(s : I32) (p : I32)] : Unit
+  (do (aist! s (a-pers) p)
+      (aist! s (a-next) 40)
+      (aist! s (a-rng) (+ (* (h (h-rng)) 2654435761) (+ 1013904223 (* s 7919))))
+      (when (= (aist s (a-rng)) 0) (aist! s (a-rng) 88172645))
+      (aist! s (a-lane) (mod p 2))
+      (let [m (gi (g-ai-mask))]
+        (gi! (g-ai-mask) (if (= p 0) (bit-and m (bit-xor 3 (shl 1 s))) (bit-or m (shl 1 s)))))))
+
+;; ---- reading the board ------------------------------------------------------------------------------------------------------------------------
+(defn lane-of [(x : I32)] : I32 (if (< x (/ (arena-w) 2)) 0 1))
+(defn fighter? [(i : I32)] : Bool (and (> (ucard i (cw-dmg)) 0) (> (ucard i (cw-speed)) 0)))
+
+;; what a unit is worth on the board
+(defn uw [(i : I32)] : I32
+  (let [dm (ucard i (cw-dmg)) per (ucard i (cw-period))]
+    (if (and (> dm 0) (> per 0))
+        (+ (/ (un i (u-hp)) 8) (div0 (* dm 60) per))
+        (/ (un i (u-hp)) 30))))
+
+(defn ai-threat [(s : I32) (lane : I32)] : I32
+  (let [(v : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s)) (= (lane-of (un j (u-x))) lane))
+        (let [y (un j (u-y))
+              near (if (= s 0) (> y (- (river-top) 1280)) (< y (+ (river-bot) 1280)))
+              onmine (if (= s 0) (>= y (river-bot)) (< y (river-top)))]
+          (when near (set! v (+ v (if onmine (uw j) (/ (uw j) 2))))))))
+    v))
+
+(defn ai-mine [(s : I32) (lane : I32)] : I32
+  (let [(v : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (and (= (un j (u-alive)) 1) (= (un j (u-owner)) s)) (and (= (lane-of (un j (u-x))) lane) (fighter? j)))
+        (set! v (+ v (uw j)))))
+    v))
+
+;; the most worrying enemy unit in a lane (-1 none)
+(defn ai-worst [(s : I32) (lane : I32)] : I32
+  (let [(best : I32) -1 (bw : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s)) (= (lane-of (un j (u-x))) lane))
+        (let [y (un j (u-y))
+              near (if (= s 0) (> y (- (river-top) 1280)) (< y (+ (river-bot) 1280)))]
+          (when (and near (> (uw j) bw)) (do (set! bw (uw j)) (set! best j))))))
+    best))
+
+(defn own-pumps [(s : I32)] : I32
+  (let [(v : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (and (= (un j (u-owner)) s) (= (ucard j (cw-fx)) 4))) (set! v (+ v 1))))
+    v))
+(defn own-fighters [(s : I32)] : I32
+  (let [(v : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (and (= (un j (u-alive)) 1) (= (un j (u-owner)) s)) (fighter? j)) (set! v (+ v 1))))
+    v))
+
+;; the enemy unit with the most worth around it within r; its position becomes the spell's centre. Returns the total worth, writes the centre to aist.
+(defn best-cluster [(s : I32) (r : I32)] : I32
+  (let [(best : I32) 0 (bx : I32) 0 (by : I32) 0 (n : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (!= (un j (u-owner)) s))
+        (let [(w : I32) 0 (k : I32) 0]
+          (dotimes [m (max-units)]
+            (when (and (= (un m (u-alive)) 1) (!= (un m (u-owner)) s))
+              (when (in-area? (un m (u-x)) (un m (u-y)) (un j (u-x)) (un j (u-y)) r)
+                (do (set! w (+ w (uw m))) (set! k (+ k 1))))))
+          (when (> w best) (do (set! best w) (set! bx (un j (u-x))) (set! by (un j (u-y))) (set! n k))))))
+    (aist! s 8 bx) (aist! s 9 by) (aist! s 10 n)
+    best))
+
+;; where my wounded are: total missing health within r of my most hurt unit's neighbourhood
+(defn best-wounded [(s : I32) (r : I32)] : I32
+  (let [(best : I32) 0 (bx : I32) 0 (by : I32) 0]
+    (dotimes [j (max-units)]
+      (when (and (= (un j (u-alive)) 1) (= (un j (u-owner)) s))
+        (let [(w : I32) 0]
+          (dotimes [m (max-units)]
+            (when (and (= (un m (u-alive)) 1) (= (un m (u-owner)) s))
+              (when (in-area? (un m (u-x)) (un m (u-y)) (un j (u-x)) (un j (u-y)) r)
+                (set! w (+ w (- (un m (u-maxhp)) (un m (u-hp))))))))
+          (when (> w best) (do (set! best w) (set! bx (un j (u-x))) (set! by (un j (u-y))))))))
+    (aist! s 8 bx) (aist! s 9 by)
+    best))
+
+;; ---- placement -------------------------------------------------------------------------------------------------------------------------------
+(defn lane-x [(lane : I32)] : I32 (if (= lane 0) 896 3712))
+(defn my-y [(s : I32) (y : I32)] : I32 (if (= s 0) y (- (arena-h) y)))   ; y written for seat 0, mirrored for seat 1
+
+;; nudge a spot until it is a legal place for a troop
+(defn legal-spot [(s : I32) (x : I32) (y : I32)] : I32
+  (let [x2 (clamp-i x 160 (- (arena-w) 160))
+        (yy : I32) y]
+    (loop [k 0]
+      (if (or (place-ok? s x2 yy) (>= k 12))
+          (if (place-ok? s x2 yy) (bit-or (/ x2 64) (shl (/ yy 64) 8)) (bit-or (/ x2 64) (shl (/ (my-y s 6500) 64) 8)))
+          (do (set! yy (if (= s 0) (+ yy 256) (- yy 256))) (recur (+ k 1)))))))
+
+(defn support-card? [(c : I32)] : Bool (and (= (cd c (cw-dmg)) 0) (= (cd c (cw-fx)) 3)))
+
+;; ---- scoring one slot ------------------------------------------------------------------------------------------------------------------------
+(defn power-of [(c : I32)] : I32
+  (let [per (cd c (cw-period))]
+    (* (cd c (cw-count))
+       (+ (/ (cd c (cw-hp)) 10) (if (> per 0) (div0 (* (cd c (cw-dmg)) 20) per) 0)))))
+
+(defn cand! [(s : I32) (slot : I32) (spot : I32)] : Unit (aist! s (+ (a-cand) slot) spot))
+
+;; returns a score (-1 = do not play this) and leaves the chosen spot in cand[slot] as x4 | y4 << 8
+(defn ai-eval [(s : I32) (slot : I32) (lane : I32) (defending : Bool) (tmax : I32)] : I32
+  (let [p (aist s (a-pers)) c (hand-card s slot) cost (card-cost c)
+        e (elixir-of s) f (h (h-faction s))
+        mythic (is-mythic-card? c)
+        after (- (h (h-decorum s)) (if mythic (fac-spend f) 0))
+        pressed (> tmax 90)
+        afford (>= e (* cost 1000))
+        keep (or defending (or (>= e (+ (* cost 1000) (* (ai-reserve p) 1000))) (>= e 9500)))
+        gate (if mythic
+                 (and (or defending (>= after (ai-floor p))) (or (> after 0) pressed))
+                 true)
+        ok (and (and afford keep) gate)]
+    (if (not ok) -1
+        (let [noise (ai-noise p)
+              nx (- (ai-rnd! s (+ (* noise 2) 1)) noise)]
+          (if (card-spell? c)
+              ;; ---- spells
+              (let [sp (cd c (cw-fx)) aoe (cd c (cw-aoe)) eager (ai-spells p)]
+                (cond
+                  (= sp 4) (if (and (and (<= e 5500) (not defending)) (<= (ai-rnd! s 100) 70))
+                               (do (cand! s slot (bit-or 36 (shl 100 8))) (/ (* 66 eager) 100))
+                               -1)
+                  (= sp 3) (let [w (best-wounded s aoe)]
+                             (if (>= w 330)
+                                 (do (cand! s slot (bit-or (/ (aist s 8) 64) (shl (/ (aist s 9) 64) 8))) (/ (* (+ 50 (/ w 12)) eager) 100))
+                                 -1))
+                  :else (let [w (best-cluster s aoe) n (aist s 10)
+                              need (if (= sp 2) 70 (if (= sp 1) 85 95))
+                              onus (if defending 25 0)]
+                          (if (and (>= w need) (or (>= n 2) (and (= sp 2) (>= w 100))))
+                              (do (cand! s slot (bit-or (/ (aist s 8) 64) (shl (/ (aist s 9) 64) 8)))
+                                  (/ (* (+ (+ 60 onus) (/ w 6)) eager) 100))
+                              -1))))
+              ;; ---- troops
+              (let [fx (cd c (cw-fx)) pw (power-of c)
+                    ratio (/ (* pw 10) (max-i 1 cost))
+                    style (ai-style p)
+                    worst (ai-worst s lane)]
+                (cond
+                  (= fx 4) (if (and (and (not defending) (= (own-pumps s) 0)) (>= e 5000))
+                               (do (cand! s slot (legal-spot s (+ 2304 nx) (my-y s 6900))) 150)
+                               -1)
+                  (support-card? c) (if (and (not defending) (>= (own-fighters s) 1))
+                                        (do (cand! s slot (legal-spot s (+ (lane-x lane) nx) (my-y s 6600))) 70)
+                                        -1)
+                  defending
+                  (let [wx (if (>= worst 0) (un worst (u-x)) (lane-x lane))
+                        wy (if (>= worst 0) (un worst (u-y)) (my-y s 5600))
+                        back (if (> (cd c (cw-range)) 400) 3 2)
+                        py (if (= s 0) (+ wy (* back 256)) (- wy (* back 256)))]
+                    (cand! s slot (legal-spot s (+ wx nx) py))
+                    (+ 100 (min-i ratio 60)))
+                  (or (>= e (* (ai-aggr p) 1000)) (>= e 9500))
+                  (let [py (case style 0 (my-y s 4700) 1 (my-y s 6300) (my-y s 6900))]
+                    (cand! s slot (legal-spot s (+ (lane-x lane) nx) py))
+                    (+ 40 (min-i (/ (* ratio 6) 10) 40)))
+                  :else -1)))))))
+
+
+;; ---- one look ---------------------------------------------------------------------------------------------------------------------------------
+(defn ai-think! [(s : I32)] : Unit
+  (let [p (aist s (a-pers))
+        t0 (ai-threat s 0) t1 (ai-threat s 1)
+        tlane (if (>= t0 t1) 0 1)
+        tmax (max-i t0 t1)
+        m0 (ai-mine s 0) m1 (ai-mine s 1)
+        olane (if (> m0 (+ m1 20)) 0 (if (> m1 (+ m0 20)) 1 (aist s (a-lane))))
+        defending (> tmax (+ (ai-mine s tlane) 18))
+        lane (if defending tlane olane)
+        (best : I32) -1 (bs : I32) 30]
+    (dotimes [slot 4]
+      (let [sc (ai-eval s slot lane defending tmax)]
+        (when (and (>= sc 0) (> (+ sc (ai-rnd! s 6)) bs))
+          (do (set! bs (+ sc (ai-rnd! s 6))) (set! best slot)))))
+    (when (>= best 0)
+      (let [spot (aist s (+ (a-cand) best))]
+        (cmd-push! s best (bit-and spot 255) (bit-and (shr spot 8) 255))
+        (when (and (not defending) (< (ai-rnd! s 100) 30)) (aist! s (a-lane) (- 1 (aist s (a-lane)))))))))
+
+(defn ai-run! [] : Unit
+  (dotimes [s 2]
+    (when (!= (bit-and (gi (g-ai-mask)) (shl 1 s)) 0)
+      (when (>= (tick-now) (aist s (a-next)))
+        (let [p (aist s (a-pers))]
+          (ai-think! s)
+          (aist! s (a-next) (+ (tick-now) (+ (ai-interval p) (ai-rnd! s 4)))))))))
+
+;; ---- the tick ----------------------------------------------------------------------------------------------------------------------------------
+(defn sim-step! [] : I32
+  (if (match-over?) 1
+      (do (sim-pre!) (ai-run!) (sim-post!) (h (h-over)))))

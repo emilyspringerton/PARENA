@@ -1,0 +1,167 @@
+;; stdlib/empire/web/em_mem.prn -- EMPIRE web: linear-memory map, accessors, globals, small math.
+;;
+;; EMPIRE (github.com/emilyspringerton/EMPIRE) is ECOWAR's card duel with BIG_O's decorum as the factions' standing: a quiet real-time
+;; game of cards and towers. This is the whole game as ONE wasm32 module with no imports and no allocator:
+;;   * the simulation (em_sim.prn) is deterministic integer maths. The browser steps it from the server's turn feed, IDUNA steps the very
+;;     same module headlessly as the referee and as the host of the AI players, so what the player sees is what the ladder records;
+;;   * the AIs (em_ai.prn) live inside it;
+;;   * the renderer, the screens and the protocol (em_gfx / em_view / em_ui / em_net) are the client.
+;;
+;; NO MALLOC: no allocator, no imports, memory never grows (4 MB, fixed). Every record has a fixed address.
+;;   0x020000 CTL      input tables                                          (em_input.prn)
+;;   0x021000 G        global state words                                    (g-* below)
+;;   0x026000 TOKEN    2 KB   the IDUNA bearer token, written by the page
+;;   0x026800 NAME     64 B   the player's display name, written by the page
+;;   0x026840 OPP      32 B   the opponent's name
+;;   0x027000 SCRATCH  1 KB
+;;   0x029000 ERR      256 B  the last error text from the gateway
+;;   0x02A000 FEED     8 x 64 B  the live event feed text
+;;   0x030000 FONT     255 glyphs x 16 rows
+;;   0x040000 SIM      the whole simulation (header, towers, units, effects): ONE contiguous region, so a snapshot is a memcpy
+;;   0x044000 CMDQ     commands waiting for the next tick
+;;   0x045000 CMDLOG   every command the sim executed (tick, seat, slot, x, y): the replay
+;;   0x050000 CARDS    the card table (16 x 64 B), built at init
+;;   0x054000 AIST     the AIs' private state (not part of a snapshot)
+;;   0x060000 REPLAY   a replay being watched (header + commands)
+;;   0x070000 NETIN    32 KB  one frame from the gateway
+;;   0x078000 NETOUT   8 KB   frames for the gateway
+;;   0x100000 FB       960 x 540 RGBA framebuffer
+
+(module empire/web)
+
+(defn ctl-base [] : I32 131072)
+(defn g-base [] : I32 135168)
+(defn token-base [] : I32 155648)
+(defn name-base [] : I32 157696)
+(defn opp-base [] : I32 157760)
+(defn scratch-base [] : I32 159744)
+(defn err-base [] : I32 167936)
+(defn feed-base [] : I32 172032)
+(defn font-base [] : I32 196608)
+(defn sim-base [] : I32 262144)
+(defn sim-len [] : I32 12288)
+(defn cmdq-base [] : I32 278528)
+(defn cmdlog-base [] : I32 282624)
+(defn cards-base [] : I32 327680)
+(defn aist-base [] : I32 344064)
+(defn replay-base [] : I32 393216)
+(defn netin-base [] : I32 458752)
+(defn netout-base [] : I32 491520)
+(defn fb-base [] : I32 1048576)
+
+(defn fb-w [] : I32 960)
+(defn fb-h [] : I32 540)
+
+;; ---- byte-level readers (the wasm has only 8/32-bit loads) -----------------------------------------------------------------
+(defn ld16 [(a : I32)] : I32 (+ (load8 a) (shl (load8 (+ a 1)) 8)))
+(defn st16! [(a : I32) (v : I32)] : Unit (do (store8! a (bit-and v 255)) (store8! (+ a 1) (bit-and (shr v 8) 255))))
+(defn st32! [(a : I32) (v : I32)] : Unit (store32! a v))
+
+;; ---- global state words -----------------------------------------------------------------------------------------------------
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+
+;; screens: 0 title, 1 deck builder, 2 searching, 3 battle, 4 result, 5 error, 6 replay
+(defn g-screen [] : I32 0)
+(defn g-frame [] : I32 1)
+(defn g-ticker [] : I32 2)          ; wall-clock ms as I32 (animation and timing only)
+(defn g-ui-t [] : I32 3)            ; frames on the current screen
+(defn g-net-state [] : I32 4)       ; 0 off, 1 connecting, 2 open, 3 closed
+(defn g-want-queue [] : I32 5)
+(defn g-token-len [] : I32 6)
+(defn g-name-len [] : I32 7)
+(defn g-in-len [] : I32 8)
+(defn g-out-len [] : I32 9)
+(defn g-auth-sent [] : I32 10)
+(defn g-guest [] : I32 12)
+(defn g-ident-ok [] : I32 13)       ; the gateway accepted the token
+(defn g-queued-sent [] : I32 14)
+(defn g-q-waiting [] : I32 15)
+(defn g-q-since [] : I32 16)        ; ticker ms the search began
+(defn g-err-code [] : I32 17)
+(defn g-err-len [] : I32 18)
+(defn g-ping-sent [] : I32 19)
+(defn g-rtt [] : I32 20)
+(defn g-out-cur [] : I32 22) (defn g-out-skip [] : I32 23) (defn g-out-start [] : I32 24)
+(defn g-ai-mask [] : I32 25)        ; seats THIS module's step runs the AI for (1 = seat 0, 2 = seat 1): the server and practice, never a networked client
+(defn g-want-bot [] : I32 26)       ; 0 any opponent, n = bot number n-1
+(defn g-version-ok [] : I32 27)
+
+;; the match as the client lives it
+(defn g-mode [] : I32 30)           ; 0 none, 1 practice (offline), 2 online, 3 replay, 4 spectate
+(defn g-m-id [] : I32 31) (defn g-m-seed [] : I32 32) (defn g-m-seat [] : I32 33) (defn g-m-oppkind [] : I32 34)
+(defn g-m-opp-rating [] : I32 35) (defn g-m-you-rating [] : I32 36)
+(defn g-last-step-t [] : I32 37)    ; ticker ms the last sim step ran (interpolation)
+(defn g-m-synced [] : I32 38)       ; the sim has started from a match frame
+(defn g-m-ranked [] : I32 39)
+(defn g-sel-slot [] : I32 40)       ; the card picked from the hand (-1 none)
+(defn g-hov-x [] : I32 41) (defn g-hov-y [] : I32 42) (defn g-hov-ok [] : I32 43)
+(defn g-toast-t [] : I32 44) (defn g-toast-id [] : I32 45)
+(defn g-cmd-sent-t [] : I32 46)
+(defn g-flash-t [] : I32 47)        ; ticker ms the last accepted play landed (a soft pulse)
+(defn g-bad-t [] : I32 48)          ; ticker ms a refused play was attempted
+(defn g-bad-why [] : I32 49)
+(defn g-desync [] : I32 50)
+(defn g-pend-resync [] : I32 51)
+(defn g-practice-bot [] : I32 52)   ; which personality the practice opponent plays
+(defn g-emote-t [] : I32 53) (defn g-emote-id [] : I32 54) (defn g-emote-seat [] : I32 55)
+(defn g-emote-cool [] : I32 56)
+(defn g-sent-emote [] : I32 57)
+(defn g-opp-fac [] : I32 58)
+(defn g-opp-deck [] : I32 59)
+(defn g-cmdq-n [] : I32 120)       ; commands waiting in CMDQ
+
+;; the result
+(defn g-have-result [] : I32 60) (defn g-res-winner [] : I32 61) (defn g-res-reason [] : I32 62) (defn g-res-ticks [] : I32 63)
+(defn g-rec-got [] : I32 64) (defn g-rec-counted [] : I32 65) (defn g-rec-rating [] : I32 66) (defn g-rec-delta [] : I32 67)
+(defn g-over-t [] : I32 68) (defn g-res-id [] : I32 69)
+
+;; the deck
+(defn g-deck [] : I32 70)           ; 8 nibbles, card ids (the player's own deck)
+(defn g-faction [] : I32 71)
+(defn g-deck-dirty [] : I32 72)     ; the page should save the deck
+(defn g-bld-hov [] : I32 73)
+(defn g-bld-sel [] : I32 74)
+
+;; replay
+(defn g-rp-on [] : I32 80) (defn g-rp-n [] : I32 81) (defn g-rp-i [] : I32 82) (defn g-rp-speed [] : I32 83) (defn g-rp-paused [] : I32 84)
+(defn g-rp-acc [] : I32 85) (defn g-rp-ready [] : I32 86) (defn g-rp-ver [] : I32 87)
+
+;; lobby
+(defn g-bot-hov [] : I32 90) (defn g-bot-rating0 [] : I32 91)   ; 8 bot ratings follow (91..98)
+(defn g-bots-n [] : I32 99)
+(defn g-stat-online [] : I32 100) (defn g-stat-playing [] : I32 101)
+
+;; ---- tiny helpers -------------------------------------------------------------------------------------------------------------------
+(defn b2i [(c : Bool)] : I32 (if c 1 0))
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn clamp-i [(x : I32) (lo : I32) (hi : I32)] : I32 (max-i lo (min-i x hi)))
+(defn abs-i [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+(defn sgn-i [(x : I32)] : I32 (if (< x 0) -1 (if (> x 0) 1 0)))
+(defn fmax2 [(a : F32) (b : F32)] : F32 (if (> a b) a b))
+(defn fmin2 [(a : F32) (b : F32)] : F32 (if (< a b) a b))
+(defn clamp-f [(x : F32) (lo : F32) (hi : F32)] : F32 (fmax2 lo (fmin2 x hi)))
+(defn lerp [(a : F32) (b : F32) (t : F32)] : F32 (+ a (* (- b a) t)))
+;; NOTE (PARENA, found the hard way): an `if` / `cond` / `case` whose branches are plain expressions compiles to a SELECT, so BOTH arms are evaluated.
+;; A division whose divisor can be zero must therefore never sit in such an arm; div0 makes the divisor safe first.
+(defn div0 [(a : I32) (b : I32)] : I32 (/ a (if (= b 0) 1 b)))
+;; integer square root (floor), through the exact F64 square root
+(defn isqrt [(n : I32)] : I32 (if (<= n 0) 0 (i32 (sqrt (f64 n)))))
+
+;; sin / cos without libm: the series is evaluated in F64 and rounded to F32 (render only: the sim never uses it)
+(defn sin64 [(x : F64)] : F64
+  (let [(k : F64) (floor (+ (/ x 6.283185307179586) 0.5))
+        (r0 : F64) (- x (* k 6.283185307179586))
+        (r : F64) (cond (> r0 1.5707963267948966) (- 3.141592653589793 r0)
+                        (< r0 -1.5707963267948966) (- -3.141592653589793 r0)
+                        :else r0)
+        (r2 : F64) (* r r)]
+    (* r (+ 1.0 (* r2 (+ -0.16666666666666666
+                         (* r2 (+ 0.008333333333333333
+                                  (* r2 (+ -0.0001984126984126984
+                                           (* r2 (+ 0.0000027557319223985893
+                                                    (* r2 (+ -0.00000002505210838544172
+                                                             (* r2 0.00000000016059043836821613)))))))))))))))
+(defn sinf [(x : F32)] : F32 (f32 (sin64 (f64 x))))
+(defn cosf [(x : F32)] : F32 (f32 (sin64 (+ (f64 x) 1.5707963267948966))))

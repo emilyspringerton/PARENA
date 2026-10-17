@@ -1,0 +1,7 @@
+# the wasm client's source files (scripts/build_empire_wasm.sh concatenates them in this order)
+stdlib/empire/web/em_mem.prn
+stdlib/empire/web/em_gfx.prn
+stdlib/empire/web/em_rules.prn
+stdlib/empire/web/em_sim.prn
+stdlib/empire/web/em_ai.prn
+stdlib/empire/web/em_main.prn

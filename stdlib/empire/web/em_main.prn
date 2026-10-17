@@ -1,0 +1,61 @@
+;; stdlib/empire/web/em_main.prn -- the exports the page and the server call.
+;;
+;; Two callers use this same module: the browser (rendering, screens, the socket) and IDUNA (headless: begin a match, queue plays, step, read the
+;; board). The headless half is first; everything a referee needs is here, and nothing in it touches the framebuffer.
+
+(defn em-version-str [] : String "empire-1")
+
+(defn em-init [] : Unit
+  (do
+    (load-font)
+    (cards-init!)
+    (gi! (g-ai-mask) 0)
+    (gi! (g-sel-slot) -1)))
+
+;; ---- the referee's door ----------------------------------------------------------------------------------------------------------------------
+(defn em-match-begin [(seed : I32) (deck0 : I32) (fac0 : I32) (deck1 : I32) (fac1 : I32)] : I32
+  (if (and (deck-valid? deck0) (deck-valid? deck1))
+      (do (sim-begin! seed deck0 fac0 deck1 fac1) 1)
+      0))
+(defn em-ai-set [(seat : I32) (p : I32)] : Unit (ai-set! seat p))
+(defn em-sim-cmd [(seat : I32) (slot : I32) (x4 : I32) (y4 : I32)] : Unit (cmd-push! seat slot x4 y4))
+(defn em-sim-step [] : I32 (sim-step!))
+(defn em-sim-resign [(seat : I32)] : Unit (resign! seat))
+(defn em-can-play [(seat : I32) (slot : I32) (x4 : I32) (y4 : I32)] : I32 (can-play seat slot (+ (* x4 64) 32) (+ (* y4 64) 32)))
+
+(defn em-h [(k : I32)] : I32 (h k))
+(defn em-tick [] : I32 (h (h-tick)))
+(defn em-over [] : I32 (h (h-over)))
+(defn em-winner [] : I32 (h (h-winner)))
+(defn em-reason [] : I32 (h (h-reason)))
+(defn em-crowns [(s : I32)] : I32 (h (h-crowns s)))
+(defn em-elixir [(s : I32)] : I32 (h (h-elixir s)))
+(defn em-decorum [(s : I32)] : I32 (h (h-decorum s)))
+(defn em-hand [(s : I32) (k : I32)] : I32 (h (h-hand s k)))
+(defn em-stat [(s : I32) (k : I32)] : I32 (h (h-stat s k)))
+(defn em-plays [(s : I32) (c : I32)] : I32 (h (h-plays s c)))
+(defn em-tower-hp [(t : I32)] : I32 (tw t (t-hp)))
+(defn em-tower-alive [(t : I32)] : I32 (tw t (t-alive)))
+(defn em-unit [(i : I32) (k : I32)] : I32 (un i k))
+(defn em-unit-count [] : I32 (let [(n : I32) 0] (dotimes [i (max-units)] (when (= (un i (u-alive)) 1) (set! n (+ n 1)))) n))
+(defn em-card [(c : I32) (k : I32)] : I32 (cd c k))
+(defn em-bot-deck [(p : I32)] : I32 (bot-deck p))
+(defn em-bot-faction [(p : I32)] : I32 (bot-faction p))
+
+(defn em-sim-addr [] : I32 (sim-base))
+(defn em-sim-len [] : I32 (sim-len))
+(defn em-cmdlog-addr [] : I32 (cmdlog-base))
+(defn em-cmdlog-n [] : I32 (h (h-cmdn)))
+;; FNV-1a over the region: the board's fingerprint. (The command log count is excluded: clients do not keep one.)
+(defn em-sim-hash [] : I32
+  (let [(a : I32) -2128831035]
+    (loop [i 0]
+      (when (< i (/ (sim-len) 4))
+        (do (when (!= i (h-cmdn))
+              (set! a (* (bit-xor a (load32 (+ (sim-base) (shl i 2)))) 16777619)))
+            (recur (+ i 1)))))
+    a))
+(defn em-g [(k : I32)] : I32 (gi k))
+(defn em-g! [(k : I32) (v : I32)] : Unit (gi! k v))
+(defn em-ai-mask [] : I32 (gi (g-ai-mask)))
+(defn em-ai-mask-set [(m : I32)] : Unit (gi! (g-ai-mask) m))
