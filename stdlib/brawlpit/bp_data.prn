@@ -63,11 +63,8 @@
     5 "THE TUXEDO DUCK, SECOND CASTING" 6 "THE MOST-SUMMONED" 7 "OFF THE CLOCK"
     8 "NOT THE ONE FROM FACTION 10" 9 "MAYBE THE WORLD IS YOURS" "?"))
 
-(defn fighter-special-a [(id : I32)] : String
-  (case id
-    0 "PARASOL RISE / TURNIP" 1 "RELIC WARP / TURNIP" 2 "TURNIP / UMBRELLA" 3 "INSERT COIN / HIGH SCORE RUSH"
-    4 "BRACING STANCE / SUNBREAK" 5 "HAT TRICK / BOW TOSS" 6 "PETRIFY GAZE / SERPENT GRASP"
-    7 "SCAVENGER DASH / PLAY DEAD" 8 "GROUND SLAM / REGROWTH" 9 "CLAIM / CAST DOUBT" "?"))
+;; every fighter has the duck's moves; what differs is speed, weight, jump, power (FighterDef)
+(defn fighter-special-a [(id : I32)] : String "QUACK SHOTGUN / DASH-PUNCH / FLAP")
 
 ;; ---- physics.h: stage geometry -----------------------------------------------------------
 ;; STAGE region: +0 count (I32), +4..+19 blast left/right/top/bottom (F32), +32 platform[i]:

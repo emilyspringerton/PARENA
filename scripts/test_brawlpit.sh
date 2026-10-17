@@ -15,4 +15,5 @@ scripts/build_brawlpit_web.sh "$W" 2>&1 | grep -E "^built|FAIL"
 gcc -O2 -ffp-contract=off -Wall -I"$BP/packages" -o "$W/parity_ref" tests/brawlpit_parity_ref.c -lm
 echo "== parity (wasm vs the C engine)";  node tests/brawlpit_parity_test.mjs "$W/brawlpit.wasm" "$W/parity_ref" "$BP" | tail -1
 echo "== engine";                          node tests/brawlpit_engine_test.mjs "$W/brawlpit.wasm" | tail -1
+echo "== duck moveset + atlas";           node tests/brawlpit_duck_test.mjs "$W/brawlpit.wasm" "${WOTAN_DIR:-../WOTAN}/BRAWLPIT/duck.png" | tail -1
 echo "== host (generated JS + wasm)";      node tests/brawlpit_host_test.mjs "$W" | tail -1

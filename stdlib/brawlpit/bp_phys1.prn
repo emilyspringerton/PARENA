@@ -21,6 +21,9 @@
 (defn mode-time [] : I32 1)
 (defn mode-sandbox [] : I32 2)
 
+;; classic = the original per-character specials of physics.h; only the parity tests turn it on
+(defn classic-moves? [] : Bool (not (= (gi (g-moveset)) 0)))
+
 ;; ---- tuning constants (physics.h #defines) ------------------------------------------------
 (defn c-attack-cooldown [] : I32 10)
 (defn c-smash-cooldown [] : I32 28)
@@ -105,6 +108,19 @@
 (defn c-sunbreak-range [] : F32 1.6)
 (defn c-sunbreak-damage [] : F32 13.0)
 (defn c-style-bow [] : I32 10)
+(defn c-style-pellet [] : I32 12)
+;; the shared duck moveset (every fighter): QUACK SHOTGUN and the TUXEDO DASH-PUNCH
+(defn c-shotgun-total [] : I32 26)
+(defn c-shotgun-fire [] : I32 13)         ; timer value on the tick the shells leave the barrel
+(defn c-shotgun-cooldown [] : I32 50)
+(defn c-pellet-speed [] : F32 1.7)
+(defn c-pellet-spread [] : F32 0.11)
+(defn c-pellet-ttl [] : I32 22)
+(defn c-pellet-damage [] : F32 4.5)
+(defn c-shotgun-recoil [] : F32 0.7)
+(defn c-dash-punch-hit [] : I32 8)        ; dash frame the punch lands on (the lunge, frame 8 of 18)
+(defn c-dash-punch-range [] : F32 3.0)
+(defn c-dash-punch-damage [] : F32 10.0)
 (defn c-style-hat [] : I32 11)
 (defn c-bow-damage [] : F32 7.0)
 (defn c-hat-damage [] : F32 6.0)
@@ -146,6 +162,7 @@
         (set-p-parasol-rehit-timer! p 0)
         (set-p-hitlag-frames! p 0) (set-p-hit-flash-timer! p 0) (set-p-hit-flash-multihit! p 0)
         (set-p-special-b-cooldown! p 0)
+        (set-p-shotgun-timer! p 0)
         (set-p-jumps-remaining! p (c-max-jumps)))))
 
 ;; phys_start_respawn: the stock is spent here (a blast-zone exit). MODE_SANDBOX never costs one.
@@ -164,7 +181,7 @@
               (set-p-attack-timer! p 0) (set-p-smash-active-timer! p 0)
               (set-p-smash-charge-timer! p 0) (set-p-smash-release-timer! p 0)
               (set-p-wavedash-frames! p 0) (set-p-rosie-dash-frame! p 0)
-              (set-p-umbrella-open! p 0))))))
+              (set-p-umbrella-open! p 0) (set-p-shotgun-timer! p 0))))))
 
 ;; ---- check_aabb / apply_knockback ---------------------------------------------------------
 (defn check-aabb [(x1 : F32) (y1 : F32) (w1 : F32) (h1 : F32)
@@ -190,6 +207,7 @@
           (do (set-p-vx! target fkx)
               (set-p-vy! target fky)))
       (set-p-hitstun-frames! target (i32 (* (* (sqrt (+ (* kbx kbx) (* kby kby))) 5.0) scaling)))
+      (set-p-shotgun-timer! target 0)
       (set-p-state! target (st-stunned)))))
 
 ;; ---- resolve_platform_collisions ---------------------------------------------------------

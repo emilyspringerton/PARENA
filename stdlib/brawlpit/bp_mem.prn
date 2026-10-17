@@ -24,6 +24,7 @@
 ;;   0x040000 HATS     8 slots x 32x32 RGBA
 ;;   0x100000 FB       960 x 540 RGBA framebuffer
 ;;   0x300000 SPRITES  8 slots x 128x128 RGBA (character portraits, optional)
+;;   0x3A0000 DUCK     640x340 RGBA atlas, 29 animation frames of 80x68 (shared by every fighter)
 
 (module brawlpit/engine)
 
@@ -39,6 +40,7 @@
 (defn hats-base [] : I32 262144)
 (defn fb-base [] : I32 1048576)
 (defn sprites-base [] : I32 3145728)
+(defn duck-base [] : I32 3801088)      ; sprites-base + 10 portraits: the 640x340 duck atlas (29 frames of 80x68)
 (defn hatname-base [] : I32 299008)     ; 64 bytes: the page writes the equipped hat's name here
 
 (defn fb-w [] : I32 960)
@@ -118,6 +120,8 @@
 (defn g-quit-req [] : I32 56)
 (defn g-ai-mode [] : I32 57)       ; CPU brain: 0 classic (the C bot), 1 easy, 2 normal, 3 hard
 (defn g-ai-sel [] : I32 58)        ; the level chosen on the select screen
+(defn g-duck-ready [] : I32 60)    ; 1 once the page has uploaded the duck animation atlas
+(defn g-moveset [] : I32 61)       ; 0 the shared duck moveset (the game), 1 the original per-character moves (parity tests only)
 (defn g-hat-touched [] : I32 59)   ; 1 once the player has picked P1's hat by hand (a late store hat then stays out of it)
 
 ;; ---- tiny integer / float helpers -------------------------------------------------------

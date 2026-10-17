@@ -214,6 +214,9 @@
 (defn k-bot-shield [] : I32 70)
 (defn p-bot-shield [(s : I32)] : I32 (load32 (+ (pl-base s) 280)))
 (defn set-p-bot-shield! [(s : I32) (v : I32)] : Unit (store32! (+ (pl-base s) 280) v))
+(defn k-shotgun-timer [] : I32 71)
+(defn p-shotgun-timer [(s : I32)] : I32 (load32 (+ (pl-base s) 284)))
+(defn set-p-shotgun-timer! [(s : I32) (v : I32)] : Unit (store32! (+ (pl-base s) 284) v))
 
 (defn k-t-active [] : I32 0)
 (defn t-active [(s : I32)] : I32 (load32 (+ (tn-base s) 0)))
@@ -256,4 +259,4 @@
 (defn e-timer [(s : I32)] : I32 (load32 (+ (ek-base s) 16)))
 (defn set-e-timer! [(s : I32) (v : I32)] : Unit (store32! (+ (ek-base s) 16) v))
 
-(defn player-words [] : I32 71)
+(defn player-words [] : I32 72)

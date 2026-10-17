@@ -94,6 +94,7 @@
     (js/call canvas "focus" (js/obj "preventScroll" true))
     (update-pad-label)
     (load-sprites)
+    (load-duck)
     (load-hat)
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
@@ -238,6 +239,30 @@
       (let [data (js/get (js/call g "getImageData" 0 0 512 256) "data")]
         (dotimes [t 8] (copy-tile! data t))
         (dotimes [t 8] (js/call wasm "bp_sprite_set" (+ t 2) 1))))))
+
+;; ---- the duck: every fighter's animation set, one 640x340 atlas PNG of 29 frames of 80x68
+;; (WOTAN/scripts/build-brawlpit-duck.py). Decoded by the browser and copied, in one piece, to the wasm
+;; module's duck region; the wasm picks frames, recolours and draws.
+(defn load-duck [] : Unit
+  (js/call
+    (js/call
+      (js/call
+        (js/call (js/call-fn (js/global "fetch") "duck.png") "then" (callback blob-of))
+        "then" (callback decode-bitmap))
+      "then" (callback on-duck))
+    "catch" (callback ignore!)))
+
+(defn on-duck [(bmp : Any)] : Unit
+  (let [c2 (js/call (doc) "createElement" "canvas")]
+    (js/set! c2 "width" 640)
+    (js/set! c2 "height" 340)
+    (let [g (js/call c2 "getContext" "2d")]
+      (js/set! g "imageSmoothingEnabled" false)
+      (js/call g "drawImage" bmp 0 0)
+      (let [data (js/get (js/call g "getImageData" 0 0 640 340) "data")]
+        (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "bp_duck_addr") 870400)
+                 "set" data)
+        (js/call wasm "bp_duck_set" 1)))))
 
 ;; ---- 4. the equipped hat: IDUNA -> pixels in wasm memory ---------------------------------------------
 ;; The player's equipped Hat Store hat is worn in matches by default (the wasm draws it, and puts it

@@ -106,12 +106,12 @@
       (and (< adx 5.5)
            (and (or (> (p-attack-timer t) 0) (> (p-smash-active-timer t) 0)) (chance (lv-shield))))
         (do (set-p-bot-shield! id (+ 8 (rnd 14))) (set-p-btn-shield! id 1) (set-p-in-x! id 0.0))
-      ;; charge a smash from mid range
+      ;; mid range: charge a smash (classic) / lunge with the dash-punch
       (and grounded (and (> adx 2.4) (and (< adx 6.0) (chance (lv-smash)))))
         (do (set-p-bot-think! id (+ 6 (rnd 30))) (set-p-btn-special! id 1) (set-p-in-x! id (* dir 0.8)))
-      ;; a character special (projectile, slam, dash...) with a still stick so it fires
+      ;; the quack shotgun (classic: a character special): a nearly still stick, turned toward the target
       (and grounded (and (< adx 9.0) (chance (lv-special))))
-        (do (set-p-in-x! id 0.0)
+        (do (set-p-in-x! id (* dir 0.05))
             (set-p-in-y! id (if (chance 50) 1.0 -1.0))
             (set-p-btn-special! id 1))
       ;; swing when in range

@@ -44,6 +44,7 @@ PLAYER = [
     ("prev-stocks", "i"), ("prev-resp", "i"), ("prev-hitlag", "i"),
     ("label", "i"),        # 0 none, 1 P1, 2 P2, 3 CPU -- name tag above the head
     ("bot-shield", "i"),   # shield frames left to hold (web CPU only)
+    ("shotgun-timer", "i"),  # QUACK SHOTGUN frames left (the shared duck moveset, bp_phys3.prn)
 ]
 
 TURNIP = [

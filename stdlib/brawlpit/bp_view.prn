@@ -126,10 +126,102 @@
     (blit (+ (sprites-base) (* cid 65536)) 128 128
           (- px (/ sz 2)) (ly py u 4.6) sz sz (< fl 0) mode)))
 
+;; ---- the duck: one animation set for every fighter -------------------------------------------
+;; duck.png (WOTAN/scripts/build-brawlpit-duck.py) is a 640x340 atlas of 29 frames of 80x68, uploaded
+;; by the page to duck-base. All fighters share the frames; the tuxedo and the beak are recoloured
+;; from the FighterDef body / accent colours so two ducks in a match are never the same duck.
+(defn duck-loaded? [] : Bool (not (= (gi (g-duck-ready)) 0)))
+
+;; frame numbers (keep in step with FRAMES in build-brawlpit-duck.py)
+(defn df-walk [] : I32 0)      ; 0-3
+(defn df-idle [] : I32 4)      ; 4-7
+(defn df-jab [] : I32 8)       ; 8-9
+(defn df-dash [] : I32 10)     ; 10-13 dash-punch
+(defn df-kick [] : I32 14)     ; 14-17
+(defn df-squat [] : I32 18)    ; jump-squat: landing, shield, dodge
+(defn df-rise [] : I32 19)     ; wings up
+(defn df-fall [] : I32 20)
+(defn df-flap [] : I32 21)     ; flap recovery
+(defn df-hurt [] : I32 22)
+(defn df-down [] : I32 23)     ; knocked down
+(defn df-gun [] : I32 24)      ; 24-28 quack shotgun
+
+;; which frame this fighter is in, from its simulation state
+(defn duck-frame-of [(p : I32) (frame : I32)] : I32
+  (let [st (p-state p)
+        grounded (not (= (p-on-ground p) 0))
+        (speed : F32) (fabs (p-vx p))]
+    (cond
+      (> (p-shotgun-timer p) 0)
+        (let [e (- (c-shotgun-total) (p-shotgun-timer p))]
+          (cond (< e 5) 24 (< e 9) 25 (< e 13) 26 (< e 19) 27 :else 28))
+      (= st (st-stunned)) (if grounded (df-down) (df-hurt))
+      (= st (st-rosie-dash))
+        (let [d (p-rosie-dash-frame p)]
+          (cond (< d 4) 10 (< d 10) 11 (< d 15) 12 :else 13))
+      (and (= st (st-attack)) (> (p-attack-timer p) 0))
+        (let [e (- (c-attack-active) (p-attack-timer p))]
+          (if grounded
+              (if (< e 5) (df-jab) (+ (df-jab) 1))
+              (cond (< e 3) 14 (< e 7) 15 (< e 10) 16 :else 17)))
+      (= st (st-upb)) (df-flap)
+      (or (= st (st-wavedash)) (or (= st (st-shield)) (> (p-upb-landing-lag p) 0))) (df-squat)
+      (not grounded) (if (> (p-vy p) 0.3) (df-rise) (df-fall))
+      (> speed 0.15) (+ (df-walk) (mod (/ frame 6) 4))
+      :else (+ (df-idle) (mod (/ frame 12) 4)))))
+
+;; tuxedo (dark, low saturation) takes the body colour, beak and feet (orange) the accent; the
+;; black outline and the cream feathers are left alone
+(defn duck-tint [(c : I32) (body : I32) (acc : I32)] : I32
+  (let [r (col-r c) g (col-g c) b (col-b c)
+        mx (max-i r (max-i g b))
+        mn (min-i r (min-i g b))]
+    (cond
+      (and (> (- r b) 90) (and (> (- r g) 40) (> g 50)))
+        (rgb (min-i 255 (/ (* (col-r acc) r) 235))
+             (min-i 255 (/ (* (col-g acc) r) 235))
+             (min-i 255 (/ (* (col-b acc) r) 235)))
+      (and (< mx 112) (and (> mx 23) (< (- mx mn) 48)))
+        (rgb (min-i 255 (/ (* (col-r body) mx) 64))
+             (min-i 255 (/ (* (col-g body) mx) 64))
+             (min-i 255 (/ (* (col-b body) mx) 64)))
+      :else (bit-or (opaque) (bit-and c 16777215)))))
+
+;; nearest-neighbour blit of atlas frame fr (80x68), mirrored when flip; mode as in blit
+(defn blit-duck [(fr : I32) (dx : I32) (dy : I32) (dw : I32) (dh : I32) (flip : Bool) (mode : I32)
+                 (body : I32) (acc : I32)] : Unit
+  (let [src (+ (duck-base) (shl (+ (* (* (/ fr 8) 68) 640) (* (mod fr 8) 80)) 2))]
+    (when (and (> dw 0) (> dh 0))
+      (dotimes [y dh]
+        (let [py (+ dy y)]
+          (when (and (>= py 0) (< py 540))
+            (let [sy (/ (* y 68) dh)]
+              (dotimes [x dw]
+                (let [px (+ dx x)]
+                  (when (and (>= px 0) (< px 960))
+                    (let [sx (/ (* (if flip (- (- dw 1) x) x) 80) dw)
+                          c (load32 (+ src (shl (+ (* sy 640) sx) 2)))]
+                      (when (>= (bit-and (ushr c 24) 255) 128)
+                        (store32! (px-addr px py)
+                                  (cond (= mode 1) -1
+                                        (= mode 2) (rgb 128 128 128)
+                                        :else (duck-tint c body acc)))))))))))))))
+
+;; the 80x68 cell is 6.72 x 5.71 world units: the duck is ~4.2 tall and its feet sit on the cell floor
+(defn draw-duck [(cid : I32) (fr : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (mode : I32)] : Unit
+  (let [dw (max-i 8 (i32 (* 6.72 u)))
+        dh (max-i 8 (i32 (* 5.71 u)))]
+    (blit-duck fr (- px (/ dw 2)) (- (+ py (i32 (* 0.15 u))) dh) dw dh (< fl 0) mode
+               (body-col cid) (accent-col cid))))
+
 ;; the flat-colour fighter (what the native client draws for a fighter with no sprite)
 (defn draw-body [(cid : I32) (px : I32) (py : I32) (fl : I32) (u : F32) (col : I32) (mode : I32)] : Unit
-  (if (sprite-loaded? cid)
+  (cond
+    (duck-loaded?)
+      (draw-duck cid (+ (df-idle) (mod (/ (gi (g-frame)) 12) 4)) px py fl u mode)
+    (sprite-loaded? cid)
       (draw-portrait cid px py fl u mode)
+    :else
       (let [acc (accent-col cid)
             edge (mix col (rgb 0 0 0) 150)]
         (if (= cid (char-petalia))
@@ -183,7 +275,7 @@
       (lrect px py fl u 0.0 0.5 0.6 0.6 (rgb 255 230 51)))))
 
 (defn draw-recovery-fx [(p : I32) (px : I32) (py : I32) (fl : I32) (u : F32)] : Unit
-  (do
+  (when (classic-moves?)
     (when (and (not (= (p-umbrella-open p) 0)) (= (p-character-id p) (char-petalia)))
       (lline px py fl u 0.0 4.0 0.0 6.5 2 (rgb 255 102 204))
       (lcircle px py fl u 0.0 7.0 1.8 (rgb 255 102 204) false))
@@ -221,11 +313,13 @@
                 (> (p-hit-flash-timer p) 0) (rgb 255 255 255)
                 (and (> (p-invuln-frames p) 0) (= (mod (/ frame 3) 2) 0)) (rgb 128 128 128)
                 :else col0)]
-      (draw-body cid px py fl u col
-                 (cond (> (p-hit-flash-timer p) 0) 1
+      (let [mode (cond (> (p-hit-flash-timer p) 0) 1
                        (and (> (p-invuln-frames p) 0) (= (mod (/ frame 3) 2) 0)) 2
-                       :else 0))
-      (when (and (= (p-state p) (st-stunned)) (sprite-loaded? cid))
+                       :else 0)]
+        (if (duck-loaded?)
+            (draw-duck cid (duck-frame-of p frame) px py fl u mode)
+            (draw-body cid px py fl u col mode)))
+      (when (and (= (p-state p) (st-stunned)) (and (sprite-loaded? cid) (not (duck-loaded?))))
         (let [sz (w2sl 4.4)]
           (rect-outline (- px (/ sz 2)) (ly py u 4.6) sz sz 2 (rgb 255 255 0))))
       (when (= (p-state p) (st-shield)) (draw-shield p px py u col0))
@@ -251,6 +345,10 @@
           (= style (c-style-bow))
             (do (fill-rect (- sx r) (- sy (/ r 2)) (* 2 r) r (rgb 255 60 200))
                 (fill-rect (- sx 2) (- sy r) 4 (* 2 r) (rgb 255 120 230)))
+          (= style (c-style-pellet))
+            (let [pr (max-i 2 (i32 (* 0.3 u)))]
+              (fill-rect-a (- sx (* (if (> (t-vx i) 0.0) 1 -1) (* 2 pr))) (- sy 1) (* 2 pr) 2 (rgb 255 200 80) 120)
+              (fill-circle sx sy pr (rgb 255 235 120)))
           (= style (c-style-hat))
             (do (fill-rect (- sx r) (+ sy (/ r 2)) (* 2 r) 3 (rgb 20 20 24))
                 (fill-rect (- sx (/ r 2)) (- sy r) r (+ r (/ r 2)) (rgb 30 30 36)))

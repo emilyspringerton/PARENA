@@ -93,6 +93,7 @@ async function replay(trace, cfg) {
   const mem = new Uint32Array(x.memory.buffer);
   x.init_fighters();
   x.bp_seed_bang(cfg.seed);
+  mem[(G + 4 * 61) / 4] = 1; // g-moveset = classic: the C engine has the per-character specials, not the shared duck moves
   x.set_slot_char_bang(0, cfg.c0);
   for (let i = 1; i < 8; i++) x.set_slot_char_bang(i, cfg.c1);
   x.sim_init_match(cfg.n, cfg.mode, cfg.stage);

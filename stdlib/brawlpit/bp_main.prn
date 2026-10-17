@@ -68,6 +68,10 @@
     (gi! (g-sprite-mask)
          (if (!= loaded 0) (bit-or (gi (g-sprite-mask)) bit) (bit-and (gi (g-sprite-mask)) (bit-xor bit -1))))))
 
+;; the duck animation atlas: 640x340 RGBA (29 frames of 80x68), one set for every fighter
+(defn bp-duck-addr [] : I32 (duck-base))
+(defn bp-duck-set [(loaded : I32)] : Unit (gi! (g-duck-ready) (if (!= loaded 0) 1 0)))
+
 ;; ---- introspection (page footer + tests) ---------------------------------------------------------------
 (defn bp-phase [] : I32 (gi (g-phase)))
 (defn bp-sim-frames [] : I32 (gi (g-sim-frames)))

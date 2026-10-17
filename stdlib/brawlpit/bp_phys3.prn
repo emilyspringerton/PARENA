@@ -39,15 +39,25 @@
     (tick-down! p (k-drop-through-timer))
     (tick-down! p (k-special-b-cooldown))))
 
-;; Rosie's side-B (High Score Rush): a timed dash, hit at the start and end, i-frames in the middle.
+;; QUACK SHOTGUN: counts down, fires on c-shotgun-fire, and the duck stands its ground meanwhile
+(defn ue-shotgun [(p : I32)] : Unit
+  (when (> (p-shotgun-timer p) 0)
+    (set-p-shotgun-timer! p (- (p-shotgun-timer p) 1))
+    (set-p-vx! p (* (p-vx p) 0.85))
+    (when (= (p-shotgun-timer p) (c-shotgun-fire)) (special-quack-shotgun-fire p))))
+
+;; The timed dash. Classic: Rosie's side-B (High Score Rush), hit at the start and end, i-frames in
+;; the middle. Duck moveset: every fighter's TUXEDO DASH-PUNCH, one hit on the lunge frame.
 (defn ue-rosie-dash [(p : I32)] : Unit
   (when (> (p-rosie-dash-frame p) 0)
     (set-p-vx! p (* (f32 (p-facing p)) (c-rosie-dash-speed)))
-    (when (= (p-rosie-dash-frame p) 1) (special-high-score-rush-hit p))
+    (if (classic-moves?)
+        (when (= (p-rosie-dash-frame p) 1) (special-high-score-rush-hit p))
+        (when (= (p-rosie-dash-frame p) (c-dash-punch-hit)) (special-dash-punch-hit p)))
     (when (and (>= (p-rosie-dash-frame p) (c-rosie-invuln-start))
                (<= (p-rosie-dash-frame p) (c-rosie-invuln-end)))
       (when (< (p-invuln-frames p) 2) (set-p-invuln-frames! p 2)))
-    (when (= (p-rosie-dash-frame p) (c-rosie-dash-total)) (special-high-score-rush-hit p))
+    (when (and (classic-moves?) (= (p-rosie-dash-frame p) (c-rosie-dash-total))) (special-high-score-rush-hit p))
     (set-p-rosie-dash-frame! p (+ (p-rosie-dash-frame p) 1))
     (when (> (p-rosie-dash-frame p) (c-rosie-dash-total))
       (set-p-rosie-dash-frame! p 0)
@@ -78,6 +88,7 @@
           (set-p-shield-windup-frames! p (c-shield-windup))
           (set-p-shield-overpowered-frames! p 0))
         (set-p-state! p (st-shield))
+        (set-p-shotgun-timer! p 0)
         (set-p-shield-health! p (- (p-shield-health p) (c-shield-drain)))
         (set-p-vx! p (* (p-vx p) 0.9))
         (if (> (p-shield-windup-frames p) 0)
@@ -108,25 +119,36 @@
       (set-p-ground-platform-type! p -1)
       (set-p-vy! p -0.2))
     (let [smash-possible (and (not (= (p-on-ground p) 0)) (> (fabs (p-in-x p)) 0.6))
-          smash-lock (b2i (or (> (p-smash-charge-timer p) 0) (> (p-smash-release-timer p) 0)))]
+          smash-lock (b2i (or (> (p-smash-charge-timer p) 0)
+                              (or (> (p-smash-release-timer p) 0) (> (p-shotgun-timer p) 0))))
+          ;; duck moveset: special + a direction on the ground is everyone's dash-punch
+          dash-punch (and (not (classic-moves?))
+                          (and smash-possible
+                               (and special-press
+                                    (and (= (p-btn-shield p) 0)
+                                         (and (= (p-dash-cooldown p) 0)
+                                              (and (= (p-rosie-dash-frame p) 0) (= (p-shotgun-timer p) 0)))))))]
       ;; Rosie's rush precedes the smash-charge trigger: both compete for the same input
       (cond
-        (and smash-possible
-             (and special-press
-                  (and (= cid (char-rosie))
-                       (and (= (p-dash-cooldown p) 0) (= (p-rosie-dash-frame p) 0)))))
+        (or dash-punch
+            (and (classic-moves?)
+                 (and smash-possible
+                      (and special-press
+                           (and (= cid (char-rosie))
+                                (and (= (p-dash-cooldown p) 0) (= (p-rosie-dash-frame p) 0)))))))
           (do (set-p-rosie-dash-frame! p 1)
               (set-p-state! p (st-rosie-dash))
               (set-p-facing! p (if (> (p-in-x p) 0.0) 1 -1))
               (set-p-dash-cooldown! p (c-dodge-cooldown)))
-        (and smash-possible
+        (and (classic-moves?)
+             (and smash-possible
              (and (not (= (p-btn-special p) 0))
                   (and (= (p-smash-charge-timer p) 0)
                        (and (= (p-smash-active-timer p) 0)
                             (and (= (p-smash-release-timer p) 0)
                                  (and (= (p-attack-timer p) 0)
                                       (and (= (p-attack-cooldown p) 0)
-                                           (not (= cid (char-rosie))))))))))
+                                           (not (= cid (char-rosie)))))))))))
           (do (set-p-smash-charge-timer! p (c-smash-charge))
               (set-p-smash-charge-level! p 0.0)
               (set-p-state! p (st-attack))
@@ -147,9 +169,10 @@
                   (set-p-smash-flash-timer! p (c-smash-flash)))))
         (set! smash-lock 1))
       (when (and special-press
-                 (and (not smash-possible)
+                 (and (not (if (classic-moves?) smash-possible dash-punch))
                       (and (= (p-smash-charge-timer p) 0)
-                           (and (= (p-smash-active-timer p) 0) (= (p-smash-release-timer p) 0)))))
+                           (and (= (p-smash-active-timer p) 0)
+                                (and (= (p-smash-release-timer p) 0) (= (p-shotgun-timer p) 0))))))
         (dispatch-special-move p))
       (let [grounded (not (= (p-on-ground p) 0))
             (accel : F32) (* (if grounded (c-ground-accel) (c-air-accel))
@@ -180,7 +203,8 @@
                       (and (= (p-attack-cooldown p) 0)
                            (and (= (p-attack-timer p) 0)
                                 (and (= (p-smash-charge-timer p) 0)
-                                     (and (= (p-smash-active-timer p) 0) (= (p-smash-release-timer p) 0)))))))
+                                     (and (= (p-smash-active-timer p) 0)
+                                          (and (= (p-smash-release-timer p) 0) (= (p-shotgun-timer p) 0))))))))
         (set-p-state! p (st-attack))
         (set-p-attack-timer! p (c-attack-active))
         (set-p-attack-cooldown! p (c-attack-cooldown))))))
@@ -202,7 +226,7 @@
               (set-p-vx! p (+ (p-vx p) (* (p-in-x p) (* (c-air-accel) 0.6)))))
         (> (p-upb-frame p) 50)
           (do (set-p-state! p (st-air)) (set-p-umbrella-open! p 0)))
-      (when (and (= cid (char-petalia)) (= (p-parasol-rehit-timer p) 0))
+      (when (and (classic-moves?) (and (= cid (char-petalia)) (= (p-parasol-rehit-timer p) 0)))
         (special-petalia-parasol-hit p)
         (set-p-parasol-rehit-timer! p (c-parasol-rehit))))
     (when (< (p-vy p) (- (c-terminal))) (set-p-vy! p (- (c-terminal))))
@@ -233,6 +257,7 @@
               (when (= (p-respawn-timer p) 0) (phys-respawn p)))
           (do
             (ue-timers p)
+            (ue-shotgun p)
             (ue-rosie-dash p)
             (ue-shield-regen p)
             (if (> (p-launch-delay-frames p) 0)
@@ -261,7 +286,8 @@
 (defn update-turnips [] : Unit
   (dotimes [i 16]
     (when (not (= (t-active i) 0))
-      (set-t-vy! i (- (t-vy i) (c-turnip-gravity)))
+      (when (not (= (t-style i) (c-style-pellet)))
+        (set-t-vy! i (- (t-vy i) (c-turnip-gravity))))
       (set-t-x! i (+ (t-x i) (t-vx i)))
       (set-t-y! i (+ (t-y i) (t-vy i)))
       (set-t-ttl-frames! i (- (t-ttl-frames i) 1))
@@ -275,13 +301,15 @@
                   (if (check-aabb (- (t-x i) 0.5) (- (t-y i) 0.5) 1.0 1.0
                                   (- (p-x pl) 1.0) (p-y pl) 2.0 4.0)
                       (let [style (t-style i)
-                            (dmg : F32) (cond (= style (c-style-bow)) (c-bow-damage)
+                            (dmg : F32) (cond (= style (c-style-pellet)) (c-pellet-damage)
+                                              (= style (c-style-bow)) (c-bow-damage)
                                               (= style (c-style-hat)) (c-hat-damage)
                                               (= style (char-vexar)) 10.0
                                               (= style (char-rosie)) (c-coin-damage)
                                               :else 8.0)
-                            (ky : F32) (if (= style (char-vexar)) 0.45 0.6)]
-                        (apply-knockback pl dmg (if (> (t-vx i) 0.0) 0.8 -0.8) ky)
+                            (ky : F32) (cond (= style (c-style-pellet)) 0.3 (= style (char-vexar)) 0.45 :else 0.6)
+                            (kx : F32) (if (= style (c-style-pellet)) 0.45 0.8)]
+                        (apply-knockback pl dmg (if (> (t-vx i) 0.0) kx (- 0.0 kx)) ky)
                         (set-t-active! i 0))
                       (recur (+ pl 1))))))))))
 
