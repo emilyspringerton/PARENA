@@ -1,7 +1,13 @@
-# the wasm client's source files (scripts/build_empire_wasm.sh concatenates them in this order)
+# the wasm client's source files (scripts/build_empire_wasm.sh concatenates them in this order; the line GENERATED:em_ver is the sim-version file it writes)
 stdlib/empire/web/em_mem.prn
+GENERATED:em_ver
 stdlib/empire/web/em_gfx.prn
 stdlib/empire/web/em_rules.prn
 stdlib/empire/web/em_sim.prn
 stdlib/empire/web/em_ai.prn
+stdlib/empire/web/em_input.prn
+stdlib/empire/web/em_net.prn
+stdlib/empire/web/em_view.prn
+stdlib/empire/web/em_ui.prn
+stdlib/empire/web/em_ui2.prn
 stdlib/empire/web/em_main.prn

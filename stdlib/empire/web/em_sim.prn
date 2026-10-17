@@ -650,3 +650,13 @@
     (separate-all!)
     (sweep!)
     (check-end!)))
+
+;; FNV-1a over the region: the board's fingerprint. (The command log count is excluded: clients do not keep one.)
+(defn sim-hash [] : I32
+  (let [(a : I32) -2128831035]
+    (loop [i 0]
+      (when (< i (/ (sim-len) 4))
+        (do (when (!= i (h-cmdn))
+              (set! a (* (bit-xor a (load32 (+ (sim-base) (shl i 2)))) 16777619)))
+            (recur (+ i 1)))))
+    a))

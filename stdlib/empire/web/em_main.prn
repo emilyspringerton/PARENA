@@ -46,16 +46,122 @@
 (defn em-sim-len [] : I32 (sim-len))
 (defn em-cmdlog-addr [] : I32 (cmdlog-base))
 (defn em-cmdlog-n [] : I32 (h (h-cmdn)))
-;; FNV-1a over the region: the board's fingerprint. (The command log count is excluded: clients do not keep one.)
-(defn em-sim-hash [] : I32
-  (let [(a : I32) -2128831035]
-    (loop [i 0]
-      (when (< i (/ (sim-len) 4))
-        (do (when (!= i (h-cmdn))
-              (set! a (* (bit-xor a (load32 (+ (sim-base) (shl i 2)))) 16777619)))
-            (recur (+ i 1)))))
-    a))
+(defn em-sim-hash [] : I32 (sim-hash))
 (defn em-g [(k : I32)] : I32 (gi k))
 (defn em-g! [(k : I32) (v : I32)] : Unit (gi! k v))
 (defn em-ai-mask [] : I32 (gi (g-ai-mask)))
 (defn em-ai-mask-set [(m : I32)] : Unit (gi! (g-ai-mask) m))
+
+;; ============================================================================================================================================
+;; the client
+;; ============================================================================================================================================
+(defn em-boot [] : Unit
+  (do
+    (em-init)
+    (gi! (g-deck) (deck-from-mask (deck-starter-mask)))
+    (gi! (g-faction) 0)
+    (gi! (g-mode) 0) (gi! (g-flip) 0) (gi! (g-sel-slot) -1) (gi! (g-pend-slot) -1)
+    (gi! (g-version-ok) 1)
+    (gi! (g-speed) 1)
+    (dotimes [k 8] (gi! (+ (g-bot-rating0) k) 1500))
+    (gi! (g-screen) 0)))
+
+;; one animation frame: act on input, then draw
+(defn em-frame [(now : F64)] : Unit
+  (let [sc (gi (g-screen))]
+    (gi! (g-ticker) (i32 now))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
+    (net-tick!)
+    (cond
+      (= sc 0) (title-update!)
+      (= sc 1) (deck-update!)
+      (= sc 2) (search-update!)
+      (= sc 3) (battle-update!)
+      (= sc 4) (over-update!)
+      (= sc 5) (error-update!)
+      :else unit)
+    (let [sc2 (gi (g-screen))]
+      (cond
+        (= sc2 0) (render-title!)
+        (= sc2 1) (render-deck!)
+        (= sc2 2) (render-search!)
+        (= sc2 3) (render-battle!)
+        (= sc2 4) (render-over!)
+        (= sc2 5) (render-error!)
+        :else unit))
+    (end-input-frame!)))
+
+;; ---- input forwarding ------------------------------------------------------------------------------------------------------------------
+(defn em-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn em-blur [] : Unit (in-clear-keys!))
+(defn em-pointer [(x : I32) (y : I32)] : Unit (in-pointer! x y))
+(defn em-button [(b : I32) (down : I32)] : Unit (in-button! b down))
+(defn em-wheel [(dir : I32)] : Unit (in-wheel! dir))
+
+;; ---- memory the page reads / writes ----------------------------------------------------------------------------------------------------------
+(defn em-fb-addr [] : I32 (fb-base))
+(defn em-fb-w [] : I32 960)
+(defn em-fb-h [] : I32 540)
+(defn em-mem-bytes [] : I32 4194304)
+(defn em-version [] : I32 (sim-version))
+
+(defn em-token-addr [] : I32 (token-base))
+(defn em-token-set [(n : I32)] : Unit (gi! (g-token-len) n))
+(defn em-name-addr [] : I32 (name-base))
+(defn em-name-set [(n : I32)] : Unit (do (gi! (g-name-len) n) (store8! (+ (name-base) (min-i n 62)) 0)))
+(defn em-guest-set [(v : I32)] : Unit (gi! (g-guest) v))
+
+(defn em-net-in-addr [] : I32 (netin-base))
+(defn em-net-out-addr [] : I32 (netout-base))
+(defn em-net-out-len [] : I32 (gi (g-out-len)))
+(defn em-net-out-clear [] : Unit (do (gi! (g-out-len) 0) (gi! (g-out-cur) 0) (gi! (g-out-skip) 0)))
+(defn em-net-recv [(len : I32)] : Unit (do (gi! (g-in-len) len) (net-handle!)))
+;; 1 connecting, 2 open, 3 closed
+(defn em-net-socket [(st : I32)] : Unit
+  (do (gi! (g-net-state) st)
+      (when (!= st 2) (do (gi! (g-auth-sent) 0) (gi! (g-ident-ok) 0) (gi! (g-queued-sent) 0) (gi! (g-ping-sent) 0) (gi! (g-watch-sent) 0)))))
+;; the engine wants a socket while it is searching or an online match is on
+(defn em-net-wanted [] : I32
+  (b2i (or (or (= (gi (g-want-queue)) 1) (> (gi (g-watch-id)) 0))
+           (and (or (= (gi (g-mode)) 2) (= (gi (g-mode)) 4)) (= (gi (g-screen)) 3)))))
+;; 1 when the engine only needs a socket to watch (no sign-in)
+(defn em-net-anon-ok [] : I32 (b2i (and (> (gi (g-watch-id)) 0) (= (gi (g-want-queue)) 0))))
+(defn em-watch [(id : I32)] : Unit (begin-watch! id))
+(defn em-screen [] : I32 (gi (g-screen)))
+(defn em-err-addr [] : I32 (err-base))
+(defn em-fail [(n : I32)] : Unit
+  (do (gi! (g-err-code) 1)
+      (store8! (+ (err-base) (min-i n 200)) 0)
+      (gi! (g-err-len) (min-i n 200))
+      (gi! (g-want-queue) 0) (gi! (g-queued-sent) 0)
+      (go-screen! (sc-error))))
+
+;; the page saved / restored the deck
+(defn em-deck-set [(d : I32) (f : I32)] : I32
+  (if (and (deck-valid? d) (and (>= f 0) (<= f 2)))
+      (do (gi! (g-deck) d) (gi! (g-faction) f) 1)
+      0))
+(defn em-deck-get [] : I32 (gi (g-deck)))
+(defn em-faction-get [] : I32 (gi (g-faction)))
+(defn em-deck-dirty [] : I32 (let [d (gi (g-deck-dirty))] (do (gi! (g-deck-dirty) 0) d)))
+
+;; lobby facts the page fetched (ratings of the eight, who is online)
+(defn em-bot-rating-set [(k : I32) (v : I32)] : Unit (when (and (>= k 0) (< k 8)) (gi! (+ (g-bot-rating0) k) v)))
+(defn em-stats-set [(online : I32) (playing : I32)] : Unit (do (gi! (g-stat-online) online) (gi! (g-stat-playing) playing)))
+(defn em-version-ok-set [(v : I32)] : Unit (gi! (g-version-ok) v))
+
+;; replays: the page copies the file to em_replay_addr() and calls em_replay_start()
+(defn em-replay-addr [] : I32 (replay-base))
+(defn em-replay-start [] : I32 (replay-start!))
+(defn em-replay-request [] : I32 (let [r (gi (g-rp-ready))] (do (gi! (g-rp-ready) 0) r)))
+
+;; ---- test hooks --------------------------------------------------------------------------------------------------------------------------
+(defn em-t-practice [(bot : I32)] : Unit (start-practice! bot))
+(defn em-t-click [(x : I32) (y : I32)] : Unit (do (in-pointer! x y) (in-button! 0 1) (in-button! 0 0)))
+
+;; the factions' numbers, for the pages that describe them (WOTAN/scripts/empire-cards.mjs reads them from the module so the pages cannot drift)
+(defn em-fac [(f : I32) (k : I32)] : I32
+  (case k 0 (fac-start f) 1 (fac-quiet f) 2 (fac-spend f) 3 (fac-pump-pct f) 4 (fac-hp-pct f) 5 (fac-dmg-pct f) 0))
+(defn em-geometry [(k : I32)] : I32
+  (case k 0 (tile) 1 (arena-w) 2 (arena-h) 3 (t-regular) 4 (t-overtime) 5 (tps) 6 (tower-hp0 0) 7 (tower-hp0 2) 8 (tower-dmg 0) 9 (tower-dmg 2) 10 (elixir-start) 0))

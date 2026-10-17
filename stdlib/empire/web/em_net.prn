@@ -1,0 +1,248 @@
+;; stdlib/empire/web/em_net.prn -- the gateway's protocol, spoken from inside the wasm, and the match state machine around it.
+;;
+;; The module has no imports, so it cannot touch a socket. The page host (em_host.prn) owns the WebSocket and does exactly two things with it: it
+;; copies every received frame to NETIN and calls em_net_recv(len), and it sends whatever the engine left in NETOUT (frames, each preceded by a u16
+;; length) and calls em_net_out_clear(). Everything else -- what to say, when, what an answer means -- is here.
+;;
+;; Authority: the match is IDUNA's. It steps the same simulation headlessly, runs the AI seats, and sends every executed play as a turn; this client
+;; applies each turn to its own copy and draws it. A play the client sends is a request: the server decides if it happens. Every so often the server
+;; sends the board's hash; a mismatch makes the client ask for a snapshot and carry on from that.
+;;
+;; client -> gateway: 0x02 AUTH [u16 len][token]   0x03 QUEUE [u32 version][u32 deck][u8 faction][u8 want-bot]   0x07 LEAVE   0x08 PING [u32]
+;;                    0x10 PLAY [slot][x4][y4]   0x11 EMOTE [id]   0x12 RESYNC   0x13 RESIGN   0x14 WATCH [u32 room]  (no sign-in needed to watch)
+;; gateway -> client: 0xA1 IDENT [guest][nl][name][il][id]   0xA0 QUEUED [u16 waiting]   0xA2 RECORDED [counted][u16 rating][i16 delta][u32 match id]
+;;                    0xA3 PONG [u32]   0xAF ERROR [code][len][text]
+;;                    0x20 MATCH [u32 id][u32 seed][seat][oppkind][opp personality][16 name][u16 opp rating][u16 your rating][u32 deck0][fac0][u32 deck1][fac1][ranked][u16 countdown ms]
+;;                    0x21 TURN [u32 tick][n]{[seat][slot][x4][y4]}   0x22 OVER [winner][reason][u32 ticks][crowns0][crowns1]
+;;                    0x23 SNAPSHOT [u32 tick][u16 len][bytes]   0x24 HASH [u32 tick][u32 hash]   0x25 EMOTE [seat][id]
+
+(defn put8! [(v : I32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (store8! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 1))))
+(defn put16! [(v : I32)] : Unit (do (put8! (bit-and v 255)) (put8! (bit-and (shr v 8) 255))))
+(defn put32! [(v : I32)] : Unit (do (put16! (bit-and v 65535)) (put16! (bit-and (ushr v 16) 65535))))
+
+(defn out-begin! [] : Unit
+  (let [o (gi (g-out-len))]
+    (gi! (g-out-start) o)
+    (gi! (g-out-skip) (if (> o 7600) 1 0))
+    (gi! (g-out-cur) (+ o 2))))
+(defn out-end! [] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (let [o (gi (g-out-start))
+          len (- (gi (g-out-cur)) (+ o 2))]
+      (store8! (+ (netout-base) o) (bit-and len 255))
+      (store8! (+ (netout-base) (+ o 1)) (bit-and (shr len 8) 255))
+      (gi! (g-out-len) (gi (g-out-cur))))))
+
+;; ---- reading --------------------------------------------------------------------------------------------------------------------------------
+(defn in8 [(k : I32)] : I32 (load8 (+ (netin-base) k)))
+(defn in16 [(k : I32)] : I32 (+ (in8 k) (shl (in8 (+ k 1)) 8)))
+(defn in32 [(k : I32)] : I32 (+ (in16 k) (shl (in16 (+ k 2)) 16)))
+(defn ins16 [(k : I32)] : I32 (let [v (in16 k)] (if (> v 32767) (- v 65536) v)))
+
+;; ---- requests ---------------------------------------------------------------------------------------------------------------------------------
+(defn net-auth! [] : Unit
+  (do (out-begin!)
+      (put8! 2) (put16! (gi (g-token-len)))
+      (dotimes [i (gi (g-token-len))] (put8! (load8 (+ (token-base) i))))
+      (out-end!)
+      (gi! (g-auth-sent) 1)))
+(defn net-queue! [] : Unit
+  (do (out-begin!) (put8! 3) (put32! (sim-version)) (put32! (gi (g-deck))) (put8! (gi (g-faction))) (put8! (gi (g-want-bot))) (out-end!)
+      (gi! (g-queued-sent) 1)))
+(defn net-leave! [] : Unit (do (out-begin!) (put8! 7) (out-end!) (gi! (g-queued-sent) 0)))
+(defn net-ping! [] : Unit
+  (do (out-begin!) (put8! 8) (put32! (gi (g-ticker))) (out-end!) (gi! (g-ping-sent) (gi (g-ticker)))))
+(defn net-play! [(slot : I32) (x4 : I32) (y4 : I32)] : Unit
+  (do (out-begin!) (put8! 16) (put8! slot) (put8! x4) (put8! y4) (out-end!)))
+(defn net-emote! [(id : I32)] : Unit (do (out-begin!) (put8! 17) (put8! id) (out-end!)))
+(defn net-resync! [] : Unit (do (out-begin!) (put8! 18) (out-end!) (gi! (g-pend-resync) (gi (g-ticker)))))
+(defn net-resign! [] : Unit (do (out-begin!) (put8! 19) (out-end!)))
+(defn net-watch! [] : Unit (do (out-begin!) (put8! 20) (put32! (gi (g-watch-id))) (out-end!) (gi! (g-watch-sent) 1)))
+
+;; ---- screens ---------------------------------------------------------------------------------------------------------------------------------
+(defn sc-title [] : I32 0) (defn sc-deck [] : I32 1) (defn sc-search [] : I32 2) (defn sc-battle [] : I32 3) (defn sc-over [] : I32 4)
+(defn sc-error [] : I32 5)
+
+(defn go-screen! [(s : I32)] : Unit
+  (when (!= (gi (g-screen)) s)
+    (gi! (g-screen) s)
+    (gi! (g-ui-t) 0)))
+
+;; ---- a match starting ------------------------------------------------------------------------------------------------------------------------------
+(defn clear-match-ui! [] : Unit
+  (do (gi! (g-sel-slot) -1) (gi! (g-have-result) 0) (gi! (g-rec-got) 0) (gi! (g-over-shown) 0) (gi! (g-toast-t) 0)
+      (gi! (g-flash-t) 0) (gi! (g-bad-t) 0) (gi! (g-emote-t) 0) (gi! (g-acc) 0) (gi! (g-last-ticker) (gi (g-ticker)))
+      (gi! (g-paused) 0) (gi! (g-desync) 0) (gi! (g-pend-resync) 0) (gi! (g-turns) 0) (gi! (g-quit-ask) 0) (gi! (g-got-snap) 0)
+      (gi! (g-countdown) 0) (gi! (g-last-step-t) (gi (g-ticker))) (gi! (g-hash-t) 0) (gi! (g-emote-cool) 0) (gi! (g-sent-emote) 0)
+      (gi! (g-cmdq-n) 0)))
+
+(defn set-opp-name! [(n : I32)] : Unit
+  (do (dotimes [i 16] (store8! (+ (opp-base) i) 0))
+      (dotimes [i (min-i n 15)] (store8! (+ (opp-base) i) (load8 (+ (scratch-base) i))))))
+
+(defn bot-opp-name! [(p : I32)] : Unit
+  (let [s (bot-name p) a (str-addr s) n (str-len s)]
+    (dotimes [i 16] (store8! (+ (opp-base) i) (if (< i n) (load8 (+ a i)) 0)))))
+
+;; offline practice against one of the AIs: the same simulation, stepped here. Nothing is recorded.
+(defn start-practice! [(bot : I32)] : Unit
+  (do
+    (clear-match-ui!)
+    (gi! (g-mode) 1) (gi! (g-m-seat) 0) (gi! (g-flip) 0) (gi! (g-m-ranked) 0) (gi! (g-m-oppkind) 1)
+    (gi! (g-speed) 1)
+    (gi! (g-opp-pers) bot)
+    (gi! (g-m-seed) (+ (gi (g-ticker)) (* (gi (g-frame)) 7919)))
+    (sim-begin! (gi (g-m-seed)) (gi (g-deck)) (gi (g-faction)) (bot-deck bot) (bot-faction bot))
+    (gi! (g-ai-mask) 0)
+    (ai-set! 1 bot)
+    (bot-opp-name! bot)
+    (gi! (g-opp-fac) (bot-faction bot))
+    (gi! (g-m-synced) 1)
+    (gi! (g-m-opp-rating) (gi (+ (g-bot-rating0) (- bot 1))))
+    (go-screen! (sc-battle))))
+
+(defn begin-search! [(bot : I32)] : Unit
+  (do (gi! (g-want-queue) 1)
+      (gi! (g-want-bot) bot)
+      (gi! (g-queued-sent) 0)
+      (gi! (g-err-code) 0)
+      (gi! (g-q-since) (gi (g-ticker)))
+      (gi! (g-q-waiting) 0)
+      (gi! (g-mode) 0)
+      (gi! (g-m-synced) 0)
+      (go-screen! (sc-search))))
+
+(defn cancel-search! [] : Unit
+  (do (when (!= (gi (g-queued-sent)) 0) (net-leave!))
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-title))))
+
+;; look in on a live match (the page passes the room id from /api/v1/empire/live)
+(defn begin-watch! [(id : I32)] : Unit
+  (do (gi! (g-watch-id) id) (gi! (g-watch-sent) 0) (gi! (g-queued-sent) 0) (gi! (g-want-queue) 0)
+      (gi! (g-mode) 0) (gi! (g-m-synced) 0) (gi! (g-q-since) (gi (g-ticker)))
+      (go-screen! (sc-search))))
+
+;; the player left a match in progress (online: a resignation the server counts)
+(defn leave-match! [] : Unit
+  (do (when (= (gi (g-mode)) 2) (net-resign!))
+      (gi! (g-watch-id) 0) (gi! (g-watch-sent) 0)
+      (gi! (g-ai-mask) 0)
+      (gi! (g-mode) 0)
+      (gi! (g-m-synced) 0)
+      (go-screen! (sc-title))))
+
+;; ---- frames in ------------------------------------------------------------------------------------------------------------------------------------
+(defn on-match-found! [] : Unit
+  (let [spec (!= (bit-and (in8 42) 2) 0)
+        seat (if spec 0 (in8 9))]
+    (clear-match-ui!)
+    (gi! (g-m-id) (in32 1))
+    (gi! (g-m-seed) (in32 5))
+    (gi! (g-m-seat) seat)
+    (gi! (g-flip) seat)
+    (gi! (g-m-oppkind) (in8 10))
+    (gi! (g-opp-pers) (in8 11))
+    (dotimes [i 16] (store8! (+ (opp-base) i) (let [c (in8 (+ 12 i))] (if (and (>= c 32) (< c 127)) c 0))))
+    (store8! (+ (opp-base) 15) 0)
+    (gi! (g-m-opp-rating) (in16 28))
+    (gi! (g-m-you-rating) (in16 30))
+    (let [d0 (in32 32) f0 (in8 36) d1 (in32 37) f1 (in8 41)]
+      (gi! (g-opp-fac) (if (= seat 0) f1 f0))
+      (gi! (g-opp-deck) (if (= seat 0) d1 d0))
+      (gi! (g-ai-mask) 0)
+      (sim-begin! (gi (g-m-seed)) d0 f0 d1 f1))
+    (gi! (g-m-ranked) (bit-and (in8 42) 1))
+    (gi! (g-countdown) (in16 43))
+    (when spec
+      (do (dotimes [i 16] (store8! (+ (scratch-base) i) (let [c (in8 (+ 45 i))] (if (and (>= c 32) (< c 127)) c 0))))
+          (dotimes [i 16] (store8! (+ (scratch-base) (+ 16 i)) (let [c (in8 (+ 12 i))] (if (and (>= c 32) (< c 127)) c 0))))
+          (store8! (+ (scratch-base) 15) 0) (store8! (+ (scratch-base) 31) 0)
+          (gi! (g-res-ticks) 0)))
+    (gi! (g-mode) (if spec 4 2))
+    (gi! (g-m-synced) 1)
+    (gi! (g-want-queue) 0)
+    (go-screen! (sc-battle))))
+
+(defn on-turn! [] : Unit
+  (when (and (or (= (gi (g-mode)) 2) (= (gi (g-mode)) 4)) (= (gi (g-m-synced)) 1))
+    (let [tick (in32 1) n (in8 5)]
+      (if (!= tick (+ (tick-now) 1))
+          ;; a gap or a repeat: ask for the board and wait for it
+          (when (= (gi (g-pend-resync)) 0) (net-resync!))
+          (do (dotimes [k n]
+                (let [o (+ 6 (* k 4))]
+                  (cmd-push! (in8 o) (in8 (+ o 1)) (in8 (+ o 2)) (in8 (+ o 3)))))
+              (sim-pre!)
+              (sim-post!)
+              (gi! (g-turns) (+ (gi (g-turns)) 1))
+              (gi! (g-last-step-t) (gi (g-ticker)))
+              (when (> n 0) (gi! (g-flash-t) (gi (g-ticker)))))))))
+
+(defn on-snapshot! [] : Unit
+  (let [len (in16 5)]
+    (when (and (> len 0) (<= len (sim-len)))
+      (do (dotimes [i len] (store8! (+ (sim-base) i) (in8 (+ 7 i))))
+          (gi! (g-got-snap) (+ (gi (g-got-snap)) 1))
+          (gi! (g-pend-resync) 0)
+          (gi! (g-last-step-t) (gi (g-ticker)))))))
+
+(defn on-hash! [] : Unit
+  (when (and (or (= (gi (g-mode)) 2) (= (gi (g-mode)) 4)) (= (in32 1) (tick-now)) (= (gi (g-pend-resync)) 0))
+    (when (!= (in32 5) (sim-hash))
+      (do (gi! (g-desync) (+ (gi (g-desync)) 1)) (net-resync!)))))
+
+(defn on-over! [] : Unit
+  (do (when (= (h (h-over)) 0)
+        (do (h! (h-winner) (in8 1)) (h! (h-reason) (in8 2)) (h! (h-over) 1)))
+      (gi! (g-res-winner) (in8 1)) (gi! (g-res-reason) (in8 2)) (gi! (g-res-ticks) (in32 3))
+      (gi! (g-have-result) 1)
+      (gi! (g-over-t) (gi (g-ticker)))))
+
+(defn on-recorded! [] : Unit
+  (do (gi! (g-rec-got) 1)
+      (gi! (g-rec-counted) (in8 1))
+      (gi! (g-rec-rating) (in16 2))
+      (gi! (g-rec-delta) (ins16 4))
+      (gi! (g-res-id) (in32 6))))
+
+(defn on-emote! [] : Unit
+  (do (gi! (g-emote-seat) (in8 1)) (gi! (g-emote-id) (in8 2)) (gi! (g-emote-t) (gi (g-ticker)))))
+
+(defn on-error! [] : Unit
+  (let [code (in8 1) len (min-i (in8 2) 200)]
+    (gi! (g-err-code) code)
+    (dotimes [i len] (store8! (+ (err-base) i) (in8 (+ 3 i))))
+    (store8! (+ (err-base) len) 0)
+    (gi! (g-err-len) len)
+    (gi! (g-want-queue) 0) (gi! (g-queued-sent) 0)
+    (gi! (g-mode) 0) (gi! (g-ai-mask) 0)
+    (go-screen! (sc-error))))
+
+(defn net-handle! [] : Unit
+  (let [t (in8 0)]
+    (cond
+      (= t 161) (gi! (g-ident-ok) 1)
+      (= t 160) (gi! (g-q-waiting) (in16 1))
+      (= t 32) (on-match-found!)
+      (= t 33) (on-turn!)
+      (= t 34) (on-over!)
+      (= t 35) (on-snapshot!)
+      (= t 36) (on-hash!)
+      (= t 37) (on-emote!)
+      (= t 162) (on-recorded!)
+      (= t 163) (gi! (g-rtt) (let [r (- (gi (g-ticker)) (in32 1))] (if (= (gi (g-rtt)) 0) r (/ (+ (* (gi (g-rtt)) 3) r) 4))))
+      (= t 175) (on-error!)
+      :else unit)))
+
+;; ---- driven by the page ---------------------------------------------------------------------------------------------------------------------------------
+(defn net-tick! [] : Unit
+  (when (= (gi (g-net-state)) 2)
+    (do (when (and (> (gi (g-watch-id)) 0) (= (gi (g-watch-sent)) 0)) (net-watch!))
+        (when (and (= (gi (g-auth-sent)) 0) (> (gi (g-token-len)) 0)) (net-auth!))
+        (when (and (= (gi (g-want-queue)) 1) (= (gi (g-ident-ok)) 1) (= (gi (g-queued-sent)) 0)) (net-queue!))
+        (when (and (> (gi (g-ping-sent)) 0) (> (- (gi (g-ticker)) (gi (g-ping-sent))) 4000)) (gi! (g-ping-sent) 0))
+        (when (and (= (gi (g-ident-ok)) 1) (= (gi (g-ping-sent)) 0)) (net-ping!)))))

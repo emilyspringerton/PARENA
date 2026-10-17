@@ -27,14 +27,14 @@
 (defn bot-name [(p : I32)] : String
   (case p 1 "Marrow" 2 "Quill" 3 "Sable" 4 "Ledger" 5 "Vesper" 6 "Brindle" 7 "Thorn" 8 "Hush" "Someone"))
 (defn bot-blurb [(p : I32)] : String
-  (case p 1 "quick and bright: small hands, early pressure"
+  (case p 1 "quick and bright: early pressure"
           2 "patient: lets you come, then answers"
-          3 "builds an economy first, then leans on it"
-          4 "spends standing freely; names go in first"
+          3 "builds an economy, then leans on it"
+          4 "spends standing freely; names first"
           5 "casts well: spells over bodies"
           6 "steady: nothing clever, nothing wasted"
-          7 "fast pushes at the bridge, again and again"
-          8 "very quiet, very careful: hardly ever wastes a card"
+          7 "fast pushes at the bridge, again"
+          8 "very quiet, very careful"
           "a visitor"))
 ;; faction 0 SYNDICATE 1 GOETIA 2 ARCHIVE
 (defn bot-faction [(p : I32)] : I32 (case p 1 0 2 2 3 2 4 1 5 0 6 2 7 1 8 0 0))

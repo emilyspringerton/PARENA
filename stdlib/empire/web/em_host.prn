@@ -1,0 +1,536 @@
+;; stdlib/empire/web/em_host.prn -- the EMPIRE web page's host code. PARENA, compiled to TypeScript
+;; (parena build em_host.prn -o em_host.ts), then type-stripped to the .js the page loads.
+;;
+;; Same rule as BRAWLPIT web, shankpit-460 web, Red Garden web and D2 web (founder, 2026-10-16: "make sure its actually wasm not faked with a bunch
+;; of garbage js; whatever we do need to use js for use parena into TS"): this is the ONLY JavaScript on the page that runs the game and it is
+;; generated from this file. It contains no game logic. The game -- the rules, the AIs, the protocol, the screens -- is empire.wasm
+;; (stdlib/empire/web/em_*.prn); the module imports nothing, so the browser has to do exactly the things below because only a browser can:
+;;   1. fetch + instantiate the wasm                          (boot ... on-instance)
+;;   2. copy the framebuffer the wasm painted onto a canvas   (tick: putImageData of a view onto wasm memory)
+;;   3. forward keyboard / pointer / wheel                    (on-keydown ... -> em_key / em_pointer / em_button / em_wheel)
+;;   4. know who is playing: the WOTAN SSO session, or a guest account IDUNA makes on the spot and this browser remembers (a watcher needs neither)
+;;   5. own the WebSocket to IDUNA's EMPIRE referee           (ensure-socket!, pump-out!)
+;;   6. keep the deck the player chose, fetch replays, and keep the page's own DOM labels in step
+;; ---- module state ----------------------------------------------------------------------------------------------------------
+(def canvas null)
+(def ctx null)
+(def image null)          ; ImageData viewing the wasm framebuffer in place
+(def wasm null)           ; the instance's exports
+(def memory null)
+(def view null)           ; DataView over wasm memory
+(def sock null)
+(def next-try 0.0)        ; performance.now() before which no new socket is opened
+(def idle-since 0.0)
+(def wasm-bytes 0)
+(def wasm-imports 0)
+(def last-screen -1)
+(def ident-ready false)
+(def ident-busy false)
+(def ident-name "")
+(def ident-guest true)
+(def ident-id "")
+(def ident-fallback false)  ; this game refused the IDUNA sign-in (the account belongs to another game, or the token expired): playing as a guest
+(def sso-pending null)      ; the SSO identity object waiting for the game to accept it
+(def play-id "")
+(def watching false)        ; this page only looks in on a live match: no account needed
+(def note-text "")          ; the player id the gateway says the match is recorded against
+
+;; ---- DOM helpers -------------------------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn win [] : Any (js/global "window"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+(defn now [] : F64 (js/call (js/global "performance") "now"))
+
+(defn set-text! [(id : String) (text : String)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "textContent" text))))
+
+(defn set-hidden! [(id : String) (hidden : Bool)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "hidden" hidden))))
+
+(defn ignore! [(e : Any)] : Unit unit)
+
+(defn fail! [(msg : Any)] : Unit
+  (do (set-text! "em-pill" "Could not start")
+      (set-text! "em-load-msg" (str "EMPIRE could not start: " msg))
+      (js/call (js/global "console") "error" msg)))
+
+;; ---- 1. fetch + instantiate the wasm -------------------------------------------------------------------------------------------
+(defn boot [(canvas-id : String) (wasm-url : String)] : Unit
+  (do
+    (set! canvas (el canvas-id))
+    (set! ctx (js/call canvas "getContext" "2d"))
+    (set-text! "em-pill" "Loading wasm...")
+    (js/call
+      (js/call
+        (js/call
+          (js/call (js/call-fn (js/global "fetch") wasm-url) "then" (callback on-response))
+          "then" (callback on-bytes))
+        "then" (callback on-instance))
+      "catch" (callback fail!))))
+
+(defn on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "empire.wasm: HTTP " (js/get r "status")))))
+
+(defn on-bytes [(bytes : Any)] : Any
+  (do (set! wasm-bytes (js/get bytes "byteLength"))
+      ;; the module takes NO imports: no allocator, no libc, no JS callbacks
+      (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj))))
+
+(defn on-instance [(result : Any)] : Unit
+  (do
+    (set! wasm (js/get (js/get result "instance") "exports"))
+    (set! memory (js/get wasm "memory"))
+    (set! view (js/new "DataView" (js/get memory "buffer")))
+    (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
+    (js/call wasm "em_boot")
+    ;; the wasm's exports, for the page's own tests and for anyone curious (nothing here can change what the server decides)
+    (js/set! (win) "__em" wasm)
+    (set! image
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "em_fb_addr")
+                          (* (* (js/call wasm "em_fb_w") (js/call wasm "em_fb_h")) 4))
+                  (js/call wasm "em_fb_w") (js/call wasm "em_fb_h")))
+    (install-listeners)
+    (set-hidden! "em-load" true)
+    (set-hidden! "em-canvas" false)
+    (set-text! "em-pill" "Running in WebAssembly")
+    (set-text! "em-stat" (str "empire.wasm " (math/round (/ wasm-bytes 1024)) " KB  -  "
+                              wasm-imports " imports  -  "
+                              (/ (js/get (js/get memory "buffer") "byteLength") 1048576) " MB fixed memory, no allocator  -  PARENA"))
+    (let [b (el "em-fullscreen")]
+      (when (not (js/null? b))
+        (js/set! b "disabled" false)
+        (js/call b "addEventListener" "click" (callback on-fullscreen))))
+    (after-boot!)
+    (refresh-status-quiet!)
+    (refresh-bots-quiet!)
+    (js/call-fn (js/global "setInterval") (callback refresh-status-quiet!) 15000)
+    (js/call-fn (js/global "setInterval") (callback refresh-bots-quiet!) 60000)
+    ;; a hidden tab gets no animation frames, but a match keeps running: keep the engine stepping so it is not left behind
+    (js/call-fn (js/global "setInterval") (callback hidden-tick) 400)
+    (js/call (win) "requestAnimationFrame" (callback tick))))
+
+;; ---- 2. the frame loop ----------------------------------------------------------------------------------------------------------
+(defn replay-nav! [(rq : I32)] : Unit
+  (when (> rq 0) (js/set! (js/get (win) "location") "href" (str "/empire/watch.html?replay=" rq))))
+
+(defn step! [(t : F64)] : Unit
+  (do
+    (ensure-socket!)
+    (js/call wasm "em_frame" t)
+    (pump-out!)
+    (deck-poll!)
+    (replay-nav! (js/call wasm "em_replay_request"))))
+
+(defn tick [(t : F64)] : Unit
+  (do
+    (step! t)
+    (js/call ctx "putImageData" image 0 0)
+    (sync-labels!)
+    (js/call (win) "requestAnimationFrame" (callback tick))))
+
+(defn hidden-tick [] : Unit
+  (when (js/get (doc) "hidden") (step! (now))))
+
+(defn on-fullscreen [(e : Any)] : Unit
+  (js/call (el "em-stage") "requestFullscreen"))
+
+;; ---- 3. input forwarding ----------------------------------------------------------------------------------------------------------
+;; keys that belong to the game while the canvas has focus: Space, Tab, arrows, Backspace, Escape
+(defn game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")]
+    (or (and (>= k 37) (<= k 40)) (or (= k 32) (or (= k 9) (or (= k 27) (= k 8)))))))
+
+(defn game-focused? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (or (js/null? a) (or (= a canvas) (= a (js/get (doc) "body"))))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (game-focused?)
+    (do (js/call wasm "em_key" (js/get e "keyCode") 1)
+        (when (and (game-key? e) (not (= (js/get e "ctrlKey") true))) (js/call e "preventDefault")))))
+
+(defn on-keyup [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "em_key" (js/get e "keyCode") 0)))
+
+(defn on-blur [(e : Any)] : Unit (js/call wasm "em_blur"))
+
+;; pointer position mapped from CSS pixels to the 960x540 framebuffer
+(defn on-move [(e : Any)] : Unit
+  (let [rect (js/call canvas "getBoundingClientRect")
+        x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call wasm "em_fb_w")) (js/get rect "width"))
+        y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "em_fb_h")) (js/get rect "height"))]
+    (js/call wasm "em_pointer" (math/floor x) (math/floor y))))
+
+;; focusing the canvas must not scroll the page: a scroll between pointer-down and pointer-up would move the canvas under the
+;; pointer and turn the click into one somewhere else
+(defn on-down [(e : Any)] : Unit
+  (let [opts (js/obj)]
+    (js/set! opts "preventScroll" true)
+    (on-move e)
+    (js/call canvas "focus" opts)
+    (js/call wasm "em_button" (js/get e "button") 1)
+    (js/call e "preventDefault")))
+
+;; the button comes up where it went down: the pointer position is not re-read here
+(defn on-up [(e : Any)] : Unit
+  (js/call wasm "em_button" (js/get e "button") 0))
+
+(defn on-wheel [(e : Any)] : Unit
+  (do (js/call wasm "em_wheel" (if (> (js/get e "deltaY") 0.0) 1 -1))
+      (js/call e "preventDefault")))
+
+(defn on-contextmenu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+(defn install-listeners [] : Unit
+  (let [w (win)]
+    (js/call w "addEventListener" "keydown" (callback on-keydown))
+    (js/call w "addEventListener" "keyup" (callback on-keyup))
+    (js/call w "addEventListener" "blur" (callback on-blur))
+    (js/call w "addEventListener" "pointermove" (callback on-move))
+    (js/call w "addEventListener" "pointerup" (callback on-up))
+    (js/call canvas "addEventListener" "pointerdown" (callback on-down))
+    (js/call canvas "addEventListener" "wheel" (callback on-wheel))
+    (js/call canvas "addEventListener" "contextmenu" (callback on-contextmenu))))
+
+;; ---- 4. who is playing -------------------------------------------------------------------------------------------------------------
+;; A signed-in WOTAN visitor plays as their IDUNA identity (the gateway resolves the SSO token to their EMPIRE player row). Everyone else
+;; is a guest: a real EMPIRE guest account IDUNA creates on the first PLAY (guest-register, which names it), kept in this browser's
+;; localStorage so the same guest comes back next time (guest-login) and the matches add up. Anything that can throw (localStorage
+;; in a locked-down browser, a bad JSON blob) runs inside a promise so the chain's catch sees it.
+(defn api [] : String "/api/v1/games/empire")
+
+(defn json-or-reject [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (js/get r "status"))))
+
+(defn post-json [(path : String) (body : Any)] : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" (js/call (js/global "JSON") "stringify" body))
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn store [] : Any (js/get (win) "localStorage"))
+
+(defn save-guest! [(d : Any)] : Any
+  (let [o (js/obj)]
+    (js/set! o "player_id" (js/get d "player_id"))
+    (js/set! o "guest_secret" (js/get d "guest_secret"))
+    (js/call (store) "setItem" "em_guest" (js/call (js/global "JSON") "stringify" o))
+    d))
+
+(defn register-guest! [] : Any
+  (js/call (post-json "/guest-register" (js/obj)) "then" (callback save-guest!)))
+
+(defn relogin-failed [(e : Any)] : Any (register-guest!))
+
+(defn guest-flow [(ignored : Any)] : Any
+  (let [raw (js/call (store) "getItem" "em_guest")]
+    (if (js/null? raw)
+        (register-guest!)
+        (let [g (js/call (js/global "JSON") "parse" raw)
+              body (js/obj)]
+          (js/set! body "player_id" (js/get g "player_id"))
+          (js/set! body "guest_secret" (js/get g "guest_secret"))
+          (js/call (post-json "/guest-login" body) "catch" (callback relogin-failed))))))
+
+(defn sso-session [] : Any
+  (if (js/defined? "getIdunaSession") (js/call-fn (js/global "getIdunaSession")) null))
+
+(defn post-auth [(path : String) (token : Any)]  : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! hdrs "Authorization" (str "Bearer " token))
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" "{}")
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn sso-accepted [(r : Any)] : Any
+  (do (js/set! sso-pending "sso" true) sso-pending))
+
+;; a signed-in visitor whose IDUNA account is already tied to a DIFFERENT game (or whose token has lapsed) is refused by the gateway
+;; at HELLO and would be stuck on an error screen: ask the game first (sso-exchange) and fall back to a guest if it says no
+(defn sso-refused [(e : Any)] : Any
+  (do (set! ident-fallback true)
+      (js/call (guest-flow 0) "then" (callback mark-guest))))
+
+(defn identity-flow [(ignored : Any)] : Any
+  (let [s (sso-session)]
+    (if (and (not (js/null? s)) (not (js/null? (js/get s "token"))))
+        (let [o (js/obj)]
+          (js/set! o "token" (js/get s "token"))
+          (js/set! o "display_name" (js/get s "displayName"))
+          (js/set! o "player_id" (js/get s "playerID"))
+          (js/set! o "sso" false)
+          (set! sso-pending o)
+          (js/call (js/call (post-auth "/sso-exchange" (js/get s "token")) "then" (callback sso-accepted)) "catch" (callback sso-refused)))
+        (js/call (guest-flow ignored) "then" (callback mark-guest)))))
+
+(defn mark-guest [(d : Any)] : Any (do (js/set! d "sso" false) d))
+
+;; a JS string as ASCII bytes in wasm memory, NUL-free; returns the length written (clamped to `cap`)
+(defn put-ascii! [(s : Any) (addr : I32) (cap : I32)] : I32
+  (let [u8 (js/new "Uint8Array" (js/get memory "buffer") addr cap)
+        n (math/min cap (js/get s "length"))]
+    (dotimes [i n]
+      (js/aset! u8 i (math/min 126 (js/call s "charCodeAt" i))))
+    n))
+
+(defn apply-identity! [(d : Any)] : Unit
+  (do
+    (set! ident-name (js/get d "display_name"))
+    (set! ident-guest (not (= (js/get d "sso") true)))
+    (set! ident-id (js/get d "player_id"))
+    (js/call wasm "em_name_set" (put-ascii! ident-name (js/call wasm "em_name_addr") 40))
+    (js/call wasm "em_guest_set" (if ident-guest 1 0))
+    (js/call wasm "em_token_set" (put-ascii! (js/get d "token") (js/call wasm "em_token_addr") 2000))
+    (set! ident-ready true)
+    (set! ident-busy false)
+    (sync-who!)))
+
+(defn identity-failed [(e : Any)] : Unit
+  (do
+    (set! ident-busy false)
+    (set-text! "em-who-msg" "Could not set up an account for you just now.")
+    (js/call wasm "em_fail" (put-ascii! (if (= e 429)
+                                            "too many new guest accounts from this network today; sign in with IDUNA, or try tomorrow"
+                                            "could not create your account; check your connection and try again")
+                                        (js/call wasm "em_err_addr") 200))))
+
+(defn refresh-identity! [] : Unit
+  (when (not ident-busy)
+    (do
+      (set! ident-busy true)
+      (js/call
+        (js/call
+          (js/call (js/call (js/global "Promise") "resolve" 0) "then" (callback identity-flow))
+          "then" (callback apply-identity!))
+        "catch" (callback identity-failed)))))
+
+(defn sign-in-url [] : Any
+  (if (js/defined? "buildSsoURL") (js/call-fn (js/global "buildSsoURL")) "/account/"))
+
+(defn sync-who! [] : Unit
+  (do
+    (if ident-guest
+        (do (set-text! "em-who-msg" (if ident-fallback
+                                    (str "Your IDUNA account is tied to another game, so you are playing EMPIRE as " ident-name ", a guest. Your matches are kept in this browser.")
+                                    (str "You are playing as " ident-name ", a guest. Your matches are kept in this browser.")))
+            (let [a (el "em-who-link")]
+              (when (not (js/null? a))
+                (js/set! a "textContent" "Sign in with IDUNA to keep them on your account")
+                (js/set! a "href" (sign-in-url))
+                (js/set! a "hidden" false))))
+        (do (set-text! "em-who-msg" (str "Signed in as " ident-name ". Your matches count toward your WOTAN profile."))
+            (set-hidden! "em-who-link" true)))
+    (sync-profile-link!)))
+
+(defn sync-profile-link! [] : Unit
+  (let [a (el "em-profile")
+        id (if (= play-id "") ident-id play-id)]
+    (when (and (not (js/null? a)) (not (= id "")) (not (js/null? id)))
+      (js/set! a "href" (str "/empire/u.html?id=" id))
+      (js/set! a "hidden" false))))
+
+;; ---- 5. the gateway socket ---------------------------------------------------------------------------------------------------------------
+(defn json-or-fail [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
+
+(defn u32 [(v : I32)] : F64 (if (< v 0) (+ (f64 v) 4294967296.0) (f64 v)))
+
+(defn on-status [(j : Any)] : Unit
+  (if (js/get j "configured")
+      (do (set-text! "em-online"
+                     (str (js/get j "online") " online  -  " (js/get j "searching") " searching  -  " (js/get j "playing") " playing"))
+          (js/call wasm "em_stats_set" (js/get j "online") (js/get j "playing"))
+          ;; a page built from other rules than the server's would drift apart from it: say so instead of failing mid-match
+          (js/call wasm "em_version_ok_set" (if (= (js/get j "version") (u32 (js/call wasm "em_version"))) 1 0)))
+      (set-text! "em-online" "the EMPIRE referee is offline right now")))
+
+(defn on-bots [(j : Any)] : Unit
+  (let [bots (js/get j "bots")
+        n (js/get bots "length")]
+    (dotimes [i n]
+      (js/call wasm "em_bot_rating_set" i (math/round (js/get (js/aget bots i) "rating"))))))
+
+(defn refresh-bots-quiet! [] : Unit
+  (js/call
+    (js/call
+      (js/call (js/call-fn (js/global "fetch") "/api/v1/empire/bots") "then" (callback json-or-fail))
+      "then" (callback on-bots))
+    "catch" (callback ignore!)))
+
+(defn refresh-status-quiet! [] : Unit
+  (js/call
+    (js/call
+      (js/call (js/call-fn (js/global "fetch") "/api/v1/empire/status") "then" (callback json-or-fail))
+      "then" (callback on-status))
+    "catch" (callback ignore!)))
+
+(defn socket-url [] : String
+  (str (if (= (js/get (js/get (win) "location") "protocol") "https:") "wss://" "ws://")
+       (js/get (js/get (win) "location") "host")
+       "/api/v1/empire/play"))
+
+;; the gateway's first frame tells us the player id the match will be recorded against: [0xA1][guest][nameLen][name][idLen][id]
+(defn read-ident-id! [(data : Any)] : Unit
+  (let [u8 (js/new "Uint8Array" data)
+        nl (js/aget u8 2)
+        at (+ 3 nl)
+        il (js/aget u8 at)]
+    (when (and (> il 0) (<= (+ (+ at 1) il) (js/get u8 "length")))
+      (let [parts (js/array)]
+        (dotimes [i il]
+          (js/call parts "push" (js/call (js/global "String") "fromCharCode" (js/aget u8 (+ (+ at 1) i)))))
+        (set! play-id (js/call parts "join" ""))
+        (sync-profile-link!)))))
+
+(defn on-open [(e : Any)] : Unit
+  (js/call wasm "em_net_socket" 2))
+
+(defn on-message [(e : Any)]  : Unit
+  (let [data (js/get e "data")
+        len (js/get data "byteLength")]
+    (when (<= len 30000)
+      (when (= (js/aget (js/new "Uint8Array" data) 0) 161) (read-ident-id! data))
+      (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "em_net_in_addr") len)
+               "set" (js/new "Uint8Array" data))
+      (js/call wasm "em_net_recv" len))))
+
+(defn on-close [(e : Any)] : Unit
+  (do (set! sock null)
+      (set! next-try (+ (now) 3000.0))
+      (js/call wasm "em_net_socket" 3)))
+
+(defn open-socket! [] : Unit
+  (do
+    (js/call wasm "em_net_socket" 1)
+    (set! sock (js/new "WebSocket" (socket-url)))
+    (js/set! sock "binaryType" "arraybuffer")
+    (js/call sock "addEventListener" "open" (callback on-open))
+    (js/call sock "addEventListener" "message" (callback on-message))
+    (js/call sock "addEventListener" "close" (callback on-close))
+    (js/call sock "addEventListener" "error" (callback on-close))))
+
+;; The engine says whether it wants a socket; it only opens once the player has an identity (the token is the first thing the gateway
+;; asks for).
+(defn ensure-socket! [] : Unit
+  (let [t (now)]
+    (if (= (js/call wasm "em_net_wanted") 1)
+        (do (set! idle-since t)
+            (when (and (js/null? sock) (>= t next-try) (or (and ident-ready (> (js/call wasm "em_g" 6) 0)) (= (js/call wasm "em_net_anon_ok") 1))) (open-socket!)))
+        (when (and (not (js/null? sock)) (> (- t idle-since) 20000.0))
+          (js/call sock "close")))))
+
+;; frames the engine queued: [u16 len][bytes]...
+(defn pump-out! [] : Unit
+  (let [total (js/call wasm "em_net_out_len")]
+    (when (> total 0)
+      (let [open (and (not (js/null? sock)) (= (js/get sock "readyState") 1))
+            base (js/call wasm "em_net_out_addr")]
+        (when open
+          (loop [off 0]
+            (when (< (+ off 2) total)
+              (let [len (+ (js/call view "getUint8" (+ base off)) (* 256 (js/call view "getUint8" (+ base (+ off 1)))))]
+                (js/call sock "send" (js/new "Uint8Array" (js/get memory "buffer") (+ base (+ off 2)) len))
+                (recur (+ off (+ 2 len)))))))
+        (js/call wasm "em_net_out_clear")))))
+
+;; ---- 6. the page's own labels -------------------------------------------------------------------------------------------------------------
+;; a new search takes a fresh token (a guest token does not live forever, and a token the gateway refused must not be sent again)
+(defn on-screen-change! [(sc : I32)] : Unit
+  (do
+    (when (and (= sc 2) (= (js/call wasm "em_g" 125) 0))
+      (do (set! ident-ready false)
+          (js/call wasm "em_token_set" 0)
+          (refresh-identity!)))
+    (set! last-screen sc)))
+
+(defn mode-label [(m : I32)] : String
+  (cond (= m 1) "Practice" (= m 2) "In a match" (= m 3) "Replay" :else "Watching live"))
+
+(defn sync-labels! [] : Unit
+  (let [sc (js/call wasm "em_screen")]
+    (when (!= sc last-screen) (on-screen-change! sc))
+    (set-text! "em-pill"
+               (cond
+                 (= sc 2) (if (> (js/call wasm "em_g" 125) 0) "Finding the table" "Looking for someone to play")
+                 (= sc 3) (mode-label (js/call wasm "em_g" 30))
+                 (= sc 4) "Match over"
+                 (= sc 5) "Something did not go through"
+                 (= sc 1) "Choosing a deck"
+                 :else "Ready"))))
+
+;; ---- 6. the deck, replays, and where the page was asked to start ---------------------------------------------------------------------------------
+;; The deck and faction are the player's own and live in this browser (localStorage); the wasm tells the page when they changed. The game works
+;; without it: a browser that will not let the page store anything just starts from the starter deck each time.
+(defn query [(k : String)] : Any
+  (js/call (js/new "URLSearchParams" (js/get (js/get (win) "location") "search")) "get" k))
+
+(defn save-deck-quiet! [(x : Any)] : Any
+  (let [o (js/obj)]
+    (js/set! o "d" (js/call wasm "em_deck_get"))
+    (js/set! o "f" (js/call wasm "em_faction_get"))
+    (js/call (store) "setItem" "empire_deck" (js/call (js/global "JSON") "stringify" o))
+    0))
+
+(defn restore-deck-now! [(x : Any)] : Any
+  (let [raw (js/call (store) "getItem" "empire_deck")]
+    (when (not (js/null? raw))
+      (let [o (js/call (js/global "JSON") "parse" raw)]
+        (js/call wasm "em_deck_set" (js/get o "d") (js/get o "f"))))
+    0))
+
+(defn deck-poll! [] : Unit
+  (when (= (js/call wasm "em_deck_dirty") 1)
+    (js/call (js/call (js/global "Promise") "resolve" 0) "then" (callback save-deck-quiet!))))
+
+(defn replay-note! [(msg : String)] : Unit (set-text! "em-note" msg))
+
+(defn on-replay-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "replay: HTTP " (js/get r "status")))))
+
+(defn on-replay-bytes [(buf : Any)] : Unit
+  (let [len (js/get buf "byteLength")]
+    (if (or (< len 56) (> len 60000))
+        (replay-note! "That replay could not be read.")
+        (do (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "em_replay_addr") len) "set" (js/new "Uint8Array" buf))
+            (if (= (js/call wasm "em_replay_start") 1)
+                (replay-note! "")
+                (replay-note! "That match was played on an older version of the rules, so it cannot be replayed here."))))))
+
+(defn replay-failed [(e : Any)] : Unit (replay-note! "That replay could not be found."))
+
+(defn fetch-replay! [(id : Any)] : Unit
+  (js/call
+    (js/call
+      (js/call (js/call-fn (js/global "fetch") (str "/api/v1/empire/replays/" id)) "then" (callback on-replay-response))
+      "then" (callback on-replay-bytes))
+    "catch" (callback replay-failed)))
+
+;; what the page was asked to do on arrival: ?replay=ID plays a recorded match, ?live=ID looks in on one, anything else is the lobby
+(defn after-boot! [] : Unit
+  (let [rp (query "replay")
+        lv (query "live")]
+    (js/call (js/call (js/global "Promise") "resolve" 0) "then" (callback restore-deck-now!))
+    (cond
+      (not (js/null? rp)) (fetch-replay! rp)
+      (not (js/null? lv)) (do (set! watching true) (js/call wasm "em_watch" (math/floor (js/call-fn (js/global "Number") lv))))
+      :else (refresh-identity!))))
+
+(start (boot "em-canvas" "empire.wasm"))

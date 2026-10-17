@@ -20,26 +20,32 @@
 (defn shade [(c : I32) (k : I32)] : I32   ; brightness k in 0..256 (256 = unchanged)
   (rgb (min-i 255 (shr (* (col-r c) k) 8)) (min-i 255 (shr (* (col-g c) k) 8)) (min-i 255 (shr (* (col-b c) k) 8))))
 
-;; ---- the palette ---------------------------------------------------------------------------------------------------------
-;; Deliberately quiet: a blue-black slate, cool white ink, one warm gold used sparingly. D2's three item kinds keep their brand
-;; triangle (Offense red / Operations amber / Defense blue) but desaturated so a full grid is calm, not loud.
-(defn c-bg [] : I32 (rgb 15 17 24))
-(defn c-ground [] : I32 (rgb 22 25 34))
-(defn c-ground2 [] : I32 (rgb 30 34 46))
-(defn c-panel [] : I32 (rgb 24 27 38))
-(defn c-ink [] : I32 (rgb 226 228 236))
-(defn c-dim [] : I32 (rgb 150 156 172))
-(defn c-faint [] : I32 (rgb 98 104 122))
+;; ---- the palette ---------------------------------------------------------------------------------------------------------------------
+;; Deliberately quiet: a blue-black slate, cool white ink, one warm gold used sparingly. The arena is moss and slate-water rather than green and blue;
+;; the two sides are a soft teal and a dusty rose, never primaries. Nothing flashes: a hit is a brief pale wash, a spell a slow ring.
+(defn c-bg [] : I32 (rgb 15 17 23))
+(defn c-ground [] : I32 (rgb 22 26 34))
+(defn c-ground2 [] : I32 (rgb 30 35 46))
+(defn c-panel [] : I32 (rgb 24 28 39))
+(defn c-ink [] : I32 (rgb 228 230 236))
+(defn c-dim [] : I32 (rgb 152 158 174))
+(defn c-faint [] : I32 (rgb 100 106 124))
 (defn c-line [] : I32 (rgb 58 64 84))
 (defn c-gold [] : I32 (rgb 214 176 98))
-(defn c-rose [] : I32 (rgb 206 98 104))
-(defn c-teal [] : I32 (rgb 92 176 164))
+(defn c-rose [] : I32 (rgb 208 106 112))
+(defn c-teal [] : I32 (rgb 96 178 170))
 (defn c-good [] : I32 (rgb 118 186 140))
 (defn c-shadow [] : I32 (rgb 8 9 13))
-(defn c-kind-off [] : I32 (rgb 204 96 88))
-(defn c-kind-ops [] : I32 (rgb 214 164 86))
-(defn c-kind-def [] : I32 (rgb 96 148 208))
-(defn c-kind [(k : I32)] : I32 (case k 0 (c-kind-off) 1 (c-kind-ops) (c-kind-def)))
+(defn c-violet [] : I32 (rgb 150 132 196))
+(defn c-sky [] : I32 (rgb 110 160 214))
+(defn c-grass [] : I32 (rgb 43 58 51))
+(defn c-grass2 [] : I32 (rgb 47 63 55))
+(defn c-river [] : I32 (rgb 48 72 90))
+(defn c-river2 [] : I32 (rgb 56 84 104))
+(defn c-bridge [] : I32 (rgb 112 99 82))
+(defn c-bridge2 [] : I32 (rgb 126 112 92))
+(defn c-me [] : I32 (rgb 96 178 170))
+(defn c-foe [] : I32 (rgb 208 106 112))
 
 (defn px-addr [(x : I32) (y : I32)] : I32 (+ (fb-base) (shl (+ (* y 960) x) 2)))
 (defn inside? [(x : I32) (y : I32)] : Bool

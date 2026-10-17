@@ -1,0 +1,274 @@
+;; stdlib/empire/web/em_view.prn -- drawing: text tables, the card faces, the arena, the units, the HUD.
+;;
+;; The arena is 18 x 32 tiles at 16 px a tile (288 x 512), centred; the player's own seat is always at the bottom (a seat-1 player sees the board
+;; turned half a turn). Everything is painted with the quiet palette in em_gfx.prn. Motion is slow on purpose: units glide between ticks, rings widen
+;; over a second, a hit is a pale wash that fades in a fifth of one.
+
+;; ---- words ---------------------------------------------------------------------------------------------------------------------------------
+(defn card-short [(c : I32)] : String
+  (case c 0 "Archivist" 1 "Dissent" 2 "Clerks" 3 "Sees You" 4 "Cataloguer" 5 "The Seal" 6 "Wren-3" 7 "Stolas" 8 "Amon" 9 "Andrealphus"
+          10 "Bael" 11 "Furfur" 12 "Astaroth" 13 "Agares" 14 "Marchosias" 15 "Nidhogg" "?"))
+(defn card-name [(c : I32)] : String
+  (case c 0 "Duration Is Data" 1 "The Dissent" 2 "One Question" 3 "He Sees You" 4 "Three Coordinates" 5 "The Seal" 6 "Four Centuries" 7 "Deep Time Sees Itself"
+          8 "Reconciliation" 9 "Fold the Circle" 10 "Crown of Dissolution" 11 "The Truth Requires a Triangle" 12 "Unlicensed Ledger"
+          13 "The Express Arrives Late" 14 "Twelve Hundred Years" 15 "The Root Remembers" "?"))
+(defn card-hero [(c : I32)] : String
+  (case c 0 "Senior Archivist Seven Votes" 1 "ARCHIVIST-7" 2 "The Stillness Council Clerk" 3 "Attempt Two's Doctrine, Given a Name"
+          4 "The Deep Archive Cataloguer" 5 "MOOR-8" 6 "Wren-3" 7 "Stolas, the Owl-Prince" 8 "Amon, Reconciler of Opposites"
+          9 "Andrealphus, the Fold" 10 "Bael, Crown of Dissolution" 11 "Furfur, the Storm Oath" 12 "Astaroth, the Ledger-Keeper"
+          13 "Agares, the First Undo" 14 "Marchosias, the Wolf Before the Fall" 15 "Nidhogg, Root-Gnawer" ""))
+(defn card-desc [(c : I32)] : String
+  (case c 0 "Silences what it strikes"
+          1 "A hush over an area: no attacks"
+          2 "Two quick clerks"
+          3 "One hard strike in a small area"
+          4 "Collects elixir while it stands"
+          5 "Mends troops and towers in an area"
+          6 "Walks with the line and mends it"
+          7 "Returns three elixir at once"
+          8 "A slow wall that mends those near"
+          9 "Slows a crowd for a few seconds"
+          10 "Hushes enemies as it arrives"
+          11 "Strikes hard from a distance"
+          12 "A great collector, slow to build"
+          13 "Very fast; its blows slow"
+          14 "Heals itself with every blow"
+          15 "Roots a crowd, with a little harm"
+          ""))
+(defn card-kind-word [(c : I32)] : String (if (card-spell? c) "spell" "troop"))
+(defn fac-name [(f : I32)] : String (case f 0 "Syndicate" 1 "Goetia" "Archive"))
+(defn fac-blurb [(f : I32)] : String
+  (case f 0 "Starts high; standing returns fast" 1 "Starts low; a cast costs less" "Even; its collectors work harder"))
+(defn fac-short [(f : I32)] : String
+  (case f 0 "standing 90, +1 every 2 s, mundane troops hardier" 1 "standing 70, +1 every 4 s, a mythic cast costs 15, mythic troops hit harder"
+          "standing 80, +1 every 3 s, collectors 25% faster"))
+(defn band-name [(b : I32)] : String (case b 0 "composed" 1 "watched" 2 "frayed" "cancelled"))
+(defn reason-text [(r : I32)] : String
+  (case r 1 "a king fell" 2 "more towers at time" 3 "first tower in overtime" 4 "more tower health" 5 "level" 6 "resigned" ""))
+(defn emote-text [(id : I32)] : String
+  (case id 0 "good luck" 1 "well done" 2 "thank you" 3 "oh dear" "..."))
+
+;; ---- small drawing helpers ---------------------------------------------------------------------------------------------------------------------
+(defn disc-i [(x : I32) (y : I32) (r : I32) (c : I32) (a : I32)] : Unit (disc (f32 x) (f32 y) (f32 r) c a))
+(defn ring-i [(x : I32) (y : I32) (r : I32) (w : I32) (c : I32) (a : I32)] : Unit (ring (f32 x) (f32 y) (f32 r) (f32 w) c a))
+
+(defn button [(x : I32) (y : I32) (w : I32) (h : I32) (label : String) (primary : Bool) (enabled : Bool)] : Unit
+  (let [hover (and enabled (in-rect? x y w h))]
+    (card x y w h (if primary (c-gold) (c-panel)) (if enabled (if primary (if hover 255 225) 235) 120)
+          (if primary (c-gold) (c-line)) (if hover 255 (if enabled 200 100)))
+    (draw-text-c label (+ x (/ w 2)) (+ y (/ (- h 16) 2)) 1 (if primary (if enabled (c-bg) (c-faint)) (if enabled (c-ink) (c-faint))))))
+
+(defn meter [(x : I32) (y : I32) (w : I32) (h : I32) (frac : F32) (c : I32)] : Unit
+  (do (fill-rect-a x y w h (c-shadow) 200)
+      (fill-rect (+ x 1) (+ y 1) (i32 (* (f32 (- w 2)) (clamp-f frac 0.0 1.0))) (- h 2) c)
+      (rect-outline-a x y w h (c-line) 160)))
+
+(defn label [(s : String) (x : I32) (y : I32)] : Unit (draw-text s x y 1 (c-faint)))
+(defn heading [(s : String) (x : I32) (y : I32)] : Unit (draw-text-s s x y 2 (c-ink)))
+(defn section [(s : String) (x : I32) (y : I32) (w : I32)] : Unit
+  (do (draw-text s x y 1 (c-dim))
+      (fill-rect-a x (+ y 19) w 1 (c-line) 255)))
+
+(defn draw-backdrop! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))]
+    (fill-rect 0 0 960 540 (c-bg))
+    (dotimes [k 25] (fill-rect-a (* k 40) 0 1 540 (c-ground2) 90))
+    (dotimes [k 14] (fill-rect-a 0 (* k 40) 960 1 (c-ground2) 90))
+    ;; one slow sweep, so the page is alive without being busy
+    (let [(sx : F32) (+ 480.0 (* 520.0 (sinf (* t 0.00017))))]
+      (fill-rect-a (i32 sx) 0 2 540 (c-gold) 10))))
+
+;; ---- emblems: one small mark a card, drawn from lines and discs ---------------------------------------------------------------------------------------
+(defn emblem [(c : I32) (x : I32) (y : I32) (r : I32) (col : I32) (a : I32)] : Unit
+  (let [q (max-i 2 (/ r 2)) w (max-i 1 (/ r 6))]
+    (case c
+      0 (do (fill-rect-a (- x r) (- y q) r (* q 2) col a) (fill-rect-a (+ x 1) (- y q) r (* q 2) col a)
+            (fill-rect-a x (- y q) 1 (* q 2) (c-bg) 200))
+      1 (do (ring-i x y r w col a) (line-a (- x q) (+ y q) (+ x q) (- y q) col a))
+      2 (do (disc-i (- x q) y q col a) (disc-i (+ x q) y q col a))
+      3 (do (ring-i x y r w col a) (disc-i x y (max-i 1 (/ r 3)) col a))
+      4 (do (disc-i x (- y q) (max-i 1 (/ r 4)) col a) (disc-i (- x q) (+ y q) (max-i 1 (/ r 4)) col a) (disc-i (+ x q) (+ y q) (max-i 1 (/ r 4)) col a))
+      5 (do (ring-i x y r w col a) (fill-rect-a (- x (/ w 2)) (- y q) (max-i 1 w) (* q 2) col a) (fill-rect-a (- x q) (- y (/ w 2)) (* q 2) (max-i 1 w) col a))
+      6 (do (line-a x (- y r) (+ x r) y col a) (line-a (+ x r) y x (+ y r) col a) (line-a x (+ y r) (- x r) y col a) (line-a (- x r) y x (- y r) col a))
+      7 (do (line-a x (- y r) (+ x r) (+ y q) col a) (line-a (+ x r) (+ y q) (- x r) (+ y q) col a) (line-a (- x r) (+ y q) x (- y r) col a) (disc-i x y (max-i 1 (/ r 5)) col a))
+      8 (do (ring-i (- x q) y q w col a) (ring-i (+ x q) y q w col a))
+      9 (do (ring-i x y r w col a) (ring-i x y (max-i 2 (/ r 2)) w col a))
+      10 (do (fill-rect-a (- x r) (+ y q) (* r 2) (max-i 2 q) col a)
+             (line-a (- x r) (+ y q) (- x r) (- y q) col a) (line-a (- x r) (- y q) (- x q) y col a) (line-a (- x q) y x (- y r) col a)
+             (line-a x (- y r) (+ x q) y col a) (line-a (+ x q) y (+ x r) (- y q) col a) (line-a (+ x r) (- y q) (+ x r) (+ y q) col a))
+      11 (do (line-a x (- y r) (+ x r) (+ y r) col a) (line-a (+ x r) (+ y r) (- x r) (+ y r) col a) (line-a (- x r) (+ y r) x (- y r) col a))
+      12 (do (fill-rect-a (- x r) (- y q) (* r 2) (max-i 1 w) col a) (fill-rect-a (- x r) y (* r 2) (max-i 1 w) col a) (fill-rect-a (- x r) (+ y q) (* r 2) (max-i 1 w) col a))
+      13 (do (line-a (- x r) (- y q) x y col a) (line-a x y (- x r) (+ y q) col a) (line-a x (- y q) (+ x r) y col a) (line-a (+ x r) y x (+ y q) col a))
+      14 (do (line-a (- x r) (+ y r) (- x r) (- y r) col a) (line-a (- x r) (- y r) x y col a) (line-a x y (+ x r) (- y r) col a) (line-a (+ x r) (- y r) (+ x r) (+ y r) col a))
+      15 (do (line-a x (+ y r) x y col a) (line-a x y (- x r) (- y r) col a) (line-a x y (+ x r) (- y r) col a))
+      (disc-i x y q col a))))
+
+;; ---- a card face -------------------------------------------------------------------------------------------------------------------------------------
+;; state: 0 ready, 1 not enough elixir, 2 picked, 3 can't be played (cancelled)
+(defn draw-card-face! [(c : I32) (x : I32) (y : I32) (w : I32) (h : I32) (state : I32) (have : I32) (spend : I32)] : Unit
+  (let [mythic (is-mythic-card? c)
+        dim (if (= state 3) 90 (if (= state 1) 170 255))
+        lift (if (= state 2) 4 0)
+        yy (- y lift)
+        tone (if mythic (c-gold) (c-dim))]
+    (fill-rect-a (+ x 2) (+ yy 3) w h (c-shadow) 120)
+    (card x yy w h (c-panel) (if (= state 2) 255 235) (if (= state 2) (c-gold) (c-line)) (if (= state 2) 255 220))
+    (when mythic (fill-rect-a x yy w 2 (c-gold) (min-i dim 200)))
+    ;; emblem
+    (disc-i (+ x (/ w 2)) (+ yy 40) 26 (c-ground2) (min-i dim 230))
+    (emblem c (+ x (/ w 2)) (+ yy 40) 15 (if mythic (c-gold) (c-ink)) dim)
+    ;; cost
+    (disc-i (+ x 16) (+ yy 16) 12 (c-bg) 230)
+    (ring-i (+ x 16) (+ yy 16) 12 1 (c-teal) (min-i dim 220))
+    (draw-int-c (cd c (cw-cost)) (+ x 16) (+ yy 8) 1 (c-ink))
+    ;; name and kind
+    (draw-text-c (card-short c) (+ x (/ w 2)) (+ yy (- h 38)) 1 (if (= state 3) (c-faint) (c-ink)))
+    (draw-text-c (card-kind-word c) (+ x (/ w 2)) (+ yy (- h 22)) 1 (c-faint))
+    (when mythic
+      (do (draw-text "-" (- (+ x w) 36) (+ yy 8) 1 tone)
+          (draw-int spend (- (+ x w) 29) (+ yy 8) 1 tone)))
+    ;; how close the elixir is
+    (when (= state 1)
+      (let [(f : F32) (clamp-f (/ (f32 have) (f32 (* (cd c (cw-cost)) 1000))) 0.0 1.0)]
+        (fill-rect-a (+ x 4) (- (+ yy h) 6) (i32 (* (f32 (- w 8)) f)) 2 (c-teal) 160)))))
+
+;; ---- the arena ----------------------------------------------------------------------------------------------------------------------------------------------
+(defn arena-ax [] : I32 336)
+(defn arena-ay [] : I32 14)
+(defn flipped? [] : Bool (= (gi (g-flip)) 1))
+(defn to-sx [(x : I32)] : I32 (+ (arena-ax) (shr (if (flipped?) (- (arena-w) x) x) 4)))
+(defn to-sy [(y : I32)] : I32 (+ (arena-ay) (shr (if (flipped?) (- (arena-h) y) y) 4)))
+(defn mine? [(s : I32)] : Bool (= s (gi (g-flip))))
+(defn team-col [(s : I32)] : I32 (if (mine? s) (c-me) (c-foe)))
+
+(defn draw-terrain! [] : Unit
+  (let [ax (arena-ax) ay (arena-ay)
+        (t : F32) (f32 (gi (g-ticker)))]
+    (fill-rect-a (- ax 4) (- ay 4) 296 520 (c-shadow) 140)
+    (dotimes [r 32]
+      (dotimes [c 18]
+        (fill-rect (+ ax (* c 16)) (+ ay (* r 16)) 16 16 (if (= (bit-and (+ r c) 1) 0) (c-grass) (c-grass2)))))
+    ;; the river: two rows, with a slow ripple
+    (dotimes [r 2]
+      (dotimes [c 18]
+        (let [(w : F32) (sinf (+ (* t 0.0012) (* (f32 (+ c (* r 5))) 0.9)))]
+          (fill-rect (+ ax (* c 16)) (+ ay (* (+ 15 r) 16)) 16 16 (if (> w 0.35) (c-river2) (c-river))))))
+    ;; bridges
+    (fill-rect (+ ax 40) (+ ay 240) 48 32 (c-bridge))
+    (fill-rect (+ ax 200) (+ ay 240) 48 32 (c-bridge))
+    (dotimes [k 6]
+      (fill-rect-a (+ ax 40) (+ ay (+ 240 (* k 6))) 48 1 (c-bridge2) 200)
+      (fill-rect-a (+ ax 200) (+ ay (+ 240 (* k 6))) 48 1 (c-bridge2) 200))
+    (rect-outline-a ax ay 288 512 (c-line) 255)))
+
+;; where the picked card may go
+(defn draw-zone! [] : Unit
+  (let [slot (gi (g-sel-slot)) s (gi (g-flip))]
+    (when (and (>= slot 0) (= (gi (g-m-synced)) 1))
+      (let [c (hand-card s slot)]
+        (when (not (card-spell? c))
+          (dotimes [r 32]
+            (dotimes [col 18]
+              (let [wx (+ (* col 256) 128) wy (+ (* r 256) 128)]
+                (when (place-ok? s wx wy)
+                  (fill-rect-a (+ (arena-ax) (* (if (flipped?) (- 17 col) col) 16)) (+ (arena-ay) (* (if (flipped?) (- 31 r) r) 16)) 16 16 (c-ink) 14))))))))))
+
+(defn hp-bar [(x : I32) (y : I32) (w : I32) (hp : I32) (mx : I32) (col : I32)] : Unit
+  (do (fill-rect-a x y w 3 (c-shadow) 190)
+      (fill-rect x y (div0 (* w (max-i 0 hp)) (max-i 1 mx)) 3 col)))
+
+(defn lerp-i [(a : I32) (b : I32) (al : I32)] : I32 (+ a (shr (* (- b a) al) 8)))
+
+(defn draw-tower! [(t : I32)] : Unit
+  (let [s (tw t (t-owner)) ty (tw t (t-type))
+        sx (to-sx (tw t (t-x))) sy (to-sy (tw t (t-y)))
+        r (shr (tower-r ty) 4)
+        col (team-col s)]
+    (if (= (tw t (t-alive)) 0)
+        (do (fill-rect-a (- sx (/ r 2)) (- sy (/ r 3)) r (/ r 2) (c-ground2) 200)
+            (fill-rect-a (+ sx 2) (- sy r) (/ r 2) (/ r 2) (c-ground2) 160))
+        (do
+          (fill-rect-a (- sx (- r 1)) (+ sy 2) (* r 2) (- r 2) (c-shadow) 90)
+          (card (- sx r) (- sy r) (* r 2) (* r 2) (c-ground) 255 col 230)
+          (fill-rect-a (- sx (- r 3)) (- sy (- r 3)) (- (* r 2) 6) (- (* r 2) 6) col 46)
+          (if (= ty 2)
+              (do (line-a (- sx 8) (+ sy 5) (- sx 8) (- sy 4) col 255) (line-a (- sx 8) (- sy 4) (- sx 4) sy col 255)
+                  (line-a (- sx 4) sy sx (- sy 6) col 255) (line-a sx (- sy 6) (+ sx 4) sy col 255)
+                  (line-a (+ sx 4) sy (+ sx 8) (- sy 4) col 255) (line-a (+ sx 8) (- sy 4) (+ sx 8) (+ sy 5) col 255)
+                  (line-a (- sx 8) (+ sy 5) (+ sx 8) (+ sy 5) col 255))
+              (do (disc-i sx sy 6 col 200) (disc-i sx sy 3 (c-ground) 255)))
+          (when (> (tw t (t-sil)) 0) (ring-i sx sy (+ r 3) 1 (c-violet) 200))
+          (when (> (tw t (t-flash)) 0) (fill-rect-a (- sx r) (- sy r) (* r 2) (* r 2) (c-ink) 70))
+          (when (and (= ty 2) (= (tw t (t-active)) 0)) (draw-text "zz" (- sx 7) (- sy (+ r 16)) 1 (c-faint)))
+          (hp-bar (- sx r) (+ sy (+ r 3)) (* r 2) (tw t (t-hp)) (tw t (t-maxhp)) col)
+          (draw-int-c (tw t (t-hp)) sx (+ sy (+ r 8)) 1 (c-dim))))))
+
+(defn draw-unit! [(i : I32) (al : I32)] : Unit
+  (let [s (un i (u-owner)) c (un i (u-card))
+        x (lerp-i (un i (u-px)) (un i (u-x)) al) y (lerp-i (un i (u-py)) (un i (u-y)) al)
+        sx (to-sx x) sy (to-sy y)
+        r (max-i 6 (/ (* (cd c (cw-body)) 5) 64))
+        col (team-col s)
+        dep (un i (u-deploy))
+        a (if (> dep 0) 110 255)
+        mythic (is-mythic-card? c)]
+    (disc-i (+ sx 1) (+ sy 2) (+ r 1) (c-shadow) 100)
+    (disc-i sx sy r col (if (> dep 0) 90 235))
+    (disc-i sx sy (- r 2) (shade col 120) a)
+    (emblem c sx sy (max-i 2 (- r 3)) (c-ink) a)
+    (when mythic (ring-i sx sy r 1 (c-gold) 220))
+    (when (> dep 0) (ring-i sx sy (+ r 3) 1 col (+ 60 (* dep 4))))
+    (when (> (un i (u-sil)) 0) (ring-i sx sy (+ r 3) 1 (c-violet) 230))
+    (when (> (un i (u-slow)) 0) (ring-i sx sy (+ r 5) 1 (c-sky) 200))
+    (when (> (un i (u-heal)) 0) (do (line-a (- sx 2) (- sy (+ r 8)) (+ sx 2) (- sy (+ r 8)) (c-good) 255) (line-a sx (- sy (+ r 10)) sx (- sy (+ r 6)) (c-good) 255)))
+    (when (> (un i (u-flash)) 0) (disc-i sx sy r (c-ink) 90))
+    (when (< (un i (u-hp)) (un i (u-maxhp)))
+      (hp-bar (- sx r) (- sy (+ r 6)) (* r 2) (un i (u-hp)) (un i (u-maxhp)) col))
+    ;; a blow: a short pale line to what it struck
+    (when (> (un i (u-atk)) 0)
+      (let [g (un i (u-tgt))]
+        (when (>= g 0)
+          (let [gx (if (>= g 100) (to-sx (tw (- g 100) (t-x))) (to-sx (un g (u-x))))
+                gy (if (>= g 100) (to-sy (tw (- g 100) (t-y))) (to-sy (un g (u-y))))]
+            (line-a sx sy gx gy (c-ink) (* (un i (u-atk)) 24))))))))
+
+(defn fx-col [(kind : I32)] : I32
+  (case kind 1 (c-violet) 2 (c-rose) 3 (c-good) 4 (c-gold) 5 (c-sky) 6 (rgb 150 140 96) 10 (c-ink) 11 (c-ink) (c-violet)))
+
+(defn draw-effects! [] : Unit
+  (let [now (tick-now)]
+    (dotimes [e (max-fx)]
+      (when (= (fxw e (f-on)) 1)
+        (let [kind (fxw e (f-kind)) land (fxw e (f-land)) rr (shr (fxw e (f-r)) 4)
+              sx (to-sx (fxw e (f-x))) sy (to-sy (fxw e (f-y)))
+              col (fx-col kind)
+              age (- now land)]
+          (cond
+            (and (>= kind 1) (<= kind 6))
+            (if (< age 0)
+                ;; on its way: a faint ring closing in
+                (let [k (+ 8 age)]
+                  (ring-i sx sy (+ rr (* (- 0 age) 2)) 1 col (+ 40 (* k 12)))
+                  (when (> rr 0) (disc-i sx sy 2 col 140)))
+                (let [fade (max-i 0 (- 200 (* age 14)))]
+                  (when (> rr 0) (disc-i sx sy rr col (/ fade 6)))
+                  (ring-i sx sy (+ rr (/ age 2)) 2 col fade)))
+            (= kind 10) (when (and (>= age 0) (< age 10)) (ring-i sx sy (+ rr (* age 2)) 1 (team-col (fxw e (f-owner))) (- 200 (* age 18))))
+            (= kind 11) (when (>= age 0) (do (ring-i sx sy (+ rr (* age 2)) 2 (c-ink) (max-i 0 (- 220 (* age 8)))) (ring-i sx sy (+ (/ rr 2) age) 1 (c-gold) (max-i 0 (- 220 (* age 8))))))
+            (= kind 12) (when (>= age 0) (ring-i sx sy (+ rr (* age 1)) 2 (c-violet) (max-i 0 (- 220 (* age 9)))))
+            :else unit))))))
+
+(defn draw-units-sorted! [(al : I32)] : Unit
+  ;; painter's order: far side first
+  (dotimes [pass 2]
+    (dotimes [i (max-units)]
+      (when (= (un i (u-alive)) 1)
+        (let [front (if (flipped?) (< (un i (u-y)) (/ (arena-h) 2)) (>= (un i (u-y)) (/ (arena-h) 2)))]
+          (when (= (b2i front) pass) (draw-unit! i al)))))))
+
+(defn draw-arena! [(al : I32)] : Unit
+  (do (draw-terrain!)
+      (draw-zone!)
+      (dotimes [t 6] (draw-tower! t))
+      (draw-effects!)
+      (draw-units-sorted! al)))

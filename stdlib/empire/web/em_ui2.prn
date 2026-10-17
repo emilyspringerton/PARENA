@@ -1,0 +1,380 @@
+;; stdlib/empire/web/em_ui2.prn -- replays, and the screens around the battle: title, deck, searching, result, error.
+
+;; ---- replays ----------------------------------------------------------------------------------------------------------------------------------------
+;; The file the page fetches (IDUNA /api/v1/empire/replays/{id}) is copied to REPLAY by the host; then em_replay_start() is called.
+;;   0 u32 sim version   4 u32 seed   8 u32 deck0   12 u8 fac0   13 u32 deck1   17 u8 fac1   18 u8 winner   19 u8 reason   20 u16 ticks
+;;   22 name0[16]   38 name1[16]   54 u16 commands   56 { u16 tick, u8 seat, u8 slot, u8 x4, u8 y4 } ...
+(defn rpb [(k : I32)] : I32 (load8 (+ (replay-base) k)))
+(defn rp16 [(k : I32)] : I32 (+ (rpb k) (shl (rpb (+ k 1)) 8)))
+(defn rp32 [(k : I32)] : I32 (+ (rp16 k) (shl (rp16 (+ k 2)) 16)))
+(defn rp-cmd-tick [(i : I32)] : I32 (rp16 (+ 56 (* i 6))))
+
+(defn replay-begin! [] : Unit
+  (do (clear-match-ui!)
+      (gi! (g-mode) 3) (gi! (g-ai-mask) 0)
+      (sim-begin! (rp32 4) (rp32 8) (rpb 12) (rp32 13) (rpb 17))
+      (gi! (g-rp-i) 0) (gi! (g-acc) 0) (gi! (g-last-ticker) (gi (g-ticker)))
+      (gi! (g-m-synced) 1)))
+
+(defn replay-start! [] : I32
+  (if (!= (rp32 0) (sim-version))
+      0
+      (do (dotimes [k 32] (store8! (+ (scratch-base) k) (let [c (rpb (+ 22 k))] (if (and (>= c 32) (< c 127)) c 0))))
+          (store8! (+ (scratch-base) 15) 0) (store8! (+ (scratch-base) 31) 0)
+          (gi! (g-rp-n) (rp16 54))
+          (gi! (g-res-ticks) (rp16 20))
+          (gi! (g-res-winner) (rpb 18)) (gi! (g-res-reason) (rpb 19))
+          (gi! (g-speed) 1) (gi! (g-paused) 0) (gi! (g-flip) 0) (gi! (g-m-seat) 0)
+          (gi! (g-m-ranked) 0) (gi! (g-m-oppkind) 0)
+          (replay-begin!)
+          (go-screen! (sc-battle))
+          1)))
+
+(defn replay-restart! [] : Unit (do (replay-start!) unit))
+
+(defn replay-tick-once! [] : Unit
+  (let [nt (+ (tick-now) 1)]
+    (loop [guard 0]
+      (when (and (< guard 16) (< (gi (g-rp-i)) (gi (g-rp-n))) (= (rp-cmd-tick (gi (g-rp-i))) nt))
+        (let [o (+ 56 (* (gi (g-rp-i)) 6))]
+          (cmd-push! (rpb (+ o 2)) (rpb (+ o 3)) (rpb (+ o 4)) (rpb (+ o 5)))
+          (gi! (g-rp-i) (+ (gi (g-rp-i)) 1))
+          (recur (+ guard 1)))))
+    (sim-step!)
+    ;; a resignation is not a command: the file's header says who left and when
+    (when (and (= (gi (g-res-reason)) 6) (>= (tick-now) (gi (g-res-ticks))) (= (h (h-over)) 0))
+      (resign! (- 1 (gi (g-res-winner)))))
+    (gi! (g-last-step-t) (gi (g-ticker)))))
+
+(defn replay-step! [] : Unit
+  (let [now (gi (g-ticker))
+        dt (clamp-i (- now (gi (g-last-ticker))) 0 250)]
+    (gi! (g-last-ticker) now)
+    (when (and (= (h (h-over)) 0) (= (gi (g-paused)) 0))
+      (do (gi! (g-acc) (+ (gi (g-acc)) (* dt (gi (g-speed)))))
+          (loop [guard 0]
+            (when (and (>= (gi (g-acc)) 50) (< guard 32) (= (h (h-over)) 0))
+              (do (gi! (g-acc) (- (gi (g-acc)) 50))
+                  (replay-tick-once!)
+                  (recur (+ guard 1)))))))))
+
+(defn replay-seek! [(target : I32)] : Unit
+  (do (replay-begin!)
+      (loop [guard 0]
+        (when (and (< (tick-now) target) (= (h (h-over)) 0) (< guard 5000))
+          (do (replay-tick-once!) (recur (+ guard 1)))))))
+
+(defn rp-bx [] : I32 24)
+;; a live match: nothing to press but the way back
+(defn draw-watch-panel! [] : Unit
+  (do (draw-text "watching" 24 96 1 (c-faint))
+      (draw-text-at (name-addr-of-seat 0) 24 120 1 (team-col 0))
+      (draw-deck-row! (h (h-deck 0 0)) 0 0)
+      (button 24 470 136 30 "stop watching" false true)))
+(defn watch-input! [] : Unit
+  (when (and (left-clicked?) (in-rect? 24 470 136 30))
+    (do (gi! (g-mode) 0) (gi! (g-m-synced) 0) (gi! (g-watch-id) 0) (gi! (g-watch-sent) 0) (go-screen! (sc-title)))))
+(defn draw-deck-row! [(d : I32) (x : I32) (y : I32)] : Unit
+  (dotimes [k 8]
+    (let [c (deck-card d k)]
+      (disc-i (+ x (+ 16 (* k 36))) (+ y 16) 15 (c-ground2) 230)
+      (emblem c (+ x (+ 16 (* k 36))) (+ y 16) 8 (if (is-mythic-card? c) (c-gold) (c-ink)) 230))))
+
+(defn draw-replay-controls! [] : Unit
+  (let [total (max-i 1 (gi (g-res-ticks)))
+        tk (tick-now)]
+    (draw-text "replay" 24 96 1 (c-faint))
+    (fill-rect-a (rp-bx) 124 288 10 (c-shadow) 200)
+    (fill-rect (rp-bx) 124 (div0 (* 288 tk) total) 10 (c-teal))
+    (rect-outline-a (rp-bx) 124 288 10 (c-line) 200)
+    (draw-clock (/ tk (tps)) 24 108 1 (c-dim))
+    (draw-clock (/ total (tps)) 264 108 1 (c-faint))
+    (button 24 150 68 28 (if (= (gi (g-paused)) 1) "play" "pause") false true)
+    (button 100 150 52 28 "1x" (= (gi (g-speed)) 1) true)
+    (button 158 150 52 28 "2x" (= (gi (g-speed)) 2) true)
+    (button 216 150 48 28 "4x" (= (gi (g-speed)) 4) true)
+    (button 270 150 42 28 "8x" (= (gi (g-speed)) 8) true)
+    (button 24 188 136 28 "from the start" false true)
+    (button 168 188 144 28 "turn the board" false true)
+    (draw-text "decks" 24 236 1 (c-faint))
+    (draw-text-at (name-addr-of-seat (my-seat)) 24 256 1 (team-col (my-seat)))
+    (draw-deck-row! (h (h-deck (my-seat) 0)) 0 0)
+    (button 24 470 136 30 "back" false true)))
+
+(defn replay-input! [] : Unit
+  (when (left-clicked?)
+    (let [total (max-i 1 (gi (g-res-ticks)))]
+      (when (in-rect? 24 118 288 22) (replay-seek! (div0 (* total (- (pointer-x) 24)) 288)))
+      (when (in-rect? 24 150 68 28) (gi! (g-paused) (- 1 (gi (g-paused)))))
+      (when (in-rect? 100 150 52 28) (gi! (g-speed) 1))
+      (when (in-rect? 158 150 52 28) (gi! (g-speed) 2))
+      (when (in-rect? 216 150 48 28) (gi! (g-speed) 4))
+      (when (in-rect? 270 150 42 28) (gi! (g-speed) 8))
+      (when (in-rect? 24 188 136 28) (replay-seek! 0))
+      (when (in-rect? 168 188 144 28) (gi! (g-flip) (- 1 (gi (g-flip)))))
+      (when (in-rect? 24 470 136 30) (do (gi! (g-mode) 0) (gi! (g-m-synced) 0) (gi! (g-rp-ready) 0) (go-screen! (sc-title)))))))
+
+;; ============================================================================================================================================
+;; TITLE
+;; ============================================================================================================================================
+(defn bot-row-y [(k : I32)] : I32 (+ 78 (* k 48)))
+
+(defn title-ready? [] : Bool (and (> (gi (g-name-len)) 0) (= (gi (g-version-ok)) 1)))
+
+(defn render-title! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))]
+    (draw-backdrop!)
+    (draw-text "E M P I R E" 60 56 3 (c-ink))
+    (draw-text "a quiet game of cards and towers" 62 106 1 (c-dim))
+    (fill-rect-a 62 128 64 1 (c-gold) 220)
+    (draw-text "Sixteen cards, one table. Elixir is tempo;" 62 148 1 (c-faint))
+    (draw-text "standing is what the watchers think of you." 62 168 1 (c-faint))
+    (button 60 204 200 44 "PLAY" true (title-ready?))
+    (button 60 258 200 30 "practice (offline)" false true)
+    (button 60 296 200 30 "deck and faction" false true)
+    ;; your hand of eight
+    (draw-text "your eight" 62 346 1 (c-faint))
+    (draw-deck-row! (gi (g-deck)) 56 362)
+    (draw-text (fac-name (gi (g-faction))) 62 408 1 (c-teal))
+    (draw-text (fac-short (gi (g-faction))) 62 428 1 (c-faint))
+    ;; the AIs
+    (draw-text "the AIs" 420 50 1 (c-dim))
+    (fill-rect-a 420 69 516 1 (c-line) 255)
+    (dotimes [k 8]
+      (let [p (+ k 1) y (bot-row-y k)
+            hov (in-rect? 420 y 516 44)]
+        (card 420 y 516 44 (c-panel) (if hov 245 215) (c-line) (if hov 255 170))
+        (disc-i 442 (+ y 22) 14 (c-ground2) 230)
+        (emblem (bit-and (deck-card (bot-deck p) 0) 15) 442 (+ y 22) 8 (team-faction (bot-faction p)) 230)
+        (draw-text (bot-name p) 466 (+ y 6) 1 (c-ink))
+        (draw-text (fac-name (bot-faction p)) 466 (+ y 24) 1 (team-faction (bot-faction p)))
+        (draw-text (bot-blurb p) 560 (+ y 6) 1 (c-faint))
+        (draw-text "rating" 560 (+ y 24) 1 (c-faint))
+        (draw-int (gi (+ (g-bot-rating0) k)) 614 (+ y 24) 1 (c-dim))
+        (draw-text "play" 836 (+ y 14) 1 (if (and hov (< (pointer-x) 886)) (c-gold) (c-dim)))
+        (draw-text "practice" 868 (+ y 14) 1 (if (and hov (>= (pointer-x) 886)) (c-gold) (c-faint)))))
+    ;; who is playing
+    (if (> (gi (g-name-len)) 0)
+        (do (draw-text "playing as" 62 470 1 (c-faint))
+            (draw-text-at (name-base) 139 470 1 (if (= (gi (g-guest)) 1) (c-dim) (c-gold)))
+            (draw-text (if (= (gi (g-guest)) 1) "guest: your matches stay with this browser" "your matches count toward your WOTAN profile") 62 490 1 (c-faint)))
+        (draw-text "getting your account ready..." 62 470 1 (c-faint)))
+    (when (= (gi (g-version-ok)) 0) (draw-text "this page and the server are on different versions: refresh to play" 62 510 1 (c-rose)))
+    (draw-text-r "very mindful  .  very demure" 936 510 1 (c-faint))
+    (draw-int (gi (g-stat-online)) 420 510 1 (c-dim))
+    (draw-text "online" (+ 420 (+ 7 (num-width (gi (g-stat-online)) 1))) 510 1 (c-faint))))
+
+(defn team-faction [(f : I32)] : I32 (case f 0 (c-gold) 1 (c-rose) (c-teal)))
+
+(defn title-update! [] : Unit
+  (do
+  (when (left-clicked?)
+    (do
+      (when (and (in-rect? 60 204 200 44) (title-ready?)) (begin-search! 0))
+      (when (in-rect? 60 258 200 30) (start-practice! (+ 1 (mod (gi (g-frame)) 8))))
+      (when (in-rect? 60 296 200 30) (open-builder!))
+      (dotimes [k 8]
+        (when (in-rect? 420 (bot-row-y k) 516 44)
+          (if (>= (pointer-x) 886)
+              (start-practice! (+ k 1))
+              (when (title-ready?) (begin-search! (+ k 1))))))))
+  (when (and (key-hit? (kc-enter)) (title-ready?)) (begin-search! 0))))
+
+;; ============================================================================================================================================
+;; DECK
+;; ============================================================================================================================================
+(defn tile-x [(k : I32)] : I32 (+ 24 (* (bit-and k 3) 158)))
+(defn tile-y [(k : I32)] : I32 (+ 66 (* (shr k 2) 96)))
+
+(defn open-builder! [] : Unit
+  (do (gi! (g-bld-sel) (deck-mask (gi (g-deck)))) (gi! (g-bld-hov) -1) (gi! (g-bld-toast) 0)
+      (go-screen! (sc-deck))))
+
+(defn bit-count [(m : I32)] : I32
+  (let [(n : I32) 0] (dotimes [k 16] (set! n (+ n (bit-and (ushr m k) 1)))) n))
+
+(defn render-deck! [] : Unit
+  (let [m (gi (g-bld-sel)) n (bit-count m)]
+    (draw-backdrop!)
+    (draw-text "your eight" 24 22 2 (c-ink))
+    (draw-text "pick eight different cards, then a faction" 24 54 1 (c-faint))
+    (gi! (g-bld-hov) -1)
+    (dotimes [k 16]
+      (let [x (tile-x k) y (tile-y k) on (!= (bit-and (ushr m k) 1) 0)
+            hov (in-rect? x y 150 88)
+            mythic (is-mythic-card? k)]
+        (when hov (gi! (g-bld-hov) k))
+        (card x y 150 88 (c-panel) (if on 250 215) (if on (c-gold) (c-line)) (if on 255 (if hov 230 150)))
+        (when mythic (fill-rect-a x y 150 2 (c-gold) (if on 220 120)))
+        (disc-i (+ x 26) (+ y 34) 20 (c-ground2) 230)
+        (emblem k (+ x 26) (+ y 34) 11 (if mythic (c-gold) (c-ink)) (if on 255 200))
+        (draw-text (card-short k) (+ x 52) (+ y 10) 1 (if on (c-ink) (c-dim)))
+        (draw-text (card-kind-word k) (+ x 52) (+ y 30) 1 (c-faint))
+        (draw-text "cost" (+ x 52) (+ y 48) 1 (c-faint))
+        (draw-int (card-cost k) (+ x 87) (+ y 48) 1 (c-teal))
+        (when mythic (draw-text "mythic" (+ x 52) (+ y 66) 1 (c-gold)))
+        (when on (draw-text "in" (- (+ x 150) 20) (+ y 8) 1 (c-gold)))))
+    ;; what is under the pointer
+    (let [k (gi (g-bld-hov))]
+      (panel 24 450 624 70)
+      (when (>= k 0)
+        (do (draw-text-s (card-name k) 36 456 1 (if (is-mythic-card? k) (c-gold) (c-ink)))
+            (draw-text (card-hero k) 36 472 1 (c-faint))
+            (draw-text (card-desc k) 36 488 1 (c-dim))
+            (draw-text (if (is-mythic-card? k) "mythic: a cast costs standing" "mundane: a cast earns a little standing") 36 504 1 (c-faint)))))
+    ;; the right-hand side
+    (let [cost-sum (let [(a : I32) 0] (dotimes [k 16] (when (!= (bit-and (ushr m k) 1) 0) (set! a (+ a (card-cost k))))) a)
+          myth (let [(a : I32) 0] (dotimes [k 16] (when (and (!= (bit-and (ushr m k) 1) 0) (is-mythic-card? k)) (set! a (+ a 1)))) a)
+          f (gi (g-faction))]
+      (section "the deck" 672 22 264)
+      (draw-int n 672 50 1 (if (= n 8) (c-good) (c-gold)))
+      (draw-text "of 8 chosen" (+ 672 (+ 14 (num-width n 1))) 50 1 (c-faint))
+      (when (> n 0)
+        (do (draw-text "mean cost" 672 72 1 (c-faint))
+            (draw-int (/ (div0 (* cost-sum 10) n) 10) 750 72 1 (c-ink))
+            (draw-text "." 757 72 1 (c-ink))
+            (draw-int (mod (div0 (* cost-sum 10) n) 10) 764 72 1 (c-ink))))
+      (draw-text "mythic" 672 92 1 (c-faint))
+      (draw-int myth 730 92 1 (c-gold))
+      (draw-text "casts you can afford" 672 112 1 (c-faint))
+      (draw-int (div0 (fac-start f) (fac-spend f)) 818 112 1 (c-ink))
+      (draw-text "before standing runs out" 672 130 1 (c-faint))
+      (section "faction" 672 164 264)
+      (dotimes [q 3]
+        (let [y (+ 192 (* q 74)) on (= f q) hov (in-rect? 672 y 264 66)]
+          (card 672 y 264 66 (c-panel) (if on 250 215) (if on (team-faction q) (c-line)) (if on 255 (if hov 230 150)))
+          (draw-text (fac-name q) 684 (+ y 8) 1 (if on (team-faction q) (c-ink)))
+          (draw-text (fac-blurb q) 684 (+ y 28) 1 (c-faint))
+          (draw-text (if (= q 0) "standing 90 / +1 per 2 s" (if (= q 1) "standing 70 / +1 per 4 s / cast 15" "standing 80 / +1 per 3 s")) 684 (+ y 46) 1 (c-dim))))
+      (button 672 424 130 30 "starter" false true)
+      (button 806 424 130 30 "clear" false true)
+      (button 672 464 264 44 "KEEP THIS DECK" true (= n 8))
+      (when (> (gi (g-bld-toast)) 0)
+        (draw-text-c (toast-text (gi (g-bld-toast))) 804 516 1 (c-gold))))))
+
+(defn deck-starter-mask [] : I32 (bit-or 1 (bit-or 2 (bit-or 4 (bit-or 16 (bit-or 32 (bit-or 256 (bit-or 2048 8192))))))))
+
+(defn deck-update! [] : Unit
+  (let [m (gi (g-bld-sel)) n (bit-count m)]
+    (when (left-clicked?)
+      (do
+        (dotimes [k 16]
+          (when (in-rect? (tile-x k) (tile-y k) 150 88)
+            (if (!= (bit-and (ushr m k) 1) 0)
+                (gi! (g-bld-sel) (bit-xor m (shl 1 k)))
+                (if (< n 8)
+                    (gi! (g-bld-sel) (bit-or m (shl 1 k)))
+                    (gi! (g-bld-toast) 7)))))
+        (dotimes [q 3]
+          (when (in-rect? 672 (+ 192 (* q 74)) 264 66) (gi! (g-faction) q)))
+        (when (in-rect? 672 424 130 30) (gi! (g-bld-sel) (deck-starter-mask)))
+        (when (in-rect? 806 424 130 30) (gi! (g-bld-sel) 0))
+        (when (and (in-rect? 672 464 264 44) (= n 8))
+          (do (gi! (g-deck) (deck-from-mask m)) (gi! (g-deck-dirty) 1) (go-screen! (sc-title))))))
+    (when (key-hit? (kc-esc)) (go-screen! (sc-title)))))
+
+;; ============================================================================================================================================
+;; SEARCHING
+;; ============================================================================================================================================
+(defn render-search! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))
+        secs (/ (- (gi (g-ticker)) (gi (g-q-since))) 1000)
+        bot (gi (g-want-bot))]
+    (draw-backdrop!)
+    (panel 270 150 420 244)
+    ;; a slow breath
+    (let [(b : F32) (+ 0.5 (* 0.5 (sinf (* t 0.0016))))]
+      (disc-i 480 218 (+ 16 (i32 (* 8.0 b))) (c-teal) (+ 30 (i32 (* 60.0 b))))
+      (ring-i 480 218 (+ 24 (i32 (* 8.0 b))) 1 (c-teal) 170))
+    (draw-text-c (if (> (gi (g-watch-id)) 0) "finding the table" (if (> bot 0) "asking if they have a moment" "looking for someone to play")) 480 270 2 (c-ink))
+    (draw-text-c (if (> (gi (g-watch-id)) 0) "one moment" (if (> bot 0) (bot-name bot) "if nobody is here in a few seconds, one of the AIs sits down with you")) 480 306 1 (c-dim))
+    (draw-text "waited" 438 336 1 (c-faint))
+    (draw-int-s secs 494 336 1 (c-ink))
+    (draw-text "s" (+ 494 (num-width secs 1)) 336 1 (c-faint))
+    (button 420 360 120 28 "never mind" false true)))
+
+(defn search-update! [] : Unit
+  (when (or (and (left-clicked?) (in-rect? 420 360 120 28)) (key-hit? (kc-esc)))
+    (do (gi! (g-watch-id) 0) (gi! (g-watch-sent) 0) (cancel-search!))))
+
+;; ============================================================================================================================================
+;; RESULT
+;; ============================================================================================================================================
+(defn stat-row! [(label-s : String) (a : I32) (b : I32) (y : I32)] : Unit
+  (do (draw-text-c label-s 480 y 1 (c-faint))
+      (draw-int-r a 360 y 1 (c-ink))
+      (draw-int b 600 y 1 (c-ink))))
+
+(defn render-over! [] : Unit
+  (let [me (my-seat) foe (- 1 me)
+        w (h (h-winner))
+        won (= w me)
+        mode (gi (g-mode))]
+    (draw-backdrop!)
+    (panel 190 30 580 480)
+    (draw-text-c (if (= w 2) "a draw" (if won "well played" "a good game")) 480 52 3 (if won (c-gold) (c-ink)))
+    (draw-text-c (reason-text (h (h-reason))) 480 104 1 (c-dim))
+    (draw-text-at-c (name-addr-of-seat me) 330 124 1 (team-col me))
+    (draw-text-at-c (name-addr-of-seat foe) 630 124 1 (team-col foe))
+    (draw-crowns! me 300 154)
+    (draw-crowns! foe 600 154)
+    (draw-clock-c (/ (tick-now) (tps)) 480 148 1 (c-faint))
+    (stat-row! "towers standing" (alive-count me) (alive-count foe) 188)
+    (stat-row! "tower health" (total-tower-hp me) (total-tower-hp foe) 210)
+    (stat-row! "cards played" (h (h-stat me (st-plays))) (h (h-stat foe (st-plays))) 232)
+    (stat-row! "mythic casts" (h (h-stat me (st-mythic))) (h (h-stat foe (st-mythic))) 254)
+    (stat-row! "elixir spent" (h (h-stat me (st-elixir-spent))) (h (h-stat foe (st-elixir-spent))) 276)
+    (stat-row! "elixir left unused" (/ (h (h-stat me (st-elixir-wasted))) 1000) (/ (h (h-stat foe (st-elixir-wasted))) 1000) 298)
+    (stat-row! "troops lost" (h (h-stat me (st-lost))) (h (h-stat foe (st-lost))) 320)
+    (stat-row! "lowest standing" (h (h-stat me (st-min-decorum))) (h (h-stat foe (st-min-decorum))) 342)
+    (stat-row! "seconds cancelled" (/ (h (h-stat me (st-cancelled))) (tps)) (/ (h (h-stat foe (st-cancelled))) (tps)) 364)
+    ;; the ladder
+    (cond
+      (and (= mode 2) (= (gi (g-rec-got)) 1) (= (gi (g-rec-counted)) 1))
+      (do (draw-text-c "rating" 480 398 1 (c-faint))
+          (draw-int-c (gi (g-rec-rating)) 480 416 2 (c-ink))
+          (draw-text-c (if (>= (gi (g-rec-delta)) 0) "a little higher" "a little lower") 480 444 1 (if (>= (gi (g-rec-delta)) 0) (c-good) (c-dim)))
+          (draw-int (abs-i (gi (g-rec-delta))) 566 422 1 (if (>= (gi (g-rec-delta)) 0) (c-good) (c-dim))))
+      (and (= mode 2) (= (gi (g-rec-got)) 1))
+      (draw-text-c "recorded, but it did not move the ladder" 480 410 1 (c-faint))
+      (= mode 2) (draw-text-c "recording..." 480 410 1 (c-faint))
+      (= mode 1) (draw-text-c "practice: nothing was recorded" 480 410 1 (c-faint))
+      :else unit)
+    (button 214 462 150 34 (if (= mode 3) "watch again" (if (= mode 4) "back" "play again")) true true)
+    (button 372 462 150 34 (if (or (= mode 3) (= mode 4)) "back" "the AIs") false (!= mode 4))
+    (button 530 462 112 34 "deck" false (and (!= mode 3) (!= mode 4)))
+    (when (and (= mode 2) (= (gi (g-rec-got)) 1) (> (gi (g-res-id)) 0))
+      (button 650 462 100 34 "replay" false true))))
+
+(defn over-update! [] : Unit
+  (do
+  (when (left-clicked?)
+    (let [mode (gi (g-mode))]
+      (when (in-rect? 214 462 150 34)
+        (cond
+          (= mode 4) (do (gi! (g-mode) 0) (gi! (g-m-synced) 0) (gi! (g-watch-id) 0) (go-screen! (sc-title)))
+          (= mode 3) (replay-restart!)
+          (= mode 1) (start-practice! (gi (g-opp-pers)))
+          :else (do (gi! (g-mode) 0) (gi! (g-ai-mask) 0) (begin-search! (gi (g-want-bot))))))
+      (when (in-rect? 372 462 150 34) (do (gi! (g-mode) 0) (gi! (g-m-synced) 0) (go-screen! (sc-title))))
+      (when (and (in-rect? 530 462 112 34) (!= mode 3) (!= mode 4)) (do (gi! (g-mode) 0) (gi! (g-m-synced) 0) (open-builder!)))
+      (when (and (in-rect? 650 462 100 34) (= mode 2) (> (gi (g-res-id)) 0)) (gi! (g-rp-ready) (gi (g-res-id))))))
+  (when (key-hit? (kc-enter))
+    (let [mode (gi (g-mode))]
+      (cond (= mode 4) (do (gi! (g-mode) 0) (gi! (g-watch-id) 0) (go-screen! (sc-title)))
+            (= mode 3) (replay-restart!)
+            (= mode 1) (start-practice! (gi (g-opp-pers)))
+            :else (do (gi! (g-mode) 0) (begin-search! (gi (g-want-bot)))))))))
+
+;; ============================================================================================================================================
+;; ERROR
+;; ============================================================================================================================================
+(defn render-error! [] : Unit
+  (do (draw-backdrop!)
+      (panel 230 170 500 200)
+      (draw-text-c "something did not go through" 480 196 2 (c-ink))
+      (draw-text-at-c (err-base) 480 246 1 (c-dim))
+      (button 400 310 160 34 "back" true true)))
+(defn error-update! [] : Unit
+  (when (or (and (left-clicked?) (in-rect? 400 310 160 34)) (key-hit? (kc-enter)))
+    (go-screen! (sc-title))))

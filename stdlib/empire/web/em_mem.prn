@@ -122,6 +122,30 @@
 (defn g-deck-dirty [] : I32 72)     ; the page should save the deck
 (defn g-bld-hov [] : I32 73)
 (defn g-bld-sel [] : I32 74)
+(defn g-acc [] : I32 102)           ; ms owed to the local step clock (practice, replay)
+(defn g-last-ticker [] : I32 103)
+(defn g-speed [] : I32 104)         ; 1 2 4 (practice 1 or 2, replay 1 2 4 8)
+(defn g-paused [] : I32 105)
+(defn g-flip [] : I32 106)          ; the seat drawn at the bottom
+(defn g-over-shown [] : I32 107)
+(defn g-countdown [] : I32 108)     ; ms until the first tick of an online match
+(defn g-quit-ask [] : I32 109)
+(defn g-bot-sel [] : I32 110)
+(defn g-hash-t [] : I32 111)
+(defn g-tip-card [] : I32 112)
+(defn g-opp-pers [] : I32 113)
+(defn g-got-snap [] : I32 114)
+(defn g-version [] : I32 115)       ; the sim version the page was built with
+(defn g-turns [] : I32 116)         ; turns applied in the current match
+(defn g-fac-hov [] : I32 117)
+(defn g-rematch [] : I32 118)
+(defn g-pend-slot [] : I32 119)     ; a play was sent from this slot and has not come back yet (-1 none)
+(defn g-pend-t [] : I32 121)
+(defn g-bld-toast [] : I32 122)
+(defn g-bld-tip [] : I32 123)
+(defn g-wait-ident [] : I32 124)
+(defn g-watch-id [] : I32 125)      ; a live match the page asked to watch (0 none)
+(defn g-watch-sent [] : I32 126)
 
 ;; replay
 (defn g-rp-on [] : I32 80) (defn g-rp-n [] : I32 81) (defn g-rp-i [] : I32 82) (defn g-rp-speed [] : I32 83) (defn g-rp-paused [] : I32 84)

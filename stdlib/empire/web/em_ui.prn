@@ -1,0 +1,296 @@
+;; stdlib/empire/web/em_ui.prn -- the screens and what a click means.
+;;
+;; The flow: TITLE (play, practise against an AI, or meet them one by one) -> [DECK: eight of the sixteen cards and a faction] -> SEARCHING -> BATTLE ->
+;; RESULT. Online, a play is a request: the click sends it and the board changes when the server's turn comes back. In practice the same click
+;; queues it for the local step. A replay is the battle screen with the hand taken away and a few controls added.
+
+;; ---- who is at the bottom / top of the battle screen -----------------------------------------------------------------------------------------------
+(defn replay? [] : Bool (or (= (gi (g-mode)) 3) (= (gi (g-mode)) 4)))
+(defn name-addr-of-seat [(s : I32)] : I32
+  (if (replay?) (+ (scratch-base) (* s 16))
+      (if (= s (gi (g-m-seat))) (name-base) (opp-base))))
+(defn seat-fac [(s : I32)] : I32 (h (h-faction s)))
+
+;; ---- the board's clock ---------------------------------------------------------------------------------------------------------------------------------
+(defn clock-secs [] : I32
+  (let [t (tick-now)]
+    (if (< t (t-regular)) (/ (- (t-regular) t) (tps))
+        (/ (max-i 0 (- (+ (t-regular) (t-overtime)) t)) (tps)))))
+(defn mode-word [] : String
+  (case (gi (g-mode)) 1 "practice" 2 (if (= (gi (g-m-ranked)) 1) "ranked" "league") 3 "replay" 4 "live" ""))
+(defn phase-word [] : String
+  (let [t (tick-now)]
+    (if (>= t (t-regular)) "overtime: first tower"
+        (if (>= t (t-double)) "double elixir" "regulation"))))
+
+;; ---- toasts ------------------------------------------------------------------------------------------------------------------------------------------------
+(defn toast! [(id : I32)] : Unit (do (gi! (g-toast-id) id) (gi! (g-toast-t) (gi (g-ticker)))))
+(defn toast-text [(id : I32)] : String
+  (case id 1 "not enough elixir yet" 2 "you are cancelled: wait for your standing to return" 3 "not there: your own side of the river"
+          4 "the match is not running" 5 "waiting for the table" 6 "nothing to cancel" 7 "eight different cards" 8 "that is not ready yet" ""))
+(defn why-toast [(why : I32)] : I32 (case why 3 1 4 2 5 3 1 4 5))
+
+;; ---- the hand ---------------------------------------------------------------------------------------------------------------------------------------------
+(defn hand-x [(k : I32)] : I32 (if (= (bit-and k 1) 0) 24 168))
+(defn hand-y [(k : I32)] : I32 (if (< k 2) 96 216))
+(defn hand-w [] : I32 136) (defn hand-h [] : I32 112)
+
+(defn my-seat [] : I32 (gi (g-flip)))
+(defn card-state [(k : I32)] : I32
+  (let [s (my-seat) c (hand-card s k)]
+    (if (= (gi (g-sel-slot)) k) 2
+        (if (= (band-of s) 3) 3
+            (if (< (elixir-of s) (* (card-cost c) 1000)) 1 0)))))
+
+(defn spend-of [(c : I32)] : I32 (if (is-mythic-card? c) (fac-spend (h (h-faction (my-seat)))) 0))
+
+;; the arena position under the pointer in quarter tiles; -1 when outside
+(defn arena-hit? [] : Bool
+  (and (and (>= (pointer-x) (arena-ax)) (< (pointer-x) (+ (arena-ax) 288))) (and (>= (pointer-y) (arena-ay)) (< (pointer-y) (+ (arena-ay) 512)))))
+(defn hit-x4 [] : I32 (let [v (shr (- (pointer-x) (arena-ax)) 2)] (if (flipped?) (- 71 v) v)))
+(defn hit-y4 [] : I32 (let [v (shr (- (pointer-y) (arena-ay)) 2)] (if (flipped?) (- 127 v) v)))
+
+(defn draw-hand! [] : Unit
+  (let [s (my-seat)]
+    (dotimes [k 4]
+      (let [c (hand-card s k)
+            pend (and (= (gi (g-pend-slot)) k) (< (- (gi (g-ticker)) (gi (g-pend-t))) 700))]
+        (draw-card-face! c (hand-x k) (hand-y k) (hand-w) (hand-h) (if pend 3 (card-state k)) (elixir-of s) (spend-of c))
+        (draw-text (case k 0 "1" 1 "2" 2 "3" "4") (+ (hand-x k) 6) (+ (hand-y k) (- (hand-h) 18)) 1 (c-faint))))
+    ;; the next card
+    (label "next" 24 342)
+    (let [c (next-card s)]
+      (card 24 360 136 62 (c-panel) 200 (c-line) 200)
+      (disc-i 52 391 18 (c-ground2) 220)
+      (emblem c 52 391 10 (if (is-mythic-card? c) (c-gold) (c-ink)) 230)
+      (draw-text (card-short c) 76 372 1 (c-dim))
+      (draw-text "cost" 76 392 1 (c-faint))
+      (draw-int (card-cost c) 110 392 1 (c-ink)))))
+
+(defn draw-elixir! [(x : I32) (y : I32) (w : I32)] : Unit
+  (let [e (elixir-of (my-seat))
+        seg (/ (- w 20) 10)
+        (t : F32) (f32 (gi (g-ticker)))
+        full (/ e 1000)
+        part (mod e 1000)]
+    (fill-rect-a x y w 22 (c-shadow) 190)
+    (dotimes [k 10]
+      (let [sx (+ x (+ 3 (* k seg)))]
+        (fill-rect-a sx (+ y 3) (- seg 2) 16 (c-ground2) 255)
+        (when (< k full) (fill-rect sx (+ y 3) (- seg 2) 16 (c-teal)))
+        (when (= k full) (fill-rect sx (+ y 3) (div0 (* (- seg 2) part) 1000) 16 (c-teal)))))
+    (rect-outline-a x y w 22 (c-line) 200)
+    (draw-int-s full (+ x (- w 15)) (- y 0) 1 (c-ink))
+    ;; a slow pulse while full: nothing is being wasted quietly
+    (when (>= e 10000) (rect-outline-a (- x 1) (- y 1) (+ w 2) 24 (c-gold) (+ 60 (i32 (* 50.0 (sinf (* t 0.004)))))))))
+
+(defn draw-decorum! [(s : I32) (x : I32) (y : I32) (w : I32)] : Unit
+  (let [d (h (h-decorum s)) b (bo-decorum-band d)
+        col (case b 0 (c-teal) 1 (c-gold) 2 (c-rose) (c-faint))]
+    (fill-rect-a x y w 8 (c-shadow) 200)
+    (fill-rect (+ x 1) (+ y 1) (div0 (* (- w 2) d) 100) 6 col)
+    (fill-rect-a (+ x (div0 (* w 60) 100)) (- y 1) 1 10 (c-ink) 90)
+    (fill-rect-a (+ x (div0 (* w 30) 100)) (- y 1) 1 10 (c-ink) 90)
+    (rect-outline-a x y w 8 (c-line) 160)
+    (draw-text "standing" x (+ y 12) 1 (c-faint))
+    (draw-int d (+ x 66) (+ y 12) 1 (c-ink))
+    (draw-text (band-name b) (- (+ x w) (* 7 (str-len (band-name b)))) (+ y 12) 1 col)))
+
+;; ---- the right-hand panel ----------------------------------------------------------------------------------------------------------------------------
+(defn draw-crowns! [(s : I32) (x : I32) (y : I32)] : Unit
+  (dotimes [k 3]
+    (let [on (< k (crowns-of s))]
+      (disc-i (+ x (* k 20)) y 6 (if on (c-gold) (c-ground2)) (if on 255 200))
+      (when (not on) (ring-i (+ x (* k 20)) y 6 1 (c-line) 200)))))
+
+(defn draw-feed! [(x : I32) (y : I32)] : Unit
+  (let [n (h (h-feed-n))]
+    (label "lately" x y)
+    (dotimes [k 6]
+      (let [i (- n (+ k 1))]
+        (when (>= i 0)
+          (let [s (h (h-feed i 1)) c (h (h-feed i 2)) tk (h (h-feed i 0))
+                yy (+ y (+ 20 (* k 20)))
+                a (- 255 (* k 30))]
+            (disc-i (+ x 4) (+ yy 7) 3 (team-col s) a)
+            (draw-clock-c-small tk (+ x 40) yy)
+            (draw-text (card-short c) (+ x 70) yy 1 (if (is-mythic-card? c) (c-gold) (c-dim)))))))))
+
+(defn draw-clock-c-small [(tk : I32) (cx : I32) (y : I32)] : Unit
+  (draw-clock (/ tk (tps)) (- cx 14) y 1 (c-faint)))
+
+(defn emote-bx [(k : I32)] : I32 (+ 24 (* k 73)))
+(defn draw-emotes! [] : Unit
+  (dotimes [k 4]
+    (let [x (emote-bx k) hov (in-rect? x 484 70 24)]
+      (card x 484 70 24 (c-panel) 220 (c-line) (if hov 255 170))
+      (draw-text-c (emote-text k) (+ x 35) 488 1 (if hov (c-ink) (c-dim))))))
+
+(defn draw-bubble! [] : Unit
+  (let [age (- (gi (g-ticker)) (gi (g-emote-t)))]
+    (when (and (> (gi (g-emote-t)) 0) (< age 2600))
+      (let [s (gi (g-emote-seat))
+            y (if (mine? s) 470 40)
+            txt (emote-text (gi (g-emote-id)))
+            w (+ 20 (text-width txt 1))
+            a (if (> age 2000) (- 255 (/ (* (- age 2000) 255) 600)) 255)]
+        (card (- 480 (/ w 2)) y w 22 (c-panel) (min-i a 235) (team-col s) (min-i a 220))
+        (draw-text-c txt 480 (+ y 3) 1 (c-ink))))))
+
+(defn draw-toast! [] : Unit
+  (let [age (- (gi (g-ticker)) (gi (g-toast-t)))]
+    (when (and (> (gi (g-toast-t)) 0) (< age 2200) (> (gi (g-toast-id)) 0))
+      (let [txt (toast-text (gi (g-toast-id)))
+            w (+ 24 (text-width txt 1))
+            a (if (> age 1700) (- 255 (/ (* (- age 1700) 255) 500)) 255)]
+        (card (- 480 (/ w 2)) 486 w 24 (c-panel) (min-i a 240) (c-gold) (min-i a 230))
+        (draw-text-c txt 480 490 1 (c-ink))))))
+
+;; ---- the ghost under the pointer ----------------------------------------------------------------------------------------------------------------------
+(defn draw-ghost! [] : Unit
+  (let [slot (gi (g-sel-slot)) s (my-seat)]
+    (when (and (>= slot 0) (arena-hit?) (= (gi (g-mode)) (gi (g-mode))))
+      (let [c (hand-card s slot)
+            x4 (hit-x4) y4 (hit-y4)
+            wx (+ (* x4 64) 32) wy (+ (* y4 64) 32)
+            ok (= (can-play s slot wx wy) 0)
+            col (if ok (c-ink) (c-rose))
+            sx (to-sx wx) sy (to-sy wy)]
+        (if (card-spell? c)
+            (let [r (shr (cd c (cw-aoe)) 4)]
+              (when (> r 0) (do (disc-i sx sy r col 28) (ring-i sx sy r 1 col 150)))
+              (emblem c sx sy 5 col 220))
+            (do (disc-i sx sy 6 col 80) (ring-i sx sy 7 1 col 190) (emblem c sx sy 4 col 230)))))))
+
+;; ---- the battle screen -------------------------------------------------------------------------------------------------------------------------------------
+(defn interp-alpha [] : I32
+  (let [m (gi (g-mode))]
+    (if (or (= (h (h-over)) 1) (= (gi (g-paused)) 1)) 256
+        (if (or (= m 2) (= m 4))
+            (min-i 256 (div0 (* (- (gi (g-ticker)) (gi (g-last-step-t))) 256) 50))
+            (min-i 256 (div0 (* (gi (g-acc)) 256) 50))))))
+
+(defn draw-side-panels! [] : Unit
+  (let [bot (my-seat) top (- 1 (my-seat))]
+    ;; bottom player (you)
+    (draw-text-at-s (name-addr-of-seat bot) 24 14 1 (c-ink))
+    (draw-text (fac-name (seat-fac bot)) 24 32 1 (team-col bot))
+    (draw-decorum! bot 24 56 288)
+    ;; top player
+    (draw-text-at-s (name-addr-of-seat top) 648 14 1 (c-ink))
+    (draw-text (fac-name (seat-fac top)) 648 32 1 (team-col top))
+    (draw-decorum! top 648 56 288)
+    ;; clock and crowns
+    (draw-clock-c (clock-secs) 792 90 3 (if (< (clock-secs) 11) (c-gold) (c-ink)))
+    (draw-text (phase-word) 648 144 1 (c-faint))
+    (draw-crowns! top 724 182)
+    (draw-crowns! bot 724 208)
+    (when (not (replay?))
+      (do (draw-text "them" 800 176 1 (c-faint))
+          (draw-text "you" 800 202 1 (c-faint))))
+    (draw-text-r (mode-word) 936 144 1 (c-faint))
+    (draw-feed! 648 236)))
+
+(defn countdown-overlay! [] : Unit
+  (when (and (= (gi (g-mode)) 2) (= (tick-now) 0))
+    (let [(t : F32) (f32 (gi (g-ticker)))]
+      (fill-rect-a (arena-ax) (arena-ay) 288 512 (c-bg) 110)
+      (draw-text-c "take a breath" 480 230 2 (c-ink))
+      (draw-text-c "the table is being laid" 480 262 1 (c-dim))
+      (ring-i 480 310 (+ 10 (i32 (* 6.0 (sinf (* t 0.003))))) 2 (c-teal) 200))))
+
+(defn render-battle! [] : Unit
+  (let [al (interp-alpha)]
+    (draw-backdrop!)
+    (draw-arena! al)
+    (draw-ghost!)
+    (draw-side-panels!)
+    (if (replay?) (if (= (gi (g-mode)) 4) (draw-watch-panel!) (draw-replay-controls!))
+        (do (draw-hand!)
+            (draw-elixir! 24 450 288)
+            (draw-emotes!)
+            (draw-text "1-4 pick a card  click the table" 648 438 1 (c-faint))
+            (draw-text "esc puts it back" 648 456 1 (c-faint))
+            (button 648 480 288 30 (if (= (gi (g-quit-ask)) 1) (if (= (gi (g-mode)) 2) "RESIGN? CLICK AGAIN" "LEAVE? CLICK AGAIN") (if (= (gi (g-mode)) 2) "resign" "leave")) false true)))
+    (countdown-overlay!)
+    (draw-bubble!)
+    (draw-toast!)
+    (when (= (h (h-over)) 1) (draw-over-banner!))))
+
+(defn draw-over-banner! [] : Unit
+  (let [w (h (h-winner)) me (my-seat)]
+    (fill-rect-a (arena-ax) 216 288 80 (c-bg) 170)
+    (draw-text-c (if (= w 2) "a draw" (if (= w me) "well played" "a good game")) 480 230 2 (c-ink))
+    (draw-text-c (reason-text (h (h-reason))) 480 266 1 (c-dim))))
+
+;; ---- battle: input and stepping ----------------------------------------------------------------------------------------------------------------------
+(defn local-play! [(slot : I32) (x4 : I32) (y4 : I32)] : Unit
+  (cmd-push! (my-seat) slot x4 y4))
+
+(defn try-play! [(slot : I32)] : Unit
+  (let [s (my-seat) x4 (hit-x4) y4 (hit-y4)
+        why (can-play s slot (+ (* x4 64) 32) (+ (* y4 64) 32))]
+    (if (!= why 0)
+        (toast! (why-toast why))
+        (do (if (= (gi (g-mode)) 2) (net-play! slot x4 y4) (local-play! slot x4 y4))
+            (gi! (g-pend-slot) slot) (gi! (g-pend-t) (gi (g-ticker)))
+            (gi! (g-sel-slot) -1)))))
+
+(defn pick-slot! [(k : I32)] : Unit
+  (when (and (= (h (h-over)) 0) (>= (tick-now) 0))
+    (if (= (gi (g-sel-slot)) k) (gi! (g-sel-slot) -1) (gi! (g-sel-slot) k))))
+
+(defn send-emote! [(id : I32)] : Unit
+  (when (> (- (gi (g-ticker)) (gi (g-emote-cool))) 4000)
+    (do (gi! (g-emote-cool) (gi (g-ticker)))
+        (if (= (gi (g-mode)) 2)
+            (net-emote! id)
+            (do (gi! (g-emote-seat) (my-seat)) (gi! (g-emote-id) id) (gi! (g-emote-t) (gi (g-ticker))))))))
+
+(defn battle-input! [] : Unit
+  (let [over (= (h (h-over)) 1)]
+    (when (not over)
+      (do
+        (when (key-hit? (kc-1)) (pick-slot! 0))
+        (when (key-hit? (kc-2)) (pick-slot! 1))
+        (when (key-hit? (kc-3)) (pick-slot! 2))
+        (when (key-hit? (kc-4)) (pick-slot! 3))
+        (when (or (key-hit? (kc-esc)) (right-clicked?))
+          (if (>= (gi (g-sel-slot)) 0) (gi! (g-sel-slot) -1) (gi! (g-quit-ask) (- 1 (gi (g-quit-ask))))))
+        (when (left-clicked?)
+          (do
+            (dotimes [k 4]
+              (when (in-rect? (hand-x k) (hand-y k) (hand-w) (hand-h)) (pick-slot! k)))
+            (dotimes [k 4]
+              (when (in-rect? (emote-bx k) 484 70 24) (send-emote! k)))
+            (when (and (>= (gi (g-sel-slot)) 0) (arena-hit?)) (try-play! (gi (g-sel-slot))))
+            (when (in-rect? 648 480 288 30)
+              (if (= (gi (g-quit-ask)) 1) (leave-match!) (gi! (g-quit-ask) 1)))))))))
+
+;; local stepping (practice): 20 steps a second of wall clock, 1x or 2x
+(defn battle-step-local! [] : Unit
+  (let [now (gi (g-ticker))
+        dt (clamp-i (- now (gi (g-last-ticker))) 0 250)]
+    (gi! (g-last-ticker) now)
+    (when (and (= (h (h-over)) 0) (= (gi (g-paused)) 0))
+      (do (gi! (g-acc) (+ (gi (g-acc)) (* dt (gi (g-speed)))))
+          (loop [guard 0]
+            (when (and (>= (gi (g-acc)) 50) (< guard 8))
+              (do (gi! (g-acc) (- (gi (g-acc)) 50))
+                  (sim-step!)
+                  (gi! (g-last-step-t) now)
+                  (recur (+ guard 1)))))))))
+
+(defn battle-update! [] : Unit
+  (let [m (gi (g-mode))]
+    (when (= m 1) (battle-step-local!))
+    (when (= m 3) (replay-step!))
+    (when (or (= m 1) (= m 2)) (battle-input!))
+    (when (= m 3) (replay-input!))
+    (when (= m 4) (watch-input!))
+    (when (and (= (h (h-over)) 1) (= (gi (g-over-shown)) 0))
+      (do (when (= (gi (g-over-t)) 0) (gi! (g-over-t) (gi (g-ticker))))
+          (when (> (- (gi (g-ticker)) (gi (g-over-t))) 2600)
+            (do (gi! (g-over-shown) 1)
+                (if (= m 3) (go-screen! (sc-over)) (go-screen! (sc-over)))))))
+    (when (and (= (h (h-over)) 1) (= (gi (g-over-t)) 0)) (gi! (g-over-t) (gi (g-ticker))))))
