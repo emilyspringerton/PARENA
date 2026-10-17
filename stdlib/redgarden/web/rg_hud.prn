@@ -1,0 +1,308 @@
+;; stdlib/redgarden/web/rg_hud.prn -- the heads-up display: score and clock, your hero, abilities, minimap, kill feed, the
+;; scoreboard, the item shop and the ability overlay.
+
+;; ---- layout ------------------------------------------------------------------------------------------------------------------------------
+(defn cp-x [] : I32 12) (defn cp-y [] : I32 446) (defn cp-w [] : I32 292) (defn cp-h [] : I32 86)
+(defn ab-x [] : I32 346) (defn ab-y [] : I32 458) (defn ab-s [] : I32 60) (defn ab-gap [] : I32 8)
+(defn mm-x [] : I32 806) (defn mm-y [] : I32 386) (defn mm-s [] : I32 146)
+(defn sh-x [] : I32 12) (defn sh-y [] : I32 66) (defn sh-w [] : I32 340) (defn sh-h [] : I32 372)
+
+(defn ab-bx [(i : I32)] : I32 (+ (ab-x) (* i (+ (ab-s) (ab-gap)))))
+
+(defn match-secs [] : I32
+  (if (> (gi (g-live-ms)) 0) (/ (- (gi (g-ticker)) (gi (g-live-ms))) 1000) 0))
+
+;; ---- top bar: the node race and the clock --------------------------------------------------------------------------------------------------
+(defn team-kills [(t : I32)] : I32
+  (let [(n : I32) 0]
+    (dotimes [s 20]
+      (when (and (< s (cur-count)) (= (team-of s) t))
+        (set! n (+ n (h-kills (cur-hero s))))))
+    n))
+
+(defn draw-topbar! [] : Unit
+  (let [b (snap-base)
+        mt (my-team)
+        et (- 1 mt)
+        mine (resource b mt)
+        theirs (resource b et)]
+    (card 290 6 380 56 (c-panel) 215 (c-moss) 70)
+    (bar 300 30 130 5 (/ (f32 mine) 2000.0) (c-teal))
+    (bar 530 30 130 5 (/ (f32 theirs) 2000.0) (c-rose))
+    (draw-int-s mine 300 12 1 (c-teal))
+    (let [w (num-width theirs 1)] (draw-int-s theirs (- 660 w) 12 1 (c-rose)))
+    (draw-clock-c (match-secs) 480 4 2 (c-ink))
+    (draw-text-c "NODE RACE" 480 44 1 (c-faint))
+    (draw-text-s "KILLS" 300 44 1 (c-faint))
+    (draw-int-s (team-kills mt) 344 44 1 (c-teal))
+    (let [w (num-width (team-kills et) 1)] (draw-int-s (team-kills et) (- 660 w) 44 1 (c-rose)))
+    (draw-text-r "KILLS" (- 660 (+ (num-width (team-kills et) 1) 7)) 44 1 (c-faint))))
+
+(defn draw-hints! [] : Unit
+  (do (draw-text-s "B shop   Tab scores   H help" 12 10 1 (c-faint))
+      (draw-text-s "A attack-move   S stop" 12 26 1 (c-faint))))
+
+;; ---- kill feed -------------------------------------------------------------------------------------------------------------------------------
+(defn draw-killfeed! [] : Unit
+  (let [head (gi (g-feed-head))
+        now (gi (g-ticker))
+        (row : I32) 0]
+    (dotimes [k 6]
+      (let [idx (- head (+ k 1))]
+        (when (>= idx 0)
+          (let [a (+ (feed-base) (* (mod idx 8) 64))
+                t (load32 (+ a 4))]
+            (when (and (= (load8 (+ a 2)) 1) (< (- now t) 9000))
+              (let [killer (load8 a) victim (load8 (+ a 1))
+                    y (+ 52 (* row 18))
+                    kn (hero-name (h-id (cur-hero killer)))
+                    vn (hero-name (h-id (cur-hero victim)))
+                    wk (text-width kn 1)]
+                (fill-rect-a 10 y (+ wk (+ (text-width vn 1) 40)) 16 (c-panel) 170)
+                (draw-text kn 16 y 1 (slot-col killer))
+                (draw-text ">" (+ 22 wk) y 1 (c-faint))
+                (draw-text vn (+ 38 wk) y 1 (slot-col victim))
+                (set! row (+ row 1))))))))))
+
+;; ---- your hero ----------------------------------------------------------------------------------------------------------------------------------
+(defn draw-charpane! [] : Unit
+  (let [a (my-hero)
+        id (h-id a)
+        hp (h-hp a) mx (max-i 1 (h-max a))
+        x (cp-x) y (cp-y)]
+    (card x y (cp-w) (cp-h) (c-panel) 232 (c-moss) 90)
+    ;; portrait
+    (disc (f32 (+ x 38)) (f32 (+ y 40)) 26.0 (hero-hue id) 255)
+    (ring (f32 (+ x 38)) (f32 (+ y 40)) 26.0 3.0 (c-gold) 255)
+    (draw-initials id (+ x 38) (+ y 40) (c-ink))
+    (draw-text-s (hero-name id) (+ x 74) (+ y 8) 1 (c-ink))
+    (draw-text-s (hero-role id) (+ x 74) (+ y 24) 1 (c-faint))
+    ;; bars
+    (bar (+ x 74) (+ y 44) 200 8 (/ (f32 hp) (f32 mx)) (c-hp))
+    (draw-int-s hp (+ x 78) (+ y 43) 1 (c-ink))
+    (draw-text-s "/" (+ x (+ 78 (num-width hp 1))) (+ y 43) 1 (c-dim))
+    (draw-int-s mx (+ x (+ 86 (num-width hp 1))) (+ y 43) 1 (c-dim))
+    (bar (+ x 74) (+ y 58) 200 6 (/ (f32 (h-mp a)) 100.0) (c-mp))
+    (draw-kv "FLOW" (h-flow a) (+ x 74) (+ y 68) (c-faint) (c-gold))
+    (draw-kv "K" (h-kills a) (+ x 164) (+ y 68) (c-faint) (c-ink))
+    (draw-kv "D" (h-deaths a) (+ x 204) (+ y 68) (c-faint) (c-ink))
+    (draw-kv "XP" (h-xp a) (+ x 238) (+ y 68) (c-faint) (c-ink))))
+
+;; ---- abilities ----------------------------------------------------------------------------------------------------------------------------------
+(defn draw-ability! [(i : I32) (label : String) (cd : I32) (on : Bool)] : Unit
+  (let [x (ab-bx i) y (ab-y) s (ab-s)
+        id (h-id (my-hero))
+        hot (in-rect? x y s s)
+        ready (= cd 0)
+        (cx : F32) (f32 (+ x (/ s 2)))
+        (cy : F32) (f32 (+ y (/ s 2)))]
+    (card x y s s (c-panel) 238 (if on (c-gold) (if ready (c-moss) (c-faint))) (if hot 255 140))
+    (draw-text-c label (+ x (/ s 2)) (+ y 4) 2 (if ready (c-ink) (c-faint)))
+    ;; the ability's name, small, across two lines when it is long
+    (draw-text-nc (abil-name (+ (* id 3) i)) (+ x (/ s 2)) (+ y (- s 18)) 1 (c-dim) 8)
+    (when (not ready)
+      (fill-rect-a x y s s (c-shadow) 150)
+      (draw-int-c (+ 1 (/ cd 1000)) (+ x (/ s 2)) (+ y 20) 2 (c-ink)))
+    (when on (rect-outline-a (+ x 2) (+ y 2) (- s 4) (- s 4) (c-gold) 230))))
+
+(defn draw-abilities! [] : Unit
+  (let [a (my-hero)]
+    (draw-ability! 0 "Q" (h-qcd a) false)
+    (draw-ability! 1 "W" (h-wcd a) (= (h-w-on a) 1))
+    (draw-ability! 2 "E" (h-rcd a) (> (h-zone-ms a) 0))
+    ;; the equipped active item (blink dagger / donkey)
+    (let [x (ab-bx 3) y (ab-y) s (ab-s)
+          have (or (= (h-item a 10) 24) (or (= (h-item a 10) 25) (or (= (h-item a 8) 25) (= (h-item a 10) 25))))
+          cd (max-i (h-blink-cd a) (h-glide-cd a))]
+      (card x y s s (c-panel) 238 (c-faint) (if have 120 60))
+      (draw-text-c "`" (+ x (/ s 2)) (+ y 4) 2 (if have (c-ink) (c-faint)))
+      (draw-text-c (if have (if (= cd 0) "ACTIVE" "...") "no item") (+ x (/ s 2)) (+ y (- s 18)) 1 (c-faint))
+      (when (and have (> cd 0))
+        (fill-rect-a x y s s (c-shadow) 150)
+        (draw-int-c (+ 1 (/ cd 1000)) (+ x (/ s 2)) (+ y 20) 2 (c-ink))))))
+
+;; ---- minimap --------------------------------------------------------------------------------------------------------------------------------------
+(defn mmx [(wx : F32)] : F32
+  (+ (f32 (+ (mm-x) (/ (mm-s) 2))) (* (* (/ wx 112.0) (f32 (mm-s))) (flipf))))
+(defn mmy [(wz : F32)] : F32
+  (+ (f32 (+ (mm-y) (/ (mm-s) 2))) (* (* (/ wz 112.0) (f32 (mm-s))) (flipf))))
+
+(defn draw-minimap! [] : Unit
+  (let [b (snap-base) x (mm-x) y (mm-y) s (mm-s)]
+    (card x y s s (c-panel) 238 (c-moss) 110)
+    (fill-rect-a (+ x 3) (+ y 3) (- s 6) (- s 6) (c-ground) 255)
+    (dotimes [i (obstacle-count)]
+      (disc (mmx (obst-x i)) (mmy (obst-z i)) 1.6 (if (= (obst-kind i) 1) (c-tree) (c-stone)) 255))
+    (dotimes [i 5]
+      (disc (mmx (node-x b i)) (mmy (node-z b i)) 5.0 (owner-col (node-owner b i)) 150)
+      (ring (mmx (node-x b i)) (mmy (node-z b i)) 5.0 1.0 (owner-col (node-owner b i)) 255))
+    (dotimes [i 2]
+      (disc (mmx (fountain-x i)) (mmy (fountain-z i)) 2.2 (c-teal) 160)
+      (fill-rect (- (i32 (mmx (shop-x i))) 2) (- (i32 (mmy (shop-z i))) 2) 5 5 (c-gold)))
+    (dotimes [i (lane-n b)]
+      (let [a (lane-a b i)]
+        (disc (mmx (rec-x a)) (mmy (rec-z a)) 1.2 (team-col (load8 (+ a 12))) 255)))
+    (dotimes [sl 20]
+      (when (and (< sl (cur-count)) (hero-drawn? sl))
+        (disc (mmx (hero-px sl)) (mmy (hero-pz sl)) (if (= sl (me)) 3.6 2.6) (if (= sl (me)) (c-gold) (slot-col sl)) 255)))
+    ;; the part of the arena the main view shows
+    (let [(ww : F32) (* (/ 960.0 (gf (g-scale))) (/ (f32 s) 112.0))
+          (hh : F32) (* (/ 540.0 (gf (g-scale))) (/ (f32 s) 112.0))
+          (cx : F32) (mmx (gf (g-cam-x)))
+          (cy : F32) (mmy (gf (g-cam-z)))]
+      (rect-outline-a (i32 (- cx (/ ww 2.0))) (i32 (- cy (/ hh 2.0))) (i32 ww) (i32 hh) (c-ink) 150))))
+
+;; a click on the minimap is a move order to that spot
+(defn minimap-world-x [] : F32
+  (let [(fx : F32) (/ (- (f32 (pointer-x)) (f32 (+ (mm-x) (/ (mm-s) 2)))) (f32 (mm-s)))]
+    (* (* fx 112.0) (flipf))))
+(defn minimap-world-z [] : F32
+  (let [(fy : F32) (/ (- (f32 (pointer-y)) (f32 (+ (mm-y) (/ (mm-s) 2)))) (f32 (mm-s)))]
+    (* (* fy 112.0) (flipf))))
+
+;; ---- banner --------------------------------------------------------------------------------------------------------------------------------------------
+(defn draw-banner! [] : Unit
+  (let [t (gi (g-banner-t))]
+    (when (> t 0)
+      (let [a (min-i 255 (* t 4))]
+        (fill-rect-a 0 150 960 76 (c-bg) (shr a 1))
+        (draw-text-c "THE MATCH IS LIVE" 480 164 3 (c-ink))
+        (draw-text-c "take the nodes  -  hold them  -  first side to 2000 wins" 480 202 1 (c-dim)))
+      (gi! (g-banner-t) (- t 1)))))
+
+;; ---- scoreboard (hold Tab) -------------------------------------------------------------------------------------------------------------------------
+(defn draw-board-col! [(t : I32) (x : I32) (y : I32) (title : String)] : Unit
+  (let [col (team-col t)]
+    (draw-text-s title x y 1 col)
+    (draw-text-r "K" (+ x 214) y 1 (c-faint))
+    (draw-text-r "D" (+ x 246) y 1 (c-faint))
+    (draw-text-r "FLOW" (+ x 304) y 1 (c-faint))
+    (fill-rect-a x (+ y 18) 310 1 col 120)
+    (let [(row : I32) 0]
+      (dotimes [s 20]
+        (when (and (< s (cur-count)) (= (team-of s) t))
+          (let [a (cur-hero s)
+                ry (+ y (+ 24 (* row 22)))
+                mine (= s (me))]
+            (when mine (fill-rect-a (- x 4) (- ry 2) 318 20 (c-gold) 40))
+            (disc (f32 (+ x 8)) (f32 (+ ry 7)) 7.0 (hero-hue (h-id a)) (if (= (h-alive a) 1) 255 90))
+            (ring (f32 (+ x 8)) (f32 (+ ry 7)) 7.0 1.5 col (if (= (h-alive a) 1) 255 90))
+            (draw-text-s (hero-name (h-id a)) (+ x 24) ry 1 (if mine (c-gold) (if (= (h-alive a) 1) (c-ink) (c-faint))))
+            (draw-int-r (h-kills a) (+ x 214) ry 1 (c-ink))
+            (draw-int-r (h-deaths a) (+ x 246) ry 1 (c-ink))
+            (draw-int-r (h-flow a) (+ x 304) ry 1 (c-gold))
+            (set! row (+ row 1))))))))
+
+(defn draw-scoreboard! [] : Unit
+  (do (card 140 56 680 340 (c-panel) 238 (c-moss) 120)
+      (draw-text-c "SCOREBOARD" 480 66 2 (c-ink))
+      (draw-board-col! (my-team) 164 104 "YOUR TEAM")
+      (draw-board-col! (- 1 (my-team)) 496 104 "THE OTHER SIDE")
+      (draw-text-c "release Tab to close" 480 372 1 (c-faint))))
+
+;; ---- the shop -------------------------------------------------------------------------------------------------------------------------------------------
+(defn shop-pages [] : I32 5)
+(defn shop-near? [] : Bool
+  (let [t (my-team)
+        (d : F32) (len2 (- (hero-px (me)) (shop-x t)) (- (hero-pz (me)) (shop-z t)))]
+    (< d 3.0)))
+(defn shop-row-y [(r : I32)] : I32 (+ (sh-y) (+ 54 (* r 27))))
+
+(defn draw-shop! [] : Unit
+  (let [a (my-hero) x (sh-x) y (sh-y) w (sh-w) pg (gi (g-shop-page))
+        flow (h-flow a)]
+    (card x y w (sh-h) (c-panel) 240 (c-gold) 110)
+    (draw-text-s "SHOP" (+ x 12) (+ y 8) 2 (c-gold))
+    (draw-kv "FLOW" flow (+ x 96) (+ y 12) (c-faint) (c-gold))
+    ;; page buttons
+    (dotimes [p (shop-pages)]
+      (let [bx (+ x (+ 196 (* p 28))) by (+ y 8)
+            on (= p pg)]
+        (card bx by 24 20 (if on (c-gold) (c-panel)) (if on 230 255) (c-faint) (if (in-rect? bx by 24 20) 220 100))
+        (draw-int-c (+ p 1) (+ bx 12) (+ by 2) 1 (if on (c-bg) (c-ink)))))
+    (draw-text-s (if (shop-near?) "you are at your shop" "walk to your shop in the corner to buy") (+ x 12) (+ y 32) 1 (if (shop-near?) (c-hp) (c-rose)))
+    (dotimes [r 9]
+      (let [i (+ (* pg 9) r)
+            ry (shop-row-y r)]
+        (when (< i (item-count))
+          (let [cost (item-cost i)
+                afford (>= flow cost)
+                held (= (h-item a (item-slot i)) i)
+                hot (in-rect? (+ x 6) ry (- w 12) 26)]
+            (when hot (fill-rect-a (+ x 6) ry (- w 12) 26 (c-moss) 40))
+            (draw-int-s (+ r 1) (+ x 12) (+ ry 2) 1 (c-faint))
+            (draw-text-s (item-name i) (+ x 32) (+ ry 2) 1 (if held (c-hp) (if afford (c-ink) (c-faint))))
+            (draw-int-r cost (- (+ x w) 14) (+ ry 2) 1 (if afford (c-gold) (c-faint)))
+            (draw-text (slot-name (item-slot i)) (+ x 32) (+ ry 14) 1 (c-faint))
+            (draw-text (item-stat i) (+ x 100) (+ ry 14) 1 (c-dim))))))
+    ;; what you wear: 11 slots, click one to sell it back for half
+    (draw-text-s "WORN  (click to sell for half)" (+ x 12) (+ y (- (sh-h) 52)) 1 (c-faint))
+    (dotimes [s 11]
+      (let [bx (+ x (+ 12 (* s 29))) by (+ y (- (sh-h) 34))
+            it (h-item a s)
+            hot (in-rect? bx by 26 26)]
+        (card bx by 26 26 (if (>= it 0) (c-moss) (c-panel)) (if (>= it 0) 90 255) (c-faint) (if hot 230 90))
+        (when (>= it 0)
+          (let [nm (item-name it) ch (load8 (str-addr nm))]
+            (draw-glyph (glyph-idx ch) (+ bx 9) (+ by 5) 1 (c-ink))))))
+    ;; the hovered slot's item name
+    (dotimes [s 11]
+      (let [bx (+ x (+ 12 (* s 29))) by (+ y (- (sh-h) 34))
+            it (h-item a s)]
+        (when (and (>= it 0) (in-rect? bx by 26 26))
+          (draw-text-s (item-name it) (+ x 12) (+ y (- (sh-h) 2)) 1 (c-ink)))))))
+
+;; returns 1 when the click was the shop's
+(defn shop-click! [] : Bool
+  (let [x (sh-x) y (sh-y) w (sh-w) a (my-hero) pg (gi (g-shop-page))]
+    (if (not (in-rect? x y w (sh-h)))
+        false
+        (do
+          (dotimes [p (shop-pages)]
+            (when (in-rect? (+ x (+ 196 (* p 28))) (+ y 8) 24 20) (gi! (g-shop-page) p)))
+          (dotimes [r 9]
+            (let [i (+ (* pg 9) r)]
+              (when (and (< i (item-count)) (in-rect? (+ x 6) (shop-row-y r) (- w 12) 26))
+                (send-buy! i))))
+          (dotimes [s 11]
+            (when (and (>= (h-item a s) 0) (in-rect? (+ x (+ 12 (* s 29))) (+ y (- (sh-h) 34)) 26 26))
+              (send-sell! s)))
+          true))))
+
+;; ---- help (H) -----------------------------------------------------------------------------------------------------------------------------------------------
+(defn draw-help! [] : Unit
+  (let [id (h-id (my-hero)) x 220 y 70]
+    (card x y 520 330 (c-panel) 242 (c-moss) 130)
+    (draw-text-s (hero-name id) (+ x 16) (+ y 12) 2 (c-ink))
+    (draw-text-s (hero-role id) (+ x 16) (+ y 40) 1 (c-faint))
+    (dotimes [i 3]
+      (let [k (+ (* id 3) i)
+            ry (+ y (+ 66 (* i 48)))]
+        (draw-text-s (case i 0 "Q" 1 "W" "E") (+ x 16) ry 2 (c-gold))
+        (draw-text-s (abil-name k) (+ x 48) ry 1 (c-ink))
+        (draw-text (abil-desc k) (+ x 48) (+ ry 18) 1 (c-dim))))
+    (draw-text-s "left or right click: move, or attack the hero you click" (+ x 16) (+ y 214) 1 (c-ink))
+    (draw-text-s "Q W E: abilities, aimed at the pointer    `: blink / glide" (+ x 16) (+ y 232) 1 (c-dim))
+    (draw-text-s "A then click: attack-move    S: stop" (+ x 16) (+ y 250) 1 (c-dim))
+    (draw-text-s "B: shop   1-9: buy   Tab: scores   wheel: zoom   Esc: close" (+ x 16) (+ y 268) 1 (c-dim))
+    (draw-text-s "Take the five nodes and hold them: first team to 2000 wins." (+ x 16) (+ y 296) 1 (c-moss))))
+
+(defn over-hud? [] : Bool
+  (or (in-rect? (cp-x) (cp-y) (cp-w) (cp-h))
+      (or (in-rect? (ab-x) (ab-y) (+ (* 4 (ab-s)) (* 3 (ab-gap))) (ab-s))
+          (or (in-rect? (mm-x) (mm-y) (mm-s) (mm-s))
+              (or (and (= (gi (g-shop-open)) 1) (in-rect? (sh-x) (sh-y) (sh-w) (sh-h)))
+                  (in-rect? 290 6 380 56))))))
+
+(defn draw-hud! [] : Unit
+  (do
+    (draw-topbar!)
+    (draw-hints!)
+    (draw-killfeed!)
+    (draw-charpane!)
+    (draw-abilities!)
+    (draw-minimap!)
+    (draw-banner!)
+    (when (= (gi (g-shop-open)) 1) (draw-shop!))
+    (when (= (gi (g-help-open)) 1) (draw-help!))
+    (when (key-down? (kc-tab)) (draw-scoreboard!))))

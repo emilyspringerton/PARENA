@@ -1,0 +1,331 @@
+;; stdlib/redgarden/web/rg_view.prn -- the arena, drawn from the newest snapshot.
+;;
+;; A top-down view that follows your hero. World units are the arena's own (the map is +-51.8, nodes 5 units across, a hero
+;; stands 1.4 units wide); `g-scale` is pixels per unit. If you are on the second team the whole view is turned 180 degrees so
+;; your base is always bottom-left, the way a MOBA draws it for both sides.
+
+(defn g-hover-slot [] : I32 78)
+(defn g-last-click-ms [] : I32 79)
+
+;; ---- the camera --------------------------------------------------------------------------------------------------------------------
+(defn flipf [] : F32 (if (= (gi (g-flip)) 1) -1.0 1.0))
+(defn vcx [] : F32 480.0)
+(defn vcy [] : F32 252.0)
+(defn w2sx [(wx : F32)] : F32 (+ (vcx) (* (* (- wx (gf (g-cam-x))) (gf (g-scale))) (flipf))))
+(defn w2sy [(wz : F32)] : F32 (+ (vcy) (* (* (- wz (gf (g-cam-z))) (gf (g-scale))) (flipf))))
+(defn s2wx [(sx : F32)] : F32 (+ (gf (g-cam-x)) (/ (* (- sx (vcx)) (flipf)) (gf (g-scale)))))
+(defn s2wz [(sy : F32)] : F32 (+ (gf (g-cam-z)) (/ (* (- sy (vcy)) (flipf)) (gf (g-scale)))))
+(defn px [(u : F32)] : F32 (* u (gf (g-scale))))
+
+(defn g-cam-lock [] : I32 83)
+(defn camera-follow! [(snap : Bool)] : Unit
+  (when (= (gi (g-cam-lock)) 0)
+   (let [m (me)
+        (tx : F32) (hero-px m)
+        (tz : F32) (hero-pz m)]
+    (if (or snap (< (gi (g-snap-n)) 2))
+        (do (gf! (g-cam-x) tx) (gf! (g-cam-z) tz))
+        (do (gf! (g-cam-x) (lerp (gf (g-cam-x)) tx 0.22))
+            (gf! (g-cam-z) (lerp (gf (g-cam-z)) tz 0.22)))))))
+
+(defn update-mouse-world! [] : Unit
+  (do (gf! (g-mouse-wx) (s2wx (f32 (pointer-x))))
+      (gf! (g-mouse-wz) (s2wz (f32 (pointer-y))))))
+
+;; ---- colours -----------------------------------------------------------------------------------------------------------------------------
+(defn team-col [(t : I32)] : I32 (if (= t (my-team)) (c-teal) (c-rose)))
+(defn slot-col [(slot : I32)] : I32 (team-col (team-of slot)))
+(defn owner-col [(o : I32)] : I32   ; node owner: 0 contested, 1 team 0, 2 team 1
+  (if (= o 0) (c-faint) (team-col (- o 1))))
+
+;; a quiet per-hero hue (the inside of the token); the ring around it says which side
+(defn hero-hue [(id : I32)] : I32
+  (case (mod id 12)
+    0 (rgb 92 128 112) 1 (rgb 128 104 88) 2 (rgb 104 112 148) 3 (rgb 142 118 84)
+    4 (rgb 120 92 124) 5 (rgb 84 130 134) 6 (rgb 148 98 92) 7 (rgb 98 132 88)
+    8 (rgb 134 126 82) 9 (rgb 90 100 138) 10 (rgb 132 94 112) (rgb 96 124 120)))
+
+(defn draw-initials [(id : I32) (cx : I32) (cy : I32) (c : I32)]  : Unit
+  (let [a (str-addr (hero-name id))
+        c0 (load8 a)
+        c1 (load8 (+ a 1))
+        two (and (!= c1 0) (!= c1 32))]
+    (if two
+        (do (draw-glyph (glyph-idx c0) (- cx 7) (- cy 8) 1 (c-shadow))
+            (draw-glyph (glyph-idx c1) (+ cx 0) (- cy 8) 1 (c-shadow))
+            (draw-glyph (glyph-idx c0) (- cx 8) (- cy 8) 1 c)
+            (draw-glyph (glyph-idx c1) (- cx 1) (- cy 8) 1 c))
+        (draw-glyph (glyph-idx c0) (- cx 4) (- cy 8) 1 c))))
+
+;; ---- ground -----------------------------------------------------------------------------------------------------------------------------------
+(defn draw-ground! [] : Unit
+  (let [(h : F32) (map-half)
+        (xa : F32) (w2sx (- 0.0 h)) (xb : F32) (w2sx h)
+        (ya : F32) (w2sy (- 0.0 h)) (yb : F32) (w2sy h)
+        (x0 : F32) (fmin2 xa xb) (x1 : F32) (fmax2 xa xb)
+        (y0 : F32) (fmin2 ya yb) (y1 : F32) (fmax2 ya yb)]
+    (fill-rect 0 0 960 540 (c-bg))
+    (fill-rect (i32 x0) (i32 y0) (i32 (- x1 x0)) (i32 (- y1 y0)) (c-ground))
+    ;; a fine grid every 8 units
+    (dotimes [k 14]
+      (let [(g : F32) (- (* (f32 k) 8.0) 52.0)
+            (gx : F32) (w2sx g)
+            (gy : F32) (w2sy g)]
+        (when (and (>= gx x0) (<= gx x1))
+          (fill-rect-a (i32 gx) (i32 (fmax2 y0 0.0)) 1 (i32 (- (fmin2 y1 540.0) (fmax2 y0 0.0))) (c-ground2) 200))
+        (when (and (>= gy y0) (<= gy y1))
+          (fill-rect-a (i32 (fmax2 x0 0.0)) (i32 gy) (i32 (- (fmin2 x1 960.0) (fmax2 x0 0.0))) 1 (c-ground2) 200))))
+    (rect-outline-a (i32 x0) (i32 y0) (i32 (- x1 x0)) (i32 (- y1 y0)) (c-moss) 120)))
+
+;; the two home corners: a soft wash in the side's colour behind the shop and fountain
+(defn draw-homes! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))]
+    (dotimes [i 2]
+      (let [(sx : F32) (w2sx (shop-x i)) (sy : F32) (w2sy (shop-z i))
+            col (team-col i)]
+        (disc sx sy (px 9.0) col 22)
+        (disc sx sy (px 2.4) (c-gold) 70)
+        (fill-rect-a (- (i32 sx) 10) (- (i32 sy) 10) 20 20 (c-panel) 230)
+        (rect-outline-a (- (i32 sx) 10) (- (i32 sy) 10) 20 20 col 230)
+        (draw-text-c "$" (i32 sx) (- (i32 sy) 8) 1 (c-gold))
+        (ring sx sy (px 3.0) 1.0 (c-gold) 70)))
+    (dotimes [i 2]
+      (let [(fx : F32) (w2sx (fountain-x i)) (fy : F32) (w2sy (fountain-z i))
+            (pulse : F32) (+ 0.5 (* 0.5 (sinf (* t 0.003))))
+            pa (+ 60 (i32 (* pulse 60.0)))]
+        (disc fx fy (px 3.0) (c-teal) 30)
+        (ring fx fy (px 3.0) 1.5 (c-teal) pa)
+        (fill-rect-a (- (i32 fx) 1) (- (i32 fy) 5) 3 11 (c-teal) 200)
+        (fill-rect-a (- (i32 fx) 5) (- (i32 fy) 1) 11 3 (c-teal) 200)))))
+
+;; ---- terrain -------------------------------------------------------------------------------------------------------------------------------------
+(defn draw-obstacles! [] : Unit
+  (dotimes [i (obstacle-count)]
+    (let [(sx : F32) (w2sx (obst-x i)) (sy : F32) (w2sy (obst-z i))
+          (r : F32) (px (obst-r i))]
+      (when (and (> sx -40.0) (< sx 1000.0) (> sy -40.0) (< sy 580.0))
+        (if (= (obst-kind i) 1)
+            ;; a tree: a leafy disc; a felled one (the Tree hero's passive) goes dark
+            (let [dead (and (> (gi (g-snap-n)) 0) (= (obst-hp (snap-base) i) 0) (> (gi (g-snap-n)) 5))]
+              (disc sx (+ sy 2.0) (+ r 2.0) (c-shadow) 90)
+              (disc sx sy (+ r 1.0) (c-tree) 255)
+              (disc (- sx 2.0) (- sy 2.0) (* r 0.55) (shade (c-tree) 330) 150)
+              (ring sx sy (+ r 1.0) 1.0 (c-shadow) 120))
+            ;; a rock
+            (do (disc sx (+ sy 2.0) (+ r 1.0) (c-shadow) 100)
+                (disc sx sy r (c-stone) 255)
+                (disc (- sx 2.0) (- sy 2.0) (* r 0.5) (shade (c-stone) 330) 130)
+                (ring sx sy r 1.0 (c-shadow) 130)))))))
+
+(defn draw-camps! [] : Unit
+  (do
+    (dotimes [i 4]
+      (let [(sx : F32) (w2sx (camp-x i)) (sy : F32) (w2sy (camp-z i))]
+        (ring sx sy (px 3.2) 1.0 (c-gold) 50)))
+    ;; camp minions
+    (dotimes [i (campm-n (snap-base))]
+      (let [a (campm-a (snap-base) i)
+            (sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))]
+        (disc sx sy (px 0.62) (rgb 176 140 84) 255)
+        (ring sx sy (px 0.62) 1.0 (c-shadow) 130)
+        (when (< (rec-hp a) (rec-max a))
+          (bar (- (i32 sx) 6) (- (i32 sy) (+ (i32 (px 0.62)) 6)) 12 3 (/ (f32 (rec-hp a)) (f32 (max-i 1 (rec-max a)))) (c-gold)))))
+    ;; the four kings
+    (dotimes [i 4]
+      (let [a (king-a (snap-base) i)]
+        (when (= (rec-alive a) 1)
+          (let [(sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))]
+            (disc sx (+ sy 2.0) (px 1.7) (c-shadow) 110)
+            (disc sx sy (px 1.6) (rgb 150 112 72) 255)
+            (ring sx sy (px 1.6) 2.0 (c-gold) 230)
+            (draw-text-c "K" (i32 sx) (- (i32 sy) 8) 1 (c-gold))
+            (bar (- (i32 sx) 14) (- (i32 sy) (+ (i32 (px 1.6)) 8)) 28 4 (/ (f32 (rec-hp a)) (f32 (max-i 1 (rec-max a)))) (c-gold))))))))
+
+;; ---- the five nodes, their towers and guardians --------------------------------------------------------------------------------------------
+(defn draw-nodes! [] : Unit
+  (let [b (snap-base)]
+    (dotimes [i 5]
+      (let [(sx : F32) (w2sx (node-x b i)) (sy : F32) (w2sy (node-z b i))
+            own (node-owner b i)
+            col (owner-col own)
+            prog (node-progress b i)
+            cap (node-cap-team b i)]
+        (disc sx sy (px 5.0) col (if (= own 0) 14 30))
+        (ring sx sy (px 5.0) 1.5 col (if (= own 0) 110 200))
+        (when (and (>= cap 0) (> prog 0))
+          (pie sx sy (px 5.0) (/ (f32 prog) 8000.0) (team-col cap) 70)
+          (ring sx sy (px 5.0) 3.0 (team-col cap) 230))
+        ;; the node's mark: a small diamond
+        (line-a (i32 sx) (- (i32 sy) 5) (+ (i32 sx) 5) (i32 sy) col 200)
+        (line-a (+ (i32 sx) 5) (i32 sy) (i32 sx) (+ (i32 sy) 5) col 200)
+        (line-a (i32 sx) (+ (i32 sy) 5) (- (i32 sx) 5) (i32 sy) col 200)
+        (line-a (- (i32 sx) 5) (i32 sy) (i32 sx) (- (i32 sy) 5) col 200)))
+    ;; towers (one per node; dead ones are gone)
+    (dotimes [i 5]
+      (let [a (tower-a b i)]
+        (when (= (rec-alive a) 1)
+          (let [(sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))
+                col (owner-col (node-owner b i))
+                (s : F32) (px 1.15)]
+            (fill-rect-a (- (i32 sx) (i32 s)) (- (i32 sy) (i32 s)) (* 2 (i32 s)) (* 2 (i32 s)) (c-panel) 245)
+            (rect-outline-a (- (i32 sx) (i32 s)) (- (i32 sy) (i32 s)) (* 2 (i32 s)) (* 2 (i32 s)) col 255)
+            (fill-rect (- (i32 sx) 3) (- (i32 sy) 3) 6 6 col)
+            (bar (- (i32 sx) 14) (- (i32 sy) (+ (i32 s) 9)) 28 4 (/ (f32 (rec-hp a)) (f32 (max-i 1 (rec-max a)))) col)))))
+    ;; node guardians
+    (dotimes [i 5]
+      (let [a (creep-a b i)]
+        (when (= (rec-alive a) 1)
+          (let [(sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))
+                fl (load8 (+ a 13))
+                col (if (= fl 0) (c-gold) (owner-col fl))]
+            (disc sx sy (px 0.95) (shade col 150) 255)
+            (ring sx sy (px 0.95) 1.5 col 255)
+            (bar (- (i32 sx) 9) (- (i32 sy) (+ (i32 (px 0.95)) 7)) 18 3 (/ (f32 (rec-hp a)) (f32 (max-i 1 (rec-max a)))) col)))))
+    ;; the two powerups
+    (dotimes [i 2]
+      (let [a (pu-a b i)]
+        (when (= (load8 (+ a 9)) 1)
+          (let [(sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))
+                col (if (= (load8 (+ a 8)) 0) (c-rose) (c-hp))
+                (bob : F32) (* 2.0 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
+            (disc sx (+ sy bob) 9.0 col 50)
+            (line-a (i32 sx) (- (i32 (+ sy bob)) 7) (+ (i32 sx) 6) (i32 (+ sy bob)) col 255)
+            (line-a (+ (i32 sx) 6) (i32 (+ sy bob)) (i32 sx) (+ (i32 (+ sy bob)) 7) col 255)
+            (line-a (i32 sx) (+ (i32 (+ sy bob)) 7) (- (i32 sx) 6) (i32 (+ sy bob)) col 255)
+            (line-a (- (i32 sx) 6) (i32 (+ sy bob)) (i32 sx) (- (i32 (+ sy bob)) 7) col 255)))))))
+
+(defn draw-lane-creeps! [] : Unit
+  (let [b (snap-base)]
+    (dotimes [i (lane-n b)]
+      (let [a (lane-a b i)
+            (sx : F32) (w2sx (rec-x a)) (sy : F32) (w2sy (rec-z a))
+            col (team-col (load8 (+ a 12)))
+            caster (= (load8 (+ a 13)) 1)]
+        (disc sx sy (px 0.55) (shade col 170) 255)
+        (ring sx sy (px 0.55) 1.0 col 255)
+        (when caster (disc sx sy 2.0 (c-ink) 255))
+        (when (< (rec-hp a) (rec-max a))
+          (bar (- (i32 sx) 6) (- (i32 sy) (+ (i32 (px 0.55)) 5)) 12 2 (/ (f32 (rec-hp a)) (f32 (max-i 1 (rec-max a)))) col))))))
+
+;; ---- abilities in the world -----------------------------------------------------------------------------------------------------------------
+(defn draw-zones! [] : Unit
+  (dotimes [s 28]
+    (let [a (cur-hero s)]
+      (do
+        (when (and (or (< s 20) (= (h-clone a) 1)) (> (h-zone-ms a) 0) (> (h-zone-r a) 0.0))
+          (let [(sx : F32) (w2sx (h-zone-x a)) (sy : F32) (w2sy (h-zone-z a))
+                col (slot-col s)
+                (pulse : F32) (+ 0.5 (* 0.5 (sinf (* (f32 (gi (g-ticker))) 0.006))))]
+            (disc sx sy (px (h-zone-r a)) col (+ 26 (i32 (* pulse 22.0))))
+            (ring sx sy (px (h-zone-r a)) 1.5 col 200)))
+        (when (and (< s 20) (> (h-smoke-ms a) 0))
+          (let [(sx : F32) (w2sx (h-smoke-x a)) (sy : F32) (w2sy (h-smoke-z a))]
+            (disc sx sy (px 3.0) (c-dim) 70)
+            (ring sx sy (px 3.0) 1.0 (c-dim) 140)))))))
+
+(defn draw-projectiles! [] : Unit
+  (let [b (snap-base)]
+    (dotimes [i (proj-n b)]
+      (let [(sx : F32) (w2sx (proj-x b i)) (sy : F32) (w2sy (proj-z b i))
+            o (proj-owner b i)
+            col (if (< o 20) (slot-col o) (c-gold))]
+        (disc sx sy 7.0 col 40)
+        (disc sx sy 3.2 col 255)
+        (disc sx sy 1.6 (c-ink) 255)))))
+
+;; ---- heroes ---------------------------------------------------------------------------------------------------------------------------------------
+(defn hero-drawn? [(s : I32)] : Bool
+  (let [a (cur-hero s)]
+    (and (= (h-alive a) 1) (or (< s (cur-count)) (and (>= s 20) (= (h-clone a) 1))))))
+
+(defn draw-hero! [(s : I32)] : Unit
+  (let [a (cur-hero s)
+        (sx : F32) (w2sx (hero-px s))
+        (sy : F32) (w2sy (hero-pz s))
+        mine (= s (me))
+        id (h-id a)
+        col (slot-col s)
+        (r : F32) (px 1.3)
+        clone (>= s 20)]
+    (when (and (> sx -60.0) (< sx 1020.0) (> sy -60.0) (< sy 600.0))
+      ;; shadow, token, side ring
+      (disc sx (+ sy 2.0) (+ r 1.0) (c-shadow) 120)
+      (disc sx sy r (hero-hue id) 255)
+      (disc (- sx (* r 0.25)) (- sy (* r 0.3)) (* r 0.55) (shade (hero-hue id) 320) 110)
+      (ring sx sy r (if mine 3.0 2.0) (if mine (c-gold) col) 255)
+      (draw-initials id (i32 sx) (i32 sy) (c-ink))
+      ;; the things holding it down
+      (when (> (h-stunned a) 0) (ring sx sy (+ r 3.0) 1.5 (c-gold) 230))
+      (when (> (h-rooted a) 0) (ring sx sy (+ r 3.0) 1.5 (c-moss) 230))
+      (when (> (h-slowed a) 0) (ring sx sy (+ r 5.0) 1.0 (c-mp) 200))
+      (when (> (h-shield a) 0) (ring sx sy (+ r 1.5) 1.5 (c-ink) 200))
+      ;; health, and mana for yourself
+      (let [bw (+ 22 (i32 r))
+            bx (- (i32 sx) (/ bw 2))
+            by (- (i32 sy) (+ (i32 r) 10))]
+        (bar bx by bw 4 (/ (f32 (h-hp a)) (f32 (max-i 1 (h-max a)))) (if mine (c-hp) col))
+        (when mine
+          (bar bx (+ by 5) bw 2 (/ (f32 (h-mp a)) 100.0) (c-mp)))
+        (when (and (> (h-cast-total a) 0) (> (h-casting a) 0))
+          (bar bx (- by 5) bw 3 (- 1.0 (/ (f32 (h-cast-left a)) (f32 (max-i 1 (h-cast-total a))))) (c-gold))))
+      (when (and (not clone) (or mine (= (gi (g-hover-slot)) s)))
+        (draw-text-c (hero-name id) (i32 sx) (+ (i32 sy) (+ (i32 r) 4)) 1 (if mine (c-gold) (c-ink)))))))
+
+(defn draw-heroes! [] : Unit
+  (do
+    ;; the line to whoever you are attacking
+    (let [t (h-target (my-hero))]
+      (when (and (>= t 0) (< t 20) (hero-drawn? t) (hero-drawn? (me)))
+        (line-a (i32 (w2sx (hero-px (me)))) (i32 (w2sy (hero-pz (me)))) (i32 (w2sx (hero-px t))) (i32 (w2sy (hero-pz t))) (c-rose) 110)))
+    ;; enemies, then allies, then you on top
+    (dotimes [s 28] (when (and (hero-drawn? s) (!= s (me)) (not (ally? s))) (draw-hero! s)))
+    (dotimes [s 28] (when (and (hero-drawn? s) (!= s (me)) (ally? s)) (draw-hero! s)))
+    (when (hero-drawn? (me)) (draw-hero! (me)))))
+
+;; which hero is under the pointer (closest within 1.9 units)
+(defn find-hover! [] : Unit
+  (let [(mx : F32) (gf (g-mouse-wx))
+        (mz : F32) (gf (g-mouse-wz))
+        (best : F32) 3.6]
+    (gi! (g-hover-slot) -1)
+    (dotimes [s 20]
+      (when (and (< s (cur-count)) (hero-drawn? s))
+        (let [(d : F32) (len2 (- (hero-px s) mx) (- (hero-pz s) mz))]
+          (when (< d best)
+            (set! best d)
+            (gi! (g-hover-slot) s)))))))
+
+;; ---- markers and cursor ------------------------------------------------------------------------------------------------------------------------
+(defn draw-order-marker! [] : Unit
+  (let [t (gi (g-order-t))]
+    (when (> t 0)
+      (let [(sx : F32) (w2sx (gf (g-order-x))) (sy : F32) (w2sy (gf (g-order-z)))
+            (k : F32) (/ (f32 t) 24.0)
+            col (case (gi (g-order-kind)) 0 (c-ink) 1 (c-gold) (c-rose))]
+        (ring sx sy (+ 3.0 (* 11.0 k)) 1.5 col (i32 (* 255.0 k)))
+        (gi! (g-order-t) (- t 1))))))
+
+(defn draw-cursor! [] : Unit
+  (when (= (gi (g-amove)) 1)
+    (let [x (pointer-x) y (pointer-y)]
+      (ring (f32 x) (f32 y) 9.0 1.5 (c-gold) 240)
+      (fill-rect (- x 14) y 8 1 (c-gold))
+      (fill-rect (+ x 7) y 8 1 (c-gold))
+      (fill-rect x (- y 14) 1 8 (c-gold))
+      (fill-rect x (+ y 7) 1 8 (c-gold)))))
+
+(defn render-world! [] : Unit
+  (do
+    (update-alpha!)
+    (update-mouse-world!)
+    (draw-ground!)
+    (draw-homes!)
+    (draw-nodes!)
+    (draw-zones!)
+    (draw-obstacles!)
+    (draw-camps!)
+    (draw-lane-creeps!)
+    (find-hover!)
+    (draw-heroes!)
+    (draw-projectiles!)
+    (draw-order-marker!)))

@@ -1,0 +1,334 @@
+;; stdlib/redgarden/web/rg_ui.prn -- the screens (title, searching, draft, match, result, error), the orders, and the frame.
+;;
+;; The flow: PLAY -> "searching for a match" -> the arena's draft (you pick a hero) -> the match against the resident bot pool
+;; -> a result screen (recorded to your WOTAN profile) with PLAY AGAIN.
+
+(defn g-leave-ask [] : I32 81)
+(defn g-dead-t [] : I32 82)
+
+;; ---- buttons -----------------------------------------------------------------------------------------------------------------------------
+(defn button [(x : I32) (y : I32) (w : I32) (h : I32) (label : String) (primary : Bool) (hot : Bool)] : Unit
+  (let [hover (or hot (in-rect? x y w h))]
+    (card x y w h (if primary (c-gold) (c-panel)) (if primary (if hover 255 225) 235)
+          (if primary (c-gold) (c-moss)) (if hover 255 120))
+    (draw-text-c label (+ x (/ w 2)) (+ y (/ (- h 16) 2)) 1 (if primary (c-bg) (c-ink)))))
+
+(defn play-bx [] : I32 390) (defn play-by [] : I32 312) (defn play-bw [] : I32 180) (defn play-bh [] : I32 44)
+
+;; a soft moving backdrop for the menus: the arena's grid and a few slowly breathing node rings
+(defn draw-backdrop! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))]
+    (fill-rect 0 0 960 540 (c-bg))
+    (dotimes [k 25]
+      (fill-rect-a (* k 40) 0 1 540 (c-ground2) 190))
+    (dotimes [k 14]
+      (fill-rect-a 0 (* k 40) 960 1 (c-ground2) 190))
+    (dotimes [k 4]
+      (let [(cx : F32) (case k 0 150.0 1 810.0 2 150.0 810.0)
+            (cy : F32) (case k 0 120.0 1 120.0 440.0)
+            (ph : F32) (+ 0.5 (* 0.5 (sinf (+ (* t 0.0006) (f32 k)))))
+            col (if (< k 2) (c-teal) (c-rose))]
+        (ring cx cy (+ 54.0 (* ph 8.0)) 1.5 col (+ 26 (i32 (* ph 30.0))))
+        (disc cx cy 5.0 col (+ 40 (i32 (* ph 40.0))))))))
+
+;; ---- title ---------------------------------------------------------------------------------------------------------------------------------------
+(defn render-title! [] : Unit
+  (do
+    (draw-backdrop!)
+    (draw-text-c "RED GARDEN" 480 112 5 (c-ink))
+    (disc 480.0 210.0 3.0 (c-red) 255)
+    (draw-text-c "KNIGHTS OF THE VOID" 480 190 1 (c-dim))
+    (draw-text-c "An arena MOBA. Take the five nodes, hold them, and be the first side to 2000." 480 238 1 (c-dim))
+    (draw-text-c "Press play: you are matched into a 10v10 with the arena's resident bots." 480 258 1 (c-faint))
+    (button (play-bx) (play-by) (play-bw) (play-bh) "PLAY" true false)
+    (if (> (gi (g-name-len)) 0)
+        (let [w (+ 70 (text-width-at (name-base) 1))
+              x0 (- 480 (/ w 2))]
+          (draw-text "playing as" x0 380 1 (c-faint))
+          (draw-text-at (name-base) (+ x0 77) 380 1 (if (= (gi (g-guest)) 1) (c-dim) (c-gold))))
+        (draw-text-c "getting your account ready..." 480 380 1 (c-faint)))
+    (draw-text-c (if (= (gi (g-guest)) 1) "guest: your matches count, and stay with this browser. sign in with IDUNA to keep them anywhere." "your matches count toward your WOTAN profile.") 480 404 1 (c-faint))
+    (draw-text-c "left click / right click move and attack   Q W E abilities   B shop   Tab scores   H help" 480 496 1 (c-faint))))
+
+;; ---- searching / connecting ----------------------------------------------------------------------------------------------------------------------
+(defn render-search! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))
+        connecting (= (gi (g-screen)) (sc-connect))]
+    (draw-backdrop!)
+    (panel 270 150 420 252)
+    (dotimes [k 8]
+      (let [(a : F32) (+ (* t 0.004) (* (f32 k) 0.7853982))
+            (px : F32) (+ 480.0 (* 26.0 (sinf a)))
+            (py : F32) (+ 214.0 (* 26.0 (- 0.0 (cosf a))))]
+        (disc px py (+ 2.0 (* 0.4 (f32 k))) (c-gold) (+ 40 (* k 26)))))
+    (draw-text-c (if connecting "MATCH FOUND" "SEARCHING FOR MATCH") 480 262 2 (c-ink))
+    (draw-text-c (if connecting "connecting you to the arena..." "the resident bots are gathering") 480 292 1 (c-dim))
+    (if (and (not connecting) (> (gi (g-q-ahead)) 0))
+        (do (draw-text-c "an arena is mid-match. you are next when its bots return." 480 316 1 (c-gold))
+            (draw-text-c "(a match lasts a few minutes)" 480 334 1 (c-faint)))
+        (when (not connecting)
+          (do (draw-text "waited" 438 320 1 (c-faint))
+              (draw-int-s (gi (g-q-elapsed)) 494 320 1 (c-ink))
+              (draw-text "s" (+ 494 (num-width (gi (g-q-elapsed)) 1)) 320 1 (c-faint)))))
+    (when (not connecting)
+      (button 420 362 120 28 "CANCEL" false false))))
+
+;; ---- draft ------------------------------------------------------------------------------------------------------------------------------------------
+(defn dr-x [] : I32 40) (defn dr-y [] : I32 92) (defn dr-cw [] : I32 110) (defn dr-ch [] : I32 46)
+(defn dr-cell-x [(i : I32)] : I32 (+ (dr-x) (* (mod i 8) (dr-cw))))
+(defn dr-cell-y [(i : I32)] : I32 (+ (dr-y) (* (/ i 8) (dr-ch))))
+(defn dr-secs-left [] : I32 (max-i 0 (- 35 (/ (- (gi (g-ticker)) (gi (g-draft-t))) 1000))))
+(defn lock-bx [] : I32 740) (defn lock-by [] : I32 470) (defn lock-bw [] : I32 180) (defn lock-bh [] : I32 40)
+
+(defn picked-count [] : I32
+  (let [(n : I32) 0]
+    (dotimes [i 20]
+      (when (and (< i (cur-count)) (= (sn-picked (snap-base) i) 1)) (set! n (+ n 1))))
+    n))
+
+(defn render-draft! [] : Unit
+  (let [sel (if (>= (gi (g-pick)) 0) (gi (g-pick)) (gi (g-sel-hero)))
+        locked (= (gi (g-sent-pick)) 1)
+        hov (gi (g-pick-hover))
+        shown (if (>= hov 0) hov sel)]
+    (draw-backdrop!)
+    (draw-text-s "CHOOSE YOUR HERO" 40 28 2 (c-ink))
+    (draw-text-s (if locked "locked in. waiting for the rest of the lobby" "click a hero, then lock in") 40 58 1 (c-dim))
+    (draw-int-r (dr-secs-left) 920 28 2 (if (< (dr-secs-left) 8) (c-rose) (c-gold)))
+    (draw-text-r "seconds" 920 52 1 (c-faint))
+    (dotimes [i 31]
+      (let [x (dr-cell-x i) y (dr-cell-y i)
+            on (= i sel)
+            hot (in-rect? x y (- (dr-cw) 4) (- (dr-ch) 4))]
+        (card x y (- (dr-cw) 4) (- (dr-ch) 4) (if on (c-moss) (c-panel)) (if on 120 225) (if on (c-gold) (c-moss)) (if (or on hot) 255 70))
+        (disc (f32 (+ x 20)) (f32 (+ y 20)) 14.0 (hero-hue i) 255)
+        (draw-initials i (+ x 20) (+ y 20) (c-ink))
+        (draw-text (hero-name i) (+ x 40) (+ y 4) 1 (if on (c-ink) (c-dim)))
+        (draw-role-short (hero-role i) (+ x 40) (+ y 20) (c-faint))))
+    ;; the hero in focus
+    (let [x 40 y 330]
+      (card x y 680 190 (c-panel) 235 (c-moss) 100)
+      (disc 78.0 372.0 26.0 (hero-hue shown) 255)
+      (ring 78.0 372.0 26.0 3.0 (c-gold) 255)
+      (draw-initials shown 78 372 (c-ink))
+      (draw-text-s (hero-name shown) 118 346 2 (c-ink))
+      (draw-text-s (hero-role shown) 118 374 1 (c-faint))
+      (dotimes [s 3]
+        (let [k (+ (* shown 3) s) ry (+ 408 (* s 36))]
+          (draw-text-s (case s 0 "Q" 1 "W" "E") 60 ry 2 (c-gold))
+          (draw-text-s (abil-name k) 92 ry 1 (c-ink))
+          (draw-text (abil-desc k) 92 (+ ry 16) 1 (c-dim)))))
+    (draw-text-s "lobby" 740 340 1 (c-faint))
+    (draw-int-s (picked-count) 740 360 2 (c-ink))
+    (draw-text-s "of 20 locked in" 780 366 1 (c-faint))
+    (button (lock-bx) (lock-by) (lock-bw) (lock-bh) (if locked "LOCKED IN" "LOCK IN") (not locked) false)))
+
+(defn draft-update! [] : Unit
+  (do
+    (gi! (g-pick-hover) -1)
+    (dotimes [i 31]
+      (when (in-rect? (dr-cell-x i) (dr-cell-y i) (- (dr-cw) 4) (- (dr-ch) 4))
+        (gi! (g-pick-hover) i)
+        (when (and (left-clicked?) (= (gi (g-sent-pick)) 0)) (gi! (g-sel-hero) i))))
+    (when (= (gi (g-sent-pick)) 0)
+      (when (key-hit? (kc-left)) (gi! (g-sel-hero) (mod (+ (gi (g-sel-hero)) 30) 31)))
+      (when (key-hit? (kc-right)) (gi! (g-sel-hero) (mod (+ (gi (g-sel-hero)) 1) 31)))
+      (when (key-hit? (kc-up)) (gi! (g-sel-hero) (mod (+ (gi (g-sel-hero)) 23) 31)))
+      (when (key-hit? (kc-down)) (gi! (g-sel-hero) (mod (+ (gi (g-sel-hero)) 8) 31)))
+      (when (or (key-hit? (kc-enter)) (and (left-clicked?) (in-rect? (lock-bx) (lock-by) (lock-bw) (lock-bh))))
+        (send-pick! (gi (g-sel-hero))))
+      ;; out of time: the arena throws a lobby away if its draft stays open, so take the hero in focus
+      (when (= (dr-secs-left) 0)
+        (send-pick! (gi (g-sel-hero)))))))
+
+;; ---- the match -----------------------------------------------------------------------------------------------------------------------------------------
+(defn order-marker! [(x : F32) (z : F32) (kind : I32)] : Unit
+  (do (gf! (g-order-x) x) (gf! (g-order-z) z) (gi! (g-order-kind) kind) (gi! (g-order-t) 24)))
+
+(defn cast! [(slot : I32)] : Unit
+  (send-cast! slot (gi (g-hover-slot)) (gf (g-mouse-wx)) (gf (g-mouse-wz))))
+
+(defn world-order! [] : Unit
+  (let [(x : F32) (gf (g-mouse-wx))
+        (z : F32) (gf (g-mouse-wz))
+        h (gi (g-hover-slot))]
+    (cond
+      (= (gi (g-amove)) 1) (do (send-amove! x z) (order-marker! x z 1) (gi! (g-amove) 0))
+      (and (>= h 0) (not (ally? h)) (!= h (me))) (do (send-attack! h) (order-marker! (hero-px h) (hero-pz h) 2))
+      :else (do (send-move! x z) (order-marker! x z 0)))))
+
+(defn buy-key! [] : Unit
+  (when (= (gi (g-shop-open)) 1)
+    (dotimes [d 9]
+      (when (and (key-hit? (+ (kc-1) d)) (not (key-down? (kc-shift))))
+        (let [i (+ (* (gi (g-shop-page)) 9) d)]
+          (when (< i (item-count)) (send-buy! i)))))
+    (dotimes [p 5]
+      (when (and (key-hit? (+ (kc-1) p)) (key-down? (kc-shift))) (gi! (g-shop-page) p)))))
+
+(defn play-update! [] : Unit
+  (let [a (my-hero)
+        alive (= (h-alive a) 1)]
+    (camera-follow! false)
+    ;; zoom
+    (let [w (wheel-dir)]
+      (when (!= w 0)
+        (gf! (g-scale) (clamp-f (* (gf (g-scale)) (if (> w 0) 0.9 1.1)) 5.5 18.0))))
+    ;; the leave prompt eats the keyboard
+    (if (= (gi (g-leave-ask)) 1)
+        (do (when (key-hit? (kc-esc)) (gi! (g-leave-ask) 0))
+            (when (left-clicked?)
+              (cond (in-rect? 380 300 100 32) (gi! (g-leave-ask) 0)
+                    (in-rect? 490 300 130 32) (do (net-leave!) (gi! (g-leave-ask) 0) (gi! (g-want-queue) 0) (go-screen! (sc-title)))
+                    :else unit)))
+        (do
+          (when (key-hit? (kc-esc))
+            (cond (= (gi (g-amove)) 1) (gi! (g-amove) 0)
+                  (= (gi (g-shop-open)) 1) (gi! (g-shop-open) 0)
+                  (= (gi (g-help-open)) 1) (gi! (g-help-open) 0)
+                  :else (gi! (g-leave-ask) 1)))
+          (when (key-hit? (kc-b)) (gi! (g-shop-open) (- 1 (gi (g-shop-open)))))
+          (when (key-hit? (kc-h)) (gi! (g-help-open) (- 1 (gi (g-help-open)))))
+          (buy-key!)
+          (when alive
+            (when (key-hit? (kc-q)) (cast! 0))
+            (when (key-hit? (kc-w)) (cast! 1))
+            (when (key-hit? (kc-e)) (cast! 2))
+            (when (key-hit? (kc-backtick)) (send-active!))
+            (when (key-hit? (kc-s)) (send-stop!))
+            (when (key-hit? (kc-a)) (gi! (g-amove) 1)))
+          ;; clicks: the interface first, then the world
+          (when (or (left-clicked?) (right-clicked?))
+            (cond
+              (and (left-clicked?) (= (gi (g-shop-open)) 1) (shop-click!)) unit
+              (and (left-clicked?) (in-rect? (ab-bx 0) (ab-y) (ab-s) (ab-s))) (when alive (cast! 0))
+              (and (left-clicked?) (in-rect? (ab-bx 1) (ab-y) (ab-s) (ab-s))) (when alive (cast! 1))
+              (and (left-clicked?) (in-rect? (ab-bx 2) (ab-y) (ab-s) (ab-s))) (when alive (cast! 2))
+              (and (left-clicked?) (in-rect? (ab-bx 3) (ab-y) (ab-s) (ab-s))) (when alive (send-active!))
+              (in-rect? (mm-x) (mm-y) (mm-s) (mm-s)) (when alive (do (send-move! (minimap-world-x) (minimap-world-z)) (order-marker! (minimap-world-x) (minimap-world-z) 0)))
+              (over-hud?) unit
+              :else (when alive (world-order!))))
+          ;; holding the right button keeps steering, like every MOBA
+          (when (and alive (right-down?) (not (over-hud?)) (not (right-clicked?)))
+            (when (= (mod (gi (g-frame)) 8) 0)
+              (send-move! (gf (g-mouse-wx)) (gf (g-mouse-wz)))))))
+    ;; the arena said who won: the gateway's RESULT follows within a moment; do not hang if it never does
+    (when (and (!= (gi (g-winner)) 0) (= (gi (g-have-result)) 0))
+      (gi! (g-hint-t) (+ (gi (g-hint-t)) 1))
+      (when (> (gi (g-hint-t)) 240)
+        (gi! (g-res-result) (if (= (gi (g-winner)) (+ 1 (my-team))) 1 2))
+        (gi! (g-res-hero) (h-id a)) (gi! (g-res-kills) (h-kills a)) (gi! (g-res-deaths) (h-deaths a))
+        (gi! (g-res-secs) (match-secs)) (gi! (g-res-recorded) 0) (gi! (g-have-result) 1)
+        (go-screen! (sc-over))))))
+
+(defn render-play! [] : Unit
+  (let [a (my-hero)]
+    (render-world!)
+    (draw-cursor!)
+    (draw-hud!)
+    (when (= (h-alive a) 0)
+      (fill-rect-a 0 0 960 540 (c-bg) 70)
+      (draw-text-c "YOU HAVE FALLEN" 480 130 2 (c-ink))
+      (draw-text-c "the whole side returns together, in waves" 480 160 1 (c-dim)))
+    (when (= (gi (g-leave-ask)) 1)
+      (fill-rect-a 0 0 960 540 (c-bg) 150)
+      (panel 330 230 300 120)
+      (draw-text-c "LEAVE THE MATCH?" 480 246 2 (c-ink))
+      (draw-text-c "it will not count as a win or a loss" 480 274 1 (c-faint))
+      (button 380 300 100 32 "STAY" true false)
+      (button 490 300 130 32 "LEAVE MATCH" false false))))
+
+;; ---- result --------------------------------------------------------------------------------------------------------------------------------------------------
+(defn over-head [] : String
+  (let [r (gi (g-res-result))]
+    (cond (= r 1) "VICTORY" (= r 2) "DEFEAT" (= r 3) "MATCH LEFT" :else "MATCH ENDED")))
+
+(defn pa-bx [] : I32 340) (defn pa-by [] : I32 478) (defn pa-bw [] : I32 170) (defn pa-bh [] : I32 40)
+
+(defn render-over! [] : Unit
+  (let [r (gi (g-res-result))
+        win (= r 1)
+        hero (gi (g-res-hero))]
+    (when (= (gi (g-have-snap)) 1)
+      (do (camera-follow! true) (render-world!)))
+    (fill-rect-a 0 0 960 540 (c-bg) 205)
+    (draw-text-c (over-head) 480 22 4 (if win (c-gold) (if (= r 2) (c-rose) (c-ink))))
+    (draw-text-c (if win "your side held the garden" (if (= r 2) "the other side took it" "the arena closed this match")) 480 96 1 (c-dim))
+    ;; the line that matters
+    (card 250 118 460 74 (c-panel) 238 (c-moss) 110)
+    (disc 290.0 156.0 22.0 (hero-hue hero) 255)
+    (ring 290.0 156.0 22.0 3.0 (c-gold) 255)
+    (draw-initials hero 290 156 (c-ink))
+    (draw-text-s (hero-name hero) 328 130 2 (c-ink))
+    (draw-kv "KILLS" (gi (g-res-kills)) 328 160 (c-faint) (c-ink))
+    (draw-kv "DEATHS" (gi (g-res-deaths)) 410 160 (c-faint) (c-ink))
+    (draw-text-s "TIME" 520 160 1 (c-faint))
+    (draw-clock (gi (g-res-secs)) 562 160 1 (c-ink))
+    (draw-text-c (if (= (gi (g-res-recorded)) 1) "saved to your WOTAN profile" "not saved to your profile") 480 202 1 (if (= (gi (g-res-recorded)) 1) (c-hp) (c-faint)))
+    (if (= (gi (g-have-snap)) 1)
+        (do (draw-board-col! (my-team) 130 228 "YOUR TEAM")
+            (draw-board-col! (- 1 (my-team)) 520 228 "THE OTHER SIDE"))
+        unit)))
+
+(defn over-update! [] : Unit
+  (do (gi! (g-end-t) (+ (gi (g-end-t)) 1))
+      (when (and (> (gi (g-end-t)) 20) (or (key-hit? (kc-enter)) (and (left-clicked?) (in-rect? (pa-bx) (pa-by) (pa-bw) (pa-bh)))))
+        (begin-search!))
+      (when (and (> (gi (g-end-t)) 20) (or (key-hit? (kc-esc)) (and (left-clicked?) (in-rect? 520 478 130 40))))
+        (do (gi! (g-want-queue) 0) (go-screen! (sc-title))))))
+
+(defn render-over-buttons! [] : Unit
+  (do (button (pa-bx) (pa-by) (pa-bw) (pa-bh) "PLAY AGAIN" true (> (gi (g-end-t)) 20))
+      (button 520 478 130 40 "TITLE" false false)))
+
+;; ---- error ----------------------------------------------------------------------------------------------------------------------------------------------------
+(defn err-title [] : String
+  (let [c (gi (g-err-code))]
+    (cond (= c 1) "SIGN IN AGAIN" (= c 2) "ANOTHER TAB HAS THE ARENA" (= c 3) "NO ARENA" (= c 4) "NO ARENA IS FREE"
+          (= c 5) "CONNECTION LOST" :else "SOMETHING WENT WRONG")))
+
+(defn render-error! [] : Unit
+  (do (draw-backdrop!)
+      (panel 240 170 480 200)
+      (draw-text-c (err-title) 480 192 2 (c-rose))
+      (if (> (gi (g-err-len)) 0)
+          (draw-text-at-c (err-base) 480 238 1 (c-dim))
+          (draw-text-c "the arena connection closed" 480 238 1 (c-dim)))
+      (draw-text-c "your match, if it was live, was recorded as left" 480 262 1 (c-faint))
+      (button 400 308 160 36 "BACK" true false)))
+
+(defn error-update! [] : Unit
+  (when (or (key-hit? (kc-enter)) (key-hit? (kc-esc)) (and (left-clicked?) (in-rect? 400 308 160 36)))
+    (go-screen! (sc-title))))
+
+;; ---- title / search updates ----------------------------------------------------------------------------------------------------------------------------
+(defn title-update! [] : Unit
+  (when (or (key-hit? (kc-enter)) (key-hit? (kc-space)) (and (left-clicked?) (in-rect? (play-bx) (play-by) (play-bw) (play-bh))))
+    (gi! (g-mode) 1)
+    (begin-search!)))
+
+(defn search-update! [] : Unit
+  (when (and (= (gi (g-screen)) (sc-search))
+             (or (key-hit? (kc-esc)) (and (left-clicked?) (in-rect? 420 362 120 28))))
+    (cancel-search!)))
+
+;; ---- the frame --------------------------------------------------------------------------------------------------------------------------------------------------
+(defn rg-render! [] : Unit
+  (let [sc (gi (g-screen))]
+    (cond
+      (= sc (sc-title)) (render-title!)
+      (or (= sc (sc-search)) (= sc (sc-connect))) (render-search!)
+      (= sc (sc-draft)) (render-draft!)
+      (= sc (sc-play)) (render-play!)
+      (= sc (sc-over)) (do (render-over!) (render-over-buttons!))
+      :else (render-error!))))
+
+(defn rg-update! [] : Unit
+  (let [sc (gi (g-screen))]
+    (cond
+      (= sc (sc-title)) (title-update!)
+      (or (= sc (sc-search)) (= sc (sc-connect))) (search-update!)
+      (= sc (sc-draft)) (draft-update!)
+      (= sc (sc-play)) (play-update!)
+      (= sc (sc-over)) (over-update!)
+      :else (error-update!))))

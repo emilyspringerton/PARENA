@@ -1,0 +1,173 @@
+;; stdlib/redgarden/web/rg_mem.prn -- REDGARDEN web client: linear-memory map, accessors, globals, small math.
+;;
+;; Founder real-time 2026-10-17: "publish redgarden web ... PARENA WASM, PARENA TSX, just like shankpit-460 and brawlpit web
+;; ... FULL WOTAN MATCH AND PLAYER TRACKING ... guest play ... iduna sso ... existing bot match infrastructure and bot pool".
+;; The match itself is REDGARDEN's real arena server (C, authoritative) with its persistent bot pool; this module is the
+;; CLIENT of that game, compiled to wasm32: it speaks the arena's snapshot/command protocol (through IDUNA's WebSocket
+;; gateway, rg_net.prn), draws the arena, runs the draft / shop / HUD and turns clicks and keys into orders.
+;;
+;; NO MALLOC: no allocator, no imports, memory never grows (8 MB, fixed). Every record has a fixed address.
+;;   0x020000 CTL      input tables                                        (rg_input.prn)
+;;   0x021000 G        global state words                                  (g-* below)
+;;   0x022000 NETIN    8 KB   one frame from the gateway
+;;   0x024000 NETOUT   8 KB   frames for the gateway
+;;   0x026000 TOKEN    2 KB   the IDUNA bearer token, written by the page
+;;   0x026800 NAME     64 B   the player's display name, written by the page
+;;   0x027000 SCRATCH  1 KB   text assembly
+;;   0x028000 FEED     8 x 64 kill-feed lines
+;;   0x029000 ERR      256 B  the last error text from the gateway
+;;   0x030000 FONT     255 glyphs x 16 rows
+;;   0x040000 SNAP     the newest snapshot (world 1244 + heroes 2 x 1460)
+;;   0x042000 PREV     the one before it (hero positions are interpolated between the two)
+;;   0x100000 FB       960 x 540 RGBA framebuffer
+;;   0x400000 SND      sound event ring (reserved)
+
+(module redgarden/web)
+
+(defn ctl-base [] : I32 131072)
+(defn g-base [] : I32 135168)
+(defn netin-base [] : I32 139264)
+(defn netout-base [] : I32 147456)
+(defn token-base [] : I32 155648)
+(defn name-base [] : I32 157696)
+(defn scratch-base [] : I32 159744)
+(defn feed-base [] : I32 163840)
+(defn err-base [] : I32 167936)
+(defn font-base [] : I32 196608)
+(defn snap-base [] : I32 262144)
+(defn prev-base [] : I32 270336)
+(defn fb-base [] : I32 1048576)
+(defn snd-base [] : I32 4194304)
+
+(defn fb-w [] : I32 960)
+(defn fb-h [] : I32 540)
+
+;; ---- byte-level readers (the wasm has only 8/32-bit loads) -----------------------------------------------------------------
+(defn ld16 [(a : I32)] : I32 (+ (load8 a) (shl (load8 (+ a 1)) 8)))
+(defn lds8 [(a : I32)] : I32 (let [v (load8 a)] (if (> v 127) (- v 256) v)))
+(defn ldf [(a : I32)] : F32 (loadf32 a))
+
+;; ---- global state words -----------------------------------------------------------------------------------------------------
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+(defn gf [(k : I32)] : F32 (loadf32 (+ (g-base) (shl k 2))))
+(defn gf! [(k : I32) (v : F32)] : Unit (storef32! (+ (g-base) (shl k 2)) v))
+
+;; screens: 0 title, 1 searching, 2 connecting, 3 draft, 4 playing, 5 match over, 6 error
+(defn g-screen [] : I32 0)
+(defn g-frame [] : I32 1)
+(defn g-ticker [] : I32 2)          ; wall-clock ms as I32 (animation + interpolation only)
+(defn g-mode [] : I32 3)            ; the mode the player picked on the title: 0 = 3v3, 1 = 10v10
+(defn g-owner [] : I32 4)           ; my hero slot in the match
+(defn g-team [] : I32 5)
+(defn g-lobby [] : I32 6)
+(defn g-flip [] : I32 7)            ; 1 = the view is turned 180 degrees so my base is always bottom-left
+(defn g-ui-t [] : I32 8)            ; frames on the current screen
+(defn g-net-state [] : I32 9)       ; 0 off, 1 connecting, 2 open, 3 closed
+(defn g-want-queue [] : I32 10)
+(defn g-token-len [] : I32 11)
+(defn g-name-len [] : I32 12)
+(defn g-in-len [] : I32 13)
+(defn g-out-len [] : I32 14)
+(defn g-hello-sent [] : I32 15)
+(defn g-welcomed [] : I32 16)
+(defn g-auth [] : I32 17)           ; 1 signed in, 2 token rejected
+(defn g-guest [] : I32 18)          ; the page says this is a guest account
+(defn g-online [] : I32 19)
+(defn g-q-state [] : I32 20)        ; the gateway's last STATUS state
+(defn g-q-elapsed [] : I32 21)
+(defn g-q-ahead [] : I32 22)
+(defn g-queue-mode [] : I32 23)
+(defn g-queue-lobby [] : I32 24)
+(defn g-have-snap [] : I32 25)
+(defn g-snap-t [] : I32 26)         ; ticker ms the newest snapshot arrived
+(defn g-snap-pt [] : I32 27)        ; ticker ms of the one before
+(defn g-snap-n [] : I32 28)         ; snapshots received this match
+(defn g-winner [] : I32 29)         ; 0 none, 1 team 0, 2 team 1
+(defn g-res-result [] : I32 30)     ; 1 win 2 loss 3 abandoned 4 arena lost
+(defn g-res-hero [] : I32 31)
+(defn g-res-kills [] : I32 32)
+(defn g-res-deaths [] : I32 33)
+(defn g-res-secs [] : I32 34)
+(defn g-res-recorded [] : I32 35)
+(defn g-have-result [] : I32 36)
+(defn g-err-code [] : I32 37)
+(defn g-err-len [] : I32 38)
+(defn g-ping-sent [] : I32 39)
+(defn g-ping-ms [] : I32 40)
+(defn g-pick [] : I32 41)           ; hero picked in the draft, -1 none
+(defn g-pick-hover [] : I32 42)
+(defn g-draft-t [] : I32 43)        ; ticker ms the draft began
+(defn g-shop-open [] : I32 44)
+(defn g-shop-page [] : I32 45)
+(defn g-help-open [] : I32 46)
+(defn g-score-open [] : I32 47)
+(defn g-amove [] : I32 48)          ; 1 = the next click is an attack-move
+(defn g-feed-head [] : I32 49)
+(defn g-end-t [] : I32 50)
+(defn g-cam-x [] : I32 51)          ; F32 camera centre, world units
+(defn g-cam-z [] : I32 52)
+(defn g-scale [] : I32 53)          ; F32 pixels per world unit
+(defn g-mouse-wx [] : I32 54)       ; F32 world position under the pointer
+(defn g-mouse-wz [] : I32 55)
+(defn g-order-t [] : I32 56)        ; frames of the click marker left
+(defn g-order-x [] : I32 57)        ; F32 world position of the last order
+(defn g-order-z [] : I32 58)
+(defn g-order-kind [] : I32 59)     ; 0 move 1 attack-move 2 attack
+(defn g-last-pick-send [] : I32 60)
+(defn g-sent-pick [] : I32 61)
+(defn g-sel-hero [] : I32 62)       ; the hero card the title preview shows
+(defn g-prev-phase [] : I32 63)
+(defn g-banner-t [] : I32 64)
+(defn g-banner-id [] : I32 65)
+(defn g-last-phase [] : I32 66)
+(defn g-flash-t [] : I32 67)        ; damage vignette frames
+(defn g-last-hp [] : I32 68)
+(defn g-live-ms [] : I32 69)        ; ticker ms the match went live
+(defn g-focus [] : I32 70)
+(defn g-snap-iv [] : I32 71)        ; ms between the last two snapshots
+(defn g-title-t [] : I32 72)
+(defn g-active-cd [] : I32 73)
+(defn g-click-cool [] : I32 74)
+(defn g-hint-t [] : I32 75)
+(defn g-sound-head [] : I32 76)
+(defn g-tmp0 [] : I32 120)
+(defn g-tmp1 [] : I32 121)
+
+;; ---- tiny helpers -------------------------------------------------------------------------------------------------------------------
+(defn b2i [(c : Bool)] : I32 (if c 1 0))
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn clamp-i [(x : I32) (lo : I32) (hi : I32)] : I32 (max-i lo (min-i x hi)))
+(defn abs-i [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+(defn fmax2 [(a : F32) (b : F32)] : F32 (if (> a b) a b))
+(defn fmin2 [(a : F32) (b : F32)] : F32 (if (< a b) a b))
+(defn clamp-f [(x : F32) (lo : F32) (hi : F32)] : F32 (fmax2 lo (fmin2 x hi)))
+(defn lerp [(a : F32) (b : F32) (t : F32)] : F32 (+ a (* (- b a) t)))
+(defn len2 [(x : F32) (z : F32)] : F32 (sqrt (+ (* x x) (* z z))))
+
+;; sin / cos without libm: the series is evaluated in F64 and rounded to F32
+(defn sin64 [(x : F64)] : F64
+  (let [(k : F64) (floor (+ (/ x 6.283185307179586) 0.5))
+        (r0 : F64) (- x (* k 6.283185307179586))
+        (r : F64) (cond (> r0 1.5707963267948966) (- 3.141592653589793 r0)
+                        (< r0 -1.5707963267948966) (- -3.141592653589793 r0)
+                        :else r0)
+        (r2 : F64) (* r r)]
+    (* r (+ 1.0 (* r2 (+ -0.16666666666666666
+                         (* r2 (+ 0.008333333333333333
+                                  (* r2 (+ -0.0001984126984126984
+                                           (* r2 (+ 0.0000027557319223985893
+                                                    (* r2 (+ -0.00000002505210838544172
+                                                             (* r2 0.00000000016059043836821613)))))))))))))))
+(defn sinf [(x : F32)] : F32 (f32 (sin64 (f64 x))))
+(defn cosf [(x : F32)] : F32 (f32 (sin64 (+ (f64 x) 1.5707963267948966))))
+
+;; a tiny deterministic generator for cosmetic jitter (never anything the game decides)
+(defn g-rng [] : I32 77)
+(defn fx-rand [] : I32
+  (let [s (+ (* (gi (g-rng)) 1103515245) 12345)]
+    (gi! (g-rng) s)
+    (bit-and (ushr s 16) 32767)))
+(defn fx-rnd [(n : I32)] : I32 (mod (fx-rand) (max-i n 1))
+)

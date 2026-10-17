@@ -1,0 +1,274 @@
+;; stdlib/redgarden/web/rg_net.prn -- the gateway protocol, spoken from inside the wasm.
+;;
+;; The module has no imports, so it cannot touch a socket. The page host (rg_host.prn) owns the WebSocket and does exactly two
+;; things with it: it copies every received frame to NETIN and calls rg_net_recv(len), and it sends whatever the engine left in
+;; NETOUT (frames, each preceded by a u16 length) and calls rg_net_out_clear(). Everything else -- what to say, when, what an
+;; answer means -- is here. The protocol is documented in IDUNA/internal/redgardenplay/proto.go; this file is its client.
+;;
+;; Authority: the match is the real arena server's. This client never simulates anything: it sends orders (move, cast, attack,
+;; buy, pick) and draws the snapshots that come back.
+
+(defn g-out-cur [] : I32 90) (defn g-out-skip [] : I32 91) (defn g-out-start [] : I32 92)
+(defn g-rd [] : I32 93) (defn g-rd-bad [] : I32 94) (defn g-queued-sent [] : I32 95)
+(defn g-ping-t [] : I32 96) (defn g-tick-n [] : I32 97)
+
+(defn put8! [(v : I32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (store8! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 1))))
+(defn put16! [(v : I32)] : Unit (do (put8! (bit-and v 255)) (put8! (bit-and (shr v 8) 255))))
+(defn put32! [(v : I32)] : Unit (do (put16! (bit-and v 65535)) (put16! (bit-and (ushr v 16) 65535))))
+(defn putf! [(v : F32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (storef32! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 4))))
+
+(defn out-begin! [] : Unit
+  (let [o (gi (g-out-len))]
+    (gi! (g-out-start) o)
+    (gi! (g-out-skip) (if (> o 7600) 1 0))
+    (gi! (g-out-cur) (+ o 2))))
+(defn out-end! [] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (let [o (gi (g-out-start))
+          len (- (gi (g-out-cur)) (+ o 2))]
+      (store8! (+ (netout-base) o) (bit-and len 255))
+      (store8! (+ (netout-base) (+ o 1)) (bit-and (shr len 8) 255))
+      (gi! (g-out-len) (gi (g-out-cur))))))
+
+;; ---- reading --------------------------------------------------------------------------------------------------------------------
+(defn in8 [(k : I32)] : I32 (load8 (+ (netin-base) k)))
+(defn in16 [(k : I32)] : I32 (+ (in8 k) (shl (in8 (+ k 1)) 8)))
+
+;; ---- orders (client -> gateway) ---------------------------------------------------------------------------------------------------
+(defn net-hello! [] : Unit
+  (do (out-begin!)
+      (put8! 1) (put8! 1) (put16! (gi (g-token-len)))
+      (dotimes [i (gi (g-token-len))] (put8! (load8 (+ (token-base) i))))
+      (out-end!)
+      (gi! (g-hello-sent) 1)))
+
+(defn net-queue! [(mode : I32)] : Unit
+  (do (out-begin!) (put8! 2) (put8! mode) (out-end!)
+      (gi! (g-queued-sent) 1)))
+
+(defn net-leave! [] : Unit
+  (do (out-begin!) (put8! 3) (out-end!) (gi! (g-queued-sent) 0)))
+
+(defn net-ping! [] : Unit
+  (do (out-begin!) (put8! 31) (put32! (gi (g-ticker))) (out-end!)
+      (gi! (g-ping-sent) (gi (g-ticker)))))
+
+(defn send-pick! [(hero : I32)] : Unit
+  (do (out-begin!) (put8! 16) (put8! hero) (out-end!)
+      (gi! (g-pick) hero) (gi! (g-sent-pick) 1)))
+
+(defn send-move! [(x : F32) (z : F32)] : Unit
+  (do (out-begin!) (put8! 17) (putf! x) (putf! z) (out-end!)))
+
+(defn send-amove! [(x : F32) (z : F32)] : Unit
+  (do (out-begin!) (put8! 24) (putf! x) (putf! z) (out-end!)))
+
+;; slot 0 = Q, 1 = W (a toggle for some heroes), 2 = E (the ultimate); hover = the hero slot under the pointer (-1 none)
+(defn send-cast! [(slot : I32) (hover : I32) (x : F32) (z : F32)] : Unit
+  (do (out-begin!) (put8! 18) (put8! slot) (put8! (bit-and hover 255)) (put8! 1) (putf! x) (putf! z) (out-end!)))
+
+(defn send-attack! [(owner : I32)] : Unit
+  (do (out-begin!) (put8! 19) (put8! owner) (out-end!)))
+(defn send-buy! [(item : I32)] : Unit
+  (do (out-begin!) (put8! 20) (put8! item) (out-end!)))
+(defn send-sell! [(slot : I32)] : Unit
+  (do (out-begin!) (put8! 21) (put8! slot) (out-end!)))
+(defn send-active! [] : Unit
+  (do (out-begin!) (put8! 22) (out-end!)))
+(defn send-stop! [] : Unit
+  (do (out-begin!) (put8! 23) (out-end!)))
+(defn send-hold! [] : Unit
+  (do (out-begin!) (put8! 25) (out-end!)))
+
+;; ---- screens ---------------------------------------------------------------------------------------------------------------------------
+(defn sc-title [] : I32 0) (defn sc-search [] : I32 1) (defn sc-connect [] : I32 2) (defn sc-draft [] : I32 3)
+(defn sc-play [] : I32 4) (defn sc-over [] : I32 5) (defn sc-error [] : I32 6)
+
+(defn go-screen! [(s : I32)] : Unit
+  (when (!= (gi (g-screen)) s)
+    (gi! (g-screen) s)
+    (gi! (g-ui-t) 0)))
+
+(defn reset-match! [] : Unit
+  (do (gi! (g-pick) -1) (gi! (g-sent-pick) 0) (gi! (g-winner) 0) (gi! (g-have-result) 0)
+      (gi! (g-snap-n) 0) (gi! (g-have-snap) 0) (gi! (g-feed-head) 0) (gi! (g-shop-open) 0)
+      (gi! (g-help-open) 0) (gi! (g-amove) 0) (gi! (g-order-t) 0) (gi! (g-banner-t) 0)
+      (gi! (g-live-ms) 0) (gi! (g-last-phase) -1) (gi! (g-flash-t) 0) (gi! (g-last-hp) -1)
+      (dotimes [i 8] (store8! (+ (feed-base) (* i 64)) 0))))
+
+;; the player pressed PLAY / REQUEUE
+(defn begin-search! [] : Unit
+  (do (reset-match!)
+      (gi! (g-want-queue) 1)
+      (gi! (g-queued-sent) 0)
+      (gi! (g-err-code) 0)
+      (gi! (g-q-elapsed) 0)
+      (go-screen! (sc-search))))
+
+(defn cancel-search! [] : Unit
+  (do (when (!= (gi (g-queued-sent)) 0) (net-leave!))
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-title))))
+
+;; ---- the kill feed --------------------------------------------------------------------------------------------------------------------
+;; The snapshot carries running kill and death counts per hero, not events. When a hero's kills rise between two snapshots it
+;; killed someone; the hero whose deaths rose is the victim. Pairing them is exact except for several kills inside one 50 ms
+;; window, where the pairing is merely plausible -- fine for a ticker.
+(defn feed-push! [(killer : I32) (victim : I32)] : Unit
+  (let [i (mod (gi (g-feed-head)) 8)
+        a (+ (feed-base) (* i 64))]
+    (store8! a killer)
+    (store8! (+ a 1) victim)
+    (store32! (+ a 4) (gi (g-ticker)))
+    (store8! (+ a 2) 1)
+    (gi! (g-feed-head) (+ (gi (g-feed-head)) 1))))
+
+(defn scan-kills! [] : Unit
+  (let [n (cur-count)]
+    (when (and (>= (gi (g-snap-n)) 2) (> n 0))
+      (dotimes [k n]
+        (let [dk (- (h-kills (cur-hero k)) (h-kills (prev-hero k)))]
+          (when (and (> dk 0) (< dk 4))
+            ;; find a victim whose deaths rose
+            (loop [v 0]
+              (when (< v n)
+                (if (and (!= v k) (> (- (h-deaths (cur-hero v)) (h-deaths (prev-hero v))) 0))
+                    (feed-push! k v)
+                    (recur (+ v 1)))))))))))
+
+;; ---- snapshots in ----------------------------------------------------------------------------------------------------------------------------
+(defn copy-words! [(dst : I32) (src : I32) (n : I32)] : Unit
+  (loop [i 0]
+    (when (< i n)
+      (store32! (+ dst (shl i 2)) (load32 (+ src (shl i 2))))
+      (recur (+ i 1)))))
+
+(defn on-snap! [] : Unit
+  (do
+    (copy-words! (prev-base) (snap-base) 1041)
+    (copy-words! (snap-base) (+ (netin-base) 1) 1041)
+    (gi! (g-snap-pt) (gi (g-snap-t)))
+    (gi! (g-snap-t) (gi (g-ticker)))
+    (gi! (g-snap-iv) (- (gi (g-snap-t)) (gi (g-snap-pt))))
+    (gi! (g-snap-n) (+ (gi (g-snap-n)) 1))
+    (when (= (gi (g-snap-n)) 1) (copy-words! (prev-base) (snap-base) 1041))
+    (gi! (g-have-snap) 1)
+    (let [ph (cur-phase)
+          sc (gi (g-screen))]
+      ;; the draft opens and the match goes live by the arena's own phase
+      (when (and (= ph 1) (or (= sc (sc-connect)) (= sc (sc-search))))
+        (gi! (g-draft-t) (gi (g-ticker)))
+        (go-screen! (sc-draft)))
+      (when (and (= ph 2) (!= sc (sc-play)) (!= sc (sc-over)))
+        (gi! (g-live-ms) (gi (g-ticker)))
+        (gi! (g-banner-t) 150) (gi! (g-banner-id) 1)
+        (go-screen! (sc-play)))
+      (when (and (= ph 2) (= (gi (g-last-phase)) 1) (= sc (sc-play)))
+        (gi! (g-live-ms) (gi (g-ticker))))
+      (gi! (g-last-phase) ph))
+    (when (!= (sn-winner (snap-base)) 0) (gi! (g-winner) (sn-winner (snap-base))))
+    (scan-kills!)))
+
+;; ---- frames in --------------------------------------------------------------------------------------------------------------------------------
+(defn on-welcome! [] : Unit
+  (do (gi! (g-welcomed) 1)
+      (gi! (g-auth) (in8 2))
+      (gi! (g-online) (in16 (+ 4 (in8 3))))))
+
+(defn on-status! [] : Unit
+  (let [st (in8 1)]
+    (gi! (g-q-state) st)
+    (gi! (g-queue-mode) (in8 2))
+    (gi! (g-queue-lobby) (in8 3))
+    (gi! (g-q-elapsed) (in16 4))
+    (gi! (g-q-ahead) (in8 6))
+    ;; idle after a search/match we are not showing any more (the gateway finished with us)
+    (when (and (= st 0) (= (gi (g-want-queue)) 0) (or (= (gi (g-screen)) (sc-search)) (= (gi (g-screen)) (sc-connect))))
+      (go-screen! (sc-title)))
+    (when (= st 2) (when (= (gi (g-screen)) (sc-search)) (go-screen! (sc-connect))))))
+
+(defn on-match! [] : Unit
+  (do (reset-match!)
+      (gi! (g-owner) (in8 1))
+      (gi! (g-lobby) (in8 2))
+      (gi! (g-team) (in8 3))
+      (gi! (g-flip) (in8 3))
+      (gi! (g-queue-mode) (in8 4))
+      (gf! (g-scale) 10.0)
+      (go-screen! (sc-connect))))
+
+(defn on-result! [] : Unit
+  (do (gi! (g-winner) (in8 1))
+      (gi! (g-res-result) (in8 2))
+      (gi! (g-res-hero) (in8 3))
+      (gi! (g-res-kills) (in8 4))
+      (gi! (g-res-deaths) (in8 5))
+      (gi! (g-res-secs) (in16 6))
+      (gi! (g-res-recorded) (in8 8))
+      (gi! (g-have-result) 1)
+      (gi! (g-end-t) 0)
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-over))))
+
+(defn on-error! [] : Unit
+  (let [code (in8 1)
+        n (min-i (in8 2) 200)]
+    (gi! (g-err-code) code)
+    (dotimes [i n] (store8! (+ (err-base) i) (let [c (in8 (+ 3 i))] (if (and (>= c 32) (< c 127)) c 63))))
+    (store8! (+ (err-base) n) 0)
+    (gi! (g-err-len) n)
+    (gi! (g-want-queue) 0)
+    (gi! (g-queued-sent) 0)
+    (go-screen! (sc-error))))
+
+(defn rg-net-recv [(len : I32)] : Unit
+  (do
+    (gi! (g-in-len) len)
+    (when (> len 0)
+      (let [k (in8 0)]
+        (cond
+          (= k 129) (on-welcome!)
+          (= k 130) (on-status!)
+          (= k 131) (on-match!)
+          (and (= k 132) (>= len 4165)) (on-snap!)
+          (= k 133) (on-result!)
+          (= k 134) (on-error!)
+          (= k 143) (gi! (g-ping-ms) (- (gi (g-ticker)) (gi (g-ping-sent))))
+          :else unit)))))
+
+;; the page tells the engine what the socket is doing: 1 connecting, 2 open, 3 closed
+(defn rg-net-socket [(st : I32)] : Unit
+  (do
+    (gi! (g-net-state) st)
+    (when (= st 2)
+      (gi! (g-hello-sent) 0) (gi! (g-welcomed) 0) (gi! (g-queued-sent) 0)
+      (net-hello!))
+    (when (= st 3)
+      (gi! (g-hello-sent) 0) (gi! (g-welcomed) 0) (gi! (g-queued-sent) 0)
+      ;; a closed socket in the middle of a search or a match is an error the player should see
+      (let [sc (gi (g-screen))]
+        (when (and (>= sc (sc-search)) (<= sc (sc-play)))
+          (do (gi! (g-err-code) 5)
+              (store8! (+ (err-base) 0) 0)
+              (gi! (g-err-len) 0)
+              (gi! (g-want-queue) 0)
+              (go-screen! (sc-error))))))))
+
+;; the engine wants a socket whenever the player wants a match or is in one
+(defn rg-net-wanted [] : I32
+  (if (or (!= (gi (g-want-queue)) 0) (and (>= (gi (g-screen)) 1) (<= (gi (g-screen)) 5))) 1 0))
+
+;; once per frame: say QUEUE as soon as the gateway has welcomed us, keep the connection warm
+(defn net-tick! [] : Unit
+  (do
+    (when (and (!= (gi (g-want-queue)) 0) (= (gi (g-welcomed)) 1) (= (gi (g-queued-sent)) 0) (= (gi (g-net-state)) 2))
+      (net-queue! (gi (g-mode))))
+    (when (and (= (gi (g-net-state)) 2) (= (gi (g-hello-sent)) 1) (> (- (gi (g-ticker)) (gi (g-ping-t))) 5000))
+      (gi! (g-ping-t) (gi (g-ticker)))
+      (net-ping!))))

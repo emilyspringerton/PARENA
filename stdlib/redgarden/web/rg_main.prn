@@ -1,0 +1,81 @@
+;; stdlib/redgarden/web/rg_main.prn -- the exports the page calls (and the test hooks).
+
+(defn rg-init [] : Unit
+  (do
+    (load-font)
+    (gi! (g-rng) 460)
+    (gi! (g-screen) 0)
+    (gi! (g-mode) 1)
+    (gi! (g-pick) -1)
+    (gi! (g-sel-hero) 0)
+    (gi! (g-pick-hover) -1)
+    (gi! (g-hover-slot) -1)
+    (gi! (g-last-phase) -1)
+    (gi! (g-last-hp) -1)
+    (gf! (g-scale) 10.0)
+    (gf! (g-cam-x) 0.0)
+    (gf! (g-cam-z) 0.0)
+    (gf! (g-alpha) 1.0)))
+
+;; one animation frame: act on input, then draw
+(defn rg-frame [(now : F64)] : Unit
+  (do
+    (gi! (g-ticker) (i32 now))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
+    (net-tick!)
+    (rg-update!)
+    (rg-render!)
+    (end-input-frame!)))
+
+;; ---- input forwarding ------------------------------------------------------------------------------------------------
+(defn rg-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn rg-blur [] : Unit (in-clear-keys!))
+(defn rg-pointer [(x : I32) (y : I32)] : Unit (in-pointer! x y))
+(defn rg-button [(b : I32) (down : I32)] : Unit (in-button! b down))
+(defn rg-wheel [(dir : I32)] : Unit (in-wheel! dir))
+
+;; ---- memory the page reads / writes ------------------------------------------------------------------------------------
+(defn rg-fb-addr [] : I32 (fb-base))
+(defn rg-fb-w [] : I32 960)
+(defn rg-fb-h [] : I32 540)
+(defn rg-mem-bytes [] : I32 8388608)
+
+(defn rg-token-addr [] : I32 (token-base))
+(defn rg-token-set [(n : I32)] : Unit (gi! (g-token-len) n))
+(defn rg-name-addr [] : I32 (name-base))
+(defn rg-name-set [(n : I32)] : Unit
+  (do (gi! (g-name-len) n) (store8! (+ (name-base) (min-i n 62)) 0)))
+(defn rg-guest-set [(v : I32)] : Unit (gi! (g-guest) v))
+
+(defn rg-net-in-addr [] : I32 (netin-base))
+(defn rg-net-out-addr [] : I32 (netout-base))
+(defn rg-net-out-len [] : I32 (gi (g-out-len)))
+(defn rg-net-out-clear [] : Unit (gi! (g-out-len) 0))
+
+;; what the page shows around the canvas
+(defn rg-screen [] : I32 (gi (g-screen)))
+(defn rg-net-status [] : I32 (gi (g-q-state)))
+(defn rg-wants-cursor [] : I32 (if (= (gi (g-amove)) 1) 1 0))
+
+;; ---- introspection (page footer + tests) ----------------------------------------------------------------------------------
+(defn rg-g [(k : I32)] : I32 (gi k))
+(defn rg-gf [(k : I32)] : F32 (gf k))
+(defn rg-snap-addr [] : I32 (snap-base))
+(defn rg-prev-addr [] : I32 (prev-base))
+(defn rg-err-addr [] : I32 (err-base))
+(defn rg-feed-addr [] : I32 (feed-base))
+
+;; test hook: freeze the camera at a point (screenshots of parts of the arena that are not near the player)
+(defn rg-t-cam [(x : F32) (z : F32) (s : F32)] : Unit
+  (do (gi! (g-cam-lock) 1) (gf! (g-cam-x) x) (gf! (g-cam-z) z) (gf! (g-scale) s)))
+
+;; the page could not sign the player in (the guest account could not be made): show the error screen with the text the
+;; page wrote at rg_err_addr
+(defn rg-fail [(n : I32)] : Unit
+  (do (gi! (g-err-code) 1)
+      (store8! (+ (err-base) (min-i n 200)) 0)
+      (gi! (g-err-len) (min-i n 200))
+      (gi! (g-want-queue) 0)
+      (gi! (g-queued-sent) 0)
+      (go-screen! (sc-error))))

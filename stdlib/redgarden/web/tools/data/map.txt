@@ -1,0 +1,117 @@
+HALF 51.777088
+OBST 0 -18.607 8.899 1.000 1
+OBST 1 -21.034 6.472 0.900 0
+OBST 2 -16.989 4.045 1.000 1
+OBST 3 -20.225 1.618 0.900 0
+OBST 4 -17.798 -1.618 1.000 1
+OBST 5 -21.843 -4.045 0.900 0
+OBST 6 -16.989 -6.472 1.000 1
+OBST 7 -19.416 -8.899 0.900 0
+OBST 8 -17.500 11.500 1.000 1
+OBST 9 -19.000 -11.500 0.900 0
+OBST 10 18.607 8.899 1.000 1
+OBST 11 21.034 6.472 0.900 0
+OBST 12 16.989 4.045 1.000 1
+OBST 13 20.225 1.618 0.900 0
+OBST 14 17.798 -1.618 1.000 1
+OBST 15 21.843 -4.045 0.900 0
+OBST 16 16.989 -6.472 1.000 1
+OBST 17 19.416 -8.899 0.900 0
+OBST 18 17.500 11.500 1.000 1
+OBST 19 19.000 -11.500 0.900 0
+OBST 20 -37.215 9.708 1.100 1
+OBST 21 37.215 -9.708 1.100 1
+OBST 22 -9.708 27.507 0.900 0
+OBST 23 9.708 -27.507 0.900 0
+OBST 24 -32.361 -24.271 1.000 1
+OBST 25 32.361 24.271 1.000 1
+OBST 26 -45.000 20.000 1.200 1
+OBST 27 45.000 -20.000 1.200 1
+OBST 28 -15.000 40.000 1.000 0
+OBST 29 15.000 -40.000 1.000 0
+OBST 30 -38.000 -32.000 1.100 1
+OBST 31 38.000 32.000 1.100 1
+NODE 0 -29.125 17.798
+NODE 1 -29.125 -17.798
+NODE 2 0.000 0.000
+NODE 3 29.125 17.798
+NODE 4 29.125 -17.798
+TOWER 0 -29.125 17.798
+TOWER 1 -29.125 -17.798
+TOWER 2 0.000 0.000
+TOWER 3 29.125 17.798
+TOWER 4 29.125 -17.798
+FOUNT 0 -43.777 -43.777
+FOUNT 1 43.777 43.777
+SHOP 0 -52.777 52.777
+SHOP 1 52.777 -52.777
+CAMP 0 0.000 43.777
+CAMP 1 0.000 -43.777
+CAMP 2 43.777 0.000
+CAMP 3 -43.777 0.000
+HERO 0 team=0 -47.78 47.78 hp=100
+HERO 1 team=0 -47.78 45.78 hp=100
+HERO 2 team=0 -47.78 43.78 hp=100
+HERO 3 team=0 -47.78 41.78 hp=100
+HERO 4 team=0 -47.78 39.78 hp=100
+HERO 5 team=0 -47.78 37.78 hp=100
+HERO 6 team=0 -47.78 35.78 hp=100
+HERO 7 team=0 -47.78 33.78 hp=100
+HERO 8 team=0 -47.78 31.78 hp=100
+HERO 9 team=0 -47.78 29.78 hp=100
+HERO 10 team=1 47.78 -47.78 hp=100
+HERO 11 team=1 47.78 -45.78 hp=100
+HERO 12 team=1 47.78 -43.78 hp=100
+HERO 13 team=1 47.78 -41.78 hp=100
+HERO 14 team=1 47.78 -39.78 hp=100
+HERO 15 team=1 47.78 -37.78 hp=100
+HERO 16 team=1 47.78 -35.78 hp=100
+HERO 17 team=1 47.78 -33.78 hp=100
+HERO 18 team=1 47.78 -31.78 hp=100
+HERO 19 team=1 47.78 -29.78 hp=100
+ITEM 0|Seedling Charm|0|300|ad8 hp40 mp0 ar0 ms0.0
+ITEM 1|Bramble Fang|0|1000|ad35 hp0 mp0 ar0 ms0.0
+ITEM 2|Thornrender|0|950|ad28 hp10 mp0 ar0 ms0.0
+ITEM 3|Bloomheart Core|0|1100|ad45 hp0 mp0 ar0 ms0.0
+ITEM 4|Wanecall Grimoire|0|950|ad25 hp0 mp60 ar0 ms0.0
+ITEM 5|Ironbark Plate|0|900|ad10 hp150 mp0 ar20 ms0.0
+ITEM 6|Willowveil|0|850|ad0 hp120 mp0 ar25 ms0.0
+ITEM 7|Vampiric Bloom|0|1000|ad32 hp30 mp0 ar0 ms0.0
+ITEM 8|Splinterfang|0|900|ad30 hp0 mp0 ar0 ms0.0
+ITEM 9|Hollow Needle|0|900|ad30 hp0 mp40 ar0 ms0.0
+ITEM 10|Rootrunner Treads|0|500|ad0 hp10 mp0 ar0 ms0.8
+ITEM 11|Gardener's Ward|0|800|ad0 hp100 mp0 ar15 ms0.0
+ITEM 12|Kraken Club|0|1200|ad60 hp0 mp0 ar0 ms0.0
+ITEM 13|Ridill|0|1100|ad20 hp20 mp0 ar20 ms0.0
+ITEM 14|Optical Hat|1|400|ad0 hp60 mp0 ar0 ms0.0
+ITEM 15|Haubergeon|2|450|ad0 hp0 mp0 ar18 ms0.0
+ITEM 16|Battle Gloves|3|400|ad12 hp0 mp0 ar0 ms0.0
+ITEM 17|Iron Ram Trousers|4|400|ad0 hp0 mp0 ar18 ms0.0
+ITEM 18|Creek F. Boots|5|400|ad0 hp0 mp0 ar0 ms0.6
+ITEM 19|Astral Ring|6|350|ad0 hp0 mp50 ar0 ms0.0
+ITEM 20|Justice Badge|7|400|ad0 hp0 mp0 ar14 ms0.0
+ITEM 21|Forager's Mantle|8|350|ad8 hp0 mp0 ar0 ms0.4
+ITEM 22|Warwolf Belt|9|400|ad0 hp80 mp0 ar0 ms0.0
+ITEM 23|Peace Earring|10|350|ad0 hp30 mp40 ar0 ms0.0
+ITEM 24|Blink Dagger|10|1400|ad6 hp6 mp0 ar0 ms0.0
+ITEM 25|Donkey|8|3200|ad0 hp0 mp0 ar0 ms0.0
+ITEM 26|Haste Trinket|10|900|ad0 hp0 mp0 ar0 ms0.0
+ITEM 27|Gae Bolg|0|3000|ad0 hp0 mp0 ar0 ms0.0
+ITEM 28|Masamune|0|3300|ad15 hp0 mp0 ar0 ms0.0
+ITEM 29|Muramasa|0|3450|ad70 hp0 mp0 ar0 ms0.0
+ITEM 30|Balance Ring|6|2700|ad0 hp0 mp0 ar0 ms0.0
+ITEM 31|Empress Hairpin|1|1350|ad0 hp0 mp100 ar0 ms0.0
+ITEM 32|Ninja Tekko|3|1500|ad20 hp0 mp0 ar0 ms1.0
+ITEM 33|Kite String|10|3333|ad0 hp0 mp0 ar0 ms0.0
+ITEM 34|Luck of the Draw|10|2200|ad0 hp0 mp0 ar0 ms0.0
+ITEM 35|Wizard's Coat|2|1400|ad0 hp0 mp80 ar10 ms0.0
+ITEM 36|Chain Leggings|4|1100|ad0 hp70 mp0 ar14 ms0.0
+ITEM 37|Boots of Winter|5|1200|ad0 hp0 mp60 ar0 ms0.5
+ITEM 38|Mage's Earring|7|900|ad0 hp0 mp70 ar0 ms0.0
+ITEM 39|Venerer's Belt|9|1300|ad12 hp0 mp0 ar0 ms0.0
+ITEM 40|Mikazuki|0|2400|ad34 hp0 mp0 ar0 ms0.0
+ITEM 41|Dojigiri|0|2800|ad58 hp0 mp0 ar0 ms1.0
+ITEM 42|Excalibur|0|4200|ad50 hp120 mp0 ar20 ms0.0
+POWERUP
+PU 0 0.00 17.80
+PU 1 0.00 -17.80

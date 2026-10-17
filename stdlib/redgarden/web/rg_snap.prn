@@ -1,0 +1,138 @@
+;; stdlib/redgarden/web/rg_snap.prn -- reading the arena's snapshots.
+;;
+;; The gateway forwards the arena server's own snapshot bodies untouched (protocol.h: ArenaSnapshotMsg, 1244 bytes, then two
+;; ArenaSnapshotHeroesMsg, 1460 bytes each; offsets checked against the real C structs -- stdlib/redgarden/web/tools/data/
+;; layout.txt). Nothing is decoded into a second copy: the newest snapshot sits at snap-base, the one before at prev-base,
+;; and these accessors read fields straight out of those bytes.
+
+(defn snap-len [] : I32 4164)
+
+;; ---- world ------------------------------------------------------------------------------------------------------------------
+(defn sn-count [(b : I32)] : I32 (load8 b))
+(defn sn-winner [(b : I32)] : I32 (load8 (+ b 1)))
+(defn sn-phase [(b : I32)] : I32 (load8 (+ b 2)))
+(defn sn-picked [(b : I32) (i : I32)] : I32 (load8 (+ b (+ 3 i))))
+
+(defn node-a [(b : I32) (i : I32)] : I32 (+ b (+ 24 (* i 12))))
+(defn node-x [(b : I32) (i : I32)] : F32 (ldf (node-a b i)))
+(defn node-z [(b : I32) (i : I32)] : F32 (ldf (+ (node-a b i) 4)))
+(defn node-owner [(b : I32) (i : I32)] : I32 (load8 (+ (node-a b i) 8)))      ; 0 contested, 1 team 0, 2 team 1
+(defn node-cap-team [(b : I32) (i : I32)] : I32 (lds8 (+ (node-a b i) 9)))    ; -1 none
+(defn node-progress [(b : I32) (i : I32)] : I32 (ld16 (+ (node-a b i) 10)))   ; of 8000 ms
+
+(defn proj-n [(b : I32)] : I32 (min-i 32 (load8 (+ b 84))))
+(defn proj-a [(b : I32) (i : I32)] : I32 (+ b (+ 88 (* i 12))))
+(defn proj-x [(b : I32) (i : I32)] : F32 (ldf (proj-a b i)))
+(defn proj-z [(b : I32) (i : I32)] : F32 (ldf (+ (proj-a b i) 4)))
+(defn proj-owner [(b : I32) (i : I32)] : I32 (load8 (+ (proj-a b i) 8)))
+
+(defn creep-a [(b : I32) (i : I32)] : I32 (+ b (+ 472 (* i 16))))             ; node guardians (5)
+(defn tower-a [(b : I32) (i : I32)] : I32 (+ b (+ 552 (* i 16))))             ; one per node (5)
+(defn pu-a [(b : I32) (i : I32)] : I32 (+ b (+ 632 (* i 12))))                ; powerups (2)
+
+(defn lane-n [(b : I32)] : I32 (min-i 12 (load8 (+ b 656))))
+(defn lane-a [(b : I32) (i : I32)] : I32 (+ b (+ 660 (* i 16))))
+(defn resource [(b : I32) (t : I32)] : I32 (ld16 (+ b (+ 852 (* t 2)))))
+
+(defn campm-n [(b : I32)] : I32 (min-i 16 (load8 (+ b 856))))
+(defn campm-a [(b : I32) (i : I32)] : I32 (+ b (+ 860 (* i 16))))
+(defn king-a [(b : I32) (i : I32)] : I32 (+ b (+ 1116 (* i 16))))             ; camp kings (4)
+(defn obst-hp [(b : I32) (i : I32)] : I32 (ld16 (+ b (+ 1180 (* i 2)))))
+
+;; a generic "thing with x z hp max_hp alive" record (creeps, towers, kings)
+(defn rec-x [(a : I32)] : F32 (ldf a))
+(defn rec-z [(a : I32)] : F32 (ldf (+ a 4)))
+(defn rec-hp [(a : I32)] : I32 (ld16 (+ a 8)))
+(defn rec-max [(a : I32)] : I32 (ld16 (+ a 10)))
+(defn rec-alive [(a : I32)] : I32 (load8 (+ a 12)))
+
+;; ---- heroes ------------------------------------------------------------------------------------------------------------------
+;; slot 0..19 are the players, 20..27 are puppet clones (Tyler); chunk = slot / 14
+(defn hero-a [(b : I32) (slot : I32)] : I32
+  (+ b (+ 1248 (+ (* (/ slot 14) 1460) (* (mod slot 14) 104)))))
+
+(defn h-x [(a : I32)] : F32 (ldf a))
+(defn h-z [(a : I32)] : F32 (ldf (+ a 4)))
+(defn h-hp [(a : I32)] : I32 (ld16 (+ a 8)))
+(defn h-max [(a : I32)] : I32 (ld16 (+ a 10)))
+(defn h-alive [(a : I32)] : I32 (load8 (+ a 12)))
+(defn h-id [(a : I32)] : I32 (load8 (+ a 13)))
+(defn h-clone [(a : I32)] : I32 (load8 (+ a 14)))
+(defn h-clone-owner [(a : I32)] : I32 (lds8 (+ a 15)))
+(defn h-flash [(a : I32)] : I32 (load8 (+ a 16)))
+(defn h-qcd [(a : I32)] : I32 (ld16 (+ a 18)))
+(defn h-wcd [(a : I32)] : I32 (ld16 (+ a 20)))
+(defn h-rcd [(a : I32)] : I32 (ld16 (+ a 22)))
+(defn h-mp [(a : I32)] : I32 (load8 (+ a 24)))
+(defn h-target [(a : I32)] : I32 (lds8 (+ a 25)))
+(defn h-flow [(a : I32)] : I32 (ld16 (+ a 26)))
+(defn h-xp [(a : I32)] : I32 (ld16 (+ a 30)))
+(defn h-kills [(a : I32)] : I32 (load8 (+ a 32)))
+(defn h-deaths [(a : I32)] : I32 (load8 (+ a 33)))
+(defn h-item [(a : I32) (s : I32)] : I32 (lds8 (+ a (+ 34 s))))              ; -1 empty
+(defn h-w-on [(a : I32)] : I32 (load8 (+ a 45)))
+(defn h-silenced [(a : I32)] : I32 (ld16 (+ a 46)))
+(defn h-rooted [(a : I32)] : I32 (ld16 (+ a 48)))
+(defn h-stunned [(a : I32)] : I32 (ld16 (+ a 56)))
+(defn h-slowed [(a : I32)] : I32 (ld16 (+ a 58)))
+(defn h-zone-x [(a : I32)] : F32 (ldf (+ a 68)))
+(defn h-zone-z [(a : I32)] : F32 (ldf (+ a 72)))
+(defn h-zone-ms [(a : I32)] : I32 (ld16 (+ a 76)))
+(defn h-zone-r [(a : I32)] : F32 (/ (f32 (load8 (+ a 78))) 10.0))
+(defn h-casting [(a : I32)] : I32 (load8 (+ a 79)))
+(defn h-cast-left [(a : I32)] : I32 (ld16 (+ a 80)))
+(defn h-cast-total [(a : I32)] : I32 (ld16 (+ a 82)))
+(defn h-blink-cd [(a : I32)] : I32 (ld16 (+ a 84)))
+(defn h-glide-cd [(a : I32)] : I32 (ld16 (+ a 86)))
+(defn h-shield [(a : I32)] : I32 (ld16 (+ a 102)))
+(defn h-smoke-x [(a : I32)] : F32 (ldf (+ a 92)))
+(defn h-smoke-z [(a : I32)] : F32 (ldf (+ a 96)))
+(defn h-smoke-ms [(a : I32)] : I32 (ld16 (+ a 100)))
+
+;; the player slots in the current snapshot
+(defn cur-count [] : I32 (sn-count (snap-base)))
+(defn cur-phase [] : I32 (sn-phase (snap-base)))
+(defn cur-hero [(slot : I32)] : I32 (hero-a (snap-base) slot))
+(defn prev-hero [(slot : I32)] : I32 (hero-a (prev-base) slot))
+
+;; teams: apps/arena_server's arena_init_teams puts slots 0..9 on team 0 and 10..19 on team 1 (ARENA_TEAM_SIZE = 10,
+;; whatever the lobby size); a puppet clone (slots 20..27) is on its owner's team
+(defn team-of [(slot : I32)] : I32
+  (if (< slot 20)
+      (if (< slot 10) 0 1)
+      (let [o (h-clone-owner (cur-hero slot))]
+        (if (and (>= o 0) (< o 20)) (if (< o 10) 0 1) 0))))
+
+;; ---- interpolation ------------------------------------------------------------------------------------------------------------
+;; snapshots arrive ~20 Hz; heroes are drawn sliding from the previous snapshot's position to the newest over one interval.
+(defn g-alpha [] : I32 80)   ; F32 0..1
+(defn alpha [] : F32 (gf (g-alpha)))
+
+(defn update-alpha! [] : Unit
+  (let [(iv : F32) (f32 (clamp-i (gi (g-snap-iv)) 20 250))
+        (dt : F32) (f32 (- (gi (g-ticker)) (gi (g-snap-t))))]
+    (gf! (g-alpha) (clamp-f (/ dt iv) 0.0 1.0))))
+
+;; interpolated world position of a hero slot; a jump of more than 9 units (a respawn, a blink) is not slid
+(defn hero-px [(slot : I32)] : F32
+  (let [(x1 : F32) (h-x (cur-hero slot))
+        (x0 : F32) (h-x (prev-hero slot))
+        (z1 : F32) (h-z (cur-hero slot))
+        (z0 : F32) (h-z (prev-hero slot))]
+    (if (or (< (gi (g-snap-n)) 2) (> (len2 (- x1 x0) (- z1 z0)) 9.0))
+        x1
+        (lerp x0 x1 (alpha)))))
+(defn hero-pz [(slot : I32)] : F32
+  (let [(x1 : F32) (h-x (cur-hero slot))
+        (x0 : F32) (h-x (prev-hero slot))
+        (z1 : F32) (h-z (cur-hero slot))
+        (z0 : F32) (h-z (prev-hero slot))]
+    (if (or (< (gi (g-snap-n)) 2) (> (len2 (- x1 x0) (- z1 z0)) 9.0))
+        z1
+        (lerp z0 z1 (alpha)))))
+
+;; ---- who is who ----------------------------------------------------------------------------------------------------------------
+(defn me [] : I32 (gi (g-owner)))
+(defn my-hero [] : I32 (cur-hero (me)))
+(defn my-team [] : I32 (gi (g-team)))
+(defn ally? [(slot : I32)] : Bool (= (team-of slot) (my-team)))

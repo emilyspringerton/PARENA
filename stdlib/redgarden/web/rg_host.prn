@@ -1,0 +1,414 @@
+;; stdlib/redgarden/web/rg_host.prn -- the REDGARDEN web page's host code. PARENA, compiled to TypeScript
+;; (parena build rg_host.prn -o rg_host.ts), then type-stripped to the .js the page loads.
+;;
+;; Same rule as BRAWLPIT web and shankpit-460 web (founder, 2026-10-16: "make sure its actually wasm not faked with a bunch of
+;; garbage js; whatever we do need to use js for use parena into TS"): this is the ONLY JavaScript on the page and it is
+;; generated from this file. It contains no game logic. The game's client -- protocol, arena renderer, draft, shop, HUD, orders
+;; -- is redgarden.wasm (stdlib/redgarden/web/rg_*.prn); the module imports nothing, so the browser has to do exactly the things
+;; below because only a browser can:
+;;   1. fetch + instantiate the wasm                          (boot ... on-instance)
+;;   2. copy the framebuffer the wasm painted onto a canvas   (tick: putImageData of a view onto wasm memory)
+;;   3. forward keyboard / pointer / wheel                    (on-keydown ... -> rg_key / rg_pointer / rg_button / rg_wheel)
+;;   4. know who is playing: the WOTAN SSO session, or a guest account IDUNA makes on the spot and this browser remembers
+;;                                                            (refresh-identity! ... apply-identity!)
+;;   5. own the WebSocket to IDUNA's arena gateway            (ensure-socket!, pump-out!)
+;;   6. keep the page's own DOM labels in step                (sync-labels!)
+
+;; ---- module state ----------------------------------------------------------------------------------------------------------
+(def canvas null)
+(def ctx null)
+(def image null)          ; ImageData viewing the wasm framebuffer in place
+(def wasm null)           ; the instance's exports
+(def memory null)
+(def view null)           ; DataView over wasm memory
+(def sock null)
+(def next-try 0.0)        ; performance.now() before which no new socket is opened
+(def idle-since 0.0)
+(def wasm-bytes 0)
+(def wasm-imports 0)
+(def last-screen -1)
+(def ident-ready false)
+(def ident-busy false)
+(def ident-name "")
+(def ident-guest true)
+(def ident-id "")
+(def play-id "")          ; the player id the gateway says the match is recorded against
+
+;; ---- DOM helpers -------------------------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn win [] : Any (js/global "window"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+(defn now [] : F64 (js/call (js/global "performance") "now"))
+
+(defn set-text! [(id : String) (text : String)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "textContent" text))))
+
+(defn set-hidden! [(id : String) (hidden : Bool)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "hidden" hidden))))
+
+(defn ignore! [(e : Any)] : Unit unit)
+
+(defn fail! [(msg : Any)] : Unit
+  (do (set-text! "rg-pill" "Could not start")
+      (set-text! "rg-load-msg" (str "REDGARDEN could not start: " msg))
+      (js/call (js/global "console") "error" msg)))
+
+;; ---- 1. fetch + instantiate the wasm -------------------------------------------------------------------------------------------
+(defn boot [(canvas-id : String) (wasm-url : String)] : Unit
+  (do
+    (set! canvas (el canvas-id))
+    (set! ctx (js/call canvas "getContext" "2d"))
+    (set-text! "rg-pill" "Loading wasm...")
+    (js/call
+      (js/call
+        (js/call
+          (js/call (js/call-fn (js/global "fetch") wasm-url) "then" (callback on-response))
+          "then" (callback on-bytes))
+        "then" (callback on-instance))
+      "catch" (callback fail!))))
+
+(defn on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "redgarden.wasm: HTTP " (js/get r "status")))))
+
+(defn on-bytes [(bytes : Any)] : Any
+  (do (set! wasm-bytes (js/get bytes "byteLength"))
+      ;; the module takes NO imports: no allocator, no libc, no JS callbacks
+      (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj))))
+
+(defn on-instance [(result : Any)] : Unit
+  (do
+    (set! wasm (js/get (js/get result "instance") "exports"))
+    (set! memory (js/get wasm "memory"))
+    (set! view (js/new "DataView" (js/get memory "buffer")))
+    (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
+    (js/call wasm "rg_init")
+    (set! image
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "rg_fb_addr")
+                          (* (* (js/call wasm "rg_fb_w") (js/call wasm "rg_fb_h")) 4))
+                  (js/call wasm "rg_fb_w") (js/call wasm "rg_fb_h")))
+    (install-listeners)
+    (set-hidden! "rg-load" true)
+    (set-hidden! "rg-canvas" false)
+    (set-text! "rg-pill" "Running in WebAssembly")
+    (set-text! "rg-stat" (str "redgarden.wasm " (math/round (/ wasm-bytes 1024)) " KB  -  "
+                              wasm-imports " imports  -  "
+                              (/ (js/get (js/get memory "buffer") "byteLength") 1048576) " MB fixed memory, no allocator  -  PARENA"))
+    (let [b (el "rg-fullscreen")]
+      (when (not (js/null? b))
+        (js/set! b "disabled" false)
+        (js/call b "addEventListener" "click" (callback on-fullscreen))))
+    (refresh-identity!)
+    (refresh-status-quiet!)
+    (js/call-fn (js/global "setInterval") (callback refresh-status-quiet!) 15000)
+    (js/call (win) "requestAnimationFrame" (callback tick))))
+
+;; ---- 2. the frame loop ----------------------------------------------------------------------------------------------------------
+(defn tick [(t : F64)] : Unit
+  (do
+    (ensure-socket!)
+    (js/call wasm "rg_frame" t)
+    (pump-out!)
+    (js/call ctx "putImageData" image 0 0)
+    (sync-labels!)
+    (js/call (win) "requestAnimationFrame" (callback tick))))
+
+(defn on-fullscreen [(e : Any)] : Unit
+  (js/call (el "rg-stage") "requestFullscreen"))
+
+;; ---- 3. input forwarding ----------------------------------------------------------------------------------------------------------
+;; keys that belong to the game while the canvas has focus: Tab (scores), Space, arrows, backtick (the active item)
+(defn game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")]
+    (or (and (>= k 37) (<= k 40)) (or (= k 32) (or (= k 9) (or (= k 192) (or (= k 27) (= k 8))))))))
+
+(defn game-focused? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (or (js/null? a) (or (= a canvas) (= a (js/get (doc) "body"))))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (game-focused?)
+    (do (js/call wasm "rg_key" (js/get e "keyCode") 1)
+        (when (and (game-key? e) (not (= (js/get e "ctrlKey") true))) (js/call e "preventDefault")))))
+
+(defn on-keyup [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "rg_key" (js/get e "keyCode") 0)))
+
+(defn on-blur [(e : Any)] : Unit (js/call wasm "rg_blur"))
+
+;; pointer position mapped from CSS pixels to the 960x540 framebuffer
+(defn on-move [(e : Any)] : Unit
+  (let [rect (js/call canvas "getBoundingClientRect")
+        x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call wasm "rg_fb_w")) (js/get rect "width"))
+        y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "rg_fb_h")) (js/get rect "height"))]
+    (js/call wasm "rg_pointer" (math/floor x) (math/floor y))))
+
+(defn on-down [(e : Any)] : Unit
+  (do (on-move e)
+      (js/call canvas "focus")
+      (js/call wasm "rg_button" (js/get e "button") 1)
+      (js/call e "preventDefault")))
+
+(defn on-up [(e : Any)] : Unit
+  (do (on-move e)
+      (js/call wasm "rg_button" (js/get e "button") 0)))
+
+(defn on-wheel [(e : Any)] : Unit
+  (do (js/call wasm "rg_wheel" (if (> (js/get e "deltaY") 0.0) 1 -1))
+      (js/call e "preventDefault")))
+
+(defn on-contextmenu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+(defn install-listeners [] : Unit
+  (let [w (win)]
+    (js/call w "addEventListener" "keydown" (callback on-keydown))
+    (js/call w "addEventListener" "keyup" (callback on-keyup))
+    (js/call w "addEventListener" "blur" (callback on-blur))
+    (js/call w "addEventListener" "pointermove" (callback on-move))
+    (js/call w "addEventListener" "pointerup" (callback on-up))
+    (js/call canvas "addEventListener" "pointerdown" (callback on-down))
+    (js/call canvas "addEventListener" "wheel" (callback on-wheel))
+    (js/call canvas "addEventListener" "contextmenu" (callback on-contextmenu))))
+
+;; ---- 4. who is playing -------------------------------------------------------------------------------------------------------------
+;; A signed-in WOTAN visitor plays as their IDUNA identity (the gateway resolves the SSO token to their REDGARDEN player row).
+;; Everyone else is a guest: a real REDGARDEN guest account IDUNA creates on the first PLAY (guest-register, which names it),
+;; kept in this browser's localStorage so the same guest comes back next time (guest-login) and the matches add up. Anything
+;; that can throw (localStorage in a locked-down browser, a bad JSON blob) runs inside a promise so the chain's catch sees it.
+(defn api [] : String "/api/v1/games/redgarden")
+
+(defn json-or-reject [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (js/get r "status"))))
+
+(defn post-json [(path : String) (body : Any)] : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" (js/call (js/global "JSON") "stringify" body))
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn store [] : Any (js/get (win) "localStorage"))
+
+(defn save-guest! [(d : Any)] : Any
+  (let [o (js/obj)]
+    (js/set! o "player_id" (js/get d "player_id"))
+    (js/set! o "guest_secret" (js/get d "guest_secret"))
+    (js/call (store) "setItem" "rg_guest" (js/call (js/global "JSON") "stringify" o))
+    d))
+
+(defn register-guest! [] : Any
+  (js/call (post-json "/guest-register" (js/obj)) "then" (callback save-guest!)))
+
+(defn relogin-failed [(e : Any)] : Any (register-guest!))
+
+(defn guest-flow [(ignored : Any)] : Any
+  (let [raw (js/call (store) "getItem" "rg_guest")]
+    (if (js/null? raw)
+        (register-guest!)
+        (let [g (js/call (js/global "JSON") "parse" raw)
+              body (js/obj)]
+          (js/set! body "player_id" (js/get g "player_id"))
+          (js/set! body "guest_secret" (js/get g "guest_secret"))
+          (js/call (post-json "/guest-login" body) "catch" (callback relogin-failed))))))
+
+(defn sso-session [] : Any
+  (if (js/defined? "getIdunaSession") (js/call-fn (js/global "getIdunaSession")) null))
+
+(defn identity-flow [(ignored : Any)] : Any
+  (let [s (sso-session)]
+    (if (and (not (js/null? s)) (not (js/null? (js/get s "token"))))
+        (let [o (js/obj)]
+          (js/set! o "token" (js/get s "token"))
+          (js/set! o "display_name" (js/get s "displayName"))
+          (js/set! o "player_id" (js/get s "playerID"))
+          (js/set! o "sso" true)
+          o)
+        (js/call (guest-flow ignored) "then" (callback mark-guest)))))
+
+(defn mark-guest [(d : Any)] : Any (do (js/set! d "sso" false) d))
+
+;; a JS string as ASCII bytes in wasm memory, NUL-free; returns the length written (clamped to `cap`)
+(defn put-ascii! [(s : Any) (addr : I32) (cap : I32)] : I32
+  (let [u8 (js/new "Uint8Array" (js/get memory "buffer") addr cap)
+        n (math/min cap (js/get s "length"))]
+    (dotimes [i n]
+      (js/aset! u8 i (math/min 126 (js/call s "charCodeAt" i))))
+    n))
+
+(defn apply-identity! [(d : Any)] : Unit
+  (do
+    (set! ident-name (js/get d "display_name"))
+    (set! ident-guest (not (= (js/get d "sso") true)))
+    (set! ident-id (js/get d "player_id"))
+    (js/call wasm "rg_name_set" (put-ascii! ident-name (js/call wasm "rg_name_addr") 40))
+    (js/call wasm "rg_guest_set" (if ident-guest 1 0))
+    (js/call wasm "rg_token_set" (put-ascii! (js/get d "token") (js/call wasm "rg_token_addr") 2000))
+    (set! ident-ready true)
+    (set! ident-busy false)
+    (sync-who!)))
+
+(defn identity-failed [(e : Any)] : Unit
+  (do
+    (set! ident-busy false)
+    (set-text! "rg-who-msg" "Could not set up an account for you just now.")
+    (js/call wasm "rg_fail" (put-ascii! (if (= e 429)
+                                            "too many new guest accounts from this network today; sign in with IDUNA, or try tomorrow"
+                                            "could not create your account; check your connection and try again")
+                                        (js/call wasm "rg_err_addr") 200))))
+
+(defn refresh-identity! [] : Unit
+  (when (not ident-busy)
+    (do
+      (set! ident-busy true)
+      (js/call
+        (js/call
+          (js/call (js/call (js/global "Promise") "resolve" 0) "then" (callback identity-flow))
+          "then" (callback apply-identity!))
+        "catch" (callback identity-failed)))))
+
+(defn sign-in-url [] : Any
+  (if (js/defined? "buildSsoURL") (js/call-fn (js/global "buildSsoURL")) "/account/"))
+
+(defn sync-who! [] : Unit
+  (do
+    (if ident-guest
+        (do (set-text! "rg-who-msg" (str "You are playing as " ident-name ", a guest. Your matches are kept in this browser."))
+            (let [a (el "rg-who-link")]
+              (when (not (js/null? a))
+                (js/set! a "textContent" "Sign in with IDUNA to keep them on your account")
+                (js/set! a "href" (sign-in-url))
+                (js/set! a "hidden" false))))
+        (do (set-text! "rg-who-msg" (str "Signed in as " ident-name ". Your matches count toward your WOTAN profile."))
+            (set-hidden! "rg-who-link" true)))
+    (sync-profile-link!)))
+
+(defn sync-profile-link! [] : Unit
+  (let [a (el "rg-profile")
+        id (if (= play-id "") ident-id play-id)]
+    (when (and (not (js/null? a)) (not (= id "")) (not (js/null? id)))
+      (js/set! a "href" (str "/redgarden/u.html?id=" id))
+      (js/set! a "hidden" false))))
+
+;; ---- 5. the gateway socket ---------------------------------------------------------------------------------------------------------------
+(defn json-or-fail [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
+
+(defn on-status [(j : Any)] : Unit
+  (if (js/get j "configured")
+      (set-text! "rg-online"
+                 (str (js/get j "online") " online  -  " (js/get j "searching") " searching  -  " (js/get j "playing") " in a match"))
+      (set-text! "rg-online" "the arena gateway is offline right now")))
+
+(defn refresh-status-quiet! [] : Unit
+  (js/call
+    (js/call
+      (js/call (js/call-fn (js/global "fetch") "/api/v1/redgarden/status") "then" (callback json-or-fail))
+      "then" (callback on-status))
+    "catch" (callback ignore!)))
+
+(defn socket-url [] : String
+  (str (if (= (js/get (js/get (win) "location") "protocol") "https:") "wss://" "ws://")
+       (js/get (js/get (win) "location") "host")
+       "/api/v1/redgarden/play"))
+
+;; the gateway's WELCOME carries the player id the match will be recorded against: ver, auth, nameLen, name, online u16, idLen, id
+(defn read-welcome-id! [(data : Any)] : Unit
+  (let [u8 (js/new "Uint8Array" data)
+        nl (js/aget u8 3)
+        at (+ (+ 4 nl) 2)
+        il (js/aget u8 at)]
+    (when (and (> il 0) (<= (+ (+ at 1) il) (js/get u8 "length")))
+      (let [parts (js/array)]
+        (dotimes [i il]
+          (js/call parts "push" (js/call (js/global "String") "fromCharCode" (js/aget u8 (+ (+ at 1) i)))))
+        (set! play-id (js/call parts "join" ""))
+        (sync-profile-link!)))))
+
+(defn on-open [(e : Any)] : Unit
+  (js/call wasm "rg_net_socket" 2))
+
+(defn on-message [(e : Any)]  : Unit
+  (let [data (js/get e "data")
+        len (js/get data "byteLength")]
+    (when (<= len 8000)
+      (when (= (js/aget (js/new "Uint8Array" data) 0) 129) (read-welcome-id! data))
+      (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "rg_net_in_addr") len)
+               "set" (js/new "Uint8Array" data))
+      (js/call wasm "rg_net_recv" len))))
+
+(defn on-close [(e : Any)] : Unit
+  (do (set! sock null)
+      (set! next-try (+ (now) 3000.0))
+      (js/call wasm "rg_net_socket" 3)))
+
+(defn open-socket! [] : Unit
+  (do
+    (js/call wasm "rg_net_socket" 1)
+    (set! sock (js/new "WebSocket" (socket-url)))
+    (js/set! sock "binaryType" "arraybuffer")
+    (js/call sock "addEventListener" "open" (callback on-open))
+    (js/call sock "addEventListener" "message" (callback on-message))
+    (js/call sock "addEventListener" "close" (callback on-close))
+    (js/call sock "addEventListener" "error" (callback on-close))))
+
+;; The engine says whether it wants a socket; it only opens once the player has an identity (the token is the first thing
+;; the gateway asks for).
+(defn ensure-socket! [] : Unit
+  (let [t (now)]
+    (if (= (js/call wasm "rg_net_wanted") 1)
+        (do (set! idle-since t)
+            (when (and (js/null? sock) (>= t next-try) ident-ready (> (js/call wasm "rg_g" 11) 0)) (open-socket!)))
+        (when (and (not (js/null? sock)) (> (- t idle-since) 20000.0))
+          (js/call sock "close")))))
+
+;; frames the engine queued: [u16 len][bytes]...
+(defn pump-out! [] : Unit
+  (let [total (js/call wasm "rg_net_out_len")]
+    (when (> total 0)
+      (let [open (and (not (js/null? sock)) (= (js/get sock "readyState") 1))
+            base (js/call wasm "rg_net_out_addr")]
+        (when open
+          (loop [off 0]
+            (when (< (+ off 2) total)
+              (let [len (+ (js/call view "getUint8" (+ base off)) (* 256 (js/call view "getUint8" (+ base (+ off 1)))))]
+                (js/call sock "send" (js/new "Uint8Array" (js/get memory "buffer") (+ base (+ off 2)) len))
+                (recur (+ off (+ 2 len)))))))
+        (js/call wasm "rg_net_out_clear")))))
+
+;; ---- 6. the page's own labels -------------------------------------------------------------------------------------------------------------
+;; a new search starts from the title: take a fresh token (a guest token does not live forever, and a token the gateway refused
+;; must not be sent again)
+(defn on-screen-change! [(sc : I32)] : Unit
+  (do
+    (when (and (= sc 1) (= last-screen 0))
+      (do (set! ident-ready false)
+          (js/call wasm "rg_token_set" 0)
+          (refresh-identity!)))
+    (set! last-screen sc)))
+
+(defn sync-labels! [] : Unit
+  (let [sc (js/call wasm "rg_screen")]
+    (when (!= sc last-screen) (on-screen-change! sc))
+    (set-text! "rg-pill"
+               (cond
+                 (= sc 1) "Searching for a match"
+                 (= sc 2) "Match found"
+                 (= sc 3) "Drafting"
+                 (= sc 4) "In a match"
+                 (= sc 5) "Match over"
+                 (= sc 6) "Disconnected"
+                 :else "Ready"))
+    (js/set! (js/get canvas "style") "cursor" (if (= (js/call wasm "rg_wants_cursor") 1) "crosshair" "default"))))
+
+(start (boot "rg-canvas" "redgarden.wasm"))

@@ -1,0 +1,11 @@
+# the wasm client's source files (scripts/build_redgarden_wasm.sh concatenates them in this order)
+stdlib/redgarden/web/rg_mem.prn
+stdlib/redgarden/web/rg_data.prn
+stdlib/redgarden/web/rg_snap.prn
+stdlib/redgarden/web/rg_net.prn
+stdlib/redgarden/web/rg_input.prn
+stdlib/redgarden/web/rg_gfx.prn
+stdlib/redgarden/web/rg_view.prn
+stdlib/redgarden/web/rg_hud.prn
+stdlib/redgarden/web/rg_ui.prn
+stdlib/redgarden/web/rg_main.prn
