@@ -148,15 +148,19 @@
         y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "rg_fb_h")) (js/get rect "height"))]
     (js/call wasm "rg_pointer" (math/floor x) (math/floor y))))
 
+;; focusing the canvas must not scroll the page: a scroll between pointer-down and pointer-up would move the canvas under the
+;; pointer and turn the click into one somewhere else
 (defn on-down [(e : Any)] : Unit
-  (do (on-move e)
-      (js/call canvas "focus")
-      (js/call wasm "rg_button" (js/get e "button") 1)
-      (js/call e "preventDefault")))
+  (let [opts (js/obj)]
+    (js/set! opts "preventScroll" true)
+    (on-move e)
+    (js/call canvas "focus" opts)
+    (js/call wasm "rg_button" (js/get e "button") 1)
+    (js/call e "preventDefault")))
 
+;; the button comes up where it went down: the pointer position is not re-read here
 (defn on-up [(e : Any)] : Unit
-  (do (on-move e)
-      (js/call wasm "rg_button" (js/get e "button") 0)))
+  (js/call wasm "rg_button" (js/get e "button") 0))
 
 (defn on-wheel [(e : Any)] : Unit
   (do (js/call wasm "rg_wheel" (if (> (js/get e "deltaY") 0.0) 1 -1))
