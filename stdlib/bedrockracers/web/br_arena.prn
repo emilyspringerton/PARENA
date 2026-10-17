@@ -1,0 +1,203 @@
+;; stdlib/bedrockracers/web/br_arena.prn -- the arena as a signed-distance field, its four towers, and the dirt track.
+;;
+;; The level is SHANKPIT's stadium (packages/common/physics.h: map_geo_stadium, stadium_rally_loop): a bowl with a dirt rally loop
+;; running round the floor and a tower at each of its four corners. Here the bowl is a ROUNDED BOX -- floor, four walls and the
+;; ceiling joined by quarter-pipes -- so a wall is just a steeper bit of floor and the curl at the top is a road that goes over
+;; your head, like the ramp the Tesla Roadster drives up in the demo. Everything the physics needs about the shape is one
+;; function, (arena-free x y z): the distance from a point to the nearest solid, positive in the open air. The surface normal is
+;; its gradient. Cars stick to whatever surface their fans reach, so floor / wall / ceiling are the same code.
+;;
+;; The goals are the towers: a vertical shaft rising out of the ceiling at each corner. They are UPSIDE DOWN -- the mouth of the
+;; goal faces the floor, so a goal is scored by flying the ball UP into it.
+;;
+;;   room   half-extents 520 x 120 x 520 (the floor is y = 0, the ceiling y = 240), every edge rounded with radius 70
+;;   tower  t = 0..3 at corner (sx, sz) = (t&1 ? +1 : -1, t&2 ? +1 : -1): shaft radius 40 at (sx*408, sz*408), open from the
+;;          ceiling up to y = 340. The ball is in the goal when its centre is in the shaft above y = 244.
+;;   track  SHANKPIT's 11-point rally loop at 0.55 scale, road half-width 35, shoulder 47, baked into a 256x256 floor texture
+
+(defn a-hx [] : F32 520.0)
+(defn a-hz [] : F32 520.0)
+(defn a-h [] : F32 240.0)          ; ceiling height
+(defn a-r [] : F32 70.0)           ; the fillet radius of every edge
+(defn a-cy [] : F32 120.0)
+(defn t-r [] : F32 40.0)           ; tower shaft radius
+(defn t-off [] : F32 408.0)        ; tower axis offset on x and z: exactly over the line a ball takes climbing the corner edge
+(defn t-top [] : F32 340.0)        ; the roof of a shaft
+(defn goal-y [] : F32 244.0)       ; the ball is in once its centre is above this inside a shaft
+
+;; team t's tower corner signs
+(defn tw-sx [(t : I32)] : F32 (if (= (bit-and t 1) 1) 1.0 -1.0))
+(defn tw-sz [(t : I32)] : F32 (if (= (bit-and t 2) 2) 1.0 -1.0))
+(defn tw-x [(t : I32)] : F32 (* (tw-sx t) (t-off)))
+(defn tw-z [(t : I32)] : F32 (* (tw-sz t) (t-off)))
+
+;; ---- team colours: muted, distinct against a dark stadium --------------------------------------------
+(defn team-color [(t : I32)] : I32
+  (case (bit-and t 3)
+    0 (rgb 236 184 92)     ; amber
+    1 (rgb 84 190 178)     ; teal
+    2 (rgb 166 134 220)    ; violet
+    (rgb 232 112 98)))     ; coral
+(defn team-name [(t : I32)] : String
+  (case (bit-and t 3) 0 "AMBER" 1 "TEAL" 2 "VIOLET" "CORAL"))
+
+;; ---- the signed-distance field ---------------------------------------------------------------------------
+;; free distance to the rounded box: r - |max(q, 0)| - min(max(q.x, q.y, q.z), 0), q = |p - centre| - (half - r)
+(defn room-free [(x : F32) (y : F32) (z : F32)] : F32
+  (let [(qx : F32) (- (abs-f x) (- (a-hx) (a-r)))
+        (qy : F32) (- (abs-f (- y (a-cy))) (- (a-cy) (a-r)))
+        (qz : F32) (- (abs-f z) (- (a-hz) (a-r)))
+        (mx : F32) (fmax2 qx 0.0)
+        (my : F32) (fmax2 qy 0.0)
+        (mz : F32) (fmax2 qz 0.0)
+        (l : F32) (sqrt (+ (+ (* mx mx) (* my my)) (* mz mz)))
+        (inner : F32) (fmin2 (fmax2 qx (fmax2 qy qz)) 0.0)]
+    (- (- (a-r) l) inner)))
+
+;; the shaft of the tower nearest (x, z); well below the ceiling it does not exist
+(defn shaft-rho [(x : F32) (z : F32)] : F32
+  (len2 (- x (* (sgn x) (t-off))) (- z (* (sgn z) (t-off)))))
+(defn shaft-free [(x : F32) (y : F32) (z : F32)] : F32
+  (if (> y (- (a-h) 30.0))
+      (fmin2 (- (t-r) (shaft-rho x z)) (- (t-top) y))
+      -999.0))
+
+(defn arena-free [(x : F32) (y : F32) (z : F32)] : F32
+  (fmax2 (room-free x y z) (shaft-free x y z)))
+
+;; the unit normal at (x, y, z), pointing into the open air, into g-sdx/y/z
+(defn arena-normal! [(x : F32) (y : F32) (z : F32)] : Unit
+  (let [(rf : F32) (room-free x y z)
+        (sf : F32) (shaft-free x y z)]
+    (if (> sf rf)
+        (let [(cx : F32) (* (sgn x) (t-off))
+              (cz : F32) (* (sgn z) (t-off))
+              (dx : F32) (- x cx)
+              (dz : F32) (- z cz)
+              (rho : F32) (fmax2 (len2 dx dz) 0.0001)]
+          (if (<= (- (t-r) rho) (- (t-top) y))
+              (do (gf! (g-sdx) (/ (- 0.0 dx) rho)) (gf! (g-sdy) 0.0) (gf! (g-sdz) (/ (- 0.0 dz) rho)))
+              (do (gf! (g-sdx) 0.0) (gf! (g-sdy) -1.0) (gf! (g-sdz) 0.0))))
+        (let [(qx : F32) (- (abs-f x) (- (a-hx) (a-r)))
+              (qy : F32) (- (abs-f (- y (a-cy))) (- (a-cy) (a-r)))
+              (qz : F32) (- (abs-f z) (- (a-hz) (a-r)))
+              (mx : F32) (fmax2 qx 0.0)
+              (my : F32) (fmax2 qy 0.0)
+              (mz : F32) (fmax2 qz 0.0)
+              (l : F32) (sqrt (+ (+ (* mx mx) (* my my)) (* mz mz)))]
+          (if (> l 0.0001)
+              (do (gf! (g-sdx) (/ (* (- 0.0 (sgn x)) mx) l))
+                  (gf! (g-sdy) (/ (* (- 0.0 (sgn (- y (a-cy)))) my) l))
+                  (gf! (g-sdz) (/ (* (- 0.0 (sgn z)) mz) l)))
+              (cond
+                (and (>= qx qy) (>= qx qz)) (do (gf! (g-sdx) (- 0.0 (sgn x))) (gf! (g-sdy) 0.0) (gf! (g-sdz) 0.0))
+                (>= qy qz) (do (gf! (g-sdx) 0.0) (gf! (g-sdy) (- 0.0 (sgn (- y (a-cy))))) (gf! (g-sdz) 0.0))
+                :else (do (gf! (g-sdx) 0.0) (gf! (g-sdy) 0.0) (gf! (g-sdz) (- 0.0 (sgn z))))))))))
+
+;; which tower's shaft is the point inside (centre above the goal line)? -1 none
+(defn goal-at [(x : F32) (y : F32) (z : F32)] : I32
+  (if (and (> y (goal-y)) (< (shaft-rho x z) (t-r)))
+      (+ (b2i (> x 0.0)) (* 2 (b2i (> z 0.0))))
+      -1))
+
+;; ---- the rally loop ----------------------------------------------------------------------------------------
+(defn loop-n [] : I32 11)
+(defn loop-x [(i : I32)] : F32
+  (* 0.55 (case i 0 680.0 1 620.0 2 360.0 3 -90.0 4 -430.0 5 -690.0 6 -720.0 7 -500.0 8 -120.0 9 300.0 -620.0)))
+(defn loop-z [(i : I32)] : F32
+  (* 0.55 (case i 0 -180.0 1 250.0 2 610.0 3 700.0 4 560.0 5 250.0 6 -210.0 7 -600.0 8 -730.0 9 -640.0 -420.0)))
+(defn road-half [] : F32 35.0)
+(defn road-shoulder [] : F32 47.0)
+
+(defn seg-dist [(px : F32) (pz : F32) (ax : F32) (az : F32) (bx : F32) (bz : F32)] : F32
+  (let [(vx : F32) (- bx ax)
+        (vz : F32) (- bz az)
+        (wx : F32) (- px ax)
+        (wz : F32) (- pz az)
+        (vv : F32) (+ (* vx vx) (* vz vz))
+        (t : F32) (clamp-f (/ (+ (* wx vx) (* wz vz)) (fmax2 vv 0.0001)) 0.0 1.0)]
+    (len2 (- px (+ ax (* vx t))) (- pz (+ az (* vz t))))))
+
+(defn road-dist [(x : F32) (z : F32)] : F32
+  (let [(best : F32) 100000.0]
+    (dotimes [i (loop-n)]
+      (let [j (mod (+ i 1) (loop-n))
+            (d : F32) (seg-dist x z (loop-x i) (loop-z i) (loop-x j) (loop-z j))]
+        (when (< d best) (set! best d))))
+    best))
+
+;; even-odd point in polygon: inside the loop = the infield
+(defn in-loop? [(x : F32) (z : F32)] : Bool
+  (let [c 0]
+    (dotimes [i (loop-n)]
+      (let [j (mod (+ i 1) (loop-n))
+            (zi : F32) (loop-z i)
+            (zj : F32) (loop-z j)]
+        (when (not (= (b2i (> zi z)) (b2i (> zj z))))
+          (let [(xx : F32) (+ (loop-x i) (/ (* (- (loop-x j) (loop-x i)) (- z zi)) (- zj zi)))]
+            (when (< x xx) (set! c (+ c 1)))))))
+    (= (bit-and c 1) 1)))
+
+;; ---- the floor texture -------------------------------------------------------------------------------------
+;; 256 x 256 texels over 1040 x 1040 world units (4.06 per texel). Texel colours are baked once at start; the road byte says how
+;; road-like a texel is (255 = dirt, 0 = anything else) and is what the physics reads for grip.
+(defn tex-n [] : I32 256)
+(defn tex-cell [] : F32 4.0625)
+(defn tex-ix [(x : F32)] : I32 (clamp-i (i32 (floor (/ (+ x 520.0) 4.0625))) 0 255))
+(defn tex-iz [(z : F32)] : I32 (clamp-i (i32 (floor (/ (+ z 520.0) 4.0625))) 0 255))
+(defn road-at [(x : F32) (z : F32)] : I32 (load8 (+ (road-base) (+ (* (tex-iz z) 256) (tex-ix x)))))
+(defn tex-color [(ix : I32) (iz : I32)] : I32 (load32 (+ (tex-base) (shl (+ (* (clamp-i iz 0 255) 256) (clamp-i ix 0 255)) 2))))
+
+(defn hash2 [(i : I32) (j : I32)] : I32
+  (let [h (+ (* i 374761393) (* j 668265263))
+        h2 (* (bit-xor h (ushr h 13)) 1274126177)]
+    (bit-and (bit-xor h2 (ushr h2 16)) 255)))
+
+(defn mix-f [(c1 : I32) (c2 : I32) (t : F32)] : I32 (mix c1 c2 (clamp-i (i32 (* t 256.0)) 0 256)))
+
+(defn bake-floor! [] : Unit
+  (dotimes [iz 256]
+    (dotimes [ix 256]
+      (let [(x : F32) (- (* (+ (f32 ix) 0.5) (tex-cell)) 520.0)
+            (z : F32) (- (* (+ (f32 iz) 0.5) (tex-cell)) 520.0)
+            (d : F32) (road-dist x z)
+            (inside : Bool) (in-loop? x z)
+            n (hash2 ix iz)
+            (rho : F32) (len2 x z)
+            ;; the vignette: floodlit in the middle, dark at the walls
+            (vig : F32) (- 1.0 (* 0.42 (sq (clamp-f (/ rho 700.0) 0.0 1.0))))
+            infield (shade (rgb 58 84 72) (+ 214 (shr n 3)))
+            apron (shade (rgb 88 86 96) (+ 220 (shr n 4)))
+            base (if inside infield apron)
+            ;; road weight: full inside the half-width, smoothstep to nothing at the shoulder
+            (rw : F32) (clamp-f (/ (- (road-shoulder) d) (- (road-shoulder) (road-half))) 0.0 1.0)
+            (rws : F32) (* rw (* rw (- 3.0 (* 2.0 rw))))
+            ;; two worn tyre lines either side of the middle of the road
+            (tyre : F32) (if (and (< d 30.0) (or (< (abs-f (- d 12.0)) 2.2) (< (abs-f (- d 22.0)) 1.6))) 0.18 0.0)
+            dirt (shade (rgb 156 108 72) (- (+ 206 (shr n 2)) (i32 (* tyre 300.0))))
+            c0 (mix-f base dirt rws)
+            ;; kickoff circle and spot
+            (kr : F32) (abs-f (- rho 44.0))
+            c1 (if (< kr 1.4) (mix c0 (rgb 236 232 220) 150) c0)
+            c2 (if (< rho 3.2) (mix c1 (rgb 236 232 220) 190) c1)
+            ;; the four team pads under the towers: a ring and a soft wash of the team's colour
+            c3 (let [(pc : I32) c2]
+                 (dotimes [t 4]
+                   (let [(dx : F32) (- x (* (tw-sx t) 400.0))
+                         (dz : F32) (- z (* (tw-sz t) 400.0))
+                         (pr : F32) (len2 dx dz)]
+                     (when (< pr 70.0)
+                       (set! pc (mix pc (team-color t) (if (< (abs-f (- pr 56.0)) 2.0) 190 (if (< pr 56.0) 46 0)))))))
+                 pc)
+            c4 (shade c3 (clamp-i (i32 (* vig 256.0)) 0 256))]
+        (store32! (+ (tex-base) (shl (+ (* iz 256) ix) 2)) c4)
+        (store8! (+ (road-base) (+ (* iz 256) ix)) (i32 (* rws 255.0)))))))
+
+(defn init-arena! [] : Unit (bake-floor!))
+
+;; ---- spawns -------------------------------------------------------------------------------------------------
+;; a team starts at its own corner, three abreast, facing the middle: (x, z) of seat k
+(defn spawn-x [(t : I32) (k : I32)] : F32
+  (+ (* (tw-sx t) 360.0) (* (- 0.0 (tw-sz t)) (* (f32 (- k 1)) 34.0) 0.7071)))
+(defn spawn-z [(t : I32) (k : I32)] : F32
+  (+ (* (tw-sz t) 360.0) (* (tw-sx t) (* (f32 (- k 1)) 34.0) 0.7071)))

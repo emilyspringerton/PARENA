@@ -1,0 +1,3 @@
+;; stdlib/bedrockracers/web/br_league.prn -- the league table: genomes for the CHAMPION level.
+;; (stub: the champion is the HARD genome until tools/league_train.mjs has run and written this file)
+(defn champion-gene [(s : I32) (k : I32)] : F32 (lvl-genome 3 k))

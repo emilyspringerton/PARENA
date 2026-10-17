@@ -1,0 +1,27 @@
+;; stdlib/bedrockracers/web/br_main.prn -- the exports the page calls (and the test hooks).
+(defn br-init [] : Unit
+  (do (load-font) (init-arena!) (gi! (g-rng2) 9001)))
+(defn br-car-addr [(s : I32)] : I32 (car-base s))
+(defn br-ball-addr [] : I32 (ball-base))
+(defn br-g [(k : I32)] : I32 (gi k))
+(defn br-t-place [(s : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (do (set-c-active! s 1) (place-car! s x y z) (set-c-air! s 100.0)))
+(defn br-t-cmd [(s : I32) (thr : F32) (steer : F32) (pitch : F32) (roll : F32) (strafe : F32) (lift : F32) (boost : I32) (fansoff : I32)] : Unit
+  (do (set-c-in-thr! s thr) (set-c-in-steer! s steer) (set-c-in-pitch! s pitch) (set-c-in-roll! s roll)
+      (set-c-in-strafe! s strafe) (set-c-in-lift! s lift) (set-c-in-boost! s boost) (set-c-in-fans-off! s fansoff)))
+(defn br-t-ball [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32)] : Unit
+  (do (set-b-x! x) (set-b-y! y) (set-b-z! z) (set-b-vx! vx) (set-b-vy! vy) (set-b-vz! vz)))
+(defn br-t-step [(n : I32)] : Unit
+  (dotimes [i n] (capture-prev!) (physics-tick!) (gi! (g-tick) (+ (gi (g-tick)) 1))))
+(defn br-t-free [(x : F32) (y : F32) (z : F32)] : F32 (arena-free x y z))
+(defn br-t-road [(x : F32) (z : F32)] : I32 (road-at x z))
+;; a whole match on the bench: begin (all bots unless a roster says otherwise) and run
+(defn br-t-begin [(seed : I32) (level : I32) (roster : I32)] : Unit
+  (do (begin-match! seed level roster) (gi! (g-phase) 1) (gi! (g-countdown) 0)))
+(defn br-t-play [(n : I32)] : Unit
+  (dotimes [i n] (when (= (gi (g-phase)) 1) (sim-tick!))))
+(defn br-t-pred-update [] : Unit (pred-update!))
+(defn br-t-plan [(px : F32) (py : F32) (pz : F32) (own : I32) (want : I32) (speed : F32)] : F32
+  (do (plan-shot! px py pz own want speed) (gf (pl-score))))
+(defn br-t-whatif [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (own : I32) (want : I32)] : F32
+  (what-if x y z vx vy vz own want))

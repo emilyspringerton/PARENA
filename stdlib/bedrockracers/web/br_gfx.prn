@@ -1,0 +1,213 @@
+;; stdlib/bedrockracers/web/br_gfx.prn -- 2D software-renderer primitives: pixels, rectangles, lines, text, numbers.
+;;
+;; Everything on screen is painted here, in wasm, into the 640x360 RGBA framebuffer at fb-base; the page only
+;; copies those bytes onto a <canvas>. Colors are 0xAABBGGRR (R is the first byte in memory, which is what
+;; ImageData wants). No heap, no libm.
+
+(defn opaque [] : I32 -16777216)  ; 0xFF000000
+(defn rgb [(r : I32) (g : I32) (b : I32)] : I32
+  (bit-or (opaque) (bit-or r (bit-or (shl g 8) (shl b 16)))))
+(defn hex [(c : I32)] : I32   ; 0xRRGGBB -> engine color
+  (rgb (bit-and (shr c 16) 255) (bit-and (shr c 8) 255) (bit-and c 255)))
+(defn col-r [(c : I32)] : I32 (bit-and c 255))
+(defn col-g [(c : I32)] : I32 (bit-and (shr c 8) 255))
+(defn col-b [(c : I32)] : I32 (bit-and (shr c 16) 255))
+
+;; mix(c1, c2, t) with t in 0..256 (0 = c1, 256 = c2); shifts instead of divides, this is the hot path of the fog
+(defn mix [(c1 : I32) (c2 : I32) (t : I32)] : I32
+  (rgb (+ (col-r c1) (shr (* (- (col-r c2) (col-r c1)) t) 8))
+       (+ (col-g c1) (shr (* (- (col-g c2) (col-g c1)) t) 8))
+       (+ (col-b c1) (shr (* (- (col-b c2) (col-b c1)) t) 8))))
+;; scale brightness: k in 0..256 (256 = unchanged)
+(defn shade [(c : I32) (k : I32)] : I32
+  (rgb (min-i 255 (shr (* (col-r c) k) 8)) (min-i 255 (shr (* (col-g c) k) 8)) (min-i 255 (shr (* (col-b c) k) 8))))
+
+(defn px-addr [(x : I32) (y : I32)] : I32 (+ (fb-base) (shl (+ (* y 640) x) 2)))
+(defn inside? [(x : I32) (y : I32)] : Bool
+  (and (and (>= x 0) (< x 640)) (and (>= y 0) (< y 360))))
+
+(defn put-px [(x : I32) (y : I32) (c : I32)] : Unit
+  (when (inside? x y) (store32! (px-addr x y) c)))
+
+(defn put-px-a [(x : I32) (y : I32) (c : I32) (a : I32)] : Unit
+  (when (inside? x y)
+    (let [d (load32 (px-addr x y))]
+      (store32! (px-addr x y) (mix d c a)))))
+
+(defn fill-rect [(x : I32) (y : I32) (w : I32) (h : I32) (c : I32)] : Unit
+  (let [x0 (max-i x 0) y0 (max-i y 0) x1 (min-i (+ x w) 640) y1 (min-i (+ y h) 360)]
+    (loop [yy y0]
+      (when (< yy y1)
+        (loop [xx x0]
+          (when (< xx x1)
+            (store32! (px-addr xx yy) c)
+            (recur (+ xx 1))))
+        (recur (+ yy 1))))))
+
+(defn fill-rect-a [(x : I32) (y : I32) (w : I32) (h : I32) (c : I32) (a : I32)] : Unit
+  (let [x0 (max-i x 0) y0 (max-i y 0) x1 (min-i (+ x w) 640) y1 (min-i (+ y h) 360)]
+    (loop [yy y0]
+      (when (< yy y1)
+        (loop [xx x0]
+          (when (< xx x1)
+            (store32! (px-addr xx yy) (mix (load32 (px-addr xx yy)) c a))
+            (recur (+ xx 1))))
+        (recur (+ yy 1))))))
+
+(defn rect-outline [(x : I32) (y : I32) (w : I32) (h : I32) (c : I32)] : Unit
+  (do (fill-rect x y w 1 c) (fill-rect x (- (+ y h) 1) w 1 c)
+      (fill-rect x y 1 h c) (fill-rect (- (+ x w) 1) y 1 h c)))
+
+(defn rect-outline-a [(x : I32) (y : I32) (w : I32) (h : I32) (c : I32) (a : I32)] : Unit
+  (do (fill-rect-a x y w 1 c a) (fill-rect-a x (- (+ y h) 1) w 1 c a)
+      (fill-rect-a x (+ y 1) 1 (- h 2) c a) (fill-rect-a (- (+ x w) 1) (+ y 1) 1 (- h 2) c a)))
+
+;; a card: translucent fill with a one-pixel hairline, the shape every panel in the game uses
+(defn card [(x : I32) (y : I32) (w : I32) (h : I32) (fill : I32) (fa : I32) (line : I32) (la : I32)] : Unit
+  (do (fill-rect-a x y w h fill fa) (rect-outline-a x y w h line la)))
+
+(defn line [(x0 : I32) (y0 : I32) (x1 : I32) (y1 : I32) (c : I32)] : Unit
+  (let [dx (abs-i (- x1 x0)) dy (- 0 (abs-i (- y1 y0)))
+        sx (if (< x0 x1) 1 -1) sy (if (< y0 y1) 1 -1)
+        x x0 y y0 err (+ dx dy)]
+    (loop [guard 0]
+      (when (< guard 1024)
+        (put-px x y c)
+        (when (not (and (= x x1) (= y y1)))
+          (let [e2 (* 2 err)]
+            (when (>= e2 dy) (set! err (+ err dy)) (set! x (+ x sx)))
+            (when (<= e2 dx) (set! err (+ err dx)) (set! y (+ y sy))))
+          (recur (+ guard 1)))))))
+
+(defn line-a [(x0 : I32) (y0 : I32) (x1 : I32) (y1 : I32) (c : I32) (a : I32)] : Unit
+  (let [dx (abs-i (- x1 x0)) dy (- 0 (abs-i (- y1 y0)))
+        sx (if (< x0 x1) 1 -1) sy (if (< y0 y1) 1 -1)
+        x x0 y y0 err (+ dx dy)]
+    (loop [guard 0]
+      (when (< guard 1024)
+        (put-px-a x y c a)
+        (when (not (and (= x x1) (= y y1)))
+          (let [e2 (* 2 err)]
+            (when (>= e2 dy) (set! err (+ err dy)) (set! x (+ x sx)))
+            (when (<= e2 dx) (set! err (+ err dx)) (set! y (+ y sy))))
+          (recur (+ guard 1)))))))
+
+(defn fill-circle-a [(cx : I32) (cy : I32) (r : I32) (c : I32) (a : I32)] : Unit
+  (dotimes [i (+ (* 2 r) 1)]
+    (let [dy (- i r)
+          (w : F32) (sqrt (f32 (max-i 0 (- (* r r) (* dy dy)))))
+          hw (i32 w)]
+      (fill-rect-a (- cx hw) (+ cy dy) (+ (* 2 hw) 1) 1 c a))))
+
+(defn circle-outline-a [(cx : I32) (cy : I32) (r : I32) (c : I32) (a : I32)] : Unit
+  (dotimes [i 64]
+    (let [(a0 : F32) (/ (* 6.2831855 (f32 i)) 64.0)]
+      (put-px-a (+ cx (i32 (* (f32 r) (cosf a0)))) (+ cy (i32 (* (f32 r) (sinf a0)))) c a))))
+
+;; ---- text (8x16 bitmap font, shared with the GFD terminal) -------------------------------------
+(defn nibble [(c : I32)] : I32 (if (>= c 97) (- c 87) (- c 48)))
+
+(defn load-font [] : Unit
+  (let [s (str-addr (font-hex))]
+    (loop [i 0]
+      (when (< i 4080)
+        (store8! (+ (font-base) i)
+                 (bit-or (shl (nibble (load8 (+ s (shl i 1)))) 4)
+                         (nibble (load8 (+ s (+ (shl i 1) 1))))))
+        (recur (+ i 1))))))
+
+(defn glyph-idx [(ch : I32)] : I32 (if (and (>= ch 32) (<= ch 126)) (- ch 32) 31))
+
+;; one glyph at scale sc; a 1x pass paints single pixels, larger scales fill blocks
+(defn draw-glyph [(g : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (dotimes [row 16]
+    (let [bits (load8 (+ (font-base) (+ (* g 16) row)))]
+      (when (!= bits 0)
+        (dotimes [col 8]
+          (when (= (bit-and (shr bits (- 7 col)) 1) 1)
+            (if (= sc 1)
+                (put-px (+ x col) (+ y row) c)
+                (fill-rect (+ x (* col sc)) (+ y (* row sc)) sc sc c))))))))
+
+(defn str-len [(s : String)] : I32
+  (let [a (str-addr s)]
+    (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1))))))
+(defn str-len-at [(a : I32)] : I32
+  (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1)))))
+
+;; glyphs are 8 wide; text is set 7 apart at sc 1 so small type is not gappy
+(defn adv [(sc : I32)] : I32 (if (= sc 1) 7 (* 8 sc)))
+(defn text-width [(s : String) (sc : I32)] : I32 (* (str-len s) (adv sc)))
+(defn text-width-at [(a : I32) (sc : I32)] : I32 (* (str-len-at a) (adv sc)))
+
+(defn draw-text [(s : String) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (let [a (str-addr s)]
+    (loop [i 0]
+      (let [ch (load8 (+ a i))]
+        (when (!= ch 0)
+          (draw-glyph (glyph-idx ch) (+ x (* i (adv sc))) y sc c)
+          (recur (+ i 1)))))))
+
+(defn draw-text-at [(a : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (loop [i 0]
+    (let [ch (load8 (+ a i))]
+      (when (!= ch 0)
+        (draw-glyph (glyph-idx ch) (+ x (* i (adv sc))) y sc c)
+        (recur (+ i 1))))))
+
+(defn ink-shadow [] : I32 (rgb 28 26 34))
+
+(defn draw-text-s [(s : String) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (do (draw-text s (+ x 1) (+ y 1) sc (ink-shadow))
+      (draw-text s x y sc c)))
+(defn draw-text-c [(s : String) (cx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-text-s s (- cx (/ (text-width s sc) 2)) y sc c))
+(defn draw-text-r [(s : String) (rx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-text-s s (- rx (text-width s sc)) y sc c))
+
+(defn draw-text-at-s [(a : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (do (draw-text-at a (+ x 1) (+ y 1) sc (ink-shadow))
+      (draw-text-at a x y sc c)))
+(defn draw-text-at-c [(a : I32) (cx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-text-at-s a (- cx (/ (text-width-at a sc) 2)) y sc c))
+
+;; ---- numbers: decimal, no libc ---------------------------------------------------------------------
+(defn digit-count [(n : I32)] : I32
+  (loop [v (abs-i n) d 1] (if (< v 10) d (recur (/ v 10) (+ d 1)))))
+(defn num-width [(n : I32) (sc : I32)] : I32
+  (* (+ (digit-count n) (b2i (< n 0))) (adv sc)))
+
+(defn draw-int [(n : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (let [d (digit-count n)
+        neg (< n 0)]
+    (when neg (draw-glyph (glyph-idx 45) x y sc c))
+    (let [x0 (+ x (* (b2i neg) (adv sc)))]
+      (loop [i (- d 1) v (abs-i n)]
+        (when (>= i 0)
+          (draw-glyph (glyph-idx (+ 48 (mod v 10))) (+ x0 (* i (adv sc))) y sc c)
+          (recur (- i 1) (/ v 10)))))))
+(defn draw-int-s [(n : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (do (draw-int n (+ x 1) (+ y 1) sc (ink-shadow))
+      (draw-int n x y sc c)))
+(defn draw-int-c [(n : I32) (cx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-int-s n (- cx (/ (num-width n sc) 2)) y sc c))
+(defn draw-int-r [(n : I32) (rx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (draw-int-s n (- rx (num-width n sc)) y sc c))
+;; two digits with a leading zero (clock seconds)
+(defn draw-int2 [(n : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (do (draw-glyph (glyph-idx (+ 48 (mod (/ n 10) 10))) x y sc c)
+      (draw-glyph (glyph-idx (+ 48 (mod n 10))) (+ x (adv sc)) y sc c)))
+;; m:ss
+(defn draw-clock [(secs : I32) (x : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (let [m (/ (max-i secs 0) 60)
+        s (mod (max-i secs 0) 60)
+        w (* (+ (digit-count m) 3) (adv sc))
+        x0 x]
+    (draw-int m x0 y sc c)
+    (draw-glyph (glyph-idx 58) (+ x0 (* (digit-count m) (adv sc))) y sc c)
+    (draw-int2 s (+ x0 (* (+ (digit-count m) 1) (adv sc))) y sc c)))
+(defn clock-width [(secs : I32) (sc : I32)] : I32
+  (* (+ (digit-count (/ (max-i secs 0) 60)) 3) (adv sc)))
+(defn draw-clock-c [(secs : I32) (cx : I32) (y : I32) (sc : I32) (c : I32)] : Unit
+  (do (draw-clock secs (+ (- cx (/ (clock-width secs sc) 2)) 1) (+ y 1) sc (ink-shadow))
+      (draw-clock secs (- cx (/ (clock-width secs sc) 2)) y sc c)))

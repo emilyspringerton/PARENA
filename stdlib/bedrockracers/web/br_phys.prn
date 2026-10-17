@@ -1,0 +1,412 @@
+;; stdlib/bedrockracers/web/br_phys.prn -- the rocket car, the ball, and the world they share. 60 Hz (16 ms ticks), two substeps each.
+;;
+;; THE CAR is modelled on the Tesla Roadster rocket demo (the founder's reference): a low car with FOUR LIFT NOZZLES under it
+;; and cold-gas jets on its flanks, plus FANS under the floor that suck it onto the road so it can drive inverted. Everything it
+;; spends comes from one tank of compressed AIR (like mana: it refills far faster than boost does in Rocket League).
+;;
+;;   on a surface  (fans on and a surface within reach)   the car's up axis swings onto the surface normal, gravity is beaten by
+;;                 the fans, so floor, wall and ceiling are all "road". W/S throttle, A/D steer, grip depends on the dirt
+;;   in the air    the car is a thruster platform with PRECISE, rate-commanded control on every axis:
+;;                    pitch / yaw / roll   angular rates follow the command and STOP when you let go (cold-gas attitude jets)
+;;                    lift                 the four nozzles, along the car's up axis
+;;                    boost                the rear nozzle, along the car's forward axis
+;;                    strafe, fore / aft   the flank jets, along its right / forward axes
+;;   the tank      lift 26 /s, boost 22 /s, jets 9 /s, attitude 4 /s of 100; it refills 34 /s once you stop spending (48 /s on a
+;;                 surface), plus a team-synergy bonus (br_rules.prn). Empty, the car still turns at a quarter rate -- never helpless.
+;;
+;; The command a car obeys is nine numbers (thr, steer, pitch, roll, strafe, lift, boost, fans-off): a person's keys, a bot's
+;; brain, or the replay log write the same fields, so a match is a pure function of (seed, roster, the humans' commands).
+
+(defn tick-dt [] : F32 0.016)
+(defn sub-dt [] : F32 0.008)
+(defn grav [] : F32 77.0)
+(defn rc [] : F32 4.0)              ; car collision sphere radius (two spheres, 3.6 either side of the centre)
+(defn sph-off [] : F32 3.6)
+(defn rb [] : F32 11.0)             ; the ball
+(defn ball-grav [] : F32 66.0)
+(defn fan-force [] : F32 130.0)
+(defn fan-reach [] : F32 6.0)       ; the fans catch a car whose wheels are this close
+(defn fan-hold [] : F32 12.0)       ; ... and keep hold until it is this far
+(defn tank-max [] : F32 100.0)
+
+;; ---- basis helpers -----------------------------------------------------------------------------------------
+;; right = forward x up  (so right x up = -forward, a normal non-mirrored camera frame)
+(defn set-right! [(s : I32)] : Unit
+  (let [(fx : F32) (c-fx s) (fy : F32) (c-fy s) (fz : F32) (c-fz s)
+        (ux : F32) (c-ux s) (uy : F32) (c-uy s) (uz : F32) (c-uz s)]
+    (set-c-rx! s (- (* fy uz) (* fz uy)))
+    (set-c-ry! s (- (* fz ux) (* fx uz)))
+    (set-c-rz! s (- (* fx uy) (* fy ux)))))
+
+;; Gram-Schmidt: forward stays, up is made perpendicular to it, right follows
+(defn fix-basis! [(s : I32)] : Unit
+  (let [(fx : F32) (c-fx s) (fy : F32) (c-fy s) (fz : F32) (c-fz s)
+        (il : F32) (inv-len3 fx fy fz)
+        (gx : F32) (* fx il) (gy : F32) (* fy il) (gz : F32) (* fz il)
+        (ux : F32) (c-ux s) (uy : F32) (c-uy s) (uz : F32) (c-uz s)
+        (d : F32) (dot3 gx gy gz ux uy uz)
+        (px : F32) (- ux (* gx d)) (py : F32) (- uy (* gy d)) (pz : F32) (- uz (* gz d))
+        (iu : F32) (inv-len3 px py pz)]
+    (set-c-fx! s gx) (set-c-fy! s gy) (set-c-fz! s gz)
+    (set-c-ux! s (* px iu)) (set-c-uy! s (* py iu)) (set-c-uz! s (* pz iu))
+    (set-right! s)))
+
+;; rotate the vector stored at words (i0, i0+1, i0+2) of car s about the unit axis k by an angle (given as cos, sin)
+(defn rot-words! [(s : I32) (i0 : I32) (kx : F32) (ky : F32) (kz : F32) (c : F32) (sn : F32)] : Unit
+  (let [(vx : F32) (cf s i0) (vy : F32) (cf s (+ i0 1)) (vz : F32) (cf s (+ i0 2))
+        (d : F32) (* (dot3 kx ky kz vx vy vz) (- 1.0 c))
+        (cx : F32) (- (* ky vz) (* kz vy))
+        (cy : F32) (- (* kz vx) (* kx vz))
+        (cz : F32) (- (* kx vy) (* ky vx))]
+    (cf! s i0 (+ (+ (* vx c) (* cx sn)) (* kx d)))
+    (cf! s (+ i0 1) (+ (+ (* vy c) (* cy sn)) (* ky d)))
+    (cf! s (+ i0 2) (+ (+ (* vz c) (* cz sn)) (* kz d)))))
+
+;; spin the car about one of its own axes: axis 0 = right (pitch), 1 = up (yaw), 2 = forward (roll)
+(defn spin-car! [(s : I32) (axis : I32) (ang : F32)] : Unit
+  (when (> (abs-f ang) 0.000001)
+    (let [(c : F32) (cosf ang) (sn : F32) (sinf ang)]
+      (cond
+        (= axis 0) (let [(kx : F32) (c-rx s) (ky : F32) (c-ry s) (kz : F32) (c-rz s)]
+                     (rot-words! s (k-ux) kx ky kz c sn) (rot-words! s (k-fx) kx ky kz c sn))
+        (= axis 1) (let [(kx : F32) (c-ux s) (ky : F32) (c-uy s) (kz : F32) (c-uz s)]
+                     (rot-words! s (k-fx) kx ky kz c sn))
+        :else (let [(kx : F32) (c-fx s) (ky : F32) (c-fy s) (kz : F32) (c-fz s)]
+                (rot-words! s (k-ux) kx ky kz c sn)))
+      (set-right! s))))
+
+;; ---- placing a car -------------------------------------------------------------------------------------------
+;; upright, facing the middle of the arena
+(defn place-car! [(s : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (let [(il : F32) (/ 1.0 (fmax2 0.001 (len2 x z)))]
+    (set-c-x! s x) (set-c-y! s y) (set-c-z! s z)
+    (set-c-vx! s 0.0) (set-c-vy! s 0.0) (set-c-vz! s 0.0)
+    (set-c-ux! s 0.0) (set-c-uy! s 1.0) (set-c-uz! s 0.0)
+    (set-c-fx! s (* (- 0.0 x) il)) (set-c-fy! s 0.0) (set-c-fz! s (* (- 0.0 z) il))
+    (fix-basis! s)
+    (set-c-wp! s 0.0) (set-c-wy! s 0.0) (set-c-wr! s 0.0)
+    (set-c-attached! s 1)
+    (set-c-px! s x) (set-c-py! s y) (set-c-pz! s z)
+    (set-c-lift-fx! s 0.0) (set-c-boost-fx! s 0.0) (set-c-strafe-fx! s 0.0) (set-c-slip! s 0.0)
+    (set-c-in-thr! s 0.0) (set-c-in-steer! s 0.0) (set-c-in-pitch! s 0.0) (set-c-in-roll! s 0.0) (set-c-in-strafe! s 0.0)
+    (set-c-in-lift! s 0.0) (set-c-in-boost! s 0) (set-c-in-fans-off! s 0)))
+
+;; ---- the surface a car stands on --------------------------------------------------------------------------------
+;; the smallest free distance of the car's two collision spheres, less their radius: <= 0 means touching
+(defn car-gap [(s : I32)] : F32
+  (let [(x : F32) (c-x s) (y : F32) (c-y s) (z : F32) (c-z s)
+        (fx : F32) (* (c-fx s) (sph-off)) (fy : F32) (* (c-fy s) (sph-off)) (fz : F32) (* (c-fz s) (sph-off))
+        (d1 : F32) (arena-free (+ x fx) (+ y fy) (+ z fz))
+        (d2 : F32) (arena-free (- x fx) (- y fy) (- z fz))]
+    (- (fmin2 d1 d2) (rc))))
+
+;; slide the car out of the walls: both spheres, two passes; velocity into a surface is removed (bounce only with fans off)
+(defn resolve-car! [(s : I32)] : Unit
+  (dotimes [pass 2]
+    (dotimes [e 2]
+      (let [(sg : F32) (if (= e 0) 1.0 -1.0)
+            (x : F32) (+ (c-x s) (* (* (c-fx s) (sph-off)) sg))
+            (y : F32) (+ (c-y s) (* (* (c-fy s) (sph-off)) sg))
+            (z : F32) (+ (c-z s) (* (* (c-fz s) (sph-off)) sg))
+            (sd : F32) (arena-free x y z)
+            (pen : F32) (- (rc) sd)]
+        (when (> pen 0.0)
+          (arena-normal! x y z)
+          (let [(nx : F32) (gf (g-sdx)) (ny : F32) (gf (g-sdy)) (nz : F32) (gf (g-sdz))
+                (vn : F32) (dot3 (c-vx s) (c-vy s) (c-vz s) nx ny nz)
+                (e1 : F32) (if (= (c-in-fans-off s) 1) 0.35 (if (= (c-attached s) 1) 0.0 0.12))]
+            (set-c-x! s (+ (c-x s) (* nx pen)))
+            (set-c-y! s (+ (c-y s) (* ny pen)))
+            (set-c-z! s (+ (c-z s) (* nz pen)))
+            (when (< vn 0.0)
+              (let [(j : F32) (* (- 0.0 vn) (+ 1.0 e1))]
+                (set-c-vx! s (+ (c-vx s) (* nx j)))
+                (set-c-vy! s (+ (c-vy s) (* ny j)))
+                (set-c-vz! s (+ (c-vz s) (* nz j)))))))))))
+
+;; ---- one car, one substep ----------------------------------------------------------------------------------------
+;; driving: the car is on a surface held by its fans
+(defn drive-sub! [(s : I32) (dt : F32)] : Unit
+  (let [(x : F32) (c-x s) (y : F32) (c-y s) (z : F32) (c-z s)]
+    (arena-normal! x y z)
+    (let [(nx : F32) (gf (g-sdx)) (ny : F32) (gf (g-sdy)) (nz : F32) (gf (g-sdz))]
+      ;; the up axis swings onto the surface normal; forward is kept in the tangent plane
+      (let [(ux : F32) (+ (c-ux s) (* (- nx (c-ux s)) 0.2))
+            (uy : F32) (+ (c-uy s) (* (- ny (c-uy s)) 0.2))
+            (uz : F32) (+ (c-uz s) (* (- nz (c-uz s)) 0.2))
+            (iu : F32) (inv-len3 ux uy uz)]
+        (set-c-ux! s (* ux iu)) (set-c-uy! s (* uy iu)) (set-c-uz! s (* uz iu))
+        (let [(fd : F32) (dot3 (c-fx s) (c-fy s) (c-fz s) (c-ux s) (c-uy s) (c-uz s))]
+          (set-c-fx! s (- (c-fx s) (* (c-ux s) fd)))
+          (set-c-fy! s (- (c-fy s) (* (c-uy s) fd)))
+          (set-c-fz! s (- (c-fz s) (* (c-uz s) fd)))
+          (fix-basis! s)))
+      ;; velocity in the surface's frame
+      (let [(vx : F32) (c-vx s) (vy : F32) (c-vy s) (vz : F32) (c-vz s)
+            (vn : F32) (dot3 vx vy vz nx ny nz)
+            (tx : F32) (- vx (* nx vn)) (ty : F32) (- vy (* ny vn)) (tz : F32) (- vz (* nz vn))
+            (vf : F32) (dot3 tx ty tz (c-fx s) (c-fy s) (c-fz s))
+            (vl : F32) (dot3 tx ty tz (c-rx s) (c-ry s) (c-rz s))
+            ;; gravity splits into a part the surface carries and a part along it
+            (gn : F32) (* (- 0.0 (grav)) ny)
+            (gtx : F32) (* (- 0.0 nx) gn) (gty : F32) (- (- 0.0 (grav)) (* ny gn)) (gtz : F32) (* (- 0.0 nz) gn)
+            (thr : F32) (c-in-thr s)
+            (boost : I32) (c-in-boost s)
+            (rw : F32) (if (> ny 0.7) (/ (f32 (road-at x z)) 255.0) 0.0)]
+        (set! vf (+ vf (* (dot3 gtx gty gtz (c-fx s) (c-fy s) (c-fz s)) dt)))
+        (set! vl (+ vl (* (dot3 gtx gty gtz (c-rx s) (c-ry s) (c-rz s)) dt)))
+        ;; steering: a rate that tightens with speed (a right turn for steer > 0, about the surface normal)
+        (let [(wmax : F32) (+ 0.55 (/ 2.6 (+ 1.0 (sq (/ (abs-f vf) 80.0)))))
+              (steer : F32) (c-in-steer s)]
+          (spin-car! s 1 (* (* (- 0.0 steer) wmax) dt)))
+        ;; throttle and brake
+        (let [(acc : F32) (cond
+                            (> thr 0.01) (* (* thr 175.0) (fmax2 0.0 (- 1.0 (/ vf 190.0))))
+                            (< thr -0.01) (if (> vf 4.0) (* thr 340.0) (* (- 0.0 (abs-f thr)) (* 125.0 (fmax2 0.0 (+ 1.0 (/ vf 90.0))))))
+                            :else 0.0)
+              (bacc : F32) (if (= boost 1) (* 285.0 (fmax2 0.0 (- 1.0 (/ vf 340.0)))) 0.0)]
+          (set! vf (+ vf (* (+ acc bacc) dt)))
+          ;; idle: the wheels hold -- enough to park on a wall -- and the air drags a little
+          (when (and (< (abs-f thr) 0.01) (= boost 0))
+            (set! vf (- vf (* (sgn vf) (fmin2 (abs-f vf) (* 90.0 dt))))))
+          (set! vf (* vf (- 1.0 (* 0.1 dt)))))
+        ;; grip: dirt lets the tail out, concrete does not
+        (let [(grip : F32) (if (> ny 0.7) (lerp 8.5 4.6 rw) 11.5)]
+          (set-c-slip! s (abs-f vl))
+          (set! vl (* vl (fmax2 0.0 (- 1.0 (* grip dt))))))
+        ;; back to a world velocity; the fans pull the car onto the surface (the collision pass holds it there)
+        (let [(nvn : F32) (+ vn (* (- gn (fan-force)) dt))
+              (fx : F32) (c-fx s) (fy : F32) (c-fy s) (fz : F32) (c-fz s)
+              (rx : F32) (c-rx s) (ry : F32) (c-ry s) (rz : F32) (c-rz s)]
+          (set-c-vx! s (+ (+ (* fx vf) (* rx vl)) (* nx nvn)))
+          (set-c-vy! s (+ (+ (* fy vf) (* ry vl)) (* ny nvn)))
+          (set-c-vz! s (+ (+ (* fz vf) (* rz vl)) (* nz nvn))))))))
+
+;; flying: thrusters and attitude jets on a body in free fall
+(defn fly-sub! [(s : I32) (dt : F32)] : Unit
+  (let [(full : F32) (if (> (c-air s) 1.0) 1.0 0.25)
+        (tp : F32) (* (* (c-in-pitch s) 3.6) full)
+        (ty : F32) (* (* (- 0.0 (c-in-steer s)) 2.8) full)
+        (tr : F32) (* (* (c-in-roll s) 4.4) full)
+        (k : F32) 0.27]
+    ;; the angular rate chases the command (and stops when the command does)
+    (set-c-wp! s (+ (c-wp s) (* (- tp (c-wp s)) k)))
+    (set-c-wy! s (+ (c-wy s) (* (- ty (c-wy s)) k)))
+    (set-c-wr! s (+ (c-wr s) (* (- tr (c-wr s)) k)))
+    (spin-car! s 0 (* (c-wp s) dt))
+    (spin-car! s 1 (* (c-wy s) dt))
+    (spin-car! s 2 (* (c-wr s) dt))
+    (let [(ax : F32) 0.0 (ay : F32) (- 0.0 (grav)) (az : F32) 0.0
+          (lift : F32) (* (c-in-lift s) 215.0)
+          (bst : F32) (if (= (c-in-boost s) 1) 270.0 0.0)
+          (stf : F32) (* (c-in-strafe s) 105.0)
+          (rcs : F32) (* (c-in-thr s) 70.0)]
+      (set-c-vx! s (+ (c-vx s) (* (+ (+ (+ ax (* (c-ux s) lift)) (* (c-fx s) (+ bst rcs))) (* (c-rx s) stf)) dt)))
+      (set-c-vy! s (+ (c-vy s) (* (+ (+ (+ ay (* (c-uy s) lift)) (* (c-fy s) (+ bst rcs))) (* (c-ry s) stf)) dt)))
+      (set-c-vz! s (+ (c-vz s) (* (+ (+ (+ az (* (c-uz s) lift)) (* (c-fz s) (+ bst rcs))) (* (c-rz s) stf)) dt)))
+      (let [(dr : F32) (- 1.0 (* 0.05 dt))]
+        (set-c-vx! s (* (c-vx s) dr)) (set-c-vy! s (* (c-vy s) dr)) (set-c-vz! s (* (c-vz s) dr))))))
+
+;; weak fans reach out and pull a falling car's belly toward a nearby surface, so a human lands on a wall without a roll command
+(defn assist-landing! [(s : I32)] : Unit
+  (let [gap (car-gap s)]
+    (when (and (< gap 26.0) (= (c-in-fans-off s) 0))
+      (arena-normal! (c-x s) (c-y s) (c-z s))
+      (let [(w : F32) (* 0.045 (clamp-f (/ (- 26.0 gap) 20.0) 0.0 1.0))
+            (ux : F32) (+ (c-ux s) (* (- (gf (g-sdx)) (c-ux s)) w))
+            (uy : F32) (+ (c-uy s) (* (- (gf (g-sdy)) (c-uy s)) w))
+            (uz : F32) (+ (c-uz s) (* (- (gf (g-sdz)) (c-uz s)) w))
+            (iu : F32) (inv-len3 ux uy uz)]
+        (set-c-ux! s (* ux iu)) (set-c-uy! s (* uy iu)) (set-c-uz! s (* uz iu))
+        (let [(fd : F32) (dot3 (c-fx s) (c-fy s) (c-fz s) (c-ux s) (c-uy s) (c-uz s))]
+          (set-c-fx! s (- (c-fx s) (* (c-ux s) fd)))
+          (set-c-fy! s (- (c-fy s) (* (c-uy s) fd)))
+          (set-c-fz! s (- (c-fz s) (* (c-uz s) fd)))
+          (fix-basis! s))))))
+
+(defn car-substep! [(s : I32) (dt : F32)] : Unit
+  (let [gap (car-gap s)
+        fans (and (= (c-in-fans-off s) 0) (< (c-in-lift s) 0.05))
+        (vn : F32) (if (< gap 40.0)
+                       (do (arena-normal! (c-x s) (c-y s) (c-z s))
+                           (dot3 (c-vx s) (c-vy s) (c-vz s) (gf (g-sdx)) (gf (g-sdy)) (gf (g-sdz))))
+                       0.0)
+        att (and fans (< gap (if (= (c-attached s) 1) (fan-hold) (fan-reach))))
+        att2 (and att (or (= (c-attached s) 1) (< vn 60.0)))]
+    (set-c-sd! s gap)
+    (set-c-attached! s (b2i att2))
+    (if att2
+        (drive-sub! s dt)
+        (do (fly-sub! s dt) (assist-landing! s)))
+    (set-c-x! s (+ (c-x s) (* (c-vx s) dt)))
+    (set-c-y! s (+ (c-y s) (* (c-vy s) dt)))
+    (set-c-z! s (+ (c-z s) (* (c-vz s) dt)))
+    (resolve-car! s)
+    ;; top speed bookkeeping and a hard cap
+    (let [(sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))]
+      (when (> sp 420.0)
+        (let [(k : F32) (/ 420.0 sp)]
+          (set-c-vx! s (* (c-vx s) k)) (set-c-vy! s (* (c-vy s) k)) (set-c-vz! s (* (c-vz s) k))))
+      (when (> sp (c-top-speed s)) (set-c-top-speed! s sp)))))
+
+;; ---- the ball ------------------------------------------------------------------------------------------------------
+(defn ball-substep! [(dt : F32)] : Unit
+  (let [(vy : F32) (- (b-vy) (* (ball-grav) dt))]
+    (set-b-vy! vy)
+    (let [(dr : F32) (- 1.0 (* 0.03 dt))]
+      (set-b-vx! (* (b-vx) dr)) (set-b-vy! (* (b-vy) dr)) (set-b-vz! (* (b-vz) dr)))
+    (set-b-x! (+ (b-x) (* (b-vx) dt)))
+    (set-b-y! (+ (b-y) (* (b-vy) dt)))
+    (set-b-z! (+ (b-z) (* (b-vz) dt)))
+    (dotimes [pass 2]
+      (let [sd (arena-free (b-x) (b-y) (b-z))
+            (pen : F32) (- (rb) sd)]
+        (when (> pen 0.0)
+          (arena-normal! (b-x) (b-y) (b-z))
+          (let [(nx : F32) (gf (g-sdx)) (ny : F32) (gf (g-sdy)) (nz : F32) (gf (g-sdz))
+                (vn : F32) (dot3 (b-vx) (b-vy) (b-vz) nx ny nz)]
+            (set-b-x! (+ (b-x) (* nx pen)))
+            (set-b-y! (+ (b-y) (* ny pen)))
+            (set-b-z! (+ (b-z) (* nz pen)))
+            (when (< vn 0.0)
+              ;; bounce: lively when it comes in fast, dead when it is merely rolling
+              (let [(e : F32) (* 0.62 (clamp-f (/ (abs-f vn) 36.0) 0.0 1.0))
+                    (j : F32) (* (- 0.0 vn) (+ 1.0 e))]
+                (set-b-vx! (+ (b-vx) (* nx j)))
+                (set-b-vy! (+ (b-vy) (* ny j)))
+                (set-b-vz! (+ (b-vz) (* nz j)))
+                ;; rolling friction along the surface
+                (let [(rf : F32) (- 1.0 (* 0.55 dt))]
+                  (set-b-vx! (* (b-vx) rf)) (set-b-vz! (* (b-vz) rf)))))))))
+    (let [(sp : F32) (len3 (b-vx) (b-vy) (b-vz))]
+      (when (> sp 520.0)
+        (let [(k : F32) (/ 520.0 sp)]
+          (set-b-vx! (* (b-vx) k)) (set-b-vy! (* (b-vy) k)) (set-b-vz! (* (b-vz) k)))))))
+
+;; ---- ball vs. car (an oriented box) --------------------------------------------------------------------------------
+(defn hit-hw [] : F32 4.4)
+(defn hit-hh [] : F32 2.6)
+(defn hit-hd [] : F32 7.6)
+
+(defn ball-car! [(s : I32)] : Unit
+  (let [(dx : F32) (- (b-x) (c-x s)) (dy : F32) (- (b-y) (c-y s)) (dz : F32) (- (b-z) (c-z s))]
+    ;; quick reject
+    (when (< (+ (+ (* dx dx) (* dy dy)) (* dz dz)) 400.0)
+      (let [(lx : F32) (dot3 dx dy dz (c-rx s) (c-ry s) (c-rz s))
+            (ly : F32) (dot3 dx dy dz (c-ux s) (c-uy s) (c-uz s))
+            (lz : F32) (dot3 dx dy dz (c-fx s) (c-fy s) (c-fz s))
+            (qx : F32) (clamp-f lx (- 0.0 (hit-hw)) (hit-hw))
+            (qy : F32) (clamp-f ly (- 0.0 (hit-hh)) (hit-hh))
+            (qz : F32) (clamp-f lz (- 0.0 (hit-hd)) (hit-hd))
+            (ex : F32) (- lx qx) (ey : F32) (- ly qy) (ez : F32) (- lz qz)
+            (d : F32) (len3 ex ey ez)]
+        (when (and (< d (rb)) (> d 0.0001))
+          (let [(mx : F32) (/ ex d) (my : F32) (/ ey d) (mz : F32) (/ ez d)
+                (nx : F32) (+ (+ (* (c-rx s) mx) (* (c-ux s) my)) (* (c-fx s) mz))
+                (ny : F32) (+ (+ (* (c-ry s) mx) (* (c-uy s) my)) (* (c-fy s) mz))
+                (nz : F32) (+ (+ (* (c-rz s) mx) (* (c-uz s) my)) (* (c-fz s) mz))
+                (pen : F32) (- (rb) d)
+                (rvx : F32) (- (b-vx) (c-vx s)) (rvy : F32) (- (b-vy) (c-vy s)) (rvz : F32) (- (b-vz) (c-vz s))
+                (vn : F32) (dot3 rvx rvy rvz nx ny nz)]
+            (set-b-x! (+ (b-x) (* nx pen)))
+            (set-b-y! (+ (b-y) (* ny pen)))
+            (set-b-z! (+ (b-z) (* nz pen)))
+            (when (< vn 0.0)
+              ;; the car is four times the ball's mass; a fast approach adds a little drive along the car's heading
+              (let [(e : F32) 0.7
+                    (jb : F32) (* (* (- 0.0 vn) (+ 1.0 e)) 0.8)
+                    (jc : F32) (* (* (- 0.0 vn) (+ 1.0 e)) 0.2)
+                    (cs : F32) (fmax2 0.0 (dot3 (c-vx s) (c-vy s) (c-vz s) (c-fx s) (c-fy s) (c-fz s)))
+                    (push : F32) (* 0.16 (* cs (fmax2 0.0 mz)))]
+                (set-b-vx! (+ (b-vx) (+ (* nx jb) (* (c-fx s) push))))
+                (set-b-vy! (+ (b-vy) (+ (* ny jb) (* (c-fy s) push))))
+                (set-b-vz! (+ (b-vz) (+ (* nz jb) (* (c-fz s) push))))
+                (set-c-vx! s (- (c-vx s) (* nx jc)))
+                (set-c-vy! s (- (c-vy s) (* ny jc)))
+                (set-c-vz! s (- (c-vz s) (* nz jc)))))
+            ;; who touched it (for credit); a touch within a few ticks of the last one by the same car is the same touch
+            (when (> (- (gi (g-tick)) (b-touch-t)) 3)
+              (when (!= (b-touch) s)
+                (set-b-touch2! (b-touch))
+                (set-b-touch! s)
+                (set-b-touch-team! (c-team s)))
+              (set-c-touches! s (+ (c-touches s) 1))
+              (set-b-hit-t! 8))
+            (set-b-touch-t! (gi (g-tick)))
+            (set-b-touch! s)
+            (set-b-touch-team! (c-team s))))))))
+
+;; ---- car vs. car: soft spheres ------------------------------------------------------------------------------------------
+(defn car-car! [(a : I32) (b : I32)] : Unit
+  (let [(dx : F32) (- (c-x b) (c-x a)) (dy : F32) (- (c-y b) (c-y a)) (dz : F32) (- (c-z b) (c-z a))
+        (d2 : F32) (+ (+ (* dx dx) (* dy dy)) (* dz dz))]
+    (when (and (< d2 144.0) (> d2 0.0001))
+      (let [(d : F32) (sqrt d2)
+            (nx : F32) (/ dx d) (ny : F32) (/ dy d) (nz : F32) (/ dz d)
+            (pen : F32) (* 0.5 (- 12.0 d))
+            (vn : F32) (dot3 (- (c-vx b) (c-vx a)) (- (c-vy b) (c-vy a)) (- (c-vz b) (c-vz a)) nx ny nz)]
+        (set-c-x! a (- (c-x a) (* nx pen))) (set-c-y! a (- (c-y a) (* ny pen))) (set-c-z! a (- (c-z a) (* nz pen)))
+        (set-c-x! b (+ (c-x b) (* nx pen))) (set-c-y! b (+ (c-y b) (* ny pen))) (set-c-z! b (+ (c-z b) (* nz pen)))
+        (when (< vn 0.0)
+          (let [(j : F32) (* (* (- 0.0 vn) 1.35) 0.5)]
+            (set-c-vx! a (- (c-vx a) (* nx j))) (set-c-vy! a (- (c-vy a) (* ny j))) (set-c-vz! a (- (c-vz a) (* nz j)))
+            (set-c-vx! b (+ (c-vx b) (* nx j))) (set-c-vy! b (+ (c-vy b) (* ny j))) (set-c-vz! b (+ (c-vz b) (* nz j)))))))))
+
+;; ---- the air tank ------------------------------------------------------------------------------------------------------------
+;; once per tick: decide what the car can afford this tick, spend it, and refill
+(defn air-tick! [(s : I32)] : Unit
+  (let [(air : F32) (c-air s)
+        (dt : F32) (tick-dt)
+        flying (= (c-attached s) 0)
+        (mx : F32) (fmax2 (abs-f (c-in-pitch s)) (fmax2 (abs-f (c-in-roll s)) (abs-f (c-in-steer s))))
+        ;; a tank under 6 cannot start a burn (it cannot stutter at zero), and the jets cut out at zero
+        (lift : F32) (if (and (> (c-in-lift s) 0.02) (> air (if (> (c-lift-fx s) 0.1) 0.5 6.0))) (clamp-f (c-in-lift s) 0.0 1.0) 0.0)
+        boost (and (= (c-in-boost s) 1) (> air (if (> (c-boost-fx s) 0.2) 0.5 6.0)))
+        (sf : F32) (if (> air 3.0) 1.0 0.0)]
+    (set-c-in-lift! s lift)
+    (set-c-in-boost! s (b2i boost))
+    (set-c-in-strafe! s (* (c-in-strafe s) sf))
+    (let [(spend : F32) (+ (+ (+ (* lift 26.0) (if boost 22.0 0.0)) (* (abs-f (c-in-strafe s)) 9.0))
+                           (if flying (* mx 4.0) 0.0))]
+      (if (> spend 0.0)
+          (do (set-c-air! s (fmax2 0.0 (- air (* spend dt))))
+              (set-c-air-used! s (+ (c-air-used s) (* spend dt)))
+              (set-c-air-wait! s 20))
+          (if (> (c-air-wait s) 0)
+              (set-c-air-wait! s (- (c-air-wait s) 1))
+              (let [(rate : F32) (* (if (= (c-attached s) 1) 48.0 34.0) (+ 1.0 (c-syn-bonus s)))]
+                (set-c-air! s (fmin2 (tank-max) (+ air (* rate dt))))))))
+    ;; effect levels the renderer draws (smoothed so a plume swells and fades)
+    (set-c-lift-fx! s (+ (c-lift-fx s) (* (- lift (c-lift-fx s)) 0.35)))
+    (set-c-boost-fx! s (+ (c-boost-fx s) (* (- (if boost 1.0 0.0) (c-boost-fx s)) 0.35)))
+    (set-c-strafe-fx! s (+ (c-strafe-fx s) (* (- (c-in-strafe s) (c-strafe-fx s)) 0.4)))
+    (when (= (c-attached s) 1)
+      (when (> (c-uy s) 0.7) (set-c-ticks-up! s (+ (c-ticks-up s) 1)))
+      (when (< (c-uy s) -0.3) (set-c-ticks-inv! s (+ (c-ticks-inv s) 1))))))
+
+;; ---- the world step ---------------------------------------------------------------------------------------------------------------
+(defn capture-prev! [] : Unit
+  (do
+    (dotimes [s (max-cars)]
+      (when (!= (c-active s) 0)
+        (set-c-px! s (c-x s)) (set-c-py! s (c-y s)) (set-c-pz! s (c-z s))
+        (set-c-prx! s (c-rx s)) (set-c-pry! s (c-ry s)) (set-c-prz! s (c-rz s))
+        (set-c-pux! s (c-ux s)) (set-c-puy! s (c-uy s)) (set-c-puz! s (c-uz s))
+        (set-c-pfx! s (c-fx s)) (set-c-pfy! s (c-fy s)) (set-c-pfz! s (c-fz s))))
+    (set-b-px! (b-x)) (set-b-py! (b-y)) (set-b-pz! (b-z))))
+
+;; the physics of one tick; the goal check is done by the rules (br_rules.prn) after it
+(defn physics-tick! [] : Unit
+  (do
+    (dotimes [s (max-cars)] (when (!= (c-active s) 0) (air-tick! s)))
+    (dotimes [sub 2]
+      (dotimes [s (max-cars)] (when (!= (c-active s) 0) (car-substep! s (sub-dt))))
+      (dotimes [a (max-cars)]
+        (when (!= (c-active a) 0)
+          (loop [b (+ a 1)]
+            (when (< b (max-cars))
+              (when (!= (c-active b) 0) (car-car! a b))
+              (recur (+ b 1))))))
+      (ball-substep! (sub-dt))
+      (dotimes [s (max-cars)] (when (!= (c-active s) 0) (ball-car! s))))
+    (when (> (b-hit-t) 0) (set-b-hit-t! (- (b-hit-t) 1)))))

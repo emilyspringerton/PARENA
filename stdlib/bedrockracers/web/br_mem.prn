@@ -1,0 +1,302 @@
+;; stdlib/bedrockracers/web/br_mem.prn -- BEDROCK RACERS web engine: linear-memory map, accessors, math.
+;;
+;; Founder real-time 2026-10-17: "IMPLEMENT BEDROCK RACERS USE SHANKPIT ARENA LEVEL WITH THE DIRT TRACK AROUND IT ... 4 GOALS 1 GOAL
+;; ON EACH CORNER OF THE ARENA AT THE TOP OF IT LIKE QUIDDICH ... PRECISELY CONTROL THEIR CARS LIKE YOU CAN WITH THE AIR WITH THE TESLA
+;; ROCKET CAR ... WASM PARENA ESPORTS WOTAN IDUNA IAM STATS ... SET UP LIKE REDGARDEN INCLUDING SOME OF THE EXOTIC AI TECHNOLOGIES ...
+;; WE NEED A GAME WITH THE AFFORDANCES OF ROCKET LEAGUE BUT ITS ACTUALLY QUIDDICH ... THE GOALS UPSIDE DOWN ... 4 TEAMS AND THE CARS ARE
+;; ALL ROCKET CARS ... DONT WORRY ABOUT VOXEL STUFF FOR v0 FOCUS ON THE SPORT THIS IS AN ESPORT".
+;;
+;; Same shape as shankpit-460 web / BRAWLPIT web / EMPIRE web: the whole game -- the physics, the bots, the 3D software renderer, the
+;; menus, the replay format -- is PARENA compiled to wasm32 (no allocator, no imports, a fixed 8 MB). The page host (br_host.prn,
+;; PARENA -> TypeScript) only does what a browser alone can do. The match is a DETERMINISTIC function of (seed, roster, the humans'
+;; per-tick commands); that is what lets IDUNA replay a submitted match in the very same wasm and record only what it saw.
+;;
+;; Memory map (byte addresses; module linked with 8 MB, fixed):
+;;   0x020000 CTL      input: key table, mouse, pad slots               (br_input.prn)
+;;   0x021000 G        global state words                               (g-* below)
+;;   0x022000 CARS     12 x 512 bytes, 128 words each                   (br_fields.prn)
+;;   0x024000 BALL     one record
+;;   0x025000 PARTS    256 x 64 bytes                                    (dust, plumes, sparks)
+;;   0x02A000 NAMES    12 x 32 bytes, NUL-terminated ASCII
+;;   0x02B000 NETIN    8 KB   frames from the gateway                    (br_net.prn)
+;;   0x02D000 NETOUT   8 KB   frames for the gateway
+;;   0x02F000 TOKEN    2 KB   the IDUNA bearer token, written by the page
+;;   0x030000 FONT     255 glyphs x 16 rows
+;;   0x031000 FEED     8 feed lines x 64 bytes
+;;   0x032000 BOARD    scoreboard rows built for the end screen
+;;   0x033000 SCR      rasteriser polygon scratch
+;;   0x038000 MESH     the arena shell: 6 faces x 12 x 12 vertices      (br_mesh.prn)
+;;   0x060000 TEX      256 x 256 RGBA floor texture (the dirt track)
+;;   0x0A0000 ROAD     256 x 256 bytes: how road-like each floor cell is
+;;   0x100000 FB       640 x 360 RGBA framebuffer
+;;   0x200000 ZB       640 x 360 F32 depth buffer
+;;   0x300000 SND      sound event ring (page plays them)
+;;   0x310000 REPLAY header: seed, roster, results                       (br_replay.prn)
+;;   0x400000 LOG      the humans' commands, 8 bytes per human per tick
+
+(module bedrockracers/engine)
+
+;; ---- region bases -----------------------------------------------------------------------
+(defn ctl-base [] : I32 131072)
+(defn g-base [] : I32 135168)
+(defn cars-base [] : I32 139264)
+(defn ball-base [] : I32 147456)
+(defn part-base [] : I32 151552)
+(defn names-base [] : I32 172032)
+(defn netin-base [] : I32 176128)
+(defn netout-base [] : I32 184320)
+(defn token-base [] : I32 192512)
+(defn font-base [] : I32 196608)
+(defn feed-base [] : I32 200704)
+(defn board-base [] : I32 204800)
+(defn mesh-base [] : I32 229376)
+(defn tex-base [] : I32 393216)
+(defn road-base [] : I32 655360)
+(defn snd-base [] : I32 3145728)
+(defn rep-base [] : I32 3211264)
+(defn log-base [] : I32 4194304)
+(defn log-cap [] : I32 4128768)
+(defn fb-base [] : I32 1048576)
+(defn zb-base [] : I32 2097152)
+
+(defn fb-w [] : I32 640)
+(defn fb-h [] : I32 360)
+
+(defn max-cars [] : I32 12)
+(defn max-parts [] : I32 256)
+(defn team-size [] : I32 3)
+(defn team-count [] : I32 4)
+
+(defn car-base [(s : I32)] : I32 (+ (cars-base) (* s 512)))
+(defn pa-base [(f : I32)] : I32 (+ (part-base) (* f 64)))
+(defn name-addr [(p : I32)] : I32 (+ (names-base) (* (clamp-i p 0 11) 32)))
+
+;; generic by-index word access (for helpers that take a field index)
+(defn ci [(s : I32) (k : I32)] : I32 (load32 (+ (car-base s) (shl k 2))))
+(defn ci! [(s : I32) (k : I32) (v : I32)] : Unit (store32! (+ (car-base s) (shl k 2)) v))
+(defn cf [(s : I32) (k : I32)] : F32 (loadf32 (+ (car-base s) (shl k 2))))
+(defn cf! [(s : I32) (k : I32) (v : F32)] : Unit (storef32! (+ (car-base s) (shl k 2)) v))
+
+;; ---- global state words ------------------------------------------------------------------
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+(defn gf [(k : I32)] : F32 (loadf32 (+ (g-base) (shl k 2))))
+(defn gf! [(k : I32) (v : F32)] : Unit (storef32! (+ (g-base) (shl k 2)) v))
+
+;; simulation
+(defn g-tick [] : I32 0)           ; sim ticks since the match started
+(defn g-rng [] : I32 1)
+(defn g-me [] : I32 2)             ; the local human's car slot
+(defn g-mode [] : I32 3)           ; 0 practice (local authority), 1 online room (lockstep)
+(defn g-match-left [] : I32 4)     ; ticks of match time left
+(defn g-match-total [] : I32 5)
+(defn g-goal-limit [] : I32 6)
+(defn g-winner [] : I32 7)         ; team, or -1
+(defn g-end-reason [] : I32 8)     ; 1 goal limit, 2 time, 3 golden goal, 4 closed
+(defn g-bot-level [] : I32 9)      ; 1 easy, 2 normal, 3 hard, 4 champion
+(defn g-match-no [] : I32 10)      ; matches started this session
+(defn g-countdown [] : I32 11)     ; ticks of the kickoff countdown (the sim is frozen)
+(defn g-overtime [] : I32 12)      ; 1 = golden goal
+(defn g-seed [] : I32 13)          ; the match seed (replay header)
+(defn g-roster [] : I32 14)        ; bit s = car s is a human
+(defn g-kickoff-t [] : I32 15)     ; ticks since the last kickoff
+(defn g-phase [] : I32 16)         ; 0 title, 1 playing, 2 match end
+(defn g-frame [] : I32 17)
+(defn g-clock-acc [] : I32 18)     ; F32 ms owed to the fixed-step sim
+(defn g-ticker [] : I32 19)        ; wall-clock ms as I32 (animation only, never sim)
+(defn g-locked [] : I32 20)        ; 1 = pointer is captured
+(defn g-paused [] : I32 21)
+(defn g-ui-t [] : I32 22)
+(defn g-hover [] : I32 23)
+(defn g-last-input [] : I32 24)
+(defn g-banner-t [] : I32 25)      ; ticks of the big centre banner
+(defn g-banner-id [] : I32 26)     ; 1 goal, 2 own goal, 3 kickoff, 4 overtime
+(defn g-banner-team [] : I32 27)
+(defn g-banner-slot [] : I32 28)
+(defn g-score-open [] : I32 29)    ; TAB held
+(defn g-goal-t [] : I32 30)        ; ticks of the goal celebration (the sim keeps running, the ball is dead)
+(defn g-goal-tower [] : I32 31)
+(defn g-score [] : I32 32)         ; 32..35 goals per team
+(defn g-conceded [] : I32 36)      ; 36..39 goals against per team
+(defn g-syn-tier [] : I32 40)      ; 40..43 synergy tier per team (0 = full cohesion .. 3 = decayed)
+(defn g-posture [] : I32 44)       ; 44..47 commander posture per team (0 neutral 1 aggressive 2 patient)
+(defn g-gest [] : I32 48)          ; 48..51 noisy-gestalt phase per team (0 Johnny spread, 1 Spike converge)
+(defn g-tgt-tower [] : I32 52)     ; 52..55 which tower each team is attacking
+(defn g-cam-x [] : I32 56)
+(defn g-cam-y [] : I32 57)
+(defn g-cam-z [] : I32 58)
+(defn g-cam-rx [] : I32 59)        ; the camera basis: right, up, forward
+(defn g-cam-ry [] : I32 60)
+(defn g-cam-rz [] : I32 61)
+(defn g-cam-ux [] : I32 62)
+(defn g-cam-uy [] : I32 63)
+(defn g-cam-uz [] : I32 64)
+(defn g-cam-fx [] : I32 65)
+(defn g-cam-fy [] : I32 66)
+(defn g-cam-fz [] : I32 67)
+(defn g-proj-scale [] : I32 68)    ; F32 pixels per unit at z=1
+(defn g-fov [] : I32 69)
+(defn g-ball-cam [] : I32 70)      ; 1 = the camera looks at the ball
+(defn g-sup-x [] : I32 71)         ; smoothed camera-up (so a wall does not flip the world)
+(defn g-sup-y [] : I32 72)
+(defn g-sup-z [] : I32 73)
+(defn g-sens [] : I32 74)          ; F32 mouse sensitivity multiplier
+(defn g-shake [] : I32 75)
+(defn g-view-slot [] : I32 76)
+(defn g-cam-init [] : I32 77)
+(defn g-cam-dir-x [] : I32 78)     ; smoothed chase direction
+(defn g-cam-dir-y [] : I32 79)
+(defn g-cam-dir-z [] : I32 80)
+(defn g-last-touch [] : I32 81)
+(defn g-gest-t [] : I32 82)
+(defn g-syn-t [] : I32 83)
+(defn g-cmd-n [] : I32 84)
+(defn g-end-t [] : I32 85)
+(defn g-end-n [] : I32 86)
+(defn g-end-me [] : I32 87)
+(defn g-feed-head [] : I32 88)
+(defn g-snd-head [] : I32 90)
+(defn g-snd-seen [] : I32 91)
+(defn g-who-len [] : I32 92)
+(defn g-signed-in [] : I32 93)
+(defn g-token-len [] : I32 94)
+(defn g-name-len [] : I32 95)
+(defn g-tab-prev [] : I32 96)
+(defn g-bc-prev [] : I32 97)
+(defn g-ticks-left-ot [] : I32 98)
+(defn g-log-n [] : I32 99)         ; commands logged so far (replay)
+(defn g-replay [] : I32 100)       ; 1 = the match is being replayed from the log (inputs come from it)
+(defn g-replay-pos [] : I32 101)
+(defn g-hit-flash [] : I32 102)
+(defn g-last-goal-tick [] : I32 103)
+(defn g-ball-last-y [] : I32 104)
+(defn g-stall [] : I32 105)         ; ticks the ball has been lying still on the floor
+(defn g-sdx [] : I32 110)          ; scratch: SDF normal out
+(defn g-sdy [] : I32 111)
+(defn g-sdz [] : I32 112)
+(defn g-sd-mat [] : I32 113)
+(defn g-tmp0 [] : I32 120)
+(defn g-tmp1 [] : I32 121)
+(defn g-tmp2 [] : I32 122)
+(defn g-tmp3 [] : I32 123)
+(defn g-tmp4 [] : I32 124)
+(defn g-tmp5 [] : I32 125)
+(defn g-cmd-thr [] : I32 130)      ; F32: the local player's command for the next tick
+(defn g-cmd-steer [] : I32 131)
+(defn g-cmd-pitch [] : I32 132)
+(defn g-cmd-roll [] : I32 133)
+(defn g-cmd-strafe [] : I32 134)
+(defn g-cmd-lift [] : I32 135)
+(defn g-cmd-boost [] : I32 136)
+(defn g-cmd-fans-off [] : I32 137)
+(defn g-mouse-x [] : I32 138)      ; F32: mouse movement owed to the next tick
+(defn g-mouse-y [] : I32 139)
+(defn g-rng2 [] : I32 140)
+(defn g-ai-seed [] : I32 141)
+(defn g-ai-tick [] : I32 142)
+(defn g-pred-x [] : I32 144)       ; the ball predictor's output
+(defn g-pred-y [] : I32 145)
+(defn g-pred-z [] : I32 146)
+(defn g-pred-t [] : I32 147)
+(defn g-lock-on [] : I32 148)
+(defn g-help [] : I32 149)
+(defn g-ac-lead [] : I32 150)      ; rasteriser words start here (br_3d.prn): 150..205 are THEIRS
+
+;; ---- tiny integer / float helpers ---------------------------------------------------------
+(defn b2i [(c : Bool)] : I32 (if c 1 0))
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn clamp-i [(x : I32) (lo : I32) (hi : I32)] : I32 (max-i lo (min-i x hi)))
+(defn abs-i [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+(defn fmax2 [(a : F32) (b : F32)] : F32 (if (> a b) a b))
+(defn fmin2 [(a : F32) (b : F32)] : F32 (if (< a b) a b))
+(defn clamp-f [(x : F32) (lo : F32) (hi : F32)] : F32 (fmax2 lo (fmin2 x hi)))
+(defn sq [(x : F32)] : F32 (* x x))
+(defn lerp [(a : F32) (b : F32) (t : F32)] : F32 (+ a (* (- b a) t)))
+(defn sgn [(x : F32)] : F32 (if (< x 0.0) -1.0 1.0))
+(defn abs-f [(x : F32)] : F32 (if (< x 0.0) (- 0.0 x) x))
+
+;; ---- PRNG: glibc TYPE_0 LCG, output bits 16..30 --------------------------------------------
+(defn br-seed! [(s : I32)] : Unit (gi! (g-rng) s))
+(defn br-rand [] : I32
+  (let [s (+ (* (gi (g-rng)) 1103515245) 12345)]
+    (gi! (g-rng) s)
+    (bit-and (ushr s 16) 32767)))
+(defn rnd [(n : I32)] : I32 (mod (br-rand) (max-i n 1)))
+(defn chance [(pct : I32)] : Bool (< (rnd 100) pct))
+(defn rand-f [] : F32 (- (/ (f32 (mod (br-rand) 1000)) 500.0) 1.0))
+(defn rand-unit [] : F32 (/ (f32 (mod (br-rand) 10000)) 10000.0))
+;; cosmetics (dust, sound pitch, camera jitter) draw from their OWN generator, so what the player sees and hears can never
+;; change what the simulation rolls
+(defn fx-rand [] : I32
+  (let [s (+ (* (gi (g-rng2)) 1103515245) 12345)]
+    (gi! (g-rng2) s)
+    (bit-and (ushr s 16) 32767)))
+(defn fx-rnd [(n : I32)] : I32 (mod (fx-rand) (max-i n 1)))
+(defn fx-rand-f [] : F32 (- (/ (f32 (mod (fx-rand) 1000)) 500.0) 1.0))
+(defn fx-rand-unit [] : F32 (/ (f32 (mod (fx-rand) 10000)) 10000.0))
+;; the AI's dice: a third generator, so the brain's noise is part of the match but never perturbs the physics' own rolls
+(defn ai-rand [] : I32
+  (let [s (+ (* (gi (g-ai-seed)) 1103515245) 12345)]
+    (gi! (g-ai-seed) s)
+    (bit-and (ushr s 16) 32767)))
+(defn ai-rand-f [] : F32 (- (/ (f32 (mod (ai-rand) 1000)) 500.0) 1.0))
+(defn ai-rand-unit [] : F32 (/ (f32 (mod (ai-rand) 10000)) 10000.0))
+
+;; ---- math without libm ---------------------------------------------------------------------
+;; sin/cos are evaluated in F64 (range reduction + a Taylor series good to ~1e-10) and rounded to F32, so every machine
+;; gets the same bits -- the determinism the replay referee depends on.
+(defn sin64 [(x : F64)] : F64
+  (let [(k : F64) (floor (+ (/ x 6.283185307179586) 0.5))
+        (r0 : F64) (- x (* k 6.283185307179586))
+        (r : F64) (cond (> r0 1.5707963267948966) (- 3.141592653589793 r0)
+                        (< r0 -1.5707963267948966) (- -3.141592653589793 r0)
+                        :else r0)
+        (r2 : F64) (* r r)]
+    (* r (+ 1.0 (* r2 (+ -0.16666666666666666
+                         (* r2 (+ 0.008333333333333333
+                                  (* r2 (+ -0.0001984126984126984
+                                           (* r2 (+ 0.0000027557319223985893
+                                                    (* r2 (+ -0.00000002505210838544172
+                                                             (* r2 0.00000000016059043836821613)))))))))))))))
+(defn sinf [(x : F32)] : F32 (f32 (sin64 (f64 x))))
+(defn cosf [(x : F32)] : F32 (f32 (sin64 (+ (f64 x) 1.5707963267948966))))
+
+(defn atan64 [(z : F64)] : F64
+  (let [(z2 : F64) (* z z)]
+    (* z (+ 0.9998660 (* z2 (+ -0.3302995 (* z2 (+ 0.1801410 (* z2 (+ -0.0851330 (* z2 0.0208351)))))))))))
+(defn atan2f [(y : F32) (x : F32)] : F32
+  (let [(ay : F64) (f64 (fabs y))
+        (ax : F64) (f64 (fabs x))
+        (a : F64) (if (and (< ax 0.0000001) (< ay 0.0000001))
+                      0.0
+                      (if (>= ax ay)
+                          (atan64 (/ ay ax))
+                          (- 1.5707963267948966 (atan64 (/ ax ay)))))
+        (b : F64) (if (< x 0.0) (- 3.141592653589793 a) a)]
+    (f32 (if (< y 0.0) (- 0.0 b) b))))
+;; acos on [-1, 1] by atan2 (the camera and the AI use it for angles between directions)
+(defn acosf [(c : F32)] : F32
+  (let [(cc : F32) (clamp-f c -1.0 1.0)]
+    (atan2f (sqrt (fmax2 0.0 (- 1.0 (* cc cc)))) cc)))
+
+(defn deg2rad [] : F32 0.017453292)
+(defn rad2deg [] : F32 57.29578)
+(defn pi-f [] : F32 3.1415927)
+
+;; vector length helpers
+(defn len2 [(x : F32) (z : F32)] : F32 (sqrt (+ (* x x) (* z z))))
+(defn len3 [(x : F32) (y : F32) (z : F32)] : F32 (sqrt (+ (+ (* x x) (* y y)) (* z z))))
+(defn dot3 [(ax : F32) (ay : F32) (az : F32) (bx : F32) (by : F32) (bz : F32)] : F32
+  (+ (+ (* ax bx) (* ay by)) (* az bz)))
+;; 1 / length with a floor, so a zero vector normalises to zero rather than NaN
+(defn inv-len3 [(x : F32) (y : F32) (z : F32)] : F32
+  (/ 1.0 (fmax2 0.000001 (len3 x y z))))
+
+;; angle_diff(a, b): a - b wrapped to [-180, 180]
+(defn angle-diff [(a : F32) (b : F32)] : F32
+  (let [(d : F32) (- a b)]
+    (loop [(v : F32) d g 0]
+      (cond (and (< v -180.0) (< g 8)) (recur (+ v 360.0) (+ g 1))
+            (and (> v 180.0) (< g 8)) (recur (- v 360.0) (+ g 1))
+            :else v))))

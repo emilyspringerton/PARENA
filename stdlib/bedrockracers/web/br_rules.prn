@@ -1,0 +1,255 @@
+;; stdlib/bedrockracers/web/br_rules.prn -- the match: four teams of three, four towers, one ball.
+;;
+;; RULES (the founder's: "it's actually Quidditch ... the goals upside down ... 4 teams ... all rocket cars"):
+;;   * Team t owns the tower at corner t. The goal is a shaft in the ceiling: fly the ball UP into somebody else's.
+;;   * A goal scores one point for the team that touched the ball last. Into your OWN tower it scores nothing and costs you one.
+;;   * First team to 7, or the most points after 4:00. A tie goes to a golden goal.
+;;   * After a goal the ball is dead for a moment, then everyone is put back at their corner and it kicks off again.
+;;
+;; THE MATCH IS A PURE FUNCTION of (seed, level, roster, the humans' commands). The sim never reads the clock, a pad, a mouse or the
+;; screen: a human's command for each tick is quantised to bytes, appended to a log, and applied FROM those bytes, so a replay
+;; (IDUNA's referee runs the very same wasm) lands on exactly the same match -- which is what makes recorded stats trustworthy.
+;;
+;; Borrowed from REDGARDEN (arena_game.c): SYNERGY DECAY -- a team's coordination bonus (here: extra air regeneration while its
+;; cars fly close together) is re-rolled every eight seconds, and the further ahead a team is the likelier a decayed tier, a
+;; rubber-band that is random on purpose. The source's formula added one constant to every logit before softmax, a no-op;
+;; this scales the lead BY tier index instead, as REDGARDEN's own port did.
+
+(defn ticks-per-sec [] : F32 62.5)
+(defn ticks-per-minute [] : I32 3750)
+(defn match-minutes [] : I32 4)
+(defn goal-limit [] : I32 7)
+(defn goal-pause [] : I32 150)            ; ticks the ball is dead after a goal
+(defn kickoff-count [] : I32 190)         ; the first kickoff: 3 .. 2 .. 1 .. GO
+(defn restart-count [] : I32 125)         ; the kickoffs after a goal
+(defn ruleset [] : I32 1)                 ; bump with ANY change that alters how a match plays out (IDUNA refuses a mismatch)
+
+(defn team-of [(s : I32)] : I32 (/ s 3))
+(defn seat-of [(s : I32)] : I32 (mod s 3))
+(defn human? [(s : I32)] : Bool (!= (bit-and (shr (gi (g-roster)) s) 1) 0))
+
+;; ---- clearing & names ---------------------------------------------------------------------------------------
+(defn zero-words! [(addr : I32) (n : I32)] : Unit
+  (loop [i 0] (when (< i n) (store32! (+ addr (shl i 2)) 0) (recur (+ i 1)))))
+
+(defn clear-world! [] : Unit
+  (do
+    (zero-words! (cars-base) (* (max-cars) 128))
+    (zero-words! (ball-base) 64)
+    (zero-words! (part-base) (* (max-parts) 16))
+    (dotimes [s (max-cars)]
+      (set-c-id! s s) (set-c-team! s (team-of s)) (set-c-seat! s (seat-of s)) (set-c-color! s (team-of s)))
+    (set-b-touch! -1) (set-b-touch2! -1) (set-b-touch-team! -1)))
+
+(defn put-name! [(p : I32) (s : String)] : Unit
+  (let [a (name-addr p)
+        src (str-addr s)]
+    (loop [i 0]
+      (let [ch (load8 (+ src i))]
+        (if (and (!= ch 0) (< i 30))
+            (do (store8! (+ a i) ch) (recur (+ i 1)))
+            (store8! (+ a i) 0))))))
+
+;; twelve bot names: calm, a little odd
+(defn bot-name [(s : I32)] : String
+  (case s 0 "Ada" 1 "Bram" 2 "Cleo" 3 "Dov" 4 "Edda" 5 "Finn" 6 "Gwen" 7 "Hale" 8 "Iris" 9 "Juno" 10 "Kit" "Lark"))
+
+;; ---- exp, for the synergy dice ----------------------------------------------------------------------------------
+(defn exp64 [(x : F64)] : F64
+  (let [(h : F64) (/ x 8.0)
+        (t : F64) (+ 1.0 (* h (+ 1.0 (* h (+ 0.5 (* h (+ 0.16666666666666666 (* h (+ 0.041666666666666664 (* h 0.008333333333333333))))))))))
+        (t2 : F64) (* t t)
+        (t4 : F64) (* t2 t2)]
+    (* t4 t4)))
+
+;; ---- scores & leads --------------------------------------------------------------------------------------------------
+(defn score-of [(t : I32)] : I32 (gi (+ (g-score) t)))
+(defn best-other [(t : I32)] : I32
+  (let [(best : I32) 0]
+    (dotimes [o 4] (when (and (!= o t) (> (score-of o) best)) (set! best (score-of o))))
+    best))
+(defn lead-of [(t : I32)] : I32 (- (score-of t) (best-other t)))
+(defn leader-team [] : I32
+  (let [(best : I32) -1 (bs : I32) -1]
+    (dotimes [t 4] (when (> (score-of t) bs) (set! best t) (set! bs (score-of t))))
+    best))
+(defn tied-lead? [] : Bool
+  (let [(n : I32) 0 (m : I32) 0]
+    (dotimes [t 4] (when (> (score-of t) m) (set! m (score-of t))))
+    (dotimes [t 4] (when (= (score-of t) m) (set! n (+ n 1))))
+    (> n 1)))
+
+;; ---- kickoff -----------------------------------------------------------------------------------------------------------------
+(defn kickoff! [(count : I32)] : Unit
+  (do
+    (dotimes [s (max-cars)]
+      (when (!= (c-active s) 0)
+        (let [t (team-of s) k (seat-of s)]
+          (place-car! s (spawn-x t k) 4.0 (spawn-z t k))
+          (set-c-air! s (tank-max))
+          (set-c-air-wait! s 0)
+          (set-c-stuck! s 0)
+          (set-c-think! s (* 3 s)))))
+    (set-b-x! 0.0) (set-b-y! 70.0) (set-b-z! 0.0)
+    (set-b-vx! 0.0) (set-b-vy! 0.0) (set-b-vz! 0.0)
+    (set-b-px! 0.0) (set-b-py! 70.0) (set-b-pz! 0.0)
+    (set-b-touch! -1) (set-b-touch2! -1) (set-b-touch-team! -1) (set-b-touch-t! -100)
+    (gi! (g-countdown) count)
+    (gi! (g-goal-t) 0)
+    (gi! (g-kickoff-t) 0)
+    (gi! (g-banner-id) 3) (gi! (g-banner-t) 0)))
+
+;; ---- starting a match -----------------------------------------------------------------------------------------------------------
+;; roster: bit s set = car s is driven by a person; every other car is a bot at `level` (1 easy, 2 normal, 3 hard, 4 champion)
+(defn begin-match! [(seed : I32) (level : I32) (roster : I32)] : Unit
+  (do
+    (clear-world!)
+    (br-seed! seed)
+    (gi! (g-ai-seed) (+ (* seed 7) 1013904223))
+    (gi! (g-seed) seed)
+    (gi! (g-bot-level) level)
+    (gi! (g-roster) roster)
+    (gi! (g-tick) 0)
+    (gi! (g-match-total) (* (match-minutes) (ticks-per-minute)))
+    (gi! (g-match-left) (gi (g-match-total)))
+    (gi! (g-goal-limit) (goal-limit))
+    (gi! (g-winner) -1)
+    (gi! (g-end-reason) 0)
+    (gi! (g-overtime) 0)
+    (gi! (g-last-goal-tick) 0)
+    (gi! (g-stall) 0)
+    (gi! (g-match-no) (+ (gi (g-match-no)) 1))
+    (gi! (g-log-n) 0)
+    (gi! (g-feed-head) 0)
+    (dotimes [t 4]
+      (gi! (+ (g-score) t) 0) (gi! (+ (g-conceded) t) 0) (gi! (+ (g-syn-tier) t) 0)
+      (gi! (+ (g-posture) t) 0) (gi! (+ (g-gest) t) (mod t 2)) (gi! (+ (g-tgt-tower) t) (mod (+ t 1) 4)))
+    (gi! (g-gest-t) 0)
+    (gi! (g-syn-t) 0)
+    (dotimes [s (max-cars)]
+      (set-c-active! s 1)
+      (if (human? s)
+          (do (set-c-is-bot! s 0) (put-name! s "Racer"))
+          (do (set-c-is-bot! s 1) (put-name! s (bot-name s)) (ai-assign! s level))))
+    (kickoff! (kickoff-count))))
+
+;; ---- a goal ---------------------------------------------------------------------------------------------------------------------
+(defn feed! [(code : I32) (a : I32) (b : I32)] : Unit
+  (let [h (gi (g-feed-head))
+        base (+ (feed-base) (* (mod h 8) 64))]
+    (store32! base code) (store32! (+ base 4) a) (store32! (+ base 8) b) (store32! (+ base 12) (gi (g-tick)))
+    (gi! (g-feed-head) (+ h 1))))
+
+(defn on-goal! [(tower : I32)] : Unit
+  (let [who (b-touch)
+        team (b-touch-team)]
+    (gi! (g-goal-t) (goal-pause))
+    (gi! (g-goal-tower) tower)
+    (gi! (g-last-goal-tick) (gi (g-tick)))
+    (gi! (g-banner-team) (if (>= team 0) team tower))
+    (gi! (g-banner-slot) who)
+    (if (or (< who 0) (= team tower))
+        ;; into your own tower (or nobody's ball): no point, and a point off for the owner
+        (do (gi! (g-banner-id) 2)
+            (when (>= who 0)
+              (set-c-own-goals! who (+ (c-own-goals who) 1))
+              (gi! (+ (g-score) tower) (max-i 0 (- (score-of tower) 1))))
+            (feed! 2 who tower))
+        (do (gi! (g-banner-id) 1)
+            (gi! (+ (g-score) team) (+ (score-of team) 1))
+            (gi! (+ (g-conceded) tower) (+ (gi (+ (g-conceded) tower)) 1))
+            (set-c-goals! who (+ (c-goals who) 1))
+            ;; an assist: the touch before the scorer's, by a team-mate
+            (let [a (b-touch2)]
+              (when (and (>= a 0) (and (!= a who) (= (team-of a) team)))
+                (set-c-assists! a (+ (c-assists a) 1))))
+            (feed! 1 who tower)))
+    ;; the dead ball hangs in the shaft until the restart
+    (set-b-vx! 0.0) (set-b-vy! 0.0) (set-b-vz! 0.0)
+    (set-b-x! (tw-x tower)) (set-b-y! (+ (goal-y) 22.0)) (set-b-z! (tw-z tower))))
+
+;; ---- synergy, posture, gestalt -----------------------------------------------------------------------------------------------
+;; per team every eight seconds: re-roll the synergy tier. weights: base * exp(0.55 * lead * tier)
+(defn base-w [(i : I32)] : F32 (case i 0 0.60 1 0.25 2 0.10 0.05))
+(defn syn-roll! [(t : I32)] : Unit
+  (let [(lead : F32) (f32 (lead-of t))
+        (w0 : F32) (base-w 0)
+        (w1 : F32) (* (base-w 1) (f32 (exp64 (f64 (* 0.55 lead)))))
+        (w2 : F32) (* (base-w 2) (f32 (exp64 (f64 (* 1.10 lead)))))
+        (w3 : F32) (* (base-w 3) (f32 (exp64 (f64 (* 1.65 lead)))))
+        (tot : F32) (+ (+ w0 w1) (+ w2 w3))
+        (r : F32) (* (rand-unit) tot)]
+    (gi! (+ (g-syn-tier) t)
+         (cond (< r w0) 0 (< r (+ w0 w1)) 1 (< r (+ (+ w0 w1) w2)) 2 :else 3))))
+
+(defn syn-factor [(tier : I32)] : F32 (case tier 0 0.5 1 0.33 2 0.16 0.0))
+
+;; the bonus a car actually has: its team's tier, but only while a team-mate is within 170 units
+(defn syn-update! [] : Unit
+  (dotimes [s (max-cars)]
+    (when (!= (c-active s) 0)
+      (let [t (team-of s) (nr : I32) 0]
+        (dotimes [o 12]
+          (when (and (!= o s) (= (team-of o) t))
+            (let [(dx : F32) (- (c-x o) (c-x s)) (dy : F32) (- (c-y o) (c-y s)) (dz : F32) (- (c-z o) (c-z s))]
+              (when (< (+ (+ (* dx dx) (* dy dy)) (* dz dz)) 28900.0) (set! nr 1)))))
+        (set-c-syn-bonus! s (if (= nr 1) (syn-factor (gi (+ (g-syn-tier) t))) 0.0))))))
+
+(defn rules-slow-tick! [] : Unit
+  (let [tk (gi (g-tick))]
+    ;; every 8 s: synergy dice
+    (when (= (mod tk 500) 499)
+      (dotimes [t 4] (syn-roll! t)))
+    ;; every 5 s: the commander's posture, off the score race (REDGARDEN's commander_posture_multiplier, in goals)
+    (when (= (mod tk 312) 311)
+      (dotimes [t 4]
+        (gi! (+ (g-posture) t) (cond (>= (lead-of t) 2) 2 (<= (lead-of t) -2) 1 :else 0))))
+    ;; every 10 s (offset per team): the noisy-gestalt phase flips -- spread out as individuals, then converge and optimise
+    (dotimes [t 4]
+      (when (= (mod (+ tk (* t 156)) 625) 624)
+        (gi! (+ (g-gest) t) (- 1 (gi (+ (g-gest) t))))))))
+
+;; ---- the end ---------------------------------------------------------------------------------------------------------------------
+(defn end-match! [(winner : I32) (reason : I32)] : Unit
+  (do (gi! (g-winner) winner) (gi! (g-end-reason) reason) (gi! (g-phase) 2) (gi! (g-end-t) 0) (gi! (g-goal-t) 0)))
+
+(defn check-end! [] : Unit
+  (let [l (leader-team)]
+    (cond
+      (and (>= l 0) (>= (score-of l) (gi (g-goal-limit)))) (end-match! l 1)
+      (and (= (gi (g-overtime)) 1) (not (tied-lead?))) (end-match! l 3)
+      (and (<= (gi (g-match-left)) 0) (= (gi (g-overtime)) 0))
+        (if (tied-lead?)
+            (do (gi! (g-overtime) 1) (gi! (g-banner-id) 4) (gi! (g-banner-t) 190))
+            (end-match! l 2))
+      :else unit)))
+
+;; ---- one tick of the rules (after the physics) ---------------------------------------------------------------------------------------
+(defn rules-tick! [] : Unit
+  (do
+    (rules-slow-tick!)
+    (syn-update!)
+    (cond
+      (> (gi (g-goal-t)) 0)
+        (do (gi! (g-goal-t) (- (gi (g-goal-t)) 1))
+            ;; the ball stays dead in the shaft while the celebration runs
+            (let [tw (gi (g-goal-tower))]
+              (set-b-vx! 0.0) (set-b-vy! 0.0) (set-b-vz! 0.0)
+              (set-b-x! (tw-x tw)) (set-b-y! (+ (goal-y) 22.0)) (set-b-z! (tw-z tw)))
+            (when (= (gi (g-goal-t)) 0)
+              (check-end!)
+              (when (= (gi (g-phase)) 1) (kickoff! (restart-count)))))
+      :else
+        (let [tw (goal-at (b-x) (b-y) (b-z))]
+          (gi! (g-kickoff-t) (+ (gi (g-kickoff-t)) 1))
+          ;; a ball that has lain still on the floor for eight seconds (a scrum nobody can break) is put back at the kickoff
+          (if (and (< (len3 (b-vx) (b-vy) (b-vz)) 10.0) (< (b-y) 26.0))
+              (gi! (g-stall) (+ (gi (g-stall)) 1))
+              (gi! (g-stall) 0))
+          (when (> (gi (g-stall)) 500)
+            (gi! (g-stall) 0)
+            (kickoff! (restart-count))
+            (gi! (g-banner-id) 5) (gi! (g-banner-t) 150))
+          (when (>= tw 0) (on-goal! tw))
+          (when (and (= (gi (g-overtime)) 0) (> (gi (g-match-left)) 0)) (gi! (g-match-left) (- (gi (g-match-left)) 1)))
+          (when (and (= (gi (g-goal-t)) 0) (<= (gi (g-match-left)) 0)) (check-end!))))))

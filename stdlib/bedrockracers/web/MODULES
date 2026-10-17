@@ -1,0 +1,11 @@
+# the wasm engine's source files, in build order (scripts/build_bedrockracers_wasm.sh)
+stdlib/bedrockracers/web/br_mem.prn
+stdlib/bedrockracers/web/br_fields.prn
+stdlib/bedrockracers/web/br_gfx.prn
+stdlib/bedrockracers/web/br_arena.prn
+stdlib/bedrockracers/web/br_phys.prn
+stdlib/bedrockracers/web/br_ai.prn
+stdlib/bedrockracers/web/br_league.prn
+stdlib/bedrockracers/web/br_rules.prn
+stdlib/bedrockracers/web/br_sim.prn
+stdlib/bedrockracers/web/br_main.prn
