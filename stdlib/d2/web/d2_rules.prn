@@ -132,8 +132,8 @@
     12 "Resist 1R" 13 "Resist 2R" 14 "Resist 4R" 15 "Capacitor" 16 "Battery" 17 "Transistor" 18 "Delayer" 19 "Core" 20 "Cryo-Vent" 21 "Biomass" 22 "Ti Shard" "Ore Chip"))
 
 ;; what a weapon fires (core/combat.c dw2_weapon_stats): it gains 10 x gain energy a tick and shoots when its charge reaches the threshold
-(defn weapon-thr [(i : I32)] : F32 (case i 3 30.0 7 10.0 8 40.0 0.0))
-(defn weapon-dmg [(i : I32)] : F32 (case i 3 30.0 7 10.0 8 45.0 0.0))
+(defn weapon-thr [(i : I32)] : F32 (case i 3 30.0 7 10.0 8 30.0 0.0))
+(defn weapon-dmg [(i : I32)] : F32 (case i 3 30.0 7 7.0 8 45.0 0.0))
 ;; 0 not a weapon, 1 laser, 2 rail, 3 cannon
 (defn weapon-kind [(i : I32)] : I32 (case i 3 2 7 1 8 3 0))
 (defn weapon-item? [(i : I32)] : Bool (> (weapon-kind i) 0))
@@ -161,7 +161,7 @@
     4 "45 HP a cell. Lasers do half."
     5 "Hard bar. Boosts touching guns."
     6 "Crystal. Scatters lasers."
-    7 "10 dmg a second. Needs clear lane."
+    7 "7 dmg a second. Needs clear lane."
     8 "Shell: 45 dmg on the DEEPEST part."
     9 "A wire that boosts power x1.5."
     10 "Mends 2 hull per 10 W."
@@ -189,8 +189,8 @@
     16 "A plain wall: 45 HP a cell, and" 17 "lasers do only half to it. Put it" 18 "on the bow of a lane that has a" 19 "laser aimed down it."
     20 "A 1x4 bar, 20 HP a cell. Slugs do" 21 "half to it. Every gun touching it" 22 "hits x1.5 as hard. C splits it" 23 "into two Shards."
     24 "A 2x2 crystal, 15 HP a cell." 25 "Lasers do a fifth to it, but" 26 "shells x1.5. An Aegis touching" 27 "it repairs x1.5. C: four Chips."
-    28 "Fires every second on 10 W: 10" 29 "dmg to the FIRST part in the lane." 30 "It needs a CLEAR LANE (nothing" 31 "alive in front) or it holds fire."
-    32 "Two cells, fed at the back end." 33 "45 dmg per 40 W lands on the" 34 "DEEPEST part in the lane, over any" 35 "wall; the blast hurts what it touches."
+    28 "Fires every second on 10 W: 7" 29 "dmg to the FIRST part in the lane." 30 "It needs a CLEAR LANE (nothing" 31 "alive in front) or it holds fire."
+    32 "Two cells, fed at the back end." 33 "45 dmg every 3rd second on 10 W," 34 "lands on the DEEPEST part in the" 35 "lane, over any wall. Splash hurts."
     36 "A wire with gain: the power after" 37 "it is x1.5 (the volts go up). Two" 38 "in a row make x2.25. A railgun on" 39 "one fires every 2nd tick."
     40 "Fed, it mends 2 hull per 10 W," 41 "up to 100. The answer to a lane" 42 "that is open, where shots hit the" 43 "hull. Half the power, half the mend."
     44 "Fed, it repairs 4 HP per 10 W to" 45 "the part in its 3x3 that is" 46 "closest to breaking. Touching" 47 "Aether Ore it works x1.5."
@@ -493,11 +493,11 @@
                 (set! shots (+ shots 1))
                 (cond
                   (= kind 1)
-                    ;; a laser: the first standing part takes the shot (10 x the multiplier), overflow lost
+                    ;; a laser: the first standing part takes the shot (7 x the multiplier), overflow lost
                     (let [(done : Bool) false]
                       (dotimes [r 6]
                         (when (and (not done) (lane-live? r))
-                          (let [(h : F32) (lane-hp-get r) (e : F32) (* 10.0 (lane-m-get r))]
+                          (let [(h : F32) (lane-hp-get r) (e : F32) (* 7.0 (lane-m-get r))]
                             (set! done true)
                             (if (>= e h)
                                 (do (lane-kill! r) (set! left (- left 1)))

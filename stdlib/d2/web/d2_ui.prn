@@ -223,7 +223,6 @@
         st0 (max-i 1 (if (= side 0) (gi (g-struct0-you)) (gi (g-struct0-opp))))
         sh (if (= side 0) (gi (g-armor-you)) (gi (g-armor-opp)))]
     (draw-text "HULL" x y 1 (c-faint))
-    (draw-text "the stern wall: a shot that finds an empty lane lands here" (+ x 40) y 1 (c-faint))
     (draw-int-r (i32 (+ hd 0.5)) (+ x w) y 1 (hull-color (i32 hd)))
     (draw-hull-bar! x (+ y 14) w 14 hd gh)
     (draw-text "PARTS" x (+ y 34) 1 (c-faint))
@@ -399,8 +398,8 @@
                   (meter (+ x 100) (+ y 27) (- w 112) 8 (/ hp (fmax2 hpm 1.0)) (hp-color (/ hp (fmax2 hpm 1.0))))
                   (draw-text "takes" (+ x 10) (+ y 42) 1 (c-faint))
                   (draw-text "laser" (+ x 48) (+ y 42) 1 (weapon-color 7)) (draw-pct! (item-x-laser item) (+ x 90) (+ y 42) (pct-color (item-x-laser item)))
-                  (draw-text "slug" (+ x 126) (+ y 42) 1 (weapon-color 3)) (draw-pct! (item-x-rail item) (+ x 161) (+ y 42) (pct-color (item-x-rail item)))
-                  (draw-text "shell" (+ x 198) (+ y 42) 1 (weapon-color 8)) (draw-pct! (item-x-cannon item) (+ x 233) (+ y 42) (pct-color (item-x-cannon item)))
+                  (draw-text "slug" (+ x 126) (+ y 42) 1 (weapon-color 3)) (draw-pct! (item-x-rail item) (+ x 165) (+ y 42) (pct-color (item-x-rail item)))
+                  (draw-text "shell" (+ x 198) (+ y 42) 1 (weapon-color 8)) (draw-pct! (item-x-cannon item) (+ x 239) (+ y 42) (pct-color (item-x-cannon item)))
                   (draw-text (cell-state-text r c) (+ x 10) (+ y 60) 1 (state-color r c))
                   (let [(ly : I32) (+ y 78)]
                     ;; the electrical picture: volts x amps = watts
@@ -416,7 +415,7 @@
                       (let [(ch : F32) (loadf32 (sim-charge-addr (- o 1)))
                             (thr : F32) (weapon-thr item)
                             left (kill-secs (- thr ch) pw)]
-                        (draw-text (case (weapon-kind item) 1 "10 dmg to the first part in the lane" 2 "30 dmg, punches through the lane" "45 dmg on the deepest part, splash") (+ x 10) ly 1 (weapon-color item))
+                        (draw-text (case (weapon-kind item) 1 "7 dmg to the first part in the lane" 2 "30 dmg, punches through the lane" "45 dmg on the deepest part, splash") (+ x 10) ly 1 (weapon-color item))
                         (meter (+ x 10) (+ ly 16) (- w 20) 8 (/ ch thr) (weapon-color item))
                         (draw-text (if (<= left 0) "fires now" "fires in") (+ x 10) (+ ly 28) 1 (c-faint))
                         (when (and (> left 0) (< left 99))
@@ -459,13 +458,35 @@
         (i32 (* (f32 amt) (* (sinf (* (f32 age) 0.13)) (- 1.0 (/ (f32 age) 260.0)))))
         0)))
 
-;; the stern wall of a ship: its hull bar, where a shot that finds an empty lane lands
+;; a lane with nothing standing in it: every shot down it lands on the hull
+(defn lane-open? [(side : I32) (c : I32)] : Bool
+  (let [(saved : I32) (gi (g-ship))]
+    (gi! (g-ship) side)
+    (let [n (lane-count c)] (do (gi! (g-ship) saved) (= n 0)))))
+
+;; how many guns of a ship fire down lane c, of weapon kind kd (1 laser, 2 rail, 3 cannon)
+(defn guns-in-lane [(side : I32) (c : I32) (kd : I32)] : I32
+  (let [(saved : I32) (gi (g-ship)) (n : I32) 0]
+    (gi! (g-ship) side)
+    (dotimes [p (gi (g-stage-n))]
+      (when (and (= (st-ok p) 1) (and (= (weapon-kind (st-item p)) kd) (= (mod (weapon-cell p) 6) c)))
+        (set! n (+ n 1))))
+    (gi! (g-ship) saved)
+    n))
+
+;; the stern wall of a ship: its hull bar, where a shot that finds an empty lane lands. A lane with nothing in it shows red on the wall: a shot down it hurts the hull.
 (defn draw-stern-wall! [(side : I32)] : Unit
   (let [y (if (= side 0) (+ (fl-y0) (+ (* 6 (fl-s)) 4)) (- (fl-y1) 13))
         (hd : F32) (gf (if (= side 0) (g-hulld-you) (g-hulld-opp)))
         (gh : F32) (gf (if (= side 0) (g-ghost-you) (g-ghost-opp)))]
     (draw-hull-bar! (fl-x) y (* 6 (fl-s)) 9 hd gh)
-    (draw-text (if (= side 0) "HULL" "HULL") (- (fl-x) 34) (- y 2) 1 (c-faint))))
+    (when (or (= side 0) (= (gi (g-opp-known)) 1))
+      (dotimes [c 6]
+        (when (lane-open? side c)
+          (let [x (+ (fl-x) (* c (fl-s)))]
+            (fill-rect-a (+ x 1) y (- (fl-s) 2) 9 (c-rose) 120)
+            (dotimes [k 4] (line-a (+ x (+ 4 (* k 9))) (+ y 8) (+ x (+ 10 (* k 9))) (+ y 1) (c-rose) 230))))))
+    (draw-text "HULL" (+ (fl-x) (+ (* 6 (fl-s)) 5)) (- y 3) 1 (c-faint))))
 
 (defn draw-lane-guides! [] : Unit
   (let [hl (gi (g-lane-hl))]
@@ -473,10 +494,19 @@
       (let [x (+ (fl-x) (* c (fl-s)))]
         (fill-rect-a x (- (fl-y1) 12) (fl-s) (- (+ (fl-y0) (+ (* 6 (fl-s)) 14)) (- (fl-y1) 12)) (c-ink) (if (= c hl) 20 6))
         (fill-rect-a x (fl-y1) 1 (- (+ (fl-y0) (* 6 (fl-s))) (fl-y1)) (c-ink) 14)
-        ;; the lane number in the gap between the two bows
-        (draw-int-c (+ c 1) (+ x (/ (fl-s) 2)) (+ (+ (fl-y1) (* 6 (fl-s))) 5) 1 (if (= c hl) (c-ink) (c-faint)))))
-    (draw-text-c "BOW" (- (fl-x) 24) (+ (+ (fl-y1) (* 6 (fl-s))) 5) 1 (c-faint))
-    (draw-text-c "BOW" (+ (fl-x) (+ (* 6 (fl-s)) 24)) (+ (+ (fl-y1) (* 6 (fl-s))) 5) 1 (c-faint))))
+        ;; the lane number in the gap between the two bows, and a pip for every gun that fires down it: theirs above the number, yours below
+        (draw-int-c (+ c 1) (+ x (/ (fl-s) 2)) (+ (+ (fl-y1) (* 6 (fl-s))) 5) 1 (if (= c hl) (c-ink) (c-faint)))
+        (let [(them : I32) 0 (me : I32) 0]
+          (dotimes [kd 3]
+            (dotimes [j (guns-in-lane 1 c (+ kd 1))]
+              (when (< them 6)
+                (do (fill-rect (+ x (+ 6 (* them 6))) (+ (+ (fl-y1) (* 6 (fl-s))) 1) 5 4 (weapon-color (case kd 0 7 1 3 8)))
+                    (set! them (+ them 1)))))
+            (dotimes [j (guns-in-lane 0 c (+ kd 1))]
+              (when (< me 6)
+                (do (fill-rect (+ x (+ 6 (* me 6))) (+ (+ (fl-y1) (* 6 (fl-s))) 22) 5 4 (weapon-color (case kd 0 7 1 3 8)))
+                    (set! me (+ me 1)))))))))
+    (draw-text "BOW" (+ (fl-x) (+ (* 6 (fl-s)) 5)) (+ (+ (fl-y1) (* 6 (fl-s))) 5) 1 (c-faint))))
 
 (defn render-fight! [] : Unit
   (let [now (gi (g-ticker))
@@ -509,29 +539,29 @@
     (draw-text "of slugs and shells" (+ 62 (+ 14 (num-width (/ (gi (g-evade10)) 10) 1))) 112 1 (c-faint))
     (section "YOUR GUNS" 14 130 330)
     (draw-roster! 0 14 154 330 4)
-    (render-log! 14 232 330 17)
+    (render-log! 14 232 316 14)
     ;; ---- right: them
-    (draw-text-s "OPPONENT" 620 12 1 (c-dim))
-    (draw-opp-chip! 690 12)
-    (draw-vitals! 620 28 326 1)
+    (draw-text-s "OPPONENT" 624 12 1 (c-dim))
+    (draw-opp-chip! 694 12)
+    (draw-vitals! 624 28 322 1)
     (when (= (gi (g-opp-known)) 1)
       (do (gi! (g-ship) 1)
-          (draw-text "DODGE" 620 112 1 (c-faint)) (draw-int (/ (gi (g-evade10)) 10) 668 112 1 (c-teal)) (draw-text "%" (+ 668 (num-width (/ (gi (g-evade10)) 10) 1)) 112 1 (c-teal))
+          (draw-text "DODGE" 624 112 1 (c-faint)) (draw-int (/ (gi (g-evade10)) 10) 672 112 1 (c-teal)) (draw-text "%" (+ 672 (num-width (/ (gi (g-evade10)) 10) 1)) 112 1 (c-teal))
           (gi! (g-ship) 0)))
-    (section "THEIR GUNS" 620 130 326)
-    (draw-roster! 1 620 154 326 4)
+    (section "THEIR GUNS" 624 130 322)
+    (draw-roster! 1 624 154 322 4)
     ;; the clock: thirty seconds, a round break every five
-    (section "THE CLOCK" 620 232 326)
+    (section "THE CLOCK" 624 232 322)
     (dotimes [k 30]
-      (let [x (+ 620 (* k 11))
+      (let [x (+ 624 (* k 11))
             done (< k t)
             cur (= k t)]
         (fill-rect-a x 262 9 10 (if done (c-gold) (c-ground2)) (if done 230 255))
         (when cur (fill-rect-a x 262 (i32 (* 9.0 frac)) 10 (c-gold) 200))
         (when (and (> k 0) (= (mod k 5) 0)) (fill-rect-a (- x 2) 258 1 18 (c-faint) 180))))
-    (draw-text "second" 620 280 1 (c-faint)) (draw-int t 676 280 1 (c-ink)) (draw-text "of 30" (+ 676 (+ 6 (num-width t 1))) 280 1 (c-faint))
+    (draw-text "second" 624 280 1 (c-faint)) (draw-int t 676 280 1 (c-ink)) (draw-text "of 30" (+ 676 (+ 6 (num-width t 1))) 280 1 (c-faint))
     (draw-text-r "round" 900 280 1 (c-faint)) (draw-int-r (+ (/ t 5) 1) 930 280 1 (c-ink))
-    (render-inspect! 620 298 326 232)
+    (render-inspect! 624 298 322 232)
     ;; forfeit
     (if (= (gi (g-leave-ask)) 1)
         (do (button 14 508 150 24 "CONFIRM FORFEIT" true true)

@@ -15,7 +15,7 @@
 (defn g-split-i [] : I32 433) (defn g-split-n0 [] : I32 434)     ; the placement that was just split, and how many parts there were before
 (defn g-undo-n [] : I32 435)
 
-(defn pg-x [] : I32 262) (defn pg-y [] : I32 102) (defn pg-s [] : I32 54)
+(defn pg-x [] : I32 296) (defn pg-y [] : I32 104) (defn pg-s [] : I32 50)
 
 (defn pack-secs-left [] : I32
   (max-i 0 (/ (- (gi (g-m-packms)) (- (gi (g-ticker)) (gi (g-m-found-t)))) 1000)))
@@ -125,9 +125,9 @@
       (send-ready!))))
 
 ;; ---- the parts bin: two columns of tiles, slot k (see bin-item for what is in it) -------------------------------------------------------
-(defn bin-x [(k : I32)] : I32 (+ 12 (* (/ k 12) 120)))
+(defn bin-x [(k : I32)] : I32 (+ 12 (* (/ k 12) 124)))
 (defn bin-y [(k : I32)] : I32 (+ 96 (* (mod k 12) 27)))
-(defn bin-w [] : I32 118) (defn bin-h [] : I32 25)
+(defn bin-w [] : I32 120) (defn bin-h [] : I32 25)
 (defn part-key [(k : I32)] : I32
   (case k 9 48 10 81 11 87 12 69 13 84 14 89 15 85 16 73 17 80 18 65 19 83 20 68 21 70 22 71 23 74 (+ (kc-1) k)))
 (defn part-key-label [(k : I32)] : String
@@ -160,14 +160,14 @@
 (defn anchor-col [(hc : I32)] : I32
   (clamp-i (- hc (/ (- (shape-w (gi (g-sel-item)) (gi (g-sel-rot))) 1) 2)) 0 (- 6 (shape-w (gi (g-sel-item)) (gi (g-sel-rot))))))
 
-(defn ready-bx [] : I32 604) (defn ready-by [] : I32 492) (defn ready-bw [] : I32 340) (defn ready-bh [] : I32 30)
+(defn ready-bx [] : I32 612) (defn ready-by [] : I32 500) (defn ready-bw [] : I32 332) (defn ready-bh [] : I32 28)
 (defn btn-ex-x [] : I32 12) (defn btn-un-x [] : I32 90) (defn btn-cl-x [] : I32 144) (defn btn-sp-x [] : I32 200) (defn btn-y [] : I32 428)
 
 (defn pack-update! [] : Unit
   (let [locked (= (gi (g-committed)) 1)]
     (hover-cell!)
     (when (key-hit? 72) (gi! (g-help-on) (- 1 (gi (g-help-on)))))      ; H: the rules card
-    (when (and (left-clicked?) (in-rect? 920 484 20 20)) (gi! (g-help-on) (- 1 (gi (g-help-on)))))
+    (when (and (left-clicked?) (in-rect? 920 50 20 20)) (gi! (g-help-on) (- 1 (gi (g-help-on)))))
     (when (and (= (gi (g-help-on)) 1) (or (key-hit? (kc-esc)) (left-clicked?))) (gi! (g-help-on) 0))
     (when (and (not locked) (= (gi (g-help-on)) 0))
       (do
@@ -375,25 +375,15 @@
 ;; a placed Titanium Beam / Aether Ore with the pointer on it: where its pieces would go if it were split
 (defn draw-split-preview! [(i : I32)] : Unit
   (let [np (split-pieces! i)
-        s (pg-s) gx (pg-x) gy (pg-y)
-        it (st-item i)]
+        s (pg-s) gx (pg-x) gy (pg-y)]
     (when (> np 0)
-      (let [pit (load32 (scratch-base))]
-        ;; each piece outlined where it will lie
-        (dotimes [k np]
-          (let [a (+ (scratch-base) (shl k 4))
-                m (shape! (load32 a) 0 (load32 (+ a 12)) (load32 (+ a 4)) (load32 (+ a 8)))]
-            (dotimes [j m]
-              (let [x (+ gx (* (sh-col j) s)) y (+ gy (* (sh-row j) s))]
-                (rect-outline-a (+ x 3) (+ y 3) (- s 6) (- s 6) (c-teal) 230)
-                (rect-outline-a (+ x 4) (+ y 4) (- s 8) (- s 8) (c-teal) 120)))))
-        (draw-text-c "C splits it, in place. The pieces cost and weigh more, and boost less:" (+ gx (* 3 s)) (+ gy (+ (* 6 s) 4)) 1 (c-teal))
-        (let [dc (- (* np (item-cost pit)) (item-cost it)) dw (- (* np (item-weight pit)) (item-weight it))
-              y (+ gy (+ (* 6 s) 18))
-              x0 (- (+ gx (* 3 s)) 90)]
-          (draw-text "+" x0 y 1 (c-gold)) (draw-int dc (+ x0 7) y 1 (c-gold)) (draw-text "credits" (+ x0 (+ 11 (num-width dc 1))) y 1 (c-faint))
-          (draw-text "+" (+ x0 90) y 1 (c-gold)) (draw-int dw (+ x0 97) y 1 (c-gold)) (draw-text "tons" (+ x0 (+ 101 (num-width dw 1))) y 1 (c-faint))
-          (draw-text (if (= (item-family it) 1) "boost x1.5 -> x1.25" "Aegis x1.5 -> x1.25") (+ x0 150) y 1 (c-faint)))))))
+      (dotimes [k np]
+        (let [a (+ (scratch-base) (shl k 4))
+              m (shape! (load32 a) 0 (load32 (+ a 12)) (load32 (+ a 4)) (load32 (+ a 8)))]
+          (dotimes [j m]
+            (let [x (+ gx (* (sh-col j) s)) y (+ gy (* (sh-row j) s))]
+              (rect-outline-a (+ x 3) (+ y 3) (- s 6) (- s 6) (c-teal) 230)
+              (rect-outline-a (+ x 4) (+ y 4) (- s 8) (- s 8) (c-teal) 120))))))))
 
 ;; ---- budget bars ---------------------------------------------------------------------------------------------------------------------
 ;; a bar of `used` of `cap`; `extra` is what the part in hand would add, shown as an outlined segment (red if it would not fit)
@@ -428,21 +418,20 @@
   (let [gx (pg-x) s (pg-s) y0 (+ (pg-y) (+ (* 6 s) 8))
         hl (gi (g-lane-hl))]
     (draw-text "SHOTS TO OPEN A LANE" gx y0 1 (c-dim))
-    (draw-text-r "a lane is a column: fire comes down it from the bow" (+ gx (* 6 s)) y0 1 (c-faint))
     (dotimes [c 6]
       (let [cx (+ gx (+ (* c s) (/ s 2)))]
-        (when (= c hl) (fill-rect-a (+ gx (* c s)) (+ y0 14) s 78 (c-ink) 22))
+        (when (= c hl) (fill-rect-a (+ gx (* c s)) (+ y0 14) s 74 (c-ink) 22))
         (draw-int-c (+ c 1) cx (+ y0 16) 1 (if (= c hl) (c-ink) (c-faint)))
         (draw-shots-cell! cx (+ y0 32) (lane-shots-to-open c 1) 1)
         (draw-shots-cell! cx (+ y0 46) (lane-shots-to-open c 2) 2)
         (draw-shots-cell! cx (+ y0 60) (lane-shots-to-open c 3) 3)
         (if (= (lane-count c) 0)
-            (draw-text-c "no HP" cx (+ y0 76) 1 (c-faint))
-            (do (draw-int-c (lane-hp-total c) (- cx 6) (+ y0 76) 1 (c-dim)) (draw-text "HP" (+ (- cx 6) (+ (/ (num-width (lane-hp-total c) 1) 2) 3)) (+ y0 76) 1 (c-faint))))))
-    ;; the row names
-    (draw-text "lane" (- gx 34) (+ y0 16) 1 (c-faint))
+            (draw-text-c "no HP" cx (+ y0 74) 1 (c-faint))
+            (do (draw-int-c (lane-hp-total c) (- cx 6) (+ y0 74) 1 (c-dim)) (draw-text "HP" (+ (- cx 6) (+ (/ (num-width (lane-hp-total c) 1) 2) 3)) (+ y0 74) 1 (c-faint))))))
+    ;; the row names, in the margin left of the hold
+    (draw-text "lane" (- gx 42) (+ y0 16) 1 (c-faint))
     (draw-text "laser" (- gx 42) (+ y0 32) 1 (weapon-color 7))
-    (draw-text "rail" (- gx 34) (+ y0 46) 1 (weapon-color 3))
+    (draw-text "rail" (- gx 42) (+ y0 46) 1 (weapon-color 3))
     (draw-text "shell" (- gx 42) (+ y0 60) 1 (weapon-color 8))))
 
 ;; a gun's own lane, drawn up the hold from the gun to the bow: where its shots go, and what stops them
@@ -527,25 +516,45 @@
 (defn pct-color [(pct : I32)] : I32 (if (< pct 100) (c-good) (if (> pct 100) (c-rose) (c-dim))))
 
 (defn draw-part-card! [(item : I32) (rot : I32) (rx : I32) (y : I32) (rw : I32) (hr : I32) (hc : I32) (placed : Bool)] : Unit
-  (do (card rx y rw 214 (c-panel) 220 (c-line) 255)
-  (let [w (shape-w item rot) h (shape-h item rot)
-        cs (clamp-i (/ 84 (max-i w h)) 18 40)]
-    (draw-item-icon! item rot (+ rx (+ 8 (- 46 (/ (* w cs) 2)))) (+ y (+ 8 (- 34 (/ (* h cs) 2)))) cs 255))
-  (draw-text-s (item-name item) (+ rx 108) (+ y 8) 1 (c-ink))
-  (draw-text (item-kind-name item) (+ rx 108) (+ y 24) 1 (c-kind (item-kind item)))
-  (draw-int (item-cost item) (+ rx 108) (+ y 40) 1 (c-gold)) (draw-text "credits" (+ rx (+ 112 (num-width (item-cost item) 1))) (+ y 40) 1 (c-faint))
-  (draw-int (item-weight item) (+ rx 108) (+ y 56) 1 (c-ink)) (draw-text "tons" (+ rx (+ 112 (num-width (item-weight item) 1))) (+ y 56) 1 (c-faint))
-  (draw-int (item-hp item) (+ rx 170) (+ y 56) 1 (c-good)) (draw-text "HP a cell" (+ rx (+ 174 (num-width (item-hp item) 1))) (+ y 56) 1 (c-faint))
-  ;; what each weapon does to it
-  (draw-text "takes" (+ rx 108) (+ y 72) 1 (c-faint))
-  (draw-text "laser" (+ rx 142) (+ y 72) 1 (weapon-color 7)) (draw-pct! (item-x-laser item) (+ rx 184) (+ y 72) (pct-color (item-x-laser item)))
-  (draw-text "slug" (+ rx 214) (+ y 72) 1 (weapon-color 3)) (draw-pct! (item-x-rail item) (+ rx 249) (+ y 72) (pct-color (item-x-rail item)))
-  (draw-text "shell" (+ rx 280) (+ y 72) 1 (weapon-color 8)) (draw-pct! (item-x-cannon item) (+ rx 315) (+ y 72) (pct-color (item-x-cannon item)))
-  (draw-facing! item rot (+ rx 108) (+ y 40))
-  (dotimes [k 4] (draw-text (item-info item k) (+ rx 10) (+ y (+ 92 (* k 14))) 1 (if (= k 0) (c-dim) (c-faint))))
-  (if placed
-      (draw-text (cell-state-text hr hc) (+ rx 10) (+ y 156) 1 (state-color hr hc))
-      (draw-text "R or the wheel turns it" (+ rx 10) (+ y 156) 1 (c-faint)))))
+  (do (card rx y rw 190 (c-panel) 220 (c-line) 255)
+      (let [w (shape-w item rot) h (shape-h item rot)
+            cs (clamp-i (/ 80 (max-i w h)) 18 40)]
+        (draw-item-icon! item rot (+ rx (+ 8 (- 44 (/ (* w cs) 2)))) (+ y (+ 8 (- 36 (/ (* h cs) 2)))) cs 255))
+      (draw-text-s (item-name item) (+ rx 108) (+ y 8) 1 (c-ink))
+      (draw-text (item-kind-name item) (+ rx 108) (+ y 24) 1 (c-kind (item-kind item)))
+      (draw-int (item-cost item) (+ rx 108) (+ y 40) 1 (c-gold)) (draw-text "credits" (+ rx (+ 112 (num-width (item-cost item) 1))) (+ y 40) 1 (c-faint))
+      (draw-int (item-weight item) (+ rx 210) (+ y 40) 1 (c-ink)) (draw-text "tons" (+ rx (+ 214 (num-width (item-weight item) 1))) (+ y 40) 1 (c-faint))
+      (draw-int (item-hp item) (+ rx 108) (+ y 56) 1 (c-good)) (draw-text "HP a cell" (+ rx (+ 112 (num-width (item-hp item) 1))) (+ y 56) 1 (c-faint))
+      (draw-facing! item rot (+ rx 108) (+ y 72))
+      ;; what each weapon does to it
+      (draw-text "takes" (+ rx 10) (+ y 96) 1 (c-faint))
+      (draw-text "laser" (+ rx 52) (+ y 96) 1 (weapon-color 7)) (draw-pct! (item-x-laser item) (+ rx 96) (+ y 96) (pct-color (item-x-laser item)))
+      (draw-text "slug" (+ rx 142) (+ y 96) 1 (weapon-color 3)) (draw-pct! (item-x-rail item) (+ rx 179) (+ y 96) (pct-color (item-x-rail item)))
+      (draw-text "shell" (+ rx 226) (+ y 96) 1 (weapon-color 8)) (draw-pct! (item-x-cannon item) (+ rx 265) (+ y 96) (pct-color (item-x-cannon item)))
+      (dotimes [k 4] (draw-text (item-info item k) (+ rx 10) (+ y (+ 114 (* k 14))) 1 (if (= k 0) (c-dim) (c-faint))))
+      (if placed
+          (draw-text (cell-state-text hr hc) (+ rx 10) (+ y 172) 1 (state-color hr hc))
+          (draw-text "R or the wheel turns it" (+ rx 10) (+ y 172) 1 (c-faint)))))
+
+;; the one line above the hold: what the pointer is on (why a part is not fed, how fast a gun fires, what a split costs), else what the top edge is
+(defn draw-status-line! [(hp : I32) (hr : I32) (hc : I32) (locked : Bool)] : Unit
+  (let [cx (+ (pg-x) (* 3 (pg-s))) y 84]
+    (cond
+      (and (not locked) (>= hp 0) (> (item-split-n (st-item hp)) 0))
+        (let [it (st-item hp) np (item-split-n it) pit (item-split-item it)
+              dc (- (* np (item-cost pit)) (item-cost it)) dw (- (* np (item-weight pit)) (item-weight it))
+              x0 (- cx 168)]
+          (draw-text "C splits it:" x0 y 1 (c-teal))
+          (draw-text "+" (+ x0 91) y 1 (c-gold)) (draw-int dc (+ x0 98) y 1 (c-gold)) (draw-text "credits" (+ x0 (+ 102 (num-width dc 1))) y 1 (c-faint))
+          (draw-text "+" (+ x0 175) y 1 (c-gold)) (draw-int dw (+ x0 182) y 1 (c-gold)) (draw-text "tons" (+ x0 (+ 186 (num-width dw 1))) y 1 (c-faint))
+          (draw-text (if (= (item-family it) 1) "boost x1.5 -> x1.25" "Aegis x1.5 -> x1.25") (+ x0 235) y 1 (c-faint)))
+      (and (not locked) (>= hp 0) (>= hr 0) (consumer-role? (cell-role hr hc)) (and (= (cell-power hr hc) 0) (= (cell-fed-any hr hc) 0)))
+        (draw-text-c (unfed-reason hr hc) cx y 1 (c-rose))
+      (and (not locked) (>= hp 0) (>= hr 0) (= (cell-role hr hc) (r-weapon)) (= (cell-power hr hc) 1))
+        (draw-weapon-rate! hr hc (st-item hp) (- cx 118) y)
+      :else
+        (do (chevron! (- cx 124) (+ y 8) 0 5 (c-faint) 255) (chevron! (+ cx 124) (+ y 8) 0 5 (c-faint) 255)
+            (draw-text-c "BOW: enemy fire arrives here" cx y 1 (c-dim))))))
 
 (defn render-pack! [] : Unit
   (let [locked (= (gi (g-committed)) 1)
@@ -556,7 +565,6 @@
         hi (gi (g-hov-item))
         shown (cond (>= hi 0) hi (>= hp 0) (st-item hp) :else sel)
         shown-rot (if (and (< hi 0) (>= hp 0)) (st-rot hp) rot)
-        gcx (+ (pg-x) (* 3 (pg-s)))
         flash (< (- (gi (g-ticker)) (gi (g-bud-flash))) 450)
         extra-item (if (and (not locked) (or (>= hi 0) (and (>= hr 0) (< hp 0)))) (if (>= hi 0) hi sel) -1)]
     (draw-backdrop!)
@@ -565,13 +573,13 @@
     (draw-opp-chip! 248 20)
     (draw-budget-bar! 440 32 280 "CREDITS" (gi (g-bud-cost)) (budget-credits) (if (>= extra-item 0) (item-cost extra-item) 0) (c-gold) "" flash)
     (draw-budget-bar! 440 58 280 "WEIGHT" (gi (g-bud-weight)) (budget-weight) (if (>= extra-item 0) (item-weight extra-item) 0) (c-kind-def) " t" flash)
-    (draw-text "DODGE" 736 46 1 (c-faint)) (draw-int (/ (gi (g-evade10)) 10) 784 46 1 (c-teal)) (draw-text "%" (+ 784 (num-width (/ (gi (g-evade10)) 10) 1)) 46 1 (c-teal))
-    (draw-text "lighter ships dodge" 736 60 1 (c-faint))
-    (draw-clock-c secs 904 22 2 (if (< secs 11) (c-rose) (c-gold)))
+    (draw-text "DODGE" 736 54 1 (c-faint)) (draw-int (/ (gi (g-evade10)) 10) 784 54 1 (c-teal)) (draw-text "%" (+ 784 (num-width (/ (gi (g-evade10)) 10) 1)) 54 1 (c-teal))
+    (draw-clock-c secs 890 22 2 (if (< secs 11) (c-rose) (c-gold)))
     (meter 12 74 932 3 (/ (f32 (- (gi (g-m-packms)) (- (gi (g-ticker)) (gi (g-m-found-t))))) (f32 (gi (g-m-packms)))) (if (< secs 11) (c-rose) (c-gold)))
+    (card 920 48 20 20 (c-panel) 235 (c-line) 255) (draw-text-c "?" 930 50 1 (c-dim))
     ;; the parts bin: two columns, by what the parts do
-    (section "POWER AND TIMING" 12 80 114)
-    (section "GUNS, DEFENCE, CARGO" 132 80 114)
+    (section "POWER" 12 80 120)
+    (section "COMBAT" 136 80 120)
     (dotimes [k 24]
       (let [it (bin-item k) x (bin-x k) y (bin-y k) on (= it sel)
             hot (and (not locked) (= it hi))
@@ -590,13 +598,12 @@
             (button (btn-un-x) (btn-y) 52 26 "UNDO" false (> (gi (g-undo-n)) 0))
             (button (btn-cl-x) (btn-y) 54 26 "CLEAR" false (> (gi (g-stage-n)) 0))
             (button (btn-sp-x) (btn-y) 46 26 "SPLIT" false (and (>= hp 0) (> (item-split-n (st-item (max-i hp 0))) 0)))))
-    (draw-text "1-0 Q-J pick  R turn  click place" 12 462 1 (c-faint))
-    (draw-text "right click removes  C splits  Z undoes" 12 476 1 (c-faint))
-    (draw-text "H shows the rules" 12 490 1 (c-faint))
-    ;; the hold: BOW label, lane guides, the grid
-    (draw-text-c "BOW" gcx 82 1 (c-dim))
-    (chevron! (- gcx 28) 94 0 5 (c-faint) 255) (chevron! (+ gcx 28) 94 0 5 (c-faint) 255)
-    (draw-text "enemy fire arrives here, one lane (column) at a time" (- gcx 150) 94 1 (c-faint))
+    (draw-text "1-0 Q-J pick a part" 12 462 1 (c-faint))
+    (draw-text "R turn  click place" 12 476 1 (c-faint))
+    (draw-text "right click removes" 12 490 1 (c-faint))
+    (draw-text "C splits  Z undoes  H rules" 12 504 1 (c-faint))
+    ;; the line above the hold, then the hold with its lane guides
+    (draw-status-line! hp hr hc locked)
     (dotimes [c 6]
       (let [x (+ (pg-x) (* c (pg-s)))]
         (fill-rect-a x (- (pg-y) 12) (pg-s) (+ (* 6 (pg-s)) 12) (c-ink) (if (= c (gi (g-lane-hl))) 18 6))))
@@ -622,66 +629,60 @@
                     (when (and fits-here (weapon-item? sel))
                       (let [n (shape! sel 0 rot (anchor-row hr) (anchor-col hc))]
                         (draw-projection! (+ (* (sh-row 0) 6) (sh-col 0)) sel)))
-                    (draw-text-c (item-name sel) gcx (+ (pg-y) (+ (* 6 (pg-s)) -2)) 1 (c-ink)))
+                    unit)
                 (when (> (item-split-n (st-item hp)) 0) (draw-split-preview! hp))))
         :else unit))
     ;; the lane table under the hold
     (draw-lane-table!)
     ;; the right panel: the ship's numbers
-    (let [rx 604 rw 340 re (+ rx rw)]
+    (let [rx 612 rw 332 re 944]
       (section "THIS SHIP" rx 80 rw)
-      (row-label "Parts" rx 102) (draw-int-r (gi (g-stage-n)) re 102 1 (c-ink))
-      (row-label "Structure (total HP)" rx 118) (draw-int-r (gi (g-structure-max)) re 118 1 (c-good))
+      (row-label "Parts" rx 104) (draw-int-r (gi (g-stage-n)) re 104 1 (c-ink))
+      (row-label "Structure (total HP)" rx 119) (draw-int-r (gi (g-structure-max)) re 119 1 (c-good))
       (row-label "Power made" rx 134) (draw-text-r "W" re 134 1 (c-faint)) (draw-int-r (gi (g-power-made)) (- re 10) 134 1 (c-gold))
-      (row-label "Guns fed" rx 150)
-      (draw-int-r (gi (g-preview-powered)) (- re (+ 14 (num-width (gi (g-preview-weapons)) 1))) 150 1
+      (row-label "Guns fed" rx 149)
+      (draw-int-r (gi (g-preview-powered)) (- re (+ 14 (num-width (gi (g-preview-weapons)) 1))) 149 1
                   (if (= (gi (g-preview-powered)) (gi (g-preview-weapons))) (c-ink) (c-gold)))
-      (draw-text-r "/" (- re (num-width (gi (g-preview-weapons)) 1)) 150 1 (c-faint))
-      (draw-int-r (gi (g-preview-weapons)) re 150 1 (c-faint))
-      (row-label "Damage a second" rx 166) (row-tenths (gi (g-preview-dps)) re 166 (c-kind-off))
-      (draw-text "laser" (+ rx 150) 166 1 (weapon-color 7)) (row-tenths (gi (g-dps-laser)) (+ rx 218) 166 (c-dim))
-      (draw-text "rail" (+ rx 226) 166 1 (weapon-color 3)) (row-tenths (gi (g-dps-rail)) (+ rx 275) 166 (c-dim))
-      (draw-text "shell" (+ rx 283) 166 1 (weapon-color 8)) (row-tenths (gi (g-dps-cannon)) re 166 (c-dim))
-      (row-label "Mends hull a second" rx 182) (row-tenths (gi (g-preview-mend)) re 182 (c-good))
-      (row-label "Repairs a part a second" rx 198) (row-tenths (gi (g-preview-regen)) re 198 (c-kind-def))
-      (row-label "Hot parts / saved by vents" rx 214)
-      (draw-int-r (gi (g-heat-saved)) re 214 1 (c-cool)) (draw-text-r "/" (- re (+ 4 (num-width (gi (g-heat-saved)) 1))) 214 1 (c-faint))
-      (draw-int-r (gi (g-heat-cooked)) (- re (+ 11 (num-width (gi (g-heat-saved)) 1))) 214 1 (if (> (gi (g-heat-cooked)) 0) (c-heat) (c-dim)))
+      (draw-text-r "/" (- re (num-width (gi (g-preview-weapons)) 1)) 149 1 (c-faint))
+      (draw-int-r (gi (g-preview-weapons)) re 149 1 (c-faint))
+      (row-label "Damage a second" rx 164) (row-tenths (gi (g-preview-dps)) re 164 (c-kind-off))
+      (draw-text "laser" (+ rx 20) 179 1 (weapon-color 7)) (row-tenths (gi (g-dps-laser)) (+ rx 100) 179 (c-dim))
+      (draw-text "rail" (+ rx 120) 179 1 (weapon-color 3)) (row-tenths (gi (g-dps-rail)) (+ rx 200) 179 (c-dim))
+      (draw-text "shell" (+ rx 220) 179 1 (weapon-color 8)) (row-tenths (gi (g-dps-cannon)) re 179 (c-dim))
+      (row-label "Mends hull a second" rx 194) (row-tenths (gi (g-preview-mend)) re 194 (c-good))
+      (row-label "Repairs a part a second" rx 209) (row-tenths (gi (g-preview-regen)) re 209 (c-kind-def))
+      (row-label "Hot parts / saved by vents" rx 224)
+      (draw-int-r (gi (g-heat-saved)) re 224 1 (c-cool)) (draw-text-r "/" (- re (+ 4 (num-width (gi (g-heat-saved)) 1))) 224 1 (c-faint))
+      (draw-int-r (gi (g-heat-cooked)) (- re (+ 11 (num-width (gi (g-heat-saved)) 1))) 224 1 (if (> (gi (g-heat-cooked)) 0) (c-heat) (c-dim)))
       (cond
         (= (gi (g-preview-loops)) 1)
-          (do (draw-text "A closed loop of wire." rx 236 1 (c-rose))
-              (draw-text "It burns out in a few seconds." rx 250 1 (c-faint)))
+          (do (draw-text "A closed loop of wire." rx 244 1 (c-rose))
+              (draw-text "It burns out in a few seconds." rx 258 1 (c-faint)))
         (not (stage-has-weapon?))
-          (do (draw-text "No weapon yet." rx 236 1 (c-gold))
-              (draw-text "Without one you cannot hurt anyone." rx 250 1 (c-faint)))
+          (do (draw-text "No weapon yet." rx 244 1 (c-gold))
+              (draw-text "Without one you cannot hurt anyone." rx 258 1 (c-faint)))
         (< (gi (g-preview-powered)) (gi (g-preview-weapons)))
-          (do (draw-text "A weapon gets no power." rx 236 1 (c-gold))
-              (draw-text "Follow the red UNFED marks." rx 250 1 (c-faint)))
+          (do (draw-text "A weapon gets no power." rx 244 1 (c-gold))
+              (draw-text "Follow the red UNFED marks." rx 258 1 (c-faint)))
         (> (gi (g-open-weapons)) 0)
-          (do (draw-text "A laser is BLOCKED by your own part." rx 236 1 (c-gold))
-              (draw-text "Lasers need nothing in front of them." rx 250 1 (c-faint)))
+          (do (draw-text "A laser is BLOCKED by your own part." rx 244 1 (c-gold))
+              (draw-text "Lasers need nothing in front of them." rx 258 1 (c-faint)))
         (> (gi (g-heat-cooked)) 0)
-          (do (draw-text "A Core is cooking some parts." rx 236 1 (c-heat))
-              (draw-text "Put a Cryo-Vent against them." rx 250 1 (c-faint)))
+          (do (draw-text "A Core is cooking some parts." rx 244 1 (c-heat))
+              (draw-text "Put a Cryo-Vent against them." rx 258 1 (c-faint)))
         :else
-          (do (draw-text "Wired and ready." rx 236 1 (c-good))
-              (draw-text "Gold dots are power on the move." rx 250 1 (c-faint))))
+          (do (draw-text "Wired and ready." rx 244 1 (c-good))
+              (draw-text "Gold dots are power on the move." rx 258 1 (c-faint))))
       ;; the part card: the one in the bin under the pointer, else the placed one under the pointer, else the one in hand
-      (section (if (>= hi 0) "THE PART" (if (>= hp 0) "THE PART ON THE GRID" "IN HAND")) rx 270 rw)
-      (draw-part-card! shown shown-rot rx 292 rw hr hc (and (< hi 0) (>= hp 0) (>= hr 0))))
-    ;; why a part under the pointer is not fed, or how fast a fed gun fires
-    (when (and (not locked) (>= hp 0) (>= hr 0) (consumer-role? (cell-role hr hc)) (and (= (cell-power hr hc) 0) (= (cell-fed-any hr hc) 0)))
-      (draw-text-c (unfed-reason hr hc) gcx (+ (pg-y) (+ (* 6 (pg-s)) -2)) 1 (c-rose)))
-    (when (and (not locked) (>= hp 0) (>= hr 0) (= (cell-role hr hc) (r-weapon)) (= (cell-power hr hc) 1))
-      (draw-weapon-rate! hr hc (st-item hp) (- gcx 120) (+ (pg-y) (+ (* 6 (pg-s)) -2))))
+      (section (if (>= hi 0) "THE PART" (if (>= hp 0) "THE PART ON THE GRID" "IN HAND")) rx 278 rw)
+      (draw-part-card! shown shown-rot rx 302 rw hr hc (and (< hi 0) (>= hp 0) (>= hr 0))))
     ;; actions
     (if locked
         (do (card (ready-bx) (ready-by) (ready-bw) (ready-bh) (c-panel) 235 (c-line) 255)
-            (draw-text-c (if (>= (gi (g-ack-wait)) 1) "sending your ship..." "waiting for the opponent") (+ (ready-bx) (/ (ready-bw) 2)) (+ (ready-by) 7) 1 (c-dim)))
+            (draw-text-c (if (>= (gi (g-ack-wait)) 1) "sending your ship..." "waiting for the opponent") (+ (ready-bx) (/ (ready-bw) 2)) (+ (ready-by) 6) 1 (c-dim)))
         (button (ready-bx) (ready-by) (ready-bw) (ready-bh) "READY" true true))
-    (draw-text "Shots fly down lanes. LASER: the first part, needs a clear lane. RAIL: punches through. CANNON: the deepest part." 12 516 1 (c-faint))
-    (draw-text-r (if locked "your ship is locked in" "sent on READY, or at six seconds") 944 526 1 (c-faint))
-    (card 920 484 20 20 (c-panel) 235 (c-line) 255) (draw-text-c "?" 930 486 1 (c-dim))
+    (draw-text "Shots fly down lanes (columns) from the bow." 260 508 1 (c-faint))
+    (draw-text "LASER first part, RAIL through, CANNON deepest" 260 522 1 (c-faint))
     (draw-toast!)
     (when (= (gi (g-help-on)) 1) (draw-rules-card!))))
 
@@ -695,14 +696,14 @@
     (draw-text "The hold's six columns are lanes. Shots fly down a lane from the BOW (the top edge) to the stern, and hit the hull if" 140 134 1 (c-dim))
     (draw-text "nothing is left in it. Every part has HP: 0 HP and it is gone -- wires and guns too, so a shot can cut a circuit." 140 148 1 (c-dim))
     (draw-text "THREE GUNS" 140 172 1 (c-gold))
-    (draw-text "LASER" 140 188 1 (weapon-color 7)) (draw-text "10 a second, hits the FIRST part in the lane. It needs a clear lane: a part of yours in front blocks it." 196 188 1 (c-dim))
+    (draw-text "LASER" 140 188 1 (weapon-color 7)) (draw-text "7 a second, hits the FIRST part in the lane. It needs a clear lane: a part of yours in front blocks it." 196 188 1 (c-dim))
     (draw-text "RAILGUN" 140 202 1 (weapon-color 3)) (draw-text "30 a slug, fires through your own ship and PUNCHES THROUGH: what it did not spend carries on (x0.8)." 210 202 1 (c-dim))
-    (draw-text "CANNON" 140 216 1 (weapon-color 8)) (draw-text "45 a shell, lobbed over everything onto the DEEPEST part, and the blast hurts what touches it." 203 216 1 (c-dim))
+    (draw-text "CANNON" 140 216 1 (weapon-color 8)) (draw-text "45 a shell every 3rd second, lobbed over everything onto the DEEPEST part; the blast hurts what touches it." 203 216 1 (c-dim))
     (draw-text "MATERIALS" 140 240 1 (c-gold))
     (draw-text "Bulwark: lasers do half. Titanium: slugs do half, and guns touching it hit x1.5. Aether Ore: lasers do a fifth, shells x1.5;" 140 256 1 (c-dim))
     (draw-text "an Aegis touching it repairs x1.5. SPLIT turns Titanium and Ore into Shards and Chips in place: dearer, heavier, weaker." 140 270 1 (c-dim))
     (draw-text "POWER AND HEAT" 140 294 1 (c-gold))
-    (draw-text "Generators make 10 W; wires carry it, splitters divide it, a gun fires when it has charged (laser 10, rail 30, cannon 40)." 140 310 1 (c-dim))
+    (draw-text "Generators make 10 W; wires carry it, splitters divide it, a gun fires when it has charged (laser 10, rail 30, cannon 30)." 140 310 1 (c-dim))
     (draw-text "A Quantum Core is 40 W in four cells but runs hot: every part touching it takes 2 a second unless a Cryo-Vent cools it." 140 324 1 (c-dim))
     (draw-text "Xeno-Biomass grows back what it touches. An Aegis repairs the weakest part near it. A Mender mends the hull." 140 338 1 (c-dim))
     (draw-text "LIMITS" 140 362 1 (c-gold))

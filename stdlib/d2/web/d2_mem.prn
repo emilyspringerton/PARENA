@@ -29,7 +29,7 @@
 ;; Two ships share one set of functions: g-ship (0 you, 1 the opponent) picks which STAGE / MODEL / SIM / ship globals they read and write.
 ;;   0x030000 FONT     255 glyphs x 16 rows
 ;;   0x040000 ITEMS    24 x 128 B the item catalog (d2_rules.prn)
-;;   0x041000 EXAMPLES 8 x 160 B  the ships the EXAMPLE button lays down (d2_examples.prn)
+;;   0x041000 EXAMPLES 12 x 160 B the ships the EXAMPLE button lays down (d2_examples.prn)
 ;;   0x042000 FX       96 x 32 B  the fight's animations in flight: shots, hits, numbers, sparks
 ;;   0x100000 FB       960 x 540 RGBA framebuffer
 

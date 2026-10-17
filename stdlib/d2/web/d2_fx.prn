@@ -6,7 +6,7 @@
 ;; and lands on the part of the other ship the rules say it hits.
 
 (defn fl-s [] : I32 38)            ; cell size in the fight
-(defn fl-x [] : I32 366)           ; left edge of both grids
+(defn fl-x [] : I32 358)           ; left edge of both grids
 (defn fl-y0 [] : I32 290)          ; top of your grid
 (defn fl-y1 [] : I32 36)           ; top of the opponent's grid
 

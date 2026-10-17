@@ -12,7 +12,7 @@ const e = instance.exports;
 e.d2_init();
 const lines = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n');
 // the catalog, the examples and the font are written once at init: no fight may land on them
-const REGIONS = { items: [262144, 24 * 128], examples: [266240, 8 * 160], font: [196608, 255 * 16] };
+const REGIONS = { items: [262144, 24 * 128], examples: [266240, 12 * 160], font: [196608, 255 * 16] };
 const sums0 = Object.fromEntries(Object.entries(REGIONS).map(([k, [a, n]]) => [k, e.d2_t_sum(a, n)]));
 let ships = 0, bad = 0, melt = 0, shotsTotal = 0, killsTotal = 0, items = new Set(), laneChecks = 0, splitChecks = 0, heatCells = 0, boosted = 0;
 const mask = (lo, hi) => (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
