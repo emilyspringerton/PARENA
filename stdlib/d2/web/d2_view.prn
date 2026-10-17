@@ -1,0 +1,137 @@
+;; stdlib/d2/web/d2_view.prn -- drawing a ship: cells, wires, the parts bin, bars. Pure drawing; no game decisions.
+
+;; ---- one cell ---------------------------------------------------------------------------------------------------------------------
+(defn opposite-port [(p : I32)] : I32
+  (cond (!= (bit-and p 8) 0) 2 (!= (bit-and p 4) 0) 1 (!= (bit-and p 2) 0) 8 :else 4))
+
+(defn draw-ports! [(x : I32) (y : I32) (s : I32) (port : I32) (c : I32) (a : I32)] : Unit
+  (let [h (/ s 2) w (max-i 2 (/ s 12))]
+    (when (!= (bit-and port 8) 0) (fill-rect-a (- (+ x h) w) y (* w 2) (+ h w) c a))
+    (when (!= (bit-and port 4) 0) (fill-rect-a (- (+ x h) w) (- (+ y h) w) (+ h w) (* w 2) c a))
+    (when (!= (bit-and port 2) 0) (fill-rect-a (- (+ x h) w) (- (+ y h) w) (* w 2) (+ h w) c a))
+    (when (!= (bit-and port 1) 0) (fill-rect-a x (- (+ y h) w) (+ h w) (* w 2) c a))))
+
+;; role art on a cell of side s at (x, y). kind colours it (0 offense, 1 operations, 2 defense).
+(defn draw-role! [(x : I32) (y : I32) (s : I32) (role : I32) (port : I32) (kind : I32) (pulse : I32)] : Unit
+  (let [kc (c-kind kind)
+        (cx : F32) (+ (f32 x) (/ (f32 s) 2.0))
+        (cy : F32) (+ (f32 y) (/ (f32 s) 2.0))
+        (fs : F32) (f32 s)]
+    (cond
+      (= role (r-none))
+        (do (fill-rect-a (+ x 3) (+ y 3) (- s 6) (- s 6) kc 120)
+            (fill-rect-a (+ x 6) (+ y 6) (- s 12) 2 (c-ink) 50))
+      (= role (r-gen))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 120)
+            (draw-ports! x y s port (c-ink) 210)
+            (disc cx cy (* fs 0.24) (c-ink) 235)
+            (ring cx cy (* fs 0.31) 2.0 (c-ink) (+ 90 pulse)))
+      (= role (r-cond))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 46)
+            (draw-ports! x y s port (c-ink) (+ 150 (/ pulse 2)))
+            (disc cx cy (* fs 0.1) (c-ink) 220))
+      (= role (r-split))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 70)
+            (draw-ports! x y s port (c-ink) (+ 150 (/ pulse 2)))
+            (disc cx cy (* fs 0.18) (c-ink) 235)
+            (disc cx cy (* fs 0.08) (c-bg) 255))
+      (= role (r-weapon))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 130)
+            (draw-ports! x y s port (c-ink) 200)
+            (draw-ports! x y s (opposite-port port) kc 255)
+            (disc cx cy (* fs 0.2) (c-bg) 255)
+            (ring cx cy (* fs 0.2) 2.0 (c-ink) 230))
+      (= role (r-armor))
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 120)
+            (rect-outline-a (+ x 7) (+ y 7) (- s 14) (- s 14) (c-ink) 150))
+      :else ; a dead square: waste that became armor
+        (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) (c-ground2) 255)
+            (dotimes [k (/ s 6)]
+              (line-a (+ x 3) (+ y (* k 6) 8) (+ x (+ (* k 6) 8) 0) (+ y 3) kc 90))
+            (rect-outline-a (+ x 2) (+ y 2) (- s 4) (- s 4) kc 80)))))
+
+;; the cell at grid (r, c) drawn at (x, y), side s: art, piece outline, the wiring's glow, scorch
+(defn draw-grid-cell! [(r : I32) (c : I32) (x : I32) (y : I32) (s : I32) (live : Bool)] : Unit
+  (let [o (cell-owner r c)
+        (t : F32) (f32 (gi (g-ticker)))
+        ph (i32 (* 60.0 (sinf (- (* t 0.008) (f32 (* (+ r c) 2))))))]
+    (fill-rect x y s s (if (= (mod (+ r c) 2) 0) (c-ground) (c-ground2)))
+    (when (!= (cell-ruined r c) 0)
+      (do (fill-rect-a (+ x 2) (+ y 2) (- s 4) (- s 4) (c-shadow) 200)
+          (line-a (+ x 4) (+ y 4) (- (+ x s) 5) (- (+ y s) 5) (c-faint) 120)
+          (line-a (- (+ x s) 5) (+ y 4) (+ x 4) (- (+ y s) 5) (c-faint) 120)))
+    (when (!= o 0)
+      (let [kind (item-kind (st-item (- o 1)))
+            role (cell-role r c) port (cell-port r c)
+            pw (cell-power r c)]
+        (draw-role! x y s role port kind (if (= pw 1) (+ 100 ph) 0))
+        ;; the piece's outline: a line wherever the neighbour is a different piece
+        (let [w 2]
+          (when (or (= r 0) (!= (cell-owner (- r 1) c) o)) (fill-rect-a x y s w (c-ink) 120))
+          (when (or (= r 5) (!= (cell-owner (+ r 1) c) o)) (fill-rect-a x (- (+ y s) w) s w (c-ink) 120))
+          (when (or (= c 0) (!= (cell-owner r (- c 1)) o)) (fill-rect-a x y w s (c-ink) 120))
+          (when (or (= c 5) (!= (cell-owner r (+ c 1)) o)) (fill-rect-a (- (+ x s) w) y w s (c-ink) 120)))
+        (when (= pw 1) (fill-rect-a x y s s (c-gold) (+ 30 (/ ph 3))))
+        (when (= pw 2) (fill-rect-a x y s s (c-rose) (+ 70 (abs-i ph))))
+        (when (and live (= role (r-weapon)))
+          (let [(ch : F32) (loadf32 (sim-charge-addr (- o 1)))]
+            (fill-rect-a (+ x 4) (- (+ y s) 7) (- s 8) 3 (c-shadow) 200)
+            (fill-rect (+ x 4) (- (+ y s) 7) (i32 (* (f32 (- s 8)) (clamp-f (/ ch 30.0) 0.0 1.0))) 3 (c-gold))))
+        (when (!= (cell-burned r c) 0)
+          (do (fill-rect-a x y s s (c-shadow) 170)
+              (line-a (+ x 5) (+ y 5) (- (+ x s) 6) (- (+ y s) 6) (c-rose) 230)
+              (line-a (- (+ x s) 6) (+ y 5) (+ x 5) (- (+ y s) 6) (c-rose) 230)))))
+    (rect-outline-a x y s s (c-line) 90)))
+
+(defn draw-grid! [(x : I32) (y : I32) (s : I32) (live : Bool)] : Unit
+  (do (card (- x 8) (- y 8) (+ (* s 6) 16) (+ (* s 6) 16) (c-panel) 235 (c-line) 255)
+      (dotimes [r 6] (dotimes [c 6] (draw-grid-cell! r c (+ x (* c s)) (+ y (* r s)) s live)))))
+
+;; an item's shape (base cells, rotation rot) as a small icon with its top-left at (x, y), cell side s
+(defn draw-item-icon! [(item : I32) (rot : I32) (x : I32) (y : I32) (s : I32) (alpha : I32)] : Unit
+  (let [n (shape! item 0 rot 0 0)
+        kind (item-kind item)]
+    (dotimes [i n]
+      (let [cx (+ x (* (sh-col i) s)) cy (+ y (* (sh-row i) s))]
+        (fill-rect-a cx cy s s (c-ground) alpha)
+        (draw-role! cx cy s (sh-role i) (sh-port i) kind 0)
+        (rect-outline-a cx cy s s (c-line) 140)))))
+
+;; width and height (in cells) of an item's shape at a rotation
+(defn shape-w [(item : I32) (rot : I32)] : I32
+  (let [n (shape! item 0 rot 0 0) (m : I32) 0]
+    (dotimes [i n] (when (> (sh-col i) m) (set! m (sh-col i))))
+    (+ m 1)))
+(defn shape-h [(item : I32) (rot : I32)] : I32
+  (let [n (shape! item 0 rot 0 0) (m : I32) 0]
+    (dotimes [i n] (when (> (sh-row i) m) (set! m (sh-row i))))
+    (+ m 1)))
+
+;; ---- small widgets ----------------------------------------------------------------------------------------------------------------
+(defn button [(x : I32) (y : I32) (w : I32) (h : I32) (label : String) (primary : Bool) (enabled : Bool)] : Unit
+  (let [hover (and enabled (in-rect? x y w h))]
+    (card x y w h (if primary (c-gold) (c-panel)) (if enabled (if primary (if hover 255 225) 235) 120)
+          (if primary (c-gold) (c-line)) (if hover 255 (if enabled 200 100)))
+    (draw-text-c label (+ x (/ w 2)) (+ y (/ (- h 16) 2)) 1 (if primary (if enabled (c-bg) (c-faint)) (if enabled (c-ink) (c-faint))))))
+
+(defn meter [(x : I32) (y : I32) (w : I32) (h : I32) (frac : F32) (c : I32)] : Unit
+  (do (fill-rect-a x y w h (c-shadow) 200)
+      (fill-rect (+ x 1) (+ y 1) (i32 (* (f32 (- w 2)) (clamp-f frac 0.0 1.0))) (- h 2) c)
+      (rect-outline-a x y w h (c-line) 160)))
+
+(defn label [(s : String) (x : I32) (y : I32)] : Unit (draw-text s x y 1 (c-faint)))
+(defn heading [(s : String) (x : I32) (y : I32)] : Unit (draw-text-s s x y 2 (c-ink)))
+
+;; small caps style section title with a hairline under it
+(defn section [(s : String) (x : I32) (y : I32) (w : I32)] : Unit
+  (do (draw-text s x y 1 (c-dim))
+      (fill-rect-a x (+ y 19) w 1 (c-line) 255)))
+
+(defn draw-backdrop! [] : Unit
+  (let [(t : F32) (f32 (gi (g-ticker)))]
+    (fill-rect 0 0 960 540 (c-bg))
+    (dotimes [k 25] (fill-rect-a (* k 40) 0 1 540 (c-ground2) 120))
+    (dotimes [k 14] (fill-rect-a 0 (* k 40) 960 1 (c-ground2) 120))
+    ;; one slow sweep, so the page is alive without being busy
+    (let [(sx : F32) (+ 480.0 (* 520.0 (sinf (* t 0.00017))))]
+      (fill-rect-a (i32 sx) 0 2 540 (c-gold) 12))))

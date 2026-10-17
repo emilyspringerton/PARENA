@@ -1,0 +1,337 @@
+;; stdlib/d2/web/d2_rules.prn -- the D2 item catalog, shape placement, the player's grid and its wiring.
+;;
+;; A port of the parts of DEADWEIGHT_2's core/ the client needs to show the player their own ship truthfully: core/items.c (the seven
+;; items and their authored fragments), dw2_shape_cells (rotation and anchoring), dw2_ship_place / dw2_ship_panic_cut (what is legal)
+;; and the self half of dw2_ship_tick (energy flowing from generators through wires into weapons, the Back-EMF meltdown of a closed
+;; loop, weapon charge). The server is authoritative and checks everything again; this exists so the grid the player builds, and the
+;; energy they watch, are exactly what the fight will use. Opponent state is never needed here: the protocol sends scalars only.
+;;
+;; Roles: 0 none (cargo) 1 generator 2 conductor 3 splitter 4 weapon 5 armor 6 dead square. Ports: N 8, E 4, S 2, W 1.
+;; Item record (128 bytes at items-base + 128*i):
+;;   +0 split class (0 none, 1 halvable, 2 quarterable)  +1 kind (0 offense, 1 operations, 2 defense)  +2 value u16
+;;   +4 base cell count  +5 fragment cell count  +8 base cells (6 x 4 bytes: dx s8, dy s8, port, role)  +32 fragment cells (8 x 4)
+
+(defn r-none [] : I32 0) (defn r-gen [] : I32 1) (defn r-cond [] : I32 2) (defn r-split [] : I32 3)
+(defn r-weapon [] : I32 4) (defn r-armor [] : I32 5) (defn r-dead [] : I32 6)
+(defn p-n [] : I32 8) (defn p-e [] : I32 4) (defn p-s [] : I32 2) (defn p-w [] : I32 1)
+
+(defn item-count [] : I32 7)
+(defn item-addr [(i : I32)] : I32 (+ (items-base) (shl i 7)))
+(defn item-split [(i : I32)] : I32 (load8 (item-addr i)))
+(defn item-kind [(i : I32)] : I32 (load8 (+ (item-addr i) 1)))
+(defn item-value [(i : I32)] : I32 (ld16 (+ (item-addr i) 2)))
+(defn item-base-n [(i : I32)] : I32 (load8 (+ (item-addr i) 4)))
+(defn item-frag-n [(i : I32)] : I32 (load8 (+ (item-addr i) 5)))
+
+(defn cell! [(a : I32) (dx : I32) (dy : I32) (port : I32) (role : I32)] : Unit
+  (do (store8! a (bit-and dx 255)) (store8! (+ a 1) (bit-and dy 255)) (store8! (+ a 2) port) (store8! (+ a 3) role)))
+
+(defn item-head! [(i : I32) (split : I32) (kind : I32) (value : I32) (bn : I32) (fn : I32)] : Unit
+  (let [a (item-addr i)]
+    (store8! a split) (store8! (+ a 1) kind) (st16! (+ a 2) value) (store8! (+ a 4) bn) (store8! (+ a 5) fn)))
+(defn bcell! [(i : I32) (k : I32) (dx : I32) (dy : I32) (port : I32) (role : I32)] : Unit
+  (cell! (+ (item-addr i) (+ 8 (shl k 2))) dx dy port role))
+(defn fcell! [(i : I32) (k : I32) (dx : I32) (dy : I32) (port : I32) (role : I32)] : Unit
+  (cell! (+ (item-addr i) (+ 32 (shl k 2))) dx dy port role))
+
+;; core/items.c, verbatim
+(defn items-init! [] : Unit
+  (do
+    ;; 0 Generator -- one cell, an output on its east side
+    (item-head! 0 0 1 200 1 0) (bcell! 0 0 0 0 (p-e) (r-gen))
+    ;; 1 Conductor -- a wire, west to east
+    (item-head! 1 0 1 40 1 0) (bcell! 1 0 0 0 (bit-or (p-w) (p-e)) (r-cond))
+    ;; 2 Splitter Node -- one input (west), two outputs (north, south)
+    (item-head! 2 0 1 120 1 0) (bcell! 2 0 0 0 (bit-or (p-w) (bit-or (p-n) (p-s))) (r-split))
+    ;; 3 Railgun -- fed from the west
+    (item-head! 3 0 0 300 1 0) (bcell! 3 0 0 0 (p-w) (r-weapon))
+    ;; 4 Bulwark Plate -- flat armor
+    (item-head! 4 0 2 250 1 0) (bcell! 4 0 0 0 0 (r-armor))
+    ;; 5 Titanium Beam -- a 1x4 line that halves into two 1x3 pieces (two armor squares), each needing its own row
+    (item-head! 5 1 0 180 4 6)
+    (bcell! 5 0 0 0 0 0) (bcell! 5 1 1 0 0 0) (bcell! 5 2 2 0 0 0) (bcell! 5 3 3 0 0 0)
+    (fcell! 5 0 0 0 0 0) (fcell! 5 1 1 0 0 0) (fcell! 5 2 2 0 0 (r-dead))
+    (fcell! 5 3 0 1 0 0) (fcell! 5 4 1 1 0 0) (fcell! 5 5 2 1 0 (r-dead))
+    ;; 6 Aether Ore -- a 2x2 that quarters into four 1x2 pieces stacked below (four armor squares)
+    (item-head! 6 2 2 220 4 8)
+    (bcell! 6 0 0 0 0 0) (bcell! 6 1 1 0 0 0) (bcell! 6 2 0 1 0 0) (bcell! 6 3 1 1 0 0)
+    (fcell! 6 0 0 0 0 0) (fcell! 6 1 1 0 0 (r-dead))
+    (fcell! 6 2 0 1 0 0) (fcell! 6 3 1 1 0 (r-dead))
+    (fcell! 6 4 0 2 0 0) (fcell! 6 5 1 2 0 (r-dead))
+    (fcell! 6 6 0 3 0 0) (fcell! 6 7 1 3 0 (r-dead))))
+
+(defn item-name [(i : I32)] : String
+  (case i 0 "Generator" 1 "Conductor" 2 "Splitter" 3 "Railgun" 4 "Bulwark" 5 "Titanium Beam" "Aether Ore"))
+(defn item-kind-name [(i : I32)] : String
+  (case (item-kind i) 0 "OFFENSE" 1 "OPERATIONS" "DEFENSE"))
+(defn item-line1 [(i : I32)] : String
+  (case i
+    0 "Makes 10 energy a tick."
+    1 "A wire. Carries energy through."
+    2 "One in, two out: feeds two parts."
+    3 "Fires at 30 charge for 15 damage."
+    4 "20 armor, and nothing else."
+    5 "Cargo. Cut it: two pieces, 16 armor."
+    "Cargo. Cut it: four pieces, 32 armor."))
+(defn item-line2 [(i : I32)] : String
+  (case i
+    0 "Output on its east side; turn it."
+    1 "Open on two opposite sides."
+    2 "Takes energy from one side."
+    3 "Takes energy from its west."
+    4 "Needs no wiring."
+    5 "Each piece needs a row of its own."
+    "Pieces stack in four rows below."))
+
+;; ---- shapes -----------------------------------------------------------------------------------------------------------------------
+(defn rot-port [(p : I32) (r : I32)] : I32
+  (loop [v p k 0]
+    (if (< k r) (recur (bit-and (bit-or (shr v 1) (shl (bit-and v 1) 3)) 15) (+ k 1)) v)))
+
+;; Lays an item's cells (frag = 0 base shape, 1 the cut fragments) rotated `rot` quarter turns and anchored at (ar, ac) into the SHAPE
+;; buffer: per cell row, col, port, role as four I32 words. Returns the cell count. Same maths as dw2_shape_cells: rotate each
+;; authored (dx, dy) by (x, y) -> (-y, x), shift so the smallest is zero, then add the anchor.
+(defn shape! [(item : I32) (frag : I32) (rot : I32) (ar : I32) (ac : I32)] : I32
+  (let [n (if (= frag 0) (item-base-n item) (item-frag-n item))
+        src (+ (item-addr item) (if (= frag 0) 8 32))
+        r (mod (+ (mod rot 4) 4) 4)
+        (mnx : I32) 99 (mny : I32) 99]
+    (dotimes [i n]
+      (let [(x : I32) (lds8 (+ src (shl i 2)))
+            (y : I32) (lds8 (+ src (+ (shl i 2) 1)))]
+        (dotimes [k r]
+          (let [nx (- 0 y)] (set! y x) (set! x nx)))
+        (store32! (+ (shape-base) (shl i 4)) y)
+        (store32! (+ (shape-base) (+ (shl i 4) 4)) x)
+        (when (< x mnx) (set! mnx x))
+        (when (< y mny) (set! mny y))))
+    (dotimes [i n]
+      (let [a (+ (shape-base) (shl i 4))]
+        (store32! a (+ ar (- (load32 a) mny)))
+        (store32! (+ a 4) (+ ac (- (load32 (+ a 4)) mnx)))
+        (store32! (+ a 8) (rot-port (load8 (+ src (+ (shl i 2) 2))) r))
+        (store32! (+ a 12) (load8 (+ src (+ (shl i 2) 3))))))
+    n))
+
+(defn sh-row [(i : I32)] : I32 (load32 (+ (shape-base) (shl i 4))))
+(defn sh-col [(i : I32)] : I32 (load32 (+ (shape-base) (+ (shl i 4) 4))))
+(defn sh-port [(i : I32)] : I32 (load32 (+ (shape-base) (+ (shl i 4) 8))))
+(defn sh-role [(i : I32)] : I32 (load32 (+ (shape-base) (+ (shl i 4) 12))))
+(defn in-grid? [(r : I32) (c : I32)] : Bool (and (and (>= r 0) (< r 6)) (and (>= c 0) (< c 6))))
+(defn shape-in-grid? [(n : I32)] : Bool
+  (loop [i 0] (if (>= i n) true (if (in-grid? (sh-row i) (sh-col i)) (recur (+ i 1)) false))))
+
+;; ---- the grid (MODEL): 36 cells x 8 bytes -----------------------------------------------------------------------------------
+;;   +0 owner (placement index + 1, 0 = empty)  +1 role  +2 port  +3 ruined  +4 burned  +5 powered (1 fed, 2 in a loop)  +6 cut piece
+(defn cell-addr [(r : I32) (c : I32)] : I32 (+ (model-base) (shl (+ (* r 6) c) 3)))
+(defn cell-owner [(r : I32) (c : I32)] : I32 (load8 (cell-addr r c)))
+(defn cell-role [(r : I32) (c : I32)] : I32 (load8 (+ (cell-addr r c) 1)))
+(defn cell-port [(r : I32) (c : I32)] : I32 (load8 (+ (cell-addr r c) 2)))
+(defn cell-ruined [(r : I32) (c : I32)] : I32 (load8 (+ (cell-addr r c) 3)))
+(defn cell-burned [(r : I32) (c : I32)] : I32 (load8 (+ (cell-addr r c) 4)))
+(defn cell-power [(r : I32) (c : I32)] : I32 (load8 (+ (cell-addr r c) 5)))
+
+(defn model-clear! [] : Unit
+  (dotimes [i 72] (store32! (+ (model-base) (shl i 2)) 0)))
+
+;; the staged ship: STAGE holds 16 placements of 8 bytes: item, row, col, rot, cut, ok
+(defn st-addr [(i : I32)] : I32 (+ (stage-base) (shl i 3)))
+(defn st-item [(i : I32)] : I32 (load8 (st-addr i)))
+(defn st-row [(i : I32)] : I32 (load8 (+ (st-addr i) 1)))
+(defn st-col [(i : I32)] : I32 (load8 (+ (st-addr i) 2)))
+(defn st-rot [(i : I32)] : I32 (load8 (+ (st-addr i) 3)))
+(defn st-cut [(i : I32)] : I32 (load8 (+ (st-addr i) 4)))
+(defn st-ok [(i : I32)] : I32 (load8 (+ (st-addr i) 5)))
+(defn st-set! [(i : I32) (item : I32) (r : I32) (c : I32) (rot : I32) (cut : I32)] : Unit
+  (let [a (st-addr i)]
+    (store8! a item) (store8! (+ a 1) r) (store8! (+ a 2) c) (store8! (+ a 3) rot) (store8! (+ a 4) cut) (store8! (+ a 5) 1)))
+
+;; the placement drawn into the grid from the shape buffer
+(defn put-shape! [(n : I32) (owner : I32)] : Unit
+  (dotimes [i n]
+    (let [a (cell-addr (sh-row i) (sh-col i))]
+      (store8! a owner) (store8! (+ a 1) (sh-role i)) (store8! (+ a 2) (sh-port i)) (store8! (+ a 6) 0))))
+
+(defn shape-free? [(n : I32)] : Bool
+  (loop [i 0]
+    (if (>= i n) true
+        (if (or (!= (cell-owner (sh-row i) (sh-col i)) 0) (!= (cell-ruined (sh-row i) (sh-col i)) 0)) false (recur (+ i 1))))))
+
+;; dw2_ship_place: the whole shape must be in the grid and on free cells
+(defn model-place! [(i : I32)] : Bool
+  (let [n (shape! (st-item i) 0 (st-rot i) (st-row i) (st-col i))]
+    (if (and (shape-in-grid? n) (shape-free? n))
+        (do (put-shape! n (+ i 1)) true)
+        false)))
+
+;; dw2_ship_panic_cut: swap the shape for its fragments. Fragments may sit on cells the item already held but nowhere else that is
+;; occupied or ruined; the cells the item gives up become Ruined Real Estate for the rest of the match. Fails clean.
+(defn model-cut! [(i : I32)] : Bool
+  (let [item (st-item i)]
+    (if (= (item-split item) 0) false
+        (let [n (shape! item 1 (st-rot i) (st-row i) (st-col i))]
+          (if (not (shape-in-grid? n)) false
+              (let [(ok : Bool) true]
+                (dotimes [k n]
+                  (let [r (sh-row k) c (sh-col k)
+                        o (cell-owner r c)]
+                    (when (or (and (!= o 0) (!= o (+ i 1))) (!= (cell-ruined r c) 0)) (set! ok false))))
+                (if (not ok) false
+                    (do
+                      ;; vacate the old shape: every cell this item owns goes empty and ruined, then the fragments claim theirs
+                      (dotimes [cc 36]
+                        (let [a (+ (model-base) (shl cc 3))]
+                          (when (= (load8 a) (+ i 1))
+                            (store8! a 0) (store8! (+ a 1) 0) (store8! (+ a 2) 0) (store8! (+ a 3) 1))))
+                      (dotimes [k n]
+                        (let [a (cell-addr (sh-row k) (sh-col k))]
+                          (store8! a (+ i 1)) (store8! (+ a 1) (sh-role k)) (store8! (+ a 2) (sh-port k))
+                          (store8! (+ a 3) 0) (store8! (+ a 6) 1)))
+                      true))))))))
+
+;; Rebuilds MODEL from STAGE in the order the server will see it: every placement, then every cut flagged, in index order. A
+;; placement that does not fit is marked not ok and left out. Returns the number of problems (0 = a legal ship).
+(defn model-rebuild! [] : I32
+  (let [n (gi (g-stage-n))
+        (bad : I32) 0]
+    (model-clear!)
+    (dotimes [i n]
+      (if (model-place! i)
+          (store8! (+ (st-addr i) 5) 1)
+          (do (store8! (+ (st-addr i) 5) 0) (set! bad (+ bad 1)))))
+    (dotimes [i n]
+      (when (and (= (st-cut i) 1) (= (st-ok i) 1))
+        (when (not (model-cut! i))
+          (do (store8! (+ (st-addr i) 4) 0) (set! bad (+ bad 1))))))
+    bad))
+
+;; ---- wiring: the self half of dw2_ship_tick ----------------------------------------------------------------------------------
+;; SIM layout (sim-base): +0 weapon charge F32 x 16  +64 activated x 36  +128 path x 40 (I32)  +288 loop hits x 36  +336 loop cells x 36
+(defn sim-charge-addr [(p : I32)] : I32 (+ (sim-base) (shl p 2)))
+(defn sim-act-addr [(cell : I32)] : I32 (+ (sim-base) (+ 64 cell)))
+(defn sim-path-addr [(k : I32)] : I32 (+ (sim-base) (+ 128 (shl k 2))))
+(defn sim-hit-addr [(cell : I32)] : I32 (+ (sim-base) (+ 288 cell)))
+(defn sim-loopcell-addr [(cell : I32)] : I32 (+ (sim-base) (+ 336 cell)))
+
+(defn path-index [(cell : I32)] : I32
+  (let [n (gi (g-sim-path-n))]
+    (loop [k 0] (if (>= k n) -1 (if (= (load32 (sim-path-addr k)) cell) k (recur (+ k 1)))))))
+
+;; energy arriving at `cell` through its `incoming` port. Recursive, exactly dw2_flow: a wire or splitter hands it on out of every
+;; port but the one it came in by; a weapon takes it; reaching a cell already on the path is a closed loop; reaching a cell that
+;; already carries energy is a second feed into it, which does nothing.
+(defn flow-in! [(cell : I32) (incoming : I32)] : Unit
+  (let [r (/ cell 6) c (mod cell 6)
+        a (cell-addr r c)]
+    (when (and (= (load8 (+ a 4)) 0) (!= (load8 a) 0) (!= (bit-and (load8 (+ a 2)) incoming) 0))
+      (let [pi (path-index cell)]
+        (if (>= pi 0)
+            (let [n (gi (g-sim-path-n))]
+              (loop [k pi] (when (< k n) (store8! (sim-hit-addr (load32 (sim-path-addr k))) 1) (recur (+ k 1)))))
+            (when (= (load8 (sim-act-addr cell)) 0)
+              (store8! (sim-act-addr cell) 1)
+              (store8! (+ a 5) 1)
+              (store32! (sim-path-addr (gi (g-sim-path-n))) cell)
+              (gi! (g-sim-path-n) (+ (gi (g-sim-path-n)) 1))
+              (let [role (load8 (+ a 1))]
+                (when (= role (r-weapon))
+                  (let [p (- (load8 a) 1)]
+                    (storef32! (sim-charge-addr p) (+ (loadf32 (sim-charge-addr p)) 10.0))))
+                (when (or (= role (r-cond)) (= role (r-split)))
+                  (flow-out! cell (bit-and (load8 (+ a 2)) (bit-xor incoming 15)))))
+              (gi! (g-sim-path-n) (- (gi (g-sim-path-n)) 1))))))))
+
+(defn flow-out! [(cell : I32) (ports : I32)] : Unit
+  (let [r (/ cell 6) c (mod cell 6)]
+    (when (and (!= (bit-and ports (p-n)) 0) (> r 0)) (flow-in! (- cell 6) (p-s)))
+    (when (and (!= (bit-and ports (p-e)) 0) (< c 5)) (flow-in! (+ cell 1) (p-w)))
+    (when (and (!= (bit-and ports (p-s)) 0) (< r 5)) (flow-in! (+ cell 6) (p-n)))
+    (when (and (!= (bit-and ports (p-w)) 0) (> c 0)) (flow-in! (- cell 1) (p-e)))))
+
+;; one pass of energy from every generator; returns 1 when some closed loop was found (their cells are marked in the loop-hit bytes)
+(defn flow-pass! [] : I32
+  (let [(found : I32) 0]
+    (dotimes [i 36]
+      (store8! (sim-act-addr i) 0) (store8! (sim-hit-addr i) 0) (store8! (+ (model-base) (+ (shl i 3) 5)) 0))
+    (gi! (g-sim-path-n) 0)
+    (dotimes [i 36]
+      (let [r (/ i 6) c (mod i 6) a (cell-addr r c)]
+        (when (and (= (load8 (+ a 1)) (r-gen)) (!= (load8 a) 0) (= (load8 (+ a 4)) 0))
+          (do
+            (store8! (sim-act-addr i) 1) (store8! (+ a 5) 1)
+            (store32! (sim-path-addr 0) i) (gi! (g-sim-path-n) 1)
+            (flow-out! i (load8 (+ a 2)))
+            (gi! (g-sim-path-n) 0)))))
+    (dotimes [i 36]
+      (when (!= (load8 (sim-hit-addr i)) 0)
+        (do (set! found 1)
+            (store8! (+ (model-base) (+ (shl i 3) 5)) 2))))
+    found))
+
+(defn sim-reset! [] : Unit
+  (do
+    (dotimes [p 16] (storef32! (sim-charge-addr p) 0.0))
+    (dotimes [i 36] (store8! (sim-loopcell-addr i) 0) (store8! (+ (model-base) (+ (shl i 3) 4)) 0))
+    (gi! (g-sim-loop-on) 0) (gf! (g-sim-phi) 0.0) (gi! (g-sim-shots) 0) (gi! (g-sim-shat) 0)))
+
+(defn loop-same? [] : Bool
+  (loop [i 0]
+    (if (>= i 36) true
+        (if (= (b2i (!= (load8 (sim-loopcell-addr i)) 0)) (b2i (!= (load8 (sim-hit-addr i)) 0))) (recur (+ i 1)) false))))
+
+;; one second of the fight for the player's own ship (dw2_ship_tick without the damage to the enemy): energy flows, a closed loop grows
+;; its Back-EMF and burns out past 2.5 generators' worth, every weapon that reached 30 charge fires once. Returns shots fired.
+(defn sim-tick! [] : I32
+  (let [(shots : I32) 0
+        loops (flow-pass!)]
+    (if (= loops 1)
+        (do
+          (when (or (= (gi (g-sim-loop-on)) 0) (not (loop-same?)))
+            (do (gi! (g-sim-loop-on) 1) (gf! (g-sim-phi) 10.0)
+                (dotimes [i 36] (store8! (sim-loopcell-addr i) (b2i (!= (load8 (sim-hit-addr i)) 0))))))
+          (gf! (g-sim-phi) (* (gf (g-sim-phi)) 1.35))
+          (when (> (gf (g-sim-phi)) 25.0)
+            (do
+              (dotimes [i 36]
+                (when (!= (load8 (sim-loopcell-addr i)) 0)
+                  (store8! (+ (model-base) (+ (shl i 3) 4)) 1)))
+              (gi! (g-sim-shat) (+ (gi (g-sim-shat)) 1))
+              (gi! (g-sim-loop-on) 0))))
+        (gi! (g-sim-loop-on) 0))
+    (dotimes [p 16]
+      (when (>= (loadf32 (sim-charge-addr p)) 30.0)
+        (do (storef32! (sim-charge-addr p) (- (loadf32 (sim-charge-addr p)) 30.0))
+            (set! shots (+ shots 1)))))
+    (gi! (g-sim-shots) (+ (gi (g-sim-shots)) shots))
+    shots))
+
+;; ---- what the readout says about a ship --------------------------------------------------------------------------------------
+;; Fills the preview words: weapons, weapons that are fed, closed loops, armor at the start of the fight, cargo value, cells used.
+(defn analyze! [] : Unit
+  (let [loops (flow-pass!)
+        (w : I32) 0 (pw : I32) 0 (arm : I32) 0 (cells : I32) 0]
+    (dotimes [i 36]
+      (let [r (/ i 6) c (mod i 6) a (cell-addr r c)
+            role (load8 (+ a 1))]
+        (when (!= (load8 a) 0)
+          (do (set! cells (+ cells 1))
+              (when (= role (r-weapon))
+                (do (set! w (+ w 1)) (when (= (load8 (+ a 5)) 1) (set! pw (+ pw 1)))))
+              (when (= role (r-armor)) (set! arm (+ arm 20)))
+              (when (= role (r-dead)) (set! arm (+ arm 8)))))))
+    (gi! (g-preview-weapons) w) (gi! (g-preview-powered) pw) (gi! (g-preview-loops) (if (= loops 1) 1 0))
+    (gi! (g-preview-armor) arm) (gi! (g-preview-cells) cells)
+    (let [(v : I32) 0]
+      (dotimes [i (gi (g-stage-n))] (when (= (st-ok i) 1) (set! v (+ v (item-value (st-item i))))))
+      (gi! (g-preview-cargo) v))
+    ;; a preview: the energy it counted is not a fight's
+    (dotimes [p 16] (storef32! (sim-charge-addr p) 0.0))))
+
+;; the server accepted a PANIC_CUT on placement idx. While packing the flag and the grid are already set (the commit sent the cuts the
+;; stage holds); in the fight this is where a live cut lands on the grid the wiring runs over.
+(defn cut-landed! [(idx : I32)] : Unit
+  (when (and (>= idx 0) (< idx (gi (g-stage-n))))
+    (when (= (st-cut idx) 0)
+      (do (store8! (+ (st-addr idx) 4) 1)
+          (model-cut! idx)
+          (gi! (g-cut-flash) (gi (g-ticker)))))))

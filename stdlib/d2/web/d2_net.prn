@@ -1,0 +1,239 @@
+;; stdlib/d2/web/d2_net.prn -- the match server's protocol, spoken from inside the wasm.
+;;
+;; The module has no imports, so it cannot touch a socket. The page host (d2_host.prn) owns the WebSocket and does exactly two things
+;; with it: it copies every received frame to NETIN and calls d2_net_recv(len), and it sends whatever the engine left in NETOUT (frames,
+;; each preceded by a u16 length) and calls d2_net_out_clear(). Everything else -- what to say, when, what an answer means -- is here.
+;;
+;; The frames are dw2_server's own (DEADWEIGHT_2/core/protocol.h) without the length prefix, plus three the IDUNA gateway adds
+;; (IDUNA/internal/d2play/proto.go): 0xA1 who you are, 0xA2 the match was recorded, 0xAF an error. Authority: the match is the
+;; server's. This client sends orders (place, cut, ready, a round-break call) and draws what comes back.
+
+(defn put8! [(v : I32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (store8! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 1))))
+(defn put16! [(v : I32)] : Unit (do (put8! (bit-and v 255)) (put8! (bit-and (shr v 8) 255))))
+(defn put32! [(v : I32)] : Unit (do (put16! (bit-and v 65535)) (put16! (bit-and (ushr v 16) 65535))))
+
+(defn out-begin! [] : Unit
+  (let [o (gi (g-out-len))]
+    (gi! (g-out-start) o)
+    (gi! (g-out-skip) (if (> o 7600) 1 0))
+    (gi! (g-out-cur) (+ o 2))))
+(defn out-end! [] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (let [o (gi (g-out-start))
+          len (- (gi (g-out-cur)) (+ o 2))]
+      (store8! (+ (netout-base) o) (bit-and len 255))
+      (store8! (+ (netout-base) (+ o 1)) (bit-and (shr len 8) 255))
+      (gi! (g-out-len) (gi (g-out-cur))))))
+
+;; ---- reading --------------------------------------------------------------------------------------------------------------------
+(defn in8 [(k : I32)] : I32 (load8 (+ (netin-base) k)))
+(defn in16 [(k : I32)] : I32 (+ (in8 k) (shl (in8 (+ k 1)) 8)))
+(defn in32 [(k : I32)] : I32 (+ (in16 k) (shl (in16 (+ k 2)) 16)))
+
+;; ---- orders (client -> gateway -> match server) ---------------------------------------------------------------------------------------
+(defn net-auth! [] : Unit
+  (do (out-begin!)
+      (put8! 2) (put16! (gi (g-token-len)))
+      (dotimes [i (gi (g-token-len))] (put8! (load8 (+ (token-base) i))))
+      (out-end!)
+      (gi! (g-auth-sent) 1)))
+(defn net-queue! [] : Unit (do (out-begin!) (put8! 3) (out-end!) (gi! (g-queued-sent) 1)))
+(defn net-leave! [] : Unit (do (out-begin!) (put8! 7) (out-end!) (gi! (g-queued-sent) 0)))
+(defn net-ping! [] : Unit
+  (do (out-begin!) (put8! 8) (put32! (gi (g-ticker))) (out-end!)
+      (gi! (g-ping-sent) (gi (g-ticker)))))
+(defn send-place! [(item : I32) (row : I32) (col : I32) (rot : I32)] : Unit
+  (do (out-begin!) (put8! 4) (put8! item) (put8! row) (put8! col) (put8! rot) (out-end!)))
+(defn send-cut! [(idx : I32)] : Unit (do (out-begin!) (put8! 5) (put8! idx) (out-end!)))
+(defn send-ready! [] : Unit (do (out-begin!) (put8! 6) (out-end!) (gi! (g-ready) 1)))
+;; 0 overcharge, 1 brace
+(defn send-call! [(call : I32)] : Unit (do (out-begin!) (put8! 9) (put8! call) (out-end!)))
+
+;; ---- screens ---------------------------------------------------------------------------------------------------------------------------
+(defn sc-title [] : I32 0) (defn sc-search [] : I32 1) (defn sc-pack [] : I32 2) (defn sc-fight [] : I32 3)
+(defn sc-over [] : I32 4) (defn sc-error [] : I32 5)
+
+(defn go-screen! [(s : I32)] : Unit
+  (when (!= (gi (g-screen)) s)
+    (gi! (g-screen) s)
+    (gi! (g-ui-t) 0)))
+
+(defn stage-clear! [] : Unit
+  (do (gi! (g-stage-n) 0) (model-clear!) (analyze!)))
+
+(defn reset-match! [] : Unit
+  (do (gi! (g-phase) 0) (gi! (g-tick) 0) (gi! (g-rb-on) 0) (gi! (g-rb-no) 0) (gi! (g-rb-call) 0) (gi! (g-rr-show) 0)
+      (gi! (g-rb-count) 0) (gi! (g-have-result) 0) (gi! (g-rec-got) 0) (gi! (g-ready) 0) (gi! (g-committed) 0)
+      (gi! (g-acks) 0) (gi! (g-rejects) 0) (gi! (g-ack-wait) 0)
+      (gi! (g-hull-you) 100) (gi! (g-hull-opp) 100) (gi! (g-armor-you) 0) (gi! (g-armor-opp) 0)
+      (gi! (g-shat-you) 0) (gi! (g-shat-opp) 0) (gi! (g-sim-shots) 0)
+      (gi! (g-shot-t) 0) (gi! (g-hit-t) 0) (gi! (g-ohit-t) 0) (gi! (g-toast-t) 0)
+      (gi! (g-sel-item) 3) (gi! (g-sel-rot) 0) (gi! (g-hov-pl) -1)
+      (dotimes [i 32] (store32! (+ (rounds-base) (shl i 2)) 0))
+      (stage-clear!)
+      (sim-reset!)))
+
+;; the player pressed PLAY / PLAY AGAIN
+(defn begin-search! [] : Unit
+  (do (gi! (g-want-queue) 1)
+      (gi! (g-queued-sent) 0)
+      (gi! (g-err-code) 0)
+      (gi! (g-q-since) (gi (g-ticker)))
+      (gi! (g-q-waiting) 0)
+      (reset-match!)
+      (go-screen! (sc-search))))
+
+(defn cancel-search! [] : Unit
+  (do (when (!= (gi (g-queued-sent)) 0) (net-leave!))
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-title))))
+
+;; ---- frames in -------------------------------------------------------------------------------------------------------------------------
+(defn on-match-found! [] : Unit
+  (do (reset-match!)
+      (gi! (g-m-id) (in32 1))
+      (gi! (g-m-seed) (in32 5))
+      (gi! (g-m-seat) (in8 9))
+      (dotimes [i 16] (store8! (+ (opp-base) i) (let [c (in8 (+ 10 i))] (if (and (>= c 32) (< c 127)) c 0))))
+      (store8! (+ (opp-base) 16) 0)
+      (gi! (g-m-oppkind) (in8 26))
+      (gi! (g-m-packms) (in16 27))
+      (gi! (g-m-found-t) (gi (g-ticker)))
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-pack))))
+
+(defn on-combat-start! [] : Unit
+  (do (gi! (g-phase) 1)
+      (gi! (g-hull-you) (in8 1)) (gi! (g-hull-opp) (in8 2))
+      (gi! (g-armor-you) (in16 3)) (gi! (g-armor-opp) (in16 5))
+      (gi! (g-cargo-you) (in16 7)) (gi! (g-cargo-opp) (in16 9))
+      (gi! (g-hull0-you) (in8 1)) (gi! (g-armor0-you) (in16 3)) (gi! (g-armor0-opp) (in16 5))
+      (gi! (g-prev-hull-you) (in8 1)) (gi! (g-prev-hull-opp) (in8 2))
+      (gi! (g-prev-armor-you) (in16 3)) (gi! (g-prev-armor-opp) (in16 5))
+      (gi! (g-tick) 0)
+      (gi! (g-combat-t) (gi (g-ticker)))
+      (gi! (g-tick-t) (gi (g-ticker)))
+      ;; the ship the server fights with is the one it accepted: rebuild the grid from what was sent, with its wiring at rest
+      (model-rebuild!)
+      (sim-reset!)
+      (go-screen! (sc-fight))))
+
+(defn on-tick! [] : Unit
+  (let [t (in8 1)]
+    (gi! (g-tick) t)
+    (gi! (g-tick-t) (gi (g-ticker)))
+    (gi! (g-hull-you) (in8 2)) (gi! (g-hull-opp) (in8 3))
+    (gi! (g-armor-you) (in16 4)) (gi! (g-armor-opp) (in16 6))
+    (gi! (g-shat-you) (in8 8)) (gi! (g-shat-opp) (in8 9))
+    (when (or (< (gi (g-hull-you)) (gi (g-prev-hull-you))) (< (gi (g-armor-you)) (gi (g-prev-armor-you))))
+      (gi! (g-hit-t) (gi (g-ticker))))
+    (when (or (< (gi (g-hull-opp)) (gi (g-prev-hull-opp))) (< (gi (g-armor-opp)) (gi (g-prev-armor-opp))))
+      (gi! (g-ohit-t) (gi (g-ticker))))
+    (gi! (g-prev-hull-you) (gi (g-hull-you))) (gi! (g-prev-hull-opp) (gi (g-hull-opp)))
+    (gi! (g-prev-armor-you) (gi (g-armor-you))) (gi! (g-prev-armor-opp) (gi (g-armor-opp)))
+    ;; our own ship takes the same second
+    (when (> (sim-tick!) 0) (gi! (g-shot-t) (gi (g-ticker))))))
+
+(defn on-round-break! [] : Unit
+  (do (gi! (g-rb-no) (in8 1)) (gi! (g-rb-behind) (in8 2))
+      (gi! (g-rb-target) (in16 3)) (gi! (g-rb-budget) (in16 5))
+      (gi! (g-rb-t0) (gi (g-ticker)))
+      (gi! (g-rb-call) 0) (gi! (g-rb-on) 1)
+      (gi! (g-rr-show) 0)
+      (gi! (g-rb-count) (+ (gi (g-rb-count)) 1))))
+
+(defn on-round-result! [] : Unit
+  (let [k (min-i (gi (g-rb-no)) 8)
+        a (+ (rounds-base) (shl (max-i (- k 1) 0) 4))]
+    (gi! (g-rr-ycall) (in8 1)) (gi! (g-rr-ygrade) (in8 2)) (gi! (g-rr-yfx) (in8 3))
+    (gi! (g-rr-ocall) (in8 4)) (gi! (g-rr-ograde) (in8 5)) (gi! (g-rr-ofx) (in8 6))
+    (store8! a (gi (g-rb-no))) (store8! (+ a 1) (in8 1)) (store8! (+ a 2) (in8 2)) (store8! (+ a 3) (in8 3))
+    (store8! (+ a 4) (in8 4)) (store8! (+ a 5) (in8 5)) (store8! (+ a 6) (in8 6)) (store8! (+ a 7) 1)
+    (gi! (g-rb-on) 0)
+    (gi! (g-rr-show) (gi (g-ticker)))))
+
+(defn on-match-end! [] : Unit
+  (do (gi! (g-res-result) (in8 5))
+      (gi! (g-res-reason) (in8 6))
+      (gi! (g-res-ticks) (in8 7))
+      (gi! (g-have-result) 1)
+      (gi! (g-phase) 2)
+      (gi! (g-rb-on) 0)
+      (gi! (g-over-t) (gi (g-ticker)))
+      (gi! (g-want-queue) 0)
+      (go-screen! (sc-over))))
+
+(defn on-gateway-error! [] : Unit
+  (let [code (in8 1)
+        n (min-i (in8 2) 200)]
+    (gi! (g-err-code) code)
+    (dotimes [i n] (store8! (+ (err-base) i) (let [c (in8 (+ 3 i))] (if (and (>= c 32) (< c 127)) c 63))))
+    (store8! (+ (err-base) n) 0)
+    (gi! (g-err-len) n)
+    (gi! (g-want-queue) 0)
+    (gi! (g-queued-sent) 0)
+    (go-screen! (sc-error))))
+
+(defn d2-net-recv [(len : I32)] : Unit
+  (do
+    (gi! (g-in-len) len)
+    (when (> len 0)
+      (let [k (in8 0)]
+        (cond
+          (= k 161) (gi! (g-ident-ok) 1)
+          (= k 129) (gi! (g-welcomed) 1)
+          (= k 130) (gi! (g-q-waiting) (in16 1))
+          (and (= k 131) (>= len 29)) (on-match-found!)
+          (= k 132) (do (gi! (g-acks) (+ (gi (g-acks)) 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
+          (= k 133) (do (gi! (g-rejects) (+ (gi (g-rejects)) 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1)))
+                        (gi! (g-toast-id) 1) (gi! (g-toast-t) (gi (g-ticker))))
+          (= k 134) (do (cut-landed! (in8 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
+          (= k 135) (do (gi! (g-toast-id) 2) (gi! (g-toast-t) (gi (g-ticker))) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
+          (= k 136) (on-combat-start!)
+          (= k 137) (on-tick!)
+          (= k 138) (on-match-end!)
+          (= k 139) (gi! (g-rtt) (let [d (- (gi (g-ticker)) (gi (g-ping-sent)))]
+                                   (if (= (gi (g-rtt)) 0) d (/ (+ (* (gi (g-rtt)) 3) d) 4))))
+          (= k 140) (on-round-break!)
+          (= k 141) (on-round-result!)
+          (= k 162) (do (gi! (g-rec-got) 1) (gi! (g-rec-counted) (in8 1)) (gi! (g-rec-bot) (in8 2))
+                        (gi! (g-rec-rating) (let [v (in16 3)] (if (> v 32767) (- v 65536) v)))
+                        (gi! (g-rec-delta) (let [v (in16 5)] (if (> v 32767) (- v 65536) v))))
+          (= k 175) (on-gateway-error!)
+          (= k 143) (do (gi! (g-err-code) (+ 100 (in8 1))) (store8! (+ (err-base) 0) 0) (gi! (g-err-len) 0)
+                        (gi! (g-want-queue) 0) (gi! (g-queued-sent) 0) (go-screen! (sc-error)))
+          :else unit)))))
+
+;; the page tells the engine what the socket is doing: 1 connecting, 2 open, 3 closed
+(defn d2-net-socket [(st : I32)] : Unit
+  (do
+    (gi! (g-net-state) st)
+    (when (= st 2)
+      (gi! (g-auth-sent) 0) (gi! (g-welcomed) 0) (gi! (g-ident-ok) 0) (gi! (g-queued-sent) 0)
+      (net-auth!))
+    (when (= st 3)
+      (gi! (g-auth-sent) 0) (gi! (g-welcomed) 0) (gi! (g-ident-ok) 0) (gi! (g-queued-sent) 0)
+      ;; a closed socket in the middle of a search or a match is an error the player should see
+      (let [sc (gi (g-screen))]
+        (when (and (>= sc (sc-search)) (<= sc (sc-fight)))
+          (do (gi! (g-err-code) 5)
+              (store8! (+ (err-base) 0) 0)
+              (gi! (g-err-len) 0)
+              (gi! (g-want-queue) 0)
+              (go-screen! (sc-error))))))))
+
+;; the engine wants a socket whenever the player wants a match or is in one
+(defn d2-net-wanted [] : I32
+  (if (or (!= (gi (g-want-queue)) 0) (and (>= (gi (g-screen)) 1) (<= (gi (g-screen)) 3))) 1 0))
+
+;; once per frame: say QUEUE as soon as the match server has welcomed us, keep measuring the round trip
+(defn net-tick! [] : Unit
+  (do
+    (when (and (!= (gi (g-want-queue)) 0) (= (gi (g-welcomed)) 1) (= (gi (g-queued-sent)) 0) (= (gi (g-net-state)) 2))
+      (net-queue!))
+    (when (and (= (gi (g-net-state)) 2) (= (gi (g-welcomed)) 1) (> (- (gi (g-ticker)) (gi (g-ping-t))) (if (= (gi (g-rtt)) 0) 400 4000)))
+      (gi! (g-ping-t) (gi (g-ticker)))
+      (net-ping!))))

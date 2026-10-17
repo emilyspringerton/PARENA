@@ -1,0 +1,84 @@
+;; stdlib/d2/web/d2_main.prn -- the exports the page calls (and the test hooks).
+
+(defn d2-init [] : Unit
+  (do
+    (load-font)
+    (items-init!)
+    (examples-init!)
+    (gi! (g-rng) 2460)
+    (gi! (g-screen) 0)
+    (gi! (g-sel-item) 3)
+    (gi! (g-hov-pl) -1)
+    (gi! (g-hov-row) -1)
+    (gi! (g-hov-col) -1)
+    (gi! (g-hull-you) 100)
+    (gi! (g-hull-opp) 100)
+    (model-clear!)))
+
+;; one animation frame: act on input, then draw
+(defn d2-frame [(now : F64)] : Unit
+  (do
+    (gi! (g-ticker) (i32 now))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
+    (net-tick!)
+    (d2-update!)
+    (d2-render!)
+    (end-input-frame!)))
+
+;; ---- input forwarding ------------------------------------------------------------------------------------------------
+(defn d2-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn d2-blur [] : Unit (in-clear-keys!))
+(defn d2-pointer [(x : I32) (y : I32)] : Unit (in-pointer! x y))
+(defn d2-button [(b : I32) (down : I32)] : Unit (in-button! b down))
+(defn d2-wheel [(dir : I32)] : Unit (in-wheel! dir))
+
+;; ---- memory the page reads / writes ------------------------------------------------------------------------------------
+(defn d2-fb-addr [] : I32 (fb-base))
+(defn d2-fb-w [] : I32 960)
+(defn d2-fb-h [] : I32 540)
+(defn d2-mem-bytes [] : I32 8388608)
+
+(defn d2-token-addr [] : I32 (token-base))
+(defn d2-token-set [(n : I32)] : Unit (gi! (g-token-len) n))
+(defn d2-name-addr [] : I32 (name-base))
+(defn d2-name-set [(n : I32)] : Unit
+  (do (gi! (g-name-len) n) (store8! (+ (name-base) (min-i n 62)) 0)))
+(defn d2-guest-set [(v : I32)] : Unit (gi! (g-guest) v))
+
+(defn d2-net-in-addr [] : I32 (netin-base))
+(defn d2-net-out-addr [] : I32 (netout-base))
+(defn d2-net-out-len [] : I32 (gi (g-out-len)))
+(defn d2-net-out-clear [] : Unit (gi! (g-out-len) 0))
+
+;; what the page shows around the canvas
+(defn d2-screen [] : I32 (gi (g-screen)))
+(defn d2-err-addr [] : I32 (err-base))
+
+;; the page could not sign the player in (the guest account could not be made): show the error screen with the text it wrote at d2_err_addr
+(defn d2-fail [(n : I32)] : Unit
+  (do (gi! (g-err-code) 1)
+      (store8! (+ (err-base) (min-i n 200)) 0)
+      (gi! (g-err-len) (min-i n 200))
+      (gi! (g-want-queue) 0)
+      (gi! (g-queued-sent) 0)
+      (go-screen! (sc-error))))
+
+;; ---- introspection (page footer + tests) ----------------------------------------------------------------------------------
+(defn d2-g [(k : I32)] : I32 (gi k))
+(defn d2-stage-n [] : I32 (gi (g-stage-n)))
+
+;; ---- test hooks: stage a ship, rebuild its grid, run the self half of the fight ---------------------------------------------
+(defn d2-t-clear [] : Unit (do (gi! (g-stage-n) 0) (model-clear!)))
+(defn d2-t-add [(item : I32) (row : I32) (col : I32) (rot : I32) (cut : I32)] : Unit
+  (do (st-set! (gi (g-stage-n)) item row col rot cut) (gi! (g-stage-n) (+ (gi (g-stage-n)) 1))))
+(defn d2-t-rebuild [] : I32 (let [bad (model-rebuild!)] (do (sim-reset!) (analyze!) bad)))
+(defn d2-t-tick [] : I32 (sim-tick!))
+(defn d2-t-shat [] : I32 (gi (g-sim-shat)))
+(defn d2-t-burn-lo [] : I32
+  (let [(v : I32) 0] (dotimes [i 32] (when (!= (cell-burned (/ i 6) (mod i 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-burn-hi [] : I32
+  (let [(v : I32) 0] (dotimes [i 4] (when (!= (cell-burned (/ (+ i 32) 6) (mod (+ i 32) 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-armor [] : I32 (gi (g-preview-armor)))
+(defn d2-t-cargo [] : I32 (gi (g-preview-cargo)))
+(defn d2-t-st [(i : I32) (f : I32)] : I32 (load8 (+ (st-addr i) f)))

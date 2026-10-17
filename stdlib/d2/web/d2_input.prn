@@ -1,0 +1,57 @@
+;; stdlib/d2/web/d2_input.prn -- keyboard and pointer.
+;;
+;; The page host only *forwards* raw device state: d2_key(code, down), d2_pointer(x, y), d2_button(b, down), d2_wheel(dir). What a key MEANS
+;; lives here, in PARENA: 1-7 pick a part, R turns it, click places, right click takes a part back off, C cuts a splittable one,
+;; Z undoes, Enter says READY; in the fight O / B answer the round break.
+
+;; ---- CTL layout ----------------------------------------------------------------------------------------------------------------
+;;   +0    keys[512]    1 = held
+;;   +512  hit[512]     1 = went down since the last frame
+;;   +1024 pointer: x y, left-down, left-clicked(edge), right-down, right-clicked(edge), wheel
+(defn key-down? [(id : I32)] : Bool (not (= (load8 (+ (ctl-base) (bit-and id 511))) 0)))
+(defn key-hit? [(id : I32)] : Bool (not (= (load8 (+ (+ (ctl-base) 512) (bit-and id 511))) 0)))
+
+(defn in-key! [(id : I32) (down : I32)] : Unit
+  (let [i (bit-and id 511)]
+    (when (and (not (= down 0)) (= (load8 (+ (ctl-base) i)) 0))
+      (store8! (+ (+ (ctl-base) 512) i) 1))
+    (store8! (+ (ctl-base) i) (if (!= down 0) 1 0))))
+
+(defn in-clear-keys! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (ctl-base) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1032) 0)
+      (store32! (+ (ctl-base) 1044) 0)))
+
+(defn end-input-frame! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (+ (ctl-base) 512) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1036) 0)
+      (store32! (+ (ctl-base) 1048) 0)
+      (store32! (+ (ctl-base) 1052) 0)))
+
+(defn pointer-x [] : I32 (load32 (+ (ctl-base) 1024)))
+(defn pointer-y [] : I32 (load32 (+ (ctl-base) 1028)))
+(defn left-down? [] : Bool (not (= (load32 (+ (ctl-base) 1032)) 0)))
+(defn right-down? [] : Bool (not (= (load32 (+ (ctl-base) 1044)) 0)))
+(defn left-clicked? [] : Bool (not (= (load32 (+ (ctl-base) 1036)) 0)))
+(defn right-clicked? [] : Bool (not (= (load32 (+ (ctl-base) 1048)) 0)))
+(defn wheel-dir [] : I32 (load32 (+ (ctl-base) 1052)))
+
+(defn in-pointer! [(x : I32) (y : I32)] : Unit
+  (do (store32! (+ (ctl-base) 1024) x) (store32! (+ (ctl-base) 1028) y)))
+(defn in-button! [(b : I32) (down : I32)] : Unit
+  (cond
+    (= b 0) (do (store32! (+ (ctl-base) 1032) (if (!= down 0) 1 0))
+                (when (!= down 0) (store32! (+ (ctl-base) 1036) 1)))
+    (= b 2) (do (store32! (+ (ctl-base) 1044) (if (!= down 0) 1 0))
+                (when (!= down 0) (store32! (+ (ctl-base) 1048) 1)))
+    :else unit))
+(defn in-wheel! [(dir : I32)] : Unit (store32! (+ (ctl-base) 1052) dir))
+
+(defn in-rect? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
+  (and (and (>= (pointer-x) x) (< (pointer-x) (+ x w))) (and (>= (pointer-y) y) (< (pointer-y) (+ y h)))))
+
+;; ---- key ids (KeyboardEvent.keyCode) ------------------------------------------------------------------------------------------------------
+(defn kc-enter [] : I32 13) (defn kc-esc [] : I32 27) (defn kc-space [] : I32 32) (defn kc-tab [] : I32 9) (defn kc-back [] : I32 8)
+(defn kc-r [] : I32 82) (defn kc-z [] : I32 90) (defn kc-x [] : I32 88) (defn kc-c [] : I32 67) (defn kc-o [] : I32 79) (defn kc-b [] : I32 66)
+(defn kc-e [] : I32 69) (defn kc-1 [] : I32 49)
+(defn kc-up [] : I32 38) (defn kc-down [] : I32 40) (defn kc-left [] : I32 37) (defn kc-right [] : I32 39)

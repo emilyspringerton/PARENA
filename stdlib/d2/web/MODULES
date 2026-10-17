@@ -1,0 +1,10 @@
+# the wasm client's source files (scripts/build_d2_wasm.sh concatenates them in this order)
+stdlib/d2/web/d2_mem.prn
+stdlib/d2/web/d2_gfx.prn
+stdlib/d2/web/d2_rules.prn
+stdlib/d2/web/d2_examples.prn
+stdlib/d2/web/d2_input.prn
+stdlib/d2/web/d2_net.prn
+stdlib/d2/web/d2_view.prn
+stdlib/d2/web/d2_ui.prn
+stdlib/d2/web/d2_main.prn
