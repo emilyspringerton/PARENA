@@ -6,5 +6,7 @@ stdlib/d2/web/d2_examples.prn
 stdlib/d2/web/d2_input.prn
 stdlib/d2/web/d2_net.prn
 stdlib/d2/web/d2_view.prn
+stdlib/d2/web/d2_fx.prn
+stdlib/d2/web/d2_pack.prn
 stdlib/d2/web/d2_ui.prn
 stdlib/d2/web/d2_main.prn

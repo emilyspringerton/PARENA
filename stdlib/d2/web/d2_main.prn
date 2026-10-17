@@ -13,6 +13,12 @@
     (gi! (g-hov-col) -1)
     (gi! (g-hull-you) 100)
     (gi! (g-hull-opp) 100)
+    (gi! (g-lane-hl) -1)
+    (gi! (g-hov-weapon) -1)
+    (gi! (g-last-cause) 255)
+    (gi! (g-split-i) -1)
+    (gi! (g-undo-n) 0)
+    (gi! (g-vflip) 0)
     (model-clear!)))
 
 ;; how long energy has been travelling: a fight's packets leave the generators when a tick lands and have crossed the ship in under a second; while
@@ -81,20 +87,37 @@
 
 ;; ---- test hooks: stage a ship, rebuild its grid, run the self half of the fight ---------------------------------------------
 (defn d2-t-clear [] : Unit (do (gi! (g-stage-n) 0) (model-clear!)))
-(defn d2-t-add [(item : I32) (row : I32) (col : I32) (rot : I32) (cut : I32)] : Unit
-  (do (st-set! (gi (g-stage-n)) item row col rot cut) (gi! (g-stage-n) (+ (gi (g-stage-n)) 1))))
+(defn d2-t-add [(item : I32) (row : I32) (col : I32) (rot : I32)] : Unit
+  (do (st-set! (gi (g-stage-n)) item row col rot) (gi! (g-stage-n) (+ (gi (g-stage-n)) 1))))
 (defn d2-t-rebuild [] : I32 (let [bad (model-rebuild!)] (do (analyze!) (sim-reset!) bad)))
 (defn d2-t-tick [] : I32 (sim-tick!))
 (defn d2-t-shat [] : I32 (gi (g-sim-shat)))
+;; destroy a cell, as an EVENTS frame would say a shot had
+(defn d2-t-kill [(cell : I32)] : Unit (cell-kill! cell 2))
+;; masks of cells, low 32 bits then the other 4: burnt out by Back-EMF (1), and destroyed or burnt (any)
 (defn d2-t-burn-lo [] : I32
-  (let [(v : I32) 0] (dotimes [i 32] (when (!= (cell-burned (/ i 6) (mod i 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
+  (let [(v : I32) 0] (dotimes [i 32] (when (= (cell-dead (/ i 6) (mod i 6)) 1) (set! v (bit-or v (shl 1 i))))) v))
 (defn d2-t-burn-hi [] : I32
-  (let [(v : I32) 0] (dotimes [i 4] (when (!= (cell-burned (/ (+ i 32) 6) (mod (+ i 32) 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
-(defn d2-t-armor [] : I32 (gi (g-preview-armor)))
-(defn d2-t-dmg [] : I32 (gi (g-sim-dmg)))
-(defn d2-t-hull [] : I32 (i32 (+ (gf (g-sim-hull)) 0.5)))
-(defn d2-t-sarmor [] : I32 (i32 (+ (gf (g-sim-armor)) 0.5)))
-(defn d2-t-cargo [] : I32 (gi (g-preview-cargo)))
+  (let [(v : I32) 0] (dotimes [i 4] (when (= (cell-dead (/ (+ i 32) 6) (mod (+ i 32) 6)) 1) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-dead-lo [] : I32
+  (let [(v : I32) 0] (dotimes [i 32] (when (!= (cell-dead (/ i 6) (mod i 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-dead-hi [] : I32
+  (let [(v : I32) 0] (dotimes [i 4] (when (!= (cell-dead (/ (+ i 32) 6) (mod (+ i 32) 6)) 0) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-cost [] : I32 (gi (g-bud-cost)))
+(defn d2-t-weight [] : I32 (gi (g-bud-weight)))
+(defn d2-t-structure [] : I32 (gi (g-structure-max)))
+(defn d2-t-evade10 [] : I32 (gi (g-evade10)))
+(defn d2-t-heat [(cell : I32)] : I32 (cell-heat-at cell))
+(defn d2-t-cooled-lo [] : I32
+  (let [(v : I32) 0] (dotimes [i 32] (when (cell-cooled? i) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-cooled-hi [] : I32
+  (let [(v : I32) 0] (dotimes [i 4] (when (cell-cooled? (+ i 32)) (set! v (bit-or v (shl 1 i))))) v))
+(defn d2-t-boost [(p : I32)] : I32 (weapon-boost-pct p))
+;; 1 if the laser in placement p has nothing standing in front of it
+(defn d2-t-lane-clear [(p : I32)] : I32 (b2i (lane-clear-ahead? (weapon-cell p))))
+(defn d2-t-shots-to-open [(lane : I32) (kind : I32)] : I32 (lane-shots-to-open lane kind))
+(defn d2-t-split [(i : I32)] : I32 (split-pieces! i))
+(defn d2-t-split-get [(k : I32) (q : I32)] : I32 (load32 (+ (scratch-base) (+ (shl k 4) (shl q 2)))))
 (defn d2-t-st [(i : I32) (f : I32)] : I32 (load8 (+ (st-addr i) f)))
 (defn d2-t-set [(k : I32) (v : I32)] : Unit (gi! k v))
 

@@ -1,0 +1,272 @@
+;; stdlib/d2/web/d2_fx.prn -- the fight's animations: every shot, every hit, every number, every part that breaks, drawn when it happens.
+;;
+;; The server resolves a whole second at once; d2_net.prn turns its EVENTS into FX records with start times spread across the second, and this file draws
+;; whichever are live. Nothing here decides anything. The two ships face each other bow to bow in the middle of the screen (yours below, the opponent's above,
+;; mirrored), so a lane is a vertical track: a shot leaves its weapon, runs up (or down) the lane THROUGH the shooter's own cells in front of it, crosses the gap,
+;; and lands on the part of the other ship the rules say it hits.
+
+(defn fl-s [] : I32 38)            ; cell size in the fight
+(defn fl-x [] : I32 366)           ; left edge of both grids
+(defn fl-y0 [] : I32 290)          ; top of your grid
+(defn fl-y1 [] : I32 36)           ; top of the opponent's grid
+
+(defn lane-x [(lane : I32)] : F32 (+ (f32 (fl-x)) (* (f32 (fl-s)) (+ (f32 lane) 0.5))))
+(defn cell-fcx [(ship : I32) (cell : I32)] : F32 (lane-x (mod cell 6)))
+(defn cell-fcy [(ship : I32) (cell : I32)] : F32
+  (if (= ship 0)
+      (+ (f32 (fl-y0)) (* (f32 (fl-s)) (+ (f32 (/ cell 6)) 0.5)))
+      (+ (f32 (fl-y1)) (* (f32 (fl-s)) (+ (f32 (- 5 (/ cell 6))) 0.5)))))
+;; the stern wall (the hull) and the bow edge of a ship, as y
+(defn stern-fy [(ship : I32)] : F32 (if (= ship 0) (+ (f32 (fl-y0)) (* 6.0 (f32 (fl-s)))) (f32 (fl-y1))))
+(defn bow-fy [(ship : I32)] : F32 (if (= ship 0) (f32 (fl-y0)) (+ (f32 (fl-y1)) (* 6.0 (f32 (fl-s))))))
+
+;; the glide of every drawn HP toward its truth, once the shot that changes it has landed (both ships)
+(defn hp-glide-all! [] : Unit
+  (do (gi! (g-ship) 1) (hp-glide!) (gi! (g-ship) 0) (hp-glide!)))
+
+;; the drawn hull and its ghost: the hull bar waits for the shot that hurts it to land, then slides; the pale ghost shows what it had, and drains after a beat
+(defn hull-glide! [(side : I32)] : Unit
+  (let [now (gi (g-ticker))
+        (truth : F32) (f32 (if (= side 0) (gi (g-hull-you)) (gi (g-hull-opp))))
+        arr (if (= side 0) (gi (g-hull-arr-you)) (gi (g-hull-arr-opp)))
+        hk (if (= side 0) (g-hulld-you) (g-hulld-opp))
+        gk (if (= side 0) (g-ghost-you) (g-ghost-opp))
+        gt (if (= side 0) (g-ghost-t-you) (g-ghost-t-opp))]
+    (when (>= now arr)
+      (let [(h : F32) (gf hk) (g : F32) (gf gk)]
+        (when (< truth (- h 0.2))
+          (do (when (< g (+ h 0.1)) (gf! gk h))
+              (gi! gt now)))
+        (gf! hk (if (< (fabs (- truth h)) 0.3) truth (+ h (* (- truth h) 0.16))))
+        (when (> now (+ (gi gt) 520))
+          (gf! gk (let [(g2 : F32) (gf gk) (h2 : F32) (gf hk)] (if (< (- g2 h2) 0.3) h2 (- g2 (* (- g2 h2) 0.07)))))))
+      (when (> truth (gf gk)) (gf! gk truth)))))
+
+(defn spokes! [(x : F32) (y : F32) (len : F32) (n : I32) (rot : F32) (c : I32) (a : I32)] : Unit
+  (dotimes [k n]
+    (let [(ang : F32) (+ rot (* (f32 k) (/ 6.2831853 (f32 n))))]
+      (line-a (i32 x) (i32 y) (i32 (+ x (* (cosf ang) len))) (i32 (+ y (* (sinf ang) len))) c a))))
+
+;; a number with a sign in front, fading as `al` (0..256) falls
+(defn num-width-signed [(n : I32) (sc : I32)] : I32 (+ (num-width n sc) (adv sc)))
+(defn draw-signed! [(sign : String) (n : I32) (cx : I32) (y : I32) (sc : I32) (c : I32) (al : I32)]  : Unit
+  (let [w (num-width-signed n sc) x0 (- cx (/ w 2))
+        col (mix (c-bg) c al)]
+    (draw-text sign (+ x0 1) (+ y 1) sc (c-shadow))
+    (draw-int n (+ (+ x0 (adv sc)) 1) (+ y 1) sc (c-shadow))
+    (draw-text sign x0 y sc col)
+    (draw-int n (+ x0 (adv sc)) y sc col)))
+
+;; ---- a shot ---------------------------------------------------------------------------------------------------------------------------
+(defn render-shot! [(a : I32) (now : I32)] : Unit
+  (let [ss (load8 (+ a 16)) ts (load8 (+ a 1)) lane (load8 (+ a 18)) src (load8 (+ a 17)) item (load8 (+ a 19))
+        hit0 (load8 (+ a 21)) hit1 (load8 (+ a 22)) endt (load8 (+ a 23))
+        age (- now (load32 (+ a 4)))
+        flight (shot-flight item)
+        (x : F32) (lane-x lane)
+        (y0 : F32) (cell-fcy ss src)
+        (y1 : F32) (cond (= endt 2) (if (= ts 0) (+ (stern-fy 0) 26.0) (- (stern-fy 1) 26.0))
+                         (= endt 1) (if (= ts 0) (+ (stern-fy 0) 4.0) (- (stern-fy 1) 4.0))
+                         (!= hit1 255) (cell-fcy ts hit1)
+                         (!= hit0 255) (cell-fcy ts hit0)
+                         :else (bow-fy ts))
+        (col : I32) (weapon-color item)
+        (t : F32) (clamp-f (/ (f32 age) (f32 flight)) 0.0 1.0)
+        (ic : I32) (if (= ts 0) (c-rose) (c-gold))
+        landed (and (!= endt 2) (>= age flight))]
+    (cond
+      ;; ---- railgun: an instant ice-blue streak that leaves an afterimage; the impact throws spokes
+      (= item 3)
+        (do
+          (when (< age 240)
+            (do (ring x y0 (+ 4.0 (* 0.09 (f32 age))) 2.0 col (- 240 age))
+                (spokes! x y0 (+ 6.0 (* 0.05 (f32 age))) 4 0.78 (c-ink) (- 220 age))))
+          (let [(fade : F32) (if (< age flight) 1.0 (clamp-f (- 1.0 (/ (f32 (- age flight)) 420.0)) 0.0 1.0))
+                (hy : F32) (lerp y0 y1 t)
+                (ty : F32) (if (< age flight) (lerp y0 y1 (fmax2 0.0 (- t 0.55))) y0)
+                (ey : F32) (if (< age flight) hy y1)]
+            (when (> fade 0.0)
+              (do (lnw (i32 x) (i32 ty) (i32 x) (i32 ey) 5 col (i32 (* 70.0 fade)))
+                  (lnw (i32 x) (i32 ty) (i32 x) (i32 ey) 3 col (i32 (* 200.0 fade)))
+                  (lnw (i32 x) (i32 ty) (i32 x) (i32 ey) 1 (c-ink) (i32 (* 255.0 fade))))))
+          (when landed
+            (let [(q : F32) (clamp-f (/ (f32 (- age flight)) 560.0) 0.0 1.0) al (i32 (* 240.0 (- 1.0 q)))]
+              (ring x y1 (+ 4.0 (* 22.0 q)) 3.0 ic al)
+              (spokes! x y1 (* 26.0 q) 8 0.2 col al)
+              (disc x y1 (* 8.0 (- 1.0 q)) (c-ink) (i32 (* 170.0 (- 1.0 q)))))))
+      ;; ---- pulse laser: a sustained magenta beam from the lens; sparks jitter where it burns
+      (= item 7)
+        (do
+          (when (< age 300)
+            (do (disc x y0 (+ 5.0 (* 2.0 (sinf (* (f32 age) 0.05)))) col 200)
+                (disc x y0 2.5 (c-ink) 255)))
+          (when (< age (+ flight 200))
+            (let [(p : F32) (clamp-f (/ (f32 age) 70.0) 0.0 1.0)
+                  (ey : F32) (lerp y0 y1 p)
+                  (fade : F32) (if (< age (+ flight 80)) 1.0 (clamp-f (- 1.0 (/ (f32 (- age (+ flight 80))) 120.0)) 0.0 1.0))
+                  pul (+ 170 (i32 (* 60.0 (sinf (* (f32 age) 0.09)))))]
+              (lnw (i32 x) (i32 y0) (i32 x) (i32 ey) 7 col (i32 (* 50.0 fade)))
+              (lnw (i32 x) (i32 y0) (i32 x) (i32 ey) 4 col (i32 (* (f32 pul) fade)))
+              (lnw (i32 x) (i32 y0) (i32 x) (i32 ey) 1 (c-ink) (i32 (* 255.0 fade)))))
+          (when (and landed (< age (+ flight 260)))
+            (let [(q : F32) (clamp-f (/ (f32 (- age flight)) 260.0) 0.0 1.0)]
+              (disc x y1 (+ 5.0 (* 2.0 (sinf (* (f32 age) 0.11)))) col 200)
+              (dotimes [j 5]
+                (let [(ang : F32) (+ (* (f32 j) 1.3) (* (f32 age) 0.07))
+                      (r : F32) (+ 6.0 (* 5.0 (sinf (+ (* (f32 age) 0.13) (f32 j)))))]
+                  (disc (+ x (* (cosf ang) r)) (+ y1 (* (sinf ang) r)) 1.6 (c-ink) 255)))
+              (ring x y1 (+ 3.0 (* 6.0 q)) 2.0 ic (i32 (* 240.0 (- 1.0 q)))))))
+      ;; ---- siege cannon: a slow orange shell lobbed on an arc, with a smoke trail; it lands as a shockwave and a fireball
+      :else
+        (do
+          (when (< age 420)
+            (let [(q : F32) (/ (f32 age) 420.0)]
+              (disc x y0 (* 16.0 (- 1.0 q)) col (i32 (* 220.0 (- 1.0 q))))
+              (disc x (- y0 (* 22.0 q)) (+ 5.0 (* 8.0 q)) (c-faint) (i32 (* 140.0 (- 1.0 q))))))
+          (when (< age flight)
+            (let [(hx : F32) (+ x (* 36.0 (sinf (* 3.14159 t))))
+                  (hy : F32) (lerp y0 y1 t)]
+              (dotimes [j 7]
+                (let [(tt : F32) (fmax2 0.0 (- t (* 0.035 (f32 (+ j 1)))))
+                      (sx : F32) (+ x (* 36.0 (sinf (* 3.14159 tt))))
+                      (sy : F32) (lerp y0 y1 tt)]
+                  (disc sx sy (+ 2.0 (* 0.7 (f32 j))) (if (< j 3) col (c-faint)) (- 190 (* j 24)))))
+              (disc hx hy (+ 9.0 (* 4.0 (sinf (* 3.14159 t)))) col 60)
+              (disc hx hy (+ 5.0 (* 2.0 (sinf (* 3.14159 t)))) col 255)
+              (disc hx hy 2.5 (c-ink) 255)))
+          (when landed
+            (let [(q : F32) (clamp-f (/ (f32 (- age flight)) 560.0) 0.0 1.0) al (i32 (* 240.0 (- 1.0 q)))]
+              (ring x y1 (+ 6.0 (* 44.0 q)) 4.0 ic al)
+              (ring x y1 (+ 3.0 (* 28.0 q)) 3.0 col al)
+              (disc x y1 (* 18.0 (- 1.0 q)) col (i32 (* 230.0 (- 1.0 q))))
+              (disc x y1 (* 8.0 (- 1.0 q)) (c-ink) (i32 (* 200.0 (- 1.0 q))))
+              (spokes! x y1 (* 34.0 q) 10 0.1 col al)))))))
+
+;; ---- numbers, bangs, sparks ---------------------------------------------------------------------------------------------------------------
+(defn render-num! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) age (- now (load32 (+ a 4))) val (load32 (+ a 12)) fl (load8 (+ a 20))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        rise (/ (* age 28) 900)
+        al (if (< age 520) 256 (max-i 0 (- 256 (/ (* (- age 520) 256) 380))))
+        destroyed (= (bit-and fl 1) 1)
+        col (cond (!= (bit-and fl 8) 0) (c-good) (!= (bit-and fl 32) 0) (c-good) (!= (bit-and fl 16) 0) (c-heat) (= side 0) (c-rose) :else (c-gold))
+        sc (if destroyed 2 1)
+        y (- (- (i32 cy) 8) rise)]
+    (draw-signed! (if (!= (bit-and fl 8) 0) "+" (if (!= (bit-and fl 32) 0) "+" "-")) val (i32 cx) (- y (if destroyed 8 0)) sc col al)
+    (when (< age 700)
+      (cond destroyed (draw-text-c "BROKEN" (i32 cx) (+ y (if destroyed 12 0)) 1 (mix (c-bg) (c-rose) al))
+            (!= (bit-and fl 4) 0) (draw-text-c "WEAK" (i32 cx) (+ y 12) 1 (mix (c-bg) (c-gold) al))
+            (!= (bit-and fl 2) 0) (draw-text-c "resisted" (i32 cx) (+ y 12) 1 (mix (c-bg) (c-dim) al))
+            :else unit))))
+
+(defn render-bang! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) age (- now (load32 (+ a 4)))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        (q : F32) (clamp-f (/ (f32 age) 700.0) 0.0 1.0) al (i32 (* 255.0 (- 1.0 q)))]
+    (disc cx cy (* 24.0 (- 1.0 q)) (c-heat) (i32 (* 210.0 (- 1.0 q))))
+    (disc cx cy (* 12.0 (- 1.0 q)) (rgb 255 240 200) (i32 (* 230.0 (- 1.0 q))))
+    (ring cx cy (+ 6.0 (* 26.0 q)) 3.0 (c-gold) al)
+    (spokes! cx cy (* 30.0 q) 9 0.3 (c-ink) al)
+    (dotimes [j 6]
+      (let [(ang : F32) (+ (* (f32 j) 1.047) 0.4)
+            (r : F32) (* (+ 8.0 (* 5.0 (f32 j))) q)]
+        (disc (+ cx (* (cosf ang) r)) (+ (- cy (* 6.0 q)) (* (sinf ang) r)) (+ 1.5 (* 1.0 (- 1.0 q))) (c-faint) (i32 (* 200.0 (- 1.0 q))))))))
+
+;; repair sparks fly from the Aegis Emitter / the Biomass to the part they mend, and a green number rises
+(defn render-repair! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) src (load8 (+ a 17)) age (- now (load32 (+ a 4))) val (load32 (+ a 12))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        (sx : F32) (cell-fcx side src) (sy : F32) (cell-fcy side src)
+        (q : F32) (clamp-f (/ (f32 age) 700.0) 0.0 1.0)]
+    (when (< age 330)
+      (let [(p : F32) (/ (f32 age) 330.0)]
+        (dotimes [j 4]
+          (let [(pp : F32) (clamp-f (- p (* 0.12 (f32 j))) 0.0 1.0)]
+            (disc (lerp sx cx pp) (lerp sy cy pp) (+ 1.5 (* 0.5 (f32 (- 4 j)))) (c-grow) 230)))))
+    (when (>= age 300)
+      (let [(qq : F32) (clamp-f (/ (f32 (- age 300)) 400.0) 0.0 1.0)]
+        (ring cx cy (+ 4.0 (* 14.0 qq)) 2.0 (c-grow) (i32 (* 230.0 (- 1.0 qq))))
+        (draw-signed! "+" val (i32 cx) (- (- (i32 cy) 8) (i32 (* 18.0 qq))) 1 (c-grow) (i32 (* 256.0 (- 1.0 (* 0.8 qq)))))))))
+
+;; the hull took a hit: a bright flash on the stern wall in the lane, and "-N HULL" rising from it
+(defn render-hullnum! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) age (- now (load32 (+ a 4))) val (load32 (+ a 12)) lane (load8 (+ a 18))
+        (x : F32) (lane-x lane) (wy : F32) (stern-fy side)
+        rise (/ (* age 24) 1100)
+        al (if (< age 600) 256 (max-i 0 (- 256 (/ (* (- age 600) 256) 500))))
+        (q : F32) (clamp-f (/ (f32 age) 420.0) 0.0 1.0)
+        healed (!= (bit-and (load8 (+ a 20)) 8) 0)]
+    (when (< age 420)
+      (fill-rect-a (- (i32 x) (/ (fl-s) 2)) (- (i32 wy) 5) (fl-s) 10 (c-ink) (i32 (* 200.0 (- 1.0 q)))))
+    (ring x wy (+ 4.0 (* 16.0 q)) 3.0 (c-rose) (i32 (* 220.0 (- 1.0 q))))
+    (let [y (if (= side 0) (+ (+ (i32 wy) 6) rise) (- (- (i32 wy) 20) rise))]
+      (draw-signed! (if healed "+" "-") val (- (i32 x) 14) y 1 (if healed (c-good) (c-rose)) al)
+      (draw-text "HULL" (+ (i32 x) 2) y 1 (mix (c-bg) (c-rose) al)))))
+
+(defn render-word! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) age (- now (load32 (+ a 4))) lane (load8 (+ a 18))
+        (x : F32) (lane-x lane) (wy : F32) (stern-fy side)
+        rise (/ (* age 20) 1000)
+        al (if (< age 500) 256 (max-i 0 (- 256 (/ (* (- age 500) 256) 500))))
+        y (if (= side 0) (+ (+ (i32 wy) 10) rise) (- (- (i32 wy) 24) rise))]
+    (draw-text-c "DODGED" (i32 x) y 1 (mix (c-bg) (c-teal) al))))
+
+(defn render-shieldfx! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) age (- now (load32 (+ a 4))) lane (load8 (+ a 18)) val (load32 (+ a 12))
+        (x : F32) (lane-x lane) (by : F32) (bow-fy side)
+        (q : F32) (clamp-f (/ (f32 age) 600.0) 0.0 1.0)]
+    (ring x by (+ 8.0 (* 10.0 q)) 4.0 (c-shield) (i32 (* 240.0 (- 1.0 q))))
+    (fill-rect-a (- (i32 x) (/ (fl-s) 2)) (- (i32 by) 2) (fl-s) 4 (c-shield) (i32 (* 220.0 (- 1.0 q))))
+    (when (< age 560)
+      (draw-text-c "shield" (i32 x) (if (= side 0) (- (i32 by) 24) (+ (i32 by) 12)) 1 (mix (c-bg) (c-shield) (i32 (* 256.0 (- 1.0 q))))))))
+
+(defn render-mender! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) age (- now (load32 (+ a 4))) val (load32 (+ a 12))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        (q : F32) (clamp-f (/ (f32 age) 800.0) 0.0 1.0) (r : F32) (+ 5.0 (* 12.0 q)) al (i32 (* 240.0 (- 1.0 q)))]
+    (line-a (i32 cx) (i32 (- cy r)) (i32 cx) (i32 (+ cy r)) (c-good) al)
+    (line-a (i32 (- cx r)) (i32 cy) (i32 (+ cx r)) (i32 cy) (c-good) al)
+    (ring cx cy (+ 6.0 (* 16.0 q)) 2.0 (c-good) al)
+    (draw-text "+" (- (i32 cx) 3) (- (- (i32 cy) 20) (i32 (* 10.0 q))) 1 (mix (c-bg) (c-good) (i32 (* 256.0 (- 1.0 q)))))
+    (draw-int (/ val 10) (+ (i32 cx) 4) (- (- (i32 cy) 20) (i32 (* 10.0 q))) 1 (mix (c-bg) (c-good) (i32 (* 256.0 (- 1.0 q)))))
+    (draw-text "hull" (+ (i32 cx) 14) (- (- (i32 cy) 20) (i32 (* 10.0 q))) 1 (mix (c-bg) (c-good) (i32 (* 256.0 (- 1.0 q)))))))
+
+(defn render-heatfx! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) age (- now (load32 (+ a 4))) val (load32 (+ a 12))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        (q : F32) (clamp-f (/ (f32 age) 900.0) 0.0 1.0)
+        rise (i32 (* 18.0 q))]
+    (dotimes [k 4]
+      (let [fx (+ (i32 cx) (- (* k 6) 9)) fh (+ 5 (mod (+ (/ now 70) (* k 3)) 7))]
+        (line-a fx (+ (i32 cy) 8) (+ fx 1) (- (+ (i32 cy) 8) fh) (c-heat) (i32 (* 230.0 (- 1.0 q))))))
+    (draw-signed! "-" val (i32 cx) (- (- (i32 cy) 12) rise) 1 (c-heat) (i32 (* 256.0 (- 1.0 (* 0.8 q)))))))
+
+(defn render-burnfx! [(a : I32) (now : I32)] : Unit
+  (let [side (load8 (+ a 1)) cell (load8 (+ a 2)) age (- now (load32 (+ a 4)))
+        (cx : F32) (cell-fcx side cell) (cy : F32) (cell-fcy side cell)
+        (q : F32) (clamp-f (/ (f32 age) 800.0) 0.0 1.0)]
+    (ring cx cy (+ 5.0 (* 18.0 q)) 2.0 (c-gold) (i32 (* 240.0 (- 1.0 q))))
+    (spokes! cx cy (* 20.0 q) 7 0.5 (c-ink) (i32 (* 240.0 (- 1.0 q))))
+    (when (< age 700) (draw-text-c "BURNT OUT" (i32 cx) (- (- (i32 cy) 14) (i32 (* 10.0 q))) 1 (mix (c-bg) (c-gold) (i32 (* 256.0 (- 1.0 q))))))))
+
+;; every live effect
+(defn render-fx! [] : Unit
+  (let [now (gi (g-ticker))]
+    (dotimes [k 96]
+      (let [a (+ (fx-base) (shl k 5)) kind (load8 a)]
+        (when (!= kind 0)
+          (let [age (- now (load32 (+ a 4))) dur (load32 (+ a 8))]
+            (cond
+              (>= age dur) (store8! a 0)
+              (< age 0) unit
+              (= kind 1) (render-shot! a now)
+              (= kind 2) (render-num! a now)
+              (= kind 3) (render-bang! a now)
+              (= kind 4) (render-repair! a now)
+              (= kind 5) (render-hullnum! a now)
+              (= kind 6) (render-word! a now)
+              (= kind 7) (render-shieldfx! a now)
+              (= kind 8) (render-mender! a now)
+              (= kind 9) (render-heatfx! a now)
+              (= kind 10) (render-burnfx! a now)
+              :else unit)))))))

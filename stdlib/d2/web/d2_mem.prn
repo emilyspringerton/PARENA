@@ -2,9 +2,13 @@
 ;;
 ;; Founder real-time 2026-10-17: "now DEADWEIGHT_2 same affordances WOTAN ESPORTS WASM TS PARENA" -- after Red Garden web (a wasm CLIENT of the
 ;; real C server, guests + IDUNA SSO, full match and player tracking, the existing bot infrastructure). D2's match is dw2_server's (C,
-;; authoritative: the 60 s packing clock, the 30-tick fight, the round-break mini-game); this module is its client, compiled to wasm32.
+;; authoritative: the 120 s packing clock, the 30-tick fight, the round-break mini-game); this module is its client, compiled to wasm32.
 ;; It speaks dw2_server's own frames through IDUNA's WebSocket gateway (d2_net.prn), holds the player's ship while they pack it, runs the
-;; ship's wiring exactly as core/combat.c does (so the energy the player sees is the energy the server fights with), and draws all of it.
+;; ship's wiring exactly as core/combat.c does (so the energy the player sees is the energy the server fights with), animates everything the server
+;; says happened each second (its EVENTS frame), and draws all of it.
+;;
+;; Ruleset 2 (2026-10-17, "iterate so the game is more playable and fun"): every part has a cost, a weight and HP; a ship has a credit and a weight budget;
+;; shots fly down lanes (columns); parts are destroyed. See DEADWEIGHT_2/core/combat.h for the rules; this client mirrors the parts it needs.
 ;;
 ;; NO MALLOC: no allocator, no imports, memory never grows (8 MB, fixed). Every record has a fixed address.
 ;;   0x020000 CTL      input tables                                         (d2_input.prn)
@@ -16,19 +20,17 @@
 ;;   0x026840 OPP      32 B   the opponent's name
 ;;   0x027000 SCRATCH  1 KB
 ;;   0x029000 ERR      256 B  the last error text from the gateway
-;;   0x02A000 free (the item catalog lived here until it outgrew it; see items-base)
 ;;   0x02A800 SHAPE    16 x 16 B  a shape being placed (row, col, port, role per cell)
-;;   0x02B000 STAGE    16 x 8 B   the ship the player is packing: item, row, col, rot, cut, ok        (0x02B400: the opponent's, shown in the fight)
-;;   0x02C000 MODEL    36 x 8 B   the grid the stage makes: owner, role, port, ruined, burned, powered, cut piece, depth|in
-;;   0x02C400 free (the first ship's SIM lived here until the circuit parts grew it; see sim-base)
+;;   0x02B000 STAGE    36 x 8 B per ship (1 KB each)   the ship being packed: item, row, col, rot, (unused), ok;  ship 1 at 0x02B400 is the opponent's, shown in the fight
+;;   0x02C000 MODEL    2 KB per ship: the grid the stage makes (36 x 8 B: owner, role, port, ruined, dead, powered, -, depth|in), then per-cell HP and effect times
 ;;   0x02D000 ROUNDS   8 x 16 B   what happened at each round break
-;;   0x02D400 BOLTS    24 x 16 B  shots in flight between the two ships
-;;   0x02D800 LOG      8 x 16 B   what just happened in the fight
-;;   0x02EC00 ITEMS    19 x 128 B the item catalog (d2_rules.prn)
-;;   0x02F600 EXAMPLES 6 x 128 B  the ships the EXAMPLE button lays down (d2_examples.prn)
-;;   0x02DC00 SIM      2 x 2 KB   per ship: weapon charge, power per cell, stored charge (capacitors, batteries, delayers), gates, loop tracker
+;;   0x02D800 LOG      16 x 16 B  what just happened in the fight
+;;   0x02DC00 SIM      2 KB per ship: weapon charge, power per cell, stored charge (capacitors, batteries, delayers), gates, loop tracker
 ;; Two ships share one set of functions: g-ship (0 you, 1 the opponent) picks which STAGE / MODEL / SIM / ship globals they read and write.
 ;;   0x030000 FONT     255 glyphs x 16 rows
+;;   0x040000 ITEMS    24 x 128 B the item catalog (d2_rules.prn)
+;;   0x041000 EXAMPLES 8 x 160 B  the ships the EXAMPLE button lays down (d2_examples.prn)
+;;   0x042000 FX       96 x 32 B  the fight's animations in flight: shots, hits, numbers, sparks
 ;;   0x100000 FB       960 x 540 RGBA framebuffer
 
 (module d2/web)
@@ -42,11 +44,11 @@
 (defn opp-base [] : I32 157760)
 (defn scratch-base [] : I32 159744)
 (defn err-base [] : I32 167936)
-(defn items-base [] : I32 191488)
+(defn items-base [] : I32 262144)
 (defn shape-base [] : I32 174080)
 (defn rounds-base [] : I32 184320)
-(defn bolts-base [] : I32 185344)
 (defn log-base [] : I32 186368)
+(defn fx-base [] : I32 270336)
 (defn font-base [] : I32 196608)
 (defn fb-base [] : I32 1048576)
 
@@ -102,7 +104,7 @@
 (defn g-phase [] : I32 37)          ; 0 packing, 1 combat, 2 over
 (defn g-tick [] : I32 39)           ; elapsed combat ticks
 (defn g-hull-you [] : I32 40) (defn g-hull-opp [] : I32 41)
-(defn g-armor-you [] : I32 42) (defn g-armor-opp [] : I32 43)
+(defn g-armor-you [] : I32 42) (defn g-armor-opp [] : I32 43)       ; "armor" on the wire is the Brace SHIELD in ruleset 2 (parts carry the armor now)
 (defn g-shat-you [] : I32 44) (defn g-shat-opp [] : I32 45)
 (defn g-cargo-you [] : I32 46) (defn g-cargo-opp [] : I32 47)
 (defn g-tick-t [] : I32 48)         ; ticker ms the last TICK arrived
@@ -135,35 +137,75 @@
 (defn g-example [] : I32 101)
 (defn g-acks [] : I32 102)          ; PLACE_ACKs seen
 (defn g-rejects [] : I32 103)
-(defn g-cut-flash [] : I32 104)
+(defn g-cut-flash [] : I32 104)     ; ticker ms a part was last split (the flash on its pieces)
 
-;; the ship simulation (own ship only: what the server fights with, drawn)
+;; the ship simulation (what the server fights with, drawn)
 (defn g-sim-loop-on [] : I32 (+ 110 (sel-off))) (defn g-sim-phi [] : I32 (+ 111 (sel-off)))      ; phi is an F32
 (defn g-sim-path-n [] : I32 (+ 112 (sel-off)))
 (defn g-sim-shots [] : I32 (+ 113 (sel-off)))     ; shots fired by the ship this fight
 (defn g-shot-t [] : I32 114)        ; ticker ms of the player's last shot
-(defn g-hit-t [] : I32 115)         ; ticker ms the player's ship last lost hull or armor
+(defn g-hit-t [] : I32 115)         ; ticker ms the player's ship last lost hull or a part
 (defn g-ohit-t [] : I32 116)        ; ... the opponent's
 (defn g-prev-hull-you [] : I32 117) (defn g-prev-hull-opp [] : I32 118)
 (defn g-prev-armor-you [] : I32 119) (defn g-prev-armor-opp [] : I32 120)
 (defn g-preview-weapons [] : I32 121) (defn g-preview-powered [] : I32 122) (defn g-preview-loops [] : I32 123)
 (defn g-preview-armor [] : I32 124) (defn g-preview-cargo [] : I32 125) (defn g-preview-cells [] : I32 126)
 (defn g-rng [] : I32 127)
-(defn g-ack-wait [] : I32 128)      ; PLACE/CUT replies still owed by the server
+(defn g-ack-wait [] : I32 128)      ; PLACE replies still owed by the server
 (defn g-sim-shat [] : I32 (+ 129 (sel-off)))      ; Back-EMF meltdowns so far
 
-;; more ship state (per ship, like the sim words above); hull/armor here are a ship's OWN arithmetic, used by the parity test only: in a fight the
-;; server's numbers are the truth
-(defn g-sim-hull [] : I32 (+ 141 (sel-off))) (defn g-sim-armor [] : I32 (+ 142 (sel-off))) (defn g-sim-amax [] : I32 (+ 143 (sel-off)))
+;; more ship state (per ship, like the sim words above)
+(defn g-sim-hull [] : I32 (+ 141 (sel-off)))
 (defn g-sim-dmg [] : I32 (+ 144 (sel-off)))
 (defn g-sim-budget [] : I32 (+ 150 (sel-off)))     ; hand-offs left this tick (the walk stops at 4096, as the C core does)
 (defn g-sim-fed [] : I32 (+ 145 (sel-off)))      ; menders + aegis emitters fed on the last tick
-(defn g-preview-dps [] : I32 133) (defn g-preview-pierce [] : I32 134) (defn g-preview-mend [] : I32 135) (defn g-preview-regen [] : I32 136)
+(defn g-preview-dps [] : I32 133) (defn g-preview-mend [] : I32 135) (defn g-preview-regen [] : I32 136)
 (defn g-opp-known [] : I32 137)     ; the server sent the opponent's ship
-(defn g-bolt-n [] : I32 138) (defn g-log-n [] : I32 139) (defn g-pulse [] : I32 140)
+(defn g-fx-n [] : I32 138) (defn g-log-n [] : I32 139) (defn g-pulse [] : I32 140)
 (defn g-fh-ship [] : I32 146) (defn g-fh-cell [] : I32 147)   ; the fight cell under the pointer (ship, cell; -1 none)
 (defn g-hov-item [] : I32 148)      ; the parts-bin entry under the pointer (-1 none)
-(defn g-hl-p [] : I32 152) (defn g-hl-ship [] : I32 153)   ; the placement the pointer is on (-1 none) and which ship's it is: its boost partners light up
+(defn g-hl-p [] : I32 152) (defn g-hl-ship [] : I32 153)   ; the placement the pointer is on (-1 none) and which ship's it is: its partners light up
+
+;; ruleset 2: budgets, structure, dodging, per-weapon-kind damage (per ship words must stay below 200)
+(defn g-bud-cost [] : I32 (+ 154 (sel-off)))        ; credits and tons the placed (ok) parts use
+(defn g-bud-weight [] : I32 (+ 155 (sel-off)))
+(defn g-structure-max [] : I32 (+ 156 (sel-off)))   ; total HP of the ship at the start
+(defn g-evade10 [] : I32 (+ 157 (sel-off)))         ; dodge chance, tenths of a percent
+(defn g-dps-laser [] : I32 (+ 158 (sel-off)))       ; damage a second by weapon kind, tenths
+(defn g-dps-rail [] : I32 (+ 159 (sel-off)))
+(defn g-dps-cannon [] : I32 (+ 160 (sel-off)))
+(defn g-power-made [] : I32 (+ 161 (sel-off)))      ; watts the generators make (a Quantum Core cell counts 10)
+(defn g-heat-cooked [] : I32 (+ 162 (sel-off)))     ; cells taking heat damage / cells a Cryo-Vent is saving
+(defn g-heat-saved [] : I32 (+ 163 (sel-off)))
+(defn g-open-weapons [] : I32 (+ 164 (sel-off)))    ; weapons that cannot fire for want of a clear lane (lasers) or are broken
+(defn g-struct-now [] : I32 (+ 165 (sel-off)))      ; total HP still standing (kept from the events)
+(defn g-shield-max [] : I32 (+ 166 (sel-off)))
+
+;; the fight's animation state (not per ship)
+(defn g-struct-you [] : I32 400) (defn g-struct-opp [] : I32 401)               ; HP standing, from the server's EVENTS
+(defn g-struct0-you [] : I32 402) (defn g-struct0-opp [] : I32 403)             ; at the start
+(defn g-hulld-you [] : I32 404) (defn g-hulld-opp [] : I32 405)                 ; hull as DRAWN (F32): glides toward the truth
+(defn g-ghost-you [] : I32 406) (defn g-ghost-opp [] : I32 407)                 ; the pale "you had this much" bar (F32)
+(defn g-ghost-t-you [] : I32 408) (defn g-ghost-t-opp [] : I32 409)             ; ticker ms the ghost started to fall
+(defn g-ev-t0 [] : I32 410)         ; ticker ms the latest EVENTS arrived (the second's animation starts here)
+(defn g-ev-n [] : I32 411)          ; events in the latest second
+(defn g-ev-fire-t [] : I32 412)     ; the start time of the shot the next HIT events belong to
+(defn g-ev-fire-kind [] : I32 413)  ; its weapon item
+(defn g-ev-fire-n [] : I32 414)     ; shots seen this second (they are staggered)
+(defn g-ev-pierce-n [] : I32 415)   ; hits so far by the current slug
+(defn g-ev-dropped [] : I32 416)
+(defn g-last-cause [] : I32 417)    ; what last hurt the player's hull: weapon item (255 none)
+(defn g-lane-hl [] : I32 418)       ; the lane under the pointer (-1 none)
+(defn g-hov-weapon [] : I32 419)    ; the placement whose lane is being shown (-1)
+(defn g-bud-flash [] : I32 420)     ; ticker ms a budget bar last refused a part
+(defn g-rr-shield-you [] : I32 421) (defn g-rr-shield-opp [] : I32 422)
+(defn g-pk-lane-sel [] : I32 423)
+(defn g-help-on [] : I32 424)       ; the rules card on the pack screen
+(defn g-fx-seq [] : I32 425)
+(defn g-shake-t [] : I32 426) (defn g-shake-amt [] : I32 427)      ; screen shake
+(defn g-tab [] : I32 428)           ; the pack screen's right panel: 0 ship, 1 lanes
+(defn g-hull-arr-you [] : I32 429) (defn g-hull-arr-opp [] : I32 430)   ; ticker ms the latest hull change LANDS (the drawn hull waits for it)
+(defn g-ev-cur-shot [] : I32 431)   ; the FX index of the shot the next HIT events belong to
 
 ;; ---- tiny helpers -------------------------------------------------------------------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

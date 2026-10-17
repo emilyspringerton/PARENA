@@ -6,7 +6,12 @@
 ;;
 ;; The frames are dw2_server's own (DEADWEIGHT_2/core/protocol.h) without the length prefix, plus three the IDUNA gateway adds
 ;; (IDUNA/internal/d2play/proto.go): 0xA1 who you are, 0xA2 the match was recorded, 0xAF an error. Authority: the match is the
-;; server's. This client sends orders (place, cut, ready, a round-break call) and draws what comes back.
+;; server's. This client sends orders (place, ready, a round-break call) and draws what comes back.
+;;
+;; Ruleset 2: every second the server sends a TICK (the scalars) and then EVENTS (everything the second DID, in order: each shot fired, each part it hit, the
+;; hull, dodges, shields, repairs, heat, burn-outs). The events are applied to the two ships at once (HP, destroyed parts, so the circuits the client runs for
+;; both ships stay true) and ALSO scheduled as animation: a shot is fired, flies down its lane, and only when it lands does the part flash, lose HP, send up a
+;; number, break. A second is spread over most of a second, so nothing happens "all at once".
 
 (defn put8! [(v : I32)] : Unit
   (when (= (gi (g-out-skip)) 0)
@@ -47,7 +52,6 @@
       (gi! (g-ping-sent) (gi (g-ticker)))))
 (defn send-place! [(item : I32) (row : I32) (col : I32) (rot : I32)] : Unit
   (do (out-begin!) (put8! 4) (put8! item) (put8! row) (put8! col) (put8! rot) (out-end!)))
-(defn send-cut! [(idx : I32)] : Unit (do (out-begin!) (put8! 5) (put8! idx) (out-end!)))
 (defn send-ready! [] : Unit (do (out-begin!) (put8! 6) (out-end!) (gi! (g-ready) 1)))
 ;; 0 overcharge, 1 brace
 (defn send-call! [(call : I32)] : Unit (do (out-begin!) (put8! 9) (put8! call) (out-end!)))
@@ -61,57 +65,42 @@
     (gi! (g-screen) s)
     (gi! (g-ui-t) 0)))
 
-;; ---- shots in flight and the fight's log ------------------------------------------------------------------------------------------------
-;; BOLTS: 24 x 16 B ring.  +0 live  +1 side (0 your ship fired, 1 theirs)  +2 placement  +3 item  +4 start ms (I32)  +8 target cell on the other grid
-;;   +9 1 if the target ship still had armor (the hit lands on a shield)  +10 the weapon's cell on its own grid
-(defn bolt-addr [(k : I32)] : I32 (+ (bolts-base) (shl (mod k 24) 4)))
+;; ---- animation in flight: FX ----------------------------------------------------------------------------------------------------------------
+;; FX: 96 x 32 B ring.  +0 kind (0 free)  +1 side (the ship the effect is ON: a shot's target, a number's cell)  +2 cell on that ship (255 none)
+;;   +4 start ms I32  +8 duration ms I32  +12 value I32  +16 shooter's side  +17 shooter's cell  +18 lane  +19 weapon item  +20 flags  +21 the first part the shot hit
+;;   (255 none)  +22 the last part it hit (a slug pierces on)  +23 how it ended: 0 on a part, 1 it reached the hull, 2 it was dodged
+;; kinds: 1 a shot  2 a number over a part (value; flags 1 destroyed 2 resisted 4 weak 8 healed 16 heat 32 repair)  3 a part blowing up  4 repair sparks (from +17 to +2)
+;;        5 a number over the hull bar (value; flags 8 healed)  6 a word over a lane (flags: 1 DODGED)  7 a shield flash  8 a Mender's cross  9 heat flames  10 a burn-out
+(defn fx-addr [(k : I32)] : I32 (+ (fx-base) (shl (mod k 96) 5)))
+(defn fx-new! [(kind : I32) (side : I32) (cell : I32) (start : I32) (dur : I32) (val : I32)] : I32
+  (let [k (gi (g-fx-n)) a (fx-addr k)]
+    (gi! (g-fx-n) (+ k 1))
+    (dotimes [i 8] (store32! (+ a (shl i 2)) 0))
+    (store8! a kind) (store8! (+ a 1) side) (store8! (+ a 2) cell)
+    (store32! (+ a 4) start) (store32! (+ a 8) dur) (store32! (+ a 12) val)
+    (store8! (+ a 21) 255) (store8! (+ a 22) 255)
+    a))
 
-;; the k-th occupied cell of the ship `side` (0 if it has none)
-(defn nth-occupied [(side : I32) (k : I32)] : I32
-  (let [(saved : I32) (gi (g-ship)) (found : I32) 0 (seen : I32) 0 (total : I32) 0]
-    (gi! (g-ship) side)
-    (dotimes [i 36] (when (and (!= (load8 (cell-addr (/ i 6) (mod i 6))) 0) (= (load8 (+ (cell-addr (/ i 6) (mod i 6)) 3)) 0)) (set! total (+ total 1))))
-    (when (> total 0)
-      (let [want (mod k total)]
-        (dotimes [i 36]
-          (when (and (!= (load8 (cell-addr (/ i 6) (mod i 6))) 0) (= (load8 (+ (cell-addr (/ i 6) (mod i 6)) 3)) 0))
-            (do (when (= seen want) (set! found i)) (set! seen (+ seen 1)))))))
-    (gi! (g-ship) saved)
-    (if (> total 0) found (mod (* k 7) 36))))
+;; the same, for effects nothing else needs to touch
+(defn fx-add! [(kind : I32) (side : I32) (cell : I32) (start : I32) (dur : I32) (val : I32)] : Unit
+  (do (fx-new! kind side cell start dur val) unit))
 
-;; the cell holding placement p's weapon (its first weapon-role cell), on the current ship
-(defn weapon-cell [(p : I32)] : I32
-  (let [(found : I32) -1]
-    (dotimes [i 36]
-      (let [a (cell-addr (/ i 6) (mod i 6))]
-        (when (and (= (load8 a) (+ p 1)) (= (load8 (+ a 1)) (r-weapon)) (< found 0)) (set! found i))))
-    (max-i found 0)))
+;; how long a weapon's shot takes to arrive, and how long the effect of landing is drawn
+(defn shot-flight [(item : I32)] : I32 (case item 3 130 7 240 520))
+(defn shot-linger [(item : I32)] : I32 (case item 3 640 7 520 760))
+(defn weapon-name [(item : I32)] : String (case item 3 "Railgun" 7 "Pulse Laser" 8 "Siege Cannon" "weapon"))
 
-;; the ship `side` just ticked (g-ship is `side`): every shot it fired becomes a bolt toward the other ship
-(defn spawn-bolts! [(side : I32) (tick : I32) (target-armored : I32)] : Unit
-  (dotimes [p 16]
-    (let [f (min-i (load8 (sim-fired-addr p)) 3)]
-      (dotimes [j f]
-        (let [k (gi (g-bolt-n))
-              a (bolt-addr k)
-              src (weapon-cell p)
-              tgt (nth-occupied (- 1 side) (+ (* tick 7) (+ (* p 13) (+ (* j 5) (* side 3)))))]
-          (gi! (g-bolt-n) (+ k 1))
-          (store8! a 1) (store8! (+ a 1) side) (store8! (+ a 2) p) (store8! (+ a 3) (st-item p))
-          (store32! (+ a 4) (+ (gi (g-ticker)) (* j 140)))
-          (store8! (+ a 8) tgt) (store8! (+ a 9) target-armored) (store8! (+ a 10) src))))))
-
-;; LOG: 8 x 16 B ring, newest last.  +0 used  +1 kind  +2 second  +3.. a b c
-;; kinds: 0 you hit them (a shots, b their armor lost, c their hull lost)  1 they hit you  2 you mended (a hull)  3 you recharged (a armor)
-;;        4 they mended  5 they recharged  6 your wire burnt out  7 theirs  8 you cut a part (a item)  9 they cut a part
-;;        11-14 your circuit: 11 a capacitor dumped (a watts)  12 a battery ran dry  13 a transistor gate opened  14 it shut;  21-24 the same for theirs
-(defn log-addr [(k : I32)] : I32 (+ (log-base) (shl (mod k 8) 4)))
-(defn log-add! [(kind : I32) (sec : I32) (a : I32) (b : I32) (c : I32)] : Unit
+;; LOG: 16 x 16 B ring, newest last.  +0 used  +1 kind  +2 second  +3 side (whose ship it happened to)  +4 a  +5 b  +6 c  +7 d  +8 e
+;; kinds: 1 a shot hit a part (a cell, b damage, c HP left, d flags, e weapon)  2 hull (a damage, b hull left, c weapon)  3 dodge (a lane, b weapon)
+;;        4 shield soaked (a, c weapon)  5 hull mended (a tenths)  6 repair (a cell, b HP, e 0 aegis 1 biomass)  7 heat (a cell, b damage, d destroyed)
+;;        8 Back-EMF burnt a part (a cell)  9 round break result  11-14 your circuit: 11 a capacitor dumped (a watts) 12 a battery ran dry 13 a gate opened 14 shut;  21-24 theirs
+(defn log-addr [(k : I32)] : I32 (+ (log-base) (shl (mod k 16) 4)))
+(defn log-add! [(kind : I32) (sec : I32) (side : I32) (a : I32) (b : I32) (c : I32) (d : I32) (e : I32)] : Unit
   (let [k (gi (g-log-n))
         ad (log-addr k)]
     (gi! (g-log-n) (+ k 1))
-    (store8! ad 1) (store8! (+ ad 1) kind) (store8! (+ ad 2) sec)
-    (store8! (+ ad 3) (min-i a 255)) (store8! (+ ad 4) (min-i b 255)) (store8! (+ ad 5) (min-i c 255))))
+    (store8! ad 1) (store8! (+ ad 1) kind) (store8! (+ ad 2) sec) (store8! (+ ad 3) side)
+    (store8! (+ ad 4) (min-i a 255)) (store8! (+ ad 5) (min-i b 255)) (store8! (+ ad 6) (min-i c 255)) (store8! (+ ad 7) (min-i d 255)) (store8! (+ ad 8) (min-i e 255))))
 
 ;; the ship g-ship names just ticked: log what its stores of power did (at most two events a second, so the log stays readable)
 (defn log-circuit-events! [(side : I32) (t : I32)] : Unit
@@ -120,9 +109,9 @@
       (let [ev (load8 (sim-ev-addr i))]
         (when (and (> ev 0) (< n 2))
           (do (set! n (+ n 1))
-              (log-add! (+ (if (= side 0) 10 20) ev) t (i32 (+ (loadf32 (sim-em-addr i)) 0.5)) 0 0)))))))
+              (log-add! (+ (if (= side 0) 10 20) ev) t side (i32 (+ (loadf32 (sim-em-addr i)) 0.5)) 0 0 0 0)))))))
 
-(defn stage-clear! [] : Unit
+(defn stage-reset! [] : Unit
   (do (gi! (g-stage-n) 0) (model-clear!) (analyze!)))
 
 (defn reset-match! [] : Unit
@@ -131,14 +120,18 @@
       (gi! (g-acks) 0) (gi! (g-rejects) 0) (gi! (g-ack-wait) 0)
       (gi! (g-hull-you) 100) (gi! (g-hull-opp) 100) (gi! (g-armor-you) 0) (gi! (g-armor-opp) 0)
       (gi! (g-shat-you) 0) (gi! (g-shat-opp) 0) (gi! (g-sim-shots) 0)
-      (gi! (g-ship) 1) (gi! (g-stage-n) 0) (model-clear!) (sim-reset!) (gi! (g-ship) 0)
-      (gi! (g-opp-known) 0) (gi! (g-bolt-n) 0) (gi! (g-log-n) 0)
-      (dotimes [i 128] (store32! (+ (bolts-base) (shl i 2)) 0))
-      (dotimes [i 32] (store32! (+ (log-base) (shl i 2)) 0))
+      (gi! (g-ship) 1) (gi! (g-stage-n) 0) (model-clear!) (sim-reset!) (analyze!) (gi! (g-ship) 0)
+      (gi! (g-opp-known) 0) (gi! (g-fx-n) 0) (gi! (g-log-n) 0)
+      (dotimes [i 768] (store32! (+ (fx-base) (shl i 2)) 0))
+      (dotimes [i 64] (store32! (+ (log-base) (shl i 2)) 0))
       (gi! (g-shot-t) 0) (gi! (g-hit-t) 0) (gi! (g-ohit-t) 0) (gi! (g-toast-t) 0)
       (gi! (g-sel-item) 3) (gi! (g-sel-rot) 0) (gi! (g-hov-pl) -1)
+      (gi! (g-struct-you) 0) (gi! (g-struct-opp) 0) (gi! (g-struct0-you) 0) (gi! (g-struct0-opp) 0)
+      (gf! (g-hulld-you) 100.0) (gf! (g-hulld-opp) 100.0) (gf! (g-ghost-you) 100.0) (gf! (g-ghost-opp) 100.0)
+      (gi! (g-ghost-t-you) 0) (gi! (g-ghost-t-opp) 0) (gi! (g-last-cause) 255) (gi! (g-ev-t0) 0)
+      (gi! (g-shake-t) 0) (gi! (g-shake-amt) 0) (gi! (g-hull-arr-you) 0) (gi! (g-hull-arr-opp) 0) (gi! (g-lane-hl) -1) (gi! (g-hov-weapon) -1) (gi! (g-bud-flash) 0)
       (dotimes [i 32] (store32! (+ (rounds-base) (shl i 2)) 0))
-      (stage-clear!)
+      (stage-reset!)
       (sim-reset!)))
 
 ;; the player pressed PLAY / PLAY AGAIN
@@ -177,7 +170,8 @@
       (gi! (g-cargo-you) (in16 7)) (gi! (g-cargo-opp) (in16 9))
       (gi! (g-hull0-you) (in8 1)) (gi! (g-armor0-you) (in16 3)) (gi! (g-armor0-opp) (in16 5))
       (gi! (g-prev-hull-you) (in8 1)) (gi! (g-prev-hull-opp) (in8 2))
-      (gi! (g-prev-armor-you) (in16 3)) (gi! (g-prev-armor-opp) (in16 5))
+      (gf! (g-hulld-you) (f32 (in8 1))) (gf! (g-hulld-opp) (f32 (in8 2)))
+      (gf! (g-ghost-you) (f32 (in8 1))) (gf! (g-ghost-opp) (f32 (in8 2)))
       (gi! (g-tick) 0)
       (gi! (g-ship) 0)
       (gi! (g-combat-t) (gi (g-ticker)))
@@ -185,76 +179,177 @@
       ;; the ship the server fights with is the one it accepted: rebuild the grid from what was sent, with its wiring at rest
       (model-rebuild!)
       (sim-reset!)
+      (analyze!)
+      (gi! (g-struct-you) (gi (g-structure-max)))
+      (gi! (g-struct0-you) (gi (g-structure-max)))
       (go-screen! (sc-fight))))
 
 (defn on-tick! [] : Unit
   (let [t (in8 1)
         yh (in8 2) oh (in8 3) ya (in16 4) oa (in16 6)
-        d-oa (max-i 0 (- (gi (g-prev-armor-opp)) oa)) d-oh (max-i 0 (- (gi (g-prev-hull-opp)) oh))
-        d-ya (max-i 0 (- (gi (g-prev-armor-you)) ya)) d-yh (max-i 0 (- (gi (g-prev-hull-you)) yh))
-        up-yh (max-i 0 (- yh (gi (g-prev-hull-you)))) up-oh (max-i 0 (- oh (gi (g-prev-hull-opp))))
-        up-ya (max-i 0 (- ya (gi (g-prev-armor-you)))) up-oa (max-i 0 (- oa (gi (g-prev-armor-opp))))
-        shat-y (in8 8) shat-o (in8 9)
-        opp-armored (b2i (> (gi (g-prev-armor-opp)) 0))
-        you-armored (b2i (> (gi (g-prev-armor-you)) 0))]
+        shat-y (in8 8) shat-o (in8 9)]
     (gi! (g-tick) t)
     (gi! (g-tick-t) (gi (g-ticker)))
-    (when (> shat-y (gi (g-shat-you))) (log-add! 6 t 0 0 0))
-    (when (> shat-o (gi (g-shat-opp))) (log-add! 7 t 0 0 0))
+    (when (> shat-y (gi (g-shat-you))) (log-add! 8 t 0 0 0 0 0 0))
+    (when (> shat-o (gi (g-shat-opp))) (log-add! 8 t 1 0 0 0 0 0))
     (gi! (g-hull-you) yh) (gi! (g-hull-opp) oh)
     (gi! (g-armor-you) ya) (gi! (g-armor-opp) oa)
     (gi! (g-shat-you) shat-y) (gi! (g-shat-opp) shat-o)
-    (when (or (< yh (gi (g-prev-hull-you))) (< ya (gi (g-prev-armor-you))))
-      (gi! (g-hit-t) (gi (g-ticker))))
-    (when (or (< oh (gi (g-prev-hull-opp))) (< oa (gi (g-prev-armor-opp))))
-      (gi! (g-ohit-t) (gi (g-ticker))))
     (gi! (g-prev-hull-you) yh) (gi! (g-prev-hull-opp) oh)
-    (gi! (g-prev-armor-you) ya) (gi! (g-prev-armor-opp) oa)
-    ;; both ships take the same second: the wiring the server fights with runs here too, so the energy, the shots and the support parts can be drawn
+    ;; both ships take the same second: the wiring the server fights with runs here too, so the energy and the charging guns can be drawn.
+    ;; (What the shots DO arrives in EVENTS, right behind this frame.)
     (gi! (g-ship) 0)
     (let [sy (sim-tick!)]
       (log-circuit-events! 0 t)
-      (when (> sy 0)
-        (do (gi! (g-shot-t) (gi (g-ticker)))
-            (spawn-bolts! 0 t opp-armored)
-            (log-add! 0 t sy d-oa d-oh))))
+      (when (> sy 0) (gi! (g-shot-t) (gi (g-ticker)))))
     (when (= (gi (g-opp-known)) 1)
       (do (gi! (g-ship) 1)
-          (let [so (sim-tick!)]
-            (log-circuit-events! 1 t)
-            (when (> so 0)
-              (do (spawn-bolts! 1 t you-armored)
-                  (log-add! 1 t so d-ya d-yh))))
-          (gi! (g-ship) 0)))
-    (when (> up-yh 0) (log-add! 2 t up-yh 0 0))
-    (when (> up-ya 0) (log-add! 3 t up-ya 0 0))
-    (when (> up-oh 0) (log-add! 4 t up-oh 0 0))
-    (when (> up-oa 0) (log-add! 5 t up-oa 0 0))))
+          (sim-tick!)
+          (log-circuit-events! 1 t)
+          (gi! (g-ship) 0)))))
+
+;; ---- EVENTS: what the second did ---------------------------------------------------------------------------------------------------------
+(defn ev-base [] : I32 8)
+(defn ev-type [(i : I32)] : I32 (in8 (+ (ev-base) (* i 7))))
+(defn ev-side [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 1))))
+(defn ev-a [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 2))))
+(defn ev-b [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 3))))
+(defn ev-c [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 4))))
+(defn ev-d [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 5))))
+(defn ev-e [(i : I32)] : I32 (in8 (+ (ev-base) (+ (* i 7) 6))))
+
+;; apply one event to the ships (truth) and schedule its animation. t0 is when the frame arrived; sec the elapsed second.
+(defn apply-event! [(i : I32) (t0 : I32) (sec : I32)] : Unit
+  (let [ty (ev-type i) side (min-i (ev-side i) 1) a (ev-a i) b (ev-b i) c (ev-c i) d (ev-d i) e (ev-e i)
+        (saved : I32) (gi (g-ship))]
+    (cond
+      ;; a weapon fired: a shot leaves its cell. Later events of the second say where it landed.
+      (= ty 1)
+        (let [n (gi (g-ev-fire-n))
+              start (+ t0 (+ 30 (min-i (* n 85) 420)))
+              fa (fx-new! 1 (- 1 side) 255 start (+ (shot-flight b) (shot-linger b)) 0)]
+          (gi! (g-ev-fire-n) (+ n 1))
+          (store8! (+ fa 16) side) (store8! (+ fa 17) a) (store8! (+ fa 18) c) (store8! (+ fa 19) b) (store8! (+ fa 20) d)
+          (gi! (g-ev-fire-t) start) (gi! (g-ev-fire-kind) b) (gi! (g-ev-pierce-n) 0)
+          (gi! (g-ev-cur-shot) (- (gi (g-fx-n)) 1))
+          (when (= side 0) (gi! (g-shot-t) start)))
+      ;; a shot hit a part
+      (= ty 2)
+        (let [arrive (+ (gi (g-ev-fire-t)) (+ (shot-flight e) (if (= e 3) (* (gi (g-ev-pierce-n)) 50) 0)))
+              fa (fx-addr (gi (g-ev-cur-shot)))]
+          ;; the shot's streak ends at the last part it pierced
+          (when (and (= (load8 fa) 1) (= (load8 (+ fa 19)) e))
+            (do (when (= (load8 (+ fa 21)) 255) (store8! (+ fa 21) a))
+                (store8! (+ fa 22) a)))
+          (gi! (g-ev-pierce-n) (+ (gi (g-ev-pierce-n)) 1))
+          (gi! (g-ship) side)
+          (storef32! (hp-addr a) (f32 c))
+          (store32! (hit-t-addr a) arrive)
+          (store32! (chg-t-addr a) arrive)
+          (store8! (hit-amt-addr a) b)
+          (when (= (bit-and d 1) 1)
+            (do (cell-kill! a 2)
+                (store32! (dead-t-addr a) arrive)))
+          (gi! (g-ship) saved)
+          (let [nf (fx-new! 2 side a arrive 900 b)]
+            (store8! (+ nf 20) d) (store8! (+ nf 19) e))
+          (when (= (bit-and d 1) 1) (fx-add! 3 side a arrive 700 0))
+          (if (= side 0)
+              (do (gi! (g-hit-t) arrive)
+                  (gi! (g-shake-t) arrive) (gi! (g-shake-amt) (min-i 7 (+ 1 (/ b 6)))))
+              (gi! (g-ohit-t) arrive))
+          (log-add! 1 sec side a b c d e))
+      ;; a shot found no part in its lane: the hull
+      (= ty 3)
+        (let [arrive (+ (gi (g-ev-fire-t)) (+ (shot-flight c) (if (= c 3) (* (gi (g-ev-pierce-n)) 50) 0)))
+              fa (fx-addr (gi (g-ev-cur-shot)))]
+          (when (and (= (load8 fa) 1) (= (load8 (+ fa 19)) c))
+            (store8! (+ fa 23) 1))
+          (let [nf (fx-new! 5 side 255 arrive 1100 a)] (store8! (+ nf 18) d))
+          (if (= side 0)
+              (do (gi! (g-hit-t) arrive) (gi! (g-last-cause) c)
+                  (gi! (g-hull-arr-you) arrive)
+                  (gi! (g-shake-t) arrive) (gi! (g-shake-amt) (min-i 8 (+ 2 (/ a 3)))))
+              (do (gi! (g-ohit-t) arrive) (gi! (g-hull-arr-opp) arrive)))
+          (log-add! 2 sec side a b c d 0))
+      ;; a slug or shell was dodged: it flies on past the ship
+      (= ty 4)
+        (let [arrive (+ (gi (g-ev-fire-t)) (shot-flight b))
+              fa (fx-addr (gi (g-ev-cur-shot)))]
+          (when (and (= (load8 fa) 1) (= (load8 (+ fa 19)) b))
+            (store8! (+ fa 23) 2))
+          (let [nf (fx-new! 6 side 255 arrive 1000 0)] (store8! (+ nf 18) a) (store8! (+ nf 20) 1))
+          (log-add! 3 sec side a b 0 0 0))
+      ;; a Brace shield soaked part of a shot
+      (= ty 5)
+        (let [arrive (+ (gi (g-ev-fire-t)) (shot-flight c))]
+          (let [nf (fx-new! 7 side 255 arrive 700 a)] (store8! (+ nf 18) d))
+          (log-add! 4 sec side a b c d 0))
+      ;; a Mender mended the hull
+      (= ty 6)
+        (let [arrive (+ t0 640)]
+          (fx-add! 8 side a arrive 800 b)
+          (if (= side 0) (gi! (g-hull-arr-you) arrive) (gi! (g-hull-arr-opp) arrive))
+          (log-add! 5 sec side b c 0 0 0))
+      ;; an Aegis Emitter or Xeno-Biomass repaired a part
+      (= ty 7)
+        (let [arrive (+ t0 (if (= e 1) 700 660))]
+          (gi! (g-ship) side)
+          (storef32! (hp-addr a) (f32 c))
+          (store32! (heal-t-addr a) arrive)
+          (store32! (chg-t-addr a) arrive)
+          (gi! (g-ship) saved)
+          (let [nf (fx-new! 4 side a arrive 700 b)] (store8! (+ nf 17) d) (store8! (+ nf 16) side) (store8! (+ nf 20) e))
+          (when (= (mod sec 2) 0) (log-add! 6 sec side a b d 0 e)))
+      ;; a Quantum Core's heat burnt a part
+      (= ty 8)
+        (let [arrive (+ t0 600)]
+          (gi! (g-ship) side)
+          (storef32! (hp-addr a) (f32 c))
+          (store32! (heat-t-addr a) arrive)
+          (store32! (chg-t-addr a) arrive)
+          (when (= d 1) (do (cell-kill! a 2) (store32! (dead-t-addr a) arrive)))
+          (gi! (g-ship) saved)
+          (let [nf (fx-new! 9 side a arrive 900 b)] (store8! (+ nf 20) d))
+          (when (= d 1) (fx-add! 3 side a arrive 700 0))
+          (log-add! 7 sec side a b c d e))
+      ;; Back-EMF burnt out a ring of wire
+      (= ty 9)
+        (let [arrive (+ t0 280)]
+          (gi! (g-ship) side)
+          (cell-kill! a 1)
+          (store32! (dead-t-addr a) arrive)
+          (gi! (g-ship) saved)
+          (fx-add! 10 side a arrive 800 0)
+          (log-add! 8 sec side a 0 0 0 0))
+      :else unit)))
+
+(defn on-events! [(len : I32)] : Unit
+  (let [t (in8 1) n (min-i (in8 2) 60) now (gi (g-ticker))]
+    (when (>= len (+ 8 (* n 7)))
+      (do
+        (gi! (g-ev-t0) now) (gi! (g-ev-n) n) (gi! (g-ev-dropped) (in8 3))
+        (gi! (g-struct-you) (in16 4)) (gi! (g-struct-opp) (in16 6))
+        (gi! (g-ev-fire-n) 0) (gi! (g-ev-pierce-n) 0) (gi! (g-ev-fire-t) now) (gi! (g-ev-fire-kind) 0) (gi! (g-ev-cur-shot) 0)
+        (dotimes [i n] (apply-event! i now t))))))
 
 ;; the server showed the opponent's ship: build its grid so its wiring can run and be drawn
 (defn on-opp-ship! [] : Unit
-  (let [n (min-i (in8 1) 16)]
+  (let [n (min-i (in8 1) 36)]
     (gi! (g-ship) 1)
     (gi! (g-stage-n) 0)
     (dotimes [i n]
-      (let [b (+ 2 (* i 5))]
-        (st-set! i (in8 b) (in8 (+ b 1)) (in8 (+ b 2)) (in8 (+ b 3)) (in8 (+ b 4)))))
+      (let [b (+ 2 (* i 4))]
+        (when (!= (in8 b) 255)
+          (st-set! i (in8 b) (in8 (+ b 1)) (in8 (+ b 2)) (in8 (+ b 3))))))
     (gi! (g-stage-n) n)
     (model-rebuild!)
     (sim-reset!)
+    (analyze!)
+    (gi! (g-struct-opp) (gi (g-structure-max)))
+    (gi! (g-struct0-opp) (gi (g-structure-max)))
     (gi! (g-ship) 0)
     (gi! (g-opp-known) 1)))
-
-;; the opponent Panic-Cut a part during the fight
-(defn on-opp-cut! [] : Unit
-  (let [i (in8 1)]
-    (when (= (gi (g-opp-known)) 1)
-      (do (gi! (g-ship) 1)
-          (when (and (< i (gi (g-stage-n))) (= (st-cut i) 0))
-            (do (store8! (+ (st-addr i) 4) 1)
-                (model-cut! i)
-                (log-add! 9 (gi (g-tick)) (st-item i) 0 0)))
-          (gi! (g-ship) 0)))))
 
 (defn on-round-break! [] : Unit
   (do (gi! (g-rb-no) (in8 1)) (gi! (g-rb-behind) (in8 2))
@@ -271,11 +366,17 @@
     (gi! (g-rr-ocall) (in8 4)) (gi! (g-rr-ograde) (in8 5)) (gi! (g-rr-ofx) (in8 6))
     (store8! a (gi (g-rb-no))) (store8! (+ a 1) (in8 1)) (store8! (+ a 2) (in8 2)) (store8! (+ a 3) (in8 3))
     (store8! (+ a 4) (in8 4)) (store8! (+ a 5) (in8 5)) (store8! (+ a 6) (in8 6)) (store8! (+ a 7) 1)
-    ;; the bonus or backfire lands between ticks: fold it into "what the last tick left" so the next tick's change is only that tick's
-    (when (= (in8 1) 1) (gi! (g-prev-armor-you) (+ (gi (g-prev-armor-you)) (in8 3))))
-    (when (= (in8 4) 1) (gi! (g-prev-armor-opp) (+ (gi (g-prev-armor-opp)) (in8 6))))
-    (when (and (= (in8 1) 0) (= (in8 2) 1)) (gi! (g-prev-hull-you) (max-i 0 (- (gi (g-prev-hull-you)) (in8 3)))))
-    (when (and (= (in8 4) 0) (= (in8 5) 1)) (gi! (g-prev-hull-opp) (max-i 0 (- (gi (g-prev-hull-opp)) (in8 6)))))
+    ;; the bonus or backfire lands between ticks: a Brace is a shield, an Overcharge miss costs hull
+    (when (= (in8 1) 1) (do (gi! (g-armor-you) (+ (gi (g-armor-you)) (in8 3))) (gi! (g-armor0-you) (max-i (gi (g-armor0-you)) (gi (g-armor-you))))))
+    (when (= (in8 4) 1) (do (gi! (g-armor-opp) (+ (gi (g-armor-opp)) (in8 6))) (gi! (g-armor0-opp) (max-i (gi (g-armor0-opp)) (gi (g-armor-opp))))))
+    (when (and (= (in8 1) 0) (= (in8 2) 1))
+      (do (gi! (g-hull-you) (max-i 0 (- (gi (g-hull-you)) (in8 3)))) (gi! (g-hull-arr-you) (gi (g-ticker)))
+          (gi! (g-hit-t) (gi (g-ticker)))
+          (fx-add! 5 0 255 (gi (g-ticker)) 1100 (in8 3))))
+    (when (and (= (in8 4) 0) (= (in8 5) 1))
+      (do (gi! (g-hull-opp) (max-i 0 (- (gi (g-hull-opp)) (in8 6)))) (gi! (g-hull-arr-opp) (gi (g-ticker)))
+          (gi! (g-ohit-t) (gi (g-ticker)))
+          (fx-add! 5 1 255 (gi (g-ticker)) 1100 (in8 6))))
     (gi! (g-rb-on) 0)
     (gi! (g-rr-show) (gi (g-ticker)))))
 
@@ -313,8 +414,8 @@
           (and (= k 131) (>= len 29)) (on-match-found!)
           (= k 132) (do (gi! (g-acks) (+ (gi (g-acks)) 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
           (= k 133) (do (gi! (g-rejects) (+ (gi (g-rejects)) 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1)))
-                        (gi! (g-toast-id) 1) (gi! (g-toast-t) (gi (g-ticker))))
-          (= k 134) (do (cut-landed! (in8 1)) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
+                        (gi! (g-toast-id) (if (= (in8 1) 3) 6 1)) (gi! (g-toast-t) (gi (g-ticker))))
+          (= k 134) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1)))
           (= k 135) (do (gi! (g-toast-id) 2) (gi! (g-toast-t) (gi (g-ticker))) (gi! (g-ack-wait) (max-i 0 (- (gi (g-ack-wait)) 1))))
           (= k 136) (on-combat-start!)
           (= k 137) (on-tick!)
@@ -323,8 +424,8 @@
                                    (if (= (gi (g-rtt)) 0) d (/ (+ (* (gi (g-rtt)) 3) d) 4))))
           (= k 140) (on-round-break!)
           (= k 141) (on-round-result!)
-          (and (= k 144) (>= len 82)) (on-opp-ship!)
-          (= k 145) (on-opp-cut!)
+          (and (= k 144) (>= len 146)) (on-opp-ship!)
+          (= k 146) (on-events! len)
           (= k 162) (do (gi! (g-rec-got) 1) (gi! (g-rec-counted) (in8 1)) (gi! (g-rec-bot) (in8 2))
                         (gi! (g-rec-rating) (let [v (in16 3)] (if (> v 32767) (- v 65536) v)))
                         (gi! (g-rec-delta) (let [v (in16 5)] (if (> v 32767) (- v 65536) v))))
