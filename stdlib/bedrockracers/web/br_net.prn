@@ -415,9 +415,10 @@
       (gi! (g-ping-t) 0)
       (when (= (gi (g-netstate)) 2) (net-send-ping!)))))
 
-;; a stream this engine cannot follow (a missing frame, a full queue): leave the room rather than play a different match from the others
+;; a stream this engine cannot follow (a missing frame, a full queue: 90 / 91), or one the server says has drifted from its own (ERROR 6, out of sync): leave the
+;; room rather than play a different match from the others. The server makes the car a bot at once; this copy ends here.
 (defn net-check-fail! [] : Unit
-  (when (and (!= (gi (g-in-match)) 0) (>= (gi (g-net-err)) 90))
+  (when (and (!= (gi (g-in-match)) 0) (or (>= (gi (g-net-err)) 90) (= (gi (g-net-err)) 6)))
     (net-leave-room!)
     (when (= (gi (g-phase)) 1) (end-match! -1 4))))
 

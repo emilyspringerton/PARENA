@@ -118,6 +118,31 @@ const cmdBytes = (thr, steer, flags = 0, lift = 0) => [thr & 255, steer & 255, 0
   ok(left.some(f => f[0] === 0x03), 'and tells the server it is leaving');
 }
 
+// ---- the server says this copy has drifted (ERROR 6): it leaves the room too -------------------------------------------------------------------------
+{
+  const c = await engine(); c.frame(3);
+  c.tap(KEY.enter); c.x.br_net_socket(2); c.out(); c.recv(WELCOME()); c.out();
+  c.recv(MATCH(5, 0, 99, 2, (1 << 0) | (1 << 3), [[0, 'Me'], [3, 'You']])); c.out();
+  for (let t = 0; t < 20; t++) c.recv(TICK(t, [cmdBytes(0, 0), cmdBytes(0, 0)]));
+  c.frame(3);
+  ok(c.gi('in-match') === 1 && c.x.br_phase() === 1, 'twenty ticks in, the match is on');
+  const msg = [...'your game has drifted'].map(ch => ch.charCodeAt(0));
+  c.recv([0x8F, 6, msg.length, ...msg]);
+  c.frame(2);
+  ok(c.gi('net-err') === 6 && c.gi('in-match') === 0 && c.x.br_phase() === 2, 'ERROR 6 (out of sync) ends the match here instead of playing a different one');
+  ok(c.out().some(f => f[0] === 0x03), 'and tells the server it is leaving, so the car becomes a bot for the others');
+}
+// a rate-limit warning (ERROR 5) is only a warning
+{
+  const c = await engine(); c.frame(3);
+  c.tap(KEY.enter); c.x.br_net_socket(2); c.out(); c.recv(WELCOME()); c.out();
+  c.recv(MATCH(5, 0, 99, 2, (1 << 0) | (1 << 3), [[0, 'Me'], [3, 'You']])); c.out();
+  for (let t = 0; t < 5; t++) c.recv(TICK(t, [cmdBytes(0, 0), cmdBytes(0, 0)]));
+  c.recv([0x8F, 5, 3, 0x73, 0x6c, 0x6f]);
+  c.frame(3);
+  ok(c.gi('in-match') === 1 && c.x.br_phase() === 1, 'ERROR 5 (too fast) does not end the match');
+}
+
 // ---- commands go out when they change ----------------------------------------------------------------------------------------------------------------
 {
   const c = await engine(); c.frame(3);
