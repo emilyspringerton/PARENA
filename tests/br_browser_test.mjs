@@ -30,17 +30,18 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 const browser = await chromium.launch();
 const errors = [];
-async function newPage() {
+async function newPage(extraInit, sink = errors) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   // a pad the test drives: navigator.getGamepads() answers with whatever window.__pad holds
   await ctx.addInitScript(() => {
     window.__pad = null;
     Object.defineProperty(navigator, 'getGamepads', { value: () => [window.__pad, null, null, null], configurable: true });
   });
+  if (extraInit) await ctx.addInitScript(extraInit);
   const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-  page.on('requestfailed', (r) => errors.push('requestfailed: ' + r.url()));
+  page.on('pageerror', (e) => sink.push('pageerror: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') sink.push('console: ' + m.text()); });
+  page.on('requestfailed', (r) => sink.push('requestfailed: ' + r.url()));
   await page.goto(base + '/');
   await page.waitForSelector('#br-canvas:not([hidden])', { timeout: 15000 });
   return page;
@@ -157,6 +158,23 @@ const s1 = await pixels(B); await sleep(500); const s2 = await pixels(B);
 ok(distinct(s1) > 60 && diff(s1, s2) > 0.02, `the spectator view is alive (${distinct(s1)} sampled colours, mean pixel change ${diff(s1, s2).toFixed(2)})`);
 await B.evaluate(() => window.dispatchEvent(new Event('blur')));
 ok(await pill(B) === 'Watching bots', 'losing focus does not pause a match with nobody in it');
+
+// ---- an embedding frame that is not allowed the gamepad feature: getGamepads() THROWS. The game must not freeze ------------------------------------------------
+const padErrors = [];
+const T = await newPage(() => { Object.defineProperty(navigator, 'getGamepads', { value: () => { throw new DOMException('Access to the feature "gamepad" is disallowed by permissions policy.', 'SecurityError'); }, configurable: true }); }, padErrors);
+await T.keyboard.press('Enter');
+ok(await waitPill(T, 'In a match'), 'with getGamepads() throwing (a frame without the gamepad feature) a match still starts');
+await sleep(800);
+const t1 = await pixels(T); await sleep(600); const t2 = await pixels(T);
+ok(diff(t1, t2) > 0.01, `and the game keeps running: the frame still changes (mean pixel change ${diff(t1, t2).toFixed(2)}); the pad chain ended on its own`);
+ok(padErrors.length <= 1, `the throw was reported at most once, not every frame (${padErrors.length})`);
+
+// ---- fullscreen refused (an embedding frame without allowfullscreen) must not raise an unhandled rejection -----------------------------------------------
+const fsErrors = [];
+const F = await newPage(() => { Element.prototype.requestFullscreen = () => Promise.reject(new TypeError('Fullscreen is not allowed in this frame')); }, fsErrors);
+await F.locator('#br-fullscreen').click(); await sleep(300);
+ok(fsErrors.length === 0, 'a refused fullscreen request is swallowed: no unhandled rejection' + (fsErrors.length ? ': ' + fsErrors[0] : ''));
+ok(await waitPill(F, 'Ready', 2000), 'and the page is unaffected');
 
 ok(errors.length === 0, 'no page errors, console errors or failed requests' + (errors.length ? ': ' + errors.slice(0, 4).join(' | ') : ''));
 await browser.close(); server.close();

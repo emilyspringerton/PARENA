@@ -91,18 +91,35 @@
         (js/set! b "disabled" false)
         (js/call b "addEventListener" "click" (callback on-fullscreen))))
     (focus-canvas!)
+    (when (pad-allowed?) (js/call (js/global "window") "requestAnimationFrame" (callback pad-tick)))
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
 (defn tick [(t : F64)] : Unit
   (do
-    (poll-pads)
     (js/call wasm "br_frame" t)
     (js/call ctx "putImageData" image 0 0)
     (sync-labels!)
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
+;; The gamepads are read on their OWN frame chain, registered ahead of the game's so each frame reads the pads and then runs the game.
+;; A frame the page is embedded in may not be allowed the gamepad feature, and then getGamepads() throws: this chain re-arms itself
+;; only after a clean read, so a throw ends it (once) and the game carries on without pads instead of freezing.
+(defn pad-tick [(t : F64)] : Unit
+  (do
+    (poll-pads)
+    (js/call (js/global "window") "requestAnimationFrame" (callback pad-tick))))
+
+;; the embedding frame's own policy, where the browser will say (Chromium does; elsewhere assume yes)
+(defn pad-allowed? [] : Bool
+  (let [pp (js/get (doc) "permissionsPolicy")
+        fp (js/get (doc) "featurePolicy")
+        p (if (js/null? pp) fp pp)]
+    (if (js/null? p) true (js/call p "allowsFeature" "gamepad"))))
+
+;; fullscreen may be refused (an embedding frame without allowfullscreen): swallow the rejection, the button just does nothing
 (defn on-fullscreen [(e : Any)] : Unit
-  (js/call (el "br-stage") "requestFullscreen"))
+  (let [r (js/call (el "br-stage") "requestFullscreen")]
+    (when (= (js/typeof r) "object") (js/call r "catch" (callback ignore!)))))
 
 ;; ---- 3. input -------------------------------------------------------------------------------------------------------------
 ;; keys the page must not scroll or tab away on while the game has the keyboard: arrows, space, tab

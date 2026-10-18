@@ -401,7 +401,7 @@ make test-bedrockracers                      # build + every test below + the so
 * **engine / host** -- 92 assertions: module hygiene, every export the page host calls exists, no two global words share a slot,
   the title / pause / results flow by keys and by clicks, keyboard / right mouse / gamepad mapping, the camera through a wall-to-ceiling
   climb and a kickoff, HUD pixel guards, the frame budget. `tests/br_browser_test.mjs` serves the static bundle and drives it in
-  headless Chromium (28 checks, 60 fps), with real clicks, a Gamepad API shim and focus loss.
+  headless Chromium (33 checks, 60 fps), with real clicks, a Gamepad API shim, focus loss, and the frames an embed produces (pad polling that throws, a refused fullscreen).
 * **can a person win?** `tests/br_human_player.mjs` is a keyboard-only player (only `br_key` events and what is on screen: no test hooks,
   no oracle) for the amber team's first car against EASY bots: chase the ball, hold F to carry it, run at the corner its throw already
   points at, let go once the throw is aimed within a few degrees of the corner's apex. **Seed 1 scores, reproducibly, at tick 12940**
