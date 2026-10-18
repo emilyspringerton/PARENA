@@ -4,6 +4,38 @@ Rewritten 2026-10-18 by the Claude session that finished the renderer, the page,
 session before it left when its usage ran out). `README.md` next to this file says what is where; this file says what is done, what
 is next, and the rules. Everything below was checked when it was written. Re-check anything you are about to rely on.
 
+## UPDATE 2026-10-18 (evening): online multiplayer is BUILT and TESTED, but NOT DEPLOYED -- read this first
+
+Written by Claude Sonnet 5.5 when the founder moved game dev to an open-weights model. Everything below this section still holds; this
+section supersedes the "Next" list where they differ.
+
+**Where the online work is** (three repos, none deployed):
+
+| Piece | Where | State |
+|---|---|---|
+| Engine side (wire protocol, tick queue, drop-to-bot, server exports, ERROR 6 -> leave room) | PARENA `main` (`7e902de`, `c5fa4b9`) | pushed; `br_net_test` 44/44 |
+| Page host: guest/SSO identity, WebSocket, NETIN/NETOUT pump, status pill for online states | PARENA `main` (`stdlib/bedrockracers/web/br_host.prn`, generated JS) | pushed |
+| IDUNA server: lockstep hub/room, wazero referee, recorder, 4-team Elo, handler `/api/v1/bedrockracers/{play,status,matches,replays,players,leaders}`, migration `202610180001_bedrockracers_web.sql`, games registry row | IDUNA branch **`wip/bedrockracers-online`** (`07736c5`) | pushed, **not on main**; its own tests pass (`go test ./internal/bedrockracers ./internal/http/handlers -run Bedrock`) |
+| WOTAN page + online build + `scripts/bedrockracers-online-test.mjs` | WOTAN branch **`bedrockracers-page`** (`e673f26`), already merged up with main | pushed, **not on main** |
+
+**Proof it works:** `scripts/bedrockracers-online-test.mjs` in WOTAN: two real Chromium pages as guests + the real IDUNA binary: both seated in
+one room, ~12 s of play with the server's 250-tick hash checks passing, a drop-to-bot, 10/10. Run it with Playwright in a `/tmp` scratch dir
+(see the traps below) and `GOWORK=off GOMODCACHE=/tmp/gomod GOCACHE=/tmp/gocache GOFLAGS=-modcacherw`.
+
+**To ship (the one thing left):** founder rule is *ask before pushing WOTAN main*; IDUNA first, then WOTAN: (1) merge `wip/bedrockracers-online` to IDUNA
+`main`, let it deploy, check `/api/v1/bedrockracers/status` says `configured: true`; (2) merge `bedrockracers-page` to WOTAN `main`; (3) smoke it
+live with two browsers. An old IDUNA just leaves PLAY as a bot match. After ANY engine change: `scripts/build-bedrockracers.sh` in WOTAN, commit the two
+outputs, and copy the new wasm to `IDUNA/internal/bedrockracers/bedrockracers.wasm` (the referee must be the same module the browsers run; bump
+`sim-version` in `br_net.prn` if the sim changed, and regenerate the golden hashes with `tests/br_golden.mjs`).
+
+**Not done / known gaps:**
+- WOTAN ladder, Matches and profile pages (IDUNA's stats routes exist and are tested; no page reads them).
+- 8 failures in IDUNA's wider `handlers` test run (guest lore name, redeem refill, guest upgrade, draft runs, nock door scripts) were seen by the earlier
+  session and NOT compared with a clean baseline; they look unrelated.
+- Not verified: Firefox, Safari, phones, real network latency (lockstep adds a round trip to your own car), more than 2 humans in a room, the live cluster.
+- Still not started: street tricks/jukes, car classes (both founder asks), audio, CHAMPION-level league trainer (`br_league.prn` stub).
+- `tests/br_engine_test.mjs` frame-time guard is now 18 ms (14.3 ms median on this box; the old 12 ms came from a faster one).
+
 ## Founder rules for this work
 
 - **Push at each step.** Every finished, tested stage gets committed and pushed straight to `main` of
