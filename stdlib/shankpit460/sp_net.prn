@@ -201,6 +201,7 @@
         to-start (rd16!)
         left (rd32!)]
     (when (not (= (gi (g-rd-bad)) 1))
+      (use-map! 0)   ; human lobbies stay on v0: IDUNA checks line of sight and owns respawns on its copy of v0
       (clear-world!)
       (zero-words! (feed-base) 32)
       (gi! (g-mode) 1)

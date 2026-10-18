@@ -18,6 +18,7 @@ TYPESCRIPT VIA PARENA ... feel free to improve the bots."* Stats and the bot lea
 | `sp_mem.prn` | memory map, accessors, the globals (`g-*`), PRNG, trig/atan2 without libm (F64 series -> F32) |
 | `sp_fields.prn` | **generated** by `tools/sp_fields_gen.py`: player / projectile / tracer / particle record accessors |
 | `sp_map.prn`, `sp_map_data.prn` | the arena: boxes, spawns, ray tests. `sp_map_data.prn` is **generated** by `tools/sp_map_gen.py` from shankpit-460's own `maps/v0_shankpit.map` |
+| `sp_map_w77.prn` | map 1 of the bot-match rotation: 68 boxes ripped from the ShankPit Windows build 77 client (`map_geo` in ShankPit.exe; also `maps/w77_map.json`). Spawns and crown are placeholders (the exe table has none). Bot matches alternate v0 / W77; human lobbies stay on v0 until IDUNA's hit checks and respawns know W77 |
 | `sp_phys.prn` | movement, collision, weapons, the katana, storm projectiles -- the port (see Parity) |
 | `sp_sim.prn`, `sp_rules.prn` | match setup, the 16 ms tick, win conditions, the final board |
 | `sp_ai.prn` | the bots |

@@ -27,7 +27,19 @@
     (zero-words! (part-base) (* (max-parts) 16))
     (dotimes [i (max-players)] (set-p-id! i i) (set-p-last-damager! i -1) (set-p-color! i i))))
 
-(defn init-map! [] : Unit (map-init-data!))
+;; the map rotation (founder 2026-10-18: "push it to the live website as a map rotation"): map 0 is v0_shankpit, map 1 is
+;; the level ripped out of the ShankPit Windows build 77 client (sp_map_w77.prn). Bot matches alternate between them. Human
+;; lobbies stay on map 0 (sp_net): the IDUNA server checks hit line of sight and places respawns on its own copy of v0, so a
+;; lobby on map 1 needs IDUNA to learn the map first.
+(defn map-count-in-rotation [] : I32 2)
+(defn init-map! [] : Unit
+  (if (= (gi (g-map-id)) 1)
+      (do (map-init-data-w77!) (gi! (g-rock-lo) 4) (gi! (g-rock-hi) 64))
+      (do (map-init-data!) (gi! (g-rock-lo) 22) (gi! (g-rock-hi) (map-count)))))
+(defn use-map! [(id : I32)] : Unit (do (gi! (g-map-id) id) (init-map!)))
+(defn next-bot-map! [] : Unit
+  (let [id (gi (g-map-next))]
+    (do (gi! (g-map-next) (mod (+ id 1) (map-count-in-rotation))) (use-map! id))))
 
 ;; ---- names -------------------------------------------------------------------------------------------
 (defn put-name! [(p : I32) (s : String)] : Unit
@@ -63,6 +75,7 @@
 ;; one human (slot 0) and seven bots, free-for-all, first to 13 kills or five minutes
 (defn setup-bot-match! [(level : I32)] : Unit
   (do
+    (next-bot-map!)
     (clear-world!)
     (gi! (g-mode) 0)
     (gi! (g-me) 0)

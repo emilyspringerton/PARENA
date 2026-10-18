@@ -37,7 +37,7 @@
 (defn tracer-base [] : I32 151552)
 (defn part-base [] : I32 155648)
 (defn map-base [] : I32 163840)
-(defn spawn-base [] : I32 165888)
+(defn spawn-base [] : I32 167936)   ; map region = 128 boxes x 32 B (was 64; the W77 map has 68)
 (defn names-base [] : I32 172032)
 (defn netin-base [] : I32 176128)
 (defn netout-base [] : I32 184320)
@@ -189,6 +189,11 @@
 (defn g-crown-x [] : I32 129)
 (defn g-crown-y [] : I32 130)
 (defn g-crown-z [] : I32 131)
+;; the map rotation: which map is loaded, the next bot match's map, and the box range bots roam to ("rocks")
+(defn g-map-id [] : I32 108)
+(defn g-map-next [] : I32 109)
+(defn g-rock-lo [] : I32 110)
+(defn g-rock-hi [] : I32 111)
 
 ;; ---- tiny integer / float helpers ---------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

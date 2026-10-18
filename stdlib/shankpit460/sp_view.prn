@@ -26,7 +26,15 @@
 
 ;; the arena's own colours, by box index in v0_shankpit.map: 0 floor, 1-4 perimeter, 5-10 north base,
 ;; 11-16 south base, 17-21 mid tower, the rest rocks
-(defn box-color [(i : I32)] : I32
+(defn box-color [(i : I32)] : I32 (if (= (gi (g-map-id)) 1) (box-color-w77 i) (box-color-v0 i)))
+;; the W77 map: 1-3 the middle tower, 64-67 the outer blocks, anything 10+ tall (pillars, base walls) in stone, the rest cover
+(defn box-color-w77 [(i : I32)] : I32
+  (cond
+    (>= i 64) (wall-color)
+    (<= i 3) (case i 1 (rgb 190 182 168) 2 (rgb 200 192 176) (rgb 214 204 184))
+    (>= (bh i) 10.0) (rgb 214 206 192)
+    :else (case (mod i 3) 0 (rgb 166 150 130) 1 (rgb 140 156 140) (rgb 156 146 150))))
+(defn box-color-v0 [(i : I32)] : I32
   (cond
     (<= i 4) (wall-color)
     (<= i 10) (rgb 214 206 192)

@@ -189,7 +189,7 @@
     (cond
       (< k 4) (let [s (rnd (spawn-count))] (set-p-bot-goal-x! p (spawn-x s)) (set-p-bot-goal-z! p (spawn-z s)))
       (< k 6) (do (set-p-bot-goal-x! p (gf (g-crown-x))) (set-p-bot-goal-z! p (gf (g-crown-z))))
-      :else (let [i (+ 22 (rnd (max-i 1 (- (map-count) 22))))]
+      :else (let [i (+ (gi (g-rock-lo)) (rnd (max-i 1 (- (gi (g-rock-hi)) (gi (g-rock-lo))))))]
               (set-p-bot-goal-x! p (+ (bx i) (* (phys-rand-f) 12.0)))
               (set-p-bot-goal-z! p (+ (bz i) (* (phys-rand-f) 12.0)))))
     (set-p-bot-goal-t! p (+ 300 (rnd 500)))))
