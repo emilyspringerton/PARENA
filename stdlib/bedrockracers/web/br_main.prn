@@ -1,6 +1,7 @@
 ;; stdlib/bedrockracers/web/br_main.prn -- the exports the page calls (and the test hooks).
 (defn br-init [] : Unit
-  (do (load-font) (init-arena!) (gi! (g-rng2) 9001)
+  (do (load-font) (init-arena!) (build-meshes!) (gi! (g-rng2) 9001)
+      (gf! (g-sens) 1.0) (gi! (g-phase) 0) (gi! (g-cam-mode) 3)
       ;; memory starts zeroed, and holder 0 would mean car 0 has the ball: nobody has it
       (set-b-holder! -1) (set-b-pass-from! -1)))
 (defn br-car-addr [(s : I32)] : I32 (car-base s))
@@ -60,3 +61,30 @@
 (defn br-t-assign [(s : I32) (level : I32)] : Unit (ai-assign! s level))
 (defn br-t-whatif-fine [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (own : I32) (want : I32) (n : I32)] : F32
   (what-if-fine x y z vx vy vz own want n -1))
+
+;; ---- the page's exports ----------------------------------------------------------------------------------------------------------------
+(defn br-frame [(now : F64)] : Unit (frame! now))
+(defn br-key [(id : I32) (down : I32)] : Unit (in-key! id down))
+(defn br-blur [] : Unit (in-clear-keys!))
+(defn br-mouse [(dx : F32) (dy : F32)] : Unit (in-mouse! dx dy))
+(defn br-pointer [(x : I32) (y : I32)] : Unit (in-pointer! x y))
+(defn br-button [(b : I32) (down : I32)] : Unit (in-button! b down))
+(defn br-pad [(slot : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (in-pad! slot lx ly rx ry lt rt buttons))
+(defn br-pad-gone [(slot : I32)] : Unit (in-pad-gone! slot))
+(defn br-lock [(on : I32)] : Unit
+  (do (gi! (g-locked) on)
+      (when (and (= (gi (g-phase)) 1) (human-playing?)) (gi! (g-paused) (if (= on 0) 1 0)))))
+(defn br-sens [(s : F32)] : Unit (gf! (g-sens) s))
+(defn br-wants-lock [] : I32 (b2i (and (= (gi (g-phase)) 1) (human-playing?))))
+(defn br-phase [] : I32 (gi (g-phase)))
+(defn br-fb-addr [] : I32 (fb-base))
+(defn br-fb-w [] : I32 640)
+(defn br-fb-h [] : I32 360)
+(defn br-ticks [] : I32 (gi (g-tick)))
+(defn br-mem-bytes [] : I32 8388608)
+(defn br-t-start [(roster : I32) (seed : I32)] : Unit
+  (do (gi! (g-ticker) seed) (start-match! roster)))
+(defn br-t-title [] : Unit (go-title!))
+(defn br-t-render [(al : F32)] : Unit (ui-render! al))
+(defn br-t-cam [(mode : I32)] : Unit (gi! (g-cam-mode) mode))
