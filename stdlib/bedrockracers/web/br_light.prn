@@ -44,9 +44,11 @@
         (il : F32) (inv-len3 kx ky kz)]
     (gf! (g-key-x) (* kx il)) (gf! (g-key-y) (* ky il)) (gf! (g-key-z) (* kz il))
     ;; a warm-white floodlight
-    (gf! (g-key-r) 0.86) (gf! (g-key-g) 0.82) (gf! (g-key-b) 0.74)
-    (gf! (g-amb-up-r) 0.30) (gf! (g-amb-up-g) 0.32) (gf! (g-amb-up-b) 0.38)
-    (gf! (g-amb-dn-r) 0.36) (gf! (g-amb-dn-g) 0.33) (gf! (g-amb-dn-b) 0.32)
+    (let [(dm : F32) (- 1.0 (* 0.55 (clamp-f (drama-level) 0.0 1.0)))
+          (fl : F32) (loadf32 (lt-flash-addr))]
+      (gf! (g-key-r) (* 0.86 dm)) (gf! (g-key-g) (* 0.82 dm)) (gf! (g-key-b) (* 0.74 dm))
+      (gf! (g-amb-up-r) (* (+ 0.30 (* 0.25 fl)) dm)) (gf! (g-amb-up-g) (* (+ 0.32 (* 0.25 fl)) dm)) (gf! (g-amb-up-b) (* (+ 0.38 (* 0.25 fl)) dm))
+      (gf! (g-amb-dn-r) (* 0.36 dm)) (gf! (g-amb-dn-g) (* 0.33 dm)) (gf! (g-amb-dn-b) (* 0.32 dm)))
     (gf! (g-fog-r) 10.0) (gf! (g-fog-g) 11.0) (gf! (g-fog-b) 17.0)
     (gf! (g-fog-near) 160.0) (gf! (g-fog-span) (/ 1.0 1100.0)) (gf! (g-fog-max) 0.6)))
 
@@ -58,7 +60,25 @@
         (k : F32) (* w w)]
     (gf! (g-lit-r) (+ (lerp (gf (g-amb-dn-r)) (gf (g-amb-up-r)) t) (* k (gf (g-key-r)))))
     (gf! (g-lit-g) (+ (lerp (gf (g-amb-dn-g)) (gf (g-amb-up-g)) t) (* k (gf (g-key-g)))))
-    (gf! (g-lit-b) (+ (lerp (gf (g-amb-dn-b)) (gf (g-amb-up-b)) t) (* k (gf (g-key-b)))))))
+    (gf! (g-lit-b) (+ (lerp (gf (g-amb-dn-b)) (gf (g-amb-up-b)) t) (* k (gf (g-key-b)))))
+    (dyn-lights! x y z nx ny nz)))
+
+;; the dynamic light table (br_fx.prn): up to 16 point lights, wrapped diffuse with a smooth falloff to the light's radius
+(defn dyn-one! [(a : I32) (x : F32) (y : F32) (z : F32) (nx : F32) (ny : F32) (nz : F32)] : Unit
+  (let [(dx : F32) (- (loadf32 a) x) (dy : F32) (- (loadf32 (+ a 4)) y) (dz : F32) (- (loadf32 (+ a 8)) z)
+        (r : F32) (loadf32 (+ a 28))
+        (d2 : F32) (+ (* dx dx) (+ (* dy dy) (* dz dz)))]
+    (when (< d2 (* r r))
+      (let [(d : F32) (sqrt d2)
+            (fall : F32) (- 1.0 (/ d r))
+            (nd : F32) (if (> d 0.001) (/ (dot3 nx ny nz dx dy dz) d) 1.0)
+            (w : F32) (clamp-f (/ (+ nd 0.35) 1.35) 0.0 1.0)
+            (k : F32) (* (* fall fall) (* w (loadf32 (+ a 24))))]
+        (gf! (g-lit-r) (+ (gf (g-lit-r)) (* k (loadf32 (+ a 12)))))
+        (gf! (g-lit-g) (+ (gf (g-lit-g)) (* k (loadf32 (+ a 16)))))
+        (gf! (g-lit-b) (+ (gf (g-lit-b)) (* k (loadf32 (+ a 20)))))))))
+(defn dyn-lights! [(x : F32) (y : F32) (z : F32) (nx : F32) (ny : F32) (nz : F32)] : Unit
+  (dotimes [i (light-count)] (dyn-one! (lt-addr i) x y z nx ny nz)))
 
 ;; fog by camera depth
 (defn fog-at [(z : F32)] : F32
