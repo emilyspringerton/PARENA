@@ -11,7 +11,7 @@
 ;; goal faces the floor, so a goal is scored by flying the ball UP into it.
 ;;
 ;;   room   half-extents 520 x 120 x 520 (the floor is y = 0, the ceiling y = 240), every edge rounded with radius 70
-;;   tower  t = 0..3 at corner (sx, sz) = (t&1 ? +1 : -1, t&2 ? +1 : -1): shaft radius 40 at (sx*408, sz*408), open from the
+;;   tower  t = 0..3 at corner (sx, sz) = (t&1 ? +1 : -1, t&2 ? +1 : -1): shaft radius 40 at (sx*450, sz*450), open from the
 ;;          ceiling up to y = 340. The ball is in the goal when its centre is in the shaft above y = 244.
 ;;   track  SHANKPIT's 11-point rally loop at 0.55 scale, road half-width 35, shoulder 47, baked into a 256x256 floor texture
 
@@ -21,7 +21,7 @@
 (defn a-r [] : F32 70.0)           ; the fillet radius of every edge
 (defn a-cy [] : F32 120.0)
 (defn t-r [] : F32 40.0)           ; tower shaft radius
-(defn t-off [] : F32 408.0)        ; tower axis offset on x and z: exactly over the line a ball takes climbing the corner edge
+(defn t-off [] : F32 450.0)        ; tower axis offset on x and z: the apex of a corner, where a ball climbing the corner edge arrives
 (defn t-top [] : F32 340.0)        ; the roof of a shaft
 (defn goal-y [] : F32 244.0)       ; the ball is in once its centre is above this inside a shaft
 

@@ -230,7 +230,7 @@
         (px : F32) (pred-x i) (py : F32) (pred-y i) (pz : F32) (pred-z i)
         t (c-team s)
         want (gi (+ (g-tgt-tower) t))
-        (spd : F32) (gv s (k-g-launch) 250.0 340.0)]
+        (spd : F32) (* 1.3 (gv s (k-g-launch) 190.0 270.0))]
     (plan-shot! px py pz t want spd)
     (set-c-aim-x! s (gf (pl-x))) (set-c-aim-y! s (gf (pl-y))) (set-c-aim-z! s (gf (pl-z)))
     ;; the contact point sits one ball radius + half a car behind the ball's centre along the push direction
@@ -405,11 +405,14 @@
               (vc : F32) (gv s (k-g-launch) 190.0 270.0)
               ;; behind the contact point: close the lateral error and walk up the line; past it: just keep going
               (back : F32) (fmax2 0.0 (- 0.0 along))
-              (lead : F32) (fmin2 back 70.0)
-              (wx : F32) (+ (- tx (* ux lead)) 0.0) (wy : F32) (- ty (* uy lead)) (wz : F32) (- tz (* uz lead))]
+              (lat : F32) (len3 lx ly lz)
+              ;; path following: steer for a carrot on the approach line, a little ahead of where the car's own projection
+              ;; sits on it. Far back it converges onto the line; on the line it points straight through the ball.
+              (carrot : F32) (+ along 60.0)
+              (wx : F32) (+ tx (* ux carrot)) (wy : F32) (+ ty (* uy carrot)) (wz : F32) (+ tz (* uz carrot))]
           ;; the ball is high or the shot climbs steeply: that is an air job
           (if (and att (and (< ty 46.0) (< uy 0.5)))
-              (drive! s (+ wx (* ux 20.0)) wy (+ wz (* uz 20.0)) (if (< back 140.0) vc 215.0))
+              (drive! s wx wy wz (if (and (> lat 22.0) (< back 110.0)) 120.0 (if (< back 150.0) vc 230.0)))
               (fly! s wx wy wz (* ux vc) (* uy vc) (* uz vc) ux uy uz)))
       ;; guarding / flanking / refuelling: get there and stop
       :else
