@@ -5,7 +5,9 @@
 ;; spends comes from one tank of compressed AIR (like mana: it refills far faster than boost does in Rocket League).
 ;;
 ;;   on a surface  (fans on and a surface within reach)   the car's up axis swings onto the surface normal, gravity is beaten by
-;;                 the fans, so floor, wall and ceiling are all "road". W/S throttle, A/D steer, grip depends on the dirt
+;;                 the fans, so floor, wall and ceiling are all "road". W/S throttle, A/D steer. The tyres hold the car up to a
+;;                 limit (dirt holds far less than concrete): past it the tail steps out and the car drifts. The fans only
+;;                 catch a car belly-down, so a car that lands on its roof scrapes along until it rolls (or tips) back over
 ;;   in the air    the car is a thruster platform with PRECISE, rate-commanded control on every axis:
 ;;                    pitch / yaw / roll   angular rates follow the command and STOP when you let go (cold-gas attitude jets)
 ;;                    lift                 the four nozzles, along the car's up axis
@@ -141,6 +143,14 @@
           (set-c-fy! s (- (c-fy s) (* (c-uy s) fd)))
           (set-c-fz! s (- (c-fz s) (* (c-uz s) fd)))
           (fix-basis! s)))
+      ;; steering first, so the tyres -- not the steering -- decide where the velocity goes. The yaw rate builds up over a few
+      ;; substeps (the car has weight), tightens with speed, fades out near a standstill and flips for reverse, like a car.
+      (let [(vf0 : F32) (dot3 (c-vx s) (c-vy s) (c-vz s) (c-fx s) (c-fy s) (c-fz s))
+            (wmax : F32) (+ 0.55 (/ 2.6 (+ 1.0 (sq (/ (abs-f vf0) 80.0)))))
+            (roll : F32) (* (clamp-f (/ (abs-f vf0) 30.0) 0.2 1.0) (if (< vf0 -1.0) -1.0 1.0))
+            (want : F32) (* (* (- 0.0 (c-in-steer s)) wmax) roll)]
+        (set-c-wy! s (+ (c-wy s) (* (- want (c-wy s)) 0.3)))
+        (spin-car! s 1 (* (c-wy s) dt)))
       ;; velocity in the surface's frame
       (let [(vx : F32) (c-vx s) (vy : F32) (c-vy s) (vz : F32) (c-vz s)
             (vn : F32) (dot3 vx vy vz nx ny nz)
@@ -155,10 +165,6 @@
             (rw : F32) (if (> ny 0.7) (/ (f32 (road-at x z)) 255.0) 0.0)]
         (set! vf (+ vf (* (dot3 gtx gty gtz (c-fx s) (c-fy s) (c-fz s)) dt)))
         (set! vl (+ vl (* (dot3 gtx gty gtz (c-rx s) (c-ry s) (c-rz s)) dt)))
-        ;; steering: a rate that tightens with speed (a right turn for steer > 0, about the surface normal)
-        (let [(wmax : F32) (+ 0.55 (/ 2.6 (+ 1.0 (sq (/ (abs-f vf) 80.0)))))
-              (steer : F32) (c-in-steer s)]
-          (spin-car! s 1 (* (* (- 0.0 steer) wmax) dt)))
         ;; throttle and brake
         (let [(acc : F32) (cond
                             (> thr 0.01) (* (* thr 175.0) (fmax2 0.0 (- 1.0 (/ vf 190.0))))
@@ -170,10 +176,17 @@
           (when (and (< (abs-f thr) 0.01) (= boost 0))
             (set! vf (- vf (* (sgn vf) (fmin2 (abs-f vf) (* 90.0 dt))))))
           (set! vf (* vf (- 1.0 (* 0.1 dt)))))
-        ;; grip: dirt lets the tail out, concrete does not
-        (let [(grip : F32) (if (> ny 0.7) (lerp 8.5 4.6 rw) 11.5)]
+        ;; grip: the tyres pull the sideways slide back toward zero, but only up to what the surface can hold. Below that limit
+        ;; the car tracks; above it the tail steps out and the car drifts until the slide is gone. Dirt holds half what the
+        ;; concrete does, walls and the ceiling a little less than the floor (the fans, not gravity, press the tyres there).
+        ;; A slide past the limit scrubs off some forward speed, so a drift costs a little pace.
+        (let [(lim : F32) (if (> ny 0.7) (lerp 320.0 125.0 rw) 280.0)
+              (want : F32) (* (abs-f vl) (* 22.0 dt))
+              (dv : F32) (fmin2 want (* lim dt))]
           (set-c-slip! s (abs-f vl))
-          (set! vl (* vl (fmax2 0.0 (- 1.0 (* grip dt))))))
+          (set! vl (- vl (* (sgn vl) dv)))
+          (when (> want dv)
+            (set! vf (- vf (* (sgn vf) (fmin2 (abs-f vf) (* 0.3 dv)))))))
         ;; back to a world velocity; the fans pull the car onto the surface (the collision pass holds it there)
         (let [(nvn : F32) (+ vn (* (- gn (fan-force)) dt))
               (fx : F32) (c-fx s) (fy : F32) (c-fy s) (fz : F32) (c-fz s)
@@ -208,10 +221,12 @@
         (set-c-vx! s (* (c-vx s) dr)) (set-c-vy! s (* (c-vy s) dr)) (set-c-vz! s (* (c-vz s) dr))))))
 
 ;; weak fans reach out and pull a falling car's belly toward a nearby surface, so a human lands on a wall without a roll command
+;; (only from the belly side: fans cannot reach through the roof, so a car coming down upside down has to roll itself over)
 (defn assist-landing! [(s : I32)] : Unit
   (let [gap (car-gap s)]
     (when (and (< gap 26.0) (= (c-in-fans-off s) 0))
       (arena-normal! (c-x s) (c-y s) (c-z s))
+      (when (> (dot3 (c-ux s) (c-uy s) (c-uz s) (gf (g-sdx)) (gf (g-sdy)) (gf (g-sdz))) -0.2)
       (let [(w : F32) (* 0.045 (clamp-f (/ (- 26.0 gap) 20.0) 0.0 1.0))
             (ux : F32) (+ (c-ux s) (* (- (gf (g-sdx)) (c-ux s)) w))
             (uy : F32) (+ (c-uy s) (* (- (gf (g-sdy)) (c-uy s)) w))
@@ -222,22 +237,56 @@
           (set-c-fx! s (- (c-fx s) (* (c-ux s) fd)))
           (set-c-fy! s (- (c-fy s) (* (c-uy s) fd)))
           (set-c-fz! s (- (c-fz s) (* (c-uz s) fd)))
-          (fix-basis! s))))))
+          (fix-basis! s)))))))
+
+;; a car lying on its roof or side: the cold-gas jets tip it back onto its wheels (slowly -- a turtled car is out of the play
+;; for a moment, and a player who rolls it over themselves is quicker)
+(defn self-right! [(s : I32) (dt : F32)] : Unit
+  (do
+  (arena-normal! (c-x s) (c-y s) (c-z s))
+  (let [(nx : F32) (gf (g-sdx)) (ny : F32) (gf (g-sdy)) (nz : F32) (gf (g-sdz))
+        (ux : F32) (c-ux s) (uy : F32) (c-uy s) (uz : F32) (c-uz s)
+        (ax : F32) (- (* uy nz) (* uz ny)) (ay : F32) (- (* uz nx) (* ux nz)) (az : F32) (- (* ux ny) (* uy nx))
+        (al : F32) (len3 ax ay az)]
+    ;; exactly upside down the axis is undefined: tip over the car's own forward axis
+    (let [(kx : F32) (if (> al 0.05) (/ ax al) (c-fx s))
+          (ky : F32) (if (> al 0.05) (/ ay al) (c-fy s))
+          (kz : F32) (if (> al 0.05) (/ az al) (c-fz s))
+          (ang : F32) (* 2.4 dt)]
+      (rot-words! s (k-ux) kx ky kz (cosf ang) (sinf ang))
+      (rot-words! s (k-fx) kx ky kz (cosf ang) (sinf ang))
+      (fix-basis! s)))))
 
 (defn car-substep! [(s : I32) (dt : F32)] : Unit
   (let [gap (car-gap s)
         fans (and (= (c-in-fans-off s) 0) (< (c-in-lift s) 0.05))
-        (vn : F32) (if (< gap 40.0)
+        near (< gap 40.0)
+        (vn : F32) (if near
                        (do (arena-normal! (c-x s) (c-y s) (c-z s))
                            (dot3 (c-vx s) (c-vy s) (c-vz s) (gf (g-sdx)) (gf (g-sdy)) (gf (g-sdz))))
                        0.0)
+        ;; how squarely the belly (and so the fans) faces the surface: the fans take hold only belly-down
+        (face : F32) (if near (dot3 (c-ux s) (c-uy s) (c-uz s) (gf (g-sdx)) (gf (g-sdy)) (gf (g-sdz))) 1.0)
         att (and fans (< gap (if (= (c-attached s) 1) (fan-hold) (fan-reach))))
-        att2 (and att (or (= (c-attached s) 1) (< vn 60.0)))]
+        att2 (and att (or (= (c-attached s) 1) (and (< vn 60.0) (> face 0.35))))]
     (set-c-sd! s gap)
     (set-c-attached! s (b2i att2))
     (if att2
         (drive-sub! s dt)
-        (do (fly-sub! s dt) (assist-landing! s)))
+        (do (fly-sub! s dt) (assist-landing! s)
+            ;; a car scraping along on its roof or its side (not driving) is slowed by the scrape
+            (when (and (< gap 1.5) (< face 0.35))
+              (let [(nx : F32) (gf (g-sdx)) (ny : F32) (gf (g-sdy)) (nz : F32) (gf (g-sdz))
+                    (wn : F32) (dot3 (c-vx s) (c-vy s) (c-vz s) nx ny nz)
+                    (tx : F32) (- (c-vx s) (* nx wn)) (ty : F32) (- (c-vy s) (* ny wn)) (tz : F32) (- (c-vz s) (* nz wn))
+                    (tl : F32) (len3 tx ty tz)
+                    (k : F32) (if (> tl 0.001) (/ (fmax2 0.0 (- tl (* 150.0 dt))) tl) 0.0)]
+                (set-c-vx! s (+ (* nx wn) (* tx k)))
+                (set-c-vy! s (+ (* ny wn) (* ty k)))
+                (set-c-vz! s (+ (* nz wn) (* tz k)))))
+            (when (and (< gap 1.5) (< face 0.35) (< (len3 (c-vx s) (c-vy s) (c-vz s)) 80.0)
+                       (< (abs-f (c-in-roll s)) 0.05) (< (abs-f (c-in-pitch s)) 0.05))
+              (self-right! s dt))))
     (set-c-x! s (+ (c-x s) (* (c-vx s) dt)))
     (set-c-y! s (+ (c-y s) (* (c-vy s) dt)))
     (set-c-z! s (+ (c-z s) (* (c-vz s) dt)))
@@ -275,9 +324,15 @@
                 (set-b-vx! (+ (b-vx) (* nx j)))
                 (set-b-vy! (+ (b-vy) (* ny j)))
                 (set-b-vz! (+ (b-vz) (* nz j)))
-                ;; rolling friction along the surface
-                (let [(rf : F32) (- 1.0 (* 0.55 dt))]
-                  (set-b-vx! (* (b-vx) rf)) (set-b-vz! (* (b-vz) rf)))))))))
+                ;; rolling resistance along the surface (and only along it): a light drag and a small constant loss, so a ball
+                ;; rolls a long way and still comes to rest, and one rolled hard into a wall keeps the speed to climb it
+                (let [(bvn : F32) (dot3 (b-vx) (b-vy) (b-vz) nx ny nz)
+                      (tx : F32) (- (b-vx) (* nx bvn)) (ty : F32) (- (b-vy) (* ny bvn)) (tz : F32) (- (b-vz) (* nz bvn))
+                      (tl : F32) (len3 tx ty tz)
+                      (k : F32) (if (> tl 0.001) (/ (fmax2 0.0 (- (* tl (- 1.0 (* 0.16 dt))) (* 9.0 dt))) tl) 0.0)]
+                  (set-b-vx! (+ (* nx bvn) (* tx k)))
+                  (set-b-vy! (+ (* ny bvn) (* ty k)))
+                  (set-b-vz! (+ (* nz bvn) (* tz k))))))))))
     (let [(sp : F32) (len3 (b-vx) (b-vy) (b-vz))]
       (when (> sp 520.0)
         (let [(k : F32) (/ 520.0 sp)]
