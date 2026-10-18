@@ -1,0 +1,274 @@
+;; stdlib/bedrockracers/web/br_hud.prn -- the heads-up display: the score strip, speed and air, the magnet, the fire, an arrow to the ball,
+;; the feed, the banners, the Tab scoreboard. Drawn over the finished 3D frame (br_ui.prn calls hud-draw!).
+;;
+;; Everything here only READS the match. The look is the one the founder asked for ("MAKE IT NICE VERY TOUGHTFUL VERY DEMURE"): small
+;; type, a dark slate panel at low alpha, the four team colours as the only colour, and flame orange reserved for ON FIRE. G words
+;; 448..511 are the HUD's and the screens' (br_ui.prn).
+
+(defn g-pick-team [] : I32 448)    ; I32: the title's team choice 0..3 (the person drives that team's first car)
+(defn g-pick-level [] : I32 449)   ; I32: the title's bot level 1 easy, 2 normal, 3 hard
+(defn g-hud-cx [] : I32 450)       ; F32: cam-space!'s answer: a world point in camera space (right, up, forward)
+(defn g-hud-cy [] : I32 451)
+(defn g-hud-cz [] : I32 452)
+
+;; ---- palette -------------------------------------------------------------------------------------------------------------------------
+(defn ink [] : I32 (rgb 232 228 218))
+(defn ink-dim [] : I32 (rgb 150 150 160))
+(defn ink-faint [] : I32 (rgb 96 98 112))
+(defn panel-ink [] : I32 (rgb 14 15 22))
+(defn flame [] : I32 (rgb 255 150 60))
+(defn flame-hot [] : I32 (rgb 255 214 120))
+(defn ivory [] : I32 (rgb 236 230 214))
+
+(defn secs-left [] : I32 (/ (+ (* (gi (g-match-left)) 2) 124) 125))
+(defn viewed [] : I32 (gi (g-view-slot)))
+(defn person? [] : Bool (!= (gi (g-roster)) 0))
+(defn ticks-since [(t : I32)] : I32 (- (gi (g-tick)) t))
+
+;; ---- the score strip -----------------------------------------------------------------------------------------------------------------
+(defn hud-top! [] : Unit
+  (let [mine (if (person?) (c-team (viewed)) -1)]
+    (card 236 6 168 22 (panel-ink) 150 (rgb 90 92 110) 60)
+    (dotimes [t 4]
+      (let [x (+ 244 (* t 26)) c (team-color t)]
+        (fill-rect x 11 3 12 c)
+        (draw-int (score-of t) (+ x 6) 9 1 (ink))
+        (when (= t mine) (fill-rect x 25 22 2 c))))
+    (if (= (gi (g-overtime)) 1)
+        (draw-text "OT" 360 9 1 (rgb 236 184 92))
+        (draw-clock (secs-left) 352 9 1 (ink)))))
+
+;; ---- speed and air ---------------------------------------------------------------------------------------------------------------------
+(defn air-color [(air : F32)] : I32
+  (cond (< air 15.0) (rgb 232 112 98)
+        (< air 35.0) (rgb 236 184 92)
+        :else (rgb 84 190 178)))
+
+(defn hud-car! [(s : I32)] : Unit
+  (let [spd (i32 (len3 (c-vx s) (c-vy s) (c-vz s)))
+        (air : F32) (c-air s)
+        w (i32 (* (clamp-f air 0.0 100.0) 0.96))]
+    (draw-int-s spd 16 316 1 (ink))
+    (draw-text-s "SPEED" (+ 16 (+ (num-width spd 1) 8)) 316 1 (ink-dim))
+    (draw-text-s "AIR" 16 336 1 (ink-dim))
+    (fill-rect-a 42 343 96 5 (panel-ink) 170)
+    ;; a tank under 15% blinks
+    (when (or (>= air 15.0) (< (mod (gi (g-ui-t)) 24) 14))
+      (fill-rect 42 343 w 5 (air-color air)))
+    (fill-rect 42 342 1 7 (ink-faint)) (fill-rect 138 342 1 7 (ink-faint))))
+
+;; ---- the magnet ------------------------------------------------------------------------------------------------------------------------
+;; a ring of n dots, clockwise from the top, k of them lit
+(defn dots-ring! [(cx : I32) (cy : I32) (r : F32) (n : I32) (k : I32) (c : I32) (a : I32)]  : Unit
+  (dotimes [i n]
+    (let [(ang : F32) (* (f32 i) (/ 6.2831853 (f32 n)))
+          x (+ cx (i32 (+ 0.5 (* r (sinf ang)))))
+          y (- cy (i32 (+ 0.5 (* r (cosf ang)))))]
+      (if (< i k) (fill-rect-a (- x 1) (- y 1) 2 2 c a) (fill-rect-a x y 1 1 (ink-faint) 140)))))
+
+(defn magnet-ring! [(s : I32) (cx : I32) (cy : I32)] : Unit
+  (let [tc (team-color (c-team s))
+        holding (= (b-holder) s)
+        pulling (and (!= (c-in-magnet s) 0) (not holding))]
+    (cond
+      holding
+        (do (fill-circle-a cx cy 12 tc 70)
+            (circle-outline-a cx cy 12 tc 230)
+            (fill-circle-a cx cy 4 (ink) 230)
+            ;; the carry clock: the throw is made for you after 313 ticks
+            (dots-ring! cx cy 17.0 24 (/ (* 24 (max-i 0 (- 313 (b-hold-t)))) 313) tc 230))
+      pulling
+        (let [ph (mod (gi (g-ui-t)) 30)]
+          (circle-outline-a cx cy 12 tc 200)
+          (circle-outline-a cx cy (+ 3 (/ (* ph 9) 30)) tc (- 220 (* ph 7)))
+          (fill-circle-a cx cy 3 tc 230))
+      :else
+        (do (circle-outline-a cx cy 12 (ink-dim) 120)
+            (fill-circle-a cx cy 2 (ink-dim) 140)))))
+
+(defn magnet-word [(s : I32)] : String
+  (cond (= (b-holder) s) "HOLDING"
+        (!= (c-in-magnet s) 0) "PULLING"
+        (> (c-nocatch s) 0) "THROWN"
+        :else "READY"))
+
+(defn hud-magnet! [(s : I32)] : Unit
+  (let [tc (team-color (c-team s))
+        live (or (= (b-holder) s) (!= (c-in-magnet s) 0))]
+    (magnet-ring! s 612 324)
+    (draw-text-r "MAGNET" 588 314 1 (ink-dim))
+    (draw-text-r (magnet-word s) 588 332 1 (if live tc (ink-dim)))))
+
+;; ---- on fire ---------------------------------------------------------------------------------------------------------------------------
+(defn hud-fire! [(s : I32)] : Unit
+  (when (> (c-fire-t s) 0)
+    (let [w (/ (* 88 (c-fire-t s)) (fire-ticks))
+          pulse (+ 200 (* 55 (b2i (< (mod (gi (g-ui-t)) 20) 10))))]
+      (draw-text-r "ON FIRE" 626 284 1 (flame))
+      (fill-rect-a 538 303 88 4 (panel-ink) 170)
+      (fill-rect-a (- 626 w) 303 w 4 (flame) pulse)
+      (fill-rect-a (- 626 w) 303 w 1 (flame-hot) 200))))
+
+;; ---- an arrow to the ball ------------------------------------------------------------------------------------------------------------------
+;; (x y z) in camera space -> g-hud-cx / cy / cz
+(defn cam-space! [(x : F32) (y : F32) (z : F32)] : Unit
+  (let [(dx : F32) (- x (gf (g-cam-x))) (dy : F32) (- y (gf (g-cam-y))) (dz : F32) (- z (gf (g-cam-z)))]
+    (gf! (g-hud-cx) (dot3 dx dy dz (gf (g-cam-rx)) (gf (g-cam-ry)) (gf (g-cam-rz))))
+    (gf! (g-hud-cy) (dot3 dx dy dz (gf (g-cam-ux)) (gf (g-cam-uy)) (gf (g-cam-uz))))
+    (gf! (g-hud-cz) (dot3 dx dy dz (gf (g-cam-fx)) (gf (g-cam-fy)) (gf (g-cam-fz))))))
+
+;; a chevron at (px py) pointing along the unit screen direction (dx dy)
+(defn chevron! [(px : F32) (py : F32) (dx : F32) (dy : F32) (c : I32) (a : I32)] : Unit
+  (let [(bx : F32) (- px (* dx 10.0)) (by : F32) (- py (* dy 10.0))
+        (ox : F32) (* (- 0.0 dy) 6.0) (oy : F32) (* dx 6.0)]
+    (line-a (i32 px) (i32 py) (i32 (+ bx ox)) (i32 (+ by oy)) c a)
+    (line-a (i32 px) (i32 py) (i32 (- bx ox)) (i32 (- by oy)) c a)
+    (line-a (i32 (+ px 1.0)) (i32 py) (i32 (+ (+ bx ox) 1.0)) (i32 (+ by oy)) c a)
+    (line-a (i32 (+ px 1.0)) (i32 py) (i32 (- (+ bx 1.0) ox)) (i32 (- by oy)) c a)))
+
+(defn ball-arrow! [(cx : F32) (cy : F32) (dist : I32)] : Unit
+  (let [(dx : F32) cx (dy : F32) (- 0.0 cy)
+        (l : F32) (fmax2 0.001 (len3 dx dy 0.0))
+        (ux : F32) (/ dx l) (uy : F32) (/ dy l)
+        ;; where the ray from the centre leaves the rectangle inset by 26 px
+        (tx : F32) (/ 294.0 (fmax2 0.001 (abs-f ux))) (ty : F32) (/ 154.0 (fmax2 0.001 (abs-f uy)))
+        (t : F32) (fmin2 tx ty)]
+    (chevron! (+ 320.0 (* ux t)) (+ 180.0 (* uy t)) ux uy (ivory) 220)
+    (draw-int-c dist (i32 (- (+ 320.0 (* ux t)) (* ux 24.0))) (i32 (- (+ 180.0 (* uy t)) (* uy 24.0) 8.0)) 1 (ink-dim))))
+
+(defn hud-ball! [(s : I32)] : Unit
+  (when (and (= (gi (g-goal-t)) 0) (!= (b-holder) s))
+    (cam-space! (b-x) (b-y) (b-z))
+    (let [(cx : F32) (gf (g-hud-cx)) (cy : F32) (gf (g-hud-cy)) (cz : F32) (gf (g-hud-cz))
+          dist (i32 (len3 cx cy cz))]
+      (if (> cz (near-z))
+          (let [sx (i32 (+ 320.0 (* (/ cx cz) (gf (g-proj-scale)))))
+                sy (i32 (- 180.0 (* (/ cy cz) (gf (g-proj-scale)))))]
+            (if (and (and (> sx 24) (< sx 616)) (and (> sy 40) (< sy 330)))
+                ;; in view: a faint ring once the ball is far enough to be a speck
+                (when (> dist 70) (circle-outline-a sx sy 8 (ivory) 150))
+                (ball-arrow! cx cy dist)))
+          (ball-arrow! cx cy dist)))))
+
+;; ---- the feed ---------------------------------------------------------------------------------------------------------------------------
+(defn feed-addr [(i : I32)] : I32 (+ (feed-base) (* (mod i 8) 64)))
+
+(defn feed-text [(code : I32)] : String
+  (case code 1 " scored" 2 " own goal" 3 " is on fire" 4 " fire is out" 5 " still on fire" " ..."))
+
+(defn feed-line! [(a : I32) (y : I32) (alpha : I32)] : Unit
+  (let [code (load32 a) who (load32 (+ a 4))]
+    (when (and (>= who 0) (< who 12))
+      (let [txt (feed-text code)
+            tc (if (>= code 3) (if (= code 4) (ink-dim) (flame)) (ink))
+            nw (text-width-at (name-addr who) 1)
+            x (- 632 (+ nw (text-width txt 1)))]
+        (fill-rect-a (- x 6) (- y 1) (+ (+ nw (text-width txt 1)) 12) 18 (panel-ink) (/ (* alpha 150) 255))
+        (fill-rect (- x 6) (- y 1) 2 18 (team-color (c-team who)))
+        (draw-text-at-s (name-addr who) x y 1 (team-color (c-team who)))
+        (draw-text-s txt (+ x nw) y 1 tc)))))
+
+(defn hud-feed! [] : Unit
+  (let [head (gi (g-feed-head))]
+    (dotimes [k 4]
+      (let [i (- (- head 1) k)]
+        (when (>= i 0)
+          (let [a (feed-addr i)
+                age (ticks-since (load32 (+ a 12)))]
+            (when (and (>= age 0) (< age 400))
+              (feed-line! a (+ 36 (* k 20)) (if (< age 340) 255 (/ (* (- 400 age) 255) 60))))))))))
+
+;; ---- the banners ---------------------------------------------------------------------------------------------------------------------------
+(defn fire-banner-text [(id : I32)] : String
+  (case id 1 " IS ON FIRE" 2 "'S FIRE IS OUT" 3 " IS STILL ON FIRE" ""))
+
+(defn hud-fire-banner! [] : Unit
+  (let [t (gi (g-fire-ann-t)) who (gi (g-fire-ann-slot)) id (gi (g-fire-ann-id))]
+    (when (and (> t 0) (and (>= who 0) (> id 0)))
+      (let [txt (fire-banner-text id)
+            nw (text-width-at (name-addr who) 2)
+            tw (text-width txt 2)
+            x (- 320 (/ (+ nw tw) 2))
+            hot (!= id 2)
+            a (if (< t 30) (/ (* t 255) 30) 255)]
+        (fill-rect-a 0 60 640 30 (if hot (rgb 60 22 8) (panel-ink)) (/ (* a 150) 255))
+        (when hot (fill-rect-a 0 60 640 2 (flame) (/ (* a 200) 255)) (fill-rect-a 0 88 640 2 (flame) (/ (* a 200) 255)))
+        (draw-text-at-s (name-addr who) x 66 2 (team-color (c-team who)))
+        (draw-text-s txt (+ x nw) 66 2 (if hot (flame-hot) (ink-dim)))))))
+
+(defn hud-banners! [] : Unit
+  (do
+    ;; the kickoff count
+    (when (> (gi (g-countdown)) 0)
+      (draw-int-c (max-i 1 (/ (+ (* (gi (g-countdown)) 2) 124) 125)) 320 130 4 (ink)))
+    ;; a goal
+    (when (> (gi (g-goal-t)) 0)
+      (let [t (gi (g-banner-team))]
+        (draw-text-c (if (= (gi (g-banner-id)) 2) "OWN GOAL" (if (= (gi (g-goal-dunk)) 1) "DUNK" "GOAL")) 320 112 3 (team-color t))
+        (draw-text-c (team-name t) 320 164 1 (ink-dim))
+        (when (and (>= (gi (g-banner-slot)) 0) (!= (gi (g-banner-id)) 2))
+          (draw-text-at-c (name-addr (gi (g-banner-slot))) 320 184 1 (ink)))))
+    ;; overtime, and a ball put back after a scrum
+    (when (and (> (gi (g-banner-t)) 0) (= (gi (g-banner-id)) 4))
+      (draw-text-c "GOLDEN GOAL" 320 120 2 (rgb 236 184 92)))
+    (when (and (> (gi (g-banner-t)) 0) (= (gi (g-banner-id)) 5))
+      (draw-text-c "BALL RESET" 320 120 1 (ink-dim)))
+    (hud-fire-banner!)))
+
+;; ---- the controls hint, for the first seconds of a match ---------------------------------------------------------------------------------------
+(defn hud-hint! [] : Unit
+  (when (and (person?) (< (gi (g-ui-t)) 760))
+    (let [a (if (< (gi (g-ui-t)) 640) 255 (/ (* (- 760 (gi (g-ui-t))) 255) 120))]
+      (fill-rect-a 124 292 392 36 (panel-ink) (/ (* a 150) 255))
+      (draw-text-c "W S drive   A D steer   Space lift   Shift boost" 320 296 1 (ink-dim))
+      (draw-text-c "hold F or right mouse: MAGNET   Tab: scores" 320 311 1 (ink)))))
+
+;; ---- the scoreboard (Tab, and the results screen) ------------------------------------------------------------------------------------------------
+;; one car's row at (x y): a team-coloured tick, the name (flame orange while burning), goals / assists / saves
+(defn board-row! [(s : I32) (x : I32) (y : I32)] : Unit
+  (let [tc (team-color (c-team s))]
+    (when (and (person?) (= s (viewed))) (fill-rect-a (- x 4) (- y 1) 262 17 tc 40))
+    (fill-rect x (+ y 1) 3 13 tc)
+    (draw-text-at-s (name-addr s) (+ x 10) y 1 (if (> (c-fire-t s) 0) (flame) (ink)))
+    (draw-int-r (c-goals s) (+ x 190) y 1 (ink))
+    (draw-int-r (c-assists s) (+ x 222) y 1 (ink))
+    (draw-int-r (c-saves s) (+ x 254) y 1 (ink-dim))))
+
+;; one team's block at (x y): its name and score, then its three cars
+(defn board-team! [(t : I32) (x : I32) (y : I32)] : Unit
+  (let [tc (team-color t)]
+    (fill-rect x (+ y 15) 258 1 tc)
+    (draw-text-s (team-name t) (+ x 10) y 1 tc)
+    (draw-int (score-of t) (+ x (+ 18 (text-width (team-name t) 1))) y 1 (ink))
+    (draw-text-r "G" (+ x 190) y 1 (ink-faint))
+    (draw-text-r "A" (+ x 222) y 1 (ink-faint))
+    (draw-text-r "S" (+ x 254) y 1 (ink-faint))
+    (dotimes [k 3] (board-row! (+ (* t 3) k) x (+ (+ y 20) (* k 17))))))
+
+;; the 2 x 2 board, its top-left corner at (x y): teams sit where their towers do
+(defn draw-board! [(x : I32) (y : I32)] : Unit
+  (dotimes [t 4]
+    (board-team! t (+ x (* (bit-and t 1) 280)) (+ y (* (shr t 1) 82)))))
+
+(defn hud-board! [] : Unit
+  (when (board-open?)
+    (card 36 56 568 188 (panel-ink) 205 (rgb 120 122 140) 90)
+    (draw-text-c "SCORES" 320 62 1 (ink-dim))
+    (draw-board! 52 86)))
+
+;; ---- all of it --------------------------------------------------------------------------------------------------------------------------------
+(defn board-open? [] : Bool (and (!= (gi (g-score-open)) 0) (= (gi (g-phase)) 1)))
+
+(defn hud-draw! [] : Unit
+  (let [board (board-open?)]
+    (hud-top!)
+    (when (and (person?) (not board))
+      (hud-car! (viewed))
+      (hud-magnet! (viewed))
+      (hud-fire! (viewed))
+      (hud-ball! (viewed)))
+    (when (not board)
+      (hud-feed!)
+      (hud-banners!))
+    (when (and (not board) (= (gi (g-paused)) 0)) (hud-hint!))
+    (hud-board!)))

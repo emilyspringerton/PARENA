@@ -16,5 +16,6 @@ stdlib/bedrockracers/web/br_mesh.prn
 stdlib/bedrockracers/web/br_cam.prn
 stdlib/bedrockracers/web/br_view.prn
 stdlib/bedrockracers/web/br_input.prn
+stdlib/bedrockracers/web/br_hud.prn
 stdlib/bedrockracers/web/br_ui.prn
 stdlib/bedrockracers/web/br_main.prn

@@ -1,46 +1,92 @@
-;; stdlib/bedrockracers/web/br_ui.prn -- the minimal flow: title -> a match -> the end, a restrained placeholder HUD, the frame.
+;; stdlib/bedrockracers/web/br_ui.prn -- the flow: title -> a match -> the end, the screens, the frame. (The HUD is br_hud.prn.)
 ;;
-;; This is the FOUNDATION's flow, enough to play and to watch: the HUD and the screens proper are a later stage's (they replace
-;; draw-title!, draw-hud!, draw-end! and may take over ui-keys!; G words 448..511 are theirs).
-;;   TITLE  (phase 0)  the empty arena turning slowly under its lamps; ENTER / Space / pad A: a match against level-2 bots, you in
-;;                     slot 0 (team amber); B / pad X: watch twelve bots play (the spectator camera)
+;;   TITLE  (phase 0)  the empty arena turning slowly under its lamps. Pick a team (Left/Right, A/D, d-pad or click) and the bots' skill
+;;                     (Up/Down, W/S or click: EASY, NORMAL, HARD); ENTER / Space / pad A / PLAY: a match, you in your team's first car;
+;;                     B / pad X / WATCH: twelve bots play (the spectator camera)
 ;;   MATCH  (phase 1)  the sim at a fixed 16 ms step (br_sim.prn's tick-ms: the physics' dt is 0.016, so the step is 62.5 Hz
 ;;                     rather than exactly 60 -- one sim tick per display frame on a 60 Hz screen, with the odd frame that runs
-;;                     two); Esc / pad Start pauses (a bot match waits for you), V / pad Y toggles the ball cam
-;;   END    (phase 2)  the result over the frozen arena; ENTER / Esc / pad A: back to the title
+;;                     two); Esc / pad Start pauses (a bot match waits for you too), V / pad Y toggles the ball cam, Tab shows the scores
+;;   PAUSE             Esc / Enter / pad Start / RESUME: play on; Backspace / pad B / LEAVE: back to the title
+;;   END    (phase 2)  the result over the frozen arena, with the board; ENTER / Esc / pad A / TITLE: back to the title,
+;;                     R / pad X / REMATCH: the same teams again
+;; G words 448..511 are the screens' and the HUD's (br_hud.prn has the first).
 
 (defn clock-slot [] : I32 (+ (g-base) 1504))   ; F64 at G words 376..377: the previous br-frame timestamp
 
 ;; ---- starting and leaving --------------------------------------------------------------------------------------------------------------
-;; roster: bit s = car s is driven by the person at this keyboard (1: slot 0, team 0; 0: bots only)
-(defn start-match! [(roster : I32)] : Unit
-  (do (begin-match! (+ (gi (g-ticker)) (* 7919 (gi (g-match-no)))) 2 roster)
-      (gi! (g-me) 0) (gi! (g-view-slot) 0)
-      (gi! (g-phase) 1) (gi! (g-paused) 0) (gi! (g-end-t) 0) (gi! (g-ui-t) 0)
-      (clear-cmd!)
-      (cam-for-match!)))
+;; person: 1 = the person at this keyboard drives the first car of the team picked on the title; 0 = twelve bots, watched
+(defn start-match! [(person : I32)] : Unit
+  (let [slot (if (= person 1) (* 3 (clamp-i (gi (g-pick-team)) 0 3)) 0)]
+    (begin-match! (+ (gi (g-ticker)) (* 7919 (gi (g-match-no)))) (clamp-i (gi (g-pick-level)) 1 3) (if (= person 1) (shl 1 slot) 0))
+    (gi! (g-me) slot) (gi! (g-view-slot) slot)
+    (gi! (g-phase) 1) (gi! (g-paused) 0) (gi! (g-end-t) 0) (gi! (g-ui-t) 0)
+    (clear-cmd!)
+    (cam-for-match!)))
 
 (defn go-title! [] : Unit
   (do (gi! (g-phase) 0) (gi! (g-paused) 0) (gi! (g-ui-t) 0) (gi! (g-cam-mode) 3) (clear-cmd!)))
 
 (defn human-playing? [] : Bool (!= (gi (g-roster)) 0))
 
-;; the keys that drive the flow, once per tick
-(defn ui-keys! [] : Unit
-  (let [ph (gi (g-phase))
-        go (or (or (key-hit? (kc-enter)) (key-hit? (kc-space))) (or (any-pad-hit? (pb-a)) (any-pad-hit? (pb-start))))]
+;; ---- the keys and clicks that drive the flow, once per tick -------------------------------------------------------------------------------
+(defn in-box? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
+  (and (and (>= (pointer-x) x) (< (pointer-x) (+ x w))) (and (>= (pointer-y) y) (< (pointer-y) (+ y h)))))
+(defn click-in? [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool (and (clicked?) (in-box? x y w h)))
+
+;; the title's controls: four team swatches, three skill pills, PLAY and WATCH
+(defn team-box-x [(t : I32)] : I32 (+ 197 (* t 64)))
+(defn level-box-x [(l : I32)] : I32 (+ 192 (* l 88)))     ; l = 0..2
+(defn play-box-x [] : I32 214)
+(defn watch-box-x [] : I32 326)
+
+(defn title-picks! [] : Unit
+  (let [left (or (key-hit? (kc-left)) (or (key-hit? (kc-a)) (any-pad-hit? (pb-left))))
+        right (or (key-hit? (kc-right)) (or (key-hit? (kc-d)) (any-pad-hit? (pb-right))))
+        up (or (key-hit? (kc-up)) (or (key-hit? (kc-w)) (any-pad-hit? (pb-up))))
+        down (or (key-hit? (kc-down)) (or (key-hit? (kc-s)) (any-pad-hit? (pb-down))))]
+    (when left (gi! (g-pick-team) (mod (+ (gi (g-pick-team)) 3) 4)))
+    (when right (gi! (g-pick-team) (mod (+ (gi (g-pick-team)) 1) 4)))
+    (when up (gi! (g-pick-level) (min-i 3 (+ (gi (g-pick-level)) 1))))
+    (when down (gi! (g-pick-level) (max-i 1 (- (gi (g-pick-level)) 1))))
+    (dotimes [t 4] (when (click-in? (team-box-x t) 176 54 28) (gi! (g-pick-team) t)))
+    (dotimes [l 3] (when (click-in? (level-box-x l) 236 80 22) (gi! (g-pick-level) (+ l 1))))))
+
+(defn title-keys! [] : Unit
+  (do
+    (title-picks!)
     (cond
-      (= ph 0) (cond go (start-match! 1)
-                     (or (key-hit? (kc-b)) (any-pad-hit? (pb-x))) (start-match! 0)
-                     :else unit)
-      (= ph 1) (do
-                 (when (or (key-hit? (kc-esc)) (any-pad-hit? (pb-start)))
-                   (gi! (g-paused) (- 1 (gi (g-paused))))
-                   (clear-cmd!))
-                 (when (and (human-playing?) (or (key-hit? (kc-v)) (any-pad-hit? (pb-y))))
-                   (gi! (g-ball-cam) (- 1 (gi (g-ball-cam))))
-                   (gi! (g-cam-mode) (if (= (gi (g-ball-cam)) 1) 1 0))))
-      :else (when (and (> (gi (g-end-t)) 30) (or go (key-hit? (kc-esc)))) (go-title!)))))
+      (or (or (key-hit? (kc-enter)) (key-hit? (kc-space))) (or (any-pad-hit? (pb-a)) (click-in? (play-box-x) 272 100 26))) (start-match! 1)
+      (or (key-hit? (kc-b)) (or (any-pad-hit? (pb-x)) (click-in? (watch-box-x) 272 100 26))) (start-match! 0)
+      :else unit)))
+
+(defn play-keys! [] : Unit
+  (do
+    (when (or (key-hit? (kc-esc)) (any-pad-hit? (pb-start)))
+      (gi! (g-paused) 1)
+      (clear-cmd!))
+    (when (and (human-playing?) (or (key-hit? (kc-v)) (any-pad-hit? (pb-y))))
+      (gi! (g-ball-cam) (- 1 (gi (g-ball-cam))))
+      (gi! (g-cam-mode) (if (= (gi (g-ball-cam)) 1) 1 0)))))
+
+(defn pause-keys! [] : Unit
+  (cond
+    (or (or (key-hit? (kc-esc)) (key-hit? (kc-enter))) (or (any-pad-hit? (pb-start)) (click-in? 226 168 84 26))) (gi! (g-paused) 0)
+    (or (key-hit? (kc-backspace)) (or (any-pad-hit? (pb-b)) (click-in? 330 168 84 26))) (go-title!)
+    :else unit))
+
+(defn end-keys! [] : Unit
+  (when (> (gi (g-end-t)) 30)
+    (cond
+      (or (or (key-hit? (kc-enter)) (key-hit? (kc-space))) (or (key-hit? (kc-esc)) (or (any-pad-hit? (pb-a)) (click-in? 214 300 100 26)))) (go-title!)
+      (or (key-hit? (kc-r)) (or (any-pad-hit? (pb-x)) (click-in? 326 300 100 26))) (start-match! (b2i (human-playing?)))
+      :else unit)))
+
+(defn ui-keys! [] : Unit
+  (let [ph (gi (g-phase))]
+    (cond
+      (= ph 0) (title-keys!)
+      (= ph 1) (if (= (gi (g-paused)) 1) (pause-keys!) (play-keys!))
+      :else (end-keys!))))
 
 ;; one fixed step: the person's command, the sim, the flow keys, the input edges spent
 (defn step-once! [] : Unit
@@ -48,64 +94,80 @@
     (when (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 0))
       (if (human-playing?) (gather-cmd!) (clear-cmd!))
       (sim-tick!))
+    (gi! (g-score-open) (b2i (and (= (gi (g-phase)) 1) (key-down? (kc-tab)))))
     (ui-keys!)
     (when (= (gi (g-phase)) 2) (gi! (g-end-t) (+ (gi (g-end-t)) 1)))
     (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
     (end-input-tick!)))
 
-;; ---- the placeholder HUD ---------------------------------------------------------------------------------------------------------------------
-(defn ink [] : I32 (rgb 232 228 218))
-(defn ink-dim [] : I32 (rgb 150 150 160))
-(defn panel-ink [] : I32 (rgb 14 15 22))
+;; ---- the screens -------------------------------------------------------------------------------------------------------------------------------
+;; a button; it lights when the pointer is over it
+(defn button! [(x : I32) (y : I32) (w : I32) (h : I32) (label : String)] : Unit
+  (let [hot (in-box? x y w h)]
+    (card x y w h (panel-ink) (if hot 235 195) (if hot (rgb 200 196 184) (rgb 90 92 110)) (if hot 210 100))
+    (draw-text-c label (+ x (/ w 2)) (+ y 5) 1 (if hot (ink) (ink-dim)))))
 
-(defn secs-left [] : I32 (/ (+ (* (gi (g-match-left)) 2) 124) 125))
+(defn level-name [(l : I32)] : String (case l 1 "EASY" 2 "NORMAL" "HARD"))
 
-(defn draw-hud! [] : Unit
-  (do
-    ;; the clock and the four scores, one quiet strip at the top
-    (card 236 6 168 22 (panel-ink) 150 (rgb 90 92 110) 60)
+(defn draw-swatches! [] : Unit
+  (let [pt (gi (g-pick-team))]
+    (draw-text-c "YOUR TEAM" 320 156 1 (ink-dim))
     (dotimes [t 4]
-      (let [x (+ 244 (* t 26)) c (team-color t)]
-        (fill-rect x 11 3 12 c)
-        (draw-int (score-of t) (+ x 6) 9 1 (ink))))
-    (if (= (gi (g-overtime)) 1)
-        (draw-text "OT" 360 9 1 (rgb 236 184 92))
-        (draw-clock (secs-left) 352 9 1 (ink)))
-    ;; the kickoff count
-    (when (> (gi (g-countdown)) 0)
-      (draw-int-c (max-i 1 (/ (+ (* (gi (g-countdown)) 2) 124) 125)) 320 130 4 (ink)))
-    ;; a goal
-    (when (> (gi (g-goal-t)) 0)
-      (let [t (gi (g-banner-team))]
-        (draw-text-c (if (= (gi (g-banner-id)) 2) "OWN GOAL" "GOAL") 320 120 3 (team-color t))
-        (draw-text-c (team-name t) 320 172 1 (ink-dim))))
-    (when (= (gi (g-paused)) 1)
-      (card 250 150 140 40 (panel-ink) 200 (rgb 120 122 140) 90)
-      (draw-text-c "PAUSED" 320 157 2 (ink))
-      (draw-text-c "Esc to play on" 320 178 1 (ink-dim)))))
+      (let [x (team-box-x t) c (team-color t)]
+        (fill-rect-a x 176 54 28 c (if (= t pt) 235 90))
+        (when (= t pt) (rect-outline x 176 54 28 (ink)))
+        (when (and (!= t pt) (in-box? x 176 54 28)) (rect-outline-a x 176 54 28 (ink-dim) 160))))
+    (draw-text-c (team-name pt) 320 208 1 (team-color pt))))
+
+(defn draw-levels! [] : Unit
+  (let [pl (gi (g-pick-level))]
+    (dotimes [l 3]
+      (let [x (level-box-x l) on (= (+ l 1) pl)]
+        (card x 236 80 22 (panel-ink) (if on 235 150) (if on (ink) (rgb 70 72 88)) (if on 220 100))
+        (draw-text-c (level-name (+ l 1)) (+ x 40) 240 1 (if on (ink) (ink-faint)))))
+    (draw-text-r "BOTS" 184 240 1 (ink-faint))))
 
 (defn draw-title! [] : Unit
   (do
-    (fill-rect-a 0 112 640 120 (panel-ink) 150)
-    (draw-text-c "BEDROCK RACERS" 320 128 3 (ink))
-    (dotimes [t 4] (fill-rect (+ 262 (* t 30)) 182 26 3 (team-color t)))
-    (draw-text-c "ENTER  play the bots          B  watch the bots" 320 198 1 (ink-dim))))
+    (fill-rect-a 0 80 640 236 (panel-ink) 150)
+    (draw-text-c "BEDROCK RACERS" 320 90 3 (ink))
+    (draw-swatches!)
+    (draw-levels!)
+    (button! (play-box-x) 272 100 26 "PLAY")
+    (button! (watch-box-x) 272 100 26 "WATCH")
+    (draw-text-c "Enter play   B watch   arrows pick a team and a skill" 320 332 1 (ink-faint))))
+
+(defn draw-pause! [] : Unit
+  (do (card 206 124 228 96 (panel-ink) 215 (rgb 120 122 140) 90)
+      (draw-text-c "PAUSED" 320 134 2 (ink))
+      (button! 226 168 84 26 "RESUME")
+      (button! 330 168 84 26 "LEAVE")
+      (draw-text-c "Esc play on     Backspace leave" 320 198 1 (ink-faint))))
+
+(defn end-reason-text [(r : I32)] : String
+  (case r 1 "first to the goal limit" 2 "full time" 3 "golden goal" "match over"))
 
 (defn draw-end! [] : Unit
   (let [w (gi (g-winner))]
-    (card 200 120 240 84 (panel-ink) 210 (rgb 120 122 140) 90)
+    (fill-rect-a 0 0 640 360 (panel-ink) 160)
     (if (>= w 0)
-        (do (draw-text-c (team-name w) 320 134 3 (team-color w))
-            (draw-text-c "WIN" 320 166 1 (ink)))
-        (draw-text-c "MATCH OVER" 320 140 2 (ink)))
-    (draw-text-c "ENTER  back to the title" 320 186 1 (ink-dim))))
+        (let [nw (text-width (team-name w) 3)
+              x (- 320 (/ (+ nw (text-width " WINS" 3)) 2))]
+          (draw-text-s (team-name w) x 18 3 (team-color w))
+          (draw-text-s " WINS" (+ x nw) 18 3 (ink)))
+        (draw-text-c "NO WINNER" 320 18 3 (ink)))
+    (draw-text-c (end-reason-text (gi (g-end-reason))) 320 70 1 (ink-dim))
+    (draw-board! 40 100)
+    (button! 214 300 100 26 "TITLE")
+    (button! 326 300 100 26 "REMATCH")))
 
 ;; ---- the frame ------------------------------------------------------------------------------------------------------------------------------
 (defn ui-render! [(al : F32)] : Unit
   (let [ph (gi (g-phase))]
     (if (= ph 0)
         (do (gi! (g-cam-mode) 3) (cam-update! al) (render-world! al false) (draw-title!))
-        (do (cam-update! al) (render-world! al true) (draw-hud!) (when (= ph 2) (draw-end!))))))
+        (do (cam-update! al) (render-world! al true)
+            (if (= ph 2) (draw-end!) (do (hud-draw!) (when (= (gi (g-paused)) 1) (draw-pause!))))))))
 
 ;; advance the sim by however many 16 ms ticks real time owes (at most six: a stalled tab does not fast-forward a minute), then
 ;; draw. alpha, how far the clock is into the next tick, blends every pose; it is 1 whenever the sim is not running (paused, the

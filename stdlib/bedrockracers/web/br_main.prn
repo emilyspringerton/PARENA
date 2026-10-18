@@ -1,7 +1,7 @@
 ;; stdlib/bedrockracers/web/br_main.prn -- the exports the page calls (and the test hooks).
 (defn br-init [] : Unit
   (do (load-font) (init-arena!) (build-meshes!) (gi! (g-rng2) 9001)
-      (gf! (g-sens) 1.0) (gi! (g-phase) 0) (gi! (g-cam-mode) 3)
+      (gf! (g-sens) 1.0) (gi! (g-phase) 0) (gi! (g-cam-mode) 3) (gi! (g-pick-team) 0) (gi! (g-pick-level) 2)
       ;; memory starts zeroed, and holder 0 would mean car 0 has the ball: nobody has it
       (set-b-holder! -1) (set-b-pass-from! -1)))
 (defn br-car-addr [(s : I32)] : I32 (car-base s))

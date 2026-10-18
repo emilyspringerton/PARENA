@@ -91,7 +91,7 @@
 
 (defn pb-a [] : I32 0) (defn pb-b [] : I32 1) (defn pb-x [] : I32 2) (defn pb-y [] : I32 3)
 (defn pb-lb [] : I32 4) (defn pb-rb [] : I32 5) (defn pb-start [] : I32 9)
-(defn pb-left [] : I32 14) (defn pb-right [] : I32 15)
+(defn pb-up [] : I32 12) (defn pb-down [] : I32 13) (defn pb-left [] : I32 14) (defn pb-right [] : I32 15)
 
 ;; a stick axis with a 0.15 dead zone, rescaled so it still reaches 1
 (defn dz [(v : F32)] : F32
@@ -120,7 +120,7 @@
 (defn kc-tab [] : I32 9) (defn kc-enter [] : I32 13) (defn kc-shift [] : I32 16) (defn kc-esc [] : I32 27)
 (defn kc-space [] : I32 32) (defn kc-left [] : I32 37) (defn kc-up [] : I32 38) (defn kc-right [] : I32 39) (defn kc-down [] : I32 40)
 (defn kc-a [] : I32 65) (defn kc-b [] : I32 66) (defn kc-c [] : I32 67) (defn kc-d [] : I32 68) (defn kc-e [] : I32 69)
-(defn kc-f [] : I32 70) (defn kc-q [] : I32 81) (defn kc-s [] : I32 83) (defn kc-v [] : I32 86) (defn kc-w [] : I32 87)
+(defn kc-f [] : I32 70) (defn kc-r [] : I32 82) (defn kc-backspace [] : I32 8) (defn kc-q [] : I32 81) (defn kc-s [] : I32 83) (defn kc-v [] : I32 86) (defn kc-w [] : I32 87)
 
 ;; ---- the mouse --------------------------------------------------------------------------------------------------------------------------------
 ;; movement while the pointer is locked is owed to the next tick (g-mouse-x / g-mouse-y, br_mem.prn)

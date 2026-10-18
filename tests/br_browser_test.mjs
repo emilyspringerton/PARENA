@@ -55,6 +55,11 @@ async function waitPill(p, text, ms = 8000) {
 const pixels = (p) => p.evaluate(() => { const c = document.getElementById('br-canvas'); return Array.from(c.getContext('2d').getImageData(0, 0, c.width, c.height).data); });
 const distinct = (a) => { const s = new Set(); for (let i = 0; i < a.length; i += 4 * 97) s.add((a[i] << 16) | (a[i + 1] << 8) | a[i + 2]); return s.size; };
 const diff = (a, b) => { let d = 0; for (let i = 0; i < a.length; i += 4) d += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); return d / (a.length / 4) / 3; };
+// a click at a framebuffer coordinate (the canvas is 640x360 scaled to fit the page)
+async function clickFb(p, x, y) {
+  const box = await p.locator('#br-canvas').boundingBox();
+  await p.mouse.click(box.x + (x / 640) * box.width, box.y + (y / 360) * box.height);
+}
 const shot = (p, name) => p.screenshot({ path: path.join(outdir, name + '.png') });
 const setPad = (p, o) => p.evaluate((x) => {
   window.__pad = x ? { connected: true, axes: x.axes || [0, 0, 0, 0], buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: (x.pressed || []).includes(i), value: (x.values || {})[i] || 0 })) } : null;
@@ -74,6 +79,8 @@ ok(diff(title, title2) > 0.05, `the title animates: the arena orbits (mean pixel
 await shot(A, '01-title');
 
 // ---- a match --------------------------------------------------------------------------------------------------------------------------
+await sleep(200); await A.keyboard.press('ArrowRight'); await sleep(120); await shot(A, '01b-title-teal');
+await A.keyboard.press('ArrowLeft');
 await A.keyboard.press('Enter');
 ok(await waitPill(A, 'In a match'), 'Enter starts a match: the pill says In a match');
 await sleep(1200);
@@ -81,12 +88,15 @@ await shot(A, '02-kickoff');
 const k1 = await pixels(A); await sleep(500); const k2 = await pixels(A);
 ok(diff(k1, k2) > 0.02, `the countdown frame is alive (mean pixel change ${diff(k1, k2).toFixed(2)})`);
 await sleep(3200);                                   // past the kickoff countdown
-const idle1 = await pixels(A); await sleep(700); const idle2 = await pixels(A);
+// the HUD's SPEED readout is the probe: "0" is a few pixels of ink, a three-digit speed is many more
+const inkAt = async () => { const a = await pixels(A); let n = 0; for (let y = 316; y < 334; y++) for (let x = 16; x < 56; x++) { const i = (y * 640 + x) * 4; if (a[i] > 200 && a[i + 1] > 200 && a[i + 2] > 185) n++; } return n; };
+const idleInk = await inkAt();
 await A.keyboard.down('w'); await A.keyboard.down('Shift');
-await sleep(250); const drive1 = await pixels(A); await sleep(700); const drive2 = await pixels(A);
+await sleep(1400);
+const driveInk = await inkAt();
 await shot(A, '03-driving');
 await A.keyboard.up('w'); await A.keyboard.up('Shift');
-ok(diff(drive1, drive2) > diff(idle1, idle2) * 1.5, `holding W and Shift moves the view more than idling (mean pixel change ${diff(drive1, drive2).toFixed(2)} vs ${diff(idle1, idle2).toFixed(2)})`);
+ok(driveInk > idleInk * 1.6 + 10, `holding W and Shift raises the SPEED readout: ${idleInk} px of digit ink at rest, ${driveInk} at speed`);
 // right mouse: the magnet, and no browser menu over the game
 const prevented = await A.evaluate(() => { const e = new MouseEvent('contextmenu', { cancelable: true, bubbles: true }); document.getElementById('br-canvas').dispatchEvent(e); return e.defaultPrevented; });
 ok(prevented, 'a right click over the game does not open the browser menu');
@@ -99,6 +109,11 @@ await A.keyboard.press('Escape');
 ok(await waitPill(A, 'Paused'), 'Esc pauses');
 const p1 = await pixels(A); await sleep(600); const p2 = await pixels(A);
 ok(diff(p1, p2) === 0, `a paused frame is perfectly still, even right after pausing a fast car (mean pixel change ${diff(p1, p2).toFixed(3)})`);
+await shot(A, '05-paused');
+await clickFb(A, 268, 181);
+ok(await waitPill(A, 'In a match'), 'a click on RESUME resumes (the pointer maps from page pixels to framebuffer pixels)');
+await A.keyboard.press('Escape');
+ok(await waitPill(A, 'Paused'), 'Esc pauses again');
 await A.keyboard.press('Escape');
 ok(await waitPill(A, 'In a match'), 'Esc resumes');
 const sy0 = await A.evaluate(() => window.scrollY);
@@ -130,8 +145,12 @@ await setPad(P, null);
 
 // ---- the bot-only view -----------------------------------------------------------------------------------------------------------------------
 const B = await newPage();
-await B.keyboard.press('b');
-ok(await waitPill(B, 'Watching bots'), 'B at the title watches the bots');
+await sleep(300); await shot(B, '00-title-fresh');
+await clickFb(B, 80, 40);                            // nothing there: a stray click does nothing
+await clickFb(B, 389 + 10, 190);                     // the coral swatch
+await clickFb(B, 368 + 40, 246);                     // HARD
+await clickFb(B, 376, 285);                          // WATCH
+ok(await waitPill(B, 'Watching bots'), 'a click on WATCH watches the bots');
 await sleep(7000);
 await shot(B, '04-spectator');
 const s1 = await pixels(B); await sleep(500); const s2 = await pixels(B);

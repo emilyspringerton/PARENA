@@ -241,7 +241,9 @@
     (fx-ball!)
     (parts-tick!)
     (lights-tick!)
-    (when (> (gi (g-fire-ann-t)) 0) (gi! (g-fire-ann-t) (- (gi (g-fire-ann-t)) 1)))))
+    (when (> (gi (g-fire-ann-t)) 0) (gi! (g-fire-ann-t) (- (gi (g-fire-ann-t)) 1)))
+    ;; the overtime and ball-reset banners (rules set g-banner-t; the HUD is the only reader, so it is counted down here)
+    (when (> (gi (g-banner-t)) 0) (gi! (g-banner-t) (- (gi (g-banner-t)) 1)))))
 
 ;; a new match: no particles, no lights, the dice seeded from the match seed
 (defn fx-reset! [(seed : I32)] : Unit

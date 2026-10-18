@@ -19,7 +19,7 @@ for (const f of fs.readdirSync(web)) {
   for (const m of fs.readFileSync(path.join(web, f), 'utf8').matchAll(/\(defn g-([a-z0-9-]+) \[\] : I32 (\d+)\)/g)) G[m[1]] = +m[2];
 }
 const KEY = { enter: 13, esc: 27, space: 32, shift: 16, tab: 9, left: 37, up: 38, right: 39, down: 40,
-  a: 65, b: 66, c: 67, d: 68, e: 69, f: 70, q: 81, s: 83, v: 86, w: 87 };
+  a: 65, b: 66, c: 67, d: 68, e: 69, f: 70, q: 81, s: 83, v: 86, w: 87, backspace: 8 };
 
 // a booted game with a frame clock: one br_frame = 16 ms exactly, so one frame is one sim tick
 async function game() {
@@ -151,6 +151,80 @@ const simState = (g) => Buffer.concat([Buffer.from(new Uint8Array(g.x.memory.buf
   g.x.br_pad(0, 0, 0, 0, 0, 0, 0, 1 << 9); g.frame(2); g.x.br_pad(0, 0, 0, 0, 0, 0, 0, 0); g.frame(2);
   ok(g.x.br_status() === 3, 'pad Start pauses');
   g.x.br_pad_gone(0);
+}
+
+// ---- the title's picks and clicks, the pause menu, the results screen -----------------------------------------------------------------------------
+{
+  const g = await game(); g.frame(30);
+  const click = (x, y) => { g.x.br_pointer(x, y); g.x.br_button(0, 1); g.frame(2); g.x.br_button(0, 0); g.frame(2); };
+  ok(g.gi('pick-team') === 0 && g.gi('pick-level') === 2, 'the title starts on the amber team and NORMAL bots');
+  g.tap(KEY.right); g.tap(KEY.right); ok(g.gi('pick-team') === 2, 'Right twice picks the third team');
+  g.tap(KEY.left); g.tap(KEY.a); ok(g.gi('pick-team') === 0, 'Left and A step back');
+  g.tap(KEY.left); ok(g.gi('pick-team') === 3, 'Left from the first team wraps to the last');
+  g.tap(KEY.d); ok(g.gi('pick-team') === 0, 'and D from the last wraps to the first');
+  g.tap(KEY.up); g.tap(KEY.up); ok(g.gi('pick-level') === 3, 'Up raises the bots\' skill to HARD and stops there');
+  g.tap(KEY.down); g.tap(KEY.s); g.tap(KEY.s); ok(g.gi('pick-level') === 1, 'Down and S lower it to EASY and stop there');
+  click(400, 190); ok(g.gi('pick-team') === 3, 'a click on the coral swatch picks coral');
+  click(400, 246); ok(g.gi('pick-level') === 3, 'a click on HARD picks HARD');
+  ok(g.x.br_phase() === 0, 'picking starts nothing');
+  click(250, 284);
+  ok(g.x.br_phase() === 1 && g.gi('roster') === (1 << 9) && g.gi('me') === 9 && g.gi('view-slot') === 9 && g.gi('bot-level') === 3,
+    'a click on PLAY starts a match with the person in coral\'s first car (slot 9) against HARD bots');
+  ok(g.car(9, 'is-bot') === 0 && g.car(0, 'is-bot') === 1 && g.car(11, 'is-bot') === 1, 'only slot 9 is a person');
+  ok(g.car(9, 'team') === 3 && g.gi('cam-mode') === 0, 'slot 9 is on team 3 and the chase camera follows it');
+  g.frame(g.gi('countdown') + 5); g.hold(KEY.w); g.frame(12);
+  const driven = g.car(9, 'in-thr'), sp9 = Math.hypot(...g.vel(9));
+  g.release(KEY.w); g.frame(4);
+  ok(driven > 0.9 && sp9 > 5 && g.car(9, 'in-thr') === 0, `the keys drive slot 9: W gives it full throttle (speed ${sp9.toFixed(0)}) and letting go gives none`);
+  g.tap(KEY.esc); ok(g.x.br_status() === 3, 'Esc pauses');
+  click(370, 180); ok(g.x.br_phase() === 0, 'LEAVE on the pause card goes back to the title');
+  g.tap(KEY.enter); g.tap(KEY.esc); click(260, 180);
+  ok(g.x.br_status() === 1, 'RESUME on the pause card plays on');
+  g.tap(KEY.esc); g.tap(KEY.backspace); ok(g.x.br_phase() === 0, 'Backspace on the pause card leaves the match');
+  g.tap(KEY.enter); g.frame(100); g.x.br_t_score(9, -1, 0); g.frame(3); g.x.br_t_end();
+  g.frame(10); g.tap(82); ok(g.x.br_phase() === 2, 'R is ignored for the first half second of the results (a stray key does not skip them)');
+  g.frame(40);
+  click(350, 312);
+  ok(g.x.br_phase() === 1 && g.gi('roster') === (1 << 9) && g.gi('countdown') > 0 && g.gi('score') === 0, 'REMATCH starts the same teams again with the scores back at zero');
+  g.x.br_t_end(); g.frame(60); click(260, 312);
+  ok(g.x.br_phase() === 0, 'TITLE on the results screen goes back to the title');
+  g.tap(66);
+  g.hold(KEY.tab); g.frame(2); ok(g.gi('score-open') === 1, 'Tab opens the scoreboard for a spectator too');
+  g.release(KEY.tab); g.frame(2); ok(g.gi('score-open') === 0, 'and letting go closes it');
+}
+
+// ---- the HUD draws what the sim says ----------------------------------------------------------------------------------------------------------------
+{
+  const g = await game(); g.frame(5); g.tap(KEY.enter); g.frame(300);
+  const count = (x0, y0, x1, y1, pred) => { const a = g.fb(); let n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * 640 + x) * 4; if (pred(a[i], a[i + 1], a[i + 2])) n++; } return n; };
+  const amber = (r, gg, b) => r > 190 && gg > 130 && gg < 215 && b < 150;
+  const red = (r, gg, b) => r > 200 && gg < 140 && b < 130;
+  const teal = (r, gg, b) => r < 130 && gg > 150 && b > 140;
+  const flameC = (r, gg, b) => r > 220 && gg > 110 && gg < 200 && b < 110;
+  for (const [k, v] of Object.entries({ ux: 0, uy: 1, uz: 0, fx: 0, fy: 0, fz: 1, rx: -1, ry: 0, rz: 0 })) g.setCar(0, k, v);
+  g.x.br_t_place(0, 0, 4, -200); for (const [k, v] of Object.entries({ ux: 0, uy: 1, uz: 0, fx: 0, fy: 0, fz: 1, rx: -1, ry: 0, rz: 0 })) g.setCar(0, k, v);
+  g.x.br_t_ball(0, 300, 380, 0, 0, 0); g.frame(10);
+  ok(count(592, 304, 632, 344, amber) === 0, 'the magnet ring is dim and grey while the magnet is off');
+  g.hold(KEY.f); g.frame(4); const pulling = count(592, 304, 632, 344, amber);
+  ok(pulling > 40, `it lights in the team colour while pulling (${pulling} px)`);
+  g.release(KEY.f); g.frame(2);
+  const cx = g.pos(0)[0] + g.fwd(0)[0] * 17, cz = g.pos(0)[2] + g.fwd(0)[2] * 17; g.x.br_t_ball(cx, 13, cz, 0, 0, 0);
+  g.hold(KEY.f); g.frame(40); const holding = count(592, 304, 632, 344, amber);
+  ok(g.ball('holder') === 0 && holding > pulling, `and fills with the carry clock when the ball is held (${holding} px)`);
+  g.release(KEY.f); g.frame(2);
+  ok(count(42, 343, 138, 348, teal) > 400, 'a full tank draws a full teal air bar');
+  g.setCar(0, 'air', 10); let seen = 0; for (let i = 0; i < 30 && !seen; i++) { g.frame(1); seen = count(42, 343, 138, 348, red); }
+  ok(seen > 15 && seen < 120, `a tank at 10% draws a short red bar (${seen} px)`);
+  g.setCar(0, 'air', 100); g.frame(2);
+  g.x.br_t_ignite(0); g.frame(60);
+  ok(count(538, 300, 628, 310, flameC) > 200 && count(100, 60, 540, 90, flameC) > 200, 'ON FIRE draws the flame bar and the banner');
+  g.x.br_t_score(1, -1, 3); g.frame(30);
+  ok(count(220, 110, 420, 160, amber) > 400, 'a goal draws the big GOAL banner in the scorer\'s colour');
+  g.frame(400);                                       // the goal's kickoff has put the cars back; stage the car again
+  g.x.br_t_place(0, 0, 4, -200); for (const [k, v] of Object.entries({ ux: 0, uy: 1, uz: 0, fx: 0, fy: 0, fz: 1, rx: -1, ry: 0, rz: 0 })) g.setCar(0, k, v);
+  g.x.br_t_ball(-300, 40, -380, 0, 0, 0); g.frame(30);
+  const arrow = count(560, 80, 640, 280, (r, gg, b) => r > 200 && gg > 195 && b > 180);
+  ok(arrow > 8, `a ball behind the car gets an arrow at the screen edge (${arrow} px)`);
 }
 
 // ---- what pitch and roll do to a car in the air (the sign the keys and the stick feed) ---------------------------------------------------------------
