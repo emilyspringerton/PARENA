@@ -1,0 +1,189 @@
+;; stdlib/bedrockracers/web/br_cam.prn -- the cameras: chase, ball cam, spectator, the title's slow orbit, and a fixed test eye.
+;;
+;; Every camera runs once per RENDERED frame on wall-clock time (g-cam-dt), reads only interpolated sim state (br_view.prn's pose!
+;; and ball-pos!), and writes only camera words -- the sim never reads any of them, so a camera can never change a match.
+;; Smoothing is exponential with a time constant (a = 1 - e^(-dt / tau), here a rational stand-in that is exact enough), so it
+;; behaves the same at 30, 60 or 144 frames a second.
+;;
+;;   CHASE (mode 0)      behind the car and a little above it, looking just ahead of it. Its UP follows the car's up smoothly
+;;                       (tau 0.22 s), so on a wall or the ceiling the world turns with you and the car stays the right way up on
+;;                       screen; its DIRECTION swings in behind the car's nose (tau 0.12 s). The camera's own forward is kept
+;;                       square to that up, so wall-riding at speed keeps the horizon where the car's road is. Faster = a touch
+;;                       further back.
+;;   BALL CAM (mode 1)   the same, but the direction is from the car toward the ball: the car low in the frame, the ball ahead.
+;;                       Toggled with V (pad Y); g-ball-cam keeps the choice across matches.
+;;   SPECTATOR (mode 2)  a bot-only match: a broadcast camera high on the side of the room nearer its middle, following the ball:
+;;                       it sits 230 back from the ball along the line from the arena's centre, at about ball height + 80
+;;                       (clamped to 60..190), so a ball in a corner is seen from the middle looking out at its tower.
+;;   ORBIT (mode 3)      the title: a slow turn round the empty arena.
+;;   FIXED (mode 4)      an eye and a target set from outside (br-t-cam, screenshots).
+;;
+;; COLLISION. No camera may leave the room: after placing the eye, the line from a safe anchor (the car's roof, the ball) out to
+;; the eye is searched (bisection on the arena's own distance field, br_arena.prn) for the farthest point still 5 units clear of
+;; every surface, the tower shafts included. A camera backed into a wall slides in toward the car instead of looking at the
+;; inside of the wall.
+
+;; ---- this file's G words (br_mem.prn: 320..351) and the old camera words it uses (56..80) -----------------------------------------------
+(defn g-cam-mode [] : I32 320)     ; I32: 0 chase, 1 ball cam, 2 spectator, 3 orbit, 4 fixed
+(defn g-cam-dt [] : I32 321)       ; F32: seconds since the last rendered frame (clamped)
+(defn g-spec-x [] : I32 322)       ; F32: the spectator's smoothed eye ...
+(defn g-spec-y [] : I32 323)
+(defn g-spec-z [] : I32 324)
+(defn g-spec-dx [] : I32 325)      ; F32: ... its smoothed direction (centre -> ball, horizontal) ...
+(defn g-spec-dz [] : I32 326)
+(defn g-spec-tx [] : I32 327)      ; F32: ... and its smoothed target
+(defn g-spec-ty [] : I32 328)
+(defn g-spec-tz [] : I32 329)
+(defn g-orbit-a [] : I32 330)      ; F32: the title orbit's angle
+(defn g-fix-ex [] : I32 331)       ; F32: the fixed camera's eye ...
+(defn g-fix-ey [] : I32 332)
+(defn g-fix-ez [] : I32 333)
+(defn g-fix-tx [] : I32 334)       ; F32: ... and target
+(defn g-fix-ty [] : I32 335)
+(defn g-fix-tz [] : I32 336)
+(defn g-safe-x [] : I32 337)       ; F32: cam-safe!'s answer
+(defn g-safe-y [] : I32 338)
+(defn g-safe-z [] : I32 339)
+(defn g-cam-dist [] : I32 340)     ; F32: the chase distance (smoothed with speed)
+
+(defn chase-fov [] : F32 70.0)
+(defn spec-fov [] : F32 62.0)
+(defn cam-clear [] : F32 5.0)      ; how far every eye keeps from the arena's surfaces
+
+;; a = 1 - e^(-dt / tau), approximated (dt / tau) / (1 + dt / tau + (dt / tau)^2 / 2): exact to 1% where it matters
+(defn smooth-k [(tau : F32)] : F32
+  (let [(x : F32) (/ (gf (g-cam-dt)) tau)]
+    (clamp-f (/ x (+ (+ 1.0 x) (* 0.5 (* x x)))) 0.0 1.0)))
+
+;; the farthest point from the anchor toward the eye that is cam-clear from every surface -> g-safe-x/y/z
+(defn cam-safe! [(ax : F32) (ay : F32) (az : F32) (ex : F32) (ey : F32) (ez : F32)] : Unit
+  (if (>= (arena-free ex ey ez) (cam-clear))
+      (do (gf! (g-safe-x) ex) (gf! (g-safe-y) ey) (gf! (g-safe-z) ez))
+      (let [(lo : F32) 0.0 (hi : F32) 1.0]
+        (dotimes [i 14]
+          (let [(m : F32) (* 0.5 (+ lo hi))]
+            (if (>= (arena-free (+ ax (* (- ex ax) m)) (+ ay (* (- ey ay) m)) (+ az (* (- ez az) m))) (cam-clear))
+                (set! lo m)
+                (set! hi m))))
+        (gf! (g-safe-x) (+ ax (* (- ex ax) lo)))
+        (gf! (g-safe-y) (+ ay (* (- ey ay) lo)))
+        (gf! (g-safe-z) (+ az (* (- ez az) lo))))))
+
+;; the smoothed up (g-sup-*) toward (ux, uy, uz) with time constant tau; a half-turn in one step (lerp through zero) keeps the old
+(defn sup-toward! [(ux : F32) (uy : F32) (uz : F32) (tau : F32)] : Unit
+  (let [(k : F32) (smooth-k tau)
+        (x : F32) (lerp (gf (g-sup-x)) ux k) (y : F32) (lerp (gf (g-sup-y)) uy k) (z : F32) (lerp (gf (g-sup-z)) uz k)
+        (l : F32) (len3 x y z)]
+    (when (> l 0.05)
+      (gf! (g-sup-x) (/ x l)) (gf! (g-sup-y) (/ y l)) (gf! (g-sup-z) (/ z l)))))
+
+;; the smoothed chase direction (g-cam-dir-*) toward (dx, dy, dz)
+(defn dir-toward! [(dx : F32) (dy : F32) (dz : F32) (tau : F32)] : Unit
+  (let [(k : F32) (smooth-k tau)
+        (x : F32) (lerp (gf (g-cam-dir-x)) dx k) (y : F32) (lerp (gf (g-cam-dir-y)) dy k) (z : F32) (lerp (gf (g-cam-dir-z)) dz k)
+        (l : F32) (len3 x y z)]
+    (when (> l 0.05)
+      (gf! (g-cam-dir-x) (/ x l)) (gf! (g-cam-dir-y) (/ y l)) (gf! (g-cam-dir-z) (/ z l)))))
+
+;; snap the chase state onto car s (a new match, a respawn, a new view): no swing in from wherever the camera last was
+(defn cam-snap! [(s : I32)] : Unit
+  (do (gf! (g-sup-x) (c-ux s)) (gf! (g-sup-y) (c-uy s)) (gf! (g-sup-z) (c-uz s))
+      (gf! (g-cam-dir-x) (c-fx s)) (gf! (g-cam-dir-y) (c-fy s)) (gf! (g-cam-dir-z) (c-fz s))
+      (gf! (g-cam-dist) 34.0)
+      (gi! (g-cam-init) 1)))
+
+;; CHASE / BALL CAM behind car s, its pose interpolated by al
+(defn cam-chase! [(s : I32) (al : F32) (ballcam : Bool)] : Unit
+  (do
+    (when (= (gi (g-cam-init)) 0) (cam-snap! s))
+    (pose! s al)
+    (let [(px : F32) (gf (g-pose-x)) (py : F32) (gf (g-pose-y)) (pz : F32) (gf (g-pose-z))]
+      (sup-toward! (gf (g-pose-ux)) (gf (g-pose-uy)) (gf (g-pose-uz)) 0.22)
+      (if ballcam
+          (do (ball-pos! al)
+              (dir-toward! (- (gf (g-bp-x)) px) (- (gf (g-bp-y)) py) (- (gf (g-bp-z)) pz) 0.10))
+          (dir-toward! (gf (g-pose-fx)) (gf (g-pose-fy)) (gf (g-pose-fz)) 0.12))
+      (let [(ux : F32) (gf (g-sup-x)) (uy : F32) (gf (g-sup-y)) (uz : F32) (gf (g-sup-z))
+            (dx0 : F32) (gf (g-cam-dir-x)) (dy0 : F32) (gf (g-cam-dir-y)) (dz0 : F32) (gf (g-cam-dir-z))
+            ;; the direction made square to the up (looking straight along the up: fall back on the car's own nose)
+            (du : F32) (dot3 dx0 dy0 dz0 ux uy uz)
+            (hx0 : F32) (- dx0 (* ux du)) (hy0 : F32) (- dy0 (* uy du)) (hz0 : F32) (- dz0 (* uz du))
+            (hl : F32) (len3 hx0 hy0 hz0)
+            (fu : F32) (dot3 (gf (g-pose-fx)) (gf (g-pose-fy)) (gf (g-pose-fz)) ux uy uz)
+            (hx : F32) (if (> hl 0.1) (/ hx0 hl) (- (gf (g-pose-fx)) (* ux fu)))
+            (hy : F32) (if (> hl 0.1) (/ hy0 hl) (- (gf (g-pose-fy)) (* uy fu)))
+            (hz : F32) (if (> hl 0.1) (/ hz0 hl) (- (gf (g-pose-fz)) (* uz fu)))
+            ;; speed pulls the camera back a little (34 at rest, 44 flat out)
+            (sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))
+            (want : F32) (+ 34.0 (* 10.0 (clamp-f (/ sp 420.0) 0.0 1.0)))
+            (dist : F32) (lerp (gf (g-cam-dist)) want (smooth-k 0.5))
+            (hgt : F32) (if ballcam 13.0 11.5)
+            (ax : F32) (+ px (* ux 6.0)) (ay : F32) (+ py (* uy 6.0)) (az : F32) (+ pz (* uz 6.0))]
+        (gf! (g-cam-dist) dist)
+        (cam-safe! ax ay az (+ (- px (* hx dist)) (* ux hgt)) (+ (- py (* hy dist)) (* uy hgt)) (+ (- pz (* hz dist)) (* uz hgt)))
+        (let [(ex : F32) (gf (g-safe-x)) (ey : F32) (gf (g-safe-y)) (ez : F32) (gf (g-safe-z))
+              ;; look a little ahead of the car (ball cam: a third of the way to the ball, but never so far the car leaves
+              ;; the bottom of the frame)
+              (tx : F32) (if ballcam (lerp (+ px (* ux 4.0)) (gf (g-bp-x)) 0.3) (+ (+ px (* ux 4.5)) (* hx 14.0)))
+              (ty : F32) (if ballcam (lerp (+ py (* uy 4.0)) (gf (g-bp-y)) 0.3) (+ (+ py (* uy 4.5)) (* hy 14.0)))
+              (tz : F32) (if ballcam (lerp (+ pz (* uz 4.0)) (gf (g-bp-z)) 0.3) (+ (+ pz (* uz 4.5)) (* hz 14.0)))]
+          (cam-look! ex ey ez tx ty tz ux uy uz (chase-fov)))))))
+
+;; SPECTATOR: the broadcast camera on the ball
+(defn cam-spectator! [(al : F32)] : Unit
+  (do
+    (ball-pos! al)
+    (let [(bx : F32) (gf (g-bp-x)) (by : F32) (gf (g-bp-y)) (bz : F32) (gf (g-bp-z))
+          (bl : F32) (len2 bx bz)]
+      (when (= (gi (g-cam-init)) 0)
+        (gf! (g-spec-dx) 0.0) (gf! (g-spec-dz) 1.0)
+        (gf! (g-spec-x) bx) (gf! (g-spec-y) 150.0) (gf! (g-spec-z) (- bz 230.0))
+        (gf! (g-spec-tx) bx) (gf! (g-spec-ty) by) (gf! (g-spec-tz) bz)
+        (gi! (g-cam-init) 1))
+      ;; the direction from the middle of the room to the ball (kept while the ball is near the middle)
+      (when (> bl 60.0)
+        (let [(k : F32) (smooth-k 0.9)
+              (x : F32) (lerp (gf (g-spec-dx)) (/ bx bl) k) (z : F32) (lerp (gf (g-spec-dz)) (/ bz bl) k)
+              (l : F32) (len2 x z)]
+          (when (> l 0.05) (gf! (g-spec-dx) (/ x l)) (gf! (g-spec-dz) (/ z l)))))
+      (let [(dx : F32) (gf (g-spec-dx)) (dz : F32) (gf (g-spec-dz))
+            (wx : F32) (- bx (* dx 230.0)) (wz : F32) (- bz (* dz 230.0))
+            (wy : F32) (clamp-f (+ by 80.0) 60.0 190.0)
+            (k : F32) (smooth-k 0.45)
+            (kt : F32) (smooth-k 0.12)]
+        (gf! (g-spec-x) (lerp (gf (g-spec-x)) wx k))
+        (gf! (g-spec-y) (lerp (gf (g-spec-y)) wy k))
+        (gf! (g-spec-z) (lerp (gf (g-spec-z)) wz k))
+        (gf! (g-spec-tx) (lerp (gf (g-spec-tx)) bx kt))
+        (gf! (g-spec-ty) (lerp (gf (g-spec-ty)) by kt))
+        (gf! (g-spec-tz) (lerp (gf (g-spec-tz)) bz kt))
+        ;; the anchor is the room's middle, always clear
+        (cam-safe! 0.0 120.0 0.0 (gf (g-spec-x)) (gf (g-spec-y)) (gf (g-spec-z)))
+        (cam-look! (gf (g-safe-x)) (gf (g-safe-y)) (gf (g-safe-z)) (gf (g-spec-tx)) (gf (g-spec-ty)) (gf (g-spec-tz))
+                   0.0 1.0 0.0 (spec-fov))))))
+
+;; ORBIT: the title's slow turn (one lap a minute) round the empty arena, from the middle of a side looking across it
+(defn cam-orbit! [] : Unit
+  (let [(a : F32) (+ (gf (g-orbit-a)) (* (gf (g-cam-dt)) 0.1047))
+        (ex : F32) (* 330.0 (cosf a)) (ez : F32) (* 330.0 (sinf a))]
+    (gf! (g-orbit-a) (if (> a 6.2831855) (- a 6.2831855) a))
+    (cam-look! ex 120.0 ez (* -120.0 (cosf a)) 70.0 (* -120.0 (sinf a)) 0.0 1.0 0.0 (spec-fov))))
+
+;; FIXED: the eye and target from br-t-cam
+(defn cam-fixed! [] : Unit
+  (cam-look! (gf (g-fix-ex)) (gf (g-fix-ey)) (gf (g-fix-ez)) (gf (g-fix-tx)) (gf (g-fix-ty)) (gf (g-fix-tz)) 0.0 1.0 0.0 (chase-fov)))
+
+;; the camera for this frame
+(defn cam-update! [(al : F32)] : Unit
+  (case (gi (g-cam-mode))
+    0 (cam-chase! (gi (g-view-slot)) al false)
+    1 (cam-chase! (gi (g-view-slot)) al true)
+    2 (cam-spectator! al)
+    3 (cam-orbit!)
+    (cam-fixed!)))
+
+;; which camera a match wants: a person playing gets the chase camera (or the ball cam, if that was the last choice), a match of
+;; bots alone the spectator
+(defn cam-for-match! [] : Unit
+  (do (gi! (g-cam-init) 0)
+      (gi! (g-cam-mode) (cond (= (gi (g-roster)) 0) 2 (= (gi (g-ball-cam)) 1) 1 :else 0))))

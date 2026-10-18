@@ -1,0 +1,171 @@
+;; stdlib/bedrockracers/web/br_view.prn -- drawing the world for the current camera: the arena, twelve cars, the ball, the particles.
+;;
+;; THE RENDERER ONLY READS THE SIM. Poses are blended between the start of the last tick (the p* fields capture-prev! keeps) and
+;; its end by alpha, the fraction of a tick the frame clock is past it, so 60 sim ticks a second look smooth on any display. The
+;; only state written here is cosmetic and lives in this file's own words (the ball's spin): no dice, no sim fields.
+;;
+;; The look (founder: "MAKE IT NICE, VERY THOUGHTFUL, VERY DEMURE"): a dark stadium -- slate panels, a deep ceiling with a field of
+;; warm lamps, the floodlit dirt loop on the floor -- and the colour kept for what matters: the four teams' cars and their towers'
+;; glowing hoops and roofs, and an ivory ball. Drawing order is near-to-far-ish for the z-buffer's sake: the small things that
+;; are usually in front (cars, ball) first, then the floor (usually the nearest big surface), the walls, the ceiling, the towers;
+;; the additive particles last, depth-tested but not depth-writing.
+;;
+;; HOOKS for the stages that follow: draw-fx! (after the opaque world; particles here, glows, plumes), and car-palette! (what a car is
+;; painted with this frame: a burning car can glow, a scorer flash).
+
+;; ---- this file's G words (br_mem.prn: 352..383, shared with br_input / br_ui / br_main as marked) -------------------------------------------
+(defn g-pose-x [] : I32 352)       ; F32: pose!'s answer: the interpolated position ...
+(defn g-pose-y [] : I32 353)
+(defn g-pose-z [] : I32 354)
+(defn g-pose-rx [] : I32 355)      ; ... right ...
+(defn g-pose-ry [] : I32 356)
+(defn g-pose-rz [] : I32 357)
+(defn g-pose-ux [] : I32 358)      ; ... up ...
+(defn g-pose-uy [] : I32 359)
+(defn g-pose-uz [] : I32 360)
+(defn g-pose-fx [] : I32 361)      ; ... forward
+(defn g-pose-fy [] : I32 362)
+(defn g-pose-fz [] : I32 363)
+(defn g-bp-x [] : I32 364)         ; F32: ball-pos!'s answer
+(defn g-bp-y [] : I32 365)
+(defn g-bp-z [] : I32 366)
+(defn g-bs-xx [] : I32 367)        ; F32: the ball's cosmetic spin: its mesh's x axis ...
+(defn g-bs-xy [] : I32 368)
+(defn g-bs-xz [] : I32 369)
+(defn g-bs-yx [] : I32 370)        ; ... and y axis (z = x cross y)
+(defn g-bs-yy [] : I32 371)
+(defn g-bs-yz [] : I32 372)
+
+;; ---- interpolation ----------------------------------------------------------------------------------------------------------------------------
+;; car s's pose at alpha: the position lerped, the basis lerped and made orthonormal again (forward, then up square to it, right =
+;; forward x up as the physics keeps it)
+(defn pose! [(s : I32) (al : F32)] : Unit
+  (let [(fx0 : F32) (lerp (c-pfx s) (c-fx s) al) (fy0 : F32) (lerp (c-pfy s) (c-fy s) al) (fz0 : F32) (lerp (c-pfz s) (c-fz s) al)
+        (fl : F32) (inv-len3 fx0 fy0 fz0)
+        (fx : F32) (* fx0 fl) (fy : F32) (* fy0 fl) (fz : F32) (* fz0 fl)
+        (ux0 : F32) (lerp (c-pux s) (c-ux s) al) (uy0 : F32) (lerp (c-puy s) (c-uy s) al) (uz0 : F32) (lerp (c-puz s) (c-uz s) al)
+        (d : F32) (dot3 ux0 uy0 uz0 fx fy fz)
+        (ux1 : F32) (- ux0 (* fx d)) (uy1 : F32) (- uy0 (* fy d)) (uz1 : F32) (- uz0 (* fz d))
+        (ul : F32) (inv-len3 ux1 uy1 uz1)
+        (ux : F32) (* ux1 ul) (uy : F32) (* uy1 ul) (uz : F32) (* uz1 ul)]
+    (gf! (g-pose-x) (lerp (c-px s) (c-x s) al))
+    (gf! (g-pose-y) (lerp (c-py s) (c-y s) al))
+    (gf! (g-pose-z) (lerp (c-pz s) (c-z s) al))
+    (gf! (g-pose-fx) fx) (gf! (g-pose-fy) fy) (gf! (g-pose-fz) fz)
+    (gf! (g-pose-ux) ux) (gf! (g-pose-uy) uy) (gf! (g-pose-uz) uz)
+    (gf! (g-pose-rx) (- (* fy uz) (* fz uy)))
+    (gf! (g-pose-ry) (- (* fz ux) (* fx uz)))
+    (gf! (g-pose-rz) (- (* fx uy) (* fy ux)))))
+
+;; the ball at alpha (a carried ball's p and current positions are both its carrier's cradle, so this is the cradle)
+(defn ball-pos! [(al : F32)] : Unit
+  (do (gf! (g-bp-x) (lerp (b-px) (b-x) al))
+      (gf! (g-bp-y) (lerp (b-py) (b-y) al))
+      (gf! (g-bp-z) (lerp (b-pz) (b-z) al))))
+
+;; ---- the arena -------------------------------------------------------------------------------------------------------------------------------
+(defn draw-arena! [] : Unit
+  (do
+    (set-model-identity!)
+    (draw-mesh! (mesh-floor))
+    (dotimes [sd 4] (draw-mesh! (mesh-band sd)))
+    (draw-mesh! (mesh-ceil))
+    (dotimes [t 4] (draw-mesh! (mesh-tower t)))))
+
+;; ---- the cars ----------------------------------------------------------------------------------------------------------------------------------
+;; HOOK: car s's palette this frame (br_mesh.prn's car slots). The team's paint, a darker shade of it for the sills, nose and tail,
+;; smoked glass, carbon, warm headlights, tail lights tinted toward the team, and the lift nozzles glowing with how hard they burn.
+(defn car-palette! [(s : I32)] : Unit
+  (let [tc (team-color (c-team s))
+        (lift : F32) (clamp-f (c-lift-fx s) 0.0 1.0)]
+    (set-palette! 1 (vcol tc 0))
+    (set-palette! 2 (vcol (shade tc 120) 0))
+    (set-palette! 3 (vcol (rgb 44 52 66) 0))
+    (set-palette! 4 (vcol (rgb 30 30 36) 0))
+    (set-palette! 5 (vcol (rgb 255 244 222) 230))
+    (set-palette! 6 (vcol (mix tc (rgb 255 70 50) 150) 220))
+    (set-palette! 7 (vcol (mix (rgb 40 42 50) (rgb 150 205 255) (i32 (* lift 256.0))) (i32 (* lift 255.0))))))
+
+(defn draw-car! [(s : I32) (al : F32)] : Unit
+  (do
+    (pose! s al)
+    ;; mesh +x is the car's LEFT (= -right), so the model basis is right-handed (br_3d.prn)
+    (set-model! (gf (g-pose-x)) (gf (g-pose-y)) (gf (g-pose-z))
+                (- 0.0 (gf (g-pose-rx))) (- 0.0 (gf (g-pose-ry))) (- 0.0 (gf (g-pose-rz)))
+                (gf (g-pose-ux)) (gf (g-pose-uy)) (gf (g-pose-uz))
+                (gf (g-pose-fx)) (gf (g-pose-fy)) (gf (g-pose-fz)) 1.0)
+    (car-palette! s)
+    (draw-mesh! (mesh-car))))
+
+(defn draw-cars! [(al : F32)] : Unit
+  (dotimes [s (max-cars)]
+    (when (!= (c-active s) 0) (draw-car! s al))))
+
+;; ---- the ball ----------------------------------------------------------------------------------------------------------------------------------
+;; cosmetic spin: a free ball rolls about (up x velocity) at |v| / r; a carried one is still. Rodrigues on the two stored axes,
+;; then made orthonormal again. Frame time, not ticks: purely for the eye.
+(defn spin-axis! [(ax : F32) (ay : F32) (az : F32) (c : F32) (sn : F32) (k0 : I32)] : Unit
+  (let [(vx : F32) (gf k0) (vy : F32) (gf (+ k0 1)) (vz : F32) (gf (+ k0 2))
+        (d : F32) (* (dot3 ax ay az vx vy vz) (- 1.0 c))]
+    (gf! k0 (+ (+ (* vx c) (* (- (* ay vz) (* az vy)) sn)) (* ax d)))
+    (gf! (+ k0 1) (+ (+ (* vy c) (* (- (* az vx) (* ax vz)) sn)) (* ay d)))
+    (gf! (+ k0 2) (+ (+ (* vz c) (* (- (* ax vy) (* ay vx)) sn)) (* az d)))))
+
+(defn ball-spin! [] : Unit
+  (do
+    (when (< (len3 (gf (g-bs-xx)) (gf (g-bs-xy)) (gf (g-bs-xz))) 0.5)
+      (gf! (g-bs-xx) 1.0) (gf! (g-bs-xy) 0.0) (gf! (g-bs-xz) 0.0)
+      (gf! (g-bs-yx) 0.0) (gf! (g-bs-yy) 1.0) (gf! (g-bs-yz) 0.0))
+    (let [(wx : F32) (/ (b-vz) (rb)) (wz : F32) (/ (- 0.0 (b-vx)) (rb))
+          (w : F32) (if (>= (b-holder) 0) 0.0 (len2 wx wz))
+          (ang : F32) (* w (gf (g-cam-dt)))]
+      (when (> ang 0.0001)
+        (let [(ax : F32) (/ wx w) (az : F32) (/ wz w) (c : F32) (cosf ang) (sn : F32) (sinf ang)]
+          (spin-axis! ax 0.0 az c sn (g-bs-xx))
+          (spin-axis! ax 0.0 az c sn (g-bs-yx))
+          ;; Gram-Schmidt so the axes never drift apart
+          (let [(xl : F32) (inv-len3 (gf (g-bs-xx)) (gf (g-bs-xy)) (gf (g-bs-xz)))
+                (xx : F32) (* (gf (g-bs-xx)) xl) (xy : F32) (* (gf (g-bs-xy)) xl) (xz : F32) (* (gf (g-bs-xz)) xl)
+                (d : F32) (dot3 xx xy xz (gf (g-bs-yx)) (gf (g-bs-yy)) (gf (g-bs-yz)))
+                (yx : F32) (- (gf (g-bs-yx)) (* xx d)) (yy : F32) (- (gf (g-bs-yy)) (* xy d)) (yz : F32) (- (gf (g-bs-yz)) (* xz d))
+                (yl : F32) (inv-len3 yx yy yz)]
+            (gf! (g-bs-xx) xx) (gf! (g-bs-xy) xy) (gf! (g-bs-xz) xz)
+            (gf! (g-bs-yx) (* yx yl)) (gf! (g-bs-yy) (* yy yl)) (gf! (g-bs-yz) (* yz yl))))))))
+
+(defn draw-ball! [(al : F32)] : Unit
+  (do
+    (ball-spin!)
+    (ball-pos! al)
+    (let [(xx : F32) (gf (g-bs-xx)) (xy : F32) (gf (g-bs-xy)) (xz : F32) (gf (g-bs-xz))
+          (yx : F32) (gf (g-bs-yx)) (yy : F32) (gf (g-bs-yy)) (yz : F32) (gf (g-bs-yz))]
+      (set-model! (gf (g-bp-x)) (gf (g-bp-y)) (gf (g-bp-z)) xx xy xz yx yy yz
+                  (- (* xy yz) (* xz yy)) (- (* xz yx) (* xx yz)) (- (* xx yy) (* xy yx)) 1.0))
+    ;; ivory and a soft warm grey: no team's colour, so the ball always reads as the ball
+    (set-palette! 1 (vcol (rgb 236 230 214) 25))
+    (set-palette! 2 (vcol (rgb 150 140 128) 10))
+    (draw-mesh! (mesh-ball))))
+
+;; ---- particles (br_fx.prn's ring) ------------------------------------------------------------------------------------------------------------------
+;; HOOK draw-fx!: everything additive after the opaque world. The plain version draws br_fx's particles as soft glows, fading
+;; with the life they have left (flames and sparks bright, plumes and dust faint).
+(defn draw-particles! [] : Unit
+  (dotimes [q 256]
+    (when (> (f-ttl q) 0)
+      (let [k (f-kind q)
+            (life : F32) (/ (f32 (f-ttl q)) (f32 (max-i 1 (f-life q))))
+            base (case k 1 220 2 90 3 60 200)]
+        (glow! (f-x q) (f-y q) (f-z q) (f-size q) (f-color q) (i32 (* (f32 base) life)))))))
+
+(defn draw-fx! [(al : F32)] : Unit (draw-particles!))
+
+;; ---- a frame of the world ---------------------------------------------------------------------------------------------------------------------------------
+;; the camera must be set (cam-update!) first. show-match: draw the cars and the ball (the title shows the empty arena)
+(defn render-world! [(al : F32) (show-match : Bool)] : Unit
+  (do
+    (clear-frame! (rgb 8 9 13))
+    (light-frame!)
+    (when show-match
+      (draw-cars! al)
+      (draw-ball! al))
+    (draw-arena!)
+    (when show-match (draw-fx! al))))

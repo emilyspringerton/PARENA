@@ -1,0 +1,167 @@
+;; stdlib/bedrockracers/web/br_input.prn -- keyboard, mouse and gamepad -> the local player's command words (g-cmd-*).
+;;
+;; The page's host only FORWARDS raw device state (br-key, br-mouse, br-button, br-pointer, br-pad, br-lock: br_main.prn); what a
+;; key MEANS lives here. Once per sim tick, before sim-tick!, gather-cmd! turns the held keys, the pads and the mouse owed to the
+;; tick into the nine command words br_sim.prn quantises into the human's pending bytes. Nothing here touches a car.
+;;
+;; DEFAULT CONTROLS
+;;   keyboard   W / S        throttle / brake and reverse   (in the air: the fore / aft jets)
+;;              A / D        steer                          (in the air: yaw)
+;;              Space        LIFT, the four nozzles: an analog ramp while held (0 to full in 0.2 s), cut on release
+;;              Shift        BOOST
+;;              F or RMB     MAGNET: hold to pull the ball in and carry it, let go to throw (or pass) along the nose
+;;              arrow up/dn  pitch: up = nose DOWN, down = nose up (a stick pushed forward)
+;;              arrow l/r    roll left / right
+;;              Q / E        strafe jets left / right
+;;              C            fans off (drop off a wall or the ceiling)
+;;              V            ball cam on / off                  (not in the brief; every chase camera needs one)
+;;              Tab          scores (held)            Esc   pause
+;;   mouse      with the pointer locked: forward / back pitches (forward = nose down, like the stick), left / right rolls
+;;   gamepad    left stick   steer (x) and pitch (y; pushed forward = nose down)
+;;              RT / LT      throttle / brake and reverse
+;;              A            lift (the same ramp)   B  magnet   RB  boost   LB  fans off   Y  ball cam   Start  pause
+;;              right stick  x rolls (y is free)
+;;              d-pad l/r    strafe (see below)
+;;   The brief put roll AND strafe on the right stick. Both are sideways motions, so they cannot share one axis without fighting,
+;;   and strafing on the stick's vertical axis would mean pushing UP to slide RIGHT. So the right stick's x rolls, and strafe moved
+;;   to the d-pad (left / right), which a thumb reaches from the same stick without letting go of the triggers.
+
+;; ---- CTL layout (0x020000) ------------------------------------------------------------------------------------------------------------
+;;   +0    keys[512]     1 = held (KeyboardEvent.keyCode)
+;;   +512  hit[512]      1 = went down since the last tick
+;;   +1024 pointer: x, y; +1032 left button; +1036 clicked (edge); +1044 right button
+;;   +1280 pads: 4 x 64 bytes: connected, lx, ly, rx, ry, buttons, previous buttons, lt, rt
+(defn key-down? [(id : I32)] : Bool (not (= (load8 (+ (ctl-base) (bit-and id 511))) 0)))
+(defn key-hit? [(id : I32)] : Bool (not (= (load8 (+ (+ (ctl-base) 512) (bit-and id 511))) 0)))
+
+(defn in-key! [(id : I32) (down : I32)] : Unit
+  (let [i (bit-and id 511)]
+    (when (and (!= down 0) (= (load8 (+ (ctl-base) i)) 0))
+      (store8! (+ (+ (ctl-base) 512) i) 1))
+    (store8! (+ (ctl-base) i) (if (!= down 0) 1 0))
+    (gi! (g-last-input) 0)))
+
+;; the window lost focus: nothing is held any more
+(defn in-clear-keys! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (ctl-base) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1032) 0)
+      (store32! (+ (ctl-base) 1044) 0)))
+
+;; after a tick has read them: the edges are spent
+(defn end-input-tick! [] : Unit
+  (do (dotimes [i 128] (store32! (+ (+ (ctl-base) 512) (shl i 2)) 0))
+      (store32! (+ (ctl-base) 1036) 0)
+      (dotimes [s 4] (store32! (pad-addr s 6) (load32 (pad-addr s 5))))))
+
+(defn pointer-x [] : I32 (load32 (+ (ctl-base) 1024)))
+(defn pointer-y [] : I32 (load32 (+ (ctl-base) 1028)))
+(defn left-down? [] : Bool (not (= (load32 (+ (ctl-base) 1032)) 0)))
+(defn right-down? [] : Bool (not (= (load32 (+ (ctl-base) 1044)) 0)))
+(defn clicked? [] : Bool (not (= (load32 (+ (ctl-base) 1036)) 0)))
+
+(defn in-pointer! [(x : I32) (y : I32)] : Unit
+  (do (store32! (+ (ctl-base) 1024) x) (store32! (+ (ctl-base) 1028) y)))
+(defn in-button! [(b : I32) (down : I32)] : Unit
+  (cond
+    (= b 0) (let [was (load32 (+ (ctl-base) 1032))]
+              (store32! (+ (ctl-base) 1032) (if (!= down 0) 1 0))
+              (when (and (= was 0) (!= down 0)) (store32! (+ (ctl-base) 1036) 1)))
+    (= b 2) (store32! (+ (ctl-base) 1044) (if (!= down 0) 1 0))
+    :else unit))
+
+;; ---- gamepads (the Gamepad API's standard mapping) ---------------------------------------------------------------------------------------
+(defn pad-addr [(s : I32) (k : I32)] : I32 (+ (+ (ctl-base) 1280) (+ (* (bit-and s 3) 64) (shl k 2))))
+(defn pad-connected? [(s : I32)] : Bool (not (= (load32 (pad-addr s 0)) 0)))
+(defn pad-f [(s : I32) (k : I32)] : F32 (loadf32 (pad-addr s k)))
+(defn pad-btn? [(s : I32) (bit : I32)] : Bool (not (= (bit-and (load32 (pad-addr s 5)) (shl 1 bit)) 0)))
+(defn pad-hit? [(s : I32) (bit : I32)] : Bool
+  (and (pad-btn? s bit) (= (bit-and (load32 (pad-addr s 6)) (shl 1 bit)) 0)))
+
+(defn in-pad! [(s : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (store32! (pad-addr s 0) 1)
+    (storef32! (pad-addr s 1) lx) (storef32! (pad-addr s 2) ly)
+    (storef32! (pad-addr s 3) rx) (storef32! (pad-addr s 4) ry)
+    (store32! (pad-addr s 5) buttons)
+    (storef32! (pad-addr s 7) lt) (storef32! (pad-addr s 8) rt)
+    (gi! (g-last-input) 1)))
+(defn in-pad-gone! [(s : I32)] : Unit
+  (when (and (>= s 0) (< s 4))
+    (dotimes [k 16] (store32! (pad-addr s k) 0))))
+
+(defn pb-a [] : I32 0) (defn pb-b [] : I32 1) (defn pb-x [] : I32 2) (defn pb-y [] : I32 3)
+(defn pb-lb [] : I32 4) (defn pb-rb [] : I32 5) (defn pb-start [] : I32 9)
+(defn pb-left [] : I32 14) (defn pb-right [] : I32 15)
+
+;; a stick axis with a 0.15 dead zone, rescaled so it still reaches 1
+(defn dz [(v : F32)] : F32
+  (cond (> v 0.15) (/ (- v 0.15) 0.85) (< v -0.15) (/ (+ v 0.15) 0.85) :else 0.0))
+(defn any-pad-axis [(k : I32)] : F32
+  (let [(best : F32) 0.0]
+    (dotimes [s 4]
+      (when (pad-connected? s)
+        (let [(v : F32) (dz (pad-f s k))]
+          (when (> (abs-f v) (abs-f best)) (set! best v)))))
+    best))
+(defn any-pad-btn? [(bit : I32)] : Bool
+  (let [hit 0]
+    (dotimes [s 4] (when (and (pad-connected? s) (pad-btn? s bit)) (set! hit 1)))
+    (= hit 1)))
+(defn any-pad-hit? [(bit : I32)] : Bool
+  (let [hit 0]
+    (dotimes [s 4] (when (and (pad-connected? s) (pad-hit? s bit)) (set! hit 1)))
+    (= hit 1)))
+(defn any-trigger [(k : I32)] : F32
+  (let [(best : F32) 0.0]
+    (dotimes [s 4] (when (and (pad-connected? s) (> (pad-f s k) best)) (set! best (pad-f s k))))
+    best))
+
+;; ---- key ids (KeyboardEvent.keyCode) ------------------------------------------------------------------------------------------------------
+(defn kc-tab [] : I32 9) (defn kc-enter [] : I32 13) (defn kc-shift [] : I32 16) (defn kc-esc [] : I32 27)
+(defn kc-space [] : I32 32) (defn kc-left [] : I32 37) (defn kc-up [] : I32 38) (defn kc-right [] : I32 39) (defn kc-down [] : I32 40)
+(defn kc-a [] : I32 65) (defn kc-b [] : I32 66) (defn kc-c [] : I32 67) (defn kc-d [] : I32 68) (defn kc-e [] : I32 69)
+(defn kc-f [] : I32 70) (defn kc-q [] : I32 81) (defn kc-s [] : I32 83) (defn kc-v [] : I32 86) (defn kc-w [] : I32 87)
+
+;; ---- the mouse --------------------------------------------------------------------------------------------------------------------------------
+;; movement while the pointer is locked is owed to the next tick (g-mouse-x / g-mouse-y, br_mem.prn)
+(defn in-mouse! [(dx : F32) (dy : F32)] : Unit
+  (when (and (!= (gi (g-locked)) 0) (= (gi (g-phase)) 1))
+    (gf! (g-mouse-x) (+ (gf (g-mouse-x)) dx))
+    (gf! (g-mouse-y) (+ (gf (g-mouse-y)) dy))))
+;; full deflection for 16 pixels of movement in one tick, times the page's sensitivity
+(defn mouse-k [] : F32 (* 0.0625 (gf (g-sens))))
+
+;; ---- the command for the next tick -------------------------------------------------------------------------------------------------------
+(defn g-lift-ramp [] : I32 373)    ; F32: the lift's analog ramp (br_view.prn's block, 352..383)
+(defn bool-f [(c : Bool)] : F32 (if c 1.0 0.0))
+(defn key-axis [(neg : I32) (pos : I32)] : F32 (- (bool-f (key-down? pos)) (bool-f (key-down? neg))))
+
+(defn gather-cmd! [] : Unit
+  (let [(mx : F32) (* (gf (g-mouse-x)) (mouse-k))
+        (my : F32) (* (gf (g-mouse-y)) (mouse-k))
+        (thr : F32) (+ (key-axis (kc-s) (kc-w)) (- (any-trigger 8) (any-trigger 7)))
+        (steer : F32) (+ (key-axis (kc-a) (kc-d)) (any-pad-axis 1))
+        (pitch : F32) (+ (+ (key-axis (kc-up) (kc-down)) (any-pad-axis 2)) my)
+        (roll : F32) (+ (+ (key-axis (kc-left) (kc-right)) (any-pad-axis 3)) mx)
+        (strafe : F32) (+ (key-axis (kc-q) (kc-e)) (- (bool-f (any-pad-btn? (pb-right))) (bool-f (any-pad-btn? (pb-left)))))
+        lifting (or (key-down? (kc-space)) (any-pad-btn? (pb-a)))
+        (ramp : F32) (if lifting (fmin2 1.0 (+ (gf (g-lift-ramp)) 0.08)) 0.0)]
+    (gf! (g-mouse-x) 0.0) (gf! (g-mouse-y) 0.0)
+    (gf! (g-lift-ramp) ramp)
+    (gf! (g-cmd-thr) (clamp-f thr -1.0 1.0))
+    (gf! (g-cmd-steer) (clamp-f steer -1.0 1.0))
+    (gf! (g-cmd-pitch) (clamp-f pitch -1.0 1.0))
+    (gf! (g-cmd-roll) (clamp-f roll -1.0 1.0))
+    (gf! (g-cmd-strafe) (clamp-f strafe -1.0 1.0))
+    (gf! (g-cmd-lift) ramp)
+    (gi! (g-cmd-boost) (b2i (or (key-down? (kc-shift)) (any-pad-btn? (pb-rb)))))
+    (gi! (g-cmd-magnet) (b2i (or (or (key-down? (kc-f)) (right-down?)) (any-pad-btn? (pb-b)))))
+    (gi! (g-cmd-fans-off) (b2i (or (key-down? (kc-c)) (any-pad-btn? (pb-lb)))))
+    (gi! (g-score-open) (b2i (key-down? (kc-tab))))))
+
+;; nothing held: a paused game, a menu, a lost focus
+(defn clear-cmd! [] : Unit
+  (do (gf! (g-cmd-thr) 0.0) (gf! (g-cmd-steer) 0.0) (gf! (g-cmd-pitch) 0.0) (gf! (g-cmd-roll) 0.0)
+      (gf! (g-cmd-strafe) 0.0) (gf! (g-cmd-lift) 0.0) (gf! (g-lift-ramp) 0.0)
+      (gi! (g-cmd-boost) 0) (gi! (g-cmd-magnet) 0) (gi! (g-cmd-fans-off) 0)
+      (gf! (g-mouse-x) 0.0) (gf! (g-mouse-y) 0.0)))
