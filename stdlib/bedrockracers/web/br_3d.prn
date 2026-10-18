@@ -1,0 +1,504 @@
+;; stdlib/bedrockracers/web/br_3d.prn -- the 3D software rasteriser: camera, meshes, clipping, culling, z-buffered
+;; perspective-correct Gouraud and textured triangles, sprites, and projecting a point for the HUD.
+;;
+;; Adapted from shankpit-460's sp_3d.prn (same z-buffer convention: the buffer holds 1/z, cleared to 0, larger is nearer), but
+;; reorganised around MESHES instead of one polygon at a time, because a car on a wall needs an arbitrary basis, the arena is
+;; curved, and per-vertex light (ON FIRE's light pools) wants every vertex lit exactly once a frame:
+;;
+;;   draw-mesh! m      1. cull the whole mesh by its bounding sphere against the view frustum
+;;                     2. TRANSFORM every vertex once: model -> world (the current model transform, set-model!), the LIGHT HOOK
+;;                        (light-vertex!, br_light.prn) with the world position and normal, fog by depth, world -> camera, an
+;;                        outcode (which frustum planes it is outside of), and the projection to the screen if it is in front
+;;                     3. every triangle: rejected if all three corners are outside one plane, back-face culled in camera space,
+;;                        clipped against the near plane if it crosses it (a triangle in, up to a quad out), then filled
+;;
+;;   fill               scanline, top-left fill rule (pixel centres at +0.5, spans half-open), so two triangles that share an edge
+;;                      never leave a crack or paint a pixel twice. Every interpolant -- 1/z, colour/z, u/z, v/z -- is linear in
+;;                      screen space, so each one gets a plane (d/dx, d/dy) once per triangle; the span loop just adds d/dx and
+;;                      divides by 1/z per pixel. Two span loops: GOURAUD (the colour) and TEXTURED (the colour multiplies a
+;;                      texel; an ordered 2x2 dither on the texel lookup stands in for bilinear filtering when a texel covers
+;;                      many pixels -- the floor texture is 4 world units a texel and the chase camera sits low).
+;;
+;; COORDINATES. World: x, z across the floor, y up (br_arena.prn). The camera's basis is (right, up, forward) with right =
+;; forward x up -- the cars' own convention (br_phys.prn) -- so camera space is x right, y up, z into the screen, and a point
+;; projects to (320 + x/z * S, 180 - y/z * S), S = g-proj-scale (pixels per unit at depth 1).
+;; A MODEL transform puts mesh space into the world: world = origin + scale * (x * X + y * Y + z * Z), with (X, Y, Z) a
+;; RIGHT-HANDED basis (X x Y = Z), so mesh windings survive it. For a car that is (left, up, forward): the car's own LEFT is mesh
+;; +x, because the car's right = forward x up makes (right, up, forward) left-handed. Meshes are built facing +z, up +y.
+;; WINDING: a triangle (p0, p1, p2) is FRONT-facing where (p1 - p0) x (p2 - p0) (right-handed, world space) points at the viewer;
+;; the mesh builder (br_mesh.prn) orients every triangle that way from its vertex normals.
+;;
+;; MEMORY (the map is in br_mem.prn):
+;;   0x038000 MDESC  64 mesh descriptors x 64 bytes                    (md-*)
+;;   0x039000 TV     the transformed-vertex cache, 2048 x 64 bytes      (one mesh's vertices at a time)
+;;   0x059000 OC     outcodes, 2048 x 4 bytes
+;;   0x033000 SCR    clip output records (8 x 64 bytes), the draw palette (16 words at +0x200)
+;;   0x340000 GEOM   mesh vertex and triangle data, filled at init by br_mesh.prn
+;;
+;; THE HOOKS later stages build on:
+;;   light-vertex! (br_light.prn)  per vertex, per frame: world position + normal in, colour multiplier out (g-lit-r/g/b)
+;;   light-frame!  (br_light.prn)  once a frame before anything is drawn (read the light table, the drama, set the ambient)
+;;   fog-at        (br_light.prn)  0..1 fog for a camera-space depth; g-fog-r/g/b the colour it fades to
+;;   set-model! / set-model-identity!, set-palette!, draw-mesh!     draw any mesh anywhere
+;;   project-point                 a world point to the screen (HUD tags, particles): returns depth, screen x/y in g-sx / g-sy
+;;   glow!                         a z-tested additive soft disc at a world point (particles, fire, nozzle glows)
+
+;; ---- the renderer's G words (br_mem.prn: 256..319 belong to this file) --------------------------------------------------------
+(defn g-kx [] : I32 256)           ; F32: 320 / S, the frustum's x slope (a point is off the right edge when x > z * kx)
+(defn g-ky [] : I32 257)           ; F32: 180 / S
+(defn g-m-ox [] : I32 258)         ; F32: the model transform: origin
+(defn g-m-oy [] : I32 259)
+(defn g-m-oz [] : I32 260)
+(defn g-m-xx [] : I32 261)         ; F32: ... mesh +x in the world
+(defn g-m-xy [] : I32 262)
+(defn g-m-xz [] : I32 263)
+(defn g-m-yx [] : I32 264)         ; F32: ... mesh +y
+(defn g-m-yy [] : I32 265)
+(defn g-m-yz [] : I32 266)
+(defn g-m-zx [] : I32 267)         ; F32: ... mesh +z
+(defn g-m-zy [] : I32 268)
+(defn g-m-zz [] : I32 269)
+(defn g-m-s [] : I32 270)          ; F32: ... uniform scale
+(defn g-lit-r [] : I32 271)        ; F32: THE LIGHT HOOK's answer: the colour multiplier for the vertex just lit (1 = its own colour)
+(defn g-lit-g [] : I32 272)
+(defn g-lit-b [] : I32 273)
+(defn g-tex-base [] : I32 274)     ; I32: the texture the textured span loop reads: base address ...
+(defn g-tex-shift [] : I32 275)    ; ... log2 of its width (rows are 1 << shift texels)
+(defn g-tex-mask [] : I32 276)     ; ... width - 1 (u and v wrap with it)
+(defn g-stat-tris [] : I32 277)    ; I32: triangles filled this frame (stats for the bench)
+(defn g-stat-meshes [] : I32 278)  ; I32: meshes drawn this frame (after the sphere cull)
+(defn g-stat-verts [] : I32 279)   ; I32: vertices transformed this frame
+(defn g-fog-r [] : I32 281)        ; F32 0..255: the colour fog fades to (br_light.prn sets it each frame)
+(defn g-fog-g [] : I32 282)
+(defn g-fog-b [] : I32 283)
+(defn g-sx [] : I32 284)           ; F32: project-point's screen x ...
+(defn g-sy [] : I32 285)           ; ... and y
+(defn g-cull-flip [] : I32 286)    ; I32: 1 = cull FRONT faces instead of back faces (a mirrored model transform)
+(defn g-dither [] : I32 287)       ; I32: 1 = dither texel lookups (on by default)
+
+;; ---- regions -------------------------------------------------------------------------------------------------------------------
+(defn mdesc-base [] : I32 229376)  ; 0x038000
+(defn tv-base [] : I32 233472)     ; 0x039000
+(defn oc-base [] : I32 364544)     ; 0x059000
+(defn tv-cap [] : I32 2048)
+(defn scr-base [] : I32 208896)    ; 0x033000
+(defn sv-addr [(i : I32)] : I32 (+ (scr-base) (shl i 6)))
+(defn pal-addr [(i : I32)] : I32 (+ (+ (scr-base) 512) (shl (bit-and i 15) 2)))
+(defn geom-base [] : I32 3407872)  ; 0x340000
+(defn geom-end [] : I32 4194304)   ; 0x400000 (the replay LOG starts here)
+
+(defn near-z [] : F32 0.8)
+(defn half-w [] : F32 320.0)
+(defn half-h [] : F32 180.0)
+(defn ceil-f [(x : F32)] : F32 (- 0.0 (floor (- 0.0 x))))
+
+;; ---- mesh descriptors: 16 words each ---------------------------------------------------------------------------------------------
+;;   +0 vbase  +4 nverts  +8 tbase  +12 ntris  +16 flags  +20 tex base  +24 tex shift  +28 tex mask
+;;   +32 bounding sphere centre x y z (mesh space)  +44 its radius  +48..63 spare
+;; flags: 1 textured (the colour multiplies a texel), 2 double-sided (no back-face cull), 4 unlit (the light hook is skipped:
+;; colour as built), 8 no fog
+(defn md-addr [(m : I32)] : I32 (+ (mdesc-base) (shl (bit-and m 63) 6)))
+(defn md-vbase [(m : I32)] : I32 (load32 (md-addr m)))
+(defn md-nv [(m : I32)] : I32 (load32 (+ (md-addr m) 4)))
+(defn md-tbase [(m : I32)] : I32 (load32 (+ (md-addr m) 8)))
+(defn md-nt [(m : I32)] : I32 (load32 (+ (md-addr m) 12)))
+(defn md-flags [(m : I32)] : I32 (load32 (+ (md-addr m) 16)))
+(defn md-bx [(m : I32)] : F32 (loadf32 (+ (md-addr m) 32)))
+(defn md-by [(m : I32)] : F32 (loadf32 (+ (md-addr m) 36)))
+(defn md-bz [(m : I32)] : F32 (loadf32 (+ (md-addr m) 40)))
+(defn md-br [(m : I32)] : F32 (loadf32 (+ (md-addr m) 44)))
+(defn mf-tex [] : I32 1)
+(defn mf-2side [] : I32 2)
+(defn mf-unlit [] : I32 4)
+(defn mf-nofog [] : I32 8)
+
+;; a VERTEX is 12 words (48 bytes):  +0 x y z  +12 nx ny nz (unit)  +24 u v (texels, for a textured mesh)  +32 col  +36 aux
+;;   +40 +44 spare (free for a later stage: e.g. a baked static light)
+;; col is 0xEEBBGGRR: the colour, and in its top byte EMISSION 0..255 -- 0 lit as normal, 255 glows at full colour whatever the
+;; light (a hoop, the top of a tower). aux > 0 takes the colour (and emission) from the draw PALETTE slot aux instead (a car's
+;; paint is its team's: set-palette! before draw-mesh!).
+;; a TRIANGLE is 4 words (16 bytes): three vertex indices (into its own mesh) and a spare word.
+(defn vx-size [] : I32 48)
+
+;; the draw palette: 16 colours a mesh's vertices can refer to by number (aux)
+(defn set-palette! [(i : I32) (c : I32)] : Unit (store32! (pal-addr i) c))
+(defn palette [(i : I32)] : I32 (load32 (pal-addr i)))
+
+;; ---- the camera ----------------------------------------------------------------------------------------------------------------------
+;; eye (ex, ey, ez), looking along (fx, fy, fz), with (hx, hy, hz) as the up HINT (made perpendicular), vertical fov in degrees.
+;; Looking straight along the hint (up a tower with world up as the hint) the hint is swapped for another axis.
+(defn cam-set! [(ex : F32) (ey : F32) (ez : F32) (fx : F32) (fy : F32) (fz : F32) (hx0 : F32) (hy0 : F32) (hz0 : F32) (fov : F32)] : Unit
+  (let [(fl : F32) (inv-len3 fx fy fz)
+        (gx : F32) (* fx fl) (gy : F32) (* fy fl) (gz : F32) (* fz fl)
+        (hl : F32) (inv-len3 hx0 hy0 hz0)
+        (hx : F32) (* hx0 hl) (hy : F32) (* hy0 hl) (hz : F32) (* hz0 hl)
+        (par : Bool) (> (abs-f (dot3 gx gy gz hx hy hz)) 0.999)
+        (ax : F32) (if par (if (< (abs-f gz) 0.9) 0.0 1.0) hx)
+        (ay : F32) (if par 0.0 hy)
+        (az : F32) (if par (if (< (abs-f gz) 0.9) 1.0 0.0) hz)
+        ;; right = forward x up
+        (rx0 : F32) (- (* gy az) (* gz ay))
+        (ry0 : F32) (- (* gz ax) (* gx az))
+        (rz0 : F32) (- (* gx ay) (* gy ax))
+        (rl : F32) (inv-len3 rx0 ry0 rz0)
+        (rx : F32) (* rx0 rl) (ry : F32) (* ry0 rl) (rz : F32) (* rz0 rl)
+        ;; up = right x forward
+        (ux : F32) (- (* ry gz) (* rz gy))
+        (uy : F32) (- (* rz gx) (* rx gz))
+        (uz : F32) (- (* rx gy) (* ry gx))
+        (half : F32) (* (* fov 0.5) (deg2rad))
+        (sc : F32) (/ 180.0 (/ (sinf half) (cosf half)))]
+    (gf! (g-cam-x) ex) (gf! (g-cam-y) ey) (gf! (g-cam-z) ez)
+    (gf! (g-cam-rx) rx) (gf! (g-cam-ry) ry) (gf! (g-cam-rz) rz)
+    (gf! (g-cam-ux) ux) (gf! (g-cam-uy) uy) (gf! (g-cam-uz) uz)
+    (gf! (g-cam-fx) gx) (gf! (g-cam-fy) gy) (gf! (g-cam-fz) gz)
+    (gf! (g-fov) fov)
+    (gf! (g-proj-scale) sc)
+    (gf! (g-kx) (/ (half-w) sc))
+    (gf! (g-ky) (/ (half-h) sc))))
+
+;; a camera looking from the eye AT a target point
+(defn cam-look! [(ex : F32) (ey : F32) (ez : F32) (tx : F32) (ty : F32) (tz : F32) (hx : F32) (hy : F32) (hz : F32) (fov : F32)] : Unit
+  (cam-set! ex ey ez (- tx ex) (- ty ey) (- tz ez) hx hy hz fov))
+
+;; ---- the model transform ------------------------------------------------------------------------------------------------------------
+(defn set-model! [(ox : F32) (oy : F32) (oz : F32)
+                  (xx : F32) (xy : F32) (xz : F32) (yx : F32) (yy : F32) (yz : F32) (zx : F32) (zy : F32) (zz : F32) (s : F32)] : Unit
+  (do (gf! (g-m-ox) ox) (gf! (g-m-oy) oy) (gf! (g-m-oz) oz)
+      (gf! (g-m-xx) xx) (gf! (g-m-xy) xy) (gf! (g-m-xz) xz)
+      (gf! (g-m-yx) yx) (gf! (g-m-yy) yy) (gf! (g-m-yz) yz)
+      (gf! (g-m-zx) zx) (gf! (g-m-zy) zy) (gf! (g-m-zz) zz)
+      (gf! (g-m-s) s)))
+(defn set-model-identity! [] : Unit (set-model! 0.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0 1.0))
+
+;; ---- the frame ------------------------------------------------------------------------------------------------------------------------
+;; both buffers at once: the colour to a flat fill (nothing should show through -- the arena is closed -- but a crack shows this,
+;; not the last frame), the depth to 0 (infinitely far)
+(defn clear-frame! [(c : I32)] : Unit
+  (do
+    (loop [i 0] (when (< i 230400) (store32! (+ (fb-base) (shl i 2)) c) (recur (+ i 1))))
+    (loop [i 0] (when (< i 230400) (storef32! (+ (zb-base) (shl i 2)) 0.0) (recur (+ i 1))))
+    (gi! (g-stat-tris) 0) (gi! (g-stat-meshes) 0) (gi! (g-stat-verts) 0)))
+
+;; ---- pixels -----------------------------------------------------------------------------------------------------------------------------
+(defn pack-rgb [(r : I32) (g : I32) (b : I32)] : I32
+  (bit-or (opaque) (bit-or (clamp-i r 0 255) (bit-or (shl (clamp-i g 0 255) 8) (shl (clamp-i b 0 255) 16)))))
+
+;; one GOURAUD span: n+1 pixels from framebuffer index p0, 1/z and colour/z stepping by their d/dx
+(defn span-g! [(p0 : I32) (n : I32) (iz : F32) (dz : F32) (r : F32) (dr : F32) (g : F32) (dg : F32) (b : F32) (db : F32)] : Unit
+  (let [za0 (+ (zb-base) (shl p0 2))
+        fa0 (+ (fb-base) (shl p0 2))]
+    (loop [k 0 (z : F32) iz (rr : F32) r (gg : F32) g (bb : F32) b]
+      (when (<= k n)
+        (let [za (+ za0 (shl k 2))]
+          (when (> z (loadf32 za))
+            (let [(w : F32) (/ 1.0 z)]
+              (storef32! za z)
+              (store32! (+ fa0 (shl k 2)) (pack-rgb (i32 (* rr w)) (i32 (* gg w)) (i32 (* bb w)))))))
+        (recur (+ k 1) (+ z dz) (+ rr dr) (+ gg dg) (+ bb db))))))
+
+;; one TEXTURED span: as above, and u/z, v/z; the colour (0..255 = x0..x1) multiplies the texel. y and the first pixel's x give
+;; the 2x2 dither phase.
+(defn span-t! [(p0 : I32) (n : I32) (x0 : I32) (y : I32) (iz : F32) (dz : F32) (r : F32) (dr : F32) (g : F32) (dg : F32) (b : F32) (db : F32)
+               (u : F32) (du : F32) (v : F32) (dv : F32)] : Unit
+  (let [za0 (+ (zb-base) (shl p0 2))
+        fa0 (+ (fb-base) (shl p0 2))
+        tb (gi (g-tex-base))
+        sh (gi (g-tex-shift))
+        mk (gi (g-tex-mask))
+        dith (gi (g-dither))
+        (ov : F32) (if (= dith 0) 0.0 (* 0.5 (f32 (bit-and y 1))))]
+    (loop [k 0 (z : F32) iz (rr : F32) r (gg : F32) g (bb : F32) b (uu : F32) u (vv : F32) v]
+      (when (<= k n)
+        (let [za (+ za0 (shl k 2))]
+          (when (> z (loadf32 za))
+            (let [(w : F32) (/ 1.0 z)
+                  (ou : F32) (if (= dith 0) 0.0 (* 0.5 (f32 (bit-and (bit-xor (+ x0 k) y) 1))))
+                  tu (bit-and (i32 (+ (* uu w) ou)) mk)
+                  tv (bit-and (i32 (+ (* vv w) ov)) mk)
+                  t (load32 (+ tb (shl (+ (shl tv sh) tu) 2)))
+                  mr (i32 (* rr w)) mg (i32 (* gg w)) mb (i32 (* bb w))]
+              (storef32! za z)
+              (store32! (+ fa0 (shl k 2))
+                        (pack-rgb (shr (* (bit-and t 255) mr) 8) (shr (* (bit-and (shr t 8) 255) mg) 8)
+                                  (shr (* (bit-and (shr t 16) 255) mb) 8))))))
+        (recur (+ k 1) (+ z dz) (+ rr dr) (+ gg dg) (+ bb db) (+ uu du) (+ vv dv))))))
+
+;; ---- triangles -------------------------------------------------------------------------------------------------------------------------
+;; A SCREEN RECORD (the first 8 words of a TV entry or a clip record): sx sy iz r*iz g*iz b*iz u*iz v*iz.
+;; d(attribute)/dx over the triangle from its three corners (e1 = b - a, e2 = c - a in screen space, ia = 1 / the doubled area)
+(defn grad-x [(a0 : F32) (a1 : F32) (a2 : F32) (e1y : F32) (e2y : F32) (ia : F32)] : F32
+  (* (- (* (- a1 a0) e2y) (* (- a2 a0) e1y)) ia))
+(defn grad-y [(a0 : F32) (a1 : F32) (a2 : F32) (e1x : F32) (e2x : F32) (ia : F32)] : F32
+  (* (- (* (- a2 a0) e1x) (* (- a1 a0) e2x)) ia))
+
+;; fill the triangle whose screen records are at pa, pb, pc; tex = 1 for the textured span loop
+(defn fill-tri! [(pa : I32) (pb : I32) (pc : I32) (tex : I32)] : Unit
+  (let [a pa b pb c pc]
+    ;; sort the corners top to bottom
+    (when (> (loadf32 (+ a 4)) (loadf32 (+ b 4))) (let [t a] (set! a b) (set! b t)))
+    (when (> (loadf32 (+ b 4)) (loadf32 (+ c 4))) (let [t b] (set! b c) (set! c t)))
+    (when (> (loadf32 (+ a 4)) (loadf32 (+ b 4))) (let [t a] (set! a b) (set! b t)))
+    (let [(x0 : F32) (loadf32 a) (y0 : F32) (loadf32 (+ a 4))
+          (x1 : F32) (loadf32 b) (y1 : F32) (loadf32 (+ b 4))
+          (x2 : F32) (loadf32 c) (y2 : F32) (loadf32 (+ c 4))
+          (e1x : F32) (- x1 x0) (e1y : F32) (- y1 y0)
+          (e2x : F32) (- x2 x0) (e2y : F32) (- y2 y0)
+          (area : F32) (- (* e1x e2y) (* e2x e1y))
+          ys (max-i 0 (i32 (ceil-f (- y0 0.5))))
+          ye (min-i 359 (- (i32 (ceil-f (- y2 0.5))) 1))]
+      (when (and (> (abs-f area) 0.00001) (<= ys ye))
+        (gi! (g-stat-tris) (+ (gi (g-stat-tris)) 1))
+        (let [(ia : F32) (/ 1.0 area)
+              (z0 : F32) (loadf32 (+ a 8)) (z1 : F32) (loadf32 (+ b 8)) (z2 : F32) (loadf32 (+ c 8))
+              (r0 : F32) (loadf32 (+ a 12)) (r1 : F32) (loadf32 (+ b 12)) (r2 : F32) (loadf32 (+ c 12))
+              (g0 : F32) (loadf32 (+ a 16)) (g1 : F32) (loadf32 (+ b 16)) (g2 : F32) (loadf32 (+ c 16))
+              (b0 : F32) (loadf32 (+ a 20)) (b1 : F32) (loadf32 (+ b 20)) (b2 : F32) (loadf32 (+ c 20))
+              (u0 : F32) (loadf32 (+ a 24)) (u1 : F32) (loadf32 (+ b 24)) (u2 : F32) (loadf32 (+ c 24))
+              (v0 : F32) (loadf32 (+ a 28)) (v1 : F32) (loadf32 (+ b 28)) (v2 : F32) (loadf32 (+ c 28))
+              (zdx : F32) (grad-x z0 z1 z2 e1y e2y ia) (zdy : F32) (grad-y z0 z1 z2 e1x e2x ia)
+              (rdx : F32) (grad-x r0 r1 r2 e1y e2y ia) (rdy : F32) (grad-y r0 r1 r2 e1x e2x ia)
+              (gdx : F32) (grad-x g0 g1 g2 e1y e2y ia) (gdy : F32) (grad-y g0 g1 g2 e1x e2x ia)
+              (bdx : F32) (grad-x b0 b1 b2 e1y e2y ia) (bdy : F32) (grad-y b0 b1 b2 e1x e2x ia)
+              (udx : F32) (grad-x u0 u1 u2 e1y e2y ia) (udy : F32) (grad-y u0 u1 u2 e1x e2x ia)
+              (vdx : F32) (grad-x v0 v1 v2 e1y e2y ia) (vdy : F32) (grad-y v0 v1 v2 e1x e2x ia)
+              ;; edge slopes dx/dy: the long edge a-c, the short ones a-b and b-c (a flat edge is never walked)
+              (s02 : F32) (/ e2x e2y)
+              (s01 : F32) (if (> e1y 0.0) (/ e1x e1y) 0.0)
+              (s12 : F32) (if (> (- y2 y1) 0.0) (/ (- x2 x1) (- y2 y1)) 0.0)]
+          (loop [y ys]
+            (when (<= y ye)
+              (let [(yc : F32) (+ (f32 y) 0.5)
+                    (xa : F32) (+ x0 (* (- yc y0) s02))
+                    (xb : F32) (if (< yc y1) (+ x0 (* (- yc y0) s01)) (+ x1 (* (- yc y1) s12)))
+                    (xl : F32) (fmin2 xa xb)
+                    (xr : F32) (fmax2 xa xb)
+                    xs (max-i 0 (i32 (ceil-f (- xl 0.5))))
+                    xe (min-i 639 (- (i32 (ceil-f (- xr 0.5))) 1))]
+                (when (<= xs xe)
+                  (let [(fx : F32) (- (+ (f32 xs) 0.5) x0)
+                        (fy : F32) (- yc y0)
+                        (zs : F32) (+ z0 (+ (* zdx fx) (* zdy fy)))
+                        (rs : F32) (+ r0 (+ (* rdx fx) (* rdy fy)))
+                        (gs : F32) (+ g0 (+ (* gdx fx) (* gdy fy)))
+                        (bs : F32) (+ b0 (+ (* bdx fx) (* bdy fy)))]
+                    (if (= tex 0)
+                        (span-g! (+ (* y 640) xs) (- xe xs) zs zdx rs rdx gs gdx bs bdx)
+                        (span-t! (+ (* y 640) xs) (- xe xs) xs y zs zdx rs rdx gs gdx bs bdx
+                                 (+ u0 (+ (* udx fx) (* udy fy))) udx (+ v0 (+ (* vdx fx) (* vdy fy))) vdx)))))
+              (recur (+ y 1)))))))))
+
+;; ---- the transformed-vertex cache ------------------------------------------------------------------------------------------------------------
+;; TV entry i (64 bytes): words 0..7 the screen record (valid only in front of the near plane), words 8..15 the camera-space
+;; position and the vertex's attributes before the divide (cx cy cz r g b u v) -- what the near-plane clip interpolates.
+(defn tv-addr [(i : I32)] : I32 (+ (tv-base) (shl i 6)))
+(defn oc-addr [(i : I32)] : I32 (+ (oc-base) (shl i 2)))
+
+;; words 8..15 of record a -> words 0..7 (the divide by z and the projection)
+(defn project-rec! [(a : I32)] : Unit
+  (let [(sc : F32) (gf (g-proj-scale))
+        (iz : F32) (/ 1.0 (loadf32 (+ a 40)))]
+    (storef32! a (+ (half-w) (* (* (loadf32 (+ a 32)) iz) sc)))
+    (storef32! (+ a 4) (- (half-h) (* (* (loadf32 (+ a 36)) iz) sc)))
+    (storef32! (+ a 8) iz)
+    (storef32! (+ a 12) (* (loadf32 (+ a 44)) iz))
+    (storef32! (+ a 16) (* (loadf32 (+ a 48)) iz))
+    (storef32! (+ a 20) (* (loadf32 (+ a 52)) iz))
+    (storef32! (+ a 24) (* (loadf32 (+ a 56)) iz))
+    (storef32! (+ a 28) (* (loadf32 (+ a 60)) iz))))
+
+;; which frustum planes a camera-space point is outside: 1 near, 2 right, 4 left, 8 top, 16 bottom
+(defn outcode [(x : F32) (y : F32) (z : F32)] : I32
+  (let [(kx : F32) (gf (g-kx)) (ky : F32) (gf (g-ky))]
+    (bit-or (bit-or (b2i (< z (near-z))) (shl (b2i (> x (* z kx))) 1))
+            (bit-or (shl (b2i (< x (- 0.0 (* z kx)))) 2)
+                    (bit-or (shl (b2i (> y (* z ky))) 3) (shl (b2i (< y (- 0.0 (* z ky)))) 4))))))
+
+;; the vertex colour after light and fog, one channel: base 0..255, lit multiplier, emission 0..1, fog 0..1, fog colour; a
+;; textured mesh's colour is a multiplier on the texel, and fog only darkens it (the fog colour is near black)
+(defn shade-ch [(base : F32) (lit : F32) (em : F32) (f : F32) (fogc : F32) (tex : I32)] : F32
+  (let [(c : F32) (* (* base (+ lit (* em (- 1.0 lit)))) (- 1.0 f))]
+    (if (= tex 0) (clamp-f (+ c (* fogc f)) 0.0 255.0) (fmax2 c 0.0))))
+
+;; transform mesh m's vertices into the TV cache (see the header: model, light, fog, camera, outcode, projection)
+(defn transform-mesh! [(m : I32)] : Unit
+  (let [vb (md-vbase m) n (min-i (md-nv m) (tv-cap)) fl (md-flags m)
+        tex (bit-and fl 1) unlit (!= (bit-and fl 4) 0) nofog (!= (bit-and fl 8) 0)
+        (ox : F32) (gf (g-m-ox)) (oy : F32) (gf (g-m-oy)) (oz : F32) (gf (g-m-oz))
+        (xx : F32) (gf (g-m-xx)) (xy : F32) (gf (g-m-xy)) (xz : F32) (gf (g-m-xz))
+        (yx : F32) (gf (g-m-yx)) (yy : F32) (gf (g-m-yy)) (yz : F32) (gf (g-m-yz))
+        (zx : F32) (gf (g-m-zx)) (zy : F32) (gf (g-m-zy)) (zz : F32) (gf (g-m-zz))
+        (ms : F32) (gf (g-m-s))
+        (ex : F32) (gf (g-cam-x)) (ey : F32) (gf (g-cam-y)) (ez : F32) (gf (g-cam-z))
+        (rx : F32) (gf (g-cam-rx)) (ry : F32) (gf (g-cam-ry)) (rz : F32) (gf (g-cam-rz))
+        (ux : F32) (gf (g-cam-ux)) (uy : F32) (gf (g-cam-uy)) (uz : F32) (gf (g-cam-uz))
+        (fx : F32) (gf (g-cam-fx)) (fy : F32) (gf (g-cam-fy)) (fz : F32) (gf (g-cam-fz))
+        (fr : F32) (gf (g-fog-r)) (fg : F32) (gf (g-fog-g)) (fb : F32) (gf (g-fog-b))]
+    (gi! (g-stat-verts) (+ (gi (g-stat-verts)) n))
+    (loop [i 0]
+      (when (< i n)
+        (let [va (+ vb (* i (vx-size)))
+              ta (tv-addr i)
+              (lx : F32) (loadf32 va) (ly : F32) (loadf32 (+ va 4)) (lz : F32) (loadf32 (+ va 8))
+              (nlx : F32) (loadf32 (+ va 12)) (nly : F32) (loadf32 (+ va 16)) (nlz : F32) (loadf32 (+ va 20))
+              (wx : F32) (+ ox (* ms (+ (+ (* lx xx) (* ly yx)) (* lz zx))))
+              (wy : F32) (+ oy (* ms (+ (+ (* lx xy) (* ly yy)) (* lz zy))))
+              (wz : F32) (+ oz (* ms (+ (+ (* lx xz) (* ly yz)) (* lz zz))))
+              (nx : F32) (+ (+ (* nlx xx) (* nly yx)) (* nlz zx))
+              (ny : F32) (+ (+ (* nlx xy) (* nly yy)) (* nlz zy))
+              (nz : F32) (+ (+ (* nlx xz) (* nly yz)) (* nlz zz))
+              aux (load32 (+ va 36))
+              col (if (> aux 0) (palette aux) (load32 (+ va 32)))
+              (em : F32) (/ (f32 (bit-and (ushr col 24) 255)) 255.0)
+              (dx : F32) (- wx ex) (dy : F32) (- wy ey) (dz : F32) (- wz ez)
+              (cx : F32) (+ (+ (* dx rx) (* dy ry)) (* dz rz))
+              (cy : F32) (+ (+ (* dx ux) (* dy uy)) (* dz uz))
+              (cz : F32) (+ (+ (* dx fx) (* dy fy)) (* dz fz))
+              (f : F32) (if nofog 0.0 (fog-at cz))]
+          (if unlit
+              (do (gf! (g-lit-r) 1.0) (gf! (g-lit-g) 1.0) (gf! (g-lit-b) 1.0))
+              (light-vertex! wx wy wz nx ny nz))
+          (storef32! (+ ta 32) cx) (storef32! (+ ta 36) cy) (storef32! (+ ta 40) cz)
+          (storef32! (+ ta 44) (shade-ch (f32 (bit-and col 255)) (gf (g-lit-r)) em f fr tex))
+          (storef32! (+ ta 48) (shade-ch (f32 (bit-and (shr col 8) 255)) (gf (g-lit-g)) em f fg tex))
+          (storef32! (+ ta 52) (shade-ch (f32 (bit-and (shr col 16) 255)) (gf (g-lit-b)) em f fb tex))
+          (storef32! (+ ta 56) (loadf32 (+ va 24)))
+          (storef32! (+ ta 60) (loadf32 (+ va 28)))
+          (let [oc (outcode cx cy cz)]
+            (store32! (oc-addr i) oc)
+            (when (= (bit-and oc 1) 0) (project-rec! ta)))
+          (recur (+ i 1)))))))
+
+;; ---- the near-plane clip ------------------------------------------------------------------------------------------------------------------
+;; the point where edge a-b (TV records, words 8..15) crosses z = near, into clip record d (words 8..15), projected
+(defn clip-lerp! [(a : I32) (b : I32) (d : I32)] : Unit
+  (let [(za : F32) (loadf32 (+ a 40)) (zb : F32) (loadf32 (+ b 40))
+        (t : F32) (/ (- (near-z) za) (- zb za))]
+    (dotimes [k 8]
+      (let [(va : F32) (loadf32 (+ a (+ 32 (shl k 2)))) (vb : F32) (loadf32 (+ b (+ 32 (shl k 2))))]
+        (storef32! (+ d (+ 32 (shl k 2))) (+ va (* (- vb va) t)))))
+    (storef32! (+ d 40) (near-z))
+    (project-rec! d)))
+(defn copy-rec! [(a : I32) (d : I32)] : Unit
+  (dotimes [k 16] (store32! (+ d (shl k 2)) (load32 (+ a (shl k 2))))))
+
+;; Sutherland-Hodgman on one plane: the triangle (a, b, c) -> a polygon of up to 4 clip records, filled as a fan
+(defn clip-fill! [(a : I32) (b : I32) (c : I32) (tex : I32)] : Unit
+  (let [n 0]
+    (dotimes [e 3]
+      (let [p (case e 0 a 1 b c)
+            q (case e 0 b 1 c a)
+            pin (>= (loadf32 (+ p 40)) (near-z))
+            qin (>= (loadf32 (+ q 40)) (near-z))]
+        (when pin (copy-rec! p (sv-addr n)) (set! n (+ n 1)))
+        (when (!= (b2i pin) (b2i qin)) (clip-lerp! p q (sv-addr n)) (set! n (+ n 1)))))
+    (when (>= n 3) (fill-tri! (sv-addr 0) (sv-addr 1) (sv-addr 2) tex))
+    (when (>= n 4) (fill-tri! (sv-addr 0) (sv-addr 2) (sv-addr 3) tex))))
+
+;; ---- drawing a mesh --------------------------------------------------------------------------------------------------------------------------
+;; is the mesh's bounding sphere (through the current model transform) inside the view at all?
+(defn mesh-visible? [(m : I32)] : Bool
+  (let [(bx : F32) (md-bx m) (by : F32) (md-by m) (bz : F32) (md-bz m)
+        (ms : F32) (gf (g-m-s))
+        (wx : F32) (+ (gf (g-m-ox)) (* ms (+ (+ (* bx (gf (g-m-xx))) (* by (gf (g-m-yx)))) (* bz (gf (g-m-zx))))))
+        (wy : F32) (+ (gf (g-m-oy)) (* ms (+ (+ (* bx (gf (g-m-xy))) (* by (gf (g-m-yy)))) (* bz (gf (g-m-zy))))))
+        (wz : F32) (+ (gf (g-m-oz)) (* ms (+ (+ (* bx (gf (g-m-xz))) (* by (gf (g-m-yz)))) (* bz (gf (g-m-zz))))))
+        (r : F32) (* (md-br m) ms)
+        (dx : F32) (- wx (gf (g-cam-x))) (dy : F32) (- wy (gf (g-cam-y))) (dz : F32) (- wz (gf (g-cam-z)))
+        (cx : F32) (dot3 dx dy dz (gf (g-cam-rx)) (gf (g-cam-ry)) (gf (g-cam-rz)))
+        (cy : F32) (dot3 dx dy dz (gf (g-cam-ux)) (gf (g-cam-uy)) (gf (g-cam-uz)))
+        (cz : F32) (dot3 dx dy dz (gf (g-cam-fx)) (gf (g-cam-fy)) (gf (g-cam-fz)))
+        (kx : F32) (gf (g-kx)) (ky : F32) (gf (g-ky))
+        ;; distance outside each side plane: (x - z k) / sqrt(1 + k^2)
+        (nx : F32) (sqrt (+ 1.0 (* kx kx))) (ny : F32) (sqrt (+ 1.0 (* ky ky)))]
+    (not (or (or (< (+ cz r) (near-z)) (> (/ (- cx (* cz kx)) nx) r))
+             (or (> (/ (- (- 0.0 cx) (* cz kx)) nx) r)
+                 (or (> (/ (- cy (* cz ky)) ny) r) (> (/ (- (- 0.0 cy) (* cz ky)) ny) r)))))))
+
+;; every triangle of mesh m against the TV cache
+(defn raster-mesh! [(m : I32)] : Unit
+  (let [tb (md-tbase m) nt (md-nt m) fl (md-flags m)
+        tex (bit-and fl 1)
+        two (!= (bit-and fl 2) 0)
+        flip (gi (g-cull-flip))]
+    (loop [t 0]
+      (when (< t nt)
+        (let [ta (+ tb (shl t 4))
+              i0 (load32 ta) i1 (load32 (+ ta 4)) i2 (load32 (+ ta 8))
+              o0 (load32 (oc-addr i0)) o1 (load32 (oc-addr i1)) o2 (load32 (oc-addr i2))]
+          (when (= (bit-and (bit-and o0 o1) o2) 0)
+            (let [a (tv-addr i0) b (tv-addr i1) c (tv-addr i2)
+                  (ax : F32) (loadf32 (+ a 32)) (ay : F32) (loadf32 (+ a 36)) (az : F32) (loadf32 (+ a 40))
+                  (e1x : F32) (- (loadf32 (+ b 32)) ax) (e1y : F32) (- (loadf32 (+ b 36)) ay) (e1z : F32) (- (loadf32 (+ b 40)) az)
+                  (e2x : F32) (- (loadf32 (+ c 32)) ax) (e2y : F32) (- (loadf32 (+ c 36)) ay) (e2z : F32) (- (loadf32 (+ c 40)) az)
+                  ;; the winding normal in camera space; camera space is left-handed, so a front face has it pointing AWAY
+                  ;; from the eye: n . a > 0 (br_3d.prn's header: WINDING)
+                  (nx : F32) (- (* e1y e2z) (* e1z e2y))
+                  (ny : F32) (- (* e1z e2x) (* e1x e2z))
+                  (nz : F32) (- (* e1x e2y) (* e1y e2x))
+                  (side : F32) (+ (+ (* nx ax) (* ny ay)) (* nz az))
+                  front (if (= flip 0) (> side 0.0) (< side 0.0))]
+              (when (or two front)
+                (if (= (bit-and (bit-or (bit-or o0 o1) o2) 1) 0)
+                    (fill-tri! a b c tex)
+                    (clip-fill! a b c tex)))))
+          (recur (+ t 1)))))))
+
+;; THE way to draw anything: mesh m through the current model transform (set-model! / set-model-identity!), its texture (if
+;; textured) from its descriptor, its palette slots from set-palette!
+(defn draw-mesh! [(m : I32)] : Unit
+  (when (and (> (md-nt m) 0) (mesh-visible? m))
+    (gi! (g-stat-meshes) (+ (gi (g-stat-meshes)) 1))
+    (gi! (g-tex-base) (load32 (+ (md-addr m) 20)))
+    (gi! (g-tex-shift) (load32 (+ (md-addr m) 24)))
+    (gi! (g-tex-mask) (load32 (+ (md-addr m) 28)))
+    (transform-mesh! m)
+    (raster-mesh! m)))
+
+;; ---- points and sprites ----------------------------------------------------------------------------------------------------------------------
+;; a world point to the screen: returns its camera depth (<= near-z: behind the eye, nothing written), screen x / y in g-sx / g-sy
+(defn project-point [(x : F32) (y : F32) (z : F32)] : F32
+  (let [(dx : F32) (- x (gf (g-cam-x))) (dy : F32) (- y (gf (g-cam-y))) (dz : F32) (- z (gf (g-cam-z)))
+        (cx : F32) (dot3 dx dy dz (gf (g-cam-rx)) (gf (g-cam-ry)) (gf (g-cam-rz)))
+        (cy : F32) (dot3 dx dy dz (gf (g-cam-ux)) (gf (g-cam-uy)) (gf (g-cam-uz)))
+        (cz : F32) (dot3 dx dy dz (gf (g-cam-fx)) (gf (g-cam-fy)) (gf (g-cam-fz)))]
+    (when (> cz (near-z))
+      (gf! (g-sx) (+ (half-w) (* (/ cx cz) (gf (g-proj-scale)))))
+      (gf! (g-sy) (- (half-h) (* (/ cy cz) (gf (g-proj-scale))))))
+    cz))
+
+;; add (r, g, b) * k (k 0..256) onto a pixel, saturating
+(defn add-px! [(a : I32) (r : I32) (g : I32) (b : I32) (k : I32)] : Unit
+  (let [d (load32 a)]
+    (store32! a (pack-rgb (+ (bit-and d 255) (shr (* r k) 8))
+                          (+ (bit-and (shr d 8) 255) (shr (* g k) 8))
+                          (+ (bit-and (shr d 16) 255) (shr (* b k) 8))))))
+
+;; a GLOW: an additive soft disc of world radius `rad` at a world point, colour c (an engine colour), strength k 0..256 at its
+;; centre, falling off as (1 - d^2)^2. Depth-tested per pixel against the sprite's own depth (pulled toward the eye by its radius,
+;; so a glow at a wall is not cut in half by it) and never writes depth. A sprite's screen radius is capped at 120 px.
+(defn glow! [(x : F32) (y : F32) (z : F32) (rad : F32) (c : I32) (k : I32)] : Unit
+  (let [(cz : F32) (project-point x y z)]
+    (when (and (> cz (+ (near-z) 0.5)) (> k 0))
+      (let [(sx : F32) (gf (g-sx)) (sy : F32) (gf (g-sy))
+            (pr : F32) (fmin2 120.0 (/ (* rad (gf (g-proj-scale))) cz))
+            (iz : F32) (/ 1.0 (fmax2 (near-z) (- cz rad)))
+            x0 (max-i 0 (i32 (- sx pr))) x1 (min-i 639 (i32 (+ sx pr)))
+            y0 (max-i 0 (i32 (- sy pr))) y1 (min-i 359 (i32 (+ sy pr)))
+            (inv : F32) (/ 1.0 (fmax2 (* pr pr) 0.25))
+            cr (col-r c) cg (col-g c) cb (col-b c)]
+        (when (>= pr 0.5)
+          (loop [py y0]
+            (when (<= py y1)
+              (loop [px x0]
+                (when (<= px x1)
+                  (let [(ddx : F32) (- (+ (f32 px) 0.5) sx) (ddy : F32) (- (+ (f32 py) 0.5) sy)
+                        (d2 : F32) (* (+ (* ddx ddx) (* ddy ddy)) inv)]
+                    (when (< d2 1.0)
+                      (let [o (+ (* py 640) px)]
+                        (when (> iz (loadf32 (+ (zb-base) (shl o 2))))
+                          (let [(fo : F32) (- 1.0 d2)
+                                kk (i32 (* (f32 k) (* fo fo)))]
+                            (add-px! (+ (fb-base) (shl o 2)) cr cg cb kk))))))
+                  (recur (+ px 1))))
+              (recur (+ py 1)))))))))

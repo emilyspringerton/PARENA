@@ -1,0 +1,513 @@
+;; stdlib/bedrockracers/web/br_mesh.prn -- every mesh the game draws, built once at init into GEOM (0x340000), and the two small
+;; textures the arena shell wears (TEX2, 0x0B0000). Formats and the draw path are in br_3d.prn.
+;;
+;; THE ARENA SHELL is the physics' own rounded box (br_arena.prn: half extents 520 x 120 x 520, every edge a 70-radius fillet) as
+;; real curved geometry, generated the way the SDF defines it: a surface point is an inner-box point plus 70 x the outward normal.
+;; Each of the six cube faces is a grid of STATIONS along its two axes: the flat part every 37.5 units across the floor and the
+;; ceiling (every 33 1/3 up the walls), and three fillet stations at 15, 30, 45 degrees either side of it. A station is (inner
+;; coordinate, normal weight): the normal is normalize(weights), so a face covers its fillets out to 45 degrees and the
+;; neighbouring face takes over -- the cube-sphere mapping, which also rounds the eight corners into sphere octants with no gaps.
+;; Two faces meeting at 45 degrees compute their shared vertices from the SAME world-ordered arguments, so they agree to the bit
+;; and the seam cannot crack.
+;;
+;; The shell is cut into meshes by MATERIAL (and so that whole pieces can be culled):
+;;   FLOOR      the flat floor, wearing the baked dirt-track texture (TEX, br_arena.prn's bake-floor!)
+;;   BAND 0..3  one per wall (+x, +z, -x, -z): the wall and the quarter-pipes along it at the floor and the ceiling, in dark slate
+;;              panels whose texture coordinates run round the room's perimeter and up its profile (arc length), so a panel
+;;              line runs unbroken from the floor up the quarter-pipe, the wall and over into the ceiling, and all the way round
+;;              (64 panels exactly fill the perimeter, so the wrap has no seam)
+;;   CEILING    the flat ceiling, deep blue-black with a soft grid of warm lamps (partly emissive: the stadium's lights)
+;;   TOWER 0..3 the goal at each corner: a COLLAR round the hole in the ceiling (the 5 x 5 station cells round the shaft are cut
+;;              out of the ceiling and rebuilt as rings from the hole's rim out to their square boundary), the SHAFT (an open
+;;              cylinder, radius 40, from the rim up to its roof at 340, darkening into a team-coloured glow toward the top), the
+;;              roof's glowing disc, and the HOOP: a team-coloured ring on the goal line (y 244) just inside the mouth
+;;   CAR        a low wedge in the spirit of the Tesla Roadster: a long low nose, a short glass cabin, a raked tail, four nozzle
+;;              pods underneath where the wheels would be; flat-shaded (light per face), painted from the draw palette:
+;;                1 paint  2 paint, darker (sills, nose, tail)  3 glass  4 carbon (underside, pods)  5 headlights (glow)
+;;                6 tail lights (glow)  7 the lift nozzles (glow; a later stage can brighten it with c-lift-fx)
+;;   BALL       a low-poly sphere (radius 11, the physics' rb) in eight octant panels, palette 1 and 2, so its spin shows
+;;
+;; Counts (asserted by the bench, tests/br_shot.mjs prints them): about 3.9k vertices and 6.4k triangles for the shell, 108
+;; triangles a car, 144 the ball.
+
+;; ---- mesh ids (br_3d.prn's descriptors; 13..63 are free for later stages) ------------------------------------------------------
+(defn mesh-floor [] : I32 0)
+(defn mesh-band [(sd : I32)] : I32 (+ 1 sd))
+(defn mesh-ceil [] : I32 5)
+(defn mesh-tower [(t : I32)] : I32 (+ 6 t))
+(defn mesh-car [] : I32 10)
+(defn mesh-ball [] : I32 12)
+
+;; ---- textures (TEX2, 0x0B0000: 64 KB, br_mem.prn) -------------------------------------------------------------------------------
+(defn panel-tex [] : I32 720896)   ; 0x0B0000  64 x 64: the wall panels
+(defn ceil-tex [] : I32 737280)    ; 0x0B4000  64 x 64: the ceiling and its lamps
+
+;; ---- the builder's G words (br_mem.prn: 300..319, inside br_3d.prn's block) --------------------------------------------------------
+(defn g-mb-top [] : I32 300)       ; the GEOM bump pointer
+(defn g-mb-m [] : I32 301)         ; the mesh being built
+(defn g-mb-capv [] : I32 302)      ; its vertex capacity ...
+(defn g-mb-capt [] : I32 303)      ; ... and triangle capacity
+(defn g-mb-px [] : I32 304)        ; F32: rb-point!'s answer: the surface point ...
+(defn g-mb-py [] : I32 305)
+(defn g-mb-pz [] : I32 306)
+(defn g-mb-nx [] : I32 307)        ; ... its room-facing normal ...
+(defn g-mb-ny [] : I32 308)
+(defn g-mb-nz [] : I32 309)
+(defn g-mb-cx [] : I32 310)        ; ... and the inner-box point it grew from
+(defn g-mb-cy [] : I32 311)
+(defn g-mb-cz [] : I32 312)
+(defn g-mb-ix [] : I32 313)        ; F32: the point a car face is oriented away from
+(defn g-mb-iy [] : I32 314)
+(defn g-mb-iz [] : I32 315)
+(defn g-mb-over [] : I32 316)      ; I32: 1 = a mesh ran out of room (a build bug; the bench checks it is 0)
+
+;; a vertex colour: an engine colour's RGB with emission e (0..255) in the top byte (br_3d.prn)
+(defn vcol [(c : I32) (e : I32)] : I32 (bit-or (bit-and c 16777215) (shl (clamp-i e 0 255) 24)))
+
+;; ---- the builder --------------------------------------------------------------------------------------------------------------------
+;; open mesh m with room for capv vertices and capt triangles (bump-allocated from GEOM; the descriptor's texture is cleared)
+(defn mesh-begin! [(m : I32) (capv : I32) (capt : I32) (flags : I32)] : Unit
+  (let [a (md-addr m) top (gi (g-mb-top))]
+    (store32! a top) (store32! (+ a 4) 0)
+    (store32! (+ a 8) (+ top (* capv (vx-size)))) (store32! (+ a 12) 0)
+    (store32! (+ a 16) flags)
+    (store32! (+ a 20) 0) (store32! (+ a 24) 0) (store32! (+ a 28) 0)
+    (gi! (g-mb-m) m) (gi! (g-mb-capv) capv) (gi! (g-mb-capt) capt)
+    (gi! (g-mb-top) (+ top (+ (* capv (vx-size)) (shl capt 4))))
+    (when (> (gi (g-mb-top)) (geom-end)) (gi! (g-mb-over) 1))))
+
+(defn mesh-tex! [(m : I32) (base : I32) (shift : I32)] : Unit
+  (let [a (md-addr m)]
+    (store32! (+ a 20) base) (store32! (+ a 24) shift) (store32! (+ a 28) (- (shl 1 shift) 1))))
+
+;; a vertex: position, unit normal, texture coordinates (texels), colour (vcol) and palette slot (0 = use col); its index, or -1
+(defn mvert! [(x : F32) (y : F32) (z : F32) (nx : F32) (ny : F32) (nz : F32) (u : F32) (v : F32) (col : I32) (aux : I32)] : I32
+  (let [a (md-addr (gi (g-mb-m))) n (load32 (+ a 4))]
+    (if (>= n (gi (g-mb-capv)))
+        (do (gi! (g-mb-over) 1) -1)
+        (let [va (+ (load32 a) (* n (vx-size)))]
+          (storef32! va x) (storef32! (+ va 4) y) (storef32! (+ va 8) z)
+          (storef32! (+ va 12) nx) (storef32! (+ va 16) ny) (storef32! (+ va 20) nz)
+          (storef32! (+ va 24) u) (storef32! (+ va 28) v)
+          (store32! (+ va 32) col) (store32! (+ va 36) aux) (store32! (+ va 40) 0) (store32! (+ va 44) 0)
+          (store32! (+ a 4) (+ n 1))
+          n))))
+
+(defn mv-f [(i : I32) (k : I32)] : F32 (loadf32 (+ (+ (load32 (md-addr (gi (g-mb-m)))) (* i (vx-size))) (shl k 2))))
+
+;; a triangle, wound so that it faces the way its vertices' normals point (br_3d.prn: WINDING); degenerate ones are dropped
+(defn mtri! [(a : I32) (b : I32) (c : I32)] : Unit
+  (when (and (>= a 0) (and (>= b 0) (>= c 0)))
+    (let [md (md-addr (gi (g-mb-m))) n (load32 (+ md 12))
+          (ax : F32) (mv-f a 0) (ay : F32) (mv-f a 1) (az : F32) (mv-f a 2)
+          (e1x : F32) (- (mv-f b 0) ax) (e1y : F32) (- (mv-f b 1) ay) (e1z : F32) (- (mv-f b 2) az)
+          (e2x : F32) (- (mv-f c 0) ax) (e2y : F32) (- (mv-f c 1) ay) (e2z : F32) (- (mv-f c 2) az)
+          (cx : F32) (- (* e1y e2z) (* e1z e2y))
+          (cy : F32) (- (* e1z e2x) (* e1x e2z))
+          (cz : F32) (- (* e1x e2y) (* e1y e2x))
+          (sx : F32) (+ (+ (mv-f a 3) (mv-f b 3)) (mv-f c 3))
+          (sy : F32) (+ (+ (mv-f a 4) (mv-f b 4)) (mv-f c 4))
+          (sz : F32) (+ (+ (mv-f a 5) (mv-f b 5)) (mv-f c 5))
+          (d : F32) (dot3 cx cy cz sx sy sz)]
+      (cond
+        (< (len3 cx cy cz) 0.000001) unit
+        (>= n (gi (g-mb-capt))) (gi! (g-mb-over) 1)
+        :else (let [ta (+ (load32 (+ md 8)) (shl n 4))]
+                (store32! ta a)
+                (store32! (+ ta 4) (if (>= d 0.0) b c))
+                (store32! (+ ta 8) (if (>= d 0.0) c b))
+                (store32! (+ ta 12) 0)
+                (store32! (+ md 12) (+ n 1)))))))
+
+(defn mquad! [(a : I32) (b : I32) (c : I32) (d : I32)] : Unit (do (mtri! a b c) (mtri! a c d)))
+
+;; close the mesh: its bounding sphere (the box's centre, the farthest vertex)
+(defn mesh-end! [] : Unit
+  (let [m (gi (g-mb-m)) md (md-addr m) n (load32 (+ md 4))
+        (x0 : F32) 100000.0 (y0 : F32) 100000.0 (z0 : F32) 100000.0
+        (x1 : F32) -100000.0 (y1 : F32) -100000.0 (z1 : F32) -100000.0
+        (r : F32) 0.0]
+    (loop [i 0]
+      (when (< i n)
+        (set! x0 (fmin2 x0 (mv-f i 0))) (set! y0 (fmin2 y0 (mv-f i 1))) (set! z0 (fmin2 z0 (mv-f i 2)))
+        (set! x1 (fmax2 x1 (mv-f i 0))) (set! y1 (fmax2 y1 (mv-f i 1))) (set! z1 (fmax2 z1 (mv-f i 2)))
+        (recur (+ i 1))))
+    (let [(cx : F32) (* 0.5 (+ x0 x1)) (cy : F32) (* 0.5 (+ y0 y1)) (cz : F32) (* 0.5 (+ z0 z1))]
+      (loop [i 0]
+        (when (< i n)
+          (set! r (fmax2 r (len3 (- (mv-f i 0) cx) (- (mv-f i 1) cy) (- (mv-f i 2) cz))))
+          (recur (+ i 1))))
+      (storef32! (+ md 32) cx) (storef32! (+ md 36) cy) (storef32! (+ md 40) cz) (storef32! (+ md 44) (+ r 0.01)))))
+
+;; ---- the rounded box ----------------------------------------------------------------------------------------------------------------------
+;; the surface point grown from inner-box point (cx, cy, cz) along the normal normalize(wx, wy, wz) (world-ordered, so two faces
+;; that meet compute it identically) -> g-mb-p*, the room-facing normal -> g-mb-n*, the inner point -> g-mb-c*
+(defn rb-point! [(wx : F32) (wy : F32) (wz : F32) (cx : F32) (cy : F32) (cz : F32)] : Unit
+  (let [(il : F32) (/ 1.0 (sqrt (+ (+ (* wx wx) (* wy wy)) (* wz wz))))
+        (nx : F32) (* wx il) (ny : F32) (* wy il) (nz : F32) (* wz il)]
+    (gf! (g-mb-px) (+ cx (* (a-r) nx))) (gf! (g-mb-py) (+ cy (* (a-r) ny))) (gf! (g-mb-pz) (+ cz (* (a-r) nz)))
+    (gf! (g-mb-nx) (- 0.0 nx)) (gf! (g-mb-ny) (- 0.0 ny)) (gf! (g-mb-nz) (- 0.0 nz))
+    (gf! (g-mb-cx) cx) (gf! (g-mb-cy) cy) (gf! (g-mb-cz) cz)))
+
+;; stations: the normal weight of a fillet station (tan 15, tan 30, tan 45) ...
+(defn fil-w [(j : I32)] : F32 (case j 1 0.26794919 2 0.57735027 1.0))
+;; ... along x or z: 31 stations, 0..2 the fillet at the negative wall, 3..27 the flat every 37.5, 28..30 the positive fillet
+(defn sxz-w [(k : I32)] : F32 (cond (< k 3) (- 0.0 (fil-w (- 3 k))) (> k 27) (fil-w (- k 27)) :else 0.0))
+(defn sxz-c [(k : I32)] : F32 (cond (< k 3) -450.0 (> k 27) 450.0 :else (+ -450.0 (* (f32 (- k 3)) 37.5))))
+;; ... and up the walls: 10 stations, 0..2 the floor's fillet, 3..6 the flat wall (y 70..170), 7..9 the ceiling's fillet
+(defn sy-w [(j : I32)] : F32 (cond (< j 3) (- 0.0 (fil-w (- 3 j))) (> j 6) (fil-w (- j 6)) :else 0.0))
+(defn sy-c [(j : I32)] : F32 (cond (< j 3) 70.0 (> j 6) 170.0 :else (+ 70.0 (/ (* (f32 (- j 3)) 100.0) 3.0))))
+
+;; face f's station (ia, ib) on the surface. f: 0 floor (x, z)  1 ceiling (x, z)  2 wall +x (z, y)  3 wall -x (z, y)
+;; 4 wall +z (x, y)  5 wall -z (x, y)
+(defn face-point! [(f : I32) (ia : I32) (ib : I32)] : Unit
+  (case f
+    0 (rb-point! (sxz-w ia) -1.0 (sxz-w ib) (sxz-c ia) 70.0 (sxz-c ib))
+    1 (rb-point! (sxz-w ia) 1.0 (sxz-w ib) (sxz-c ia) 170.0 (sxz-c ib))
+    2 (rb-point! 1.0 (sy-w ib) (sxz-w ia) 450.0 (sy-c ib) (sxz-c ia))
+    3 (rb-point! -1.0 (sy-w ib) (sxz-w ia) -450.0 (sy-c ib) (sxz-c ia))
+    4 (rb-point! (sxz-w ia) (sy-w ib) 1.0 (sxz-c ia) (sy-c ib) 450.0)
+    (rb-point! (sxz-w ia) (sy-w ib) -1.0 (sxz-c ia) (sy-c ib) -450.0)))
+
+;; ---- the band's texture coordinates ---------------------------------------------------------------------------------------------------
+;; u runs round the perimeter of the rounded room, v up its profile, both in arc length. The perimeter is 4 x (900 + 35 pi) =
+;; 4039.82 units; band-k = 64 panels x 64 texels over it. Each band mesh measures u from its own wall's middle (so no triangle
+;; ever straddles the wrap) and adds its wall's offset; the walls agree at the corners to a whole number of panels.
+(defn band-k [] : F32 1.0139079)
+(defn side-psi [(sd : I32)] : F32 (case sd 0 0.0 1 1.5707964 2 3.1415927 -1.5707964))
+(defn wrap-pi [(a : F32)] : F32 (cond (> a 3.1415927) (- a 6.2831855) (< a -3.1415927) (+ a 6.2831855) :else a))
+;; (onx, onz): the horizontal part of the OUTWARD normal; (cx, cz) the inner-box point
+(defn band-u [(sd : I32) (cx : F32) (cz : F32) (onx : F32) (onz : F32)] : F32
+  (let [(psi : F32) (if (< (len2 onx onz) 0.00001) 0.0 (wrap-pi (- (atan2f onz onx) (side-psi sd))))
+        (along : F32) (case sd 0 cz 1 (- 0.0 cx) 2 (- 0.0 cz) cx)]
+    (+ (* (+ (+ along (* (a-r) psi)) (* (f32 sd) 1009.9557)) (band-k)) 8192.0)))
+;; v: 0 at the floor's flat edge, up the quarter-pipe (arc), the wall, the upper quarter-pipe: 319.9 at the ceiling's flat edge
+(defn band-v [(cy : F32) (onx : F32) (ony : F32) (onz : F32)] : F32
+  (* (+ (- cy 70.0) (* (a-r) (+ (atan2f ony (len2 onx onz)) 1.5707964))) (band-k)))
+
+;; ---- materials ---------------------------------------------------------------------------------------------------------------------------------
+(defn floor-col [] : I32 (vcol (rgb 255 255 255) 0))
+;; the band: a dark slate, a touch lighter and warmer low down (concrete the cars have scuffed), cooler up toward the ceiling
+(defn band-col [(v : F32)] : I32
+  (vcol (mix (rgb 104 104 112) (rgb 70 76 98) (clamp-i (i32 (* v 0.8)) 0 256)) 0))
+(defn ceil-col [] : I32 (vcol (rgb 255 255 255) 120))
+(defn metal-col [] : I32 (vcol (rgb 62 64 76) 0))
+
+;; ---- the textures --------------------------------------------------------------------------------------------------------------------------------
+;; wall panels: 64 x 64 texels (one panel), a light grey with a faint grain, a dark seam on two edges and a bevel highlight inside
+;; it -- greyscale, the band's vertex colour tints it
+(defn bake-panel! [] : Unit
+  (dotimes [y 64]
+    (dotimes [x 64]
+      (let [n (hash2 (+ x 17) (+ y 191))
+            v (cond (or (= x 0) (= y 0)) 128
+                    (or (= x 1) (= y 1)) 236
+                    (or (= x 63) (= y 63)) 182
+                    :else (+ 200 (shr n 5)))
+            ;; a thin horizontal pinstripe a third of the way up each panel (reads speed when you drive along a wall)
+            v2 (if (and (= y 22) (> x 1)) (- v 26) v)]
+        (store32! (+ (panel-tex) (shl (+ (* y 64) x) 2)) (rgb v2 v2 v2))))))
+
+;; the ceiling: deep blue-black panels with a soft warm lamp in the middle of each (64 units apart)
+(defn bake-ceiling! [] : Unit
+  (dotimes [y 64]
+    (dotimes [x 64]
+      (let [n (hash2 (+ x 301) (+ y 7))
+            (dx : F32) (- (f32 x) 31.5) (dy : F32) (- (f32 y) 31.5)
+            (d : F32) (sqrt (+ (* dx dx) (* dy dy)))
+            (lamp : F32) (clamp-f (- 1.0 (/ (- d 2.5) 4.0)) 0.0 1.0)
+            (halo : F32) (* 0.18 (clamp-f (- 1.0 (/ d 16.0)) 0.0 1.0))
+            base (if (or (= x 0) (= y 0)) (rgb 16 17 24) (rgb (+ 26 (shr n 6)) (+ 28 (shr n 6)) (+ 38 (shr n 6))))
+            c (mix (mix base (rgb 255 214 160) (i32 (* halo 256.0))) (rgb 255 240 214) (i32 (* lamp 256.0)))]
+        (store32! (+ (ceil-tex) (shl (+ (* y 64) x) 2)) c)))))
+
+;; ---- the face passes -------------------------------------------------------------------------------------------------------------------------------
+;; a station -> vertex index map for one face (31 x 31 words in SCR, reset per face pass), so cells share their corners
+(defn imap-addr [(k : I32)] : I32 (+ (+ (scr-base) 1024) (shl (bit-and k 1023) 2)))
+(defn imap-reset! [] : Unit (dotimes [k 1024] (store32! (imap-addr k) -1)))
+
+;; the vertex at face f's station (ia, ib) for a mesh of kind mode: 0 floor (TEX texels), 1 band of side sd, 2 ceiling (planar)
+(defn face-vert-new! [(f : I32) (ia : I32) (ib : I32) (mode : I32) (sd : I32)] : I32
+  (do
+    (face-point! f ia ib)
+    (let [(px : F32) (gf (g-mb-px)) (py : F32) (gf (g-mb-py)) (pz : F32) (gf (g-mb-pz))
+          (nx : F32) (gf (g-mb-nx)) (ny : F32) (gf (g-mb-ny)) (nz : F32) (gf (g-mb-nz))
+          (cx : F32) (gf (g-mb-cx)) (cy : F32) (gf (g-mb-cy)) (cz : F32) (gf (g-mb-cz))]
+      (case mode
+        0 (mvert! px py pz nx ny nz (/ (+ px 520.0) (tex-cell)) (/ (+ pz 520.0) (tex-cell)) (floor-col) 0)
+        1 (let [(v : F32) (band-v cy (- 0.0 nx) (- 0.0 ny) (- 0.0 nz))]
+            (mvert! px py pz nx ny nz (band-u sd cx cz (- 0.0 nx) (- 0.0 nz)) v (band-col v) 0))
+        (mvert! px py pz nx ny nz (+ px 4096.0) (+ pz 4096.0) (ceil-col) 0)))))
+
+(defn face-vert! [(f : I32) (ia : I32) (ib : I32) (mode : I32) (sd : I32)] : I32
+  (let [key (+ (* ia 31) ib)
+        have (load32 (imap-addr key))]
+    (if (>= have 0)
+        have
+        (let [v (face-vert-new! f ia ib mode sd)]
+          (store32! (imap-addr key) v)
+          v))))
+
+;; the 5 x 5 station cells round each tower (the ceiling's corners) are the collar's, not the ceiling's
+(defn collar-cell? [(ia : I32) (ib : I32)] : Bool
+  (and (or (>= ia 25) (< ia 5)) (or (>= ib 25) (< ib 5))))
+
+;; face f's cells ia in [ia0, ia1), ib in [ib0, ib1) into the current mesh (the ceiling face skips the collars)
+(defn face-cells! [(f : I32) (ia0 : I32) (ia1 : I32) (ib0 : I32) (ib1 : I32) (mode : I32) (sd : I32)] : Unit
+  (do
+    (imap-reset!)
+    (loop [ia ia0]
+      (when (< ia ia1)
+        (loop [ib ib0]
+          (when (< ib ib1)
+            (when (not (and (= f 1) (collar-cell? ia ib)))
+              (mquad! (face-vert! f ia ib mode sd) (face-vert! f (+ ia 1) ib mode sd)
+                      (face-vert! f (+ ia 1) (+ ib 1) mode sd) (face-vert! f ia (+ ib 1) mode sd)))
+            (recur (+ ib 1))))
+        (recur (+ ia 1))))))
+
+;; ---- the shell's meshes --------------------------------------------------------------------------------------------------------------------------
+(defn build-floor! [] : Unit
+  (do (mesh-begin! (mesh-floor) 640 1160 (mf-tex))
+      (mesh-tex! (mesh-floor) (tex-base) 8)
+      (face-cells! 0 3 27 3 27 0 0)
+      (mesh-end!)))
+
+;; band sd: its wall (face 2 +x, 4 +z, 3 -x, 5 -z) and the floor's and the ceiling's quarter-pipes along it (the corner patches go
+;; with the x walls)
+(defn band-wall [(sd : I32)] : I32 (case sd 0 2 1 4 2 3 5))
+(defn build-band! [(sd : I32)] : Unit
+  (let [m (mesh-band sd)
+        ;; the floor / ceiling cells on this side: x walls take ia in a fillet and every ib; z walls the flat ia and ib in a fillet
+        ia0 (case sd 0 27 2 0 3) ia1 (case sd 0 30 2 3 27)
+        ib0 (case sd 1 27 3 0 0) ib1 (case sd 1 30 3 3 30)]
+    (mesh-begin! m 1100 1400 (mf-tex))
+    (mesh-tex! m (panel-tex) 6)
+    (face-cells! (band-wall sd) 0 30 0 9 1 sd)
+    (face-cells! 0 ia0 ia1 ib0 ib1 1 sd)
+    (face-cells! 1 ia0 ia1 ib0 ib1 1 sd)
+    (mesh-end!)))
+
+(defn build-ceiling! [] : Unit
+  (do (mesh-begin! (mesh-ceil) 640 1160 (mf-tex))
+      (mesh-tex! (mesh-ceil) (ceil-tex) 6)
+      (face-cells! 1 3 27 3 27 2 0)
+      (mesh-end!)))
+
+;; ---- the towers -----------------------------------------------------------------------------------------------------------------------------------
+;; the ceiling's height above (x, z) (it is a height field everywhere a tower's collar reaches) and its room-facing normal
+(defn ceil-h [(x : F32) (z : F32)] : F32
+  (let [(dx : F32) (fmax2 0.0 (- (abs-f x) 450.0)) (dz : F32) (fmax2 0.0 (- (abs-f z) 450.0))]
+    (+ 170.0 (sqrt (fmax2 0.0 (- 4900.0 (+ (* dx dx) (* dz dz))))))))
+;; a vertex on the ceiling at (x, z): the normal points back down at the inner box's top (room-facing)
+(defn ceil-vert! [(x : F32) (z : F32) (col : I32)] : I32
+  (let [(y : F32) (ceil-h x z)
+        (cx : F32) (clamp-f x -450.0 450.0) (cz : F32) (clamp-f z -450.0 450.0)
+        (ox : F32) (- x cx) (oy : F32) (- y 170.0) (oz : F32) (- z cz)
+        (il : F32) (inv-len3 ox oy oz)]
+    (mvert! x y z (* (- 0.0 ox) il) (* (- 0.0 oy) il) (* (- 0.0 oz) il) 0.0 0.0 col 0)))
+
+;; the collar's square boundary: 20 ceiling stations in order round the tower; j = 0..19
+(defn bnd-ia [(t : I32) (j : I32)] : I32
+  (let [i0 (if (= (bit-and t 1) 1) 25 0) s (/ j 5) k (mod j 5)]
+    (case s 0 (+ i0 k) 1 (+ i0 5) 2 (- (+ i0 5) k) i0)))
+(defn bnd-ib [(t : I32) (j : I32)] : I32
+  (let [k0 (if (= (bit-and t 2) 2) 25 0) s (/ j 5) k (mod j 5)]
+    (case s 0 k0 1 (+ k0 k) 2 (+ k0 5) (- (+ k0 5) k))))
+
+;; scratch: per boundary station j, its point (x, z) and the rim's angle from the shaft's axis
+(defn rim-addr [(j : I32) (k : I32)] : I32 (+ (+ (scr-base) 6144) (+ (shl j 4) (shl k 2))))
+(defn rim-prep! [(t : I32)] : Unit
+  (dotimes [j 20]
+    (face-point! 1 (bnd-ia t j) (bnd-ib t j))
+    (storef32! (rim-addr j 0) (gf (g-mb-px)))
+    (storef32! (rim-addr j 1) (gf (g-mb-pz)))
+    (storef32! (rim-addr j 2) (atan2f (- (gf (g-mb-pz)) (tw-z t)) (- (gf (g-mb-px)) (tw-x t))))))
+(defn rim-x [(t : I32) (j : I32)] : F32 (+ (tw-x t) (* (t-r) (cosf (loadf32 (rim-addr j 2))))))
+(defn rim-z [(t : I32) (j : I32)] : F32 (+ (tw-z t) (* (t-r) (sinf (loadf32 (rim-addr j 2))))))
+
+;; shaft levels: 0 the rim, then up to the roof
+(defn shaft-n [] : I32 6)
+(defn shaft-y [(l : I32)] : F32 (case l 1 250.0 2 266.0 3 288.0 4 314.0 340.0))
+
+(defn build-tower! [(t : I32)] : Unit
+  (let [m (mesh-tower t)
+        tc (team-color t)
+        (tx : F32) (tw-x t) (tz : F32) (tw-z t)
+        dark (rgb 40 42 52)]
+    (rim-prep! t)
+    (mesh-begin! m 400 640 0)
+    ;; the collar: 4 rings x 20, from the rim (s = 0: team-coloured, glowing) out to the ceiling's own stations (s = 3)
+    (let [base (load32 (+ (md-addr m) 4))]
+      (dotimes [s 4]
+        (dotimes [j 20]
+          (let [(f : F32) (/ (f32 s) 3.0)
+                (bx : F32) (loadf32 (rim-addr j 0)) (bz : F32) (loadf32 (rim-addr j 1))
+                (rx : F32) (rim-x t j) (rz : F32) (rim-z t j)]
+            (if (= s 3)
+                (do (face-point! 1 (bnd-ia t j) (bnd-ib t j))
+                    (mvert! (gf (g-mb-px)) (gf (g-mb-py)) (gf (g-mb-pz)) (gf (g-mb-nx)) (gf (g-mb-ny)) (gf (g-mb-nz))
+                            0.0 0.0 (metal-col) 0))
+                (ceil-vert! (+ rx (* (- bx rx) f)) (+ rz (* (- bz rz) f))
+                            (case s 0 (vcol (mix tc (rgb 255 255 255) 40) 210)
+                                    1 (vcol (mix (rgb 62 64 76) tc 70) 30)
+                                    (metal-col)))))))
+      (dotimes [s 3]
+        (dotimes [j 20]
+          (let [j2 (mod (+ j 1) 20) a (+ base (+ (* s 20) j))]
+            (mquad! a (+ base (+ (* s 20) j2)) (+ base (+ (* (+ s 1) 20) j2)) (+ base (+ (* (+ s 1) 20) j)))))))
+    ;; the shaft: 6 rings x 20 (normals toward the axis), darkening up from the rim and then warming into the team's glow
+    (let [base (load32 (+ (md-addr m) 4))]
+      (dotimes [l 6]
+        (dotimes [j 20]
+          (let [(ang : F32) (loadf32 (rim-addr j 2))
+                (x : F32) (rim-x t j) (z : F32) (rim-z t j)
+                (y : F32) (if (= l 0) (ceil-h x z) (shaft-y l))
+                k (case l 0 0 1 10 2 40 3 90 4 160 230)
+                e (case l 0 0 1 10 2 40 3 90 4 150 220)]
+            (mvert! x y z (- 0.0 (cosf ang)) 0.0 (- 0.0 (sinf ang)) 0.0 0.0 (vcol (mix dark tc k) e) 0))))
+      (dotimes [l 5]
+        (dotimes [j 20]
+          (let [j2 (mod (+ j 1) 20)]
+            (mquad! (+ base (+ (* l 20) j)) (+ base (+ (* l 20) j2)) (+ base (+ (* (+ l 1) 20) j2)) (+ base (+ (* (+ l 1) 20) j)))))))
+    ;; the roof: a glowing disc in the team's colour, facing down the shaft
+    (let [c (mvert! tx (t-top) tz 0.0 -1.0 0.0 0.0 0.0 (vcol (mix tc (rgb 255 250 240) 60) 255) 0)
+          base (load32 (+ (md-addr m) 4))]
+      (dotimes [j 20]
+        (mvert! (rim-x t j) (t-top) (rim-z t j) 0.0 -1.0 0.0 0.0 0.0 (vcol tc 255) 0))
+      (dotimes [j 20]
+        (mtri! c (+ base j) (+ base (mod (+ j 1) 20)))))
+    ;; the hoop: a torus on the goal line, 20 round x 4 round the tube, standing 2.6 proud of the shaft wall
+    (let [base (load32 (+ (md-addr m) 4))
+          hc (vcol (mix tc (rgb 255 255 255) 50) 190)]
+      (dotimes [j 20]
+        (dotimes [k 4]
+          (let [(a : F32) (* (f32 j) 0.31415927)
+                (b : F32) (* (f32 k) 1.5707964)
+                (ca : F32) (cosf a) (sa : F32) (sinf a)
+                (rr : F32) (+ 37.0 (* 2.6 (cosf b)))
+                (nx : F32) (* (cosf b) ca) (ny : F32) (sinf b) (nz : F32) (* (cosf b) sa)]
+            (mvert! (+ tx (* rr ca)) (+ (goal-y) (* 2.6 (sinf b))) (+ tz (* rr sa)) nx ny nz 0.0 0.0 hc 0))))
+      (dotimes [j 20]
+        (dotimes [k 4]
+          (let [j2 (mod (+ j 1) 20) k2 (mod (+ k 1) 4)]
+            (mquad! (+ base (+ (* j 4) k)) (+ base (+ (* j2 4) k)) (+ base (+ (* j2 4) k2)) (+ base (+ (* j 4) k2)))))))
+    (mesh-end!)))
+
+;; ---- the car ------------------------------------------------------------------------------------------------------------------------------------------
+;; mesh space: +x the car's LEFT, +y up, +z forward (a right-handed model basis, br_3d.prn), the origin the physics' car centre (its
+;; collision spheres, radius 4, sit 3.6 fore and aft of it, so the road is 4 below). Seven cross-sections from nose to tail, each
+;; six points round: bottom, beltline (widest), roof edge, mirrored.
+(defn cs-z [(s : I32)] : F32 (case s 0 7.6 1 4.4 2 1.9 3 -0.3 4 -3.0 5 -5.4 -7.6))
+(defn cs-wbot [(s : I32)] : F32 (case s 0 2.6 1 3.5 2 3.6 3 3.6 4 3.6 5 3.5 3.1))
+(defn cs-ybot [(s : I32)] : F32 (case s 0 -2.1 1 -2.5 6 -2.2 -2.6))
+(defn cs-wb [(s : I32)] : F32 (case s 0 3.3 1 4.3 2 4.4 3 4.4 4 4.4 5 4.3 3.9))
+(defn cs-yb [(s : I32)] : F32 (case s 0 -1.5 1 -1.0 2 -0.7 3 -0.5 4 -0.4 5 -0.4 -0.6))
+(defn cs-wt [(s : I32)] : F32 (case s 0 2.5 1 3.5 2 3.3 3 2.7 4 2.8 5 3.4 3.3))
+(defn cs-yt [(s : I32)] : F32 (case s 0 -1.0 1 -0.1 2 0.5 3 2.2 4 2.0 5 0.8 0.4))
+(defn cs-x [(s : I32) (k : I32)] : F32
+  (case k 0 (cs-wbot s) 1 (cs-wb s) 2 (cs-wt s) 3 (- 0.0 (cs-wt s)) 4 (- 0.0 (cs-wb s)) (- 0.0 (cs-wbot s))))
+(defn cs-y [(s : I32) (k : I32)] : F32
+  (case k 0 (cs-ybot s) 1 (cs-yb s) 2 (cs-yt s) 3 (cs-yt s) 4 (cs-yb s) (cs-ybot s)))
+
+;; a flat face (quad, or a triangle when the last corner repeats the first): its own four vertices with the face normal turned
+;; away from the inside point (g-mb-i*), palette slot pal
+(defn cquad! [(x0 : F32) (y0 : F32) (z0 : F32) (x1 : F32) (y1 : F32) (z1 : F32) (x2 : F32) (y2 : F32) (z2 : F32)
+              (x3 : F32) (y3 : F32) (z3 : F32) (pal : I32)] : Unit
+  (let [(ax : F32) (- x2 x0) (ay : F32) (- y2 y0) (az : F32) (- z2 z0)
+        (bx : F32) (- x3 x1) (by : F32) (- y3 y1) (bz : F32) (- z3 z1)
+        ;; the normal of a quad from its diagonals (works for a slightly bent one)
+        (nx0 : F32) (- (* ay bz) (* az by)) (ny0 : F32) (- (* az bx) (* ax bz)) (nz0 : F32) (- (* ax by) (* ay bx))
+        (il : F32) (inv-len3 nx0 ny0 nz0)
+        (mx : F32) (- (* 0.25 (+ (+ x0 x1) (+ x2 x3))) (gf (g-mb-ix)))
+        (my : F32) (- (* 0.25 (+ (+ y0 y1) (+ y2 y3))) (gf (g-mb-iy)))
+        (mz : F32) (- (* 0.25 (+ (+ z0 z1) (+ z2 z3))) (gf (g-mb-iz)))
+        (sg : F32) (if (< (dot3 nx0 ny0 nz0 mx my mz) 0.0) (- 0.0 il) il)
+        (nx : F32) (* nx0 sg) (ny : F32) (* ny0 sg) (nz : F32) (* nz0 sg)
+        a (mvert! x0 y0 z0 nx ny nz 0.0 0.0 0 pal)
+        b (mvert! x1 y1 z1 nx ny nz 0.0 0.0 0 pal)
+        c (mvert! x2 y2 z2 nx ny nz 0.0 0.0 0 pal)
+        d (mvert! x3 y3 z3 nx ny nz 0.0 0.0 0 pal)]
+    (mquad! a b c d)))
+
+(defn inside! [(x : F32) (y : F32) (z : F32)] : Unit (do (gf! (g-mb-ix) x) (gf! (g-mb-iy) y) (gf! (g-mb-iz) z)))
+
+;; a box (a nozzle pod): centre, half extents; its top is inside the body and is not built
+(defn cbox! [(cx : F32) (cy : F32) (cz : F32) (hx : F32) (hy : F32) (hz : F32) (pal : I32)] : Unit
+  (let [(x0 : F32) (- cx hx) (x1 : F32) (+ cx hx) (y0 : F32) (- cy hy) (y1 : F32) (+ cy hy) (z0 : F32) (- cz hz) (z1 : F32) (+ cz hz)]
+    (inside! cx cy cz)
+    (cquad! x0 y0 z1 x1 y0 z1 x1 y1 z1 x0 y1 z1 pal)
+    (cquad! x0 y0 z0 x1 y0 z0 x1 y1 z0 x0 y1 z0 pal)
+    (cquad! x1 y0 z0 x1 y0 z1 x1 y1 z1 x1 y1 z0 pal)
+    (cquad! x0 y0 z0 x0 y0 z1 x0 y1 z1 x0 y1 z0 pal)
+    (cquad! x0 y0 z0 x1 y0 z0 x1 y0 z1 x0 y0 z1 pal)))
+
+(defn body-pal [(s : I32) (k : I32)] : I32
+  (cond
+    (= k 5) 4                                                 ; the underside
+    (or (= k 0) (= k 4)) 2                                    ; the sills
+    (= k 2) (case s 2 3 4 3 1)                                ; the top: windscreen and rear window glass, hood, roof, deck paint
+    :else (if (and (>= s 2) (<= s 4)) 3 1)))                  ; the flanks: side windows along the cabin
+
+(defn build-car! [] : Unit
+  (do
+    (mesh-begin! (mesh-car) 480 240 0)
+    (inside! 0.0 -0.4 0.0)
+    ;; the body: six bays between the seven sections, six faces round each
+    (dotimes [s 6]
+      (dotimes [k 6]
+        (let [k2 (mod (+ k 1) 6) s2 (+ s 1)]
+          (cquad! (cs-x s k) (cs-y s k) (cs-z s) (cs-x s k2) (cs-y s k2) (cs-z s)
+                  (cs-x s2 k2) (cs-y s2 k2) (cs-z s2) (cs-x s2 k) (cs-y s2 k) (cs-z s2) (body-pal s k)))))
+    ;; the nose and the tail, each in two quads (low and high), and their lamps standing just proud of them
+    (cquad! (cs-x 0 0) (cs-y 0 0) (cs-z 0) (cs-x 0 1) (cs-y 0 1) (cs-z 0) (cs-x 0 4) (cs-y 0 4) (cs-z 0) (cs-x 0 5) (cs-y 0 5) (cs-z 0) 2)
+    (cquad! (cs-x 0 1) (cs-y 0 1) (cs-z 0) (cs-x 0 2) (cs-y 0 2) (cs-z 0) (cs-x 0 3) (cs-y 0 3) (cs-z 0) (cs-x 0 4) (cs-y 0 4) (cs-z 0) 2)
+    (cquad! (cs-x 6 0) (cs-y 6 0) (cs-z 6) (cs-x 6 1) (cs-y 6 1) (cs-z 6) (cs-x 6 4) (cs-y 6 4) (cs-z 6) (cs-x 6 5) (cs-y 6 5) (cs-z 6) 2)
+    (cquad! (cs-x 6 1) (cs-y 6 1) (cs-z 6) (cs-x 6 2) (cs-y 6 2) (cs-z 6) (cs-x 6 3) (cs-y 6 3) (cs-z 6) (cs-x 6 4) (cs-y 6 4) (cs-z 6) 2)
+    (cquad! -2.3 -1.42 7.63 2.3 -1.42 7.63 2.1 -1.12 7.63 -2.1 -1.12 7.63 5)
+    (cquad! -3.4 -0.25 -7.63 3.4 -0.25 -7.63 3.2 0.15 -7.63 -3.2 0.15 -7.63 6)
+    ;; four nozzle pods where the wheels would be, and the nozzles' mouths under them
+    (dotimes [p 4]
+      (let [(px : F32) (if (= (bit-and p 1) 1) 3.35 -3.35)
+            (pz : F32) (if (= (bit-and p 2) 2) 4.7 -4.5)]
+        (cbox! px -2.75 pz 0.95 0.8 1.45 4)
+        (inside! px 0.0 pz)
+        (cquad! (- px 0.6) -3.57 (- pz 0.9) (+ px 0.6) -3.57 (- pz 0.9) (+ px 0.6) -3.57 (+ pz 0.9) (- px 0.6) -3.57 (+ pz 0.9) 7)))
+    (mesh-end!)))
+
+;; ---- the ball -------------------------------------------------------------------------------------------------------------------------------------------
+;; a UV sphere, 12 slices x 6 stacks, built as eight octant panels (each its own vertices, so the colour changes sharply at the
+;; seams while the normals stay smooth): palette 1 and 2 in a checker
+(defn build-ball! [] : Unit
+  (do
+    (mesh-begin! (mesh-ball) 140 160 0)
+    (dotimes [o 8]
+      (let [q (bit-and o 3) lower (shr o 2)
+            j0 (* q 3) i0 (* lower 3)
+            pal (+ 1 (bit-and (+ q lower) 1))
+            base (load32 (+ (md-addr (mesh-ball)) 4))]
+        (dotimes [ii 4]
+          (dotimes [jj 4]
+            (let [(th : F32) (* (f32 (+ i0 ii)) 0.5235988)
+                  (ph : F32) (* (f32 (+ j0 jj)) 0.5235988)
+                  (nx : F32) (* (sinf th) (cosf ph)) (ny : F32) (cosf th) (nz : F32) (* (sinf th) (sinf ph))]
+              (mvert! (* (rb) nx) (* (rb) ny) (* (rb) nz) nx ny nz 0.0 0.0 0 pal))))
+        (dotimes [ii 3]
+          (dotimes [jj 3]
+            (let [a (+ base (+ (* ii 4) jj))]
+              (mquad! a (+ a 1) (+ a 5) (+ a 4)))))))
+    (mesh-end!)))
+
+;; ---- everything, once -----------------------------------------------------------------------------------------------------------------------------------
+(defn build-meshes! [] : Unit
+  (do
+    (gi! (g-mb-top) (geom-base))
+    (gi! (g-mb-over) 0)
+    (bake-panel!)
+    (bake-ceiling!)
+    (build-floor!)
+    (dotimes [sd 4] (build-band! sd))
+    (build-ceiling!)
+    (dotimes [t 4] (build-tower! t))
+    (build-car!)
+    (build-ball!)))

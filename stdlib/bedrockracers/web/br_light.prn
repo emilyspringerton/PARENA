@@ -1,0 +1,65 @@
+;; stdlib/bedrockracers/web/br_light.prn -- THE LIGHT HOOK: how a vertex is lit, and the fog.
+;;
+;; The rasteriser (br_3d.prn, transform-mesh!) calls (light-vertex! x y z nx ny nz) once per vertex of every lit mesh, every frame,
+;; with the vertex's WORLD position and unit WORLD normal (for the arena the normal points into the room). It must leave a colour
+;; MULTIPLIER in (gf (g-lit-r)) (gf (g-lit-g)) (gf (g-lit-b)): 1.0 is the material's own colour, 0 black, above 1 over-bright (a
+;; goal flash). The multiplier is applied to the vertex colour (or, on a textured mesh, to the texel) and interpolated across the
+;; triangle, so light is exactly as fine as the mesh: the floor is a 37.5-unit grid, the walls 37.5 x 33, the cars per face.
+;; A vertex's EMISSION (the top byte of its colour) blends the multiplier toward 1 after this, so a glowing hoop ignores the dark.
+;; (light-frame!) runs once per frame before anything is drawn: the place to read the dynamic light table (br_fx.prn, lights-base)
+;; and the drama scalar into fast words, and to set the fog colour.
+;;
+;; THIS IS THE PLAIN VERSION -- the calm stadium with nobody on fire: a hemispherical ambient (cool from above, a little warmer
+;; bounce from below, since the floor is what the ceiling sees) and ONE soft key light: the floodlights, high above, a little
+;; off-centre so the walls are not all lit alike. "Soft" is wrapped diffuse ((n.l + w) / (1 + w)), so the terminator is a long
+;; gradient instead of a line. The dynamic lights, the drama dimming the ambient, light pools on the floor and walls, belong to the
+;; lighting stage: it replaces light-frame! and light-vertex! (and owns G words 384..447) and keeps their contract.
+;;
+;; FOG (fog-at z) is 0..1 by camera depth; the rasteriser fades a vertex toward (g-fog-r/g/b) by it (a textured surface only
+;; darkens). Here it is a deep blue-black haze that starts 160 units out and takes 60% of a surface at the far side of the room:
+;; the far wall recedes, the near play stays crisp.
+
+;; ---- this file's G words (br_mem.prn: 384..447 belong to the lighting) -----------------------------------------------------------------
+(defn g-key-x [] : I32 384)        ; F32: unit vector TOWARD the key light
+(defn g-key-y [] : I32 385)
+(defn g-key-z [] : I32 386)
+(defn g-key-r [] : I32 387)        ; F32: the key light's colour x strength
+(defn g-key-g [] : I32 388)
+(defn g-key-b [] : I32 389)
+(defn g-amb-up-r [] : I32 390)     ; F32: ambient seen by a normal pointing up ...
+(defn g-amb-up-g [] : I32 391)
+(defn g-amb-up-b [] : I32 392)
+(defn g-amb-dn-r [] : I32 393)     ; F32: ... and by one pointing down (blended by n.y)
+(defn g-amb-dn-g [] : I32 394)
+(defn g-amb-dn-b [] : I32 395)
+(defn g-fog-near [] : I32 396)     ; F32: fog starts at this depth ...
+(defn g-fog-span [] : I32 397)     ; F32: ... 1 / the depth over which it reaches g-fog-max
+(defn g-fog-max [] : I32 398)      ; F32
+
+(defn key-wrap [] : F32 0.45)
+
+;; once a frame, before the first draw
+(defn light-frame! [] : Unit
+  (let [(kx : F32) 0.32 (ky : F32) 0.9 (kz : F32) 0.22
+        (il : F32) (inv-len3 kx ky kz)]
+    (gf! (g-key-x) (* kx il)) (gf! (g-key-y) (* ky il)) (gf! (g-key-z) (* kz il))
+    ;; a warm-white floodlight
+    (gf! (g-key-r) 0.86) (gf! (g-key-g) 0.82) (gf! (g-key-b) 0.74)
+    (gf! (g-amb-up-r) 0.30) (gf! (g-amb-up-g) 0.32) (gf! (g-amb-up-b) 0.38)
+    (gf! (g-amb-dn-r) 0.36) (gf! (g-amb-dn-g) 0.33) (gf! (g-amb-dn-b) 0.32)
+    (gf! (g-fog-r) 10.0) (gf! (g-fog-g) 11.0) (gf! (g-fog-b) 17.0)
+    (gf! (g-fog-near) 160.0) (gf! (g-fog-span) (/ 1.0 1100.0)) (gf! (g-fog-max) 0.6)))
+
+;; per vertex: world position (x y z), unit world normal (nx ny nz) -> the multiplier in g-lit-r/g/b
+(defn light-vertex! [(x : F32) (y : F32) (z : F32) (nx : F32) (ny : F32) (nz : F32)] : Unit
+  (let [(t : F32) (+ 0.5 (* 0.5 ny))
+        (d : F32) (dot3 nx ny nz (gf (g-key-x)) (gf (g-key-y)) (gf (g-key-z)))
+        (w : F32) (clamp-f (/ (+ d (key-wrap)) (+ 1.0 (key-wrap))) 0.0 1.0)
+        (k : F32) (* w w)]
+    (gf! (g-lit-r) (+ (lerp (gf (g-amb-dn-r)) (gf (g-amb-up-r)) t) (* k (gf (g-key-r)))))
+    (gf! (g-lit-g) (+ (lerp (gf (g-amb-dn-g)) (gf (g-amb-up-g)) t) (* k (gf (g-key-g)))))
+    (gf! (g-lit-b) (+ (lerp (gf (g-amb-dn-b)) (gf (g-amb-up-b)) t) (* k (gf (g-key-b)))))))
+
+;; fog by camera depth
+(defn fog-at [(z : F32)] : F32
+  (* (gf (g-fog-max)) (clamp-f (* (- z (gf (g-fog-near))) (gf (g-fog-span))) 0.0 1.0)))
