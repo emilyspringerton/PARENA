@@ -9,7 +9,10 @@
  * binaries. Those are system tools, not product logic, but a PARENA-native apply client is a
  * tracked replacement item (EMILY/BACKLOG.md), not forgotten.
  *
- * usage: parena-gitops -r <repo> -p <manifest-subdir> -s <state-dir> [-i secs] [--once] [--dry-run]
+ * usage: parena-gitops -r <repo> -p <manifest-subdir> -s <state-dir> [-i secs] [-x prefix] [--once] [--dry-run]
+ *   -x prefix  skip manifest files whose name starts with prefix (e.g. "00-": the Namespace, which a
+ *              namespaced Role cannot apply). With -x, files are applied one by one so one bad
+ *              manifest does not stop the rest; the tick still counts as failed if any failed.
  *   --dry-run  print the decision, never touch the cluster (kubectl is not invoked)
  */
 #include "parena_runtime.h"
@@ -45,13 +48,14 @@ static void write_file(const char *path, const char *s) {
 }
 
 int main(int argc, char **argv) {
-    const char *repo = NULL, *sub = ".", *state = NULL;
+    const char *repo = NULL, *sub = ".", *state = NULL, *skip = NULL;
     int interval = 30; bool once = false, dry = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-r") && i + 1 < argc) repo = argv[++i];
         else if (!strcmp(argv[i], "-p") && i + 1 < argc) sub = argv[++i];
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) state = argv[++i];
         else if (!strcmp(argv[i], "-i") && i + 1 < argc) interval = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-x") && i + 1 < argc) skip = argv[++i];
         else if (!strcmp(argv[i], "--once")) once = true;
         else if (!strcmp(argv[i], "--dry-run")) dry = true;
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
@@ -84,7 +88,11 @@ int main(int argc, char **argv) {
         if (action == 1 || action == 2) {
             if (dry) { printf("gitops: dry-run, would: kubectl apply -R -f %s/%s\n", repo, sub); }
             else {
-                snprintf(cmd, sizeof cmd, "kubectl apply -R -f '%s/%s'", repo, sub);
+                if (skip) snprintf(cmd, sizeof cmd,
+                    "cd '%s/%s' && rc=0 && for f in *.yaml; do case \"$f\" in '%s'*) continue;; esac; "
+                    "out=$(kubectl apply -f \"$f\" 2>&1) || { echo \"FAIL $f: $out\"; rc=1; continue; }; "
+                    "echo \"$out\" | grep -v ' unchanged$' || true; done; exit $rc", repo, sub, skip);
+                else snprintf(cmd, sizeof cmd, "kubectl apply -R -f '%s/%s'", repo, sub);
                 if (sh(cmd, NULL, 0) == 0) { write_file(p_applied, head); write_file(p_att, "0"); write_file(p_fail, ""); }
                 else { char b[16]; snprintf(b, sizeof b, "%d", attempt + 1); write_file(p_att, b); write_file(p_fail, head); fprintf(stderr, "gitops: apply failed (attempt %d)\n", attempt + 1); }
             }
