@@ -26,7 +26,13 @@
 
 ;; the arena's own colours, by box index in v0_shankpit.map: 0 floor, 1-4 perimeter, 5-10 north base,
 ;; 11-16 south base, 17-21 mid tower, the rest rocks
-(defn box-color [(i : I32)] : I32 (if (= (gi (g-map-id)) 1) (box-color-w77 i) (box-color-v0 i)))
+(defn box-color [(i : I32)] : I32 (case (gi (g-map-id)) 1 (box-color-w77 i) 2 (box-color-dust i) (box-color-v0 i)))
+;; Dust Compound: 1-4 perimeter walls, anything 10+ tall (bridge pillars, site blocks) pale stone, the rest sand/rust cover
+(defn box-color-dust [(i : I32)] : I32
+  (cond
+    (<= i 4) (wall-color)
+    (>= (bh i) 12.0) (rgb 214 198 170)
+    :else (case (mod i 3) 0 (rgb 196 168 130) 1 (rgb 176 150 116) (rgb 160 140 120))))
 ;; the W77 map: 1-3 the middle tower, 64-67 the outer blocks, anything 10+ tall (pillars, base walls) in stone, the rest cover
 (defn box-color-w77 [(i : I32)] : I32
   (cond

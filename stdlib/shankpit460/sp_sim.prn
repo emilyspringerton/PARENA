@@ -28,14 +28,15 @@
     (dotimes [i (max-players)] (set-p-id! i i) (set-p-last-damager! i -1) (set-p-color! i i))))
 
 ;; the map rotation (founder 2026-10-18: "push it to the live website as a map rotation"): map 0 is v0_shankpit, map 1 is
-;; the level ripped out of the ShankPit Windows build 77 client (sp_map_w77.prn). Bot matches alternate between them. Human
+;; the level ripped out of the ShankPit Windows build 77 client (sp_map_w77.prn), map 2 is the Dust Compound (sp_map_dust.prn). Bot matches alternate between them. Human
 ;; lobbies stay on map 0 (sp_net): the IDUNA server checks hit line of sight and places respawns on its own copy of v0, so a
 ;; lobby on map 1 needs IDUNA to learn the map first.
-(defn map-count-in-rotation [] : I32 2)
+(defn map-count-in-rotation [] : I32 3)
 (defn init-map! [] : Unit
-  (if (= (gi (g-map-id)) 1)
-      (do (map-init-data-w77!) (gi! (g-rock-lo) 4) (gi! (g-rock-hi) 64))
-      (do (map-init-data!) (gi! (g-rock-lo) 22) (gi! (g-rock-hi) (map-count)))))
+  (case (gi (g-map-id))
+    1 (do (map-init-data-w77!) (gi! (g-rock-lo) 4) (gi! (g-rock-hi) 64))
+    2 (do (map-init-data-dust!) (gi! (g-rock-lo) 5) (gi! (g-rock-hi) 55))
+    (do (map-init-data!) (gi! (g-rock-lo) 22) (gi! (g-rock-hi) (map-count)))))
 (defn use-map! [(id : I32)] : Unit (do (gi! (g-map-id) id) (init-map!)))
 (defn next-bot-map! [] : Unit
   (let [id (gi (g-map-next))]
