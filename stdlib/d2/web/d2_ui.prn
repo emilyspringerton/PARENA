@@ -28,7 +28,7 @@
     (draw-text-c "HOLD BATTLES" 480 110 1 (c-faint))
     (fill-rect-a 440 134 80 1 (c-gold) 200)
     (draw-text-c "Pack a ship. Wire it. Fight with the ship you built." 480 154 1 (c-dim))
-    (draw-text-c "Two minutes, 1000 credits and 40 tons to fill a 6x6 hold. Every part has a price, a weight and HP." 480 176 1 (c-faint))
+    (draw-text-c "Two minutes, 2618 credits and 105 tons to fill a 6x6 hold. Every part has a price, a weight and HP." 480 176 1 (c-faint))
     (draw-text-c "Shots fly down lanes. Where a part sits decides what it protects, what feeds it, and what it boosts." 480 192 1 (c-faint))
     (draw-text-c "Then thirty seconds of fight, both ships on show, and every five a timing duel." 480 208 1 (c-faint))
     (draw-parts-strip! 232)

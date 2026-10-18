@@ -23,8 +23,9 @@
 (defn p-n [] : I32 8) (defn p-e [] : I32 4) (defn p-s [] : I32 2) (defn p-w [] : I32 1)
 
 (defn item-count [] : I32 24)
-(defn budget-credits [] : I32 1000)
-(defn budget-weight [] : I32 40)
+(defn budget-credits [] : I32 2618)
+(defn budget-weight [] : I32 105)
+(defn evade-ref-weight [] : I32 40)
 (defn max-parts [] : I32 36)
 
 (defn item-addr [(i : I32)] : I32 (+ (items-base) (shl i 7)))
@@ -836,7 +837,7 @@
     (let [(cost : I32) 0 (wt : I32) 0]
       (dotimes [i (gi (g-stage-n))] (when (= (st-ok i) 1) (do (set! cost (+ cost (item-cost (st-item i)))) (set! wt (+ wt (item-weight (st-item i)))))))
       (gi! (g-bud-cost) cost) (gi! (g-bud-weight) wt) (gi! (g-preview-cargo) cost)
-      (gi! (g-evade10) (min-i 500 (max-i 0 (i32 (+ (* (f32 (- (budget-weight) wt)) 15.0) 0.5))))))
+      (gi! (g-evade10) (min-i 500 (max-i 0 (i32 (+ (* (f32 (- (evade-ref-weight) wt)) 15.0) 0.5))))))
     ;; a preview: the power it counted is not a fight's
     (dotimes [p 36] (storef32! (sim-charge-addr p) 0.0))
     (sim-state-init!)))

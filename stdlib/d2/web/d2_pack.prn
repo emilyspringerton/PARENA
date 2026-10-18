@@ -707,6 +707,6 @@
     (draw-text "A Quantum Core is 40 W in four cells but runs hot: every part touching it takes 2 a second unless a Cryo-Vent cools it." 140 324 1 (c-dim))
     (draw-text "Xeno-Biomass grows back what it touches. An Aegis repairs the weakest part near it. A Mender mends the hull." 140 338 1 (c-dim))
     (draw-text "LIMITS" 140 362 1 (c-gold))
-    (draw-text "1000 credits and 40 tons. Weight matters twice: lighter ships dodge slugs and shells (never lasers), up to 50%." 140 378 1 (c-dim))
+    (draw-text "2618 credits and 105 tons. Weight matters twice: lighter ships dodge slugs and shells (never lasers), up to 50%." 140 378 1 (c-dim))
     (draw-text "Cargo value (what the ship cost) breaks a tie. At 30 seconds the ship with more hull wins, then more structure." 140 392 1 (c-dim))
     (draw-text-c "click or Esc to close" 480 440 1 (c-faint))))
