@@ -232,6 +232,45 @@
 (defn grad-y [(a0 : F32) (a1 : F32) (a2 : F32) (e1x : F32) (e2x : F32) (ia : F32)] : F32
   (* (- (* (- a2 a0) e1x) (* (- a1 a0) e2x)) ia))
 
+;; the attribute gradients of the sorted triangle a b c -> 12 floats at gr-addr: zdx zdy rdx rdy gdx gdy bdx bdy udx udy vdx vdy
+(defn gr-addr [(k : I32)] : I32 (+ (+ (scr-base) 1024) (shl k 2)))
+(defn grad-one! [(k : I32) (a : I32) (b : I32) (c : I32) (o : I32) (e1x : F32) (e1y : F32) (e2x : F32) (e2y : F32) (ia : F32)] : Unit
+  (let [(p0 : F32) (loadf32 (+ a o)) (p1 : F32) (loadf32 (+ b o)) (p2 : F32) (loadf32 (+ c o))]
+    (storef32! (gr-addr (shl k 1)) (grad-x p0 p1 p2 e1y e2y ia))
+    (storef32! (gr-addr (+ (shl k 1) 1)) (grad-y p0 p1 p2 e1x e2x ia))))
+(defn tri-grads! [(a : I32) (b : I32) (c : I32) (ia : F32)] : Unit
+  (let [(e1x : F32) (- (loadf32 b) (loadf32 a)) (e1y : F32) (- (loadf32 (+ b 4)) (loadf32 (+ a 4)))
+        (e2x : F32) (- (loadf32 c) (loadf32 a)) (e2y : F32) (- (loadf32 (+ c 4)) (loadf32 (+ a 4)))]
+    (grad-one! 0 a b c 8 e1x e1y e2x e2y ia)
+    (grad-one! 1 a b c 12 e1x e1y e2x e2y ia)
+    (grad-one! 2 a b c 16 e1x e1y e2x e2y ia)
+    (grad-one! 3 a b c 20 e1x e1y e2x e2y ia)
+    (grad-one! 4 a b c 24 e1x e1y e2x e2y ia)
+    (grad-one! 5 a b c 28 e1x e1y e2x e2y ia)))
+
+;; one scanline y of the sorted triangle: the edge x range at its centre, then the span loop
+(defn fill-row! [(a : I32) (b : I32) (c : I32) (y : I32) (tex : I32) (sl02 : F32) (sl01 : F32) (sl12 : F32)] : Unit
+  (let [(x0 : F32) (loadf32 a) (y0 : F32) (loadf32 (+ a 4))
+        (x1 : F32) (loadf32 b) (y1 : F32) (loadf32 (+ b 4))
+        (x2 : F32) (loadf32 c)
+        (yc : F32) (+ (f32 y) 0.5)
+        (xa : F32) (+ x0 (* (- yc y0) sl02))
+        (xb : F32) (if (< yc y1) (+ x0 (* (- yc y0) sl01)) (+ x1 (* (- yc y1) sl12)))
+        xs (max-i 0 (i32 (ceil-f (- (fmin2 xa xb) 0.5))))
+        xe (min-i 639 (- (i32 (ceil-f (- (fmax2 xa xb) 0.5))) 1))]
+    (when (<= xs xe)
+      (let [(fx : F32) (- (+ (f32 xs) 0.5) x0)
+            (fy : F32) (- yc y0)
+            (zs : F32) (+ (loadf32 (+ a 8)) (+ (* (loadf32 (gr-addr 0)) fx) (* (loadf32 (gr-addr 1)) fy)))
+            (rs : F32) (+ (loadf32 (+ a 12)) (+ (* (loadf32 (gr-addr 2)) fx) (* (loadf32 (gr-addr 3)) fy)))
+            (gs : F32) (+ (loadf32 (+ a 16)) (+ (* (loadf32 (gr-addr 4)) fx) (* (loadf32 (gr-addr 5)) fy)))
+            (bs : F32) (+ (loadf32 (+ a 20)) (+ (* (loadf32 (gr-addr 6)) fx) (* (loadf32 (gr-addr 7)) fy)))]
+        (if (= tex 0)
+            (span-g! (+ (* y 640) xs) (- xe xs) zs (loadf32 (gr-addr 0)) rs (loadf32 (gr-addr 2)) gs (loadf32 (gr-addr 4)) bs (loadf32 (gr-addr 6)))
+            (span-t! (+ (* y 640) xs) (- xe xs) xs y zs (loadf32 (gr-addr 0)) rs (loadf32 (gr-addr 2)) gs (loadf32 (gr-addr 4)) bs (loadf32 (gr-addr 6))
+                     (+ (loadf32 (+ a 24)) (+ (* (loadf32 (gr-addr 8)) fx) (* (loadf32 (gr-addr 9)) fy))) (loadf32 (gr-addr 8))
+                     (+ (loadf32 (+ a 28)) (+ (* (loadf32 (gr-addr 10)) fx) (* (loadf32 (gr-addr 11)) fy))) (loadf32 (gr-addr 10)))))))) 
+
 ;; fill the triangle whose screen records are at pa, pb, pc; tex = 1 for the textured span loop
 (defn fill-tri! [(pa : I32) (pb : I32) (pc : I32) (tex : I32)] : Unit
   (let [a pa b pb c pc]
@@ -249,43 +288,14 @@
           ye (min-i 359 (- (i32 (ceil-f (- y2 0.5))) 1))]
       (when (and (> (abs-f area) 0.00001) (<= ys ye))
         (gi! (g-stat-tris) (+ (gi (g-stat-tris)) 1))
-        (let [(ia : F32) (/ 1.0 area)
-              (z0 : F32) (loadf32 (+ a 8)) (z1 : F32) (loadf32 (+ b 8)) (z2 : F32) (loadf32 (+ c 8))
-              (r0 : F32) (loadf32 (+ a 12)) (r1 : F32) (loadf32 (+ b 12)) (r2 : F32) (loadf32 (+ c 12))
-              (g0 : F32) (loadf32 (+ a 16)) (g1 : F32) (loadf32 (+ b 16)) (g2 : F32) (loadf32 (+ c 16))
-              (b0 : F32) (loadf32 (+ a 20)) (b1 : F32) (loadf32 (+ b 20)) (b2 : F32) (loadf32 (+ c 20))
-              (u0 : F32) (loadf32 (+ a 24)) (u1 : F32) (loadf32 (+ b 24)) (u2 : F32) (loadf32 (+ c 24))
-              (v0 : F32) (loadf32 (+ a 28)) (v1 : F32) (loadf32 (+ b 28)) (v2 : F32) (loadf32 (+ c 28))
-              (zdx : F32) (grad-x z0 z1 z2 e1y e2y ia) (zdy : F32) (grad-y z0 z1 z2 e1x e2x ia)
-              (rdx : F32) (grad-x r0 r1 r2 e1y e2y ia) (rdy : F32) (grad-y r0 r1 r2 e1x e2x ia)
-              (gdx : F32) (grad-x g0 g1 g2 e1y e2y ia) (gdy : F32) (grad-y g0 g1 g2 e1x e2x ia)
-              (bdx : F32) (grad-x b0 b1 b2 e1y e2y ia) (bdy : F32) (grad-y b0 b1 b2 e1x e2x ia)
-              (udx : F32) (grad-x u0 u1 u2 e1y e2y ia) (udy : F32) (grad-y u0 u1 u2 e1x e2x ia)
-              (vdx : F32) (grad-x v0 v1 v2 e1y e2y ia) (vdy : F32) (grad-y v0 v1 v2 e1x e2x ia)
-              ;; edge slopes dx/dy: the long edge a-c, the short ones a-b and b-c (a flat edge is never walked)
-              (s02 : F32) (/ e2x e2y)
+        (tri-grads! a b c (/ 1.0 area))
+        ;; edge slopes dx/dy: the long edge a-c, the short ones a-b and b-c (a flat edge is never walked)
+        (let [(s02 : F32) (/ e2x e2y)
               (s01 : F32) (if (> e1y 0.0) (/ e1x e1y) 0.0)
               (s12 : F32) (if (> (- y2 y1) 0.0) (/ (- x2 x1) (- y2 y1)) 0.0)]
           (loop [y ys]
             (when (<= y ye)
-              (let [(yc : F32) (+ (f32 y) 0.5)
-                    (xa : F32) (+ x0 (* (- yc y0) s02))
-                    (xb : F32) (if (< yc y1) (+ x0 (* (- yc y0) s01)) (+ x1 (* (- yc y1) s12)))
-                    (xl : F32) (fmin2 xa xb)
-                    (xr : F32) (fmax2 xa xb)
-                    xs (max-i 0 (i32 (ceil-f (- xl 0.5))))
-                    xe (min-i 639 (- (i32 (ceil-f (- xr 0.5))) 1))]
-                (when (<= xs xe)
-                  (let [(fx : F32) (- (+ (f32 xs) 0.5) x0)
-                        (fy : F32) (- yc y0)
-                        (zs : F32) (+ z0 (+ (* zdx fx) (* zdy fy)))
-                        (rs : F32) (+ r0 (+ (* rdx fx) (* rdy fy)))
-                        (gs : F32) (+ g0 (+ (* gdx fx) (* gdy fy)))
-                        (bs : F32) (+ b0 (+ (* bdx fx) (* bdy fy)))]
-                    (if (= tex 0)
-                        (span-g! (+ (* y 640) xs) (- xe xs) zs zdx rs rdx gs gdx bs bdx)
-                        (span-t! (+ (* y 640) xs) (- xe xs) xs y zs zdx rs rdx gs gdx bs bdx
-                                 (+ u0 (+ (* udx fx) (* udy fy))) udx (+ v0 (+ (* vdx fx) (* vdy fy))) vdx)))))
+              (fill-row! a b c y tex s02 s01 s12)
               (recur (+ y 1)))))))))
 
 ;; ---- the transformed-vertex cache ------------------------------------------------------------------------------------------------------------
