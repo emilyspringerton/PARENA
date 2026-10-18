@@ -403,6 +403,9 @@
                    (= st 2) "Watching bots"
                    (= st 3) "Paused"
                    (= st 4) "Match over"
+                   (= st 5) "Online match"
+                   (= st 6) "Searching for a match"
+                   (= st 7) "Match found"
                    :else "Ready")))))
 
 (start (boot "br-canvas" "bedrockracers.wasm"))
