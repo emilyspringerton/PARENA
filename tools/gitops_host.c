@@ -48,6 +48,7 @@ static void write_file(const char *path, const char *s) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0); /* piped to container logs: line-buffer so ticks show up live */
     const char *repo = NULL, *sub = ".", *state = NULL, *skip = NULL;
     int interval = 30; bool once = false, dry = false;
     for (int i = 1; i < argc; i++) {
