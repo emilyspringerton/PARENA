@@ -21,6 +21,12 @@ built, and CI-verified — all five DoD domains pass, see `NORTHSTAR.md`'s own c
 for the detail. Stdlib and the editor/plugin API build out on top of it now, on their own
 separate, ongoing timeline (`STDLIB.md`) — that work is not "done" the way VS0 itself is.**
 
+## Bedrock Racers: start here
+
+Picking up Bedrock Racers (`stdlib/bedrockracers/`)? Read `stdlib/bedrockracers/HANDOFF.md` first: the founder's rules for
+this work (push each finished stage straight to main), what is done, the half-built renderer on branch
+`wip/bedrockracers-renderer`, and the exact next steps.
+
 ## Stack
 
 VS0 targets C (the compiler itself and its C99 output). Later targets (JVM 22+/Panama,
