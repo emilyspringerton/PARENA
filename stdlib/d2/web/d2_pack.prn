@@ -163,6 +163,9 @@
 (defn ready-bx [] : I32 612) (defn ready-by [] : I32 500) (defn ready-bw [] : I32 332) (defn ready-bh [] : I32 28)
 (defn btn-ex-x [] : I32 12) (defn btn-un-x [] : I32 90) (defn btn-cl-x [] : I32 144) (defn btn-sp-x [] : I32 200) (defn btn-y [] : I32 428)
 
+;; the turn button (for touch, where there is no R key or wheel): shows the part in hand as it would be placed; each tap turns it a quarter
+(defn rot-bx [] : I32 204) (defn rot-by [] : I32 458) (defn rot-bw [] : I32 84) (defn rot-bh [] : I32 74)
+
 (defn pack-update! [] : Unit
   (let [locked (= (gi (g-committed)) 1)]
     (hover-cell!)
@@ -177,6 +180,8 @@
             (do (gi! (g-sel-item) (bin-item k)) (gi! (g-sel-rot) 0))))
         (when (or (key-hit? (kc-r)) (> (wheel-dir) 0)) (gi! (g-sel-rot) (mod (+ (gi (g-sel-rot)) 1) 4)))
         (when (< (wheel-dir) 0) (gi! (g-sel-rot) (mod (+ (gi (g-sel-rot)) 3) 4)))
+        (when (and (left-clicked?) (in-rect? (rot-bx) (rot-by) (rot-bw) (rot-bh)))
+          (gi! (g-sel-rot) (mod (+ (gi (g-sel-rot)) 1) 4)))
         ;; the grid
         (when (and (left-clicked?) (>= (gi (g-hov-row)) 0))
           (stage-try-place! (gi (g-sel-item)) (gi (g-sel-rot)) (anchor-row (gi (g-hov-row))) (anchor-col (gi (g-hov-col)))))
@@ -598,6 +603,14 @@
             (button (btn-un-x) (btn-y) 52 26 "UNDO" false (> (gi (g-undo-n)) 0))
             (button (btn-cl-x) (btn-y) 54 26 "CLEAR" false (> (gi (g-stage-n)) 0))
             (button (btn-sp-x) (btn-y) 46 26 "SPLIT" false (and (>= hp 0) (> (item-split-n (st-item (max-i hp 0))) 0)))))
+    (when (not locked)
+      (let [w (shape-w sel rot) h (shape-h sel rot)
+            cs (clamp-i (/ 44 (max-i w h)) 8 28)
+            bx (rot-bx) by (rot-by) bw (rot-bw) bh (rot-bh)
+            hot (in-rect? bx by bw bh)]
+        (card bx by bw bh (if hot (c-ground2) (c-panel)) 235 (c-gold) (if hot 255 160))
+        (draw-item-icon! sel rot (+ bx (- (/ bw 2) (/ (* w cs) 2))) (+ by (+ 4 (- 22 (/ (* h cs) 2)))) cs 255)
+        (draw-text-c "TURN" (+ bx (/ bw 2)) (+ by 56) 1 (c-gold))))
     (draw-text "1-0 Q-J pick a part" 12 462 1 (c-faint))
     (draw-text "R turn  click place" 12 476 1 (c-faint))
     (draw-text "right click removes" 12 490 1 (c-faint))
