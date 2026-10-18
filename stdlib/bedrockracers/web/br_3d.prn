@@ -75,6 +75,7 @@
 (defn g-sy [] : I32 285)           ; ... and y
 (defn g-cull-flip [] : I32 286)    ; I32: 1 = cull FRONT faces instead of back faces (a mirrored model transform)
 (defn g-dither [] : I32 287)       ; I32: 1 = dither texel lookups (on by default)
+(defn g-tex-bil [] : I32 288)      ; I32: 1 = the textured span loop blends the four nearest texels (the mesh's flag mf-bilinear)
 
 ;; ---- regions -------------------------------------------------------------------------------------------------------------------
 (defn mdesc-base [] : I32 229376)  ; 0x038000
@@ -111,6 +112,7 @@
 (defn mf-2side [] : I32 2)
 (defn mf-unlit [] : I32 4)
 (defn mf-nofog [] : I32 8)
+(defn mf-bilinear [] : I32 16)     ; the textured span loop filters this mesh's texture (smooth ground; the wall panels stay crisp)
 
 ;; a VERTEX is 12 words (48 bytes):  +0 x y z  +12 nx ny nz (unit)  +24 u v (texels, for a textured mesh)  +32 col  +36 aux
 ;;   +40 +44 spare (free for a later stage: e.g. a baked static light)
@@ -199,6 +201,30 @@
 
 ;; one TEXTURED span: as above, and u/z, v/z; the colour (0..255 = x0..x1) multiplies the texel. y and the first pixel's x give
 ;; the 2x2 dither phase.
+;; the classic two-lane blend: red and blue ride one word (0x00FF00FF, each lane 8 bits with 8 spare), green another; a weight w in
+;; 0..256 blends x toward y. Each product stays under 2^24, so the lanes never touch.
+(defn lerp-rb [(x : I32) (y : I32) (w : I32)] : I32
+  (bit-and (shr (+ (* (bit-and x 16711935) (- 256 w)) (* (bit-and y 16711935) w)) 8) 16711935))
+(defn lerp-g [(x : I32) (y : I32) (w : I32)] : I32
+  (bit-and (shr (+ (* (bit-and x 65280) (- 256 w)) (* (bit-and y 65280) w)) 8) 65280))
+(defn texel-at [(tb : I32) (sh : I32) (mk : I32) (tu : I32) (tv : I32)] : I32
+  (load32 (+ tb (shl (+ (shl (bit-and tv mk) sh) (bit-and tu mk)) 2))))
+;; the colour at (u, v), in texels, blended from the four texels round it; the texture is a torus (the mask wraps)
+(defn bilerp-texel [(tb : I32) (sh : I32) (mk : I32) (u : F32) (v : F32)] : I32
+  (let [(uf : F32) (- u 0.5) (vf : F32) (- v 0.5)
+        (ufl : F32) (floor uf) (vfl : F32) (floor vf)
+        tu (i32 ufl) tv (i32 vfl)
+        fx (i32 (* (- uf ufl) 256.0)) fy (i32 (* (- vf vfl) 256.0))
+        a (texel-at tb sh mk tu tv) b (texel-at tb sh mk (+ tu 1) tv)
+        c (texel-at tb sh mk tu (+ tv 1)) d (texel-at tb sh mk (+ tu 1) (+ tv 1))]
+    (bit-or (lerp-rb (lerp-rb a b fx) (lerp-rb c d fx) fy)
+            (lerp-g (lerp-g a b fx) (lerp-g c d fx) fy))))
+;; the texel for a pixel: filtered, or the nearest with the 2x2 dither
+(defn texel-for [(bil : I32) (tb : I32) (sh : I32) (mk : I32) (uw : F32) (vw : F32) (ou : F32) (ov : F32)] : I32
+  (if (= bil 1)
+      (bilerp-texel tb sh mk uw vw)
+      (texel-at tb sh mk (i32 (+ uw ou)) (i32 (+ vw ov)))))
+
 (defn span-t! [(p0 : I32) (n : I32) (x0 : I32) (y : I32) (iz : F32) (dz : F32) (r : F32) (dr : F32) (g : F32) (dg : F32) (b : F32) (db : F32)
                (u : F32) (du : F32) (v : F32) (dv : F32)] : Unit
   (let [za0 (+ (zb-base) (shl p0 2))
@@ -206,7 +232,8 @@
         tb (gi (g-tex-base))
         sh (gi (g-tex-shift))
         mk (gi (g-tex-mask))
-        dith (gi (g-dither))
+        bil (gi (g-tex-bil))
+        dith (if (= bil 1) 0 (gi (g-dither)))
         (ov : F32) (if (= dith 0) 0.0 (* 0.5 (f32 (bit-and y 1))))]
     (loop [k 0 (z : F32) iz (rr : F32) r (gg : F32) g (bb : F32) b (uu : F32) u (vv : F32) v]
       (when (<= k n)
@@ -214,9 +241,7 @@
           (when (> z (loadf32 za))
             (let [(w : F32) (/ 1.0 z)
                   (ou : F32) (if (= dith 0) 0.0 (* 0.5 (f32 (bit-and (bit-xor (+ x0 k) y) 1))))
-                  tu (bit-and (i32 (+ (* uu w) ou)) mk)
-                  tv (bit-and (i32 (+ (* vv w) ov)) mk)
-                  t (load32 (+ tb (shl (+ (shl tv sh) tu) 2)))
+                  t (texel-for bil tb sh mk (* uu w) (* vv w) ou ov)
                   mr (i32 (* rr w)) mg (i32 (* gg w)) mb (i32 (* bb w))]
               (storef32! za z)
               (store32! (+ fa0 (shl k 2))
@@ -462,6 +487,7 @@
     (gi! (g-tex-base) (load32 (+ (md-addr m) 20)))
     (gi! (g-tex-shift) (load32 (+ (md-addr m) 24)))
     (gi! (g-tex-mask) (load32 (+ (md-addr m) 28)))
+    (gi! (g-tex-bil) (b2i (!= (bit-and (md-flags m) 16) 0)))
     (transform-mesh! m)
     (raster-mesh! m)))
 

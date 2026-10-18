@@ -45,6 +45,10 @@
 (defn g-safe-y [] : I32 338)
 (defn g-safe-z [] : I32 339)
 (defn g-cam-dist [] : I32 340)     ; F32: the chase distance (smoothed with speed)
+(defn g-cam-lpx [] : I32 341)      ; F32: where the chased car was on the last rendered frame (a jump = a respawn or a kickoff: snap)
+(defn g-cam-lpy [] : I32 342)
+(defn g-cam-lpz [] : I32 343)
+(defn g-cam-carry [] : I32 344)    ; F32 0..1: how much the chase camera has risen to see over a carried ball (smoothed)
 
 (defn chase-fov [] : F32 70.0)
 (defn spec-fov [] : F32 62.0)
@@ -69,36 +73,54 @@
         (gf! (g-safe-y) (+ ay (* (- ey ay) lo)))
         (gf! (g-safe-z) (+ az (* (- ez az) lo))))))
 
-;; the smoothed up (g-sup-*) toward (ux, uy, uz) with time constant tau; a half-turn in one step (lerp through zero) keeps the old
-(defn sup-toward! [(ux : F32) (uy : F32) (uz : F32) (tau : F32)] : Unit
-  (let [(k : F32) (smooth-k tau)
-        (x : F32) (lerp (gf (g-sup-x)) ux k) (y : F32) (lerp (gf (g-sup-y)) uy k) (z : F32) (lerp (gf (g-sup-z)) uz k)
+;; a smoothed UNIT vector (three G words from k0) toward the unit vector (tx ty tz), by the fraction k of the way. A plain lerp
+;; passes through zero when the target is nearly straight behind the vector; there it would stall (or whip), so then it turns toward
+;; the perpendicular of the hint (hx hy hz) instead, and the normal path takes over once the angle is under about 110 degrees.
+(defn vec-toward! [(k0 : I32) (tx : F32) (ty : F32) (tz : F32) (hx : F32) (hy : F32) (hz : F32) (k : F32)] : Unit
+  (let [(vx : F32) (gf k0) (vy : F32) (gf (+ k0 1)) (vz : F32) (gf (+ k0 2))
+        (x : F32) (lerp vx tx k) (y : F32) (lerp vy ty k) (z : F32) (lerp vz tz k)
         (l : F32) (len3 x y z)]
-    (when (> l 0.05)
-      (gf! (g-sup-x) (/ x l)) (gf! (g-sup-y) (/ y l)) (gf! (g-sup-z) (/ z l)))))
+    (if (> l 0.35)
+        (do (gf! k0 (/ x l)) (gf! (+ k0 1) (/ y l)) (gf! (+ k0 2) (/ z l)))
+        (let [(hd : F32) (dot3 hx hy hz vx vy vz)
+              (px : F32) (- hx (* vx hd)) (py : F32) (- hy (* vy hd)) (pz : F32) (- hz (* vz hd))
+              (pl : F32) (len3 px py pz)]
+          (when (> pl 0.05)
+            (let [(kk : F32) (fmax2 k 0.05)
+                  (qx : F32) (lerp vx (/ px pl) kk) (qy : F32) (lerp vy (/ py pl) kk) (qz : F32) (lerp vz (/ pz pl) kk)
+                  (ql : F32) (len3 qx qy qz)]
+              (gf! k0 (/ qx ql)) (gf! (+ k0 1) (/ qy ql)) (gf! (+ k0 2) (/ qz ql))))))))
 
-;; the smoothed chase direction (g-cam-dir-*) toward (dx, dy, dz)
+;; the smoothed up (g-sup-*) toward (ux, uy, uz) with time constant tau; the car's nose is the hint for a half-turn
+(defn sup-toward! [(ux : F32) (uy : F32) (uz : F32) (tau : F32)] : Unit
+  (vec-toward! (g-sup-x) ux uy uz (gf (g-pose-fx)) (gf (g-pose-fy)) (gf (g-pose-fz)) (smooth-k tau)))
+
+;; the smoothed chase direction (g-cam-dir-*) toward (dx, dy, dz); the smoothed up is the hint
 (defn dir-toward! [(dx : F32) (dy : F32) (dz : F32) (tau : F32)] : Unit
-  (let [(k : F32) (smooth-k tau)
-        (x : F32) (lerp (gf (g-cam-dir-x)) dx k) (y : F32) (lerp (gf (g-cam-dir-y)) dy k) (z : F32) (lerp (gf (g-cam-dir-z)) dz k)
-        (l : F32) (len3 x y z)]
+  (let [(l : F32) (len3 dx dy dz)]
     (when (> l 0.05)
-      (gf! (g-cam-dir-x) (/ x l)) (gf! (g-cam-dir-y) (/ y l)) (gf! (g-cam-dir-z) (/ z l)))))
+      (vec-toward! (g-cam-dir-x) (/ dx l) (/ dy l) (/ dz l) (gf (g-sup-x)) (gf (g-sup-y)) (gf (g-sup-z)) (smooth-k tau)))))
 
 ;; snap the chase state onto car s (a new match, a respawn, a new view): no swing in from wherever the camera last was
 (defn cam-snap! [(s : I32)] : Unit
   (do (gf! (g-sup-x) (c-ux s)) (gf! (g-sup-y) (c-uy s)) (gf! (g-sup-z) (c-uz s))
       (gf! (g-cam-dir-x) (c-fx s)) (gf! (g-cam-dir-y) (c-fy s)) (gf! (g-cam-dir-z) (c-fz s))
-      (gf! (g-cam-dist) 34.0)
+      (gf! (g-cam-dist) 34.0) (gf! (g-cam-carry) 0.0)
       (gi! (g-cam-init) 1)))
 
 ;; CHASE / BALL CAM behind car s, its pose interpolated by al
 (defn cam-chase! [(s : I32) (al : F32) (ballcam : Bool)] : Unit
   (do
-    (when (= (gi (g-cam-init)) 0) (cam-snap! s))
     (pose! s al)
+    ;; a car that jumped (a kickoff, a respawn) is not chased there: the camera snaps onto it
+    (when (or (= (gi (g-cam-init)) 0)
+              (> (len3 (- (gf (g-pose-x)) (gf (g-cam-lpx))) (- (gf (g-pose-y)) (gf (g-cam-lpy))) (- (gf (g-pose-z)) (gf (g-cam-lpz)))) 60.0))
+      (cam-snap! s))
+    (gf! (g-cam-lpx) (gf (g-pose-x))) (gf! (g-cam-lpy) (gf (g-pose-y))) (gf! (g-cam-lpz) (gf (g-pose-z)))
     (let [(px : F32) (gf (g-pose-x)) (py : F32) (gf (g-pose-y)) (pz : F32) (gf (g-pose-z))]
-      (sup-toward! (gf (g-pose-ux)) (gf (g-pose-uy)) (gf (g-pose-uz)) 0.22)
+      ;; the world turns with the car on a surface; in the air the camera keeps its up (no rolling with a tumbling car)
+      (when (!= (c-attached s) 0)
+        (sup-toward! (gf (g-pose-ux)) (gf (g-pose-uy)) (gf (g-pose-uz)) 0.22))
       (if ballcam
           (do (ball-pos! al)
               (dir-toward! (- (gf (g-bp-x)) px) (- (gf (g-bp-y)) py) (- (gf (g-bp-z)) pz) 0.10))
@@ -115,18 +137,22 @@
             (hz : F32) (if (> hl 0.1) (/ hz0 hl) (- (gf (g-pose-fz)) (* uz fu)))
             ;; speed pulls the camera back a little (34 at rest, 44 flat out)
             (sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))
-            (want : F32) (+ 34.0 (* 10.0 (clamp-f (/ sp 420.0) 0.0 1.0)))
+            ;; a carried ball sits dead ahead of the nose and would hide the road: rise and back off to look over it
+            (ck : F32) (lerp (gf (g-cam-carry)) (if (= (b-holder) s) 1.0 0.0) (smooth-k 0.3))
+            (want : F32) (+ (+ 34.0 (* 10.0 (clamp-f (/ sp 420.0) 0.0 1.0))) (* 8.0 ck))
             (dist : F32) (lerp (gf (g-cam-dist)) want (smooth-k 0.5))
-            (hgt : F32) (if ballcam 13.0 11.5)
-            (ax : F32) (+ px (* ux 6.0)) (ay : F32) (+ py (* uy 6.0)) (az : F32) (+ pz (* uz 6.0))]
+            (hgt : F32) (+ (if ballcam 13.0 11.5) (* 11.0 ck))
+            (ax : F32) (+ px (* (gf (g-pose-ux)) 6.0)) (ay : F32) (+ py (* (gf (g-pose-uy)) 6.0)) (az : F32) (+ pz (* (gf (g-pose-uz)) 6.0))]
         (gf! (g-cam-dist) dist)
+        (gf! (g-cam-carry) ck)
         (cam-safe! ax ay az (+ (- px (* hx dist)) (* ux hgt)) (+ (- py (* hy dist)) (* uy hgt)) (+ (- pz (* hz dist)) (* uz hgt)))
         (let [(ex : F32) (gf (g-safe-x)) (ey : F32) (gf (g-safe-y)) (ez : F32) (gf (g-safe-z))
               ;; look a little ahead of the car (ball cam: a third of the way to the ball, but never so far the car leaves
               ;; the bottom of the frame)
-              (tx : F32) (if ballcam (lerp (+ px (* ux 4.0)) (gf (g-bp-x)) 0.3) (+ (+ px (* ux 4.5)) (* hx 14.0)))
-              (ty : F32) (if ballcam (lerp (+ py (* uy 4.0)) (gf (g-bp-y)) 0.3) (+ (+ py (* uy 4.5)) (* hy 14.0)))
-              (tz : F32) (if ballcam (lerp (+ pz (* uz 4.0)) (gf (g-bp-z)) 0.3) (+ (+ pz (* uz 4.5)) (* hz 14.0)))]
+              (ah : F32) (+ 14.0 (* 14.0 ck)) (au : F32) (+ 4.5 (* 2.0 ck))
+              (tx : F32) (if ballcam (lerp (+ px (* ux 4.0)) (gf (g-bp-x)) 0.3) (+ (+ px (* ux au)) (* hx ah)))
+              (ty : F32) (if ballcam (lerp (+ py (* uy 4.0)) (gf (g-bp-y)) 0.3) (+ (+ py (* uy au)) (* hy ah)))
+              (tz : F32) (if ballcam (lerp (+ pz (* uz 4.0)) (gf (g-bp-z)) 0.3) (+ (+ pz (* uz au)) (* hz ah)))]
           (cam-look! ex ey ez tx ty tz ux uy uz (chase-fov)))))))
 
 ;; SPECTATOR: the broadcast camera on the ball

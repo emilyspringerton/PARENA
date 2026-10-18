@@ -155,6 +155,37 @@
 
 (defn mix-f [(c1 : I32) (c2 : I32) (t : F32)] : I32 (mix c1 c2 (clamp-i (i32 (* t 256.0)) 0 256)))
 
+;; smooth value noise 0..1 on a lattice every `cell` texels: soft wear and weather, not sparkle
+(defn vnoise [(ix : I32) (iz : I32) (cell : I32) (seed : I32)] : F32
+  (let [cx (/ ix cell) cz (/ iz cell)
+        (fx : F32) (/ (f32 (- ix (* cx cell))) (f32 cell))
+        (fz : F32) (/ (f32 (- iz (* cz cell))) (f32 cell))
+        (sx : F32) (* fx (* fx (- 3.0 (* 2.0 fx))))
+        (sz : F32) (* fz (* fz (- 3.0 (* 2.0 fz))))
+        (a : F32) (/ (f32 (hash2 (+ cx seed) cz)) 255.0)
+        (b : F32) (/ (f32 (hash2 (+ (+ cx 1) seed) cz)) 255.0)
+        (c : F32) (/ (f32 (hash2 (+ cx seed) (+ cz 1))) 255.0)
+        (d : F32) (/ (f32 (hash2 (+ (+ cx 1) seed) (+ cz 1))) 255.0)]
+    (lerp (lerp a b sx) (lerp c d sx) sz)))
+
+;; the floor's palette: a cool slate infield, a slightly lighter apron, and a neutral clay road. No amber on the floor: amber is a
+;; team's colour, and it has to stand out on the road it drives on.
+(defn infield-rgb [] : I32 (rgb 54 66 80))
+(defn apron-rgb [] : I32 (rgb 66 68 82))
+(defn road-rgb [] : I32 (rgb 104 106 114))
+
+;; the fraction of texel (x, z)'s footprint inside the annulus whose distance from (cx, cz) is within hw of r (3 x 3 samples): a ring
+;; thinner than a texel has to be baked as coverage or it breaks into arcs where the texel centres miss it
+(defn ring-cov [(x : F32) (z : F32) (cx : F32) (cz : F32) (r : F32) (hw : F32)] : F32
+  (let [(hit : F32) 0.0]
+    (dotimes [a 3]
+      (dotimes [b 3]
+        (let [(px : F32) (+ x (* (- (f32 a) 1.0) 1.354))
+              (pz : F32) (+ z (* (- (f32 b) 1.0) 1.354))
+              (d : F32) (abs-f (- (len2 (- px cx) (- pz cz)) r))]
+          (when (< d hw) (set! hit (+ hit 1.0))))))
+    (/ hit 9.0)))
+
 (defn bake-floor! [] : Unit
   (dotimes [iz 256]
     (dotimes [ix 256]
@@ -163,31 +194,35 @@
             (d : F32) (road-dist x z)
             (inside : Bool) (in-loop? x z)
             n (hash2 ix iz)
+            ;; weather: broad soft patches, and a fine grain that is only a few percent
+            (wx : F32) (+ (* 0.7 (vnoise ix iz 16 3)) (* 0.3 (vnoise ix iz 5 11)))
+            (grain : I32) (- (shr n 5) 4)
             (rho : F32) (len2 x z)
             ;; the vignette: floodlit in the middle, dark at the walls
             (vig : F32) (- 1.0 (* 0.42 (sq (clamp-f (/ rho 700.0) 0.0 1.0))))
-            infield (shade (rgb 58 84 72) (+ 214 (shr n 3)))
-            apron (shade (rgb 88 86 96) (+ 220 (shr n 4)))
+            infield (shade (infield-rgb) (+ (+ 222 (i32 (* wx 26.0))) grain))
+            apron (shade (apron-rgb) (+ (+ 226 (i32 (* wx 22.0))) grain))
             base (if inside infield apron)
             ;; road weight: full inside the half-width, smoothstep to nothing at the shoulder
             (rw : F32) (clamp-f (/ (- (road-shoulder) d) (- (road-shoulder) (road-half))) 0.0 1.0)
             (rws : F32) (* rw (* rw (- 3.0 (* 2.0 rw))))
             ;; two worn tyre lines either side of the middle of the road
-            (tyre : F32) (if (and (< d 30.0) (or (< (abs-f (- d 12.0)) 2.2) (< (abs-f (- d 22.0)) 1.6))) 0.18 0.0)
-            dirt (shade (rgb 156 108 72) (- (+ 206 (shr n 2)) (i32 (* tyre 300.0))))
+            (tyre : F32) (if (and (< d 30.0) (or (< (abs-f (- d 12.0)) 2.2) (< (abs-f (- d 22.0)) 1.6))) 0.10 0.0)
+            dirt (shade (road-rgb) (- (+ (+ 218 (i32 (* wx 30.0))) grain) (i32 (* tyre 300.0))))
             c0 (mix-f base dirt rws)
-            ;; kickoff circle and spot
-            (kr : F32) (abs-f (- rho 44.0))
-            c1 (if (< kr 1.4) (mix c0 (rgb 236 232 220) 150) c0)
-            c2 (if (< rho 3.2) (mix c1 (rgb 236 232 220) 190) c1)
+            ;; kickoff circle and spot, baked as coverage (see ring-cov)
+            c1 (mix c0 (rgb 236 232 220) (i32 (* 190.0 (ring-cov x z 0.0 0.0 44.0 1.7))))
+            c2 (mix c1 (rgb 236 232 220) (i32 (* 210.0 (ring-cov x z 0.0 0.0 0.0 3.2))))
             ;; the four team pads under the towers: a ring and a soft wash of the team's colour
             c3 (let [(pc : I32) c2]
                  (dotimes [t 4]
-                   (let [(dx : F32) (- x (* (tw-sx t) 400.0))
-                         (dz : F32) (- z (* (tw-sz t) 400.0))
-                         (pr : F32) (len2 dx dz)]
-                     (when (< pr 70.0)
-                       (set! pc (mix pc (team-color t) (if (< (abs-f (- pr 56.0)) 2.0) 190 (if (< pr 56.0) 46 0)))))))
+                   (let [(cx : F32) (* (tw-sx t) 400.0)
+                         (cz : F32) (* (tw-sz t) 400.0)
+                         (pr : F32) (len2 (- x cx) (- z cz))]
+                     (when (< pr 72.0)
+                       (set! pc (mix pc (team-color t)
+                                     (+ (i32 (* 150.0 (ring-cov x z cx cz 56.0 1.7)))
+                                        (if (< pr 56.0) 34 0)))))))
                  pc)
             c4 (shade c3 (clamp-i (i32 (* vig 256.0)) 0 256))]
         (store32! (+ (tex-base) (shl (+ (* iz 256) ix) 2)) c4)

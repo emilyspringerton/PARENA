@@ -140,9 +140,7 @@
           (yx : F32) (gf (g-bs-yx)) (yy : F32) (gf (g-bs-yy)) (yz : F32) (gf (g-bs-yz))]
       (set-model! (gf (g-bp-x)) (gf (g-bp-y)) (gf (g-bp-z)) xx xy xz yx yy yz
                   (- (* xy yz) (* xz yy)) (- (* xz yx) (* xx yz)) (- (* xx yy) (* xy yx)) 1.0))
-    ;; ivory and a soft warm grey: no team's colour, so the ball always reads as the ball
-    (set-palette! 1 (vcol (rgb 236 230 214) 25))
-    (set-palette! 2 (vcol (rgb 150 140 128) 10))
+    ;; leather and stitching: no team's colour, so the ball always reads as the ball (the carrier's colour is its halo, below)
     (draw-mesh! (mesh-ball))))
 
 ;; ---- particles (br_fx.prn's ring) ------------------------------------------------------------------------------------------------------------------
@@ -156,7 +154,14 @@
             base (case k 1 220 2 90 3 60 200)]
         (glow! (f-x q) (f-y q) (f-z q) (f-size q) (f-color q) (i32 (* (f32 base) life)))))))
 
-(defn draw-fx! [(al : F32)] : Unit (draw-particles!))
+;; the carried ball wears its carrier's colour as a soft halo, so who has it reads at a glance
+(defn draw-ball-halo! [(al : F32)] : Unit
+  (let [h (b-holder)]
+    (when (>= h 0)
+      (ball-pos! al)
+      (glow! (gf (g-bp-x)) (gf (g-bp-y)) (gf (g-bp-z)) 20.0 (team-color (c-team h)) 70))))
+
+(defn draw-fx! [(al : F32)] : Unit (do (draw-ball-halo! al) (draw-particles!)))
 
 ;; ---- a frame of the world ---------------------------------------------------------------------------------------------------------------------------------
 ;; the camera must be set (cam-update!) first. show-match: draw the cars and the ball (the title shows the empty arena)

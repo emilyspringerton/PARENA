@@ -41,6 +41,7 @@
 ;; ---- textures (TEX2, 0x0B0000: 64 KB, br_mem.prn) -------------------------------------------------------------------------------
 (defn panel-tex [] : I32 720896)   ; 0x0B0000  64 x 64: the wall panels
 (defn ceil-tex [] : I32 737280)    ; 0x0B4000  64 x 64: the ceiling and its lamps
+(defn ball-tex [] : I32 753664)    ; 0x0B8000  64 x 64: the Quaffle's leather (u round the equator, v pole to pole)
 
 ;; ---- the builder's G words (br_mem.prn: 300..319, inside br_3d.prn's block) --------------------------------------------------------
 (defn g-mb-top [] : I32 300)       ; the GEOM bump pointer
@@ -268,7 +269,7 @@
 
 ;; ---- the shell's meshes --------------------------------------------------------------------------------------------------------------------------
 (defn build-floor! [] : Unit
-  (do (mesh-begin! (mesh-floor) 640 1160 (mf-tex))
+  (do (mesh-begin! (mesh-floor) 640 1160 (bit-or (mf-tex) (mf-bilinear)))
       (mesh-tex! (mesh-floor) (tex-base) 8)
       (face-cells! 0 3 27 3 27 0 0)
       (mesh-end!)))
@@ -476,26 +477,46 @@
     (mesh-end!)))
 
 ;; ---- the ball -------------------------------------------------------------------------------------------------------------------------------------------
-;; a UV sphere, 12 slices x 6 stacks, built as eight octant panels (each its own vertices, so the colour changes sharply at the
-;; seams while the normals stay smooth): palette 1 and 2 in a checker
+;; THE QUAFFLE: stitched leather. A 64 x 64 texture (u runs round the equator, v from pole to pole) with eight panels: dark seams on
+;; the equator and four meridians, a row of pale stitches either side of each, a faint grain and a slow patina, each panel a touch
+;; different. The sphere is smooth (20 x 12, normals true), lit per vertex and filtered per pixel.
+(defn seam-dist [(x : I32) (y : I32)] : F32
+  (let [(du : F32) (f32 (abs-i (- (mod (+ x 8) 16) 8)))
+        (dv : F32) (f32 (abs-i (- y 32)))]
+    (fmin2 du dv)))
+
+(defn bake-ball-tex! [] : Unit
+  (dotimes [y 64]
+    (dotimes [x 64]
+      (let [n (hash2 (+ x 5) (+ y 77))
+            (sd : F32) (seam-dist x y)
+            ;; which seam is nearer (the stitches run along it): the equator or a meridian
+            (along : I32) (if (< (f32 (abs-i (- y 32))) (f32 (abs-i (- (mod (+ x 8) 16) 8)))) x y)
+            (patina : F32) (vnoise x y 8 41)
+            panel (+ (bit-and (+ (/ x 16) (/ y 32)) 1) 0)
+            body (shade (rgb 214 186 148) (+ (+ 224 (i32 (* patina 22.0))) (- (shr n 5) 4) (* panel 6)))
+            thread (< (bit-and along 3) 2)
+            c (cond (< sd 0.85) (rgb 62 44 34)
+                    (and (and (> sd 1.6) (< sd 2.7)) thread) (rgb 238 224 192)
+                    (< sd 1.6) (mix body (rgb 62 44 34) 70)
+                    :else body)]
+        (store32! (+ (ball-tex) (shl (+ (* y 64) x) 2)) c)))))
+
 (defn build-ball! [] : Unit
   (do
-    (mesh-begin! (mesh-ball) 140 160 0)
-    (dotimes [o 8]
-      (let [q (bit-and o 3) lower (shr o 2)
-            j0 (* q 3) i0 (* lower 3)
-            pal (+ 1 (bit-and (+ q lower) 1))
-            base (load32 (+ (md-addr (mesh-ball)) 4))]
-        (dotimes [ii 4]
-          (dotimes [jj 4]
-            (let [(th : F32) (* (f32 (+ i0 ii)) 0.5235988)
-                  (ph : F32) (* (f32 (+ j0 jj)) 0.5235988)
-                  (nx : F32) (* (sinf th) (cosf ph)) (ny : F32) (cosf th) (nz : F32) (* (sinf th) (sinf ph))]
-              (mvert! (* (rb) nx) (* (rb) ny) (* (rb) nz) nx ny nz 0.0 0.0 0 pal))))
-        (dotimes [ii 3]
-          (dotimes [jj 3]
-            (let [a (+ base (+ (* ii 4) jj))]
-              (mquad! a (+ a 1) (+ a 5) (+ a 4)))))))
+    (mesh-begin! (mesh-ball) 280 500 (bit-or (mf-tex) (mf-bilinear)))
+    (mesh-tex! (mesh-ball) (ball-tex) 6)
+    (dotimes [i 13]
+      (dotimes [j 21]
+        (let [(th : F32) (* (f32 i) 0.2617994)
+              (ph : F32) (* (f32 j) 0.3141593)
+              (nx : F32) (* (sinf th) (cosf ph)) (ny : F32) (cosf th) (nz : F32) (* (sinf th) (sinf ph))]
+          (mvert! (* (rb) nx) (* (rb) ny) (* (rb) nz) nx ny nz (* (f32 j) 3.0476190) (* (f32 i) 5.3333333) (vcol (rgb 255 255 255) 36) 0))))
+    ;; the ball is the whole mesh, so its vertex numbers start at 0
+    (dotimes [i 12]
+      (dotimes [j 20]
+        (let [b (+ (* i 21) j)]
+          (mquad! b (+ b 1) (+ b 22) (+ b 21)))))
     (mesh-end!)))
 
 ;; ---- everything, once -----------------------------------------------------------------------------------------------------------------------------------
@@ -505,6 +526,7 @@
     (gi! (g-mb-over) 0)
     (bake-panel!)
     (bake-ceiling!)
+    (bake-ball-tex!)
     (build-floor!)
     (dotimes [sd 4] (build-band! sd))
     (build-ceiling!)

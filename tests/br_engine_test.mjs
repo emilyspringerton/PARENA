@@ -153,6 +153,39 @@ const simState = (g) => Buffer.concat([Buffer.from(new Uint8Array(g.x.memory.buf
   g.x.br_pad_gone(0);
 }
 
+// ---- the chase camera through a wall, the ceiling and a kickoff ----------------------------------------------------------------------------------
+{
+  const g = await game(); g.frame(5); g.tap(KEY.enter); g.frame(260);
+  const basis = (s, u, f) => { const r = [f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]];
+    for (const [k, v] of Object.entries({ ux: u[0], uy: u[1], uz: u[2], fx: f[0], fy: f[1], fz: f[2], rx: r[0], ry: r[1], rz: r[2] })) g.setCar(s, k, v); };
+  const eye = () => ['x', 'y', 'z'].map(k => g.gfl('cam-' + k)), camUp = () => ['ux', 'uy', 'uz'].map(k => g.gfl('cam-' + k));
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  g.x.br_t_ball(0, 40, 380, 0, 0, 0);
+  // a car dropped onto the ceiling (a half-turn from where the camera was): the camera snaps onto it, inside the room
+  g.x.br_t_place(0, 0, 236, -150); basis(0, [0, -1, 0], [0, 0, 1]); g.frame(3);
+  ok(dot(camUp(), [0, -1, 0]) > 0.9 && g.x.br_t_free(...eye()) >= 4.9, `a car put on the ceiling is chased from inside the room with the world turned over (camera up . car up ${dot(camUp(), [0, -1, 0]).toFixed(2)}, eye ${g.x.br_t_free(...eye()).toFixed(1)} from a surface)`);
+  // a real climb: up the wall and over onto the ceiling, W held
+  g.x.br_t_place(0, -516, 40, 0); basis(0, [1, 0, 0], [0, 1, 0]); g.frame(5); g.hold(KEY.w);
+  let minFree = 1e9, minDot = 1, ceiling = false;
+  for (let i = 0; i < 260; i++) { g.frame(1); minFree = Math.min(minFree, g.x.br_t_free(...eye())); if (i > 5) minDot = Math.min(minDot, dot(camUp(), g.up(0))); if (g.up(0)[1] < -0.8) ceiling = true; }
+  g.release(KEY.w);
+  ok(ceiling, 'the car really drove from the wall onto the ceiling');
+  ok(minFree >= 4.9, `through the whole climb the eye never gets closer than 5 units to a surface (${minFree.toFixed(1)})`);
+  ok(minDot > 0.8, `and the camera's up follows the car's up the whole way (worst camera up . car up ${minDot.toFixed(2)})`);
+  // carrying the ball: it sits dead ahead of the nose, so the camera rises and backs off to see over it
+  g.x.br_t_place(0, 0, 4, -200); basis(0, [0, 1, 0], [0, 0, 1]); g.x.br_t_ball(0, 300, 380, 0, 0, 0); g.frame(60);
+  const lift = () => { const e = eye(), p = g.pos(0), u = g.up(0); return (e[0] - p[0]) * u[0] + (e[1] - p[1]) * u[1] + (e[2] - p[2]) * u[2]; };
+  const free = lift();
+  const c = [g.pos(0)[0] + g.fwd(0)[0] * 17, 13, g.pos(0)[2] + g.fwd(0)[2] * 17]; g.x.br_t_ball(c[0], c[1], c[2], 0, 0, 0);
+  g.hold(KEY.f); g.frame(90); const carrying = lift(); const held = g.ball('holder');
+  g.release(KEY.f); g.x.br_t_ball(0, 300, 380, 0, 0, 0); g.frame(90); const after = lift();
+  ok(held === 0 && carrying > free + 8, `a carried ball raises the chase camera to see over it (${free.toFixed(1)} -> ${carrying.toFixed(1)} above the car's roof line) and it settles back when the ball is gone (${after.toFixed(1)})`);
+  // a goal scored while the person is on the ceiling: the kickoff stands the car up and the camera must come with it
+  g.x.br_t_place(0, 0, 236, -150); basis(0, [0, -1, 0], [0, 0, 1]); g.frame(40);
+  g.x.br_t_score(1, -1, 3); g.frame(400);
+  ok(g.up(0)[1] > 0.9 && camUp()[1] > 0.9 && g.x.br_t_free(...eye()) >= 4.9, 'after a goal from the ceiling the kickoff puts the car upright and the camera is upright with it (it used to stay upside down)');
+}
+
 // ---- the title's picks and clicks, the pause menu, the results screen -----------------------------------------------------------------------------
 {
   const g = await game(); g.frame(30);
