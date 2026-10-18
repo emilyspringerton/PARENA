@@ -7,7 +7,9 @@
 ;;   1. fetch and instantiate the wasm                       (boot ... on-instance)
 ;;   2. copy the framebuffer it painted onto a canvas         (tick: putImageData of a view onto wasm memory)
 ;;   3. forward keyboard / mouse buttons / gamepads           (on-keydown ... poll-pads -> br_key / br_button / br_pad)
-;;   4. keep the page's own labels in step                    (sync-labels!)
+;;   4. know who is playing (WOTAN SSO session, or a guest IDUNA makes and this browser remembers) and own the WebSocket to IDUNA's
+;;      lockstep room (ensure-socket!, pump-out!): copy frames between the socket and the engine's NETIN / NETOUT, nothing else
+;;   5. keep the page's own labels in step                    (sync-labels!)
 ;; Pointer lock is NOT used: the cursor stays, the keys and sticks drive, right mouse is the magnet.
 
 ;; ---- module state ----------------------------------------------------------------------------------------------
@@ -19,6 +21,14 @@
 (def wasm-bytes 0)
 (def wasm-imports 0)
 (def last-status -1)
+(def view null)           ; DataView over wasm memory
+(def sock null)
+(def next-try 0.0)        ; performance.now() before which no new socket is opened
+(def idle-since 0.0)
+(def ident-ready false)
+(def ident-busy false)
+(def ident-fallback false)
+(def sso-pending null)
 
 ;; ---- DOM helpers -------------------------------------------------------------------------------------------------
 (defn doc [] : Any (js/global "document"))
@@ -75,6 +85,7 @@
     (set! memory (js/get wasm "memory"))
     (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
     (js/call wasm "br_init")
+    (set! view (js/new "DataView" (js/get memory "buffer")))
     (set! image
           (js/new "ImageData"
                   (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "br_fb_addr")
@@ -91,12 +102,15 @@
         (js/set! b "disabled" false)
         (js/call b "addEventListener" "click" (callback on-fullscreen))))
     (focus-canvas!)
+    (refresh-identity!)
     (when (pad-allowed?) (js/call (js/global "window") "requestAnimationFrame" (callback pad-tick)))
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
 (defn tick [(t : F64)] : Unit
   (do
     (js/call wasm "br_frame" t)
+    (ensure-socket!)
+    (pump-out!)
     (js/call ctx "putImageData" image 0 0)
     (sync-labels!)
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
@@ -212,6 +226,173 @@
               (send-pad i gp)))))))
 
 ;; ---- 4. the page's own labels -----------------------------------------------------------------------------------------------
+;; ---- 4. identity and the gateway socket ------------------------------------------------------------------------------------------
+;; Same flow as the D2 page (stdlib/d2/web/d2_host.prn): guest-register / guest-login / sso-exchange on /api/v1/games/bedrockracers, the
+;; token handed to the engine, which sends it in HELLO. A token a gateway refused is never sent again: the next search takes a fresh one.
+(defn win [] : Any (js/global "window"))
+(defn now [] : F64 (js/call (js/global "performance") "now"))
+(defn api [] : String "/api/v1/games/bedrockracers")
+
+(defn json-or-reject [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "json")
+      (js/call (js/global "Promise") "reject" (js/get r "status"))))
+
+(defn post-json [(path : String) (body : Any)] : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" (js/call (js/global "JSON") "stringify" body))
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn post-auth [(path : String) (token : Any)] : Any
+  (let [opts (js/obj)
+        hdrs (js/obj)]
+    (js/set! hdrs "Content-Type" "application/json")
+    (js/set! hdrs "Authorization" (str "Bearer " token))
+    (js/set! opts "method" "POST")
+    (js/set! opts "headers" hdrs)
+    (js/set! opts "body" "{}")
+    (js/call (js/call-fn (js/global "fetch") (str (api) path) opts) "then" (callback json-or-reject))))
+
+(defn store [] : Any (js/get (win) "localStorage"))
+
+(defn save-guest! [(d : Any)] : Any
+  (let [o (js/obj)]
+    (js/set! o "player_id" (js/get d "player_id"))
+    (js/set! o "guest_secret" (js/get d "guest_secret"))
+    (js/call (store) "setItem" "br_guest" (js/call (js/global "JSON") "stringify" o))
+    d))
+
+(defn register-guest! [] : Any
+  (js/call (post-json "/guest-register" (js/obj)) "then" (callback save-guest!)))
+
+(defn relogin-failed [(e : Any)] : Any (register-guest!))
+
+(defn guest-flow [(ignored : Any)] : Any
+  (let [raw (js/call (store) "getItem" "br_guest")]
+    (if (js/null? raw)
+        (register-guest!)
+        (let [g (js/call (js/global "JSON") "parse" raw)
+              body (js/obj)]
+          (js/set! body "player_id" (js/get g "player_id"))
+          (js/set! body "guest_secret" (js/get g "guest_secret"))
+          (js/call (post-json "/guest-login" body) "catch" (callback relogin-failed))))))
+
+(defn sso-session [] : Any
+  (if (js/defined? "getIdunaSession") (js/call-fn (js/global "getIdunaSession")) null))
+
+(defn mark-guest [(d : Any)] : Any (do (js/set! d "sso" false) d))
+
+(defn sso-accepted [(r : Any)] : Any
+  (do (js/set! sso-pending "sso" true) sso-pending))
+
+;; a signed-in visitor whose IDUNA account is tied to a different game (or whose token lapsed) would be refused at HELLO: ask the game
+;; first and fall back to a guest if it says no
+(defn sso-refused [(e : Any)] : Any
+  (do (set! ident-fallback true)
+      (js/call (guest-flow 0) "then" (callback mark-guest))))
+
+(defn identity-flow [(ignored : Any)] : Any
+  (let [s (sso-session)]
+    (if (and (not (js/null? s)) (not (js/null? (js/get s "token"))))
+        (let [o (js/obj)]
+          (js/set! o "token" (js/get s "token"))
+          (js/set! o "display_name" (js/get s "displayName"))
+          (js/set! o "sso" false)
+          (set! sso-pending o)
+          (js/call (js/call (post-auth "/sso-exchange" (js/get s "token")) "then" (callback sso-accepted)) "catch" (callback sso-refused)))
+        (js/call (guest-flow ignored) "then" (callback mark-guest)))))
+
+;; a JS string as ASCII bytes in wasm memory; returns the length written (clamped to `cap`)
+(defn put-ascii! [(s : Any) (addr : I32) (cap : I32)] : I32
+  (let [u8 (js/new "Uint8Array" (js/get memory "buffer") addr cap)
+        n (math/min cap (js/get s "length"))]
+    (dotimes [i n]
+      (js/aset! u8 i (math/min 126 (js/call s "charCodeAt" i))))
+    n))
+
+(defn apply-identity! [(d : Any)] : Unit
+  (do
+    (js/call wasm "br_name_set" (put-ascii! (js/get d "display_name") (js/call wasm "br_name_addr") 24))
+    (js/call wasm "br_token_set" (put-ascii! (js/get d "token") (js/call wasm "br_token_addr") 2000))
+    (set! ident-ready true)
+    (set! ident-busy false)))
+
+(defn identity-failed [(e : Any)] : Unit
+  (do (set! ident-busy false)
+      (set! next-try (+ (now) 5000.0))))
+
+(defn refresh-identity! [] : Unit
+  (when (not ident-busy)
+    (do
+      (set! ident-busy true)
+      (js/call
+        (js/call
+          (js/call (js/call (js/global "Promise") "resolve" 0) "then" (callback identity-flow))
+          "then" (callback apply-identity!))
+        "catch" (callback identity-failed)))))
+
+(defn socket-url [] : String
+  (str (if (= (js/get (js/get (win) "location") "protocol") "https:") "wss://" "ws://")
+       (js/get (js/get (win) "location") "host")
+       "/api/v1/bedrockracers/play"))
+
+(defn on-open [(e : Any)] : Unit
+  (js/call wasm "br_net_socket" 2))
+
+(defn on-message [(e : Any)] : Unit
+  (let [data (js/get e "data")
+        len (js/get data "byteLength")]
+    (when (<= len 2000)
+      (js/call (js/new "Uint8Array" (js/get memory "buffer") (js/call wasm "br_net_in_addr") len)
+               "set" (js/new "Uint8Array" data))
+      (js/call wasm "br_net_recv" len))))
+
+;; the socket ended: tell the engine, wait a moment before another, and take a fresh token for the next search
+(defn on-close [(e : Any)] : Unit
+  (do (set! sock null)
+      (set! next-try (+ (now) 3000.0))
+      (set! ident-ready false)
+      (js/call wasm "br_token_set" 0)
+      (js/call wasm "br_net_socket" 3)
+      (refresh-identity!)))
+
+(defn open-socket! [] : Unit
+  (do
+    (js/call wasm "br_net_socket" 1)
+    (set! sock (js/new "WebSocket" (socket-url)))
+    (js/set! sock "binaryType" "arraybuffer")
+    (js/call sock "addEventListener" "open" (callback on-open))
+    (js/call sock "addEventListener" "message" (callback on-message))
+    (js/call sock "addEventListener" "close" (callback on-close))
+    (js/call sock "addEventListener" "error" (callback on-close))))
+
+;; The engine says whether it wants a socket (PLAY searches for a match, a match is on); it opens once the player has an identity.
+(defn ensure-socket! [] : Unit
+  (let [t (now)]
+    (if (= (js/call wasm "br_net_wanted") 1)
+        (do (set! idle-since t)
+            (when (and (js/null? sock) (>= t next-try) ident-ready) (open-socket!)))
+        (when (and (not (js/null? sock)) (> (- t idle-since) 20000.0))
+          (js/call sock "close")))))
+
+;; frames the engine queued: [u16 len][bytes]...
+(defn pump-out! [] : Unit
+  (let [total (js/call wasm "br_net_out_len")]
+    (when (> total 0)
+      (let [open (and (not (js/null? sock)) (= (js/get sock "readyState") 1))
+            base (js/call wasm "br_net_out_addr")]
+        (when open
+          (loop [off 0]
+            (when (< (+ off 2) total)
+              (let [len (+ (js/call view "getUint8" (+ base off)) (* 256 (js/call view "getUint8" (+ base (+ off 1)))))]
+                (js/call sock "send" (js/new "Uint8Array" (js/get memory "buffer") (+ base (+ off 2)) len))
+                (recur (+ off (+ 2 len)))))))
+        (js/call wasm "br_net_out_clear")))))
+
 (defn sync-labels! [] : Unit
   (let [st (js/call wasm "br_status")]
     (when (!= st last-status)
