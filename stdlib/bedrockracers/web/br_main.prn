@@ -4,6 +4,9 @@
       (gf! (g-sens) 1.0) (gi! (g-phase) 0) (gi! (g-cam-mode) 3) (gi! (g-pick-team) 0) (gi! (g-pick-level) 2)
       ;; memory starts zeroed, and holder 0 would mean car 0 has the ball: nobody has it
       (set-b-holder! -1) (set-b-pass-from! -1)))
+(defn br-init-sim [] : Unit
+  (do (init-arena!) (gi! (g-rng2) 9001)
+      (set-b-holder! -1) (set-b-pass-from! -1)))
 (defn br-car-addr [(s : I32)] : I32 (car-base s))
 (defn br-ball-addr [] : I32 (ball-base))
 (defn br-g [(k : I32)] : I32 (gi k))
@@ -89,13 +92,18 @@
 (defn br-t-render [(al : F32)] : Unit (ui-render! al))
 (defn br-t-cam [(mode : I32)] : Unit (gi! (g-cam-mode) mode))
 ;; the page's labels and its focus handling: what the match is doing, and "the tab went away" (a person's match waits for them)
+;; focus lost: a person's bot match waits for them; an online match cannot wait, so the car just lets go of the controls
 (defn br-pause [] : Unit
-  (when (and (= (gi (g-phase)) 1) (human-playing?)) (gi! (g-paused) 1) (clear-cmd!)))
-;; 0 title, 1 playing, 2 watching bots, 3 paused, 4 match over
+  (when (and (= (gi (g-phase)) 1) (human-playing?))
+    (if (online?) (clear-cmd!) (do (gi! (g-paused) 1) (clear-cmd!)))))
+;; 0 title, 1 playing, 2 watching bots, 3 paused, 4 match over, 5 playing ONLINE (people, lockstep), 6 searching for a match while playing bots
 (defn br-status [] : I32
   (let [ph (gi (g-phase))]
     (cond (= ph 0) 0
           (= ph 2) 4
           (= (gi (g-paused)) 1) 3
+          (online?) 5
+          (and (human-playing?) (and (!= (gi (g-welcomed)) 0) (= (gi (g-q-state)) 2))) 7
+          (and (human-playing?) (and (!= (gi (g-want-queue)) 0) (!= (gi (g-welcomed)) 0))) 6
           (human-playing?) 1
           :else 2)))

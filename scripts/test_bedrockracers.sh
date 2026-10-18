@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_bedrockracers_web.sh "$W/web"
 WASM="$W/web/bedrockracers.wasm"
-for t in physics magnet fire engine; do
+for t in physics magnet fire engine net; do
   echo "== br_${t}_test"; node "tests/br_${t}_test.mjs" "$WASM"
 done
 echo "== soak (seeds 1-6, level 3, 15000 ticks) against tests/br_soak_baseline.txt"

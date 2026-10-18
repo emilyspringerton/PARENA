@@ -1,0 +1,456 @@
+;; stdlib/bedrockracers/web/br_net.prn -- online play: the LOCKSTEP wire protocol, spoken from inside the wasm.
+;;
+;; The module has no imports, so it cannot touch a socket. The page host (br_host.prn) owns the WebSocket and does exactly two things
+;; with it: it copies every received frame to NETIN and calls br_net_recv(len), and it sends whatever the engine left in NETOUT (frames,
+;; each preceded by a u16 length) and calls br_net_out_clear(). Everything else -- what to say, when, what an answer means -- is here.
+;; IDUNA/internal/bedrockracers/proto.go is the other end of the same protocol.
+;;
+;; HOW A MATCH IS PLAYED. The match is a deterministic function of (seed, level, which slots are people) and, every 16 ms tick, eight
+;; command bytes per person (br_sim.prn). The server sequences those bytes: it takes each person's newest CMD frame, builds ONE tick frame
+;; with everyone's bytes, steps its own copy of this same module (the referee: the result it records is the one its copy reached), and
+;; broadcasts the frame. This engine queues the frames and steps them in order at 62.5 ticks a second. Nothing about the world travels:
+;; no snapshots, no positions. Bots are part of the sim and run identically in every copy, so they cost no bandwidth either. A person who
+;; leaves is turned into a bot at an exact tick (a "drop" in the tick frame) in every copy at once.
+;;
+;; The price of lockstep is that your own car answers your keys a round trip later (plus a tick or three of buffer). The buffer is the
+;; queue: if frames arrive in bursts the engine waits (never runs ahead of the server), and if it falls behind it catches up
+;; several ticks a frame.
+;;
+;; client -> server                                                       server -> client
+;;   0x01 HELLO ver u8 | simVer u32 | tokenLen u16 | token | nameLen u8 | name      0x81 WELCOME ver u8 | auth u8 | simVer u32 | nameLen u8 | name | online u16 | pidLen u8 | pid
+;;   0x02 QUEUE team u8 (255 any) | level u8                                        0x82 STATUS qstate u8 | searching u8 | online u16 | elapsed u16 | lobbyHumans u8 | lobbyMs u16
+;;   0x03 LEAVE                                                                     0x83 MATCH roomId u32 | slot u8 | seed u32 | level u8 | humans u16 | n u8 | n x {slot u8, nameLen u8, name}
+;;   0x10 CMD   8 command bytes (the newest wins; sent when they change, and every 20 frames)  0x84 TICK tick u32 | flags u8 | [nd u8 | nd x slot u8] | 8 bytes per person left, ascending slot
+;;   0x13 PING  t u32                                                               0x87 END reason u8 | winner u8 | scores 4 x u8 | matchId u32 | counted u8 | ratingBefore f32 | ratingAfter f32
+;;   0x14 HASH  tick u32 | hash u32 (every 250 ticks: the server compares)         0x88 PONG t u32
+;;                                                                                  0x8F ERROR code u8 | msgLen u8 | msg
+;; qstate: 0 idle, 1 searching, 2 a lobby is counting down (you are in it), 3 in a live match. TICK flag bit 0: a drop list follows (those slots
+;; become bots before this tick is stepped). ERROR codes: 1 bad frame, 2 version mismatch (reload), 3 busy, 4 rejected token, 5 too fast, 6 out of sync.
+
+(defn sim-version [] : I32 1)       ; bump with ANY change to the simulation: the server refuses a client built on other rules
+
+;; ---- the net layer's G words (br_mem.prn: 460..511 are this file's) ---------------------------------------------------------------------
+(defn g-nin-len [] : I32 460)       ; bytes of the frame in NETIN
+(defn g-nout-len [] : I32 461)      ; bytes waiting in NETOUT
+(defn g-out-cur [] : I32 462)
+(defn g-out-skip [] : I32 463)
+(defn g-out-start [] : I32 464)
+(defn g-rd [] : I32 465)
+(defn g-rd-bad [] : I32 466)
+(defn g-welcomed [] : I32 467)
+(defn g-auth [] : I32 468)          ; 0 guest, 1 signed in, 2 token rejected
+(defn g-netstate [] : I32 469)      ; the socket: 0 none, 1 connecting, 2 open, 3 closed or failed
+(defn g-want-queue [] : I32 470)    ; 1 = the person wants to be matched with other people
+(defn g-q-state [] : I32 471)       ; qstate (above)
+(defn g-q-count [] : I32 472)       ; how many are searching
+(defn g-q-online [] : I32 473)      ; how many are connected
+(defn g-q-elapsed [] : I32 474)     ; seconds spent searching
+(defn g-in-match [] : I32 475)      ; 1 = in a live online match (the sim is fed by the server)
+(defn g-room-id [] : I32 476)
+(defn g-ping-t [] : I32 477)
+(defn g-ping-ms [] : I32 478)
+(defn g-ping-sent [] : I32 479)
+(defn g-nq-head [] : I32 480)       ; the tick queue: where the oldest waiting tick is ...
+(defn g-nq-n [] : I32 481)          ; ... and how many wait
+(defn g-npmask [] : I32 482)        ; who is a person as of the newest QUEUED tick (the frame parser's view)
+(defn g-ntick-in [] : I32 483)      ; the tick number the next frame must carry
+(defn g-ntick-sim [] : I32 484)     ; ticks stepped
+(defn g-lobby-humans [] : I32 485)
+(defn g-lobby-ms [] : I32 486)
+(defn g-net-err [] : I32 487)       ; the last ERROR code, or 90 / 91 for a stream this engine could not follow
+(defn g-cmd-hold [] : I32 488)      ; frames since a CMD was last sent
+(defn g-end-got [] : I32 489)       ; 1 = the server's END has arrived
+(defn g-end-match-id [] : I32 490)
+(defn g-end-counted [] : I32 491)
+(defn g-end-before [] : I32 492)    ; F32
+(defn g-end-after [] : I32 493)     ; F32
+(defn g-leave-menu [] : I32 494)    ; 1 = the "leave the match?" card is up (an online match cannot be paused)
+(defn g-net-hello [] : I32 495)
+(defn g-end-wait [] : I32 496)      ; frames the results have waited for END
+(defn g-lobby-seen [] : I32 497)
+
+;; ---- memory (br_mem.prn's map: TOKEN 2 KB at 0x2F000, then these; the tick queue lives where the replay log would) -----------------------
+(defn name-buf [] : I32 194560)     ; the local display name (page-written, g-name-len bytes of printable ASCII)
+(defn cmd-last [] : I32 194592)     ; the eight command bytes last sent
+(defn cmd-now [] : I32 194600)      ; the eight just made
+(defn res-base [] : I32 194624)     ; the result block (build-result!)
+(defn netq-base [] : I32 4194304)   ; = log-base: an online match logs nothing here, the server's stream is the log
+(defn netq-slot [] : I32 128)       ; flags u8 | nd u8 | drops 12 | nh u8 | pad | commands from byte 16
+(defn netq-cap [] : I32 32000)      ; ~8.5 minutes of ticks
+
+;; ---- writing -----------------------------------------------------------------------------------------------------------------------------
+(defn nput8! [(v : I32)] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (store8! (+ (netout-base) (gi (g-out-cur))) v)
+    (gi! (g-out-cur) (+ (gi (g-out-cur)) 1))))
+(defn nput16! [(v : I32)] : Unit (do (nput8! (bit-and v 255)) (nput8! (bit-and (shr v 8) 255))))
+(defn nput32! [(v : I32)] : Unit (do (nput16! (bit-and v 65535)) (nput16! (bit-and (ushr v 16) 65535))))
+
+(defn out-begin! [] : Unit
+  (let [o (gi (g-nout-len))]
+    (gi! (g-out-start) o)
+    (gi! (g-out-skip) (if (> o 7400) 1 0))
+    (gi! (g-out-cur) (+ o 2))))
+(defn out-end! [] : Unit
+  (when (= (gi (g-out-skip)) 0)
+    (let [o (gi (g-out-start))
+          len (- (gi (g-out-cur)) (+ o 2))]
+      (store8! (+ (netout-base) o) (bit-and len 255))
+      (store8! (+ (netout-base) (+ o 1)) (bit-and (shr len 8) 255))
+      (gi! (g-nout-len) (gi (g-out-cur))))))
+
+;; ---- reading -----------------------------------------------------------------------------------------------------------------------------
+(defn rd-need [(n : I32)] : Bool
+  (if (> (+ (gi (g-rd)) n) (gi (g-nin-len)))
+      (do (gi! (g-rd-bad) 1) false)
+      true))
+(defn nrd8! [] : I32
+  (if (rd-need 1)
+      (let [v (load8 (+ (netin-base) (gi (g-rd))))]
+        (gi! (g-rd) (+ (gi (g-rd)) 1))
+        v)
+      0))
+(defn nrd16! [] : I32 (let [lo (nrd8!) hi (nrd8!)] (+ lo (shl hi 8))))
+(defn nrd32! [] : I32 (let [lo (nrd16!) hi (nrd16!)] (+ lo (shl hi 16))))
+(defn nrdf! [] : F32
+  (if (rd-need 4)
+      (let [(v : F32) (loadf32 (+ (netin-base) (gi (g-rd))))]
+        (gi! (g-rd) (+ (gi (g-rd)) 4))
+        v)
+      0.0))
+
+;; a length-prefixed ASCII string into a player's name slot (printable only, 30 bytes at most)
+(defn nrd-name! [(slot : I32)] : Unit
+  (let [n (nrd8!)
+        a (name-addr slot)]
+    (dotimes [i n]
+      (let [c (nrd8!)]
+        (when (< i 30) (store8! (+ a i) (if (and (>= c 32) (< c 127)) c 63)))))
+    (store8! (+ a (min-i n 30)) 0)))
+
+(defn popcount12 [(m : I32)] : I32
+  (let [n 0]
+    (dotimes [i 12] (when (!= (bit-and (shr m i) 1) 0) (set! n (+ n 1))))
+    n))
+
+;; ---- outgoing messages ----------------------------------------------------------------------------------------------------------------
+(defn net-send-hello! [] : Unit
+  (do
+    (out-begin!)
+    (nput8! 1) (nput8! 1) (nput32! (sim-version))
+    (nput16! (gi (g-token-len)))
+    (dotimes [i (gi (g-token-len))] (nput8! (load8 (+ (token-base) i))))
+    (nput8! (gi (g-name-len)))
+    (dotimes [i (gi (g-name-len))] (nput8! (load8 (+ (name-buf) i))))
+    (out-end!)
+    (gi! (g-net-hello) 1)))
+
+(defn net-send-queue! [] : Unit
+  (do (out-begin!) (nput8! 2) (nput8! (clamp-i (gi (g-pick-team)) 0 3)) (nput8! (clamp-i (gi (g-pick-level)) 1 3)) (out-end!)
+      (gi! (g-q-state) 1)
+      (gi! (g-q-elapsed) 0)))
+
+(defn net-send-leave! [] : Unit (do (out-begin!) (nput8! 3) (out-end!)))
+
+(defn net-send-ping! [] : Unit
+  (do (out-begin!) (nput8! 19) (nput32! (gi (g-ticker))) (out-end!)
+      (gi! (g-ping-sent) (gi (g-ticker)))))
+
+;; the sim state's hash (FNV-1a over every car's record, the ball's, the scores and the tick): equal in every copy of the same match
+(defn state-hash [] : I32
+  (let [h -2128831035]
+    (dotimes [i 6144]                 ; all twelve car records (12 x 512 bytes)
+      (set! h (* (bit-xor h (load8 (+ (cars-base) i))) 16777619)))
+    (dotimes [i 256] (set! h (* (bit-xor h (load8 (+ (ball-base) i))) 16777619)))
+    (dotimes [t 4] (set! h (* (bit-xor h (+ (score-of t) 1)) 16777619)))
+    (set! h (* (bit-xor h (gi (g-tick))) 16777619))
+    h))
+
+(defn net-send-hash! [] : Unit
+  (do (out-begin!) (nput8! 20) (nput32! (gi (g-ntick-sim))) (nput32! (state-hash)) (out-end!)))
+
+;; one CMD frame when the command changed (and every 20 frames so the server never doubts a quiet player)
+(defn net-send-cmd! [] : Unit
+  (when (and (= (gi (g-netstate)) 2) (!= (gi (g-in-match)) 0) (= (gi (g-phase)) 1))
+    (cmd-bytes-to! (cmd-now))
+    (let [diff (if (and (= (load32 (cmd-now)) (load32 (cmd-last))) (= (load32 (+ (cmd-now) 4)) (load32 (+ (cmd-last) 4)))) 0 1)]
+      (gi! (g-cmd-hold) (+ (gi (g-cmd-hold)) 1))
+      (when (or (= diff 1) (>= (gi (g-cmd-hold)) 20))
+        (gi! (g-cmd-hold) 0)
+        (store32! (cmd-last) (load32 (cmd-now)))
+        (store32! (+ (cmd-last) 4) (load32 (+ (cmd-now) 4)))
+        (out-begin!) (nput8! 16)
+        (dotimes [k 8] (nput8! (load8 (+ (cmd-now) k))))
+        (out-end!)))))
+
+;; ---- what the engine wants from the network ----------------------------------------------------------------------------------------------
+(defn net-want-queue! [] : Unit
+  (do
+    (gi! (g-want-queue) 1)
+    (when (and (= (gi (g-netstate)) 2) (!= (gi (g-welcomed)) 0) (= (gi (g-in-match)) 0))
+      (net-send-queue!))))
+
+;; stop searching (the person left the bot match): the server forgets the queue entry
+(defn net-stop-search! [] : Unit
+  (do
+    (when (and (!= (gi (g-want-queue)) 0) (= (gi (g-netstate)) 2) (!= (gi (g-welcomed)) 0) (= (gi (g-in-match)) 0))
+      (net-send-leave!))
+    (gi! (g-want-queue) 0)
+    (when (= (gi (g-in-match)) 0) (gi! (g-q-state) 0))))
+
+;; leave the room (the match is lost to the person; the server turns their car into a bot)
+(defn net-leave-room! [] : Unit
+  (do
+    (when (and (= (gi (g-netstate)) 2) (!= (gi (g-welcomed)) 0) (!= (gi (g-in-match)) 0))
+      (net-send-leave!))
+    (gi! (g-in-match) 0)
+    (gi! (g-replay) 0)
+    (gi! (g-mode) 0)
+    (gi! (g-nq-n) 0)
+    (gi! (g-q-state) 0)
+    (gi! (g-end-wait) 0)))
+
+;; the page asks: should a socket exist?
+(defn net-wanted [] : I32 (b2i (or (!= (gi (g-want-queue)) 0) (!= (gi (g-in-match)) 0))))
+
+;; the page reports the socket: 1 connecting, 2 open, 3 closed or failed
+(defn net-socket! [(s : I32)] : Unit
+  (do
+    (gi! (g-netstate) s)
+    (cond
+      (= s 2) (do (gi! (g-welcomed) 0) (gi! (g-net-hello) 0) (net-send-hello!) (net-send-ping!))
+      (= s 3) (do (gi! (g-welcomed) 0)
+                  (when (= (gi (g-in-match)) 0) (gi! (g-q-state) 0))
+                  (when (!= (gi (g-in-match)) 0)
+                    ;; the room is gone: the match cannot go on without the server's stream
+                    (gi! (g-in-match) 0)
+                    (gi! (g-replay) 0)
+                    (when (= (gi (g-phase)) 1) (end-match! -1 4))))
+      :else unit)))
+
+;; ---- an online match ---------------------------------------------------------------------------------------------------------------------------
+;; person -> bot at this tick, in every copy at once (the car keeps its place in the world and its inputs become the bots')
+(defn net-drop! [(s : I32)] : Unit
+  (when (and (>= s 0) (and (< s 12) (human? s)))
+    (gi! (g-roster) (bit-and (gi (g-roster)) (bit-xor 4095 (shl 1 s))))
+    (set-c-is-bot! s 1)
+    (ai-assign! s (gi (g-bot-level)))
+    (put-name! s (bot-name s))
+    (pend-clear! s)))
+
+;; start the match the server announced: begin-match! is the whole of the sim's start; the rest is this client's furniture
+(defn net-begin! [(seed : I32) (level : I32) (humans : I32) (me : I32)] : Unit
+  (do
+    (begin-match! seed level humans)
+    (gi! (g-replay) 2) (gi! (g-mode) 1)
+    (gi! (g-me) me) (gi! (g-view-slot) (if (!= (bit-and (shr humans me) 1) 0) me 0))
+    (gi! (g-phase) 1) (gi! (g-paused) 0) (gi! (g-end-t) 0) (gi! (g-ui-t) 0)
+    (gi! (g-in-match) 1) (gi! (g-q-state) 3) (gi! (g-leave-menu) 0)
+    (gi! (g-nq-head) 0) (gi! (g-nq-n) 0) (gi! (g-npmask) humans) (gi! (g-ntick-in) 0) (gi! (g-ntick-sim) 0)
+    (gi! (g-end-got) 0) (gi! (g-end-wait) 0) (gi! (g-net-err) 0)
+    (store32! (cmd-last) 0) (store32! (+ (cmd-last) 4) 0) (gi! (g-cmd-hold) 99)
+    (clear-cmd!)
+    (cam-for-match!)))
+
+;; MATCH: roomId u32 | slot u8 | seed u32 | level u8 | humans u16 | n u8 | n x {slot u8, nameLen u8, name}
+(defn net-on-match! [] : Unit
+  (let [room (nrd32!)
+        slot (nrd8!)
+        seed (nrd32!)
+        level (nrd8!)
+        humans (nrd16!)
+        n (nrd8!)]
+    (when (= (gi (g-rd-bad)) 0)
+      (net-begin! seed (clamp-i level 1 3) (bit-and humans 4095) (min-i slot 11))
+      (gi! (g-room-id) room)
+      (dotimes [k n]
+        (let [s (nrd8!)]
+          (if (< s 12) (nrd-name! s) (nrd-name! 11)))))))
+
+;; ---- ticks ---------------------------------------------------------------------------------------------------------------------------------
+;; TICK: tick u32 | flags u8 | [nd u8 | nd x slot u8] | 8 bytes per person left, ascending slot order. Queued; net-step! plays them.
+(defn net-on-tick! [] : Unit
+  (let [tick (nrd32!)
+        fl (nrd8!)]
+    (when (and (= (gi (g-rd-bad)) 0) (!= (gi (g-in-match)) 0))
+      (cond
+        (!= tick (gi (g-ntick-in))) (gi! (g-net-err) 90)
+        (>= (gi (g-nq-n)) (netq-cap)) (gi! (g-net-err) 91)
+        :else
+          (let [a (+ (netq-base) (* (mod (+ (gi (g-nq-head)) (gi (g-nq-n))) (netq-cap)) (netq-slot)))]
+            (store8! a fl)
+            (let [nd (if (!= (bit-and fl 1) 0) (min-i 12 (nrd8!)) 0)]
+              (store8! (+ a 1) nd)
+              (dotimes [i nd]
+                (let [sl (nrd8!)]
+                  (store8! (+ a (+ 2 i)) sl)
+                  (gi! (g-npmask) (bit-and (gi (g-npmask)) (bit-xor 4095 (shl 1 (min-i sl 11)))))))
+              (let [nh (popcount12 (gi (g-npmask)))]
+                (store8! (+ a 14) nh)
+                (dotimes [k (* nh 8)] (store8! (+ a (+ 16 k)) (nrd8!)))))
+            (when (= (gi (g-rd-bad)) 0)
+              (gi! (g-nq-n) (+ (gi (g-nq-n)) 1))
+              (gi! (g-ntick-in) (+ tick 1)))
+            (when (!= (gi (g-rd-bad)) 0) (gi! (g-net-err) 90)))))))
+
+;; step ONE queued tick: the drops, then every person's bytes into their pending slot, then the tick itself (false when nothing waits)
+(defn net-step! [] : Bool
+  (if (and (> (gi (g-nq-n)) 0) (= (gi (g-phase)) 1))
+      (let [a (+ (netq-base) (* (gi (g-nq-head)) (netq-slot)))
+            nd (load8 (+ a 1))]
+        (dotimes [i nd] (net-drop! (load8 (+ a (+ 2 i)))))
+        (let [k 0]
+          (dotimes [s 12]
+            (when (human? s)
+              (dotimes [b 8] (store8! (pend-addr s b) (load8 (+ a (+ 16 (+ (* k 8) b))))))
+              (set! k (+ k 1)))))
+        (sim-tick!)
+        (gi! (g-nq-head) (mod (+ (gi (g-nq-head)) 1) (netq-cap)))
+        (gi! (g-nq-n) (- (gi (g-nq-n)) 1))
+        (gi! (g-ntick-sim) (+ (gi (g-ntick-sim)) 1))
+        (when (= (mod (gi (g-ntick-sim)) 250) 0) (net-send-hash!))
+        true)
+      false))
+
+;; the person's own slot was dropped (or the match is over): nothing more will play from the queue
+(defn net-flush! [] : Unit (do (gi! (g-nq-n) 0) (gi! (g-nq-head) 0)))
+
+;; ---- the end ---------------------------------------------------------------------------------------------------------------------------------
+;; END: reason u8 | winner u8 | scores 4 x u8 | matchId u32 | counted u8 | ratingBefore f32 | ratingAfter f32
+(defn net-on-end! [] : Unit
+  (let [reason (nrd8!)
+        winner (nrd8!)]
+    (dotimes [t 4] (nrd8!))
+    (let [mid (nrd32!)
+          counted (nrd8!)
+          (rb : F32) (nrdf!)
+          (ra : F32) (nrdf!)]
+      (when (= (gi (g-rd-bad)) 0)
+        (gi! (g-end-match-id) mid)
+        (gi! (g-end-counted) counted)
+        (gf! (g-end-before) rb)
+        (gf! (g-end-after) ra)
+        (gi! (g-end-got) 1)
+        ;; the server's copy has finished: if this copy is still on its way (it is a few ticks behind), it gets there by itself
+        (when (and (= (gi (g-phase)) 1) (= (gi (g-nq-n)) 0))
+          (end-match! (if (= winner 255) -1 winner) reason))))))
+
+;; ---- dispatch ---------------------------------------------------------------------------------------------------------------------------------
+(defn net-recv! [(len : I32)] : Unit
+  (do
+    (gi! (g-nin-len) len)
+    (gi! (g-rd) 0)
+    (gi! (g-rd-bad) 0)
+    (let [typ (nrd8!)]
+      (cond
+        ;; WELCOME ver auth simVer nameLen name online pidLen pid
+        (= typ 129)
+          (let [ver (nrd8!) auth (nrd8!) sv (nrd32!)]
+            (gi! (g-auth) auth)
+            (let [nl (nrd8!)]
+              (gi! (g-rd) (+ (gi (g-rd)) nl))
+              (gi! (g-q-online) (nrd16!)))
+            (gi! (g-welcomed) 1)
+            (when (and (!= (gi (g-want-queue)) 0) (= (gi (g-in-match)) 0)) (net-send-queue!)))
+        ;; STATUS qstate searching online elapsed lobbyHumans lobbyMs
+        (= typ 130)
+          (let [qs (nrd8!) searching (nrd8!) online (nrd16!) el (nrd16!) lh (nrd8!) lms (nrd16!)]
+            (gi! (g-q-count) searching)
+            (gi! (g-q-online) online)
+            (gi! (g-q-elapsed) el)
+            (gi! (g-lobby-humans) lh)
+            (gi! (g-lobby-ms) lms)
+            (when (= (gi (g-in-match)) 0) (gi! (g-q-state) qs)))
+        (= typ 131) (net-on-match!)
+        (= typ 132) (net-on-tick!)
+        (= typ 135) (when (!= (gi (g-in-match)) 0) (net-on-end!))
+        (= typ 136) (let [t (nrd32!)] (gi! (g-ping-ms) (- (gi (g-ticker)) t)))
+        (= typ 143) (gi! (g-net-err) (nrd8!))
+        :else unit))))
+
+;; ---- results the server needs (and the page may show) ---------------------------------------------------------------------------------
+(defn clamp255 [(v : I32)] : I32 (clamp-i v 0 255))
+
+;; the finished (or running) match as bytes at res-base:
+;;   0 winner u8 (255 none) | 1 reason u8 | 2 ticks u32 | 6 overtime u8 | 7 phase u8 | 8 scores 4 x u8 | 12 conceded 4 x u8
+;;   16 + 16 x slot: goals assists own steals catches throws passes fires (u8 each) | touches u16 | topSpeed u16 | airUsed u16 | pad u16
+(defn build-result! [] : I32
+  (let [a (res-base)]
+    (store8! a (if (>= (gi (g-winner)) 0) (gi (g-winner)) 255))
+    (store8! (+ a 1) (gi (g-end-reason)))
+    (store32! (+ a 2) (gi (g-tick)))
+    (store8! (+ a 6) (gi (g-overtime)))
+    (store8! (+ a 7) (gi (g-phase)))
+    (dotimes [t 4]
+      (store8! (+ a (+ 8 t)) (clamp255 (score-of t)))
+      (store8! (+ a (+ 12 t)) (clamp255 (gi (+ (g-conceded) t)))))
+    (dotimes [s 12]
+      (let [o (+ a (+ 16 (* s 16)))]
+        (store8! o (clamp255 (c-goals s)))
+        (store8! (+ o 1) (clamp255 (c-assists s)))
+        (store8! (+ o 2) (clamp255 (c-own-goals s)))
+        (store8! (+ o 3) (clamp255 (c-steals s)))
+        (store8! (+ o 4) (clamp255 (c-catches s)))
+        (store8! (+ o 5) (clamp255 (c-throws s)))
+        (store8! (+ o 6) (clamp255 (c-passes s)))
+        (store8! (+ o 7) (clamp255 (c-fires s)))
+        (store8! (+ o 8) (bit-and (c-touches s) 255)) (store8! (+ o 9) (bit-and (shr (c-touches s) 8) 255))
+        (let [sp (clamp-i (i32 (c-top-speed s)) 0 65535)]
+          (store8! (+ o 10) (bit-and sp 255)) (store8! (+ o 11) (bit-and (shr sp 8) 255)))
+        (let [au (clamp-i (i32 (c-air-used s)) 0 65535)]
+          (store8! (+ o 12) (bit-and au 255)) (store8! (+ o 13) (bit-and (shr au 8) 255)))
+        (store8! (+ o 14) 0) (store8! (+ o 15) 0)))
+    a))
+
+;; the server ends a match that has gone on too long (a golden goal nobody scores): the leading team wins, reason 4 (closed)
+(defn net-force-end! [] : Unit
+  (when (= (gi (g-phase)) 1) (end-match! (leader-team) 4)))
+
+;; ---- per frame ----------------------------------------------------------------------------------------------------------------------------------
+;; every frame, on every screen: a heartbeat so an idle socket is not reaped
+(defn net-idle-tick! [] : Unit
+  (do
+    (gi! (g-ping-t) (+ (gi (g-ping-t)) 1))
+    (when (>= (gi (g-ping-t)) 250)
+      (gi! (g-ping-t) 0)
+      (when (= (gi (g-netstate)) 2) (net-send-ping!)))))
+
+;; a stream this engine cannot follow (a missing frame, a full queue): leave the room rather than play a different match from the others
+(defn net-check-fail! [] : Unit
+  (when (and (!= (gi (g-in-match)) 0) (>= (gi (g-net-err)) 90))
+    (net-leave-room!)
+    (when (= (gi (g-phase)) 1) (end-match! -1 4))))
+
+;; ---- exports the host calls ----------------------------------------------------------------------------------------------------------------------
+(defn br-net-wanted [] : I32 (net-wanted))
+(defn br-net-socket [(s : I32)] : Unit (net-socket! s))
+(defn br-net-in-addr [] : I32 (netin-base))
+(defn br-net-recv [(len : I32)] : Unit (net-recv! len))
+(defn br-net-out-addr [] : I32 (netout-base))
+(defn br-net-out-len [] : I32 (gi (g-nout-len)))
+(defn br-net-out-clear [] : Unit (do (gi! (g-nout-len) 0) (gi! (g-out-skip) 0)))
+(defn br-token-addr [] : I32 (token-base))
+(defn br-token-set [(len : I32)] : Unit (do (gi! (g-token-len) (clamp-i len 0 2000)) (gi! (g-signed-in) (b2i (> len 0)))))
+(defn br-name-addr [] : I32 (name-buf))
+(defn br-name-set [(len : I32)] : Unit (gi! (g-name-len) (clamp-i len 0 24)))
+(defn br-net-status [] : I32 (gi (g-q-state)))
+(defn br-net-err [] : I32 (gi (g-net-err)))
+(defn br-ping-ms [] : I32 (gi (g-ping-ms)))
+(defn br-net-online [] : I32 (gi (g-q-online)))
+(defn br-net-searching [] : I32 (gi (g-q-count)))
+(defn br-net-auth [] : I32 (gi (g-auth)))
+(defn br-net-welcomed [] : I32 (gi (g-welcomed)))
+(defn br-net-match-id [] : I32 (gi (g-end-match-id)))
+
+;; ---- exports the SERVER's copy of this module calls (IDUNA/internal/bedrockracers/engine.go) ------------------------------------------------------
+(defn br-version [] : I32 (sim-version))
+(defn br-net-begin [(seed : I32) (level : I32) (humans : I32) (me : I32)] : Unit (net-begin! seed level humans me))
+(defn br-net-pend-addr [] : I32 (pend-base))
+(defn br-net-drop [(s : I32)] : Unit (net-drop! s))
+(defn br-net-tick [] : Unit (sim-tick!))
+(defn br-net-end-now [] : Unit (net-force-end!))
+(defn br-net-result [] : I32 (build-result!))
+(defn br-net-hash [] : I32 (state-hash))
+(defn br-net-phase [] : I32 (gi (g-phase)))
+(defn br-net-ticks [] : I32 (gi (g-tick)))
+(defn br-net-roster [] : I32 (gi (g-roster)))

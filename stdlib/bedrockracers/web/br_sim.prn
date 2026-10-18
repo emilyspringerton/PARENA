@@ -14,18 +14,21 @@
 (defn quant-u [(v : F32)] : I32 (clamp-i (i32 (floor (+ (* v 255.0) 0.5))) 0 255))
 (defn sbyte [(b : I32)] : I32 (if (> b 127) (- b 256) b))
 
-;; write the local player's global command (g-cmd-*) into slot s's pending bytes
-(defn pend-from-cmd! [(s : I32)] : Unit
+;; write the local player's global command (g-cmd-*) as eight bytes at address a
+(defn cmd-bytes-to! [(a : I32)] : Unit
   (do
-    (store8! (pend-addr s 0) (bit-and (quant (gf (g-cmd-thr))) 255))
-    (store8! (pend-addr s 1) (bit-and (quant (gf (g-cmd-steer))) 255))
-    (store8! (pend-addr s 2) (bit-and (quant (gf (g-cmd-pitch))) 255))
-    (store8! (pend-addr s 3) (bit-and (quant (gf (g-cmd-roll))) 255))
-    (store8! (pend-addr s 4) (bit-and (quant (gf (g-cmd-strafe))) 255))
-    (store8! (pend-addr s 5) (quant-u (gf (g-cmd-lift))))
-    (store8! (pend-addr s 6) (+ (+ (b2i (!= (gi (g-cmd-boost)) 0)) (* 2 (b2i (!= (gi (g-cmd-fans-off)) 0))))
-                                (* 4 (b2i (!= (gi (g-cmd-magnet)) 0)))))
-    (store8! (pend-addr s 7) 0)))
+    (store8! a (bit-and (quant (gf (g-cmd-thr))) 255))
+    (store8! (+ a 1) (bit-and (quant (gf (g-cmd-steer))) 255))
+    (store8! (+ a 2) (bit-and (quant (gf (g-cmd-pitch))) 255))
+    (store8! (+ a 3) (bit-and (quant (gf (g-cmd-roll))) 255))
+    (store8! (+ a 4) (bit-and (quant (gf (g-cmd-strafe))) 255))
+    (store8! (+ a 5) (quant-u (gf (g-cmd-lift))))
+    (store8! (+ a 6) (+ (+ (b2i (!= (gi (g-cmd-boost)) 0)) (* 2 (b2i (!= (gi (g-cmd-fans-off)) 0))))
+                        (* 4 (b2i (!= (gi (g-cmd-magnet)) 0)))))
+    (store8! (+ a 7) 0)))
+
+;; ... and into slot s's pending bytes
+(defn pend-from-cmd! [(s : I32)] : Unit (cmd-bytes-to! (pend-addr s 0)))
 
 (defn pend-clear! [(s : I32)] : Unit (dotimes [k 8] (store8! (pend-addr s k) 0)))
 
@@ -63,12 +66,16 @@
           (pend-clear! s)))))
 
 ;; ---- one tick ---------------------------------------------------------------------------------------------------------
-;; the online room (br_net.prn) fills the other humans' pending bytes before this runs; the local one is read here
+;; Where a human's command comes from, by g-replay: 0 the keyboard (the local human's bytes are made here and logged), 1 a replay (read from
+;; the log), 2 an ONLINE room (br_net.prn writes every human's pending bytes from the server's tick frame just before this runs; the server's
+;; stream is the log, so nothing is logged here).
 (defn gather-pend! [] : Unit
-  (if (= (gi (g-replay)) 1)
-      (log-read!)
-      (do (when (human? (gi (g-me))) (pend-from-cmd! (gi (g-me))))
-          (log-append!))))
+  (let [rp (gi (g-replay))]
+    (cond
+      (= rp 1) (log-read!)
+      (= rp 2) unit
+      :else (do (when (human? (gi (g-me))) (pend-from-cmd! (gi (g-me))))
+                (log-append!)))))
 
 ;; the cosmetics (br_fx.prn) run last, after the match has moved, and on the frozen countdown ticks too; they only read the match
 (defn sim-tick! [] : Unit

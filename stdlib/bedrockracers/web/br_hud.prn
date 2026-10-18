@@ -227,7 +227,7 @@
       (draw-text-c "hold F or right mouse: MAGNET   Tab: scores" 320 311 1 (ink)))))
 
 ;; ---- the scoreboard (Tab, and the results screen) ------------------------------------------------------------------------------------------------
-;; one car's row at (x y): a team-coloured tick, the name (flame orange while burning), goals / assists / saves
+;; one car's row at (x y): a team-coloured tick, the name (flame orange while burning), goals / assists / steals
 (defn board-row! [(s : I32) (x : I32) (y : I32)] : Unit
   (let [tc (team-color (c-team s))]
     (when (and (person?) (= s (viewed))) (fill-rect-a (- x 4) (- y 1) 262 17 tc 40))
@@ -235,7 +235,7 @@
     (draw-text-at-s (name-addr s) (+ x 10) y 1 (if (> (c-fire-t s) 0) (flame) (ink)))
     (draw-int-r (c-goals s) (+ x 190) y 1 (ink))
     (draw-int-r (c-assists s) (+ x 222) y 1 (ink))
-    (draw-int-r (c-saves s) (+ x 254) y 1 (ink-dim))))
+    (draw-int-r (c-steals s) (+ x 254) y 1 (ink-dim))))
 
 ;; one team's block at (x y): its name and score, then its three cars
 (defn board-team! [(t : I32) (x : I32) (y : I32)] : Unit
@@ -245,7 +245,7 @@
     (draw-int (score-of t) (+ x (+ 18 (text-width (team-name t) 1))) y 1 (ink))
     (draw-text-r "G" (+ x 190) y 1 (ink-faint))
     (draw-text-r "A" (+ x 222) y 1 (ink-faint))
-    (draw-text-r "S" (+ x 254) y 1 (ink-faint))
+    (draw-text-r "ST" (+ x 254) y 1 (ink-faint))
     (dotimes [k 3] (board-row! (+ (* t 3) k) x (+ (+ y 20) (* k 17))))))
 
 ;; the 2 x 2 board, its top-left corner at (x y): teams sit where their towers do
@@ -258,6 +258,34 @@
     (card 36 56 568 188 (panel-ink) 205 (rgb 120 122 140) 90)
     (draw-text-c "SCORES" 320 62 1 (ink-dim))
     (draw-board! 52 86)))
+
+;; ---- online: the search, the lobby, the connection -------------------------------------------------------------------------------------------------------
+(defn hud-net! [] : Unit
+  (cond
+    (online?)
+      (do (draw-text-s "ONLINE" 10 8 1 (rgb 120 200 150))
+          (when (> (gi (g-ping-ms)) 0)
+            (draw-int (gi (g-ping-ms)) 10 24 1 (ink-dim))
+            (draw-text-s " ms" (+ 10 (num-width (gi (g-ping-ms)) 1)) 24 1 (ink-dim))))
+    (and (person?) (and (!= (gi (g-want-queue)) 0) (!= (gi (g-welcomed)) 0)))
+      (if (= (gi (g-q-state)) 2)
+          (let [secs (/ (+ (gi (g-lobby-ms)) 999) 1000)]
+            (fill-rect-a 6 6 176 40 (panel-ink) 170)
+            (draw-text-s "MATCH FOUND" 12 9 1 (rgb 120 200 150))
+            (draw-text-s "starting in" 12 25 1 (ink-dim))
+            (draw-int secs (+ 12 (+ 7 (text-width "starting in" 1))) 25 1 (ink))
+            (draw-text-s (if (> (gi (g-lobby-humans)) 1) "people" "person") 118 25 1 (ink-faint)))
+          (do (fill-rect-a 6 6 176 40 (panel-ink) 150)
+              (draw-text-s "SEARCHING FOR A MATCH" 12 9 1 (ink))
+              (draw-int (gi (g-q-online)) 12 25 1 (ink-dim))
+              (draw-text-s "online" (+ 12 (+ 7 (num-width (gi (g-q-online)) 1))) 25 1 (ink-faint))))
+    :else unit))
+
+;; the server refused this build (the rules moved on): say so plainly
+(defn hud-outdated! [] : Unit
+  (when (= (gi (g-net-err)) 2)
+    (fill-rect-a 150 40 340 22 (rgb 70 24 20) 200)
+    (draw-text-c "OUT OF DATE  reload the page to play online" 320 44 1 (ink))))
 
 ;; ---- all of it --------------------------------------------------------------------------------------------------------------------------------
 (defn board-open? [] : Bool (and (!= (gi (g-score-open)) 0) (= (gi (g-phase)) 1)))
@@ -274,4 +302,6 @@
       (hud-feed!)
       (hud-banners!))
     (when (and (not board) (= (gi (g-paused)) 0)) (hud-hint!))
+    (hud-net!)
+    (hud-outdated!)
     (hud-board!)))

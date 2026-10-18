@@ -17,14 +17,20 @@
 ;; person: 1 = the person at this keyboard drives the first car of the team picked on the title; 0 = twelve bots, watched
 (defn start-match! [(person : I32)] : Unit
   (let [slot (if (= person 1) (* 3 (clamp-i (gi (g-pick-team)) 0 3)) 0)]
+    (net-leave-room!)
+    (gi! (g-replay) 0) (gi! (g-mode) 0)
     (begin-match! (+ (gi (g-ticker)) (* 7919 (gi (g-match-no)))) (clamp-i (gi (g-pick-level)) 1 3) (if (= person 1) (shl 1 slot) 0))
     (gi! (g-me) slot) (gi! (g-view-slot) slot)
-    (gi! (g-phase) 1) (gi! (g-paused) 0) (gi! (g-end-t) 0) (gi! (g-ui-t) 0)
+    (gi! (g-phase) 1) (gi! (g-paused) 0) (gi! (g-end-t) 0) (gi! (g-ui-t) 0) (gi! (g-leave-menu) 0) (gi! (g-end-got) 0)
     (clear-cmd!)
-    (cam-for-match!)))
+    (cam-for-match!)
+    ;; PLAY is a bot match at once AND a search for other people: the moment a lobby forms the server moves you into it
+    (if (= person 1) (net-want-queue!) (net-stop-search!))))
 
+;; the person is leaving whatever they are in (the title is the one place that asks for nothing from the network)
 (defn go-title! [] : Unit
-  (do (gi! (g-phase) 0) (gi! (g-paused) 0) (gi! (g-ui-t) 0) (gi! (g-cam-mode) 3) (clear-cmd!)))
+  (do (net-leave-room!) (net-stop-search!)
+      (gi! (g-phase) 0) (gi! (g-paused) 0) (gi! (g-ui-t) 0) (gi! (g-leave-menu) 0) (gi! (g-cam-mode) 3) (clear-cmd!)))
 
 (defn human-playing? [] : Bool (!= (gi (g-roster)) 0))
 
@@ -59,14 +65,25 @@
       (or (key-hit? (kc-b)) (or (any-pad-hit? (pb-x)) (click-in? (watch-box-x) 272 100 26))) (start-match! 0)
       :else unit)))
 
+(defn online? [] : Bool (and (!= (gi (g-in-match)) 0) (= (gi (g-replay)) 2)))
+
 (defn play-keys! [] : Unit
   (do
     (when (or (key-hit? (kc-esc)) (any-pad-hit? (pb-start)))
-      (gi! (g-paused) 1)
+      (if (online?)
+          (gi! (g-leave-menu) 1)
+          (gi! (g-paused) 1))
       (clear-cmd!))
     (when (and (human-playing?) (or (key-hit? (kc-v)) (any-pad-hit? (pb-y))))
       (gi! (g-ball-cam) (- 1 (gi (g-ball-cam))))
       (gi! (g-cam-mode) (if (= (gi (g-ball-cam)) 1) 1 0)))))
+
+;; the leave card of an online match (the match keeps playing under it, your car coasting)
+(defn leave-keys! [] : Unit
+  (cond
+    (or (or (key-hit? (kc-esc)) (key-hit? (kc-enter))) (or (any-pad-hit? (pb-start)) (click-in? 226 168 84 26))) (gi! (g-leave-menu) 0)
+    (or (key-hit? (kc-backspace)) (or (any-pad-hit? (pb-b)) (click-in? 330 168 84 26))) (go-title!)
+    :else unit))
 
 (defn pause-keys! [] : Unit
   (cond
@@ -85,8 +102,20 @@
   (let [ph (gi (g-phase))]
     (cond
       (= ph 0) (title-keys!)
-      (= ph 1) (if (= (gi (g-paused)) 1) (pause-keys!) (play-keys!))
+      (= ph 1) (cond (= (gi (g-leave-menu)) 1) (leave-keys!)
+                     (= (gi (g-paused)) 1) (pause-keys!)
+                     :else (play-keys!))
       :else (end-keys!))))
+
+;; the housekeeping every step or frame needs: the scoreboard key, the flow keys, the end clock, the HUD clock, the input edges spent
+(defn housekeeping! [] : Unit
+  (do
+    (gi! (g-score-open) (b2i (and (= (gi (g-phase)) 1) (key-down? (kc-tab)))))
+    (ui-keys!)
+    (when (= (gi (g-phase)) 2) (gi! (g-end-t) (+ (gi (g-end-t)) 1)))
+    ;; the HUD's clock (a low tank blinks, the magnet ring pulses) stands still with the match: a paused frame is a still frame
+    (when (not (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1))) (gi! (g-ui-t) (+ (gi (g-ui-t)) 1)))
+    (end-input-tick!)))
 
 ;; one fixed step: the person's command, the sim, the flow keys, the input edges spent
 (defn step-once! [] : Unit
@@ -94,12 +123,23 @@
     (when (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 0))
       (if (human-playing?) (gather-cmd!) (clear-cmd!))
       (sim-tick!))
-    (gi! (g-score-open) (b2i (and (= (gi (g-phase)) 1) (key-down? (kc-tab)))))
-    (ui-keys!)
-    (when (= (gi (g-phase)) 2) (gi! (g-end-t) (+ (gi (g-end-t)) 1)))
-    ;; the HUD's clock (a low tank blinks, the magnet ring pulses) stands still with the match: a paused frame is a still frame
-    (when (not (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1))) (gi! (g-ui-t) (+ (gi (g-ui-t)) 1)))
-    (end-input-tick!)))
+    (housekeeping!)))
+
+;; one RENDERED frame of an online match. The sim does not run on this clock: it plays the ticks the server has sent, in order, and never
+;; more than exist. Normally that is the one or two this frame owes; if frames have piled up (a slow tab, a burst) it plays extra ones
+;; until the queue is a few ticks deep, so latency does not grow.
+(defn net-frame! [] : Unit
+  (let [owed (min-i 6 (i32 (/ (gf (g-clock-acc)) (tick-ms))))
+        avail (gi (g-nq-n))
+        steps (min-i 120 (+ owed (cond (> avail 120) 80 (> avail 30) 4 (> avail 12) 2 (> avail 5) 1 :else 0)))]
+    (gf! (g-clock-acc) (fmin2 (tick-ms) (- (gf (g-clock-acc)) (* (f32 owed) (tick-ms)))))
+    (if (and (= (gi (g-phase)) 1) (= (gi (g-leave-menu)) 0)) (gather-cmd!) (clear-cmd!))
+    (net-send-cmd!)
+    (loop [i 0]
+      (when (< i steps)
+        (when (net-step!) (recur (+ i 1)))))
+    (housekeeping!)
+    (net-check-fail!)))
 
 ;; ---- the screens -------------------------------------------------------------------------------------------------------------------------------
 ;; a button; it lights when the pointer is over it
@@ -145,8 +185,26 @@
       (button! 330 168 84 26 "LEAVE")
       (draw-text-c "Esc play on     Backspace leave" 320 198 1 (ink-faint))))
 
+(defn draw-leave! [] : Unit
+  (do (card 196 124 248 96 (panel-ink) 215 (rgb 120 122 140) 90)
+      (draw-text-c "MATCH IN PROGRESS" 320 134 2 (ink))
+      (button! 226 168 84 26 "KEEP PLAYING")
+      (button! 330 168 84 26 "LEAVE")
+      (draw-text-c "Esc keep playing   Backspace leave" 320 198 1 (ink-faint))))
+
 (defn end-reason-text [(r : I32)] : String
   (case r 1 "first to the goal limit" 2 "full time" 3 "golden goal" "match over"))
+
+(defn draw-rating! [] : Unit
+  (cond
+    (and (= (gi (g-end-got)) 1) (= (gi (g-end-counted)) 1))
+      (let [b (i32 (+ (gf (g-end-before)) 0.5)) a (i32 (+ (gf (g-end-after)) 0.5)) d (- a b)]
+        (draw-text-c "RATING" 280 84 1 (ink-dim))
+        (draw-int a 316 84 1 (ink))
+        (draw-text (if (>= d 0) "+" "-") 346 84 1 (if (>= d 0) (rgb 120 200 150) (rgb 224 120 106)))
+        (draw-int (abs-i d) 356 84 1 (if (>= d 0) (rgb 120 200 150) (rgb 224 120 106))))
+    (= (gi (g-end-got)) 1) (draw-text-c "unrated" 320 84 1 (ink-faint))
+    :else unit))
 
 (defn draw-end! [] : Unit
   (let [w (gi (g-winner))]
@@ -158,6 +216,7 @@
           (draw-text-s " WINS" (+ x nw) 18 3 (ink)))
         (draw-text-c "NO WINNER" 320 18 3 (ink)))
     (draw-text-c (end-reason-text (gi (g-end-reason))) 320 70 1 (ink-dim))
+    (when (online?) (draw-rating!))
     (draw-board! 40 100)
     (button! 214 300 100 26 "TITLE")
     (button! 326 300 100 26 "REMATCH")))
@@ -168,7 +227,7 @@
     (if (= ph 0)
         (do (gi! (g-cam-mode) 3) (cam-update! al) (render-world! al false) (draw-title!))
         (do (cam-update! al) (render-world! al true)
-            (if (= ph 2) (draw-end!) (do (hud-draw!) (when (= (gi (g-paused)) 1) (draw-pause!))))))))
+            (if (= ph 2) (draw-end!) (do (hud-draw!) (when (= (gi (g-paused)) 1) (draw-pause!)) (when (= (gi (g-leave-menu)) 1) (draw-leave!))))))))
 
 ;; advance the sim by however many 16 ms ticks real time owes (at most six: a stalled tab does not fast-forward a minute), then
 ;; draw. alpha, how far the clock is into the next tick, blends every pose; it is 1 whenever the sim is not running (paused, the
@@ -182,12 +241,16 @@
     ;; the camera and the ball's spin run on wall-clock time; a paused match holds its view exactly where it is
     (gf! (g-cam-dt) (if (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1)) 0.0 (* (clamp-f dt 0.0 50.0) 0.001)))
     (gf! (g-clock-acc) (+ (gf (g-clock-acc)) (clamp-f dt 0.0 100.0)))
-    (loop [steps 0]
-      (when (and (>= (gf (g-clock-acc)) (tick-ms)) (< steps 6))
-        (step-once!)
-        (gf! (g-clock-acc) (- (gf (g-clock-acc)) (tick-ms)))
-        (recur (+ steps 1))))
-    (when (> (gf (g-clock-acc)) (tick-ms)) (gf! (g-clock-acc) (tick-ms)))
+    (net-idle-tick!)
+    (if (online?)
+        (net-frame!)
+        (do
+          (loop [steps 0]
+            (when (and (>= (gf (g-clock-acc)) (tick-ms)) (< steps 6))
+              (step-once!)
+              (gf! (g-clock-acc) (- (gf (g-clock-acc)) (tick-ms)))
+              (recur (+ steps 1))))
+          (when (> (gf (g-clock-acc)) (tick-ms)) (gf! (g-clock-acc) (tick-ms)))))
     (ui-render! (if (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 0))
                     (clamp-f (/ (gf (g-clock-acc)) (tick-ms)) 0.0 1.0)
                     1.0))))
