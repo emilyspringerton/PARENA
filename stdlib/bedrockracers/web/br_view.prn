@@ -117,7 +117,7 @@
       (gf! (g-bs-xx) 1.0) (gf! (g-bs-xy) 0.0) (gf! (g-bs-xz) 0.0)
       (gf! (g-bs-yx) 0.0) (gf! (g-bs-yy) 1.0) (gf! (g-bs-yz) 0.0))
     (let [(wx : F32) (/ (b-vz) (rb)) (wz : F32) (/ (- 0.0 (b-vx)) (rb))
-          (w : F32) (if (>= (b-holder) 0) 0.0 (len2 wx wz))
+          (w : F32) (if (or (>= (b-holder) 0) (or (!= (gi (g-paused)) 0) (!= (gi (g-phase)) 1))) 0.0 (len2 wx wz))   ; a paused or finished match is still
           (ang : F32) (* w (gf (g-cam-dt)))]
       (when (> ang 0.0001)
         (let [(ax : F32) (/ wx w) (az : F32) (/ wz w) (c : F32) (cosf ang) (sn : F32) (sinf ang)]

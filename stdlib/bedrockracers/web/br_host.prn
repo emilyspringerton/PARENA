@@ -1,0 +1,204 @@
+;; stdlib/bedrockracers/web/br_host.prn -- the BEDROCK RACERS web page's host code. PARENA, compiled to TypeScript
+;; (parena build br_host.prn -o br-host.ts), then type-stripped to the br-host.js the page loads.
+;;
+;; The same rule as shankpit-460 and BRAWLPIT web: this is the ONLY JavaScript on the page and it is generated from this
+;; file. It holds no game logic. The game -- physics, rules, bots, the 3D renderer, the menus -- is bedrockracers.wasm
+;; (stdlib/bedrockracers/web/br_*.prn); the module imports nothing, so the page does only what a page must:
+;;   1. fetch and instantiate the wasm                       (boot ... on-instance)
+;;   2. copy the framebuffer it painted onto a canvas         (tick: putImageData of a view onto wasm memory)
+;;   3. forward keyboard / mouse buttons / gamepads           (on-keydown ... poll-pads -> br_key / br_button / br_pad)
+;;   4. keep the page's own labels in step                    (sync-labels!)
+;; Pointer lock is NOT used: the cursor stays, the keys and sticks drive, right mouse is the magnet.
+
+;; ---- module state ----------------------------------------------------------------------------------------------
+(def canvas null)
+(def ctx null)
+(def image null)          ; ImageData viewing the wasm framebuffer in place
+(def wasm null)           ; the instance's exports
+(def memory null)
+(def wasm-bytes 0)
+(def wasm-imports 0)
+(def last-status -1)
+
+;; ---- DOM helpers -------------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+
+(defn set-text! [(id : String) (text : String)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "textContent" text))))
+
+(defn set-hidden! [(id : String) (hidden : Bool)] : Unit
+  (let [e (el id)]
+    (when (not (js/null? e)) (js/set! e "hidden" hidden))))
+
+(defn fail! [(msg : Any)] : Unit
+  (do (set-text! "br-pill" "Could not start")
+      (set-text! "br-load-msg" (str "Bedrock Racers could not start: " msg))
+      (js/call (js/global "console") "error" msg)))
+
+(defn ignore! [(e : Any)] : Unit unit)
+
+;; ---- 1. fetch + instantiate the wasm ---------------------------------------------------------------------------------
+(defn boot [(canvas-id : String) (wasm-url : String)] : Unit
+  (do
+    (set! canvas (el canvas-id))
+    (set! ctx (js/call canvas "getContext" "2d"))
+    (set-text! "br-pill" "Loading")
+    (js/call
+      (js/call
+        (js/call
+          (js/call (js/call-fn (js/global "fetch") wasm-url) "then" (callback on-response))
+          "then" (callback on-bytes))
+        "then" (callback on-instance))
+      "catch" (callback fail!))))
+
+(defn on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "bedrockracers.wasm: HTTP " (js/get r "status")))))
+
+(defn on-bytes [(bytes : Any)] : Any
+  (do (set! wasm-bytes (js/get bytes "byteLength"))
+      ;; the module takes NO imports: no allocator, no libc, no JS callbacks
+      (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj))))
+
+(defn on-instance [(result : Any)] : Unit
+  (do
+    (set! wasm (js/get (js/get result "instance") "exports"))
+    (set! memory (js/get wasm "memory"))
+    (set! wasm-imports (js/get (js/call (js/global "WebAssembly.Module") "imports" (js/get result "module")) "length"))
+    (js/call wasm "br_init")
+    (set! image
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get memory "buffer") (js/call wasm "br_fb_addr")
+                          (* (* (js/call wasm "br_fb_w") (js/call wasm "br_fb_h")) 4))
+                  (js/call wasm "br_fb_w") (js/call wasm "br_fb_h")))
+    (install-listeners)
+    (set-hidden! "br-load" true)
+    (set-hidden! "br-canvas" false)
+    (set-text! "br-stat" (str "bedrockracers.wasm " (math/round (/ wasm-bytes 1024)) " KB  -  "
+                              wasm-imports " imports  -  "
+                              (/ (js/get (js/get memory "buffer") "byteLength") 1048576) " MB fixed memory, no allocator  -  PARENA"))
+    (let [b (el "br-fullscreen")]
+      (when (not (js/null? b))
+        (js/set! b "disabled" false)
+        (js/call b "addEventListener" "click" (callback on-fullscreen))))
+    (js/call canvas "focus")
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+(defn tick [(t : F64)] : Unit
+  (do
+    (poll-pads)
+    (js/call wasm "br_frame" t)
+    (js/call ctx "putImageData" image 0 0)
+    (sync-labels!)
+    (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
+
+(defn on-fullscreen [(e : Any)] : Unit
+  (js/call (el "br-stage") "requestFullscreen"))
+
+;; ---- 3. input -------------------------------------------------------------------------------------------------------------
+;; keys the page must not scroll or tab away on while the game has the keyboard: arrows, space, tab
+(defn game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")]
+    (or (and (>= k 37) (<= k 40)) (or (= k 32) (= k 9)))))
+
+(defn game-focused? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (or (js/null? a) (or (= a canvas) (= a (js/get (doc) "body"))))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "br_key" (js/get e "keyCode") 1)
+    (when (game-key? e) (js/call e "preventDefault"))))
+
+(defn on-keyup [(e : Any)] : Unit
+  (when (game-focused?)
+    (js/call wasm "br_key" (js/get e "keyCode") 0)))
+
+;; a lost focus lets go of every key, and a person's match waits for them
+(defn on-blur [(e : Any)] : Unit
+  (do (js/call wasm "br_blur") (js/call wasm "br_pause")))
+
+(defn on-visibility [(e : Any)] : Unit
+  (when (js/get (doc) "hidden")
+    (do (js/call wasm "br_blur") (js/call wasm "br_pause"))))
+
+;; the pointer in framebuffer pixels (menus hit-test against it)
+(defn on-mousemove [(e : Any)] : Unit
+  (let [rect (js/call canvas "getBoundingClientRect")
+        x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call wasm "br_fb_w")) (js/get rect "width"))
+        y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call wasm "br_fb_h")) (js/get rect "height"))]
+    (js/call wasm "br_pointer" (math/floor x) (math/floor y))))
+
+(defn on-mousedown [(e : Any)] : Unit
+  (do
+    (on-mousemove e)
+    (js/call wasm "br_button" (js/get e "button") 1)
+    (js/call canvas "focus")
+    (js/call e "preventDefault")))
+
+(defn on-mouseup [(e : Any)] : Unit
+  (js/call wasm "br_button" (js/get e "button") 0))
+
+;; right mouse is the magnet: no context menu over the game
+(defn on-contextmenu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+(defn install-listeners [] : Unit
+  (let [w (js/global "window")]
+    (js/call w "addEventListener" "keydown" (callback on-keydown))
+    (js/call w "addEventListener" "keyup" (callback on-keyup))
+    (js/call w "addEventListener" "blur" (callback on-blur))
+    (js/call w "addEventListener" "mousemove" (callback on-mousemove))
+    (js/call w "addEventListener" "mouseup" (callback on-mouseup))
+    (js/call (doc) "addEventListener" "visibilitychange" (callback on-visibility))
+    (js/call canvas "addEventListener" "mousedown" (callback on-mousedown))
+    (js/call canvas "addEventListener" "contextmenu" (callback on-contextmenu))))
+
+;; ---- gamepads: polled every frame (the Gamepad API has no change events for sticks and buttons) -------------------------
+(defn pad-api? [] : Bool
+  (and (js/defined? "navigator")
+       (= (js/typeof (js/get (js/global "navigator") "getGamepads")) "function")))
+
+(defn pad-mask [(gp : Any)] : I32
+  (let [buttons (js/get gp "buttons")
+        n (math/min 16 (js/get buttons "length"))]
+    (loop [i 0 m 0]
+      (if (< i n)
+          (recur (+ i 1) (if (js/get (js/aget buttons i) "pressed") (bit-or m (shl 1 i)) m))
+          m))))
+
+(defn pad-value [(gp : Any) (i : I32)] : F64
+  (let [b (js/aget (js/get gp "buttons") i)]
+    (if (js/null? b) 0.0 (js/get b "value"))))
+
+(defn send-pad [(i : I32) (gp : Any)] : Unit
+  (let [axes (js/get gp "axes")]
+    (js/call wasm "br_pad" i
+             (js/aget axes 0) (js/aget axes 1) (js/aget axes 2) (js/aget axes 3)
+             (pad-value gp 6) (pad-value gp 7) (pad-mask gp))))
+
+(defn poll-pads [] : Unit
+  (when (pad-api?)
+    (let [pads (js/call (js/global "navigator") "getGamepads")]
+      (dotimes [i 4]
+        (let [gp (js/aget pads i)]
+          (if (js/null? gp)
+              (js/call wasm "br_pad_gone" i)
+              (send-pad i gp)))))))
+
+;; ---- 4. the page's own labels -----------------------------------------------------------------------------------------------
+(defn sync-labels! [] : Unit
+  (let [st (js/call wasm "br_status")]
+    (when (!= st last-status)
+      (set! last-status st)
+      (set-text! "br-pill"
+                 (cond
+                   (= st 1) "In a match"
+                   (= st 2) "Watching bots"
+                   (= st 3) "Paused"
+                   (= st 4) "Match over"
+                   :else "Ready")))))
+
+(start (boot "br-canvas" "bedrockracers.wasm"))

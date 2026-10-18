@@ -116,7 +116,8 @@
     (storef64! (clock-slot) now)
     (gi! (g-ticker) (i32 now))
     (gi! (g-frame) (+ (gi (g-frame)) 1))
-    (gf! (g-cam-dt) (* (clamp-f dt 0.0 50.0) 0.001))
+    ;; the camera and the ball's spin run on wall-clock time; a paused match holds its view exactly where it is
+    (gf! (g-cam-dt) (if (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1)) 0.0 (* (clamp-f dt 0.0 50.0) 0.001)))
     (gf! (g-clock-acc) (+ (gf (g-clock-acc)) (clamp-f dt 0.0 100.0)))
     (loop [steps 0]
       (when (and (>= (gf (g-clock-acc)) (tick-ms)) (< steps 6))

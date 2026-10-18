@@ -3,6 +3,7 @@
 #   <outdir>/bedrockracers.wasm   the game (stdlib/bedrockracers/web/br_*.prn -> LLVM -> wasm32, no malloc, 0 imports)
 #   <outdir>/br-host.js           the page's host code (br_host.prn -> TypeScript -> JS)
 #   <outdir>/br-host.ts           the TypeScript the JS was stripped from
+#   <outdir>/index.html           the static page (examples/bedrockracers_web/index.html): the outdir is a complete, servable bundle
 # There is no hand-written JavaScript in the product: the .js is generated.
 #   scripts/build_bedrockracers_web.sh <outdir>
 set -euo pipefail
@@ -16,4 +17,8 @@ if [ -f stdlib/bedrockracers/web/br_host.prn ]; then
   "$PARENA" build stdlib/bedrockracers/web/br_host.prn -o "$OUT/br-host.ts"
   node scripts/ts_strip.mjs "$OUT/br-host.ts" "$OUT/br-host.js"
   echo "built $OUT/br-host.js ($(wc -c < "$OUT/br-host.js") bytes of generated JS, from PARENA via TypeScript)"
+fi
+if [ -f examples/bedrockracers_web/index.html ]; then
+  cp examples/bedrockracers_web/index.html "$OUT/index.html"
+  echo "bundle ready in $OUT: index.html bedrockracers.wasm br-host.js"
 fi

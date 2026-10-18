@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#14151c">
+<title>Bedrock Racers</title>
+<meta name="description" content="Bedrock Racers: four teams of three rocket cars, one Quaffle, four upside-down goals. The whole game runs as WebAssembly compiled from PARENA.">
+<style>
+  :root {
+    --bg: #14151c; --panel: #1b1c26; --line: #2a2c3a; --ink: #e4e1d8; --dim: #8f909c; --faint: #5d5f6e;
+    --amber: #e8b254; --teal: #4fb8a8; --violet: #9a82d6; --coral: #e0776a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body { font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1040px; margin: 0 auto; padding: 1.6rem 1rem 3.5rem; }
+  .eyebrow { margin: 0 0 .35rem; font-size: .68rem; letter-spacing: .34em; text-transform: uppercase; color: var(--faint); }
+  h1 { margin: 0; font-weight: 500; font-size: clamp(1.7rem, 4.2vw, 2.4rem); letter-spacing: .02em; line-height: 1.1; }
+  .teams { display: flex; gap: 6px; margin: .8rem 0 1.1rem; }
+  .teams i { display: block; width: 34px; height: 3px; border-radius: 2px; }
+  .teams i:nth-child(1) { background: var(--amber); } .teams i:nth-child(2) { background: var(--teal); }
+  .teams i:nth-child(3) { background: var(--violet); } .teams i:nth-child(4) { background: var(--coral); }
+  .sub { margin: 0 0 1.1rem; max-width: 40rem; color: var(--dim); }
+  .bar { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem; }
+  .bar .grow { flex: 1; }
+  .pill { font-size: .7rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: .28rem .7rem; border-radius: 999px;
+    color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  button { font: inherit; font-size: .85rem; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+    height: 2.2rem; padding: 0 .9rem; cursor: pointer; transition: border-color .15s ease, background-color .15s ease; }
+  button:hover:not(:disabled) { border-color: var(--faint); background: #20212d; }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible, canvas:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .stage { position: relative; aspect-ratio: 16 / 9; background: #0b0c10; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; box-shadow: 0 18px 50px rgba(0, 0, 0, .45); }
+  .stage:fullscreen { aspect-ratio: auto; border: 0; border-radius: 0; background: #000; }
+  .stage:fullscreen canvas { width: auto; height: 100%; max-width: 100%; aspect-ratio: 16 / 9; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; cursor: default;
+    image-rendering: pixelated; image-rendering: crisp-edges; }
+  canvas[hidden], .load[hidden] { display: none; }
+  .load { max-width: 30rem; padding: 2rem; text-align: center; color: var(--dim); display: flex; flex-direction: column; gap: .4rem; }
+  .load b { color: var(--amber); font-size: .7rem; letter-spacing: .14em; text-transform: uppercase; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: .7rem; margin-top: 1.1rem; }
+  .keys div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .75rem .9rem; color: var(--dim); font-size: .85rem; line-height: 1.7; }
+  .keys b { display: block; margin-bottom: .25rem; font-size: .66rem; letter-spacing: .24em; text-transform: uppercase; color: var(--ink); }
+  kbd { font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: .14rem .38rem; color: var(--ink);
+    background: #23242f; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; }
+  .stat { margin: 1rem 0 0; font: .7rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--faint); }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Weaknight &middot; Rocket cars</p>
+  <h1>Bedrock Racers</h1>
+  <div class="teams" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <p class="sub">Four teams of three rocket cars in one stadium. Carry the Quaffle with your magnet, pass it to a team-mate, and throw it up through one of the four upside-down goals. Two goals in a row and you are on fire.</p>
+
+  <div class="bar" role="toolbar" aria-label="Bedrock Racers controls">
+    <span class="pill" id="br-pill" role="status" aria-live="polite">Loading</span>
+    <span class="grow"></span>
+    <button type="button" id="br-fullscreen" title="Fullscreen" disabled>Fullscreen</button>
+  </div>
+
+  <div class="stage" id="br-stage">
+    <div class="load" id="br-load">
+      <b>Starting</b>
+      <span id="br-load-msg">Fetching the game (a WebAssembly module, about 190 KB)&hellip;</span>
+      <noscript><span>Bedrock Racers is WebAssembly; it needs JavaScript enabled to load it.</span></noscript>
+    </div>
+    <canvas id="br-canvas" width="640" height="360" tabindex="0" role="application"
+            aria-label="Bedrock Racers. Press Enter to play against bots. W and S throttle and brake, A and D steer, Space lifts, Shift boosts, right mouse or F holds the magnet." hidden></canvas>
+  </div>
+
+  <div class="keys">
+    <div><b>Drive</b><kbd>W</kbd> <kbd>S</kbd> throttle and brake &middot; <kbd>A</kbd> <kbd>D</kbd> steer &middot; <kbd>Space</kbd> lift (hold) &middot; <kbd>Shift</kbd> boost &middot; <kbd>C</kbd> fans off.</div>
+    <div><b>Fly</b><kbd>&uarr;</kbd> <kbd>&darr;</kbd> pitch &middot; <kbd>&larr;</kbd> <kbd>&rarr;</kbd> roll &middot; <kbd>Q</kbd> <kbd>E</kbd> strafe. Air is your fuel: lift and boost spend it, the road refills it.</div>
+    <div><b>The Quaffle</b>Hold <kbd>F</kbd> or the right mouse button: the magnet pulls the ball in and carries it. Let go to throw it along your nose. Hold it toward a team-mate to pass.</div>
+    <div><b>Match</b><kbd>Enter</kbd> play the bots &middot; <kbd>B</kbd> watch the bots &middot; <kbd>V</kbd> ball cam &middot; <kbd>Tab</kbd> scores &middot; <kbd>Esc</kbd> pause.</div>
+    <div><b>Gamepad</b>Left stick steers and pitches &middot; RT throttle, LT brake &middot; A lift &middot; B magnet &middot; RB boost &middot; LB fans off &middot; right stick rolls and strafes.</div>
+    <div><b>What this is</b>One WebAssembly module with no imports and no allocator, compiled from PARENA: the physics, the bots and a software 3D renderer. The only JavaScript here is generated from PARENA too.</div>
+  </div>
+
+  <p class="stat" id="br-stat"></p>
+</main>
+<script type="module" src="br-host.js"></script>
+</body>
+</html>
