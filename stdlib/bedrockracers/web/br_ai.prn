@@ -6,19 +6,36 @@
 ;; full learned commander -> squad -> soldier hierarchy is still unbuilt there. This is the same family, honestly labelled:
 ;;
 ;;   LEVEL 3  COMMANDER  (per team, every 20 ticks)  reads the score race, the ball and its own cars. It picks the TARGET TOWER (it
-;;            attacks whoever is leading), assigns ROLES by who can reach the ball first (STRIKER / LIFTER / WARDEN), and carries
-;;            a POSTURE (aggressive when behind by two, patient when ahead by two) and a GESTALT PHASE that flips every ten
-;;            seconds -- Johnny: spread out and be individuals; Spike: converge and cash in the synergy bonus.
-;;   LEVEL 2  TACTICS    (per car, every few ticks) a BALL PREDICTOR runs the real physics forward 3.2 s; a SHOT PLANNER searches
-;;            candidate outgoing velocities by forward simulation and keeps the one that actually flies into an enemy tower;
-;;            the car then plans an approach line through the ball along that velocity.
-;;   LEVEL 1  MOTOR      (per car, every tick) a thrust-vector guidance law: it asks for an acceleration, aims the car's UP axis
-;;            along it (the four lift nozzles are the only big thrusters), points the nose at the aim, and spends strafe,
-;;            fore/aft and boost jets for the rest -- or, on a surface, drives and steers with the fans holding it down.
+;;            attacks whoever is leading), names the KEEPER (the car nearest home), and carries a POSTURE (aggressive when behind
+;;            by two: the keeper joins the attack; patient when ahead by two: it never leaves) and a GESTALT PHASE that flips every
+;;            ten seconds -- Johnny: the outlets spread wide; Spike: they tuck in close for the short pass.
+;;   LEVEL 2  TACTICS    (per car, every few ticks) NBA STREET TEAM PLAY with the magnet (br_phys.prn: the ball is a Quaffle --
+;;            catch it, carry it, pass it, throw it). Who does what follows the ball:
+;;              the ball is OURS    the CARRIER runs at its target tower and looks for a team-mate who is better placed (nearer
+;;                                  the tower, open: no enemy within 70, a clear lane) to PASS to; the two others run to OPEN
+;;                                  SPACE between the ball and the tower, one on each side, so there is always an outlet, and the
+;;                                  one the carrier picks CALLS for it (holds its magnet: only a calling team-mate gets a pass).
+;;              the ball is LOOSE   the car of each team that can reach it first goes to CATCH it, approaching slowly enough for
+;;                                  the magnet to hold it; the others take up spots for the counter; the keeper stays home.
+;;              the ball is THEIRS  the nearest car PRESSES the carrier (a bump is a tackle: the ball comes loose), another CUTS
+;;                                  the passing lane or the shooting lane, the keeper stays home and comes out to meet a carrier
+;;                                  that gets close.
+;;            SHOTS: every tick the carrier flies a throw right now -- its own velocity plus 260 along the nose -- through the
+;;            ball physics at the physics' own 8 ms step (what-if-fine; a sharp eye also reads the lane for cars in the way), and
+;;            lets go the moment it goes in. A ball thrown hard along the floor at a corner climbs the curved corner and drops up
+;;            into the shaft, so the bread-and-butter shot is a hard throw at the corner on the run; carried all the way, driving up
+;;            the corner takes the ball up into the shaft itself (a dunk -- rare: the throw almost always goes first).
+;;   LEVEL 1  MOTOR      (per car, every tick) on a surface it drives and steers with the fans holding it down (floor, walls,
+;;            ceiling); in the air a thrust-vector guidance law asks for an acceleration, aims the car's UP axis along it (the four
+;;            lift nozzles are the only big thrusters), points the nose at the aim, and spends strafe, fore/aft and boost for the rest.
+;;            Cars keep apart by job: a presser or a chaser shies only from its own team-mates (the enemy is what it means to hit),
+;;            a carrier turning to its pass shies from nobody; and nobody climbs its own corner after a ball hanging at the mouth
+;;            of its own shaft (the bump or the magnet puts it in).
 ;;
-;; A bot writes only what a person writes (the nine command fields), so it obeys the same physics and the same air tank.
-;; Each bot carries a GENOME of fourteen numbers 0..1 (aggression, patience, risk, thrift, ...). EASY / NORMAL / HARD are three
-;; hand-set genomes; CHAMPION draws from the league table (br_league.prn), genomes found by tools/league_train.mjs.
+;; A bot writes only what a person writes (the nine command fields, the magnet button among them), so it obeys the same physics,
+;; the same air tank and the same five-second carry clock. Each bot carries a GENOME of fourteen numbers 0..1 (aggression,
+;; patience, risk, thrift, ...). EASY / NORMAL / HARD are three hand-set genomes -- easy bots think three times slower, aim with
+;; noise, come in too fast to catch cleanly, hardly pass and hardly press; CHAMPION draws from the league table (br_league.prn).
 
 ;; ---- prediction table -------------------------------------------------------------------------------------
 (defn pred-base [] : I32 173056)
@@ -39,14 +56,23 @@
   (do (set-b-x! (gf (g-tmp0))) (set-b-y! (gf (g-tmp1))) (set-b-z! (gf (g-tmp2)))
       (set-b-vx! (gf (g-tmp3))) (set-b-vy! (gf (g-tmp4))) (set-b-vz! (gf (g-tmp5)))))
 
-;; the real ball, 3.2 s ahead, in 32 ms steps; every few ticks, shared by every bot
+;; the real ball, 3.2 s ahead, in 32 ms steps; every few ticks, shared by every bot. A CARRIED ball does not fly: it goes where
+;; its carrier goes, so it is extrapolated along the carrier's velocity (no gravity), kept inside the room.
 (defn pred-update! [] : Unit
-  (do
-    (sv-ball!)
-    (dotimes [i (pred-n)]
-      (ball-substep! (pred-dt))
-      (pred-set! i (b-x) (b-y) (b-z) (b-vy)))
-    (rs-ball!)))
+  (let [h (b-holder)]
+    (if (>= h 0)
+        (dotimes [i (pred-n)]
+          (let [(t : F32) (* (f32 (+ i 1)) (pred-dt))]
+            (pred-set! i (clamp-f (+ (b-x) (* (c-vx h) t)) -509.0 509.0)
+                         (clamp-f (+ (b-y) (* (c-vy h) t)) 11.0 229.0)
+                         (clamp-f (+ (b-z) (* (c-vz h) t)) -509.0 509.0)
+                         (c-vy h))))
+        (do
+          (sv-ball!)
+          (dotimes [i (pred-n)]
+            (ball-substep! (pred-dt))
+            (pred-set! i (b-x) (b-y) (b-z) (b-vy)))
+          (rs-ball!)))))
 
 ;; ---- shot planner ---------------------------------------------------------------------------------------------
 ;; Fly the ball from (x, y, z) with velocity (vx, vy, vz) and say what happens. Returns a score in the planner's own units:
@@ -72,6 +98,47 @@
                       (let [(d : F32) (len3 (- (b-x) (tw-x t)) (- (b-y) (goal-y)) (- (b-z) (tw-z t)))]
                         (when (< d bd) (set! bd d)))))
                   (when (> (- 0.0 bd) best) (set! best (- 0.0 bd))))))
+          (recur (+ i 1))))
+      (rs-ball!)
+      best)))
+
+;; the same question at the physics' own step (8 ms) for up to n steps -- the carrier's trigger. The planner's 32 ms steps are
+;; fine for choosing a direction, but a throw that rolls up a corner and pops into a shaft touches the walls dozens of times on the
+;; way, and at 32 ms each of those contacts lands somewhere else: in a probe 3 of every 4 throws the coarse what-if called a goal
+;; missed. A goal is 1000 less the steps it took (a little more for `want`), an own goal -600, anything else how near it came.
+;; The goal line is checked where the rules check it -- once a tick, after its two substeps -- so a ball that pokes over the line
+;; for one substep and drops back is not called a goal. With a `shooter` (-1: none) it also READS THE LANE: every other car flown
+;; on along its own velocity for the first second, and a ball that passes within a car's reach of one is called blocked (-300):
+;; a shot through a keeper is no shot.
+(defn lane-reach [] : F32 19.0)
+(defn what-if-fine [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (own : I32) (want : I32) (n : I32) (shooter : I32)] : F32
+  (do
+    (sv-ball!)
+    (set-b-x! x) (set-b-y! y) (set-b-z! z) (set-b-vx! vx) (set-b-vy! vy) (set-b-vz! vz)
+    (let [(best : F32) -100000.0 (done : I32) 0]
+      (loop [i 0]
+        (when (and (< i n) (= done 0))
+          (ball-substep! (sub-dt))
+          (let [g (if (= (mod i 2) 1) (goal-at (b-x) (b-y) (b-z)) -1)]
+            (if (>= g 0)
+                (do (set! done 1)
+                    (set! best (cond (= g own) -600.0
+                                     (= g want) (+ 1100.0 (- 0.0 (* 0.25 (f32 i))))
+                                     :else (- 1000.0 (* 0.25 (f32 i))))))
+                (when (= (mod i 4) 3)
+                  (let [(bd : F32) 100000.0 (tt : F32) (* (f32 (+ i 1)) (sub-dt))]
+                    (dotimes [t 4]
+                      (when (!= t own)
+                        (let [(d : F32) (len3 (- (b-x) (tw-x t)) (- (b-y) (goal-y)) (- (b-z) (tw-z t)))]
+                          (when (< d bd) (set! bd d)))))
+                    (when (> (- 0.0 bd) best) (set! best (- 0.0 bd)))
+                    (when (and (>= shooter 0) (< i 125))
+                      (dotimes [o 12]
+                        (when (and (!= o shooter) (!= (c-active o) 0))
+                          (let [(d : F32) (len3 (- (b-x) (+ (c-x o) (* (c-vx o) tt)))
+                                                (- (b-y) (+ (c-y o) (* (c-vy o) tt)))
+                                                (- (b-z) (+ (c-z o) (* (c-vz o) tt))))]
+                            (when (< d (lane-reach)) (set! done 1) (set! best -300.0))))))))))
           (recur (+ i 1))))
       (rs-ball!)
       best)))
@@ -133,32 +200,60 @@
         (recur (+ i 3))))
     (if (< found 0) 40 found)))
 
+;; ---- the street game's own words in the car record ---------------------------------------------------------------------------
+;; The brain block of the car record (br_fields.prn) has words nothing else reads or writes; the team play keeps its state there
+;; (all of it zeroed by clear-world!, which every one of these reads as "nothing yet"):
+;;   persona  the enemy tower this car attacks when it has the ball
+;;   tact-t   the team-mate the carrier means to pass to, PLUS ONE (0 = nobody: a zeroed record means no pass plan)
+;;   react-t  the tick that pass plan was made (a pass that has not come off inside a second is given up)
+;;   genome   the ball's holder as this car last thought about it, PLUS TWO (0 = never): when the ball changes hands every bot
+;;            thinks again, after its genome's reaction time, instead of waiting for its usual beat
+(defn c-attack [(s : I32)] : I32 (clamp-i (c-persona s) 0 3))
+(defn set-c-attack! [(s : I32) (t : I32)] : Unit (set-c-persona! s t))
+(defn c-mate [(s : I32)] : I32 (- (c-tact-t s) 1))
+(defn set-c-mate! [(s : I32) (m : I32)] : Unit (set-c-tact-t! s (+ m 1)))
+(defn c-seen [(s : I32)] : I32 (- (c-genome s) 2))
+(defn set-c-seen! [(s : I32) (h : I32)] : Unit (set-c-genome! s (+ h 2)))
+
+;; the team holding the ball (-1: it is loose)
+(defn holder-team [] : I32 (let [h (b-holder)] (if (>= h 0) (c-team h) -1)))
+
+;; is s being passed to? the carrier picked it (it should call for the ball now), or that pass is in the air
+(defn picked? [(s : I32)] : Bool
+  (let [h (b-holder)]
+    (and (>= h 0) (!= h s) (= (c-team h) (c-team s)) (= (c-mate h) s))))
+(defn pass-for-me? [(s : I32)] : Bool
+  (let [pf (b-pass-from)]
+    (and (< (b-holder) 0) (> (b-pass-t) 0) (>= pf 0) (!= pf s) (= (c-team pf) (c-team s)) (= (c-mate pf) s))))
+
+;; horizontal distance from a point to a tower's axis (the corner it stands over)
+(defn tower-dist [(t : I32) (x : F32) (z : F32)] : F32 (len2 (- x (tw-x t)) (- z (tw-z t))))
+
 ;; ---- level 3: the commander --------------------------------------------------------------------------------------------------
 (defn r-striker [] : I32 1)
 (defn r-lifter [] : I32 2)
 (defn r-warden [] : I32 3)
 
-;; who is the leader the commander wants to cut down (not itself)
+;; who is the leader the commander wants to cut down (not itself). The tie-break is the AI's own dice (ai-rand), never the
+;; sim's: a bot's thinking must not shift the rules' rolls.
 (defn pick-target-tower [(t : I32)] : I32
   (let [(best : I32) -1 (bs : I32) -1000]
     (dotimes [o 4]
       (when (!= o t)
-        (let [sc (+ (* 10 (score-of o)) (* -1 (gi (+ (g-conceded) o))) (rnd 3))]
+        (let [sc (+ (* 10 (score-of o)) (* -1 (gi (+ (g-conceded) o))) (mod (ai-rand) 3))]
           (when (> sc bs) (set! best o) (set! bs sc)))))
     best))
 
+;; the car nearest its own tower keeps it (the WARDEN); of the other two the one nearer the ball is the STRIKER, the other the
+;; LIFTER (the roles only order who goes first: who actually does what is read off the ball, in decide!)
 (defn commander! [(t : I32)] : Unit
-  (let [posture (gi (+ (g-posture) t))
-        gest (gi (+ (g-gest) t))
-        (own : I32) t]
+  (let [(own : I32) t]
     (gi! (+ (g-tgt-tower) t) (pick-target-tower t))
-    ;; the car closest to its own tower guards it -- unless the posture is aggressive, in which case the guard
-    ;; is only a suggestion (the nearest car to the tower still holds the line, but from further out)
     (let [(wk : I32) -1 (wd : F32) 100000.0 (sk : I32) -1 (se : F32) 100000.0]
       (dotimes [k 3]
         (let [s (+ (* t 3) k)]
           (when (!= (c-active s) 0)
-            (let [(d : F32) (len3 (- (c-x s) (tw-x own)) 0.0 (- (c-z s) (tw-z own)))]
+            (let [(d : F32) (tower-dist own (c-x s) (c-z s))]
               (when (< d wd) (set! wd d) (set! wk s))))))
       (dotimes [k 3]
         (let [s (+ (* t 3) k)]
@@ -169,17 +264,6 @@
         (let [s (+ (* t 3) k)]
           (when (!= (c-active s) 0)
             (set-c-role! s (cond (= s wk) (r-warden) (= s sk) (r-striker) :else (r-lifter))))))
-      ;; a patient team that is ahead keeps a second guard; an aggressive team that is behind sends the guard up as striker when
-      ;; the ball is far from home
-      (when (and (= posture 1) (>= wk 0))
-        (let [(bd : F32) (len3 (- (b-x) (tw-x own)) 0.0 (- (b-z) (tw-z own)))]
-          (when (> bd 520.0) (set-c-role! wk (r-lifter)))))
-      (when (and (= posture 2) (>= sk 0))
-        (let [(bd : F32) (len3 (- (b-x) (tw-x own)) 0.0 (- (b-z) (tw-z own)))]
-          (when (< bd 380.0)
-            (dotimes [k 3]
-              (let [s (+ (* t 3) k)]
-                (when (and (!= s sk) (!= s wk)) (set-c-role! s (r-warden))))))))
       unit)))
 
 ;; how many cars that are not on my team are close to a point
@@ -190,136 +274,270 @@
         (when (< (len3 (- (c-x o) x) (- (c-y o) y) (- (c-z o) z)) r) (set! n (+ n 1)))))
     n))
 
-;; a push away from cars that are too close (added to the point a bot is steering for)
-(defn avoid-x [(s : I32)] : F32
-  (let [(a : F32) 0.0]
-    (dotimes [o 12]
-      (when (and (!= o s) (!= (c-active o) 0))
-        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
-              (d : F32) (len3 dx dy dz)]
-          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (/ dx d) (* (- 26.0 d) 3.2))))))))
-    a))
-(defn avoid-y [(s : I32)] : F32
-  (let [(a : F32) 0.0]
-    (dotimes [o 12]
-      (when (and (!= o s) (!= (c-active o) 0))
-        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
-              (d : F32) (len3 dx dy dz)]
-          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (/ dy d) (* (- 26.0 d) 3.2))))))))
-    a))
-(defn avoid-z [(s : I32)] : F32
-  (let [(a : F32) 0.0]
-    (dotimes [o 12]
-      (when (and (!= o s) (!= (c-active o) 0))
-        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
-              (d : F32) (len3 dx dy dz)]
-          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (/ dz d) (* (- 26.0 d) 3.2))))))))
-    a))
-
 ;; ---- level 2: tactics -----------------------------------------------------------------------------------------------------------
-(defn tc-strike [] : I32 1)
-(defn tc-guard [] : I32 2)
-(defn tc-flank [] : I32 3)
-(defn tc-refuel [] : I32 4)
-(defn tc-kickoff [] : I32 5)
+(defn tc-carry [] : I32 1)       ; I have the ball
+(defn tc-chase [] : I32 2)       ; a loose ball: go and catch it
+(defn tc-receive [] : I32 3)     ; a team-mate's pass is in the air for me: hold my line and let the magnet take it
+(defn tc-support [] : I32 4)     ; a team-mate has it: get open for the pass
+(defn tc-press [] : I32 5)       ; an enemy has it: tackle the carrier
+(defn tc-cut [] : I32 6)         ; an enemy has it: stand in its passing (or shooting) lane
+(defn tc-keep [] : I32 7)        ; mind the tower
+(defn tc-spot [] : I32 8)        ; a loose ball someone else is chasing: take a spot for what comes next
 
-;; a car's contact plan: where to touch the ball and in which direction to push it. Leaves the contact point in tgt-x/y/z and the
-;; push direction in aim-x/y/z.
-(defn plan-strike! [(s : I32) (extra : F32)] : Unit
-  (let [i (intercept-step s extra)
-        (px : F32) (pred-x i) (py : F32) (pred-y i) (pz : F32) (pred-z i)
-        t (c-team s)
-        want (gi (+ (g-tgt-tower) t))
-        (spd : F32) (* 1.3 (gv s (k-g-launch) 190.0 270.0))]
-    (plan-shot! px py pz t want spd)
-    (set-c-aim-x! s (gf (pl-x))) (set-c-aim-y! s (gf (pl-y))) (set-c-aim-z! s (gf (pl-z)))
-    ;; the contact point sits one ball radius + half a car behind the ball's centre along the push direction
-    (let [(back : F32) (+ (rb) 7.5)
-          (nz : F32) (* (gv s (k-g-noise) 0.0 14.0) (ai-rand-f))
-          (nx : F32) (* (gv s (k-g-noise) 0.0 14.0) (ai-rand-f))]
-      (set-c-tgt-x! s (+ (- px (* (c-aim-x s) back)) nx))
-      (set-c-tgt-y! s (fmax2 6.0 (- py (* (c-aim-y s) back))))
-      (set-c-tgt-z! s (+ (- pz (* (c-aim-z s) back)) nz)))))
-
-;; the lifter's job: spread wide (Johnny) or tuck in behind the striker (Spike)
-(defn plan-flank! [(s : I32)] : Unit
+;; ---- the carrier's choices ----
+;; the enemy tower a carrier goes for: the nearest corner, the commander's target counted 20% nearer. A carrier keeps the tower it
+;; has unless another is a good deal nearer, so it does not dither between two corners.
+(defn attack-tower [(s : I32)] : I32
   (let [t (c-team s)
-        gest (gi (+ (g-gest) t))
-        i (min-i 40 (intercept-step s 0.6))
-        (px : F32) (pred-x i) (py : F32) (pred-y i) (pz : F32) (pred-z i)
-        (own : I32) t
-        (hx : F32) (- px (tw-x own)) (hz : F32) (- pz (tw-z own))
-        (hl : F32) (fmax2 1.0 (len2 hx hz))
-        (ux : F32) (/ hx hl) (uz : F32) (/ hz hl)
-        (sp : F32) (gv s (k-g-spread) 50.0 150.0)
-        ;; Johnny: stand off to the side, level with the ball; Spike: stand in line with it, between it and home
-        (sgn2 : F32) (if (= (bit-and (c-seat s) 1) 0) 1.0 -1.0)]
-    (if (= gest 0)
-        (do (set-c-tgt-x! s (+ px (* (- 0.0 uz) (* sgn2 sp))))
-            (set-c-tgt-y! s 4.0)
-            (set-c-tgt-z! s (+ pz (* ux (* sgn2 sp)))))
-        (do (set-c-tgt-x! s (- px (* ux (* sp 0.55))))
-            (set-c-tgt-y! s 4.0)
-            (set-c-tgt-z! s (- pz (* uz (* sp 0.55))))))
-    (set-c-aim-x! s (- 0.0 ux)) (set-c-aim-y! s 0.0) (set-c-aim-z! s (- 0.0 uz))))
+        want (gi (+ (g-tgt-tower) t))
+        cur (c-attack s)
+        (best : I32) -1 (bd : F32) 1000000.0]
+    (dotimes [o 4]
+      (when (!= o t)
+        (let [(d : F32) (* (* (tower-dist o (c-x s) (c-z s)) (if (= o want) 0.8 1.0)) (if (= o cur) 0.85 1.0))]
+          (when (< d bd) (set! bd d) (set! best o)))))
+    best))
 
-;; the warden holds a point on the line from its tower toward the ball, near the floor; when the ball is a threat it clears
-(defn plan-guard! [(s : I32)] : Unit
+;; how good a spot is to attack tower `tw` from: the nearer the corner the better; an enemy within 70 of it is worth 110 of
+;; distance (a spot with a defender on it is not open)
+(defn spot-value [(t : I32) (tw : I32) (x : F32) (y : F32) (z : F32)] : F32
+  (- (- 0.0 (tower-dist tw x z)) (* 110.0 (f32 (crowd-at t x y z 70.0)))))
+
+;; no enemy within 30 of the segment from a to b (the ball can get through)
+(defn lane-clear? [(t : I32) (ax : F32) (ay : F32) (az : F32) (bx : F32) (by : F32) (bz : F32)] : Bool
+  (let [(n : I32) 0
+        (dx : F32) (- bx ax) (dy : F32) (- by ay) (dz : F32) (- bz az)
+        (ll : F32) (fmax2 1.0 (dot3 dx dy dz dx dy dz))]
+    (dotimes [o 12]
+      (when (and (!= (c-active o) 0) (!= (c-team o) t))
+        (let [(u : F32) (clamp-f (/ (dot3 (- (c-x o) ax) (- (c-y o) ay) (- (c-z o) az) dx dy dz) ll) 0.0 1.0)
+              (qx : F32) (- (c-x o) (+ ax (* dx u))) (qy : F32) (- (c-y o) (+ ay (* dy u))) (qz : F32) (- (c-z o) (+ az (* dz u)))]
+          (when (< (len3 qx qy qz) 30.0) (set! n (+ n 1))))))
+    (= n 0)))
+
+;; enemies bearing down on s: within 75 and closing (or already on top of it)
+(defn pressure [(s : I32)] : I32
+  (let [(n : I32) 0 t (c-team s)]
+    (dotimes [o 12]
+      (when (and (!= (c-active o) 0) (!= (c-team o) t))
+        (let [(dx : F32) (- (c-x o) (c-x s)) (dy : F32) (- (c-y o) (c-y s)) (dz : F32) (- (c-z o) (c-z s))
+              (d : F32) (len3 dx dy dz)
+              (close : F32) (/ (- 0.0 (dot3 dx dy dz (- (c-vx o) (c-vx s)) (- (c-vy o) (c-vy s)) (- (c-vz o) (c-vz s)))) (fmax2 d 1.0))]
+          (when (and (< d 75.0) (or (> close 20.0) (< d 30.0))) (set! n (+ n 1))))))
+    n))
+
+;; THE PASS (NBA Street): the team-mate the carrier should give it to, or -1. A team-mate qualifies when it is 50..250 away (inside
+;; the physics' pass range, so the throw is led to it), the lane to it is clear, and its spot is worth more than the carrier's own
+;; by the genome's margin -- less when the carrier is under pressure, when getting rid of it beats being tackled.
+(defn choose-mate [(s : I32) (tw : I32)] : I32
+  (let [t (c-team s)
+        (mine : F32) (spot-value t tw (c-x s) (c-y s) (c-z s))
+        (margin : F32) (if (> (pressure s) 0) (gv s (k-g-risk) 20.0 -60.0) (gv s (k-g-lead) 170.0 60.0))
+        (bv : F32) (+ mine margin)
+        (best : I32) -1]
+    (dotimes [k 3]
+      (let [m (+ (* t 3) k)]
+        (when (and (!= m s) (!= (c-active m) 0) (= (c-team m) t))
+          (let [(d : F32) (len3 (- (c-x m) (c-x s)) (- (c-y m) (c-y s)) (- (c-z m) (c-z s)))
+                (v : F32) (spot-value t tw (c-x m) (c-y m) (c-z m))]
+            (when (and (> d 50.0) (< d 250.0) (> v bv)
+                       (lane-clear? t (b-x) (b-y) (b-z) (c-x m) (c-y m) (c-z m)))
+              (set! bv v) (set! best m))))))
+    best))
+
+;; THE TRIGGER: the velocity a throw right now would leave with (the physics' throw!: the car's velocity plus 260 along the nose,
+;; 35% more on fire), with the genome's aim noise on top -- what the bot BELIEVES it would throw -- flown on at the physics' own
+;; step for up to 240 substeps (what-if-fine). A sharp eye (low noise: HARD) also reads the lane: a shot through a car is no
+;; shot. (Measured at HARD, seeds 7-18: on the coarse planner step 76 of 344 throws scored and 168 came to nothing; on the fine
+;; step 104 of 278 scored, 92 were passes caught and only 69 came to nothing -- fewer wasted throws, more goals.)
+(defn shot-score [(s : I32)] : F32
+  (let [(sp : F32) (* (throw-speed) (throw-mul s))
+        (nz : F32) (gv s (k-g-noise) 0.0 0.16)
+        (fx : F32) (+ (c-fx s) (* nz (ai-rand-f))) (fy : F32) (+ (c-fy s) (* nz (ai-rand-f))) (fz : F32) (+ (c-fz s) (* nz (ai-rand-f)))
+        (il : F32) (inv-len3 fx fy fz)]
+    (what-if-fine (b-x) (b-y) (b-z)
+                  (+ (c-vx s) (* (* fx il) sp)) (+ (c-vy s) (* (* fy il) sp)) (+ (c-vz s) (* (* fz il) sp))
+                  (c-team s) (c-attack s) 240 (if (< (cf s (k-g-noise)) 0.4) s -1))))
+
+;; the carrier's tactics: on the first think after a catch it picks its tower and has no pass plan; after that it keeps the tower
+;; unless another gets a lot nearer, and makes a pass plan -- or keeps the one it has while it is fresh and still on
+(defn carry-decide! [(s : I32)] : Unit
+  (let [tk (gi (g-tick))]
+    (when (!= (c-tactic s) (tc-carry))
+      (set-c-tactic! s (tc-carry)) (set-c-attack! s -1) (set-c-mate! s -1) (set-c-react-t! s tk))
+    (set-c-attack! s (attack-tower s))
+    (let [m (c-mate s)
+          fresh (and (>= m 0) (< (- tk (c-react-t s)) 60) (!= (c-active m) 0)
+                     (< (len3 (- (c-x m) (c-x s)) (- (c-y m) (c-y s)) (- (c-z m) (c-z s))) 270.0))]
+      (when (not fresh)
+        (set-c-mate! s (choose-mate s (c-attack s)))
+        (set-c-react-t! s tk)))))
+
+;; ---- the off-ball choices ----
+;; which car of team t goes for a loose ball: the one that gets to it soonest (the earliest step of the ball predictor it can
+;; make; between two that make the same step, the one nearer the ball now). The keeper only goes when the ball is near home.
+(defn team-chaser [(t : I32)] : I32
+  (let [(best : I32) -1 (bt : F32) 100000.0]
+    (dotimes [k 3]
+      (let [s (+ (* t 3) k)]
+        (when (and (!= (c-active s) 0)
+                   (or (!= (c-role s) (r-warden)) (< (tower-dist t (b-x) (b-z)) 300.0)))
+          (let [(e : F32) (+ (f32 (intercept-step s 0.0)) (* 0.002 (dist-to-ball s)))]
+            (when (< e bt) (set! bt e) (set! best s))))))
+    best))
+
+;; which car of team t presses enemy carrier h: the nearest that is not the keeper
+(defn team-presser [(t : I32) (h : I32)] : I32
+  (let [(best : I32) -1 (bd : F32) 100000.0]
+    (dotimes [k 3]
+      (let [s (+ (* t 3) k)]
+        (when (and (!= (c-active s) 0) (!= (c-role s) (r-warden)))
+          (let [(d : F32) (len3 (- (c-x h) (c-x s)) (- (c-y h) (c-y s)) (- (c-z h) (c-z s)))]
+            (when (< d bd) (set! bd d) (set! best s))))))
+    best))
+
+;; is s the nearest of all the cars hunting carrier h (every other team's non-keepers)? With four teams the carrier has three
+;; teams against it; if all three sent a presser no carrier would ever get a pass away. One team's presser takes it on.
+(defn first-presser? [(s : I32) (h : I32)] : Bool
+  (let [(mine : F32) (len3 (- (c-x h) (c-x s)) (- (c-y h) (c-y s)) (- (c-z h) (c-z s)))
+        (n : I32) 0]
+    (dotimes [o 12]
+      (when (and (!= o s) (!= (c-active o) 0) (!= (c-team o) (c-team h)) (!= (c-team o) (c-team s)) (!= (c-role o) (r-warden)))
+        (when (< (len3 (- (c-x h) (c-x o)) (- (c-y h) (c-y o)) (- (c-z h) (c-z o))) mine) (set! n (+ n 1)))))
+    (= n 0)))
+
+;; the tower an enemy carrier h is most likely going for: its own pick if it is a bot, else the nearest corner that is not its own
+(defn carrier-tower [(h : I32)] : I32
+  (if (!= (c-is-bot h) 0)
+      (c-attack h)
+      (let [(best : I32) 0 (bd : F32) 1000000.0]
+        (dotimes [o 4]
+          (when (!= o (c-team h))
+            (let [(d : F32) (tower-dist o (c-x h) (c-z h))]
+              (when (< d bd) (set! bd d) (set! best o)))))
+        best)))
+
+;; set the point a car makes for (on the floor unless said otherwise), clamped into the room
+(defn set-tgt! [(s : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (do (set-c-tgt-x! s (clamp-f x -440.0 440.0)) (set-c-tgt-y! s y) (set-c-tgt-z! s (clamp-f z -440.0 440.0))))
+(defn set-aim! [(s : I32) (x : F32) (y : F32) (z : F32)] : Unit
+  (let [(il : F32) (inv-len3 x y z)] (set-c-aim-x! s (* x il)) (set-c-aim-y! s (* y il)) (set-c-aim-z! s (* z il))))
+
+;; OPEN SPACE for a team-mate of carrier h: up the field toward h's tower and off to one side -- the seat says which side, the
+;; gestalt phase how wide (Johnny 26 degrees off the carrier's line, Spike 15), both inside the 28 degree cone the carrier's
+;; nose sweeps as it runs at the tower, so a pass needs hardly a turn. If an enemy is standing on the spot it swings to the
+;; other side, and if that is taken too it slides further up the field.
+(defn support-x [(h : I32) (side : F32) (wide : F32)] : F32
+  (let [tw (c-attack h) (hx : F32) (- (tw-x tw) (b-x)) (hz : F32) (- (tw-z tw) (b-z)) (hl : F32) (fmax2 1.0 (len2 hx hz))
+        (up : F32) (clamp-f (* hl 0.5) 90.0 210.0)]
+    (+ (+ (b-x) (* (/ hx hl) up)) (* (/ (- 0.0 hz) hl) (* side (* wide up))))))
+(defn support-z [(h : I32) (side : F32) (wide : F32)] : F32
+  (let [tw (c-attack h) (hx : F32) (- (tw-x tw) (b-x)) (hz : F32) (- (tw-z tw) (b-z)) (hl : F32) (fmax2 1.0 (len2 hx hz))
+        (up : F32) (clamp-f (* hl 0.5) 90.0 210.0)]
+    (+ (+ (b-z) (* (/ hz hl) up)) (* (/ hx hl) (* side (* wide up))))))
+(defn plan-support! [(s : I32) (h : I32)] : Unit
+  (let [t (c-team s)
+        tw (c-attack h)
+        (side : F32) (if (= (bit-and (c-seat s) 1) 0) 1.0 -1.0)
+        (wide : F32) (* (gv s (k-g-spread) 0.3 0.5) (if (= (gi (+ (g-gest) t)) 0) 1.0 0.55))
+        (px : F32) (support-x h side wide) (pz : F32) (support-z h side wide)
+        (ox : F32) (support-x h (- 0.0 side) wide) (oz : F32) (support-z h (- 0.0 side) wide)
+        swap (and (> (crowd-at t px 10.0 pz 70.0) 0) (= (crowd-at t ox 10.0 oz 70.0) 0))
+        (qx : F32) (if swap ox px) (qz : F32) (if swap oz pz)
+        busy (> (crowd-at t qx 10.0 qz 70.0) 0)
+        (hx : F32) (- (tw-x tw) qx) (hz : F32) (- (tw-z tw) qz) (hl : F32) (fmax2 1.0 (len2 hx hz))]
+    (if busy
+        (set-tgt! s (+ qx (* (/ hx hl) 70.0)) 4.0 (+ qz (* (/ hz hl) 70.0)))
+        (set-tgt! s qx 4.0 qz))
+    (set-aim! s (- (b-x) (c-x s)) 0.0 (- (b-z) (c-z s)))))
+
+;; a spot for the counter while somebody else chases a loose ball: 130 from the ball on the way to my target tower
+(defn plan-spot! [(s : I32)] : Unit
+  (let [tw (gi (+ (g-tgt-tower) (c-team s)))
+        (hx : F32) (- (tw-x tw) (b-x)) (hz : F32) (- (tw-z tw) (b-z))
+        (hl : F32) (fmax2 1.0 (len2 hx hz))
+        (side : F32) (if (= (bit-and (c-seat s) 1) 0) 1.0 -1.0)
+        (wide : F32) (gv s (k-g-spread) 40.0 110.0)]
+    (set-tgt! s (+ (+ (b-x) (* (/ hx hl) 130.0)) (* (/ (- 0.0 hz) hl) (* side wide))) 4.0
+              (+ (+ (b-z) (* (/ hz hl) 130.0)) (* (/ hx hl) (* side wide))))
+    (set-aim! s (- (b-x) (c-x s)) 0.0 (- (b-z) (c-z s)))))
+
+;; CUT the lane: between enemy carrier h and its nearest team-mate within 300 (its outlet), else between h and the corner it is
+;; going for -- 40% of the way out from the carrier
+(defn plan-cut! [(s : I32) (h : I32)] : Unit
+  (let [ht (c-team h)
+        (om : I32) -1 (od : F32) 300.0]
+    (dotimes [k 3]
+      (let [m (+ (* ht 3) k)]
+        (when (and (!= m h) (!= (c-active m) 0))
+          (let [(d : F32) (len3 (- (c-x m) (c-x h)) (- (c-y m) (c-y h)) (- (c-z m) (c-z h)))]
+            (when (< d od) (set! od d) (set! om m))))))
+    (let [tw (carrier-tower h)
+          (ex : F32) (if (>= om 0) (c-x om) (tw-x tw))
+          (ez : F32) (if (>= om 0) (c-z om) (tw-z tw))]
+      (set-tgt! s (+ (c-x h) (* (- ex (c-x h)) 0.4)) 4.0 (+ (c-z h) (* (- ez (c-z h)) 0.4)))
+      (set-aim! s (- (c-x h) (c-x s)) 0.0 (- (c-z h) (c-z s))))))
+
+;; the KEEPER: on the line from its corner toward the ball, guard-radius out (never more than half way to the ball), facing out
+(defn plan-keep! [(s : I32)] : Unit
   (let [t (c-team s)
         (ox : F32) (tw-x t) (oz : F32) (tw-z t)
         (bx : F32) (- (b-x) ox) (bz : F32) (- (b-z) oz)
         (bl : F32) (fmax2 1.0 (len2 bx bz))
-        (rad : F32) (gv s (k-g-guard) 90.0 190.0)]
-    (set-c-tgt-x! s (+ ox (* (/ bx bl) (fmin2 rad (* bl 0.5)))))
-    (set-c-tgt-y! s 4.0)
-    (set-c-tgt-z! s (+ oz (* (/ bz bl) (fmin2 rad (* bl 0.5)))))
-    (set-c-aim-x! s (/ bx bl)) (set-c-aim-y! s 0.0) (set-c-aim-z! s (/ bz bl))))
+        (rad : F32) (fmin2 (gv s (k-g-guard) 90.0 190.0) (* bl 0.5))]
+    (set-tgt! s (+ ox (* (/ bx bl) rad)) 4.0 (+ oz (* (/ bz bl) rad)))
+    (set-aim! s bx 0.0 bz)))
 
-;; is the ball about to go up into this car's own tower?
-(defn threat? [(t : I32)] : Bool
-  (let [(hit : I32) 0]
-    (dotimes [i 48]
-      (when (and (> (pred-y i) 90.0) (< (len2 (- (pred-x i) (tw-x t)) (- (pred-z i) (tw-z t))) 120.0)) (set! hit 1)))
-    (= hit 1)))
+;; the ball is LOOSE: the team's chaser goes for it -- unless it is a team-mate's pass in the air, which belongs to the one it
+;; was thrown to (that one RECEIVES: it holds its line and lets the lead and the magnet do the rest). Only ONE car a team goes
+;; for a loose ball; the keeper minds the corner and the third takes a spot for the counter. (A chaser that let an enemy it
+;; would lose the race to have the ball, lurking for the squirt instead, was tried: fewer goals, fewer steals, the same scrum.)
+(defn loose-decide![(s : I32)] : Unit
+  (let [t (c-team s)
+        pf (b-pass-from)
+        ours (and (> (b-pass-t) 0) (>= pf 0) (= (c-team (max-i pf 0)) t) (!= pf s))
+        mine (and ours (= (c-mate (max-i pf 0)) s))
+        chaser (and (not ours) (= (team-chaser t) s))]
+    (cond
+      mine (set-c-tactic! s (tc-receive))
+      chaser (set-c-tactic! s (tc-chase))
+      (= (c-role s) (r-warden)) (do (set-c-tactic! s (tc-keep)) (plan-keep! s))
+      :else (do (set-c-tactic! s (tc-spot)) (plan-spot! s)))))
 
 (defn decide! [(s : I32)] : Unit
   (let [t (c-team s)
-        ;; a scrum round the ball that I am not in: wait it out at a stand-off point on my own side
-        scrum (and (>= (crowd-at t (b-x) (b-y) (b-z) 55.0) 2) (> (dist-to-ball s) 70.0))
-        role (c-role s)
-        (air : F32) (c-air s)
-        (low : F32) (gv s (k-g-refuel) 8.0 45.0)
-        (cd : I32) (gi (g-countdown))]
+        h (b-holder)
+        ht (holder-team)
+        keeper (= (c-role s) (r-warden))
+        posture (gi (+ (g-posture) t))]
+    (set-c-seen! s h)
     (cond
-      scrum
-        (do (set-c-tactic! s (tc-flank))
-            (set-c-tgt-x! s (+ (* (tw-x t) 0.45) (* (b-x) 0.2)))
-            (set-c-tgt-y! s 4.0)
-            (set-c-tgt-z! s (+ (* (tw-z t) 0.45) (* (b-z) 0.2)))
-            (set-c-aim-x! s (- (b-x) (c-x s))) (set-c-aim-y! s 0.0) (set-c-aim-z! s (- (b-z) (c-z s))))
-      ;; the opening whistle: the nearest car to the middle goes for it
-      (< (gi (g-kickoff-t)) 80)
-        (if (= role (r-striker))
-            (do (set-c-tactic! s (tc-strike)) (plan-strike! s 0.0))
-            (if (= role (r-warden))
-                (do (set-c-tactic! s (tc-guard)) (plan-guard! s))
-                (do (set-c-tactic! s (tc-flank))
-                    (set-c-tgt-x! s (* (tw-x t) 0.55)) (set-c-tgt-y! s 4.0) (set-c-tgt-z! s (* (tw-z t) 0.55))
-                    (set-c-aim-x! s (- 0.0 (tw-x t))) (set-c-aim-y! s 0.0) (set-c-aim-z! s (- 0.0 (tw-z t))))))
-      (and (< air low) (!= (c-attached s) 0) (!= role (r-striker)))
-        (do (set-c-tactic! s (tc-refuel)) (plan-flank! s))
-      (= role (r-warden))
-        (if (threat? t)
-            (do (set-c-tactic! s (tc-strike)) (plan-strike! s 0.0))
-            (do (set-c-tactic! s (tc-guard)) (plan-guard! s)))
-      (= role (r-striker))
-        (do (set-c-tactic! s (tc-strike)) (plan-strike! s 0.0))
+      ;; the ball is dead in a shaft after a goal: everyone drifts back toward home for the restart
+      (> (gi (g-goal-t)) 0)
+        (do (set-c-tactic! s (tc-spot)) (set-tgt! s (* (tw-x t) 0.6) 4.0 (* (tw-z t) 0.6)))
+      (= h s) (carry-decide! s)
+      (< h 0) (loose-decide! s)
+      ;; ours: get open. The keeper stays home -- unless the attack is far up the field (then it is the second outlet; a
+      ;; patient team, ahead by two, never sends it) or the team is behind by two and has to gamble
+      (= ht t)
+        (if (and keeper (or (= posture 2) (and (!= posture 1) (< (tower-dist t (b-x) (b-z)) 620.0))))
+            (do (set-c-tactic! s (tc-keep)) (plan-keep! s))
+            (do (set-c-tactic! s (tc-support)) (plan-support! s h)))
+      ;; theirs: the keeper meets a carrier that comes close to home. My team's nearest other car presses when the carrier is
+      ;; coming at our tower, or when it is the nearest hunter of all and near enough for the genome's appetite (or right on
+      ;; top of the carrier anyway); otherwise it cuts a lane, as the third does
       :else
-        ;; the lifter: if it is the one that can reach the ball sooner than the striker, it takes the ball; else it flanks
-        (let [sk (+ (* t 3) 0)]
-          (if (< (eta-to s (b-x) (b-y) (b-z)) 0.5)
-              (do (set-c-tactic! s (tc-strike)) (plan-strike! s 0.2))
-              (do (set-c-tactic! s (tc-flank)) (plan-flank! s)))))))
+        (let [(hd : F32) (tower-dist t (c-x h) (c-z h))
+              (reach : F32) (gv s (k-g-aggr) 160.0 420.0)
+              (dh : F32) (len3 (- (c-x h) (c-x s)) (- (c-y h) (c-y s)) (- (c-z h) (c-z s)))]
+          (cond
+            keeper (if (< hd (+ (gv s (k-g-guard) 90.0 190.0) 90.0))
+                       (set-c-tactic! s (tc-press))
+                       (do (set-c-tactic! s (tc-keep)) (plan-keep! s)))
+            (and (= (team-presser t h) s)
+                 (or (= (carrier-tower h) t) (< dh 70.0) (and (< dh reach) (first-presser? s h))))
+              (set-c-tactic! s (tc-press))
+            :else (do (set-c-tactic! s (tc-cut)) (plan-cut! s h)))))))
 
 ;; ---- level 1: the motor ---------------------------------------------------------------------------------------------------------------
 (defn clamp1 [(x : F32)] : F32 (clamp-f x -1.0 1.0))
@@ -345,8 +563,44 @@
         (set-c-in-steer! s (if (< ff -0.2) (if (< fr 0.0) -1.0 1.0) (clamp1 (* fr (* gain 2.2)))))
         (set-c-in-steer! s 0.0))))
 
+;; a push away from cars that are too close (added to the point a bot is steering for). Who shies from whom depends on the job:
+;; a carrier lining up a pass shies from nobody (the push would swing its nose off the mate it is turning to), a carrier with no
+;; pass on shies from everyone (it is getting away), a car going for the ball or for a carrier (chase, receive, press) shies only
+;; from its own team-mates (the enemy is what it means to hit: a presser that bounced off the carrier would circle it for a second
+;; and never tackle), and everyone else spreads out from everyone
+(defn avoid-w [(s : I32) (o : I32)] : F32
+  (let [(w : F32) 1.0 tc (c-tactic s)]
+    (cond (= tc (tc-carry)) (when (>= (c-mate s) 0) (set! w 0.0))
+          (or (= tc (tc-chase)) (= tc (tc-receive)) (= tc (tc-press))) (when (!= (c-team o) (c-team s)) (set! w 0.0))
+          :else unit)
+    w))
+(defn avoid-x [(s : I32)] : F32
+  (let [(a : F32) 0.0]
+    (dotimes [o 12]
+      (when (and (!= o s) (!= (c-active o) 0))
+        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
+              (d : F32) (len3 dx dy dz)]
+          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (* (/ dx d) (* (- 26.0 d) 3.2)) (avoid-w s o))))))))
+    a))
+(defn avoid-y [(s : I32)] : F32
+  (let [(a : F32) 0.0]
+    (dotimes [o 12]
+      (when (and (!= o s) (!= (c-active o) 0))
+        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
+              (d : F32) (len3 dx dy dz)]
+          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (* (/ dy d) (* (- 26.0 d) 3.2)) (avoid-w s o))))))))
+    a))
+(defn avoid-z [(s : I32)] : F32
+  (let [(a : F32) 0.0]
+    (dotimes [o 12]
+      (when (and (!= o s) (!= (c-active o) 0))
+        (let [(dx : F32) (- (c-x s) (c-x o)) (dy : F32) (- (c-y s) (c-y o)) (dz : F32) (- (c-z s) (c-z o))
+              (d : F32) (len3 dx dy dz)]
+          (when (and (< d 26.0) (> d 0.01)) (set! a (+ a (* (* (/ dz d) (* (- 26.0 d) 3.2)) (avoid-w s o))))))))
+    a))
+
 ;; in the air: guidance toward the waypoint (wx, wy, wz) with a wanted velocity (vx, vy, vz), body nose toward (nx, ny, nz)
-(defn fly! [(s : I32) (wx : F32) (wy : F32) (wz : F32) (vx : F32) (vy : F32) (vz : F32) (nx : F32) (ny : F32) (nz : F32)] : Unit
+(defn fly![(s : I32) (wx : F32) (wy : F32) (wz : F32) (vx : F32) (vy : F32) (vz : F32) (nx : F32) (ny : F32) (nz : F32)] : Unit
   (let [(ax : F32) (+ (+ (* (- wx (c-x s)) 1.4) (* (- vx (c-vx s)) 3.2)) (* (avoid-x s) 4.0))
         (ay : F32) (+ (+ (+ (* (- wy (c-y s)) 1.4) (* (- vy (c-vy s)) 3.2)) (grav)) (* (avoid-y s) 4.0))
         (az : F32) (+ (+ (* (- wz (c-z s)) 1.4) (* (- vz (c-vz s)) 3.2)) (* (avoid-z s) 4.0))
@@ -387,43 +641,174 @@
   (do (set-c-in-thr! s -1.0) (set-c-in-steer! s (if (= (bit-and (gi (g-tick)) 64) 0) 1.0 -1.0))
       (when (> (c-air s) 20.0) (set-c-in-lift! s 0.6))))
 
+;; is there a surface for the wheels near the point (x, y, z)? (the ball on the floor, rolling up a wall, on the ceiling)
+(defn on-surface? [(x : F32) (y : F32) (z : F32)] : Bool (< (arena-free x y z) 24.0))
+
+;; a loose ball hanging high at the mouth of s's OWN shaft (up the corner, near the line)
+(defn own-mouth? [(s : I32)] : Bool
+  (and (< (b-holder) 0) (> (b-y) 150.0) (< (tower-dist (c-team s) (b-x) (b-z)) 110.0)))
+
+;; get to (tx, ty, tz) and stop there: drive if the wheels are down and the point is on a surface, else fly
+(defn goto! [(s : I32) (tx : F32) (ty : F32) (tz : F32)] : Unit
+  (let [(dd : F32) (len3 (- tx (c-x s)) (- ty (c-y s)) (- tz (c-z s)))]
+    (if (and (= (c-attached s) 1) (on-surface? tx ty tz))
+        (drive! s tx ty tz (fmin2 230.0 (* dd 1.6)))
+        (fly! s tx ty tz 0.0 0.0 0.0 (c-aim-x s) 0.0 (c-aim-z s)))))
+
+;; on the wheels, hold the line and the speed: no steering, no boost, just the throttle that keeps `want` (the pass was led to
+;; where the car would be if it kept going, so it keeps going)
+(defn cruise! [(s : I32) (want : F32)] : Unit
+  (let [(vf : F32) (dot3 (c-vx s) (c-vy s) (c-vz s) (c-fx s) (c-fy s) (c-fz s))]
+    (set-c-in-steer! s 0.0) (set-c-in-pitch! s 0.0) (set-c-in-roll! s 0.0) (set-c-in-strafe! s 0.0) (set-c-in-lift! s 0.0)
+    (set-c-in-boost! s 0)
+    (set-c-in-thr! s (clamp1 (+ (* (- want vf) 0.06) (* (/ want 190.0) 0.5))))))
+
+;; the ground catch: the earliest step of the ball predictor at which the ball is down where a driving car's cradle can take it
+;; (within 24 of a surface: the floor, a wall it is rolling up) and this car's cradle can be there in time at `vmax` -> the
+;; step, or -1 (the ball is out of reach on the wheels: fly for it)
+(defn ground-catch-step [(s : I32) (vmax : F32)] : I32
+  (let [(found : I32) -1
+        (cx : F32) (cradle-x s) (cy : F32) (cradle-y s) (cz : F32) (cradle-z s)]
+    (loop [i 0]
+      (when (and (< i 75) (< found 0))
+        (when (and (on-surface? (pred-x i) (pred-y i) (pred-z i))
+                   (<= (len3 (- (pred-x i) cx) (- (pred-y i) cy) (- (pred-z i) cz)) (* vmax (* (f32 (+ i 1)) (pred-dt)))))
+          (set! found i))
+        (recur (+ i 1))))
+    found))
+
+;; CATCH: put the cradle on the ball. Close in, home on the ball itself and come in at no more than the genome's approach speed
+;; relative to it -- a ball that arrives at the cradle too fast is fumbled, so an easy bot that charges in fumbles a lot more.
+;; Further off, on the wheels: drive to the first place the ball comes down within reach, at the speed that gets the cradle
+;; there when the ball does (a ball coming this way is waited for, not charged). Otherwise make for the predictor's intercept
+;; step, driving if it is on a surface, flying if not.
+(defn chase-ball! [(s : I32)] : Unit
+  (let [(d : F32) (dist-to-ball s)
+        att (= (c-attached s) 1)
+        gs (if (and att (> d 60.0)) (ground-catch-step s (gv s (k-g-launch) 260.0 210.0)) -1)
+        i (if (and (< gs 0) (> d 90.0)) (intercept-step s 0.0) 0)
+        (px : F32) (cond (>= gs 0) (pred-x gs) (> i 0) (pred-x i) :else (b-x))
+        (py : F32) (cond (>= gs 0) (pred-y gs) (> i 0) (pred-y i) :else (b-y))
+        (pz : F32) (cond (>= gs 0) (pred-z gs) (> i 0) (pred-z i) :else (b-z))
+        (ex : F32) (- px (c-x s)) (ey : F32) (- py (c-y s)) (ez : F32) (- pz (c-z s))
+        (el : F32) (fmax2 1.0 (len3 ex ey ez))
+        (nx : F32) (/ ex el) (ny : F32) (/ ey el) (nz : F32) (/ ez el)
+        (appr : F32) (gv s (k-g-launch) 240.0 130.0)
+        (close : F32) (clamp-f (* d 1.6) 35.0 appr)]
+    (set-c-in-magnet! s 1)
+    (cond
+      ;; driving to where the ball comes down: on time, not early
+      (>= gs 0)
+        (drive! s px py pz (+ 15.0 (/ (len3 (- px (cradle-x s)) (- py (cradle-y s)) (- pz (cradle-z s)))
+                                      (* (f32 (+ gs 1)) (pred-dt)))))
+      (and att (on-surface? px py pz))
+        ;; on the wheels: the speed asked for is the ball's own speed along my nose plus the closing speed, so a ball rolling
+        ;; away is run down and one rolling at me is met almost standing (a few tens backward at most)
+        (let [(vb : F32) (dot3 (b-vx) (b-vy) (b-vz) (c-fx s) (c-fy s) (c-fz s))]
+          (drive! s px py pz (if (> d 90.0) 260.0 (clamp-f (+ vb close) -40.0 280.0))))
+      ;; in the air: the car's centre goes where the ball is less the cradle's offset, at the ball's velocity plus the closing
+      ;; speed toward it, nose on the ball
+      :else
+        (fly! s (- px (* nx 17.0)) (- py 9.0) (- pz (* nz 17.0))
+              (+ (b-vx) (* nx close)) (+ (b-vy) (* ny close)) (+ (b-vz) (* nz close)) nx ny nz))))
+(defn chase-motor! [(s : I32)] : Unit
+  (if (own-mouth? s)
+      ;; the ball is hanging at the mouth of my own shaft: climbing the corner after it bumps (or pulls) it over the line -- a
+      ;; chaser scored on its own team that way -- so wait on the floor below, out from the corner, for it to fall back out
+      (let [t (c-team s)
+            (ox : F32) (tw-x t) (oz : F32) (tw-z t) (ol : F32) (fmax2 1.0 (len2 ox oz))]
+        (goto! s (- ox (* (/ ox ol) 130.0)) 4.0 (- oz (* (/ oz ol) 130.0)))
+        (set-c-in-magnet! s 0))
+      (chase-ball! s)))
+
+;; RECEIVE: the pass was led to where I would be if I kept going, so keep going -- same speed, same line, no boost -- with the
+;; button down; only in the last stretch does the car go for the ball itself
+(defn receive-motor! [(s : I32)] : Unit
+  (let [(d : F32) (dist-to-ball s)]
+    (set-c-in-magnet! s 1)
+    (if (< d 50.0)
+        (chase-motor! s)
+        (if (= (c-attached s) 1)
+            (cruise! s (dot3 (c-vx s) (c-vy s) (c-vz s) (c-fx s) (c-fy s) (c-fz s)))
+            (fly! s (+ (c-x s) (* (c-vx s) 0.1)) (+ (c-y s) (* (c-vy s) 0.1)) (+ (c-z s) (* (c-vz s) 0.1))
+                  (c-vx s) (c-vy s) (c-vz s) (- (b-x) (c-x s)) 0.0 (- (b-z) (c-z s)))))))
+
+;; PRESS: run the carrier down where it is going to be, flat out, button down to take the ball when it comes loose
+(defn press-motor! [(s : I32)] : Unit
+  (let [h (b-holder)]
+    (set-c-in-magnet! s 1)
+    (if (< h 0)
+        (chase-motor! s)
+        (let [(d : F32) (len3 (- (c-x h) (c-x s)) (- (c-y h) (c-y s)) (- (c-z h) (c-z s)))
+              (lt : F32) (fmin2 0.8 (/ d 260.0))
+              (px : F32) (+ (c-x h) (* (c-vx h) lt)) (py : F32) (+ (c-y h) (* (c-vy h) lt)) (pz : F32) (+ (c-z h) (* (c-vz h) lt))]
+          (if (and (= (c-attached s) 1) (on-surface? px py pz))
+              (drive! s px py pz 300.0)
+              (let [(ex : F32) (- px (c-x s)) (ey : F32) (- py (c-y s)) (ez : F32) (- pz (c-z s))
+                    (il : F32) (inv-len3 ex ey ez)]
+                (fly! s px py pz (* ex (* il 220.0)) (* ey (* il 220.0)) (* ez (* il 220.0)) (* ex il) (* ey il) (* ez il))))))))
+
+;; CARRY: run at the target tower's corner -- driving up it takes the ball into the shaft (a dunk) -- or at the team-mate the pass
+;; plan names, and LET GO (the button up: that is the throw) the moment it pays:
+;;   a pass   the planned team-mate is in the nose cone and calling, so the physics will lead the throw to it
+;;   a shot   no calling team-mate in the cone (that would turn the throw into a pass), and the what-if says it goes in
+;;   the clock  held past the genome's patience (short of the five seconds that would throw it for us at half pace)
+;; A carrier with an enemy bearing down on it and no pass plan looks for an outlet every tick, not just on its thinking beat: a
+;; tackle is a fraction of a second away.
+(defn carry-motor! [(s : I32)] : Unit
+  (let [tw (c-attack s)
+        (m : I32) (c-mate s)
+        (gx : F32) (tw-x tw) (gz : F32) (tw-z tw)
+        att (= (c-attached s) 1)]
+    (when (and (< m 0) (> (pressure s) 0))
+      (set! m (choose-mate s tw))
+      (when (>= m 0) (set-c-mate! s m) (set-c-react-t! s (gi (g-tick)))))
+    (set-c-in-magnet! s 1)
+    (if (>= m 0)
+        (if att
+            (drive! s (c-x m) (c-y m) (c-z m) 220.0)
+            (let [(ex : F32) (- (c-x m) (c-x s)) (ey : F32) (- (c-y m) (c-y s)) (ez : F32) (- (c-z m) (c-z s))]
+              (fly! s (c-x s) (fmax2 20.0 (c-y s)) (c-z s) 0.0 0.0 0.0 ex ey ez)))
+        ;; the way in is along the floor (a car up a wall heads back down: the far corner is not "up"); only the last stretch
+        ;; aims up into the shaft, so the corner it drives up is the target's -- never its own
+        (if att
+            (drive! s gx (if (< (tower-dist tw (c-x s) (c-z s)) 170.0) 300.0 0.0) gz 300.0)
+            (let [(ex : F32) (- gx (c-x s)) (ez : F32) (- gz (c-z s))]
+              (fly! s (c-x s) 4.0 (c-z s) (* ex 0.6) -60.0 (* ez 0.6) ex 0.0 ez))))
+    (let [pm (pass-mate s)
+          go (cond (>= m 0) (= pm m)
+                   (>= pm 0) false
+                   :else (> (shot-score s) 880.0))]
+      (when (or go (> (b-hold-t) (i32 (gv s (k-g-patience) 290.0 240.0))))
+        (set-c-in-magnet! s 0)))))
+
 ;; the guidance that carries out the tactic, every tick
 (defn motor! [(s : I32)] : Unit
   (let [(tx : F32) (c-tgt-x s) (ty : F32) (c-tgt-y s) (tz : F32) (c-tgt-z s)
         tac (c-tactic s)
-        (px : F32) (c-x s) (py : F32) (c-y s) (pz : F32) (c-z s)
-        att (= (c-attached s) 1)
-        (dd : F32) (len3 (- tx px) (- ty py) (- tz pz))]
+        (dd : F32) (len3 (- tx (c-x s)) (- ty (c-y s)) (- tz (c-z s)))]
     (set-c-in-fans-off! s 0)
     (cond
-      ;; striking: an approach LINE through the contact point along the push direction
-      (= tac (tc-strike))
-        (let [(ux : F32) (c-aim-x s) (uy : F32) (c-aim-y s) (uz : F32) (c-aim-z s)
-              (ex : F32) (- px tx) (ey : F32) (- py ty) (ez : F32) (- pz tz)
-              (along : F32) (dot3 ex ey ez ux uy uz)
-              (lx : F32) (- ex (* ux along)) (ly : F32) (- ey (* uy along)) (lz : F32) (- ez (* uz along))
-              (vc : F32) (gv s (k-g-launch) 190.0 270.0)
-              ;; behind the contact point: close the lateral error and walk up the line; past it: just keep going
-              (back : F32) (fmax2 0.0 (- 0.0 along))
-              (lat : F32) (len3 lx ly lz)
-              ;; path following: steer for a carrot on the approach line, a little ahead of where the car's own projection
-              ;; sits on it. Far back it converges onto the line; on the line it points straight through the ball.
-              (carrot : F32) (+ along 60.0)
-              (wx : F32) (+ tx (* ux carrot)) (wy : F32) (+ ty (* uy carrot)) (wz : F32) (+ tz (* uz carrot))]
-          ;; the ball is high or the shot climbs steeply: that is an air job
-          (if (and att (and (< ty 46.0) (< uy 0.5)))
-              (drive! s wx wy wz (if (and (> lat 22.0) (< back 110.0)) 120.0 (if (< back 150.0) vc 230.0)))
-              (fly! s wx wy wz (* ux vc) (* uy vc) (* uz vc) ux uy uz)))
-      ;; guarding / flanking / refuelling: get there and stop
+      (= tac (tc-carry)) (carry-motor! s)
+      (= tac (tc-chase)) (chase-motor! s)
+      (= tac (tc-receive)) (receive-motor! s)
+      (= tac (tc-press)) (press-motor! s)
       :else
-        (if (and att (< ty 40.0))
-            (drive! s tx ty tz (fmin2 200.0 (* dd 2.0)))
-            (fly! s tx ty tz 0.0 0.0 0.0 (c-aim-x s) 0.0 (c-aim-z s))))
+        (do ;; picked for a pass: hold the line (the throw is led to where I will be if I keep going), else go to my spot
+            (if (and (picked? s) (= (c-attached s) 1))
+                (cruise! s (dot3 (c-vx s) (c-vy s) (c-vz s) (c-fx s) (c-fy s) (c-fz s)))
+                (goto! s tx ty tz))
+            ;; the button: down to defend (a keeper or a cutter takes a slow ball or a loose one), down to CALL for it when the
+            ;; carrier has picked me (and while that pass is in the air), down when a loose ball comes my way
+            (set-c-in-magnet! s (b2i (or (= tac (tc-keep)) (= tac (tc-cut)) (picked? s) (pass-for-me? s)
+                                         (and (< (b-holder) 0) (< (dist-to-ball s) 90.0)))))))
+    ;; never the button under a loose ball hanging at the mouth of my OWN shaft: a magnet there pulls it up over the line
+    (when (own-mouth? s) (set-c-in-magnet! s 0))
     ;; the genome's thrift: no boosting an empty tank
     (when (< (c-air s) 4.0) (set-c-in-boost! s 0))
     ;; stuck? (barely moving for a second with somewhere to be)
     (let [(sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))]
-      (if (and (< sp 6.0) (> dd 30.0))
+      (if (and (< sp 6.0) (> dd 30.0) (!= tac (tc-carry)))
           (set-c-stuck! s (+ (c-stuck s) 1))
           (set-c-stuck! s 0)))
     (when (> (c-stuck s) 70)
@@ -431,20 +816,33 @@
       (when (> (c-stuck s) 110) (set-c-stuck! s 0)))))
 
 ;; ---- driving the whole field -----------------------------------------------------------------------------------------------------------
+;; Each bot thinks on its own beat (the genome's reaction time: every 5 ticks for a hard bot, every 20 for an easy one), and
+;; sooner when the ball changes hands: a car that has just caught it is a carrier on the very next tick and one that has just
+;; lost it stops being one; everyone else catches up with the new situation a reaction time after the ball last changed
+;; hands (1..14 ticks by the genome), not on its next beat.
 (defn ai-think-all! [] : Unit
-  (let [tk (gi (g-tick))]
-    (when (= (mod tk 4) 0) (pred-update!))
+  (let [tk (gi (g-tick))
+        h (b-holder)]
+    ;; the ball predictor: every tick while the ball flies free (a catch is a matter of a few ticks), every fourth while carried
+    (when (or (< h 0) (= (mod tk 4) 0)) (pred-update!))
     (dotimes [t 4]
       (when (= (mod (+ tk (* t 5)) 20) 0) (commander! t)))
     (dotimes [s (max-cars)]
       (when (and (!= (c-active s) 0) (!= (c-is-bot s) 0))
-        (let [(period : I32) (i32 (gv s (k-g-react) 24.0 5.0))]
-          (when (= (mod (+ tk s) (max-i period 1)) 0) (decide! s))
+        (let [(period : I32) (i32 (gv s (k-g-react) 24.0 5.0))
+              (delay : I32) (i32 (gv s (k-g-react) 14.0 1.0))
+              flip (or (and (= h s) (!= (c-tactic s) (tc-carry))) (and (!= h s) (= (c-tactic s) (tc-carry))))
+              news (and (!= (c-seen s) h) (>= (- tk (b-touch-t)) delay))]
+          (when (or flip news (= (mod (+ tk s) (max-i period 1)) 0)) (decide! s))
           (motor! s))))))
 
 ;; ---- genomes -----------------------------------------------------------------------------------------------------------------------------
 ;; the three hand-set levels; CHAMPION comes from the league table. Each bot gets a little personal jitter so a team of three
 ;; is three people, not one (the noisy-gestalt idea: do not let a shared policy collapse every agent into the same behaviour).
+;; The genes, as the street game reads them: 0 aggr (how far out a defender presses), 1 patience (how long a carrier holds),
+;; 2 risk (how readily a pressed carrier gives it up), 3 thrift (boost), 4 lead (how much better placed a team-mate must be to be
+;; passed to), 5 react (thinking beat), 6 noise (aim), 7 refuel, 8 spread (how wide the outlets run), 9 guard (the keeper's
+;; distance out), 10 launch (how gently a catch is approached), 11 turn (air control gain), 12 lift, 13 style.
 (defn lvl-genome [(level : I32) (k : I32)] : F32
   (case level
     1 (case k 0 0.3 1 0.7 2 0.1 3 0.2 4 0.2 5 0.2 6 1.0 7 0.7 8 0.3 9 0.5 10 0.2 11 0.25 12 0.4 13 0.5 0.5)
@@ -458,4 +856,4 @@
       (let [(v : F32) (if (= level 4) (champion-gene s k) (lvl-genome level k))]
         (cf! s (+ (k-g-aggr) k) (clamp-f (+ v (* 0.07 (ai-rand-f))) 0.0 1.0))))
     (set-c-role! s (+ 1 (mod s 3)))
-    (set-c-tactic! s (tc-flank))))
+    (set-c-tactic! s (tc-spot))))

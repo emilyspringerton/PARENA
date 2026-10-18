@@ -16,7 +16,16 @@
 ;;   0x021000 G        global state words                               (g-* below)
 ;;   0x022000 CARS     12 x 512 bytes, 128 words each                   (br_fields.prn)
 ;;   0x024000 BALL     one record
-;;   0x025000 PARTS    256 x 64 bytes                                    (dust, plumes, sparks)
+;;   0x025000 PARTS    256 x 64 bytes                                    (fire, plumes, dust, sparks: br_fx.prn)
+;;   0x029000 LIGHTS   the DYNAMIC LIGHT TABLE the renderer reads every frame (br_fx.prn), rebuilt every tick; cosmetic only,
+;;                     the sim never reads it. 544 bytes of the free 4 KB up to NAMES:
+;;                       +0  I32 count     lights in use this tick (0..16; the slots past it are zeroed)
+;;                       +4  F32 drama     0..1: how hard to darken the ambient and push the contrast (someone on fire, a goal)
+;;                       +8  F32 flash     0..1: the goal flash (1 as the ball goes in, 0 a second later) for a screen-wide bloom
+;;                       +12 I32 tick      the sim tick the table was built on
+;;                       +16 I32 flash-t   ticks left of the goal flash, +20 its tower, +24 its team (fx state), +28 spare
+;;                       +32 16 lights x 32 bytes, all F32: x y z, r g b (0..1), intensity (1 = a car's worth, the goal
+;;                           flash starts at 9), radius (world units: the light is gone at that distance)
 ;;   0x02A000 NAMES    12 x 32 bytes, NUL-terminated ASCII
 ;;   0x02B000 NETIN    8 KB   frames from the gateway                    (br_net.prn)
 ;;   0x02D000 NETOUT   8 KB   frames for the gateway
@@ -42,6 +51,7 @@
 (defn cars-base [] : I32 139264)
 (defn ball-base [] : I32 147456)
 (defn part-base [] : I32 151552)
+(defn lights-base [] : I32 167936)
 (defn names-base [] : I32 172032)
 (defn netin-base [] : I32 176128)
 (defn netout-base [] : I32 184320)
@@ -64,6 +74,7 @@
 
 (defn max-cars [] : I32 12)
 (defn max-parts [] : I32 256)
+(defn max-lights [] : I32 16)
 (defn team-size [] : I32 3)
 (defn team-count [] : I32 4)
 
@@ -171,6 +182,7 @@
 (defn g-last-goal-tick [] : I32 103)
 (defn g-ball-last-y [] : I32 104)
 (defn g-stall [] : I32 105)         ; ticks the ball has been lying still on the floor
+(defn g-goal-dunk [] : I32 106)     ; 1 = the last goal was carried in (a dunk), 0 = it was thrown or struck in
 (defn g-sdx [] : I32 110)          ; scratch: SDF normal out
 (defn g-sdy [] : I32 111)
 (defn g-sdz [] : I32 112)
@@ -181,6 +193,7 @@
 (defn g-tmp3 [] : I32 123)
 (defn g-tmp4 [] : I32 124)
 (defn g-tmp5 [] : I32 125)
+(defn g-cmd-magnet [] : I32 129)   ; I32: the magnet button (hold = magnet on; let go while carrying = throw)
 (defn g-cmd-thr [] : I32 130)      ; F32: the local player's command for the next tick
 (defn g-cmd-steer [] : I32 131)
 (defn g-cmd-pitch [] : I32 132)
@@ -201,6 +214,14 @@
 (defn g-lock-on [] : I32 148)
 (defn g-help [] : I32 149)
 (defn g-ac-lead [] : I32 150)      ; rasteriser words start here (br_3d.prn): 150..205 are THEIRS
+;; ON FIRE's announcements and the particle system (br_fire.prn, br_fx.prn): HUD and cosmetic words the sim writes or the fx
+;; keep, and the sim never reads
+(defn g-part-head [] : I32 208)    ; the particle ring's spawn cursor
+(defn g-part-live [] : I32 209)    ; particles alive after the last fx tick
+(defn g-fire-ann-id [] : I32 210)  ; the fire banner: 1 "X IS ON FIRE", 2 fire out, 3 still on fire (scored while burning)
+(defn g-fire-ann-slot [] : I32 211) ; ... whose
+(defn g-fire-ann-why [] : I32 212) ; ... why it went out (fo-* in br_fire.prn)
+(defn g-fire-ann-t [] : I32 213)   ; ... ticks left on screen
 
 ;; ---- tiny integer / float helpers ---------------------------------------------------------
 (defn b2i [(c : Bool)] : I32 (if c 1 0))

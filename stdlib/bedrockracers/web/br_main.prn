@@ -1,18 +1,48 @@
 ;; stdlib/bedrockracers/web/br_main.prn -- the exports the page calls (and the test hooks).
 (defn br-init [] : Unit
-  (do (load-font) (init-arena!) (gi! (g-rng2) 9001)))
+  (do (load-font) (init-arena!) (gi! (g-rng2) 9001)
+      ;; memory starts zeroed, and holder 0 would mean car 0 has the ball: nobody has it
+      (set-b-holder! -1) (set-b-pass-from! -1)))
 (defn br-car-addr [(s : I32)] : I32 (car-base s))
 (defn br-ball-addr [] : I32 (ball-base))
 (defn br-g [(k : I32)] : I32 (gi k))
+;; what the renderer reads every frame for ON FIRE's lighting (br_fx.prn; the layout is in br_mem.prn's memory map): the dynamic
+;; light table, how many of its sixteen lights are lit, the drama scalar, the goal flash; and the particles
+(defn br-lights-addr [] : I32 (lights-base))
+(defn br-light-count [] : I32 (light-count))
+(defn br-drama [] : F32 (drama-level))
+(defn br-flash [] : F32 (loadf32 (lt-flash-addr)))
+(defn br-parts-addr [] : I32 (part-base))
+(defn br-part-live [] : I32 (gi (g-part-live)))
 (defn br-t-place [(s : I32) (x : F32) (y : F32) (z : F32)] : Unit
   (do (set-c-active! s 1) (place-car! s x y z) (set-c-air! s 100.0)))
-(defn br-t-cmd [(s : I32) (thr : F32) (steer : F32) (pitch : F32) (roll : F32) (strafe : F32) (lift : F32) (boost : I32) (fansoff : I32)] : Unit
+;; a JS caller that passes only the first nine arguments gets magnet = 0 (wasm fills a missing argument with zero)
+(defn br-t-cmd [(s : I32) (thr : F32) (steer : F32) (pitch : F32) (roll : F32) (strafe : F32) (lift : F32) (boost : I32) (fansoff : I32) (magnet : I32)] : Unit
   (do (set-c-in-thr! s thr) (set-c-in-steer! s steer) (set-c-in-pitch! s pitch) (set-c-in-roll! s roll)
-      (set-c-in-strafe! s strafe) (set-c-in-lift! s lift) (set-c-in-boost! s boost) (set-c-in-fans-off! s fansoff)))
+      (set-c-in-strafe! s strafe) (set-c-in-lift! s lift) (set-c-in-boost! s boost) (set-c-in-fans-off! s fansoff)
+      (set-c-in-magnet! s (b2i (!= magnet 0)))))
+;; put the ball somewhere: a placed ball is a free ball
 (defn br-t-ball [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32)] : Unit
-  (do (set-b-x! x) (set-b-y! y) (set-b-z! z) (set-b-vx! vx) (set-b-vy! vy) (set-b-vz! vz)))
+  (do (free-ball!) (set-b-x! x) (set-b-y! y) (set-b-z! z) (set-b-vx! vx) (set-b-vy! vy) (set-b-vz! vz)))
+;; the magnet's hooks: hand car s the ball (a catch, with its credit), and the kickoff / command-byte paths on their own
+(defn br-t-give [(s : I32)] : Unit (catch! s))
+(defn br-t-kickoff [] : Unit (kickoff! 0))
+(defn br-t-end [] : Unit (end-match! -1 4))
+(defn br-t-pend-from-cmd [(s : I32)] : Unit (pend-from-cmd! s))
+(defn br-t-apply-pend [(s : I32)] : Unit (apply-pend! s))
+(defn br-t-pend-byte [(s : I32) (k : I32)] : I32 (load8 (pend-addr s k)))
+(defn br-t-setg [(k : I32) (v : I32)] : Unit (gi! k v))
+(defn br-t-setgf [(k : I32) (v : F32)] : Unit (gf! k v))
+;; the physics on the bench, n ticks (and the cosmetics after each, which never change it)
 (defn br-t-step [(n : I32)] : Unit
-  (dotimes [i n] (capture-prev!) (physics-tick!) (gi! (g-tick) (+ (gi (g-tick)) 1))))
+  (dotimes [i n] (capture-prev!) (physics-tick!) (gi! (g-tick) (+ (gi (g-tick)) 1)) (fx-tick!)))
+;; ON FIRE's hooks: a goal into `tower` scored by `who` with `assist` (-1 none) as the last two touches, through the real
+;; on-goal!; set car s on fire as if it had just earned it; the cosmetics alone, n ticks
+(defn br-t-score [(who : I32) (assist : I32) (tower : I32)] : Unit
+  (do (free-ball!) (set-b-touch! who) (set-b-touch2! assist) (set-b-touch-team! (if (>= who 0) (c-team who) -1))
+      (on-goal! tower)))
+(defn br-t-ignite [(s : I32)] : Unit (ignite! s))
+(defn br-t-fx [(n : I32)] : Unit (dotimes [i n] (fx-tick!)))
 (defn br-t-free [(x : F32) (y : F32) (z : F32)] : F32 (arena-free x y z))
 (defn br-t-road [(x : F32) (z : F32)] : I32 (road-at x z))
 ;; a whole match on the bench: begin (all bots unless a roster says otherwise) and run
@@ -25,3 +55,8 @@
   (do (plan-shot! px py pz own want speed) (gf (pl-score))))
 (defn br-t-whatif [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (own : I32) (want : I32)] : F32
   (what-if x y z vx vy vz own want))
+;; the bots on the bench: re-assign car s a level's genome (to pit levels against each other in one match); the carrier's own
+;; trigger (the what-if at the physics' step, n substeps, no lane reading)
+(defn br-t-assign [(s : I32) (level : I32)] : Unit (ai-assign! s level))
+(defn br-t-whatif-fine [(x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (own : I32) (want : I32) (n : I32)] : F32
+  (what-if-fine x y z vx vy vz own want n -1))

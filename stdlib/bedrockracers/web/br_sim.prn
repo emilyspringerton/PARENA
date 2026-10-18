@@ -1,8 +1,8 @@
 ;; stdlib/bedrockracers/web/br_sim.prn -- the simulation driver: commands, the replay log, the 16 ms tick.
 ;;
 ;; A human's command is nine numbers; here it is made into EIGHT BYTES -- thr, steer, pitch, roll, strafe (signed, /127), lift
-;; (unsigned, /255), flags (1 boost, 2 fans off), a spare -- and the car is driven FROM THOSE BYTES, in the live game and in a
-;; replay alike. So the log IS the human half of the match: with (seed, level, roster) it replays bit for bit.
+;; (unsigned, /255), flags (1 boost, 2 fans off, 4 magnet), a spare -- and the car is driven FROM THOSE BYTES, in the live game and
+;; in a replay alike. So the log IS the human half of the match: with (seed, level, roster) it replays bit for bit.
 
 (defn tick-ms [] : F32 16.0)
 
@@ -23,7 +23,8 @@
     (store8! (pend-addr s 3) (bit-and (quant (gf (g-cmd-roll))) 255))
     (store8! (pend-addr s 4) (bit-and (quant (gf (g-cmd-strafe))) 255))
     (store8! (pend-addr s 5) (quant-u (gf (g-cmd-lift))))
-    (store8! (pend-addr s 6) (+ (b2i (!= (gi (g-cmd-boost)) 0)) (* 2 (b2i (!= (gi (g-cmd-fans-off)) 0)))))
+    (store8! (pend-addr s 6) (+ (+ (b2i (!= (gi (g-cmd-boost)) 0)) (* 2 (b2i (!= (gi (g-cmd-fans-off)) 0))))
+                                (* 4 (b2i (!= (gi (g-cmd-magnet)) 0)))))
     (store8! (pend-addr s 7) 0)))
 
 (defn pend-clear! [(s : I32)] : Unit (dotimes [k 8] (store8! (pend-addr s k) 0)))
@@ -37,7 +38,8 @@
     (set-c-in-strafe! s (/ (f32 (sbyte (load8 (pend-addr s 4)))) 127.0))
     (set-c-in-lift! s (/ (f32 (load8 (pend-addr s 5))) 255.0))
     (set-c-in-boost! s (bit-and fl 1))
-    (set-c-in-fans-off! s (bit-and (shr fl 1) 1))))
+    (set-c-in-fans-off! s (bit-and (shr fl 1) 1))
+    (set-c-in-magnet! s (bit-and (shr fl 2) 1))))
 
 ;; ---- the log ------------------------------------------------------------------------------------------------------
 (defn log-room? [] : Bool (< (+ (* (gi (g-log-n)) 8) 8) (log-cap)))
@@ -68,12 +70,14 @@
       (do (when (human? (gi (g-me))) (pend-from-cmd! (gi (g-me))))
           (log-append!))))
 
+;; the cosmetics (br_fx.prn) run last, after the match has moved, and on the frozen countdown ticks too; they only read the match
 (defn sim-tick! [] : Unit
   (cond
     (> (gi (g-countdown)) 0)
       (do (capture-prev!)
           (gi! (g-countdown) (- (gi (g-countdown)) 1))
-          (set-b-hit-t! 0))
+          (set-b-hit-t! 0)
+          (fx-tick!))
     :else
       (do
         (capture-prev!)
@@ -82,4 +86,5 @@
         (ai-think-all!)
         (physics-tick!)
         (gi! (g-tick) (+ (gi (g-tick)) 1))
-        (rules-tick!))))
+        (rules-tick!)
+        (fx-tick!))))

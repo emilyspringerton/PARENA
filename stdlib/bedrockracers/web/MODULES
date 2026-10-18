@@ -7,5 +7,7 @@ stdlib/bedrockracers/web/br_phys.prn
 stdlib/bedrockracers/web/br_ai.prn
 stdlib/bedrockracers/web/br_league.prn
 stdlib/bedrockracers/web/br_rules.prn
+stdlib/bedrockracers/web/br_fire.prn
 stdlib/bedrockracers/web/br_sim.prn
+stdlib/bedrockracers/web/br_fx.prn
 stdlib/bedrockracers/web/br_main.prn

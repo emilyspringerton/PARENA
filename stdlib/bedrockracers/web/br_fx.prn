@@ -1,0 +1,253 @@
+;; stdlib/bedrockracers/web/br_fx.prn -- the cosmetics: particles, the flames, and the DYNAMIC LIGHT TABLE the renderer lights the
+;; arena with. ON FIRE's "REALLY DRAMATIC LIGHTING EFFECTS" (founder, 2026-10-18) are built here.
+;;
+;; NOTHING HERE FEEDS THE SIM. This file reads the match (cars, ball, fires, the goal) and writes only its own records -- the
+;; particles at part-base, the light table at lights-base, each car's fire-fx, the fire banner's clock -- and every die it rolls
+;; is fx-rand (br_mem.prn), the cosmetic generator, never the sim's or the AI's. The fx dice are seeded from the match seed at
+;; begin-match!, so a replayed match LOOKS the same as well as plays the same; but if they were seeded differently, the match
+;; itself would still come out bit for bit the same (tests/br_fire_test.mjs checks both).
+;;
+;; fx-tick! runs once per sim tick (br_sim.prn: also during the frozen kickoff countdown, so the flames keep moving):
+;;   the cars     each car's fire-fx (0..1, the renderer's flame size) swells fast when it catches fire and dies down slowly
+;;                when it goes out; a burning car throws off flames, a boosting one a plume, one driving the dirt track
+;;                (or drifting) a little dust
+;;   the ball     alight (b-fire): flames off its surface, a comet's tail behind it
+;;   particles    256 slots, a spawn ring that takes the first free slot of the next eight (else recycles the oldest-ish one);
+;;                each lives `life` ticks: integrate (flames rise and shrink, plumes spread and slow, dust settles, sparks
+;;                fall), age, die. The floor stops what falls; nothing else collides (they are only light and colour).
+;;   the lights   rebuilt from scratch every tick, in priority order, up to 16: the goal flash, the burning ball, burning
+;;                cars (flickering orange-white), boost plumes. Then the DRAMA scalar: it jumps up when someone is on fire or a
+;;                goal goes in and ebbs away slowly after -- the renderer darkens the ambient and pushes the contrast with it.
+;;
+;; The light table's layout is in br_mem.prn's memory map (LIGHTS, 0x029000). Light colours are 0..1 per channel; intensity is in
+;; "a car's worth" (a burning car flickers between about 1.4 and 2.4, the goal flash starts at 9); a light reaches out to its
+;; radius and no further (a renderer might take colour * intensity * (1 - d / radius)^2).
+
+;; ---- the constants ----------------------------------------------------------------------------------------------------------
+(defn fx-flash-ticks [] : I32 63)       ; the goal flash lasts ~1 s
+(defn fx-flash-power [] : F32 9.0)      ; ... starts this bright (a burning car is ~2) and falls off as the square of what is left
+(defn fx-flash-radius [] : F32 900.0)   ; ... lighting most of the arena at first, shrinking to 45% of it
+(defn fx-flash-y [] : F32 205.0)        ; ... from just under the mouth of the tower's shaft
+(defn fx-sparks [] : I32 40)            ; sparks sprayed down out of the shaft by a goal
+(defn fx-fire-rise [] : F32 0.25)       ; fire-fx swells this much of the way to 1 each tick on catching fire ...
+(defn fx-fire-fall [] : F32 0.06)       ; ... and dies down this much of the way to 0 once out
+(defn fx-drama-rise [] : F32 0.2)       ; the drama jumps up ...
+(defn fx-drama-fall [] : F32 0.025)     ; ... and ebbs away (a time constant of ~0.6 s)
+
+;; particle kinds
+(defn pk-fire [] : I32 1)
+(defn pk-plume [] : I32 2)
+(defn pk-dust [] : I32 3)
+(defn pk-spark [] : I32 4)
+
+;; ---- the light table ----------------------------------------------------------------------------------------------------------
+(defn lt-count-addr [] : I32 (lights-base))
+(defn lt-drama-addr [] : I32 (+ (lights-base) 4))
+(defn lt-flash-addr [] : I32 (+ (lights-base) 8))
+(defn lt-tick-addr [] : I32 (+ (lights-base) 12))
+(defn lt-flash-t-addr [] : I32 (+ (lights-base) 16))
+(defn lt-flash-tower-addr [] : I32 (+ (lights-base) 20))
+(defn lt-flash-team-addr [] : I32 (+ (lights-base) 24))
+(defn lt-addr [(i : I32)] : I32 (+ (+ (lights-base) 32) (* i 32)))
+(defn lt-words [] : I32 136)             ; header 8 + 16 lights x 8
+
+(defn light-count [] : I32 (load32 (lt-count-addr)))
+(defn drama-level [] : F32 (loadf32 (lt-drama-addr)))
+
+;; one more light, if there is room
+(defn light! [(x : F32) (y : F32) (z : F32) (cr : F32) (cg : F32) (cb : F32) (power : F32) (radius : F32)] : Unit
+  (let [n (light-count)]
+    (when (< n (max-lights))
+      (let [a (lt-addr n)]
+        (storef32! a x) (storef32! (+ a 4) y) (storef32! (+ a 8) z)
+        (storef32! (+ a 12) cr) (storef32! (+ a 16) cg) (storef32! (+ a 20) cb)
+        (storef32! (+ a 24) power) (storef32! (+ a 28) radius)
+        (store32! (lt-count-addr) (+ n 1))))))
+
+;; a channel of an engine colour (0xAABBGGRR), as 0..1: shift 0 red, 8 green, 16 blue
+(defn chan-f [(c : I32) (sh : I32)] : F32 (/ (f32 (bit-and (shr c sh) 255)) 255.0))
+
+;; ---- the particles ------------------------------------------------------------------------------------------------------------
+;; the first free slot among the next eight from the ring's cursor; none free: the one at the cursor is recycled
+(defn part-slot [] : I32
+  (let [h (gi (g-part-head))]
+    (loop [i 0]
+      (cond (>= i 8) (bit-and h 255)
+            (= (f-ttl (bit-and (+ h i) 255)) 0) (bit-and (+ h i) 255)
+            :else (recur (+ i 1))))))
+
+(defn part! [(kind : I32) (ttl : I32) (col : I32) (x : F32) (y : F32) (z : F32) (vx : F32) (vy : F32) (vz : F32) (size : F32)] : Unit
+  (let [q (part-slot)]
+    (gi! (g-part-head) (bit-and (+ q 1) 255))
+    (set-f-ttl! q ttl) (set-f-life! q ttl) (set-f-kind! q kind) (set-f-color! q col)
+    (set-f-x! q x) (set-f-y! q y) (set-f-z! q z)
+    (set-f-vx! q vx) (set-f-vy! q vy) (set-f-vz! q vz)
+    (set-f-size! q size)))
+
+;; a flame's colour: orange to yellow, now and then a white-hot core
+(defn fire-col [] : I32
+  (if (= (fx-rnd 6) 0) (rgb 255 244 214) (rgb 255 (+ 120 (fx-rnd 110)) (+ 24 (fx-rnd 50)))))
+
+;; one tick of every live particle: flames rise (they are hot) and shrink, plumes spread and slow, dust settles, sparks fall
+(defn parts-tick! [] : Unit
+  (let [(live : I32) 0 (dt : F32) (tick-dt)]
+    (dotimes [q 256]
+      (when (> (f-ttl q) 0)
+        (let [k (f-kind q)
+              (ay : F32) (case k 1 70.0 2 0.0 3 -30.0 -66.0)
+              (drag : F32) (case k 1 2.5 2 4.0 3 1.5 0.6)
+              (dr : F32) (fmax2 0.0 (- 1.0 (* drag dt)))
+              (vx : F32) (* (f-vx q) dr)
+              (vy : F32) (* (+ (f-vy q) (* ay dt)) dr)
+              (vz : F32) (* (f-vz q) dr)
+              (y : F32) (+ (f-y q) (* vy dt))]
+          (set-f-vx! q vx) (set-f-vz! q vz)
+          (set-f-x! q (+ (f-x q) (* vx dt)))
+          (set-f-z! q (+ (f-z q) (* vz dt)))
+          ;; the floor stops what falls (dust and sparks skid along it)
+          (if (< y 1.0)
+              (do (set-f-y! q 1.0) (set-f-vy! q 0.0))
+              (do (set-f-y! q y) (set-f-vy! q vy)))
+          (set-f-size! q (case k 1 (* (f-size q) 0.96) 2 (+ (f-size q) 0.3) 3 (+ (f-size q) 0.12) (f-size q)))
+          (set-f-ttl! q (- (f-ttl q) 1))
+          (when (> (f-ttl q) 0) (set! live (+ live 1))))))
+    (gi! (g-part-live) live)))
+
+;; ---- the cars ---------------------------------------------------------------------------------------------------------------------
+(defn fx-car! [(s : I32)] : Unit
+  (let [(want : F32) (if (on-fire? s) 1.0 0.0)
+        (ff0 : F32) (c-fire-fx s)
+        (ff1 : F32) (+ ff0 (* (- want ff0) (if (> want ff0) (fx-fire-rise) (fx-fire-fall))))
+        (ff : F32) (if (< ff1 0.002) 0.0 ff1)
+        (sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))]
+    (set-c-fire-fx! s ff)
+    ;; flames: up to two a tick, off the body and licking up away from it; they keep only half the car's speed, so a car on the
+    ;; move drags a tail of fire behind it
+    (dotimes [i 2]
+      (when (< (fx-rand-unit) ff)
+        (let [(a : F32) (* 4.5 (fx-rand-f)) (b : F32) (* 7.5 (fx-rand-f)) (c : F32) (+ 2.0 (* 3.0 (fx-rand-unit)))
+              (up : F32) (+ 18.0 (* 22.0 (fx-rand-unit)))
+              (jx : F32) (* 14.0 (fx-rand-f)) (jy : F32) (* 8.0 (fx-rand-f)) (jz : F32) (* 14.0 (fx-rand-f))]
+          (part! (pk-fire) (+ 16 (fx-rnd 12)) (fire-col)
+                 (+ (c-x s) (+ (* (c-rx s) a) (+ (* (c-fx s) b) (* (c-ux s) c))))
+                 (+ (c-y s) (+ (* (c-ry s) a) (+ (* (c-fy s) b) (* (c-uy s) c))))
+                 (+ (c-z s) (+ (* (c-rz s) a) (+ (* (c-fz s) b) (* (c-uz s) c))))
+                 (+ (* 0.5 (c-vx s)) (+ (* (c-ux s) up) jx))
+                 (+ (* 0.5 (c-vy s)) (+ (* (c-uy s) up) jy))
+                 (+ (* 0.5 (c-vz s)) (+ (* (c-uz s) up) jz))
+                 (+ 3.5 (* 2.5 (fx-rand-unit)))))))
+    ;; the boost plume, out of the rear nozzle and back along the car (a burning car's plume burns too)
+    (when (and (> (c-boost-fx s) 0.25) (< (fx-rand-unit) (* 0.7 (c-boost-fx s))))
+      (let [(back : F32) (+ 140.0 (* 40.0 (fx-rand-unit)))
+            (jx : F32) (* 10.0 (fx-rand-f)) (jy : F32) (* 10.0 (fx-rand-f)) (jz : F32) (* 10.0 (fx-rand-f))]
+        (part! (pk-plume) (+ 12 (fx-rnd 7)) (if (on-fire? s) (rgb 255 150 60) (rgb 196 222 255))
+               (- (c-x s) (* (c-fx s) 8.0)) (- (c-y s) (* (c-fy s) 8.0)) (- (c-z s) (* (c-fz s) 8.0))
+               (+ (- (c-vx s) (* (c-fx s) back)) jx) (+ (- (c-vy s) (* (c-fy s) back)) jy) (+ (- (c-vz s) (* (c-fz s) back)) jz)
+               2.5)))
+    ;; dust: kicked up behind the rear wheels by a car driving the dirt track, or drifting anywhere on the floor, in the floor's
+    ;; own colour
+    (when (and (= (c-attached s) 1) (> (c-uy s) 0.7)
+               (or (and (> sp 60.0) (> (road-at (c-x s) (c-z s)) 128)) (> (c-slip s) 50.0))
+               (< (fx-rand-unit) 0.35))
+      (let [(rx : F32) (* 4.0 (fx-rand-f))
+            (x : F32) (- (+ (c-x s) (* (c-rx s) rx)) (* (c-fx s) 7.0))
+            (z : F32) (- (+ (c-z s) (* (c-rz s) rx)) (* (c-fz s) 7.0))]
+        (part! (pk-dust) (+ 30 (fx-rnd 16)) (mix (tex-color (tex-ix x) (tex-iz z)) (rgb 200 190 170) 90)
+               x (+ (c-y s) 1.0) z
+               (+ (* 0.2 (c-vx s)) (* 15.0 (fx-rand-f))) (+ 10.0 (* 8.0 (fx-rand-unit))) (+ (* 0.2 (c-vz s)) (* 15.0 (fx-rand-f)))
+               3.0)))))
+
+;; the ball alight: flames off its surface, and since they keep less than half its speed, a comet's tail behind it
+(defn fx-ball! [] : Unit
+  (when (> (b-fire) 0)
+    (dotimes [i 2]
+      (let [(ox : F32) (* 9.0 (fx-rand-f)) (oy : F32) (* 9.0 (fx-rand-f)) (oz : F32) (* 9.0 (fx-rand-f))]
+        (part! (pk-fire) (+ 14 (fx-rnd 9)) (fire-col)
+               (+ (b-x) ox) (+ (b-y) oy) (+ (b-z) oz)
+               (+ (* 0.4 (b-vx)) (* 2.0 ox)) (+ (+ (* 0.4 (b-vy)) (* 2.0 oy)) 25.0) (+ (* 0.4 (b-vz)) (* 2.0 oz))
+               (+ 4.0 (* 3.0 (fx-rand-unit))))))))
+
+;; ---- a goal: the tower goes up ----------------------------------------------------------------------------------------------------
+;; called by on-goal! (br_rules.prn): the flash (in the light table's header, burnt down by lights-tick!) and a spray of sparks in
+;; the scorer's colour, down out of the mouth of the shaft into the arena
+(defn fx-goal! [(tower : I32) (team : I32)] : Unit
+  (let [col (team-color team)]
+    (store32! (lt-flash-t-addr) (fx-flash-ticks))
+    (store32! (lt-flash-tower-addr) tower)
+    (store32! (lt-flash-team-addr) team)
+    (dotimes [i (fx-sparks)]
+      (let [(ang : F32) (* 6.2831855 (fx-rand-unit))
+            (out : F32) (* 200.0 (fx-rand-unit))]
+        (part! (pk-spark) (+ 40 (fx-rnd 30)) (if (= (fx-rnd 4) 0) (rgb 255 250 236) col)
+               (+ (tw-x tower) (* 20.0 (fx-rand-f))) (- (a-h) 6.0) (+ (tw-z tower) (* 20.0 (fx-rand-f)))
+               (* (cosf ang) out) (- 0.0 (+ 40.0 (* 180.0 (fx-rand-unit)))) (* (sinf ang) out)
+               (+ 1.5 (fx-rand-unit)))))))
+
+;; ---- the lights and the drama -----------------------------------------------------------------------------------------------------
+(defn lights-tick! [] : Unit
+  (let [ft (load32 (lt-flash-t-addr))
+        (target : F32) 0.0]
+    (store32! (lt-count-addr) 0)
+    (store32! (lt-tick-addr) (gi (g-tick)))
+    ;; 1. the goal flash: white-hot as the ball goes in, settling into the scorer's colour as it dies (with the square of what is
+    ;;    left, so it is a flash, not a glow)
+    (if (> ft 0)
+        (let [(k : F32) (/ (f32 ft) (f32 (fx-flash-ticks)))
+              tw (load32 (lt-flash-tower-addr))
+              c (team-color (load32 (lt-flash-team-addr)))
+              (w : F32) (* 0.6 k)]
+          (light! (tw-x tw) (fx-flash-y) (tw-z tw)
+                  (lerp (chan-f c 0) 1.0 w) (lerp (chan-f c 8) 1.0 w) (lerp (chan-f c 16) 1.0 w)
+                  (* (fx-flash-power) (* k k)) (* (fx-flash-radius) (+ 0.45 (* 0.55 k))))
+          (storef32! (lt-flash-addr) k)
+          (store32! (lt-flash-t-addr) (- ft 1))
+          (set! target (fmax2 target (+ 0.5 (* 0.5 k)))))
+        (storef32! (lt-flash-addr) 0.0))
+    ;; 2. the burning ball
+    (when (> (b-fire) 0)
+      (let [(fl : F32) (fx-rand-unit)]
+        (light! (b-x) (b-y) (b-z) 1.0 (+ 0.55 (* 0.25 fl)) (+ 0.16 (* 0.2 fl)) (+ 2.2 (* 0.9 fl)) (+ 170.0 (* 40.0 fl)))
+        (set! target (fmax2 target 0.75))))
+    ;; 3. the burning cars: orange, flickering toward white as they flare
+    (dotimes [s 12]
+      (when (and (!= (c-active s) 0) (> (c-fire-fx s) 0.03))
+        (let [(fl : F32) (fx-rand-unit) (ff : F32) (c-fire-fx s)]
+          (light! (+ (c-x s) (* (c-ux s) 5.0)) (+ (c-y s) (* (c-uy s) 5.0)) (+ (c-z s) (* (c-uz s) 5.0))
+                  1.0 (+ 0.5 (* 0.3 fl)) (+ 0.12 (* 0.25 (* fl fl)))
+                  (* ff (+ 1.4 fl)) (+ 130.0 (* 50.0 fl)))
+          (when (on-fire? s) (set! target (fmax2 target 0.6))))))
+    ;; 4. the boost plumes (in slot order, while there is room): a cold blue-white, or fire for a burning car
+    (dotimes [s 12]
+      (when (and (!= (c-active s) 0) (> (c-boost-fx s) 0.2))
+        (let [hot (on-fire? s)]
+          (light! (- (c-x s) (* (c-fx s) 10.0)) (- (c-y s) (* (c-fy s) 10.0)) (- (c-z s) (* (c-fz s) 10.0))
+                  (if hot 1.0 0.55) (if hot 0.5 0.75) (if hot 0.15 1.0)
+                  (* 0.9 (c-boost-fx s)) 70.0))))
+    ;; the slots not used this tick are zeroed, so a renderer that reads all sixteen sees nothing in them
+    (loop [i (light-count)]
+      (when (< i (max-lights))
+        (zero-words! (lt-addr i) 8)
+        (recur (+ i 1))))
+    ;; the drama: a dead ball after a goal holds it up a little; it jumps to its target and ebbs away from it
+    (when (> (gi (g-goal-t)) 0) (set! target (fmax2 target 0.45)))
+    (let [(d : F32) (drama-level)]
+      (storef32! (lt-drama-addr)
+                 (clamp-f (+ d (* (- target d) (if (> target d) (fx-drama-rise) (fx-drama-fall)))) 0.0 1.0)))))
+
+;; ---- once per tick ------------------------------------------------------------------------------------------------------------------
+(defn fx-tick! [] : Unit
+  (do
+    (dotimes [s (max-cars)] (when (!= (c-active s) 0) (fx-car! s)))
+    (fx-ball!)
+    (parts-tick!)
+    (lights-tick!)
+    (when (> (gi (g-fire-ann-t)) 0) (gi! (g-fire-ann-t) (- (gi (g-fire-ann-t)) 1)))))
+
+;; a new match: no particles, no lights, the dice seeded from the match seed
+(defn fx-reset! [(seed : I32)] : Unit
+  (do
+    (gi! (g-rng2) (+ (* seed 31) 9001))
+    (zero-words! (part-base) (* (max-parts) 16))
+    (zero-words! (lights-base) (lt-words))
+    (gi! (g-part-head) 0) (gi! (g-part-live) 0)
+    (gi! (g-fire-ann-id) 0) (gi! (g-fire-ann-slot) -1) (gi! (g-fire-ann-why) 0) (gi! (g-fire-ann-t) 0)))

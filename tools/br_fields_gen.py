@@ -39,6 +39,13 @@ CAR = [
     ("role", "i"), ("tactic", "i"), ("tgt-x", "f"), ("tgt-y", "f"), ("tgt-z", "f"), ("aim-x", "f"), ("aim-y", "f"), ("aim-z", "f"),
     ("think", "i"), ("tact-t", "i"), ("level", "i"), ("genome", "i"), ("persona", "i"),
     ("want-boost", "i"), ("react-t", "i"), ("last-x", "f"), ("last-z", "f"), ("sk", "f"),
+    # the magnet (br_phys.prn: catch, carry, throw, pass). in-magnet is a command button like in-boost; nocatch is the re-catch
+    # lockout (ticks left); the rest are stats. Appended here so every older word offset stays put.
+    ("in-magnet", "i"), ("nocatch", "i"), ("catches", "i"), ("passes", "i"), ("steals", "i"), ("throws", "i"),
+    # ON FIRE (br_fire.prn): fire-t is the ticks of fire left (0 = not burning), fire-streak the team goals in a row this car was
+    # directly involved in, fires a stat (times it caught fire). fire-fx is COSMETIC (br_fx.prn): the flames' smoothed 0..1
+    # intensity for the renderer -- the sim never reads it.
+    ("fire-t", "i"), ("fire-streak", "i"), ("fires", "i"), ("fire-fx", "f"),
 ]
 
 BALL = [
@@ -46,8 +53,16 @@ BALL = [
     ("px", "f"), ("py", "f"), ("pz", "f"),
     ("touch", "i"), ("touch2", "i"), ("touch-team", "i"), ("touch-t", "i"), ("sx", "f"), ("sy", "f"), ("sz", "f"),
     ("hit-t", "i"), ("trail", "i"),
+    # possession: the car carrying the ball (-1 = free) and for how many ticks; the last throw (thrower, ticks left of the pass
+    # catch window) so a team-mate's throw is easier to catch
+    ("holder", "i"), ("hold-t", "i"), ("pass-from", "i"), ("pass-t", "i"),
+    # a ball on fire (br_fire.prn): held by a burning car, or thrown by one in the last two seconds. fire is the renderer's flag
+    # (0 / 1), fire-t the ticks of flame left
+    ("fire", "i"), ("fire-t", "i"),
 ]
 
+# a particle (br_fx.prn, cosmetic only): ttl ticks left (0 = a free slot) of a life of `life`, kind 1 fire 2 boost plume 3 dust
+# 4 spark, color 0xAABBGGRR, position, velocity, size in world units
 PART = [
     ("ttl", "i"), ("life", "i"), ("kind", "i"), ("color", "i"),
     ("x", "f"), ("y", "f"), ("z", "f"), ("vx", "f"), ("vy", "f"), ("vz", "f"), ("size", "f"),

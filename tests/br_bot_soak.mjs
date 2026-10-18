@@ -1,5 +1,6 @@
 // tests/br_bot_soak.mjs -- BEDROCK RACERS bot matches on the bench: goals, own goals, touches, how hard and how well the ball is
-// struck, and how much of the floor has a goal-scoring shot at all. Prints one JSON object (the last line of output).
+// struck, the magnet's play (catches, throws, completed passes, steals), how often a car caught fire (ON FIRE), and how much of
+// the floor has a goal-scoring shot at all. Prints one JSON object (the last line of output).
 //   node tests/br_bot_soak.mjs <bedrockracers.wasm> [seeds=6] [level=3] [ticks=15000] [first-seed=1]
 import { boot } from './br_harness.mjs';
 const W = process.argv[2];
@@ -7,7 +8,7 @@ if (!W) { console.error('usage: br_bot_soak.mjs <wasm> [seeds] [level] [ticks]')
 const SEEDS = +(process.argv[3] || 6), LEVEL = +(process.argv[4] || 3), TICKS = +(process.argv[5] || 15000), FIRST = +(process.argv[6] || 1);
 const G_PHASE = 16, G_SCORE = 32;
 const out = { seeds: SEEDS, first_seed: FIRST, level: LEVEL, minutes: 0, goals: 0, own_goals: 0, touches: 0, mean_ball_speed: 0, mean_ball_height: 0,
-  strikes: 0, strikes_on_target: 0, per_seed: [] };
+  strikes: 0, strikes_on_target: 0, catches: 0, throws: 0, passes: 0, steals: 0, fires: 0, per_seed: [] };
 let bs = 0, bh = 0, bn = 0;
 for (let sd = FIRST; sd < FIRST + SEEDS; sd++) {
   const g = await boot(W); g.x.br_t_begin(sd, LEVEL, 0); let t = 0, lastTouch = -1, lastTick = -999;
@@ -25,9 +26,11 @@ for (let sd = FIRST; sd < FIRST + SEEDS; sd++) {
     }
   }
   const sc = [0, 1, 2, 3].map(k => g.g(G_SCORE + k)); let own = 0, touches = 0;
-  for (let s = 0; s < 12; s++) { own += g.car(s, 'own-goals'); touches += g.car(s, 'touches'); }
+  const mag = { catches: 0, throws: 0, passes: 0, steals: 0, fires: 0 };   // the magnet's stats and ON FIRE's, summed over the twelve cars
+  for (let s = 0; s < 12; s++) { own += g.car(s, 'own-goals'); touches += g.car(s, 'touches'); for (const k in mag) mag[k] += g.car(s, k); }
   out.goals += sc.reduce((a, b) => a + b, 0); out.own_goals += own; out.touches += touches; out.minutes += t * 0.016 / 60;
-  out.per_seed.push({ seed: sd, score: sc.join('/'), own_goals: own, touches, ticks: t });
+  for (const k in mag) out[k] += mag[k];
+  out.per_seed.push({ seed: sd, score: sc.join('/'), own_goals: own, touches, ...mag, ticks: t });
 }
 out.mean_ball_speed = +(bs / bn).toFixed(1); out.mean_ball_height = +(bh / bn).toFixed(1); out.minutes = +out.minutes.toFixed(2);
 out.goals_per_minute = +(out.goals / out.minutes).toFixed(3);

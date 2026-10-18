@@ -5,6 +5,11 @@
 ;;   * A goal scores one point for the team that touched the ball last. Into your OWN tower it scores nothing and costs you one.
 ;;   * First team to 7, or the most points after 4:00. A tie goes to a golden goal.
 ;;   * After a goal the ball is dead for a moment, then everyone is put back at their corner and it kicks off again.
+;;   * The ball is a Quaffle (br_phys.prn, "the magnet"): catch it, carry it, pass it, throw it. Carried up into a shaft it scores
+;;     like any ball -- a DUNK, for the carrier's team (into your own tower it is an own goal, as ever). A kickoff, a goal, the
+;;     end of the match, a car put back at its corner or leaving the match: the ball is free again, nobody holds it.
+;;   * ON FIRE (br_fire.prn): in on two of your team's goals in a row (scorer or assist) and you are on fire -- a full tank, 35%
+;;     faster throws, a 50% longer magnet -- until another team scores, you lose the ball to a steal, or 45 s of play pass.
 ;;
 ;; THE MATCH IS A PURE FUNCTION of (seed, level, roster, the humans' commands). The sim never reads the clock, a pad, a mouse or the
 ;; screen: a human's command for each tick is quantised to bytes, appended to a log, and applied FROM those bytes, so a replay
@@ -22,7 +27,9 @@
 (defn goal-pause [] : I32 150)            ; ticks the ball is dead after a goal
 (defn kickoff-count [] : I32 190)         ; the first kickoff: 3 .. 2 .. 1 .. GO
 (defn restart-count [] : I32 125)         ; the kickoffs after a goal
-(defn ruleset [] : I32 1)                 ; bump with ANY change that alters how a match plays out (IDUNA refuses a mismatch)
+(defn ruleset [] : I32 3)                 ; bump with ANY change that alters how a match plays out (IDUNA refuses a mismatch)
+                                          ; 2: the magnet (catch, carry, pass, throw, tackle, dunk)
+                                          ; 3: ON FIRE (two goals in a row: full tank, faster throws, longer magnet)
 
 (defn team-of [(s : I32)] : I32 (/ s 3))
 (defn seat-of [(s : I32)] : I32 (mod s 3))
@@ -39,7 +46,8 @@
     (zero-words! (part-base) (* (max-parts) 16))
     (dotimes [s (max-cars)]
       (set-c-id! s s) (set-c-team! s (team-of s)) (set-c-seat! s (seat-of s)) (set-c-color! s (team-of s)))
-    (set-b-touch! -1) (set-b-touch2! -1) (set-b-touch-team! -1)))
+    (set-b-touch! -1) (set-b-touch2! -1) (set-b-touch-team! -1)
+    (set-b-holder! -1) (set-b-pass-from! -1)))
 
 (defn put-name! [(p : I32) (s : String)] : Unit
   (let [a (name-addr p)
@@ -89,7 +97,13 @@
           (set-c-air! s (tank-max))
           (set-c-air-wait! s 0)
           (set-c-stuck! s 0)
-          (set-c-think! s (* 3 s)))))
+          (set-c-think! s (* 3 s))))
+      (set-c-nocatch! s 0))
+    ;; nobody holds the ball at a kickoff, and no pass is in the air (and the ball is not alight: fires survive a kickoff, a
+    ;; burning ball does not)
+    (free-ball!)
+    (set-b-pass-from! -1) (set-b-pass-t! 0)
+    (ball-fire! 0)
     (set-b-x! 0.0) (set-b-y! 70.0) (set-b-z! 0.0)
     (set-b-vx! 0.0) (set-b-vy! 0.0) (set-b-vz! 0.0)
     (set-b-px! 0.0) (set-b-py! 70.0) (set-b-pz! 0.0)
@@ -117,6 +131,7 @@
     (gi! (g-end-reason) 0)
     (gi! (g-overtime) 0)
     (gi! (g-last-goal-tick) 0)
+    (gi! (g-goal-dunk) 0)
     (gi! (g-stall) 0)
     (gi! (g-match-no) (+ (gi (g-match-no)) 1))
     (gi! (g-log-n) 0)
@@ -126,6 +141,8 @@
       (gi! (+ (g-posture) t) 0) (gi! (+ (g-gest) t) (mod t 2)) (gi! (+ (g-tgt-tower) t) (mod (+ t 1) 4)))
     (gi! (g-gest-t) 0)
     (gi! (g-syn-t) 0)
+    ;; the cosmetics start clean and their dice are seeded from the match seed, so a replay looks the same as well as plays the same
+    (fx-reset! seed)
     (dotimes [s (max-cars)]
       (set-c-active! s 1)
       (if (human? s)
@@ -141,8 +158,16 @@
     (gi! (g-feed-head) (+ h 1))))
 
 (defn on-goal! [(tower : I32)] : Unit
-  (let [who (b-touch)
-        team (b-touch-team)]
+  (let [h (b-holder)
+        ;; a carried ball (a DUNK) scores for its carrier, whoever touched it last (a catch is a touch, so they agree anyway)
+        who (if (>= h 0) h (b-touch))
+        team (if (>= h 0) (c-team h) (b-touch-team))
+        ;; the assist: the touch before the scorer's, by a team-mate (-1: none)
+        a0 (b-touch2)
+        assist (if (and (>= a0 0) (and (!= a0 who) (= (team-of a0) team))) a0 -1)]
+    (gi! (g-goal-dunk) (b2i (>= h 0)))
+    (free-ball!)
+    (set-b-pass-from! -1) (set-b-pass-t! 0)
     (gi! (g-goal-t) (goal-pause))
     (gi! (g-goal-tower) tower)
     (gi! (g-last-goal-tick) (gi (g-tick)))
@@ -154,16 +179,18 @@
             (when (>= who 0)
               (set-c-own-goals! who (+ (c-own-goals who) 1))
               (gi! (+ (g-score) tower) (max-i 0 (- (score-of tower) 1))))
-            (feed! 2 who tower))
+            (feed! 2 who tower)
+            (fire-own-goal! who))
         (do (gi! (g-banner-id) 1)
             (gi! (+ (g-score) team) (+ (score-of team) 1))
             (gi! (+ (g-conceded) tower) (+ (gi (+ (g-conceded) tower)) 1))
             (set-c-goals! who (+ (c-goals who) 1))
-            ;; an assist: the touch before the scorer's, by a team-mate
-            (let [a (b-touch2)]
-              (when (and (>= a 0) (and (!= a who) (= (team-of a) team)))
-                (set-c-assists! a (+ (c-assists a) 1))))
-            (feed! 1 who tower)))
+            (when (>= assist 0) (set-c-assists! assist (+ (c-assists assist) 1)))
+            (feed! 1 who tower)
+            ;; ON FIRE: streaks, fires lit, fires out (after the goal's own feed line, so the HUD reads GOAL then ON FIRE)
+            (fire-goal! who assist team)))
+    ;; the tower goes up in a flash of the scorer's colour (cosmetic: br_fx.prn)
+    (fx-goal! tower (if (>= team 0) team tower))
     ;; the dead ball hangs in the shaft until the restart
     (set-b-vx! 0.0) (set-b-vy! 0.0) (set-b-vz! 0.0)
     (set-b-x! (tw-x tower)) (set-b-y! (+ (goal-y) 22.0)) (set-b-z! (tw-z tower))))
@@ -211,7 +238,8 @@
 
 ;; ---- the end ---------------------------------------------------------------------------------------------------------------------
 (defn end-match! [(winner : I32) (reason : I32)] : Unit
-  (do (gi! (g-winner) winner) (gi! (g-end-reason) reason) (gi! (g-phase) 2) (gi! (g-end-t) 0) (gi! (g-goal-t) 0)))
+  (do (gi! (g-winner) winner) (gi! (g-end-reason) reason) (gi! (g-phase) 2) (gi! (g-end-t) 0) (gi! (g-goal-t) 0)
+      (free-ball!)))
 
 (defn check-end! [] : Unit
   (let [l (leader-team)]
@@ -243,7 +271,8 @@
         (let [tw (goal-at (b-x) (b-y) (b-z))]
           (gi! (g-kickoff-t) (+ (gi (g-kickoff-t)) 1))
           ;; a ball that has lain still on the floor for eight seconds (a scrum nobody can break) is put back at the kickoff
-          (if (and (< (len3 (b-vx) (b-vy) (b-vz)) 10.0) (< (b-y) 26.0))
+          ;; (a carried ball is never lying still: its five-second clock is the carrier's stall rule)
+          (if (and (< (len3 (b-vx) (b-vy) (b-vz)) 10.0) (< (b-y) 26.0) (< (b-holder) 0))
               (gi! (g-stall) (+ (gi (g-stall)) 1))
               (gi! (g-stall) 0))
           (when (> (gi (g-stall)) 500)

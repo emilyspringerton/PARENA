@@ -16,8 +16,27 @@
 ;;   the tank      lift 26 /s, boost 22 /s, jets 9 /s, attitude 4 /s of 100; it refills 34 /s once you stop spending (48 /s on a
 ;;                 surface), plus a team-synergy bonus (br_rules.prn). Empty, the car still turns at a quarter rate -- never helpless.
 ;;
-;; The command a car obeys is nine numbers (thr, steer, pitch, roll, strafe, lift, boost, fans-off): a person's keys, a bot's
-;; brain, or the replay log write the same fields, so a match is a pure function of (seed, roster, the humans' commands).
+;; The command a car obeys is nine numbers (thr, steer, pitch, roll, strafe, lift, boost, fans-off, magnet): a person's keys, a
+;; bot's brain, or the replay log write the same fields, so a match is a pure function of (seed, roster, the humans' commands).
+;;
+;; THE MAGNET (founder: "make the ball magnet to the cars ... remember its like quidich ... you can add a control for the magnet ...
+;; let the ball be thrown and passed like NBA street vol 2"). The ball is a Quaffle: you catch it, carry it, pass it, throw it.
+;;   hold the button  the magnet is on: a free ball near the car's CRADLE (a point just ahead of the nose and a little above it) is
+;;                    pulled in -- harder the closer it gets, and the pull damps the ball's speed relative to the car so it
+;;                    settles into the cradle instead of orbiting it. A ball that reaches the cradle slowly enough is CAUGHT;
+;;                    one that comes in too fast is fumbled and just hits the car, as it always did.
+;;   carrying         the ball rides the cradle wherever the car goes (floor, wall, ceiling, air) -- but the tank does not refill,
+;;                    the car's top speed is 90%, and after five seconds the ball is thrown for you (no stalling).
+;;   let go           the THROW: the car's velocity plus 260 along the nose -- or, with a team-mate in a 28 degree cone ahead that
+;;                    is calling for it (its own button held), a PASS led to where that team-mate will be when the ball gets
+;;                    there; a team-mate's pass is easier to catch.
+;;   tackles          an enemy bumping the carrier (or driving into the carried ball) knocks it loose; a team-mate never does.
+;; With the button up nothing here runs, and the car and the ball behave exactly as they did before the magnet existed.
+;;
+;; ON FIRE (br_fire.prn) reaches in here at the places marked "on fire": a burning car's tank stays full (air-tick!), its throws
+;; are 35% faster and leave alight (throw!), its magnet reaches 50% further (magnet-pull!), a burning pass is that much easier
+;; for the team-mate to catch (catch-limit), a car that is not burning puts a burning ball out by playing it (credit-touch!),
+;; and a steal puts the carrier's fire out (ball-car!, car-car!). The fires' clocks run once a tick in physics-tick!.
 
 (defn tick-dt [] : F32 0.016)
 (defn sub-dt [] : F32 0.008)
@@ -91,7 +110,9 @@
     (set-c-px! s x) (set-c-py! s y) (set-c-pz! s z)
     (set-c-lift-fx! s 0.0) (set-c-boost-fx! s 0.0) (set-c-strafe-fx! s 0.0) (set-c-slip! s 0.0)
     (set-c-in-thr! s 0.0) (set-c-in-steer! s 0.0) (set-c-in-pitch! s 0.0) (set-c-in-roll! s 0.0) (set-c-in-strafe! s 0.0)
-    (set-c-in-lift! s 0.0) (set-c-in-boost! s 0) (set-c-in-fans-off! s 0)))
+    (set-c-in-lift! s 0.0) (set-c-in-boost! s 0) (set-c-in-fans-off! s 0) (set-c-in-magnet! s 0)
+    ;; a car put somewhere new (a kickoff, a respawn) leaves the ball behind
+    (when (= (b-holder) s) (free-ball!))))
 
 ;; ---- the surface a car stands on --------------------------------------------------------------------------------
 ;; the smallest free distance of the car's two collision spheres, less their radius: <= 0 means touching
@@ -291,10 +312,11 @@
     (set-c-y! s (+ (c-y s) (* (c-vy s) dt)))
     (set-c-z! s (+ (c-z s) (* (c-vz s) dt)))
     (resolve-car! s)
-    ;; top speed bookkeeping and a hard cap
-    (let [(sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))]
-      (when (> sp 420.0)
-        (let [(k : F32) (/ 420.0 sp)]
+    ;; top speed bookkeeping and a hard cap (90% of it for the car carrying the ball: the carrier can be caught)
+    (let [(sp : F32) (len3 (c-vx s) (c-vy s) (c-vz s))
+          (cap : F32) (if (= (b-holder) s) (* 420.0 (carry-speed-frac)) 420.0)]
+      (when (> sp cap)
+        (let [(k : F32) (/ cap sp)]
           (set-c-vx! s (* (c-vx s) k)) (set-c-vy! s (* (c-vy s) k)) (set-c-vz! s (* (c-vz s) k))))
       (when (> sp (c-top-speed s)) (set-c-top-speed! s sp)))))
 
@@ -343,10 +365,33 @@
 (defn hit-hh [] : F32 2.6)
 (defn hit-hd [] : F32 7.6)
 
-(defn ball-car! [(s : I32)] : Unit
+;; who touched it (for credit); a touch within a few ticks of the last one is the same touch (a dribble, a scrum) -- unless it is
+;; FRESH: the ball changing hands through the magnet (a catch by another car, a steal off the carrier) is always a new touch, so
+;; the chain of touches (touch2: the assist) follows the ball even when a hand-off pass is caught a tick after it was thrown.
+;; An ENEMY's touch breaks up a pass: the pass window closes (a deflection a team-mate picks up is not a completed pass).
+(defn credit-touch! [(s : I32) (fresh : Bool)] : Unit
+  (do
+    (when (or fresh (> (- (gi (g-tick)) (b-touch-t)) 3))
+      (when (!= (b-touch) s)
+        (set-b-touch2! (b-touch))
+        (set-b-touch! s)
+        (set-b-touch-team! (c-team s)))
+      (set-c-touches! s (+ (c-touches s) 1))
+      (set-b-hit-t! 8))
+    (set-b-touch-t! (gi (g-tick)))
+    (set-b-touch! s)
+    (set-b-touch-team! (c-team s))
+    (let [pf (b-pass-from)]
+      (when (and (>= pf 0) (!= (c-team pf) (c-team s))) (set-b-pass-from! -1) (set-b-pass-t! 0)))
+    ;; on fire: a ball alight from a burning car's throw goes out when a car that is not burning plays it
+    (when (not (on-fire? s)) (ball-fire! 0))))
+
+;; the contact itself: push the ball out of the car's box and bounce it. true if they touched (the caller credits the touch).
+(defn ball-car-hit! [(s : I32)] : Bool
   (let [(dx : F32) (- (b-x) (c-x s)) (dy : F32) (- (b-y) (c-y s)) (dz : F32) (- (b-z) (c-z s))]
     ;; quick reject
-    (when (< (+ (+ (* dx dx) (* dy dy)) (* dz dz)) 400.0)
+    (if (>= (+ (+ (* dx dx) (* dy dy)) (* dz dz)) 400.0)
+      false
       (let [(lx : F32) (dot3 dx dy dz (c-rx s) (c-ry s) (c-rz s))
             (ly : F32) (dot3 dx dy dz (c-ux s) (c-uy s) (c-uz s))
             (lz : F32) (dot3 dx dy dz (c-fx s) (c-fy s) (c-fz s))
@@ -355,7 +400,8 @@
             (qz : F32) (clamp-f lz (- 0.0 (hit-hd)) (hit-hd))
             (ex : F32) (- lx qx) (ey : F32) (- ly qy) (ez : F32) (- lz qz)
             (d : F32) (len3 ex ey ez)]
-        (when (and (< d (rb)) (> d 0.0001))
+        (if (not (and (< d (rb)) (> d 0.0001)))
+          false
           (let [(mx : F32) (/ ex d) (my : F32) (/ ey d) (mz : F32) (/ ez d)
                 (nx : F32) (+ (+ (* (c-rx s) mx) (* (c-ux s) my)) (* (c-fx s) mz))
                 (ny : F32) (+ (+ (* (c-ry s) mx) (* (c-uy s) my)) (* (c-fy s) mz))
@@ -379,17 +425,28 @@
                 (set-c-vx! s (- (c-vx s) (* nx jc)))
                 (set-c-vy! s (- (c-vy s) (* ny jc)))
                 (set-c-vz! s (- (c-vz s) (* nz jc)))))
-            ;; who touched it (for credit); a touch within a few ticks of the last one by the same car is the same touch
-            (when (> (- (gi (g-tick)) (b-touch-t)) 3)
-              (when (!= (b-touch) s)
-                (set-b-touch2! (b-touch))
-                (set-b-touch! s)
-                (set-b-touch-team! (c-team s)))
-              (set-c-touches! s (+ (c-touches s) 1))
-              (set-b-hit-t! 8))
-            (set-b-touch-t! (gi (g-tick)))
-            (set-b-touch! s)
-            (set-b-touch-team! (c-team s))))))))
+            true))))))
+
+;; a car against the ball. A free ball: the contact above -- and a ball that hits a live magnet faster than it can be caught is
+;; too hot to handle: it bounces off as it always did and the car FUMBLES (locked out like a car that just lost the ball), so a
+;; hard shot cannot be smothered by catching its slow rebound. A carried ball: the carrier and its team-mates pass through it (the
+;; carrier holds it, a team-mate never knocks it loose); an enemy's body that hits it knocks it loose -- the ball goes off with
+;; the carrier's velocity (it had it) plus the hit's impulse, and that is a steal (a fresh touch: the ball changed hands).
+(defn ball-car! [(s : I32)] : Unit
+  (let [h (b-holder)]
+    (cond
+      (< h 0) (let [hot (and (magnet-ready? s)
+                             (> (len3 (- (b-vx) (c-vx s)) (- (b-vy) (c-vy s)) (- (b-vz) (c-vz s))) (catch-limit s)))]
+                (when (ball-car-hit! s)
+                  (credit-touch! s false)
+                  (when hot (set-c-nocatch! s (nocatch-ticks)))))
+      (= (c-team h) (c-team s)) unit
+      :else (when (ball-car-hit! s)
+              (credit-touch! s true)
+              (set-c-steals! s (+ (c-steals s) 1))
+              (lose-ball! h)
+              ;; on fire: losing the ball to a steal puts the carrier's fire out
+              (douse! h (fo-stolen))))))
 
 ;; ---- car vs. car: soft spheres ------------------------------------------------------------------------------------------
 (defn car-car! [(a : I32) (b : I32)] : Unit
@@ -405,7 +462,21 @@
         (when (< vn 0.0)
           (let [(j : F32) (* (* (- 0.0 vn) 1.35) 0.5)]
             (set-c-vx! a (- (c-vx a) (* nx j))) (set-c-vy! a (- (c-vy a) (* ny j))) (set-c-vz! a (- (c-vz a) (* nz j)))
-            (set-c-vx! b (+ (c-vx b) (* nx j))) (set-c-vy! b (+ (c-vy b) (* ny j))) (set-c-vz! b (+ (c-vz b) (* nz j)))))))))
+            (set-c-vx! b (+ (c-vx b) (* nx j))) (set-c-vy! b (+ (c-vy b) (* ny j))) (set-c-vz! b (+ (c-vz b) (* nz j)))
+            ;; a TACKLE: an enemy closing on the carrier faster than tackle-speed knocks the ball loose. It leaves with the
+            ;; carrier's (new) velocity plus the bump's impulse once more, so it squirts out the way the carrier was shoved.
+            (when (> (- 0.0 vn) (tackle-speed))
+              (let [h (b-holder)]
+                (cond
+                  (and (= h a) (!= (c-team a) (c-team b)))
+                    (do (set-c-steals! b (+ (c-steals b) 1))
+                        (knock-loose! a (* nx (- 0.0 j)) (* ny (- 0.0 j)) (* nz (- 0.0 j)))
+                        (douse! a (fo-stolen)))      ; on fire: a steal puts the carrier's fire out
+                  (and (= h b) (!= (c-team a) (c-team b)))
+                    (do (set-c-steals! a (+ (c-steals a) 1))
+                        (knock-loose! b (* nx j) (* ny j) (* nz j))
+                        (douse! b (fo-stolen)))
+                  :else unit)))))))))
 
 ;; ---- the air tank ------------------------------------------------------------------------------------------------------------
 ;; once per tick: decide what the car can afford this tick, spend it, and refill
@@ -427,10 +498,14 @@
           (do (set-c-air! s (fmax2 0.0 (- air (* spend dt))))
               (set-c-air-used! s (+ (c-air-used s) (* spend dt)))
               (set-c-air-wait! s 20))
-          (if (> (c-air-wait s) 0)
-              (set-c-air-wait! s (- (c-air-wait s) 1))
-              (let [(rate : F32) (* (if (= (c-attached s) 1) 48.0 34.0) (+ 1.0 (c-syn-bonus s)))]
-                (set-c-air! s (fmin2 (tank-max) (+ air (* rate dt))))))))
+          (cond
+            (> (c-air-wait s) 0) (set-c-air-wait! s (- (c-air-wait s) 1))
+            ;; carrying the ball costs you the refill: the tank you had when you caught it is what you have to score with
+            (= (b-holder) s) unit
+            :else (let [(rate : F32) (* (if (= (c-attached s) 1) 48.0 34.0) (+ 1.0 (c-syn-bonus s)))]
+                    (set-c-air! s (fmin2 (tank-max) (+ air (* rate dt))))))))
+    ;; on fire: the tank stays full, whatever was spent and even while carrying (the spend is still counted in air-used)
+    (when (on-fire? s) (set-c-air! s (tank-max)))
     ;; effect levels the renderer draws (smoothed so a plume swells and fades)
     (set-c-lift-fx! s (+ (c-lift-fx s) (* (- lift (c-lift-fx s)) 0.35)))
     (set-c-boost-fx! s (+ (c-boost-fx s) (* (- (if boost 1.0 0.0) (c-boost-fx s)) 0.35)))
@@ -438,6 +513,222 @@
     (when (= (c-attached s) 1)
       (when (> (c-uy s) 0.7) (set-c-ticks-up! s (+ (c-ticks-up s) 1)))
       (when (< (c-uy s) -0.3) (set-c-ticks-inv! s (+ (c-ticks-inv s) 1))))))
+
+;; ---- the magnet: catch, carry, throw, pass ------------------------------------------------------------------------------------------
+;; The CRADLE sits 17 ahead of the car's centre and 9 above it, along the car's own axes: a ball there just clears the car's box
+;; (so catching it is not a collision) and rides 13 off whatever surface the car drives on -- floor, wall or ceiling -- so the
+;; quarter-pipes only nudge it. The magnet's pull fades linearly from full at the cradle to nothing at magnet-range; its damping
+;; of the ball's velocity RELATIVE TO THE CAR fades the same way. Head-on, a ball entering the field at 260 reaches the cradle at
+;; about 190 (a team-mate's pass: inside the 260 pass window, caught; anyone else's throw: over the 170 limit, fumbled), one at
+;; 450 still comes in above 300 and just hits the car; a slow ball nearby is reeled in and arrives at under 100. A ball
+;; that passes off to one side is bent in and slowed even more, so it is the easier catch -- that is the magnet.
+;; But the field only HOLDS a ball it could tame: one moving (relative to the car) faster than magnet-grab x the car's catch limit
+;; -- 238 for anyone else's ball, 364 for a team-mate's pass -- goes through it untouched. That keeps the head-on numbers above
+;; (the field brakes a 238 ball to about the 170 limit by the cradle) and stops a near miss being reeled back in: without it a
+;; 400 shot passing 14 off the cradle, or a 500 one passing 10 off, was bent round, braked and caught, so a keeper with the
+;; button down caught anything that came close. And the goal line is the goal line: a ball already over it in a shaft is a goal
+;; (no magnet pulls or catches it back out), and a cradle up over it holds nothing -- a keeper hovering in its own shaft used to
+;; catch a shot just under the line, the catch snapped the ball up into its cradle over the line, and the other team's goal
+;; became the keeper's own goal.
+(defn cradle-fwd [] : F32 17.0)
+(defn cradle-up [] : F32 9.0)
+(defn magnet-range [] : F32 34.0)       ; the pull reaches this far from the cradle
+(defn magnet-pull [] : F32 1400.0)      ; acceleration toward the cradle at the cradle
+(defn magnet-damp [] : F32 14.0)        ; per second, on the ball's velocity relative to the car, at the cradle
+(defn magnet-grab [] : F32 1.4)         ; the field holds only a ball slower than this x the catch limit (relative to the car)
+(defn catch-r [] : F32 9.0)             ; a ball this close to the cradle ...
+(defn catch-speed [] : F32 170.0)       ; ... and slower than this relative to the car is caught
+(defn pass-catch-speed [] : F32 260.0)  ; ... or slower than this, inside a team-mate's pass window
+(defn throw-speed [] : F32 260.0)       ; a throw leaves at the car's velocity plus this
+(defn pass-range [] : F32 280.0)        ; a team-mate this close ...
+(defn pass-cone [] : F32 0.883)         ; ... and within 28 degrees of the nose (cos 28) is passed to
+(defn pass-lift [] : F32 6.0)           ; a pass is aimed this far above the receiver's cradle, so one from behind clears its roof
+(defn tear-dist [] : F32 8.0)           ; a carried ball pushed this far off the cradle (a wall in the way) is dropped
+(defn carry-speed-frac [] : F32 0.9)    ; the carrier's hard speed cap, as a fraction of everyone else's
+(defn tackle-speed [] : F32 40.0)       ; an enemy closing on the carrier faster than this knocks the ball loose
+(defn nocatch-ticks [] : I32 44)        ; 0.7 s: a car that has just thrown or lost the ball cannot catch
+(defn hold-ticks [] : I32 313)          ; 5 s: carried this long, the ball is thrown for you
+(defn pass-window [] : I32 94)          ; 1.5 s: how long a team-mate's throw stays easier to catch
+
+(defn cradle-x [(s : I32)] : F32 (+ (+ (c-x s) (* (c-fx s) (cradle-fwd))) (* (c-ux s) (cradle-up))))
+(defn cradle-y [(s : I32)] : F32 (+ (+ (c-y s) (* (c-fy s) (cradle-fwd))) (* (c-uy s) (cradle-up))))
+(defn cradle-z [(s : I32)] : F32 (+ (+ (c-z s) (* (c-fz s) (cradle-fwd))) (* (c-uz s) (cradle-up))))
+
+;; the magnet is live: the button is held and the car is not locked out
+(defn magnet-ready? [(s : I32)] : Bool
+  (and (!= (c-active s) 0) (= (c-in-magnet s) 1) (= (c-nocatch s) 0)))
+
+;; the ball is free again, at no cost to anyone (a kickoff, a goal, the end, a car leaving the match)
+(defn free-ball! [] : Unit (do (set-b-holder! -1) (set-b-hold-t! 0)))
+
+;; the carrier LOSES the ball (dropped against a wall, knocked loose): it is free and the carrier is locked out of catching it
+;; straight back; a loose ball is nobody's pass
+(defn lose-ball! [(h : I32)] : Unit
+  (do (free-ball!)
+      (set-c-nocatch! h (nocatch-ticks))
+      (set-b-pass-from! -1) (set-b-pass-t! 0)))
+
+;; knocked loose by a bump: it leaves the cradle with the carrier's velocity plus the impulse (ix, iy, iz)
+(defn knock-loose! [(h : I32) (ix : F32) (iy : F32) (iz : F32)] : Unit
+  (do (set-b-x! (cradle-x h)) (set-b-y! (cradle-y h)) (set-b-z! (cradle-z h))
+      (set-b-vx! (+ (c-vx h) ix)) (set-b-vy! (+ (c-vy h) iy)) (set-b-vz! (+ (c-vz h) iz))
+      (lose-ball! h)))
+
+;; the ball sits in s's cradle and moves with it
+(defn ride-cradle! [(s : I32)] : Unit
+  (do (set-b-x! (cradle-x s)) (set-b-y! (cradle-y s)) (set-b-z! (cradle-z s))
+      (set-b-vx! (c-vx s)) (set-b-vy! (c-vy s)) (set-b-vz! (c-vz s))))
+
+;; inside the pass window of a throw by one of s's team-mates?
+(defn team-pass? [(s : I32)] : Bool
+  (let [pf (b-pass-from)]
+    (and (> (b-pass-t) 0) (>= pf 0) (!= pf s) (= (c-team (max-i pf 0)) (c-team s)))))
+
+;; on fire: a burning car's pass comes in 35% faster, so while the ball is alight a team-mate's limit rises by the same 35%
+(defn catch-limit [(s : I32)] : F32
+  (if (team-pass? s) (* (pass-catch-speed) (if (ball-alight?) (fire-throw-mul) 1.0)) (catch-speed)))
+
+;; s CATCHES the ball. A catch is a touch (credit: a pass caught and scored makes the passer the assist, through touch2); a
+;; team-mate's throw caught inside its window is a completed pass, credited to the passer.
+(defn catch! [(s : I32)] : Unit
+  (do
+    (when (team-pass? s)
+      (let [pf (b-pass-from)] (set-c-passes! pf (+ (c-passes pf) 1))))
+    (set-b-pass-from! -1) (set-b-pass-t! 0)
+    (set-b-holder! s) (set-b-hold-t! 0)
+    (set-c-catches! s (+ (c-catches s) 1))
+    ;; a catch by a car that was not the last to touch it is the ball changing hands: always a new touch
+    (credit-touch! s (!= (b-touch) s))
+    (ride-cradle! s)))
+
+;; the team-mate a throw from s goes to: within pass-range and inside the cone ahead of the nose, the one nearest the middle of
+;; the cone; -1 for nobody (the throw then goes straight along the nose). Only a team-mate CALLING for it -- holding its magnet
+;; button, the only way it can catch -- is passed to: a throw led to one that cannot catch it would just hijack the thrower's
+;; aim (a shot up into a tower with a team-mate floating ahead, every bot today). A team-mate still in its re-catch lockout is
+;; passed to all the same: the lockout is usually over by the time the ball gets there (a give-and-go).
+(defn pass-mate [(s : I32)] : I32
+  (let [(best : I32) -1 (bc : F32) (pass-cone) t (c-team s)]
+    (dotimes [m 12]
+      (when (and (!= m s) (!= (c-active m) 0) (= (c-team m) t) (= (c-in-magnet m) 1))
+        (let [(dx : F32) (- (c-x m) (c-x s)) (dy : F32) (- (c-y m) (c-y s)) (dz : F32) (- (c-z m) (c-z s))
+              (d : F32) (len3 dx dy dz)
+              (cs : F32) (/ (dot3 dx dy dz (c-fx s) (c-fy s) (c-fz s)) (fmax2 d 0.001))]
+          (when (and (< d (pass-range)) (> cs bc)) (set! best m) (set! bc cs)))))
+    best))
+
+;; THE THROW, at `speed` on top of the car's own velocity. Along the nose -- or, with a team-mate in the cone, a pass LED to them
+;; (NBA Street): aimed at where their cradle will be when the ball gets there, with the drop under gravity added back. The flight
+;; time t solves |R(t)| = speed * t, R(t) = (their cradle + lift - the ball) + (their velocity - mine) t + (0, g t^2 / 2, 0),
+;; by fixed-point iteration (it converges while the cars are slower than the throw, which they are). On fire: 35% faster, and
+;; the ball leaves alight.
+(defn throw! [(s : I32) (speed0 : F32)] : Unit
+  (let [m (pass-mate s)
+        (speed : F32) (* speed0 (throw-mul s))
+        (dx : F32) (c-fx s) (dy : F32) (c-fy s) (dz : F32) (c-fz s)]
+    (when (>= m 0)
+      (let [(ox : F32) (- (cradle-x m) (b-x))
+            (oy : F32) (- (+ (cradle-y m) (pass-lift)) (b-y))
+            (oz : F32) (- (cradle-z m) (b-z))
+            (wx : F32) (- (c-vx m) (c-vx s)) (wy : F32) (- (c-vy m) (c-vy s)) (wz : F32) (- (c-vz m) (c-vz s))
+            (hg : F32) (* 0.5 (ball-grav))
+            (t : F32) (/ (len3 ox oy oz) speed)]
+        (dotimes [it 6]
+          (set! t (fmin2 2.5 (/ (len3 (+ ox (* wx t)) (+ (+ oy (* wy t)) (* hg (* t t))) (+ oz (* wz t))) speed))))
+        (let [(rx : F32) (+ ox (* wx t)) (ry : F32) (+ (+ oy (* wy t)) (* hg (* t t))) (rz : F32) (+ oz (* wz t))
+              (il : F32) (inv-len3 rx ry rz)]
+          (set! dx (* rx il)) (set! dy (* ry il)) (set! dz (* rz il)))))
+    (set-b-vx! (+ (c-vx s) (* dx speed)))
+    (set-b-vy! (+ (c-vy s) (* dy speed)))
+    (set-b-vz! (+ (c-vz s) (* dz speed)))
+    (free-ball!)
+    (set-c-nocatch! s (nocatch-ticks))
+    (set-c-throws! s (+ (c-throws s) 1))
+    (set-b-pass-from! s) (set-b-pass-t! (pass-window))
+    (when (on-fire? s) (ball-fire! (fire-ball-ticks)))
+    ;; a throw is a play of the ball (the renderer's flash and the bench's strike counter see it), not a second touch
+    (set-b-touch-t! (gi (g-tick)))
+    (set-b-hit-t! 8)))
+
+;; once per tick, before the substeps: the lockout and pass-window clocks, and the carrier's choices
+(defn magnet-tick! [] : Unit
+  (do
+    (dotimes [s (max-cars)] (when (> (c-nocatch s) 0) (set-c-nocatch! s (- (c-nocatch s) 1))))
+    (when (> (b-pass-t) 0)
+      (set-b-pass-t! (- (b-pass-t) 1))
+      (when (= (b-pass-t) 0) (set-b-pass-from! -1)))
+    (let [h (b-holder)]
+      (when (>= h 0)
+        (cond
+          ;; the carrier has left the match: the ball is simply free
+          (= (c-active h) 0) (free-ball!)
+          ;; the button let go: throw
+          (= (c-in-magnet h) 0) (throw! h (throw-speed))
+          ;; five seconds is the limit: the ball is thrown for you, at half pace
+          (>= (b-hold-t) (hold-ticks)) (throw! h (* 0.5 (throw-speed)))
+          :else (set-b-hold-t! (+ (b-hold-t) 1)))))))
+
+;; one substep of a carried ball: it rides the cradle. A wall in the way (the car driven nose-first into it) pushes it out like a
+;; free ball, and a ball torn more than tear-dist off the cradle that way is dropped.
+(defn held-ball-step! [] : Unit
+  (let [h (b-holder)]
+    (ride-cradle! h)
+    (dotimes [pass 2]
+      (let [sd (arena-free (b-x) (b-y) (b-z))
+            (pen : F32) (- (rb) sd)]
+        (when (> pen 0.0)
+          (arena-normal! (b-x) (b-y) (b-z))
+          (set-b-x! (+ (b-x) (* (gf (g-sdx)) pen)))
+          (set-b-y! (+ (b-y) (* (gf (g-sdy)) pen)))
+          (set-b-z! (+ (b-z) (* (gf (g-sdz)) pen))))))
+    (when (> (len3 (- (b-x) (cradle-x h)) (- (b-y) (cradle-y h)) (- (b-z) (cradle-z h))) (tear-dist))
+      (lose-ball! h))))
+
+;; the magnets leave a ball alone while it is dead after a goal, or over the line in a shaft (it is a goal at the end of the tick)
+(defn ball-magnetic? [] : Bool
+  (and (= (gi (g-goal-t)) 0) (< (goal-at (b-x) (b-y) (b-z)) 0)))
+
+;; s's magnet is live AND its cradle is in play: a cradle up over the goal line in a shaft holds nothing (a catch would snap the
+;; ball over the line -- a keeper up in its own shaft would turn the other team's shot into its own goal)
+(defn magnet-live? [(s : I32)] : Bool
+  (and (magnet-ready? s) (< (goal-at (cradle-x s) (cradle-y s) (cradle-z s)) 0)))
+
+;; one substep of the magnets on a free ball: every live magnet in range pulls it toward its cradle and damps its velocity
+;; relative to that car (nothing at all happens while no magnet is live -- the ball is exactly the old ball). On fire the field
+;; reaches 50% further (magnet-reach), with the same fade from full at the cradle to nothing at its edge. A ball moving too fast
+;; relative to the car for the field to hold (magnet-grab) goes through it untouched.
+(defn magnet-pull! [(dt : F32)] : Unit
+  (when (ball-magnetic?)
+    (dotimes [s (max-cars)]
+      (when (magnet-live? s)
+        (let [(dx : F32) (- (cradle-x s) (b-x)) (dy : F32) (- (cradle-y s) (b-y)) (dz : F32) (- (cradle-z s) (b-z))
+              (d : F32) (len3 dx dy dz)
+              (reach : F32) (magnet-reach s)
+              (rv : F32) (len3 (- (b-vx) (c-vx s)) (- (b-vy) (c-vy s)) (- (b-vz) (c-vz s)))]
+          (when (and (< d reach) (> d 0.001) (< rv (* (magnet-grab) (catch-limit s))))
+            (let [(w : F32) (- 1.0 (/ d reach))
+                  (k : F32) (/ (* (magnet-pull) w) d)
+                  (damp : F32) (* (magnet-damp) w)]
+              (set-b-vx! (+ (b-vx) (* (- (* dx k) (* (- (b-vx) (c-vx s)) damp)) dt)))
+              (set-b-vy! (+ (b-vy) (* (- (* dy k) (* (- (b-vy) (c-vy s)) damp)) dt)))
+              (set-b-vz! (+ (b-vz) (* (- (* dz k) (* (- (b-vz) (c-vz s)) damp)) dt))))))))))
+
+;; after a free ball's substep: a live magnet with the ball inside catch-r of its cradle CATCHES it if it came in slower than the
+;; catch limit relative to the car (the nearest such cradle, if two qualify). The speed is judged as the ball arrives: one that
+;; comes in faster is FUMBLED -- the magnet lets go (the car is locked out, as if it had just lost the ball) and the ball carries
+;; on into the car, where ball-car! bounces it as it always did. (Without that, the damping would keep braking a hot ball inside
+;; the cradle until it crept under the limit, and the limit would mean nothing.)
+(defn magnet-catch! [] : Unit
+  (when (and (< (b-holder) 0) (ball-magnetic?))
+    (let [(best : I32) -1 (bd : F32) (catch-r)]
+      (dotimes [s (max-cars)]
+        (when (magnet-live? s)
+          (let [(d : F32) (len3 (- (b-x) (cradle-x s)) (- (b-y) (cradle-y s)) (- (b-z) (cradle-z s)))
+                (rv : F32) (len3 (- (b-vx) (c-vx s)) (- (b-vy) (c-vy s)) (- (b-vz) (c-vz s)))]
+            (when (< d (catch-r))
+              (if (< rv (catch-limit s))
+                  (when (< d bd) (set! best s) (set! bd d))
+                  (set-c-nocatch! s (nocatch-ticks)))))))
+      (when (>= best 0) (catch! best)))))
 
 ;; ---- the world step ---------------------------------------------------------------------------------------------------------------
 (defn capture-prev! [] : Unit
@@ -453,6 +744,8 @@
 ;; the physics of one tick; the goal check is done by the rules (br_rules.prn) after it
 (defn physics-tick! [] : Unit
   (do
+    (magnet-tick!)
+    (fire-tick!)
     (dotimes [s (max-cars)] (when (!= (c-active s) 0) (air-tick! s)))
     (dotimes [sub 2]
       (dotimes [s (max-cars)] (when (!= (c-active s) 0) (car-substep! s (sub-dt))))
@@ -462,6 +755,9 @@
             (when (< b (max-cars))
               (when (!= (c-active b) 0) (car-car! a b))
               (recur (+ b 1))))))
-      (ball-substep! (sub-dt))
+      ;; a carried ball rides its cradle; a free one feels the magnets, flies, and may be caught (before ball-car! can bounce it)
+      (if (>= (b-holder) 0)
+          (held-ball-step!)
+          (do (magnet-pull! (sub-dt)) (ball-substep! (sub-dt)) (magnet-catch!)))
       (dotimes [s (max-cars)] (when (!= (c-active s) 0) (ball-car! s))))
     (when (> (b-hit-t) 0) (set-b-hit-t! (- (b-hit-t) 1)))))

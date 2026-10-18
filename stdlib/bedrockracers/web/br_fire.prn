@@ -1,0 +1,119 @@
+;; stdlib/bedrockracers/web/br_fire.prn -- ON FIRE: the NBA Jam / NBA Street streak, as match rules.
+;;
+;; Founder real-time 2026-10-18: "add ON FIRE WITH REALLY DRAMATIC LIGHTING EFFECTS". This file is the RULE half of it: who is on
+;; fire, what it does for them, and when it goes out. It is SIM state, a pure function of the match like everything else here
+;; (no clock, no host input, no dice at all). The flames, the particles and the light table the renderer reads are the
+;; COSMETIC half (br_fx.prn): they read this state and never write back.
+;;
+;;   catching fire   a car directly involved -- the scorer or the assist -- in its team's goals TWICE IN A ROW (no other team
+;;                   scoring in between, and no team-mate scoring without it) catches fire: "Ada IS ON FIRE".
+;;   on fire         its air tank stays full (even while it carries the ball, which normally stops the refill), its throws leave
+;;                   35% faster, its magnet reaches 50% further. The ball it holds, or has just thrown, is alight too (for two
+;;                   seconds, or until a car that is not burning touches it, or its car's fire goes out).
+;;   going out       another team scores; the car loses the ball to a steal (an enemy's tackle, or an enemy's body knocking it
+;;                   out of the cradle); 45 seconds of play run out (the clock stops while the ball is dead after a goal);
+;;                   it scores into its own tower; or it leaves the match.
+;;   staying lit     a burning car that SCORES is still on fire, with its 45 seconds wound back to full ("STILL ON FIRE").
+;;   a hot pass      a burning car's pass comes in 35% faster, so for the team-mate it was thrown to the pass catch limit rises
+;;                   by the same 35% while the ball is alight (otherwise a burning car could never be passed to head-on);
+;;                   anyone else's limit is the ordinary one -- a burning throw is that much harder to pick off.
+;;
+;; Announcements go out the way a goal's do: a feed line (feed! code a b: 3 "a IS ON FIRE" (b team), 4 "a's fire is out"
+;; (b why, fo-*), 5 "a IS STILL ON FIRE" (b team)) and the fire banner words g-fire-ann-* (br_mem.prn) for the HUD.
+
+;; ---- the constants ----------------------------------------------------------------------------------------------------------
+(defn fire-goals [] : I32 2)            ; team goals in a row a car must be in on (scoring or assisting) to catch fire
+(defn fire-ticks [] : I32 2813)         ; 45 s of play at 62.5 ticks a second: how long the fire lasts
+(defn fire-throw-mul [] : F32 1.35)     ; a burning car's throws (and its hot passes' catch limit) are 35% faster
+(defn fire-range-mul [] : F32 1.5)      ; a burning car's magnet reaches 50% further (34 -> 51)
+(defn fire-ball-ticks [] : I32 125)     ; 2 s: how long a burning car's throw stays alight (a cold car's touch puts it out)
+(defn fire-ann-ticks [] : I32 150)      ; 2.4 s: how long the fire banner stays up
+
+;; feed codes (goals are 1 and 2, br_rules.prn) and the reasons a fire goes out
+(defn fd-on-fire [] : I32 3)
+(defn fd-fire-out [] : I32 4)
+(defn fd-still-on-fire [] : I32 5)
+(defn fo-scored [] : I32 1)             ; another team scored
+(defn fo-stolen [] : I32 2)             ; the car lost the ball to a steal
+(defn fo-burnt [] : I32 3)              ; 45 s ran out
+(defn fo-own-goal [] : I32 4)           ; it put the ball into its own tower
+(defn fo-left [] : I32 5)               ; it left the match
+
+(defn on-fire? [(s : I32)] : Bool (> (c-fire-t s) 0))
+
+;; the fire's effects, as the physics asks for them (br_phys.prn)
+(defn throw-mul [(s : I32)] : F32 (if (on-fire? s) (fire-throw-mul) 1.0))
+(defn magnet-reach [(s : I32)] : F32 (if (on-fire? s) (* (magnet-range) (fire-range-mul)) (magnet-range)))
+
+;; the ball's flame: both the renderer's flag and the ticks left
+(defn ball-fire! [(n : I32)] : Unit (do (set-b-fire-t! n) (set-b-fire! (b2i (> n 0)))))
+(defn ball-alight? [] : Bool (> (b-fire-t) 0))
+
+;; ---- lighting up and going out ------------------------------------------------------------------------------------------------
+;; the fire banner (HUD only)
+(defn fire-announce! [(id : I32) (s : I32) (why : I32)] : Unit
+  (do (gi! (g-fire-ann-id) id) (gi! (g-fire-ann-slot) s) (gi! (g-fire-ann-why) why) (gi! (g-fire-ann-t) (fire-ann-ticks))))
+
+(defn ignite! [(s : I32)] : Unit
+  (do (set-c-fire-t! s (fire-ticks))
+      (set-c-fires! s (+ (c-fires s) 1))
+      (set-c-air! s (tank-max))
+      (feed! (fd-on-fire) s (c-team s))
+      (fire-announce! 1 s 0)))
+
+;; a burning car scored again: the full 45 seconds once more
+(defn stoke! [(s : I32)] : Unit
+  (do (set-c-fire-t! s (fire-ticks))
+      (feed! (fd-still-on-fire) s (c-team s))
+      (fire-announce! 3 s 0)))
+
+;; out (a car that is not burning is left alone). The streak goes with it: lighting up again takes two fresh goals. The ball
+;; burns with its car: if this car holds it or played it last (its throw is still in the air, it was just stolen off it), the
+;; ball's flame goes out too.
+(defn douse! [(s : I32) (why : I32)] : Unit
+  (when (on-fire? s)
+    (set-c-fire-t! s 0)
+    (set-c-fire-streak! s 0)
+    (when (or (= (b-holder) s) (= (b-touch) s)) (ball-fire! 0))
+    (feed! (fd-fire-out) s why)
+    (fire-announce! 2 s why)))
+
+;; ---- the goals ------------------------------------------------------------------------------------------------------------------
+;; a goal that counted for `team`, scored by `who` with `assist` (-1 for none). Every other team's streaks break and their fires
+;; go out; on the scoring team the two cars in on it extend their streaks (two in a row: ON FIRE; a burning scorer stays lit)
+;; and a team-mate who was not in on it starts again from nothing.
+(defn fire-goal! [(who : I32) (assist : I32) (team : I32)] : Unit
+  (dotimes [s 12]
+    (cond
+      (!= (c-team s) team) (do (douse! s (fo-scored)) (set-c-fire-streak! s 0))
+      (or (= s who) (= s assist))
+        (do (set-c-fire-streak! s (+ (c-fire-streak s) 1))
+            (cond
+              (on-fire? s) (when (= s who) (stoke! s))
+              (>= (c-fire-streak s) (fire-goals)) (ignite! s)
+              :else unit))
+      :else (set-c-fire-streak! s 0))))
+
+;; an own goal: the culprit's streak is over, and so is its fire. Nobody else's changes (no team scored).
+(defn fire-own-goal! [(who : I32)] : Unit
+  (when (>= who 0)
+    (douse! who (fo-own-goal))
+    (set-c-fire-streak! who 0)))
+
+;; ---- once per tick (br_phys.prn's physics-tick!, after the magnet's clocks) ---------------------------------------------------------
+;; the fires' clocks (stopped while the ball is dead after a goal: 45 s of PLAY), and the ball's flame: kept lit while a burning
+;; car holds it, burning down once it is thrown
+(defn fire-tick! [] : Unit
+  (do
+    (dotimes [s 12]
+      (when (on-fire? s)
+        (cond
+          (= (c-active s) 0) (douse! s (fo-left))
+          (> (gi (g-goal-t)) 0) unit
+          (<= (c-fire-t s) 1) (douse! s (fo-burnt))
+          :else (set-c-fire-t! s (- (c-fire-t s) 1)))))
+    (let [h (b-holder)]
+      (cond
+        (and (>= h 0) (on-fire? h)) (ball-fire! (fire-ball-ticks))
+        (ball-alight?) (ball-fire! (- (b-fire-t) 1))
+        :else unit))))
