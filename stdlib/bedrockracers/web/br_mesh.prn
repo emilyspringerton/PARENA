@@ -1,5 +1,5 @@
-;; stdlib/bedrockracers/web/br_mesh.prn -- every mesh the game draws, built once at init into GEOM (0x340000), and the two small
-;; textures the arena shell wears (TEX2, 0x0B0000). Formats and the draw path are in br_3d.prn.
+;; stdlib/bedrockracers/web/br_mesh.prn -- every mesh the game draws, built once at init into GEOM (0x340000), and the three small
+;; textures (TEX2, 0x0B0000): the arena's wall panels and ceiling, and the Quaffle's leather. Formats and the draw path are in br_3d.prn.
 ;;
 ;; THE ARENA SHELL is the physics' own rounded box (br_arena.prn: half extents 520 x 120 x 520, every edge a 70-radius fillet) as
 ;; real curved geometry, generated the way the SDF defines it: a surface point is an inner-box point plus 70 x the outward normal.
@@ -25,10 +25,11 @@
 ;;              pods underneath where the wheels would be; flat-shaded (light per face), painted from the draw palette:
 ;;                1 paint  2 paint, darker (sills, nose, tail)  3 glass  4 carbon (underside, pods)  5 headlights (glow)
 ;;                6 tail lights (glow)  7 the lift nozzles (glow; a later stage can brighten it with c-lift-fx)
-;;   BALL       a low-poly sphere (radius 11, the physics' rb) in eight octant panels, palette 1 and 2, so its spin shows
+;;   BALL       the Quaffle: a smooth 20 x 12 sphere (radius 11, the physics' rb) wearing a 64 x 64 stitched-leather texture (eight
+;;              panels, seams, stitches), filtered bilinearly, so its spin shows
 ;;
 ;; Counts (asserted by the bench, tests/br_shot.mjs prints them): about 3.9k vertices and 6.4k triangles for the shell, 108
-;; triangles a car, 144 the ball.
+;; triangles a car, 480 the ball.
 
 ;; ---- mesh ids (br_3d.prn's descriptors; 13..63 are free for later stages) ------------------------------------------------------
 (defn mesh-floor [] : I32 0)

@@ -56,6 +56,11 @@ test-brawlpit: .parena-bootstrap
 test-shankpit460: .parena-bootstrap
 	bash scripts/test_shankpit460.sh
 
+# Bedrock Racers web game: build the static bundle, the physics / magnet / fire / engine tests, the soak baseline, and (when
+# Playwright is configured) the real-browser test.
+test-bedrockracers: .parena-bootstrap
+	bash scripts/test_bedrockracers.sh
+
 # VS0 domain 4 -- runs the real emitted program under ASan+UBSan (and
 # Valgrind, if installed), plus a deliberately-broken fixture proving
 # the check has teeth. Not part of the default `test` target since it

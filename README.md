@@ -380,6 +380,42 @@ No audio. Online play is not built (the page is local: vs CPU, two players on on
 practice). The CPU brain levels EASY/NORMAL/HARD are new web code, not part of the parity-tested simulation
 (CLASSIC is the C engine's own bot). Consumer: `WOTAN/BRAWLPIT/`. Details: `STDLIB.md` "brawlpit".
 
+## BEDROCK RACERS in the browser — a rocket-car ball game as WebAssembly (2026-10-18)
+
+`stdlib/bedrockracers/web/br_*.prn` is Bedrock Racers, a Rocket League-style Quidditch game: four teams of three rocket cars in one
+stadium (a rounded box whose floor, walls and ceiling you can all drive on), one ball and four upside-down corner goals. Every car has
+a **magnet**: hold it to carry the ball, let go to throw it, hold it at a team-mate to pass, bump a carrier to steal; be in on two of
+your team's goals in a row and you are **ON FIRE** (a full tank, faster throws, more reach, a stadium lit in flame). It is one wasm32
+module (~215 KB, **no malloc, zero imports, a fixed 8 MB**) with the physics, the rules, bots at three skill levels, a z-buffered
+perspective software renderer into a 640x360 framebuffer, the HUD and the screens. The page host, `br_host.prn`, is PARENA compiled
+to **TypeScript** and type-stripped to `br-host.js` -- no hand-written JavaScript.
+
+```bash
+scripts/build_bedrockracers_web.sh out/      # out/index.html + bedrockracers.wasm + br-host.js (+ the .ts): serve it statically
+make test-bedrockracers                      # build + every test below + the soak line (the browser test needs Playwright configured)
+```
+
+* **drawing only reads the sim** -- `tests/br_engine_test.mjs` runs one match drawn every tick and one never drawn for 700 ticks and
+  requires every car and ball byte to be identical; the bots' soak line (`tests/br_soak_baseline.txt`, 24 bot-minutes) must stay
+  byte-identical across any render-only change.
+* **engine / host** -- 92 assertions: module hygiene, every export the page host calls exists, no two global words share a slot,
+  the title / pause / results flow by keys and by clicks, keyboard / right mouse / gamepad mapping, the camera through a wall-to-ceiling
+  climb and a kickoff, HUD pixel guards, the frame budget. `tests/br_browser_test.mjs` serves the static bundle and drives it in
+  headless Chromium (28 checks, 60 fps), with real clicks, a Gamepad API shim and focus loss.
+* **can a person win?** `tests/br_human_player.mjs` is a keyboard-only player (only `br_key` events and what is on screen: no test hooks,
+  no oracle) for the amber team's first car against EASY bots: chase the ball, hold F to carry it, run at the corner its throw already
+  points at, let go once the throw is aimed within a few degrees of the corner's apex. **Seed 1 scores, reproducibly, at tick 12940**
+  (the sim is deterministic), so yes, with the default controls. The honest rate is low: 1 of 7 four-minute matches (seeds 1-7), because
+  the bots swarm the carrier and touch most throws in flight (a note for tuning EASY, not done: that is a design call).
+* **found by looking at it** -- pausing did not freeze the view; after a goal scored from the ceiling the camera stayed upside down with
+  its eye outside the arena; a carried ball hid the road; the overtime banner could never show. Each is fixed and has a test.
+
+**Honest status:** verified in Node and headless Chromium only -- not on Firefox/Safari, not on a phone (no touch controls), and the
+gamepad path was driven synthetically. No audio. Local play against bots only: there is no sign-in, matchmaking or stats yet, street
+tricks / jukes and different car classes are not started, and the CHAMPION bot level has no league yet. Frame time in Node on a shared
+vCPU: median ~8.4 ms, p99 ~10 ms. The WOTAN page (`/bedrockracers/`) is finished on a branch, not deployed. Details:
+`stdlib/bedrockracers/README.md`, `HANDOFF.md`.
+
 ## `plugins/static_analysis` — multi-tier IR lifter + SSA (Python)
 
 Headless binary analysis: `Lifter.open(path)` (ELF64 / PE32+ / raw x86-64) indexes functions and gives each

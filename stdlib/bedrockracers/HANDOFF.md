@@ -1,150 +1,110 @@
 # Bedrock Racers handoff (read this first)
 
-Written 2026-10-18 by the Claude session that built the vehicle physics, the Quaffle magnet, ON FIRE and the scoring bots.
-That session stopped because the founder's usage limit ran out. Everything below was checked when it was written.
-Re-check anything you are about to rely on.
+Rewritten 2026-10-18 by the Claude session that finished the renderer, the page, the HUD and the screens (it replaces the note the
+session before it left when its usage ran out). `README.md` next to this file says what is where; this file says what is done, what
+is next, and the rules. Everything below was checked when it was written. Re-check anything you are about to rely on.
 
 ## Founder rules for this work
 
 - **Push at each step.** Every finished, tested stage gets committed and pushed straight to `main` of
-  github.com/emilyspringerton/PARENA as soon as it lands. Don't save things up for one big push at the end, and don't open PRs for
-  this work. Work that isn't finished goes to a `wip/` branch, so nothing is lost if a session ends.
-- **Develop in the cloud container.** Her Linux box (`/home/garybifrost`) catches up later. Her Windows PC does not have the repo.
-- **Ask before pushing to WOTAN.** A push to WOTAN `main` deploys to production (wotan.okemily.com).
-- Commits go in under author `emilyspringerton`, in the house style of `git log` (subject `bedrockracers: ...` plus a body with real measured numbers).
-  Add a `CHANGELOG.md` bullet under the day's `## YYYY-MM-DD`.
+  github.com/emilyspringerton/PARENA as soon as it lands. Don't save things up for one big push, and don't open PRs for this
+  work. Unfinished work goes to a `wip/` branch so nothing is lost if a session ends.
+- **Ask before pushing to WOTAN `main`.** A push to WOTAN `main` deploys to production (wotan.okemily.com). A *branch* does not
+  (the workflow only runs on `main`), so finished WOTAN work waits on a branch for her go-ahead.
+- **Commit as the repo's configured identity**, `Emily Springerton <emilyspringerton@gmail.com>` (monorepo `CLAUDE.md`, "Git Identity").
+  Do not override it with `git -c user.name=...`. Subject `bedrockracers: ...`, a body with real measured numbers, a `session:
+  <emily session current>` trailer, then the attribution lines. Add a `CHANGELOG.md` bullet under the day's `## YYYY-MM-DD`.
+  Sync (commit + push) at the end of every turn: a box can vanish at any time.
+- **Develop in the cloud container when you can.** Her Linux box (`/home/garybifrost`) catches up later; her Windows PC does not have the repo.
 
 ## The game, and what she asked for (her words)
 
-A Rocket League-style Quidditch esport: four teams of three rocket cars in the SHANKPIT stadium, with four upside-down corner goals.
-The cars are Tesla Roadster-style and use air as their mana. Her direction for the look: "MAKE IT NICE VERY TOUGHTFUL VERY DEMURE".
-Design asks from 2026-10-18:
+A Rocket League-style Quidditch esport: four teams of three rocket cars in one stadium with four upside-down corner goals. The cars
+are Tesla Roadster-style and use air as their mana. Her direction for the look: "MAKE IT NICE VERY TOUGHTFUL VERY DEMURE".
 
-| Ask | Status |
+| Ask (2026-10-18) | Status |
 |---|---|
-| "make the ball magnet to the cars", "remember its like quidich", "add a control for the magnet" | Done on main (d0ac58b): hold MAGNET to pull in and carry, release to throw along the nose |
-| "let the ball be thown and passed like NBA street vol 2" | Done (d0ac58b): led passes to a team-mate who is holding their magnet, steals on bumps, dunks score |
-| "ON FIRE WITH REALLY DRAMATIC LIGHTING EFFECTS" | Rules, particles and the light table are done (d0ac58b). **Nothing draws them yet. That's the renderer, below.** |
-| "AND ADD REALLY LIKE STREET TRICKS" / "like jukes and stuff" | Not started. A juke is a quick side-jet dodge while carrying the ball that makes a tackle whiff. |
-| "MAYBE DIFFERENT CARS HAVE DIFFERENT ABILITIES" | Not started (car classes) |
-| Playable in a browser, screenshots | Not yet. **No renderer, no key bound to the magnet, no page.** |
+| "make the ball magnet to the cars", "remember its like quidich", "add a control for the magnet" | **Done**: hold `F` / right mouse / pad B |
+| "let the ball be thown and passed like NBA street vol 2" | **Done**: led passes, steals on bumps, dunks |
+| "ON FIRE WITH REALLY DRAMATIC LIGHTING EFFECTS" | **Done and drawn**: the light table lights every vertex, drama dims the stadium, flames and particles, a goal flash, the ON FIRE banner and chip |
+| Playable in a browser, screenshots | **Done**: `examples/bedrockracers_web` via `scripts/build_bedrockracers_web.sh`; the WOTAN page is on a branch (below) |
+| "AND ADD REALLY LIKE STREET TRICKS" / "like jukes and stuff" | **Not started.** A juke is a quick side-jet dodge while carrying the ball that makes a tackle whiff |
+| "MAYBE DIFFERENT CARS HAVE DIFFERENT ABILITIES" | **Not started** (car classes) |
 
-Also queued from the original ask: a WOTAN page, IDUNA SSO + stats, and the league trainer for bot level 4.
+Also queued from the original ask and **not built**: IDUNA SSO + stats (the "second pass", as for shankpit-460), the league trainer
+for the CHAMPION bot level (`br_league.prn` is a three-line stub), audio (the SND ring exists in the memory map and nothing writes
+to it).
 
-## What is on main (d0ac58b) and how to check it
+## What is on main and how to check it
 
-The engine lives in `stdlib/bedrockracers/web/*.prn`, built in the order given in `MODULES`.
-- Memory is fixed-address with 0 imports, no allocator and 8 MB.
-- `br_fields.prn` is generated by `tools/br_fields_gen.py`. Never hand-edit it. Add fields at the END of a list and regenerate.
+Since `d0ac58b` (the engine), in order: `3dfd52b` the renderer builds, `9a6c1f7` it runs, `21cb140` dynamic lighting, `2187ca0` the
+page, `daf763f` the HUD and screens, `746eef8` the camera fixes and the look pass, then the gate script and docs.
 
-```sh
-# system LLVM 18 is in the container
-LLVM_TOOLCHAIN_ROOT=/ scripts/build_bedrockracers_wasm.sh /tmp/br.wasm
-node tests/br_physics_test.mjs /tmp/br.wasm   # 21/21
-node tests/br_magnet_test.mjs  /tmp/br.wasm   # 37/37
-node tests/br_fire_test.mjs    /tmp/br.wasm   # 40/40
-node tests/br_bot_soak.mjs     /tmp/br.wasm 6 3   # last line must match the baseline below exactly
+```bash
+make test-bedrockracers      # builds the bundle, runs every test, compares the soak line; the browser test needs NODE_PATH + PLAYWRIGHT_BROWSERS_PATH
 ```
 
-The soak baseline at d0ac58b (seeds 1-6, level 3, 15000 ticks). This is the summary. The full last line also carries `per_seed`.
-Regenerate it from d0ac58b and diff the whole line.
-`goals 63, own_goals 0, touches 1609, strikes 1506, strikes_on_target 59, catches 782, throws 149, passes 50, steals 623, fires 9, goals_per_minute 2.625, plan_coverage 0.432`.
-Held-out check: `node tests/br_bot_soak.mjs /tmp/br.wasm 12 3 15000 7` gave 109 goals / 0 own goals. The sim is deterministic, so
-**rendering must only READ sim state**. Cosmetic randomness comes only from `fx-rand`.
+The gate before any push: 0 imports; physics 21/21, magnet 37/37, fire 40/40, `br_engine_test.mjs` and `br_browser_test.mjs` green;
+**the soak line byte-identical to `tests/br_soak_baseline.txt`** (regenerated from `d0ac58b`, whole line including `per_seed`; held-out
+seeds 7-18 give 109 goals, 0 own goals). A render-only change must not move a goal. A change to the sim needs a new baseline and a reason.
 
-PARENA quirks that will bite:
-- Float literals default to F64, so annotate F32 locals.
-- A `defn` body is ONE expression, so wrap several in `(do ...)`.
-- A Unit branch ends in `unit`.
-- A nested `dotimes` with a call-bound inner bound fails.
-- There is no `ignore`.
-- Use `b2i` for booleans.
-- **New:** `emit_llvm: too many locals in one function (v0 fixed limit)`. Split big functions.
+**WOTAN:** the page is finished on branch `bedrockracers-page` in the WOTAN repo (not main): `/bedrockracers/`, `css/wotan-br.css`,
+a `br` nav skin and Games-bar entry, a home card, `scripts/build-bedrockracers.sh`, `scripts/bedrockracers-browser-test.mjs` (11/11).
+Merging it to main deploys it: ask her first. After any engine change, rerun `scripts/build-bedrockracers.sh` there and commit the
+two outputs (the deploy image is built from tracked files only).
 
-## In progress: the renderer (branch `wip/bedrockracers-renderer`, 4930f2f, NOT on main)
+## Found and fixed while finishing it (so you do not trip on them again)
 
-It was stopped partway through its first stage. Files on the branch, on top of d0ac58b:
-- `br_3d.prn`: z-buffered perspective rasteriser into FB 640x360 at 0x100000 and ZB at 0x200000.
-- `br_light.prn`: the per-vertex light hook (ambient + key light; meant to read the light table).
-- `br_mesh.prn`: arena shell, car wedge, ball.
-- `br_cam.prn`: camera.
-- `br_view.prn`: draws the world.
-- `br_input.prn`, `br_ui.prn`.
-- `MODULES`: updated for the new files.
+- `fill-tri!` hit `emit_llvm: too many locals`; split into `tri-grads!` / `fill-row!` with the gradients in scratch memory. `span-t!`
+  needed the same care once the floor was filtered (helpers: `texel-for`, `bilerp-texel`).
+- **Pausing did not freeze the view**: the ball kept rolling (spin ran on frame time) and the chase camera glided for ~3 s onto a car
+  paused at speed. `g-cam-dt` is 0 while paused; a test pins "not one pixel changes".
+- **After a kickoff the camera stayed upside down with its eye outside the arena** if the person had been on the ceiling
+  (`sup-toward!` lerped through zero and kept the old vector at a half turn). `vec-toward!` now turns toward a perpendicular, the camera
+  snaps when the car jumps > 60 units, the up is held in the air, and the safe-eye anchor is on the car's real up.
+- The overtime and ball-reset banners could never show (`g-banner-t` was set and never counted down); `fx-tick!` counts it now.
+- The amber floor camouflaged the amber team's cars; the floor is slate with a neutral road now. Rings thinner than a texel broke into
+  arcs; they are baked as 3x3 coverage.
+- The carried ball sat dead ahead and hid the road; the camera rises and backs off while carrying.
+- Pitch convention: `Down` = pitch +1 = nose UP (a flight stick pulled back). The pad's stick-back is the same. Documented, not inverted.
 
-**It does not build yet.** `fill-tri!` in `br_3d.prn` hits the too-many-locals limit. Split it.
+## Next, in the order I would do it
 
-`br_main.prn` is untouched. It still needs these exports:
-- `br-init`;
-- `br-frame(now : F64)`, with a fixed 60 Hz accumulator that runs `sim-tick!` then renders;
-- `br-key` / `br-pointer` / `br-button` / `br-pad-*`;
-- `br-fb-addr` / `br-fb-w` / `br-fb-h`.
+1. **Merge the WOTAN branch** once she says go (it is finished and tested). Then IDUNA SSO + stats + a bot league, as for shankpit-460:
+   persist per-match results, give the CHAMPION level a trainer (`br_league.prn`).
+2. **Street tricks and jukes**, then **car classes** (her asks above). They change the sim: add the commands to the 8-byte command word
+   (byte 6 has flags: boost 1, fans-off 2, magnet 4; room for more), give the bots a counter, and expect a new soak baseline.
+3. **Audio**: fill the SND ring from the sim's events (catch, throw, pass, goal, fire) and play it in `br_host.prn` like `sp_host.prn`.
+4. Reach: touch controls, Firefox and Safari, a physical pad, a frame-time guard (the smooth floor costs ~2.2 ms of a ~8.4 ms frame;
+   the host can time `br_frame` and drop the floor filter on a slow machine).
+5. **EASY is not easy for a naive player -- her call.** `tests/br_human_player.mjs` (keyboard events only, no hooks) scores against EASY bots,
+   reproducibly (seed 1, tick 12940), but only in 1 of 7 four-minute matches (seeds 1-7): the bots swarm the carrier and touch most
+   throws in flight (clean, well-aimed throws from 220-260 units out hit the tower and still did not go in when a bot clipped the ball).
+   A throw has to be within about +-4 degrees of the corner's apex at 300 units (+-2 at 600), speed above ~450 hardly matters. If EASY
+   should be beatable by a beginner, tune level 1's genome in `br_ai.prn` (the soak baseline is level 3, so it will not move) and rerun
+   that script. Jukes (a dodge while carrying) would also help a carrier, which is one more reason to build them.
 
-Keep every existing `br-t-*` export. None of this code has been run, so review it before trusting it.
+## Environment traps on this box (found 2026-10-18)
 
-**The template:** `stdlib/shankpit460/` already ships exactly this kind of client. Its parts:
-- `sp_3d` (rasteriser), `sp_view`, `sp_hud`, `sp_input`, `sp_ui`;
-- `sp_main` (`sp-frame` accumulator, input exports);
-- `sp_host.prn` (the page host, written in PARENA, compiled by `emit_ts`, stripped to JS by `scripts/ts_strip.mjs`);
-- `tests/shankpit460_shot.mjs` (PNG screenshots from the framebuffer in node);
-- `scripts/build_shankpit460_web.sh`.
+- `/home` is ~100% full. Each screenshot you *read* is stored in the session transcript (~100-200 KB), which is what ate it. Pack git's
+  loose objects (`git repack -d`, non-destructive) to get megabytes back; look at fewer, smaller images.
+- Playwright and Chromium are not installed here and `/opt/pw-browsers` does not exist: install them into a scratch directory on `/tmp`
+  (`npm_config_cache=<scratch> npm i playwright`, then `PLAYWRIGHT_BROWSERS_PATH=<scratch> npx playwright install chromium`), never `/home`.
+- `pkill -f <pattern>` kills your own tool call when the pattern is in its command line (exit 144). Use `pkill -f '[p]attern'`.
+- `emily apples post` needs the port-forward and the EMILY-PRIME secret from the pod (memory: `reference_post_apple_from_this_box`).
 
-Copy and adapt it. Don't modify shankpit460. `scripts/build_bedrockracers_web.sh` already exists. It builds the wasm, plus `br-host.js` once `br_host.prn` exists.
+## Mechanics reference (ruleset 3)
 
-### The plan: one stage at a time, each pushed to main when green
-
-The gate before every push: the wasm builds with 0 imports, all three test files pass plus any new `tests/br_*.mjs`, and the soak line is unchanged.
-
-1. **Core.** Fix the build, then write the `br_main` exports and a minimal title → match flow (one key starts a match against level-2 bots, player in slot 0, team 0).
-   The chase camera's up should follow the car's up through wall and ceiling driving. Add a ball-cam toggle and a spectator cam for bot-only matches.
-   Add `tests/br_shot.mjs` and take screenshots of kickoff, a wall, the ceiling, a tower from below and the spectator view. Look at them and fix holes and inside-out faces.
-   Measure ms/frame; it must stay well under 16 (the shankpit client takes about 1 ms).
-2. **Lighting.**
-   - Per-vertex lighting from the dynamic light table at 0x029000 (up to 16 point lights `{x y z r g b intensity radius}`, plus `drama` and `flash` scalars; see `br_mem`/`br_fx`), with ambient dimmed by drama.
-   - Particles (the PARTS ring: fire, plume, dust, spark) as additive billboards.
-   - A glow halo per light.
-   - A burning car wrapped in flame, and a burning ball leaving a fire trail.
-   - A team-coloured flash up the tower on a goal.
-   - A vignette and warm grade when drama is high.
-   - Calm by default, dramatic when someone is on fire.
-3. **HUD and page.**
-   - `br_hud`: score, clock, speed, an AIR bar, and a MAGNET indicator (off / pulling / holding plus a carry ring).
-   - An arrow to the ball when it's off-screen, a feed with a loud "X IS ON FIRE", and a Tab scoreboard.
-   - `br_ui`: title with bot level and team choice, pause, end screen.
-   - `br_input` writes `g-cmd-*` incl. `g-cmd-magnet`.
-   - `br_host.prn`.
-   - `examples/bedrockracers_web/index.html`.
-   - `tests/br_engine_test.mjs`, and `tests/br_browser_test.mjs` (Playwright; Chromium is at `/opt/pw-browsers`, never run `playwright install`).
-4. **Camera and look.**
-   - Chase cam: lag, look-ahead, FOV with speed, no clipping into walls, no flip from wall to ceiling.
-   - A broadcast spectator cam.
-   - A Roadster silhouette, a stitched-leather Quaffle, banded towers with lit hoops, panelled arena surfaces, fog.
-   - A muted dark-slate palette with the team colours amber / teal / violet / coral.
-5. **Polish.**
-   - An art-director critique of the screenshots, fixed over two rounds.
-   - Prove a human can score against EASY bots with the default controls.
-   - Final shots, perf numbers (median and worst), and a static bundle (index.html + bedrockracers.wasm + br-host.js).
-   - A `stdlib/bedrockracers/README.md`, and a CHANGELOG bullet.
-   - Then show her the screenshots and offer a private playable preview. Ask before any WOTAN page.
-
-Default controls (document any change):
-- **Keyboard:** W/S throttle and brake, A/D steer, Space lift, Shift boost, **right mouse or F = MAGNET (hold)**, arrows pitch and roll,
-  Q/E strafe, C fans off, Tab scores, Esc pause.
-- **Gamepad:** LS steer + pitch, RT throttle, LT brake, A lift, **B magnet**, RB boost, LB fans off, RS roll/strafe.
-
-After the renderer: street tricks and jukes, then car classes. Both are much easier to tune once you can see the game.
-
-## Mechanics reference (d0ac58b, ruleset 3)
-
-**Physics:** two 8 ms substeps per 16 ms tick. The arena is a rounded-box SDF (half extents 520, height 240, fillet 70). Goals are shafts of radius 40 above the
-ceiling at (±450, ±450); goal-y is 244 and the top is 340. Commands are quantised to 8 bytes per human per tick. Byte 6 holds flags: boost = 1, fans-off = 2, magnet = 4.
+**Physics:** two 8 ms substeps per 16 ms tick. The arena is a rounded-box SDF (half extents 520, height 240, fillet 70). Goals are
+shafts of radius 40 above the ceiling at (+-450, +-450); goal-y is 244 and the top is 340. Commands are quantised to 8 bytes per human
+per tick. Byte 6 holds flags: boost = 1, fans-off = 2, magnet = 4.
 
 **Magnet:**
 - The cradle sits 17 ahead and 9 up.
 - The pull is 1400, fading to 0 at range 34.
 - A catch needs the ball within 9 and under 170 relative speed. A team-mate's pass allows 260.
 - Throws go at car velocity + 260 along the nose.
-- A pass goes to a team-mate who is holding their magnet, within 28° and 280.
+- A pass goes to a team-mate who is holding their magnet, within 28 degrees and 280.
 - There is a 0.7 s re-catch lockout, and an auto-throw after 313 ticks.
 - No air refill while carrying, and a speed cap of 378.
 - An enemy bump closing faster than 40 knocks the ball loose.
@@ -153,3 +113,7 @@ ceiling at (±450, ±450); goal-y is 244 and the top is 340. Commands are quanti
 - You catch fire after being in on two of your team's goals in a row, and it lasts 45 s.
 - It gives a full tank, +35% throw speed and magnet range 51.
 - It ends on another team's goal, a steal, an own goal or the timeout.
+
+**The scoring window** (measured with the bots' own what-if, `br_t_whatif_fine`, on a flat throw at the +x +z corner): a
+throw along the floor diagonal at 350+ units/s goes in from up to 450 units out, at 450+ from up to 800; the aim has to be within about
++-4 degrees of the diagonal. Distance hardly matters, speed and aim do.

@@ -120,6 +120,15 @@ const simState = (g) => Buffer.concat([Buffer.from(new Uint8Array(g.x.memory.buf
   ok(sp > 150 && Buffer.compare(a, Buffer.from(g.fb())) === 0, `a match paused at ${sp.toFixed(0)} units/s is frozen at once: not one pixel changes in the next 60 frames`);
 }
 
+// ---- a paused HUD is still too: a low tank blinks and the magnet ring pulses, and neither may while paused ------------------------------------------
+{
+  const g = await game(); g.frame(5); g.tap(KEY.enter); g.frame(260);
+  g.setCar(0, 'air', 5); g.hold(KEY.f); g.frame(40);                 // a nearly empty tank (blinking) and the magnet held (pulsing)
+  g.tap(KEY.esc, 1); const a = Buffer.from(g.fb()); g.frame(50);
+  ok(g.x.br_status() === 3 && Buffer.compare(a, Buffer.from(g.fb())) === 0, 'with a blinking air bar and a pulsing magnet ring on screen, pausing still freezes every pixel');
+  g.release(KEY.f);
+}
+
 // ---- input: keyboard, mouse, gamepad ------------------------------------------------------------------------------------------------------
 {
   const g = await game(); g.frame(5); g.tap(KEY.enter); g.frame(3);
@@ -224,6 +233,14 @@ const simState = (g) => Buffer.concat([Buffer.from(new Uint8Array(g.x.memory.buf
   g.tap(66);
   g.hold(KEY.tab); g.frame(2); ok(g.gi('score-open') === 1, 'Tab opens the scoreboard for a spectator too');
   g.release(KEY.tab); g.frame(2); ok(g.gi('score-open') === 0, 'and letting go closes it');
+}
+
+// ---- the whistle: GO is up for under a second once the kickoff count runs out ------------------------------------------------------------------------------
+{
+  const g = await game(); g.frame(5); g.tap(KEY.enter); g.frame(g.gi('countdown') + 3);
+  const amberIn = () => { const a = g.fb(); let n = 0; for (let y = 125; y < 200; y++) for (let x = 280; x < 360; x++) { const i = (y * 640 + x) * 4; if (a[i] > 190 && a[i + 1] > 130 && a[i + 1] < 215 && a[i + 2] < 150) n++; } return n; };
+  const during = amberIn(); g.frame(120); const after = amberIn();
+  ok(during > 100 && after < 20, `GO is drawn in the team's colour as the count runs out (${during} px) and is gone two seconds later (${after} px)`);
 }
 
 // ---- the HUD draws what the sim says ----------------------------------------------------------------------------------------------------------------

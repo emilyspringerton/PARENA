@@ -201,6 +201,9 @@
     ;; the kickoff count
     (when (> (gi (g-countdown)) 0)
       (draw-int-c (max-i 1 (/ (+ (* (gi (g-countdown)) 2) 124) 125)) 320 130 4 (ink)))
+    ;; the whistle: GO for three quarters of a second once the count is out (g-kickoff-t counts play ticks since the kickoff)
+    (when (and (= (gi (g-countdown)) 0) (and (= (gi (g-goal-t)) 0) (< (gi (g-kickoff-t)) 45)))
+      (draw-text-c "GO" 320 130 4 (team-color (c-team (viewed)))))
     ;; a goal
     (when (> (gi (g-goal-t)) 0)
       (let [t (gi (g-banner-team))]

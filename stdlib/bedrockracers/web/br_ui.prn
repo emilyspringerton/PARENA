@@ -97,7 +97,8 @@
     (gi! (g-score-open) (b2i (and (= (gi (g-phase)) 1) (key-down? (kc-tab)))))
     (ui-keys!)
     (when (= (gi (g-phase)) 2) (gi! (g-end-t) (+ (gi (g-end-t)) 1)))
-    (gi! (g-ui-t) (+ (gi (g-ui-t)) 1))
+    ;; the HUD's clock (a low tank blinks, the magnet ring pulses) stands still with the match: a paused frame is a still frame
+    (when (not (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1))) (gi! (g-ui-t) (+ (gi (g-ui-t)) 1)))
     (end-input-tick!)))
 
 ;; ---- the screens -------------------------------------------------------------------------------------------------------------------------------

@@ -23,9 +23,11 @@ separate, ongoing timeline (`STDLIB.md`) — that work is not "done" the way VS0
 
 ## Bedrock Racers: start here
 
-Picking up Bedrock Racers (`stdlib/bedrockracers/`)? Read `stdlib/bedrockracers/HANDOFF.md` first: the founder's rules for
-this work (push each finished stage straight to main), what is done, the half-built renderer on branch
-`wip/bedrockracers-renderer`, and the exact next steps.
+Picking up Bedrock Racers (`stdlib/bedrockracers/`)? Read `stdlib/bedrockracers/README.md` (what is where, controls, tests, the
+gate) and `stdlib/bedrockracers/HANDOFF.md` (the founder's rules for this work -- push each finished stage straight to main, ask
+before pushing to WOTAN main -- what is done and what is next). The game is playable on main: the renderer, the HUD and screens,
+the page host and a static bundle (`scripts/build_bedrockracers_web.sh <out>`). Commit as the repo's configured identity
+(`Emily Springerton <emilyspringerton@gmail.com>`; do not override it with `-c user.*`).
 
 ## Stack
 

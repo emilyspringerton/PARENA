@@ -39,6 +39,12 @@
 
 (defn ignore! [(e : Any)] : Unit unit)
 
+;; keyboard focus on the game without letting the browser scroll the page to it (a scroll between pointer-down and -up also eats clicks)
+(defn focus-canvas! [] : Unit
+  (let [opts (js/obj)]
+    (js/set! opts "preventScroll" true)
+    (js/call canvas "focus" opts)))
+
 ;; ---- 1. fetch + instantiate the wasm ---------------------------------------------------------------------------------
 (defn boot [(canvas-id : String) (wasm-url : String)] : Unit
   (do
@@ -84,7 +90,7 @@
       (when (not (js/null? b))
         (js/set! b "disabled" false)
         (js/call b "addEventListener" "click" (callback on-fullscreen))))
-    (js/call canvas "focus")
+    (focus-canvas!)
     (js/call (js/global "window") "requestAnimationFrame" (callback tick))))
 
 (defn tick [(t : F64)] : Unit
@@ -136,7 +142,7 @@
   (do
     (on-mousemove e)
     (js/call wasm "br_button" (js/get e "button") 1)
-    (js/call canvas "focus")
+    (focus-canvas!)
     (js/call e "preventDefault")))
 
 (defn on-mouseup [(e : Any)] : Unit
