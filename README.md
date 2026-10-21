@@ -411,10 +411,10 @@ make test-bedrockracers                      # build + every test below + the so
   its eye outside the arena; a carried ball hid the road; the overtime banner could never show. Each is fixed and has a test.
 
 **Honest status:** verified in Node and headless Chromium only -- not on Firefox/Safari, not on a phone (no touch controls), and the
-gamepad path was driven synthetically. No audio. Local play against bots only: there is no sign-in, matchmaking or stats yet, street
-tricks / jukes and different car classes are not started, and the CHAMPION bot level has no league yet. Frame time in Node on a shared
-vCPU: median ~8.4 ms, p99 ~10 ms. The WOTAN page (`/bedrockracers/`) is finished on a branch, not deployed. Details:
-`stdlib/bedrockracers/README.md`, `HANDOFF.md`.
+gamepad path was driven synthetically. No audio. Online multiplayer (a lockstep room on IDUNA, up to four teams, a rated ladder) is
+live at WOTAN `/bedrockracers/` since 2026-10-21; only two humans have been tested in one room. Street tricks / jukes and different
+car classes are not started, and the CHAMPION bot level has no league yet. Frame time in Node on a shared vCPU: median ~8.4 ms,
+p99 ~10 ms. Details: `stdlib/bedrockracers/README.md`, `HANDOFF.md`.
 
 ## `plugins/static_analysis` — multi-tier IR lifter + SSA (Python)
 

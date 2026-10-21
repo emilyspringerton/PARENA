@@ -4,7 +4,28 @@ Rewritten 2026-10-18 by the Claude session that finished the renderer, the page,
 session before it left when its usage ran out). `README.md` next to this file says what is where; this file says what is done, what
 is next, and the rules. Everything below was checked when it was written. Re-check anything you are about to rely on.
 
-## UPDATE 2026-10-18 (evening): online multiplayer is BUILT and TESTED, but NOT DEPLOYED -- read this first
+## UPDATE 2026-10-21: online multiplayer is SHIPPED (read this, then the evening section below for where things are)
+
+IDUNA `main` `d2684db` (the `wip/bedrockracers-online` branch merged onto current main, deployed; `/api/v1/bedrockracers/status` says
+`configured: true`) and WOTAN `main` (`bedrockracers-page` fast-forwarded, plus `a961b1c`) are both live, IDUNA first. The founder said
+"do all of it" for the whole sequence, including the WOTAN push. What changed on the way:
+
+- **The referee wasm in IDUNA was stale.** `IDUNA/internal/bedrockracers/bedrockracers.wasm` differed from the browsers' module in two
+  net functions (`net_check_fail_bang`, `net_frame_bang`, 20 bytes: the ERROR-6-leaves-the-room change, PARENA `c5fa4b9`). It is now the
+  WOTAN `bedrockracers-page` build (sha256 `bc8b7d72...`); the golden hashes did not move. If you rebuild, copy the new wasm to BOTH repos.
+- Checked on the merged tree: `go build ./...`, the `bedrockracers` and `-run Bedrock` handler tests, and WOTAN's two-Chromium online
+  test 10/10 against a binary built from it. The wider IDUNA `handlers` run has the same 9 failures on clean `main` (draft runs, guest
+  lore name / upgrade, redeem refill, nock door scripts, identity admin merge): they are not this work. One run also failed
+  `TestBedrockRacersPlay_RatedMatchIsRecordedAndShownInTheStats` while another test suite was hogging this 2-core box; 0 in 23 reruns.
+- IDUNA's `IDUNA Construct` workflow has failed on every push since 2026-10-17, before this merge.
+- Smoke it live after any deploy of either side: `scripts/bedrockracers-live-smoke.mjs [origin]` in WOTAN (two real browsers).
+- Toolchain on a fresh box with no root: Go and Node tarballs into `~/.local`, Playwright + its Chromium into a scratch dir, and for the
+  four missing system libs (`libatk-1.0`, `libatk-bridge-2.0`, `libatspi`, `libXcomposite`) `apt-get download` + `dpkg -x` into a scratch
+  dir and `LD_LIBRARY_PATH` (no sudo needed).
+- Still open: WOTAN ladder / Matches / profile pages; Firefox, Safari, phones, real latency, 3+ humans in a room; the tricks, car classes,
+  audio and CHAMPION-trainer items below.
+
+## UPDATE 2026-10-18 (evening): online multiplayer was BUILT and TESTED, NOT DEPLOYED then (shipped, see above)
 
 Written by Claude Sonnet 5.5 when the founder moved game dev to an open-weights model. Everything below this section still holds; this
 section supersedes the "Next" list where they differ.
