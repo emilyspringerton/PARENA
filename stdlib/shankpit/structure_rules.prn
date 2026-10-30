@@ -1,0 +1,86 @@
+;; stdlib/shankpit/structure_rules.prn -- material + structural rules for destructible brick.
+;;
+;; Founder real-time (2026-10-30): "we need to evolve the destructible brick logic into an intelligent,
+;; physically aware material and structural simulation ... a web of self-anchoring volumetric nodes".
+;; Scoped honestly to what this engine is: there is no finite-element solver here and adding one would
+;; not survive MMO tick budgets. What a player can actually feel is (a) different materials failing
+;; differently, (b) two touching pieces acting like they are joined, and (c) a piece losing its support
+;; and falling. Those three are cheap, deterministic, and belong in PARENA like the rest of the rules.
+;;
+;; Deliberately NOT modelled, named so nobody assumes it: real shear flow, fatigue, per-cell stress
+;; redistribution inside a piece, and any buckling shape (a pillar either holds its column load or the
+;; node fails -- it does not bow). Those need a solver this codebase does not have.
+;;
+;; Units at the boundary are integers, per this monorepo's mod ABI (ECOWAR/docs/ARENA_API.md):
+;;   density      kg/m^3
+;;   compression  kg per m^2 of footprint (a load capacity, not a pressure in SI)
+;;   tensile/shear/joint strength, damping   permille (1000 = "as strong as this engine ever gets")
+;; Material kinds are SHANKPIT's own BF_KIND_* (packages/world/brick_fracture.h):
+;;   0 brick, 1 concrete, 2 wood, 3 glass
+(module shankpit/structure-rules)
+(export struct-density struct-tensile struct-compression struct-shear struct-damping
+        struct-fracture-kind struct-joint-strength struct-holds-load)
+
+;; Mass per m^3. The level format already carries a per-material density override; this is the
+;; fallback for a material that does not set one.
+(defn struct-density [(kind : I32)] : I32
+  (if (= kind 1) 2400
+    (if (= kind 2) 600
+      (if (= kind 3) 2500 1900))))
+
+;; Resistance to being pulled apart. Wood is fibrous and takes tension well for its weight; glass
+;; takes almost none; masonry is held by mortar and is effectively a compression-only material.
+(defn struct-tensile [(kind : I32)] : I32
+  (if (= kind 1) 150
+    (if (= kind 2) 400
+      (if (= kind 3) 60 120))))
+
+;; Load a footprint m^2 can carry from above. These are deliberately large numbers: a real brick pier
+;; holds tonnes, and the interesting failures in a game are "the support was shot away", not
+;; "the brick quietly crushed itself". Concrete is the strongest, wood a quarter of it, glass barely.
+(defn struct-compression [(kind : I32)] : I32
+  (if (= kind 1) 2000000
+    (if (= kind 2) 350000
+      (if (= kind 3) 250000 900000))))
+
+;; Resistance to sliding/cutting. Timber joints fail in shear first, which is exactly why a peg is a
+;; good joint for wood and a bad one for glass.
+(defn struct-shear [(kind : I32)] : I32
+  (if (= kind 1) 260
+    (if (= kind 2) 300
+      (if (= kind 3) 80 200))))
+
+;; How much of an impact the material absorbs instead of passing on (permille). Concrete soaks a hit
+;; and breaks locally; glass transmits nearly everything and shatters along the whole pane.
+(defn struct-damping [(kind : I32)] : I32
+  (if (= kind 1) 700
+    (if (= kind 2) 400
+      (if (= kind 3) 60 550))))
+
+;; How a material comes apart: 0 SHARD (glass -- sharp plates), 1 GRAIN (wood -- splinters along the
+;; grain), 2 DUST (brick/concrete -- rubble). Consumed by the debris side, not the load maths.
+(defn struct-fracture-kind [(kind : I32)] : I32
+  (if (= kind 2) 1
+    (if (= kind 3) 0 2)))
+
+;; Strength of a joint where two pieces meet, as a permille of the weaker partner's own tensile
+;; strength. This is the "virtual peg" idea: two crossing timbers are not welded, they are pegged, so
+;; the joint is strong in shear and weaker in tension. Glass meets nothing well -- a pane leaning on a
+;; wall is resting, not anchored.
+(defn struct-joint-strength [(kind-a : I32) (kind-b : I32)] : I32
+  (if (= kind-a kind-b)
+    (if (= kind-a 2) 900          ; timber-to-timber peg
+      (if (= kind-a 1) 850        ; cast concrete
+        (if (= kind-a 0) 600      ; brick in mortar
+          (if (= kind-a 3) 100 500))))
+    (if (= kind-a 3) 150
+      (if (= kind-b 3) 150
+        (if (= kind-a 1) 800      ; concrete foundation anchoring anything
+          (if (= kind-b 1) 800 650))))))
+
+;; Does a support carrying `mass-kg` above it hold? A 15% safety factor, in integers so every client
+;; and the server agree exactly (same determinism requirement the lighting matrix has).
+(defn struct-holds-load [(mass-kg : I32) (capacity-kg : I32)] : I32
+  (if (< mass-kg 0) 0
+    (if (< capacity-kg 0) 0
+      (if (<= (* mass-kg 1000) (* capacity-kg 850)) 1 0))))
