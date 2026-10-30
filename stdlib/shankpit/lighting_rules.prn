@@ -1,0 +1,109 @@
+;; stdlib/shankpit/lighting_rules.prn -- SHANKPIT's unified environment matrix.
+;;
+;; Founder real-time (2026-10-30): "we need to up our game on lighting we have cool weather effects but
+;; it doesnt work with the ambient lighting like it always looks too dark everywhere we have some
+;; lighting tech down but we need more of a theory of all the lighting needs to talk to each other".
+;;
+;; The problem, stated exactly: weather, time of day, the ambient slider, fog and the emitters were
+;; each adjusting the scene independently, and every one of them could only ever subtract. A storm
+;; dimmed ambient, night dimmed ambient, a low slider dimmed ambient, fog replaced the draw distance --
+;; three multipliers and an addition that nobody reconciled, so a stormy night at slider 0 collapsed
+;; to near-black walls. There was no state that said "this is how much light the world gets right now".
+;;
+;; This module is that state. It is the ONE place the atmosphere is resolved: every consumer (surface
+;; lighting, fog, the outline emissive, the flashlight/headlight emitters) reads the same numbers out
+;; of here instead of deriving its own. Same ABI as every other real mod in this monorepo
+;; (ECOWAR/docs/ARENA_API.md): I32 in, I32 out, scalars only, no struct/F32/Vec across the boundary.
+;; Permille throughout -- 1000 == 1.0 -- and every input is clamped, so these are pure, total
+;; functions. The host (packages/render/env_matrix.c) only converts and applies.
+;;
+;; Deliberately NOT the "rayleigh/mie" vocabulary: there is no per-pixel atmospheric scattering here
+;; and claiming it would be a lie. What this actually models is the thing that was broken -- that a
+;; hazy sky SCATTERS some of the light it blocks, that the low end needs a hard floor for
+;; competitive legibility, and that emitters must trade reach for spread as visibility drops.
+;;
+;; Inputs (all permille 0..1000 unless noted):
+;;   cover, rain, storm  the SkyWeather profile's own already-smoothed intensities
+;;   fog-wash            how much the sky itself is swallowed by fog (SkyWeather.fog_wash)
+;;   visibility          meteorological visibility; WORLD UNITS (not permille), <= 0 = none
+;;   ambient-level       the pause-menu ambient slider, 0..10 (ambient_rules.prn owns that range)
+;;   interior            1 for an enclosed custom level (no sky exposure at all)
+(module shankpit/lighting-rules)
+(export env-occlusion env-light-bleed env-exposure env-ambient-floor
+        env-emissive-scale env-emitter-range-scale env-emitter-spread-scale)
+
+(defn lr-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; Raw occlusion before the interior shield: how much of the sky's own light the weather actually
+;; blocks. Weighted by what each state physically does rather than treating them as one dial --
+;; overcast is haze (most light still gets through), rain scatters and absorbs, a storm's cloud deck
+;; absorbs most of the direct beam, and fog wash adds its own extinction on top.
+(defn env-occlusion-raw [(cover : I32) (rain : I32) (storm : I32) (fog-wash : I32)] : I32
+  (+ (/ (* (lr-clamp cover 0 1000) 180) 1000)
+     (/ (* (lr-clamp rain 0 1000) 220) 1000)
+     (/ (* (lr-clamp storm 0 1000) 400) 1000)
+     (/ (* (lr-clamp fog-wash 0 1000) 200) 1000)))
+
+;; Occlusion, 0..780. Capped well short of 1.0: a real storm at noon is dim daylight, never night --
+;; that cap is the whole reason the old chain could not go pitch black, and it is stated here rather
+;; than left implicit in a magic multiplier. An interior keeps only 35% of it: a room with a roof has
+;; no line of sight to the weather, so weather must not darken it like open sky.
+(defn env-occlusion [(cover : I32) (rain : I32) (storm : I32) (fog-wash : I32) (interior : I32)] : I32
+  (lr-clamp
+    (/ (* (lr-clamp (env-occlusion-raw cover rain storm fog-wash) 0 1000)
+          (if (= interior 1) 350 1000))
+       1000)
+    0 780))
+
+;; Light bleed, 0..320: the light the atmosphere does NOT destroy -- haze and moisture scatter it, so
+;; a gloomy sky fills shaded surfaces instead of only removing the sun. This is the piece the old
+;; chain was missing entirely: dimming without any compensating scatter. Interiors get 30% of it
+;; (a little bounce through the windows, not open-sky glow).
+(defn env-light-bleed [(occlusion : I32) (interior : I32)] : I32
+  (lr-clamp
+    (/ (* (lr-clamp occlusion 0 1000) (if (= interior 1) 300 1000) 420) 1000000)
+    0 320))
+
+;; Exposure compensation, 1000..1936: the counterweight to the dimming, so the LOW end of the range
+;; lifts while the bright end stays put. A camera would open its aperture in bad weather; this is the
+;; engine doing the same, scaled by how much light the atmosphere took away.
+(defn env-exposure [(occlusion : I32)] : I32
+  (+ 1000 (/ (* (lr-clamp occlusion 0 1000) 1200) 1000)))
+
+;; The competitive-clarity floor, 300..900. This is a hard guarantee, not a taste knob: no surface's
+;; combined ambient term may end up below this, however bad the weather or however low the player's
+;; slider. Three parts, in the order they matter:
+;;   * a flat 300 -- even a total blackout keeps silhouettes and cover readable;
+;;   * up to +120 for clear skies (when nothing is occluded, the floor barely engages at all);
+;;   * the ambient slider on top, 0..+180, so a player who wants more really gets more.
+;; An interior adds +60: rooms should be readable, not a cave.
+(defn env-ambient-floor [(occlusion : I32) (ambient-level : I32) (interior : I32)] : I32
+  (lr-clamp
+    (+ 300
+       (/ (* (- 780 (lr-clamp occlusion 0 780)) 120) 780)
+       (/ (* (lr-clamp ambient-level 0 10) 180) 10)
+       (if (= interior 1) 60 0))
+    300 900))
+
+;; Emissive scale for outlines and shield FX, 750..1600. The reason this belongs in the matrix: an
+;; enemy outline tuned to read at noon is invisible at midnight, and one tuned for midnight blinds a
+;; noon match. Dark scenes push emissives UP (up to 1.6x), bright scenes tuck them DOWN to 0.75.
+;; Fed the floor rather than the raw ambient, because the floor is what the scene actually delivers.
+(defn env-emissive-scale [(ambient-permille : I32)] : I32
+  (lr-clamp (- 1600 (/ (* (lr-clamp ambient-permille 0 1000) 900) 1000)) 750 1600))
+
+;; Emitter reach vs. visibility, 450..1000. A flashlight or a buggy's worklights throw light through
+;; the medium, so fog eats their reach: at 3000 world units of visibility they are full range, and
+;; they bottom out at 45% rather than going out. visibility <= 0 means "no weather fog at all" and
+;; gets the unfiltered 1000 -- the indoor/clear-sky case must not be shortened by a missing reading.
+(defn env-emitter-range-scale [(visibility : I32)] : I32
+  (if (<= visibility 0)
+    1000
+    (lr-clamp (/ (* (lr-clamp visibility 0 3000) 1000) 3000) 450 1000)))
+
+;; Emitter spread, 1000..1600: the complement. Light that cannot travel as far is not lost, it is
+;; scattered -- so a shrunken beam widens, which is exactly how headlights read in real fog. Derived
+;; from the range so the two can never disagree instead of being tuned separately.
+(defn env-emitter-spread-scale [(range-scale : I32)] : I32
+  (lr-clamp (- 2000 (lr-clamp range-scale 0 1000)) 1000 1600))
