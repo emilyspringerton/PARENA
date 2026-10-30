@@ -30,7 +30,7 @@
 ;;   interior            1 for an enclosed custom level (no sky exposure at all)
 (module shankpit/lighting-rules)
 (export env-occlusion env-light-bleed env-exposure env-ambient-floor
-        env-emissive-scale env-emitter-range-scale env-emitter-spread-scale)
+        env-emissive-scale env-emitter-range-scale env-emitter-spread-scale env-flash-boost)
 
 (defn lr-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
   (if (< v lo) lo (if (> v hi) hi v)))
@@ -92,6 +92,15 @@
 ;; Fed the floor rather than the raw ambient, because the floor is what the scene actually delivers.
 (defn env-emissive-scale [(ambient-permille : I32)] : I32
   (lr-clamp (- 1600 (/ (* (lr-clamp ambient-permille 0 1000) 900) 1000)) 750 1600))
+
+;; Lightning, 0..300: a strike is a real light source and must reach the WORLD the same way the rest
+;; of the atmosphere does, not only tint the screen (which is all sky_weather_draw_grade did before).
+;; `flash` is SkyWeather's own already-smoothed bolt intensity, 0..1000. The result is extra SCATTERED
+;; light -- the bolt lights the whole storm deck, so its contribution is diffuse and white rather than
+;; a directional beam, and the host mixes the bleed toward white by this same fraction. Short-lived in
+;; the caller by construction: the flash itself decays, so this is a strike, not a weather state.
+(defn env-flash-boost [(flash : I32)] : I32
+  (/ (* (lr-clamp flash 0 1000) 300) 1000))
 
 ;; Emitter reach vs. visibility, 450..1000. A flashlight or a buggy's worklights throw light through
 ;; the medium, so fog eats their reach: at 3000 world units of visibility they are full range, and
