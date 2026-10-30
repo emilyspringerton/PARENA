@@ -2565,7 +2565,13 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         }
         if (expr->children[1]->type == NODE_SYMBOL) {
             Local *target = scope_lookup(scope, expr->children[1]->text);
-            if (target && target->c_type) {
+            /* A top-level `(def name ...)` is bound in g_globals and reachable through the scope
+             * chain, so it lands here too -- and a String global's c_type is `char *`, which would
+             * make this branch emit `*(global)` (a char assignment) instead of the direct global
+             * assignment the next branch handles. Real bug found 2026-10-30 building SHANKPIT's
+             * tools/local_nock.prn, whose session state is exactly that shape. When a LOCAL shadows
+             * the global, scope_lookup returns the local and the pointer branch below still applies. */
+            if (target && target->c_type && target != scope_lookup(&g_globals, expr->children[1]->text)) {
                 size_t tl = strlen(target->c_type);
                 if (tl > 0 && target->c_type[tl - 1] == '*') {
                     const char *rhs_type = NULL;

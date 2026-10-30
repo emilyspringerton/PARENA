@@ -19,8 +19,8 @@
 (module net/http_server)
 (import string)
 
-(export parse-method parse-path parse-body header-value find-sub trim
-        response json-response text-response status-line)
+(export parse-method parse-path parse-target parse-body header-value query-value find-sub trim
+        response json-response text-response html-response status-line)
 
 ;; find-sub -- first index of `needle` in `haystack` at or after `from`, or -1. Real, plain
 ;; recursion rather than a loop form: the emitted C for a self-recursive typed defn is an ordinary
@@ -39,22 +39,27 @@
         i
         (find-sub-from haystack needle (+ i 1) nl hl dest)))))
 
-;; trim -- strip leading and trailing ASCII spaces/tabs. Header values arrive as " 7" and a caller
-;; comparing or parsing them wants "7"; the same helper serves any other trimmed comparison.
+;; trim -- strip leading and trailing ASCII whitespace: space, tab, CR and LF. Header values arrive
+;; as " 7" and a caller comparing or parsing them wants "7"; CR/LF matter because command output
+;; (e.g. `git rev-parse --short HEAD`) ends in a newline, and splicing that straight into a JSON
+;; string produced a body no parser would accept -- found by this module's own server returning an
+;; invalid save response.
 (defn trim [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
   (trim-left s 0 (string/length s) dest))
 
 (defn trim-left [(s : String @ Region) (i : I32) (end : I32) (dest : Arena @ Region)] : String @ Region
   (if (>= i end)
     ""
-    (if (or (= (string/char-at s i) 32) (= (string/char-at s i) 9))
+    (if (or (= (string/char-at s i) 32) (= (string/char-at s i) 9)
+            (= (string/char-at s i) 10) (= (string/char-at s i) 13))
       (trim-left s (+ i 1) end dest)
       (trim-right s i (trim-end s i end) dest))))
 
 (defn trim-end [(s : String @ Region) (i : I32) (end : I32)] : I32
   (if (<= end i)
     i
-    (if (or (= (string/char-at s (- end 1)) 32) (= (string/char-at s (- end 1)) 9))
+    (if (or (= (string/char-at s (- end 1)) 32) (= (string/char-at s (- end 1)) 9)
+            (= (string/char-at s (- end 1)) 10) (= (string/char-at s (- end 1)) 13))
       (trim-end s i (- end 1))
       end)))
 
@@ -106,6 +111,33 @@
       (let [sp2 (find-sub raw " " (+ sp1 1) dest)]
         (if (< sp2 0) "" (path-only (string/substring raw (+ sp1 1) sp2 dest) dest))))))
 
+;; parse-target -- the request target INCLUDING its query string ("GET /x?since=4 HTTP/1.1").
+;; parse-path deliberately strips the query for literal route matching; a caller that needs
+;; `?since`/`?wait` needs the raw target too, and re-parsing the request line in the caller would
+;; duplicate this file's own scanning.
+(defn parse-target [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [sp1 (find-sub raw " " 0 dest)]
+    (if (< sp1 0)
+      ""
+      (let [sp2 (find-sub raw " " (+ sp1 1) dest)]
+        (if (< sp2 0) "" (string/substring raw (+ sp1 1) sp2 dest))))))
+
+;; query-value -- the value of `?key=value` in a request target, or "" when absent. Search starts
+;; after the '?', so a path segment that happens to contain "key=" cannot match as a parameter.
+(defn query-value [(target : String @ Region) (key : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [q (find-sub target "?" 0 dest)]
+    (if (< q 0)
+      ""
+      (let [needle (string/concat key "=" dest)
+            at (find-sub target needle (+ q 1) dest)]
+        (if (< at 0)
+          ""
+          (let [start (+ at (string/length needle))
+                end (find-sub target "&" start dest)]
+            (if (< end 0)
+              (string/substring target start (string/length target) dest)
+              (string/substring target start end dest))))))))
+
 (defn path-only [(target : String @ Region) (dest : Arena @ Region)] : String @ Region
   (if (string/str-eq? target "")
     ""
@@ -130,7 +162,8 @@
         (if (= status 400) "400 Bad Request"
           (if (= status 404) "404 Not Found"
             (if (= status 405) "405 Method Not Allowed"
-              (if (= status 500) "500 Internal Server Error" "200 OK"))))))))
+              (if (= status 413) "413 Payload Too Large"
+                (if (= status 500) "500 Internal Server Error" "200 OK")))))))))
 
 (defn response [(status : I32) (content-type : String @ Region) (body : String @ Region) (dest : Arena @ Region)] : String @ Region
   (string/concat
