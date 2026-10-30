@@ -1397,7 +1397,92 @@ static const char *emit_binop(Arena *arena, Node *call, const char *c_op, EmitSc
      * pairwise folding `((a < b) < c)` would silently compute wrong
      * (comparing a real 0/1 int result against c) -- flagged as a
      * real, separate, unstarted gap rather than guessed at here. */
-    if (call->child_count > 3 && (strcmp(c_op, "&&") == 0 || strcmp(c_op, "||") == 0)) {
+    /* Real, general N-ary extension (2026-10-30, found building SHANKPIT's own
+     * tools/local_nock.prn, which really does write `(+ sp1 1)`-shaped sums with
+     * three or more operands): every ASSOCIATIVE operator left-folds exactly --
+     * `(+ a b c)` -> `((a + b) + c)`, which is semantically identical to the
+     * n-ary arithmetic every Lisp-family language gives it (same for `-`/`/`,
+     * where Lisp's own left-to-right reading IS the fold). `%%`/bitwise/shift
+     * fold the same way (each is associative enough that the C grouping this
+     * emits is the only reading the language ever documents).
+     *
+     * Comparisons stay 2-argument on purpose, and that is an explicitly
+     * HONEST limitation, not an oversight: `(< a b c)` in Lisp/Scheme means
+     * "a<b AND b<c" (a real chained comparison), and folding it pairwise
+     * `((a < b) < c)` would silently compute the WRONG thing (comparing a
+     * real 0/1 result against c). Emitting the correct chain would require
+     * evaluating the shared middle operand exactly once, and expression
+     * position has no real statement slot to hoist a temp into (the same
+     * reason emit_binop's own let/match/loop guard exists below), so
+     * duplicating it would silently double any side effects. Left as a
+     * real, named gap with a message that says so, rather than guessed at. */
+    if (call->child_count > 3) {
+        int is_logic = strcmp(c_op, "&&") == 0 || strcmp(c_op, "||") == 0;
+        int is_foldable = is_logic ||
+                          strcmp(c_op, "+") == 0 || strcmp(c_op, "-") == 0 ||
+                          strcmp(c_op, "*") == 0 || strcmp(c_op, "/") == 0 ||
+                          strcmp(c_op, "%") == 0 || strcmp(c_op, "&") == 0 ||
+                          strcmp(c_op, "|") == 0 || strcmp(c_op, "^") == 0 ||
+                          strcmp(c_op, "<<") == 0 || strcmp(c_op, ">>") == 0;
+        if (!is_foldable) {
+            return fail(arena, out_error,
+                        "emit: operator '%s' at line %d has %d operands -- VS0 folds associative "
+                        "arithmetic/bitwise/logical operators n-arily, but a chained COMPARISON "
+                        "like (< a b c) would have to evaluate its shared middle operand twice to "
+                        "mean a<b && b<c, so comparisons stay exactly 2 operands: write the chain "
+                        "out as explicit (and (< a b) (< b c)) instead",
+                        call->children[0]->text, call->line, (int)(call->child_count - 1));
+        }
+        const char *acc_type = NULL;
+        const char *acc = emit_expr(arena, call->children[1], scope, &acc_type, out_error);
+        if (!acc) return NULL;
+        const char *fold_type = is_logic ? "int" : acc_type;
+        for (size_t i = 2; i < call->child_count; i++) {
+            const char *next_type = NULL;
+            const char *next = emit_expr(arena, call->children[i], scope, &next_type, out_error);
+            if (!next) return NULL;
+            StrBuf buf;
+            sb_init(&buf);
+            sb_append(&buf, "(");
+            sb_append(&buf, acc);
+            sb_append(&buf, " ");
+            sb_append(&buf, c_op);
+            sb_append(&buf, " ");
+            sb_append(&buf, next);
+            sb_append(&buf, ")");
+            acc = arena_strdup(arena, buf.data, buf.len);
+            sb_free(&buf);
+        }
+        *out_type = fold_type;
+        return acc;
+    }
+    /* One operand: `(+ x)` is x, and `(- x)` is a real unary negation -- the
+     * same identity/negation a Lisp-family `-` already has. Every other
+     * operator with a single operand is a real typo, reported rather than
+     * silently passing the operand through. */
+    if (call->child_count == 2) {
+        if (strcmp(c_op, "+") != 0 && strcmp(c_op, "-") != 0) {
+            return fail(arena, out_error,
+                        "emit: operator '%s' at line %d needs at least 2 operands",
+                        call->children[0]->text, call->line);
+        }
+        const char *one_type = NULL;
+        const char *one = emit_expr(arena, call->children[1], scope, &one_type, out_error);
+        if (!one) return NULL;
+        *out_type = one_type;
+        if (strcmp(c_op, "-") == 0) {
+            StrBuf neg;
+            sb_init(&neg);
+            sb_append(&neg, "(- ");
+            sb_append(&neg, one);
+            sb_append(&neg, ")");
+            const char *res = arena_strdup(arena, neg.data, neg.len);
+            sb_free(&neg);
+            return res;
+        }
+        return one;
+    }
+    if (call->child_count != 3) {
         const char *acc_type = NULL;
         const char *acc = emit_expr(arena, call->children[1], scope, &acc_type, out_error);
         if (!acc) return NULL;
@@ -1802,7 +1887,25 @@ static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const c
                 return NULL;
             }
             if (i > 1) sb_append(&args, ", ");
-            sb_appendf(&args, "&(%s)", inner_c);
+            /* Real fix (2026-10-30, gcc-verifying SHANKPIT's own
+             * tools/local_nock.prn: `(tcp-accept &!listener dest)` on a
+             * match-bound Ok payload emitted `&(listener)` against a
+             * `void *listener`, i.e. a real `void **` where `TcpListener *`
+             * was required). A match-bound Result/Option payload's tracked
+             * type is already a POINTER to the payload ("TcpListener *"),
+             * because the runtime boxes the value behind `.value` -- so the
+             * operand already IS the address, and `&` on it must pass the
+             * pointer value, not its address. Same rule as emit_expr's own
+             * single-token `&x` path, which is why both were wrong together
+             * and are fixed together. A non-pointer operand (a real value
+             * local, a Vec, a struct) still takes its address as before, so
+             * nothing that already worked changes. */
+            size_t inner_len = inner_type ? strlen(inner_type) : 0;
+            if (inner_len > 0 && inner_type[inner_len - 1] == '*') {
+                sb_appendf(&args, "(%s)", inner_c);
+            } else {
+                sb_appendf(&args, "&(%s)", inner_c);
+            }
             i++;
             continue;
         }
@@ -2173,6 +2276,16 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
         strcmp(expr->text, "&mut") != 0 && strlen(expr->text) > 1) {
         Local *b = scope_lookup(scope, expr->text + 1);
         if (!b) return fail(arena, out_error, "unknown identifier '%s' at line %d", expr->text + 1, expr->line);
+        /* Real fix (2026-10-30, the same one made in emit_call's own
+         * argument loop -- see its comment): a symbol whose tracked type is
+         * ALREADY a pointer (a match-bound Result/Option payload, a `&T`
+         * parameter) is the address itself, so `&x` is x. Wrapping it in
+         * `&(...)` produced a real double pointer (`void **` for a boxed
+         * Ok payload) that gcc rejects at every call site expecting `T *`. */
+        if (b->c_type && strlen(b->c_type) > 0 && b->c_type[strlen(b->c_type) - 1] == '*') {
+            *out_type = b->c_type;
+            return b->c_name;
+        }
         char buf[256];
         snprintf(buf, sizeof(buf), "&(%s)", b->c_name);
         char type_buf[128];
@@ -2464,9 +2577,32 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                 }
             }
         }
+        /* Real top-level `(def ...)` mutation (2026-10-30, found building
+         * SHANKPIT's own tools/local_nock.prn: a server's session id, its
+         * event log and its draft level are all real globals that outlive
+         * one request, and routing them through a hand-written C host was
+         * the workaround this replaces). process_defs() emits every `def` as
+         * a real `static` C variable and binds it into g_globals before any
+         * defn body is emitted, so assigning through that binding is
+         * ordinary C assignment -- no pointer indirection needed, unlike the
+         * &mut-local case above. Deliberately still narrow: only a bare
+         * symbol naming a real top-level def qualifies; anything else falls
+         * through to the honest error below. */
+        if (expr->children[1]->type == NODE_SYMBOL) {
+            Local *global = scope_lookup(&g_globals, expr->children[1]->text);
+            if (global && global->c_name) {
+                const char *rhs_type = NULL;
+                const char *rhs_c = emit_expr(arena, expr->children[2], scope, &rhs_type, out_error);
+                if (!rhs_c) return NULL;
+                *out_type = "void";
+                char *buf = xfmt("(%s = %s)", global->c_name, rhs_c);
+                return arena_strdup(arena, buf, strlen(buf));
+            }
+        }
         return fail(arena, out_error,
-                    "set!: VS0's emitter only supports (set! (get-field target :field) value) or "
-                    "(set! ref-var value) for an in-scope &mut-typed local/parameter so far at line %d",
+                    "set!: VS0's emitter supports (set! (get-field target :field) value), "
+                    "(set! ref-var value) for an in-scope &mut-typed local/parameter, and "
+                    "(set! global-name value) for a real top-level (def ...) so far at line %d",
                     expr->line);
     }
     if (is_call_named(expr, "deref")) {
@@ -2870,7 +3006,16 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
                     return NULL;
                 }
                 if (i > 1) sb_append(&args, ", ");
-                sb_appendf(&args, "&(%s)", inner_c);
+                /* Same already-a-pointer rule as emit_call's own argument
+                 * loop (see its comment) -- kept in sync here rather than
+                 * factored out, matching how this loop's other argument
+                 * handling is already duplicated. */
+                size_t inner_len = inner_type ? strlen(inner_type) : 0;
+                if (inner_len > 0 && inner_type[inner_len - 1] == '*') {
+                    sb_appendf(&args, "(%s)", inner_c);
+                } else {
+                    sb_appendf(&args, "&(%s)", inner_c);
+                }
                 i++;
                 continue;
             }

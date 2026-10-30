@@ -1181,6 +1181,29 @@ static inline char *string_concat(const char *a, const char *b, Arena *dest) {
     return out;
 }
 
+/* print / println -- PARENA's own console output primitives, found genuinely
+ * MISSING (2026-10-30, building SHANKPIT's tools/local_nock.prn: `parena build`
+ * emitted `println("...")` for a call with no runtime declaration and no emitter
+ * builtin behind it at all, so the build succeeded and only gcc rejected the
+ * result -- the same silent-gap class tcp.prn's own header documents). Two
+ * plain helpers here rather than an emitter special case: `println` is just
+ * `print` plus a newline, the output call sites stay ordinary C calls, and any
+ * other generated file that wants to report startup/bind errors gets the same
+ * two functions. Returns the number of bytes written (or EOF on a real write
+ * failure), the same shape as libc's own fputs, so a caller can check it.
+ * `(println x)`'s emitted C is `(void)(println(x))` in statement position,
+ * which is exactly what a real function returning int needs there. Both
+ * tolerate a NULL string (a failed parse handing back "" vs NULL) by
+ * printing nothing rather than dereferencing NULL. */
+static inline int print(const char *s) {
+    return fputs(s ? s : "", stdout);
+}
+
+static inline int println(const char *s) {
+    if (fputs(s ? s : "", stdout) < 0) return -1;
+    return putchar('\n') < 0 ? -1 : 0;
+}
+
 /* string_contains_ci_impl -- real, portable case-insensitive substring
  * search for stdlib/string.prn's own contains-ci?. Originally called
  * glibc's own strcasestr directly inline -- real, genuinely portable
@@ -2125,9 +2148,17 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
         if (content_length < 0) {
             long cl = find_body_length_from_headers(buf, len, &header_end);
             if (cl >= 0) content_length = cl;
-            /* cl == -2 (boundary seen, no real Content-Length): keep the
-               original read-until-EOF/timeout behavior. cl == -1
-               (boundary not seen yet): keep reading. */
+            /* cl == -2 (boundary seen, no real Content-Length): the request
+             * has NO body, so the header block just read IS the whole
+             * message -- stop here. Real bug found and fixed 2026-10-30 by
+             * running SHANKPIT's own tools/local_nock.prn: this used to fall
+             * through to read-until-EOF, so every bodyless GET sat blocked
+             * until the client gave up (curl: `Operation timed out ... 0
+             * bytes received`) while every POST/PUT with a Content-Length
+             * worked. RFC 7230 section 3.3.3 says the same thing: a request
+             * without Content-Length or Transfer-Encoding has an empty
+             * body. cl == -1 (boundary not seen yet): keep reading. */
+            else if (cl == -2) break;
         }
     }
     char *out = (char *)arena_alloc(dest, len + 1);

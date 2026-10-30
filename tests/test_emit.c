@@ -3214,6 +3214,84 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- variadic arithmetic + top-level (def ...) mutation (2026-10-30, the
+     * two real expressability gaps SHANKPIT's own tools/local_nock.prn hit) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(def counter 0)\n"
+            "(defn bump! [] : I32 (do (set! counter (+ counter 1)) counter))\n"
+            "(defn sum3 [(a : I32) (b : I32) (c : I32)] : I32 (+ a b c))\n"
+            "(defn sum4 [(a : I32) (b : I32) (c : I32) (d : I32)] : I32 (+ a b c d))\n"
+            "(defn diff3 [(a : I32) (b : I32) (c : I32)] : I32 (- a b c))\n"
+            "(defn neg [(x : I32)] : I32 (- x))\n"
+            "(defn shout [] : I32 (do (println \"hi\") 0))\n";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "variadic/global-mutation program parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "variadic arithmetic and set! on a top-level def emit");
+        if (c_src) {
+            CHECK(strstr(c_src, "((a + b) + c)") != NULL,
+                  "(+ a b c) left-folds in operand order");
+            CHECK(strstr(c_src, "(((a + b) + c) + d)") != NULL,
+                  "(+ a b c d) folds all four operands");
+            CHECK(strstr(c_src, "((a - b) - c)") != NULL, "(- a b c) folds as a - b - c");
+            CHECK(strstr(c_src, "(- x)") != NULL, "(- x) emits a real unary negation");
+            CHECK(strstr(c_src, "(counter = (counter + 1))") != NULL,
+                  "set! on a top-level def assigns the real C global");
+            CHECK(strstr(c_src, "println(\"hi\")") != NULL,
+                  "println is emitted as an ordinary call into the runtime helper");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- `&` on a match-bound Result payload passes the payload pointer itself,
+     * not its address (found gcc-verifying SHANKPIT's tools/local_nock.prn, where
+     * `(tcp-accept &!listener dest)` emitted a real `void **`) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum BoxErr (Nope))\n"
+            "(defstruct Box (n : I32))\n"
+            "(defn open-box [] : (Result Box BoxErr) #target {:c (inline-c \"no_box()\")})\n"
+            "(defn take-box [(!b : &mut Box)] : I32 (get-field !b :n))\n"
+            "(defn use-box [] : I32\n"
+            "  (match (open-box) ((Ok !b) (take-box &!b)) ((Err _) -1)))\n";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "match-bound payload &-argument program parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL, "& on a match-bound payload emits");
+        if (c_src) {
+            CHECK(strstr(c_src, "&(b)") == NULL,
+                  "& on a boxed Ok payload does not take the address of the box pointer (the old void ** bug)");
+            CHECK(strstr(c_src, "take_box(b)") != NULL,
+                  "& on a boxed Ok payload passes the payload pointer itself");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a chained comparison is still a named, honest failure, not a silently
+     * wrong pairwise fold (see emit_binop's own comment for why) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defn bad [(a : I32) (b : I32) (c : I32)] : I32 (< a b c))";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "3-operand comparison program parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err && strstr(emit_err, "chained COMPARISON") != NULL,
+              "(< a b c) fails with the named chained-comparison error rather than folding wrongly");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

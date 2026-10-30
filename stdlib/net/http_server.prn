@@ -9,22 +9,92 @@
 ;; case-insensitive header lookup over the raw header block.
 ;;
 ;; Deliberately socket-free: this module builds response STRINGS only. Writing them out belongs to
-;; the caller, because a `&mut TcpStream` parameter in a module that only *imports* net/tcp hits a
-;; real VS0 limitation ("unsupported reference target type 'TcpStream'") -- found by building this
-;; file, not assumed. Session/level decisions stay in the caller too: no first-class functions exist
-;; yet (http/routes.prn's own header documents the same constraint against a handler table), so the
-;; caller's own string dispatch chooses among these builders.
+;; the caller (a real host loop), because the request/response half is genuinely independent of the
+;; socket type and is the part that unit-tests without any network. Session/level decisions stay in
+;; the caller too: no first-class function tables are needed for a handful of literal routes.
+;;
+;; Request shape: three String accessors (parse-method/parse-path/parse-body) rather than one
+;; Request struct -- the caller gets plain Strings and never has to name this module's types.
 
 (module net/http_server)
 (import string)
 
-(export parse-method parse-path parse-body header-value find-sub
-        response json-response text-response)
+(export parse-method parse-path parse-body header-value find-sub trim
+        response json-response text-response status-line)
 
-;; parse-method / parse-path / parse-body -- three String accessors instead of one Request struct:
-;; returning a defstruct across a module boundary is a real VS0 limitation found by building this
-;; file ("'void *' isn't a registered defstruct type" at the caller's get-field), so the caller gets
-;; plain Strings and never has to name this module's types.
+;; find-sub -- first index of `needle` in `haystack` at or after `from`, or -1. Real, plain
+;; recursion rather than a loop form: the emitted C for a self-recursive typed defn is an ordinary
+;; call, and this keeps every call site a plain expression. Each probe allocates one substring in
+;; `dest`, which is the same arena the response itself is built in -- fine for a request-sized
+;; haystack, and an honest cost to note rather than an accidental leak.
+(defn find-sub [(haystack : String @ Region) (needle : String @ Region) (from : I32) (dest : Arena @ Region)] : I32
+  (find-sub-from haystack needle (if (< from 0) 0 from) (string/length needle) (string/length haystack) dest))
+
+(defn find-sub-from [(haystack : String @ Region) (needle : String @ Region) (i : I32) (nl : I32) (hl : I32) (dest : Arena @ Region)] : I32
+  (if (= nl 0)
+    (if (> i hl) hl i)
+    (if (> (+ i nl) hl)
+      -1
+      (if (string/str-eq? (string/substring haystack i (+ i nl) dest) needle)
+        i
+        (find-sub-from haystack needle (+ i 1) nl hl dest)))))
+
+;; trim -- strip leading and trailing ASCII spaces/tabs. Header values arrive as " 7" and a caller
+;; comparing or parsing them wants "7"; the same helper serves any other trimmed comparison.
+(defn trim [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (trim-left s 0 (string/length s) dest))
+
+(defn trim-left [(s : String @ Region) (i : I32) (end : I32) (dest : Arena @ Region)] : String @ Region
+  (if (>= i end)
+    ""
+    (if (or (= (string/char-at s i) 32) (= (string/char-at s i) 9))
+      (trim-left s (+ i 1) end dest)
+      (trim-right s i (trim-end s i end) dest))))
+
+(defn trim-end [(s : String @ Region) (i : I32) (end : I32)] : I32
+  (if (<= end i)
+    i
+    (if (or (= (string/char-at s (- end 1)) 32) (= (string/char-at s (- end 1)) 9))
+      (trim-end s i (- end 1))
+      end)))
+
+(defn trim-right [(s : String @ Region) (start : I32) (end : I32) (dest : Arena @ Region)] : String @ Region
+  (string/substring s start end dest))
+
+;; lower-char / eq-at-ci? -- the real case-insensitive comparison RFC 7230 asks for in header
+;; names. Only ASCII letters fold, which is exactly the range header names are restricted to.
+(defn lower-char [(c : I32)] : I32
+  (if (and (>= c 65) (<= c 90)) (+ c 32) c))
+
+(defn eq-at-ci? [(s : String @ Region) (at : I32) (prefix : String @ Region) (j : I32)] : Bool
+  (if (>= j (string/length prefix))
+    true
+    (if (>= (+ at j) (string/length s))
+      false
+      (if (= (lower-char (string/char-at s (+ at j))) (lower-char (string/char-at prefix j)))
+        (eq-at-ci? s at prefix (+ j 1))
+        false))))
+
+;; header-value -- the value of header `name` (matched case-insensitively) in a raw request, or
+;; "" when absent. Scans real header starts only: it looks for a CRLF and compares from the byte
+;; right after it, so a header name mentioned inside another value can't match by accident. A
+;; name must be followed by ':' before the next CRLF, and the value runs to that CRLF.
+(defn header-value [(raw : String @ Region) (name : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (header-value-from raw name (find-sub raw "\r\n" 0 dest) dest))
+
+(defn header-value-from [(raw : String @ Region) (name : String @ Region) (crlf : I32) (dest : Arena @ Region)] : String @ Region
+  (if (< crlf 0)
+    ""
+    (let [start (+ crlf 2)]
+      (if (and (eq-at-ci? raw start name 0)
+               (= (string/char-at raw (+ start (string/length name))) 58))
+        (let [value-start (+ start (string/length name) 1)
+              value-end (find-sub raw "\r\n" value-start dest)]
+          (trim (string/substring raw value-start (if (< value-end 0) (string/length raw) value-end) dest) dest))
+        (header-value-from raw name (find-sub raw "\r\n" start dest) dest)))))
+
+;; parse-method / parse-path / parse-body -- "GET /x HTTP/1.1\r\n..." -> the three pieces.
+;; parse-path strips a query string, since every route here matches on the literal path.
 (defn parse-method [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
   (let [sp1 (find-sub raw " " 0 dest)]
     (if (< sp1 0) "" (string/substring raw 0 sp1 dest))))
@@ -36,17 +106,32 @@
       (let [sp2 (find-sub raw " " (+ sp1 1) dest)]
         (if (< sp2 0) "" (path-only (string/substring raw (+ sp1 1) sp2 dest) dest))))))
 
-(defn parse-body [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
-  (body-of raw dest))
+(defn path-only [(target : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (string/str-eq? target "")
+    ""
+    (let [q (find-sub target "?" 0 dest)]
+      (if (< q 0) target (string/substring target 0 q dest)))))
 
+;; parse-body -- everything after the blank line ending the headers. Accepts both CRLF and bare LF
+;; framing, since a hand-written curl/test client may send either.
+(defn parse-body [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [crlf (find-sub raw "\r\n\r\n" 0 dest)]
+    (if (>= crlf 0)
+      (string/substring raw (+ crlf 4) (string/length raw) dest)
+      (let [lf (find-sub raw "\n\n" 0 dest)]
+        (if (>= lf 0) (string/substring raw (+ lf 2) (string/length raw) dest) "")))))
+
+;; response -- a complete HTTP/1.1 response with Content-Length and Connection: close (one request
+;; per connection, matching the accept loop's own read-once/write-once shape).
 (defn status-line [(status : I32)] : String @ Region
   (if (= status 200) "200 OK"
     (if (= status 201) "201 Created"
-      (if (= status 400) "400 Bad Request"
-        (if (= status 404) "404 Not Found"
-          (if (= status 500) "500 Internal Server Error" "200 OK"))))))
+      (if (= status 204) "204 No Content"
+        (if (= status 400) "400 Bad Request"
+          (if (= status 404) "404 Not Found"
+            (if (= status 405) "405 Method Not Allowed"
+              (if (= status 500) "500 Internal Server Error" "200 OK"))))))))
 
-;; response -- a complete HTTP/1.1 response with Content-Length and Connection: close.
 (defn response [(status : I32) (content-type : String @ Region) (body : String @ Region) (dest : Arena @ Region)] : String @ Region
   (string/concat
     (string/concat "HTTP/1.1 "
@@ -63,3 +148,8 @@
 
 (defn text-response [(status : I32) (text : String @ Region) (dest : Arena @ Region)] : String @ Region
   (response status "text/plain; charset=utf-8" text dest))
+
+;; html-response -- the browser editor is served through this, so the Content-Type has to be right
+;; or the page renders as plain text.
+(defn html-response [(status : I32) (html : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (response status "text/html; charset=utf-8" html dest))
