@@ -80,7 +80,12 @@
 
 ;; Does a support carrying `mass-kg` above it hold? A 15% safety factor, in integers so every client
 ;; and the server agree exactly (same determinism requirement the lighting matrix has).
+;;
+;; The 15% is taken off the CAPACITY, divided before multiplying, and deliberately so: the earlier
+;; `(* mass 1000) <= (* capacity 850)` overflowed I32 for any real building (a concrete pier holds
+;; 72 million kg, and 72e6 x 850 does not fit), which the structure test caught as UBSan garbage
+;; verdicts. `capacity / 100 * 85` stays inside I32 for every capacity the rules can produce.
 (defn struct-holds-load [(mass-kg : I32) (capacity-kg : I32)] : I32
   (if (< mass-kg 0) 0
     (if (< capacity-kg 0) 0
-      (if (<= (* mass-kg 1000) (* capacity-kg 850)) 1 0))))
+      (if (<= mass-kg (* (/ capacity-kg 100) 85)) 1 0))))
