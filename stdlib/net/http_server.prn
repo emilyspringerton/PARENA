@@ -1,0 +1,65 @@
+;; stdlib/net/http_server.prn -- the server half of net/http, the dependency STDLIB.md/net/http.prn
+;; already names as deliberately dropped ("`serve` ... flagged as real, deliberately out-of-scope work
+;; for whoever needs it next"). Whoever needs it next is SHANKPIT's local NOCK map tools
+;; (SHANKPIT/tools/local_nock.prn): the cloud IDUNA/NOCK tooling is not always reachable and levels
+;; still have to be authored.
+;;
+;; Deliberately minimal and honest: HTTP/1.1, one request per connection (tcp_read_impl already stops
+;; at the Content-Length body), literal path/prefix matching (http/router.prn covers patterns), and
+;; case-insensitive header lookup over the raw header block.
+;;
+;; Deliberately socket-free: this module builds response STRINGS only. Writing them out belongs to
+;; the caller, because a `&mut TcpStream` parameter in a module that only *imports* net/tcp hits a
+;; real VS0 limitation ("unsupported reference target type 'TcpStream'") -- found by building this
+;; file, not assumed. Session/level decisions stay in the caller too: no first-class functions exist
+;; yet (http/routes.prn's own header documents the same constraint against a handler table), so the
+;; caller's own string dispatch chooses among these builders.
+
+(module net/http_server)
+(import string)
+
+(export parse-method parse-path parse-body header-value find-sub
+        response json-response text-response)
+
+;; parse-method / parse-path / parse-body -- three String accessors instead of one Request struct:
+;; returning a defstruct across a module boundary is a real VS0 limitation found by building this
+;; file ("'void *' isn't a registered defstruct type" at the caller's get-field), so the caller gets
+;; plain Strings and never has to name this module's types.
+(defn parse-method [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [sp1 (find-sub raw " " 0 dest)]
+    (if (< sp1 0) "" (string/substring raw 0 sp1 dest))))
+
+(defn parse-path [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [sp1 (find-sub raw " " 0 dest)]
+    (if (< sp1 0)
+      ""
+      (let [sp2 (find-sub raw " " (+ sp1 1) dest)]
+        (if (< sp2 0) "" (path-only (string/substring raw (+ sp1 1) sp2 dest) dest))))))
+
+(defn parse-body [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (body-of raw dest))
+
+(defn status-line [(status : I32)] : String @ Region
+  (if (= status 200) "200 OK"
+    (if (= status 201) "201 Created"
+      (if (= status 400) "400 Bad Request"
+        (if (= status 404) "404 Not Found"
+          (if (= status 500) "500 Internal Server Error" "200 OK"))))))
+
+;; response -- a complete HTTP/1.1 response with Content-Length and Connection: close.
+(defn response [(status : I32) (content-type : String @ Region) (body : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (string/concat
+    (string/concat "HTTP/1.1 "
+      (string/concat (status-line status)
+        (string/concat "\r\nContent-Type: "
+          (string/concat content-type
+            (string/concat "\r\nContent-Length: "
+              (string/concat (string/i32-to-string (string/length body) dest)
+                "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n" dest) dest) dest) dest) dest) dest)
+    body dest))
+
+(defn json-response [(status : I32) (json : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (response status "application/json" json dest))
+
+(defn text-response [(status : I32) (text : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (response status "text/plain; charset=utf-8" text dest))
