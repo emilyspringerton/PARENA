@@ -80,6 +80,17 @@ cc_library(
 )
 
 cc_library(
+    name = "emit_lua",
+    srcs = ["emit_lua.c"],
+    hdrs = ["emit_lua.h"],
+    deps = [
+        ":arena",
+        ":ast",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "emit_llvm",
     srcs = ["emit_llvm.c", "ast_sugar.h"],
     hdrs = ["emit_llvm.h"],
@@ -107,6 +118,7 @@ cc_binary(
         ":emit",
         ":emit_java",
         ":emit_llvm",
+        ":emit_lua",
         ":emit_ts",
         ":fmt",
         ":parser",

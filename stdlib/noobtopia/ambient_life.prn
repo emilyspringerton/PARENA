@@ -1,0 +1,66 @@
+;; stdlib/noobtopia/ambient_life.prn -- the shared ambient-life decisions.
+;;
+;; Founder real-time (2026-10-30): "NOOBTOPIA is the data for making our world seem more alive we script in more random
+;; interactions like the talking from noobtopia" and "PARENA is the gl[ue]".
+;;
+;; This file is the glue. A decision that SHANKPIT's C and NOOBTOPIA's Luau must agree on lives HERE, once:
+;;
+;;   * which KIND of line fits an NPC's mood        (ambient-category-for-mood)
+;;   * how long it must wait before speaking again  (ambient-cooldown-ms)
+;;   * whether it may speak now                     (ambient-should-speak)
+;;   * which line it picks from a category          (ambient-pick)
+;;
+;; The WORDS are not here, deliberately: they are data, and they live in NOOBTOPIA/data/noob_lines.lua, which
+;; SHANKPIT consumes through a generated include (scripts/gen_ambient_lines.sh). One source of truth for the words,
+;; one for the numbers.
+;;
+;; Moods are MISHRI's own 8-state enum (SHANKPIT packages/simulation/humanness.c, vendored by BIG_O), so the same
+;; integer means the same thing in all three repos -- the reason this can be a single function at all:
+;;   0 IDLE  1 CURIOUS  2 BORED  3 TIRED  4 STARTLED  (5..7 unused here, treated as IDLE)
+;;
+;; Categories (the host maps a category to a slice of its line table):
+;;   0 GREETING  1 QUESTION  2 BANTER  3 COMPLAINT  4 SELF
+;;
+;; Units are integers at the boundary, per this monorepo's mod ABI (ECOWAR/docs/ARENA_API.md). No host here: no clock,
+;; no RNG, no strings. The caller passes `seed`; that is what makes both worlds reproducible and testable.
+(module noobtopia/ambient-life)
+(export ambient-category-for-mood
+        ambient-cooldown-ms
+        ambient-should-speak
+        ambient-pick
+        ambient-category-count)
+
+;; How many categories exist. A host with no line in a category should fall back to GREETING rather than say nothing.
+(defn ambient-category-count [] : I32
+  5)
+
+;; A tired or bored noob complains; a startled one talks to itself; a curious one asks; everyone else greets or banters.
+;; BANTER is deliberately the widest bucket in the data, because that is what fills a street.
+(defn ambient-category-for-mood [(mood : I32)] : I32
+  (if (= mood 3) 3
+    (if (= mood 2) 2
+      (if (= mood 4) 4
+        (if (= mood 1) 1
+          (if (= mood 5) 3 0))))))
+
+;; Cooldown before it may speak again, in milliseconds: tired and bored noobs are quiet for longer, a startled one
+;; recovers its chatter fast. `seed` jitters the wait so a crowd never synchronises into a chorus.
+;; 33 s (NOOBTOPIA's original wander timer) is far too slow to read as life in a 60 Hz world; these are 3-22 s.
+(defn ambient-cooldown-ms [(mood : I32) (seed : I32)] : I32
+  (if (= mood 3) (+ 14000 (ambient-pick 8000 seed))
+    (if (= mood 2) (+ 10000 (ambient-pick 8000 seed))
+      (if (= mood 4) (+ 3000 (ambient-pick 4000 seed))
+        (+ 6000 (ambient-pick 8000 seed))))))
+
+;; May it speak now? One call, so neither host can drift on the comparison.
+(defn ambient-should-speak [(mood : I32) (since-ms : I32) (seed : I32)] : I32
+  (if (< since-ms 0) 0
+    (if (>= since-ms (ambient-cooldown-ms mood seed)) 1 0)))
+
+;; Uniform pick in [0, count): `seed / count * count` subtracted, i.e. modulo by hand. Integer division on I32 is the
+;; only division this file uses, on purpose -- `%` is not in the ABI subset every emitter here agrees on, while `/` is
+;; (see brick_rules.prn's own base-damage/4).
+(defn ambient-pick [(count : I32) (seed : I32)] : I32
+  (if (<= count 0) 0
+    (if (< seed 0) 0
+      (if (>= seed count) (- seed (* (/ seed count) count)) seed))))

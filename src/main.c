@@ -12,6 +12,7 @@
 #include "emit_java.h"
 #include "emit_llvm.h"
 #include "emit_ts.h"
+#include "emit_lua.h"
 #include "fmt.h"
 #include "parser.h"
 #include "region.h"
@@ -285,6 +286,7 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
     int is_ts_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ts") == 0;
     int is_java_target = out_path_len >= 5 && strcmp(out_path + out_path_len - 5, ".java") == 0;
     int is_llvm_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ll") == 0;
+    int is_lua_target = out_path_len >= 4 && strcmp(out_path + out_path_len - 4, ".lua") == 0;
 
     const char *emit_err = NULL;
     const char *emitted_source;
@@ -296,6 +298,10 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         emitted_source = emit_java(&arena, program, class_name, package_name, &emit_err);
     } else if (is_llvm_target) {
         emitted_source = emit_llvm(&arena, program, &emit_err);
+    } else if (is_lua_target) {
+        /* The three-way merge's shared half: NOOBTOPIA (Roblox/Luau) calls a module emitted from the SAME .prn
+           SHANKPIT compiles to C, so neither world keeps its own copy of a threshold. See emit_lua.h. */
+        emitted_source = emit_lua(&arena, program, &emit_err);
     } else {
         emitted_source = emit_c(&arena, program, &emit_err);
     }

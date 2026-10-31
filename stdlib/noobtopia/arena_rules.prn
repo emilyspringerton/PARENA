@@ -1,0 +1,115 @@
+;; stdlib/noobtopia/arena_rules.prn -- the SHANKPIT affordances NOOBTOPIA needs: combat and slippery physics.
+;;
+;; Founder real-time (2026-10-30): "build the shankpit affordances into NOOBTOPIA including combat and slippery
+;; physics PARENA IS THE GLUE".
+;;
+;; This file is the glue made literal: it is emitted TWICE from one source.
+;;   * SHANKPIT (and any C host):   parena build ... -o packages/simulation/noobtopia_rules.c
+;;   * NOOBTOPIA (Roblox, Luau):    parena build ... -o src/generated/arena_rules.lua
+;; The two worlds cannot drift on what a bat hits for or how long ice keeps you moving, because there is one file
+;; that says so. See MONOREPO/docs/THREE_WAY_MERGE.md.
+;;
+;; Units, all integers (the mod ABI in ECOWAR/docs/ARENA_API.md):
+;;   speed        units per tick (the host integrates; this file only decides the next speed)
+;;   surface      permille of traction: 1000 = perfect grip, 0 = frictionless
+;;   damage       hit points
+;;   chance       permille
+;;   cooldown     ticks
+;;
+;; Deliberately NOT here: rendering, hit detection, network, or anything that needs a clock. This is the decision
+;; layer; both hosts keep their own verbs.
+(module noobtopia/arena-rules)
+(export weapon-damage weapon-knockback-permille weapon-hit-chance-permille weapon-cooldown-ticks
+        surface-friction-permille surface-accel surface-jump-impulse
+        step-speed slide-decay)
+
+;; ---- combat ---------------------------------------------------------------------------------------
+;; Weapon ids are NOOBTOPIA's own, deliberately small (a Roblox noob has fists, a bat, a pistol, a rocket):
+;;   0 FIST  1 BAT  2 PISTOL  3 ROCKET
+;; Fists are the baseline a noob always has; a rocket is the only thing that should read as an event.
+(defn weapon-damage [(weapon : I32)] : I32
+  (if (= weapon 3) 90
+    (if (= weapon 1) 22
+      (if (= weapon 2) 18
+        12))))
+
+;; Hit points of force the target keeps, permille of its own speed. A rocket throws you; a bat shoves you; a pistol
+;; barely moves you at all (it is the damage that matters); fists are a nudge.
+(defn weapon-knockback-permille [(weapon : I32)] : I32
+  (if (= weapon 3) 600
+    (if (= weapon 1) 180
+      (if (= weapon 2) 90
+        60))))
+
+;; To-hit chance, permille, falling off with distance. Base per weapon, then -8 permille per unit, floored at 50
+;; so no shot is ever impossible and clamped at 950 so none is ever certain.
+(defn weapon-hit-chance-permille [(weapon : I32) (dist : I32)] : I32
+  (if (< dist 0) 950
+    (if (> (- (weapon-hit-base weapon) (* dist 8)) 950) 950
+      (if (< (- (weapon-hit-base weapon) (* dist 8)) 50) 50
+        (- (weapon-hit-base weapon) (* dist 8))))))
+
+;; Base accuracy per weapon (kept as its own function so the falloff above reads as one expression).
+(defn weapon-hit-base [(weapon : I32)] : I32
+  (if (= weapon 3) 900
+    (if (= weapon 2) 800
+      (if (= weapon 1) 700
+        650))))
+
+;; Ticks between swings/shots. A rocket is a commitment; fists are fast.
+(defn weapon-cooldown-ticks [(weapon : I32)] : I32
+  (if (= weapon 3) 90
+    (if (= weapon 2) 30
+      (if (= weapon 1) 24
+        8))))
+
+;; ---- slippery physics -----------------------------------------------------------------------------
+;; Surface ids: 0 CONCRETE  1 ICE  2 GRASS  3 METAL  4 MUD
+;; Traction in permille. Ice is the whole point of this file: 120 permille means a step-speed loses only 12% of
+;; its speed per tick when you let go, so you coast -- and metal (a wet platform) is not far behind.
+(defn surface-friction-permille [(surface : I32)] : I32
+  (if (= surface 1) 120
+    (if (= surface 3) 300
+      (if (= surface 2) 600
+        (if (= surface 4) 700
+          850)))))
+
+;; How hard you can push yourself on this surface, in speed units per tick. Ice gives you almost nothing to push
+;; with (that is what makes it slippery rather than merely fast); concrete gives you the most.
+(defn surface-accel [(surface : I32)] : I32
+  (if (= surface 1) 1
+    (if (= surface 3) 2
+      (if (= surface 2) 3
+        (if (= surface 4) 2
+          4)))))
+
+;; Upward impulse from a jump. Ice and metal kill your launch a little (you cannot plant); grass is springy.
+(defn surface-jump-impulse [(surface : I32)] : I32
+  (if (= surface 1) 5
+    (if (= surface 3) 6
+      (if (= surface 2) 8
+        (if (= surface 4) 5
+          7)))))
+
+;; One tick of movement. `wish` is the speed the player is asking for this tick; `wish < 0` means "no input", which
+;; is exactly when the surface's own friction takes over and you slide to a stop. Neither host integrates here --
+;; they hand in last tick's speed and take next tick's.
+(defn step-speed [(speed : I32) (wish : I32) (surface : I32)] : I32
+  (if (< wish 0) (slide-decay speed surface)
+    (if (< speed wish)
+      (if (> (+ speed (surface-accel surface)) wish) wish (+ speed (surface-accel surface)))
+      (if (> speed wish)
+        (if (< (- speed (surface-accel surface)) wish) wish (- speed (surface-accel surface)))
+        wish))))
+
+;; No input: lose `traction` permille of speed this tick, i.e. a GRIPPY surface takes your speed away and a slippery one
+;; does not. (Written the other way round first -- subtracting `1000 - traction` -- which made ice lose 88% per tick and
+;; concrete glide; the test caught it immediately: 60 released ticks travelled 64 units on ice vs 507 on concrete.)
+;; ...and it MUST terminate, which integer division alone does not give you: at 8 units and 120 permille traction the
+;; loss floors to 0, so the slide would creep forever at 8 units a tick. A floor of one unit of loss per tick is what
+;; makes a slide end, and the test says so (`a slide actually terminates`).
+(defn slide-decay [(speed : I32) (surface : I32)] : I32
+  (if (<= speed 0) 0
+    (if (< (/ (* speed (surface-friction-permille surface)) 1000) 1)
+      (- speed 1)
+      (- speed (/ (* speed (surface-friction-permille surface)) 1000)))))
