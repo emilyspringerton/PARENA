@@ -28,6 +28,7 @@
         empire-troop-kind-count empire-troop-cost empire-clone-cost-milli
         empire-squad-cap empire-spawn-radius-milli empire-can-spawn
         empire-clone-can empire-influence-from-district
+        empire-influence-per-banked-unit empire-bank-credit
         empire-district-state empire-district-threshold-milli
         empire-sphere-rings empire-districts-in-ring empire-sphere-radius-milli
         empire-district-radius-milli empire-nearby-districts)
@@ -73,6 +74,25 @@
   (if (<= veterans 0) 0
     (if (>= live (empire-squad-cap)) 0
       (if (>= influence (empire-clone-cost kind)) 1 0))))
+
+;; ---- banking ---------------------------------------------------------------------------------------
+;; Gathered goods only become influence when they are BANKED, not while they are carried: carrying is
+;; exposure (you can be shot before you spend it), banking is the decision. The district trickle above is
+;; rent; this is wages. 1:1 keeps the two currencies legible -- one rifleman is 25 banked units.
+;;
+;; The pool and its cap are ARGUMENTS, not constants, on purpose: this file says what a banked unit is
+;; WORTH, empire-influence-max says how much can be held, and the host owns the balance. Returning the
+;; credit instead of performing the addition is what keeps a full pool from silently swallowing a
+;; hauler's cargo -- "capped" and "lost" have to be two different outcomes, and the difference is the
+;; number this returns.
+(defn empire-influence-per-banked-unit [] : I32 1)
+
+(defn empire-bank-credit [(carrying : I32) (influence : I32) (cap : I32)] : I32
+  (if (< carrying 1) 0
+    (if (>= influence cap) 0
+      (if (> (+ influence (* carrying (empire-influence-per-banked-unit))) cap)
+        (- cap influence)
+        (* carrying (empire-influence-per-banked-unit))))))
 
 ;; ---- districts --------------------------------------------------------------------------------------
 ;; A district you hold pays its own rate; a contested one pays a third; a rival's pays nothing. These
