@@ -3390,6 +3390,241 @@ static inline int run_capture_last_exit_code_impl(void) {
 }
 #endif /* !_WIN32 -- end of process.prn real host glue */
 
+#if defined(_WIN32) && !defined(PARENA_FREESTANDING)
+
+/* ---- Windows host glue for net/tcp.prn + process.prn (2026-10-31) ----------------------------
+ * Founder real-time: "fix the local nock? i click it in shankpit apps and nothing happens ... ensure
+ * it is bundled into the client". SHANKPIT's local NOCK map server (tools/local_nock.prn) is a
+ * PARENA program over net/tcp and process/run-capture, and both of those were POSIX-only by design --
+ * the guard above says so outright ("genuinely absent on Windows, not stubbed"). That is the real
+ * reason there was no dw_nock.exe to bundle and why the app tile could only ever report "server not
+ * found": not a packaging oversight, a missing host layer. This is that layer.
+ *
+ * Same six tcp_* entry points, same contracts as the POSIX block above: a raw fd or -1; read stops
+ * once the Content-Length body is complete, or at EOF when there is no Content-Length (RFC 7230
+ * 3.3.3 -- a request without one has an empty body, the real bug that block's own comment records).
+ * The PARENA side is byte-for-byte unchanged: it passes I32 fds around and never sees a SOCKET.
+ *
+ * Named limitations, not hidden: WSAPoll replaces poll, so the read loop is a faithful
+ * reimplementation rather than shared code (the platforms genuinely differ); run_capture's exit code
+ * is _pclose's raw return value, which mingw already gives as the process exit status, so POSIX's
+ * WIFEXITED/WEXITSTATUS unwrapping has no equivalent and is not needed; SOCKET is 64-bit on Win64
+ * and is narrowed to the I32 the stdlib uses, which is safe for real sockets (small handles) but is
+ * a narrowing rather than a guarantee; and process.prn's spawn/kill stay absent -- nothing in
+ * local_nock.prn calls them, and the Windows analogue is CreateProcess, not fork+exec.
+ */
+#include <process.h>
+
+static int g_parena_wsa_ready = 0;
+static inline int parena_wsa_start(void) {
+    if (!g_parena_wsa_ready) {
+        WSADATA w;
+        if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return -1;
+        g_parena_wsa_ready = 1;
+    }
+    return 0;
+}
+
+static inline int tcp_connect_impl(const char *host, int port) {
+    struct addrinfo hints, *res, *rp;
+    SOCKET s = INVALID_SOCKET;
+    char portstr[16];
+    if (parena_wsa_start() != 0) return -1;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        s = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (s == INVALID_SOCKET) continue;
+        if (connect(s, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
+        closesocket(s);
+        s = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return (s == INVALID_SOCKET) ? -1 : (int)s;
+}
+
+static inline int tcp_listen_impl(int port) {
+    SOCKET s;
+    int opt = 1;
+    struct sockaddr_in addr;
+    if (parena_wsa_start() != 0) return -1;
+    s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return -1;
+    (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, (int)sizeof opt);
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((u_short)port);
+    if (bind(s, (const struct sockaddr *)&addr, (int)sizeof addr) != 0) { closesocket(s); return -1; }
+    if (listen(s, 16) != 0) { closesocket(s); return -1; }
+    return (int)s;
+}
+
+static inline int tcp_accept_impl(int listener_fd) {
+    SOCKET a;
+    if (parena_wsa_start() != 0) return -1;
+    a = accept((SOCKET)listener_fd, NULL, NULL);
+    return (a == INVALID_SOCKET) ? -1 : (int)a;
+}
+
+/* parena_find_body_length_from_headers -- the same scan as the POSIX find_body_length_from_headers
+ * above (that one is inside the earlier !_WIN32 block, so it does not exist here). Returns -1 while
+ * the header/body boundary has not arrived, -2 once it has and there is no Content-Length, otherwise
+ * the parsed length with *header_end_out set to the first body byte. */
+static inline long parena_find_body_length_from_headers(const char *buf, size_t have, size_t *header_end_out) {
+    const char *boundary = NULL;
+    size_t i;
+    for (i = 0; i + 3 < have; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+            boundary = buf + i;
+            break;
+        }
+    }
+    if (!boundary) return -1;
+    {
+        size_t header_len = (size_t)(boundary - buf);
+        *header_end_out = header_len + 4;
+        for (i = 0; i + 15 <= header_len; i++) {
+            if (_strnicmp(buf + i, "Content-Length:", 15) == 0) {
+                long v = strtol(buf + i + 15, NULL, 10);
+                return v >= 0 ? v : -2;
+            }
+        }
+    }
+    return -2;
+}
+
+static inline char *tcp_read_impl(int fd, Arena *dest) {
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)arena_alloc(dest, cap);
+    long content_length = -1;
+    size_t header_end = 0;
+    char *out;
+    for (;;) {
+        WSAPOLLFD pfd;
+        int pr, n;
+        if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
+        if (len + 4096 > cap) {
+            size_t new_cap = cap + 4096;
+            char *grown = (char *)arena_alloc(dest, new_cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+            cap = new_cap;
+        }
+        pfd.fd = (SOCKET)fd;
+        pfd.events = POLLRDNORM;
+        pfd.revents = 0;
+        pr = WSAPoll(&pfd, 1, 30000);   /* same 30s idle-read safety net as the POSIX path */
+        if (pr <= 0) break;
+        n = recv((SOCKET)fd, buf + len, 4096, 0);
+        if (n <= 0) break;
+        len += (size_t)n;
+        if (content_length < 0) {
+            long cl = parena_find_body_length_from_headers(buf, len, &header_end);
+            if (cl >= 0) content_length = cl;
+            else if (cl == -2) break;   /* bodyless request: the header block IS the message */
+        }
+    }
+    out = (char *)arena_alloc(dest, len + 1);
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return out;
+}
+
+static inline int tcp_write_impl(int fd, const char *s) {
+    size_t len = strlen(s);
+    size_t written = 0;
+    while (written < len) {
+        int n = send((SOCKET)fd, s + written, (int)(len - written), 0);
+        if (n <= 0) return -1;
+        written += (size_t)n;
+    }
+    return 0;
+}
+
+static inline int tcp_close_impl(int fd) {
+    return closesocket((SOCKET)fd) == 0 ? 0 : -1;
+}
+
+/* spawn_detached_impl / process_kill_impl -- process.prn's own two primitives, which this block
+ * needs even though local_nock.prn never calls them: importing (process) emits every one of its
+ * `#target` functions into the generated C, so the module has to LINK on Windows too. Found by
+ * actually cross-compiling the server (-Wimplicit-function-declaration on both, then a real
+ * `undefined reference` at link), not assumed. CreateProcessA replaces fork+exec -- that is the
+ * genuine Windows analogue, not a stub -- and the returned id is the process id, which is what
+ * process_kill takes back. No wait/reap, same contract as the POSIX block: the caller owns the pid. */
+static inline int spawn_detached_impl(const char *path, const char *arg1) {
+    char cmdline[2048];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    snprintf(cmdline, sizeof cmdline, "\"%s\" \"%s\"", path, arg1 ? arg1 : "");
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+    ZeroMemory(&pi, sizeof pi);
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+        return -1;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)pi.dwProcessId;
+}
+
+static inline int process_kill_impl(int pid) {
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+    BOOL ok;
+    if (h == NULL) return -1;
+    ok = TerminateProcess(h, 0);
+    CloseHandle(h);
+    return ok ? 0 : -1;
+}
+
+/* run_capture_impl -- process/run-capture on Windows: _popen + _pclose. NOCK uses it for the
+ * `git add` / `git commit` a level save performs, so a Windows save commits like any other. */
+static int g_run_capture_last_exit_code = -1;
+
+static inline char *run_capture_impl(const char *cmd, Arena *dest) {
+    FILE *p = _popen(cmd, "r");
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf;
+    char chunk[4096];
+    size_t n;
+    int status;
+    if (p == NULL) {
+        g_run_capture_last_exit_code = -1;
+        buf = (char *)arena_alloc(dest, 1);
+        buf[0] = '\0';
+        return buf;
+    }
+    buf = (char *)arena_alloc(dest, cap);
+    while ((n = fread(chunk, 1, sizeof(chunk), p)) > 0) {
+        if (len + n + 1 > cap) {
+            size_t new_cap = cap * 2;
+            char *new_buf;
+            while (len + n + 1 > new_cap) new_cap *= 2;
+            new_buf = (char *)arena_alloc(dest, new_cap);
+            memcpy(new_buf, buf, len);
+            buf = new_buf;
+            cap = new_cap;
+        }
+        memcpy(buf + len, chunk, n);
+        len += n;
+    }
+    buf[len] = '\0';
+    status = _pclose(p);
+    g_run_capture_last_exit_code = status;
+    return buf;
+}
+
+static inline int run_capture_last_exit_code_impl(void) {
+    return g_run_capture_last_exit_code;
+}
+
+#endif /* _WIN32 -- end of net/tcp.prn + process.prn Windows host glue */
+
 /* ---- real `(current-arena)` builtin (2026-08-25) -----------------------
  * See src/emit.c's own `is_call_named(expr, "current-arena")` comment
  * for the full real reasoning. g_process_arena is zero-initialized by
