@@ -29,6 +29,8 @@
         empire-squad-cap empire-spawn-radius-milli empire-can-spawn
         empire-clone-can empire-influence-from-district
         empire-influence-per-banked-unit empire-bank-credit
+        empire-bleedout-ms empire-revive-radius-milli empire-revive-hold-ms
+        empire-revive-health-milli empire-downable empire-bled-out empire-revive-holds
         empire-district-state empire-district-threshold-milli
         empire-sphere-rings empire-districts-in-ring empire-sphere-radius-milli
         empire-district-radius-milli empire-nearby-districts)
@@ -93,6 +95,35 @@
       (if (> (+ influence (* carrying (empire-influence-per-banked-unit))) cap)
         (- cap influence)
         (* carrying (empire-influence-per-banked-unit))))))
+
+;; ---- downed allies ----------------------------------------------------------------------------------
+;; A downed ALLY is not a dead one: it bleeds out on the ground and gets back up if somebody reaches it.
+;; The window, the reach and the recovery are here; the state and the timing belong to the host, which is
+;; why every one of these is a plain number or a predicate over numbers the host passes in.
+;;
+;; Allies only, and the predicate says so: empire-downable is false for a zombie (archetype 2) and for the
+;; no-archetype case, because a beast that lingers on the ground is a bug, not a rescue.
+(defn empire-bleedout-ms [] : I32 20000)
+
+;; 4 units. Inside a squad's own spread (spawn radius is 14), so a companion can always reach one -- a
+;; revive reach longer than the squad can be apart would make the mechanic free.
+(defn empire-revive-radius-milli [] : I32 4000)
+
+;; A HOLD, not a touch: 2.5 s standing over the body while it is still being shot at.
+(defn empire-revive-hold-ms [] : I32 2500)
+
+;; 40% of the archetype's pool: getting somebody up is not healing them, and a full restore would make
+;; bleeding out the cheap way to repair a squad.
+(defn empire-revive-health-milli [] : I32 400)
+
+(defn empire-downable [(archetype : I32)] : I32
+  (if (< archetype 1) 0 (if (= archetype 2) 0 1)))
+
+(defn empire-bled-out [(downed-ms : I32)] : I32
+  (if (>= downed-ms (empire-bleedout-ms)) 1 0))
+
+(defn empire-revive-holds [(held-ms : I32)] : I32
+  (if (>= held-ms (empire-revive-hold-ms)) 1 0))
 
 ;; ---- districts --------------------------------------------------------------------------------------
 ;; A district you hold pays its own rate; a contested one pays a third; a rival's pays nothing. These
