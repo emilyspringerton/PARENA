@@ -1,0 +1,80 @@
+;; stdlib/shankpit/ocean_rules.prn -- sea state, the wave field, and hull forces.
+;;
+;; Founder paste (2026-10-30, SP-ARCH-ENG-004): an archipelago battle royale on SHANKPIT. The only section with
+;; literally no code behind it was the ocean, so that is what this file is: the numbers for water, in PARENA, where
+;; both the client that draws it and the server that arbitrates it can call the same decisions.
+;;
+;; Honest scope, because the blueprint's words are bigger than the maths here:
+;;   * This is a HEIGHTFIELD of three layered cosine swells, not a Gerstner spectrum. There is no horizontal particle
+;;     displacement, so no crest that leans over and no barrel. Probes need a height and a slope; this gives both.
+;;   * Nothing here is threaded. The blueprint asks for async physics; this engine's whole netcode depends on one
+;;     deterministic loop, and buoyancy is cheap enough to stay in it. Debris bodies are the only thing off that path.
+;;   * Sea state is ONE integer. Every number below derives from it, so "a storm rolled in" is one value changing.
+;;
+;; Units at the boundary are integers where they are decisions (sea state, speeds, areas) and F64 where they are
+;; geometry (world positions in metres, time in seconds). Heights come back in millimetres so the host can stay in
+;; integer-ish units for comparisons; the host divides by 1000 to get metres.
+(module shankpit/ocean-rules)
+(export ocean-sea-state-count ocean-amplitude-mm ocean-wind-mps
+        ocean-wave-height-mm ocean-planing-lift-mm ocean-drag-permille
+        ocean-submerged-permille)
+
+;; 0 CALM  1 SWELL  2 CHOPPY  3 STORM  4 TEMPEST
+(defn ocean-sea-state-count [] : I32
+  5)
+
+;; Significant wave height, in millimetres. Calm is genuinely flat (a millimetre of ripple, not zero, so a probe
+;; still has a slope and a resting boat is not on a perfectly glassy plane).
+(defn ocean-amplitude-mm [(sea : I32)] : F64
+  (if (= sea 4) 1800.0
+    (if (= sea 3) 1200.0
+      (if (= sea 2) 700.0
+        (if (= sea 1) 350.0
+          1.0)))))
+
+;; Wind speed, metres per second -- drives which way a boat's nose is pushed and, later, spray and sail. Kept here
+;; rather than in the renderer so the server can arbitrate a race the same way the client renders it.
+(defn ocean-wind-mps [(sea : I32)] : I32
+  (if (= sea 4) 32
+    (if (= sea 3) 24
+      (if (= sea 2) 14
+        (if (= sea 1) 7
+          1)))))
+
+;; The wave field. Three swells: a long primary running along +x, a shorter cross chop along -z, and a small
+;; ripple on the diagonal. Amplitudes sum to 1.0 of the sea's own significant height, so "sea 3" really does mean
+;; about 1.2 m of water rather than three independent metres.
+;;
+;; x, z in metres; t in seconds. The phase speeds differ, which is what stops the surface from looking like a
+;; moving wallpaper: the three swells drift apart and re-combine over roughly 20 seconds.
+(defn ocean-wave-height-mm [(x : F64) (z : F64) (t : F64) (sea : I32)] : F64
+  (* (ocean-amplitude-mm sea)
+     (+ (* 0.55 (math/cos (+ (* 0.11 x) (* 0.90 t))))
+        (+ (* 0.30 (math/cos (- (* 0.17 z) (* 1.30 t))))
+           (* 0.15 (math/cos (+ (* 0.05 (+ x z)) (* 0.60 t))))))))
+;; ^ SUM OF WEIGHTS IS 1.0 (0.55 + 0.30 + 0.15): at t = 0, x = z = 0 the field is exactly the amplitude, which is
+;;   what makes the RMS assertion in make test-ocean meaningful instead of arithmetic that happens to pass.
+
+;; How much of the hull is under water, permille. This is the one place a boat's draft is decided: the host hands in
+;; the waterline depth under the keel and the hull's own height, and gets back how submerged she is.
+(defn ocean-submerged-permille [(depth-mm : I32) (hull-height-mm : I32)] : I32
+  (if (<= hull-height-mm 0) 0
+    (if (<= depth-mm 0) 0
+      (if (>= depth-mm hull-height-mm) 1000
+        (/ (* depth-mm 1000) hull-height-mm)))))
+
+;; Planing lift, in millimetres of extra effective waterline rise, as a boat gets up on top of the water. Rises
+;; with speed and saturates -- a hull that planes does not keep climbing, it stops generating more lift and starts
+;; generating drag, which is the trade a fast boat is making.
+;; speed in millimetres per second, so 1000 = 1 m/s.
+(defn ocean-planing-lift-mm [(speed-mm-s : I32)] : I32
+  (if (<= speed-mm-s 0) 0
+    (if (>= speed-mm-s 12000) 420
+      (/ (* speed-mm-s 420) 12000))))
+
+;; Hydrodynamic drag, permille of the vessel's speed removed per second, from speed and how much of it is wet.
+;; Deliberately grows with speed: this is what caps a boat's top speed without any explicit "max speed" number.
+(defn ocean-drag-permille [(speed-mm-s : I32) (submerged : I32)] : I32
+  (if (<= speed-mm-s 0) 120
+    (if (<= submerged 0) 60
+      (+ 120 (/ (* speed-mm-s (if (> submerged 1000) 1000 submerged)) 1000)))))

@@ -1726,6 +1726,50 @@ static VecElemHint *vec_call_target_hint(Arena *arena, Node *call, EmitScope *sc
 static const char *emit_call(Arena *arena, Node *call, EmitScope *scope, const char **out_type,
                               const char **out_error) {
     const char *fn_name = mangle_call_name(arena, call->children[0]->text);
+    /* math/ primitives -- real C lowering (2026-10-30, found live by
+     * stdlib/shankpit/ocean_rules.prn, the first .prn to call math/cos on the C
+     * target). stdlib/math/math.prn's own doc comment has carried this as a real,
+     * named, unstarted gap for months: the TypeScript and Java emitters recognize
+     * these exact qualified names and lower them straight to Math.*, while the C
+     * target mangled them into calls to never-defined math_cos()/math_sqrt()
+     * functions -- and an undefined function is a Werror, so a water rule could not
+     * compile at all.
+     *
+     * Lowered by the QUALIFIED name, checked before anything else, so a same-named
+     * local defn is never accidentally captured: math/cos is libm's cos, always.
+     * The bodies in math.prn stay placeholders for targets that need them (and this
+     * path never evaluates them, exactly like emit_ts/emit_java). <math.h> is
+     * already emitted by the C target's own preamble, and math_random_impl() comes
+     * from parena_runtime.h, both checked, not assumed. */
+    {
+        static const struct { const char *prn; const char *c; int argc; const char *type; } MATH_PRIMS[] = {
+            {"math/random-f64", "math_random_impl", 0, "double"},
+            {"math/floor", "floor", 1, "double"},
+            {"math/sqrt", "sqrt", 1, "double"},
+            {"math/log", "log", 1, "double"},
+            {"math/cos", "cos", 1, "double"},
+        };
+        const char *head = call->children[0]->text;
+        for (size_t mi = 0; mi < sizeof MATH_PRIMS / sizeof MATH_PRIMS[0]; mi++) {
+            if (strcmp(head, MATH_PRIMS[mi].prn) != 0) continue;
+            size_t got_args = call->child_count - 1;
+            if ((int)got_args != MATH_PRIMS[mi].argc) {
+                return fail(arena, out_error, "%s: expected %d argument(s) at line %d", head,
+                            MATH_PRIMS[mi].argc, call->line);
+            }
+            char *buf;
+            if (MATH_PRIMS[mi].argc == 0) {
+                buf = xfmt("%s()", MATH_PRIMS[mi].c);
+            } else {
+                const char *arg_type = NULL;
+                const char *arg = emit_expr(arena, call->children[1], scope, &arg_type, out_error);
+                if (!arg) return NULL;
+                buf = xfmt("%s(%s)", MATH_PRIMS[mi].c, arg);
+            }
+            *out_type = MATH_PRIMS[mi].type;
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+    }
     /* vec-eq? -- see g_veceq_types/g_veceq_helpers' own declaration
      * comment for the full real reasoning. Handled entirely separately
      * from the generic argument loop below (like vec_push_/vec_set_at_'s

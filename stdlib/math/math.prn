@@ -11,9 +11,18 @@
 ;; primitives of its own) -- every real function below is a real host call, lowered directly by
 ;; whichever real backend compiles this file. The TypeScript emitter (src/emit_ts.c,
 ;; MATH_PRIM_TABLE) recognizes each of these exact, qualified names and lowers them straight to
-;; the matching real `Math.*` call/constant; the C emitter has no equivalent mapping registered
-;; yet for any of them (a real, separate, unstarted follow-up -- likely libm's own `floor`/`sqrt`/
-;; `log`/`cos`/`M_PI` via `parena_runtime.h`, not attempted in this pass).
+;; the matching real `Math.*` call/constant, the Java emitter does the same against
+;; `java.lang.Math`, and the Lua emitter against Lua's own `math.*`.
+;;
+;; C TARGET LANDED 2026-10-30 (src/emit.c's own MATH_PRIMS table, found live by
+;; stdlib/shankpit/ocean_rules.prn -- the first .prn to call math/cos on the C target, where it
+;; mangled into a call to a never-defined math_cos() and failed the -Werror build): the same
+;; qualified names now lower to libm's own `floor`/`sqrt`/`log`/`cos` and to
+;; `math_random_impl()` from parena_runtime.h, matched by QUALIFIED name so a same-named local
+;; defn is never captured. The placeholder bodies below are therefore never evaluated on C
+;; either; they stay only because a target that does not recognize a name still needs something
+;; to compile. `math/pi` is still symbol-lowered by TS/Java/Lua only -- the C target does not
+;; emit M_PI yet, which is a smaller, separate follow-up.
 ;;
 ;; Real signatures chosen to match JavaScript's own `Math.*` contracts exactly, deliberately, so
 ;; the TypeScript target's own lowering is a direct, honest 1:1 mapping, not an approximation --
