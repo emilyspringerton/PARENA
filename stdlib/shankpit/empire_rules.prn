@@ -1,0 +1,114 @@
+;; stdlib/shankpit/empire_rules.prn -- the EMPIRE layer's economy, and the shape of the sphere.
+;;
+;; Founder 2026-10-31: "we need phone app affordances in shankpit to bring in the mp and to clone your
+;; troops in PARENA first mods based it should show the minimap of the nearby area and allow you to
+;; spawn in troops near you or near buildings you have enough influence over ... in empire mode the map
+;; itself should be a big sphere and it should be procedurally generated ... a sphere of procedural
+;; cities in districts or neighborhoods".
+;;
+;; So this mod is TWO things, both decision logic rather than rendering:
+;;
+;;   the economy   INFLUENCE is the only currency. You do not buy troops with money and you do not
+;;                 build a base: influence trickles in from districts you hold and from buildings you
+;;                 control nearby, and every troop you place spends it. Cloning costs MORE than a
+;;                 fresh recruit (a clone keeps its rank, a recruit does not), which is the tradeoff
+;;                 the founder asked for: spam cheap bodies, or invest in the ones that survive.
+;;
+;;   the sphere    a real geometry, not a metaphor: rings of districts on a sphere, each ring with its
+;;                 own district count, so "the nearby area" is always a handful of districts and the
+;;                 whole world is thousands. Both sides derive the same numbers from the same seed.
+;;
+;; EMPIRE's own NORTHSTAR (../EMPIRE/NORTHSTAR.md) puts TRAPX doctrine underneath this: indirect
+;; control, no avatar commanding units, pressure instead of orders. Influence IS that doctrine's
+;; pressure made spendable -- you do not order a squad, you buy the conditions for one to exist.
+;;
+;; I32 fixed point throughout, total functions, same conventions as the other shankpit mods.
+(module shankpit/empire-rules)
+(export empire-influence-start empire-influence-max empire-influence-per-second
+        empire-troop-kind-count empire-troop-cost empire-clone-cost-milli
+        empire-squad-cap empire-spawn-radius-milli empire-can-spawn
+        empire-clone-can empire-influence-from-district
+        empire-district-state empire-district-threshold-milli
+        empire-sphere-rings empire-districts-in-ring empire-sphere-radius-milli
+        empire-district-radius-milli empire-nearby-districts)
+
+;; ---- influence --------------------------------------------------------------------------------------
+(defn empire-influence-start [] : I32 100)
+(defn empire-influence-max [] : I32 400)
+
+;; Trickle per SECOND (the host applies it against real tick delta). Slow on purpose: a squad is a
+;; decision, not a stream. 2/s at the start means one rifleman every 12 s, or one clone every ~18 s.
+(defn empire-influence-per-second [] : I32 2)
+
+;; ---- troops -----------------------------------------------------------------------------------------
+;; 0 rifleman, 1 breacher, 2 recon drone, 3 mini fly drone. Numbers match the roster SHANKPIT can
+;; actually place (pdf/story AI bodies, plus the two drones this engine already flies).
+(defn empire-troop-kind-count [] : I32 4)
+
+(defn empire-troop-cost [(kind : I32)] : I32
+  (if (= kind 1) 35 (if (= kind 2) 40 (if (= kind 3) 60 25))))
+
+;; A clone costs 130% of a fresh recruit: it arrives with the veterancy of the body it copies, so the
+;; premium is the whole point. Milli-units, so 1300 = 1.3x.
+(defn empire-clone-cost-milli [(kind : I32)] : I32
+  (* (empire-troop-cost kind) 1300))
+
+(defn empire-clone-cost [(kind : I32)] : I32
+  (/ (+ (* (empire-troop-cost kind) 1300) 500) 1000))
+
+;; Bodies you may have alive at once. Small: this is a phone app, not a barracks.
+(defn empire-squad-cap [] : I32 6)
+
+;; How far from you (or from a controlled building) a troop may appear, in thousandths of a unit.
+;; 14000 = 14 units: close enough to matter, far enough not to spawn inside a wall.
+(defn empire-spawn-radius-milli [] : I32 14000)
+
+;; The whole gate, in one place so the phone's greyed-out row and the host's refusal cannot disagree.
+(defn empire-can-spawn [(influence : I32) (kind : I32) (live : I32)] : I32
+  (if (or (< kind 0) (>= kind (empire-troop-kind-count))) 0
+    (if (>= live (empire-squad-cap)) 0
+      (if (>= influence (empire-troop-cost kind)) 1 0))))
+
+(defn empire-clone-can [(influence : I32) (kind : I32) (live : I32) (veterans : I32)] : I32
+  (if (<= veterans 0) 0
+    (if (>= live (empire-squad-cap)) 0
+      (if (>= influence (empire-clone-cost kind)) 1 0))))
+
+;; ---- districts --------------------------------------------------------------------------------------
+;; A district you hold pays its own rate; a contested one pays a third; a rival's pays nothing. These
+;; are the numbers TRAPX's "pressure" turns into when it has a currency.
+(defn empire-influence-from-district [(state : I32) (base : I32)] : I32
+  (if (= state 1) base (if (= state 0) (/ base 3) 0)))
+
+;; 0 neutral, 1 yours, 2 rival's -- the same three-way alignment TRAPX's BLOCK ZERO cells carry
+;; (Neutral / Player / Rival), minus the fourth Institutional state, which has no owner yet.
+(defn empire-district-threshold-milli [] : I32 600)
+
+(defn empire-district-state [(your-pressure-milli : I32) (their-pressure-milli : I32)] : I32
+  (let [t (empire-district-threshold-milli)]
+    (if (>= your-pressure-milli t) 1
+      (if (>= their-pressure-milli t) 2 0))))
+
+;; ---- the sphere -------------------------------------------------------------------------------------
+;; Districts live on rings of a sphere: ring 0 is the pole cap, the last ring the far cap. Counts rise
+;; toward the equator so districts stay roughly the same size -- that is the whole reason a sphere is
+;; better than a square grid for this, and the reason the "nearby area" can be a fixed handful of
+;; cells at every latitude.
+(defn empire-sphere-rings [] : I32 6)
+(defn empire-sphere-radius-milli [] : I32 240000)   ; 240 world units of radius
+
+(defn empire-districts-in-ring [(ring : I32)] : I32
+  (if (< ring 0) 0
+    (if (= ring 0) 6
+      (if (= ring 1) 12
+        (if (= ring 2) 18
+          (if (= ring 3) 18
+            (if (= ring 4) 12
+              (if (= ring 5) 6 0))))))))
+
+;; ~72 districts: a neighbourhood you can learn, a world bigger than one fight. Each district is a
+;; couple of hundred world units across, i.e. the size of a SHANKPIT city block cluster.
+(defn empire-district-radius-milli [] : I32 16000)
+
+;; What the phone's minimap actually covers: your district and its neighbours.
+(defn empire-nearby-districts [] : I32 9)

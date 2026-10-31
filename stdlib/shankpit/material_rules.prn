@@ -1,0 +1,129 @@
+;; stdlib/shankpit/material_rules.prn -- what a surface IS, as a total integer function of the tick.
+;;
+;; Founder 2026-10-31: "shankpit already has some lighting primitives like hps light and ips light
+;; what other materials/shaders do we need for full doom/quake/half life/gta story telling?"
+;;
+;; The honest answer for THIS engine is not a PBR pipeline -- it is fixed-function GL 1.x with one
+;; hand-loaded GL 2.0 shader path (gl_shader.h), and no VAO / #version 330 / 3D-texture support in
+;; the build anywhere. So the storytelling vocabulary is authored as ANIMATION, not material science:
+;; a material is (base look, how its UVs move, how its own light flickers, what colour the screen
+;; goes when it hurts you). Every one of those is a pure function of the tick and a few integers, so
+;; the server, every client and a headless test compute the same frame -- the only way a flicker can
+;; be part of a deterministic simulation at all.
+;;
+;; The vocabulary Doom / Quake / Half-Life / GTA communicate fear with:
+;;   Doom      palette-cycled hazard colours, scrolling toxic ooze, damage tints
+;;   Quake     light styles ("aaaaaaazzzzz" strobes), the texture-warp look, dark corners
+;;   HL        terminals as frame-loop materials, unstable fluorescents, alien flesh
+;;   GTA       sodium streetlights over dark alleys, animated signage, flooded canals
+;;
+;; The renderer still has to draw it -- docs/RENDER_NORTHSTAR.md is explicit about what is wired and
+;; what is not. Nothing here invents a texture: indices and timings only.
+
+(module shankpit/material-rules)
+(export mat-reflection-strength-permille
+        mat-kind-count mat-scroll-speed-milli mat-scroll-u-milli mat-scroll-v-milli
+        mat-frame-index mat-light-style-count light-style-level-permille mat-emissive-milli
+        tint-low-health-milli tint-submerged-milli tint-acid-milli tint-shield-milli
+        palette-index-256 vlm-axis-index-milli vlm-ambient-floor-milli)
+
+;; ---- integer helpers --------------------------------------------------------------------------------
+(defn m-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn m-max [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn m-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (m-min hi (m-max lo x)))
+
+;; Modulo that is never negative: a negative UV offset or palette index is a visible seam, and C's
+;; truncating `/` would give one.
+(defn m-mod [(a : I32) (n : I32)] : I32
+  (if (<= n 0) 0
+    (let [r (- a (* (/ a n) n))]
+      (if (< r 0) (+ r n) r))))
+
+;; ---- reflection ------------------------------------------------------------------------------------
+;; How much of a material's look is its environment, permille. Founder: "we want to implement basic
+;; reflection in metal and glass materials i guess make a mirror material? it needs to be lightweight".
+;; The map is ONE 64x64 procedural sphere map and one extra additive draw per reflective box (see
+;; packages/render/reflection.h), so these numbers are the whole design budget:
+;;   MIRROR 900 -- the reflection IS the surface; the base colour underneath should be near black
+;;   METAL  380 -- brushed steel: a bright highlight travelling over a real base coat
+;;   GLASS  320 -- a sheen on a pane that is already transparent, so it must stay subtle
+;;   other    0 -- brick, concrete and wood reflect nothing, and cost nothing
+(defn mat-reflection-strength-permille [(kind : I32)] : I32
+  (if (= kind 0) 900 (if (= kind 1) 380 (if (= kind 2) 320 0))))
+
+;; ---- material kinds ---------------------------------------------------------------------------------
+;; 0 plain, 1 scrolling (ooze / water / conveyor), 2 frame-loop sprite (terminals, cameras, timers),
+;; 3 palette-LUT (indexed colour), 4 emissive flicker (a fixture's own face).
+(defn mat-kind-count [] : I32 5)
+
+;; Scroll speed in permille of a texture per SECOND (1000 = one full tile/s). Ooze creeps, water
+;; drifts, a conveyor is quick, a flickering sign scrolls slowly under its own glow.
+(defn mat-scroll-speed-milli [(kind : I32)] : I32
+  (if (= kind 1) 220 (if (= kind 3) 90 (if (= kind 4) 60 0))))
+
+;; Offset in permille, 0..999, at a tick (60 ticks = one second).
+(defn mat-scroll-u-milli [(kind : I32) (tick : I32)] : I32
+  (m-mod (/ (* (mat-scroll-speed-milli kind) (m-mod tick 60)) 60) 1000))
+
+;; Toxic ooze also creeps sideways, slowly, which is what makes it read as thick rather than tiled.
+(defn mat-scroll-v-milli [(kind : I32) (tick : I32)] : I32
+  (if (= kind 1) (m-mod (/ (* 90 (m-mod tick 60)) 60) 1000) 0))
+
+;; A frame-loop material's sprite index, stepped at `fps` (1..30): a terminal that blinks, a camera
+;; that sweeps, a bomb timer that ticks -- one sheet, one offset per frame.
+(defn mat-frame-index [(fps : I32) (frames : I32) (tick : I32)] : I32
+  (if (or (<= frames 0) (<= fps 0)) 0
+    (m-mod (/ (* (m-mod tick 60) fps) 60) frames)))
+
+;; ---- light styles (Quake's vocabulary, as integers) --------------------------------------------------
+;; 0 steady, 1 strobe, 2 fluorescent (unstable), 3 broken, 4 pulse, 5 dying, 6 alarm, 7 candle.
+;; Always 0..1000 permille of the fixture's own brightness.
+(defn mat-light-style-count [] : I32 8)
+
+(defn light-style-level-permille [(style : I32) (tick : I32)] : I32
+  (let [t (m-mod tick 600)]
+    (if (= style 1) (if (< (m-mod t 12) 6) 1000 0)
+      (if (= style 2) (if (= (m-mod t 97) 0) 250 940)
+        (if (= style 3) (if (< (m-mod (* t 37) 11) 3) 1000 180)
+          (if (= style 4) (m-clamp 400 1000 (+ 400 (m-mod (* t 5) 600)))
+            (if (= style 5) (m-clamp 60 1000 (- 1000 (m-mod t 940)))
+              (if (= style 6) (if (< (m-mod t 8) 4) 1000 120)
+                (if (= style 7) (if (< (m-mod t 5) 2) 1000 (if (< (m-mod t 5) 4) 820 640))
+                  1000)))))))))
+
+(defn mat-emissive-milli [(light_style : I32) (tick : I32) (room_light_milli : I32)] : I32
+  (let [level (light-style-level-permille light_style tick)
+        floor (if (< room_light_milli 250) 350 120)]
+    (m-clamp floor 1000 level)))
+
+;; ---- screen tints (0..1000; the renderer blends a colour quad at value/1000 alpha) ------------------
+(defn tint-low-health-milli [(hp : I32) (max_hp : I32)] : I32
+  (if (<= max_hp 0) 0
+    (let [pct (/ (* (m-clamp 0 max_hp hp) 1000) max_hp)]
+      (if (>= pct 300) 0 (m-clamp 0 1000 (/ (* (- 300 pct) 1000) 300))))))
+
+(defn tint-submerged-milli [(depth_milli : I32)] : I32
+  (m-clamp 0 1000 (/ (* (m-clamp 0 4000 depth_milli) 1000) 4000)))
+
+(defn tint-acid-milli [(acid_permille : I32)] : I32
+  (/ (* (m-clamp 0 1000 acid_permille) 900) 1000))
+
+(defn tint-shield-milli [(shield : I32) (max_shield : I32)] : I32
+  (if (<= max_shield 0) 0 (/ (* (m-clamp 0 max_shield shield) 700) max_shield)))
+
+;; ---- palette LUT (Doom's 256-entry trick) -----------------------------------------------------------
+;; A cycling palette runs past 255 and comes back round instead of wrapping into a negative texel.
+(defn palette-index-256 [(index : I32)] : I32 (m-mod index 256))
+
+;; ---- voxel lightmap lookup (the cheap half of Source 2's probe volumes) -----------------------------
+;; Map a world coordinate to a cell on one axis of a probe grid, clamped to the grid. World units
+;; x1000 so this stays integer and identical everywhere.
+(defn vlm-axis-index-milli [(pos_milli : I32) (origin_milli : I32) (extent_milli : I32) (res : I32)] : I32
+  (if (or (<= extent_milli 0) (<= res 0))
+    0
+    (let [local (m-clamp 0 1000 (/ (* (m-clamp 0 extent_milli (- pos_milli origin_milli)) 1000) extent_milli))]
+      (m-clamp 0 (- res 1) (/ (* local (- res 1)) 1000)))))
+
+;; Outside every probe volume there is still light, and it is deliberately dark: 120 permille is the
+;; corner a zombie waits in, not a black hole the player cannot read.
+(defn vlm-ambient-floor-milli [] : I32 120)

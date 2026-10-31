@@ -1,0 +1,113 @@
+;; stdlib/shankpit/anim_rules.prn -- which animation clip a player should be playing, as rules.
+;;
+;; Founder paste 2026-10-31 (Mixamo pipeline + XPBD ragdoll spec), §2 "Animation Set Specification":
+;; thirteen discrete sequences an imported skin must bundle or map to. The ragdoll half of that spec
+;; already exists in this repo (packages/simulation/ragdoll_pool.h on GOLDENBAND's grb, wired to
+;; deaths in the lobby); the missing half is this: nothing decided WHICH clip belongs to a given tick
+;; of gameplay, and no clip naming contract existed for an imported Mixamo bundle to satisfy.
+;;
+;; So this module is the DECISION, and packages/simulation/anim_state.h is the host that feeds it the
+;; engine's own real state (protocol.h PlayerState: on_ground, crouching, velocity, is_shooting,
+;; reload_timer, katana_slash_timer, dash_timer) plus the clip-name table an importer must match.
+;;
+;; Priority order, highest first -- this is the part a spec dump usually leaves out and a player
+;; notices immediately:
+;;   MELEE      a swing window owns the whole body; you cannot walk out of a hammer arc
+;;   ABILITY    the katana dash / underbarrel grenade is a committed action
+;;   FIRE       upper-body only (additive), so it wins over locomotion but not over a swing
+;;   RELOAD     the 60/42 tick reload the engine actually runs, so it outranks walk/run
+;;   airborne   jump start (first 6 ticks) then in-air, with the reserved climb state
+;;   grounded   crouch, slide, then walk/run/idle by speed band
+;;
+;; All I32, total, no state -- the same pure-evaluation contract every other rules module keeps.
+;; Every threshold here is a tunable constant, not a measurement: retune in this file and
+;; `make regen-anim-rules`.
+(module shankpit/anim-rules)
+(export anim-state-count anim-state-select anim-state-loops anim-state-additive
+        anim-state-blend-ms anim-speed-band anim-melee-ticks anim-eye-height-mm
+        anim-walk-speed-milli anim-run-speed-milli anim-jump-start-ticks
+        anim-melee-kind-light anim-melee-kind-katana anim-melee-kind-hammer)
+
+;; ---- the clip set, in the order this module and the C table both use ------------------------------
+;; 0 IDLE 1 WALK 2 RUN 3 CROUCH_IDLE 4 CROUCH_WALK 5 JUMP_START 6 IN_AIR 7 SLIDE
+;; 8 WEAPON_FIRE 9 RELOAD 10 MELEE_SWING 11 ABILITY 12 CLIMB_LOOP (reserved: no producer yet)
+(defn anim-state-count [] : I32 13)
+
+;; Speed bands, units/tick x 1000. Deliberately lower than a sprint: WALK has to cover indoor and
+;; strafing movement or every foot slide becomes visible, which is why the spec asks for two clips.
+(defn anim-walk-speed-milli [] : I32 60)
+(defn anim-run-speed-milli [] : I32 300)
+(defn anim-jump-start-ticks [] : I32 6)
+
+(defn a-abs [(n : I32)] : I32 (if (< n 0) (- 0 n) n))
+
+(defn anim-speed-band [(speed_milli : I32)] : I32
+  (if (< (a-abs speed_milli) (anim-walk-speed-milli)) 0
+    (if (< (a-abs speed_milli) (anim-run-speed-milli)) 1 2)))
+
+;; ---- melee windows -------------------------------------------------------------------------------
+;; The engine's own weapon table already carries these as cooldowns (WPN_KNIFE 20, WPN_KATANA 28,
+;; WPN_HAMMER 42), so the clip window and the damage window are the same number instead of two guesses.
+;; The host maps protocol.h's WPN_* to these three classes; this module never sees a weapon id.
+(defn anim-melee-kind-light [] : I32 0)
+(defn anim-melee-kind-katana [] : I32 1)
+(defn anim-melee-kind-hammer [] : I32 2)
+
+(defn anim-melee-ticks [(kind : I32)] : I32
+  (if (= kind 1) 28 (if (= kind 2) 42 (if (= kind 0) 20 0))))
+
+;; ---- the selection -------------------------------------------------------------------------------
+(defn anim-climb-or-air [(climb : I32)] : I32 (if (> climb 0) 12 6))
+
+(defn anim-air-state [(jump_ticks : I32) (climb : I32)] : I32
+  (if (> jump_ticks 0)
+    (if (<= jump_ticks (anim-jump-start-ticks)) 5 (anim-climb-or-air climb))
+    (anim-climb-or-air climb)))
+
+(defn anim-state-select
+  [(grounded : I32) (crouching : I32) (speed_milli : I32)
+   (jump_ticks : I32) (slide_ticks : I32)
+   (fire_ticks : I32) (reload_ticks : I32) (melee_ticks : I32) (ability_ticks : I32)
+   (climb : I32)] : I32
+  (if (> melee_ticks 0) 10
+    (if (> ability_ticks 0) 11
+      (if (> fire_ticks 0) 8
+        (if (> reload_ticks 0) 9
+          (if (= grounded 0)
+            (anim-air-state jump_ticks climb)
+            (if (= crouching 1)
+              (if (> slide_ticks 0) 7
+                (if (= (anim-speed-band speed_milli) 1) 4 3))
+              (if (= (anim-speed-band speed_milli) 2) 2
+                (if (= (anim-speed-band speed_milli) 1) 1 0)))))))))
+
+;; ---- per-state clip metadata ---------------------------------------------------------------------
+;; Which states loop. Everything that is a pose the player can stand in loops; one-shot actions do
+;; not, and JUMP_START/SLIDE are one-shots by definition (the spec calls SLIDE "looping/timed" -- it
+;; is timed here, because a looping slide would keep playing after the momentum is gone).
+(defn anim-state-loops [(state : I32)] : I32
+  (if (= state 5) 0 (if (= state 7) 0 (if (<= state 6) 1 0))))
+
+;; Upper-body additive masking. Only the recoil is additive: a player must be able to fire while
+;; running, and the spec says so. RELOAD is NOT additive here -- it owns both hands.
+(defn anim-state-additive [(state : I32)] : I32 (if (= state 8) 1 0))
+
+;; Crossfade into this state, milliseconds. Shorter for things that must read as an instant reaction
+;; (a shot, a jump) and longer for postures, where a fast blend looks like a twitch.
+(defn anim-state-blend-ms [(state : I32)] : I32
+  (if (= state 8) 60
+    (if (= state 5) 40
+      (if (= state 10) 80
+        (if (= state 11) 90
+          (if (= state 7) 90
+            (if (= state 9) 120
+              (if (= state 6) 140
+                (if (= state 12) 160 150)))))))))
+
+;; ---- eye height -----------------------------------------------------------------------------------
+;; The spec's own numbers (4.0 units standing, 2.5 crouched) describe a different build: this engine's
+;; real eye height is physics.h's EYE_HEIGHT = 2.59, and the crouch value is set below it so the
+;; camera and the pose move together. The C test asserts the standing value equals EYE_HEIGHT*1000, so
+;; a change to either one is a failing check rather than a quiet mismatch.
+(defn anim-eye-height-mm [(crouching : I32)] : I32
+  (if (= crouching 1) 1650 2590))

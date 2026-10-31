@@ -1,0 +1,100 @@
+;; stdlib/shankpit/widget_rules.prn -- composable world widgets: levers, plates, delays, gates, motors.
+;;
+;; Founder: "we already have a widget primative ... we need a way to tell our agent to generate rich
+;; affordances via the widgets ... general interface like F to interact and then after that it needs to
+;; be able to go into custom programmed affordances ... the main thing we are trying to do is bring the
+;; lab equipment to life ... the widgets need to be composible ... think light switches, basic
+;; circuits, an elevator is a widget of widgets ... bring in edu vm script it all needs to play nice
+;; with that interpreter".
+;;
+;; So this module is the CIRCUIT, not the furniture. Everything a machine does is one of five node
+;; kinds wired input -> output, evaluated in two phases per tick (sensors first, then propagation),
+;; with every node's live value mirrored into an EduVM register so a script in the terminal can read
+;; and drive the same circuit. No node knows what it looks like: a centrifuge is a motor, a lift is a
+;; motor plus a lever, a security door is a plate into a transistor into a gate.
+;;
+;; Power is 0..15, one integer, exactly like DEADWEIGHT's cable tiers -- low enough that a whole level
+;; fits in a byte per node and high enough to read a bar graph.
+;;
+;; All I32, total, no state. Retune here and `make regen-widget-rules`.
+(module shankpit/widget-rules)
+(export widget-kind-count widget-power-on widget-power-off widget-max-power
+        widget-delay-default-ticks widget-delay-min-ticks widget-delay-max-ticks
+        widget-output-power widget-delay-armed widget-delay-still-running
+        widget-lever-toggle widget-plate-power widget-motor-target
+        widget-focus-ok widget-focus-prompt-ms widget-panel-key-adjust)
+
+;; 0 LEVER, 1 PLATE, 2 DELAY, 3 TRANSISTOR, 4 MOTOR
+(defn widget-kind-count [] : I32 5)
+(defn widget-power-on [] : I32 15)
+(defn widget-power-off [] : I32 0)
+(defn widget-max-power [] : I32 15)
+
+;; Delay nodes count in ticks (60 = one second). The default is a half-second relay -- long enough to
+;; see a signal arrive and leave, short enough to still feel like a switch.
+(defn widget-delay-default-ticks [] : I32 30)
+(defn widget-delay-min-ticks [] : I32 1)
+(defn widget-delay-max-ticks [] : I32 600)
+
+(defn w-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+;; ---- the circuit ----------------------------------------------------------------------------------
+;; `armed` is the node's own latched output from the previous tick; for a lever that is its position,
+;; for a delay it is the pulse it is currently holding. Everything else ignores it except the delay,
+;; which is the one node whose output is not simply its input.
+;;
+;;   LEVER        outputs its own position (armed), regardless of input -- it is a source
+;;   PLATE        outputs its own sensor reading (armed): the host writes it, a script cannot
+;;   DELAY        outputs the pulse it is holding (armed); the host arms/clears it (see below)
+;;   TRANSISTOR   passes input ONLY when the gate input is powered (a real AND, not a diode)
+;;   MOTOR        follows its input: a lift, a centrifuge, a door -- whatever the level draws
+(defn widget-output-power [(kind : I32) (armed : I32) (src_power : I32) (gate_power : I32)] : I32
+  (if (= kind 0) (w-clamp 0 15 armed)
+    (if (= kind 1) (w-clamp 0 15 armed)
+      (if (= kind 2) (w-clamp 0 15 armed)
+        (if (= kind 3) (if (> (w-clamp 0 15 gate_power) 0) (w-clamp 0 15 src_power) 0)
+          (w-clamp 0 15 src_power))))))
+
+;; A delay line is a RELAY: its output follows its input, N ticks late. A CHANGE in the input starts
+;; the timer (if it is not already counting); when the timer runs out the output takes the new value.
+;; Both edges are delayed, which is what makes a delay composable -- a switch that waits before it
+;; turns anything on AND before it turns it off, so a door does not slam the instant you step off.
+;; (The first draft only delayed the rising edge, which made a delay node useless as a relay.)
+(defn widget-delay-armed [(src_power : I32) (armed : I32) (timer_ticks : I32)] : I32
+  (if (= (w-clamp 0 15 src_power) (w-clamp 0 15 armed)) 0 (if (<= timer_ticks 0) 1 0)))
+
+(defn widget-delay-still-running [(timer_ticks : I32)] : I32 (if (> timer_ticks 0) 1 0))
+
+;; ---- inputs -----------------------------------------------------------------------------------------
+;; A lever is a light switch: press it and it stays where you put it.
+;; (D2's own cable tiers are 0..15, which is where the range comes from.)
+(defn widget-lever-toggle [(power : I32)] : I32
+  (if (> (w-clamp 0 15 power) 0) (widget-power-off) (widget-power-on)))
+
+;; A pressure plate reads bodies standing on it. Any real weight closes it; the count is capped so a
+;; crowd cannot produce a stronger signal than one person (this is a switch, not a scale).
+(defn widget-plate-power [(occupants : I32)] : I32
+  (if (> (w-clamp 0 8 occupants) 0) (widget-power-on) (widget-power-off)))
+
+;; A motor's discrete target: 0 down/idle, 1 up/running. The level decides what that means (a lift
+;; car's floor, a centrifuge's spin) -- the circuit only says the machine has power.
+(defn widget-motor-target [(power : I32)] : I32 (if (> (w-clamp 0 15 power) 0) 1 0))
+
+;; ---- the F interface ---------------------------------------------------------------------------------
+;; Whether a parked widget offers itself for interaction. Distance is in millimetres so the whole
+;; decision stays integer; a widget with no interaction radius (0) is scenery and never prompts.
+;; The prompt asks for the widget standing between the player and the surface they are looking at:
+;; closest wins, so a lever bolted to a terminal is reachable without reaching through it.
+(defn widget-focus-ok [(dist_mm : I32) (radius_mm : I32) (busy : I32)] : I32
+  (if (= busy 1) 0
+    (if (<= (w-clamp 0 1000000 radius_mm) 0) 0
+      (if (<= (w-clamp 0 1000000 dist_mm) (w-clamp 0 1000000 radius_mm)) 1 0))))
+
+;; How long the "[F] USE" prompt holds after the player stops moving, so it does not flicker when the
+;; distance wobbles across the radius boundary.
+(defn widget-focus-prompt-ms [] : I32 250)
+
+;; A panel's key repeat for a value the player is dialling (RPM, floor, intensity): one step per press,
+;; and the step size is the panel's own, clamped so a held key cannot spin a motor to nonsense.
+(defn widget-panel-key-adjust [(value : I32) (delta : I32) (lo : I32) (hi : I32)] : I32
+  (w-clamp (w-clamp -1000000 1000000 lo) (w-clamp -1000000 1000000 hi) (+ value delta)))

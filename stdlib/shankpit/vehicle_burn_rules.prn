@@ -1,0 +1,90 @@
+;; stdlib/shankpit/vehicle_burn_rules.prn -- when a car catches fire, how long it burns, and what the
+;; fire LOOKS like (founder 2026-10-31: "use the shaders from bedrock racers on fire for when a car
+;; is about to blow up or whatever").
+;;
+;; The look is not invented here: Bedrock Racers' stdlib/bedrockracers/web/br_fx.prn already has the
+;; fire-fx curve that reads well on a burning car -- it SWELLS FAST (a car that catches fire is
+;; visibly alight within a few frames) and DIES SLOWLY (it keeps glowing after the fire is out), and
+;; its light flickers around 1.4-2.4 "a car's worth". Those constants are copied below, in the units
+;; this mod uses: fire-fx is permille of full, rise/fall are permille of the remaining gap closed
+;; per tick.
+;;
+;; What is new is the DESTRUCTION ladder, which Bedrock Racers does not have (its cars are out or on
+;; fire, never dying): after a threshold a car smokes, then burns (losing hull every tick), then
+;; detonates, so a player gets a real warning window -- smoke, then flame -- before the blast.
+;;
+;; All fixed point I32, scalar, total. Hull in whole points, rates per tick.
+(module shankpit/vehicle-burn-rules)
+(export vehicle-hull vehicle-fire-threshold vehicle-smoke-threshold
+        vehicle-fire-fx-rise-milli vehicle-fire-fx-fall-milli
+        vehicle-burn-hp-centi-per-tick vehicle-burn-detonate-ticks
+        vehicle-fire-light-min-milli vehicle-fire-light-max-milli
+        vehicle-drama-rise-milli vehicle-drama-fall-milli
+        vehicle-burn-state vehicle-smoke-permille vehicle-impact-damage
+        vehicle-blast-radius-milli vehicle-blast-damage)
+
+;; ---- hulls ------------------------------------------------------------------------------------------
+;; The rocket car is a buggy with a tank on the back: same hull, an explosion risk rather than a
+;; tougher car. 300 matches local_game.h's buggy_spawn_defaults.
+(defn vehicle-hull [(kind : I32)] : I32
+  (if (= kind 1) 300 300))
+
+;; ---- the ladder -------------------------------------------------------------------------------------
+;; A quarter hull or less is a car about to go, which is the warning the player gets. Above the smoke
+;; line it still runs, on a bent frame.
+(defn vehicle-fire-threshold [] : I32 75)
+(defn vehicle-smoke-threshold [] : I32 150)
+
+;; 0 fine, 1 smoking, 2 on fire, 3 gone.
+(defn vehicle-burn-state [(hp : I32) (burning-ticks : I32)] : I32
+  (if (<= hp 0)
+    3
+    (if (< hp (vehicle-fire-threshold))
+      2
+      (if (> burning-ticks 0) 2 (if (< hp (vehicle-smoke-threshold)) 1 0)))))
+
+;; How thick the smoke is, permille: nothing above the smoke line, all of it at fire, and a burning
+;; car smokes at full until it goes -- smoke is the tell you can see across the map.
+(defn vehicle-smoke-permille [(hp : I32) (burning-ticks : I32)] : I32
+  (if (>= hp (vehicle-smoke-threshold))
+    0
+    (if (or (>= hp (vehicle-fire-threshold)) (> burning-ticks 0)) 1000 420)))
+
+;; ---- the fire curve (Bedrock Racers br_fx.prn) -------------------------------------------------------
+(defn vehicle-fire-fx-rise-milli [] : I32 250)   ; br fx-fire-rise 0.25
+(defn vehicle-fire-fx-fall-milli [] : I32 60)    ; br fx-fire-fall 0.06
+
+;; Hull lost per tick while burning, in hundredths. 25 = 0.25 hp/tick, so the 75 hp between the fire
+;; line and zero takes 300 ticks: the WARN window and the burn clock are the same 5 s. Burning slower
+;; than the hull above the fire line would make detonate-ticks a lie.
+(defn vehicle-burn-hp-centi-per-tick [] : I32 25)
+
+;; ~5 s at 60 Hz. Bedrock Racers burns until it is put out; a car in SHANKPIT is scrap after this.
+(defn vehicle-burn-detonate-ticks [] : I32 300)
+
+;; br_fx lights a burning car between 1.4 and 2.4 (milli-units here) -- the flicker is the tell.
+(defn vehicle-fire-light-min-milli [] : I32 1400)
+(defn vehicle-fire-light-max-milli [] : I32 2400)
+
+;; br_fx's drama scalar: jumps up at the event, ebbs away slowly after.
+(defn vehicle-drama-rise-milli [] : I32 200)
+(defn vehicle-drama-fall-milli [] : I32 25)
+
+;; ---- crashes ----------------------------------------------------------------------------------------
+(defn vb-abs [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+(defn vb-max [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+
+;; Kinetic damage: mass x delta-v^2, nothing below 0.5 units/tick. The damage is deliberately small
+;; relative to hull (300): a 900 kg buggy straight into a wall at 5 units/tick costs ~22, so a crash
+;; is a warning, not a death -- you keep hitting things until the car is already smoking.
+;; Staged divisions keep every intermediate inside I32 (900 * 5000 = 4.5M, then 4500 * 5000 = 22.5M).
+(defn vehicle-impact-damage [(mass-kg : I32) (delta-v-milli : I32)] : I32
+  (let [dv (vb-abs delta-v-milli)
+        m (vb-max 0 mass-kg)]
+    (if (<= dv 500)
+      0
+      (/ (* (/ (* m dv) 1000) dv) 1000000))))
+
+;; The blast a burning car finally makes, in thousandths of a world unit and hull points.
+(defn vehicle-blast-radius-milli [] : I32 8000)
+(defn vehicle-blast-damage [] : I32 250)

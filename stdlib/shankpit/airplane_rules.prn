@@ -1,0 +1,54 @@
+;; stdlib/shankpit/airplane_rules.prn -- the C-110 twin-prop transport (founder 2026-10-31: "how about a
+;; basic prop plane c-110 or whatever the legendary ones are").
+;;
+;; A fixed-wing aircraft is the one vehicle here that cannot hover, and that is the whole point: lift comes
+;; from AIRSPEED, so it has to be flown. It is not a helicopter with wings bolted on -- no lift below the
+;; stall speed, a runway before takeoff, a bank that turns it, and heavy inertia on everything.
+;;
+;; Units: the host's world is units/tick (60 Hz). Speeds cross this boundary in milli-units/tick, thrust and
+;; drag in milli-units/tick^2, lift in permille of the weight (1000 = exactly holding altitude at full
+;; angle of attack). Scalar-only I32, pure and total, same convention as the other vehicle mods.
+(module shankpit/airplane-rules)
+(export airplane-top-speed-milli airplane-stall-milli airplane-liftoff-milli airplane-thrust-milli
+        airplane-drag-milli airplane-lift-permille airplane-hull)
+
+;; 12 units/tick: the fastest thing in the game, and it needs the whole map to use it.
+(defn airplane-top-speed-milli [] : I32 12000)
+(defn airplane-liftoff-milli [] : I32 6000)
+
+;; Flaps buy a lower stall speed at the cost of drag -- the reason a loaded transport can use a short field.
+(defn airplane-stall-milli [(flaps : I32)] : I32
+  (if (= flaps 1) 3200 4000))
+
+(defn airplane-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+;; Full throttle is 60 milli-units/tick^2 (0.06). Against the drag curve below that settles near the top
+;; speed, and it puts the aircraft past the 6.0 liftoff speed in roughly two and a half seconds of roll.
+(defn airplane-thrust-milli [(throttle : I32)] : I32
+  (/ (* (airplane-clamp 0 1000 throttle) 60) 1000))
+
+;; Parasitic drag rises with speed; flaps add a small flat penalty. The penalty is deliberately small (4,
+;; not 12): the test caught that a bigger one made the takeoff run LONGER with flaps, which is the
+;; opposite of what flaps are for. They earn their keep through the lower stall speed and the extra lift
+;; below, not by being free; their real cost is top speed, not the roll.
+(defn airplane-drag-milli [(speed-milli : I32) (flaps : I32)] : I32
+  (+ (/ (* (airplane-clamp 0 20000 speed-milli) 5) 1000)
+     (if (= flaps 1) 4 0)))
+
+;; Wing lift, permille of weight. Zero at or below the stall speed however the nose is pointed -- a
+;; too-aggressive pitch at low speed does not save it, it just makes the dive uglier.
+;; d = airspeed above the stall; 1000 permille lands at d = 2000 (i.e. 6.0 units/tick clean), and the
+;; (d*d) term is the v^2 law. Angle of attack multiplies it, clamped so a full-stick zoom cannot
+;; invent lift it has not earned.
+(defn airplane-lift-permille [(speed-milli : I32) (flaps : I32) (aoa-permille : I32)] : I32
+  (if (<= speed-milli (airplane-stall-milli flaps))
+    0
+    (airplane-clamp 0 1800
+      (/ (* (/ (* (- speed-milli (airplane-stall-milli flaps))
+                   (- speed-milli (airplane-stall-milli flaps))) 4000)
+            (/ (* (airplane-clamp 0 2000 aoa-permille) (if (= flaps 1) 1150 1000)) 1000))
+         1000))))
+
+;; A transport that lands badly does not explode, it needs a new wing.
+(defn airplane-hull [] : I32 600)

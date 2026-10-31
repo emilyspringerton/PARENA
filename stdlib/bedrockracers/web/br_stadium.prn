@@ -1,0 +1,94 @@
+;; stdlib/bedrockracers/web/br_stadium.prn -- the stadium's SHAPE, shared by the web game and the
+;; native SHANKPIT client.
+;;
+;; Founder 2026-10-31: "we need to implement bedrock racers in the native shankpit client pixel for
+;; pixel using shankpit unified physics ... also the geometry of the level needs to be accurate with
+;; the smooth curved walls" and "we need to dedupe stuff into parena as much as possible so the
+;; bedrock racers wasm stuff leaks into shankpit".
+;;
+;; So this is a MOVE, not a copy: br_arena.prn's rounded-box SDF (which its own header already says is
+;; SHANKPIT's stadium) now lives here, with its exact numbers, and both consumers link the same
+;; generated C. Nothing in the shape changes -- a rounded box with a 70 unit fillet on every edge, four
+;; upside-down goal shafts at the corners, and the rally loop's own scale/width so the road baked into
+;; the floor texture and the road the native client draws come from one pair of constants.
+;;
+;; Why an SDF and not more boxes: wall-riding needs a CONTINUOUS normal. A faceted shell (the 15
+;; degree OBBs the renderer also draws, for destruction) gives 12 normals per turn; the SDF gives one
+;; normal per point, so a car crossing floor -> fillet -> wall -> ceiling never sees a seam.
+;;
+;; All F64 (the C emitter's double), total, no state -- the same pure-evaluation contract every other
+;; rules module keeps. F64 rather than F32 because this repo's PARENA emitter lowers only I32/F64/Bool/
+;; String, and a stadium SDF at 520 units wants sub-unit precision anyway.
+(module bedrockracers/stadium)
+(export stadium-half-x stadium-half-z stadium-height stadium-radius stadium-center-y
+        stadium-free stadium-open stadium-grip-permille stadium-facet-degrees
+        stadium-tower-offset stadium-tower-radius stadium-tower-top stadium-goal-y
+        stadium-tower stadium-track-scale stadium-track-half-width stadium-track-shoulder)
+
+;; ---- the room, exactly as br_arena.prn has it -------------------------------------------------------
+(defn stadium-half-x [] : F64 520.0)
+(defn stadium-half-z [] : F64 520.0)
+(defn stadium-height [] : F64 240.0)      ; floor y = 0, ceiling y = 240
+(defn stadium-radius [] : F64 70.0)       ; the fillet on every edge: this is the "smooth curved wall"
+(defn stadium-center-y [] : F64 120.0)
+
+;; ---- the four goal towers ---------------------------------------------------------------------------
+(defn stadium-tower-offset [] : F64 450.0)
+(defn stadium-tower-radius [] : F64 40.0)
+(defn stadium-tower-top [] : F64 340.0)
+(defn stadium-goal-y [] : F64 244.0)
+
+;; ---- the rally loop (SHANKPIT's 11-point loop, baked into the floor at this scale) -------------------
+(defn stadium-track-scale [] : F64 0.55)
+(defn stadium-track-half-width [] : F64 35.0)
+(defn stadium-track-shoulder [] : F64 47.0)
+
+;; ---- helpers (kept local so this module has no imports) ----------------------------------------------
+;; Written as small defns rather than one big `let`: every binding here is used more than once by the
+;; rounded-box terms below, and this emitter's `let` is narrow (typed scalar bindings only).
+(defn s-abs [(x : F64)] : F64 (if (< x 0.0) (- 0.0 x) x))
+(defn s-max [(a : F64) (b : F64)] : F64 (if (> a b) a b))
+(defn s-min [(a : F64) (b : F64)] : F64 (if (< a b) a b))
+
+;; distance from the room's centre along each axis, already shrunk by the fillet radius
+(defn s-qx [(x : F64)] : F64 (- (s-abs x) (- (stadium-half-x) (stadium-radius))))
+(defn s-qy [(y : F64)] : F64
+  (- (s-abs (- y (stadium-center-y))) (- (/ (stadium-height) 2.0) (stadium-radius))))
+(defn s-qz [(z : F64)] : F64 (- (s-abs z) (- (stadium-half-z) (stadium-radius))))
+
+(defn s-only-pos [(q : F64)] : F64 (if (> q 0.0) q 0.0))
+(defn s-mag3 [(x : F64) (y : F64) (z : F64)] : F64
+  (math/sqrt (+ (+ (* x x) (* y y)) (* z z))))
+
+;; ---- the signed distance: free air is POSITIVE, solid is negative -----------------------------------
+;; The rounded box: distance to the shrunk box, minus the radius, with the inside term handled the
+;; same way the web game does it (min(max(q), 0)) so both sides return bit-identical numbers.
+(defn stadium-free [(x : F64) (y : F64) (z : F64)] : F64
+  (- (- (stadium-radius)
+        (s-mag3 (s-only-pos (s-qx x)) (s-only-pos (s-qy y)) (s-only-pos (s-qz z))))
+     (s-min (s-max (s-qx x) (s-max (s-qy y) (s-qz z))) 0.0)))
+
+;; 1 when the point is in open air (strictly inside the room, not counting the towers)
+(defn stadium-open [(x : F64) (y : F64) (z : F64)] : I32
+  (if (> (stadium-free x y z) 0.0) 1 0))
+
+;; Which goal tower a point is nearest: 0..3 by corner sign (bit 0 = +x, bit 1 = +z). The shafts are
+;; upside down -- their mouth faces the floor -- so a goal is flown UP into one.
+(defn s-x-bit [(x : F64)] : I32 (if (>= x 0.0) 1 0))
+(defn s-z-bit [(z : F64)] : I32 (if (>= z 0.0) 2 0))
+(defn stadium-tower [(x : F64) (z : F64)] : I32 (+ (s-x-bit x) (s-z-bit z)))
+
+;; ---- wall-riding -----------------------------------------------------------------------------------
+;; How much of its own weight the fans can hold against a surface, permille. Slow: the hold is a
+;; quarter of the car, so you can and will fall off a wall if you crawl up it. From 400 units/tick the
+;; hold is TOTAL (1000), which is what lets a car cross the fillet onto the ceiling without a seam.
+;; Saturating rather than linear on purpose -- the shape of the web game's fan curve.
+(defn s-abs-int [(n : I32)] : I32 (if (< n 0) (- 0 n) n))
+(defn stadium-grip-permille [(speed_milli : I32)] : I32
+  (if (<= (s-abs-int speed_milli) 400)
+    (+ 250 (/ (* (s-abs-int speed_milli) 750) 400))
+    1000))
+
+;; The faceted destruction shell the renderer/structure layer builds: 15 degree slices, exactly the
+;; step the engineering note asks for. The SDF is authoritative; the facets are what a missile hits.
+(defn stadium-facet-degrees [] : I32 15)

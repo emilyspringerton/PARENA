@@ -1,0 +1,65 @@
+;; stdlib/shankpit/rocket_car_rules.prn -- the ROCKET CAR as a PARENA mod.
+;;
+;; The rocket car is not a new vehicle chassis: it is a buggy with a rocket profile (BuggyState.rocket,
+;; packages/common/physics.h simulate_rocket_car_state). The handling model is ported from the one we
+;; already run in Bedrock Racers -- stdlib/bedrockracers/web/br_phys.prn, "THE CAR is modelled on the
+;; Tesla Roadster rocket demo ... FOUR LIFT NOZZLES under it ... FANS under the floor that suck it
+;; onto the road ... Everything it spends comes from one tank of compressed AIR (like mana)". What
+;; carries over is the ECONOMY, which is the part that makes it feel like that car:
+;;
+;;   lift 26 /s, boost 22 /s, refills 34 /s once you stop spending (48 /s on a surface)   [br_phys.prn]
+;;   attitude/strafe jets 9 /s and 4 /s -- not ported: this chassis has no separate strafe or
+;;   attitude axes (the driver's camera is the steering, same as the buggy), so those two spends
+;;   have nowhere to go. Named here rather than invented.
+;;
+;; What SHANKPIT adds is the fan suspension: the fans hold the car ROCKET_HOVER_HEIGHT off the
+;; surface instead of riding the wheels, so it skims over terrain the buggy has to crawl across.
+;; Tank is stored as centi-units (0..10000) so the per-tick spends stay pure integers: 26/s at 60 Hz
+;; is 433 centi-units a tick, 34/s is 567, 48/s is 800, 22/s is 367.
+;;
+;; Scalar-only I32, fixed point, total functions. Retune here, `make regen-rocket-car-rules` in
+;; SHANKPIT, and the server and every client drive the new car.
+(module shankpit/rocket-car-rules)
+(export rocket-top-speed-milli rocket-reverse-top-speed-milli rocket-drive-permille
+        rocket-boost-permille rocket-tank-max rocket-lift-spend rocket-refill-spend
+        rocket-surface-refill-spend rocket-boost-spend rocket-hover-height-milli
+        rocket-hover-accel-milli rocket-tank-step rocket-tank-fill)
+
+;; 9.2 units/tick against the buggy's 6.24 -- the same margin the BR car has over a road car.
+(defn rocket-top-speed-milli [] : I32 9200)
+(defn rocket-reverse-top-speed-milli [] : I32 2200)
+
+;; Drive force multiplier over the buggy's base: 1.7x, because most of the thrust is the rear nozzle.
+(defn rocket-drive-permille [] : I32 1700)
+
+(defn rocket-tank-max [] : I32 10000)
+
+;; br_phys.prn: lift 26 /s, boost 22 /s, refill 34 /s, 48 /s on a surface (per tick at 60 Hz).
+(defn rocket-lift-spend [] : I32 433)
+(defn rocket-boost-spend [] : I32 367)
+(defn rocket-refill-spend [] : I32 567)
+(defn rocket-surface-refill-spend [] : I32 800)
+
+;; The fans hold the belly this far off the surface (milli-units): higher than the buggy's wheel rest
+;; height, so a rocket car clears kerbs and the low ledges a buggy has to go around.
+(defn rocket-hover-height-milli [] : I32 2600)
+
+(defn clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+;; The boost bonus scales with the tank, exactly like br_phys's "empty, the car still turns at a
+;; quarter rate -- never helpless": full air is +1300 permille of drive, an empty tank is +0 and the
+;; car is just a slow buggy.
+(defn rocket-boost-permille [(tank : I32)] : I32
+  (/ (* (clamp 0 10000 tank) 1300) 10000))
+
+;; Fan suspension, a spring on the height error (milli-units: positive = below the rest height).
+;; 3000 permille stiffness, capped so the nozzles can beat gravity but never launch it.
+(defn rocket-hover-accel-milli [(err : I32)] : I32
+  (clamp -900 1200 (/ (* err 3000) 1000)))
+
+(defn rocket-tank-step [(tank : I32) (spend : I32)] : I32
+  (clamp 0 10000 (- tank (if (< spend 0) 0 spend))))
+
+(defn rocket-tank-fill [(tank : I32) (gain : I32)] : I32
+  (clamp 0 10000 (+ tank (if (< gain 0) 0 gain))))

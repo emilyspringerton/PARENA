@@ -1,0 +1,72 @@
+;; stdlib/shankpit/slide_rules.prn -- a crouch-slide on a hillside speeds you up, like a board.
+;;
+;; Founder, on the Skate spec paste: "can we also make it so doing a slide after a slide jump in
+;; normal shankpit physics where there is a terrain like in voxworld map the slide should use the same
+;; kind of physics as the skateboarding where sliding down a hill accelerates you or whatever".
+;;
+;; What this replaces: the engine already had a slide -- apply_friction (physics.h) drops the drag from
+;; FRICTION to SLIDE_FRICTION when you are crouching above 0.75 units/tick -- but it treated a 40
+;; degree hillside exactly like a flat car park, because nothing ever read the terrain NORMAL. So a
+;; slide could only ever slow you down. These rules turn the surface's own tilt into acceleration
+;; along the downhill direction, and lighten the slide drag on a slope so the two do not cancel:
+;;
+;;   ny 990..1000  flat       no acceleration at all -- existing behaviour, bit for bit
+;;   ny 707        ~45 deg    steep 879 permille
+;;   ny 667        ~48 deg    steep ~1000 (saturates: past this a hill is a wall)
+;;
+;; Everything is permille of a base per-tick acceleration chosen by the host, plus a permille of the
+;; existing SLIDE_FRICTION drag to KEEP -- flat keeps 1000, i.e. exactly today's slide. All I32, total,
+;; no state; retune here and `make regen-slide-rules`.
+(module shankpit/slide-rules)
+(export slide-slope-flat-threshold-permille slide-slope-steep-permille
+        slide-slope-align-permille slide-slope-accel-permille
+        slide-slope-scrub-permille slide-slope-speed-cap-milli)
+
+;; Above this normal.y the surface is flat for our purposes (990 = under 8 degrees). Deliberately not
+;; 1000: a perfectly level heightfield still has float noise in its sampled normal, and a slide that
+;; crept downhill on flat ground would be a physics bug a player would find immediately.
+(defn slide-slope-flat-threshold-permille [] : I32 990)
+
+(defn s-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+(defn s-abs [(n : I32)] : I32 (if (< n 0) (- 0 n) n))
+
+;; How steep is this face, 0..1000. Three times the tilt so a moderate hill already carries real
+;; speed; saturates at ~48 degrees, past which a heightfield is not rideable anyway.
+(defn slide-slope-steep-permille [(normal_y_permille : I32)] : I32
+  (s-clamp 0 1000 (* (- 1000 (s-clamp 0 1000 normal_y_permille)) 3)))
+
+;; How much the board/body is pointed downhill, 0..1000. The host does the dot product (it has the
+;; velocity vector) and passes 0..1000 here; 0 means across the hill or straight up it, which earns no
+;; help -- gravity does not push you sideways.
+(defn slide-slope-align-permille [(downhill_dot_permille : I32)] : I32
+  (s-clamp 0 1000 downhill_dot_permille))
+
+;; The acceleration, permille of the host's base per-tick acceleration.
+;;
+;; Deliberately CONSTANT with speed, the way gravity is: steep x align decides the hill's pull, and the
+;; host clamps the resulting velocity to the speed cap. The first draft tapered the pull by the room
+;; left before the cap and the test killed it -- at a riding speed of 0.9 of a 1.2 cap there is only a
+;; quarter of the room left, so a 45 degree hill could not even overcome the slide's own 1% scrub and
+;; a downhill slide still slowed down. Speed only matters here as the terminal check.
+(defn slide-slope-accel-permille
+  [(normal_y_permille : I32) (downhill_dot_permille : I32) (speed_milli : I32)] : I32
+  (if (>= (s-clamp 0 1000 normal_y_permille) (slide-slope-flat-threshold-permille))
+    0
+    (if (>= (s-clamp 0 (slide-slope-speed-cap-milli) speed_milli) (slide-slope-speed-cap-milli))
+      0
+      (s-clamp 0 1000
+        (/ (* (slide-slope-steep-permille normal_y_permille)
+              (slide-slope-align-permille downhill_dot_permille))
+           1000)))))
+
+;; The share of the existing slide drag to KEEP, permille. Flat keeps all of it (1000 = unchanged), a
+;; full-steep hill keeps 300 -- otherwise the 1% slide scrub would eat the slope's contribution and a
+;; downhill slide would still grind to a halt, which is exactly the complaint this fixes.
+(defn slide-slope-scrub-permille [(normal_y_permille : I32)] : I32
+  (s-clamp 300 1000
+    (- 1000 (/ (* (slide-slope-steep-permille normal_y_permille) 700) 1000))))
+
+;; Units/tick x 1000. Above MAX_SPEED (950) on purpose: a hill is the one way to outrun a sprint.
+(defn slide-slope-speed-cap-milli [] : I32 1200)
