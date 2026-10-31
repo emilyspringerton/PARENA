@@ -1,0 +1,129 @@
+;; stdlib/noobtopia/walk_rules.prn -- where an NPC drifts, and when. The movement half of the three-way merge.
+;;
+;; The first slice (ambient_life.prn) unified what a noob SAYS. It deliberately left movement alone, and said so:
+;; "NOOBTOPIA's original script wanders on a 33 s timer; SHANKPIT NPCs are stationary today ... Unifying 'where does
+;; it drift' is the next slice, and it needs a shared walk target rule, not just a shared line." This is that rule.
+;;
+;; Emitted twice, from this one file:
+;;   SHANKPIT (C)      packages/simulation/walk_rules.c    <- scripts/gen_noobtopia_rules.sh
+;;   NOOBTOPIA (Luau)  src/generated/walk_rules.lua        <- scripts/gen_rules.sh
+;; Neither side keeps its own numbers. If the Luau port and the C disagree, the C is authoritative and the port is
+;; the bug (MONOREPO/docs/THREE_WAY_MERGE.md).
+;;
+;; What is decided HERE:
+;;   * how long it stands still before wandering again   (walk-idle-ticks, walk-should-choose)
+;;   * which of 8 compass headings it picks              (walk-heading)
+;;   * how long the leg is                               (walk-leg-length)
+;;   * how fast it walks, permille of base               (walk-mood-speed-permille)
+;;   * whether a destination stays inside its own leash  (walk-within-leash)
+;;
+;; What is NOT here, deliberately: position integration, rendering, pathfinding, collision, any clock. The hosts own
+;; position; this file owns the decision. Both hosts integrate with the same integer rule (one unit per tick, with a
+;; permille accumulator), which is what makes the two worlds comparable at all.
+;;
+;; Moods are MISHRI's own 8-state enum (SHANKPIT packages/simulation/humanness.c, vendored by BIG_O), the same
+;; integers ambient_life.prn already uses:
+;;   0 IDLE  1 CURIOUS  2 BORED  3 TIRED  4 STARTLED  (5..7 treated as IDLE)
+;;
+;; Headings are a compass, clockwise from +X, so a heading means the same thing in both worlds:
+;;   0 E  1 NE  2 N  3 NW  4 W  5 SW  6 S  7 SE
+;; A diagonal leg is sqrt(2) longer in world units than an axis-aligned one; both hosts step by the unit vector, so
+;; this file never needs a sqrt and the two worlds agree exactly.
+;;
+;; All integers, per the mod ABI (ECOWAR/docs/ARENA_API.md). The caller passes `seed`; nothing here is random.
+(module noobtopia/walk-rules)
+(export walk-heading-count
+        walk-mod
+        walk-jitter
+        walk-idle-ticks
+        walk-should-choose
+        walk-leg-length
+        walk-heading
+        walk-heading-dx
+        walk-heading-dy
+        walk-target-dx
+        walk-target-dy
+        walk-mood-speed-permille
+        walk-within-leash)
+
+(defn walk-heading-count [] : I32
+  8)
+
+;; Modulo by hand, the same way ambient-pick does it: integer division `/` is in every emitter's ABI subset, `%` is
+;; not. A negative or zero modulus has no useful answer, so it is 0 rather than a surprise.
+(defn walk-mod [(count : I32) (seed : I32)] : I32
+  (if (<= count 0) 0
+    (if (< seed 0) 0
+      (if (>= seed count) (- seed (* (/ seed count) count)) seed))))
+
+;; Jitter in [0, span). Zero span (or a hostile one) is 0, not a crash.
+(defn walk-jitter [(span : I32) (seed : I32)] : I32
+  (if (<= span 0) 0 (walk-mod span seed)))
+
+;; Ticks it stands still before choosing a new target. A startled noob holds still for a long time -- that is the
+;; readable "it saw something" tell -- while a curious one barely pauses. The original 33 s wander timer is far too
+;; slow to read as life at 60 Hz; these are 0.5-5 s.
+(defn walk-idle-ticks [(mood : I32) (seed : I32)] : I32
+  (if (= mood 4) (+ 180 (walk-jitter 120 seed))
+    (if (= mood 3) (+ 150 (walk-jitter 240 seed))
+      (if (= mood 2) (+ 45 (walk-jitter 90 seed))
+        (if (= mood 1) (+ 30 (walk-jitter 60 seed))
+          (+ 90 (walk-jitter 150 seed)))))))
+
+;; May it pick a new target now? One call, so neither host can drift on the comparison.
+(defn walk-should-choose [(mood : I32) (since-ticks : I32) (seed : I32)] : I32
+  (if (< since-ticks 0) 0
+    (if (>= since-ticks (walk-idle-ticks mood seed)) 1 0)))
+
+;; Length of one leg, in world units. Curious noobs roam furthest, tired ones shuffle, startled ones barely move.
+(defn walk-leg-length [(mood : I32)] : I32
+  (if (= mood 4) 4
+    (if (= mood 3) 10
+      (if (= mood 2) 24
+        (if (= mood 1) 18
+          14)))))
+
+;; Which heading this seed walks on. Total: a negative seed is heading 0 rather than a negative index.
+(defn walk-heading [(seed : I32)] : I32
+  (if (< seed 0) 0 (walk-mod (walk-heading-count) seed)))
+
+;; The unit vector for a heading, one axis at a time. Both hosts step by this, so a leg is the same shape in both.
+(defn walk-heading-dx [(heading : I32)] : I32
+  (if (= heading 0) 1
+    (if (= heading 1) 1
+      (if (= heading 2) 0
+        (if (= heading 3) -1
+          (if (= heading 4) -1
+            (if (= heading 5) -1
+              (if (= heading 6) 0 1))))))))
+
+(defn walk-heading-dy [(heading : I32)] : I32
+  (if (= heading 0) 0
+    (if (= heading 1) 1
+      (if (= heading 2) 1
+        (if (= heading 3) 1
+          (if (= heading 4) 0
+            (if (= heading 5) -1
+              (if (= heading 6) -1 -1))))))))
+
+;; The whole target offset in one call, so a host that multiplies by the leg itself cannot get it wrong.
+(defn walk-target-dx [(heading : I32) (leg : I32)] : I32
+  (* (walk-heading-dx heading) leg))
+
+(defn walk-target-dy [(heading : I32) (leg : I32)] : I32
+  (* (walk-heading-dy heading) leg))
+
+;; How fast it walks, permille of base speed. 0 is not "slow", it is FROZEN -- a startled noob stops dead, which is
+;; the one movement state both worlds must share. Curious noobs move faster than idle ones.
+(defn walk-mood-speed-permille [(mood : I32)] : I32
+  (if (= mood 4) 0
+    (if (= mood 3) 400
+      (if (= mood 2) 800
+        (if (= mood 1) 1100
+          1000)))))
+
+;; Does a proposed offset keep this NPC inside its own leash? Squared comparison, so no sqrt and no float: the same
+;; integer answer in C and Luau. A noob may wander, but it must not leave its street.
+(defn walk-within-leash [(dx : I32) (dy : I32) (leash : I32)] : I32
+  (if (< leash 0) 0
+    (if (<= (+ (* dx dx) (* dy dy)) (* leash leash)) 1 0)))

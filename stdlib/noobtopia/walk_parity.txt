@@ -1,0 +1,32 @@
+# walk_parity.txt -- the shared movement fixture. Two test suites assert this same file.
+#
+#   SHANKPIT/packages/simulation/walk_rules_test.c   (make test-walk-rules)
+#   NOOBTOPIA/tests/walk_test.lua                    (lua tests/walk_test.lua)
+#
+# The numbers are the C answers, because the C emitted from the .prn is authoritative and the Luau port is the bug
+# if it disagrees (MONOREPO/docs/THREE_WAY_MERGE.md §5). A row that either side fails means the two worlds have
+# started drifting, which is the one thing this whole merge exists to prevent.
+#
+# Regenerate after editing PARENA/stdlib/noobtopia/walk_rules.prn: build the C, then print
+#   mood  walk_idle_ticks  walk_should_choose  walk_heading  walk_leg_length  walk_mood_speed_permille
+# for the (mood, since, seed) triples below, and re-check a couple of rows by hand.
+#
+# Columns: mood  sinceTicks  seed  idleTicks  shouldChoose  heading  legLength  speedPermille  headingDx  headingDy
+#
+# Coverage: every mood in play, an unused mood (7), an unknown one (99), the exact-idle boundary, a negative clock,
+# and a seed large enough to prove the mixer is not losing bits.
+#
+# mood  since    seed     idle choose head leg  speed dx dy
+     0      0       0       90      0    0   14   1000   1   0
+     0     89       0       90      0    0   14   1000   1   0
+     0 999999    4242      132      1    2   14   1000   0   1
+     1     29       5       35      0    5   18   1100  -1  -1
+     1 999999       5       35      1    5   18   1100  -1  -1
+     2     44       7       52      0    7   24    800   1  -1
+     2 999999       7       52      1    7   24    800   1  -1
+     3    149    1234      184      0    2   10    400   0   1
+     3 999999    1234      184      1    2   10    400   0   1
+     4      0      99      279      0    3    4      0  -1   1
+     4 999999      99      279      1    3    4      0  -1   1
+     7     -1    2026      166      0    2   14   1000   0   1
+    99   5000  654321      111      1    1   14   1000   1   1
