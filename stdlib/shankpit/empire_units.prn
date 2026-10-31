@@ -1,0 +1,182 @@
+;; stdlib/shankpit/empire_rules.prn -- the EMPIRE unit model: archetypes, the human baseline, orders.
+;;
+;; Founder: "we need to be able to spawn in allies like mike etc and they need their own ais etc for
+;; exploring the environment engaging enemies following allies taking over territory gathering resources
+;; etc ... the ais also need some generic stuff that all humans will inherit but not all ais will be
+;; human ... this is almost like a level building affordance i should be able to spawn in citizens
+;; zombies soldiers etc and i should be able to have different ais".
+;;
+;; So there are three separate tables here and they are deliberately separate:
+;;   * ARCHETYPES -- what a spawned thing IS (citizen, zombie, soldier, ally, guard, worker). Picking one
+;;     picks a brain role, a default skin and a faction, which is the level-editor affordance;
+;;   * the HUMAN BASELINE -- the generic numbers every human inherits (courage, loyalty, greed,
+;;     curiosity) and the BEAST baseline a non-human uses instead. A zombie is not a human with different
+;;     numbers, it is a different inheritance, which is why this is a second table and not a column;
+;;   * ORDERS -- the programmable half: a per-unit bitmask of what it will accept, and a per-archetype
+;;     priority for each. That is what "custom AI" means here: author the orders, not new C.
+;;
+;; Everything is I32 and total. No state, no RNG, no allocation -- the unit itself lives in
+;; packages/simulation/empire_units.h, which carries numerically identical C defaults so a test or a
+;; binary can run without the generated file (`make test-empire-units` asserts the two agree).
+(module shankpit/empire-units)
+(export eu-archetype-count eu-archetype-species eu-archetype-role eu-archetype-kit
+        eu-archetype-faction eu-archetype-orders eu-archetype-health
+        eu-human-courage eu-human-aggression eu-human-loyalty eu-human-greed eu-human-curiosity
+        eu-beast-courage eu-beast-aggression eu-beast-loyalty eu-beast-greed eu-beast-curiosity
+        eu-order-follow eu-order-explore eu-order-engage eu-order-gather eu-order-claim eu-order-guard
+        eu-order-priority eu-claim-ticks eu-claim-radius eu-gather-radius eu-node-capacity
+        eu-explore-radius eu-follow-distance)
+
+;; eu-clamp, NOT w-clamp or zr-clamp: PARENA lowers a helper to a global C function, and widget_rules.prn
+;; and zone_rules.prn already own their own -- a third copy under the same name is a duplicate symbol.
+(defn eu-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+;; ---- archetypes ---------------------------------------------------------------------------------
+;; 0 is "none": a character with no archetype keeps the exact pre-EMPIRE behaviour (its authored role
+;; and kit, nothing else), which is what keeps every level written before this field still loads.
+;; 1 citizen, 2 zombie, 3 soldier, 4 ally, 5 guard, 6 worker.
+(defn eu-archetype-count [] : I32 6)
+
+;; 0 none, 1 human, 2 non-human. This is the inheritance switch, not a flavour label.
+(defn eu-archetype-species [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0 (if (= (eu-clamp 0 6 arch) 2) 2 1)))
+
+;; AIRole values (packages/simulation/story_ai.h): 3 = STORY_ALLY, 4 = GUARD, 7 = RELENTLESS_PURSUER,
+;; 10 = WANDERING_BOT. Repeated here as numbers so this module never includes a C header.
+(defn eu-archetype-role [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0
+    (if (= (eu-clamp 0 6 arch) 1) 10
+      (if (= (eu-clamp 0 6 arch) 2) 7
+        (if (= (eu-clamp 0 6 arch) 3) 4
+          (if (= (eu-clamp 0 6 arch) 4) 3
+            (if (= (eu-clamp 0 6 arch) 5) 4 10)))))))
+
+;; AIKit (story_ai.h): 0 AUTO, 1 MANNEQUIN, 2 STAN, 3 MIKE, 4 LEELA, 5 GEORGE. The ally default is
+;; MIKE because the founder named Mike as the ally -- an authored kit always wins over this.
+(defn eu-archetype-kit [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0
+    (if (= (eu-clamp 0 6 arch) 1) 1
+      (if (= (eu-clamp 0 6 arch) 2) 0
+        (if (= (eu-clamp 0 6 arch) 3) 2
+          (if (= (eu-clamp 0 6 arch) 4) 3
+            (if (= (eu-clamp 0 6 arch) 5) 5 4)))))))
+
+;; 0 neutral, 1 ally, 2 hostile. Citizens and workers are neutral; soldiers and guards are hostile;
+;; an ally is on the player's side. A level may override any of them (that is the point).
+(defn eu-archetype-faction [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0
+    (if (= (eu-clamp 0 6 arch) 2) 2
+      (if (= (eu-clamp 0 6 arch) 3) 2
+        (if (= (eu-clamp 0 6 arch) 4) 1
+          (if (= (eu-clamp 0 6 arch) 5) 2 0))))))
+
+;; Order bitmask. FOLLOW 1, EXPLORE 2, ENGAGE 4, GATHER 8, CLAIM 16, GUARD 32.
+;;   citizen 42 = EXPLORE|GATHER|GUARD          zombie 4  = ENGAGE only
+;;   soldier 52 = ENGAGE|CLAIM|GUARD            ally   15 = FOLLOW|EXPLORE|ENGAGE|GATHER
+;;   guard   36 = ENGAGE|GUARD                  worker 11 = FOLLOW|EXPLORE|GATHER
+(defn eu-archetype-orders [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0
+    (if (= (eu-clamp 0 6 arch) 1) 42
+      (if (= (eu-clamp 0 6 arch) 2) 4
+        (if (= (eu-clamp 0 6 arch) 3) 52
+          (if (= (eu-clamp 0 6 arch) 4) 15
+            (if (= (eu-clamp 0 6 arch) 5) 36 11)))))))
+
+(defn eu-archetype-health [(arch : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 100
+    (if (= (eu-clamp 0 6 arch) 1) 60
+      (if (= (eu-clamp 0 6 arch) 2) 40
+        (if (= (eu-clamp 0 6 arch) 3) 100
+          (if (= (eu-clamp 0 6 arch) 4) 120
+            (if (= (eu-clamp 0 6 arch) 5) 100 70)))))))
+
+;; ---- the two inheritances -----------------------------------------------------------------------
+;; Permille. Every HUMAN inherits these unless its archetype or its author says otherwise; a
+;; non-human inherits the beast row instead and simply has no loyalty or greed to spend.
+(defn eu-human-courage [] : I32 600)
+(defn eu-human-aggression [] : I32 500)
+(defn eu-human-loyalty [] : I32 700)
+(defn eu-human-greed [] : I32 500)
+(defn eu-human-curiosity [] : I32 500)
+
+(defn eu-beast-courage [] : I32 900)
+(defn eu-beast-aggression [] : I32 900)
+(defn eu-beast-loyalty [] : I32 0)
+(defn eu-beast-greed [] : I32 0)
+(defn eu-beast-curiosity [] : I32 300)
+
+;; ---- orders -------------------------------------------------------------------------------------
+(defn eu-order-follow [] : I32 1)
+(defn eu-order-explore [] : I32 2)
+(defn eu-order-engage [] : I32 4)
+(defn eu-order-gather [] : I32 8)
+(defn eu-order-claim [] : I32 16)
+(defn eu-order-guard [] : I32 32)
+
+;; The programmable half: how much this archetype wants a given order, 0..100. EVERY archetype has a
+;; priority for EVERY order, including ones its default mask does not include -- that is what makes an
+;; authored mask real. "A citizen that fights" is a mask with ENGAGE in it, not a code change, so a
+;; zero here would silently swallow the author's intent. The mask decides what is accepted; the numbers
+;; decide what wins when several accepted orders are triggered at once.
+(defn eu-citizen-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 30
+    (if (= (eu-clamp 0 5 o) 1) 60
+      (if (= (eu-clamp 0 5 o) 2) 25
+        (if (= (eu-clamp 0 5 o) 3) 50
+          (if (= (eu-clamp 0 5 o) 4) 20 40))))))
+
+(defn eu-zombie-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 5
+    (if (= (eu-clamp 0 5 o) 1) 10
+      (if (= (eu-clamp 0 5 o) 2) 100
+        (if (= (eu-clamp 0 5 o) 3) 5
+          (if (= (eu-clamp 0 5 o) 4) 5 20))))))
+
+(defn eu-soldier-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 20
+    (if (= (eu-clamp 0 5 o) 1) 20
+      (if (= (eu-clamp 0 5 o) 2) 85
+        (if (= (eu-clamp 0 5 o) 3) 10
+          (if (= (eu-clamp 0 5 o) 4) 60 50))))))
+
+(defn eu-ally-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 80
+    (if (= (eu-clamp 0 5 o) 1) 30
+      (if (= (eu-clamp 0 5 o) 2) 90
+        (if (= (eu-clamp 0 5 o) 3) 40
+          (if (= (eu-clamp 0 5 o) 4) 20 30))))))
+
+(defn eu-guard-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 10
+    (if (= (eu-clamp 0 5 o) 1) 10
+      (if (= (eu-clamp 0 5 o) 2) 70
+        (if (= (eu-clamp 0 5 o) 3) 5
+          (if (= (eu-clamp 0 5 o) 4) 20 90))))))
+
+(defn eu-worker-priority [(o : I32)] : I32
+  (if (= (eu-clamp 0 5 o) 0) 50
+    (if (= (eu-clamp 0 5 o) 1) 40
+      (if (= (eu-clamp 0 5 o) 2) 10
+        (if (= (eu-clamp 0 5 o) 3) 80
+          (if (= (eu-clamp 0 5 o) 4) 30 20))))))
+
+(defn eu-order-priority [(arch : I32) (order : I32)] : I32
+  (if (= (eu-clamp 0 6 arch) 0) 0
+    (if (= (eu-clamp 0 6 arch) 1) (eu-citizen-priority order)
+      (if (= (eu-clamp 0 6 arch) 2) (eu-zombie-priority order)
+        (if (= (eu-clamp 0 6 arch) 3) (eu-soldier-priority order)
+          (if (= (eu-clamp 0 6 arch) 4) (eu-ally-priority order)
+            (if (= (eu-clamp 0 6 arch) 5) (eu-guard-priority order)
+              (eu-worker-priority order))))))))
+
+;; ---- world numbers ------------------------------------------------------------------------------
+;; Claiming is standing still, not a capture bar with its own UI: thirty seconds on the cell and it is
+;; yours. Units are world units, milliseconds are milliseconds.
+(defn eu-claim-ticks [] : I32 30000)
+(defn eu-claim-radius [] : I32 6)
+(defn eu-gather-radius [] : I32 5)
+(defn eu-node-capacity [] : I32 25)
+;; How far a unit will wander from its spawn on an EXPLORE order, and how far the leader can get before
+;; FOLLOW outranks standing around.
+(defn eu-explore-radius [] : I32 60)
+(defn eu-follow-distance [] : I32 20)
