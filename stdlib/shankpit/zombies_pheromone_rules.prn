@@ -24,6 +24,30 @@
 ;; biting at your heels.
 (module shankpit/zombies-pheromone-rules)
 (export zombies-pheromone-should-steer-to-marker)
+(export zombies-pheromone-should-hunt)
+(export zombies-pheromone-spares-thrower)
 
 (defn zombies-pheromone-should-steer-to-marker [(hero-has-target : I32)] : Bool
   (= hero-has-target 0))
+
+;; zombies-pheromone-should-hunt -- when does a zombie go for a BODY rather than shuffle along?
+;; Founder 2026-10-31: "they should attack the player and the citizens when they are hungry or
+;; aggressive". Before this, the only trigger was the STARVING hunger line (0.70), so a fed zombie
+;; with a full aggression meter stood next to a citizen and did nothing -- the aggression half of
+;; zombie_values.h's own vocabulary was real, computed every tick, and never once consulted for
+;; targeting. Two ways in now, deliberately unequal: hunger is the cheap, common route (0.40, the
+;; same "scent" line witness_ai.c's own wander bias already uses), aggression is the expensive,
+;; earned one (0.45) that only a real fight feeds. Not an OR of two identical numbers, because
+;; they mean different things: hunger is "I need a meal", aggression is "something just happened".
+(defn zombies-pheromone-should-hunt [(hunger-milli : I32) (aggression-milli : I32)] : Bool
+  (or (>= hunger-milli 400) (>= aggression-milli 450)))
+
+;; zombies-pheromone-spares-thrower -- the fading memory, as one decision. A zombie that YOUR marker
+;; recruited does not eat you while it still remembers the canister: grace-ms is the live countdown
+;; (witness_ai.c's own WITNESS_AI_PHEROMONE_GRACE_MS, decremented by the clock, not by behaviour)
+;; and thrower-alive keeps a dead thrower from staying mysteriously un-eaten. BOTH must hold -- a
+;; grace window with no living thrower in it means nothing, and a living thrower with no grace left
+;; is just lunch. The whole point of the mechanic is that this returns 0 soon enough that you have
+;; to keep moving: the immunity is a window, never a state.
+(defn zombies-pheromone-spares-thrower [(grace-ms : I32) (thrower-alive : I32)] : Bool
+  (and (> grace-ms 0) (= thrower-alive 1)))
