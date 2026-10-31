@@ -1,0 +1,59 @@
+;; stdlib/shankpit/wave_rules.prn -- when a survival wave arrives, how big it is, and when it must not.
+;;
+;; The named gap this fills (SHANKPIT, 2026-10-30/31 session): "no wave spawner that emits authored
+;; archetypes on a timer for zombies and survival modes". The TIMER is the host's (it owns the clock and
+;; the bodies); what a wave IS belongs here, with the rest of the decision numbers.
+;;
+;; Two properties are the whole design, and both are easy to get wrong in a host:
+;;
+;;   A CAPPED WORLD DOES NOT BURN ITS WAVE. wave-should-spawn answers 0 when the live count is at the
+;;   cap, and the host must leave the wave DUE rather than skipping to the next one -- otherwise a busy
+;;   fight silently eats the waves it could not place, and the mode quietly ends early.
+;;
+;;   PRESSURE, NOT A TREADMILL. Waves start 20 s after the first tick, arrive every 45 s, and the cadence
+;;   tightens by 3 s per wave down to a 15 s floor. Size grows slowly (one extra body every third wave,
+;;   capped at 8) so the threat curve comes from the survivors already on the map.
+(module shankpit/wave-rules)
+(export wave-first-delay-ms wave-interval-ms wave-count wave-size wave-size-for
+        wave-live-cap wave-spawn-radius-milli wave-archetype wave-interval-for
+        wave-should-spawn)
+
+;; 20 s of quiet: enough time to look around, take ground, and find out you were not alone.
+(defn wave-first-delay-ms [] : I32 20000)
+
+;; Between waves. Tightened per wave by wave-interval-for below.
+(defn wave-interval-ms [] : I32 45000)
+
+;; Eight waves is a session, not a siege -- when they are spent, the mode is over and the survivors are
+;; the score.
+(defn wave-count [] : I32 8)
+
+(defn wave-size [] : I32 3)
+
+;; +1 body every third wave, capped at 8. A wave of eight is already more than SHANKPIT's default squad
+;; cap can answer with, which is the point at which a player should be running instead of shooting.
+(defn wave-size-for [(wave : I32)] : I32
+  (if (< wave 0) (wave-size)
+    (let [raw (+ (wave-size) (/ wave 3))]
+      (if (> raw 8) 8 raw))))
+
+;; How many EMPIRE units may be alive before a wave holds. This is the number that makes "capped" a
+;; delay instead of a loss.
+(defn wave-live-cap [] : I32 24)
+
+;; Where a wave appears, in thousandths of a unit: a 30-unit ring around the world origin -- out of
+;; sight at the start, walkable, and nowhere near a fresh spawn point.
+(defn wave-spawn-radius-milli [] : I32 30000)
+
+;; Archetype 2 is EU_ARCH_ZOMBIE (packages/simulation/empire_units.h): a beast row, ENGAGE-first.
+(defn wave-archetype [] : I32 2)
+
+(defn wave-interval-for [(wave : I32)] : I32
+  (if (< wave 0) (wave-interval-ms)
+    (let [raw (- (wave-interval-ms) (* wave 3000))]
+      (if (< raw 15000) 15000 raw))))
+
+(defn wave-should-spawn [(wave : I32) (live : I32) (now-ms : I32) (due-ms : I32)] : I32
+  (if (>= wave (wave-count)) 0
+    (if (>= live (wave-live-cap)) 0
+      (if (>= now-ms due-ms) 1 0))))
