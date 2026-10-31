@@ -8,6 +8,10 @@
 ;; carries over is the ECONOMY, which is the part that makes it feel like that car:
 ;;
 ;;   lift 26 /s, boost 22 /s, refills 34 /s once you stop spending (48 /s on a surface)   [br_phys.prn]
+;;   lift and boost are also the two COMMANDS (Space and Shift): the four nozzles climb while the
+;;   lift key is held, the rear nozzle shoves on the boost key, and the fans -- free, in BR too --
+;;   hold the belly at the hover height in between. The two accelerations below are BR's, rescaled
+;;   into this chassis' per-tick units.
 ;;   attitude/strafe jets 9 /s and 4 /s -- not ported: this chassis has no separate strafe or
 ;;   attitude axes (the driver's camera is the steering, same as the buggy), so those two spends
 ;;   have nowhere to go. Named here rather than invented.
@@ -23,7 +27,8 @@
 (export rocket-top-speed-milli rocket-reverse-top-speed-milli rocket-drive-permille
         rocket-boost-permille rocket-tank-max rocket-lift-spend rocket-refill-spend
         rocket-surface-refill-spend rocket-boost-spend rocket-hover-height-milli
-        rocket-hover-accel-milli rocket-tank-step rocket-tank-fill)
+        rocket-hover-accel-milli rocket-lift-accel-milli rocket-boost-accel-milli
+        rocket-tank-step rocket-tank-fill)
 
 ;; 9.2 units/tick against the buggy's 6.24 -- the same margin the BR car has over a road car.
 (defn rocket-top-speed-milli [] : I32 9200)
@@ -57,6 +62,16 @@
 ;; 3000 permille stiffness, capped so the nozzles can beat gravity but never launch it.
 (defn rocket-hover-accel-milli [(err : I32)] : I32
   (clamp -900 1200 (/ (* err 3000) 1000)))
+
+;; THE FOUR NOZZLES, climbing (Space). br_phys fly-sub!: lift 215 against a gravity of 77, i.e. 2.8x
+;; gravity. This chassis' effective gravity in the rocket profile is BUGGY_GRAVITY * 0.55 = 0.0825 a
+;; tick, so the same 2.8x is 0.23. Below that the car could not leave the ground at all; far above it
+;; it would be a missile, so physics.h also caps the climb rate itself.
+(defn rocket-lift-accel-milli [] : I32 230)
+
+;; THE REAR NOZZLE, shoving (Shift). br_phys drive-sub! boosts with 285 against a drive of 175, so
+;; the booster's own acceleration here is 0.10 a tick on top of the ordinary drive force.
+(defn rocket-boost-accel-milli [] : I32 100)
 
 (defn rocket-tank-step [(tank : I32) (spend : I32)] : I32
   (clamp 0 10000 (- tank (if (< spend 0) 0 spend))))
