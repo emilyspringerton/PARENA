@@ -1,0 +1,110 @@
+;; stdlib/shankpit/stats_bridge.prn -- GFD's job table, and the mapping into SHANKPIT's gameplay units.
+;;
+;; Phase 4 of docs/GFD_UNIFICATION.md. The founder: "the stat progression stuff can all be tied together ...
+;; we can tie some of the classes more to generic DND but lets worry about that later".
+;;
+;; WHAT IS GFDS AND WHAT IS OURS, because this file mixes both:
+;;   * the TABLE (base HP, HP/level, base MP, MP/level, STR/DEX/VIT/AGI) is copied verbatim from
+;;     GoblinFoxDragon/server/job/job.go's jobStats map -- 23 real jobs in GFD's own FFXI-canonical order,
+;;     including its own non-canonical 23rd (ASN). The job index legend below is that file's AllJobs order.
+;;   * the MAPPING (haste, move, crit, evade, damage scalars) is OURS. GFD's MUD resolves damage with its
+;;     own STR/DEX/VIT formula against a mob registry it owns; SHANKPIT has no mob registry and no dice,
+;;     it has per-weapon ROF ticks and a small integer health pool. So the bridge's job is to turn one
+;;     honest base block into the handful of numbers this engine's fixed-frame loop already understands,
+;;     in permille, and nothing more. No magic, no loot, no party mechanics -- those stay in GFD.
+;;
+;; Every function is total and takes I32: no id ever reads past the table. A NEGATIVE job is clamped to
+;; 0 (WAR) and an id ABOVE the table to 22 (ASN) -- different cases, different meaning: a corrupt id gets
+;; the first job, an exhausted search gets the last. A level below 1 is level 1 and above 75 is 75. That is
+;; the one behaviour a caller can rely on without checking anything first.
+(module shankpit/stats-bridge)
+(export sb-rule-clamp sb-level sb-job-count
+        sb-hp-base sb-hp-per sb-mp-base sb-mp-per
+        sb-str sb-dex sb-vit sb-agi
+        sb-hp sb-mp
+        sb-haste-permille sb-cooldown sb-move-permille sb-crit-permille
+        sb-evade-permille sb-damage-permille sb-health)
+
+;; sb-rule-clamp, not sb_clamp-with-another-name: PARENA lowers a helper to a global C function, and widget_rules
+;; already owns w_clamp / zone_rules owns zr_clamp -- a duplicate symbol is a link error, found live before.
+(defn sb-rule-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+;; GFD defines 23 jobs; its own MUD enables six while the job system is redesigned. We keep all 23 so a
+;; character's id survives the trip, and treat "which are playable" as a GFD decision, not ours.
+(defn sb-job-count [] : I32 23)
+
+;; FFXI's level cap is 75 and GFD's HP/MP curves are linear from there; 0 and negatives are level 1.
+(defn sb-level [(level : I32)] : I32 (sb-rule-clamp 1 75 level))
+
+;; ---- the table (job.go jobStats, in AllJobs order) ------------------------------------------------
+;;  0 WAR  1 MNK  2 WHM  3 BLM  4 RDM  5 THF  6 PLD  7 DRK  8 BST  9 BRD 10 RNG 11 SAM
+;; 12 NIN 13 DRG 14 SMN 15 BLU 16 COR 17 PUP 18 DNC 19 SCH 20 GEO 21 RUN 22 ASN
+(defn sb-hp-base [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 90 (if (= (sb-rule-clamp 0 22 job) 1) 100 (if (= (sb-rule-clamp 0 22 job) 2) 65 (if (= (sb-rule-clamp 0 22 job) 3) 55 (if (= (sb-rule-clamp 0 22 job) 4) 70 (if (= (sb-rule-clamp 0 22 job) 5) 75 (if (= (sb-rule-clamp 0 22 job) 6) 95 (if (= (sb-rule-clamp 0 22 job) 7) 90 (if (= (sb-rule-clamp 0 22 job) 8) 80 (if (= (sb-rule-clamp 0 22 job) 9) 65 (if (= (sb-rule-clamp 0 22 job) 10) 75 (if (= (sb-rule-clamp 0 22 job) 11) 85 (if (= (sb-rule-clamp 0 22 job) 12) 75 (if (= (sb-rule-clamp 0 22 job) 13) 85 (if (= (sb-rule-clamp 0 22 job) 14) 60 (if (= (sb-rule-clamp 0 22 job) 15) 80 (if (= (sb-rule-clamp 0 22 job) 16) 70 (if (= (sb-rule-clamp 0 22 job) 17) 75 (if (= (sb-rule-clamp 0 22 job) 18) 80 (if (= (sb-rule-clamp 0 22 job) 19) 55 (if (= (sb-rule-clamp 0 22 job) 20) 60 (if (= (sb-rule-clamp 0 22 job) 21) 80 78)))))))))))))))))))))))
+
+(defn sb-hp-per [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 15 (if (= (sb-rule-clamp 0 22 job) 1) 16 (if (= (sb-rule-clamp 0 22 job) 2) 10 (if (= (sb-rule-clamp 0 22 job) 3) 8 (if (= (sb-rule-clamp 0 22 job) 4) 11 (if (= (sb-rule-clamp 0 22 job) 5) 12 (if (= (sb-rule-clamp 0 22 job) 6) 15 (if (= (sb-rule-clamp 0 22 job) 7) 14 (if (= (sb-rule-clamp 0 22 job) 8) 13 (if (= (sb-rule-clamp 0 22 job) 9) 10 (if (= (sb-rule-clamp 0 22 job) 10) 12 (if (= (sb-rule-clamp 0 22 job) 11) 14 (if (= (sb-rule-clamp 0 22 job) 12) 12 (if (= (sb-rule-clamp 0 22 job) 13) 14 (if (= (sb-rule-clamp 0 22 job) 14) 9 (if (= (sb-rule-clamp 0 22 job) 15) 13 (if (= (sb-rule-clamp 0 22 job) 16) 11 (if (= (sb-rule-clamp 0 22 job) 17) 12 (if (= (sb-rule-clamp 0 22 job) 18) 13 (if (= (sb-rule-clamp 0 22 job) 19) 8 (if (= (sb-rule-clamp 0 22 job) 20) 9 (if (= (sb-rule-clamp 0 22 job) 21) 13 12)))))))))))))))))))))))
+
+(defn sb-mp-base [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 0 (if (= (sb-rule-clamp 0 22 job) 1) 0 (if (= (sb-rule-clamp 0 22 job) 2) 85 (if (= (sb-rule-clamp 0 22 job) 3) 100 (if (= (sb-rule-clamp 0 22 job) 4) 75 (if (= (sb-rule-clamp 0 22 job) 5) 0 (if (= (sb-rule-clamp 0 22 job) 6) 60 (if (= (sb-rule-clamp 0 22 job) 7) 45 (if (= (sb-rule-clamp 0 22 job) 8) 0 (if (= (sb-rule-clamp 0 22 job) 9) 50 (if (= (sb-rule-clamp 0 22 job) 10) 0 (if (= (sb-rule-clamp 0 22 job) 11) 0 (if (= (sb-rule-clamp 0 22 job) 12) 20 (if (= (sb-rule-clamp 0 22 job) 13) 0 (if (= (sb-rule-clamp 0 22 job) 14) 90 (if (= (sb-rule-clamp 0 22 job) 15) 55 (if (= (sb-rule-clamp 0 22 job) 16) 45 (if (= (sb-rule-clamp 0 22 job) 17) 30 (if (= (sb-rule-clamp 0 22 job) 18) 0 (if (= (sb-rule-clamp 0 22 job) 19) 95 (if (= (sb-rule-clamp 0 22 job) 20) 85 (if (= (sb-rule-clamp 0 22 job) 21) 40 45)))))))))))))))))))))))
+
+(defn sb-mp-per [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 0 (if (= (sb-rule-clamp 0 22 job) 1) 0 (if (= (sb-rule-clamp 0 22 job) 2) 14 (if (= (sb-rule-clamp 0 22 job) 3) 16 (if (= (sb-rule-clamp 0 22 job) 4) 12 (if (= (sb-rule-clamp 0 22 job) 5) 0 (if (= (sb-rule-clamp 0 22 job) 6) 9 (if (= (sb-rule-clamp 0 22 job) 7) 8 (if (= (sb-rule-clamp 0 22 job) 8) 0 (if (= (sb-rule-clamp 0 22 job) 9) 9 (if (= (sb-rule-clamp 0 22 job) 10) 0 (if (= (sb-rule-clamp 0 22 job) 11) 0 (if (= (sb-rule-clamp 0 22 job) 12) 6 (if (= (sb-rule-clamp 0 22 job) 13) 0 (if (= (sb-rule-clamp 0 22 job) 14) 15 (if (= (sb-rule-clamp 0 22 job) 15) 9 (if (= (sb-rule-clamp 0 22 job) 16) 8 (if (= (sb-rule-clamp 0 22 job) 17) 6 (if (= (sb-rule-clamp 0 22 job) 18) 0 (if (= (sb-rule-clamp 0 22 job) 19) 15 (if (= (sb-rule-clamp 0 22 job) 20) 14 (if (= (sb-rule-clamp 0 22 job) 21) 7 8)))))))))))))))))))))))
+
+(defn sb-str [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 8 (if (= (sb-rule-clamp 0 22 job) 1) 8 (if (= (sb-rule-clamp 0 22 job) 2) 5 (if (= (sb-rule-clamp 0 22 job) 3) 4 (if (= (sb-rule-clamp 0 22 job) 4) 6 (if (= (sb-rule-clamp 0 22 job) 5) 6 (if (= (sb-rule-clamp 0 22 job) 6) 8 (if (= (sb-rule-clamp 0 22 job) 7) 9 (if (= (sb-rule-clamp 0 22 job) 8) 7 (if (= (sb-rule-clamp 0 22 job) 9) 5 (if (= (sb-rule-clamp 0 22 job) 10) 7 (if (= (sb-rule-clamp 0 22 job) 11) 8 (if (= (sb-rule-clamp 0 22 job) 12) 6 (if (= (sb-rule-clamp 0 22 job) 13) 8 (if (= (sb-rule-clamp 0 22 job) 14) 4 (if (= (sb-rule-clamp 0 22 job) 15) 7 (if (= (sb-rule-clamp 0 22 job) 16) 6 (if (= (sb-rule-clamp 0 22 job) 17) 7 (if (= (sb-rule-clamp 0 22 job) 18) 7 (if (= (sb-rule-clamp 0 22 job) 19) 4 (if (= (sb-rule-clamp 0 22 job) 20) 5 (if (= (sb-rule-clamp 0 22 job) 21) 7 7)))))))))))))))))))))))
+
+(defn sb-dex [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 7 (if (= (sb-rule-clamp 0 22 job) 1) 8 (if (= (sb-rule-clamp 0 22 job) 2) 5 (if (= (sb-rule-clamp 0 22 job) 3) 5 (if (= (sb-rule-clamp 0 22 job) 4) 6 (if (= (sb-rule-clamp 0 22 job) 5) 9 (if (= (sb-rule-clamp 0 22 job) 6) 6 (if (= (sb-rule-clamp 0 22 job) 7) 6 (if (= (sb-rule-clamp 0 22 job) 8) 7 (if (= (sb-rule-clamp 0 22 job) 9) 7 (if (= (sb-rule-clamp 0 22 job) 10) 8 (if (= (sb-rule-clamp 0 22 job) 11) 7 (if (= (sb-rule-clamp 0 22 job) 12) 9 (if (= (sb-rule-clamp 0 22 job) 13) 6 (if (= (sb-rule-clamp 0 22 job) 14) 4 (if (= (sb-rule-clamp 0 22 job) 15) 7 (if (= (sb-rule-clamp 0 22 job) 16) 8 (if (= (sb-rule-clamp 0 22 job) 17) 8 (if (= (sb-rule-clamp 0 22 job) 18) 8 (if (= (sb-rule-clamp 0 22 job) 19) 5 (if (= (sb-rule-clamp 0 22 job) 20) 5 (if (= (sb-rule-clamp 0 22 job) 21) 7 9)))))))))))))))))))))))
+
+(defn sb-vit [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 8 (if (= (sb-rule-clamp 0 22 job) 1) 8 (if (= (sb-rule-clamp 0 22 job) 2) 5 (if (= (sb-rule-clamp 0 22 job) 3) 4 (if (= (sb-rule-clamp 0 22 job) 4) 5 (if (= (sb-rule-clamp 0 22 job) 5) 6 (if (= (sb-rule-clamp 0 22 job) 6) 9 (if (= (sb-rule-clamp 0 22 job) 7) 7 (if (= (sb-rule-clamp 0 22 job) 8) 7 (if (= (sb-rule-clamp 0 22 job) 9) 5 (if (= (sb-rule-clamp 0 22 job) 10) 6 (if (= (sb-rule-clamp 0 22 job) 11) 7 (if (= (sb-rule-clamp 0 22 job) 12) 6 (if (= (sb-rule-clamp 0 22 job) 13) 8 (if (= (sb-rule-clamp 0 22 job) 14) 4 (if (= (sb-rule-clamp 0 22 job) 15) 6 (if (= (sb-rule-clamp 0 22 job) 16) 5 (if (= (sb-rule-clamp 0 22 job) 17) 6 (if (= (sb-rule-clamp 0 22 job) 18) 7 (if (= (sb-rule-clamp 0 22 job) 19) 4 (if (= (sb-rule-clamp 0 22 job) 20) 5 (if (= (sb-rule-clamp 0 22 job) 21) 7 6)))))))))))))))))))))))
+
+(defn sb-agi [(job : I32)] : I32
+  (if (= (sb-rule-clamp 0 22 job) 0) 6 (if (= (sb-rule-clamp 0 22 job) 1) 7 (if (= (sb-rule-clamp 0 22 job) 2) 5 (if (= (sb-rule-clamp 0 22 job) 3) 5 (if (= (sb-rule-clamp 0 22 job) 4) 6 (if (= (sb-rule-clamp 0 22 job) 5) 9 (if (= (sb-rule-clamp 0 22 job) 6) 5 (if (= (sb-rule-clamp 0 22 job) 7) 5 (if (= (sb-rule-clamp 0 22 job) 8) 7 (if (= (sb-rule-clamp 0 22 job) 9) 7 (if (= (sb-rule-clamp 0 22 job) 10) 8 (if (= (sb-rule-clamp 0 22 job) 11) 7 (if (= (sb-rule-clamp 0 22 job) 12) 9 (if (= (sb-rule-clamp 0 22 job) 13) 6 (if (= (sb-rule-clamp 0 22 job) 14) 5 (if (= (sb-rule-clamp 0 22 job) 15) 6 (if (= (sb-rule-clamp 0 22 job) 16) 8 (if (= (sb-rule-clamp 0 22 job) 17) 7 (if (= (sb-rule-clamp 0 22 job) 18) 8 (if (= (sb-rule-clamp 0 22 job) 19) 5 (if (= (sb-rule-clamp 0 22 job) 20) 5 (if (= (sb-rule-clamp 0 22 job) 21) 7 8)))))))))))))))))))))))
+
+;; ---- pools (GFD's own linear curve) ---------------------------------------------------------------
+;; HP = base + per*(level-1), exactly job.go's HPAtLevel/MPAtLevel, including its "melee jobs have no MP".
+(defn sb-hp [(job : I32) (level : I32)] : I32
+  (+ (sb-hp-base job) (* (sb-hp-per job) (- (sb-level level) 1))))
+(defn sb-mp [(job : I32) (level : I32)] : I32
+  (+ (sb-mp-base job) (* (sb-mp-per job) (- (sb-level level) 1))))
+
+;; ---- the mapping into SHANKPIT ---------------------------------------------------------------
+;; Haste is a cooldown MULTIPLIER in permille (1000 = unchanged), because this engine's timing is per-weapon
+;; ROF ticks (WPN_STATS: knife 20, AR 6, shotgun 17, sniper 52) and a job must not be able to rewrite a
+;; weapon's identity -- it nudges it. AGI above the 5-point baseline buys speed, and every level adds a
+;; little, capped at 700..1300 so no build can make a weapon instant or a job unplayable.
+(defn sb-haste-permille [(job : I32) (level : I32)] : I32
+  (sb-rule-clamp 700 1300 (+ 1000 (* (- (sb-agi job) 5) 20) (* (- (sb-level level) 1) 2))))
+
+;; The cooldown a weapon ACTUALLY gets: its own ROF scaled by haste, floored at 1 tick so a fast job can
+;; never produce a zero-tick weapon (which would fire every frame from one input).
+(defn sb-cooldown [(rof : I32) (haste : I32)] : I32
+  (sb-rule-clamp 1 999 (/ (* (sb-rule-clamp 1 999 rof) (sb-rule-clamp 700 1300 haste)) 1000)))
+
+;; Movement: AGI only, and narrow, because this engine's MAX_SPEED and its vehicles/terrain are tuned
+;; against one number. A THF is 4% quicker than a Warrior; it is not a different game.
+(defn sb-move-permille [(job : I32)] : I32
+  (sb-rule-clamp 850 1150 (+ 1000 (* (- (sb-agi job) 5) 10))))
+
+;; Crit chance in permille, DEX-based off a 5% baseline -- THF/NIN/ASN (DEX 9) reach 11%.
+(defn sb-crit-permille [(job : I32)] : I32
+  (sb-rule-clamp 0 400 (+ 50 (* (- (sb-dex job) 5) 15))))
+
+;; Evasion, AGI plus level. This is the number GFD's own accuracy roll would consume; in SHANKPIT it is
+;; the dodge chance a host may apply, and it stays low (max 35%) because a 60 Hz shooter cannot afford
+;; invisible hits.
+(defn sb-evade-permille [(job : I32) (level : I32)] : I32
+  (sb-rule-clamp 0 350 (+ (* (- (sb-agi job) 5) 12) (* (- (sb-level level) 1) 3))))
+
+;; Melee damage scalar in permille, STR-based, level-aware. Deliberately a SCALAR on the weapon's own
+;; WPN_STATS dmg rather than a flat number: a knife stays a knife, a hammer stays a hammer.
+(defn sb-damage-permille [(job : I32) (level : I32)] : I32
+  (sb-rule-clamp 600 2000 (+ 1000 (* (- (sb-str job) 5) 30) (* (- (sb-level level) 1) 5))))
+
+;; GFD's HP in SHANKPIT's health units. The engine's wire field is an unsigned char (0..255) and its
+;; default pool is 100, so a level-1 mage is squishier than a Warrior and a level-75 anything caps out
+;; rather than wrapping to zero on the wire -- the one failure mode that would be worse than a nerf.
+(defn sb-health [(job : I32) (level : I32)] : I32
+  (sb-rule-clamp 10 255 (sb-hp job level)))
