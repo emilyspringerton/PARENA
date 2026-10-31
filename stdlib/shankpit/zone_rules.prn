@@ -1,0 +1,88 @@
+;; stdlib/shankpit/zone_rules.prn -- shared (instanceless) world zones and their procedural layouts.
+;;
+;; Founder: "we need to start unifying GFD and shankpit ... i want to make it so that GFD server we have
+;; it like diablo where we can travel to a map and do it as a dungeon it can be procedurally generated
+;; ... for now the first person to enter it it generates and then everyone else enters the same one ...
+;; there should be a grace period of 15 minutes for the zone existing for after you leave it ... dungeons
+;; are not instanced they are generated and then they exist until everyone leaves + 15 minutes".
+;;
+;; So there are two separate things here and they are deliberately not the same file:
+;;   * the LIFECYCLE (how long an empty zone survives) is pure arithmetic on two integers -- this module,
+;;     so the client, the server and the test cannot disagree about the grace period;
+;;   * the LAYOUT (how many rooms, how big, which material) is generation parameters, also here, so a
+;;     seed produces the same dungeon on every machine that runs this build.
+;;
+;; Every function is I32 and total: no state, no allocation, no RNG hidden inside. The caller owns the
+;; seed and the clock (packages/simulation/zone_registry.h), which is what makes a zone reproducible and
+;; a test possible. All millisecond values are milliseconds.
+(module shankpit/zone-rules)
+(export zone-grace-seconds zone-max-zones
+        zone-room-count zone-room-width zone-room-depth zone-wall-height
+        zone-wall-thickness zone-door-width zone-ring-distance
+        zone-ring-dir-x zone-ring-dir-z
+        zone-spawn-count zone-mob-count zone-material-count zone-material-for
+        zone-difficulty zone-zone-status-name
+        zone-should-expire zone-elapsed-ms)
+
+;; zr-clamp, NOT w-clamp: PARENA lowers a helper to a global C function, and widget_rules.prn already
+;; defines w_clamp -- two modules with the same helper name is a duplicate-symbol link error, found live.
+(defn zr-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+;; The founder's own number: fifteen minutes of nobody inside and the layout is gone, so a farmed-out
+;; zone does not come back the way it was.
+(defn zone-grace-seconds [] : I32 900)
+
+;; One registry slot per zone id. Small on purpose: a zone holds a full level (hundreds of boxes) in the
+;; host's own memory, so this is a count of live layouts, not a list of every door in the world.
+(defn zone-max-zones [] : I32 8)
+
+;; ---- layout parameters ---------------------------------------------------------------------------
+;; A hub plus 2..4 cardinal rooms. 3..5 rooms total, never a diagonal corridor (they are the one case
+;; that needs corner geometry, and a four-way hub already reads as a dungeon crossing).
+;; All sizes are world units, matching LevelBox's own convention.
+(defn zone-room-count [(seed : I32)] : I32 (+ 3 (zr-clamp 0 2 (mod seed 3))))
+(defn zone-room-width [(seed : I32) (room : I32)] : I32
+  (+ 24 (* 8 (zr-clamp 0 2 (mod (+ seed (* room 37)) 3)))))
+(defn zone-room-depth [(seed : I32) (room : I32)] : I32
+  (+ 24 (* 8 (zr-clamp 0 2 (mod (+ seed (* room 53)) 3)))))
+(defn zone-wall-height [(seed : I32)] : I32 (+ 18 (* 6 (zr-clamp 0 2 (mod seed 3)))))
+(defn zone-wall-thickness [] : I32 2)
+(defn zone-door-width [] : I32 8)
+;; Far enough apart that two 40-unit rooms do not share a wall, close enough that a corridor is short.
+(defn zone-ring-distance [] : I32 52)
+
+;; Cardinal directions only, 0 = east, 1 = south, 2 = west, 3 = north (x east, z south, matching the
+;; engine's own yaw-0-faces--Z convention). Room i uses direction (i - 1) mod 4.
+(defn zone-ring-dir-x [(dir : I32)] : I32
+  (if (= (zr-clamp 0 3 dir) 0) 1 (if (= (zr-clamp 0 3 dir) 2) -1 0)))
+(defn zone-ring-dir-z [(dir : I32)] : I32
+  (if (= (zr-clamp 0 3 dir) 1) 1 (if (= (zr-clamp 0 3 dir) 3) -1 0)))
+
+;; One spawner in the hub and one per room, so a party never has to walk the whole layout to find where
+;; it started. Capped at LEVEL_BOXES_MAX_SPAWNERS by the generator.
+(defn zone-spawn-count [(seed : I32)] : I32 (+ 3 (zr-clamp 0 2 (mod seed 3))))
+;; What the mode's own population should be told to aim for. Twice the rooms plus a little, so a 5-room
+;; layout is a real fight and a 3-room layout is not empty.
+(defn zone-mob-count [(seed : I32) (rooms : I32)] : I32 (+ (* 2 (zr-clamp 1 8 rooms)) (mod seed 5)))
+
+;; 0 concrete, 1 metal, 2 brick -- indices into the generator's own material table, which is why this is
+;; a kind and not a colour: the level file carries the material, the renderer owns the look.
+(defn zone-material-count [] : I32 3)
+(defn zone-material-for [(seed : I32) (idx : I32)] : I32 (mod (+ seed (* idx 7)) 3))
+
+;; 1..5, the depth of the zone's own dungeon tier -- GFD's state server is what turns this into stats.
+(defn zone-difficulty [(seed : I32)] : I32 (+ 1 (zr-clamp 0 4 (mod seed 5))))
+
+;; ---- lifecycle -----------------------------------------------------------------------------------
+;; Expire only when BOTH are true: nobody is inside AND the grace window has run out. A zone that is
+;; still occupied never expires, no matter how long the clock says it has existed.
+(defn zone-should-expire [(players : I32) (idle_ms : I32)] : I32
+  (if (<= (zr-clamp 0 1000 players) 0)
+      (if (>= (zr-clamp 0 2000000000 idle_ms) (* (zone-grace-seconds) 1000)) 1 0)
+      0))
+
+(defn zone-elapsed-ms [(now_ms : I32) (since_ms : I32)] : I32
+  (if (> now_ms since_ms) (- now_ms since_ms) 0))
+
+;; 0 uninitialized, 1 active (someone inside or recently inside), 2 idle (empty, counting down).
+(defn zone-zone-status-name [(status : I32)] : I32 (zr-clamp 0 2 status))
