@@ -42,6 +42,7 @@ char *host_json_unescape(char *s, int start, int end, char *out) {
     return out;
 }
 
+
 #include "test_forgedinface_gen.c"
 
 int main(void) {

@@ -129,3 +129,28 @@ that turns `count-at` into an actual scene.
 Two constraints added to the list this pass: a `let`/`loop` cannot sit in an `if` branch, and two
 modules in one build collide on shared helper names — which is why the renderer lives in
 `rig.prn` rather than beside it.
+
+---
+
+## Blocker found 2026-11-03: accessor decode needs one emitter gap closed first
+
+Attempted the next slice — reading real vertex data (accessor -> bufferView -> floats) — and
+stopped rather than shipping it half-built. The JSON reads needed are below, and one of them is
+not expressible today:
+
+* **Works:** `parse` + `get` + `match` on an `Option` **by value** (`array-len-at` proves it), and
+  `match` on a **parameter** of a `defenum` type (`array-len`, `get`).
+* **Does not:** `match` on `Option<&T>` — the shape `vec/get` returns for an element of a
+  `(Vec JsonValue)`. The emitter reports `scrutinee's own type resolved to 'JsonValue *'`, because
+  the `Option`'s payload type leaks through as the scrutinee type in C.
+* **Also not:** `match` on a `deref`'d payload (`(deref x)` where `x` came out of a variant binds a
+  pointer). Routing through a parameter works, which is why `number-of`/`array-len` had to exist.
+
+So `accessors[i].componentType` — i.e. "element *i* of the array at this key, then a field of it" —
+cannot be written yet without either an emitter fix for `Option<&enum>` matching or a json-side
+API that returns primitives per path (which is the same code, blocked at the same line).
+
+No half-built path was left in `json.prn`/`rig.prn`: the attempted code was reverted and both
+suites re-run green. The next attempt should start by fixing the emitter (a small, contained change
+to the `match` scrutinee type resolution), because every richer JSON consumer will hit this same
+shape — it is not glTF-specific.
