@@ -6,7 +6,7 @@
 ;; Ported real formula, not invented: SHANKPIT_CONSTRUCT.txt's own progression_apply_bonuses
 ;; (construct lines 819-846) computes the real MOVE stat's own effect as
 ;; `boost = 1.0f + 0.035f * (float)move` (a real F32 multiplier applied to the player's own
-;; velocity). this ABI takes no F32 parameters (ECOWAR/docs/ARENA_API.md's own "Real VS0 limits"
+;; velocity). This ABI takes no F32 parameters (ECOWAR/docs/ARENA_API.md's own "Real VS0 limits"
 ;; section) -- this mod computes the exact same real formula in I32 fixed-point (permille, x1000)
 ;; instead, so the real DECISION (how much of a boost does this rank earn?) still lives in PARENA;
 ;; host C (apps/server/src/main.c) only does the one real float division needed to turn permille

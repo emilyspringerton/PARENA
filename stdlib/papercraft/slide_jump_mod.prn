@@ -9,7 +9,7 @@
 ;;   boost_mult = 1.0f + (0.25f / speed);
 ;;   clamp(boost_mult, 1.02f, 1.4f);
 ;; -- a real crouch+jump combo trick, exactly the kind of momentum-chaining move a SKATE game
-;; rewards, not an invented mechanic. this ABI takes no F32 parameters (ECOWAR/docs/ARENA_API.md's
+;; rewards, not an invented mechanic. This ABI takes no F32 parameters (ECOWAR/docs/ARENA_API.md's
 ;; own "Real VS0 limits" section), so this mod takes speed pre-scaled to fixed-point milli (round
 ;; (speed * 1000) -- matching the same "milli/permille fixed point crossing the VS0 boundary"
 ;; convention stat_effects_mod.prn already established for the real MOVE-stat boost) and returns
