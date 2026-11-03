@@ -3419,11 +3419,12 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
             const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
                                               ? "int"
                                               : (temp_type ? temp_type : "void *");
-            /* Zero-initialized, because a `let` bound to a `loop`/`match` whose own value type is
+            /* Zero-initialized (braced, because the temp's type may be a struct such as `Bytes`, not only a
+               pointer or a scalar), because a `let` bound to a `loop`/`match` whose own value type is
                void leaves __let_val_N unassigned and the binding below then reads it: real UB in the
                generated C, caught by gcc -Wuninitialized in png_decode_gen.c. Every real path assigns
                the temp first, so 0 is only ever the value when the form produced no value at all. */
-            sb_appendf(out, "    %s %s __attribute__((unused)) = 0;\n", temp_decl_type, temp_var);
+            sb_appendf(out, "    %s %s __attribute__((unused)) = {0};\n", temp_decl_type, temp_var);
             sb_append(out, temp_body.data);
             sb_free(&temp_body);
             expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
@@ -3711,7 +3712,7 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
                 const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
                                                   ? "int"
                                                   : (temp_type ? temp_type : "void *");
-                sb_appendf(out, "        %s %s __attribute__((unused)) = 0;\n", temp_decl_type, temp_var); /* see the zero-init note above */
+                sb_appendf(out, "        %s %s __attribute__((unused)) = {0};\n", temp_decl_type, temp_var); /* see the zero-init note above */
                 sb_append(out, temp_body.data);
                 sb_free(&temp_body);
                 expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
@@ -4294,7 +4295,7 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
                 const char *temp_decl_type = temp_type && strcmp(temp_type, "void") == 0
                                                   ? "int"
                                                   : (temp_type ? temp_type : "void *");
-                sb_appendf(out, "        %s %s __attribute__((unused)) = 0;\n", temp_decl_type, temp_var); /* see the zero-init note above */
+                sb_appendf(out, "        %s %s __attribute__((unused)) = {0};\n", temp_decl_type, temp_var); /* see the zero-init note above */
                 sb_append(out, temp_body.data);
                 sb_free(&temp_body);
                 expr_c = arena_strdup(arena, temp_var, strlen(temp_var));
