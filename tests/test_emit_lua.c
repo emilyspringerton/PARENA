@@ -112,8 +112,29 @@ int main(void) {
             "    (let [l (- 1000 winrate)]\n"
             "      (if (>= l 600) 2 (if (<= l 350) 1 0)))))", &err);
         CHECK(lua != NULL, "an if wrapping a let wrapping an if emits successfully");
-        CHECK(lua && strstr(lua, "((meta < 0) and 0 or (function() ") != NULL,
-              "the let sits inside the if's Lua ternary without spilling statements");
+        CHECK(lua && strstr(lua, "(function() if (meta < 0) then return 0 else return (function() ") != NULL,
+              "the let sits inside the if without spilling statements");
+        arena_free_all(&arena);
+    }
+
+    /* --- an if whose branch is FALSE must stay false --------------------------------------------------
+     * This is the bug the DEADWEIGHT match parity vectors found, and the reason `if` is not lowered to
+     * `(cond and then or else)` any more. A Bool-returning if-ladder (`fx-cond-ok` is 21 branches) had
+     * every false branch fall through into the next `or`, so a condition that answered false reached the
+     * ladder's final `roll >= PP` test and answered true -- silently changing the rules in the Luau port
+     * only, while the C was correct. The old lowering emits `((ok == 2) and false or true)`, which is
+     * ALWAYS true. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena,
+            "(defn is-two [(ok : I32)] : Bool (if (= ok 2) false true))", &err);
+        CHECK(lua != NULL, "a Bool if with a false then-branch emits successfully");
+        CHECK(lua && strstr(lua, "and false or") == NULL,
+              "a false branch is NOT folded into Lua's and/or (which would discard it)");
+        CHECK(lua && strstr(lua, "if (ok == 2) then return false else return true") != NULL,
+              "the if keeps both branches as real branches, so false is a value");
         arena_free_all(&arena);
     }
 

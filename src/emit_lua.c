@@ -165,7 +165,18 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
         if (!else_e) return NULL;
         LuaBuf b;
         lb_init(&b);
-        lb_appendf(&b, "(%s and %s or %s)", cond, then_e, else_e);
+        /* NOT `(cond and then or else)`. That idiom is wrong whenever the THEN branch's VALUE is
+         * false: `and false or` discards the false and takes the else. Worse -- and this is the one
+         * that bit -- a false branch inside a nested ladder falls through into the NEXT `or` branch, so
+         * an if-chain that RETURNS Bool answers with whatever later branch happens to be true. That is
+         * not hypothetical: DEADWEIGHT's `fx-cond-ok` is a 21-branch if-ladder returning Bool, and the
+         * ternary lowering made "opponent kind == 2" answer true whenever the ladder's own final
+         * `roll >= PP` test passed -- a live rules bug in the Luau port, caught by the match parity
+         * vectors in PARENA/stdlib/deadweight/match_parity.txt, that a strict `if` never has. Lua has no
+         * expression-if, so this lowers to an immediately-invoked function: still ONE expression (so it
+         * composes inside any parent expression), branches still evaluated LAZILY, and false is a value
+         * like any other. */
+        lb_appendf(&b, "(function() if %s then return %s else return %s end end)()", cond, then_e, else_e);
         const char *result = arena_strdup(arena, b.data, b.len);
         lb_free(&b);
         return result;
