@@ -53,6 +53,17 @@ file yet (`otp/*`, `media/*`, `sql/*`, `mapbuilder/layout`, `mapbuilder/template
 LXC/cgroups/Docker, designed for the Moltbook/OpenClaw hardening + Emily OS threads, blocked on the
 shared file-I/O gap before real `.prn` source is worth writing).
 
+### FORGEDINFACE — character rig core (`stdlib/forgedinface/`)
+
+The avatar/character builder for the online game, starting where a builder actually has to start:
+bones. Real today — a canonical 20-bone flat skeleton (a parent's index is always lower than its
+children's), forward kinematics from bind translation + unit quaternion + per-bone scale,
+2-influence linear blend skinning, masculine/feminine proportions as scalars over one shared
+topology, and a GLB/VRM container reader for the import path. Quaternions rather than Euler angles
+because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 15
+hand-derived assertions. Not yet: morph targets, GLB body decode, any renderer, clothing, export —
+see `stdlib/forgedinface/NORTHSTAR.md`.
+
 ## Standard library — full planned API surface
 
 Every package below is designed in `STDLIB.md` with real function signatures (region-typed,

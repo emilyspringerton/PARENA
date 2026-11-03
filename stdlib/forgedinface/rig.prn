@@ -1,0 +1,489 @@
+;; stdlib/forgedinface/rig.prn — FORGEDINFACE v0 core: the character rig.
+;;
+;; FORGEDINFACE is the character builder for the online game (founder real-time, 2026-11-03:
+;; "free vtuber avatars there is no web based builder like vroid studio ... we want to start
+;; building one in PARENA" -> "we want a full rigging" -> "start with a full rig with bones while
+;; starting low poly so we can have an agent handle the geometry"). The pasted design transcript
+;; that started this thread proposed syntax the real compiler does not have (`(Array F32 3)`,
+;; `js/call`, `set-data`, `dotimes`, `@ core`); everything below is written against the actual
+;; `parena build` surface instead and is gcc-`-Werror`-verified by `make test-forgedinface`.
+;;
+;; What is REAL here (v0, low-poly, arena-allocated, no host dependency at all):
+;;   - the canonical 20-bone flat skeleton map (parent index always < child index)
+;;   - forward kinematics: bind translation + unit-quaternion rotation + per-bone scale,
+;;     composed parent-to-child into world matrices. Quaternions, not Euler angles, because the
+;;     real `math` package has no `sin` (only `cos`, `sqrt`, `log` — see stdlib/math/math.prn),
+;;     and the quaternion->matrix conversion needs no trig at all.
+;;   - linear blend skinning with the 2-influence vertices a low-poly mesh actually needs
+;;   - proportions: the masc/fem bias is a scalar over ONE shared topology (never two rigs), plus
+;;     shoulder / hip / limb-length modifiers
+;;   - a real GLB (`.vrm`/`.glb`) container reader — the first, genuinely required dependency of
+;;     "support standard VRoid files", since VRM is glTF 2.0 in a GLB wrapper.
+;;
+;; Deliberately NOT here yet, named rather than faked: morph-target/blend-shape deltas, the
+;; VAO/WebGL host, pattern sewing + cloth relaxation, mesh loaders past the GLB header, and
+;; animation clips. See NORTHSTAR.md in this directory for the phase plan.
+;;
+;; Real compiler constraints this file works around (all already documented elsewhere in this
+;; stdlib, not new bugs): (1) every numeric literal is typed `double`, so pushing an `I32` into a
+;; `(Vec I32)` boxes it as f64 — hence `i32-push!` below, the same `#target` fix shape
+;; `stdlib/base4/pattern.prn`'s own `push-i32!` uses; (2) a plain local `(Vec T)` has no element
+;; type hint registered, so element access goes through `#target` accessors (same class of gap
+;; `stdlib/regex/pcre.prn`'s own `vec-i32-at` documents). Reads are `f64-at`/`i32-at`, and every
+;; write in this file is an APPEND built in index order — that keeps the whole module on the
+;; proven `vec_push_` path and avoids needing an unproven index-assignment call shape.
+;;
+;; Index convention: every flat array is row-major, 16 F64 per 4x4 matrix, 3 F64 per vec3, and
+;; bones are always in skeleton index order.
+
+(module forgedinface/rig)
+(import vec)
+
+(export Rig Anatomy Mesh
+        skeleton/standard
+        rig/solve rig/effective-scale
+        mesh/new mesh/add-vertex!
+        skin/deform
+        glb/json-chunk-length
+        self-test)
+
+;; ---------------------------------------------------------------------------
+;; The canonical skeleton map.
+;; ---------------------------------------------------------------------------
+;; 20 bones is the documented sweet spot for a low-poly MMO character: enough for distinct
+;; masculine/feminine silhouettes, limb animation and basic face motion, small enough that an
+;; agent can rewrite the whole vertex buffer every frame. Index order IS the hierarchy contract:
+;; a parent always has a strictly lower index than its children, which is what lets `rig/solve`
+;; do one flat forward pass with no recursion and no pointer tree.
+;;
+;;   0 Root  1 Pelvis  2 Spine  3 Chest  4 Neck  5 Head  6 Jaw  7 L_Eye  8 R_Eye
+;;   9 L_Clavicle 10 L_UpperArm 11 L_Forearm  12 R_Clavicle 13 R_UpperArm 14 R_Forearm
+;;   15 L_Thigh 16 L_Calf   17 R_Thigh 18 R_Calf   19 Weapon_Slot
+
+(defstruct Anatomy
+  (shoulder-x : F64) ;; chest (3) x-scale multiplier
+  (hip-x      : F64) ;; pelvis (1) x-scale multiplier
+  (limb-y     : F64) ;; thigh (15,17) y-scale multiplier — leg length
+  (masc-fem   : F64)) ;; 0.0 = fully masculine .. 1.0 = fully feminine, 0.5 = neutral
+
+(defstruct Rig
+  (bone-count : I32)
+  (parent     : (Vec I32))    ;; 1 per bone, -1 for Root
+  (trans      : (Vec F64))    ;; 3 per bone, bind/pose translation in parent space
+  (quat       : (Vec F64))    ;; 4 per bone, x y z w (unit)
+  (scale      : (Vec F64)))   ;; 3 per bone, bind scale
+
+(defstruct Mesh
+  (vertex-count : I32)
+  (pos          : (Vec F64))  ;; 3 per vertex, undeformed bind position
+  (b0           : (Vec I32))  ;; primary joint
+  (b1           : (Vec I32))  ;; secondary joint, -1 when unused
+  (w0           : (Vec F64))) ;; weight of b0 (b1 gets 1.0 - w0)
+
+;; ---------------------------------------------------------------------------
+;; #target accessors — see this file's header note on the two real gaps.
+;; ---------------------------------------------------------------------------
+(defn f64-at [(v : &(Vec F64)) (idx : I32)] : F64
+  #target {:c (inline-c "*(double *)vec_get(v, idx)")})
+
+(defn i32-at [(v : &(Vec I32)) (idx : I32)] : I32
+  #target {:c (inline-c "*(int *)vec_get(v, idx)")})
+
+(defn f64-push! [(v : &mut (Vec F64)) (val : F64)] : I32
+  ;; comma-expression, not a bare statement: these are bound in `let`s (a push is one binding in
+  ;; a table of pushes), and a void-valued call cannot be bound -- `void _0 = ...` is a real
+  ;; gcc -Werror error. Same real fix shape as the I32-returning helpers elsewhere in this file.
+  #target {:c (inline-c "(vec_push_(v, vec_box_f64(v, val)), 1)")})
+
+(defn i32-push! [(v : &mut (Vec I32)) (val : I32)] : I32
+  #target {:c (inline-c "(vec_push_(v, vec_box_i32(v, val)), 1)")})
+
+;; ---------------------------------------------------------------------------
+;; Canonical bind pose
+;; ---------------------------------------------------------------------------
+;; One bone at a time: parent, translation, quaternion, scale. Most of a bind pose is identity
+;; rotation and unit scale, so the two helpers below keep the table readable instead of spelling
+;; out 11 pushes per bone. A human model ~1.8m tall is the reference frame; Y is up.
+(defn bone-unit! [(parents : &mut (Vec I32)) (trans : &mut (Vec F64))
+                  (quat : &mut (Vec F64)) (scale : &mut (Vec F64))
+                  (parent : I32) (tx : F64) (ty : F64) (tz : F64)] : I32
+  (let [_ (i32-push! parents parent)
+        _2 (f64-push! trans tx)
+        _3 (f64-push! trans ty)
+        _4 (f64-push! trans tz)
+        _5 (f64-push! quat 0.0)
+        _6 (f64-push! quat 0.0)
+        _7 (f64-push! quat 0.0)
+        _8 (f64-push! quat 1.0)
+        _9 (f64-push! scale 1.0)
+        _10 (f64-push! scale 1.0)
+        _11 (f64-push! scale 1.0)]
+    0))
+
+(defn skeleton/standard [(dest : Arena @ Region)] : Rig @ Region
+  (let [parents (vec/new dest)
+        trans (vec/new dest)
+        quat (vec/new dest)
+        scale (vec/new dest)
+        ;; 0 Root — global character frame
+        _0 (bone-unit! &mut parents &mut trans &mut quat &mut scale -1 0.0 0.0 0.0)
+        ;; 1 Pelvis — hip width lives here
+        _1 (bone-unit! &mut parents &mut trans &mut quat &mut scale 0 0.0 0.95 0.0)
+        ;; 2 Spine — waist
+        _2 (bone-unit! &mut parents &mut trans &mut quat &mut scale 1 0.0 0.18 0.0)
+        ;; 3 Chest — shoulder breadth lives here
+        _3 (bone-unit! &mut parents &mut trans &mut quat &mut scale 2 0.0 0.22 0.0)
+        ;; 4 Neck
+        _4 (bone-unit! &mut parents &mut trans &mut quat &mut scale 3 0.0 0.12 0.0)
+        ;; 5 Head
+        _5 (bone-unit! &mut parents &mut trans &mut quat &mut scale 4 0.0 0.08 0.0)
+        ;; 6 Jaw
+        _6 (bone-unit! &mut parents &mut trans &mut quat &mut scale 5 0.0 -0.03 0.04)
+        ;; 7 L_Eye
+        _7 (bone-unit! &mut parents &mut trans &mut quat &mut scale 5 0.035 0.01 0.07)
+        ;; 8 R_Eye
+        _8 (bone-unit! &mut parents &mut trans &mut quat &mut scale 5 -0.035 0.01 0.07)
+        ;; 9 L_Clavicle
+        _9 (bone-unit! &mut parents &mut trans &mut quat &mut scale 3 0.06 0.06 0.0)
+        ;; 10 L_UpperArm
+        _10 (bone-unit! &mut parents &mut trans &mut quat &mut scale 9 0.10 0.0 0.0)
+        ;; 11 L_Forearm
+        _11 (bone-unit! &mut parents &mut trans &mut quat &mut scale 10 0.26 0.0 0.0)
+        ;; 12 R_Clavicle
+        _12 (bone-unit! &mut parents &mut trans &mut quat &mut scale 3 -0.06 0.06 0.0)
+        ;; 13 R_UpperArm
+        _13 (bone-unit! &mut parents &mut trans &mut quat &mut scale 12 -0.10 0.0 0.0)
+        ;; 14 R_Forearm
+        _14 (bone-unit! &mut parents &mut trans &mut quat &mut scale 13 -0.26 0.0 0.0)
+        ;; 15 L_Thigh
+        _15 (bone-unit! &mut parents &mut trans &mut quat &mut scale 1 0.09 -0.08 0.0)
+        ;; 16 L_Calf
+        _16 (bone-unit! &mut parents &mut trans &mut quat &mut scale 15 0.0 -0.43 0.0)
+        ;; 17 R_Thigh
+        _17 (bone-unit! &mut parents &mut trans &mut quat &mut scale 1 -0.09 -0.08 0.0)
+        ;; 18 R_Calf
+        _18 (bone-unit! &mut parents &mut trans &mut quat &mut scale 17 0.0 -0.43 0.0)
+        ;; 19 Weapon_Slot — equipment anchor under the pelvis frame
+        _19 (bone-unit! &mut parents &mut trans &mut quat &mut scale 1 0.0 0.05 -0.12)]
+    {:bone-count 20
+     :parent parents
+     :trans trans
+     :quat quat
+     :scale scale}))
+
+;; ---------------------------------------------------------------------------
+;; Proportions
+;; ---------------------------------------------------------------------------
+;; One shared topology, driven by scalars — the whole point of the masc/fem ask. The bias moves
+;; the SAME two bone scales in opposite directions, so 0.0 reads as masculine, 1.0 as feminine,
+;; and 0.5 leaves the neutral bind pose untouched. Nothing here builds a second rig.
+(defn rig/effective-scale [(anatomy : &Anatomy) (bone : I32) (axis : I32) (base : F64)] : F64
+  (let [bias (- 0.5 (get-field anatomy :masc-fem))
+        shoulder (+ (get-field anatomy :shoulder-x) (* 0.2 bias))
+        hip (- (get-field anatomy :hip-x) (* 0.2 bias))]
+    ;; every branch MULTIPLIES the bone's own bind scale, so a rig authored with a non-unit
+    ;; bind scale keeps it and the anatomy modifiers compose on top of it (a bone with bind
+    ;; scale 2.0 and limb-y 1.0 stays 2.0, rather than being silently replaced).
+    (if (= axis 0)
+      (if (= bone 3)
+        (* base shoulder)
+        (if (= bone 1) (* base hip) base))
+      (if (= axis 1)
+        (if (or (= bone 15) (= bone 17)) (* base (get-field anatomy :limb-y)) base)
+        base))))
+
+;; ---------------------------------------------------------------------------
+;; Forward kinematics
+;; ---------------------------------------------------------------------------
+;; Local matrix = T * R(quat) * S, row-major, 4x4. Returns the world matrices for every bone,
+;; 16 F64 per bone in skeleton index order. Bones are appended in index order, so a parent's
+;; world matrix is always already present when its children are solved — that invariant is the
+;; entire reason the map pins parent index < child index.
+(defn mat-push-local! [(dst : &mut (Vec F64)) (rig : &Rig) (anatomy : &Anatomy) (b : I32)] : I32
+  (let [tx (f64-at &(get-field rig :trans) (* b 3))
+        ty (f64-at &(get-field rig :trans) (+ (* b 3) 1))
+        tz (f64-at &(get-field rig :trans) (+ (* b 3) 2))
+        qx (f64-at &(get-field rig :quat) (* b 4))
+        qy (f64-at &(get-field rig :quat) (+ (* b 4) 1))
+        qz (f64-at &(get-field rig :quat) (+ (* b 4) 2))
+        qw (f64-at &(get-field rig :quat) (+ (* b 4) 3))
+        bx (f64-at &(get-field rig :scale) (* b 3))
+        by (f64-at &(get-field rig :scale) (+ (* b 3) 1))
+        bz (f64-at &(get-field rig :scale) (+ (* b 3) 2))
+        sx (rig/effective-scale anatomy b 0 bx)
+        sy (rig/effective-scale anatomy b 1 by)
+        sz (rig/effective-scale anatomy b 2 bz)
+        xx (- 1.0 (* 2.0 (+ (* qy qy) (* qz qz))))
+        xy (* 2.0 (- (* qx qy) (* qz qw)))
+        xz (* 2.0 (+ (* qx qz) (* qy qw)))
+        yx (* 2.0 (+ (* qx qy) (* qz qw)))
+        yy (- 1.0 (* 2.0 (+ (* qx qx) (* qz qz))))
+        yz (* 2.0 (- (* qy qz) (* qx qw)))
+        zx (* 2.0 (- (* qx qz) (* qy qw)))
+        zy (* 2.0 (+ (* qy qz) (* qx qw)))
+        zz (- 1.0 (* 2.0 (+ (* qx qx) (* qy qy))))
+        _0 (f64-push! dst (* xx sx))
+        _1 (f64-push! dst (* xy sy))
+        _2 (f64-push! dst (* xz sz))
+        _3 (f64-push! dst tx)
+        _4 (f64-push! dst (* yx sx))
+        _5 (f64-push! dst (* yy sy))
+        _6 (f64-push! dst (* yz sz))
+        _7 (f64-push! dst ty)
+        _8 (f64-push! dst (* zx sx))
+        _9 (f64-push! dst (* zy sy))
+        _10 (f64-push! dst (* zz sz))
+        _11 (f64-push! dst tz)
+        _12 (f64-push! dst 0.0)
+        _13 (f64-push! dst 0.0)
+        _14 (f64-push! dst 0.0)
+        _15 (f64-push! dst 1.0)]
+    16))
+
+(defn mat-push-mul! [(dst : &mut (Vec F64)) (world : &(Vec F64)) (parent : I32) (local : &(Vec F64))] : I32
+  (let [started 0]
+    (loop [r 0]
+      (when (< r 4)
+        (loop [c 0]
+          (when (< c 4)
+            (loop [k 0 s 0.0]
+              (if (>= k 4)
+                (f64-push! dst s)
+                (recur (+ k 1)
+                       (+ s (* (f64-at world (+ (* parent 16) (+ (* r 4) k)))
+                               (f64-at local (+ (* k 4) c)))))))
+            (recur (+ c 1))))
+        (recur (+ r 1))))
+    started))
+(defn mat-push-copy! [(dst : &mut (Vec F64)) (src : &(Vec F64))] : I32
+  (let [started 0]
+    (loop [i 0]
+      (when (< i 16)
+        (f64-push! dst (f64-at src i))
+        (recur (+ i 1))))
+    started))
+
+(defn zeros-push! [(v : &mut (Vec I32)) (n : I32)] : I32
+  (let [started 0]
+    (loop [j 0]
+      (when (< j n)
+        (i32-push! v 0)
+        (recur (+ j 1))))
+    started))
+(defn rig/solve [(rig : &Rig) (anatomy : &Anatomy) (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [n (get-field rig :bone-count)
+        world (vec/new dest)]
+    (loop [b 0]
+      (when (< b n)
+        (let [local (vec/new dest)
+              _ (mat-push-local! &mut local rig anatomy b)
+              p (i32-at &(get-field rig :parent) b)]
+          (if (< p 0)
+            (mat-push-copy! &mut world &local)
+            (mat-push-mul! &mut world &world p &local)))
+        (recur (+ b 1))))
+    world))
+
+;; ---------------------------------------------------------------------------
+;; Low-poly skinned mesh + linear blend skinning
+;; ---------------------------------------------------------------------------
+(defn mesh/new [(dest : Arena @ Region)] : Mesh @ Region
+  {:vertex-count 0
+   :pos (vec/new dest)
+   :b0 (vec/new dest)
+   :b1 (vec/new dest)
+   :w0 (vec/new dest)})
+
+;; add-vertex! — a low-poly vertex takes at most 2 influences; pass b1 as -1 for a single-bone
+;; vertex, which is most of a low-poly body. Returns Unit: the mesh's field Vecs are mutated in
+;; place through the reference, so the caller keeps working with the same Mesh value.
+(defn mesh/add-vertex! [(m : &mut Mesh) (x : F64) (y : F64) (z : F64)
+                        (b0 : I32) (b1 : I32) (w0 : F64)] : I32
+  (let [_0 (f64-push! &mut (get-field m :pos) x)
+        _1 (f64-push! &mut (get-field m :pos) y)
+        _2 (f64-push! &mut (get-field m :pos) z)
+        _3 (i32-push! &mut (get-field m :b0) b0)
+        _4 (i32-push! &mut (get-field m :b1) b1)
+        _5 (f64-push! &mut (get-field m :w0) w0)]
+    (set! (get-field m :vertex-count) (+ (get-field m :vertex-count) 1))
+    1))
+
+;; skin/deform — LBS over every vertex, returning the cooked positions (3 F64 per vertex, same
+;; order). Two influences, weights summing to 1; b1 == -1 means pure single-bone.
+(defn skin/deform [(world : &(Vec F64)) (mesh : &Mesh) (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [n (get-field mesh :vertex-count)
+        out (vec/new dest)]
+    (loop [v 0]
+      (when (< v n)
+        (let [x (f64-at &(get-field mesh :pos) (* v 3))
+              y (f64-at &(get-field mesh :pos) (+ (* v 3) 1))
+              z (f64-at &(get-field mesh :pos) (+ (* v 3) 2))
+              b0 (i32-at &(get-field mesh :b0) v)
+              b1 (i32-at &(get-field mesh :b1) v)
+              w0 (f64-at &(get-field mesh :w0) v)
+              w1 (- 1.0 w0)
+              ;; b0 contribution
+              x0 (+ (* (f64-at world (* b0 16)) x)
+                    (* (f64-at world (+ (* b0 16) 1)) y)
+                    (* (f64-at world (+ (* b0 16) 2)) z)
+                    (f64-at world (+ (* b0 16) 3)))
+              y0 (+ (* (f64-at world (+ (* b0 16) 4)) x)
+                    (* (f64-at world (+ (* b0 16) 5)) y)
+                    (* (f64-at world (+ (* b0 16) 6)) z)
+                    (f64-at world (+ (* b0 16) 7)))
+              z0 (+ (* (f64-at world (+ (* b0 16) 8)) x)
+                    (* (f64-at world (+ (* b0 16) 9)) y)
+                    (* (f64-at world (+ (* b0 16) 10)) z)
+                    (f64-at world (+ (* b0 16) 11)))]
+          (if (< b1 0)
+            (let [_0 (f64-push! &mut out x0)
+                  _1 (f64-push! &mut out y0)
+                  _2 (f64-push! &mut out z0)]
+              0)
+            (let [x1 (+ (* (f64-at world (* b1 16)) x)
+                        (* (f64-at world (+ (* b1 16) 1)) y)
+                        (* (f64-at world (+ (* b1 16) 2)) z)
+                        (f64-at world (+ (* b1 16) 3)))
+                  y1 (+ (* (f64-at world (+ (* b1 16) 4)) x)
+                        (* (f64-at world (+ (* b1 16) 5)) y)
+                        (* (f64-at world (+ (* b1 16) 6)) z)
+                        (f64-at world (+ (* b1 16) 7)))
+                  z1 (+ (* (f64-at world (+ (* b1 16) 8)) x)
+                        (* (f64-at world (+ (* b1 16) 9)) y)
+                        (* (f64-at world (+ (* b1 16) 10)) z)
+                        (f64-at world (+ (* b1 16) 11)))
+                  _0 (f64-push! &mut out (+ (* x0 w0) (* x1 w1)))
+                  _1 (f64-push! &mut out (+ (* y0 w0) (* y1 w1)))
+                  _2 (f64-push! &mut out (+ (* z0 w0) (* z1 w1)))]
+              0)))
+        (recur (+ v 1))))
+    out))
+
+;; ---------------------------------------------------------------------------
+;; GLB / VRM container reader
+;; ---------------------------------------------------------------------------
+;; VRM is glTF 2.0 inside a GLB wrapper (that is the whole reason "support standard VRoid files"
+;; starts here and not with a mesh importer): a 12-byte header, then length-prefixed chunks.
+;;   u32 magic "glTF" | u32 version | u32 total length | u32 chunk0 length | u32 chunk0 type | ...
+;; The binary chunk that follows is what a mesh/skin reader consumes later. Input is a Vec of
+;; byte values 0..255 (the caller reads the file into it); this returns the JSON chunk length so
+;; a caller can slice the JSON text, or a negative code:
+;;   -1 bad magic   -2 not glTF 2.0   -3 file too short   -4 chunk0 is not JSON
+;; Answering "how big is the JSON chunk" is the real, minimum useful question: it is what every
+;; later loader needs before it can look at a single node or skin.
+(defn glb/u32-le [(bytes : &(Vec I32)) (at : I32)] : I32
+  (+ (i32-at bytes at)
+     (* 256 (i32-at bytes (+ at 1)))
+     (* 65536 (i32-at bytes (+ at 2)))
+     (* 16777216 (i32-at bytes (+ at 3)))))
+
+(defn glb/json-chunk-length [(bytes : &(Vec I32))] : I32
+  (if (< (vec/len bytes) 20)
+    -3
+    (if (not (= (glb/u32-le bytes 0) 1179937895)) ;; 0x46546C67 == "glTF"
+      -1
+      (if (not (= (glb/u32-le bytes 4) 2))
+        -2
+        (if (not (= (glb/u32-le bytes 16) 1313821514)) ;; 0x4E4F534A == "JSON"
+          -4
+          (glb/u32-le bytes 12))))))
+
+;; ---------------------------------------------------------------------------
+;; self-test — real assertions, written in PARENA, run by tests/test_forgedinface.c
+;; ---------------------------------------------------------------------------
+;; Split into four small checks on purpose: one `let` with ~60 bindings hits a real
+;; VS0 emitter limit (the late bindings stop resolving — the same class of
+;; scope-threading gap stdlib/linalg.prn's own header comment documents for a
+;; `let`-bound recur value), so each check keeps its own binding count small.
+(defn near? [(a : F64) (b : F64)] : Bool
+  (if (< (- a b) 0.0) (< (- b a) 0.000001) (< (- a b) 0.000001)))
+
+;; skeleton map invariants + FK up the spine. Bind pose: pelvis 0.95, spine +0.18,
+;; chest +0.22, neck +0.12, head +0.08 -> head sits at 1.55 with neutral proportions.
+(defn self-test-skeleton [(dest : Arena @ Region)] : Bool
+  (let [rig (skeleton/standard dest)
+        neutral {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 0.5}
+        world (rig/solve &rig &neutral dest)
+        ok-count (= (get-field rig :bone-count) 20)
+        ok-root (= (i32-at &(get-field rig :parent) 0) -1)
+        ok-mats (= (vec/len &world) 320)
+        ok-head-y (near? (f64-at &world (+ (* 5 16) 7)) 1.55)
+        ok-pelvis (= (i32-at &(get-field rig :parent) 1) 0)]
+    (and ok-count (and ok-root (and ok-mats (and ok-head-y ok-pelvis))))))
+
+;; skinning: a single-influence vertex under bone 5 (translated 1.55 up) moves with it,
+;; and a 50/50 two-influence vertex lands exactly halfway between Root and bone 5.
+(defn self-test-skin [(dest : Arena @ Region)] : Bool
+  (let [rig (skeleton/standard dest)
+        neutral {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 0.5}
+        world (rig/solve &rig &neutral dest)
+        m (mesh/new dest)
+        _ (mesh/add-vertex! &mut m 1.0 2.0 3.0 5 -1 1.0)
+        cooked (skin/deform &world &m dest)
+        ok-x (near? (f64-at &cooked 0) 1.0)
+        ok-y (near? (f64-at &cooked 1) 3.55)
+        ok-z (near? (f64-at &cooked 2) 3.0)
+        m2 (mesh/new dest)
+        _2 (mesh/add-vertex! &mut m2 0.0 0.0 0.0 0 5 0.5)
+        cooked2 (skin/deform &world &m2 dest)
+        ok-blend (near? (f64-at &cooked2 1) 0.775)]
+    (and ok-x (and ok-y (and ok-z ok-blend)))))
+
+;; proportions: one shared topology, bias 0.0 reads masculine, 1.0 feminine, 0.5 neutral.
+(defn self-test-proportions [(dest : Arena @ Region)] : Bool
+  (let [masc {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 0.0}
+        fem {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 1.0}
+        neutral {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 0.5}
+        ok-chest (near? (rig/effective-scale &masc 3 0 1.0) 1.1)
+        ok-pelvis (near? (rig/effective-scale &masc 1 0 1.0) 0.9)
+        ok-neutral (near? (rig/effective-scale &neutral 3 0 1.0) 1.0)
+        ok-flip (near? (rig/effective-scale &fem 3 0 1.0) 0.9)
+        ok-limb (near? (rig/effective-scale &masc 15 1 2.0) 2.0)
+        ok-other (near? (rig/effective-scale &masc 7 2 1.0) 1.0)]
+    (and ok-chest (and ok-pelvis (and ok-neutral (and ok-flip (and ok-limb ok-other)))))))
+
+;; The 20 header bytes of a minimal, valid GLB as a fixture: magic "glTF", version 2, total
+;; length 0, a 256-byte JSON chunk (0x00000100 little-endian), and the "JSON" chunk type.
+;; Pushed from nested 5-binding lets for the same reason the checks are split up — see the
+;; self-test section's own note on VS0's real let-binding limit.
+(defn glb/test-header-push! [(b : &mut (Vec I32))] : I32
+  (let [_0 (i32-push! b 103)
+        _1 (i32-push! b 108)
+        _2 (i32-push! b 84)
+        _3 (i32-push! b 70)
+        _4 (i32-push! b 2)]
+    (let [_5 (i32-push! b 0)
+          _6 (i32-push! b 0)
+          _7 (i32-push! b 0)
+          _8 (i32-push! b 0)
+          _9 (i32-push! b 0)]
+      (let [_10 (i32-push! b 0)
+            _11 (i32-push! b 0)
+            _12 (i32-push! b 0)
+            _13 (i32-push! b 1)
+            _14 (i32-push! b 0)]
+        (let [_15 (i32-push! b 0)
+              _16 (i32-push! b 74)
+              _17 (i32-push! b 83)
+              _18 (i32-push! b 79)
+              _19 (i32-push! b 78)]
+          20)))))
+
+;; GLB/VRM container: a real glTF 2.0 header with a 256-byte JSON chunk parses; a short
+;; buffer and a bad magic both fail closed with their own distinct codes.
+(defn self-test-glb [(dest : Arena @ Region)] : Bool
+  (let [bytes (vec/new dest)
+        _ (glb/test-header-push! &mut bytes)
+        tiny (vec/new dest)
+        _t (i32-push! &mut tiny 103)
+        bad (vec/new dest)
+        _b (zeros-push! &mut bad 20)
+        ok-json (= (glb/json-chunk-length &bytes) 256)
+        ok-short (= (glb/json-chunk-length &tiny) -3)
+        ok-magic (= (glb/json-chunk-length &bad) -1)]
+    (and ok-json (and ok-short ok-magic))))
+
+(defn self-test [(dest : Arena @ Region)] : Bool
+  (and (self-test-skeleton dest)
+       (and (self-test-skin dest)
+            (and (self-test-proportions dest) (self-test-glb dest)))))
