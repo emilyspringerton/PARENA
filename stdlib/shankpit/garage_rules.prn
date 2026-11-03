@@ -1,0 +1,41 @@
+;; stdlib/shankpit/garage_rules.prn -- what a garage accepts, and what it pays for it.
+;;
+;; Founder real-time (2026-11-03): a garage that takes "vehicles of questionable origin" and hooks them
+;; to a mission. The car already knows where it came from (LevelVehicleSpawn.origin, carried into
+;; BuggyState.origin at spawn); this module decides whether a garage bay will take it, and what it is
+;; worth, WITHOUT the C host restating a single number.
+;;
+;;   PARENA/stdlib/shankpit/garage_rules.prn --> SHANKPIT/packages/simulation/garage_rules.c
+;;   (scripts/gen_garage_rules.sh, mk/salvage.mk)
+;;
+;; Total functions over I32, like vehicle_salvage_rules.prn beside it: every input pair has an answer,
+;; so a hand-rolled packet or a level file cannot produce an "undefined" garage.
+(module shankpit/garage-rules)
+(export garage-accepts garage-pays)
+
+;; ORIGINS -- must match LEVEL_VEHICLE_ORIGIN_* (packages/world/level_boxes.h).
+;;   0 CIVILIAN  paperwork in order, the boring one
+;;   1 STOLEN    the one a fence wants and a rebuild does not
+;;   2 MILITARY  rare parts, and a trail nobody wants to be holding
+
+;; OBJECTIVES -- what the garage is being asked to do right now.
+;;   0 ANY       no job: the bay takes anything roadworthy
+;;   1 REBUILD   put a civilian wreck back on the road
+;;   2 DISAPPEAR a stolen car stops existing
+;;   3 FENCE     move anything hot
+(defn garage-accepts [(origin : I32) (objective : I32)] : I32
+  (if (= objective 0) 1
+    (if (= objective 1) (if (= origin 0) 1 0)
+      (if (= objective 2) (if (= origin 1) 1 0)
+        (if (= objective 3) (if (>= origin 1) 1 0)
+          0)))))
+
+;; Payout in permille of the car's salvage value, by where it came from. A stolen car pays LESS than a
+;; clean one on paper (no papers to sell with it), a military hulk pays MORE (the parts are worth more
+;; than the car). Anything outside the three origins pays nothing, so a bad value is worthless rather
+;; than generous.
+(defn garage-pays [(origin : I32)] : I32
+  (if (= origin 0) 1000
+    (if (= origin 1) 700
+      (if (= origin 2) 1300
+        0))))
