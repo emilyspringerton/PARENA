@@ -5350,3 +5350,28 @@ Design rules worth keeping:
   two traits a stranger can actually see.
 
 Not here: faces, per-citizen animation, mesh emission for a body, and the zombie bodies.
+
+## deadweight/citizen_policy — how the CITIZENS play DEADWEIGHT (2026-11-03)
+
+The layer above `deadweight/card_rules.prn`: the two decisions the rules deliberately have no opinion
+about, and nothing else.
+
+| rule | what it answers |
+|---|---|
+| `cp-winrate-permille` | a citizen's record as a win rate, Laplace-smoothed: no record is an unknown 500, one win from one game is 666 |
+| `cp-kind-identity` | the kind a path is built around (DUEL/ENDGAME Offense, CRAFT/TRADE Operations, IDLE Defense) |
+| `cp-kind-answer` | the kind that beats a meta's dominant kind |
+| `cp-deck-kind` | identity vs the answer, decided by WIN RATE against the META's share — a divided meta is not a meta |
+| `cp-card-score` | one card's value to this seat this round, from facts the host resolved (kind/power/cost/legal) |
+| `cp-pick` | the best card, first-maximal ties, and pass when nothing beats passing |
+| `cp-deck-card` | the card for deck slot 0..15: the base line's three tiers of the current kind, plus three of the kind that answers it |
+
+**Import-free on purpose.** The C emitter types an imported call's result as `void *`, so arithmetic
+on `(card-kind x)` inside a `let` does not compile — and a policy that cannot do arithmetic is not a
+policy. So the facts arrive as ARGUMENTS, from the same `card_rules` engine the host plays with,
+which also means this file holds no second copy of a number. Fixing the emitter (propagate the
+callee's declared return type across module boundaries) would let the obvious version compile; that
+is a named next step in the consumer's report, not a workaround to celebrate.
+
+Consumed by SHANKPIT (`make regen-dw-engine` -> `packages/simulation/dw_citizen_rules.c`), behind the
+engine shim in `packages/simulation/dw_engine.*`.
