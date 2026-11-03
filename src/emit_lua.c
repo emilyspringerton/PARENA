@@ -186,6 +186,63 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
         return result;
     }
 
+    /* `let` -- found missing by the first REAL rules module this target was pointed at
+     * (stdlib/deadweight/citizen_policy.prn: "unsupported expression form" on the binding vector, which
+     * had fallen through to the call branch and been emitted as an argument). A `let` is a sequence of
+     * scoped bindings around one expression, and Lua has no expression-local binding, so it lowers to an
+     * immediately-invoked function: `(function() local a = ...; return ... end)()`. That is still ONE
+     * expression, so it composes inside the `(cond and then or else)` an `if` lowers to, and the bindings
+     * are `local` in order -- which is exactly `let`'s own rule that each binding sees the ones before it.
+     * v0 shape: (let [name expr ...] body), one body expression, no `do` sequence. */
+    if (strcmp(head, "let") == 0) {
+        if (expr->child_count != 3 || expr->children[1]->type != NODE_VEC) {
+            *out_error = "emit_lua: let requires (let [name expr ...] body)";
+            return NULL;
+        }
+        Node *bindings = expr->children[1];
+        if (bindings->child_count % 2 != 0) {
+            *out_error = "emit_lua: let bindings must be name/expression pairs";
+            return NULL;
+        }
+        LuaBuf b;
+        lb_init(&b);
+        lb_append(&b, "(function() ");
+        for (size_t i = 0; i + 1 < bindings->child_count; i += 2) {
+            Node *name = bindings->children[i];
+            if (name->type != NODE_SYMBOL) {
+                *out_error = "emit_lua: let binding name must be a symbol";
+                lb_free(&b);
+                return NULL;
+            }
+            const char *value = emit_lua_expr(arena, bindings->children[i + 1], out_error);
+            if (!value) { lb_free(&b); return NULL; }
+            lb_appendf(&b, "local %s = %s; ", camel_case(arena, name->text), value);
+        }
+        const char *body = emit_lua_expr(arena, expr->children[2], out_error);
+        if (!body) { lb_free(&b); return NULL; }
+        lb_appendf(&b, "return %s end)()", body);
+        const char *result = arena_strdup(arena, b.data, b.len);
+        lb_free(&b);
+        return result;
+    }
+
+    /* Statement forms this target cannot express in expression position (no `do` sequence, no mutation, no
+     * loops, no type declarations). WITHOUT this they fell through to the "call to another defn" branch below
+     * and emitted `M.do(1, 2)` / `M.set!(...)` -- plausible-LOOKING Lua that only a real interpreter rejects on
+     * the next run, which is the worst of both worlds: the emitter says it succeeded. Found by this target's
+     * own new test (`(defn f [] : I32 (do 1 2))` emitted `M.do(1, 2)` instead of failing), the same class of gap
+     * the C emitter's own honest-refusal list exists to prevent. A named refusal beats a guessed call. */
+    static const char *const UNSUPPORTED_STATEMENT_FORMS[] = {
+        "do", "set!", "while", "dotimes", "loop", "recur", "def", "defstruct", "defenum", "match", "case"
+    };
+    for (size_t i = 0; i < sizeof(UNSUPPORTED_STATEMENT_FORMS) / sizeof(UNSUPPORTED_STATEMENT_FORMS[0]); i++) {
+        if (strcmp(head, UNSUPPORTED_STATEMENT_FORMS[i]) == 0) {
+            *out_error = "emit_lua: unsupported statement form in expression position (v0 has no do/set!/loops/"
+                         "declarations -- only defn, let, if, not, binops and calls)";
+            return NULL;
+        }
+    }
+
     const char *lua_op = find_binop(head);
     if (lua_op) {
         if (expr->child_count != 3) {

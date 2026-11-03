@@ -30,6 +30,20 @@
  *     shared rule whose `then` branch is a bare boolean false.
  *   * names are camelCased (kebab `ambient-pick` -> `ambientPick`), matching the hand-written Luau module this
  *     target exists to replace.
+ *   * `let` lowers to an immediately-invoked function: `(let [a .. b ..] body)` -> `(function() local a = ..;
+ *     local b = ..; return body end)()`. Lua has no expression-local binding, and an IIFE keeps the form an
+ *     EXPRESSION (so it still nests inside the `(cond and then or else)` an `if` becomes) while `local`s keep
+ *     `let`'s rule that each binding sees the earlier ones. Added when the first real policy module was pointed at
+ *     this target (DEADWEIGHT's citizen policy, 2026-11-03) -- before it, the binding vector fell through to the
+ *     call branch and the emitter reported the vector as an unsupported expression.
+ *   * statement forms this target cannot express in expression position (`do`, `set!`, loops, `def`/`defstruct`/
+ *     `defenum`, `match`, `case`) are REFUSED BY NAME. Without that list they fell through to the "call to another
+ *     defn" branch and emitted `M.do(1, 2)` -- plausible-looking Lua that only a real interpreter rejects, i.e.
+ *     the emitter reporting success on output that cannot run. Found by this target's own test.
+ *
+ * What is still NOT supported, honestly: those statement forms, multiple body expressions, structs/enums/Vec, and
+ * region-annotated parameters. A module that needs them is a real gap, not a silent one -- `emit_lua` returns NULL
+ * and names the form.
  *
  * Deliberately independent of emit.c/emit_ts.c/emit_java.c, same "each target module stays independent" rule
  * those three already follow.
