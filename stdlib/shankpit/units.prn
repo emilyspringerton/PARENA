@@ -1,0 +1,120 @@
+;; UNITS -- the unit affordance layer: lengths, masses and volumes in both metric and imperial,
+;; converted through ONE canonical unit per family instead of a matrix of pairwise factors.
+;;
+;; Written against the emitter this repo actually has: it understands Unit/I32/Bool/F64/String/Bytes
+;; and defenum/defstruct names, but NOT F32 or I64 (parena: "unsupported return type symbol 'F32'"),
+;; and it does not yet emit a working `case` for I32 -- so unit codes are I32 with nested `if`, the
+;; same zero-cost tag convention stdlib/pentest/scan.prn already uses for PortState.
+;;
+;; Canonical units, chosen so no conversion is a lossy double round trip:
+;;   length -> MILLIMETRE  (imperial factors are exact by definition: 25.4, 304.8, 914.4)
+;;   mass   -> MILLIGRAM   (1 lb = 453592.37 mg exactly, 1 oz = 28349.523125 mg)
+;;   volume -> CUBIC METRE (1 cu in = 16.387064 mL, 1 cu ft = 28.316846592 L, 1 US gal = 3.785411784 L)
+;;
+;; Codes (stable; append only, never renumber -- they cross the C boundary as plain ints):
+;;   length 0 mm, 1 cm, 2 m, 3 in, 4 ft, 5 yd
+;;   mass   0 g,  1 kg, 2 oz, 3 lb, 4 short ton
+;;   volume 0 ml, 1 L, 2 m3, 3 cu in, 4 cu ft, 5 US gallon
+;;   family 0 length, 1 mass, 2 volume
+
+;; ---- validity ---------------------------------------------------------------------------------
+
+(defn units-code-valid [(family : I32) (code : I32)] : I32
+  (if (< code 0) 0
+    (if (= family 0) (if (> code 5) 0 1)
+      (if (= family 1) (if (> code 4) 0 1)
+        (if (= family 2) (if (> code 5) 0 1) 0)))))
+
+;; ---- length -----------------------------------------------------------------------------------
+
+(defn units-length-mm [(v : F64) (u : I32)] : F64
+  (if (= u 0) v
+    (if (= u 1) (* v 10.0)
+      (if (= u 2) (* v 1000.0)
+        (if (= u 3) (* v 25.4)
+          (if (= u 4) (* v 304.8)
+            (if (= u 5) (* v 914.4) 0.0)))))))
+
+(defn units-length-mm-to [(mm : F64) (u : I32)] : F64
+  (if (= u 0) mm
+    (if (= u 1) (/ mm 10.0)
+      (if (= u 2) (/ mm 1000.0)
+        (if (= u 3) (/ mm 25.4)
+          (if (= u 4) (/ mm 304.8)
+            (if (= u 5) (/ mm 914.4) 0.0)))))))
+
+(defn units-length-m [(v : F64) (u : I32)] : F64
+  (/ (units-length-mm v u) 1000.0))
+
+;; ---- mass -------------------------------------------------------------------------------------
+
+(defn units-mass-mg [(v : F64) (u : I32)] : F64
+  (if (= u 0) (* v 1000.0)
+    (if (= u 1) (* v 1000000.0)
+      (if (= u 2) (* v 28349.523125)
+        (if (= u 3) (* v 453592.37)
+          (if (= u 4) (* v 907184740.0) 0.0))))))
+
+(defn units-mass-mg-to [(mg : F64) (u : I32)] : F64
+  (if (= u 0) (/ mg 1000.0)
+    (if (= u 1) (/ mg 1000000.0)
+      (if (= u 2) (/ mg 28349.523125)
+        (if (= u 3) (/ mg 453592.37)
+          (if (= u 4) (/ mg 907184740.0) 0.0))))))
+
+(defn units-mass-kg [(v : F64) (u : I32)] : F64
+  (/ (units-mass-mg v u) 1000000.0))
+
+;; ---- volume -----------------------------------------------------------------------------------
+
+(defn units-volume-m3 [(v : F64) (u : I32)] : F64
+  (if (= u 0) (* v 0.000001)
+    (if (= u 1) (* v 0.001)
+      (if (= u 2) v
+        (if (= u 3) (* v 0.000016387064)
+          (if (= u 4) (* v 0.028316846592)
+            (if (= u 5) (* v 0.003785411784) 0.0)))))))
+
+(defn units-volume-m3-to [(m3 : F64) (u : I32)] : F64
+  (if (= u 0) (/ m3 0.000001)
+    (if (= u 1) (/ m3 0.001)
+      (if (= u 2) m3
+        (if (= u 3) (/ m3 0.000016387064)
+          (if (= u 4) (/ m3 0.028316846592)
+            (if (= u 5) (/ m3 0.003785411784) 0.0)))))))
+
+;; ---- any unit of the same family to any other ------------------------------------------------
+;; The one call a designer or a mod needs: "12 ft 7 in in metres", "3 lb in kg", "2 gal in litres".
+
+(defn units-convert [(v : F64) (family : I32) (from : I32) (to : I32)] : F64
+  (if (= (units-code-valid family from) 0) 0.0
+    (if (= (units-code-valid family to) 0) 0.0
+      (if (= family 0) (units-length-mm-to (units-length-mm v from) to)
+        (if (= family 1) (units-mass-mg-to (units-mass-mg v from) to)
+          (if (= family 2) (units-volume-m3-to (units-volume-m3 v from) to) 0.0))))))
+
+;; ---- compound affordances: a box, its volume, its mass ---------------------------------------
+
+(defn units-box-volume-m3 [(w : F64) (h : F64) (d : F64) (u : I32)] : F64
+  (if (= (units-code-valid 0 u) 0) 0.0
+    (* (* (units-length-m w u) (units-length-m h u)) (units-length-m d u))))
+
+(defn units-box-mass-kg [(volume-m3 : F64) (density-kg-m3 : F64)] : F64
+  (* volume-m3 density-kg-m3))
+
+;; ---- grid snapping ---------------------------------------------------------------------------
+;; Structural profiles, in metres: 0 none, 1 metric CMU block (0.4), 2 metric tile (0.3),
+;; 3 imperial stud/16 in (0.4064), 4 imperial brick/8 in (0.2032). Imperial steps are the exact
+;; metric equivalents, not rounded, so a 16-inch wall and a metric wall can meet on the same grid.
+
+(defn units-snap [(x : F64) (profile : I32)] : F64
+  (let [step (if (= profile 1) 0.4
+               (if (= profile 2) 0.3
+                 (if (= profile 3) 0.4064
+                   (if (= profile 4) 0.2032 0.0))))]
+    (if (= step 0.0) x (* (math/floor (+ (/ x step) 0.5)) step))))
+
+(export units-code-valid units-length-mm units-length-mm-to units-length-m
+        units-mass-mg units-mass-mg-to units-mass-kg
+        units-volume-m3 units-volume-m3-to units-convert
+        units-box-volume-m3 units-box-mass-kg units-snap)
