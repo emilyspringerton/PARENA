@@ -6,6 +6,15 @@
 #include <math.h>
 
 typedef struct {
+    char * message;
+} ParseError;
+static inline __attribute__((unused)) ParseError ParseError_new(char * message) {
+    ParseError v;
+    v.message = message;
+    return v;
+}
+
+typedef struct {
     double shoulder_x;
     double hip_x;
     double limb_y;
@@ -69,6 +78,21 @@ static inline __attribute__((unused)) MorphSet MorphSet_new(int target_count, in
     return v;
 }
 
+int length(char *);
+int char_at(char *, int);
+int str_eq_(char *, char *);
+char * char_from_code(int, Arena *);
+char * i32_to_string(int, Arena *);
+int contains_ci_(char *, char *);
+int is_digit_(int);
+char * substring(char *, int, int, Arena *);
+int raw_parse_i32(char *);
+Result parse_i32(char *, Arena *);
+double parse_f64_raw(char *);
+int starts_with_sign_(char *);
+int is_valid_i32_text_(char *);
+char * concat(char *, char *, Arena *);
+Vec split(char *, char *, Arena *);
 double f64_at(Vec *, int);
 int i32_at(Vec *, int);
 int f64_push_(Vec *, double);
@@ -92,6 +116,9 @@ Vec skin_deform(Vec *, Mesh *, Arena *);
 Vec skin_deform_morphed(Vec *, Mesh *, MorphSet *, Arena *);
 int glb_u32_le(Vec *, int);
 int glb_json_chunk_length(Vec *);
+int glb_bin_chunk_offset(Vec *);
+int glb_bin_chunk_length(Vec *);
+int rig_humanoid_index(char *);
 int near_(double, double);
 int self_test_skeleton(Arena *);
 int self_test_skin(Arena *);
@@ -99,7 +126,145 @@ int self_test_proportions(Arena *);
 int glb_test_header_push_(Vec *);
 int self_test_glb(Arena *);
 int self_test_morphs(Arena *);
+int glb_test_binary_push_(Vec *);
+int self_test_glb_bin(Arena *);
+int self_test_humanoid(Arena *);
 int self_test(Arena *);
+
+static inline int *int_box(Arena *dest, int v) {
+    int *p = (int *)arena_alloc(dest, sizeof(int));
+    *p = v;
+    return p;
+}
+
+static inline ParseError *ParseError_box(Arena *dest, ParseError v) {
+    ParseError *p = (ParseError *)arena_alloc(dest, sizeof(ParseError));
+    *p = v;
+    return p;
+}
+
+int length(char * s __attribute__((unused))) {
+    return ((int32_t)strlen(s));
+}
+
+int char_at(char * s __attribute__((unused)), int i __attribute__((unused))) {
+    return ((int32_t)s[i]);
+}
+
+int str_eq_(char * a __attribute__((unused)), char * b __attribute__((unused))) {
+    return (strcmp(a, b) == 0);
+}
+
+char * char_from_code(int code __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    out[0] = (char)code; out[1] = '\0';
+    return out;
+}
+
+char * i32_to_string(int n __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, (16) + 1);
+    snprintf(out, 16, "%d", n);
+    return out;
+}
+
+int contains_ci_(char * haystack __attribute__((unused)), char * needle __attribute__((unused))) {
+    return (string_contains_ci_impl(haystack, needle) != 0);
+}
+
+int is_digit_(int c __attribute__((unused))) {
+    return ((c >= 48) && (c <= 57));
+}
+
+char * substring(char * s __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((end - start)) + 1);
+    memcpy(out, s + start, end - start); out[end - start] = '\0';
+    return out;
+}
+
+int raw_parse_i32(char * s __attribute__((unused))) {
+    return (atoi(s));
+}
+
+Result parse_i32(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    if (is_valid_i32_text_(s)) {
+    return result_ok(int_box(dest, raw_parse_i32(s)));
+    } else {
+    return result_err(ParseError_box(dest, ParseError_new("not a valid integer")));
+    }
+}
+
+double parse_f64_raw(char * s __attribute__((unused))) {
+    return (strtod(s, NULL));
+}
+
+int starts_with_sign_(char * s __attribute__((unused))) {
+    return ((char_at(s, 0) == 45) || (char_at(s, 0) == 43));
+}
+
+int is_valid_i32_text_(char * s __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    if ((n == 0)) {
+    return 0;
+    } else {
+    int __loop_result_0 __attribute__((unused));
+    int i = (starts_with_sign_(s) ? 1 : 0);
+    int ok = 1;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_0 = (ok && (n > (starts_with_sign_(s) ? 1 : 0)));
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (ok && is_digit_(char_at(s, i)));
+        i = __recur_tmp_0;
+        ok = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_0;
+    }
+}
+
+char * concat(char * a __attribute__((unused)), char * b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((length(a) + length(b))) + 1);
+    strcpy(out, a); strcat(out, b);
+    return out;
+}
+
+Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec result __attribute__((unused)) = vec_new(dest);
+    Vec __loop_result_1 __attribute__((unused));
+    int start = 0;
+    int i = 0;
+    int n = length(s);
+    while (1) {
+        if ((i >= n)) {
+        (void)(vec_push_(&(result), substring(s, start, i, dest)));
+        __loop_result_1 = result;
+        break;
+        } else {
+        if ((char_at(s, i) == char_at(sep, 0))) {
+        (void)(vec_push_(&(result), substring(s, start, i, dest)));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (i + 1);
+        int __recur_tmp_2 = n;
+        start = __recur_tmp_0;
+        i = __recur_tmp_1;
+        n = __recur_tmp_2;
+        continue;
+        } else {
+        int __recur_tmp_0 = start;
+        int __recur_tmp_1 = (i + 1);
+        int __recur_tmp_2 = n;
+        start = __recur_tmp_0;
+        i = __recur_tmp_1;
+        n = __recur_tmp_2;
+        continue;
+        }
+        }
+    }
+    return __loop_result_1;
+}
 
 double f64_at(Vec * v __attribute__((unused)), int idx __attribute__((unused))) {
     return (*(double *)vec_get(v, idx));
@@ -231,20 +396,20 @@ int mat_push_local_(Vec * dst __attribute__((unused)), Rig * rig __attribute__((
 
 int mat_push_mul_(Vec * dst __attribute__((unused)), Vec * world __attribute__((unused)), int parent __attribute__((unused)), Vec * local __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_0 __attribute__((unused));
+    void * __loop_result_2 __attribute__((unused));
     int r = 0;
     while (1) {
         if ((r < 4)) {
-    void * __loop_result_1 __attribute__((unused));
+    void * __loop_result_3 __attribute__((unused));
     int c = 0;
     while (1) {
         if ((c < 4)) {
-    int __loop_result_2 __attribute__((unused));
+    int __loop_result_4 __attribute__((unused));
     int k = 0;
     double s = 0.0;
     while (1) {
         if ((k >= 4)) {
-        __loop_result_2 = f64_push_(dst, s);
+        __loop_result_4 = f64_push_(dst, s);
         break;
         } else {
         int __recur_tmp_0 = (k + 1);
@@ -273,7 +438,7 @@ int mat_push_mul_(Vec * dst __attribute__((unused)), Vec * world __attribute__((
 
 int mat_push_copy_(Vec * dst __attribute__((unused)), Vec * src __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_3 __attribute__((unused));
+    void * __loop_result_5 __attribute__((unused));
     int i = 0;
     while (1) {
         if ((i < 16)) {
@@ -290,7 +455,7 @@ int mat_push_copy_(Vec * dst __attribute__((unused)), Vec * src __attribute__((u
 
 int zeros_push_(Vec * v __attribute__((unused)), int n __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_4 __attribute__((unused));
+    void * __loop_result_6 __attribute__((unused));
     int j = 0;
     while (1) {
         if ((j < n)) {
@@ -308,7 +473,7 @@ int zeros_push_(Vec * v __attribute__((unused)), int n __attribute__((unused))) 
 Vec rig_solve(Rig * rig __attribute__((unused)), Anatomy * anatomy __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = (rig)->bone_count;
     Vec world __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_5 __attribute__((unused));
+    void * __loop_result_7 __attribute__((unused));
     int b = 0;
     while (1) {
         if ((b < n)) {
@@ -366,12 +531,12 @@ int morph_ready_(MorphSet * m __attribute__((unused))) {
 }
 
 double morph_axis_sum(MorphSet * m __attribute__((unused)), int v __attribute__((unused)), int vc __attribute__((unused)), int targets __attribute__((unused)), int axis __attribute__((unused))) {
-    double __loop_result_6 __attribute__((unused));
+    double __loop_result_8 __attribute__((unused));
     int t = 0;
     double sum = 0.0;
     while (1) {
         if ((t >= targets)) {
-        __loop_result_6 = sum;
+        __loop_result_8 = sum;
         break;
         } else {
         int __recur_tmp_0 = (t + 1);
@@ -381,13 +546,13 @@ double morph_axis_sum(MorphSet * m __attribute__((unused)), int v __attribute__(
         continue;
         }
     }
-    return __loop_result_6;
+    return __loop_result_8;
 }
 
 Vec skin_deform(Vec * world __attribute__((unused)), Mesh * mesh __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = (mesh)->vertex_count;
     Vec out __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_7 __attribute__((unused));
+    void * __loop_result_9 __attribute__((unused));
     int v = 0;
     while (1) {
         if ((v < n)) {
@@ -430,7 +595,7 @@ Vec skin_deform_morphed(Vec * world __attribute__((unused)), Mesh * mesh __attri
     int vc __attribute__((unused)) = (m)->vertex_count;
     int targets __attribute__((unused)) = (m)->target_count;
     Vec out __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_8 __attribute__((unused));
+    void * __loop_result_10 __attribute__((unused));
     int v = 0;
     while (1) {
         if ((v < n)) {
@@ -486,6 +651,122 @@ int glb_json_chunk_length(Vec * bytes __attribute__((unused))) {
     return -4;
     } else {
     return glb_u32_le(bytes, 12);
+    }
+    }
+    }
+    }
+}
+
+int glb_bin_chunk_offset(Vec * bytes __attribute__((unused))) {
+    int n __attribute__((unused)) = vec_len(bytes);
+    if ((n < 20)) {
+    return -3;
+    } else {
+    if ((!((glb_u32_le(bytes, 0) == 1179937895)))) {
+    return -1;
+    } else {
+    int hdr __attribute__((unused)) = (20 + glb_u32_le(bytes, 12));
+    if (((hdr + 8) > n)) {
+    return -5;
+    } else {
+    int len __attribute__((unused)) = glb_u32_le(bytes, hdr);
+    if ((((hdr + 8) + len) > n)) {
+    return -5;
+    } else {
+    return (hdr + 8);
+    }
+    }
+    }
+    }
+}
+
+int glb_bin_chunk_length(Vec * bytes __attribute__((unused))) {
+    int off __attribute__((unused)) = glb_bin_chunk_offset(bytes);
+    if ((off < 0)) {
+    return off;
+    } else {
+    return glb_u32_le(bytes, (off - 8));
+    }
+}
+
+int rig_humanoid_index(char * name __attribute__((unused))) {
+    if (str_eq_(name, "hips")) {
+    return 1;
+    } else {
+    if (str_eq_(name, "spine")) {
+    return 2;
+    } else {
+    if (str_eq_(name, "chest")) {
+    return 3;
+    } else {
+    if (str_eq_(name, "upperChest")) {
+    return 3;
+    } else {
+    if (str_eq_(name, "neck")) {
+    return 4;
+    } else {
+    if (str_eq_(name, "head")) {
+    return 5;
+    } else {
+    if (str_eq_(name, "jaw")) {
+    return 6;
+    } else {
+    if (str_eq_(name, "leftEye")) {
+    return 7;
+    } else {
+    if (str_eq_(name, "rightEye")) {
+    return 8;
+    } else {
+    if (str_eq_(name, "leftShoulder")) {
+    return 9;
+    } else {
+    if (str_eq_(name, "leftUpperArm")) {
+    return 10;
+    } else {
+    if (str_eq_(name, "leftLowerArm")) {
+    return 11;
+    } else {
+    if (str_eq_(name, "rightShoulder")) {
+    return 12;
+    } else {
+    if (str_eq_(name, "rightUpperArm")) {
+    return 13;
+    } else {
+    if (str_eq_(name, "rightLowerArm")) {
+    return 14;
+    } else {
+    if (str_eq_(name, "leftUpperLeg")) {
+    return 15;
+    } else {
+    if (str_eq_(name, "leftLowerLeg")) {
+    return 16;
+    } else {
+    if (str_eq_(name, "rightUpperLeg")) {
+    return 17;
+    } else {
+    if (str_eq_(name, "rightLowerLeg")) {
+    return 18;
+    } else {
+    if (str_eq_(name, "root")) {
+    return 0;
+    } else {
+    return -1;
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
+    }
     }
     }
     }
@@ -601,7 +882,67 @@ int self_test_morphs(Arena *dest __attribute__((unused))) {
     return (ok_ready && (ok_x && (ok_y && (ok_z && ok_partial))));
 }
 
+int glb_test_binary_push_(Vec * b __attribute__((unused))) {
+    int _0 __attribute__((unused)) = i32_push_(b, 103);
+    int _1 __attribute__((unused)) = i32_push_(b, 108);
+    int _2 __attribute__((unused)) = i32_push_(b, 84);
+    int _3 __attribute__((unused)) = i32_push_(b, 70);
+    int _4 __attribute__((unused)) = i32_push_(b, 2);
+    int _5 __attribute__((unused)) = i32_push_(b, 0);
+    int _6 __attribute__((unused)) = i32_push_(b, 0);
+    int _7 __attribute__((unused)) = i32_push_(b, 0);
+    int _8 __attribute__((unused)) = i32_push_(b, 0);
+    int _9 __attribute__((unused)) = i32_push_(b, 0);
+    int _10 __attribute__((unused)) = i32_push_(b, 0);
+    int _11 __attribute__((unused)) = i32_push_(b, 0);
+    int _12 __attribute__((unused)) = i32_push_(b, 0);
+    int _13 __attribute__((unused)) = i32_push_(b, 0);
+    int _14 __attribute__((unused)) = i32_push_(b, 0);
+    int _15 __attribute__((unused)) = i32_push_(b, 0);
+    int _16 __attribute__((unused)) = i32_push_(b, 74);
+    int _17 __attribute__((unused)) = i32_push_(b, 83);
+    int _18 __attribute__((unused)) = i32_push_(b, 79);
+    int _19 __attribute__((unused)) = i32_push_(b, 78);
+    int _20 __attribute__((unused)) = i32_push_(b, 0);
+    int _21 __attribute__((unused)) = i32_push_(b, 0);
+    int _22 __attribute__((unused)) = i32_push_(b, 0);
+    int _23 __attribute__((unused)) = i32_push_(b, 0);
+    int _24 __attribute__((unused)) = i32_push_(b, 66);
+    int _25 __attribute__((unused)) = i32_push_(b, 73);
+    int _26 __attribute__((unused)) = i32_push_(b, 78);
+    int _27 __attribute__((unused)) = i32_push_(b, 0);
+    return 28;
+}
+
+int self_test_glb_bin(Arena *dest __attribute__((unused))) {
+    Vec bytes __attribute__((unused)) = vec_new(dest);
+    int _ __attribute__((unused)) = glb_test_binary_push_(&(bytes));
+    int ok_off __attribute__((unused)) = (glb_bin_chunk_offset(&(bytes)) == 28);
+    int ok_len __attribute__((unused)) = (glb_bin_chunk_length(&(bytes)) == 0);
+    Vec tiny __attribute__((unused)) = vec_new(dest);
+    int _t __attribute__((unused)) = i32_push_(&(tiny), 103);
+    int ok_short __attribute__((unused)) = (glb_bin_chunk_offset(&(tiny)) == -3);
+    Vec bad __attribute__((unused)) = vec_new(dest);
+    int _b __attribute__((unused)) = zeros_push_(&(bad), 28);
+    int ok_magic __attribute__((unused)) = (glb_bin_chunk_offset(&(bad)) == -1);
+    return (ok_off && (ok_len && (ok_short && ok_magic)));
+}
+
+int self_test_humanoid(Arena *dest __attribute__((unused))) {
+    int ok_hips __attribute__((unused)) = (rig_humanoid_index("hips") == 1);
+    int ok_chest __attribute__((unused)) = (rig_humanoid_index("upperChest") == 3);
+    int ok_jaw __attribute__((unused)) = (rig_humanoid_index("jaw") == 6);
+    int ok_eye __attribute__((unused)) = (rig_humanoid_index("rightEye") == 8);
+    int ok_leg __attribute__((unused)) = (rig_humanoid_index("rightUpperLeg") == 17);
+    int ok_arm __attribute__((unused)) = (rig_humanoid_index("leftLowerArm") == 11);
+    int ok_root __attribute__((unused)) = (rig_humanoid_index("root") == 0);
+    int ok_hand __attribute__((unused)) = (rig_humanoid_index("leftHand") == -1);
+    int ok_finger __attribute__((unused)) = (rig_humanoid_index("leftRingProximal") == -1);
+    int ok_empty __attribute__((unused)) = (rig_humanoid_index("") == -1);
+    return (ok_hips && (ok_chest && (ok_jaw && (ok_eye && (ok_leg && (ok_arm && (ok_root && (ok_hand && (ok_finger && ok_empty)))))))));
+}
+
 int self_test(Arena *dest __attribute__((unused))) {
-    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && self_test_morphs(dest)))));
+    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && (self_test_morphs(dest) && (self_test_glb_bin(dest) && self_test_humanoid(dest)))))));
 }
 

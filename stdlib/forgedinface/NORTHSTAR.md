@@ -1,9 +1,10 @@
 # FORGEDINFACE — the character builder
 
-**Status (2026-11-03): v0 rig core + morph targets are real, built, and tested.** `stdlib/forgedinface/rig.prn`
+**Status (2026-11-03): v0 rig core, morph targets, and the GLB/VRM container walk are real, built,
+and tested.** `stdlib/forgedinface/rig.prn`
 compiles with `parena build`, and `make test-forgedinface` builds it under
-`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 23 hand-derived assertions in five checks (skeleton, skinning, proportions, GLB, morphs), all
-passing.
+`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 37 hand-derived assertions in seven checks (skeleton, skinning, proportions, GLB container,
+morphs, GLB binary chunk, humanoid remap), all passing.
 Nothing renders yet — there is no mesh importer past the GLB header, no host, and no editor.
 
 Founder framing that started this: free VTuber avatars have no web-based builder like VRoid
@@ -22,7 +23,8 @@ pipeline.
 | Skinning | linear blend, 2 influences, weights sum to 1 | 4-influence, dual quaternions |
 | Customization | masc/fem bias + shoulder/hip/limb scalars over ONE topology | per-bone twist/roll helpers |
 | Morph targets | weighted per-vertex deltas (blend shapes), folded into the skinning pass | expression presets, `morph/ready?` enforced at call sites |
-| Import | GLB/VRM container header + JSON chunk bounds | JSON node/skin/mesh decode, VRoid bone remap |
+| Import | GLB/VRM container walk: both chunk bounds + binary chunk offset | JSON node/skin/mesh decode, accessor reads |
+| Bone remap | glTF/VRM humanoid names -> the 20-bone map (`rig/humanoid-index`) | automatic use during load |
 | Output | cooked vertex positions in arena memory | any renderer, any export format |
 
 Run it: `cd PARENA && make test-forgedinface`.
@@ -77,13 +79,23 @@ Found live while building it, all in the same family the stdlib already document
    split into four small checks for exactly that reason.
 5. `and` wants binary nesting for long chains (`stdlib/base4/pattern.prn` already does this).
 6. `short` is a C keyword — a let binding named `short` emits `Vec short = ...` and fails.
+7. Name resolution is single-pass: a function or struct must be defined before its first *reference*
+   in file order (a forward reference reports the callee as an "unknown identifier" at the caller).
+8. `and`/`or` need at least two operands — a one-operand `(and x)` is a hard emit error, so a chain
+   should be rebuilt when entries are removed rather than left with a dangling single operand.
+9. Importing `string` means the module is a two-file build: `parena build stdlib/string.prn
+   stdlib/forgedinface/rig.prn` (the same multi-file shape `make test-json` already uses).
 
 ## Phases after v0
 
 1. **Morph targets — DONE (2026-11-03).** `MorphSet` + `morph/new`/`add-delta!`/`add-weight!`/`ready?`,
    applied inside `skin/deform-morphed` in the same loop that skins, so a slider move costs one
    pass and no intermediate buffer. Face customization is now real at the data layer.
-2. **GLB body decode** — accessors/bufferViews/nodes/skins, so a VRoid export actually loads;
+2. **GLB body decode — partially done (2026-11-03).** `glb/bin-chunk-offset` / `glb/bin-chunk-length`
+   locate the geometry bytes, and `rig/humanoid-index` maps the standard VRM humanoid vocabulary onto
+   the 20-bone map (hands/fingers/toes return -1 on purpose — a low-poly rig has nowhere honest to
+   put them; `upperChest` folds into `chest`). Still missing: the JSON chunk parsed into
+   accessors/nodes/skins, and the vertex/index reads themselves. Then the old line: **GLB body decode** — accessors/bufferViews/nodes/skins, so a VRoid export actually loads;
    then the VRoid→20-bone remap, with decimation for VRoid's high-poly hair.
 3. **Host** — one renderer (C/SDL2 first, matching SHANKPIT's lineage) drawing cooked vertices.
 4. **Clothing** — flat 2D panel pattern + seam relaxation + capsule push-out, per the transcript's

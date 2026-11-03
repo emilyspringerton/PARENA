@@ -38,6 +38,7 @@
 
 (module forgedinface/rig)
 (import vec)
+(import string)
 
 (export Rig Anatomy Mesh MorphSet
         skeleton/standard
@@ -45,7 +46,8 @@
         mesh/new mesh/add-vertex!
         skin/deform skin/deform-morphed
         morph/new morph/add-delta! morph/add-weight! morph/ready?
-        glb/json-chunk-length
+        glb/json-chunk-length glb/bin-chunk-offset glb/bin-chunk-length
+        rig/humanoid-index
         self-test)
 
 ;; ---------------------------------------------------------------------------
@@ -496,6 +498,64 @@
           (glb/u32-le bytes 12))))))
 
 ;; ---------------------------------------------------------------------------
+;; The binary chunk. A .vrm/.glb carries its geometry as a second chunk right after the JSON
+;; one: at (20 + json-length) sits u32 length, u32 type, then the data. Answering "where do the
+;; accessors' bytes start, and how many are there" is everything a mesh/skin decode needs from
+;; the container — the vertex and index data itself is read at that offset.
+;; Same fail-closed codes as glb/json-chunk-length, plus -5 for a chunk that claims to run past
+;; the end of the file (a truncated download is the realistic way that happens).
+(defn glb/bin-chunk-offset [(bytes : &(Vec I32))] : I32
+  (let [n (vec/len bytes)]
+    (if (< n 20)
+      -3
+      (if (not (= (glb/u32-le bytes 0) 1179937895))
+        -1
+        (let [hdr (+ 20 (glb/u32-le bytes 12))]
+          (if (> (+ hdr 8) n)
+            -5
+            (let [len (glb/u32-le bytes hdr)]
+              (if (> (+ (+ hdr 8) len) n)
+                -5
+                (+ hdr 8
+)))))))))
+(defn glb/bin-chunk-length [(bytes : &(Vec I32))] : I32
+  (let [off (glb/bin-chunk-offset bytes)]
+    (if (< off 0)
+      off
+      (glb/u32-le bytes (- off 8
+)))))
+;; ---------------------------------------------------------------------------
+;; glTF/VRM humanoid bone name -> FORGEDINFACE bone index.
+;; VRM exports name their joints with the standard humanoid vocabulary ("hips", "leftUpperArm",
+;; ...), while this rig's indices are the flat 20-bone map above — this is the one translation
+;; the import path needs, and it is deliberately lossy in the honest direction: hands, fingers
+;; and toes return -1 rather than being folded onto the nearest bone, because a low-poly rig has
+;; nowhere honest to put them. upperChest folds into chest (both index 3), which is the only
+;; merge that does not change a silhouette.
+(defn rig/humanoid-index [(name : String @ Region)] : I32
+  (if (string/str-eq? name "hips") 1
+      (if (string/str-eq? name "spine") 2
+      (if (string/str-eq? name "chest") 3
+      (if (string/str-eq? name "upperChest") 3
+      (if (string/str-eq? name "neck") 4
+      (if (string/str-eq? name "head") 5
+      (if (string/str-eq? name "jaw") 6
+      (if (string/str-eq? name "leftEye") 7
+      (if (string/str-eq? name "rightEye") 8
+      (if (string/str-eq? name "leftShoulder") 9
+      (if (string/str-eq? name "leftUpperArm") 10
+      (if (string/str-eq? name "leftLowerArm") 11
+      (if (string/str-eq? name "rightShoulder") 12
+      (if (string/str-eq? name "rightUpperArm") 13
+      (if (string/str-eq? name "rightLowerArm") 14
+      (if (string/str-eq? name "leftUpperLeg") 15
+      (if (string/str-eq? name "leftLowerLeg") 16
+      (if (string/str-eq? name "rightUpperLeg") 17
+      (if (string/str-eq? name "rightLowerLeg") 18
+      (if (string/str-eq? name "root") 0
+      -1))))))))))))))))))))
+
+);; ---------------------------------------------------------------------------
 ;; self-test — real assertions, written in PARENA, run by tests/test_forgedinface.c
 ;; ---------------------------------------------------------------------------
 ;; Split into four small checks on purpose: one `let` with ~60 bindings hits a real
@@ -616,8 +676,74 @@
         ok-partial (not (morph/ready? &partial))]
     (and ok-ready (and ok-x (and ok-y (and ok-z ok-partial))))))
 
+;; A 28-byte GLB fixture: 12-byte header, an empty JSON chunk (length 0, type JSON), then an
+;; empty binary chunk (length 0, type BIN). Nested lets for the same reason the other fixtures
+;; use them — see the self-test section's note on VS0's real let-binding limit.
+(defn glb/test-binary-push! [(b : &mut (Vec I32))] : I32
+  (let [_0 (i32-push! b 103)
+        _1 (i32-push! b 108)
+        _2 (i32-push! b 84)
+        _3 (i32-push! b 70)
+        _4 (i32-push! b 2)]
+    (let [_5 (i32-push! b 0)
+          _6 (i32-push! b 0)
+          _7 (i32-push! b 0)
+          _8 (i32-push! b 0)
+          _9 (i32-push! b 0)]
+      (let [_10 (i32-push! b 0)
+            _11 (i32-push! b 0)
+            _12 (i32-push! b 0)
+            _13 (i32-push! b 0)
+            _14 (i32-push! b 0)]
+        (let [_15 (i32-push! b 0)
+              _16 (i32-push! b 74)
+              _17 (i32-push! b 83)
+              _18 (i32-push! b 79)
+              _19 (i32-push! b 78)]
+          (let [_20 (i32-push! b 0)
+                _21 (i32-push! b 0)
+                _22 (i32-push! b 0)
+                _23 (i32-push! b 0)
+                _24 (i32-push! b 66)]
+            (let [_25 (i32-push! b 73)
+                  _26 (i32-push! b 78)
+                  _27 (i32-push! b 0)]
+              28
+)))))))
+;; GLB binary chunk: in the 28-byte fixture the binary data starts at 28 (end of file) and is
+;; 0 bytes long; a one-byte file and a bad magic each fail closed with their own code.
+(defn self-test-glb-bin [(dest : Arena @ Region)] : Bool
+  (let [bytes (vec/new dest)
+        _ (glb/test-binary-push! &mut bytes)
+        ok-off (= (glb/bin-chunk-offset &bytes) 28)
+        ok-len (= (glb/bin-chunk-length &bytes) 0)
+        tiny (vec/new dest)
+        _t (i32-push! &mut tiny 103)
+        ok-short (= (glb/bin-chunk-offset &tiny) -3)
+        bad (vec/new dest)
+        _b (zeros-push! &mut bad 28)
+        ok-magic (= (glb/bin-chunk-offset &bad) -1)]
+    (and ok-off (and ok-len (and ok-short ok-magic
+)))))
+;; the humanoid remap: real VRM names land on real bones, and the honest losses return -1.
+(defn self-test-humanoid [(dest : Arena @ Region)] : Bool
+  (let [ok-hips (= (rig/humanoid-index "hips") 1)
+        ok-chest (= (rig/humanoid-index "upperChest") 3)
+        ok-jaw (= (rig/humanoid-index "jaw") 6)
+        ok-eye (= (rig/humanoid-index "rightEye") 8)
+        ok-leg (= (rig/humanoid-index "rightUpperLeg") 17)
+        ok-arm (= (rig/humanoid-index "leftLowerArm") 11)
+        ok-root (= (rig/humanoid-index "root") 0)
+        ok-hand (= (rig/humanoid-index "leftHand") -1)
+        ok-finger (= (rig/humanoid-index "leftRingProximal") -1)
+        ok-empty (= (rig/humanoid-index "") -1)]
+    (and ok-hips (and ok-chest (and ok-jaw (and ok-eye (and ok-leg (and ok-arm
+      (and ok-root (and ok-hand (and ok-finger ok-empty
+)))))))))))
 (defn self-test [(dest : Arena @ Region)] : Bool
   (and (self-test-skeleton dest)
-       (and (self-test-skin dest)
-            (and (self-test-proportions dest)
-                 (and (self-test-glb dest) (self-test-morphs dest))))))
+    (and (self-test-skin dest)
+      (and (self-test-proportions dest)
+        (and (self-test-glb dest)
+          (and (self-test-morphs dest)
+            (and (self-test-glb-bin dest) (self-test-humanoid dest))))))))
