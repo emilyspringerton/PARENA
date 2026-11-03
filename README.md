@@ -66,6 +66,22 @@ because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Wer
 hand-derived assertions. Not yet: morph targets, GLB body decode, any renderer, clothing, export —
 see `stdlib/forgedinface/NORTHSTAR.md`.
 
+### FORGEDLEVEL — parametric, recursive level builder (`stdlib/forgedlevel/`)
+
+The map/level builder that sits next to FORGEDINFACE, built the way the founder described it: a
+material, then a cinder block, then a wall tool that lays blocks, then a plan of walls, then a
+PARENA mod that parameterizes the whole thing. Real today — parametric materials (density, bevel,
+weathering) feeding a recursive assembly library (one flat cell buffer with `offset`/`span` per
+assembly, i.e. what nested vectors compile to, minus the allocation), a 4x2x2-cell cinder block
+with real cores, a wall tool with mortar joints and running bond, and plan quantities (blocks,
+half blocks, primitive cells, volume, mass) computed from stored ids rather than from geometry.
+Recursion is by id and ids only point backwards, so a nested cycle cannot be expressed. A real
+mod, `mods/cottage.prn`, sets the wall parameters from its own file. `make test-forgedlevel`
+compiles both through `parena build` under `gcc -Werror` and runs hand-derived assertions
+(9 blocks per 4 m course, 320 mm slack, 27+2 blocks, 336000 cm3 = 806.4 kg in concrete). Not yet:
+floor-plan painting, adjacency/joinery, mesh emission, mechanical FK/IK, RL actuators, SDF/3D
+print, serialization, host — see `stdlib/forgedlevel/NORTHSTAR.md`.
+
 ## Standard library — full planned API surface
 
 Every package below is designed in `STDLIB.md` with real function signatures (region-typed,

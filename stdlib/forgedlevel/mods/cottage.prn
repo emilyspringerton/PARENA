@@ -1,0 +1,37 @@
+;; stdlib/forgedlevel/mods/cottage.prn — a real PARENA level-builder mod.
+;;
+;; This is the top rung of the chain FORGEDLEVEL's own header describes: a mod does not touch
+;; geometry, it sets the parameters the wall tool reads. "use parena mods to make it parametized
+;; for helping the level builders" — so the mod surface is just a `WallMod` value plus whatever
+;; the host wants to expose as a slider. A level designer swapping this file for another one
+;; changes every wall built through it, and nothing downstream stores a cooked mesh, so there is
+;; nothing to rebuild.
+;;
+;; A cottage wall: 4 m run, 3 courses, 10 mm joints, running bond. Cross-module calls are always
+;; `<module-id>/<export>` (see stdlib/editor/registry.prn's own `editor/document/new-document`),
+;; which is why the layout calls below read the long way.
+(module forgedlevel/mods/cottage)
+(import vec)
+(import forgedlevel/level)
+
+(export cottage/spec self-test-mod)
+
+(defn cottage/spec [] : WallMod
+  {:length-mm 4000.0 :courses 3 :gap-mm 10.0 :bond 1})
+
+;; Proves the mod surface end to end: a spec written here, laid by the real wall tool, produces
+;; the same quantities a hand-built spec does (9 per course, 27 full blocks, 2 halves, 320 mm
+;; slack). If the mod's numbers and the tool's arithmetic ever disagree, this fails.
+(defn self-test-mod [(dest : Arena @ Region)] : Bool
+  (let [lib (lib/new dest)
+        cells (vec/new dest)
+        nested (vec/new dest)
+        _0 (block/cinder! &mut cells &mut nested 0)
+        _1 (lib/add! &mut lib 4 2 2 10.0 &cells &nested)
+        spec (cottage/spec)
+        w (wall/lay &lib 0 &spec)
+        ok-per (= (wall/per-course &w) 9)
+        ok-blocks (= (wall/blocks &w) 27)
+        ok-halves (= (wall/halves &w) 2)
+        ok-slack (< (wall/slack-mm &w) 321.0)]
+    (and ok-per (and ok-blocks (and ok-halves ok-slack)))))
