@@ -1,0 +1,187 @@
+;; stdlib/forgedinface/citizen.prn -- FORGEDINFACE for the POPULATION: a citizen's body and its
+;; clothes, derived from the persona the citizen already has.
+;;
+;; The engine's ambient population lives in SHANKPIT's packages/simulation/citizen_life.c: a citizen
+;; is a "player" with five traits (industry, commerce, ambition, bravery, sociability), one of five
+;; MMO-player PATHS (CRAFT, TRADE, DUEL, ENDGAME, IDLE), a handle, and a home. What it has never had
+;; is a body -- every citizen is drawn with the same box mannequin. This module is the missing half:
+;; the same person, seen.
+;;
+;; ONE RULE, EVERYWHERE: the avatar is a TOTAL FUNCTION of (seed, slot, path, the five traits). Not
+;; a roll, not a lookup table of presets, and never a second source of randomness -- so the same
+;; citizen looks the same in the lobby, on the server, in a replay, and in a test, and its looks
+;; agree with its behaviour. A DUEL player is dressed lean and long-armed because it plays the game
+;; by looking for a fight; a CRAFT player is heavier across the chest and shorter in the leg because
+;; it stands at a bench. That agreement is the whole point: nobody has to keep a character sheet in
+;; sync with a personality sheet.
+;;
+;; WHAT A SLIDER MEANS HERE (this is FORGEDINFACE's proportion rig, flattened to the one thing a
+;; low-poly box body can express):
+;;   sex_bias          0 = masculine build, 1000 = feminine, 500 = androgynous. ONE shared body, a
+;;                     scalar over it -- never two rigs, the same rule stdlib/forgedinface/rig.prn
+;;                     applies to the mesh.
+;;   height_mm         a standing height, 1500..1980.
+;;   bulk/shoulder/    permille OF THE REFERENCE BODY (SHANKPIT's Ronin Shell, see
+;;   arm/leg/head      apps/lobby/src/player_model.h). 1000 = the body that already exists, so the
+;;                     neutral citizen is exactly today's mannequin and nothing regresses.
+;;   kit               0..5, which shell/palette family the body is dressed from.
+;;   coat/pants/accent a real HSV->RGB conversion in integers, not three random bytes: a kit owns a
+;;                     hue anchor, the persona shifts saturation and value, and the PATH owns the
+;;                     accent (the one piece of clothing that reads at a distance).
+;;
+;; All arithmetic is I32 and every product is bounded so int32 cannot overflow -- a look must be the
+;; same on every compiler, not depend on signed-overflow behaviour. Emitted as C and compiled with
+;; -Werror by `make test-citizen-avatar` in SHANKPIT.
+
+(module forgedinface/citizen)
+(export cav-kit-count cav-kit cav-sex-bias cav-height-mm
+        cav-bulk-permille cav-shoulder-permille cav-arm-permille cav-leg-permille cav-head-permille
+        cav-hue cav-sat cav-val cav-hsv)
+
+;; ---- integer helpers ---------------------------------------------------------------------------
+(defn cav-mod [(a : I32) (n : I32)] : I32
+  (if (<= n 0) 0
+    (let [r (- a (* (/ a n) n))]
+      (if (< r 0) (+ r n) r))))
+
+(defn cav-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn cav-max [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn cav-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (cav-min hi (cav-max lo x)))
+
+;; Deterministic mix. Both factors are taken mod 4096 first, so (a%4096)*7919 < 2^25 and
+;; (b%4096)*104729 < 2^29: the sum stays inside int32 and the result cannot depend on overflow.
+(defn cav-hash [(a : I32) (b : I32)] : I32
+  (cav-mod (+ (* (cav-mod a 4096) 7919) (* (cav-mod b 4096) 104729) 15485863) 2147483647))
+
+(defn cav-range [(h : I32) (lo : I32) (hi : I32)] : I32
+  (if (<= hi lo) lo (+ lo (cav-mod h (+ (- hi lo) 1)))))
+
+;; ---- the shell ---------------------------------------------------------------------------------
+;; Six kits: a rain-slicked city has six kinds of coat on it. The count is exported so a caller can
+;; add a seventh shell without hunting for a magic 6.
+(defn cav-kit-count [] : I32 6)
+
+(defn cav-kit [(seed : I32) (slot : I32)] : I32
+  (cav-range (cav-hash seed (+ (* slot 17) 3)) 0 (- (cav-kit-count) 1)))
+
+;; ---- the body ----------------------------------------------------------------------------------
+;; Where a citizen sits on the masc/fem continuum. Hashed, never path-derived: how a citizen is
+;; built is not a fact about how it plays.
+(defn cav-sex-bias [(seed : I32) (slot : I32) (path : I32)] : I32
+  (cav-range (cav-hash (cav-hash seed slot) (+ (* path 97) 11)) 0 1000))
+
+;; Standing height. 1710 mm is the neutral adult; the continuum moves 120 mm across the whole range
+;; (masculine builds read taller, not because they are "more" of a person but because that is the
+;; shape the morph actually has), and bravery moves 60 mm -- squared shoulders are a posture.
+(defn cav-height-mm [(sex-bias : I32) (bravery : I32)] : I32
+  (cav-clamp 1500 1980
+    (+ 1710 (/ (* (- 1000 sex-bias) 120) 1000) (/ (* (- bravery 50) 60) 100))))
+
+;; Bulk: what a life does to a torso. Industry thickens, commerce thins (the one who walks between
+;; posts rather than lifting at one), and the PATH adds its own signature -- a bench-worker is
+;; heavier, a duelist and an endgame raider are leaner, an idle citizen settles.
+(defn cav-path-bulk [(path : I32)] : I32
+  (if (= path 0) 60 (if (= path 1) 0 (if (= path 2) -40 (if (= path 3) -60 20)))))
+
+(defn cav-bulk-permille [(industry : I32) (commerce : I32) (path : I32)] : I32
+  (cav-clamp 780 1250
+    (+ 1000 (/ (* (- industry 50) 8) 10) (/ (* (- 50 commerce) 4) 10) (cav-path-bulk path))))
+
+;; Shoulders: the widest, most readable part of a low-poly silhouette, so it carries the strongest
+;; signal of the continuum (300 permille) plus a little of how the citizen carries itself.
+(defn cav-shoulder-permille [(sex-bias : I32) (bravery : I32)] : I32
+  (cav-clamp 850 1300
+    (+ 1000 (/ (* (- 1000 sex-bias) 300) 1000) (/ (* (- bravery 50) 2) 10))))
+
+;; Arms and legs. Reach belongs to the duelist (it is the citizen that walks TOWARD the zombie), and
+;; the legs belong to the endgame player, whose whole persona is long trips to one far post. A
+;; craft post is a place you stand, so its legs are the shortest of the five.
+(defn cav-path-arm [(path : I32)] : I32
+  (if (= path 0) 40 (if (= path 1) 20 (if (= path 2) 60 (if (= path 3) -10 -40)))))
+
+(defn cav-arm-permille [(path : I32) (industry : I32)] : I32
+  (cav-clamp 900 1120 (+ 1000 (cav-path-arm path) (/ (* (- industry 50) 6) 10))))
+
+(defn cav-path-leg [(path : I32)] : I32
+  (if (= path 0) -40 (if (= path 1) 40 (if (= path 2) 80 (if (= path 3) 120 -50)))))
+
+(defn cav-leg-permille [(path : I32) (bravery : I32)] : I32
+  (cav-clamp 900 1150 (+ 1000 (cav-path-leg path) (/ (* (- bravery 50) 8) 10))))
+
+;; Head size: the one proportion nobody chooses, so only the continuum moves it (the classic
+;; stylised read -- 120 permille across the whole span, well short of a caricature).
+(defn cav-head-permille [(sex-bias : I32)] : I32
+  (cav-clamp 880 1120 (+ 940 (/ (* (- 1000 sex-bias) 120) 1000))))
+
+;; ---- clothes ------------------------------------------------------------------------------------
+;; A kit owns a hue anchor; the citizen owns a small jitter around it, so two people in the same
+;; kit are recognisably dressed alike without being uniforms. Pants sit 14 degrees off the coat --
+;; a different dye lot, not a different outfit.
+(defn cav-anchor [(kit : I32)] : I32
+  (if (= kit 0) 12 (if (= kit 1) 200 (if (= kit 2) 48 (if (= kit 3) 320 (if (= kit 4) 90 280))))))
+
+;; The accent is the PATH's own colour: the one garment that tells you how this citizen plays before
+;; it moves. Teal for the bench, amber for the market, red for the duelist, violet for the endgame
+;; player, slate for the one who is simply there.
+(defn cav-path-accent [(path : I32)] : I32
+  (if (= path 0) 172 (if (= path 1) 42 (if (= path 2) 2 (if (= path 3) 282 210)))))
+
+(defn cav-hue [(kind : I32) (seed : I32) (slot : I32) (path : I32) (kit : I32)] : I32
+  (let [jitter (- (cav-range (cav-hash (+ (* slot 31) seed) (+ (* kit 13) 7)) 0 36) 18)]
+    (if (= kind 2)
+      (cav-mod (+ (cav-path-accent path) (/ jitter 2)) 360)
+      (cav-mod (+ (cav-anchor kit) jitter (* kind 14)) 360))))
+
+;; How much colour, 0..1000. A coat is worn, not printed, so industry only moves it 60. Pants are
+;; always quieter than the coat. The accent is the loudest thing on the body -- and how loud is the
+;; one place SOCIABILITY lives in the look, because a citizen that wants to be talked to dresses so.
+(defn cav-anchor-sat [(kit : I32)] : I32
+  (if (= kit 0) 520 (if (= kit 1) 380 (if (= kit 2) 300 (if (= kit 3) 460 (if (= kit 4) 640 420))))))
+
+(defn cav-path-accent-sat [(path : I32)] : I32
+  (if (= path 0) 760 (if (= path 1) 820 (if (= path 2) 900 (if (= path 3) 880 260)))))
+
+(defn cav-sat [(kind : I32) (kit : I32) (path : I32) (industry : I32) (sociability : I32)] : I32
+  (if (= kind 0)
+    (cav-clamp 120 900 (+ (cav-anchor-sat kit) (/ (* (- industry 50) 60) 100)))
+    (if (= kind 1)
+      (+ 200 (cav-mod (* kit 17) 60))
+      (cav-clamp 120 1000 (+ (cav-path-accent-sat path) (/ (* (- sociability 50) 120) 100))))))
+
+;; Brightness 0..255. Pants are the darkest material, the coat sits mid, and the accent is the
+;; brightest -- and AMBITION is how showy it is, which is the other trait a stranger can see.
+(defn cav-val [(kind : I32) (kit : I32) (path : I32) (ambition : I32)] : I32
+  (if (= kind 0)
+    (+ 150 (cav-mod (* kit 23) 80))
+    (if (= kind 1)
+      (+ 70 (cav-mod (* kit 11) 40))
+      (cav-clamp 150 255
+        (+ 205 (cav-mod (* (+ (* kit 13) path) 7) 50) (/ (* (- ambition 50) 40) 100))))))
+
+;; ---- HSV -> RGB, in integers --------------------------------------------------------------------
+;; Real HSV (one hue wheel, six 60-degree regions, linear ramps inside each) rather than three
+;; hashed bytes, because that is what makes a wardrobe look like a wardrobe: every kit's coat, pants
+;; and accent are the same family of colours at different saturations, which three independent
+;; hashes can never be.
+(defn cav-region-r [(r : I32) (p : I32) (q : I32) (t : I32) (v : I32)] : I32
+  (if (= r 0) v (if (= r 1) q (if (= r 2) p (if (= r 3) p (if (= r 4) t v))))))
+
+(defn cav-region-g [(r : I32) (p : I32) (q : I32) (t : I32) (v : I32)] : I32
+  (if (= r 0) t (if (= r 1) v (if (= r 2) v (if (= r 3) q (if (= r 4) p p))))))
+
+(defn cav-region-b [(r : I32) (p : I32) (q : I32) (t : I32) (v : I32)] : I32
+  (if (= r 0) p (if (= r 1) p (if (= r 2) t (if (= r 3) v (if (= r 4) v q))))))
+
+;; channel 0 = r, 1 = g, 2 = b.
+(defn cav-hsv [(hue : I32) (sat : I32) (val : I32) (channel : I32)] : I32
+  (let [v (cav-clamp 0 255 val)
+        s (cav-clamp 0 1000 sat)
+        h (cav-mod hue 360)
+        region (/ h 60)
+        f (cav-mod h 60)
+        p (- v (/ (* v s) 1000))
+        q (- v (/ (* v s f) 60000))
+        t (- v (/ (* v s (- 60 f)) 60000))]
+    (if (= channel 0) (cav-region-r region p q t v)
+      (if (= channel 1) (cav-region-g region p q t v)
+        (cav-region-b region p q t v)))))

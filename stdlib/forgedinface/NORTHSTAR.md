@@ -154,3 +154,16 @@ No half-built path was left in `json.prn`/`rig.prn`: the attempted code was reve
 suites re-run green. The next attempt should start by fixing the emitter (a small, contained change
 to the `match` scrutinee type resolution), because every richer JSON consumer will hit this same
 shape — it is not glTF-specific.
+
+## Population bodies (2026-11-03) — `citizen.prn`
+
+`stdlib/forgedinface/citizen.prn` is this directory's second module and the first consumer of the
+proportion rig that is not a mesh: a citizen's body and wardrobe as a total integer function of the
+persona SHANKPIT's `citizen_life.h` already rolled (five traits, one of five paths, its own seed).
+It exists because the population had personalities and one shared mannequin.
+
+Kept deliberately separate from `rig.prn` and integer-only: SHANKPIT consumes it as generated C
+(`make regen-citizen-avatar`) inside the simulation layer, which cannot carry an arena or a mesh. The
+next real slice is the one this makes possible rather than replaces — emit an actual low-poly body
+through `stdlib/forgedlevel/mesh.prn`'s face-culled paths, sized by these permilles, once the
+renderer that would draw it can be compiled outside the founder's machine.
