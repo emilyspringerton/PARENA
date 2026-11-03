@@ -1,0 +1,43 @@
+;; stdlib/deadweight/stage.prn -- the BRACKET's arithmetic: who plays whom, and who advances a draw.
+;;
+;; Founder, real-time: "can we make a stage for esports tournoments inside of noobtopia", then "publish the
+;; stage". A bracket now exists in two worlds -- NOOBTOPIA's Roblox place and SHANKPIT's own ladder -- and the
+;; one thing they must never disagree about is the SEEDING. So the fold, the bracket size and the draw
+;; tie-break live here, emitted twice, exactly like the rating and the card rules:
+;;
+;;   PARENA/stdlib/deadweight/stage.prn --> SHANKPIT/packages/simulation/dw_stage_rules.c   (the C world)
+;;                                      --> NOOBTOPIA/src/generated/deadweight_stage.lua     (the Roblox side)
+;;
+;; WHY SEEDING AT ALL: a bracket that pairs the two best entrants in round one does not crown the best
+;; player, it crowns whoever got lucky with the draw. The fold (seed 1 plays the LAST seed, 2 the second-last)
+;; is the standard answer, and it is arithmetic rather than taste, so it belongs in one file.
+;;
+;; Scalar-only: I32 in, I32 out, comparisons and if -- the subset both emitters accept.
+;;
+;; A SHORT FIELD (3 entrants, or 5) is padded to the next power of two with EMPTY SLOTS, which the host
+;; records as byes. Padding to exactly the field size instead would mean a different bracket shape for every
+;; count; padding to the next power of two means one shape and a slot that says "nobody".
+
+(module deadweight/stage)
+(export stage-slots stage-rounds stage-opponent stage-higher-seed)
+
+;; The bracket SIZE for a field of n: the next power of two, floored at 2 (there is no bracket of one).
+;; 2 -> 2, 3..4 -> 4, 5..8 -> 8. Capped at 8, which is the biggest stage either world draws.
+(defn stage-slots [(n : I32)] : I32
+  (if (< n 3) 2 (if (< n 5) 4 (if (< n 9) 8 8))))
+
+;; How many rounds that bracket needs: a 2-slot stage is the final, 4 has a semifinal, 8 has a quarterfinal.
+(defn stage-rounds [(slots : I32)] : I32
+  (if (< slots 4) 1 (if (< slots 8) 2 3)))
+
+;; The FOLD: slot i (1-based) plays this slot. i=1 in an 8-slot bracket plays 8, i=2 plays 7, and so on, so
+;; the top half and the bottom half meet only in the final.
+(defn stage-opponent [(slots : I32) (i : I32)] : I32
+  (- (+ slots 1) i))
+
+;; A DRAWN match still has to advance somebody: the higher seed (the SMALLER rank number) goes through, and
+;; this answers with the SIDE -- 0 for the first entrant, 1 for the second. A bracket needs a body, and a rule
+;; a spectator can predict beats a coin flip. The match itself is still a real draw on the ladder; only the
+;; advancing is decided here.
+(defn stage-higher-seed [(rank-a : I32) (rank-b : I32)] : I32
+  (if (> rank-a rank-b) 1 0))
