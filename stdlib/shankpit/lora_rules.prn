@@ -29,7 +29,8 @@
         lora-xp-move
         lora-resend-ms
         lora-max-sends
-        lora-snapshot-global-ms)
+        lora-snapshot-global-ms
+        lora-range-max-ticks)
 
 ;; How long one world tick is. Everything the players see is interpolated on the client between these.
 (defn lora-tick-ms [(preset : I32)] : I32
@@ -92,3 +93,12 @@
   (if (= preset 1) 8000
     (if (= preset 2) 2000
       4000)))
+
+;; RANGE CAP -- a "everything since tick N" request is answered from the ring, and the ring is 8 ticks.
+;; Eight is too much air to spend on one client's catch-up, so one range answer is capped here; the
+;; client asks again from where the answer stopped. The gap is a real airtime cost, so LONG_SLOW is
+;; meanest and SHORT_TURBO can afford the most.
+(defn lora-range-max-ticks [(preset : I32)] : I32
+  (if (= preset 1) 2
+    (if (= preset 2) 6
+      4)))
