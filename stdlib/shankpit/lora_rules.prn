@@ -1,0 +1,51 @@
+;; stdlib/shankpit/lora_rules.prn -- the numbers a LoRa (Meshtastic) play-by-radio session runs on.
+;;
+;; Founder (2026-11-03): "how do we evolve the engine for a low bandwidth runescape classic style rpg
+;; that can run over meshtastic". A LoRa frame is ~237 bytes of payload with airtime measured in
+;; SECONDS, so nothing about the arena shooter's 60Hz UDP replication survives contact with it. What
+;; survives is a tick: clients send INTENTS (few bytes, once), the host resolves them on a fixed grid,
+;; and every client gets the DELTA.
+;;
+;;   PARENA/stdlib/shankpit/lora_rules.prn --> SHANKPIT/packages/protocol/lora_rules.c
+;;   (scripts/gen_lora_rules.sh, mk/lora.mk)
+;;
+;; The `preset` argument is the Meshtastic modem preset, because that is what actually sets airtime:
+;;   0 LONG_FAST     default; ~5s tick is comfortable and leaves room for retries
+;;   1 LONG_SLOW     longer range, more airtime; a slow, deliberate game
+;;   2 SHORT_TURBO   close range (a camp), the closest thing to real time this radio can do
+;; Unknown presets must still answer, like every other rules module here: an unrecognised value falls
+;; back to LONG_FAST rather than producing an undefined session.
+;;
+;; Total functions over I32: no floats, no randomness, no clock. The tick duration and the combat
+;; numbers are the only things that differ between a walkie-talkie camp and a 1-mile valley.
+(module shankpit/lora-rules)
+(export lora-tick-ms lora-grid-w lora-grid-h lora-hit-permille lora-damage lora-xp-hit lora-xp-move)
+
+;; How long one world tick is. Everything the players see is interpolated on the client between these.
+(defn lora-tick-ms [(preset : I32)] : I32
+  (if (= preset 1) 12000
+    (if (= preset 2) 3000
+      5000)))
+
+;; The map is the same map on every radio -- airtime changes the pace, never the world. 64x64 is the
+;; whole playable square for this first slice; it fits a 6-bit coordinate with room to spare inside the
+;; pack, so a position can never overflow the wire.
+(defn lora-grid-w [(preset : I32)] : I32
+  (if (> preset 2) 64 64))
+(defn lora-grid-h [(preset : I32)] : I32
+  (if (> preset 2) 64 64))
+
+;; Hit chance in permille. A slower radio makes every swing more valuable, but this is deliberately not
+;; a balance lever yet: it is nearly flat, and the real change on a slow link is the tick, not the roll.
+(defn lora-hit-permille [(preset : I32)] : I32
+  (if (= preset 2) 550
+    600))
+
+(defn lora-damage [(preset : I32)] : I32
+  (if (= preset 1) 4 3))
+
+;; XP is integer and awarded per RESOLVED action, never per frame: there are no frames.
+(defn lora-xp-hit [(preset : I32)] : I32
+  (if (= preset 1) 12 10))
+(defn lora-xp-move [(preset : I32)] : I32
+  1)
