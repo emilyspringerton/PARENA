@@ -1,0 +1,30 @@
+;; stdlib/shankpit/ticket_rules.prn -- the connect ticket's arithmetic, typed once, emitted to Luau.
+;;
+;; The wire format is not a guess. `IDUNA/internal/http/handlers/shankpit_ticket.go` mints
+;; `POST /api/v1/shankpit/ticket` -> {"ticket": "<72 hex chars>", "expires_at": <unix s>, "player_id": "<uuid>"},
+;; and the ticket is 36 raw bytes: player_id (16, raw UUID) || expires_at (4, LITTLE-endian u32) ||
+;; hmac_sha256(secret, payload) truncated to 16. TTL is 5 minutes because it is presented once, at PACKET_CONNECT.
+;; The C server verifies it with the shared secret (shankpit-460's hmac_sha256.h); a Roblox server cannot and
+;; must not, so what the place needs from the ticket is exactly: is this the right SHAPE, and has it EXPIRED.
+;;
+;;   PARENA/stdlib/shankpit/ticket_rules.prn --> SHANKPIT/roblox/src/ticket460_rules.lua
+;;
+;; Same discipline as queue_rules.prn beside it: scalar I32 in, I32 out, no host restates a constant.
+
+(module shankpit/ticket-rules)
+(export ticket-shape-ok ticket-expired ticket-remaining-s)
+
+;; 36 bytes hex-encoded is 72 characters. Any other length is a truncated string or another protocol's ticket,
+;; and it is worth refusing before a byte of it is interpreted.
+(defn ticket-shape-ok [(hex-len : I32)] : I32
+  (if (= hex-len 72) 1 0))
+
+;; A ticket is dead AT its expiry second, not one second later: it is presented once, so the boundary belongs to
+;; the server that will refuse it.
+(defn ticket-expired [(now-s : I32) (expires-s : I32)] : I32
+  (if (>= now-s expires-s) 1 0))
+
+;; Seconds left, floored at zero -- for a screen that counts down, never for a decision (the decision is above).
+(defn ticket-remaining-s [(now-s : I32) (expires-s : I32)] : I32
+  (let [d (- expires-s now-s)]
+    (if (< d 0) 0 d)))
