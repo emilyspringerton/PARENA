@@ -46,6 +46,13 @@
     (if (= preset 2) 5
       4)))
 
+;; The farthest a cast may be AIMED at a target, in YARDS -- the unit the rule is written in, not the
+;; engine's metres. A target beyond it fires along the player's own aim instead: a client's word must
+;; not swing the server's crosshair across the map. SHANKPIT converts this through packages/common's
+;; unit layer (units_author_length_m), so 40 is never restated as 36.576 anywhere in C.
+(defn wow-cast-range-yd [(preset : I32)] : I32
+  40)
+
 (export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max)
 
 ;; ---- the wire's ARITHMETIC, not just its policy ------------------------------------------------
@@ -75,4 +82,4 @@
   (if (> seq 65534) 1 (+ seq 1)))
 
 (export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max
-        wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next)
+        wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next wow-cast-range-yd)
