@@ -60,8 +60,9 @@ bones. Real today — a canonical 20-bone flat skeleton (a parent's index is alw
 children's), forward kinematics from bind translation + unit quaternion + per-bone scale,
 2-influence linear blend skinning, morph targets (blend shapes) applied inside the skinning pass,
 masculine/feminine proportions as scalars over one shared topology, and a GLB/VRM container
-reader plus a glTF/VRM humanoid bone remap for the import path. Quaternions rather than Euler angles
-because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 37
+reader, a glTF/VRM humanoid bone remap, and the JSON chunk as real text for the
+import path. Quaternions rather than Euler angles
+because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 41
 hand-derived assertions. Not yet: morph targets, GLB body decode, any renderer, clothing, export —
 see `stdlib/forgedinface/NORTHSTAR.md`.
 

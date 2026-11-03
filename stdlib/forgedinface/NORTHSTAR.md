@@ -3,8 +3,8 @@
 **Status (2026-11-03): v0 rig core, morph targets, and the GLB/VRM container walk are real, built,
 and tested.** `stdlib/forgedinface/rig.prn`
 compiles with `parena build`, and `make test-forgedinface` builds it under
-`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 37 hand-derived assertions in seven checks (skeleton, skinning, proportions, GLB container,
-morphs, GLB binary chunk, humanoid remap), all passing.
+`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 41 hand-derived assertions in eight checks (skeleton, skinning, proportions, GLB container,
+morphs, GLB binary chunk, humanoid remap, JSON chunk -> text), all passing.
 Nothing renders yet — there is no mesh importer past the GLB header, no host, and no editor.
 
 Founder framing that started this: free VTuber avatars have no web-based builder like VRoid
@@ -23,7 +23,7 @@ pipeline.
 | Skinning | linear blend, 2 influences, weights sum to 1 | 4-influence, dual quaternions |
 | Customization | masc/fem bias + shoulder/hip/limb scalars over ONE topology | per-bone twist/roll helpers |
 | Morph targets | weighted per-vertex deltas (blend shapes), folded into the skinning pass | expression presets, `morph/ready?` enforced at call sites |
-| Import | GLB/VRM container walk: both chunk bounds + binary chunk offset | JSON node/skin/mesh decode, accessor reads |
+| Import | GLB/VRM container walk, binary chunk offset, JSON chunk as text | JSON node/skin/mesh decode, accessor reads |
 | Bone remap | glTF/VRM humanoid names -> the 20-bone map (`rig/humanoid-index`) | automatic use during load |
 | Output | cooked vertex positions in arena memory | any renderer, any export format |
 

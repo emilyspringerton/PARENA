@@ -48,6 +48,7 @@
         morph/new morph/add-delta! morph/add-weight! morph/ready?
         glb/json-chunk-length glb/bin-chunk-offset glb/bin-chunk-length
         rig/humanoid-index
+        glb/json-text
         self-test)
 
 ;; ---------------------------------------------------------------------------
@@ -478,6 +479,9 @@
 ;; byte values 0..255 (the caller reads the file into it); this returns the JSON chunk length so
 ;; a caller can slice the JSON text, or a negative code:
 ;;   -1 bad magic   -2 not glTF 2.0   -3 file too short   -4 chunk0 is not JSON
+;;   -5 the JSON chunk claims to run past the end of the file (found live 2026-11-03: without
+;;      this check `glb/json-text` copied `len` bytes out of a 20-byte buffer and segfaulted, so
+;;      a truncated file was a crash rather than an error code)
 ;; Answering "how big is the JSON chunk" is the real, minimum useful question: it is what every
 ;; later loader needs before it can look at a single node or skin.
 (defn glb/u32-le [(bytes : &(Vec I32)) (at : I32)] : I32
@@ -495,7 +499,10 @@
         -2
         (if (not (= (glb/u32-le bytes 16) 1313821514)) ;; 0x4E4F534A == "JSON"
           -4
-          (glb/u32-le bytes 12))))))
+          (let [len (glb/u32-le bytes 12)]
+            (if (> (+ 20 len) (vec/len bytes))
+              -5
+              len)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The binary chunk. A .vrm/.glb carries its geometry as a second chunk right after the JSON
@@ -555,7 +562,31 @@
       (if (string/str-eq? name "root") 0
       -1))))))))))))))))))))
 
-);; ---------------------------------------------------------------------------
+);; The JSON chunk as real text. Everything a VRM loader does next — nodes, skins, accessors —
+;; happens on this string, so this is the boundary between "container bytes" and "a document".
+;; Returns an EMPTY string (never a partial one) when the chunk bounds are invalid, so a caller
+;; checks length rather than being handed truncated JSON that parses into something wrong.
+(defn glb/byte-set! [(out : String @ Region) (i : I32) (v : I32)] : I32
+  #target
+  {:c (inline-c "(out[i] = (char)v, 1)")})
+
+;; json-text: the chunk's bytes become a NUL-terminated String in the arena. Costs one copy of the
+;; chunk; a zero-copy view would need the arena to own the file bytes, which the caller does.
+(defn glb/json-text [(bytes : &(Vec I32)) (dest : Arena @ Region)] : String @ Region
+  (let [code (glb/json-chunk-length bytes)]
+    (if (< code 0)
+      (let [empty (alloc dest String 1)]
+        (glb/byte-set! empty 0 0)
+        empty)
+      (let [out (alloc dest String (+ code 1))]
+        (loop [i 0]
+          (when (< i code)
+            (glb/byte-set! out i (i32-at bytes (+ 20 i)))
+            (recur (+ i 1))))
+        (glb/byte-set! out code 0)
+        out))))
+
+;; ---------------------------------------------------------------------------
 ;; self-test — real assertions, written in PARENA, run by tests/test_forgedinface.c
 ;; ---------------------------------------------------------------------------
 ;; Split into four small checks on purpose: one `let` with ~60 bindings hits a real
@@ -609,8 +640,9 @@
         ok-other (near? (rig/effective-scale &masc 7 2 1.0) 1.0)]
     (and ok-chest (and ok-pelvis (and ok-neutral (and ok-flip (and ok-limb ok-other)))))))
 
-;; The 20 header bytes of a minimal, valid GLB as a fixture: magic "glTF", version 2, total
-;; length 0, a 256-byte JSON chunk (0x00000100 little-endian), and the "JSON" chunk type.
+;; The 20 header bytes of a GLB that DECLARES a 256-byte JSON chunk but carries no chunk data
+;; at all — i.e. a truncated file. Proves the container fails closed instead of reading past
+;; the buffer (it did the latter until 2026-11-03).
 ;; Pushed from nested 5-binding lets for the same reason the checks are split up — see the
 ;; self-test section's own note on VS0's real let-binding limit.
 (defn glb/test-header-push! [(b : &mut (Vec I32))] : I32
@@ -638,14 +670,56 @@
 
 ;; GLB/VRM container: a real glTF 2.0 header with a 256-byte JSON chunk parses; a short
 ;; buffer and a bad magic both fail closed with their own distinct codes.
+;; A 22-byte GLB fixture whose JSON chunk is the two bytes "{}": header, chunk length 2,
+;; type JSON, then the data.
+(defn glb/test-json-push! [(b : &mut (Vec I32))] : I32
+  (let [_0 (i32-push! b 103)
+        _1 (i32-push! b 108)
+        _2 (i32-push! b 84)
+        _3 (i32-push! b 70)
+        _4 (i32-push! b 2)]
+    (let [_5 (i32-push! b 0)
+          _6 (i32-push! b 0)
+          _7 (i32-push! b 0)
+          _8 (i32-push! b 0)
+          _9 (i32-push! b 0)]
+      (let [_10 (i32-push! b 0)
+            _11 (i32-push! b 0)
+            _12 (i32-push! b 2)
+            _13 (i32-push! b 0)
+            _14 (i32-push! b 0)]
+        (let [_15 (i32-push! b 0)
+              _16 (i32-push! b 74)
+              _17 (i32-push! b 83)
+              _18 (i32-push! b 79)
+              _19 (i32-push! b 78)]
+          (let [_20 (i32-push! b 123)
+                _21 (i32-push! b 125)]
+            22)))))
+)
+;; the JSON chunk becomes text: 2 bytes in, "{}" out (123 '{' then 125 '}'), and a chunk whose
+;; bounds are wrong yields an empty string rather than truncated JSON.
+(defn self-test-glb-text [(dest : Arena @ Region)] : Bool
+  (let [bytes (vec/new dest)
+        _ (glb/test-json-push! &mut bytes)
+        text (glb/json-text &bytes dest)
+        ok-len (= (string/length text) 2)
+        ok-open (= (string/char-at text 0) 123)
+        ok-close (= (string/char-at text 1) 125)
+        wide (vec/new dest)
+        _w (glb/test-header-push! &mut wide)
+        none (glb/json-text &wide dest)
+        ok-empty (= (string/length none) 0)]
+    (and ok-len (and ok-open (and ok-close ok-empty)))))
+
 (defn self-test-glb [(dest : Arena @ Region)] : Bool
   (let [bytes (vec/new dest)
-        _ (glb/test-header-push! &mut bytes)
+        _ (glb/test-json-push! &mut bytes)
         tiny (vec/new dest)
         _t (i32-push! &mut tiny 103)
         bad (vec/new dest)
         _b (zeros-push! &mut bad 20)
-        ok-json (= (glb/json-chunk-length &bytes) 256)
+        ok-json (= (glb/json-chunk-length &bytes) 2)
         ok-short (= (glb/json-chunk-length &tiny) -3)
         ok-magic (= (glb/json-chunk-length &bad) -1)]
     (and ok-json (and ok-short ok-magic))))
@@ -746,4 +820,5 @@
       (and (self-test-proportions dest)
         (and (self-test-glb dest)
           (and (self-test-morphs dest)
-            (and (self-test-glb-bin dest) (self-test-humanoid dest))))))))
+            (and (self-test-glb-bin dest)
+              (and (self-test-humanoid dest) (self-test-glb-text dest)))))))))

@@ -119,11 +119,15 @@ int glb_json_chunk_length(Vec *);
 int glb_bin_chunk_offset(Vec *);
 int glb_bin_chunk_length(Vec *);
 int rig_humanoid_index(char *);
+int glb_byte_set_(char *, int, int);
+char * glb_json_text(Vec *, Arena *);
 int near_(double, double);
 int self_test_skeleton(Arena *);
 int self_test_skin(Arena *);
 int self_test_proportions(Arena *);
 int glb_test_header_push_(Vec *);
+int glb_test_json_push_(Vec *);
+int self_test_glb_text(Arena *);
 int self_test_glb(Arena *);
 int self_test_morphs(Arena *);
 int glb_test_binary_push_(Vec *);
@@ -650,7 +654,12 @@ int glb_json_chunk_length(Vec * bytes __attribute__((unused))) {
     if ((!((glb_u32_le(bytes, 16) == 1313821514)))) {
     return -4;
     } else {
-    return glb_u32_le(bytes, 12);
+    int len __attribute__((unused)) = glb_u32_le(bytes, 12);
+    if (((20 + len) > vec_len(bytes))) {
+    return -5;
+    } else {
+    return len;
+    }
     }
     }
     }
@@ -773,6 +782,35 @@ int rig_humanoid_index(char * name __attribute__((unused))) {
     }
 }
 
+int glb_byte_set_(char * out __attribute__((unused)), int i __attribute__((unused)), int v __attribute__((unused))) {
+    return ((out[i] = (char)v, 1));
+}
+
+char * glb_json_text(Vec * bytes __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int code __attribute__((unused)) = glb_json_chunk_length(bytes);
+    if ((code < 0)) {
+    char *empty __attribute__((unused)) = (char *)arena_alloc(dest, (1) + 1);
+    (void)(glb_byte_set_(empty, 0, 0));
+    return empty;
+    } else {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((code + 1)) + 1);
+    void * __loop_result_11 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < code)) {
+    (void)(glb_byte_set_(out, i, i32_at(bytes, (20 + i))));
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    (void)(glb_byte_set_(out, code, 0));
+    return out;
+    }
+}
+
 int near_(double a __attribute__((unused)), double b __attribute__((unused))) {
     if (((a - b) < 0.0)) {
     return ((b - a) < 0.000001);
@@ -847,14 +885,54 @@ int glb_test_header_push_(Vec * b __attribute__((unused))) {
     return 20;
 }
 
+int glb_test_json_push_(Vec * b __attribute__((unused))) {
+    int _0 __attribute__((unused)) = i32_push_(b, 103);
+    int _1 __attribute__((unused)) = i32_push_(b, 108);
+    int _2 __attribute__((unused)) = i32_push_(b, 84);
+    int _3 __attribute__((unused)) = i32_push_(b, 70);
+    int _4 __attribute__((unused)) = i32_push_(b, 2);
+    int _5 __attribute__((unused)) = i32_push_(b, 0);
+    int _6 __attribute__((unused)) = i32_push_(b, 0);
+    int _7 __attribute__((unused)) = i32_push_(b, 0);
+    int _8 __attribute__((unused)) = i32_push_(b, 0);
+    int _9 __attribute__((unused)) = i32_push_(b, 0);
+    int _10 __attribute__((unused)) = i32_push_(b, 0);
+    int _11 __attribute__((unused)) = i32_push_(b, 0);
+    int _12 __attribute__((unused)) = i32_push_(b, 2);
+    int _13 __attribute__((unused)) = i32_push_(b, 0);
+    int _14 __attribute__((unused)) = i32_push_(b, 0);
+    int _15 __attribute__((unused)) = i32_push_(b, 0);
+    int _16 __attribute__((unused)) = i32_push_(b, 74);
+    int _17 __attribute__((unused)) = i32_push_(b, 83);
+    int _18 __attribute__((unused)) = i32_push_(b, 79);
+    int _19 __attribute__((unused)) = i32_push_(b, 78);
+    int _20 __attribute__((unused)) = i32_push_(b, 123);
+    int _21 __attribute__((unused)) = i32_push_(b, 125);
+    return 22;
+}
+
+int self_test_glb_text(Arena *dest __attribute__((unused))) {
+    Vec bytes __attribute__((unused)) = vec_new(dest);
+    int _ __attribute__((unused)) = glb_test_json_push_(&(bytes));
+    char *text __attribute__((unused)) = glb_json_text(&(bytes), dest);
+    int ok_len __attribute__((unused)) = (length(text) == 2);
+    int ok_open __attribute__((unused)) = (char_at(text, 0) == 123);
+    int ok_close __attribute__((unused)) = (char_at(text, 1) == 125);
+    Vec wide __attribute__((unused)) = vec_new(dest);
+    int _w __attribute__((unused)) = glb_test_header_push_(&(wide));
+    char *none __attribute__((unused)) = glb_json_text(&(wide), dest);
+    int ok_empty __attribute__((unused)) = (length(none) == 0);
+    return (ok_len && (ok_open && (ok_close && ok_empty)));
+}
+
 int self_test_glb(Arena *dest __attribute__((unused))) {
     Vec bytes __attribute__((unused)) = vec_new(dest);
-    int _ __attribute__((unused)) = glb_test_header_push_(&(bytes));
+    int _ __attribute__((unused)) = glb_test_json_push_(&(bytes));
     Vec tiny __attribute__((unused)) = vec_new(dest);
     int _t __attribute__((unused)) = i32_push_(&(tiny), 103);
     Vec bad __attribute__((unused)) = vec_new(dest);
     int _b __attribute__((unused)) = zeros_push_(&(bad), 20);
-    int ok_json __attribute__((unused)) = (glb_json_chunk_length(&(bytes)) == 256);
+    int ok_json __attribute__((unused)) = (glb_json_chunk_length(&(bytes)) == 2);
     int ok_short __attribute__((unused)) = (glb_json_chunk_length(&(tiny)) == -3);
     int ok_magic __attribute__((unused)) = (glb_json_chunk_length(&(bad)) == -1);
     return (ok_json && (ok_short && ok_magic));
@@ -943,6 +1021,6 @@ int self_test_humanoid(Arena *dest __attribute__((unused))) {
 }
 
 int self_test(Arena *dest __attribute__((unused))) {
-    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && (self_test_morphs(dest) && (self_test_glb_bin(dest) && self_test_humanoid(dest)))))));
+    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && (self_test_morphs(dest) && (self_test_glb_bin(dest) && (self_test_humanoid(dest) && self_test_glb_text(dest))))))));
 }
 
