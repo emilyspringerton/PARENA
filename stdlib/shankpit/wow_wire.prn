@@ -53,6 +53,24 @@
 (defn wow-cast-range-yd [(preset : I32)] : I32
   40)
 
+;; The same rule PER WEAPON, still in yards. One number for every weapon made a magnum reach as far as
+;; a sniper, which is not a rule anyone would defend out loud. Ids are SHANKPIT's own WPN_*
+;; (packages/common/protocol.h): 0 knife, 1 magnum, 2 assault rifle, 3 shotgun, 4 sniper, 5 katana,
+;; 6 missile launcher, 7 flashlight, 8 hammer, 9 spray can. An id this table does not know falls back
+;; to the generic 40 above, so a weapon added tomorrow is bounded rather than trusted.
+(defn wow-cast-range-yd-for [(weapon : I32)] : I32
+  (if (= weapon 0) 2
+    (if (= weapon 1) 25
+      (if (= weapon 2) 55
+        (if (= weapon 3) 20
+          (if (= weapon 4) 120
+            (if (= weapon 5) 2
+              (if (= weapon 6) 90
+                (if (= weapon 7) 15
+                  (if (= weapon 8) 2
+                    (if (= weapon 9) 8
+                      40)))))))))))
+
 (export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max)
 
 ;; ---- the wire's ARITHMETIC, not just its policy ------------------------------------------------
@@ -82,4 +100,5 @@
   (if (> seq 65534) 1 (+ seq 1)))
 
 (export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max
-        wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next wow-cast-range-yd)
+        wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next wow-cast-range-yd
+        wow-cast-range-yd-for)
