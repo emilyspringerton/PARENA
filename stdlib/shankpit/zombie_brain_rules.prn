@@ -1,0 +1,72 @@
+;; stdlib/shankpit/zombie_brain_rules.prn -- how each CLASS reads a neural net's intent differently.
+;;
+;; Founder, real-time: "FOR ZOMBIES MODE CAN WE MERGE IN THE OG TRAIN MODE NEURAL NET OPPONENTS SO THE
+;; ZOMBIES ARE MORE DYNAMIC?"
+;;
+;; The OG train-mode opponent is a real, trained net: packages/simulation/brain_weights.h is exported from
+;; shank_brain_horde.pth, 8 inputs -> 256 -> 128 -> 4 outputs, driven by bot_brain_forward (neural_net.h).
+;; It was trained on a HORDE, which is why wiring it into zombies is a merge rather than a rewrite.
+;;
+;; But one net driving five classes would make five identical brains in five different bodies -- dynamic to
+;; nobody. What makes a horde read as a horde is that the same intent lands differently in each body, so the
+;; per-class numbers live HERE, as pure scalars, and the host applies them around the inference:
+;;
+;;   distance-bias    what the class BELIEVES the range is, as permille of the truth. A BRUTE reads 1200: the
+;;                    hero looks farther away than he is, so it commits late and hard. A RUNNER reads 900: it
+;;                    sees the gap as smaller and starts closing early.
+;;   health-bias      what the class believes about its OWN body. A RUNNER at 1150 thinks it is fresher than
+;;                    it is (reckless); a BRUTE at 850 knows it is a big target.
+;;   turn-cap         millidegrees of yaw per tick. A BRUTE physically cannot pivot like a RUNNER, and that
+;;                    asymmetry is most of what makes a charge feel heavy.
+;;   attack-threshold permille of the net's own shoot output that commits a lunge. Higher = more deliberate.
+;;   phase-milli      a deterministic per-body offset (class + level), so a horde of one class does not strafe
+;;                    in lockstep. Not RNG: the same body always drifts the same way, which is what keeps a
+;;                    replay and a test honest.
+;;
+;; Scalar-only I32, one expression per defn, same discipline as ai_brain_rules.prn and zombies_pheromone_rules.
+;; Class ids match zombie_taxonomy.h (0 SHAMBLER, 1 WALKER, 2 RUNNER, 3 BRUTE, 4 ALPHA); an unknown class
+;; reads as WALKER's numbers, so a bad id is a stock zombie rather than an uninitialised one.
+
+(module shankpit/zombie-brain-rules)
+(export zb-distance-bias zb-health-bias zb-turn-cap zb-attack-threshold zb-phase-milli)
+
+(defn zb-distance-bias [(cls : I32)] : I32
+  (if (= cls 0) 1050
+    (if (= cls 1) 1000
+      (if (= cls 2) 900
+        (if (= cls 3) 1200
+          (if (= cls 4) 950 1000))))))
+
+(defn zb-health-bias [(cls : I32)] : I32
+  (if (= cls 0) 1000
+    (if (= cls 1) 1000
+      (if (= cls 2) 1150
+        (if (= cls 3) 850
+          (if (= cls 4) 1050 1000))))))
+
+;; millidegrees of turn per tick: SHAMBLER 600, WALKER 900, RUNNER 1500, BRUTE 350, ALPHA 1200
+(defn zb-turn-cap [(cls : I32)] : I32
+  (if (= cls 0) 600
+    (if (= cls 1) 900
+      (if (= cls 2) 1500
+        (if (= cls 3) 350
+          (if (= cls 4) 1200 900))))))
+
+;; permille of the net's shoot output that commits a lunge: BRUTE 300 (commits earliest), SHAMBLER 700
+(defn zb-attack-threshold [(cls : I32)] : I32
+  (if (= cls 0) 700
+    (if (= cls 1) 500
+      (if (= cls 2) 650
+        (if (= cls 3) 300
+          (if (= cls 4) 550 500))))))
+
+;; 0..899, deterministic in (class, level). The host centres it on 450 to get a signed drift.
+;;
+;; WRAP, NOT CLAMP, and the difference is not academic: a straight `if raw > 899 then 899` collapsed every
+;; (class, level) pair above level 7 of a BRUTE onto the SAME 899 -- i.e. precisely the high-level bodies a
+;; late horde is made of would have strafed in perfect lockstep, which is the one thing this number exists to
+;; prevent. 137/89 are coprime, so (cls*137 + level*89) is unique over this range and one conditional
+;; subtraction (the true max is 1616) keeps it unique and inside 0..899.
+(defn zb-phase-milli [(cls : I32) (level : I32)] : I32
+  (let [raw (+ (* cls 137) (* level 89))]
+    (if (> raw 899) (- raw 900) raw)))
