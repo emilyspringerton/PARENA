@@ -18,7 +18,7 @@
 (module shankpit/zone-rules)
 (export zone-grace-seconds zone-max-zones
         zone-room-count zone-room-width zone-room-depth zone-wall-height
-        zone-wall-thickness zone-door-width zone-ring-distance
+        zone-wall-thickness zone-door-width zone-ring-distance zone-door-height-ft
         zone-ring-dir-x zone-ring-dir-z
         zone-spawn-count zone-mob-count zone-material-count zone-material-for
         zone-difficulty zone-zone-status-name
@@ -48,6 +48,10 @@
 (defn zone-wall-height [(seed : I32)] : I32 (+ 18 (* 6 (zr-clamp 0 2 (mod seed 3)))))
 (defn zone-wall-thickness [] : I32 2)
 (defn zone-door-width [] : I32 8)
+;; The doorway HEIGHT, in feet -- a dimension a designer says out loud ("a seven-foot door"), while the
+;; rest of this table is in engine world units. The host converts it once through the unit layer
+;; (units_author_length_m with the feet code) instead of restating 2.1336 anywhere in C.
+(defn zone-door-height-ft [] : I32 7)
 ;; Far enough apart that two 40-unit rooms do not share a wall, close enough that a corridor is short.
 (defn zone-ring-distance [] : I32 52)
 
