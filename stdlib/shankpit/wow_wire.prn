@@ -39,3 +39,32 @@
       500)))
 
 (export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms)
+
+;; ---- the wire's ARITHMETIC, not just its policy ------------------------------------------------
+;; The byte writes stay in C (PARENA has no arrays to write into), but every NUMBER in the frame is
+;; computed here, so the server's packing and the client's are the same arithmetic rather than two
+;; copies that agree until someone edits one.
+
+;; Low and high byte of a u16 entity id, expressed with integer division so it cannot depend on a
+;; shift instruction the target may not have.
+(defn wow-entity-lo [(e : I32)] : I32
+  (- e (* (/ e 256) 256)))
+
+(defn wow-entity-hi [(e : I32)] : I32
+  (/ e 256))
+
+;; 0 is not a unit: a cleared slot must be absent, not "entity zero".
+(defn wow-entity-valid [(e : I32)] : I32
+  (if (< e 1) 0 (if (> e 65535) 0 1)))
+
+;; Definition size: header 5 + per clause (6 + argument length). Encoder and decoder both ask this, so
+;; they cannot disagree about where a frame ends.
+(defn wow-def-bytes [(clauses : I32) (argbytes : I32)] : I32
+  (+ 5 (+ (* 6 clauses) argbytes)))
+
+;; The per-client intent sequence, skipping 0 (which means "never sent") and wrapping at 16 bits.
+(defn wow-seq-next [(seq : I32)] : I32
+  (if (> seq 65534) 1 (+ seq 1)))
+
+(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms
+        wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next)
