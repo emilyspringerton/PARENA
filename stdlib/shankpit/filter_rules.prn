@@ -1,0 +1,96 @@
+;; stdlib/shankpit/filter_rules.prn -- the look of the PROGRAM FEED, as rules a modmaker can retune.
+;;
+;; Founder real-time (2026-11-03): migrating from Unity/Unreal/OBS, what is missing is the POST stack --
+;; colour correction, sharpness, curves, vignette, grain. The engine had none: the program feed left the
+;; frame capture as raw rgb24 and went straight to the encoder, so every stream looked exactly like the
+;; viewport and the only way to grade it was an external OBS instance.
+;;
+;;   PARENA/stdlib/shankpit/filter_rules.prn --> SHANKPIT/packages/render/filter_rules.c
+;;   (scripts/gen_filter_rules.sh, mk/filters.mk)
+;;
+;; Every parameter is an I32, total over any preset number, and neutral is preset 0 -- so a machine that
+;; never installs this table, or a host that leaves the default, produces a BIT-IDENTICAL feed to before.
+;; The host (stream_filters.h) turns these into a 256-byte lookup table ONCE per preset change, never per
+;; pixel; nothing here is evaluated inside the frame loop.
+(module shankpit/filter-rules)
+(export filter-preset-count filter-kernel filter-divisor filter-offset
+        filter-black filter-white filter-gamma filter-saturation filter-vignette filter-grain
+        filter-kernel-edge filter-kernel-corner)
+
+;; PRESETS
+;;   0 NEUTRAL    identity: kernel centre 1, no levels, no grading, no grain
+;;   1 CRISP      sharpen, light vignette -- esports/HUD-clean
+;;   2 CINEMATIC  soft 3x3 blur, crushed blacks, lifted gamma, vignette, a little grain
+;;   3 GRITTY     hard blacks, low saturation, heavy vignette and grain -- industrial horror
+;;   4 RETRO      sharpen, high saturation, warm-ish lift, grain -- VHS/OS aesthetic
+
+(defn filter-preset-count [] : I32 5)
+
+;; 3x3 kernel index 0..8 is row-major: 0 1 2 / 3 4 5 / 6 7 8. Centre is 4.
+(defn filter-kernel-edge [(index : I32)] : I32
+  (if (= index 1) 1
+    (if (= index 3) 1
+      (if (= index 5) 1
+        (if (= index 7) 1 0)))))
+
+(defn filter-kernel-corner [(index : I32)] : I32
+  (if (= index 0) 1
+    (if (= index 2) 1
+      (if (= index 6) 1
+        (if (= index 8) 1 0)))))
+
+;; Sharpen is OBS's own matrix: centre 5, edges -1, corners 0. Blur is the 1-2-1 Gaussian over 16.
+(defn filter-kernel [(preset : I32) (index : I32)] : I32
+  (if (= preset 1)
+      (if (= (filter-kernel-edge index) 1) (- 0 1)
+        (if (= index 4) 5 0))
+    (if (= preset 2)
+        (if (= index 4) 4
+          (if (= (filter-kernel-edge index) 1) 2
+            (if (= (filter-kernel-corner index) 1) 1 0)))
+      (if (= preset 4)
+          (if (= (filter-kernel-edge index) 1) (- 0 1)
+            (if (= index 4) 5 0))
+        (if (= index 4) 1 0)))))
+
+(defn filter-divisor [(preset : I32)] : I32
+  (if (= preset 2) 16 1))
+
+;; No preset biases its kernel: a positive offset would lift the whole image and call it a grade.
+(defn filter-offset [(preset : I32)] : I32 0)
+
+;; LEVELS -- input points mapped to 0 and 255. 0..255 because the feed is 8-bit rgb24.
+(defn filter-black [(preset : I32)] : I32
+  (if (= preset 2) 16
+    (if (= preset 3) 24
+      (if (= preset 4) 8 0))))
+
+(defn filter-white [(preset : I32)] : I32
+  (if (= preset 2) 235
+    (if (= preset 3) 220
+      (if (= preset 4) 248 255))))
+
+;; GAMMA in permille: 1000 linear, 2000 squares the midtones, 500 square-roots them.
+(defn filter-gamma [(preset : I32)] : I32
+  (if (= preset 2) 1100
+    (if (= preset 3) 1200
+      (if (= preset 4) 900 1000))))
+
+;; SATURATION in permille, applied around luma so a grey sky stays grey.
+(defn filter-saturation [(preset : I32)] : I32
+  (if (= preset 2) 900
+    (if (= preset 3) 700
+      (if (= preset 4) 1300 1000))))
+
+;; VIGNETTE 0..1000: 0 is none, 1000 darkens the corners to nothing.
+(defn filter-vignette [(preset : I32)] : I32
+  (if (= preset 1) 300
+    (if (= preset 2) 700
+      (if (= preset 3) 900
+        (if (= preset 4) 500 0)))))
+
+;; GRAIN 0..1000: the amplitude of a deterministic per-pixel dither, never a clock and never rand().
+(defn filter-grain [(preset : I32)] : I32
+  (if (= preset 2) 120
+    (if (= preset 3) 250
+      (if (= preset 4) 180 0))))
