@@ -118,6 +118,73 @@ int main(void) {
             const char *pg = strstr(lua, "local g = ");
             CHECK(pw && pg && pw < pg, "bindings keep source order, so a later binding can read an earlier one");
         }
+    }
+
+    /* --- N-ARY operands: rules modules are written n-ary, and Lua's operators are n-ary too ------------
+     * stdlib/shankpit/lighting_rules.prn sums four coverage terms in ONE `+`; refusing that made the whole
+     * environment matrix unauthorable for this target -- the file the Roblox half of the merge needed most.
+     * Operands fold LEFT, which is C's own associativity, and the emitted text is parenthesised rather
+     * than relying on precedence, so the two worlds cannot disagree about which addition happens first. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena,
+            "(defn cover-total [(a : I32) (b : I32) (c : I32) (d : I32)] : I32 (+ a b c d))", &err);
+        CHECK(lua != NULL, "a four-operand + emits (it used to be a hard refusal)");
+        CHECK(lua && strstr(lua, "(((a + b) + c) + d)") != NULL,
+              "n-ary + folds left, exactly like C's own associativity");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena, "(defn third [(a : I32) (b : I32) (c : I32)] : I32 (/ a b c))", &err);
+        CHECK(lua != NULL, "a three-operand / emits");
+        CHECK(lua && strstr(lua, "__idiv(__idiv(a, b), c)") != NULL,
+              "n-ary / nests the truncating helper, so arity cannot change the rounding rule");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena,
+            "(defn all [(a : I32) (b : I32) (c : I32)] : Bool (and (> a 0) (> b 0) (> c 0)))", &err);
+        CHECK(lua != NULL, "a three-operand and emits");
+        CHECK(lua && strstr(lua, "((a > 0) and (b > 0))") != NULL, "n-ary and folds left as well");
+        arena_free_all(&arena);
+    }
+    /* --- reserved words: a real .prn binds a variable called `local`, and `local local = ...` is invalid Lua
+     * that only an interpreter rejects -- the emitter reported success and wrote it. material_rules.prn's voxel
+     * lightmap does exactly this (`let [local ...]`), so this is a case a real file had, not a hypothetical. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena,
+            "(defn pick [(end : I32)] : I32 (let [local (+ end 1)] local))", &err);
+        CHECK(lua != NULL, "a binding named `local` and a parameter named `end` emit");
+        CHECK(lua && strstr(lua, "local local_ = ") != NULL,
+              "a reserved binding name gets a trailing underscore");
+        CHECK(lua && strstr(lua, "return local_") != NULL && strstr(lua, "return local)") == NULL,
+              "and every reference uses the SAME escaped name");
+        CHECK(lua && strstr(lua, "end_") != NULL, "so does a reserved parameter name");
+        arena_free_all(&arena);
+    }
+
+    /* A chained comparison means a<b<c in the source language, and a left fold would mean (a<b)<c -- a
+     * comparison against a boolean. Refused BY NAME: nothing in the stdlib writes one, and a refusal that
+     * says why beats plausible-looking Lua that answers a different question. */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena, "(defn between [(a : I32) (b : I32) (c : I32)] : Bool (< a b c))", &err);
+        CHECK(lua == NULL, "a chained comparison is refused rather than silently misfolded");
+        CHECK(err && strstr(err, "chained comparison") != NULL, "and the refusal names the reason");
+        arena_free_all(&arena);
         if (!lua) printf("  error: %s\n", err ? err : "(none)");
         arena_free_all(&arena);
     }

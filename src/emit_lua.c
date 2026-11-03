@@ -80,6 +80,33 @@ static const char *camel_case(Arena *arena, const char *kebab) {
     return out;
 }
 
+/* Lua/Luau reserved words. A PARENA binding may legitimately be named `local` -- material_rules.prn's voxel
+ * lightmap does exactly that -- and emitting `local local = ...` is invalid Lua that only a real interpreter
+ * rejects, which is the worst kind of emitter bug: it reports success. The same fix emit_ts.c's own `ident()`
+ * already carries for TypeScript's `new`/`default`: a reserved identifier gets a trailing underscore, on the
+ * definition and on every reference, so the two cannot be spelled differently. */
+static const char *const LUA_RESERVED[] = {
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+    /* Luau's own additions, so the emitted module stays valid inside Roblox as well as plain Lua. */
+    "continue", "export", "type", "typeof",
+};
+
+static const char *lua_ident(Arena *arena, const char *kebab) {
+    const char *c = camel_case(arena, kebab);
+    for (size_t i = 0; i < sizeof(LUA_RESERVED) / sizeof(LUA_RESERVED[0]); i++) {
+        if (strcmp(c, LUA_RESERVED[i]) == 0) {
+            size_t n = strlen(c);
+            char *out = arena_alloc(arena, n + 2);
+            memcpy(out, c, n);
+            out[n] = '_';
+            out[n + 1] = '\0';
+            return out;
+        }
+    }
+    return c;
+}
+
 /* BINOP_TABLE -- the same narrow set the other targets recognize, lowered per emit_lua.h's own notes: `/` is
  * integer division, so it must be `//`; `=` is equality, so it must be `==`. `and`/`or` are already Lua. */
 typedef struct { const char *prn_op; const char *lua_op; } BinopEntry;
@@ -141,7 +168,7 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
     if (expr->type == NODE_SYMBOL) {
         if (strcmp(expr->text, "math/pi") == 0) return "math.pi";
         if (strcmp(expr->text, "true") == 0 || strcmp(expr->text, "false") == 0) return expr->text;
-        return camel_case(arena, expr->text);
+        return lua_ident(arena, expr->text);
     }
 
     if (expr->type != NODE_LIST || expr->child_count == 0 || expr->children[0]->type != NODE_SYMBOL) {
@@ -227,7 +254,7 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
             }
             const char *value = emit_lua_expr(arena, bindings->children[i + 1], out_error);
             if (!value) { lb_free(&b); return NULL; }
-            lb_appendf(&b, "local %s = %s; ", camel_case(arena, name->text), value);
+            lb_appendf(&b, "local %s = %s; ", lua_ident(arena, name->text), value);
         }
         const char *body = emit_lua_expr(arena, expr->children[2], out_error);
         if (!body) { lb_free(&b); return NULL; }
@@ -256,30 +283,57 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
 
     const char *lua_op = find_binop(head);
     if (lua_op) {
-        if (expr->child_count != 3) {
-            *out_error = "emit_lua: binary operator requires exactly 2 operands (v0 has no variadic +/and/or)";
+        /* N-ARY, because real rules modules are written n-ary and Lua's own operators are n-ary too.
+         * stdlib/shankpit/lighting_rules.prn sums four terms of coverage in ONE `+`, and refusing that made
+         * the whole environment matrix unauthorable for this target -- the file the Roblox half of the merge
+         * most needed. Nothing new is being computed here: operands are folded LEFT, which is exactly C's and
+         * Lua's associativity, so `(+ a b c)` is `((a + b) + c)` in both worlds, and the emitted form is
+         * parenthesised instead of relying on precedence.
+         *
+         * `/` stays the `__idiv` helper at EVERY arity (`__idiv(__idiv(a, b), c)`), because the C `/` on an
+         * I32 truncates toward zero while Lua's `//` floors; see the note in the module prologue.
+         *
+         * COMPARISONS ARE NOT FOLDED, by name. Clojure's `(< a b c)` means a<b<c, and a left fold would mean
+         * `(a<b)<c` -- comparing a boolean to a number. Nothing in the stdlib writes one; a named refusal is
+         * better than a silently wrong answer. */
+        static const char *const COMPARISON_OPS[] = { "=", "==", "!=", "not=", "<", "<=", ">", ">=" };
+        size_t n_operands = expr->child_count - 1;
+        if (n_operands == 0) {
+            *out_error = "emit_lua: operator with no operands";
             return NULL;
         }
-        const char *lhs = emit_lua_expr(arena, expr->children[1], out_error);
-        if (!lhs) return NULL;
-        const char *rhs = emit_lua_expr(arena, expr->children[2], out_error);
-        if (!rhs) return NULL;
-        LuaBuf b;
-        lb_init(&b);
-        /* `/` is NOT `//`. Luau's and Lua 5.4's `//` FLOOR; the C emitter's `/` on an I32 TRUNCATES toward
-         * zero, and those differ for every negative dividend: -70/50 is -1 in C and -2 with `//`. That is
-         * not a corner: DEADWEIGHT's rating ladder divides a (theirs - mine) difference by 50 and by 100,
-         * which is negative whenever the higher-rated player is the one being asked about, so the two
-         * worlds printed different leaderboard numbers for the same server. `/` therefore lowers to a
-         * helper that reproduces C's truncation exactly (defined once in the module prologue below). */
-        if (strcmp(head, "/") == 0) {
-            lb_appendf(&b, "__idiv(%s, %s)", lhs, rhs);
-        } else {
-            lb_appendf(&b, "(%s %s %s)", lhs, lua_op, rhs);
+        if (n_operands == 1) {
+            if (strcmp(head, "-") == 0) {
+                *out_error = "emit_lua: unary minus is not a binop";
+                return NULL;
+            }
+            /* `(+ a)`, `(* a)`, `(and a)` are just a -- one operand, nothing to combine. */
+            return emit_lua_expr(arena, expr->children[1], out_error);
         }
-        const char *result = arena_strdup(arena, b.data, b.len);
-        lb_free(&b);
-        return result;
+        if (n_operands > 2) {
+            for (size_t i = 0; i < sizeof(COMPARISON_OPS) / sizeof(COMPARISON_OPS[0]); i++) {
+                if (strcmp(head, COMPARISON_OPS[i]) == 0) {
+                    *out_error = "emit_lua: chained comparison is not supported (write two comparisons and `and`) ";
+                    return NULL;
+                }
+            }
+        }
+        const char *acc = emit_lua_expr(arena, expr->children[1], out_error);
+        if (!acc) return NULL;
+        for (size_t i = 2; i < expr->child_count; i++) {
+            const char *rhs = emit_lua_expr(arena, expr->children[i], out_error);
+            if (!rhs) return NULL;
+            LuaBuf b;
+            lb_init(&b);
+            if (strcmp(head, "/") == 0) {
+                lb_appendf(&b, "__idiv(%s, %s)", acc, rhs);
+            } else {
+                lb_appendf(&b, "(%s %s %s)", acc, lua_op, rhs);
+            }
+            acc = arena_strdup(arena, b.data, b.len);
+            lb_free(&b);
+        }
+        return acc;
     }
 
     const MathPrimEntry *math_prim = find_math_prim(head);
@@ -308,7 +362,7 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
      * function itself was declared, so an intra-module call resolves without any global namespace. */
     LuaBuf b;
     lb_init(&b);
-    lb_appendf(&b, "M.%s(", camel_case(arena, head));
+    lb_appendf(&b, "M.%s(", lua_ident(arena, head));
     for (size_t i = 1; i < expr->child_count; i++) {
         if (i > 1) lb_append(&b, ", ");
         const char *arg = emit_lua_expr(arena, expr->children[i], out_error);
@@ -362,7 +416,7 @@ static int emit_lua_defn(Arena *arena, LuaBuf *out, Node *defn, const char **out
         *out_error = "emit_lua: defn: malformed function definition";
         return 0;
     }
-    const char *fn_name = camel_case(arena, defn->children[1]->text);
+    const char *fn_name = lua_ident(arena, defn->children[1]->text);
     Node *params = defn->children[2];
 
     LuaBuf param_list;
@@ -378,7 +432,7 @@ static int emit_lua_defn(Arena *arena, LuaBuf *out, Node *defn, const char **out
         }
         /* Lua has no type annotations on parameters, so `(x : I32)` emits as just `x`. */
         if (i > 0) lb_append(&param_list, ", ");
-        lb_append(&param_list, camel_case(arena, param->children[0]->text));
+        lb_append(&param_list, lua_ident(arena, param->children[0]->text));
     }
 
     if (defn->child_count == 7 && is_symbol(defn->children[5], "#target")) {

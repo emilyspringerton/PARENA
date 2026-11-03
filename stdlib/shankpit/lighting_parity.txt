@@ -1,0 +1,28 @@
+# lighting_parity.txt -- the shared environment matrix. Two test suites assert this same file.
+#
+#   SHANKPIT/packages/render/env_parity_test.c   (make test-env-parity)
+#   NOOBTOPIA/tests/lighting_test.lua            (lua tests/lighting_test.lua)
+#
+# These are the C answers, because the C emitted from PARENA/stdlib/shankpit/lighting_rules.prn is authoritative
+# and the Luau port is the bug if they disagree (MONOREPO/docs/THREE_WAY_MERGE.md). Never hand-edit a column:
+# change the .prn, re-emit both sides, and regenerate these rows.
+#
+#   in:  cover rain storm fog_wash interior ambient_level flash visibility
+#   out: occlusion light_bleed exposure ambient_floor emissive_scale flash_boost emitter_range emitter_spread
+#
+# `emissive_scale` is fed the ambient FLOOR, not the raw occlusion -- that is the chain the host runs, so the
+# fixture describes the real one instead of a function in isolation. `emitter_spread` is derived from the range,
+# so the two can never be tuned apart.
+#
+0 0 0 0 0 5 0 0  0 0 1000 510 1141 0 1000 1000
+1000 0 0 0 0 0 0 3000  180 75 1216 392 1248 0 1000 1000
+0 1000 0 0 0 0 0 3000  220 92 1264 386 1253 0 1000 1000
+0 0 1000 0 0 0 0 3000  400 168 1480 358 1278 0 1000 1000
+0 0 0 1000 0 0 0 3000  200 84 1240 389 1250 0 1000 1000
+1000 1000 1000 1000 0 0 0 3000  780 320 1936 300 1330 0 1000 1000
+1000 1000 1000 1000 1 10 1000 0  350 44 1420 606 1055 300 1000 1000
+500 250 0 100 0 7 400 1500  165 69 1198 520 1132 120 500 1500
+0 0 0 0 1 3 0 0  0 0 1000 534 1120 0 1000 1000
+1000 1000 1000 1000 0 10 1000 3000  780 320 1936 480 1168 300 1000 1000
+-5 1200 2000 0 0 99 0 -1  620 260 1744 504 1147 0 1000 1000
+250 0 0 0 0 1 1000 200  45 18 1054 431 1213 300 450 1550

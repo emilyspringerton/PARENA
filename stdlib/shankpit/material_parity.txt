@@ -1,0 +1,41 @@
+# material_parity.txt -- the shared material vocabulary. Two test suites assert this same file.
+#
+#   SHANKPIT/packages/render/env_parity_test.c   (make test-env-parity)
+#   NOOBTOPIA/tests/material_test.lua            (lua tests/material_test.lua)
+#
+# These are the C answers, emitted from PARENA/stdlib/shankpit/material_rules.prn through
+# SHANKPIT/packages/simulation/material_rules.c. Never hand-edit a column.
+#
+#   q=0  reflection(kind)                    q=1  light level(style, tick)
+#   q=2  emissive(style, tick, room_light)   q=3  frame index(fps, frames, tick)
+#   q=4  scroll u/v(kind, tick)              q=5  tint low health(hp, max_hp)
+#   q=6  tint submerged(depth)               q=7  tint acid(acid)
+#   q=8  tint shield(shield, max_shield)     q=9  palette index(index)
+#   q=10 voxel axis(pos, origin, extent, res)
+#
+# Row: q a b c d e   answer [answer2]
+#
+0 0 0 0 0 0  900
+0 1 0 0 0 0  380
+0 2 0 0 0 0  320
+0 3 0 0 0 0  0
+1 1 0 0 0 0  1000
+1 1 6 0 0 0  0
+1 2 97 0 0 0  250
+1 4 120 0 0 0  400
+1 5 940 0 0 0  660
+1 7 4 0 0 0  640
+2 1 6 200 0 0  350
+2 0 0 900 0 0  1000
+3 10 4 37 0 0  2
+4 1 30 0 0 0  110 45
+4 2 30 0 0 0  0 0
+5 15 100 0 0 0  500
+5 5 100 0 0 0  833
+6 2000 0 0 0 0  500
+7 500 0 0 0 0  450
+8 35 100 0 0 0  245
+9 -1 0 0 0 0  255
+10 500 100 1000 16 0  6
+10 5000 100 1000 16 0  15
+# kinds=5 styles=8 vlm-floor=120
