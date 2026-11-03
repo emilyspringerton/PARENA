@@ -1,0 +1,41 @@
+;; WOW WIRE -- the macro/mod surface on the air, not in a chat line.
+;;
+;; The client compiles a macro once (packages/ui/wow_macro.h), uploads the CLAUSES as bytes, and then
+;; invokes it by id. What crosses the network per activation is 5 bytes, not the 40-byte text line, and
+;; a target change is 7 bytes sent only when the target actually changes. These numbers are the policy
+;; that bounds that traffic; they are per modem/transport preset like the LoRa rules, because the cost
+;; of a byte is not the same on a LAN and on a 1k2 radio.
+;;
+;; preset 0 = LAN / default, 1 = slow (LoRa long), 2 = fast (LoRa turbo)
+
+;; How many target slots the server tracks per client: target, focus, and two the mods can name.
+(defn wow-target-slots [(preset : I32)] : I32
+  4)
+
+;; Cast intents a client may have outstanding before the server refuses another. One is enough on a
+;; slow link: a queue deeper than the link can drain is just latency with extra steps.
+(defn wow-cast-queue [(preset : I32)] : I32
+  (if (= preset 1) 1
+    (if (= preset 2) 3
+      2)))
+
+;; Clauses a single macro may carry -- the wire format has to be able to hold whatever the compiler
+;; accepts, and nowhere more.
+(defn wow-macro-max-clauses [(preset : I32)] : I32
+  4)
+
+;; How long a client waits for an ACK before resending an intent. Long enough that a slow link is not
+;; flooded with duplicates, short enough that a lost cast is not a lost action.
+(defn wow-ack-ms [(preset : I32)] : I32
+  (if (= preset 1) 500
+    (if (= preset 2) 120
+      250)))
+
+;; How often the SERVER may resend its target snapshot to a client. Target state is tiny but it is not
+;; free: two clients on one radio must not both stream it every tick.
+(defn wow-target-resend-ms [(preset : I32)] : I32
+  (if (= preset 1) 1000
+    (if (= preset 2) 250
+      500)))
+
+(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms)
