@@ -1,0 +1,112 @@
+;; stdlib/shankpit/vehicle_salvage_rules.prn -- what a car is MADE OF, and what is left of it when it
+;; is parted out (founder 2026-11-03: garage that accepts "vehicles of questionable origin", cars
+;; "converted down to components and its a bit variable like wow disenchanting").
+;;
+;; Today a car is one `int health`. vehicle_burn.h already decides when it smokes, burns and
+;; detonates, but nothing in the engine knows WHICH part broke. This module is that missing table: five
+;; components on one integer hull, so the sum of the parts is always the hull and a car can be limped
+;; home on three of them.
+;;
+;; Everything is fixed-point I32 and total, like vehicle_burn_rules.prn and material_rules.prn: no
+;; floats, no sin, no time. That is what lets the server, every client and a headless test compute the
+;; same answer -- and what makes a salvage roll reproducible instead of a server-side secret.
+;;
+;; Component indices are stable and contiguous from 0, because the wire carries them as a bitmask:
+;;   0 ENGINE   1 CHASSIS   2 WHEELS   3 LOGIC (the overclockable board)   4 TANK (rocket car only)
+;; TANK is last on purpose: a vehicle without one has 4 components and 0..3 is still a valid mask.
+(module shankpit/vehicle-salvage-rules)
+(export salvage-hull salvage-component-count salvage-component-hp
+        salvage-component-material salvage-component-offset-centi
+        salvage-handling-permille salvage-tier salvage-quantity
+        salvage-tier-count salvage-quantity-max)
+
+;; ---- hull ------------------------------------------------------------------------------------------
+;; 300 is the buggy's own spawn hull (local_game.h buggy_spawn_defaults) and vehicle_burn_rules.prn's
+;; vehicle-hull. If these two ever disagree the burn ladder and the component split are describing
+;; different cars, which is why the test asserts they match.
+(defn salvage-hull [(kind : I32)] : I32
+  (if (= kind 1) 300 300))
+
+;; ---- component table --------------------------------------------------------------------------------
+;; The rocket car spends 40 of its hull on the tank, so its other four parts are thinner than a plain
+;; buggy's. Both kinds sum to exactly 300: a car with every part intact is a full car.
+(defn salvage-component-count [(kind : I32)] : I32
+  (if (= kind 1) 5 4))
+
+(defn salvage-component-hp [(kind : I32) (comp : I32)] : I32
+  (if (= comp 0)
+    (if (= kind 1) 80 90)        ; ENGINE   -- drive force lives here
+    (if (= comp 1)
+      (if (= kind 1) 100 120)    ; CHASSIS  -- most of the car, and what a crash mostly hits
+      (if (= comp 2)
+        (if (= kind 1) 50 60)    ; WHEELS
+        (if (= comp 3)
+          30                     ; LOGIC    -- small, and the only part worth disenchanting
+          (if (= kind 1) 40 0))))))  ; TANK
+
+;; Which BF_KIND_* the shards use, so a broken part behaves like the material it already is in
+;; brick_fracture.h rather than inventing a second materials table: 0 brick, 1 concrete, 2 wood,
+;; 3 glass. The logic board is glass -- it shatters long before the chassis does -- and the wheels are
+;; wood (soft, takes tension badly), not steel.
+(defn salvage-component-material [(comp : I32)] : I32
+  (if (= comp 2) 2 (if (= comp 3) 3 1)))
+
+;; Local offset from the vehicle origin, in centi-units (1/100 world unit), axis 0 = x, 1 = y, 2 = z.
+;; A detached part is spawned at position + rotated offset; these are the numbers the paste called
+;; local_offset[3], kept integer so the host never needs a float table of its own.
+(defn salvage-component-offset-centi [(kind : I32) (comp : I32) (axis : I32)] : I32
+  (if (= comp 0)
+    (if (= axis 0) 0 (if (= axis 1) 10 (if (= axis 2) (- 0 70) 0)))    ; ENGINE  rear
+    (if (= comp 1)
+      (if (= axis 0) 0 (if (= axis 1) 0 (if (= axis 2) 0 0)))           ; CHASSIS centre
+      (if (= comp 2)
+        (if (= axis 0) 0 (if (= axis 1) (- 0 30) (if (= axis 2) 0 0))) ; WHEELS  under the car
+        (if (= comp 3)
+          (if (= axis 0) 0 (if (= axis 1) 0 (if (= axis 2) 45 0)))     ; LOGIC   front
+          (if (= kind 1)
+            (if (= axis 0) 0 (if (= axis 1) 20 (if (= axis 2) (- 0 20) 0)))  ; TANK  on the back
+            0))))))
+
+;; ---- what losing a part does to the car -------------------------------------------------------------
+;; Permille of the LIVE value, per channel: 0 drive force, 1 top speed, 2 turn rate, 3 lateral grip.
+;; Channels are multiplied together by the host, so three broken parts stack the way a player expects.
+;; The logic board changes no handling at all -- losing it costs you the salvage, not the drive.
+(defn salvage-handling-permille [(comp : I32) (channel : I32)] : I32
+  (if (= comp 0)
+    (if (= channel 0) 300 (if (= channel 1) 600 1000))      ; ENGINE: slow, and slow to accelerate
+    (if (= comp 1)
+      (if (= channel 0) 700 (if (= channel 1) 700
+        (if (= channel 2) 800 900)))                        ; CHASSIS: bent, still drives
+      (if (= comp 2)
+        (if (= channel 0) 800 (if (= channel 1) 900
+          (if (= channel 2) 500 400)))                      ; WHEELS: terrible steering/grip
+        1000))))                                            ; LOGIC / TANK: handling unchanged
+
+;; ---- the disenchant table ---------------------------------------------------------------------------
+;; Four tiers, low to high: 0 SCRAP_STEEL, 1 REBAR_ALLOY, 2 COMPOSITE_MESH, 3 OVERCLOCKED_LOGIC.
+;; `roll` is 0..999 and comes from the hash in the C header (entity, tick, component) -- never from a
+;; clock, or two clients watching the same wreck would disagree about what fell out of it.
+;; Only the engine and the logic board can yield tier 3, and only from a good roll: that is what makes
+;; a clean engine worth more than a crash-burned one.
+(defn salvage-tier-count [] : I32 4)
+
+(defn salvage-tier [(kind : I32) (comp : I32) (roll : I32)] : I32
+  (if (= comp 3)                                   ; LOGIC: the only real prize
+    (if (< roll 180) 3 (if (< roll 500) 2 1))
+    (if (= comp 0)                                 ; ENGINE: rarer, and never from a wreck's luck
+      (if (< roll 60) 3 (if (< roll 300) 2 1))
+      (if (= comp 4)                               ; TANK
+        (if (< roll 90) 2 0)
+        (if (= comp 2)                             ; WHEELS
+          (if (< roll 120) 2 0)
+          (if (< roll 30) 2 0))))))                ; CHASSIS
+
+;; Quantity is a function of CONDITION, not luck: a part you unbolted carefully yields more than one a
+;; rocket turned into shrapnel. This is the half of WoW's disenchanting the paste missed -- rarity is
+;; the table, quantity is what the part still was.
+(defn salvage-quantity [(hp_permille : I32)] : I32
+  (if (>= hp_permille 900)
+    3
+    (if (>= hp_permille 400) 2 1)))
+
+(defn salvage-quantity-max [] : I32 3)
