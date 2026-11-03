@@ -3440,7 +3440,14 @@ static int emit_let(Arena *arena, StrBuf *out, Node *node, EmitScope *scope, int
          * flags a genuinely unused C local, but that's not a real bug in
          * the *Parena* source, so it's suppressed the standard, honest
          * C99 way rather than by disabling -Wunused-variable wholesale. */
-        sb_appendf(out, "    %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
+        if (c_type && strcmp(c_type, "void *") == 0)
+            /* The emitter could not name the callee's return type and fell back to "void *". The C
+               compiler can: __typeof__ takes the real one, so `bytes-len` on the bound value compiles
+               instead of receiving a void pointer. __typeof__ never evaluates its operand, so the
+               initializer still runs exactly once. */
+            sb_appendf(out, "    __typeof__(%s) %s __attribute__((unused)) = %s;\n", expr_c, c_name, expr_c);
+        else
+            sb_appendf(out, "    %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
         scope_bind(&child, name_node->text, c_name, c_type, 0 /* not an arena value */);
     }
 
@@ -3721,7 +3728,10 @@ static int emit_loop_tail(Arena *arena, StrBuf *out, Node *tail, EmitScope *scop
                 expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
             }
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
+            if (c_type && strcmp(c_type, "void *") == 0)
+                sb_appendf(out, "        __typeof__(%s) %s __attribute__((unused)) = %s;\n", expr_c, c_name, expr_c); /* see the __typeof__ note in emit_body */
+            else
+                sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
         }
         Node **body_forms = tail->children + 2;
@@ -4304,7 +4314,10 @@ static int emit_match_clause_body(Arena *arena, StrBuf *out, Node *body, EmitSco
                 expr_c = emit_expr(arena, expr_node, &child, &c_type, out_error);
             }
             if (!expr_c) return 0;
-            sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
+            if (c_type && strcmp(c_type, "void *") == 0)
+                sb_appendf(out, "        __typeof__(%s) %s __attribute__((unused)) = %s;\n", expr_c, c_name, expr_c); /* see the __typeof__ note in emit_body */
+            else
+                sb_appendf(out, "        %s __attribute__((unused)) = %s;\n", format_c_decl(arena, c_type, c_name), expr_c);
             scope_bind(&child, name_node->text, c_name, c_type, 0);
         }
         Node **body_forms = body->children + 2;
