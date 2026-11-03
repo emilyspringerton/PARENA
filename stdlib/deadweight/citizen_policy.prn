@@ -1,0 +1,98 @@
+;; stdlib/deadweight/citizen_policy.prn -- DEADWEIGHT, played by the CITIZENS.
+;;
+;; The rules are stdlib/deadweight/card_rules.prn (105 cards, the triangle, every number, the packed
+;; fx engine). This module is the layer ABOVE them: the two decisions the rules deliberately have no
+;; opinion about -- which card to play, and which cards go in the deck at all.
+;;
+;; DELIBERATELY IMPORT-FREE. It takes the facts it needs (a card's kind/power/cost, whether it is
+;; legal) as ARGUMENTS, which the host fills from the same card_rules engine it plays with. That is
+;; not laziness: the C emitter types an imported call's result as `void *`, so arithmetic on
+;; `(card-kind x)` inside a `let` does not compile, and a policy that cannot do arithmetic is not a
+;; policy. Taking facts as arguments also means this file holds no second copy of a number.
+;;
+;; ON DECK CRAFTING -- the founder's requirement: "citizens will craft their own decks based on their
+;; win rate and the current meta." Two inputs and nothing else:
+;;   * WIN RATE decides how far from its own identity the citizen moves. Winning keeps its identity
+;;     (it leans on its own path's kind); losing reaches for the answer to whatever is beating it.
+;;   * THE META decides WHAT that answer is: the population's own observed kind mix, tallied from
+;;     real matches by the ladder. A meta swung to Operations makes the answer Defense, so the decks
+;;     shift by themselves.
+;;
+;; The "path" is the citizen's own MMO-player path (CILIFE_*): CRAFT 0, TRADE 1, DUEL 2, ENDGAME 3,
+;; IDLE 4. Scalar-only, so it emits to clean C with nothing to link.
+
+(module deadweight/citizen-policy)
+(export cp-winrate-permille cp-kind-identity cp-kind-answer cp-deck-kind
+        cp-card-score cp-pick cp-deck-card)
+
+;; Laplace-smoothed win rate in permille: no record reads as an unknown 500; one win from one game is
+;; 2/3 = 666, not a perfect 1000 -- a citizen that has won once has not proven anything.
+(defn cp-winrate-permille [(wins : I32) (games : I32)] : I32
+  (if (<= games 0) 500
+    (let [w (if (< wins 0) 0 wins)
+          g (if (< w games) games w)]
+      (/ (* (+ w 1) 1000) (+ g 2)))))
+
+;; The kind a path is built around: DUEL/ENDGAME Offense, CRAFT/TRADE Operations (they win on
+;; information and money), IDLE Defense -- a citizen that barely wants the game still has to survive
+;; it.
+(defn cp-kind-identity [(path : I32)] : I32
+  (if (= path 2) 0 (if (= path 3) 0 (if (= path 4) 2 1))))
+
+;; The answer to a meta: kind k is beaten (as the aggressor's victim) by the kind that beats k, which
+;; in this triangle is (k + 2) mod 3.
+(defn cp-kind-answer [(meta_kind : I32)] : I32
+  (if (= meta_kind 0) 2 (if (= meta_kind 1) 0 1)))
+
+;; Which kind this citizen builds toward right now.
+;;   meta_kind 0/1/2 most-played kind, -1 with no data.  meta_share its permille of all cards played.
+;; A divided meta (<= 400 permille) is not a meta and identity wins. A losing citizen (lean >= 600)
+;; takes the answer; a winning one (lean <= 350) keeps its identity; between them the answer wins only
+;; past halfway -- losing has to be a threshold, because there is no fractional kind.
+(defn cp-deck-kind [(path : I32) (winrate : I32) (meta_kind : I32) (meta_share : I32)] : I32
+  (if (< meta_kind 0) (cp-kind-identity path)
+    (if (<= meta_share 400) (cp-kind-identity path)
+      (let [lean (- 1000 winrate)]
+        (if (>= lean 600) (cp-kind-answer meta_kind)
+          (if (<= lean 350) (cp-kind-identity path)
+            (if (>= lean 475) (cp-kind-answer meta_kind) (cp-kind-identity path))))))))
+
+;; A card's score for this seat in this round, given the facts the host resolved:
+;;   kind/power/cost from card_rules, legal from is_legal_play, opp_kind the opponent's last kind
+;;   (-1 = no read), aggression this citizen's temperament 0..1000.
+;; -1 means "cannot be played": unplayable cards are MASKED, so a citizen always has a real choice.
+;; Pass scores 0, so it wins only when it genuinely beats every legal card (banking energy is a play).
+(defn cp-card-score [(kind : I32) (power : I32) (cost : I32) (legal : I32)
+                     (opp_kind : I32) (aggression : I32)] : I32
+  (if (= legal 0) (- 0 1)
+    (let [beat (if (and (>= opp_kind 0)
+                        (= opp_kind (if (= kind 2) 0 (+ kind 1)))) 400 0)
+          read (if (< opp_kind 0) 100 0)
+          tempo (- 600 (* cost 120))
+          dmg (if (= kind 2) (/ power 3) power)
+          aggr (/ (* dmg aggression) 100)]
+      (+ beat (+ read (+ tempo (+ aggr (* 10 power))))))))
+
+;; Pick the card to play, or -1 to pass. Takes the four scores and the four card ids, so the decision
+;; is one pure function over pre-resolved facts. First maximal score wins (replays pick the same
+;; card); a tie with pass (<= 0) is a pass.
+(defn cp-pick [(s0 : I32) (s1 : I32) (s2 : I32) (s3 : I32)
+               (h0 : I32) (h1 : I32) (h2 : I32) (h3 : I32)] : I32
+  (let [b01 (if (> s1 s0) s1 s0)
+        b012 (if (> s2 b01) s2 b01)
+        best (if (> s3 b012) s3 b012)]
+    (if (<= best 0) (- 0 1)
+      (if (= s0 best) h0 (if (= s1 best) h1 (if (= s2 best) h2 h3))))))
+
+;; Deck crafting: the card for deck slot 0..15.
+;; The base line (ids 0-8) is the game's own core: three cards per kind, tiers 0/1/2, contiguous by
+;; kind -- so kind k's cards are exactly 3k, 3k+1, 3k+2. Slots 0-12 are the citizen's current kind,
+;; cycling the three tiers so the deck has a COST CURVE rather than sixteen copies of the cheapest
+;; card; slots 13-15 are the kind that answers its own, because a deck of one colour loses to the
+;; colour that beats it.
+(defn cp-deck-card [(slot : I32) (path : I32) (winrate : I32) (meta_kind : I32) (meta_share : I32)] : I32
+  (let [want (cp-deck-kind path winrate meta_kind meta_share)
+        s (if (< slot 0) 0 (if (>= slot 16) 15 slot))
+        mix (if (< s 13) want (cp-kind-answer want))
+        tier (- s (* (/ s 3) 3))]
+    (+ (* mix 3) tier)))
