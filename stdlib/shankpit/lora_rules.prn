@@ -19,7 +19,8 @@
 ;; Total functions over I32: no floats, no randomness, no clock. The tick duration and the combat
 ;; numbers are the only things that differ between a walkie-talkie camp and a 1-mile valley.
 (module shankpit/lora-rules)
-(export lora-tick-ms lora-grid-w lora-grid-h lora-hit-permille lora-damage lora-xp-hit lora-xp-move)
+(export lora-tick-ms lora-grid-w lora-grid-h lora-hit-permille lora-damage lora-xp-hit lora-xp-move
+        lora-resend-ms lora-max-sends)
 
 ;; How long one world tick is. Everything the players see is interpolated on the client between these.
 (defn lora-tick-ms [(preset : I32)] : I32
@@ -49,3 +50,18 @@
   (if (= preset 1) 12 10))
 (defn lora-xp-move [(preset : I32)] : I32
   1)
+
+;; RESEND POLICY -- how long a client waits for an ACK before sending the same intent again, and how
+;; many sends before it gives up and tells the player. This is a RADIO property, not a balance knob:
+;; airtime is seconds, so a window shorter than a tick would retransmit into the same congestion it is
+;; trying to survive. LONG_SLOW tolerates more sends because each one is cheaper than the wait.
+(defn lora-resend-ms [(preset : I32)] : I32
+  (if (= preset 1) 20000
+    (if (= preset 2) 5000
+      8000)))
+
+;; After this many sends the intent is DROPPED and the client is told, rather than retrying forever
+;; into a link that is not carrying it.
+(defn lora-max-sends [(preset : I32)] : I32
+  (if (= preset 1) 4
+    3))
