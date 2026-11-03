@@ -434,7 +434,7 @@ LenReadStep read_code_lengths(Bytes data __attribute__((unused)), int bitpos __a
         if ((sym == 16)) {
         BitStep ex __attribute__((unused)) = read_bits(data, p1, 2);
         int rep __attribute__((unused)) = (3 + (ex).value);
-        void * __let_val_0 __attribute__((unused));
+        void * __let_val_0 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < rep)) {
@@ -456,7 +456,7 @@ LenReadStep read_code_lengths(Bytes data __attribute__((unused)), int bitpos __a
         if ((sym == 17)) {
         BitStep ex __attribute__((unused)) = read_bits(data, p1, 3);
         int rep __attribute__((unused)) = (3 + (ex).value);
-        void * __let_val_1 __attribute__((unused));
+        void * __let_val_1 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < rep)) {
@@ -477,7 +477,7 @@ LenReadStep read_code_lengths(Bytes data __attribute__((unused)), int bitpos __a
         } else {
         BitStep ex __attribute__((unused)) = read_bits(data, p1, 7);
         int rep __attribute__((unused)) = (11 + (ex).value);
-        void * __let_val_2 __attribute__((unused));
+        void * __let_val_2 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < rep)) {
@@ -532,7 +532,7 @@ HuffTables read_dynamic_tables(Bytes data __attribute__((unused)), int bitpos __
     BitStep hclen_s __attribute__((unused)) = read_bits(data, (hdist_s).next, 4);
     int hclen __attribute__((unused)) = (4 + (hclen_s).value);
     Vec raw_values __attribute__((unused)) = vec_new(dest);
-    int __let_val_0 __attribute__((unused));
+    int __let_val_0 __attribute__((unused)) = {0};
     int i = 0;
     int pos = (hclen_s).next;
     while (1) {
@@ -626,7 +626,7 @@ InflateStep inflate_huffman_block(Bytes data __attribute__((unused)), int bitpos
         BitStep dex __attribute__((unused)) = read_bits(data, p2, dist_extra_bits(dcode));
         int dist __attribute__((unused)) = (dist_base(dcode) + (dex).value);
         double copy_src __attribute__((unused)) = (opos - dist);
-        void * __let_val_3 __attribute__((unused));
+        void * __let_val_3 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < match_len)) {
@@ -903,7 +903,7 @@ PngHeader png_scan_header(Bytes data __attribute__((unused))) {
 
 Bytes png_copy_idat(Bytes data __attribute__((unused)), int total __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Bytes out __attribute__((unused)) = bytes_alloc(total, dest);
-    Bytes __let_val_1 __attribute__((unused));
+    Bytes __let_val_1 __attribute__((unused)) = {0};
     double pos = 8;
     double opos = 0;
     while (1) {
@@ -917,7 +917,7 @@ Bytes png_copy_idat(Bytes data __attribute__((unused)), int total __attribute__(
         break;
         } else {
         if (chunk_is(data, (pos + 4), 73, 68, 65, 84)) {
-        void * __let_val_4 __attribute__((unused));
+        void * __let_val_4 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < clen)) {
@@ -951,7 +951,7 @@ Bytes png_copy_idat(Bytes data __attribute__((unused)), int total __attribute__(
 
 Bytes png_strip_zlib_wrapper(Bytes idat __attribute__((unused)), int deflate_len __attribute__((unused)), Arena *dest __attribute__((unused))) {
     Bytes dp __attribute__((unused)) = bytes_alloc(deflate_len, dest);
-    void * __let_val_2 __attribute__((unused));
+    void * __let_val_2 __attribute__((unused)) = {0};
     int k = 0;
     while (1) {
         if ((k < deflate_len)) {
@@ -999,12 +999,12 @@ Bytes png_defilter(Bytes raw __attribute__((unused)), int width __attribute__((u
     int stride __attribute__((unused)) = (width * bpp);
     int rowlen __attribute__((unused)) = (1 + stride);
     Bytes recon __attribute__((unused)) = bytes_alloc((stride * height), dest);
-    void * __let_val_3 __attribute__((unused));
+    void * __let_val_3 __attribute__((unused)) = {0};
     double r = 0;
     while (1) {
         if ((r < height)) {
         int ftype __attribute__((unused)) = bytes_get(raw, (r * rowlen));
-        void * __let_val_5 __attribute__((unused));
+        void * __let_val_5 __attribute__((unused)) = {0};
     int x = 0;
     while (1) {
         if ((x < stride)) {
@@ -1066,7 +1066,7 @@ PngImage png_decode(Bytes data __attribute__((unused)), Arena *dest __attribute_
     int plte_pos __attribute__((unused)) = (hdr).plte_pos;
     int trns_pos __attribute__((unused)) = (hdr).trns_pos;
     int trns_len __attribute__((unused)) = (hdr).trns_len;
-    void * __let_val_4 __attribute__((unused));
+    void * __let_val_4 __attribute__((unused)) = {0};
     int i = 0;
     while (1) {
         if ((i < (width * height))) {
