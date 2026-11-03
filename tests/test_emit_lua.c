@@ -66,13 +66,34 @@ int main(void) {
             "(defn same [(a : I32) (b : I32)] : Bool (= a b))\n"
             "(defn both [(a : I32) (b : I32)] : Bool (and (> a 0) (> b 0)))", &err);
         CHECK(lua != NULL, "division, equality and `and` all emit");
-        CHECK(lua && strstr(lua, "(n // 2)") != NULL, "`/` lowers to `//` (integer division, not float)");
+        CHECK(lua && strstr(lua, "__idiv(n, 2)") != NULL,
+              "`/` lowers to the truncating helper, not Lua's flooring `//`");
+        CHECK(lua && strstr(lua, "local function __idiv") != NULL,
+              "the truncating helper is defined once in the prologue");
+        CHECK(lua && strstr(lua, "q < 0 and q * b ~= a") != NULL,
+              "the helper corrects a floored quotient only when the signs disagree");
         CHECK(lua && strstr(lua, "(a == b)") != NULL, "`=` lowers to `==` (Lua's `=` is assignment)");
         CHECK(lua && strstr(lua, "and") != NULL, "`and` is already Lua and is not renamed");
         arena_free_all(&arena);
     }
 
-    /* --- `let`: the form DEADWEIGHT's citizen policy needed, and the reason this test exists ---
+    /* --- `/` must mean what C means, including for negative dividends -------------------------------
+     * `//` floors and C truncates: -70/50 is -2 versus -1. The rating ladder (`rating.prn`) divides a
+     * difference that is negative half the time, so the two worlds printed different leaderboard numbers
+     * for the same server. The shape is asserted above; the VALUES are asserted against a real interpreter
+     * in NOOBTOPIA's tests/deadweight_board_test.lua, which pins ratingGain(1000, 930) == 15 (a -1 term). */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena, "(defn term [(mine : I32) (theirs : I32)] : I32 (/ (- theirs mine) 50))", &err);
+        CHECK(lua != NULL, "a division of a negative difference emits");
+        CHECK(lua && strstr(lua, "__idiv((theirs - mine), 50)") != NULL,
+              "the difference is handed to the truncating helper, not to `//`");
+        arena_free_all(&arena);
+    }
+
+/* --- `let`: the form DEADWEIGHT's citizen policy needed, and the reason this test exists ---
      * A sequence of scoped bindings around one expression has no direct Lua equivalent, so it lowers to
      * an immediately-invoked function. That keeps it ONE expression (so it still nests inside the
      * `(cond and then or else)` an `if` becomes) and keeps `local`'s sequential scope. */

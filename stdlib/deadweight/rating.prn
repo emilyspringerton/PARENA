@@ -1,0 +1,58 @@
+;; stdlib/deadweight/rating.prn -- the LADDER's number: what a win is worth.
+;;
+;; The founder's ask for the Roblox side: "the leaderboard can be per server and reset its fine it lets
+;; players face the noobs and also eachother to climb the elos". So there is one number a player climbs,
+;; and it lives HERE rather than in the C ladder and again in the Luau one -- the same discipline the
+;; card rules follow: one .prn, emitted twice.
+;;
+;; THIS IS NOT FIDE ELO, and it says so rather than nearly-implementing the real formula: real Elo needs
+;; 1/(1+10^(diff/400)), and PARENA v0 has no floating point at all. A piecewise approximation of that
+;; curve would be a near-miss people then trust; a clearly-labelled integer ladder with the SAME
+;; PROPERTIES is honest about what it is:
+;;
+;;   * beating somebody stronger pays more than beating somebody weaker,
+;;   * losing to somebody stronger costs less than losing to somebody weaker,
+;;   * the swing is bounded (8..24), so one lucky match cannot leapfrog the table,
+;;   * a draw moves both players by the same small amount,
+;;   * every adjustment is ZERO-SUM: the winner's gain and the loser's loss are computed from the same
+;;     difference, so a server cannot inflate its own total by playing itself.
+;;
+;; Scalar-only: I32 in, I32 out, if/arithmetic/comparison -- the subset both the C emitter and the Lua
+;; emitter accept, so this file has no second copy anywhere.
+
+(module deadweight/rating)
+(export rating-start rating-floor rating-gain rating-loss rating-draw rating-apply)
+
+(defn rating-start [] : I32 1000)
+
+;; Nobody drops below this by losing; a server leaderboard that can bury a player at 0 is a leaderboard
+;; nobody comes back to.
+(defn rating-floor [] : I32 100)
+
+;; (theirs - mine) / 50, clamped to +/-8 so the swing stays inside 8..24 whatever the gap.
+(defn rating-term [(mine : I32) (theirs : I32)] : I32
+  (let [d (- theirs mine)
+        q (/ d 50)]
+    (if (> q 8) 8 (if (< q (- 0 8)) (- 0 8) q))))
+
+;; What the WINNER gains: 16 base, plus the term for facing a stronger opponent (and minus it for a
+;; weaker one).
+(defn rating-gain [(mine : I32) (theirs : I32)] : I32
+  (+ 16 (rating-term mine theirs)))
+
+;; What MINE drops when THEIRS won. The term is taken from the WINNER's side -- (rating-term theirs
+;; mine) -- which is what makes the pair zero-sum: gain(w, l) == loss(l, w) for every pair, not just for
+;; equal ratings. (Written the other way round it prices the loser's own point of view, and the two
+;; sides of one match stop adding up: a 1000 beating a 3000 would gain 24 while the 3000 dropped 8.)
+(defn rating-loss [(mine : I32) (theirs : I32)] : I32
+  (+ 16 (rating-term theirs mine)))
+
+;; A draw: a tenth of the difference, clamped to +/-4. Zero-sum for the same reason.
+(defn rating-draw [(mine : I32) (theirs : I32)] : I32
+  (let [q (/ (- theirs mine) 100)]
+    (if (> q 4) 4 (if (< q (- 0 4)) (- 0 4) q))))
+
+;; Applies a delta without ever going under the floor.
+(defn rating-apply [(rating : I32) (delta : I32)] : I32
+  (let [next (+ rating delta)]
+    (if (< next (rating-floor)) (rating-floor) next)))

@@ -1,0 +1,61 @@
+# ladder_parity.txt -- the shared LADDER fixture. Two suites assert this same file.
+#
+#   SHANKPIT/packages/simulation/dw_ladder_parity_test.c   (make test-dw-ladder-parity)
+#   NOOBTOPIA/tests/deadweight_ladder_test.lua             (lua tests/deadweight_ladder_test.lua)
+#
+# Both sides READ THE SCRIPT BELOW and execute it, then compare the outcome lines. The script
+# is here rather than in either implementation so the two cannot drift by one of them
+# re-typing the scenario. `accept`/`decline` address "the challenge opened most recently".
+#
+# op <lid> <verb> <a> <b> <c>   verbs: reset seed | hero pid | add pid path aggr |
+#                               challenge from to now | accept now | decline | tick now |
+#                               remove pid
+# ladder <lid> meta <kind> <share> <plays> results <x4> count <n> hero <pid>
+#        last <valid> <kind> <pid0> <pid1> <winner> <rounds> <hull0> <hull1> <at_ms>
+# member <lid> pid <p> player <0/1> path <p> aggr <a> wins <w> games <g> deck <16 ids>
+# chal   <lid> slot <i> id <id> from <f> to <t> kind <k> opened <ms> expires <ms>
+#
+# The decks are NOT in the save format on purpose -- a deck is a function of the record and
+# the meta -- so they are printed here as PROOF that re-crafting reproduces them exactly.
+# Regenerate with `make regen-dw-ladder-parity`, and re-check a row by hand.
+#
+op 0 reset 777 0 0
+op 0 hero 0 0 0
+op 0 add 5 0 400
+op 0 add 6 2 800
+op 0 add 7 4 200
+op 0 challenge 0 5 1000
+op 0 accept 1200 0 0
+op 0 challenge 5 0 1300
+op 0 accept 1400 0 0
+op 0 challenge 6 7 1500
+op 0 decline 0 0 0
+op 0 challenge 7 6 1700
+op 0 accept 1800 0 0
+op 0 tick 2000 0 0
+op 0 tick 6000 0 0
+op 0 tick 10000 0 0
+ladder 0 meta 0 500 42 results 1 1 1 0 count 4 hero 0 last 1 1 7 6 0 7 20 -1 1800
+member 0 pid 0 player 1 path 2 aggr 500 wins 1 games 2 deck 6 7 8 6 7 8 6 7 8 6 7 8 6 4 5 3
+member 0 pid 5 player 0 path 0 aggr 400 wins 1 games 2 deck 6 7 8 6 7 8 6 7 8 6 7 8 6 4 5 3
+member 0 pid 6 player 0 path 2 aggr 800 wins 0 games 1 deck 6 7 8 6 7 8 6 7 8 6 7 8 6 4 5 3
+member 0 pid 7 player 0 path 4 aggr 200 wins 1 games 1 deck 6 7 8 6 7 8 6 7 8 6 7 8 6 4 5 3
+chal 0 slot 0 id 5 from 6 to 5 kind 1 opened 2000 expires 47000
+chal 0 slot 1 id 6 from 6 to 7 kind 1 opened 6000 expires 51000
+chal 0 slot 2 id 7 from 6 to 0 kind 2 opened 10000 expires 55000
+op 1 reset 4242 0 0
+op 1 hero 0 0 0
+op 1 add 5 2 900
+op 1 add 6 1 500
+op 1 challenge 5 0 1000
+op 1 tick 1010 0 0
+op 1 tick 46100 0 0
+op 1 challenge 6 0 47000
+op 1 accept 47100 0 0
+op 1 remove 5 0 0
+op 1 challenge 6 5 47200
+op 1 tick 50000 0 0
+ladder 1 meta 0 500 14 results 0 1 0 0 count 2 hero 0 last 1 2 6 0 1 7 -1 20 47100
+member 1 pid 0 player 1 path 2 aggr 500 wins 1 games 1 deck 0 1 2 0 1 2 0 1 2 0 1 2 0 7 8 6
+member 1 pid 6 player 0 path 1 aggr 500 wins 0 games 1 deck 6 7 8 6 7 8 6 7 8 6 7 8 6 4 5 3
+chal 1 slot 0 id 4 from 6 to 0 kind 2 opened 50000 expires 95000
