@@ -19,8 +19,17 @@
 ;; Total functions over I32: no floats, no randomness, no clock. The tick duration and the combat
 ;; numbers are the only things that differ between a walkie-talkie camp and a 1-mile valley.
 (module shankpit/lora-rules)
-(export lora-tick-ms lora-grid-w lora-grid-h lora-hit-permille lora-damage lora-xp-hit lora-xp-move
-        lora-resend-ms lora-max-sends)
+(export
+        lora-tick-ms
+        lora-grid-w
+        lora-grid-h
+        lora-hit-permille
+        lora-damage
+        lora-xp-hit
+        lora-xp-move
+        lora-resend-ms
+        lora-max-sends
+        lora-snapshot-global-ms)
 
 ;; How long one world tick is. Everything the players see is interpolated on the client between these.
 (defn lora-tick-ms [(preset : I32)] : I32
@@ -74,3 +83,12 @@
   (if (= preset 1) 60000
     (if (= preset 2) 15000
       30000)))
+
+;; GLOBAL AIRTIME GAP -- the per-client budget above still allows one snapshot per client per interval,
+;; which is 8 snapshots per interval at full attendance. That is more air than a mesh should spend on
+;; resync, so no snapshot at all is served inside this gap, whoever asks. Longer presets get a longer
+;; gap: the airtime is the cost, and LONG_SLOW pays it hardest.
+(defn lora-snapshot-global-ms [(preset : I32)] : I32
+  (if (= preset 1) 8000
+    (if (= preset 2) 2000
+      4000)))
