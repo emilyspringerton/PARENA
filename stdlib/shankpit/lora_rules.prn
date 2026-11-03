@@ -65,3 +65,12 @@
 (defn lora-max-sends [(preset : I32)] : I32
   (if (= preset 1) 4
     3))
+
+;; SNAPSHOT BUDGET -- the minimum gap between full-state frames the host will send to the whole mesh.
+;; A client that lost everything asks for one; a client that asks every frame would consume the air for
+;; everybody, and LoRa has no way to shout over it. One snapshot per half-minute at LONG_FAST is the
+;; shape: a player who drops out waits, and the rest of the camp keeps playing.
+(defn lora-snapshot-interval-ms [(preset : I32)] : I32
+  (if (= preset 1) 60000
+    (if (= preset 2) 15000
+      30000)))
