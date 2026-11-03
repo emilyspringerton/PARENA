@@ -33,6 +33,11 @@ static Node *mk_call2(Arena *arena, const char *head, Node *a, Node *b, int line
     return n;
 }
 static int g_sugar_counter = 0;
+/* Some backends already lower `cond` themselves -- the C emitter nests real ternaries and resolves the
+ * clause result type natively (and its type resolution is the part that a naive rewrite loses). Those
+ * backends set this to 1 so only the forms they genuinely lack (`case`, `dotimes`, `unless`, compound
+ * assignment) are rewritten here. Default 0 keeps the wasm/TS backends byte-for-byte as they were. */
+static int g_sugar_skip_cond = 0;
 
 static int is_else_test(Node *t) {
     return (t->type == NODE_KEYWORD && t->text && strcmp(t->text, ":else") == 0) ||
@@ -89,7 +94,7 @@ static Node *ast_sugar(Arena *arena, Node *n, const char **out_error) {
         return set;
     }
 
-    if (!strcmp(h, "cond")) {
+    if (!strcmp(h, "cond") && !g_sugar_skip_cond) {
         size_t nforms = n->child_count - 1;
         Node *rest = NULL;
         size_t pairs = nforms / 2;

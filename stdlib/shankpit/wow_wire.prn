@@ -38,7 +38,15 @@
     (if (= preset 2) 250
       500)))
 
-(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms)
+;; How many times a client resends ONE unacknowledged frame before giving up. Bounded on purpose: a
+;; dead server must not turn a two-byte intent into a loop that floods a 1k2 radio, and the caller has
+;; to be told the frame is abandoned (wow_client_retry returns -2) rather than retrying forever.
+(defn wow-retry-max [(preset : I32)] : I32
+  (if (= preset 1) 2
+    (if (= preset 2) 5
+      4)))
+
+(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max)
 
 ;; ---- the wire's ARITHMETIC, not just its policy ------------------------------------------------
 ;; The byte writes stay in C (PARENA has no arrays to write into), but every NUMBER in the frame is
@@ -66,5 +74,5 @@
 (defn wow-seq-next [(seq : I32)] : I32
   (if (> seq 65534) 1 (+ seq 1)))
 
-(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms
+(export wow-target-slots wow-cast-queue wow-macro-max-clauses wow-ack-ms wow-target-resend-ms wow-retry-max
         wow-entity-lo wow-entity-hi wow-entity-valid wow-def-bytes wow-seq-next)

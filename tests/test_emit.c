@@ -3292,6 +3292,61 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- F32 / I64 / fn / bare defenum variants / case in the C backend (2026-11-03, founder:
+     * "fix no F32 I64 defn fn support etc; fix emitter gap"). Each of these was a real refusal
+     * before this block existed: F32/I64 hit "unsupported return type symbol", `fn` hit "unsupported
+     * top-level form", `(defenum E A B)` hit "variant ... must be (Name)", and `case` over an I32
+     * emitted the literal, invalid `return case(u, 0, v, ...)` that gcc rejects. --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defenum MeasurementSystem Metric Imperial)\n"
+            "(fn to-mm [(v : F32) (u : I32)] : F32\n"
+            "  (case u\n"
+            "    0 v\n"
+            "    (1 2) (* v 10.0)\n"
+            "    3 (* v 25.4)\n"
+            "    0.0))\n"
+            "(fn add-wide [(a : I64) (b : I64)] : I64 (+ a b))\n";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "an F32/I64/fn/bare-defenum/case program parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src != NULL && emit_err == NULL,
+              "F32, I64, `fn` and bare defenum variants emit (all four used to be refused)");
+        if (c_src) {
+            CHECK(strstr(c_src, "float to_mm(float v") != NULL, "F32 emits as C float in the signature");
+            CHECK(strstr(c_src, "long long add_wide(long long a") != NULL,
+                  "I64 emits as C long long in the signature");
+            CHECK(strstr(c_src, "MeasurementSystem_TAG_Metric") != NULL &&
+                  strstr(c_src, "MeasurementSystem_TAG_Imperial") != NULL,
+                  "a bare-symbol defenum declares real tags");
+            CHECK(strstr(c_src, "case") == NULL,
+                  "`case` is lowered to if/else -- no literal case(...) call in the emitted C");
+            CHECK(strstr(c_src, "(u == 0)") != NULL && strstr(c_src, "((u == 1) || (u == 2))") != NULL,
+                  "each case clause becomes a real equality test, with value lists OR-ed");
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- a defenum variant that is neither a bare symbol nor a (Name ...) list is still a named
+     * failure, not silently accepted --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src = "(defenum Broken 42)";
+        const char *parse_err = NULL;
+        Node *program = parse_program(&arena, src, strlen(src), &parse_err);
+        CHECK(program != NULL, "a defenum with a numeric variant parses");
+        const char *emit_err = NULL;
+        const char *c_src = emit_c(&arena, program, &emit_err);
+        CHECK(c_src == NULL && emit_err && strstr(emit_err, "defenum: variant") != NULL,
+              "a non-symbol defenum variant still fails by name");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -1126,9 +1126,23 @@ static int process_defenum(Arena *arena, StrBuf *out, Node *node, const char **o
 
     for (size_t i = 0; i < variant_count; i++) {
         Node *variant = node->children[2 + i];
+        /* Real, additive widening (2026-11-03, founder: "fix ... defn fn support"): a bare-symbol
+         * zero-payload variant -- `(defenum MeasurementSystem Metric Imperial)` -- is the shape every
+         * other language's enum uses and the shape that was refused here, even though the EMITTER
+         * already handled a bare variant at a USE site (see emit_expr's own "A bare, zero-payload user
+         * defenum variant" branch). Accepting it at the DECLARATION site is what was missing: the
+         * variant gets tag i and no payload struct, exactly like `(Metric)` did, so both spellings
+         * coexist and nothing already-compiling changes. */
+        if (variant->type == NODE_SYMBOL) {
+            variants[i].name = variant->text;
+            variants[i].tag_value = (int)i;
+            variants[i].field_count = 0;
+            variants[i].fields = (EnumField *)arena_alloc(arena, sizeof(EnumField));
+            continue;
+        }
         if (variant->type != NODE_LIST || variant->child_count < 1 || variant->children[0]->type != NODE_SYMBOL) {
             return fail(arena, out_error,
-                        "defenum: variant at line %d must be (Name) or (Name (field : Type) ...)",
+                        "defenum: variant at line %d must be Name, (Name) or (Name (field : Type) ...)",
                         node->line) != NULL;
         }
         variants[i].name = variant->children[0]->text;
@@ -5264,6 +5278,16 @@ static const char *resolve_base_type_name(Node *type_node) {
     if (is_symbol(type_node, "I32")) return "int";
     if (is_symbol(type_node, "Bool")) return "int";
     if (is_symbol(type_node, "F64")) return "double";
+    /* `F32`/`I64` -- a real 32-bit float and a real 64-bit integer, added 2026-11-03 (founder: "fix
+     * no F32 I64 defn fn support"). The wasm backend has understood `F32` for a while
+     * (emit_llvm.c's own `float`); the C emitter never did, which is why SHANKPIT's unit layer and
+     * every other shankpit rule file had to write F64 and say so in a comment. Emitted as the C types
+     * they are named after -- `float` and `long long` -- not a typedef, so a generated file needs no
+     * extra header to use them. Deliberately NOT a wider numeric tower: `F32` does not implicitly
+     * promote to `F64` at a call site any more than `I32` does (C's own usual arithmetic conversions
+     * still apply INSIDE an expression, which is C's business, not the type system's). */
+    if (is_symbol(type_node, "F32")) return "float";
+    if (is_symbol(type_node, "I64")) return "long long";
     if (is_symbol(type_node, "String")) return "char *";
     /* `Bytes` -- a real, second core-language base type alongside
      * `String` (2026-09-09, closing the embedded-NUL-byte gap
@@ -5360,7 +5384,7 @@ static const char *resolve_declared_type(Arena *arena, Node *type_node, const ch
         if (base) return base;
         return fail(arena, out_error,
                     "defn: unsupported return type symbol '%s' at line %d (VS0's emitter only "
-                    "understands Unit/I32/Bool/F64/String/Bytes/a registered defenum/defstruct name so far)",
+                    "understands Unit/I32/I64/Bool/F32/F64/String/Bytes/a registered defenum/defstruct name so far)",
                     type_node->text ? type_node->text : "?", type_node->line);
     }
     if (type_node->type == NODE_LIST && type_node->child_count > 0 && type_node->children[0]->type == NODE_SYMBOL) {
@@ -5715,6 +5739,26 @@ static int emit_target_defn(Arena *arena, StrBuf *out, Node *target_map, const c
  * stated limitation, not silently pretended solved). A body of exactly
  * `#target {...}` skips normal body emission entirely -- see
  * emit_target_defn. */
+/* ast_sugar.h -- the SAME shared AST rewrites the wasm (emit_llvm.c) and TypeScript (emit_ts.c)
+ * backends already run, included here so the C backend understands `case`/`cond`/`dotimes`/`unless`
+ * too. Found genuinely missing 2026-11-03 (founder: "fix emitter gap"): `(case u 0 a 1 b)` over an
+ * I32 fell straight through to emit_call's generic path and emitted `return case(u, 0, a, 1, b);`
+ * -- real, invalid C that gcc rejects with `expected expression before 'case'`. The sugar pass
+ * rewrites `case` into one `if`/`=` chain per clause (evaluating the subject once via a let when it
+ * is not already a symbol), so the emitter only ever sees core forms it already handles.
+ *
+ * Included mid-file on purpose: the header only needs Arena/Node/<stdio.h>/<string.h>, all already
+ * present by this point, and its own include guard keeps a second inclusion harmless. */
+#include "ast_sugar.h"
+
+/* `fn` is accepted as a spelling of `defn` (2026-11-03). Every other language the team writes in
+ * spells a function `fn`, and the emitter's top-level dispatch treated any head that was not exactly
+ * `defn` as an unsupported top-level form. One predicate so the prototype pre-pass and the body pass
+ * cannot disagree about what a function is. */
+static int is_defn_form(Node *n) {
+    return is_call_named(n, "defn") || is_call_named(n, "fn");
+}
+
 static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_error) {
     if (defn->child_count < 3 || defn->children[1]->type != NODE_SYMBOL ||
         defn->children[2]->type != NODE_VEC) {
@@ -5753,7 +5797,8 @@ static int emit_defn(Arena *arena, StrBuf *out, Node *defn, const char **out_err
             sb_appendf(&param_list, "Arena *%s __attribute__((unused))", c_name);
         } else if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
                    param->children[2]->type == NODE_SYMBOL &&
-                   (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
+                   (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "I64") ||
+                    is_symbol(param->children[2], "Bool") || is_symbol(param->children[2], "F32") ||
                     is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String") ||
                     is_symbol(param->children[2], "Bytes"))) {
             /* A plain, non-region-annotated `I32`/`Bool`/`F64`/`String`/
@@ -6155,7 +6200,8 @@ static const char *resolve_param_prototype_type(Arena *arena, Node *param) {
     }
     if (param->child_count == 3 && param->children[1]->type == NODE_COLON &&
         param->children[2]->type == NODE_SYMBOL &&
-        (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "Bool") ||
+        (is_symbol(param->children[2], "I32") || is_symbol(param->children[2], "I64") ||
+         is_symbol(param->children[2], "Bool") || is_symbol(param->children[2], "F32") ||
          is_symbol(param->children[2], "F64") || is_symbol(param->children[2], "String") ||
          is_symbol(param->children[2], "Bytes"))) {
         return resolve_declared_type(arena, param->children[2], &dummy_err);
@@ -6346,6 +6392,26 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * declared in <math.h>). */
     sb_append(&out, "#include <math.h>\n\n");
 
+    /* AST sugar, once per defn body, before anything reads a body: `case`/`cond`/`dotimes`/`unless`
+     * are rewrites, not emitter features, and the wasm/TS backends have always done this (see
+     * ast_sugar.h's own header comment). The loop starts at 4 to match emit_llvm.c -- index 3 is the
+     * `:` and index 4 the declared return type, which can itself be a list (`(Result ..)`) but is
+     * never a sugar form. */
+    g_sugar_counter = 0;
+    g_sugar_skip_cond = 1;   /* emit.c lowers `cond` itself, with the clause result type resolved */
+    for (size_t i = 0; i < program->child_count; i++) {
+        Node *form = program->children[i];
+        if (!is_defn_form(form)) continue;
+        for (size_t c = 4; c < form->child_count; c++) {
+            form->children[c] = ast_sugar(arena, form->children[c], out_error);
+            if (*out_error) {
+                sb_free(&out);
+                return NULL;
+            }
+        }
+    }
+    g_sugar_skip_cond = 0;   /* leave the shared header as the other backends expect to find it */
+
     /* Pre-pass: every defenum AND defstruct, processed together in ONE
      * pass, in their real, natural combined-file order -- before any
      * defn. Real, honest, narrower limitation, unchanged from before:
@@ -6467,7 +6533,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
      * the same value either way. */
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
-        if (!is_call_named(form, "defn")) continue;
+        if (!is_defn_form(form)) continue;
         if (form->child_count < 3 || form->children[1]->type != NODE_SYMBOL) continue;
         if (form->child_count < 5 || form->children[3]->type != NODE_COLON) continue;
         const char *proto_fn_name = mangle(arena, form->children[1]->text);
@@ -6508,7 +6574,7 @@ const char *emit_c(Arena *arena, Node *program, const char **out_error) {
     sb_init(&defn_out);
     for (size_t i = 0; i < program->child_count; i++) {
         Node *form = program->children[i];
-        if (!is_call_named(form, "defn")) continue;
+        if (!is_defn_form(form)) continue;
         if (!emit_defn(arena, &defn_out, form, out_error)) {
             sb_free(&defn_out);
             sb_free(&out);
