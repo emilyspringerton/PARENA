@@ -54,6 +54,21 @@ static inline __attribute__((unused)) Mesh Mesh_new(int vertex_count, Vec pos, V
     return v;
 }
 
+typedef struct {
+    int target_count;
+    int vertex_count;
+    Vec weights;
+    Vec deltas;
+} MorphSet;
+static inline __attribute__((unused)) MorphSet MorphSet_new(int target_count, int vertex_count, Vec weights, Vec deltas) {
+    MorphSet v;
+    v.target_count = target_count;
+    v.vertex_count = vertex_count;
+    v.weights = weights;
+    v.deltas = deltas;
+    return v;
+}
+
 double f64_at(Vec *, int);
 int i32_at(Vec *, int);
 int f64_push_(Vec *, double);
@@ -68,7 +83,13 @@ int zeros_push_(Vec *, int);
 Vec rig_solve(Rig *, Anatomy *, Arena *);
 Mesh mesh_new(Arena *);
 int mesh_add_vertex_(Mesh *, double, double, double, int, int, double);
+MorphSet morph_new(int, int, Arena *);
+int morph_add_delta_(MorphSet *, double, double, double);
+int morph_add_weight_(MorphSet *, double);
+int morph_ready_(MorphSet *);
+double morph_axis_sum(MorphSet *, int, int, int, int);
 Vec skin_deform(Vec *, Mesh *, Arena *);
+Vec skin_deform_morphed(Vec *, Mesh *, MorphSet *, Arena *);
 int glb_u32_le(Vec *, int);
 int glb_json_chunk_length(Vec *);
 int near_(double, double);
@@ -77,6 +98,7 @@ int self_test_skin(Arena *);
 int self_test_proportions(Arena *);
 int glb_test_header_push_(Vec *);
 int self_test_glb(Arena *);
+int self_test_morphs(Arena *);
 int self_test(Arena *);
 
 double f64_at(Vec * v __attribute__((unused)), int idx __attribute__((unused))) {
@@ -323,16 +345,98 @@ int mesh_add_vertex_(Mesh * m __attribute__((unused)), double x __attribute__((u
     return 1;
 }
 
+MorphSet morph_new(int target_count __attribute__((unused)), int vertex_count __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return MorphSet_new(target_count, vertex_count, vec_new(dest), vec_new(dest));
+}
+
+int morph_add_delta_(MorphSet * m __attribute__((unused)), double dx __attribute__((unused)), double dy __attribute__((unused)), double dz __attribute__((unused))) {
+    int _0 __attribute__((unused)) = f64_push_(&((m)->deltas), dx);
+    int _1 __attribute__((unused)) = f64_push_(&((m)->deltas), dy);
+    int _2 __attribute__((unused)) = f64_push_(&((m)->deltas), dz);
+    return 1;
+}
+
+int morph_add_weight_(MorphSet * m __attribute__((unused)), double w __attribute__((unused))) {
+    int _0 __attribute__((unused)) = f64_push_(&((m)->weights), w);
+    return 1;
+}
+
+int morph_ready_(MorphSet * m __attribute__((unused))) {
+    return ((vec_len(&((m)->weights)) == (m)->target_count) && (vec_len(&((m)->deltas)) == ((m)->target_count * ((m)->vertex_count * 3))));
+}
+
+double morph_axis_sum(MorphSet * m __attribute__((unused)), int v __attribute__((unused)), int vc __attribute__((unused)), int targets __attribute__((unused)), int axis __attribute__((unused))) {
+    double __loop_result_6 __attribute__((unused));
+    int t = 0;
+    double sum = 0.0;
+    while (1) {
+        if ((t >= targets)) {
+        __loop_result_6 = sum;
+        break;
+        } else {
+        int __recur_tmp_0 = (t + 1);
+        double __recur_tmp_1 = (sum + (f64_at(&((m)->weights), t) * f64_at(&((m)->deltas), ((((t * vc) + v) * 3) + axis))));
+        t = __recur_tmp_0;
+        sum = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_6;
+}
+
 Vec skin_deform(Vec * world __attribute__((unused)), Mesh * mesh __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = (mesh)->vertex_count;
     Vec out __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_6 __attribute__((unused));
+    void * __loop_result_7 __attribute__((unused));
     int v = 0;
     while (1) {
         if ((v < n)) {
     double x __attribute__((unused)) = f64_at(&((mesh)->pos), (v * 3));
     double y __attribute__((unused)) = f64_at(&((mesh)->pos), ((v * 3) + 1));
     double z __attribute__((unused)) = f64_at(&((mesh)->pos), ((v * 3) + 2));
+    int b0 __attribute__((unused)) = i32_at(&((mesh)->b0), v);
+    int b1 __attribute__((unused)) = i32_at(&((mesh)->b1), v);
+    double w0 __attribute__((unused)) = f64_at(&((mesh)->w0), v);
+    double w1 __attribute__((unused)) = (1.0 - w0);
+    double x0 __attribute__((unused)) = ((((f64_at(world, (b0 * 16)) * x) + (f64_at(world, ((b0 * 16) + 1)) * y)) + (f64_at(world, ((b0 * 16) + 2)) * z)) + f64_at(world, ((b0 * 16) + 3)));
+    double y0 __attribute__((unused)) = ((((f64_at(world, ((b0 * 16) + 4)) * x) + (f64_at(world, ((b0 * 16) + 5)) * y)) + (f64_at(world, ((b0 * 16) + 6)) * z)) + f64_at(world, ((b0 * 16) + 7)));
+    double z0 __attribute__((unused)) = ((((f64_at(world, ((b0 * 16) + 8)) * x) + (f64_at(world, ((b0 * 16) + 9)) * y)) + (f64_at(world, ((b0 * 16) + 10)) * z)) + f64_at(world, ((b0 * 16) + 11)));
+    if ((b1 < 0)) {
+    int _0 __attribute__((unused)) = f64_push_(&(out), x0);
+    int _1 __attribute__((unused)) = f64_push_(&(out), y0);
+    int _2 __attribute__((unused)) = f64_push_(&(out), z0);
+    (void)(0);
+    } else {
+    double x1 __attribute__((unused)) = ((((f64_at(world, (b1 * 16)) * x) + (f64_at(world, ((b1 * 16) + 1)) * y)) + (f64_at(world, ((b1 * 16) + 2)) * z)) + f64_at(world, ((b1 * 16) + 3)));
+    double y1 __attribute__((unused)) = ((((f64_at(world, ((b1 * 16) + 4)) * x) + (f64_at(world, ((b1 * 16) + 5)) * y)) + (f64_at(world, ((b1 * 16) + 6)) * z)) + f64_at(world, ((b1 * 16) + 7)));
+    double z1 __attribute__((unused)) = ((((f64_at(world, ((b1 * 16) + 8)) * x) + (f64_at(world, ((b1 * 16) + 9)) * y)) + (f64_at(world, ((b1 * 16) + 10)) * z)) + f64_at(world, ((b1 * 16) + 11)));
+    int _0 __attribute__((unused)) = f64_push_(&(out), ((x0 * w0) + (x1 * w1)));
+    int _1 __attribute__((unused)) = f64_push_(&(out), ((y0 * w0) + (y1 * w1)));
+    int _2 __attribute__((unused)) = f64_push_(&(out), ((z0 * w0) + (z1 * w1)));
+    (void)(0);
+    }
+        int __recur_tmp_0 = (v + 1);
+        v = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return out;
+}
+
+Vec skin_deform_morphed(Vec * world __attribute__((unused)), Mesh * mesh __attribute__((unused)), MorphSet * m __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = (mesh)->vertex_count;
+    int vc __attribute__((unused)) = (m)->vertex_count;
+    int targets __attribute__((unused)) = (m)->target_count;
+    Vec out __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_8 __attribute__((unused));
+    int v = 0;
+    while (1) {
+        if ((v < n)) {
+    double x __attribute__((unused)) = (f64_at(&((mesh)->pos), (v * 3)) + morph_axis_sum(m, v, vc, targets, 0));
+    double y __attribute__((unused)) = (f64_at(&((mesh)->pos), ((v * 3) + 1)) + morph_axis_sum(m, v, vc, targets, 1));
+    double z __attribute__((unused)) = (f64_at(&((mesh)->pos), ((v * 3) + 2)) + morph_axis_sum(m, v, vc, targets, 2));
     int b0 __attribute__((unused)) = i32_at(&((mesh)->b0), v);
     int b1 __attribute__((unused)) = i32_at(&((mesh)->b1), v);
     double w0 __attribute__((unused)) = f64_at(&((mesh)->w0), v);
@@ -475,7 +579,29 @@ int self_test_glb(Arena *dest __attribute__((unused))) {
     return (ok_json && (ok_short && ok_magic));
 }
 
+int self_test_morphs(Arena *dest __attribute__((unused))) {
+    Rig rig __attribute__((unused)) = skeleton_standard(dest);
+    Anatomy neutral __attribute__((unused)) = Anatomy_new(1.0, 1.0, 1.0, 0.5);
+    Vec world __attribute__((unused)) = rig_solve(&(rig), &(neutral), dest);
+    Mesh m __attribute__((unused)) = mesh_new(dest);
+    int _ __attribute__((unused)) = mesh_add_vertex_(&(m), 1.0, 2.0, 3.0, 5, -1, 1.0);
+    MorphSet ms __attribute__((unused)) = morph_new(2, 1, dest);
+    int _d0 __attribute__((unused)) = morph_add_delta_(&(ms), 0.5, -0.5, 0.0);
+    int _d1 __attribute__((unused)) = morph_add_delta_(&(ms), 0.0, 2.0, 0.0);
+    int _w0 __attribute__((unused)) = morph_add_weight_(&(ms), 1.0);
+    int _w1 __attribute__((unused)) = morph_add_weight_(&(ms), 0.5);
+    int ok_ready __attribute__((unused)) = morph_ready_(&(ms));
+    Vec cooked __attribute__((unused)) = skin_deform_morphed(&(world), &(m), &(ms), dest);
+    int ok_x __attribute__((unused)) = near_(f64_at(&(cooked), 0), 1.5);
+    int ok_y __attribute__((unused)) = near_(f64_at(&(cooked), 1), 4.05);
+    int ok_z __attribute__((unused)) = near_(f64_at(&(cooked), 2), 3.0);
+    MorphSet partial __attribute__((unused)) = morph_new(2, 1, dest);
+    int _p0 __attribute__((unused)) = morph_add_delta_(&(partial), 0.0, 0.0, 0.0);
+    int ok_partial __attribute__((unused)) = (!(morph_ready_(&(partial))));
+    return (ok_ready && (ok_x && (ok_y && (ok_z && ok_partial))));
+}
+
 int self_test(Arena *dest __attribute__((unused))) {
-    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && self_test_glb(dest))));
+    return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && self_test_morphs(dest)))));
 }
 

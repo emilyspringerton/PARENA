@@ -58,9 +58,10 @@ shared file-I/O gap before real `.prn` source is worth writing).
 The avatar/character builder for the online game, starting where a builder actually has to start:
 bones. Real today — a canonical 20-bone flat skeleton (a parent's index is always lower than its
 children's), forward kinematics from bind translation + unit quaternion + per-bone scale,
-2-influence linear blend skinning, masculine/feminine proportions as scalars over one shared
-topology, and a GLB/VRM container reader for the import path. Quaternions rather than Euler angles
-because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 15
+2-influence linear blend skinning, morph targets (blend shapes) applied inside the skinning pass,
+masculine/feminine proportions as scalars over one shared topology, and a GLB/VRM container
+reader for the import path. Quaternions rather than Euler angles
+because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 23
 hand-derived assertions. Not yet: morph targets, GLB body decode, any renderer, clothing, export —
 see `stdlib/forgedinface/NORTHSTAR.md`.
 

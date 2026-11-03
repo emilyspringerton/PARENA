@@ -39,11 +39,12 @@
 (module forgedinface/rig)
 (import vec)
 
-(export Rig Anatomy Mesh
+(export Rig Anatomy Mesh MorphSet
         skeleton/standard
         rig/solve rig/effective-scale
         mesh/new mesh/add-vertex!
-        skin/deform
+        skin/deform skin/deform-morphed
+        morph/new morph/add-delta! morph/add-weight! morph/ready?
         glb/json-chunk-length
         self-test)
 
@@ -310,6 +311,57 @@
 
 ;; skin/deform — LBS over every vertex, returning the cooked positions (3 F64 per vertex, same
 ;; order). Two influences, weights summing to 1; b1 == -1 means pure single-bone.
+;; ---------------------------------------------------------------------------
+;; Morph targets (blend shapes) — Phase 1 of NORTHSTAR.md
+;; ---------------------------------------------------------------------------
+;; A blend shape is a per-vertex displacement activated by a weight: the standard way one face
+;; gets "blink 40%, a bit of smile" out of ONE topology instead of an asset per expression.
+;; Deltas are in bind space, the same space the base positions are in, so a morphed mesh then
+;; follows the bones normally.
+;;
+;; Storage is target-major and flat, because that is the order an importer reads and an agent
+;; rewrites it: deltas[((t * vertex-count) + v) * 3 + axis]. Weights are one F64 per target.
+;; Everything is appended in order (this module never index-assigns a Vec), and `morph/ready?`
+;; is the honest guard that the caller actually supplied target-count weights and
+;; target-count * vertex-count * 3 deltas before anything is applied.
+(defstruct MorphSet
+  (target-count : I32)
+  (vertex-count : I32)
+  (weights      : (Vec F64))  ;; 1 per target
+  (deltas       : (Vec F64))) ;; target-major, 3 per vertex per target
+
+(defn morph/new [(target-count : I32) (vertex-count : I32) (dest : Arena @ Region)] : MorphSet @ Region
+  {:target-count target-count
+   :vertex-count vertex-count
+   :weights (vec/new dest)
+   :deltas (vec/new dest)})
+
+(defn morph/add-delta! [(m : &mut MorphSet) (dx : F64) (dy : F64) (dz : F64)] : I32
+  (let [_0 (f64-push! &mut (get-field m :deltas) dx)
+        _1 (f64-push! &mut (get-field m :deltas) dy)
+        _2 (f64-push! &mut (get-field m :deltas) dz)]
+    1))
+
+(defn morph/add-weight! [(m : &mut MorphSet) (w : F64)] : I32
+  (let [_0 (f64-push! &mut (get-field m :weights) w)]
+    1))
+
+(defn morph/ready? [(m : &MorphSet)] : Bool
+  (and (= (vec/len &(get-field m :weights)) (get-field m :target-count))
+       (= (vec/len &(get-field m :deltas))
+          (* (get-field m :target-count) (* (get-field m :vertex-count) 3)))))
+
+;; sum of weight_t * delta_t[vertex][axis] over every target — the whole blend-shape evaluation,
+;; one axis at a time so no temporary buffer is needed.
+(defn morph/axis-sum [(m : &MorphSet) (v : I32) (vc : I32) (targets : I32) (axis : I32)] : F64
+  (loop [t 0 sum 0.0]
+    (if (>= t targets)
+      sum
+      (recur (+ t 1)
+             (+ sum (* (f64-at &(get-field m :weights) t)
+                       (f64-at &(get-field m :deltas)
+                               (+ (* (+ (* t vc) v) 3) axis))))))))
+
 (defn skin/deform [(world : &(Vec F64)) (mesh : &Mesh) (dest : Arena @ Region)] : (Vec F64) @ Region
   (let [n (get-field mesh :vertex-count)
         out (vec/new dest)]
@@ -318,6 +370,61 @@
         (let [x (f64-at &(get-field mesh :pos) (* v 3))
               y (f64-at &(get-field mesh :pos) (+ (* v 3) 1))
               z (f64-at &(get-field mesh :pos) (+ (* v 3) 2))
+              b0 (i32-at &(get-field mesh :b0) v)
+              b1 (i32-at &(get-field mesh :b1) v)
+              w0 (f64-at &(get-field mesh :w0) v)
+              w1 (- 1.0 w0)
+              ;; b0 contribution
+              x0 (+ (* (f64-at world (* b0 16)) x)
+                    (* (f64-at world (+ (* b0 16) 1)) y)
+                    (* (f64-at world (+ (* b0 16) 2)) z)
+                    (f64-at world (+ (* b0 16) 3)))
+              y0 (+ (* (f64-at world (+ (* b0 16) 4)) x)
+                    (* (f64-at world (+ (* b0 16) 5)) y)
+                    (* (f64-at world (+ (* b0 16) 6)) z)
+                    (f64-at world (+ (* b0 16) 7)))
+              z0 (+ (* (f64-at world (+ (* b0 16) 8)) x)
+                    (* (f64-at world (+ (* b0 16) 9)) y)
+                    (* (f64-at world (+ (* b0 16) 10)) z)
+                    (f64-at world (+ (* b0 16) 11)))]
+          (if (< b1 0)
+            (let [_0 (f64-push! &mut out x0)
+                  _1 (f64-push! &mut out y0)
+                  _2 (f64-push! &mut out z0)]
+              0)
+            (let [x1 (+ (* (f64-at world (* b1 16)) x)
+                        (* (f64-at world (+ (* b1 16) 1)) y)
+                        (* (f64-at world (+ (* b1 16) 2)) z)
+                        (f64-at world (+ (* b1 16) 3)))
+                  y1 (+ (* (f64-at world (+ (* b1 16) 4)) x)
+                        (* (f64-at world (+ (* b1 16) 5)) y)
+                        (* (f64-at world (+ (* b1 16) 6)) z)
+                        (f64-at world (+ (* b1 16) 7)))
+                  z1 (+ (* (f64-at world (+ (* b1 16) 8)) x)
+                        (* (f64-at world (+ (* b1 16) 9)) y)
+                        (* (f64-at world (+ (* b1 16) 10)) z)
+                        (f64-at world (+ (* b1 16) 11)))
+                  _0 (f64-push! &mut out (+ (* x0 w0) (* x1 w1)))
+                  _1 (f64-push! &mut out (+ (* y0 w0) (* y1 w1)))
+                  _2 (f64-push! &mut out (+ (* z0 w0) (* z1 w1)))]
+              0)))
+        (recur (+ v 1))))
+    out))
+
+;; morph weights + skinning in ONE pass: a builder frame recomputes this after every slider
+;; move, so the deltas fold into the loop that already touches each vertex instead of
+;; materializing an intermediate posed-position buffer.
+(defn skin/deform-morphed [(world : &(Vec F64)) (mesh : &Mesh) (m : &MorphSet)
+                           (dest : Arena @ Region)] : (Vec F64) @ Region
+  (let [n (get-field mesh :vertex-count)
+        vc (get-field m :vertex-count)
+        targets (get-field m :target-count)
+        out (vec/new dest)]
+    (loop [v 0]
+      (when (< v n)
+        (let [x (+ (f64-at &(get-field mesh :pos) (* v 3)) (morph/axis-sum m v vc targets 0))
+              y (+ (f64-at &(get-field mesh :pos) (+ (* v 3) 1)) (morph/axis-sum m v vc targets 1))
+              z (+ (f64-at &(get-field mesh :pos) (+ (* v 3) 2)) (morph/axis-sum m v vc targets 2))
               b0 (i32-at &(get-field mesh :b0) v)
               b1 (i32-at &(get-field mesh :b1) v)
               w0 (f64-at &(get-field mesh :w0) v)
@@ -483,7 +590,34 @@
         ok-magic (= (glb/json-chunk-length &bad) -1)]
     (and ok-json (and ok-short ok-magic))))
 
+;; morph targets: weighted deltas in bind space, applied in the same pass as skinning.
+(defn self-test-morphs [(dest : Arena @ Region)] : Bool
+  (let [rig (skeleton/standard dest)
+        neutral {:shoulder-x 1.0 :hip-x 1.0 :limb-y 1.0 :masc-fem 0.5}
+        world (rig/solve &rig &neutral dest)
+        m (mesh/new dest)
+        _ (mesh/add-vertex! &mut m 1.0 2.0 3.0 5 -1 1.0)
+        ms (morph/new 2 1 dest)
+        _d0 (morph/add-delta! &mut ms 0.5 -0.5 0.0)
+        _d1 (morph/add-delta! &mut ms 0.0 2.0 0.0)
+        _w0 (morph/add-weight! &mut ms 1.0)
+        _w1 (morph/add-weight! &mut ms 0.5)
+        ok-ready (morph/ready? &ms)
+        ;; hand-derived: X = 1.0 + 1.0*0.5 + 0.5*0.0 = 1.5; Z is untouched by both targets = 3.0;
+        ;; Y = 2.0 + 1.0*(-0.5) + 0.5*2.0 = 2.5, then bone 5 adds its own 1.55 bind translation
+        ;; = 4.05.
+        cooked (skin/deform-morphed &world &m &ms dest)
+        ok-x (near? (f64-at &cooked 0) 1.5)
+        ok-y (near? (f64-at &cooked 1) 4.05)
+        ok-z (near? (f64-at &cooked 2) 3.0)
+        ;; a half-filled set fails closed instead of being silently misread
+        partial (morph/new 2 1 dest)
+        _p0 (morph/add-delta! &mut partial 0.0 0.0 0.0)
+        ok-partial (not (morph/ready? &partial))]
+    (and ok-ready (and ok-x (and ok-y (and ok-z ok-partial))))))
+
 (defn self-test [(dest : Arena @ Region)] : Bool
   (and (self-test-skeleton dest)
        (and (self-test-skin dest)
-            (and (self-test-proportions dest) (self-test-glb dest)))))
+            (and (self-test-proportions dest)
+                 (and (self-test-glb dest) (self-test-morphs dest))))))

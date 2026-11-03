@@ -1,8 +1,9 @@
 # FORGEDINFACE — the character builder
 
-**Status (2026-11-03): v0 rig core is real, built, and tested.** `stdlib/forgedinface/rig.prn`
+**Status (2026-11-03): v0 rig core + morph targets are real, built, and tested.** `stdlib/forgedinface/rig.prn`
 compiles with `parena build`, and `make test-forgedinface` builds it under
-`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 15 hand-derived assertions, all passing.
+`gcc -std=c99 -Wall -Wextra -pedantic -Werror` and runs 23 hand-derived assertions in five checks (skeleton, skinning, proportions, GLB, morphs), all
+passing.
 Nothing renders yet — there is no mesh importer past the GLB header, no host, and no editor.
 
 Founder framing that started this: free VTuber avatars have no web-based builder like VRoid
@@ -19,7 +20,8 @@ pipeline.
 | Pose | bind translation + unit quaternion + per-bone scale | animation clips, IK |
 | FK | one flat forward pass, world matrices as 16 F64 per bone | rotation from angles (quats only, see below) |
 | Skinning | linear blend, 2 influences, weights sum to 1 | 4-influence, dual quaternions |
-| Customization | masc/fem bias + shoulder/hip/limb scalars over ONE topology | blend-shape/morph-target deltas |
+| Customization | masc/fem bias + shoulder/hip/limb scalars over ONE topology | per-bone twist/roll helpers |
+| Morph targets | weighted per-vertex deltas (blend shapes), folded into the skinning pass | expression presets, `morph/ready?` enforced at call sites |
 | Import | GLB/VRM container header + JSON chunk bounds | JSON node/skin/mesh decode, VRoid bone remap |
 | Output | cooked vertex positions in arena memory | any renderer, any export format |
 
@@ -78,7 +80,9 @@ Found live while building it, all in the same family the stdlib already document
 
 ## Phases after v0
 
-1. **Morph targets** — blend-shape deltas accumulated before skinning (face customization proper).
+1. **Morph targets — DONE (2026-11-03).** `MorphSet` + `morph/new`/`add-delta!`/`add-weight!`/`ready?`,
+   applied inside `skin/deform-morphed` in the same loop that skins, so a slider move costs one
+   pass and no intermediate buffer. Face customization is now real at the data layer.
 2. **GLB body decode** — accessors/bufferViews/nodes/skins, so a VRoid export actually loads;
    then the VRoid→20-bone remap, with decimation for VRoid's high-poly hair.
 3. **Host** — one renderer (C/SDL2 first, matching SHANKPIT's lineage) drawing cooked vertices.
