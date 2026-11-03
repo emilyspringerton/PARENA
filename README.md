@@ -88,10 +88,13 @@ compiles both through `parena build` under `gcc -Werror` and runs hand-derived a
 floor-plan painting (a 2D grid with Bresenham runs, rectangles, and `enclosed-area` — a fixpoint
 flood from the border that answers "did my walls actually close"), and face-culled mesh emission
 (one quad per exposed face, 8 floats per vertex, centred, indexed) — one cell is 6 quads, two
-cells sharing a face are 10, the real cinder block is 40. `make test-forgedlevel` passes
-`level=1 plan2d=1 line=1 mesh=1 cull=1 mod=1`. Not yet: adjacency/joinery, the bevel pass,
-mechanical FK/IK, RL actuators, SDF/3D print, serialization, host — see
-`stdlib/forgedlevel/NORTHSTAR.md`.
+cells sharing a face are 10, the real cinder block is 40. Painted cells then EXTRUDE: each cell is
+one block footprint repeated once per course, with courses derived from the same pitch rule the
+wall tool uses, so the height slider and the masonry agree by construction (800 mm at 200 mm
+courses + 10 mm joints is 3 courses, 36 blocks, 432000 cm3, 1036.8 kg of concrete).
+`make test-forgedlevel` passes `level=1 plan2d=1 line=1 mesh=1 cull=1 extrude=1 mod=1`. Not yet:
+floor slabs, lintels, adjacency/joinery, the bevel pass, mechanical FK/IK, RL actuators, SDF/3D
+print, serialization, host — see `stdlib/forgedlevel/NORTHSTAR.md`.
 
 ## Standard library — full planned API surface
 

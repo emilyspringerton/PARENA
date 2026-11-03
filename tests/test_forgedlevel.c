@@ -19,16 +19,18 @@ int main(void) {
     int line = self_test_line(&arena);
     int mesh = self_test_mesh(&arena);
     int cull = self_test_cull(&arena);
+    int extrude = self_test_extrude(&arena);
     int mod = self_test_mod(&arena);
 
-    printf("level=%d plan2d=%d line=%d mesh=%d cull=%d mod=%d\n",
-           level, plan2d, line, mesh, cull, mod);
+    printf("level=%d plan2d=%d line=%d mesh=%d cull=%d extrude=%d mod=%d\n",
+           level, plan2d, line, mesh, cull, extrude, mod);
 
     assert(level);
     assert(plan2d);
     assert(line);
     assert(mesh);
     assert(cull);
+    assert(extrude);
     assert(mod);
 
     printf("test_forgedlevel: self-test (real PARENA-native test logic) passed\n");

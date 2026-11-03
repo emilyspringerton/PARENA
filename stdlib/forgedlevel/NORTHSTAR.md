@@ -188,3 +188,21 @@ Both belong to the level concern, so this is where the code goes.
 
 Next: extrusion (painted cells -> courses -> the wall tool), then adjacency/joinery, then the
 bevel pass that the material's `bevel` field is still waiting for.
+
+---
+
+## 2026-11-03 — Extrusion landed (Phase 1 complete)
+
+`extrude!` closes Phase 1: a painted plan becomes a structure. Each painted cell is one block
+footprint; courses come from the same pitch rule as the wall tool, so the two cannot disagree.
+`Structure` carries cells, courses, blocks, enclosed room cells, primitive cells, volume and mass,
+and `structure/*` accessors expose it (they exist because a struct returned from another module
+cannot be `get-field`ed by a caller yet).
+
+Hand-derived: 6x6 plan, 4x4 outlined room -> 12 wall cells, 4 interior; 800 mm at 200 mm courses
++ 10 mm joints -> 3 courses -> 36 blocks -> 432000 cm3 -> 1036.8 kg concrete -> 432 primitive
+cells; a 200 mm spec gives exactly 1 course.
+
+Deliberately not built yet, and next in line: **floor slabs** for the enclosed area (rooms are
+counted but not poured), lintels and door openings, and multi-storey stacking. All three are
+arithmetic over the same `Structure`, not new data.

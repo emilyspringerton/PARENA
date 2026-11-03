@@ -122,6 +122,38 @@ static inline __attribute__((unused)) Grid Grid_new(int w, int h, Vec cells) {
     return v;
 }
 
+typedef struct {
+    double height_mm;
+    double course_mm;
+    double gap_mm;
+} ExtrudeSpec;
+static inline __attribute__((unused)) ExtrudeSpec ExtrudeSpec_new(double height_mm, double course_mm, double gap_mm) {
+    ExtrudeSpec v;
+    v.height_mm = height_mm;
+    v.course_mm = course_mm;
+    v.gap_mm = gap_mm;
+    return v;
+}
+
+typedef struct {
+    int cells;
+    int courses;
+    int blocks;
+    int rooms;
+    int prims;
+    double volume_cm3;
+} Structure;
+static inline __attribute__((unused)) Structure Structure_new(int cells, int courses, int blocks, int rooms, int prims, double volume_cm3) {
+    Structure v;
+    v.cells = cells;
+    v.courses = courses;
+    v.blocks = blocks;
+    v.rooms = rooms;
+    v.prims = prims;
+    v.volume_cm3 = volume_cm3;
+    return v;
+}
+
 double f64_at(Vec *, int);
 int i32_at(Vec *, int);
 int f64_push_(Vec *, double);
@@ -217,6 +249,17 @@ int flood_(Grid *);
 int enclosed_area(Grid *);
 int self_test_plan2d(Arena *);
 int self_test_line(Arena *);
+ExtrudeSpec extrude_spec(double, double, double);
+int extrude_courses(ExtrudeSpec *);
+Structure extrude_(Grid *, ExtrudeSpec *, int, Library *);
+int structure_cells(Structure *);
+int structure_courses(Structure *);
+int structure_blocks(Structure *);
+int structure_rooms(Structure *);
+int structure_prims(Structure *);
+double structure_volume_cm3(Structure *);
+double structure_mass_kg(Structure *, MaterialTable *, int);
+int self_test_extrude(Arena *);
 WallMod cottage_spec();
 int self_test_mod(Arena *);
 
@@ -1207,6 +1250,88 @@ int self_test_line(Arena *dest __attribute__((unused))) {
     int _2 __attribute__((unused)) = paint_line_(&(g), 0, 0, 99, 0, 1);
     int ok_clipped __attribute__((unused)) = (grid_at(&(g), 7, 0) == 1);
     return (ok_count && (ok_col && (ok_left && (ok_right && (ok_row && ok_clipped)))));
+}
+
+ExtrudeSpec extrude_spec(double height_mm __attribute__((unused)), double course_mm __attribute__((unused)), double gap_mm __attribute__((unused))) {
+    return ExtrudeSpec_new(height_mm, course_mm, gap_mm);
+}
+
+int extrude_courses(ExtrudeSpec * spec __attribute__((unused))) {
+    double pitch __attribute__((unused)) = ((spec)->course_mm + (spec)->gap_mm);
+    double height __attribute__((unused)) = (spec)->height_mm;
+    double gap __attribute__((unused)) = (spec)->gap_mm;
+    if ((pitch <= 0.0)) {
+    return 0;
+    } else {
+    return f64_to_i32(floor(((height + gap) / pitch)));
+    }
+}
+
+Structure extrude_(Grid * g __attribute__((unused)), ExtrudeSpec * spec __attribute__((unused)), int block __attribute__((unused)), Library * lib __attribute__((unused))) {
+    int cells __attribute__((unused)) = grid_count(g, 1);
+    int rooms __attribute__((unused)) = enclosed_area(g);
+    int courses __attribute__((unused)) = extrude_courses(spec);
+    int blocks __attribute__((unused)) = (cells * courses);
+    int bp __attribute__((unused)) = lib_prims(lib, block);
+    double bv __attribute__((unused)) = lib_volume_cm3(lib, block);
+    return Structure_new(cells, courses, blocks, rooms, (bp * blocks), (bv * i32_to_f64(blocks)));
+}
+
+int structure_cells(Structure * s __attribute__((unused))) {
+    return (s)->cells;
+}
+
+int structure_courses(Structure * s __attribute__((unused))) {
+    return (s)->courses;
+}
+
+int structure_blocks(Structure * s __attribute__((unused))) {
+    return (s)->blocks;
+}
+
+int structure_rooms(Structure * s __attribute__((unused))) {
+    return (s)->rooms;
+}
+
+int structure_prims(Structure * s __attribute__((unused))) {
+    return (s)->prims;
+}
+
+double structure_volume_cm3(Structure * s __attribute__((unused))) {
+    return (s)->volume_cm3;
+}
+
+double structure_mass_kg(Structure * s __attribute__((unused)), MaterialTable * mats __attribute__((unused)), int mat __attribute__((unused))) {
+    double d __attribute__((unused)) = mats_density(mats, mat);
+    if ((d < 0.0)) {
+    return -1.0;
+    } else {
+    return ((s)->volume_cm3 * (d / 1000000.0));
+    }
+}
+
+int self_test_extrude(Arena *dest __attribute__((unused))) {
+    Library lib __attribute__((unused)) = lib_new(dest);
+    Vec cells __attribute__((unused)) = vec_new(dest);
+    Vec nested __attribute__((unused)) = vec_new(dest);
+    int _0 __attribute__((unused)) = block_cinder_(&(cells), &(nested), 0);
+    int blk __attribute__((unused)) = lib_add_(&(lib), 4, 2, 2, 10.0, &(cells), &(nested));
+    Grid g __attribute__((unused)) = grid_new(6, 6, dest);
+    int _1 __attribute__((unused)) = paint_rect_(&(g), 1, 1, 4, 4, 1);
+    ExtrudeSpec spec __attribute__((unused)) = extrude_spec(800.0, 200.0, 10.0);
+    Structure s __attribute__((unused)) = extrude_(&(g), &(spec), blk, &(lib));
+    MaterialTable mats __attribute__((unused)) = mats_standard(dest);
+    int ok_cells __attribute__((unused)) = (structure_cells(&(s)) == 12);
+    int ok_rooms __attribute__((unused)) = (structure_rooms(&(s)) == 4);
+    int ok_courses __attribute__((unused)) = (structure_courses(&(s)) == 3);
+    int ok_blocks __attribute__((unused)) = (structure_blocks(&(s)) == 36);
+    int ok_prims __attribute__((unused)) = (structure_prims(&(s)) == 432);
+    int ok_volume __attribute__((unused)) = near_(structure_volume_cm3(&(s)), 432000.0);
+    int ok_mass __attribute__((unused)) = near_(structure_mass_kg(&(s), &(mats), 0), 1036.8);
+    ExtrudeSpec low __attribute__((unused)) = extrude_spec(200.0, 200.0, 10.0);
+    Structure s1 __attribute__((unused)) = extrude_(&(g), &(low), blk, &(lib));
+    int ok_one __attribute__((unused)) = (structure_courses(&(s1)) == 1);
+    return (ok_cells && (ok_rooms && (ok_courses && (ok_blocks && (ok_prims && (ok_volume && (ok_mass && ok_one)))))));
 }
 
 WallMod cottage_spec(void) {

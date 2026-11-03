@@ -60,6 +60,9 @@
         Grid grid/new grid/width grid/height grid/at grid/set! grid/count
         paint-line! paint-rect! enclosed-area grid/clear-marks!
         self-test-plan2d self-test-line
+        ExtrudeSpec Structure extrude/spec extrude/courses extrude!
+        structure/cells structure/courses structure/blocks structure/rooms
+        structure/prims structure/volume-cm3 structure/mass-kg self-test-extrude
         self-test)
 
 ;; ---------------------------------------------------------------------------
@@ -1026,3 +1029,93 @@
         _2 (paint-line! &mut g 0 0 99 0 1)
         ok-clipped (= (grid/at &g 7 0) 1)]
     (and ok-count (and ok-col (and ok-left (and ok-right (and ok-row ok-clipped)))))))
+
+;; ---------------------------------------------------------------------------
+;; Extrusion — painted cells become a structure
+;; ---------------------------------------------------------------------------
+;; Phase 1's second half: a plan is 2D, a structure is not. Each painted cell is one block
+;; footprint; extrusion repeats it once per course. Courses use the SAME pitch arithmetic the
+;; wall tool uses (n courses fit iff n*course + (n-1)*gap <= height), so a designer's height
+;; slider and a masonry wall cannot disagree by construction.
+;;
+;; Hand-derived check: a 6x6 plan with a 4x4 outlined room is 12 wall cells and 4 interior cells;
+;; 800 mm of height at 200 mm courses + 10 mm joints is 3 courses (3*200 + 2*10 = 620 <= 800,
+;; 4*200 + 3*10 = 830 > 800), so 36 blocks of a 12000 cm^3 cinder block = 432000 cm^3 = 1036.8 kg
+;; in concrete, and 36 * 12 = 432 primitive cells.
+(defstruct ExtrudeSpec
+  (height-mm : F64)
+  (course-mm : F64)
+  (gap-mm    : F64))
+
+(defstruct Structure
+  (cells      : I32)   ;; painted wall cells
+  (courses    : I32)
+  (blocks     : I32)   ;; cells * courses
+  (rooms      : I32)   ;; enclosed plan cells (floor area, no slab yet)
+  (prims      : I32)   ;; primitive cells the whole structure expands to
+  (volume-cm3 : F64))
+
+(defn extrude/spec [(height-mm : F64) (course-mm : F64) (gap-mm : F64)] : ExtrudeSpec
+  {:height-mm height-mm :course-mm course-mm :gap-mm gap-mm})
+
+(defn extrude/courses [(spec : &ExtrudeSpec)] : I32
+  (let [pitch (+ (get-field spec :course-mm) (get-field spec :gap-mm))
+        height (get-field spec :height-mm)
+        gap (get-field spec :gap-mm)]
+    (if (<= pitch 0.0)
+      0
+      (f64-to-i32 (math/floor (/ (+ height gap) pitch))))))
+
+;; The grid is taken as `&mut` because `enclosed-area` clears and re-lays its own flood marks;
+;; it never touches a wall cell, so counting before or after is the same answer.
+(defn extrude! [(g : &mut Grid) (spec : &ExtrudeSpec) (block : I32) (lib : &Library)] : Structure
+  (let [cells (grid/count g 1)
+        rooms (enclosed-area g)
+        courses (extrude/courses spec)
+        blocks (* cells courses)
+        bp (lib/prims lib block)
+        bv (lib/volume-cm3 lib block)]
+    {:cells cells
+     :courses courses
+     :blocks blocks
+     :rooms rooms
+     :prims (* bp blocks)
+     :volume-cm3 (* bv (i32-to-f64 blocks))}))
+
+(defn structure/cells [(s : &Structure)] : I32 (get-field s :cells))
+(defn structure/courses [(s : &Structure)] : I32 (get-field s :courses))
+(defn structure/blocks [(s : &Structure)] : I32 (get-field s :blocks))
+(defn structure/rooms [(s : &Structure)] : I32 (get-field s :rooms))
+(defn structure/prims [(s : &Structure)] : I32 (get-field s :prims))
+(defn structure/volume-cm3 [(s : &Structure)] : F64 (get-field s :volume-cm3))
+
+(defn structure/mass-kg [(s : &Structure) (mats : &MaterialTable) (mat : I32)] : F64
+  (let [d (mats/density mats mat)]
+    (if (< d 0.0)
+      -1.0
+      (* (get-field s :volume-cm3) (/ d 1000000.0)))))
+
+(defn self-test-extrude [(dest : Arena @ Region)] : Bool
+  (let [lib (lib/new dest)
+        cells (vec/new dest)
+        nested (vec/new dest)
+        _0 (block/cinder! &mut cells &mut nested 0)
+        blk (lib/add! &mut lib 4 2 2 10.0 &cells &nested)
+        g (grid/new 6 6 dest)
+        _1 (paint-rect! &mut g 1 1 4 4 1)
+        spec (extrude/spec 800.0 200.0 10.0)
+        s (extrude! &mut g &spec blk &lib)
+        mats (mats/standard dest)
+        ok-cells (= (structure/cells &s) 12)
+        ok-rooms (= (structure/rooms &s) 4)
+        ok-courses (= (structure/courses &s) 3)
+        ok-blocks (= (structure/blocks &s) 36)
+        ok-prims (= (structure/prims &s) 432)
+        ok-volume (near? (structure/volume-cm3 &s) 432000.0)
+        ok-mass (near? (structure/mass-kg &s &mats 0) 1036.8)
+        low (extrude/spec 200.0 200.0 10.0)
+        s1 (extrude! &mut g &low blk &lib)
+        ok-one (= (structure/courses &s1) 1)]
+    (and ok-cells
+         (and ok-rooms (and ok-courses (and ok-blocks
+              (and ok-prims (and ok-volume (and ok-mass ok-one)))))))))
