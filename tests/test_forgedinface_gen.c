@@ -14,6 +14,66 @@ static inline __attribute__((unused)) ParseError ParseError_new(char * message) 
     return v;
 }
 
+typedef enum {
+    JsonValue_TAG_JNull,
+    JsonValue_TAG_JBool,
+    JsonValue_TAG_JNumber,
+    JsonValue_TAG_JString,
+    JsonValue_TAG_JArray,
+    JsonValue_TAG_JObject,
+} JsonValue_Tag;
+typedef struct { JsonValue_Tag tag; void *value; } JsonValue;
+static inline __attribute__((unused)) JsonValue JsonValue_JNull(void) { JsonValue v; v.tag = JsonValue_TAG_JNull; v.value = NULL; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JBool(void *value) { JsonValue v; v.tag = JsonValue_TAG_JBool; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JNumber(void *value) { JsonValue v; v.tag = JsonValue_TAG_JNumber; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JString(void *value) { JsonValue v; v.tag = JsonValue_TAG_JString; v.value = value; return v; }
+static inline __attribute__((unused)) JsonValue JsonValue_JArray(void *value) { JsonValue v; v.tag = JsonValue_TAG_JArray; v.value = value; return v; }
+typedef struct {
+    Vec keys;
+    Vec values;
+} JsonValue_JObject_Payload;
+static inline __attribute__((unused)) JsonValue JsonValue_JObject(Arena *dest, Vec keys, Vec values) {
+    JsonValue_JObject_Payload *p = (JsonValue_JObject_Payload *)arena_alloc(dest, sizeof(JsonValue_JObject_Payload));
+    p->keys = keys;
+    p->values = values;
+    JsonValue v; v.tag = JsonValue_TAG_JObject; v.value = p; return v;
+}
+
+typedef struct {
+    char * message;
+    int pos;
+} JsonError;
+static inline __attribute__((unused)) JsonError JsonError_new(char * message, int pos) {
+    JsonError v;
+    v.message = message;
+    v.pos = pos;
+    return v;
+}
+
+typedef struct {
+    JsonValue value;
+    int next;
+} JsonStep;
+static inline __attribute__((unused)) JsonStep JsonStep_new(JsonValue value, int next) {
+    JsonStep v;
+    v.value = value;
+    v.next = next;
+    return v;
+}
+
+typedef struct {
+    char * key;
+    JsonValue value;
+    int next;
+} MemberStep;
+static inline __attribute__((unused)) MemberStep MemberStep_new(char * key, JsonValue value, int next) {
+    MemberStep v;
+    v.key = key;
+    v.value = value;
+    v.next = next;
+    return v;
+}
+
 typedef struct {
     double shoulder_x;
     double hip_x;
@@ -78,6 +138,21 @@ static inline __attribute__((unused)) MorphSet MorphSet_new(int target_count, in
     return v;
 }
 
+typedef struct {
+    int w;
+    int h;
+    Vec pixels;
+    Vec zbuf;
+} Frame;
+static inline __attribute__((unused)) Frame Frame_new(int w, int h, Vec pixels, Vec zbuf) {
+    Frame v;
+    v.w = w;
+    v.h = h;
+    v.pixels = pixels;
+    v.zbuf = zbuf;
+    return v;
+}
+
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
@@ -93,6 +168,22 @@ int starts_with_sign_(char *);
 int is_valid_i32_text_(char *);
 char * concat(char *, char *, Arena *);
 Vec split(char *, char *, Arena *);
+char * json_unescape(char *, int, int, Arena *);
+int is_whitespace_(int);
+int json_skip_ws(char *, int);
+Result parse(char *, Arena *);
+Result parse_value(char *, int, Arena *);
+Result parse_literal(char *, int, char *, JsonValue, Arena *);
+Result json_parse_number(char *, int, Arena *);
+int find_string_end(char *, int);
+Result parse_string_value(char *, int, Arena *);
+Result parse_array(char *, int, Arena *);
+Result parse_object(char *, int, Arena *);
+Result parse_member(char *, int, Arena *);
+Option get(JsonValue, char *);
+int array_len(JsonValue);
+int array_len_at(char *, char *, Arena *);
+Option as_string(JsonValue);
 double f64_at(Vec *, int);
 int i32_at(Vec *, int);
 int f64_push_(Vec *, double);
@@ -134,6 +225,31 @@ int glb_test_binary_push_(Vec *);
 int self_test_glb_bin(Arena *);
 int self_test_humanoid(Arena *);
 int self_test(Arena *);
+int glb_count_at(Vec *, char *, Arena *);
+int self_test_glb_json(Arena *);
+double f64_min3(double, double, double);
+double f64_max3(double, double, double);
+int i32_set_(Vec *, int, int);
+int f64_set_(Vec *, int, double);
+double i32_to_f64(int);
+int f64_to_i32(double);
+Frame frame_new(int, int, int, Arena *);
+int frame_width(Frame *);
+int frame_height(Frame *);
+int frame_pixel(Frame *, int, int);
+int frame_fill_(Frame *, int);
+double render_project_x(double, double, double, double);
+double render_project_y(double, double, double, double);
+double render_edge(double, double, double, double, double, double);
+double render_bary_z(double, double, double, double, double, double, double);
+int render_store_(Frame *, int, double, int);
+int render_put_(Frame *, int, int, double, int);
+int render_pixel_(Frame *, double, int, int, double, double, double, double, double, double, double, double, double, int);
+int render_scan_(Frame *, double, int, int, int, int, double, double, double, double, double, double, double, double, double, int);
+int render_tri_(Frame *, double, double, double, double, double, double, double, double, double, int);
+int render_count_color(Frame *, int);
+int self_test_render(Arena *);
+int self_test_projection(Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -143,6 +259,42 @@ static inline int *int_box(Arena *dest, int v) {
 
 static inline ParseError *ParseError_box(Arena *dest, ParseError v) {
     ParseError *p = (ParseError *)arena_alloc(dest, sizeof(ParseError));
+    *p = v;
+    return p;
+}
+
+static inline JsonError *JsonError_box(Arena *dest, JsonError v) {
+    JsonError *p = (JsonError *)arena_alloc(dest, sizeof(JsonError));
+    *p = v;
+    return p;
+}
+
+static inline JsonValue *JsonValue_box(Arena *dest, JsonValue v) {
+    JsonValue *p = (JsonValue *)arena_alloc(dest, sizeof(JsonValue));
+    *p = v;
+    return p;
+}
+
+static inline JsonStep *JsonStep_box(Arena *dest, JsonStep v) {
+    JsonStep *p = (JsonStep *)arena_alloc(dest, sizeof(JsonStep));
+    *p = v;
+    return p;
+}
+
+static inline double *double_box(Arena *dest, double v) {
+    double *p = (double *)arena_alloc(dest, sizeof(double));
+    *p = v;
+    return p;
+}
+
+static inline Vec *Vec_box(Arena *dest, Vec v) {
+    Vec *p = (Vec *)arena_alloc(dest, sizeof(Vec));
+    *p = v;
+    return p;
+}
+
+static inline MemberStep *MemberStep_box(Arena *dest, MemberStep v) {
+    MemberStep *p = (MemberStep *)arena_alloc(dest, sizeof(MemberStep));
     *p = v;
     return p;
 }
@@ -268,6 +420,371 @@ Vec split(char * s __attribute__((unused)), char * sep __attribute__((unused)), 
         }
     }
     return __loop_result_1;
+}
+
+char * json_unescape(char * s __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((end - start)) + 1);
+    host_json_unescape(s, start, end, out);
+    return out;
+}
+
+int is_whitespace_(int c __attribute__((unused))) {
+    return ((c == 32) || ((c == 9) || ((c == 10) || (c == 13))));
+}
+
+int json_skip_ws(char * s __attribute__((unused)), int pos __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    int __loop_result_2 __attribute__((unused));
+    int p = pos;
+    while (1) {
+        if (((p < n) && is_whitespace_(char_at(s, p)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        __loop_result_2 = p;
+        break;
+        }
+    }
+    return __loop_result_2;
+}
+
+Result parse(char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(text);
+    Result __match_result_0 __attribute__((unused)) = {0};
+    Result __match_tmp_0 = parse_value(text, json_skip_ws(text, 0), dest);
+    if (__match_tmp_0.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_0.value;
+        __match_result_0 = result_err(e);
+    }
+    else if (__match_tmp_0.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_0.value;
+        int after __attribute__((unused)) = json_skip_ws(text, ((*((JsonStep *)(step)))).next);
+        if ((after < n)) {
+        __match_result_0 = result_err(JsonError_box(dest, JsonError_new("trailing data after top-level value", after)));
+        } else {
+        __match_result_0 = result_ok(JsonValue_box(dest, ((*((JsonStep *)(step)))).value));
+        }
+    }
+    return __match_result_0;
+}
+
+Result parse_value(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    if ((pos >= n)) {
+    return result_err(JsonError_box(dest, JsonError_new("unexpected end of input", pos)));
+    } else {
+    int c __attribute__((unused)) = char_at(s, pos);
+    return ((c == 123) ? parse_object(s, pos, dest) : ((c == 91) ? parse_array(s, pos, dest) : ((c == 34) ? parse_string_value(s, pos, dest) : ((c == 116) ? parse_literal(s, pos, "true", JsonValue_JBool(int_box(dest, 1)), dest) : ((c == 102) ? parse_literal(s, pos, "false", JsonValue_JBool(int_box(dest, 0)), dest) : ((c == 110) ? parse_literal(s, pos, "null", JsonValue_JNull(), dest) : ((is_digit_(c) || (c == 45)) ? json_parse_number(s, pos, dest) : result_err(JsonError_box(dest, JsonError_new("unexpected character", pos))))))))));
+    }
+}
+
+Result parse_literal(char * s __attribute__((unused)), int pos __attribute__((unused)), char * word __attribute__((unused)), JsonValue value __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int wlen __attribute__((unused)) = length(word);
+    int n __attribute__((unused)) = length(s);
+    if (((pos + wlen) > n)) {
+    return result_err(JsonError_box(dest, JsonError_new("unexpected end of input", pos)));
+    } else {
+    char *slice __attribute__((unused)) = substring(s, pos, (pos + wlen), dest);
+    if (str_eq_(slice, word)) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(value, (pos + wlen))));
+    } else {
+    return result_err(JsonError_box(dest, JsonError_new("invalid literal", pos)));
+    }
+    }
+}
+
+Result json_parse_number(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Result __loop_result_3 __attribute__((unused));
+    int p = ((char_at(s, pos) == 45) ? (pos + 1) : pos);
+    while (1) {
+        if (((p < n) && is_digit_(char_at(s, p)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if (((p < n) && (char_at(s, p) == 46))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if (((p < n) && ((char_at(s, p) == 101) || (char_at(s, p) == 69)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if (((p < n) && ((char_at(s, p) == 43) || (char_at(s, p) == 45)))) {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        if ((p == pos)) {
+        __loop_result_3 = result_err(JsonError_box(dest, JsonError_new("invalid number", pos)));
+        break;
+        } else {
+        char *slice __attribute__((unused)) = substring(s, pos, p, dest);
+        __loop_result_3 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JNumber(double_box(dest, parse_f64_raw(slice))), p)));
+        break;
+        }
+        }
+        }
+        }
+        }
+    }
+    return __loop_result_3;
+}
+
+int find_string_end(char * s __attribute__((unused)), int pos __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    int __loop_result_4 __attribute__((unused));
+    int p = (pos + 1);
+    while (1) {
+        if ((p >= n)) {
+        __loop_result_4 = -1;
+        break;
+        } else {
+        if ((char_at(s, p) == 34)) {
+        __loop_result_4 = p;
+        break;
+        } else {
+        if ((char_at(s, p) == 92)) {
+        int __recur_tmp_0 = (p + 2);
+        p = __recur_tmp_0;
+        continue;
+        } else {
+        int __recur_tmp_0 = (p + 1);
+        p = __recur_tmp_0;
+        continue;
+        }
+        }
+        }
+    }
+    return __loop_result_4;
+}
+
+Result parse_string_value(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int close __attribute__((unused)) = find_string_end(s, pos);
+    if ((close < 0)) {
+    return result_err(JsonError_box(dest, JsonError_new("unterminated string", pos)));
+    } else {
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JString(json_unescape(s, (pos + 1), close, dest)), (close + 1))));
+    }
+}
+
+Result parse_array(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Vec items __attribute__((unused)) = vec_new(dest);
+    int p1 __attribute__((unused)) = json_skip_ws(s, (pos + 1));
+    if (((p1 < n) && (char_at(s, p1) == 93))) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p1 + 1))));
+    } else {
+    Result __match_result_1 __attribute__((unused)) = {0};
+    Result __match_tmp_1 = parse_value(s, p1, dest);
+    if (__match_tmp_1.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_1.value;
+        __match_result_1 = result_err(e);
+    }
+    else if (__match_tmp_1.tag == 1) {
+        void *first __attribute__((unused)) = __match_tmp_1.value;
+    (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(first)))).value)));
+    double p = json_skip_ws(s, ((*((JsonStep *)(first)))).next);
+    while (1) {
+        if ((p >= n)) {
+        __match_result_1 = result_err(JsonError_box(dest, JsonError_new("unterminated array", pos)));
+        break;
+        } else {
+        if ((char_at(s, p) == 93)) {
+        __match_result_1 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JArray(Vec_box(dest, items)), (p + 1))));
+        break;
+        } else {
+        if ((char_at(s, p) == 44)) {
+    Result __match_tmp_2 = parse_value(s, json_skip_ws(s, (p + 1)), dest);
+    if (__match_tmp_2.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_2.value;
+        __match_result_1 = result_err(e);
+        break;
+    }
+    else if (__match_tmp_2.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_2.value;
+    (void)(vec_push_(&(items), JsonValue_box(dest, ((*((JsonStep *)(step)))).value)));
+        double __recur_tmp_0 = json_skip_ws(s, ((*((JsonStep *)(step)))).next);
+        p = __recur_tmp_0;
+        continue;
+    }
+        } else {
+        __match_result_1 = result_err(JsonError_box(dest, JsonError_new("expected ',' or ']'", p)));
+        break;
+        }
+        }
+        }
+    }
+    }
+    return __match_result_1;
+    }
+}
+
+Result parse_object(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    Vec keys __attribute__((unused)) = vec_new(dest);
+    Vec values __attribute__((unused)) = vec_new(dest);
+    int p1 __attribute__((unused)) = json_skip_ws(s, (pos + 1));
+    if (((p1 < n) && (char_at(s, p1) == 125))) {
+    return result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p1 + 1))));
+    } else {
+    Result __match_result_2 __attribute__((unused)) = {0};
+    Result __match_tmp_3 = parse_member(s, p1, dest);
+    if (__match_tmp_3.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_3.value;
+        __match_result_2 = result_err(e);
+    }
+    else if (__match_tmp_3.tag == 1) {
+        void *first __attribute__((unused)) = __match_tmp_3.value;
+    (void)(vec_push_(&(keys), ((*((MemberStep *)(first)))).key));
+    (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(first)))).value)));
+    double p = json_skip_ws(s, ((*((MemberStep *)(first)))).next);
+    while (1) {
+        if ((p >= n)) {
+        __match_result_2 = result_err(JsonError_box(dest, JsonError_new("unterminated object", pos)));
+        break;
+        } else {
+        if ((char_at(s, p) == 125)) {
+        __match_result_2 = result_ok(JsonStep_box(dest, JsonStep_new(JsonValue_JObject(dest, keys, values), (p + 1))));
+        break;
+        } else {
+        if ((char_at(s, p) == 44)) {
+    Result __match_tmp_4 = parse_member(s, json_skip_ws(s, (p + 1)), dest);
+    if (__match_tmp_4.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_4.value;
+        __match_result_2 = result_err(e);
+        break;
+    }
+    else if (__match_tmp_4.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_4.value;
+    (void)(vec_push_(&(keys), ((*((MemberStep *)(step)))).key));
+    (void)(vec_push_(&(values), JsonValue_box(dest, ((*((MemberStep *)(step)))).value)));
+        double __recur_tmp_0 = json_skip_ws(s, ((*((MemberStep *)(step)))).next);
+        p = __recur_tmp_0;
+        continue;
+    }
+        } else {
+        __match_result_2 = result_err(JsonError_box(dest, JsonError_new("expected ',' or '}'", p)));
+        break;
+        }
+        }
+        }
+    }
+    }
+    return __match_result_2;
+    }
+}
+
+Result parse_member(char * s __attribute__((unused)), int pos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    if (((pos >= n) || (!((char_at(s, pos) == 34))))) {
+    return result_err(JsonError_box(dest, JsonError_new("expected string key", pos)));
+    } else {
+    int close __attribute__((unused)) = find_string_end(s, pos);
+    if ((close < 0)) {
+    return result_err(JsonError_box(dest, JsonError_new("unterminated key string", pos)));
+    } else {
+    char *key __attribute__((unused)) = json_unescape(s, (pos + 1), close, dest);
+    int p1 __attribute__((unused)) = json_skip_ws(s, (close + 1));
+    if (((p1 >= n) || (!((char_at(s, p1) == 58))))) {
+    return result_err(JsonError_box(dest, JsonError_new("expected ':' after key", p1)));
+    } else {
+    Result __match_result_3 __attribute__((unused)) = {0};
+    Result __match_tmp_5 = parse_value(s, json_skip_ws(s, (p1 + 1)), dest);
+    if (__match_tmp_5.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_5.value;
+        __match_result_3 = result_err(e);
+    }
+    else if (__match_tmp_5.tag == 1) {
+        void *step __attribute__((unused)) = __match_tmp_5.value;
+        __match_result_3 = result_ok(MemberStep_box(dest, MemberStep_new(key, ((*((JsonStep *)(step)))).value, ((*((JsonStep *)(step)))).next)));
+    }
+    return __match_result_3;
+    }
+    }
+    }
+}
+
+Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused))) {
+    Option __match_result_4 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_6 = v;
+    if (__match_tmp_6.tag == 5) {
+        JsonValue_JObject_Payload *__match_payload_6 = (JsonValue_JObject_Payload *)(__match_tmp_6.value);
+        Vec keys __attribute__((unused)) = __match_payload_6->keys;
+        Vec values __attribute__((unused)) = __match_payload_6->values;
+        int n __attribute__((unused)) = vec_len(&(keys));
+    int i = 0;
+    while (1) {
+        if ((i >= n)) {
+        __match_result_4 = option_none();
+        break;
+        } else {
+        if (str_eq_(vec_get(&(keys), i), key)) {
+        __match_result_4 = option_some(vec_get(&(values), i));
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    }
+    else if (1) {
+        __match_result_4 = option_none();
+    }
+    return __match_result_4;
+}
+
+int array_len(JsonValue v __attribute__((unused))) {
+    int __match_result_5 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_7 = v;
+    if (__match_tmp_7.tag == 4) {
+        void *items __attribute__((unused)) = __match_tmp_7.value;
+        __match_result_5 = vec_len(items);
+    }
+    else if (1) {
+        __match_result_5 = -1;
+    }
+    return __match_result_5;
+}
+
+int array_len_at(char * text __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int __match_result_6 __attribute__((unused)) = {0};
+    Result __match_tmp_8 = parse(text, dest);
+    if (__match_tmp_8.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_8.value;
+        __match_result_6 = -2;
+    }
+    else if (__match_tmp_8.tag == 1) {
+        void *doc __attribute__((unused)) = __match_tmp_8.value;
+    Option __match_tmp_9 = get((*((JsonValue *)(doc))), key);
+    if (__match_tmp_9.tag == 1) {
+        void *item __attribute__((unused)) = __match_tmp_9.value;
+        __match_result_6 = array_len((*((JsonValue *)(item))));
+    }
+    else if (__match_tmp_9.tag == 0) {
+        __match_result_6 = -1;
+    }
+    }
+    return __match_result_6;
+}
+
+Option as_string(JsonValue v __attribute__((unused))) {
+    Option __match_result_7 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_10 = v;
+    if (__match_tmp_10.tag == 3) {
+        void *s __attribute__((unused)) = __match_tmp_10.value;
+        __match_result_7 = option_some(s);
+    }
+    else if (1) {
+        __match_result_7 = option_none();
+    }
+    return __match_result_7;
 }
 
 double f64_at(Vec * v __attribute__((unused)), int idx __attribute__((unused))) {
@@ -400,20 +917,20 @@ int mat_push_local_(Vec * dst __attribute__((unused)), Rig * rig __attribute__((
 
 int mat_push_mul_(Vec * dst __attribute__((unused)), Vec * world __attribute__((unused)), int parent __attribute__((unused)), Vec * local __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_2 __attribute__((unused));
+    void * __loop_result_5 __attribute__((unused));
     int r = 0;
     while (1) {
         if ((r < 4)) {
-    void * __loop_result_3 __attribute__((unused));
+    void * __loop_result_6 __attribute__((unused));
     int c = 0;
     while (1) {
         if ((c < 4)) {
-    int __loop_result_4 __attribute__((unused));
+    int __loop_result_7 __attribute__((unused));
     int k = 0;
     double s = 0.0;
     while (1) {
         if ((k >= 4)) {
-        __loop_result_4 = f64_push_(dst, s);
+        __loop_result_7 = f64_push_(dst, s);
         break;
         } else {
         int __recur_tmp_0 = (k + 1);
@@ -442,7 +959,7 @@ int mat_push_mul_(Vec * dst __attribute__((unused)), Vec * world __attribute__((
 
 int mat_push_copy_(Vec * dst __attribute__((unused)), Vec * src __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_5 __attribute__((unused));
+    void * __loop_result_8 __attribute__((unused));
     int i = 0;
     while (1) {
         if ((i < 16)) {
@@ -459,7 +976,7 @@ int mat_push_copy_(Vec * dst __attribute__((unused)), Vec * src __attribute__((u
 
 int zeros_push_(Vec * v __attribute__((unused)), int n __attribute__((unused))) {
     int started __attribute__((unused)) = 0;
-    void * __loop_result_6 __attribute__((unused));
+    void * __loop_result_9 __attribute__((unused));
     int j = 0;
     while (1) {
         if ((j < n)) {
@@ -477,7 +994,7 @@ int zeros_push_(Vec * v __attribute__((unused)), int n __attribute__((unused))) 
 Vec rig_solve(Rig * rig __attribute__((unused)), Anatomy * anatomy __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = (rig)->bone_count;
     Vec world __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_7 __attribute__((unused));
+    void * __loop_result_10 __attribute__((unused));
     int b = 0;
     while (1) {
         if ((b < n)) {
@@ -535,12 +1052,12 @@ int morph_ready_(MorphSet * m __attribute__((unused))) {
 }
 
 double morph_axis_sum(MorphSet * m __attribute__((unused)), int v __attribute__((unused)), int vc __attribute__((unused)), int targets __attribute__((unused)), int axis __attribute__((unused))) {
-    double __loop_result_8 __attribute__((unused));
+    double __loop_result_11 __attribute__((unused));
     int t = 0;
     double sum = 0.0;
     while (1) {
         if ((t >= targets)) {
-        __loop_result_8 = sum;
+        __loop_result_11 = sum;
         break;
         } else {
         int __recur_tmp_0 = (t + 1);
@@ -550,13 +1067,13 @@ double morph_axis_sum(MorphSet * m __attribute__((unused)), int v __attribute__(
         continue;
         }
     }
-    return __loop_result_8;
+    return __loop_result_11;
 }
 
 Vec skin_deform(Vec * world __attribute__((unused)), Mesh * mesh __attribute__((unused)), Arena *dest __attribute__((unused))) {
     int n __attribute__((unused)) = (mesh)->vertex_count;
     Vec out __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_9 __attribute__((unused));
+    void * __loop_result_12 __attribute__((unused));
     int v = 0;
     while (1) {
         if ((v < n)) {
@@ -599,7 +1116,7 @@ Vec skin_deform_morphed(Vec * world __attribute__((unused)), Mesh * mesh __attri
     int vc __attribute__((unused)) = (m)->vertex_count;
     int targets __attribute__((unused)) = (m)->target_count;
     Vec out __attribute__((unused)) = vec_new(dest);
-    void * __loop_result_10 __attribute__((unused));
+    void * __loop_result_13 __attribute__((unused));
     int v = 0;
     while (1) {
         if ((v < n)) {
@@ -794,7 +1311,7 @@ char * glb_json_text(Vec * bytes __attribute__((unused)), Arena *dest __attribut
     return empty;
     } else {
     char *out __attribute__((unused)) = (char *)arena_alloc(dest, ((code + 1)) + 1);
-    void * __loop_result_11 __attribute__((unused));
+    void * __loop_result_14 __attribute__((unused));
     int i = 0;
     while (1) {
         if ((i < code)) {
@@ -1022,5 +1539,245 @@ int self_test_humanoid(Arena *dest __attribute__((unused))) {
 
 int self_test(Arena *dest __attribute__((unused))) {
     return (self_test_skeleton(dest) && (self_test_skin(dest) && (self_test_proportions(dest) && (self_test_glb(dest) && (self_test_morphs(dest) && (self_test_glb_bin(dest) && (self_test_humanoid(dest) && self_test_glb_text(dest))))))));
+}
+
+int glb_count_at(Vec * bytes __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return array_len_at(glb_json_text(bytes, dest), key, dest);
+}
+
+int self_test_glb_json(Arena *dest __attribute__((unused))) {
+    Vec empty_doc __attribute__((unused)) = vec_new(dest);
+    int _0 __attribute__((unused)) = glb_test_json_push_(&(empty_doc));
+    int ok_absent __attribute__((unused)) = (glb_count_at(&(empty_doc), "nodes", dest) == -1);
+    char *doc __attribute__((unused)) = concat("{\"nodes\":[{},{},{}],\"skins\":[]}", "", dest);
+    int ok_nodes __attribute__((unused)) = (array_len_at(doc, "nodes", dest) == 3);
+    int ok_skins __attribute__((unused)) = (array_len_at(doc, "skins", dest) == 0);
+    int ok_missing __attribute__((unused)) = (array_len_at(doc, "meshes", dest) == -1);
+    int ok_broken __attribute__((unused)) = (array_len_at("{", "nodes", dest) == -2);
+    return (ok_absent && (ok_nodes && (ok_skins && (ok_missing && ok_broken))));
+}
+
+double f64_min3(double a __attribute__((unused)), double b __attribute__((unused)), double c __attribute__((unused))) {
+    double m __attribute__((unused)) = ((a < b) ? a : b);
+    if ((m < c)) {
+    return m;
+    } else {
+    return c;
+    }
+}
+
+double f64_max3(double a __attribute__((unused)), double b __attribute__((unused)), double c __attribute__((unused))) {
+    double m __attribute__((unused)) = ((a > b) ? a : b);
+    if ((m > c)) {
+    return m;
+    } else {
+    return c;
+    }
+}
+
+int i32_set_(Vec * v __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    return ((*(int *)vec_get(v, idx) = val, 1));
+}
+
+int f64_set_(Vec * v __attribute__((unused)), int idx __attribute__((unused)), double val __attribute__((unused))) {
+    return ((*(double *)vec_get(v, idx) = val, 1));
+}
+
+double i32_to_f64(int x __attribute__((unused))) {
+    return (((double)x));
+}
+
+int f64_to_i32(double x __attribute__((unused))) {
+    return (((int)x));
+}
+
+Frame frame_new(int w __attribute__((unused)), int h __attribute__((unused)), int bg __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec pixels __attribute__((unused)) = vec_new(dest);
+    Vec zbuf __attribute__((unused)) = vec_new(dest);
+    int n __attribute__((unused)) = (w * h);
+    void * __loop_result_15 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    int _0 __attribute__((unused)) = i32_push_(&(pixels), bg);
+    int _1 __attribute__((unused)) = f64_push_(&(zbuf), 1000000000000.0);
+    (void)(0);
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return Frame_new(w, h, pixels, zbuf);
+}
+
+int frame_width(Frame * f __attribute__((unused))) {
+    return (f)->w;
+}
+
+int frame_height(Frame * f __attribute__((unused))) {
+    return (f)->h;
+}
+
+int frame_pixel(Frame * f __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    if (((((x < 0) || (y < 0)) || (x >= (f)->w)) || (y >= (f)->h))) {
+    return -1;
+    } else {
+    return i32_at(&((f)->pixels), ((y * (f)->w) + x));
+    }
+}
+
+int frame_fill_(Frame * f __attribute__((unused)), int color __attribute__((unused))) {
+    int n __attribute__((unused)) = ((f)->w * (f)->h);
+    void * __loop_result_16 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    int _0 __attribute__((unused)) = i32_set_(&((f)->pixels), i, color);
+    int _1 __attribute__((unused)) = f64_set_(&((f)->zbuf), i, 1000000000000.0);
+    (void)(0);
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return n;
+}
+
+double render_project_x(double f __attribute__((unused)), double cx __attribute__((unused)), double x __attribute__((unused)), double z __attribute__((unused))) {
+    return (cx + ((f * x) / z));
+}
+
+double render_project_y(double f __attribute__((unused)), double cy __attribute__((unused)), double y __attribute__((unused)), double z __attribute__((unused))) {
+    return (cy - ((f * y) / z));
+}
+
+double render_edge(double ax __attribute__((unused)), double ay __attribute__((unused)), double bx __attribute__((unused)), double by __attribute__((unused)), double px __attribute__((unused)), double py __attribute__((unused))) {
+    return (((bx - ax) * (py - ay)) - ((by - ay) * (px - ax)));
+}
+
+double render_bary_z(double e0 __attribute__((unused)), double e1 __attribute__((unused)), double e2 __attribute__((unused)), double area __attribute__((unused)), double z0 __attribute__((unused)), double z1 __attribute__((unused)), double z2 __attribute__((unused))) {
+    return ((((e0 / area) * z0) + ((e1 / area) * z1)) + ((e2 / area) * z2));
+}
+
+int render_store_(Frame * f __attribute__((unused)), int idx __attribute__((unused)), double z __attribute__((unused)), int color __attribute__((unused))) {
+    int _0 __attribute__((unused)) = i32_set_(&((f)->pixels), idx, color);
+    int _1 __attribute__((unused)) = f64_set_(&((f)->zbuf), idx, z);
+    return 1;
+}
+
+int render_put_(Frame * f __attribute__((unused)), int px __attribute__((unused)), int py __attribute__((unused)), double z __attribute__((unused)), int color __attribute__((unused))) {
+    int idx __attribute__((unused)) = ((py * (f)->w) + px);
+    double depth __attribute__((unused)) = f64_at(&((f)->zbuf), idx);
+    if ((z < depth)) {
+    return render_store_(f, idx, z, color);
+    } else {
+    return 0;
+    }
+}
+
+int render_pixel_(Frame * f __attribute__((unused)), double area __attribute__((unused)), int px __attribute__((unused)), int py __attribute__((unused)), double x0 __attribute__((unused)), double y0 __attribute__((unused)), double z0 __attribute__((unused)), double x1 __attribute__((unused)), double y1 __attribute__((unused)), double z1 __attribute__((unused)), double x2 __attribute__((unused)), double y2 __attribute__((unused)), double z2 __attribute__((unused)), int color __attribute__((unused))) {
+    int w __attribute__((unused)) = (f)->w;
+    int h __attribute__((unused)) = (f)->h;
+    double cx __attribute__((unused)) = (i32_to_f64(px) + 0.5);
+    double cy __attribute__((unused)) = (i32_to_f64(py) + 0.5);
+    double e0 __attribute__((unused)) = render_edge(x1, y1, x2, y2, cx, cy);
+    double e1 __attribute__((unused)) = render_edge(x2, y2, x0, y0, cx, cy);
+    double e2 __attribute__((unused)) = render_edge(x0, y0, x1, y1, cx, cy);
+    int covered __attribute__((unused)) = ((area > 0.0) ? ((e0 >= 0.0) && ((e1 >= 0.0) && (e2 >= 0.0))) : ((e0 <= 0.0) && ((e1 <= 0.0) && (e2 <= 0.0))));
+    int onscreen __attribute__((unused)) = ((px >= 0) && ((px < w) && ((py >= 0) && (py < h))));
+    if ((covered && onscreen)) {
+        (void)(render_put_(f, px, py, render_bary_z(e0, e1, e2, area, z0, z1, z2), color));
+    }
+    return 1;
+}
+
+int render_scan_(Frame * f __attribute__((unused)), double area __attribute__((unused)), int minx __attribute__((unused)), int maxx __attribute__((unused)), int miny __attribute__((unused)), int maxy __attribute__((unused)), double x0 __attribute__((unused)), double y0 __attribute__((unused)), double z0 __attribute__((unused)), double x1 __attribute__((unused)), double y1 __attribute__((unused)), double z1 __attribute__((unused)), double x2 __attribute__((unused)), double y2 __attribute__((unused)), double z2 __attribute__((unused)), int color __attribute__((unused))) {
+    void * __loop_result_17 __attribute__((unused));
+    int py = miny;
+    while (1) {
+        if ((py <= maxy)) {
+    void * __loop_result_18 __attribute__((unused));
+    int px = minx;
+    while (1) {
+        if ((px <= maxx)) {
+    (void)(render_pixel_(f, area, px, py, x0, y0, z0, x1, y1, z1, x2, y2, z2, color));
+        int __recur_tmp_0 = (px + 1);
+        px = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        int __recur_tmp_0 = (py + 1);
+        py = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return 1;
+}
+
+int render_tri_(Frame * f __attribute__((unused)), double x0 __attribute__((unused)), double y0 __attribute__((unused)), double z0 __attribute__((unused)), double x1 __attribute__((unused)), double y1 __attribute__((unused)), double z1 __attribute__((unused)), double x2 __attribute__((unused)), double y2 __attribute__((unused)), double z2 __attribute__((unused)), int color __attribute__((unused))) {
+    double area __attribute__((unused)) = render_edge(x0, y0, x1, y1, x2, y2);
+    int minx __attribute__((unused)) = f64_to_i32(floor(f64_min3(x0, x1, x2)));
+    int maxx __attribute__((unused)) = f64_to_i32(floor(f64_max3(x0, x1, x2)));
+    int miny __attribute__((unused)) = f64_to_i32(floor(f64_min3(y0, y1, y2)));
+    int maxy __attribute__((unused)) = f64_to_i32(floor(f64_max3(y0, y1, y2)));
+    if ((area == 0.0)) {
+    return 0;
+    } else {
+    return render_scan_(f, area, minx, maxx, miny, maxy, x0, y0, z0, x1, y1, z1, x2, y2, z2, color);
+    }
+}
+
+int render_count_color(Frame * f __attribute__((unused)), int color __attribute__((unused))) {
+    int n __attribute__((unused)) = ((f)->w * (f)->h);
+    int __loop_result_19 __attribute__((unused));
+    int i = 0;
+    int acc = 0;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_19 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = ((i32_at(&((f)->pixels), i) == color) ? (acc + 1) : acc);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_19;
+}
+
+int self_test_render(Arena *dest __attribute__((unused))) {
+    Frame f __attribute__((unused)) = frame_new(8, 8, 16711680, dest);
+    int ok_size __attribute__((unused)) = (frame_width(&(f)) == 8);
+    int ok_bg __attribute__((unused)) = (frame_pixel(&(f), 0, 0) == 16711680);
+    int ok_bg_count __attribute__((unused)) = (render_count_color(&(f), 16711680) == 64);
+    int ok_bounds __attribute__((unused)) = (frame_pixel(&(f), 8, 0) == -1);
+    int _0 __attribute__((unused)) = render_tri_(&(f), 0.0, 0.0, 1.0, 4.0, 0.0, 1.0, 0.0, 4.0, 1.0, 255);
+    int ok_tri __attribute__((unused)) = (render_count_color(&(f), 255) == 10);
+    int ok_corner __attribute__((unused)) = (frame_pixel(&(f), 0, 0) == 255);
+    int ok_outside __attribute__((unused)) = (frame_pixel(&(f), 4, 4) == 16711680);
+    int _1 __attribute__((unused)) = render_tri_(&(f), 0.0, 0.0, 9.0, 4.0, 0.0, 9.0, 0.0, 4.0, 9.0, 65280);
+    int ok_far __attribute__((unused)) = (render_count_color(&(f), 65280) == 0);
+    int _2 __attribute__((unused)) = render_tri_(&(f), 0.0, 0.0, 0.5, 4.0, 0.0, 0.5, 0.0, 4.0, 0.5, 65535);
+    int ok_near __attribute__((unused)) = (render_count_color(&(f), 65535) == 10);
+    int ok_replaced __attribute__((unused)) = (render_count_color(&(f), 255) == 0);
+    return (ok_size && (ok_bg && (ok_bg_count && (ok_bounds && (ok_tri && (ok_corner && (ok_outside && (ok_far && (ok_near && ok_replaced)))))))));
+}
+
+int self_test_projection(Arena *dest __attribute__((unused))) {
+    int ok_centre __attribute__((unused)) = near_(render_project_x(100.0, 50.0, 0.0, 10.0), 50.0);
+    int ok_right __attribute__((unused)) = near_(render_project_x(100.0, 50.0, 1.0, 10.0), 60.0);
+    int ok_up __attribute__((unused)) = near_(render_project_y(100.0, 50.0, 1.0, 10.0), 40.0);
+    int ok_far __attribute__((unused)) = near_(render_project_x(100.0, 50.0, 1.0, 20.0), 55.0);
+    return (ok_centre && (ok_right && (ok_up && ok_far)));
 }
 

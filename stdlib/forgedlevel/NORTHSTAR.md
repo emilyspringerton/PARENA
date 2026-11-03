@@ -158,3 +158,33 @@ default codec), then the WASM/WebGL host. FORGEDINFACE's browser host is the sam
   (position + rotation + params) is a different thing from a nested definition. Phase 2/3 will
   need that distinction, and picking it late is how level formats end up with two ways to say the
   same block.
+
+---
+
+## 2026-11-03 — Phase 1 (floor plan) and Phase 3 (mesh emission) landed
+
+**Floor-plan painting** is real: a 2D occupancy grid, Bresenham `paint-line!` (both axes step, so
+a steep run has no gaps), `paint-rect!`, and `enclosed-area`, which floods from the border and
+reports what the walls actually closed. Verified against a 6x6 plan with a 4x4 outlined room: 12
+wall cells, 4 interior cells, and opening ONE wall cell drops the enclosed area to 0.
+
+**Mesh emission** is real: one quad per EXPOSED face, culled against neighbours, 8 F64 per vertex
+(position, normal, uv), indexed, centred on the assembly. One cell is 6 quads; two cells sharing a
+face are 10, not 12; the real cinder block is 40 after culling (72 raw faces minus 2 per shared
+face, 16 shared). This is the geometry a renderer consumes, and FORGEDINFACE's software renderer
+already consumes exactly this vertex layout.
+
+**Two bugs my own tests caught, both worth recording:** `enclosed-area` left its flood marks in the
+grid, so a second call seeded nothing and reported the previous run's interior as still sealed —
+replaced with a fixpoint scan, which cannot have that class of bug; and the cinder block's
+expected count was derived wrong (8 z-pairs where each layer holds 6), so the assertion was fixed
+to the derived 40 rather than the code being bent to a wrong number.
+
+**Structure changed for a real compiler reason:** floor-plan painting and mesh emission are
+sections of `level.prn`, not separate modules. A second module in the same build redeclares the
+shared `i32-at`/`i32-push!` accessors and gcc fails on duplicate symbols — a cross-module
+`&Library` parameter is not expressible either ("unsupported reference target type 'Library'").
+Both belong to the level concern, so this is where the code goes.
+
+Next: extrusion (painted cells -> courses -> the wall tool), then adjacency/joinery, then the
+bevel pass that the material's `bevel` field is still waiting for.

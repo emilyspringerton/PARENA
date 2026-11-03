@@ -56,7 +56,7 @@
 (module json)
 (import string)
 (import vec)
-(export parse JsonValue JsonError get as-string)
+(export parse JsonValue JsonError get as-string array-len array-len-at)
 
 (defenum JsonValue
   (JNull)
@@ -313,6 +313,28 @@
             ((string/str-eq? (vec/get &keys i) key) (Some (vec/get &values i)))
             (true (recur (+ i 1)))))))
     (_ None)))
+
+;; array-len-at — "how many items are in the array at this top-level key", for callers in OTHER
+;; modules. It exists because cross-module pattern matching on this module's own JsonValue is not
+;; a working surface yet (stdlib/forgedinface/rig.prn hit `get-field: 'void *' ... isn't a
+;; registered defstruct type` doing exactly that), and because re-deriving `parse` + `get` +
+;; match in every consumer costs more than it explains. Returns a plain I32 rather than an Option
+;; for the same reason: -1 means "no such key, or not an array", -2 means "the text is not JSON".
+;; Cost is honest: it parses the whole document per call, so a loader that needs several counts
+;; should grow a real scene accessor instead of calling this four times in a frame loop.
+(defn array-len [(v : JsonValue @ Region)] : I32
+  (match v
+    ((JArray items) (vec/len &items))
+    (_ -1)))
+
+(defn array-len-at [(text : String @ Region) (key : String @ Region) (dest : Arena @ Region)]
+  : I32
+  (match (parse text dest)
+    ((Err e) -2)
+    ((Ok doc)
+      (match (get (deref doc) key)
+        ((Some item) (array-len (deref item)))
+        ((None) -1)))))
 
 ;; as-string — unwraps a JString leaf, None for any other variant.
 (defn as-string [(v : JsonValue @ Region)]

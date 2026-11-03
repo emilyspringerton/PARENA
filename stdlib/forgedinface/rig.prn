@@ -38,7 +38,9 @@
 
 (module forgedinface/rig)
 (import vec)
+(import math)
 (import string)
+(import json)
 
 (export Rig Anatomy Mesh MorphSet
         skeleton/standard
@@ -48,7 +50,10 @@
         morph/new morph/add-delta! morph/add-weight! morph/ready?
         glb/json-chunk-length glb/bin-chunk-offset glb/bin-chunk-length
         rig/humanoid-index
-        glb/json-text
+        glb/json-text glb/count-at
+        Frame frame/new frame/width frame/height frame/pixel frame/fill!
+        render/project-x render/project-y render/edge render/tri! render/count-color
+        self-test-render self-test-projection
         self-test)
 
 ;; ---------------------------------------------------------------------------
@@ -822,3 +827,246 @@
           (and (self-test-morphs dest)
             (and (self-test-glb-bin dest)
               (and (self-test-humanoid dest) (self-test-glb-text dest)))))))))
+
+;; ---------------------------------------------------------------------------
+;; The GLB's JSON chunk, PARSED (Phase 2's missing half)
+;; ---------------------------------------------------------------------------
+;; Until now the chunk was real text nobody read. `json/array-len-at` answers the question a
+;; glTF loader actually starts with — "how many nodes / skins / meshes / accessors does this
+;; document declare" — over the real parser in stdlib/json.prn, not a substring search (which
+;; would happily count a "nodes" inside a mesh name).
+;;
+;; The count itself comes from json rather than from a `match` here on purpose: matching on this
+;; module's own JsonValue from OUTSIDE json.prn is not a working surface yet (that is the real
+;; `'void *' ... isn't a registered defstruct type` gap the accessors in forgedlevel exist for),
+;; so json owns the unwrapping and hands back a plain I32.
+(defn glb/count-at [(bytes : &(Vec I32)) (key : String @ Region) (dest : Arena @ Region)] : I32
+  (json/array-len-at (glb/json-text bytes dest) key dest))
+
+;; A real glTF-shaped document, parsed through the same json/parse a VRM file goes through: three
+;; nodes, an EMPTY skins array (0 is not the same answer as "absent"), no meshes key at all, and
+;; a deliberately broken document that must report -2 rather than be quietly counted as zero.
+(defn self-test-glb-json [(dest : Arena @ Region)] : Bool
+  (let [empty-doc (vec/new dest)
+        _0 (glb/test-json-push! &mut empty-doc)
+        ok-absent (= (glb/count-at &empty-doc "nodes" dest) -1)
+        doc (string/concat "{\"nodes\":[{},{},{}],\"skins\":[]}" "" dest)
+        ok-nodes (= (json/array-len-at doc "nodes" dest) 3)
+        ok-skins (= (json/array-len-at doc "skins" dest) 0)
+        ok-missing (= (json/array-len-at doc "meshes" dest) -1)
+        ok-broken (= (json/array-len-at "{" "nodes" dest) -2)]
+    (and ok-absent (and ok-nodes (and ok-skins (and ok-missing ok-broken))))))
+
+(defn f64-min3 [(a : F64) (b : F64) (c : F64)] : F64
+  (let [m (if (< a b) a b)]
+    (if (< m c) m c)))
+
+(defn f64-max3 [(a : F64) (b : F64) (c : F64)] : F64
+  (let [m (if (> a b) a b)]
+    (if (> m c) m c)))
+
+;; ---------------------------------------------------------------------------
+;; The software renderer — merged in from a separate render.prn
+;; ---------------------------------------------------------------------------
+;; Same real constraint that merged mesh emission into forgedlevel/level.prn: two modules in one
+;; build emit unqualified C names, so a second module with its own `near?`/`i32-at` collides
+;; ("redefinition of 'near_'"). Rendering a FORGEDINFACE mesh is also the same concern as posing
+;; it, so this belongs here rather than beside it.
+;;
+;; Why software and not SDL2: this box has no display, so a window cannot be opened or verified.
+;; A rasterizer writing into an arena pixel buffer is the part of "render the avatar" that can be
+;; PROVEN today — every assertion reads specific pixels back. A presenter is a thin layer over
+;; this buffer, not a second renderer.
+;;
+;; Scope: one perspective pinhole camera looking down +z, flat-coloured triangles with a z-buffer.
+;; No lighting, no textures, no backface culling (the mesh stage already emits correctly wound
+;; quads, and culling is a fill-rate decision, not a correctness one).
+
+(defn i32-set! [(v : &mut (Vec I32)) (idx : I32) (val : I32)] : I32
+  #target {:c (inline-c "(*(int *)vec_get(v, idx) = val, 1)")})
+
+(defn f64-set! [(v : &mut (Vec F64)) (idx : I32) (val : F64)] : I32
+  #target {:c (inline-c "(*(double *)vec_get(v, idx) = val, 1)")})
+
+;; Explicit conversions, and no `>` in the names: `>` is unmapped by the emitter's symbol
+;; mangler (`i32->f64` becomes `i32_>f64`, an implicit declaration at gcc time).
+(defn i32-to-f64 [(x : I32)] : F64
+  #target {:c (inline-c "((double)x)")})
+
+(defn f64-to-i32 [(x : F64)] : I32
+  #target {:c (inline-c "((int)x)")})
+
+(defstruct Frame
+  (w      : I32)
+  (h      : I32)
+  (pixels : (Vec I32))   ;; 1 per pixel, 0xRRGGBB
+  (zbuf   : (Vec F64)))  ;; 1 per pixel
+
+(defn frame/new [(w : I32) (h : I32) (bg : I32) (dest : Arena @ Region)] : Frame @ Region
+  (let [pixels (vec/new dest)
+        zbuf (vec/new dest)
+        n (* w h)]
+    (loop [i 0]
+      (when (< i n)
+        (let [_0 (i32-push! &mut pixels bg)
+              _1 (f64-push! &mut zbuf 1000000000000.0)]
+          0)
+        (recur (+ i 1))))
+    {:w w :h h :pixels pixels :zbuf zbuf}))
+
+(defn frame/width [(f : &Frame)] : I32 (get-field f :w))
+(defn frame/height [(f : &Frame)] : I32 (get-field f :h))
+
+;; Out-of-range reads return -1 instead of a neighbour's pixel.
+(defn frame/pixel [(f : &Frame) (x : I32) (y : I32)] : I32
+  (if (or (< x 0) (< y 0) (>= x (get-field f :w)) (>= y (get-field f :h)))
+    -1
+    (i32-at &(get-field f :pixels) (+ (* y (get-field f :w)) x))))
+
+(defn frame/fill! [(f : &mut Frame) (color : I32)] : I32
+  (let [n (* (get-field f :w) (get-field f :h))]
+    (loop [i 0]
+      (when (< i n)
+        (let [_0 (i32-set! &mut (get-field f :pixels) i color)
+              _1 (f64-set! &mut (get-field f :zbuf) i 1000000000000.0)]
+          0)
+        (recur (+ i 1))))
+    n))
+
+;; ---------------------------------------------------------------------------
+;; Camera
+;; ---------------------------------------------------------------------------
+;; A pinhole camera at the origin looking down +z. `f` is the focal length in pixels (so a point
+;; one unit off-axis at distance f lands exactly one pixel off-centre), and y is flipped because
+;; screen coordinates grow downward while world coordinates do not.
+(defn render/project-x [(f : F64) (cx : F64) (x : F64) (z : F64)] : F64
+  (+ cx (/ (* f x) z)))
+
+(defn render/project-y [(f : F64) (cy : F64) (y : F64) (z : F64)] : F64
+  (- cy (/ (* f y) z)))
+
+;; Signed area of the triangle (a,b,p) * 2 — the same edge function every modern rasterizer uses.
+;; Positive and negative both mean "same side as the others"; zero means on the line.
+(defn render/edge [(ax : F64) (ay : F64) (bx : F64) (by : F64) (px : F64) (py : F64)] : F64
+  (- (* (- bx ax) (- py ay)) (* (- by ay) (- px ax))))
+
+;; ---------------------------------------------------------------------------
+;; Triangle fill
+;; ---------------------------------------------------------------------------
+;; Edge-function rasterisation with a depth test. Both windings are accepted (the test asks "are
+;; all three edges the same sign", not "are they all positive"), so an emitter that winds
+;; clockwise and one that winds counter-clockwise both draw. Depth is interpolated with
+;; normalised barycentrics, and the fragment is kept only if it beats the depth already stored.
+;; The scan is three small functions instead of one, for a real emitter constraint hit live: a
+;; `loop` (or a `let`) may not sit in an `if` BRANCH -- only a function/let/match body may hold
+;; them, which is what "if: expected (if cond then else)" at the `if` line actually meant.
+(defn render/bary-z [(e0 : F64) (e1 : F64) (e2 : F64) (area : F64)
+                     (z0 : F64) (z1 : F64) (z2 : F64)] : F64
+  (+ (* (/ e0 area) z0) (* (/ e1 area) z1) (* (/ e2 area) z2)))
+
+(defn render/store! [(f : &mut Frame) (idx : I32) (z : F64) (color : I32)] : I32
+  (let [_0 (i32-set! &mut (get-field f :pixels) idx color)
+        _1 (f64-set! &mut (get-field f :zbuf) idx z)]
+    1))
+
+(defn render/put! [(f : &mut Frame) (px : I32) (py : I32) (z : F64) (color : I32)] : I32
+  (let [idx (+ (* py (get-field f :w)) px)
+        depth (f64-at &(get-field f :zbuf) idx)]
+    (if (< z depth)
+      (render/store! f idx z color)
+      0)))
+
+(defn render/pixel! [(f : &mut Frame) (area : F64) (px : I32) (py : I32)
+                     (x0 : F64) (y0 : F64) (z0 : F64)
+                     (x1 : F64) (y1 : F64) (z1 : F64)
+                     (x2 : F64) (y2 : F64) (z2 : F64) (color : I32)] : I32
+  (let [w (get-field f :w)
+        h (get-field f :h)
+        cx (+ (i32-to-f64 px) 0.5)
+        cy (+ (i32-to-f64 py) 0.5)
+        e0 (render/edge x1 y1 x2 y2 cx cy)
+        e1 (render/edge x2 y2 x0 y0 cx cy)
+        e2 (render/edge x0 y0 x1 y1 cx cy)
+        covered (if (> area 0.0)
+                  (and (>= e0 0.0) (and (>= e1 0.0) (>= e2 0.0)))
+                  (and (<= e0 0.0) (and (<= e1 0.0) (<= e2 0.0))))
+        onscreen (and (>= px 0) (and (< px w) (and (>= py 0) (< py h))))]
+    (when (and covered onscreen)
+      (render/put! f px py (render/bary-z e0 e1 e2 area z0 z1 z2) color))
+    1))
+
+(defn render/scan! [(f : &mut Frame) (area : F64)
+                    (minx : I32) (maxx : I32) (miny : I32) (maxy : I32)
+                    (x0 : F64) (y0 : F64) (z0 : F64)
+                    (x1 : F64) (y1 : F64) (z1 : F64)
+                    (x2 : F64) (y2 : F64) (z2 : F64) (color : I32)] : I32
+  (loop [py miny]
+    (when (<= py maxy)
+      (loop [px minx]
+        (when (<= px maxx)
+          (render/pixel! f area px py x0 y0 z0 x1 y1 z1 x2 y2 z2 color)
+          (recur (+ px 1))))
+      (recur (+ py 1))))
+  1)
+
+;; Edge-function rasterisation with a depth test. Both windings are accepted (the test asks "are
+;; all three edges the same sign", not "are they all positive"), so an emitter that winds
+;; clockwise and one that winds counter-clockwise both draw.
+(defn render/tri! [(f : &mut Frame)
+                   (x0 : F64) (y0 : F64) (z0 : F64)
+                   (x1 : F64) (y1 : F64) (z1 : F64)
+                   (x2 : F64) (y2 : F64) (z2 : F64) (color : I32)] : I32
+  (let [area (render/edge x0 y0 x1 y1 x2 y2)
+        minx (f64-to-i32 (math/floor (f64-min3 x0 x1 x2)))
+        maxx (f64-to-i32 (math/floor (f64-max3 x0 x1 x2)))
+        miny (f64-to-i32 (math/floor (f64-min3 y0 y1 y2)))
+        maxy (f64-to-i32 (math/floor (f64-max3 y0 y1 y2)))]
+    (if (= area 0.0)
+      0
+      (render/scan! f area minx maxx miny maxy x0 y0 z0 x1 y1 z1 x2 y2 z2 color))))
+
+(defn render/count-color [(f : &Frame) (color : I32)] : I32
+  (let [n (* (get-field f :w) (get-field f :h))]
+    (loop [i 0 acc 0]
+      (if (>= i n)
+        acc
+        (recur (+ i 1) (if (= (i32-at &(get-field f :pixels) i) color) (+ acc 1) acc))))))
+
+;; ---------------------------------------------------------------------------
+;; self-test — real assertions, written in PARENA, run by tests/test_forgedinface.c
+;; ---------------------------------------------------------------------------
+;; Every number here is derived on paper first. The triangle below has legs of 4 units from the
+;; origin, tested at PIXEL CENTRES (x+0.5, y+0.5), so a pixel is covered when (x+0.5)+(y+0.5) <= 4,
+;; i.e. x+y <= 3: that is 4+3+2+1 = 10 pixels. Both hand-derived counts are asserted, not
+;; "greater than zero".
+(defn self-test-render [(dest : Arena @ Region)] : Bool
+  (let [f (frame/new 8 8 16711680 dest)          ;; background 0xFF0000
+        ok-size (= (frame/width &f) 8)
+        ok-bg (= (frame/pixel &f 0 0) 16711680)
+        ok-bg-count (= (render/count-color &f 16711680) 64)
+        ok-bounds (= (frame/pixel &f 8 0) -1)
+        _0 (render/tri! &mut f 0.0 0.0 1.0 4.0 0.0 1.0 0.0 4.0 1.0 255)
+        ok-tri (= (render/count-color &f 255) 10)
+        ok-corner (= (frame/pixel &f 0 0) 255)
+        ok-outside (= (frame/pixel &f 4 4) 16711680)
+        ;; same pixels, FARTHER away: the depth test must reject it entirely
+        _1 (render/tri! &mut f 0.0 0.0 9.0 4.0 0.0 9.0 0.0 4.0 9.0 65280)
+        ok-far (= (render/count-color &f 65280) 0)
+        ;; same pixels, NEARER: it wins, and the old colour is gone
+        _2 (render/tri! &mut f 0.0 0.0 0.5 4.0 0.0 0.5 0.0 4.0 0.5 65535)
+        ok-near (= (render/count-color &f 65535) 10)
+        ok-replaced (= (render/count-color &f 255) 0)]
+    (and ok-size
+         (and ok-bg (and ok-bg-count (and ok-bounds
+              (and ok-tri (and ok-corner (and ok-outside
+                   (and ok-far (and ok-near ok-replaced)))))))))))
+
+;; Projection is checked against its own definition, which is the only honest way to check a
+;; coordinate transform: one unit off-axis at distance f is exactly one pixel off-centre, and +y
+;; in world space is UP the screen.
+(defn self-test-projection [(dest : Arena @ Region)] : Bool
+  (let [ok-centre (near? (render/project-x 100.0 50.0 0.0 10.0) 50.0)
+        ok-right (near? (render/project-x 100.0 50.0 1.0 10.0) 60.0)
+        ok-up (near? (render/project-y 100.0 50.0 1.0 10.0) 40.0)
+        ok-far (near? (render/project-x 100.0 50.0 1.0 20.0) 55.0)]
+    (and ok-centre (and ok-right (and ok-up ok-far)))))

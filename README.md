@@ -59,12 +59,18 @@ The avatar/character builder for the online game, starting where a builder actua
 bones. Real today — a canonical 20-bone flat skeleton (a parent's index is always lower than its
 children's), forward kinematics from bind translation + unit quaternion + per-bone scale,
 2-influence linear blend skinning, morph targets (blend shapes) applied inside the skinning pass,
-masculine/feminine proportions as scalars over one shared topology, and a GLB/VRM container
-reader, a glTF/VRM humanoid bone remap, and the JSON chunk as real text for the
-import path. Quaternions rather than Euler angles
-because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror` and runs 41
-hand-derived assertions. Not yet: morph targets, GLB body decode, any renderer, clothing, export —
-see `stdlib/forgedinface/NORTHSTAR.md`.
+masculine/feminine proportions as scalars over one shared topology, a GLB/VRM container reader, a
+glTF/VRM humanoid bone remap, the JSON chunk as real text and then as a PARSED document
+(`glb/count-at` reports node/skin/mesh/accessor counts over the real `stdlib/json.prn` parser),
+and a software renderer (pinhole projection + edge-function rasterisation with a z-buffer, writing
+an arena pixel buffer — software because a window cannot be verified on a headless box, and a
+presenter is a thin layer over the buffer rather than a second renderer). Quaternions rather than
+Euler angles because `math` has no `sin`. `make test-forgedinface` compiles it with `gcc -Werror`
+and passes four PARENA-native checks (`rig=1 glb_json=1 render=1 projection=1`) whose numbers are
+hand-derived — a 4x4 right triangle covers exactly 10 pixels, a farther triangle is rejected by the
+depth test, and one unit off-axis at focal length f is exactly one pixel off-centre. Not yet: GLB
+body decode (accessors/bufferViews/skins), lighting, textures, clothing, export — see
+`stdlib/forgedinface/NORTHSTAR.md`.
 
 ### FORGEDLEVEL — parametric, recursive level builder (`stdlib/forgedlevel/`)
 
@@ -78,9 +84,14 @@ half blocks, primitive cells, volume, mass) computed from stored ids rather than
 Recursion is by id and ids only point backwards, so a nested cycle cannot be expressed. A real
 mod, `mods/cottage.prn`, sets the wall parameters from its own file. `make test-forgedlevel`
 compiles both through `parena build` under `gcc -Werror` and runs hand-derived assertions
-(9 blocks per 4 m course, 320 mm slack, 27+2 blocks, 336000 cm3 = 806.4 kg in concrete). Not yet:
-floor-plan painting, adjacency/joinery, mesh emission, mechanical FK/IK, RL actuators, SDF/3D
-print, serialization, host — see `stdlib/forgedlevel/NORTHSTAR.md`.
+(9 blocks per 4 m course, 320 mm slack, 27+2 blocks, 336000 cm3 = 806.4 kg in concrete). Also real:
+floor-plan painting (a 2D grid with Bresenham runs, rectangles, and `enclosed-area` — a fixpoint
+flood from the border that answers "did my walls actually close"), and face-culled mesh emission
+(one quad per exposed face, 8 floats per vertex, centred, indexed) — one cell is 6 quads, two
+cells sharing a face are 10, the real cinder block is 40. `make test-forgedlevel` passes
+`level=1 plan2d=1 line=1 mesh=1 cull=1 mod=1`. Not yet: adjacency/joinery, the bevel pass,
+mechanical FK/IK, RL actuators, SDF/3D print, serialization, host — see
+`stdlib/forgedlevel/NORTHSTAR.md`.
 
 ## Standard library — full planned API surface
 

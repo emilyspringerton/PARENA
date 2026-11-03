@@ -96,10 +96,37 @@ static inline __attribute__((unused)) Plan Plan_new(int walls, int blocks, int h
     return v;
 }
 
+typedef struct {
+    Vec verts;
+    Vec indices;
+    int quads;
+} MeshData;
+static inline __attribute__((unused)) MeshData MeshData_new(Vec verts, Vec indices, int quads) {
+    MeshData v;
+    v.verts = verts;
+    v.indices = indices;
+    v.quads = quads;
+    return v;
+}
+
+typedef struct {
+    int w;
+    int h;
+    Vec cells;
+} Grid;
+static inline __attribute__((unused)) Grid Grid_new(int w, int h, Vec cells) {
+    Grid v;
+    v.w = w;
+    v.h = h;
+    v.cells = cells;
+    return v;
+}
+
 double f64_at(Vec *, int);
 int i32_at(Vec *, int);
 int f64_push_(Vec *, double);
 int i32_push_(Vec *, int);
+int i32_set_(Vec *, int, int);
 double i32_to_f64(int);
 int f64_to_i32(double);
 int near_(double, double);
@@ -147,6 +174,49 @@ int self_test_wall(Arena *);
 int self_test_plan(Arena *);
 int self_test_nested(Arena *);
 int self_test(Arena *);
+int solid_(Library *, int, int);
+int occupied_(Library *, int, int, int, int);
+int vert_(Vec *, double, double, double, double, double, double, double, double);
+int corner_(Vec *, int, double, double, double, double, double, double, double, double);
+int quad_corners_fwd_(MeshData *, int, double, double, double, double, double, double, double, double);
+int quad_corners_flip_(MeshData *, int, double, double, double, double, double, double, double, double);
+int quad_indices_(MeshData *, int);
+int quad_(MeshData *, int, double, double, double, double, double, double, double, double, int);
+int emit_cell_(Library *, int, MeshData *, double, int, int, int, int, int, int);
+int emit_index_(Library *, int, MeshData *, double, int, int, int);
+MeshData mesh_emit(Library *, int, Arena *);
+int mesh_quads(MeshData *);
+int mesh_vertex_count(MeshData *);
+int mesh_index_count(MeshData *);
+double mesh_vert(MeshData *, int, int);
+int mesh_index(MeshData *, int);
+double mesh_min(MeshData *, int);
+double mesh_max(MeshData *, int);
+int solid_box_(Library *, int, int, int, double, Arena *);
+int self_test_mesh(Arena *);
+int self_test_cull(Arena *);
+int abs_i32(int);
+Grid grid_new(int, int, Arena *);
+int grid_width(Grid *);
+int grid_height(Grid *);
+int grid_at(Grid *, int, int);
+int grid_set_(Grid *, int, int, int);
+int grid_count(Grid *, int);
+int paint_line_(Grid *, int, int, int, int, int);
+int paint_rect_(Grid *, int, int, int, int, int);
+int push_marked_(Grid *, Vec *, int, int);
+int grid_clear_marks_(Grid *);
+int mark_cell_(Grid *, int, int);
+int seed_cell_(Grid *, int, int);
+int seed_border_(Grid *);
+int adjacent_marked_(Grid *, int, int);
+int mark_if_reachable_(Grid *, int, int);
+int mark_row_(Grid *, int, int);
+int mark_pass_(Grid *, int);
+int flood_(Grid *);
+int enclosed_area(Grid *);
+int self_test_plan2d(Arena *);
+int self_test_line(Arena *);
 WallMod cottage_spec();
 int self_test_mod(Arena *);
 
@@ -164,6 +234,10 @@ int f64_push_(Vec * v __attribute__((unused)), double val __attribute__((unused)
 
 int i32_push_(Vec * v __attribute__((unused)), int val __attribute__((unused))) {
     return ((vec_push_(v, vec_box_i32(v, val)), 1));
+}
+
+int i32_set_(Vec * v __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    return ((*(int *)vec_get(v, idx) = val, 1));
 }
 
 double i32_to_f64(int x __attribute__((unused))) {
@@ -621,6 +695,518 @@ int self_test_nested(Arena *dest __attribute__((unused))) {
 
 int self_test(Arena *dest __attribute__((unused))) {
     return (self_test_materials(dest) && (self_test_block(dest) && (self_test_quantities(dest) && (self_test_wall(dest) && (self_test_plan(dest) && self_test_nested(dest))))));
+}
+
+int solid_(Library * lib __attribute__((unused)), int asm __attribute__((unused)), int i __attribute__((unused))) {
+    return ((lib_cell(lib, asm, i) >= 0) || (lib_nested(lib, asm, i) >= 0));
+}
+
+int occupied_(Library * lib __attribute__((unused)), int asm __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int z __attribute__((unused))) {
+    int dx __attribute__((unused)) = lib_dim(lib, asm, 0);
+    int dy __attribute__((unused)) = lib_dim(lib, asm, 1);
+    int dz __attribute__((unused)) = lib_dim(lib, asm, 2);
+    if (((x < 0) || ((y < 0) || (z < 0)))) {
+    return 0;
+    } else {
+    if (((x >= dx) || ((y >= dy) || (z >= dz)))) {
+    return 0;
+    } else {
+    return solid_(lib, asm, block_cell_index(x, y, z, dx, dy));
+    }
+    }
+}
+
+int vert_(Vec * verts __attribute__((unused)), double px __attribute__((unused)), double py __attribute__((unused)), double pz __attribute__((unused)), double nx __attribute__((unused)), double ny __attribute__((unused)), double nz __attribute__((unused)), double u __attribute__((unused)), double v __attribute__((unused))) {
+    int _0 __attribute__((unused)) = f64_push_(verts, px);
+    int _1 __attribute__((unused)) = f64_push_(verts, py);
+    int _2 __attribute__((unused)) = f64_push_(verts, pz);
+    int _3 __attribute__((unused)) = f64_push_(verts, nx);
+    int _4 __attribute__((unused)) = f64_push_(verts, ny);
+    int _5 __attribute__((unused)) = f64_push_(verts, nz);
+    int _6 __attribute__((unused)) = f64_push_(verts, u);
+    int _7 __attribute__((unused)) = f64_push_(verts, v);
+    return 1;
+}
+
+int corner_(Vec * verts __attribute__((unused)), int axis __attribute__((unused)), double plane __attribute__((unused)), double a __attribute__((unused)), double b __attribute__((unused)), double nx __attribute__((unused)), double ny __attribute__((unused)), double nz __attribute__((unused)), double u __attribute__((unused)), double v __attribute__((unused))) {
+    if ((axis == 0)) {
+    return vert_(verts, plane, a, b, nx, ny, nz, u, v);
+    } else {
+    if ((axis == 1)) {
+    return vert_(verts, a, plane, b, nx, ny, nz, u, v);
+    } else {
+    return vert_(verts, a, b, plane, nx, ny, nz, u, v);
+    }
+    }
+}
+
+int quad_corners_fwd_(MeshData * m __attribute__((unused)), int axis __attribute__((unused)), double plane __attribute__((unused)), double a0 __attribute__((unused)), double a1 __attribute__((unused)), double b0 __attribute__((unused)), double b1 __attribute__((unused)), double nx __attribute__((unused)), double ny __attribute__((unused)), double nz __attribute__((unused))) {
+    int _0 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a0, b0, nx, ny, nz, 0.0, 0.0);
+    int _1 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a0, b1, nx, ny, nz, 0.0, 1.0);
+    int _2 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a1, b1, nx, ny, nz, 1.0, 1.0);
+    int _3 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a1, b0, nx, ny, nz, 1.0, 0.0);
+    return 1;
+}
+
+int quad_corners_flip_(MeshData * m __attribute__((unused)), int axis __attribute__((unused)), double plane __attribute__((unused)), double a0 __attribute__((unused)), double a1 __attribute__((unused)), double b0 __attribute__((unused)), double b1 __attribute__((unused)), double nx __attribute__((unused)), double ny __attribute__((unused)), double nz __attribute__((unused))) {
+    int _0 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a0, b0, nx, ny, nz, 0.0, 0.0);
+    int _1 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a1, b0, nx, ny, nz, 1.0, 0.0);
+    int _2 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a1, b1, nx, ny, nz, 1.0, 1.0);
+    int _3 __attribute__((unused)) = corner_(&((m)->verts), axis, plane, a0, b1, nx, ny, nz, 0.0, 1.0);
+    return 1;
+}
+
+int quad_indices_(MeshData * m __attribute__((unused)), int base __attribute__((unused))) {
+    int _0 __attribute__((unused)) = i32_push_(&((m)->indices), base);
+    int _1 __attribute__((unused)) = i32_push_(&((m)->indices), (base + 1));
+    int _2 __attribute__((unused)) = i32_push_(&((m)->indices), (base + 2));
+    int _3 __attribute__((unused)) = i32_push_(&((m)->indices), base);
+    int _4 __attribute__((unused)) = i32_push_(&((m)->indices), (base + 2));
+    int _5 __attribute__((unused)) = i32_push_(&((m)->indices), (base + 3));
+    return 6;
+}
+
+int quad_(MeshData * m __attribute__((unused)), int axis __attribute__((unused)), double plane __attribute__((unused)), double a0 __attribute__((unused)), double a1 __attribute__((unused)), double b0 __attribute__((unused)), double b1 __attribute__((unused)), double nx __attribute__((unused)), double ny __attribute__((unused)), double nz __attribute__((unused)), int flip __attribute__((unused))) {
+    int base __attribute__((unused)) = ((m)->quads * 4);
+    int _0 __attribute__((unused)) = (flip ? quad_corners_flip_(m, axis, plane, a0, a1, b0, b1, nx, ny, nz) : quad_corners_fwd_(m, axis, plane, a0, a1, b0, b1, nx, ny, nz));
+    int _1 __attribute__((unused)) = quad_indices_(m, base);
+    (void)(((m)->quads = ((m)->quads + 1)));
+    return 1;
+}
+
+int emit_cell_(Library * lib __attribute__((unused)), int asm __attribute__((unused)), MeshData * m __attribute__((unused)), double edge __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int z __attribute__((unused)), int dx __attribute__((unused)), int dy __attribute__((unused)), int dz __attribute__((unused))) {
+    double hx __attribute__((unused)) = (0.5 * (i32_to_f64(dx) * edge));
+    double hy __attribute__((unused)) = (0.5 * (i32_to_f64(dy) * edge));
+    double hz __attribute__((unused)) = (0.5 * (i32_to_f64(dz) * edge));
+    double x0 __attribute__((unused)) = ((i32_to_f64(x) * edge) - hx);
+    double x1 __attribute__((unused)) = (x0 + edge);
+    double y0 __attribute__((unused)) = ((i32_to_f64(y) * edge) - hy);
+    double y1 __attribute__((unused)) = (y0 + edge);
+    double z0 __attribute__((unused)) = ((i32_to_f64(z) * edge) - hz);
+    double z1 __attribute__((unused)) = (z0 + edge);
+    int q0 __attribute__((unused)) = (occupied_(lib, asm, (x + 1), y, z) ? 0 : quad_(m, 0, x1, y0, y1, z0, z1, 1.0, 0.0, 0.0, 0));
+    int q1 __attribute__((unused)) = (occupied_(lib, asm, (x - 1), y, z) ? 0 : quad_(m, 0, x0, y0, y1, z0, z1, -1.0, 0.0, 0.0, 1));
+    int q2 __attribute__((unused)) = (occupied_(lib, asm, x, (y + 1), z) ? 0 : quad_(m, 1, y1, x0, x1, z0, z1, 0.0, 1.0, 0.0, 0));
+    int q3 __attribute__((unused)) = (occupied_(lib, asm, x, (y - 1), z) ? 0 : quad_(m, 1, y0, x0, x1, z0, z1, 0.0, -1.0, 0.0, 1));
+    int q4 __attribute__((unused)) = (occupied_(lib, asm, x, y, (z + 1)) ? 0 : quad_(m, 2, z1, x0, x1, y0, y1, 0.0, 0.0, 1.0, 0));
+    int q5 __attribute__((unused)) = (occupied_(lib, asm, x, y, (z - 1)) ? 0 : quad_(m, 2, z0, x0, x1, y0, y1, 0.0, 0.0, -1.0, 1));
+    return (q0 + (q1 + (q2 + (q3 + (q4 + q5)))));
+}
+
+int emit_index_(Library * lib __attribute__((unused)), int asm __attribute__((unused)), MeshData * m __attribute__((unused)), double edge __attribute__((unused)), int dx __attribute__((unused)), int dy __attribute__((unused)), int i __attribute__((unused))) {
+    int z __attribute__((unused)) = (i / (dx * dy));
+    int r __attribute__((unused)) = (i - (z * (dx * dy)));
+    int y __attribute__((unused)) = (r / dx);
+    int x __attribute__((unused)) = (r - (y * dx));
+    return emit_cell_(lib, asm, m, edge, x, y, z, dx, dy, lib_dim(lib, asm, 2));
+}
+
+MeshData mesh_emit(Library * lib __attribute__((unused)), int asm __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    MeshData m __attribute__((unused)) = MeshData_new(vec_new(dest), vec_new(dest), 0);
+    int dx __attribute__((unused)) = lib_dim(lib, asm, 0);
+    int dy __attribute__((unused)) = lib_dim(lib, asm, 1);
+    double edge __attribute__((unused)) = lib_cell_cm(lib, asm);
+    int span __attribute__((unused)) = lib_span(lib, asm);
+    void * __loop_result_4 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < span)) {
+    if (solid_(lib, asm, i)) {
+    (void)(emit_index_(lib, asm, &(m), edge, dx, dy, i));
+    } else {
+    (void)(0);
+    }
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return m;
+}
+
+int mesh_quads(MeshData * m __attribute__((unused))) {
+    return (m)->quads;
+}
+
+int mesh_vertex_count(MeshData * m __attribute__((unused))) {
+    return ((m)->quads * 4);
+}
+
+int mesh_index_count(MeshData * m __attribute__((unused))) {
+    return ((m)->quads * 6);
+}
+
+double mesh_vert(MeshData * m __attribute__((unused)), int v __attribute__((unused)), int c __attribute__((unused))) {
+    return f64_at(&((m)->verts), ((v * 8) + c));
+}
+
+int mesh_index(MeshData * m __attribute__((unused)), int i __attribute__((unused))) {
+    return i32_at(&((m)->indices), i);
+}
+
+double mesh_min(MeshData * m __attribute__((unused)), int axis __attribute__((unused))) {
+    int n __attribute__((unused)) = ((m)->quads * 4);
+    double __loop_result_5 __attribute__((unused));
+    int v = 0;
+    double acc = 1000000000000.0;
+    while (1) {
+        if ((v >= n)) {
+        __loop_result_5 = acc;
+        break;
+        } else {
+        double c __attribute__((unused)) = f64_at(&((m)->verts), ((v * 8) + axis));
+        int __recur_tmp_0 = (v + 1);
+        double __recur_tmp_1 = ((c < acc) ? c : acc);
+        v = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_5;
+}
+
+double mesh_max(MeshData * m __attribute__((unused)), int axis __attribute__((unused))) {
+    int n __attribute__((unused)) = ((m)->quads * 4);
+    double __loop_result_6 __attribute__((unused));
+    int v = 0;
+    double acc = -1000000000000.0;
+    while (1) {
+        if ((v >= n)) {
+        __loop_result_6 = acc;
+        break;
+        } else {
+        double c __attribute__((unused)) = f64_at(&((m)->verts), ((v * 8) + axis));
+        int __recur_tmp_0 = (v + 1);
+        double __recur_tmp_1 = ((c > acc) ? c : acc);
+        v = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_6;
+}
+
+int solid_box_(Library * lib __attribute__((unused)), int w __attribute__((unused)), int h __attribute__((unused)), int d __attribute__((unused)), double edge __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec cells __attribute__((unused)) = vec_new(dest);
+    Vec nested __attribute__((unused)) = vec_new(dest);
+    int n __attribute__((unused)) = (w * (h * d));
+    void * __loop_result_7 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    int _0 __attribute__((unused)) = i32_push_(&(cells), 0);
+    int _1 __attribute__((unused)) = i32_push_(&(nested), -1);
+    (void)(0);
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return lib_add_(lib, w, h, d, edge, &(cells), &(nested));
+}
+
+int self_test_mesh(Arena *dest __attribute__((unused))) {
+    Library lib __attribute__((unused)) = lib_new(dest);
+    int one __attribute__((unused)) = solid_box_(&(lib), 1, 1, 1, 10.0, dest);
+    MeshData m1 __attribute__((unused)) = mesh_emit(&(lib), one, dest);
+    int ok_quads __attribute__((unused)) = (mesh_quads(&(m1)) == 6);
+    int ok_verts __attribute__((unused)) = (mesh_vertex_count(&(m1)) == 24);
+    int ok_indices __attribute__((unused)) = (mesh_index_count(&(m1)) == 36);
+    int ok_px __attribute__((unused)) = near_(mesh_vert(&(m1), 0, 0), 5.0);
+    int ok_py __attribute__((unused)) = near_(mesh_vert(&(m1), 0, 1), -5.0);
+    int ok_pz __attribute__((unused)) = near_(mesh_vert(&(m1), 0, 2), -5.0);
+    int ok_nx __attribute__((unused)) = near_(mesh_vert(&(m1), 0, 3), 1.0);
+    int ok_uv __attribute__((unused)) = near_(mesh_vert(&(m1), 0, 6), 0.0);
+    int two __attribute__((unused)) = solid_box_(&(lib), 2, 1, 1, 10.0, dest);
+    MeshData m2 __attribute__((unused)) = mesh_emit(&(lib), two, dest);
+    int ok_shared __attribute__((unused)) = (mesh_quads(&(m2)) == 10);
+    int ok_shared_i __attribute__((unused)) = (mesh_index_count(&(m2)) == 60);
+    return (ok_quads && (ok_verts && (ok_indices && (ok_px && (ok_py && (ok_pz && (ok_nx && (ok_uv && (ok_shared && ok_shared_i)))))))));
+}
+
+int self_test_cull(Arena *dest __attribute__((unused))) {
+    Library lib __attribute__((unused)) = lib_new(dest);
+    Vec cells __attribute__((unused)) = vec_new(dest);
+    Vec nested __attribute__((unused)) = vec_new(dest);
+    int _0 __attribute__((unused)) = block_cinder_(&(cells), &(nested), 0);
+    int blk __attribute__((unused)) = lib_add_(&(lib), 4, 2, 2, 10.0, &(cells), &(nested));
+    MeshData m __attribute__((unused)) = mesh_emit(&(lib), blk, dest);
+    int ok_quads __attribute__((unused)) = (mesh_quads(&(m)) == 40);
+    int ok_verts __attribute__((unused)) = (mesh_vertex_count(&(m)) == 160);
+    int ok_indices __attribute__((unused)) = (mesh_index_count(&(m)) == 240);
+    int ok_min_x __attribute__((unused)) = near_(mesh_min(&(m), 0), -20.0);
+    int ok_max_x __attribute__((unused)) = near_(mesh_max(&(m), 0), 20.0);
+    int ok_min_y __attribute__((unused)) = near_(mesh_min(&(m), 1), -10.0);
+    return (ok_quads && (ok_verts && (ok_indices && (ok_min_x && (ok_max_x && ok_min_y)))));
+}
+
+int abs_i32(int x __attribute__((unused))) {
+    if ((x < 0)) {
+    return (0 - x);
+    } else {
+    return x;
+    }
+}
+
+Grid grid_new(int w __attribute__((unused)), int h __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec cells __attribute__((unused)) = vec_new(dest);
+    int n __attribute__((unused)) = (w * h);
+    void * __loop_result_8 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    int _0 __attribute__((unused)) = i32_push_(&(cells), 0);
+    (void)(0);
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return Grid_new(w, h, cells);
+}
+
+int grid_width(Grid * g __attribute__((unused))) {
+    return (g)->w;
+}
+
+int grid_height(Grid * g __attribute__((unused))) {
+    return (g)->h;
+}
+
+int grid_at(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    if (((((x < 0) || (y < 0)) || (x >= (g)->w)) || (y >= (g)->h))) {
+    return -1;
+    } else {
+    return i32_at(&((g)->cells), ((y * (g)->w) + x));
+    }
+}
+
+int grid_set_(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused)), int v __attribute__((unused))) {
+    if (((((x < 0) || (y < 0)) || (x >= (g)->w)) || (y >= (g)->h))) {
+    return 0;
+    } else {
+    return i32_set_(&((g)->cells), ((y * (g)->w) + x), v);
+    }
+}
+
+int grid_count(Grid * g __attribute__((unused)), int v __attribute__((unused))) {
+    int n __attribute__((unused)) = ((g)->w * (g)->h);
+    int __loop_result_9 __attribute__((unused));
+    int i = 0;
+    int acc = 0;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_9 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = ((i32_at(&((g)->cells), i) == v) ? (acc + 1) : acc);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_9;
+}
+
+int paint_line_(Grid * g __attribute__((unused)), int x0 __attribute__((unused)), int y0 __attribute__((unused)), int x1 __attribute__((unused)), int y1 __attribute__((unused)), int v __attribute__((unused))) {
+    int dx __attribute__((unused)) = abs_i32((x1 - x0));
+    int dy __attribute__((unused)) = abs_i32((y1 - y0));
+    int sx __attribute__((unused)) = ((x0 < x1) ? 1 : -1);
+    int sy __attribute__((unused)) = ((y0 < y1) ? 1 : -1);
+    int err __attribute__((unused)) = (dx - dy);
+    int __loop_result_10 __attribute__((unused));
+    int x = x0;
+    int y = y0;
+    int e = err;
+    int painted = 0;
+    while (1) {
+        int _0 __attribute__((unused)) = grid_set_(g, x, y, v);
+        int n __attribute__((unused)) = (painted + 1);
+        if (((x == x1) && (y == y1))) {
+        __loop_result_10 = n;
+        break;
+        } else {
+        int e2 __attribute__((unused)) = (2 * e);
+        int step_y __attribute__((unused)) = ((e2 > (0 - dy)) ? 1 : 0);
+        int step_x __attribute__((unused)) = ((e2 < dx) ? 1 : 0);
+        int ne __attribute__((unused)) = (step_y ? (step_x ? ((e - dy) + dx) : (e - dy)) : (step_x ? (e + dx) : e));
+        int nx __attribute__((unused)) = (step_y ? (x + sx) : x);
+        int ny __attribute__((unused)) = (step_x ? (y + sy) : y);
+        int __recur_tmp_0 = nx;
+        int __recur_tmp_1 = ny;
+        int __recur_tmp_2 = ne;
+        int __recur_tmp_3 = n;
+        x = __recur_tmp_0;
+        y = __recur_tmp_1;
+        e = __recur_tmp_2;
+        painted = __recur_tmp_3;
+        continue;
+        }
+    }
+    return __loop_result_10;
+}
+
+int paint_rect_(Grid * g __attribute__((unused)), int x0 __attribute__((unused)), int y0 __attribute__((unused)), int x1 __attribute__((unused)), int y1 __attribute__((unused)), int v __attribute__((unused))) {
+    int _0 __attribute__((unused)) = paint_line_(g, x0, y0, x1, y0, v);
+    int _1 __attribute__((unused)) = paint_line_(g, x1, y0, x1, y1, v);
+    int _2 __attribute__((unused)) = paint_line_(g, x1, y1, x0, y1, v);
+    int _3 __attribute__((unused)) = paint_line_(g, x0, y1, x0, y0, v);
+    return 1;
+}
+
+int push_marked_(Grid * g __attribute__((unused)), Vec * stack __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    int _0 __attribute__((unused)) = grid_set_(g, x, y, 2);
+    int _1 __attribute__((unused)) = i32_push_(stack, x);
+    int _2 __attribute__((unused)) = i32_push_(stack, y);
+    return 2;
+}
+
+int grid_clear_marks_(Grid * g __attribute__((unused))) {
+    int n __attribute__((unused)) = ((g)->w * (g)->h);
+    void * __loop_result_11 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    if ((i32_at(&((g)->cells), i) == 2)) {
+        (void)(i32_set_(&((g)->cells), i, 0));
+    }
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return n;
+}
+
+int mark_cell_(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    return grid_set_(g, x, y, 2);
+}
+
+int seed_cell_(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    if ((grid_at(g, x, y) == 0)) {
+    return (0 + mark_cell_(g, x, y));
+    } else {
+    return 0;
+    }
+}
+
+int seed_border_(Grid * g __attribute__((unused))) {
+    int w __attribute__((unused)) = (g)->w;
+    int h __attribute__((unused)) = (g)->h;
+    void * __loop_result_12 __attribute__((unused));
+    int x = 0;
+    while (1) {
+        if ((x < w)) {
+    int _a __attribute__((unused)) = seed_cell_(g, x, 0);
+    int _b __attribute__((unused)) = seed_cell_(g, x, (h - 1));
+    (void)(0);
+        int __recur_tmp_0 = (x + 1);
+        x = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    void * __loop_result_13 __attribute__((unused));
+    int y = 0;
+    while (1) {
+        if ((y < h)) {
+    int _a __attribute__((unused)) = seed_cell_(g, 0, y);
+    int _b __attribute__((unused)) = seed_cell_(g, (w - 1), y);
+    (void)(0);
+        int __recur_tmp_0 = (y + 1);
+        y = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return 1;
+}
+
+int adjacent_marked_(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    return ((grid_at(g, (x + 1), y) == 2) || ((grid_at(g, (x - 1), y) == 2) || ((grid_at(g, x, (y + 1)) == 2) || (grid_at(g, x, (y - 1)) == 2))));
+}
+
+int mark_if_reachable_(Grid * g __attribute__((unused)), int x __attribute__((unused)), int y __attribute__((unused))) {
+    if ((grid_at(g, x, y) == 0)) {
+    if (adjacent_marked_(g, x, y)) {
+    return (0 + mark_cell_(g, x, y));
+    } else {
+    return 0;
+    }
+    } else {
+    return 0;
+    }
+}
+
+int mark_row_(Grid * g __attribute__((unused)), int y __attribute__((unused)), int x __attribute__((unused))) {
+    if ((x >= (g)->w)) {
+    return 0;
+    } else {
+    return (mark_if_reachable_(g, x, y) + mark_row_(g, y, (x + 1)));
+    }
+}
+
+int mark_pass_(Grid * g __attribute__((unused)), int y __attribute__((unused))) {
+    if ((y >= (g)->h)) {
+    return 0;
+    } else {
+    return (mark_row_(g, y, 0) + mark_pass_(g, (y + 1)));
+    }
+}
+
+int flood_(Grid * g __attribute__((unused))) {
+    int n __attribute__((unused)) = mark_pass_(g, 0);
+    if ((n > 0)) {
+    return (n + flood_(g));
+    } else {
+    return n;
+    }
+}
+
+int enclosed_area(Grid * g __attribute__((unused))) {
+    int _0 __attribute__((unused)) = grid_clear_marks_(g);
+    int _1 __attribute__((unused)) = seed_border_(g);
+    int _2 __attribute__((unused)) = flood_(g);
+    return grid_count(g, 0);
+}
+
+int self_test_plan2d(Arena *dest __attribute__((unused))) {
+    Grid g __attribute__((unused)) = grid_new(6, 6, dest);
+    int ok_empty __attribute__((unused)) = (grid_count(&(g), 0) == 36);
+    int ok_oob __attribute__((unused)) = (grid_at(&(g), 6, 0) == -1);
+    int _0 __attribute__((unused)) = paint_rect_(&(g), 1, 1, 4, 4, 1);
+    int ok_walls __attribute__((unused)) = (grid_count(&(g), 1) == 12);
+    int ok_inside __attribute__((unused)) = (grid_at(&(g), 2, 2) == 0);
+    int ok_on __attribute__((unused)) = (grid_at(&(g), 1, 2) == 1);
+    int ok_enclosed __attribute__((unused)) = (enclosed_area(&(g)) == 4);
+    int _1 __attribute__((unused)) = grid_set_(&(g), 2, 1, 0);
+    int ok_open __attribute__((unused)) = (enclosed_area(&(g)) == 0);
+    return (ok_empty && (ok_oob && (ok_walls && (ok_inside && (ok_on && (ok_enclosed && ok_open))))));
+}
+
+int self_test_line(Arena *dest __attribute__((unused))) {
+    Grid g __attribute__((unused)) = grid_new(8, 8, dest);
+    int _0 __attribute__((unused)) = paint_line_(&(g), 1, 0, 1, 4, 1);
+    int ok_count __attribute__((unused)) = (grid_count(&(g), 1) == 5);
+    int ok_col __attribute__((unused)) = (grid_at(&(g), 1, 4) == 1);
+    int ok_left __attribute__((unused)) = (grid_at(&(g), 0, 2) == 0);
+    int ok_right __attribute__((unused)) = (grid_at(&(g), 2, 2) == 0);
+    int _1 __attribute__((unused)) = paint_line_(&(g), 0, 7, 7, 7, 1);
+    int ok_row __attribute__((unused)) = (grid_count(&(g), 1) == 13);
+    int _2 __attribute__((unused)) = paint_line_(&(g), 0, 0, 99, 0, 1);
+    int ok_clipped __attribute__((unused)) = (grid_at(&(g), 7, 0) == 1);
+    return (ok_count && (ok_col && (ok_left && (ok_right && (ok_row && ok_clipped)))));
 }
 
 WallMod cottage_spec(void) {

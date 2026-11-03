@@ -54,6 +54,12 @@
         WallMod Wall wall/params wall/lay wall/blocks-along wall/block-mm
         wall/per-course wall/blocks wall/halves wall/slack-mm wall/laid-blocks
         Plan plan/new plan/add-wall! plan/mass-kg
+        MeshData mesh/emit mesh/quads mesh/vertex-count mesh/index-count
+        mesh/vert mesh/index mesh/min mesh/max
+        self-test-mesh self-test-cull
+        Grid grid/new grid/width grid/height grid/at grid/set! grid/count
+        paint-line! paint-rect! enclosed-area grid/clear-marks!
+        self-test-plan2d self-test-line
         self-test)
 
 ;; ---------------------------------------------------------------------------
@@ -77,6 +83,11 @@
 
 (defn i32-push! [(v : &mut (Vec I32)) (val : I32)] : I32
   #target {:c (inline-c "(vec_push_(v, vec_box_i32(v, val)), 1)")})
+
+;; Random-access write: a paint grid and a rasterizer both need one; rebuilding a buffer per
+;; cell would be O(n) per stroke.
+(defn i32-set! [(v : &mut (Vec I32)) (idx : I32) (val : I32)] : I32
+  #target {:c (inline-c "(*(int *)vec_get(v, idx) = val, 1)")})
 
 ;; Explicit conversions. Mixed I32/F64 arithmetic is not something this file relies on: every
 ;; place a count becomes a distance (or a float result becomes a count) it says so out loud.
@@ -570,3 +581,448 @@
             (and (self-test-quantities dest)
                  (and (self-test-wall dest)
                       (and (self-test-plan dest) (self-test-nested dest)))))))
+
+;; ---------------------------------------------------------------------------
+;; Mesh emission — merged in from a separate mesh.prn
+;; ---------------------------------------------------------------------------
+;; It started as `stdlib/forgedlevel/mesh.prn` and could not stay there: a `&Library` parameter
+;; across modules is not expressible today ("defn: unsupported reference target type 'Library'"),
+;; and this stage needs the whole library, not a scalar. Same-module is not a workaround here, it
+;; is where the code belongs — mesh emission is a level concern, and it keeps every cell lookup on
+;; the module's own accessors.
+
+(defstruct MeshData
+  (verts   : (Vec F64))   ;; 8 per vertex: px py pz nx ny nz u v
+  (indices : (Vec I32))   ;; 6 per quad, two triangles
+  (quads   : I32))
+
+;; ---------------------------------------------------------------------------
+;; Occupancy — asked through level's exported accessors, never by reaching into Library fields
+;; (a cross-module `get-field` on a value from another module's call is a real VS0 gap; the
+;; accessors are the working surface, so this module only ever calls them).
+;; ---------------------------------------------------------------------------
+(defn solid? [(lib : &Library) (asm : I32) (i : I32)] : Bool
+  (or (>= (lib/cell lib asm i) 0) (>= (lib/nested lib asm i) 0)))
+
+;; A nested cell counts as occupied: it names a sub-assembly, and a face between a cell and a
+;; sub-assembly is interior too. Emitting the sub-assembly's own mesh is a later phase.
+(defn occupied? [(lib : &Library) (asm : I32) (x : I32) (y : I32) (z : I32)] : Bool
+  (let [dx (lib/dim lib asm 0)
+        dy (lib/dim lib asm 1)
+        dz (lib/dim lib asm 2)]
+    (if (or (< x 0) (or (< y 0) (< z 0)))
+      false
+      (if (or (>= x dx) (or (>= y dy) (>= z dz)))
+        false
+        (solid? lib asm (block/cell-index x y z dx dy))))))
+
+;; ---------------------------------------------------------------------------
+;; Quad emission
+;; ---------------------------------------------------------------------------
+(defn vert! [(verts : &mut (Vec F64)) (px : F64) (py : F64) (pz : F64)
+             (nx : F64) (ny : F64) (nz : F64) (u : F64) (v : F64)] : I32
+  (let [_0 (f64-push! verts px)
+        _1 (f64-push! verts py)
+        _2 (f64-push! verts pz)
+        _3 (f64-push! verts nx)
+        _4 (f64-push! verts ny)
+        _5 (f64-push! verts nz)
+        _6 (f64-push! verts u)
+        _7 (f64-push! verts v)]
+    1))
+
+;; One corner of a face. `axis` says which coordinate the face is perpendicular to, so the other
+;; two are (a, b) in that axis's own order: axis 0 -> (y, z), axis 1 -> (x, z), axis 2 -> (x, y).
+(defn corner! [(verts : &mut (Vec F64)) (axis : I32) (plane : F64) (a : F64) (b : F64)
+               (nx : F64) (ny : F64) (nz : F64) (u : F64) (v : F64)] : I32
+  (if (= axis 0)
+    (vert! verts plane a b nx ny nz u v)
+    (if (= axis 1)
+      (vert! verts a plane b nx ny nz u v)
+      (vert! verts a b plane nx ny nz u v))))
+
+;; Winding is what makes a face visible to a backface-culling host, so the two orientations are
+;; emitted in genuinely opposite orders rather than relying on the normal alone.
+;; Winding is what makes a face visible to a backface-culling host, so the two orientations are
+;; emitted in genuinely opposite orders. Each order is its own function because a `let` may not
+;; sit in an `if` branch (real emitter constraint); `quad!` then only chooses between two calls.
+(defn quad-corners-fwd! [(m : &mut MeshData) (axis : I32) (plane : F64)
+                         (a0 : F64) (a1 : F64) (b0 : F64) (b1 : F64)
+                         (nx : F64) (ny : F64) (nz : F64)] : I32
+  (let [_0 (corner! &mut (get-field m :verts) axis plane a0 b0 nx ny nz 0.0 0.0)
+        _1 (corner! &mut (get-field m :verts) axis plane a0 b1 nx ny nz 0.0 1.0)
+        _2 (corner! &mut (get-field m :verts) axis plane a1 b1 nx ny nz 1.0 1.0)
+        _3 (corner! &mut (get-field m :verts) axis plane a1 b0 nx ny nz 1.0 0.0)]
+    1))
+
+(defn quad-corners-flip! [(m : &mut MeshData) (axis : I32) (plane : F64)
+                          (a0 : F64) (a1 : F64) (b0 : F64) (b1 : F64)
+                          (nx : F64) (ny : F64) (nz : F64)] : I32
+  (let [_0 (corner! &mut (get-field m :verts) axis plane a0 b0 nx ny nz 0.0 0.0)
+        _1 (corner! &mut (get-field m :verts) axis plane a1 b0 nx ny nz 1.0 0.0)
+        _2 (corner! &mut (get-field m :verts) axis plane a1 b1 nx ny nz 1.0 1.0)
+        _3 (corner! &mut (get-field m :verts) axis plane a0 b1 nx ny nz 0.0 1.0)]
+    1))
+
+(defn quad-indices! [(m : &mut MeshData) (base : I32)] : I32
+  (let [_0 (i32-push! &mut (get-field m :indices) base)
+        _1 (i32-push! &mut (get-field m :indices) (+ base 1))
+        _2 (i32-push! &mut (get-field m :indices) (+ base 2))
+        _3 (i32-push! &mut (get-field m :indices) base)
+        _4 (i32-push! &mut (get-field m :indices) (+ base 2))
+        _5 (i32-push! &mut (get-field m :indices) (+ base 3))]
+    6))
+
+(defn quad! [(m : &mut MeshData) (axis : I32) (plane : F64)
+             (a0 : F64) (a1 : F64) (b0 : F64) (b1 : F64)
+             (nx : F64) (ny : F64) (nz : F64) (flip : Bool)] : I32
+  (let [base (* (get-field m :quads) 4)
+        _0 (if flip
+             (quad-corners-flip! m axis plane a0 a1 b0 b1 nx ny nz)
+             (quad-corners-fwd! m axis plane a0 a1 b0 b1 nx ny nz))
+        _1 (quad-indices! m base)]
+    (set! (get-field m :quads) (+ (get-field m :quads) 1))
+    1))
+
+(defn emit-cell! [(lib : &Library) (asm : I32) (m : &mut MeshData) (edge : F64)
+                  (x : I32) (y : I32) (z : I32) (dx : I32) (dy : I32) (dz : I32)] : I32
+  (let [hx (* 0.5 (* (i32-to-f64 dx) edge))
+        hy (* 0.5 (* (i32-to-f64 dy) edge))
+        hz (* 0.5 (* (i32-to-f64 dz) edge))
+        x0 (- (* (i32-to-f64 x) edge) hx)
+        x1 (+ x0 edge)
+        y0 (- (* (i32-to-f64 y) edge) hy)
+        y1 (+ y0 edge)
+        z0 (- (* (i32-to-f64 z) edge) hz)
+        z1 (+ z0 edge)
+        q0 (if (occupied? lib asm (+ x 1) y z) 0 (quad! m 0 x1 y0 y1 z0 z1 1.0 0.0 0.0 false))
+        q1 (if (occupied? lib asm (- x 1) y z) 0 (quad! m 0 x0 y0 y1 z0 z1 -1.0 0.0 0.0 true))
+        q2 (if (occupied? lib asm x (+ y 1) z) 0 (quad! m 1 y1 x0 x1 z0 z1 0.0 1.0 0.0 false))
+        q3 (if (occupied? lib asm x (- y 1) z) 0 (quad! m 1 y0 x0 x1 z0 z1 0.0 -1.0 0.0 true))
+        q4 (if (occupied? lib asm x y (+ z 1)) 0 (quad! m 2 z1 x0 x1 y0 y1 0.0 0.0 1.0 false))
+        q5 (if (occupied? lib asm x y (- z 1)) 0 (quad! m 2 z0 x0 x1 y0 y1 0.0 0.0 -1.0 true))]
+    (+ q0 (+ q1 (+ q2 (+ q3 (+ q4 q5)))))))
+
+;; Cell index -> (x, y, z) is the inverse of level's row-major `block/cell-index`, which is why the
+;; two agree on dx/dy: i = (z * dy + y) * dx + x.
+;; Cell index -> (x, y, z) is the inverse of `block/cell-index`, which is why the two agree on
+;; dx/dy: i = (z * dy + y) * dx + x.
+(defn emit-index! [(lib : &Library) (asm : I32) (m : &mut MeshData) (edge : F64)
+                   (dx : I32) (dy : I32) (i : I32)] : I32
+  (let [z (/ i (* dx dy))
+        r (- i (* z (* dx dy)))
+        y (/ r dx)
+        x (- r (* y dx))]
+    (emit-cell! lib asm m edge x y z dx dy (lib/dim lib asm 2))))
+
+(defn mesh/emit [(lib : &Library) (asm : I32) (dest : Arena @ Region)] : MeshData @ Region
+  (let [m {:verts (vec/new dest) :indices (vec/new dest) :quads 0}
+        dx (lib/dim lib asm 0)
+        dy (lib/dim lib asm 1)
+        edge (lib/cell-cm lib asm)
+        span (lib/span lib asm)]
+    (loop [i 0]
+      (when (< i span)
+        (if (solid? lib asm i) (emit-index! lib asm &mut m edge dx dy i) 0)
+        (recur (+ i 1))))
+    m))
+
+(defn mesh/quads [(m : &MeshData)] : I32 (get-field m :quads))
+(defn mesh/vertex-count [(m : &MeshData)] : I32 (* (get-field m :quads) 4))
+(defn mesh/index-count [(m : &MeshData)] : I32 (* (get-field m :quads) 6))
+(defn mesh/vert [(m : &MeshData) (v : I32) (c : I32)] : F64
+  (f64-at &(get-field m :verts) (+ (* v 8) c)))
+(defn mesh/index [(m : &MeshData) (i : I32)] : I32
+  (i32-at &(get-field m :indices) i))
+
+(defn mesh/min [(m : &MeshData) (axis : I32)] : F64
+  (let [n (* (get-field m :quads) 4)]
+    (loop [v 0 acc 1000000000000.0]
+      (if (>= v n)
+        acc
+        (let [c (f64-at &(get-field m :verts) (+ (* v 8) axis))]
+          (recur (+ v 1) (if (< c acc) c acc)))))))
+
+(defn mesh/max [(m : &MeshData) (axis : I32)] : F64
+  (let [n (* (get-field m :quads) 4)]
+    (loop [v 0 acc -1000000000000.0]
+      (if (>= v n)
+        acc
+        (let [c (f64-at &(get-field m :verts) (+ (* v 8) axis))]
+          (recur (+ v 1) (if (> c acc) c acc)))))))
+
+;; ---------------------------------------------------------------------------
+;; self-test
+;; ---------------------------------------------------------------------------
+(defn solid-box! [(lib : &mut Library) (w : I32) (h : I32) (d : I32) (edge : F64)
+                  (dest : Arena @ Region)] : I32
+  (let [cells (vec/new dest)
+        nested (vec/new dest)
+        n (* w (* h d))]
+    (loop [i 0]
+      (when (< i n)
+        (let [_0 (i32-push! &mut cells 0)
+              _1 (i32-push! &mut nested -1)]
+          0)
+        (recur (+ i 1))))
+    (lib/add! lib w h d edge &cells &nested)))
+
+;; A single cell is 6 quads / 24 vertices / 36 indices. Two cells side by side SHARE one face, so
+;; they cost 10 quads, not 12 — the culling proof. The first vertex of the first face (+x plane at
+;; x=+5, corner (a,b) = (y0,z0) = (-5,-5)) pins position, normal and uv.
+(defn self-test-mesh [(dest : Arena @ Region)] : Bool
+  (let [lib (lib/new dest)
+        one (solid-box! &mut lib 1 1 1 10.0 dest)
+        m1 (mesh/emit &lib one dest)
+        ok-quads (= (mesh/quads &m1) 6)
+        ok-verts (= (mesh/vertex-count &m1) 24)
+        ok-indices (= (mesh/index-count &m1) 36)
+        ok-px (near? (mesh/vert &m1 0 0) 5.0)
+        ok-py (near? (mesh/vert &m1 0 1) -5.0)
+        ok-pz (near? (mesh/vert &m1 0 2) -5.0)
+        ok-nx (near? (mesh/vert &m1 0 3) 1.0)
+        ok-uv (near? (mesh/vert &m1 0 6) 0.0)
+        two (solid-box! &mut lib 2 1 1 10.0 dest)
+        m2 (mesh/emit &lib two dest)
+        ok-shared (= (mesh/quads &m2) 10)
+        ok-shared-i (= (mesh/index-count &m2) 60)]
+    (and ok-quads
+         (and ok-verts (and ok-indices (and ok-px (and ok-py (and ok-pz
+              (and ok-nx (and ok-uv (and ok-shared ok-shared-i)))))))))))
+
+;; The real cinder block: 12 solid cells x 6 faces = 72, minus two per shared face. Shared pairs
+;; are 6 along x (the solid row y=1, three pairs per z-level), 4 along y (x=0 and x=3, both hollow
+;; at y=0 only for x=1,2) and 6 along z (six solid cells on each of the two z layers), so
+;; 72 - 2*16 = 40 quads. First written as 36 here — the z count was 8 by mistake, and the test
+;; caught it rather than the comment surviving as a plausible-looking lie.
+(defn self-test-cull [(dest : Arena @ Region)] : Bool
+  (let [lib (lib/new dest)
+        cells (vec/new dest)
+        nested (vec/new dest)
+        _0 (block/cinder! &mut cells &mut nested 0)
+        blk (lib/add! &mut lib 4 2 2 10.0 &cells &nested)
+        m (mesh/emit &lib blk dest)
+        ok-quads (= (mesh/quads &m) 40)
+        ok-verts (= (mesh/vertex-count &m) 160)
+        ok-indices (= (mesh/index-count &m) 240)
+        ok-min-x (near? (mesh/min &m 0) -20.0)
+        ok-max-x (near? (mesh/max &m 0) 20.0)
+        ok-min-y (near? (mesh/min &m 1) -10.0)]
+    (and ok-quads (and ok-verts (and ok-indices
+         (and ok-min-x (and ok-max-x ok-min-y)))))))
+
+(defn abs-i32 [(x : I32)] : I32
+  (if (< x 0) (- 0 x) x))
+
+;; ---------------------------------------------------------------------------
+;; Floor-plan painting — merged in from a separate plan2d.prn
+;; ---------------------------------------------------------------------------
+;; The VRoid "paint on the 2D canvas" affordance, translated to a map: draw wall runs in plan view
+;; on a grid, then extrude. It lives here for the same real reason mesh emission does — a second
+;; module in one build collides on the shared accessor names (`redefinition of 'i32_push_'`).
+;;
+;; Grid cells: 0 empty, 1 wall, 2 reached-from-outside (a flood-fill mark). `enclosed-area` floods
+;; from the border and answers "did my walls actually close?", which is the question a designer
+;; asks, rather than a bounding-box guess.
+
+(defstruct Grid
+  (w     : I32)
+  (h     : I32)
+  (cells : (Vec I32)))
+
+(defn grid/new [(w : I32) (h : I32) (dest : Arena @ Region)] : Grid @ Region
+  (let [cells (vec/new dest)
+        n (* w h)]
+    (loop [i 0]
+      (when (< i n)
+        (let [_0 (i32-push! &mut cells 0)] 0)
+        (recur (+ i 1))))
+    {:w w :h h :cells cells}))
+
+(defn grid/width [(g : &Grid)] : I32 (get-field g :w))
+(defn grid/height [(g : &Grid)] : I32 (get-field g :h))
+
+;; Out-of-range reads answer -1 so a paint stroke that runs off the canvas is clipped rather than
+;; wrapping into the next row (the classic grid bug: x=w reads the first cell of the row below).
+(defn grid/at [(g : &Grid) (x : I32) (y : I32)] : I32
+  (if (or (< x 0) (< y 0) (>= x (get-field g :w)) (>= y (get-field g :h)))
+    -1
+    (i32-at &(get-field g :cells) (+ (* y (get-field g :w)) x))))
+
+(defn grid/set! [(g : &mut Grid) (x : I32) (y : I32) (v : I32)] : I32
+  (if (or (< x 0) (< y 0) (>= x (get-field g :w)) (>= y (get-field g :h)))
+    0
+    (i32-set! &mut (get-field g :cells) (+ (* y (get-field g :w)) x) v)))
+
+(defn grid/count [(g : &Grid) (v : I32)] : I32
+  (let [n (* (get-field g :w) (get-field g :h))]
+    (loop [i 0 acc 0]
+      (if (>= i n)
+        acc
+        (recur (+ i 1) (if (= (i32-at &(get-field g :cells) i) v) (+ acc 1) acc))))))
+
+;; ---------------------------------------------------------------------------
+;; Brushes
+;; ---------------------------------------------------------------------------
+;; Bresenham, integer only. Both coordinate pairs move at once when the line is diagonal, which is
+;; the whole point of the error term: a naive per-x step leaves gaps on steep runs, and gaps in a
+;; wall plan become doors nobody asked for.
+(defn paint-line! [(g : &mut Grid) (x0 : I32) (y0 : I32) (x1 : I32) (y1 : I32) (v : I32)] : I32
+  (let [dx (abs-i32 (- x1 x0))
+        dy (abs-i32 (- y1 y0))
+        sx (if (< x0 x1) 1 -1)
+        sy (if (< y0 y1) 1 -1)
+        err (- dx dy)]
+    (loop [x x0 y y0 e err painted 0]
+      (let [_0 (grid/set! g x y v)
+            n (+ painted 1)]
+        (if (and (= x x1) (= y y1))
+          n
+          (let [e2 (* 2 e)
+                step-y (if (> e2 (- 0 dy)) true false)
+                step-x (if (< e2 dx) true false)
+                ne (if step-y
+                     (if step-x (+ (- e dy) dx) (- e dy))
+                     (if step-x (+ e dx) e))
+                nx (if step-y (+ x sx) x)
+                ny (if step-x (+ y sy) y)]
+            (recur nx ny ne n)))))))
+
+(defn paint-rect! [(g : &mut Grid) (x0 : I32) (y0 : I32) (x1 : I32) (y1 : I32) (v : I32)] : I32
+  (let [_0 (paint-line! g x0 y0 x1 y0 v)
+        _1 (paint-line! g x1 y0 x1 y1 v)
+        _2 (paint-line! g x1 y1 x0 y1 v)
+        _3 (paint-line! g x0 y1 x0 y0 v)]
+    1))
+
+;; ---------------------------------------------------------------------------
+;; What did I enclose?
+;; ---------------------------------------------------------------------------
+;; Flood from every empty border cell, marking reachable cells 2. What is left as 0 afterwards is
+;; enclosed — that is the plan's rooms, and it is the answer a designer wants ("did my walls
+;; actually close?") rather than a bounding-box guess.
+;;
+;; The stack is an interleaved (x, y) buffer with an explicit `sp`, because this stdlib's Vec has
+;; append but no pop; an index cursor is the honest way to express "pop" without one.
+;; The mark+push lives in its own function because VS0's emitter rejects a `let` used directly
+;; as an `if` branch ("can't be used directly in expression position"). Real constraint, designed
+;; around rather than worked around with a dummy binding.
+(defn push-marked! [(g : &mut Grid) (stack : &mut (Vec I32)) (x : I32) (y : I32)] : I32
+  (let [_0 (grid/set! g x y 2)
+        _1 (i32-push! stack x)
+        _2 (i32-push! stack y)]
+    2))
+
+;; Idempotence, and this is a real bug the self-test caught: `enclosed-area` leaves its marks (2)
+;; in the grid so the caller can inspect them, which means a SECOND call found a border already
+;; marked, seeded nothing, and reported the previous run's interior as still enclosed. A designer
+;; re-asks after every stroke, so clearing first is the correct contract, not a nicety.
+(defn grid/clear-marks! [(g : &mut Grid)] : I32
+  (let [n (* (get-field g :w) (get-field g :h))]
+    (loop [i 0]
+      (when (< i n)
+        (when (= (i32-at &(get-field g :cells) i) 2)
+          (i32-set! &mut (get-field g :cells) i 0))
+        (recur (+ i 1))))
+    n))
+
+(defn mark-cell! [(g : &mut Grid) (x : I32) (y : I32)] : I32
+  (grid/set! g x y 2))
+
+(defn seed-cell! [(g : &mut Grid) (x : I32) (y : I32)] : I32
+  (if (= (grid/at g x y) 0)
+    (+ 0 (mark-cell! g x y))
+    0))
+
+(defn seed-border! [(g : &mut Grid)] : I32
+  (let [w (get-field g :w)
+        h (get-field g :h)]
+    (loop [x 0]
+      (when (< x w)
+        (let [_a (seed-cell! g x 0)
+              _b (seed-cell! g x (- h 1))] 0)
+        (recur (+ x 1))))
+    (loop [y 0]
+      (when (< y h)
+        (let [_a (seed-cell! g 0 y)
+              _b (seed-cell! g (- w 1) y)] 0)
+        (recur (+ y 1))))
+    1))
+
+(defn adjacent-marked? [(g : &Grid) (x : I32) (y : I32)] : Bool
+  (or (= (grid/at g (+ x 1) y) 2)
+      (or (= (grid/at g (- x 1) y) 2)
+          (or (= (grid/at g x (+ y 1)) 2)
+              (= (grid/at g x (- y 1)) 2)))))
+
+(defn mark-if-reachable! [(g : &mut Grid) (x : I32) (y : I32)] : I32
+  (if (= (grid/at g x y) 0)
+    (if (adjacent-marked? g x y)
+      (+ 0 (mark-cell! g x y))
+      0)
+    0))
+
+(defn mark-row! [(g : &mut Grid) (y : I32) (x : I32)] : I32
+  (if (>= x (get-field g :w))
+    0
+    (+ (mark-if-reachable! g x y) (mark-row! g y (+ x 1)))))
+
+(defn mark-pass! [(g : &mut Grid) (y : I32)] : I32
+  (if (>= y (get-field g :h))
+    0
+    (+ (mark-row! g y 0) (mark-pass! g (+ y 1)))))
+
+;; Fixpoint, not a stack. The first version pushed (x, y) pairs onto a Vec and walked it with an
+;; explicit cursor; it silently marked nothing on a second call, which is precisely the class of
+;; bug a fixpoint cannot have. A plan grid is a few thousand cells, so a scan per pass is cheap,
+;; and "no cell changed" is both obviously terminating and hand-checkable.
+(defn flood! [(g : &mut Grid)] : I32
+  (let [n (mark-pass! g 0)]
+    (if (> n 0)
+      (+ n (flood! g))
+      n)))
+
+;; Cells still 0 after the flood are the enclosed ones. Marks are cleared first so a second call
+;; answers about the CURRENT plan — a designer re-asks after every stroke.
+(defn enclosed-area [(g : &mut Grid)] : I32
+  (let [_0 (grid/clear-marks! g)
+        _1 (seed-border! g)
+        _2 (flood! g)]
+    (grid/count g 0)))
+
+;; ---------------------------------------------------------------------------
+;; self-test
+;; ---------------------------------------------------------------------------
+;; A 6x6 plan with a 4x4 rectangle outlined from (1,1) to (4,4): 12 wall cells on the outline,
+;; a 2x2 = 4 cell room inside, and 36 - 12 - 4 = 20 cells outside. Break one wall cell and the
+;; room is no longer enclosed, so enclosed-area drops from 4 to 0 — which is the assertion that
+;; proves the flood fill is answering the real question and not counting walls.
+(defn self-test-plan2d [(dest : Arena @ Region)] : Bool
+  (let [g (grid/new 6 6 dest)
+        ok-empty (= (grid/count &g 0) 36)
+        ok-oob (= (grid/at &g 6 0) -1)
+        _0 (paint-rect! &mut g 1 1 4 4 1)
+        ok-walls (= (grid/count &g 1) 12)
+        ok-inside (= (grid/at &g 2 2) 0)
+        ok-on (= (grid/at &g 1 2) 1)
+        ok-enclosed (= (enclosed-area &mut g) 4)
+        _1 (grid/set! &mut g 2 1 0)          ;; a door
+        ok-open (= (enclosed-area &mut g) 0)]
+    (and ok-empty
+         (and ok-oob (and ok-walls (and ok-inside (and ok-on
+              (and ok-enclosed ok-open))))))))
+
+;; A drawn run must be the cells a designer sees: a steep diagonal (1,0)->(1,4) paints 5 cells in
+;; one column and nothing in the columns either side of it — the case a per-x loop gets wrong.
+(defn self-test-line [(dest : Arena @ Region)] : Bool
+  (let [g (grid/new 8 8 dest)
+        _0 (paint-line! &mut g 1 0 1 4 1)
+        ok-count (= (grid/count &g 1) 5)
+        ok-col (= (grid/at &g 1 4) 1)
+        ok-left (= (grid/at &g 0 2) 0)
+        ok-right (= (grid/at &g 2 2) 0)
+        _1 (paint-line! &mut g 0 7 7 7 1)
+        ok-row (= (grid/count &g 1) 13)
+        _2 (paint-line! &mut g 0 0 99 0 1)
+        ok-clipped (= (grid/at &g 7 0) 1)]
+    (and ok-count (and ok-col (and ok-left (and ok-right (and ok-row ok-clipped)))))))

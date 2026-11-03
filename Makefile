@@ -1640,7 +1640,7 @@ test-unicode: build
 # rig.prn itself); tests/test_forgedinface.c is only the thinnest C shim, because parena-c has no
 # `(defn main ...)` -> C `int main` emission convention.
 test-forgedinface: build
-	./parena build stdlib/string.prn stdlib/forgedinface/rig.prn -o tests/test_forgedinface_gen.c
+	./parena build stdlib/string.prn stdlib/json.prn stdlib/forgedinface/rig.prn -o tests/test_forgedinface_gen.c
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_forgedinface.c \
 		runtime/parena_runtime.c -o /tmp/test_forgedinface_bin -lm
 	/tmp/test_forgedinface_bin

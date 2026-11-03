@@ -106,3 +106,26 @@ Found live while building it, all in the same family the stdlib already document
 
 FORGEDINFACE is intended to become its own repo; until that upstream exists, this directory is the
 real source of truth for its core.
+
+---
+
+## 2026-11-03 — Phase 2 progress + a renderer that can be verified
+
+**GLB JSON is decoded.** The chunk stops being opaque bytes: `glb/count-at` reports how many
+nodes / skins / meshes / accessors a document declares, parsed by the real `stdlib/json.prn`
+(so a `"nodes"` inside a mesh name is not counted). `json/array-len-at` exists for exactly this
+and returns -1 (absent / not an array) or -2 (not JSON) rather than an Option, because an Option
+payload is a `void *` and cannot be handed onward without a real gap being closed first.
+
+**The renderer is software, deliberately.** A pinhole projection plus edge-function
+rasterisation with a z-buffer, writing an arena pixel buffer (`Frame`). No display exists on this
+box, so an SDL2 window could not be opened or verified; this can be, pixel by pixel. Phase 3's
+presenter is a thin layer over `Frame`, not a second renderer.
+
+Still the honest gap: **the JSON counts are counts.** Accessors, bufferViews, nodes and skins are
+not read yet, so a real VRoid export still cannot load. That is the next slice, and it is the one
+that turns `count-at` into an actual scene.
+
+Two constraints added to the list this pass: a `let`/`loop` cannot sit in an `if` branch, and two
+modules in one build collide on shared helper names — which is why the renderer lives in
+`rig.prn` rather than beside it.
