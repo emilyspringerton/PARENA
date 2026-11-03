@@ -1,0 +1,50 @@
+;; stdlib/shankpit/queue_rules.prn -- the 460 queue's arithmetic, written once in PARENA, emitted to Luau.
+;;
+;; Founder, real-time: "write it in upstream PARENA compiled into LUA so we get types". The queue that pairs
+;; bodies on the Roblox side (SHANKPIT/roblox/src/queue460.lua) is a list manager; every THRESHOLD in it is
+;; arithmetic, and arithmetic is the part that must not be restated in a second language. So the numbers and the
+;; comparisons live here, emitted by `parena build` into Luau:
+;;
+;;   PARENA/stdlib/shankpit/queue_rules.prn --> SHANKPIT/roblox/src/queue460_rules.lua
+;;
+;; Exactly the discipline `stdlib/deadweight/rating.prn` and `stdlib/deadweight/stage.prn` already follow
+;; (one .prn, two targets). If the Luau and this file ever disagree, this file is right and the copy is the bug.
+;;
+;; WHAT THE POLICY IS, in one line: standing in line buys you a wider match, never a lopsided one nobody agreed
+;; to. The window starts at 100 rating points, grows 50 a second, and stops at 600 -- and a pair is legal only
+;; inside the STRICTER of the two bodies' windows, so a body that just walked in cannot drag a patient one into
+;; a mismatch it did not wait for.
+;;
+;; Scalar-only I32 in, I32 out -- the subset both emitters accept (see stage.prn's own note).
+
+(module shankpit/queue-rules)
+(export queue-window queue-strict-window queue-gap-fits queue-expired queue-fillable)
+
+;; Rating points of tolerance after waiting wait-ms. 100 at 0, +50 per WHOLE second, capped at 600.
+;; A negative wait is a clock disagreement, not a crisis: it reads as zero.
+(defn queue-window [(wait-ms : I32)] : I32
+  (let [v (+ 100 (* (/ (if (< wait-ms 0) 0 wait-ms) 1000) 50))]
+    (if (> v 600) 600 v)))
+
+;; The window a PAIR must fit: the smaller of the two. Computed from the waits rather than passed in, so no
+;; host can accidentally compare against the wrong body's patience.
+(defn queue-strict-window [(wait-a : I32) (wait-b : I32)] : I32
+  (if (< (queue-window wait-a) (queue-window wait-b))
+      (queue-window wait-a)
+      (queue-window wait-b)))
+
+;; 1 when this rating gap may be paired now. `gap` is signed at the call site (a minus b) and is taken as a
+;; magnitude here, so a host that hands the pair in either order gets the same answer.
+(defn queue-gap-fits [(gap : I32) (wait-a : I32) (wait-b : I32)] : I32
+  (let [g (if (< gap 0) (- 0 gap) gap)]
+    (if (<= g (queue-strict-window wait-a wait-b)) 1 0)))
+
+;; Two minutes in line releases the seat -- strictly MORE than two minutes, because the exact boundary is a
+;; body still legally waiting.
+(defn queue-expired [(wait-ms : I32)] : I32
+  (if (> wait-ms 120000) 1 0))
+
+;; Casual only (ranked = 1 answers 0 always): after 30 s a body may be filled with a citizen. A rating moved
+;; against a bot is a lie about a person, which is why ranked never gets here.
+(defn queue-fillable [(ranked : I32) (wait-ms : I32)] : I32
+  (if (= ranked 1) 0 (if (>= wait-ms 30000) 1 0)))
