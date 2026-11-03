@@ -14,7 +14,7 @@
 ;; PPO "soldier" policy conditions on, matching the doc's own "smaller in scope than the full
 ;; commander/soldier hierarchy... a genuine structural step in the same direction" framing.
 ;;
-;; I32-only the whole way (no F32/struct/Vec crossing the #target boundary VS0 still can't do --
+;; I32-only the whole way (no F32/struct/Vec crossing the #target boundary by design --
 ;; same real constraint stdlib/ecowar/frontier_village_mod.prn's own header names) -- damage/
 ;; stocks are already integer-shaped on the wire (NetPlayer.damage is a real unsigned short
 ;; percent, stocks a real unsigned char), and edge distance is passed pre-rounded to the nearest

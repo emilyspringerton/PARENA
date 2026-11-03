@@ -8,7 +8,7 @@
 ;; PAPERCRAFT mod's own "mod decides, host applies" split (see paper_fragment_mod.prn's own
 ;; header comment for the identical real reasoning on a sibling damage-decision mod).
 ;;
-;; Real I32-only decision logic, no F32/struct/Vec across the boundary -- the same VS0 ceiling
+;; Real I32-only decision logic, no F32/struct/Vec across the boundary -- the same deliberately minimal ABI
 ;; every real mod in this monorepo respects (ECOWAR/docs/ARENA_API.md). Distance and blast
 ;; radius are real integer game units (whatever unit `packages/common` positions already use,
 ;; e.g. centimeters or a fixed-point subdivision) -- host C owns converting real vector math

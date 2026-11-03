@@ -7,8 +7,8 @@
 ;;
 ;; ABI: apps/server/src/main.c calls on-papercraft-pickup-radius-millis once, at server startup
 ;; (not per-tick -- this is a real, static tuning value, not a per-event decision), and divides
-;; the real I32 result by 1000.0f to get an actual float world-unit radius (VS0 has no F32 params/
-;; returns yet, same real fixed-point-millis convention on_papercraft_slide_jump_boost_permille's
+;; the real I32 result by 1000.0f to get an actual float world-unit radius (this ABI returns I32 on
+;; purpose, same real fixed-point-millis convention on_papercraft_slide_jump_boost_permille's
 ;; own real speed_milli input/output already uses elsewhere in this monorepo).
 
 (module papercraft/pickup-mod)

@@ -9,7 +9,7 @@
 ;; decision logic, no F32/struct/Vec across the boundary -- see ECOWAR/docs/ARENA_API.md) and
 ;; WEAKNIGHT_BEDROCK_RACERS' own racer/bike-gear-mod.prn already proved outside ECOWAR. Host C
 ;; (packages/common/paper_mesh.h) owns the actual subdivision/vertex-jitter geometry math (real
-;; F32/struct/array work VS0 can't touch) and the real physics/rendering consequence of a
+;; F32/struct/array work kept out of this ABI) and the real physics/rendering consequence of a
 ;; fragment detaching -- this mod is only the real DECISION: how much a hit actually hurts a
 ;; fragment, and what visible damage tier that leaves it in.
 

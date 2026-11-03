@@ -5,7 +5,7 @@
 ;; WEAKNIGHT_BEDROCK_RACERS' own racer/bike_gear_mod.prn just proved, itself following ECOWAR's
 ;; own established mod ABI, see ECOWAR/docs/ARENA_API.md).
 ;;
-;; Real I32-only decision logic (no F32/struct/Vec across the boundary, same VS0 ceiling every
+;; Real I32-only decision logic (no F32/struct/Vec across the boundary, the same deliberately minimal ABI every
 ;; other real mod in this monorepo respects): given a player's current level and their current
 ;; total XP, decide the real level they should actually be at. Host C still owns applying the
 ;; real consequence of a level change (stat increases, unlocks, persistence writes) -- same "mod

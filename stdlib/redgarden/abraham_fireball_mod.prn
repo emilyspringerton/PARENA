@@ -30,8 +30,8 @@
 (module redgarden/abraham-fireball-mod)
 (export on-abraham-fireball-cast)
 
-;; target-x/target-z are I32, not F32 -- VS0 doesn't support F32 params yet
-;; (confirmed live), same reason bloodflower_mod.prn's on-moon-zenith takes
+;; target-x/target-z are I32, not F32 -- this ABI stays integer-only by design (F32 params exist as
+;; of 2026-11-03), same reason bloodflower_mod.prn's on-moon-zenith takes
 ;; I32 x/z for a world position instead of float; the host C side
 ;; (redgarden_host_abraham_fireball_cast) converts back to float itself.
 (defn on-abraham-fireball-cast [(hero-index : I32) (target-x : I32) (target-z : I32)] : Unit

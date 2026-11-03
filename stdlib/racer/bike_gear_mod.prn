@@ -14,9 +14,10 @@
 ;; Follows the exact real ABI ECOWAR's own card_effect_mod.prn already established (see
 ;; ECOWAR/docs/ARENA_API.md) -- real I32-only decision logic in PARENA, host C still owns the
 ;; actual float physics (racer_vehicle.h's own racer_bike_tick, packages/common), same "mod does
-;; what VS0 can, host does the rest" split: no F32 params, no struct/Vec across this boundary.
-;; Speed is fixed-point x100 (an F32 world-units/sec value times 100, truncated to I32) since VS0
-;; has no F32 parameters yet.
+;; what the ABI can, host does the rest" split: no F32 params, no struct/Vec across this boundary, a
+;; deliberately minimal ABI rather than a missing feature (F32 params exist as of 2026-11-03).
+;; Speed is fixed-point x100 (an F32 world-units/sec value times 100, truncated to I32) to keep that
+;; boundary integer-only.
 ;;
 ;; ABI: racer_bike_tick (packages/common/racer_vehicle.h) calls straight into
 ;; on-racer-bike-gear-shift (emitted as on_racer_bike_gear_shift) once per tick with the vehicle's
