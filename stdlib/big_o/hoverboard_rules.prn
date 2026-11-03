@@ -10,8 +10,9 @@
 ;; two ratios),
 ;; same convention `gear_max_x100` (WEAKNIGHT_BEDROCK_RACERS' own real per-vehicle physics tuning
 ;; precedent, PARENA/stdlib/racer/bike_gear_mod.prn) and `party-xp-share`/`chat-in-range` (this
-;; repo's own fixed-point-cm distance convention) already establish -- VS0 is I32/Bool-scalar-only,
-;; no F32 params yet.
+;; repo's own fixed-point-cm distance convention) already establish. Fixed-point BY DESIGN, not for want
+;; of F32: the C emitter has accepted F32 since 2026-11-03, and these constants stay integer so the
+;; host's own per-tick math is exact (the same call stdlib/shankpit/hoverboard_rules.prn makes).
 ;;
 ;; Board identity (1=SPEEDSTER, 2=TANK, 3=GLIDER; 0 is reserved by the host for "no board
 ;; mounted", never passed in here):
