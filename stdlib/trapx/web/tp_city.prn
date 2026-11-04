@@ -1,0 +1,199 @@
+;; stdlib/trapx/web/tp_city.prn -- the city itself: state, clock, bank, bus, verbs.
+;;
+;; Line for line the same machine as WOTAN/trapx/trapx-city.js (which SHANKPIT's C host mirrors), with
+;; one deliberate difference: every threshold, cost, level and digest is a CALL into trapx_rules.prn,
+;; never a literal. If a number appears here that is also in the rules, the rules are wrong and this
+;; file is a bug -- which is why the wasm and the JS are pinned to the same behaviour test.
+
+(defn tp-scenes [] : I32 2)
+
+(defn tp-ok [] : I32 0)
+(defn tp-err-scene [] : I32 1)
+(defn tp-err-not-here [] : I32 2)
+(defn tp-err-full [] : I32 3)
+(defn tp-err-poor [] : I32 4)
+(defn tp-err-none-held [] : I32 5)
+(defn tp-err-no-portal [] : I32 6)
+(defn tp-err-arg [] : I32 7)
+
+;; receipt kinds (documented in trapx_rules.prn)
+(defn rc-claim [] : I32 0)
+(defn rc-flow [] : I32 1)
+(defn rc-contest [] : I32 2)
+(defn rc-k9 [] : I32 3)
+(defn rc-witness [] : I32 4)
+
+;; action kinds, for trapx-heat-step
+(defn act-none [] : I32 0)
+(defn act-claim [] : I32 1)
+(defn act-contest [] : I32 2)
+(defn act-k9 [] : I32 3)
+
+;; event kinds, the same ten the C ring names
+(defn ev-tick [] : I32 0)
+(defn ev-claim [] : I32 1)
+(defn ev-contest [] : I32 2)
+(defn ev-k9 [] : I32 3)
+(defn ev-alert [] : I32 4)
+(defn ev-enforce [] : I32 5)
+(defn ev-receipt [] : I32 6)
+(defn ev-kill [] : I32 7)
+(defn ev-rogue [] : I32 8)
+(defn ev-portal [] : I32 9)
+
+(defn tp-start-flow [] : I32 100)
+(defn tp-ledger-mod [] : I32 1000000007)
+
+;; ---- init ------------------------------------------------------------------------------------
+(defn tp-init [] : Unit
+  (do
+    (dotimes [i 32] (tp-g! i 0))
+    (dotimes [i 32] (store32! (+ (dist-base) (shl i 2)) 0))
+    (dotimes [i 256] (store32! (+ (ev-base) (shl i 3)) 0))
+    (dotimes [i 64] (store32! (+ (mod-base) (shl i 2)) 0))
+    (dotimes [i (tp-scenes)]
+      (let [scene (+ 200 i)]
+        (tp-di! scene (d-scene) scene)
+        (tp-di! scene (d-alert) 0)
+        (tp-di! scene (d-trust) 0)
+        (tp-di! scene (d-heat) 0)
+        (tp-di! scene (d-level) 0)
+        (tp-di! scene (d-fos-total) (trapx-scene-fos scene))
+        (tp-di! scene (d-fos) 0)
+        (tp-di! scene (d-attention) 0)
+        (tp-di! scene (d-integrity) 100)
+        (tp-di! scene (d-pressure) 0)
+        (tp-di! scene (d-k9) 0)
+        (tp-di! scene (d-rogue) 0)))
+    (tp-g! (g-flow) (tp-start-flow))
+    (tp-g! (g-scene) 200)
+    (tp-g! (g-started) 1)
+    ;; the three mods VS0 ships, by name id, exactly as the JS host and the C host register them
+    (tp-mod-add 1 64 100)      ; trapx.ledger  : RECEIPT (kind 6) -> bit 6
+    (tp-mod-add 2 48 50)       ; trapx.watcher : ALERT (4) | ENFORCE (5) -> bits 4,5
+    (tp-mod-add 3 264 20)      ; trapx.k9      : K9 (3) | ROGUE (8) -> bits 3,8
+    ;; Unit is the LAST expression's type: the three calls above answer I32, so the body has to end on
+    ;; something that answers Unit (this store) or the emitter rightly refuses the declaration.
+    (tp-g! (g-started) 1)))
+
+;; ---- receipts ---------------------------------------------------------------------------------
+(defn tp-receipt [(scene : I32) (kind : I32) (amount : I32)] : I32
+  (if (= (trapx-receipt-known kind) false) (- 0 1)
+    (if (= (tp-d scene) 0) (- 0 1)
+      (let [digest (trapx-receipt-digest kind amount (tp-g (g-tick)))]
+        (tp-g! (g-ledger) (mod (+ (tp-g (g-ledger)) digest) (tp-ledger-mod)))
+        (tp-g! (g-receipts) (+ (tp-g (g-receipts)) 1))
+        (if (or (= kind (rc-k9)) (= kind (rc-witness)))
+          (tp-di! scene (d-dirty) (+ (tp-di scene (d-dirty)) 1))
+          (tp-di! scene (d-clean) (+ (tp-di scene (d-clean)) 1)))
+        (tp-push (ev-receipt) scene kind amount)
+        digest))))
+
+;; ---- the tick ---------------------------------------------------------------------------------
+;; One tick of both districts: watchers gain, heat decays by existing, enforcement is re-decided, and a
+;; held office loses Integrity under Attention and Pressure. Every band and level change announces.
+(defn tp-tick [(quiet : I32)] : I32
+  (do
+    (tp-g! (g-tick) (+ (tp-g (g-tick)) 1))
+    (dotimes [i (tp-scenes)]
+      (let [scene (+ 200 i)
+            density (trapx-scene-watcher-density scene)
+            before-band (tp-band (tp-di scene (d-alert)))
+            before-level (tp-di scene (d-level))
+            alert (trapx-alertness-step (tp-di scene (d-alert)) density (tp-di scene (d-heat)) quiet)
+            heat (trapx-heat-step (tp-di scene (d-heat)) (act-none) (tp-di scene (d-level)))
+            level (trapx-enforcement-level alert (tp-di scene (d-trust)) heat)]
+        (tp-di! scene (d-alert) alert)
+        (tp-di! scene (d-heat) heat)
+        (tp-di! scene (d-level) level)
+        (when (> (tp-di scene (d-fos)) 0)
+          (tp-di! scene (d-pressure)
+                  (tp-clamp (+ (- (+ (tp-di scene (d-pressure))
+                                     (trapx-pressure-per-tick (tp-di scene (d-attention)) level
+                                                             (tp-di scene (d-fos))))
+                                  2)
+                               0) 0 100))
+          (tp-di! scene (d-attention) (trapx-attention-step (tp-di scene (d-attention)) (tp-di scene (d-k9))))
+          (tp-di! scene (d-integrity)
+                  (trapx-integrity-decay (tp-di scene (d-integrity)) (tp-di scene (d-attention))
+                                         (tp-di scene (d-k9)))))
+        (when (!= (tp-band alert) before-band)
+          (tp-push (ev-alert) scene alert (* before-band 25)))
+        (when (!= level before-level)
+          (tp-push (ev-enforce) scene level before-level))
+        (when (and (= (tp-di scene (d-rogue)) 0)
+                   (> (tp-di scene (d-fos)) 0)
+                   (= (tp-b2i (trapx-rogue-swarm (tp-di scene (d-integrity))
+                                                 (tp-di scene (d-attention))
+                                                 (tp-di scene (d-pressure)))) 1))
+          (do
+            (tp-di! scene (d-rogue) 1)
+            (tp-push (ev-rogue) scene (tp-di scene (d-integrity)) (tp-di scene (d-attention)))
+            (tp-receipt scene (rc-witness) 0)))))
+    (tp-di (tp-g (g-scene)) (d-level))))
+
+;; ---- verbs -------------------------------------------------------------------------------------
+(defn tp-claim [(scene : I32)] : I32
+  (if (= (trapx-scene-known scene) false) (tp-err-scene)
+    (if (!= (tp-g (g-scene)) scene) (tp-err-not-here)
+      (if (>= (tp-di scene (d-fos)) (tp-di scene (d-fos-total))) (tp-err-full)
+        (let [cost (trapx-claim-cost scene (tp-di scene (d-fos)))]
+          (if (< (tp-g (g-flow)) cost) (tp-err-poor)
+            (do
+              (tp-g! (g-flow) (- (tp-g (g-flow)) cost))
+              (tp-di! scene (d-fos) (+ (tp-di scene (d-fos)) 1))
+              (when (= (tp-di scene (d-fos)) 1)
+                (tp-di! scene (d-integrity) 100)
+                (tp-di! scene (d-attention) 0)
+                (tp-di! scene (d-pressure) 0))
+              (tp-push (ev-claim) scene scene cost)
+              (tp-receipt scene (rc-claim) cost)
+              (tp-ok))))))))
+
+(defn tp-contest [(scene : I32)] : I32
+  (if (= (trapx-scene-known scene) false) (tp-err-scene)
+    (if (!= (tp-g (g-scene)) scene) (tp-err-not-here)
+      (if (<= (tp-di scene (d-fos)) 0) (tp-err-none-held)
+        (do
+          (tp-di! scene (d-pressure) (tp-clamp (+ (tp-di scene (d-pressure)) 15) 0 100))
+          (tp-di! scene (d-heat)
+                  (trapx-heat-step (tp-di scene (d-heat)) (act-contest) (tp-di scene (d-level))))
+          (tp-push (ev-contest) scene scene (tp-di scene (d-pressure)))
+          (tp-receipt scene (rc-contest) 0)
+          (tp-ok))))))
+
+(defn tp-k9 [(scene : I32) (units : I32)] : I32
+  (if (= (trapx-scene-known scene) false) (tp-err-scene)
+    (if (!= (tp-g (g-scene)) scene) (tp-err-not-here)
+      (if (or (< units 0) (> units 5)) (tp-err-arg)
+        (do
+          (tp-di! scene (d-k9) units)
+          (tp-di! scene (d-heat)
+                  (trapx-heat-step (tp-di scene (d-heat)) (act-k9) (tp-di scene (d-level))))
+          (tp-di! scene (d-attention) (trapx-attention-step (tp-di scene (d-attention)) units))
+          (tp-push (ev-k9) scene scene units)
+          (tp-receipt scene (rc-k9) (trapx-k9-worth units))
+          (tp-ok))))))
+
+;; BIG_O's half: a killing in public heats the district and costs it trust. What the WITNESSES do is
+;; big_o/witness_rules.prn's decision, not this file's -- the city is a second observer.
+(defn tp-kill [(scene : I32) (witnesses : I32)] : I32
+  (if (= (trapx-scene-known scene) false) (tp-err-scene)
+    (if (< witnesses 0) (tp-err-arg)
+      (do
+        (tp-di! scene (d-heat) (tp-clamp (+ (tp-di scene (d-heat)) (trapx-public-kill-heat witnesses)) 0 100))
+        (tp-di! scene (d-trust) (tp-clamp (+ (tp-di scene (d-trust)) (trapx-public-kill-trust witnesses)) (- 0 100) 100))
+        (tp-di! scene (d-kills) (+ (tp-di scene (d-kills)) 1))
+        (tp-di! scene (d-level)
+                (trapx-enforcement-level (tp-di scene (d-alert)) (tp-di scene (d-trust)) (tp-di scene (d-heat))))
+        (tp-push (ev-kill) scene witnesses (trapx-public-kill-heat witnesses))
+        (tp-receipt scene (rc-witness) witnesses)
+        (tp-ok)))))
+
+(defn tp-portal [(to-scene : I32)] : I32
+  (if (= (trapx-scene-known to-scene) false) (tp-err-scene)
+    (if (!= (trapx-portal-target (tp-g (g-scene))) to-scene) (tp-err-no-portal)
+      (let [from (tp-g (g-scene))]
+        (tp-g! (g-scene) to-scene)
+        (tp-push (ev-portal) to-scene from to-scene)
+        (tp-ok)))))

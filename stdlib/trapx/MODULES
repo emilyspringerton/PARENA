@@ -1,0 +1,6 @@
+# the TRAPX wasm sandbox's source files, in build order (scripts/build_trapx_wasm.sh)
+# The rules come first and are never restated below: the city calls them.
+stdlib/trapx/trapx_rules.prn
+stdlib/trapx/web/tp_mem.prn
+stdlib/trapx/web/tp_city.prn
+stdlib/trapx/web/tp_api.prn

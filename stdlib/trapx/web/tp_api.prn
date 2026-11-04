@@ -1,0 +1,25 @@
+;; stdlib/trapx/web/tp_api.prn -- what the page (and the test) may call.
+;;
+;; The surface is deliberately words, not objects: a host reads a district field by index, an event by
+;; (index, field), and a delivery order by (kind, rank). No strings cross the boundary, so the module
+;; keeps zero imports -- the page maps event kinds to names itself, exactly as the C host does.
+
+(export tp-init tp-tick tp-claim tp-contest tp-k9 tp-kill tp-portal
+        tp-d tp-di tp-g tp-ev tp-ev-count
+        tp-mod-add tp-mod-enable tp-mod-wants tp-deliver tp-mods
+        tp-receipt
+        tp-band tp-ok tp-err-scene tp-err-not-here tp-err-full tp-err-poor tp-err-none-held
+        tp-err-no-portal tp-err-arg
+        d-scene d-alert d-trust d-heat d-level d-fos-total d-fos d-attention d-integrity
+        d-pressure d-k9 d-kills d-clean d-dirty d-rogue
+        g-tick g-flow g-scene g-receipts g-ledger g-seq g-head g-mods
+        m-name m-mask m-prio m-on
+        rc-claim rc-flow rc-contest rc-k9 rc-witness
+        ev-tick ev-claim ev-contest ev-k9 ev-alert ev-enforce ev-receipt ev-kill ev-rogue ev-portal
+        tp--mem-bytes)
+
+;; The module's whole memory, fixed: 8 MB, the same shape as the other four web games.
+(defn tp--mem-bytes [] : I32 8388608)
+
+;; number of registered mods, as a call rather than a global read, so a page never has to know slots
+(defn tp-mods [] : I32 (tp-g (g-mods)))

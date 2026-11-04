@@ -1,0 +1,169 @@
+;; stdlib/trapx/web/tp_mem.prn -- TRAPX VS0 as a wasm sandbox: the fixed memory map.
+;;
+;; The city used to live in the page (WOTAN/trapx/trapx-city.js). This is that same city as a
+;; zero-import wasm32 module -- the layout borrowed from shankpit-460's engine (sp_mem.prn), the
+;; numbers borrowed from trapx_rules.prn, and nothing else borrowed at all.
+;;
+;; NO MALLOC, NO IMPORTS, 8 MB FIXED: every record sits at a fixed byte address below. That is the
+;; property the other four web games hold (brawlpit, shankpit-460, d2, empire), so the same page, the
+;; same referee and the same test harness can drive this one.
+;;
+;;   0x020000 G       city globals: tick, flow, scene, receipts, ledger, event head, mods   (32 words)
+;;   0x021000 DIST    2 districts x 64 bytes, 16 words each
+;;   0x022000 EVENTS  256 events x 32 bytes (kind, tick, scene, a, b)
+;;   0x024000 MODS    8 mods x 32 bytes (name id, mask, priority, enabled)
+(module trapx/web)
+
+(defn g-base [] : I32 131072)
+(defn dist-base [] : I32 135168)
+(defn ev-base [] : I32 139264)
+(defn mod-base [] : I32 147456)
+
+(defn ev-cap [] : I32 256)
+(defn mod-cap [] : I32 8)
+
+;; ---- globals ------------------------------------------------------------------------------
+(defn tp-g [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn tp-g! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+
+(defn g-tick [] : I32 0)
+(defn g-flow [] : I32 1)
+(defn g-scene [] : I32 2)
+(defn g-receipts [] : I32 3)
+(defn g-ledger [] : I32 4)
+(defn g-seq [] : I32 5)        ; total events pushed (the ring wraps; this does not)
+(defn g-head [] : I32 6)       ; next ring slot
+(defn g-mods [] : I32 7)       ; registered mods
+(defn g-started [] : I32 8)
+
+;; ---- districts ----------------------------------------------------------------------------
+;; 200 Detroit Apartment is row 0, 201 Detroit School row 1. A scene that is not one of the two has
+;; no row at all (address 0), which is why every accessor below refuses rather than inventing one.
+(defn tp-d [(scene : I32)] : I32
+  (if (= scene 200) (dist-base)
+    (if (= scene 201) (+ (dist-base) 64) 0)))
+
+(defn d-scene [] : I32 0)
+(defn d-alert [] : I32 1)
+(defn d-trust [] : I32 2)
+(defn d-heat [] : I32 3)
+(defn d-level [] : I32 4)
+(defn d-fos-total [] : I32 5)
+(defn d-fos [] : I32 6)
+(defn d-attention [] : I32 7)
+(defn d-integrity [] : I32 8)
+(defn d-pressure [] : I32 9)
+(defn d-k9 [] : I32 10)
+(defn d-kills [] : I32 11)
+(defn d-clean [] : I32 12)
+(defn d-dirty [] : I32 13)
+(defn d-rogue [] : I32 14)
+
+(defn tp-di [(scene : I32) (k : I32)] : I32
+  (let [b (tp-d scene)]
+    (if (= b 0) 0 (load32 (+ b (shl k 2))))))
+
+(defn tp-di! [(scene : I32) (k : I32) (v : I32)] : Unit
+  (let [b (tp-d scene)]
+    (when (!= b 0) (store32! (+ b (shl k 2)) v))))
+
+;; ---- the event ring ------------------------------------------------------------------------
+;; Newest first, exactly like the JS host's unshift: slot i (0 = newest) lives at ring position
+;; (head - 1 - i) mod 256, and the sequence keeps counting past the wrap so a replay can order events
+;; the ring no longer holds.
+(defn ev-slot [(i : I32)] : I32
+  ;; (head - 1 - i) wrapped into 0..255 without ever going negative: `mod` on a negative I32 follows
+  ;; the sign in LLVM, so the +256 is load-bearing, not decoration.
+  (mod (+ (- (tp-g (g-head)) (+ 1 i)) (ev-cap)) (ev-cap)))
+
+(defn tp-ev [(i : I32) (k : I32)] : I32
+  (if (or (< i 0) (>= i (tp-ev-count))) 0
+    (load32 (+ (ev-base) (shl (ev-slot i) 5) (shl k 2)))))
+
+(defn tp-ev-count [] : I32
+  (let [n (tp-g (g-seq))]
+    (if (> n (ev-cap)) (ev-cap) n)))
+
+(defn tp-push [(kind : I32) (scene : I32) (a : I32) (b : I32)] : I32
+  (if (or (< kind 0) (>= kind 10)) 0
+    (let [(slot : I32) (bit-and (tp-g (g-head)) 255)
+          (at : I32) (+ (ev-base) (shl slot 5))]
+      (store32! at kind)
+      (store32! (+ at 4) (tp-g (g-tick)))
+      (store32! (+ at 8) scene)
+      (store32! (+ at 12) a)
+      (store32! (+ at 16) b)
+      (tp-g! (g-head) (+ (tp-g (g-head)) 1))
+      (tp-g! (g-seq) (+ (tp-g (g-seq)) 1))
+      (tp-g (g-seq)))))
+
+;; ---- mods (MODS FIRST, the same contract as trapx_mods_deliver) -----------------------------
+(defn m-name [] : I32 0)
+(defn m-mask [] : I32 1)
+(defn m-prio [] : I32 2)
+(defn m-on [] : I32 3)
+
+(defn tp-mi [(at : I32) (k : I32)] : I32
+  (if (or (< at 0) (>= at (tp-g (g-mods)))) 0
+    (load32 (+ (mod-base) (shl at 5) (shl k 2)))))
+
+(defn tp-mi! [(at : I32) (k : I32) (v : I32)] : Unit
+  (when (and (>= at 0) (< at (tp-g (g-mods))))
+    (store32! (+ (mod-base) (shl at 5) (shl k 2)) v)))
+
+(defn tp-mod-add [(name-id : I32) (mask : I32) (prio : I32)] : I32
+  ;; A duplicate NAME is refused, not overwritten -- the host speaks ids, so the id is the name.
+  (let [n (tp-g (g-mods))]
+    (if (>= n (mod-cap)) (- 0 1)
+      (if (= (tp-mod-find name-id) 1) (- 0 1)
+        ;; Written with raw stores, NOT through tp-mi!: that accessor refuses any slot >= the registered
+        ;; count, which is exactly the slot being claimed here. Going through it registered three mods
+        ;; with blank masks (found by the delivery assertions, not by reading the code).
+        (do
+          (store32! (+ (mod-base) (shl n 5)) name-id)
+          (store32! (+ (mod-base) (shl n 5) 4) mask)
+          (store32! (+ (mod-base) (shl n 5) 8) prio)
+          (store32! (+ (mod-base) (shl n 5) 12) 1)
+          (tp-g! (g-mods) (+ n 1))
+          n)))))
+
+(defn tp-mod-find [(name-id : I32)] : I32
+  (loop [i 0]
+    (cond (>= i (tp-g (g-mods))) 0
+          (= (tp-mi i (m-name)) name-id) 1
+          :else (recur (+ i 1)))))
+
+(defn tp-mod-enable [(at : I32) (on : I32)] : I32
+  (if (or (< at 0) (>= at (tp-g (g-mods)))) 0
+    (do (tp-mi! at (m-on) (if (= on 0) 0 1)) 1)))
+
+(defn tp-mod-wants [(at : I32) (kind : I32)] : I32
+  (if (or (< at 0) (>= at (tp-g (g-mods))) (= (tp-mi at (m-on)) 0)) 0
+    (if (or (< kind 0) (>= kind 10)) 0
+      (bit-and (ushr (tp-mi at (m-mask)) kind) 1))))
+
+;; How many eligible mods sort ahead of `at`: higher priority first, ties on registration order.
+(defn tp-before [(at : I32) (kind : I32)] : I32
+  (loop [j 0 c 0]
+    (if (>= j (tp-g (g-mods))) c
+      (recur (+ j 1)
+             (+ c (if (= (tp-mod-wants j kind) 0) 0
+                    (if (or (> (tp-mi j (m-prio)) (tp-mi at (m-prio)))
+                            (and (= (tp-mi j (m-prio)) (tp-mi at (m-prio))) (< j at)))
+                        1 0)))))))
+
+;; rank 0 = the first mod to deliver. Stateless, so a host can walk the delivery order one call at a
+;; time; -1 means the pass is over.
+(defn tp-deliver [(kind : I32) (rank : I32)] : I32
+  (loop [i 0]
+    (cond (>= i (tp-g (g-mods))) (- 0 1)
+          (and (= (tp-mod-wants i kind) 1) (= (tp-before i kind) rank)) i
+          :else (recur (+ i 1)))))
+
+;; ---- small helpers --------------------------------------------------------------------------
+(defn tp-max [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn tp-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn tp-b2i [(c : Bool)] : I32 (if c 1 0))
+(defn tp-clamp [(v : I32) (lo : I32) (hi : I32)] : I32 (trapx-clamp v lo hi))
+;; alertness band, 25 points wide: the JS host's Math.trunc(alertness / 25)
+(defn tp-band [(alertness : I32)] : I32 (/ alertness 25))
