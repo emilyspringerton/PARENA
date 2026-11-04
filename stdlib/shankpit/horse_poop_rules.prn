@@ -1,0 +1,50 @@
+;; stdlib/shankpit/horse_poop_rules.prn -- what comes out the other end, and how long it sits there.
+;;
+;; horse_rules.prn owns how the tölt mount FEELS under a rider (speed, stamina, jump, carrot) and
+;; horse_goals.prn owns what it does with its own afternoon (graze, wander, idle, home, flee). This
+;; mod owns the one thing a farm full of eating animals unavoidably produces: when a pile appears,
+;; where it lands relative to the tail, how long it stays in the world, and how much of it the
+;; paddock can hold before the oldest is cleared away.
+;;
+;; Same split as its two siblings: pure, total I32 functions. No RNG, no clock, no state -- the host
+;; supplies the elapsed time and the horse's own stream for the sideways spread, and does the
+;; spawning. That keeps "does a grazing horse poop every five seconds" a value a test can assert
+;; instead of a behaviour nobody can reproduce.
+;;
+;; Goal ids are horse_goals.prn's own 0..4 (protocol.h's HORSE_GOAL_*): graze 0, wander 1, idle 2,
+;; home 3, flee 4. A grazing horse is the one with its head down eating, so it is the one producing;
+;; a walking horse produces slower; a standing or bolting horse produces nothing at all, which is
+;; also what keeps a spooked paddock from turning into a minefield.
+(module shankpit/horse-poop-rules)
+(export horse-poop-interval-ms horse-poop-lifetime-ms horse-poop-max-piles
+        horse-poop-behind-milli horse-poop-spread-milli horse-poop-after-carrot-ms)
+
+;; How many milliseconds between piles, per goal. 0 means "not this one": an idle horse is not
+;; eating, and a horse running home or bolting is not stopping to drop anything.
+(defn horse-poop-interval-ms [(goal : I32)] : I32
+  (if (< goal 1)
+    5000                                         ; graze -- head down in the grass, so it comes out
+    (if (< goal 2)
+      15000                                      ; wander -- a slower digestive walk
+      0)))                                       ; idle / home / flee
+
+;; How long a pile stays in the world before the paddock reclaims it, ms. Long enough that a farm
+;; looks lived in, short enough that it does not become a permanent brown carpet.
+(defn horse-poop-lifetime-ms [] : I32 45000)
+
+;; The most piles one server keeps at once. The host recycles the oldest when it is full, so this is
+;; a memory bound rather than a cap on how often horses produce. MUST match MAX_HORSE_PILES in
+;; protocol.h; horse_test.c asserts the two agree instead of assuming it.
+(defn horse-poop-max-piles [] : I32 24)
+
+;; How far BEHIND the tail a pile lands, milli of a world unit. A horse is about 2.4 m nose to tail,
+;; so 1.3 m behind its own origin is just clear of the hind hooves.
+(defn horse-poop-behind-milli [] : I32 1300)
+
+;; Sideways slop, milli, applied from the horse's own RNG stream: a pile is not a precision drop.
+(defn horse-poop-spread-milli [] : I32 400)
+
+;; A carrot goes in the front and comes out the back. The host schedules one pile this many ms after
+;; a carrot is eaten (from either the rider's button or a mod's own feed verb), which is also the
+;; fastest way for a player to see the feature: feed a horse, wait two and a half seconds.
+(defn horse-poop-after-carrot-ms [] : I32 2500)
