@@ -1,0 +1,100 @@
+;; stdlib/shankpit/horse_goals.prn -- what a loose tölt horse decides to do with its afternoon.
+;;
+;; horse_rules.prn owns how the horse FEELS once you are on it (top speed, stamina, the jump, the
+;; carrot). This mod owns what the horse is doing when nobody is: pick a goal, how long it keeps it,
+;; how fast it walks there, how far from the paddock it is allowed to drift, how fast grass refills
+;; the bar, when a passing player spooks it, and the MISHRI-shaped reaction window before it acts on
+;; a new goal.
+;;
+;; Same split every other PARENA mod here uses: these are pure, total I32 functions -- no RNG, no
+;; clock, no state. The host (local_game.h's horse_goal_tick) supplies the roll, the mood and the
+;; distances, and does the moving. That keeps a decision reproducible and testable without a world.
+;;
+;; Goal ids are the shared vocabulary with protocol.h's own HORSE_GOAL_* enum (0 graze, 1 wander,
+;; 2 idle, 3 home, 4 flee) -- cross-checked at the boundary by horse_test.c, not assumed.
+(module shankpit/horse-goals)
+(export horse-goal-pick horse-goal-duration-ms horse-goal-speed-milli
+        horse-goal-radius-milli horse-goal-reached-milli horse-graze-restore-milli
+        horse-startle-radius-milli horse-goal-react-base-ms horse-goal-jitter-skill-permille)
+
+;; Which goal a horse picks next. `roll` is 0..999 from the horse's own RNG stream (the host's, so
+;; this stays pure). Mood is MISHRI's own 8-state NPCMood: a tired horse idles, a nervous or
+;; startled one goes home, a hungry one eats, and the rest of the time it grazes, wanders or stands.
+(defn horse-goal-pick [(roll : I32) (stamina_milli : I32) (mood : I32)] : I32
+  (if (< stamina_milli 300)
+    0                                            ; graze -- a hungry horse eats first
+    (if (> mood 5)
+      3                                          ; nervous (7) / startled (6) -> head home
+      (if (> mood 3)
+        2                                        ; social (4) / focused (5) -> stand
+        (if (< roll 250)
+          0                                      ; graze
+          (if (< roll 700)
+            1                                    ; wander
+            2))))))                              ; idle
+
+;; How long a goal is held before it is reconsidered. Long enough that a horse looks like it has
+;; decided something, short enough that a paddock never freezes.
+(defn horse-goal-duration-ms [(goal : I32)] : I32
+  (if (< goal 1)
+    14000                                        ; graze
+    (if (< goal 2)
+      9000                                       ; wander
+      (if (< goal 3)
+        6000                                     ; idle
+        (if (< goal 4)
+          12000                                  ; home
+          4000)))))                              ; flee
+
+;; The pace of each goal, m/s x 1000. All of it is a walk: a loose horse never tölters, which is
+;; also why it never spends stamina doing this.
+(defn horse-goal-speed-milli [(goal : I32)] : I32
+  (if (< goal 1)
+    1400                                         ; graze -- nose down, drifting
+    (if (< goal 2)
+      2400                                       ; wander
+      (if (< goal 3)
+        0                                        ; idle -- standing still
+        (if (< goal 4)
+          3200                                   ; home -- purposeful
+          5200)))))                              ; flee -- a startled canter
+
+;; How far from its own pad a goal may put the target, milli of a world unit. Grazing stays close,
+;; wandering drifts, home and flee are the pad itself.
+(defn horse-goal-radius-milli [(goal : I32)] : I32
+  (if (< goal 1)
+    7000
+    (if (< goal 2)
+      15000
+      0)))
+
+;; Close enough to call the goal reached, milli. A horse does not need to stand exactly on a point.
+(defn horse-goal-reached-milli [] : I32 1500)
+
+;; Grass: a grazing horse refills the bar without a carrot, slowly -- the Zelda wheel refills by
+;; walking away from the fight, not only by eating what you carry. A nervous horse eats less.
+(defn horse-graze-restore-milli [(mood : I32)] : I32
+  (if (> mood 5)
+    40
+    70))
+
+;; A player this close (milli, 5 m) is close enough to spook a loose horse.
+(defn horse-startle-radius-milli [] : I32 5000)
+
+;; MISHRI's own reaction window, given a base per goal -- the host jitters it through
+;; humanness_reaction_delay_ms, so a startled horse acts fast and a tired one does not.
+(defn horse-goal-react-base-ms [(goal : I32)] : I32
+  (if (< goal 1)
+    700
+    (if (< goal 2)
+      400
+      (if (< goal 3)
+        900
+        (if (< goal 4)
+          500
+          150)))))
+
+;; How sloppy a loose horse's heading is, permille of MISHRI's skill scale (0 = perfect, 1000 =
+;; fully unskilled). Wide on purpose: a horse grazing its way across a paddock is not pathing to a
+;; navmesh point, it is ambling somewhere near one.
+(defn horse-goal-jitter-skill-permille [] : I32 350)
