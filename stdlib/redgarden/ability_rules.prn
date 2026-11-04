@@ -1,0 +1,179 @@
+;; stdlib/redgarden/ability_rules.prn -- the hero kits REDGARDEN already tuned, as decisions.
+;;
+;; "redgarden ... a lot of the design for the abilities of shankpit" (founder, 2026-11-04). REDGARDEN's kits
+;; were the first real ability surface this org built: Q/W/R, mana, cooldowns, windups, toggles, silence,
+;; slows, ally heals. SHANKPIT inherits that DESIGN, so the numbers move rather than being re-invented --
+;; every constant below is quoted from `packages/simulation/arena_game.h` next to its macro name.
+;;
+;; Hero ids (documented I32, hosts mirror them exactly):
+;;   0 UNICORN   1 DUCK   2 GHOST   3 FROG   4 GARY (ranged)   5 DOC WHEEL (healer)
+;;
+;; Honest gap, deliberately not filled with invented numbers: GARY and DOC have real kits in REDGARDEN, but
+;; only their auto-attack and heal numbers were read for this port, so their Q/W/R slots return 0 here and a
+;; zero-cost zero-cooldown ability is not a kit -- the host must treat 0 as "not ported yet". The roster is 31
+;; heroes in REDGARDEN; five kits are encoded, and the shape is what the rest will be filled into.
+;;
+;; Slot: 0 Q, 1 W, 2 R -- the same index the wire uses. Permille for fractional values, total functions, no
+;; RNG (a host that needs a die rolls it and passes the result in).
+(module redgarden/ability)
+
+(export rg-hero-count rg-hero-known
+        rg-hero-attack-range-milli rg-hero-attack-damage rg-hero-attack-cooldown-ms
+        rg-hero-attack-windup-ms rg-hero-is-ranged
+        rg-ability-cooldown-ms rg-ability-damage rg-ability-range-milli rg-ability-duration-ms
+        rg-ability-is-toggle rg-ability-toggle-regen-per-sec
+        rg-ability-silence-ms rg-ability-slow-chance-percent rg-ability-slow-ms
+        rg-ability-slow-percent rg-ability-heal-base rg-ability-heal-low rgh-ability-heal-for-hp
+        rg-ability-dps-pooled
+        rg-cooldown-ready rg-cooldown-after-cast rg-toggle-sustain-ms rg-can-cast)
+
+(defn rg-hero-count [] : I32 6)
+
+(defn rg-hero-known [(hero : I32)] : Bool
+  (and (>= hero 0) (< hero (rg-hero-count))))
+
+;; ---- auto-attacks --------------------------------------------------------------------------------
+;; Melee is the flat default (ARENA_ATTACK_RANGE 1.6, ARENA_ATTACK_DAMAGE 8, cooldown 700, windup 175).
+;; GARY is the roster's first real ranged auto-attack (S170-162/163): range ARENA_GARY_ATTACK_RANGE
+;; = 6.0 * 2.0 * 0.74 in the source, i.e. 8.88 -- written here as the same visible product so the
+;; "founder doubled it, then took 26% off" history stays traceable rather than collapsed into 8880.
+(defn rg-hero-is-ranged [(hero : I32)] : Bool
+  (= hero 4))
+
+(defn rg-hero-attack-range-milli [(hero : I32)] : I32
+  (if (= hero 4) 8880 1600))
+
+;; ARENA_GARY_ATTACK_DAMAGE 7 / ARENA_GARY_ATTACK_COOLDOWN_MS 900, windup = cooldown/4 (225).
+(defn rg-hero-attack-damage [(hero : I32)] : I32
+  (if (= hero 4) 7 8))
+
+(defn rg-hero-attack-cooldown-ms [(hero : I32)] : I32
+  (if (= hero 4) 900 700))
+
+(defn rg-hero-attack-windup-ms [(hero : I32)] : I32
+  (/ (rg-hero-attack-cooldown-ms hero) 4))
+
+;; ---- cooldowns -----------------------------------------------------------------------------------
+;; UNICORN: Q 4000 (Diagnostic Charge), W 0 (Spaghetti Vent is a TOGGLE, not a cooldown), R 15000.
+;; DUCK:    Q 5000, W 16000 (Smoke Bomb, S202-10), R 18000.
+;; GHOST:   Q 4500, W 10000, R 20000.
+;; FROG:    Q 8000 (Loop Back), W 12000 (Borrowed Time), R 25000 (The Secret).
+;; GARY/DOC: 0 = not encoded yet (see the header note), DOC R is 30000 in the source.
+(defn rg-ability-cooldown-ms [(hero : I32) (slot : I32)] : I32
+  (if (= hero 0) (if (= slot 0) 4000 (if (= slot 1) 0 (if (= slot 2) 15000 0)))
+    (if (= hero 1) (if (= slot 0) 5000 (if (= slot 1) 16000 (if (= slot 2) 18000 0)))
+      (if (= hero 2) (if (= slot 0) 4500 (if (= slot 1) 10000 (if (= slot 2) 20000 0)))
+        (if (= hero 3) (if (= slot 0) 8000 (if (= slot 1) 12000 (if (= slot 2) 25000 0)))
+          (if (= hero 5) (if (= slot 0) 3500 (if (= slot 1) 16000 (if (= slot 2) 30000 0)))
+            0))))))
+
+;; ---- damage --------------------------------------------------------------------------------------
+;; ARENA_UNICORN_Q_DAMAGE 12 / ARENA_DUCK_Q_DAMAGE 10 / ARENA_DUCK_R_DAMAGE 20 / ARENA_GHOST_Q_DAMAGE 9.
+;; FROG's kit is movement and refunds: no damage at all, and that is the kit, not a hole.
+;; GHOST R's 6 is damage per second over the zone (`rg-ability-dps-pooled` multiplies by duration).
+(defn rg-ability-damage [(hero : I32) (slot : I32)] : I32
+  (if (= hero 0) (if (= slot 0) 12 0)
+    (if (= hero 1) (if (= slot 0) 10 (if (= slot 2) 20 0))
+      (if (= hero 2) (if (= slot 0) 9 (if (= slot 2) 6 0))
+        0))))
+
+(defn rg-ability-dps-pooled [(hero : I32) (slot : I32)] : I32
+  (let [dps (rg-ability-damage hero slot)
+        ms (rg-ability-duration-ms hero slot)]
+    (/ (* dps ms) 1000)))
+
+;; ---- ranges --------------------------------------------------------------------------------------
+;; ARENA_UNICORN_Q_DASH_DIST 4.0 / ARENA_DUCK_Q_RANGE 6.0 / ARENA_DUCK_W_RADIUS 4.5 /
+;; ARENA_DUCK_R_RANGE 9.0 / ARENA_GHOST_Q_RANGE 7.0 / ARENA_GHOST_R_RADIUS 4.0 / ARENA_DOC_WHEEL_R_RADIUS
+;; 6.0. 0 means "self or ally target, no ground range" -- not "infinite".
+(defn rg-ability-range-milli [(hero : I32) (slot : I32)] : I32
+  (if (= hero 0) (if (= slot 0) 4000 0)
+    (if (= hero 1) (if (= slot 0) 6000 (if (= slot 1) 4500 (if (= slot 2) 9000 0)))
+      (if (= hero 2) (if (= slot 0) 7000 (if (= slot 2) 4000 0))
+        (if (= hero 5) (if (= slot 2) 6000 0) 0)))))
+
+;; ---- durations -----------------------------------------------------------------------------------
+;; UNICORN R 3000 (armor doubled) / DUCK W 6000 cloud / GHOST Q 1500 silence, W 1500 intangible,
+;; R 4000 zone / FROG Q 3000 rewind window, R 5000 vanish.
+(defn rg-ability-duration-ms [(hero : I32) (slot : I32)] : I32
+  (if (= hero 0) (if (= slot 2) 3000 0)
+    (if (= hero 1) (if (= slot 1) 6000 0)
+      (if (= hero 2) (if (= slot 0) 1500 (if (= slot 1) 1500 (if (= slot 2) 4000 0)))
+        (if (= hero 3) (if (= slot 0) 3000 (if (= slot 2) 5000 0))
+          0)))))
+
+;; ---- the odd shapes ------------------------------------------------------------------------------
+;; ARENA_UNICORN_W_REGEN_PER_SEC 6 -- a toggle, so its "cooldown" is 0 and its cost is mana over time.
+(defn rg-ability-is-toggle [(hero : I32) (slot : I32)] : Bool
+  (and (= hero 0) (= slot 1)))
+
+(defn rg-ability-toggle-regen-per-sec [(hero : I32) (slot : I32)] : I32
+  (if (and (= hero 0) (= slot 1)) 6 0))
+
+;; ARENA_GHOST_Q_SILENCE_MS 1500 is the duration field above; silence is what the duration MEANS for that
+;; slot, so it is exposed as its own reading rather than making every host know slot 0's semantics per hero.
+(defn rg-ability-silence-ms [(hero : I32) (slot : I32)] : I32
+  (if (and (= hero 2) (= slot 0)) 1500 0))
+
+;; ARENA_DUCK_W_SLOW_CHANCE_PCT 50 / ARENA_DUCK_W_SLOW_MS 2000 / ARENA_DUCK_W_SLOW_PCT 0.30 (30%).
+;; The chance is a percent and the host rolls the die: no RNG in a rules file, ever.
+(defn rg-ability-slow-chance-percent [(hero : I32) (slot : I32)] : I32
+  (if (and (= hero 1) (= slot 1)) 50 0))
+
+(defn rg-ability-slow-ms [(hero : I32) (slot : I32)] : I32
+  (if (and (= hero 1) (= slot 1)) 2000 0))
+
+(defn rg-ability-slow-percent [(hero : I32) (slot : I32)] : I32
+  (if (and (= hero 1) (= slot 1)) 30 0))
+
+;; ---- healing -------------------------------------------------------------------------------------
+;; ARENA_DOC_WHEEL_Q_HEAL_BASE 14 at a full-health target, ARENA_DOC_WHEEL_Q_HEAL_LOW_HP 28 at ~0%:
+;; the heal is bigger the more hurt the target is, so the number a client shows has to come from here and not
+;; from a constant in the HUD. ARENA_DOC_WHEEL_R_HEAL 20 is flat and teamwide.
+(defn rg-ability-heal-base [(hero : I32) (slot : I32)] : I32
+  (if (= hero 5) (if (= slot 0) 14 (if (= slot 2) 20 0)) 0))
+
+(defn rg-ability-heal-low [(hero : I32) (slot : I32)] : I32
+  (if (= hero 5) (if (= slot 0) 28 (if (= slot 2) 20 0)) 0))
+
+;; Linear between the two ends. The divisor is guarded at the division itself (`max-hp` can arrive as 0 from a
+;; dead entity) -- the same convention mining_rules.prn uses, and it stays correct even now that the LLVM
+;; emitter no longer speculates a dividing arm.
+(defn rgh-ability-heal-for-hp [(hero : I32) (slot : I32) (target-hp : I32) (max-hp : I32)] : I32
+  (let [base (rg-ability-heal-base hero slot)
+        low (rg-ability-heal-low hero slot)
+        m (if (<= max-hp 0) 0 max-hp)
+        h (if (< target-hp 0) 0 (if (> target-hp m) m target-hp))
+        missing (- m h)
+        span (- low base)]
+    (if (<= m 0) base
+      (+ base (/ (* span missing) m)))))
+
+;; ---- cast resolution -----------------------------------------------------------------------------
+;; A cooldown is ready when nothing is left on it. A cast is legal when the slot is real, the cooldown is
+;; spent, the mana is there, and the caster is not silenced -- four separate readings, because a HUD wants to
+;; grey a tile for four different reasons and print which one.
+(defn rg-cooldown-ready [(remaining-ms : I32)] : Bool
+  (<= remaining-ms 0))
+
+(defn rg-can-cast [(mana : I32) (remaining-ms : I32) (silenced-ms : I32) (slot : I32) (cost : I32)] : Bool
+  (and (>= slot 0) (<= slot 2)
+       (rg-cooldown-ready remaining-ms)
+       (<= silenced-ms 0)
+       (>= mana (if (< cost 0) 0 cost))))
+
+;; Cooldown reduction from synergy/buffs: `cdr-percent` 0..100, clamped, and the result never goes negative
+;; (a 100% CDR hero casts on the frame, which is a rules decision the host makes, not a broken timer).
+(defn rg-cooldown-after-cast [(cd-ms : I32) (cdr-percent : I32)] : I32
+  (let [cd (if (< cd-ms 0) 0 cd-ms)
+        pct (if (< cdr-percent 0) 0 (if (> cdr-percent 100) 100 cdr-percent))
+        cut (/ (* cd pct) 100)
+        left (- cd cut)]
+    (if (< left 0) 0 left)))
+
+;; How long a full bar sustains a draining toggle: ARENA_MP_DRAIN_W_PER_SEC 5 against ARENA_MP_MAX 100 is
+;; 20 seconds. 0 means "not a draining toggle", not "infinite".
+(defn rg-toggle-sustain-ms [(mana : I32) (drain-per-sec : I32)] : I32
+  (let [m (if (< mana 0) 0 mana)
+        d (if (< drain-per-sec 0) 0 drain-per-sec)]
+    (if (<= d 0) 0 (/ (* m 1000) d))))

@@ -1,0 +1,144 @@
+;; stdlib/redgarden/ai_rules.prn -- REDGARDEN's AI, as a genome and a decision table.
+;;
+;; Founder: "redgarden is the multiplayer and ai dna". REDGARDEN's bots are real: a hand-authored 4->6->2
+;; feed-forward net (`bot_brain_forward`, arena_game.c) that steers toward the foe from
+;; [dx, dz, dist, hp-fraction-diff], and, since S170-228, a trained policy (`arena_bot_tick_rl_move` /
+;; `_cast`) exported as tensors into `rl_policy_weights.h`. Both are inference: numbers in, a direction out.
+;;
+;; This module ports the DECISION half, which is the part an MMO server has to run for thousands of actors
+;; and cannot do with one hero-vs-hero net:
+;;
+;;   - a genome of four traits (aggression, caution, greed, loyalty), each 0..100;
+;;   - the decision itself, as a total function of the genome, the situation and a `roll-milli` the HOST
+;;     rolls. No RNG in here, ever -- but randomness is part of the answer, because the old MPK griefers and
+;;     the honour-and-elite players differ by how often they take the ugly shot, not only by what they can do;
+;;   - target scoring, so "who do I hit" is a reading rather than a switch buried in a C loop.
+;;
+;; Honest scope: REDGARDEN's trained tensors are NOT loaded here. Porting an inference bridge (and the genome
+;; -> tensor mapping that would make a trained policy play a personality) is a separate, later step; this is
+;; the behaviour layer the server can run today, and it is the layer the tensors would be a refinement OF,
+;; not a replacement for.
+(module redgarden/ai)
+
+(export rg-gene-count rg-gene-aggression rg-gene-caution rg-gene-greed rg-gene-loyalty
+        rg-gene-name-ok rg-genome-valid rg-genome-clamp
+        rg-action-hold rg-action-approach rg-action-attack rg-action-cast
+        rg-action-retreat rg-action-farm rg-action-objective
+        rg-retreat-threshold-milli rg-should-retreat
+        rg-desired-range-milli rg-should-engage
+        rg-target-kind-hero rg-target-kind-creep rg-target-kind-tower rg-target-kind-node
+        rg-target-score
+        rg-decide rg-jitter-milli)
+
+;; Genome order is fixed and part of the wire/save format: [aggression, caution, greed, loyalty].
+(defn rg-gene-count [] : I32 4)
+(defn rg-gene-aggression [] : I32 0)
+(defn rg-gene-caution [] : I32 1)
+(defn rg-gene-greed [] : I32 2)
+(defn rg-gene-loyalty [] : I32 3)
+
+(defn rg-gene-name-ok [(gene : I32)] : Bool
+  (and (>= gene 0) (< gene (rg-gene-count))))
+
+;; A genome from the wire or a save file is clamped, not rejected: a corrupt byte should make a duller bot,
+;; never a crash or a 300%-aggression hero.
+(defn rg-genome-clamp [(v : I32)] : I32
+  (if (< v 0) 0 (if (> v 100) 100 v)))
+
+(defn rg-genome-valid [(a : I32) (c : I32) (g : I32) (l : I32)] : Bool
+  (and (and (>= a 0) (<= a 100))
+       (and (>= c 0) (<= c 100))
+       (and (>= g 0) (<= g 100))
+       (and (>= l 0) (<= l 100))))
+
+;; ---- actions -------------------------------------------------------------------------------------
+;; Seven actions is enough to be legible in a log and enough to play every "how you want": fight, farm,
+;; take ground, run. 0 hold exists for the stunned/rooted/dead frames so a log reads honestly.
+(defn rg-action-hold [] : I32 0)
+(defn rg-action-approach [] : I32 1)
+(defn rg-action-attack [] : I32 2)
+(defn rg-action-cast [] : I32 3)
+(defn rg-action-retreat [] : I32 4)
+(defn rg-action-farm [] : I32 5)
+(defn rg-action-objective [] : I32 6)
+
+;; ---- survival ------------------------------------------------------------------------------------
+;; Caution sets the health at which an actor breaks off: 150 permille for a reckless 0, 450 for a careful 100.
+;; `roll-milli` 0..999 is jitter -- a careful player still sometimes stays one hit too long, which is the whole
+;; difference between an opponent that feels alive and one that feels scripted.
+(defn rg-retreat-threshold-milli [(caution : I32) (roll-milli : I32)] : I32
+  (let [c (rg-genome-clamp caution)
+        r (if (< roll-milli 0) 0 (if (> roll-milli 999) 999 roll-milli))
+        base (+ 150 (/ (* c 3) 1))
+        jitter (/ (* r 40) 1000)]
+    (+ base jitter)))
+
+(defn rg-should-retreat [(hp-milli : I32) (caution : I32) (roll-milli : I32)] : Bool
+  (< hp-milli (rg-retreat-threshold-milli caution roll-milli)))
+
+;; ---- spacing -------------------------------------------------------------------------------------
+;; Aggression pulls an actor in; the base range is the attack it wants to use. A cautious ranged actor holds
+;; the max range, an aggressive one walks into the projectile's face. 800 permille is the floor: something
+;; that wants to overlap its target's centre is a bug, not a personality.
+(defn rg-desired-range-milli [(base-range-milli : I32) (aggression : I32)] : I32
+  (let [base (if (< base-range-milli 0) 0 base-range-milli)
+        a (rg-genome-clamp aggression)
+        pull (* a 10)
+        want (- base pull)]
+    (if (< want 800) 800 want)))
+
+;; In range with a roll under the genome's aggression is an attack; outside it is an approach. The roll makes
+;; two identical wolves not act on the same frame.
+(defn rg-should-engage [(dist-milli : I32) (range-milli : I32) (aggression : I32) (roll-milli : I32)] : Bool
+  (let [d (if (< dist-milli 0) 0 dist-milli)
+        r (if (< range-milli 0) 0 range-milli)
+        a (rg-genome-clamp aggression)
+        roll (if (< roll-milli 0) 0 (if (> roll-milli 999) 999 roll-milli))
+        gate (/ (* a 6) 1)]
+    (and (<= d r) (< roll (+ 400 gate)))))
+
+;; ---- targets -------------------------------------------------------------------------------------
+;; Kinds: 0 hero, 1 creep, 2 tower, 3 node. Base weights come from what the objective is worth, then the
+;; genome tilts them: greed farms, aggression hunts players, loyalty prefers what the team is already on.
+(defn rg-target-kind-hero [] : I32 0)
+(defn rg-target-kind-creep [] : I32 1)
+(defn rg-target-kind-tower [] : I32 2)
+(defn rg-target-kind-node [] : I32 3)
+
+(defn rg-target-score [(kind : I32) (aggression : I32) (greed : I32) (loyalty : I32)] : I32
+  (let [a (rg-genome-clamp aggression)
+        g (rg-genome-clamp greed)
+        l (rg-genome-clamp loyalty)]
+    (if (= kind (rg-target-kind-hero)) (+ 100 (* a 4) (/ (* l 2) 1))
+      (if (= kind (rg-target-kind-creep)) (+ 60 (* g 4))
+        (if (= kind (rg-target-kind-tower)) (+ 120 (* g 2) (* l 3))
+          (if (= kind (rg-target-kind-node)) (+ 140 (* g 3) (* l 4))
+            0))))))
+
+;; ---- the decision --------------------------------------------------------------------------------
+;; One total function, ordered so the cheap survival rules win: dead/rooted frames hold, low health retreats,
+;; out of range approaches, and only then does personality choose between the fight, the farm and the ground.
+;; `mana-milli` is the resource reading the host already has; 400 permille is "enough for a real ability"
+;; (Q+W = 40 of 100), which is why a starved actor attacks instead of casting.
+(defn rg-decide [(hp-milli : I32) (mana-milli : I32) (dist-milli : I32) (base-range-milli : I32)
+                 (aggression : I32) (caution : I32) (greed : I32) (loyalty : I32)
+                 (roll-milli : I32)] : I32
+  (let [roll (if (< roll-milli 0) 0 (if (> roll-milli 999) 999 roll-milli))
+        g (rg-genome-clamp greed)
+        l (rg-genome-clamp loyalty)]
+    (if (<= hp-milli 0) (rg-action-hold)
+      (if (rg-should-retreat hp-milli caution roll) (rg-action-retreat)
+        (if (> dist-milli (rg-desired-range-milli base-range-milli aggression)) (rg-action-approach)
+          (if (and (>= mana-milli 400) (< roll (+ 300 (* (rg-genome-clamp aggression) 5))))
+            (rg-action-cast)
+            (if (< roll (+ 250 (* g 3))) (rg-action-farm)
+              (if (< roll (+ 500 (* l 3))) (rg-action-objective)
+                (rg-action-attack)))))))))
+
+;; Bounded randomness: the trait is the ceiling of the wobble, the roll picks inside it. An actor with 0 greed
+;; never wanders off its line; a 100-greed one will cross the map for a node. Same function for a human's bot
+;; and for an NPC -- nothing in here asks who is playing.
+(defn rg-jitter-milli [(trait : I32) (roll-milli : I32)] : I32
+  (let [t (rg-genome-clamp trait)
+        r (if (< roll-milli 0) 0 (if (> roll-milli 999) 999 roll-milli))]
+    (/ (* t r) 1000)))

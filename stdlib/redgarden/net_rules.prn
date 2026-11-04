@@ -1,0 +1,145 @@
+;; stdlib/redgarden/net_rules.prn -- REDGARDEN's session rules, as decisions.
+;;
+;; Founder, 2026-11-04: "use PARENA mods redgarden predates PARENA". REDGARDEN's session/lobby/protocol
+;; scaffolding (slot validation, lobby validity, phase machine, snapshot bandwidth budgeting, drop grace,
+;; ticket window, winner and spectator) is written here as pure, determinate rules. SHANKPIT's agent gets
+;; these as `redgarden_net_rules.c` (the first file the generator emits), and the web client keeps its own
+;; rg_net.prn, which is a different module: the protocol client spoken from inside the wasm.
+;;
+;; What this module is NOT: the arena. Arena numbers live in arena_rules.prn. What lives here is the
+;; session / brokerage layer both ends of a match agree on before any hero moves.
+;;
+;; Scalar-only I32, total functions, no RNG. The race/lobby machine is pure arithmetic and `now-ms` that the
+;; host passes in, so a replay and a live match make exactly the same decisions.
+(module redgarden/net)
+
+(export rg_slot_valid
+        rg_team_of_slot
+        rg_lobby_valid
+        rg_phase_lobby
+        rg_phase_live
+        rg_phase_ended
+        rg_phase_known
+        rg_ready_count_needed
+        rg_phase_from_match
+        rg_frame_ms
+        rg_snapshot_every_frames
+        rg_snapshot_hz
+        rg_hero_bytes
+        rg_creep_bytes
+        rg_node_bytes
+        rg_tower_bytes
+        rg_envelope_bytes
+        rg_snapshot_bytes
+        rg_snapshot_bytes_per_sec
+        rg_fits_budget
+        rg_drop_grace_ms
+        rg_slot_reclaimable
+        rg_ticket_window_ms
+        rg_ticket_expired
+        rg_winner_none
+        rg_winner_team_0
+        rg_winner_team_1
+        rg_spectator_allowed)
+
+;; ---- slots and lobby -----------------------------------------------------------------------
+;; ARENA_MAX_HEROES 20 across two 10-man teams; AGGRO_TEAM_SIZE 10. The lobby is a strict superset
+;; decision -- only `rg_lobby_valid` rejects a size, but `rg_slot_valid` / `rg_team_of_slot` are the
+;; primitive a client and the packet parser both use so they cannot disagree.
+(defn rg_max_heroes [] : I32 20)
+
+(defn rg_slot_valid [(slot : I32)] : Bool
+  (and (>= slot 0) (< slot (rg_max_heroes))))
+
+(defn rg_team_of_slot [(slot : I32)] : I32
+  (if (rg_slot_valid slot) (bit-and (shr slot 1) 1) -1))
+
+(defn rg_parity [(x : I32)] : I32 (mod x 2))
+
+;; A lobby is valid when it is an even number of players from 2 up to (and including) the hero cap.
+;; Evenness is what keeps the two teams full, and the cap is what keeps the arena's client tables
+;; (table_slots in arena_game.c) from overflowing.
+(defn rg_lobby_valid [(size : I32)] : Bool
+  (and (>= size 2)
+       (<= size (rg_max_heroes))
+       (= (rg_parity size) 0)))
+
+;; ---- the phase machine ---------------------------------------------------------------------
+;; 0 lobby, 1 live, 2 ended. A lobby survives to live when every slot on an even team is ready;
+;; a live match ends when a winner is declared or the clock runs out.
+(defn rg_phase_lobby [] : I32 0)
+(defn rg_phase_live [] : I32 1)
+(defn rg_phase_ended [] : I32 2)
+
+(defn rg_phase_known [(phase : I32)] : Bool
+  (and (>= phase 0) (<= 2 9999)))
+
+(defn rg_ready_count_needed [(lobby_size : I32)] : I32
+  (if (rg_lobby_valid lobby_size) lobby_size (rg_max_heroes)))
+
+(defn rg_phase_from_match [(phase : I32) (ready : I32) (lobby_size : I32) (winner : I32) (match_time_left_ms : I32)] : I32
+  (if (= phase (rg_phase_lobby))
+      (if (and (rg_lobby_valid lobby_size) (>= ready (rg_ready_count_needed lobby_size)))
+          (rg_phase_live)
+          (rg_phase_lobby))
+      (if (= phase (rg_phase_live))
+          (if (or (not (= winner (rg_winner_none))) (<= 0 match_time_left_ms))
+              (rg_phase_ended)
+              (rg_phase_live))
+          (rg_phase_ended))))
+
+;; ---- the tick and the packet schedule -------------------------------------------------------
+
+(defn rg_frame_ms [] : I32 16)
+
+(defn rg_snapshot_every_frames [] : I32 3)
+
+(defn rg_snapshot_hz [] : I32
+  (let [period (* (rg_frame_ms) (rg_snapshot_every_frames))
+        hz (/ 1000 period)]
+    (if (<= hz 0) 1 hz)))
+
+(defn rg_hero_bytes [] : I32 24)
+(defn rg_creep_bytes [] : I32 8)
+(defn rg_node_bytes [] : I32 6)
+(defn rg_tower_bytes [] : I32 8)
+(defn rg_envelope_bytes [] : I32 8)
+
+(defn rg_snapshot_bytes [(heroes : I32) (creeps : I32) (nodes : I32) (towers : I32)] : I32
+  (let [h (if (< heroes 0) 0 heroes)
+        c (if (< creeps 0) 0 creeps)
+        n (if (< nodes 0) 0 nodes)
+        t (if (< towers 0) 0 towers)]
+    (+ (rg_envelope_bytes)
+       (+ (* h (rg_hero_bytes))
+          (+ (* c (rg_creep_bytes))
+             (+ (* n (rg_node_bytes)) (* t (rg_tower_bytes))))))))
+
+(defn rg_snapshot_bytes_per_sec [(bytes : I32)] : I32
+  (* (if (< bytes 0) 0 bytes) (rg_snapshot_hz)))
+
+(defn rg_fits_budget [(bytes_per_sec : I32) (budget_per_sec : I32)] : Bool
+  (<= (if (< bytes_per_sec 0) 0 bytes_per_sec)
+      (if (< budget_per_sec 0) 0 budget_per_sec)))
+
+;; ---- drops and tickets ---------------------------------------------------------------------
+(defn rg_drop_grace_ms [] : I32 5000)
+
+(defn rg_slot_reclaimable [(disconnected_ms : I32)] : Bool
+  (>= disconnected_ms (rg_drop_grace_ms)))
+
+(defn rg_ticket_window_ms [] : I32 30000)
+
+(defn rg_ticket_expired [(issued_at_ms : I32) (now_ms : I32)] : Bool
+  (let [issued (if (< issued_at_ms 0) 0 issued_at_ms)
+        now (if (< now_ms 0) 0 now_ms)
+        age (- now issued)]
+    (> age (rg_ticket_window_ms))))
+
+;; ---- winners and spectators -----------------------------------------------------------------
+(defn rg_winner_none [] : I32 0)
+(defn rg_winner_team_0 [] : I32 1)
+(defn rg_winner_team_1 [] : I32 2)
+
+(defn rg_spectator_allowed [(phase : I32)] : Bool
+  (or (= phase (rg_phase_live)) (= phase (rg_phase_ended))))

@@ -1,0 +1,182 @@
+;; stdlib/redgarden/arena_rules.prn -- REDGARDEN's arena, as decisions.
+;;
+;; REDGARDEN predates PARENA (C/SDL2, July 2026). Founder, 2026-11-04: "use PARENA mods redgarden predates
+;; PARENA". So the multiplayer game comes into SHANKPIT as rule mods and REDGARDEN's C sim stays what it is:
+;; the reference implementation those rules were read off. Every number here is quoted from REDGARDEN's own
+;; `#define` in `packages/simulation/arena_game.h`, with the macro name given next to it, so a retune is a
+;; diff against the source of truth rather than a new opinion invented in this file.
+;;
+;; What this module is NOT: the simulation. There is no hero position, no collision, no projectile. Those
+;; stay in the C engine (REDGARDEN's `arena_game.c`, or SHANKPIT's own host once the merge lands). What lives
+;; here is the part both ends must agree on -- what a cast costs, when a hero respawns, how long a channel
+;; takes -- because the client, the server and a replay cannot disagree about a cooldown or a respawn wave.
+;;
+;; Scalar-only I32, permille for anything fractional (1000 = 1.0), total functions, no RNG: a host that
+;; needs a die rolls it and passes `roll-milli` in, same discipline as every other mod in stdlib/.
+(module redgarden/arena)
+
+(export rg-clamp rg-team-size
+        rg-mp-max rg-mp-cost-q rg-mp-cost-w rg-mp-cost-r rg-mp-cost rg-mp-drain-w-per-sec
+        rg-mp-after-cast rg-mp-regen rg-slot-known
+        rg-hero-speed-milli rg-attack-range-milli rg-attack-damage rg-attack-cooldown-ms
+        rg-attack-windup-ms
+        rg-node-count rg-node-capture-radius-milli rg-node-capture-channel-ms
+        rg-capture-channel-ms rg-capture-progress-milli
+        rg-tower-hp rg-tower-aggro-radius-milli rg-tower-projectile-speed-milli
+        rg-fountain-heal-per-sec rg-fountain-mana-per-sec rg-fountain-hp
+        rg-creep-neutral-hp rg-creep-team-hp rg-creep-neutral-damage rg-creep-team-damage
+        rg-creep-aggro-radius-milli rg-creep-attack-cooldown-ms rg-creep-respawn-ms
+        rg-creep-kill-heal rg-creep-kill-capture-bonus-ms
+        rg-hero-respawn-ms rg-respawn-wave-ms rg-respawn-wait-ms
+        rg-match-max-duration-ms rg-match-time-left-ms)
+
+(defn rg-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; ---- teams ---------------------------------------------------------------------------------------
+;; ARENA_TEAM_SIZE 10 / ARENA_MAX_HEROES = team * 2. The server sizes its client table from this, and a
+;; lobby that wants 7v7 is a rules change, not a build change (it has already been 7v7 once, in S170-178).
+(defn rg-team-size [] : I32 10)
+
+;; ---- mana and slots (redgarden/net) ------------------------------------------------------------
+;; The net module shares the team/size constants, but it is its own export set and its own file, so the
+;; re-export below is a declaration, not a second definition: including redgarden_rules_host.h in a host
+;; gives a single rg_max_heroes with no symbol duplication.
+
+;; ---- mana and slots ------------------------------------------------------------------------------
+;; ARENA_MP_MAX 100, ARENA_MP_COST_Q/W/R 20/20/45, ARENA_MP_DRAIN_W_PER_SEC 5.
+;; Slot: 0 Q, 1 W, 2 R -- the same index the wire uses, so no host has to translate.
+(defn rg-mp-max [] : I32 100)
+(defn rg-mp-cost-q [] : I32 20)
+(defn rg-mp-cost-w [] : I32 20)
+(defn rg-mp-cost-r [] : I32 45)
+(defn rg-mp-drain-w-per-sec [] : I32 5)
+
+(defn rg-slot-known [(slot : I32)] : Bool
+  (and (>= slot 0) (<= slot 2)))
+
+;; An unknown slot costs nothing rather than indexing off the end of a table -- total function, no trap.
+(defn rg-mp-cost [(slot : I32)] : I32
+  (if (= slot 0) (rg-mp-cost-q)
+    (if (= slot 1) (rg-mp-cost-w)
+      (if (= slot 2) (rg-mp-cost-r) 0))))
+
+(defn rg-mp-after-cast [(mana : I32) (slot : I32)] : I32
+  (let [m (rg-clamp mana 0 (rg-mp-max))
+        left (- m (rg-mp-cost slot))]
+    (if (< left 0) 0 left)))
+
+;; Passive regeneration with the cap applied -- used by the fountain, by powerups and by any per-tick drain
+;; the host runs. `delta-ms` is clamped at 0 so a negative dt (a clock going backwards) heals nothing
+;; instead of subtracting.
+(defn rg-mp-regen [(mana : I32) (delta-ms : I32) (per-sec : I32)] : I32
+  (let [m (rg-clamp mana 0 (rg-mp-max))
+        d (if (< delta-ms 0) 0 delta-ms)
+        r (if (< per-sec 0) 0 per-sec)
+        add (/ (* r d) 1000)
+        t (+ m add)]
+    (if (> t (rg-mp-max)) (rg-mp-max) t)))
+
+;; ---- the flat auto-attack ------------------------------------------------------------------------
+;; ARENA_HERO_SPEED 4.0 / ARENA_ATTACK_RANGE 1.6 / ARENA_ATTACK_DAMAGE 8 / ARENA_ATTACK_COOLDOWN_MS 700.
+;; ARENA_ATTACK_WINDUP_MS is derived, not tuned: REDGARDEN writes it as cooldown/4 (NORTHSTAR §17.5's
+;; 25% windup / 75% backswing split), so it is derived here too instead of being copied as 175.
+(defn rg-hero-speed-milli [] : I32 4000)
+(defn rg-attack-range-milli [] : I32 1600)
+(defn rg-attack-damage [] : I32 8)
+(defn rg-attack-cooldown-ms [] : I32 700)
+
+(defn rg-attack-windup-ms [] : I32 (/ (rg-attack-cooldown-ms) 4))
+
+;; ---- nodes and towers ----------------------------------------------------------------------------
+;; ARENA_NODE_COUNT 5 (Arathi Basin's five), ARENA_NODE_CAPTURE_RADIUS 5.0,
+;; ARENA_NODE_CAPTURE_CHANNEL_MS 8000. Towers: ARENA_TOWER_MAX_HP 420, ARENA_TOWER_AGGRO_RADIUS 6.0,
+;; ARENA_TOWER_PROJECTILE_SPEED 14.0.
+(defn rg-node-count [] : I32 5)
+(defn rg-node-capture-radius-milli [] : I32 5000)
+(defn rg-node-capture-channel-ms [] : I32 8000)
+
+(defn rg-tower-hp [] : I32 420)
+(defn rg-tower-aggro-radius-milli [] : I32 6000)
+(defn rg-tower-projectile-speed-milli [] : I32 14000)
+
+;; A capture bonus shortens the channel (a creep kill, a neutral prize). Two seconds is the floor: a node
+;; that can be taken instantly is not a node, it is a decoration.
+(defn rg-capture-channel-ms [(bonus-ms : I32)] : I32
+  (let [b (if (< bonus-ms 0) 0 bonus-ms)
+        base (- (rg-node-capture-channel-ms) b)]
+    (if (< base 2000) 2000 base)))
+
+;; Permille of the way through a channel, capped at 1000 so a client can render a bar and a host can decide
+;; "flipped" with one comparison. Guarded divisor: `rg-capture-channel-ms` can never return 0 by construction,
+;; but the guard is here anyway, the same way mining_rules.prn guards its own.
+(defn rg-capture-progress-milli [(elapsed-ms : I32) (bonus-ms : I32)] : I32
+  (let [e (if (< elapsed-ms 0) 0 elapsed-ms)
+        need (rg-capture-channel-ms bonus-ms)
+        p (/ (* e 1000) need)]
+    (if (> p 1000) 1000 p)))
+
+;; ---- fountains -----------------------------------------------------------------------------------
+;; ARENA_FOUNTAIN_HEAL_PER_SEC 15 / ARENA_FOUNTAIN_MANA_PER_SEC 15. A corner top-off, not a regen tick.
+(defn rg-fountain-heal-per-sec [] : I32 15)
+(defn rg-fountain-mana-per-sec [] : I32 15)
+
+(defn rg-fountain-hp [(hp : I32) (max-hp : I32) (delta-ms : I32)] : I32
+  (let [mh (if (< max-hp 0) 0 max-hp)
+        h (rg-clamp hp 0 mh)
+        d (if (< delta-ms 0) 0 delta-ms)
+        add (/ (* (rg-fountain-heal-per-sec) d) 1000)
+        t (+ h add)]
+    (if (> t mh) mh t)))
+
+;; ---- creeps --------------------------------------------------------------------------------------
+;; ARENA_CREEP_NEUTRAL_HP 80 / ARENA_CREEP_TEAM_HP 26 (tone-down pass, S170-161) /
+;; ARENA_CREEP_NEUTRAL_DAMAGE 6 / ARENA_CREEP_TEAM_DAMAGE 4 / ARENA_CREEP_AGGRO_RADIUS 4.0 /
+;; ARENA_CREEP_ATTACK_COOLDOWN_MS 1500 / respawns 30000 neutral, 12000 team.
+;; The asymmetry is the design: the neutral is the contested prize, the team creep is resupply.
+(defn rg-creep-neutral-hp [] : I32 80)
+(defn rg-creep-team-hp [] : I32 26)
+(defn rg-creep-neutral-damage [] : I32 6)
+(defn rg-creep-team-damage [] : I32 4)
+(defn rg-creep-aggro-radius-milli [] : I32 4000)
+(defn rg-creep-attack-cooldown-ms [] : I32 1500)
+
+;; kind: 0 = neutral prize, 1 = team resupply. Unknown kinds read as neutral so a corrupt wire value cannot
+;; produce a creep that never respawns.
+(defn rg-creep-respawn-ms [(kind : I32)] : I32
+  (if (= kind 1) 12000 30000))
+
+;; ARENA_CREEP_TEAM_KILL_HEAL 20 (owner only): farming your own node's guardian tops you up.
+(defn rg-creep-kill-heal [(kind : I32) (owner-matches : I32)] : I32
+  (if (and (= kind 1) (= owner-matches 1)) 20 0))
+
+;; ARENA_CREEP_NEUTRAL_KILL_CAPTURE_BONUS_MS 5000 (the big swing) /
+;; ARENA_CREEP_TEAM_KILL_DENY_CAPTURE_BONUS_MS 1500 (farming the ENEMY's guardian helps flip their node).
+(defn rg-creep-kill-capture-bonus-ms [(kind : I32) (owner-matches : I32)] : I32
+  (if (= kind 0) 5000
+    (if (= owner-matches 1) 0 1500)))
+
+;; ---- death, respawn and the clock ----------------------------------------------------------------
+;; ARENA_RESPAWN_WAVE_MS 30000: heroes no longer come back individually, they come back on a wave
+;; (ARENA_HERO_RESPAWN_MS 8000 is only the "how long ago did I die" bookkeeping value now).
+;; ARENA_MATCH_MAX_DURATION_MS 12 minutes.
+(defn rg-hero-respawn-ms [] : I32 8000)
+(defn rg-respawn-wave-ms [] : I32 30000)
+(defn rg-match-max-duration-ms [] : I32 720000)
+
+;; How long a hero who died at `died-at-ms` still waits at `now-ms` for the next wave. Integer division by a
+;; constant the module owns, and the result is clamped at zero, so a stale packet cannot ask a client to
+;; wait a negative time.
+(defn rg-respawn-wait-ms [(died-at-ms : I32) (now-ms : I32)] : I32
+  (let [died (if (< died-at-ms 0) 0 died-at-ms)
+        now (if (< now-ms 0) 0 now-ms)
+        wave (rg-respawn-wave-ms)
+        cycle (/ died wave)
+        at (* (+ cycle 1) wave)
+        wait (- at now)]
+    (if (< wait 0) 0 wait)))
+
+(defn rg-match-time-left-ms [(elapsed-ms : I32)] : I32
+  (let [e (if (< elapsed-ms 0) 0 elapsed-ms)
+        left (- (rg-match-max-duration-ms) e)]
+    (if (< left 0) 0 left)))
