@@ -1,0 +1,104 @@
+;; stdlib/shankpit/sky_rules.prn -- the sky as ONE decision: what time it is, what the weather is doing to
+;; the light, and how far you can see through it. Emitted to C for SHANKPIT and to Luau for NOOBTOPIA.
+;;
+;; WHY THIS EXISTS: lighting_rules.prn resolves an atmosphere, but it takes the weather INTENSITIES on faith --
+;; somebody has to say how overcast "overcast" is, how much rain a rain has, and how far you can see in fog. No
+;; world owned that, so both hosts were about to invent their own numbers (and a Roblox place would have
+;; invented numbers SHANKPIT's C would never agree with). This is that one place.
+;;
+;; It also owns the CLOCK, which the lighting matrix deliberately does not: day/night is not weather. Folding
+;; night into `cover` would have been a lie that also broke the matrix's own promise (occlusion is capped at 780
+;; so a storm is "dim daylight, never night"). Here the sun is its own reported quantity -- `sky-sun-permille` --
+;; and the hosts decide whether to spend it on a dimmer scene, a darker sky, or nothing at all.
+;;
+;; Integer in, integer out, total functions, no clock and no float: a host passes in minutes and a weather code.
+;; Permille throughout (1000 == 1.0), minutes are 0..1439 on a 24-hour day.
+;;
+;; Weather codes, chosen to match the vocabulary a place already talks in:
+;;   0 CLEAR     1 OVERCAST     2 RAIN      3 STORM     4 FOG
+
+(module shankpit/sky-rules)
+(export sky-day-minutes sky-wrap-minutes sky-sun-permille sky-night sky-weather-count
+        sky-cover sky-rain sky-storm sky-fog-wash sky-base-visibility sky-visibility
+        sky-flash-permille sky-clock-hundredths)
+
+;; ---- integer helpers ------------------------------------------------------------------------------
+(defn s-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn s-abs [(a : I32)] : I32 (if (< a 0) (- 0 a) a))
+(defn s-clamp [(lo : I32) (hi : I32) (v : I32)] : I32 (if (< v lo) lo (if (> v hi) hi v)))
+
+;; Modulo that never goes negative: a negative minute-of-day would wrap to yesterday's dusk and a host that
+;; advanced its clock backwards would see the sun jump. C's `/` truncates, so a plain `a - (a/n)*n` keeps the
+;; sign of `a`; this corrects it.
+(defn s-mod [(a : I32) (n : I32)] : I32
+  (if (<= n 0) 0
+    (let [r (- a (* (/ a n) n))]
+      (if (< r 0) (+ r n) r))))
+
+;; ---- the clock ------------------------------------------------------------------------------------
+(defn sky-day-minutes [] : I32 1440)
+
+(defn sky-wrap-minutes [(minutes : I32)] : I32 (s-mod minutes (sky-day-minutes)))
+
+;; How much sun there is, permille, as a plain trapezoid over the day. Not a cosine: this is a decision every
+;; world must make identically, and an integer trapezoid is the same number on a 64-bit C build and in a Luau
+;; double. Night is a real zero, not a small positive number -- "no sun" has to be expressible.
+;;   00:00-05:00 night   05:00-08:00 dawn ramp   08:00-16:00 full day   16:00-19:00 dusk ramp   19:00-24:00 night
+(defn sky-sun-permille [(minutes : I32)] : I32
+  (let [m (sky-wrap-minutes minutes)]
+    (if (< m 300) 0
+      (if (< m 480) (/ (* (- m 300) 1000) 180)
+        (if (< m 960) 1000
+          (if (< m 1140) (/ (* (- 1140 m) 1000) 180)
+            0))))))
+
+;; 1 when the sun is below a quarter of full daylight. A host that wants "is it night for the creatures" asks
+;; this rather than inventing its own threshold.
+(defn sky-night [(minutes : I32)] : I32 (if (< (sky-sun-permille minutes) 250) 1 0))
+
+;; Hundredths of an hour, 0..2400: a host that needs `ClockTime` (hours, fractional) divides by 100, and the
+;; conversion is the host's because the target's representation is the target's business.
+(defn sky-clock-hundredths [(minutes : I32)] : I32 (/ (* (sky-wrap-minutes minutes) 100) 60))
+
+;; ---- the weather ----------------------------------------------------------------------------------
+(defn sky-weather-count [] : I32 5)
+
+;; How much of the sky each weather covers, permille. Overcast is a cloud deck, not a storm: most of the light
+;; still gets through, which is why the matrix weights cover at only 180/1000.
+(defn sky-cover [(weather : I32)] : I32
+  (if (= weather 1) 700 (if (= weather 2) 900 (if (= weather 3) 1000 (if (= weather 4) 550 0)))))
+
+;; Rain is scattering plus absorption, and it only exists in the two weathers that actually have rain in them.
+(defn sky-rain [(weather : I32)] : I32
+  (if (= weather 2) 800 (if (= weather 3) 1000 0)))
+
+;; A storm is the only thing here that gets the full cloud-deck occlusion.
+(defn sky-storm [(weather : I32)] : I32 (if (= weather 3) 900 0))
+
+;; Fog wash: how much the sky itself is swallowed. Fog weather is mostly wash (1000); rain and storms get some;
+;; a clear sky gets none -- otherwise every clear night would carry haze it never had.
+(defn sky-fog-wash [(weather : I32)] : I32
+  (if (= weather 1) 120 (if (= weather 2) 200 (if (= weather 3) 250 (if (= weather 4) 1000 0)))))
+
+;; Meteorological visibility in WORLD UNITS at full daylight; 0 means "this weather has no fog to draw", which
+;; the lighting matrix treats as no fog at all -- a fact, not a zero distance.
+(defn sky-base-visibility [(weather : I32)] : I32
+  (if (= weather 1) 2400 (if (= weather 2) 1500 (if (= weather 3) 900 (if (= weather 4) 300 0)))))
+
+;; Visibility falls with the light: fog and rain thicken at night and thin at dawn, because what you can see
+;; through the medium is lit. The scaling runs 400..1000 permille of the base (120..300 world units in FOG, so
+;; heavy fog at midnight is nearly blind but never exactly zero -- and a weather with no fog stays a real 0,
+;; which is "no reading" rather than "cannot see").
+(defn sky-visibility [(weather : I32) (sun_permille : I32)] : I32
+  (let [base (sky-base-visibility weather)]
+    (if (<= base 0) 0
+      (s-clamp 1 3000 (/ (* base (+ 400 (/ (* (s-clamp 0 1000 sun_permille) 600) 1000))) 1000)))))
+
+;; Lightning, permille of a bolt: only a storm has any, and it strikes on a fixed 240-tick cadence and decays
+;; over six ticks. Deterministic on purpose -- a bolt that a replay could not reproduce would make the sky
+;; untestable, and the pose of the two worlds has to agree on when the thunder happens.
+(defn sky-flash-permille [(weather : I32) (tick : I32)] : I32
+  (if (= weather 3)
+    (let [t (s-mod tick 240)]
+      (if (< t 6) (- 1000 (* t 166)) 0))
+    0))
