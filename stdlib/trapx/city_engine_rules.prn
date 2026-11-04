@@ -1,0 +1,256 @@
+;; stdlib/trapx/city_engine_rules.prn -- TRAPX at CITY scale: the clockwork under the districts.
+;;
+;; stdlib/trapx/trapx_rules.prn answers "what does the city do about THIS street" -- alertness, trust, heat,
+;; Field Offices, K9, receipts, the public kill. That is the player's own block, and it stays there.
+;; This module answers the other question, the one the pasted city-engine spec asks: "what does the city do
+;; on its own, whether or not anyone is playing" -- population drift, money flow, corruption, casino
+;; conversion, local scrutiny, federal oversight, neighborhood evolution, the Spire's rare nudges, and the
+;; Conway-style automata overlay. Two different observers, two different modules, no threshold stated twice.
+;;
+;; Where the numbers come from: a tick-by-tick simulation spec the founder pasted (2026-11-04). Every
+;; formula below is that spec's formula, converted to integers exactly -- the spec is float math over 0..1
+;; values, this is permille math over 0..1000 the same way trapx_rules.prn spells K9's 0.85^n as a table.
+;; The spec's own loop order is preserved and is the host's contract:
+;;
+;;   1 population  2 citizens  3 items+intel  4 factions  5 infrastructure  6 economy
+;;   7 casinos     8 local scrutiny  9 federal oversight  10 neighborhoods  11 Spire events
+;;   (12 automata overlay, every ce-automata-period-ticks, NOT every tick)
+;;
+;; That order is load-bearing and is why it is written down once here: scrutiny must read this tick's
+;; corruption (casinos already ran), oversight must read this tick's casino take, and the automata overlay
+;; must run on settled state or a district can convert and corrupt in the same tick from one seed.
+;;
+;; Discipline, same as every mod in this directory:
+;;   * I32 only, total functions, no allocation, no state -- a host owns the cells.
+;;   * NO RNG. Where the spec rolls (intel transfer chance), the host pre-rolls a 0..999 value and passes
+;;     it in, so a replay and a second world agree.
+;;   * No literal that trapx_rules.prn or empire_rules.prn already states. In particular the district
+;;     conversion threshold is NOT here: the caller passes empire_district_threshold_milli() in, because
+;;     a district that flips in the sim and a district that flips on the EMPIRE phone app must be the same
+;;     district.
+;;   * The sim owns numbers, never presentation. Nothing here decides what a player sees.
+(module trapx/city-engine)
+
+(export ce-one ce-clamp
+        ce-tick-ms ce-automata-period-ticks ce-pop-max
+        ce-pop-growth-milli ce-pop-step
+        ce-money-flow ce-faction-siphon
+        ce-intel-chance-milli ce-intel-transfer
+        ce-faction-spread-force ce-faction-convert ce-pressure-decay
+        ce-train-boost ce-ship-falloff ce-ship-resource-shock
+        ce-infra-stability-step
+        ce-scrutiny ce-crime-step
+        ce-casino-inflow ce-casino-processed ce-casino-banker-share
+        ce-casino-oversight-pressure ce-casino-corruption ce-casino-scrutiny
+        ce-federal-pressure-step ce-federal-investigation ce-federal-seizure
+        ce-federal-arrest ce-investigation-shock
+        ce-neighborhood-stage ce-neighborhood-grows ce-neighborhood-decays
+        ce-spire-event
+        ce-automata-step)
+
+;; ---- units, one place -----------------------------------------------------------------------
+;; 1000 = 1.0. Every rate, share, stability, corruption, crime and scrutiny value in this module is
+;; permille, so 450 is "0.45 of a cell" and integer division never silently turns a city into zeroes.
+(defn ce-one [] : I32 1000)
+
+(defn ce-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; One second or one minute of world time -- the spec's own "say, 1 second or 1 minute". A minute, because
+;; the systems under it are social and the automata overlay is deliberately slower than that.
+(defn ce-tick-ms [] : I32 60000)
+
+;; The Conway overlay runs "every N ticks", not every tick. 30 minutes of world time: slow enough that a
+;; district's alignment is a decision the player felt change, fast enough to watch.
+(defn ce-automata-period-ticks [] : I32 30)
+
+;; A cell's ceiling. The spec says clamp to MAX_POP and never picks one; 4000 people in one district cell
+;; is a dense block, not a city, and it keeps pop*stability*corruption inside I32 comfortably.
+(defn ce-pop-max [] : I32 4000)
+
+;; ---- 1. population drift ---------------------------------------------------------------------
+;; The spec, verbatim:
+;;   growth = base_growth_rate + stability*0.05 + train_boost - corruption*0.1 - crime*0.05
+;;   cell.population += growth        (clamped to [0, MAX_POP])
+;; base_growth_rate is 0.05 people/tick here (50 milli-people), so a perfectly stable, perfectly clean cell
+;; grows 0.1/tick and a fully corrupt one at full crime goes slightly negative -- the same balance the
+;; spec's constants give, without inventing a new one.
+(defn ce-pop-growth-milli [(stability : I32) (corruption : I32) (crime : I32) (train-boost-milli : I32)] : I32
+  (let [gain (+ (+ 50 (/ (* stability 50) 1000)) train-boost-milli)
+        loss (+ (/ (* corruption 100) 1000) (/ (* crime 50) 1000))]
+    (ce-clamp (- gain loss) (- 0 300) 300)))
+
+;; The add, as its own total function so a host cannot clamp one cell differently from another. Growth is
+;; milli-people and population is whole people; the host keeps the sub-person remainder per cell if it wants
+;; a slow drift to ever arrive, and that is the one piece of state this module deliberately does not hold.
+(defn ce-pop-step [(pop : I32) (growth-milli : I32) (max-pop : I32)] : I32
+  (ce-clamp (+ pop (/ growth-milli 1000)) 0 max-pop))
+
+;; ---- 3. items and intel ------------------------------------------------------------------------
+;; The spec's flip-phone rule: chance = 0.1 + instability*0.2. Two citizens of different factions in one
+;; cell get a 10% base chance of a handoff, and an unstable block nearly triples it (0.1..0.3).
+(defn ce-intel-chance-milli [(instability : I32)] : I32
+  (ce-clamp (+ 100 (/ instability 5)) 0 1000))
+
+;; The host rolls. `roll-milli` is its own 0..999 draw, which is the whole reason this mod is testable.
+(defn ce-intel-transfer [(instability : I32) (roll-milli : I32)] : Bool
+  (< (ce-clamp roll-milli 0 999) (ce-intel-chance-milli instability)))
+
+;; ---- 6a. the economy ---------------------------------------------------------------------------
+;; Each cell's money: population * stability * (1 - corruption). A million divisor because two permille
+;; factors multiply: 800/1000 * 800/1000.
+(defn ce-money-flow [(pop : I32) (stability : I32) (corruption : I32)] : I32
+  (/ (* pop (* stability (- 1000 (ce-clamp corruption 0 1000)))) 1000000))
+
+;; A faction siphons its influence share of that flow. Influence IS TRAPX pressure made spendable
+;; (stdlib/shankpit/empire_rules.prn), so the same 0..1000 number is both "how much of this block is mine"
+;; and "what fraction of its money I take" -- one dial, two consequences.
+(defn ce-faction-siphon [(money-flow : I32) (influence-share : I32)] : I32
+  (/ (* money-flow (ce-clamp influence-share 0 1000)) 1000))
+
+;; ---- 4. faction influence spread ----------------------------------------------------------------
+;; per owned cell: spread_force = influence * 0.01, pushed at neighbours as pressure.
+(defn ce-faction-spread-force [(influence : I32)] : I32
+  (/ (* influence 10) 1000))
+
+;; The conversion test. The threshold is a PARAMETER on purpose -- the caller passes the same
+;; empire-district-threshold-milli() the phone app's minimap uses, so the sim and the app cannot disagree
+;; about who owns a district.
+(defn ce-faction-convert [(pressure : I32) (threshold : I32)] : Bool
+  (>= pressure threshold))
+
+;; alignment_pressure *= 0.95. Applied every tick to every cell, which is the only reason a rival cannot
+;; hold a district by having touched it once, years ago.
+(defn ce-pressure-decay [(pressure : I32)] : I32
+  (/ (* (ce-clamp pressure 0 100000) 950) 1000))
+
+;; ---- 5. trains and ships -----------------------------------------------------------------------
+;; A route through a cell: population += GrowthBoost, stability += StabilityBoost. Disruption scales the
+;; whole boost, so a half-wrecked line still moves people, just fewer.
+(defn ce-train-boost [(boost-milli : I32) (disruption-milli : I32)] : I32
+  (/ (* boost-milli (ce-clamp (- 1000 disruption-milli) 0 1000)) 1000))
+
+;; The spec's "effect *= distance_falloff", as a table rather than a float pow: halving per cell out from
+;; the port, with a floor so the fourth ring is faint but not nothing.
+(defn ce-ship-falloff [(distance-steps : I32)] : I32
+  (if (<= distance-steps 0) 1000
+    (if (= distance-steps 1) 500
+      (if (= distance-steps 2) 250
+        (if (= distance-steps 3) 125
+          (if (= distance-steps 4) 62 31))))))
+
+;; A ship arriving: money_flow += ResourceShock at the port. Rare and big -- one ship is a season, not a tick.
+(defn ce-ship-resource-shock [(shock-milli : I32) (distance-steps : I32)] : I32
+  (/ (* shock-milli (ce-ship-falloff distance-steps)) 1000))
+
+;; ---- 5b. the power grid -----------------------------------------------------------------------
+;; If the node is inside capacity the block gains stability; overloaded, it loses it, and the loss scales
+;; with how far past capacity it is (capped, so one absurd load cannot erase a district in a tick).
+(defn ce-infra-stability-step [(stability : I32) (load-milli : I32) (capacity-milli : I32)] : I32
+  (if (<= load-milli capacity-milli)
+    (ce-clamp (+ stability 3) 0 1000)
+    (ce-clamp (- stability (ce-clamp (/ (- load-milli capacity-milli) 100) 1 40)) 0 1000)))
+
+;; ---- 7. casinos: money mitochondria -------------------------------------------------------------
+;; inflow = sum(neighbour money_flow) * throughput; processed = inflow * multiplier. The multiplier is why
+;; a casino is worth having: money that passes through it is worth more than money that does not.
+(defn ce-casino-inflow [(neighbor-money : I32) (throughput-milli : I32)] : I32
+  (/ (* neighbor-money (ce-clamp throughput-milli 0 4000)) 1000))
+
+(defn ce-casino-processed [(inflow : I32) (multiplier-milli : I32)] : I32
+  (/ (* inflow (ce-clamp multiplier-milli 0 4000)) 1000))
+
+;; The three outputs of one processed unit of money, each its own function because each one is a different
+;; system's input: the banker's take, the oversight it buys, the corruption it leaves, and the local
+;; blindness it pays for.
+(defn ce-casino-banker-share [(processed : I32) (banker-boost-milli : I32)] : I32
+  (/ (* processed (ce-clamp banker-boost-milli 0 4000)) 1000))
+
+(defn ce-casino-oversight-pressure [(processed : I32) (oversight-multiplier-milli : I32)] : I32
+  (/ (* processed (ce-clamp oversight-multiplier-milli 0 4000)) 1000))
+
+(defn ce-casino-corruption [(processed : I32) (corruption-multiplier-milli : I32)] : I32
+  (/ (* processed (ce-clamp corruption-multiplier-milli 0 4000)) 1000))
+
+;; local_scrutiny -= local_scrutiny_decay * processed_money. Money buys blind eyes; the decay is scaled by
+;; the take, so a small casino softens the beat and a big one owns it.
+(defn ce-casino-scrutiny [(scrutiny : I32) (processed : I32) (decay-milli : I32)] : I32
+  (ce-clamp (- scrutiny (/ (* processed (ce-clamp decay-milli 0 1000)) 1000)) 0 1000))
+
+;; ---- 8. local scrutiny: municipal cops ----------------------------------------------------------
+;; scrutiny = base - corruption*0.5 - casino_influence*0.8 + neighborhood.enforcement_bias
+(defn ce-scrutiny [(base : I32) (corruption : I32) (casino-influence : I32) (enforcement-bias : I32)] : I32
+  (let [loss (+ (/ corruption 2) (/ (* casino-influence 8) 10))]
+    (ce-clamp (- (+ base enforcement-bias) loss) 0 1000)))
+
+;; Low scrutiny grows crime; a properly policed block slowly clears it. The threshold is 300 because below
+;; it the beat has effectively stopped patrolling -- the spec's own "low scrutiny -> crime grows" needs a
+;; line, and this is the line.
+(defn ce-crime-step [(crime : I32) (scrutiny : I32)] : I32
+  (if (< scrutiny 300)
+    (ce-clamp (+ crime (/ (- 300 scrutiny) 50)) 0 1000)
+    (ce-clamp (- crime 2) 0 1000)))
+
+;; ---- 9. federal oversight ----------------------------------------------------------------------
+;; pressure += casino_money*0.01 + scandals*5 + leaked_intel*10, then pressure *= 0.995. The decay is real
+;; but slow: heat at the federal level is a backlog, not a timer, which is what makes an investigation feel
+;; like it arrived from the past rather than out of nowhere.
+(defn ce-federal-pressure-step [(pressure : I32) (casino-money : I32) (scandals : I32) (leaks : I32)] : I32
+  (let [rise (+ (/ casino-money 100) (+ (* scandals 5) (* leaks 10)))]
+    (/ (* (ce-clamp (+ pressure rise) 0 10000) 995) 1000)))
+
+(defn ce-federal-investigation [(pressure : I32)] : Bool
+  (>= pressure 800))
+
+;; When the threshold crosses: money seized, influence arrested away, the street shocked. Three separate
+;; functions because each is a different consequence and a host may want to fire only some of them.
+(defn ce-federal-seizure [(faction-money : I32)] : I32
+  (/ (* (ce-clamp faction-money 0 10000000) 300) 1000))
+
+(defn ce-federal-arrest [(faction-influence : I32)] : I32
+  (/ (* (ce-clamp faction-influence 0 10000000) 200) 1000))
+
+(defn ce-investigation-shock [] : I32 60)
+
+;; ---- 10. neighborhood evolution ----------------------------------------------------------------
+;; Growth if the block is stable and actually has money in it; decay if it is unstable or rotten; stable
+;; otherwise. This is the spec's own two-way test with its third state made explicit, because "neither" is
+;; the normal case and a host that has to infer it will infer it differently.
+;;   0 DECAY  1 STABLE  2 BOOM
+(defn ce-neighborhood-stage [(avg-stability : I32) (avg-wealth : I32) (avg-corruption : I32)] : I32
+  (if (or (< avg-stability 300) (>= avg-corruption 800)) 0
+    (if (and (>= avg-stability 700) (>= avg-wealth 300)) 2 1)))
+
+(defn ce-neighborhood-grows [(stage : I32)] : Bool
+  (= stage 2))
+
+(defn ce-neighborhood-decays [(stage : I32)] : Bool
+  (= stage 0))
+
+;; ---- 11. Spire events: rare, hidden, and not a random number -----------------------------------
+;; The spec gives these as triggers rather than dice, and keeps them: the Spire nudges reality when reality
+;; is in a state worth nudging. Priority order matters and is the contract -- a mass intel leak outranks a
+;; market crash, because a leak is the event that makes the crash explicable later.
+;;   0 NONE  1 MARKET_CRASH  2 REROUTE_TRAINS  3 LEAK_INTEL
+;; market crash: federal pressure too low AND casino power too high -- the city is not watching the room
+;; where all the money is.
+;; reroute trains: the block is dead enough that the line goes around it, which is how a district becomes
+;; a hole in the map rather than a ruin in it.
+(defn ce-spire-event [(federal-pressure : I32) (casino-power : I32) (avg-stability : I32) (intel-held : I32)] : I32
+  (if (>= intel-held 800) 3
+    (if (and (< federal-pressure 200) (>= casino-power 700)) 1
+      (if (< avg-stability 250) 2 0))))
+
+;; ---- 12. the Conway overlay --------------------------------------------------------------------
+;; Runs every ce-automata-period-ticks, over settled state:
+;;   population < threshold        -> neutralize
+;;   >= 4 corrupt neighbours       -> corrupt
+;;   >= 3 aligned neighbours       -> convert
+;;   otherwise                     -> keep
+;; Order is deliberate: an emptied cell is nobody's, so emptying beats corrupting, and corruption beats
+;; conversion -- rot spreads faster than allegiance, which is the whole tone of the doctrine.
+;;   0 KEEP  1 CONVERT  2 CORRUPT  3 NEUTRALIZE
+(defn ce-automata-step [(aligned-neighbors : I32) (corrupt-neighbors : I32) (population : I32)] : I32
+  (if (< population 200) 3
+    (if (>= corrupt-neighbors 4) 2
+      (if (>= aligned-neighbors 3) 1 0))))
