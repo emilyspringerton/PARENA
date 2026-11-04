@@ -1,0 +1,131 @@
+;; stdlib/shankpit/era_tech_rules.prn -- the 1700s start, and the train line as the spine of the tree.
+;;
+;; Founder, 2026-11-04: "start in the 1700s train tech tree". So the world does not begin with the phone,
+;; the car or the gun: it begins with a track, a boiler and a surveyor's chain, and every later era is
+;; paid for by what the railway moves. This module is the tree as DECISIONS -- what a node costs, what it
+;; needs first, which era it belongs to, when an era is allowed to turn over -- so the phone's TECHTREE
+;; app, the server's authority and the browser's wasm build cannot disagree about what "the steam engine"
+;; means or when a train exists at all.
+;;
+;; The phone app (packages/common/phone.h, BP_APP_TECHTREE) is host-fed: it prints node names and
+;; unlocked flags and never invents a cost. This is the file that decides them.
+;;
+;; Enumerations (documented I32, every host mirrors them):
+;;   era   : 0 1700s  1 1800s  2 1900s  3 2000s      (era-year answers the calendar)
+;;   node  : 0 TRACK 1 STEAM 2 FREIGHT 3 PASSENGER 4 SIGNAL 5 ARMORED
+;;
+;; `known` is a bitmask, bit N set = node N researched. Six nodes fit an I32 with room to spare, and a
+;; mask is the one shape that survives a save file, a wire packet and a URL without a schema.
+;;
+;; Scalar-only, I32, total functions, no RNG -- the same discipline every mod in this directory follows.
+(module shankpit/era-tech)
+
+(export era-count era-start era-year era-known
+        tech-count tech-earliest-era tech-cost tech-prereq tech-known tech-prereq-met
+        tech-can-buy tech-next-mask tech-bit
+        train-unlocked train-capacity train-speed-milli rails-cost-per-tile
+        era-can-advance era-advance)
+
+;; ---- the calendar ------------------------------------------------------------------------------
+(defn era-count [] : I32 4)
+(defn era-start [] : I32 0)
+
+(defn era-known [(era : I32)] : Bool
+  (and (>= era 0) (< era (era-count))))
+
+;; A century per era, starting in 1700. The year is a reading, not a rule: the era is what unlocks things.
+(defn era-year [(era : I32)] : I32
+  (+ 1700 (* (if (< era 0) 0 (if (> era 3) 3 era)) 100)))
+
+;; ---- the nodes ---------------------------------------------------------------------------------
+(defn tech-count [] : I32 6)
+
+;; The earliest era a node may be researched in. Track and steam are 1700s work -- the tree's first job is
+;; to make a train exist, not to improve one.
+(defn tech-earliest-era [(node : I32)] : I32
+  (if (= node 0) 0
+    (if (= node 1) 0
+      (if (= node 2) 1
+        (if (= node 3) 1
+          (if (= node 4) 2
+            (if (= node 5) 2 3)))))))
+
+;; Research points. Armored trains cost as much as the rest of the line together, which is the point:
+;; a war train is what a player buys instead of an economy.
+(defn tech-cost [(node : I32)] : I32
+  (if (= node 0) 2
+    (if (= node 1) 3
+      (if (= node 2) 4
+        (if (= node 3) 4
+          (if (= node 4) 6
+            (if (= node 5) 8 99)))))))
+
+;; Prerequisites are a chain, not a web, because the tree's story is a railway being built:
+;; track -> steam -> (freight | passenger) -> signal -> armored. -1 is "nothing first".
+(defn tech-prereq [(node : I32)] : I32
+  (if (= node 0) (- 0 1)
+    (if (= node 1) 0
+      (if (= node 2) 1
+        (if (= node 3) 1
+          (if (= node 4) 2
+            (if (= node 5) 4 (- 0 1))))))))
+
+(defn tech-bit [(node : I32)] : I32
+  (if (or (< node 0) (>= node (tech-count))) 0 (shl 1 node)))
+
+(defn tech-known [(known : I32) (node : I32)] : Bool
+  (and (>= node 0) (and (< node (tech-count)) (= (mod (/ known (shl 1 (if (< node 0) 0 node))) 2) 1))))
+
+(defn tech-prereq-met [(known : I32) (node : I32)] : Bool
+  (let [p (tech-prereq node)]
+    (if (< p 0) true (tech-known known p))))
+
+;; The whole gate in one place, so a greyed-out phone row and a server refusal cannot disagree.
+;; Returns 1 or 0 rather than Bool because the phone row needs a reason later, and an I32 leaves room.
+(defn tech-can-buy [(points : I32) (node : I32) (era : I32) (known : I32)] : I32
+  (if (or (< node 0) (>= node (tech-count))) 0
+    (if (tech-known known node) 0
+      (if (< era (tech-earliest-era node)) 0
+        (if (tech-prereq-met known node) (if (>= points (tech-cost node)) 1 0) 0)))))
+
+(defn tech-next-mask [(known : I32) (node : I32)] : I32
+  (if (tech-known known node) known (+ known (tech-bit node))))
+
+;; ---- the train ---------------------------------------------------------------------------------
+;; A train needs track and a boiler. Nothing else -- freight and passenger are what it can CARRY, which
+;; is why they are separate nodes and not prerequisites of existing.
+(defn train-unlocked [(known : I32)] : Bool
+  (and (tech-known known 0) (tech-known known 1)))
+
+;; Seats and wagons: 4 by default, and the two carrying nodes add two each. A 1700s train that can move
+;; eight people is already the most important object in the world, which is the era's whole feel.
+(defn train-capacity [(known : I32)] : I32
+  (if (train-unlocked known)
+    (+ 4 (+ (* (if (tech-known known 2) 2 0) 2) (* (if (tech-known known 3) 2 0) 2)))
+    0))
+
+;; Permille of a nominal 1000. Later eras run faster (better steel, better boilers) and passenger service
+;; adds speed because it pays for it; a 1700s freight train is the slowest thing that still works.
+(defn train-speed-milli [(known : I32) (era : I32)] : I32
+  (if (train-unlocked known)
+    (+ 700 (+ (* (if (< era 0) 0 (if (> era 3) 3 era)) 100)
+              (if (tech-known known 3) 150 0)))
+    0))
+
+;; Rails are a build cost per tile and they get cheaper as the era industrialises -- the one place this
+;; tree gets easier over time rather than harder, because a railway that costs the same in 1900 as 1700
+;; would make the whole map a museum.
+(defn rails-cost-per-tile [(era : I32)] : I32
+  (if (<= era 0) 3 (if (= era 1) 2 (if (= era 2) 2 1))))
+
+;; ---- turning the century over ------------------------------------------------------------------
+;; Era 0 -> 1 is "there is a railway". 1 -> 2 is "the railway carries an economy" (freight AND passenger,
+;; both, because one alone is a hobby). 2 -> 3 needs the signal network, which is what makes a railway a
+;; system rather than a line. Nothing else advances an era: research is not a timer.
+(defn era-can-advance [(era : I32) (known : I32)] : Bool
+  (if (= era 0) (and (tech-known known 0) (tech-known known 1))
+    (if (= era 1) (and (tech-known known 2) (tech-known known 3))
+      (if (= era 2) (tech-known known 4) false))))
+
+(defn era-advance [(era : I32) (known : I32)] : I32
+  (if (era-can-advance era known) (+ era 1) era))

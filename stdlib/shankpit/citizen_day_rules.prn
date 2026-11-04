@@ -1,0 +1,119 @@
+;; stdlib/shankpit/citizen_day_rules.prn -- the citizens' own day, like the Sims, on the engine's clock.
+;;
+;; Founder, 2026-11-04: "the citizens have their own lives like the sims". SHANKPIT already has the
+;; PERSONA for that (`packages/simulation/citizen_life.h`: five traits, five MMO-player paths, homes, a
+;; place they are trying to be, rare spies). What it did not have is a DAY: nothing said that a CRAFT
+;; citizen is at the bench in the morning and at the bar in the evening, or that a DUEL citizen is on the
+;; street while an IDLE one is in the plaza.
+;;
+;; This is that clock, and only the clock -- which activity a path is doing in which phase, what it costs
+;; them in energy and hunger, what the day pays, and which KIND of place the activity happens in (the host
+;; owns the actual zone ids, the geometry and the animation). Tie it to the city engine's money flow
+;; (stdlib/trapx/city_engine_rules.prn) and a citizen walking to work is visible in a district's numbers.
+;;
+;; Enumerations (documented I32):
+;;   path     : 0 CRAFT 1 TRADE 2 DUEL 3 ENDGAME 4 IDLE      <- citizen_life.h's CILIFE_* order, kept
+;;   phase    : 0 NIGHT (00:00-05:59) 1 MORNING (06:00-11:59) 2 AFTERNOON (12:00-17:59) 3 EVENING (18:00-23:59)
+;;   activity : 0 SLEEP 1 WORK 2 TRADE_ROUTE 3 DRINK 4 PATROL 5 SOCIAL 6 TRAVEL 7 IDLE
+;;   zone kind: 0 HOME 1 WORKPLACE 2 MARKET 3 BAR 4 STREET 5 PLAZA 6 ROAD 7 ANYWHERE
+;;
+;; I32, total functions, no RNG, no allocation. The host owns minutes-of-day, needs and the zone table.
+(module shankpit/citizen-day)
+
+(export cd-day-minutes cd-phase cd-phase-count cd-activity-count
+        cd-activity cd-activity-in-public cd-activity-zone-kind
+        cd-hunger-step cd-energy-step cd-mood-step cd-wage
+        cd-should-seek-home cd-should-socialize
+        cd-path-known cd-phase-known cd-activity-known)
+
+(defn cd-day-minutes [] : I32 1440)
+(defn cd-phase-count [] : I32 4)
+(defn cd-activity-count [] : I32 8)
+
+(defn cd-path-known [(path : I32)] : Bool
+  (and (>= path 0) (< path 5)))
+
+(defn cd-phase-known [(phase : I32)] : Bool
+  (and (>= phase 0) (< phase (cd-phase-count))))
+
+(defn cd-activity-known [(activity : I32)] : Bool
+  (and (>= activity 0) (< activity (cd-activity-count))))
+
+;; Four six-hour phases. Six hours is the smallest slice that still reads as a day in a game a player
+;; dips into: whatever the player does, a citizen has moved on by the time they look again.
+(defn cd-phase [(minute : I32)] : I32
+  (let [m (if (< minute 0) 0 (if (>= minute (cd-day-minutes)) (- (cd-day-minutes) 1) minute))]
+    (if (< m 360) 0 (if (< m 720) 1 (if (< m 1080) 2 3)))))
+
+;; The path decides the day; the phase decides the hour of it. Every citizen sleeps at night -- that is
+;; what makes a night shift feel like a choice the city made rather than a state the player found.
+(defn cd-activity [(path : I32) (phase : I32)] : I32
+  (if (= phase 0)
+      0
+      (if (= path 0)
+          (if (= phase 3) 5 1)                                         ; CRAFT: bench, bench, social
+          (if (= path 1)
+              (if (= phase 3) 3 2)                                     ; TRADE: the route, then the bar
+              (if (= path 2)
+                  (if (= phase 3) 3 4)                                 ; DUEL: patrol, then drink
+                  (if (= path 3)
+                      (if (= phase 1) 6 (if (= phase 2) 1 5))          ; ENDGAME: travel, work, social
+                      (if (= path 4)
+                          (if (= phase 1) 7 5)                         ; IDLE drifts, then socialises
+                          7)))))))
+
+;; Sleeping is the only private activity. Everything else is on the street where the player and the
+;; Watchers can see it -- which is the whole reason the city can be stalked.
+(defn cd-activity-in-public [(activity : I32)] : Bool
+  (not (= activity 0)))
+
+;; Which kind of place the activity happens in. Zone ids are the host's; kinds are the shared vocabulary,
+;; so a "market" can be the same building in every district without the rules knowing its name.
+(defn cd-activity-zone-kind [(activity : I32)] : I32
+  (if (= activity 0) 0
+    (if (= activity 1) 1
+      (if (= activity 2) 2
+        (if (= activity 3) 3
+          (if (= activity 4) 4
+            (if (= activity 5) 5
+              (if (= activity 6) 6 7))))))))
+
+;; Hunger 0..1000: rises through the working day, stops while asleep, and the evening is when it is
+;; cheapest to answer -- which is why bars exist.
+(defn cd-hunger-step [(hunger : I32) (phase : I32)] : I32
+  (let [h (if (< hunger 0) 0 hunger)
+        rise (if (= phase 0) 0 (if (= phase 1) 60 (if (= phase 2) 100 80)))]
+    (let [out (+ h rise)] (if (> out 1000) 1000 out))))
+
+;; Energy 0..1000: sleep restores, work and patrol drain hard, everything else drains gently.
+(defn cd-energy-step [(energy : I32) (phase : I32) (activity : I32)] : I32
+  (let [e (if (< energy 0) 0 energy)
+        delta (if (and (= phase 0) (= activity 0))
+                250
+                (- 0 (if (or (= activity 1) (or (= activity 2) (= activity 4))) 120 60)))
+        out (+ e delta)]
+    (if (< out 0) 0 (if (> out 1000) 1000 out))))
+
+;; Mood 0..1000 follows needs: fed and rested drifts up, hungry and exhausted drifts down. A host reads
+;; this for the face, the greeting and (with the contact rules) whether a citizen will talk at all.
+(defn cd-mood-step [(mood : I32) (hunger : I32) (energy : I32)] : I32
+  (let [delta (+ (/ (- 500 (if (< hunger 0) 0 hunger)) 25)
+                 (/ (- 500 (if (< energy 0) 0 energy)) 25))
+        out (+ (if (< mood 0) 0 mood) delta)]
+    (if (< out 0) 0 (if (> out 1000) 1000 out))))
+
+;; What a working hour pays, by path: a trader earns most (that is the point of the route), an idle
+;; citizen almost nothing. Zero on any non-working activity, so the day's economy is the working day.
+(defn cd-wage [(path : I32) (activity : I32)] : I32
+  (if (or (= activity 1) (= activity 2))
+    (if (= path 0) 6 (if (= path 1) 9 (if (= path 2) 4 (if (= path 3) 7 1))))
+    0))
+
+;; Going home is a rule, not a habit: night, or too tired to be out. The host walks them there.
+(defn cd-should-seek-home [(phase : I32) (energy : I32)] : Bool
+  (or (= phase 0) (< energy 200)))
+
+;; And the other end: a low mood in daylight sends them to people. That is the door the player can knock
+;; on, and the reason a lonely district reads as lonely.
+(defn cd-should-socialize [(mood : I32) (phase : I32)] : Bool
+  (and (< mood 300) (and (>= phase 1) (<= phase 3))))

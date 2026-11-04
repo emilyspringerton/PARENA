@@ -1,0 +1,105 @@
+;; stdlib/trapx/citizen_contact_rules.prn -- Animal Crossing, but the neighbours might be setting you up.
+;;
+;; Founder, 2026-11-04: "allow for interacting with citizens like its animal crossing; trapx is like a
+;; harder animal crossing; sometimes citizens will share contact info with you and you can call them to do
+;; commerce, borrow tech, do tech repairs, recruit mercenaries for missions farming pvp contracts etc".
+;;
+;; So: TRAPX is a village sim with a police state under it. You talk to people, they warm to you, and at
+;; some point one of them gives you a number -- which is the moment the village becomes a network you can
+;; use for work. Affinity is the whole economy of that: it is earned in gifts and favours, spent on
+;; services, and it is the thing that decides whether a stranger is a contact or a threat.
+;;
+;; The doctrine this encodes, stated once: a citizen who shares a number is not a shop UI. What they will
+;; do for you depends on what they think of you, everything they do costs something, and the ones who
+;; dislike you are exactly the ones who know where you sleep.
+;;
+;; Enumerations (documented I32):
+;;   gift    : 0 NONE 1 SMALL 2 GOOD 3 TECH
+;;   service : 0 COMMERCE 1 BORROW_TECH 2 REPAIR 3 MERCENARY        -- the four the founder named
+;;
+;; I32, permille for prices, total functions, no RNG (the host rolls contact-share's dice).
+(module trapx/citizen-contact)
+
+(export cc-affinity-max cc-gift-count cc-gift-worth cc-affinity-step
+        cc-contact-chance-milli cc-contact-share
+        cc-service-count cc-service-min-affinity cc-service-can-ask
+        cc-service-price-milli cc-mercenary-strength cc-affinity-decay
+        cc-known cc-add cc-gift-known cc-service-known)
+
+(defn cc-affinity-max [] : I32 1000)
+
+(defn cc-gift-known [(gift : I32)] : Bool
+  (and (>= gift 0) (< gift (cc-gift-count))))
+
+(defn cc-service-known [(service : I32)] : Bool
+  (and (>= service 0) (< service (cc-service-count))))
+
+(defn cc-gift-count [] : I32 4)
+
+;; What a gift is worth in affinity. TECH is the expensive one on purpose: handing someone a tool you built
+;; is the strongest thing you can do for a neighbour, and it should be.
+(defn cc-gift-worth [(gift : I32)] : I32
+  (if (= gift 1) 40 (if (= gift 2) 120 (if (= gift 3) 260 0))))
+
+;; Affinity moves on gifts and, much harder, on insults: one deliberate slight costs two good gifts.
+;; Clamped at both ends; a citizen cannot owe you more than a full bar of goodwill, or less than nothing.
+(defn cc-affinity-step [(affinity : I32) (gift : I32) (insult : I32)] : I32
+  (let [a (if (< affinity 0) 0 (if (> affinity (cc-affinity-max)) (cc-affinity-max) affinity))
+        delta (- (cc-gift-worth gift) (* (if (< insult 0) 0 insult) 80))
+        out (+ a delta)]
+    (if (< out 0) 0 (if (> out (cc-affinity-max)) (cc-affinity-max) out))))
+
+;; Whether a conversation ends in a number. Affinity does most of it, the city's trust in YOU does the
+;; rest -- a citizen with a clean record gets phone numbers a marked one does not.
+(defn cc-contact-chance-milli [(affinity : I32) (trust : I32)] : I32
+  (let [t (if (< trust (- 0 100)) (- 0 100) (if (> trust 100) 100 trust))
+        v (+ (/ (if (< affinity 0) 0 affinity) 2) (/ (+ t 100) 4))]
+    (if (< v 0) 0 (if (> v 1000) 1000 v))))
+
+;; The host rolls. Contact is never guaranteed, even at full affinity -- a village where everyone is your
+;; friend is not a village.
+(defn cc-contact-share [(affinity : I32) (trust : I32) (roll-milli : I32)] : Bool
+  (< (if (< roll-milli 0) 0 (if (> roll-milli 999) 999 roll-milli))
+     (cc-contact-chance-milli affinity trust)))
+
+;; The four services, in the order the founder named them, each with the affinity floor that unlocks it.
+;; Commerce is practically free; a mercenary is somebody deciding your fight is worth dying in.
+(defn cc-service-count [] : I32 4)
+
+(defn cc-service-min-affinity [(service : I32)] : I32
+  (if (= service 0) 200 (if (= service 1) 400 (if (= service 2) 300 (if (= service 3) 600 1000)))))
+
+(defn cc-service-can-ask [(affinity : I32) (service : I32)] : Bool
+  (and (cc-service-known service) (>= affinity (cc-service-min-affinity service))))
+
+;; Base prices in permille of a nominal 1000. Affinity is a discount, floored at half price: friends are
+;; cheaper, never free -- a free favour is a debt, and debts are how TRAPX ruins people.
+(defn cc-service-price-milli [(service : I32) (affinity : I32)] : I32
+  (let [base (if (= service 0) 1000 (if (= service 1) 1500 (if (= service 2) 800 2000)))
+        a (if (< affinity 0) 0 (if (> affinity (cc-affinity-max)) (cc-affinity-max) affinity))
+        cut (/ a 5)
+        floor (/ base 2)
+        price (- base cut)]
+    (if (< price floor) floor price)))
+
+;; What a hired body is worth: a stranger's mercenary is a warm body, a friend's is somebody who will
+;; actually hold the line. Host uses this as its own strength scalar.
+(defn cc-mercenary-strength [(affinity : I32)] : I32
+  (let [a (if (< affinity 0) 0 (if (> affinity (cc-affinity-max)) (cc-affinity-max) affinity))]
+    (+ 100 (/ a 10))))
+
+;; Affinity fades one point a day. Slow enough that a contact you earned is a contact you keep, fast
+;; enough that a village left alone forgets you -- and the reason to call somebody you do not need yet.
+(defn cc-affinity-decay [(affinity : I32)] : I32
+  (if (<= affinity 1) 0 (- affinity 1)))
+
+;; ---- the address book --------------------------------------------------------------------------
+;; A bitmask, same shape as the tech tree's known-mask: survives a save, a packet and a URL. 30 contacts
+;; is more than a district has citizens in this engine's own district size.
+(defn cc-known [(book : I32) (contact-id : I32)] : Bool
+  (and (>= contact-id 0) (and (< contact-id 30) (= (mod (/ book (shl 1 (if (< contact-id 0) 0 contact-id))) 2) 1))))
+
+(defn cc-add [(book : I32) (contact-id : I32)] : I32
+  (if (or (< contact-id 0) (>= contact-id 30) (cc-known book contact-id))
+    book
+    (+ book (shl 1 contact-id))))

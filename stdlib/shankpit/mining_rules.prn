@@ -1,0 +1,115 @@
+;; stdlib/shankpit/mining_rules.prn -- traditional mining: a pickaxe, a vein, and a cart.
+;;
+;; Founder, 2026-11-04: "add resource collection via traditional mining affordances". Traditional is the
+;; operative word: you swing at a rock face, the face gets smaller, you carry what came off it, and coal is
+;; fuel rather than a bar. No drone-mining, no idle timer, no recipe book -- the 1700s tech era
+;; (stdlib/shankpit/era_tech_rules.prn) is paid for in ore you personally took out of a hill.
+;;
+;; What this module decides, and what it deliberately does not:
+;;   * it DOES decide yield per strike, stamina, tool wear, vein depletion, what a tile holds and what
+;;     smelting returns -- the numbers two hosts would otherwise answer differently;
+;;   * it does NOT decide where the vein is, what it looks like, or when a strike connects. Geometry,
+;;     animation and collision are the host's, the same boundary every mod in this directory keeps.
+;;
+;; Enumerations (documented I32, every host mirrors them):
+;;   ore   : 0 COAL  1 IRON  2 COPPER  3 GOLD  4 GEM
+;;   pick  : 0 STONE 1 COPPER 2 IRON 3 STEEL
+;;
+;; I32, permille where a rate is needed, total functions, no RNG: the caller hands in a roll when it
+;; wants variety (see ore-from-variant), so a replay and a second world agree.
+(module shankpit/mining)
+
+(export ore-kinds pick-tiers pick-strike-ms pick-yield-milli
+        ore-base-yield strike-yield vein-deplete vein-empty vein-ratio-milli
+        stamina-cost-milli can-strike ore-from-variant xp-per-ore
+        tool-integrity-step smelt-bars smelt-fuel-needed carry-capacity
+        pick-known ore-known)
+
+(defn pick-known [(tier : I32)] : Bool
+  (and (>= tier 0) (< tier (pick-tiers))))
+
+(defn ore-known [(ore : I32)] : Bool
+  (and (>= ore 0) (< ore (ore-kinds))))
+
+(defn ore-kinds [] : I32 5)
+(defn pick-tiers [] : I32 4)
+
+;; Milliseconds per swing. A stone pick is a slow, tiring conversation with a rock face; steel is the
+;; 1700s-to-1900s difference in one number.
+(defn pick-strike-ms [(tier : I32)] : I32
+  (if (= tier 0) 1200 (if (= tier 1) 900 (if (= tier 2) 650 (if (= tier 3) 450 1200)))))
+
+;; Yield multiplier, permille. Better tools do not make ore appear -- they waste less of the swing.
+(defn pick-yield-milli [(tier : I32)] : I32
+  (if (= tier 0) 1000 (if (= tier 1) 1400 (if (= tier 2) 1900 (if (= tier 3) 2600 1000)))))
+
+;; What a vein gives up per connected swing before the tool multiplier: coal is everywhere and comes off
+;; in slabs, gold and gems are one careful piece at a time.
+(defn ore-base-yield [(ore : I32)] : I32
+  (if (= ore 0) 4 (if (= ore 1) 3 (if (= ore 2) 3 (if (= ore 3) 1 (if (= ore 4) 1 0))))))
+
+;; A swing that lands on a real vein always takes at least one unit -- a steel pick on gold should not
+;; round down to nothing, which is the whole reason this is not a bare multiply.
+(defn strike-yield [(ore : I32) (tier : I32)] : I32
+  (let [base (ore-base-yield ore)
+        got (/ (* base (pick-yield-milli tier)) 1000)]
+    (if (<= base 0) 0 (if (< got 1) 1 got))))
+
+(defn vein-deplete [(amount : I32) (taken : I32)] : I32
+  (let [left (- (if (< amount 0) 0 amount) (if (< taken 0) 0 taken))]
+    (if (< left 0) 0 left)))
+
+(defn vein-empty [(amount : I32)] : Bool
+  (<= amount 0))
+
+;; How much of the seam has been taken, 0..1000 -- what a host draws as the face getting smaller.
+;;
+;; The divisor is guarded AT THE DIVISION, not by the surrounding `if`: PARENA's wasm emitter evaluates both
+;; arms of an `if` (found live 2026-11-04 -- `(if (<= b 0) 0 (/ a b))` compiles and runs in C, and traps
+;; with "divide by zero" in wasm), so a branch-only guard is a latent wasm crash. C keeps its own answer
+;; either way, which is why the parity test has to run BOTH targets.
+(defn vein-ratio-milli [(amount : I32) (capacity : I32)] : I32
+  (let [cap (if (<= capacity 0) 1 capacity)
+        a (if (< amount 0) 0 amount)]
+    (if (<= a 0) 0 (if (>= a cap) 1000 (/ (* a 1000) cap)))))
+
+;; Stamina, permille of a full bar. Heavier tools cost more per swing, so the fast pick is fast because it
+;; is exhausting -- the tradeoff that makes a tool tier a decision instead of an upgrade.
+(defn stamina-cost-milli [(tier : I32)] : I32
+  (if (= tier 0) 1000 (if (= tier 1) 1300 (if (= tier 2) 1700 (if (= tier 3) 2200 1000)))))
+
+;; The host's own gate, in one place: enough left in the bar, and the last swing's animation is done.
+(defn can-strike [(stamina-milli : I32) (cooldown-ms : I32) (tier : I32)] : I32
+  (if (and (>= stamina-milli (stamina-cost-milli tier)) (<= cooldown-ms 0)) 1 0))
+
+;; What a tile holds, from a variant integer the generator derives from its own seed. Weighted the way a
+;; 1700s hillside actually was: mostly coal, some iron and copper, rare gold, rarer gems. Deterministic on
+;; the variant alone, which is what lets two clients agree without exchanging anything.
+(defn ore-from-variant [(variant : I32)] : I32
+  (let [v (mod (if (< variant 0) (- 0 variant) variant) 8)]
+    (if (<= v 2) 0 (if (<= v 4) 1 (if (= v 5) 2 (if (= v 6) 3 4))))))
+
+;; Prospecting XP: coal teaches almost nothing, a gem is a story.
+(defn xp-per-ore [(ore : I32)] : I32
+  (if (= ore 0) 1 (if (= ore 1) 2 (if (= ore 2) 2 (if (= ore 3) 6 (if (= ore 4) 10 0))))))
+
+;; Tool wear, 0..1000: better tools are also harder and last longer per point, so a steel pick's cost is
+;; paid up front and in stamina rather than in constant repair.
+(defn tool-integrity-step [(integrity : I32) (strikes : I32) (tier : I32)] : I32
+  (let [wear (* (if (< strikes 0) 0 strikes) (+ 1 (if (< tier 0) 0 tier)))
+        left (- (if (< integrity 0) 0 integrity) wear)]
+    (if (< left 0) 0 (if (> left 1000) 1000 left))))
+
+;; Coal is fuel, gems are cut -- neither becomes a bar. Everything else smelts one for one, because a
+;; 1700s bloomery is not a yield puzzle.
+(defn smelt-bars [(ore : I32) (amount : I32)] : I32
+  (if (or (= ore 0) (= ore 4)) 0 (if (< amount 0) 0 amount)))
+
+;; One coal per bar. There is no recipe: the fuel cost IS the bar count, so a player learns it by running
+;; out of coal rather than by reading a table.
+(defn smelt-fuel-needed [(bars : I32)] : I32
+  (if (< bars 0) 0 bars))
+
+;; A cart, in the most literal sense: tool tier buys you capacity, and nothing else does.
+(defn carry-capacity [(tier : I32)] : I32
+  (+ 20 (* 10 (if (< tier 0) 0 (if (> tier 3) 3 tier)))))
