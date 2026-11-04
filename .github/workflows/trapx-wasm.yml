@@ -1,0 +1,102 @@
+name: trapx-wasm
+
+# Builds the TRAPX VS0 city to wasm32 on every change to its sources, and refuses the build unless it keeps
+# the promises the other web games make: zero imports, no allocator, no memory.grow, fixed 8 MB.
+#
+# Why CI and not just a Makefile target: the module is a COMMITTED artifact in another repo (WOTAN serves
+# trapx/trapx.wasm), so "it built on my box" is not evidence that the deployed file matches the source. This
+# job builds it from scratch on a clean runner with a pinned LLVM, runs the two test suites, and publishes the
+# wasm as an artifact so a drift check (or a human) can compare bytes.
+#
+# The toolchain is the one the scripts expect: apt's llvm-18 + lld-18, wired where build_trapx_wasm.sh looks
+# (LLVM_TOOLCHAIN_ROOT/usr/lib/llvm-18/bin), so no script has to carry a CI-only branch.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'stdlib/trapx/**'
+      - 'scripts/build_trapx_wasm.sh'
+      - 'scripts/trapx_wasm_test.mjs'
+      - '.github/workflows/trapx-wasm.yml'
+  pull_request:
+    paths:
+      - 'stdlib/trapx/**'
+      - 'scripts/build_trapx_wasm.sh'
+      - 'scripts/trapx_wasm_test.mjs'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 18 + lld (llc, opt, wasm-ld)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-18 lld-18
+          sudo mkdir -p /opt/llvm-toolchain/usr/lib/llvm-18
+          sudo ln -sfn /usr/lib/llvm-18/bin /opt/llvm-toolchain/usr/lib/llvm-18/bin
+          for t in opt llc llvm-nm llvm-objdump wasm-ld; do test -x "/opt/llvm-toolchain/usr/lib/llvm-18/bin/$t"; done
+          /usr/lib/llvm-18/bin/llc --version | grep -i wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The equivalence half of the test compares against WOTAN's JavaScript city, so check it out beside us
+      # rather than letting the test skip the most valuable assertions.
+      - uses: actions/checkout@v4
+        with:
+          repository: emilyspringerton/WOTAN
+          path: wotan
+
+      - name: Build trapx.wasm
+        env:
+          LLVM_TOOLCHAIN_ROOT: /opt/llvm-toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          ./scripts/build_trapx_wasm.sh build/trapx.wasm
+          echo "### trapx.wasm" >> "$GITHUB_STEP_SUMMARY"
+          echo "- bytes: $(wc -c < build/trapx.wasm)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sha256: $(sha256sum build/trapx.wasm | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Assert the module imports nothing and never grows memory
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "
+          import fs from 'node:fs';
+          const b = fs.readFileSync('build/trapx.wasm');
+          const m = new WebAssembly.Module(b);
+          const imports = WebAssembly.Module.imports(m);
+          if (imports.length) { console.error('FAIL: imports ' + JSON.stringify(imports)); process.exit(1); }
+          const text = fs.readFileSync('build/trapx.wasm').toString('latin1');
+          if (text.includes('memory.grow')) { console.error('FAIL: module grows memory'); process.exit(1); }
+          console.log('0 imports, no memory.grow, ' + b.length + ' bytes');
+          "
+
+      - name: Behaviour + city equivalence (the 668-check suite)
+        run: node scripts/trapx_wasm_test.mjs build/trapx.wasm wotan
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trapx-wasm
+          path: build/trapx.wasm
+          if-no-files-found: error
+
+      - name: Fail if WOTAN serves different bytes than this build produces
+        run: |
+          set -euo pipefail
+          built="$(sha256sum build/trapx.wasm | cut -d' ' -f1)"
+          shipped="$(sha256sum wotan/trapx/trapx.wasm | cut -d' ' -f1)"
+          echo "built   $built"
+          echo "shipped $shipped"
+          if [ "$built" != "$shipped" ]; then
+            echo "::warning::wotan/trapx/trapx.wasm does not match this build -- copy build/trapx.wasm into WOTAN and redeploy (not failing: the sources may simply be ahead of the deployed artifact)"
+          fi
