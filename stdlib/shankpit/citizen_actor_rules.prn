@@ -1,0 +1,188 @@
+;; stdlib/shankpit/citizen_actor_rules.prn -- what a citizen in MODE_ZOMBIES does with its body.
+;;
+;; Founder real-time: "lets make the citizens in zombie mode more dynamic have them be able to jump
+;; ... merge player physics with citizen physics ... allow them to jump crouch slide and slide jump
+;; also wield weapons ... wire up heuristics mixed with a parena hand written llm".
+;;
+;; The split this file draws, and why:
+;;   * PHYSICS is not re-invented here. A citizen is a real PlayerState and already runs the
+;;     player's own update_entity / accelerate / apply_friction / crouch-slide / wall-ride path
+;;     (local_game.h). "Merging" the two means a citizen now writes the SAME input fields a human
+;;     writes -- in_jump, crouching, in_shoot, current_weapon -- instead of only in_fwd and yaw. So
+;;     the numbers below are the inputs the shared physics consumes, in the shared units (vy in
+;;     milli of a unit/tick, speeds in milli), never a second movement system.
+;;   * DECIDING is what this file owns, and it is deliberately two opinions blended:
+;;       1. HAND-WRITTEN HEURISTICS (citizen-heuristic-score): one explainable scorer per action,
+;;          the kind of if-ladder a designer can read and retune.
+;;       2. A HAND-WRITTEN POLICY (citizen-policy-aggression): a fixed-point perceptron -- six
+;;          features, six hand-picked weights, no training, no clock, no state. It is a policy
+;;          NETWORK the way a shader is a program: small, inspectable, and wrong in ways you can
+;;          point at. This is NOT a language model and this file does not pretend otherwise: a real
+;;          LLM needs weights that are trained and megabytes of file, neither of which belongs in a
+;;          pure-total-I32 decision library. What the founder asked for that IS honest to build here
+;;          is "heuristics mixed with a learned-shaped scorer", and that is exactly this pair.
+;;       citizen-blended-score mixes them per action: heuristics decide, the policy leans
+;;       (+/- bias scaled by how aggressive it feels right now), and citizen-pick is the argmax.
+;;
+;; Everything is I32, total (no division by a zero a caller can pass), no RNG, no clock, no state:
+;; the host owns the tick, the cooldowns and the bodies. Retune here and
+;; `make regen-citizen-actor-rules`.
+(module shankpit/citizen-actor-rules)
+(export citizen-jump-vy-milli citizen-jump-cooldown-ms citizen-crouch-speed-milli
+        citizen-slide-speed-milli citizen-slide-min-ms citizen-slide-max-ms
+        citizen-slide-jump-boost-milli citizen-slide-jump-window-ms
+        citizen-wield-range-milli citizen-fire-range-milli citizen-fire-cooldown-ms
+        citizen-heuristic-score citizen-policy-aggression citizen-blended-score citizen-pick)
+
+;; ---- action ids (the C side's CitizenActor enum, one contract) -------------------------------
+;; 0 idle  1 walk  2 run  3 jump  4 crouch  5 slide  6 slide-jump  7 shoot  8 reload
+
+(defn citizen-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+;; ---- physics inputs, in the engine's own units -----------------------------------------------
+;; JUMP_FORCE is 0.95 units/tick in physics.h; stated here in milli so the shared jump path gets a
+;; number a mod can own without touching the player's own jump. 950 milli = today's human jump: a
+;; citizen that jumps today jumps exactly as high as a person, which is what "merged physics" means.
+(defn citizen-jump-vy-milli [] : I32 950)
+
+;; Long enough that a cornered citizen cannot pogo out of trouble, short enough that a chase over a
+;; fence looks alive. The human jump has no cooldown; an actor needs one or it hops every tick.
+(defn citizen-jump-cooldown-ms [] : I32 900)
+
+;; CROUCH_SPEED (physics.h) is 0.35 -- the human crouch-walk cap. Same number, same feel.
+(defn citizen-crouch-speed-milli [] : I32 350)
+
+;; The speed at which the engine's own crouch-slide drag (SLIDE_FRICTION) takes over: physics.h
+;; switches at 0.75 units/tick. Below this a crouch is just a crouch, so a slide is never asked for.
+(defn citizen-slide-speed-milli [] : I32 750)
+
+(defn citizen-slide-min-ms [] : I32 350)
+(defn citizen-slide-max-ms [] : I32 1400)
+
+;; A slide jump is the founder's own move: leave a slide with the slide's momentum plus a kick.
+;; 200 milli on top of the shared 950 is a visible hop, not flight.
+(defn citizen-slide-jump-boost-milli [] : I32 200)
+(defn citizen-slide-jump-window-ms [] : I32 250)
+
+;; A citizen notices a weapon-worthy problem before it is on top of it, and shoots from further
+;; than it draws. 14 m is inside the eye-line of the maps' streets.
+(defn citizen-wield-range-milli [] : I32 12000)
+(defn citizen-fire-range-milli [] : I32 14000)
+(defn citizen-fire-cooldown-ms [] : I32 260)
+
+;; ---- opinion 1: hand-written heuristics ------------------------------------------------------
+;; Every scorer answers "how much does this action want to happen, 0..2000". `ready` is the host's
+;; own jump/cooldown gate (1 = the body could jump right now), because "jump" is a legal *choice*
+;; only when the body is able; the host still enforces it.
+
+(defn citizen-idle-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (= threat 0) 420 0))
+
+(defn citizen-walk-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (= threat 0) 900 (if (> dist 12000) 500 200)))
+
+(defn citizen-run-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (= threat 0) 260 (+ 380 (/ (citizen-clamp 0 20000 dist) 40))))
+
+(defn citizen-jump-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (= ready 0)
+    0
+    (if (and (= threat 1) (< dist 7000))
+      (+ 600 (if (< health 400) 260 0))
+      (if (= threat 0) 60 120))))
+
+(defn citizen-crouch-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 0) (< speed 200)) 240 0))
+
+(defn citizen-slide-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (>= speed (citizen-slide-speed-milli)))
+    (if (< dist 6000) 900 660)
+    0))
+
+(defn citizen-slide-jump-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= ready 1) (and (= threat 1) (and (>= speed (citizen-slide-speed-milli)) (< dist 5000))))
+    980
+    0))
+
+;; Deliberately silent inside 2.5 m: a citizen that close is better off moving than aiming, and
+;; without this floor the score ladder made shooting beat sliding at every range, which left the
+;; founder's "slide at a zombie" unreachable no matter how fast the body was going.
+(defn citizen-shoot-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (and (>= dist 2500) (< dist (citizen-fire-range-milli))))
+    (+ 500 (/ (* (- (citizen-fire-range-milli) dist) 400) (citizen-fire-range-milli)))
+    0))
+
+(defn citizen-reload-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (< health 500) (> dist 6000)) 300 0))
+
+(defn citizen-heuristic-score
+  [(action : I32) (dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (= action 0) (citizen-idle-score dist threat health speed ready)
+   (if (= action 1) (citizen-walk-score dist threat health speed ready)
+    (if (= action 2) (citizen-run-score dist threat health speed ready)
+     (if (= action 3) (citizen-jump-score dist threat health speed ready)
+      (if (= action 4) (citizen-crouch-score dist threat health speed ready)
+       (if (= action 5) (citizen-slide-score dist threat health speed ready)
+        (if (= action 6) (citizen-slide-jump-score dist threat health speed ready)
+         (if (= action 7) (citizen-shoot-score dist threat health speed ready)
+          (if (= action 8) (citizen-reload-score dist threat health speed ready)
+           0))))))))))
+
+;; ---- opinion 2: the hand-written policy ------------------------------------------------------
+;; A six-input, one-output perceptron. Inputs are 0..1000 and the weights sum to 1000, so the output
+;; is 0..1000 with no rescaling: 500 is "no strong feeling", 1000 is "deal with this NOW".
+;;   proximity 320  -- how close the threat is (the dominant term, as it is in a real fight)
+;;   hurt      260  -- low health makes a body decisive rather than careful
+;;   threat    180  -- a hunting zombie is worth acting on at all
+;;   ready     140  -- a body that cannot jump right now should not be scored as if it could
+;;   speed      60  -- already moving is a small push toward committing
+;;   ground     40  -- feet under you is a small push toward committing
+;; These six weights are HAND WRITTEN, picked to be explainable, and not trained on anything. A
+;; different set is a different citizen personality; the file is the tuning surface on purpose.
+(defn citizen-policy-aggression
+  [(proximity : I32) (hurt : I32) (threat : I32) (ready : I32) (speed : I32) (ground : I32)] : I32
+  (citizen-clamp 0 1000
+    (/ (+ (* (citizen-clamp 0 1000 proximity) 320)
+          (* (citizen-clamp 0 1000 hurt) 260)
+          (* (if (= threat 0) 0 1000) 180)
+          (* (if (= ready 0) 0 1000) 140)
+          (* (citizen-clamp 0 1000 speed) 60)
+          (* (if (= ground 0) 0 1000) 40))
+       1000)))
+
+;; ---- mixing them -----------------------------------------------------------------------------
+;; What each action gains or loses when the policy feels aggressive (aggression 500 = no change).
+;; The policy never overrides the heuristics -- at full aggression a slide jumps +220 on a 2000
+;; scale, which decides a close call and cannot beat a 720-vs-0 certainty. That ceiling is the point:
+;; a hand-written net this small is a tie-breaker, not the driver.
+(defn citizen-bias [(action : I32)] : I32
+  (if (= action 0) -200
+   (if (= action 1) -120
+    (if (= action 2) 80
+     (if (= action 3) 200
+      (if (= action 4) 60
+       (if (= action 5) 180
+        (if (= action 6) 220
+         (if (= action 7) 160
+          (if (= action 8) 60 0))))))))))
+
+(defn citizen-blended-score
+  [(action : I32) (dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)
+   (aggression : I32)] : I32
+  (citizen-clamp 0 2000
+    (+ (citizen-heuristic-score action dist threat health speed ready)
+       (/ (* (- aggression 500) (citizen-bias action)) 1000))))
+
+;; The argmax. Ties go to the earlier action in the id order except that idle (0) is seeded with a
+;; score of 0 and every action is compared with `>`, so a dead-flat field of zeroes still answers
+;; "idle" -- a citizen with nothing to do stands still rather than twitching.
+(defn citizen-pick
+  [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32) (aggression : I32)] : I32
+  (loop [action 0 best -1 best-action 0]
+    (if (>= action 9)
+      best-action
+      (let [score (citizen-blended-score action dist threat health speed ready aggression)]
+        (if (> score best)
+          (recur (+ action 1) score action)
+          (recur (+ action 1) best best-action))))))
