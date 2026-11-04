@@ -423,15 +423,28 @@ static int is_arith_or_cmp_head(const char *h) {
            strcmp(h, "or") == 0 || strcmp(h, "if") == 0;
 }
 
-/* Pure = no calls, stores, or binding forms anywhere inside, so evaluating it unconditionally (as
-   `select` does) is unobservable. Anything else gets a real branch. */
-static int expr_is_pure(Node *n) {
+/* Division and remainder are the only arithmetic that can TRAP: a zero divisor, and (for sdiv/srem)
+   INT_MIN / -1. They have no effects, so they counted as "pure" and a `select` over them evaluated
+   both arms -- `(if (<= b 0) 0 (/ a b))` compiled correctly under src/emit.c and trapped under this
+   emitter with `RuntimeError: divide by zero` (real, found live 2026-11-04 building the
+   GFD-frontend VS0 rules to wasm). Purity was the wrong question: the right one is whether the
+   expression is safe to evaluate even when its value is discarded, i.e. speculable. Float division
+   does not trap, but the operand types are only known after emission, so both are treated alike. */
+static int head_may_trap(const char *h) {
+    return strcmp(h, "/") == 0 || strcmp(h, "mod") == 0;
+}
+
+/* Speculable = no calls, stores, or binding forms anywhere inside AND nothing inside can trap, so
+   evaluating it unconditionally (as `select` does) is unobservable. Anything else gets a real
+   branch, which is what `if` actually promises: only one arm runs. */
+static int expr_is_speculable(Node *n) {
     if (!n) return 1;
     if (n->type == NODE_NUMBER || n->type == NODE_STRING) return 1;
     if (n->type == NODE_SYMBOL) return 1;
     if (n->type != NODE_LIST || n->child_count == 0 || n->children[0]->type != NODE_SYMBOL) return 0;
     if (!is_arith_or_cmp_head(n->children[0]->text)) return 0;
-    for (size_t i = 1; i < n->child_count; i++) if (!expr_is_pure(n->children[i])) return 0;
+    if (head_may_trap(n->children[0]->text)) return 0;
+    for (size_t i = 1; i < n->child_count; i++) if (!expr_is_speculable(n->children[i])) return 0;
     return 1;
 }
 
@@ -1075,10 +1088,12 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
         if (handled) return nv;
     }
 
-    /* if -- a pure `if` lowers to a `select` (see emit_llvm.h); an `if` whose branches have
-       effects (calls, stores, set!, loops) lowers to real basic blocks so only one side runs. */
+    /* if -- a speculable `if` lowers to a `select` (see emit_llvm.h); an `if` whose branches have
+       effects (calls, stores, set!, loops) OR can trap (division, `mod`) lowers to real basic blocks
+       so only one side runs. */
     if (strcmp(head, "if") == 0 && (expr->child_count == 3 ||
-        (expr->child_count == 4 && !(expr_is_pure(expr->children[2]) && expr_is_pure(expr->children[3]))))) {
+        (expr->child_count == 4 && !(expr_is_speculable(expr->children[2]) &&
+                                     expr_is_speculable(expr->children[3]))))) {
         return emit_if_branch(arena, fn, expr, expected_type, mod, out_error);
     }
     if (strcmp(head, "if") == 0) {
@@ -1212,9 +1227,13 @@ static LlvmVal emit_llvm_expr(Arena *arena, LlvmFn *fn, Node *expr, const char *
         return v;
     }
 
-    /* `and`/`or` -- real, honestly non-short-circuiting Bool operators. See emit_llvm.h's own
-       header comment for the full real rationale on why this is a safe, observably-equivalent
-       simplification for this v0's own pure, side-effect-free scalar scope. */
+    /* `and`/`or` -- real, honestly non-short-circuiting Bool operators, emitted as a plain `and`/
+       `or` over two already-evaluated operands (see emit_llvm.h's own header comment). One honest
+       correction to that rationale (2026-11-04): "no side effects" does not mean "cannot trap", so
+       a dividing `and`/`or` operand is evaluated even when the other operand settled the answer --
+       `(and (> b 0) (> (/ a b) 2))` traps at b = 0 here, where a short-circuiting language would not
+       reach the division at all. `if` no longer has this problem (head_may_trap above); making
+       and/or short-circuit is a real, separate item -- named, not silently left. */
     if (strcmp(head, "and") == 0 || strcmp(head, "or") == 0) {
         if (expr->child_count != 3) {
             *out_error = "emit_llvm: and/or requires exactly 2 operands (v0 has no variadic and/or)";

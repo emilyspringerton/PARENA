@@ -101,6 +101,52 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- a trapping arm forces a real branch: `select` would evaluate both sides --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn safe-div [(a : I32) (b : I32)] : I32\n"
+            "  (if (<= b 0) 0 (/ a b)))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "if whose else-arm divides emits successfully");
+        if (ir) {
+            /* Found live 2026-11-04 building the GFD-frontend VS0 rules to wasm: the arms were
+               "pure" (no calls, no stores), so both were evaluated under a `select`, and the guard
+               `(<= b 0)` did nothing -- b = 0 trapped with divide by zero on the arm that was
+               supposed to be skipped. C (src/emit.c) ran the same source correctly, which is what
+               made it a parity bug rather than a source bug. */
+            CHECK(strstr(ir, "sdiv i32") != NULL, "division still lowers to a real sdiv");
+            CHECK(strstr(ir, "select i1") == NULL,
+                  "a dividing arm is NOT lowered to select (both arms would run, and one traps)");
+            CHECK(strstr(ir, "br i1") != NULL,
+                  "a dividing arm lowers to real basic blocks, so only the taken arm runs");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
+    /* --- the same shape without a trap still selects: the fix must not cost every `if` a branch --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *src =
+            "(defn pick [(a : I32) (b : I32)] : I32\n"
+            "  (if (<= b 0) (- a b) (+ a b)))";
+        const char *err = NULL;
+        const char *ir = build_llvm(&arena, src, &err);
+        CHECK(ir != NULL, "if over non-trapping arithmetic emits successfully");
+        if (ir) {
+            CHECK(strstr(ir, "select i1") != NULL,
+                  "non-trapping if still lowers to select (no basic-block splitting regression)");
+        } else {
+            printf("  error: %s\n", err);
+        }
+        arena_free_all(&arena);
+    }
+
     /* --- F64 arithmetic: proves the real add/fadd opcode split LLVM (unlike C/TS/Java) needs --- */
     {
         Arena arena;

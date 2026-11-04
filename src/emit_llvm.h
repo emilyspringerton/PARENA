@@ -36,17 +36,19 @@
  * against each other where they meet (e.g. both `if` branches, both binop operands) — a genuine,
  * real type-mismatch is a real, honest compile error, never silently-wrong emitted IR.
  *
- * `if` lowers to a real `select` instruction, not a branch/phi pair — both branches in this v0's
- * own narrow, side-effect-free scope are pure scalar computations, so `select` is the exact
- * correct, simpler real choice (matches `emit_java.c`'s own ternary-based `if` lowering in
- * spirit, just LLVM's own SSA-native equivalent), avoiding basic-block splitting entirely.
+ * `if` lowers to a real `select` instruction when both arms are SPECULABLE, and to real basic
+ * blocks when they are not. "Speculable" used to be spelled "pure", which was wrong: a division
+ * has no effects but can trap, so `(if (<= b 0) 0 (/ a b))` used to be lowered to a `select` that
+ * evaluated both arms — correct under `src/emit.c`, `RuntimeError: divide by zero` under this
+ * emitter on wasm32 (found live 2026-11-04, fixed: `head_may_trap`). Effects and trapping are two
+ * separate questions, and `if` promises only one arm runs.
  *
  * Real, honest, named semantic gap: `and`/`or` lower to LLVM's own plain `and`/`or` instructions
  * (bitwise on `i1`), which are NOT short-circuiting — every other backend's own `&&`/`||` (C/TS/
- * Java) IS short-circuiting. For this v0's own pure, side-effect-free scalar scope this is
- * observably identical (no side effect could ever be skipped), but it's a real, structural
- * difference named here rather than silently assumed equivalent — a future stateful/effectful
- * PARENA feature would need real short-circuit branches here, not attempted in this v0.
+ * Java) IS short-circuiting. For a side-effect-free scalar operand this is observably identical,
+ * but trapping operands are the counter-example (see src/emit_llvm.c's own comment at the and/or
+ * case): `(and (> b 0) (> (/ a b) 2))` traps here at b = 0 and would not in a short-circuiting
+ * backend. Named, not silently assumed equivalent; real short-circuit branches are a separate item.
  *
  * A call to another top-level defn's own `LlvmFnSig` (2026-09-10, real follow-up) now records
  * every declared parameter's own type, not just the return type — a real call site independently
