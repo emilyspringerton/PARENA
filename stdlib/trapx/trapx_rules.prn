@@ -1,0 +1,158 @@
+;; stdlib/trapx/trapx_rules.prn -- TRAPX VS0 (Detroit), the decisions both worlds must agree on.
+;;
+;; TRAPX is a GTA-shaped urban sandbox on the SHANKPIT lineage: a city that watches, remembers and reacts, with
+;; Field Offices, Flow, Pressure, Attention, receipts, and BIG_O's witness loop running underneath. Two hosts run
+;; these numbers -- SHANKPIT's C (packages/simulation/trapx_rules.c, via scripts/gen_trapx_rules.sh) and the WOTAN
+;; sandbox page (WOTAN/trapx/trapx-rules.js, via PARENA's TypeScript emitter, via WOTAN/scripts/build-trapx.sh).
+;; Neither may state a threshold of its own.
+;;
+;; Scalar-only on purpose (I32/Bool, if/arithmetic/comparison/let, calls between defns): the subset every emitter
+;; here accepts, and the same discipline stdlib/big_o/witness_rules.prn and stdlib/deadweight/card_rules.prn use.
+;; No RNG: the host pre-rolls and passes integers in, so a replay and a second world agree.
+;;
+;; VS0 scope is the two Detroit scenes, and only those: 200 Detroit Apartment (residential, Jiangshi Watcher
+;; density, 2 Field Offices) and 201 Detroit School (custody zone, Emily OS ambient, 1 Field Office). A scene that
+;; is not one of the two is NOT a silent zero -- trapx-scene-known says so, and every other answer degenerates to
+;; the empty value on purpose so a host cannot accidentally play a district that does not exist yet.
+;;
+;; Enumerations (documented I32, the host mirrors them):
+;;   district  : 0 RESIDENTIAL 1 CUSTODY 2 UNKNOWN
+;;   action    : 0 NONE 1 CLAIM 2 CONTEST 3 DEPLOY_K9 4 RECEIPT
+;;   receipt   : 0 CLAIM 1 FLOW 2 CONTEST 3 K9 4 WITNESS
+;;
+;; The BIG_O division of labour, stated once: witness STATES (UNAWARE/DENIAL/...) are big_o/witness_rules.prn's and
+;; stay there. What is here is the CITY's own reaction to a killing in public -- heat and trust -- because the city
+;; and the witnesses are two different observers and were always going to disagree.
+(module trapx/rules)
+(export trapx-scene-known trapx-scene-fos trapx-scene-watcher-density trapx-scene-district
+        trapx-portal-target trapx-clamp
+        trapx-alertness-step trapx-trust-step trapx-enforcement-level trapx-media-press trapx-heat-step
+        trapx-claim-cost trapx-flow-per-tick trapx-pressure-per-tick trapx-attention-step trapx-k9-worth
+        trapx-contest-window-ms trapx-integrity-decay trapx-rogue-swarm
+        trapx-receipt-known trapx-receipt-digest
+        trapx-public-kill-heat trapx-public-kill-trust)
+
+;; ---- the two scenes that exist -------------------------------------------------------------
+(defn trapx-scene-known [(scene : I32)] : Bool
+  (or (= scene 200) (= scene 201)))
+
+;; Field Offices: the Apartment holds two, the School one. That count is the whole VS0 content budget, so it is a
+;; rule rather than each host's map data.
+(defn trapx-scene-fos [(scene : I32)] : I32
+  (if (= scene 200) 2 (if (= scene 201) 1 0)))
+
+;; Watcher DENSITY per scene, permille: the Apartment is Jiangshi territory and notices fast, the School is a
+;; custody zone where the city is quieter and slower to care.
+(defn trapx-scene-watcher-density [(scene : I32)] : I32
+  (if (= scene 200) 900 (if (= scene 201) 400 0)))
+
+(defn trapx-scene-district [(scene : I32)] : I32
+  (if (= scene 200) 0 (if (= scene 201) 1 2)))
+
+;; The portal graph. -1 is "nowhere", a reading rather than an invented neighbour.
+(defn trapx-portal-target [(scene : I32)] : I32
+  (if (= scene 200) 201 (if (= scene 201) 200 (- 0 1))))
+
+(defn trapx-clamp [(v : I32) (lo : I32) (hi : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; ---- Watchers ------------------------------------------------------------------------------
+;; Alertness 0..100. A tick gains density/100 (Apartment 9, School 4) plus heat/50, minus 6 per quiet tick, and
+;; never moves more than 12 in one tick -- a meter that can slam from calm to alarm in a frame is not a Watcher,
+;; it is a jump scare. Quiet is the host's own decision (lay low, stay out of the street) and is passed in.
+(defn trapx-alertness-step [(alertness : I32) (density : I32) (heat : I32) (quiet : I32)] : I32
+  (let [gain (trapx-clamp (- (+ (/ density 100) (/ heat 50)) (* quiet 6)) 0 12)]
+    (trapx-clamp (+ alertness gain) 0 100)))
+
+;; Trust -100..100 is about HOW you acted: receipts kept clean buy a little, receipts the city can call dirty cost
+;; a lot more. -7 per dirty receipt versus +3 per clean one is the whole asymmetry -- being caught is worse than
+;; being honest is good.
+(defn trapx-trust-step [(trust : I32) (clean : I32) (dirty : I32)] : I32
+  (trapx-clamp (+ trust (- (* clean 3) (* dirty 7))) (- 0 100) 100))
+
+;; Enforcement 0..4 (TRAPX northstar: "activates at Alertness >= 65, Trust <= -20, Heat >= 50"). Level 1 is any one
+;; of those; 2..4 need BOTH a hot alertness and a hot street, so a patient player cannot be escalated by one dial.
+(defn trapx-enforcement-level [(alertness : I32) (trust : I32) (heat : I32)] : I32
+  (if (and (>= alertness 96) (and (>= heat 90) (<= trust (- 0 60)))) 4
+    (if (and (>= alertness 88) (>= heat 75)) 3
+      (if (and (>= alertness 75) (>= heat 60)) 2
+        (if (or (>= alertness 65) (or (<= trust (- 0 20)) (>= heat 50))) 1 0)))))
+
+;; The Media layer starts talking once enforcement is really on the street, or the city is already watching hard.
+(defn trapx-media-press [(enforcement : I32) (alertness : I32)] : Bool
+  (if (or (>= enforcement 2) (>= alertness 75)) true false))
+
+;; Heat 0..100. Each action costs a little, and an already-escalated street makes every one of them cost more --
+;; which is the feedback loop that makes Enforcement level 3 feel different from level 0.
+(defn trapx-heat-step [(heat : I32) (action : I32) (enforcement : I32)] : I32
+  (let [base (if (= action 1) 2
+               (if (= action 2) 5
+                 (if (= action 3) 9
+                   (if (= action 4) 0 (- 0 1)))))]
+    (trapx-clamp (+ (+ heat base) (* enforcement 3)) 0 100)))
+
+;; ---- Field Offices -------------------------------------------------------------------------
+;; Claiming costs Flow, and each office you already hold makes the next one dearer. The School is a custody zone,
+;; so it costs 50 more: the city charges you for touching a place that is watching you back.
+(defn trapx-claim-cost [(scene : I32) (owned : I32)] : I32
+  (let [base (if (= scene 201) 90 40)]
+    (+ base (* owned 20))))
+
+;; Flow per tick: a healthy office produces, an escalated street taxes it, and a broken one produces nothing.
+(defn trapx-flow-per-tick [(integrity : I32) (enforcement : I32)] : I32
+  (let [flow (- (/ integrity 10) (* enforcement 2))]
+    (if (< flow 0) 0 flow)))
+
+;; Pressure per tick: Attention, the street's enforcement, and how many offices you are trying to hold at once.
+(defn trapx-pressure-per-tick [(attention : I32) (enforcement : I32) (fos : I32)] : I32
+  (+ (/ attention 8) (+ (* enforcement 3) (* fos 2))))
+
+;; Attention 0..100: a K9 unit on the street raises it hard, and with no unit out it decays at 4 a tick. That is
+;; the "battery" the northstar's merit points buy back.
+(defn trapx-attention-step [(attention : I32) (k9 : I32)] : I32
+  (let [delta (if (> k9 0) (* k9 7) (- 0 4))]
+    (trapx-clamp (+ attention delta) 0 100)))
+
+;; K9 Doctrine's diminishing returns, 0.85^n in permille: 1000, 850, 722, 613, 521, then a 443 floor. Integer
+;; arithmetic, so the C and the browser cannot round a swarm differently.
+(defn trapx-k9-worth [(deployed : I32)] : I32
+  (if (<= deployed 0) 1000
+    (if (= deployed 1) 850
+      (if (= deployed 2) 722
+        (if (= deployed 3) 613
+          (if (= deployed 4) 521
+            (if (= deployed 5) 443 443)))))))
+
+;; The Contest Window opens longer the more Pressure the office is under -- a contested office is a live one.
+(defn trapx-contest-window-ms [(pressure : I32)] : I32
+  (+ 30000 (* pressure 300)))
+
+;; Control Integrity 0..100: Attention and dogs both eat it, and it never goes negative.
+(defn trapx-integrity-decay [(integrity : I32) (attention : I32) (k9 : I32)] : I32
+  (let [left (- integrity (+ (/ attention 10) (* k9 3)))]
+    (if (< left 0) 0 left)))
+
+;; The Rogue Swarm trigger: an office already falling apart, being looked at hard, under real pressure. All three
+;; together, because any one of them alone is just a bad afternoon.
+(defn trapx-rogue-swarm [(integrity : I32) (attention : I32) (pressure : I32)] : Bool
+  (and (< integrity 20) (and (>= attention 80) (>= pressure 60))))
+
+;; ---- the receipt ledger --------------------------------------------------------------------
+(defn trapx-receipt-known [(kind : I32)] : Bool
+  (and (>= kind 0) (<= kind 4)))
+
+;; A receipt is append-only and diegetic: this digest chains an entry into the ledger deterministically, so the
+;; same action at the same tick produces the same receipt in C and in the browser. Not a security primitive -- a
+;; tamper-evident ORDERING, which is the part a replay needs.
+(defn trapx-receipt-digest [(kind : I32) (amount : I32) (tick : I32)] : I32
+  (mod (+ (* kind 7919) (+ (* amount 104729) (* tick 1299709))) 1000000007))
+
+;; ---- BIG_O, the city's half -------------------------------------------------------------------
+;; A killing in front of witnesses: the city heats up by 8 plus 4 a witness, and its trust drops hard. The
+;; witnesses' own behaviour is not decided here (that is big_o/witness_rules.prn, called by the C host); this is
+;; what the DISTRICT remembers, which is why it is a separate decision at all.
+(defn trapx-public-kill-heat [(witnesses : I32)] : I32
+  (trapx-clamp (+ 8 (* witnesses 4)) 0 100))
+
+(defn trapx-public-kill-trust [(witnesses : I32)] : I32
+  (trapx-clamp (- 0 (+ 4 (* witnesses 6))) (- 0 100) 100))
