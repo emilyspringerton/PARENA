@@ -1,0 +1,51 @@
+;; stdlib/shankpit/horse_rules.prn -- the Icelandic tölt mount's feel as a PARENA mod.
+;;
+;; Same split buggy_rules.prn already uses: local_game.h keeps the integration (terrain follow, jump
+;; arc, collision, rider sync) and every number that decides how the horse FEELS comes from here --
+;; top speed, how fast tölt burns stamina, how fast it comes back standing still, what a jump costs
+;; and how high it goes, what a carrot gives back, and how much a blown horse slows down.
+;; The defaults reproduce the previous built-in constants exactly (8 m/s, smooth ramp).
+;;
+;; Scalar-only I32, fixed point: speeds are m/s x 1000 (milli), stamina is 0..1000 milli, a drain or
+;; regen is milli per second, costs/restores are milli, and a multiplier is permille (1000 = 1.0).
+;; The host clamps its own inputs and converts with * 0.001, so these stay pure, total functions.
+(module shankpit/horse-rules)
+(export horse-max-speed-milli horse-tolt-drain-milli horse-stamina-regen-milli
+        horse-jump-cost-milli horse-jump-speed-milli horse-carrot-restore-milli
+        horse-fatigue-permille horse-can-jump)
+
+;; 8 m/s, the same cap the tölt had before it was a mod.
+(defn horse-max-speed-milli [] : I32 8000)
+
+;; Tölt is a working gait, not a sprint: 90 milli/s at full speed, proportionally less at a walk.
+;; Negative speeds (reining back) cost nothing -- the horse is not working.
+(defn horse-tolt-drain-milli [(speed_milli : I32)] : I32
+  (if (< speed_milli 0)
+    0
+    (if (> speed_milli 8000)
+      (/ (* 90 8000) 8000)
+      (/ (* 90 speed_milli) 8000))))
+
+;; Standing still gets it back at 55 milli/s, so a full refill from empty is ~18 s.
+(defn horse-stamina-regen-milli [] : I32 55)
+
+;; A jump is a real effort: 180 milli, a bit under a fifth of the bar.
+(defn horse-jump-cost-milli [] : I32 180)
+
+;; 5.6 m/s launch -- with the host's 11 m/s^2 gravity that is a ~1.4 m hop, enough to clear a fence
+;; rail but nothing like the rocket car's four-nozzle flight.
+(defn horse-jump-speed-milli [] : I32 5600)
+
+;; A carrot is the Zelda-style refill: 400 milli, a little under half the bar.
+(defn horse-carrot-restore-milli [] : I32 400)
+
+;; Blown (under 250) the horse still moves, at 62% of its top speed, until it has eaten or rested.
+(defn horse-fatigue-permille [(stamina_milli : I32)] : I32
+  (if (< stamina_milli 250) 620 1000))
+
+;; A jump needs a grounded horse and 200 milli in the bar -- one jump's cost plus a margin, so a
+;; spent horse cannot chain-jump its way out of being spent.
+(defn horse-can-jump [(stamina_milli : I32) (grounded : I32)] : I32
+  (if (> grounded 0)
+    (if (> stamina_milli 199) 1 0)
+    0))
