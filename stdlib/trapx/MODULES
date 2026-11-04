@@ -1,5 +1,10 @@
 # the TRAPX wasm sandbox's source files, in build order (scripts/build_trapx_wasm.sh)
 # The rules come first and are never restated below: the city calls them.
+#
+# NOTE: city_engine_rules.prn is deliberately NOT in this list. It is the city at scale (population,
+# economy, casinos, scrutiny, federal oversight, automata), not the two-scene sandbox this build packs,
+# and nothing in tp_city.prn calls it yet. Adding it here would grow the page for no reader. It is
+# emitted to SHANKPIT's C host instead -- scripts/gen_trapx_city_rules.sh there, make test-trapx-city.
 stdlib/trapx/trapx_rules.prn
 stdlib/trapx/web/tp_mem.prn
 stdlib/trapx/web/tp_city.prn
