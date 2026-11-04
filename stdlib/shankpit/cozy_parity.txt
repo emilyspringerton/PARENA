@@ -1,0 +1,122 @@
+# cozy_parity.txt -- the cosy verbs, asserted from both sides.
+#
+#   SHANKPIT/packages/simulation/cozy_test.c   (make test-cozy)
+#   NOOBTOPIA/tests/cozy_test.lua              (lua tests/cozy_test.lua)
+#
+# Emitted from PARENA/stdlib/shankpit/cozy_rules.prn through SHANKPIT/packages/simulation/cozy_rules.c. Never
+# hand-edit a column: change the .prn, re-emit both worlds, regenerate these rows.
+#
+#   question a b c | answer
+#
+#   0  kick cooldown (ms)          8  comfort target (mood)
+#   1  kick lift (permille)        9  comfort drift (comfort, target, ticks)
+#   2  kick puffs (seed)          10  line count
+#   3  kick allowed (is_dandelion, cooldown_left, sun)
+#   4  hug cooldown (ms)          11  line index (count, seed)
+#   5  hug comfort (permille)     12  flavour daylight (sun)
+#   6  hug allowed (trunk, cooldown_left)
+#   7  hug diminish (hugs today)  13/14  trunk-huggable / daylight thresholds
+#
+0 0 0 0  900
+1 0 0 0  60
+2 -3 0 0  4
+2 0 0 0  3
+2 1 0 0  4
+2 4 0 0  3
+2 7 0 0  6
+2 13 0 0  4
+3 0 -1 0  0
+3 0 -1 100  0
+3 0 -1 249  0
+3 0 -1 250  0
+3 0 -1 1000  0
+3 0 900 0  0
+3 0 900 100  0
+3 0 900 249  0
+3 0 900 250  0
+3 0 900 1000  0
+3 1 -1 0  0
+3 1 -1 100  0
+3 1 -1 249  0
+3 1 -1 250  1
+3 1 -1 1000  1
+3 1 900 0  0
+3 1 900 100  0
+3 1 900 249  0
+3 1 900 250  0
+3 1 900 1000  0
+4 0 0 0  8000
+5 0 0 0  120
+6 0 -5 0  0
+6 0 8000 0  0
+6 399 -5 0  0
+6 399 8000 0  0
+6 400 -5 0  1
+6 400 8000 0  0
+6 900 -5 0  1
+6 900 8000 0  0
+6 1500 -5 0  1
+6 1500 8000 0  0
+7 -1 0 0  1000
+7 0 0 0  1000
+7 1 0 0  700
+7 2 0 0  500
+7 3 0 0  350
+7 4 0 0  250
+7 5 0 0  200
+7 9 0 0  200
+8 0 0 0  650
+8 1 0 0  800
+8 2 0 0  500
+8 3 0 0  400
+8 4 0 0  200
+8 5 0 0  650
+9 0 0 -5  0
+9 0 0 9999  0
+9 0 200 -5  0
+9 0 200 9999  200
+9 0 650 -5  0
+9 0 650 9999  650
+9 0 1000 -5  0
+9 0 1000 9999  1000
+9 300 0 -5  300
+9 300 0 9999  0
+9 300 200 -5  300
+9 300 200 9999  200
+9 300 650 -5  300
+9 300 650 9999  650
+9 300 1000 -5  300
+9 300 1000 9999  1000
+9 990 0 -5  990
+9 990 0 9999  0
+9 990 200 -5  990
+9 990 200 9999  200
+9 990 650 -5  990
+9 990 650 9999  650
+9 990 1000 -5  990
+9 990 1000 9999  1000
+9 1000 0 -5  1000
+9 1000 0 9999  0
+9 1000 200 -5  1000
+9 1000 200 9999  200
+9 1000 650 -5  1000
+9 1000 650 9999  650
+9 1000 1000 -5  1000
+9 1000 1000 9999  1000
+10 0 0 0  6
+11 -2 -7 0  0
+11 -2 -1 0  0
+11 -2 5 0  0
+11 2 -7 0  1
+11 2 -1 0  1
+11 2 5 0  1
+11 6 -7 0  5
+11 6 -1 0  5
+11 6 5 0  5
+12 0 0 0  0
+12 100 0 0  0
+12 249 0 0  0
+12 250 0 0  1
+12 1000 0 0  1
+13 0 0 0  400
+14 0 0 0  250

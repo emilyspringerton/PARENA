@@ -1,0 +1,116 @@
+;; stdlib/shankpit/cozy_rules.prn -- the two small joys: kicking a dandelion, and hugging a tree.
+;;
+;; These are not combat. Nothing here can kill, damage or score, and that is the point: an open world that is only
+;; ever a contest is a stressful place to stand in. The verbs are deliberately tiny -- a puff of seeds, a moment of
+;; comfort -- and they are in PARENA because both worlds must agree on what "cosy" costs and what it gives back,
+;; or the two worlds will feel different for a reason nobody chose.
+;;
+;; Three decisions this file owns, in the order a player meets them:
+;;
+;;   1. WHEN a verb is allowed. A dandelion is only a dandelion in daylight (it closes at night, which is a real
+;;      thing dandelions do), and a tree can only be hugged if you can get your arms around it. Both verbs have a
+;;      cooldown: the dandelion's is short so it stays a fidget, the tree's is long so it stays a *stop*.
+;;   2. WHAT it gives. A comfort value, 0..1000, and the tree's hugs are worth less the more you take from the
+;;      same tree in one day -- not as a punishment, but because the fifth hug of the afternoon is genuinely a
+;;      different thing from the first. Morning forgives it (the host resets the day count).
+;;   3. HOW comfort goes back down. It drifts toward a target set by the NPC's mood, one permille per tick, and
+;;      never overshoots: a startled noob cannot be permanently comforted by a single dandelion.
+;;
+;; Integer in, integer out, total functions, no host state and no clock: the host owns the cooldown timestamps and
+;; the day count and asks here. Permille throughout (1000 == 1.0).
+
+(module shankpit/cozy-rules)
+(export cozy-kick-cooldown-ms cozy-kick-lift-milli cozy-kick-puffs cozy-kick-allowed
+        cozy-hug-cooldown-ms cozy-hug-comfort-milli cozy-hug-allowed cozy-hug-diminish
+        cozy-comfort-target cozy-comfort-drift cozy-line-count cozy-line-index cozy-flavor-daylight
+        cozy-trunk-huggable-milli cozy-daylight-milli)
+
+;; ---- integer helpers ------------------------------------------------------------------------------
+(defn c-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn c-max [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn c-clamp [(lo : I32) (hi : I32) (v : I32)] : I32 (c-min hi (c-max lo v)))
+(defn c-abs [(a : I32)] : I32 (if (< a 0) (- 0 a) a))
+(defn c-sign [(a : I32)] : I32 (if (< a 0) (- 0 1) (if (> a 0) 1 0)))
+
+;; Modulo that never goes negative: a seed is a counter that may be negative, and a negative line index would
+;; index past the start of a table in every host.
+(defn c-mod [(a : I32) (n : I32)] : I32
+  (if (<= n 0) 0
+    (let [r (- a (* (/ a n) n))]
+      (if (< r 0) (+ r n) r))))
+
+;; ---- kicking a dandelion --------------------------------------------------------------------------
+;; Short enough to be a fidget while walking, long enough that it is not a machine gun of seeds.
+(defn cozy-kick-cooldown-ms [] : I32 900)
+
+;; What one puff is worth, permille of comfort. Small on purpose: joy from a weed should be a nudge, not a cure.
+(defn cozy-kick-lift-milli [] : I32 60)
+
+;; How many seeds come off this particular head, 3..6. Deterministic from the head's own seed, so the same
+;; dandelion gives the same puff twice and a replay matches.
+(defn cozy-kick-puffs [(seed : I32)] : I32 (+ 3 (c-mod seed 4)))
+
+;; A dandelion at night is closed, so there is nothing to kick. The daylight threshold is declared once, here,
+;; and reused by the flavour rule below rather than restated in each host.
+(defn cozy-daylight-milli [] : I32 250)
+
+(defn cozy-flavor-daylight [(sun_permille : I32)] : I32
+  (if (>= (c-clamp 0 1000 sun_permille) (cozy-daylight-milli)) 1 0))
+
+(defn cozy-kick-allowed [(is_dandelion : I32) (cooldown_left_ms : I32) (sun_permille : I32)] : I32
+  (if (= is_dandelion 1)
+    (if (<= cooldown_left_ms 0)
+      (cozy-flavor-daylight sun_permille)
+      0)
+    0))
+
+;; ---- hugging a tree -------------------------------------------------------------------------------
+;; Long on purpose: this is the verb you stop walking for.
+(defn cozy-hug-cooldown-ms [] : I32 8000)
+
+(defn cozy-hug-comfort-milli [] : I32 120)
+
+;; You cannot hug a sapling: a trunk has to be at least this thick (permille of the thickest a tree gets) before
+;; the arms fit around it. It is also the reason this cannot be spammed on every bush in a level.
+(defn cozy-trunk-huggable-milli [] : I32 400)
+
+(defn cozy-hug-allowed [(trunk_milli : I32) (cooldown_left_ms : I32)] : I32
+  (if (>= (c-clamp 0 1000 trunk_milli) (cozy-trunk-huggable-milli))
+    (if (<= cooldown_left_ms 0) 1 0)
+    0))
+
+;; Diminishing returns across one day, permille: 1000, 700, 500, 350, 250, then a floor of 200. The floor is not
+;; zero because the hundredth hug should still be worth something -- it is just no longer the first one.
+(defn cozy-hug-diminish [(hugs_today : I32)] : I32
+  (if (<= hugs_today 0) 1000
+    (if (= hugs_today 1) 700
+      (if (= hugs_today 2) 500
+        (if (= hugs_today 3) 350
+          (if (= hugs_today 4) 250 200))))))
+
+;; ---- comfort: what it is drifting toward, and how fast ---------------------------------------------
+;; Moods are MISHRI's 8-state enum, the same integers SHANKPIT simulates and NOOBTOPIA hosts:
+;;   0 IDLE  1 CURIOUS  2 BORED  3 TIRED  4 STARTLED
+;; A startled creature wants very little comfort and a curious one wants a lot; that asymmetry is the whole
+;; reason a dandelion feels different depending on who kicks it.
+(defn cozy-comfort-target [(mood : I32)] : I32
+  (if (= mood 4) 200
+    (if (= mood 3) 400
+      (if (= mood 1) 800
+        (if (= mood 2) 500 650)))))
+
+;; One step toward the target, at most one permille per tick, never overshooting. Cozy things comfort a little;
+;; they cannot make a startled noob content by arithmetic.
+(defn cozy-comfort-drift [(comfort : I32) (target : I32) (ticks : I32)] : I32
+  (let [c (c-clamp 0 1000 comfort)
+        t (c-clamp 0 1000 target)
+        step (c-min (c-abs (- t c)) (c-max 0 ticks))]
+    (c-clamp 0 1000 (+ c (* (c-sign (- t c)) step)))))
+
+;; ---- flavour: which line the world says back ------------------------------------------------------
+;; Six kinds of small answer (a wish, a rustle, a bee, an apology, a promise, silence). The host owns the words;
+;; this only decides which one, deterministically, so the same tree answers the same way twice.
+(defn cozy-line-count [] : I32 6)
+
+(defn cozy-line-index [(count : I32) (seed : I32)] : I32
+  (if (<= count 0) 0 (c-mod seed count)))
