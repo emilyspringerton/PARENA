@@ -1,0 +1,108 @@
+;; stdlib/shankpit/icecream_rules.prn -- what an ice-cream truck's song IS, how far it carries, and when it plays.
+;;
+;; Founder (2026-11-05): "add ice cream trucks similar affordances to police vehicles ice tream truck song
+;; affordances real sound audio engineering parena mods focuse".
+;;
+;; Why this lives in PARENA and not in the engine: the song is the affordance. The point of an ice-cream truck
+;; is that you hear it BEFORE you see it -- that is the whole mechanic, and it only works if every host agrees
+;; on the tune, its tempo, how it decays inside a note and how far a block away it still reads. A level
+;; editor, a server and a browser host should be able to play the same jingle without shipping this engine's
+;; waveform, exactly as they agree on a police wail (siren_rules.prn).
+;;
+;; Everything here is integer and total: millihertz for pitch, permille for gains, milliseconds for time. No
+;; clock, no allocation, no memory -- a host asks what note is sounding at a moment and gets a number back.
+;;
+;; WHAT THIS IS NOT: a licence to play anything. A civilian car never sings; only a truck flagged as a vendor
+;; does (icecream-trigger), and only while it is MOVING -- a parked truck with the song blaring is a noise
+;; complaint, not an affordance.
+;;
+;; The melody is an original 16-step motif in C major, an eighth-note box tune at 227 ms per step (about
+;; 132 bpm), the last step held twice as long so the loop breathes instead of running into itself.
+(module shankpit/icecream-rules)
+(export icecream-note-count icecream-note-hz-milli icecream-note-ms icecream-note-gain-permille
+        icecream-loop-ms icecream-env-permille icecream-gain-permille icecream-pan-permille
+        icecream-trigger icecream-kind-off icecream-kind-playing
+        icecream-carry-units icecream-tempo-ms)
+
+(defn icr-clamp [(lo : I32) (hi : I32) (v : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; kind numbers: the wire and the host both use 0/1, never a bare number
+(defn icecream-kind-off [] : I32 0)
+(defn icecream-kind-playing [] : I32 1)
+
+(defn icecream-note-count [] : I32 16)
+;; one step of the tune: 227 ms (eighth notes at ~132 bpm)
+(defn icecream-tempo-ms [] : I32 227)
+;; how far a corner jingle is still audible at all, in world units. Shorter than a siren's 4000 on purpose:
+;; a vendor's song is meant for its block, not for the whole city at night.
+(defn icecream-carry-units [] : I32 3000)
+
+;; The melody, in millihertz: C5 E5 G5 E5 | A5 G5 E5 D5 | C5 E5 G5 C6 | B5 G5 E5 D5.
+;; A rising arpeggio answered by a stepwise fall -- bright enough to carry through traffic, and it lands back
+;; on D5 so the loop's return to C5 reads as a resolution rather than a jump.
+(defn icecream-note-hz-milli [(i : I32)] : I32
+  (if (= i 0) 523000
+  (if (= i 1) 659000
+  (if (= i 2) 784000
+  (if (= i 3) 659000
+  (if (= i 4) 880000
+  (if (= i 5) 784000
+  (if (= i 6) 659000
+  (if (= i 7) 587000
+  (if (= i 8) 523000
+  (if (= i 9) 659000
+  (if (= i 10) 784000
+  (if (= i 11) 1047000
+  (if (= i 12) 988000
+  (if (= i 13) 784000
+  (if (= i 14) 659000
+  (if (= i 15) 587000
+       0))))  ))))  ))))  ))))  )
+
+;; How long a step lasts. The last note of the loop is held twice as long, which is what makes a 3.9 s
+;; jingle feel like a phrase instead of a machine gun.
+(defn icecream-note-ms [(i : I32)] : I32
+  (if (= i 15) (* 2 (icecream-tempo-ms)) (icecream-tempo-ms)))
+
+;; One loop, in milliseconds -- what a host wraps its clock against.
+(defn icecream-loop-ms [] : I32
+  (+ (* 15 (icecream-tempo-ms)) (* 2 (icecream-tempo-ms))))
+
+;; Accent: the first step of each bar is played at full gain, the rest a little under it. Without an accent
+;; pattern the same tune reads as a test tone.
+(defn icecream-note-gain-permille [(i : I32)] : I32
+  (if (= (* (/ i 4) 4) i) 1000 800))
+
+;; Inside one note the tone decays like a music box: full on the strike, down to ~a quarter by the end. This
+;; is what makes a bell instead of an organ, and it is a rule (not a filter tweak) because a browser host has
+;; to be able to render the same decay without this engine's DSP.
+(defn icecream-env-permille [(pos_ms : I32) (note_ms : I32)] : I32
+  (let [n (if (> note_ms 0) note_ms 1)
+        p (icr-clamp 0 n pos_ms)
+        drop (/ (* p 750) n)]
+    (icr-clamp 0 1000 (- 1000 drop))))
+
+;; Loudness at a distance, 0..1000. Gentler than a gunshot (it is a song, not a crack) but with a real edge:
+;; full on top of the truck, ~700 at 500 units, ~410 at 2 km, and silent past icecream-carry-units. The cut
+;; rather than a fade to nothing is deliberate -- a jingle you can barely hear is worse than no jingle.
+(defn icecream-gain-permille [(dist_units : I32)] : I32
+  (if (> dist_units (icecream-carry-units))
+      0
+      (let [d (icr-clamp 0 3000 dist_units)]
+        (icr-clamp 0 1000 (/ (* 1000 700) (+ 700 (/ d 2)))))))
+
+;; Pan relative to the listener, -1000..1000 (0 ahead, + right): the same shortest-way-round law as the siren
+;; and the wind bed, so a truck behind you really pans behind you.
+(defn icecream-pan-permille [(bearing_deg : I32) (yaw_deg : I32)] : I32
+  (let [m (- bearing_deg yaw_deg)
+        d (- m (* (/ (+ m 180) 360) 360))
+        rel (if (< d -180) (+ d 360) (if (> d 180) (- d 360) d))]
+    (icr-clamp -1000 1000 (/ (* rel 1000) 180))))
+
+;; Is the song playing RIGHT NOW? A truck that is flagged as a vendor and actually MOVING (speed_pm > 20 of
+;; its top speed). Parked is silent; a civilian car is silent whatever it does.
+(defn icecream-trigger [(ice_cream : I32) (speed_pm : I32)] : I32
+  (if (<= ice_cream 0)
+      0
+      (if (> (icr-clamp 0 1000 speed_pm) 20) 1 0)))
