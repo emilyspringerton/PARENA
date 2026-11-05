@@ -27,7 +27,10 @@
         icecream-scale-hz-milli icecream-motif-degree icecream-note-hz-milli-for
         icecream-stop-cycle-ms icecream-dwell-ms icecream-parked icecream-park-phase-ms icecream-parked-for
         icecream-window-units icecream-serve-ms icecream-serve-heal
-        icecream-serve-cooldown-ms icecream-serve-progress icecream-serve-open)
+        icecream-serve-cooldown-ms icecream-serve-progress icecream-serve-open
+        icecream-chime-carry-units icecream-chime-note-count icecream-chime-note-ms
+        icecream-chime-gap-ms icecream-chime-period-ms icecream-chime-ms
+        icecream-chime-hz-milli icecream-chime-trigger icecream-chime-gain-permille)
 
 (defn icr-clamp [(lo : I32) (hi : I32) (v : I32)] : I32
   (if (< v lo) lo (if (> v hi) hi v)))
@@ -226,3 +229,41 @@
   (if (> dist_units (icecream-window-units))
       0
       (if (> (icr-clamp 0 1000 speed_pm) 20) 0 1)))
+
+;; ---------------------------------------------------------------------------------------------------
+;; THE CHIME OF A STOPPED TRUCK.
+;;
+;; The jingle plays only while the truck MOVES (icecream-trigger), which is the right rule -- a parked truck
+;; blaring its song is a noise complaint -- but it leaves a vendor silent exactly when its window is open. A
+;; silent truck at the corner is one you cannot find once you have walked there, so a STOPPED vendor chimes
+;; instead: two struck notes every icecream-chime-period-ms, quieter than the song and carrying a third as
+;; far. A different SOUND on purpose, not the song turned down: a slow tune for a truck that is coming, a
+;; short bell for a window that is here, so the ear can tell the two apart without looking.
+(defn icecream-chime-carry-units [] : I32 1200)   ;; a window is heard down the block, not across town
+(defn icecream-chime-note-count [] : I32 2)
+(defn icecream-chime-note-ms [] : I32 220)        ;; one struck note
+(defn icecream-chime-gap-ms [] : I32 90)          ;; the breath between the two notes of a chime
+(defn icecream-chime-period-ms [] : I32 4000)     ;; how often an open window announces itself
+
+;; How long the chime is actually sounding, gap included -- what a host wraps its own bell clock against.
+(defn icecream-chime-ms [] : I32
+  (* (icecream-chime-note-count) (+ (icecream-chime-note-ms) (icecream-chime-gap-ms))))
+
+;; "Ding-dong": C6 down to G5, the interval every doorbell in the world agrees on. 0 for a note that does not
+;; exist, so a host can ask for note 7 and get silence rather than a table overrun.
+(defn icecream-chime-hz-milli [(i : I32)] : I32
+  (if (= i 0) 1047000 (if (= i 1) 784000 0)))
+
+;; Does this vendor chime right now? Yes when it is STOPPED -- the mirror of icecream-trigger, which is the
+;; song, and the same 20-of-1000 threshold the window uses, so a truck cannot be serving and singing at once
+;; and cannot be silent while serving.
+(defn icecream-chime-trigger [(speed_pm : I32)] : I32
+  (if (> (icr-clamp 0 1000 speed_pm) 20) 0 1))
+
+;; How loud the chime is at a distance, 0..1000: half the song on top of the truck (~500), a quarter a block
+;; away, and cut dead past icecream-chime-carry-units. Quiet on purpose -- a window is an invitation, not an
+;; alarm, and two open windows in one district must not add up to a siren.
+(defn icecream-chime-gain-permille [(dist_units : I32)] : I32
+  (if (> dist_units (icecream-chime-carry-units))
+      0
+      (icr-clamp 0 1000 (/ (* 1000 300) (+ 600 (icr-clamp 0 (icecream-chime-carry-units) dist_units))))))
