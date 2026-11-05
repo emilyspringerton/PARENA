@@ -23,8 +23,9 @@
         icecream-loop-ms icecream-env-permille icecream-gain-permille icecream-pan-permille
         icecream-trigger icecream-kind-off icecream-kind-playing
         icecream-carry-units icecream-tempo-ms
-        icecream-jingle-count icecream-jingle-for-id icecream-jingle-semitones
-        icecream-jingle-key-permille icecream-note-hz-milli-keyed
+        icecream-jingle-count icecream-jingle-for-id
+        icecream-scale-hz-milli icecream-motif-degree icecream-note-hz-milli-for
+        icecream-stop-cycle-ms icecream-dwell-ms icecream-parked
         icecream-window-units icecream-serve-ms icecream-serve-heal
         icecream-serve-cooldown-ms icecream-serve-progress icecream-serve-open)
 
@@ -112,16 +113,18 @@
       (if (> (icr-clamp 0 1000 speed_pm) 20) 1 0)))
 
 ;; ---------------------------------------------------------------------------------------------------
-;; WHICH TRUCK SINGS IN WHICH KEY, and what it costs to be served.
+;; WHAT EACH TRUCK SINGS, and when it pulls over to sell.
 ;;
-;; Two trucks on the same street in the same key are one truck as far as an ear is concerned: you cannot tell
-;; the one about to turn the corner from the one two blocks away, which is the whole information the jingle
-;; carries. So a truck's key is derived from its own slot id -- a fact every host already agrees on, and one
-;; that survives a reconnect -- rather than being hand-assigned per truck.
+;; One tune transposed four ways is still one tune: a fourth up is the same shop on the same street, and an
+;; ear reads it as the same truck. So a truck's jingle is a MELODY of its own -- jingle 0 is the song above
+;; (the tune the whole district hums), and the rest are GENERATED from the truck's index by a fixed modular
+;; walk over a pentatonic scale. Generated rather than authored on purpose: the walk is a rule, so a level
+;; editor, a browser host and this engine derive the same four tunes without shipping a note list, and a
+;; fifth truck cannot turn up with no song at all.
 ;;
-;; The keys are a MAJOR chord's worth of transpositions (unison, up a tone, down a minor third, up a fourth).
-;; Every interval is a real equal-temperament ratio in permille, so a host with nothing but integer maths can
-;; render the same jingle in the same key: 2^(2/12)=1122, 2^(-3/12)=841, 2^(5/12)=1335.
+;; The RHYTHM is the town's, not the motif's -- every jingle steps at icecream-tempo-ms with the last note
+;; held -- so the loop length, the accents and the envelope stay one rule each, and two trucks in earshot
+;; breathe together instead of phasing against each other.
 (defn icecream-jingle-count [] : I32 4)
 
 ;; A truck's jingle, from its slot id. Total for any id, negative included: an invalid truck still has to be
@@ -131,23 +134,59 @@
         i (if (< id 0) 0 id)]
     (- i (* (/ i n) n))))
 
-(defn icecream-jingle-semitones [(v : I32)] : I32
-  (if (= v 1) 2
-  (if (= v 2) -3
-  (if (= v 3) 5
-       0))))
+;; The pentatonic the generated motifs walk: C5 D5 E5 G5 A5 C6 D6 E6, in millihertz. A five-note scale is
+;; why a walk sounds like a tune rather than a test pattern -- there is no interval in it that can land on a
+;; note that needs resolving, so any ordering of it is music.
+(defn icecream-scale-hz-milli [(deg : I32)] : I32
+  (if (= deg 1) 587000
+  (if (= deg 2) 659000
+  (if (= deg 3) 784000
+  (if (= deg 4) 880000
+  (if (= deg 5) 1047000
+  (if (= deg 6) 1175000
+  (if (= deg 7) 1319000
+       523000))))))))
 
-;; The key as a permille multiplier (1000 = the tune exactly as written).
-(defn icecream-jingle-key-permille [(v : I32)] : I32
-  (if (= v 1) 1122
-  (if (= v 2) 841
-  (if (= v 3) 1335
-       1000))))
+;; Step i of jingle v as a scale degree. Fixed arithmetic on the step number and the jingle index -- never a
+;; clock, never a random source -- so every host derives the same walk. Both ends of the loop are the tonic,
+;; so a jingle that wraps comes home instead of stopping wherever it happened to be.
+(defn icecream-motif-degree [(i : I32) (v : I32)] : I32
+  (let [n (icecream-note-count)
+        m (- i (* (/ i n) n))
+        k (+ (if (< v 0) 0 v) 1)
+        raw (+ (* m 5) (* m m 3) (* k 7))
+        deg (- raw (* (/ raw 8) 8))]
+    (if (<= k 1) 0
+      (if (= m 0) 0
+        (if (= m (- n 1)) 0 deg)))))
 
-;; One step of the tune, in the key THIS truck sings in. Still millihertz, still an integer: a host renders
-;; pitch, not ratios.
-(defn icecream-note-hz-milli-keyed [(i : I32) (v : I32)] : I32
-  (/ (* (icecream-note-hz-milli i) (icecream-jingle-key-permille v)) 1000))
+;; The note jingle v plays on step i, in millihertz. Jingle 0 IS the song above, note for note: the tune
+;; survives the generation instead of being replaced by it.
+(defn icecream-note-hz-milli-for [(i : I32) (v : I32)] : I32
+  (if (<= v 0)
+      (icecream-note-hz-milli i)
+      (icecream-scale-hz-milli (icecream-motif-degree i v))))
+
+;; ---------------------------------------------------------------------------------------------------
+;; PULLING OVER. The jingle is what walks you to the truck; the window only opens while the truck is STOPPED
+;; (icecream-serve-open), and an unmanned vendor has no driver to decide that. So the stop is a rule on the
+;; town clock: every icecream-stop-cycle-ms the vendor parks for icecream-dwell-ms, on its own side of the
+;; road -- keep-right is what has already put it at the kerb.
+;;
+;; Clock-derived instead of state-derived on purpose: the server and every client compute the same answer
+;; from the same tick, so there is nothing to replicate and nothing to desync, and a truck that nobody is
+;; near still parks its shift.
+(defn icecream-stop-cycle-ms [] : I32 60000)
+(defn icecream-dwell-ms [] : I32 15000)
+
+;; Is a vendor parked right now? 1 for the first icecream-dwell-ms of every cycle on the town clock. Same
+;; answer on the server and on every client, with no state to send.
+(defn icecream-parked [(now_ms : I32)] : I32
+  (let [cycle (icecream-stop-cycle-ms)
+        c (if (> cycle 0) cycle 1)
+        t (if (< now_ms 0) 0 now_ms)
+        m (- t (* (/ t c) c))]
+    (if (< m (icecream-dwell-ms)) 1 0)))
 
 ;; ---------------------------------------------------------------------------------------------------
 ;; VENDING. The song is the advertisement; the cone is the payoff. A jingle that never leads anywhere is set
