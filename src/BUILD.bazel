@@ -48,7 +48,16 @@ cc_library(
 
 cc_library(
     name = "emit",
-    srcs = ["emit.c"],
+    # ast_sugar.h is a real emitted-code dependency of emit.c (grep: emit.c, emit_llvm.c and
+    # emit_ts.c all #include it), and it was only declared on emit_ts/emit_llvm -- so this
+    # target could not compile under Bazel at all: `fatal error: ast_sugar.h: No such file or
+    # directory` compiling src/emit.c [for tool], which in turn meant NO consumer could build
+    # `@parena//src:parena` and therefore no consumer's parena_compile genrule could run.
+    # Found live on 2026-11-05 building SHANKPIT's own co-located menu.prn rule.
+    srcs = [
+        "emit.c",
+        "ast_sugar.h",
+    ],
     hdrs = ["emit.h"],
     deps = [
         ":arena",
