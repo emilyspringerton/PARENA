@@ -1,0 +1,115 @@
+;; PARENA/stdlib/shankpit/shield_regen_rules.prn -- a shield that was knocked off comes back, FFXI-style.
+;;
+;; The rule, in the founder's words: lose your shield and you are vulnerable for FOUR SECONDS; after
+;; those four seconds a ONE SECOND regeneration starts, and its ticks start small and grow the longer
+;; the body is left alone. Any damage during the four seconds restarts the whole thing -- so the clock
+;; is not "time since the shield broke", it is "time since the last hit".
+;;
+;; Shape, the same discipline as hit_rules and the other shankpit modules:
+;;   * pure and total over I32 -- no clock, no RNG, no state. The host keeps two numbers per body
+;;     (the shield it held at the last hit, and the ms since that hit); every question below is a
+;;     function of those two plus the elapsed time, so a replay and a live tick cannot disagree;
+;;   * the shield is never handed back for free: at 3999 ms the answer is the same shield the body
+;;     had, and at 4000 ms it is exactly one point more;
+;;   * the ramp is capped (shield-regen-ramp-cap), because "grows the longer you heal" must not mean
+;;     a body that disengages for two minutes is immortal -- it means the first ticks are cheap and
+;;     the later ones are worth waiting for.
+;;
+;; The FFXI reference is the healing-tick curve, not its exact numbers: a healing tick that lands
+;; repeatedly on an undisturbed body is worth more each time. The ramp here is +1 point per tick more
+;; than the last (1, 2, 3, ... 10) and then flat at 10 -- a broken 100 shield is whole again 15 ticks
+;; (15 s) after the delay ends, 19 s after the hit that broke it, and the last 45 points arrive in the
+;; final 5 s, which is the part that makes holding the disengage worth it.
+;;
+;; The 4-second delay and 1-second interval are MILLISECONDS. The tick helpers below are for a host
+;; that schedules in ticks rather than accumulating ms -- they round UP, so a tick counter can never
+;; fire the regen early. packages/simulation/shield_regen.h is the host half: it stores the pair and
+;; calls sh-shield-at every tick.
+(module shankpit/shield-regen)
+
+(export shield-max shield-regen-delay-ms shield-regen-interval-ms shield-regen-ramp-cap
+        sh-clamp sh-ceil-div sh-regen-delay-ticks sh-regen-interval-ticks
+        sh-regen-tick-index sh-regen-ticks-landed sh-regen-tick-amount sh-regen-total
+        sh-shield-at sh-regen-in-ms sh-regen-waiting?)
+
+;; The bar the engine already draws (protocol.h's PlayerState.shield tops out at 100), and the reason
+;; regen has a ceiling at all.
+(defn shield-max [] : I32 100)
+
+;; Four seconds of real vulnerability: no shield, no trickle, nothing. A hit in this window rewrites
+;; the host's "last hit" number and the counter starts again at zero.
+(defn shield-regen-delay-ms [] : I32 4000)
+
+;; One tick a second once the delay is over -- the FFXI cadence, not a per-frame trickle.
+(defn shield-regen-interval-ms [] : I32 1000)
+
+;; The ramp's ceiling: the tick after this many is worth the same as the one before it. Chosen so a
+;; full refill takes ~19 s from the hit rather than never: at cap 10 the curve is 1,2,...,10,10,...
+(defn shield-regen-ramp-cap [] : I32 10)
+
+;; Local clamp rather than a shared helper: PARENA lowers every defn to a global C function, and other
+;; stdlib modules already own their own clamps. A duplicate symbol is a link error.
+(defn sh-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+;; Integer division the other way: a 16 ms tick reaches 1000 ms in 62.5 ticks, and a host that floors
+;; would fire the regen up to a tick early. Rounding up costs 8 ms per tick (1.008 s), which is stated
+;; here rather than discovered in a replay.
+(defn sh-ceil-div [(n : I32) (d : I32)] : I32
+  (if (<= d 0) n
+    (let [q (/ n d) r (mod n d)]
+      (if (> r 0) (+ q 1) q))))
+
+(defn sh-regen-delay-ticks [(tick-ms : I32)] : I32
+  (sh-ceil-div (shield-regen-delay-ms) (if (< tick-ms 1) 1 tick-ms)))
+
+(defn sh-regen-interval-ticks [(tick-ms : I32)] : I32
+  (sh-ceil-div (shield-regen-interval-ms) (if (< tick-ms 1) 1 tick-ms)))
+
+;; Which regen tick landed most recently: -1 while the four seconds are still running (nothing has
+;; landed), 0 at exactly 4000 ms, 1 at 5000 ms, and so on. The index is what the ramp reads, so a host
+;; never has to count ticks itself -- elapsed time is enough.
+(defn sh-regen-tick-index [(since-ms : I32)] : I32
+  (if (< since-ms (shield-regen-delay-ms)) -1
+    (/ (- since-ms (shield-regen-delay-ms)) (shield-regen-interval-ms))))
+
+;; How many ticks have landed: 0 during the delay, 1 at 4000 ms. This is the tick a HUD counts up.
+(defn sh-regen-ticks-landed [(since-ms : I32)] : I32
+  (let [i (sh-regen-tick-index since-ms)]
+    (if (< i 0) 0 (+ i 1))))
+
+;; What ONE tick is worth, given its 0-based index: 1, 2, 3, ... capped. "Starts slower than it ends"
+;; is this function and nothing else.
+(defn sh-regen-tick-amount [(index : I32)] : I32
+  (if (< index 0) 0 (sh-clamp 1 (shield-regen-ramp-cap) (+ index 1))))
+
+;; Everything the landed ticks have given back. Closed form (triangular numbers up to the cap, then a
+;; flat ramp) rather than a loop, because a per-tick call to this should not replay every tick since
+;; the hit. sh-regen-tick-amount is still the per-tick statement of the same curve, and the host test
+;; asserts the two agree -- a closed form that quietly drifts from the curve it summarises is the bug
+;; this pairing exists to catch.
+(defn sh-regen-total [(since-ms : I32)] : I32
+  (let [n (sh-regen-ticks-landed since-ms)
+        c (shield-regen-ramp-cap)]
+    (if (<= n c)
+      (/ (* n (+ n 1)) 2)
+      (+ (/ (* c (+ c 1)) 2) (* (- n c) c)))))
+
+;; The shield a body holds `since-ms` after the hit that started its regen, given the shield it held
+;; THEN. Pure, so calling it every tick costs nothing and cannot double-count; the host only has to
+;; re-snapshot the pair (shield, since) when damage lands -- which is exactly what "a hit restarts the
+;; counter" means, with no separate reset code to forget.
+(defn sh-shield-at [(shield : I32) (since-ms : I32)] : I32
+  (sh-clamp 0 (shield-max)
+    (+ (sh-clamp 0 (shield-max) shield) (sh-regen-total since-ms))))
+
+;; The 4-second counter itself, for the HUD: ms left before the first tick, 0 once it has begun.
+(defn sh-regen-in-ms [(since-ms : I32)] : I32
+  (let [left (- (shield-regen-delay-ms) since-ms)]
+    (if (< left 0) 0 left)))
+
+;; 1 while the body is inside the vulnerable window (a shield that was just knocked off), 0 once its
+;; regen has started. The existing "shield soaks first" rule is unchanged; this only says whether the
+;; body is still paying for the last hit.
+(defn sh-regen-waiting? [(since-ms : I32)] : I32
+  (if (< since-ms (shield-regen-delay-ms)) 1 0))
