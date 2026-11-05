@@ -25,7 +25,7 @@
         icecream-carry-units icecream-tempo-ms
         icecream-jingle-count icecream-jingle-for-id
         icecream-scale-hz-milli icecream-motif-degree icecream-note-hz-milli-for
-        icecream-stop-cycle-ms icecream-dwell-ms icecream-parked
+        icecream-stop-cycle-ms icecream-dwell-ms icecream-parked icecream-park-phase-ms icecream-parked-for
         icecream-window-units icecream-serve-ms icecream-serve-heal
         icecream-serve-cooldown-ms icecream-serve-progress icecream-serve-open)
 
@@ -187,6 +187,22 @@
         t (if (< now_ms 0) 0 now_ms)
         m (- t (* (/ t c) c))]
     (if (< m (icecream-dwell-ms)) 1 0)))
+
+;; WHOSE TURN IT IS. A town-wide window parks every truck at once, so a district with two vendors opens both
+;; windows together and then neither for the rest of the cycle -- the queues collide instead of the trucks
+;; taking turns. So the cycle is cut into one shift per jingle and a truck's slot moves its own window along
+;; by its shift: with four jingles and a 15 s dwell that is one truck parked at a time, all cycle long.
+;; Still pure clock arithmetic (and still nothing to replicate), just with the slot folded in.
+(defn icecream-park-phase-ms [] : I32
+  (/ (icecream-stop-cycle-ms) (icecream-jingle-count)))
+
+;; Is the vendor in SLOT parked right now? Slot 0 is icecream-parked exactly; each further slot parks one
+;; shift later. Total for any slot, negative included (a wrapped slot is the same truck as its jingle).
+(defn icecream-parked-for [(now_ms : I32) (slot : I32)] : I32
+  (let [n (icecream-jingle-count)
+        s (if (< slot 0) 0 slot)
+        k (- s (* (/ s n) n))]
+    (icecream-parked (+ (if (< now_ms 0) 0 now_ms) (* k (icecream-park-phase-ms))))))
 
 ;; ---------------------------------------------------------------------------------------------------
 ;; VENDING. The song is the advertisement; the cone is the payoff. A jingle that never leads anywhere is set
