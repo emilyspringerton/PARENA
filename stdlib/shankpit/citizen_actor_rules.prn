@@ -23,6 +23,12 @@
 ;;          is "heuristics mixed with a learned-shaped scorer", and that is exactly this pair.
 ;;       citizen-blended-score mixes them per action: heuristics decide, the policy leans
 ;;       (+/- bias scaled by how aggressive it feels right now), and citizen-pick is the argmax.
+;;   * FIGHT PLAN. Moving and shooting is not a plan, so three scorers answer the questions a
+;;     cornered body actually asks: DODGE when a claw is already inside its reach, TAKE COVER (drop
+;;     the profile, give ground, keep it in front) when hurt but not yet in reach, and RETREAT when
+;;     badly hurt -- turn and break for distance. Which WAY is clear is geometry, and geometry is the
+;;     host's (it owns the walls and the bodies); how hurt is too hurt, how close is a claw, and how
+;;     long a dodge or a retreat commits are here, because they are design numbers.
 ;;
 ;; Everything is I32, total (no division by a zero a caller can pass), no RNG, no clock, no state:
 ;; the host owns the tick, the cooldowns and the bodies. Retune here and
@@ -32,10 +38,13 @@
         citizen-slide-speed-milli citizen-slide-min-ms citizen-slide-max-ms
         citizen-slide-jump-boost-milli citizen-slide-jump-window-ms
         citizen-wield-range-milli citizen-fire-range-milli citizen-fire-cooldown-ms
+        citizen-claw-reach-milli citizen-dodge-ms citizen-cover-health-pm citizen-cover-ms
+        citizen-cover-backpedal-milli citizen-retreat-health-pm citizen-retreat-ms
         citizen-heuristic-score citizen-policy-aggression citizen-blended-score citizen-pick)
 
 ;; ---- action ids (the C side's CitizenActor enum, one contract) -------------------------------
 ;; 0 idle  1 walk  2 run  3 jump  4 crouch  5 slide  6 slide-jump  7 shoot  8 reload
+;; 9 dodge  10 take-cover  11 retreat
 
 (defn citizen-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
   (if (< x lo) lo (if (> x hi) hi x)))
@@ -70,6 +79,29 @@
 (defn citizen-wield-range-milli [] : I32 12000)
 (defn citizen-fire-range-milli [] : I32 14000)
 (defn citizen-fire-cooldown-ms [] : I32 260)
+
+;; ---- the fight plan's own numbers ----------------------------------------------------------
+;; A claw is in reach at 3.2 m (witness_ai.c's WAI_ZOMBIE_CLAW_REACH, minus a body radius). Inside
+;; 2.6 m a standing body is already being hit, so the plan is a sidestep, not a shot.
+(defn citizen-claw-reach-milli [] : I32 2600)
+
+;; A dodge is a commitment like a slide: a side-step that lasts one frame is a twitch, and a body
+;; that re-decides every tick never actually leaves the line of a swing.
+(defn citizen-dodge-ms [] : I32 220)
+
+;; Hurt enough to stop trading shots, but not hurt enough to abandon the fight: drop the profile and
+;; give ground with the zombie still in front of you. 400 milli = 40 health.
+(defn citizen-cover-health-pm [] : I32 400)
+(defn citizen-cover-ms [] : I32 700)
+;; Backpedal speed, milli of the shared MAX_SPEED path. Slow on purpose: cover is not flight, and a
+;; body that moonwalks at full speed reads as a bug, not as caution.
+(defn citizen-cover-backpedal-milli [] : I32 450)
+
+;; Badly hurt: the fight is already lost, so it runs instead of trading. 250 milli = 25 health.
+;; Deliberately BELOW citizen-cover-health-pm, so the three rungs are ordered: fight, cover, run.
+(defn citizen-retreat-health-pm [] : I32 250)
+(defn citizen-retreat-ms [] : I32 900)
+
 
 ;; ---- opinion 1: hand-written heuristics ------------------------------------------------------
 ;; Every scorer answers "how much does this action want to happen, 0..2000". `ready` is the host's
@@ -116,6 +148,28 @@
 (defn citizen-reload-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
   (if (and (= threat 1) (< health 500) (> dist 6000)) 300 0))
 
+;; A claw inside its reach outranks everything, including the trigger -- you cannot out-shoot a
+;; swing that has already started. But a body ALREADY at sliding speed slides (the founder's own
+;; move) rather than side-stepping, which is why the fast case is scored lower instead of higher:
+;; 1500 standing still, 700 when the engine's own slide is the better answer.
+(defn citizen-dodge-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (< dist (citizen-claw-reach-milli)))
+    (if (< speed (citizen-slide-speed-milli)) 1500 700)
+    0))
+
+;; Hurt and close, but not yet being swung at: give ground with the gun still up. 900 is a rung
+;; above a hurt jump (860) and above a shot at this range (about 760), and it deliberately stops at
+;; 6 m -- past that a hurt citizen still jumps, which is what keeps the founder's own jump reachable
+;; at all instead of cover swallowing every situation where the body is bleeding.
+(defn citizen-cover-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (and (< health (citizen-cover-health-pm)) (< dist 6000)))
+    900
+    0))
+
+;; The last rung. Outranks everything: a body at 25 health does not win a trade, it leaves.
+(defn citizen-retreat-score [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
+  (if (and (= threat 1) (< health (citizen-retreat-health-pm))) 1400 0))
+
 (defn citizen-heuristic-score
   [(action : I32) (dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)] : I32
   (if (= action 0) (citizen-idle-score dist threat health speed ready)
@@ -127,7 +181,10 @@
         (if (= action 6) (citizen-slide-jump-score dist threat health speed ready)
          (if (= action 7) (citizen-shoot-score dist threat health speed ready)
           (if (= action 8) (citizen-reload-score dist threat health speed ready)
-           0))))))))))
+           (if (= action 9) (citizen-dodge-score dist threat health speed ready)
+            (if (= action 10) (citizen-cover-score dist threat health speed ready)
+             (if (= action 11) (citizen-retreat-score dist threat health speed ready)
+              0)))))))))))))
 
 ;; ---- opinion 2: the hand-written policy ------------------------------------------------------
 ;; A six-input, one-output perceptron. Inputs are 0..1000 and the weights sum to 1000, so the output
@@ -165,7 +222,10 @@
        (if (= action 5) 180
         (if (= action 6) 220
          (if (= action 7) 160
-          (if (= action 8) 60 0))))))))))
+          (if (= action 8) 60
+           (if (= action 9) 200
+            (if (= action 10) 120
+             (if (= action 11) 180 0)))))))))))))
 
 (defn citizen-blended-score
   [(action : I32) (dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32)
@@ -180,7 +240,7 @@
 (defn citizen-pick
   [(dist : I32) (threat : I32) (health : I32) (speed : I32) (ready : I32) (aggression : I32)] : I32
   (loop [action 0 best -1 best-action 0]
-    (if (>= action 9)
+    (if (>= action 12)
       best-action
       (let [score (citizen-blended-score action dist threat health speed ready aggression)]
         (if (> score best)
