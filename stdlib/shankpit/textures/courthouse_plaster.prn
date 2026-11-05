@@ -1,0 +1,75 @@
+(module gentexture)
+(import math)
+
+;; courthouse_plaster — the municipal district's wall material: lime plaster over brick, troweled by
+;; hand and painted the same warm bone as the rest of the civic palette (SHANKPIT's `plaster`,
+;; density 900 kg/m^3 -- the lightest masonry in the city, which is why a plaster wall comes apart
+;; into dust rather than into blocks). Companion to institutional_tile.prn and courthouse_marble.prn:
+;; the district needed a wall surface that reads as PAINTED MASONRY at arm's length and stays quiet at
+;; distance, so this is deliberately mottling and not a grid -- a plaster wall has no pattern to repeat,
+;; only uneven absorption and the ghost of the trowel.
+;;
+;; Every frequency below is a WHOLE NUMBER of cycles across the canvas. That is not decoration: a
+;; fractional coefficient (this file's first draft used 1.3) does not meet itself at x=w, so the
+;; texture shows a brightness step on every box boundary in the level. SHANKPIT's own proc_tex test
+;; asserts the same property on the native generator (packages/render/proc_tex_test.c), and the
+;; marble file next door had exactly that bug before it was fixed.
+;;
+;; One real tweakable, per bullet_hole.prn's convention: mottle-strength. Everything else is the
+;; surface's identity.
+
+;; mottle-strength — how far the plaster's tone wanders around its base. Lower (~0.10) reads as fresh
+;; paint, higher (~0.30) as seventy years of damp and repainting.
+(defn mottle-strength [] : F64 0.23)
+
+(defn -two-pi [] : F64 6.2831853)
+
+;; frac-coord — math/abs does not exist on this target (MATH_PRIM_TABLE in src/emit_java.c only
+;; recognizes floor/sqrt/log/cos/random-f64), so this file uses plain conditionals and whole-number
+;; cosines instead of the hash helpers institutional_tile.prn needs for its per-tile jitter.
+(defn frac-coord [(scaled : F64)] : F64
+  (- scaled (math/floor scaled)))
+
+;; wrap-safe cosines: u and v are in [0,1), every coefficient is whole, so cos(2*pi*k*u) at u=1 equals
+;; its value at u=0 and the render tiles seamlessly.
+(defn wave-u [(x : F64) (w : F64) (k : F64)] : F64
+  (math/cos (* (-two-pi) (* k (/ x w)))))
+
+(defn wave-uv [(x : F64) (y : F64) (w : F64) (h : F64) (ku : F64) (kv : F64)] : F64
+  (math/cos (* (-two-pi) (+ (* ku (/ x w)) (* kv (/ y h))))))
+
+;; mottle — the tone itself: one broad two-axis cloud (the trowel's big sweeps), a finer diagonal
+;; (lapping passes), and two single-axis ripples (the drag marks). Normalised into 0..1 by
+;; base-tone + strength/2 and clamped, so the knob above means what it says.
+(defn base-tone [] : F64 0.72)
+
+;; Every operator call here is strictly BINARY. Not style: NOCK renders this file through PARENA's
+;; Java target (IDUNA internal/nock/procgen.go), and emit_java.c's own real, current limit is
+;; "binary operator requires exactly 2 operands (v0 has no variadic +/and/or)" -- a four-operand + (the
+;; first draft of the sum below) compiles on the C target and is REJECTED on the Java one, so the
+;; material rendered natively and then failed to store in the texture library. Hence nested sums
+;; rather than one wide one.
+(defn mottle [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ (base-tone)
+     (* (mottle-strength)
+        (+ (* 0.45 (wave-uv x y w h 1.0 1.0))
+           (+ (* 0.28 (wave-uv x y w h 3.0 2.0))
+              (+ (* 0.15 (wave-u x w 4.0))
+                 (* 0.12 (wave-uv x y w h 2.0 5.0))))))))
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn value [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01 (mottle x y w h)))
+
+;; the bone palette: slightly warmer in red, slightly cooler in blue, all three multiplied by the same
+;; value so the mottling is a change of LIGHT rather than a change of hue.
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.80 (value x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.77 (value x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.70 (value x y w h)))

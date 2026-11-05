@@ -1,0 +1,87 @@
+(module gentexture)
+(import math)
+
+;; courthouse_marble — veined stone for the municipal district's columns, daises and entablatures
+;; (SHANKPIT tools/build_municipal_district.py, material `marble`, density 2700).
+;;
+;; The district's shell is institutional tile and flat plaster; marble is the one material that has to
+;; read as EXPENSIVE from across the street, which in a fixed-function engine means value contrast:
+;; a pale warm base with a few dark, wandering veins rather than a fine pattern. Rendering is NOCK's
+;; procedural texture pipeline (IDUNA cmd/nock_gen_textures); the native client draws the same name
+;; with packages/render/proc_tex.c's own proctex_make_marble_rgba, the way it already draws `brick`
+;; and `wood` without a texture file.
+;;
+;; Two knobs, kept to exactly two on purpose (bullet_hole.prn's "one real knob" convention, one more
+;; because stone needs both a vein count and a contrast):
+;;   veins-per-axis  how many veins cross the tile; LOW is expensive-looking, HIGH is busy
+;;   vein-contrast   0.0 = invisible marbling, 1.0 = near-black streaks
+;; Everything else is derived, so a change here re-renders pixel-identical.
+
+(defn veins-per-axis [] : F64 2.0)
+(defn vein-contrast [] : F64 0.55)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn frac-coord [(scaled : F64)] : F64
+  (- scaled (math/floor scaled)))
+
+;; abs64 — math/abs does not exist on the Java target (MATH_PRIM_TABLE in src/emit_java.c), so the
+;; reflected distance below is a conditional negation.
+(defn abs64 [(v : F64)] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+;; per-pixel deterministic jitter (0..1). Never math/random-f64: the texture has to re-render
+;; identically for every host that builds the same file.
+(defn jitter [(x : F64) (y : F64)] : F64
+  (frac-coord (+ (* (math/floor x) 12.9898) (* (math/floor y) 78.233))))
+
+;; EVERY coefficient here is a WHOLE number of cycles across the canvas, including the warp below
+;; (1.7 was the first draft): a fractional one does not meet itself at x=w, which put a visible
+;; brightness step on every column face where two marble boxes met. Measured, not guessed -- the seam
+;; across the wrap was 49 on a 0..255 luminance scale with 1.7 and every interior step was at most 39;
+;; with whole numbers the seam is down with the jitter noise. The same property is asserted on the
+;; native generator (SHANKPIT packages/render/proc_tex_test.c) and in docs for the plaster next door.
+;;
+;; No `let` anywhere in this file, and every operator call is strictly binary. Not style: NOCK renders
+;; this through PARENA's Java target (IDUNA internal/nock/procgen.go), whose emitter currently accepts
+;; "numbers, symbols, binops, if, and calls" -- a `let` (the first draft of the helpers below) and a
+;; variadic +/and/or both compile on the C target and are REJECTED there. Caught by running the render:
+;; the material drew natively and then failed to store in the texture library.
+
+;; vein — 1.0 on a vein, falling to 0.0 over the width of one. A sine of a slowly warped coordinate
+;; gives the wandering line; the warp is a second, much lower frequency so the veins bend rather than
+;; stay parallel.
+(defn warp [(y : F64) (h : F64)] : F64
+  (* 0.35 (math/cos (* 6.2832 (/ y h)))))
+
+(defn vein-phase [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ (+ (* (veins-per-axis) (/ x w)) (warp y h)) (* 0.08 (/ y h))))
+
+;; THIN lines, not broad bands: the line is where the warped phase is nearest the half-period, so
+;; 1 - (d / width) gives a vein a few percent wide with a pale field either side. The first draft used
+;; (0.5 - d) / width, which is 1.0 over 88% of the canvas -- that renders a DARK stone with a few pale
+;; slivers, the exact opposite of the pale base this file is for. Measured off the PNG (mean luminance
+;; 99 where the palette implies ~198) before it was fixed, not guessed from the source.
+(defn vein [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (clamp01 (/ (- 0.06 (abs64 (- (frac-coord (vein-phase x y w h)) 0.5))) 0.06)))
+
+;; base-value — warm off-white with a slow cloudy mottle so the stone is not one flat grey.
+(defn cloud [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.5 (+ 1.0 (math/cos (* 6.2832 (+ (/ x w) (/ y h)))))))
+
+(defn base-value [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ 0.80 (+ (* 0.10 (cloud x y w h)) (* 0.04 (- (jitter x y) 0.5)))))
+
+(defn shaded [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (base-value x y w h) (- 1.0 (* (vein-contrast) (vein x y w h)))))
+
+;; A cool pale stone: slightly blue in the shadow, warm in the light.
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.97 (shaded x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.95 (shaded x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.92 (shaded x y w h)))

@@ -1,0 +1,67 @@
+(module gentexture)
+(import math)
+
+;; wood_mahogany — dark, dull, close-grained mahogany for the parts of the municipal district that are
+;; supposed to cost something: the judge's bench, the council dais, the doors (SHANKPIT
+;; tools/build_municipal_district.py, material `wood_mahogany`, density 580).
+;;
+;; Same generator as wood_oak.prn; read that file's header for why the species are three files.
+;; Mahogany's numbers sit BETWEEN oak and pine in density and nowhere near either in colour: TIGHT
+;; narrow boards with many rings per board, and a red-brown that goes almost black in the seams. That is
+;; the whole reason it is in the district -- a courthouse bench should be the one wooden object in the
+;; room that reads heavier than the furniture around it.
+;;
+;;   plank-rows   7 narrow boards
+;;   ring-density 14 -- the closest grain of the three
+;;   tint         0.42/0.22/0.16
+
+(defn plank-rows [] : F64 7.0)
+(defn ring-density [] : F64 14.0)
+(defn tint-r [] : F64 0.42)
+(defn tint-g [] : F64 0.22)
+(defn tint-b [] : F64 0.16)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn frac-coord [(scaled : F64)] : F64
+  (- scaled (math/floor scaled)))
+
+(defn jitter [(x : F64) (y : F64)] : F64
+  (frac-coord (+ (* (math/floor x) 12.9898) (* (math/floor y) 78.233))))
+
+;; Same generator shape as wood_oak.prn, and the same two Java-target limits (no `let`, binary
+;; operators only) -- see that file's note. Mahogany's only structural difference is a shallower
+;; ring bow, its own number rather than a different shape.
+(defn board-frac [(y : F64) (h : F64)] : F64
+  (frac-coord (* (/ y h) (plank-rows))))
+
+(defn seam [(y : F64) (h : F64)] : F64
+  (if (< (board-frac y h) 0.05) 1.0 0.0))
+
+(defn ring-bow [(x : F64) (w : F64)] : F64
+  (* 0.08 (math/cos (* 6.2832 (/ x w)))))
+
+(defn ring-phase [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ (* (ring-density) (/ (board-frac y h) (plank-rows))) (ring-bow x w)))
+
+(defn rings [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.5 (+ 1.0 (math/cos (* 6.2832 (ring-phase x y w h))))))
+
+(defn grain [(x : F64) (y : F64)] : F64
+  (- (jitter x y) 0.5))
+
+(defn shade-base [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ 0.66 (+ (* 0.22 (rings x y w h)) (* 0.05 (grain x y)))))
+
+(defn shade [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (clamp01 (shade-base x y w h)) (- 1.0 (* 0.65 (seam y h)))))
+
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-r) (shade x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-g) (shade x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-b) (shade x y w h)))

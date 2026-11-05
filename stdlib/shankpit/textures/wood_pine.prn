@@ -1,0 +1,64 @@
+(module gentexture)
+(import math)
+
+;; wood_pine — soft, pale, wide-ringed pine for the municipal district's crates, cheap partitions and
+;; the scaffolding of the clinic (SHANKPIT tools/build_municipal_district.py, material `wood_pine`,
+;; density 460 -- the lightest thing in the district, and the debris that spreads furthest).
+;;
+;; Same generator, same knobs as wood_oak.prn; read that file's header for why the three species are
+;; three files rather than one knob. Pine's numbers: WIDE boards, FEW rings, pale honey tint. A pine
+;; crate and an oak bench should not weigh the same, and they should not read as the same wood either.
+;;
+;;   plank-rows   4 wide boards, not oak's six narrow ones
+;;   ring-density 4 slow rings per board
+;;   tint         0.72/0.60/0.38 -- pale, warm, almost no red
+
+(defn plank-rows [] : F64 4.0)
+(defn ring-density [] : F64 4.0)
+(defn tint-r [] : F64 0.72)
+(defn tint-g [] : F64 0.60)
+(defn tint-b [] : F64 0.38)
+
+(defn clamp01 [(v : F64)] : F64
+  (if (< v 0.0) 0.0 (if (> v 1.0) 1.0 v)))
+
+(defn frac-coord [(scaled : F64)] : F64
+  (- scaled (math/floor scaled)))
+
+(defn jitter [(x : F64) (y : F64)] : F64
+  (frac-coord (+ (* (math/floor x) 12.9898) (* (math/floor y) 78.233))))
+
+;; Same generator shape as wood_oak.prn, and the same two Java-target limits (no `let`, binary
+;; operators only) -- see that file's note.
+(defn board-frac [(y : F64) (h : F64)] : F64
+  (frac-coord (* (/ y h) (plank-rows))))
+
+(defn seam [(y : F64) (h : F64)] : F64
+  (if (< (board-frac y h) 0.05) 1.0 0.0))
+
+(defn ring-bow [(x : F64) (w : F64)] : F64
+  (* 0.10 (math/cos (* 6.2832 (/ x w)))))
+
+(defn ring-phase [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ (* (ring-density) (/ (board-frac y h) (plank-rows))) (ring-bow x w)))
+
+(defn rings [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* 0.5 (+ 1.0 (math/cos (* 6.2832 (ring-phase x y w h))))))
+
+(defn grain [(x : F64) (y : F64)] : F64
+  (- (jitter x y) 0.5))
+
+(defn shade-base [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (+ 0.76 (+ (* 0.16 (rings x y w h)) (* 0.06 (grain x y)))))
+
+(defn shade [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (clamp01 (shade-base x y w h)) (- 1.0 (* 0.45 (seam y h)))))
+
+(defn pixel-r [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-r) (shade x y w h)))
+
+(defn pixel-g [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-g) (shade x y w h)))
+
+(defn pixel-b [(x : F64) (y : F64) (w : F64) (h : F64)] : F64
+  (* (tint-b) (shade x y w h)))

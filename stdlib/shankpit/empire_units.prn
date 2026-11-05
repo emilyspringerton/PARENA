@@ -41,8 +41,19 @@
 (defn eu-archetype-species [(arch : I32)] : I32
   (if (= (eu-clamp 0 6 arch) 0) 0 (if (= (eu-clamp 0 6 arch) 2) 2 1)))
 
-;; AIRole values (packages/simulation/story_ai.h): 3 = STORY_ALLY, 4 = GUARD, 7 = RELENTLESS_PURSUER,
-;; 10 = WANDERING_BOT. Repeated here as numbers so this module never includes a C header.
+;; AIRole values (packages/simulation/story_ai.h): 0 RIFT_HOUND, 1 SHAMBLER_TROOPER, 2 GORE_BRUTE,
+;; 3 STORY_ALLY, 4 GUARD, 5 STORM_CALLER, 6 BOMBARDIER, 7 RELENTLESS_PURSUER, 8 TERRITORIAL_BEAST,
+;; 9 BLIND_STALKER, 10 WANDERING_BOT, 11 MAGISTRATE (the civic boss: holds the bench, carries the
+;; magnum, and can stun with the player in sight). Repeated here as numbers so this module never
+;; includes a C header.
+;;
+;; This table is the DEFAULT, not a ceiling: a level character that authors its own `role` keeps it
+;; (story_ai_spawn_unit_role in SHANKPIT honours an authored role over this one, the same way an
+;; authored kit already wins over eu-archetype-kit). The archetype still owns the health pool, the
+;; default skin and the order priorities -- so "six municipalities, six different threats" is routing
+;; in the level data, not a sixth archetype here. A boss is the same story: the courthouse authors one
+;; of its two bodies as AI_ROLE_MAGISTRATE, and the archetype that body inherits still owns its health
+;; pool, so no new archetype or number is needed in this module for a boss to exist.
 (defn eu-archetype-role [(arch : I32)] : I32
   (if (= (eu-clamp 0 6 arch) 0) 0
     (if (= (eu-clamp 0 6 arch) 1) 10

@@ -1,0 +1,122 @@
+;; stdlib/shankpit/weather_audio_rules.prn -- what the weather SOUNDS like, and how much of the fog it blows away.
+;;
+;; Founder (2026-11-05): "add basic wind sound effects for storms ensure that the fog we simulate the sound
+;; effects of fog in a storm like that and then how it sounds different when it gets windier and blows all
+;; the wind and smoke away".
+;;
+;; Why this lives in PARENA rather than in packages/audio: the wind is a WEATHER fact, not a mixer setting.
+;; The fog density the renderer pools on the ground and the gain/brightness of the wind bed have to come from
+;; one place or a storm will sound like a gale while looking like a still morning. sky_rules.prn already owns
+;; how overcast "overcast" is and how far you can see; this file owns the two things sky_rules deliberately
+;; did not: the AIR MOVING, and what that moving air does to the fog that is already there.
+;;
+;; Honest scope: this is an INTEGER, total-function model. No FFT, no reverb, no per-material wind. It
+;; answers three questions -- how hard is the wind, how loud/bright should its bed be, how much fog does it
+;; eat -- and the DSP that turns those into samples lives in SHANKPIT's audio.c. Everything is permille
+;; (1000 == 1.0) so the same numbers could drive a Roblox place or a browser host without agreeing on floats.
+;;
+;; Thunder is here too, but only as the two facts that are real physics: how long the sound takes to reach
+;; you from a strike you just SAW, and how much quieter it is for being far away. The scheduling (counting
+;; strikes, holding the rumble until its travel time is up) is mechanics and lives in the host; a synthetic
+;; "thunder" folded into the wind bed would make the storm one sound instead of two.
+(module shankpit/weather-audio-rules)
+(export weather-wind-speed-permille weather-wind-gain-permille weather-wind-bright-permille
+        weather-wind-pan-permille weather-wind-direction-deg weather-wind-gust-permille
+        weather-wind-fog-thin-permille weather-wind-brightness-floor-permille
+        weather-thunder-delay-ms weather-thunder-gain-permille)
+
+(defn wa-clamp [(lo : I32) (hi : I32) (v : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; Gust: a slow, deterministic breathing on top of the steady wind. Two integer triangle waves at 9 s and
+;; 3.7 s (co-prime enough that the pattern does not repeat inside a fight) so a storm is never a flat hiss.
+;; Deterministic on time rather than random so a replay, a server and a client all hear the same gust.
+(defn weather-wind-gust-permille [(now_ms : I32)] : I32
+  (let [t (if (< now_ms 0) 0 now_ms)
+        a (- (* (/ t 9000) 9000) t)          ;; -8999..0 within each 9 s
+        b (- (* (/ t 3700) 3700) t)]
+    (let [ta (if (< a -4500) (+ 9000 a) a)   ;; triangle, -4500..4500
+          tb (if (< b -1850) (+ 3700 b) b)]
+      (let [ua (+ 4500 ta)                   ;; 0..9000, the slow breath
+            ub (+ 1850 tb)]                  ;; 0..3700, a faster wobble on top of it
+        ;; The slow wave is the gust itself (0..1000 after /9); the fast one only bends it by about
+        ;; +/-74, so the bed swells and falls instead of sitting pinned at full.
+        (wa-clamp 0 1000 (+ (/ ua 9) (/ (- ub 1850) 25)))))))
+
+;; How hard the air is moving, 0..1000. A still day is not silent -- 120 permille of breeze, because the
+;; world outside a storm still has air in it -- and a full storm sits near 1000 before the gust is added.
+(defn weather-wind-speed-permille [(storm_pm : I32) (gust_pm : I32)] : I32
+  (let [s (wa-clamp 0 1000 storm_pm)
+        g (wa-clamp 0 1000 gust_pm)
+        base (+ 120 (/ (* s 640) 1000))
+        gust_span (+ 160 (/ (* s 240) 1000))]
+    (wa-clamp 0 1000 (+ base (/ (* gust_span g) 1000)))))
+
+;; Gain of the wind bed, 0..1000. The wind is the one sound in this engine with no source to walk away
+;; from, so it must never be loud enough to bury a gunshot: it tops out at 620 permille of its own buffer.
+;; Fog does not silence it -- fog is air you can see -- but a dense fog makes the same air read duller, so
+;; a little gain is traded for brightness below rather than both going up.
+(defn weather-wind-gain-permille [(storm_pm : I32) (fog_pm : I32) (speed_pm : I32)] : I32
+  (let [s (wa-clamp 0 1000 storm_pm)
+        f (wa-clamp 0 1000 fog_pm)
+        v (wa-clamp 0 1000 speed_pm)
+        raw (+ (/ (* v 560) 1000) (/ (* s 90) 1000) 40)]
+    (wa-clamp 0 620 (- raw (/ (* f 60) 1000)))))
+
+;; Brightness, 0..1000: how much top end the bed keeps. Fast air hisses (bright), fog absorbs it (dull).
+;; This is the number audio.c turns into its low-pass coefficient, so "it sounds different when it gets
+;; windier" is one continuous value rather than a second sound file.
+(defn weather-wind-brightness-floor-permille [] : I32
+  140)
+
+(defn weather-wind-bright-permille [(speed_pm : I32) (fog_pm : I32)] : I32
+  (let [v (wa-clamp 0 1000 speed_pm)
+        f (wa-clamp 0 1000 fog_pm)
+        raw (+ 140 (/ (* v 720) 1000))]
+    (wa-clamp 0 1000 (- raw (/ (* raw f 520) 1000000)))))
+
+;; Where the wind is coming FROM, in degrees, 0..359. Slowly rotating so standing still in a storm still
+;; moves the sound across your head; 71 s for a full turn is slow enough to be weather, not a pan effect.
+(defn weather-wind-direction-deg [(now_ms : I32)] : I32
+  (let [t (if (< now_ms 0) 0 now_ms)
+        r (- t (* (/ t 71000) 71000))]
+    (/ (* r 360) 71000)))
+
+;; Pan of the wind relative to the listener, -1000..1000 (0 = dead ahead, +1000 = hard right). The wind
+;; has no position, but it has a DIRECTION, and a direction is what makes an ambient bed spatial: turn
+;; your back on a gale and it should move behind you. Same convention as audio.c's spatial_gains --
+;; 0 degrees is the listener's forward -- and the shortest way round the circle, so 350 vs 10 does not
+;; pan to the far side.
+(defn weather-wind-pan-permille [(dir_deg : I32) (yaw_deg : I32)] : I32
+  (let [m (- dir_deg yaw_deg)
+        d (- m (* (/ (+ m 180) 360) 360))
+        rel (if (< d -180) (+ d 360) (if (> d 180) (- d 360) d))]
+    (wa-clamp -1000 1000 (/ (* rel 1000) 180))))
+
+;; How much of the ground fog survives the wind, 1000 = untouched, ~400 in a gale. This is the "blows all
+;; the ... fog away" half: a storm that gusts harder must visibly thin its own scud, or the picture and the
+;; sound disagree the moment the gust rises. Floored at 400 -- wind moves fog, it does not delete weather.
+;; Thunder: how long the sound of a strike you already SAW is still in the air. Sound is ~343 m/s, so
+;; 300 units of distance is most of a second and a strike at the far edge of a storm is a slow roll you
+;; hear well after the flash. Distance is clamped to 2000 units -- past that the storm's own roar wins and
+;; the exact delay stops mattering (it would still be under six seconds).
+(defn weather-thunder-delay-ms [(dist_units : I32)] : I32
+  (let [d (wa-clamp 0 2000 dist_units)]
+    (wa-clamp 0 6000 (/ (* d 1000) 343))))
+
+;; Thunder's loudness, 0..1000: the inverse-square-ish falloff, scaled by how violent the storm is. The
+;; near end is deliberately capped below a gunshot's own gain -- thunder is atmosphere, not a jump scare --
+;; and a clear sky produces none of it because storm_pm is 0 (the host only counts bolts in a storm, and
+;; this curve would still return a quiet rumble if it were asked, which is the honest answer for a distant
+;; storm you are not in). Floored at 60, not 0: a strike 2 km out is nearly inaudible, not literally absent.
+(defn weather-thunder-gain-permille [(dist_units : I32) (storm_pm : I32)] : I32
+  (let [d (wa-clamp 0 2000 dist_units)
+        s (wa-clamp 0 1000 storm_pm)
+        fall (- 1000 (/ (* d 620) 1000))
+        raw (/ (* fall (+ 400 (/ (* s 600) 1000))) 1000)]
+    (wa-clamp 0 1000 raw)))
+
+(defn weather-wind-fog-thin-permille [(speed_pm : I32) (storm_pm : I32)] : I32
+  (let [v (wa-clamp 0 1000 speed_pm)
+        s (wa-clamp 0 1000 storm_pm)]
+    (wa-clamp 400 1000 (- 1000 (/ (* v 520) 1000) (/ (* s 80) 1000)))))
