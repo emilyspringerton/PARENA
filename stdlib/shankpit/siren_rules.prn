@@ -1,0 +1,90 @@
+;; stdlib/shankpit/siren_rules.prn -- what an emergency siren sounds like, how it carries, and when it goes off.
+;;
+;; Founder (2026-11-05): "add sound affordances for sirens; we need sound engineering for classic ems and
+;; police sirens ... the police ones when you are boosting or hitting space for hover the siren is
+;; triggered by those things all mods first parena first spacial sound engineering".
+;;
+;; Why this lives in PARENA: a siren is not a sample, it is a TONE with a schedule, and the schedule is a
+;; rule like any other. Two vehicles the world over have to agree on what an EMS two-tone is and what a
+;; police wail is, and a Level editor, a server and a browser host should be able to sound the same alarm
+;; without shipping the same waveform. Everything here is integer and total: millihertz so the phase can be
+;; integrated exactly, permille for gains, degrees for bearing.
+;;
+;; WHAT THIS MODULE DOES NOT DO: it never decides whose siren is playing. A host asks siren-trigger with its
+;; own facts (is this a police car? is the driver boosting or lifting? how fast is an unmanned car moving?)
+;; and gets a kind back. Nothing here allocates, remembers, or reads the clock itself: one siren voice is
+;; enough for the engine (see SHANKPIT's packages/audio/audio.c), and the host picks the loudest.
+(module shankpit/siren-rules)
+(export siren-hz-milli siren-gain-permille siren-pan-permille siren-trigger
+        siren-kind-silent siren-kind-ems siren-kind-police
+        siren-ems-low-milli siren-ems-high-milli siren-police-low-milli siren-police-high-milli)
+
+(defn sr-clamp [(lo : I32) (hi : I32) (v : I32)] : I32
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+;; The kind numbers are the wire/level numbers. They are exported as functions so a host never hardcodes a
+;; number it might drift from, and so the header SHANKPIT generates can be checked against them by a test.
+(defn siren-kind-silent [] : I32 0)
+(defn siren-kind-ems [] : I32 1)
+(defn siren-kind-police [] : I32 2)
+
+;; The two tones of a classic European EMS "hi-lo": roughly a fifth apart, which is why it reads as an
+;; alarm rather than a two-note melody.
+(defn siren-ems-low-milli [] : I32 690000)
+(defn siren-ems-high-milli [] : I32 880000)
+;; A police wail sweeps between these; the band is deliberately wider than the EMS pair (520..1480 against
+;; 690..880) so the two sirens are distinguishable through a wall and across a city, not just up close.
+(defn siren-police-low-milli [] : I32 520000)
+(defn siren-police-high-milli [] : I32 1480000)
+
+;; Instantaneous frequency, in MILLIhertz, for one siren kind at a moment. The host integrates this into a
+;; phase; nothing here needs a sample rate, so the same function is correct at 22 kHz and at 48 kHz.
+;;   kind 1 EMS    -- two tones, 0.9 s each, alternating: 690 / 880 Hz
+;;   kind 2 police -- a wail: a linear sweep up then down, 4.2 s for the full round trip
+;;   anything else -- silent, because an unknown siren is not a licence to make a noise
+(defn siren-hz-milli [(kind : I32) (now_ms : I32)] : I32
+  (let [t (if (< now_ms 0) 0 now_ms)]
+    (if (= kind 1)
+        (let [p (- t (* (/ t 1800) 1800))]
+          (if (< p 900) 690000 880000))
+        (if (= kind 2)
+            (let [p (- t (* (/ t 4200) 4200))
+                  half (if (< p 2100) p (- 4200 p))]
+              (+ 520000 (/ (* half 960000) 2100)))
+            0))))
+
+;; How loud a siren is at a distance, 0..1000. Sirens are made to carry, so the falloff is far gentler than
+;; a gunshot's: 1000 on top of it, still ~750 at 600 units, ~470 at 2 km, ~310 at the 4 km clamp. The second
+;; input is how fast the car is going (permille of its top speed): a stationary cruiser's siren is quieter
+;; than a moving one because it is farther from you in practice, and a stopped siren that is as loud as a
+;; chase is the one thing a city at night would notice as wrong.
+(defn siren-gain-permille [(dist_units : I32) (speed_pm : I32)] : I32
+  (let [d (sr-clamp 0 4000 dist_units)
+        s (sr-clamp 0 1000 speed_pm)
+        near (/ (* 1000 900) (+ 900 (/ d 2)))
+        alive (+ 700 (/ (* s 300) 1000))]
+    (sr-clamp 0 1000 (/ (* near alive) 1000))))
+
+;; Pan of a siren relative to the listener, -1000..1000, 0 = dead ahead, + = right. The same shortest-way-
+;; round convention the wind bed uses (weather_audio_rules.prn's weather-wind-pan-permille): a siren behind
+;; you must pan behind you however the compass numbers happen to wrap.
+(defn siren-pan-permille [(bearing_deg : I32) (yaw_deg : I32)] : I32
+  (let [m (- bearing_deg yaw_deg)
+        d (- m (* (/ (+ m 180) 360) 360))
+        rel (if (< d -180) (+ d 360) (if (> d 180) (- d 360) d))]
+    (sr-clamp -1000 1000 (/ (* rel 1000) 180))))
+
+;; Should this car be sounding a siren RIGHT NOW, and which one? Returns a siren kind (0 none).
+;;   police   -- the car is a police unit (a civilian car never sounds one, whatever the driver does)
+;;   boost    -- the rear nozzle is lit
+;;   lift     -- the hover nozzles are lit (space)
+;;   speed_pm -- how fast the car is moving, 0..1000
+;; A driven police car sounds on the two things the founder named -- boost or lift -- plus a moving car
+;; that has nobody in it (the automated patrols), which is the only way a self-driving cruiser announces
+;; itself. Parked and idle is silent, so a police car left on the street does not wail all night.
+(defn siren-trigger [(police : I32) (boost : I32) (lift : I32) (speed_pm : I32)] : I32
+  (if (<= police 0)
+      0
+      (if (or (> boost 0) (> lift 0) (> (sr-clamp 0 1000 speed_pm) 60))
+          2
+          0)))
