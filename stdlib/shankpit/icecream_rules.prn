@@ -22,7 +22,11 @@
 (export icecream-note-count icecream-note-hz-milli icecream-note-ms icecream-note-gain-permille
         icecream-loop-ms icecream-env-permille icecream-gain-permille icecream-pan-permille
         icecream-trigger icecream-kind-off icecream-kind-playing
-        icecream-carry-units icecream-tempo-ms)
+        icecream-carry-units icecream-tempo-ms
+        icecream-jingle-count icecream-jingle-for-id icecream-jingle-semitones
+        icecream-jingle-key-permille icecream-note-hz-milli-keyed
+        icecream-window-units icecream-serve-ms icecream-serve-heal
+        icecream-serve-cooldown-ms icecream-serve-progress icecream-serve-open)
 
 (defn icr-clamp [(lo : I32) (hi : I32) (v : I32)] : I32
   (if (< v lo) lo (if (> v hi) hi v)))
@@ -106,3 +110,64 @@
   (if (<= ice_cream 0)
       0
       (if (> (icr-clamp 0 1000 speed_pm) 20) 1 0)))
+
+;; ---------------------------------------------------------------------------------------------------
+;; WHICH TRUCK SINGS IN WHICH KEY, and what it costs to be served.
+;;
+;; Two trucks on the same street in the same key are one truck as far as an ear is concerned: you cannot tell
+;; the one about to turn the corner from the one two blocks away, which is the whole information the jingle
+;; carries. So a truck's key is derived from its own slot id -- a fact every host already agrees on, and one
+;; that survives a reconnect -- rather than being hand-assigned per truck.
+;;
+;; The keys are a MAJOR chord's worth of transpositions (unison, up a tone, down a minor third, up a fourth).
+;; Every interval is a real equal-temperament ratio in permille, so a host with nothing but integer maths can
+;; render the same jingle in the same key: 2^(2/12)=1122, 2^(-3/12)=841, 2^(5/12)=1335.
+(defn icecream-jingle-count [] : I32 4)
+
+;; A truck's jingle, from its slot id. Total for any id, negative included: an invalid truck still has to be
+;; handed a jingle rather than a table overrun.
+(defn icecream-jingle-for-id [(id : I32)] : I32
+  (let [n (icecream-jingle-count)
+        i (if (< id 0) 0 id)]
+    (- i (* (/ i n) n))))
+
+(defn icecream-jingle-semitones [(v : I32)] : I32
+  (if (= v 1) 2
+  (if (= v 2) -3
+  (if (= v 3) 5
+       0))))
+
+;; The key as a permille multiplier (1000 = the tune exactly as written).
+(defn icecream-jingle-key-permille [(v : I32)] : I32
+  (if (= v 1) 1122
+  (if (= v 2) 841
+  (if (= v 3) 1335
+       1000))))
+
+;; One step of the tune, in the key THIS truck sings in. Still millihertz, still an integer: a host renders
+;; pitch, not ratios.
+(defn icecream-note-hz-milli-keyed [(i : I32) (v : I32)] : I32
+  (/ (* (icecream-note-hz-milli i) (icecream-jingle-key-permille v)) 1000))
+
+;; ---------------------------------------------------------------------------------------------------
+;; VENDING. The song is the advertisement; the cone is the payoff. A jingle that never leads anywhere is set
+;; dressing, so the truck has a window you can stand at, and the window is only open when the truck is STOPPED
+;; -- which is the mirror image of the trigger above: while it drives you hear it, when it stops you can buy.
+;; The player's health scale is 0..100 (PlayerState), so 25 is a real quarter of a player, not a token.
+(defn icecream-window-units [] : I32 7)          ;; how close counts as "at the window"
+(defn icecream-serve-ms [] : I32 900)            ;; how long you have to stand there
+(defn icecream-serve-heal [] : I32 25)           ;; health a cone is worth
+(defn icecream-serve-cooldown-ms [] : I32 45000) ;; one cone per minute per player, per truck
+
+;; How far through the hand-over the buyer is, 0..1000 -- what a prompt or a progress ring draws.
+(defn icecream-serve-progress [(held_ms : I32)] : I32
+  (let [n (icecream-serve-ms)]
+    (icr-clamp 0 1000 (/ (* (icr-clamp 0 n held_ms) 1000) n))))
+
+;; Is the window open? Close enough AND stopped (speed_pm <= 20 of top speed). The two halves matter
+;; separately: a truck rolling past you at arm's length is not serving, and a stopped truck across the road
+;; is not either.
+(defn icecream-serve-open [(dist_units : I32) (speed_pm : I32)] : I32
+  (if (> dist_units (icecream-window-units))
+      0
+      (if (> (icr-clamp 0 1000 speed_pm) 20) 0 1)))
