@@ -23,7 +23,8 @@
         lm-cmd-toggle lm-cmd-source lm-cmd-close lm-cmd-load-ok lm-cmd-load-fail lm-cmd-trap lm-cmd-overlay-closed
         lm-cmd-suspend
         lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-world-input lm-banner
-        lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key)
+        lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key
+        lm-compile-now lm-swap-on)
 
 ;; ---- states and commands ----------------------------------------------------------------------------
 (defn lm-st-none [] : I32 0)
@@ -231,3 +232,16 @@
     ((and (>= sym 48) (<= sym 57)) sym)                                  ; 0..9
     ((and (>= sym (lm-sdl-scan 0)) (<= sym (lm-sdl-scan 511))) (lm-dom-scan (- sym (lm-sdl-scan 0))))
     (true (lm-dom-punct sym))))
+
+;; ---- save -> compile -> swap (T0 step 6; decision B: a dev box with ../PARENA and the LLVM toolchain) --------
+;; Build now: a watched source (the manifest or any of its src files) changed since the last build started, no
+;; build is running, and this machine can build at all. A change made while a build runs waits for it to finish
+;; and then builds again, so the newest save always ends up compiled.
+(defn lm-compile-now [(changed : I32) (compiling : I32) (can-build : I32)] : I32
+  (if (and (!= changed 0) (and (= compiling 0) (!= can-build 0))) 1 0))
+
+;; A freshly compiled module swaps in on an ENTRY into the foreground: out of the overlay (edit, save, Escape,
+;; play the new build) or back from the world (Shift+M). Never under a running level, and not on LOADING -> FG,
+;; which already loads the newest module there is.
+(defn lm-swap-on [(old : I32) (new : I32)] : I32
+  (if (and (= new (lm-st-fg)) (or (= old (lm-st-source)) (= old (lm-st-bg)))) 1 0))
