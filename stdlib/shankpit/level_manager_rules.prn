@@ -21,7 +21,7 @@
 (module shankpit/level-manager)
 (export lm-st-none lm-st-loading lm-st-fg lm-st-bg lm-st-source lm-st-source-none
         lm-cmd-toggle lm-cmd-source lm-cmd-close lm-cmd-load-ok lm-cmd-load-fail lm-cmd-trap lm-cmd-overlay-closed
-        lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-banner
+        lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-world-input lm-banner
         lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key)
 
 ;; ---- states and commands ----------------------------------------------------------------------------
@@ -128,6 +128,11 @@
 ;; the host steps the level this frame / the level gets keyboard and mouse and the world gets none
 (defn lm-ticks [(s : I32)] : I32 (if (= s (lm-st-fg)) 1 0))
 (defn lm-owns-input [(s : I32)] : I32 (if (= s (lm-st-fg)) 1 0))
+
+;; the world reads its own keys, mouse and pad, and may grab the mouse: only when nothing is in front of it.
+;; Not in FG (the level has them), not under the view-source overlay (the editor has them, with a visible
+;; cursor), not on the one LOADING frame (the level is about to be in front).
+(defn lm-world-input [(s : I32)] : I32 (if (or (= s (lm-st-none)) (= s (lm-st-bg))) 1 0))
 
 ;; the world-view hint: 0 none, 1 "Shift+M resume / Shift+X close" (a suspended level), 2 "Shift+M play"
 (defn lm-banner [(s : I32)] : I32
