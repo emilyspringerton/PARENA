@@ -5375,3 +5375,15 @@ is a named next step in the consumer's report, not a workaround to celebrate.
 
 Consumed by SHANKPIT (`make regen-dw-engine` -> `packages/simulation/dw_citizen_rules.c`), behind the
 engine shim in `packages/simulation/dw_engine.*`.
+
+## wasm/surface -- a wasm module's import/export surface, from the binary (2026-11-08)
+
+`(import wasm/surface)` (depends on `bytes`). Reads sections 1 (types), 2 (imports), 3 (functions) and 7 (exports); all
+others are skipped by size. Scalar API over the caller's `Bytes`: `ws-valid?`, `ws-import-count` / `-kind` /
+`-module-off` / `-module-len` / `-field-off` / `-field-len` / `-sig` / `-func-count`, `ws-export-count` / `-kind` /
+`-name-off` / `-name-len` / `-index` / `-sig`, `ws-sig-char`, `ws-sig-of`, `ws-name-is?`. Counts are -1 on a malformed
+module. A signature is one I32: result in bits 0-2 (0 none, 1 i32, 2 i64, 3 f32, 4 f64), parameter count in bits 3-6,
+parameter k in bits 7+3k (k < 8); -1 = not a function, -2 = not expressible (more than 8 params, more than one result,
+v128/reference types). Consumers: SHANKPIT `packages/wasm_host` (bind-or-refuse at load) and `tools/wasm_surface_check`
+(the level build's exact-surface assertion). Test: `make test-wasm-surface`. Deferred: memory64 limits, data/element
+validation (the runtime's job), UTF-8 validation of names (compared as raw bytes on purpose).

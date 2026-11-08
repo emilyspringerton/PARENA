@@ -1,0 +1,345 @@
+;; stdlib/wasm/surface.prn -- the surface of a WebAssembly module: what it imports and what it exports,
+;; read straight from the binary. Depends on bytes.
+;;
+;; Founder real-time, 2026-11-08: "implement as always mods first parena first mods driven development"
+;; (SHANKPIT/specs/2026-11-08-0000.md, T0: boot BRAWLPIT as a WASM level inside the SHANKPIT world). The
+;; host runs untrusted level modules, so before a module is linked it must be checked against the surface
+;; the host offers: every import bound, with the right signature, or the module is refused at load
+;; instead of trapping on its first call. The vendored runtime (wasm3, a labeled STOPGAP in SHANKPIT) has
+;; no public way to list a module's imports, and the level build needs the same check without node. Core
+;; deps are PARENA-first, so this half of a wasm loader -- the binary format -- is written here, once,
+;; and both consumers use it: SHANKPIT's packages/wasm_host (C, generated from this file) and PARENA's own
+;; tools/wasm_surface_check (the build-time "exactly these imports, exactly these exports" assertion).
+;; It is also the first brick of the queued PARENA-native wasm interpreter (EMILY/BACKLOG.md
+;; PARENA-WASM-INTERP) that is meant to replace the stopgap.
+;;
+;; Scope: the binary format's sections 1 (types), 2 (imports), 3 (functions) and 7 (exports); every other
+;; section is skipped by its size. Scalar API (IFC-3.4): names come back as an offset and a length into
+;; the caller's own Bytes, never copied. Every walk is bounded by the buffer and the section's declared
+;; size, so a truncated or hostile module yields -1/-2, never an out-of-range read past the section.
+;;
+;;   ws-valid?           magic \0asm + version 1
+;;   ws-import-count     -1 malformed, 0 when there is no import section
+;;   ws-import-kind      0 func, 1 table, 2 memory, 3 global (-1 out of range)
+;;   ws-import-{module,field}-{off,len}
+;;   ws-import-sig       the function's signature (below); -1 not a function
+;;   ws-export-count / -kind / -name-off / -name-len / -index / -sig
+;;   ws-sig-char         character k of the signature in wasm3's notation, e.g. "v(iiii)", 0 past the end
+;;
+;; A signature is ONE I32: result type in bits 0-2 (0 none, 1 i32, 2 i64, 3 f32, 4 f64), parameter count in
+;; bits 3-6, parameter k's type in bits 7+3k (k < 8). -2 = not expressible in that encoding (more than 8
+;; parameters, more than one result, or a v128/reference type), which the host treats as "refuse".
+;;
+;; Deferred, named: data/element/start validation (the runtime does that), the multi-memory and memory64
+;; limit flags beyond bit 0 (a flagged max is skipped correctly, a 64-bit limit is not), and names that are
+;; not valid UTF-8 (compared as raw bytes, which is what the host's exact-match needs).
+
+(module wasm/surface)
+(import bytes)
+(export ws-valid? ws-import-count ws-import-kind ws-import-module-off ws-import-module-len
+        ws-import-field-off ws-import-field-len ws-import-sig ws-import-func-count
+        ws-export-count ws-export-kind ws-export-name-off ws-export-name-len ws-export-index ws-export-sig
+        ws-sig-char ws-sig-of ws-name-is?)
+
+;; ---- bytes and LEB128 -----------------------------------------------------------------------------------
+(defstruct Leb
+  (value : I32)
+  (next  : I32))
+
+(defn ws-len [(d : Bytes)] : I32 (bytes/bytes-len d))
+
+;; a byte, or -1 past the end (every reader below treats -1 as "malformed")
+(defn ws-byte [(d : Bytes) (p : I32)] : I32
+  (if (and (>= p 0) (< p (bytes/bytes-len d))) (bytes/bytes-get d p) -1))
+
+;; unsigned LEB128, at most 5 bytes (u32). next = -1 when it runs off the end or past 5 bytes.
+(defn ws-leb [(d : Bytes) (pos : I32)] : Leb
+  (loop [p pos shift 0 acc 0]
+    (let [b (ws-byte d p)]
+      (cond
+        ((< b 0) {:value 0 :next -1})
+        ((>= shift 35) {:value 0 :next -1})
+        ((= (bit-and b 128) 0) {:value (bit-or acc (shl (bit-and b 127) shift)) :next (+ p 1)})
+        (true (recur (+ p 1) (+ shift 7) (bit-or acc (shl (bit-and b 127) shift))))))))
+
+;; a name / byte vector: the position just past it, or -1
+(defn ws-skip-vec [(d : Bytes) (p : I32)] : I32
+  (let [l (ws-leb d p)]
+    (if (< (get-field l :next) 0) -1
+        (let [end (+ (get-field l :next) (get-field l :value))]
+          (if (or (< (get-field l :value) 0) (> end (ws-len d))) -1 end)))))
+
+(defn ws-valid? [(d : Bytes)] : Bool
+  (and (>= (ws-len d) 8)
+       (and (and (= (ws-byte d 0) 0) (= (ws-byte d 1) 97))
+            (and (and (= (ws-byte d 2) 115) (= (ws-byte d 3) 109))
+                 (and (and (= (ws-byte d 4) 1) (= (ws-byte d 5) 0))
+                      (and (= (ws-byte d 6) 0) (= (ws-byte d 7) 0)))))))
+
+;; ---- sections -------------------------------------------------------------------------------------------
+;; Where section `id`'s content starts: -1 absent, -2 malformed (a size that runs past the end).
+(defstruct Sect
+  (start : I32)
+  (size  : I32))
+
+(defn ws-section [(d : Bytes) (id : I32)] : Sect
+  (if (not (ws-valid? d)) {:start -2 :size 0}
+      (loop [p 8]
+        (if (>= p (ws-len d)) {:start -1 :size 0}
+            (let [sid (ws-byte d p)
+                  l (ws-leb d (+ p 1))]
+              (cond
+                ((< (get-field l :next) 0) {:start -2 :size 0})
+                ((> (+ (get-field l :next) (get-field l :value)) (ws-len d)) {:start -2 :size 0})
+                ((= sid id) {:start (get-field l :next) :size (get-field l :value)})
+                (true (recur (+ (get-field l :next) (get-field l :value))))))))))
+
+;; the entry count at the head of a section: -1 malformed, 0 absent
+(defn ws-section-count [(d : Bytes) (id : I32)] : I32
+  (let [s (ws-section d id)]
+    (cond
+      ((= (get-field s :start) -1) 0)
+      ((< (get-field s :start) 0) -1)
+      (true (let [l (ws-leb d (get-field s :start))]
+              (if (< (get-field l :next) 0) -1 (get-field l :value)))))))
+
+;; the position of the first entry (just past the count), or -1
+(defn ws-section-first [(d : Bytes) (id : I32)] : I32
+  (let [s (ws-section d id)]
+    (if (< (get-field s :start) 0) -1
+        (get-field (ws-leb d (get-field s :start)) :next))))
+
+(defn ws-section-end [(d : Bytes) (id : I32)] : I32
+  (let [s (ws-section d id)]
+    (if (< (get-field s :start) 0) -1 (+ (get-field s :start) (get-field s :size)))))
+
+;; ---- types (section 1) ----------------------------------------------------------------------------------
+(defn ws-valtype-code [(b : I32)] : I32
+  (cond ((= b 127) 1) ((= b 126) 2) ((= b 125) 3) ((= b 124) 4) (true -2)))
+
+;; skip one functype (0x60, params vec, results vec): the position after it, or -1
+(defn ws-skip-functype [(d : Bytes) (p : I32)] : I32
+  (if (not (= (ws-byte d p) 96)) -1
+      (let [after-params (ws-skip-vec d (+ p 1))]
+        (if (< after-params 0) -1 (ws-skip-vec d after-params)))))
+
+;; the position of type `t`'s 0x60 byte, or -1
+(defn ws-type-pos [(d : Bytes) (t : I32)] : I32
+  (let [n (ws-section-count d 1)
+        end (ws-section-end d 1)]
+    (if (or (< t 0) (>= t n)) -1
+        (loop [i 0 p (ws-section-first d 1)]
+          (cond
+            ((or (< p 0) (>= p end)) -1)
+            ((= i t) p)
+            (true (recur (+ i 1) (ws-skip-functype d p))))))))
+
+;; pack parameter types one by one (k = index, acc = bits so far)
+(defn ws-pack-params [(d : Bytes) (p : I32) (n : I32)] : I32
+  (loop [k 0 acc 0]
+    (if (>= k n) acc
+        (let [c (ws-valtype-code (ws-byte d (+ p k)))]
+          (if (< c 0) -2 (recur (+ k 1) (bit-or acc (shl c (+ 7 (* 3 k))))))))))
+
+(defn ws-sig-at [(d : Bytes) (tp : I32)] : I32
+  (if (< tp 0) -2
+      (let [pl (ws-leb d (+ tp 1))
+            np (get-field pl :value)
+            rpos (+ (get-field pl :next) np)
+            rl (ws-leb d rpos)
+            nr (get-field rl :value)]
+        (cond
+          ((or (< (get-field pl :next) 0) (< (get-field rl :next) 0)) -2)
+          ((or (> np 8) (> nr 1)) -2)
+          (true (let [params (ws-pack-params d (get-field pl :next) np)
+                  res (if (= nr 0) 0 (ws-valtype-code (ws-byte d (get-field rl :next))))]
+              (if (or (< params 0) (< res 0)) -2
+                  (bit-or (bit-or res (shl np 3)) params))))))))
+
+(defn ws-type-sig [(d : Bytes) (t : I32)] : I32 (ws-sig-at d (ws-type-pos d t)))
+
+;; ---- imports (section 2) --------------------------------------------------------------------------------
+;; limits: flags byte, min, and max when bit 0 is set
+(defn ws-skip-limits [(d : Bytes) (p : I32)] : I32
+  (let [flags (ws-byte d p)
+        mn (ws-leb d (+ p 1))]
+    (cond
+      ((or (< flags 0) (< (get-field mn :next) 0)) -1)
+      ((= (bit-and flags 1) 0) (get-field mn :next))
+      (true (get-field (ws-leb d (get-field mn :next)) :next)))))
+
+;; the position of an import's kind byte (after both names), or -1
+(defn ws-import-kind-pos [(d : Bytes) (p : I32)] : I32
+  (let [after-mod (ws-skip-vec d p)]
+    (if (< after-mod 0) -1 (ws-skip-vec d after-mod))))
+
+;; one import entry: the position after it, or -1
+(defn ws-skip-import [(d : Bytes) (p : I32)] : I32
+  (let [kp (ws-import-kind-pos d p)
+        k (ws-byte d kp)]
+    (cond
+      ((< kp 0) -1)
+      ((= k 0) (get-field (ws-leb d (+ kp 1)) :next))
+      ((= k 1) (if (< (ws-byte d (+ kp 1)) 0) -1 (ws-skip-limits d (+ kp 2))))
+      ((= k 2) (ws-skip-limits d (+ kp 1)))
+      ((= k 3) (if (< (ws-byte d (+ kp 2)) 0) -1 (+ kp 3)))
+      (true -1))))
+
+(defn ws-import-count [(d : Bytes)] : I32
+  (if (not (ws-valid? d)) -1 (ws-section-count d 2)))
+
+;; the position of import i's entry, or -1
+(defn ws-import-pos [(d : Bytes) (i : I32)] : I32
+  (let [n (ws-section-count d 2)
+        end (ws-section-end d 2)]
+    (if (or (< i 0) (>= i n)) -1
+        (loop [k 0 p (ws-section-first d 2)]
+          (cond
+            ((or (< p 0) (>= p end)) -1)
+            ((= k i) p)
+            (true (recur (+ k 1) (ws-skip-import d p))))))))
+
+(defn ws-import-module-off [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1 (get-field (ws-leb d p) :next))))
+
+(defn ws-import-module-len [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1 (get-field (ws-leb d p) :value))))
+
+(defn ws-import-field-off [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1
+        (let [q (ws-skip-vec d p)]
+          (if (< q 0) -1 (get-field (ws-leb d q) :next))))))
+
+(defn ws-import-field-len [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1
+        (let [q (ws-skip-vec d p)]
+          (if (< q 0) -1 (get-field (ws-leb d q) :value))))))
+
+(defn ws-import-kind [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1 (ws-byte d (ws-import-kind-pos d p)))))
+
+;; a function import's type index, or -1
+(defn ws-import-typeidx [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-import-pos d i)]
+    (if (< p 0) -1
+        (let [kp (ws-import-kind-pos d p)]
+          (if (not (= (ws-byte d kp) 0)) -1
+              (let [l (ws-leb d (+ kp 1))]
+                (if (< (get-field l :next) 0) -1 (get-field l :value))))))))
+
+(defn ws-import-sig [(d : Bytes) (i : I32)] : I32
+  (let [t (ws-import-typeidx d i)]
+    (if (< t 0) -1 (ws-type-sig d t))))
+
+(defn ws-import-func-count [(d : Bytes)] : I32
+  (let [n (ws-import-count d)]
+    (if (< n 0) -1
+        (loop [i 0 c 0]
+          (if (>= i n) c (recur (+ i 1) (if (= (ws-import-kind d i) 0) (+ c 1) c)))))))
+
+;; the type index of the k-th FUNCTION import (function index space order), or -1
+(defn ws-import-func-typeidx [(d : Bytes) (k : I32)] : I32
+  (let [n (ws-import-count d)]
+    (loop [i 0 seen 0]
+      (cond
+        ((>= i n) -1)
+        ((not (= (ws-import-kind d i) 0)) (recur (+ i 1) seen))
+        ((= seen k) (ws-import-typeidx d i))
+        (true (recur (+ i 1) (+ seen 1)))))))
+
+;; ---- functions (section 3) ------------------------------------------------------------------------------
+;; the type index of the k-th DEFINED function, or -1
+(defn ws-func-typeidx [(d : Bytes) (k : I32)] : I32
+  (let [n (ws-section-count d 3)
+        end (ws-section-end d 3)]
+    (if (or (< k 0) (>= k n)) -1
+        (loop [i 0 p (ws-section-first d 3)]
+          (let [l (ws-leb d p)]
+            (cond
+              ((or (< p 0) (>= p end) (< (get-field l :next) 0)) -1)
+              ((= i k) (get-field l :value))
+              (true (recur (+ i 1) (get-field l :next)))))))))
+
+;; ---- exports (section 7) --------------------------------------------------------------------------------
+(defn ws-export-count [(d : Bytes)] : I32
+  (if (not (ws-valid? d)) -1 (ws-section-count d 7)))
+
+;; one export entry is a name, a kind byte and an index
+(defn ws-skip-export [(d : Bytes) (p : I32)] : I32
+  (let [q (ws-skip-vec d p)]
+    (if (or (< q 0) (< (ws-byte d q) 0)) -1 (get-field (ws-leb d (+ q 1)) :next))))
+
+(defn ws-export-pos [(d : Bytes) (i : I32)] : I32
+  (let [n (ws-section-count d 7)
+        end (ws-section-end d 7)]
+    (if (or (< i 0) (>= i n)) -1
+        (loop [k 0 p (ws-section-first d 7)]
+          (cond
+            ((or (< p 0) (>= p end)) -1)
+            ((= k i) p)
+            (true (recur (+ k 1) (ws-skip-export d p))))))))
+
+(defn ws-export-name-off [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-export-pos d i)]
+    (if (< p 0) -1 (get-field (ws-leb d p) :next))))
+
+(defn ws-export-name-len [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-export-pos d i)]
+    (if (< p 0) -1 (get-field (ws-leb d p) :value))))
+
+(defn ws-export-kind [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-export-pos d i)]
+    (if (< p 0) -1 (ws-byte d (ws-skip-vec d p)))))
+
+(defn ws-export-index [(d : Bytes) (i : I32)] : I32
+  (let [p (ws-export-pos d i)]
+    (if (< p 0) -1
+        (let [q (ws-skip-vec d p)]
+          (if (< q 0) -1
+              (let [l (ws-leb d (+ q 1))]
+                (if (< (get-field l :next) 0) -1 (get-field l :value))))))))
+
+;; an exported function's signature: imported functions come first in the index space; -1 not a function
+(defn ws-export-sig [(d : Bytes) (i : I32)] : I32
+  (if (not (= (ws-export-kind d i) 0)) -1
+      (let [f (ws-export-index d i)
+            nimp (ws-import-func-count d)]
+        (cond
+          ((or (< f 0) (< nimp 0)) -2)
+          ((< f nimp) (ws-type-sig d (ws-import-func-typeidx d f)))
+          (true (let [t (ws-func-typeidx d (- f nimp))]
+                  (if (< t 0) -2 (ws-type-sig d t))))))))
+
+;; ---- signatures as text ---------------------------------------------------------------------------------
+;; One type code as wasm3 writes it: i I F f, v for none.
+(defn ws-type-char [(c : I32)] : I32
+  (cond ((= c 1) 105) ((= c 2) 73) ((= c 3) 102) ((= c 4) 70) (true 118)))
+
+;; character k of "R(P...)" for a packed signature; 0 past the end (or for -1/-2)
+(defn ws-sig-char [(sig : I32) (k : I32)] : I32
+  (if (< sig 0) 0
+      (let [np (bit-and (shr sig 3) 15)]
+        (cond
+          ((= k 0) (ws-type-char (bit-and sig 7)))
+          ((= k 1) 40)
+          ((< k (+ np 2)) (ws-type-char (bit-and (shr sig (+ 7 (* 3 (- k 2)))) 7)))
+          ((= k (+ np 2)) 41)
+          (true 0)))))
+
+;; build a packed signature from its parts (hosts describe the imports they offer this way)
+(defn ws-sig-of [(result : I32) (nparams : I32) (params-bits : I32)] : I32
+  (bit-or (bit-or (bit-and result 7) (shl (bit-and nparams 15) 3)) params-bits))
+
+;; does the name at [off, off+len) equal the bytes of `want` (a second Bytes holding just the name)?
+(defn ws-name-is? [(d : Bytes) (off : I32) (len : I32) (want : Bytes)] : Bool
+  (if (or (< off 0) (not (= len (bytes/bytes-len want))) (> (+ off len) (ws-len d))) false
+      (loop [k 0]
+        (cond
+          ((>= k len) true)
+          ((not (= (ws-byte d (+ off k)) (bytes/bytes-get want k))) false)
+          (true (recur (+ k 1)))))))
