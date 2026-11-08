@@ -1,0 +1,222 @@
+;; stdlib/shankpit/level_manager_rules.prn -- the level manager: every decision the SHANKPIT level shell makes
+;; about a level (BRAWLPIT first) -- which chord means what, the state machine, which lifecycle row a
+;; transition announces, who gets input, how many 60 Hz steps a display frame owes, and how an SDL key reaches
+;; a level as the DOM keyCode the level was written against.
+;;
+;; Founder real-time 2026-11-08 (SHANKPIT/specs/2026-11-08-0000.md, T0): "Boot the SHANKPIT world plus BRAWLPIT
+;; as WASM, BRAWLPIT in the foreground. Shift+M toggles to the world view and pauses BRAWLPIT." Then: "implement
+;; as always mods first parena first mods driven development". Contract: SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md
+;; section 2 ("Level manager mod"). Generated into SHANKPIT/packages/simulation/level_manager_rules.c
+;; (scripts/gen_level_manager_rules.sh); the host holds the state and calls these (INV-1.2: host code is
+;; plumbing, the decisions live here).
+;;
+;; States: 0 NONE (nothing loaded), 1 LOADING (the host instantiates this frame), 2 FG (the level in the
+;; foreground, running), 3 BG (the world in the foreground, the level suspended), 4 SOURCE (the view-source
+;; overlay over a suspended level), 5 SOURCE_NONE (the overlay, no level). Boot is LOADING.
+;; Commands: 1 TOGGLE (Shift+M), 2 SOURCE (Ctrl+Shift+J; Cmd+Option+J on macOS), 3 CLOSE (Shift+X), 4 LOAD_OK,
+;; 5 LOAD_FAIL, 6 TRAP, 7 OVERLAY_CLOSED. A command that does not apply leaves the state as it is, and the host
+;; then passes the key on to whoever owns input, so Shift+X still reaches a level that is playing.
+;;
+;; Scalar-only I32, no FFI, no state, total: every input has an answer.
+(module shankpit/level-manager)
+(export lm-st-none lm-st-loading lm-st-fg lm-st-bg lm-st-source lm-st-source-none
+        lm-cmd-toggle lm-cmd-source lm-cmd-close lm-cmd-load-ok lm-cmd-load-fail lm-cmd-trap lm-cmd-overlay-closed
+        lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-banner
+        lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key)
+
+;; ---- states and commands ----------------------------------------------------------------------------
+(defn lm-st-none [] : I32 0)
+(defn lm-st-loading [] : I32 1)
+(defn lm-st-fg [] : I32 2)
+(defn lm-st-bg [] : I32 3)
+(defn lm-st-source [] : I32 4)
+(defn lm-st-source-none [] : I32 5)
+
+(defn lm-cmd-toggle [] : I32 1)
+(defn lm-cmd-source [] : I32 2)
+(defn lm-cmd-close [] : I32 3)
+(defn lm-cmd-load-ok [] : I32 4)
+(defn lm-cmd-load-fail [] : I32 5)
+(defn lm-cmd-trap [] : I32 6)
+(defn lm-cmd-overlay-closed [] : I32 7)
+
+;; the lifecycle rows a transition can announce (SHANKPIT packages/reflux/reflux_runtime.h). LOADED,
+;; LOAD_FAILED and SWAPPED are the loader's own facts, with payloads only the loader has, so the host
+;; dispatches those itself when it loads; these three follow from the state alone.
+(defn lm-act-shown [] : I32 1001)
+(defn lm-act-hidden [] : I32 1002)
+(defn lm-act-closed [] : I32 1003)
+
+;; SDL keycodes for the three chord letters (SDL keycodes are the unshifted key, lowercase ASCII)
+(defn lm-key-j [] : I32 106)
+(defn lm-key-m [] : I32 109)
+(defn lm-key-x [] : I32 120)
+
+;; ---- chords -----------------------------------------------------------------------------------------
+;; one modifier set, exactly: Shift alone for M and X; Ctrl+Shift for J, or Cmd+Option on macOS (the
+;; browsers' own view-source / console chord). Nothing fires while text focus is active (chat, the orb,
+;; a phone text app, a lobby text field, the editor overlay) or on a key-repeat: a held Shift+M toggles once.
+;; (Written in the C emitter's subset: clause-form cond ending in (true ...), no case.)
+(defn lm-only-shift? [(shift : I32) (ctrl : I32) (alt : I32) (gui : I32)] : Bool
+  (and (!= shift 0) (and (= ctrl 0) (and (= alt 0) (= gui 0)))))
+
+(defn lm-source-mods? [(shift : I32) (ctrl : I32) (alt : I32) (gui : I32) (mac : I32)] : Bool
+  (if (!= mac 0)
+      (and (!= gui 0) (and (!= alt 0) (and (= ctrl 0) (= shift 0))))
+      (and (!= ctrl 0) (and (!= shift 0) (and (= alt 0) (= gui 0))))))
+
+(defn lm-chord [(sym : I32) (shift : I32) (ctrl : I32) (alt : I32) (gui : I32) (mac : I32) (text-focus : I32) (repeat : I32)] : I32
+  (cond
+    ((or (!= text-focus 0) (!= repeat 0)) 0)
+    ((and (= sym (lm-key-m)) (lm-only-shift? shift ctrl alt gui)) (lm-cmd-toggle))
+    ((and (= sym (lm-key-x)) (lm-only-shift? shift ctrl alt gui)) (lm-cmd-close))
+    ((and (= sym (lm-key-j)) (lm-source-mods? shift ctrl alt gui mac)) (lm-cmd-source))
+    (true 0)))
+
+;; ---- the state machine ------------------------------------------------------------------------------
+;; a level instance exists (the host keeps it, polls REFLUX for it, and can be told it trapped)
+(defn lm-loaded [(s : I32)] : I32
+  (if (or (= s (lm-st-fg)) (or (= s (lm-st-bg)) (= s (lm-st-source)))) 1 0))
+
+(defn lm-next-none [(cmd : I32)] : I32
+  (cond ((= cmd (lm-cmd-toggle)) (lm-st-loading))
+        ((= cmd (lm-cmd-source)) (lm-st-source-none))
+        (true (lm-st-none))))
+
+(defn lm-next-loading [(cmd : I32)] : I32
+  (cond ((= cmd (lm-cmd-load-ok)) (lm-st-fg))
+        ((= cmd (lm-cmd-load-fail)) (lm-st-none))
+        (true (lm-st-loading))))
+
+(defn lm-next-fg [(cmd : I32)] : I32
+  (cond ((= cmd (lm-cmd-toggle)) (lm-st-bg))
+        ((= cmd (lm-cmd-source)) (lm-st-source))
+        (true (lm-st-fg))))
+
+(defn lm-next-bg [(cmd : I32)] : I32
+  (cond ((= cmd (lm-cmd-toggle)) (lm-st-fg))
+        ((= cmd (lm-cmd-close)) (lm-st-none))
+        ((= cmd (lm-cmd-source)) (lm-st-source))
+        (true (lm-st-bg))))
+
+(defn lm-next [(s : I32) (cmd : I32)] : I32
+  (cond
+    ((and (= cmd (lm-cmd-trap)) (= (lm-loaded s) 1)) (lm-st-none))
+    ((= s (lm-st-none)) (lm-next-none cmd))
+    ((= s (lm-st-loading)) (lm-next-loading cmd))
+    ((= s (lm-st-fg)) (lm-next-fg cmd))
+    ((= s (lm-st-bg)) (lm-next-bg cmd))
+    ;; closing the overlay is an ENTRY into the level: where a newer compiled module swaps in (T0 step 6)
+    ((= s (lm-st-source)) (if (= cmd (lm-cmd-overlay-closed)) (lm-st-fg) s))
+    ((= s (lm-st-source-none)) (if (= cmd (lm-cmd-overlay-closed)) (lm-st-none) s))
+    (true s)))
+
+;; the lifecycle row (reflux_runtime.h) a transition announces, 0 = none. Coming to the foreground from
+;; anywhere is SHOWN; leaving it for the world or the overlay is HIDDEN (BRAWLPIT pauses a live match on it);
+;; a loaded level going away is CLOSED, its payload b from lm-close-reason.
+(defn lm-announce [(old : I32) (new : I32)] : I32
+  (cond
+    ((= old new) 0)
+    ((= new (lm-st-fg)) (lm-act-shown))
+    ((and (= old (lm-st-fg)) (or (= new (lm-st-bg)) (= new (lm-st-source)))) (lm-act-hidden))
+    ((and (= (lm-loaded old) 1) (= new (lm-st-none))) (lm-act-closed))
+    (true 0)))
+
+;; LEVEL_CLOSED payload b: 1 the level trapped, 0 the player closed it
+(defn lm-close-reason [(cmd : I32)] : I32 (if (= cmd (lm-cmd-trap)) 1 0))
+
+;; the host steps the level this frame / the level gets keyboard and mouse and the world gets none
+(defn lm-ticks [(s : I32)] : I32 (if (= s (lm-st-fg)) 1 0))
+(defn lm-owns-input [(s : I32)] : I32 (if (= s (lm-st-fg)) 1 0))
+
+;; the world-view hint: 0 none, 1 "Shift+M resume / Shift+X close" (a suspended level), 2 "Shift+M play"
+(defn lm-banner [(s : I32)] : I32
+  (cond ((= s (lm-st-bg)) 1)
+        ((= s (lm-st-none)) 2)
+        (true 0)))
+
+;; ---- the fixed step ---------------------------------------------------------------------------------
+;; The level's sim is a fixed 60 Hz step (parity-tested against the C engine at 16.666 ms); the host owes it
+;; steps out of real time. At most two per display frame -- one frame is several ms of software rendering
+;; under the interpreter, so catching up harder would only fall further behind -- and whole steps owed past
+;; the cap are dropped (the fraction of a step is kept, so a steady frame rate does not stutter). A single
+;; frame's dt is capped too, so a stall (a window drag, a breakpoint) cannot overflow the accumulator.
+(defn lm-max-steps [] : I32 2)
+(defn lm-tick-us [] : I32 16667)
+(defn lm-dt-cap-us [] : I32 250000)
+
+(defn lm-acc-add [(acc-us : I32) (dt-us : I32)] : I32
+  (+ (if (< acc-us 0) 0 acc-us) (if (< dt-us 0) 0 (if (> dt-us (lm-dt-cap-us)) (lm-dt-cap-us) dt-us))))
+
+(defn lm-steps [(acc-us : I32)] : I32
+  (if (< acc-us 0) 0 (if (> (/ acc-us (lm-tick-us)) (lm-max-steps)) (lm-max-steps) (/ acc-us (lm-tick-us)))))
+
+(defn lm-acc-left-raw [(acc-us : I32)] : I32 (- acc-us (* (lm-steps acc-us) (lm-tick-us))))
+
+(defn lm-acc-left [(acc-us : I32)] : I32
+  (cond ((< acc-us 0) 0)
+        ((>= (lm-acc-left-raw acc-us) (lm-tick-us)) (mod (lm-acc-left-raw acc-us) (lm-tick-us)))
+        (true (lm-acc-left-raw acc-us))))
+
+;; ---- keys -------------------------------------------------------------------------------------------
+;; An SDL keycode -> the DOM keyCode a level reads (BRAWLPIT was written for the browser: bp_input.prn's
+;; kc-* table, +256 for the right-hand Shift/Ctrl/Alt/Meta, KeyboardEvent.location 2). 0 = a key no level
+;; is given. Non-character SDL keys are the scancode with bit 30 set (SDL_SCANCODE_TO_KEYCODE).
+(defn lm-sdl-scan [(scancode : I32)] : I32 (+ scancode 1073741824))
+
+(defn lm-dom-punct [(sym : I32)] : I32
+  (cond
+    ((= sym 59) 186)    ; ;
+    ((= sym 61) 187)    ; =
+    ((= sym 44) 188)    ; ,
+    ((= sym 45) 189)    ; -
+    ((= sym 46) 190)    ; .
+    ((= sym 47) 191)    ; /
+    ((= sym 96) 192)    ; `
+    ((= sym 91) 219)    ; [
+    ((= sym 92) 220)    ; backslash
+    ((= sym 93) 221)    ; ]
+    ((= sym 39) 222)    ; '
+    ((= sym 8) 8)       ; Backspace
+    ((= sym 9) 9)       ; Tab
+    ((= sym 13) 13)     ; Return
+    ((= sym 27) 27)     ; Escape
+    ((= sym 32) 32)     ; Space
+    ((= sym 127) 46)    ; Delete
+    (true 0)))
+
+(defn lm-dom-mod [(sc : I32)] : I32
+  (cond
+    ((= sc 224) 17)     ; left Ctrl
+    ((= sc 225) 16)     ; left Shift
+    ((= sc 226) 18)     ; left Alt
+    ((= sc 227) 91)     ; left Meta
+    ((= sc 228) 273)    ; right Ctrl  (17 + 256)
+    ((= sc 229) 272)    ; right Shift (16 + 256)
+    ((= sc 230) 274)    ; right Alt   (18 + 256)
+    ((= sc 231) 347)    ; right Meta  (91 + 256)
+    (true 0)))
+
+(defn lm-dom-scan [(sc : I32)] : I32
+  (cond
+    ((and (>= sc 58) (<= sc 69)) (+ 112 (- sc 58)))   ; F1..F12
+    ((and (>= sc 89) (<= sc 97)) (+ 97 (- sc 89)))    ; keypad 1..9
+    ((= sc 79) 39)      ; Right
+    ((= sc 80) 37)      ; Left
+    ((= sc 81) 40)      ; Down
+    ((= sc 82) 38)      ; Up
+    ((= sc 73) 45)      ; Insert
+    ((= sc 74) 36)      ; Home
+    ((= sc 75) 33)      ; Page Up
+    ((= sc 77) 35)      ; End
+    ((= sc 78) 34)      ; Page Down
+    ((= sc 88) 13)      ; keypad Enter
+    ((= sc 98) 96)      ; keypad 0
+    (true (lm-dom-mod sc))))
+
+(defn lm-dom-key [(sym : I32)] : I32
+  (cond
+    ((and (>= sym 97) (<= sym 122)) (- sym 32))                          ; a..z -> 65..90
+    ((and (>= sym 48) (<= sym 57)) sym)                                  ; 0..9
+    ((and (>= sym (lm-sdl-scan 0)) (<= sym (lm-sdl-scan 511))) (lm-dom-scan (- sym (lm-sdl-scan 0))))
+    (true (lm-dom-punct sym))))
