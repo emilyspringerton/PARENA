@@ -121,9 +121,12 @@
 ;; ---- input -------------------------------------------------------------------------------------------
 (defn level-key [(code : I32) (down : I32)] : Unit (in-key! code down))
 (defn level-pointer [(x : I32) (y : I32) (buttons : I32)] : Unit (in-pointer! x y (bit-and buttons 1)))
-;; clear held keys and release a held click: the Shift of Shift+M must not stay down as P1's shield
+;; clear held keys AND presses no tick has seen yet, and release a held click (a release never clicks):
+;; the Shift of Shift+M must not stay down as P1's shield, and a press made in the frame the level lost
+;; focus must not fire on the first tick after it comes back
 (defn level-blur [] : Unit
   (do (in-clear-keys!)
+      (end-input-tick!)
       (in-pointer! (pointer-x) (pointer-y) 0)))
 
 ;; ---- memory the host reads and writes ----------------------------------------------------------------
