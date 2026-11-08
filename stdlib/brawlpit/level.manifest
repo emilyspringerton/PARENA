@@ -1,0 +1,56 @@
+# stdlib/brawlpit/level.manifest -- BRAWLPIT as a SHANKPIT level (T0, SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md).
+# Read by scripts/build_level_wasm.sh (the build) and by the SHANKPIT level shell (which file VS0 opens).
+# One directive per line; '#' starts a comment.
+#
+#   name    the level's file stem
+#   entry   the file the view-source overlay opens first
+#   src     sources, in build order (order is irrelevant to the compiler; fixed so the IR is reproducible)
+#   export  wire name + signature (wasm3 notation); the module must export EXACTLY these, plus `memory`
+#   import  module.field + signature; the module may import ONLY these
+
+name brawlpit_level
+entry stdlib/brawlpit/bp_level.prn
+
+src stdlib/brawlpit/bp_mem.prn
+src stdlib/brawlpit/bp_fields.prn
+src stdlib/brawlpit/bp_data.prn
+src stdlib/brawlpit/bp_phys1.prn
+src stdlib/brawlpit/bp_phys2.prn
+src stdlib/brawlpit/bp_phys3.prn
+src stdlib/brawlpit/bp_sim.prn
+src stdlib/brawlpit/bp_ai.prn
+src stdlib/brawlpit/bp_input.prn
+src stdlib/brawlpit/bp_draw.prn
+src stdlib/brawlpit/bp_view.prn
+src stdlib/brawlpit/bp_ui.prn
+src stdlib/brawlpit/bp_main.prn
+src stdlib/gfd/term_font.prn
+src stdlib/reflux/reflux.prn
+src stdlib/reflux/cursor.prn
+src stdlib/brawlpit/bp_level.prn
+
+export level_api i()
+export level_enter i()
+export level_poll i(i)
+export level_tick v()
+export level_render v()
+export level_exit v()
+export level_seed v(i)
+export level_key v(ii)
+export level_pointer v(iii)
+export level_blur v()
+export level_fb_addr i()
+export level_fb_w i()
+export level_fb_h i()
+export level_asset_addr i(i)
+export level_asset_set v(ii)
+export level_lost_rows i()
+
+import env.reflux_host_dispatch v(iiii)
+import env.reflux_host_total_dispatched i()
+import env.reflux_host_index_for_abs i(i)
+import env.reflux_host_oldest_abs i()
+import env.reflux_host_action_type_at i(i)
+import env.reflux_host_action_a_at i(i)
+import env.reflux_host_action_b_at i(i)
+import env.reflux_host_action_c_at i(i)

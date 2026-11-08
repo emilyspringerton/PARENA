@@ -5387,3 +5387,18 @@ parameter k in bits 7+3k (k < 8); -1 = not a function, -2 = not expressible (mor
 v128/reference types). Consumers: SHANKPIT `packages/wasm_host` (bind-or-refuse at load) and `tools/wasm_surface_check`
 (the level build's exact-surface assertion). Test: `make test-wasm-surface`. Deferred: memory64 limits, data/element
 validation (the runtime's job), UTF-8 validation of names (compared as raw bytes on purpose).
+
+## reflux/cursor -- REFLUX's absolute cursor (2026-11-08)
+
+`reflux-total-dispatched`, `reflux-index-for-abs`, `reflux-oldest-abs` over the host's `reflux_host_*` of the same names
+(`:c` and `:llvm`). Poll from a host-held absolute cursor: rows `[max(cursor, oldest), total)`, index each with
+`reflux-index-for-abs`, read with `reflux.prn`'s `reflux-action-*-at`, hand `total` back. `reflux-log-size` saturates at the
+ring's capacity and must not be used as a cursor. Separate from `reflux.prn` so hosts that link that file natively do not gain
+undefined references. First consumer: `brawlpit/bp_level.prn`.
+
+## brawlpit/bp_level -- BRAWLPIT as a SHANKPIT level (2026-11-08)
+
+The level surface over the web engine (contract: SHANKPIT `docs/T0_LEVEL_WASM_CONTRACT.md`): `level-api/-enter/-poll/-tick/
+-render/-exit/-seed/-key/-pointer/-blur/-fb-addr/-fb-w/-fb-h/-asset-addr/-asset-set/-lost-rows`. Built from
+`stdlib/brawlpit/level.manifest` by `scripts/build_level_wasm.sh <manifest> <out.wasm>`, which any other level can reuse with
+its own manifest. Test: `make test-level-wasm-build`.

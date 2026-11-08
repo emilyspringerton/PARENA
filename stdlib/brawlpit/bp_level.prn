@@ -1,0 +1,124 @@
+;; stdlib/brawlpit/bp_level.prn -- BRAWLPIT as a SHANKPIT level: the level surface over the web engine.
+;;
+;; Founder real-time 2026-11-08 (SHANKPIT/specs/2026-11-08-0000.md, T0 first cut): "Boot the SHANKPIT world
+;; plus BRAWLPIT as WASM, BRAWLPIT in the foreground. Shift+M toggles to the world view and pauses BRAWLPIT."
+;; Then: "implement as always mods first parena first mods driven development".
+;;
+;; Contract: SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md, section 2 (rev 3). This file is the whole surface; the
+;; game itself is the same bp_*.prn the WOTAN web build ships (scripts/build_brawlpit_wasm.sh, untouched),
+;; parity-tested against the C engine. Nothing here changes a rule of the game.
+;;
+;; What the level adds over the web entry points (bp_main.prn):
+;;   - one sim step per level-tick and drawing in level-render, because the host owns the fixed-step
+;;     accumulator (a frame that owes two steps must not draw twice: a frame is 13-16 ms under wasm3);
+;;   - its own millisecond clock (level-seed + ticks), replacing the browser's wall clock bp-frame read --
+;;     BRAWLPIT seeds each match from it (start-match!), so a seeded level replays the same matches;
+;;   - REFLUX both ways, through the PARENA bindings (reflux.prn + cursor.prn), never a new FFI:
+;;       out: 1100 BP_MATCH_STARTED (mode, stage, fighters), 1101 BP_MATCH_ENDED (winner, sim frames, mode)
+;;            -- the host's dispatch import accepts only this module's 1100-1199 family;
+;;       in:  level-poll reads the log from the HOST-HELD cursor (INV-3R.3) and returns the new one. Its one
+;;            decision: LEVEL_HIDDEN (1002) for this level during a live, unpaused match opens BRAWLPIT's own
+;;            pause menu, so coming back with Shift+M never drops the player straight into a fight.
+;;
+;; State lives in the G region's spare words (200-203; the game uses 0-61 and the F64 clock at 128-129).
+;; Deferred, named: gamepad (bp-pad, F32 sticks), hats, and the hat-name buffer -- the SHANKPIT host
+;; forwards keyboard + pointer only in T0.
+
+(defn level-id [] : I32 1)                 ; level id 1 = BRAWLPIT (contract: action payload a)
+(defn act-level-hidden [] : I32 1002)      ; REFLUX_ACTION_LEVEL_HIDDEN      (reflux_runtime.h)
+(defn act-bp-match-started [] : I32 1100)  ; REFLUX_ACTION_BP_MATCH_STARTED
+(defn act-bp-match-ended [] : I32 1101)    ; REFLUX_ACTION_BP_MATCH_ENDED
+
+(defn g-lv-seed [] : I32 200)       ; base of the level's millisecond clock
+(defn g-lv-ticks [] : I32 201)      ; sim steps since level-enter
+(defn g-lv-lost [] : I32 202)       ; REFLUX rows overtaken before this level could read them
+(defn g-lv-phase [] : I32 203)      ; the screen before the step in flight (for the match-ended edge)
+
+(defn level-api [] : I32 1)
+
+;; a fresh BRAWLPIT at its title screen. 0 = ok (the only failure a level could report is a host problem,
+;; and the host checks level-api before calling this)
+(defn level-enter [] : I32
+  (do
+    (bp-init)
+    (gi! (g-lv-ticks) 0)
+    (gi! (g-lv-lost) 0)
+    (gi! (g-lv-phase) (gi (g-phase)))
+    0))
+
+(defn level-seed [(s : I32)] : Unit (gi! (g-lv-seed) s))
+
+;; the level's clock: seed + ticks * 16.666 ms, integer (exact for about 8 days of play)
+(defn lv-clock-ms [] : I32 (+ (gi (g-lv-seed)) (/ (* (gi (g-lv-ticks)) 50) 3)))
+
+;; the two match edges, read off the step that just ran: start-match! leaves the countdown at exactly 170
+;; on the step that called it (fighter select, REMATCH, or the pause menu's restart), and the results
+;; screen follows the match screen exactly once per match
+(defn lv-announce! [(before : I32)] : Unit
+  (let [now (gi (g-phase))]
+    (when (and (= now (ph-match)) (= (gi (g-countdown)) 170))
+      (reflux-dispatch (act-bp-match-started) (gi (g-mode)) (stage-of (gi (g-stage-sel))) (gi (g-num-players))))
+    (when (and (= before (ph-match)) (= now (ph-results)))
+      (reflux-dispatch (act-bp-match-ended) (gi (g-winner)) (gi (g-sim-frames)) (gi (g-mode))))))
+
+;; exactly one 60 Hz sim step, no drawing
+(defn level-tick [] : Unit
+  (let [before (gi (g-phase))]
+    (gi! (g-lv-ticks) (+ (gi (g-lv-ticks)) 1))
+    (gi! (g-ticker) (lv-clock-ms))
+    (step-once!)
+    (gi! (g-lv-phase) (gi (g-phase)))
+    (lv-announce! before)))
+
+(defn level-render [] : Unit (ui-render!))
+
+(defn level-exit [] : Unit (in-clear-keys!))
+
+;; ---- REFLUX in ---------------------------------------------------------------------------------------
+(defn lv-match-live? [] : Bool
+  (and (= (gi (g-phase)) (ph-match)) (and (= (gi (g-paused)) 0) (= (gi (g-match-over)) 0))))
+
+(defn lv-on-action! [(idx : I32)] : Unit
+  (when (and (= (reflux-action-type-at idx) (act-level-hidden)) (= (reflux-action-a-at idx) (level-id)))
+    (when (lv-match-live?)
+      (gi! (g-paused) 1)
+      (gi! (g-cursor) 0))))
+
+;; read rows [cursor, total) and hand total back; a cursor the ring has overtaken starts at the oldest
+;; retained row and the gap is counted, not hidden. A cursor past total (a host that lost track) just
+;; resynchronises to total.
+(defn level-poll [(cursor : I32)] : I32
+  (let [total (reflux-total-dispatched)
+        oldest (reflux-oldest-abs)
+        start (if (< cursor oldest) oldest cursor)]
+    (when (< cursor oldest) (gi! (g-lv-lost) (+ (gi (g-lv-lost)) (- oldest cursor))))
+    (loop [abs start]
+      (when (< abs total)
+        (let [idx (reflux-index-for-abs abs)]
+          (when (>= idx 0) (lv-on-action! idx)))
+        (recur (+ abs 1))))
+    total))
+
+(defn level-lost-rows [] : I32 (gi (g-lv-lost)))
+
+;; ---- input -------------------------------------------------------------------------------------------
+(defn level-key [(code : I32) (down : I32)] : Unit (in-key! code down))
+(defn level-pointer [(x : I32) (y : I32) (buttons : I32)] : Unit (in-pointer! x y (bit-and buttons 1)))
+;; clear held keys and release a held click: the Shift of Shift+M must not stay down as P1's shield
+(defn level-blur [] : Unit
+  (do (in-clear-keys!)
+      (in-pointer! (pointer-x) (pointer-y) 0)))
+
+;; ---- memory the host reads and writes ----------------------------------------------------------------
+(defn level-fb-addr [] : I32 (fb-base))
+(defn level-fb-w [] : I32 (fb-w))
+(defn level-fb-h [] : I32 (fb-h))
+;; slot 0: the 8 portrait tiles (128x128 RGBA, 65536 B apart) the web host cuts out of sprites.png into
+;; portrait slots 2..9; slot 1: the 640x340 duck atlas. Anything else: 0 (nothing to write).
+(defn level-asset-addr [(slot : I32)] : I32
+  (case slot 0 (bp-sprite-addr 2) 1 (bp-duck-addr) 0))
+(defn level-asset-set [(slot : I32) (loaded : I32)] : Unit
+  (case slot
+    0 (dotimes [t 8] (bp-sprite-set (+ t 2) loaded))
+    1 (bp-duck-set loaded)
+    unit))

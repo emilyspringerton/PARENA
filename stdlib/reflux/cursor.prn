@@ -1,0 +1,45 @@
+;; stdlib/reflux/cursor.prn -- REFLUX's absolute-cursor trio, for a mod that polls the log from a cursor.
+;;
+;; Founder real-time 2026-11-08 ("implement as always mods first parena first"), SHANKPIT T0: a level
+;; module polls REFLUX from a host-held cursor. reflux.prn's own reflux-log-size SATURATES at the log's
+;; capacity (256 in SHANKPIT), so a cursor taken from it goes permanently silent after 256 dispatches --
+;; the bug SHANKPIT's horse_sync.h cursor had (packages/reflux/reflux_runtime.h, "Absolute dispatch count").
+;; These three are the fix, as PARENA calls over the same host functions SHANKPIT already exports:
+;;
+;;   reflux-total-dispatched        every dispatch ever (never saturates)
+;;   reflux-index-for-abs abs       absolute row number -> the retained index reflux-action-*-at take,
+;;                                  -1 once that row has been overwritten (or is not dispatched yet)
+;;   reflux-oldest-abs              absolute number of the oldest retained row; a cursor below it was
+;;                                  overtaken, and the rows in between are gone (say so, don't skip silently)
+;;
+;; Poll pattern (proposed as the IFC-3R.2 amendment, SHANKPIT docs/T0_LEVEL_WASM_CONTRACT.md):
+;;   from max(cursor, oldest) to total: idx = (reflux-index-for-abs abs), then reflux-action-*-at idx;
+;;   hand total back to the host as the new cursor.
+;;
+;; Its own file, not three more functions in reflux.prn, on purpose: reflux.prn is linked as object code by
+;; other hosts (EDGE.GAME's relay links its LLVM output natively; ECOWAR / IDUNA.GAME carry their own
+;; runtimes), and a function that names a host symbol those runtimes may not define would turn into an
+;; undefined reference at their link. A mod that wants the cursor imports this file as well; nobody else
+;; pays for it. Same #target shape as reflux.prn (IFC-1.4): one form, :c and :llvm keys.
+
+(llvm-extern "declare i32 @reflux_host_total_dispatched()")
+(llvm-extern "declare i32 @reflux_host_index_for_abs(i32)")
+(llvm-extern "declare i32 @reflux_host_oldest_abs()")
+
+(module reflux/cursor)
+(export reflux-total-dispatched reflux-index-for-abs reflux-oldest-abs)
+
+(defn reflux-total-dispatched [] : I32
+  #target
+  {:c (inline-c "reflux_host_total_dispatched()")
+   :llvm (inline-llvm "call i32 @reflux_host_total_dispatched()")})
+
+(defn reflux-index-for-abs [(abs-index : I32)] : I32
+  #target
+  {:c (inline-c "reflux_host_index_for_abs(abs_index)")
+   :llvm (inline-llvm "call i32 @reflux_host_index_for_abs(i32 %abs_index)")})
+
+(defn reflux-oldest-abs [] : I32
+  #target
+  {:c (inline-c "reflux_host_oldest_abs()")
+   :llvm (inline-llvm "call i32 @reflux_host_oldest_abs()")})

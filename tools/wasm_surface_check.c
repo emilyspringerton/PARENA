@@ -3,6 +3,8 @@
  *   wasm_surface_check <module.wasm>                         print every import and export
  *   wasm_surface_check <module.wasm> --imports F --exports G  exit 1 unless the module's surface is
  *                                                            EXACTLY the lines in F and G
+ *   ... --imports-allowed F                                  imports may be any SUBSET of F (an allowlist:
+ *                                                            the host offers F, a module imports what it uses)
  *
  * One line per entry, sorted, the same shape the spec files use:
  *   import env.reflux_host_dispatch func v(iiii)
@@ -108,7 +110,9 @@ static int spec_lines(const char *path, char (*lines)[LINE_MAX_LEN], int start) 
 
 int main(int argc, char **argv) {
     static char got[MAX_LINES][LINE_MAX_LEN], want[MAX_LINES][LINE_MAX_LEN];
-    const char *imports = NULL, *exports = NULL;
+    const char *imports = NULL, *exports = NULL, *allowed = NULL;
+    static char allow[MAX_LINES][LINE_MAX_LEN];
+    int nallow = 0;
     unsigned char *raw = NULL;
     long len = 0, i;
     int ngot, nwant = 0, a, b, bad = 0;
@@ -119,6 +123,7 @@ int main(int argc, char **argv) {
     for (a = 2; a + 1 < argc; a += 2) {
         if (strcmp(argv[a], "--imports") == 0) imports = argv[a + 1];
         else if (strcmp(argv[a], "--exports") == 0) exports = argv[a + 1];
+        else if (strcmp(argv[a], "--imports-allowed") == 0) allowed = argv[a + 1];
         else { fprintf(stderr, "wasm_surface_check: unknown flag %s\n", argv[a]); return 2; }
     }
     if (!read_file(argv[1], &raw, &len)) { fprintf(stderr, "wasm_surface_check: cannot read %s\n", argv[1]); return 2; }
@@ -129,13 +134,31 @@ int main(int argc, char **argv) {
 
     ngot = surface_lines(d, got);
     if (ngot < 0) { fprintf(stderr, "wasm_surface_check: %s is not a well-formed module\n", argv[1]); return 1; }
-    if (!imports && !exports) {
+    if (!imports && !exports && !allowed) {
         for (a = 0; a < ngot; a++) printf("%s\n", got[a]);
         return 0;
     }
     if (imports) nwant = spec_lines(imports, want, nwant);
     if (nwant >= 0 && exports) nwant = spec_lines(exports, want, nwant);
     if (nwant < 0) { fprintf(stderr, "wasm_surface_check: cannot read a spec file\n"); return 2; }
+    if (allowed) {
+        /* allowlist mode: every import the module has must be listed; the listed-but-unused are fine.
+           The module's imports leave `got` here, so the exact comparison below covers exports only. */
+        int keep = 0;
+        nallow = spec_lines(allowed, allow, 0);
+        if (nallow < 0) { fprintf(stderr, "wasm_surface_check: cannot read %s\n", allowed); return 2; }
+        for (a = 0; a < ngot; a++) {
+            if (strncmp(got[a], "import ", 7) == 0) {
+                int found = 0;
+                for (b = 0; b < nallow && !found; b++) found = strcmp(got[a], allow[b]) == 0;
+                if (!found) { printf("NOT ALLOWED %s\n", got[a]); bad = 1; }
+            } else {
+                if (keep != a) strcpy(got[keep], got[a]);
+                keep++;
+            }
+        }
+        ngot = keep;
+    }
     qsort(want, (size_t)nwant, LINE_MAX_LEN, cmp_lines);
 
     /* sorted merge: report both directions */
