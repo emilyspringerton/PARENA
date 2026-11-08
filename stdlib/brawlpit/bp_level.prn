@@ -20,7 +20,7 @@
 ;;            decision: LEVEL_HIDDEN (1002) for this level during a live, unpaused match opens BRAWLPIT's own
 ;;            pause menu, so coming back with Shift+M never drops the player straight into a fight.
 ;;
-;; State lives in the G region's spare words (200-203; the game uses 0-61 and the F64 clock at 128-129).
+;; State lives in the G region's spare words (200-204; the game uses 0-61 and the F64 clock at 128-129).
 ;; Deferred, named: gamepad (bp-pad, F32 sticks), hats, and the hat-name buffer -- the SHANKPIT host
 ;; forwards keyboard + pointer only in T0.
 
@@ -33,6 +33,7 @@
 (defn g-lv-ticks [] : I32 201)      ; sim steps since level-enter
 (defn g-lv-lost [] : I32 202)       ; REFLUX rows overtaken before this level could read them
 (defn g-lv-phase [] : I32 203)      ; the screen before the step in flight (for the match-ended edge)
+(defn g-lv-pause-due [] : I32 204)  ; 1 = a LEVEL_HIDDEN pause is owed after the next step (see lv-on-action!)
 
 (defn level-api [] : I32 1)
 
@@ -44,6 +45,7 @@
     (gi! (g-lv-ticks) 0)
     (gi! (g-lv-lost) 0)
     (gi! (g-lv-phase) (gi (g-phase)))
+    (gi! (g-lv-pause-due) 0)
     0))
 
 (defn level-seed [(s : I32)] : Unit (gi! (g-lv-seed) s))
@@ -53,7 +55,9 @@
 
 ;; the two match edges, read off the step that just ran: start-match! leaves the countdown at exactly 170
 ;; on the step that called it (fighter select, REMATCH, or the pause menu's restart), and the results
-;; screen follows the match screen exactly once per match
+;; screen follows the match screen exactly once per match. "Countdown 170 after a step" means "this step
+;; started a match" only because no paused state ever holds 170: the game's own countdown decrements
+;; before it reads the pause key, and lv-on-action! defers its pause off that one step (below).
 (defn lv-announce! [(before : I32)] : Unit
   (let [now (gi (g-phase))]
     (when (and (= now (ph-match)) (= (gi (g-countdown)) 170))
@@ -68,7 +72,10 @@
     (gi! (g-ticker) (lv-clock-ms))
     (step-once!)
     (gi! (g-lv-phase) (gi (g-phase)))
-    (lv-announce! before)))
+    (lv-announce! before)
+    (when (not (= (gi (g-lv-pause-due)) 0))
+      (gi! (g-lv-pause-due) 0)
+      (when (lv-match-live?) (lv-pause!)))))
 
 (defn level-render [] : Unit (ui-render!))
 
@@ -78,11 +85,21 @@
 (defn lv-match-live? [] : Bool
   (and (= (gi (g-phase)) (ph-match)) (and (= (gi (g-paused)) 0) (= (gi (g-match-over)) 0))))
 
+;; what the pause key does mid-match (bp_ui.prn match-tick!): the pause menu, cursor on RESUME
+(defn lv-pause! [] : Unit
+  (do (gi! (g-paused) 1)
+      (gi! (g-cursor) 0)))
+
+;; LEVEL_HIDDEN for this level during a live match opens the pause menu. On the one step a match starts
+;; (countdown still 170) the pause is owed instead and level-tick pays it after the next step, which only
+;; counts the frozen READY down by one: pausing at 170 would leave "countdown 170" true on every paused
+;; step, and lv-announce! would report the match as starting again on each of them.
 (defn lv-on-action! [(idx : I32)] : Unit
   (when (and (= (reflux-action-type-at idx) (act-level-hidden)) (= (reflux-action-a-at idx) (level-id)))
     (when (lv-match-live?)
-      (gi! (g-paused) 1)
-      (gi! (g-cursor) 0))))
+      (if (= (gi (g-countdown)) 170)
+          (gi! (g-lv-pause-due) 1)
+          (lv-pause!)))))
 
 ;; read rows [cursor, total) and hand total back; a cursor the ring has overtaken starts at the oldest
 ;; retained row and the gap is counted, not hidden. A cursor past total (a host that lost track) just

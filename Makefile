@@ -691,7 +691,7 @@ test-level-wasm-build: tools/wasm_surface_check
 	tests/level_wasm_build_test.sh
 
 # wasm_surface_check -- print or assert a module's exact import/export surface, no node needed
-# (scripts/build_brawlpit_level_wasm.sh runs it on every level build).
+# (scripts/build_level_wasm.sh runs it on every level build).
 tools/wasm_surface_gen.c: .parena-bootstrap stdlib/bytes.prn stdlib/wasm/surface.prn
 	./.parena-bootstrap build stdlib/bytes.prn stdlib/wasm/surface.prn -o tools/wasm_surface_gen.c
 
