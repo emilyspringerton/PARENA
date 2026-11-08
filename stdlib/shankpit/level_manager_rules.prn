@@ -14,13 +14,14 @@
 ;; foreground, running), 3 BG (the world in the foreground, the level suspended), 4 SOURCE (the view-source
 ;; overlay over a suspended level), 5 SOURCE_NONE (the overlay, no level). Boot is LOADING.
 ;; Commands: 1 TOGGLE (Shift+M), 2 SOURCE (Ctrl+Shift+J; Cmd+Option+J on macOS), 3 CLOSE (Shift+X), 4 LOAD_OK,
-;; 5 LOAD_FAIL, 6 TRAP, 7 OVERLAY_CLOSED. A command that does not apply leaves the state as it is, and the host
+;; 5 LOAD_FAIL, 6 TRAP, 7 OVERLAY_CLOSED, 8 SUSPEND (the game leaves the world for its menu). A command that does not apply leaves the state as it is, and the host
 ;; then passes the key on to whoever owns input, so Shift+X still reaches a level that is playing.
 ;;
 ;; Scalar-only I32, no FFI, no state, total: every input has an answer.
 (module shankpit/level-manager)
 (export lm-st-none lm-st-loading lm-st-fg lm-st-bg lm-st-source lm-st-source-none
         lm-cmd-toggle lm-cmd-source lm-cmd-close lm-cmd-load-ok lm-cmd-load-fail lm-cmd-trap lm-cmd-overlay-closed
+        lm-cmd-suspend
         lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-world-input lm-banner
         lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key)
 
@@ -39,6 +40,9 @@
 (defn lm-cmd-load-fail [] : I32 5)
 (defn lm-cmd-trap [] : I32 6)
 (defn lm-cmd-overlay-closed [] : I32 7)
+;; the game leaves the world for its menu (a net drop, Esc to the menu): nothing of the level may stay in front.
+;; The level steps back to BG (BRAWLPIT pauses its match on the HIDDEN this announces), the overlay closes.
+(defn lm-cmd-suspend [] : I32 8)
 
 ;; the lifecycle rows a transition can announce (SHANKPIT packages/reflux/reflux_runtime.h). LOADED,
 ;; LOAD_FAILED and SWAPPED are the loader's own facts, with payloads only the loader has, so the host
@@ -89,7 +93,7 @@
         (true (lm-st-loading))))
 
 (defn lm-next-fg [(cmd : I32)] : I32
-  (cond ((= cmd (lm-cmd-toggle)) (lm-st-bg))
+  (cond ((or (= cmd (lm-cmd-toggle)) (= cmd (lm-cmd-suspend))) (lm-st-bg))
         ((= cmd (lm-cmd-source)) (lm-st-source))
         (true (lm-st-fg))))
 
@@ -107,8 +111,10 @@
     ((= s (lm-st-fg)) (lm-next-fg cmd))
     ((= s (lm-st-bg)) (lm-next-bg cmd))
     ;; closing the overlay is an ENTRY into the level: where a newer compiled module swaps in (T0 step 6)
-    ((= s (lm-st-source)) (if (= cmd (lm-cmd-overlay-closed)) (lm-st-fg) s))
-    ((= s (lm-st-source-none)) (if (= cmd (lm-cmd-overlay-closed)) (lm-st-none) s))
+    ((= s (lm-st-source)) (cond ((= cmd (lm-cmd-overlay-closed)) (lm-st-fg))
+                                ((= cmd (lm-cmd-suspend)) (lm-st-bg))
+                                (true s)))
+    ((= s (lm-st-source-none)) (if (or (= cmd (lm-cmd-overlay-closed)) (= cmd (lm-cmd-suspend))) (lm-st-none) s))
     (true s)))
 
 ;; the lifecycle row (reflux_runtime.h) a transition announces, 0 = none. Coming to the foreground from
