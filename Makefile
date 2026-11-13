@@ -1487,6 +1487,20 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi
+	@# The suite fragments (BOARD.md plug-in slots), tests/reflux_wow/suite.d/NN-<agent>.sh, against the client
+	@# packaged above, with LUA51 and REFLUX_WOW_OUT exported. The first failure fails the target.
+	LUA51="$(LUA51)" REFLUX_WOW_OUT="$(REFLUX_WOW_OUT)" bash tests/reflux_wow/run-suites.sh
+
+# test-reflux-wow-fast -- one suite's quick loop: packages only COLLECTION_ONLY's addons (plus RefluxCore, the journal
+# and the reader) into $(REFLUX_WOW_OUT)/client, then runs only the suite fragments whose names match SUITE.
+#   make test-reflux-wow-fast COLLECTION_ONLY=AddonA,AddonB SUITE='20-*' LUA51=lua5.1 REFLUX_WOW_OUT=D:/WORKSPACE/tmp/<you>/rw
+.PHONY: test-reflux-wow-fast
+SUITE ?= *
+test-reflux-wow-fast: .parena-bootstrap
+	@test -n "$(COLLECTION_ONLY)" || { echo "test-reflux-wow-fast needs COLLECTION_ONLY=AddonA,AddonB (the whole client is test-reflux-wow)"; exit 2; }
+	WOW_INTERFACE=99999 COLLECTION_WITH_TABLED=1 COLLECTION_ONLY='$(COLLECTION_ONLY)' COLLECTION_CLIENT_OUT=$(REFLUX_WOW_OUT)/client \
+		bash scripts/wow-package-collection.sh
+	LUA51="$(LUA51)" REFLUX_WOW_OUT="$(REFLUX_WOW_OUT)" bash tests/reflux_wow/run-suites.sh '$(SUITE)'
 
 # test-usb-serial-java -- real CLI-level proof for stdlib/hw/usb_serial.prn (EDGE.GAME's Android
 # arm, S584): runs the actual `parena build` binary (not just emit_java() directly, unlike
