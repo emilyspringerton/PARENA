@@ -91,7 +91,7 @@ wrap() {
 glue() {
   sed -e "s/@ADDON@/${3:-}/g" -e "s/@VAR@/${4:-}/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" \
       -e "s/@FAFNIR_VAR@/$F_VAR/g" -e "s/@HRUNGNIR_VAR@/$H_VAR/g" -e "s/@RATATOSKR_VAR@/$R_VAR/g" \
-      -e "s/@VOLVA_VAR@/$V_VAR/g" "$1" > "$2"
+      -e "s/@VOLVA_VAR@/$V_VAR/g" -e "s/@JOURNAL_VAR@/$J_VAR/g" "$1" > "$2"
   if grep -q '@[A-Z_]*@' "$2"; then die "unfilled placeholder left in $2"; fi
 }
 
@@ -146,6 +146,79 @@ fun "$V_ADDON" "$V_VAR" volva volva.prn volva.lua volva.lua "Völva" \
 fun "$S_ADDON" "$S_VAR" saga saga.prn saga_of_fools.lua saga.lua "Saga of Fools" \
   "Joke achievements nobody asked for. /saga" SavedVariablesPerCharacter
 
+# MacroSync (the spec's own addon): the sync rules and the class macro sets, two PARENA modules. /ascend
+M_ADDON="${MACROSYNC_ADDON:-MacroSync}"
+M_VAR="${MACROSYNC_VAR:-MacroSyncDB}"
+for n in "$M_ADDON" "$M_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+ms="$OUT/AddOns/$M_ADDON"
+mkdir -p "$ms"
+wrap collection/macrosync "$ms/macrosync_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/macrosync.prn
+wrap collection/macros "$ms/macros.lua" stdlib/collection/macros.prn
+cp runtime/wow/locales/macrosync.lua "$ms/locale.lua"
+glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
+toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros, loaded with /ascend; removed ones are pruned. Speaks in haiku." \
+  SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua locale.lua macrosync.lua
+GAMES_BUILT=" $M_ADDON"
+
+# The party games (spec 54-71). Each is built with collection/games and carries the shared kit (fun_kit.lua) and
+# its catalogue. Folder and SavedVariables names are env-driven: GAME_<KEY>_ADDON / GAME_<KEY>_VAR.
+# game KEY ADDON VAR MODULE GLUE TITLE NOTES SVKIND
+
+game() {
+  local key="$1" addon_default="$2" var_default="$3" module="$4" gluesrc="$5" title="$6" notes="$7" kind="$8"
+  local av="GAME_${key}_ADDON" vv="GAME_${key}_VAR"
+  local addon="${!av:-$addon_default}" var="${!vv:-$var_default}"
+  for n in "$addon" "$var"; do
+    case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+    case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+  done
+  local d="$OUT/AddOns/$addon"
+  mkdir -p "$d"
+  wrap "collection/$module" "$d/${module}_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn \
+    stdlib/collection/games.prn "stdlib/collection/$module.prn"
+  cp runtime/wow/locales/fun_kit.lua "$d/kit_locale.lua"
+  cp "runtime/wow/locales/$module.lua" "$d/locale.lua"
+  cp runtime/wow/fun_kit.lua "$d/kit.lua"
+  glue "runtime/wow/$gluesrc" "$d/$gluesrc" "$addon" "$var"
+  toc "$d/$addon.toc" "$title" "$notes" "$kind" "$var" "${module}_rules.lua" kit_locale.lua locale.lua kit.lua "$gluesrc"
+  GAMES_BUILT="$GAMES_BUILT $addon"
+}
+game HULDUFOLK HuldufolkHunt HuldufolkHuntDB huldufolk huldufolk_hunt.lua "Huldufólk Hunt" \
+  "Hide and seek with hot-or-cold hints and a score board. /hunt" SavedVariables
+game MJOLNIR MjolnirPass MjolnirPassDB mjolnir mjolnir_pass.lua "Mjölnir Pass" \
+  "Tag for a party: touch someone to pass the hammer; who held it longest? /tag" SavedVariables
+game RUNERIDDLE RuneRiddle RuneRiddleDB runeriddle rune_riddle.lua "Rune Riddle" \
+  "Scavenger hunts: riddles point to real spots, arriving checks them off. /riddle" SavedVariables
+game ODINN OdinnSays OdinnSaysDB odinn odinn_says.lua "Óðinn Says" \
+  "Emote Simon Says: copy only when Óðinn says. /odinn" SavedVariables
+game ANDVARI AndvarisMap AndvarisMapDB andvari andvaris_map.lua "Andvari's Map" \
+  "Bury an X, draw a treasure map, mail the clue to a friend. /treasure" SavedVariables
+game MIMIR MimirsRiddle MimirsRiddleDB mimir mimirs_riddle.lua "Mímir's Riddle" \
+  "Trivia night in group or guild chat, scores kept over time. /mimir" SavedVariables
+game SLEIPNIR SleipnirSprint SleipnirSprintDB sleipnir sleipnir_sprint.lua "Sleipnir Sprint" \
+  "Foot and mount races with laps, times and a leaderboard. /sprint" SavedVariables
+game FREYA FreyasRunway FreyasRunwayDB freya freyas_runway.lua "Freya's Runway" \
+  "A fashion show: a runway queue and a judging panel. /runway" SavedVariables
+game AEGIR AegirsCatch AegirsCatchDB aegir aegirs_catch.lua "Ægir's Catch" \
+  "Fishing derbies: the biggest and the weirdest catch win. /derby" SavedVariables
+game BRAGI BragisVerse BragisVerseDB bragi bragis_verse.lua "Bragi's Verse" \
+  "Haiku duels with a syllable checker. /verse" SavedVariables
+game ALFAR AlfarRevel AlfarRevelDB alfar alfar_revel.lua "Álfar Revel" \
+  "Dance parties on the beat, with streak scores. /revel" SavedVariables
+game NORNS NornsDraw NornsDrawDB norns norns_draw.lua "Norns' Draw" \
+  "Bingo cards of in-world events. /bingo" SavedVariablesPerCharacter
+game HOLMGANG Holmgang HolmgangDB holmgang holmgang.lua "Holmgang" \
+  "Friendly duel tournaments: brackets, seeding and a champion. /holmgang" SavedVariables
+game LOKI LokisLies LokisLiesDB loki lokis_lies.lua "Loki's Lies" \
+  "Silly made-up news from your own adventures. /rumour" SavedVariablesPerCharacter
+game TAPESTRY HallTapestry HallTapestryDB tapestry hall_tapestry.lua "Hall Tapestry" \
+  "Group photo poses with a countdown and callouts. /tapestry" SavedVariables
+game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
+  "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
+
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
 
@@ -169,6 +242,7 @@ IN GAME
   /census            Ratatoskr Roll: this week's most loved critters (target one, then /love, /pet or /wave)
   /fortune          Völva: today's fortune again (a new one opens at every login)
   /saga              Saga of Fools: joke achievements, earned and still to come
+  /ascend            MacroSync: load your class's macros (paladin so far); /ascend preview changes nothing
   Each character is learned the first time you log it in; the bank is learned each time you open it,
   mail each time you open the mailbox.
 
@@ -179,7 +253,7 @@ AFTER PLAYING (log out first: the client writes SavedVariables on logout and /re
 EOF
 echo "$VERSION" > "$OUT/VERSION"
 
-echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, $H_ADDON, $R_ADDON, $V_ADDON, $S_ADDON, reader"
+echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, $H_ADDON, $R_ADDON, $V_ADDON, $S_ADDON,$GAMES_BUILT, reader"
 
 for a in "$@"; do
   case "$a" in

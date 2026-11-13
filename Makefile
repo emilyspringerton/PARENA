@@ -1471,6 +1471,8 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# The four fun addons in the same package -- Hrungnir (70), Ratatoskr Roll (65), Völva (72), Saga of Fools
 	@# (73) -- played across sessions and a week, their REFLUX rows journalled, and the 12-locale string check.
 	$(LUA51) tests/reflux_wow/fun_test.lua $(REFLUX_WOW_OUT)/client
+	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.
+	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
 	@# Step 7, the event store (stdlib/collection/eventstore.prn): its rules through the real wrapper, then the
 	@# on-disk check against PRRJECT_FATBABY's real Go FileStore (skipped without PRRJECT_FATBABY_DIR and Go).
 	bash tests/collection_store/store_test.sh $(REFLUX_WOW_OUT)/store
