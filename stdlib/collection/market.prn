@@ -1,0 +1,391 @@
+;; stdlib/collection/market.prn -- the market library behind the Jon Stockwell suite (spec addons 74-100): the AH Scan
+;; Primitive's ingest and every desk analytic, as pure functions over the scan table. Compiled into each of those
+;; addons (with collection/games for the shared helpers), and runnable outside the game under Lua 5.1 on the same
+;; table, which is how Jon reads it ("Jon Stockwell reads that data outside the game").
+;;
+;; THE SCAN TABLE (AH Scan's account-wide SavedVariables), all prices in copper per single unit:
+;;   db.scans          {{t, listings, items, sold}...}             the last 200 scans
+;;   db.items[id]      { name, vendor,
+;;                       hist   = {{t, min, med, units, listings, sellers}...}   one row per scan seen in, last 400
+;;                       depth  = {{price, units}...}              the latest scan's price levels, cheapest first, 30
+;;                       sellers= {[name] = units}  prev = the scan before's
+;;                       sold   = {{t, units, price}...}           estimated sales, last 400 }
+;;   db.last           {[listing key] = time-left band}            the previous scan's listings
+;;   db.mine, db.undercuts                                         own listings, and when they were undercut
+;; A listing that was in the previous scan and is gone now, and was not in the Short band (so it could not simply
+;; have expired), is counted as SOLD at its unit buyout. That is an estimate -- a cancelled listing looks the same
+;; -- and every analytic built on it says so in its name: Volume METER, Implied fair value.
+;; Bands are normalised to 1 short, 2 medium, 3 long, 4 very long, whatever the client calls them.
+
+(module collection/market)
+(export mk-init mk-key mk-ingest! mk-item mk-latest mk-volume mk-depth mk-spread mk-fair mk-concentration
+        mk-mean-std mk-zscore mk-returns mk-vol mk-vol-ratio mk-hour mk-weekday mk-tod mk-restock mk-pearson mk-correlation
+        mk-slope mk-delta mk-gamma mk-theta mk-arbitrage mk-cut mk-net mk-watch-hits mk-undercut-stats)
+
+(defn mk-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "scans")) (lua/set! db "scans" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "items")) (lua/set! db "items" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "last")) (lua/set! db "last" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "undercuts")) (lua/set! db "undercuts" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "watch")) (lua/set! db "watch" (lua/obj)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn mk-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+;; Real division. `/` is floor division on the Lua target (D-9's fix), which is right for copper and wrong for a
+;; mean, a ratio or a slope; a * b^-1 is exact float division in Lua 5.1.
+(defn mk-div [(a : Any) (b : Any)] : Any (* a (lua/call-fn (lua/global "math.pow") b -1)))
+(defn mk-floor [(x : Any)] : I32 (lua/call-fn (lua/global "math.floor") x))
+(defn mk-push [(t : Any) (v : Any) (cap : I32)] : I32
+  (do (lua/aset! t (+ (g-len t) 1) v)
+      (if (> (g-len t) cap) (lua/call-fn (lua/global "table.remove") t 1) 0)
+      (g-len t)))
+
+;; A listing's identity across scans.
+(defn mk-key [(id : I32) (seller : String) (count : I32) (buyout : I32)] : String
+  (str id ":" seller ":" count ":" buyout))
+
+(defn mk-item [(db : Any) (id : I32) (name : Any)] : Any
+  (do (if (lua/nil? (lua/aget (lua/get db "items") id))
+        (lua/aset! (lua/get db "items") id (lua/obj "hist" (lua/array) "depth" (lua/array) "sellers" (lua/obj) "prev" (lua/obj) "sold" (lua/array))) 0)
+      (if (lua/nil? name) 0 (lua/set! (lua/aget (lua/get db "items") id) "name" name))
+      (lua/aget (lua/get db "items") id)))
+
+;; ---- ingest (spec 74) ---------------------------------------------------------------------------------------
+;; listings = {{itemID, count, buyout, bid, seller, band, name}...} from one full scan; mine = {[name] = 1} for the
+;; player's own characters. Returns {listings, items, sold}. Dispatches 2730 (a = listings, b = items, c = sold).
+
+(defn mk-agg-walk [(ls : Any) (i : I32) (agg : Any) (keys : Any)] : Any
+  (if (> i (g-len ls)) agg
+    (let [l (lua/aget ls i)
+          id (lua/aget l 1) count (g-clamp 1 1000000 (lua/aget l 2)) buyout (lua/aget l 3)
+          seller (if (lua/nil? (lua/aget l 5)) "?" (lua/aget l 5))]
+      (if (<= buyout 0) (mk-agg-walk ls (+ i 1) agg keys)
+        (let [unit (/ buyout count)
+              a (do (if (lua/nil? (lua/aget agg id))
+                      (lua/aset! agg id (lua/obj "units" 0 "listings" 0 "prices" (lua/array) "levels" (lua/obj) "sellers" (lua/obj)
+                                                 "name" (lua/aget l 7))) 0)
+                    (lua/aget agg id))]
+          (do (lua/set! a "units" (+ (lua/get a "units") count))
+              (lua/set! a "listings" (+ (lua/get a "listings") 1))
+              (lua/aset! (lua/get a "prices") (+ (g-len (lua/get a "prices")) 1) unit)
+              (lua/aset! (lua/get a "levels") unit (+ (mk-zero (lua/aget (lua/get a "levels") unit)) count))
+              (lua/aset! (lua/get a "sellers") seller (+ (mk-zero (lua/aget (lua/get a "sellers") seller)) count))
+              (lua/aset! keys (mk-key id seller count buyout) (lua/aget l 6))
+              (mk-agg-walk ls (+ i 1) agg keys)))))))
+
+;; Sold estimates: last scan's keys missing now, not in the Short band.
+(defn mk-sold-walk [(db : Any) (last : Any) (keys : Any) (k : Any) (now : I32) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") last k)]
+    (if (lua/nil? nk) n
+      (if (and (lua/nil? (lua/aget keys nk)) (> (lua/aget last nk) 1))
+        (let [id (lua/call-fn (lua/global "tonumber") (lua/call-fn (lua/global "string.match") nk "^(%d+):"))
+              count (lua/call-fn (lua/global "tonumber") (lua/call-fn (lua/global "string.match") nk ":(%d+):%d+$"))
+              buyout (lua/call-fn (lua/global "tonumber") (lua/call-fn (lua/global "string.match") nk ":(%d+)$"))
+              it (mk-item db id (lua/nil))]
+          (do (mk-push (lua/get it "sold") (lua/array now count (/ buyout (g-clamp 1 1000000 count))) 400)
+              (mk-sold-walk db last keys nk now (+ n 1))))
+        (mk-sold-walk db last keys nk now n)))))
+
+(defn mk-levels-walk [(levels : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") levels k)]
+    (if (lua/nil? nk) out (do (lua/aset! out (+ (g-len out) 1) nk) (mk-levels-walk levels nk out)))))
+
+(defn mk-depth-build [(levels : Any) (prices : Any) (i : I32) (out : Any)] : Any
+  (if (or (> i (g-len prices)) (> i 30)) out
+    (do (lua/aset! out i (lua/array (lua/aget prices i) (lua/aget levels (lua/aget prices i))))
+        (mk-depth-build levels prices (+ i 1) out))))
+
+(defn mk-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (mk-count t nk (+ n 1)))))
+
+(defn mk-store-walk [(db : Any) (agg : Any) (k : Any) (now : I32) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") agg k)]
+    (if (lua/nil? nk) n
+      (let [a (lua/aget agg nk)
+            it (mk-item db nk (lua/get a "name"))
+            prices (lua/get a "prices")
+            sorted (do (lua/call-fn (lua/global "table.sort") prices) prices)
+            levels (mk-levels-walk (lua/get a "levels") (lua/nil) (lua/array))
+            lsorted (do (lua/call-fn (lua/global "table.sort") levels) levels)]
+        (do (mk-push (lua/get it "hist")
+              (lua/array now (lua/aget sorted 1) (lua/aget sorted (+ (/ (g-len sorted) 2) 1)) (lua/get a "units")
+                         (lua/get a "listings") (mk-count (lua/get a "sellers") (lua/nil) 0)) 400)
+            (lua/set! it "depth" (mk-depth-build (lua/get a "levels") lsorted 1 (lua/array)))
+            (lua/set! it "prev" (lua/get it "sellers"))
+            (lua/set! it "sellers" (lua/get a "sellers"))
+            (mk-store-walk db agg nk now (+ n 1)))))))
+
+(defn mk-ingest! [(db : Any) (listings : Any) (now : I32)] : Any
+  (let [keys (lua/obj)
+        agg (mk-agg-walk listings 1 (lua/obj) keys)
+        sold (mk-sold-walk db (lua/get db "last") keys (lua/nil) now 0)
+        items (mk-store-walk db agg (lua/nil) now 0)]
+    (do (lua/set! db "last" keys)
+        (mk-push (lua/get db "scans") (lua/array now (g-len listings) items sold) 200)
+        (reflux-dispatch (collection-action-type 74 0) (g-len listings) items sold)
+        (lua/array (g-len listings) items sold))))
+
+;; The latest history row of an item {t, min, med, units, listings, sellers}, or nil.
+(defn mk-latest [(db : Any) (id : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (or (lua/nil? it) (= (g-len (lua/get it "hist")) 0)) (lua/nil) (lua/aget (lua/get it "hist") (g-len (lua/get it "hist"))))))
+
+;; ---- 75 Volume Meter: estimated units sold per day over the last `days` ------------------------------------
+(defn mk-sold-since [(sold : Any) (i : I32) (since : I32) (units : I32)] : I32
+  (if (> i (g-len sold)) units
+    (mk-sold-since sold (+ i 1) since (if (>= (lua/aget (lua/aget sold i) 1) since) (+ units (lua/aget (lua/aget sold i) 2)) units))))
+
+;; {units sold in the window, units per day in tenths}
+(defn mk-volume [(db : Any) (id : I32) (days : I32) (now : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)
+        u (if (lua/nil? it) 0 (mk-sold-since (lua/get it "sold") 1 (- now (* days 86400)) 0))]
+    (lua/array u (/ (* u 10) (g-clamp 1 1000 days)))))
+
+;; ---- 76 Listing Depth Book: {{price, units, cumulative units}...} cheapest first -------------------------------
+(defn mk-depth-walk [(d : Any) (i : I32) (k : I32) (cum : I32) (out : Any)] : Any
+  (if (or (> i (g-len d)) (> i k)) out
+    (let [c (+ cum (lua/aget (lua/aget d i) 2))]
+      (do (lua/aset! out i (lua/array (lua/aget (lua/aget d i) 1) (lua/aget (lua/aget d i) 2) c))
+          (mk-depth-walk d (+ i 1) k c out)))))
+
+(defn mk-depth [(db : Any) (id : I32) (k : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (lua/nil? it) (lua/array) (mk-depth-walk (lua/get it "depth") 1 k 0 (lua/array)))))
+
+;; ---- 77 Spread Watch: {lowest, next level, gap, gap permille, vendor, buyout - vendor} ---------------------------
+(defn mk-spread [(db : Any) (id : I32) (vendor : I32)] : Any
+  (let [d (mk-depth db id 2)]
+    (if (= (g-len d) 0) (lua/nil)
+      (let [lo (lua/aget (lua/aget d 1) 1)
+            nx (if (> (g-len d) 1) (lua/aget (lua/aget d 2) 1) lo)]
+        (lua/array lo nx (- nx lo) (/ (* (- nx lo) 1000) (g-clamp 1 2000000000 lo)) vendor (- lo vendor))))))
+
+;; ---- 82 Implied Fair Value ----------------------------------------------------------------------------------
+;; The median estimated sale price over 3 days, blended with the price at which the cheapest fifth of listed units
+;; is gone, weighted by how much sold against how much is listed (more trade, more trust in the sales). With no
+;; sales, the depth price alone. Returns {fair, lowest, discount permille (lowest vs fair; positive = cheap)}.
+(defn mk-recent-prices [(sold : Any) (i : I32) (since : I32) (out : Any)] : Any
+  (if (> i (g-len sold)) out
+    (do (if (>= (lua/aget (lua/aget sold i) 1) since) (lua/aset! out (+ (g-len out) 1) (lua/aget (lua/aget sold i) 3)) 0)
+        (mk-recent-prices sold (+ i 1) since out))))
+
+(defn mk-depth-at [(d : Any) (i : I32) (want : I32) (cum : I32)] : I32
+  (if (> i (g-len d)) (if (= (g-len d) 0) 0 (lua/aget (lua/aget d (g-len d)) 1))
+    (let [c (+ cum (lua/aget (lua/aget d i) 2))] (if (>= c want) (lua/aget (lua/aget d i) 1) (mk-depth-at d (+ i 1) want c)))))
+
+(defn mk-fair [(db : Any) (id : I32) (now : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)
+        last (mk-latest db id)]
+    (if (or (lua/nil? it) (lua/nil? last)) (lua/nil)
+      (let [rp (mk-recent-prices (lua/get it "sold") 1 (- now 259200) (lua/array))
+            sorted (do (lua/call-fn (lua/global "table.sort") rp) rp)
+            med (if (= (g-len sorted) 0) 0 (lua/aget sorted (+ (/ (g-len sorted) 2) 1)))
+            units (g-clamp 1 2000000000 (lua/aget last 4))
+            dp (mk-depth-at (lua/get it "depth") 1 (g-clamp 1 2000000000 (/ (+ units 4) 5)) 0)
+            soldu (mk-sold-since (lua/get it "sold") 1 (- now 259200) 0)
+            w (if (= (g-len sorted) 0) 0 (g-clamp 0 1000 (/ (* soldu 1000) units)))
+            fair (/ (+ (* med w) (* dp (- 1000 w))) 1000)
+            lo (lua/aget last 2)]
+        (lua/array fair lo (if (= fair 0) 0 (/ (* (- fair lo) 1000) fair)))))))
+
+;; ---- 84 Seller Concentration: {top seller, share permille, top-3 share permille, HHI (0..10000)} ----------------
+(defn mk-shares [(s : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") s k)]
+    (if (lua/nil? nk) out (do (lua/aset! out (+ (g-len out) 1) (lua/aget s nk)) (mk-shares s nk out)))))
+
+(defn mk-hhi [(v : Any) (i : I32) (total : I32) (acc : I32)] : I32
+  (if (> i (g-len v)) acc
+    (let [sh (/ (* (lua/aget v i) 100) (g-clamp 1 2000000000 total))] (mk-hhi v (+ i 1) total (+ acc (* sh sh))))))
+
+(defn mk-sum [(v : Any) (i : I32) (acc : I32)] : I32 (if (> i (g-len v)) acc (mk-sum v (+ i 1) (+ acc (lua/aget v i)))))
+
+(defn mk-concentration [(db : Any) (id : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (lua/nil? it) (lua/nil)
+      (let [s (lua/get it "sellers")
+            top (g-board-top s 3)
+            v (mk-shares s (lua/nil) (lua/array))
+            total (mk-sum v 1 0)
+            t1 (if (lua/nil? (lua/aget top 1)) 0 (lua/aget (lua/aget top 1) 2))
+            t3 (+ t1 (+ (if (lua/nil? (lua/aget top 2)) 0 (lua/aget (lua/aget top 2) 2)) (if (lua/nil? (lua/aget top 3)) 0 (lua/aget (lua/aget top 3) 2))))]
+        (if (= total 0) (lua/nil)
+          (lua/array (lua/aget (lua/aget top 1) 1) (/ (* t1 1000) total) (/ (* t3 1000) total) (mk-hhi v 1 total 0)))))))
+
+;; ---- statistics -------------------------------------------------------------------------------------------
+;; {mean, standard deviation} of the history's column `col` over rows [from, to] (floats).
+(defn mk-ms-walk [(h : Any) (i : I32) (to : I32) (col : I32) (n : I32) (s : Any) (ss : Any)] : Any
+  (if (> i to)
+    (if (= n 0) (lua/array 0 0)
+      (let [m (mk-div s n)] (lua/array m (lua/call-fn (lua/global "math.sqrt") (lua/call-fn (lua/global "math.max") 0 (- (mk-div ss n) (* m m))))))))
+    (let [v (lua/aget (lua/aget h i) col)] (mk-ms-walk h (+ i 1) to col (+ n 1) (+ s v) (+ ss (* v v))))))
+
+(defn mk-mean-std [(h : Any) (from : I32) (to : I32) (col : I32)] : Any (mk-ms-walk h from to col 0 0 0))
+
+;; ---- 88 Crash and Spike Alert: the latest lowest price's z-score against the history before it, in hundredths.
+;; 0 when there are fewer than 5 earlier scans or the history never moved.
+(defn mk-zscore [(db : Any) (id : I32)] : I32
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (or (lua/nil? it) (< (g-len (lua/get it "hist")) 6)) 0
+      (let [h (lua/get it "hist") n (g-len h)
+            ms (mk-mean-std h 1 (- n 1) 2)
+            sd (lua/aget ms 2)]
+        (if (< sd 0.5) 0 (mk-floor (* (mk-div (- (lua/aget (lua/aget h n) 2) (lua/aget ms 1)) sd) 100)))))))
+
+;; ---- 81 Vega / 83 Volatility Surface: realised volatility of the lowest price over `days`, in thousandths of a log
+;; return per scan (the standard deviation of ln(p_t / p_t-1)).
+(defn mk-returns [(h : Any) (i : I32) (since : I32) (out : Any)] : Any
+  (if (> i (g-len h)) out
+    (let [a (lua/aget h (- i 1)) b (lua/aget h i)]
+      (do (if (and (>= (lua/aget b 1) since) (and (> (lua/aget a 2) 0) (> (lua/aget b 2) 0)))
+            (lua/aset! out (+ (g-len out) 1) (lua/array (lua/call-fn (lua/global "math.log") (mk-div (lua/aget b 2) (lua/aget a 2))))) 0)
+          (mk-returns h (+ i 1) since out)))))
+
+(defn mk-vol [(db : Any) (id : I32) (days : I32) (now : I32)] : I32
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (or (lua/nil? it) (< (g-len (lua/get it "hist")) 3)) 0
+      (let [r (mk-returns (lua/get it "hist") 2 (- now (* days 86400)) (lua/array))]
+        (if (< (g-len r) 2) 0 (mk-floor (* (lua/aget (mk-mean-std r 1 (g-len r) 1) 2) 1000)))))))
+
+;; 81 Vega: this item's volatility against the average over `ids`, in permille (1000 = as volatile as the market).
+(defn mk-vol-avg [(db : Any) (ids : Any) (i : I32) (days : I32) (now : I32) (n : I32) (s : I32)] : I32
+  (if (> i (g-len ids)) (if (= n 0) 0 (/ s n))
+    (let [v (mk-vol db (lua/aget ids i) days now)]
+      (mk-vol-avg db ids (+ i 1) days now (if (> v 0) (+ n 1) n) (+ s v)))))
+
+(defn mk-vol-ratio [(db : Any) (id : I32) (ids : Any) (days : I32) (now : I32)] : I32
+  (let [avg (mk-vol-avg db ids 1 days now 0 0)]
+    (if (= avg 0) 0 (/ (* (mk-vol db id days now) 1000) avg))))
+
+;; ---- 86 Time-of-Day Curve / 93 Seasonality ------------------------------------------------------------------
+;; Hours and weekdays are UTC (0 = Monday): the client's clock may be local, and a realm's own time is not confirmed.
+(defn mk-hour [(t : I32)] : I32 (/ (g-mod t 86400) 3600))
+(defn mk-weekday [(t : I32)] : I32 (g-mod (+ (/ t 86400) 3) 7))
+
+;; {{bucket, average lowest price, average units, scans}...} by hour (by = 1) or weekday (by = 2), buckets with data.
+(defn mk-tod-walk [(h : Any) (i : I32) (by : I32) (acc : Any)] : Any
+  (if (> i (g-len h)) acc
+    (let [r (lua/aget h i)
+          b (if (= by 1) (mk-hour (lua/aget r 1)) (mk-weekday (lua/aget r 1)))
+          a (do (if (lua/nil? (lua/aget acc (+ b 1))) (lua/aset! acc (+ b 1) (lua/array b 0 0 0)) 0) (lua/aget acc (+ b 1)))]
+      (do (lua/aset! a 2 (+ (lua/aget a 2) (lua/aget r 2)))
+          (lua/aset! a 3 (+ (lua/aget a 3) (lua/aget r 4)))
+          (lua/aset! a 4 (+ (lua/aget a 4) 1))
+          (mk-tod-walk h (+ i 1) by acc)))))
+
+(defn mk-tod-out [(acc : Any) (b : I32) (n : I32) (out : Any)] : Any
+  (if (> b n) out
+    (let [a (lua/aget acc b)]
+      (do (if (lua/nil? a) 0 (lua/aset! out (+ (g-len out) 1) (lua/array (lua/aget a 1) (/ (lua/aget a 2) (lua/aget a 4)) (/ (lua/aget a 3) (lua/aget a 4)) (lua/aget a 4))))
+          (mk-tod-out acc (+ b 1) n out)))))
+
+(defn mk-tod [(db : Any) (id : I32) (by : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (lua/nil? it) (lua/array) (mk-tod-out (mk-tod-walk (lua/get it "hist") 1 by (lua/obj)) 1 (if (= by 1) 24 7) (lua/array)))))
+
+;; ---- 87 Restock Detector: {units before, units now, change permille, the seller who added most, their added units}
+;; or nil when there is no earlier scan or units did not grow by at least `pct` percent.
+(defn mk-added [(now : Any) (prev : Any) (k : Any) (best : Any) (bestn : I32)] : Any
+  (let [nk (lua/call-fn (lua/global "next") now k)]
+    (if (lua/nil? nk) (lua/array best bestn)
+      (let [d (- (lua/aget now nk) (mk-zero (lua/aget prev nk)))]
+        (if (> d bestn) (mk-added now prev nk nk d) (mk-added now prev nk best bestn))))))
+
+(defn mk-restock [(db : Any) (id : I32) (pct : I32)] : Any
+  (let [it (lua/aget (lua/get db "items") id)]
+    (if (or (lua/nil? it) (< (g-len (lua/get it "hist")) 2)) (lua/nil)
+      (let [h (lua/get it "hist") n (g-len h)
+            before (lua/aget (lua/aget h (- n 1)) 4) after (lua/aget (lua/aget h n) 4)
+            ch (if (= before 0) 1000000 (/ (* (- after before) 1000) before))]
+        (if (< ch (* pct 10)) (lua/nil)
+          (let [who (mk-added (lua/get it "sellers") (lua/get it "prev") (lua/nil) (lua/nil) 0)]
+            (lua/array before after ch (lua/aget who 1) (lua/aget who 2))))))))
+
+;; ---- 92 Correlation Matrix / 78 Delta / 79 Gamma: aligned series ------------------------------------------------
+;; Pairs (x, y) of lowest prices from scans both items appear in (same scan time).
+(defn mk-index [(h : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len h)) out (do (lua/aset! out (lua/aget (lua/aget h i) 1) (lua/aget (lua/aget h i) 2)) (mk-index h (+ i 1) out))))
+
+(defn mk-pairs-walk [(hx : Any) (iy : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len hx)) out
+    (let [t (lua/aget (lua/aget hx i) 1) y (lua/aget iy t)]
+      (do (if (lua/nil? y) 0 (lua/aset! out (+ (g-len out) 1) (lua/array (lua/aget (lua/aget hx i) 2) y)))
+          (mk-pairs-walk hx iy (+ i 1) out)))))
+
+(defn mk-pairs [(db : Any) (x : I32) (y : I32)] : Any
+  (let [ix (lua/aget (lua/get db "items") x) iy (lua/aget (lua/get db "items") y)]
+    (if (or (lua/nil? ix) (lua/nil? iy)) (lua/array) (mk-pairs-walk (lua/get ix "hist") (mk-index (lua/get iy "hist") 1 (lua/obj)) 1 (lua/array)))))
+
+;; Pearson correlation of pairs [from, to] in thousandths; 0 when fewer than 3 or a flat series.
+(defn mk-pearson-walk [(p : Any) (i : I32) (to : I32) (n : I32) (sx : Any) (sy : Any) (sxx : Any) (syy : Any) (sxy : Any)] : I32
+  (if (> i to)
+    (if (< n 3) 0
+      (let [cov (- (* n sxy) (* sx sy))
+            vx (- (* n sxx) (* sx sx)) vy (- (* n syy) (* sy sy))]
+        (if (or (<= vx 0) (<= vy 0)) 0 (mk-floor (* (mk-div cov (lua/call-fn (lua/global "math.sqrt") (* vx vy))) 1000)))))
+    (let [x (lua/aget (lua/aget p i) 1) y (lua/aget (lua/aget p i) 2)]
+      (mk-pearson-walk p (+ i 1) to (+ n 1) (+ sx x) (+ sy y) (+ sxx (* x x)) (+ syy (* y y)) (+ sxy (* x y))))))
+
+(defn mk-pearson [(p : Any) (from : I32) (to : I32)] : I32 (mk-pearson-walk p from to 0 0 0 0 0 0))
+
+(defn mk-correlation [(db : Any) (x : I32) (y : I32)] : I32
+  (let [p (mk-pairs db x y)] (mk-pearson p 1 (g-len p))))
+
+;; Least-squares slope dy/dx over pairs [from, to], in thousandths; 0 when undefined.
+(defn mk-slope-walk [(p : Any) (i : I32) (to : I32) (n : I32) (sx : Any) (sy : Any) (sxx : Any) (sxy : Any)] : I32
+  (if (> i to)
+    (let [d (- (* n sxx) (* sx sx))] (if (or (< n 3) (<= d 0)) 0 (mk-floor (* (mk-div (- (* n sxy) (* sx sy)) d) 1000))))
+    (let [x (lua/aget (lua/aget p i) 1) y (lua/aget (lua/aget p i) 2)]
+      (mk-slope-walk p (+ i 1) to (+ n 1) (+ sx x) (+ sy y) (+ sxx (* x x)) (+ sxy (* x y))))))
+
+(defn mk-slope [(p : Any) (from : I32) (to : I32)] : I32 (mk-slope-walk p from to 0 0 0 0 0))
+
+;; 78 Delta: copper the output's price moves per copper of the input's, in thousandths, over all shared scans.
+(defn mk-delta [(db : Any) (out : I32) (in : I32)] : I32
+  (let [p (mk-pairs db in out)] (mk-slope p 1 (g-len p))))
+
+;; 79 Gamma: the delta of the newer half of the shared scans minus that of the older half, in thousandths.
+(defn mk-gamma [(db : Any) (out : I32) (in : I32)] : I32
+  (let [p (mk-pairs db in out) n (g-len p) h (/ n 2)]
+    (if (< n 6) 0 (- (mk-slope p (+ h 1) n) (mk-slope p 1 h)))))
+
+;; ---- 80 Theta: by the band a listing was last seen in, how many of the listings that left were sold. Returns
+;; {{band, sold, left}...}; sold here means "gone before Short" (the ingest's rule), so the Short band sells 0 by
+;; definition and the curve reads as how the chance of selling decays as time runs down.
+(defn mk-theta [(db : Any)] : Any
+  (let [t (lua/get db "theta")] (if (lua/nil? t) (lua/array) t)))
+
+;; ---- 90 Vendor Arbitrage: a listing below the vendor price is free money: {gain per unit, units at that price}.
+(defn mk-arbitrage [(db : Any) (id : I32) (vendor : I32)] : Any
+  (let [d (mk-depth db id 30)]
+    (if (or (= (g-len d) 0) (<= vendor 0) (>= (lua/aget (lua/aget d 1) 1) vendor)) (lua/nil)
+      (lua/array (- vendor (lua/aget (lua/aget d 1) 1)) (mk-arb-units d 1 vendor 0)))))
+
+(defn mk-arb-units [(d : Any) (i : I32) (vendor : I32) (n : I32)] : I32
+  (if (or (> i (g-len d)) (>= (lua/aget (lua/aget d i) 1) vendor)) n (mk-arb-units d (+ i 1) vendor (+ n (lua/aget (lua/aget d i) 2)))))
+
+;; ---- 91 Deposit and Cut: the house cut of a sale in permille is the host's (client or config) -- never assumed.
+(defn mk-cut [(price : I32) (cut-permille : I32)] : I32 (/ (* price cut-permille) 1000))
+;; Net from a post: price - cut - deposit (the deposit is lost either way, so it is always subtracted).
+(defn mk-net [(price : I32) (cut-permille : I32) (deposit : I32)] : I32 (- (- price (mk-cut price cut-permille)) deposit))
+
+;; ---- 98 Watchlist: items whose lowest price is at or under the buy target, or at or over the sell target.
+;; db.watch[id] = {buy, sell}. Returns {{id, lowest, 1 buy / 2 sell}...}.
+(defn mk-watch-walk [(db : Any) (w : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") w k)]
+    (if (lua/nil? nk) out
+      (let [last (mk-latest db nk) t (lua/aget w nk)]
+        (do (if (lua/nil? last) 0
+              (if (and (> (lua/aget t 1) 0) (<= (lua/aget last 2) (lua/aget t 1))) (lua/aset! out (+ (g-len out) 1) (lua/array nk (lua/aget last 2) 1))
+                (if (and (> (lua/aget t 2) 0) (>= (lua/aget last 2) (lua/aget t 2))) (lua/aset! out (+ (g-len out) 1) (lua/array nk (lua/aget last 2) 2)) 0)))
+            (mk-watch-walk db w nk out))))))
+
+(defn mk-watch-hits [(db : Any)] : Any (mk-watch-walk db (lua/get db "watch") (lua/nil) (lua/array)))
+
+;; ---- 85 Undercut Tracker: undercuts = {{t, id, gap permille}...}; {count, mean gap permille} for one item or all (0).
+(defn mk-uc-walk [(u : Any) (i : I32) (id : I32) (n : I32) (s : I32)] : Any
+  (if (> i (g-len u)) (lua/array n (if (= n 0) 0 (/ s n)))
+    (let [r (lua/aget u i)]
+      (if (or (= id 0) (= (lua/aget r 2) id)) (mk-uc-walk u (+ i 1) id (+ n 1) (+ s (lua/aget r 3))) (mk-uc-walk u (+ i 1) id n s)))))
+
+(defn mk-undercut-stats [(db : Any) (id : I32)] : Any (mk-uc-walk (lua/get db "undercuts") 1 id 0 0))
