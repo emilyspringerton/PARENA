@@ -1,0 +1,259 @@
+;; stdlib/collection/ecowar.prn -- EcoWar: team mini-games of cozy farming, Wotan esports style. Founder,
+;; 2026-11-13: "a plugin for a group to do mini games based on cozy farming like killing critters gives points and
+;; the rules can be parena driven ... it can include economics of the game that we can get from our auction house
+;; tools ... 3 versions horde vs horde, ally vs ally, ally vs horde, and then a mode of 3 teams 2 from one side",
+;; "full wotan esports", "parena mods driven everything". Every rule is here; the host only counts and carries.
+;;
+;; MODES (team layout):   1 Horde v Horde   2 Alliance v Alliance   3 Alliance v Horde   4 three teams, two from one
+;;                        side and one from the other (either way round)
+;; GAMES (what scores):   1 Cull (critter kills)   2 Harvest (the value of what you loot)   3 EcoWar (both)
+;;
+;; Teams of the host's faction are LOCAL (one raid, one subgroup per team, scored live). A team of the other
+;; faction is REMOTE: it runs its own captain, and its score arrives by a carrier (2 a shared chat channel, 3 a
+;; Battle.net link, 4 a signed match code typed in) -- the host never makes one up.
+;;
+;; SCORING
+;;   kill   a critter scores ew-kill-base, +1 per kill already in that player's streak (kills less than
+;;          ew-streak-secs apart), capped at +5; the first critter of a kind the TEAM has killed this match
+;;          scores ew-first-bonus more. Each critter (by its unique id) scores once, whoever reports it.
+;;   eco    loot value in copper -> points: one point per ew-eco-copper (10 silver). Prices are the host's
+;;          price source -- vendor value today, the auction house scan when that addon exists.
+;;   Cull counts kills only, Harvest eco only, EcoWar both.
+;; ESPORTS
+;;   league per team name: played, won, drawn, lost, points (3 win / 1 draw), best score; an Elo rating
+;;   (start 1500, K 32); every match end and rating change is a REFLUX row a Wotan hub can read.
+;;
+;; db = { match, league = {[team] = {...}}, ratings = {[team] = n}, history = {last 20 results} }
+;; match = { id, mode, game, teams = {{name, faction, remote, score, kills, eco, kinds = {}}...}, start, secs,
+;;           seen = {[critter id] = 1}, streak = {[player] = {n, at}} }
+;;
+;; REFLUX types 3010-3019 (above MacroSync's 3000-3009):
+;;   3010 match start   a = mode, b = game, c = teams
+;;   3011 kill          a = team, b = points, c = streak
+;;   3012 eco           a = team, b = points, c = copper / 100
+;;   3013 remote score  a = team, b = score, c = carrier (2 channel, 3 Battle.net, 4 code)
+;;   3014 match end     a = winning team (0 on a tie), b = winning score, c = margin
+;;   3015 rating        a = team, b = new rating, c = change
+
+(module collection/ecowar)
+(export ew-init ew-first-type ew-mode-teams ew-mode-ok ew-kill-base ew-first-bonus ew-streak-secs ew-eco-copper
+        ew-new! ew-team-of ew-kill! ew-eco! ew-remote! ew-over ew-standings ew-finish! ew-expected ew-code
+        ew-parse-code ew-league)
+
+(defn ew-first-type [] : I32 3010)
+(defn ew-kill-base [] : I32 10)
+(defn ew-first-bonus [] : I32 15)
+(defn ew-streak-secs [] : I32 10)
+(defn ew-eco-copper [] : I32 1000)
+
+(defn ew-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "league")) (lua/set! db "league" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "ratings")) (lua/set! db "ratings" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "history")) (lua/set! db "history" (lua/array)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn ew-mode-teams [(mode : I32)] : I32 (if (= mode 4) 3 (if (and (>= mode 1) (<= mode 3)) 2 0)))
+
+;; Do these factions ("Horde"/"Alliance", one per team, in order) fit the mode? 1/0.
+(defn ew-count-side [(teams : Any) (side : String) (i : I32) (n : I32)] : I32
+  (if (> i (g-len teams)) n (ew-count-side teams side (+ i 1) (if (= (lua/aget (lua/aget teams i) 2) side) (+ n 1) n))))
+
+(defn ew-mode-ok [(mode : I32) (teams : Any)] : I32
+  (let [n (g-len teams)
+        h (ew-count-side teams "Horde" 1 0)
+        a (ew-count-side teams "Alliance" 1 0)]
+    (if (or (not (= n (ew-mode-teams mode))) (not (= (+ h a) n))) 0
+      (if (= mode 1) (if (= h 2) 1 0)
+        (if (= mode 2) (if (= a 2) 1 0)
+          (if (= mode 3) (if (and (= h 1) (= a 1)) 1 0)
+            (if (or (and (= h 2) (= a 1)) (and (= h 1) (= a 2))) 1 0)))))))
+
+(defn ew-build-teams [(teams : Any) (host : String) (i : I32) (out : Any)] : Any
+  (if (> i (g-len teams)) out
+    (let [t (lua/aget teams i)]
+      (do (lua/aset! out i (lua/obj "name" (lua/aget t 1) "faction" (lua/aget t 2) "remote" (if (= (lua/aget t 2) host) 0 1)
+                                    "score" 0 "kills" 0 "eco" 0 "kinds" (lua/obj)))
+          (ew-build-teams teams host (+ i 1) out)))))
+
+;; A new match. teams = {{name, faction}...}; host = the host's faction. Returns the match id, or 0 when the teams
+;; do not fit the mode or the game is unknown.
+(defn ew-new! [(db : Any) (mode : I32) (game : I32) (teams : Any) (host : String) (secs : I32) (now : I32)] : I32
+  (if (or (= (ew-mode-ok mode teams) 0) (or (< game 1) (> game 3))) 0
+    (let [id (+ (g-mod now 1000000) 1)]
+      (do (lua/set! db "match" (lua/obj "id" id "mode" mode "game" game "teams" (ew-build-teams teams host 1 (lua/array))
+                                        "start" now "secs" secs "seen" (lua/obj) "streak" (lua/obj)))
+          (reflux-dispatch (ew-first-type) mode game (g-len teams))
+          id))))
+
+;; Index (1..) of the team called `name`, or 0.
+(defn ew-team-walk [(teams : Any) (name : String) (i : I32)] : I32
+  (if (> i (g-len teams)) 0 (if (= (lua/get (lua/aget teams i) "name") name) i (ew-team-walk teams name (+ i 1)))))
+
+(defn ew-team-of [(db : Any) (name : String)] : I32
+  (let [m (lua/get db "match")] (if (lua/nil? m) 0 (ew-team-walk (lua/get m "teams") name 1))))
+
+(defn ew-live [(m : Any) (now : I32)] : I32
+  (if (lua/nil? m) 0 (if (< (- now (lua/get m "start")) (lua/get m "secs")) 1 0)))
+
+;; Local team `team` (index) killed critter `cid` (unique id) of kind `kind`, by `player`. Points scored, or 0
+;; (no live match, not a Cull/EcoWar game, a remote team, or that critter already scored).
+(defn ew-kill! [(db : Any) (team : I32) (player : String) (cid : String) (kind : String) (now : I32)] : I32
+  (let [m (lua/get db "match")]
+    (if (or (= (ew-live m now) 0) (or (= (lua/get m "game") 2) (or (< team 1) (> team (g-len (lua/get m "teams")))))) 0
+      (let [t (lua/aget (lua/get m "teams") team)]
+        (if (or (= (lua/get t "remote") 1) (not (lua/nil? (lua/aget (lua/get m "seen") cid)))) 0
+          (let [st (lua/aget (lua/get m "streak") player)
+                n (if (or (lua/nil? st) (> (- now (lua/aget st 2)) (ew-streak-secs))) 0 (lua/aget st 1))
+                first (lua/nil? (lua/aget (lua/get t "kinds") kind))
+                pts (+ (+ (ew-kill-base) (g-clamp 0 5 n)) (if first (ew-first-bonus) 0))]
+            (do (lua/aset! (lua/get m "seen") cid 1)
+                (lua/aset! (lua/get m "streak") player (lua/array (+ n 1) now))
+                (lua/aset! (lua/get t "kinds") kind 1)
+                (lua/set! t "kills" (+ (lua/get t "kills") 1))
+                (lua/set! t "score" (+ (lua/get t "score") pts))
+                (reflux-dispatch (+ (ew-first-type) 1) team pts (+ n 1))
+                pts)))))))
+
+;; Local team `team` looted `copper` worth. Points scored (copper / ew-eco-copper, the remainder carried in eco).
+(defn ew-eco! [(db : Any) (team : I32) (copper : I32) (now : I32)] : I32
+  (let [m (lua/get db "match")]
+    (if (or (= (ew-live m now) 0) (or (= (lua/get m "game") 1) (or (< team 1) (or (> team (g-len (lua/get m "teams"))) (<= copper 0))))) 0
+      (let [t (lua/aget (lua/get m "teams") team)]
+        (if (= (lua/get t "remote") 1) 0
+          (let [before (/ (lua/get t "eco") (ew-eco-copper))
+                after (/ (+ (lua/get t "eco") copper) (ew-eco-copper))
+                pts (- after before)]
+            (do (lua/set! t "eco" (+ (lua/get t "eco") copper))
+                (lua/set! t "score" (+ (lua/get t "score") pts))
+                (if (> pts 0) (reflux-dispatch (+ (ew-first-type) 2) team pts (/ copper 100)) 0)
+                pts)))))))
+
+;; A remote team's score arrived by `carrier`. Only a remote team, and never lower than what it already has
+;; (a late or repeated message cannot take points away). Returns 1 accepted, 0 refused.
+(defn ew-remote! [(db : Any) (team : I32) (score : I32) (kills : I32) (eco : I32) (carrier : I32)] : I32
+  (let [m (lua/get db "match")]
+    (if (or (lua/nil? m) (or (< team 1) (> team (g-len (lua/get m "teams"))))) 0
+      (let [t (lua/aget (lua/get m "teams") team)]
+        (if (or (= (lua/get t "remote") 0) (< score (lua/get t "score"))) 0
+          (do (lua/set! t "score" score) (lua/set! t "kills" kills) (lua/set! t "eco" eco)
+              (reflux-dispatch (+ (ew-first-type) 3) team score carrier)
+              1))))))
+
+(defn ew-over [(db : Any) (now : I32)] : I32
+  (let [m (lua/get db "match")] (if (lua/nil? m) 0 (if (= (ew-live m now) 1) 0 1))))
+
+;; {{team index, name, score}...} best first; ties keep team order.
+(defn ew-rank-walk [(teams : Any) (taken : Any) (out : Any) (k : I32)] : Any
+  (if (> k (g-len teams)) out
+    (let [b (ew-best teams taken 1 0)]
+      (do (lua/aset! taken b 1)
+          (lua/aset! out k (lua/array b (lua/get (lua/aget teams b) "name") (lua/get (lua/aget teams b) "score")))
+          (ew-rank-walk teams taken out (+ k 1))))))
+
+(defn ew-best [(teams : Any) (taken : Any) (i : I32) (best : I32)] : I32
+  (if (> i (g-len teams)) best
+    (if (and (lua/nil? (lua/aget taken i))
+             (or (= best 0) (> (lua/get (lua/aget teams i) "score") (lua/get (lua/aget teams best) "score"))))
+      (ew-best teams taken (+ i 1) i)
+      (ew-best teams taken (+ i 1) best))))
+
+(defn ew-standings [(db : Any)] : Any
+  (let [m (lua/get db "match")]
+    (if (lua/nil? m) (lua/array) (ew-rank-walk (lua/get m "teams") (lua/obj) (lua/array) 1))))
+
+;; Elo: expected score of a against b, in thousandths: 1000 / (1 + 10^((rb - ra) / 400)). The power is taken
+;; as 1.0057731^(rb - ra) -- the 400th root of 10 -- because `/` is floor division on the Lua target and
+;; (rb - ra) / 400 would move in whole steps.
+(defn ew-expected [(ra : I32) (rb : I32)] : I32
+  (/ 1000 (+ 1 (lua/call-fn (lua/global "math.pow") 1.0057731 (- rb ra)))))
+
+(defn ew-rating [(db : Any) (name : String)] : I32
+  (let [r (lua/aget (lua/get db "ratings") name)] (if (lua/nil? r) 1500 r)))
+
+(defn ew-league [(db : Any) (name : String)] : Any
+  (do (if (lua/nil? (lua/aget (lua/get db "league") name))
+        (lua/aset! (lua/get db "league") name (lua/obj "played" 0 "won" 0 "drawn" 0 "lost" 0 "points" 0 "best" 0)) 0)
+      (lua/aget (lua/get db "league") name)))
+
+;; Every pair of teams is a game for the league and the ratings: win 3, draw 1, loss 0; Elo K = 32.
+(defn ew-pair [(db : Any) (teams : Any) (i : I32) (j : I32) (delta : Any)] : I32
+  (let [a (lua/aget teams i) b (lua/aget teams j)
+        sa (lua/get a "score") sb (lua/get b "score")
+        res (if (> sa sb) 1000 (if (< sa sb) 0 500))
+        ea (ew-expected (ew-rating db (lua/get a "name")) (ew-rating db (lua/get b "name")))
+        d (/ (* 32 (- res ea)) 1000)]
+    (do (lua/aset! delta i (+ (lua/aget delta i) d))
+        (lua/aset! delta j (- (lua/aget delta j) d))
+        (let [la (ew-league db (lua/get a "name")) lb (ew-league db (lua/get b "name"))]
+          (do (lua/set! la "played" (+ (lua/get la "played") 1)) (lua/set! lb "played" (+ (lua/get lb "played") 1))
+              (if (= res 1000) (do (lua/set! la "won" (+ (lua/get la "won") 1)) (lua/set! la "points" (+ (lua/get la "points") 3))
+                                   (lua/set! lb "lost" (+ (lua/get lb "lost") 1)))
+                (if (= res 0) (do (lua/set! lb "won" (+ (lua/get lb "won") 1)) (lua/set! lb "points" (+ (lua/get lb "points") 3))
+                                  (lua/set! la "lost" (+ (lua/get la "lost") 1)))
+                  (do (lua/set! la "drawn" (+ (lua/get la "drawn") 1)) (lua/set! la "points" (+ (lua/get la "points") 1))
+                      (lua/set! lb "drawn" (+ (lua/get lb "drawn") 1)) (lua/set! lb "points" (+ (lua/get lb "points") 1)))))
+              1)))))
+
+(defn ew-pairs [(db : Any) (teams : Any) (i : I32) (j : I32) (delta : Any)] : I32
+  (if (> i (g-len teams)) 0
+    (if (> j (g-len teams)) (ew-pairs db teams (+ i 1) (+ i 2) delta)
+      (do (ew-pair db teams i j delta) (ew-pairs db teams i (+ j 1) delta)))))
+
+(defn ew-zeros [(n : I32) (i : I32) (out : Any)] : Any (if (> i n) out (do (lua/aset! out i 0) (ew-zeros n (+ i 1) out))))
+
+(defn ew-apply [(db : Any) (teams : Any) (delta : Any) (i : I32)] : I32
+  (if (> i (g-len teams)) 0
+    (let [t (lua/aget teams i)
+          nr (+ (ew-rating db (lua/get t "name")) (lua/aget delta i))
+          lg (ew-league db (lua/get t "name"))]
+      (do (lua/aset! (lua/get db "ratings") (lua/get t "name") nr)
+          (if (> (lua/get t "score") (lua/get lg "best")) (lua/set! lg "best" (lua/get t "score")) 0)
+          (reflux-dispatch (+ (ew-first-type) 5) i nr (lua/aget delta i))
+          (ew-apply db teams delta (+ i 1))))))
+
+;; End the match: league, ratings and history updated; returns the standings. Clears the match.
+(defn ew-finish! [(db : Any)] : Any
+  (let [m (lua/get db "match")]
+    (if (lua/nil? m) (lua/array)
+      (let [teams (lua/get m "teams")
+            st (ew-standings db)
+            top (lua/aget st 1)
+            second (lua/aget st 2)
+            tie (= (lua/aget top 3) (lua/aget second 3))
+            delta (ew-zeros (g-len teams) 1 (lua/array))]
+        (do (ew-pairs db teams 1 2 delta)
+            (ew-apply db teams delta 1)
+            (reflux-dispatch (+ (ew-first-type) 4) (if tie 0 (lua/aget top 1)) (lua/aget top 3) (- (lua/aget top 3) (lua/aget second 3)))
+            (lua/call-fn (lua/global "table.insert") (lua/get db "history") 1
+              (lua/obj "id" (lua/get m "id") "mode" (lua/get m "mode") "game" (lua/get m "game") "standings" st))
+            (if (> (g-len (lua/get db "history")) 20) (lua/call-fn (lua/global "table.remove") (lua/get db "history")) 0)
+            (lua/set! db "match" (lua/nil))
+            st)))))
+
+;; A signed match code a captain can read out or type in: EW1-<match>-<team>-<score>-<kills>-<eco>-<check>.
+(defn ew-check [(id : I32) (team : I32) (score : I32) (kills : I32) (eco : I32)] : I32
+  (g-hash (str "ecowar" id "-" team "-" score "-" kills "-" eco)))
+
+(defn ew-code [(id : I32) (team : I32) (score : I32) (kills : I32) (eco : I32)] : String
+  (str "EW1-" id "-" team "-" score "-" kills "-" eco "-" (ew-check id team score kills eco)))
+
+;; The numbers of a code after its "EW1-" prefix, split on "-": an array, or nil on any other character.
+(defn ew-split-walk [(s : String) (i : I32) (n : I32) (cur : I32) (has : I32) (out : Any)] : Any
+  (if (> i n) (if (= has 1) (do (lua/aset! out (+ (g-len out) 1) cur) out) (lua/nil))
+    (let [b (lua/call-fn (lua/global "string.byte") s i)]
+      (if (and (>= b 48) (<= b 57)) (ew-split-walk s (+ i 1) n (+ (* cur 10) (- b 48)) 1 out)
+        (if (and (= b 45) (= has 1)) (do (lua/aset! out (+ (g-len out) 1) cur) (ew-split-walk s (+ i 1) n 0 0 out))
+          (lua/nil))))))
+
+(defn ew-split [(code : String)] : Any
+  (if (not (= (lua/call-fn (lua/global "string.sub") code 1 4) "EW1-")) (lua/nil)
+    (ew-split-walk code 5 (lua/call-fn (lua/global "string.len") code) 0 0 (lua/array))))
+
+;; {match, team, score, kills, eco} from a code whose check is right, else nil.
+(defn ew-parse-code [(code : String)] : Any
+  (let [p (ew-split code)]
+    (if (or (lua/nil? p) (< (g-len p) 6)) (lua/nil)
+      (if (= (lua/aget p 6) (ew-check (lua/aget p 1) (lua/aget p 2) (lua/aget p 3) (lua/aget p 4) (lua/aget p 5)))
+        (lua/array (lua/aget p 1) (lua/aget p 2) (lua/aget p 3) (lua/aget p 4) (lua/aget p 5))
+        (lua/nil)))))
