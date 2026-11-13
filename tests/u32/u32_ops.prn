@@ -1,0 +1,12 @@
+;; tests/u32/u32_ops.prn -- every unsigned 32-bit word form, one per function, for tests/test_u32_ops.c.
+(module u32t)
+(export t-add t-sub t-mul t-shl t-ushr t-rotr t-rotl t-lt t-mulhi)
+(defn t-add [(a : I32) (b : I32)] : I32 (u32-add a b))
+(defn t-sub [(a : I32) (b : I32)] : I32 (u32-sub a b))
+(defn t-mul [(a : I32) (b : I32)] : I32 (u32-mul a b))
+(defn t-shl [(a : I32) (b : I32)] : I32 (u32-shl a b))
+(defn t-ushr [(a : I32) (b : I32)] : I32 (ushr a b))
+(defn t-rotr [(a : I32) (b : I32)] : I32 (u32-rotr a b))
+(defn t-rotl [(a : I32) (b : I32)] : I32 (u32-rotl a b))
+(defn t-lt [(a : I32) (b : I32)] : I32 (u32-lt a b))
+(defn t-mulhi [(a : I32) (b : I32)] : I32 (u32-mulhi a b))

@@ -2943,6 +2943,46 @@ static const char *emit_expr(Arena *arena, Node *expr, EmitScope *scope, const c
      * Reports "int" the same real, honest way every other comparison/
      * boolean operator in emit_binop() already does (C's own bool-as-
      * int convention, matching region.c's own real code). */
+    /* Unsigned 32-bit word arithmetic (2026-11-13, for the PARENA-native crypto stack: SHA-2, ChaCha20,
+     * Poly1305, X25519). PARENA's only integer is I32 and `+`/`*`/`shl` emit C's SIGNED operators, whose
+     * overflow is undefined behaviour -- an optimiser may assume it never happens, which is exactly what a
+     * hash or a cipher does on every round. These forms compute in uint32_t, where wrap-around is defined,
+     * and hand back the same 32 bits as an int:
+     *   (u32-add a b) (u32-sub a b) (u32-mul a b)   modulo 2^32
+     *   (u32-shl a n) (ushr a n)                     shifts, n in 0..31 (logical right shift: zeros in)
+     *   (u32-rotr a n) (u32-rotl a n)                rotations, n in 0..31
+     *   (u32-lt a b)                                 unsigned a < b, 1/0
+     *   (u32-mulhi a b)                              the high 32 bits of the 64-bit unsigned product
+     * The shift count is masked to 0..31 so no input is undefined. */
+    if (expr->type == NODE_LIST && expr->child_count == 3 && expr->children[0]->type == NODE_SYMBOL) {
+        const char *op = expr->children[0]->text;
+        const char *fmt = NULL;
+        if (strcmp(op, "u32-add") == 0) fmt = "((int)((uint32_t)(%s) + (uint32_t)(%s)))";
+        else if (strcmp(op, "u32-sub") == 0) fmt = "((int)((uint32_t)(%s) - (uint32_t)(%s)))";
+        else if (strcmp(op, "u32-mul") == 0) fmt = "((int)((uint32_t)(%s) * (uint32_t)(%s)))";
+        else if (strcmp(op, "u32-shl") == 0) fmt = "((int)((uint32_t)(%s) << ((uint32_t)(%s) & 31u)))";
+        else if (strcmp(op, "ushr") == 0) fmt = "((int)((uint32_t)(%s) >> ((uint32_t)(%s) & 31u)))";
+        else if (strcmp(op, "u32-lt") == 0) fmt = "((int)((uint32_t)(%s) < (uint32_t)(%s)))";
+        else if (strcmp(op, "u32-mulhi") == 0) fmt = "((int)(uint32_t)(((uint64_t)(uint32_t)(%s) * (uint64_t)(uint32_t)(%s)) >> 32))";
+        int rot = strcmp(op, "u32-rotr") == 0 ? 1 : strcmp(op, "u32-rotl") == 0 ? 2 : 0;
+        if (fmt || rot) {
+            const char *ta = NULL, *tb = NULL;
+            const char *a = emit_expr(arena, expr->children[1], scope, &ta, out_error);
+            if (!a) return NULL;
+            const char *b = emit_expr(arena, expr->children[2], scope, &tb, out_error);
+            if (!b) return NULL;
+            *out_type = "int";
+            char *buf;
+            /* a rotation names each operand twice; PARENA arithmetic operands are pure expressions */
+            if (rot == 1)
+                buf = xfmt("((int)(((uint32_t)(%s) >> ((uint32_t)(%s) & 31u)) | ((uint32_t)(%s) << ((32u - ((uint32_t)(%s) & 31u)) & 31u))))", a, b, a, b);
+            else if (rot == 2)
+                buf = xfmt("((int)(((uint32_t)(%s) << ((uint32_t)(%s) & 31u)) | ((uint32_t)(%s) >> ((32u - ((uint32_t)(%s) & 31u)) & 31u))))", a, b, a, b);
+            else
+                buf = xfmt(fmt, a, b);
+            return arena_strdup(arena, buf, strlen(buf));
+        }
+    }
     if (is_call_named(expr, "not") && expr->child_count == 2) {
         const char *inner_type = NULL;
         const char *inner_c = emit_expr(arena, expr->children[1], scope, &inner_type, out_error);
