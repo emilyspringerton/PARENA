@@ -30,7 +30,7 @@
 (module collection/macros)
 (export macro-set macro-classes)
 
-(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST"))
+(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST" "MAGE" "SHAMAN" "DRUID"))
 
 (defn macro-paladin [] : Any
   (lua/array
@@ -80,6 +80,72 @@
     (lua/array "PriInnerFire" "#showtooltip\n/cast {Inner Fire}")
     (lua/array "PriNova" "#showtooltip\n/cast {Holy Nova}")))
 
+;; MAGE -- damage, control and utility (core kit; no mage guide on this machine). Harmful spells take your
+;; mouseover enemy first, then your target; buffs and decurse take a friend the usual way. Where a choice lists
+;; several, the best is listed first, so a character casts the strongest one it knows.
+(defn macro-mage [] : Any
+  (lua/array
+    (lua/array "MagFrostbolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Frostbolt}")
+    (lua/array "MagFireball" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Fireball}")
+    (lua/array "MagFireBlast" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Fire Blast}")
+    (lua/array "MagPoly" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Polymorph}")
+    (lua/array "MagCounter" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Counterspell}")
+    (lua/array "MagNova" "#showtooltip\n/cast {Frost Nova}")
+    (lua/array "MagConeCold" "#showtooltip\n/cast {Cone of Cold}")
+    (lua/array "MagArcExpl" "#showtooltip\n/cast {Arcane Explosion}")
+    (lua/array "MagBlink" "#showtooltip\n/cast {Blink}")
+    (lua/array "MagIceBlock" "#showtooltip\n/cast {Ice Block|Ice Barrier}")
+    (lua/array "MagArmor" "#showtooltip\n/cast {Molten Armor|Mage Armor|Ice Armor|Frost Armor}")
+    (lua/array "MagIntellect" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Arcane Brilliance|Arcane Intellect}")
+    (lua/array "MagDecurse" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Curse|Remove Lesser Curse}")
+    (lua/array "MagWater" "#showtooltip\n/cast {Conjure Refreshment|Conjure Water}")
+    (lua/array "MagFood" "#showtooltip\n/cast {Conjure Refreshment|Conjure Food}")
+    (lua/array "MagEvocate" "#showtooltip\n/cast {Evocation}")))
+
+;; SHAMAN -- shocks, heals, weapons, shields and one macro per totem element (shift picks the other totem).
+(defn macro-shaman [] : Any
+  (lua/array
+    (lua/array "ShaBolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Lightning Bolt}")
+    (lua/array "ShaChain" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Chain Lightning}")
+    (lua/array "ShaShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Earth Shock}")
+    (lua/array "ShaFrostShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Frost Shock}")
+    (lua/array "ShaFlameShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Flame Shock}")
+    (lua/array "ShaPurge" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Purge}")
+    (lua/array "ShaHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Wave}")
+    (lua/array "ShaQuickHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
+    (lua/array "ShaChainHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Chain Heal}")
+    (lua/array "ShaCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Purify Spirit|Cleanse Spirit|Cure Poison}")
+    (lua/array "ShaWeapon" "#showtooltip\n/cast [mod:shift] {Flametongue Weapon}; {Windfury Weapon|Rockbiter Weapon}")
+    (lua/array "ShaShield" "#showtooltip\n/cast [mod:shift] {Water Shield|Lightning Shield}; {Lightning Shield}")
+    (lua/array "ShaGhost" "#showtooltip\n/cast {Ghost Wolf}")
+    (lua/array "ShaEarthTotem" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
+    (lua/array "ShaFireTotem" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem}; {Searing Totem}")
+    (lua/array "ShaWaterTotem" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem}; {Healing Stream Totem}")))
+
+;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
+(defn macro-druid [] : Any
+  (lua/array
+    (lua/array "DruWrath" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Wrath}")
+    (lua/array "DruMoonfire" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Moonfire}")
+    (lua/array "DruRoots" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Entangling Roots}")
+    (lua/array "DruClaw" "#showtooltip\n/startattack\n/cast {Mangle|Claw}")
+    (lua/array "DruHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch|Regrowth}")
+    (lua/array "DruRegrowth" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Regrowth}")
+    (lua/array "DruRejuv" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
+    (lua/array "DruMark" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
+    (lua/array "DruThorns" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Thorns}")
+    (lua/array "DruCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse|Abolish Poison|Cure Poison}")
+    (lua/array "DruInnervate" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
+    (lua/array "DruRebirth" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Rebirth}")
+    (lua/array "DruBear" "#showtooltip\n/cast {Dire Bear Form|Bear Form}")
+    (lua/array "DruCat" "#showtooltip\n/cast {Cat Form}")
+    (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")
+    (lua/array "DruCaster" "/cancelform")))
+
 ;; The set for a class file name; an empty array for a class without one yet.
 (defn macro-set [(class : String)] : Any
-  (if (= class "PALADIN") (macro-paladin) (if (= class "PRIEST") (macro-priest) (lua/array))))
+  (if (= class "PALADIN") (macro-paladin)
+    (if (= class "PRIEST") (macro-priest)
+      (if (= class "MAGE") (macro-mage)
+        (if (= class "SHAMAN") (macro-shaman)
+          (if (= class "DRUID") (macro-druid) (lua/array)))))))

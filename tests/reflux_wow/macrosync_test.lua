@@ -86,40 +86,45 @@ end
 local function names(list) local t = {}; for _, m in ipairs(list) do t[#t + 1] = m.name end; return table.concat(t, ",") end
 local function find(list, name) for _, m in ipairs(list) do if m.name == name then return m end end end
 
--- ===== a level-1 paladin on a classic-named client ========================================================
+-- ===== a level-1 paladin on a classic-named client: EVERY macro is written, learned or not =================
 local w = world("PALADIN", { "Holy Light", "Seal of Righteousness", "Devotion Aura", "Judgement" })
 w.account = { { name = "MyMount", body = "/cast Swift Brown Steed" } }
 w.char = { { name = "PalStun", body = "/say my own stun macro" } }
 local s = session(w)
 local out = s.ascend("preview")
-has(out, "would write 3, prune 0; 13 wait for spells", "preview counts what /ascend would do")
+has(out, "would write 15, prune 0;", "preview counts what /ascend would do (16 in the set, one name is the player's)")
 eq(#w.char, 1, "and changes nothing")
 out = s.ascend()
-eq(names(w.char), "PalStun,PalJudge,PalHeal,PalBigHeal", "three macros written as character macros, after the player's own")
-eq(find(w.char, "PalJudge").body, "#showtooltip\n/startattack\n/cast Judgement", "the classic spelling was chosen")
-eq(find(w.char, "PalHeal").body:find("Holy Light", 1, true) ~= nil, true, "Flash of Light unknown, so Holy Light")
+eq(#w.char, 16, "all fifteen written beside the player's own macro, with nothing learned past level 1")
+eq(names(w.char), "PalStun,PalJudge,PalSeal,PalHeal,PalBigHeal,PalBubble,PalBubHearth,PalLoH,PalBless,PalBoP,PalFreedom,PalCleanse,PalAura,PalTaunt,PalExo,PalMount",
+   "in the set's order")
+eq(find(w.char, "PalJudge").body, "#showtooltip\n/startattack\n/cast Judgement", "the known spelling is chosen")
+eq(find(w.char, "PalHeal").body:find("Holy Light", 1, true) ~= nil, true, "Flash of Light unknown, Holy Light known: Holy Light")
+eq(find(w.char, "PalLoH").body, "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] Lay on Hands",
+   "an unlearned spell is written by its first name, ready for the day it is learned")
+eq(find(w.char, "PalSeal").body, "#showtooltip\n/cast [mod:shift] Seal of the Crusader; Seal of Righteousness",
+   "one choice unlearned, the other known: both resolve")
 eq(find(w.char, "PalStun").body, "/say my own stun macro", "the player's own macro is untouched")
 eq(names(w.account), "MyMount", "account macros are untouched")
-has(out, "3 written, 0 pruned, 13 waiting for spells", "summary line")
-has(out, "waiting (learn the spell, then /ascend): ", "dormant macros are listed")
-has(out, "PalSeal (Seal of the Crusader / Seal of Command)", "with the spells they wait for")
+has(out, "15 written, 0 pruned;", "summary line")
+has(out, "not learned yet (already on your list, they work once learned): ", "unlearned spells are listed")
+has(out, "PalLoH (Lay on Hands)", "by macro and spell")
 local lines = 0
 for _, l in ipairs(w.out) do if l:find("|cff8c6b27", 1, true) then lines = lines + 1 end end
-eq(lines >= 6, true, "the ascend and the dormant haiku print, three lines each")
+eq(lines >= 6, true, "the ascend and the not-learned haiku print, three lines each")
 eq(s.env.MacroSyncDB.managed.PalJudge, 1, "MacroSync remembers what it manages")
 eq(s.env.MacroSyncDB.managed.PalStun, nil, "but not the player's own")
 
--- ===== later: more spells learned; one forgotten (respec) ================================================
+-- ===== later: spells learned -- the choices upgrade; a macro dropped from the set is pruned =================
 w.saved.MacroSyncDB = s.env.MacroSyncDB
 for _, sp in ipairs({ "Hammer of Justice", "Seal of the Crusader", "Retribution Aura", "Flash of Light", "Lay on Hands" }) do w.known[sp] = true end
-w.known["Holy Light"] = nil
+w.char[#w.char + 1] = { name = "PalOldOne", body = "/cast Old Spell" }
+w.saved.MacroSyncDB.managed.PalOldOne = 1          -- a macro an older set had
 s = session(w)
 out = s.ascend()
-eq(find(w.char, "PalBigHeal"), nil, "a macro whose spell is gone is pruned")
-has(out, "pruned: PalBigHeal", "and the prune is reported")
-eq(find(w.char, "PalHeal").body:find("Flash of Light", 1, true) ~= nil, true, "PalHeal updated to Flash of Light")
-eq(find(w.char, "PalSeal") ~= nil, true, "PalSeal woke up")
-eq(find(w.char, "PalAura") ~= nil, true, "PalAura woke up")
+eq(find(w.char, "PalOldOne"), nil, "a managed macro no longer in the set is pruned")
+has(out, "pruned: PalOldOne", "and the prune is reported")
+eq(find(w.char, "PalHeal").body:find("Flash of Light", 1, true) ~= nil, true, "PalHeal upgraded to Flash of Light")
 eq(find(w.char, "PalStun").body, "/say my own stun macro", "a name collision leaves the player's macro alone")
 has(out, "left alone (your own macro has the name): PalStun", "and says so")
 local before = names(w.char)
@@ -164,17 +169,38 @@ eq(#k.char, 0, "and nothing is written")
 local pr = world("PRIEST", { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" })
 s = session(pr)
 out = s.ascend()
-eq(names(pr.char), "PriHeal,PriBigHeal,PriFort,PriSmite,PriWand", "a level-1 priest gets the five it can cast")
+eq(#pr.char, 16, "a level-1 priest gets all sixteen, learned or not")
 eq(find(pr.char, "PriHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "the quick heal falls back to Lesser Heal")
 eq(find(pr.char, "PriBigHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "so does the big heal, until a bigger one is known")
 eq(find(pr.char, "PriWand").body, "#showtooltip\n/cast !Shoot", "the wand keeps its no-toggle !")
-has(out, "5 written, 0 pruned, 11 waiting for spells", "the rest wait")
+has(out, "16 written, 0 pruned; 11 use spells you have not learned yet", "and is told which wait on learning")
+eq(find(pr.char, "PriShield").body:find("Power Word: Shield", 1, true) ~= nil, true, "the shield macro is there before the shield is learned")
 pr.known["Greater Heal"], pr.known["Power Word: Shield"] = true, true
 pr.saved.MacroSyncDB = s.env.MacroSyncDB
 s = session(pr)
 s.ascend()
 eq(find(pr.char, "PriBigHeal").body:find("Greater Heal", 1, true) ~= nil, true, "learning Greater Heal upgrades the big heal")
-eq(find(pr.char, "PriShield") ~= nil, true, "and the shield wakes up")
+eq(#pr.char, 16, "and nothing is duplicated")
+
+-- ===== mage, shaman, druid: every set is complete on a fresh character, and choices pick the best known ======
+for _, case in ipairs({
+    { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor" },
+    { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon" },
+    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild" },
+}) do
+    local cw = world(case[1], case[2])
+    s = session(cw)
+    out = s.ascend()
+    eq(#cw.char, 16, case[1] .. ": all sixteen written on a fresh character")
+    eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
+    local named = true
+    for _, m in ipairs(cw.char) do if #m.name > 16 then named = false end end
+    eq(named, true, case[1] .. ": every name fits the macro frame's 16 characters")
+end
+local dr = world("DRUID", {})
+s = session(dr)
+s.ascend()
+eq(find(dr.char, "DruCaster").body, "/cancelform", "a macro with no spell choice is written as is")
 
 -- ===== REFLUX: ascends reach the journal ================================================================
 local j = world("PALADIN", { "Judgement" })
