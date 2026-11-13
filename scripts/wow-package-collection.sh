@@ -146,6 +146,22 @@ fun "$V_ADDON" "$V_VAR" volva volva.prn volva.lua volva.lua "Völva" \
 fun "$S_ADDON" "$S_VAR" saga saga.prn saga_of_fools.lua saga.lua "Saga of Fools" \
   "Joke achievements nobody asked for. /saga" SavedVariablesPerCharacter
 
+# The Total Character Board (spec addon 1): the progression record the CSV export reads. /board
+B_ADDON="${BOARD_ADDON:-CharacterBoard}"
+B_VAR="${BOARD_VAR:-CharacterBoardDB}"
+for n in "$B_ADDON" "$B_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+bd="$OUT/AddOns/$B_ADDON"
+mkdir -p "$bd"
+wrap collection/board "$bd/board_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn stdlib/collection/games.prn \
+  stdlib/collection/board.prn
+cp runtime/wow/locales/board.lua "$bd/locale.lua"
+glue runtime/wow/character_board.lua "$bd/character_board.lua" "$B_ADDON" "$B_VAR"
+toc "$bd/$B_ADDON.toc" "Character Board" "Every character's level, xp, rested, gold, zone and professions, kept as a progression record for the CSV export. /board" \
+  SavedVariables "$B_VAR" board_rules.lua locale.lua character_board.lua
+
 # MacroSync (the spec's own addon): the sync rules and the class macro sets, two PARENA modules. /ascend
 M_ADDON="${MACROSYNC_ADDON:-MacroSync}"
 M_VAR="${MACROSYNC_VAR:-MacroSyncDB}"
@@ -229,7 +245,9 @@ game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
 
 "$PARENA_BIN" build stdlib/collection/ids.prn -o "$OUT/reader/ids.lua" >/dev/null
-cp runtime/wow/journal_reader.lua runtime/wow/journal_read_cli.lua "$OUT/reader/"
+cp runtime/wow/journal_reader.lua runtime/wow/journal_read_cli.lua runtime/wow/csv_export.lua "$OUT/reader/"
+cp scripts/collection-csv.sh "$OUT/reader/export-csv.sh"
+chmod +x "$OUT/reader/export-csv.sh"
 cp scripts/collection-journal-read.sh "$OUT/reader/read-journal.sh"
 chmod +x "$OUT/reader/read-journal.sh"
 
@@ -248,7 +266,7 @@ IN GAME
   /census            Ratatoskr Roll: this week's most loved critters (target one, then /love, /pet or /wave)
   /fortune          Völva: today's fortune again (a new one opens at every login)
   /saga              Saga of Fools: joke achievements, earned and still to come
-  /ascend            MacroSync: load your class's macros (paladin and priest so far); /ascend preview changes nothing
+  /ascend            MacroSync: load your class's macros (paladin, priest, mage, shaman, druid); /ascend preview changes nothing
   Each character is learned the first time you log it in; the bank is learned each time you open it,
   mail each time you open the mailbox.
 
@@ -256,6 +274,9 @@ AFTER PLAYING (log out first: the client writes SavedVariables on logout and /re
   WOW_WTF_DIR="<WoW>/_forever_/WTF" COLLECTION_EVENTS=<somewhere>/events.ndjson reader/read-journal.sh
   Needs a Lua 5.1 interpreter (LUA51=lua5.1). Appends new events only; exit 3 means rows were trimmed in
   game before a read reached them -- the report names them.
+  WOW_WTF_DIR="<WoW>/_forever_/WTF" COLLECTION_CSV_DIR=<somewhere>/csv reader/export-csv.sh
+  writes characters.csv (every snapshot: your progression), bags.csv, bags_history.csv (appended each run)
+  and inventory_net.csv. /board in game shows the characters; /board snap takes a snapshot now.
 EOF
 echo "$VERSION" > "$OUT/VERSION"
 

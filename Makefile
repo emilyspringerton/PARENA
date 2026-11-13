@@ -1477,6 +1477,9 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	$(LUA51) tests/reflux_wow/ecowar_test.lua $(REFLUX_WOW_OUT)/client
 	@# The sixteen party games, each played end to end with a four-player party.
 	$(LUA51) tests/reflux_wow/games_test.lua $(REFLUX_WOW_OUT)/client
+	@# The Character Board across three stubbed sessions, then the CSV export on the SavedVariables it leaves.
+	rm -rf $(REFLUX_WOW_OUT)/csvwork
+	$(LUA51) tests/reflux_wow/board_csv_test.lua $(REFLUX_WOW_OUT)/client $(REFLUX_WOW_OUT)/csvwork
 	@# Step 7, the event store (stdlib/collection/eventstore.prn): its rules through the real wrapper, then the
 	@# on-disk check against PRRJECT_FATBABY's real Go FileStore (skipped without PRRJECT_FATBABY_DIR and Go).
 	bash tests/collection_store/store_test.sh $(REFLUX_WOW_OUT)/store
