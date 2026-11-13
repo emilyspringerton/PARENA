@@ -37,5 +37,17 @@ eq(M.point(r)[1], 10, "arrays are 1-based: first element at [1]")
 eq(M.secondOf(r), 11, "lua/aget indexes raw")
 eq(M.nilCheck(r), true, "lua/nil? on a missing field")
 
+local db = { rows = {}, count = 0 }
+eq(M.journalPut(db, 1, 500), 1, "do yields its last expression")
+eq(M.journalPut(db, 2, 600), 2, "a second write")
+eq(db.rows[1], 500, "lua/aset! wrote rows[1]")
+eq(db.rows[2], 600, "lua/aset! wrote rows[2]")
+eq(db.count, 2, "lua/set! by name, in order: the later write wins")
+eq(db["last write"], 600, "lua/set! with a non-name key")
+eq(M.setFlag(db), nil, "an assignment used as a value yields nil")
+eq(db.flag, true, "...and still assigns")
+eq(M.countFrom(0, 256, 0), 256, "recursion walks a full 256-row REFLUX ring")
+eq(M.countFrom(0, 5000, 0), 5000, "and 5000 steps without a stack overflow")
+
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -272,9 +272,21 @@ int main(void) {
         Arena arena;
         arena_init(&arena);
         const char *err = NULL;
-        /* multiple body expressions: v0 has no `do`, and silently dropping one would be worse than saying so */
-        const char *lua = build_lua(&arena, "(defn f [] : I32 (do 1 2))", &err);
+        /* a loop form this target still cannot express is refused, not emitted as `M.while(...)`. (This check
+         * used `do` until 2026-11-13, when `do` gained a real lowering -- see the next block.) */
+        const char *lua = build_lua(&arena, "(defn f [] : I32 (while 1 2))", &err);
         CHECK(lua == NULL, "an unsupported body form is refused rather than partially emitted");
+        arena_free_all(&arena);
+    }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        /* `do` sequences in order and yields its last expression; a non-call entry becomes `local _ = e` because
+         * Lua only accepts calls as bare statements, and dropping it would lose its effects. */
+        const char *lua = build_lua(&arena, "(defn f [] : I32 (do 1 2))", &err);
+        CHECK(lua && strstr(lua, "(function() local _ = 1; return 2 end)()") != NULL,
+              "do lowers to a sequencing IIFE that returns its last expression");
         arena_free_all(&arena);
     }
 

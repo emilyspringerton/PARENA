@@ -40,3 +40,17 @@
 (defn point [(r : Any)] : Any (lua/get r "pos"))
 (defn second-of [(r : Any)] : I32 (lua/aget (lua/get r "pos") 2))
 (defn nil-check [(r : Any)] : Bool (lua/nil? (lua/get r "missing")))
+
+;; mutation + sequencing, the shape a SavedVariables writer takes: put v at rows[n], record n, yield n
+(defn journal-put [(db : Any) (n : I32) (v : I32)] : I32
+  (do (lua/aset! (lua/get db "rows") n v)
+      (lua/set! db "count" n)
+      (lua/set! db "last write" v)
+      n))
+
+;; assignment in expression position yields nil
+(defn set-flag [(db : Any)] : Any (lua/set! db "flag" true))
+
+;; a loop is recursion: count REFLUX-style rows [abs, total) -- deep enough to prove it does not overflow
+(defn count-from [(abs : I32) (total : I32) (acc : I32)] : I32
+  (if (>= abs total) acc (count-from (+ abs 1) total (+ acc 1))))

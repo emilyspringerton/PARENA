@@ -219,6 +219,48 @@ static const char *lb_take(Arena *arena, LuaBuf *b) {
     return result;
 }
 
+/* (lua/set! obj "key" v) -> `(obj).key = v` (or `(obj)[k] = v` for a computed / non-name key);
+ * (lua/aset! arr i v)    -> `(arr)[i] = v`, raw 1-based like lua/aget. Returns the statement text. */
+static const char *emit_lua_assignment(Arena *arena, Node *expr, const char *head, const char **out_error) {
+    if (expr->child_count != 4) {
+        *out_error = "emit_lua: lua/set! takes (object \"key\" value) and lua/aset! takes (array index value)";
+        return NULL;
+    }
+    const char *obj = emit_lua_expr(arena, expr->children[1], out_error);
+    if (!obj) return NULL;
+    const char *val = emit_lua_expr(arena, expr->children[3], out_error);
+    if (!val) return NULL;
+    Node *k = expr->children[2];
+    LuaBuf b;
+    lb_init(&b);
+    if (strcmp(head, "lua/set!") == 0 && k->type == NODE_STRING && is_lua_name(k->text, k->text_len, 0)) {
+        lb_appendf(&b, "(%s).%.*s = %s", obj, (int)k->text_len, k->text, val);
+    } else {
+        const char *key = emit_lua_expr(arena, k, out_error);
+        if (!key) { lb_free(&b); return NULL; }
+        lb_appendf(&b, "(%s)[%s] = %s", obj, key, val);
+    }
+    const char *result = arena_strdup(arena, b.data, b.len);
+    lb_free(&b);
+    return result;
+}
+
+/* One non-final entry of a `do`: an assignment as itself, anything else evaluated into a throwaway local. */
+static const char *emit_lua_stmt(Arena *arena, Node *expr, const char **out_error) {
+    if (expr->type == NODE_LIST && expr->child_count > 0 && expr->children[0]->type == NODE_SYMBOL &&
+        (strcmp(expr->children[0]->text, "lua/set!") == 0 || strcmp(expr->children[0]->text, "lua/aset!") == 0)) {
+        return emit_lua_assignment(arena, expr, expr->children[0]->text, out_error);
+    }
+    const char *e = emit_lua_expr(arena, expr, out_error);
+    if (!e) return NULL;
+    LuaBuf b;
+    lb_init(&b);
+    lb_appendf(&b, "local _ = %s", e);
+    const char *result = arena_strdup(arena, b.data, b.len);
+    lb_free(&b);
+    return result;
+}
+
 /* emit_lua_interop -- the `lua/` bridge to the host's Lua world (WoW's API globals, frames, tables), the Lua
  * counterpart of emit_ts.c's `js/` family and named the same way so one reading serves both:
  *
@@ -351,11 +393,40 @@ static const char *emit_lua_interop(Arena *arena, Node *expr, const char *head, 
         lb_appendf(&b, "(%s == nil)", a);
         return lb_take(arena, &b);
     }
+    if (strcmp(head, "lua/set!") == 0 || strcmp(head, "lua/aset!") == 0) {
+        /* In expression position an assignment has no value, so it runs inside an IIFE and yields nil. Inside a
+         * `do` the same form is written as a bare statement instead (emit_lua_stmt). */
+        const char *assign = emit_lua_assignment(arena, expr, head, out_error);
+        if (!assign) return NULL;
+        lb_init(&b);
+        lb_appendf(&b, "(function() %s; return nil end)()", assign);
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "do") == 0) {
+        /* (do e1 e2 ... en): run e1..e(n-1) for their effects, in order, and yield en -- the sequencing a
+         * SavedVariables writer or an event handler needs. Lua only allows CALLS as bare statements, so every
+         * non-final expression that is not an assignment is written `local _ = e;`, which is valid for any e. */
+        if (expr->child_count < 2) {
+            *out_error = "emit_lua: do needs at least one expression";
+            return NULL;
+        }
+        lb_init(&b);
+        lb_append(&b, "(function() ");
+        for (size_t i = 1; i + 1 < expr->child_count; i++) {
+            const char *s = emit_lua_stmt(arena, expr->children[i], out_error);
+            if (!s) { lb_free(&b); return NULL; }
+            lb_appendf(&b, "%s; ", s);
+        }
+        const char *last = emit_lua_expr(arena, expr->children[expr->child_count - 1], out_error);
+        if (!last) { lb_free(&b); return NULL; }
+        lb_appendf(&b, "return %s end)()", last);
+        return lb_take(arena, &b);
+    }
     if (strncmp(head, "lua/", 4) == 0) {
         /* Without this, an unknown or misspelled bridge form fell through to the defn-call branch and emitted
          * `M.lua/whatever(...)` -- a syntax error only the client would find. */
         *out_error = "emit_lua: unknown lua/ form (have: lua/global lua/defined? lua/call lua/call-fn lua/get "
-                     "lua/aget lua/obj lua/array lua/nil?)";
+                     "lua/aget lua/obj lua/array lua/nil? lua/set! lua/aset!)";
         return NULL;
     }
     *handled = 0;
@@ -485,7 +556,7 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
      * own new test (`(defn f [] : I32 (do 1 2))` emitted `M.do(1, 2)` instead of failing), the same class of gap
      * the C emitter's own honest-refusal list exists to prevent. A named refusal beats a guessed call. */
     static const char *const UNSUPPORTED_STATEMENT_FORMS[] = {
-        "do", "set!", "while", "dotimes", "loop", "recur", "def", "defstruct", "defenum", "match", "case"
+        "set!", "while", "dotimes", "loop", "recur", "def", "defstruct", "defenum", "match", "case"
     };
     for (size_t i = 0; i < sizeof(UNSUPPORTED_STATEMENT_FORMS) / sizeof(UNSUPPORTED_STATEMENT_FORMS[0]); i++) {
         if (strcmp(head, UNSUPPORTED_STATEMENT_FORMS[i]) == 0) {
