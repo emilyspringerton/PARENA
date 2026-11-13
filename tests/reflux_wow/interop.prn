@@ -1,0 +1,42 @@
+;; tests/reflux_wow/interop.prn -- the `lua/` bridge and string literals on the Lua 5.1 (WoW) target.
+;; Run by tests/reflux_wow/interop_test.lua against stand-in WoW globals; every function returns something the
+;; test can compare exactly.
+(module tests/reflux-wow-interop)
+(export best-map map-of build-toc has-cmap has-missing frame-name title quoted unicode
+        record record-zone point second-of nil-check)
+
+;; a namespaced WoW API call, by dotted global path
+(defn best-map [] : I32
+  (lua/call-fn (lua/global "C_Map.GetBestMapForUnit") "player"))
+
+(defn map-of [(unit : String)] : I32
+  (lua/call-fn (lua/global "C_Map.GetBestMapForUnit") unit))
+
+;; a plain global with several results, narrowed by Lua's own select
+(defn build-toc [] : I32
+  (lua/call-fn (lua/global "select") 4 (lua/call-fn (lua/global "GetBuildInfo"))))
+
+;; feature-test before calling
+(defn has-cmap [] : Bool (lua/defined? "C_Map"))
+(defn has-missing [] : Bool (lua/defined? "C_DoesNotExist"))
+
+;; a method call on a frame-like object (self passed with `:`)
+(defn frame-name [(frame : Any)] : String
+  (lua/call frame "GetName"))
+
+;; str concatenates anything
+(defn title [(name : String) (level : I32)] : String
+  (str name " (" level ")"))
+
+;; escapes and UTF-8 survive into the Lua literal
+(defn quoted [] : String "say \"hi\"\n\tback\\slash")
+(defn unicode [] : String "Hallo Welt, 世界, мир")
+
+;; tables: built, then read back by name, by non-name key and by raw index
+(defn record [(zone : I32) (x : I32)] : Any
+  (lua/obj "zone" zone "pos" (lua/array x (+ x 1)) "not a name" 7 "end" 9))
+
+(defn record-zone [(r : Any)] : I32 (lua/get r "zone"))
+(defn point [(r : Any)] : Any (lua/get r "pos"))
+(defn second-of [(r : Any)] : I32 (lua/aget (lua/get r "pos") 2))
+(defn nil-check [(r : Any)] : Bool (lua/nil? (lua/get r "missing")))

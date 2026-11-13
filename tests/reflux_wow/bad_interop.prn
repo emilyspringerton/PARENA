@@ -1,0 +1,3 @@
+;; tests/reflux_wow/bad_interop.prn -- a misspelled lua/ form must fail the build, not emit `M.lua/...`.
+(module tests/reflux-wow-bad-interop)
+(defn f [] : I32 (lua/globl "GetTime"))

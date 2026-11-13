@@ -1432,6 +1432,12 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# ...and with a test-only one, produce an addon that loads in .toc order under Lua 5.1.
 	WOW_INTERFACE=99999 REFLUXCORE_OUT=$(REFLUX_WOW_OUT)/pkg bash scripts/wow-package-refluxcore.sh
 	$(LUA51) tests/reflux_wow/toc_load_test.lua $(REFLUX_WOW_OUT)/pkg/RefluxCore
+	@# spec Step 2: the lua/ bridge to WoW's API globals, tables and escaped strings, executed under Lua 5.1...
+	./.parena-bootstrap build tests/reflux_wow/interop.prn -o $(REFLUX_WOW_OUT)/interop.lua
+	$(LUA51) tests/reflux_wow/interop_test.lua $(REFLUX_WOW_OUT)/interop.lua
+	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
+	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
+		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi
 
 # test-usb-serial-java -- real CLI-level proof for stdlib/hw/usb_serial.prn (EDGE.GAME's Android
 # arm, S584): runs the actual `parena build` binary (not just emit_java() directly, unlike

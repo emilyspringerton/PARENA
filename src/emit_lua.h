@@ -21,13 +21,17 @@
  * Real, target-specific differences, spelled out rather than discovered later:
  *   * `=` lowers to `==` (Lua's `=` is assignment, never equality).
  *   * `and`/`or`/`not` are already Lua.
- *   * `/` lowers to `//`, Luau's floor division, because PARENA's `/` on I32 is integer division -- emitting `/`
- *     would silently produce floats and every parity test between the two worlds would fail for no visible reason.
- *     Caveat, named: C truncates toward zero and `//` floors, so the two agree only for non-negative operands,
- *     which is the only case the shared rules use (a divider's operand is a count or a duration).
- *   * `if` becomes `(cond and then or else)`. Correct for every integer/string branch this ABI produces; it would
- *     be wrong for a `false` branch value, so the emitter REFUSES nothing but the header says it: do not write a
- *     shared rule whose `then` branch is a bare boolean false.
+ *   * `/` lowers to the module-local `__idiv(a, b)`, which truncates toward zero like C (Lua's floor division
+ *     disagrees on every negative dividend). It is written with `math.floor`, not `//`, so the output also loads in
+ *     Lua 5.1 -- World of Warcraft's dialect, where `//` is a syntax error (2026-11-13).
+ *   * `if` becomes an immediately-invoked function `(function() if c then return a else return b end end)()`,
+ *     not `(c and a or b)`, which is wrong whenever the taken branch's value is false (see emit_lua.c).
+ *   * string literals are re-escaped for Lua (`\"`, `\\`, `\n`, `\r`, `\t`, `\ddd` for other control bytes);
+ *     UTF-8 passes through unchanged, which the 12 WoW client locales rely on.
+ *   * the `lua/` bridge (spec Step 2, 2026-11-13), named after emit_ts.c's `js/` family: `lua/global`,
+ *     `lua/defined?`, `lua/call-fn`, `lua/call` (method call with `:`), `lua/get`, `lua/aget` (raw, 1-based),
+ *     `lua/obj`, `lua/array`, `lua/nil?`, plus `str`. This is how a REFLUX mod reaches WoW's API globals and
+ *     tables. An unknown `lua/` form is refused by name.
  *   * names are camelCased (kebab `ambient-pick` -> `ambientPick`), matching the hand-written Luau module this
  *     target exists to replace.
  *   * `let` lowers to an immediately-invoked function: `(let [a .. b ..] body)` -> `(function() local a = ..;

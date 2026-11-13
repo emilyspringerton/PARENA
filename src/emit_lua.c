@@ -143,6 +143,225 @@ static const MathPrimEntry *find_math_prim(const char *name) {
 
 static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_error);
 
+/* lua_string_literal -- a PARENA string (already DECODED by the lexer: a `\"` in source is a bare `"` here) as a
+ * Lua string literal. Writing the decoded bytes straight between quotes, as v0 did, turned `"say \"hi\""` into
+ * `"say "hi""` -- broken Lua that reports success. Escapes are the ones Lua 5.1 and Luau both read. Bytes >= 0x80
+ * pass through untouched: they are UTF-8, and the 12 WoW client locales (koKR, zhCN, zhTW, ruRU...) are all UTF-8.
+ * Other control bytes become a three-digit `\ddd`, so a digit that follows can never be read as part of it. */
+static const char *lua_string_literal(Arena *arena, const char *text, size_t len) {
+    LuaBuf b;
+    lb_init(&b);
+    lb_append(&b, "\"");
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)text[i];
+        switch (c) {
+            case '"': lb_append(&b, "\\\""); break;
+            case '\\': lb_append(&b, "\\\\"); break;
+            case '\n': lb_append(&b, "\\n"); break;
+            case '\r': lb_append(&b, "\\r"); break;
+            case '\t': lb_append(&b, "\\t"); break;
+            default:
+                if (c < 0x20 || c == 0x7f) lb_appendf(&b, "\\%03u", (unsigned)c);
+                else { char one[2] = { (char)c, '\0' }; lb_append(&b, one); }
+        }
+    }
+    lb_append(&b, "\"");
+    const char *result = arena_strdup(arena, b.data, b.len);
+    lb_free(&b);
+    return result;
+}
+
+static int is_lua_reserved(const char *s, size_t len) {
+    for (size_t i = 0; i < sizeof(LUA_RESERVED) / sizeof(LUA_RESERVED[0]); i++) {
+        if (strlen(LUA_RESERVED[i]) == len && strncmp(LUA_RESERVED[i], s, len) == 0) return 1;
+    }
+    return 0;
+}
+
+/* A plain Lua name: [A-Za-z_][A-Za-z0-9_]*, not reserved. With allow_dots, a dotted path of such names
+ * (`C_Map.GetBestMapForUnit`), which is how WoW's API namespaces are reached. */
+static int is_lua_name(const char *s, size_t len, int allow_dots) {
+    if (len == 0) return 0;
+    size_t start = 0;
+    for (size_t i = 0; i <= len; i++) {
+        if (i == len || (allow_dots && s[i] == '.')) {
+            size_t seg = i - start;
+            if (seg == 0) return 0;
+            if (s[start] >= '0' && s[start] <= '9') return 0;
+            if (is_lua_reserved(s + start, seg)) return 0;
+            start = i + 1;
+            continue;
+        }
+        char c = s[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return 0;
+    }
+    return 1;
+}
+
+/* "a, b, c" for expr->children[from..] */
+static const char *emit_lua_args(Arena *arena, Node *expr, size_t from, const char **out_error) {
+    LuaBuf b;
+    lb_init(&b);
+    for (size_t i = from; i < expr->child_count; i++) {
+        if (i > from) lb_append(&b, ", ");
+        const char *arg = emit_lua_expr(arena, expr->children[i], out_error);
+        if (!arg) { lb_free(&b); return NULL; }
+        lb_append(&b, arg);
+    }
+    const char *result = arena_strdup(arena, b.data, b.len);
+    lb_free(&b);
+    return result;
+}
+
+static const char *lb_take(Arena *arena, LuaBuf *b) {
+    const char *result = arena_strdup(arena, b->data, b->len);
+    lb_free(b);
+    return result;
+}
+
+/* emit_lua_interop -- the `lua/` bridge to the host's Lua world (WoW's API globals, frames, tables), the Lua
+ * counterpart of emit_ts.c's `js/` family and named the same way so one reading serves both:
+ *
+ *   (lua/global "C_Map.GetBestMapForUnit")  a global or dotted global path, by name
+ *   (lua/call-fn f args...)                 f(args)
+ *   (lua/call obj "Method" args...)         obj:Method(args) -- Lua's method call, obj passed as self
+ *   (lua/get obj "key") / (lua/get obj k)   obj.key, or obj[k] for a computed or non-name key
+ *   (lua/aget arr i)                        arr[i] -- RAW index: Lua arrays start at 1, nothing is shifted
+ *   (lua/obj "k" v ...)                     { k = v, ["not a name"] = v }
+ *   (lua/array a b ...)                     { a, b }
+ *   (lua/nil? x)                            (x == nil)
+ *   (lua/defined? "Name")                   (Name ~= nil) -- feature-test a WoW global before calling it
+ *   (str a b ...)                           (tostring(a) .. tostring(b) ...), the same `str` emit_ts.c has
+ *
+ * Every result is an expression, so these compose with if/let/calls like any other form. Mutation (`set!`) is
+ * still refused: this target has no statement sequencing yet. Returns NULL with *handled == 0 when head is not
+ * one of these. */
+static const char *emit_lua_interop(Arena *arena, Node *expr, const char *head, const char **out_error, int *handled) {
+    *handled = 1;
+    LuaBuf b;
+    if (strcmp(head, "str") == 0) {
+        if (expr->child_count == 1) return "\"\"";
+        lb_init(&b);
+        lb_append(&b, "(");
+        for (size_t i = 1; i < expr->child_count; i++) {
+            const char *a = emit_lua_expr(arena, expr->children[i], out_error);
+            if (!a) { lb_free(&b); return NULL; }
+            if (i > 1) lb_append(&b, " .. ");
+            lb_appendf(&b, "tostring(%s)", a);
+        }
+        lb_append(&b, ")");
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/global") == 0 || strcmp(head, "lua/defined?") == 0) {
+        Node *n = expr->child_count == 2 ? expr->children[1] : NULL;
+        if (!n || n->type != NODE_STRING || !is_lua_name(n->text, n->text_len, 1)) {
+            *out_error = "emit_lua: lua/global and lua/defined? take one string literal naming a global "
+                         "(a Lua name or dotted path such as \"C_Map.GetBestMapForUnit\")";
+            return NULL;
+        }
+        lb_init(&b);
+        if (strcmp(head, "lua/global") == 0) lb_appendf(&b, "%.*s", (int)n->text_len, n->text);
+        else lb_appendf(&b, "(%.*s ~= nil)", (int)n->text_len, n->text);
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/call-fn") == 0) {
+        if (expr->child_count < 2) {
+            *out_error = "emit_lua: lua/call-fn takes (function args...)";
+            return NULL;
+        }
+        const char *f = emit_lua_expr(arena, expr->children[1], out_error);
+        if (!f) return NULL;
+        const char *args = emit_lua_args(arena, expr, 2, out_error);
+        if (!args) return NULL;
+        lb_init(&b);
+        if (is_lua_name(f, strlen(f), 1)) lb_appendf(&b, "%s(%s)", f, args);
+        else lb_appendf(&b, "(%s)(%s)", f, args);
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/call") == 0) {
+        if (expr->child_count < 3 || expr->children[2]->type != NODE_STRING ||
+            !is_lua_name(expr->children[2]->text, expr->children[2]->text_len, 0)) {
+            *out_error = "emit_lua: lua/call takes (object \"Method\" args...) with a string-literal method name";
+            return NULL;
+        }
+        const char *obj = emit_lua_expr(arena, expr->children[1], out_error);
+        if (!obj) return NULL;
+        const char *args = emit_lua_args(arena, expr, 3, out_error);
+        if (!args) return NULL;
+        lb_init(&b);
+        lb_appendf(&b, "(%s):%.*s(%s)", obj, (int)expr->children[2]->text_len, expr->children[2]->text, args);
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/get") == 0 || strcmp(head, "lua/aget") == 0) {
+        if (expr->child_count != 3) {
+            *out_error = "emit_lua: lua/get and lua/aget take (object key)";
+            return NULL;
+        }
+        const char *obj = emit_lua_expr(arena, expr->children[1], out_error);
+        if (!obj) return NULL;
+        Node *k = expr->children[2];
+        lb_init(&b);
+        if (strcmp(head, "lua/get") == 0 && k->type == NODE_STRING && is_lua_name(k->text, k->text_len, 0)) {
+            lb_appendf(&b, "(%s).%.*s", obj, (int)k->text_len, k->text);
+        } else {
+            const char *key = emit_lua_expr(arena, k, out_error);
+            if (!key) { lb_free(&b); return NULL; }
+            lb_appendf(&b, "(%s)[%s]", obj, key);
+        }
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/obj") == 0) {
+        if ((expr->child_count - 1) % 2 != 0) {
+            *out_error = "emit_lua: lua/obj takes key/value pairs";
+            return NULL;
+        }
+        lb_init(&b);
+        lb_append(&b, "{");
+        for (size_t i = 1; i + 1 < expr->child_count; i += 2) {
+            Node *k = expr->children[i];
+            if (k->type != NODE_STRING) {
+                lb_free(&b);
+                *out_error = "emit_lua: lua/obj keys must be string literals";
+                return NULL;
+            }
+            const char *v = emit_lua_expr(arena, expr->children[i + 1], out_error);
+            if (!v) { lb_free(&b); return NULL; }
+            if (i > 1) lb_append(&b, ", ");
+            if (is_lua_name(k->text, k->text_len, 0)) lb_appendf(&b, "%.*s = %s", (int)k->text_len, k->text, v);
+            else lb_appendf(&b, "[%s] = %s", lua_string_literal(arena, k->text, k->text_len), v);
+        }
+        lb_append(&b, "}");
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/array") == 0) {
+        const char *args = emit_lua_args(arena, expr, 1, out_error);
+        if (!args) return NULL;
+        lb_init(&b);
+        lb_appendf(&b, "{%s}", args);
+        return lb_take(arena, &b);
+    }
+    if (strcmp(head, "lua/nil?") == 0) {
+        if (expr->child_count != 2) {
+            *out_error = "emit_lua: lua/nil? takes one operand";
+            return NULL;
+        }
+        const char *a = emit_lua_expr(arena, expr->children[1], out_error);
+        if (!a) return NULL;
+        lb_init(&b);
+        lb_appendf(&b, "(%s == nil)", a);
+        return lb_take(arena, &b);
+    }
+    if (strncmp(head, "lua/", 4) == 0) {
+        /* Without this, an unknown or misspelled bridge form fell through to the defn-call branch and emitted
+         * `M.lua/whatever(...)` -- a syntax error only the client would find. */
+        *out_error = "emit_lua: unknown lua/ form (have: lua/global lua/defined? lua/call lua/call-fn lua/get "
+                     "lua/aget lua/obj lua/array lua/nil?)";
+        return NULL;
+    }
+    *handled = 0;
+    return NULL;
+}
+
 static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_error) {
     if (!expr) {
         *out_error = "emit_lua: null expression";
@@ -157,12 +376,7 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
         /* Strings are real values in this emitter (BIG_O's rules return them for callsigns/lines). Lua escapes are
          * the same for the ordinary quote/backslash cases these tables use; %q-style handling is deliberately not
          * attempted here, so an unsupported escape is the source author's problem, named rather than mangled. */
-        LuaBuf b;
-        lb_init(&b);
-        lb_appendf(&b, "\"%.*s\"", (int)expr->text_len, expr->text);
-        const char *result = arena_strdup(arena, b.data, b.len);
-        lb_free(&b);
-        return result;
+        return lua_string_literal(arena, expr->text, expr->text_len);
     }
 
     if (expr->type == NODE_SYMBOL) {
@@ -280,6 +494,10 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
             return NULL;
         }
     }
+
+    int interop_handled = 0;
+    const char *interop = emit_lua_interop(arena, expr, head, out_error, &interop_handled);
+    if (interop_handled) return interop;
 
     const char *lua_op = find_binop(head);
     if (lua_op) {
