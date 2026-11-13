@@ -1435,6 +1435,10 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# spec Step 2: the lua/ bridge to WoW's API globals, tables and escaped strings, executed under Lua 5.1...
 	./.parena-bootstrap build tests/reflux_wow/interop.prn -o $(REFLUX_WOW_OUT)/interop.lua
 	$(LUA51) tests/reflux_wow/interop_test.lua $(REFLUX_WOW_OUT)/interop.lua
+	@# spec Steps 5-6: the v1 event record and the SavedVariables journal, a REFLUX subscriber, as one module.
+	./.parena-bootstrap build stdlib/reflux/reflux.prn stdlib/reflux/cursor.prn stdlib/collection/journal.prn \
+		-o $(REFLUX_WOW_OUT)/journal.lua
+	$(LUA51) tests/reflux_wow/journal_test.lua runtime/wow/reflux_host.lua $(REFLUX_WOW_OUT)/journal.lua
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi

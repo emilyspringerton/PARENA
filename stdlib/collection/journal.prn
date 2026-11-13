@@ -1,0 +1,83 @@
+;; stdlib/collection/journal.prn -- the Collection of Value's event record (spec Step 5) and in-game journal (Step 6),
+;; as a REFLUX mod compiled to Lua 5.1 for World of Warcraft.
+;;
+;; Every primitive addon dispatches into REFLUX and nothing else. This mod is the one subscriber that makes those
+;; rows durable: it polls REFLUX from its own absolute cursor (stdlib/reflux/cursor.prn's pattern) and appends
+;; one versioned record per row to a SavedVariablesPerCharacter table, which the client writes to disk on logout
+;; and /reload. The external reader (Step 6, outside the game) dedups on (character, seq).
+;;
+;; Record v1 -- the spec's fields (ID, type, character, time, zone, coordinates, payload), mapped onto
+;; PRRJECT_FATBABY's Go eventstore envelope as Disputes D-2 records (Type <- type, Source <- source, OccurredAt <-
+;; time, Data <- everything else):
+;;   v          schema version, 1
+;;   id         "<character>:<seq>", unique per character and stable across reloads
+;;   seq        per-character sequence, 1, 2, 3 ... never reused
+;;   type       the REFLUX action type
+;;   source     "reflux" -- the log the row came from
+;;   character  as handed in by the host glue (name-realm)
+;;   time       epoch seconds, as handed in
+;;   zone, x, y map id and position, as handed in; nil when the client could not say
+;;   payload    { a, b, c } -- the REFLUX row's three integers
+;;
+;; Nothing here calls the WoW API. Character, time, zone and position are PARAMETERS, so this module is testable
+;; under plain Lua 5.1 and does not depend on client functions the Step 1 probe has not confirmed yet.
+;;
+;; Build together with the REFLUX stdlib it calls (one Lua module):
+;;   parena build stdlib/reflux/reflux.prn stdlib/reflux/cursor.prn stdlib/collection/journal.prn -o journal.lua
+
+(module collection/journal)
+(export journal-init journal-record journal-append journal-poll)
+
+;; Give a fresh (or older) SavedVariables table the v1 fields it is missing. Never resets existing data.
+(defn journal-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "rows")) (lua/set! db "rows" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "nextSeq")) (lua/set! db "nextSeq" 1) 0)
+      (if (lua/nil? (lua/get db "cursor")) (lua/set! db "cursor" 0) 0)
+      (if (lua/nil? (lua/get db "lost")) (lua/set! db "lost" 0) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; One v1 record. Pure: builds the table, stores nothing.
+(defn journal-record [(seq : I32) (action-type : I32) (a : I32) (b : I32) (c : I32)
+                      (character : String) (now : I32) (zone : Any) (x : Any) (y : Any)] : Any
+  (lua/obj "v" 1
+           "id" (str character ":" seq)
+           "seq" seq
+           "type" action-type
+           "source" "reflux"
+           "character" character
+           "time" now
+           "zone" zone
+           "x" x
+           "y" y
+           "payload" (lua/array a b c)))
+
+;; Append one record at rows[seq] and advance nextSeq. Returns the seq it used.
+(defn journal-append [(db : Any) (action-type : I32) (a : I32) (b : I32) (c : I32)
+                      (character : String) (now : I32) (zone : Any) (x : Any) (y : Any)] : I32
+  (let [seq (lua/get db "nextSeq")]
+    (do (lua/aset! (lua/get db "rows") seq (journal-record seq action-type a b c character now zone x y))
+        (lua/set! db "nextSeq" (+ seq 1))
+        seq)))
+
+;; Copy REFLUX rows [abs, total) into the journal, oldest first. Returns n plus the number copied.
+(defn journal-copy-from [(db : Any) (abs : I32) (total : I32) (character : String) (now : I32)
+                         (zone : Any) (x : Any) (y : Any) (n : I32)] : I32
+  (if (>= abs total)
+      n
+      (let [idx (reflux-index-for-abs abs)]
+        (do (journal-append db (reflux-action-type-at idx) (reflux-action-a-at idx) (reflux-action-b-at idx)
+                            (reflux-action-c-at idx) character now zone x y)
+            (journal-copy-from db (+ abs 1) total character now zone x y (+ n 1))))))
+
+;; The poll. Reads every REFLUX row dispatched since the last poll; if the ring overwrote rows before this poll
+;; reached them, adds how many to db.lost instead of skipping them silently (cursor.prn: "say so"). Moves the
+;; cursor to total. Returns how many records were appended.
+(defn journal-poll [(db : Any) (character : String) (now : I32) (zone : Any) (x : Any) (y : Any)] : I32
+  (let [cursor (lua/get db "cursor")
+        oldest (reflux-oldest-abs)
+        total (reflux-total-dispatched)
+        from (if (> cursor oldest) cursor oldest)]
+    (do (if (< cursor oldest) (lua/set! db "lost" (+ (lua/get db "lost") (- oldest cursor))) 0)
+        (lua/set! db "cursor" total)
+        (journal-copy-from db from total character now zone x y 0))))
