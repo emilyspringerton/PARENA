@@ -1442,6 +1442,21 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# COV-REFLUX-IDS: the Collection's reserved action-type range, 2000-2999, ten per addon.
 	./.parena-bootstrap build stdlib/collection/ids.prn -o $(REFLUX_WOW_OUT)/ids.lua
 	$(LUA51) tests/reflux_wow/ids_test.lua $(REFLUX_WOW_OUT)/ids.lua
+	@# COV-6b: the external SavedVariables reader, on journals the real journal module wrote...
+	rm -rf $(REFLUX_WOW_OUT)/reader && mkdir -p "$(REFLUX_WOW_OUT)/reader/wtf/Account/1234#1/Realm Name/Emily/SavedVariables"
+	$(LUA51) tests/reflux_wow/journal_reader_test.lua runtime/wow/reflux_host.lua $(REFLUX_WOW_OUT)/journal.lua \
+		runtime/wow/journal_reader.lua $(REFLUX_WOW_OUT)/ids.lua $(REFLUX_WOW_OUT)/reader \
+		"$(REFLUX_WOW_OUT)/reader/wtf/Account/1234#1/Realm Name/Emily/SavedVariables/CollectionJournal.lua"
+	@# ...then through the env-driven wrapper over a WTF tree (space in the realm, a .bak beside the file):
+	@# refuses without its env, reads 2 rows once, appends nothing the second time.
+	@if env -u WOW_WTF_DIR COLLECTION_EVENTS=x bash scripts/collection-journal-read.sh >/dev/null 2>&1; then \
+		echo "FAIL: reader ran without WOW_WTF_DIR"; exit 1; fi
+	WOW_WTF_DIR=$(REFLUX_WOW_OUT)/reader/wtf COLLECTION_EVENTS=$(REFLUX_WOW_OUT)/reader/store/events.ndjson \
+		bash scripts/collection-journal-read.sh | grep -q "2 rows read, 2 appended"
+	WOW_WTF_DIR=$(REFLUX_WOW_OUT)/reader/wtf COLLECTION_EVENTS=$(REFLUX_WOW_OUT)/reader/store/events.ndjson \
+		bash scripts/collection-journal-read.sh | grep -q "2 rows read, 0 appended, 2 already stored"
+	@test "$$(wc -l < $(REFLUX_WOW_OUT)/reader/store/events.ndjson)" -eq 2 || { echo "FAIL: wrapper store has wrong line count"; exit 1; }
+	@echo "journal reader wrapper: ok"
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi

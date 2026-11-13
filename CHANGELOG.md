@@ -1,5 +1,16 @@
 ## 2026-11-13
 
+- **external SavedVariables reader** (COV-6b): `runtime/wow/journal_reader.lua` (library),
+  `runtime/wow/journal_read_cli.lua`, and the env-driven `scripts/collection-journal-read.sh`, which finds
+  `$WOW_WTF_DIR/Account/*/*/*/SavedVariables/$COLLECTION_JOURNAL_ADDON.lua`. Each file is loaded with no
+  globals and an instruction budget, and only `$COLLECTION_JOURNAL_VAR` is read out of it; binary chunks are
+  refused. New rows go to `$COLLECTION_EVENTS` as PRRJECT_FATBABY eventstore `Event` NDJSON: `id`, `type`
+  (`reflux.<n>`), `source` (`collection/addon-<n>` via ids.prn), `occurred_at`, `partition_key`, `data`,
+  `metadata`, with `sequence` and `ingested_at` left to the store's Append. Dedup is on `character:seq`.
+  Rows the in-game cap trimmed before a read are reported as a GAP (exit 3), never passed over.
+  journal_reader_test 38/38 under Lua 5.1, plus a wrapper run over a WTF tree with a space in the path and a
+  `.bak`. Output was checked to unmarshal into the Go `Event` struct.
+
 - **journal size cap** (`stdlib/collection/journal.prn`, COV-6b): `journal-trim db keep` keeps the newest
   `keep` rows, removing from the low end only, and never moves `nextSeq`, so a reader detects exactly which
   seqs it missed from `firstSeq` (and `trimmed` counts them). It removes at most 512 rows per call, because
