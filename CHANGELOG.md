@@ -1,5 +1,18 @@
 ## 2026-11-13
 
+- **MacroSync gains the priest set** (16 macros): shield, quick heal, big heal, Renew, Fortitude, dispel,
+  resurrect, SW:Pain, Mind Blast, Smite, Mind Flay, wand (`!Shoot`), Psychic Scream, Fade, Inner Fire,
+  Holy Nova. Heals pick the best one the character knows (Flash Heal / Heal / Lesser Heal) and upgrade on
+  the next `/ascend`. `macrosync_test` is now 53 checks.
+- **The sixteen party games are played end to end**: `tests/reflux_wow/games_test.lua`, 79 checks with a
+  four-player party (positions, chat, emotes, loot, a clock), every game's REFLUX rows in its own block.
+  - It found one real bug: in Óðinn Says, when every player was knocked out in the same round, the call
+    timer kept running on a finished game and crashed. The round now ends cleanly ("Óðinn wins this one")
+    and the timer stops whenever the game is over.
+- **EcoWar is tabled** (founder: "skip ecowar for now its busted table it"). Its code and its test stay, but
+  the packager only builds it with `COLLECTION_WITH_TABLED=1` (the test build), never for a release or an
+  install.
+
 - **EcoWar**: team mini-games of cozy farming, Wotan esports style (`/ecowar`). All rules are in
   `stdlib/collection/ecowar.prn`, built with `games.prn`.
   - **Modes:** Horde vs Horde, Alliance vs Alliance, Alliance vs Horde, and three teams with two from one side

@@ -216,8 +216,12 @@ game LOKI LokisLies LokisLiesDB loki lokis_lies.lua "Loki's Lies" \
   "Silly made-up news from your own adventures. /rumour" SavedVariablesPerCharacter
 game TAPESTRY HallTapestry HallTapestryDB tapestry hall_tapestry.lua "Hall Tapestry" \
   "Group photo poses with a countdown and callouts. /tapestry" SavedVariables
+# EcoWar is TABLED (founder, 2026-11-13: "skip ecowar for now its busted table it"). Its code and its test stay;
+# it is only packaged when COLLECTION_WITH_TABLED=1 (the test build sets it), never in a release or an install.
+if [ "${COLLECTION_WITH_TABLED:-0}" = 1 ]; then
 game ECOWAR EcoWar EcoWarDB ecowar ecowar.lua "EcoWar" \
   "Team cozy-farming wars: critters and loot, four team modes, a league and ratings. /ecowar" SavedVariables
+fi
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
@@ -244,7 +248,7 @@ IN GAME
   /census            Ratatoskr Roll: this week's most loved critters (target one, then /love, /pet or /wave)
   /fortune          Völva: today's fortune again (a new one opens at every login)
   /saga              Saga of Fools: joke achievements, earned and still to come
-  /ascend            MacroSync: load your class's macros (paladin so far); /ascend preview changes nothing
+  /ascend            MacroSync: load your class's macros (paladin and priest so far); /ascend preview changes nothing
   Each character is learned the first time you log it in; the bank is learned each time you open it,
   mail each time you open the mailbox.
 
