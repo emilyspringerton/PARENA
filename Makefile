@@ -7,10 +7,10 @@
 CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 
-SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_lua.c src/emit_llvm.c src/fmt.c
+SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_lua.c src/emit_llvm.c src/fmt.c src/i18n.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-wasm-surface test-level-wasm-build test-forgedinface test-forgedlevel test-unicode test-emit-ts test-emit-java test-emit-lua test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-v16-engine v16-wasm test-v16-wasm test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-quic-wire test-h3-wire test-quic-crypto test-quic-client test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-img-store test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-i18n test-wasm-surface test-level-wasm-build test-forgedinface test-forgedlevel test-unicode test-emit-ts test-emit-java test-emit-lua test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-v16-engine v16-wasm test-v16-wasm test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-quic-wire test-h3-wire test-quic-crypto test-quic-client test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-img-store test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -1405,6 +1405,13 @@ test-emit-java: tests/test_emit_java.c $(OBJ)
 test-emit-lua: tests/test_emit_lua.c $(OBJ)
 	$(CC) $(CFLAGS) -Werror -o tests/test_emit_lua tests/test_emit_lua.c $(OBJ)
 	./tests/test_emit_lua
+
+# test-i18n -- the translation core module (src/i18n.c): ids, lowering with and without a catalogue,
+# extraction round trip, malformed tr refusals, the 12-locale missing-string check, and one end-to-end
+# build through the real Lua emitter. Every expected value is hand-derived (see the test header).
+test-i18n: tests/test_i18n.c $(OBJ)
+	$(CC) $(CFLAGS) -Werror -o tests/test_i18n tests/test_i18n.c $(OBJ)
+	./tests/test_i18n
 
 # test-usb-serial-java -- real CLI-level proof for stdlib/hw/usb_serial.prn (EDGE.GAME's Android
 # arm, S584): runs the actual `parena build` binary (not just emit_java() directly, unlike

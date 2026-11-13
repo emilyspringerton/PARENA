@@ -89,6 +89,18 @@ cc_library(
 )
 
 cc_library(
+    name = "i18n",
+    srcs = ["i18n.c"],
+    hdrs = ["i18n.h"],
+    deps = [
+        ":arena",
+        ":ast",
+        ":parser",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "emit_lua",
     srcs = ["emit_lua.c"],
     hdrs = ["emit_lua.h"],
@@ -130,6 +142,7 @@ cc_binary(
         ":emit_lua",
         ":emit_ts",
         ":fmt",
+        ":i18n",
         ":parser",
         ":region",
     ],

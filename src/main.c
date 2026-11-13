@@ -14,6 +14,7 @@
 #include "emit_ts.h"
 #include "emit_lua.h"
 #include "fmt.h"
+#include "i18n.h"
 #include "parser.h"
 #include "region.h"
 #include <ctype.h>
@@ -21,6 +22,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+/* Windows' mkdir takes no mode argument; the mode has no meaning there. */
+#define parena_mkdir(path, mode) _mkdir(path)
+#else
+#define parena_mkdir(path, mode) mkdir(path, mode)
+#endif
 
 /* PARENA_HAS_CI_STATUS -- real, deliberate two-stage bootstrap, not
  * dead code: `parena ci-status` (founder, real-time, 2026-08-21: "add
@@ -245,7 +253,7 @@ static const char *java_package_name_from_path(Arena *arena, const char *out_pat
     return pkg;
 }
 
-static int cmd_build(const char **paths, size_t path_count, const char *out_path) {
+static int cmd_build(const char **paths, size_t path_count, const char *out_path, const char *catalog_path) {
     Arena arena;
     arena_init(&arena);
     Node *program = node_new_compound(&arena, NODE_LIST, 1);
@@ -267,6 +275,40 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
         }
         for (size_t c = 0; c < file_program->child_count; c++) {
             node_push_child(&arena, program, file_program->children[c]);
+        }
+    }
+    /* The translation core module (src/i18n.h): rewrite every (tr ...) form to a string literal before
+       anything else sees the tree. No --catalog means every tr becomes its inline default. */
+    {
+        I18nCatalog catalog;
+        const I18nCatalog *catalog_ptr = NULL;
+        if (catalog_path) {
+            size_t clen;
+            char *csrc = read_file(catalog_path, &clen);
+            if (!csrc) {
+                fprintf(stderr, "parena: cannot read catalogue %s\n", catalog_path);
+                arena_free_all(&arena);
+                return 1;
+            }
+            const char *cerr = i18n_load_catalog(&arena, csrc, clen, &catalog);
+            free(csrc);
+            if (cerr) {
+                fprintf(stderr, "parena: %s: %s\n", catalog_path, cerr);
+                arena_free_all(&arena);
+                return 1;
+            }
+            catalog_ptr = &catalog;
+        }
+        size_t fallbacks = 0;
+        const char *ierr = i18n_lower(&arena, program, catalog_ptr, &fallbacks);
+        if (ierr) {
+            fprintf(stderr, "parena: %s\n", ierr);
+            arena_free_all(&arena);
+            return 1;
+        }
+        if (fallbacks > 0) {
+            fprintf(stderr, "parena: warning: %zu string(s) missing from %s, built with the inline default\n",
+                    fallbacks, catalog_path);
         }
     }
     const char *region_err = region_analyze(&arena, program);
@@ -369,12 +411,12 @@ static int cmd_new(const char *name) {
         return 1;
     }
     char pathbuf[1024];
-    if (mkdir(name, 0755) != 0) {
+    if (parena_mkdir(name, 0755) != 0) {
         fprintf(stderr, "parena: new: cannot create directory %s\n", name);
         return 1;
     }
     snprintf(pathbuf, sizeof(pathbuf), "%s/runtime", name);
-    if (mkdir(pathbuf, 0755) != 0) {
+    if (parena_mkdir(pathbuf, 0755) != 0) {
         fprintf(stderr, "parena: new: cannot create %s\n", pathbuf);
         return 1;
     }
@@ -657,6 +699,118 @@ static int cmd_ci_status(const char *repo, const char *sha) {
 }
 #endif
 
+/* cmd_i18n -- the translation core module's two CI-facing commands (src/i18n.h):
+ *   parena i18n extract <file.prn> ... -o <catalog.enUS.prn>
+ *   parena i18n check   <file.prn> ... --catalog <de.prn> --catalog <fr.prn> ...
+ * `check` exits 1 if any of the 12 locales lacks a catalogue or a string, so CI can gate on it. */
+static int cmd_i18n(int argc, char **argv) {
+    const char *usage = "usage: parena i18n extract <file.prn> ... -o <catalog.prn>\n"
+                        "       parena i18n check <file.prn> ... --catalog <catalog.prn> [--catalog ...]\n";
+    if (argc < 4) {
+        fputs(usage, stderr);
+        return 1;
+    }
+    int extract = strcmp(argv[2], "extract") == 0;
+    if (!extract && strcmp(argv[2], "check") != 0) {
+        fputs(usage, stderr);
+        return 1;
+    }
+    Arena arena;
+    arena_init(&arena);
+    Node *program = node_new_compound(&arena, NODE_LIST, 1);
+    const char *out_path = NULL;
+    const char **catalog_paths = (const char **)malloc(sizeof(char *) * (size_t)argc);
+    size_t catalog_count = 0;
+    size_t source_count = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 && extract && i + 1 < argc) {
+            out_path = argv[++i];
+        } else if (strcmp(argv[i], "--catalog") == 0 && !extract && i + 1 < argc) {
+            catalog_paths[catalog_count++] = argv[++i];
+        } else {
+            size_t len;
+            char *src = read_file(argv[i], &len);
+            if (!src) {
+                fprintf(stderr, "parena: cannot read %s\n", argv[i]);
+                free(catalog_paths);
+                arena_free_all(&arena);
+                return 1;
+            }
+            const char *parse_err = NULL;
+            Node *file_program = parse_program(&arena, src, len, &parse_err);
+            free(src);
+            if (!file_program) {
+                fprintf(stderr, "parena: %s: parse error: %s\n", argv[i], parse_err);
+                free(catalog_paths);
+                arena_free_all(&arena);
+                return 1;
+            }
+            for (size_t c = 0; c < file_program->child_count; c++) {
+                node_push_child(&arena, program, file_program->children[c]);
+            }
+            source_count++;
+        }
+    }
+    int rc = 0;
+    if (source_count == 0 || (extract && !out_path)) {
+        fputs(usage, stderr);
+        rc = 1;
+    } else if (extract) {
+        const char *text = NULL;
+        const char *err = i18n_extract(&arena, program, &text);
+        if (err) {
+            fprintf(stderr, "parena: %s\n", err);
+            rc = 1;
+        } else {
+            FILE *out = fopen(out_path, "wb");
+            if (!out) {
+                fprintf(stderr, "parena: cannot write %s\n", out_path);
+                rc = 1;
+            } else {
+                fputs(text, out);
+                fclose(out);
+                printf("parena: i18n extract -> %s\n", out_path);
+            }
+        }
+    } else {
+        I18nCatalog *cats = (I18nCatalog *)malloc(sizeof(I18nCatalog) * (catalog_count ? catalog_count : 1));
+        for (size_t i = 0; i < catalog_count && rc == 0; i++) {
+            size_t clen;
+            char *csrc = read_file(catalog_paths[i], &clen);
+            if (!csrc) {
+                fprintf(stderr, "parena: cannot read catalogue %s\n", catalog_paths[i]);
+                rc = 1;
+                break;
+            }
+            const char *cerr = i18n_load_catalog(&arena, csrc, clen, &cats[i]);
+            free(csrc);
+            if (cerr) {
+                fprintf(stderr, "parena: %s: %s\n", catalog_paths[i], cerr);
+                rc = 1;
+            }
+        }
+        if (rc == 0) {
+            const char *report = NULL;
+            size_t problems = 0;
+            const char *err = i18n_check(&arena, program, cats, catalog_count, &report, &problems);
+            if (err) {
+                fprintf(stderr, "parena: %s\n", err);
+                rc = 1;
+            } else if (problems > 0) {
+                fputs(report, stderr);
+                fprintf(stderr, "parena: i18n check failed: %zu problem(s)\n", problems);
+                rc = 1;
+            } else {
+                printf("parena: i18n check ok: all 12 locales complete\n");
+            }
+        }
+        free(cats);
+    }
+    free(catalog_paths);
+    arena_free_all(&arena);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: parena parse <file.prn>\n"
@@ -722,6 +876,9 @@ int main(int argc, char **argv) {
         free(paths);
         return rc;
     }
+    if (strcmp(argv[1], "i18n") == 0) {
+        return cmd_i18n(argc, argv);
+    }
     if (strcmp(argv[1], "build") == 0) {
         /* Every argument between "build" and "-o" is an input file --
          * at least one required. `-o <output.c>` must be the final two
@@ -731,12 +888,29 @@ int main(int argc, char **argv) {
             fprintf(stderr, "usage: parena build <file.prn> [file2.prn ...] -o <output.c|output.ts|output.java>\n");
             return 1;
         }
-        size_t path_count = (size_t)(argc - 4); /* argv[2..argc-3] are input files */
-        const char **paths = (const char **)malloc(sizeof(char *) * path_count);
-        for (size_t i = 0; i < path_count; i++) {
-            paths[i] = argv[2 + i];
+        /* argv[2..argc-3] are input files, except that `--catalog <file>` (at most once) names a
+           translation catalogue for the (tr ...) forms -- see src/i18n.h. */
+        const char **paths = (const char **)malloc(sizeof(char *) * (size_t)argc);
+        size_t path_count = 0;
+        const char *catalog_path = NULL;
+        for (int i = 2; i <= argc - 3; i++) {
+            if (strcmp(argv[i], "--catalog") == 0) {
+                if (i + 1 > argc - 3 || catalog_path) {
+                    fprintf(stderr, "usage: parena build <file.prn> ... [--catalog <catalog.prn>] -o <output>\n");
+                    free(paths);
+                    return 1;
+                }
+                catalog_path = argv[++i];
+            } else {
+                paths[path_count++] = argv[i];
+            }
         }
-        int rc = cmd_build(paths, path_count, argv[argc - 1]);
+        if (path_count == 0) {
+            fprintf(stderr, "usage: parena build <file.prn> ... [--catalog <catalog.prn>] -o <output>\n");
+            free(paths);
+            return 1;
+        }
+        int rc = cmd_build(paths, path_count, argv[argc - 1], catalog_path);
         free(paths);
         return rc;
     }
