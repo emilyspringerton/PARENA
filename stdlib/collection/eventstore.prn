@@ -1,0 +1,75 @@
+;; stdlib/collection/eventstore.prn -- the Collection's event store (spec Step 7: "the JSONL append-only store
+;; from the PRRJECT_FATBABY port, in PARENA"), compiled to Lua 5.1 for the desktop.
+;;
+;; Ported from PRRJECT_FATBABY/eventstore/file_store.go, and ON-DISK COMPATIBLE with it (Disputes D-2: the source
+;; is a sequenced Go store, not a bare JSONL file; the source wins). A Go FileStore opened on the same root reads
+;; every record this writes, and continues the sequence after it:
+;;
+;;   <root>/events/YYYY-MM-DD.ndjson   one Record per line, file named by the UTC date of the append:
+;;                                       {"sequence":N,"event":{...Event...},"appended_at":"<RFC 3339 UTC>"}
+;;   <root>/state/latest-sequence      the last sequence assigned, decimal + "\n", replaced by temp file + rename
+;;
+;; Rules taken from the Go source:
+;;   * recovery: the state file wins when it exists; a state file that does not parse is an ERROR (never guessed
+;;     past); only a missing state file falls back to the highest sequence in the journals.
+;;   * validation (normalizeAndValidateEvent): id, type and data are required; a missing ingested_at is set to
+;;     the append time.
+;;   * a partial trailing line (a write in flight, or a crash) is skipped when scanning, not fatal.
+;; Added for the Collection, which the Go store does not do: ingest is idempotent -- an event whose id is already
+;; in the store is not appended again, so re-running the ingest after every play session is safe.
+;;
+;; Pure string logic over Lua's string library; the host glue (runtime/collection/store_ingest.lua) does the
+;; file reads and writes, and scripts/collection-store-ingest.sh the directories and the lock.
+
+(module collection/eventstore)
+(export es-record-sequence es-record-id es-event-id es-event-ok es-latest es-record-line es-journal-name
+        es-timestamp)
+
+(defn es-match [(s : Any) (pattern : String)] : Any
+  (lua/call-fn (lua/global "string.match") s pattern))
+
+;; A stored record line's sequence, or nil when the line is not a complete record (partial trailing line).
+(defn es-record-sequence [(line : Any)] : Any
+  (if (lua/nil? (es-match line "}%s*$"))
+      (lua/nil)
+      (lua/call-fn (lua/global "tonumber") (es-match line "^%s*{\"sequence\":(%d+),"))))
+
+;; A stored record's event id (Go marshals Record fields in order, and Event's id first), or nil.
+(defn es-record-id [(line : Any)] : Any
+  (es-match line "^%s*{\"sequence\":%d+,\"event\":{\"id\":\"(.-[^\\])\""))
+
+;; An incoming event line's id, or nil.
+(defn es-event-id [(line : Any)] : Any
+  (es-match line "^%s*{\"id\":\"(.-[^\\])\""))
+
+;; 1 when an incoming event line has what Append requires (an object with id, type and data), else 0.
+(defn es-event-ok [(line : Any)] : I32
+  (if (lua/nil? (es-match line "^%s*{.*}%s*$")) 0
+      (if (lua/nil? (es-event-id line)) 0
+          (if (lua/nil? (es-match line "\"type\":\"[^\"]")) 0
+              (if (lua/nil? (es-match line "\"data\":[{%[]")) 0 1)))))
+
+;; recoverLatestSequence: the state file's text when it exists (nil when missing), else the journals' max.
+;; Returns -1 for a state file that does not parse -- the caller must stop, as Go does.
+(defn es-latest [(state-text : Any) (journal-max : I32)] : I32
+  (if (lua/nil? state-text)
+      journal-max
+      (let [digits (es-match state-text "^%s*(%d+)%s*$")]
+        (if (lua/nil? digits) -1 (lua/call-fn (lua/global "tonumber") digits)))))
+
+;; RFC 3339 UTC for epoch seconds -- what Go's time.Time unmarshals.
+(defn es-timestamp [(now : I32)] : String
+  (lua/call-fn (lua/global "os.date") "!%Y-%m-%dT%H:%M:%SZ" now))
+
+;; journalPathForDate: the journal file for the UTC date of `now`.
+(defn es-journal-name [(now : I32)] : String
+  (str (lua/call-fn (lua/global "os.date") "!%Y-%m-%d" now) ".ndjson"))
+
+;; One Record line. The event keeps its own bytes, field order included (id stays first, so es-record-id finds
+;; it); ingested_at is added before its closing brace when it has none, as normalizeAndValidateEvent does.
+(defn es-record-line [(seq : I32) (event : Any) (now : I32)] : String
+  (let [body (es-match event "^%s*(.-)%s*$")
+        stamped (if (lua/nil? (es-match body "\"ingested_at\":"))
+                    (str (lua/call-fn (lua/global "string.sub") body 1 -2) ",\"ingested_at\":\"" (es-timestamp now) "\"}")
+                    body)]
+    (str "{\"sequence\":" seq ",\"event\":" stamped ",\"appended_at\":\"" (es-timestamp now) "\"}")))
