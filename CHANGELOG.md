@@ -1,5 +1,20 @@
 ## 2026-11-13
 
+- **HTTP/2 wire layer for PELLEGRINO**: `stdlib/net/h2_wire.prn` (RFC 9113 frames + RFC 7541 HPACK), pure PARENA
+  over Bytes. `make test-h2-wire`, 57 checks.
+  - Frames: the 9-byte header, the connection preface, SETTINGS (ENABLE_PUSH 0, a chosen initial window) and
+    its ACK, WINDOW_UPDATE, PING ACK, RST_STREAM, GOAWAY, HEADERS and DATA; padding and priority are skipped
+    on read, and padding longer than its frame is an error.
+  - HPACK decode has the full dynamic table, in a caller-owned Bytes (no allocation): insert, eviction, size
+    updates capped at our limit. Output is the same `name: value\n` text as `qpack-decode-section`, so an h2
+    and an h3 response read alike.
+  - Prefix integers and the Huffman decoder are reused from `net/h3_wire`, not copied.
+  - Verified against RFC 7541 Appendix C: C.2 single fields, C.3 and C.4 (three requests on one table,
+    plain and Huffman), C.5 (responses on a 256-byte table, evicting once and then twice), with the table
+    size checked after every block.
+  - Limits: the encoder never Huffman-codes or indexes; CONTINUATION blocks are joined by the caller; no
+    transport yet -- `net/stream` still needs ALPN ("h2") and a binary send before PELLEGRINO can speak it.
+
 - **The Collection event store** (spec Step 7): `stdlib/collection/eventstore.prn` is a port of PRRJECT_FATBABY's
   Go `eventstore.FileStore`, written in PARENA and run with Lua 5.1. Thin host glue:
   `runtime/collection/store_ingest.lua`, plus the env-driven `scripts/collection-store-ingest.sh`.
