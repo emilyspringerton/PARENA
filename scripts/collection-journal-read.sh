@@ -20,7 +20,15 @@ set -uo pipefail
 abs() { case "$1" in /*|?:/*|?:\\*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
 [ -n "${WOW_WTF_DIR:-}" ] && WOW_WTF_DIR="$(abs "$WOW_WTF_DIR")"
 [ -n "${COLLECTION_EVENTS:-}" ] && COLLECTION_EVENTS="$(abs "$COLLECTION_EVENTS")"
-cd "$(dirname "$0")/.."
+here="$(cd "$(dirname "$0")" && pwd)"
+# Two layouts: the release zip's reader/ folder (journal_reader.lua and a prebuilt ids.lua beside this script,
+# no compiler needed) or a PARENA checkout (scripts/ -> build ids.lua from stdlib/collection/ids.prn).
+if [ -f "$here/journal_reader.lua" ]; then
+  reader_dir="$here"
+else
+  cd "$here/.."
+  reader_dir="runtime/wow"
+fi
 PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
 LUA51="${LUA51:-lua5.1}"
 ADDON="${COLLECTION_JOURNAL_ADDON:-CollectionJournal}"
@@ -31,11 +39,15 @@ die() { echo "collection-journal-read: $*" >&2; exit 2; }
 [ -n "${COLLECTION_EVENTS:-}" ] || die "COLLECTION_EVENTS is not set (source MONOREPO/scripts/collection-env.sh)"
 [ -d "$WOW_WTF_DIR/Account" ] || die "no Account folder under WOW_WTF_DIR=$WOW_WTF_DIR"
 command -v "$LUA51" >/dev/null 2>&1 || die "no Lua 5.1 at LUA51=$LUA51"
-[ -x "$PARENA_BIN" ] || die "no compiler at $PARENA_BIN (make .parena-bootstrap)"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-"$PARENA_BIN" build stdlib/collection/ids.prn -o "$tmp/ids.lua" >/dev/null || die "could not build stdlib/collection/ids.prn"
+if [ -f "$reader_dir/ids.lua" ]; then
+  cp "$reader_dir/ids.lua" "$tmp/ids.lua"
+else
+  [ -x "$PARENA_BIN" ] || die "no compiler at $PARENA_BIN (make .parena-bootstrap)"
+  "$PARENA_BIN" build stdlib/collection/ids.prn -o "$tmp/ids.lua" >/dev/null || die "could not build stdlib/collection/ids.prn"
+fi
 
 # Account/<account>/<realm>/<character>/SavedVariables/<Addon>.lua -- the .lua.bak next to each is the
 # client's previous copy and is never read (the glob ends in .lua).
@@ -51,4 +63,4 @@ if [ "${#args[@]}" -eq 0 ]; then
 fi
 
 mkdir -p "$(dirname "$COLLECTION_EVENTS")"
-"$LUA51" runtime/wow/journal_read_cli.lua runtime/wow/journal_reader.lua "$tmp/ids.lua" "$VAR" "$COLLECTION_EVENTS" "${args[@]}"
+"$LUA51" "$reader_dir/journal_read_cli.lua" "$reader_dir/journal_reader.lua" "$tmp/ids.lua" "$VAR" "$COLLECTION_EVENTS" "${args[@]}"

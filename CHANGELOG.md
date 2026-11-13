@@ -1,5 +1,29 @@
 ## 2026-11-13
 
+- **The Collection of Value client** -- `scripts/wow-package-collection.sh [--zip] [--install]` builds
+  `AddOns/RefluxCore`, `AddOns/CollectionJournal` (REFLUX -> per-character journal; `/cov`),
+  `AddOns/FafnirsBed` and `reader/` (`read-journal.sh`, which needs no compiler) into one folder or
+  `CollectionOfValue-<version>.zip`. Like RefluxCore, it refuses without `WOW_INTERFACE`. Everything else
+  is env-driven (`COLLECTION_JOURNAL_KEEP`, `COLLECTION_JOURNAL_POLL_SECONDS`, `FAFNIR_ADDON`, `FAFNIR_VAR`, ...).
+- **Fafnir's Bed** (spec addon 2, Unified Inventory) -- `stdlib/collection/inventory.prn` plus host glue
+  `runtime/wow/fafnirs_bed.lua`:
+  - Tracks bags, bank (while open), mail (while open) and gold for every character in one account-wide
+    table.
+  - `/fafnir` (also `/hoard`) shows net inventory and account gold; `/fafnir <name|id|link>` shows who has
+    an item and its net count.
+  - Every change is dispatched into REFLUX (2010 item delta, 2011 gold delta, 2012 location read), so the
+    journal turns net inventory into a time series.
+  - The bag API (C_Container or the older globals), the bag/bank ids and the inbox API are feature-tested
+    and read from the client's own globals, never hard-coded. A location the client cannot read is
+    reported, and its last real read is kept.
+- `tests/reflux_wow/client_test.lua` (36/36) loads the packaged addons in `.toc` order into a stubbed client.
+  It plays two characters on the two bag APIs, then a client with no bag API, and runs the packaged reader
+  over the result. `make test-reflux-wow` also checks that the packager refuses without an interface number,
+  and that `reader/` runs standalone.
+- `runtime/parena_runtime.h`: winnt.h's `TokenType` constant is renamed while the Windows headers are
+  included. It collided with selfhost's generated `TokenType` type, which had failed the Windows CI step
+  and skipped every release since 2026-10-02.
+
 - **external SavedVariables reader** (COV-6b): `runtime/wow/journal_reader.lua` (library),
   `runtime/wow/journal_read_cli.lua`, and the env-driven `scripts/collection-journal-read.sh`, which finds
   `$WOW_WTF_DIR/Account/*/*/*/SavedVariables/$COLLECTION_JOURNAL_ADDON.lua`. Each file is loaded with no

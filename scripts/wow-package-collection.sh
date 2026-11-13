@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# scripts/wow-package-collection.sh -- build the Collection of Value client: every addon that is built so far,
+# plus the outside-the-game reader, as one folder (and optionally one zip).
+#
+#   AddOns/RefluxCore         the shared REFLUX log every other addon depends on
+#   AddOns/CollectionJournal  REFLUX -> per-character SavedVariables journal (Step 6)
+#   AddOns/FafnirsBed         Fafnir's Bed, the inventory manager: bags, bank, mail, gold across every
+#                             character, net inventory, "who has this?" (spec addon 2)  -- /fafnir, /hoard
+#   reader/                   read-journal.sh: journal files -> eventstore NDJSON, after logout
+#
+# Every .lua module is `parena build` output; the only hand-written Lua is host glue in runtime/wow/.
+#
+# Environment (all overridable; see MONOREPO/scripts/collection-env.sh):
+#   WOW_INTERFACE                    REQUIRED, never defaulted (an unconfirmed fact): the client's TOC number
+#   COLLECTION_CLIENT_OUT            output folder                         (default build/wow/client)
+#   COLLECTION_VERSION               version stamp                         (default: git short SHA, else dev)
+#   COLLECTION_JOURNAL_ADDON / _VAR  journal addon folder / its global      (CollectionJournal / CollectionJournalDB)
+#   COLLECTION_JOURNAL_KEEP          journal size cap in rows              (20000)
+#   COLLECTION_JOURNAL_POLL_SECONDS  REFLUX poll interval while playing    (5)
+#   FAFNIR_ADDON / FAFNIR_VAR        inventory addon folder / its global   (FafnirsBed / FafnirsBedDB)
+#   PARENA_BIN                       compiler driver                       (./.parena-bootstrap)
+#   WOW_ADDONS_DIR                   install target for --install
+#
+# usage: scripts/wow-package-collection.sh [--zip] [--install]
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
+OUT="${COLLECTION_CLIENT_OUT:-build/wow/client}"
+VERSION="${COLLECTION_VERSION:-$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo dev)}"
+J_ADDON="${COLLECTION_JOURNAL_ADDON:-CollectionJournal}"
+J_VAR="${COLLECTION_JOURNAL_VAR:-CollectionJournalDB}"
+J_KEEP="${COLLECTION_JOURNAL_KEEP:-20000}"
+J_POLL="${COLLECTION_JOURNAL_POLL_SECONDS:-5}"
+F_ADDON="${FAFNIR_ADDON:-FafnirsBed}"
+F_VAR="${FAFNIR_VAR:-FafnirsBedDB}"
+
+die() { echo "wow-package-collection: $*" >&2; exit 2; }
+if [ -z "${WOW_INTERFACE:-}" ]; then
+  echo "wow-package-collection: WOW_INTERFACE is not set." >&2
+  echo "  Run in game:  /run print(select(4, GetBuildInfo()))  and export the number it prints." >&2
+  exit 2
+fi
+case "$WOW_INTERFACE" in *[!0-9]*) die "WOW_INTERFACE must be digits, got '$WOW_INTERFACE'" ;; esac
+for v in "$J_KEEP" "$J_POLL"; do case "$v" in ''|*[!0-9]*|0) die "journal KEEP/POLL must be positive integers" ;; esac; done
+for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+[ -x "$PARENA_BIN" ] || die "no compiler at $PARENA_BIN (make .parena-bootstrap)"
+
+rm -rf "$OUT"
+mkdir -p "$OUT/AddOns" "$OUT/reader"
+
+# RefluxCore, by its own packager (same refusal rules).
+REFLUXCORE_OUT="$OUT/AddOns" PARENA_BIN="$PARENA_BIN" bash scripts/wow-package-refluxcore.sh >/dev/null
+
+# wrap NAME OUT SRC.prn... -- compile the sources as ONE module and register it in RefluxCore.modules[NAME].
+wrap() {
+  local name="$1" out="$2" tmp
+  shift 2
+  tmp="$(mktemp -d)"
+  "$PARENA_BIN" build "$@" -o "$tmp/m.lua" >/dev/null
+  {
+    echo "-- $name, built by parena from: $*. Do not edit; edit the .prn."
+    echo "RefluxCore = RefluxCore or { modules = {} }"
+    echo "RefluxCore.modules[\"$name\"] = (function(...)"
+    cat "$tmp/m.lua"
+    echo "end)(...)"
+  } > "$out"
+  rm -rf "$tmp"
+}
+
+# glue SRC OUT -- host glue with its @...@ values filled from the environment.
+glue() {
+  sed -e "s/@ADDON@/$3/g" -e "s/@VAR@/$4/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" "$1" > "$2"
+  if grep -q '@[A-Z]*@' "$2"; then die "unfilled placeholder left in $2"; fi
+}
+
+toc() {  # toc FILE TITLE NOTES SVKIND SVVAR FILES...
+  local file="$1" title="$2" notes="$3" kind="$4" var="$5"
+  shift 5
+  {
+    echo "## Interface: $WOW_INTERFACE"
+    echo "## Title: $title"
+    echo "## Notes: $notes"
+    echo "## Version: $VERSION"
+    echo "## Dependencies: RefluxCore"
+    echo "## $kind: $var"
+    echo "## X-Built-By: PARENA"
+    echo
+    for f in "$@"; do echo "$f"; done
+  } > "$file"
+}
+
+j="$OUT/AddOns/$J_ADDON"
+mkdir -p "$j"
+wrap collection/journal "$j/journal.lua" stdlib/reflux/reflux.prn stdlib/reflux/cursor.prn stdlib/collection/journal.prn
+glue runtime/wow/collection_journal.lua "$j/collection_journal.lua" "$J_ADDON" "$J_VAR"
+toc "$j/$J_ADDON.toc" "Collection Journal" "Writes every REFLUX event to a per-character journal the outside reader collects." \
+  SavedVariablesPerCharacter "$J_VAR" journal.lua collection_journal.lua
+
+f="$OUT/AddOns/$F_ADDON"
+mkdir -p "$f"
+wrap collection/inventory "$f/inventory.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn stdlib/collection/inventory.prn
+glue runtime/wow/fafnirs_bed.lua "$f/fafnirs_bed.lua" "$F_ADDON" "$F_VAR"
+toc "$f/$F_ADDON.toc" "Fafnir's Bed" "Every bag, bank and mailbox on the account in one hoard: net inventory and who has what. /fafnir" \
+  SavedVariables "$F_VAR" inventory.lua fafnirs_bed.lua
+
+# Re-stamp RefluxCore's version with the release's, so all three agree.
+sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
+
+"$PARENA_BIN" build stdlib/collection/ids.prn -o "$OUT/reader/ids.lua" >/dev/null
+cp runtime/wow/journal_reader.lua runtime/wow/journal_read_cli.lua "$OUT/reader/"
+cp scripts/collection-journal-read.sh "$OUT/reader/read-journal.sh"
+chmod +x "$OUT/reader/read-journal.sh"
+
+cat > "$OUT/README.txt" <<EOF
+Collection of Value -- client $VERSION (WoW interface $WOW_INTERFACE), built by PARENA.
+
+INSTALL
+  Copy every folder in AddOns/ into your client's Interface/AddOns folder
+  (WoW Forever: <WoW>/_forever_/Interface/AddOns), then restart the client or /reload.
+
+IN GAME
+  /fafnir            net inventory: characters, distinct items, item count, gold across the account
+  /fafnir <name|id>  who has it, and the net count (shift-click an item link in works too)
+  /cov               the journal's state (rows held, trimmed, lost)
+  Each character is learned the first time you log it in; the bank is learned each time you open it,
+  mail each time you open the mailbox.
+
+AFTER PLAYING (log out first: the client writes SavedVariables on logout and /reload)
+  WOW_WTF_DIR="<WoW>/_forever_/WTF" COLLECTION_EVENTS=<somewhere>/events.ndjson reader/read-journal.sh
+  Needs a Lua 5.1 interpreter (LUA51=lua5.1). Appends new events only; exit 3 means rows were trimmed in
+  game before a read reached them -- the report names them.
+EOF
+echo "$VERSION" > "$OUT/VERSION"
+
+echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, reader"
+
+for a in "$@"; do
+  case "$a" in
+    --zip)
+      command -v zip >/dev/null 2>&1 || die "--zip needs zip"
+      zipname="CollectionOfValue-$VERSION.zip"
+      (cd "$OUT" && rm -f "../$zipname" && zip -qr "../$zipname" AddOns reader README.txt VERSION)
+      echo "wow-package-collection: $(dirname "$OUT")/$zipname" ;;
+    --install)
+      [ -n "${WOW_ADDONS_DIR:-}" ] || die "--install needs WOW_ADDONS_DIR"
+      for d in "$OUT"/AddOns/*/; do
+        n="$(basename "$d")"
+        rm -rf "${WOW_ADDONS_DIR:?}/$n"
+        cp -r "$d" "$WOW_ADDONS_DIR/$n"
+      done
+      echo "wow-package-collection: installed to $WOW_ADDONS_DIR" ;;
+    *) die "unknown option $a" ;;
+  esac
+done

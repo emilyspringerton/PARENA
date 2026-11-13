@@ -1457,6 +1457,17 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 		bash scripts/collection-journal-read.sh | grep -q "2 rows read, 0 appended, 2 already stored"
 	@test "$$(wc -l < $(REFLUX_WOW_OUT)/reader/store/events.ndjson)" -eq 2 || { echo "FAIL: wrapper store has wrong line count"; exit 1; }
 	@echo "journal reader wrapper: ok"
+	@# The shipped client (RefluxCore + CollectionJournal + Fafnir's Bed + reader): refuses without an
+	@# interface number, then packaged with a test-only one and played end to end in a stubbed client...
+	@if env -u WOW_INTERFACE bash scripts/wow-package-collection.sh >/dev/null 2>&1; then \
+		echo "FAIL: client packaged without WOW_INTERFACE"; exit 1; fi
+	rm -rf $(REFLUX_WOW_OUT)/clientwork && mkdir -p $(REFLUX_WOW_OUT)/clientwork
+	WOW_INTERFACE=99999 COLLECTION_CLIENT_OUT=$(REFLUX_WOW_OUT)/client bash scripts/wow-package-collection.sh
+	$(LUA51) tests/reflux_wow/client_test.lua $(REFLUX_WOW_OUT)/client $(REFLUX_WOW_OUT)/clientwork
+	@# ...and its reader/ runs on its own, with no compiler beside it.
+	WOW_WTF_DIR=$(REFLUX_WOW_OUT)/reader/wtf COLLECTION_EVENTS=$(REFLUX_WOW_OUT)/clientwork/pkg.ndjson PARENA_BIN=/nonexistent \
+		bash $(REFLUX_WOW_OUT)/client/reader/read-journal.sh | grep -q "2 rows read, 2 appended"
+	@echo "packaged reader: ok"
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi
