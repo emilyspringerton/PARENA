@@ -1,0 +1,191 @@
+;; stdlib/crypto/sha2.prn -- SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104), HKDF (RFC 5869) and TLS 1.3's
+;; HKDF-Expand-Label (RFC 8446 s7.1), in pure PARENA. No FFI, no mbedTLS, no OpenSSL.
+;;
+;; Founder, 2026-11-13: "cant we build the deps in parena?" ... "please i beg you". This is the first layer
+;; of a PARENA-native TLS 1.3 client for PELLEGRINO. The rule this goes against, named so nobody misses it:
+;; PELLEGRINO/CLAUDE.md says "Do not hand-roll crypto: TLS is mbedTLS", and crypto/hash.prn binds OpenSSL
+;; for the same reason. The founder overrode it in real time. What keeps it honest: every function here is
+;; checked against the published vectors (FIPS 180-4 / NIST, RFC 4231, RFC 5869, RFC 8448) in
+;; tests/test_sha2.c, and PELLEGRINO keeps mbedTLS until the whole native stack passes its own vectors.
+;;
+;; Words are I32 holding 32 bits; every add, shift and rotate uses the u32-* forms (src/emit.c), which emit
+;; uint32_t arithmetic, because C's signed overflow is undefined and a hash overflows every round.
+;; SHA-256 is not a secret-dependent-branching algorithm, so this is constant-time by construction for
+;; equal-length inputs.
+
+(module crypto/sha2)
+(import bytes)
+(export sha256 sha256-range hmac-sha256 hkdf-extract hkdf-expand hkdf-expand-label)
+
+;; ---- words in Bytes, big-endian ---------------------------------------------------------------------
+
+(defn s2-wget [(b : Bytes) (i : I32)] : I32
+  (let [p (* i 4)]
+    (bit-or (u32-shl (bytes-get b p) 24)
+      (bit-or (u32-shl (bytes-get b (+ p 1)) 16)
+        (bit-or (u32-shl (bytes-get b (+ p 2)) 8) (bytes-get b (+ p 3)))))))
+
+(defn s2-wset! [(b : Bytes) (i : I32) (v : I32)] : I32
+  (let [p (* i 4)]
+    (do (bytes-set! b p (bit-and (ushr v 24) 255))
+        (bytes-set! b (+ p 1) (bit-and (ushr v 16) 255))
+        (bytes-set! b (+ p 2) (bit-and (ushr v 8) 255))
+        (bytes-set! b (+ p 3) (bit-and v 255))
+        v)))
+
+;; ---- constants ----------------------------------------------------------------------------------------
+
+;; The 64 round constants (FIPS 180-4 s4.2.2), 8 hex digits each.
+(defn s2-k-hex [] : String
+  "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca63511429296727b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa07019a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2")
+
+;; The initial hash value H(0) (s5.3.3).
+(defn s2-iv-hex [] : String "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19")
+
+(defn s2-hexval [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) (- c 48) (if (and (>= c 97) (<= c 102)) (- c 87) 0)))
+
+(defn s2-hexword [(s : String) (i : I32)] : I32
+  (loop [j 0 acc 0]
+    (if (>= j 8) acc
+      (recur (+ j 1) (bit-or (u32-shl acc 4) (s2-hexval (char-at s (+ (* i 8) j))))))))
+
+(defn s2-k [(t : I32)] : I32 (s2-hexword (s2-k-hex) t))
+
+;; ---- the functions of s4.1.2 --------------------------------------------------------------------------
+
+(defn s2-bsig0 [(x : I32)] : I32 (bit-xor (u32-rotr x 2) (bit-xor (u32-rotr x 13) (u32-rotr x 22))))
+(defn s2-bsig1 [(x : I32)] : I32 (bit-xor (u32-rotr x 6) (bit-xor (u32-rotr x 11) (u32-rotr x 25))))
+(defn s2-ssig0 [(x : I32)] : I32 (bit-xor (u32-rotr x 7) (bit-xor (u32-rotr x 18) (ushr x 3))))
+(defn s2-ssig1 [(x : I32)] : I32 (bit-xor (u32-rotr x 17) (bit-xor (u32-rotr x 19) (ushr x 10))))
+(defn s2-ch [(x : I32) (y : I32) (z : I32)] : I32 (bit-xor (bit-and x y) (bit-and (bit-xor x -1) z)))
+(defn s2-maj [(x : I32) (y : I32) (z : I32)] : I32
+  (bit-xor (bit-and x y) (bit-xor (bit-and x z) (bit-and y z))))
+
+;; ---- padding (s5.1.1), read byte by byte so the message is never copied --------------------------------
+
+(defn s2-padded-len [(len : I32)] : I32 (* (/ (+ len 72) 64) 64))
+
+;; Byte `pos` of the padded message for data[start, start+len).
+(defn s2-pbyte [(data : Bytes) (start : I32) (len : I32) (total : I32) (pos : I32)] : I32
+  (if (< pos len) (bytes-get data (+ start pos))
+    (if (= pos len) 128
+      (if (< pos (- total 8)) 0
+        ;; the 64-bit bit length, big-endian: len * 8, of which only the low 35 bits can be non-zero
+        (let [k (- pos (- total 8))]
+          (if (< k 3) 0
+            (if (= k 3) (bit-and (ushr len 29) 255)
+              (bit-and (ushr (u32-shl len 3) (* (- 7 k) 8)) 255))))))))
+
+;; ---- compression -------------------------------------------------------------------------------------
+
+;; w[0..63] for block `blk` into the 256-byte schedule.
+(defn s2-schedule! [(w : Bytes) (data : Bytes) (start : I32) (len : I32) (total : I32) (blk : I32)] : I32
+  (do (loop [t 0]
+        (if (>= t 16) 0
+          (let [p (+ (* blk 64) (* t 4))]
+            (do (s2-wset! w t
+                  (bit-or (u32-shl (s2-pbyte data start len total p) 24)
+                    (bit-or (u32-shl (s2-pbyte data start len total (+ p 1)) 16)
+                      (bit-or (u32-shl (s2-pbyte data start len total (+ p 2)) 8)
+                        (s2-pbyte data start len total (+ p 3))))))
+                (recur (+ t 1))))))
+      (loop [u 16]
+        (if (>= u 64) 0
+          (do (s2-wset! w u (u32-add (u32-add (s2-ssig1 (s2-wget w (- u 2))) (s2-wget w (- u 7)))
+                                     (u32-add (s2-ssig0 (s2-wget w (- u 15))) (s2-wget w (- u 16)))))
+              (recur (+ u 1)))))))
+
+;; The 64 rounds over w, starting from the hash in h; adds the result back into h (s6.2.2 steps 2-4).
+(defn s2-rounds! [(h : Bytes) (w : Bytes)] : I32
+  (loop [t 0 a (s2-wget h 0) b (s2-wget h 1) c (s2-wget h 2) d (s2-wget h 3)
+         e (s2-wget h 4) f (s2-wget h 5) g (s2-wget h 6) hh (s2-wget h 7)]
+    (if (>= t 64)
+      (do (s2-wset! h 0 (u32-add (s2-wget h 0) a)) (s2-wset! h 1 (u32-add (s2-wget h 1) b))
+          (s2-wset! h 2 (u32-add (s2-wget h 2) c)) (s2-wset! h 3 (u32-add (s2-wget h 3) d))
+          (s2-wset! h 4 (u32-add (s2-wget h 4) e)) (s2-wset! h 5 (u32-add (s2-wget h 5) f))
+          (s2-wset! h 6 (u32-add (s2-wget h 6) g)) (s2-wset! h 7 (u32-add (s2-wget h 7) hh))
+          0)
+      (let [t1 (u32-add (u32-add (u32-add hh (s2-bsig1 e)) (s2-ch e f g)) (u32-add (s2-k t) (s2-wget w t)))
+            t2 (u32-add (s2-bsig0 a) (s2-maj a b c))]
+        (recur (+ t 1) (u32-add t1 t2) a b c (u32-add d t1) e f g)))))
+
+(defn s2-blocks! [(h : Bytes) (w : Bytes) (data : Bytes) (start : I32) (len : I32) (total : I32)] : I32
+  (loop [blk 0]
+    (if (>= (* blk 64) total) 0
+      (do (s2-schedule! w data start len total blk) (s2-rounds! h w) (recur (+ blk 1))))))
+
+;; SHA-256 of data[start, start+len), as 32 fresh bytes in dest. A range outside data hashes nothing
+;; and returns 0 bytes -- never reads out of bounds.
+(defn sha256-range [(data : Bytes) (start : I32) (len : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (if (or (< start 0) (or (< len 0) (> (+ start len) (bytes-len data)))) (bytes-alloc 0 dest)
+    (let [h (bytes-alloc 32 dest) w (bytes-alloc 256 dest) iv (s2-iv-hex)]
+      (do (loop [i 0] (if (>= i 8) 0 (do (s2-wset! h i (s2-hexword iv i)) (recur (+ i 1)))))
+          (s2-blocks! h w data start len (s2-padded-len len))
+          h))))
+
+(defn sha256 [(data : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (sha256-range data 0 (bytes-len data) dest))
+
+;; ---- HMAC-SHA256 (RFC 2104 with H = SHA-256, B = 64, L = 32) -----------------------------------------
+
+;; bytes-set! as an I32 expression, so it can sit in a let binding (a Unit binding does not compile).
+(defn s2-bset! [(b : Bytes) (i : I32) (v : I32)] : I32 (do (bytes-set! b i v) 0))
+
+(defn s2-copy! [(out : Bytes) (op : I32) (src : Bytes) (n : I32)] : I32
+  (loop [i 0] (if (>= i n) (+ op n) (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1))))))
+
+;; key XOR pad into out[0, 64): key bytes past its length count as zero.
+(defn s2-pad! [(out : Bytes) (key : Bytes) (pad : I32)] : I32
+  (loop [i 0]
+    (if (>= i 64) 64
+      (do (bytes-set! out i (bit-xor (if (< i (bytes-len key)) (bytes-get key i) 0) pad)) (recur (+ i 1))))))
+
+(defn hmac-sha256 [(key : Bytes) (msg : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (let [k (if (> (bytes-len key) 64) (sha256 key dest) key)
+        inner (bytes-alloc (+ 64 (bytes-len msg)) dest)
+        p1 (s2-pad! inner k 54)
+        p2 (s2-copy! inner 64 msg (bytes-len msg))
+        ih (sha256 inner dest)
+        outer (bytes-alloc 96 dest)
+        p3 (s2-pad! outer k 92)
+        p4 (s2-copy! outer 64 ih 32)]
+    (sha256 outer dest)))
+
+;; ---- HKDF (RFC 5869) ------------------------------------------------------------------------------
+
+;; PRK = HMAC(salt, IKM). An empty salt is HashLen zeros, which HMAC's zero padding already gives.
+(defn hkdf-extract [(salt : Bytes) (ikm : Bytes) (dest : Arena @ Region)] : Bytes @ Region
+  (hmac-sha256 salt ikm dest))
+
+;; T(i) = HMAC(PRK, T(i-1) | info | i), OKM = first L bytes of T(1) | T(2) | ... L must be 0..8160;
+;; outside that, 0 bytes.
+(defn hkdf-expand [(prk : Bytes) (info : Bytes) (l : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (if (or (< l 0) (> l 8160)) (bytes-alloc 0 dest)
+    (let [okm (bytes-alloc l dest) il (bytes-len info)]
+      (loop [i 1 done 0 prev (bytes-alloc 0 dest)]
+        (if (>= done l) okm
+          (let [pl (bytes-len prev)
+                m (bytes-alloc (+ (+ pl il) 1) dest)
+                a (s2-copy! m 0 prev pl)
+                b (s2-copy! m pl info il)
+                c (s2-bset! m (+ pl il) i)
+                t (hmac-sha256 prk m dest)
+                take (if (> (- l done) 32) 32 (- l done))
+                d (loop [j 0] (if (>= j take) 0 (do (bytes-set! okm (+ done j) (bytes-get t j)) (recur (+ j 1)))))]
+            (recur (+ i 1) (+ done take) t)))))))
+
+;; HKDF-Expand-Label(Secret, Label, Context, Length) = HKDF-Expand(Secret, HkdfLabel, Length) where
+;; HkdfLabel = uint16 length | opaque label<7..255> = "tls13 " + Label | opaque context<0..255>.
+(defn hkdf-expand-label [(secret : Bytes) (label : String) (context : Bytes) (l : I32) (dest : Arena @ Region)] : Bytes @ Region
+  (let [ll (+ 6 (length label))
+        cl (bytes-len context)
+        info (bytes-alloc (+ (+ 4 ll) cl) dest)
+        a (s2-bset! info 0 (bit-and (ushr l 8) 255))
+        b (s2-bset! info 1 (bit-and l 255))
+        c (s2-bset! info 2 ll)
+        d (loop [i 0] (if (>= i 6) 0 (do (bytes-set! info (+ 3 i) (char-at "tls13 " i)) (recur (+ i 1)))))
+        e (loop [j 0] (if (>= j (length label)) 0 (do (bytes-set! info (+ 9 j) (char-at label j)) (recur (+ j 1)))))
+        f (s2-bset! info (+ 3 ll) cl)
+        g (s2-copy! info (+ 4 ll) context cl)]
+    (hkdf-expand secret info l dest)))
