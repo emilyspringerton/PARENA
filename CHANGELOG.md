@@ -1,5 +1,30 @@
 ## 2026-11-13
 
+- **Four fun Collection addons** (spec 65, 70, 72, 73), each a REFLUX mod: the rules are PARENA in
+  `stdlib/collection/`, with thin Lua glue in `runtime/wow/` and a locale catalogue in `runtime/wow/locales/`.
+  Names come from the spec's own lists.
+  - **Hrungnir** (70, Pet Rock; `/rock`): a pet rock in a tiny draggable frame. It levels from minutes
+    online, quests, character levels and pats (one a minute, or it complains), with level L needing
+    25·L·(L−1) points. It sulks when ignored for a day, looks smug when you die, and makes a remark every
+    15 minutes. REFLUX 2690-2692.
+  - **Ratatoskr Roll** (65, Critter Census; `/census`): every critter you `/love`, `/pet` or `/wave` at,
+    via a `DoEmote` hook on the target. Account-wide counts, weekly top three, and a once-only Critter of the
+    Week at the first login of a new week (weeks start Monday UTC). REFLUX 2640-2641.
+  - **Völva** (72, Fortune Cookie; `/fortune`): a fortune at every login, with six lucky numbers. About a
+    third are stat fortunes read from live numbers (gold, level, Fafnir's Bed net inventory, the rock's
+    level, critters loved), offered only when that number is really there. It's reproducible from
+    (character, day, count). REFLUX 2710.
+  - **Saga of Fools** (73, Achievement Nonsense; `/saga`): 14 joke achievements (jumps, deaths, dances,
+    sits, "Open 50 mails from yourself", broke at login, plus three read from the other three addons), with
+    a raid-warning banner. REFLUX 2720.
+  - Sibling addons' saved tables are found by their packaged (env-driven) names, never hard-coded.
+  - Tests: `tests/reflux_wow/fun_test.lua`, 154 checks under Lua 5.1, inside `make test-reflux-wow`. It plays
+    sessions across a week in a stubbed client, checks every REFLUX row reaches the journal, and runs the
+    missing-string check over all 12 spec locales.
+  - **Locales:** enUS and enGB are complete. The other ten fall back to enUS, and the check names them --
+    the spec has translators supply those catalogues, so none were invented. Ratatoskr's `CRITTER_TYPE` must
+    be copied from each locale's client, because until it is the census only counts in English clients.
+
 - **A PARENA-native crypto stack starts: unsigned word arithmetic, then SHA-256 / HMAC / HKDF.** Founder:
   "cant we build the deps in parena?" ... "please i beg you". Goal: a TLS 1.3 client for PELLEGRINO in pure
   PARENA, so HTTP/2 needs no mbedTLS. **Named conflict:** PELLEGRINO/CLAUDE.md says "Do not hand-roll
