@@ -30,7 +30,7 @@
 (module collection/macros)
 (export macro-set macro-classes)
 
-(defn macro-classes [] : Any (lua/array "PALADIN"))
+(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST"))
 
 (defn macro-paladin [] : Any
   (lua/array
@@ -51,6 +51,35 @@
     (lua/array "PalExo" "#showtooltip\n/startattack\n/cast {Exorcism}")
     (lua/array "PalMount" "#showtooltip\n/cast {Summon Charger|Summon Warhorse}")))
 
+;; PRIEST -- a levelling and support set (the class's core kit; no priest guide is on this machine either):
+;;   PriShield    the shield: mouseover friend, else friendly target, else yourself
+;;   PriHeal      quick heal, same targeting      PriBigHeal  the big heal you know, same targeting
+;;   PriRenew     renew, same targeting           PriFort     fortitude, same targeting
+;;   PriDispel    dispel, same targeting          PriRez      resurrect your target
+;;   PriSWP       pain on your mouseover enemy, else your target      PriMindBlast  likewise
+;;   PriSmite     smite                           PriFlay     mind flay
+;;   PriWand      start the wand without toggling it off (!Shoot)
+;;   PriFear      psychic scream                  PriFade     fade
+;;   PriInnerFire inner fire                      PriNova     holy nova
+(defn macro-priest [] : Any
+  (lua/array
+    (lua/array "PriShield" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Power Word: Shield}")
+    (lua/array "PriHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Flash Heal|Lesser Heal|Heal}")
+    (lua/array "PriBigHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Greater Heal|Heal|Lesser Heal}")
+    (lua/array "PriRenew" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Renew}")
+    (lua/array "PriFort" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Power Word: Fortitude}")
+    (lua/array "PriDispel" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Dispel Magic|Purify}")
+    (lua/array "PriRez" "#showtooltip\n/cast {Resurrection}")
+    (lua/array "PriSWP" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Shadow Word: Pain}")
+    (lua/array "PriMindBlast" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Mind Blast}")
+    (lua/array "PriSmite" "#showtooltip\n/cast {Smite}")
+    (lua/array "PriFlay" "#showtooltip\n/cast {Mind Flay}")
+    (lua/array "PriWand" "#showtooltip\n/cast !{Shoot}")
+    (lua/array "PriFear" "#showtooltip\n/cast {Psychic Scream}")
+    (lua/array "PriFade" "#showtooltip\n/cast {Fade}")
+    (lua/array "PriInnerFire" "#showtooltip\n/cast {Inner Fire}")
+    (lua/array "PriNova" "#showtooltip\n/cast {Holy Nova}")))
+
 ;; The set for a class file name; an empty array for a class without one yet.
 (defn macro-set [(class : String)] : Any
-  (if (= class "PALADIN") (macro-paladin) (lua/array)))
+  (if (= class "PALADIN") (macro-paladin) (if (= class "PRIEST") (macro-priest) (lua/array))))

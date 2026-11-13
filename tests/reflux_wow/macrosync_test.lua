@@ -160,6 +160,22 @@ out = s.ascend()
 has(out, "the Flame holds no words for you", "a class with no set yet is told so")
 eq(#k.char, 0, "and nothing is written")
 
+-- ===== a level-1 priest ===============================================================================
+local pr = world("PRIEST", { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" })
+s = session(pr)
+out = s.ascend()
+eq(names(pr.char), "PriHeal,PriBigHeal,PriFort,PriSmite,PriWand", "a level-1 priest gets the five it can cast")
+eq(find(pr.char, "PriHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "the quick heal falls back to Lesser Heal")
+eq(find(pr.char, "PriBigHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "so does the big heal, until a bigger one is known")
+eq(find(pr.char, "PriWand").body, "#showtooltip\n/cast !Shoot", "the wand keeps its no-toggle !")
+has(out, "5 written, 0 pruned, 11 waiting for spells", "the rest wait")
+pr.known["Greater Heal"], pr.known["Power Word: Shield"] = true, true
+pr.saved.MacroSyncDB = s.env.MacroSyncDB
+s = session(pr)
+s.ascend()
+eq(find(pr.char, "PriBigHeal").body:find("Greater Heal", 1, true) ~= nil, true, "learning Greater Heal upgrades the big heal")
+eq(find(pr.char, "PriShield") ~= nil, true, "and the shield wakes up")
+
 -- ===== REFLUX: ascends reach the journal ================================================================
 local j = world("PALADIN", { "Judgement" })
 s = session(j)
