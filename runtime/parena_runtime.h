@@ -57,8 +57,15 @@
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601
 #endif
+/* winsock2.h pulls in windows.h -> winnt.h, whose _TOKEN_INFORMATION_CLASS enum declares a constant named
+ * `TokenType`. Generated PARENA code defines its own `TokenType` (selfhost/lexer.prn's token sum type), and the
+ * two collided: "'TokenType' redeclared as different kind of symbol" -- the Windows self-hosting CI step had
+ * failed on that since 2026-10-02, which also stopped every release. Renaming winnt's constant for the length
+ * of these includes frees the name; the runtime never calls GetTokenInformation. */
+#define TokenType parena_winnt_TokenType
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#undef TokenType
 #endif
 #include <stddef.h>
 #include <string.h>
