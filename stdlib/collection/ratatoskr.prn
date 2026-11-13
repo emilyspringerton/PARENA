@@ -1,0 +1,100 @@
+;; stdlib/collection/ratatoskr.prn -- Ratatoskr Roll, the critter census (spec addon 65, "Critter Census": logs every
+;; critter you /love, pet or wave at, with a weekly top-critter award). Named for the squirrel of Yggdrasil -- one
+;; of the spec's own names for it. A REFLUX mod.
+;;
+;; Account-wide (## SavedVariables: RatatoskrRollDB), so every character's affection counts toward one census:
+;;   db.critters[name] = { love, pet, wave, first, last, zone }
+;;   db.weeks[week][name] = acts of affection that week
+;;   db.awarded[week] = 1 once that week's Critter of the Week has been announced
+;;
+;; A week runs Monday 00:00 UTC to Monday (1970-01-01 was a Thursday, so weeks start 4 days into the epoch).
+;; Which unit counts as a critter is the host's call (the creature type is a localised string, so the catalogue
+;; carries it per locale); this module only counts.
+;;
+;; Addon 65's REFLUX block is 2640-2649 (ids.prn):
+;;   2640 affection   a = emote (1 love, 2 pet, 3 wave), b = that critter's all-time total, c = zone map id
+;;   2641 award       a = week number, b = the winner's acts that week, c = 0
+
+(module collection/ratatoskr)
+(export census-init census-emote-code census-week census-record census-top census-award-due census-totals
+        census-critter-total)
+
+(defn census-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+(defn census-next [(t : Any) (k : Any)] : Any (lua/call-fn (lua/global "next") t k))
+
+(defn census-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "critters")) (lua/set! db "critters" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "weeks")) (lua/set! db "weeks" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "awarded")) (lua/set! db "awarded" (lua/obj)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; The emote tokens the default UI passes to DoEmote. Anything else is not affection.
+(defn census-emote-code [(token : String)] : I32
+  (if (= token "LOVE") 1 (if (= token "PET") 2 (if (= token "WAVE") 3 0))))
+
+(defn census-emote-key [(code : I32)] : String
+  (if (= code 1) "love" (if (= code 2) "pet" "wave")))
+
+(defn census-week [(now : I32)] : I32 (/ (- now 345600) 604800))
+
+(defn census-critter-total [(c : Any)] : I32
+  (+ (census-zero (lua/get c "love")) (+ (census-zero (lua/get c "pet")) (census-zero (lua/get c "wave")))))
+
+;; One act of affection. Returns that critter's new all-time total, or 0 when the emote is not one we count.
+(defn census-record [(db : Any) (name : String) (token : String) (now : I32) (zone : I32)] : I32
+  (let [code (census-emote-code token)]
+    (if (= code 0) 0
+      (let [cs (lua/get db "critters")
+            key (census-emote-key code)
+            wk (census-week now)
+            weeks (lua/get db "weeks")]
+        (do (if (lua/nil? (lua/aget cs name)) (lua/aset! cs name (lua/obj "love" 0 "pet" 0 "wave" 0 "first" now)) 0)
+            (let [c (lua/aget cs name)]
+              (do (lua/set! c key (+ (census-zero (lua/get c key)) 1))
+                  (lua/set! c "last" now)
+                  (lua/set! c "zone" zone)
+                  (if (lua/nil? (lua/aget weeks wk)) (lua/aset! weeks wk (lua/obj)) 0)
+                  (lua/aset! (lua/aget weeks wk) name (+ (census-zero (lua/aget (lua/aget weeks wk) name)) 1))
+                  (reflux-dispatch (collection-action-type 65 0) code (census-critter-total c) zone)
+                  (census-critter-total c))))))))
+
+;; The largest count in t whose name is not already in `taken`; returns the name or nil.
+(defn census-best [(t : Any) (k : Any) (taken : Any) (best : Any) (bestn : I32)] : Any
+  (let [nk (census-next t k)]
+    (if (lua/nil? nk) best
+      (let [n (lua/aget t nk)]
+        (if (and (lua/nil? (lua/aget taken nk))
+                 (or (> n bestn) (and (= n bestn) (and (not (lua/nil? best)) (< nk best)))))
+          (census-best t nk taken nk n)
+          (census-best t nk taken best bestn))))))
+
+(defn census-top-walk [(t : Any) (taken : Any) (out : Any) (i : I32) (k : I32)] : Any
+  (if (> i k) out
+    (let [b (census-best t (lua/nil) taken (lua/nil) 0)]
+      (if (lua/nil? b) out
+        (do (lua/aset! taken b 1)
+            (lua/aset! out i (lua/array b (lua/aget t b)))
+            (census-top-walk t taken out (+ i 1) k))))))
+
+;; The week's top k critters as an array of {name, acts}, most first; ties go to the name that sorts first.
+(defn census-top [(db : Any) (week : I32) (k : I32)] : Any
+  (let [t (lua/aget (lua/get db "weeks") week)]
+    (if (lua/nil? t) (lua/array) (census-top-walk t (lua/obj) (lua/array) 1 k))))
+
+;; Last week's Critter of the Week, once: {name, acts}, or nil when there is nothing (new) to announce.
+(defn census-award-due [(db : Any) (now : I32)] : Any
+  (let [last (- (census-week now) 1)
+        top (census-top db last 1)]
+    (if (or (lua/nil? (lua/aget top 1)) (not (lua/nil? (lua/aget (lua/get db "awarded") last)))) (lua/nil)
+      (do (lua/aset! (lua/get db "awarded") last 1)
+          (reflux-dispatch (collection-action-type 65 1) last (lua/aget (lua/aget top 1) 2) 0)
+          (lua/aget top 1)))))
+
+(defn census-sum [(cs : Any) (k : Any) (n : I32) (acts : I32)] : Any
+  (let [nk (census-next cs k)]
+    (if (lua/nil? nk) (lua/array n acts)
+      (census-sum cs nk (+ n 1) (+ acts (census-critter-total (lua/aget cs nk)))))))
+
+;; {distinct critters, acts of affection} all time.
+(defn census-totals [(db : Any)] : Any (census-sum (lua/get db "critters") (lua/nil) 0 0))

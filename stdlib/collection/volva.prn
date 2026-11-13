@@ -1,0 +1,62 @@
+;; stdlib/collection/volva.prn -- Völva, the fortune cookie (spec addon 72, "Fortune Cookie": opens a fortune each
+;; time you log in, sometimes based on your own stats). A völva is a Norse seeress -- one of the spec's own names
+;; for it. A REFLUX mod.
+;;
+;; Per character (## SavedVariablesPerCharacter: VolvaDB): db = { opened, lastday, v }.
+;;
+;; Every login opens one fortune. Which one is decided here from a seed of (character, day, how many this
+;; character has opened), so a fortune is reproducible from the journal and two characters on the same day get
+;; different ones. About one in three is a STAT fortune -- the host offers the stat lines it can fill right now
+;; (gold, level, net inventory, the rock's level, critters loved...) and this module picks among them; with none on
+;; offer it is always a plain one. Six lucky numbers from 1 to 49 come with every fortune.
+;;
+;; Addon 72's REFLUX block is 2710-2719 (ids.prn):
+;;   2710 fortune opened   a = day number, b = line index, c = kind (1 plain, 2 stat)
+
+(module collection/volva)
+(export fortune-init fortune-day fortune-hash fortune-seed fortune-next fortune-open)
+
+(defn fortune-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "opened")) (lua/set! db "opened" 0) 0)
+      (if (lua/nil? (lua/get db "lastday")) (lua/set! db "lastday" 0) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn fortune-day [(now : I32)] : I32 (/ now 86400))
+
+(defn fortune-mod [(a : I32) (b : I32)] : I32 (- a (* (/ a b) b)))
+
+;; A small string hash (bytes folded mod 65521), so a character's name moves the seed.
+(defn fortune-hash-walk [(s : String) (i : I32) (n : I32) (h : I32)] : I32
+  (if (> i n) h
+    (fortune-hash-walk s (+ i 1) n
+      (fortune-mod (+ (* h 31) (lua/call-fn (lua/global "string.byte") s i)) 65521))))
+
+(defn fortune-hash [(s : String)] : I32 (fortune-hash-walk s 1 (lua/call-fn (lua/global "string.len") s) 7))
+
+;; One step of the generator: stays in 0..65520, every product fits I32 on every target.
+(defn fortune-next [(x : I32)] : I32 (fortune-mod (+ (* x 1103) 12345) 65521))
+
+(defn fortune-seed [(name-hash : I32) (day : I32) (opened : I32)] : I32
+  (fortune-next (fortune-mod (+ (+ name-hash (* (fortune-mod day 4096) 13)) (* opened 7)) 65521)))
+
+(defn fortune-lucky [(x : I32) (i : I32) (last : I32) (out : Any)] : Any
+  (if (> i last) out
+    (let [y (fortune-next x)]
+      (do (lua/aset! out i (+ (fortune-mod y 49) 1))
+          (fortune-lucky y (+ i 1) last out)))))
+
+;; Open today's next fortune. plain-count / stat-count are how many lines of each kind the host has on offer.
+;; Returns {kind, index, lucky1 .. lucky6}; kind 1 plain, 2 stat. A host with no plain lines gets index 0.
+(defn fortune-open [(db : Any) (character : String) (now : I32) (plain-count : I32) (stat-count : I32)] : Any
+  (let [day (fortune-day now)
+        seed (fortune-seed (fortune-hash character) day (lua/get db "opened"))
+        stat (and (> stat-count 0) (= (fortune-mod seed 3) 0))
+        kind (if stat 2 1)
+        pool (if stat stat-count plain-count)
+        idx (if (<= pool 0) 0 (+ (fortune-mod (/ seed 3) pool) 1))
+        out (lua/array kind idx)]
+    (do (lua/set! db "opened" (+ (lua/get db "opened") 1))
+        (lua/set! db "lastday" day)
+        (reflux-dispatch (collection-action-type 72 0) day idx kind)
+        (fortune-lucky seed 3 8 out))))

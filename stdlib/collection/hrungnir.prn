@@ -1,0 +1,105 @@
+;; stdlib/collection/hrungnir.prn -- Hrungnir, the pet rock (spec addon 70, "Pet Rock": a pretend pet that levels
+;; up as you play; it lives in a tiny frame and occasionally makes comments). Named for the giant whose head was
+;; stone -- one of the spec's own names for it. A REFLUX mod.
+;;
+;; One rock per character (## SavedVariablesPerCharacter: HrungnirDB):
+;;   db = { points, level, born, lastpat, pats, deaths, lastdeath, lastidle, v }
+;;
+;; Pebble points come from playing, not from grinding the rock: a minute online is 1, a quest turned in 10, a
+;; character level 50, a pat 2 (at most one a minute -- a rock does not like being poked). Level L needs
+;; 25 * L * (L - 1) points: 50 for level 2, 150 for 3, 2,475 for 10, capped at 99.
+;;
+;; Addon 70's REFLUX block is 2690-2699 (ids.prn):
+;;   2690 points gained   a = reason (1 minute, 2 quest, 3 level, 4 pat), b = points total, c = rock level
+;;   2691 rock levelled   a = new level, b = points total, c = the reason that did it
+;;   2692 player died     a = deaths so far, b = rock level, c = 0
+;;
+;; What the rock SAYS is the catalogue's (runtime/wow/locales/hrungnir.lua); which line it says is decided here,
+;; from a seed, so the same moment always gets the same line.
+
+(module collection/hrungnir)
+(export rock-init rock-need rock-level-of rock-reason-points rock-gain rock-pat rock-died rock-mood
+        rock-comment-count rock-comment rock-idle-due rock-progress)
+
+(defn rock-init [(db : Any) (now : I32)] : Any
+  (do (if (lua/nil? (lua/get db "points")) (lua/set! db "points" 0) 0)
+      (if (lua/nil? (lua/get db "level")) (lua/set! db "level" 1) 0)
+      (if (lua/nil? (lua/get db "born")) (lua/set! db "born" now) 0)
+      (if (lua/nil? (lua/get db "lastpat")) (lua/set! db "lastpat" 0) 0)
+      (if (lua/nil? (lua/get db "pats")) (lua/set! db "pats" 0) 0)
+      (if (lua/nil? (lua/get db "deaths")) (lua/set! db "deaths" 0) 0)
+      (if (lua/nil? (lua/get db "lastdeath")) (lua/set! db "lastdeath" 0) 0)
+      (if (lua/nil? (lua/get db "lastidle")) (lua/set! db "lastidle" now) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn rock-max-level [] : I32 99)
+
+;; Total points level L needs.
+(defn rock-need [(level : I32)] : I32 (* 25 (* level (- level 1))))
+
+(defn rock-level-walk [(pts : I32) (l : I32)] : I32
+  (if (>= l (rock-max-level)) (rock-max-level)
+    (if (>= pts (rock-need (+ l 1))) (rock-level-walk pts (+ l 1)) l)))
+
+(defn rock-level-of [(pts : I32)] : I32 (rock-level-walk pts 1))
+
+(defn rock-reason-points [(reason : I32)] : I32
+  (if (= reason 1) 1 (if (= reason 2) 10 (if (= reason 3) 50 (if (= reason 4) 2 0)))))
+
+;; Add `count` of `reason`. Returns the new level when the rock levelled, else 0.
+(defn rock-gain [(db : Any) (reason : I32) (count : I32) (now : I32)] : I32
+  (let [add (* (rock-reason-points reason) count)]
+    (if (<= add 0) 0
+      (let [pts (+ (lua/get db "points") add)
+            old (lua/get db "level")
+            lvl (rock-level-of pts)]
+        (do (lua/set! db "points" pts)
+            (reflux-dispatch (collection-action-type 70 0) reason pts lvl)
+            (if (> lvl old)
+              (do (lua/set! db "level" lvl)
+                  (reflux-dispatch (collection-action-type 70 1) lvl pts reason)
+                  lvl)
+              0))))))
+
+;; A pat. -1 = too soon after the last one (under a minute), else what rock-gain returned: the new level if
+;; the pat levelled the rock, 0 if it only gained.
+(defn rock-pat [(db : Any) (now : I32)] : I32
+  (if (< (- now (lua/get db "lastpat")) 60) -1
+    (do (lua/set! db "lastpat" now)
+        (lua/set! db "pats" (+ (lua/get db "pats") 1))
+        (rock-gain db 4 1 now))))
+
+(defn rock-died [(db : Any) (now : I32)] : I32
+  (let [d (+ (lua/get db "deaths") 1)]
+    (do (lua/set! db "deaths" d)
+        (lua/set! db "lastdeath" now)
+        (reflux-dispatch (collection-action-type 70 2) d (lua/get db "level") 0)
+        d)))
+
+;; 1 content, 2 lonely (no pat in a day -- counted from its birth until the first pat), 3 smug (you died in the
+;; last five minutes; the rock did not).
+(defn rock-mood [(db : Any) (now : I32)] : I32
+  (let [since (if (> (lua/get db "lastpat") (lua/get db "born")) (lua/get db "lastpat") (lua/get db "born"))]
+    (if (and (> (lua/get db "lastdeath") 0) (< (- now (lua/get db "lastdeath")) 300)) 3
+      (if (> (- now since) 86400) 2 1))))
+
+;; How many lines the catalogue has for each moment:
+;;   1 levelled  2 patted  3 patted too soon  4 you died  5 idle remark  6 hello on login
+(defn rock-comment-count [(moment : I32)] : I32
+  (if (= moment 1) 5 (if (= moment 2) 5 (if (= moment 3) 3 (if (= moment 4) 5 (if (= moment 5) 8 (if (= moment 6) 4 0)))))))
+
+;; Which line (1-based) for this moment and seed; 0 for an unknown moment.
+(defn rock-comment [(moment : I32) (seed : I32)] : I32
+  (let [n (rock-comment-count moment) s (if (< seed 0) (- 0 seed) seed)]
+    (if (= n 0) 0 (+ (- s (* (/ s n) n)) 1))))
+
+;; 1 when it is time for an idle remark (every 15 minutes of play), and the clock restarts.
+(defn rock-idle-due [(db : Any) (now : I32)] : I32
+  (if (< (- now (lua/get db "lastidle")) 900) 0
+    (do (lua/set! db "lastidle" now) 1)))
+
+;; {level, points, points this level has, points the next level needs}.
+(defn rock-progress [(db : Any)] : Any
+  (let [l (lua/get db "level")]
+    (lua/array l (lua/get db "points") (rock-need l) (rock-need (+ l 1)))))

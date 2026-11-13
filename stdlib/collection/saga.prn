@@ -1,0 +1,83 @@
+;; stdlib/collection/saga.prn -- Saga of Fools, joke achievements (spec addon 73, "Achievement Nonsense": joke
+;; achievements like "Opened 50 mails from yourself"). The name is one of the spec's own. A REFLUX mod.
+;;
+;; Per character (## SavedVariablesPerCharacter: SagaOfFoolsDB):
+;;   db.counters[key] = a number the host bumps (jumps) or sets (the rock's level)
+;;   db.earned[id]    = the time it was earned
+;;
+;; The achievement table is here, so what counts and how much is one definition: id, the counter it reads, and
+;; the threshold. Titles and descriptions are the catalogue's (runtime/wow/locales/saga.lua), keyed by id.
+;;   1 jumps 100      2 jumps 1000       3 jumps 10000
+;;   4 deaths 10      5 deaths 100
+;;   6 selfmail 10    7 selfmail 50      (the spec's own "Opened 50 mails from yourself")
+;;   8 dances 25      9 dances 250       10 sits 50
+;;   11 broke 1       (logged in with under a silver)
+;;   12 rocklevel 10  (Hrungnir, addon 70)   13 critters 25 (Ratatoskr Roll, addon 65)   14 fortunes 30 (Völva, 72)
+;; An achievement is earned once, the moment its counter reaches the threshold, and never taken back.
+;;
+;; Addon 73's REFLUX block is 2720-2729 (ids.prn):
+;;   2720 earned   a = achievement id, b = the counter's value, c = achievements earned so far
+
+(module collection/saga)
+(export saga-init saga-count saga-key saga-threshold saga-bump saga-set saga-earned-count saga-progress)
+
+(defn saga-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+(defn saga-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "counters")) (lua/set! db "counters" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "earned")) (lua/set! db "earned" (lua/obj)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn saga-count [] : I32 14)
+
+(defn saga-key [(id : I32)] : String
+  (if (<= id 3) "jumps"
+    (if (<= id 5) "deaths"
+      (if (<= id 7) "selfmail"
+        (if (<= id 9) "dances"
+          (if (= id 10) "sits"
+            (if (= id 11) "broke"
+              (if (= id 12) "rocklevel"
+                (if (= id 13) "critters" "fortunes")))))))))
+
+(defn saga-threshold [(id : I32)] : I32
+  (if (= id 1) 100 (if (= id 2) 1000 (if (= id 3) 10000 (if (= id 4) 10 (if (= id 5) 100 (if (= id 6) 10
+  (if (= id 7) 50 (if (= id 8) 25 (if (= id 9) 250 (if (= id 10) 50 (if (= id 11) 1 (if (= id 12) 10
+  (if (= id 13) 25 (if (= id 14) 30 0)))))))))))))))
+
+(defn saga-earned-walk [(e : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") e k)]
+    (if (lua/nil? nk) n (saga-earned-walk e nk (+ n 1)))))
+
+(defn saga-earned-count [(db : Any)] : I32 (saga-earned-walk (lua/get db "earned") (lua/nil) 0))
+
+;; Award every achievement on `key` the counter has now reached; appends their ids to out.
+(defn saga-check [(db : Any) (key : String) (v : I32) (now : I32) (id : I32) (out : Any)] : Any
+  (if (> id (saga-count)) out
+    (if (and (= (saga-key id) key)
+             (and (>= v (saga-threshold id)) (lua/nil? (lua/aget (lua/get db "earned") id))))
+      (do (lua/aset! (lua/get db "earned") id now)
+          (lua/aset! out (+ (lua/call-fn (lua/global "table.getn") out) 1) id)
+          (reflux-dispatch (collection-action-type 73 0) id v (saga-earned-count db))
+          (saga-check db key v now (+ id 1) out))
+      (saga-check db key v now (+ id 1) out))))
+
+;; Add n to a counter. Returns the array of achievement ids this just earned (usually empty).
+(defn saga-bump [(db : Any) (key : String) (n : I32) (now : I32)] : Any
+  (let [v (+ (saga-zero (lua/aget (lua/get db "counters") key)) n)]
+    (do (lua/aset! (lua/get db "counters") key v)
+        (saga-check db key v now 1 (lua/array)))))
+
+;; Set a counter outright (a gauge, such as the rock's level). Never lowers it.
+(defn saga-set [(db : Any) (key : String) (value : I32) (now : I32)] : Any
+  (let [old (saga-zero (lua/aget (lua/get db "counters") key))
+        v (if (> value old) value old)]
+    (do (lua/aset! (lua/get db "counters") key v)
+        (saga-check db key v now 1 (lua/array)))))
+
+;; {counter value, threshold, earned time or 0}.
+(defn saga-progress [(db : Any) (id : I32)] : Any
+  (lua/array (saga-zero (lua/aget (lua/get db "counters") (saga-key id)))
+             (saga-threshold id)
+             (saga-zero (lua/aget (lua/get db "earned") id))))
