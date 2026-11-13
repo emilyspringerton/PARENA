@@ -1,0 +1,82 @@
+;; stdlib/collection/games.prn -- the rules every Collection party game shares (spec addons 54-73).
+;;
+;; Compiled INTO each game's module (wow-package-collection.sh builds reflux + ids + games + the game as one
+;; Lua module), so a game calls these directly and every game rounds, picks and ranks the same way.
+;;
+;;   numbers   g-mod (never negative), g-next (a 0..65520 generator: every product fits I32 on every target),
+;;             g-pick seed n -> 1..n, g-hash of a string
+;;   space     positions are map fractions in permille (C_Map's 0..1 x 1000); g-dist is the straight-line
+;;             distance in the same units, g-hot-cold buckets it 1 burning .. 5 freezing
+;;   boards    {[name] = score} tables: g-board-add, g-board-top k -> {{name, score}...}, best first, ties to
+;;             the name that sorts first
+;;   lists     g-shuffle! an array in place from a seed (Fisher-Yates)
+;; Nothing here calls the game client.
+
+(module collection/games)
+(export g-mod g-next g-pick g-hash g-dist g-hot-cold g-board-add g-board-top g-shuffle! g-len g-clamp)
+
+(defn g-mod [(a : I32) (b : I32)] : I32
+  (let [r (- a (* (/ a b) b))] (if (< r 0) (+ r b) r)))
+
+(defn g-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+(defn g-next [(x : I32)] : I32 (g-mod (+ (* (g-mod x 65521) 1103) 12345) 65521))
+
+;; 1..n from a seed (0 when n < 1).
+(defn g-pick [(seed : I32) (n : I32)] : I32 (if (< n 1) 0 (+ (g-mod (g-next seed) n) 1)))
+
+(defn g-hash-walk [(s : String) (i : I32) (n : I32) (h : I32)] : I32
+  (if (> i n) h (g-hash-walk s (+ i 1) n (g-mod (+ (* h 31) (lua/call-fn (lua/global "string.byte") s i)) 65521))))
+
+(defn g-hash [(s : String)] : I32 (g-hash-walk s 1 (lua/call-fn (lua/global "string.len") s) 7))
+
+(defn g-len [(t : Any)] : I32 (lua/call-fn (lua/global "table.getn") t))
+
+;; Distance between two map positions, permille units, rounded down.
+(defn g-dist [(x1 : I32) (y1 : I32) (x2 : I32) (y2 : I32)] : I32
+  (let [dx (- x1 x2) dy (- y1 y2)]
+    (lua/call-fn (lua/global "math.floor") (lua/call-fn (lua/global "math.sqrt") (+ (* dx dx) (* dy dy))))))
+
+;; 1 burning (under 10), 2 hot (under 30), 3 warm (under 80), 4 cold (under 200), 5 freezing.
+(defn g-hot-cold [(d : I32)] : I32
+  (if (< d 10) 1 (if (< d 30) 2 (if (< d 80) 3 (if (< d 200) 4 5)))))
+
+(defn g-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+;; Add n to name's score; returns the new score.
+(defn g-board-add [(board : Any) (name : String) (n : I32)] : I32
+  (do (lua/aset! board name (+ (g-zero (lua/aget board name)) n))
+      (lua/aget board name)))
+
+(defn g-best [(t : Any) (k : Any) (taken : Any) (best : Any) (bestn : I32)] : Any
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) best
+      (let [n (lua/aget t nk)]
+        (if (and (lua/nil? (lua/aget taken nk))
+                 (or (lua/nil? best) (or (> n bestn) (and (= n bestn) (< nk best)))))
+          (g-best t nk taken nk n)
+          (g-best t nk taken best bestn))))))
+
+(defn g-top-walk [(t : Any) (taken : Any) (out : Any) (i : I32) (k : I32)] : Any
+  (if (> i k) out
+    (let [b (g-best t (lua/nil) taken (lua/nil) 0)]
+      (if (lua/nil? b) out
+        (do (lua/aset! taken b 1)
+            (lua/aset! out i (lua/array b (lua/aget t b)))
+            (g-top-walk t taken out (+ i 1) k))))))
+
+;; The board's top k as {{name, score}...}, best first. Negative scores rank too (a race time board stores
+;; times negated so "best" is still "largest").
+(defn g-board-top [(board : Any) (k : I32)] : Any (g-top-walk board (lua/obj) (lua/array) 1 k))
+
+;; Fisher-Yates over a Lua array, driven by the generator from `seed`. Returns the array.
+(defn g-shuffle-walk [(t : Any) (i : I32) (x : I32)] : Any
+  (if (< i 2) t
+    (let [y (g-next x)
+          j (+ (g-mod y i) 1)
+          a (lua/aget t i)]
+      (do (lua/aset! t i (lua/aget t j))
+          (lua/aset! t j a)
+          (g-shuffle-walk t (- i 1) y)))))
+
+(defn g-shuffle! [(t : Any) (seed : I32)] : Any (g-shuffle-walk t (g-len t) seed))
