@@ -1,0 +1,71 @@
+;; stdlib/collection/macrosync.prn -- MacroSync (the spec's own addon, outside the numbered 100): "load stored macros
+;; into the WoW macro list. Sync is command-only via /ascend; /ascend prunes removed managed macros. Fantasy: the
+;; Flame from The 100; chat lines and errors print as haiku." A REFLUX mod.
+;;
+;; The spec's toolchain is LO -> PARENA -> Lua. LO's grammar is still a spec "Confirm", so macro sets are written in
+;; PARENA directly for now (stdlib/collection/macros_<class>.prn); the PARENA -> Lua half is the real one. The macro
+;; zip layout is also a "Confirm", so nothing here reads zips: the sets are compiled into the addon.
+;;
+;; What /ascend decides (the host does only the client calls):
+;;   * MANAGED macros are the ones MacroSync created, remembered per character in db.managed[name] = 1. A macro
+;;     the player made is never edited or deleted, even when it has the same name (that is a COLLISION, reported).
+;;   * Each macro in the set is LOADED (created or brought up to date) when every spell line resolved, or DORMANT
+;;     when the character does not know a spell it needs yet -- then it is not loaded, and an old managed copy is
+;;     pruned, so no macro ever casts nothing.
+;;   * PRUNED: a managed macro no longer in the set, or now dormant, is deleted.
+;;   * Slots: the client's own MAX_CHARACTER_MACROS is the limit (never assumed); creates that would not fit are
+;;     refused and reported, never forced.
+;; db = { managed = {[name] = 1}, ascends, v }
+;;
+;; MacroSync's REFLUX types sit just above the Collection's 2000-2999 block (ids.prn), at 3000-3009:
+;;   3000 ascended   a = macros loaded, b = macros pruned, c = macros dormant
+;;   3001 refused    a = reason (1 in combat, 2 no macro API, 3 slots full), b = macros it could not place, c = 0
+
+(module collection/macrosync)
+(export ms-init ms-first-type ms-managed ms-adopt! ms-forget! ms-prune-list ms-fits ms-ascended! ms-refused!
+        ms-haiku-count ms-haiku)
+
+(defn ms-first-type [] : I32 3000)
+
+(defn ms-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "managed")) (lua/set! db "managed" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "ascends")) (lua/set! db "ascends" 0) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn ms-managed [(db : Any) (name : String)] : I32 (if (lua/nil? (lua/aget (lua/get db "managed") name)) 0 1))
+(defn ms-adopt! [(db : Any) (name : String)] : I32 (do (lua/aset! (lua/get db "managed") name 1) 1))
+(defn ms-forget! [(db : Any) (name : String)] : I32 (do (lua/aset! (lua/get db "managed") name (lua/nil)) 1))
+
+;; Managed names that are not in `keep` ({[name] = 1}): the macros /ascend deletes. An array, sorted.
+(defn ms-prune-walk [(managed : Any) (keep : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") managed k)]
+    (if (lua/nil? nk) out
+      (do (if (lua/nil? (lua/aget keep nk)) (lua/aset! out (+ (lua/call-fn (lua/global "table.getn") out) 1) nk) 0)
+          (ms-prune-walk managed keep nk out)))))
+
+(defn ms-prune-list [(db : Any) (keep : Any)] : Any
+  (let [out (ms-prune-walk (lua/get db "managed") keep (lua/nil) (lua/array))]
+    (do (lua/call-fn (lua/global "table.sort") out) out)))
+
+;; Can `want` more macros be created when `used` of `max` slots are taken? 1/0. max < 0 = the client did not say.
+(defn ms-fits [(used : I32) (max : I32) (want : I32)] : I32
+  (if (< max 0) 0 (if (<= (+ used want) max) 1 0)))
+
+(defn ms-ascended! [(db : Any) (loaded : I32) (pruned : I32) (dormant : I32)] : I32
+  (do (lua/set! db "ascends" (+ (lua/get db "ascends") 1))
+      (reflux-dispatch (ms-first-type) loaded pruned dormant)
+      (lua/get db "ascends")))
+
+(defn ms-refused! [(reason : I32) (count : I32)] : I32
+  (do (reflux-dispatch (+ (ms-first-type) 1) reason count 0) reason))
+
+;; Haiku: every moment MacroSync speaks has a few, in the catalogue as H_<moment>_<n> (three lines split by "/").
+;;   ascend 1 (all loaded)  pruned 2  dormant 3  collision 4  combat 5  noapi 6  full 7  notclass 8  toolong 9
+(defn ms-haiku-count [(moment : I32)] : I32
+  (if (= moment 1) 3 (if (= moment 2) 2 (if (= moment 3) 2 (if (= moment 4) 1 (if (= moment 5) 2
+    (if (= moment 6) 1 (if (= moment 7) 1 (if (= moment 8) 1 (if (= moment 9) 1 0))))))))))
+
+(defn ms-haiku [(moment : I32) (seed : I32)] : I32
+  (let [n (ms-haiku-count moment) s (if (< seed 0) (- 0 seed) seed)]
+    (if (= n 0) 0 (+ (- s (* (/ s n) n)) 1))))

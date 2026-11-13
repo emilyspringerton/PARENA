@@ -1,0 +1,56 @@
+;; stdlib/collection/macros.prn -- the macro sets MacroSync loads, by class (the client's class file name, so it is
+;; the same in every locale). Written in PARENA until LO is confirmed (see macrosync.prn).
+;;
+;; A macro is {name, body}. Names are at most 16 characters (the macro frame's limit) and every managed name starts
+;; with the class tag, so the set reads as one family in the macro list. Bodies use one MacroSync extension:
+;;   {A|B|C}  the first of these spells this character knows, asked of the client at /ascend
+;; because Forever's spell names are not confirmed (a classic client says "Judgement", a retail one "Judgment").
+;; A line whose alternatives are all unknown makes the macro DORMANT until the spell is learned.
+;; The modifiers used ([@mouseover], [help], [harm], [nodead], [mod:shift]) are retail-lineage conditionals.
+;;
+;; PALADIN -- a levelling and duo set (the Warlock and Paladin duo of the founder's guides; the guides themselves
+;; are not on this machine, so the set follows the class's core kit rather than a guide's list):
+;;   PalJudge     open with a judgement and start swinging
+;;   PalSeal      seal up; shift for the crusader seal
+;;   PalHeal      quick heal: mouseover, else your friendly target, else yourself
+;;   PalBigHeal   the big heal, same targeting
+;;   PalBubble    the bubble
+;;   PalBubHearth bubble, then hearth -- the classic exit
+;;   PalStun      stun your mouseover enemy, else your target
+;;   PalLoH       lay on hands, friendly targeting
+;;   PalBless     the first blessing you know, friendly targeting
+;;   PalBoP       protection blessing, friendly targeting
+;;   PalFreedom   freedom, yourself unless you mouse over a friend
+;;   PalCleanse   cleanse, friendly targeting
+;;   PalAura      devotion aura; shift for retribution
+;;   PalTaunt     the paladin taunt
+;;   PalExo       exorcism
+;;   PalMount     your class mount
+
+(module collection/macros)
+(export macro-set macro-classes)
+
+(defn macro-classes [] : Any (lua/array "PALADIN"))
+
+(defn macro-paladin [] : Any
+  (lua/array
+    (lua/array "PalJudge" "#showtooltip\n/startattack\n/cast {Judgement|Judgment}")
+    (lua/array "PalSeal" "#showtooltip\n/cast [mod:shift] {Seal of the Crusader|Seal of Command}; {Seal of Righteousness|Seal of Command}")
+    (lua/array "PalHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Flash of Light|Holy Light}")
+    (lua/array "PalBigHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Holy Light}")
+    (lua/array "PalBubble" "#showtooltip\n/cast {Divine Shield|Divine Protection}")
+    (lua/array "PalBubHearth" "#showtooltip {Divine Shield|Divine Protection}\n/cast {Divine Shield|Divine Protection}\n/use Hearthstone")
+    (lua/array "PalStun" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hammer of Justice}")
+    (lua/array "PalLoH" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Lay on Hands}")
+    (lua/array "PalBless" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Blessing of Might|Blessing of Kings|Blessing of Wisdom}")
+    (lua/array "PalBoP" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Blessing of Protection|Hand of Protection}")
+    (lua/array "PalFreedom" "#showtooltip\n/cast [@mouseover,help,nodead][@player] {Blessing of Freedom|Hand of Freedom}")
+    (lua/array "PalCleanse" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Cleanse|Purify}")
+    (lua/array "PalAura" "#showtooltip\n/cast [mod:shift] {Retribution Aura}; {Devotion Aura}")
+    (lua/array "PalTaunt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hand of Reckoning|Righteous Defense}")
+    (lua/array "PalExo" "#showtooltip\n/startattack\n/cast {Exorcism}")
+    (lua/array "PalMount" "#showtooltip\n/cast {Summon Charger|Summon Warhorse}")))
+
+;; The set for a class file name; an empty array for a class without one yet.
+(defn macro-set [(class : String)] : Any
+  (if (= class "PALADIN") (macro-paladin) (lua/array)))
