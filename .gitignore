@@ -50,3 +50,6 @@ build/
 
 # test-reflux-wow scratch output
 tests/reflux_wow/out/
+
+# Windows (MSYS2) builds of the test binaries
+tests/*.exe
