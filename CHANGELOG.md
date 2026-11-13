@@ -1,5 +1,20 @@
 ## 2026-11-13
 
+- **A PARENA-native crypto stack starts: unsigned word arithmetic, then SHA-256 / HMAC / HKDF.** Founder:
+  "cant we build the deps in parena?" ... "please i beg you". Goal: a TLS 1.3 client for PELLEGRINO in pure
+  PARENA, so HTTP/2 needs no mbedTLS. **Named conflict:** PELLEGRINO/CLAUDE.md says "Do not hand-roll
+  crypto: TLS is mbedTLS". The founder overrode it in real time. The safeguard: every layer passes the
+  published vectors before anything uses it, and PELLEGRINO stays on mbedTLS until the whole stack does.
+  - **Compiler:** `src/emit.c` gains `u32-add`, `u32-sub`, `u32-mul`, `u32-mulhi`, `u32-shl`, `ushr`,
+    `u32-rotr`, `u32-rotl` and `u32-lt`, emitted as `uint32_t` arithmetic. PARENA's only integer is I32, and
+    `+`/`*`/`shl` emit C's signed operators, whose overflow is undefined -- which a hash hits every round.
+    Shift counts are masked to 0..31, so no input is undefined. `make test-u32-ops` (17 checks, under UBSan).
+  - **`stdlib/crypto/sha2.prn`:** SHA-256, HMAC-SHA256, HKDF-Extract/Expand and TLS 1.3's
+    HKDF-Expand-Label, no FFI. `make test-sha2`, 19 checks: FIPS 180-4 / NIST ("", "abc", the 448- and
+    896-bit messages, one million 'a'), RFC 4231 cases 1-3, 6 and 7, RFC 5869 A.1 and A.3, and RFC 8448's
+    early secret and its "derived" secret.
+  - Only the native C emitter has the new forms so far; the LLVM and TypeScript emitters already had `ushr`.
+
 - **HTTP/2 wire layer for PELLEGRINO**: `stdlib/net/h2_wire.prn` (RFC 9113 frames + RFC 7541 HPACK), pure PARENA
   over Bytes. `make test-h2-wire`, 57 checks.
   - Frames: the 9-byte header, the connection preface, SETTINGS (ENABLE_PUSH 0, a chosen initial window) and
