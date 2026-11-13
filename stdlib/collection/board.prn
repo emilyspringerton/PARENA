@@ -1,0 +1,58 @@
+;; stdlib/collection/board.prn -- the Total Character Board (spec addon 1: "one screen for every character: level, rested
+;; XP, gold, location, professions, last login"), and the progression record behind the CSV export. Founder,
+;; 2026-11-13: "we need affordances that save the whole array of character data and bag data into a csv so we can
+;; track our character progression". A REFLUX mod.
+;;
+;; An addon cannot write files -- only SavedVariables, flushed on /reload and logout -- so this keeps the record and
+;; the outside exporter (runtime/wow/csv_export.lua, scripts/collection-csv.sh) writes the CSV from it.
+;; Account-wide (## SavedVariables: CharacterBoardDB):
+;;   db.chars[character] = the latest snapshot
+;;   db.rows = every snapshot ever taken, oldest first: the progression series. A snapshot is
+;;     { t, character, class, race, level, xp, xpmax, rested, gold, zone, map, played, ilvl, profs }
+;;   (profs = "Mining 75/150; Herbalism 12/75", ilvl and played 0 when the client did not say)
+;; A snapshot is taken at login, on every level, at logout, and on /board snap. Two snapshots of a character
+;; within board-min-gap seconds with nothing but time changed are one row, so a /reload loop cannot flood it.
+;;
+;; Addon 1's REFLUX block is 2000-2009 (ids.prn):
+;;   2000 snapshot   a = level, b = gold in whole gold, c = xp permille of the level
+;;   2001 level up   a = new level, b = seconds played at this level (0 when unknown), c = 0
+
+(module collection/board)
+(export board-init board-min-gap board-snap! board-rows board-latest board-xp-permille)
+
+(defn board-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "chars")) (lua/set! db "chars" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "rows")) (lua/set! db "rows" (lua/array)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+(defn board-min-gap [] : I32 60)
+
+(defn board-xp-permille [(xp : I32) (xpmax : I32)] : I32 (if (<= xpmax 0) 0 (/ (* xp 1000) xpmax)))
+
+(defn board-same [(a : Any) (b : Any)] : I32
+  (if (or (lua/nil? a) (lua/nil? b)) 0
+    (if (and (= (lua/get a "level") (lua/get b "level"))
+             (and (= (lua/get a "xp") (lua/get b "xp"))
+                  (and (= (lua/get a "gold") (lua/get b "gold"))
+                       (and (= (lua/get a "zone") (lua/get b "zone")) (= (lua/get a "profs") (lua/get b "profs"))))))
+      1 0)))
+
+;; Record snapshot s (a table with the fields above). Returns 1 when it became a new row, 0 when it only refreshed
+;; the latest (same state inside the gap).
+(defn board-snap! [(db : Any) (s : Any)] : I32
+  (let [who (lua/get s "character")
+        old (lua/aget (lua/get db "chars") who)
+        t (lua/get s "t")]
+    (do (lua/aset! (lua/get db "chars") who s)
+        (if (and (= (board-same old s) 1) (< (- t (lua/get old "t")) (board-min-gap))) 0
+          (do (lua/aset! (lua/get db "rows") (+ (g-len (lua/get db "rows")) 1) s)
+              (reflux-dispatch (collection-action-type 1 0) (lua/get s "level") (/ (lua/get s "gold") 10000)
+                               (board-xp-permille (lua/get s "xp") (lua/get s "xpmax")))
+              (if (and (not (lua/nil? old)) (> (lua/get s "level") (lua/get old "level")))
+                (reflux-dispatch (collection-action-type 1 1) (lua/get s "level")
+                                 (if (> (lua/get s "played") 0) (- (lua/get s "played") (lua/get old "played")) 0) 0) 0)
+              1)))))
+
+(defn board-rows [(db : Any)] : Any (lua/get db "rows"))
+(defn board-latest [(db : Any) (who : String)] : Any (lua/aget (lua/get db "chars") who))
