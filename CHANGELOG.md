@@ -1,5 +1,38 @@
 ## 2026-11-13
 
+- **MacroSync** (the spec's own addon; `/ascend`, `/ascend preview`), with the **paladin macro set**
+  baked in.
+  - The sync rules are `stdlib/collection/macrosync.prn`, and the class sets are
+    `stdlib/collection/macros.prn` -- written in PARENA, since LO is still a spec "Confirm".
+  - `/ascend` loads this character's class set as character macros, updates changed ones, and prunes any
+    managed macro that left the set or went dormant.
+  - It never touches a macro the player made, even one with the same name; that's reported as a collision.
+  - It never assumes the slot limit (it reads `MAX_CHARACTER_MACROS`) and refuses to work in combat.
+  - It catches a body the client shortened by reading it back, and every line it prints is a haiku.
+  - **Spell-name choices:** bodies may hold `{A|B}`, and `/ascend` asks the client which spell the character
+    knows. Forever's spell names aren't confirmed (classic "Judgement", retail "Judgment"). A macro needing
+    an unlearned spell stays DORMANT until it is learned, so no macro ever casts nothing.
+  - **Paladin set (16 macros):** judge, seal, quick heal, big heal, bubble, bubble-hearth, stun, Lay on Hands,
+    blessing, BoP, freedom, cleanse, aura, taunt, Exorcism, mount. The founder's paladin guide isn't on this
+    machine, so the set follows the class's core kit.
+  - REFLUX 3000-3001, just above the Collection's 2000-2999.
+  - `tests/reflux_wow/macrosync_test.lua`: 46 checks, including every haiku 5-7-5 by Bragi's Verse's
+    syllable counter.
+- **The sixteen party-game addons** (spec 54-64, 66-69, 71): Huldufólk Hunt, Mjölnir Pass, Rune Riddle,
+  Óðinn Says, Andvari's Map, Mímir's Riddle, Sleipnir Sprint, Freya's Runway, Ægir's Catch, Bragi's Verse,
+  Álfar Revel, Norns' Draw, Holmgang, Loki's Lies, Hall Tapestry and Naglfar Crew.
+  - Each game's rules are a PARENA module built with the new shared `stdlib/collection/games.prn` (seeded
+    picks, distances, hot/cold, boards, shuffle), with REFLUX in its spec block.
+  - The host plumbing is the shared `runtime/wow/fun_kit.lua`: group, map positions, timers, group chat,
+    and emote recognition from per-locale patterns.
+  - Games announce in group chat, so friends without the addon can play.
+  - **Status:** built, compiled to Lua 5.1 and packaged, but **not yet played in a stubbed client** -- that
+    test is next.
+  - **Stand-ins:** Rune Riddle and Andvari's Map stand in for the Landmark Library (45), our maps (43) and the
+    Pixel Mail Studio (48) until those exist.
+- **Fix (Lua backend):** `!` and `?` in names are now mangled to `_`, as the C backend does. `g-shuffle!`
+  used to emit `M.gShuffle!`, which no Lua can load.
+
 - **Four fun Collection addons** (spec 65, 70, 72, 73), each a REFLUX mod: the rules are PARENA in
   `stdlib/collection/`, with thin Lua glue in `runtime/wow/` and a locale catalogue in `runtime/wow/locales/`.
   Names come from the spec's own lists.
