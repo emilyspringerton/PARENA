@@ -1,5 +1,27 @@
 ## 2026-11-13
 
+- **EcoWar**: team mini-games of cozy farming, Wotan esports style (`/ecowar`). All rules are in
+  `stdlib/collection/ecowar.prn`, built with `games.prn`.
+  - **Modes:** Horde vs Horde, Alliance vs Alliance, Alliance vs Horde, and three teams with two from one side
+    (either way round). The team list is checked against the mode.
+  - **Games:**
+    - Cull: 10 per critter, +1 per streak kill within 10 s (capped at +5), and +15 for the first of a kind per
+      team. Each critter scores once, whoever reports it.
+    - Harvest: loot value, one point per 10 silver, with the remainder carried over.
+    - EcoWar: both.
+  - **Prices:** the vendor price today. An auction-house addon can register `EcoWarPriceSource` -- that's the
+    hook for the AH Scan tools when they exist.
+  - **Teams:** teams of the captain's faction share one raid, one subgroup each, scored live. Players with
+    EcoWar report their own kills and loot as addon messages; the captain also counts the kills it sees.
+  - **Other faction:** a team from the other faction runs its own captain. Its score comes over a temporary
+    channel -- whether that crosses factions on Forever is not confirmed -- or as a signed match code typed in.
+    A remote score can only go up, and nobody can set a local team's score from outside.
+  - **Esports:** a league (P/W/D/L, 3 points for a win, best score), Elo ratings (start 1500, K 32), and the
+    last 20 matches. Every match start, kill, eco point, remote score, match end and rating change is a REFLUX
+    row (3010-3015) a Wotan hub can read.
+  - `tests/reflux_wow/ecowar_test.lua`, 58 checks: a captain and players in stubbed clients passing addon
+    messages, every mode, both carriers, tampered and misplaced codes, the league and the ratings.
+
 - **MacroSync** (the spec's own addon; `/ascend`, `/ascend preview`), with the **paladin macro set**
   baked in.
   - The sync rules are `stdlib/collection/macrosync.prn`, and the class sets are

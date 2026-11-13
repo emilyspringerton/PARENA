@@ -216,6 +216,8 @@ game LOKI LokisLies LokisLiesDB loki lokis_lies.lua "Loki's Lies" \
   "Silly made-up news from your own adventures. /rumour" SavedVariablesPerCharacter
 game TAPESTRY HallTapestry HallTapestryDB tapestry hall_tapestry.lua "Hall Tapestry" \
   "Group photo poses with a countdown and callouts. /tapestry" SavedVariables
+game ECOWAR EcoWar EcoWarDB ecowar ecowar.lua "EcoWar" \
+  "Team cozy-farming wars: critters and loot, four team modes, a league and ratings. /ecowar" SavedVariables
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
