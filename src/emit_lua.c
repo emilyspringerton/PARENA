@@ -271,13 +271,15 @@ static const char *emit_lua_stmt(Arena *arena, Node *expr, const char **out_erro
  *   (lua/aget arr i)                        arr[i] -- RAW index: Lua arrays start at 1, nothing is shifted
  *   (lua/obj "k" v ...)                     { k = v, ["not a name"] = v }
  *   (lua/array a b ...)                     { a, b }
+ *   (lua/nil)                               nil -- e.g. (lua/aset! rows seq (lua/nil)) removes a row
  *   (lua/nil? x)                            (x == nil)
  *   (lua/defined? "Name")                   (Name ~= nil) -- feature-test a WoW global before calling it
+ *   (lua/set! obj "key" v) / (lua/aset! arr i v)   assignment (a statement inside `do`, an IIFE elsewhere)
+ *   (do e1 ... en)                          run in order, yield en
  *   (str a b ...)                           (tostring(a) .. tostring(b) ...), the same `str` emit_ts.c has
  *
- * Every result is an expression, so these compose with if/let/calls like any other form. Mutation (`set!`) is
- * still refused: this target has no statement sequencing yet. Returns NULL with *handled == 0 when head is not
- * one of these. */
+ * Every result is an expression, so these compose with if/let/calls like any other form. Returns NULL with
+ * *handled == 0 when head is not one of these. */
 static const char *emit_lua_interop(Arena *arena, Node *expr, const char *head, const char **out_error, int *handled) {
     *handled = 1;
     LuaBuf b;
@@ -382,6 +384,13 @@ static const char *emit_lua_interop(Arena *arena, Node *expr, const char *head, 
         lb_appendf(&b, "{%s}", args);
         return lb_take(arena, &b);
     }
+    if (strcmp(head, "lua/nil") == 0) {
+        if (expr->child_count != 1) {
+            *out_error = "emit_lua: lua/nil takes no operands";
+            return NULL;
+        }
+        return "nil";
+    }
     if (strcmp(head, "lua/nil?") == 0) {
         if (expr->child_count != 2) {
             *out_error = "emit_lua: lua/nil? takes one operand";
@@ -426,7 +435,7 @@ static const char *emit_lua_interop(Arena *arena, Node *expr, const char *head, 
         /* Without this, an unknown or misspelled bridge form fell through to the defn-call branch and emitted
          * `M.lua/whatever(...)` -- a syntax error only the client would find. */
         *out_error = "emit_lua: unknown lua/ form (have: lua/global lua/defined? lua/call lua/call-fn lua/get "
-                     "lua/aget lua/obj lua/array lua/nil? lua/set! lua/aset!)";
+                     "lua/aget lua/obj lua/array lua/nil lua/nil? lua/set! lua/aset!)";
         return NULL;
     }
     *handled = 0;

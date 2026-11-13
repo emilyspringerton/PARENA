@@ -289,6 +289,20 @@ int main(void) {
               "do lowers to a sequencing IIFE that returns its last expression");
         arena_free_all(&arena);
     }
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        /* (lua/nil) is Lua's nil -- what clearing a table slot takes. */
+        const char *lua = build_lua(&arena, "(defn f [(t : Any)] : Any (do (lua/aset! t 1 (lua/nil)) t))", &err);
+        CHECK(lua && strstr(lua, "(t)[1] = nil;") != NULL, "lua/nil emits nil, and aset! with it clears a slot");
+        arena_free_all(&arena);
+        err = NULL;
+        arena_init(&arena);
+        lua = build_lua(&arena, "(defn f [] : Any (lua/nil 1))", &err);
+        CHECK(lua == NULL && err != NULL, "lua/nil with an operand is refused");
+        arena_free_all(&arena);
+    }
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
