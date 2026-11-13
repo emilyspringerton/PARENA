@@ -1439,6 +1439,9 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	./.parena-bootstrap build stdlib/reflux/reflux.prn stdlib/reflux/cursor.prn stdlib/collection/journal.prn \
 		-o $(REFLUX_WOW_OUT)/journal.lua
 	$(LUA51) tests/reflux_wow/journal_test.lua runtime/wow/reflux_host.lua $(REFLUX_WOW_OUT)/journal.lua
+	@# COV-REFLUX-IDS: the Collection's reserved action-type range, 2000-2999, ten per addon.
+	./.parena-bootstrap build stdlib/collection/ids.prn -o $(REFLUX_WOW_OUT)/ids.lua
+	$(LUA51) tests/reflux_wow/ids_test.lua $(REFLUX_WOW_OUT)/ids.lua
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi

@@ -1,0 +1,46 @@
+;; stdlib/collection/ids.prn -- the Collection of Value's reserved REFLUX action-type range (COV-REFLUX-IDS).
+;;
+;; Every Collection addon dispatches into REFLUX, so every addon needs action types that collide with no other
+;; REFLUX host's. SHANKPIT already reserves 1-5, 101-128, 1000-1099 (level lifecycle) and 1100-1199
+;; (BRAWLPIT) in packages/reflux/reflux_runtime.h. The Collection takes the next free thousand:
+;;
+;;   2000-2999  the Collection of Value. One block of 10 per addon number 1..100, in the spec's numbering:
+;;              addon n owns 2000 + (n-1)*10 .. 2000 + (n-1)*10 + 9.
+;;              Addon 26 (Position) -> 2250-2259; addon 74 (AH Scan) -> 2730-2739; addon 100 -> 2990-2999.
+;;
+;; The block is the trust boundary in the same shape SHANKPIT's families use (one range check, not a member
+;; list): a relay or the journal reader can tell which addon wrote a row from its type alone. What each of an
+;; addon's ten types MEANS is defined by that addon when it is built (Step 9 on), not here.
+;;
+;; Pure integer arithmetic, no host calls: compiles to every PARENA target, so a C relay and the WoW addons
+;; share one definition. Out of range is answered with -1 (a type) or 0 (an addon number), never guessed.
+
+(module collection/ids)
+(export collection-action-first collection-action-last collection-types-per-addon collection-addon-count
+        collection-is-action collection-addon-first collection-action-type collection-addon-of)
+
+(defn collection-action-first [] : I32 2000)
+(defn collection-action-last [] : I32 2999)
+(defn collection-types-per-addon [] : I32 10)
+(defn collection-addon-count [] : I32 100)
+
+;; 1 when the type is inside the Collection's range, else 0.
+(defn collection-is-action [(action-type : I32)] : I32
+  (if (< action-type (collection-action-first)) 0 (if (> action-type (collection-action-last)) 0 1)))
+
+;; The first type addon n owns, or -1 when n is not an addon number (1..100).
+(defn collection-addon-first [(addon : I32)] : I32
+  (if (< addon 1) -1
+      (if (> addon (collection-addon-count)) -1
+          (+ (collection-action-first) (* (- addon 1) (collection-types-per-addon))))))
+
+;; Addon n's k-th type (k = 0..9), or -1 when either is out of range.
+(defn collection-action-type [(addon : I32) (k : I32)] : I32
+  (if (< k 0) -1
+      (if (>= k (collection-types-per-addon)) -1
+          (if (< (collection-addon-first addon) 0) -1 (+ (collection-addon-first addon) k)))))
+
+;; The addon number that owns a type, or 0 when the type is not the Collection's.
+(defn collection-addon-of [(action-type : I32)] : I32
+  (if (= (collection-is-action action-type) 0) 0
+      (+ (/ (- action-type (collection-action-first)) (collection-types-per-addon)) 1)))
