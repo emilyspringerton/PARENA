@@ -6,6 +6,10 @@
 #   AddOns/CollectionJournal  REFLUX -> per-character SavedVariables journal (Step 6)
 #   AddOns/FafnirsBed         Fafnir's Bed, the inventory manager: bags, bank, mail, gold across every
 #                             character, net inventory, "who has this?" (spec addon 2)  -- /fafnir, /hoard
+#   AddOns/Hrungnir           Hrungnir, the pet rock in a tiny frame that levels as you play (spec addon 70)  -- /rock
+#   AddOns/RatatoskrRoll      Ratatoskr Roll, the critter census and Critter of the Week (spec addon 65)  -- /census
+#   AddOns/Volva              Völva, a fortune at every login, sometimes from your own stats (spec addon 72)  -- /fortune
+#   AddOns/SagaOfFools        Saga of Fools, joke achievements (spec addon 73)  -- /saga
 #   reader/                   read-journal.sh: journal files -> eventstore NDJSON, after logout
 #
 # Every .lua module is `parena build` output; the only hand-written Lua is host glue in runtime/wow/.
@@ -18,6 +22,10 @@
 #   COLLECTION_JOURNAL_KEEP          journal size cap in rows              (20000)
 #   COLLECTION_JOURNAL_POLL_SECONDS  REFLUX poll interval while playing    (5)
 #   FAFNIR_ADDON / FAFNIR_VAR        inventory addon folder / its global   (FafnirsBed / FafnirsBedDB)
+#   HRUNGNIR_ADDON / HRUNGNIR_VAR    pet rock folder / its global           (Hrungnir / HrungnirDB)
+#   RATATOSKR_ADDON / RATATOSKR_VAR  critter census folder / its global     (RatatoskrRoll / RatatoskrRollDB)
+#   VOLVA_ADDON / VOLVA_VAR          fortune folder / its global            (Volva / VolvaDB)
+#   SAGA_ADDON / SAGA_VAR            joke achievements folder / its global  (SagaOfFools / SagaOfFoolsDB)
 #   PARENA_BIN                       compiler driver                       (./.parena-bootstrap)
 #   WOW_ADDONS_DIR                   install target for --install
 #
@@ -34,6 +42,14 @@ J_KEEP="${COLLECTION_JOURNAL_KEEP:-20000}"
 J_POLL="${COLLECTION_JOURNAL_POLL_SECONDS:-5}"
 F_ADDON="${FAFNIR_ADDON:-FafnirsBed}"
 F_VAR="${FAFNIR_VAR:-FafnirsBedDB}"
+H_ADDON="${HRUNGNIR_ADDON:-Hrungnir}"
+H_VAR="${HRUNGNIR_VAR:-HrungnirDB}"
+R_ADDON="${RATATOSKR_ADDON:-RatatoskrRoll}"
+R_VAR="${RATATOSKR_VAR:-RatatoskrRollDB}"
+V_ADDON="${VOLVA_ADDON:-Volva}"
+V_VAR="${VOLVA_VAR:-VolvaDB}"
+S_ADDON="${SAGA_ADDON:-SagaOfFools}"
+S_VAR="${SAGA_VAR:-SagaOfFoolsDB}"
 
 die() { echo "wow-package-collection: $*" >&2; exit 2; }
 if [ -z "${WOW_INTERFACE:-}" ]; then
@@ -43,7 +59,7 @@ if [ -z "${WOW_INTERFACE:-}" ]; then
 fi
 case "$WOW_INTERFACE" in *[!0-9]*) die "WOW_INTERFACE must be digits, got '$WOW_INTERFACE'" ;; esac
 for v in "$J_KEEP" "$J_POLL"; do case "$v" in ''|*[!0-9]*|0) die "journal KEEP/POLL must be positive integers" ;; esac; done
-for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR"; do
+for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR" "$H_ADDON" "$H_VAR" "$R_ADDON" "$R_VAR" "$V_ADDON" "$V_VAR" "$S_ADDON" "$S_VAR"; do
   case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
   case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
 done
@@ -73,8 +89,22 @@ wrap() {
 
 # glue SRC OUT -- host glue with its @...@ values filled from the environment.
 glue() {
-  sed -e "s/@ADDON@/$3/g" -e "s/@VAR@/$4/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" "$1" > "$2"
-  if grep -q '@[A-Z]*@' "$2"; then die "unfilled placeholder left in $2"; fi
+  sed -e "s/@ADDON@/${3:-}/g" -e "s/@VAR@/${4:-}/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" \
+      -e "s/@FAFNIR_VAR@/$F_VAR/g" -e "s/@HRUNGNIR_VAR@/$H_VAR/g" -e "s/@RATATOSKR_VAR@/$R_VAR/g" \
+      -e "s/@VOLVA_VAR@/$V_VAR/g" "$1" > "$2"
+  if grep -q '@[A-Z_]*@' "$2"; then die "unfilled placeholder left in $2"; fi
+}
+
+# fun ADDON VAR MODULE PRN GLUE LOCALE TITLE NOTES -- one of the fun addons: its PARENA module, its catalogue,
+# its host glue, and a per-character or account .toc (SVKIND in $FUN_SV).
+fun() {
+  local addon="$1" var="$2" module="$3" prn="$4" gluesrc="$5" locale="$6" title="$7" notes="$8" kind="$9"
+  local d="$OUT/AddOns/$addon"
+  mkdir -p "$d"
+  wrap "collection/$module" "$d/${module}_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn "stdlib/collection/$prn"
+  cp "runtime/wow/locales/$locale" "$d/locale.lua"
+  glue "runtime/wow/$gluesrc" "$d/$gluesrc" "$addon" "$var"
+  toc "$d/$addon.toc" "$title" "$notes" "$kind" "$var" "${module}_rules.lua" locale.lua "$gluesrc"
 }
 
 toc() {  # toc FILE TITLE NOTES SVKIND SVVAR FILES...
@@ -107,6 +137,15 @@ glue runtime/wow/fafnirs_bed.lua "$f/fafnirs_bed.lua" "$F_ADDON" "$F_VAR"
 toc "$f/$F_ADDON.toc" "Fafnir's Bed" "Every bag, bank and mailbox on the account in one hoard: net inventory and who has what. /fafnir" \
   SavedVariables "$F_VAR" inventory.lua fafnirs_bed.lua
 
+fun "$H_ADDON" "$H_VAR" hrungnir hrungnir.prn hrungnir.lua hrungnir.lua "Hrungnir" \
+  "A pet rock in a tiny frame. It levels up as you play and has opinions. /rock" SavedVariablesPerCharacter
+fun "$R_ADDON" "$R_VAR" ratatoskr ratatoskr.prn ratatoskr_roll.lua ratatoskr.lua "Ratatoskr Roll" \
+  "The critter census: every critter you /love, /pet or /wave at, and a Critter of the Week. /census" SavedVariables
+fun "$V_ADDON" "$V_VAR" volva volva.prn volva.lua volva.lua "Völva" \
+  "A fortune every time you log in, sometimes read from your own stats. /fortune" SavedVariablesPerCharacter
+fun "$S_ADDON" "$S_VAR" saga saga.prn saga_of_fools.lua saga.lua "Saga of Fools" \
+  "Joke achievements nobody asked for. /saga" SavedVariablesPerCharacter
+
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
 
@@ -126,6 +165,10 @@ IN GAME
   /fafnir            net inventory: characters, distinct items, item count, gold across the account
   /fafnir <name|id>  who has it, and the net count (shift-click an item link in works too)
   /cov               the journal's state (rows held, trimmed, lost)
+  /rock              Hrungnir, your pet rock (/rock pat, /rock hide, /rock show; right-click the rock to pat it)
+  /census            Ratatoskr Roll: this week's most loved critters (target one, then /love, /pet or /wave)
+  /fortune          Völva: today's fortune again (a new one opens at every login)
+  /saga              Saga of Fools: joke achievements, earned and still to come
   Each character is learned the first time you log it in; the bank is learned each time you open it,
   mail each time you open the mailbox.
 
@@ -136,7 +179,7 @@ AFTER PLAYING (log out first: the client writes SavedVariables on logout and /re
 EOF
 echo "$VERSION" > "$OUT/VERSION"
 
-echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, reader"
+echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, $H_ADDON, $R_ADDON, $V_ADDON, $S_ADDON, reader"
 
 for a in "$@"; do
   case "$a" in
