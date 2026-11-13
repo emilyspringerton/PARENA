@@ -1462,7 +1462,7 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@if env -u WOW_INTERFACE bash scripts/wow-package-collection.sh >/dev/null 2>&1; then \
 		echo "FAIL: client packaged without WOW_INTERFACE"; exit 1; fi
 	rm -rf $(REFLUX_WOW_OUT)/clientwork && mkdir -p $(REFLUX_WOW_OUT)/clientwork
-	WOW_INTERFACE=99999 COLLECTION_CLIENT_OUT=$(REFLUX_WOW_OUT)/client bash scripts/wow-package-collection.sh
+	WOW_INTERFACE=99999 COLLECTION_WITH_TABLED=1 COLLECTION_CLIENT_OUT=$(REFLUX_WOW_OUT)/client bash scripts/wow-package-collection.sh
 	$(LUA51) tests/reflux_wow/client_test.lua $(REFLUX_WOW_OUT)/client $(REFLUX_WOW_OUT)/clientwork
 	@# ...and its reader/ runs on its own, with no compiler beside it.
 	WOW_WTF_DIR=$(REFLUX_WOW_OUT)/reader/wtf COLLECTION_EVENTS=$(REFLUX_WOW_OUT)/clientwork/pkg.ndjson PARENA_BIN=/nonexistent \
@@ -1473,8 +1473,10 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	$(LUA51) tests/reflux_wow/fun_test.lua $(REFLUX_WOW_OUT)/client
 	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.
 	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
-	@# EcoWar: captain and players in stubbed clients, all four modes, both carriers, the league and the ratings.
+	@# EcoWar (tabled, test only): captain and players in stubbed clients, all four modes, both carriers, the league and the ratings.
 	$(LUA51) tests/reflux_wow/ecowar_test.lua $(REFLUX_WOW_OUT)/client
+	@# The sixteen party games, each played end to end with a four-player party.
+	$(LUA51) tests/reflux_wow/games_test.lua $(REFLUX_WOW_OUT)/client
 	@# Step 7, the event store (stdlib/collection/eventstore.prn): its rules through the real wrapper, then the
 	@# on-disk check against PRRJECT_FATBABY's real Go FileStore (skipped without PRRJECT_FATBABY_DIR and Go).
 	bash tests/collection_store/store_test.sh $(REFLUX_WOW_OUT)/store
