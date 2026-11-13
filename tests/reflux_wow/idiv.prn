@@ -1,0 +1,6 @@
+;; tests/reflux_wow/idiv.prn -- PARENA `/` on the Lua 5.1 (WoW) target must truncate like C.
+(module tests/reflux-wow-idiv)
+(export q)
+
+(defn q [(a : I32) (b : I32)] : I32
+  (/ a b))

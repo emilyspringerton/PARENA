@@ -471,9 +471,10 @@ const char *emit_lua(Arena *arena, Node *program, const char **out_error) {
                     "local M = {}\n\n"
                     "-- `a / b` in PARENA is C's integer division (truncation toward zero), not Lua's `//`\n"
                     "-- (floor). They disagree on every negative dividend, so the emitter routes `/` here\n"
-                    "-- instead of pretending the two are the same operator.\n"
+                    "-- instead of pretending the two are the same operator. math.floor rather than `//` so\n"
+                    "-- the same output also loads in Lua 5.1 (World of Warcraft), which has no `//`.\n"
                     "local function __idiv(a, b)\n"
-                    "    local q = a // b\n"
+                    "    local q = math.floor(a / b)\n"
                     "    if q < 0 and q * b ~= a then q = q + 1 end\n"
                     "    return q\n"
                     "end\n\n");

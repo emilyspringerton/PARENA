@@ -32,14 +32,17 @@
 (defn reflux-total-dispatched [] : I32
   #target
   {:c (inline-c "reflux_host_total_dispatched()")
-   :llvm (inline-llvm "call i32 @reflux_host_total_dispatched()")})
+   :llvm (inline-llvm "call i32 @reflux_host_total_dispatched()")
+   :lua (inline-lua "return RefluxHost.total_dispatched()")})
 
 (defn reflux-index-for-abs [(abs-index : I32)] : I32
   #target
   {:c (inline-c "reflux_host_index_for_abs(abs_index)")
-   :llvm (inline-llvm "call i32 @reflux_host_index_for_abs(i32 %abs_index)")})
+   :llvm (inline-llvm "call i32 @reflux_host_index_for_abs(i32 %abs_index)")
+   :lua (inline-lua "return RefluxHost.index_for_abs(absIndex)")})
 
 (defn reflux-oldest-abs [] : I32
   #target
   {:c (inline-c "reflux_host_oldest_abs()")
-   :llvm (inline-llvm "call i32 @reflux_host_oldest_abs()")})
+   :llvm (inline-llvm "call i32 @reflux_host_oldest_abs()")
+   :lua (inline-lua "return RefluxHost.oldest_abs()")})

@@ -5396,6 +5396,13 @@ validation (the runtime's job), UTF-8 validation of names (compared as raw bytes
 ring's capacity and must not be used as a cursor. Separate from `reflux.prn` so hosts that link that file natively do not gain
 undefined references. First consumer: `brawlpit/bp_level.prn`.
 
+## reflux on World of Warcraft (2026-11-13)
+
+`reflux.prn` and `cursor.prn` also carry a `:lua` key, which calls the global `RefluxHost` (`runtime/wow/reflux_host.lua`,
+Lua 5.1, the same ring and cursor semantics as SHANKPIT's C host). `scripts/wow-package-refluxcore.sh` builds the `RefluxCore`
+addon that every Collection addon depends on; the modules are reached as `RefluxCore.modules["reflux/reflux"]` and
+`["reflux/cursor"]`. Test: `make test-reflux-wow`.
+
 ## brawlpit/bp_level -- BRAWLPIT as a SHANKPIT level (2026-11-08)
 
 The level surface over the web engine (contract: SHANKPIT `docs/T0_LEVEL_WASM_CONTRACT.md`): `level-api/-enter/-poll/-tick/

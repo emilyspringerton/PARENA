@@ -47,29 +47,35 @@
 (defn reflux-dispatch [(action-type : I32) (a : I32) (b : I32) (c : I32)] : Unit
   #target
   {:c (inline-c "reflux_host_dispatch(action_type, a, b, c);")
-   :llvm (inline-llvm "call void @reflux_host_dispatch(i32 %action_type, i32 %a, i32 %b, i32 %c)")})
+   :llvm (inline-llvm "call void @reflux_host_dispatch(i32 %action_type, i32 %a, i32 %b, i32 %c)")
+   :lua (inline-lua "return RefluxHost.dispatch(actionType, a, b, c)")})
 
 (defn reflux-log-size [] : I32
   #target
   {:c (inline-c "reflux_host_log_size()")
-   :llvm (inline-llvm "call i32 @reflux_host_log_size()")})
+   :llvm (inline-llvm "call i32 @reflux_host_log_size()")
+   :lua (inline-lua "return RefluxHost.log_size()")})
 
 (defn reflux-action-type-at [(index : I32)] : I32
   #target
   {:c (inline-c "reflux_host_action_type_at(index)")
-   :llvm (inline-llvm "call i32 @reflux_host_action_type_at(i32 %index)")})
+   :llvm (inline-llvm "call i32 @reflux_host_action_type_at(i32 %index)")
+   :lua (inline-lua "return RefluxHost.action_type_at(index)")})
 
 (defn reflux-action-a-at [(index : I32)] : I32
   #target
   {:c (inline-c "reflux_host_action_a_at(index)")
-   :llvm (inline-llvm "call i32 @reflux_host_action_a_at(i32 %index)")})
+   :llvm (inline-llvm "call i32 @reflux_host_action_a_at(i32 %index)")
+   :lua (inline-lua "return RefluxHost.action_a_at(index)")})
 
 (defn reflux-action-b-at [(index : I32)] : I32
   #target
   {:c (inline-c "reflux_host_action_b_at(index)")
-   :llvm (inline-llvm "call i32 @reflux_host_action_b_at(i32 %index)")})
+   :llvm (inline-llvm "call i32 @reflux_host_action_b_at(i32 %index)")
+   :lua (inline-lua "return RefluxHost.action_b_at(index)")})
 
 (defn reflux-action-c-at [(index : I32)] : I32
   #target
   {:c (inline-c "reflux_host_action_c_at(index)")
-   :llvm (inline-llvm "call i32 @reflux_host_action_c_at(i32 %index)")})
+   :llvm (inline-llvm "call i32 @reflux_host_action_c_at(i32 %index)")
+   :lua (inline-lua "return RefluxHost.action_c_at(index)")})

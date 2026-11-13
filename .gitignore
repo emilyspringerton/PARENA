@@ -47,3 +47,6 @@ parena-pod-render
 tools/pod_render_gen.c
 tests/test_k8s_pod_gen.c
 build/
+
+# test-reflux-wow scratch output
+tests/reflux_wow/out/
