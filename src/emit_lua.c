@@ -69,6 +69,10 @@ static const char *camel_case(Arena *arena, const char *kebab) {
     for (size_t i = 0; i < len; i++) {
         char c = kebab[i];
         if (c == '-') { capitalize_next = 1; continue; }
+        /* `!` (mutators) and `?` (predicates) are legal in PARENA names and not in Lua's. The C emitter's own
+         * mangle already maps both to `_`; without this, `(defn g-shuffle! ...)` emitted `M.gShuffle!`, which
+         * every Lua rejects at load time (found 2026-11-13 building the Collection's party games). */
+        if (c == '!' || c == '?') { out[oi++] = '_'; capitalize_next = 0; continue; }
         if (capitalize_next) {
             out[oi++] = (char)((c >= 'a' && c <= 'z') ? c - 32 : c);
             capitalize_next = 0;
