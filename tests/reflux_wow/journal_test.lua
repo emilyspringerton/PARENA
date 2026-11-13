@@ -67,5 +67,44 @@ eq(db.rows[5].payload[1], 45, "the first copied row is abs 48, the 45th of the 3
 eq(db.rows[260].payload[1], 300, "the last copied row is the newest")
 eq(db.nextSeq, 261, "seq never skips even when REFLUX rows were lost")
 
+-- the size cap: keep the newest, drop from the low end only, never move nextSeq
+eq(db.firstSeq, 1, "nothing trimmed yet")
+eq(J.journalTrim(db, 0), -1, "a cap of 0 is refused")
+eq(db.rows[1] ~= nil, true, "and touched nothing")
+eq(J.journalTrim(db, 100), 160, "keep 100 of 260 drops 160")
+eq(db.firstSeq, 161, "firstSeq moved to the oldest kept")
+eq(db.trimmed, 160, "trimmed counts them")
+eq(db.rows[160], nil, "row 160 is gone")
+eq(db.rows[161].seq, 161, "row 161 is the oldest kept")
+eq(db.rows[260].seq, 260, "the newest is kept")
+eq(db.nextSeq, 261, "trimming never moves nextSeq")
+eq(J.journalTrim(db, 100), 0, "a second trim at the same cap drops nothing")
+eq(J.journalTrim(db, 1000), 0, "a cap above the size drops nothing")
+local held = 0
+for s = db.firstSeq, db.nextSeq - 1 do if db.rows[s] then held = held + 1 end end
+eq(held, 100, "rows are contiguous firstSeq..nextSeq-1")
+
+-- a big backlog drains in batches of 512, so no single call recurses past Lua 5.1's limit
+local big = J.journalInit({})
+RefluxHost.reset()
+for round = 1, 8 do                                   -- 8 x 250 = 2000 rows
+    for i = 1, 250 do J.refluxDispatch(2250, i, 0, 0) end
+    J.journalPoll(big, "Emily-Forever", 2000 + round, 1415, 0, 0)
+end
+eq(big.nextSeq, 2001, "2000 rows journalled")
+eq(J.journalTrim(big, 10), J.journalTrimBatch(), "the first trim stops at the batch size")
+local calls = 1
+while J.journalTrim(big, 10) > 0 do calls = calls + 1 end
+eq(big.firstSeq, 1991, "and repeated trims reach keep = 10")
+eq(big.trimmed, 1990, "1990 trimmed in all")
+eq(calls, 4, "in 4 calls (512 + 512 + 512 + 454)")
+
+-- an older table (no firstSeq/trimmed) is upgraded by init without losing rows
+local old = { v = 1, rows = { {seq = 1} }, nextSeq = 2, cursor = 1, lost = 0 }
+J.journalInit(old)
+eq(old.firstSeq, 1, "init adds firstSeq to an older table")
+eq(old.trimmed, 0, "and trimmed")
+eq(old.rows[1].seq, 1, "keeping its rows")
+
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

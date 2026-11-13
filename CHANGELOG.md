@@ -1,5 +1,13 @@
 ## 2026-11-13
 
+- **journal size cap** (`stdlib/collection/journal.prn`, COV-6b): `journal-trim db keep` keeps the newest
+  `keep` rows, removing from the low end only, and never moves `nextSeq`, so a reader detects exactly which
+  seqs it missed from `firstSeq` (and `trimmed` counts them). It removes at most 512 rows per call, because
+  Lua 5.1 stops at 20000 nested calls. A cap below 1 is refused (-1) and changes nothing. `journal-init`
+  upgrades older tables in place. journal_test 53/53 under Lua 5.1.
+- **emit_lua `(lua/nil)`** -- Lua's `nil`, so `(lua/aset! t k (lua/nil))` clears a table slot. The header
+  comment no longer claims mutation is refused. test-emit-lua 46/46.
+
 - **stdlib/collection/ids.prn** -- the Collection of Value's reserved REFLUX action-type range, 2000-2999,
   ten types per addon number 1..100 (addon n: 2000 + (n-1)*10 .. +9), clear of SHANKPIT's 1-5, 101-128 and
   1000-1199. Pure arithmetic, so the WoW addons and any C relay share one definition; out of range answers -1

@@ -26,14 +26,20 @@
 ;;   parena build stdlib/reflux/reflux.prn stdlib/reflux/cursor.prn stdlib/collection/journal.prn -o journal.lua
 
 (module collection/journal)
-(export journal-init journal-record journal-append journal-poll)
+(export journal-init journal-record journal-append journal-poll journal-trim journal-trim-batch)
 
 ;; Give a fresh (or older) SavedVariables table the v1 fields it is missing. Never resets existing data.
+;;   rows      seq -> record. Contiguous from firstSeq to nextSeq-1 (trimming removes from the low end only),
+;;             so readers iterate firstSeq..nextSeq-1, not #rows.
+;;   firstSeq  the lowest seq still held; trimmed = how many rows the size cap removed in total
+;;   lost      REFLUX rows the ring overwrote before a poll reached them (never journalled at all)
 (defn journal-init [(db : Any)] : Any
   (do (if (lua/nil? (lua/get db "rows")) (lua/set! db "rows" (lua/array)) 0)
       (if (lua/nil? (lua/get db "nextSeq")) (lua/set! db "nextSeq" 1) 0)
+      (if (lua/nil? (lua/get db "firstSeq")) (lua/set! db "firstSeq" 1) 0)
       (if (lua/nil? (lua/get db "cursor")) (lua/set! db "cursor" 0) 0)
       (if (lua/nil? (lua/get db "lost")) (lua/set! db "lost" 0) 0)
+      (if (lua/nil? (lua/get db "trimmed")) (lua/set! db "trimmed" 0) 0)
       (lua/set! db "v" 1)
       db))
 
@@ -81,3 +87,33 @@
     (do (if (< cursor oldest) (lua/set! db "lost" (+ (lua/get db "lost") (- oldest cursor))) 0)
         (lua/set! db "cursor" total)
         (journal-copy-from db from total character now zone x y 0))))
+
+;; The size cap. SavedVariables is loaded whole at login and written whole at logout, so the journal must not
+;; grow without bound. The cap only removes rows from the LOW end; it never touches nextSeq, so a reader that
+;; last stored seq s and now sees firstSeq > s + 1 knows exactly which seqs it missed (and trimmed says how many
+;; in total). Rows the external reader has already taken are the ones a sensible keep drops first.
+;;
+;; At most journal-trim-batch rows go per call: the loop is recursion, and Lua 5.1 stops at 20000 nested
+;; calls. A poll appends at most 256 (REFLUX's capacity), so trimming 512 per poll always catches up.
+(defn journal-trim-batch [] : I32 512)
+
+(defn journal-drop-from [(db : Any) (seq : I32) (stop : I32) (n : I32)] : I32
+  (if (>= seq stop)
+      n
+      (do (lua/aset! (lua/get db "rows") seq (lua/nil))
+          (journal-drop-from db (+ seq 1) stop (+ n 1)))))
+
+;; Keep at most `keep` rows (the newest). Returns how many it removed, or -1 when keep < 1 (refused, nothing
+;; touched: a cap of zero would discard every row before the reader saw it).
+(defn journal-trim [(db : Any) (keep : I32)] : I32
+  (if (< keep 1)
+      -1
+      (let [lo (lua/get db "firstSeq")
+            want (- (lua/get db "nextSeq") keep)
+            stop (if (> want (+ lo (journal-trim-batch))) (+ lo (journal-trim-batch)) want)]
+        (if (> stop lo)
+            (let [n (journal-drop-from db lo stop 0)]
+              (do (lua/set! db "firstSeq" stop)
+                  (lua/set! db "trimmed" (+ (lua/get db "trimmed") n))
+                  n))
+            0))))
