@@ -1,0 +1,377 @@
+;; stdlib/net/h2_wire.prn -- HTTP/2 (RFC 9113) frame codec + HPACK (RFC 7541) header-block codec with the
+;; full dynamic table. Pure PARENA over Bytes, no FFI. The PELLEGRINO HTTP/2 path's wire layer; the
+;; transport (TLS with ALPN "h2") is net/stream's business, not this module's.
+;;
+;; Shared with net/h3_wire, not duplicated: HPACK and QPACK use the same prefix integers (RFC 7541 s5.1)
+;; and the same Huffman code (RFC 7541 Appendix B), so this module imports qpack-int-read / qpack-int-len /
+;; qpack-put-int! / qpack-huffman-decode from there. What HPACK has of its own is here: the 61-entry static
+;; table (RFC 7541 Appendix A), the representation bits, and the dynamic table.
+;;
+;; THE DYNAMIC TABLE lives in a caller-owned Bytes (no allocation here), newest entry first:
+;;   [0,2) count   [2,4) size (RFC 7541 s4.1: name + value + 32 per entry)   [4,6) max size
+;;   [6,8) bytes of entry data in use   [8,10) limit (our SETTINGS_HEADER_TABLE_SIZE)   [10,12) unused
+;;   [12, ...) entries: name length u16, value length u16, name bytes, value bytes
+;; All u16 big-endian. A 4096-byte table needs at most 12 + 4096 bytes of backing (each entry costs 32 in the
+;; RFC's accounting and only 4 + name + value here). hpack-dyn-init! sets it up; one table per connection,
+;; per direction -- the decoder's table follows the PEER's encoder.
+;;
+;; Decode output is the same "name: value\n" text qpack-decode-section writes, so PELLEGRINO reads an h2
+;; and an h3 response the same way.
+;;
+;; Honest limits: the encoder never Huffman-codes and never indexes (literal-without-indexing is always
+;; legal, and it means the peer's decoder table is never touched by us); header blocks split across
+;; CONTINUATION frames must be joined by the caller before decode; no PRIORITY frames are ever sent.
+
+(module net/h2_wire)
+(import bytes)
+(export h2-frame-header-len h2-put-frame-header! h2-frame-len h2-frame-type h2-frame-flags h2-frame-stream
+        h2-frame-payload-off h2-frame-end h2-payload-start h2-payload-end
+        h2-preface-len h2-put-preface! h2-put-settings! h2-put-settings-ack! h2-settings-count
+        h2-settings-id h2-settings-value h2-put-window-update! h2-put-ping-ack! h2-put-rst-stream!
+        h2-put-goaway! h2-put-headers! h2-put-data!
+        h2-type-data h2-type-headers h2-type-priority h2-type-rst-stream h2-type-settings
+        h2-type-push-promise h2-type-ping h2-type-goaway h2-type-window-update h2-type-continuation
+        h2-flag-end-stream h2-flag-ack h2-flag-end-headers h2-flag-padded h2-flag-priority
+        hpack-static-count hpack-dyn-init! hpack-dyn-count hpack-dyn-size hpack-dyn-max
+        hpack-decode-block hpack-put-get-request!)
+
+;; ---- frame types and flags (RFC 9113 s6) --------------------------------------------------------
+
+(defn h2-type-data [] : I32 0)
+(defn h2-type-headers [] : I32 1)
+(defn h2-type-priority [] : I32 2)
+(defn h2-type-rst-stream [] : I32 3)
+(defn h2-type-settings [] : I32 4)
+(defn h2-type-push-promise [] : I32 5)
+(defn h2-type-ping [] : I32 6)
+(defn h2-type-goaway [] : I32 7)
+(defn h2-type-window-update [] : I32 8)
+(defn h2-type-continuation [] : I32 9)
+
+(defn h2-flag-end-stream [] : I32 1)
+(defn h2-flag-ack [] : I32 1)
+(defn h2-flag-end-headers [] : I32 4)
+(defn h2-flag-padded [] : I32 8)
+(defn h2-flag-priority [] : I32 32)
+
+;; ---- the 9-byte frame header: length(24) type(8) flags(8) R+stream(1+31) --------------------------
+
+(defn h2-frame-header-len [] : I32 9)
+
+(defn h2w-put32! [(out : Bytes) (op : I32) (v : I32)] : I32
+  (do (bytes-set! out op (bit-and (shr v 24) 255))
+      (bytes-set! out (+ op 1) (bit-and (shr v 16) 255))
+      (bytes-set! out (+ op 2) (bit-and (shr v 8) 255))
+      (bytes-set! out (+ op 3) (bit-and v 255))
+      (+ op 4)))
+
+(defn h2w-get32 [(b : Bytes) (p : I32)] : I32
+  (bit-or (shl (bytes-get b p) 24)
+    (bit-or (shl (bytes-get b (+ p 1)) 16)
+      (bit-or (shl (bytes-get b (+ p 2)) 8) (bytes-get b (+ p 3))))))
+
+(defn h2-put-frame-header! [(out : Bytes) (op : I32) (len : I32) (type : I32) (flags : I32) (stream : I32)] : I32
+  (if (or (< op 0) (or (< len 0) (or (> len 16777215) (or (< stream 0) (> (+ op 9) (bytes-len out)))))) -1
+    (do (bytes-set! out op (bit-and (shr len 16) 255))
+        (bytes-set! out (+ op 1) (bit-and (shr len 8) 255))
+        (bytes-set! out (+ op 2) (bit-and len 255))
+        (bytes-set! out (+ op 3) (bit-and type 255))
+        (bytes-set! out (+ op 4) (bit-and flags 255))
+        (h2w-put32! out (+ op 5) (bit-and stream 2147483647)))))
+
+(defn h2w-have [(b : Bytes) (pos : I32) (n : I32)] : I32
+  (if (and (>= pos 0) (<= (+ pos n) (bytes-len b))) 1 0))
+
+;; -1 when the 9 header bytes are not all present.
+(defn h2-frame-len [(b : Bytes) (pos : I32)] : I32
+  (if (= (h2w-have b pos 9) 0) -1
+    (bit-or (shl (bytes-get b pos) 16) (bit-or (shl (bytes-get b (+ pos 1)) 8) (bytes-get b (+ pos 2))))))
+(defn h2-frame-type [(b : Bytes) (pos : I32)] : I32 (if (= (h2w-have b pos 9) 0) -1 (bytes-get b (+ pos 3))))
+(defn h2-frame-flags [(b : Bytes) (pos : I32)] : I32 (if (= (h2w-have b pos 9) 0) -1 (bytes-get b (+ pos 4))))
+(defn h2-frame-stream [(b : Bytes) (pos : I32)] : I32
+  (if (= (h2w-have b pos 9) 0) -1 (bit-and (h2w-get32 b (+ pos 5)) 2147483647)))
+(defn h2-frame-payload-off [(b : Bytes) (pos : I32)] : I32 (if (= (h2w-have b pos 9) 0) -1 (+ pos 9)))
+
+;; Position after the whole frame, or -1 if it has not fully arrived.
+(defn h2-frame-end [(b : Bytes) (pos : I32)] : I32
+  (let [l (h2-frame-len b pos)]
+    (if (< l 0) -1 (if (= (h2w-have b (+ pos 9) l) 0) -1 (+ (+ pos 9) l)))))
+
+;; Where the real payload of a DATA/HEADERS frame starts and ends, past the pad-length byte and (HEADERS
+;; with PRIORITY) the 5 priority bytes, and before the padding. -1 if the padding does not fit (a
+;; PROTOCOL_ERROR in RFC 9113 s6.1).
+(defn h2-payload-start [(b : Bytes) (pos : I32)] : I32
+  (let [f (h2-frame-flags b pos) t (h2-frame-type b pos)]
+    (if (< f 0) -1
+      (let [p1 (if (= (bit-and f 8) 0) (+ pos 9) (+ pos 10))]
+        (if (and (= t 1) (> (bit-and f 32) 0)) (+ p1 5) p1)))))
+
+(defn h2-payload-end [(b : Bytes) (pos : I32)] : I32
+  (let [e (h2-frame-end b pos) f (h2-frame-flags b pos) s (h2-payload-start b pos)]
+    (if (or (< e 0) (< s 0)) -1
+      (let [pad (if (= (bit-and f 8) 0) 0 (bytes-get b (+ pos 9)))]
+        (if (> (+ s pad) e) -1 (- e pad))))))
+
+;; ---- connection setup ------------------------------------------------------------------------------
+
+;; "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" (RFC 9113 s3.4)
+(defn h2-preface-len [] : I32 24)
+(defn h2w-lit! [(out : Bytes) (op : I32) (s : String)] : I32
+  (let [n (length s)]
+    (if (or (< op 0) (> (+ op n) (bytes-len out))) -1
+      (loop [i 0]
+        (if (>= i n) (+ op n)
+          (do (bytes-set! out (+ op i) (bit-and (char-at s i) 255)) (recur (+ i 1))))))))
+(defn h2-put-preface! [(out : Bytes) (op : I32)] : I32 (h2w-lit! out op "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))
+
+(defn h2w-put-setting! [(out : Bytes) (op : I32) (id : I32) (v : I32)] : I32
+  (if (< op 0) -1
+    (do (bytes-set! out op (bit-and (shr id 8) 255)) (bytes-set! out (+ op 1) (bit-and id 255))
+        (h2w-put32! out (+ op 2) v))))
+
+;; Our SETTINGS: ENABLE_PUSH (0x2) = 0 -- a browser that never asked for pushes refuses them -- and
+;; INITIAL_WINDOW_SIZE (0x4) = `window` per stream. The header table stays at the 4096 default, which the
+;; decoder below handles in full.
+(defn h2-put-settings! [(out : Bytes) (op : I32) (window : I32)] : I32
+  (let [p (h2-put-frame-header! out op 12 4 0 0)]
+    (if (or (< p 0) (> (+ p 12) (bytes-len out))) -1
+      (h2w-put-setting! out (h2w-put-setting! out p 2 0) 4 window))))
+
+(defn h2-put-settings-ack! [(out : Bytes) (op : I32)] : I32 (h2-put-frame-header! out op 0 4 1 0))
+
+;; A received SETTINGS frame at pos: how many settings, and the id / value of the i-th.
+(defn h2-settings-count [(b : Bytes) (pos : I32)] : I32
+  (let [l (h2-frame-len b pos)] (if (or (< l 0) (> (- l (* (/ l 6) 6)) 0)) -1 (/ l 6))))
+(defn h2-settings-id [(b : Bytes) (pos : I32) (i : I32)] : I32
+  (let [p (+ (+ pos 9) (* i 6))] (bit-or (shl (bytes-get b p) 8) (bytes-get b (+ p 1)))))
+(defn h2-settings-value [(b : Bytes) (pos : I32) (i : I32)] : I32 (h2w-get32 b (+ (+ (+ pos 9) (* i 6)) 2)))
+
+(defn h2-put-window-update! [(out : Bytes) (op : I32) (stream : I32) (incr : I32)] : I32
+  (if (or (< incr 1) (> incr 2147483647)) -1
+    (let [p (h2-put-frame-header! out op 4 8 0 stream)]
+      (if (or (< p 0) (> (+ p 4) (bytes-len out))) -1 (h2w-put32! out p incr)))))
+
+;; Answer the PING frame at b[pos] with the same 8 opaque bytes and ACK.
+(defn h2-put-ping-ack! [(out : Bytes) (op : I32) (b : Bytes) (pos : I32)] : I32
+  (if (or (not (= (h2-frame-len b pos) 8)) (= (h2w-have b (+ pos 9) 8) 0)) -1
+    (let [p (h2-put-frame-header! out op 8 6 1 0)]
+      (if (or (< p 0) (> (+ p 8) (bytes-len out))) -1
+        (loop [i 0]
+          (if (>= i 8) (+ p 8)
+            (do (bytes-set! out (+ p i) (bytes-get b (+ (+ pos 9) i))) (recur (+ i 1)))))))))
+
+(defn h2-put-rst-stream! [(out : Bytes) (op : I32) (stream : I32) (code : I32)] : I32
+  (let [p (h2-put-frame-header! out op 4 3 0 stream)]
+    (if (or (< p 0) (> (+ p 4) (bytes-len out))) -1 (h2w-put32! out p code))))
+
+(defn h2-put-goaway! [(out : Bytes) (op : I32) (last-stream : I32) (code : I32)] : I32
+  (let [p (h2-put-frame-header! out op 8 7 0 0)]
+    (if (or (< p 0) (> (+ p 8) (bytes-len out))) -1
+      (h2w-put32! out (h2w-put32! out p (bit-and last-stream 2147483647)) code))))
+
+(defn h2w-copy! [(out : Bytes) (op : I32) (src : Bytes) (n : I32)] : I32
+  (if (or (< op 0) (or (> n (bytes-len src)) (> (+ op n) (bytes-len out)))) -1
+    (loop [i 0]
+      (if (>= i n) (+ op n) (do (bytes-set! out (+ op i) (bytes-get src i)) (recur (+ i 1)))))))
+
+;; One HEADERS frame carrying the first `n` bytes of `block` (END_HEADERS set; END_STREAM when end-stream
+;; is 1, which a GET always is).
+(defn h2-put-headers! [(out : Bytes) (op : I32) (stream : I32) (block : Bytes) (n : I32) (end-stream : I32)] : I32
+  (let [p (h2-put-frame-header! out op n 1 (if (= end-stream 1) 5 4) stream)]
+    (if (< p 0) -1 (h2w-copy! out p block n))))
+
+(defn h2-put-data! [(out : Bytes) (op : I32) (stream : I32) (data : Bytes) (n : I32) (end-stream : I32)] : I32
+  (let [p (h2-put-frame-header! out op n 0 (if (= end-stream 1) 1 0) stream)]
+    (if (< p 0) -1 (h2w-copy! out p data n))))
+
+;; ---- HPACK static table (RFC 7541 Appendix A): 61 entries as "name|value|" pairs -------------------
+
+(defn hpack-static-count [] : I32 61)
+
+(defn hp-static [] : String
+  ":authority||:method|GET|:method|POST|:path|/|:path|/index.html|:scheme|http|:scheme|https|:status|200|:status|204|:status|206|:status|304|:status|400|:status|404|:status|500|accept-charset||accept-encoding|gzip, deflate|accept-language||accept-ranges||accept||access-control-allow-origin||age||allow||authorization||cache-control||content-disposition||content-encoding||content-language||content-length||content-location||content-range||content-type||cookie||date||etag||expect||expires||from||host||if-match||if-modified-since||if-none-match||if-range||if-unmodified-since||last-modified||link||location||max-forwards||proxy-authenticate||proxy-authorization||range||referer||refresh||retry-after||server||set-cookie||strict-transport-security||transfer-encoding||user-agent||vary||via||www-authenticate||")
+
+(defn hp-sfield-start [(f : I32)] : I32
+  (let [s (hp-static)]
+    (loop [i 0 seen 0]
+      (if (= seen f) i (recur (+ i 1) (if (= (char-at s i) 124) (+ seen 1) seen))))))
+
+(defn hp-sfield-end [(start : I32)] : I32
+  (let [s (hp-static)]
+    (loop [i start] (if (= (char-at s i) 124) i (recur (+ i 1))))))
+
+;; Static entry idx (1..61), which 0 = name / 1 = value, copied to out at op.
+(defn hp-put-sfield! [(out : Bytes) (op : I32) (idx : I32) (which : I32)] : I32
+  (let [st (hp-sfield-start (+ (* (- idx 1) 2) which))
+        en (hp-sfield-end st)
+        s (hp-static)]
+    (if (or (< op 0) (> (+ op (- en st)) (bytes-len out))) -1
+      (loop [i st o op]
+        (if (>= i en) o
+          (do (bytes-set! out o (bit-and (char-at s i) 255)) (recur (+ i 1) (+ o 1))))))))
+
+;; ---- HPACK dynamic table (layout in the header comment) ----------------------------------------------
+
+(defn hp-u16 [(b : Bytes) (p : I32)] : I32 (bit-or (shl (bytes-get b p) 8) (bytes-get b (+ p 1))))
+(defn hp-put-u16! [(b : Bytes) (p : I32) (v : I32)] : I32
+  (do (bytes-set! b p (bit-and (shr v 8) 255)) (bytes-set! b (+ p 1) (bit-and v 255)) v))
+
+(defn hpack-dyn-init! [(dyn : Bytes) (limit : I32)] : I32
+  (if (or (< (bytes-len dyn) 12) (or (< limit 0) (> limit 65535))) -1
+    (do (hp-put-u16! dyn 0 0) (hp-put-u16! dyn 2 0) (hp-put-u16! dyn 4 limit)
+        (hp-put-u16! dyn 6 0) (hp-put-u16! dyn 8 limit) (hp-put-u16! dyn 10 0) 0)))
+
+(defn hpack-dyn-count [(dyn : Bytes)] : I32 (hp-u16 dyn 0))
+(defn hpack-dyn-size [(dyn : Bytes)] : I32 (hp-u16 dyn 2))
+(defn hpack-dyn-max [(dyn : Bytes)] : I32 (hp-u16 dyn 4))
+
+;; Byte offset of the k-th entry (0 = newest).
+(defn hp-dyn-off [(dyn : Bytes) (k : I32)] : I32
+  (loop [i 0 off 12]
+    (if (>= i k) off
+      (recur (+ i 1) (+ (+ off 4) (+ (hp-u16 dyn off) (hp-u16 dyn (+ off 2))))))))
+
+;; Drop the oldest entry.
+(defn hp-dyn-drop-last! [(dyn : Bytes)] : I32
+  (let [n (hpack-dyn-count dyn)
+        off (hp-dyn-off dyn (- n 1))
+        nl (hp-u16 dyn off)
+        vl (hp-u16 dyn (+ off 2))]
+    (do (hp-put-u16! dyn 0 (- n 1))
+        (hp-put-u16! dyn 2 (- (hpack-dyn-size dyn) (+ (+ nl vl) 32)))
+        (hp-put-u16! dyn 6 (- (hp-u16 dyn 6) (+ (+ nl vl) 4))))))
+
+;; Evict oldest entries until `need` more bytes fit under the max size (RFC 7541 s4.4).
+(defn hp-dyn-evict! [(dyn : Bytes) (need : I32)] : I32
+  (if (and (> (hpack-dyn-count dyn) 0) (> (+ (hpack-dyn-size dyn) need) (hpack-dyn-max dyn)))
+    (do (hp-dyn-drop-last! dyn) (hp-dyn-evict! dyn need))
+    0))
+
+(defn hp-dyn-clear! [(dyn : Bytes)] : I32
+  (do (hp-put-u16! dyn 0 0) (hp-put-u16! dyn 2 0) (hp-put-u16! dyn 6 0) 0))
+
+;; Shift entry bytes [12, 12+used) right by d (from the end, so nothing is overwritten before it is moved).
+(defn hp-dyn-shift! [(dyn : Bytes) (used : I32) (d : I32)] : I32
+  (loop [i (- (+ 12 used) 1)]
+    (if (< i 12) 0 (do (bytes-set! dyn (+ i d) (bytes-get dyn i)) (recur (- i 1))))))
+
+(defn hp-dyn-write! [(dyn : Bytes) (src : Bytes) (ns : I32) (nl : I32) (vs : I32) (vl : I32)] : I32
+  (do (hp-put-u16! dyn 12 nl) (hp-put-u16! dyn 14 vl)
+      (loop [i 0]
+        (if (>= i nl) 0 (do (bytes-set! dyn (+ 16 i) (bytes-get src (+ ns i))) (recur (+ i 1)))))
+      (loop [j 0]
+        (if (>= j vl) 0 (do (bytes-set! dyn (+ (+ 16 nl) j) (bytes-get src (+ vs j))) (recur (+ j 1)))))
+      (hp-put-u16! dyn 0 (+ (hpack-dyn-count dyn) 1))
+      (hp-put-u16! dyn 2 (+ (hpack-dyn-size dyn) (+ (+ nl vl) 32)))
+      (hp-put-u16! dyn 6 (+ (hp-u16 dyn 6) (+ (+ nl vl) 4)))
+      0))
+
+;; Insert name src[ns, ns+nl) / value src[vs, vs+vl) as the newest entry. An entry larger than the whole
+;; table empties it and is not inserted (s4.4). -1 only if the backing Bytes is too small.
+(defn hp-dyn-insert! [(dyn : Bytes) (src : Bytes) (ns : I32) (nl : I32) (vs : I32) (vl : I32)] : I32
+  (let [esz (+ (+ nl vl) 32)]
+    (if (> esz (hpack-dyn-max dyn)) (hp-dyn-clear! dyn)
+      (let [ev (hp-dyn-evict! dyn esz) used (hp-u16 dyn 6) d (+ (+ nl vl) 4)]
+        (if (> (+ (+ 12 used) d) (bytes-len dyn)) -1
+          (let [sh (hp-dyn-shift! dyn used d)] (hp-dyn-write! dyn src ns nl vs vl)))))))
+
+;; Dynamic table size update (s6.3): never above our limit.
+(defn hp-dyn-resize! [(dyn : Bytes) (max : I32)] : I32
+  (if (or (< max 0) (> max (hp-u16 dyn 8))) -1
+    (do (hp-put-u16! dyn 4 max) (hp-dyn-evict! dyn 0))))
+
+;; Copy dynamic entry k (0 = newest), which 0 = name / 1 = value, to out at op.
+(defn hp-put-dfield! [(dyn : Bytes) (out : Bytes) (op : I32) (k : I32) (which : I32)] : I32
+  (let [off (hp-dyn-off dyn k)
+        nl (hp-u16 dyn off)
+        vl (hp-u16 dyn (+ off 2))
+        st (if (= which 0) (+ off 4) (+ (+ off 4) nl))
+        n (if (= which 0) nl vl)]
+    (if (or (< op 0) (> (+ op n) (bytes-len out))) -1
+      (loop [i 0]
+        (if (>= i n) (+ op n) (do (bytes-set! out (+ op i) (bytes-get dyn (+ st i))) (recur (+ i 1))))))))
+
+;; Field idx (1-based, static then dynamic) to out. -1 for 0 or an index past the table.
+(defn hp-put-field! [(dyn : Bytes) (out : Bytes) (op : I32) (idx : I32) (which : I32)] : I32
+  (if (< idx 1) -1
+    (if (<= idx 61) (hp-put-sfield! out op idx which)
+      (if (>= (- idx 62) (hpack-dyn-count dyn)) -1 (hp-put-dfield! dyn out op (- idx 62) which)))))
+
+;; ---- HPACK decode -------------------------------------------------------------------------------------
+
+;; String literal at pos (H flag = bit 7, 7-bit length) appended to out at op. Returns new op or -1.
+(defn hp-read-str! [(b : Bytes) (pos : I32) (end : I32) (out : Bytes) (op : I32)] : I32
+  (let [len (qpack-int-read b pos 7) il (qpack-int-len b pos 7)]
+    (if (or (< op 0) (or (< len 0) (or (< il 0) (> (+ (+ pos il) len) end)))) -1
+      (if (>= (bytes-get b pos) 128)
+        (qpack-huffman-decode b (+ pos il) len out op)
+        (if (> (+ op len) (bytes-len out)) -1
+          (loop [i 0]
+            (if (>= i len) (+ op len)
+              (do (bytes-set! out (+ op i) (bytes-get b (+ (+ pos il) i))) (recur (+ i 1))))))))))
+
+(defn hp-str-end [(b : Bytes) (pos : I32)] : I32
+  (let [len (qpack-int-read b pos 7) il (qpack-int-len b pos 7)]
+    (if (or (< len 0) (< il 0)) -1 (+ (+ pos il) len))))
+
+;; An indexed field (1xxxxxxx): "name: value\n".
+(defn hp-indexed! [(b : Bytes) (pos : I32) (end : I32) (dyn : Bytes) (out : Bytes) (op : I32)] : I32
+  (let [idx (qpack-int-read b pos 7) il (qpack-int-len b pos 7)
+        o1 (if (or (< idx 0) (< il 0)) -1 (hp-put-field! dyn out op idx 0))
+        o2 (if (< o1 0) -1 (h2w-lit! out o1 ": "))
+        o3 (if (< o2 0) -1 (hp-put-field! dyn out o2 idx 1))
+        o4 (if (< o3 0) -1 (h2w-lit! out o3 "\n"))]
+    (if (< o4 0) -1 (hpack-lines b (+ pos il) end dyn out o4))))
+
+;; A literal field with `prefix`-bit name index (0 = literal name follows). insert = 1 adds it to the
+;; dynamic table (01xxxxxx), 0 does not (0000xxxx, 0001xxxx).
+(defn hp-literal! [(b : Bytes) (pos : I32) (end : I32) (dyn : Bytes) (out : Bytes) (op : I32)
+                   (prefix : I32) (insert : I32)] : I32
+  (let [idx (qpack-int-read b pos prefix) il (qpack-int-len b pos prefix)
+        npos (+ pos il)
+        o1 (if (or (< idx 0) (< il 0)) -1 (if (= idx 0) (hp-read-str! b npos end out op) (hp-put-field! dyn out op idx 0)))
+        vpos (if (< o1 0) -1 (if (= idx 0) (hp-str-end b npos) npos))
+        o2 (if (< o1 0) -1 (h2w-lit! out o1 ": "))
+        o3 (if (or (< o2 0) (or (< vpos 0) (>= vpos end))) -1 (hp-read-str! b vpos end out o2))
+        o4 (if (< o3 0) -1 (h2w-lit! out o3 "\n"))
+        ins (if (or (< o4 0) (= insert 0)) 0 (hp-dyn-insert! dyn out op (- o1 op) o2 (- o3 o2)))]
+    (if (or (< o4 0) (< ins 0)) -1 (hpack-lines b (hp-str-end b vpos) end dyn out o4))))
+
+(defn hpack-lines [(b : Bytes) (pos : I32) (end : I32) (dyn : Bytes) (out : Bytes) (op : I32)] : I32
+  (if (< op 0) -1
+    (if (>= pos end) op
+      (let [f (bytes-get b pos)]
+        (if (>= f 128) (hp-indexed! b pos end dyn out op)
+          (if (>= f 64) (hp-literal! b pos end dyn out op 6 1)
+            (if (>= f 32)
+              (let [m (qpack-int-read b pos 5) il (qpack-int-len b pos 5)]
+                (if (or (< m 0) (or (< il 0) (< (hp-dyn-resize! dyn m) 0))) -1
+                  (hpack-lines b (+ pos il) end dyn out op)))
+              (hp-literal! b pos end dyn out op 4 0))))))))
+
+;; Decode the header block b[start, end) against the connection's decoder table `dyn` into out as
+;; "name: value\n" lines. Returns bytes written, or -1 on any error (bad index, bad Huffman, a size update
+;; above our limit, a truncated literal, output overflow). On -1 the connection must be torn down with
+;; COMPRESSION_ERROR: the table may be half-updated and no later block can be trusted.
+(defn hpack-decode-block [(b : Bytes) (start : I32) (end : I32) (dyn : Bytes) (out : Bytes)] : I32
+  (if (or (< start 0) (> end (bytes-len b))) -1 (hpack-lines b start end dyn out 0)))
+
+;; ---- HPACK encode: a GET ------------------------------------------------------------------------------
+
+(defn hp-put-str! [(out : Bytes) (op : I32) (v : Bytes)] : I32
+  (let [p (qpack-put-int! out op 0 7 (bytes-len v))]
+    (if (< p 0) -1 (h2w-copy! out p v (bytes-len v)))))
+
+;; :method GET (2), :scheme https (7), :authority and :path as literals without indexing on their static
+;; names (1, 4), then one extra literal pair (zero-length name skips it). Returns new op or -1.
+(defn hpack-put-get-request! [(out : Bytes) (op : I32) (authority : Bytes) (path : Bytes) (xname : Bytes) (xvalue : Bytes)] : I32
+  (let [p1 (qpack-put-int! out op 128 7 2)
+        p2 (if (< p1 0) -1 (qpack-put-int! out p1 128 7 7))
+        p3 (if (< p2 0) -1 (qpack-put-int! out p2 0 4 1))
+        p4 (if (< p3 0) -1 (hp-put-str! out p3 authority))
+        p5 (if (< p4 0) -1 (qpack-put-int! out p4 0 4 4))
+        p6 (if (< p5 0) -1 (hp-put-str! out p5 path))]
+    (if (or (< p6 0) (= (bytes-len xname) 0)) p6
+      (let [p7 (qpack-put-int! out p6 0 4 0)
+            p8 (if (< p7 0) -1 (hp-put-str! out p7 xname))]
+        (if (< p8 0) -1 (hp-put-str! out p8 xvalue))))))
