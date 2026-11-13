@@ -1,0 +1,34 @@
+;; stdlib/collection/tapestry.prn -- Hall Tapestry, the photo planner (spec addon 69: "plans group screenshot poses,
+;; with a countdown and pose callouts"). A tapestry was how a Norse hall kept its pictures. A REFLUX mod; built
+;; with collection/games.
+;;
+;; A session is a run of shots. Each shot gets a pose -- one of the kit's ten emotes -- never the same as the
+;; shot before, plus an arrangement callout (front row kneels, tallest at the back, ...), from a seed. The host
+;; counts down in group chat, calls the pose, and takes the screenshot on zero.
+;;
+;; Addon 69's REFLUX block is 2680-2689:
+;;   2680 shot      a = shot number, b = pose (1..10), c = arrangement
+;;   2681 session   a = shots taken, b = shots planned, c = 0
+
+(module collection/tapestry)
+(export tap-arrangements tap-plan tap-shot! tap-done!)
+
+(defn tap-arrangements [] : I32 6)
+
+(defn tap-plan-walk [(i : I32) (n : I32) (x : I32) (prev : I32) (out : Any)] : Any
+  (if (> i n) out
+    (let [y (g-next x)
+          p0 (g-pick y 10)
+          p (if (= p0 prev) (+ (g-mod p0 10) 1) p0)
+          a (g-pick (+ y 3) (tap-arrangements))]
+      (do (lua/aset! out i (lua/array p a))
+          (tap-plan-walk (+ i 1) n y p out)))))
+
+;; A plan of n shots (1..12): {{pose, arrangement}...}.
+(defn tap-plan [(n : I32) (seed : I32)] : Any (tap-plan-walk 1 (g-clamp 1 12 n) seed 0 (lua/array)))
+
+(defn tap-shot! [(i : I32) (pose : I32) (arrangement : I32)] : I32
+  (do (reflux-dispatch (collection-action-type 69 0) i pose arrangement) i))
+
+(defn tap-done! [(taken : I32) (planned : I32)] : I32
+  (do (reflux-dispatch (collection-action-type 69 1) taken planned 0) taken))

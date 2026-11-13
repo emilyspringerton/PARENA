@@ -1,0 +1,73 @@
+;; stdlib/collection/mimir.prn -- Mímir's Riddle, trivia night (spec addon 59: "lore and quest trivia in party or guild
+;; chat, with scores tracked over time"). Mímir is the well of wisdom. A REFLUX mod; built with collection/games.
+;;
+;; The questions and their accepted answers are the catalogue's (runtime/wow/locales/mimir.lua): a question is
+;; asked in party or guild chat, and whether a chat line answers it is decided by the host against that list.
+;; This module decides the order, who scored first, and keeps the boards: the night's and the all-time one.
+;; Other players' chat lines are matched and dropped; only names and points are kept (spec dispute D-8).
+;; db.night = { order = {question indices}, at, scores = {[name] = n}, answered }; db.alltime = {[name] = n}.
+;;
+;; Addon 59's REFLUX block is 2580-2589:
+;;   2580 asked     a = question number in the night, b = question index in the catalogue, c = questions tonight
+;;   2581 answered  a = question number, b = seconds to the answer, c = that player's score tonight
+;;   2582 night end a = questions, b = top score, c = players who scored
+
+(module collection/mimir)
+(export mimir-init mimir-start! mimir-ask! mimir-current mimir-answer! mimir-skip! mimir-finish!)
+
+(defn mimir-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "alltime")) (lua/set! db "alltime" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn mimir-fill [(t : Any) (i : I32) (n : I32)] : Any
+  (if (> i n) t (do (lua/aset! t i i) (mimir-fill t (+ i 1) n))))
+
+(defn mimir-take [(t : Any) (i : I32) (k : I32) (out : Any)] : Any
+  (if (or (> i k) (> i (g-len t))) out (do (lua/aset! out i (lua/aget t i)) (mimir-take t (+ i 1) k out))))
+
+;; A night of `count` questions drawn without repeats from `total` in the catalogue. Returns how many.
+(defn mimir-start! [(db : Any) (total : I32) (count : I32) (seed : I32)] : I32
+  (let [order (mimir-take (g-shuffle! (mimir-fill (lua/array) 1 total) seed) 1 count (lua/array))]
+    (do (lua/set! db "night" (lua/obj "order" order "at" 0 "scores" (lua/obj) "answered" 1 "asked" 0))
+        (g-len order))))
+
+;; The next question's catalogue index, or 0 when the night is out of questions.
+(defn mimir-ask! [(db : Any) (now : I32)] : I32
+  (let [n (lua/get db "night")]
+    (if (lua/nil? n) 0
+      (let [k (+ (lua/get n "at") 1)]
+        (if (> k (g-len (lua/get n "order"))) 0
+          (do (lua/set! n "at" k)
+              (lua/set! n "answered" 0)
+              (lua/set! n "asked" now)
+              (reflux-dispatch (collection-action-type 59 0) k (lua/aget (lua/get n "order") k) (g-len (lua/get n "order")))
+              (lua/aget (lua/get n "order") k)))))))
+
+;; The open question's catalogue index, or 0 when none is open.
+(defn mimir-current [(db : Any)] : I32
+  (let [n (lua/get db "night")]
+    (if (or (lua/nil? n) (or (= (lua/get n "at") 0) (= (lua/get n "answered") 1))) 0
+      (lua/aget (lua/get n "order") (lua/get n "at")))))
+
+;; `name` gave a right answer: their score tonight when they were first, 0 when someone beat them to it.
+(defn mimir-answer! [(db : Any) (name : String) (now : I32)] : I32
+  (if (= (mimir-current db) 0) 0
+    (let [n (lua/get db "night")
+          s (g-board-add (lua/get n "scores") name 1)]
+      (do (lua/set! n "answered" 1)
+          (g-board-add (lua/get db "alltime") name 1)
+          (reflux-dispatch (collection-action-type 59 1) (lua/get n "at") (- now (lua/get n "asked")) s)
+          s))))
+
+;; Time ran out on the open question: close it with nobody scoring. 1 closed, 0 nothing was open.
+(defn mimir-skip! [(db : Any)] : I32
+  (if (= (mimir-current db) 0) 0 (do (lua/set! (lua/get db "night") "answered" 1) 1)))
+
+;; End the night: its scoreboard, best first. Clears it.
+(defn mimir-finish! [(db : Any)] : Any
+  (let [n (lua/get db "night")]
+    (if (lua/nil? n) (lua/array)
+      (let [top (g-board-top (lua/get n "scores") 40)]
+        (do (lua/set! db "night" (lua/nil))
+            (reflux-dispatch (collection-action-type 59 2) (lua/get n "at")
+              (if (lua/nil? (lua/aget top 1)) 0 (lua/aget (lua/aget top 1) 2)) (g-len top))
+            top)))))

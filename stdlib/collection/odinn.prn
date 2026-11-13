@@ -1,0 +1,101 @@
+;; stdlib/collection/odinn.prn -- Óðinn Says, emote Simon Says (spec addon 57: "the host calls emotes, players copy
+;; them, and the slowest or wrong player is out"). A REFLUX mod; built with collection/games.
+;;
+;; Each round the host calls one of the kit's ten emotes, either "Óðinn says /wave" (copy it) or a bare "/wave"
+;; (a trap: anyone who copies it is out). About one call in four is a trap. During the answer window the host
+;; reports every emote it sees from a player still in. When the window closes: on a real call, anyone who did
+;; not do it, or did another emote, is out -- and if everyone got it right, the slowest is out; on a trap,
+;; anyone who moved is out. The last one standing wins. db.round = { alive = {[name] = 1}, round, emote, real,
+;; answered = {[name] = order}, wrong = {[name] = 1} }; db.wins = all-time {[name] = wins}.
+;;
+;; Addon 57's REFLUX block is 2560-2569:
+;;   2560 call      a = round, b = emote (1..10, the kit's order), c = 1 real / 0 trap
+;;   2561 out       a = round, b = players left, c = reason (1 missed, 2 wrong emote, 3 slowest, 4 fell for a trap)
+;;   2562 winner    a = rounds played, b = players at the start, c = 0
+
+(module collection/odinn)
+(export odinn-init odinn-emotes odinn-start! odinn-call! odinn-answer! odinn-close! odinn-alive odinn-winner odinn-stop!)
+
+(defn odinn-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "wins")) (lua/set! db "wins" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn odinn-emotes [] : I32 10)
+
+(defn odinn-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (odinn-count t nk (+ n 1)))))
+
+(defn odinn-mark [(names : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len names)) out (do (lua/aset! out (lua/aget names i) 1) (odinn-mark names (+ i 1) out))))
+
+(defn odinn-start! [(db : Any) (names : Any)] : I32
+  (do (lua/set! db "round" (lua/obj "alive" (odinn-mark names 1 (lua/obj)) "round" 0 "players" (g-len names)))
+      (g-len names)))
+
+(defn odinn-alive [(db : Any)] : I32
+  (let [r (lua/get db "round")] (if (lua/nil? r) 0 (odinn-count (lua/get r "alive") (lua/nil) 0))))
+
+;; Make the next call from a seed: {emote 1..10, real 1/0}.
+(defn odinn-call! [(db : Any) (seed : I32)] : Any
+  (let [r (lua/get db "round")
+        e (g-pick seed (odinn-emotes))
+        real (if (= (g-mod (g-next (+ seed 7)) 4) 0) 0 1)]
+    (do (lua/set! r "round" (+ (lua/get r "round") 1))
+        (lua/set! r "emote" e)
+        (lua/set! r "real" real)
+        (lua/set! r "answered" (lua/obj))
+        (lua/set! r "wrong" (lua/obj))
+        (reflux-dispatch (collection-action-type 57 0) (lua/get r "round") e real)
+        (lua/array e real))))
+
+;; Player `name` made emote e during the window. Only the first emote counts.
+(defn odinn-answer! [(db : Any) (name : String) (e : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (or (lua/nil? r) (or (lua/nil? (lua/aget (lua/get r "alive") name))
+                             (or (not (lua/nil? (lua/aget (lua/get r "answered") name)))
+                                 (not (lua/nil? (lua/aget (lua/get r "wrong") name)))))) 0
+      (if (= e (lua/get r "emote"))
+        (do (lua/aset! (lua/get r "answered") name (+ (odinn-count (lua/get r "answered") (lua/nil) 0) 1)) 1)
+        (do (lua/aset! (lua/get r "wrong") name 1) 2)))))
+
+(defn odinn-out! [(db : Any) (r : Any) (name : String) (why : I32) (out : Any)] : Any
+  (do (lua/aset! (lua/get r "alive") name (lua/nil))
+      (lua/aset! out (+ (g-len out) 1) (lua/array name why))
+      (reflux-dispatch (collection-action-type 57 1) (lua/get r "round") (odinn-count (lua/get r "alive") (lua/nil) 0) why)
+      out))
+
+(defn odinn-sweep [(db : Any) (r : Any) (alive : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") alive k)]
+    (if (lua/nil? nk) out
+      (let [did (not (lua/nil? (lua/aget (lua/get r "answered") nk)))
+            wrong (not (lua/nil? (lua/aget (lua/get r "wrong") nk)))
+            why (if (= (lua/get r "real") 1) (if wrong 2 (if did 0 1)) (if (or did wrong) 4 0))]
+        (do (if (> why 0) (odinn-out! db r nk why out) 0)
+            (odinn-sweep db r alive nk out))))))
+
+(defn odinn-slowest [(answered : Any) (k : Any) (best : Any) (bestn : I32)] : Any
+  (let [nk (lua/call-fn (lua/global "next") answered k)]
+    (if (lua/nil? nk) best
+      (if (> (lua/aget answered nk) bestn) (odinn-slowest answered nk nk (lua/aget answered nk))
+        (odinn-slowest answered nk best bestn)))))
+
+;; (Clearing entries of the table being walked is allowed by Lua's next.)
+;; Close the window: returns {{name, reason}...} for everyone knocked out this round.
+(defn odinn-close! [(db : Any)] : Any
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) (lua/array)
+      (let [out (odinn-sweep db r (lua/get r "alive") (lua/nil) (lua/array))]
+        (if (and (= (g-len out) 0) (and (= (lua/get r "real") 1) (> (odinn-alive db) 1)))
+          (odinn-out! db r (odinn-slowest (lua/get r "answered") (lua/nil) (lua/nil) 0) 3 out)
+          out)))))
+
+;; The winner once one player is left (records the win, ends the game), else nil.
+(defn odinn-winner [(db : Any)] : Any
+  (let [r (lua/get db "round")]
+    (if (or (lua/nil? r) (> (odinn-alive db) 1)) (lua/nil)
+      (let [w (lua/call-fn (lua/global "next") (lua/get r "alive"))]
+        (do (if (lua/nil? w) 0 (g-board-add (lua/get db "wins") w 1))
+            (reflux-dispatch (collection-action-type 57 2) (lua/get r "round") (lua/get r "players") 0)
+            (lua/set! db "round" (lua/nil))
+            w)))))
+
+(defn odinn-stop! [(db : Any)] : I32 (do (lua/set! db "round" (lua/nil)) 0))

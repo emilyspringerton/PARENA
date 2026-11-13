@@ -1,0 +1,119 @@
+;; stdlib/collection/holmgang.prn -- Holmgang, the duel bracket (spec addon 67: "runs friendly duel tournaments with
+;; brackets, seeding and a champion banner"). A holmgang was a Norse duel of honour. A REFLUX mod; built with
+;; collection/games.
+;;
+;; Single elimination. Entrants are seeded in the order given (or shuffled from a seed); the bracket is the next
+;; power of two, seeded the standard way (1 v 16, 8 v 9, ... so the top seeds meet last) and the empty slots are
+;; byes that advance automatically. A result is reported by the winner's name -- by hand, or by the host
+;; reading the client's own duel-won system line. db.cup = { size, slots = {round -> {name or false}}, round };
+;; db.titles = all-time {[name] = championships}.
+;;
+;; Addon 67's REFLUX block is 2660-2669:
+;;   2660 match won  a = round, b = match in the round, c = winner's seed
+;;   2661 champion   a = winner's seed, b = entrants, c = rounds
+
+(module collection/holmgang)
+(export holm-init holm-size holm-seed-order holm-start! holm-matches holm-win! holm-champion holm-round)
+
+(defn holm-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "titles")) (lua/set! db "titles" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn holm-size [(n : I32)] : I32 (if (<= n 1) 1 (* 2 (holm-size (/ (+ n 1) 2)))))
+
+;; The standard seed order for a bracket of size s: position i holds seed holm-seed-order(s, i).
+;; Built by doubling: [1] -> [1,2] -> [1,4,2,3] -> [1,8,4,5,2,7,3,6] ...
+(defn holm-seed-order [(s : I32) (i : I32)] : I32
+  (if (<= s 1) 1
+    (let [half (/ s 2)
+          parent (holm-seed-order half (+ (/ (- i 1) 2) 1))]
+      (if (= (g-mod (- i 1) 2) 0) parent (- (+ s 1) parent)))))
+
+(defn holm-fill [(names : Any) (s : I32) (i : I32) (out : Any)] : Any
+  (if (> i s) out
+    (let [seed (holm-seed-order s i)]
+      (do (lua/aset! out i (if (> seed (g-len names)) false (lua/aget names seed)))
+          (holm-fill names s (+ i 1) out)))))
+
+(defn holm-copy [(t : Any) (i : I32) (n : I32) (out : Any)] : Any
+  (if (> i n) out (do (lua/aset! out i (lua/aget t i)) (holm-copy t (+ i 1) n out))))
+
+;; Start a cup; seed > 0 shuffles the entrants first. Returns the bracket size. Byes advance at once.
+(defn holm-start! [(db : Any) (names : Any) (seed : I32)] : I32
+  (let [list (if (> seed 0) (g-shuffle! (holm-copy names 1 (g-len names) (lua/array)) seed) names)
+        s (holm-size (g-len list))
+        slots (lua/array (holm-fill list s 1 (lua/array)))]
+    (do (lua/set! db "cup" (lua/obj "size" s "slots" slots "round" 1 "entrants" (g-len list) "seeds" (holm-seeds list 1 (lua/obj))))
+        (holm-advance-byes db)
+        s)))
+
+(defn holm-seeds [(list : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len list)) out (do (lua/aset! out (lua/aget list i) i) (holm-seeds list (+ i 1) out))))
+
+(defn holm-round [(db : Any)] : I32 (let [c (lua/get db "cup")] (if (lua/nil? c) 0 (lua/get c "round"))))
+
+(defn holm-cur [(c : Any)] : Any (lua/aget (lua/get c "slots") (lua/get c "round")))
+
+;; The open matches of the current round: {{match, a, b}...}, byes and decided ones left out.
+(defn holm-open [(cur : Any) (next : Any) (m : I32) (n : I32) (out : Any)] : Any
+  (if (> m n) out
+    (let [a (lua/aget cur (- (* m 2) 1)) b (lua/aget cur (* m 2))]
+      (do (if (and (not (= a false)) (and (not (= b false)) (lua/nil? (lua/aget next m))))
+            (lua/aset! out (+ (g-len out) 1) (lua/array m a b)) 0)
+          (holm-open cur next (+ m 1) n out)))))
+
+(defn holm-next-round [(c : Any)] : Any
+  (let [k (+ (lua/get c "round") 1)]
+    (do (if (lua/nil? (lua/aget (lua/get c "slots") k)) (lua/aset! (lua/get c "slots") k (lua/obj)) 0)
+        (lua/aget (lua/get c "slots") k))))
+
+(defn holm-matches [(db : Any)] : Any
+  (let [c (lua/get db "cup")]
+    (if (or (lua/nil? c) (< (g-len (holm-cur c)) 2)) (lua/array)
+      (holm-open (holm-cur c) (holm-next-round c) 1 (/ (g-len (holm-cur c)) 2) (lua/array)))))
+
+;; Byes: a match with one empty side sends the other through. Then, if the round is complete, move on.
+(defn holm-byes [(cur : Any) (next : Any) (m : I32) (n : I32)] : I32
+  (if (> m n) 0
+    (let [a (lua/aget cur (- (* m 2) 1)) b (lua/aget cur (* m 2))]
+      (do (if (lua/nil? (lua/aget next m))
+            (if (= a false) (lua/aset! next m b) (if (= b false) (lua/aset! next m a) 0)) 0)
+          (holm-byes cur next (+ m 1) n)))))
+
+(defn holm-full [(next : Any) (m : I32) (n : I32)] : I32
+  (if (> m n) 1 (if (lua/nil? (lua/aget next m)) 0 (holm-full next (+ m 1) n))))
+
+(defn holm-advance-byes [(db : Any)] : I32
+  (let [c (lua/get db "cup")
+        cur (holm-cur c)
+        n (/ (g-len cur) 2)]
+    (if (< n 1) 0
+      (let [next (holm-next-round c)
+            z (holm-byes cur next 1 n)]
+        (if (= (holm-full next 1 n) 1)
+          (do (lua/set! c "round" (+ (lua/get c "round") 1)) (holm-advance-byes db))
+          0)))))
+
+(defn holm-find [(open : Any) (name : String) (i : I32)] : Any
+  (if (> i (g-len open)) (lua/nil)
+    (let [m (lua/aget open i)]
+      (if (or (= (lua/aget m 2) name) (= (lua/aget m 3) name)) m (holm-find open name (+ i 1))))))
+
+;; `name` won their open match: 1 recorded, 0 when they have no open match.
+(defn holm-win! [(db : Any) (name : String)] : I32
+  (let [m (holm-find (holm-matches db) name 1)]
+    (if (lua/nil? m) 0
+      (let [c (lua/get db "cup")]
+        (do (lua/aset! (holm-next-round c) (lua/aget m 1) name)
+            (reflux-dispatch (collection-action-type 67 0) (lua/get c "round") (lua/aget m 1) (lua/aget (lua/get c "seeds") name))
+            (holm-advance-byes db)
+            1)))))
+
+;; The champion once the final is decided (records the title, ends the cup), else nil.
+(defn holm-champion [(db : Any)] : Any
+  (let [c (lua/get db "cup")]
+    (if (or (lua/nil? c) (> (g-len (holm-cur c)) 1)) (lua/nil)
+      (let [w (lua/aget (holm-cur c) 1)]
+        (do (lua/set! db "cup" (lua/nil))
+            (g-board-add (lua/get db "titles") w 1)
+            (reflux-dispatch (collection-action-type 67 1) (lua/aget (lua/get c "seeds") w) (lua/get c "entrants") (- (lua/get c "round") 1))
+            w)))))

@@ -1,0 +1,79 @@
+;; stdlib/collection/alfar.prn -- Álfar Revel, the dance floor (spec addon 64: "synced dance parties: the host starts,
+;; everyone joins the emote on the beat, with streak scores"). A REFLUX mod; built with collection/games.
+;;
+;; The host's clock drops a beat every few seconds and calls the emote for it. Everyone who does that emote before
+;; the next beat keeps their streak going (+1); anyone who misses the beat or does the wrong one drops to 0. The
+;; best streak of the party wins. db.party = { beat, emote, hit = {[name] = 1}, streak = {[name] = n},
+;; best = {[name] = n} }; db.records = all-time best streak per name.
+;;
+;; Addon 64's REFLUX block is 2630-2639:
+;;   2630 beat     a = beat number, b = emote (1..10), c = dancers on a streak
+;;   2631 hit      a = beat number, b = that dancer's streak, c = 0
+;;   2632 over     a = beats, b = best streak, c = dancers
+
+(module collection/alfar)
+(export revel-init revel-start! revel-beat! revel-hit! revel-close! revel-finish!)
+
+(defn revel-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "records")) (lua/set! db "records" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn revel-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+(defn revel-mark [(names : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len names)) out (do (lua/aset! out (lua/aget names i) 0) (revel-mark names (+ i 1) out))))
+
+(defn revel-start! [(db : Any) (names : Any)] : I32
+  (do (lua/set! db "party" (lua/obj "beat" 0 "emote" 0 "hit" (lua/obj) "streak" (revel-mark names 1 (lua/obj)) "best" (lua/obj)))
+      (g-len names)))
+
+(defn revel-on-streak [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) n (revel-on-streak t nk (if (> (lua/aget t nk) 0) (+ n 1) n)))))
+
+;; The next beat: returns the emote to call (1..10).
+(defn revel-beat! [(db : Any) (seed : I32)] : I32
+  (let [p (lua/get db "party") e (g-pick seed 10)]
+    (do (lua/set! p "beat" (+ (lua/get p "beat") 1))
+        (lua/set! p "emote" e)
+        (lua/set! p "hit" (lua/obj))
+        (reflux-dispatch (collection-action-type 64 0) (lua/get p "beat") e (revel-on-streak (lua/get p "streak") (lua/nil) 0))
+        e)))
+
+;; `name` did emote e: 1 on the beat, 2 wrong emote (streak broken), 0 already counted or no party.
+(defn revel-hit! [(db : Any) (name : String) (e : I32)] : I32
+  (let [p (lua/get db "party")]
+    (if (or (lua/nil? p) (or (= (lua/get p "beat") 0) (not (lua/nil? (lua/aget (lua/get p "hit") name))))) 0
+      (if (= e (lua/get p "emote"))
+        (let [s (+ (revel-zero (lua/aget (lua/get p "streak") name)) 1)]
+          (do (lua/aset! (lua/get p "hit") name 1)
+              (lua/aset! (lua/get p "streak") name s)
+              (if (> s (revel-zero (lua/aget (lua/get p "best") name))) (lua/aset! (lua/get p "best") name s) 0)
+              (reflux-dispatch (collection-action-type 64 1) (lua/get p "beat") s 0)
+              1))
+        (do (lua/aset! (lua/get p "hit") name 0) (lua/aset! (lua/get p "streak") name 0) 2)))))
+
+(defn revel-reset [(streak : Any) (hit : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") streak k)]
+    (if (lua/nil? nk) 0
+      (do (if (lua/nil? (lua/aget hit nk)) (lua/aset! streak nk 0) 0) (revel-reset streak hit nk)))))
+
+;; The beat is over: everyone who missed it loses their streak.
+(defn revel-close! [(db : Any)] : I32
+  (let [p (lua/get db "party")] (if (lua/nil? p) 0 (revel-reset (lua/get p "streak") (lua/get p "hit") (lua/nil)))))
+
+(defn revel-records [(best : Any) (rec : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") best k)]
+    (if (lua/nil? nk) 0
+      (do (if (> (lua/aget best nk) (revel-zero (lua/aget rec nk))) (lua/aset! rec nk (lua/aget best nk)) 0)
+          (revel-records best rec nk)))))
+
+;; End: best streaks, longest first. Clears the party.
+(defn revel-finish! [(db : Any)] : Any
+  (let [p (lua/get db "party")]
+    (if (lua/nil? p) (lua/array)
+      (let [top (g-board-top (lua/get p "best") 40)]
+        (do (revel-records (lua/get p "best") (lua/get db "records") (lua/nil))
+            (lua/set! db "party" (lua/nil))
+            (reflux-dispatch (collection-action-type 64 2) (lua/get p "beat")
+              (if (lua/nil? (lua/aget top 1)) 0 (lua/aget (lua/aget top 1) 2)) (g-len top))
+            top)))))

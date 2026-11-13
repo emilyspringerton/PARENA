@@ -1,0 +1,62 @@
+;; stdlib/collection/runeriddle.prn -- Rune Riddle, the scavenger hunt (spec addon 56: "build hunts from the Landmark
+;; Library: riddles point to real spots and arriving checks them off"). A REFLUX mod; built with collection/games.
+;;
+;; The Landmark Library (spec addon 45) is not built yet, so a hunt keeps its own spots: /riddle mark <riddle>
+;; stores where you stand (map, x, y in permille) with the riddle you wrote for it. When the Library lands, its
+;; landmarks become a second source of spots; the hunt's shape does not change. Arriving (within riddle-reach)
+;; at the current stop checks it off -- for the host alone, or for anyone in the group whose position the client
+;; gives.
+;; db.stops = {{map, x, y, riddle}...}; db.run = { stop, start, finder = {[stop] = name} } while a hunt runs;
+;; db.best = fastest full hunt in seconds.
+;;
+;; Addon 56's REFLUX block is 2550-2559:
+;;   2550 stop reached  a = stop number, b = seconds since the start, c = stops in the hunt
+;;   2551 hunt done     a = stops, b = seconds, c = 1 when it was a new best
+
+(module collection/runeriddle)
+(export riddle-init riddle-reach riddle-mark! riddle-clear! riddle-start! riddle-current riddle-arrive! riddle-done)
+
+(defn riddle-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "stops")) (lua/set! db "stops" (lua/array)) 0) (lua/set! db "v" 1) db))
+
+(defn riddle-reach [] : I32 8)
+
+(defn riddle-mark! [(db : Any) (map : I32) (x : I32) (y : I32) (riddle : String)] : I32
+  (let [n (+ (g-len (lua/get db "stops")) 1)]
+    (do (lua/aset! (lua/get db "stops") n (lua/obj "map" map "x" x "y" y "riddle" riddle)) n)))
+
+(defn riddle-clear! [(db : Any)] : I32 (do (lua/set! db "stops" (lua/array)) (lua/set! db "run" (lua/nil)) 0))
+
+;; Start at stop 1. Returns the number of stops (0: nothing to hunt).
+(defn riddle-start! [(db : Any) (now : I32)] : I32
+  (let [n (g-len (lua/get db "stops"))]
+    (if (= n 0) 0 (do (lua/set! db "run" (lua/obj "stop" 1 "start" now "finder" (lua/obj))) n))))
+
+;; The current stop's record, or nil when no hunt runs.
+(defn riddle-current [(db : Any)] : Any
+  (let [r (lua/get db "run")] (if (lua/nil? r) (lua/nil) (lua/aget (lua/get db "stops") (lua/get r "stop")))))
+
+;; `who` stands at (map, x, y). 0 nothing, 1 reached the current stop (the next riddle is up), 2 the hunt is done.
+(defn riddle-arrive! [(db : Any) (who : String) (map : I32) (x : I32) (y : I32) (now : I32)] : I32
+  (let [s (riddle-current db)]
+    (if (lua/nil? s) 0
+      (if (or (not (= map (lua/get s "map"))) (> (g-dist x y (lua/get s "x") (lua/get s "y")) (riddle-reach))) 0
+        (let [r (lua/get db "run")
+              n (g-len (lua/get db "stops"))
+              k (lua/get r "stop")
+              secs (- now (lua/get r "start"))]
+          (do (lua/aset! (lua/get r "finder") k who)
+              (reflux-dispatch (collection-action-type 56 0) k secs n)
+              (if (< k n)
+                (do (lua/set! r "stop" (+ k 1)) 1)
+                (let [best (lua/get db "best")
+                      isbest (if (or (lua/nil? best) (< secs best)) 1 0)]
+                  (do (if (= isbest 1) (lua/set! db "best" secs) 0)
+                      (lua/set! r "secs" secs)
+                      (lua/set! r "done" 1)
+                      (reflux-dispatch (collection-action-type 56 1) n secs isbest)
+                      2)))))))))
+
+;; 1 when the running hunt has been finished.
+(defn riddle-done [(db : Any)] : I32
+  (let [r (lua/get db "run")] (if (lua/nil? r) 0 (if (lua/nil? (lua/get r "done")) 0 1))))

@@ -1,0 +1,99 @@
+;; stdlib/collection/bragi.prn -- Bragi's Verse, the haiku duel (spec addon 63: "players trade haiku in chat and a
+;; syllable checker scores them, in the Flame's spirit"). Bragi is the god of poetry. A REFLUX mod; built with
+;; collection/games.
+;;
+;; The syllable checker is English-only, and a heuristic: a word's syllables are its vowel groups (a e i o u y),
+;; less a silent final "e" (but not "-le" after a consonant, as in "candle"), less "-es"/"-ed" endings that add
+;; no sound, and never fewer than one. It is close, not perfect -- which is part of the fun, and the host can
+;; always rule. Each line of the haiku scores 10 for its exact count (5, 7, 5), 5 when one off, else 0; a perfect
+;; haiku gets 5 more (35 at most). A duel is two poets; the higher score wins, a tie is a tie.
+;; db.duel = { a, b, scores = {[name] = n} }; db.wins = all-time {[name] = wins}.
+;;
+;; Addon 63's REFLUX block is 2620-2629:
+;;   2620 haiku scored  a = score, b = syllables as one number (5,7,5 -> 575), c = 1 when perfect
+;;   2621 duel decided  a = winner's score, b = loser's score, c = 1 when it was a tie
+
+(module collection/bragi)
+(export bragi-init bragi-syllables bragi-line-score bragi-score bragi-start! bragi-submit! bragi-result)
+
+(defn bragi-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "wins")) (lua/set! db "wins" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn bragi-byte [(s : String) (i : I32)] : I32
+  (let [b (lua/call-fn (lua/global "string.byte") s i)] (if (lua/nil? b) 0 b)))
+
+;; lower-case ASCII letter code, or 0 for anything else (so words split on it)
+(defn bragi-letter [(b : I32)] : I32
+  (if (and (>= b 97) (<= b 122)) b (if (and (>= b 65) (<= b 90)) (+ b 32) 0)))
+
+(defn bragi-vowel [(c : I32)] : I32
+  (if (or (= c 97) (or (= c 101) (or (= c 105) (or (= c 111) (or (= c 117) (= c 121)))))) 1 0))
+
+;; Syllables of the word s[from, to] (inclusive, letters only).
+(defn bragi-groups [(s : String) (i : I32) (to : I32) (prev : I32) (n : I32)] : I32
+  (if (> i to) n
+    (let [v (bragi-vowel (bragi-letter (bragi-byte s i)))]
+      (bragi-groups s (+ i 1) to v (if (and (= v 1) (= prev 0)) (+ n 1) n)))))
+
+(defn bragi-word [(s : String) (from : I32) (to : I32)] : I32
+  (let [len (+ (- to from) 1)
+        g (bragi-groups s from to 0 0)
+        last (bragi-letter (bragi-byte s to))
+        prev (if (> len 1) (bragi-letter (bragi-byte s (- to 1))) 0)
+        prev2 (if (> len 2) (bragi-letter (bragi-byte s (- to 2))) 0)
+        silent-e (and (= last 101) (and (> len 2) (and (not (and (= prev 108) (= (bragi-vowel prev2) 0)))
+                                                      (= (bragi-vowel prev) 0))))
+        silent-esd (and (> len 3) (and (= prev 101) (and (or (= last 115) (= last 100))
+                                                         (and (= (bragi-vowel prev2) 0)
+                                                              (not (or (= prev2 116) (or (= prev2 100) (or (= prev2 115) (or (= prev2 120) (= prev2 122))))))))))
+        n (- (- g (if silent-e 1 0)) (if silent-esd 1 0))]
+    (if (< n 1) 1 n)))
+
+(defn bragi-walk [(s : String) (i : I32) (n : I32) (start : I32) (total : I32)] : I32
+  (if (> i n)
+    (if (> start 0) (+ total (bragi-word s start n)) total)
+    (let [isl (> (bragi-letter (bragi-byte s i)) 0)
+          apos (= (bragi-byte s i) 39)]
+      (if isl
+        (bragi-walk s (+ i 1) n (if (> start 0) start i) total)
+        (if (and apos (> start 0))
+          (bragi-walk s (+ i 1) n start total)
+          (bragi-walk s (+ i 1) n 0 (if (> start 0) (+ total (bragi-word s start (- i 1))) total)))))))
+
+;; Syllables in a line of English.
+(defn bragi-syllables [(line : String)] : I32 (bragi-walk line 1 (lua/call-fn (lua/global "string.len") line) 0 0))
+
+(defn bragi-line-score [(got : I32) (want : I32)] : I32
+  (if (= got want) 10 (if (or (= got (+ want 1)) (= got (- want 1))) 5 0)))
+
+;; Score a haiku from its three lines' syllable counts. Dispatches 2620.
+(defn bragi-score [(s1 : I32) (s2 : I32) (s3 : I32)] : I32
+  (let [perfect (and (= s1 5) (and (= s2 7) (= s3 5)))
+        score (+ (+ (bragi-line-score s1 5) (bragi-line-score s2 7)) (+ (bragi-line-score s3 5) (if perfect 5 0)))]
+    (do (reflux-dispatch (collection-action-type 63 0) score (+ (* (g-clamp 0 9 s1) 100) (+ (* (g-clamp 0 9 s2) 10) (g-clamp 0 9 s3))) (if perfect 1 0))
+        score)))
+
+(defn bragi-start! [(db : Any) (a : String) (b : String)] : I32
+  (do (lua/set! db "duel" (lua/obj "a" a "b" b "scores" (lua/obj))) 1))
+
+;; A poet's haiku, by its syllable counts: their score, or -1 when they are not in the duel or already went.
+(defn bragi-submit! [(db : Any) (name : String) (s1 : I32) (s2 : I32) (s3 : I32)] : I32
+  (let [d (lua/get db "duel")]
+    (if (or (lua/nil? d) (or (and (not (= name (lua/get d "a"))) (not (= name (lua/get d "b"))))
+                             (not (lua/nil? (lua/aget (lua/get d "scores") name))))) -1
+      (let [sc (bragi-score s1 s2 s3)] (do (lua/aset! (lua/get d "scores") name sc) sc)))))
+
+;; Once both have gone: {winner or nil on a tie, winner's score, loser's score}; ends the duel. Else nil.
+(defn bragi-result [(db : Any)] : Any
+  (let [d (lua/get db "duel")]
+    (if (lua/nil? d) (lua/nil)
+      (let [sa (lua/aget (lua/get d "scores") (lua/get d "a"))
+            sb (lua/aget (lua/get d "scores") (lua/get d "b"))]
+        (if (or (lua/nil? sa) (lua/nil? sb)) (lua/nil)
+          (let [w (if (> sa sb) (lua/get d "a") (if (> sb sa) (lua/get d "b") (lua/nil)))
+                hi (if (> sa sb) sa sb)
+                lo (if (> sa sb) sb sa)]
+            (do (lua/set! db "duel" (lua/nil))
+                (if (lua/nil? w) 0 (g-board-add (lua/get db "wins") w 1))
+                (reflux-dispatch (collection-action-type 63 1) hi lo (if (lua/nil? w) 1 0))
+                (lua/array w hi lo))))))))

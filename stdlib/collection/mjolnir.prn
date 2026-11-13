@@ -1,0 +1,63 @@
+;; stdlib/collection/mjolnir.prn -- Mjölnir Pass, tag (spec addon 55: "tag games in a party; touching range passes
+;; 'it' and the board tracks who held it longest"). The hammer is "it". A REFLUX mod; built with collection/games.
+;;
+;; The host runs the clock; every tick it hands the hammer's position and everyone else's distance to it to
+;; tag-tick!. Whoever is "it" and comes within tag-touch-dist of someone passes it on -- except straight back to
+;; the one who just passed it, for tag-no-backs seconds. Seconds holding the hammer are counted per player; the
+;; board shows who held it longest (the loser, in tag's own logic, and the spec's headline).
+;; db.round = { it, from, since, held = {[name] = seconds}, start }; db.alltime = {[name] = seconds ever held}.
+;;
+;; Addon 55's REFLUX block is 2540-2549:
+;;   2540 passed    a = passes so far, b = seconds the passer held it, c = 0
+;;   2541 game over a = players, b = longest hold in seconds, c = passes
+
+(module collection/mjolnir)
+(export tag-init tag-touch-dist tag-no-backs tag-start! tag-it tag-can-pass tag-pass! tag-finish!)
+
+(defn tag-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "alltime")) (lua/set! db "alltime" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn tag-touch-dist [] : I32 4)
+(defn tag-no-backs [] : I32 3)
+
+;; Start with `first` as it. Names is the array of players.
+(defn tag-start! [(db : Any) (names : Any) (seed : I32) (now : I32)] : String
+  (let [first (lua/aget names (g-pick seed (g-len names)))]
+    (do (lua/set! db "round" (lua/obj "it" first "since" now "start" now "held" (lua/obj) "passes" 0 "players" (g-len names)))
+        first)))
+
+(defn tag-it [(db : Any)] : Any (let [r (lua/get db "round")] (if (lua/nil? r) (lua/nil) (lua/get r "it"))))
+
+;; May `it` pass to `target` at distance d right now? 1/0. No tag-backs to the one who passed it last.
+(defn tag-can-pass [(db : Any) (target : String) (d : I32) (now : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) 0
+      (if (or (> d (tag-touch-dist)) (= target (lua/get r "it"))) 0
+        (if (and (= target (lua/get r "from")) (< (- now (lua/get r "since")) (tag-no-backs))) 0 1)))))
+
+(defn tag-credit [(db : Any) (r : Any) (now : I32)] : I32
+  (let [s (- now (lua/get r "since"))]
+    (do (g-board-add (lua/get r "held") (lua/get r "it") s)
+        (g-board-add (lua/get db "alltime") (lua/get r "it") s)
+        s)))
+
+(defn tag-pass! [(db : Any) (target : String) (now : I32)] : I32
+  (let [r (lua/get db "round")
+        s (tag-credit db r now)]
+    (do (lua/set! r "from" (lua/get r "it"))
+        (lua/set! r "it" target)
+        (lua/set! r "since" now)
+        (lua/set! r "passes" (+ (lua/get r "passes") 1))
+        (reflux-dispatch (collection-action-type 55 0) (lua/get r "passes") s 0)
+        s)))
+
+;; End: the board of seconds held, longest first. Clears the round.
+(defn tag-finish! [(db : Any) (now : I32)] : Any
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) (lua/array)
+      (let [s (tag-credit db r now)
+            top (g-board-top (lua/get r "held") (lua/get r "players"))]
+        (do (lua/set! db "round" (lua/nil))
+            (reflux-dispatch (collection-action-type 55 1) (lua/get r "players")
+              (if (lua/nil? (lua/aget top 1)) 0 (lua/aget (lua/aget top 1) 2)) (lua/get r "passes"))
+            top)))))

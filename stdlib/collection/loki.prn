@@ -1,0 +1,49 @@
+;; stdlib/collection/loki.prn -- Loki's Lies, the rumour mill (spec addon 68: "silly made-up 'news' from your own event
+;; stream, such as 'Local Warlock drops 40 gold on a shiny hat'"). A REFLUX mod; built with collection/games.
+;;
+;; The source is the character's own journal (Collection Journal's rows: REFLUX type, a, b, c). This module picks
+;; a row worth gossiping about -- the most recent rows first, skipping types with no rumour -- and which of that
+;; type's templates to use; the catalogue holds the templates (R<type>_<n>) and fills them from the row. Types
+;; with rumours and how many templates each has are listed in loki-templates. Only this character's own rows are
+;; read; nothing is published (spec dispute D-8) -- a rumour goes to the player's own chat unless they choose to
+;; share it.
+;;
+;; Addon 68's REFLUX block is 2670-2679:
+;;   2670 rumour   a = the source row's type, b = template number, c = how far back the row was (rows)
+
+(module collection/loki)
+(export loki-templates loki-gossip-worthy loki-pick loki-told!)
+
+;; Templates per journal type (0 = no rumour for that type).
+(defn loki-templates [(type : I32)] : I32
+  (if (= type 2011) 4                      ;; gold changed
+    (if (= type 2010) 3                    ;; an item came or went
+      (if (= type 2692) 3                  ;; you died (Hrungnir saw it)
+        (if (= type 2691) 2                ;; the rock levelled
+          (if (= type 2640) 3              ;; affection for a critter
+            (if (= type 2720) 2            ;; a joke achievement
+              (if (= type 2710) 2          ;; a fortune
+                (if (= type 2591) 2 0))))))))) ;; a race finish
+
+;; Gold rows are only gossip when at least a gold moved; everything else with templates is.
+(defn loki-gossip-worthy [(type : I32) (a : I32)] : I32
+  (if (= (loki-templates type) 0) 0
+    (if (= type 2011) (if (or (>= a 10000) (<= a -10000)) 1 0) 1)))
+
+;; Pick from the journal rows given newest first as {{type, a, b, c}...}: {row index, template number} or nil.
+;; Looks at the newest 50 and chooses among the worthy ones with the seed.
+(defn loki-worthy [(rows : Any) (i : I32) (out : Any)] : Any
+  (if (or (> i (g-len rows)) (> i 50)) out
+    (let [r (lua/aget rows i)]
+      (do (if (= (loki-gossip-worthy (lua/aget r 1) (lua/aget r 2)) 1) (lua/aset! out (+ (g-len out) 1) i) 0)
+          (loki-worthy rows (+ i 1) out)))))
+
+(defn loki-pick [(rows : Any) (seed : I32)] : Any
+  (let [w (loki-worthy rows 1 (lua/array))]
+    (if (= (g-len w) 0) (lua/nil)
+      (let [i (lua/aget w (g-pick seed (g-len w)))
+            t (lua/aget (lua/aget rows i) 1)]
+        (lua/array i (g-pick (+ seed 31) (loki-templates t)))))))
+
+(defn loki-told! [(type : I32) (template : I32) (back : I32)] : I32
+  (do (reflux-dispatch (collection-action-type 68 0) type template back) 1))

@@ -1,0 +1,64 @@
+;; stdlib/collection/naglfar.prn -- Naglfar Crew, sardines (spec addon 71: "reverse hide and seek: one hides, and each
+;; finder squeezes in next to them until one seeker is left"). A REFLUX mod; built with collection/games.
+;;
+;; One player hides; the host watches every seeker's distance to the hider. A seeker within sard-squeeze-dist
+;; joins the tin (in the order they arrived). The round ends when one seeker is left out -- they lose -- or the
+;; clock runs out. db.round = { hider, seekers = {[name] = 1}, tin = {[name] = order}, start, secs };
+;; db.losses = all-time {[name] = times left last}.
+;;
+;; Addon 71's REFLUX block is 2700-2709:
+;;   2700 squeezed in  a = order in the tin, b = seconds taken, c = seekers
+;;   2701 round over   a = seekers in the tin, b = seekers, c = seconds
+
+(module collection/naglfar)
+(export sard-init sard-squeeze-dist sard-start! sard-check! sard-out sard-over sard-finish!)
+
+(defn sard-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "losses")) (lua/set! db "losses" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn sard-squeeze-dist [] : I32 6)
+
+(defn sard-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (sard-count t nk (+ n 1)))))
+
+(defn sard-mark [(names : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len names)) out (do (lua/aset! out (lua/aget names i) 1) (sard-mark names (+ i 1) out))))
+
+(defn sard-start! [(db : Any) (hider : String) (seekers : Any) (secs : I32) (now : I32)] : I32
+  (do (lua/set! db "round" (lua/obj "hider" hider "seekers" (sard-mark seekers 1 (lua/obj)) "tin" (lua/obj) "start" now "secs" secs))
+      (g-len seekers)))
+
+;; Seeker `name` is d from the hider: their place in the tin when they just squeezed in, else 0.
+(defn sard-check! [(db : Any) (name : String) (d : I32) (now : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (or (lua/nil? r) (or (lua/nil? (lua/aget (lua/get r "seekers") name))
+                             (or (not (lua/nil? (lua/aget (lua/get r "tin") name))) (> d (sard-squeeze-dist))))) 0
+      (let [order (+ (sard-count (lua/get r "tin") (lua/nil) 0) 1)]
+        (do (lua/aset! (lua/get r "tin") name order)
+            (reflux-dispatch (collection-action-type 71 0) order (- now (lua/get r "start")) (sard-count (lua/get r "seekers") (lua/nil) 0))
+            order)))))
+
+;; Seekers still outside the tin.
+(defn sard-out [(db : Any)] : I32
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) 0 (- (sard-count (lua/get r "seekers") (lua/nil) 0) (sard-count (lua/get r "tin") (lua/nil) 0)))))
+
+(defn sard-over [(db : Any) (now : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) 0 (if (or (<= (sard-out db) 1) (>= (- now (lua/get r "start")) (lua/get r "secs"))) 1 0))))
+
+(defn sard-loser-walk [(seekers : Any) (tin : Any) (k : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") seekers k)]
+    (if (lua/nil? nk) (lua/nil) (if (lua/nil? (lua/aget tin nk)) nk (sard-loser-walk seekers tin nk)))))
+
+;; End: {the last seeker out (nil if everyone made it), in the tin, seekers}. Clears the round.
+(defn sard-finish! [(db : Any) (now : I32)] : Any
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) (lua/array (lua/nil) 0 0)
+      (let [inn (sard-count (lua/get r "tin") (lua/nil) 0)
+            all (sard-count (lua/get r "seekers") (lua/nil) 0)
+            loser (if (= (- all inn) 1) (sard-loser-walk (lua/get r "seekers") (lua/get r "tin") (lua/nil)) (lua/nil))]
+        (do (lua/set! db "round" (lua/nil))
+            (if (lua/nil? loser) 0 (g-board-add (lua/get db "losses") loser 1))
+            (reflux-dispatch (collection-action-type 71 1) inn all (- now (lua/get r "start")))
+            (lua/array loser inn all))))))

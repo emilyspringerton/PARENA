@@ -1,0 +1,60 @@
+;; stdlib/collection/andvari.prn -- Andvari's Map, the treasure map maker (spec addon 58: "draw an X on our own maps
+;; and mail the clue to a friend, with ASCII art from the Pixel Mail Studio"). Andvari was the dwarf with the
+;; hoard. A REFLUX mod; built with collection/games.
+;;
+;; Our own maps (spec addon 43) and the Pixel Mail Studio (48) are not built yet. Until they are, the map is an
+;; ASCII chart of the zone: andvari-cell places a mark on a w x h grid, and andvari-clue describes where it lies
+;; (which way from the middle of the zone, and how far out) so the clue can be written in words too. The host
+;; draws the chart and fills an open mail with it. A mark is FOUND by standing within andvari-reach of it.
+;; db.marks = {{map, x, y, made, found}...}.
+;;
+;; Addon 58's REFLUX block is 2570-2579:
+;;   2570 marked  a = map id, b = x permille, c = y permille
+;;   2571 found   a = mark number, b = seconds since it was made, c = 0
+
+(module collection/andvari)
+(export andvari-init andvari-reach andvari-mark! andvari-cell andvari-heading andvari-band andvari-check!)
+
+(defn andvari-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "marks")) (lua/set! db "marks" (lua/array)) 0) (lua/set! db "v" 1) db))
+
+(defn andvari-reach [] : I32 8)
+
+(defn andvari-mark! [(db : Any) (map : I32) (x : I32) (y : I32) (now : I32)] : I32
+  (let [n (+ (g-len (lua/get db "marks")) 1)]
+    (do (lua/aset! (lua/get db "marks") n (lua/obj "map" map "x" x "y" y "made" now))
+        (reflux-dispatch (collection-action-type 58 0) map x y)
+        n)))
+
+;; The grid cell for a position: {column 1..w, row 1..h}.
+(defn andvari-cell [(x : I32) (y : I32) (w : I32) (h : I32)] : Any
+  (lua/array (+ (g-clamp 0 (- w 1) (/ (* x w) 1000)) 1) (+ (g-clamp 0 (- h 1) (/ (* y h) 1000)) 1)))
+
+;; Which way from the zone's middle: 0 the middle itself, 1 N, 2 NE, 3 E, 4 SE, 5 S, 6 SW, 7 W, 8 NW.
+;; (Map y grows southward.)
+(defn andvari-heading [(x : I32) (y : I32)] : I32
+  (let [dx (- x 500) dy (- 500 y)
+        ax (if (< dx 0) (- 0 dx) dx)
+        ay (if (< dy 0) (- 0 dy) dy)]
+    (if (and (< ax 60) (< ay 60)) 0
+      (if (> (* ay 5) (* ax 12)) (if (> dy 0) 1 5)
+        (if (> (* ax 5) (* ay 12)) (if (> dx 0) 3 7)
+          (if (> dy 0) (if (> dx 0) 2 8) (if (> dx 0) 4 6)))))))
+
+;; How far out: 1 near the middle, 2 halfway, 3 near the edge.
+(defn andvari-band [(x : I32) (y : I32)] : I32
+  (let [d (g-dist x y 500 500)] (if (< d 150) 1 (if (< d 350) 2 3))))
+
+(defn andvari-walk [(db : Any) (marks : Any) (i : I32) (map : I32) (x : I32) (y : I32) (now : I32)] : I32
+  (if (> i (g-len marks)) 0
+    (let [m (lua/aget marks i)]
+      (if (and (lua/nil? (lua/get m "found"))
+               (and (= map (lua/get m "map")) (<= (g-dist x y (lua/get m "x") (lua/get m "y")) (andvari-reach))))
+        (do (lua/set! m "found" now)
+            (reflux-dispatch (collection-action-type 58 1) i (- now (lua/get m "made")) 0)
+            i)
+        (andvari-walk db marks (+ i 1) map x y now)))))
+
+;; Standing at (map, x, y): the number of an unfound mark this finds, else 0.
+(defn andvari-check! [(db : Any) (map : I32) (x : I32) (y : I32) (now : I32)] : I32
+  (andvari-walk db (lua/get db "marks") 1 map x y now))

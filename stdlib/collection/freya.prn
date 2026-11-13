@@ -1,0 +1,71 @@
+;; stdlib/collection/freya.prn -- Freya's Runway, the fashion show (spec addon 61: "judges vote on outfits with a
+;; scoring panel and a runway queue"). A REFLUX mod; built with collection/games.
+;;
+;; The host lines models up in a queue and sends them down the runway one at a time. While a model walks, judges
+;; score them 1 to 10 in group chat; a judge votes once per model and never for themselves. When the walk
+;; closes, the model's score is the average of the votes, in tenths. The best average wins the show.
+;; db.show = { queue = {names}, at, votes = {[judge] = n}, results = {[name] = tenths} }; db.crowns = all-time wins.
+;;
+;; Addon 61's REFLUX block is 2600-2609:
+;;   2600 on the runway  a = place in the queue, b = models in the queue, c = 0
+;;   2601 scored         a = place in the queue, b = average in tenths, c = votes
+;;   2602 crowned        a = winning average in tenths, b = models, c = 0
+
+(module collection/freya)
+(export freya-init freya-start! freya-next! freya-model freya-vote! freya-close! freya-finish!)
+
+(defn freya-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "crowns")) (lua/set! db "crowns" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn freya-start! [(db : Any) (queue : Any)] : I32
+  (do (lua/set! db "show" (lua/obj "queue" queue "at" 0 "votes" (lua/obj) "results" (lua/obj) "open" 0)) (g-len queue)))
+
+;; Send the next model down; their name, or nil when the queue is done.
+(defn freya-next! [(db : Any)] : Any
+  (let [s (lua/get db "show")]
+    (if (lua/nil? s) (lua/nil)
+      (let [k (+ (lua/get s "at") 1)]
+        (if (> k (g-len (lua/get s "queue"))) (lua/nil)
+          (do (lua/set! s "at" k)
+              (lua/set! s "votes" (lua/obj))
+              (lua/set! s "open" 1)
+              (reflux-dispatch (collection-action-type 61 0) k (g-len (lua/get s "queue")) 0)
+              (lua/aget (lua/get s "queue") k)))))))
+
+(defn freya-model [(db : Any)] : Any
+  (let [s (lua/get db "show")]
+    (if (or (lua/nil? s) (= (lua/get s "open") 0)) (lua/nil) (lua/aget (lua/get s "queue") (lua/get s "at")))))
+
+;; A judge's vote: 1 counted, 0 refused (no walk open, out of 1..10, their own walk, or already voted).
+(defn freya-vote! [(db : Any) (judge : String) (score : I32)] : I32
+  (let [m (freya-model db)]
+    (if (or (lua/nil? m) (or (< score 1) (or (> score 10) (or (= judge m)
+            (not (lua/nil? (lua/aget (lua/get (lua/get db "show") "votes") judge))))))) 0
+      (do (lua/aset! (lua/get (lua/get db "show") "votes") judge score) 1))))
+
+(defn freya-sum [(t : Any) (k : Any) (n : I32) (sum : I32)] : Any
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) (lua/array n sum) (freya-sum t nk (+ n 1) (+ sum (lua/aget t nk))))))
+
+;; Close the walk: {average in tenths, votes}. A walk nobody voted on scores 0.
+(defn freya-close! [(db : Any)] : Any
+  (let [m (freya-model db)]
+    (if (lua/nil? m) (lua/array 0 0)
+      (let [s (lua/get db "show")
+            ns (freya-sum (lua/get s "votes") (lua/nil) 0 0)
+            avg (if (= (lua/aget ns 1) 0) 0 (/ (* (lua/aget ns 2) 10) (lua/aget ns 1)))]
+        (do (lua/aset! (lua/get s "results") m avg)
+            (lua/set! s "open" 0)
+            (reflux-dispatch (collection-action-type 61 1) (lua/get s "at") avg (lua/aget ns 1))
+            (lua/array avg (lua/aget ns 1)))))))
+
+;; End the show: results best first ({{name, tenths}...}); the winner gets a crown. Clears it.
+(defn freya-finish! [(db : Any)] : Any
+  (let [s (lua/get db "show")]
+    (if (lua/nil? s) (lua/array)
+      (let [top (g-board-top (lua/get s "results") 40)]
+        (do (lua/set! db "show" (lua/nil))
+            (if (lua/nil? (lua/aget top 1)) 0
+              (do (g-board-add (lua/get db "crowns") (lua/aget (lua/aget top 1) 1) 1)
+                  (reflux-dispatch (collection-action-type 61 2) (lua/aget (lua/aget top 1) 2) (g-len top) 0)))
+            top)))))

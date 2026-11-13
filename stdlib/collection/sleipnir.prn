@@ -1,0 +1,97 @@
+;; stdlib/collection/sleipnir.prn -- Sleipnir Sprint, the race marshal (spec addon 60: "set start and finish points for
+;; footraces or mount races, with laps, times and a leaderboard"). Sleipnir is Óðinn's eight-legged horse. A REFLUX
+;; mod; built with collection/games.
+;;
+;; A course is a start and a finish (map, x, y in permille). A race with laps > 1 must touch the finish and come
+;; back to the start for each lap but the last, which ends at the finish. The host's clock samples every racer's
+;; position; a racer reaching the next point within race-reach moves on. Times are in tenths of a second from
+;; the "go". The leaderboard per course keeps each racer's best (stored negated, so best is largest).
+;; db.course = {map, sx, sy, fx, fy}; db.race = { laps, go, leg = {[name] = legs done}, done = {[name] = tenths} };
+;; db.board = {[name] = -best tenths}.
+;;
+;; Addon 60's REFLUX block is 2590-2599:
+;;   2590 go        a = racers, b = laps, c = 0
+;;   2591 finished  a = place, b = time in tenths, c = 1 when it beat that racer's best
+;;   2592 lap       a = legs done, b = time in tenths, c = 0
+
+(module collection/sleipnir)
+(export race-init race-reach race-set-start! race-set-finish! race-ready race-go! race-move! race-over race-finish!)
+
+(defn race-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "board")) (lua/set! db "board" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn race-reach [] : I32 6)
+
+(defn race-course [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "course")) (lua/set! db "course" (lua/obj)) 0) (lua/get db "course")))
+
+(defn race-set-start! [(db : Any) (map : I32) (x : I32) (y : I32)] : I32
+  (let [c (race-course db)]
+    (do (lua/set! c "map" map) (lua/set! c "sx" x) (lua/set! c "sy" y) (lua/set! c "fx" (lua/nil)) (lua/set! db "board" (lua/obj)) 1)))
+
+(defn race-set-finish! [(db : Any) (map : I32) (x : I32) (y : I32)] : I32
+  (let [c (race-course db)]
+    (if (or (lua/nil? (lua/get c "sx")) (not (= map (lua/get c "map")))) 0
+      (do (lua/set! c "fx" x) (lua/set! c "fy" y) 1))))
+
+(defn race-ready [(db : Any)] : I32
+  (let [c (lua/get db "course")] (if (or (lua/nil? c) (lua/nil? (lua/get c "fx"))) 0 1)))
+
+(defn race-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+(defn race-mark [(names : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len names)) out (do (lua/aset! out (lua/aget names i) 0) (race-mark names (+ i 1) out))))
+
+(defn race-go! [(db : Any) (names : Any) (laps : I32) (go : I32)] : I32
+  (if (= (race-ready db) 0) 0
+    (do (lua/set! db "race" (lua/obj "laps" (g-clamp 1 20 laps) "go" go "leg" (race-mark names 1 (lua/obj)) "done" (lua/obj) "places" 0))
+        (reflux-dispatch (collection-action-type 60 0) (g-len names) (g-clamp 1 20 laps) 0)
+        (g-len names))))
+
+;; Racer `name` is at (map, x, y) at time `t` (tenths). 0 nothing, 1 a lap point reached, else their finishing
+;; place + 1 (so 2 = first).
+(defn race-move! [(db : Any) (name : String) (map : I32) (x : I32) (y : I32) (t : I32)] : I32
+  (let [r (lua/get db "race") c (lua/get db "course")]
+    (if (or (lua/nil? r) (or (lua/nil? (lua/aget (lua/get r "leg") name)) (or (not (lua/nil? (lua/aget (lua/get r "done") name)))
+                                                                           (not (= map (lua/get c "map")))))) 0
+      (let [legs (lua/aget (lua/get r "leg") name)
+            to-finish (= (g-mod legs 2) 0)
+            tx (if to-finish (lua/get c "fx") (lua/get c "sx"))
+            ty (if to-finish (lua/get c "fy") (lua/get c "sy"))]
+        (if (> (g-dist x y tx ty) (race-reach)) 0
+          (let [legs2 (+ legs 1)
+                el (- t (lua/get r "go"))]
+            (do (lua/aset! (lua/get r "leg") name legs2)
+                (if (< legs2 (- (* (lua/get r "laps") 2) 1))
+                  (do (reflux-dispatch (collection-action-type 60 2) legs2 el 0) 1)
+                  (let [place (+ (lua/get r "places") 1)
+                        old (lua/aget (lua/get db "board") name)
+                        best (if (or (lua/nil? old) (> (- 0 el) old)) 1 0)]
+                    (do (lua/set! r "places" place)
+                        (lua/aset! (lua/get r "done") name el)
+                        (if (= best 1) (lua/aset! (lua/get db "board") name (- 0 el)) 0)
+                        (reflux-dispatch (collection-action-type 60 1) place el best)
+                        (+ place 1)))))))))))
+
+(defn race-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (race-count t nk (+ n 1)))))
+
+;; 1 when every racer has finished.
+(defn race-over [(db : Any)] : I32
+  (let [r (lua/get db "race")]
+    (if (lua/nil? r) 0 (if (= (race-count (lua/get r "done") (lua/nil) 0) (race-count (lua/get r "leg") (lua/nil) 0)) 1 0))))
+
+;; End: this race's results fastest first ({{name, tenths}...}); clears it.
+(defn race-flip [(top : Any) (i : I32)] : Any
+  (if (> i (g-len top)) top
+    (do (lua/aset! (lua/aget top i) 2 (- 0 (lua/aget (lua/aget top i) 2))) (race-flip top (+ i 1)))))
+
+(defn race-neg [(t : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) out (do (lua/aset! out nk (- 0 (lua/aget t nk))) (race-neg t nk out)))))
+
+(defn race-finish! [(db : Any)] : Any
+  (let [r (lua/get db "race")]
+    (if (lua/nil? r) (lua/array)
+      (do (lua/set! db "race" (lua/nil))
+          (race-flip (g-board-top (race-neg (lua/get r "done") (lua/nil) (lua/obj)) 40) 1)))))

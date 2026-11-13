@@ -1,0 +1,78 @@
+;; stdlib/collection/huldufolk.prn -- Huldufólk Hunt, hide and seek (spec addon 54: "hosts rounds in a chosen zone:
+;; the seeker gets hot-or-cold hints from distance, with a countdown and score board"). The huldufólk are the hidden
+;; folk -- the spec's own name. A REFLUX mod; built with collection/games.
+;;
+;; The host is the seeker; everyone else in the group hides. Positions come from the client (permille of the map);
+;; a hider is FOUND when the seeker is within hunt-found-dist of them. Score: seconds left on the clock per find.
+;; db.round = { hiders = {[name] = 1}, found = {[name] = seconds taken}, start, secs, left } while a round runs;
+;; db.board = all-time {[name] = points} for the seeker (keyed by the seeker's name).
+;;
+;; Addon 54's REFLUX block is 2530-2539:
+;;   2530 round start  a = hiders, b = seconds, c = 0
+;;   2531 found        a = hiders found so far, b = seconds taken, c = points
+;;   2532 round over   a = found, b = hiders, c = 1 when everyone was found
+
+(module collection/huldufolk)
+(export hunt-init hunt-found-dist hunt-start! hunt-check! hunt-left hunt-over hunt-finish! hunt-hint)
+
+(defn hunt-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "board")) (lua/set! db "board" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn hunt-found-dist [] : I32 12)
+
+(defn hunt-hint [(d : I32)] : I32 (g-hot-cold d))
+
+(defn hunt-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (hunt-count t nk (+ n 1)))))
+
+(defn hunt-mark [(names : Any) (i : I32) (out : Any)] : Any
+  (if (> i (g-len names)) out (do (lua/aset! out (lua/aget names i) 1) (hunt-mark names (+ i 1) out))))
+
+;; Start a round: names is an array of hider names. Returns how many hide.
+(defn hunt-start! [(db : Any) (names : Any) (secs : I32) (now : I32)] : I32
+  (do (lua/set! db "round" (lua/obj "hiders" (hunt-mark names 1 (lua/obj)) "found" (lua/obj) "start" now "secs" secs))
+      (reflux-dispatch (collection-action-type 54 0) (g-len names) secs 0)
+      (g-len names)))
+
+;; The seeker is `d` from hider `name`: 1 when that finds them now, else 0.
+(defn hunt-check! [(db : Any) (name : String) (d : I32) (now : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (or (lua/nil? r) (or (lua/nil? (lua/aget (lua/get r "hiders") name))
+                             (or (not (lua/nil? (lua/aget (lua/get r "found") name))) (> d (hunt-found-dist))))) 0
+      (let [taken (- now (lua/get r "start"))
+            pts (g-clamp 1 100000 (- (lua/get r "secs") taken))]
+        (do (lua/aset! (lua/get r "found") name taken)
+            (g-board-add (lua/get db "board") "seeker" pts)
+            (reflux-dispatch (collection-action-type 54 1) (hunt-count (lua/get r "found") (lua/nil) 0) taken pts)
+            1)))))
+
+(defn hunt-left [(db : Any)] : I32
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) 0 (- (hunt-count (lua/get r "hiders") (lua/nil) 0) (hunt-count (lua/get r "found") (lua/nil) 0)))))
+
+;; 1 when the round is over: everyone found, or the clock ran out.
+(defn hunt-over [(db : Any) (now : I32)] : I32
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) 0
+      (if (or (= (hunt-left db) 0) (>= (- now (lua/get r "start")) (lua/get r "secs"))) 1 0))))
+
+;; End the round: {found, hiders, {{name, seconds}...} fastest first}. Clears it.
+(defn hunt-finish! [(db : Any) (now : I32)] : Any
+  (let [r (lua/get db "round")]
+    (if (lua/nil? r) (lua/array 0 0 (lua/array))
+      (let [found (hunt-count (lua/get r "found") (lua/nil) 0)
+            hiders (hunt-count (lua/get r "hiders") (lua/nil) 0)
+            neg (hunt-negate (lua/get r "found") (lua/nil) (lua/obj))
+            top (g-board-top neg hiders)]
+        (do (lua/set! db "round" (lua/nil))
+            (reflux-dispatch (collection-action-type 54 2) found hiders (if (= found hiders) 1 0))
+            (lua/array found hiders (hunt-unnegate top 1)))))))
+
+;; times negated so the board's "largest first" is "fastest first"
+(defn hunt-negate [(t : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) out (do (lua/aset! out nk (- 0 (lua/aget t nk))) (hunt-negate t nk out)))))
+
+(defn hunt-unnegate [(top : Any) (i : I32)] : Any
+  (if (> i (g-len top)) top
+    (do (lua/aset! (lua/aget top i) 2 (- 0 (lua/aget (lua/aget top i) 2))) (hunt-unnegate top (+ i 1)))))

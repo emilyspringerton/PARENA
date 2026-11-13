@@ -1,0 +1,75 @@
+;; stdlib/collection/aegir.prn -- Ægir's Catch, the fishing derby (spec addon 62: "timed fishing contests where the
+;; biggest or weirdest catch wins, read from the loot stream"). Ægir is the sea-giant. A REFLUX mod; built with
+;; collection/games.
+;;
+;; Fish have no weight in the game, so the derby measures what it can: the BIGGEST catch is the one worth the
+;; most at a vendor, and the WEIRDEST is the rarest -- the item caught fewest times in the whole derby, the
+;; higher quality breaking a tie. Which loot counts as a catch is the host's call (its own fishing loot, and
+;; party members' loot lines for items known to be fish). db.derby = { start, secs, catches, by = {[who] = n},
+;; items = {[itemID] = n}, best = {who, item, price}, quality = {[itemID] = q}, who = {[itemID] = first catcher} };
+;; db.records = { biggest = {who, item, price} }.
+;;
+;; Addon 62's REFLUX block is 2610-2619:
+;;   2610 catch       a = itemID, b = vendor price in copper, c = 1 when it is the derby's new biggest
+;;   2611 derby over  a = catches, b = biggest price, c = anglers
+
+(module collection/aegir)
+(export aegir-init aegir-start! aegir-catch! aegir-over aegir-finish!)
+
+(defn aegir-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "records")) (lua/set! db "records" (lua/obj)) 0) (lua/set! db "v" 1) db))
+
+(defn aegir-start! [(db : Any) (secs : I32) (now : I32)] : I32
+  (do (lua/set! db "derby" (lua/obj "start" now "secs" secs "catches" 0 "by" (lua/obj) "items" (lua/obj) "quality" (lua/obj) "who" (lua/obj)))
+      secs))
+
+;; `who` landed itemID worth `price` copper, of quality q. Returns 1 when it is the new biggest, else 0;
+;; -1 when no derby runs or it is over.
+(defn aegir-catch! [(db : Any) (who : String) (item : I32) (price : I32) (q : I32) (now : I32)] : I32
+  (let [d (lua/get db "derby")]
+    (if (or (lua/nil? d) (>= (- now (lua/get d "start")) (lua/get d "secs"))) -1
+      (let [best (lua/get d "best")
+            big (if (or (lua/nil? best) (> price (lua/aget best 3))) 1 0)]
+        (do (lua/set! d "catches" (+ (lua/get d "catches") 1))
+            (g-board-add (lua/get d "by") who 1)
+            (g-board-add (lua/get d "items") (lua/call-fn (lua/global "tostring") item) 1)
+            (lua/aset! (lua/get d "quality") (lua/call-fn (lua/global "tostring") item) q)
+            (if (lua/nil? (lua/aget (lua/get d "who") (lua/call-fn (lua/global "tostring") item)))
+              (lua/aset! (lua/get d "who") (lua/call-fn (lua/global "tostring") item) who) 0)
+            (if (= big 1) (lua/set! d "best" (lua/array who item price)) 0)
+            (reflux-dispatch (collection-action-type 62 0) item price big)
+            big)))))
+
+(defn aegir-over [(db : Any) (now : I32)] : I32
+  (let [d (lua/get db "derby")] (if (lua/nil? d) 0 (if (>= (- now (lua/get d "start")) (lua/get d "secs")) 1 0))))
+
+;; rarest item: fewest catches, then higher quality, then lower id string
+(defn aegir-rarest [(items : Any) (qual : Any) (k : Any) (best : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") items k)]
+    (if (lua/nil? nk) best
+      (if (or (lua/nil? best)
+              (or (< (lua/aget items nk) (lua/aget items best))
+                  (and (= (lua/aget items nk) (lua/aget items best))
+                       (or (> (lua/aget qual nk) (lua/aget qual best))
+                           (and (= (lua/aget qual nk) (lua/aget qual best)) (< nk best))))))
+        (aegir-rarest items qual nk nk)
+        (aegir-rarest items qual nk best)))))
+
+(defn aegir-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (aegir-count t nk (+ n 1)))))
+
+;; End the derby: {biggest {who, item, price} or nil, weirdest {who, item} or nil, catches, anglers board}.
+(defn aegir-finish! [(db : Any)] : Any
+  (let [d (lua/get db "derby")]
+    (if (lua/nil? d) (lua/array (lua/nil) (lua/nil) 0 (lua/array))
+      (let [best (lua/get d "best")
+            rare (aegir-rarest (lua/get d "items") (lua/get d "quality") (lua/nil) (lua/nil))
+            weird (if (lua/nil? rare) (lua/nil)
+                    (lua/array (lua/aget (lua/get d "who") rare) (lua/call-fn (lua/global "tonumber") rare)))
+            rec (lua/get (lua/get db "records") "biggest")]
+        (do (lua/set! db "derby" (lua/nil))
+            (if (and (not (lua/nil? best)) (or (lua/nil? rec) (> (lua/aget best 3) (lua/aget rec 3))))
+              (lua/set! (lua/get db "records") "biggest" best) 0)
+            (reflux-dispatch (collection-action-type 62 1) (lua/get d "catches")
+              (if (lua/nil? best) 0 (lua/aget best 3)) (aegir-count (lua/get d "by") (lua/nil) 0))
+            (lua/array best weird (lua/get d "catches") (g-board-top (lua/get d "by") 40)))))))

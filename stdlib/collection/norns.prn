@@ -1,0 +1,81 @@
+;; stdlib/collection/norns.prn -- Norns' Draw, gnome bingo (spec addon 66: "bingo cards with in-world events like 'a
+;; rogue appears' or 'someone jumps off a cliff'"). A REFLUX mod; built with collection/games.
+;;
+;; A card is 5 x 5: the centre (square 13) is free, the other 24 squares are events drawn without repeats from the
+;; host's pool (the glue numbers the events it can detect, 1..pool). When an event happens, every square showing
+;; it is marked. Rows, columns and both diagonals are lines; the first completed line is BINGO, and the card
+;; keeps counting lines after. db.card = { squares = {25 event ids, 0 = free}, marked = {[square] = 1}, dealt,
+;; lines, bingo }; db.bingos = all-time count.
+;;
+;; Addon 66's REFLUX block is 2650-2659:
+;;   2650 marked   a = square (1..25), b = event id, c = squares marked
+;;   2651 BINGO    a = lines complete, b = squares marked, c = seconds since the deal
+
+(module collection/norns)
+(export norns-init norns-deal! norns-mark! norns-lines norns-square norns-marked)
+
+(defn norns-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "bingos")) (lua/set! db "bingos" 0) 0) (lua/set! db "v" 1) db))
+
+(defn norns-fill [(t : Any) (i : I32) (n : I32)] : Any
+  (if (> i n) t (do (lua/aset! t i i) (norns-fill t (+ i 1) n))))
+
+(defn norns-lay [(drawn : Any) (sq : I32) (k : I32) (out : Any)] : Any
+  (if (> sq 25) out
+    (if (= sq 13) (do (lua/aset! out 13 0) (norns-lay drawn 14 k out))
+      (do (lua/aset! out sq (lua/aget drawn k)) (norns-lay drawn (+ sq 1) (+ k 1) out)))))
+
+;; the free centre square starts marked
+(defn norns-free [(m : Any)] : Any (do (lua/aset! m 13 1) m))
+
+;; Deal a card from a pool of `pool` events (needs at least 24). Returns 1, or 0 when the pool is too small.
+(defn norns-deal! [(db : Any) (pool : I32) (seed : I32) (now : I32)] : I32
+  (if (< pool 24) 0
+    (let [drawn (g-shuffle! (norns-fill (lua/array) 1 pool) seed)]
+      (do (lua/set! db "card" (lua/obj "squares" (norns-lay drawn 1 1 (lua/array)) "marked" (norns-free (lua/obj)) "dealt" now "lines" 0 "bingo" 0))
+          1))))
+
+(defn norns-square [(db : Any) (sq : I32)] : I32
+  (let [c (lua/get db "card")] (if (lua/nil? c) 0 (lua/aget (lua/get c "squares") sq))))
+
+(defn norns-marked [(db : Any) (sq : I32)] : I32
+  (let [c (lua/get db "card")] (if (or (lua/nil? c) (lua/nil? (lua/aget (lua/get c "marked") sq))) 0 1)))
+
+(defn norns-count [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)] (if (lua/nil? nk) n (norns-count t nk (+ n 1)))))
+
+;; Is the line from square `start` stepping `step`, 5 squares long, all marked?
+(defn norns-line [(db : Any) (start : I32) (step : I32) (i : I32)] : I32
+  (if (> i 4) 1 (if (= (norns-marked db (+ start (* i step))) 0) 0 (norns-line db start step (+ i 1)))))
+
+(defn norns-rows [(db : Any) (r : I32) (n : I32)] : I32
+  (if (> r 4) n
+    (norns-rows db (+ r 1) (+ (+ n (norns-line db (+ (* r 5) 1) 1 0)) (norns-line db (+ r 1) 5 0)))))
+
+;; Complete lines on the card (rows, columns, diagonals).
+(defn norns-lines [(db : Any)] : I32
+  (if (lua/nil? (lua/get db "card")) 0
+    (+ (norns-rows db 0 0) (+ (norns-line db 1 6 0) (norns-line db 5 4 0)))))
+
+(defn norns-walk [(db : Any) (c : Any) (event : I32) (sq : I32) (n : I32)] : I32
+  (if (> sq 25) n
+    (if (and (= (lua/aget (lua/get c "squares") sq) event) (lua/nil? (lua/aget (lua/get c "marked") sq)))
+      (do (lua/aset! (lua/get c "marked") sq 1)
+          (reflux-dispatch (collection-action-type 66 0) sq event (norns-count (lua/get c "marked") (lua/nil) 0))
+          (norns-walk db c event (+ sq 1) (+ n 1)))
+      (norns-walk db c event (+ sq 1) n))))
+
+;; Event `event` happened: 0 nothing new, 1 a square marked, 2 that mark made the first BINGO.
+(defn norns-mark! [(db : Any) (event : I32) (now : I32)] : I32
+  (let [c (lua/get db "card")]
+    (if (lua/nil? c) 0
+      (let [n (norns-walk db c event 1 0)]
+        (if (= n 0) 0
+          (let [lines (norns-lines db)]
+            (do (lua/set! c "lines" lines)
+                (if (and (> lines 0) (= (lua/get c "bingo") 0))
+                  (do (lua/set! c "bingo" 1)
+                      (lua/set! db "bingos" (+ (lua/get db "bingos") 1))
+                      (reflux-dispatch (collection-action-type 66 1) lines (norns-count (lua/get c "marked") (lua/nil) 0) (- now (lua/get c "dealt")))
+                      2)
+                  1))))))))
