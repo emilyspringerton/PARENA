@@ -1,5 +1,20 @@
 ## 2026-11-13
 
+- **The Collection event store** (spec Step 7): `stdlib/collection/eventstore.prn` is a port of PRRJECT_FATBABY's
+  Go `eventstore.FileStore`, written in PARENA and run with Lua 5.1. Thin host glue:
+  `runtime/collection/store_ingest.lua`, plus the env-driven `scripts/collection-store-ingest.sh`.
+  - It writes the Go store's own layout, so the Go code reads it unchanged: `events/YYYY-MM-DD.ndjson`
+    records `{"sequence","event","appended_at"}` and `state/latest-sequence`.
+  - Go's rules are kept: the state file wins; a corrupt state file is refused, never guessed past; a missing
+    one is rebuilt from the journals; a partial trailing line is skipped; id, type and data are required;
+    ingested_at is filled in when missing.
+  - Added: ingest is idempotent by event id.
+  - The lock is `state/append.lock.d`. It excludes other ingests, but not Go writers, because Lua has no flock.
+  - `tests/collection_store/store_test.sh`: 21/21.
+  - `go_interop.sh`: 4/4 against the real Go `FileStore`, taken from PRRJECT_FATBABY's HEAD unmodified; only
+    the cgo flock is stubbed. Go reads PARENA's records, Go appends next, PARENA continues after it. The check
+    is skipped when PRRJECT_FATBABY or Go is absent. Nothing in the shipped store is Go.
+
 - **The Collection of Value client** -- `scripts/wow-package-collection.sh [--zip] [--install]` builds
   `AddOns/RefluxCore`, `AddOns/CollectionJournal` (REFLUX -> per-character journal; `/cov`),
   `AddOns/FafnirsBed` and `reader/` (`read-journal.sh`, which needs no compiler) into one folder or

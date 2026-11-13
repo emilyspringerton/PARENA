@@ -1468,6 +1468,10 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	WOW_WTF_DIR=$(REFLUX_WOW_OUT)/reader/wtf COLLECTION_EVENTS=$(REFLUX_WOW_OUT)/clientwork/pkg.ndjson PARENA_BIN=/nonexistent \
 		bash $(REFLUX_WOW_OUT)/client/reader/read-journal.sh | grep -q "2 rows read, 2 appended"
 	@echo "packaged reader: ok"
+	@# Step 7, the event store (stdlib/collection/eventstore.prn): its rules through the real wrapper, then the
+	@# on-disk check against PRRJECT_FATBABY's real Go FileStore (skipped without PRRJECT_FATBABY_DIR and Go).
+	bash tests/collection_store/store_test.sh $(REFLUX_WOW_OUT)/store
+	bash tests/collection_store/go_interop.sh $(REFLUX_WOW_OUT)/gointerop
 	@# ...and a misspelled lua/ form fails the build instead of emitting `M.lua/...`.
 	@if ./.parena-bootstrap build tests/reflux_wow/bad_interop.prn -o $(REFLUX_WOW_OUT)/bad.lua >/dev/null 2>&1; then \
 		echo "FAIL: an unknown lua/ form was emitted"; exit 1; fi
