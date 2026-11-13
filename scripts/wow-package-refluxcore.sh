@@ -4,7 +4,9 @@
 # RefluxCore is the first addon every other Collection addon depends on (## Dependencies: RefluxCore): it
 # carries the shared REFLUX log (runtime/wow/reflux_host.lua) and the PARENA-built REFLUX stdlib
 # (stdlib/reflux/reflux.prn, cursor.prn), registered as RefluxCore.modules["reflux/reflux"] and
-# ["reflux/cursor"]. Nothing here is hand-written addon logic; the .lua modules are `parena build` output.
+# ["reflux/cursor"], and the REFLUX tips API: its rules (stdlib/collection/tips.prn, ["collection/tips"]), its
+# catalogue and its registry glue (runtime/wow/reflux_tips.lua, the global RefluxTips). The .lua modules are
+# `parena build` output; the only hand-written Lua is host glue, as everywhere in the Collection.
 #
 # Environment (all overridable; see MONOREPO/scripts/collection-env.sh):
 #   WOW_INTERFACE     REQUIRED. The client's TOC interface number (4th value of GetBuildInfo()). Never
@@ -32,14 +34,16 @@ addon="$REFLUXCORE_OUT/RefluxCore"
 rm -rf "$addon"
 mkdir -p "$addon"
 
-# wrap NAME SRC.prn OUT.lua -- compile, then register the module's table in RefluxCore.modules[NAME].
-# The emitted chunk ends in `return M`; WoW discards a file's return value, so it is called as a function.
+# wrap NAME OUT.lua SRC.prn... -- compile the sources as one module, then register its table in
+# RefluxCore.modules[NAME]. The emitted chunk ends in `return M`; WoW discards a file's return value, so it is
+# called as a function.
 wrap() {
-  local name="$1" src="$2" out="$3" tmp
+  local name="$1" out="$2" tmp
+  shift 2
   tmp="$(mktemp)"
-  "$PARENA_BIN" build "$src" -o "$tmp.lua" >/dev/null
+  "$PARENA_BIN" build "$@" -o "$tmp.lua" >/dev/null
   {
-    echo "-- RefluxCore: $name, built by parena from $src. Do not edit; edit the .prn."
+    echo "-- RefluxCore: $name, built by parena from $*. Do not edit; edit the .prn."
     echo "RefluxCore = RefluxCore or { modules = {} }"
     echo "RefluxCore.modules[\"$name\"] = (function(...)"
     cat "$tmp.lua"
@@ -49,8 +53,13 @@ wrap() {
 }
 
 cp runtime/wow/reflux_host.lua "$addon/reflux_host.lua"
-wrap reflux/reflux stdlib/reflux/reflux.prn "$addon/reflux.lua"
-wrap reflux/cursor stdlib/reflux/cursor.prn "$addon/cursor.lua"
+wrap reflux/reflux "$addon/reflux.lua" stdlib/reflux/reflux.prn
+wrap reflux/cursor "$addon/cursor.lua" stdlib/reflux/cursor.prn
+# The REFLUX tips API every Collection addon publishes its tips through (/rumor tells one about another addon):
+# the rules, RefluxCore's own catalogue (its tips and the API's lines) and the registry glue, RefluxTips.
+wrap collection/tips "$addon/tips.lua" stdlib/reflux/reflux.prn stdlib/collection/tips.prn
+cp runtime/wow/locales/reflux.lua "$addon/locale.lua"
+cp runtime/wow/reflux_tips.lua "$addon/reflux_tips.lua"
 
 version="$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo dev)"
 # Title/Notes are enUS only for now: the 12-locale TOC fields (## Title-deDE: ...) come from the i18n
@@ -65,6 +74,9 @@ cat > "$addon/RefluxCore.toc" <<EOF
 reflux_host.lua
 reflux.lua
 cursor.lua
+tips.lua
+locale.lua
+reflux_tips.lua
 EOF
 
 echo "wow-package-refluxcore: built $addon (interface $WOW_INTERFACE, $version)"
