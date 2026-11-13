@@ -17,6 +17,7 @@ K.on_emote(function(tok, sender)
 end)
 
 local function call()
+    if not (K.db and K.db.round) then K.cancel(loop); loop = nil; return end
     seed = seed + 1
     local c = G.odinnCall_(K.db, K.now() * 7 + seed)
     local cmd = K.emote_cmd(K.EMOTES[c[1]])
@@ -25,7 +26,11 @@ local function call()
         if not K.db.round then return end
         for _, o in ipairs(G.odinnClose_(K.db)) do K.say(K.f("OUT_" .. o[2], o[1])) end
         local w = G.odinnWinner(K.db)
-        if w then K.cancel(loop); loop = nil; K.notice(K.f("WINNER", K.L("NAME"), w)) end
+        if w then K.notice(K.f("WINNER", K.L("NAME"), w)) end
+        if not K.db.round then
+            K.cancel(loop); loop = nil
+            if not w then K.say(K.f("NOBODY", K.L("NAME"))) end
+        end
     end)
 end
 
