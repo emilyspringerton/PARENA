@@ -390,6 +390,62 @@ jobs:
           path: PARENA_CONSTRUCT.zip
           if-no-files-found: error
 
+  # The Collection of Value client (founder, 2026-11-13: "ensure ... there is a client to run and that it
+  # builds and auto releases in cicd" / "ensure it ships our flagship inventory manager"): RefluxCore,
+  # CollectionJournal and Fafnir's Bed (the inventory manager) as World of Warcraft addons, plus the
+  # outside-the-game journal reader -- all PARENA-built, all tested under a real Lua 5.1 (WoW's dialect),
+  # including an end-to-end run of the packaged addons in a stubbed client (tests/reflux_wow/client_test.lua).
+  #
+  # Packaging needs the client's TOC interface number, an unconfirmed fact that is never defaulted
+  # (docs/COLLECTION_OF_VALUE_STEP1_AND_DISPUTES.md, "never guess past a Confirm"). It comes from the
+  # repository variable WOW_INTERFACE (Settings -> Secrets and variables -> Actions -> Variables). Until
+  # that is set, the tests still gate every release, and the zip is skipped with a warning annotation
+  # saying so -- not shipped with a guessed number.
+  collection_client:
+    name: Collection client (WoW addons + reader, Lua 5.1)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      packaged: ${{ steps.pkg.outputs.packaged }}
+      zip: ${{ steps.pkg.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.1 and zip
+        run: sudo apt-get update && sudo apt-get install -y lua5.1 zip
+
+      - name: Build the compiler, test the Lua target and the whole client
+        run: |
+          set -euo pipefail
+          make .parena-bootstrap
+          make test-emit-lua
+          make test-reflux-wow
+
+      - name: Package the client
+        id: pkg
+        env:
+          WOW_INTERFACE: ${{ vars.WOW_INTERFACE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WOW_INTERFACE:-}" ]; then
+            echo "::warning title=Collection client not packaged::Repository variable WOW_INTERFACE is not set. Run /run print(select(4, GetBuildInfo())) in game and set the number it prints as WOW_INTERFACE; the next green build on main then releases CollectionOfValue-<sha>.zip."
+            echo "packaged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export COLLECTION_VERSION="$(git rev-parse --short HEAD)"
+          COLLECTION_CLIENT_OUT=dist-collection/client bash scripts/wow-package-collection.sh --zip
+          echo "packaged=true" >> "$GITHUB_OUTPUT"
+          echo "zip=CollectionOfValue-$COLLECTION_VERSION.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the client
+        if: steps.pkg.outputs.packaged == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-client-${{ github.run_number }}-${{ github.sha }}
+          path: dist-collection/${{ steps.pkg.outputs.zip }}
+          if-no-files-found: error
+
   # Real, native Windows compile of editor-demo, mirroring PITVIPER's own
   # real, proven build_windows job (.github/workflows/ci.yml): MSYS2/MinGW64
   # provides SDL2 + a matching gcc in one self-consistent toolchain, avoiding
@@ -757,7 +813,7 @@ jobs:
     # whether/when it's fixed), it just no longer blocks a release. Releases ship Linux + Windows
     # editor-demo builds only until someone fixes the real macOS build failure and this gets
     # re-added.
-    needs: [build_and_test, build_editor_windows]
+    needs: [build_and_test, build_editor_windows, collection_client]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: write
@@ -786,6 +842,13 @@ jobs:
         with:
           name: editor-demo-windows-${{ github.run_number }}-${{ github.sha }}
           path: dist-editor/windows
+
+      - name: Download the Collection client
+        if: needs.collection_client.outputs.packaged == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: collection-client-${{ github.run_number }}-${{ github.sha }}
+          path: dist-collection
 
       # macOS download step removed (2026-09-08, see this job's own "needs:" comment above) --
       # build_editor_macos doesn't run to completion reliably right now, so its artifact often
@@ -899,9 +962,12 @@ jobs:
           # earlier founder call (2026-08-21, "PARENA is pre release for
           # now" -- VS0 was still early, pre-1.0 compiler development);
           # superseded by this later, explicit direction.
+          assets=(dist/parena editor-demo-linux-x86_64.tar.gz editor-demo-windows-x86_64.zip)
+          # The Collection client, when collection_client packaged it (see that job's WOW_INTERFACE note).
+          for z in dist-collection/CollectionOfValue-*.zip; do
+            if [ -f "$z" ]; then assets+=("$z"); fi
+          done
           gh release create "$NEXT_VERSION" \
-            dist/parena \
-            editor-demo-linux-x86_64.tar.gz \
-            editor-demo-windows-x86_64.zip \
+            "${assets[@]}" \
             --title "$NEXT_VERSION" \
             --generate-notes
