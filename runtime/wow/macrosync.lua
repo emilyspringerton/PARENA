@@ -49,18 +49,21 @@ local function spell_known(name)
     return false
 end
 
--- Resolve {A|B} choices. Returns the body, or nil plus the first unresolved choice.
+-- Resolve {A|B} choices: the first spell this character knows, else the FIRST name listed -- every macro is
+-- written either way, because the client looks a macro's spell up when it is pressed, so a macro for a spell not
+-- learned yet simply starts working the day it is learned. Returns the body and the choices nobody knew.
 local function resolve(template)
-    local missing = nil
+    local unlearned = {}
     local body = template:gsub("{([^}]*)}", function(alts)
+        local first = nil
         for alt in alts:gmatch("[^|]+") do
+            first = first or alt
             if spell_known(alt) then return alt end
         end
-        missing = missing or alts
-        return ""
+        unlearned[#unlearned + 1] = first
+        return first or ""
     end)
-    if missing then return nil, missing end
-    return body
+    return body, unlearned
 end
 
 local function ascend(preview)
@@ -75,9 +78,10 @@ local function ascend(preview)
 
     local keep, ready, dormant = {}, {}, {}
     for _, m in ipairs(set) do
-        local body, missing = resolve(m[2])
-        if body then keep[m[1]] = 1; ready[#ready + 1] = { m[1], body }
-        else dormant[#dormant + 1] = m[1] .. " (" .. missing:gsub("|", " / ") .. ")" end
+        local body, unlearned = resolve(m[2])
+        keep[m[1]] = 1
+        ready[#ready + 1] = { m[1], body }
+        if #unlearned > 0 then dormant[#dormant + 1] = m[1] .. " (" .. table.concat(unlearned, ", ") .. ")" end
     end
 
     local pruned, loaded, collided, full, short = {}, {}, {}, {}, {}
