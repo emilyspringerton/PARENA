@@ -1,0 +1,179 @@
+;; stdlib/collection/inventory.prn -- Fafnir's Bed, the Collection's inventory manager (spec addon 2, "Unified
+;; Inventory": bags, bank and mail for all characters in one searchable view, with "who has this?" lookup; the
+;; name is one of the spec's own for it). A REFLUX mod.
+;;
+;; The model, in one account-wide SavedVariables table (## SavedVariables: FafnirsBedDB):
+;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...} } }
+;;   db.names[itemID]    = the item's name, as last seen in a link (for search)
+;;
+;; NET INVENTORY is the sum over every character and location. Moving 5 ore from bags to bank is -5 in bags and
+;; +5 in bank, so net is unchanged; selling, looting, mailing to someone outside the account move it.
+;;
+;; Every change is DISPATCHED into REFLUX, so the journal (journal.prn) makes net inventory a time series the
+;; reader carries into the event store. Addon 2's block is 2010-2019 (ids.prn):
+;;   2010 item count changed     a = itemID, b = signed delta, c = location (1 bags, 2 bank, 3 mail)
+;;   2011 gold changed           a = signed copper delta, b = new total in whole gold, c = 0
+;;   2012 location re-read       a = location, b = distinct items held there, c = total count held there
+;;
+;; The host glue (runtime/wow/fafnirs_bed.lua) reads the client and hands this module plain tables
+;; {[itemID] = count}; nothing here calls the WoW API. Table iteration is Lua's own `next`, by recursion.
+;;
+;; Build together with what it calls (one Lua module):
+;;   parena build stdlib/reflux/reflux.prn stdlib/collection/ids.prn stdlib/collection/inventory.prn -o inv.lua
+
+(module collection/inventory)
+(export inv-init inv-character inv-location-code inv-apply-snapshot inv-set-gold inv-net inv-who inv-gold-total
+        inv-find inv-remember-name inv-totals)
+
+(defn inv-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+(defn inv-next [(t : Any) (k : Any)] : Any (lua/call-fn (lua/global "next") t k))
+
+;; Give a fresh (or older) table what it is missing. Never resets data.
+(defn inv-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "chars")) (lua/set! db "chars" (lua/obj)) 0)
+      (if (lua/nil? (lua/get db "names")) (lua/set! db "names" (lua/obj)) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; The character's record, created on first sight. `seen` moves to now.
+(defn inv-character [(db : Any) (character : String) (now : I32)] : Any
+  (do (if (lua/nil? (lua/aget (lua/get db "chars") character))
+          (lua/aset! (lua/get db "chars") character (lua/obj "gold" 0 "seen" now "loc" (lua/obj)))
+          0)
+      (lua/set! (lua/aget (lua/get db "chars") character) "seen" now)
+      (lua/aget (lua/get db "chars") character)))
+
+(defn inv-location-code [(loc : String)] : I32
+  (if (= loc "bags") 1 (if (= loc "bank") 2 (if (= loc "mail") 3 0))))
+
+;; Pass 1: items in the new snapshot -- dispatch the delta against the old one. Returns n + changes.
+(defn inv-diff-new [(snap : Any) (old : Any) (k : Any) (code : I32) (n : I32)] : I32
+  (let [nk (inv-next snap k)]
+    (if (lua/nil? nk)
+        n
+        (let [d (- (lua/aget snap nk) (inv-zero (lua/aget old nk)))]
+          (if (= d 0)
+              (inv-diff-new snap old nk code n)
+              (do (reflux-dispatch (collection-action-type 2 0) nk d code)
+                  (inv-diff-new snap old nk code (+ n 1))))))))
+
+;; Pass 2: items gone from the location -- dispatch their whole old count as negative.
+(defn inv-diff-gone [(snap : Any) (old : Any) (k : Any) (code : I32) (n : I32)] : I32
+  (let [nk (inv-next old k)]
+    (if (lua/nil? nk)
+        n
+        (if (lua/nil? (lua/aget snap nk))
+            (do (reflux-dispatch (collection-action-type 2 0) nk (- 0 (lua/aget old nk)) code)
+                (inv-diff-gone snap old nk code (+ n 1)))
+            (inv-diff-gone snap old nk code n)))))
+
+;; Distinct items and total count in a {[itemID] = n} table: returns {distinct, total}.
+(defn inv-count [(t : Any) (k : Any) (distinct : I32) (total : I32)] : Any
+  (let [nk (inv-next t k)]
+    (if (lua/nil? nk)
+        (lua/array distinct total)
+        (inv-count t nk (+ distinct 1) (+ total (lua/aget t nk))))))
+
+;; Replace one location's contents with a fresh read of it. Dispatches 2010 per changed item, then 2012.
+;; Returns how many items changed; -1 (nothing touched) for an unknown location name.
+(defn inv-apply-snapshot [(db : Any) (character : String) (loc : String) (snap : Any) (now : I32)] : I32
+  (let [code (inv-location-code loc)]
+    (if (= code 0)
+        -1
+        (let [ch (inv-character db character now)
+              locs (lua/get ch "loc")
+              old (if (lua/nil? (lua/aget locs loc)) (lua/obj) (lua/aget locs loc))
+              changed (+ (inv-diff-new snap old (lua/nil) code 0) (inv-diff-gone snap old (lua/nil) code 0))
+              counts (inv-count snap (lua/nil) 0 0)]
+          (do (lua/aset! locs loc snap)
+              (reflux-dispatch (collection-action-type 2 2) code (lua/aget counts 1) (lua/aget counts 2))
+              changed)))))
+
+;; Record the character's money. Dispatches 2011 when it moved. Returns the signed copper delta.
+(defn inv-set-gold [(db : Any) (character : String) (copper : I32) (now : I32)] : I32
+  (let [ch (inv-character db character now)
+        d (- copper (lua/get ch "gold"))]
+    (do (lua/set! ch "gold" copper)
+        (if (= d 0) 0 (reflux-dispatch (collection-action-type 2 1) d (/ copper 10000) 0))
+        d)))
+
+(defn inv-remember-name [(db : Any) (item : I32) (name : Any)] : Any
+  (if (lua/nil? name) 0 (lua/aset! (lua/get db "names") item name)))
+
+;; One character's count of an item across bags, bank and mail.
+(defn inv-char-count [(ch : Any) (item : I32)] : I32
+  (let [locs (lua/get ch "loc")]
+    (+ (+ (if (lua/nil? (lua/get locs "bags")) 0 (inv-zero (lua/aget (lua/get locs "bags") item)))
+          (if (lua/nil? (lua/get locs "bank")) 0 (inv-zero (lua/aget (lua/get locs "bank") item))))
+       (if (lua/nil? (lua/get locs "mail")) 0 (inv-zero (lua/aget (lua/get locs "mail") item))))))
+
+(defn inv-who-walk [(chars : Any) (k : Any) (item : I32) (out : Any)] : Any
+  (let [nk (inv-next chars k)]
+    (if (lua/nil? nk)
+        out
+        (let [n (inv-char-count (lua/aget chars nk) item)]
+          (do (if (> n 0) (lua/aset! out nk n) 0)
+              (inv-who-walk chars nk item out))))))
+
+;; "Who has this?" -- {[character] = count} for every character holding the item.
+(defn inv-who [(db : Any) (item : I32)] : Any
+  (inv-who-walk (lua/get db "chars") (lua/nil) item (lua/obj)))
+
+(defn inv-net-walk [(chars : Any) (k : Any) (item : I32) (sum : I32)] : I32
+  (let [nk (inv-next chars k)]
+    (if (lua/nil? nk) sum (inv-net-walk chars nk item (+ sum (inv-char-count (lua/aget chars nk) item))))))
+
+;; Net inventory of one item: every character, every location.
+(defn inv-net [(db : Any) (item : I32)] : I32
+  (inv-net-walk (lua/get db "chars") (lua/nil) item 0))
+
+(defn inv-gold-walk [(chars : Any) (k : Any) (sum : Any)] : Any
+  (let [nk (inv-next chars k)]
+    (if (lua/nil? nk) sum (inv-gold-walk chars nk (+ sum (lua/get (lua/aget chars nk) "gold"))))))
+
+;; Account gold, in copper.
+(defn inv-gold-total [(db : Any)] : Any
+  (inv-gold-walk (lua/get db "chars") (lua/nil) 0))
+
+;; Item ids whose remembered name contains the query, case-insensitively: an array.
+(defn inv-find-walk [(names : Any) (k : Any) (q : String) (out : Any)] : Any
+  (let [nk (inv-next names k)]
+    (if (lua/nil? nk)
+        out
+        (do (if (lua/nil? (lua/call-fn (lua/global "string.find")
+                                       (lua/call-fn (lua/global "string.lower") (lua/aget names nk)) q 1 true))
+                0
+                (lua/aset! out (+ (lua/call-fn (lua/global "table.getn") out) 1) nk))
+            (inv-find-walk names nk q out)))))
+
+(defn inv-find [(db : Any) (query : String)] : Any
+  (inv-find-walk (lua/get db "names") (lua/nil) (lua/call-fn (lua/global "string.lower") query) (lua/array)))
+
+;; Net totals across everything: {characters, distinct items, total count, gold copper}.
+(defn inv-union-walk [(t : Any) (k : Any) (seen : Any)] : Any
+  (let [nk (inv-next t k)]
+    (if (lua/nil? nk) seen (do (lua/aset! seen nk 1) (inv-union-walk t nk seen)))))
+
+(defn inv-union-locs [(locs : Any) (k : Any) (seen : Any)] : Any
+  (let [nk (inv-next locs k)]
+    (if (lua/nil? nk) seen (do (inv-union-walk (lua/aget locs nk) (lua/nil) seen) (inv-union-locs locs nk seen)))))
+
+(defn inv-union-chars [(chars : Any) (k : Any) (seen : Any) (n : I32)] : I32
+  (let [nk (inv-next chars k)]
+    (if (lua/nil? nk)
+        n
+        (do (inv-union-locs (lua/get (lua/aget chars nk) "loc") (lua/nil) seen)
+            (inv-union-chars chars nk seen (+ n 1))))))
+
+(defn inv-sum-net [(db : Any) (seen : Any) (k : Any) (distinct : I32) (total : I32)] : Any
+  (let [nk (inv-next seen k)]
+    (if (lua/nil? nk)
+        (lua/array distinct total)
+        (inv-sum-net db seen nk (+ distinct 1) (+ total (inv-net db nk))))))
+
+(defn inv-totals [(db : Any)] : Any
+  (let [seen (lua/obj)
+        chars (inv-union-chars (lua/get db "chars") (lua/nil) seen 0)
+        sums (inv-sum-net db seen (lua/nil) 0 0)]
+    (lua/array chars (lua/aget sums 1) (lua/aget sums 2) (inv-gold-total db))))
