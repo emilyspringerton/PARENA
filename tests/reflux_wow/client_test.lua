@@ -177,7 +177,14 @@ eq((types[2012] or 0) > 0, true, "location reads (2012) journalled")
 eq(jdb.rows[jdb.firstSeq].zone, 1415, "journal rows carry the zone")
 out = s.slash("COLLECTIONJOURNAL")
 has(out, "rows held", "/cov reports the journal")
+-- the real client tears the bags down before PLAYER_LOGOUT (0 slots); the snapshot must survive it
+-- (the founder's first live account came back with every character's bags empty)
+local kept_bags = world.bags
+world.bags = {}
+s.fire("BAG_UPDATE_DELAYED")
 s.fire("PLAYER_LOGOUT")
+world.bags = kept_bags
+eq(s.env.FafnirsBedDB.chars["Emily-Forever"].loc.bags[2770], 35, "torn-down bags at logout do not wipe the snapshot")
 saved.FafnirsBedDB = s.env.FafnirsBedDB             -- account-wide: carried to the next session
 local journal_emily = s.env.CollectionJournalDB      -- per character: stays with Emily
 

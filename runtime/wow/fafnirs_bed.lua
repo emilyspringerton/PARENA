@@ -64,6 +64,10 @@ local function read_bags(ids)
     for _, bag in ipairs(ids) do
         local n = num_slots(bag)
         if n == nil then return nil end
+        -- The backpack is never 0 slots: 0 means the client has not loaded the bags yet (early login) or has
+        -- already torn them down (logout). Saving that would wipe the real snapshot -- the founder's first
+        -- live account came back with every character empty -- so it is "not ready", not "empty".
+        if bag == 0 and n == 0 then return nil, "not ready" end
         for slot = 1, n do
             local id, count, link = slot_item(bag, slot)
             if id and count then
@@ -107,7 +111,8 @@ end
 local function scan_bags()
     local ids = bag_ids()
     if not ids then unreadable.bags = "NUM_BAG_SLOTS is missing"; return end
-    local snap = read_bags(ids)
+    local snap, why = read_bags(ids)
+    if why == "not ready" then return end
     if not snap then unreadable.bags = "no container API (C_Container or GetContainerItemInfo)"; return end
     apply("bags", snap)
 end
@@ -115,7 +120,8 @@ end
 local function scan_bank()
     local ids = bank_ids()
     if not ids then unreadable.bank = "BANK_CONTAINER / NUM_BANKBAGSLOTS are missing"; return end
-    local snap = read_bags(ids)
+    local snap, why = read_bags(ids)
+    if why == "not ready" then return end
     if not snap then unreadable.bank = "no container API"; return end
     apply("bank", snap)
 end
@@ -161,6 +167,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         end
     elseif event == "PLAYER_LOGIN" then
         scan_bags(); scan_gold()
+        -- the bags are often not loaded at login yet; look again once the world is up
+        if C_Timer and C_Timer.After then C_Timer.After(3, function() scan_bags(); scan_gold() end) end
     elseif event == "BAG_UPDATE_DELAYED" then
         scan_bags(); if bank_open then scan_bank() end
     elseif event == "PLAYER_MONEY" then
@@ -173,9 +181,9 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         if bank_open then scan_bank() end
     elseif event == "MAIL_INBOX_UPDATE" then
         scan_mail()
-    elseif event == "PLAYER_LOGOUT" then
-        scan_bags(); scan_gold()
     end
+    -- No scan at PLAYER_LOGOUT: by then the client reports empty bags and 0 gold, and the last
+    -- BAG_UPDATE_DELAYED / PLAYER_MONEY scan is already current.
 end)
 
 local function money(copper)
