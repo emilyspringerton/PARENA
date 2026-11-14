@@ -1473,6 +1473,8 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	$(LUA51) tests/reflux_wow/fun_test.lua $(REFLUX_WOW_OUT)/client
 	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.
 	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
+	@# The Collection hub (/collection): its registry against the package, the window, Open, and older clients.
+	$(LUA51) tests/reflux_wow/hub_test.lua $(REFLUX_WOW_OUT)/client
 	@# EcoWar (tabled, test only): captain and players in stubbed clients, all four modes, both carriers, the league and the ratings.
 	$(LUA51) tests/reflux_wow/ecowar_test.lua $(REFLUX_WOW_OUT)/client
 	@# The sixteen party games, each played end to end with a four-player party.

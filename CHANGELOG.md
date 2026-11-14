@@ -1,5 +1,13 @@
 ## 2026-11-14
 
+- **CollectionHub: the settings and status of every addon in one window** (founder: "give like some interfaces to see
+  the settings for the different components"). `/collection` (or `/coll`) opens it; it is also the "Collection"
+  category of the client's options window (`Settings` on retail-lineage clients, `InterfaceOptions` on older ones,
+  neither needed). One row per addon: loaded or not, its slash commands, where it saves (per character or
+  account-wide) and how much, and an Open button that runs its command. The header shows the build's settings
+  (version, interface, the journal's cap and poll interval) and the REFLUX bus. `/collection list` prints the same
+  in chat. The registry is written by the packager from each built addon's own `.toc` and code, so it cannot drift
+  from what was built. What it reports is PARENA (`stdlib/collection/hub.prn`); `hub_test` is 32 checks.
 - **The export now writes a web page, `collection.html`** (founder: "where is my local data showing my
   characters and inventory? it should be a basic webpage"). `collection-csv.sh` writes it next to the CSVs:
   one self-contained file that opens straight from disk (no server, nothing fetched). It shows a card per

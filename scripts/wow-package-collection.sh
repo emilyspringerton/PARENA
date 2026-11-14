@@ -26,6 +26,7 @@
 #   RATATOSKR_ADDON / RATATOSKR_VAR  critter census folder / its global     (RatatoskrRoll / RatatoskrRollDB)
 #   VOLVA_ADDON / VOLVA_VAR          fortune folder / its global            (Volva / VolvaDB)
 #   SAGA_ADDON / SAGA_VAR            joke achievements folder / its global  (SagaOfFools / SagaOfFoolsDB)
+#   COLLECTION_HUB_ADDON / _VAR      settings and status window / its global (CollectionHub / CollectionHubDB)
 #   PARENA_BIN                       compiler driver                       (./.parena-bootstrap)
 #   WOW_ADDONS_DIR                   install target for --install
 #
@@ -50,6 +51,8 @@ V_ADDON="${VOLVA_ADDON:-Volva}"
 V_VAR="${VOLVA_VAR:-VolvaDB}"
 S_ADDON="${SAGA_ADDON:-SagaOfFools}"
 S_VAR="${SAGA_VAR:-SagaOfFoolsDB}"
+HUB_ADDON="${COLLECTION_HUB_ADDON:-CollectionHub}"
+HUB_VAR="${COLLECTION_HUB_VAR:-CollectionHubDB}"
 
 die() { echo "wow-package-collection: $*" >&2; exit 2; }
 if [ -z "${WOW_INTERFACE:-}" ]; then
@@ -59,7 +62,8 @@ if [ -z "${WOW_INTERFACE:-}" ]; then
 fi
 case "$WOW_INTERFACE" in *[!0-9]*) die "WOW_INTERFACE must be digits, got '$WOW_INTERFACE'" ;; esac
 for v in "$J_KEEP" "$J_POLL"; do case "$v" in ''|*[!0-9]*|0) die "journal KEEP/POLL must be positive integers" ;; esac; done
-for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR" "$H_ADDON" "$H_VAR" "$R_ADDON" "$R_VAR" "$V_ADDON" "$V_VAR" "$S_ADDON" "$S_VAR"; do
+for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR" "$H_ADDON" "$H_VAR" "$R_ADDON" "$R_VAR" "$V_ADDON" "$V_VAR" "$S_ADDON" "$S_VAR" \
+         "$HUB_ADDON" "$HUB_VAR"; do
   case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
   case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
 done
@@ -241,6 +245,38 @@ fi
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
+# CollectionHub, built LAST: its registry is read back from every addon this package just built -- each one's
+# .toc (title, notes, where it saves) and code (its SLASH_ commands) -- so the window never drifts from the build.
+luastr() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+hub="$OUT/AddOns/$HUB_ADDON"
+mkdir -p "$hub"
+wrap collection/hub "$hub/hub_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/hub.prn
+cp runtime/wow/locales/collection_hub.lua "$hub/locale.lua"
+glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB_VAR"
+{
+  echo "-- registry.lua -- every addon in this package, read back from its own .toc and code by"
+  echo "-- scripts/wow-package-collection.sh. Generated; do not edit."
+  echo "local _, ns = ..."
+  echo "ns.build = { version = \"$(luastr "$VERSION")\", interface = $WOW_INTERFACE, keep = $J_KEEP, poll = $J_POLL, journal = \"$J_ADDON\" }"
+  echo "ns.addons = {"
+  for t in "$OUT"/AddOns/*/*.toc; do
+    d="$(dirname "$t")"; folder="$(basename "$d")"
+    [ "$folder" = "$HUB_ADDON" ] && continue
+    title="$(sed -n 's/^## Title: //p' "$t" | head -1)"
+    notes="$(sed -n 's/^## Notes: //p' "$t" | head -1)"
+    svkind="$(sed -n 's/^## \(SavedVariables[A-Za-z]*\): .*/\1/p' "$t" | head -1)"
+    sv="$(sed -n 's/^## SavedVariables[A-Za-z]*: *\([A-Za-z0-9_]*\).*/\1/p' "$t" | head -1)"
+    slashes="$(cat "$d"/*.lua | sed -n 's/^SLASH_\([A-Z0-9_]*[A-Z_]\)[0-9][0-9]* *= *"\(\/[^"]*\)".*/\1 \2/p')"
+    key="$(printf '%s\n' "$slashes" | awk 'NF{print $1; exit}')"
+    cmds="$(printf '%s\n' "$slashes" | awk 'NF{printf "%s\"%s\"", (n++ ? ", " : ""), $2}')"
+    echo "  { folder = \"$(luastr "$folder")\", title = \"$(luastr "${title:-$folder}")\", notes = \"$(luastr "$notes")\","
+    echo "    svkind = \"$(luastr "$svkind")\", sv = \"$(luastr "$sv")\", key = \"$(luastr "$key")\", cmds = { $cmds } },"
+  done
+  echo "}"
+} > "$hub/registry.lua"
+toc "$hub/$HUB_ADDON.toc" "Collection" "The settings and status of every Collection addon in one window. /collection" \
+  SavedVariables "$HUB_VAR" registry.lua hub_rules.lua locale.lua collection_hub.lua
+
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
 
@@ -259,7 +295,8 @@ INSTALL
   (WoW Forever: <WoW>/_forever_/Interface/AddOns), then restart the client or /reload.
 
 IN GAME
-  /fafnir            net inventory: characters, distinct items, item count, gold across the account
+  /collection        every addon's settings and status in one window (also in the game's options, "Collection")
+  /fafnir           net inventory: characters, distinct items, item count, gold across the account
   /fafnir <name|id>  who has it, and the net count (shift-click an item link in works too)
   /cov               the journal's state (rows held, trimmed, lost)
   /rock              Hrungnir, your pet rock (/rock pat, /rock hide, /rock show; right-click the rock to pat it)
