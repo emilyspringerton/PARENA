@@ -7,9 +7,11 @@ local enUS = {
     LOADED = "loaded", NOTLOADED = "not loaded", NOTHING = "nothing saved yet",
     PERCHAR = "saves per character in %s", ACCOUNT = "saves account-wide in %s", NOSAVE = "saves nothing",
     ENTRIES = "%d entries", ROWS = "%d rows held",
-    OPEN = "Open", CLOSE = "Close",
+    CLOSE = "Close",
+    FINISH = "Click to put it in the chat box, then type the rest.",
+    TYPEIT = "Type it in chat: %s",
     NOCMD = "no command",
-    HELP = "/collection -- the settings and status of every Collection addon   /collection list -- the same, in chat",
+    HELP = "/collection -- every Collection addon, its settings and a button for each command   /collection list -- the same, in chat",
     NOFRAMES = "%s: this client has no frames API; here is the list instead.",
     MISSING = "%s: RefluxCore's collection/hub module or this package's registry is missing.",
 }

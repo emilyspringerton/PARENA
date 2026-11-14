@@ -1,5 +1,7 @@
 -- runtime/wow/ratatoskr_roll.lua -- Ratatoskr Roll's host glue (spec addon 65, Critter Census).
 --
+-- /census   this week's top three critters (target one and /love, /pet or /wave at it to count it)
+--
 -- The census is PARENA (stdlib/collection/ratatoskr.prn, RefluxCore.modules["collection/ratatoskr"]). This file
 -- listens for the emotes and decides whether the target is a critter; every word comes from the catalogue
 -- (runtime/wow/locales/ratatoskr.lua), including the creature-type string that identifies a critter in this locale.

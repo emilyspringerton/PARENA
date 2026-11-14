@@ -1,5 +1,7 @@
 -- runtime/wow/saga_of_fools.lua -- Saga of Fools' host glue (spec addon 73, Achievement Nonsense).
 --
+-- /saga   every nonsense achievement: earned, and how far along the rest are
+--
 -- The achievements -- what counts, how much, and when one is earned -- are PARENA (stdlib/collection/saga.prn,
 -- RefluxCore.modules["collection/saga"]). This file moves the counters and announces what they earn. Every word
 -- comes from the catalogue (runtime/wow/locales/saga.lua).

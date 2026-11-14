@@ -3,7 +3,7 @@
 ;; glue (runtime/wow/collection_hub.lua) draws it; what it reports is decided here.
 
 (module collection/hub)
-(export hub-size hub-state)
+(export hub-size hub-state hub-action-mode)
 
 ;; Top-level entries of a table, by walking next.
 (defn hub-count-walk [(t : Any) (k : Any) (n : I32)] : I32
@@ -21,3 +21,9 @@
 ;; An addon's state for its row: 0 not loaded, 1 loaded with nothing saved yet, 2 loaded and holding data.
 (defn hub-state [(loaded : I32) (size : I32)] : I32
   (if (= loaded 0) 0 (if (> size 0) 2 1)))
+
+;; What one of an addon's command buttons does: 0 nothing (the addon is not loaded, so the button is hidden),
+;; 1 run the command now, 2 put it in the chat box for the player to finish -- it needs an argument (`<...>`) only
+;; they can type, such as a name or a riddle. Optional arguments (`[...]`) run with their defaults.
+(defn hub-action-mode [(loaded : I32) (needs-input : I32)] : I32
+  (if (= loaded 0) 0 (if (= needs-input 0) 1 2)))

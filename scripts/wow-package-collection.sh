@@ -262,7 +262,8 @@ toc "$hg/$HG_ADDON.toc" "Huginn" "Quest arrows for orienteering: turn arrows on 
   SavedVariables "$HG_VAR" huginn_rules.lua locale.lua huginn.lua
 
 # CollectionHub, built LAST: its registry is read back from every addon this package just built -- each one's
-# .toc (title, notes, where it saves) and code (its SLASH_ commands) -- so the window never drifts from the build.
+# .toc (title, notes, where it saves) and code (its SLASH_ commands, and the commands and subcommands its header
+# comment documents, via scripts/wow-slash-actions.awk) -- so the window never drifts from the build.
 luastr() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 hub="$OUT/AddOns/$HUB_ADDON"
 mkdir -p "$hub"
@@ -286,11 +287,15 @@ glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB
     key="$(printf '%s\n' "$slashes" | awk 'NF{print $1; exit}')"
     cmds="$(printf '%s\n' "$slashes" | awk 'NF{printf "%s\"%s\"", (n++ ? ", " : ""), $2}')"
     echo "  { folder = \"$(luastr "$folder")\", title = \"$(luastr "${title:-$folder}")\", notes = \"$(luastr "$notes")\","
-    echo "    svkind = \"$(luastr "$svkind")\", sv = \"$(luastr "$sv")\", key = \"$(luastr "$key")\", cmds = { $cmds } },"
+    echo "    svkind = \"$(luastr "$svkind")\", sv = \"$(luastr "$sv")\", key = \"$(luastr "$key")\", cmds = { $cmds },"
+    # the control panel's buttons: each command and subcommand the addon documents in its header comment
+    echo "    actions = {"
+    awk -v cmds="$(printf '%s\n' "$slashes" | awk 'NF{print $2}' | tr '\n' ' ')" -f scripts/wow-slash-actions.awk "$d"/*.lua
+    echo "    } },"
   done
   echo "}"
 } > "$hub/registry.lua"
-toc "$hub/$HUB_ADDON.toc" "Collection" "The settings and status of every Collection addon in one window. /collection" \
+toc "$hub/$HUB_ADDON.toc" "Collection" "Every Collection addon in one window: its status, its settings, and a button for each of its commands. /collection" \
   SavedVariables "$HUB_VAR" registry.lua hub_rules.lua locale.lua collection_hub.lua
 
 # Re-stamp RefluxCore's version with the release's, so all three agree.

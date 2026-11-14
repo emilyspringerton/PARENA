@@ -1,5 +1,7 @@
 -- runtime/wow/volva.lua -- Völva's host glue (spec addon 72, Fortune Cookie).
 --
+-- /fortune   today's fortune again
+--
 -- Which fortune, which kind and the lucky numbers are PARENA (stdlib/collection/volva.prn,
 -- RefluxCore.modules["collection/volva"]). This file offers the stat lines it can fill right now, prints the
 -- fortune at login, and shows it again on /fortune. Every word comes from the catalogue

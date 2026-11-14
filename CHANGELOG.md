@@ -1,5 +1,22 @@
 ## 2026-11-14
 
+- **CollectionHub is now a control panel: a button for every slash command** (founder: "a flame addon control
+  surface inside of wow, some kind of window, as I discover the slash commands"). `/collection` still opens the
+  window; under each addon's status lines there is now one button per command and subcommand it has, wrapped to the
+  window's width -- MacroSync (the Flame) gets `/ascend` and `preview`, Huginn six, the party games their
+  `start`/`stop`/`board`... Hovering a button shows the full command and what it does. A button runs its command at
+  once (optional `[...]` arguments take their defaults); one that needs something only you can type (`<name>`,
+  `<riddle>`) puts the command in the chat box instead, ready to finish (`ChatFrame_OpenChat`, else the chat edit
+  box, else the usage is printed). An addon that is not loaded shows no buttons. `/collection list` prints every
+  command with its arguments and description too. Where the buttons come from: the packager reads each addon's
+  header comment (`-- /derby start [minutes]   a timed derby...`; `a | b` alternatives, `<required>`/`[optional]`
+  arguments, descriptions wrapped onto the next line) with the new `scripts/wow-slash-actions.awk` (POSIX awk; mawk
+  has no `{m,n}`) into `registry.lua`, so the panel never drifts from the build. Seven addons that never documented
+  their commands that way now do (Fafnir's Bed, Hrungnir, Ratatoskr Roll, Saga of Fools, Völva, Loki's Lies,
+  Collection Journal). Run-or-type is PARENA (`hub-action-mode` in `stdlib/collection/hub.prn`). `hub_test` 32 -> 79
+  checks; `make test-reflux-wow` passes. Not yet seen in the real client: no in-game screenshot, and
+  `ChatFrame_OpenChat`/`GameTooltip` are feature-tested, not probed on Forever.
+
 - **Huginn: quest arrows for orienteering** (founder: "a basic quest tracker that takes the quest from our quest logs
   and uses a gps arrow on the screen to point towards the coordinates", then "a stripped down and optimized mini
   quest log thing so we can turn on and off multiple arrows"). `/huginn` shows a small panel: a row per arrow (a

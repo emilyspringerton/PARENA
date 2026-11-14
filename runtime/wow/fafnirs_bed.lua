@@ -1,5 +1,8 @@
 -- runtime/wow/fafnirs_bed.lua -- Fafnir's Bed's host glue (spec addon 2, Unified Inventory).
 --
+-- /fafnir                    net inventory across every character on the account
+-- /fafnir <name or item id>  who has it, and the net count
+--
 -- The inventory model is PARENA (stdlib/collection/inventory.prn, RefluxCore.modules["collection/inventory"]).
 -- This file reads the client into plain {[itemID] = count} tables, hands them over on the events that mean
 -- "this location may have changed", and gives the searchable view as a slash command.

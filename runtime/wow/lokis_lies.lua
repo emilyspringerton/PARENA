@@ -1,4 +1,8 @@
 -- runtime/wow/lokis_lies.lua -- Loki's Lies' host glue (spec addon 68, rumour mill). Rules: stdlib/collection/loki.prn.
+--
+-- /rumour         a fresh rumour, just for you
+-- /rumour share   say it to the group
+--
 -- A rumour at every login and on /rumour, made up from this character's own Collection Journal (the REFLUX rows
 -- every Collection addon writes). /rumour share says it to the group instead of only to you.
 local ADDON, VAR = "@ADDON@", "@VAR@"

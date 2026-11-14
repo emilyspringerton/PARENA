@@ -34,6 +34,8 @@ local function widget(kind, all)
     function w:CreateFontString() local f = widget("FontString", all); all[#all + 1] = f; return f end
     function w:CreateTexture() return widget("Texture", all) end
     function w:Click() if self.scripts.OnClick then self.scripts.OnClick(self) end end
+    function w:SetPoint(_, _, _, x, y) rawset(self, "x", x); rawset(self, "y", y) end
+    function w:SetSize(wd, ht) rawset(self, "w", wd); rawset(self, "h", ht) end
     return setmetatable(w, { __index = function() return function() end end })
 end
 
@@ -66,6 +68,17 @@ local function session(opts)
     env.SlashCmdList = {}
     env.UISpecialFrames = {}
     env.UIParent = widget("UIParent", all)
+    local tip = { lines = {} }
+    if not opts.no_tooltip then
+        env.GameTooltip = {
+            SetOwner = function(self, owner) self.owner = owner; self.lines = {} end,
+            SetText = function(self, t) self.lines = { t } end,
+            AddLine = function(self, t) self.lines[#self.lines + 1] = t end,
+            Show = function(self) self.shown = true end, Hide = function(self) self.shown = false end }
+        tip = env.GameTooltip
+    end
+    local chat = {}
+    if not opts.no_chat then env.ChatFrame_OpenChat = function(text) chat[#chat + 1] = text end end
     env.CreateFrame = function(kind, name, parent, template)
         if opts.no_templates and template then error("no template " .. template) end
         local f = widget(kind, all)
@@ -84,7 +97,7 @@ local function session(opts)
     elseif opts.options == "interfaceoptions" then
         env.InterfaceOptions_AddCategory = function(panel) registered.panel, registered.name = panel, panel.name end
     end
-    local s = { env = env, out = out, all = all, frames = frames, registered = registered, macros = macros }
+    local s = { env = env, out = out, all = all, frames = frames, registered = registered, macros = macros, tip = tip, chat = chat }
     function s.load(addon)
         local dir = client .. "/AddOns/" .. addon
         local ns = {}
@@ -98,8 +111,18 @@ local function session(opts)
     function s.cmd(msg) for i = #out, 1, -1 do out[i] = nil end; env.SlashCmdList.COLLECTIONHUB(msg or ""); return table.concat(out, "\n") end
     function s.texts() local t = {}; for _, f in ipairs(all) do if f.kind == "FontString" and rawget(f, "text") then t[#t + 1] = rawget(f, "text") end end; return table.concat(t, "\n") end
     function s.buttons() local b = {}; for _, f in ipairs(frames) do if f.kind == "Button" and rawget(f, "text") then b[#b + 1] = f end end; return b end
-    for _, a in ipairs({ "RefluxCore", "CollectionJournal", "MacroSync", "CollectionHub" }) do s.load(a) end
-    for _, a in ipairs({ "RefluxCore", "CollectionJournal", "MacroSync", "CollectionHub" }) do s.fire("ADDON_LOADED", a) end
+    -- the window's button for one action: its command and label (the options panel has a second set; this is the
+    -- window's, which is built last)
+    function s.button(cmd, text)
+        local found
+        for _, b in ipairs(s.buttons()) do
+            if b.action and b.action.cmd == cmd and rawget(b, "text") == text then found = b end
+        end
+        return found
+    end
+    local addons = { "RefluxCore", "CollectionJournal", "MacroSync", "FafnirsBed", "CollectionHub" }
+    for _, a in ipairs(addons) do s.load(a) end
+    for _, a in ipairs(addons) do s.fire("ADDON_LOADED", a) end
     return s
 end
 
@@ -131,21 +154,67 @@ has(t, "REFLUX: ", "and the REFLUX bus")
 has(t, "MacroSync|r  |cff7fd17floaded", "MacroSync is loaded")
 has(t, "/ascend", "with its command")
 has(t, "saves per character in MacroSyncDB", "and where it saves")
-has(t, "Fafnir's Bed|r  |cff9d9d9dnot loaded", "an addon not loaded in this session says so")
+has(t, "Ægir's Catch|r  |cff9d9d9dnot loaded", "an addon not loaded in this session says so")
 has(t, "saves per character in CollectionJournalDB -- ", "the journal row says how much it holds")
 eq(s.env.UISpecialFrames[1], "CollectionHubFrame", "Escape closes it")
 
--- ===== Open runs the addon's own command; addons not loaded get no button ===================================
+-- ===== the control panel: a button for every command and subcommand the addons document ====================
+local acts = {}
+for _, act in ipairs(reg.MacroSync.actions) do acts[#acts + 1] = act.cmd .. "|" .. act.sub .. "|" .. act.args end
+eq(table.concat(acts, ","), "/ascend||,/ascend|preview|", "MacroSync's two documented commands are in the registry")
+eq(#reg.Huginn.actions >= 6, true, "Huginn documents at least six")
+local fafnir_args = {}
+for _, act in ipairs(reg.FafnirsBed.actions) do fafnir_args[#fafnir_args + 1] = act.sub .. "|" .. act.args end
+eq(table.concat(fafnir_args, ","), "|,|<name or item id>", "a bare command and the same command with an argument are two actions")
+local wrapped
+for _, act in ipairs(reg.AndvarisMap.actions) do if act.sub == "map" then wrapped = act.desc end end
+has(wrapped, "the chart goes into the body", "a description wrapped onto the next comment line is joined")
+for _, a in ipairs(s.ns.addons) do
+    if a.key ~= "" then eq(#s.ns.actions(a) > 0, true, a.folder .. " gets at least one button") end
+end
+
+local ascend, preview = s.button("/ascend", "/ascend"), s.button("/ascend", "preview")
+eq(ascend ~= nil and preview ~= nil, true, "MacroSync's block has an /ascend and a preview button")
+eq(rawget(ascend, "shown"), true, "shown, because MacroSync is loaded")
 local before = #s.macros
-local ran = false
+local got = {}
 local orig = s.env.SlashCmdList.MACROSYNC
-s.env.SlashCmdList.MACROSYNC = function(msg) ran = true; return orig(msg) end
-for _, b in ipairs(s.buttons()) do if rawget(b, "text") == "Open" and rawget(b, "shown") then b:Click() end end
-eq(ran, true, "Open on MacroSync's row runs /ascend")
+s.env.SlashCmdList.MACROSYNC = function(msg) got[#got + 1] = msg; return orig(msg) end
+preview:Click()
+eq(got[1], "preview", "preview runs /ascend preview")
+eq(#s.macros, before, "and preview changes nothing")
+ascend:Click()
+eq(got[2], "", "the bare button runs /ascend")
 eq(#s.macros > before, true, "and /ascend wrote macros")
-local hidden = 0
-for _, b in ipairs(s.buttons()) do if rawget(b, "text") == "Open" and not rawget(b, "shown") then hidden = hidden + 1 end end
-eq(hidden > 0, true, "addons that are not loaded have their Open button hidden")
+
+ascend.scripts.OnEnter(ascend)
+eq(s.tip.lines[1], "/ascend", "hovering shows the command")
+has(s.tip.lines[2], "load this character's class set", "and what it does")
+ascend.scripts.OnLeave(ascend)
+eq(s.tip.shown, false, "leaving hides the tooltip")
+
+local who = s.button("/fafnir", "<name or item id>...")
+eq(who ~= nil, true, "a command that needs input is labelled with ...")
+local fafnir_ran = false
+local forig = s.env.SlashCmdList.FAFNIRSBED
+s.env.SlashCmdList.FAFNIRSBED = function(msg) fafnir_ran = true; return forig(msg) end
+who:Click()
+eq(fafnir_ran, false, "it does not run")
+eq(s.chat[#s.chat], "/fafnir ", "it puts the command in the chat box to finish")
+who.scripts.OnEnter(who)
+eq(s.tip.lines[1], "/fafnir <name or item id>", "its tooltip shows the full usage")
+has(s.tip.lines[3], "type the rest", "and says to type the rest")
+
+local hidden, shown = 0, 0
+for _, b in ipairs(s.buttons()) do
+    if b.action and b.action.cmd == "/derby" then if rawget(b, "shown") then shown = shown + 1 else hidden = hidden + 1 end end
+end
+eq(hidden > 0 and shown == 0, true, "an addon that is not loaded shows no buttons")
+local overflow = 0
+for _, b in ipairs(s.buttons()) do
+    if b.action and (rawget(b, "x") + rawget(b, "w")) > 624 then overflow = overflow + 1 end
+end
+eq(overflow, 0, "every button fits the window's width (rows wrap)")
 
 s.cmd("")
 eq(s.env.CollectionHubFrame:IsShown(), false, "/collection again closes it")
@@ -154,6 +223,8 @@ eq(s.env.CollectionHubFrame:IsShown(), false, "/collection again closes it")
 local out = s.cmd("list")
 has(out, "Collection|r  Build ", "the list starts with the build line")
 has(out, "/fafnir  /hoard", "Fafnir's commands are listed")
+has(out, "/derby start [minutes]", "every documented command is listed with its arguments")
+has(out, "a timed derby for the whole group", "and what it does")
 out = s.cmd("help")
 has(out, "/collection list", "anything else prints help")
 
@@ -167,6 +238,15 @@ eq(n.env.CollectionHubFrame:IsShown(), true, "and /collection still opens the wi
 local nt = session({ no_templates = true, options = "settings" })
 nt.cmd("")
 eq(nt.env.CollectionHubFrame:IsShown(), true, "no button templates: plain buttons instead")
+-- no chat-box API: a command that needs input is printed for the player to type
+local nc = session({ no_chat = true, no_tooltip = true })
+nc.cmd("")
+for i = #nc.out, 1, -1 do nc.out[i] = nil end
+nc.button("/fafnir", "<name or item id>..."):Click()
+has(table.concat(nc.out, "\n"), "Type it in chat: /fafnir <name or item id>", "no chat box: the usage is printed instead")
+local b2 = nc.button("/ascend", "/ascend")
+b2.scripts.OnEnter(b2)
+eq(true, true, "no GameTooltip: hovering does nothing, and does not error")
 local nf = session({})
 nf.env.CreateFrame = nil          -- no frames when the window is first asked for
 out = nf.cmd("")

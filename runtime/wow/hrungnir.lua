@@ -1,5 +1,9 @@
 -- runtime/wow/hrungnir.lua -- Hrungnir's host glue (spec addon 70, Pet Rock).
 --
+-- /rock               the rock's level, mood and pats
+-- /rock pat           pat it
+-- /rock hide | show   hide the little frame / show it again
+--
 -- The rock is PARENA (stdlib/collection/hrungnir.prn, RefluxCore.modules["collection/hrungnir"]): points, levels,
 -- mood and which line it says. This file feeds it the moments that matter, draws the tiny frame and prints its
 -- remarks. Every line of text comes from the catalogue (runtime/wow/locales/hrungnir.lua).

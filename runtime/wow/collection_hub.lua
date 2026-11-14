@@ -1,16 +1,26 @@
 -- runtime/wow/collection_hub.lua -- the Collection hub: one window with the settings and status of every addon in
--- this package (founder, 2026-11-14: "give like some interfaces to see the settings for the different components").
--- What it reports is decided in PARENA (stdlib/collection/hub.prn); this file only makes the client calls.
+-- this package (founder, 2026-11-14: "give like some interfaces to see the settings for the different components"),
+-- and its control panel (founder, 2026-11-14: "a control surface inside of wow, some kind of window, as I discover
+-- the slash commands"). What it reports and what a button does are decided in PARENA (stdlib/collection/hub.prn);
+-- this file only makes the client calls.
 --
--- One row per addon from registry.lua (written by the packager from each addon's own .toc and code, so it never
--- drifts from what was built): loaded or not, its slash commands, where it saves and how much, and an Open button
--- that runs its command. A header shows the build's settings (version, interface, the journal's cap and poll) and
--- the REFLUX bus. Shown by /collection, and as the "Collection" category of the client's options window when there
--- is one.
+-- /collection        open or close the window
+-- /collection list   the same, in chat, with every command
+--
+-- One block per addon from registry.lua (written by the packager from each addon's own .toc and code, so it never
+-- drifts from what was built): loaded or not, where it saves and how much, and a button for every command and
+-- subcommand the addon documents (scripts/wow-slash-actions.awk). Hovering a button shows the full command and
+-- what it does. A button runs its command at once; one that needs something only the player can type (a name, a
+-- riddle: `<...>` in its usage) puts the command in the chat box instead, ready to finish. An addon that is not
+-- loaded shows no buttons. A header shows the build's settings (version, interface, the journal's cap and poll)
+-- and the REFLUX bus. Shown by /collection, and as the "Collection" category of the client's options window when
+-- there is one.
 --
 -- Client calls (feature-tested; none probed on Forever yet): CreateFrame, UIParent, C_AddOns.IsAddOnLoaded or
 -- IsAddOnLoaded, Settings.RegisterCanvasLayoutCategory + Settings.RegisterAddOnCategory (retail) or
--- InterfaceOptions_AddCategory (older clients), UISpecialFrames (Escape closes the window), UIPanelButtonTemplate.
+-- InterfaceOptions_AddCategory (older clients), UISpecialFrames (Escape closes the window), UIPanelButtonTemplate,
+-- GameTooltip (the hover text), ChatFrame_OpenChat or DEFAULT_CHAT_FRAME.editBox (a command left to finish; with
+-- neither, the usage is printed instead).
 
 local ADDON = "@ADDON@"
 local VAR = "@VAR@"
@@ -71,6 +81,48 @@ local function describe(a)
     return GOLD .. a.title .. "|r  " .. status, cmds .. "   " .. GREY .. where .. "|r", state
 end
 
+-- An addon's buttons: what it documents, or, when it documents nothing, its first command on its own.
+local function actions(a)
+    if a.actions and #a.actions > 0 then return a.actions end
+    if a.key ~= "" and a.cmds[1] then return { { cmd = a.cmds[1], sub = "", args = "", desc = "" } } end
+    return {}
+end
+
+local function needs_input(act) return act.args:find("<", 1, true) and 1 or 0 end
+
+-- The command as it would be typed, with and without its arguments.
+local function typed(act) return act.cmd .. (act.sub ~= "" and (" " .. act.sub) or "") end
+local function usage(act) return typed(act) .. (act.args ~= "" and (" " .. act.args) or "") end
+
+-- A button's label: the subcommand, else the bare command; "..." when the player still has something to type.
+local function label(act)
+    local t = act.sub ~= "" and act.sub or (act.args ~= "" and act.args or act.cmd)
+    return needs_input(act) == 1 and (t .. "...") or t
+end
+
+local function chat_prefill(text)
+    if ChatFrame_OpenChat then ChatFrame_OpenChat(text); return true end
+    local box = DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.editBox
+    if box and box.Show and box.SetText then
+        box:Show(); box:SetText(text)
+        if box.SetFocus then box:SetFocus() end
+        return true
+    end
+    return false
+end
+
+-- What a button does, decided by hub-action-mode: 1 runs the command, 2 leaves it in the chat box.
+local function press(a, act)
+    local mode = H.hubActionMode(is_loaded(a), needs_input(act))
+    if mode == 1 then
+        local fn = a.key ~= "" and SlashCmdList and SlashCmdList[a.key]
+        if fn then fn(act.sub) end
+    elseif mode == 2 then
+        if not chat_prefill(typed(act) .. " ") then print(string.format(L("TYPEIT"), usage(act))) end
+    end
+    return mode
+end
+
 local function header()
     local b = ns.build
     local line1 = string.format(L("BUILD"), tostring(b.version), tostring(b.interface), b.keep, b.poll)
@@ -81,11 +133,6 @@ local function header()
     return line1, line2
 end
 
-local function open(a)
-    local fn = a.key ~= "" and SlashCmdList and SlashCmdList[a.key]
-    if fn then fn("") end
-end
-
 local function list_in_chat()
     local h1, h2 = header()
     print(GOLD .. L("TITLE") .. "|r  " .. h1)
@@ -94,11 +141,17 @@ local function list_in_chat()
         local one, two = describe(a)
         print(one)
         print("    " .. two)
+        for _, act in ipairs(actions(a)) do
+            print("      " .. GOLD .. usage(act) .. "|r" .. (act.desc ~= "" and ("  " .. GREY .. act.desc .. "|r") or ""))
+        end
     end
 end
 
--- Fill `parent` with the header and one row per addon; returns a function that refreshes every text.
-local ROW = 38
+-- Fill `parent` with the header and one block per addon -- its two lines, then its command buttons, wrapped to the
+-- width; returns a function that refreshes every text and shows the buttons of the addons that are loaded.
+local LINE, BTN_H, BTN_GAP, BLOCK_GAP = 17, 22, 4, 10
+local function button_width(text) return math.max(56, 16 + 7 * string.len(text)) end
+
 local function fill(parent, width)
     local function text(p, template, x, y, w)
         local fs = p:CreateFontString(nil, "OVERLAY", template)
@@ -112,39 +165,59 @@ local function fill(parent, width)
     local h1 = text(parent, "GameFontHighlightSmall", 16, 40, width - 32)
     local h2 = text(parent, "GameFontHighlightSmall", 16, 56, width - 32)
 
-    -- the rows scroll: a plain ScrollFrame with the mouse wheel, so no template is needed
+    -- the blocks scroll: a plain ScrollFrame with the mouse wheel, so no template is needed
     local top = 80
     local scroll = CreateFrame("ScrollFrame", nil, parent)
     scroll:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, -top)
     scroll:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -8, 8)
     local body = CreateFrame("Frame", nil, scroll)
-    body:SetSize(width - 16, #ns.addons * ROW + 8)
     scroll:SetScrollChild(body)
+
+    local inner = width - 16
+    local rows, y = {}, 4
+    for _, a in ipairs(sorted()) do
+        local r = { addon = a, buttons = {} }
+        r.one = text(body, "GameFontHighlight", 8, y, inner - 16)
+        r.two = text(body, "GameFontHighlightSmall", 8, y + LINE, inner - 16)
+        y = y + 2 * LINE + 2
+        local x = 8
+        local acts = actions(a)
+        for _, act in ipairs(acts) do
+            local w = button_width(label(act))
+            if x > 8 and x + w > inner - 8 then x = 8; y = y + BTN_H + BTN_GAP end
+            local ok, b = pcall(CreateFrame, "Button", nil, body, "UIPanelButtonTemplate")
+            if not ok then b = CreateFrame("Button", nil, body) end
+            b:SetSize(w, BTN_H)
+            b:SetPoint("TOPLEFT", body, "TOPLEFT", x, -y)
+            b:SetText(label(act))
+            b.action = act
+            b:SetScript("OnClick", function() press(a, act) end)
+            b:SetScript("OnEnter", function(self)
+                if not (GameTooltip and GameTooltip.SetOwner) then return end
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(usage(act))
+                if act.desc ~= "" then GameTooltip:AddLine(act.desc, 1, 1, 1, true) end
+                if needs_input(act) == 1 then GameTooltip:AddLine(L("FINISH"), 0.62, 0.62, 0.62, true) end
+                GameTooltip:Show()
+            end)
+            b:SetScript("OnLeave", function() if GameTooltip and GameTooltip.Hide then GameTooltip:Hide() end end)
+            b:Hide()                         -- shown by the refresh, once it knows the addon is loaded
+            r.buttons[#r.buttons + 1] = b
+            x = x + w + BTN_GAP
+        end
+        if #acts > 0 then y = y + BTN_H end
+        y = y + BLOCK_GAP
+        rows[#rows + 1] = r
+    end
+    local total = y + 4
+    body:SetSize(inner, total)
     if scroll.EnableMouseWheel then
         scroll:EnableMouseWheel(true)
         scroll:SetScript("OnMouseWheel", function(self, delta)
-            local max = math.max(0, #ns.addons * ROW + 8 - (self.GetHeight and self:GetHeight() or 0))
-            local v = math.min(max, math.max(0, (self:GetVerticalScroll() or 0) - delta * ROW * 2))
+            local max = math.max(0, total - (self.GetHeight and self:GetHeight() or 0))
+            local v = math.min(max, math.max(0, (self:GetVerticalScroll() or 0) - delta * 60))
             self:SetVerticalScroll(v)
         end)
-    end
-
-    local rows = {}
-    for i, a in ipairs(sorted()) do
-        local y = (i - 1) * ROW + 4
-        local r = { addon = a }
-        r.one = text(body, "GameFontHighlight", 8, y, width - 120)
-        r.two = text(body, "GameFontHighlightSmall", 8, y + 17, width - 120)
-        if a.key ~= "" then
-            local ok, b = pcall(CreateFrame, "Button", nil, body, "UIPanelButtonTemplate")
-            if not ok then b = CreateFrame("Button", nil, body) end
-            b:SetSize(72, 22)
-            b:SetPoint("TOPRIGHT", body, "TOPRIGHT", -8, -(y + 4))
-            b:SetText(L("OPEN"))
-            b:SetScript("OnClick", function() open(a) end)
-            r.button = b
-        end
-        rows[#rows + 1] = r
     end
 
     return function()
@@ -155,7 +228,7 @@ local function fill(parent, width)
             local one, two, state = describe(r.addon)
             r.one:SetText(one)
             r.two:SetText(two)
-            if r.button then if state == 0 then r.button:Hide() else r.button:Show() end end
+            for _, b in ipairs(r.buttons) do if state == 0 then b:Hide() else b:Show() end end
         end
     end
 end
@@ -164,7 +237,7 @@ local window
 local function make_window()
     if window or not (CreateFrame and UIParent) then return window end
     local f = CreateFrame("Frame", "CollectionHubFrame", UIParent)
-    f:SetSize(640, 520)
+    f:SetSize(640, 560)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
     if f.SetFrameStrata then f:SetFrameStrata("DIALOG") end
     local bg = f:CreateTexture(nil, "BACKGROUND")
@@ -237,4 +310,4 @@ SlashCmdList["COLLECTIONHUB"] = function(msg)
 end
 
 -- for tests and other addons
-ns.describe, ns.list_in_chat = describe, list_in_chat
+ns.describe, ns.list_in_chat, ns.actions, ns.press = describe, list_in_chat, actions, press

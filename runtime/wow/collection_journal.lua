@@ -1,5 +1,7 @@
 -- runtime/wow/collection_journal.lua -- the CollectionJournal addon's host glue (Collection of Value, Step 6).
 --
+-- /cov   how many rows the journal holds, trimmed and lost
+--
 -- The journal itself is PARENA (stdlib/collection/journal.prn, registered by the packager as
 -- RefluxCore.modules["collection/journal"]). This file only does what emit_lua cannot express yet -- a frame,
 -- event and OnUpdate callbacks, a slash command -- and hands the journal its context. Same role as
