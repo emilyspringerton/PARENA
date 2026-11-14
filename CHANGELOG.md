@@ -13,6 +13,17 @@
   (split after 10 minutes apart), the latest position ringed, and the time and coordinates on hover. Maps are
   named from the Character Board's snapshots of the same map id. No game map art is drawn, only the grid.
 - `board_csv_test` is now 37 checks (the page, the positions, and a zone that tries to close the page's script).
+- **MacroSync gains Warrior, Rogue and Hunter** (founder: "add druid warrior rogue sham hunter ensure those macros
+  built in"; Druid and Shaman were already in). Sixteen macros each, from the class's core kit:
+  - Warrior: stance-aware (Intercept in Berserker stance, else Charge; Pummel in Berserker, else Shield Bash; one
+    stance button, shift/ctrl for the others); the main strike is whichever of Mortal Strike / Bloodthirst /
+    Shield Slam the character has, else Heroic Strike.
+  - Rogue: stealth openers (shift for Ambush, else Cheap Shot, else Sinister Strike), Stealth that never toggles
+    you back out (`[nostealth]`), finishers, control, escapes, Pick Pocket.
+  - Hunter: Auto Shot that never toggles off (`!`), shots on mouseover else target, traps, aspects, tracking, and
+    one pet button that revives a dead pet, calls a missing one, else mends it.
+  - `macrosync_test` is now 114 checks, including one over every class: sixteen macros, unique names of at most 16
+    characters with the class tag, and every body within 255 characters even with its longest spell choices.
 
 ## 2026-11-13
 

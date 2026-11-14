@@ -30,7 +30,7 @@
 (module collection/macros)
 (export macro-set macro-classes)
 
-(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST" "MAGE" "SHAMAN" "DRUID"))
+(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST" "MAGE" "SHAMAN" "DRUID" "WARRIOR" "ROGUE" "HUNTER"))
 
 (defn macro-paladin [] : Any
   (lua/array
@@ -142,10 +142,76 @@
     (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")
     (lua/array "DruCaster" "/cancelform")))
 
+;; WARRIOR -- stance-aware (classic stances: 1 Battle, 2 Defensive, 3 Berserker). The main strike is whichever
+;; talent strike the character has, falling back to Heroic Strike; shift and ctrl pick the other stances.
+(defn macro-warrior [] : Any
+  (lua/array
+    (lua/array "WarCharge" "#showtooltip\n/startattack\n/cast [stance:3] {Intercept}; {Charge}")
+    (lua/array "WarStrike" "#showtooltip\n/startattack\n/cast {Mortal Strike|Bloodthirst|Shield Slam|Heroic Strike}")
+    (lua/array "WarCleave" "#showtooltip\n/startattack\n/cast {Cleave}")
+    (lua/array "WarRend" "#showtooltip\n/startattack\n/cast [@mouseover,harm,nodead][] {Rend}")
+    (lua/array "WarHamstring" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hamstring}")
+    (lua/array "WarOverpower" "#showtooltip\n/cast {Overpower}")
+    (lua/array "WarExecute" "#showtooltip\n/cast {Execute}")
+    (lua/array "WarRevenge" "#showtooltip\n/cast {Revenge}")
+    (lua/array "WarSunder" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Devastate|Sunder Armor}")
+    (lua/array "WarThunder" "#showtooltip\n/cast {Thunder Clap}")
+    (lua/array "WarShout" "#showtooltip\n/cast [mod:shift] {Demoralizing Shout}; {Battle Shout}")
+    (lua/array "WarTaunt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Taunt}")
+    (lua/array "WarKick" "#showtooltip\n/cast [stance:3] {Pummel}; {Shield Bash}")
+    (lua/array "WarBlock" "#showtooltip\n/cast {Shield Block}")
+    (lua/array "WarRage" "#showtooltip\n/cast {Bloodrage}")
+    (lua/array "WarStance" "#showtooltip\n/cast [mod:shift] {Defensive Stance}; [mod:ctrl] {Berserker Stance}; {Battle Stance}")))
+
+;; ROGUE -- builders, finishers, the stealth openers ([stealth]: shift for Ambush, else Cheap Shot), control and
+;; escapes. Stealth uses [nostealth] so pressing it twice never drops you out.
+(defn macro-rogue [] : Any
+  (lua/array
+    (lua/array "RogSinister" "#showtooltip\n/startattack\n/cast {Mutilate|Sinister Strike}")
+    (lua/array "RogOpener" "#showtooltip\n/cast [stealth,mod:shift] {Ambush}; [stealth] {Cheap Shot}; {Sinister Strike}")
+    (lua/array "RogStealth" "#showtooltip\n/cast [nostealth] {Stealth}")
+    (lua/array "RogEvis" "#showtooltip\n/startattack\n/cast {Eviscerate}")
+    (lua/array "RogSnD" "#showtooltip\n/cast {Slice and Dice}")
+    (lua/array "RogRupture" "#showtooltip\n/cast {Rupture}")
+    (lua/array "RogExpose" "#showtooltip\n/cast {Expose Armor}")
+    (lua/array "RogKick" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Kick}")
+    (lua/array "RogGouge" "#showtooltip\n/cast {Gouge}")
+    (lua/array "RogKidney" "#showtooltip\n/cast {Kidney Shot}")
+    (lua/array "RogSap" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Sap}")
+    (lua/array "RogBlind" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Blind}")
+    (lua/array "RogEvasion" "#showtooltip\n/cast {Evasion}")
+    (lua/array "RogSprint" "#showtooltip\n/cast {Sprint}")
+    (lua/array "RogVanish" "#showtooltip\n/cast {Vanish}")
+    (lua/array "RogPickPocket" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Pick Pocket}")))
+
+;; HUNTER -- shots on your mouseover enemy else your target, Auto Shot that never toggles off (!), melee, traps,
+;; aspects, tracking, and the pet: one button revives it when dead, calls it when missing, else mends it.
+(defn macro-hunter [] : Any
+  (lua/array
+    (lua/array "HunAuto" "#showtooltip\n/cast !{Auto Shot}")
+    (lua/array "HunArcane" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Arcane Shot}")
+    (lua/array "HunSerpent" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Serpent Sting}")
+    (lua/array "HunMark" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hunter's Mark}")
+    (lua/array "HunConcuss" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Concussive Shot}")
+    (lua/array "HunMulti" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Multi-Shot}")
+    (lua/array "HunAimed" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Aimed Shot}")
+    (lua/array "HunRaptor" "#showtooltip\n/startattack\n/cast {Raptor Strike}")
+    (lua/array "HunWingClip" "#showtooltip\n/cast {Wing Clip}")
+    (lua/array "HunDisengage" "#showtooltip\n/cast {Disengage}")
+    (lua/array "HunFeign" "#showtooltip\n/cast {Feign Death}")
+    (lua/array "HunTrap" "#showtooltip\n/cast [mod:shift] {Immolation Trap}; {Freezing Trap}")
+    (lua/array "HunAspect" "#showtooltip\n/cast [mod:shift] {Aspect of the Cheetah}; {Aspect of the Hawk|Aspect of the Monkey}")
+    (lua/array "HunTrack" "#showtooltip\n/cast [mod:shift] {Track Humanoids}; {Track Beasts}")
+    (lua/array "HunPet" "#showtooltip\n/cast [@pet,dead] {Revive Pet}; [nopet] {Call Pet}; {Mend Pet}")
+    (lua/array "HunPetAttack" "/petattack [@mouseover,harm,nodead][]")))
+
 ;; The set for a class file name; an empty array for a class without one yet.
 (defn macro-set [(class : String)] : Any
   (if (= class "PALADIN") (macro-paladin)
     (if (= class "PRIEST") (macro-priest)
       (if (= class "MAGE") (macro-mage)
         (if (= class "SHAMAN") (macro-shaman)
-          (if (= class "DRUID") (macro-druid) (lua/array)))))))
+          (if (= class "DRUID") (macro-druid)
+            (if (= class "WARRIOR") (macro-warrior)
+              (if (= class "ROGUE") (macro-rogue)
+                (if (= class "HUNTER") (macro-hunter) (lua/array))))))))))

@@ -187,6 +187,9 @@ for _, case in ipairs({
     { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor" },
     { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon" },
     { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild" },
+    { "WARRIOR", { "Heroic Strike", "Battle Stance", "Battle Shout", "Charge" }, "WarStrike", "Heroic Strike" },
+    { "ROGUE", { "Sinister Strike", "Stealth", "Eviscerate" }, "RogSinister", "Sinister Strike" },
+    { "HUNTER", { "Auto Shot", "Raptor Strike", "Aspect of the Monkey", "Track Beasts" }, "HunAspect", "Aspect of the Monkey" },
 }) do
     local cw = world(case[1], case[2])
     s = session(cw)
@@ -201,6 +204,46 @@ local dr = world("DRUID", {})
 s = session(dr)
 s.ascend()
 eq(find(dr.char, "DruCaster").body, "/cancelform", "a macro with no spell choice is written as is")
+
+-- ===== warrior, rogue, hunter: the class-specific conditionals survive resolution ==========================
+local wa = world("WARRIOR", { "Bloodthirst", "Heroic Strike", "Charge", "Battle Stance" })
+s = session(wa); s.ascend()
+eq(find(wa.char, "WarStrike").body, "#showtooltip\n/startattack\n/cast Bloodthirst", "a fury warrior's strike is Bloodthirst, not Heroic Strike")
+eq(find(wa.char, "WarCharge").body, "#showtooltip\n/startattack\n/cast [stance:3] Intercept; Charge", "Charge, Intercept in Berserker stance")
+local ro = world("ROGUE", { "Sinister Strike", "Stealth" })
+s = session(ro); s.ascend()
+eq(find(ro.char, "RogStealth").body, "#showtooltip\n/cast [nostealth] Stealth", "Stealth never toggles you out")
+eq(find(ro.char, "RogOpener").body, "#showtooltip\n/cast [stealth,mod:shift] Ambush; [stealth] Cheap Shot; Sinister Strike", "the stealth openers")
+local hu = world("HUNTER", { "Auto Shot", "Call Pet" })
+s = session(hu); s.ascend()
+eq(find(hu.char, "HunAuto").body, "#showtooltip\n/cast !Auto Shot", "Auto Shot keeps its no-toggle !")
+eq(find(hu.char, "HunPet").body, "#showtooltip\n/cast [@pet,dead] Revive Pet; [nopet] Call Pet; Mend Pet", "one pet button: revive, call, mend")
+eq(find(hu.char, "HunPetAttack").body, "/petattack [@mouseover,harm,nodead][]", "pet attack has no spell choice")
+
+-- ===== every class's set is built in, and fits the client ==================================================
+local SETS = s.env.RefluxCore.modules["collection/macros"]
+local classes = SETS.macroClasses()
+eq(table.concat(classes, ","), "PALADIN,PRIEST,MAGE,SHAMAN,DRUID,WARRIOR,ROGUE,HUNTER", "eight classes have a set")
+for _, class in ipairs(classes) do
+    local set, names_ok, tag_ok, len_ok, uniq = SETS.macroSet(class), true, true, true, {}
+    local tag = set[1] and set[1][1]:sub(1, 3)
+    for _, m in ipairs(set) do
+        if #m[1] > 16 or uniq[m[1]] then names_ok = false end
+        uniq[m[1]] = true
+        if m[1]:sub(1, 3) ~= tag then tag_ok = false end
+        -- the longest body this template can resolve to: every choice its longest alternative
+        local longest = m[2]:gsub("{([^}]*)}", function(alts)
+            local best = ""
+            for alt in alts:gmatch("[^|]+") do if #alt > #best then best = alt end end
+            return best
+        end)
+        if #longest > 255 then len_ok = false end
+    end
+    eq(#set, 16, class .. ": sixteen macros")
+    eq(names_ok, true, class .. ": names unique and at most 16 characters")
+    eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
+    eq(len_ok, true, class .. ": every body fits 255 characters")
+end
 
 -- ===== REFLUX: ascends reach the journal ================================================================
 local j = world("PALADIN", { "Judgement" })
