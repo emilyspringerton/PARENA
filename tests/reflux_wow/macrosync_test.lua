@@ -241,7 +241,7 @@ for _, case in ipairs({
     local cw = world(case[1], case[2])
     s = session(cw)
     out = s.ascend()
-    local want = case[1] == "SHAMAN" and 17 or 16       -- the shaman set also has the panic button
+    local want = (case[1] == "SHAMAN" or case[1] == "DRUID") and 17 or 16   -- shaman: the panic button; druid: Swiftness
     eq(#cw.char, want, case[1] .. ": the whole set written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
@@ -287,7 +287,8 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    eq(#set, class == "SHAMAN" and 17 or 16, class .. ": the set's size (shaman: sixteen and the panic button)")
+    eq(#set, (class == "SHAMAN" or class == "DRUID") and 17 or 16,
+       class .. ": the set's size (shaman: sixteen and the panic button; druid: and the Swiftness heal)")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
     eq(len_ok, true, class .. ": every body fits 255 characters")
@@ -319,6 +320,17 @@ for key, text in pairs(ns.catalogue.enUS) do
     end
 end
 eq(count, 14, "fourteen haiku")
+
+-- ===== druid Healing Touch (founder, 2026-11-14: "druid macros is missing healing touch") ======================
+local dt = world("DRUID", { "Healing Touch", "Nature's Swiftness" })
+s = session(dt)
+s.ascend()
+eq(find(dt.char, "DruTouch").body,
+   "#showtooltip Healing Touch\n/cancelform [form]\n/cast [@mouseover,help,nodead][help,nodead][@player] Healing Touch",
+   "DruTouch: mouseover Healing Touch, out of form first")
+eq(find(dt.char, "DruSwift").body,
+   "#showtooltip Healing Touch\n/cancelform [form]\n/cast Nature's Swiftness\n/cast [@mouseover,help,nodead][help,nodead][@player] Healing Touch",
+   "DruSwift: Nature's Swiftness, then the instant Healing Touch")
 
 print(string.format("macrosync: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

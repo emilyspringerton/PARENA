@@ -134,7 +134,11 @@
     (lua/array "DruMoonfire" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Moonfire}")
     (lua/array "DruRoots" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Entangling Roots}")
     (lua/array "DruClaw" "#showtooltip\n/startattack\n/cast {Mangle|Claw}")
-    (lua/array "DruHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch|Regrowth}")
+    ;; Healing Touch on the mouseover (founder, 2026-11-14: "druid macros is missing healing touch" -- it was here as
+    ;; DruHeal, which did not say what it cast). Drops bear/cat form first, since no heal casts in a form.
+    (lua/array "DruTouch" "#showtooltip Healing Touch\n/cancelform [form]\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch}")
+    ;; the emergency heal: Nature's Swiftness (talent; off the global cooldown) makes the Healing Touch instant.
+    (lua/array "DruSwift" "#showtooltip Healing Touch\n/cancelform [form]\n/cast {Nature's Swiftness}\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch}")
     (lua/array "DruRegrowth" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Regrowth}")
     (lua/array "DruRejuv" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
     (lua/array "DruMark" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")

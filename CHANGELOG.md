@@ -1,4 +1,5 @@
 ## 2026-11-14
+- WoW MacroSync, druid: the mouseover Healing Touch is now `DruTouch` (was `DruHeal`, which did not say what it cast; MacroSync prunes the old name, so re-drag it to the bar) and drops bear/cat form first; new `DruSwift` = Nature's Swiftness + instant mouseover Healing Touch. Druid set is 17.
 
 - **Shot: a Mac-style screenshot tool for Windows** (founder: "can we build a screenshot tool i want to stop having to
   open snipping tool", "it should work like the mac screenshot utility"). `tools/shot/shot.c`, a plain Win32 tray app
