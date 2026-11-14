@@ -242,7 +242,7 @@ for _, case in ipairs({
     local cw = world(case[1], case[2])
     s = session(cw)
     out = s.ascend()
-    local want = (case[1] == "SHAMAN" or case[1] == "DRUID") and 17 or 16   -- shaman: the panic button; druid: Swiftness
+    local want = (case[1] == "WARRIOR" and 18) or ((case[1] == "SHAMAN" or case[1] == "DRUID") and 17) or 16   -- warrior: the full 18
     eq(#cw.char, want, case[1] .. ": the whole set written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
@@ -288,7 +288,7 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    eq(#set, (class == "SHAMAN" or class == "DRUID") and 17 or 16,
+    eq(#set, (class == "WARRIOR" and 18) or ((class == "SHAMAN" or class == "DRUID") and 17) or 16,
        class .. ": the set's size (shaman: sixteen and the panic button; druid: and the Swiftness heal)")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
@@ -392,6 +392,27 @@ bars_for(fs, fw)
 o = fs.ascend()
 has(o, "put on the action bars (1): ", "one empty slot: one macro placed")
 has(o, "not placed -- no empty action slot left: ", "the rest are reported, never forced")
+
+-- ===== warrior: stance-dancing, and the whole set fits the classic per-character limit ======================
+do
+    local ww = world("WARRIOR", { "Heroic Strike", "Battle Stance", "Defensive Stance", "Berserker Stance", "Overpower",
+                                   "Revenge", "Taunt", "Shield Block", "Shield Wall", "Cleave", "Whirlwind", "Shoot Bow" })
+    local wsess = session(ww)
+    wsess.ascend()
+    eq(#ww.char, 18, "the warrior set is 18 macros: the classic client's per-character limit, exactly")
+    eq(find(ww.char, "WarOverpower").body, "#showtooltip Overpower\n/startattack\n/cast [nostance:1] Battle Stance; Overpower",
+       "Overpower dances into Battle Stance first")
+    eq(find(ww.char, "WarRevenge").body, "#showtooltip Revenge\n/startattack\n/cast [nostance:2] Defensive Stance; Revenge",
+       "Revenge into Defensive")
+    eq(find(ww.char, "WarHeroic").body,
+       "#showtooltip\n/startattack\n/cast [mod:ctrl,nostance:3] Berserker Stance; [mod:ctrl] Whirlwind; [mod:shift] Cleave; Heroic Strike",
+       "Heroic Strike, shift Cleave, ctrl Whirlwind (into Berserker)")
+    eq(find(ww.char, "WarDefense").body,
+       "#showtooltip\n/cast [mod:ctrl] Shield Wall; [nostance:2] Defensive Stance; [mod:shift] Shield Wall; Shield Block",
+       "the panic button: without Last Stand, ctrl falls back to Shield Wall")
+    eq(find(ww.char, "WarPull").body, "#showtooltip\n/cast [@mouseover,harm,nodead][] Shoot Bow", "the pull uses the ranged weapon it has")
+    for _, m in ipairs(ww.char) do eq(#m.body <= 255, true, m.name .. " fits the client's 255-character body") end
+end
 
 print(string.format("macrosync: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
