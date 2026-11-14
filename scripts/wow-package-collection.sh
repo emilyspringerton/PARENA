@@ -175,6 +175,10 @@ wrap collection/macrosync "$ms/macrosync_rules.lua" stdlib/reflux/reflux.prn std
 wrap collection/macros "$ms/macros.lua" stdlib/collection/macros.prn
 cp runtime/wow/locales/macrosync.lua "$ms/locale.lua"
 glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
+# MACROSYNC_LIMIT: load only the first N macros of each class set (0 or unset = the whole set).
+M_LIMIT="${MACROSYNC_LIMIT:-0}"
+case "$M_LIMIT" in ''|*[!0-9]*) die "MACROSYNC_LIMIT must be a whole number, got '$M_LIMIT'" ;; esac
+sed -i "s/__MS_LIMIT__/$M_LIMIT/" "$ms/macrosync.lua"
 toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros, loaded with /ascend; removed ones are pruned. Speaks in haiku." \
   SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua locale.lua macrosync.lua
 GAMES_BUILT=" $M_ADDON"

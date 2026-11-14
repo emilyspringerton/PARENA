@@ -14,6 +14,7 @@
 
 local ADDON = "@ADDON@"
 local VAR = "@VAR@"
+local LIMIT = tonumber("__MS_LIMIT__") or 0   -- filled by the packager from MACROSYNC_LIMIT
 local _, ns = ...
 
 local M = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macrosync"]
@@ -74,6 +75,13 @@ local function ascend(preview)
     end
     local _, class = UnitClass("player")
     local set = SETS.macroSet(class or "")
+    -- MACROSYNC_LIMIT (package time, 0 = the whole set): keep only the first N of the class set. Macros past the
+    -- cap that MacroSync wrote earlier are pruned like any removed macro.
+    if LIMIT > 0 and #set > LIMIT then
+        local cut = {}
+        for i = 1, LIMIT do cut[i] = set[i] end
+        set = cut
+    end
     if #set == 0 then haiku(8) end
 
     local keep, ready, dormant = {}, {}, {}
