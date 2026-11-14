@@ -1,0 +1,121 @@
+;; stdlib/shankpit460/sp_level.prn -- shankpit-460 as a SHANKPIT level: the level surface over the web engine, so the
+;; SHANKPHONE plays it natively on SHANKPIT's own wasm3 host instead of through the Chromium stopgap (founder
+;; 2026-11-14: "build pellegrino on the phone into a full app that can play the wasm games" / "parenafy it";
+;; EMILY/BACKLOG.md S635-4, the PARENA replacement for the stopgap).
+;;
+;; Contract: SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md section 2, the same surface BRAWLPIT's bp_level.prn speaks. The
+;; game is the very sp_*.prn the WOTAN web build ships (MODULES, scripts/build_shankpit460_web.sh, untouched); nothing
+;; here changes a rule. What the level adds over the page entry points (sp_main.prn):
+;;   - one 16 ms sim step per level-tick and drawing in level-render (the host owns the fixed-step accumulator);
+;;   - its own millisecond clock (level-seed + ticks), replacing the page's wall clock;
+;;   - no network: the page owns the WebSocket, and a level has none, so the engine is told matchmaking is offline at
+;;     enter and plays bot matches ("MATCHMAKING OFFLINE - BOTS ONLY", the engine's own banner);
+;;   - a keyboard-only control scheme, because the phone has no mouse: the pointer is always "captured", arrow keys
+;;     look (yaw / pitch, while playing -- on the menus they still pick the bot level), F fires, Q zooms the sniper.
+;;     Everything else is the engine's own: WASD, Space, Shift / C crouch, R, E, 1-6, Tab, Enter.
+;;   - REFLUX in: LEVEL_HIDDEN for this level pauses a bot match (the game's own pause), like BRAWLPIT.
+;;
+;; State lives in the G region's spare words 900-905 (the engine uses 0-271, and 500-501 for the page clock).
+
+(defn sp-level-id [] : I32 2)                 ; level id 2 = SHANKPIT-460 (SHANKPIT REFLUX_LEVEL_SHANKPIT460)
+(defn sp-act-level-hidden [] : I32 1002)      ; REFLUX_ACTION_LEVEL_HIDDEN
+
+(defn g-lv-seed [] : I32 900)       ; base of the level's millisecond clock
+(defn g-lv-ticks [] : I32 901)      ; sim steps since level-enter
+(defn g-lv-lost [] : I32 902)       ; REFLUX rows overtaken before this level could read them
+
+;; the phone scheme's keys (DOM key codes, as the host sends them)
+(defn kc-arrow-left [] : I32 37) (defn kc-arrow-up [] : I32 38) (defn kc-arrow-right [] : I32 39) (defn kc-arrow-down [] : I32 40)
+(defn kc-fire [] : I32 70)          ; F
+(defn kc-zoom [] : I32 81)          ; Q
+;; degrees per 16 ms tick a held arrow turns: ~150 deg/s across, ~90 deg/s up and down -- a full turn in ~2.4 s
+(defn arrow-yaw-step [] : F32 2.4)
+(defn arrow-pitch-step [] : F32 1.5)
+
+(defn level-api [] : I32 1)
+
+;; a fresh shankpit-460 at its title screen, matchmaking offline. 0 = ok
+(defn level-enter [] : I32
+  (do
+    (sp-init)
+    (net-socket! 3)
+    (gi! (g-locked) 1)
+    (gi! (g-lv-ticks) 0)
+    (gi! (g-lv-lost) 0)
+    0))
+
+(defn level-seed [(s : I32)] : Unit
+  (do (gi! (g-lv-seed) s)
+      (sp-seed! (bit-and s 2147483647))))
+
+(defn lv-clock-ms [] : I32 (+ (gi (g-lv-seed)) (* (gi (g-lv-ticks)) 16)))
+
+;; the keyboard stands in for the mouse
+(defn lv-phone-controls! [] : Unit
+  (do
+    (gi! (g-locked) 1)
+    (in-button! 0 (b2i (key-down? (kc-fire))))
+    (in-button! 2 (b2i (key-down? (kc-zoom))))
+    (when (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 0))
+      (let [(yaw : F32) (- (bool-f (key-down? (kc-arrow-right))) (bool-f (key-down? (kc-arrow-left))))
+            (pitch : F32) (- (bool-f (key-down? (kc-arrow-down))) (bool-f (key-down? (kc-arrow-up))))
+            (z : F32) (if (!= (gi (g-zoom)) 0) 0.35 1.0)]
+        (look! (* (* yaw (arrow-yaw-step)) z) (* (* pitch (arrow-pitch-step)) z))))))
+
+;; exactly one 16 ms sim step, no drawing
+(defn level-tick [] : Unit
+  (do
+    (gi! (g-lv-ticks) (+ (gi (g-lv-ticks)) 1))
+    (gi! (g-ticker) (lv-clock-ms))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (lv-phone-controls!)
+    (step-once!)))
+
+(defn level-render [] : Unit (ui-render!))
+
+(defn level-exit [] : Unit (in-clear-keys!))
+
+;; ---- REFLUX in ---------------------------------------------------------------------------------------------------
+(defn lv-on-action! [(idx : I32)] : Unit
+  (when (and (= (reflux-action-type-at idx) (sp-act-level-hidden)) (= (reflux-action-a-at idx) (sp-level-id)))
+    (when (and (= (gi (g-phase)) 1) (= (gi (g-mode)) 0))
+      (gi! (g-paused) 1))))
+
+;; read rows [cursor, total) and hand total back; an overtaken cursor starts at the oldest row, the gap counted
+(defn level-poll [(cursor : I32)] : I32
+  (let [total (reflux-total-dispatched)
+        oldest (reflux-oldest-abs)
+        start (if (< cursor oldest) oldest cursor)]
+    (when (< cursor oldest) (gi! (g-lv-lost) (+ (gi (g-lv-lost)) (- oldest cursor))))
+    (loop [abs start]
+      (when (< abs total)
+        (let [idx (reflux-index-for-abs abs)]
+          (when (>= idx 0) (lv-on-action! idx)))
+        (recur (+ abs 1))))
+    total))
+
+(defn level-lost-rows [] : I32 (gi (g-lv-lost)))
+
+;; ---- input -------------------------------------------------------------------------------------------------------
+(defn level-key [(code : I32) (down : I32)] : Unit (in-key! code down))
+;; a pointer (the SHANKPIT world view forwards one; the phone does not): position and the left button, which also
+;; clicks the menus the way the page's click does
+(defn level-pointer [(x : I32) (y : I32) (buttons : I32)] : Unit
+  (let [down (bit-and buttons 1)
+        was (if (left-down?) 1 0)]
+    (in-pointer! x y)
+    (in-button! 0 down)
+    (when (and (= was 0) (!= down 0)) (ui-click!))))
+(defn level-blur [] : Unit
+  (do (in-clear-keys!)
+      (end-input-tick!)
+      (in-button! 0 0)
+      (in-button! 2 0)))
+
+;; ---- memory the host reads and writes ----------------------------------------------------------------------------
+(defn level-fb-addr [] : I32 (fb-base))
+(defn level-fb-w [] : I32 640)
+(defn level-fb-h [] : I32 360)
+;; no assets: the font, the maps and the people are all in the module
+(defn level-asset-addr [(slot : I32)] : I32 0)
+(defn level-asset-set [(slot : I32) (loaded : I32)] : Unit unit)

@@ -30,6 +30,14 @@ TYPESCRIPT VIA PARENA ... feel free to improve the bots."* Stats and the bot lea
 | `sp_host.prn` | the page host: instantiate, blit, forward input / pointer lock, the WebSocket, WebAudio, labels |
 | `MODULES` | the build order |
 
+**As a SHANKPIT level (2026-11-14).** `sp_level.prn` + `level.manifest` build the same engine as a T0 level module
+(`scripts/build_level_wasm.sh stdlib/shankpit460/level.manifest <out.wasm>`, 126 KB, the exact T0 surface, no allocator),
+so the SHANKPHONE's PELLEGRINO app plays it natively on SHANKPIT's wasm3 host (`SHANKPIT/scripts/build_shankpit460_level.sh`
+commits it). No network there -- the engine is told matchmaking is offline and plays bot matches -- and a keyboard-only
+scheme for a phone with no mouse: arrows look, F fires, Q zooms. Checked by SHANKPIT's `make test-phone-arcade`
+(title -> Enter -> playing, a held arrow turns the camera) and in the lobby under Xvfb. The title screen's control hint
+still says "mouse / click to fire" (it is the page's).
+
 Build: `scripts/build_shankpit460_web.sh <outdir>` -> `shankpit460.wasm` + `sp-host.js`. WOTAN commits both
 (`WOTAN/scripts/build-shankpit460.sh`).
 
