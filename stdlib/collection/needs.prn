@@ -1,0 +1,41 @@
+;; stdlib/collection/needs.prn -- the account's needs list: what each character is short of, and how urgent (founder,
+;; 2026-11-14: "i need a way for a character to request an item or a bag etc in the system ... we need to keep a list
+;; of stuff like 0 bags empty gear that are huge upgrades"). The forge (runtime/wow/forge/forge.lua, `forge needs`)
+;; builds the list from three sources and sorts it with these rules:
+;;   bags      Fafnir's Bed's bag space per character: full, nearly full, or bag slots with no bag in them
+;;   requests  what a character asked for (/need in game, or `forge request`)
+;;   upgrades  spare gear worth at least need-big-gain over what a character wears (collection/upgrades)
+;;
+;; Urgency is one number, highest first: a full bag stops looting, so it outranks everything; an empty bag slot is
+;; free space waiting; a request is something a person asked for; an upgrade is a nice-to-have unless it is huge.
+
+(module collection/needs)
+(export need-low-free need-bag-state need-missing-bags need-big-gain need-urgency need-kind-name)
+
+;; Free slots at or under which the bags count as nearly full.
+(defn need-low-free [] : I32 4)
+
+;; 0 room to spare, 1 nearly full, 2 full. A character with no slots read yet (total 0) is 0: unknown is not full.
+(defn need-bag-state [(free : I32) (total : I32)] : I32
+  (if (= total 0) 0 (if (= free 0) 2 (if (<= free (need-low-free)) 1 0))))
+
+;; Bag slots with no bag in them.
+(defn need-missing-bags [(bags : I32) (max : I32)] : I32 (if (> max bags) (- max bags) 0))
+
+;; The smallest gain (tenths of a score point, as collection/upgrades scores) that puts an upgrade on the needs list.
+(defn need-big-gain [] : I32 100)
+
+;; Kinds: 1 bags full, 2 bags nearly full, 3 empty bag slots, 4 a request, 5 an upgrade.
+(defn need-kind-name [(kind : I32)] : String
+  (cond ((= kind 1) "bags full") ((= kind 2) "bags nearly full") ((= kind 3) "empty bag slot")
+        ((= kind 4) "request") (true "upgrade")))
+
+;; How urgent, highest first. `amount` is the kind's own size: free slots for 2, empty bag slots for 3, the gain in
+;; tenths for 5 (a gain of three times the threshold ranks with a request); unused for 1 and 4.
+(defn need-urgency [(kind : I32) (amount : I32)] : I32
+  (cond
+    ((= kind 1) 1000)
+    ((= kind 2) (- 900 (* amount 10)))
+    ((= kind 3) (+ 700 (* amount 10)))
+    ((= kind 4) 600)
+    (true (if (> amount 600) 600 amount))))

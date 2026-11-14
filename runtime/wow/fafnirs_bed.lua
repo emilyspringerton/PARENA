@@ -2,6 +2,10 @@
 --
 -- /fafnir                    net inventory across every character on the account
 -- /fafnir <name or item id>  who has it, and the net count
+-- /need                      this character's requests to the account (the forge's needs list)
+-- /need bag                  ask the account for a bag
+-- /need <item or id> [n]     ask the account for an item, n of them
+-- /need done <k>             drop request k
 --
 -- The inventory model is PARENA (stdlib/collection/inventory.prn, RefluxCore.modules["collection/inventory"]).
 -- This file reads the client into plain {[itemID] = count} tables, hands them over on the events that mean
@@ -101,8 +105,7 @@ local function remember_facts(id)
     if db.items[id] then return true end
     local name, link, quality, ilvl, req, _, _, _, loc, _, _, cls, sub, bind = item_info(id)
     if not name then return false end
-    if not loc or loc == "" or loc == "INVTYPE_NON_EQUIP_IGNORE" or loc == "INVTYPE_BAG" or loc == "INVTYPE_AMMO"
-        or loc == "INVTYPE_QUIVER" then return true end
+    if not loc or loc == "" or loc == "INVTYPE_NON_EQUIP_IGNORE" or loc == "INVTYPE_AMMO" then return true end
     local f = { q = quality, ilvl = ilvl, req = req, loc = loc, cls = cls, sub = sub, bind = bind, s = {} }
     local raw = link and item_stats(link)
     for k, v in pairs(raw or {}) do
@@ -182,6 +185,34 @@ local function apply(loc, snap, bound)
     end
 end
 
+-- How full the bags are, for the forge's needs list: slots in all, slots free, bags worn and bag slots the client
+-- has (NUM_BAG_SLOTS). A worn bag's own slot count is learned here too (a spare bag's is only known once some
+-- character has worn one), via C_Container.ContainerIDToInventoryID + GetInventoryItemID where they exist.
+local function bag_space(ids)
+    local who = character()
+    if not (db and who) then return end
+    local total, free, worn = 0, 0, 0
+    for _, bag in ipairs(ids) do
+        local n = num_slots(bag) or 0
+        if bag > 0 and bag <= NUM_BAG_SLOTS and n > 0 then
+            worn = worn + 1
+            local inv = C_Container and C_Container.ContainerIDToInventoryID and C_Container.ContainerIDToInventoryID(bag)
+                or (ContainerIDToInventoryID and ContainerIDToInventoryID(bag))
+            local id = inv and GetInventoryItemID and GetInventoryItemID("player", inv)
+            if id then
+                remember_facts(id)
+                if db.items and db.items[id] then db.items[id].slots = n end
+            end
+        end
+        for slot = 1, n do
+            total = total + 1
+            if not slot_item(bag, slot) then free = free + 1 end
+        end
+    end
+    db.space = db.space or {}
+    db.space[who] = { total = total, free = free, bags = worn, max = NUM_BAG_SLOTS, t = time() }
+end
+
 local function scan_bags()
     local ids = bag_ids()
     if not ids then unreadable.bags = "NUM_BAG_SLOTS is missing"; return end
@@ -189,6 +220,7 @@ local function scan_bags()
     if why == "not ready" then return end
     if not snap then unreadable.bags = "no container API (C_Container or GetContainerItemInfo)"; return end
     apply("bags", snap, bound)
+    bag_space(ids)
 end
 
 local function scan_bank()
@@ -328,5 +360,54 @@ SlashCmdList["FAFNIRSBED"] = function(msg)
     for k = 1, math.min(#hits, 10) do report_item(hits[k]) end
     if #hits > 10 then print(string.format("  ...and %d more", #hits - 10)) end
 end
+
+-- The need command asks the account for something (founder, 2026-11-14: "a way for a character to request an item or
+-- a bag"; usage in this file's header). Kept in this character's slot of FafnirsBedDB.requests; the forge
+-- (scripts/forge.sh needs) lists every request with who on the account can fill it, beside the needs it works out
+-- itself (full bags, empty bag slots, big gear upgrades). An item may be a name, an id or a shift-clicked link.
+local function need_cmd(msg)
+    local who = character()
+    if not (db and who) then print(ADDON .. ": not loaded yet."); return end
+    db.requests = db.requests or {}
+    local mine = db.requests[who] or {}
+    db.requests[who] = mine
+    msg = (msg or ""):match("^%s*(.-)%s*$")
+    if msg == "" then
+        if #mine == 0 then print(ADDON .. ": no requests. /need bag, /need <item> [count]") return end
+        for k, r in ipairs(mine) do print(string.format("  %d. %s x%d", k, r.name or tostring(r.what), r.count or 1)) end
+        return
+    end
+    local k = tonumber(msg:match("^done%s+(%d+)$"))
+    if k then
+        if not mine[k] then print(ADDON .. ": no request " .. k .. ".") return end
+        local r = table.remove(mine, k)
+        print(ADDON .. ": dropped " .. (r.name or tostring(r.what)) .. ".")
+        return
+    end
+    local count = tonumber(msg:match("%s(%d+)$")) or 1
+    local what_text = count > 1 and msg:gsub("%s%d+$", "") or msg:gsub("%s1$", "")
+    local r
+    if what_text:lower() == "bag" then
+        r = { what = "bag", name = "a bag", count = count, t = time() }
+    else
+        local id = tonumber(what_text) or tonumber(what_text:match("item:(%d+)"))
+        local name = what_text:match("%[(.-)%]")
+        if not id then
+            local hits = I.invFind(db, what_text)
+            if #hits == 1 then id = hits[1]
+            elseif #hits > 1 then
+                print(ADDON .. ": more than one item is named like '" .. what_text .. "' -- use its id or a link:")
+                for i = 1, math.min(#hits, 5) do print("  " .. hits[i] .. "  " .. (db.names[hits[i]] or "")) end
+                return
+            end
+        end
+        r = { what = id or what_text, name = (id and db.names[id]) or name or what_text, count = count, t = time() }
+    end
+    mine[#mine + 1] = r
+    print(string.format("%s: asked the account for %s x%d. The forge lists it at your next logout or /reload.",
+        ADDON, r.name, r.count))
+end
+SLASH_FAFNIRSNEED1 = "/need"
+SlashCmdList["FAFNIRSNEED"] = need_cmd
 
 FafnirsBed = { remember_facts = remember_facts, scan_bags = scan_bags, scan_bank = scan_bank, scan_mail = scan_mail, scan_gold = scan_gold, scan_gear = scan_gear }

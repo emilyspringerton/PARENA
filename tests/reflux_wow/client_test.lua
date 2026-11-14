@@ -306,6 +306,17 @@ do
     eq(db.items[1004] and db.items[1004].s.agi, 4, "facts: recorded once the client loads it")
     eq(db.bound and db.bound["Ash-Forever"] and db.bound["Ash-Forever"][1003], 1, "a soulbound copy is remembered")
     eq(db.bound["Ash-Forever"][1001], nil, "an unbound one is not")
+    -- bag space and /need
+    eq(db.space and db.space["Ash-Forever"] and db.space["Ash-Forever"].total, 4, "bag space: the slots read")
+    eq(db.space["Ash-Forever"].free, 0, "bag space: none free")
+    eq(db.space["Ash-Forever"].bags, 0, "bag space: no bags worn in the bag slots")
+    eq(db.space["Ash-Forever"].max, 4, "bag space: of NUM_BAG_SLOTS")
+    has(g.slash("FAFNIRSNEED", "bag"), "asked the account for a bag x1", "/need bag")
+    has(g.slash("FAFNIRSNEED", "linen 20"), "asked the account for Linen Cloth x20", "/need an item by name, with a count")
+    eq(db.requests["Ash-Forever"][2].what, 2589, "the request names the item by id")
+    has(g.slash("FAFNIRSNEED", ""), "2. Linen Cloth x20", "/need lists the requests")
+    has(g.slash("FAFNIRSNEED", "done 1"), "dropped a bag", "/need done k drops one")
+    eq(#db.requests["Ash-Forever"], 1, "one left")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

@@ -120,9 +120,9 @@ cp "$acct/SavedVariables/FafnirsBed.lua" "$work/fafnir.bak"
 cat > "$acct/SavedVariables/FafnirsBed.lua" <<'LUA'
 FafnirsBedDB = { ["chars"] = {
   ["Emily-Forever"] = { ["gold"] = 1300000, ["gear"] = { [1] = 1001, [16] = 1002 }, ["loc"] = { ["bags"] = { [2005] = 1 }, ["equipped"] = { [1001] = 1, [1002] = 1 } } },
-  ["Ash-Forever"] = { ["gold"] = 9000000, ["gear"] = { [1] = 2001 }, ["loc"] = { ["bags"] = { [2589] = 20, [2002] = 1, [2003] = 1, [2004] = 1 }, ["bank"] = { [1005] = 1 } } } },
+  ["Ash-Forever"] = { ["gold"] = 9000000, ["gear"] = { [1] = 2001 }, ["loc"] = { ["bags"] = { [2589] = 20, [2002] = 1, [2003] = 1, [2004] = 1 }, ["bank"] = { [1005] = 1 }, ["mail"] = { [4500] = 1 } } } },
   ["names"] = { [2589] = "Linen Cloth", [1001] = "Lionheart Helm", [1002] = "Ashbringer", [2001] = "Cloth Hat", [2002] = "Crown of Wits",
-                [2003] = "Ring of Might", [2004] = "Bound Band", [2005] = "Spare Signet", [1005] = "Titan Helm" },
+                [2003] = "Ring of Might", [2004] = "Bound Band", [2005] = "Spare Signet", [1005] = "Titan Helm", [4500] = "Mooncloth Bag" },
   ["items"] = {
     [1001] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 4, ["req"] = 40, ["bind"] = 2, ["s"] = { ["str"] = 18, ["sta"] = 12 } },
     [1002] = { ["loc"] = "INVTYPE_2HWEAPON", ["cls"] = 2, ["sub"] = 8, ["req"] = 40, ["bind"] = 1, ["s"] = { ["str"] = 20, ["dps"] = 30 } },
@@ -131,7 +131,10 @@ FafnirsBedDB = { ["chars"] = {
     [2003] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 30, ["bind"] = 2, ["s"] = { ["str"] = 8 } },
     [2004] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 30, ["bind"] = 1, ["s"] = { ["int"] = 9 } },
     [2005] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 20, ["bind"] = 1, ["s"] = { ["str"] = 3 }, ["other"] = { ["ITEM_MOD_NEW_THING"] = 1 } },
+    [4500] = { ["loc"] = "INVTYPE_BAG", ["cls"] = 1, ["sub"] = 0, ["bind"] = 2, ["slots"] = 16, ["s"] = {} },
     [1005] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 4, ["req"] = 45, ["bind"] = 2, ["s"] = { ["str"] = 25 } } },
+  ["space"] = { ["Emily-Forever"] = { ["total"] = 46, ["free"] = 2, ["bags"] = 3, ["max"] = 4 }, ["Ash-Forever"] = { ["total"] = 80, ["free"] = 0, ["bags"] = 4, ["max"] = 4 } },
+  ["requests"] = { ["Emily-Forever"] = { { ["what"] = 2589, ["name"] = "Linen Cloth", ["count"] = 20, ["t"] = 1763000000 } } },
   ["bound"] = { ["Ash-Forever"] = { [2004] = 1 } } }
 LUA
 o="$(f upgrades emily)"
@@ -151,6 +154,29 @@ o="$(f role emily dancer)"; check "role: an unknown one is refused" "$o" "no rol
 o="$(f role emily caster)"; check "role: set" "$o" "Emily-Forever is weighed as caster now"
 o="$(f upgrades emily)"; check "upgrades: a caster paladin wants the crown" "$o" "Head       Crown of Wits                 +6.0  over Lionheart Helm"
 f role emily strength >/dev/null
+# the needs list: full bags first, then empty bag slots, requests, big upgrades -- each with who can fill it
+o="$(f needs)"
+check "needs: full bags lead" "$(printf '%s' "$o" | sed -n 2p)" "Ash-Forever        bags full         bag space  (0 of 80 slots free)"
+check "needs: a spare bag, its size, where" "$o" "from: Mooncloth Bag (16 slots) -- Ash-Forever mail"
+check "needs: an empty bag slot" "$o" "Emily-Forever      empty bag slot    a bag  (1 of 4 bag slots empty)"
+check "needs: a /need request from the game, and who has it" "$o" "Emily-Forever      request           1. Linen Cloth x20"
+check "needs: ...filled from an alt's bags" "$o" "from: Ash-Forever bags x20"
+check "needs: a big upgrade" "$o" "Emily-Forever      upgrade           Ring of Might  (+16.0 in Finger)"
+case "$o" in *"Spare Signet"*) bad "a small upgrade made the needs list" ;; *) ok ;; esac
+o="$(f request emily bag)"; check "request: from the forge" "$o" "Emily-Forever asks the account for a bag x1"
+o="$(f request emily linen 5)"; check "request: an item by name, with a count" "$o" "asks the account for Linen Cloth x5"
+o="$(f request emily zzzz)"; check "request: an unknown item is refused" "$o" "no item named like 'zzzz'"
+o="$(f needs emily)"; check "needs CHAR: the forge's requests numbered after the game's" "$o" "2. a bag x1"
+o="$(f done emily 1)"; check "done: a game request is marked done here" "$o" "request 1 (Linen Cloth) is done"
+o="$(f done emily 1)"; check "done: a forge request is removed" "$o" "request 1 (a bag) is done"
+o="$(f needs emily)"; check "done: what is left" "$o" "1. Linen Cloth x5"
+case "$o" in *"Linen Cloth x20"*) bad "a request marked done came back" ;; *) ok ;; esac
+f done emily 1 >/dev/null
+o="$(f board)"; check "board: writes the big screen's file" "$o" "board: 2 characters -> "
+B="$(cat "$FORGE_DIR/board.json")"
+check "board: a character's bags" "$B" '"bags":{"free":2,"max":4,"total":46,"worn":3}'
+check "board: gear by slot" "$B" '"name":"Lionheart Helm","slot":1,"slot_name":"Head"'
+check "board: the needs" "$B" '"kind_name":"bags full"'
 cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
 
 # build: the plans go into MacroSync, and /ascend writes the planned kit

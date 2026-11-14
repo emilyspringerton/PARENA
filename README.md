@@ -507,6 +507,9 @@ probed against the WoW Forever client beyond what each addon's header says.
   scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
   scripts/forge.sh upgrades            # spare gear on the account, and which characters it would improve
   scripts/forge.sh upgrades emily      # ...or one character's best upgrades; `forge role emily healer` re-weighs her
+  scripts/forge.sh needs [emily]       # full bags, empty bag slots, requests, big upgrades -- and who can fill each
+  scripts/forge.sh request emily bag   # ask the account for something (in game: /need bag, /need linen 20); done to clear
+  scripts/forge.sh board               # characters, gear, bags and needs as one JSON file for a big screen
   scripts/forge.sh ledger [FILE]       # the whole account in ONE spreadsheet (default $FORGE_DIR/ledger.csv)
   scripts/forge.sh watch [FILE]        # ...and keep it current: rewritten every time the client saves
   scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)
@@ -528,6 +531,15 @@ probed against the WoW Forever client beyond what each addon's header says.
   bonuses, unique-equipped, enchants and random-suffix stats are not seen; any stat the client reports that it does
   not know is listed as "not scored" rather than dropped. Command line only for now (not on the forge page or in
   `/chars`); tested over fixtures and a stubbed client, not yet against the live one.
+
+- **The needs list** (`forge needs`, `forge request`, `forge done`, `/need` in game) -- what each character is short of,
+  most urgent first: bags full or nearly full (4 free slots or fewer), bag slots with no bag in them, requests (made in
+  game with `/need bag` / `/need <item> [n]`, kept in Fafnir's Bed, or with `forge request`), and spare gear worth at
+  least +10.0 to someone (the optimizer). Each need says who on the account can fill it: spare bags (largest first,
+  their size once some character has worn one), the holders of a requested item, the alt holding the upgrade.
+  Soulbound copies never count. Rules: `stdlib/collection/needs.prn`. `forge board` writes all of it, with every
+  character's sheet and gear, to `board.json` for a big screen (`forge watch` keeps it current beside the ledger).
+  Fafnir's Bed records bag space and worn bags' sizes for this; untested against the live client.
 
 - **The ledger** (`forge ledger`, `forge watch`) -- one CSV for the whole account, one row per item per character
   (worn by slot, bags, bank, mail), every row carrying the character's realm, class, race, level, xp, gold, item

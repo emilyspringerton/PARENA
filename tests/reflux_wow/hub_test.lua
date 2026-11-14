@@ -134,7 +134,7 @@ local dirs = 0
 for d in io.popen('ls "' .. client .. '/AddOns"'):lines() do if d ~= "CollectionHub" then dirs = dirs + 1 end end
 eq(#s.ns.addons, dirs, "one registry row per addon folder in the package (the hub itself excluded)")
 eq(reg.MacroSync and table.concat(reg.MacroSync.cmds, ","), "/ascend", "MacroSync's command read from its code")
-eq(reg.FafnirsBed and table.concat(reg.FafnirsBed.cmds, ","), "/fafnir,/hoard", "Fafnir's Bed's two commands")
+eq(reg.FafnirsBed and table.concat(reg.FafnirsBed.cmds, ","), "/fafnir,/hoard,/need", "Fafnir's Bed's commands, /need included")
 eq(reg.MacroSync and reg.MacroSync.svkind, "SavedVariablesPerCharacter", "MacroSync saves per character")
 eq(reg.RefluxCore and reg.RefluxCore.key, "", "RefluxCore has no command")
 eq(s.ns.build.keep, 20000, "the journal cap is in the build settings")
@@ -165,7 +165,8 @@ eq(table.concat(acts, ","), "/ascend||,/ascend|preview|", "MacroSync's two docum
 eq(#reg.Huginn.actions >= 6, true, "Huginn documents at least six")
 local fafnir_args = {}
 for _, act in ipairs(reg.FafnirsBed.actions) do fafnir_args[#fafnir_args + 1] = act.sub .. "|" .. act.args end
-eq(table.concat(fafnir_args, ","), "|,|<name or item id>", "a bare command and the same command with an argument are two actions")
+eq(table.concat(fafnir_args, ","), "|,|<name or item id>,|,bag|,|<item or id> [n],done|<k>",
+   "a bare command and the same command with an argument are two actions (and /need's subcommands each a button)")
 local wrapped
 for _, act in ipairs(reg.AndvarisMap.actions) do if act.sub == "map" then wrapped = act.desc end end
 has(wrapped, "the chart goes into the body", "a description wrapped onto the next comment line is joined")

@@ -34,6 +34,11 @@
 --   export                          the plans as MacroSync's kits.lua (what `forge build` bakes into the addon)
 --   upgrades [CHARACTER]            the gear optimizer: every spare item on the account (bags, bank, mail) and which
 --                                   characters it would improve, by how much; or one character's best upgrades
+--   needs [CHARACTER]               what the account is short of, most urgent first: full bags, empty bag slots,
+--                                   requests (/need in game, or `request`) and big upgrades -- and who can fill each
+--   request CHARACTER bag|ITEM [N]  ask for a bag or N of an item from the forge;  done CHARACTER K  drop request K
+--   board [FILE]                    everything a big screen shows (characters, gear, bags, needs) as one JSON file
+--                                   (default <FORGE_DIR>/board.json; - for stdout)
 --   role CHARACTER [ROLE]           the stat weights the optimizer uses for a character (tank, strength, agility,
 --                                   hunter, caster, healer); the class's levelling role until set
 --   ledger [FILE]                   the whole account in ONE spreadsheet file (default <FORGE_DIR>/ledger.csv; - for
@@ -76,6 +81,7 @@ local K = dofile(opts.lib .. "/kits.lua")
 local S = dofile(opts.lib .. "/macros.lua")
 local R = dofile(opts.lib .. "/journal_reader.lua")   -- the sandboxed SavedVariables loader
 local U = dofile(opts.lib .. "/upgrades.lua")         -- the gear optimizer's rules (stdlib/collection/upgrades.prn)
+local N = dofile(opts.lib .. "/needs.lua")            -- the needs list's rules (stdlib/collection/needs.prn)
 
 local BOARD_VAR = os.getenv("BOARD_VAR") or "CharacterBoardDB"
 local MS_VAR = os.getenv("MACROSYNC_VAR") or "MacroSyncDB"
@@ -205,6 +211,16 @@ local function characters(plans)
         if db and type(db.chars) == "table" then
             for id, n in pairs(db.names or {}) do ITEM_NAMES[id] = n end
             for id, f in pairs(db.items or {}) do ITEM_FACTS[tonumber(id) or id] = f end
+            for who, sp in pairs(db.space or {}) do
+                local c = chars[who] or {}
+                c.space = sp
+                chars[who] = c
+            end
+            for who, list in pairs(db.requests or {}) do
+                local c = chars[who] or {}
+                c.game_requests = list
+                chars[who] = c
+            end
             for who, b in pairs(db.bound or {}) do
                 local c = chars[who] or {}
                 c.bound = c.bound or {}
@@ -669,6 +685,123 @@ end
 
 local UPGRADE_KEY = "gain = score points for the character's role; ~ = what it replaces has no facts yet (log that character in once)"
 
+-- The needs list (stdlib/collection/needs.prn): bags, requests and big upgrades, most urgent first. -----------------
+local function sig(r) return tostring(r.what) .. "@" .. tostring(r.t or 0) end
+
+-- A character's requests: the ones made in game (Fafnir's Bed) not marked done here, then the forge's own.
+local function requests_of(who)
+    local c, p = chars[who] or {}, plans[who] or {}
+    local done = p.done_requests or {}
+    local list = {}
+    for _, r in ipairs(c.game_requests or {}) do
+        if not done[sig(r)] then list[#list + 1] = { what = r.what, name = r.name, count = r.count or 1, t = r.t, from = "game" } end
+    end
+    for i, r in ipairs(p.requests or {}) do
+        list[#list + 1] = { what = r.what, name = r.name, count = r.count or 1, t = r.t, from = "forge", index = i }
+    end
+    return list
+end
+
+-- Who else on the account could send `id`: their copies, by location, that are not soulbound.
+local function fillers_of(who, id)
+    local out = arr()
+    local f = ITEM_FACTS[id]
+    for _, h in ipairs((holders_of(chars, id))) do
+        local c = chars[h.character]
+        local own = h.character == who
+        local bound = not own and ((c.bound and c.bound[id]) or (f and f.bind == 1))
+        if not bound then
+            for _, l in ipairs({ "bags", "bank", "mail" }) do
+                if h[l] and (not own or l ~= "bags") then out[#out + 1] = { character = h.character, location = l, count = h[l] } end
+            end
+        end
+    end
+    return out
+end
+
+-- Spare bags on the account that could go to `who` (their own banked ones too), biggest first when the size is known.
+local function spare_bags(who)
+    local out = arr()
+    for id, f in pairs(ITEM_FACTS) do
+        if f.loc == "INVTYPE_BAG" then
+            for _, x in ipairs(fillers_of(who, id)) do
+                x.id, x.item, x.slots = id, item_name(id), f.slots
+                out[#out + 1] = x
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        if (a.slots or 0) ~= (b.slots or 0) then return (a.slots or 0) > (b.slots or 0) end
+        return a.item < b.item
+    end)
+    return out
+end
+
+local function resolve_item(what)
+    if type(what) == "number" or tonumber(what) then return tonumber(what) end
+    local hits = find_items(chars, tostring(what))
+    if #hits == 1 then return hits[1].id end
+    return nil
+end
+
+local function needs_list(only)
+    local list = arr()
+    local function add(n) n.urgency = N.needUrgency(n.kind, n.amount or 0); n.kind_name = N.needKindName(n.kind); list[#list + 1] = n end
+    local names = {}
+    for who in pairs(chars) do names[#names + 1] = who end
+    table.sort(names)
+    for _, who in ipairs(names) do
+        local c = chars[who]
+        if not only or only == who then
+            local sp = c.space
+            if sp then
+                local st = N.needBagState(sp.free or 0, sp.total or 0)
+                if st == 2 then add({ character = who, kind = 1, what = "bag space", detail = string.format("0 of %d slots free", sp.total), fill = spare_bags(who) })
+                elseif st == 1 then add({ character = who, kind = 2, amount = sp.free, what = "bag space", detail = string.format("%d of %d slots free", sp.free, sp.total), fill = spare_bags(who) }) end
+                local miss = N.needMissingBags(sp.bags or 0, sp.max or 0)
+                if miss > 0 then add({ character = who, kind = 3, amount = miss, what = "a bag", count = miss, detail = string.format("%d of %d bag slots empty", miss, sp.max), fill = spare_bags(who) }) end
+            end
+            for k, r in ipairs(requests_of(who)) do
+                local fill
+                if r.what == "bag" then fill = spare_bags(who)
+                else
+                    local id = resolve_item(r.what)
+                    fill = id and fillers_of(who, id) or arr()
+                    if id then r.name = item_name(id) end
+                end
+                add({ character = who, kind = 4, what = r.name or tostring(r.what), count = r.count, number = k, from = r.from, fill = fill })
+            end
+        end
+    end
+    if next(ITEM_FACTS) ~= nil then
+        for _, r in ipairs((upgrade_rows(only))) do
+            local g = math.floor(r.gain * 10 + 0.5)
+            if g >= N.needBigGain() and not r.at_level then
+                add({ character = r.character, kind = 5, amount = g, what = r.item, slot = r.slot_name, gain = r.gain,
+                      replaces = r.replaces, fill = arr({ { character = r.holder, location = r.location, count = 1 } }),
+                      detail = string.format("%+.1f in %s%s", r.gain, r.slot_name, r.replaces and (" over " .. r.replaces) or "") })
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.urgency ~= b.urgency then return a.urgency > b.urgency end
+        if a.character ~= b.character then return a.character < b.character end
+        return tostring(a.what) < tostring(b.what)
+    end)
+    return list
+end
+
+local function fill_text(n)
+    if #n.fill == 0 then return "nobody on the account has one to spare" end
+    local t = {}
+    for i, x in ipairs(n.fill) do
+        if i > 3 then t[#t + 1] = "..."; break end
+        local what = x.item and (x.item .. (x.slots and (" (" .. x.slots .. " slots)") or "") .. " -- ") or ""
+        t[#t + 1] = what .. (x.character == n.character and ("your " .. x.location) or (x.character .. " " .. x.location)) .. (x.count and x.count > 1 and (" x" .. x.count) or "")
+    end
+    return table.concat(t, "; ")
+end
+
 local function char_arg(i)
     local who, why = resolve(chars, args[i])
     if not who then refuse(why) end
@@ -720,6 +853,10 @@ forge copy FROM TO                give TO the same plan as FROM (same class)
 forge class CHARACTER CLASS       plan for a character the Character Board has not seen yet
 forge export                      the plans as MacroSync's kits.lua
 forge upgrades [CHARACTER]        spare gear on the account and which characters it improves; or one character's upgrades
+forge needs [CHARACTER]           what the account is short of (full bags, empty bag slots, requests, big upgrades)
+forge request CHARACTER bag|ITEM [N]   ask the account for a bag or N of an item (in game: /need)
+forge done CHARACTER K            drop request K (numbered in forge needs)
+forge board [FILE]                characters, gear, bags and needs as one JSON file for a big screen
 forge role CHARACTER [ROLE]       how the optimizer weighs a character: tank, strength, agility, hunter, caster, healer
 forge ledger [FILE]               the whole account in one spreadsheet (default FORGE_DIR/ledger.csv; - prints it)
 forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload) (scripts/forge.sh)
@@ -998,6 +1135,97 @@ elseif cmd == "upgrades" then
         if #rows == 0 then lines[#lines + 1] = string.format("  none of the %d spare gear items is an upgrade for anyone", nspare) end
         lines[#lines + 1] = "  " .. UPGRADE_KEY
         out({ items = items }, table.concat(lines, "\n"))
+    end
+
+elseif cmd == "needs" then
+    local only = args[1] and char_arg(1) or nil
+    local list = needs_list(only)
+    local lines = { only and (only .. " needs, most urgent first") or "What the account needs, most urgent first" }
+    for _, n in ipairs(list) do
+        local head = string.format("  %-18s %-17s %s", n.character, n.kind_name,
+            n.kind == 4 and string.format("%d. %s x%d", n.number, n.what, n.count or 1) or (n.what .. (n.detail and ("  (" .. n.detail .. ")") or "")))
+        lines[#lines + 1] = head
+        lines[#lines + 1] = "      from: " .. fill_text(n)
+    end
+    if #list == 0 then lines[#lines + 1] = "  nothing: every bag has room, nobody has asked for anything, no big upgrades are waiting" end
+    if next(chars) and not next(ITEM_FACTS) then lines[#lines + 1] = "  (no item facts yet, so no upgrades or bag sizes: rebuild the package and log each character in once)" end
+    out({ needs = list }, table.concat(lines, "\n"))
+
+elseif cmd == "request" then
+    local who = char_arg(1)
+    local c = needs_class(who)
+    if not args[2] then refuse("request what? forge request " .. who .. " bag|ITEM [COUNT]") end
+    local count = 1
+    local last = tonumber(args[#args])
+    local parts = {}
+    for i = 2, #args do parts[#parts + 1] = args[i] end
+    if last and #parts > 1 then count = last; table.remove(parts) end
+    local q = table.concat(parts, " ")
+    local r
+    if q:lower() == "bag" then r = { what = "bag", name = "a bag", count = count, t = os.time() }
+    else
+        local id = tonumber(q)
+        if not id then
+            local hits = find_items(chars, q)
+            if #hits == 0 then refuse("no item named like '" .. q .. "' has been seen (use its id)") end
+            if #hits > 1 then
+                local t = {}
+                for i = 1, math.min(#hits, 5) do t[#t + 1] = hits[i].name .. " (" .. hits[i].id .. ")" end
+                refuse("more than one item is named like '" .. q .. "': " .. table.concat(t, ", "))
+            end
+            id = hits[1].id
+        end
+        r = { what = id, name = item_name(id), count = count, t = os.time() }
+    end
+    plans[who] = plans[who] or {}
+    plans[who].class = plans[who].class or c.class
+    plans[who].requests = plans[who].requests or {}
+    table.insert(plans[who].requests, r)
+    save_plans(plans)
+    out({ ok = true, character = who, request = r }, string.format("%s asks the account for %s x%d", who, r.name, r.count))
+
+elseif cmd == "done" then
+    local who = char_arg(1)
+    local k = tonumber(args[2])
+    local list = requests_of(who)
+    local r = k and list[k]
+    if not r then refuse(who .. " has no request " .. tostring(args[2]) .. " (forge needs " .. who .. " numbers them)") end
+    plans[who] = plans[who] or {}
+    if r.from == "forge" then table.remove(plans[who].requests, r.index)
+    else
+        plans[who].done_requests = plans[who].done_requests or {}
+        plans[who].done_requests[sig(r)] = 1
+    end
+    save_plans(plans)
+    out({ ok = true }, string.format("%s: request %d (%s) is done", who, k, r.name or tostring(r.what)))
+
+elseif cmd == "board" then
+    -- One JSON file for a big screen (SHANKPIT's gear board): every character's sheet, gear, bag space, and the needs.
+    local path = args[1] or (opts.dir .. "/board.json")
+    local list = arr()
+    local names = {}
+    for who, c in pairs(chars) do if c.on_board or c.hold then names[#names + 1] = who end end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    for _, who in ipairs(names) do
+        local c = chars[who]
+        local gear = holdings(c)
+        for _, g in ipairs(gear) do local f = ITEM_FACTS[tonumber(g.id) or g.id]; g.ilvl = f and f.ilvl; g.quality = f and f.q end
+        list[#list + 1] = {
+            character = who, class = c.class or "", race = c.race or "", level = c.level or 0, gold = gold_of(c),
+            zone = c.zone or "", subzone = c.subzone or "", seen = c.seen or 0, ilvl = c.ilvl or 0,
+            xp = c.xp or 0, xpmax = c.xpmax or 0, role = (c.class or "") ~= "" and role_of(who, c) or "",
+            bags = c.space and { total = c.space.total, free = c.space.free, worn = c.space.bags, max = c.space.max } or nil,
+            gear = gear,
+        }
+    end
+    local text = json({ version = 1, generated = os.time(), characters = list, needs = needs_list(nil) }) .. "\n"
+    if path == "-" then io.write(text)
+    else
+        local tmp = path .. ".tmp"
+        local fh = io.open(tmp, "wb") or refuse("cannot write " .. tmp)
+        fh:write(text); fh:close()
+        if not os.rename(tmp, path) then os.remove(path); if not os.rename(tmp, path) then refuse("cannot replace " .. path) end end
+        out({ file = path, characters = #list }, string.format("board: %d characters -> %s", #list, path))
     end
 
 elseif cmd == "role" then

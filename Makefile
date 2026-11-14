@@ -1504,6 +1504,8 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	$(LUA51) tests/reflux_wow/kits_test.lua $(REFLUX_WOW_OUT)/kits.lua $(REFLUX_WOW_OUT)/macros.lua
 	./.parena-bootstrap build stdlib/collection/upgrades.prn -o $(REFLUX_WOW_OUT)/upgrades.lua
 	$(LUA51) tests/reflux_wow/upgrades_test.lua $(REFLUX_WOW_OUT)/upgrades.lua
+	./.parena-bootstrap build stdlib/collection/needs.prn -o $(REFLUX_WOW_OUT)/needs.lua
+	$(LUA51) -e 'local N = dofile("$(REFLUX_WOW_OUT)/needs.lua"); assert(N.needBagState(0, 80) == 2 and N.needBagState(3, 80) == 1 and N.needBagState(30, 80) == 0 and N.needBagState(0, 0) == 0 and N.needMissingBags(2, 4) == 2 and N.needUrgency(1, 0) > N.needUrgency(3, 1) and N.needUrgency(3, 1) > N.needUrgency(4, 0) and N.needUrgency(4, 0) >= N.needUrgency(5, 900)); print("needs: rules ok")'
 	@# The plugin forge: CLI over a fake WTF folder, `forge build` baking a kit /ascend then writes, the local server.
 	bash tests/reflux_wow/forge_test.sh $(REFLUX_WOW_OUT)/forge
 	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.

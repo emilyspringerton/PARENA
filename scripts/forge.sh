@@ -12,7 +12,9 @@
 #   scripts/forge.sh upgrades [emily]          which characters each spare item would improve (or one character's)
 #   scripts/forge.sh ledger [FILE]              the whole account -- every item worn/bags/bank/mail, level, class, race,
 #                                               gold, where -- in ONE spreadsheet (default $FORGE_DIR/ledger.csv)
-#   scripts/forge.sh watch [FILE]               keep that file current: rewrite it each time WoW saves (logout, /reload)
+#   scripts/forge.sh watch [FILE]               keep that file current: rewrite it each time WoW saves (logout, /reload);
+#                                               board.json (the big screen's data) is rewritten beside it
+#   scripts/forge.sh needs [emily]              full bags, empty bag slots, requests (/need), big upgrades -- and who can fill each
 #
 # Environment (see MONOREPO/scripts/collection-env.sh):
 #   FORGE_DIR         REQUIRED. Where the plans live (kits.lua), outside every repository; made if missing
@@ -44,7 +46,7 @@ PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
 if [ "$PARENA_BIN" = "./.parena-bootstrap" ] && [ ! -x ./.parena-bootstrap ]; then
   make -s .parena-bootstrap >/dev/null || die "could not build the PARENA compiler (make .parena-bootstrap)"
 fi
-for m in kits macros upgrades; do
+for m in kits macros upgrades needs; do
   if [ ! -f "$FORGE_DIR/lib/$m.lua" ] || [ "stdlib/collection/$m.prn" -nt "$FORGE_DIR/lib/$m.lua" ]; then
     "$PARENA_BIN" build "stdlib/collection/$m.prn" -o "$FORGE_DIR/lib/$m.lua" >/dev/null || die "could not compile stdlib/collection/$m.prn"
   fi
@@ -97,6 +99,7 @@ case "${1:-}" in
       sig="$(stat -c '%n %Y %s' "$WOW_WTF_DIR"/Account/*/SavedVariables/{"${BOARD_ADDON:-CharacterBoard}","${FAFNIR_ADDON:-FafnirsBed}"}.lua 2>/dev/null)"
       if [ "$sig" != "$done_sig" ] && [ "$sig" = "$prev" ]; then
         echo "$(date '+%H:%M:%S') $(bash "$0" ledger "$ledger" 2>&1)"
+        echo "$(date '+%H:%M:%S') $(bash "$0" board "$(dirname "$ledger")/board.json" 2>&1)"
         done_sig="$sig"
       fi
       prev="$sig"
