@@ -480,6 +480,9 @@ on real Windows; see `tools/shot/README.txt` for every shortcut and what is not 
 
 ## World of Warcraft: the Collection addons and the plugin forge (2026-11)
 
+**New here? Start with [WOW_TUTORIAL.md](WOW_TUTORIAL.md)** -- install, then see what is on which character (gold, gear,
+bags, bank, mail), in game and outside it, step by step.
+
 The Collection of Value is a package of WoW addons whose rules are PARENA compiled to Lua 5.1 (`stdlib/collection/`),
 with thin host glue in `runtime/wow/`. `scripts/wow-package-collection.sh` builds the package (`WOW_INTERFACE` is
 required); `make test-reflux-wow` plays every addon in a stubbed client under real Lua 5.1. None of it has been
