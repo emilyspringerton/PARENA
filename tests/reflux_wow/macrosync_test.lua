@@ -19,10 +19,14 @@ local function toc_files(dir, name)
     return files
 end
 
+ITEM_NAMES = { [1251] = "Linen Bandage", [2581] = "Heavy Linen Bandage", [3530] = "Wool Bandage", [3531] = "Heavy Wool Bandage",
+               [6450] = "Silk Bandage", [14530] = "Heavy Runecloth Bandage", [118] = "Minor Healing Potion",
+               [858] = "Lesser Healing Potion", [929] = "Healing Potion", [13446] = "Major Healing Potion" }
+
 -- the world: a macro list (account macros first, then character macros, like the client) and a spellbook
 local function world(class, spells)
     local w = { out = {}, class = class, known = {}, combat = false, char = {}, account = {}, max = 18, cut = 255,
-                saved = {}, now = 1763000000 }
+                saved = {}, now = 1763000000, items = {}, level = 1, skills = {}, amax = 36 }
     for _, s in ipairs(spells) do w.known[s] = true end
     return w
 end
@@ -49,10 +53,24 @@ local function session(w)
     env.GetMacroIndexByName = function(name) for i, m in ipairs(all()) do if m.name == name then return i end end return 0 end
     env.GetMacroBody = function(i) local m = all()[i]; return m and m.body end
     env.CreateMacro = function(name, icon, body, per)
-        assert(per, "MacroSync makes character macros")
+        if not per then   -- an account macro: only FirstAid is ever one
+            assert(name == "FirstAid", "MacroSync makes character macros, except FirstAid")
+            assert(#w.account < w.amax, "CreateMacro past the account slot limit")
+            table.insert(w.account, { name = name, icon = icon, body = body:sub(1, w.cut) })
+            return #w.account
+        end
         assert(#w.char < w.max, "CreateMacro past the slot limit")
         w.char[#w.char + 1] = { name = name, icon = icon, body = body:sub(1, w.cut) }
         return #w.account + #w.char
+    end
+    -- bags, skills and level (FirstAid)
+    env.MAX_ACCOUNT_MACROS = w.amax
+    env.GetItemCount = function(id) return w.items[id] or 0 end
+    env.GetItemInfo = function(id) return ITEM_NAMES[id] end
+    env.UnitLevel = function() return w.level end
+    if not w.no_skill_api then
+        env.GetNumSkillLines = function() return #w.skills end
+        env.GetSkillLineInfo = function(i) local k = w.skills[i]; if k then return k[1], k[2], false, k[3] end end
     end
     env.EditMacro = function(i, name, icon, body) local m = all()[i]; m.name, m.icon, m.body = name, icon, body:sub(1, w.cut); return i end
     env.DeleteMacro = function(i)
@@ -79,6 +97,7 @@ local function session(w)
     function s.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end end end
     function s.tick(dt) for _, f in ipairs(frames) do if f.scripts.OnUpdate then f.scripts.OnUpdate(f, dt) end end end
     function s.ascend(msg) w.out = {}; env.SlashCmdList.MACROSYNC(msg or ""); return table.concat(w.out, "\n") end
+    function s.firstaid() w.out = {}; env.SlashCmdList.MACROSYNCFIRSTAID(""); return table.concat(w.out, "\n") end
     for _, a in ipairs({ "RefluxCore", "CollectionJournal", "MacroSync" }) do s.load(a) end
     for _, a in ipairs({ "RefluxCore", "CollectionJournal", "MacroSync" }) do s.fire("ADDON_LOADED", a) end
     return s
@@ -106,7 +125,7 @@ eq(find(w.char, "PalLoH").body, "#showtooltip\n/cast [@mouseover,help,nodead][he
 eq(find(w.char, "PalSeal").body, "#showtooltip\n/cast [mod:shift] Seal of the Crusader; Seal of Righteousness",
    "one choice unlearned, the other known: both resolve")
 eq(find(w.char, "PalStun").body, "/say my own stun macro", "the player's own macro is untouched")
-eq(names(w.account), "MyMount", "account macros are untouched")
+eq(names(w.account), "MyMount,FirstAid", "the player's account macro is untouched; FirstAid is the one account macro MacroSync adds")
 has(out, "15 written, 0 pruned;", "summary line")
 has(out, "not learned yet (already on your list, they work once learned): ", "unlearned spells are listed")
 has(out, "PalLoH (Lay on Hands)", "by macro and spell")
@@ -358,10 +377,10 @@ bw.bars = { [61] = { kind = "spell", id = 635 }, [1] = { kind = "spell", id = 20
 local bs = session(bw)
 bars_for(bs, bw)
 local o = bs.ascend("preview")
-has(o, "would put on the action bars (16): ", "preview: says where they would go")
+has(o, "would put on the action bars (17): ", "preview: says where they would go (16 and FirstAid)")
 eq(next(bw.bars, nil) ~= nil and bw.bars[62] == nil, true, "preview: places nothing")
 o = bs.ascend()
-has(o, "put on the action bars (16): ", "/ascend puts every macro on a bar")
+has(o, "put on the action bars (17): ", "/ascend puts every macro on a bar, FirstAid too")
 eq(on_bar(bw, "PalJudge"), 62, "the first goes in the first EMPTY bottom-left slot (61 holds the player's spell)")
 eq(bw.bars[61].kind == "spell" and bw.bars[61].id == 635, true, "the player's spell is untouched")
 eq(bw.bars[1].id, 20271, "and so is the main bar")
@@ -412,6 +431,103 @@ do
        "the panic button: without Last Stand, ctrl falls back to Shield Wall")
     eq(find(ww.char, "WarPull").body, "#showtooltip\n/cast [@mouseover,harm,nodead][] Shoot Bow", "the pull uses the ranged weapon it has")
     for _, m in ipairs(ww.char) do eq(#m.body <= 255, true, m.name .. " fits the client's 255-character body") end
+end
+
+-- ===== FirstAid: the universal, intelligent first aid macro =================================================
+do
+    local function fa(w) return find(w.account, "FirstAid") end
+    local ON = "[@mouseover,help,nodead][help,nodead][@player]"
+    -- a level 10 paladin, First Aid 50: Linen and Heavy Linen are usable, Wool (needs 80) is not; two Minor Healing
+    -- Potions, and a Healing Potion that needs level 12
+    local w = world("PALADIN", { "Holy Light", "First Aid" })
+    w.level = 10
+    w.skills = { { "Professions", true, 0 }, { "First Aid", false, 50 }, { "Cooking", false, 20 } }
+    w.items = { [1251] = 5, [2581] = 3, [3530] = 2, [118] = 2, [929] = 1 }
+    local s = session(w)
+    s.ascend()
+    eq(fa(w) ~= nil, true, "/ascend writes FirstAid as an account macro")
+    eq(fa(w).body, "#showtooltip\n#MacroSync first aid\n/use [mod:shift] item:118; " .. ON .. " item:2581",
+       "Heavy Linen (the best usable), on a friend or yourself; shift drinks the best potion this level can")
+    eq(find(w.char, "FirstAid"), nil, "it takes no character slot")
+    local o = s.firstaid()
+    has(o, "Heavy Linen Bandage (you carry 3, heals 114)", "/firstaid says which bandage and why")
+    has(o, "you also carry Wool Bandage: it needs First Aid 80", "and that a better one is waiting on the skill")
+    has(o, "Shift-click: Minor Healing Potion (you carry 2)", "and what shift does")
+    hasnt(o, "Healing Potion (you carry 1)", "the potion above this level is never chosen")
+
+    -- the Heavy Linen runs out: half a second after the bags settle, FirstAid follows by itself
+    w.items[2581] = nil
+    s.fire("BAG_UPDATE", 0)
+    s.tick(0.2)
+    eq(fa(w).body:find("item:2581", 1, true) ~= nil, true, "not before the bags settle")
+    s.tick(0.4)
+    eq(fa(w).body:find(ON .. " item:1251", 1, true) ~= nil, true, "then down to Linen, with no /ascend")
+
+    -- First Aid trains to 80: Wool, the moment the skill changes
+    w.skills[2][3] = 80
+    s.fire("SKILL_LINES_CHANGED"); s.tick(1)
+    eq(fa(w).body:find("item:3530", 1, true) ~= nil, true, "skill 80: Wool")
+
+    -- in combat the client forbids it: the change waits for the fight to end
+    w.combat = true
+    w.items[3530] = nil
+    s.fire("BAG_UPDATE", 0); s.tick(1)
+    eq(fa(w).body:find("item:3530", 1, true) ~= nil, true, "a bag change in combat does not touch the macro")
+    w.combat = false
+    s.fire("PLAYER_REGEN_ENABLED"); s.tick(1)
+    eq(fa(w).body:find("item:1251", 1, true) ~= nil, true, "it is written when the fight ends")
+
+    -- level 12: the Healing Potion becomes the shift choice
+    w.level = 12
+    s.fire("PLAYER_LEVEL_UP", 12); s.tick(1)
+    eq(fa(w).body:find("[mod:shift] item:929", 1, true) ~= nil, true, "level 12: shift drinks the Healing Potion")
+
+    -- no bandages left: the potion on a plain press; nothing at all: open First Aid to make some
+    w.items[1251] = nil
+    s.fire("BAG_UPDATE", 0); s.tick(1)
+    eq(fa(w).body, "#showtooltip\n#MacroSync first aid\n/use item:929", "no bandages: the best potion on a plain press")
+    w.items = {}
+    s.fire("BAG_UPDATE", 0); s.tick(1)
+    eq(fa(w).body, "#showtooltip\n#MacroSync first aid\n/cast First Aid", "nothing to use: it opens First Aid")
+    has(s.firstaid(), "FirstAid opens First Aid, so you can make bandages.", "and says so")
+
+    -- /ascend firstaid off: it stops following
+    s.ascend("firstaid off")
+    w.items[1251] = 4
+    s.fire("BAG_UPDATE", 0); s.tick(1)
+    eq(fa(w).body:find("item:1251", 1, true), nil, "turned off, it does not follow the bags")
+    s.ascend("firstaid on")
+    eq(fa(w).body:find("item:1251", 1, true) ~= nil, true, "turned back on, it catches up at once")
+    eq(#fa(w).body <= 255, true, "it fits the 255-character body")
+
+    -- a FirstAid of the player's own (no marker) is never touched
+    local w2 = world("MAGE", { "Fireball" })
+    w2.account = { { name = "FirstAid", body = "/use Linen Bandage" } }
+    w2.items = { [1251] = 9 }
+    w2.skills = { { "First Aid", false, 10 } }
+    local s2 = session(w2)
+    o = s2.ascend()
+    eq(w2.account[1].body, "/use Linen Bandage", "the player's own FirstAid is left alone")
+    has(o, "you already have a macro called FirstAid of your own", "and /ascend says so")
+
+    -- a warrior's 18 class macros fill every character slot: FirstAid still fits, as an account macro
+    local w3 = world("WARRIOR", { "Heroic Strike", "Battle Stance" })
+    w3.items = { [14530] = 20, [6450] = 5 }
+    w3.skills = { { "First Aid", false, 300 } }
+    w3.level = 60
+    local s3 = session(w3)
+    s3.ascend()
+    eq(#w3.char, 18, "the warrior's character slots are all class macros")
+    eq(fa(w3).body:find(ON .. " item:14530", 1, true) ~= nil, true, "and FirstAid holds Heavy Runecloth beside them")
+
+    -- a client that cannot report skills: every bandage carried counts as usable
+    local w4 = world("ROGUE", { "Sinister Strike" })
+    w4.no_skill_api = true
+    w4.items = { [3531] = 1, [1251] = 10 }
+    local s4 = session(w4)
+    s4.ascend()
+    eq(fa(w4).body:find("item:3531", 1, true) ~= nil, true, "no skill API: the best bandage carried")
+    has(s4.firstaid(), "First Aid: unknown", "and /firstaid says the skill is unknown")
 end
 
 print(string.format("macrosync: %d passed, %d failed", passed, failed))

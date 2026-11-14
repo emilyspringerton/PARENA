@@ -182,6 +182,7 @@ mkdir -p "$ms"
 wrap collection/macrosync "$ms/macrosync_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/macrosync.prn
 wrap collection/macros "$ms/macros.lua" stdlib/collection/macros.prn
 wrap collection/kits "$ms/kits_rules.lua" stdlib/collection/kits.prn
+wrap collection/firstaid "$ms/firstaid_rules.lua" stdlib/collection/firstaid.prn
 # The kits planned in the plugin forge (`forge build` sets MACROSYNC_KITS to its export); none: the class sets as shipped.
 if [ -n "${MACROSYNC_KITS:-}" ]; then
   [ -f "$MACROSYNC_KITS" ] || die "MACROSYNC_KITS=$MACROSYNC_KITS does not exist"
@@ -191,8 +192,8 @@ else
 fi
 cp runtime/wow/locales/macrosync.lua "$ms/locale.lua"
 glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
-toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros -- or the kit planned for this character in the plugin forge -- loaded with /ascend; removed ones are pruned. Speaks in haiku." \
-  SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua kits_rules.lua kits.lua locale.lua macrosync.lua
+toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros -- or the kit planned for this character in the plugin forge -- loaded with /ascend; removed ones are pruned. FirstAid, one macro for every character, always holds your best bandage. Speaks in haiku." \
+  SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua kits_rules.lua firstaid_rules.lua kits.lua locale.lua macrosync.lua
 GAMES_BUILT=" $M_ADDON"
 
 # The party games (spec 54-71). Each is built with collection/games and carries the shared kit (fun_kit.lua) and

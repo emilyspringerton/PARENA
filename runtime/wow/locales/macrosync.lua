@@ -4,7 +4,7 @@
 -- 3 spells not learned yet (the macros are written anyway), 4 name collision, 5 in combat, 6 no macro API, 7 slots full, 8 no set for this class, 9 too long.
 local _, ns = ...
 local enUS = {
-    HELP = "/ascend -- load your kit (your class's macros, or the kit planned in the forge), prune removed ones, and put them on your action bars   /ascend preview -- see what it would do   /ascend bars off|on -- leave the action bars alone / fill them again",
+    HELP = "/firstaid -- what the universal FirstAid macro holds for you and why   /ascend firstaid off|on -- stop or resume its updates   /ascend -- load your kit (your class's macros, or the kit planned in the forge), prune removed ones, and put them on your action bars   /ascend preview -- see what it would do   /ascend bars off|on -- leave the action bars alone / fill them again",
     BARS = "put on the action bars (%d): ",
     BARS_WOULD = "would put on the action bars (%d): ",
     BARS_TAKEN = "not placed -- the planned slot holds something of yours: ",
@@ -17,6 +17,20 @@ local enUS = {
     PRUNED = "pruned: ", DORMANT = "not learned yet (already on your list, they work once learned): ", COLLIDED = "left alone (your own macro has the name): ",
     FULL = "no slot free for: ", TOOLONG = "the client shortened: ",
     KIT = "%s: this character's kit was planned in the forge (%d changes to the class set).",
+    FA_WRITTEN = "FirstAid is up to date for this character (an account macro: every character's FirstAid follows who is logged in).",
+    FA_COLLIDED = "FirstAid: you already have a macro called FirstAid of your own -- left alone. Rename it to let MacroSync make its own.",
+    FA_FULL = "FirstAid: no account macro slot free.",
+    FA_COMBAT = "FirstAid will update when the fight ends (macros cannot change in combat).",
+    FA_BANDAGE = "FirstAid: %s (you carry %d, heals %d) on your mouseover friend, else your friendly target, else you. First Aid: %s.",
+    FA_BANDAGE_LOCKED = "FirstAid: you carry %s but it needs First Aid %d (you have %s) -- no bandage you can use yet.",
+    FA_NO_BANDAGE = "FirstAid: no bandages in your bags.",
+    FA_SKILL_UP = "you also carry %s: it needs First Aid %d -- train up and FirstAid switches to it by itself.",
+    FA_SKILL_UNKNOWN = "unknown",
+    FA_POTION_SHIFT = "Shift-click: %s (you carry %d).",
+    FA_POTION = "FirstAid drinks %s instead (you carry %d).",
+    FA_OPENS = "FirstAid opens First Aid, so you can make bandages.",
+    FA_OFF = "FirstAid will no longer update by itself. /ascend firstaid on to turn it back on.",
+    FA_ON = "FirstAid will follow your bags, skill and level again.",
     H_1_1 = "The Flame wakes again / your macros rise from the ash / ready in your hands",
     H_1_2 = "We ascend as one / each spell falls into its place / the bar remembers",
     H_1_3 = "Commander, it's done / the old words are written fresh / go and fight again",
@@ -35,3 +49,7 @@ local enUS = {
 local enGB = {}
 for k, v in pairs(enUS) do enGB[k] = v end
 ns.catalogue = { enUS = enUS, enGB = enGB }
+-- The First Aid skill line's name in each client language (GetSkillLineInfo returns it translated); the first is also
+-- the spell FirstAid casts when there is nothing to use.
+ns.first_aid_names = { "First Aid", "Erste Hilfe", "Secourisme", "Primeros auxilios", "Primeiros Socorros", "Primo Soccorso",
+                       "Первая помощь", "응급치료", "急救" }

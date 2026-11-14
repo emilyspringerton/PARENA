@@ -14,6 +14,7 @@ nothing to answers, in game and outside it.
 | who is running out of bag space | `/rock bags` | `scripts/forge.sh needs` |
 | the whole account in a spreadsheet | | `scripts/forge.sh ledger` -> open `ledger.csv` in Excel |
 | every command there is | `/hhelp` | `scripts/forge.sh help` |
+| what the FirstAid macro will use, and why | `/firstaid` | |
 
 ---
 
@@ -145,7 +146,30 @@ Every time WoW saves (each logout or `/reload`), it rewrites `ledger.csv` and `b
 **SHANKPIT's big screen.** With `FORGE_DIR` set and `forge.sh watch` running, press **I** in SHANKPIT: every
 character, the needs list, and each character's gear on a full-screen board (PageUp/PageDown to turn pages).
 
-## 5. When something looks wrong
+## 5. FirstAid -- one bandage button for every character
+
+After `/ascend`, every character has a macro called **FirstAid** (MacroSync puts it on your bars). Press it:
+
+- it uses **the best bandage you carry that your First Aid skill can use** -- on the friend under your mouse, else your
+  friendly target, else yourself;
+- **shift**-press drinks **the best healing potion** you have that your level allows;
+- with no bandages, a plain press drinks the potion; with nothing at all, it **opens First Aid** so you can make some.
+
+It keeps itself up to date: when a stack runs out, you loot better bandages, your First Aid goes up or you level, the
+macro changes by itself half a second later (after the fight, if you are in one -- the game does not let macros change in
+combat). It is one account macro, so it never takes one of your character's macro slots, and it always follows whoever
+is logged in.
+
+`/firstaid` says what it holds and why -- for example *"Heavy Linen Bandage (you carry 3, heals 114) ... First Aid: 50"*,
+*"you also carry Wool Bandage: it needs First Aid 80"*, *"Shift-click: Minor Healing Potion (you carry 2)"*.
+`/ascend firstaid off` stops it following your bags (`on` to resume). If you already had your own macro called
+FirstAid, MacroSync leaves it alone and says so -- rename yours to get this one.
+
+Limits: it knows the classic bandages (Linen to Heavy Runecloth) and healing potions (Minor to Major) by their classic
+item ids, not battleground bandages; it cannot tell whether you are still *Recently Bandaged*, so a second press within a
+minute is refused by the game (use shift for a potion then).
+
+## 6. When something looks wrong
 
 | You see | Why, and what to do |
 |---|---|

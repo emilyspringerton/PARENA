@@ -5,6 +5,15 @@
 -- /ascend preview  what /ascend would do, changing nothing
 -- /ascend bars off  leave the action bars alone from now on
 -- /ascend bars on   put the macros on empty action slots again (the default)
+-- /ascend firstaid off  stop FirstAid following your bags, skill and level
+-- /ascend firstaid on   let it follow them again (the default)
+-- /firstaid        what the universal FirstAid macro holds for this character, and why
+--
+-- FirstAid (stdlib/collection/firstaid.prn): one ACCOUNT macro for every class, rewritten for whoever is logged in
+-- whenever their bags, First Aid skill or level change -- the best bandage they carry and can use (on a mouseover or
+-- friendly target, else themselves), shift for the best healing potion they can drink, else open First Aid. Never in
+-- combat (the client forbids it): a change waits for the fight to end. Item calls: GetItemCount (C_Item.GetItemCount),
+-- UnitLevel, GetNumSkillLines/GetSkillLineInfo (the First Aid rank), MAX_ACCOUNT_MACROS.
 --
 -- The kit is the class set, changed by the plan made for this character in the plugin forge (runtime/wow/forge/,
 -- baked into kits.lua at build time; stdlib/collection/kits.prn applies it). No plan: the class set as shipped.
@@ -29,6 +38,7 @@ local _, ns = ...
 local M = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macrosync"]
 local SETS = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macros"]
 local KITS = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/kits"]
+local FA = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/firstaid"]
 MacroSyncKits = ns and ns.kits or {}      -- the planned kits, for the Collection's character screen
 if not (M and SETS) then
     print("|cffff5555" .. ADDON .. ": RefluxCore's MacroSync modules are missing.|r")
@@ -96,6 +106,112 @@ local function copy(t)
     return c
 end
 
+-- ---- FirstAid: the universal macro ---------------------------------------------------------------------------------
+-- Is the macro called `name` MacroSync's FirstAid (named so, and carrying the marker line)?
+local function fa_is_ours(name)
+    if not (FA and name == FA.faMacroName() and GetMacroBody) then return false end
+    local idx = GetMacroIndexByName and GetMacroIndexByName(name) or 0
+    return idx > 0 and FA.faOurs(GetMacroBody(idx)) == 1
+end
+
+local function item_count(id)
+    if C_Item and C_Item.GetItemCount then return C_Item.GetItemCount(id) or 0 end
+    if GetItemCount then return GetItemCount(id) or 0 end
+    return 0
+end
+
+-- The First Aid rank: the skill line named First Aid in any client language; 0 when the character has not learned it;
+-- -1 when the client cannot say (then every bandage carried counts as usable).
+local function first_aid_rank()
+    if not (GetNumSkillLines and GetSkillLineInfo) then return -1 end
+    local names = (ns and ns.first_aid_names) or { "First Aid" }
+    for i = 1, GetNumSkillLines() do
+        local name, header, _, rank = GetSkillLineInfo(i)
+        if name and not header then
+            for _, n in ipairs(names) do if name == n then return rank or 0 end end
+        end
+    end
+    return 0
+end
+
+-- What FirstAid should hold now: the body and the choice, {body, bandage row, potion row, skill, level, counts}.
+local function fa_plan()
+    local bc, pc = {}, {}
+    for i = 0, FA.faBandageCount() - 1 do bc[i + 1] = item_count(FA.faBandageId(i)) end
+    for i = 0, FA.faPotionCount() - 1 do pc[i + 1] = item_count(FA.faPotionId(i)) end
+    local skill = first_aid_rank()
+    local level = UnitLevel and UnitLevel("player") or 1
+    local b = FA.faBestBandage(bc, skill)
+    local p = FA.faBestPotion(pc, level)
+    local spell = (ns and ns.first_aid_names and ns.first_aid_names[1]) or "First Aid"
+    for _, n in ipairs((ns and ns.first_aid_names) or {}) do if spell_known(n) then spell = n; break end end
+    return { body = FA.faBody(b, p, spell), b = b, p = p, skill = skill, level = level, bc = bc, pc = pc }
+end
+
+local fa_pending, fa_collided = false, false
+
+-- Write FirstAid if it should change. quiet: the automatic refresh (bags, skill, level) says nothing unless it could not.
+-- Returns "written", "same", "combat", "collided", "full" or "none" (no macro API / module).
+local function fa_write(quiet)
+    if not (FA and CreateMacro and EditMacro and GetMacroIndexByName and GetNumMacros and GetMacroBody) then return "none" end
+    if InCombatLockdown and InCombatLockdown() then fa_pending = true; return "combat" end
+    fa_pending = false
+    local plan = fa_plan()
+    local name = FA.faMacroName()
+    local idx = GetMacroIndexByName(name) or 0
+    if idx > 0 then
+        local body = GetMacroBody(idx)
+        if FA.faOurs(body) == 0 then
+            if not fa_collided and not quiet then print("  " .. L("FA_COLLIDED")) end
+            fa_collided = true
+            return "collided"
+        end
+        if body == plan.body then return "same" end
+        EditMacro(idx, name, ICON, plan.body)
+        return "written"
+    end
+    local account = GetNumMacros()
+    local max = type(MAX_ACCOUNT_MACROS) == "number" and MAX_ACCOUNT_MACROS or -1
+    if M.msFits(account or 0, max, 1) == 0 then
+        if not quiet then print("  " .. L("FA_FULL")) end
+        return "full"
+    end
+    CreateMacro(name, ICON, plan.body, false)
+    return "written"
+end
+
+-- /firstaid: the choice, in words
+local function fa_explain()
+    if not FA then return end
+    local plan = fa_plan()
+    local function item(id) return (GetItemInfo and GetItemInfo(id)) or ("item " .. id) end
+    local skill = plan.skill < 0 and L("FA_SKILL_UNKNOWN") or tostring(plan.skill)
+    if plan.b >= 0 then
+        print(string.format(L("FA_BANDAGE"), item(FA.faBandageId(plan.b)), plan.bc[plan.b + 1], FA.faBandageHeal(plan.b), skill))
+    else
+        local carried, best = 0, nil
+        for i = 0, FA.faBandageCount() - 1 do if plan.bc[i + 1] > 0 then carried = carried + plan.bc[i + 1]; best = i end end
+        if carried > 0 then
+            print(string.format(L("FA_BANDAGE_LOCKED"), item(FA.faBandageId(best)), FA.faBandageSkill(best), skill))
+        else
+            print(L("FA_NO_BANDAGE"))
+        end
+    end
+    -- a carried bandage the skill cannot use yet is worth saying even when a lesser one was chosen
+    for i = FA.faBandageCount() - 1, (plan.b >= 0 and plan.b + 1 or FA.faBandageCount()), -1 do
+        if plan.bc[i + 1] > 0 and plan.skill >= 0 and plan.skill < FA.faBandageSkill(i) then
+            print("  " .. string.format(L("FA_SKILL_UP"), item(FA.faBandageId(i)), FA.faBandageSkill(i))); break
+        end
+    end
+    if plan.p >= 0 then
+        print(string.format(L(plan.b >= 0 and "FA_POTION_SHIFT" or "FA_POTION"), item(FA.faPotionId(plan.p)), plan.pc[plan.p + 1]))
+    end
+    if plan.b < 0 and plan.p < 0 then print(L("FA_OPENS")) end
+    local r = fa_write(false)
+    if r == "written" then print("  " .. L("FA_WRITTEN"))
+    elseif r == "combat" then print("  " .. L("FA_COMBAT")) end
+end
+
 -- ---- the action bars ---------------------------------------------------------------------------------------------
 -- What every slot holds now: state {[slot] = 1 (not ours) or our macro's name}, where {[name] = its first slot}.
 local function bar_state()
@@ -105,7 +221,7 @@ local function bar_state()
         if HasAction(slot) then
             local kind, id = GetActionInfo(slot)
             local name = kind == "macro" and id and GetMacroInfo and GetMacroInfo(id)
-            if name and M.msManaged(db, name) == 1 then
+            if name and (M.msManaged(db, name) == 1 or fa_is_ours(name)) then
                 state[slot] = name
                 where[name] = where[name] or slot
             else
@@ -218,22 +334,44 @@ local function ascend(preview)
     if #collided > 0 then haiku(4); print("  " .. L("COLLIDED") .. table.concat(collided, ", ")) end
     if #full > 0 then haiku(7); M.msRefused_(3, #full); print("  " .. L("FULL") .. table.concat(full, ", ")) end
     if #short > 0 then haiku(9); print("  " .. L("TOOLONG") .. table.concat(short, ", ")) end
-    -- then the action bars: every macro of the kit that exists now (or would, in a preview)
+    -- FirstAid, the universal one (an account macro, so it never takes one of the class set's slots)
+    if FA and not preview then
+        local r = fa_write(false)
+        if r == "written" then print("  " .. L("FA_WRITTEN")) end
+    end
+    -- then the action bars: every macro of the kit that exists now (or would, in a preview), and FirstAid
     local names = {}
     for _, r in ipairs(ready) do
         local exists = GetMacroIndexByName(r[1]) or 0
         if exists > 0 or preview then names[#names + 1] = r[1] end
     end
+    if FA and (fa_is_ours(FA.faMacroName()) or preview) then names[#names + 1] = FA.faMacroName() end
     place_on_bars(names, plan, preview)
 end
 
+-- FirstAid stays current by itself: bags settle in bursts, so a change is written half a second after the last one.
+local FA_EVENTS = { "PLAYER_ENTERING_WORLD", "BAG_UPDATE", "BAG_UPDATE_DELAYED", "SKILL_LINES_CHANGED", "PLAYER_LEVEL_UP",
+                    "PLAYER_REGEN_ENABLED" }
+local fa_due = nil
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
-f:SetScript("OnEvent", function(_, _, name)
-    if name == ADDON then
-        _G[VAR] = M.msInit(_G[VAR] or {})
-        db = _G[VAR]
+for _, e in ipairs(FA_EVENTS) do f:RegisterEvent(e) end
+f:SetScript("OnEvent", function(_, event, name)
+    if event == "ADDON_LOADED" then
+        if name == ADDON then
+            _G[VAR] = M.msInit(_G[VAR] or {})
+            db = _G[VAR]
+        end
+    elseif db and FA and db.firstaid ~= false then
+        if event == "PLAYER_REGEN_ENABLED" and not fa_pending then return end
+        fa_due = 0.5
     end
+end)
+local fa_timer = CreateFrame("Frame")   -- its own frame: the timer never shares a frame with the event handler
+fa_timer:SetScript("OnUpdate", function(_, dt)
+    if not fa_due then return end
+    fa_due = fa_due - (dt or 0)
+    if fa_due <= 0 then fa_due = nil; fa_write(true) end
 end)
 
 SLASH_MACROSYNC1 = "/ascend"
@@ -242,6 +380,11 @@ SlashCmdList["MACROSYNC"] = function(msg)
     if msg == "bars off" then db.bars = false; print(L("BARS_OFF"))
     elseif msg == "bars on" then db.bars = nil; print(L("BARS_ON"))
     elseif msg == "preview" then ascend(true)
+    elseif msg == "firstaid off" then db.firstaid = false; print(L("FA_OFF"))
+    elseif msg == "firstaid on" then db.firstaid = nil; print(L("FA_ON")); fa_write(false)
     elseif msg == "" then ascend(false)
     else print(L("HELP")) end
 end
+
+SLASH_MACROSYNCFIRSTAID1 = "/firstaid"
+SlashCmdList["MACROSYNCFIRSTAID"] = function() fa_explain() end
