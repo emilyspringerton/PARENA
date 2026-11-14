@@ -1,0 +1,192 @@
+;; stdlib/collection/rocktalk.prn -- talking to the rock: Hrungnir answers questions about the account and passes on
+;; requests, and at the mailbox packs what another character asked for (founder, 2026-11-14: "can i like talk to the
+;; rock and get him to use regex to que up mail suggestions ... a character can say a rumor and then when you are at
+;; the mail the rock packs an amazon shipment" / "i want the rock to be the main affordance i should be able to query
+;; it for character data including bag free space and coin data"). runtime/wow/hrungnir_talk.lua is the host glue.
+;;
+;; What is said to the rock (/rock <words>) is matched, lowercased, against rock-rules in order; the first rule whose
+;; test pattern matches decides what it is. A rule is {test, intent, who, count, item}: `test` a Lua pattern (the
+;; client's own matcher -- Lua patterns, not full regular expressions: no alternation, so each wording is its own
+;; rule), and who/count/item one-capture patterns that pull that part out ("" when the rule has none). Intents:
+;;   1 gold   2 bags   3 find (item)   4 levels   5 request (who? count? item)   6 shipments   7 pat   8 hide   9 show
+;;   0 nothing matched (the rock's status)
+;;
+;; Shipments: every request another character on the same realm made (FafnirsBedDB.requests, from /need or from
+;; talking to the rock) that this character can fill from its own bags, not soulbound. A bag request is filled by any
+;; spare bag in the bags. Picking stacks to attach: an exact stack if there is one, else the largest stacks until
+;; there is enough, never more than the mail's attachment slots.
+
+(module collection/rocktalk)
+(export rock-rules rock-intent rock-realm-of rock-name-of rock-shipments rock-pick-stacks)
+
+(defn rt-count [(arr : Any)] : I32 (lua/call-fn (lua/global "table.getn") arr))
+(defn rt-match [(s : Any) (p : Any)] : Any (lua/call-fn (lua/global "string.match") s p))
+(defn rt-str [(v : Any)] : Any (lua/call-fn (lua/global "tostring") v))
+(defn rt-num [(v : Any)] : Any (lua/call-fn (lua/global "tonumber") v))
+(defn rt-next [(t : Any) (k : Any)] : Any (lua/call-fn (lua/global "next") t k))
+
+(defn rt-rule [(test : String) (intent : I32) (who : String) (count : String) (item : String)] : Any
+  (lua/array test intent who count item))
+
+;; The wordings the rock understands, most specific first.
+(defn rock-rules [] : Any
+  (lua/array
+    (rt-rule "^pat$" 7 "" "" "")
+    (rt-rule "^hide$" 8 "" "" "")
+    (rt-rule "^show$" 9 "" "" "")
+    ;; requests: "i need 20 linen", "i need a bag", "need linen", "emily needs 5 copper ore", "ash wants a bag"
+    (rt-rule "^i need %d+ .+" 5 "" "^i need (%d+) " "^i need %d+ (.+)$")
+    (rt-rule "^i need an? .+" 5 "" "" "^i need an? (.+)$")
+    (rt-rule "^i need .+" 5 "" "" "^i need (.+)$")
+    (rt-rule "^need %d+ .+" 5 "" "^need (%d+) " "^need %d+ (.+)$")
+    (rt-rule "^need an? .+" 5 "" "" "^need an? (.+)$")
+    (rt-rule "^need .+" 5 "" "" "^need (.+)$")
+    (rt-rule "^%a+ needs %d+ .+" 5 "^(%a+) " "^%a+ needs (%d+) " "^%a+ needs %d+ (.+)$")
+    (rt-rule "^%a+ needs an? .+" 5 "^(%a+) " "" "^%a+ needs an? (.+)$")
+    (rt-rule "^%a+ needs .+" 5 "^(%a+) " "" "^%a+ needs (.+)$")
+    (rt-rule "^%a+ wants %d+ .+" 5 "^(%a+) " "^%a+ wants (%d+) " "^%a+ wants %d+ (.+)$")
+    (rt-rule "^%a+ wants an? .+" 5 "^(%a+) " "" "^%a+ wants an? (.+)$")
+    (rt-rule "^%a+ wants .+" 5 "^(%a+) " "" "^%a+ wants (.+)$")
+    ;; "who has room / space" is a question about bags, not a search for an item called room
+    (rt-rule "^who has room" 2 "" "" "")
+    (rt-rule "^who has space" 2 "" "" "")
+    ;; finding things: "who has linen", "where is my axe", "where are the bags", "find copper"
+    (rt-rule "^who has .+" 3 "" "" "^who has (.+)$")
+    (rt-rule "^where is .+" 3 "" "" "^where is (.+)$")
+    (rt-rule "^where are .+" 3 "" "" "^where are (.+)$")
+    (rt-rule "^find .+" 3 "" "" "^find (.+)$")
+    ;; shipments before bags, so "what should i mail" is not a question about bags
+    (rt-rule "ship" 6 "" "" "")
+    (rt-rule "mail" 6 "" "" "")
+    (rt-rule "post" 6 "" "" "")
+    (rt-rule "parcel" 6 "" "" "")
+    (rt-rule "deliver" 6 "" "" "")
+    (rt-rule "amazon" 6 "" "" "")
+    ;; questions: gold, bags, levels -- anywhere in the sentence ("how much coin does ash have")
+    (rt-rule "gold" 1 "" "" "")
+    (rt-rule "coin" 1 "" "" "")
+    (rt-rule "money" 1 "" "" "")
+    (rt-rule "rich" 1 "" "" "")
+    (rt-rule "broke" 1 "" "" "")
+    (rt-rule "bag" 2 "" "" "")
+    (rt-rule "space" 2 "" "" "")
+    (rt-rule "room" 2 "" "" "")
+    (rt-rule "slot" 2 "" "" "")
+    (rt-rule "full" 2 "" "" "")
+    (rt-rule "level" 4 "" "" "")
+    (rt-rule "lvl" 4 "" "" "")
+    (rt-rule "xp" 4 "" "" "")))
+
+(defn rt-part [(text : Any) (p : String)] : Any (if (= p "") (lua/nil) (rt-match text p)))
+
+(defn rt-intent-from [(text : Any) (rules : Any) (i : I32)] : Any
+  (if (> i (rt-count rules)) (lua/obj "intent" 0)
+    (let [r (lua/aget rules i)]
+      (if (lua/nil? (rt-match text (lua/aget r 1)))
+        (rt-intent-from text rules (+ i 1))
+        (lua/obj "intent" (lua/aget r 2) "who" (rt-part text (lua/aget r 3))
+                 "count" (rt-num (rt-part text (lua/aget r 4))) "item" (rt-part text (lua/aget r 5)))))))
+
+;; What the words mean: {intent, who (or nil), count (a number or nil), item (or nil)}. `text` is already lowercased
+;; and trimmed. Articles are left on the item ("the bags"); the host trims what it does not need.
+(defn rock-intent [(text : Any)] : Any (rt-intent-from text (rock-rules) 1))
+
+;; "Emily-Forever" -> "Forever" and "Emily"; a key with no realm is its own name and has an empty realm.
+(defn rock-realm-of [(who : Any)] : Any
+  (let [r (rt-match who "^[^%-]+%-(.+)$")] (if (lua/nil? r) "" r)))
+(defn rock-name-of [(who : Any)] : Any
+  (let [n (rt-match who "^([^%-]+)%-")] (if (lua/nil? n) who n)))
+
+;; ---- shipments ----------------------------------------------------------------------------------------------------
+(defn rt-bound [(bound : Any) (id : Any)] : Bool
+  (if (lua/nil? bound) false (not (lua/nil? (lua/aget bound id)))))
+
+;; Could this copy leave `me`'s bags? Not when it is soulbound here, or bind-on-pickup by its facts.
+(defn rt-movable [(bound : Any) (facts : Any) (id : Any)] : Bool
+  (if (rt-bound bound id) false
+    (let [f (lua/aget facts id)]
+      (if (lua/nil? f) true (not (= (lua/get f "bind") 1))))))
+
+;; The first spare bag in `bags` ({[id] = count}) that may be sent, or nil.
+(defn rt-spare-bag [(bags : Any) (facts : Any) (bound : Any) (k : Any)] : Any
+  (let [nk (rt-next bags k)]
+    (if (lua/nil? nk) (lua/nil)
+      (let [f (lua/aget facts nk)]
+        (if (and (not (lua/nil? f)) (and (= (lua/get f "loc") "INVTYPE_BAG") (rt-movable bound facts nk)))
+          nk
+          (rt-spare-bag bags facts bound nk))))))
+
+(defn rt-min [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+
+(defn rt-ship-list [(out : Any) (who : Any) (list : Any) (i : I32) (bags : Any) (facts : Any) (bound : Any)] : Any
+  (if (> i (rt-count list)) out
+    (let [r (lua/aget list i)
+          what (lua/get r "what")
+          want (if (lua/nil? (lua/get r "count")) 1 (lua/get r "count"))]
+      (do
+        (if (= what "bag")
+          (let [b (rt-spare-bag bags facts bound (lua/nil))]
+            (if (lua/nil? b) 0
+              (lua/aset! out (+ (rt-count out) 1)
+                (lua/obj "to" who "index" i "what" b "bag" 1 "count" 1 "want" 1 "have" (lua/aget bags b)))))
+          (let [have (if (lua/nil? (rt-num what)) (lua/nil) (lua/aget bags (rt-num what)))]
+            (if (or (lua/nil? have) (not (rt-movable bound facts (rt-num what)))) 0
+              (lua/aset! out (+ (rt-count out) 1)
+                (lua/obj "to" who "index" i "what" (rt-num what) "bag" 0 "count" (rt-min want have) "want" want "have" have)))))
+        (rt-ship-list out who list (+ i 1) bags facts bound)))))
+
+(defn rt-ship-who [(out : Any) (requests : Any) (k : Any) (me : Any) (bags : Any) (facts : Any) (bound : Any)] : Any
+  (let [who (rt-next requests k)]
+    (if (lua/nil? who) out
+      (do
+        (if (and (not (= who me)) (= (rock-realm-of who) (rock-realm-of me)))
+          (rt-ship-list out who (lua/aget requests who) 1 bags facts bound)
+          0)
+        (rt-ship-who out requests who me bags facts bound)))))
+
+;; What `me` can send: an array of {to, index (the request's place in to's list), what (item id), bag (1 when it fills
+;; a bag request), count (to send), want, have}. requests: FafnirsBedDB.requests; bags: me's {[id] = count};
+;; facts: FafnirsBedDB.items; bound: FafnirsBedDB.bound[me] (any may be nil). Unordered: the host sorts.
+(defn rock-shipments [(requests : Any) (me : Any) (bags : Any) (facts : Any) (bound : Any)] : Any
+  (if (or (lua/nil? requests) (lua/nil? bags)) (lua/array)
+    (rt-ship-who (lua/array) requests (lua/nil) me bags (if (lua/nil? facts) (lua/obj) facts) bound)))
+
+;; ---- which stacks to attach ---------------------------------------------------------------------------------------
+(defn rt-exact [(stacks : Any) (need : I32) (i : I32)] : I32
+  (if (> i (rt-count stacks)) 0
+    (if (= (lua/aget (lua/aget stacks i) 3) need) i (rt-exact stacks need (+ i 1)))))
+
+;; The largest stack not yet picked, or 0.
+(defn rt-largest [(stacks : Any) (picked : Any) (i : I32) (best : I32)] : I32
+  (if (> i (rt-count stacks)) best
+    (if (and (lua/nil? (lua/aget picked i))
+             (or (= best 0) (> (lua/aget (lua/aget stacks i) 3) (lua/aget (lua/aget stacks best) 3))))
+      (rt-largest stacks picked (+ i 1) i)
+      (rt-largest stacks picked (+ i 1) best))))
+
+;; The smallest stack not yet picked that covers `rest` on its own, or 0.
+(defn rt-covering [(stacks : Any) (picked : Any) (rest : I32) (i : I32) (best : I32)] : I32
+  (if (> i (rt-count stacks)) best
+    (let [c (lua/aget (lua/aget stacks i) 3)]
+      (if (and (lua/nil? (lua/aget picked i))
+               (and (>= c rest) (or (= best 0) (< c (lua/aget (lua/aget stacks best) 3)))))
+        (rt-covering stacks picked rest (+ i 1) i)
+        (rt-covering stacks picked rest (+ i 1) best)))))
+
+;; Each step: the smallest stack that finishes the job if there is one (least sent over), else the largest.
+(defn rt-greedy [(stacks : Any) (need : I32) (max : I32) (picked : Any) (out : Any) (total : I32)] : Any
+  (if (or (>= total need) (>= (rt-count out) max)) (lua/obj "picks" out "total" total)
+    (let [cover (rt-covering stacks picked (- need total) 1 0)
+          k (if (> cover 0) cover (rt-largest stacks picked 1 0))]
+      (if (= k 0) (lua/obj "picks" out "total" total)
+        (do (lua/aset! picked k 1)
+            (lua/aset! out (+ (rt-count out) 1) k)
+            (rt-greedy stacks need max picked out (+ total (lua/aget (lua/aget stacks k) 3))))))))
+
+;; stacks: an array of {bag, slot, count}. Returns {picks = indices into stacks, total}: one stack of exactly `need`
+;; when there is one, else the largest stacks until one stack can finish the job, then the smallest that does (total may be more than need: the mail cannot
+;; split a stack), never more than `max` of them (total may then be less).
+(defn rock-pick-stacks [(stacks : Any) (need : I32) (max : I32)] : Any
+  (let [e (rt-exact stacks need 1)]
+    (if (> e 0) (lua/obj "picks" (lua/array e) "total" need)
+      (rt-greedy stacks need max (lua/obj) (lua/array) 0))))

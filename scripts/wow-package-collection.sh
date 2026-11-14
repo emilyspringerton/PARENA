@@ -95,7 +95,7 @@ wrap() {
 glue() {
   sed -e "s/@ADDON@/${3:-}/g" -e "s/@VAR@/${4:-}/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" \
       -e "s/@FAFNIR_VAR@/$F_VAR/g" -e "s/@HRUNGNIR_VAR@/$H_VAR/g" -e "s/@RATATOSKR_VAR@/$R_VAR/g" \
-      -e "s/@VOLVA_VAR@/$V_VAR/g" -e "s/@JOURNAL_VAR@/$J_VAR/g" "$1" > "$2"
+      -e "s/@VOLVA_VAR@/$V_VAR/g" -e "s/@JOURNAL_VAR@/$J_VAR/g" -e "s/@BOARD_VAR@/${BOARD_VAR:-CharacterBoardDB}/g" "$1" > "$2"
   if grep -q '@[A-Z_]*@' "$2"; then die "unfilled placeholder left in $2"; fi
 }
 
@@ -143,6 +143,10 @@ toc "$f/$F_ADDON.toc" "Fafnir's Bed" "Every bag, bank and mailbox on the account
 
 fun "$H_ADDON" "$H_VAR" hrungnir hrungnir.prn hrungnir.lua hrungnir.lua "Hrungnir" \
   "A pet rock in a tiny frame. It levels up as you play and has opinions. /rock" SavedVariablesPerCharacter
+# talking to the rock: questions about every character, requests, and packing shipments at the mailbox
+wrap collection/rocktalk "$OUT/AddOns/$H_ADDON/rocktalk_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/rocktalk.prn
+glue runtime/wow/hrungnir_talk.lua "$OUT/AddOns/$H_ADDON/hrungnir_talk.lua" "$H_ADDON" "$H_VAR"
+printf '%s\n' rocktalk_rules.lua hrungnir_talk.lua >> "$OUT/AddOns/$H_ADDON/$H_ADDON.toc"
 fun "$R_ADDON" "$R_VAR" ratatoskr ratatoskr.prn ratatoskr_roll.lua ratatoskr.lua "Ratatoskr Roll" \
   "The critter census: every critter you /love, /pet or /wave at, and a Critter of the Week. /census" SavedVariables
 fun "$V_ADDON" "$V_VAR" volva volva.prn volva.lua volva.lua "Völva" \
@@ -331,7 +335,9 @@ IN GAME
   /fafnir           net inventory: characters, distinct items, item count, gold across the account
   /fafnir <name|id>  who has it, and the net count (shift-click an item link in works too)
   /cov               the journal's state (rows held, trimmed, lost)
-  /rock              Hrungnir, your pet rock (/rock pat, /rock hide, /rock show; right-click the rock to pat it)
+  /rock              Hrungnir, your pet rock and the account's front desk: /rock gold, /rock bags, /rock levels,
+                     /rock who has <item>, /rock i need <n> <item> (or a bag), /rock mail; at a mailbox it packs what
+                     others asked for (/rock pat, /rock hide, /rock show; right-click the rock to pat it)
   /census            Ratatoskr Roll: this week's most loved critters (target one, then /love, /pet or /wave)
   /fortune          Völva: today's fortune again (a new one opens at every login)
   /saga              Saga of Fools: joke achievements, earned and still to come

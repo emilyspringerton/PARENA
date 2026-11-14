@@ -532,6 +532,17 @@ probed against the WoW Forever client beyond what each addon's header says.
   not know is listed as "not scored" rather than dropped. Command line only for now (not on the forge page or in
   `/chars`); tested over fixtures and a stubbed client, not yet against the live one.
 
+- **Talking to the rock** (`/rock`, Hrungnir) -- the account's front desk in game. Ask it anything the account knows,
+  in plain words: `/rock gold` (every character's coin and the total; "how much coin does emily have" for one),
+  `/rock bags` (free space, nearly full / full, empty bag slots), `/rock levels`, `/rock who has linen`. Tell it what
+  someone needs -- `/rock i need 20 linen`, `/rock emily needs a bag` -- and it passes the word on: the next character
+  to log in that can fill it hears the rumour, and at a mailbox the rock shows a Pack button per shipment that fills in
+  the recipient and subject and attaches the stacks (an exact stack if there is one, else the fewest over); you press
+  Send, and the sent count comes off the request. Wordings are Lua patterns (the client's own matcher, not full
+  regular expressions) in `stdlib/collection/rocktalk.prn`; data is Fafnir's Bed and the Character Board (account-wide,
+  so other characters are as of their last logout). Same realm only (mail cannot cross). English only for now. Tested in
+  a stubbed client (36 checks); not yet against the live mail frame.
+
 - **The needs list** (`forge needs`, `forge request`, `forge done`, `/need` in game) -- what each character is short of,
   most urgent first: bags full or nearly full (4 free slots or fewer), bag slots with no bag in them, requests (made in
   game with `/need bag` / `/need <item> [n]`, kept in Fafnir's Bed, or with `forge request`), and spare gear worth at

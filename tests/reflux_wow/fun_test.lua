@@ -93,6 +93,8 @@ local function session(world, saved)
         function f:StopMovingOrSizing() end
         function f:Show() self.shown = true end
         function f:Hide() self.shown = false end
+        function f:SetText(t) self.text = t end
+        function f:GetText() return self.text end
         function f:CreateFontString() local fs = fontstring(); self.fonts = self.fonts or {}; self.fonts[#self.fonts + 1] = fs; return fs end
         frames[#frames + 1] = f
         if name then env[name] = f end
@@ -348,6 +350,103 @@ ns = {}; assert(loadfile(client .. "/AddOns/Volva/locale.lua"))("Volva", ns)
 all = true
 for i = 1, tonumber(ns.catalogue.enUS.PLAIN_COUNT) do if not ns.catalogue.enUS["PLAIN_" .. i] then all = false end end
 eq(all, true, "every plain fortune PLAIN_COUNT promises exists")
+
+-- ===== talking to the rock: questions, a request passed on, and a shipment packed at the mailbox ==============
+do
+    local rw = { out = {}, notices = {}, now = MONDAY + 7200, name = "Ash", realm = "Forever", money = 9000000, level = 60,
+                 locale = "enUS", mail = {}, attached = {} }
+    rw.bag0 = { { 2589, 12, "Linen Cloth" }, { 2589, 8, "Linen Cloth" }, { 4500, 1, "Mooncloth Bag" }, false }
+    local rsaved = {
+        FafnirsBedDB = { v = 1,
+            chars = { ["Emily-Forever"] = { gold = 1300000, seen = 1, loc = { bags = {} } },
+                      ["Ash-Forever"] = { gold = 9000000, seen = 1, loc = { bags = {} } },
+                      ["Zed-Elsewhere"] = { gold = 5, seen = 1, loc = { bags = {} } } },
+            names = { [2589] = "Linen Cloth", [4500] = "Mooncloth Bag" },
+            items = { [4500] = { loc = "INVTYPE_BAG", bind = 2, slots = 16 } },
+            space = { ["Emily-Forever"] = { total = 46, free = 2, bags = 3, max = 4 } },
+            requests = { ["Emily-Forever"] = { { what = 2589, name = "Linen Cloth", count = 15, t = 1 } },
+                         ["Zed-Elsewhere"] = { { what = 2589, name = "Linen Cloth", count = 1, t = 1 } } } },
+        CharacterBoardDB = { chars = { ["Emily-Forever"] = { level = 42, class = "PALADIN", zone = "Ironforge" },
+                                       ["Ash-Forever"] = { level = 60, class = "MAGE", zone = "Stormwind" } } },
+    }
+    local rs = session(rw, rsaved)
+    rs.env.C_Container = {
+        GetContainerNumSlots = function(b) return b == 0 and #rw.bag0 or 0 end,
+        GetContainerItemInfo = function(b, slot)
+            local t = b == 0 and rw.bag0[slot]
+            if t then return { itemID = t[1], stackCount = t[2], hyperlink = "|Hitem:" .. t[1] .. "|h[" .. t[3] .. "]|h" } end
+        end,
+        PickupContainerItem = function(b, slot) rw.cursor = { b, slot } end,
+    }
+    local function editbox() local e = { text = "" }; function e:SetText(t) self.text = t end; return e end
+    rs.env.MailFrame = {}
+    rs.env.MailFrameTab2 = { Click = function() rw.tab = 2 end }
+    rs.env.SendMailNameEditBox, rs.env.SendMailSubjectEditBox = editbox(), editbox()
+    rs.env.GetSendMailItem = function(i) return rw.attached[i] end
+    rs.env.ClickSendMailItemButton = function(i) rw.attached[i] = rw.cursor; rw.cursor = nil end
+    rs.env.ATTACHMENTS_MAX_SEND = 12
+    local hi = rs.login()
+    has(hi, "Rumour has it Emily-Forever needs Linen Cloth x15 -- you have 20.", "a request this character can fill is passed on at login")
+    hasnt(hi, "Zed-Elsewhere", "a request from another realm is not (the mail cannot reach it)")
+    local o = rs.slash("HRUNGNIR", "gold")
+    has(o, "Coin on the account:", "/rock gold: every character")
+    has(o, "Ash-Forever            900g 0s 0c", "/rock gold: this character's coin, live")
+    has(o, "all together           1030g 0s 5c", "/rock gold: the account's")
+    o = rs.slash("HRUNGNIR", "how much coin does Emily have?")
+    eq(o, "|cffc8a878Hrungnir:|r Emily-Forever has 130g 0s 0c.", "/rock in a sentence, about one character")
+    o = rs.slash("HRUNGNIR", "bags")
+    has(o, "Ash-Forever            1 of 4 free  nearly full", "/rock bags: free space, live for this character")
+    has(o, "Emily-Forever          2 of 46 free  nearly full  (1 bag slot empty)", "/rock bags: others as last seen, with empty bag slots")
+    o = rs.slash("HRUNGNIR", "who has linen")
+    has(o, "Linen Cloth: Ash-Forever 20", "/rock who has <item>")
+    o = rs.slash("HRUNGNIR", "levels")
+    has(o, "Emily-Forever          PALADIN   42  Ironforge", "/rock levels")
+    o = rs.slash("HRUNGNIR", "emily needs a bag")
+    has(o, "I'll spread the word: Emily-Forever needs a bag x1.", "/rock <name> needs a bag: a request, passed on")
+    has(o, "You could send 1 yourself -- open a mailbox and I'll pack it.", "and this character could fill it")
+    eq(rs.env.FafnirsBedDB.requests["Emily-Forever"][2].what, "bag", "it is the same record /need writes")
+    o = rs.slash("HRUNGNIR", "i need 3 copper")
+    has(o, "Ash-Forever needs copper x3", "/rock i need <n> <item>: for this character, kept by name when nobody has seen it")
+    o = rs.slash("HRUNGNIR", "what should i mail?")
+    has(o, "Emily-Forever needs Linen Cloth x15 -- you have 20", "/rock mail lists the shipments")
+    has(o, "Emily-Forever needs Mooncloth Bag (for a bag) x1 -- you have 1", "including a spare bag for a bag request")
+    hasnt(o, "copper", "not its own request")
+    -- at the mailbox
+    rs.fire("MAIL_SHOW")
+    local panel = rs.env.HrungnirShipments
+    eq(panel and panel.shown, true, "at a mailbox the rock shows what it can pack")
+    eq(rs.env.HrungnirShip1.text, "Pack Linen Cloth x15 for Emily", "a Pack button per shipment")
+    eq(rs.env.HrungnirShip2.text, "Pack Mooncloth Bag x1 for Emily", "and the bag")
+    rw.out = {}
+    rs.env.HrungnirShip1.scripts.OnClick(rs.env.HrungnirShip1)
+    o = table.concat(rw.out, "\n")
+    eq(rw.tab, 2, "Pack opens the send tab")
+    eq(rs.env.SendMailNameEditBox.text, "Emily", "the recipient, by name on this realm")
+    eq(rs.env.SendMailSubjectEditBox.text, "From the rock: Linen Cloth x20", "a subject saying what is in it")
+    eq(rw.attached[1] and rw.attached[1][2], 1, "the 12 stack attached")
+    eq(rw.attached[2] and rw.attached[2][2], 2, "then the 8 (no stack of 15; the mail cannot split one)")
+    has(o, "Packed Linen Cloth x20 for Emily-Forever. Press Send.", "it says what it packed")
+    has(o, "(15 asked for -- a mail can't split a stack", "and that it is over")
+    rw.out = {}
+    rs.env.HrungnirShip2.scripts.OnClick(rs.env.HrungnirShip2)
+    has(table.concat(rw.out, "\n"), "Clear the attachments first", "one shipment at a time")
+    rw.out = {}
+    rs.fire("MAIL_SEND_SUCCESS")
+    has(table.concat(rw.out, "\n"), "Shipped. Emily-Forever's request is filled.", "a sent shipment fills the request")
+    eq(#rs.env.FafnirsBedDB.requests["Emily-Forever"], 1, "and takes it off the list")
+    eq(rs.env.FafnirsBedDB.requests["Emily-Forever"][1].what, "bag", "the bag request is left")
+    rw.attached = {}
+    rw.bag0[1], rw.bag0[2] = false, false        -- the linen went with the mail
+    rs.fire("BAG_UPDATE_DELAYED")
+    eq(rs.env.HrungnirShip1.text, "Pack Mooncloth Bag x1 for Emily", "the panel follows the bags")
+    eq(rs.env.HrungnirShip2.shown, false, "one shipment left")
+    rs.fire("MAIL_CLOSED")
+    eq(panel.shown, false, "the panel goes with the mailbox")
+    o = rs.slash("HRUNGNIR", "pat")
+    has(o, "Hrungnir", "/rock pat is still the pet rock")
+    o = rs.slash("HRUNGNIR", "")
+    has(o, "Ask me: gold | bags | levels", "/rock on its own says what it can be asked")
+end
 
 print(string.format("fun addons: %d passed, %d failed", passed, failed))
 print("missing-string check (translators' catalogues not yet supplied):")
