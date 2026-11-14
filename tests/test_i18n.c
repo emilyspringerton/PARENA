@@ -55,6 +55,19 @@ int main(void) {
         arena_free_all(&a);
     }
 
+    /* --- a binding or parameter NAMED tr is not a tr call (Bedrock Racers' roll torque, 2026-11-14) --- */
+    {
+        Arena a;
+        arena_init(&a);
+        Node *p = parse(&a, "(defn f [(tr : F32)] : F32 (let [(tr : F32) (* tr 2.0)] tr))");
+        const char *err = i18n_lower(&a, p, NULL, NULL);
+        CHECK(err == NULL, "(tr : F32) as a parameter and a let binding lowers without a tr error");
+        Node *params = p->children[0]->children[2];
+        CHECK(params->children[0]->type == NODE_LIST && params->children[0]->child_count == 3,
+              "and the typed name is left exactly as written");
+        arena_free_all(&a);
+    }
+
     /* --- module off: tr becomes its inline default, at any depth --- */
     {
         Arena a;

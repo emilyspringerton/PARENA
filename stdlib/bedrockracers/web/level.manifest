@@ -1,0 +1,56 @@
+# stdlib/bedrockracers/web/level.manifest -- Bedrock Racers as a SHANKPIT level (T0, SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md),
+# so the SHANKPHONE plays it on SHANKPIT's wasm3 host (EMILY/BACKLOG.md S635-4). Format: stdlib/brawlpit/level.manifest.
+# Build: scripts/build_level_wasm.sh stdlib/bedrockracers/web/level.manifest <out.wasm>
+
+name bedrockracers_level
+entry stdlib/bedrockracers/web/br_level.prn
+
+src stdlib/bedrockracers/web/br_mem.prn
+src stdlib/bedrockracers/web/br_fields.prn
+src stdlib/bedrockracers/web/br_gfx.prn
+src stdlib/bedrockracers/web/br_arena.prn
+src stdlib/bedrockracers/web/br_phys.prn
+src stdlib/bedrockracers/web/br_ai.prn
+src stdlib/bedrockracers/web/br_league.prn
+src stdlib/bedrockracers/web/br_rules.prn
+src stdlib/bedrockracers/web/br_fire.prn
+src stdlib/bedrockracers/web/br_sim.prn
+src stdlib/bedrockracers/web/br_fx.prn
+src stdlib/bedrockracers/web/br_3d.prn
+src stdlib/bedrockracers/web/br_light.prn
+src stdlib/bedrockracers/web/br_mesh.prn
+src stdlib/bedrockracers/web/br_cam.prn
+src stdlib/bedrockracers/web/br_view.prn
+src stdlib/bedrockracers/web/br_input.prn
+src stdlib/bedrockracers/web/br_hud.prn
+src stdlib/bedrockracers/web/br_net.prn
+src stdlib/bedrockracers/web/br_ui.prn
+src stdlib/bedrockracers/web/br_main.prn
+src stdlib/gfd/term_font.prn
+src stdlib/reflux/reflux.prn
+src stdlib/reflux/cursor.prn
+src stdlib/bedrockracers/web/br_level.prn
+
+export level_api i()
+export level_enter i()
+export level_poll i(i)
+export level_tick v()
+export level_render v()
+export level_exit v()
+export level_seed v(i)
+export level_key v(ii)
+export level_pointer v(iii)
+export level_blur v()
+export level_fb_addr i()
+export level_fb_w i()
+export level_fb_h i()
+export level_asset_addr i(i)
+export level_asset_set v(ii)
+export level_lost_rows i()
+import env.reflux_host_total_dispatched i()
+import env.reflux_host_index_for_abs i(i)
+import env.reflux_host_oldest_abs i()
+import env.reflux_host_action_type_at i(i)
+import env.reflux_host_action_a_at i(i)
+import env.reflux_host_action_b_at i(i)
+import env.reflux_host_action_c_at i(i)

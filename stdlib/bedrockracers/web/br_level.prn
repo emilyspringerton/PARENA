@@ -1,0 +1,93 @@
+;; stdlib/bedrockracers/web/br_level.prn -- Bedrock Racers as a SHANKPIT level: the level surface over the web engine, so
+;; the SHANKPHONE plays it natively on SHANKPIT's wasm3 host instead of through the Chromium stopgap (founder 2026-11-14:
+;; "build pellegrino on the phone into a full app that can play the wasm games" / "parenafy it"; EMILY/BACKLOG.md S635-4).
+;;
+;; Contract: SHANKPIT/docs/T0_LEVEL_WASM_CONTRACT.md section 2, the surface BRAWLPIT's bp_level.prn and shankpit-460's
+;; sp_level.prn speak. The game is the very br_*.prn the WOTAN web build ships (MODULES, untouched). The level adds:
+;;   - one 16 ms sim step per level-tick and drawing in level-render (the host owns the fixed-step accumulator); the
+;;     cameras run on render time, so level-render hands them the time of the steps since the last picture;
+;;   - its own millisecond clock (level-seed + ticks) for the page's wall clock (matches are seeded from it);
+;;   - no network: the engine is told the socket is closed at enter, so PLAY is a match against bots;
+;;   - REFLUX in: LEVEL_HIDDEN for this level pauses a live match (the game's own pause menu).
+;; Controls are the game's own and need no mouse (WASD, Space lift, Shift boost, F magnet, arrows pitch / roll, Q / E
+;; strafe, C fans off, V ball cam, Tab scores, Esc pause; Enter plays, B watches).
+;;
+;; State: the G region's spare words 900-903 (the engine uses 0-497, the page clock at 376-377).
+
+(defn br-level-id [] : I32 3)                 ; level id 3 = BEDROCK RACERS (SHANKPIT REFLUX_LEVEL_BEDROCKRACERS)
+(defn br-act-level-hidden [] : I32 1002)      ; REFLUX_ACTION_LEVEL_HIDDEN
+
+(defn g-lv-seed [] : I32 900)
+(defn g-lv-ticks [] : I32 901)
+(defn g-lv-lost [] : I32 902)
+(defn g-lv-drawn [] : I32 903)      ; g-lv-ticks at the last level-render
+
+(defn level-api [] : I32 1)
+
+(defn level-enter [] : I32
+  (do
+    (br-init)
+    (net-socket! 3)
+    (gi! (g-lv-ticks) 0)
+    (gi! (g-lv-lost) 0)
+    (gi! (g-lv-drawn) 0)
+    0))
+
+(defn level-seed [(s : I32)] : Unit (gi! (g-lv-seed) s))
+
+(defn lv-clock-ms [] : I32 (+ (gi (g-lv-seed)) (* (gi (g-lv-ticks)) 16)))
+
+(defn level-tick [] : Unit
+  (do
+    (gi! (g-lv-ticks) (+ (gi (g-lv-ticks)) 1))
+    (gi! (g-ticker) (lv-clock-ms))
+    (net-idle-tick!)
+    (step-once!)))
+
+;; the picture: the cameras get the time of the steps since the last one (none while paused), capped as the page caps it
+(defn level-render [] : Unit
+  (let [steps (- (gi (g-lv-ticks)) (gi (g-lv-drawn)))
+        (dt : F32) (clamp-f (* (f32 steps) 16.0) 0.0 50.0)]
+    (gi! (g-lv-drawn) (gi (g-lv-ticks)))
+    (gi! (g-frame) (+ (gi (g-frame)) 1))
+    (gf! (g-cam-dt) (if (and (= (gi (g-phase)) 1) (= (gi (g-paused)) 1)) 0.0 (* dt 0.001)))
+    (ui-render! 1.0)))
+
+(defn level-exit [] : Unit (in-clear-keys!))
+
+;; ---- REFLUX in ---------------------------------------------------------------------------------------------------
+(defn lv-on-action! [(idx : I32)] : Unit
+  (when (and (= (reflux-action-type-at idx) (br-act-level-hidden)) (= (reflux-action-a-at idx) (br-level-id)))
+    (when (= (gi (g-phase)) 1) (gi! (g-paused) 1))))
+
+(defn level-poll [(cursor : I32)] : I32
+  (let [total (reflux-total-dispatched)
+        oldest (reflux-oldest-abs)
+        start (if (< cursor oldest) oldest cursor)]
+    (when (< cursor oldest) (gi! (g-lv-lost) (+ (gi (g-lv-lost)) (- oldest cursor))))
+    (loop [abs start]
+      (when (< abs total)
+        (let [idx (reflux-index-for-abs abs)]
+          (when (>= idx 0) (lv-on-action! idx)))
+        (recur (+ abs 1))))
+    total))
+
+(defn level-lost-rows [] : I32 (gi (g-lv-lost)))
+
+;; ---- input -------------------------------------------------------------------------------------------------------
+(defn level-key [(code : I32) (down : I32)] : Unit (in-key! code down))
+;; a pointer: position and the left button (the title's swatches and buttons take clicks)
+(defn level-pointer [(x : I32) (y : I32) (buttons : I32)] : Unit
+  (do (in-pointer! x y)
+      (in-button! 0 (bit-and buttons 1))))
+(defn level-blur [] : Unit
+  (do (in-clear-keys!)
+      (in-button! 0 0)
+      (in-button! 2 0)))
+
+;; ---- memory the host reads and writes ----------------------------------------------------------------------------
+(defn level-fb-addr [] : I32 (fb-base))
+(defn level-fb-w [] : I32 640)
+(defn level-fb-h [] : I32 360)
+(defn level-asset-addr [(slot : I32)] : I32 0)
+(defn level-asset-set [(slot : I32) (loaded : I32)] : Unit unit)

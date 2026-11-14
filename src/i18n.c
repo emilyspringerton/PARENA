@@ -95,8 +95,13 @@ static int is_kw(const Node *n, const char *text) {
     return n && n->type == NODE_KEYWORD && n->text && strcmp(n->text, text) == 0;
 }
 
+/* (tr "text" ...) -- but not (tr : F32), the typed name of a binding or parameter that happens to be called tr (found
+   2026-11-14: Bedrock Racers' br_phys.prn binds (tr : F32), the roll torque, and stopped compiling the day tr landed). */
+static int is_typed_name(const Node *n) {
+    return n->child_count >= 2 && n->children[1] && n->children[1]->type == NODE_COLON;
+}
 static int is_tr_form(const Node *n) {
-    return n && n->type == NODE_LIST && n->child_count >= 1 && is_sym(n->children[0], "tr");
+    return n && n->type == NODE_LIST && n->child_count >= 1 && is_sym(n->children[0], "tr") && !is_typed_name(n);
 }
 
 /* ---- ids ------------------------------------------------------------------------------------ */

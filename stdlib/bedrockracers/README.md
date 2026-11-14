@@ -36,6 +36,14 @@ The title picks your team (Left/Right, A/D, d-pad or click) and the bots' skill 
 team's first car, `B` / WATCH sets twelve bots going under a broadcast camera. The cursor is never captured: the keys and sticks
 drive, the right mouse button is the magnet.
 
+## As a SHANKPIT level (2026-11-14)
+
+`web/br_level.prn` + `web/level.manifest` build the same engine as a T0 level module (`scripts/build_level_wasm.sh
+stdlib/bedrockracers/web/level.manifest <out.wasm>`, 147 KB, the exact T0 surface, no allocator), so the SHANKPHONE's PELLEGRINO
+app plays it natively on SHANKPIT's wasm3 host (`SHANKPIT/scripts/build_phone_levels.sh` commits it). No network there: the
+engine is told the socket is closed, so PLAY is a match against bots. The controls are the game's own -- it needs no mouse.
+Checked by SHANKPIT's `make test-phone-arcade` (title -> Enter -> a match; a held W drives car 0) and in the lobby under Xvfb.
+
 ## The game in one paragraph
 
 Hold the magnet near the ball and it is pulled into your cradle (17 ahead, 9 up) and carried; let go and it is thrown along your
