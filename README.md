@@ -538,7 +538,8 @@ probed against the WoW Forever client beyond what each addon's header says.
   least +10.0 to someone (the optimizer). Each need says who on the account can fill it: spare bags (largest first,
   their size once some character has worn one), the holders of a requested item, the alt holding the upgrade.
   Soulbound copies never count. Rules: `stdlib/collection/needs.prn`. `forge board` writes all of it, with every
-  character's sheet and gear, to `board.json` for a big screen (`forge watch` keeps it current beside the ledger).
+  character's sheet and gear, to `board.json` and `board.tsv` (`forge watch` keeps both current beside the ledger);
+  SHANKPIT shows `board.tsv` full-screen on **I** (its gear board, re-read whenever the forge rewrites it).
   Fafnir's Bed records bag space and worn bags' sizes for this; untested against the live client.
 
 - **The ledger** (`forge ledger`, `forge watch`) -- one CSV for the whole account, one row per item per character

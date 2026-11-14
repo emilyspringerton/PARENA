@@ -1218,14 +1218,44 @@ elseif cmd == "board" then
             gear = gear,
         }
     end
-    local text = json({ version = 1, generated = os.time(), characters = list, needs = needs_list(nil) }) .. "\n"
+    local needs = needs_list(nil)
+    local generated = os.time()
+    local text = json({ version = 1, generated = generated, characters = list, needs = needs }) .. "\n"
+    -- The same board as tab-separated lines, for SHANKPIT's gear board (packages/ui/gear_board.h), which reads it
+    -- with no JSON parser. One record per line, the first field its kind:
+    --   SHANKPIT_GEAR_BOARD <version> <generated>
+    --   C character class level role gold(copper) zone subzone bags_free bags_total bags_worn bag_slots ilvl xp_pct
+    --   G character slot slot_name item ilvl quality
+    --   N urgency character kind what detail from
+    local function f(v) return (tostring(v == nil and "" or v):gsub("[\t\r\n]", " ")) end
+    local function line(t) for i = 1, #t do t[i] = f(t[i]) end return table.concat(t, "\t") end
+    local tsv = { line({ "SHANKPIT_GEAR_BOARD", 1, generated }) }
+    for _, c in ipairs(list) do
+        local b = c.bags or {}
+        tsv[#tsv + 1] = line({ "C", c.character, c.class, c.level, c.role, c.gold, c.zone, c.subzone, b.free or -1,
+            b.total or -1, b.worn or -1, b.max or -1, c.ilvl, c.xpmax > 0 and math.floor(100 * c.xp / c.xpmax) or -1 })
+        for _, g in ipairs(c.gear) do
+            tsv[#tsv + 1] = line({ "G", c.character, g.slot, g.slot_name, g.name, g.ilvl or "", g.quality or "" })
+        end
+    end
+    for _, n in ipairs(needs) do
+        local what = n.kind == 4 and string.format("%s x%d", n.what, n.count or 1) or n.what
+        tsv[#tsv + 1] = line({ "N", n.urgency, n.character, n.kind_name, what, n.detail or "", fill_text(n) })
+    end
+    local tsv_text = table.concat(tsv, "\n") .. "\n"
+    local function put(p, body)
+        local tmp = p .. ".tmp"
+        local fh = io.open(tmp, "wb") or refuse("cannot write " .. tmp)
+        fh:write(body); fh:close()
+        if not os.rename(tmp, p) then os.remove(p); if not os.rename(tmp, p) then refuse("cannot replace " .. p) end end
+    end
     if path == "-" then io.write(text)
     else
-        local tmp = path .. ".tmp"
-        local fh = io.open(tmp, "wb") or refuse("cannot write " .. tmp)
-        fh:write(text); fh:close()
-        if not os.rename(tmp, path) then os.remove(path); if not os.rename(tmp, path) then refuse("cannot replace " .. path) end end
-        out({ file = path, characters = #list }, string.format("board: %d characters -> %s", #list, path))
+        put(path, text)
+        local tsv_path = path:gsub("%.json$", "") .. ".tsv"
+        put(tsv_path, tsv_text)
+        out({ file = path, tsv = tsv_path, characters = #list },
+            string.format("board: %d characters -> %s (and %s for SHANKPIT)", #list, path, tsv_path))
     end
 
 elseif cmd == "role" then

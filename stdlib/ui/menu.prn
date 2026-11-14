@@ -21,7 +21,8 @@
 (export menu-col menu-row menu-rows menu-cell-x menu-cell-y menu-nav-move menu-hit-test
         menu-click-kind menu-cycle
         menu-path-depth menu-path-push menu-path-pop menu-path-leaf menu-path-max-depth
-        menu-path-enter menu-path-parent-sel)
+        menu-path-enter menu-path-parent-sel
+        menu-page-count menu-page-first menu-page-turn menu-page-of)
 
 (defn menu-col [(idx : I32) (cols : I32)] : I32 (mod idx cols))
 (defn menu-row [(idx : I32) (cols : I32)] : I32 (/ idx cols))
@@ -119,3 +120,17 @@
 ;; alone (the host runs it). Returns the new path.
 (defn menu-path-enter [(path : I32) (cell : I32) (is-sub : I32)] : I32
   (if (= is-sub 1) (menu-path-push path cell) path))
+
+;; ---- pages (2026-11-14, the gear board: "shankit needs to start tracking the gear so i can see it on a big screen
+;; in game") ----
+;; A list longer than one screen is shown a page at a time. Pages are numbered from 0; `per` rows fit on a page.
+;; menu-page-count -- pages needed for `count` rows; an empty list still has one (empty) page.
+(defn menu-page-count [(count : I32) (per : I32)] : I32
+  (if (or (<= count 0) (<= per 0)) 1 (/ (+ count (- per 1)) per)))
+;; menu-page-first -- the index of the first row on `page`.
+(defn menu-page-first [(page : I32) (per : I32)] : I32 (if (or (< page 0) (< per 0)) 0 (* page per)))
+;; menu-page-turn -- step `delta` pages (PageDown +1, PageUp -1), wrapping round both ends.
+(defn menu-page-turn [(page : I32) (delta : I32) (pages : I32)] : I32
+  (if (<= pages 0) 0 (mod (+ (mod (+ page delta) pages) pages) pages)))
+;; menu-page-of -- the page row `index` is on.
+(defn menu-page-of [(index : I32) (per : I32)] : I32 (if (or (<= per 0) (< index 0)) 0 (/ index per)))

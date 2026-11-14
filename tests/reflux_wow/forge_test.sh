@@ -177,6 +177,11 @@ B="$(cat "$FORGE_DIR/board.json")"
 check "board: a character's bags" "$B" '"bags":{"free":2,"max":4,"total":46,"worn":3}'
 check "board: gear by slot" "$B" '"name":"Lionheart Helm","slot":1,"slot_name":"Head"'
 check "board: the needs" "$B" '"kind_name":"bags full"'
+T="$(cat "$FORGE_DIR/board.tsv")"
+check "board.tsv: the header" "$T" "$(printf 'SHANKPIT_GEAR_BOARD\t1\t')"
+check "board.tsv: a character" "$T" "$(printf 'C\tEmily-Forever\tPALADIN\t42\tstrength\t1300000\tIronforge\t\t2\t46\t3\t4\t38\t50')"
+check "board.tsv: gear" "$T" "$(printf 'G\tEmily-Forever\t1\tHead\tLionheart Helm')"
+check "board.tsv: a need" "$T" "$(printf 'N\t1000\tAsh-Forever\tbags full\tbag space\t0 of 80 slots free\tMooncloth Bag (16 slots) -- your mail')"
 cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
 
 # build: the plans go into MacroSync, and /ascend writes the planned kit

@@ -142,6 +142,14 @@ int main(void) {
         CHECK(bad == 0, "push/pop round trip across the whole cell range");
     }
 
+    /* ---- pages (the gear board), hand-derived ---- */
+    CHECK(menu_page_count(0, 10) == 1 && menu_page_count(10, 10) == 1 && menu_page_count(11, 10) == 2, "page count: empty is one page, 11 rows of 10 is two");
+    CHECK(menu_page_count(5, 0) == 1, "page count: a zero page size cannot divide by zero");
+    CHECK(menu_page_first(0, 10) == 0 && menu_page_first(3, 10) == 30, "first row of a page");
+    CHECK(menu_page_turn(0, 1, 3) == 1 && menu_page_turn(2, 1, 3) == 0 && menu_page_turn(0, -1, 3) == 2, "turning wraps both ways");
+    CHECK(menu_page_turn(1, -7, 3) == 0 && menu_page_turn(0, 1, 0) == 0, "a big step wraps; no pages stays 0");
+    CHECK(menu_page_of(0, 10) == 0 && menu_page_of(19, 10) == 1 && menu_page_of(20, 10) == 2, "which page a row is on");
+
     printf(failures ? "\n%d FAILED\n" : "\nAll ui/menu checks passed.\n", failures);
     return failures ? 1 : 0;
 }
