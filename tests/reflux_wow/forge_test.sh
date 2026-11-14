@@ -72,6 +72,19 @@ o="$(f class Zed-Forever DEATHKNIGHT)"; check "plan for a character the Board ha
 o="$(f add zed DkGrip '/cast Death Grip')"; check "and give it a macro" "$o" "added DkGrip"
 o="$(f class Emily-Forever MAGE)"; check "a Board character's class cannot be changed" "$o" "already a PALADIN"
 o="$(f copy emily ash)"; check "a plan only copies within a class" "$o" "only copies within a class"
+o="$(f want emily offhand linen)"; check "want: a slot by name, an item by part of its name" "$o" "Emily-Forever wants Linen Cloth in Off hand"
+o="$(f want emily head 1001)"; check "want: an item by id" "$o" "wants Lionheart Helm in Head"
+o="$(f want emily neck 55555)"; check "want: an item nobody has seen yet" "$o" "wants item 55555 in Neck"
+o="$(f want emily elbow 1)"; check "want: an unknown slot is refused" "$o" "no slot called 'elbow'"
+o="$(f want emily neck zzzz)"; check "want: an unknown name is refused" "$o" "no item named like 'zzzz'"
+o="$(f gear emily)"
+check "gear: worn and planned" "$o" "Head       Lionheart Helm                want Lionheart Helm  [worn]"
+check "gear: on the account, and where" "$o" "want Linen Cloth  [on the account]  (Ash-Forever bags 20; Emily-Forever bags 3)"
+check "gear: not on the account" "$o" "want item 55555  [not on the account]"
+o="$(f unwant emily neck)"; check "unwant" "$o" "nothing planned for Neck now"
+o="$(f unwant emily neck)"; check "unwant twice is refused" "$o" "nothing is planned for Neck"
+check "the plan keeps slot numbers as numbers" "$(cat "$FORGE_DIR/kits.lua")" "[17] = 2589,"
+o="$(f --json show emily)"; check "show --json carries the gear plan" "$o" '"status":"on the account"'
 o="$(f export)"; check "export" "$o" '["Emily-Forever"] = {'
 
 # build: the plans go into MacroSync, and /ascend writes the planned kit

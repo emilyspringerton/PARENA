@@ -72,5 +72,23 @@ local p2 = {}
 eq(K.kitAdd_(none, p2, "DkGrip", "/cast Death Grip"), 0, "adding to an empty class")
 eq(names(K.kitApply(none, p2)), "DkGrip:2", "the kit is just what was added")
 
+-- gear plans
+local g = {}
+eq(K.kitWant_(g, 1, 1001), 0, "want a helm in slot 1")
+eq(K.kitWant_(g, 20, 1001), 8, "slot 20 does not exist")
+eq(K.kitWant_(g, 0, 1001), 8, "nor slot 0")
+eq(K.kitWant_(g, 16, 0), 9, "0 is not an item")
+eq(K.kitWant_(g, 16, 1002), 0, "want a main hand")
+eq(K.kitGearCount(g), 2, "two slots planned")
+eq(K.kitChanges(g), 0, "gear is not a macro change")
+eq(K.kitUnwant_(g, 16), 0, "stop wanting the main hand")
+eq(K.kitUnwant_(g, 16), 7, "nothing wanted there any more")
+eq(K.kitGearCount(g), 1, "one slot left")
+eq(#K.kitApply(set, g), 16, "a gear plan leaves the macro kit alone")
+eq(K.kitGearStatus(0, 5, 0), 0, "nothing wanted")
+eq(K.kitGearStatus(1001, 1001, 0), 1, "worn already")
+eq(K.kitGearStatus(1001, 7, 1), 2, "on the account: go and get it")
+eq(K.kitGearStatus(1001, 0, 0), 3, "nowhere on the account yet")
+
 print(string.format("kits: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

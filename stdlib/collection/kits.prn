@@ -16,7 +16,8 @@
 
 (module collection/kits)
 (export kit-name-max kit-body-max kit-plan kit-check kit-find kit-apply kit-changes
-        kit-add! kit-edit! kit-drop! kit-restore!)
+        kit-add! kit-edit! kit-drop! kit-restore!
+        kit-slot-ok kit-want! kit-unwant! kit-gear-count kit-gear-status)
 
 ;; The macro frame's name limit (macros.prn), and the body length past which the client may shorten a macro
 ;; (retail-lineage 255; not confirmed on Forever -- MacroSync reads every body back and reports a shortened one).
@@ -114,3 +115,31 @@
     (if (= (kit-find set name) 0) 6
       (if (and (lua/nil? (lua/aget (lua/get p "drop") name)) (lua/nil? (lua/aget (lua/get p "edit") name))) 7
         (do (lua/aset! (lua/get p "drop") name (lua/nil)) (lua/aset! (lua/get p "edit") name (lua/nil)) 0)))))
+
+;; ---- Gear plans (founder, 2026-11-14, same ask: "plan kits for characters", with "the inv ... and equip"). A plan
+;; can also say which item the character should wear in each slot: plan.gear = { [slot] = itemID }, slots 1 head ..
+;; 19 tabard (the client's inventory slot ids). Separate from the macro kit: kit-changes does not count it, and
+;; MacroSync ignores it; the forge and the /chars screen read it.
+
+(defn kit-slot-ok [(slot : I32)] : I32 (if (and (>= slot 1) (<= slot 19)) 1 0))
+
+(defn kit-gear [(p : Any)] : Any
+  (do (if (lua/nil? (lua/get p "gear")) (lua/set! p "gear" (lua/obj)) 0) (lua/get p "gear")))
+
+;; Want `item` in `slot`. 0 done, 8 no such slot, 9 not an item id.
+(defn kit-want! [(plan : Any) (slot : I32) (item : I32)] : I32
+  (if (= (kit-slot-ok slot) 0) 8
+    (if (<= item 0) 9 (do (lua/aset! (kit-gear plan) slot item) 0))))
+
+;; Stop wanting anything in `slot`. 0 done, 8 no such slot, 7 nothing was wanted there.
+(defn kit-unwant! [(plan : Any) (slot : I32)] : I32
+  (if (= (kit-slot-ok slot) 0) 8
+    (if (lua/nil? (lua/aget (kit-gear plan) slot)) 7 (do (lua/aset! (kit-gear plan) slot (lua/nil)) 0))))
+
+(defn kit-gear-count [(plan : Any)] : I32 (kit-count-keys (kit-gear plan) (lua/nil) 0))
+
+;; Where a wanted slot stands: 0 nothing wanted, 1 worn already, 2 on the account (this character's bags or bank, or
+;; another character's) -- go and get it, 3 nowhere on the account yet. `worn` is the item in the slot now (0: none),
+;; `held` how many the account holds outside this slot.
+(defn kit-gear-status [(wanted : I32) (worn : I32) (held : I32)] : I32
+  (if (<= wanted 0) 0 (if (= worn wanted) 1 (if (> held 0) 2 3))))

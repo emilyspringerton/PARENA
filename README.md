@@ -482,8 +482,9 @@ probed against the WoW Forever client beyond what each addon's header says.
   gold, everything equipped (by slot), bags, bank and mail, and its last week of level and gold, read from the
   Character Board and Fafnir's Bed. A Find box (or `/chars find <item>`) shows who has an item and where. The bank
   and mail are as of the last time that character opened them.
-- **The plugin forge** -- see and plan each character's macro kit outside the game, then bake the plans into
-  MacroSync so `/ascend` writes the planned kit (the class set minus drops, with edits, plus your own macros):
+- **The plugin forge** -- see and plan each character's kit outside the game: its macros (the class set minus drops,
+  with edits, plus your own -- `/ascend` writes them once baked) and its gear (an item per slot; `/chars` then shows
+  each slot as worn, on the account and where, or still to get):
 
   ```sh
   export FORGE_DIR=~/wow-forge WOW_WTF_DIR="/path/to/the/client/WTF"   # FORGE_DIR: outside the repo
@@ -491,6 +492,8 @@ probed against the WoW Forever client beyond what each addon's header says.
   scripts/forge.sh show emily          # one character: xp, gold, gear, bags, bank, mail
   scripts/forge.sh history [emily]     # gold (and level) by day: the account's, or one character's
   scripts/forge.sh find linen          # who has it, and where (bags, bank, mail, worn)
+  scripts/forge.sh gear emily          # worn gear by slot, and the gear planned for it
+  scripts/forge.sh want emily head 1001   # plan a slot (an item id, or a name Fafnir's Bed has seen); unwant to clear
   scripts/forge.sh kit emily           # the planned kit, macro by macro
   scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
   scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)

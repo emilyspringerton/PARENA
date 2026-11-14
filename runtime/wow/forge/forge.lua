@@ -18,6 +18,9 @@
 --   show CHARACTER                  its level, xp, gold, gear by slot, bags, bank and mail (Fafnir's Bed), and its kit
 --   history [CHARACTER]             gold by day across the account, or one character's level and gold by day
 --   find ITEM                       every item whose name holds ITEM (or whose id it is): who has it, and where
+--   gear CHARACTER                  worn gear by slot, and the gear planned for each slot (stdlib/collection/kits.prn)
+--   want CHARACTER SLOT ITEM        plan ITEM (an id, or a name Fafnir's Bed has seen) for SLOT
+--   unwant CHARACTER SLOT           stop planning SLOT
 --   classes                         the classes that have a macro set
 --   set CLASS                       a class's set, as MacroSync ships it
 --   kit CHARACTER                   the character's planned kit, macro by macro, and what /ascend last wrote
@@ -120,6 +123,13 @@ local function load_plans()
     setfenv(chunk, {})
     local ok, t = pcall(chunk)
     if not ok or type(t) ~= "table" then die("kits.lua is damaged: " .. tostring(t)) end
+    for _, p in pairs(t) do          -- a gear plan is keyed by slot number; an older file may have written "16"
+        if type(p) == "table" and type(p.gear) == "table" then
+            local g = {}
+            for k, v in pairs(p.gear) do g[tonumber(k) or k] = v end
+            p.gear = g
+        end
+    end
     return t
 end
 
@@ -136,7 +146,10 @@ local function lua_lit(v, indent)
         local keys = {}
         for k in pairs(v) do keys[#keys + 1] = k end
         table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-        for _, k in ipairs(keys) do out[#out + 1] = inner .. "[" .. lua_lit(tostring(k)) .. "] = " .. lua_lit(v[k], inner) .. "," end
+        for _, k in ipairs(keys) do
+            local key = type(k) == "number" and tostring(k) or lua_lit(tostring(k))     -- slots and item ids stay numbers
+            out[#out + 1] = inner .. "[" .. key .. "] = " .. lua_lit(v[k], inner) .. ","
+        end
     end
     if #out == 0 then return "{}" end
     return "{\n" .. table.concat(out, "\n") .. "\n" .. indent .. "}"
@@ -271,6 +284,8 @@ end
 local SLOTS = { "Head", "Neck", "Shoulder", "Shirt", "Chest", "Waist", "Legs", "Feet", "Wrist", "Hands", "Finger", "Finger",
                 "Trinket", "Trinket", "Back", "Main hand", "Off hand", "Ranged", "Tabard" }
 
+local LOCS = { "bags", "bank", "mail", "equipped" }
+
 local function gold_of(c)
     if c.hold and c.hold.gold then return c.hold.gold end
     return c.gold or 0
@@ -343,7 +358,24 @@ local function account_history()
 end
 
 -- Items whose name holds the query (or whose id it is), and who holds them where.
-local LOCS = { "bags", "bank", "mail", "equipped" }
+-- Who holds item `id`, where: an array of {character, bags, bank, mail, equipped, total}, most first; and the total.
+local function holders_of(chars, id)
+    local holders, total = arr(), 0
+    for who, c in pairs(chars) do
+        local loc = c.hold and c.hold.loc
+        if loc then
+            local h, n = { character = who }, 0
+            for _, l in ipairs(LOCS) do
+                local k = loc[l] and (loc[l][id] or loc[l][tostring(id)]) or 0
+                if k > 0 then h[l] = k; n = n + k end
+            end
+            if n > 0 then h.total = n; holders[#holders + 1] = h; total = total + n end
+        end
+    end
+    table.sort(holders, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.character < b.character end)
+    return holders, total
+end
+
 local function find_items(chars, q)
     local lq, id_q = q:lower(), tonumber(q)
     local ids = {}
@@ -352,24 +384,78 @@ local function find_items(chars, q)
     end
     local items = arr()
     for _, id in ipairs(ids) do
-        local holders, total = arr(), 0
-        for who, c in pairs(chars) do
-            local loc = c.hold and c.hold.loc
-            if loc then
-                local h, n = { character = who }, 0
-                for _, l in ipairs(LOCS) do
-                    local k = loc[l] and (loc[l][id] or loc[l][tostring(id)]) or 0
-                    if k > 0 then h[l] = k; n = n + k end
-                end
-                if n > 0 then h.total = n; holders[#holders + 1] = h; total = total + n end
-            end
-        end
-        table.sort(holders, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.character < b.character end)
+        local holders, total = holders_of(chars, id)
         items[#items + 1] = { id = id, name = item_name(id), total = total, holders = holders }
     end
     table.sort(items, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.name < b.name end)
     while #items > 50 do table.remove(items) end
     return items
+end
+
+-- Gear plans. A slot is its number (1-19) or its name: head, neck, shoulder, shirt, chest, waist, legs, feet, wrist,
+-- hands, finger1, finger2, trinket1, trinket2, back, mainhand, offhand, ranged, tabard (spaces and case ignored).
+local SLOT_KEYS = { "head", "neck", "shoulder", "shirt", "chest", "waist", "legs", "feet", "wrist", "hands", "finger1",
+                    "finger2", "trinket1", "trinket2", "back", "mainhand", "offhand", "ranged", "tabard" }
+local function slot_of(q)
+    local n = tonumber(q)
+    if n then return n end
+    local k = (q or ""):lower():gsub("[%s_%-]", "")
+    if k == "finger" or k == "ring" then k = "finger1" elseif k == "trinket" then k = "trinket1"
+    elseif k == "shoulders" then k = "shoulder" elseif k == "weapon" then k = "mainhand" elseif k == "cloak" then k = "back" end
+    for i, name in ipairs(SLOT_KEYS) do if name == k then return i end end
+    return nil
+end
+
+-- An item: its id, or a name (an exact name first, else the one name that holds the text).
+local function item_of(q)
+    local n = tonumber(q)
+    if n then return n end
+    local lq, hits = (q or ""):lower(), {}
+    for id, name in pairs(ITEM_NAMES) do
+        local ln = tostring(name):lower()
+        if ln == lq then return tonumber(id) or id end
+        if ln:find(lq, 1, true) then hits[#hits + 1] = { id = tonumber(id) or id, name = tostring(name) } end
+    end
+    if #hits == 1 then return hits[1].id end
+    if #hits == 0 then return nil, "no item named like '" .. q .. "' has been seen (use its item id)" end
+    table.sort(hits, function(a, b) return a.name < b.name end)
+    local names = {}
+    for i = 1, math.min(5, #hits) do names[i] = hits[i].name end
+    return nil, "'" .. q .. "' could be " .. table.concat(names, ", ") .. (#hits > 5 and ", ..." or "")
+end
+
+local STATUS = { [0] = "none", [1] = "worn", [2] = "on the account", [3] = "not on the account" }
+
+local function gear_plan_view(chars, who, plan)
+    local c = chars[who]
+    local h = c.hold or {}
+    local wanted = (plan and plan.gear) or {}
+    local rows = arr()
+    for slot = 1, 19 do
+        local worn = h.gear and (h.gear[slot] or h.gear[tostring(slot)]) or nil
+        local want = wanted[slot] or wanted[tostring(slot)]
+        if worn or want then
+            local row = { slot = slot, slot_name = SLOTS[slot] }
+            if worn then row.worn = { id = worn, name = item_name(worn) } end
+            if want then
+                local holders, total = holders_of(chars, want)
+                local held = total - ((worn == want) and 1 or 0)
+                row.wanted = { id = want, name = item_name(want) }
+                row.status = STATUS[K.kitGearStatus(want, worn or 0, held)]
+                local where = arr()
+                for _, hd in ipairs(holders) do
+                    for _, l in ipairs(LOCS) do
+                        local k = hd[l]
+                        if hd.character == who and l == "equipped" and worn == want then k = (k or 0) - 1 end
+                        if k and k > 0 then where[#where + 1] = { character = hd.character, location = l, count = k } end
+                    end
+                end
+                row.where = where
+            end
+            rows[#rows + 1] = row
+        end
+    end
+    return rows
 end
 
 -- Commands ----------------------------------------------------------------------------------------------------------
@@ -413,6 +499,9 @@ forge characters                  every character, its class, level and gold, an
 forge show CHARACTER              level, xp, gold, professions, everything equipped, bags, bank and mail
 forge history [CHARACTER]         gold (and level) by day: the account's, or one character's
 forge find ITEM                   who has it, and where (part of a name, or an item id)
+forge gear CHARACTER              what is worn in each slot, and the gear planned for it (worn / on the account / not yet)
+forge want CHARACTER SLOT ITEM    plan an item for a slot (head ... mainhand, offhand, ranged, or 1-19; ITEM: id or name)
+forge unwant CHARACTER SLOT       stop planning that slot
 forge classes                     the classes that have a macro set
 forge set CLASS                   a class's set, as MacroSync ships it
 forge kit CHARACTER               the planned kit, macro by macro (* = on the character since its last /ascend)
@@ -491,7 +580,7 @@ elseif cmd == "show" then
     local v = { character = who, class = c.class or "", race = c.race, level = c.level, zone = c.zone, seen = c.seen,
                 xp = c.xp, xpmax = c.xpmax, rested = c.rested, ilvl = c.ilvl, played = c.played, profs = c.profs,
                 gold = gold_of(c), gear = gear, bags = locs.bags, bank = locs.bank, mail = locs.mail,
-                kit = kit_view(who, c, plans[who]) }
+                kit = kit_view(who, c, plans[who]), gear_plan = gear_plan_view(chars, who, plans[who]) }
     local lines = { string.format("%s -- level %s %s %s", who, tostring(c.level or "?"), tostring(c.race or ""), v.class) }
     if c.xpmax and c.xpmax > 0 then
         lines[#lines + 1] = string.format("  xp %d%% of the level, %d%% rested   item level %s", math.floor(c.xp * 100 / c.xpmax),
@@ -558,6 +647,48 @@ elseif cmd == "find" then
     if #items == 0 then lines[1] = "nothing seen named like '" .. q .. "' (Fafnir's Bed learns names as items pass through bags, bank, mail and gear)" end
     out({ query = q, items = items }, table.concat(lines, "\n"))
 
+elseif cmd == "gear" then
+    local who = char_arg(1)
+    local rows = gear_plan_view(chars, who, plans[who])
+    local lines = { who .. ": what is worn, and what is planned for each slot" }
+    for _, r in ipairs(rows) do
+        local line = string.format("  %-10s %-28s", r.slot_name, r.worn and r.worn.name or "-")
+        if r.wanted then
+            line = line .. "  want " .. r.wanted.name .. "  [" .. r.status .. "]"
+            local where = {}
+            for _, w in ipairs(r.where) do where[#where + 1] = string.format("%s %s %d", w.character, w.location, w.count) end
+            if r.status == "on the account" and #where > 0 then line = line .. "  (" .. table.concat(where, "; ") .. ")" end
+        end
+        lines[#lines + 1] = line
+    end
+    if #rows == 0 then lines[#lines + 1] = "  nothing worn has been read and nothing is planned (forge want " .. who .. " SLOT ITEM)" end
+    out({ character = who, gear = rows }, table.concat(lines, "\n"))
+
+elseif cmd == "want" then
+    local who = char_arg(1)
+    local slot = slot_of(args[2])
+    if not slot then refuse("no slot called '" .. tostring(args[2]) .. "' (head, neck, shoulder, ... mainhand, offhand, ranged, or 1-19)") end
+    local id, why = item_of(body_from(3))
+    if not id then refuse(why) end
+    plans[who] = plans[who] or {}
+    if chars[who].class and not plans[who].class then plans[who].class = chars[who].class end
+    local code = K.kitWant_(plans[who], slot, id)
+    if code ~= 0 then refuse(code == 8 and "slots are 1-19" or "that is not an item id") end
+    save_plans(plans)
+    local msg = string.format("%s wants %s in %s", who, item_name(id), SLOTS[slot])
+    out({ ok = true, message = msg, gear = gear_plan_view(chars, who, plans[who]) }, msg)
+
+elseif cmd == "unwant" then
+    local who = char_arg(1)
+    local slot = slot_of(args[2])
+    if not slot then refuse("no slot called '" .. tostring(args[2]) .. "'") end
+    plans[who] = plans[who] or {}
+    local code = K.kitUnwant_(plans[who], slot)
+    if code ~= 0 then refuse(code == 8 and "slots are 1-19" or ("nothing is planned for " .. SLOTS[slot])) end
+    save_plans(plans)
+    local msg = string.format("%s: nothing planned for %s now", who, SLOTS[slot])
+    out({ ok = true, message = msg, gear = gear_plan_view(chars, who, plans[who]) }, msg)
+
 elseif cmd == "add" then
     local who, name = char_arg(1), args[2] or ""
     local body = body_from(3)
@@ -614,7 +745,9 @@ elseif cmd == "export" then
     -- MacroSync's kits.lua: only what /ascend needs, keyed exactly as the addon builds its key (Name-Realm).
     local baked = {}
     for who, p in pairs(plans) do
-        if K.kitChanges(p) > 0 then baked[who] = { drop = p.drop, edit = p.edit, add = p.add } end
+        if K.kitChanges(p) > 0 or K.kitGearCount(p) > 0 then
+            baked[who] = { drop = p.drop, edit = p.edit, add = p.add, gear = (K.kitGearCount(p) > 0) and p.gear or nil }
+        end
     end
     io.write("-- kits.lua -- the macro kits planned in the plugin forge (runtime/wow/forge/forge.lua). Generated; do not edit.\n")
     io.write("local _, ns = ...\nns.kits = " .. lua_lit(baked) .. "\n")

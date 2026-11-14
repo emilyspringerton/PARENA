@@ -283,6 +283,14 @@ has(sheet_txt, "2025-11-14|r  level 42", "newest day first, with the level")
 has(sheet_txt, "(+13g)", "and the change in gold")
 eq(select(2, sheet_txt:gsub("level 4%d", "")), 3 + 1, "one line per day (plus the header's level)")
 
+-- the gear planned in the forge (baked into MacroSync's kits): worn, on the account and where, or not yet
+s.env.MacroSyncKits["Emily-Forever"] = { gear = { [1] = 1001, [2] = 55555, [17] = 2589 } }
+local gear_txt = table.concat(s.ns.char_sheet("Emily-Forever"), "\n")
+has(gear_txt, "Head|r  |cffffffffLionheart Helm|r   |cff9d9d9dwant|r |cffffffffLionheart Helm|r  |cff7fd17f[worn]", "a planned slot that is worn")
+has(gear_txt, "Off hand|r  |cff9d9d9d-|r   |cff9d9d9dwant|r |cffffffffLinen Cloth|r  |cff6fa8dc[on the account]|r|cff9d9d9d  (Ash bags 20, Emily bags 3)", "one on the account says where")
+has(gear_txt, "Neck|r  |cff9d9d9d-|r   |cff9d9d9dwant|r |cffffffffitem 55555|r  |cffd97a6c[not on the account yet]", "one nobody has")
+s.env.MacroSyncKits["Emily-Forever"] = nil
+
 -- who has what: /chars find, and the Find box
 s.env.SlashCmdList.COLLECTIONCHARS("find linen")
 ct = s.texts()

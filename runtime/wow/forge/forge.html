@@ -42,6 +42,7 @@ td.slot { color: var(--dim); white-space: nowrap; width: 1%; }
 .macro .name { font-weight: 600; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid currentColor; }
 .tag.class { color: var(--class); } .tag.edited { color: var(--edited); } .tag.added { color: var(--added); } .tag.live { color: var(--live); }
+.tag.dropped { color: var(--dropped); }
 .macro pre { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #cfc6b6; }
 .macro .acts { margin-left: auto; display: flex; gap: 6px; }
 button.small, .form button { background: #2c251c; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px;
@@ -172,6 +173,28 @@ async function showAccount() {
   q.focus();
 }
 
+const SLOTS = ["head", "neck", "shoulder", "shirt", "chest", "waist", "legs", "feet", "wrist", "hands", "finger1", "finger2",
+  "trinket1", "trinket2", "back", "mainhand", "offhand", "ranged", "tabard"];
+const STATUS_TAG = { "worn": "added", "on the account": "edited", "not on the account": "dropped" };
+
+// Every slot that has something worn or planned: what is worn, what is planned, where to get it; and a form to plan.
+function gearTable(v, who) {
+  const rows = v.gear_plan || [];
+  const table = rows.length ? $("table", {}, $("tr", {}, ["slot", "worn", "planned", ""].map(h => $("td", { class: "slot" }, h))),
+    rows.map(r => $("tr", {},
+      $("td", { class: "slot" }, r.slot_name),
+      $("td", {}, r.worn ? r.worn.name : $("span", { class: "none" }, "—")),
+      $("td", {}, r.wanted ? [r.wanted.name, " ", $("span", { class: "tag " + (STATUS_TAG[r.status] || "class") }, r.status),
+        r.status === "on the account" && r.where.length ? $("div", { class: "facts" }, r.where.map(w => `${w.character} ${w.location} ${w.count}`).join(" · ")) : null] : ""),
+      $("td", { class: "n" }, r.wanted ? $("button", { class: "small", on: { click: () => act("unwant", who, SLOTS[r.slot - 1]) } }, "unplan") : null))))
+    : $("p", { class: "none" }, "Nothing worn has been read yet (log in with this character once), and nothing is planned.");
+  const slot = $("select", {}, SLOTS.map((k, i) => $("option", { value: k }, `${i + 1} ${k}`)));
+  const itemBox = $("input", { placeholder: "Item id, or a name Fafnir has seen", size: "32" });
+  const form = $("div", { class: "form" }, $("div", { class: "row" }, slot, itemBox,
+    $("button", { on: { click: () => itemBox.value.trim() && act("want", who, slot.value, itemBox.value.trim()) } }, "Plan this slot")));
+  return [table, form];
+}
+
 let showing = 0;
 async function show(who) {
   if (!who) return;
@@ -206,9 +229,9 @@ async function show(who) {
       xp !== null ? ` · xp ${xp}% of the level, ${rested}% rested` : "", v.ilvl ? ` · item level ${v.ilvl}` : "",
       v.zone ? ` · in ${v.zone}` : "", v.seen ? ` · last seen ${new Date(v.seen * 1000).toLocaleString()}` : ""),
     $("p", { class: "facts" }, $("b", {}, money(v.gold)), v.profs ? ` · ${v.profs}` : ""),
+    $("h3", {}, "Gear — worn, and planned"),
+    ...gearTable(v, who),
     $("div", { class: "cols" },
-      $("div", {}, $("h3", {}, "Equipped"), v.gear.length ? $("table", {}, v.gear.map(g => $("tr", {}, $("td", { class: "slot" }, g.slot_name), $("td", {}, g.name))))
-                                                  : $("p", { class: "none" }, "not read yet — log in with this character once")),
       $("div", {}, itemsTable(v.bags, "Bags")),
       $("div", {}, itemsTable(v.bank, "Bank"), itemsTable(v.mail, "Mail"))),
     $("h3", {}, "Progress — the last snapshot of each day"),

@@ -1,5 +1,16 @@
 ## 2026-11-14
 
+- **Gear plans: a kit is gear as well as macros** (founder: "plan kits for characters", with "the inv ... and equip").
+  A character's plan can now name the item it should wear in each slot (`plan.gear`, slots 1-19;
+  `kit-want!`/`kit-unwant!`/`kit-gear-status` in `stdlib/collection/kits.prn`). Each planned slot is **worn**, **on
+  the account** (with who holds it and where -- go and get it), or **not on the account** yet. The forge: `forge gear
+  CHARACTER`, `forge want CHARACTER SLOT ITEM` (a slot by name or number, an item by id or by a name Fafnir's Bed has
+  seen), `forge unwant CHARACTER SLOT`; the page's gear table shows worn and planned side by side with a form to plan
+  a slot. `forge build` bakes the gear plans in with the macro kits, and `/chars` shows each planned slot's status in
+  game. Fixed on the way: saved plans wrote number keys as strings ("16"), so a slot could not be found again; numbers
+  stay numbers now and older files are read either way. `kits_test` 54, `forge_test.sh` 55, `forge_ascend_test` 8,
+  `hub_test` 118.
+
 - **`/chars` gets who-has-what and the last week** (founder: "ideally all from one in game screen"). A Find box at
   the top of the window (and `/chars find <item>`) lists every item Fafnir's Bed has seen whose name holds the text
   (or whose id it is): the account total and who holds it where (bags, bank, mail, worn), most first. Each

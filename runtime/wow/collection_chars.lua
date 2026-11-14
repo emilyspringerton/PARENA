@@ -31,7 +31,7 @@ end
 
 local GOLD, GREY, WHITE = "|cffd8b25e", "|cff9d9d9d", "|cffffffff"
 
-local progress           -- defined below, used by sheet
+local progress, held_by  -- defined below, used by sheet
 
 local function db_of(var) local t = var and _G[var]; return type(t) == "table" and t or nil end
 local function board() return db_of(ns.build.board) end
@@ -106,6 +106,21 @@ progress = function(who, max)
     return days
 end
 
+-- How many of `id` the account holds outside this character's `slot`, and where ("Ash bags 2, ...").
+held_by = function(id, who, slot, worn)
+    local f = fafnir()
+    local n, where = 0, {}
+    for name, ch in pairs(f and f.chars or {}) do
+        for _, l in ipairs({ "bags", "bank", "mail", "equipped" }) do
+            local k = ch.loc and ch.loc[l] and ch.loc[l][id] or 0
+            if name == who and l == "equipped" and worn == id then k = k - 1 end
+            if k > 0 then n = n + k; where[#where + 1] = (name:match("^([^-]+)") or name) .. " " .. L("C_" .. l:upper()):lower() .. " " .. k end
+        end
+    end
+    table.sort(where)
+    return n, table.concat(where, ", ")
+end
+
 -- Who has what: every item whose name holds `q` (or whose id it is), the account total, and who holds it where.
 local LOCS = { "bags", "bank", "mail", "equipped" }
 local function search(q)
@@ -165,9 +180,23 @@ local function sheet(who)
 
     add(GOLD .. L("C_GEAR") .. "|r")
     local gear = hold and hold.gear
-    if gear and next(gear) then
+    local kits = type(MacroSyncKits) == "table" and MacroSyncKits or nil
+    local wanted = kits and kits[who] and kits[who].gear or {}
+    local K = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/kits"]
+    if (gear and next(gear)) or next(wanted) then
         for slot = 1, 19 do
-            if gear[slot] then add("  " .. GREY .. L("SLOT_" .. slot) .. "|r  " .. item(gear[slot], names)) end
+            local worn, want = gear and gear[slot], wanted[slot]
+            if worn or want then
+                local line = "  " .. GREY .. L("SLOT_" .. slot) .. "|r  " .. (worn and item(worn, names) or (GREY .. "-|r"))
+                if want and K then
+                    -- the gear plan made in the forge: worn already, somewhere on the account, or still to get
+                    local held, where = held_by(want, who, slot, worn)
+                    local status = K.kitGearStatus(want, worn or 0, held)
+                    line = line .. "   " .. GREY .. L("C_WANT") .. "|r " .. item(want, names) .. "  " .. L("C_GEAR_" .. status)
+                    if status == 2 and where ~= "" then line = line .. GREY .. "  (" .. where .. ")|r" end
+                end
+                add(line)
+            end
         end
     else
         add("  " .. GREY .. L("C_NOGEAR") .. "|r")
