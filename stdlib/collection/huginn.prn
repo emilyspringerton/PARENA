@@ -1,0 +1,75 @@
+;; stdlib/collection/huginn.prn -- Huginn, the quest arrow (founder, 2026-11-14: "a basic quest tracker that takes the
+;; quest from our quest logs and uses a gps arrow on the screen to point towards the coordinates"). Odin's raven of
+;; thought flies out over the world and comes back with where to go. A REFLUX mod.
+;;
+;; What it decides (the host glue, runtime/wow/huginn.lua, only reads the client and draws):
+;;   space    positions are fractions of the PLAYER's map in ten-thousandths (0..10000; a target on another map
+;;            is converted into these units by the host, so it can lie outside 0..10000). A map's span is its size
+;;            in yards when the client can say, else a stand-in (1000 x 667) and distances are "map units".
+;;   bearing  degrees counterclockwise from north, 0..359 -- the client's own facing convention, so the arrow's
+;;            turn is just bearing - facing, and turning the arrow counterclockwise by it points at the target.
+;;   heat     1 ahead (within 15 degrees), 2 off to the side (within 60), 3 behind -- the arrow's colour.
+;;   side     0 ahead, 1 ahead-left, 2 left, 3 behind-left, 4 behind, 5 behind-right, 6 right, 7 ahead-right:
+;;            the words for a client that cannot rotate a texture or has no facing.
+;;   arrive   within 10 yards (or 15 map units) counts as there.
+;; Nothing here calls the WoW API.
+;;
+;; Several arrows can be on at once (founder: "a stripped down and optimized mini quest log thing so we can turn on
+;; and off multiple arrows for orienteering"); each one is decided by the same functions.
+;; db = { arrivals, v } here; the host keeps the arrows that are on (db.active: quest ids and waypoints -- client
+;; data) and whether the mini log is open.
+;;
+;; Huginn's REFLUX types sit after MacroSync's 3000-3009, at 3010-3019:
+;;   3010 arrived   a = quest id (0 for a waypoint you set), b = map id, c = distance at arrival
+
+(module collection/huginn)
+(export hg-first-type hg-init hg-delta hg-dist hg-bearing hg-turn hg-heat hg-side hg-arrived hg-arrived!
+        hg-stand-in-width hg-stand-in-height)
+
+(defn hg-first-type [] : I32 3010)
+
+(defn hg-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "arrivals")) (lua/set! db "arrivals" 0) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; The span used when the client cannot say how big a map is: the shape of a WoW zone map, in "map units".
+(defn hg-stand-in-width [] : I32 1000)
+(defn hg-stand-in-height [] : I32 667)
+
+(defn hg-mod [(a : I32) (b : I32)] : I32
+  (let [r (- a (* (/ a b) b))] (if (< r 0) (+ r b) r)))
+
+;; From one position to another along one axis, in the span's units (yards or map units).
+(defn hg-delta [(from : I32) (to : I32) (span : I32)] : I32
+  (/ (* (- to from) span) 10000))
+
+;; Straight-line distance for an east / south difference, rounded down.
+(defn hg-dist [(dx : I32) (dy : I32)] : I32
+  (lua/call-fn (lua/global "math.floor") (lua/call-fn (lua/global "math.sqrt") (+ (* dx dx) (* dy dy)))))
+
+;; Bearing to a target dx east and dy south of you: degrees counterclockwise from north, 0..359.
+;; North is (0, -1): atan2(-dx, -dy) is 0 there, 90 to the west, 180 to the south, 270 to the east.
+(defn hg-bearing [(dx : I32) (dy : I32)] : I32
+  (if (= dx 0) (if (= dy 0) 0 (if (< dy 0) 0 180))
+    ;; radians -> degrees, shifted to (180, 540] so it is positive, then rounded: floor(2d + 1) / 2
+    (let [d (+ (lua/call-fn (lua/global "math.deg") (lua/call-fn (lua/global "math.atan2") (- 0 dx) (- 0 dy))) 360)]
+      (hg-mod (/ (lua/call-fn (lua/global "math.floor") (+ (* d 2) 1)) 2) 360))))
+
+;; How far to turn the arrow, counterclockwise, from where you face: 0..359.
+(defn hg-turn [(bearing : I32) (facing : I32)] : I32 (hg-mod (- bearing facing) 360))
+
+(defn hg-heat [(turn : I32)] : I32
+  (if (or (<= turn 15) (>= turn 345)) 1 (if (or (<= turn 60) (>= turn 300)) 2 3)))
+
+(defn hg-side [(turn : I32)] : I32
+  (hg-mod (/ (+ turn 22) 45) 8))
+
+;; There yet? `yards` is 1 when the span was the map's real size in yards, else 0 (map units).
+(defn hg-arrived [(dist : I32) (yards : I32)] : I32
+  (if (<= dist (if (= yards 1) 10 15)) 1 0))
+
+(defn hg-arrived! [(db : Any) (quest : I32) (map : I32) (dist : I32)] : I32
+  (do (lua/set! db "arrivals" (+ (lua/get db "arrivals") 1))
+      (reflux-dispatch (hg-first-type) quest map dist)
+      (lua/get db "arrivals")))

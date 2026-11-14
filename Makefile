@@ -1475,6 +1475,8 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
 	@# The Collection hub (/collection): its registry against the package, the window, Open, and older clients.
 	$(LUA51) tests/reflux_wow/hub_test.lua $(REFLUX_WOW_OUT)/client
+	@# Huginn (/huginn): quest arrows, the mini log's toggles, waypoints, other maps, arrival, the refresh budget.
+	$(LUA51) tests/reflux_wow/huginn_test.lua $(REFLUX_WOW_OUT)/client
 	@# EcoWar (tabled, test only): captain and players in stubbed clients, all four modes, both carriers, the league and the ratings.
 	$(LUA51) tests/reflux_wow/ecowar_test.lua $(REFLUX_WOW_OUT)/client
 	@# The sixteen party games, each played end to end with a four-player party.

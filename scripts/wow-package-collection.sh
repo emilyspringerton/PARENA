@@ -245,6 +245,22 @@ fi
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
+# Huginn: quest arrows for orienteering (several at once) with a mini quest log. Account-wide: its waypoints and
+# toggles are by quest id and map, the same for every character.
+HG_ADDON="${HUGINN_ADDON:-Huginn}"
+HG_VAR="${HUGINN_VAR:-HuginnDB}"
+for n in "$HG_ADDON" "$HG_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+hg="$OUT/AddOns/$HG_ADDON"
+mkdir -p "$hg"
+wrap collection/huginn "$hg/huginn_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/huginn.prn
+cp runtime/wow/locales/huginn.lua "$hg/locale.lua"
+glue runtime/wow/huginn.lua "$hg/huginn.lua" "$HG_ADDON" "$HG_VAR"
+toc "$hg/$HG_ADDON.toc" "Huginn" "Quest arrows for orienteering: turn arrows on and off from a mini quest log, several at once, plus waypoints. /huginn" \
+  SavedVariables "$HG_VAR" huginn_rules.lua locale.lua huginn.lua
+
 # CollectionHub, built LAST: its registry is read back from every addon this package just built -- each one's
 # .toc (title, notes, where it saves) and code (its SLASH_ commands) -- so the window never drifts from the build.
 luastr() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
@@ -296,6 +312,7 @@ INSTALL
 
 IN GAME
   /collection        every addon's settings and status in one window (also in the game's options, "Collection")
+  /huginn            quest arrows: click quests in its mini log to turn arrows on and off; /huginn way <x> <y>
   /fafnir           net inventory: characters, distinct items, item count, gold across the account
   /fafnir <name|id>  who has it, and the net count (shift-click an item link in works too)
   /cov               the journal's state (rows held, trimmed, lost)

@@ -1,5 +1,19 @@
 ## 2026-11-14
 
+- **Huginn: quest arrows for orienteering** (founder: "a basic quest tracker that takes the quest from our quest logs
+  and uses a gps arrow on the screen to point towards the coordinates", then "a stripped down and optimized mini
+  quest log thing so we can turn on and off multiple arrows"). `/huginn` shows a small panel: a row per arrow (a
+  turning arrow, green ahead / yellow to the side / red behind, the name, yards, and "ahead, left"-style words),
+  and under it a mini quest log -- click a quest to turn its arrow on or off, up to 8 at once. `/huginn way x y
+  [note]` adds waypoint arrows that clear themselves on arrival. With nothing on, the tracked quest gets the arrow.
+  - Locations, best first: the client's own next waypoint, the quest's marker on your map, coordinates written in
+    an objective's text; a client with none of these still has waypoints. Targets on other maps of the same
+    continent are placed through the client's world positions; another continent says so.
+  - Optimized: quest locations are looked up only when the quest log, zone or tracking changes (and every 2 s as a
+    backstop), never per frame; arrows refresh 10 times a second for active rows only; rows are reused.
+  - The math is PARENA (`stdlib/collection/huginn.prn`: bearing, turn, distance, arrival, colour, direction words);
+    arrivals are REFLUX 3010. None of the client's quest-location APIs are probed on Forever yet, so `/huginn
+    list` says per quest whether the client gave a location. `huginn_test` is 53 checks.
 - **CollectionHub: the settings and status of every addon in one window** (founder: "give like some interfaces to see
   the settings for the different components"). `/collection` (or `/coll`) opens it; it is also the "Collection"
   category of the client's options window (`Settings` on retail-lineage clients, `InterfaceOptions` on older ones,
