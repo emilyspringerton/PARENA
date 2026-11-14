@@ -32,6 +32,9 @@
 --   copy FROM TO                    give TO the same plan as FROM (TO keeps its own class)
 --   class CHARACTER CLASS           plan for a character the Character Board has not seen yet, as this class
 --   export                          the plans as MacroSync's kits.lua (what `forge build` bakes into the addon)
+--   ledger [FILE]                   the whole account in ONE spreadsheet file (default <FORGE_DIR>/ledger.csv; - for
+--                                   stdout): a row per item per character -- worn, bags, bank, mail -- each carrying the
+--                                   character's realm, class, race, level, gold and where it last was
 -- --json prints one JSON value instead of text (forge_server.c uses it). Exit codes: 0 done, 1 refused, 2 usage.
 
 local opts = { board = {}, ms = {}, fafnir = {} }
@@ -184,6 +187,7 @@ local function characters(plans)
                 if not c.seen or (s.t or 0) >= c.seen then
                     c.class, c.level, c.race, c.zone, c.seen = s.class, s.level, s.race, s.zone, s.t or 0
                     c.xp, c.xpmax, c.rested, c.ilvl, c.played, c.profs, c.gold = s.xp, s.xpmax, s.rested, s.ilvl, s.played, s.profs, s.gold
+                    c.map, c.subzone, c.x, c.y = s.map, s.subzone, s.x, s.y
                 end
                 c.on_board = true
                 chars[who] = c
@@ -314,6 +318,91 @@ local function holdings(c)
         locs[loc] = { read = t ~= nil, items = rows }
     end
     return gear, locs
+end
+
+-- The ledger (founder, 2026-11-14: "a single file that records the ledger for the current bags and equip and level and
+-- job and race and logged in location ... so we can manage our inventory on a top level"): one CSV a spreadsheet opens,
+-- one row per item per character, every row carrying the character's facts so any filter or pivot works on its own.
+local RACES = { Scourge = "Undead", NightElf = "Night Elf", BloodElf = "Blood Elf", HighmountainTauren = "Highmountain Tauren",
+                LightforgedDraenei = "Lightforged Draenei", VoidElf = "Void Elf", DarkIronDwarf = "Dark Iron Dwarf",
+                MagharOrc = "Mag'har Orc", KulTiran = "Kul Tiran", ZandalariTroll = "Zandalari Troll" }
+local CLASS_NAMES = { DEATHKNIGHT = "Death Knight", DEMONHUNTER = "Demon Hunter" }
+local function nice_class(t)
+    if not t or t == "" then return "" end
+    return CLASS_NAMES[t] or (t:sub(1, 1) .. t:sub(2):lower())
+end
+local LEDGER_COLS = { "character", "realm", "class", "race", "level", "xp_pct", "gold", "ilvl", "zone", "subzone",
+                      "map_id", "x", "y", "last_seen_utc", "location", "slot", "item_id", "item", "count" }
+local function csv_field(v)
+    v = v == nil and "" or tostring(v)
+    if v:find('[,"\r\n]') then v = '"' .. v:gsub('"', '""') .. '"' end
+    return v
+end
+local function ledger_rows(chars)
+    local rows = {}
+    local names = {}
+    for who in pairs(chars) do names[#names + 1] = who end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    for _, who in ipairs(names) do
+        local c = chars[who]
+        if c.on_board or c.hold then
+            local name, realm = who:match("^([^%-]+)%-(.+)$")
+            local base = {
+                character = name or who, realm = realm or "", class = nice_class(c.class), race = RACES[c.race] or c.race or "",
+                level = c.level or "", ilvl = (c.ilvl and c.ilvl > 0) and c.ilvl or "",
+                xp_pct = (c.xpmax and c.xpmax > 0) and string.format("%.1f", 100 * (c.xp or 0) / c.xpmax) or "",
+                gold = string.format("%.4f", (tonumber(gold_of(c)) or 0) / 10000),
+                zone = c.zone or "", subzone = c.subzone or "",
+                map_id = (c.map and c.map ~= 0) and c.map or "",
+                x = c.x and string.format("%.1f", c.x) or "", y = c.y and string.format("%.1f", c.y) or "",
+                last_seen_utc = (c.seen and c.seen > 0) and os.date("!%Y-%m-%d %H:%M", c.seen) or "",
+            }
+            local function row(extra)
+                local r = {}
+                for k, v in pairs(base) do r[k] = v end
+                for k, v in pairs(extra) do r[k] = v end
+                rows[#rows + 1] = r
+            end
+            local gear, locs = holdings(c)
+            local any = false
+            for _, g in ipairs(gear) do
+                row({ location = "equipped", slot = g.slot_name, item_id = g.id, item = g.name, count = 1 }); any = true
+            end
+            for _, loc in ipairs({ "bags", "bank", "mail" }) do
+                local l = locs[loc]
+                if not l.read and c.hold then
+                    row({ location = loc, item = "(not seen yet: " .. (loc == "bank" and "open the bank" or
+                          loc == "mail" and "open the mailbox" or "log in") .. " once with Fafnir's Bed on)" }); any = true
+                end
+                for _, it in ipairs(l.items) do
+                    row({ location = loc, item_id = it.id, item = it.name, count = it.count }); any = true
+                end
+            end
+            if not any then row({ location = "", item = c.hold and "(nothing carried)" or "(no inventory yet: Fafnir's Bed has not seen this character)" }) end
+        end
+    end
+    return rows, #names
+end
+
+local function write_ledger(path, rows)
+    local lines = { table.concat(LEDGER_COLS, ",") }
+    for _, r in ipairs(rows) do
+        local f = {}
+        for i, col in ipairs(LEDGER_COLS) do f[i] = csv_field(r[col]) end
+        lines[#lines + 1] = table.concat(f, ",")
+    end
+    -- the BOM tells Excel it is UTF-8 (item names with accents); CRLF is what it expects on Windows and fine elsewhere
+    local text = "\239\187\191" .. table.concat(lines, "\r\n") .. "\r\n"
+    if path == "-" then io.write(text); return true end
+    local tmp = path .. ".tmp"
+    local fh, err = io.open(tmp, "wb")
+    if not fh then return false, "cannot write " .. tmp .. ": " .. tostring(err) end
+    fh:write(text); fh:close()
+    -- swap it in whole, so a reader never sees half a file; on Windows rename() will not replace, so remove first
+    if os.rename(tmp, path) then return true end
+    os.remove(path)
+    if os.rename(tmp, path) then return true end
+    return false, path .. " is open in another program (Excel?) -- close it; this ledger is in " .. tmp
 end
 
 -- History (the Character Board's snapshots) and search (Fafnir's Bed's names and holdings). -----------------------
@@ -513,6 +602,8 @@ forge reset CHARACTER             forget the character's whole plan
 forge copy FROM TO                give TO the same plan as FROM (same class)
 forge class CHARACTER CLASS       plan for a character the Character Board has not seen yet
 forge export                      the plans as MacroSync's kits.lua
+forge ledger [FILE]               the whole account in one spreadsheet (default FORGE_DIR/ledger.csv; - prints it)
+forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload) (scripts/forge.sh)
 forge build                       bake the plans into the addon package (scripts/forge.sh)
 forge serve [PORT]                the same on a page at http://127.0.0.1:PORT (scripts/forge.sh)
 CHARACTER is Name or Name-Realm, any case; a unique start of the name is enough.]]
@@ -740,6 +831,18 @@ elseif cmd == "class" then
     plans[who].class = cl
     save_plans(plans)
     out({ ok = true, message = "planning " .. who .. " as a " .. cl }, "planning " .. who .. " as a " .. cl .. (#S.macroSet(cl) == 0 and " (no class set: add its macros yourself)" or ""))
+
+elseif cmd == "ledger" then
+    local path = args[1] or (opts.dir .. "/ledger.csv")
+    local rows = ledger_rows(chars)
+    local n = 0
+    for who, c in pairs(chars) do if c.on_board or c.hold then n = n + 1 end end
+    local ok, err = write_ledger(path, rows)
+    if not ok then refuse(err) end
+    if path ~= "-" then
+        out({ file = path, rows = #rows, characters = n },
+            string.format("ledger: %d rows for %d character%s -> %s", #rows, n, n == 1 and "" or "s", path))
+    end
 
 elseif cmd == "export" then
     -- MacroSync's kits.lua: only what /ascend needs, keyed exactly as the addon builds its key (Name-Realm).

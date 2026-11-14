@@ -5,7 +5,7 @@
 --
 -- Client calls (retail-lineage; none probed on Forever yet, each feature-tested; a missing one leaves its field 0
 -- or empty, never a guess): UnitName, GetRealmName, UnitClass, UnitRace, UnitLevel, UnitXP, UnitXPMax,
--- GetXPExhaustion, GetMoney, GetZoneText, C_Map.GetBestMapForUnit, RequestTimePlayed + TIME_PLAYED_MSG,
+-- GetXPExhaustion, GetMoney, GetZoneText, GetSubZoneText, C_Map.GetBestMapForUnit + GetPlayerMapPosition, RequestTimePlayed + TIME_PLAYED_MSG,
 -- GetAverageItemLevel, and professions from GetProfessions/GetProfessionInfo (retail) or
 -- GetNumSkillLines/GetSkillLineInfo (classic).
 local ADDON, VAR = "@ADDON@", "@VAR@"
@@ -55,6 +55,16 @@ local function snapshot()
     local class, race
     if UnitClass then class = select(2, UnitClass("player")) end
     if UnitRace then race = select(2, UnitRace("player")) end
+    -- where on the map, in percent (the numbers coordinate addons show); nil inside instances, where there is none
+    local map = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+    local x, y
+    if map and C_Map.GetPlayerMapPosition then
+        local ok, pos = pcall(C_Map.GetPlayerMapPosition, map, "player")
+        if ok and pos and pos.GetXY then
+            local px, py = pos:GetXY()
+            if px and py then x, y = math.floor(px * 1000 + 0.5) / 10, math.floor(py * 1000 + 0.5) / 10 end
+        end
+    end
     local ilvl = 0
     if GetAverageItemLevel then ilvl = math.floor((select(2, GetAverageItemLevel())) or 0) end
     B.boardSnap_(db, {
@@ -64,7 +74,7 @@ local function snapshot()
         rested = GetXPExhaustion and GetXPExhaustion() or 0,
         gold = GetMoney and GetMoney() or 0,
         zone = GetZoneText and GetZoneText() or "",
-        map = (C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")) or 0,
+        map = map or 0, subzone = GetSubZoneText and GetSubZoneText() or "", x = x, y = y,
         played = played, ilvl = ilvl, profs = professions(),
     })
 end

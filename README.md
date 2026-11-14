@@ -505,6 +505,8 @@ probed against the WoW Forever client beyond what each addon's header says.
   scripts/forge.sh want emily head 1001   # plan a slot (an item id, or a name Fafnir's Bed has seen); unwant to clear
   scripts/forge.sh kit emily           # the planned kit, macro by macro
   scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
+  scripts/forge.sh ledger [FILE]       # the whole account in ONE spreadsheet (default $FORGE_DIR/ledger.csv)
+  scripts/forge.sh watch [FILE]        # ...and keep it current: rewritten every time the client saves
   scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)
   WOW_INTERFACE=... scripts/forge.sh build   # bake the plans into the package, then copy AddOns/ into the client
   ```
@@ -512,6 +514,17 @@ probed against the WoW Forever client beyond what each addon's header says.
   Needs Lua 5.1 and a C compiler (MSYS2 UCRT64 gcc on Windows; the server builds with `-lws2_32` there -- checked by
   cross-compiling with MinGW, not yet run on Windows). The forge reads SavedVariables, which the client writes on
   logout and `/reload`. Tested end to end over a fake WTF folder (`tests/reflux_wow/forge_test.sh`).
+
+- **The ledger** (`forge ledger`, `forge watch`) -- one CSV for the whole account, one row per item per character
+  (worn by slot, bags, bank, mail), every row carrying the character's realm, class, race, level, xp, gold, item
+  level, and where it was at its last login or logout (zone, sub-zone, map id and x/y in percent, UTC time), so a
+  spreadsheet can filter or pivot it any way. UTF-8 with a BOM and CRLF so Excel opens it as is; written whole and
+  swapped in, and if the old file is open in Excel it says so and leaves the new one beside it (`ledger.csv.tmp`).
+  `watch` polls the Character Board and Fafnir's Bed SavedVariables and rewrites the ledger once they settle -- the
+  client only writes them on logout, `/reload` or exit, so that is when the ledger moves, not the moment you log in.
+  Bank and mail rows are as of the last time that character opened them (rows say so until then). Sub-zone and x/y
+  come from a Character Board field added with the ledger: blank for characters until their next login; untested
+  against the live client.
 
 ## Related
 

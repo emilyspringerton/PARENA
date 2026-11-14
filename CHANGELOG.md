@@ -1,4 +1,5 @@
 ## 2026-11-14
+- WoW plugin forge: `forge ledger [FILE]` writes the whole account to ONE spreadsheet (`$FORGE_DIR/ledger.csv`): a row per item per character -- worn by slot, bags, bank, mail -- each with realm, class, race, level, xp %, gold, ilvl and the last login/logout location (zone, sub-zone, map id, x/y); BOM + CRLF for Excel, swapped in whole, a locked file is reported with the new ledger left beside it. `forge watch [FILE]` rewrites it every time the client saves (logout, /reload). Character Board snapshots now also record the sub-zone and map coordinates. README updated; 13 new forge tests.
 - WoW MacroSync, druid: the mouseover Healing Touch is now `DruTouch` (was `DruHeal`, which did not say what it cast; MacroSync prunes the old name, so re-drag it to the bar) and drops bear/cat form first; new `DruSwift` = Nature's Swiftness + instant mouseover Healing Touch. Druid set is 17.
 
 - **Shot: a Mac-style screenshot tool for Windows** (founder: "can we build a screenshot tool i want to stop having to

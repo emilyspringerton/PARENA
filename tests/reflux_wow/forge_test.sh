@@ -87,6 +87,33 @@ check "the plan keeps slot numbers as numbers" "$(cat "$FORGE_DIR/kits.lua")" "[
 o="$(f --json show emily)"; check "show --json carries the gear plan" "$o" '"status":"on the account"'
 o="$(f export)"; check "export" "$o" '["Emily-Forever"] = {'
 
+# the ledger: the whole account in one spreadsheet
+o="$(f ledger)"; check "ledger: says what it wrote" "$o" "ledger: 8 rows for 2 characters -> $(cd "$FORGE_DIR" && pwd)/ledger.csv"
+L="$(cat "$FORGE_DIR/ledger.csv")"
+check "ledger: starts with the BOM and the header" "$L" "$(printf '\357\273\277')character,realm,class,race,level,xp_pct,gold,ilvl,zone,subzone,map_id,x,y,last_seen_utc,location,slot,item_id,item,count"
+check "ledger: a worn item, with the character's facts" "$L" "Emily,Forever,Paladin,Human,42,50.0,130.0000,38,Ironforge,,,,,2025-11-14 06:00,equipped,Main hand,1002,Ashbringer,1"
+check "ledger: a bag item" "$L" "Ash,Forever,Mage,Gnome,60,,900.0000,,Stormwind,,,,,2025-11-13 02:13,bags,,2589,Linen Cloth,20"
+check "ledger: a bank never opened says so" "$L" "bank,,,(not seen yet: open the bank once with Fafnir's Bed on),"
+check "ledger: CRLF lines" "$(head -c 400 "$FORGE_DIR/ledger.csv" | od -c)" '\r  \n'
+o="$(f ledger -)"; check "ledger -: to stdout" "$o" "Linen Cloth,3"
+# the Board's newer fields (sub-zone, map, coordinates), an undead's race, and a name a spreadsheet must quote
+cp "$acct/SavedVariables/CharacterBoard.lua" "$work/board.bak"; cp "$acct/SavedVariables/FafnirsBed.lua" "$work/fafnir.bak"
+sed -i 's/\["zone"\] = "Stormwind" } },/["zone"] = "Stormwind" }, ["Bone-Forever"] = { ["t"] = 1763200000, ["class"] = "WARLOCK", ["race"] = "Scourge", ["level"] = 12, ["gold"] = 50, ["zone"] = "Tirisfal Glades", ["subzone"] = "Brill", ["map"] = 1420, ["x"] = 61.5, ["y"] = 52.3 } },/' "$acct/SavedVariables/CharacterBoard.lua"
+sed -i 's/\[1002\] = "Ashbringer" }/[1002] = "Ashbringer", [3000] = "Bag, \\"Big\\"" }/; s/\["Ash-Forever"\] = { \["gold"\] = 9000000, \["loc"\] = { \["bags"\] = { \[2589\] = 20 } } } },/["Ash-Forever"] = { ["gold"] = 9000000, ["loc"] = { ["bags"] = { [2589] = 20, [3000] = 1 } } } },/' "$acct/SavedVariables/FafnirsBed.lua"
+f ledger >/dev/null; L="$(cat "$FORGE_DIR/ledger.csv")"
+check "ledger: where the character logged out, to the coordinate" "$L" "Bone,Forever,Warlock,Undead,12,,0.0050,,Tirisfal Glades,Brill,1420,61.5,52.3,2025-11-15 09:46,,,,(no inventory yet: Fafnir's Bed has not seen this character),"
+check "ledger: commas and quotes are quoted" "$L" 'bags,,3000,"Bag, ""Big""",1'
+# locked by a spreadsheet: a directory in the way stands in for Excel's lock; the new ledger is left beside it
+mv "$FORGE_DIR/ledger.csv" "$work/ledger.keep"; mkdir -p "$FORGE_DIR/ledger.csv/x"
+f ledger >/dev/null 2>&1; [ $? -eq 1 ] && ok || bad "a locked ledger exits 1"
+o="$(f ledger)"; check "a locked ledger says where the new one is" "$o" "ledger.csv is open in another program (Excel?) -- close it; this ledger is in $(cd "$FORGE_DIR" && pwd)/ledger.csv.tmp"
+rm -rf "$FORGE_DIR/ledger.csv" "$FORGE_DIR/ledger.csv.tmp"
+# watch: rewrites the ledger once WoW's files settle
+o="$(FORGE_WATCH_ONCE=1 FORGE_WATCH_SECONDS=0.2 timeout 20 bash scripts/forge.sh watch "$work/watched.csv" 2>&1)"
+check "watch: writes the ledger" "$o" "ledger: 10 rows for 3 characters -> $(cd "$work" && pwd)/watched.csv"
+check "watch: the file is there" "$(cat "$work/watched.csv")" "Bone,Forever,Warlock"
+cp "$work/board.bak" "$acct/SavedVariables/CharacterBoard.lua"; cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
+
 # build: the plans go into MacroSync, and /ascend writes the planned kit
 if WOW_INTERFACE=99999 COLLECTION_CLIENT_OUT="$work/client" bash scripts/forge.sh build >"$work/build.log" 2>&1; then ok; else bad "forge build failed: $(tail -3 "$work/build.log")"; fi
 check "build says what it baked" "$(cat "$work/build.log")" "baking 2 character kit(s)"
