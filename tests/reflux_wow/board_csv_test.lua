@@ -125,6 +125,22 @@ local wtf = work .. "/WTF"
 os.execute('bash -c "mkdir -p \'' .. wtf .. '/Account/1#1/SavedVariables\'"')
 write_sv(wtf .. "/Account/1#1/SavedVariables/CharacterBoard.lua", "CharacterBoardDB", saved.CharacterBoardDB)
 write_sv(wtf .. "/Account/1#1/SavedVariables/FafnirsBed.lua", "FafnirsBedDB", saved.FafnirsBedDB)
+-- the Collection Journal is per character, and every row carries a map id and x/y: the page's maps
+local function jrow(who, seq, t, zone, x, y)
+    return { v = 1, id = who .. ":" .. seq, seq = seq, type = 2001, source = "reflux", character = who, time = t,
+             zone = zone, x = x, y = y, payload = { 0, 0, 0 } }
+end
+for _, d in ipairs({ "Emily", "Brokkr" }) do
+    os.execute('bash -c "mkdir -p \'' .. wtf .. '/Account/1#1/Forever/' .. d .. '/SavedVariables\'"')
+end
+write_sv(wtf .. "/Account/1#1/Forever/Emily/SavedVariables/CollectionJournal.lua", "CollectionJournalDB",
+    { firstSeq = 2, nextSeq = 5, rows = {
+        [1] = jrow("Emily-Forever", 1, W.now - 900, 1412, 0.1, 0.1),           -- below firstSeq: already trimmed
+        [2] = jrow("Emily-Forever", 2, W.now - 600, 1412, 0.45123, 0.60201),
+        [3] = jrow("Emily-Forever", 3, W.now - 540, 1412, 0.46, 0.61),
+        [4] = jrow("Emily-Forever", 4, W.now - 480, 1412, nil, nil) } })       -- no position: not drawn
+write_sv(wtf .. "/Account/1#1/Forever/Brokkr/SavedVariables/CollectionJournal.lua", "CollectionJournalDB",
+    { firstSeq = 1, nextSeq = 2, rows = { [1] = jrow("Brokkr-Forever", 1, W.now, 1420, 0.3, 0.7) } })
 local csvdir = work .. "/csv"
 local function export()
     -- through bash -c: on Windows popen goes to cmd.exe, which has no VAR=value prefix
@@ -147,6 +163,23 @@ has(bags, "Emily-Forever,bags,2770,Copper Ore,20,", "bags.csv holds Emily's ore"
 has(bags, "Brokkr-Forever,bags,2589,Linen Cloth,12,", "and Brokkr's linen")
 local net = read("inventory_net.csv")
 has(net, "2770,Copper Ore,25,Brokkr-Forever 5; Emily-Forever 20", "net copper ore across the account, with holders")
+local page = read("collection.html")
+has(page, '<script id="data" type="application/json">{', "collection.html is written, its data built in")
+has(page, '"name":"Emily-Forever"', "with Emily's card")
+has(page, '"name":"Brokkr-Forever"', "and Brokkr's")
+has(page, '["Emily-Forever","bags",2770,"Copper Ore",20]', "her ore in the inventory")
+has(page, '[2770,"Copper Ore",25,"Brokkr-Forever 5; Emily-Forever 20"]', "the account total")
+has(out, "open collection.html", "the export points at the page")
+has(out, "3 positions", "three positions: trimmed and position-less rows are left out")
+local pos = read("positions.csv")
+has(pos, "character,time_utc,epoch,map_id,zone,x,y,event_type", "positions.csv header")
+has(pos, ",0.4512,0.6020,2001", "Emily's first position, x/y to four places")
+-- the stubbed client reports map 1412 in every zone, so the name is whichever snapshot came last; a name is there
+eq(pos:find("Emily%-Forever,[^,]*,%d+,1412,[A-Z][^,]*,0%.4512") ~= nil, true, "named from a board snapshot of the same map")
+has(pos, "Brokkr-Forever,", "and Brokkr's")
+has(page, '"points":[["Brokkr-Forever",', "the page carries the points")
+has(page, '"mapNames":{"1412":"', "and the map names")
+has(page, '<h2>Maps</h2>', "and has a Maps section")
 local hist = read("bags_history.csv")
 eq(lines(hist), 5, "the first export writes the history header and every bag row")
 out = export()
@@ -164,6 +197,13 @@ saved.CharacterBoardDB.rows[1].zone = 'Orgrimmar, "the Drag"'
 write_sv(wtf .. "/Account/1#1/SavedVariables/CharacterBoard.lua", "CharacterBoardDB", saved.CharacterBoardDB)
 export()
 has(read("characters.csv"), '"Orgrimmar, ""the Drag"""', "a field with a comma and quotes is quoted CSV")
+-- a name that tries to close the page's <script> cannot
+saved.CharacterBoardDB.rows[#saved.CharacterBoardDB.rows].zone = '</script><b>x'
+write_sv(wtf .. "/Account/1#1/SavedVariables/CharacterBoard.lua", "CharacterBoardDB", saved.CharacterBoardDB)
+export()
+page = read("collection.html")
+eq(page:find("</script><b>", 1, true), nil, "a zone holding </script> stays inside the page's JSON")
+has(page, "\\u003c/script\\u003e\\u003cb\\u003ex", "escaped as \\u003c")
 
 print(string.format("board+csv: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -1,3 +1,19 @@
+## 2026-11-14
+
+- **The export now writes a web page, `collection.html`** (founder: "where is my local data showing my
+  characters and inventory? it should be a basic webpage"). `collection-csv.sh` writes it next to the CSVs:
+  one self-contained file that opens straight from disk (no server, nothing fetched). It shows a card per
+  character (level, XP bar, gold, zone, played time, item level, professions, the level they started at),
+  the inventory with character / location filters and a search, and the account totals. The data is
+  embedded as JSON with `<`, `>` and `&` escaped, so no item, zone or character name can break the page.
+- **Maps of where each character has been** (founder: "affordances for viewing the maps our gps plugins are
+  generating"). Every Collection Journal row already carries the map id and x/y; the export now also reads the
+  per-character journal files (`Account/<account>/<realm>/<character>/SavedVariables/CollectionJournal.lua`),
+  writes `positions.csv`, and the page draws each map as a 0-100 grid with one colored trail per character
+  (split after 10 minutes apart), the latest position ringed, and the time and coordinates on hover. Maps are
+  named from the Character Board's snapshots of the same map id. No game map art is drawn, only the grid.
+- `board_csv_test` is now 37 checks (the page, the positions, and a zone that tries to close the page's script).
+
 ## 2026-11-13
 
 - **MacroSync gains the priest set** (16 macros): shield, quick heal, big heal, Renew, Fortitude, dispel,

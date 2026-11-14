@@ -7,7 +7,9 @@
 #   COLLECTION_CSV_DIR   REQUIRED. Where the CSV files go (outside every repository; made if missing)
 #   BOARD_ADDON / BOARD_VAR    the Character Board's folder / global   (CharacterBoard / CharacterBoardDB)
 #   FAFNIR_ADDON / FAFNIR_VAR  Fafnir's Bed's folder / global          (FafnirsBed / FafnirsBedDB)
-#   LUA51                a Lua 5.1 interpreter (default lua5.1)
+#   COLLECTION_JOURNAL_ADDON / COLLECTION_JOURNAL_VAR  the journal's folder / global, saved per character, whose
+#                        positions draw the page's maps        (CollectionJournal / CollectionJournalDB)
+#   LUA51               a Lua 5.1 interpreter (default lua5.1)
 # Exit codes: 0 done; 1 a file was skipped (said on stderr); 2 setup error.
 # usage: scripts/collection-csv.sh
 set -uo pipefail
@@ -21,6 +23,8 @@ BOARD_ADDON="${BOARD_ADDON:-CharacterBoard}"
 BOARD_VAR="${BOARD_VAR:-CharacterBoardDB}"
 FAFNIR_ADDON="${FAFNIR_ADDON:-FafnirsBed}"
 FAFNIR_VAR="${FAFNIR_VAR:-FafnirsBedDB}"
+JOURNAL_ADDON="${COLLECTION_JOURNAL_ADDON:-CollectionJournal}"
+export COLLECTION_JOURNAL_VAR="${COLLECTION_JOURNAL_VAR:-CollectionJournalDB}"
 die() { echo "collection-csv: $*" >&2; exit 2; }
 [ -n "${WOW_WTF_DIR:-}" ] || die "WOW_WTF_DIR is not set (source MONOREPO/scripts/collection-env.sh)"
 [ -n "${COLLECTION_CSV_DIR:-}" ] || die "COLLECTION_CSV_DIR is not set (source MONOREPO/scripts/collection-env.sh)"
@@ -28,9 +32,11 @@ die() { echo "collection-csv: $*" >&2; exit 2; }
 command -v "$LUA51" >/dev/null 2>&1 || die "no Lua 5.1 at LUA51=$LUA51"
 mkdir -p "$COLLECTION_CSV_DIR" || die "cannot make $COLLECTION_CSV_DIR"
 
-board=() fafnir=()
+board=() fafnir=() journal=()
 for f in "$WOW_WTF_DIR"/Account/*/SavedVariables/"$BOARD_ADDON".lua; do [ -f "$f" ] && board+=("$f"); done
 for f in "$WOW_WTF_DIR"/Account/*/SavedVariables/"$FAFNIR_ADDON".lua; do [ -f "$f" ] && fafnir+=("$f"); done
+# the journal is per character: Account/<account>/<realm>/<character>/SavedVariables/
+for f in "$WOW_WTF_DIR"/Account/*/*/*/SavedVariables/"$JOURNAL_ADDON".lua; do [ -f "$f" ] && journal+=("$f"); done
 [ ${#board[@]} -gt 0 ] || echo "collection-csv: no $BOARD_ADDON.lua yet -- log in and out once with the Character Board installed" >&2
 exec "$LUA51" "$lib/csv_export.lua" "$lib/journal_reader.lua" "$COLLECTION_CSV_DIR" "$BOARD_VAR" "$FAFNIR_VAR" \
-  ${board[@]+"${board[@]}"} -- ${fafnir[@]+"${fafnir[@]}"}
+  ${board[@]+"${board[@]}"} -- ${fafnir[@]+"${fafnir[@]}"} -- ${journal[@]+"${journal[@]}"}
