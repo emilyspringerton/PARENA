@@ -9,6 +9,7 @@
 #   scripts/forge.sh drop emily PalExo          ...plan it
 #   scripts/forge.sh build                      bake the plans into the addon package (then copy AddOns/ into the game)
 #   scripts/forge.sh serve [PORT]               the same on a page at http://127.0.0.1:PORT (default 7744)
+#   scripts/forge.sh upgrades [emily]          which characters each spare item would improve (or one character's)
 #   scripts/forge.sh ledger [FILE]              the whole account -- every item worn/bags/bank/mail, level, class, race,
 #                                               gold, where -- in ONE spreadsheet (default $FORGE_DIR/ledger.csv)
 #   scripts/forge.sh watch [FILE]               keep that file current: rewrite it each time WoW saves (logout, /reload)
@@ -43,7 +44,7 @@ PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
 if [ "$PARENA_BIN" = "./.parena-bootstrap" ] && [ ! -x ./.parena-bootstrap ]; then
   make -s .parena-bootstrap >/dev/null || die "could not build the PARENA compiler (make .parena-bootstrap)"
 fi
-for m in kits macros; do
+for m in kits macros upgrades; do
   if [ ! -f "$FORGE_DIR/lib/$m.lua" ] || [ "stdlib/collection/$m.prn" -nt "$FORGE_DIR/lib/$m.lua" ]; then
     "$PARENA_BIN" build "stdlib/collection/$m.prn" -o "$FORGE_DIR/lib/$m.lua" >/dev/null || die "could not compile stdlib/collection/$m.prn"
   fi

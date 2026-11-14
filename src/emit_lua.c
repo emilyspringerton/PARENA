@@ -507,6 +507,37 @@ static const char *emit_lua_expr(Arena *arena, Node *expr, const char **out_erro
         return result;
     }
 
+    /* (cond (test value) ... (true value)) -- the gear optimizer (stdlib/collection/upgrades.prn, 2026-11-14) is the
+     * first Lua-target module to want it. Lowered like `if` above, for the same reasons: one immediately-invoked
+     * function with an if/elseif chain, so every test and value is evaluated lazily and false is an ordinary value.
+     * No clause matching gives nil (C's emitter requires a final `true` clause; Lua has a value for "none"). */
+    if (strcmp(head, "cond") == 0) {
+        if (expr->child_count < 2) {
+            *out_error = "emit_lua: cond requires at least one (test value) clause";
+            return NULL;
+        }
+        LuaBuf b;
+        lb_init(&b);
+        lb_appendf(&b, "(function() ");
+        for (size_t i = 1; i < expr->child_count; i++) {
+            Node *clause = expr->children[i];
+            if (clause->type != NODE_LIST || clause->child_count != 2) {
+                lb_free(&b);
+                *out_error = "emit_lua: each cond clause must be exactly (test value)";
+                return NULL;
+            }
+            const char *test = emit_lua_expr(arena, clause->children[0], out_error);
+            if (!test) { lb_free(&b); return NULL; }
+            const char *val = emit_lua_expr(arena, clause->children[1], out_error);
+            if (!val) { lb_free(&b); return NULL; }
+            lb_appendf(&b, "%s %s then return %s ", i == 1 ? "if" : "elseif", test, val);
+        }
+        lb_appendf(&b, "end end)()");
+        const char *result = arena_strdup(arena, b.data, b.len);
+        lb_free(&b);
+        return result;
+    }
+
     if (strcmp(head, "not") == 0) {
         if (expr->child_count != 2) {
             *out_error = "emit_lua: not requires exactly 1 operand";

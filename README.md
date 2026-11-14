@@ -505,6 +505,8 @@ probed against the WoW Forever client beyond what each addon's header says.
   scripts/forge.sh want emily head 1001   # plan a slot (an item id, or a name Fafnir's Bed has seen); unwant to clear
   scripts/forge.sh kit emily           # the planned kit, macro by macro
   scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
+  scripts/forge.sh upgrades            # spare gear on the account, and which characters it would improve
+  scripts/forge.sh upgrades emily      # ...or one character's best upgrades; `forge role emily healer` re-weighs her
   scripts/forge.sh ledger [FILE]       # the whole account in ONE spreadsheet (default $FORGE_DIR/ledger.csv)
   scripts/forge.sh watch [FILE]        # ...and keep it current: rewritten every time the client saves
   scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)
@@ -514,6 +516,18 @@ probed against the WoW Forever client beyond what each addon's header says.
   Needs Lua 5.1 and a C compiler (MSYS2 UCRT64 gcc on Windows; the server builds with `-lws2_32` there -- checked by
   cross-compiling with MinGW, not yet run on Windows). The forge reads SavedVariables, which the client writes on
   logout and `/reload`. Tested end to end over a fake WTF folder (`tests/reflux_wow/forge_test.sh`).
+
+- **The gear optimizer** (`forge upgrades`, `forge role`) -- every spare gear item on the account (anyone's bags, bank
+  or mail) checked against every character: can it use it (armor type, weapon skill, level -- items up to 10 levels
+  ahead are shown with the level), which slot, and how much better it is than what that character wears now, under
+  that character's role (tank, strength, agility, hunter, caster, healer; the class's levelling role until set).
+  Soulbound copies are only offered to their holder; bind-on-equip ones say to mail them unworn. The rules are PARENA
+  (`stdlib/collection/upgrades.prn`); Fafnir's Bed now records each gear item's facts (`GetItemInfo`/`GetItemStats`)
+  and soulbound copies (`C_Item.IsBound`) -- so it needs the rebuilt package and one login per character before it
+  knows anything. Honest limits: Classic proficiency rules; stat weights are rules of thumb, not a simulation; set
+  bonuses, unique-equipped, enchants and random-suffix stats are not seen; any stat the client reports that it does
+  not know is listed as "not scored" rather than dropped. Command line only for now (not on the forge page or in
+  `/chars`); tested over fixtures and a stubbed client, not yet against the live one.
 
 - **The ledger** (`forge ledger`, `forge watch`) -- one CSV for the whole account, one row per item per character
   (worn by slot, bags, bank, mail), every row carrying the character's realm, class, race, level, xp, gold, item

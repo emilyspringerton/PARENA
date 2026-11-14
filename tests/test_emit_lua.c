@@ -304,6 +304,26 @@ int main(void) {
         arena_free_all(&arena);
     }
 
+    /* --- cond: an if/elseif chain, lazy, false is a value, no match is nil (stdlib/collection/upgrades.prn) --- */
+    {
+        Arena arena;
+        arena_init(&arena);
+        const char *err = NULL;
+        const char *lua = build_lua(&arena,
+            "(defn grade [(n : I32)] : I32 (cond ((> n 90) 3) ((> n 50) 2) (true 1)))\n"
+            "(defn neg [(n : I32)] : Bool (cond ((< n 0) false) (true true)))", &err);
+        CHECK(lua != NULL, "cond emits");
+        CHECK(lua && strstr(lua, "if (n > 90) then return 3 elseif (n > 50) then return 2 elseif true then return 1 end") != NULL,
+              "cond lowers to one if/elseif chain inside an immediately-invoked function");
+        CHECK(lua && strstr(lua, "then return false elseif") != NULL, "a false value is returned, not skipped");
+        arena_free_all(&arena);
+        err = NULL;
+        arena_init(&arena);
+        lua = build_lua(&arena, "(defn f [(n : I32)] : I32 (cond (true)))", &err);
+        CHECK(lua == NULL && err != NULL, "a cond clause without a value is refused");
+        arena_free_all(&arena);
+    }
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }

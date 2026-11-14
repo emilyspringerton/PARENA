@@ -114,6 +114,45 @@ check "watch: writes the ledger" "$o" "ledger: 10 rows for 3 characters -> $(cd 
 check "watch: the file is there" "$(cat "$work/watched.csv")" "Bone,Forever,Warlock"
 cp "$work/board.bak" "$acct/SavedVariables/CharacterBoard.lua"; cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
 
+# the gear optimizer: spare gear on the account, and who it improves
+o="$(f upgrades)"; check "upgrades: no facts yet says what to do" "$o" "no item facts yet: rebuild the addon package"
+cp "$acct/SavedVariables/FafnirsBed.lua" "$work/fafnir.bak"
+cat > "$acct/SavedVariables/FafnirsBed.lua" <<'LUA'
+FafnirsBedDB = { ["chars"] = {
+  ["Emily-Forever"] = { ["gold"] = 1300000, ["gear"] = { [1] = 1001, [16] = 1002 }, ["loc"] = { ["bags"] = { [2005] = 1 }, ["equipped"] = { [1001] = 1, [1002] = 1 } } },
+  ["Ash-Forever"] = { ["gold"] = 9000000, ["gear"] = { [1] = 2001 }, ["loc"] = { ["bags"] = { [2589] = 20, [2002] = 1, [2003] = 1, [2004] = 1 }, ["bank"] = { [1005] = 1 } } } },
+  ["names"] = { [2589] = "Linen Cloth", [1001] = "Lionheart Helm", [1002] = "Ashbringer", [2001] = "Cloth Hat", [2002] = "Crown of Wits",
+                [2003] = "Ring of Might", [2004] = "Bound Band", [2005] = "Spare Signet", [1005] = "Titan Helm" },
+  ["items"] = {
+    [1001] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 4, ["req"] = 40, ["bind"] = 2, ["s"] = { ["str"] = 18, ["sta"] = 12 } },
+    [1002] = { ["loc"] = "INVTYPE_2HWEAPON", ["cls"] = 2, ["sub"] = 8, ["req"] = 40, ["bind"] = 1, ["s"] = { ["str"] = 20, ["dps"] = 30 } },
+    [2001] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 1, ["req"] = 10, ["bind"] = 2, ["s"] = { ["int"] = 5 } },
+    [2002] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 1, ["req"] = 30, ["bind"] = 2, ["s"] = { ["int"] = 12 } },
+    [2003] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 30, ["bind"] = 2, ["s"] = { ["str"] = 8 } },
+    [2004] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 30, ["bind"] = 1, ["s"] = { ["int"] = 9 } },
+    [2005] = { ["loc"] = "INVTYPE_FINGER", ["cls"] = 4, ["sub"] = 0, ["req"] = 20, ["bind"] = 1, ["s"] = { ["str"] = 3 }, ["other"] = { ["ITEM_MOD_NEW_THING"] = 1 } },
+    [1005] = { ["loc"] = "INVTYPE_HEAD", ["cls"] = 4, ["sub"] = 4, ["req"] = 45, ["bind"] = 2, ["s"] = { ["str"] = 25 } } },
+  ["bound"] = { ["Ash-Forever"] = { [2004] = 1 } } }
+LUA
+o="$(f upgrades emily)"
+check "upgrades CHAR: the role it is weighed as" "$o" "Emily-Forever (PALADIN 42, weighed as strength): upgrades on the account"
+check "upgrades CHAR: a ring from an alt, by how much" "$o" "Finger     Ring of Might                +16.0  (Ash-Forever's bags -- bind on equip, mail it unworn)"
+check "upgrades CHAR: one in its own bags" "$o" "Spare Signet                  +6.0  (in your bags -- equip it)  [not scored: ITEM_MOD_NEW_THING 1]"
+check "upgrades CHAR: one for a few levels on, over what it replaces" "$o" "Head       Titan Helm                    +8.0  over Lionheart Helm  [at level 45]  (Ash-Forever's bank"
+case "$o" in *"Bound Band"*) bad "a soulbound ring was offered to another character" ;; *) ok ;; esac
+case "$o" in *"Crown of Wits"*) bad "cloth intellect was offered to a strength paladin" ;; *) ok ;; esac
+o="$(f upgrades)"
+check "upgrades: each item with who it helps" "$o" "  Ring of Might  [Finger]"
+check "upgrades: the holder's own soulbound ring" "$o" "Ash-Forever          Finger     Bound Band                    +9.0  (in your bags -- equip it)"
+check "upgrades: the mage's hat" "$o" "Ash-Forever          Head       Crown of Wits                 +7.0  over Cloth Hat  (in your bags -- equip it)"
+o="$(f --json upgrades emily)"; check "upgrades --json" "$o" '"slot_name":"Finger"'
+o="$(f role emily)"; check "role: the class's default" "$o" "Emily-Forever is weighed as strength (the class's levelling role"
+o="$(f role emily dancer)"; check "role: an unknown one is refused" "$o" "no role called 'dancer' (tank, strength, agility, hunter, caster, healer)"
+o="$(f role emily caster)"; check "role: set" "$o" "Emily-Forever is weighed as caster now"
+o="$(f upgrades emily)"; check "upgrades: a caster paladin wants the crown" "$o" "Head       Crown of Wits                 +6.0  over Lionheart Helm"
+f role emily strength >/dev/null
+cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
+
 # build: the plans go into MacroSync, and /ascend writes the planned kit
 if WOW_INTERFACE=99999 COLLECTION_CLIENT_OUT="$work/client" bash scripts/forge.sh build >"$work/build.log" 2>&1; then ok; else bad "forge build failed: $(tail -3 "$work/build.log")"; fi
 check "build says what it baked" "$(cat "$work/build.log")" "baking 2 character kit(s)"

@@ -17,6 +17,11 @@
 --   Gear: GetInventoryItemID/GetInventoryItemLink("player", slot) over INVSLOT_FIRST_EQUIPPED..INVSLOT_LAST_EQUIPPED
 --     (1..19 when the client does not name them), on login and PLAYER_EQUIPMENT_CHANGED.
 --   Mail: GetInboxNumItems/GetInboxItem, ATTACHMENTS_MAX_RECEIVE -- only while the mailbox is open.
+--   Item facts, for the forge's gear optimizer (stdlib/collection/upgrades.prn): GetItemInfo (C_Item.GetItemInfo
+--     where it exists) for item level, required level, slot, class and subclass ids, binding; GetItemStats
+--     (C_Item.GetItemStats) for the stats; GET_ITEM_INFO_RECEIVED when the client had not cached an item yet.
+--     Soulbound copies: C_Item.IsBound(ItemLocation:CreateFromBagAndSlot(...)) where both exist; without them the
+--     forge goes by the binding type alone (bind on pickup = stays with its holder).
 -- None of the bag/bank/mail forms above is confirmed on WoW Forever yet; that is what the in-game probe and
 -- the first real run settle.
 
@@ -63,9 +68,65 @@ local function name_of(link)
     return type(link) == "string" and link:match("%[(.-)%]") or nil
 end
 
+-- ---- item facts for the gear optimizer ---------------------------------------------------------------------------
+-- GetItemStats' keys, shortened to the optimizer's (stdlib/collection/upgrades.prn upg-stat-names). A key not here is
+-- kept as-is under `other`, so the forge can say which stats it did not score instead of silently ignoring them.
+local STAT_KEYS = {
+    ITEM_MOD_STRENGTH_SHORT = "str", ITEM_MOD_AGILITY_SHORT = "agi", ITEM_MOD_STAMINA_SHORT = "sta",
+    ITEM_MOD_INTELLECT_SHORT = "int", ITEM_MOD_SPIRIT_SHORT = "spi", RESISTANCE0_NAME = "armor",
+    ITEM_MOD_ATTACK_POWER_SHORT = "ap", ITEM_MOD_RANGED_ATTACK_POWER_SHORT = "rap",
+    ITEM_MOD_SPELL_POWER_SHORT = "sp", ITEM_MOD_SPELL_DAMAGE_DONE_SHORT = "sp", ITEM_MOD_SPELL_HEALING_DONE_SHORT = "heal",
+    ITEM_MOD_CRIT_RATING_SHORT = "crit", ITEM_MOD_CRIT_MELEE_RATING_SHORT = "crit", ITEM_MOD_CRIT_RANGED_RATING_SHORT = "crit",
+    ITEM_MOD_HIT_RATING_SHORT = "hit", ITEM_MOD_HIT_MELEE_RATING_SHORT = "hit", ITEM_MOD_HIT_RANGED_RATING_SHORT = "hit",
+    ITEM_MOD_CRIT_SPELL_RATING_SHORT = "spellcrit", ITEM_MOD_HIT_SPELL_RATING_SHORT = "spellhit",
+    ITEM_MOD_MANA_REGENERATION_SHORT = "mp5", ITEM_MOD_POWER_REGEN0_SHORT = "mp5",
+    ITEM_MOD_DEFENSE_SKILL_RATING_SHORT = "def", ITEM_MOD_DAMAGE_PER_SECOND_SHORT = "dps",
+}
+
+local function item_info(id)
+    if C_Item and C_Item.GetItemInfo then return C_Item.GetItemInfo(id) end
+    if GetItemInfo then return GetItemInfo(id) end
+end
+
+local function item_stats(link)
+    if C_Item and C_Item.GetItemStats then return C_Item.GetItemStats(link) end
+    if GetItemStats then return GetItemStats(link) end
+end
+
+-- Record what the optimizer needs to know about item `id`, once. Not gear (no slot) is skipped: the SavedVariables
+-- stay small. Returns false when the client has not loaded the item yet (GET_ITEM_INFO_RECEIVED will bring it).
+local function remember_facts(id)
+    if not (db and id) then return true end
+    db.items = db.items or {}
+    if db.items[id] then return true end
+    local name, link, quality, ilvl, req, _, _, _, loc, _, _, cls, sub, bind = item_info(id)
+    if not name then return false end
+    if not loc or loc == "" or loc == "INVTYPE_NON_EQUIP_IGNORE" or loc == "INVTYPE_BAG" or loc == "INVTYPE_AMMO"
+        or loc == "INVTYPE_QUIVER" then return true end
+    local f = { q = quality, ilvl = ilvl, req = req, loc = loc, cls = cls, sub = sub, bind = bind, s = {} }
+    local raw = link and item_stats(link)
+    for k, v in pairs(raw or {}) do
+        if STAT_KEYS[k] then f.s[STAT_KEYS[k]] = (f.s[STAT_KEYS[k]] or 0) + v
+        else f.other = f.other or {}; f.other[k] = v end
+    end
+    db.items[id] = f
+    I.invRememberName(db, id, name)
+    return true
+end
+
+-- Is the copy in this bag slot soulbound? nil when the client cannot say.
+local function slot_bound(bag, slot)
+    if not (C_Item and C_Item.IsBound and ItemLocation and ItemLocation.CreateFromBagAndSlot) then return nil end
+    local ok, loc = pcall(ItemLocation.CreateFromBagAndSlot, ItemLocation, bag, slot)
+    if not ok or not loc then return nil end
+    local ok2, b = pcall(C_Item.IsBound, loc)
+    if ok2 then return b and true or false end
+    return nil
+end
+
 -- Read the given bag ids into one {[itemID] = count}; nil when the client has no bag API at all.
 local function read_bags(ids)
-    local snap = {}
+    local snap, bound = {}, {}
     for _, bag in ipairs(ids) do
         local n = num_slots(bag)
         if n == nil then return nil end
@@ -78,10 +139,12 @@ local function read_bags(ids)
             if id and count then
                 snap[id] = (snap[id] or 0) + count
                 I.invRememberName(db, id, name_of(link))
+                remember_facts(id)
+                if slot_bound(bag, slot) then bound[id] = 1 end
             end
         end
     end
-    return snap
+    return snap, nil, bound
 end
 
 local function bag_ids()
@@ -105,30 +168,36 @@ local function bank_ids()
     return ids
 end
 
-local function apply(loc, snap)
+local function apply(loc, snap, bound)
     local who = character()
     if not (db and who) then return end
     if not snap then return end
     unreadable[loc] = nil
     I.invApplySnapshot(db, who, loc, snap, time())
+    -- soulbound item ids per character: a bound copy never unbinds, so ids only accumulate
+    if bound and next(bound) then
+        db.bound = db.bound or {}
+        db.bound[who] = db.bound[who] or {}
+        for id in pairs(bound) do db.bound[who][id] = 1 end
+    end
 end
 
 local function scan_bags()
     local ids = bag_ids()
     if not ids then unreadable.bags = "NUM_BAG_SLOTS is missing"; return end
-    local snap, why = read_bags(ids)
+    local snap, why, bound = read_bags(ids)
     if why == "not ready" then return end
     if not snap then unreadable.bags = "no container API (C_Container or GetContainerItemInfo)"; return end
-    apply("bags", snap)
+    apply("bags", snap, bound)
 end
 
 local function scan_bank()
     local ids = bank_ids()
     if not ids then unreadable.bank = "BANK_CONTAINER / NUM_BANKBAGSLOTS are missing"; return end
-    local snap, why = read_bags(ids)
+    local snap, why, bound = read_bags(ids)
     if why == "not ready" then return end
     if not snap then unreadable.bank = "no container API"; return end
-    apply("bank", snap)
+    apply("bank", snap, bound)
 end
 
 local function scan_mail()
@@ -142,6 +211,7 @@ local function scan_mail()
             if id and count then
                 snap[id] = (snap[id] or 0) + count
                 I.invRememberName(db, id, name)
+                remember_facts(id)
             end
         end
     end
@@ -164,6 +234,7 @@ local function scan_gear()
             snap[id] = (snap[id] or 0) + 1
             worn = worn + 1
             if GetInventoryItemLink then I.invRememberName(db, id, name_of(GetInventoryItemLink("player", slot))) end
+            remember_facts(id)
         end
     end
     -- Nothing worn at all is what an unloaded character looks like (early login, logout), not a naked one
@@ -189,6 +260,7 @@ frame:RegisterEvent("BANKFRAME_CLOSED")          -- the bank is only readable wh
 frame:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 frame:RegisterEvent("MAIL_INBOX_UPDATE")
 frame:RegisterEvent("PLAYER_LOGOUT")
+frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")    -- an item the client had not cached when it was first seen
 local bank_open = false
 frame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" then
@@ -214,6 +286,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         if bank_open then scan_bank() end
     elseif event == "MAIL_INBOX_UPDATE" then
         scan_mail()
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        if arg1 then remember_facts(arg1) end
     end
     -- No scan at PLAYER_LOGOUT: by then the client reports empty bags and 0 gold, and the last
     -- BAG_UPDATE_DELAYED / PLAYER_MONEY scan is already current.
@@ -255,4 +329,4 @@ SlashCmdList["FAFNIRSBED"] = function(msg)
     if #hits > 10 then print(string.format("  ...and %d more", #hits - 10)) end
 end
 
-FafnirsBed = { scan_bags = scan_bags, scan_bank = scan_bank, scan_mail = scan_mail, scan_gold = scan_gold, scan_gear = scan_gear }
+FafnirsBed = { remember_facts = remember_facts, scan_bags = scan_bags, scan_bank = scan_bank, scan_mail = scan_mail, scan_gold = scan_gold, scan_gear = scan_gear }

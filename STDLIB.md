@@ -5431,3 +5431,24 @@ the obvious next step. `png-encode`: 8-bit RGB or RGBA, not interlaced; takes BG
 order); each row gets the filter with the smallest sum of absolute values. A 1920x1080 capture encodes in ~0.35 s.
 Tests: `make test-deflate`, `make test-png-encode`.
 
+
+### `collection/upgrades` — the gear optimizer's rules (2026-11-14)
+
+Lua 5.1 target (`stdlib/collection/upgrades.prn`), run by the plugin forge (`forge upgrades`, `forge role`) over the item
+facts Fafnir's Bed records (slot, required level, armor/weapon class and subclass, binding, stats under short keys).
+
+```clojure
+(defn upg-can-use [(class : String) (level : I32) (item : Any)] : I32)   ; 0 yes, 1 not gear, 2 armor type, 3 weapon, 4 level
+(defn upg-slots [(loc : Any) (class : String)] : Any)                     ; equipment slots 1-19 for an INVTYPE_*
+(defn upg-weights [(role : String)] : Any)                                ; tank strength agility hunter caster healer
+(defn upg-default-role [(class : String)] : String)
+(defn upg-score [(w : Any) (item : Any) (slot : I32)] : I32)              ; tenths of a point; slot 18 counts dps as ranged
+(defn upg-best [(class : String) (w : Any) (gear : Any) (items : Any) (cand : Any)] : Any)  ; {slot gain replaced known} or nil
+```
+
+Proficiencies are World of Warcraft Classic's (mail at 40 for hunters and shamans, plate at 40 for warriors and paladins,
+dual wield for warriors, rogues and hunters). Two-handers are weighed against main hand plus off hand; rings and trinkets
+replace the weaker worn one. Weights are rules of thumb per role, not a simulation; set bonuses, unique-equipped and
+enchants are not seen. Written alongside the Lua emitter's `cond` (an if/elseif chain in one immediately-invoked
+function). Tests: `tests/reflux_wow/upgrades_test.lua` and `tests/test_emit_lua.c`, both in `make test-reflux-wow` /
+`make test-emit-lua`.

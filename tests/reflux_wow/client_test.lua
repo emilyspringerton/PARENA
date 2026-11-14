@@ -72,6 +72,20 @@ local function session(world, saved)
             GetPlayerMapPosition = function() return { GetXY = function() return 0.25, 0.75 end } end,
         }
     end
+    if world.item_info then           -- the gear optimizer's facts (GetItemInfo / GetItemStats / C_Item.IsBound)
+        env.GetItemInfo = function(id)
+            local f = world.item_info[id]
+            if not f or f.uncached then return nil end
+            return f.name, "|Hitem:" .. id .. "|h[" .. f.name .. "]|h", f.q, f.ilvl, f.req, "Armor", "Plate", 1, f.loc,
+                   "tex", 0, f.cls, f.sub, f.bind
+        end
+        env.GetItemStats = function(link)
+            local id = tonumber(link:match("item:(%d+)"))
+            return world.item_info[id] and world.item_info[id].stats
+        end
+        env.ItemLocation = { CreateFromBagAndSlot = function(_, bag, slot) return { bag = bag, slot = slot } end }
+        env.C_Item = { IsBound = function(loc) local c = cell(loc.bag, loc.slot); return c and c.bound or false end }
+    end
     local frames = {}
     env.CreateFrame = function()
         local f = { events = {}, scripts = {} }
@@ -252,6 +266,47 @@ for line in io.lines(events) do
 end
 eq(n, r1.appended + r2.appended, "one line per journal row")
 eq(src, n, "every event is attributed to addon 2 (Fafnir's Bed)")
+
+-- the gear optimizer's facts ------------------------------------------------------------------------------------------
+do
+    local gw = {
+        out = {}, now = 1763000000, name = "Ash", realm = "Forever", money = 5, api = "c_container",
+        bags = { [0] = { { id = 1001, name = "Lionheart Helm", n = 1 }, { id = 1003, name = "Soul Ring", n = 1, bound = true },
+                         { id = 2589, name = "Linen Cloth", n = 3 }, { id = 1004, name = "Late Boots", n = 1 } } },
+        mail = {},
+        item_info = {
+            [1001] = { name = "Lionheart Helm", q = 4, ilvl = 65, req = 60, loc = "INVTYPE_HEAD", cls = 4, sub = 4, bind = 2,
+                       stats = { ITEM_MOD_STRENGTH_SHORT = 18, ITEM_MOD_STAMINA_SHORT = 12, RESISTANCE0_NAME = 565,
+                                 ITEM_MOD_SOMETHING_NEW = 2 } },
+            [1003] = { name = "Soul Ring", q = 3, ilvl = 40, req = 35, loc = "INVTYPE_FINGER", cls = 4, sub = 0, bind = 1,
+                       stats = { ITEM_MOD_INTELLECT_SHORT = 5 } },
+            [2589] = { name = "Linen Cloth", q = 1, ilvl = 5, req = 0, loc = "", cls = 7, sub = 5, bind = 0, stats = {} },
+            [1004] = { name = "Late Boots", uncached = true, q = 2, ilvl = 20, req = 15, loc = "INVTYPE_FEET", cls = 4,
+                       sub = 2, bind = 2, stats = { ITEM_MOD_AGILITY_SHORT = 4 } },
+        },
+    }
+    local gsaved = {}
+    local g = session(gw, gsaved)
+    g.load("RefluxCore"); g.load("FafnirsBed")
+    g.fire("ADDON_LOADED", "RefluxCore"); g.fire("ADDON_LOADED", "FafnirsBed")
+    g.fire("PLAYER_LOGIN")
+    local db = g.env.FafnirsBedDB
+    local helm = db.items and db.items[1001]
+    eq(helm and helm.loc, "INVTYPE_HEAD", "facts: the slot")
+    eq(helm and helm.req, 60, "facts: the required level")
+    eq(helm and helm.cls == 4 and helm.sub == 4, true, "facts: plate armor")
+    eq(helm and helm.bind, 2, "facts: bind on equip")
+    eq(helm and helm.s.str, 18, "facts: stats under the optimizer's short names")
+    eq(helm and helm.s.armor, 565, "facts: armor")
+    eq(helm and helm.other and helm.other.ITEM_MOD_SOMETHING_NEW, 2, "facts: a stat it does not know is kept, not dropped")
+    eq(db.items[2589], nil, "facts: not gear is not recorded")
+    eq(db.items[1004], nil, "facts: an item the client has not loaded yet waits")
+    gw.item_info[1004].uncached = nil
+    g.fire("GET_ITEM_INFO_RECEIVED", 1004, true)
+    eq(db.items[1004] and db.items[1004].s.agi, 4, "facts: recorded once the client loads it")
+    eq(db.bound and db.bound["Ash-Forever"] and db.bound["Ash-Forever"][1003], 1, "a soulbound copy is remembered")
+    eq(db.bound["Ash-Forever"][1001], nil, "an unbound one is not")
+end
 
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

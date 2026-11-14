@@ -1,0 +1,193 @@
+;; stdlib/collection/upgrades.prn -- the gear optimizer's rules: who can use an item, which slot it goes in, how good it
+;; is for a character, and how much better than what that character wears now (founder, 2026-11-14: "we need a gear
+;; optimizer that lets us figure out what alts benefit from certain gear upgrades"). The forge
+;; (runtime/wow/forge/forge.lua) runs these over every spare item on the account and every character.
+;;
+;; An item is the facts Fafnir's Bed records for it (runtime/wow/fafnirs_bed.lua, from GetItemInfo/GetItemStats):
+;;   { req = required level, loc = "INVTYPE_HEAD"..., cls = item class id (2 weapon, 4 armor), sub = subclass id,
+;;     bind = 1 on pickup / 2 on equip / 3 on use, s = { str = 10, sta = 7, dps = 12.5, ... } }
+;; Stat keys: str agi sta int spi armor ap rap sp heal crit hit spellcrit spellhit mp5 def dps -- see upg-stat-names.
+;;
+;; Honest scope: the proficiency rules are World of Warcraft Classic's (who trains which weapon, mail at 40 for hunters
+;; and shamans, plate at 40 for warriors and paladins, dual wield for warriors, rogues and hunters only); a client with
+;; other rules needs this table changed, nothing else. The weights are rough rules of thumb per role, in tenths of a
+;; point (strength 20 = 2.0 per point), not a simulation: a gain says "better for this role", not by how much DPS.
+;; Set bonuses, unique-equipped, enchants and random-suffix stats are not seen.
+
+(module collection/upgrades)
+(export upg-stat-names upg-roles upg-role-ok upg-default-role upg-weights upg-score upg-slots upg-can-use
+        upg-use-why upg-best)
+
+(defn upg-count [(arr : Any)] : I32 (lua/call-fn (lua/global "table.getn") arr))
+
+(defn upg-has-from [(arr : Any) (v : Any) (i : I32)] : Bool
+  (if (> i (upg-count arr)) false
+    (if (= (lua/aget arr i) v) true (upg-has-from arr v (+ i 1)))))
+;; Does the array hold v? A Bool, never 0/1: in Lua 0 is true, so a 0/1 helper in an `if` is always taken.
+(defn upg-has [(arr : Any) (v : Any)] : Bool (upg-has-from arr v 1))
+
+(defn upg-stat-names [] : Any
+  (lua/array "str" "agi" "sta" "int" "spi" "armor" "ap" "rap" "sp" "heal" "crit" "hit" "spellcrit" "spellhit" "mp5"
+             "def" "dps"))
+
+;; ---- roles and their weights ------------------------------------------------------------------------------------
+(defn upg-roles [] : Any (lua/array "tank" "strength" "agility" "hunter" "caster" "healer"))
+(defn upg-role-ok [(role : String)] : I32 (if (upg-has (upg-roles) role) 1 0))
+
+;; What a class levels as, when the forge has not been told otherwise.
+(defn upg-default-role [(class : String)] : String
+  (cond
+    ((upg-has (lua/array "WARRIOR" "PALADIN" "SHAMAN") class) "strength")
+    ((upg-has (lua/array "ROGUE" "DRUID") class) "agility")
+    ((= class "HUNTER") "hunter")
+    (true "caster")))
+
+;; Tenths of a point of score per point of each stat (crit and hit are per 1%). `dps` is a melee weapon's damage per
+;; second, `rdps` the ranged slot's (a bow, a gun, a wand).
+(defn upg-weights [(role : String)] : Any
+  (let [w (lua/obj)]
+    (do
+    (cond
+      ((= role "tank")
+       (do (lua/set! w "sta" 15) (lua/set! w "def" 15) (lua/set! w "armor" 1) (lua/set! w "agi" 10)
+           (lua/set! w "str" 8) (lua/set! w "hit" 40) (lua/set! w "dps" 40)))
+      ((= role "strength")
+       (do (lua/set! w "str" 20) (lua/set! w "agi" 10) (lua/set! w "sta" 5) (lua/set! w "ap" 10) (lua/set! w "crit" 140)
+           (lua/set! w "hit" 100) (lua/set! w "dps" 140) (lua/set! w "int" 2)))
+      ((= role "agility")
+       (do (lua/set! w "agi" 20) (lua/set! w "str" 10) (lua/set! w "sta" 5) (lua/set! w "ap" 10) (lua/set! w "crit" 140)
+           (lua/set! w "hit" 140) (lua/set! w "dps" 140)))
+      ((= role "hunter")
+       (do (lua/set! w "agi" 20) (lua/set! w "rap" 10) (lua/set! w "ap" 3) (lua/set! w "int" 5) (lua/set! w "sta" 5)
+           (lua/set! w "crit" 140) (lua/set! w "hit" 140) (lua/set! w "rdps" 140) (lua/set! w "dps" 20)))
+      ((= role "healer")
+       (do (lua/set! w "heal" 10) (lua/set! w "int" 10) (lua/set! w "spi" 8) (lua/set! w "mp5" 20) (lua/set! w "sta" 4)
+           (lua/set! w "sp" 3) (lua/set! w "spellcrit" 60) (lua/set! w "rdps" 30)))
+      (true
+       (do (lua/set! w "sp" 12) (lua/set! w "int" 10) (lua/set! w "spi" 6) (lua/set! w "sta" 5) (lua/set! w "mp5" 15)
+           (lua/set! w "spellcrit" 100) (lua/set! w "spellhit" 100) (lua/set! w "rdps" 60))))
+    w)))
+
+(defn upg-num [(v : Any)] : I32 (if (lua/nil? v) 0 v))
+
+(defn upg-score-from [(w : Any) (s : Any) (names : Any) (i : I32) (ranged : I32) (sum : I32)] : I32
+  (if (> i (upg-count names)) sum
+    (let [k (lua/aget names i)
+          wk (if (and (= k "dps") (= ranged 1)) "rdps" k)]
+      (upg-score-from w s names (+ i 1) ranged (+ sum (* (upg-num (lua/get w wk)) (upg-num (lua/get s k))))))))
+
+;; An item's score under a role's weights, in the slot it would go in (slot 18 counts dps as ranged). 0 for nil.
+(defn upg-score [(w : Any) (item : Any) (slot : I32)] : I32
+  (if (lua/nil? item) 0
+    (if (lua/nil? (lua/get item "s")) 0
+      (upg-score-from w (lua/get item "s") (upg-stat-names) 1 (if (= slot 18) 1 0) 0))))
+
+;; ---- who can use it ---------------------------------------------------------------------------------------------
+(defn upg-dual [(class : String)] : Bool (upg-has (lua/array "WARRIOR" "ROGUE" "HUNTER") class))
+
+;; Weapon subclasses each class trains: 0/1 axe 1H/2H, 2 bow, 3 gun, 4/5 mace, 6 polearm, 7/8 sword, 10 staff, 13 fist,
+;; 14 miscellaneous, 15 dagger, 16 thrown, 18 crossbow, 19 wand.
+(defn upg-weapons [(class : String)] : Any
+  (cond
+    ((= class "WARRIOR") (lua/array 0 1 2 3 4 5 6 7 8 10 13 14 15 16 18))
+    ((= class "PALADIN") (lua/array 0 1 4 5 6 7 8 14))
+    ((= class "HUNTER") (lua/array 0 1 2 3 6 7 8 10 13 14 15 16 18))
+    ((= class "ROGUE") (lua/array 2 3 4 7 13 14 15 16 18))
+    ((= class "PRIEST") (lua/array 4 10 14 15 19))
+    ((= class "SHAMAN") (lua/array 0 1 4 5 10 13 14 15))
+    ((= class "DRUID") (lua/array 4 5 10 13 14 15))
+    ((upg-has (lua/array "MAGE" "WARLOCK") class) (lua/array 7 10 14 15 19))
+    (true (lua/array))))
+
+;; Armor subclasses: 0 miscellaneous (rings, trinkets...), 1 cloth, 2 leather, 3 mail, 4 plate, 6 shield, 7 libram,
+;; 8 idol, 9 totem.
+(defn upg-armor-ok [(class : String) (level : I32) (sub : I32)] : I32
+  (cond
+    ((or (= sub 0) (= sub 1)) 1)
+    ((= sub 2) (if (upg-has (lua/array "MAGE" "PRIEST" "WARLOCK") class) 0 1))
+    ((= sub 3) (if (upg-has (lua/array "WARRIOR" "PALADIN") class) 1
+                 (if (and (upg-has (lua/array "HUNTER" "SHAMAN") class) (>= level 40)) 1 0)))
+    ((= sub 4) (if (and (upg-has (lua/array "WARRIOR" "PALADIN") class) (>= level 40)) 1 0))
+    ((= sub 6) (if (upg-has (lua/array "WARRIOR" "PALADIN" "SHAMAN") class) 1 0))
+    ((= sub 7) (if (= class "PALADIN") 1 0))
+    ((= sub 8) (if (= class "DRUID") 1 0))
+    ((= sub 9) (if (= class "SHAMAN") 1 0))
+    (true 0)))
+
+;; The equipment slots (1 head .. 19 tabard) an item can go in for this class; empty when it is not gear.
+(defn upg-slots [(loc : Any) (class : String)] : Any
+  (cond
+    ((lua/nil? loc) (lua/array))
+    ((= loc "INVTYPE_HEAD") (lua/array 1))
+    ((= loc "INVTYPE_NECK") (lua/array 2))
+    ((= loc "INVTYPE_SHOULDER") (lua/array 3))
+    ((= loc "INVTYPE_BODY") (lua/array 4))
+    ((or (= loc "INVTYPE_CHEST") (= loc "INVTYPE_ROBE")) (lua/array 5))
+    ((= loc "INVTYPE_WAIST") (lua/array 6))
+    ((= loc "INVTYPE_LEGS") (lua/array 7))
+    ((= loc "INVTYPE_FEET") (lua/array 8))
+    ((= loc "INVTYPE_WRIST") (lua/array 9))
+    ((= loc "INVTYPE_HAND") (lua/array 10))
+    ((= loc "INVTYPE_FINGER") (lua/array 11 12))
+    ((= loc "INVTYPE_TRINKET") (lua/array 13 14))
+    ((= loc "INVTYPE_CLOAK") (lua/array 15))
+    ((= loc "INVTYPE_WEAPON") (if (upg-dual class) (lua/array 16 17) (lua/array 16)))
+    ((or (= loc "INVTYPE_2HWEAPON") (= loc "INVTYPE_WEAPONMAINHAND")) (lua/array 16))
+    ((= loc "INVTYPE_WEAPONOFFHAND") (if (upg-dual class) (lua/array 17) (lua/array)))
+    ((or (= loc "INVTYPE_SHIELD") (= loc "INVTYPE_HOLDABLE")) (lua/array 17))
+    ((or (= loc "INVTYPE_RANGED") (or (= loc "INVTYPE_RANGEDRIGHT") (or (= loc "INVTYPE_THROWN") (= loc "INVTYPE_RELIC"))))
+     (lua/array 18))
+    ((= loc "INVTYPE_TABARD") (lua/array 19))
+    (true (lua/array))))
+
+;; Can a character of this class and level use the item? 0 yes; 1 not gear; 2 the wrong armor type; 3 a weapon it does
+;; not train; 4 its level is too low (it can once it reaches the item's required level).
+(defn upg-can-use [(class : String) (level : I32) (item : Any)] : I32
+  (let [cls (upg-num (lua/get item "cls"))
+        sub (upg-num (lua/get item "sub"))]
+    (cond
+      ((= (upg-count (upg-slots (lua/get item "loc") class)) 0) 1)
+      ((and (= cls 4) (= (upg-armor-ok class level sub) 0))
+       ;; mail and plate open up at 40: too low, not the wrong class
+       (if (= (upg-armor-ok class 60 sub) 1) 4 2))
+      ((and (= cls 2) (not (upg-has (upg-weapons class) sub))) 3)
+      ((> (upg-num (lua/get item "req")) level) 4)
+      (true 0))))
+
+(defn upg-use-why [(code : I32)] : String
+  (cond ((= code 0) "") ((= code 1) "not gear") ((= code 2) "wrong armor type") ((= code 3) "a weapon it does not use")
+        (true "level too low")))
+
+;; ---- the best slot and its gain ---------------------------------------------------------------------------------
+(defn upg-two-hand [(item : Any)] : I32
+  (if (lua/nil? item) 0 (if (= (lua/get item "loc") "INVTYPE_2HWEAPON") 1 0)))
+
+;; The score of what is worn in `slot` that the item would replace: a two-hander replaces the main and off hand both.
+(defn upg-current [(w : Any) (gear : Any) (items : Any) (slot : I32) (cand : Any)] : I32
+  (let [worn (lua/aget items (lua/aget gear slot))]
+    (if (and (= slot 16) (= (upg-two-hand cand) 1))
+      (+ (upg-score w worn 16) (upg-score w (lua/aget items (lua/aget gear 17)) 17))
+      (upg-score w worn slot))))
+
+;; 1 when the slot's current item is known (empty counts as known); an unknown one makes the gain a guess.
+(defn upg-known [(gear : Any) (items : Any) (slot : I32)] : I32
+  (let [id (lua/aget gear slot)]
+    (if (lua/nil? id) 1 (if (lua/nil? (lua/aget items id)) 0 1))))
+
+(defn upg-best-from [(w : Any) (gear : Any) (items : Any) (cand : Any) (slots : Any) (i : I32) (best : Any)] : Any
+  (if (> i (upg-count slots)) best
+    (let [slot (lua/aget slots i)
+          blocked (and (= slot 17) (= (upg-two-hand (lua/aget items (lua/aget gear 16))) 1))
+          gain (- (upg-score w cand slot) (upg-current w gear items slot cand))
+          known (upg-known gear items slot)]
+      ;; the bigger gain; on a tie the slot whose current item is known (an empty slot over an unread ring)
+      (if (and (not blocked)
+               (or (lua/nil? best) (or (> gain (lua/aget best 2)) (and (= gain (lua/aget best 2)) (> known (lua/aget best 4))))))
+        (upg-best-from w gear items cand slots (+ i 1) (lua/array slot gain (lua/aget gear slot) known))
+        (upg-best-from w gear items cand slots (+ i 1) best)))))
+
+;; Where the item does the most for this character, and by how much: {slot, gain, the replaced item id or nil,
+;; 1 if the replaced item's facts are known}; nil when it has no slot this character can fill. `gear` is
+;; {[slot] = item id}, `items` the facts by item id. Use upg-can-use first: this only scores.
+(defn upg-best [(class : String) (w : Any) (gear : Any) (items : Any) (cand : Any)] : Any
+  (upg-best-from w gear items cand (upg-slots (lua/get cand "loc") class) 1 (lua/nil)))

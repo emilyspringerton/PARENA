@@ -32,6 +32,10 @@
 --   copy FROM TO                    give TO the same plan as FROM (TO keeps its own class)
 --   class CHARACTER CLASS           plan for a character the Character Board has not seen yet, as this class
 --   export                          the plans as MacroSync's kits.lua (what `forge build` bakes into the addon)
+--   upgrades [CHARACTER]            the gear optimizer: every spare item on the account (bags, bank, mail) and which
+--                                   characters it would improve, by how much; or one character's best upgrades
+--   role CHARACTER [ROLE]           the stat weights the optimizer uses for a character (tank, strength, agility,
+--                                   hunter, caster, healer); the class's levelling role until set
 --   ledger [FILE]                   the whole account in ONE spreadsheet file (default <FORGE_DIR>/ledger.csv; - for
 --                                   stdout): a row per item per character -- worn, bags, bank, mail -- each carrying the
 --                                   character's realm, class, race, level, gold and where it last was
@@ -71,11 +75,13 @@ end
 local K = dofile(opts.lib .. "/kits.lua")
 local S = dofile(opts.lib .. "/macros.lua")
 local R = dofile(opts.lib .. "/journal_reader.lua")   -- the sandboxed SavedVariables loader
+local U = dofile(opts.lib .. "/upgrades.lua")         -- the gear optimizer's rules (stdlib/collection/upgrades.prn)
 
 local BOARD_VAR = os.getenv("BOARD_VAR") or "CharacterBoardDB"
 local MS_VAR = os.getenv("MACROSYNC_VAR") or "MacroSyncDB"
 local FAFNIR_VAR = os.getenv("FAFNIR_VAR") or "FafnirsBedDB"
 local ITEM_NAMES = {}
+local ITEM_FACTS = {}      -- what Fafnir's Bed recorded about each gear item: slot, levels, type, binding, stats
 local ROWS = {}            -- every Character Board snapshot ever taken, every account: the progression series
 local PLANS = opts.dir .. "/kits.lua"
 
@@ -198,6 +204,13 @@ local function characters(plans)
         local db = load_db(path, FAFNIR_VAR)
         if db and type(db.chars) == "table" then
             for id, n in pairs(db.names or {}) do ITEM_NAMES[id] = n end
+            for id, f in pairs(db.items or {}) do ITEM_FACTS[tonumber(id) or id] = f end
+            for who, b in pairs(db.bound or {}) do
+                local c = chars[who] or {}
+                c.bound = c.bound or {}
+                for id in pairs(b) do c.bound[tonumber(id) or id] = true end
+                chars[who] = c
+            end
             for who, h in pairs(db.chars) do
                 local c = chars[who] or {}
                 c.hold = h
@@ -552,6 +565,110 @@ local cmd = table.remove(args, 1)
 local plans = load_plans()
 local chars = characters(plans)
 
+-- The gear optimizer (founder, 2026-11-14: "a gear optimizer that lets us figure out what alts benefit from certain
+-- gear upgrades"). The rules -- who can use an item, which slot, the score, the gain over what is worn -- are
+-- stdlib/collection/upgrades.prn; this walks every spare copy on the account against every character.
+local SOON = 10   -- also show items a character can use within this many levels
+
+local function role_of(who, c)
+    local p = plans[who]
+    if p and p.role and U.upgRoleOk(p.role) == 1 then return p.role end
+    return U.upgDefaultRole(c.class or "")
+end
+
+local function gear_map(c)
+    local g = {}
+    for slot, id in pairs(c.hold and c.hold.gear or {}) do g[tonumber(slot) or slot] = tonumber(id) or id end
+    return g
+end
+
+-- Can this copy go to someone other than its holder? "own" for the holder, "bound" when it cannot, else how it moves.
+local function movable(holder_c, id, f)
+    if holder_c.bound and holder_c.bound[id] then return "bound" end
+    if f.bind == 1 then return "bound" end
+    return f.bind == 2 and "bind on equip" or "tradeable"
+end
+
+local function unscored(f)
+    local t = {}
+    for k, v in pairs(f.other or {}) do t[#t + 1] = k .. " " .. tostring(v) end
+    table.sort(t)
+    return t
+end
+
+-- Every (character, spare item) pair where the item would be a gain. One row per character and item id: the
+-- character's own copy first, else the first other holder that can send it.
+local function upgrade_rows(only)
+    local spares = {}
+    local holders = {}
+    for who in pairs(chars) do holders[#holders + 1] = who end
+    table.sort(holders)
+    for _, who in ipairs(holders) do
+        local h = chars[who].hold
+        for _, loc in ipairs({ "bags", "bank", "mail" }) do
+            for id, n in pairs(h and h.loc and h.loc[loc] or {}) do
+                id = tonumber(id) or id
+                if ITEM_FACTS[id] then spares[#spares + 1] = { id = id, holder = who, loc = loc, count = n } end
+            end
+        end
+    end
+    local best = {}
+    for _, sp in ipairs(spares) do
+        local f = ITEM_FACTS[sp.id]
+        for who, c in pairs(chars) do
+            if (not only or who == only) and (c.class or "") ~= "" and c.level then
+                local own = who == sp.holder
+                local how = own and "own" or movable(chars[sp.holder], sp.id, f)
+                local code = U.upgCanUse(c.class, c.level, f)
+                if how ~= "bound" and (code == 0 or (code == 4 and (f.req or 0) <= c.level + SOON)) then
+                    local role = role_of(who, c)
+                    local b = U.upgBest(c.class, U.upgWeights(role), gear_map(c), ITEM_FACTS, f)
+                    if b and b[2] > 0 then
+                        local key = who .. "\0" .. tostring(sp.id)
+                        local prev = best[key]
+                        if not prev or (own and prev.how ~= "own") then
+                            best[key] = {
+                                character = who, role = role, id = sp.id, item = item_name(sp.id), slot = b[1],
+                                slot_name = SLOTS[b[1]], gain = b[2] / 10, replaces = b[3] and item_name(b[3]) or nil,
+                                guess = b[4] ~= 1, at_level = code == 4 and f.req or nil, holder = sp.holder,
+                                location = sp.loc, how = how, unscored = arr(unscored(f)),
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local rows = arr()
+    for _, r in pairs(best) do rows[#rows + 1] = r end
+    table.sort(rows, function(a, b)
+        if a.gain ~= b.gain then return a.gain > b.gain end
+        if a.character ~= b.character then return a.character < b.character end
+        return tostring(a.id) < tostring(b.id)
+    end)
+    return rows, #spares
+end
+
+local function where_text(r, who)
+    if r.how == "own" then
+        return r.location == "bags" and "in your bags -- equip it" or ("in your " .. r.location)
+    end
+    return string.format("%s's %s -- %s", r.holder, r.location, r.how == "bind on equip" and "bind on equip, mail it unworn" or "mail it")
+end
+
+local function upgrade_line(r, name_col)
+    local line = string.format("%-10s %-26s %+7.1f", r.slot_name, r.item, r.gain)
+    if r.guess then line = line .. "~" end
+    if r.replaces then line = line .. "  over " .. r.replaces end
+    if r.at_level then line = line .. "  [at level " .. r.at_level .. "]" end
+    line = line .. "  (" .. where_text(r) .. ")"
+    if name_col then line = string.format("%-20s %s", r.character, line) end
+    if #r.unscored > 0 then line = line .. "  [not scored: " .. table.concat(r.unscored, ", ") .. "]" end
+    return "  " .. line
+end
+
+local UPGRADE_KEY = "gain = score points for the character's role; ~ = what it replaces has no facts yet (log that character in once)"
+
 local function char_arg(i)
     local who, why = resolve(chars, args[i])
     if not who then refuse(why) end
@@ -602,6 +719,8 @@ forge reset CHARACTER             forget the character's whole plan
 forge copy FROM TO                give TO the same plan as FROM (same class)
 forge class CHARACTER CLASS       plan for a character the Character Board has not seen yet
 forge export                      the plans as MacroSync's kits.lua
+forge upgrades [CHARACTER]        spare gear on the account and which characters it improves; or one character's upgrades
+forge role CHARACTER [ROLE]       how the optimizer weighs a character: tank, strength, agility, hunter, caster, healer
 forge ledger [FILE]               the whole account in one spreadsheet (default FORGE_DIR/ledger.csv; - prints it)
 forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload) (scripts/forge.sh)
 forge build                       bake the plans into the addon package (scripts/forge.sh)
@@ -842,6 +961,61 @@ elseif cmd == "ledger" then
     if path ~= "-" then
         out({ file = path, rows = #rows, characters = n },
             string.format("ledger: %d rows for %d character%s -> %s", #rows, n, n == 1 and "" or "s", path))
+    end
+
+elseif cmd == "upgrades" then
+    if next(ITEM_FACTS) == nil then
+        refuse("no item facts yet: rebuild the addon package (forge build), then log in each character once -- Fafnir's Bed now records each item's slot, levels and stats")
+    end
+    if args[1] then
+        local who = char_arg(1)
+        local c = needs_class(who)
+        local rows = upgrade_rows(who)
+        local role = role_of(who, c)
+        local lines = { string.format("%s (%s %s, weighed as %s): upgrades on the account", who, c.class or "?",
+                                      tostring(c.level or "?"), role) }
+        for _, r in ipairs(rows) do lines[#lines + 1] = upgrade_line(r) end
+        if #rows == 0 then lines[#lines + 1] = "  nothing spare on the account beats what " .. who .. " wears" end
+        lines[#lines + 1] = "  " .. UPGRADE_KEY
+        out({ character = who, role = role, upgrades = rows }, table.concat(lines, "\n"))
+    else
+        local rows, nspare = upgrade_rows(nil)
+        local by_item, order = {}, {}
+        for _, r in ipairs(rows) do
+            local k = tostring(r.id)
+            if not by_item[k] then by_item[k] = arr(); order[#order + 1] = k end
+            by_item[k][#by_item[k] + 1] = r
+        end
+        local lines = { "Spare gear on the account, and who it would improve (best gain first)" }
+        local items = arr()
+        for _, k in ipairs(order) do
+            local list = by_item[k]
+            local first = list[1]
+            items[#items + 1] = { id = first.id, item = first.item, characters = list }
+            lines[#lines + 1] = string.format("  %s  [%s]", first.item, first.slot_name)
+            for _, r in ipairs(list) do lines[#lines + 1] = "  " .. upgrade_line(r, true) end
+        end
+        if #rows == 0 then lines[#lines + 1] = string.format("  none of the %d spare gear items is an upgrade for anyone", nspare) end
+        lines[#lines + 1] = "  " .. UPGRADE_KEY
+        out({ items = items }, table.concat(lines, "\n"))
+    end
+
+elseif cmd == "role" then
+    local who = char_arg(1)
+    local c = needs_class(who)
+    if args[2] then
+        local role = args[2]:lower()
+        if U.upgRoleOk(role) ~= 1 then refuse("no role called '" .. args[2] .. "' (" .. table.concat(U.upgRoles(), ", ") .. ")") end
+        plans[who] = plans[who] or {}
+        plans[who].class = plans[who].class or c.class
+        plans[who].role = role
+        save_plans(plans)
+        out({ ok = true, character = who, role = role }, who .. " is weighed as " .. role .. " now")
+    else
+        local p = plans[who]
+        local set = p and p.role
+        out({ character = who, role = role_of(who, c), default = set == nil },
+            who .. " is weighed as " .. role_of(who, c) .. (set and "" or " (the class's levelling role; forge role " .. who .. " ROLE to change)"))
     end
 
 elseif cmd == "export" then
