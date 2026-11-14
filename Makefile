@@ -1475,6 +1475,8 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	./.parena-bootstrap build stdlib/collection/kits.prn -o $(REFLUX_WOW_OUT)/kits.lua
 	./.parena-bootstrap build stdlib/collection/macros.prn -o $(REFLUX_WOW_OUT)/macros.lua
 	$(LUA51) tests/reflux_wow/kits_test.lua $(REFLUX_WOW_OUT)/kits.lua $(REFLUX_WOW_OUT)/macros.lua
+	@# The plugin forge: CLI over a fake WTF folder, `forge build` baking a kit /ascend then writes, the local server.
+	bash tests/reflux_wow/forge_test.sh $(REFLUX_WOW_OUT)/forge
 	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.
 	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
 	@# The Collection hub (/collection): its registry against the package, the window, Open, and older clients.

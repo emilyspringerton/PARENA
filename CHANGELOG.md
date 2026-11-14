@@ -1,5 +1,31 @@
 ## 2026-11-14
 
+- **The plugin forge, `/chars`, and equipment** (founder: "a server we can run local with full cli interface for the
+  plugin forge -- i want to be able to see and plan kits for characters", "i want to see the inv and levels and
+  equip of the chars, including monies", "ideally all from one in game screen").
+  - **`/chars`** (and a Characters button in `/collection`): one in-game window over the whole account -- a list of
+    characters, highest level first, with their gold and the account total, and the chosen one's sheet: level,
+    race, class, xp and rested, item level, played, zone, professions, gold, every equipped slot, bags, bank, mail,
+    and the macro kit planned for it. Reads the Character Board's and Fafnir's Bed's account-wide tables.
+    `/chars <name>` opens on one character; with no frames API it prints the sheet. Rules in `hub.prn`.
+  - **Equipment**: Fafnir's Bed reads what is worn (`GetInventoryItemID` over the equipped slots, on login and
+    `PLAYER_EQUIPMENT_CHANGED`) into an `equipped` location (so `/fafnir`'s who-has-this counts worn gear; REFLUX
+    2010's location 4) and gear by slot. An empty read is ignored, like the bags' 0-slot rule.
+  - **Macro kits** (`stdlib/collection/kits.prn`): a character's plan of drops, edits and adds over its class set,
+    with validation (16-character names; bodies over 255 flagged). MacroSync bakes the planned kits in
+    (`MACROSYNC_KITS` at package time) and `/ascend` applies the plan for the character it runs on.
+  - **The forge** (`scripts/forge.sh`, `runtime/wow/forge/`): a Lua 5.1 command line -- `characters`, `show`, `kit`,
+    `add`/`edit`/`drop`/`restore`/`reset`/`copy`/`class`, `export`, `build`, `serve` -- over the WTF folder's
+    SavedVariables, plans kept in `$FORGE_DIR/kits.lua` outside the repo, and `--json` for the page. `serve` runs
+    `forge_server.c` (C99, localhost only, one request at a time) with a page that shows the sheet and edits the kit
+    by running the same commands. A visitor's text goes through an argument file, never onto a command line; the
+    API needs an `X-Forge: 1` header and a 127.0.0.1/localhost Host, so other sites cannot drive it.
+  - Tests: `kits_test` 39, `forge_test.sh` 34 (CLI, build, server refusals, a body with quotes and `$( )` stored as
+    text), `forge_ascend_test` 7 (a baked kit is what `/ascend` writes), `hub_test` 104 (the screen and the gear
+    scan); `make test-reflux-wow` passes. The page was driven in headless Chromium (plan from the page, no console
+    errors). The server cross-compiles for Windows with MinGW but has not run there; nothing here has been seen in
+    the real client yet. README: new "World of Warcraft" section.
+
 - **CollectionHub is now a control panel: a button for every slash command** (founder: "a flame addon control
   surface inside of wow, some kind of window, as I discover the slash commands"). `/collection` still opens the
   window; under each addon's status lines there is now one button per command and subcommand it has, wrapped to the

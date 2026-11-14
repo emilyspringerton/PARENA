@@ -469,6 +469,35 @@ Run the tests with `python3 -m unittest plugins.static_analysis.test_static_anal
 integer subset only (SSE/x87/string ops/adc/sbb/mul are reported as `unimplemented`, never guessed); no jump-table
 recovery or type inference; cross-block flag reuse is handled only through single-predecessor chains.
 
+## World of Warcraft: the Collection addons and the plugin forge (2026-11)
+
+The Collection of Value is a package of WoW addons whose rules are PARENA compiled to Lua 5.1 (`stdlib/collection/`),
+with thin host glue in `runtime/wow/`. `scripts/wow-package-collection.sh` builds the package (`WOW_INTERFACE` is
+required); `make test-reflux-wow` plays every addon in a stubbed client under real Lua 5.1. None of it has been
+probed against the WoW Forever client beyond what each addon's header says.
+
+- **`/collection`** -- one window over every addon: loaded or not, where it saves, and a button for every slash
+  command it documents (hover for what it does; commands that need a name or a riddle go to the chat box to finish).
+- **`/chars`** -- every character on the account in one screen: level, xp and rested, item level, zone, professions,
+  gold, everything equipped (by slot), bags, bank and mail, read from the Character Board and Fafnir's Bed. The bank
+  and mail are as of the last time that character opened them.
+- **The plugin forge** -- see and plan each character's macro kit outside the game, then bake the plans into
+  MacroSync so `/ascend` writes the planned kit (the class set minus drops, with edits, plus your own macros):
+
+  ```sh
+  export FORGE_DIR=~/wow-forge WOW_WTF_DIR="/path/to/the/client/WTF"   # FORGE_DIR: outside the repo
+  scripts/forge.sh characters          # everyone: class, level, gold, kit
+  scripts/forge.sh show emily          # one character: xp, gold, gear, bags, bank, mail
+  scripts/forge.sh kit emily           # the planned kit, macro by macro
+  scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
+  scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)
+  WOW_INTERFACE=... scripts/forge.sh build   # bake the plans into the package, then copy AddOns/ into the client
+  ```
+
+  Needs Lua 5.1 and a C compiler (MSYS2 UCRT64 gcc on Windows; the server builds with `-lws2_32` there -- checked by
+  cross-compiling with MinGW, not yet run on Windows). The forge reads SavedVariables, which the client writes on
+  logout and `/reload`. Tested end to end over a fake WTF folder (`tests/reflux_wow/forge_test.sh`).
+
 ## Related
 
 - `NORTHSTAR.md` — language design, VS0 Definition of Done, self-hosting plan

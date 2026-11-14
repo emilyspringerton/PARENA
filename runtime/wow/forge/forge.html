@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugin Forge</title>
+<link rel="icon" href="data:,">
+<!-- runtime/wow/forge/forge.html -- the plugin forge's page, served by forge_server.c (scripts/forge.sh serve). Every
+     action is a forge command run through POST /api, so the page and the command line always agree. No external
+     files: it works offline. Everything shown comes from the forge's JSON and is set as text, never as HTML. -->
+<style>
+:root {
+  --bg: #15120e; --panel: #1f1a14; --line: #3a3126; --text: #e9e1d2; --dim: #a39684; --gold: #d8b25e;
+  --class: #8a8a8a; --edited: #6fa8dc; --added: #7fd17f; --dropped: #d97a6c; --live: #d8b25e;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 20px; color: var(--gold); font-weight: 600; letter-spacing: .02em; }
+header .sum { color: var(--dim); }
+main { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; min-height: calc(100vh - 54px); }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } nav { max-height: 40vh; } }
+nav { border-right: 1px solid var(--line); overflow: auto; }
+nav button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--text); padding: 10px 16px; cursor: pointer; font: inherit; }
+nav button:hover, nav button.on { background: var(--panel); }
+nav button .who { font-weight: 600; }
+nav button .meta { color: var(--dim); font-size: 12px; display: block; }
+section { padding: 18px 22px; overflow: auto; }
+h2 { margin: 0 0 4px; font-size: 18px; color: var(--gold); }
+h3 { margin: 22px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+.facts { color: var(--dim); }
+.facts b { color: var(--text); font-weight: 500; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 28px; }
+table { border-collapse: collapse; width: 100%; }
+td { padding: 3px 8px 3px 0; vertical-align: top; border-bottom: 1px solid #2a231b; }
+td.n { text-align: right; color: var(--dim); white-space: nowrap; }
+td.slot { color: var(--dim); white-space: nowrap; width: 1%; }
+.none { color: var(--dim); font-style: italic; }
+.macro { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; background: var(--panel); }
+.macro .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.macro .name { font-weight: 600; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid currentColor; }
+.tag.class { color: var(--class); } .tag.edited { color: var(--edited); } .tag.added { color: var(--added); } .tag.live { color: var(--live); }
+.macro pre { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #cfc6b6; }
+.macro .acts { margin-left: auto; display: flex; gap: 6px; }
+button.small, .form button { background: #2c251c; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px;
+  font: inherit; font-size: 12px; cursor: pointer; }
+button.small:hover, .form button:hover { border-color: var(--gold); }
+textarea, input, select { background: #120f0b; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; font: 12px ui-monospace, Consolas, monospace; }
+textarea { width: 100%; min-height: 64px; }
+.form { display: grid; gap: 6px; max-width: 560px; }
+.form .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.dropped { color: var(--dropped); }
+#msg { position: fixed; right: 16px; bottom: 16px; max-width: 420px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 10px 14px; display: none; }
+#msg.err { border-color: var(--dropped); }
+</style>
+</head>
+<body>
+<header><h1>Plugin Forge</h1><span class="sum" id="sum">loading…</span></header>
+<main>
+  <nav id="list" aria-label="Characters"></nav>
+  <section id="detail"><p class="none">Pick a character.</p></section>
+</main>
+<div id="msg" role="status"></div>
+<script>
+"use strict";
+// One forge command: its words, one per line, escaped the way forge.lua's --argfile reads them.
+async function forge(...words) {
+  const body = words.map(w => String(w).replace(/\r/g, "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n")).join("\n") + "\n";
+  const r = await fetch("/api", { method: "POST", headers: { "X-Forge": "1", "Content-Type": "text/plain" }, body });
+  const j = await r.json();
+  if (j && j.error) throw new Error(j.error);
+  return j;
+}
+const $ = (tag, attrs, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "on") for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
+    else if (k === "class") e.className = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return e;
+};
+const money = c => { c = Math.floor(c || 0); return `${Math.floor(c / 10000)}g ${Math.floor(c / 100) % 100}s ${c % 100}c`; };
+let current = null;
+function note(text, err) {
+  const m = document.getElementById("msg");
+  m.textContent = text; m.className = err ? "err" : ""; m.style.display = "block";
+  clearTimeout(note.t); note.t = setTimeout(() => m.style.display = "none", err ? 7000 : 3000);
+}
+async function act(...words) {
+  try { const j = await forge(...words); note(j.message || "done"); await loadList(); await show(current); }
+  catch (e) { note(e.message, true); }
+}
+
+async function loadList() {
+  const j = await forge("characters");
+  const list = document.getElementById("list");
+  list.replaceChildren();
+  let gold = 0;
+  for (const c of j.characters || []) {
+    gold += c.gold || 0;
+    const b = $("button", { class: c.character === current ? "on" : "", on: { click: () => show(c.character) } },
+      $("span", { class: "who" }, c.character),
+      $("span", { class: "meta" }, `${c.class || "?"} ${c.level ?? "?"} · ${money(c.gold)} · kit ${c.kit}${c.planned ? ` (${c.planned} planned)` : ""}`));
+    list.append(b);
+  }
+  if (!(j.characters || []).length) list.append($("p", { class: "none", style: "padding:16px" },
+    "No characters yet: log in and out once with the Character Board and Fafnir's Bed, or plan one with `forge class NAME-Realm CLASS`."));
+  document.getElementById("sum").textContent = `${(j.characters || []).length} characters · ${money(gold)} across the account`;
+  if (!current && j.characters && j.characters.length) await show(j.characters[0].character);
+}
+
+function itemsTable(loc, title) {
+  const total = (loc.items || []).reduce((a, r) => a + r.count, 0);
+  return [$("h3", {}, loc.read ? `${title} — ${loc.items.length} kinds, ${total} items` : title),
+    loc.read ? (loc.items.length ? $("table", {}, loc.items.map(r => $("tr", {}, $("td", {}, r.name), $("td", { class: "n" }, r.count > 1 ? `×${r.count}` : ""))))
+                                  : $("p", { class: "none" }, "empty"))
+             : $("p", { class: "none" }, title === "Bags" ? "not read yet" : `not read yet — open the ${title.toLowerCase() === "mail" ? "mailbox" : "bank"} once with this character`)];
+}
+
+let showing = 0;
+async function show(who) {
+  if (!who) return;
+  current = who;
+  const mine = ++showing;           // a slower, older request must not overwrite the one asked for last
+  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.querySelector(".who").textContent === who);
+  let v;
+  try { v = await forge("show", who); } catch (e) { note(e.message, true); return; }
+  if (mine !== showing) return;
+  const d = document.getElementById("detail");
+  const pct = (a, b) => b > 0 ? Math.floor(a * 100 / b) : null;
+  const xp = pct(v.xp || 0, v.xpmax || 0), rested = pct(v.rested || 0, v.xpmax || 0);
+  const k = v.kit;
+  const kitNodes = k.macros.map(m => $("div", { class: "macro" },
+    $("div", { class: "top" }, $("span", { class: "name" }, m.name), $("span", { class: "tag " + m.origin }, m.origin),
+      m.live ? $("span", { class: "tag live", title: "on the character since its last /ascend" }, "on character") : null,
+      m.long ? $("span", { class: "tag", style: "color:var(--dropped)" }, "over 255: the client may cut it") : null,
+      $("span", { class: "acts" },
+        $("button", { class: "small", on: { click: () => editForm(m) } }, "edit"),
+        m.origin === "edited" ? $("button", { class: "small", on: { click: () => act("restore", who, m.name) } }, "restore") : null,
+        $("button", { class: "small", on: { click: () => act("drop", who, m.name) } }, m.origin === "added" ? "remove" : "drop"))),
+    $("pre", {}, m.body)));
+  const add = $("div", { class: "form" },
+    $("div", { class: "row" }, $("input", { id: "newname", maxlength: "16", placeholder: "Name (16 max)", size: "16" })),
+    $("textarea", { id: "newbody", placeholder: "#showtooltip\n/cast [@mouseover,harm,nodead][] {Spell A|Spell B}" }),
+    $("div", { class: "row" }, $("button", { on: { click: () => act("add", who, document.getElementById("newname").value, document.getElementById("newbody").value) } }, "Add macro"),
+      k.changes ? $("button", { on: { click: () => { if (confirm(`Forget every planned change for ${who}?`)) act("reset", who); } } }, "Reset to the class set") : null));
+  d.replaceChildren(...[
+    $("h2", {}, who),
+    $("p", { class: "facts" }, $("b", {}, `level ${v.level ?? "?"} ${v.race || ""} ${v.class || ""}`),
+      xp !== null ? ` · xp ${xp}% of the level, ${rested}% rested` : "", v.ilvl ? ` · item level ${v.ilvl}` : "",
+      v.zone ? ` · in ${v.zone}` : "", v.seen ? ` · last seen ${new Date(v.seen * 1000).toLocaleString()}` : ""),
+    $("p", { class: "facts" }, $("b", {}, money(v.gold)), v.profs ? ` · ${v.profs}` : ""),
+    $("div", { class: "cols" },
+      $("div", {}, $("h3", {}, "Equipped"), v.gear.length ? $("table", {}, v.gear.map(g => $("tr", {}, $("td", { class: "slot" }, g.slot_name), $("td", {}, g.name))))
+                                                  : $("p", { class: "none" }, "not read yet — log in with this character once")),
+      $("div", {}, itemsTable(v.bags, "Bags")),
+      $("div", {}, itemsTable(v.bank, "Bank"), itemsTable(v.mail, "Mail"))),
+    $("h3", {}, `Macro kit — ${k.macros.length} macros, ${k.changes} planned change${k.changes === 1 ? "" : "s"}`),
+    k.class_set === 0 && v.class ? $("p", { class: "none" }, `${v.class} has no class set yet: the kit is only what you add.`) : null,
+    k.dropped.length ? $("p", { class: "dropped" }, "dropped: ", k.dropped.join(", "), " ",
+      ...k.dropped.map(n => $("button", { class: "small", on: { click: () => act("restore", who, n) } }, `restore ${n}`))) : null,
+    k.ascended ? (k.will_prune.length ? $("p", { class: "facts" }, "the next /ascend prunes: ", k.will_prune.join(", ")) : null)
+               : $("p", { class: "none" }, "/ascend has not run on this character yet (or it has not logged out since)."),
+    ...kitNodes,
+    $("h3", {}, "Add a macro"), add,
+    $("p", { class: "facts" }, "Plans take effect in game after `scripts/forge.sh build`, copying AddOns/ into the client, and /ascend on the character.")
+  ].filter(n => n != null));
+  function editForm(m) {
+    const ta = $("textarea", {}, m.body);
+    const box = $("div", { class: "form" }, ta, $("div", { class: "row" },
+      $("button", { on: { click: () => act("edit", who, m.name, ta.value) } }, `Save ${m.name}`),
+      $("button", { on: { click: () => show(who) } }, "Cancel")));
+    const card = [...document.querySelectorAll(".macro")].find(e => e.querySelector(".name").textContent === m.name);
+    if (card) { card.querySelector("pre").replaceWith(box); ta.focus(); }
+  }
+}
+loadList().catch(e => note(e.message, true));
+</script>
+</body>
+</html>
