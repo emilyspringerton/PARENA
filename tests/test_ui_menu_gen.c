@@ -22,6 +22,10 @@ int menu_path_pop(int);
 int menu_path_leaf(int);
 int menu_path_parent_sel(int);
 int menu_path_enter(int, int, int);
+int menu_page_count(int, int);
+int menu_page_first(int, int);
+int menu_page_turn(int, int, int);
+int menu_page_of(int, int);
 
 int menu_col(int idx __attribute__((unused)), int cols __attribute__((unused))) {
     return (idx % cols);
@@ -192,6 +196,38 @@ int menu_path_enter(int path __attribute__((unused)), int cell __attribute__((un
     return menu_path_push(path, cell);
     } else {
     return path;
+    }
+}
+
+int menu_page_count(int count __attribute__((unused)), int per __attribute__((unused))) {
+    if (((count <= 0) || (per <= 0))) {
+    return 1;
+    } else {
+    return ((count + (per - 1)) / per);
+    }
+}
+
+int menu_page_first(int page __attribute__((unused)), int per __attribute__((unused))) {
+    if (((page < 0) || (per < 0))) {
+    return 0;
+    } else {
+    return (page * per);
+    }
+}
+
+int menu_page_turn(int page __attribute__((unused)), int delta __attribute__((unused)), int pages __attribute__((unused))) {
+    if ((pages <= 0)) {
+    return 0;
+    } else {
+    return ((((page + delta) % pages) + pages) % pages);
+    }
+}
+
+int menu_page_of(int index __attribute__((unused)), int per __attribute__((unused))) {
+    if (((per <= 0) || (index < 0))) {
+    return 0;
+    } else {
+    return (index / per);
     }
 }
 
