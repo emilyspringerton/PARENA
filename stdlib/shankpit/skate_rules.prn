@@ -1,0 +1,80 @@
+;; stdlib/shankpit/skate_rules.prn -- SHANKPIT's skateboard: how it pushes, rolls, carves, takes a hill, and what
+;; counts as a landed trick (founder, 2026-11-14: "can we get shankpit skateboarding working?").
+;;
+;; The host (SHANKPIT packages/simulation/skate.h) owns the state -- the board's heading, its speed along that heading,
+;; the trick in the air -- and integrates it once a tick (64 Hz). Everything a rider would call "the feel" is decided
+;; here, in whole numbers so it is total and identical on every target:
+;;   speeds        milli-units per tick (1000 = 1.0 unit/tick; walking tops out at 950, MAX_SPEED)
+;;   accelerations milli-units per tick per tick
+;;   angles        degrees, or tenths of a degree per tick for turning
+;;   surfaces      permille of the terrain normal's y (1000 flat), as stdlib/shankpit/slide_rules.prn reads them
+;;
+;; A board rolls only along its heading (wheels do not slide sideways): turning the board turns the motion. Uphill
+;; costs speed and downhill gives it, through the same terrain gradient the crouch-slide feels. In the air the motion
+;; keeps its direction while the rider can spin the board; the landing compares the two.
+;;
+;; Generated to C by SHANKPIT's scripts/gen_skate_rules.sh; packages/simulation/skate_rules.h carries the same numbers
+;; compiled in (a test proves they agree), like slide_rules.
+
+(module shankpit/skate-rules)
+(export skate-push-accel-milli skate-push-top-milli skate-cap-milli skate-roll-keep-permille skate-brake-milli
+        skate-carve-decideg skate-slope-accel-milli skate-landing skate-spin-halves skate-trick-points
+        skate-combo-mult skate-flip-ticks skate-bail-ticks)
+
+(defn skate-clamp [(lo : I32) (hi : I32) (x : I32)] : I32 (if (< x lo) lo (if (> x hi) hi x)))
+
+;; Pushing (holding forward): this much speed a tick, up to push-top. A push never takes you past push-top; only a
+;; hill does, up to the cap.
+(defn skate-push-accel-milli [] : I32 28)
+(defn skate-push-top-milli [] : I32 1050)
+(defn skate-cap-milli [] : I32 1600)
+;; Rolling: the speed kept each tick with nothing pressed (996 = 22% lost in a second on the flat).
+(defn skate-roll-keep-permille [] : I32 996)
+;; Braking (holding back): speed lost a tick.
+(defn skate-brake-milli [] : I32 45)
+
+;; How fast the board can turn, tenths of a degree a tick: 50 (5 degrees, 320 a second) standing still, falling to 18
+;; at the cap -- fast boards carve wide.
+(defn skate-carve-decideg [(speed-milli : I32)] : I32
+  (let [s (skate-clamp 0 1600 speed-milli)]
+    (- 50 (/ (* s 32) 1600))))
+
+;; A hill: the speed gained (positive) or lost (negative) a tick, from how steep the surface is and how much of the
+;; board's heading points downhill (align, -1000 straight uphill .. 1000 straight down). Flat (ny 990 and up) or no
+;; surface (ny 0) is nothing. Steepness is three times the tilt, saturating at ~48 degrees, as for the slide.
+(defn skate-slope-accel-milli [(ny-permille : I32) (align-permille : I32)] : I32
+  (if (or (<= ny-permille 0) (>= ny-permille 990)) 0
+    (let [steep (skate-clamp 0 1000 (* (- 1000 ny-permille) 3))
+          align (skate-clamp (- 0 1000) 1000 align-permille)]
+      (/ (* (/ (* 14 steep) 1000) align) 1000))))
+
+;; The landing. angle: degrees between where the board points and where it is going (0..180). flip-left: ticks of a
+;; flip still turning (0 when none or done). speed-milli: how fast it is going.
+;;   0 clean      within 35 degrees
+;;   1 switch     within 35 degrees of backwards -- rolled away fakie, which is fine
+;;   2 bail       sideways, or a flip not finished -- the rider comes off
+;; Rolling slower than 150 (barely moving) never bails on the angle: you can land a slow 90 and just stand there.
+(defn skate-landing [(angle : I32) (flip-left : I32) (speed-milli : I32)] : I32
+  (cond
+    ((> flip-left 0) 2)
+    ((< speed-milli 150) 0)
+    ((<= angle 35) 0)
+    ((>= angle 145) 1)
+    (true 2)))
+
+;; How many half turns a spin of `degrees` (absolute, accumulated in the air) counts as: 0 under 150, 1 for a 180,
+;; 2 for a 360, ... each 180 counted once 30 degrees short of it, the leniency every board game gives.
+(defn skate-spin-halves [(degrees : I32)] : I32
+  (if (< degrees 150) 0 (+ 1 (/ (- degrees 150) 180))))
+
+;; Points: 1 ollie, 2 kickflip, 3 heelflip, 4 grab (each tick-held grab scores once), 5 a half turn of spin.
+(defn skate-trick-points [(trick : I32)] : I32
+  (cond ((= trick 1) 100) ((= trick 2) 300) ((= trick 3) 300) ((= trick 4) 250) ((= trick 5) 200) (true 0)))
+
+;; The combo multiplier: tricks landed in a row without a bail (1 the first, up to 5).
+(defn skate-combo-mult [(landed-in-a-row : I32)] : I32 (skate-clamp 1 5 landed-in-a-row))
+
+;; A flip takes this many ticks to come round (~0.4 s); landing before then is a bail.
+(defn skate-flip-ticks [] : I32 26)
+;; After a bail the rider is off the board this long (~1.1 s) before getting back on.
+(defn skate-bail-ticks [] : I32 70)
