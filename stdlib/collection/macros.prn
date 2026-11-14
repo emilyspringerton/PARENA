@@ -13,7 +13,7 @@
 ;;   PalJudge     open with a judgement and start swinging
 ;;   PalSeal      seal up; shift for the crusader seal
 ;;   PalHeal      quick heal: mouseover, else your friendly target, else yourself
-;;   PalBigHeal   the big heal, same targeting
+;;   PalBigHeal   the big heal, same targeting; over a dead friend (mouseover or target) it casts Redemption instead
 ;;   PalBubble    the bubble
 ;;   PalBubHearth bubble, then hearth -- the classic exit
 ;;   PalStun      stun your mouseover enemy, else your target
@@ -37,7 +37,7 @@
     (lua/array "PalJudge" "#showtooltip\n/startattack\n/cast {Judgement|Judgment}")
     (lua/array "PalSeal" "#showtooltip\n/cast [mod:shift] {Seal of the Crusader|Seal of Command}; {Seal of Righteousness|Seal of Command}")
     (lua/array "PalHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Flash of Light|Holy Light}")
-    (lua/array "PalBigHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Holy Light}")
+    (lua/array "PalBigHeal" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Redemption}; [@mouseover,help,nodead][help,nodead][@player] {Holy Light}")
     (lua/array "PalBubble" "#showtooltip\n/cast {Divine Shield|Divine Protection}")
     (lua/array "PalBubHearth" "#showtooltip {Divine Shield|Divine Protection}\n/cast {Divine Shield|Divine Protection}\n/use Hearthstone")
     (lua/array "PalStun" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hammer of Justice}")
@@ -55,7 +55,7 @@
 ;;   PriShield    the shield: mouseover friend, else friendly target, else yourself
 ;;   PriHeal      quick heal, same targeting      PriBigHeal  the big heal you know, same targeting
 ;;   PriRenew     renew, same targeting           PriFort     fortitude, same targeting
-;;   PriDispel    dispel, same targeting          PriRez      resurrect your target
+;;   PriDispel    dispel, same targeting          PriRez      resurrect your dead mouseover, else your target
 ;;   PriSWP       pain on your mouseover enemy, else your target      PriMindBlast  likewise
 ;;   PriSmite     smite                           PriFlay     mind flay
 ;;   PriWand      start the wand without toggling it off (!Shoot)
@@ -69,7 +69,7 @@
     (lua/array "PriRenew" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Renew}")
     (lua/array "PriFort" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Power Word: Fortitude}")
     (lua/array "PriDispel" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Dispel Magic|Purify}")
-    (lua/array "PriRez" "#showtooltip\n/cast {Resurrection}")
+    (lua/array "PriRez" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Resurrection}")
     (lua/array "PriSWP" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Shadow Word: Pain}")
     (lua/array "PriMindBlast" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Mind Blast}")
     (lua/array "PriSmite" "#showtooltip\n/cast {Smite}")
@@ -112,7 +112,7 @@
     (lua/array "ShaFrostShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Frost Shock}")
     (lua/array "ShaFlameShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Flame Shock}")
     (lua/array "ShaPurge" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Purge}")
-    (lua/array "ShaHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Wave}")
+    (lua/array "ShaHeal" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Ancestral Spirit}; [@mouseover,help,nodead][help,nodead][@player] {Healing Wave}")
     (lua/array "ShaQuickHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
     (lua/array "ShaChainHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Chain Heal}")
     (lua/array "ShaCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Purify Spirit|Cleanse Spirit|Cure Poison}")

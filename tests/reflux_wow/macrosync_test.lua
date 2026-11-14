@@ -177,6 +177,41 @@ s.ascend()
 eq(find(orc.char, "ShaPanic").body, "#showtooltip\n/castsequence [@player] reset=combat/15 Healing Wave, Healing Wave, Healing Wave",
    "a shaman with no War Stomp (and no Lesser Healing Wave yet) just heals")
 
+-- ===== every heal, in every class's set, can be cast on whoever is under the mouse =========================
+-- (founder, 2026-11-14: "all the classes with healing need mouseover macros for their heals"). The panic button is
+-- the one heal on yourself by design; totems are not cast on anyone.
+do
+    local heals = { "Heal", "Holy Light", "Flash of Light", "Lay on Hands", "Renew", "Healing Wave", "Healing Surge",
+                    "Chain Heal", "Healing Touch", "Regrowth", "Rejuvenation", "Power Word: Shield", "Resurrection",
+                    "Redemption", "Ancestral Spirit", "Rebirth" }
+    local ns = {}
+    local chunk = assert(loadfile(client .. "/AddOns/MacroSync/macros.lua"))
+    local fake = { RefluxCore = { modules = {} } }
+    setfenv(chunk, setmetatable(fake, { __index = _G }))
+    chunk("MacroSync", ns)
+    local S = fake.RefluxCore.modules["collection/macros"]
+    local checked = 0
+    for _, class in ipairs(S.macroClasses()) do
+        for _, m in ipairs(S.macroSet(class)) do
+            local name, body = m[1], m[2]
+            local heals_someone = false
+            for _, h in ipairs(heals) do if body:find(h, 1, true) then heals_someone = true end end
+            if heals_someone and name ~= "ShaPanic" and not name:find("Totem", 1, true) then
+                checked = checked + 1
+                eq(body:find("[@mouseover,help", 1, true) ~= nil, true, class .. " " .. name .. " casts on the mouseover")
+            end
+        end
+    end
+    eq(checked >= 14, true, "every healing class's heals were checked (" .. checked .. ")")
+end
+do
+    local pal = world("PALADIN", { "Holy Light", "Redemption" })
+    local ps = session(pal)
+    ps.ascend()
+    eq(find(pal.char, "PalBigHeal").body, "#showtooltip\n/cast [@mouseover,help,dead][help,dead] Redemption; [@mouseover,help,nodead][help,nodead][@player] Holy Light",
+       "the paladin's big heal raises a dead mouseover, and heals a living one")
+end
+
 -- ===== a level-1 priest ===============================================================================
 local pr = world("PRIEST", { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" })
 s = session(pr)

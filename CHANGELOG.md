@@ -1,5 +1,13 @@
 ## 2026-11-14
 
+- **Every heal casts on your mouseover, and the heals raise the dead** (founder: "all the classes with healing need
+  mouseover macros for their heals"). Checked every class set: every heal (paladin, priest, shaman, druid) already
+  cast on the mouseover, else the friendly target, else yourself -- now pinned by a test that sweeps every set, so a
+  new heal cannot leave it out. The gap was resurrection: `PriRez` now raises a dead mouseover (else your target),
+  and the paladin's and shaman's big heals (`PalBigHeal`, `ShaHeal`) cast Redemption / Ancestral Spirit when the
+  friend under the mouse (or targeted) is dead, healing as before otherwise -- no macro slot spent. `macrosync_test`
+  133.
+
 - **Shaman panic button, `ShaPanic`** (founder: "a panic cast rotation stomp heal macro"). Mash it: War Stomp stuns
   everything around you, then two quick heals on yourself while they are stunned (`/castsequence [@player]
   reset=combat/15`); a shaman without War Stomp (not a Tauren) gets a heal on the first press instead. The shaman set
