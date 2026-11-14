@@ -150,6 +150,113 @@ typedef struct { ProcessError_Tag tag; void *value; } ProcessError;
 static inline __attribute__((unused)) ProcessError ProcessError_SpawnFailed(void) { ProcessError v; v.tag = ProcessError_TAG_SpawnFailed; v.value = NULL; return v; }
 static inline __attribute__((unused)) ProcessError ProcessError_KillFailed(void) { ProcessError v; v.tag = ProcessError_TAG_KillFailed; v.value = NULL; return v; }
 
+typedef struct {
+    int value;
+    int next;
+} BitStep;
+static inline __attribute__((unused)) BitStep BitStep_new(int value, int next) {
+    BitStep v;
+    v.value = value;
+    v.next = next;
+    return v;
+}
+
+typedef struct {
+    int symbol;
+    int next;
+} DecodeStep;
+static inline __attribute__((unused)) DecodeStep DecodeStep_new(int symbol, int next) {
+    DecodeStep v;
+    v.symbol = symbol;
+    v.next = next;
+    return v;
+}
+
+typedef struct {
+    Vec lengths;
+    int next;
+} LenReadStep;
+static inline __attribute__((unused)) LenReadStep LenReadStep_new(Vec lengths, int next) {
+    LenReadStep v;
+    v.lengths = lengths;
+    v.next = next;
+    return v;
+}
+
+typedef struct {
+    Vec lit_counts;
+    Vec lit_symbols;
+    int lit_maxbits;
+    Vec dist_counts;
+    Vec dist_symbols;
+    int dist_maxbits;
+    int next;
+} HuffTables;
+static inline __attribute__((unused)) HuffTables HuffTables_new(Vec lit_counts, Vec lit_symbols, int lit_maxbits, Vec dist_counts, Vec dist_symbols, int dist_maxbits, int next) {
+    HuffTables v;
+    v.lit_counts = lit_counts;
+    v.lit_symbols = lit_symbols;
+    v.lit_maxbits = lit_maxbits;
+    v.dist_counts = dist_counts;
+    v.dist_symbols = dist_symbols;
+    v.dist_maxbits = dist_maxbits;
+    v.next = next;
+    return v;
+}
+
+typedef struct {
+    int pos;
+    int out;
+} InflateStep;
+static inline __attribute__((unused)) InflateStep InflateStep_new(int pos, int out) {
+    InflateStep v;
+    v.pos = pos;
+    v.out = out;
+    return v;
+}
+
+typedef struct {
+    int width;
+    int height;
+    int bit_depth;
+    int color_type;
+    int interlace;
+    int idat_total;
+    int plte_pos;
+    int trns_pos;
+    int trns_len;
+    int ok;
+} PngHeader;
+static inline __attribute__((unused)) PngHeader PngHeader_new(int width, int height, int bit_depth, int color_type, int interlace, int idat_total, int plte_pos, int trns_pos, int trns_len, int ok) {
+    PngHeader v;
+    v.width = width;
+    v.height = height;
+    v.bit_depth = bit_depth;
+    v.color_type = color_type;
+    v.interlace = interlace;
+    v.idat_total = idat_total;
+    v.plte_pos = plte_pos;
+    v.trns_pos = trns_pos;
+    v.trns_len = trns_len;
+    v.ok = ok;
+    return v;
+}
+
+typedef struct {
+    int width;
+    int height;
+    Bytes pixels;
+    int ok;
+} PngImage;
+static inline __attribute__((unused)) PngImage PngImage_new(int width, int height, Bytes pixels, int ok) {
+    PngImage v;
+    v.width = width;
+    v.height = height;
+    v.pixels = pixels;
+    v.ok = ok;
+    return v;
+}
+
 int length(char *);
 int char_at(char *, int);
 int str_eq_(char *, char *);
@@ -178,6 +285,8 @@ Result parse_array(char *, int, Arena *);
 Result parse_object(char *, int, Arena *);
 Result parse_member(char *, int, Arena *);
 Option get(JsonValue, char *);
+int array_len(JsonValue);
+int array_len_at(char *, char *, Arena *);
 Option as_string(JsonValue);
 int raw_connect(char *, int);
 int raw_listen(int);
@@ -213,6 +322,9 @@ Result element_send_keys(Session *, char *, char *, Arena *);
 Result element_text(Session *, char *, Arena *);
 Result page_title(Session *, Arena *);
 Result page_source(Session *, Arena *);
+Result take_screenshot(Session *, Arena *);
+Result perform_key(Session *, char *, int, Arena *);
+Result release_actions(Session *, Arena *);
 Result quit_session(Session *, Arena *);
 int raw_spawn(char *, char *);
 int raw_kill(int);
@@ -220,6 +332,48 @@ Result process_spawn(char *, char *, Arena *);
 Result process_kill(int, Arena *);
 char * run_capture(char *, Arena *);
 int run_capture_exit_code();
+Bytes bytes_alloc(int, Arena *);
+int bytes_len(Bytes);
+int bytes_get(Bytes, int);
+void bytes_set_(Bytes, int, int);
+Bytes bytes_from_string(char *, Arena *);
+char * bytes_to_string_lossy(Bytes, Arena *);
+Bytes bytes_slice(Bytes, int, int, Arena *);
+int base64_value(int);
+int base64_decoded_len(char *);
+int base64_pow2(int);
+Bytes base64_decode(char *, Arena *);
+BitStep read_bit(Bytes, int);
+BitStep read_bits(Bytes, int, int);
+int vec_i32_at(Vec *, int);
+int as_i32(int);
+int count_length(Vec *, int, int);
+Vec build_counts(Vec *, int, int, Arena *);
+Vec build_symbols(Vec *, int, int, Arena *);
+DecodeStep decode_huffman(Bytes, int, Vec *, Vec *, int);
+Vec fixed_lit_lengths(Arena *);
+Vec fixed_dist_lengths(Arena *);
+int length_base(int);
+int length_extra_bits(int);
+int dist_base(int);
+int dist_extra_bits(int);
+int clc_order(int);
+LenReadStep read_code_lengths(Bytes, int, int, Vec *, Vec *, Arena *);
+int clc_value_for_symbol(Vec *, int, int);
+HuffTables read_dynamic_tables(Bytes, int, Arena *);
+InflateStep inflate_huffman_block(Bytes, int, Bytes, int, Vec *, Vec *, int, Vec *, Vec *, int);
+InflateStep inflate_stored_block(Bytes, int, Bytes, int);
+int inflate(Bytes, Bytes, Arena *);
+int read_u32_be(Bytes, int);
+int chunk_is(Bytes, int, int, int, int, int);
+PngHeader png_scan_header(Bytes);
+Bytes png_copy_idat(Bytes, int, Arena *);
+Bytes png_strip_zlib_wrapper(Bytes, int, Arena *);
+int abs_i32(int);
+int paeth_predictor(int, int, int);
+int defilter_byte(int, int, int, int, int);
+Bytes png_defilter(Bytes, int, int, int, Arena *);
+PngImage png_decode(Bytes, Arena *);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -746,17 +900,51 @@ Option get(JsonValue v __attribute__((unused)), char * key __attribute__((unused
     return __match_result_4;
 }
 
-Option as_string(JsonValue v __attribute__((unused))) {
-    Option __match_result_5 __attribute__((unused)) = {0};
+int array_len(JsonValue v __attribute__((unused))) {
+    int __match_result_5 __attribute__((unused)) = {0};
     JsonValue __match_tmp_7 = v;
-    if (__match_tmp_7.tag == 3) {
-        void *s __attribute__((unused)) = __match_tmp_7.value;
-        __match_result_5 = option_some(s);
+    if (__match_tmp_7.tag == 4) {
+        void *items __attribute__((unused)) = __match_tmp_7.value;
+        __match_result_5 = vec_len(items);
     }
     else if (1) {
-        __match_result_5 = option_none();
+        __match_result_5 = -1;
     }
     return __match_result_5;
+}
+
+int array_len_at(char * text __attribute__((unused)), char * key __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int __match_result_6 __attribute__((unused)) = {0};
+    Result __match_tmp_8 = parse(text, dest);
+    if (__match_tmp_8.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_8.value;
+        __match_result_6 = -2;
+    }
+    else if (__match_tmp_8.tag == 1) {
+        void *doc __attribute__((unused)) = __match_tmp_8.value;
+    Option __match_tmp_9 = get((*((JsonValue *)(doc))), key);
+    if (__match_tmp_9.tag == 1) {
+        void *item __attribute__((unused)) = __match_tmp_9.value;
+        __match_result_6 = array_len((*((JsonValue *)(item))));
+    }
+    else if (__match_tmp_9.tag == 0) {
+        __match_result_6 = -1;
+    }
+    }
+    return __match_result_6;
+}
+
+Option as_string(JsonValue v __attribute__((unused))) {
+    Option __match_result_7 __attribute__((unused)) = {0};
+    JsonValue __match_tmp_10 = v;
+    if (__match_tmp_10.tag == 3) {
+        void *s __attribute__((unused)) = __match_tmp_10.value;
+        __match_result_7 = option_some(s);
+    }
+    else if (1) {
+        __match_result_7 = option_none();
+    }
+    return __match_result_7;
 }
 
 int raw_connect(char * host __attribute__((unused)), int port __attribute__((unused))) {
@@ -894,16 +1082,16 @@ char * trim_leading_space(char * s __attribute__((unused)), Arena *dest __attrib
 char * build_request(char * method __attribute__((unused)), char * host __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *crlf __attribute__((unused)) = concat(char_from_code(13, dest), "\n", dest);
     char *head __attribute__((unused)) = concat(concat(concat(concat(concat(concat(concat(method, " ", dest), path, dest), " HTTP/1.1", dest), crlf, dest), concat("Host: ", host, dest), dest), crlf, dest), concat("Connection: close", crlf, dest), dest);
-    char * __match_result_6 __attribute__((unused)) = {0};
-    Option __match_tmp_8 = body;
-    if (__match_tmp_8.tag == 1) {
-        void *b __attribute__((unused)) = __match_tmp_8.value;
-        __match_result_6 = concat(concat(concat(concat(concat(head, "Content-Type: application/json", dest), crlf, dest), concat("Content-Length: ", i32_to_string(length(b), dest), dest), dest), concat(crlf, crlf, dest), dest), b, dest);
+    char * __match_result_8 __attribute__((unused)) = {0};
+    Option __match_tmp_11 = body;
+    if (__match_tmp_11.tag == 1) {
+        void *b __attribute__((unused)) = __match_tmp_11.value;
+        __match_result_8 = concat(concat(concat(concat(concat(head, "Content-Type: application/json", dest), crlf, dest), concat("Content-Length: ", i32_to_string(length(b), dest), dest), dest), concat(crlf, crlf, dest), dest), b, dest);
     }
-    else if (__match_tmp_8.tag == 0) {
-        __match_result_6 = concat(head, crlf, dest);
+    else if (__match_tmp_11.tag == 0) {
+        __match_result_8 = concat(head, crlf, dest);
     }
-    return __match_result_6;
+    return __match_result_8;
 }
 
 int parse_status_line(char * line __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -911,17 +1099,17 @@ int parse_status_line(char * line __attribute__((unused)), Arena *dest __attribu
     if ((vec_len(&(parts)) < 2)) {
     return 0;
     } else {
-    int __match_result_7 __attribute__((unused)) = {0};
-    Result __match_tmp_9 = parse_i32(vec_get(&(parts), 1), dest);
-    if (__match_tmp_9.tag == 1) {
-        void *n __attribute__((unused)) = __match_tmp_9.value;
-        __match_result_7 = (*((int *)(n)));
+    int __match_result_9 __attribute__((unused)) = {0};
+    Result __match_tmp_12 = parse_i32(vec_get(&(parts), 1), dest);
+    if (__match_tmp_12.tag == 1) {
+        void *n __attribute__((unused)) = __match_tmp_12.value;
+        __match_result_9 = (*((int *)(n)));
     }
-    else if (__match_tmp_9.tag == 0) {
-        void *_ __attribute__((unused)) = __match_tmp_9.value;
-        __match_result_7 = 0;
+    else if (__match_tmp_12.tag == 0) {
+        void *_ __attribute__((unused)) = __match_tmp_12.value;
+        __match_result_9 = 0;
     }
-    return __match_result_7;
+    return __match_result_9;
     }
 }
 
@@ -934,7 +1122,7 @@ HttpResponse parse_http_response(char * raw __attribute__((unused)), Arena *dest
     Vec values __attribute__((unused)) = vec_new(dest);
     int n_lines __attribute__((unused)) = vec_len(&(lines));
     int status __attribute__((unused)) = ((n_lines > 0) ? parse_status_line(trim_trailing_cr(vec_get(&(lines), 0), dest), dest) : 0);
-    int __let_val_0 __attribute__((unused));
+    int __let_val_0 __attribute__((unused)) = {0};
     int i = 1;
     while (1) {
         if ((i >= n_lines)) {
@@ -962,27 +1150,27 @@ HttpResponse parse_http_response(char * raw __attribute__((unused)), Arena *dest
 }
 
 Result http_request(char * method __attribute__((unused)), char * host __attribute__((unused)), int port __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_8 __attribute__((unused)) = {0};
-    Result __match_tmp_10 = tcp_connect(host, port, dest);
-    if (__match_tmp_10.tag == 1) {
-        void *stream __attribute__((unused)) = __match_tmp_10.value;
+    Result __match_result_10 __attribute__((unused)) = {0};
+    Result __match_tmp_13 = tcp_connect(host, port, dest);
+    if (__match_tmp_13.tag == 1) {
+        void *stream __attribute__((unused)) = __match_tmp_13.value;
     (void)(tcp_write(stream, build_request(method, host, path, body, dest), dest));
-    Result __match_tmp_11 = tcp_read(stream, dest);
-    if (__match_tmp_11.tag == 1) {
-        void *raw __attribute__((unused)) = __match_tmp_11.value;
+    Result __match_tmp_14 = tcp_read(stream, dest);
+    if (__match_tmp_14.tag == 1) {
+        void *raw __attribute__((unused)) = __match_tmp_14.value;
     (void)(tcp_close(stream, dest));
-        __match_result_8 = result_ok(HttpResponse_box(dest, parse_http_response(raw, dest)));
+        __match_result_10 = result_ok(HttpResponse_box(dest, parse_http_response(raw, dest)));
     }
-    else if (__match_tmp_11.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_11.value;
-        __match_result_8 = result_err(e);
+    else if (__match_tmp_14.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_14.value;
+        __match_result_10 = result_err(e);
     }
     }
-    else if (__match_tmp_10.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_10.value;
-        __match_result_8 = result_err(e);
+    else if (__match_tmp_13.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_13.value;
+        __match_result_10 = result_err(e);
     }
-    return __match_result_8;
+    return __match_result_10;
 }
 
 Result http_get(char * host __attribute__((unused)), int port __attribute__((unused)), char * path __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1034,38 +1222,38 @@ char * json_escape_string(char * s __attribute__((unused)), Arena *dest __attrib
 }
 
 Result do_request(char * method __attribute__((unused)), char * host __attribute__((unused)), int port __attribute__((unused)), char * path __attribute__((unused)), Option body __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    Result __match_result_9 __attribute__((unused)) = {0};
-    Result __match_tmp_12 = http_request(method, host, port, path, body, dest);
-    if (__match_tmp_12.tag == 0) {
-        void *_ __attribute__((unused)) = __match_tmp_12.value;
-        __match_result_9 = result_err(WebDriverError_box(dest, WebDriverError_ConnectFailed()));
+    Result __match_result_11 __attribute__((unused)) = {0};
+    Result __match_tmp_15 = http_request(method, host, port, path, body, dest);
+    if (__match_tmp_15.tag == 0) {
+        void *_ __attribute__((unused)) = __match_tmp_15.value;
+        __match_result_11 = result_err(WebDriverError_box(dest, WebDriverError_ConnectFailed()));
     }
-    else if (__match_tmp_12.tag == 1) {
-        void *resp __attribute__((unused)) = __match_tmp_12.value;
+    else if (__match_tmp_15.tag == 1) {
+        void *resp __attribute__((unused)) = __match_tmp_15.value;
         HttpResponse r __attribute__((unused)) = (*((HttpResponse *)(resp)));
         int status __attribute__((unused)) = (r).status;
         if (((status < 200) || (status >= 300))) {
-        __match_result_9 = result_err(WebDriverError_box(dest, WebDriverError_ProtocolError((r).body)));
+        __match_result_11 = result_err(WebDriverError_box(dest, WebDriverError_ProtocolError((r).body)));
         } else {
-    Result __match_tmp_13 = parse((r).body, dest);
-    if (__match_tmp_13.tag == 0) {
-        void *_ __attribute__((unused)) = __match_tmp_13.value;
-        __match_result_9 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    Result __match_tmp_16 = parse((r).body, dest);
+    if (__match_tmp_16.tag == 0) {
+        void *_ __attribute__((unused)) = __match_tmp_16.value;
+        __match_result_11 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
     }
-    else if (__match_tmp_13.tag == 1) {
-        void *parsed __attribute__((unused)) = __match_tmp_13.value;
-    Option __match_tmp_14 = get((*((JsonValue *)(parsed))), "value");
-    if (__match_tmp_14.tag == 1) {
-        void *v __attribute__((unused)) = __match_tmp_14.value;
-        __match_result_9 = result_ok(JsonValue_box(dest, (*((JsonValue *)(v)))));
+    else if (__match_tmp_16.tag == 1) {
+        void *parsed __attribute__((unused)) = __match_tmp_16.value;
+    Option __match_tmp_17 = get((*((JsonValue *)(parsed))), "value");
+    if (__match_tmp_17.tag == 1) {
+        void *v __attribute__((unused)) = __match_tmp_17.value;
+        __match_result_11 = result_ok(JsonValue_box(dest, (*((JsonValue *)(v)))));
     }
-    else if (__match_tmp_14.tag == 0) {
-        __match_result_9 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    else if (__match_tmp_17.tag == 0) {
+        __match_result_11 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
     }
     }
         }
     }
-    return __match_result_9;
+    return __match_result_11;
 }
 
 Result new_session(char * host __attribute__((unused)), int port __attribute__((unused)), Arena *dest __attribute__((unused))) {
@@ -1074,189 +1262,243 @@ Result new_session(char * host __attribute__((unused)), int port __attribute__((
 
 Result new_session_with_capabilities(char * host __attribute__((unused)), int port __attribute__((unused)), char * capabilities_json __attribute__((unused)), Arena *dest __attribute__((unused))) {
     char *body __attribute__((unused)) = concat(concat("{\"capabilities\":{\"alwaysMatch\":", capabilities_json, dest), "}}", dest);
-    Result __match_result_10 __attribute__((unused)) = {0};
-    Result __match_tmp_15 = do_request("POST", host, port, "/session", option_some(body), dest);
-    if (__match_tmp_15.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_15.value;
-        __match_result_10 = result_err(e);
-    }
-    else if (__match_tmp_15.tag == 1) {
-        void *value __attribute__((unused)) = __match_tmp_15.value;
-    Option __match_tmp_16 = get((*((JsonValue *)(value))), "sessionId");
-    if (__match_tmp_16.tag == 1) {
-        void *sid __attribute__((unused)) = __match_tmp_16.value;
-    Option __match_tmp_17 = as_string((*((JsonValue *)(sid))));
-    if (__match_tmp_17.tag == 1) {
-        void *id __attribute__((unused)) = __match_tmp_17.value;
-        __match_result_10 = result_ok(Session_box(dest, Session_new(host, port, id)));
-    }
-    else if (__match_tmp_17.tag == 0) {
-        __match_result_10 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
-    }
-    }
-    else if (__match_tmp_16.tag == 0) {
-        __match_result_10 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
-    }
-    }
-    return __match_result_10;
-}
-
-Result navigate_to(Session * sess __attribute__((unused)), char * url __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/url", dest);
-    char *body __attribute__((unused)) = concat(concat("{\"url\":\"", json_escape_string(url, dest), dest), "\"}", dest);
-    Result __match_result_11 __attribute__((unused)) = {0};
-    Result __match_tmp_18 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
+    Result __match_result_12 __attribute__((unused)) = {0};
+    Result __match_tmp_18 = do_request("POST", host, port, "/session", option_some(body), dest);
     if (__match_tmp_18.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_18.value;
-        __match_result_11 = result_err(e);
-    }
-    else if (__match_tmp_18.tag == 1) {
-        void *_ __attribute__((unused)) = __match_tmp_18.value;
-        __match_result_11 = result_ok(NULL);
-    }
-    return __match_result_11;
-}
-
-Result find_element(Session * sess __attribute__((unused)), char * css_selector __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/element", dest);
-    char *body __attribute__((unused)) = concat(concat("{\"using\":\"css selector\",\"value\":\"", json_escape_string(css_selector, dest), dest), "\"}", dest);
-    Result __match_result_12 __attribute__((unused)) = {0};
-    Result __match_tmp_19 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
-    if (__match_tmp_19.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_19.value;
         __match_result_12 = result_err(e);
     }
-    else if (__match_tmp_19.tag == 1) {
-        void *value __attribute__((unused)) = __match_tmp_19.value;
-    Option __match_tmp_20 = get((*((JsonValue *)(value))), element_ref_key());
+    else if (__match_tmp_18.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_18.value;
+    Option __match_tmp_19 = get((*((JsonValue *)(value))), "sessionId");
+    if (__match_tmp_19.tag == 1) {
+        void *sid __attribute__((unused)) = __match_tmp_19.value;
+    Option __match_tmp_20 = as_string((*((JsonValue *)(sid))));
     if (__match_tmp_20.tag == 1) {
-        void *eid __attribute__((unused)) = __match_tmp_20.value;
-    Option __match_tmp_21 = as_string((*((JsonValue *)(eid))));
-    if (__match_tmp_21.tag == 1) {
-        void *id __attribute__((unused)) = __match_tmp_21.value;
-        __match_result_12 = result_ok(id);
+        void *id __attribute__((unused)) = __match_tmp_20.value;
+        __match_result_12 = result_ok(Session_box(dest, Session_new(host, port, id)));
     }
-    else if (__match_tmp_21.tag == 0) {
+    else if (__match_tmp_20.tag == 0) {
         __match_result_12 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
     }
     }
-    else if (__match_tmp_20.tag == 0) {
+    else if (__match_tmp_19.tag == 0) {
         __match_result_12 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
     }
     }
     return __match_result_12;
 }
 
-Result element_click(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/click", dest);
+Result navigate_to(Session * sess __attribute__((unused)), char * url __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/url", dest);
+    char *body __attribute__((unused)) = concat(concat("{\"url\":\"", json_escape_string(url, dest), dest), "\"}", dest);
     Result __match_result_13 __attribute__((unused)) = {0};
-    Result __match_tmp_22 = do_request("POST", (sess)->host, (sess)->port, path, option_some("{}"), dest);
-    if (__match_tmp_22.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_22.value;
+    Result __match_tmp_21 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
+    if (__match_tmp_21.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_21.value;
         __match_result_13 = result_err(e);
     }
-    else if (__match_tmp_22.tag == 1) {
-        void *_ __attribute__((unused)) = __match_tmp_22.value;
+    else if (__match_tmp_21.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_21.value;
         __match_result_13 = result_ok(NULL);
     }
     return __match_result_13;
 }
 
-Result element_send_keys(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/value", dest);
-    char *body __attribute__((unused)) = concat(concat("{\"text\":\"", json_escape_string(text, dest), dest), "\"}", dest);
+Result find_element(Session * sess __attribute__((unused)), char * css_selector __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/element", dest);
+    char *body __attribute__((unused)) = concat(concat("{\"using\":\"css selector\",\"value\":\"", json_escape_string(css_selector, dest), dest), "\"}", dest);
     Result __match_result_14 __attribute__((unused)) = {0};
-    Result __match_tmp_23 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
-    if (__match_tmp_23.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_23.value;
+    Result __match_tmp_22 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
+    if (__match_tmp_22.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_22.value;
         __match_result_14 = result_err(e);
     }
-    else if (__match_tmp_23.tag == 1) {
-        void *_ __attribute__((unused)) = __match_tmp_23.value;
-        __match_result_14 = result_ok(NULL);
+    else if (__match_tmp_22.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_22.value;
+    Option __match_tmp_23 = get((*((JsonValue *)(value))), element_ref_key());
+    if (__match_tmp_23.tag == 1) {
+        void *eid __attribute__((unused)) = __match_tmp_23.value;
+    Option __match_tmp_24 = as_string((*((JsonValue *)(eid))));
+    if (__match_tmp_24.tag == 1) {
+        void *id __attribute__((unused)) = __match_tmp_24.value;
+        __match_result_14 = result_ok(id);
+    }
+    else if (__match_tmp_24.tag == 0) {
+        __match_result_14 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
+    }
+    else if (__match_tmp_23.tag == 0) {
+        __match_result_14 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
     }
     return __match_result_14;
 }
 
-Result element_text(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/text", dest);
+Result element_click(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/click", dest);
     Result __match_result_15 __attribute__((unused)) = {0};
-    Result __match_tmp_24 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
-    if (__match_tmp_24.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_24.value;
+    Result __match_tmp_25 = do_request("POST", (sess)->host, (sess)->port, path, option_some("{}"), dest);
+    if (__match_tmp_25.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_25.value;
         __match_result_15 = result_err(e);
     }
-    else if (__match_tmp_24.tag == 1) {
-        void *value __attribute__((unused)) = __match_tmp_24.value;
-    Option __match_tmp_25 = as_string((*((JsonValue *)(value))));
-    if (__match_tmp_25.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_25.value;
-        __match_result_15 = result_ok(s);
-    }
-    else if (__match_tmp_25.tag == 0) {
-        __match_result_15 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
-    }
+    else if (__match_tmp_25.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_25.value;
+        __match_result_15 = result_ok(NULL);
     }
     return __match_result_15;
 }
 
-Result page_title(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/title", dest);
+Result element_send_keys(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), char * text __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/value", dest);
+    char *body __attribute__((unused)) = concat(concat("{\"text\":\"", json_escape_string(text, dest), dest), "\"}", dest);
     Result __match_result_16 __attribute__((unused)) = {0};
-    Result __match_tmp_26 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
+    Result __match_tmp_26 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
     if (__match_tmp_26.tag == 0) {
         void *e __attribute__((unused)) = __match_tmp_26.value;
         __match_result_16 = result_err(e);
     }
     else if (__match_tmp_26.tag == 1) {
-        void *value __attribute__((unused)) = __match_tmp_26.value;
-    Option __match_tmp_27 = as_string((*((JsonValue *)(value))));
-    if (__match_tmp_27.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_27.value;
-        __match_result_16 = result_ok(s);
-    }
-    else if (__match_tmp_27.tag == 0) {
-        __match_result_16 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
-    }
+        void *_ __attribute__((unused)) = __match_tmp_26.value;
+        __match_result_16 = result_ok(NULL);
     }
     return __match_result_16;
 }
 
-Result page_source(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/source", dest);
+Result element_text(Session * sess __attribute__((unused)), char * element_id __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat(concat(concat("/session/", (sess)->session_id, dest), "/element/", dest), element_id, dest), "/text", dest);
     Result __match_result_17 __attribute__((unused)) = {0};
-    Result __match_tmp_28 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
-    if (__match_tmp_28.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_28.value;
+    Result __match_tmp_27 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_27.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_27.value;
         __match_result_17 = result_err(e);
     }
-    else if (__match_tmp_28.tag == 1) {
-        void *value __attribute__((unused)) = __match_tmp_28.value;
-    Option __match_tmp_29 = as_string((*((JsonValue *)(value))));
-    if (__match_tmp_29.tag == 1) {
-        void *s __attribute__((unused)) = __match_tmp_29.value;
+    else if (__match_tmp_27.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_27.value;
+    Option __match_tmp_28 = as_string((*((JsonValue *)(value))));
+    if (__match_tmp_28.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_28.value;
         __match_result_17 = result_ok(s);
     }
-    else if (__match_tmp_29.tag == 0) {
+    else if (__match_tmp_28.tag == 0) {
         __match_result_17 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
     }
     }
     return __match_result_17;
 }
 
-Result quit_session(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
-    char *path __attribute__((unused)) = concat("/session/", (sess)->session_id, dest);
+Result page_title(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/title", dest);
     Result __match_result_18 __attribute__((unused)) = {0};
-    Result __match_tmp_30 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
-    if (__match_tmp_30.tag == 0) {
-        void *e __attribute__((unused)) = __match_tmp_30.value;
+    Result __match_tmp_29 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_29.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_29.value;
         __match_result_18 = result_err(e);
     }
-    else if (__match_tmp_30.tag == 1) {
-        void *_ __attribute__((unused)) = __match_tmp_30.value;
-        __match_result_18 = result_ok(NULL);
+    else if (__match_tmp_29.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_29.value;
+    Option __match_tmp_30 = as_string((*((JsonValue *)(value))));
+    if (__match_tmp_30.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_30.value;
+        __match_result_18 = result_ok(s);
+    }
+    else if (__match_tmp_30.tag == 0) {
+        __match_result_18 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
     }
     return __match_result_18;
+}
+
+Result page_source(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/source", dest);
+    Result __match_result_19 __attribute__((unused)) = {0};
+    Result __match_tmp_31 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_31.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_31.value;
+        __match_result_19 = result_err(e);
+    }
+    else if (__match_tmp_31.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_31.value;
+    Option __match_tmp_32 = as_string((*((JsonValue *)(value))));
+    if (__match_tmp_32.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_32.value;
+        __match_result_19 = result_ok(s);
+    }
+    else if (__match_tmp_32.tag == 0) {
+        __match_result_19 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
+    }
+    return __match_result_19;
+}
+
+Result take_screenshot(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/screenshot", dest);
+    Result __match_result_20 __attribute__((unused)) = {0};
+    Result __match_tmp_33 = do_request("GET", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_33.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_33.value;
+        __match_result_20 = result_err(e);
+    }
+    else if (__match_tmp_33.tag == 1) {
+        void *value __attribute__((unused)) = __match_tmp_33.value;
+    Option __match_tmp_34 = as_string((*((JsonValue *)(value))));
+    if (__match_tmp_34.tag == 1) {
+        void *s __attribute__((unused)) = __match_tmp_34.value;
+        __match_result_20 = result_ok(s);
+    }
+    else if (__match_tmp_34.tag == 0) {
+        __match_result_20 = result_err(WebDriverError_box(dest, WebDriverError_BadResponse()));
+    }
+    }
+    return __match_result_20;
+}
+
+Result perform_key(Session * sess __attribute__((unused)), char * key __attribute__((unused)), int down __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/actions", dest);
+    char *kind __attribute__((unused)) = ((down == 1) ? "keyDown" : "keyUp");
+    char *body __attribute__((unused)) = concat(concat(concat(concat("{\"actions\":[{\"type\":\"key\",\"id\":\"keyboard\",\"actions\":[{\"type\":\"", kind, dest), "\",\"value\":\"", dest), key, dest), "\"}]}]}", dest);
+    Result __match_result_21 __attribute__((unused)) = {0};
+    Result __match_tmp_35 = do_request("POST", (sess)->host, (sess)->port, path, option_some(body), dest);
+    if (__match_tmp_35.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_35.value;
+        __match_result_21 = result_err(e);
+    }
+    else if (__match_tmp_35.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_35.value;
+        __match_result_21 = result_ok(NULL);
+    }
+    return __match_result_21;
+}
+
+Result release_actions(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat(concat("/session/", (sess)->session_id, dest), "/actions", dest);
+    Result __match_result_22 __attribute__((unused)) = {0};
+    Result __match_tmp_36 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_36.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_36.value;
+        __match_result_22 = result_err(e);
+    }
+    else if (__match_tmp_36.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_36.value;
+        __match_result_22 = result_ok(NULL);
+    }
+    return __match_result_22;
+}
+
+Result quit_session(Session * sess __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char *path __attribute__((unused)) = concat("/session/", (sess)->session_id, dest);
+    Result __match_result_23 __attribute__((unused)) = {0};
+    Result __match_tmp_37 = do_request("DELETE", (sess)->host, (sess)->port, path, option_none(), dest);
+    if (__match_tmp_37.tag == 0) {
+        void *e __attribute__((unused)) = __match_tmp_37.value;
+        __match_result_23 = result_err(e);
+    }
+    else if (__match_tmp_37.tag == 1) {
+        void *_ __attribute__((unused)) = __match_tmp_37.value;
+        __match_result_23 = result_ok(NULL);
+    }
+    return __match_result_23;
 }
 
 int raw_spawn(char * path __attribute__((unused)), char * arg1 __attribute__((unused))) {
@@ -1290,5 +1532,1064 @@ char * run_capture(char * cmd __attribute__((unused)), Arena *dest __attribute__
 
 int run_capture_exit_code(void) {
     return (run_capture_last_exit_code_impl());
+}
+
+Bytes bytes_alloc(int len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_alloc_impl(dest, len));
+}
+
+int bytes_len(Bytes b __attribute__((unused))) {
+    return (bytes_len_impl(b));
+}
+
+int bytes_get(Bytes b __attribute__((unused)), int idx __attribute__((unused))) {
+    return (bytes_get_impl(b, idx));
+}
+
+void bytes_set_(Bytes b __attribute__((unused)), int idx __attribute__((unused)), int val __attribute__((unused))) {
+    bytes_set_impl(b, idx, val);
+}
+
+Bytes bytes_from_string(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_from_string_impl(dest, s));
+}
+
+char * bytes_to_string_lossy(Bytes b __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_to_string_lossy_impl(b, dest));
+}
+
+Bytes bytes_slice(Bytes b __attribute__((unused)), int start __attribute__((unused)), int end __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    return (bytes_slice_impl(b, start, end, dest));
+}
+
+int base64_value(int c __attribute__((unused))) {
+    return (((c >= 65) && (c <= 90)) ? (c - 65) : (((c >= 97) && (c <= 122)) ? ((c - 97) + 26) : (((c >= 48) && (c <= 57)) ? ((c - 48) + 52) : ((c == 43) ? 62 : ((c == 47) ? 63 : (((c == 32) || ((c == 9) || ((c == 10) || (c == 13)))) ? -2 : -1))))));
+}
+
+int base64_decoded_len(char * s __attribute__((unused))) {
+    int n __attribute__((unused)) = length(s);
+    int __loop_result_8 __attribute__((unused));
+    int i = 0;
+    int k = 0;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_8 = ((k * 6) / 8);
+        break;
+        } else {
+        int c __attribute__((unused)) = char_at(s, i);
+        int v __attribute__((unused)) = base64_value(c);
+        if ((v >= 0)) {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (k + 1);
+        i = __recur_tmp_0;
+        k = __recur_tmp_1;
+        continue;
+        } else {
+        if ((v == -2)) {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = k;
+        i = __recur_tmp_0;
+        k = __recur_tmp_1;
+        continue;
+        } else {
+        if ((c == 61)) {
+        __loop_result_8 = ((k * 6) / 8);
+        break;
+        } else {
+        __loop_result_8 = -1;
+        break;
+        }
+        }
+        }
+        }
+    }
+    return __loop_result_8;
+}
+
+int base64_pow2(int k __attribute__((unused))) {
+    return ((k == 0) ? 1 : ((k == 1) ? 2 : ((k == 2) ? 4 : ((k == 3) ? 8 : ((k == 4) ? 16 : ((k == 5) ? 32 : 64))))));
+}
+
+Bytes base64_decode(char * s __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int total __attribute__((unused)) = base64_decoded_len(s);
+    if ((total < 0)) {
+    return bytes_alloc(0, dest);
+    } else {
+    Bytes out __attribute__((unused)) = bytes_alloc(total, dest);
+    int n __attribute__((unused)) = length(s);
+    int __loop_result_9 __attribute__((unused));
+    int i = 0;
+    int acc = 0;
+    int bits = 0;
+    int o = 0;
+    while (1) {
+        if (((i >= n) || (o >= total))) {
+        __loop_result_9 = o;
+        break;
+        } else {
+        int c __attribute__((unused)) = char_at(s, i);
+        int v __attribute__((unused)) = base64_value(c);
+        if ((c == 61)) {
+        __loop_result_9 = o;
+        break;
+        } else {
+        if ((v < 0)) {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = acc;
+        int __recur_tmp_2 = bits;
+        int __recur_tmp_3 = o;
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        bits = __recur_tmp_2;
+        o = __recur_tmp_3;
+        continue;
+        } else {
+        if (((bits + 6) >= 8)) {
+        int a2 __attribute__((unused)) = ((acc * 64) + v);
+        int b2 __attribute__((unused)) = ((bits + 6) - 8);
+        int div __attribute__((unused)) = base64_pow2(b2);
+        (void)(bytes_set_(out, o, (a2 / div)));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (a2 - ((a2 / div) * div));
+        int __recur_tmp_2 = b2;
+        int __recur_tmp_3 = (o + 1);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        bits = __recur_tmp_2;
+        o = __recur_tmp_3;
+        continue;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = ((acc * 64) + v);
+        int __recur_tmp_2 = (bits + 6);
+        int __recur_tmp_3 = o;
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        bits = __recur_tmp_2;
+        o = __recur_tmp_3;
+        continue;
+        }
+        }
+        }
+        }
+    }
+    return out;
+    }
+}
+
+BitStep read_bit(Bytes data __attribute__((unused)), int bitpos __attribute__((unused))) {
+    int byte_idx __attribute__((unused)) = (bitpos / 8);
+    int bit_idx __attribute__((unused)) = (bitpos % 8);
+    int b __attribute__((unused)) = bytes_get(data, byte_idx);
+    return BitStep_new(((b >> bit_idx) & 1), (bitpos + 1));
+}
+
+BitStep read_bits(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), int n __attribute__((unused))) {
+    BitStep __loop_result_10 __attribute__((unused));
+    int i = 0;
+    int pos = bitpos;
+    int acc = 0;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_10 = BitStep_new(acc, pos);
+        break;
+        } else {
+        BitStep step __attribute__((unused)) = read_bit(data, pos);
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (step).next;
+        int __recur_tmp_2 = (acc | ((step).value << i));
+        i = __recur_tmp_0;
+        pos = __recur_tmp_1;
+        acc = __recur_tmp_2;
+        continue;
+        }
+    }
+    return __loop_result_10;
+}
+
+int vec_i32_at(Vec * v __attribute__((unused)), int idx __attribute__((unused))) {
+    return (*((int *)(vec_get(v, idx))));
+}
+
+int as_i32(int x __attribute__((unused))) {
+    return x;
+}
+
+int count_length(Vec * lengths __attribute__((unused)), int n __attribute__((unused)), int target_len __attribute__((unused))) {
+    int __loop_result_11 __attribute__((unused));
+    int i = 0;
+    int c = 0;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_11 = c;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (c + (((*((int *)(vec_get(lengths, i)))) == target_len) ? 1 : 0));
+        i = __recur_tmp_0;
+        c = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_11;
+}
+
+Vec build_counts(Vec * lengths __attribute__((unused)), int n __attribute__((unused)), int maxbits __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec counts __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_12 __attribute__((unused));
+    int len = 1;
+    while (1) {
+        if ((len <= maxbits)) {
+    (void)(vec_push_(&(counts), vec_box_i32(&(counts), count_length(lengths, n, len))));
+        int __recur_tmp_0 = (len + 1);
+        len = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return counts;
+}
+
+Vec build_symbols(Vec * lengths __attribute__((unused)), int n __attribute__((unused)), int maxbits __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec symbols __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_13 __attribute__((unused));
+    int len = 1;
+    while (1) {
+        if ((len <= maxbits)) {
+    void * __loop_result_14 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < n)) {
+    if (((*((int *)(vec_get(lengths, i)))) == len)) {
+        (void)(vec_push_(&(symbols), vec_box_i32(&(symbols), i)));
+    }
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        int __recur_tmp_0 = (len + 1);
+        len = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return symbols;
+}
+
+DecodeStep decode_huffman(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), Vec * counts __attribute__((unused)), Vec * symbols __attribute__((unused)), int maxbits __attribute__((unused))) {
+    DecodeStep __loop_result_15 __attribute__((unused));
+    int len = 1;
+    int pos = bitpos;
+    int code = 0;
+    int first = 0;
+    int index = 0;
+    while (1) {
+        if ((len > maxbits)) {
+        __loop_result_15 = DecodeStep_new(-1, pos);
+        break;
+        } else {
+        BitStep bstep __attribute__((unused)) = read_bit(data, pos);
+        int code2 __attribute__((unused)) = (code | (bstep).value);
+        int count __attribute__((unused)) = (*((int *)(vec_get(counts, (len - 1)))));
+        if (((code2 - first) < count)) {
+        __loop_result_15 = DecodeStep_new((*((int *)(vec_get(symbols, (index + (code2 - first)))))), (bstep).next);
+        break;
+        } else {
+        int __recur_tmp_0 = (len + 1);
+        int __recur_tmp_1 = (bstep).next;
+        int __recur_tmp_2 = (code2 << 1);
+        int __recur_tmp_3 = ((first + count) << 1);
+        int __recur_tmp_4 = (index + count);
+        len = __recur_tmp_0;
+        pos = __recur_tmp_1;
+        code = __recur_tmp_2;
+        first = __recur_tmp_3;
+        index = __recur_tmp_4;
+        continue;
+        }
+        }
+    }
+    return __loop_result_15;
+}
+
+Vec fixed_lit_lengths(Arena *dest __attribute__((unused))) {
+    Vec v __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_16 __attribute__((unused));
+    int i0 = 0;
+    while (1) {
+        if ((i0 < 144)) {
+    (void)(vec_push_(&(v), vec_box_i32(&(v), 8)));
+        int __recur_tmp_0 = (i0 + 1);
+        i0 = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    void * __loop_result_17 __attribute__((unused));
+    int i1 = 144;
+    while (1) {
+        if ((i1 < 256)) {
+    (void)(vec_push_(&(v), vec_box_i32(&(v), 9)));
+        int __recur_tmp_0 = (i1 + 1);
+        i1 = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    void * __loop_result_18 __attribute__((unused));
+    int i2 = 256;
+    while (1) {
+        if ((i2 < 280)) {
+    (void)(vec_push_(&(v), vec_box_i32(&(v), 7)));
+        int __recur_tmp_0 = (i2 + 1);
+        i2 = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    void * __loop_result_19 __attribute__((unused));
+    int i3 = 280;
+    while (1) {
+        if ((i3 < 288)) {
+    (void)(vec_push_(&(v), vec_box_i32(&(v), 8)));
+        int __recur_tmp_0 = (i3 + 1);
+        i3 = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return v;
+}
+
+Vec fixed_dist_lengths(Arena *dest __attribute__((unused))) {
+    Vec v __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_20 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i < 30)) {
+    (void)(vec_push_(&(v), vec_box_i32(&(v), 5)));
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return v;
+}
+
+int length_base(int code __attribute__((unused))) {
+    return ((code < 8) ? (3 + (code - 0)) : ((code == 8) ? 11 : ((code == 9) ? 13 : ((code == 10) ? 15 : ((code == 11) ? 17 : ((code == 12) ? 19 : ((code == 13) ? 23 : ((code == 14) ? 27 : ((code == 15) ? 31 : ((code == 16) ? 35 : ((code == 17) ? 43 : ((code == 18) ? 51 : ((code == 19) ? 59 : ((code == 20) ? 67 : ((code == 21) ? 83 : ((code == 22) ? 99 : ((code == 23) ? 115 : ((code == 24) ? 131 : ((code == 25) ? 163 : ((code == 26) ? 195 : ((code == 27) ? 227 : 258)))))))))))))))))))));
+}
+
+int length_extra_bits(int code __attribute__((unused))) {
+    return ((code < 8) ? 0 : ((code < 12) ? 1 : ((code < 16) ? 2 : ((code < 20) ? 3 : ((code < 24) ? 4 : ((code < 28) ? 5 : 0))))));
+}
+
+int dist_base(int code __attribute__((unused))) {
+    return ((code == 0) ? 1 : ((code == 1) ? 2 : ((code == 2) ? 3 : ((code == 3) ? 4 : ((code == 4) ? 5 : ((code == 5) ? 7 : ((code == 6) ? 9 : ((code == 7) ? 13 : ((code == 8) ? 17 : ((code == 9) ? 25 : ((code == 10) ? 33 : ((code == 11) ? 49 : ((code == 12) ? 65 : ((code == 13) ? 97 : ((code == 14) ? 129 : ((code == 15) ? 193 : ((code == 16) ? 257 : ((code == 17) ? 385 : ((code == 18) ? 513 : ((code == 19) ? 769 : ((code == 20) ? 1025 : ((code == 21) ? 1537 : ((code == 22) ? 2049 : ((code == 23) ? 3073 : ((code == 24) ? 4097 : ((code == 25) ? 6145 : ((code == 26) ? 8193 : ((code == 27) ? 12289 : ((code == 28) ? 16385 : 24577)))))))))))))))))))))))))))));
+}
+
+int dist_extra_bits(int code __attribute__((unused))) {
+    return ((code < 4) ? 0 : ((code < 6) ? 1 : ((code < 8) ? 2 : ((code < 10) ? 3 : ((code < 12) ? 4 : ((code < 14) ? 5 : ((code < 16) ? 6 : ((code < 18) ? 7 : ((code < 20) ? 8 : ((code < 22) ? 9 : ((code < 24) ? 10 : ((code < 26) ? 11 : ((code < 28) ? 12 : 13)))))))))))));
+}
+
+int clc_order(int i __attribute__((unused))) {
+    return ((i == 0) ? 16 : ((i == 1) ? 17 : ((i == 2) ? 18 : ((i == 3) ? 0 : ((i == 4) ? 8 : ((i == 5) ? 7 : ((i == 6) ? 9 : ((i == 7) ? 6 : ((i == 8) ? 10 : ((i == 9) ? 5 : ((i == 10) ? 11 : ((i == 11) ? 4 : ((i == 12) ? 12 : ((i == 13) ? 3 : ((i == 14) ? 13 : ((i == 15) ? 2 : ((i == 16) ? 14 : ((i == 17) ? 1 : 15))))))))))))))))));
+}
+
+LenReadStep read_code_lengths(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), int total __attribute__((unused)), Vec * clc_counts __attribute__((unused)), Vec * clc_symbols __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Vec out __attribute__((unused)) = vec_new(dest);
+    LenReadStep __loop_result_21 __attribute__((unused));
+    double pos = bitpos;
+    double prev = 0;
+    while (1) {
+        if ((vec_len(&(out)) >= total)) {
+        __loop_result_21 = LenReadStep_new(out, pos);
+        break;
+        } else {
+        DecodeStep dstep __attribute__((unused)) = decode_huffman(data, pos, clc_counts, clc_symbols, 7);
+        int sym __attribute__((unused)) = (dstep).symbol;
+        int p1 __attribute__((unused)) = (dstep).next;
+        if ((sym < 16)) {
+        int seq __attribute__((unused)) = 0;
+        (void)(vec_push_(&(out), vec_box_i32(&(out), sym)));
+        double __recur_tmp_0 = p1;
+        double __recur_tmp_1 = sym;
+        pos = __recur_tmp_0;
+        prev = __recur_tmp_1;
+        continue;
+        } else {
+        if ((sym == 16)) {
+        BitStep ex __attribute__((unused)) = read_bits(data, p1, 2);
+        int rep __attribute__((unused)) = (3 + (ex).value);
+        void * __let_val_0 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < rep)) {
+    (void)(vec_push_(&(out), vec_box_i32(&(out), as_i32(prev))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_0) filled __attribute__((unused)) = __let_val_0;
+        double __recur_tmp_0 = (ex).next;
+        double __recur_tmp_1 = prev;
+        pos = __recur_tmp_0;
+        prev = __recur_tmp_1;
+        continue;
+        } else {
+        if ((sym == 17)) {
+        BitStep ex __attribute__((unused)) = read_bits(data, p1, 3);
+        int rep __attribute__((unused)) = (3 + (ex).value);
+        void * __let_val_1 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < rep)) {
+    (void)(vec_push_(&(out), vec_box_i32(&(out), 0)));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_1) filled __attribute__((unused)) = __let_val_1;
+        double __recur_tmp_0 = (ex).next;
+        double __recur_tmp_1 = 0;
+        pos = __recur_tmp_0;
+        prev = __recur_tmp_1;
+        continue;
+        } else {
+        BitStep ex __attribute__((unused)) = read_bits(data, p1, 7);
+        int rep __attribute__((unused)) = (11 + (ex).value);
+        void * __let_val_2 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < rep)) {
+    (void)(vec_push_(&(out), vec_box_i32(&(out), 0)));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_2) filled __attribute__((unused)) = __let_val_2;
+        double __recur_tmp_0 = (ex).next;
+        double __recur_tmp_1 = 0;
+        pos = __recur_tmp_0;
+        prev = __recur_tmp_1;
+        continue;
+        }
+        }
+        }
+        }
+    }
+    return __loop_result_21;
+}
+
+int clc_value_for_symbol(Vec * raw_values __attribute__((unused)), int hclen __attribute__((unused)), int target __attribute__((unused))) {
+    int __loop_result_22 __attribute__((unused));
+    int i = 0;
+    while (1) {
+        if ((i >= hclen)) {
+        __loop_result_22 = 0;
+        break;
+        } else {
+        if ((clc_order(i) == target)) {
+        __loop_result_22 = (*((int *)(vec_get(raw_values, i))));
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        }
+        }
+    }
+    return __loop_result_22;
+}
+
+HuffTables read_dynamic_tables(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    BitStep hlit_s __attribute__((unused)) = read_bits(data, bitpos, 5);
+    int hlit __attribute__((unused)) = (257 + (hlit_s).value);
+    BitStep hdist_s __attribute__((unused)) = read_bits(data, (hlit_s).next, 5);
+    int hdist __attribute__((unused)) = (1 + (hdist_s).value);
+    BitStep hclen_s __attribute__((unused)) = read_bits(data, (hdist_s).next, 4);
+    int hclen __attribute__((unused)) = (4 + (hclen_s).value);
+    Vec raw_values __attribute__((unused)) = vec_new(dest);
+    int __let_val_1 __attribute__((unused)) = {0};
+    int i = 0;
+    int pos = (hclen_s).next;
+    while (1) {
+        if ((i >= hclen)) {
+        __let_val_1 = pos;
+        break;
+        } else {
+        BitStep vs __attribute__((unused)) = read_bits(data, pos, 3);
+        (void)(vec_push_(&(raw_values), vec_box_i32(&(raw_values), (vs).value)));
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (vs).next;
+        i = __recur_tmp_0;
+        pos = __recur_tmp_1;
+        continue;
+        }
+    }
+    int final_pos __attribute__((unused)) = __let_val_1;
+    Vec clc_raw __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_23 __attribute__((unused));
+    int s = 0;
+    while (1) {
+        if ((s < 19)) {
+    (void)(vec_push_(&(clc_raw), vec_box_i32(&(clc_raw), clc_value_for_symbol(&(raw_values), hclen, s))));
+        int __recur_tmp_0 = (s + 1);
+        s = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    Vec clc_counts __attribute__((unused)) = build_counts(&(clc_raw), 19, 7, dest);
+    Vec clc_symbols __attribute__((unused)) = build_symbols(&(clc_raw), 19, 7, dest);
+    LenReadStep lens_step __attribute__((unused)) = read_code_lengths(data, final_pos, (hlit + hdist), &(clc_counts), &(clc_symbols), dest);
+    Vec all_lens __attribute__((unused)) = (lens_step).lengths;
+    Vec lit_lens __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_24 __attribute__((unused));
+    int li = 0;
+    while (1) {
+        if ((li < hlit)) {
+    (void)(vec_push_(&(lit_lens), vec_box_i32(&(lit_lens), vec_i32_at(&(all_lens), li))));
+        int __recur_tmp_0 = (li + 1);
+        li = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    Vec dist_lens __attribute__((unused)) = vec_new(dest);
+    void * __loop_result_25 __attribute__((unused));
+    int di = 0;
+    while (1) {
+        if ((di < hdist)) {
+    (void)(vec_push_(&(dist_lens), vec_box_i32(&(dist_lens), vec_i32_at(&(all_lens), (hlit + di)))));
+        int __recur_tmp_0 = (di + 1);
+        di = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return HuffTables_new(build_counts(&(lit_lens), hlit, 15, dest), build_symbols(&(lit_lens), hlit, 15, dest), 15, build_counts(&(dist_lens), hdist, 15, dest), build_symbols(&(dist_lens), hdist, 15, dest), 15, (lens_step).next);
+}
+
+InflateStep inflate_huffman_block(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), Bytes output __attribute__((unused)), int out_pos __attribute__((unused)), Vec * lit_counts __attribute__((unused)), Vec * lit_symbols __attribute__((unused)), int lit_maxbits __attribute__((unused)), Vec * dist_counts __attribute__((unused)), Vec * dist_symbols __attribute__((unused)), int dist_maxbits __attribute__((unused))) {
+    InflateStep __loop_result_26 __attribute__((unused));
+    double pos = bitpos;
+    double opos = out_pos;
+    while (1) {
+        DecodeStep dstep __attribute__((unused)) = decode_huffman(data, pos, lit_counts, lit_symbols, lit_maxbits);
+        int sym __attribute__((unused)) = (dstep).symbol;
+        int p1 __attribute__((unused)) = (dstep).next;
+        if ((sym == 256)) {
+        __loop_result_26 = InflateStep_new(p1, opos);
+        break;
+        } else {
+        if ((sym < 256)) {
+        int seq __attribute__((unused)) = 0;
+        (void)(bytes_set_(output, opos, sym));
+        double __recur_tmp_0 = p1;
+        double __recur_tmp_1 = (opos + 1);
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        } else {
+        int lcode __attribute__((unused)) = (sym - 257);
+        BitStep lex __attribute__((unused)) = read_bits(data, p1, length_extra_bits(lcode));
+        int match_len __attribute__((unused)) = (length_base(lcode) + (lex).value);
+        DecodeStep ddstep __attribute__((unused)) = decode_huffman(data, (lex).next, dist_counts, dist_symbols, dist_maxbits);
+        int dcode __attribute__((unused)) = (ddstep).symbol;
+        int p2 __attribute__((unused)) = (ddstep).next;
+        BitStep dex __attribute__((unused)) = read_bits(data, p2, dist_extra_bits(dcode));
+        int dist __attribute__((unused)) = (dist_base(dcode) + (dex).value);
+        double copy_src __attribute__((unused)) = (opos - dist);
+        void * __let_val_3 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < match_len)) {
+    (void)(bytes_set_(output, (opos + k), bytes_get(output, (copy_src + k))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_3) copied __attribute__((unused)) = __let_val_3;
+        double __recur_tmp_0 = (dex).next;
+        double __recur_tmp_1 = (opos + match_len);
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        }
+        }
+    }
+    return __loop_result_26;
+}
+
+InflateStep inflate_stored_block(Bytes data __attribute__((unused)), int bitpos __attribute__((unused)), Bytes output __attribute__((unused)), int out_pos __attribute__((unused))) {
+    int aligned __attribute__((unused)) = (8 * ((bitpos + 7) / 8));
+    int start_byte __attribute__((unused)) = (aligned / 8);
+    int len_lo __attribute__((unused)) = bytes_get(data, start_byte);
+    int len_hi __attribute__((unused)) = bytes_get(data, (start_byte + 1));
+    int len __attribute__((unused)) = (len_lo | (len_hi << 8));
+    int data_start __attribute__((unused)) = (start_byte + 4);
+    void * __loop_result_27 __attribute__((unused));
+    int k = 0;
+    while (1) {
+        if ((k < len)) {
+    (void)(bytes_set_(output, (out_pos + k), bytes_get(data, (data_start + k))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    return InflateStep_new((8 * (data_start + len)), (out_pos + len));
+}
+
+int inflate(Bytes data __attribute__((unused)), Bytes output __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int __loop_result_28 __attribute__((unused));
+    int pos = 0;
+    int opos = 0;
+    while (1) {
+        BitStep bfinal_s __attribute__((unused)) = read_bit(data, pos);
+        BitStep btype_s __attribute__((unused)) = read_bits(data, (bfinal_s).next, 2);
+        int btype __attribute__((unused)) = (btype_s).value;
+        int p1 __attribute__((unused)) = (btype_s).next;
+        int bfinal __attribute__((unused)) = (bfinal_s).value;
+        if ((btype == 0)) {
+        InflateStep s __attribute__((unused)) = inflate_stored_block(data, p1, output, opos);
+        if ((bfinal == 1)) {
+        __loop_result_28 = (s).out;
+        break;
+        } else {
+        int __recur_tmp_0 = (s).pos;
+        int __recur_tmp_1 = (s).out;
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        }
+        } else {
+        if ((btype == 1)) {
+        Vec litl __attribute__((unused)) = fixed_lit_lengths(dest);
+        Vec distl __attribute__((unused)) = fixed_dist_lengths(dest);
+        Vec lit_counts __attribute__((unused)) = build_counts(&(litl), 288, 15, dest);
+        Vec lit_symbols __attribute__((unused)) = build_symbols(&(litl), 288, 15, dest);
+        Vec dist_counts __attribute__((unused)) = build_counts(&(distl), 30, 15, dest);
+        Vec dist_symbols __attribute__((unused)) = build_symbols(&(distl), 30, 15, dest);
+        InflateStep r __attribute__((unused)) = inflate_huffman_block(data, p1, output, opos, &(lit_counts), &(lit_symbols), 15, &(dist_counts), &(dist_symbols), 15);
+        if ((bfinal == 1)) {
+        __loop_result_28 = (r).out;
+        break;
+        } else {
+        int __recur_tmp_0 = (r).pos;
+        int __recur_tmp_1 = (r).out;
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        }
+        } else {
+        HuffTables tabs __attribute__((unused)) = read_dynamic_tables(data, p1, dest);
+        InflateStep r __attribute__((unused)) = inflate_huffman_block(data, (tabs).next, output, opos, &((tabs).lit_counts), &((tabs).lit_symbols), (tabs).lit_maxbits, &((tabs).dist_counts), &((tabs).dist_symbols), (tabs).dist_maxbits);
+        if ((bfinal == 1)) {
+        __loop_result_28 = (r).out;
+        break;
+        } else {
+        int __recur_tmp_0 = (r).pos;
+        int __recur_tmp_1 = (r).out;
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        }
+        }
+        }
+    }
+    return __loop_result_28;
+}
+
+int read_u32_be(Bytes data __attribute__((unused)), int pos __attribute__((unused))) {
+    int b0 __attribute__((unused)) = bytes_get(data, pos);
+    int b1 __attribute__((unused)) = bytes_get(data, (pos + 1));
+    int b2 __attribute__((unused)) = bytes_get(data, (pos + 2));
+    int b3 __attribute__((unused)) = bytes_get(data, (pos + 3));
+    return ((b0 << 24) + ((b1 << 16) + ((b2 << 8) + b3)));
+}
+
+int chunk_is(Bytes data __attribute__((unused)), int pos __attribute__((unused)), int c0 __attribute__((unused)), int c1 __attribute__((unused)), int c2 __attribute__((unused)), int c3 __attribute__((unused))) {
+    return ((bytes_get(data, pos) == c0) && ((bytes_get(data, (pos + 1)) == c1) && ((bytes_get(data, (pos + 2)) == c2) && (bytes_get(data, (pos + 3)) == c3))));
+}
+
+PngHeader png_scan_header(Bytes data __attribute__((unused))) {
+    PngHeader __loop_result_29 __attribute__((unused));
+    int pos = 8;
+    int width = 0;
+    int height = 0;
+    int bit_depth = 0;
+    int color_type = 0;
+    int interlace = 0;
+    int idat_total = 0;
+    int plte_pos = 0;
+    int trns_pos = 0;
+    int trns_len = 0;
+    int saw_ihdr = 0;
+    while (1) {
+        if ((pos >= bytes_len(data))) {
+        __loop_result_29 = PngHeader_new(width, height, bit_depth, color_type, interlace, idat_total, plte_pos, trns_pos, trns_len, saw_ihdr);
+        break;
+        } else {
+        int clen __attribute__((unused)) = read_u32_be(data, pos);
+        if (chunk_is(data, (pos + 4), 73, 69, 78, 68)) {
+        __loop_result_29 = PngHeader_new(width, height, bit_depth, color_type, interlace, idat_total, plte_pos, trns_pos, trns_len, saw_ihdr);
+        break;
+        } else {
+        if (chunk_is(data, (pos + 4), 73, 72, 68, 82)) {
+        int dpos __attribute__((unused)) = (pos + 8);
+        int __recur_tmp_0 = (pos + (12 + clen));
+        int __recur_tmp_1 = read_u32_be(data, dpos);
+        int __recur_tmp_2 = read_u32_be(data, (dpos + 4));
+        int __recur_tmp_3 = bytes_get(data, (dpos + 8));
+        int __recur_tmp_4 = bytes_get(data, (dpos + 9));
+        int __recur_tmp_5 = bytes_get(data, (dpos + 12));
+        int __recur_tmp_6 = idat_total;
+        int __recur_tmp_7 = plte_pos;
+        int __recur_tmp_8 = trns_pos;
+        int __recur_tmp_9 = trns_len;
+        int __recur_tmp_10 = 1;
+        pos = __recur_tmp_0;
+        width = __recur_tmp_1;
+        height = __recur_tmp_2;
+        bit_depth = __recur_tmp_3;
+        color_type = __recur_tmp_4;
+        interlace = __recur_tmp_5;
+        idat_total = __recur_tmp_6;
+        plte_pos = __recur_tmp_7;
+        trns_pos = __recur_tmp_8;
+        trns_len = __recur_tmp_9;
+        saw_ihdr = __recur_tmp_10;
+        continue;
+        } else {
+        if (chunk_is(data, (pos + 4), 73, 68, 65, 84)) {
+        int __recur_tmp_0 = (pos + (12 + clen));
+        int __recur_tmp_1 = width;
+        int __recur_tmp_2 = height;
+        int __recur_tmp_3 = bit_depth;
+        int __recur_tmp_4 = color_type;
+        int __recur_tmp_5 = interlace;
+        int __recur_tmp_6 = (idat_total + clen);
+        int __recur_tmp_7 = plte_pos;
+        int __recur_tmp_8 = trns_pos;
+        int __recur_tmp_9 = trns_len;
+        int __recur_tmp_10 = saw_ihdr;
+        pos = __recur_tmp_0;
+        width = __recur_tmp_1;
+        height = __recur_tmp_2;
+        bit_depth = __recur_tmp_3;
+        color_type = __recur_tmp_4;
+        interlace = __recur_tmp_5;
+        idat_total = __recur_tmp_6;
+        plte_pos = __recur_tmp_7;
+        trns_pos = __recur_tmp_8;
+        trns_len = __recur_tmp_9;
+        saw_ihdr = __recur_tmp_10;
+        continue;
+        } else {
+        if (chunk_is(data, (pos + 4), 80, 76, 84, 69)) {
+        int __recur_tmp_0 = (pos + (12 + clen));
+        int __recur_tmp_1 = width;
+        int __recur_tmp_2 = height;
+        int __recur_tmp_3 = bit_depth;
+        int __recur_tmp_4 = color_type;
+        int __recur_tmp_5 = interlace;
+        int __recur_tmp_6 = idat_total;
+        int __recur_tmp_7 = (pos + 8);
+        int __recur_tmp_8 = trns_pos;
+        int __recur_tmp_9 = trns_len;
+        int __recur_tmp_10 = saw_ihdr;
+        pos = __recur_tmp_0;
+        width = __recur_tmp_1;
+        height = __recur_tmp_2;
+        bit_depth = __recur_tmp_3;
+        color_type = __recur_tmp_4;
+        interlace = __recur_tmp_5;
+        idat_total = __recur_tmp_6;
+        plte_pos = __recur_tmp_7;
+        trns_pos = __recur_tmp_8;
+        trns_len = __recur_tmp_9;
+        saw_ihdr = __recur_tmp_10;
+        continue;
+        } else {
+        if (chunk_is(data, (pos + 4), 116, 82, 78, 83)) {
+        int __recur_tmp_0 = (pos + (12 + clen));
+        int __recur_tmp_1 = width;
+        int __recur_tmp_2 = height;
+        int __recur_tmp_3 = bit_depth;
+        int __recur_tmp_4 = color_type;
+        int __recur_tmp_5 = interlace;
+        int __recur_tmp_6 = idat_total;
+        int __recur_tmp_7 = plte_pos;
+        int __recur_tmp_8 = (pos + 8);
+        int __recur_tmp_9 = clen;
+        int __recur_tmp_10 = saw_ihdr;
+        pos = __recur_tmp_0;
+        width = __recur_tmp_1;
+        height = __recur_tmp_2;
+        bit_depth = __recur_tmp_3;
+        color_type = __recur_tmp_4;
+        interlace = __recur_tmp_5;
+        idat_total = __recur_tmp_6;
+        plte_pos = __recur_tmp_7;
+        trns_pos = __recur_tmp_8;
+        trns_len = __recur_tmp_9;
+        saw_ihdr = __recur_tmp_10;
+        continue;
+        } else {
+        int __recur_tmp_0 = (pos + (12 + clen));
+        int __recur_tmp_1 = width;
+        int __recur_tmp_2 = height;
+        int __recur_tmp_3 = bit_depth;
+        int __recur_tmp_4 = color_type;
+        int __recur_tmp_5 = interlace;
+        int __recur_tmp_6 = idat_total;
+        int __recur_tmp_7 = plte_pos;
+        int __recur_tmp_8 = trns_pos;
+        int __recur_tmp_9 = trns_len;
+        int __recur_tmp_10 = saw_ihdr;
+        pos = __recur_tmp_0;
+        width = __recur_tmp_1;
+        height = __recur_tmp_2;
+        bit_depth = __recur_tmp_3;
+        color_type = __recur_tmp_4;
+        interlace = __recur_tmp_5;
+        idat_total = __recur_tmp_6;
+        plte_pos = __recur_tmp_7;
+        trns_pos = __recur_tmp_8;
+        trns_len = __recur_tmp_9;
+        saw_ihdr = __recur_tmp_10;
+        continue;
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+    return __loop_result_29;
+}
+
+Bytes png_copy_idat(Bytes data __attribute__((unused)), int total __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Bytes out __attribute__((unused)) = bytes_alloc(total, dest);
+    Bytes __let_val_2 __attribute__((unused)) = {0};
+    double pos = 8;
+    double opos = 0;
+    while (1) {
+        if ((pos >= bytes_len(data))) {
+        __let_val_2 = out;
+        break;
+        } else {
+        int clen __attribute__((unused)) = read_u32_be(data, pos);
+        if (chunk_is(data, (pos + 4), 73, 69, 78, 68)) {
+        __let_val_2 = out;
+        break;
+        } else {
+        if (chunk_is(data, (pos + 4), 73, 68, 65, 84)) {
+        void * __let_val_4 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < clen)) {
+    (void)(bytes_set_(out, (opos + k), bytes_get(data, (pos + (8 + k)))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_4) copied __attribute__((unused)) = __let_val_4;
+        double __recur_tmp_0 = (pos + (12 + clen));
+        double __recur_tmp_1 = (opos + clen);
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        } else {
+        double __recur_tmp_0 = (pos + (12 + clen));
+        double __recur_tmp_1 = opos;
+        pos = __recur_tmp_0;
+        opos = __recur_tmp_1;
+        continue;
+        }
+        }
+        }
+    }
+    Bytes final_out __attribute__((unused)) = __let_val_2;
+    return final_out;
+}
+
+Bytes png_strip_zlib_wrapper(Bytes idat __attribute__((unused)), int deflate_len __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    Bytes dp __attribute__((unused)) = bytes_alloc(deflate_len, dest);
+    void * __let_val_3 __attribute__((unused)) = {0};
+    int k = 0;
+    while (1) {
+        if ((k < deflate_len)) {
+    (void)(bytes_set_(dp, k, bytes_get(idat, (k + 2))));
+        int __recur_tmp_0 = (k + 1);
+        k = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    __typeof__(__let_val_3) copied __attribute__((unused)) = __let_val_3;
+    return dp;
+}
+
+int abs_i32(int x __attribute__((unused))) {
+    if ((x < 0)) {
+    return (0 - x);
+    } else {
+    return x;
+    }
+}
+
+int paeth_predictor(int a __attribute__((unused)), int b __attribute__((unused)), int c __attribute__((unused))) {
+    int p __attribute__((unused)) = ((a + b) - c);
+    int pa __attribute__((unused)) = abs_i32((p - a));
+    int pb __attribute__((unused)) = abs_i32((p - b));
+    int pc __attribute__((unused)) = abs_i32((p - c));
+    if (((pa <= pb) && (pa <= pc))) {
+    return a;
+    } else {
+    if ((pb <= pc)) {
+    return b;
+    } else {
+    return c;
+    }
+    }
+}
+
+int defilter_byte(int ftype __attribute__((unused)), int raw __attribute__((unused)), int a __attribute__((unused)), int b __attribute__((unused)), int c __attribute__((unused))) {
+    return ((raw + ((ftype == 1) ? a : ((ftype == 2) ? b : ((ftype == 3) ? ((a + b) / 2) : ((ftype == 4) ? paeth_predictor(a, b, c) : 0))))) % 256);
+}
+
+Bytes png_defilter(Bytes raw __attribute__((unused)), int width __attribute__((unused)), int height __attribute__((unused)), int bpp __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int stride __attribute__((unused)) = (width * bpp);
+    int rowlen __attribute__((unused)) = (1 + stride);
+    Bytes recon __attribute__((unused)) = bytes_alloc((stride * height), dest);
+    void * __let_val_4 __attribute__((unused)) = {0};
+    double r = 0;
+    while (1) {
+        if ((r < height)) {
+        int ftype __attribute__((unused)) = bytes_get(raw, (r * rowlen));
+        void * __let_val_5 __attribute__((unused)) = {0};
+    int x = 0;
+    while (1) {
+        if ((x < stride)) {
+        int rawb __attribute__((unused)) = bytes_get(raw, ((r * rowlen) + (1 + x)));
+        int a __attribute__((unused)) = ((x >= bpp) ? bytes_get(recon, ((r * stride) + (x - bpp))) : 0);
+        int b __attribute__((unused)) = ((r > 0) ? bytes_get(recon, (((r - 1) * stride) + x)) : 0);
+        int c __attribute__((unused)) = (((r > 0) && (x >= bpp)) ? bytes_get(recon, (((r - 1) * stride) + (x - bpp))) : 0);
+        (void)(bytes_set_(recon, ((r * stride) + x), defilter_byte(ftype, rawb, a, b, c)));
+        int __recur_tmp_0 = (x + 1);
+        x = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+        __typeof__(__let_val_5) filled_row __attribute__((unused)) = __let_val_5;
+        double __recur_tmp_0 = (r + 1);
+        r = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    __typeof__(__let_val_4) filled __attribute__((unused)) = __let_val_4;
+    return recon;
+}
+
+PngImage png_decode(Bytes data __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    PngHeader hdr __attribute__((unused)) = png_scan_header(data);
+    if (((hdr).ok == 0)) {
+    return PngImage_new(0, 0, bytes_alloc(0, dest), 0);
+    } else {
+    if ((!(((hdr).bit_depth == 8)))) {
+    return PngImage_new(0, 0, bytes_alloc(0, dest), 0);
+    } else {
+    if ((!(((hdr).interlace == 0)))) {
+    return PngImage_new(0, 0, bytes_alloc(0, dest), 0);
+    } else {
+    int color_type __attribute__((unused)) = (hdr).color_type;
+    if ((!(((color_type == 2) || ((color_type == 3) || (color_type == 6)))))) {
+    return PngImage_new(0, 0, bytes_alloc(0, dest), 0);
+    } else {
+    int width __attribute__((unused)) = (hdr).width;
+    int height __attribute__((unused)) = (hdr).height;
+    int bpp __attribute__((unused)) = ((color_type == 6) ? 4 : ((color_type == 3) ? 1 : 3));
+    Bytes idat __attribute__((unused)) = png_copy_idat(data, (hdr).idat_total, dest);
+    int deflate_len __attribute__((unused)) = (bytes_len(idat) - 6);
+    Bytes deflate_payload __attribute__((unused)) = png_strip_zlib_wrapper(idat, deflate_len, dest);
+    int stride __attribute__((unused)) = (width * bpp);
+    int rowlen __attribute__((unused)) = (1 + stride);
+    int raw_len __attribute__((unused)) = (rowlen * height);
+    Bytes raw __attribute__((unused)) = bytes_alloc(raw_len, dest);
+    int n __attribute__((unused)) = inflate(deflate_payload, raw, dest);
+    if ((!((n == raw_len)))) {
+    return PngImage_new(0, 0, bytes_alloc(0, dest), 0);
+    } else {
+    Bytes recon __attribute__((unused)) = png_defilter(raw, width, height, bpp, dest);
+    Bytes rgba __attribute__((unused)) = bytes_alloc((width * (height * 4)), dest);
+    int plte_pos __attribute__((unused)) = (hdr).plte_pos;
+    int trns_pos __attribute__((unused)) = (hdr).trns_pos;
+    int trns_len __attribute__((unused)) = (hdr).trns_len;
+    void * __let_val_5 __attribute__((unused)) = {0};
+    int i = 0;
+    while (1) {
+        if ((i < (width * height))) {
+        int idx __attribute__((unused)) = ((bpp == 1) ? bytes_get(recon, i) : 0);
+        int rb __attribute__((unused)) = ((bpp == 1) ? bytes_get(data, (plte_pos + (idx * 3))) : bytes_get(recon, (i * bpp)));
+        int gb __attribute__((unused)) = ((bpp == 1) ? bytes_get(data, (plte_pos + ((idx * 3) + 1))) : bytes_get(recon, ((i * bpp) + 1)));
+        int bb __attribute__((unused)) = ((bpp == 1) ? bytes_get(data, (plte_pos + ((idx * 3) + 2))) : bytes_get(recon, ((i * bpp) + 2)));
+        int ab __attribute__((unused)) = ((bpp == 4) ? bytes_get(recon, ((i * bpp) + 3)) : (((bpp == 1) && ((trns_pos > 0) && (idx < trns_len))) ? bytes_get(data, (trns_pos + idx)) : 255));
+        (void)(bytes_set_(rgba, (i * 4), rb));
+        (void)(bytes_set_(rgba, ((i * 4) + 1), gb));
+        (void)(bytes_set_(rgba, ((i * 4) + 2), bb));
+        (void)(bytes_set_(rgba, ((i * 4) + 3), ab));
+        int __recur_tmp_0 = (i + 1);
+        i = __recur_tmp_0;
+        continue;
+        } else {
+            break;
+        }
+    }
+    __typeof__(__let_val_5) filled __attribute__((unused)) = __let_val_5;
+    return PngImage_new(width, height, rgba, 1);
+    }
+    }
+    }
+    }
+    }
 }
 

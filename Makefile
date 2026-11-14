@@ -10,7 +10,7 @@ CFLAGS := -std=c99 -Wall -Wextra -pedantic -g
 SRC := src/arena.c src/ast.c src/lexer.c src/parser.c src/region.c src/emit.c src/emit_ts.c src/emit_java.c src/emit_lua.c src/emit_llvm.c src/fmt.c src/i18n.c
 OBJ := $(SRC:.c=.o)
 
-.PHONY: all build test test-i18n test-reflux-wow test-wasm-surface test-level-wasm-build test-forgedinface test-forgedlevel test-unicode test-emit-ts test-emit-java test-emit-lua test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-v16-engine v16-wasm test-v16-wasm test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-quic-wire test-h3-wire test-h2-wire test-u32-ops test-sha2 test-quic-crypto test-quic-client test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-deflate test-png-encode shot-gen shot-exe test-img-store test-spi test-i2c test-bytes test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
+.PHONY: all build test test-i18n test-reflux-wow test-wasm-surface test-level-wasm-build test-forgedinface test-forgedlevel test-unicode test-emit-ts test-emit-java test-emit-lua test-usb-serial-java test-base4 test-base4-vector test-base4-matrix test-base4-pattern test-mag-gematria test-papercraft-note-version test-datetime test-http-router test-http-routes test-http-controller test-process test-log-jsonl test-log-projector test-mixforge-import test-mixforge-dsp test-git test-ami test-bstree test-v16-lexer test-v16-parser test-v16-engine v16-wasm test-v16-wasm test-sip-message test-sip-sdp test-sip-transaction test-dtmf test-g711 test-net-proxy test-net-udp test-net-stream test-net-stream-tls test-pentest-scan test-pentest-dot11 test-pentest-x509 test-net-rawsocket test-pentest-procmaps test-set test-io-mmap test-linalg-sparse test-linalg-matmul test-pentest-wireless test-net-l2socket test-net-unixsocket test-database-mssql-util test-editor-document test-editor-registry test-domain4 test-domain5 test-multifile test-webdriver test-shell test-serial test-traffic-router test-math-harmonics test-ui-menu test-aead test-quic-wire test-h3-wire test-h2-wire test-u32-ops test-sha2 test-quic-crypto test-quic-client test-lz4-block test-secure-channel test-tyler-voice test-wav test-png test-deflate test-png-encode shot-gen shot-exe test-img-store test-spi test-i2c test-bytes test-base64 test-sdl2 test-editor test-editor-render test-editor-widget test-editor-spotlight test-construct-split test-textmate-loader test-editor-io test-editor-undo test-editor-indent test-editor-navigation test-selfhost-lexer test-selfhost-parser test-selfhost-region test-selfhost-emit test-selfhost-main test-selfhost-main-multifile editor-demo editor-demo-smoke turbogrep test-parenabusybox parenabusybox parenash test-parenash test-mldsa test-mlkem avr-blink-hex avr-blink-upload avr-touch-reset avr-nano-old-bootloader-upload avr-feather-blink-hex avr-feather-blink-upload avr-blink-hex-clang avr-blink-upload-clang avr-blink-hex-llvm avr-blink-upload-llvm wasm-smoke host-led-blink-build test-emit-llvm clean
 
 all: build
 
@@ -627,7 +627,8 @@ test-awk: build
 # scripting around this Makefile target.
 test-webdriver: build
 	./parena build stdlib/string.prn stdlib/json.prn stdlib/net/tcp.prn stdlib/net/http.prn \
-		stdlib/net/webdriver.prn stdlib/process.prn -o tests/test_webdriver_gen.c
+		stdlib/net/webdriver.prn stdlib/process.prn stdlib/bytes.prn stdlib/base64.prn stdlib/compress/inflate.prn \
+		stdlib/image/png.prn -o tests/test_webdriver_gen.c
 	$(CC) -std=c99 -Wall -Wextra -I runtime -I tests tests/test_webdriver.c runtime/parena_runtime.c \
 		-o /tmp/test_webdriver_bin -lm
 	cd tests && go build -o fake_webdriver_server fake_webdriver_server.go
@@ -792,6 +793,14 @@ test-bytes: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -I runtime -I tests tests/test_bytes.c runtime/parena_runtime.c \
 		-o /tmp/test_bytes_bin -lm
 	/tmp/test_bytes_bin
+
+# test-base64 -- stdlib/base64.prn against RFC 4648's vectors (2026-11-14: the WebDriver screenshot decode for the
+# SHANKPHONE's web-game stopgap).
+test-base64: build
+	./parena build stdlib/string.prn stdlib/bytes.prn stdlib/base64.prn -o tests/test_base64_gen.c
+	$(CC) -std=c99 -Wall -Wextra -pedantic -I runtime -I tests tests/test_base64.c runtime/parena_runtime.c \
+		-o /tmp/test_base64_bin -lm
+	/tmp/test_base64_bin
 
 # test-mldsa -- real end-to-end verification for stdlib/crypto/mldsa.prn (EMILY/BACKLOG.md
 # SECTION 536 follow-up, BIG_O/NORTHSTAR.md §29), PARENA's first real, working crypto binding.

@@ -1,0 +1,91 @@
+;; stdlib/shankpit/arcade.prn -- the rules of the SHANKPHONE's PELLEGRINO app, now a games app (founder, 2026-11-14:
+;; "lets build pellegrino on the phone into a full app that can play the wasm games" / "bring in chromium to fill the
+;; gaps" / "parenafy it" / "mods first everything"). The games are a mod of their own (arcade_games.prn); this file is
+;; how the app behaves. SHANKPIT's packages/simulation/phone_arcade.h holds the state and makes the calls these decide.
+;;
+;; The app's home is a list: every game in the mod, then one more row, WEB BROWSER (Pellegrino's own embedded browser,
+;; as before). Choosing a row runs it on an engine:
+;;   1 WASM3     a SHANKPIT level module (kind 1) -- SHANKPIT's own WebAssembly host, in the phone, full speed
+;;   2 BROWSER   Pellegrino's embedded browser (the last row)
+;;   3 CHROMIUM  a web game (kind 2). STOPGAP: Pellegrino cannot run JavaScript yet, so the phone drives a headless
+;;               Chromium through PARENA's own WebDriver client (net/webdriver.prn) -- screenshots in, keys out. The
+;;               replacement is Pellegrino running the page's WebAssembly itself (EMILY/BACKLOG.md, PARENA item).
+;;   0 none      a web game when no Chromium/driver is available; the app says what to install
+;; While a game runs, Backspace goes back to the list (the phone's BACK key) and every other key is the game's.
+
+(module shankpit/arcade)
+(export arcade-engine arcade-rows arcade-row-is-browser arcade-nav arcade-per-page arcade-page-first arcade-key
+        arcade-fit-w arcade-fit-h arcade-shot-ms arcade-wd-key-special arcade-wd-key-char arcade-chromium-w
+        arcade-chromium-h arcade-chromium-args)
+
+(defn arcade-engine [(kind : I32) (chromium-ok : I32)] : I32
+  (cond ((= kind 1) 1)
+        ((= kind 2) (if (= chromium-ok 1) 3 0))
+        (true 0)))
+
+;; The list: the games, then WEB BROWSER.
+(defn arcade-rows [(games : I32)] : I32 (+ games 1))
+(defn arcade-row-is-browser [(row : I32) (games : I32)] : I32 (if (= row games) 1 0))
+
+;; Up/down through the list, stopping at the ends (a phone list does not wrap).
+(defn arcade-nav [(cursor : I32) (delta : I32) (rows : I32)] : I32
+  (let [c (+ cursor delta)]
+    (if (< c 0) 0 (if (>= c rows) (- rows 1) c))))
+
+(defn arcade-per-page [] : I32 6)
+(defn arcade-page-first [(cursor : I32)] : I32 (* (/ cursor (arcade-per-page)) (arcade-per-page)))
+
+;; A key while a game runs: 2 = back to the list (Backspace, SDL keycode 8), 1 = the game's.
+(defn arcade-key [(sym : I32)] : I32 (if (= sym 8) 2 1))
+
+;; The game's picture in the phone's screen area, its shape kept: the size to draw it at.
+(defn arcade-fit-w [(fb-w : I32) (fb-h : I32) (box-w : I32) (box-h : I32)] : I32
+  (if (or (<= fb-w 0) (<= fb-h 0)) 0
+    (if (<= (* box-w fb-h) (* box-h fb-w)) box-w (/ (* box-h fb-w) fb-h))))
+(defn arcade-fit-h [(fb-w : I32) (fb-h : I32) (box-w : I32) (box-h : I32)] : I32
+  (if (or (<= fb-w 0) (<= fb-h 0)) 0
+    (if (<= (* box-w fb-h) (* box-h fb-w)) (/ (* box-w fb-h) fb-w) box-h)))
+
+;; How often the Chromium stopgap takes a new picture of the page (ms): ~8 a second -- enough to play slowly, honest
+;; about being a stopgap.
+(defn arcade-shot-ms [] : I32 120)
+
+;; --- the Chromium stopgap's keys and window ---------------------------------------------------------------------------
+;; A key the player presses while a web game runs goes to the page as a W3C WebDriver key action (net/webdriver.prn
+;; perform-key). The value is either a named key -- the spec's code point, written as the JSON escape perform-key
+;; passes through (§17.4.2) -- or the character itself.
+
+;; The named key for an SDL keycode, "" when it is not one.
+(defn arcade-wd-key-special [(sym : I32)] : String
+  (cond ((= sym 13) "\\uE007")            ;; Enter
+        ((= sym 27) "\\uE00C")            ;; Escape
+        ((= sym 9) "\\uE004")             ;; Tab
+        ((= sym 1073741904) "\\uE012")    ;; Left
+        ((= sym 1073741906) "\\uE013")    ;; Up
+        ((= sym 1073741903) "\\uE014")    ;; Right
+        ((= sym 1073741905) "\\uE015")    ;; Down
+        ((or (= sym 1073742049) (= sym 1073742053)) "\\uE008")   ;; Shift (left, right)
+        ((or (= sym 1073742048) (= sym 1073742052)) "\\uE009")   ;; Control
+        ((or (= sym 1073742050) (= sym 1073742054)) "\\uE00A")   ;; Alt
+        (true "")))
+
+;; The character an SDL keycode types (SDL's printable keycodes are their own character): a-z, 0-9, space and the
+;; usual punctuation; 0 for anything else (and for the named keys above, which go by name).
+(defn arcade-wd-key-char [(sym : I32)] : I32
+  (cond ((and (>= sym 97) (<= sym 122)) sym)
+        ((and (>= sym 48) (<= sym 57)) sym)
+        ((= sym 32) sym)
+        ((or (= sym 44) (or (= sym 45) (or (= sym 46) (or (= sym 47) (or (= sym 59) (or (= sym 61) (= sym 39)))))))
+          sym)
+        (true 0)))
+
+;; The page's window: the size of the phone's game area at BRAWLPIT's 16:9, so a screenshot needs no scaling down.
+(defn arcade-chromium-w [] : I32 960)
+(defn arcade-chromium-h [] : I32 540)
+
+;; Chromium's command line for the stopgap, as the JSON array items of goog:chromeOptions.args: headless, no
+;; sandbox (a container has none), the window above, and autoplay allowed (a game's sound starts without a click).
+;; The host wraps it into the capabilities (net/webdriver.prn new-session-with-capabilities) with the browser binary,
+;; which is a path on that machine (SHANKPIT_CHROMIUM).
+(defn arcade-chromium-args [] : String
+  "\"--headless=new\",\"--no-sandbox\",\"--disable-gpu\",\"--disable-dev-shm-usage\",\"--window-size=960,540\",\"--hide-scrollbars\",\"--autoplay-policy=no-user-gesture-required\",\"--mute-audio\"")

@@ -154,6 +154,35 @@ int main(int argc, char **argv) {
         CHECK(r6b.tag && strcmp((char *)r6b.value, "<html><body><h1>Fake Rendered Page</h1></body></html>") == 0,
               "page-source returns the real, currently-rendered HTML value");
 
+        /* take-screenshot -> base64-decode -> png-decode: the SHANKPHONE web-game stopgap's whole picture path */
+        Result rs = take_screenshot(sess, &a);
+        CHECK(rs.tag && rs.value && strncmp((char *)rs.value, "iVBORw0KGgo", 11) == 0,
+              "take-screenshot returns the base64 PNG");
+        if (rs.tag) {
+            Bytes pngb = base64_decode((char *)rs.value, &a);
+            CHECK(bytes_len(pngb) > 8 && bytes_get(pngb, 1) == 'P', "base64-decode gives the PNG bytes");
+            PngImage img = png_decode(pngb, &a);
+            CHECK(img.ok && img.width == 4 && img.height == 2, "png-decode reads the 4x2 picture");
+            const unsigned char *px = img.pixels.data;
+            CHECK(img.ok && px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255, "pixel (0,0) is red");
+            CHECK(img.ok && px[(1 * 4 + 3) * 4 + 2] == 255 && px[(1 * 4 + 3) * 4 + 1] == 0, "pixel (3,1) is blue");
+        }
+
+        /* perform-key: the spec's action body (the fixture 400s anything else), a character and a named key */
+        Result rk1 = perform_key(sess, "g", 1, &a);
+        CHECK(rk1.tag, "perform-key sends a keyDown the driver accepts");
+        Result rk2 = perform_key(sess, "\\uE013", 0, &a);
+        CHECK(rk2.tag, "perform-key sends a named key (ArrowUp, as its JSON escape) as a keyUp");
+        Result rl = do_request("GET", host, port, "/fixture/last-key", option_none(), &a);
+        CHECK(rl.tag, "the fixture reports the last key");
+        if (rl.tag) {
+            Option ls = as_string(*(JsonValue *)rl.value);
+            CHECK(ls.tag && strcmp((char *)ls.value, "keyUp:\xee\x80\x93") == 0,
+                  "and it arrived as keyUp U+E013 (decoded by the driver's JSON parser)");
+        }
+        Result rra = release_actions(sess, &a);
+        CHECK(rra.tag, "release-actions succeeds");
+
         Result r7 = quit_session(sess, &a);
         CHECK(r7.tag, "quit-session succeeds");
     } else {

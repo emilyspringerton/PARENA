@@ -1,0 +1,62 @@
+;; stdlib/base64.prn -- RFC 4648 base64 (the standard alphabet, '=' padding), decode to Bytes. Depends on bytes.
+;;
+;; Added 2026-11-14 for the SHANKPHONE's web-game stopgap: a W3C WebDriver screenshot comes back as base64 PNG
+;; (net/webdriver.prn take-screenshot), and PARENA had no base64 at all ("core deps are PARENA-first"). Pure PARENA,
+;; one pass, no per-byte allocation: the output Bytes is sized up front and filled with bytes-set!.
+;;
+;; Decoding is lenient where it is safe to be: whitespace (space, \t, \r, \n) is skipped, so a MIME-wrapped body
+;; decodes too; decoding stops at the first '='. Any other character outside the alphabet makes the result empty
+;; (length 0) rather than a guess -- a caller checks bytes-len.
+
+(module base64)
+(import bytes)
+(import string)
+(export base64-value base64-decoded-len base64-decode)
+
+;; The 6-bit value of a base64 character: 0..63, -1 for padding/other, -2 for skippable whitespace.
+(defn base64-value [(c : I32)] : I32
+  (cond ((and (>= c 65) (<= c 90)) (- c 65))          ;; A-Z  0..25
+        ((and (>= c 97) (<= c 122)) (+ (- c 97) 26))  ;; a-z 26..51
+        ((and (>= c 48) (<= c 57)) (+ (- c 48) 52))   ;; 0-9 52..61
+        ((= c 43) 62)                                 ;; +
+        ((= c 47) 63)                                 ;; /
+        ((or (= c 32) (or (= c 9) (or (= c 10) (= c 13)))) -2)
+        (true -1)))
+
+;; How many bytes `s` decodes to (counting only alphabet characters before the first '='); -1 when a character is
+;; neither alphabet, whitespace nor '='.
+(defn base64-decoded-len [(s : String @ Region)] : I32
+  (let [n (string/length s)]
+    (loop [i 0 k 0]
+      (if (>= i n)
+        (/ (* k 6) 8)
+        (let [c (string/char-at s i) v (base64-value c)]
+          (cond ((>= v 0) (recur (+ i 1) (+ k 1)))
+                ((= v -2) (recur (+ i 1) k))
+                ((= c 61) (/ (* k 6) 8))           ;; '=' -- the end
+                (true -1)))))))
+
+;; 2^k for the 0..4 leftover bits a step can hold (named for this module: top-level names are not module-scoped).
+(defn base64-pow2 [(k : I32)] : I32
+  (cond ((= k 0) 1) ((= k 1) 2) ((= k 2) 4) ((= k 3) 8) ((= k 4) 16) ((= k 5) 32) (true 64)))
+
+;; Decode `s`. Returns an empty Bytes when `s` is not base64.
+(defn base64-decode [(s : String @ Region) (dest : Arena @ Region)] : Bytes @ Region
+  (let [total (base64-decoded-len s)]
+    (if (< total 0)
+      (bytes/bytes-alloc 0 dest)
+      (let [out (bytes/bytes-alloc total dest) n (string/length s)]
+        ;; acc holds up to 3 pending 6-bit groups' bits; bits = how many bits are pending.
+        (do
+          (loop [i 0 acc 0 bits 0 o 0]
+            (if (or (>= i n) (>= o total))
+              o
+              (let [c (string/char-at s i) v (base64-value c)]
+                (cond ((= c 61) o)
+                      ((< v 0) (recur (+ i 1) acc bits o))
+                      ((>= (+ bits 6) 8)
+                        (let [a2 (+ (* acc 64) v) b2 (- (+ bits 6) 8) div (base64-pow2 b2)]
+                          (do (bytes/bytes-set! out o (/ a2 div))
+                              (recur (+ i 1) (- a2 (* (/ a2 div) div)) b2 (+ o 1)))))
+                      (true (recur (+ i 1) (+ (* acc 64) v) (+ bits 6) o))))))
+          out)))))

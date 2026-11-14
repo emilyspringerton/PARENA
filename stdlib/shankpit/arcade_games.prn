@@ -1,0 +1,61 @@
+;; stdlib/shankpit/arcade_games.prn -- THE MOD: the games on the SHANKPHONE's PELLEGRINO app (founder, 2026-11-14:
+;; "lets build pellegrino on the phone into a full app that can play the wasm games" / "parenafy it" / "mods first
+;; everything"). Add a game here and nowhere else: SHANKPIT's scripts/gen_arcade_rules.sh compiles this with the app's
+;; rules (arcade.prn) into packages/simulation/arcade_rules.c, and the phone lists it on the next build.
+;;
+;; A game is one index, 0 .. arcade-game-count - 1:
+;;   name   what the list shows
+;;   blurb  one line under it
+;;   kind   1 a SHANKPIT level module: WebAssembly built to the T0 level contract (docs/T0_LEVEL_WASM_CONTRACT.md,
+;;            exports level_api/enter/tick/render/key/pointer...), run IN the phone by SHANKPIT's own wasm3 host
+;;          2 a web game: a page that runs its own WebAssembly with JavaScript. Pellegrino has no JavaScript yet, so
+;;            the phone drives Chromium for it (a stopgap -- see arcade.prn arcade-engine)
+;;   path   kind 1: the module, relative to the game's working directory; kind 2: the page's URL
+;;   level  kind 1: the level id its REFLUX lifecycle rows carry (0 when it has none of its own)
+;;   asset  kind 1: up to 4 PNGs the level wants cut into its memory (slot 0..3; "" = none), with their tile size
+;;
+;; The web games live on WOTAN (the esports site). Their pages are as the site serves them; a page that moves breaks only
+;; its entry here.
+
+(module shankpit/arcade-games)
+(export arcade-game-count arcade-game-name arcade-game-blurb arcade-game-kind arcade-game-path arcade-game-level
+        arcade-game-asset arcade-game-tile-w arcade-game-tile-h arcade-game-asset-stride)
+
+(defn arcade-game-count [] : I32 5)
+
+(defn arcade-game-name [(i : I32)] : String
+  (cond ((= i 0) "BRAWLPIT")
+        ((= i 1) "SHANKPIT-460")
+        ((= i 2) "DEADWEIGHT 2")
+        ((= i 3) "REDGARDEN")
+        ((= i 4) "BEDROCK RACERS")
+        (true "")))
+
+(defn arcade-game-blurb [(i : I32)] : String
+  (cond ((= i 0) "platform brawler -- runs right here on the phone")
+        ((= i 1) "the arena shooter, web build")
+        ((= i 2) "backpack battler, web build")
+        ((= i 3) "10v10 arena, web build")
+        ((= i 4) "kart racing, web build")
+        (true "")))
+
+(defn arcade-game-kind [(i : I32)] : I32 (if (= i 0) 1 2))
+
+(defn arcade-game-path [(i : I32)] : String
+  (cond ((= i 0) "assets/levels/brawlpit/brawlpit_level.wasm")
+        ((= i 1) "https://wotan.okemily.com/shankpit-460/")
+        ((= i 2) "https://wotan.okemily.com/d2/")
+        ((= i 3) "https://wotan.okemily.com/redgarden/play.html")
+        ((= i 4) "https://wotan.okemily.com/bedrockracers/")
+        (true "")))
+
+;; BRAWLPIT's REFLUX level id (SHANKPIT packages/reflux REFLUX_LEVEL_BRAWLPIT).
+(defn arcade-game-level [(i : I32)] : I32 (if (= i 0) 1 0))
+
+(defn arcade-game-asset [(i : I32) (slot : I32)] : String
+  (cond ((and (= i 0) (= slot 0)) "assets/levels/brawlpit/sprites.png")   ;; 8 portrait tiles
+        ((and (= i 0) (= slot 1)) "assets/levels/brawlpit/duck.png")      ;; the 640x340 duck atlas, one tile
+        (true "")))
+(defn arcade-game-tile-w [(i : I32) (slot : I32)] : I32 (if (and (= i 0) (= slot 0)) 128 0))
+(defn arcade-game-tile-h [(i : I32) (slot : I32)] : I32 (if (and (= i 0) (= slot 0)) 128 0))
+(defn arcade-game-asset-stride [(i : I32) (slot : I32)] : I32 (if (and (= i 0) (= slot 0)) 65536 0))

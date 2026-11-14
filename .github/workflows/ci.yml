@@ -181,6 +181,13 @@ jobs:
           make build
           make test-construct-split
 
+      # base64 (2026-11-14): RFC 4648's vectors -- the decode under the SHANKPHONE web-game stopgap's screenshots.
+      - name: "base64 -- RFC 4648 decode"
+        run: |
+          set -euo pipefail
+          make build
+          make test-base64
+
       # V16 JS engine spike (2026-10-15, founder: "spike out the v16 js execution engine it must
       # run in WASM totally parena powered all arenas"): the engine's own corpus natively under
       # -Wall -Wextra -pedantic -Werror, then the SAME corpus against the engine compiled to a

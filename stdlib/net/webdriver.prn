@@ -37,7 +37,8 @@
 (import json)
 (import string)
 (export new-session new-session-with-capabilities navigate-to find-element element-click element-text
-        element-send-keys page-title page-source quit-session Session WebDriverError)
+        element-send-keys page-title page-source take-screenshot perform-key release-actions quit-session
+        Session WebDriverError)
 
 (defstruct Session
   (host       : String @ Region)
@@ -243,6 +244,49 @@
         (match (json/as-string (deref value))
           ((Some s) (Ok s))
           (None (Err BadResponse)))))))
+
+;; take-screenshot — GET /session/{id}/screenshot (spec §19.1): the top-level browsing context's viewport as a PNG,
+;; base64-encoded, as one JSON string. Decode it with stdlib/base64.prn base64-decode. Added 2026-11-14 for the
+;; SHANKPHONE's web-game stopgap (SHANKPIT packages/simulation/phone_chromium.c): the phone shows the page by
+;; screenshotting it a few times a second. Same shape as page-title: a bare string value.
+(defn take-screenshot [(!sess : &Session) (dest : Arena @ Region)]
+  : (Result String WebDriverError) @ Region
+  (let [path (string/concat (string/concat "/session/" (get-field !sess :session-id) dest) "/screenshot" dest)]
+    (match (do-request "GET" (get-field !sess :host) (get-field !sess :port) path None dest)
+      ((Err e) (Err e))
+      ((Ok value)
+        (match (json/as-string (deref value))
+          ((Some s) (Ok s))
+          (None (Err BadResponse)))))))
+
+;; perform-key — POST /session/{id}/actions (spec §15.7) with one key input source and one action: keyDown when
+;; `down` is 1, keyUp otherwise. `key` is the spec's key value: the character itself ("a", " ") or one of the spec's
+;; normalised-key code points written as a JSON escape ("\uE013" ArrowUp -- see §17.4.2's table), passed through
+;; as-is, so the caller writes the escape and this function does not re-escape a backslash. The key goes to whatever
+;; the page has focused -- a game canvas listening on document gets it. Added 2026-11-14 with take-screenshot.
+(defn perform-key [(!sess : &Session) (key : String @ Region) (down : I32) (dest : Arena @ Region)]
+  : (Result Unit WebDriverError) @ Region
+  (let [path (string/concat (string/concat "/session/" (get-field !sess :session-id) dest) "/actions" dest)
+        kind (if (= down 1) "keyDown" "keyUp")
+        body (string/concat
+               (string/concat
+                 (string/concat
+                   (string/concat "{\"actions\":[{\"type\":\"key\",\"id\":\"keyboard\",\"actions\":[{\"type\":\"" kind dest)
+                   "\",\"value\":\"" dest)
+                 key dest)
+               "\"}]}]}" dest)]
+    (match (do-request "POST" (get-field !sess :host) (get-field !sess :port) path (Some body) dest)
+      ((Err e) (Err e))
+      ((Ok _) (Ok unit)))))
+
+;; release-actions — DELETE /session/{id}/actions (spec §15.8): lets go of every key still held, as if each were
+;; released. For when the player leaves a game with a key down.
+(defn release-actions [(!sess : &Session) (dest : Arena @ Region)]
+  : (Result Unit WebDriverError) @ Region
+  (let [path (string/concat (string/concat "/session/" (get-field !sess :session-id) dest) "/actions" dest)]
+    (match (do-request "DELETE" (get-field !sess :host) (get-field !sess :port) path None dest)
+      ((Err e) (Err e))
+      ((Ok _) (Ok unit)))))
 
 ;; quit-session — DELETE /session/{id}. Ends the real browser session
 ;; server-side (a real driver process frees its own resources here,

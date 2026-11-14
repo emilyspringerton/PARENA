@@ -18,12 +18,37 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 )
+
+// screenshotPNG is the fixture's "viewport": 4x2, red at (0,0), blue at (3,1), the rest green -- a real PNG from Go's
+// own encoder, so take-screenshot + base64-decode + png-decode can be checked pixel by pixel (2026-11-14).
+func screenshotPNG() string {
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 4; x++ {
+			img.Set(x, y, color.NRGBA{0, 255, 0, 255})
+		}
+	}
+	img.Set(0, 0, color.NRGBA{255, 0, 0, 255})
+	img.Set(3, 1, color.NRGBA{0, 0, 255, 255})
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// lastKey is the last key action perform-key sent, checked shape and all (GET /fixture/last-key reads it back).
+var lastKey = ""
 
 const elemKey = "element-6066-11e4-a52e-4f735466cecf"
 
@@ -78,12 +103,48 @@ func main() {
 		{"GET", regexp.MustCompile(`^/session/[^/]+/source$`), func(w http.ResponseWriter) {
 			writeJSON(w, map[string]any{"value": "<html><body><h1>Fake Rendered Page</h1></body></html>"})
 		}},
+		{"GET", regexp.MustCompile(`^/session/[^/]+/screenshot$`), func(w http.ResponseWriter) {
+			writeJSON(w, map[string]any{"value": screenshotPNG()})
+		}},
+		{"DELETE", regexp.MustCompile(`^/session/[^/]+/actions$`), func(w http.ResponseWriter) {
+			writeJSON(w, map[string]any{"value": nil})
+		}},
+		{"GET", regexp.MustCompile(`^/fixture/last-key$`), func(w http.ResponseWriter) {
+			writeJSON(w, map[string]any{"value": lastKey})
+		}},
 		{"DELETE", regexp.MustCompile(`^/session/[^/]+$`), func(w http.ResponseWriter) {
 			writeJSON(w, map[string]any{"value": nil})
 		}},
 	}
 
+	// POST /session/{id}/actions: the body must be the spec's shape -- one key source, one keyDown/keyUp with a
+	// one-character value (a \uE0xx named key decodes to one character too). Anything else is a 400, as a real driver
+	// would answer "invalid argument".
+	actions := regexp.MustCompile(`^/session/[^/]+/actions$`)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && actions.MatchString(r.URL.Path) {
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				Actions []struct {
+					Type    string `json:"type"`
+					ID      string `json:"id"`
+					Actions []struct {
+						Type  string `json:"type"`
+						Value string `json:"value"`
+					} `json:"actions"`
+				} `json:"actions"`
+			}
+			if json.Unmarshal(body, &req) != nil || len(req.Actions) != 1 || req.Actions[0].Type != "key" ||
+				len(req.Actions[0].Actions) != 1 || len([]rune(req.Actions[0].Actions[0].Value)) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"value": map[string]string{"error": "invalid argument", "message": string(body)}})
+				return
+			}
+			a := req.Actions[0].Actions[0]
+			lastKey = a.Type + ":" + a.Value
+			writeJSON(w, map[string]any{"value": nil})
+			return
+		}
 		for _, rt := range routes {
 			if r.Method == rt.method && rt.pattern.MatchString(r.URL.Path) {
 				rt.handle(w)

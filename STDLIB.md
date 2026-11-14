@@ -455,6 +455,14 @@ never defined anywhere reachable, nor declared via `#target` FFI the way every o
 primitive elsewhere in this stdlib is — real, separate, un-started work; this file's own header
 comment already flags the underlying region-escape check itself as "VS0 domain 2, not built yet."
 
+### `base64` — RFC 4648 decode (2026-11-14)
+
+`stdlib/base64.prn`: `base64-decode` (String -> `Bytes`, empty when the input is not base64; whitespace skipped,
+stops at `=`), `base64-decoded-len`, `base64-value`. Pure PARENA, one pass, no per-byte allocation. Decode only for
+now: the one caller is a W3C WebDriver screenshot (`net/webdriver.prn` `take-screenshot`, which with `perform-key`
+and `release-actions` was added the same day). Encode is the obvious next addition when something needs it.
+`make test-base64`.
+
 ### `array` / `linalg` / `stats` — the numpy/scipy equivalent
 
 Founder: "can we build scipy and numpy into the standard language of PARENA?" → "whatever the
