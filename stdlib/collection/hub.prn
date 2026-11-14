@@ -3,7 +3,7 @@
 ;; glue (runtime/wow/collection_hub.lua) draws it; what it reports is decided here.
 
 (module collection/hub)
-(export hub-size hub-state hub-action-mode hub-gold-parts hub-xp-pct hub-roster hub-char-before)
+(export hub-size hub-state hub-action-mode hub-gold-parts hub-xp-pct hub-roster hub-char-before hub-help-match)
 
 ;; Top-level entries of a table, by walking next.
 (defn hub-count-walk [(t : Any) (k : Any) (n : I32)] : I32
@@ -51,3 +51,23 @@
 ;; The list's order: highest level first, then by name. 1 when a comes before b.
 (defn hub-char-before [(alevel : I32) (aname : String) (blevel : I32) (bname : String)] : I32
   (if (> alevel blevel) 1 (if (< alevel blevel) 0 (if (< aname bname) 1 0))))
+
+;; ---- /hhelp (founder, 2026-11-14: "i need /hhelp command list help instructions for all of our addons") -----------
+(defn hub-lower [(s : Any)] : Any (lua/call-fn (lua/global "string.lower") s))
+(defn hub-has [(s : Any) (q : Any)] : Bool
+  (not (lua/nil? (lua/call-fn (lua/global "string.find") (hub-lower s) q 1 true))))
+;; The query without a leading slash, lowercased: "/Rock" and "rock" ask the same thing.
+(defn hub-help-query [(q : Any)] : Any
+  (hub-lower (lua/call-fn (lua/global "string.gsub") q "^/" "")))
+(defn hub-help-cmd [(q : Any) (cmds : Any) (i : I32)] : I32
+  (if (> i (lua/call-fn (lua/global "table.getn") cmds)) 0
+    (if (= (hub-help-query (lua/aget cmds i)) q) 1 (hub-help-cmd q cmds (+ i 1)))))
+;; Does a /hhelp query name this addon? 2: it is one of its commands (with or without the slash); 1: part of its
+;; title or folder name; 0: no. An empty query matches nothing (the caller shows every addon instead).
+(defn hub-help-match [(query : Any) (title : Any) (folder : Any) (cmds : Any)] : I32
+  (let [q (hub-help-query query)]
+    (cond
+      ((= q "") 0)
+      ((= (hub-help-cmd q cmds 1) 1) 2)
+      ((or (hub-has title q) (hub-has folder q)) 1)
+      (true 0))))

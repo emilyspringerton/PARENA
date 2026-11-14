@@ -8,6 +8,7 @@ local function eq(got, want, what)
     if got == want then passed = passed + 1
     else failed = failed + 1; print("FAIL: " .. what .. " (got " .. tostring(got) .. ", want " .. tostring(want) .. ")") end
 end
+local function hasnt(t, sub, what) eq(type(t) == "string" and t:find(sub, 1, true) == nil, true, what .. " [" .. tostring(t) .. "]") end
 local function has(s, sub, what) eq(type(s) == "string" and s:find(sub, 1, true) ~= nil, true, what .. " [" .. tostring(s):sub(1, 300) .. "]") end
 
 local function toc_files(dir, name)
@@ -315,6 +316,35 @@ has(out, "/derby start [minutes]", "every documented command is listed with its 
 has(out, "a timed derby for the whole group", "and what it does")
 out = s.cmd("help")
 has(out, "/collection list", "anything else prints help")
+
+-- ===== /hhelp: every addon's commands and what they do ======================================================
+local function hh(msg) for i = #s.out, 1, -1 do s.out[i] = nil end; s.env.SlashCmdList.COLLECTIONHHELP(msg or ""); return table.concat(s.out, "\n") end
+out = hh("")
+has(out, "Collection addons -- every command, and what it does", "/hhelp: a title")
+has(out, "/hhelp <addon or command> for one addon in full", "/hhelp: how to use it")
+has(out, "/chars -- every character's level, gold, gear and bags", "/hhelp: the hub's own commands")
+has(out, "Hrungnir|r  /rock  /hrungnir", "/hhelp: each addon with its commands")
+has(out, "A pet rock in a tiny frame. It levels up as you play and has opinions.", "/hhelp: and what it is, without the command repeated")
+hasnt(out, "/rock gold", "/hhelp alone keeps to one block per addon")
+local n = 0
+for a in out:gmatch("|cffd8b25e([^|]+)|r  [/n]") do n = n + 1 end   -- "  /cmd" or "  no command" (RefluxCore)
+eq(n, #s.ns.addons, "/hhelp: every addon in the package")
+out = hh("all")
+has(out, "/rock gold|r  every character's coin, and the account's", "/hhelp all: every command, with what it does")
+has(out, "/derby start [minutes]|r  a timed derby", "/hhelp all: with its arguments")
+out = hh("/rock")
+has(out, "/rock who has <item>|r  who holds it", "/hhelp /rock: that addon in full")
+hasnt(out, "/derby", "and only it")
+has(out, "saves per character in HrungnirDB", "with where it saves")
+eq(hh("rock"), out, "/hhelp rock: the same, with or without the slash")
+out = hh("aegir")
+has(out, "/derby start", "/hhelp <part of a name>")
+out = hh("chars")
+has(out, "/chars -- every character", "/hhelp chars: the hub's own")
+out = hh("zzz")
+has(out, "no addon or command called 'zzz'", "/hhelp: an unknown name says so")
+out = s.cmd("help")
+has(out, "/hhelp -- every command and what it does", "/collection help points at /hhelp")
 
 -- ===== older clients: InterfaceOptions; none at all; no templates; no frames ===============================
 local o = session({ options = "interfaceoptions" })

@@ -330,6 +330,7 @@ INSTALL
   (WoW Forever: <WoW>/_forever_/Interface/AddOns), then restart the client or /reload.
 
 IN GAME
+  /hhelp             every addon's commands and what they do (/hhelp all: every command; /hhelp rock: one addon)
   /collection        every addon's settings and status in one window (also in the game's options, "Collection")
   /huginn            quest arrows: click quests in its mini log to turn arrows on and off; /huginn way <x> <y>
   /fafnir           net inventory: characters, distinct items, item count, gold across the account

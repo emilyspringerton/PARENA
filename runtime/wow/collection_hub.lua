@@ -7,6 +7,9 @@
 -- /collection        open or close the window
 -- /collection list   the same, in chat, with every command
 -- /chars             every character's level, gold, gear and bags in one screen (collection_chars.lua)
+-- /hhelp             every addon in the package, its commands and what they do
+-- /hhelp all         every command of every addon, with what each does
+-- /hhelp <name>      one addon in full: by its name, part of it, or one of its commands (/hhelp rock, /hhelp derby)
 --
 -- One block per addon from registry.lua (written by the packager from each addon's own .toc and code, so it never
 -- drifts from what was built): loaded or not, where it saves and how much, and a button for every command and
@@ -305,6 +308,56 @@ if f then
     end)
 end
 
+-- ---- /hhelp: the help for every addon, from the same registry as the window (so it never drifts from the build) ----
+local function notes_text(a)
+    -- the .toc notes end with the addon's main command ("... /rock"), which the help shows on its own anyway
+    return ((a.notes or ""):gsub("%s*/%S+%s*$", ""))
+end
+
+local function hub_help()
+    print(GOLD .. L("H_HUB") .. "|r")
+    for i = 1, 4 do print("    " .. L("H_HUB_" .. i)) end
+end
+
+local function help_one(a, full)
+    local cmds = #a.cmds > 0 and table.concat(a.cmds, "  ") or L("NOCMD")
+    print(string.format(L("H_ONE"), GOLD .. a.title .. "|r", cmds) .. (is_loaded(a) == 1 and "" or ("  " .. GREY .. L("H_NOTLOADED") .. "|r")))
+    if notes_text(a) ~= "" then print("    " .. GREY .. string.format(L("H_NOTES"), notes_text(a)) .. "|r") end
+    if full then
+        for _, act in ipairs(actions(a)) do
+            print("      " .. GOLD .. usage(act) .. "|r" .. (act.desc ~= "" and ("  " .. act.desc) or ""))
+        end
+        if a.sv ~= "" then
+            local _, where = describe(a)
+            print("    " .. where)
+        end
+    end
+end
+
+local function hhelp(msg)
+    local q = (msg or ""):match("^%s*(.-)%s*$")
+    if q == "" or q:lower() == "all" then
+        print(GOLD .. L("H_TITLE") .. "|r")
+        print(GREY .. L("H_HOW") .. "|r")
+        hub_help()
+        for _, a in ipairs(sorted()) do help_one(a, q:lower() == "all") end
+        return
+    end
+    -- a command match (2) beats a name match (1); show every addon at the best level found
+    local best, hits = 0, {}
+    for _, a in ipairs(sorted()) do
+        local m = H.hubHelpMatch(q, a.title, a.folder, a.cmds)
+        if m > best then best, hits = m, { a } elseif m == best and m > 0 then hits[#hits + 1] = a end
+    end
+    local lq = q:lower():gsub("^/", "")
+    if lq == "collection" or lq == "coll" or lq == "chars" or lq == "hhelp" or lq == "help" then hub_help(); return end
+    if best == 0 then print(string.format(L("H_NOMATCH"), q)); return end
+    for _, a in ipairs(hits) do help_one(a, true) end
+end
+
+SLASH_COLLECTIONHHELP1 = "/hhelp"
+SlashCmdList["COLLECTIONHHELP"] = hhelp
+
 SLASH_COLLECTIONHUB1 = "/collection"
 SLASH_COLLECTIONHUB2 = "/coll"
 SlashCmdList["COLLECTIONHUB"] = function(msg)
@@ -320,4 +373,4 @@ SlashCmdList["COLLECTIONHUB"] = function(msg)
 end
 
 -- for tests and other addons
-ns.describe, ns.list_in_chat, ns.actions, ns.press = describe, list_in_chat, actions, press
+ns.describe, ns.list_in_chat, ns.actions, ns.press, ns.hhelp = describe, list_in_chat, actions, press, hhelp

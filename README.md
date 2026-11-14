@@ -487,6 +487,9 @@ probed against the WoW Forever client beyond what each addon's header says.
 
 - **`/collection`** -- one window over every addon: loaded or not, where it saves, and a button for every slash
   command it documents (hover for what it does; commands that need a name or a riddle go to the chat box to finish).
+- **`/hhelp`** -- the help for the whole package in chat: every addon, its commands and what it is (`/hhelp all` for
+  every command with what it does, `/hhelp rock` or `/hhelp derby` for one addon in full, including where it saves). Read
+  from the same registry as `/collection`, so it always matches what was built.
 - **`/chars`** -- every character on the account in one screen: level, xp and rested, item level, zone, professions,
   gold, everything equipped (by slot), bags, bank and mail, and its last week of level and gold, read from the
   Character Board and Fafnir's Bed. A Find box (or `/chars find <item>`) shows who has an item and where. The bank
