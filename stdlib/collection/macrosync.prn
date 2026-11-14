@@ -23,7 +23,7 @@
 
 (module collection/macrosync)
 (export ms-init ms-first-type ms-managed ms-adopt! ms-forget! ms-prune-list ms-fits ms-ascended! ms-refused!
-        ms-haiku-count ms-haiku)
+        ms-haiku-count ms-haiku ms-bar-order ms-bar-slot-ok ms-bar-plan)
 
 (defn ms-first-type [] : I32 3000)
 
@@ -69,3 +69,87 @@
 (defn ms-haiku [(moment : I32) (seed : I32)] : I32
   (let [n (ms-haiku-count moment) s (if (< seed 0) (- 0 seed) seed)]
     (if (= n 0) 0 (+ (- s (* (/ s n) n)) 1))))
+
+;; ---- action bars (founder, 2026-11-14: "macro sync needs to sync the macros to my action bars actually") -----------
+;; After the macros are written, each one goes on an action bar. The rules:
+;;   * a macro already on a bar stays where the player put it;
+;;   * a slot planned in the forge (`forge place`) is used if it is empty or holds one of MacroSync's own macros (that
+;;     one is moved on to a free slot); if it holds anything else -- a spell, an item, the player's own macro -- it is
+;;     left alone and the macro is reported, never overwritten;
+;;   * the rest go into empty slots in ms-bar-order: the bottom-left and bottom-right bars first (61-72, 49-60), then
+;;     the two right bars (25-36, 37-48), then the main bar's two pages (1-24). Slots 73-120 (stance and form pages)
+;;     are never filled automatically, only when planned.
+;; Inputs, all Lua tables the host builds from the client (and this function changes):
+;;   names    the kit's macro names, in kit order
+;;   where    {[name] = slot}: where each managed macro is now (absent: on no bar)
+;;   planned  {[name] = slot}: the forge's plan (may be empty)
+;;   state    {[slot] = 1 when it holds something not ours, or the managed macro's name when it holds one of ours}
+;; Output: an array of steps {name, slot, kind, from}, in the order the host performs them. Kinds:
+;;   1 place in the planned slot   2 place in a free slot   5 move from `from` to the planned slot
+;;   3 the planned slot holds something else (nothing done)   4 no free slot left (nothing done)
+
+(defn ms-bar-range [(out : Any) (from : I32) (to : I32)] : Any
+  (if (> from to) out (do (lua/aset! out (+ (lua/call-fn (lua/global "table.getn") out) 1) from) (ms-bar-range out (+ from 1) to))))
+
+(defn ms-bar-order [] : Any
+  (ms-bar-range (ms-bar-range (ms-bar-range (ms-bar-range (ms-bar-range (lua/array) 61 72) 49 60) 25 36) 37 48) 1 24))
+
+;; A slot the forge may plan: 1-120.
+(defn ms-bar-slot-ok [(slot : I32)] : I32 (if (and (>= slot 1) (<= slot 120)) 1 0))
+
+(defn ms-bar-n [(t : Any)] : I32 (lua/call-fn (lua/global "table.getn") t))
+(defn ms-bar-push [(out : Any) (step : Any)] : Any (do (lua/aset! out (+ (ms-bar-n out) 1) step) out))
+
+;; 1 when some other macro's planned slot is `slot` (kept free for it).
+(defn ms-bar-reserved [(planned : Any) (names : Any) (slot : I32) (self : Any) (i : I32)] : I32
+  (if (> i (ms-bar-n names)) 0
+    (let [n (lua/aget names i)]
+      (if (and (not (= n self)) (= (lua/aget planned n) slot)) 1 (ms-bar-reserved planned names slot self (+ i 1))))))
+
+(defn ms-bar-free [(order : Any) (state : Any) (planned : Any) (names : Any) (self : Any) (i : I32)] : I32
+  (if (> i (ms-bar-n order)) 0
+    (let [slot (lua/aget order i)]
+      (if (and (lua/nil? (lua/aget state slot)) (= (ms-bar-reserved planned names slot self 1) 0))
+        slot
+        (ms-bar-free order state planned names self (+ i 1))))))
+
+;; Pass 1: the planned slots.
+(defn ms-bar-planned [(names : Any) (where : Any) (planned : Any) (state : Any) (out : Any) (refused : Any) (i : I32)] : Any
+  (if (> i (ms-bar-n names)) out
+    (let [name (lua/aget names i)
+          p (lua/aget planned name)
+          now (lua/aget where name)]
+      (do
+        (if (or (lua/nil? p) (= now p)) 0
+          (let [s (lua/aget state p)]
+            (if (= s 1)
+              (do (ms-bar-push out (lua/array name p 3 (lua/nil))) (lua/aset! refused name 1) 0)
+              (do (ms-bar-push out (lua/array name p (if (lua/nil? now) 1 5) now))
+                  ;; a macro of ours in the way is displaced: pass 2 finds it a free slot
+                  (if (lua/nil? s) 0 (lua/aset! where s (lua/nil)))
+                  (if (lua/nil? now) 0 (lua/aset! state now (lua/nil)))
+                  (lua/aset! state p name)
+                  (lua/aset! where name p)
+                  0))))
+        (ms-bar-planned names where planned state out refused (+ i 1))))))
+
+;; Pass 2: everything still on no bar goes into the first free slot.
+(defn ms-bar-rest [(names : Any) (where : Any) (planned : Any) (state : Any) (out : Any) (refused : Any) (order : Any) (i : I32)] : Any
+  (if (> i (ms-bar-n names)) out
+    (let [name (lua/aget names i)]
+      (do
+        (if (or (not (lua/nil? (lua/aget where name))) (not (lua/nil? (lua/aget refused name)))) 0
+          (let [slot (ms-bar-free order state planned names name 1)]
+            (if (= slot 0)
+              (do (ms-bar-push out (lua/array name 0 4 (lua/nil))) 0)
+              (do (ms-bar-push out (lua/array name slot 2 (lua/nil)))
+                  (lua/aset! state slot name)
+                  (lua/aset! where name slot)
+                  0))))
+        (ms-bar-rest names where planned state out refused order (+ i 1))))))
+
+(defn ms-bar-plan [(names : Any) (where : Any) (planned : Any) (state : Any)] : Any
+  (let [out (lua/array)
+        refused (lua/obj)
+        pl (if (lua/nil? planned) (lua/obj) planned)]
+    (ms-bar-rest names where pl state (ms-bar-planned names where pl state out refused 1) refused (ms-bar-order) 1)))

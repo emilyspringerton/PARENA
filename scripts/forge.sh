@@ -46,7 +46,7 @@ PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
 if [ "$PARENA_BIN" = "./.parena-bootstrap" ] && [ ! -x ./.parena-bootstrap ]; then
   make -s .parena-bootstrap >/dev/null || die "could not build the PARENA compiler (make .parena-bootstrap)"
 fi
-for m in kits macros upgrades needs; do
+for m in kits macros upgrades needs macrosync; do
   if [ ! -f "$FORGE_DIR/lib/$m.lua" ] || [ "stdlib/collection/$m.prn" -nt "$FORGE_DIR/lib/$m.lua" ]; then
     "$PARENA_BIN" build "stdlib/collection/$m.prn" -o "$FORGE_DIR/lib/$m.lua" >/dev/null || die "could not compile stdlib/collection/$m.prn"
   fi

@@ -184,6 +184,14 @@ check "board.tsv: gear" "$T" "$(printf 'G\tEmily-Forever\t1\tHead\tLionheart Hel
 check "board.tsv: a need" "$T" "$(printf 'N\t1000\tAsh-Forever\tbags full\tbag space\t0 of 80 slots free\tMooncloth Bag (16 slots) -- your mail')"
 cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
 
+# action bars: a macro pinned to a slot
+o="$(f place emily PalJudge 5)"; check "place: a macro in an action slot" "$o" "Emily-Forever: PalJudge goes in action slot 5 at the next /ascend"
+o="$(f place emily PalHeal 5)"; check "place: one slot, one macro" "$o" "slot 5 is already planned for PalJudge"
+o="$(f place emily PalJudge 121)"; check "place: slots are 1-120" "$o" "an action slot is 1-120"
+o="$(f place emily PalNope 7)"; check "place: only a macro in the kit" "$o" "no macro called 'PalNope' in Emily-Forever's kit"
+o="$(f place emily palheal 9)"; o="$(f place emily PalHeal off)"; check "place off" "$o" "PalHeal goes in the first empty slot again"
+o="$(f kit emily)"; check "kit: shows the planned slot" "$o" "[action slot 5]"
+o="$(f export)"; check "export: the bar plan is baked" "$o" '["PalJudge"] = 5,'
 # build: the plans go into MacroSync, and /ascend writes the planned kit
 if WOW_INTERFACE=99999 COLLECTION_CLIENT_OUT="$work/client" bash scripts/forge.sh build >"$work/build.log" 2>&1; then ok; else bad "forge build failed: $(tail -3 "$work/build.log")"; fi
 check "build says what it baked" "$(cat "$work/build.log")" "baking 2 character kit(s)"

@@ -38,7 +38,24 @@ for _, addon in ipairs({ "RefluxCore", "MacroSync" }) do
     end
 end
 for _, f in ipairs(frames) do if f.events.ADDON_LOADED and f.fn then f.fn(f, "ADDON_LOADED", "MacroSync") end end
+-- action bars: the forge planned PalJudge for slot 5, which holds nothing; slot 61 holds the player's own spell
+local bars = { [61] = { kind = "spell", id = 1 } }
+local cursor = nil
+env.HasAction = function(s) return bars[s] ~= nil end
+env.GetActionInfo = function(s) local b = bars[s]; if b then return b.kind, b.id end end
+env.GetMacroInfo = function(i) return macros[i] and macros[i].name end
+env.PickupMacro = function(n) for i, m in ipairs(macros) do if m.name == n then cursor = { kind = "macro", id = i } end end end
+env.PickupAction = function(s) cursor = bars[s]; bars[s] = nil end
+env.PlaceAction = function(s) local old = bars[s]; bars[s] = cursor; cursor = old end
+env.ClearCursor = function() cursor = nil end
 env.SlashCmdList.MACROSYNC("")
+local function slot_of(name) for s, b in pairs(bars) do if b.kind == "macro" and macros[b.id] and macros[b.id].name == name then return s end end end
+eq(slot_of("PalJudge"), 5, "a slot planned in the forge (forge place) is where /ascend puts the macro")
+local ph = slot_of("PalHeal") or 0
+eq(ph >= 62 and ph <= 72, true, "the rest fill the empty bottom-left slots, around the player's spell (PalHeal in " .. ph .. ")")
+local first = nil; for s = 61, 72 do if bars[s] and bars[s].kind == "macro" then first = first or s end end
+eq(first, 62, "starting at the first empty one")
+eq(bars[61].kind, "spell", "the player's spell stays")
 local by = {}
 for _, m in ipairs(macros) do by[m.name] = m.body end
 eq(by.PalExo, nil, "the dropped macro is not written")

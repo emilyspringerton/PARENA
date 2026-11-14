@@ -3,6 +3,8 @@
 --
 -- /ascend          load this character's kit: create or update managed macros, prune removed ones
 -- /ascend preview  what /ascend would do, changing nothing
+-- /ascend bars off  leave the action bars alone from now on
+-- /ascend bars on   put the macros on empty action slots again (the default)
 --
 -- The kit is the class set, changed by the plan made for this character in the plugin forge (runtime/wow/forge/,
 -- baked into kits.lua at build time; stdlib/collection/kits.prn applies it). No plan: the class set as shipped.
@@ -12,7 +14,12 @@
 --   CreateMacro(name, icon, body, perCharacter), EditMacro(index, name, icon, body), DeleteMacro(index),
 --   MAX_CHARACTER_MACROS (the slot limit, read from the client -- never assumed), UnitClass,
 --   C_Spell.GetSpellInfo or GetSpellInfo (which of a {A|B} choice this character knows).
+--   Action bars: HasAction, GetActionInfo, GetMacroInfo, PickupMacro, PickupAction, PlaceAction, ClearCursor,
+--   MultiBarBottomLeft/MultiBarBottomRight (only to say when the bars it filled are switched off).
 -- Every macro is created per character with the question-mark icon, so #showtooltip shows the live spell.
+-- After writing, each macro that is on no action bar is put on one (stdlib/collection/macrosync.prn ms-bar-plan
+-- decides where: a slot planned in the forge, else the first empty slot of the bottom bars, then the right bars, then
+-- the main bar; never over a spell, item or macro the player placed).
 -- A body the client shortens on save (its length limit is not confirmed) is caught by reading it back.
 
 local ADDON = "@ADDON@"
@@ -89,6 +96,56 @@ local function copy(t)
     return c
 end
 
+-- ---- the action bars ---------------------------------------------------------------------------------------------
+-- What every slot holds now: state {[slot] = 1 (not ours) or our macro's name}, where {[name] = its first slot}.
+local function bar_state()
+    if not (HasAction and GetActionInfo) then return nil end
+    local state, where = {}, {}
+    for slot = 1, 120 do
+        if HasAction(slot) then
+            local kind, id = GetActionInfo(slot)
+            local name = kind == "macro" and id and GetMacroInfo and GetMacroInfo(id)
+            if name and M.msManaged(db, name) == 1 then
+                state[slot] = name
+                where[name] = where[name] or slot
+            else
+                state[slot] = 1
+            end
+        end
+    end
+    return state, where
+end
+
+local function place_on_bars(names, plan, preview)
+    if db.bars == false then return end
+    if not (PickupMacro and PlaceAction) then return end
+    local state, where = bar_state()
+    if not state then return end
+    local steps = M.msBarPlan(names, where, plan and plan.bars or {}, state)
+    local placed, taken, full, bottom = {}, {}, {}, false
+    for _, st in ipairs(steps) do
+        local name, slot, kind, from = st[1], st[2], st[3], st[4]
+        if kind == 1 or kind == 2 or kind == 5 then
+            if not preview then
+                if kind == 5 then PickupAction(from) else PickupMacro(name) end
+                PlaceAction(slot)
+                if ClearCursor then ClearCursor() end
+            end
+            placed[#placed + 1] = name .. " " .. slot
+            if slot >= 49 and slot <= 72 then bottom = true end
+        elseif kind == 3 then taken[#taken + 1] = name .. " (slot " .. slot .. ")"
+        else full[#full + 1] = name end
+    end
+    if #placed > 0 then print("  " .. string.format(L(preview and "BARS_WOULD" or "BARS"), #placed) .. table.concat(placed, ", ")) end
+    if #taken > 0 then print("  " .. L("BARS_TAKEN") .. table.concat(taken, ", ")) end
+    if #full > 0 then print("  " .. L("BARS_FULL") .. table.concat(full, ", ")) end
+    if bottom and not preview then
+        local bl = MultiBarBottomLeft and MultiBarBottomLeft.IsShown and not MultiBarBottomLeft:IsShown()
+        local br = MultiBarBottomRight and MultiBarBottomRight.IsShown and not MultiBarBottomRight:IsShown()
+        if bl or br then print("  " .. L("BARS_HIDDEN")) end
+    end
+end
+
 local function ascend(preview)
     if not db then return end
     if InCombatLockdown and InCombatLockdown() then haiku(5); M.msRefused_(1, 0); return end
@@ -161,6 +218,13 @@ local function ascend(preview)
     if #collided > 0 then haiku(4); print("  " .. L("COLLIDED") .. table.concat(collided, ", ")) end
     if #full > 0 then haiku(7); M.msRefused_(3, #full); print("  " .. L("FULL") .. table.concat(full, ", ")) end
     if #short > 0 then haiku(9); print("  " .. L("TOOLONG") .. table.concat(short, ", ")) end
+    -- then the action bars: every macro of the kit that exists now (or would, in a preview)
+    local names = {}
+    for _, r in ipairs(ready) do
+        local exists = GetMacroIndexByName(r[1]) or 0
+        if exists > 0 or preview then names[#names + 1] = r[1] end
+    end
+    place_on_bars(names, plan, preview)
 end
 
 local f = CreateFrame("Frame")
@@ -175,7 +239,9 @@ end)
 SLASH_MACROSYNC1 = "/ascend"
 SlashCmdList["MACROSYNC"] = function(msg)
     msg = (msg or ""):match("^%s*(.-)%s*$"):lower()
-    if msg == "preview" then ascend(true)
+    if msg == "bars off" then db.bars = false; print(L("BARS_OFF"))
+    elseif msg == "bars on" then db.bars = nil; print(L("BARS_ON"))
+    elseif msg == "preview" then ascend(true)
     elseif msg == "" then ascend(false)
     else print(L("HELP")) end
 end

@@ -162,7 +162,7 @@ eq(s.env.UISpecialFrames[1], "CollectionHubFrame", "Escape closes it")
 -- ===== the control panel: a button for every command and subcommand the addons document ====================
 local acts = {}
 for _, act in ipairs(reg.MacroSync.actions) do acts[#acts + 1] = act.cmd .. "|" .. act.sub .. "|" .. act.args end
-eq(table.concat(acts, ","), "/ascend||,/ascend|preview|", "MacroSync's two documented commands are in the registry")
+eq(table.concat(acts, ","), "/ascend||,/ascend|preview|,/ascend|bars off|,/ascend|bars on|", "MacroSync's documented commands are in the registry")
 eq(#reg.Huginn.actions >= 6, true, "Huginn documents at least six")
 local fafnir_args = {}
 for _, act in ipairs(reg.FafnirsBed.actions) do fafnir_args[#fafnir_args + 1] = act.sub .. "|" .. act.args end

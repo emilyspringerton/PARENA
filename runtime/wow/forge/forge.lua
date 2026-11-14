@@ -39,6 +39,7 @@
 --   request CHARACTER bag|ITEM [N]  ask for a bag or N of an item from the forge;  done CHARACTER K  drop request K
 --   board [FILE]                    everything a big screen shows (characters, gear, bags, needs) as one JSON file
 --                                   (default <FORGE_DIR>/board.json; - for stdout)
+--   place CHARACTER NAME SLOT|off   put macro NAME in action slot SLOT (1-120) when /ascend fills the bars; off forgets it
 --   role CHARACTER [ROLE]           the stat weights the optimizer uses for a character (tank, strength, agility,
 --                                   hunter, caster, healer); the class's levelling role until set
 --   ledger [FILE]                   the whole account in ONE spreadsheet file (default <FORGE_DIR>/ledger.csv; - for
@@ -82,6 +83,7 @@ local S = dofile(opts.lib .. "/macros.lua")
 local R = dofile(opts.lib .. "/journal_reader.lua")   -- the sandboxed SavedVariables loader
 local U = dofile(opts.lib .. "/upgrades.lua")         -- the gear optimizer's rules (stdlib/collection/upgrades.prn)
 local N = dofile(opts.lib .. "/needs.lua")            -- the needs list's rules (stdlib/collection/needs.prn)
+local MS = dofile(opts.lib .. "/macrosync.lua")       -- MacroSync's rules: which action slots may be planned
 
 local BOARD_VAR = os.getenv("BOARD_VAR") or "CharacterBoardDB"
 local MS_VAR = os.getenv("MACROSYNC_VAR") or "MacroSyncDB"
@@ -300,7 +302,7 @@ local function kit_view(who, c, plan)
     for i, m in ipairs(kit) do
         local check = K.kitCheck(m[1], m[2])
         macros[i] = { name = m[1], body = m[2], origin = ORIGIN[m[3]], live = live[m[1]] == true,
-                      long = check == 4 }
+                      long = check == 4, bar = plan and plan.bars and plan.bars[m[1]] or nil }
     end
     local dropped = arr()
     for name in pairs((plan or {}).drop or {}) do dropped[#dropped + 1] = name end
@@ -857,6 +859,7 @@ forge needs [CHARACTER]           what the account is short of (full bags, empty
 forge request CHARACTER bag|ITEM [N]   ask the account for a bag or N of an item (in game: /need)
 forge done CHARACTER K            drop request K (numbered in forge needs)
 forge board [FILE]                characters, gear, bags and needs as one JSON file for a big screen
+forge place CHARACTER NAME SLOT   put a macro in action slot SLOT (1-120) when /ascend fills the bars; off forgets
 forge role CHARACTER [ROLE]       how the optimizer weighs a character: tank, strength, agility, hunter, caster, healer
 forge ledger [FILE]               the whole account in one spreadsheet (default FORGE_DIR/ledger.csv; - prints it)
 forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload) (scripts/forge.sh)
@@ -908,7 +911,8 @@ elseif cmd == "kit" then
         v.class ~= "" and v.class or "no class", v.level and (" " .. v.level) or "", #v.macros, v.class_set, v.changes, v.changes == 1 and "" or "s") }
     for _, m in ipairs(v.macros) do
         local tag = m.origin == "class" and "      " or string.format("%-6s", m.origin)
-        lines[#lines + 1] = string.format("  %s %s %-16s %s%s", tag, m.live and "*" or " ", m.name, one_line(m.body), m.long and "   (over 255: the client may cut it)" or "")
+        lines[#lines + 1] = string.format("  %s %s %-16s %s%s%s", tag, m.live and "*" or " ", m.name, one_line(m.body), m.long and "   (over 255: the client may cut it)" or "",
+            m.bar and ("   [action slot " .. m.bar .. "]") or "")
     end
     if #v.dropped > 0 then lines[#lines + 1] = "  dropped: " .. table.concat(v.dropped, ", ") end
     if v.ascended then
@@ -1258,6 +1262,34 @@ elseif cmd == "board" then
             string.format("board: %d characters -> %s (and %s for SHANKPIT)", #list, path, tsv_path))
     end
 
+elseif cmd == "place" then
+    local who = char_arg(1)
+    local c = needs_class(who)
+    local name, where = args[2], args[3]
+    if not (name and where) then refuse("forge place " .. who .. " NAME SLOT (1-120; off to forget)") end
+    local kit = K.kitApply(S.macroSet(c.class), plans[who] or {})
+    local real = nil
+    for _, m in ipairs(kit) do if m[1]:lower() == name:lower() then real = m[1] end end
+    if not real then refuse("no macro called '" .. name .. "' in " .. who .. "'s kit (forge kit " .. who .. ")") end
+    plans[who] = plans[who] or {}
+    plans[who].class = plans[who].class or c.class
+    plans[who].bars = plans[who].bars or {}
+    if where:lower() == "off" then
+        plans[who].bars[real] = nil
+        save_plans(plans)
+        out({ ok = true, character = who, macro = real, slot = nil }, string.format("%s: %s goes in the first empty slot again", who, real))
+    else
+        local slot = tonumber(where)
+        if not slot or MS.msBarSlotOk(slot) ~= 1 then refuse("an action slot is 1-120 (61-72 bottom left, 49-60 bottom right, 1-12 the main bar)") end
+        for other, sl in pairs(plans[who].bars) do
+            if sl == slot and other ~= real then refuse(string.format("slot %d is already planned for %s", slot, other)) end
+        end
+        plans[who].bars[real] = slot
+        save_plans(plans)
+        out({ ok = true, character = who, macro = real, slot = slot },
+            string.format("%s: %s goes in action slot %d at the next /ascend (after forge build)", who, real, slot))
+    end
+
 elseif cmd == "role" then
     local who = char_arg(1)
     local c = needs_class(who)
@@ -1280,8 +1312,10 @@ elseif cmd == "export" then
     -- MacroSync's kits.lua: only what /ascend needs, keyed exactly as the addon builds its key (Name-Realm).
     local baked = {}
     for who, p in pairs(plans) do
-        if K.kitChanges(p) > 0 or K.kitGearCount(p) > 0 then
-            baked[who] = { drop = p.drop, edit = p.edit, add = p.add, gear = (K.kitGearCount(p) > 0) and p.gear or nil }
+        local has_bars = type(p.bars) == "table" and next(p.bars) ~= nil
+        if K.kitChanges(p) > 0 or K.kitGearCount(p) > 0 or has_bars then
+            baked[who] = { drop = p.drop, edit = p.edit, add = p.add, gear = (K.kitGearCount(p) > 0) and p.gear or nil,
+                           bars = has_bars and p.bars or nil }
         end
     end
     io.write("-- kits.lua -- the macro kits planned in the plugin forge (runtime/wow/forge/forge.lua). Generated; do not edit.\n")

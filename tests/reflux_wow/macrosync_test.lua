@@ -8,6 +8,7 @@ local function eq(got, want, what)
     if got == want then passed = passed + 1
     else failed = failed + 1; print("FAIL: " .. what .. " (got " .. tostring(got) .. ", want " .. tostring(want) .. ")") end
 end
+local function hasnt(t, sub, what) eq(type(t) == "string" and t:find(sub, 1, true) == nil, true, what .. " [" .. tostring(t) .. "]") end
 local function has(s, sub, what) eq(type(s) == "string" and s:find(sub, 1, true) ~= nil, true, what .. " [" .. tostring(s) .. "]") end
 
 local function toc_files(dir, name)
@@ -331,6 +332,66 @@ eq(find(dt.char, "DruTouch").body,
 eq(find(dt.char, "DruSwift").body,
    "#showtooltip Healing Touch\n/cancelform [form]\n/cast Nature's Swiftness\n/cast [@mouseover,help,nodead][help,nodead][@player] Healing Touch",
    "DruSwift: Nature's Swiftness, then the instant Healing Touch")
+
+-- ===== the action bars (founder, 2026-11-14: "macro sync needs to sync the macros to my action bars") ==========
+local function bars_for(s, w)
+    w.bars = w.bars or {}
+    local env = s.env
+    env.HasAction = function(slot) return w.bars[slot] ~= nil end
+    env.GetActionInfo = function(slot) local b = w.bars[slot]; if b then return b.kind, b.id end end
+    local function every() local t = {}; for _, m in ipairs(w.account) do t[#t + 1] = m end; for _, m in ipairs(w.char) do t[#t + 1] = m end; return t end
+    env.GetMacroInfo = function(i) local m = every()[i]; return m and m.name end
+    env.PickupMacro = function(name)
+        for i, m in ipairs(every()) do if m.name == name or i == name then w.cursor = { kind = "macro", id = i } end end
+    end
+    env.PickupAction = function(slot) w.cursor = w.bars[slot]; w.bars[slot] = nil end
+    env.PlaceAction = function(slot) local old = w.bars[slot]; w.bars[slot] = w.cursor; w.cursor = old end
+    env.ClearCursor = function() w.cursor = nil end
+    env.MultiBarBottomLeft = { IsShown = function() return w.bottom_shown end }
+end
+local function on_bar(w, name)
+    local all = {}; for _, m in ipairs(w.account) do all[#all + 1] = m end; for _, m in ipairs(w.char) do all[#all + 1] = m end
+    for slot, b in pairs(w.bars) do if b.kind == "macro" and all[b.id] and all[b.id].name == name then return slot end end
+end
+local bw = world("PALADIN", { "Holy Light", "Judgement" })
+bw.bars = { [61] = { kind = "spell", id = 635 }, [1] = { kind = "spell", id = 20271 } }   -- the player's own spells
+local bs = session(bw)
+bars_for(bs, bw)
+local o = bs.ascend("preview")
+has(o, "would put on the action bars (16): ", "preview: says where they would go")
+eq(next(bw.bars, nil) ~= nil and bw.bars[62] == nil, true, "preview: places nothing")
+o = bs.ascend()
+has(o, "put on the action bars (16): ", "/ascend puts every macro on a bar")
+eq(on_bar(bw, "PalJudge"), 62, "the first goes in the first EMPTY bottom-left slot (61 holds the player's spell)")
+eq(bw.bars[61].kind == "spell" and bw.bars[61].id == 635, true, "the player's spell is untouched")
+eq(bw.bars[1].id, 20271, "and so is the main bar")
+eq(on_bar(bw, (bw.char[12] or {}).name) ~= nil, true, "the bottom-left fills, then the bottom-right")
+has(o, "bottom action bars, which are switched off", "says so when those bars are hidden")
+eq(bw.cursor, nil, "nothing is left on the cursor")
+-- the player moves one; the next /ascend leaves it there and places nothing twice
+local moved = bw.bars[62]; bw.bars[62] = nil; bw.bars[5] = moved
+o = bs.ascend()
+eq(on_bar(bw, "PalJudge"), 5, "a macro the player moved stays where they put it")
+hasnt(o, "put on the action bars", "and nothing already on a bar is placed again")
+-- off and on
+o = bs.ascend("bars off"); has(o, "leave your action bars alone", "/ascend bars off")
+bw.bars[5] = nil
+o = bs.ascend()
+hasnt(o, "action bars (", "with bars off nothing is placed")
+eq(on_bar(bw, "PalJudge"), nil, "the removed one stays off")
+o = bs.ascend("bars on"); has(o, "at the next /ascend", "/ascend bars on")
+o = bs.ascend()
+has(o, "put on the action bars (1): PalJudge", "and the next /ascend puts it back")
+-- a full set of bars
+local fw = world("PALADIN", { "Holy Light" })
+fw.bars = {}
+for slot = 1, 120 do fw.bars[slot] = { kind = "spell", id = slot } end
+fw.bars[61] = nil
+local fs = session(fw)
+bars_for(fs, fw)
+o = fs.ascend()
+has(o, "put on the action bars (1): ", "one empty slot: one macro placed")
+has(o, "not placed -- no empty action slot left: ", "the rest are reported, never forced")
 
 print(string.format("macrosync: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

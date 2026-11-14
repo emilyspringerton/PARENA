@@ -4,7 +4,14 @@
 -- 3 spells not learned yet (the macros are written anyway), 4 name collision, 5 in combat, 6 no macro API, 7 slots full, 8 no set for this class, 9 too long.
 local _, ns = ...
 local enUS = {
-    HELP = "/ascend -- load your kit (your class's macros, or the kit planned in the forge), prune removed ones   /ascend preview -- see what it would do",
+    HELP = "/ascend -- load your kit (your class's macros, or the kit planned in the forge), prune removed ones, and put them on your action bars   /ascend preview -- see what it would do   /ascend bars off|on -- leave the action bars alone / fill them again",
+    BARS = "put on the action bars (%d): ",
+    BARS_WOULD = "would put on the action bars (%d): ",
+    BARS_TAKEN = "not placed -- the planned slot holds something of yours: ",
+    BARS_FULL = "not placed -- no empty action slot left: ",
+    BARS_HIDDEN = "some went on the bottom action bars, which are switched off: turn them on in Options > Action Bars.",
+    BARS_OFF = "MacroSync will leave your action bars alone. /ascend bars on to fill them again.",
+    BARS_ON = "MacroSync will put your macros on empty action slots at the next /ascend.",
     SUMMARY = "%s: %d in the set -- %d written, %d pruned; %d use spells you have not learned yet (they work once you do).",
     PREVIEW = "%s (preview, nothing changed): would write %d, prune %d; %d use spells not learned yet.",
     PRUNED = "pruned: ", DORMANT = "not learned yet (already on your list, they work once learned): ", COLLIDED = "left alone (your own macro has the name): ",

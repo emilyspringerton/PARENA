@@ -487,6 +487,13 @@ probed against the WoW Forever client beyond what each addon's header says.
 
 - **`/collection`** -- one window over every addon: loaded or not, where it saves, and a button for every slash
   command it documents (hover for what it does; commands that need a name or a riddle go to the chat box to finish).
+- **`/ascend`** (MacroSync) -- writes this character's macro kit (the class set, or the kit planned in the forge) and
+  then puts every macro that is on no action bar onto one: a slot planned with `forge place CHAR MACRO SLOT`, else the
+  first empty slot of the bottom-left bar (61-72), then bottom-right (49-60), the right bars, then the main bar. It never
+  replaces a spell, item or macro you placed; a macro you moved stays where you put it; a planned slot holding something
+  of yours is reported and left. `/ascend bars off` leaves the bars alone, `/ascend bars on` resumes; if the bottom bars
+  are switched off in the game's options it says so. Rules: `stdlib/collection/macrosync.prn` `ms-bar-plan`. Tested in
+  a stubbed client; not yet against the live action bars.
 - **`/hhelp`** -- the help for the whole package in chat: every addon, its commands and what it is (`/hhelp all` for
   every command with what it does, `/hhelp rock` or `/hhelp derby` for one addon in full, including where it saves). Read
   from the same registry as `/collection`, so it always matches what was built.
