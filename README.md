@@ -479,7 +479,8 @@ probed against the WoW Forever client beyond what each addon's header says.
 - **`/collection`** -- one window over every addon: loaded or not, where it saves, and a button for every slash
   command it documents (hover for what it does; commands that need a name or a riddle go to the chat box to finish).
 - **`/chars`** -- every character on the account in one screen: level, xp and rested, item level, zone, professions,
-  gold, everything equipped (by slot), bags, bank and mail, read from the Character Board and Fafnir's Bed. The bank
+  gold, everything equipped (by slot), bags, bank and mail, and its last week of level and gold, read from the
+  Character Board and Fafnir's Bed. A Find box (or `/chars find <item>`) shows who has an item and where. The bank
   and mail are as of the last time that character opened them.
 - **The plugin forge** -- see and plan each character's macro kit outside the game, then bake the plans into
   MacroSync so `/ascend` writes the planned kit (the class set minus drops, with edits, plus your own macros):

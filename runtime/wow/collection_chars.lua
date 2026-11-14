@@ -5,6 +5,7 @@
 --
 -- /chars             open or close the character screen (also the Characters button in /collection)
 -- /chars <name>      open it on that character
+-- /chars find <item> who has it, and where (also the Find box at the top of the window)
 --
 -- Reads two account-wide SavedVariables, so every character shows, not only the one logged in: the Character Board's
 -- latest snapshot of each character (level, xp, rested, gold, zone, item level, played, professions) and Fafnir's
@@ -29,6 +30,8 @@ local function L(key)
 end
 
 local GOLD, GREY, WHITE = "|cffd8b25e", "|cff9d9d9d", "|cffffffff"
+
+local progress           -- defined below, used by sheet
 
 local function db_of(var) local t = var and _G[var]; return type(t) == "table" and t or nil end
 local function board() return db_of(ns.build.board) end
@@ -87,6 +90,56 @@ local function played(sec)
     return string.format("%dd %dh", math.floor(sec / 86400), math.floor(sec / 3600) % 24)
 end
 
+-- The Character Board's snapshots of one character, the last one of each day, oldest first; at most `max` days.
+progress = function(who, max)
+    local b = board()
+    local rows = {}
+    for _, r in ipairs(b and b.rows or {}) do if r.character == who and r.t then rows[#rows + 1] = r end end
+    table.sort(rows, function(x, y) return x.t < y.t end)
+    local days = {}
+    for _, r in ipairs(rows) do
+        local d = date and date("%Y-%m-%d", r.t) or tostring(r.t)
+        local entry = { date = d, level = r.level, gold = r.gold or 0 }
+        if days[#days] and days[#days].date == d then days[#days] = entry else days[#days + 1] = entry end
+    end
+    while #days > max do table.remove(days, 1) end
+    return days
+end
+
+-- Who has what: every item whose name holds `q` (or whose id it is), the account total, and who holds it where.
+local LOCS = { "bags", "bank", "mail", "equipped" }
+local function search(q)
+    local f = fafnir()
+    local lines = { GOLD .. string.format(L("C_FOUND"), q) .. "|r" }
+    if not f then lines[2] = GREY .. L("C_NOFAFNIR") .. "|r"; return lines end
+    local lq, id_q = q:lower(), tonumber(q)
+    local hits = {}
+    for id, name in pairs(f.names or {}) do
+        if id == id_q or tostring(name):lower():find(lq, 1, true) then
+            local holders, total = {}, 0
+            for who, ch in pairs(f.chars or {}) do
+                local n, where = 0, {}
+                for _, l in ipairs(LOCS) do
+                    local k = ch.loc and ch.loc[l] and ch.loc[l][id] or 0
+                    if k > 0 then n = n + k; where[#where + 1] = L("C_" .. l:upper()):lower() .. " " .. k end
+                end
+                if n > 0 then holders[#holders + 1] = { who = who, n = n, where = table.concat(where, ", ") }; total = total + n end
+            end
+            table.sort(holders, function(a, b) if a.n ~= b.n then return a.n > b.n end return a.who < b.who end)
+            hits[#hits + 1] = { id = id, total = total, holders = holders, name = tostring(name) }
+        end
+    end
+    table.sort(hits, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.name < b.name end)
+    for i, h in ipairs(hits) do
+        if i > 30 then lines[#lines + 1] = GREY .. string.format(L("C_MORE"), #hits - 30) .. "|r"; break end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = item(h.id, f.names) .. "  " .. GREY .. string.format(L("C_TOTAL"), h.total) .. "|r"
+        for _, hd in ipairs(h.holders) do lines[#lines + 1] = "  " .. hd.who .. "  " .. hd.n .. "  " .. GREY .. "(" .. hd.where .. ")|r" end
+    end
+    if #hits == 0 then lines[#lines + 1] = GREY .. L("C_NOTHING") .. "|r" end
+    return lines
+end
+
 -- The whole sheet of one character, as lines of text.
 local function sheet(who)
     local snap, hold, names = facts(who)
@@ -134,6 +187,19 @@ local function sheet(who)
         end
     end
 
+    -- the last week of the Character Board's snapshots: level and gold at the end of each day
+    local days = progress(who, 7)
+    if #days > 1 then
+        add("")
+        add(GOLD .. L("C_PROGRESS") .. "|r")
+        for i = #days, 1, -1 do
+            local d, prev = days[i], days[i - 1]
+            local delta = prev and ((tonumber(d.gold) or 0) - (tonumber(prev.gold) or 0)) or nil
+            add(string.format("  %s%s|r  " .. L("C_DAYLEVEL") .. "  %s%s", GREY, d.date, tonumber(d.level) or 0, money(d.gold),
+                delta and (GREY .. "  (" .. (delta >= 0 and "+" or "-") .. string.format("%dg", math.floor(math.abs(delta) / 10000)) .. ")|r") or ""))
+        end
+    end
+
     local kits = type(MacroSyncKits) == "table" and MacroSyncKits or nil
     local plan = kits and kits[who]
     if plan then
@@ -152,6 +218,8 @@ end
 local function list_in_chat(who)
     for _, line in ipairs(sheet(who)) do print(line) end
 end
+
+local query = nil      -- when set, the right side shows who has what instead of a character
 
 -- The window: the account across the top, a list of characters on the left, the chosen one's sheet on the right.
 local window, selected
@@ -181,6 +249,17 @@ local function make_window()
     title:SetText(L("C_TITLE"))
     local account = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     account:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -38)
+
+    -- who has what: type part of an item's name (or its id) and press Enter
+    local label = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    label:SetPoint("TOPLEFT", f, "TOPLEFT", LIST_W + 20, -38)
+    label:SetText(L("C_FIND"))
+    local okb, box = pcall(CreateFrame, "EditBox", nil, f, "InputBoxTemplate")
+    if not okb then box = CreateFrame("EditBox", nil, f) end
+    box:SetSize(220, 20)
+    box:SetPoint("TOPLEFT", f, "TOPLEFT", LIST_W + 110, -34)
+    if box.SetAutoFocus then box:SetAutoFocus(false) end
+    f.findbox = box
 
     -- left: one button per character
     local list = CreateFrame("ScrollFrame", nil, f)
@@ -216,8 +295,8 @@ local function make_window()
 
     local buttons = {}
     local function show_sheet()
-        if not selected then text:SetText(GREY .. L("C_PICK") .. "|r"); return end
-        local lines = sheet(selected)
+        if not query and not selected then text:SetText(GREY .. L("C_PICK") .. "|r"); return end
+        local lines = query and search(query) or sheet(selected)
         text:SetText(table.concat(lines, "\n"))
         sheet_h = #lines * LINE_H + 16
         if text.SetHeight then text:SetHeight(sheet_h) end
@@ -239,7 +318,7 @@ local function make_window()
                 if not okb then nb = CreateFrame("Button", nil, listbody) end
                 nb:SetSize(LIST_W - 8, ROW_H - 2)
                 nb:SetPoint("TOPLEFT", listbody, "TOPLEFT", 4, -((i - 1) * ROW_H + 4))
-                nb:SetScript("OnClick", function(self) selected = self.who; show_sheet() end)
+                nb:SetScript("OnClick", function(self) selected = self.who; query = nil; show_sheet() end)
                 buttons[i] = nb
                 b = nb
             end
@@ -251,6 +330,15 @@ local function make_window()
         for i = #people + 1, #buttons do buttons[i]:Hide() end
         if #people == 0 then text:SetText(GREY .. L("C_NONE") .. "|r") else show_sheet() end
     end
+
+    box:SetScript("OnEnterPressed", function(self)
+        local q = (self:GetText() or ""):match("^%s*(.-)%s*$")
+        query = q ~= "" and q or nil
+        if self.ClearFocus then self:ClearFocus() end
+        show_sheet()
+    end)
+    box:SetScript("OnEscapePressed", function(self) if self.ClearFocus then self:ClearFocus() end end)
+    f.show_sheet = show_sheet
 
     f:SetScript("OnShow", refresh)
     if UISpecialFrames then table.insert(UISpecialFrames, "CollectionCharsFrame") end
@@ -273,7 +361,7 @@ local function open(who)
 end
 
 -- "emily" / "Emily-Forever" / "em" -> the character, if exactly one matches.
-local function find(q)
+local function find_char(q)
     q = q:lower()
     local hits = {}
     for _, p in ipairs(roster()) do
@@ -289,9 +377,19 @@ SLASH_COLLECTIONCHARS1 = "/chars"
 SlashCmdList["COLLECTIONCHARS"] = function(msg)
     msg = (msg or ""):match("^%s*(.-)%s*$")
     if msg == "" then return open(nil) end
-    local who, n = find(msg)
+    local q = msg:match("^[Ff][Ii][Nn][Dd]%s+(.+)$")
+    if q then
+        query = q
+        local w = make_window()
+        if not w then for _, line in ipairs(search(q)) do print(line) end return end
+        if w.findbox and w.findbox.SetText then w.findbox:SetText(q) end
+        if w:IsShown() then w.show_sheet() else w:Show() end
+        return
+    end
+    query = nil
+    local who, n = find_char(msg)
     if not who then print(string.format(n == 0 and L("C_NOSUCH") or L("C_MANY"), msg)) return end
     open(who)
 end
 
-ns.open_chars, ns.char_sheet = open, sheet
+ns.open_chars, ns.char_sheet, ns.char_search = open, sheet, search

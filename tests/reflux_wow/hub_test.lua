@@ -271,6 +271,33 @@ s.env.SlashCmdList.COLLECTIONCHARS("zed")
 has(table.concat(s.out, "\n"), "no character called 'zed'", "an unknown name says so")
 eq(s.ns.char_sheet("Emily-Forever")[1]:find("Emily-Forever", 1, true) ~= nil, true, "the sheet is available to other code")
 
+-- the last week, from the Board's snapshot series (last snapshot of each day)
+s.env.date = function(fmt, t) return os.date("!" .. fmt:gsub("^!", ""), t) end
+s.env.CharacterBoardDB.rows = {
+    { t = 1762900000, character = "Emily-Forever", level = 40, gold = 1000000 },
+    { t = 1762910000, character = "Emily-Forever", level = 41, gold = 1100000 },
+    { t = 1763100000, character = "Emily-Forever", level = 42, gold = 1234567 } }
+local sheet_txt = table.concat(s.ns.char_sheet("Emily-Forever"), "\n")
+has(sheet_txt, "The last week", "the sheet has the last week")
+has(sheet_txt, "2025-11-14|r  level 42", "newest day first, with the level")
+has(sheet_txt, "(+13g)", "and the change in gold")
+eq(select(2, sheet_txt:gsub("level 4%d", "")), 3 + 1, "one line per day (plus the header's level)")
+
+-- who has what: /chars find, and the Find box
+s.env.SlashCmdList.COLLECTIONCHARS("find linen")
+ct = s.texts()
+has(ct, "Who has \"linen\"", "/chars find shows who has it")
+has(ct, "Linen Cloth|r  |cff9d9d9d23 on the account", "with the account total")
+has(ct, "Ash-Forever  20  |cff9d9d9d(bags 20)", "most first, with where")
+has(table.concat(s.ns.char_search("1002"), "\n"), "Emily-Forever  1  |cff9d9d9d(worn 1)", "by id, worn gear included")
+has(table.concat(s.ns.char_search("zzz"), "\n"), "Nothing seen with that name", "nothing found says so")
+local box = s.env.CollectionCharsFrame.findbox
+box:SetText("potion")
+box.scripts.OnEnterPressed(box)
+has(s.texts(), "Minor Healing Potion", "the Find box searches on Enter")
+for _, b in ipairs(s.buttons()) do if rawget(b, "who") == "Ash-Forever" then b:Click() end end
+has(s.texts(), "level 60 Gnome MAGE", "picking a character goes back to its sheet")
+
 -- ===== /collection list prints the same in chat ===========================================================
 local out = s.cmd("list")
 has(out, "Collection|r  Build ", "the list starts with the build line")

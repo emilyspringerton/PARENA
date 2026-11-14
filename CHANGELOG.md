@@ -1,5 +1,11 @@
 ## 2026-11-14
 
+- **`/chars` gets who-has-what and the last week** (founder: "ideally all from one in game screen"). A Find box at
+  the top of the window (and `/chars find <item>`) lists every item Fafnir's Bed has seen whose name holds the text
+  (or whose id it is): the account total and who holds it where (bags, bank, mail, worn), most first. Each
+  character's sheet now ends with its last week from the Character Board's snapshot series: level and gold at the
+  end of each day, with the change. Picking a character goes back to its sheet. `hub_test` 104 -> 115.
+
 - **The forge shows progress and who has what** (continuing "i want to see the inv and levels ... including monies").
   `forge history` is the account's gold by day (every character's latest snapshot by the end of each day, with the
   change from the day before); `forge history CHARACTER` is that character's level, xp, zone and gold by day. Both
