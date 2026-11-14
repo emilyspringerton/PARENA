@@ -28,8 +28,18 @@
 #   SAGA_ADDON / SAGA_VAR            joke achievements folder / its global  (SagaOfFools / SagaOfFoolsDB)
 #   PARENA_BIN                       compiler driver                       (./.parena-bootstrap)
 #   WOW_ADDONS_DIR                   install target for --install
+#   COLLECTION_WITH_TABLED           1 also packages tabled addons (EcoWar): tests only, never a release
+#   COLLECTION_ONLY                  AddonA,AddonB: a partial dev build of only those addon folders, plus the base
+#                                    every addon needs (RefluxCore, the journal) and the reader. Unset: the whole client.
+#   COLLECTION_FRAGMENTS_DIR         where the suite fragments live        (default scripts/collection.d)
 #
-# usage: scripts/wow-package-collection.sh [--zip] [--install]
+# Suite fragments (BOARD.md plug-in slots): after the built-in addons, every $COLLECTION_FRAGMENTS_DIR/*.sh is
+# sourced in sorted (C locale) order, NN-<agent>.sh. A fragment adds its addons with the helpers the built-in blocks
+# use (wrap, glue, toc, fun, game), plus needs (extra .toc dependencies), placeholder (extra @NAME@ glue values) and
+# readme / readme_after (README.txt lines). The helpers skip any addon COLLECTION_ONLY leaves out, so fragments need
+# no filtering of their own. Keep tabled addons behind COLLECTION_WITH_TABLED=1, as EcoWar is.
+#
+# usage: scripts/wow-package-collection.sh [--zip] [--install]     (--zip refuses a COLLECTION_ONLY build)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -65,6 +75,43 @@ for n in "$J_ADDON" "$J_VAR" "$F_ADDON" "$F_VAR" "$H_ADDON" "$H_VAR" "$R_ADDON" 
 done
 [ -x "$PARENA_BIN" ] || die "no compiler at $PARENA_BIN (make .parena-bootstrap)"
 
+check_name() {
+  case "$1" in [A-Za-z_]*) ;; *) die "'$1' is not a Lua/addon name" ;; esac
+  case "$1" in *[!A-Za-z0-9_]*) die "'$1' is not a Lua/addon name" ;; esac
+}
+
+# COLLECTION_ONLY. SELECTED: the addon folders this run builds (all of them when ONLY is empty). SEEN: every addon
+# folder a block or fragment reached, built or skipped, so a misspelt name is caught. BUILT: what was built, in order.
+ONLY="" SELECTED=" RefluxCore $J_ADDON " SEEN=" RefluxCore " BUILT="RefluxCore"
+if [ -n "${COLLECTION_ONLY:-}" ]; then
+  IFS=', ' read -r -a only_names <<< "$COLLECTION_ONLY"
+  for n in "${only_names[@]}"; do
+    [ -n "$n" ] || continue
+    check_name "$n"
+    ONLY="$ONLY $n" SELECTED="$SELECTED$n "
+  done
+  [ -n "$ONLY" ] || die "COLLECTION_ONLY is set but names no addon"
+fi
+for a in "$@"; do
+  case "$a" in --zip) [ -z "$ONLY" ] || die "--zip makes a release, and a COLLECTION_ONLY build is partial: unset COLLECTION_ONLY" ;; esac
+done
+
+# want ADDON -- note that a block reached ADDON; true when this run builds it.
+want() {
+  case "$SEEN" in *" $1 "*) ;; *) SEEN="$SEEN$1 " ;; esac
+  [ -z "$ONLY" ] && return 0
+  case "$SELECTED" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# skip_path PATH -- true when PATH is inside an addon folder ($OUT/AddOns/<addon>/...) this run leaves out. Paths
+# outside AddOns/ (the reader) are always built.
+skip_path() {
+  local rest="${1#"$OUT/AddOns/"}"
+  [ "$rest" != "$1" ] || return 1
+  ! want "${rest%%/*}"
+}
+
 rm -rf "$OUT"
 mkdir -p "$OUT/AddOns" "$OUT/reader"
 
@@ -72,27 +119,74 @@ mkdir -p "$OUT/AddOns" "$OUT/reader"
 REFLUXCORE_OUT="$OUT/AddOns" PARENA_BIN="$PARENA_BIN" bash scripts/wow-package-refluxcore.sh >/dev/null
 
 # wrap NAME OUT SRC.prn... -- compile the sources as ONE module and register it in RefluxCore.modules[NAME].
+# One scratch file for every wrap, removed at the end: each process start costs seconds on a busy Windows box.
+WRAP_TMP="$OUT/.wrap.lua"
 wrap() {
-  local name="$1" out="$2" tmp
+  local name="$1" out="$2"
   shift 2
-  tmp="$(mktemp -d)"
-  "$PARENA_BIN" build "$@" -o "$tmp/m.lua" >/dev/null
+  skip_path "$out" && return 0
+  "$PARENA_BIN" build "$@" -o "$WRAP_TMP" >/dev/null
   {
     echo "-- $name, built by parena from: $*. Do not edit; edit the .prn."
     echo "RefluxCore = RefluxCore or { modules = {} }"
     echo "RefluxCore.modules[\"$name\"] = (function(...)"
-    cat "$tmp/m.lua"
+    cat "$WRAP_TMP"
     echo "end)(...)"
   } > "$out"
-  rm -rf "$tmp"
 }
 
-# glue SRC OUT -- host glue with its @...@ values filled from the environment.
+# glue SRC OUT -- host glue with its @...@ values filled from the environment (and from `placeholder`).
 glue() {
+  skip_path "$2" && return 0
   sed -e "s/@ADDON@/${3:-}/g" -e "s/@VAR@/${4:-}/g" -e "s/@KEEP@/$J_KEEP/g" -e "s/@POLL@/$J_POLL/g" \
       -e "s/@FAFNIR_VAR@/$F_VAR/g" -e "s/@HRUNGNIR_VAR@/$H_VAR/g" -e "s/@RATATOSKR_VAR@/$R_VAR/g" \
-      -e "s/@VOLVA_VAR@/$V_VAR/g" -e "s/@JOURNAL_VAR@/$J_VAR/g" "$1" > "$2"
-  if grep -q '@[A-Z_]*@' "$2"; then die "unfilled placeholder left in $2"; fi
+      -e "s/@VOLVA_VAR@/$V_VAR/g" -e "s/@JOURNAL_VAR@/$J_VAR/g" ${GLUE_EXTRA[@]+"${GLUE_EXTRA[@]}"} "$1" > "$2"
+  if [[ "$(<"$2")" =~ @[A-Z_]*@ ]]; then die "unfilled placeholder left in $2"; fi
+}
+
+# placeholder NAME VALUE -- glue also fills @NAME@ with VALUE: a fragment's own names, e.g. another addon's global.
+GLUE_EXTRA=()
+placeholder() {
+  case "$1" in [A-Z]*) ;; *) die "placeholder '$1': use [A-Z][A-Z0-9_]*" ;; esac
+  case "$1" in *[!A-Z0-9_]*) die "placeholder '$1': use [A-Z][A-Z0-9_]*" ;; esac
+  case "$2" in */*|*\\*|*\&*|*$'\n'*) die "placeholder @$1@: the value may not hold / \\ & or a newline" ;; esac
+  GLUE_EXTRA+=(-e "s/@$1@/$2/g")
+}
+
+# needs ADDON DEP... -- ADDON's .toc lists each DEP after RefluxCore in ## Dependencies, so WoW loads DEP first.
+# Call it before ADDON's toc. Under COLLECTION_ONLY, building ADDON without a DEP stops here and says what to add.
+declare -A DEPS=()
+needs() {
+  local addon="$1" dep
+  shift
+  check_name "$addon"
+  for dep in "$@"; do
+    check_name "$dep"
+    [ "$dep" != RefluxCore ] || continue
+    case " ${DEPS[$addon]:-} " in *" $dep "*) continue ;; esac
+    if [ -n "$ONLY" ]; then
+      case "$SELECTED" in
+        *" $addon "*) case "$SELECTED" in *" $dep "*) ;; *) die "COLLECTION_ONLY: $addon needs $dep; add it: COLLECTION_ONLY=$COLLECTION_ONLY,$dep" ;; esac ;;
+      esac
+    fi
+    DEPS[$addon]="${DEPS[$addon]:+${DEPS[$addon]} }$dep"
+  done
+}
+
+# readme ADDON LINE... -- lines for README.txt's IN GAME list; readme_after ADDON LINE... -- for AFTER PLAYING.
+# Lines for an addon this run does not build are dropped.
+README_GAME="" README_AFTER=""
+readme() {
+  local addon="$1" l
+  shift
+  want "$addon" || return 0
+  for l in "$@"; do README_GAME="$README_GAME$l"$'\n'; done
+}
+readme_after() {
+  local addon="$1" l
+  shift
+  want "$addon" || return 0
+  for l in "$@"; do README_AFTER="$README_AFTER$l"$'\n'; done
 }
 
 # fun ADDON VAR MODULE PRN GLUE LOCALE TITLE NOTES -- one of the fun addons: its PARENA module, its catalogue,
@@ -100,6 +194,7 @@ glue() {
 fun() {
   local addon="$1" var="$2" module="$3" prn="$4" gluesrc="$5" locale="$6" title="$7" notes="$8" kind="$9"
   local d="$OUT/AddOns/$addon"
+  want "$addon" || return 0
   mkdir -p "$d"
   wrap "collection/$module" "$d/${module}_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn "stdlib/collection/$prn"
   cp "runtime/wow/locales/$locale" "$d/locale.lua"
@@ -108,14 +203,18 @@ fun() {
 }
 
 toc() {  # toc FILE TITLE NOTES SVKIND SVVAR FILES...
-  local file="$1" title="$2" notes="$3" kind="$4" var="$5"
+  local file="$1" title="$2" notes="$3" kind="$4" var="$5" addon deps=RefluxCore
   shift 5
+  skip_path "$file" && return 0
+  addon="${file#"$OUT/AddOns/"}" && addon="${addon%%/*}"
+  if [ -n "${DEPS[$addon]:-}" ]; then deps="RefluxCore, ${DEPS[$addon]// /, }"; fi
+  BUILT="$BUILT $addon"
   {
     echo "## Interface: $WOW_INTERFACE"
     echo "## Title: $title"
     echo "## Notes: $notes"
     echo "## Version: $VERSION"
-    echo "## Dependencies: RefluxCore"
+    echo "## Dependencies: $deps"
     echo "## $kind: $var"
     echo "## X-Built-By: PARENA"
     echo
@@ -177,7 +276,6 @@ cp runtime/wow/locales/macrosync.lua "$ms/locale.lua"
 glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
 toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros, loaded with /ascend; removed ones are pruned. Speaks in haiku." \
   SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua locale.lua macrosync.lua
-GAMES_BUILT=" $M_ADDON"
 
 # The party games (spec 54-71). Each is built with collection/games and carries the shared kit (fun_kit.lua) and
 # its catalogue. Folder and SavedVariables names are env-driven: GAME_<KEY>_ADDON / GAME_<KEY>_VAR.
@@ -192,6 +290,7 @@ game() {
     case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
   done
   local d="$OUT/AddOns/$addon"
+  want "$addon" || return 0
   mkdir -p "$d"
   wrap "collection/$module" "$d/${module}_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn \
     stdlib/collection/games.prn "stdlib/collection/$module.prn"
@@ -200,7 +299,6 @@ game() {
   cp runtime/wow/fun_kit.lua "$d/kit.lua"
   glue "runtime/wow/$gluesrc" "$d/$gluesrc" "$addon" "$var"
   toc "$d/$addon.toc" "$title" "$notes" "$kind" "$var" "${module}_rules.lua" kit_locale.lua locale.lua kit.lua "$gluesrc"
-  GAMES_BUILT="$GAMES_BUILT $addon"
 }
 game HULDUFOLK HuldufolkHunt HuldufolkHuntDB huldufolk huldufolk_hunt.lua "Huldufólk Hunt" \
   "Hide and seek with hot-or-cold hints and a score board. /hunt" SavedVariables
@@ -241,6 +339,29 @@ fi
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
+# Suite fragments (BOARD.md plug-in slots), in sorted order; see the header. A fragment that fails stops the build.
+FRAG_DIR="${COLLECTION_FRAGMENTS_DIR:-scripts/collection.d}" FRAGS="" frags=() LEFTOVERS=()
+if [ -d "$FRAG_DIR" ]; then
+  while IFS= read -r frag; do frags+=("$FRAG_DIR/$frag"); done < <(ls -1 "$FRAG_DIR" | grep '\.sh$' | LC_ALL=C sort)
+fi
+for frag in ${frags[@]+"${frags[@]}"}; do
+  # shellcheck source=/dev/null
+  . "$frag"
+  FRAGS="$FRAGS ${frag##*/}"
+done
+
+if [ -n "$ONLY" ]; then
+  for n in $ONLY; do
+    case "$SEEN" in *" $n "*) ;; *) die "COLLECTION_ONLY names '$n', but no block or fragment builds that addon folder (tabled ones need COLLECTION_WITH_TABLED=1)" ;; esac
+  done
+  # An inline block may have made a folder, or copied its catalogue, before its helpers skipped the addon.
+  for d in "$OUT"/AddOns/*/; do
+    d="${d%/}"
+    case "$SELECTED" in *" ${d##*/} "*) ;; *) LEFTOVERS+=("$d") ;; esac
+  done
+fi
+rm -rf "$WRAP_TMP" ${LEFTOVERS[@]+"${LEFTOVERS[@]}"}
+
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"
 
@@ -251,8 +372,12 @@ chmod +x "$OUT/reader/export-csv.sh"
 cp scripts/collection-journal-read.sh "$OUT/reader/read-journal.sh"
 chmod +x "$OUT/reader/read-journal.sh"
 
-cat > "$OUT/README.txt" <<EOF
+{
+cat <<EOF
 Collection of Value -- client $VERSION (WoW interface $WOW_INTERFACE), built by PARENA.
+EOF
+[ -z "$ONLY" ] || echo "PARTIAL DEV BUILD, not a release (COLLECTION_ONLY=$COLLECTION_ONLY): only ${BUILT// /, } and the reader."
+cat <<EOF
 
 INSTALL
   Copy every folder in AddOns/ into your client's Interface/AddOns folder
@@ -267,6 +392,9 @@ IN GAME
   /fortune          Völva: today's fortune again (a new one opens at every login)
   /saga              Saga of Fools: joke achievements, earned and still to come
   /ascend            MacroSync: load your class's macros (paladin, priest, mage, shaman, druid); /ascend preview changes nothing
+EOF
+printf '%s' "$README_GAME"
+cat <<EOF
   Each character is learned the first time you log it in; the bank is learned each time you open it,
   mail each time you open the mailbox.
 
@@ -278,9 +406,11 @@ AFTER PLAYING (log out first: the client writes SavedVariables on logout and /re
   writes characters.csv (every snapshot: your progression), bags.csv, bags_history.csv (appended each run)
   and inventory_net.csv. /board in game shows the characters; /board snap takes a snapshot now.
 EOF
+printf '%s' "$README_AFTER"
+} > "$OUT/README.txt"
 echo "$VERSION" > "$OUT/VERSION"
 
-echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): RefluxCore, $J_ADDON, $F_ADDON, $H_ADDON, $R_ADDON, $V_ADDON, $S_ADDON,$GAMES_BUILT, reader"
+echo "wow-package-collection: built $OUT ($VERSION, interface $WOW_INTERFACE): ${BUILT// /, }, reader${FRAGS:+; fragments:$FRAGS}${ONLY:+; partial (COLLECTION_ONLY=$COLLECTION_ONLY)}"
 
 for a in "$@"; do
   case "$a" in
