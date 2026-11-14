@@ -41,7 +41,7 @@ local function session(w)
     env.GetRealmName = function() return "Forever" end
     env.UnitClass = function() return w.class:sub(1, 1) .. w.class:sub(2):lower(), w.class end
     env.InCombatLockdown = function() return w.combat end
-    env.MAX_CHARACTER_MACROS = w.max
+    if not w.hidemax then env.MAX_CHARACTER_MACROS = w.max end   -- WoW Forever: the global is absent
     env.C_Spell = { GetSpellInfo = function(name) if w.known[name] then return { name = name } end end }
     local function all() local t = {}; for _, m in ipairs(w.account) do t[#t + 1] = m end; for _, m in ipairs(w.char) do t[#t + 1] = m end; return t end
     env.GetNumMacros = function() return #w.account, #w.char end
@@ -72,7 +72,16 @@ local function session(w)
         local dir = client .. "/AddOns/" .. addon
         local ns = {}
         for _, file in ipairs(toc_files(dir, addon)) do
-            local chunk = assert(loadfile(dir .. "/" .. file)); setfenv(chunk, env); chunk(addon, ns)
+            local chunk
+            if w.limit and file == "macrosync.lua" then   -- stand in for a build packaged with MACROSYNC_LIMIT
+                local fh = assert(io.open(dir .. "/" .. file, "rb")); local src = fh:read("*a"); fh:close()
+                local n; src, n = src:gsub('tonumber%("%d+"%)', 'tonumber("' .. w.limit .. '")', 1)
+                assert(n == 1, "the packaged limit placeholder was not found")
+                chunk = assert(loadstring(src, "=macrosync.lua"))
+            else
+                chunk = assert(loadfile(dir .. "/" .. file))
+            end
+            setfenv(chunk, env); chunk(addon, ns)
         end
     end
     function s.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end end end
@@ -152,6 +161,37 @@ s = session(f)
 out = s.ascend()
 eq(#f.char, 18, "only the one free slot is used")
 has(out, "no slot free for: ", "the rest are reported, never forced")
+
+-- WoW Forever: no MAX_CHARACTER_MACROS. Nothing is assumed; the client's own CreateMacro decides.
+local fv = world("PALADIN", { "Judgement", "Holy Light" })
+fv.hidemax = true
+s = session(fv)
+out = s.ascend()
+eq(#fv.char > 0, true, "with no slot-limit global, macros are still written (the bug: none were)")
+eq(out:find("no slot free for: ", 1, true), nil, "and nothing is falsely reported full")
+local fvn = #fv.char
+
+local ff = world("PALADIN", { "Judgement", "Holy Light", "Devotion Aura" })
+ff.hidemax = true
+for i = 1, 17 do ff.char[i] = { name = "Mine" .. i, body = "/wave" } end
+s = session(ff)
+out = s.ascend()
+eq(#ff.char, 18, "with no global, the client's refusal stops it at the real limit")
+has(out, "no slot free for: ", "and only the client's refusal counts as full")
+eq(ff.char[1].name, "Mine1", "the player's own macros are untouched")
+
+-- MACROSYNC_LIMIT=4: only the first four of the set are written, and nothing else.
+local l4 = world("PALADIN", { "Judgement", "Holy Light" })
+l4.hidemax, l4.limit = true, 4
+s = session(l4)
+out = s.ascend()
+eq(names(l4.char), "PalJudge,PalSeal,PalHeal,PalBigHeal", "a limit of 4 writes exactly the first four")
+has(out, "4 written", "and says so")
+l4.limit = 2
+l4.saved.MacroSyncDB = s.env.MacroSyncDB          -- the saved list of macros MacroSync wrote
+s = session(l4)
+s.ascend()
+eq(names(l4.char), "PalJudge,PalSeal", "lowering the limit prunes the ones MacroSync wrote past it")
 
 local t = world("PALADIN", { "Judgement" })
 t.cut = 20
