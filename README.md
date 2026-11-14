@@ -469,6 +469,15 @@ Run the tests with `python3 -m unittest plugins.static_analysis.test_static_anal
 integer subset only (SSE/x87/string ops/adc/sbb/mul are reported as `unimplemented`, never guessed); no jump-table
 recovery or type inference; cross-block flag reuse is handled only through single-predecessor chains.
 
+## Shot — Mac-style screenshots on Windows (2026-11)
+
+`tools/shot/` is a small Win32 tray app that works like the Mac's screenshot shortcuts: **Ctrl+Shift+3** the screen,
+**Ctrl+Shift+4** drag a box (Space: pick a window), **Ctrl+Shift+5** a toolbar with options (save location, timer,
+floating thumbnail); add **Alt** to copy to the clipboard instead. Its PNG writer is PARENA
+(`stdlib/image/png_encode.prn`, `stdlib/compress/deflate.prn`). Download `Shot-windows-x86_64.zip` from a release, or
+build it: `make shot-exe` (MinGW; `SHOT_CC=gcc` in an MSYS2 shell). Tested under Wine with scripted input, not yet
+on real Windows; see `tools/shot/README.txt` for every shortcut and what is not done yet.
+
 ## World of Warcraft: the Collection addons and the plugin forge (2026-11)
 
 The Collection of Value is a package of WoW addons whose rules are PARENA compiled to Lua 5.1 (`stdlib/collection/`),

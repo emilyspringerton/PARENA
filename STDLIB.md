@@ -5409,3 +5409,25 @@ The level surface over the web engine (contract: SHANKPIT `docs/T0_LEVEL_WASM_CO
 -render/-exit/-seed/-key/-pointer/-blur/-fb-addr/-fb-w/-fb-h/-asset-addr/-asset-set/-lost-rows`. Built from
 `stdlib/brawlpit/level.manifest` by `scripts/build_level_wasm.sh <manifest> <out.wasm>`, which any other level can reuse with
 its own manifest. Test: `make test-level-wasm-build`.
+
+### `compress/deflate` / `image/png_encode` — writing zlib and PNG (2026-11-14)
+
+The writing halves of `compress/inflate` and `image/png`, built first for Shot (`tools/shot/`, the Windows
+screenshot tool) and general.
+
+```clojure
+(defn zlib-bound [(n : I32)] : I32)                                      ; the most bytes zlib-compress can write
+(defn zlib-compress [(src : Bytes) (n : I32) (out : Bytes) (dest : Arena @ Region)] : I32)   ; bytes written
+(defn adler32 [(src : Bytes) (n : I32)] : I32)
+(defn png-encode [(pixels : Bytes) (width : I32) (height : I32) (src-channels : I32) (bgr : I32) (alpha : I32)
+                  (dest : Arena @ Region)] : Bytes)                        ; the whole .png file
+(defn crc32 [(data : Bytes) (start : I32) (len : I32)] : I32)
+```
+
+`zlib-compress`: one DEFLATE block with the fixed Huffman codes, greedy LZ77 with one hash candidate per position (no
+chains, no lazy matching), matches up to 258 bytes and 32 KiB back. Output is a standard zlib stream (tested against
+this stdlib's own `inflate` and against zlib). Fixed codes cost ~2-3x zlib's size on flat images; dynamic tables are
+the obvious next step. `png-encode`: 8-bit RGB or RGBA, not interlaced; takes BGR(A) directly (`bgr` 1, Windows' DIB
+order); each row gets the filter with the smallest sum of absolute values. A 1920x1080 capture encodes in ~0.35 s.
+Tests: `make test-deflate`, `make test-png-encode`.
+

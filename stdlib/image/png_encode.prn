@@ -1,0 +1,166 @@
+;; stdlib/image/png_encode.prn -- depends on bytes, compress/deflate. Pixels in, a PNG file out: the writing half of
+;; image/png.prn (which only decodes). Written for the screenshot tool (founder, 2026-11-14: "can we build a
+;; screenshot tool i want to stop having to open snipping tool"), and general.
+;;
+;; Input: `width` x `height` pixels, `src-channels` bytes each (3 or 4), rows top to bottom with no padding. `bgr` 1
+;; says the first three bytes are blue, green, red -- Windows' own DIB order, so a screen capture goes straight in
+;; with no copy. `alpha` 1 writes RGBA (colour type 6, and needs 4 source channels), 0 writes RGB (colour type 2;
+;; a screenshot's alpha is meaningless). Always 8 bits per channel, never interlaced.
+;;
+;; Each row gets the filter (none, sub, up, average, paeth) whose output has the smallest sum of absolute values --
+;; the standard heuristic from the PNG spec's own advice (12.8) -- then the whole image is one zlib stream
+;; (compress/deflate) in one IDAT chunk. CRC-32 is computed bit by bit (no table: this stdlib has no constant
+;; arrays), which is plenty fast for screenshots. Symbols are prefixed `pe-` so this module links beside
+;; image/png.prn (which has its own paeth-predictor).
+
+(module image/png_encode)
+(import bytes)
+(import compress/deflate)
+(export png-encode crc32)
+
+;; ---- CRC-32 (ISO 3309, as PNG uses it), reflected polynomial 0xEDB88320 -----------------------------------------
+;; `shr` is arithmetic, so a logical shift right by one is a shift then a mask of the top bit.
+(defn pe-crc-byte [(crc : I32) (b : I32)]
+  : I32
+  (loop [k 0 c (bit-xor crc b)]
+    (if (>= k 8) c
+      (let [half (bit-and (shr c 1) 2147483647)]
+        (recur (+ k 1) (if (= (bit-and c 1) 1) (bit-xor half (- 0 306674912)) half))))))
+
+;; CRC-32 of `len` bytes of `data` from `start`.
+(defn crc32 [(data : Bytes) (start : I32) (len : I32)]
+  : I32
+  (loop [i 0 c (- 0 1)]
+    (if (>= i len) (bit-xor c (- 0 1)) (recur (+ i 1) (pe-crc-byte c (bytes/bytes-get data (+ start i)))))))
+
+;; ---- the unfiltered image, packed: `oc` bytes per pixel in RGB(A) order, rows of width*oc, no filter bytes ---------
+;; Done once, so every filter trial below reads one byte at an index instead of re-deriving the pixel and channel.
+(defn pe-pack [(px : Bytes) (width : I32) (height : I32) (sc : I32) (oc : I32) (bgr : I32) (dest : Arena @ Region)]
+  : Bytes
+  (let [img (bytes/bytes-alloc (* (* width height) oc) dest)]
+    (let [packed
+           (loop [i 0]
+             (when (< i (* width height))
+               (let [s (* i sc) o (* i oc)]
+                 ;; alpha first: with no alpha (oc 3) this lands on the third colour byte, which the next writes fix
+                 (bytes/bytes-set! img (+ o (- oc 1)) (bytes/bytes-get px (+ s (- oc 1))))
+                 (bytes/bytes-set! img o (bytes/bytes-get px (if (= bgr 1) (+ s 2) s)))
+                 (bytes/bytes-set! img (+ o 1) (bytes/bytes-get px (+ s 1)))
+                 (bytes/bytes-set! img (+ o 2) (bytes/bytes-get px (if (= bgr 1) s (+ s 2))))
+                 (recur (+ i 1)))))]
+      img)))
+
+;; Byte k of row y of the packed image; 0 off the top or left edge (the filters' "no neighbour").
+(defn pe-at [(img : Bytes) (stride : I32) (y : I32) (k : I32)]
+  : I32
+  (if (or (< y 0) (< k 0)) 0 (bytes/bytes-get img (+ (* y stride) k))))
+
+(defn pe-abs [(v : I32)] : I32 (if (< v 0) (- 0 v) v))
+
+(defn pe-paeth [(a : I32) (b : I32) (c : I32)]
+  : I32
+  (let [p (- (+ a b) c)]
+    (let [pa (pe-abs (- p a)) pb (pe-abs (- p b)) pc (pe-abs (- p c))]
+      (if (and (<= pa pb) (<= pa pc)) a (if (<= pb pc) b c)))))
+
+;; Byte k of row y under filter `ft` (PNG spec 9.2), 0-255.
+(defn pe-filtered [(img : Bytes) (stride : I32) (oc : I32) (y : I32) (k : I32) (ft : I32)]
+  : I32
+  (let [x (pe-at img stride y k)]
+    (bit-and
+      (cond
+        ((= ft 0) x)
+        ((= ft 1) (- x (pe-at img stride y (- k oc))))
+        ((= ft 2) (- x (pe-at img stride (- y 1) k)))
+        ((= ft 3) (- x (/ (+ (pe-at img stride y (- k oc)) (pe-at img stride (- y 1) k)) 2)))
+        (true (- x (pe-paeth (pe-at img stride y (- k oc)) (pe-at img stride (- y 1) k) (pe-at img stride (- y 1) (- k oc))))))
+      255)))
+
+;; The heuristic's score for row y under filter ft: the filtered bytes read as signed, summed by size.
+(defn pe-score [(img : Bytes) (stride : I32) (oc : I32) (y : I32) (ft : I32)]
+  : I32
+  (loop [k 0 sum 0]
+    (if (>= k stride) sum
+      (let [v (pe-filtered img stride oc y k ft)]
+        (recur (+ k 1) (+ sum (if (< v 128) v (- 256 v))))))))
+
+(defn pe-best-filter [(img : Bytes) (stride : I32) (oc : I32) (y : I32)]
+  : I32
+  (loop [ft 1 best 0 best-score (pe-score img stride oc y 0)]
+    (if (> ft 4) best
+      (let [s (pe-score img stride oc y ft)]
+        (if (< s best-score) (recur (+ ft 1) ft s) (recur (+ ft 1) best best-score))))))
+
+;; ---- writing the file -------------------------------------------------------------------------------------------
+(defn pe-u32 [(b : Bytes) (pos : I32) (v : I32)]
+  : I32
+  (bytes/bytes-set! b pos (bit-and (shr v 24) 255))
+  (bytes/bytes-set! b (+ pos 1) (bit-and (shr v 16) 255))
+  (bytes/bytes-set! b (+ pos 2) (bit-and (shr v 8) 255))
+  (bytes/bytes-set! b (+ pos 3) (bit-and v 255))
+  (+ pos 4))
+
+(defn pe-tag [(b : Bytes) (pos : I32) (c0 : I32) (c1 : I32) (c2 : I32) (c3 : I32)]
+  : I32
+  (bytes/bytes-set! b pos c0)
+  (bytes/bytes-set! b (+ pos 1) c1)
+  (bytes/bytes-set! b (+ pos 2) c2)
+  (bytes/bytes-set! b (+ pos 3) c3)
+  (+ pos 4))
+
+;; The CRC of a chunk whose type starts at `type-pos` and whose data is `len` bytes long, written after it.
+(defn pe-chunk-crc [(b : Bytes) (type-pos : I32) (len : I32)]
+  : I32
+  (pe-u32 b (+ type-pos (+ 4 len)) (crc32 b type-pos (+ 4 len))))
+
+;; The PNG file. Its length is the returned Bytes' length.
+(defn png-encode [(pixels : Bytes) (width : I32) (height : I32) (src-channels : I32) (bgr : I32) (alpha : I32)
+                  (dest : Arena @ Region)]
+  : Bytes
+  (let [oc (if (= alpha 1) 4 3)]
+    (let [stride (* width oc)]
+      (let [raw-len (* height (+ stride 1))]
+        (let [raw (bytes/bytes-alloc raw-len dest)
+              img (pe-pack pixels width height src-channels oc bgr dest)]
+          (let [filtered
+                 (loop [y 0]
+                   (when (< y height)
+                     (let [ft (pe-best-filter img stride oc y)
+                           row (* y (+ stride 1))]
+                       (bytes/bytes-set! raw row ft)
+                       (let [wrote
+                              (loop [k 0]
+                                (when (< k stride)
+                                  (bytes/bytes-set! raw (+ row (+ 1 k)) (pe-filtered img stride oc y k ft))
+                                  (recur (+ k 1))))]
+                         (recur (+ y 1))))))]
+            (let [z (bytes/bytes-alloc (deflate/zlib-bound raw-len) dest)]
+              (let [zn (deflate/zlib-compress raw raw-len z dest)]
+                ;; signature 8 + IHDR (4 len, 4 type, 13 data, 4 crc) + IDAT (12 + zn) + IEND (12)
+                (let [png (bytes/bytes-alloc (+ 57 zn) dest)]
+                  (bytes/bytes-set! png 0 137)
+                  (bytes/bytes-set! png 1 80)
+                  (bytes/bytes-set! png 2 78)
+                  (bytes/bytes-set! png 3 71)
+                  (bytes/bytes-set! png 4 13)
+                  (bytes/bytes-set! png 5 10)
+                  (bytes/bytes-set! png 6 26)
+                  (bytes/bytes-set! png 7 10)
+                  (let [p1 (pe-tag png (pe-u32 png 8 13) 73 72 68 82)]           ;; "IHDR"
+                    (let [p2 (pe-u32 png (pe-u32 png p1 width) height)]
+                      (bytes/bytes-set! png p2 8)                                   ;; bit depth
+                      (bytes/bytes-set! png (+ p2 1) (if (= alpha 1) 6 2))         ;; colour type
+                      (bytes/bytes-set! png (+ p2 2) 0)                             ;; deflate
+                      (bytes/bytes-set! png (+ p2 3) 0)                             ;; adaptive filtering
+                      (bytes/bytes-set! png (+ p2 4) 0)                             ;; not interlaced
+                      (let [p3 (pe-chunk-crc png 12 13)]
+                        (let [p4 (pe-tag png (pe-u32 png p3 zn) 73 68 65 84)]     ;; "IDAT"
+                          (let [copied
+                                 (loop [i 0]
+                                   (when (< i zn)
+                                     (bytes/bytes-set! png (+ p4 i) (bytes/bytes-get z i))
+                                     (recur (+ i 1))))]
+                            (let [p5 (pe-chunk-crc png (- p4 4) zn)]
+                              (let [p6 (pe-tag png (pe-u32 png p5 0) 73 69 78 68)]   ;; "IEND"
+                                (let [done (pe-chunk-crc png (- p6 4) 0)]
+                                  png)))))))))))))))))

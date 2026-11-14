@@ -1,0 +1,148 @@
+;; stdlib/compress/deflate.prn -- depends on bytes. The compressing half of compress/inflate.prn: a zlib (RFC 1950)
+;; stream of one DEFLATE (RFC 1951) block with the FIXED Huffman codes and greedy LZ77 matching. Written for the
+;; screenshot tool's PNG encoder (founder, 2026-11-14: "can we build a screenshot tool i want to stop having to open
+;; snipping tool"; image/png_encode.prn), and general: any caller with a byte buffer to shrink.
+;;
+;; Honest scope: fixed codes only (no dynamic Huffman tables, so text-like data compresses less than zlib -9 would),
+;; one hash candidate per position (no chains, no lazy matching), matches up to 258 bytes back up to 32 KiB. On a
+;; PNG-filtered screenshot -- long runs of zeros and repeated rows -- that is most of the win; the output is a
+;; standard stream any inflater reads (checked against this stdlib's own inflate and against zlib in the tests).
+;;
+;; Arena memory is not zeroed, so the bit writer clears each output byte the first time a bit lands in it. The hash
+;; table is a Bytes buffer holding 32768 little-endian I32 slots (position + 1; 0 = empty): this stdlib has no
+;; mutable integer array, and Bytes does the job.
+
+(module compress/deflate)
+(import bytes)
+(export zlib-bound zlib-compress adler32)
+
+;; ---- the bit writer: DEFLATE packs bits from the least significant end of each byte -------------------------
+(defn put-bit [(out : Bytes) (bitpos : I32) (bit : I32)]
+  : I32
+  (let [byte (shr bitpos 3) off (bit-and bitpos 7)]
+    (let [cur (if (= off 0) 0 (bytes/bytes-get out byte))]
+      (bytes/bytes-set! out byte (if (= bit 0) cur (bit-or cur (shl 1 off))))
+      (+ bitpos 1))))
+
+;; `n` bits of `value`, least significant first (extra bits, block headers).
+(defn put-bits [(out : Bytes) (bitpos : I32) (value : I32) (n : I32)]
+  : I32
+  (loop [i 0 p bitpos]
+    (if (>= i n) p (recur (+ i 1) (put-bit out p (bit-and (shr value i) 1))))))
+
+;; A Huffman code of `len` bits, most significant first (RFC 1951 3.1.1: codes are packed starting with the MSB).
+(defn put-code [(out : Bytes) (bitpos : I32) (code : I32) (len : I32)]
+  : I32
+  (loop [i (- len 1) p bitpos]
+    (if (< i 0) p (recur (- i 1) (put-bit out p (bit-and (shr code i) 1))))))
+
+;; The fixed literal/length code (RFC 1951 3.2.6): 0-143 8 bits from 0x30, 144-255 9 bits from 0x190, 256-279 7 bits
+;; from 0, 280-287 8 bits from 0xC0.
+(defn put-symbol [(out : Bytes) (bitpos : I32) (sym : I32)]
+  : I32
+  (cond
+    ((< sym 144) (put-code out bitpos (+ 48 sym) 8))
+    ((< sym 256) (put-code out bitpos (+ 400 (- sym 144)) 9))
+    ((< sym 280) (put-code out bitpos (- sym 256) 7))
+    (true (put-code out bitpos (+ 192 (- sym 280)) 8))))
+
+;; floor(log2 v) for v >= 1.
+(defn ilog2 [(v : I32)]
+  : I32
+  (loop [n 0 x v]
+    (if (<= x 1) n (recur (+ n 1) (shr x 1)))))
+
+;; A match of `len` (3-258) at distance `dist` (1-32768): the length symbol and its extra bits, then the 5-bit
+;; distance code and its extra bits. Lengths and distances above the first few share codes in power-of-two bands:
+;; for v = len - 3 >= 8 there are e = log2(v) - 2 extra bits and the code is 4(e+1) + (v >> e) - 4; for
+;; v = dist - 1 >= 4, e = log2(v) - 1 and the code is 2(e+1) + (v >> e) - 2. 258 has its own code, 285.
+(defn put-match [(out : Bytes) (bitpos : I32) (len : I32) (dist : I32)]
+  : I32
+  (let [v (- len 3)
+        le (if (or (< v 8) (= len 258)) 0 (- (ilog2 v) 2))
+        lidx (if (= len 258) 28 (if (< v 8) v (+ (* 4 (+ le 1)) (- (shr v le) 4))))
+        lextra (if (= le 0) 0 (- v (shl (shr v le) le)))
+        d (- dist 1)
+        de (if (< d 4) 0 (- (ilog2 d) 1))
+        dcode (if (< d 4) d (+ (* 2 (+ de 1)) (- (shr d de) 2)))
+        dextra (if (= de 0) 0 (- d (shl (shr d de) de)))]
+    (put-bits out (put-code out (put-bits out (put-symbol out bitpos (+ 257 lidx)) lextra le) dcode 5) dextra de)))
+
+;; ---- the hash table: 32768 I32 slots in a Bytes buffer --------------------------------------------------------
+(defn slot-get [(t : Bytes) (h : I32)]
+  : I32
+  (let [p (* h 4)]
+    (bit-or (bit-or (bytes/bytes-get t p) (shl (bytes/bytes-get t (+ p 1)) 8))
+            (bit-or (shl (bytes/bytes-get t (+ p 2)) 16) (shl (bytes/bytes-get t (+ p 3)) 24)))))
+
+(defn slot-set [(t : Bytes) (h : I32) (v : I32)]
+  : I32
+  (let [p (* h 4)]
+    (bytes/bytes-set! t p (bit-and v 255))
+    (bytes/bytes-set! t (+ p 1) (bit-and (shr v 8) 255))
+    (bytes/bytes-set! t (+ p 2) (bit-and (shr v 16) 255))
+    (bytes/bytes-set! t (+ p 3) (bit-and (shr v 24) 255))
+    v))
+
+(defn hash3 [(src : Bytes) (i : I32)]
+  : I32
+  (bit-and (bit-xor (shl (bytes/bytes-get src i) 10)
+                    (bit-xor (shl (bytes/bytes-get src (+ i 1)) 5) (bytes/bytes-get src (+ i 2))))
+           32767))
+
+;; How many bytes at `cand` equal the bytes at `i`, up to 258 and the end of the input.
+(defn match-len [(src : Bytes) (n : I32) (cand : I32) (i : I32)]
+  : I32
+  (loop [k 0]
+    (if (or (>= k 258) (>= (+ i k) n)) k
+      (if (= (bytes/bytes-get src (+ cand k)) (bytes/bytes-get src (+ i k))) (recur (+ k 1)) k))))
+
+;; ---- Adler-32 (RFC 1950 2.2): the zlib trailer ------------------------------------------------------------------
+(defn adler32 [(src : Bytes) (n : I32)]
+  : I32
+  (loop [i 0 s1 1 s2 0]
+    (if (>= i n)
+      (bit-or (u32-shl s2 16) s1)
+      (let [a (mod (+ s1 (bytes/bytes-get src i)) 65521)]
+        (recur (+ i 1) a (mod (+ s2 a) 65521))))))
+
+;; The most bytes zlib-compress can write for `n` input bytes: every byte a 9-bit literal, plus the header, the end
+;; code, the alignment and the trailer.
+(defn zlib-bound [(n : I32)]
+  : I32
+  (+ (+ n (/ n 7)) 64))
+
+;; Compress the first `n` bytes of `src` into `out` (at least zlib-bound(n) long) as a zlib stream. Returns the
+;; number of bytes written.
+(defn zlib-compress [(src : Bytes) (n : I32) (out : Bytes) (dest : Arena @ Region)]
+  : I32
+  (let [table (bytes/bytes-alloc (* 32768 4) dest)]
+    (let [cleared
+           (loop [k 0]
+             (when (< k (* 32768 4))
+               (bytes/bytes-set! table k 0)
+               (recur (+ k 1))))]
+      (bytes/bytes-set! out 0 120)          ;; CMF: deflate, 32 KiB window
+      (bytes/bytes-set! out 1 1)            ;; FLG: no dictionary, (0x7801 % 31) == 0
+      (let [start (put-bits out (put-bits out 16 1 1) 1 2)]   ;; BFINAL 1, BTYPE 01 (fixed codes)
+        (let [body
+               (loop [i 0 p start]
+                 (if (>= i n)
+                   p
+                   (if (> (+ i 3) n)
+                     (recur (+ i 1) (put-symbol out p (bytes/bytes-get src i)))
+                     (let [h (hash3 src i)]
+                       (let [cand (- (slot-get table h) 1)]
+                         (let [stored (slot-set table h (+ i 1))]
+                           (let [len (if (and (>= cand 0) (<= (- i cand) 32768)) (match-len src n cand i) 0)]
+                             (if (>= len 3)
+                               (recur (+ i len) (put-match out p len (- i cand)))
+                               (recur (+ i 1) (put-symbol out p (bytes/bytes-get src i)))))))))))]
+          (let [ended (put-symbol out body 256)]
+            (let [nbytes (shr (+ ended 7) 3)
+                  ad (adler32 src n)]
+              (bytes/bytes-set! out nbytes (bit-and (shr ad 24) 255))
+              (bytes/bytes-set! out (+ nbytes 1) (bit-and (shr ad 16) 255))
+              (bytes/bytes-set! out (+ nbytes 2) (bit-and (shr ad 8) 255))
+              (bytes/bytes-set! out (+ nbytes 3) (bit-and ad 255))
+              (+ nbytes 4))))))))

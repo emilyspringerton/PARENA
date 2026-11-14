@@ -446,6 +446,77 @@ jobs:
           path: dist-collection/${{ steps.pkg.outputs.zip }}
           if-no-files-found: error
 
+  # Shot (tools/shot/), the screenshot tool for Windows (founder, 2026-11-14: "can we build a screenshot tool i want
+  # to stop having to open snipping tool ... it should work like the mac screenshot utility"). Its PNG writer is
+  # PARENA (stdlib/compress/deflate.prn + stdlib/image/png_encode.prn), tested here on Linux, compiled into the
+  # committed tools/shot/shot_png_gen.c -- which must match its .prn sources, so a stale copy fails the build.
+  shot_tests:
+    name: Shot -- the PNG writer (deflate + png_encode)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2 dev headers (the parena compiler links them)
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev
+
+      - name: Test the zlib and PNG writers
+        run: |
+          set -euo pipefail
+          make test-deflate
+          make test-png-encode
+
+      - name: tools/shot/shot_png_gen.c matches its PARENA sources
+        run: |
+          set -euo pipefail
+          make shot-gen
+          git diff --exit-code tools/shot/shot_png_gen.c || { echo "::error::tools/shot/shot_png_gen.c is stale: run make shot-gen and commit it"; exit 1; }
+
+  # shot.exe itself, built natively with MSYS2's MinGW gcc (plain Win32, no SDL), smoke-tested with one real
+  # capture of this runner's own screen (`shot.exe --screen`, checked to be a PNG), then uploaded; the release job
+  # attaches it as Shot-windows-x86_64.zip.
+  build_shot_windows:
+    name: Shot (Windows screenshot tool)
+    runs-on: windows-latest
+    needs: shot_tests
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            make
+
+      - name: Build shot.exe
+        run: make shot-exe SHOT_CC=gcc
+
+      - name: Smoke test -- one capture of this runner's screen
+        run: |
+          set -euo pipefail
+          ./shot.exe --screen smoke.png
+          test -s smoke.png
+          sig="$(head -c 8 smoke.png | od -An -tx1 | tr -d ' \n')"
+          echo "first bytes: $sig, size: $(stat -c %s smoke.png)"
+          test "$sig" = "89504e470d0a1a0a"
+
+      - name: Upload shot.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: shot-windows-${{ github.run_number }}-${{ github.sha }}
+          path: |
+            shot.exe
+            tools/shot/README.txt
+          if-no-files-found: error
+
   # Real, native Windows compile of editor-demo, mirroring PITVIPER's own
   # real, proven build_windows job (.github/workflows/ci.yml): MSYS2/MinGW64
   # provides SDL2 + a matching gcc in one self-consistent toolchain, avoiding
@@ -813,7 +884,7 @@ jobs:
     # whether/when it's fixed), it just no longer blocks a release. Releases ship Linux + Windows
     # editor-demo builds only until someone fixes the real macOS build failure and this gets
     # re-added.
-    needs: [build_and_test, build_editor_windows, collection_client]
+    needs: [build_and_test, build_editor_windows, collection_client, build_shot_windows]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: write
@@ -849,6 +920,12 @@ jobs:
         with:
           name: collection-client-${{ github.run_number }}-${{ github.sha }}
           path: dist-collection
+
+      - name: Download Shot (the Windows screenshot tool)
+        uses: actions/download-artifact@v4
+        with:
+          name: shot-windows-${{ github.run_number }}-${{ github.sha }}
+          path: dist-shot
 
       # macOS download step removed (2026-09-08, see this job's own "needs:" comment above) --
       # build_editor_macos doesn't run to completion reliably right now, so its artifact often
@@ -963,6 +1040,9 @@ jobs:
           # now" -- VS0 was still early, pre-1.0 compiler development);
           # superseded by this later, explicit direction.
           assets=(dist/parena editor-demo-linux-x86_64.tar.gz editor-demo-windows-x86_64.zip)
+          # Shot: the exe and its README, flat in one zip.
+          (cd dist-shot && mkdir -p pkg && cp shot.exe pkg/ && cp tools/shot/README.txt pkg/ && cd pkg && zip -r ../../Shot-windows-x86_64.zip .)
+          assets+=(Shot-windows-x86_64.zip)
           # The Collection client, when collection_client packaged it (see that job's WOW_INTERFACE note).
           for z in dist-collection/CollectionOfValue-*.zip; do
             if [ -f "$z" ]; then assets+=("$z"); fi

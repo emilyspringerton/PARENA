@@ -1,5 +1,25 @@
 ## 2026-11-14
 
+- **Shot: a Mac-style screenshot tool for Windows** (founder: "can we build a screenshot tool i want to stop having to
+  open snipping tool", "it should work like the mac screenshot utility"). `tools/shot/shot.c`, a plain Win32 tray app
+  (no SDL): Ctrl+Shift+3 the screen under the mouse; Ctrl+Shift+4 drag a box (the screen dims, a size label follows),
+  Space to pick a window instead, Enter for the last box, Esc to cancel; Ctrl+Shift+5 a toolbar (Entire Screen /
+  Window / Selection, Options, Capture); Alt added copies to the clipboard (a DIB and a PNG) instead of saving. A
+  floating thumbnail after each save (click to open; right-click Open / Copy / Show in Folder / Delete). Options: save
+  to Desktop (default) / Documents / Pictures\Screenshots / Clipboard / any folder, a 5 or 10 s timer with a
+  countdown, thumbnail on/off, remember the last selection; Start with Windows from the tray. Mac-style names
+  ("Screenshot 2026-11-14 at 09.31.05.png"); per-monitor DPI aware; `shot.exe --screen [FILE]` for scripts.
+  - **The PNG writer is PARENA, built first** (core deps PARENA-first): new `stdlib/compress/deflate.prn` (zlib:
+    fixed Huffman + greedy LZ77) and `stdlib/image/png_encode.prn` (BGRA in, per-row adaptive filters, CRC-32),
+    compiled to the committed `tools/shot/shot_png_gen.c` (`make shot-gen`; CI fails if it is stale). Tests: `make
+    test-deflate` (round trips through this stdlib's inflate; also checked against Python's zlib) and `make
+    test-png-encode` (round trips through `png-decode`; also opened in Pillow); 1080p encodes in ~0.35 s.
+  - Verified under Wine + Xvfb with xdotool driving it: Ctrl+Shift+3/4 (drag and window pick), the clipboard
+    (image/png and image/bmp offered, no file), the toolbar's Capture, the 5 s timer and countdown, the thumbnail.
+    Not yet run on real Windows. CI builds `shot.exe` natively (MSYS2 MinGW), takes one real capture on the runner, and
+    releases `Shot-windows-x86_64.zip`. Not done: dragging the thumbnail into apps, markup, the shutter sound, covered
+    windows, all displays at once.
+
 - **Every heal casts on your mouseover, and the heals raise the dead** (founder: "all the classes with healing need
   mouseover macros for their heals"). Checked every class set: every heal (paladin, priest, shaman, druid) already
   cast on the mouseover, else the friendly target, else yourself -- now pinned by a test that sweeps every set, so a
