@@ -1,5 +1,10 @@
 ## 2026-11-14
 
+- **Shaman panic button, `ShaPanic`** (founder: "a panic cast rotation stomp heal macro"). Mash it: War Stomp stuns
+  everything around you, then two quick heals on yourself while they are stunned (`/castsequence [@player]
+  reset=combat/15`); a shaman without War Stomp (not a Tauren) gets a heal on the first press instead. The shaman set
+  is 17 macros now (still under the 18 character slots). `macrosync_test` 116.
+
 - **Gear plans: a kit is gear as well as macros** (founder: "plan kits for characters", with "the inv ... and equip").
   A character's plan can now name the item it should wear in each slot (`plan.gear`, slots 1-19;
   `kit-want!`/`kit-unwant!`/`kit-gear-status` in `stdlib/collection/kits.prn`). Each planned slot is **worn**, **on

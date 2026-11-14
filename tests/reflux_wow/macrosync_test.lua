@@ -165,6 +165,18 @@ out = s.ascend()
 has(out, "the Flame holds no words for you", "a class with no set yet is told so")
 eq(#k.char, 0, "and nothing is written")
 
+-- ===== the shaman's panic button: War Stomp then heals on a Tauren, heals all the way on anyone else ==========
+local tau = world("SHAMAN", { "War Stomp", "Lesser Healing Wave", "Healing Wave" })
+s = session(tau)
+s.ascend()
+eq(find(tau.char, "ShaPanic").body, "#showtooltip\n/castsequence [@player] reset=combat/15 War Stomp, Lesser Healing Wave, Lesser Healing Wave",
+   "a Tauren shaman stomps first, then heals twice")
+local orc = world("SHAMAN", { "Healing Wave" })
+s = session(orc)
+s.ascend()
+eq(find(orc.char, "ShaPanic").body, "#showtooltip\n/castsequence [@player] reset=combat/15 Healing Wave, Healing Wave, Healing Wave",
+   "a shaman with no War Stomp (and no Lesser Healing Wave yet) just heals")
+
 -- ===== a level-1 priest ===============================================================================
 local pr = world("PRIEST", { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" })
 s = session(pr)
@@ -194,7 +206,8 @@ for _, case in ipairs({
     local cw = world(case[1], case[2])
     s = session(cw)
     out = s.ascend()
-    eq(#cw.char, 16, case[1] .. ": all sixteen written on a fresh character")
+    local want = case[1] == "SHAMAN" and 17 or 16       -- the shaman set also has the panic button
+    eq(#cw.char, want, case[1] .. ": the whole set written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
     for _, m in ipairs(cw.char) do if #m.name > 16 then named = false end end
@@ -239,7 +252,7 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    eq(#set, 16, class .. ": sixteen macros")
+    eq(#set, class == "SHAMAN" and 17 or 16, class .. ": the set's size (shaman: sixteen and the panic button)")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
     eq(len_ok, true, class .. ": every body fits 255 characters")

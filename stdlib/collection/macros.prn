@@ -102,7 +102,8 @@
     (lua/array "MagFood" "#showtooltip\n/cast {Conjure Refreshment|Conjure Food}")
     (lua/array "MagEvocate" "#showtooltip\n/cast {Evocation}")))
 
-;; SHAMAN -- shocks, heals, weapons, shields and one macro per totem element (shift picks the other totem).
+;; SHAMAN -- shocks, heals, weapons, shields, one macro per totem element (shift picks the other totem), and a panic
+;; button (War Stomp, then heal yourself).
 (defn macro-shaman [] : Any
   (lua/array
     (lua/array "ShaBolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Lightning Bolt}")
@@ -120,7 +121,11 @@
     (lua/array "ShaGhost" "#showtooltip\n/cast {Ghost Wolf}")
     (lua/array "ShaEarthTotem" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
     (lua/array "ShaFireTotem" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem}; {Searing Totem}")
-    (lua/array "ShaWaterTotem" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem}; {Healing Stream Totem}")))
+    (lua/array "ShaWaterTotem" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem}; {Healing Stream Totem}")
+    ;; the panic button (founder, 2026-11-14: "a panic cast rotation stomp heal macro"): mash it -- War Stomp stuns
+    ;; everything around you, then two quick heals on yourself while they are stunned; it starts over out of combat
+    ;; or after 15 s. A shaman who is not a Tauren has no War Stomp, so the first press is a heal for them.
+    (lua/array "ShaPanic" "#showtooltip\n/castsequence [@player] reset=combat/15 {War Stomp|Lesser Healing Wave|Healing Wave}, {Lesser Healing Wave|Healing Wave}, {Lesser Healing Wave|Healing Wave}")))
 
 ;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
 (defn macro-druid [] : Any
