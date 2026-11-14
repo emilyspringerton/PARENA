@@ -16,6 +16,8 @@
 -- Commands (CHARACTER is Name or Name-Realm, any case; a unique start of the name is enough):
 --   characters                      every character the forge knows, its class, level, gold, and how its kit is planned
 --   show CHARACTER                  its level, xp, gold, gear by slot, bags, bank and mail (Fafnir's Bed), and its kit
+--   history [CHARACTER]             gold by day across the account, or one character's level and gold by day
+--   find ITEM                       every item whose name holds ITEM (or whose id it is): who has it, and where
 --   classes                         the classes that have a macro set
 --   set CLASS                       a class's set, as MacroSync ships it
 --   kit CHARACTER                   the character's planned kit, macro by macro, and what /ascend last wrote
@@ -68,6 +70,7 @@ local BOARD_VAR = os.getenv("BOARD_VAR") or "CharacterBoardDB"
 local MS_VAR = os.getenv("MACROSYNC_VAR") or "MacroSyncDB"
 local FAFNIR_VAR = os.getenv("FAFNIR_VAR") or "FafnirsBedDB"
 local ITEM_NAMES = {}
+local ROWS = {}            -- every Character Board snapshot ever taken, every account: the progression series
 local PLANS = opts.dir .. "/kits.lua"
 
 -- JSON --------------------------------------------------------------------------------------------------------------
@@ -159,6 +162,9 @@ local function characters(plans)
     local chars = {}
     for _, path in ipairs(opts.board) do
         local db = load_db(path, BOARD_VAR)
+        if db and type(db.rows) == "table" then
+            for _, r in ipairs(db.rows) do if type(r) == "table" and r.character and r.t then ROWS[#ROWS + 1] = r end end
+        end
         if db and type(db.chars) == "table" then
             for who, s in pairs(db.chars) do
                 local c = chars[who] or {}
@@ -295,6 +301,77 @@ local function holdings(c)
     return gear, locs
 end
 
+-- History (the Character Board's snapshots) and search (Fafnir's Bed's names and holdings). -----------------------
+local function day(t) return os.date("!%Y-%m-%d", t) end
+
+-- One character by day: the last snapshot of each day.
+local function char_history(who)
+    local rows = {}
+    for _, r in ipairs(ROWS) do if r.character == who then rows[#rows + 1] = r end end
+    table.sort(rows, function(a, b) return a.t < b.t end)
+    local days, last = arr(), nil
+    for _, r in ipairs(rows) do
+        local d = day(r.t)
+        local entry = { date = d, level = r.level, gold = r.gold or 0, zone = r.zone,
+                        xp_pct = (r.xpmax and r.xpmax > 0) and math.floor((r.xp or 0) * 100 / r.xpmax) or nil }
+        if last and last.date == d then days[#days] = entry else days[#days + 1] = entry end
+        last = entry
+    end
+    return days
+end
+
+-- The account by day: every character's gold as last seen by the end of that day, added up.
+local function account_history()
+    local rows = {}
+    for _, r in ipairs(ROWS) do rows[#rows + 1] = r end
+    table.sort(rows, function(a, b) return a.t < b.t end)
+    local gold, days = {}, arr()
+    local function close(d)
+        local total, n = 0, 0
+        for _, g in pairs(gold) do total = total + g; n = n + 1 end
+        days[#days + 1] = { date = d, gold = total, characters = n }
+    end
+    local current
+    for _, r in ipairs(rows) do
+        local d = day(r.t)
+        if current and d ~= current then close(current) end
+        current = d
+        gold[r.character] = r.gold or 0
+    end
+    if current then close(current) end
+    return days
+end
+
+-- Items whose name holds the query (or whose id it is), and who holds them where.
+local LOCS = { "bags", "bank", "mail", "equipped" }
+local function find_items(chars, q)
+    local lq, id_q = q:lower(), tonumber(q)
+    local ids = {}
+    for id, name in pairs(ITEM_NAMES) do
+        if tonumber(id) == id_q or tostring(name):lower():find(lq, 1, true) then ids[#ids + 1] = tonumber(id) or id end
+    end
+    local items = arr()
+    for _, id in ipairs(ids) do
+        local holders, total = arr(), 0
+        for who, c in pairs(chars) do
+            local loc = c.hold and c.hold.loc
+            if loc then
+                local h, n = { character = who }, 0
+                for _, l in ipairs(LOCS) do
+                    local k = loc[l] and (loc[l][id] or loc[l][tostring(id)]) or 0
+                    if k > 0 then h[l] = k; n = n + k end
+                end
+                if n > 0 then h.total = n; holders[#holders + 1] = h; total = total + n end
+            end
+        end
+        table.sort(holders, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.character < b.character end)
+        items[#items + 1] = { id = id, name = item_name(id), total = total, holders = holders }
+    end
+    table.sort(items, function(a, b) if a.total ~= b.total then return a.total > b.total end return a.name < b.name end)
+    while #items > 50 do table.remove(items) end
+    return items
+end
+
 -- Commands ----------------------------------------------------------------------------------------------------------
 local cmd = table.remove(args, 1)
 local plans = load_plans()
@@ -334,6 +411,8 @@ end
 local USAGE = [[
 forge characters                  every character, its class, level and gold, and how its kit is planned
 forge show CHARACTER              level, xp, gold, professions, everything equipped, bags, bank and mail
+forge history [CHARACTER]         gold (and level) by day: the account's, or one character's
+forge find ITEM                   who has it, and where (part of a name, or an item id)
 forge classes                     the classes that have a macro set
 forge set CLASS                   a class's set, as MacroSync ships it
 forge kit CHARACTER               the planned kit, macro by macro (* = on the character since its last /ascend)
@@ -433,6 +512,51 @@ elseif cmd == "show" then
     end
     lines[#lines + 1] = string.format("kit: %d macros, %d planned changes (forge kit %s)", #v.kit.macros, v.kit.changes, who)
     out(v, table.concat(lines, "\n"))
+
+elseif cmd == "history" then
+    if args[1] then
+        local who = char_arg(1)
+        local days = char_history(who)
+        local lines = { who .. ": level and gold by day (the last snapshot of each day)" }
+        local prev
+        for _, d in ipairs(days) do
+            local delta = prev and (d.gold - prev) or 0
+            lines[#lines + 1] = string.format("  %s  level %-3s %-6s %16s %s  %s", d.date, tostring(d.level or "?"),
+                d.xp_pct and (d.xp_pct .. "%") or "", money(d.gold), prev and string.format("(%s%s)", delta >= 0 and "+" or "-", money(math.abs(delta))) or "",
+                d.zone or "")
+            prev = d.gold
+        end
+        if #days == 0 then lines[#lines + 1] = "  no snapshots yet: the Character Board takes one at every login, level and logout" end
+        out({ character = who, days = days }, table.concat(lines, "\n"))
+    else
+        local days = account_history()
+        local lines = { "the account's gold by day (every character's latest by the end of the day)" }
+        local prev
+        for _, d in ipairs(days) do
+            local delta = prev and (d.gold - prev) or 0
+            lines[#lines + 1] = string.format("  %s  %16s %s  %d characters", d.date, money(d.gold),
+                prev and string.format("(%s%s)", delta >= 0 and "+" or "-", money(math.abs(delta))) or "", d.characters)
+            prev = d.gold
+        end
+        if #days == 0 then lines[#lines + 1] = "  no snapshots yet" end
+        out({ days = days }, table.concat(lines, "\n"))
+    end
+
+elseif cmd == "find" then
+    local q = body_from(1)
+    if q == "" then refuse("find what? (part of an item's name, or its id)") end
+    local items = find_items(chars, q)
+    local lines = {}
+    for _, it in ipairs(items) do
+        lines[#lines + 1] = string.format("%s (%s): %d on the account", it.name, tostring(it.id), it.total)
+        for _, h in ipairs(it.holders) do
+            local where = {}
+            for _, l in ipairs(LOCS) do if h[l] then where[#where + 1] = l .. " " .. h[l] end end
+            lines[#lines + 1] = string.format("  %-24s %d  (%s)", h.character, h.total, table.concat(where, ", "))
+        end
+    end
+    if #items == 0 then lines[1] = "nothing seen named like '" .. q .. "' (Fafnir's Bed learns names as items pass through bags, bank, mail and gear)" end
+    out({ query = q, items = items }, table.concat(lines, "\n"))
 
 elseif cmd == "add" then
     local who, name = char_arg(1), args[2] or ""

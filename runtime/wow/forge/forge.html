@@ -91,14 +91,15 @@ function note(text, err) {
   clearTimeout(note.t); note.t = setTimeout(() => m.style.display = "none", err ? 7000 : 3000);
 }
 async function act(...words) {
-  try { const j = await forge(...words); note(j.message || "done"); await loadList(); await show(current); }
+  try { const j = await forge(...words); note(j.message || "done"); await loadList(); await (current === ACCOUNT ? showAccount() : show(current)); }
   catch (e) { note(e.message, true); }
 }
 
 async function loadList() {
   const j = await forge("characters");
   const list = document.getElementById("list");
-  list.replaceChildren();
+  list.replaceChildren($("button", { class: current === ACCOUNT ? "on" : "", on: { click: () => showAccount() } },
+    $("span", { class: "who" }, "Account"), $("span", { class: "meta" }, "gold by day · who has what")));
   let gold = 0;
   for (const c of j.characters || []) {
     gold += c.gold || 0;
@@ -110,7 +111,7 @@ async function loadList() {
   if (!(j.characters || []).length) list.append($("p", { class: "none", style: "padding:16px" },
     "No characters yet: log in and out once with the Character Board and Fafnir's Bed, or plan one with `forge class NAME-Realm CLASS`."));
   document.getElementById("sum").textContent = `${(j.characters || []).length} characters · ${money(gold)} across the account`;
-  if (!current && j.characters && j.characters.length) await show(j.characters[0].character);
+  if (!current) await showAccount();
 }
 
 function itemsTable(loc, title) {
@@ -121,14 +122,65 @@ function itemsTable(loc, title) {
              : $("p", { class: "none" }, title === "Bags" ? "not read yet" : `not read yet — open the ${title.toLowerCase() === "mail" ? "mailbox" : "bank"} once with this character`)];
 }
 
+const ACCOUNT = "\u0000account";   // never a character's name
+function highlight(who) {
+  for (const b of document.querySelectorAll("nav button")) {
+    const name = b.querySelector(".who").textContent;
+    b.classList.toggle("on", who === ACCOUNT ? name === "Account" && b === document.querySelector("nav button") : name === who);
+  }
+}
+const signed = d => (d >= 0 ? "+" : "−") + money(Math.abs(d));
+
+// A table of days: date, then the given columns, then the change in gold since the day before.
+function daysTable(days, cols) {
+  if (!days.length) return $("p", { class: "none" }, "No snapshots yet: the Character Board takes one at every login, level-up and logout.");
+  let prev = null;
+  return $("table", {}, $("tr", {}, $("td", { class: "slot" }, "day"), cols.map(c => $("td", { class: "slot" }, c[0])), $("td", { class: "slot" }, "gold"), $("td", { class: "slot" }, "change")),
+    days.map(d => { const row = $("tr", {}, $("td", { class: "slot" }, d.date), cols.map(c => $("td", {}, c[1](d) ?? "")),
+      $("td", { class: "n" }, money(d.gold)), $("td", { class: "n" }, prev === null ? "" : signed(d.gold - prev))); prev = d.gold; return row; }).reverse());
+}
+
+async function showAccount() {
+  current = ACCOUNT;
+  const mine = ++showing;
+  highlight(ACCOUNT);
+  let h;
+  try { h = await forge("history"); } catch (e) { note(e.message, true); return; }
+  if (mine !== showing) return;
+  const results = $("div", {});
+  const q = $("input", { placeholder: "Item name or id", size: "28" });
+  async function find() {
+    if (!q.value.trim()) return;
+    try {
+      const r = await forge("find", q.value.trim());
+      results.replaceChildren(...(r.items.length ? r.items.map(it => $("div", { class: "macro" },
+        $("div", { class: "top" }, $("span", { class: "name" }, it.name), $("span", { class: "tag class" }, `#${it.id}`), $("span", { class: "facts" }, `${it.total} on the account`)),
+        it.holders.length ? $("table", {}, it.holders.map(hd => $("tr", {}, $("td", {}, hd.character),
+          $("td", { class: "n" }, ["bags", "bank", "mail", "equipped"].filter(l => hd[l]).map(l => `${l} ${hd[l]}`).join(" · ")), $("td", { class: "n" }, hd.total))))
+          : $("p", { class: "none" }, "nobody holds it now")))
+        : [$("p", { class: "none" }, `Nothing seen named like “${q.value.trim()}”.`)]));
+    } catch (e) { note(e.message, true); }
+  }
+  q.addEventListener("keydown", e => { if (e.key === "Enter") find(); });
+  document.getElementById("detail").replaceChildren(
+    $("h2", {}, "Account"),
+    $("h3", {}, "Who has what"),
+    $("div", { class: "form" }, $("div", { class: "row" }, q, $("button", { on: { click: find } }, "Find"))),
+    results,
+    $("h3", {}, "Gold by day — every character's latest by the end of the day"),
+    daysTable(h.days, [["characters", d => d.characters]]));
+  q.focus();
+}
+
 let showing = 0;
 async function show(who) {
   if (!who) return;
   current = who;
   const mine = ++showing;           // a slower, older request must not overwrite the one asked for last
-  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.querySelector(".who").textContent === who);
+  highlight(who);
   let v;
-  try { v = await forge("show", who); } catch (e) { note(e.message, true); return; }
+  let hist;
+  try { v = await forge("show", who); hist = await forge("history", who); } catch (e) { note(e.message, true); return; }
   if (mine !== showing) return;
   const d = document.getElementById("detail");
   const pct = (a, b) => b > 0 ? Math.floor(a * 100 / b) : null;
@@ -159,6 +211,8 @@ async function show(who) {
                                                   : $("p", { class: "none" }, "not read yet — log in with this character once")),
       $("div", {}, itemsTable(v.bags, "Bags")),
       $("div", {}, itemsTable(v.bank, "Bank"), itemsTable(v.mail, "Mail"))),
+    $("h3", {}, "Progress — the last snapshot of each day"),
+    daysTable(hist.days, [["level", d => d.level], ["xp", d => d.xp_pct != null ? `${d.xp_pct}%` : ""], ["zone", d => d.zone]]),
     $("h3", {}, `Macro kit — ${k.macros.length} macros, ${k.changes} planned change${k.changes === 1 ? "" : "s"}`),
     k.class_set === 0 && v.class ? $("p", { class: "none" }, `${v.class} has no class set yet: the kit is only what you add.`) : null,
     k.dropped.length ? $("p", { class: "dropped" }, "dropped: ", k.dropped.join(", "), " ",

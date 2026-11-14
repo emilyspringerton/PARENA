@@ -14,7 +14,12 @@ mkdir -p "$acct/SavedVariables" "$acct/Forever/Emily/SavedVariables" "$work/forg
 cat > "$acct/SavedVariables/CharacterBoard.lua" <<'LUA'
 CharacterBoardDB = { ["chars"] = {
   ["Emily-Forever"] = { ["t"] = 1763100000, ["class"] = "PALADIN", ["race"] = "Human", ["level"] = 42, ["xp"] = 500, ["xpmax"] = 1000, ["rested"] = 250, ["gold"] = 1234567, ["zone"] = "Ironforge", ["ilvl"] = 38, ["profs"] = "Mining 120/150" },
-  ["Ash-Forever"] = { ["t"] = 1763000000, ["class"] = "MAGE", ["race"] = "Gnome", ["level"] = 60, ["gold"] = 9000000, ["zone"] = "Stormwind" } }, ["rows"] = {} }
+  ["Ash-Forever"] = { ["t"] = 1763000000, ["class"] = "MAGE", ["race"] = "Gnome", ["level"] = 60, ["gold"] = 9000000, ["zone"] = "Stormwind" } },
+  ["rows"] = {
+    { ["t"] = 1762900000, ["character"] = "Emily-Forever", ["level"] = 40, ["xp"] = 100, ["xpmax"] = 1000, ["gold"] = 1000000, ["zone"] = "Loch Modan" },
+    { ["t"] = 1762910000, ["character"] = "Emily-Forever", ["level"] = 41, ["xp"] = 0, ["xpmax"] = 1000, ["gold"] = 1100000, ["zone"] = "Wetlands" },
+    { ["t"] = 1762900500, ["character"] = "Ash-Forever", ["level"] = 60, ["gold"] = 8000000, ["zone"] = "Stormwind" },
+    { ["t"] = 1763100000, ["character"] = "Emily-Forever", ["level"] = 42, ["xp"] = 500, ["xpmax"] = 1000, ["gold"] = 1234567, ["zone"] = "Ironforge" } } }
 LUA
 cat > "$acct/SavedVariables/FafnirsBed.lua" <<'LUA'
 FafnirsBedDB = { ["chars"] = {
@@ -38,6 +43,18 @@ check "show: bags" "$o" "Linen Cloth  x3"
 check "show: bank not read" "$o" "bank: not read yet"
 check "show: gold" "$o" "gold: 130g 0s 0c"
 o="$(f show zed)"; check "an unknown character is refused" "$o" "no character called 'zed'"
+o="$(f history)"
+check "history: the account's gold on its first day" "$o" "2025-11-11        900g 0s 0c   2 characters"
+check "history: a later day adds the latest of each" "$o" "2025-11-12        910g 0s 0c (+10g 0s 0c)"
+o="$(f history emily)"
+check "history: one character keeps the last snapshot of each day" "$o" "2025-11-12  level 41"
+check "history: with the change in gold" "$o" "123g 45s 67c (+13g 45s 67c)  Ironforge"
+o="$(f find linen)"
+check "find: by part of a name, with the account total" "$o" "Linen Cloth (2589): 23 on the account"
+check "find: who has it, most first" "$o" "Ash-Forever              20  (bags 20)"
+o="$(f find 1002)"; check "find: by id, worn gear included" "$o" "Emily-Forever            1  (equipped 1)"
+o="$(f find zzz)"; check "find: nothing found says so" "$o" "nothing seen named like 'zzz'"
+o="$(f --json find nobody-has-this)"; check "find --json: no items is an empty list" "$o" '"items":[]' 
 o="$(f drop emily PalExo)"; check "drop" "$o" "dropped PalExo"
 o="$(f edit emily PalHeal '#showtooltip\n/cast {Holy Light}')"; check "edit" "$o" "changed PalHeal"
 o="$(f add emily PalSpeed '/cast [mod:alt] {Divine Steed}')"; check "add" "$o" "added PalSpeed"

@@ -488,6 +488,8 @@ probed against the WoW Forever client beyond what each addon's header says.
   export FORGE_DIR=~/wow-forge WOW_WTF_DIR="/path/to/the/client/WTF"   # FORGE_DIR: outside the repo
   scripts/forge.sh characters          # everyone: class, level, gold, kit
   scripts/forge.sh show emily          # one character: xp, gold, gear, bags, bank, mail
+  scripts/forge.sh history [emily]     # gold (and level) by day: the account's, or one character's
+  scripts/forge.sh find linen          # who has it, and where (bags, bank, mail, worn)
   scripts/forge.sh kit emily           # the planned kit, macro by macro
   scripts/forge.sh drop emily PalExo   # plan: also add / edit / restore / reset / copy / class
   scripts/forge.sh serve               # the same on a page at http://127.0.0.1:7744 (a small C server, localhost only)

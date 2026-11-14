@@ -1,5 +1,13 @@
 ## 2026-11-14
 
+- **The forge shows progress and who has what** (continuing "i want to see the inv and levels ... including monies").
+  `forge history` is the account's gold by day (every character's latest snapshot by the end of each day, with the
+  change from the day before); `forge history CHARACTER` is that character's level, xp, zone and gold by day. Both
+  come from the Character Board's snapshot series (`rows`), which the forge did not read before. `forge find ITEM`
+  searches every item name Fafnir's Bed has seen (or an item id) and lists who holds it, where (bags, bank, mail,
+  worn) and the account total. The page gets an Account view (search + gold by day) and a Progress table on each
+  character. `forge_test.sh` 34 -> 43; driven in headless Chromium with no console errors.
+
 - **The plugin forge, `/chars`, and equipment** (founder: "a server we can run local with full cli interface for the
   plugin forge -- i want to be able to see and plan kits for characters", "i want to see the inv and levels and
   equip of the chars, including monies", "ideally all from one in game screen").
