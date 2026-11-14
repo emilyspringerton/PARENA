@@ -105,15 +105,24 @@ local function ascend(preview)
                 loaded[#loaded + 1] = name
             end
         else
+            -- When the client names its slot limit, check it first. When it doesn't (WoW Forever has no
+            -- MAX_CHARACTER_MACROS), no number is assumed: the client itself is asked, and only its refusal
+            -- counts as "full". A macro counts as loaded only once the client has actually created it.
             local _, perchar = GetNumMacros()
-            if M.msFits(perchar or 0, max, 1) == 0 then
+            if max >= 0 and M.msFits(perchar or 0, max, 1) == 0 then
                 full[#full + 1] = name
-            else
-                if not preview then
-                    idx = CreateMacro(name, ICON, body, true)
-                    if idx and idx > 0 then M.msAdopt_(db, name) end
-                end
+            elseif preview then
                 loaded[#loaded + 1] = name
+            else
+                local ok, made = pcall(CreateMacro, name, ICON, body, true)
+                if ok and type(made) == "number" and made > 0 then
+                    idx = made
+                    M.msAdopt_(db, name)
+                    loaded[#loaded + 1] = name
+                else
+                    idx = 0
+                    full[#full + 1] = name
+                end
             end
         end
         if not preview and idx and idx > 0 and M.msManaged(db, name) == 1 and GetMacroBody(idx) ~= body then

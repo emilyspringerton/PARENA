@@ -41,7 +41,7 @@ local function session(w)
     env.GetRealmName = function() return "Forever" end
     env.UnitClass = function() return w.class:sub(1, 1) .. w.class:sub(2):lower(), w.class end
     env.InCombatLockdown = function() return w.combat end
-    env.MAX_CHARACTER_MACROS = w.max
+    if not w.hidemax then env.MAX_CHARACTER_MACROS = w.max end   -- WoW Forever: the global is absent
     env.C_Spell = { GetSpellInfo = function(name) if w.known[name] then return { name = name } end end }
     local function all() local t = {}; for _, m in ipairs(w.account) do t[#t + 1] = m end; for _, m in ipairs(w.char) do t[#t + 1] = m end; return t end
     env.GetNumMacros = function() return #w.account, #w.char end
@@ -152,6 +152,24 @@ s = session(f)
 out = s.ascend()
 eq(#f.char, 18, "only the one free slot is used")
 has(out, "no slot free for: ", "the rest are reported, never forced")
+
+-- WoW Forever: no MAX_CHARACTER_MACROS. Nothing is assumed; the client's own CreateMacro decides.
+local fv = world("PALADIN", { "Judgement", "Holy Light" })
+fv.hidemax = true
+s = session(fv)
+out = s.ascend()
+eq(#fv.char > 0, true, "with no slot-limit global, macros are still written (the bug: none were)")
+eq(out:find("no slot free for: ", 1, true), nil, "and nothing is falsely reported full")
+local fvn = #fv.char
+
+local ff = world("PALADIN", { "Judgement", "Holy Light", "Devotion Aura" })
+ff.hidemax = true
+for i = 1, 17 do ff.char[i] = { name = "Mine" .. i, body = "/wave" } end
+s = session(ff)
+out = s.ascend()
+eq(#ff.char, 18, "with no global, the client's refusal stops it at the real limit")
+has(out, "no slot free for: ", "and only the client's refusal counts as full")
+eq(ff.char[1].name, "Mine1", "the player's own macros are untouched")
 
 local t = world("PALADIN", { "Judgement" })
 t.cut = 20
