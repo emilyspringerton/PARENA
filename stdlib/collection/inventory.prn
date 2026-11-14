@@ -3,7 +3,10 @@
 ;; name is one of the spec's own for it). A REFLUX mod.
 ;;
 ;; The model, in one account-wide SavedVariables table (## SavedVariables: FafnirsBedDB):
-;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...} } }
+;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...},
+;;                           equipped = {...} }, gear = { [slot] = itemID } }
+;;   (equipped: what the character is wearing, counted like any location so "who has this?" finds worn gear too;
+;;   gear: the same by inventory slot, 1 head .. 19 tabard, for the character sheet in the Collection hub)
 ;;   db.names[itemID]    = the item's name, as last seen in a link (for search)
 ;;
 ;; NET INVENTORY is the sum over every character and location. Moving 5 ore from bags to bank is -5 in bags and
@@ -11,7 +14,7 @@
 ;;
 ;; Every change is DISPATCHED into REFLUX, so the journal (journal.prn) makes net inventory a time series the
 ;; reader carries into the event store. Addon 2's block is 2010-2019 (ids.prn):
-;;   2010 item count changed     a = itemID, b = signed delta, c = location (1 bags, 2 bank, 3 mail)
+;;   2010 item count changed     a = itemID, b = signed delta, c = location (1 bags, 2 bank, 3 mail, 4 equipped)
 ;;   2011 gold changed           a = signed copper delta, b = new total in whole gold, c = 0
 ;;   2012 location re-read       a = location, b = distinct items held there, c = total count held there
 ;;
@@ -23,7 +26,7 @@
 
 (module collection/inventory)
 (export inv-init inv-character inv-location-code inv-apply-snapshot inv-set-gold inv-net inv-who inv-gold-total
-        inv-find inv-remember-name inv-totals)
+        inv-find inv-remember-name inv-totals inv-set-gear!)
 
 (defn inv-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
 
@@ -45,7 +48,7 @@
       (lua/aget (lua/get db "chars") character)))
 
 (defn inv-location-code [(loc : String)] : I32
-  (if (= loc "bags") 1 (if (= loc "bank") 2 (if (= loc "mail") 3 0))))
+  (if (= loc "bags") 1 (if (= loc "bank") 2 (if (= loc "mail") 3 (if (= loc "equipped") 4 0)))))
 
 ;; Pass 1: items in the new snapshot -- dispatch the delta against the old one. Returns n + changes.
 (defn inv-diff-new [(snap : Any) (old : Any) (k : Any) (code : I32) (n : I32)] : I32
@@ -102,11 +105,13 @@
   (if (lua/nil? name) 0 (lua/aset! (lua/get db "names") item name)))
 
 ;; One character's count of an item across bags, bank and mail.
+(defn inv-loc-count [(locs : Any) (loc : String) (item : I32)] : I32
+  (if (lua/nil? (lua/get locs loc)) 0 (inv-zero (lua/aget (lua/get locs loc) item))))
+
 (defn inv-char-count [(ch : Any) (item : I32)] : I32
   (let [locs (lua/get ch "loc")]
-    (+ (+ (if (lua/nil? (lua/get locs "bags")) 0 (inv-zero (lua/aget (lua/get locs "bags") item)))
-          (if (lua/nil? (lua/get locs "bank")) 0 (inv-zero (lua/aget (lua/get locs "bank") item))))
-       (if (lua/nil? (lua/get locs "mail")) 0 (inv-zero (lua/aget (lua/get locs "mail") item))))))
+    (+ (+ (inv-loc-count locs "bags" item) (inv-loc-count locs "bank" item))
+       (+ (inv-loc-count locs "mail" item) (inv-loc-count locs "equipped" item)))))
 
 (defn inv-who-walk [(chars : Any) (k : Any) (item : I32) (out : Any)] : Any
   (let [nk (inv-next chars k)]
@@ -177,3 +182,15 @@
         chars (inv-union-chars (lua/get db "chars") (lua/nil) seen 0)
         sums (inv-sum-net db seen (lua/nil) 0 0)]
     (lua/array chars (lua/aget sums 1) (lua/aget sums 2) (inv-gold-total db))))
+
+;; What the character wears, by inventory slot ({[slot] = itemID}). The host also applies the same items as the
+;; "equipped" location, so counts and REFLUX rows go the usual way; this keeps which slot each one is in.
+;; Returns the number of slots filled.
+(defn inv-set-gear! [(db : Any) (character : String) (gear : Any) (now : I32)] : I32
+  (let [ch (inv-character db character now)]
+    (do (lua/set! ch "gear" gear)
+        (inv-count-keys gear (lua/nil) 0))))
+
+(defn inv-count-keys [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (inv-next t k)]
+    (if (lua/nil? nk) n (inv-count-keys t nk (+ n 1)))))

@@ -6,6 +6,7 @@
 --
 -- /collection        open or close the window
 -- /collection list   the same, in chat, with every command
+-- /chars             every character's level, gold, gear and bags in one screen (collection_chars.lua)
 --
 -- One block per addon from registry.lua (written by the packager from each addon's own .toc and code, so it never
 -- drifts from what was built): loaded or not, where it saves and how much, and a button for every command and
@@ -256,6 +257,15 @@ local function make_window()
     end
     close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
     close:SetScript("OnClick", function() f:Hide() end)
+    if ns.open_chars then        -- the character screen (collection_chars.lua)
+        local okc, chars = pcall(CreateFrame, "Button", nil, f, "UIPanelButtonTemplate")
+        if not okc then chars = CreateFrame("Button", nil, f) end
+        chars:SetSize(96, 22)
+        chars:SetPoint("TOPRIGHT", f, "TOPRIGHT", -40, -10)
+        chars:SetText(L("CHARS"))
+        chars:SetScript("OnClick", function() ns.open_chars(nil) end)
+        f.chars_button = chars
+    end
     local refresh = fill(f, 640)
     f:SetScript("OnShow", refresh)
     if UISpecialFrames then table.insert(UISpecialFrames, "CollectionHubFrame") end

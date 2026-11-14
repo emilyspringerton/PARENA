@@ -3,7 +3,7 @@
 ;; glue (runtime/wow/collection_hub.lua) draws it; what it reports is decided here.
 
 (module collection/hub)
-(export hub-size hub-state hub-action-mode)
+(export hub-size hub-state hub-action-mode hub-gold-parts hub-xp-pct hub-roster hub-char-before)
 
 ;; Top-level entries of a table, by walking next.
 (defn hub-count-walk [(t : Any) (k : Any) (n : I32)] : I32
@@ -27,3 +27,27 @@
 ;; they can type, such as a name or a riddle. Optional arguments (`[...]`) run with their defaults.
 (defn hub-action-mode [(loaded : I32) (needs-input : I32)] : I32
   (if (= loaded 0) 0 (if (= needs-input 0) 1 2)))
+
+;; ---- The character screen (founder, 2026-11-14: "i want to see the inv and levels and equip of the chars,
+;; including monies -- ideally all from one in game screen"). It reads the Character Board's snapshots and Fafnir's
+;; Bed's holdings, both account-wide, so every character shows, not just the one logged in.
+
+;; Copper as {gold, silver, copper}.
+(defn hub-gold-parts [(copper : I32)] : Any
+  (lua/array (/ copper 10000) (- (/ copper 100) (* (/ copper 10000) 100)) (- copper (* (/ copper 100) 100))))
+
+;; Experience into the level, 0..100. 0 when the client did not say how much the level needs.
+(defn hub-xp-pct [(xp : I32) (xpmax : I32)] : I32 (if (<= xpmax 0) 0 (/ (* xp 100) xpmax)))
+
+;; Every character either table knows: {[character] = 1}. Either table may be nil (its addon not installed).
+(defn hub-roster-add [(chars : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lua/call-fn (lua/global "next") chars k)]
+    (if (lua/nil? nk) out (do (lua/aset! out nk 1) (hub-roster-add chars nk out)))))
+(defn hub-roster-from [(db : Any) (out : Any)] : Any
+  (if (lua/nil? db) out (if (lua/nil? (lua/get db "chars")) out (hub-roster-add (lua/get db "chars") (lua/nil) out))))
+(defn hub-roster [(board : Any) (fafnir : Any)] : Any
+  (hub-roster-from fafnir (hub-roster-from board (lua/obj))))
+
+;; The list's order: highest level first, then by name. 1 when a comes before b.
+(defn hub-char-before [(alevel : I32) (aname : String) (blevel : I32) (bname : String)] : I32
+  (if (> alevel blevel) 1 (if (< alevel blevel) 0 (if (< aname bname) 1 0))))

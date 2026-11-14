@@ -116,7 +116,7 @@ local function session(opts)
     function s.button(cmd, text)
         local found
         for _, b in ipairs(s.buttons()) do
-            if b.action and b.action.cmd == cmd and rawget(b, "text") == text then found = b end
+            local a = rawget(b, "action"); if a and a.cmd == cmd and rawget(b, "text") == text then found = b end
         end
         return found
     end
@@ -189,7 +189,7 @@ eq(#s.macros > before, true, "and /ascend wrote macros")
 
 ascend.scripts.OnEnter(ascend)
 eq(s.tip.lines[1], "/ascend", "hovering shows the command")
-has(s.tip.lines[2], "load this character's class set", "and what it does")
+has(s.tip.lines[2], "load this character's kit", "and what it does")
 ascend.scripts.OnLeave(ascend)
 eq(s.tip.shown, false, "leaving hides the tooltip")
 
@@ -207,17 +207,69 @@ has(s.tip.lines[3], "type the rest", "and says to type the rest")
 
 local hidden, shown = 0, 0
 for _, b in ipairs(s.buttons()) do
-    if b.action and b.action.cmd == "/derby" then if rawget(b, "shown") then shown = shown + 1 else hidden = hidden + 1 end end
+    if rawget(b, "action") and b.action.cmd == "/derby" then if rawget(b, "shown") then shown = shown + 1 else hidden = hidden + 1 end end
 end
 eq(hidden > 0 and shown == 0, true, "an addon that is not loaded shows no buttons")
 local overflow = 0
 for _, b in ipairs(s.buttons()) do
-    if b.action and (rawget(b, "x") + rawget(b, "w")) > 624 then overflow = overflow + 1 end
+    if rawget(b, "action") and (rawget(b, "x") + rawget(b, "w")) > 624 then overflow = overflow + 1 end
 end
 eq(overflow, 0, "every button fits the window's width (rows wrap)")
 
 s.cmd("")
 eq(s.env.CollectionHubFrame:IsShown(), false, "/collection again closes it")
+
+-- ===== the character screen: every character's level, gold, gear and bags in one window =================
+-- Fafnir's Bed reads what the logged-in character wears (slots 1..19), as a location and by slot
+s.env.GetInventoryItemID = function(_, slot) if slot == 1 then return 1001 elseif slot == 16 then return 1002 end end
+s.env.GetInventoryItemLink = function(_, slot) return slot == 1 and "|cff0070dd|Hitem:1001|h[Lionheart Helm]|h|r" or "|Hitem:1002|h[Ashbringer]|h" end
+s.env.GetMoney = function() return 1234567 end
+s.env.FafnirsBed.scan_gear()
+s.env.FafnirsBed.scan_gold()
+local me = s.env.FafnirsBedDB.chars["Emily-Forever"]
+eq(me.gear[1], 1001, "the helm is recorded in slot 1")
+eq(me.gear[16], 1002, "the main hand in slot 16")
+eq(me.loc.equipped[1001], 1, "worn gear is a location too")
+local whohas = s.env.RefluxCore.modules["collection/inventory"].invWho(s.env.FafnirsBedDB, 1002)
+eq(whohas["Emily-Forever"], 1, "so 'who has this?' finds worn gear")
+s.env.GetInventoryItemID = function() return nil end
+s.env.FafnirsBed.scan_gear()
+eq(me.gear[1], 1001, "an empty read (early login, logout) does not wipe the gear")
+-- a second character the Board and Fafnir know from another login
+s.env.CharacterBoardDB = { chars = {
+    ["Emily-Forever"] = { t = 1763000000, character = "Emily-Forever", class = "PALADIN", race = "Human", level = 42, xp = 500, xpmax = 1000, rested = 250, gold = 1234567, zone = "Ironforge", ilvl = 38, played = 200000, profs = "Mining 120/150" },
+    ["Ash-Forever"] = { t = 1762900000, character = "Ash-Forever", class = "MAGE", race = "Gnome", level = 60, xp = 0, xpmax = 0, rested = 0, gold = 9000000, zone = "Stormwind" } }, rows = {} }
+s.env.FafnirsBedDB.chars["Ash-Forever"] = { gold = 9000000, seen = 1, loc = { bags = { [2589] = 20 } } }
+s.env.FafnirsBedDB.names[2589] = "Linen Cloth"
+s.env.FafnirsBedDB.chars["Emily-Forever"].loc.bags = { [2589] = 3, [118] = 1 }
+s.env.FafnirsBedDB.names[118] = "Minor Healing Potion"
+eq(s.ns.build.board, "CharacterBoardDB", "the hub knows the Board's table")
+eq(s.env.CollectionHubFrame.chars_button ~= nil, true, "the /collection window has a Characters button")
+s.env.SlashCmdList.COLLECTIONCHARS("")
+eq(s.env.CollectionCharsFrame and s.env.CollectionCharsFrame:IsShown(), true, "/chars opens the character screen")
+local ct = s.texts()
+has(ct, "2 characters", "the account line counts every character")
+has(ct, "1023g|r 45s 67c across the account", "and adds up their gold (Fafnir's, which follows every change)")
+local first
+for _, b in ipairs(s.buttons()) do if rawget(b, "who") and rawget(b, "shown") then first = first or b end end
+has(rawget(first, "text"), "Ash  60", "the list starts with the highest level")
+has(ct, "level 60 Gnome MAGE", "and opens on that character")
+has(ct, "Linen Cloth|r  x20", "with its bags")
+has(ct, "not read yet -- open the bank", "saying what has not been read")
+s.env.SlashCmdList.COLLECTIONCHARS("em")
+ct = s.texts()
+has(ct, "level 42 Human PALADIN", "/chars em picks Emily")
+has(ct, "xp 50% of the level, 25% rested", "her xp and rest")
+has(ct, "item level 38", "item level")
+has(ct, "123g|r 45s 67c", "her gold")
+has(ct, "Head|r  |cffffffffLionheart Helm", "her gear by slot")
+has(ct, "Main hand|r  |cffffffffAshbringer", "every slot she has filled")
+has(ct, "Minor Healing Potion", "her bags")
+has(ct, "professions: Mining 120/150", "and professions")
+for i = #s.out, 1, -1 do s.out[i] = nil end
+s.env.SlashCmdList.COLLECTIONCHARS("zed")
+has(table.concat(s.out, "\n"), "no character called 'zed'", "an unknown name says so")
+eq(s.ns.char_sheet("Emily-Forever")[1]:find("Emily-Forever", 1, true) ~= nil, true, "the sheet is available to other code")
 
 -- ===== /collection list prints the same in chat ===========================================================
 local out = s.cmd("list")
@@ -252,6 +304,10 @@ nf.env.CreateFrame = nil          -- no frames when the window is first asked fo
 out = nf.cmd("")
 has(out, "no frames API", "no frames at all: says so")
 has(out, "MacroSync", "and prints the list in chat")
+nf.env.CharacterBoardDB = { chars = { ["Emily-Forever"] = { class = "PALADIN", race = "Human", level = 42, gold = 5 } } }
+for i = #nf.out, 1, -1 do nf.out[i] = nil end
+nf.env.SlashCmdList.COLLECTIONCHARS("")
+has(table.concat(nf.out, "\n"), "level 42 Human PALADIN", "no frames: /chars prints the sheet in chat")
 
 print(string.format("hub: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

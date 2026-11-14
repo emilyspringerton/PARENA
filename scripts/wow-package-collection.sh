@@ -177,10 +177,18 @@ ms="$OUT/AddOns/$M_ADDON"
 mkdir -p "$ms"
 wrap collection/macrosync "$ms/macrosync_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/macrosync.prn
 wrap collection/macros "$ms/macros.lua" stdlib/collection/macros.prn
+wrap collection/kits "$ms/kits_rules.lua" stdlib/collection/kits.prn
+# The kits planned in the plugin forge (`forge build` sets MACROSYNC_KITS to its export); none: the class sets as shipped.
+if [ -n "${MACROSYNC_KITS:-}" ]; then
+  [ -f "$MACROSYNC_KITS" ] || die "MACROSYNC_KITS=$MACROSYNC_KITS does not exist"
+  cp "$MACROSYNC_KITS" "$ms/kits.lua"
+else
+  printf -- '-- kits.lua -- no kits planned in the plugin forge for this build.\nlocal _, ns = ...\nns.kits = {}\n' > "$ms/kits.lua"
+fi
 cp runtime/wow/locales/macrosync.lua "$ms/locale.lua"
 glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
-toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros, loaded with /ascend; removed ones are pruned. Speaks in haiku." \
-  SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua locale.lua macrosync.lua
+toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros -- or the kit planned for this character in the plugin forge -- loaded with /ascend; removed ones are pruned. Speaks in haiku." \
+  SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua kits_rules.lua kits.lua locale.lua macrosync.lua
 GAMES_BUILT=" $M_ADDON"
 
 # The party games (spec 54-71). Each is built with collection/games and carries the shared kit (fun_kit.lua) and
@@ -274,7 +282,8 @@ glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB
   echo "-- registry.lua -- every addon in this package, read back from its own .toc and code by"
   echo "-- scripts/wow-package-collection.sh. Generated; do not edit."
   echo "local _, ns = ..."
-  echo "ns.build = { version = \"$(luastr "$VERSION")\", interface = $WOW_INTERFACE, keep = $J_KEEP, poll = $J_POLL, journal = \"$J_ADDON\" }"
+  echo "ns.build = { version = \"$(luastr "$VERSION")\", interface = $WOW_INTERFACE, keep = $J_KEEP, poll = $J_POLL, journal = \"$J_ADDON\","
+  echo "  board = \"$B_VAR\", fafnir = \"$F_VAR\" }"
   echo "ns.addons = {"
   for t in "$OUT"/AddOns/*/*.toc; do
     d="$(dirname "$t")"; folder="$(basename "$d")"
@@ -295,8 +304,9 @@ glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB
   done
   echo "}"
 } > "$hub/registry.lua"
-toc "$hub/$HUB_ADDON.toc" "Collection" "Every Collection addon in one window: its status, its settings, and a button for each of its commands. /collection" \
-  SavedVariables "$HUB_VAR" registry.lua hub_rules.lua locale.lua collection_hub.lua
+glue runtime/wow/collection_chars.lua "$hub/collection_chars.lua" "$HUB_ADDON" "$HUB_VAR"
+toc "$hub/$HUB_ADDON.toc" "Collection" "Every Collection addon in one window, a button for each of its commands, and every character's level, gold, gear and bags. /collection /chars" \
+  SavedVariables "$HUB_VAR" registry.lua hub_rules.lua locale.lua collection_chars.lua collection_hub.lua
 
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"

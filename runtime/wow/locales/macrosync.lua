@@ -4,11 +4,12 @@
 -- 3 spells not learned yet (the macros are written anyway), 4 name collision, 5 in combat, 6 no macro API, 7 slots full, 8 no set for this class, 9 too long.
 local _, ns = ...
 local enUS = {
-    HELP = "/ascend -- load your class's macros, prune removed ones   /ascend preview -- see what it would do",
+    HELP = "/ascend -- load your kit (your class's macros, or the kit planned in the forge), prune removed ones   /ascend preview -- see what it would do",
     SUMMARY = "%s: %d in the set -- %d written, %d pruned; %d use spells you have not learned yet (they work once you do).",
     PREVIEW = "%s (preview, nothing changed): would write %d, prune %d; %d use spells not learned yet.",
     PRUNED = "pruned: ", DORMANT = "not learned yet (already on your list, they work once learned): ", COLLIDED = "left alone (your own macro has the name): ",
     FULL = "no slot free for: ", TOOLONG = "the client shortened: ",
+    KIT = "%s: this character's kit was planned in the forge (%d changes to the class set).",
     H_1_1 = "The Flame wakes again / your macros rise from the ash / ready in your hands",
     H_1_2 = "We ascend as one / each spell falls into its place / the bar remembers",
     H_1_3 = "Commander, it's done / the old words are written fresh / go and fight again",

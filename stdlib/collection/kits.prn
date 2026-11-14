@@ -1,0 +1,116 @@
+;; stdlib/collection/kits.prn -- macro kits: the plan for one character's macros, on top of its class set (founder,
+;; 2026-11-14: "a server we can run local with full cli interface for the plugin forge -- i want to be able to see and
+;; plan kits for characters"; a kit is the set of macros MacroSync writes for a character). Used in two places, so the
+;; rules are written once: the forge (runtime/wow/forge/forge.lua, outside the game) edits plans with these, and
+;; MacroSync's /ascend applies the plan the forge baked into the addon.
+;;
+;; A character's kit = its class set (collection/macros), minus the macros the plan drops, with the bodies the plan
+;; edits, plus the macros the plan adds. A plan is a table:
+;;   { drop = { [name] = 1 }, edit = { [name] = body }, add = { {name, body}, ... } }
+;; Edits and drops only ever name class macros; an added macro is changed or removed in the add list itself, so the
+;; three never overlap. A macro is {name, body}; bodies may use MacroSync's {A|B} spell choices.
+;;
+;; Result codes of the changes (the forge prints them):
+;;   0 done  1 empty name  2 name over kit-name-max characters  3 empty body  5 the name is already in the kit
+;;   6 no such macro in the kit  7 nothing to restore
+
+(module collection/kits)
+(export kit-name-max kit-body-max kit-plan kit-check kit-find kit-apply kit-changes
+        kit-add! kit-edit! kit-drop! kit-restore!)
+
+;; The macro frame's name limit (macros.prn), and the body length past which the client may shorten a macro
+;; (retail-lineage 255; not confirmed on Forever -- MacroSync reads every body back and reports a shortened one).
+(defn kit-name-max [] : I32 16)
+(defn kit-body-max [] : I32 255)
+
+(defn kit-len [(s : Any)] : I32 (lua/call-fn (lua/global "string.len") s))
+(defn kit-count [(arr : Any)] : I32 (lua/call-fn (lua/global "table.getn") arr))
+
+;; Give a plan table (possibly empty, or loaded from an older file) all three parts. Returns it.
+(defn kit-plan [(p : Any)] : Any
+  (do (if (lua/nil? (lua/get p "drop")) (lua/set! p "drop" (lua/obj)) 0)
+      (if (lua/nil? (lua/get p "edit")) (lua/set! p "edit" (lua/obj)) 0)
+      (if (lua/nil? (lua/get p "add")) (lua/set! p "add" (lua/array)) 0)
+      p))
+
+;; Is this a macro the client will take? 0 yes, else the code above; 4 = the body is longer than kit-body-max
+;; (allowed -- the client's limit is unconfirmed -- but worth a warning).
+(defn kit-check [(name : String) (body : String)] : I32
+  (if (= (kit-len name) 0) 1
+    (if (> (kit-len name) (kit-name-max)) 2
+      (if (= (kit-len body) 0) 3
+        (if (> (kit-len body) (kit-body-max)) 4 0)))))
+
+;; The index of the macro called `name` in an array of {name, body}, or 0.
+(defn kit-find-from [(arr : Any) (name : String) (i : I32)] : I32
+  (if (> i (kit-count arr)) 0
+    (if (= (lua/aget (lua/aget arr i) 1) name) i (kit-find-from arr name (+ i 1)))))
+(defn kit-find [(arr : Any) (name : String)] : I32 (kit-find-from arr name 1))
+
+;; The kit itself: an array of {name, body, origin}, origin 0 class, 1 edited, 2 added. Class macros first, in the
+;; set's order, then the added ones in the order they were added.
+(defn kit-apply-class [(set : Any) (p : Any) (i : I32) (out : Any)] : Any
+  (if (> i (kit-count set)) out
+    (let [m (lua/aget set i)
+          name (lua/aget m 1)
+          edited (lua/aget (lua/get p "edit") name)]
+      (do (if (lua/nil? (lua/aget (lua/get p "drop") name))
+            (if (lua/nil? edited)
+              (lua/aset! out (+ (kit-count out) 1) (lua/array name (lua/aget m 2) 0))
+              (lua/aset! out (+ (kit-count out) 1) (lua/array name edited 1)))
+            0)
+          (kit-apply-class set p (+ i 1) out)))))
+
+(defn kit-apply-added [(add : Any) (i : I32) (out : Any)] : Any
+  (if (> i (kit-count add)) out
+    (let [m (lua/aget add i)]
+      (do (lua/aset! out (+ (kit-count out) 1) (lua/array (lua/aget m 1) (lua/aget m 2) 2))
+          (kit-apply-added add (+ i 1) out)))))
+
+(defn kit-apply [(set : Any) (plan : Any)] : Any
+  (let [p (kit-plan plan)]
+    (kit-apply-added (lua/get p "add") 1 (kit-apply-class set p 1 (lua/array)))))
+
+;; How many changes a plan makes to its class set (drops + edits + adds).
+(defn kit-count-keys [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) n (kit-count-keys t nk (+ n 1)))))
+(defn kit-changes [(plan : Any)] : I32
+  (let [p (kit-plan plan)]
+    (+ (kit-count-keys (lua/get p "drop") (lua/nil) 0)
+       (+ (kit-count-keys (lua/get p "edit") (lua/nil) 0) (kit-count (lua/get p "add"))))))
+
+;; Add a macro of the player's own. Its name must be new to the kit -- class macros included, dropped or not: to
+;; change a class macro, edit it.
+(defn kit-add! [(set : Any) (plan : Any) (name : String) (body : String)] : I32
+  (let [p (kit-plan plan)
+        bad (kit-check name body)]
+    (if (and (> bad 0) (< bad 4)) bad
+      (if (or (> (kit-find set name) 0) (> (kit-find (lua/get p "add") name) 0)) 5
+        (do (lua/aset! (lua/get p "add") (+ (kit-count (lua/get p "add")) 1) (lua/array name body)) 0)))))
+
+;; Change a macro's body: a class macro (which also takes back a drop of it) or an added one.
+(defn kit-edit! [(set : Any) (plan : Any) (name : String) (body : String)] : I32
+  (let [p (kit-plan plan)
+        bad (kit-check name body)
+        added (kit-find (lua/get p "add") name)]
+    (if (and (> bad 0) (< bad 4)) bad
+      (if (> (kit-find set name) 0)
+        (do (lua/aset! (lua/get p "edit") name body) (lua/aset! (lua/get p "drop") name (lua/nil)) 0)
+        (if (> added 0) (do (lua/aset! (lua/aget (lua/get p "add") added) 2 body) 0) 6)))))
+
+;; Leave a macro out of the kit: a class macro is dropped (and any edit of it forgotten); an added one is removed.
+(defn kit-drop! [(set : Any) (plan : Any) (name : String)] : I32
+  (let [p (kit-plan plan)
+        added (kit-find (lua/get p "add") name)]
+    (if (> (kit-find set name) 0)
+      (do (lua/aset! (lua/get p "drop") name 1) (lua/aset! (lua/get p "edit") name (lua/nil)) 0)
+      (if (> added 0) (do (lua/call-fn (lua/global "table.remove") (lua/get p "add") added) 0) 6))))
+
+;; Put a class macro back the way the class set has it (undo a drop or an edit). 7 when it is unchanged; 6 when the
+;; class set has no such macro (an added macro is removed with kit-drop!).
+(defn kit-restore! [(set : Any) (plan : Any) (name : String)] : I32
+  (let [p (kit-plan plan)]
+    (if (= (kit-find set name) 0) 6
+      (if (and (lua/nil? (lua/aget (lua/get p "drop") name)) (lua/nil? (lua/aget (lua/get p "edit") name))) 7
+        (do (lua/aset! (lua/get p "drop") name (lua/nil)) (lua/aset! (lua/get p "edit") name (lua/nil)) 0)))))

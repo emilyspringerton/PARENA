@@ -1471,6 +1471,10 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# The four fun addons in the same package -- Hrungnir (70), Ratatoskr Roll (65), Völva (72), Saga of Fools
 	@# (73) -- played across sessions and a week, their REFLUX rows journalled, and the 12-locale string check.
 	$(LUA51) tests/reflux_wow/fun_test.lua $(REFLUX_WOW_OUT)/client
+	@# Macro kits (stdlib/collection/kits.prn): a plan's drops, edits and adds on the real class sets.
+	./.parena-bootstrap build stdlib/collection/kits.prn -o $(REFLUX_WOW_OUT)/kits.lua
+	./.parena-bootstrap build stdlib/collection/macros.prn -o $(REFLUX_WOW_OUT)/macros.lua
+	$(LUA51) tests/reflux_wow/kits_test.lua $(REFLUX_WOW_OUT)/kits.lua $(REFLUX_WOW_OUT)/macros.lua
 	@# MacroSync: /ascend against a stubbed macro list and spellbook (paladin set), and every haiku 5-7-5.
 	$(LUA51) tests/reflux_wow/macrosync_test.lua $(REFLUX_WOW_OUT)/client
 	@# The Collection hub (/collection): its registry against the package, the window, Open, and older clients.

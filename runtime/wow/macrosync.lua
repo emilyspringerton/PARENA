@@ -1,8 +1,11 @@
 -- runtime/wow/macrosync.lua -- MacroSync's host glue. The decisions are PARENA (stdlib/collection/macrosync.prn) and
 -- the macro sets are PARENA (stdlib/collection/macros.prn); this file makes the client calls and speaks in haiku.
 --
--- /ascend          load this character's class set: create or update managed macros, prune removed ones
+-- /ascend          load this character's kit: create or update managed macros, prune removed ones
 -- /ascend preview  what /ascend would do, changing nothing
+--
+-- The kit is the class set, changed by the plan made for this character in the plugin forge (runtime/wow/forge/,
+-- baked into kits.lua at build time; stdlib/collection/kits.prn applies it). No plan: the class set as shipped.
 --
 -- Client calls (retail-lineage; none probed on Forever yet, each feature-tested):
 --   InCombatLockdown (macros cannot change in combat), GetNumMacros, GetMacroIndexByName, GetMacroBody,
@@ -18,6 +21,8 @@ local _, ns = ...
 
 local M = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macrosync"]
 local SETS = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macros"]
+local KITS = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/kits"]
+MacroSyncKits = ns and ns.kits or {}      -- the planned kits, for the Collection's character screen
 if not (M and SETS) then
     print("|cffff5555" .. ADDON .. ": RefluxCore's MacroSync modules are missing.|r")
     return
@@ -66,6 +71,24 @@ local function resolve(template)
     return body, unlearned
 end
 
+-- The plan the forge made for this character (Name-Realm, as the Character Board and the forge key it), if any.
+local function this_plan()
+    local kits = ns and ns.kits
+    if type(kits) ~= "table" then return nil end
+    local name = UnitName and UnitName("player")
+    local realm = GetRealmName and GetRealmName()
+    if not name then return nil end
+    return kits[(realm and realm ~= "") and (name .. "-" .. realm) or name]
+end
+
+-- kitApply fills a plan's missing parts in; never let it touch the baked table itself.
+local function copy(t)
+    if type(t) ~= "table" then return t end
+    local c = {}
+    for k, v in pairs(t) do c[k] = copy(v) end
+    return c
+end
+
 local function ascend(preview)
     if not db then return end
     if InCombatLockdown and InCombatLockdown() then haiku(5); M.msRefused_(1, 0); return end
@@ -74,6 +97,11 @@ local function ascend(preview)
     end
     local _, class = UnitClass("player")
     local set = SETS.macroSet(class or "")
+    local plan = this_plan()
+    if plan and KITS then
+        set = KITS.kitApply(set, copy(plan))
+        print(string.format(L("KIT"), ADDON, KITS.kitChanges(copy(plan))))
+    end
     if #set == 0 then haiku(8) end
 
     local keep, ready, dormant = {}, {}, {}
