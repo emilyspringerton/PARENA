@@ -77,6 +77,10 @@ local function session(w)
                 local fh = assert(io.open(dir .. "/" .. file, "rb")); local src = fh:read("*a"); fh:close()
                 local n; src, n = src:gsub('tonumber%("%d+"%)', 'tonumber("' .. w.limit .. '")', 1)
                 assert(n == 1, "the packaged limit placeholder was not found")
+                if w.classlimits then   -- and MACROSYNC_CLASS_LIMITS
+                    src, n = src:gsub('%(""%):gmatch', '("' .. w.classlimits .. '"):gmatch', 1)
+                    assert(n == 1, "the packaged class-limits placeholder was not found")
+                end
                 chunk = assert(loadstring(src, "=macrosync.lua"))
             else
                 chunk = assert(loadfile(dir .. "/" .. file))
@@ -193,6 +197,24 @@ s = session(l4)
 s.ascend()
 eq(names(l4.char), "PalJudge,PalSeal", "lowering the limit prunes the ones MacroSync wrote past it")
 
+-- MACROSYNC_LIMIT=4 with MACROSYNC_CLASS_LIMITS=SHAMAN=12: shamans get all twelve, everyone else stays at four.
+local sh = world("SHAMAN", { "Lightning Bolt", "Earth Shock", "Healing Wave", "Rockbiter Weapon" })
+sh.hidemax, sh.limit, sh.classlimits = true, 4, "SHAMAN=12"
+s = session(sh)
+out = s.ascend()
+eq(#sh.char, 12, "a shaman gets all twelve under SHAMAN=12")
+eq(names(sh.char), "ShaBolt,ShaShock,ShaKick,ShaPurge,ShaHeal,ShaCure,ShaWeapon,ShaShield,ShaEarth,ShaFire,ShaWater,ShaAir", "in the set's order")
+local fit = true
+for _, m in ipairs(sh.char) do if #m.body > 255 then fit = false end end
+eq(fit, true, "every shaman macro fits the client's 255-character body")
+eq(find(sh.char, "ShaShock").body:find("[mod:shift,@mouseover,harm,nodead][mod:shift] Earth Shock", 1, true) ~= nil, true,
+   "a shock not learned yet falls back to Earth Shock")
+local pl = world("PALADIN", { "Judgement" })
+pl.hidemax, pl.limit, pl.classlimits = true, 4, "SHAMAN=12"
+s = session(pl)
+s.ascend()
+eq(#pl.char, 4, "a paladin stays at four")
+
 local t = world("PALADIN", { "Judgement" })
 t.cut = 20
 s = session(t)
@@ -224,14 +246,14 @@ eq(#pr.char, 16, "and nothing is duplicated")
 
 -- ===== mage, shaman, druid: every set is complete on a fresh character, and choices pick the best known ======
 for _, case in ipairs({
-    { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor" },
-    { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon" },
-    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild" },
+    { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor", 16 },
+    { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon", 12 },
+    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild", 16 },
 }) do
     local cw = world(case[1], case[2])
     s = session(cw)
     out = s.ascend()
-    eq(#cw.char, 16, case[1] .. ": all sixteen written on a fresh character")
+    eq(#cw.char, case[5], case[1] .. ": the whole set (" .. case[5] .. ") written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
     for _, m in ipairs(cw.char) do if #m.name > 16 then named = false end end

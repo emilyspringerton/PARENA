@@ -179,6 +179,10 @@ glue runtime/wow/macrosync.lua "$ms/macrosync.lua" "$M_ADDON" "$M_VAR"
 M_LIMIT="${MACROSYNC_LIMIT:-0}"
 case "$M_LIMIT" in ''|*[!0-9]*) die "MACROSYNC_LIMIT must be a whole number, got '$M_LIMIT'" ;; esac
 sed -i "s/__MS_LIMIT__/$M_LIMIT/" "$ms/macrosync.lua"
+# MACROSYNC_CLASS_LIMITS: per-class overrides, CLASS=N[,CLASS=N...] with the client's class file names (SHAMAN, MAGE).
+M_CLASS_LIMITS="${MACROSYNC_CLASS_LIMITS:-}"
+case "$M_CLASS_LIMITS" in *[!A-Z0-9=,]*) die "MACROSYNC_CLASS_LIMITS must look like SHAMAN=12,MAGE=6, got '$M_CLASS_LIMITS'" ;; esac
+sed -i "s/__MS_CLASS_LIMITS__/$M_CLASS_LIMITS/" "$ms/macrosync.lua"
 toc "$ms/$M_ADDON.toc" "MacroSync" "Your class's macros, loaded with /ascend; removed ones are pruned. Speaks in haiku." \
   SavedVariablesPerCharacter "$M_VAR" macrosync_rules.lua macros.lua locale.lua macrosync.lua
 GAMES_BUILT=" $M_ADDON"

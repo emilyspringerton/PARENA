@@ -15,6 +15,8 @@
 local ADDON = "@ADDON@"
 local VAR = "@VAR@"
 local LIMIT = tonumber("__MS_LIMIT__") or 0   -- filled by the packager from MACROSYNC_LIMIT
+local CLASS_LIMITS = {}                         -- and these from MACROSYNC_CLASS_LIMITS, e.g. "SHAMAN=12"
+for class, n in ("__MS_CLASS_LIMITS__"):gmatch("(%u+)=(%d+)") do CLASS_LIMITS[class] = tonumber(n) end
 local _, ns = ...
 
 local M = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/macrosync"]
@@ -75,11 +77,13 @@ local function ascend(preview)
     end
     local _, class = UnitClass("player")
     local set = SETS.macroSet(class or "")
-    -- MACROSYNC_LIMIT (package time, 0 = the whole set): keep only the first N of the class set. Macros past the
-    -- cap that MacroSync wrote earlier are pruned like any removed macro.
-    if LIMIT > 0 and #set > LIMIT then
+    -- MACROSYNC_LIMIT (package time, 0 = the whole set): keep only the first N of the class set;
+    -- MACROSYNC_CLASS_LIMITS ("SHAMAN=12,MAGE=6") overrides it for the classes it names. Macros past the cap that
+    -- MacroSync wrote earlier are pruned like any removed macro.
+    local limit = CLASS_LIMITS[class or ""] or LIMIT
+    if limit > 0 and #set > limit then
         local cut = {}
-        for i = 1, LIMIT do cut[i] = set[i] end
+        for i = 1, limit do cut[i] = set[i] end
         set = cut
     end
     if #set == 0 then haiku(8) end

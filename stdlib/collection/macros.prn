@@ -102,25 +102,35 @@
     (lua/array "MagFood" "#showtooltip\n/cast {Conjure Refreshment|Conjure Food}")
     (lua/array "MagEvocate" "#showtooltip\n/cast {Evocation}")))
 
-;; SHAMAN -- shocks, heals, weapons, shields and one macro per totem element (shift picks the other totem).
+;; SHAMAN -- twelve, every one doing several jobs through modifiers (shift, ctrl), so the whole kit fits in twelve
+;; buttons (the founder: "extensive sham macros like 12 of em"). Enemy spells go to your mouseover, else your target;
+;; heals and cures to your mouseover friend, else your friendly target, else yourself.
+;;   ShaBolt      Lightning Bolt (starts the fight); shift: Chain Lightning
+;;   ShaShock     Earth Shock; shift: Frost Shock (slow a runner); ctrl: Flame Shock (the burn)
+;;   ShaKick      stop your cast and interrupt: Wind Shear where it exists, else Earth Shock
+;;   ShaPurge     Purge your mouseover enemy, else your target; shift: always your target
+;;   ShaHeal      the quick heal; shift: the big Healing Wave; ctrl: Chain Heal
+;;   ShaCure      cure poison; shift: cure disease (newer clients: their one cleanse)
+;;   ShaWeapon    the weapon imbue (Windfury, else Rockbiter); shift: Flametongue; ctrl: Frostbrand
+;;   ShaShield    Lightning Shield; shift: Water Shield where it exists
+;;   ShaEarth     the earth totem (Stoneskin, else Strength of Earth); shift: Earthbind; ctrl: Tremor
+;;   ShaFire      Searing Totem; shift: Fire Nova Totem; ctrl: Magma Totem
+;;   ShaWater     Healing Stream Totem; shift: Mana Spring Totem; ctrl: Poison Cleansing Totem
+;;   ShaAir       Windfury/Grace of Air Totem; shift: Grounding Totem; ctrl: Ghost Wolf (out of the fight: travel)
 (defn macro-shaman [] : Any
   (lua/array
-    (lua/array "ShaBolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Lightning Bolt}")
-    (lua/array "ShaChain" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Chain Lightning}")
-    (lua/array "ShaShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Earth Shock}")
-    (lua/array "ShaFrostShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Frost Shock}")
-    (lua/array "ShaFlameShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Flame Shock}")
-    (lua/array "ShaPurge" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Purge}")
-    (lua/array "ShaHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Wave}")
-    (lua/array "ShaQuickHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
-    (lua/array "ShaChainHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Chain Heal}")
-    (lua/array "ShaCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Purify Spirit|Cleanse Spirit|Cure Poison}")
-    (lua/array "ShaWeapon" "#showtooltip\n/cast [mod:shift] {Flametongue Weapon}; {Windfury Weapon|Rockbiter Weapon}")
+    (lua/array "ShaBolt" "#showtooltip\n/startattack [@mouseover,harm,nodead][harm,nodead]\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Chain Lightning|Lightning Bolt}; [@mouseover,harm,nodead][] {Lightning Bolt}")
+    (lua/array "ShaShock" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Frost Shock|Earth Shock}; [mod:ctrl,@mouseover,harm,nodead][mod:ctrl] {Flame Shock|Earth Shock}; [@mouseover,harm,nodead][] {Earth Shock}")
+    (lua/array "ShaKick" "#showtooltip\n/stopcasting\n/cast [@mouseover,harm,nodead][] {Wind Shear|Earth Shock}")
+    (lua/array "ShaPurge" "#showtooltip\n/cast [mod:shift,harm,nodead] {Purge}; [@mouseover,harm,nodead][] {Purge}")
+    (lua/array "ShaHeal" "#showtooltip\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Chain Heal|Healing Wave}; [mod:shift,@mouseover,help,nodead][mod:shift] {Healing Wave};[@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
+    (lua/array "ShaCure" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift,help,nodead][mod:shift,@player] {Cure Disease|Cleanse Spirit|Purify Spirit}; [@mouseover,help,nodead][help,nodead][@player] {Cure Poison|Cleanse Spirit|Purify Spirit}")
+    (lua/array "ShaWeapon" "#showtooltip\n/cast [mod:shift] {Flametongue Weapon|Rockbiter Weapon}; [mod:ctrl] {Frostbrand Weapon|Rockbiter Weapon}; {Windfury Weapon|Rockbiter Weapon}")
     (lua/array "ShaShield" "#showtooltip\n/cast [mod:shift] {Water Shield|Lightning Shield}; {Lightning Shield}")
-    (lua/array "ShaGhost" "#showtooltip\n/cast {Ghost Wolf}")
-    (lua/array "ShaEarthTotem" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
-    (lua/array "ShaFireTotem" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem}; {Searing Totem}")
-    (lua/array "ShaWaterTotem" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem}; {Healing Stream Totem}")))
+    (lua/array "ShaEarth" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; [mod:ctrl] {Tremor Totem|Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
+    (lua/array "ShaFire" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem|Searing Totem}; [mod:ctrl] {Magma Totem|Searing Totem}; {Searing Totem}")
+    (lua/array "ShaWater" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem|Healing Stream Totem}; [mod:ctrl] {Poison Cleansing Totem|Healing Stream Totem}; {Healing Stream Totem}")
+    (lua/array "ShaAir" "#showtooltip\n/cast [mod:ctrl,nocombat] {Ghost Wolf}; [mod:shift] {Grounding Totem|Windfury Totem}; {Windfury Totem|Grace of Air Totem|Ghost Wolf}")))
 
 ;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
 (defn macro-druid [] : Any
