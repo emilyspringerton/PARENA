@@ -66,6 +66,15 @@ local function session(world, saved)
     end
     env.GetInboxNumItems = function() return #world.mail end
     env.GetInboxItem = function(i, j) local m = world.mail[i] and world.mail[i][j]; if m then return m.name, m.id, "tex", m.n end end
+    -- the send side of the mailbox (mail in flight)
+    env.ATTACHMENTS_MAX_SEND = 12
+    env.GetSendMailItem = function(i) local m = world.outbox and world.outbox[i]; if m then return m.name, m.id, "tex", m.n end end
+    env.GetSendMailMoney = function() return world.outbox_money or 0 end
+    env.SendMail = function() end
+    env.hooksecurefunc = function(name, f)
+        local orig = env[name]
+        env[name] = function(...) local r = { orig(...) }; f(...); return unpack(r) end
+    end
     if world.c_map then
         env.C_Map = {
             GetBestMapForUnit = function() return 1415 end,
@@ -154,6 +163,31 @@ eq(inv.chars["Emily-Forever"].loc.bank[2770], 43, "a closed bank keeps its last 
 world.mail = { { item(2589, "Linen Cloth", 20), item(2770, "Copper Ore", 2) } }
 s.fire("MAIL_INBOX_UPDATE")
 eq(inv.chars["Emily-Forever"].loc.mail[2589], 20, "mail attachments read")
+
+-- mail in flight: a parcel to an alt is remembered once the client confirms it, and cleared when the alt reads it
+world.outbox = { item(2589, "Linen Cloth", 5) }
+world.outbox_money = 250
+s.env.SendMail("astrid", "cloth", "")
+eq(inv.post, nil, "nothing is in flight until the client confirms the send")
+s.fire("MAIL_SEND_SUCCESS")
+local parcel = inv.post and inv.post["Astrid-Forever"] and inv.post["Astrid-Forever"][1]
+eq(parcel and parcel.items[2589], 5, "the parcel's items are in flight to Astrid-Forever (name capitalised, realm added)")
+eq(parcel and parcel.copper, 250, "and its money")
+eq(parcel and parcel.from, "Emily-Forever", "from the sender")
+world.outbox = { item(2770, "Copper Ore", 3) }; world.outbox_money = 0
+s.env.SendMail("Astrid-Forever", "", "")
+s.fire("MAIL_FAILED")
+eq(inv.post["Astrid-Forever"][2], nil, "a failed send is not remembered")
+world.outbox = nil
+s.env.SendMail("Astrid", "empty", "")
+s.fire("MAIL_SEND_SUCCESS")
+eq(inv.post["Astrid-Forever"][2], nil, "a letter with nothing attached is not a parcel")
+local me = world.name
+world.name = "Astrid"
+s.fire("MAIL_INBOX_UPDATE")
+eq(next(inv.post["Astrid-Forever"]), nil, "Astrid opening her mailbox clears what was in flight to her")
+world.name = me
+inv.chars["Astrid-Forever"] = nil   -- the rest of this test is about one character
 
 local out = s.slash("FAFNIRSBED", "")
 has(out, "net inventory -- 1 characters", "/fafnir shows the net totals")

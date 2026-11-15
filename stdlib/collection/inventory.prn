@@ -5,6 +5,9 @@
 ;; The model, in one account-wide SavedVariables table (## SavedVariables: FafnirsBedDB):
 ;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...} } }
 ;;   db.names[itemID]    = the item's name, as last seen in a link (for search)
+;;   db.post[recipient][n] = { from = sender, at = time, copper = n, items = {[itemID] = n} }: mail IN FLIGHT,
+;;                           sent by one of your characters and not yet seen in the recipient's mailbox. It is
+;;                           cleared when the recipient opens their mailbox (the mail is then in their `mail`).
 ;;
 ;; NET INVENTORY is the sum over every character and location. Moving 5 ore from bags to bank is -5 in bags and
 ;; +5 in bank, so net is unchanged; selling, looting, mailing to someone outside the account move it.
@@ -23,7 +26,7 @@
 
 (module collection/inventory)
 (export inv-init inv-character inv-location-code inv-apply-snapshot inv-set-gold inv-net inv-who inv-gold-total
-        inv-find inv-remember-name inv-totals)
+        inv-find inv-remember-name inv-totals inv-post inv-post-arrived)
 
 (defn inv-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
 
@@ -97,6 +100,21 @@
     (do (lua/set! ch "gold" copper)
         (if (= d 0) 0 (reflux-dispatch (collection-action-type 2 1) d (/ copper 10000) 0))
         d)))
+
+;; A parcel left the sender: remember it under the recipient until their mailbox is read. Returns its number.
+(defn inv-post [(db : Any) (from : String) (to : String) (items : Any) (copper : I32) (now : I32)] : I32
+  (do (if (lua/nil? (lua/get db "post")) (lua/set! db "post" (lua/obj)) 0)
+      (if (lua/nil? (lua/aget (lua/get db "post") to)) (lua/aset! (lua/get db "post") to (lua/obj)) 0)
+      (lua/set! db "postn" (+ (inv-zero (lua/get db "postn")) 1))
+      (lua/aset! (lua/aget (lua/get db "post") to) (lua/get db "postn")
+                 (lua/obj "from" from "at" now "copper" copper "items" items))
+      (lua/get db "postn")))
+
+;; The recipient read their mailbox: whatever was in flight to them is now their mail. 1 if anything was waiting.
+(defn inv-post-arrived [(db : Any) (to : String)] : I32
+  (if (lua/nil? (lua/get db "post")) 0
+      (if (lua/nil? (lua/aget (lua/get db "post") to)) 0
+          (do (lua/aset! (lua/get db "post") to (lua/obj)) 1))))
 
 (defn inv-remember-name [(db : Any) (item : I32) (name : Any)] : Any
   (if (lua/nil? name) 0 (lua/aset! (lua/get db "names") item name)))

@@ -21,6 +21,16 @@ FafnirsBedDB = {
 [6948] = "Hearthstone",
 [159] = "Refreshing \"Spring\" Water",
 },
+["post"] = {
+["Bjorn-Test Realm"] = {
+[1] = { ["from"] = "Astrid-Test Realm", ["at"] = 1794738000, ["copper"] = 250, ["items"] = { [2589] = 5, }, },
+},
+["Stranger-Test Realm"] = {
+[2] = { ["from"] = "Astrid-Test Realm", ["at"] = 1794738100, ["copper"] = 0, ["items"] = { [6948] = 1, }, },
+},
+["Gone-Test Realm"] = {
+},
+},
 ["chars"] = {
 ["Astrid-Test Realm"] = {
 ["seen"] = 1794738458,
@@ -108,11 +118,20 @@ func TestLoad(t *testing.T) {
 	if b.BankRead || b.Items != 4 || len(b.Bags) != 2 {
 		t.Fatalf("Bjorn (zero-count stacks dropped, bank never opened) = %+v", b)
 	}
-	if h.Copper != 12634 {
-		t.Fatalf("copper = %d", h.Copper)
+	if h.Copper != 12634+250 {
+		t.Fatalf("copper (purses + money in the post to the account) = %d", h.Copper)
 	}
-	if h.Items[0].ID != 2589 || h.Items[0].Total != 20 || len(h.Items[0].Holders) != 2 || h.Items[0].Holders[0].Count != 16 {
-		t.Fatalf("top item = %+v", h.Items[0])
+	if h.Items[0].ID != 2589 || h.Items[0].Total != 25 || len(h.Items[0].Holders) != 3 || h.Items[0].Holders[0].Count != 16 {
+		t.Fatalf("top item (16 + 4 bank + 5 in the post to Bjorn) = %+v", h.Items[0])
+	}
+	if len(h.Post) != 2 || h.Post[0].ToName != "Stranger" || h.Post[0].OnAccount || !h.Post[1].OnAccount ||
+		h.Post[1].FromName != "Astrid" || h.Post[1].Items[0].Name != "Linen Cloth" || h.Post[1].Copper != 250 {
+		t.Fatalf("post (newest first; empty boxes dropped) = %+v", h.Post)
+	}
+	for _, hd := range h.Items[0].Holders {
+		if hd.Where == "post" && (hd.Character != "Bjorn" || hd.Count != 5) {
+			t.Fatalf("the parcel is held by its recipient: %+v", hd)
+		}
 	}
 	var hearth Item
 	for _, it := range h.Items {

@@ -141,6 +141,48 @@ local function scan_mail()
         end
     end
     apply("mail", snap)
+    local who = character()
+    if db and who then I.invPostArrived(db, who) end
+end
+
+-- Mail in flight. SendMail only queues a send, so the parcel is read when SendMail is called and remembered
+-- only when the client confirms it (MAIL_SEND_SUCCESS); MAIL_FAILED drops it. Every call is feature-tested:
+-- none of the send API is confirmed on WoW Forever yet, and without it nothing is recorded.
+local parcel = nil
+
+local function recipient_key(to)
+    to = (to or ""):match("^%s*(.-)%s*$")
+    if to == "" then return nil end
+    if to:byte(1) and to:byte(1) < 128 then to = to:sub(1, 1):upper() .. to:sub(2) end   -- names are capitalised
+    if to:find("-", 1, true) then return to end
+    local realm = GetRealmName and GetRealmName()
+    if realm and realm ~= "" then return to .. "-" .. realm end
+    return to
+end
+
+local function read_parcel(to)
+    local per = type(ATTACHMENTS_MAX_SEND) == "number" and ATTACHMENTS_MAX_SEND or nil
+    if not (per and GetSendMailItem) then unreadable.post = "ATTACHMENTS_MAX_SEND / GetSendMailItem are missing"; return nil end
+    local items, any = {}, false
+    for i = 1, per do
+        local name, id, _, count = GetSendMailItem(i)
+        if type(id) ~= "number" and name and GetSendMailItemLink then
+            local link = GetSendMailItemLink(i)
+            id = link and tonumber(link:match("item:(%d+)"))
+        end
+        if type(id) == "number" and count and count > 0 then
+            items[id] = (items[id] or 0) + count
+            any = true
+            if name then I.invRememberName(db, id, name) end
+        end
+    end
+    local copper = GetSendMailMoney and GetSendMailMoney() or 0
+    if not any and copper <= 0 then return nil end
+    return { to = recipient_key(to), items = items, copper = copper }
+end
+
+if hooksecurefunc and SendMail then
+    hooksecurefunc("SendMail", function(to) parcel = read_parcel(to) end)
 end
 
 local function scan_gold()
@@ -157,6 +199,8 @@ frame:RegisterEvent("BANKFRAME_OPENED")
 frame:RegisterEvent("BANKFRAME_CLOSED")          -- the bank is only readable while it is open
 frame:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 frame:RegisterEvent("MAIL_INBOX_UPDATE")
+frame:RegisterEvent("MAIL_SEND_SUCCESS")
+frame:RegisterEvent("MAIL_FAILED")
 frame:RegisterEvent("PLAYER_LOGOUT")
 local bank_open = false
 frame:SetScript("OnEvent", function(_, event, arg1)
@@ -181,6 +225,14 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         if bank_open then scan_bank() end
     elseif event == "MAIL_INBOX_UPDATE" then
         scan_mail()
+    elseif event == "MAIL_SEND_SUCCESS" then
+        local who = character()
+        if parcel and parcel.to and db and who then
+            I.invPost(db, who, parcel.to, parcel.items, parcel.copper, time())
+        end
+        parcel = nil
+    elseif event == "MAIL_FAILED" then
+        parcel = nil
     end
     -- No scan at PLAYER_LOGOUT: by then the client reports empty bags and 0 gold, and the last
     -- BAG_UPDATE_DELAYED / PLAYER_MONEY scan is already current.

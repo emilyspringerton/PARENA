@@ -71,13 +71,33 @@ type Item struct {
 	Holders []Holder `json:"holders"`
 }
 
+// Parcel is mail in flight: sent by one of your characters, not yet seen in the recipient's mailbox.
+type Parcel struct {
+	To        string  `json:"to"`
+	ToName    string  `json:"toName"`
+	From      string  `json:"from"`
+	FromName  string  `json:"fromName"`
+	At        int64   `json:"at"`
+	Copper    int64   `json:"copper"`
+	Items     []Stack `json:"items"`
+	OnAccount bool    `json:"onAccount"`
+}
+
 type Hoard struct {
 	SavedAt    int64       `json:"savedAt"`
 	Files      []string    `json:"files"`
 	Characters []Character `json:"characters"`
 	Items      []Item      `json:"items"`
+	Post       []Parcel    `json:"post"`
 	Copper     int64       `json:"copper"`
 	Problems   []string    `json:"problems"`
+}
+
+func shortName(key string) string {
+	if i := strings.Index(key, "-"); i > 0 {
+		return key[:i]
+	}
+	return key
 }
 
 func configFromEnv() (Config, error) {
@@ -104,7 +124,7 @@ func Load(c Config) (*Hoard, error) {
 		return nil, fmt.Errorf("no %s.lua under %s: log in once with Fafnir's Bed enabled, then /reload", c.Addon, filepath.Join(c.WTF, "Account", "*", "SavedVariables"))
 	}
 	sort.Strings(files)
-	h := &Hoard{Characters: []Character{}, Items: []Item{}, Problems: []string{}}
+	h := &Hoard{Characters: []Character{}, Items: []Item{}, Post: []Parcel{}, Problems: []string{}}
 	names := map[int]string{}
 	for _, f := range files {
 		account := filepath.Base(filepath.Dir(filepath.Dir(f)))
@@ -135,6 +155,26 @@ func Load(c Config) (*Hoard, error) {
 				if id, err := strconv.Atoi(k); err == nil {
 					if s, ok := nt.Field[k].(string); ok {
 						names[id] = s
+					}
+				}
+			}
+		}
+		if post := db.Sub("post"); post != nil {
+			for _, to := range post.Keys {
+				box, _ := post.Field[to].(*Table)
+				if box == nil {
+					continue
+				}
+				for _, n := range box.Keys {
+					pt, _ := box.Field[n].(*Table)
+					if pt == nil {
+						continue
+					}
+					from, _ := pt.Get("from").(string)
+					p := Parcel{To: to, ToName: shortName(to), From: from, FromName: shortName(from), At: int64(pt.Num("at")),
+						Copper: int64(pt.Num("copper")), Items: stacks(pt.Sub("items"))}
+					if len(p.Items) > 0 || p.Copper > 0 {
+						h.Post = append(h.Post, p)
 					}
 				}
 			}
@@ -192,6 +232,35 @@ func Load(c Config) (*Hoard, error) {
 		sortStacks(ch.Bank)
 		sortStacks(ch.Mail)
 	}
+	// Parcels to your own characters still belong to the account: count them as "post", held by the recipient.
+	// Mail to anyone else has left the account; it is listed, not counted.
+	keys := map[string]bool{}
+	for _, ch := range h.Characters {
+		keys[ch.Key] = true
+	}
+	for pi := range h.Post {
+		p := &h.Post[pi]
+		p.OnAccount = keys[p.To]
+		for si := range p.Items {
+			s := &p.Items[si]
+			s.Name = names[s.ID]
+			if !p.OnAccount {
+				continue
+			}
+			it := byID[s.ID]
+			if it == nil {
+				it = &Item{ID: s.ID, Name: s.Name}
+				byID[s.ID] = it
+			}
+			it.Total += s.Count
+			it.Holders = append(it.Holders, Holder{Character: p.ToName, Where: "post", Count: s.Count})
+		}
+		sortStacks(p.Items)
+		if p.OnAccount {
+			h.Copper += p.Copper
+		}
+	}
+	sort.SliceStable(h.Post, func(a, b int) bool { return h.Post[a].At > h.Post[b].At })
 	for _, it := range byID {
 		sort.SliceStable(it.Holders, func(a, b int) bool { return it.Holders[a].Count > it.Holders[b].Count })
 		h.Items = append(h.Items, *it)
