@@ -13,7 +13,9 @@
 -- whenever their bags, First Aid skill or level change -- the best bandage they carry and can use (on a mouseover or
 -- friendly target, else themselves), shift for the best healing potion they can drink, else open First Aid. Never in
 -- combat (the client forbids it): a change waits for the fight to end. Item calls: GetItemCount (C_Item.GetItemCount),
--- UnitLevel, GetNumSkillLines/GetSkillLineInfo (the First Aid rank), MAX_ACCOUNT_MACROS.
+-- UnitLevel, GetNumSkillLines/GetSkillLineInfo (the First Aid rank), MAX_ACCOUNT_MACROS, and Recently Bandaged through
+-- C_UnitAuras.GetAuraDataByIndex or UnitDebuff (+ GetTime): while it lasts, a plain press bandages a friend or drinks a
+-- potion on you, instead of a bandage the game would refuse.
 --
 -- The kit is the class set, changed by the plan made for this character in the plugin forge (runtime/wow/forge/,
 -- baked into kits.lua at build time; stdlib/collection/kits.prn applies it). No plan: the class set as shipped.
@@ -134,6 +136,38 @@ local function first_aid_rank()
     return 0
 end
 
+-- Recently Bandaged: seconds left (0 = not), found by spell id, else by name in any client language.
+local function recently_bandaged()
+    local names = (ns and ns.recently_bandaged_names) or { "Recently Bandaged" }
+    local function check(name, expires, id)
+        if not name then return nil end
+        local hit = id == FA.faRecentSpell()
+        if not hit then for _, n in ipairs(names) do if name == n then hit = true; break end end end
+        if hit then
+            local left = (expires and expires > 0 and GetTime) and (expires - GetTime()) or 60
+            return left > 0 and left or 0
+        end
+    end
+    if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        for i = 1, 40 do
+            local a = C_UnitAuras.GetAuraDataByIndex("player", i, "HARMFUL")
+            if not a then break end
+            local left = check(a.name, a.expirationTime, a.spellId)
+            if left then return left end
+        end
+        return 0
+    end
+    if UnitDebuff then
+        for i = 1, 40 do
+            local name, _, _, _, _, expires, _, _, _, id = UnitDebuff("player", i)
+            if not name then break end
+            local left = check(name, expires, id)
+            if left then return left end
+        end
+    end
+    return 0
+end
+
 -- What FirstAid should hold now: the body and the choice, {body, bandage row, potion row, skill, level, counts}.
 local function fa_plan()
     local bc, pc = {}, {}
@@ -145,7 +179,9 @@ local function fa_plan()
     local p = FA.faBestPotion(pc, level)
     local spell = (ns and ns.first_aid_names and ns.first_aid_names[1]) or "First Aid"
     for _, n in ipairs((ns and ns.first_aid_names) or {}) do if spell_known(n) then spell = n; break end end
-    return { body = FA.faBody(b, p, spell), b = b, p = p, skill = skill, level = level, bc = bc, pc = pc }
+    local recent = recently_bandaged()
+    return { body = FA.faBody(b, p, spell, recent > 0 and 1 or 0), b = b, p = p, skill = skill, level = level,
+             bc = bc, pc = pc, recent = recent }
 end
 
 local fa_pending, fa_collided = false, false
@@ -207,6 +243,9 @@ local function fa_explain()
         print(string.format(L(plan.b >= 0 and "FA_POTION_SHIFT" or "FA_POTION"), item(FA.faPotionId(plan.p)), plan.pc[plan.p + 1]))
     end
     if plan.b < 0 and plan.p < 0 then print(L("FA_OPENS")) end
+    if plan.recent > 0 and plan.b >= 0 then
+        print(string.format(L(plan.p >= 0 and "FA_RECENT" or "FA_RECENT_NOPOT"), math.ceil(plan.recent)))
+    end
     local r = fa_write(false)
     if r == "written" then print("  " .. L("FA_WRITTEN"))
     elseif r == "combat" then print("  " .. L("FA_COMBAT")) end
@@ -351,7 +390,7 @@ end
 
 -- FirstAid stays current by itself: bags settle in bursts, so a change is written half a second after the last one.
 local FA_EVENTS = { "PLAYER_ENTERING_WORLD", "BAG_UPDATE", "BAG_UPDATE_DELAYED", "SKILL_LINES_CHANGED", "PLAYER_LEVEL_UP",
-                    "PLAYER_REGEN_ENABLED" }
+                    "PLAYER_REGEN_ENABLED", "UNIT_AURA" }
 local fa_due = nil
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
@@ -364,6 +403,7 @@ f:SetScript("OnEvent", function(_, event, name)
         end
     elseif db and FA and db.firstaid ~= false then
         if event == "PLAYER_REGEN_ENABLED" and not fa_pending then return end
+        if event == "UNIT_AURA" and name ~= "player" then return end
         fa_due = 0.5
     end
 end)

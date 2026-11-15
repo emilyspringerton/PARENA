@@ -28,6 +28,8 @@ local enUS = {
     FA_SKILL_UNKNOWN = "unknown",
     FA_POTION_SHIFT = "Shift-click: %s (you carry %d).",
     FA_POTION = "FirstAid drinks %s instead (you carry %d).",
+    FA_RECENT = "You are Recently Bandaged (%d s): a press bandages a friend you mouse over or target, and on you drinks the potion. It switches back when the debuff ends.",
+    FA_RECENT_NOPOT = "You are Recently Bandaged (%d s): a press still bandages a friend; on you the game will refuse it until then.",
     FA_OPENS = "FirstAid opens First Aid, so you can make bandages.",
     FA_OFF = "FirstAid will no longer update by itself. /ascend firstaid on to turn it back on.",
     FA_ON = "FirstAid will follow your bags, skill and level again.",
@@ -51,5 +53,7 @@ for k, v in pairs(enUS) do enGB[k] = v end
 ns.catalogue = { enUS = enUS, enGB = enGB }
 -- The First Aid skill line's name in each client language (GetSkillLineInfo returns it translated); the first is also
 -- the spell FirstAid casts when there is nothing to use.
+ns.recently_bandaged_names = { "Recently Bandaged", "Kürzlich bandagiert", "Récemment bandé", "Vendado recientemente",
+                               "Recentemente enfaixado", "Bendato di recente", "Недавняя перевязка", "최근에 붕대를 감음", "近期包扎过" }
 ns.first_aid_names = { "First Aid", "Erste Hilfe", "Secourisme", "Primeros auxilios", "Primeiros Socorros", "Primo Soccorso",
                        "Первая помощь", "응급치료", "急救" }

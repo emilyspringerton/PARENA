@@ -68,6 +68,11 @@ local function session(w)
     env.GetItemCount = function(id) return w.items[id] or 0 end
     env.GetItemInfo = function(id) return ITEM_NAMES[id] end
     env.UnitLevel = function() return w.level end
+    env.GetTime = function() return 1000 end
+    env.UnitDebuff = function(unit, i)
+        local d = unit == "player" and w.debuffs and w.debuffs[i]
+        if d then return d[1], nil, 0, nil, 60, d[2], nil, nil, nil, d[3] end
+    end
     if not w.no_skill_api then
         env.GetNumSkillLines = function() return #w.skills end
         env.GetSkillLineInfo = function(i) local k = w.skills[i]; if k then return k[1], k[2], false, k[3] end end
@@ -490,6 +495,22 @@ do
     s.fire("BAG_UPDATE", 0); s.tick(1)
     eq(fa(w).body, "#showtooltip\n#MacroSync first aid\n/cast First Aid", "nothing to use: it opens First Aid")
     has(s.firstaid(), "FirstAid opens First Aid, so you can make bandages.", "and says so")
+
+    -- Recently Bandaged (out of combat): a press bandages a friend, and on you drinks the potion; back when it ends
+    w.items = { [1251] = 4, [118] = 2 }
+    s.fire("BAG_UPDATE", 0); s.tick(1)
+    w.debuffs = { { "Recently Bandaged", 1042, 11196 } }
+    s.fire("UNIT_AURA", "target"); s.tick(1)
+    eq(fa(w).body:find("[@player]", 1, true) ~= nil, true, "another unit's aura changes nothing")
+    s.fire("UNIT_AURA", "player"); s.tick(1)
+    eq(fa(w).body, "#showtooltip\n#MacroSync first aid\n/use [mod:shift] item:118; [@mouseover,help,nodead][help,nodead] item:1251; item:118",
+       "Recently Bandaged: a friend still gets the bandage, you get the potion")
+    has(s.firstaid(), "You are Recently Bandaged (42 s)", "/firstaid says so, with the time left")
+    w.debuffs = nil
+    s.fire("UNIT_AURA", "player"); s.tick(1)
+    eq(fa(w).body:find(ON .. " item:1251", 1, true) ~= nil, true, "the debuff gone: back to bandaging yourself")
+    w.items = {}
+    s.fire("BAG_UPDATE", 0); s.tick(1)
 
     -- /ascend firstaid off: it stops following
     s.ascend("firstaid off")

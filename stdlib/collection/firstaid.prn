@@ -9,6 +9,8 @@
 ;;   shift-press  the best healing potion you have and are high enough level to drink
 ;;   no bandage   the potion on a plain press
 ;;   neither      opens First Aid, so you can make some
+;;   bandaged     while you are Recently Bandaged (out of combat, when the macro can change): a press still bandages a
+;;                friend you mouse over or target, and on yourself drinks the potion instead of being refused
 ;;
 ;; "Best" is the most healing. A bandage you carry but cannot use yet (First Aid too low) is skipped, never written --
 ;; the client would refuse it mid-fight. The macro names items by id (item:1251), so it is the same in every locale.
@@ -19,10 +21,12 @@
 ;; Forever's item ids are not confirmed; they are the classic ones.
 
 (module collection/firstaid)
-(export fa-macro-name fa-marker fa-bandage-count fa-bandage-id fa-bandage-skill fa-bandage-heal fa-potion-count
+(export fa-recent-spell fa-macro-name fa-marker fa-bandage-count fa-bandage-id fa-bandage-skill fa-bandage-heal fa-potion-count
         fa-potion-id fa-potion-level fa-potion-heal fa-best-bandage fa-best-potion fa-body fa-ours)
 
 (defn fa-macro-name [] : String "FirstAid")
+;; the Recently Bandaged debuff's spell id (classic)
+(defn fa-recent-spell [] : I32 11196)
 (defn fa-marker [] : String "#MacroSync first aid")
 
 ;; ---- bandages: 0 Linen .. 9 Heavy Runecloth -----------------------------------------------------------------------------
@@ -72,14 +76,20 @@
   (fa-potion-walk counts level (- (fa-potion-count) 1)))
 
 ;; ---- the macro --------------------------------------------------------------------------------------------------------------
-;; b, p: the rows chosen (-1 none); first-aid: the client's name for the First Aid spell (it opens the profession window).
+;; b, p: the rows chosen (-1 none); first-aid: the client's name for the First Aid spell (it opens the profession window);
+;; recent: 1 while the player is Recently Bandaged (a minute after any bandage; the game refuses another on YOU, not on a
+;; friend). Then a plain press still bandages a friend under the mouse or targeted, and on yourself drinks the potion.
 (defn fa-on-friend [] : String "[@mouseover,help,nodead][help,nodead][@player]")
+(defn fa-friend-only [] : String "[@mouseover,help,nodead][help,nodead]")
 
-(defn fa-body [(b : I32) (p : I32) (first-aid : String)] : String
+(defn fa-body [(b : I32) (p : I32) (first-aid : String) (recent : I32)] : String
   (let [head (str "#showtooltip\n" (fa-marker) "\n")]
     (if (>= b 0)
       (if (>= p 0)
-        (str head "/use [mod:shift] item:" (fa-potion-id p) "; " (fa-on-friend) " item:" (fa-bandage-id b))
+        (if (= recent 1)
+          (str head "/use [mod:shift] item:" (fa-potion-id p) "; " (fa-friend-only) " item:" (fa-bandage-id b)
+               "; item:" (fa-potion-id p))
+          (str head "/use [mod:shift] item:" (fa-potion-id p) "; " (fa-on-friend) " item:" (fa-bandage-id b)))
         (str head "/use " (fa-on-friend) " item:" (fa-bandage-id b)))
       (if (>= p 0)
         (str head "/use item:" (fa-potion-id p))
