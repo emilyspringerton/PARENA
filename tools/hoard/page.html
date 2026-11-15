@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Hoard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=League+Gothic&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Playfair+Display+SC:wght@400;700;900&family=Playfair+Display:ital,wght@1,400;1,700&display=swap" rel="stylesheet">
+<style>
+/* Valhöll day (Vellum) tokens, replicated from WOTAN css/valholl.css (plates III Palette, IV Type, VIII Kit). */
+:root {
+  --parchment-100: #F3E9D2; --parchment-300: #E7D7B4; --parchment-600: #8A7350;
+  --ink-900: #1E1915; --ink-700: #4B4036; --sea-700: #1C4A5A; --sea-400: #6E9BA2;
+  --blood-600: #9B3421; --brass-500: #8C6B27; --vanir-700: #7F4C0E;
+  --vellum-ground:
+    radial-gradient(130% 110% at 22% 14%, rgba(255,250,236,0.55) 0%, rgba(243,233,210,0) 48%, rgba(110,80,40,0.20) 100%),
+    #F3E9D2;
+  --font-display: 'Playfair Display SC', Georgia, serif;
+  --font-wood: 'League Gothic', 'Arial Narrow', Impact, sans-serif;
+  --font-body: 'Libre Caslon Text', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  --font-marginalia: 'Playfair Display', Georgia, serif;
+  --ease-unroll: cubic-bezier(0.2, 0.8, 0.2, 1); --dur-unroll: 220ms;
+}
+@media (prefers-reduced-motion: reduce) { :root { --dur-unroll: 0ms; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--vellum-ground); background-attachment: fixed; color: var(--ink-900);
+  font: 400 16px/1.55 var(--font-body); }
+a { color: var(--sea-700); }
+a:hover { color: var(--ink-900); }
+:focus-visible { outline: 2px solid var(--brass-500); outline-offset: 3px; }
+::selection { background: var(--sea-400); color: var(--ink-900); }
+.sr { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.page { position: relative; max-width: 1200px; margin: 0 auto; padding: 48px 64px 56px; }
+@media (min-width: 900px) {
+  .page::before, .page::after { content: ""; position: absolute; pointer-events: none; }
+  .page::before { inset: 16px; border: 1.5px solid var(--ink-900); }
+  .page::after { inset: 23px; border: 0.75px solid var(--ink-900); }
+}
+@media (max-width: 899px) { .page { padding: 24px 16px 40px; } }
+
+.eyebrow { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 24px; margin: 0;
+  font: 400 13px/1.4 var(--font-mono); letter-spacing: 0.14em; color: var(--ink-700); text-transform: uppercase; }
+h1 { margin: 18px 0 6px; font: 900 64px/1 var(--font-display); letter-spacing: 0.04em; }
+.lede { margin: 0; max-width: 46em; font: italic 400 21px/1.4 var(--font-marginalia); color: var(--ink-700); }
+.rule2 { width: 220px; height: 0; border: 0; border-top: 1.5px solid var(--ink-900); border-bottom: 0.75px solid var(--ink-900);
+  padding-top: 3px; margin: 28px 0; }
+@media (max-width: 600px) { h1 { font-size: 44px; } .lede { font-size: 18px; } }
+
+.plate { border: 1.25px solid var(--ink-900); padding: 4px; background: var(--parchment-300); min-width: 0; }
+.plate > .in { border: 0.75px solid var(--parchment-600); padding: 18px 22px; min-width: 0; }
+.plate.soft { background: rgba(231,215,180,0.55); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat .num { font: 400 52px/0.95 var(--font-wood); text-transform: uppercase; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+.label { margin: 0 0 6px; font: 400 12px/1.4 var(--font-mono); letter-spacing: 0.12em; color: var(--ink-700); text-transform: uppercase; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; margin: 28px 0 18px; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; }
+input[type=search] { min-height: 48px; padding: 8px 12px; border: 1.25px solid var(--ink-900); background: rgba(243,233,210,0.7);
+  font: 400 16px/1.3 var(--font-body); color: var(--ink-900); }
+.tabs { display: inline-flex; border: 1.25px solid var(--ink-900); }
+.tabs button { min-height: 48px; padding: 0 18px; border: 0; background: transparent; cursor: pointer;
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); }
+.tabs button + button { border-left: 0.75px solid var(--parchment-600); }
+.tabs button[aria-pressed=true] { background: var(--sea-700); color: var(--parchment-100); }
+
+.watch { display: flex; align-items: center; gap: 10px; font: 400 13px/1.4 var(--font-mono); color: var(--ink-700); }
+.lamp { width: 10px; height: 10px; border-radius: 50%; background: var(--brass-500); flex: none; }
+.watch.fresh .lamp { background: var(--sea-700); box-shadow: 0 0 0 4px rgba(28,74,90,0.18); }
+.watch.down .lamp { background: var(--blood-600); }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 8px 10px; border-bottom: 1.5px solid var(--ink-900);
+  font: 400 12px/1.3 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700); }
+td { padding: 10px; border-bottom: 0.75px solid var(--parchment-600); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.num-col { text-align: right; font: 500 15px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.iname { font-weight: 700; }
+.iid { font: 400 12px/1.3 var(--font-mono); color: var(--ink-700); margin-left: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 10px; border: 0.75px solid var(--parchment-600);
+  background: rgba(243,233,210,0.6); font: 400 12px/1.2 var(--font-mono); letter-spacing: 0.06em; color: var(--ink-900); cursor: pointer; }
+.chip b { font-weight: 600; }
+.chip .where { color: var(--vanir-700); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
+.chip:hover { border-color: var(--ink-900); }
+.table-wrap { overflow-x: auto; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.char h2 { margin: 0; font: 700 26px/1.1 var(--font-display); letter-spacing: 0.04em; overflow-wrap: anywhere; }
+.char .realm { margin: 2px 0 10px; font: italic 400 15px/1.3 var(--font-marginalia); color: var(--ink-700); }
+.char .row { display: flex; justify-content: space-between; gap: 12px; font: 400 13px/1.5 var(--font-mono); color: var(--ink-700); }
+.char .row b { color: var(--ink-900); font-weight: 600; font-variant-numeric: tabular-nums; }
+.char h3 { margin: 14px 0 6px; font: 400 12px/1.3 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700);
+  border-top: 0.75px solid var(--parchment-600); padding-top: 10px; }
+.char ul { list-style: none; margin: 0; padding: 0; }
+.char li { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; font-size: 15px; }
+.char li .n { font: 500 14px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
+.empty { margin: 0; font: italic 400 15px/1.4 var(--font-marginalia); color: var(--ink-700); }
+.coin { white-space: nowrap; }
+.coin .g { color: var(--vanir-700); } .coin .s { color: var(--ink-700); } .coin .c { color: #7A4A2A; }
+.problem { margin: 16px 0; color: var(--blood-600); font: 400 14px/1.5 var(--font-mono); }
+.unroll { animation: unroll var(--dur-unroll) var(--ease-unroll); }
+@keyframes unroll { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); color: var(--ink-700); }
+</style>
+</head>
+<body>
+<main class="page">
+  <p class="eyebrow"><span>Fafnir's Bed · Unified inventory</span><span id="eyebrow-right">Reading the hoard…</span></p>
+  <h1>The Hoard</h1>
+  <p class="lede">Every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
+    only on <b>/reload</b> or logout: type <b>/reload</b> in game and this page follows within a few seconds.</p>
+  <hr class="rule2">
+
+  <section class="stats" aria-label="Totals">
+    <div class="plate stat"><div class="in"><p class="label">Characters</p><div class="num" id="s-chars">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Kinds of item</p><div class="num" id="s-kinds">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Items held</p><div class="num" id="s-items">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Gold, all told</p><div class="num" id="s-gold">–</div></div></div>
+  </section>
+
+  <div class="bar">
+    <label class="field"><span class="label">Find an item or a character</span>
+      <input type="search" id="q" placeholder="Linen Cloth, 2589, Nerf…" autocomplete="off"></label>
+    <div class="tabs" role="group" aria-label="View">
+      <button type="button" id="v-items" aria-pressed="true">By item</button>
+      <button type="button" id="v-chars" aria-pressed="false">By character</button>
+    </div>
+  </div>
+  <p class="watch" id="watch" role="status"><span class="lamp" aria-hidden="true"></span><span id="watch-text">Watching the saved file…</span></p>
+  <div id="problems"></div>
+  <section id="view" aria-live="polite"></section>
+  <footer>Saved by the game, read by this page; nothing here writes back. Bank contents appear once a character has opened the bank.</footer>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = (n) => Number(n).toLocaleString("en-US");
+  const coin = (c) => {
+    c = Math.max(0, Math.floor(c || 0));
+    const g = Math.floor(c / 10000), s = Math.floor((c % 10000) / 100), k = c % 100;
+    const parts = [];
+    if (g) parts.push(`<span class="g">${fmt(g)}g</span>`);
+    if (g || s) parts.push(`<span class="s">${s}s</span>`);
+    parts.push(`<span class="c">${k}c</span>`);
+    return `<span class="coin">${parts.join(" ")}</span>`;
+  };
+  const ago = (t) => {
+    if (!t) return "never";
+    const d = Math.max(0, Date.now() / 1000 - t);
+    if (d < 60) return "just now";
+    if (d < 3600) return `${Math.floor(d / 60)} min ago`;
+    if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
+    return `${Math.floor(d / 86400)} d ago`;
+  };
+  const clock = (t) => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const itemName = (s) => s.name || `item ${s.id}`;
+
+  let data = null, view = "items", lastSaved = 0, freshUntil = 0;
+  try { view = localStorage.getItem("hoard.view") || "items"; } catch (e) {}
+
+  function setView(v) {
+    view = v;
+    try { localStorage.setItem("hoard.view", v); } catch (e) {}
+    $("v-items").setAttribute("aria-pressed", v === "items");
+    $("v-chars").setAttribute("aria-pressed", v === "chars");
+    render();
+  }
+
+  function matches(q, ...fields) { return !q || fields.some((f) => String(f ?? "").toLowerCase().includes(q)); }
+
+  function renderItems(q) {
+    const rows = data.items.filter((it) => matches(q, it.name, it.id, ...it.holders.map((h) => h.character)));
+    if (!rows.length) return `<div class="plate soft"><div class="in"><p class="empty">Nothing in the hoard matches “${esc(q)}”.</p></div></div>`;
+    return `<div class="plate"><div class="in table-wrap"><table>
+      <thead><tr><th>Item</th><th class="num-col">Total</th><th>Who holds it</th></tr></thead><tbody>
+      ${rows.map((it) => `<tr>
+        <td><a class="iname" href="https://www.wowhead.com/classic/item=${it.id}" target="_blank" rel="noopener">${esc(itemName(it))}</a><span class="iid">#${it.id}</span></td>
+        <td class="num-col">${fmt(it.total)}</td>
+        <td><div class="chips">${it.holders.map((h) => `<button type="button" class="chip" data-char="${esc(h.character)}"><b>${esc(h.character)}</b> ${fmt(h.count)}${h.where !== "bags" ? ` <span class="where">${esc(h.where)}</span>` : ""}</button>`).join("")}</div></td>
+      </tr>`).join("")}
+      </tbody></table></div></div>`;
+  }
+
+  function list(title, stacks, read, q) {
+    const shown = stacks.filter((s) => matches(q, s.name, s.id));
+    let body;
+    if (!read) body = `<p class="empty">Not opened since Fafnir's Bed arrived.</p>`;
+    else if (!stacks.length) body = `<p class="empty">Empty.</p>`;
+    else body = `<ul>${shown.map((s) => `<li><span>${esc(itemName(s))}</span><span class="n">${fmt(s.count)}</span></li>`).join("")}</ul>`;
+    return `<h3>${title}</h3>${body}`;
+  }
+
+  function renderChars(q) {
+    const chars = data.characters.filter((c) => matches(q, c.name, c.realm) ||
+      [...c.bags, ...c.bank, ...c.mail].some((s) => matches(q, s.name, s.id)));
+    if (!chars.length) return `<div class="plate soft"><div class="in"><p class="empty">No character matches “${esc(q)}”.</p></div></div>`;
+    const qForItems = chars.some((c) => matches(q, c.name, c.realm)) ? "" : q;
+    return `<div class="grid">${chars.map((c) => `<article class="plate char"><div class="in">
+      <h2>${esc(c.name)}</h2><p class="realm">${esc(c.realm)}</p>
+      <div class="row"><span>Purse</span><b>${coin(c.copper)}</b></div>
+      <div class="row"><span>Items</span><b>${fmt(c.items)} · ${fmt(c.distinct)} kinds</b></div>
+      <div class="row"><span>Last saved</span><b>${c.seen ? `${clock(c.seen)} · ${ago(c.seen)}` : "never"}</b></div>
+      ${list("Bags", c.bags, true, qForItems)}
+      ${list("Bank", c.bank, c.bankRead && c.bank.length > 0 || c.bankRead, qForItems)}
+      ${c.mail.length ? list("Mail", c.mail, c.mailRead, qForItems) : ""}
+    </div></article>`).join("")}</div>`;
+  }
+
+  function render() {
+    if (!data) return;
+    const q = $("q").value.trim().toLowerCase();
+    $("view").innerHTML = view === "items" ? renderItems(q) : renderChars(q);
+  }
+
+  function paint(d, changed) {
+    data = d;
+    const items = d.characters.reduce((a, c) => a + c.items, 0);
+    $("s-chars").textContent = fmt(d.characters.length);
+    $("s-kinds").textContent = fmt(d.items.length);
+    $("s-items").textContent = fmt(items);
+    $("s-gold").innerHTML = (d.copper / 10000).toLocaleString("en-US", { maximumFractionDigits: 2 }) + "g";
+    $("eyebrow-right").textContent = `Saved ${clock(d.savedAt)}`;
+    $("problems").innerHTML = d.problems.map((p) => `<p class="problem">${esc(p)}</p>`).join("");
+    render();
+    if (changed) { $("view").classList.remove("unroll"); void $("view").offsetWidth; $("view").classList.add("unroll"); }
+  }
+
+  function watchText() {
+    const w = $("watch");
+    if (!data) return;
+    const fresh = Date.now() < freshUntil;
+    w.className = "watch" + (fresh ? " fresh" : "");
+    $("watch-text").textContent = fresh
+      ? `Updated from your /reload, saved ${ago(data.savedAt)}.`
+      : `Watching the saved file. Last /reload or logout: ${clock(data.savedAt)} (${ago(data.savedAt)}).`;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch("/api/hoard", { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      if (d.savedAt !== lastSaved) {
+        const changed = lastSaved !== 0;
+        if (changed) freshUntil = Date.now() + 20000;
+        lastSaved = d.savedAt;
+        paint(d, changed);
+      }
+      watchText();
+    } catch (e) {
+      $("watch").className = "watch down";
+      $("watch-text").textContent = `Can't read the hoard: ${e.message}`;
+    }
+  }
+
+  $("q").addEventListener("input", render);
+  $("v-items").addEventListener("click", () => setView("items"));
+  $("v-chars").addEventListener("click", () => setView("chars"));
+  $("view").addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip[data-char]");
+    if (chip) { $("q").value = chip.dataset.char; setView("chars"); }
+  });
+  setView(view);
+  poll();
+  setInterval(poll, 4000);
+})();
+</script>
+</body>
+</html>
