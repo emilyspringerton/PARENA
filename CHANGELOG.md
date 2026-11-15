@@ -1,3 +1,52 @@
+## 2026-11-14
+
+- **Huginn: quest arrows for orienteering** (founder: "a basic quest tracker that takes the quest from our quest logs
+  and uses a gps arrow on the screen to point towards the coordinates", then "a stripped down and optimized mini
+  quest log thing so we can turn on and off multiple arrows"). `/huginn` shows a small panel: a row per arrow (a
+  turning arrow, green ahead / yellow to the side / red behind, the name, yards, and "ahead, left"-style words),
+  and under it a mini quest log -- click a quest to turn its arrow on or off, up to 8 at once. `/huginn way x y
+  [note]` adds waypoint arrows that clear themselves on arrival. With nothing on, the tracked quest gets the arrow.
+  - Locations, best first: the client's own next waypoint, the quest's marker on your map, coordinates written in
+    an objective's text; a client with none of these still has waypoints. Targets on other maps of the same
+    continent are placed through the client's world positions; another continent says so.
+  - Optimized: quest locations are looked up only when the quest log, zone or tracking changes (and every 2 s as a
+    backstop), never per frame; arrows refresh 10 times a second for active rows only; rows are reused.
+  - The math is PARENA (`stdlib/collection/huginn.prn`: bearing, turn, distance, arrival, colour, direction words);
+    arrivals are REFLUX 3010. None of the client's quest-location APIs are probed on Forever yet, so `/huginn
+    list` says per quest whether the client gave a location. `huginn_test` is 53 checks.
+- **CollectionHub: the settings and status of every addon in one window** (founder: "give like some interfaces to see
+  the settings for the different components"). `/collection` (or `/coll`) opens it; it is also the "Collection"
+  category of the client's options window (`Settings` on retail-lineage clients, `InterfaceOptions` on older ones,
+  neither needed). One row per addon: loaded or not, its slash commands, where it saves (per character or
+  account-wide) and how much, and an Open button that runs its command. The header shows the build's settings
+  (version, interface, the journal's cap and poll interval) and the REFLUX bus. `/collection list` prints the same
+  in chat. The registry is written by the packager from each built addon's own `.toc` and code, so it cannot drift
+  from what was built. What it reports is PARENA (`stdlib/collection/hub.prn`); `hub_test` is 32 checks.
+- **The export now writes a web page, `collection.html`** (founder: "where is my local data showing my
+  characters and inventory? it should be a basic webpage"). `collection-csv.sh` writes it next to the CSVs:
+  one self-contained file that opens straight from disk (no server, nothing fetched). It shows a card per
+  character (level, XP bar, gold, zone, played time, item level, professions, the level they started at),
+  the inventory with character / location filters and a search, and the account totals. The data is
+  embedded as JSON with `<`, `>` and `&` escaped, so no item, zone or character name can break the page.
+- **Maps of where each character has been** (founder: "affordances for viewing the maps our gps plugins are
+  generating"). Every Collection Journal row already carries the map id and x/y; the export now also reads the
+  per-character journal files (`Account/<account>/<realm>/<character>/SavedVariables/CollectionJournal.lua`),
+  writes `positions.csv`, and the page draws each map as a 0-100 grid with one colored trail per character
+  (split after 10 minutes apart), the latest position ringed, and the time and coordinates on hover. Maps are
+  named from the Character Board's snapshots of the same map id. No game map art is drawn, only the grid.
+- `board_csv_test` is now 37 checks (the page, the positions, and a zone that tries to close the page's script).
+- **MacroSync gains Warrior, Rogue and Hunter** (founder: "add druid warrior rogue sham hunter ensure those macros
+  built in"; Druid and Shaman were already in). Sixteen macros each, from the class's core kit:
+  - Warrior: stance-aware (Intercept in Berserker stance, else Charge; Pummel in Berserker, else Shield Bash; one
+    stance button, shift/ctrl for the others); the main strike is whichever of Mortal Strike / Bloodthirst /
+    Shield Slam the character has, else Heroic Strike.
+  - Rogue: stealth openers (shift for Ambush, else Cheap Shot, else Sinister Strike), Stealth that never toggles
+    you back out (`[nostealth]`), finishers, control, escapes, Pick Pocket.
+  - Hunter: Auto Shot that never toggles off (`!`), shots on mouseover else target, traps, aspects, tracking, and
+    one pet button that revives a dead pet, calls a missing one, else mends it.
+  - `macrosync_test` is now 114 checks, including one over every class: sixteen macros, unique names of at most 16
+    characters with the class tag, and every body within 255 characters even with its longest spell choices.
+
 ## 2026-11-13
 
 - **MacroSync gains the priest set** (16 macros): shield, quick heal, big heal, Renew, Fortitude, dispel,
