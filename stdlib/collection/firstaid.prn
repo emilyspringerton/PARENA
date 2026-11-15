@@ -51,8 +51,9 @@
 (defn fa-potion-level [(i : I32)] : I32
   (cond ((= i 0) 1) ((= i 1) 3) ((= i 2) 12) ((= i 3) 21) ((= i 4) 35) ((= i 5) 45) (true 9999)))
 ;; the middle of each potion's healing range
+;; ranges (classic): Minor 70-90, Lesser 140-180, Healing 280-360, Greater 455-585, Superior 700-900, Major 1050-1750
 (defn fa-potion-heal [(i : I32)] : I32
-  (cond ((= i 0) 80) ((= i 1) 160) ((= i 2) 360) ((= i 3) 585) ((= i 4) 875) ((= i 5) 1400) (true 0)))
+  (cond ((= i 0) 80) ((= i 1) 160) ((= i 2) 320) ((= i 3) 520) ((= i 4) 800) ((= i 5) 1400) (true 0)))
 
 ;; ---- choosing -------------------------------------------------------------------------------------------------------------
 ;; counts: a Lua array, counts[i + 1] = how many of table row i the character carries.
