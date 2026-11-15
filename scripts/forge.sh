@@ -15,6 +15,7 @@
 #   scripts/forge.sh watch [FILE]               keep that file current: rewrite it each time WoW saves (logout, /reload);
 #                                               board.json (the big screen's data) is rewritten beside it
 #   scripts/forge.sh needs [emily]              full bags, empty bag slots, requests (/need), big upgrades -- and who can fill each
+#   scripts/forge.sh rockreport [--slack]       what the rock (Hrungnir) says since it last spoke; watch posts it to Slack
 #
 # Environment (see MONOREPO/scripts/collection-env.sh):
 #   FORGE_DIR         REQUIRED. Where the plans live (kits.lua), outside every repository; made if missing
@@ -24,6 +25,8 @@
 #   PARENA_BIN        the compiler (default: ./.parena-bootstrap, built with `make .parena-bootstrap` if missing)
 #   LUA51             a Lua 5.1 interpreter (default lua5.1)
 #   CC                a C compiler for the page's server (default cc; on MSYS2 UCRT64 gcc)
+#   FORGE_SLACK_WEBHOOK  a Slack incoming-webhook URL: `watch` has the rock report there after every save (a secret:
+#                     keep it in your environment, not in a file in a repository)
 # Exit codes: forge.lua's (0 done, 1 refused, 2 usage), 2 for setup errors here.
 set -uo pipefail
 abs() { case "$1" in /*|?:/*|?:\\*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
@@ -46,7 +49,7 @@ PARENA_BIN="${PARENA_BIN:-./.parena-bootstrap}"
 if [ "$PARENA_BIN" = "./.parena-bootstrap" ] && [ ! -x ./.parena-bootstrap ]; then
   make -s .parena-bootstrap >/dev/null || die "could not build the PARENA compiler (make .parena-bootstrap)"
 fi
-for m in kits macros upgrades needs macrosync; do
+for m in kits macros upgrades needs macrosync rockreport; do
   if [ ! -f "$FORGE_DIR/lib/$m.lua" ] || [ "stdlib/collection/$m.prn" -nt "$FORGE_DIR/lib/$m.lua" ]; then
     "$PARENA_BIN" build "stdlib/collection/$m.prn" -o "$FORGE_DIR/lib/$m.lua" >/dev/null || die "could not compile stdlib/collection/$m.prn"
   fi
@@ -100,6 +103,22 @@ case "${1:-}" in
       if [ "$sig" != "$done_sig" ] && [ "$sig" = "$prev" ]; then
         echo "$(date '+%H:%M:%S') $(bash "$0" ledger "$ledger" 2>&1)"
         echo "$(date '+%H:%M:%S') $(bash "$0" board "$(dirname "$ledger")/board.json" 2>&1)"
+        # The rock reports to Slack (founder, 2026-11-15: "when i reload or stop playing wow ... i need the plugins to
+        # talk to me via slack"). FORGE_SLACK_WEBHOOK is a Slack incoming-webhook URL; it is a secret, so it lives in
+        # your environment, never in a file here. STOPGAP: the HTTPS POST is curl (built into Windows 10+, Git Bash and
+        # MSYS2); the PARENA-native HTTPS client is EMILY/BACKLOG.md S636-12. FORGE_SLACK_POST replaces the whole post
+        # command (the tests capture the message with it).
+        if [ -n "${FORGE_SLACK_WEBHOOK:-}" ] || [ -n "${FORGE_SLACK_POST:-}" ]; then
+          payload="$(bash "$0" rockreport --slack 2>&1)"
+          if [ -n "${FORGE_SLACK_POST:-}" ]; then
+            printf '%s' "$payload" | bash -c "$FORGE_SLACK_POST" && echo "$(date '+%H:%M:%S') rock: reported"
+          elif printf '%s' "$payload" | curl -sS -f -m 20 -X POST -H 'Content-Type: application/json' --data-binary @- \
+                 "$FORGE_SLACK_WEBHOOK" >/dev/null; then
+            echo "$(date '+%H:%M:%S') rock: reported to Slack"
+          else
+            echo "$(date '+%H:%M:%S') rock: Slack did not take the report (check FORGE_SLACK_WEBHOOK)"
+          fi
+        fi
         done_sig="$sig"
       fi
       prev="$sig"

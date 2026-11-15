@@ -1,0 +1,66 @@
+;; stdlib/collection/rockreport.prn -- what the rock (Hrungnir) tells you on Slack when you stop playing (founder,
+;; 2026-11-15: "when i reload or stop playing wow or whatever i need the plugins to talk to me via slack" / "the rock
+;; speaks and remembers and is a pretty good general manager").
+;;
+;; WoW addons cannot reach the network, so the report is made outside the game: the forge's `watch` notices the save
+;; WoW makes at logout or /reload, and `forge rockreport` (runtime/wow/forge/forge.lua) writes what the rock says. This
+;; file is the rock's judgment -- what is worth saying, how worried to sound, how to count money -- so the voice is a mod
+;; like everything else; the forge only gathers the facts and remembers the last report (rock_memory.lua in FORGE_DIR),
+;; so each report says what CHANGED since the rock last spoke.
+;;
+;; A report, top to bottom: a greeting set by the rock's mood, what changed per character (levels, gold, bags), then the
+;; account's needs most urgent first (collection/needs.prn) with who can fill each, then the account's gold.
+
+(module collection/rockreport)
+(export rr-gold-step rr-gold-worth-saying rr-urgent rr-mood rr-greeting-count rr-greeting rr-money rr-max-needs
+        rr-sign-off rr-bag-line)
+
+;; Gold moves smaller than this (copper) are not worth a manager's breath: one gold.
+(defn rr-gold-step [] : I32 10000)
+
+(defn rr-abs [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+
+;; 1 when a change in gold (copper) is worth mentioning.
+(defn rr-gold-worth-saying [(delta : I32)] : I32 (if (>= (rr-abs delta) (rr-gold-step)) 1 0))
+
+;; 1 when a need is urgent: bags full (1000) or down to their last couple of slots (900 - 10 x free, see needs.prn).
+(defn rr-urgent [(urgency : I32)] : I32 (if (>= urgency 880) 1 0))
+
+;; The rock's mood: 0 calm (nothing needs you), 1 busy (things to do), 2 alarmed (something urgent).
+(defn rr-mood [(needs : I32) (urgent : I32)] : I32 (if (> urgent 0) 2 (if (> needs 0) 1 0)))
+
+(defn rr-greeting-count [(mood : I32)] : I32 (if (= mood 2) 2 (if (= mood 1) 3 2)))
+
+;; The opening line. seed picks among the mood's lines, so the rock does not say the same thing every time.
+(defn rr-greeting [(mood : I32) (seed : I32)] : String
+  (let [n (rr-greeting-count mood)
+        s (rr-abs seed)
+        i (- s (* (/ s n) n))]
+    (cond
+      ((= mood 2) (if (= i 0) "Hrungnir here. Stop what you are doing: somebody is out of bag space, and loot is being left on the ground."
+                              "Hrungnir here. Bags are full. Sort that before the next pull."))
+      ((= mood 1) (cond ((= i 0) "Hrungnir here. I kept notes while you were away. Most pressing first:")
+                        ((= i 1) "Hrungnir here. A few things want doing. Here is the list:")
+                        (true "Hrungnir here. Nothing is on fire, but the list is not empty:")))
+      (true (if (= i 0) "Hrungnir here. All quiet in the hold. Nothing needs you."
+                        "Hrungnir here. I counted everything twice. All is well.")))))
+
+;; Money as the forge writes it everywhere: "12g 34s 5c", a minus sign in front when it went down.
+(defn rr-money [(copper : I32)] : String
+  (let [c (rr-abs copper)
+        g (/ c 10000)
+        s (- (/ c 100) (* (/ c 10000) 100))
+        k (- c (* (/ c 100) 100))]
+    (str (if (< copper 0) "-" "") g "g " s "s " k "c")))
+
+;; At most this many needs in one report: past that, the rock says how many more there are.
+(defn rr-max-needs [] : I32 8)
+
+;; A character's bag line, only when it is worth a word: "" when there is room.
+(defn rr-bag-line [(free : I32) (total : I32)] : String
+  (if (= total 0) ""
+    (if (= free 0) (str "bags FULL (0 of " total ")")
+      (if (<= free 4) (str "bags nearly full (" free " of " total " free)") ""))))
+
+(defn rr-sign-off [(mood : I32)] : String
+  (if (= mood 2) "-- Hrungnir. Clear those bags." (if (= mood 1) "-- Hrungnir" "-- Hrungnir. Go and have fun.")))

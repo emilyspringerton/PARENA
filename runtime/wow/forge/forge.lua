@@ -84,6 +84,7 @@ local R = dofile(opts.lib .. "/journal_reader.lua")   -- the sandboxed SavedVari
 local U = dofile(opts.lib .. "/upgrades.lua")         -- the gear optimizer's rules (stdlib/collection/upgrades.prn)
 local N = dofile(opts.lib .. "/needs.lua")            -- the needs list's rules (stdlib/collection/needs.prn)
 local MS = dofile(opts.lib .. "/macrosync.lua")       -- MacroSync's rules: which action slots may be planned
+local RR = dofile(opts.lib .. "/rockreport.lua")      -- what the rock says after a save (stdlib/collection/rockreport.prn)
 
 local BOARD_VAR = os.getenv("BOARD_VAR") or "CharacterBoardDB"
 local MS_VAR = os.getenv("MACROSYNC_VAR") or "MacroSyncDB"
@@ -862,7 +863,10 @@ forge board [FILE]                characters, gear, bags and needs as one JSON f
 forge place CHARACTER NAME SLOT   put a macro in action slot SLOT (1-120) when /ascend fills the bars; off forgets
 forge role CHARACTER [ROLE]       how the optimizer weighs a character: tank, strength, agility, hunter, caster, healer
 forge ledger [FILE]               the whole account in one spreadsheet (default FORGE_DIR/ledger.csv; - prints it)
-forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload) (scripts/forge.sh)
+forge rockreport [--slack] [--dry] what the rock says since it last spoke: changes, then the needs, most urgent first;
+                                  --slack prints Slack's message JSON, --dry does not update the rock's memory
+forge watch [FILE]                rewrite the ledger every time WoW saves (logout or /reload); with FORGE_SLACK_WEBHOOK
+                                  set, the rock reports to Slack too (scripts/forge.sh)
 forge build                       bake the plans into the addon package (scripts/forge.sh)
 forge serve [PORT]                the same on a page at http://127.0.0.1:PORT (scripts/forge.sh)
 CHARACTER is Name or Name-Realm, any case; a unique start of the name is enough.]]
@@ -1320,6 +1324,88 @@ elseif cmd == "export" then
     end
     io.write("-- kits.lua -- the macro kits planned in the plugin forge (runtime/wow/forge/forge.lua). Generated; do not edit.\n")
     io.write("local _, ns = ...\nns.kits = " .. lua_lit(baked) .. "\n")
+
+elseif cmd == "rockreport" then
+    -- What the rock (Hrungnir) says when you stop playing: what changed since it last spoke, then the account's needs.
+    -- The rock remembers each character's level, gold and bags, and which needs it already told you about, in
+    -- FORGE_DIR/rock_memory.lua -- so the next report only says what is new. The judgment (what is worth a word, the
+    -- mood, the lines) is stdlib/collection/rockreport.prn.
+    local slack, dry = false, false
+    for _, a in ipairs(args) do
+        if a == "--slack" then slack = true elseif a == "--dry" then dry = true
+        else refuse("rockreport takes --slack and --dry, not '" .. a .. "'") end
+    end
+    local mem_path = opts.dir .. "/rock_memory.lua"
+    local mem = {}
+    local mf = io.open(mem_path, "rb")
+    if mf then
+        local chunk = loadstring(mf:read("*a"))
+        mf:close()
+        if chunk then
+            setfenv(chunk, {})
+            local okm, m = pcall(chunk)
+            if okm and type(m) == "table" then mem = m end
+        end
+    end
+    mem.chars = mem.chars or {}
+    mem.told = mem.told or {}
+    local first = next(mem.chars) == nil
+    local names = {}
+    for who, c in pairs(chars) do if c.on_board or c.hold then names[#names + 1] = who end end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    local lines, now_chars, total = {}, {}, 0
+    for _, who in ipairs(names) do
+        local c = chars[who]
+        local g, lvl = gold_of(c), c.level or 0
+        local sp = c.space or {}
+        total = total + g
+        now_chars[who] = { level = lvl, gold = g, free = sp.free, total = sp.total }
+        local was = mem.chars[who]
+        local said = {}
+        if not was then
+            if not first then said[#said + 1] = string.format("new to me: level %d, %s", lvl, money(g)) end
+        else
+            if lvl > (was.level or 0) then said[#said + 1] = string.format("level %d -> %d", was.level or 0, lvl) end
+            local dg = g - (was.gold or 0)
+            if RR.rrGoldWorthSaying(dg) == 1 then said[#said + 1] = (dg > 0 and "+" or "") .. RR.rrMoney(dg) .. " gold" end
+        end
+        local bag = RR.rrBagLine(sp.free or 0, sp.total or 0)
+        if bag ~= "" and (not was or was.free ~= sp.free) then said[#said + 1] = bag end
+        if #said > 0 then lines[#lines + 1] = string.format("*%s*: %s", who, table.concat(said, ", ")) end
+    end
+    local needs = needs_list(nil)
+    local urgent, told_now, need_lines = 0, {}, {}
+    for i, n in ipairs(needs) do
+        if RR.rrUrgent(n.urgency) == 1 then urgent = urgent + 1 end
+        local what = n.kind == 4 and string.format("%s x%d", n.what, n.count or 1) or tostring(n.what)
+        local key = n.character .. "|" .. tostring(n.kind) .. "|" .. what
+        told_now[key] = 1   -- lua_lit writes numbers, not booleans
+        if i <= RR.rrMaxNeeds() then
+            local new = (not first and not mem.told[key]) and " _(new)_" or ""
+            need_lines[#need_lines + 1] = string.format("- *%s* %s: %s%s%s. %s", n.character, n.kind_name, what,
+                n.detail and (" (" .. n.detail .. ")") or "", new,
+                #n.fill > 0 and ("From: " .. fill_text(n)) or "Nobody on the account has one to spare.")
+        end
+    end
+    if #needs > RR.rrMaxNeeds() then need_lines[#need_lines + 1] = string.format("...and %d more (forge needs)", #needs - RR.rrMaxNeeds()) end
+    local mood = RR.rrMood(#needs, urgent)
+    local text = { RR.rrGreeting(mood, (mem.reports or 0) + #names) }
+    if first then text[#text + 1] = "_First report: from now on I only tell you what changed._" end
+    if #lines > 0 then text[#text + 1] = "*Since we last spoke*"; for _, l in ipairs(lines) do text[#text + 1] = l end end
+    if #need_lines > 0 then text[#text + 1] = "*On my list*"; for _, l in ipairs(need_lines) do text[#text + 1] = l end end
+    text[#text + 1] = string.format("Account gold: %s across %d character%s.", money(total), #names, #names == 1 and "" or "s")
+    text[#text + 1] = RR.rrSignOff(mood)
+    local body = table.concat(text, "\n")
+    if not dry then
+        local memo = { chars = now_chars, told = told_now, reports = (mem.reports or 0) + 1, t = os.time() }
+        local wf = io.open(mem_path .. ".tmp", "wb") or die("cannot write " .. mem_path)
+        wf:write("-- rock_memory.lua -- what the rock remembers between reports (forge rockreport). Safe to delete.\n")
+        wf:write("return " .. lua_lit(memo) .. "\n")
+        wf:close()
+        os.remove(mem_path)
+        os.rename(mem_path .. ".tmp", mem_path)
+    end
+    if slack then io.write(json({ text = body }), "\n") else io.write(body, "\n") end
 
 else
     refuse("unknown command '" .. tostring(cmd) .. "' (forge help)")

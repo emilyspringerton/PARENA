@@ -14,6 +14,7 @@ nothing to answers, in game and outside it.
 | who is running out of bag space | `/rock bags` | `scripts/forge.sh needs` |
 | the whole account in a spreadsheet | | `scripts/forge.sh ledger` -> open `ledger.csv` in Excel |
 | every command there is | `/hhelp` | `scripts/forge.sh help` |
+| a report on Slack every time you log out | | `scripts/forge.sh watch` with `FORGE_SLACK_WEBHOOK` set (section 6) |
 | what the FirstAid macro will use, and why | `/firstaid` | |
 
 ---
@@ -170,7 +171,33 @@ item ids, not battleground bandages. While you are *Recently Bandaged*, a press 
 drinks the potion -- but only once the fight is over (in combat the macro cannot change, so a second press on yourself
 within that minute is refused; use shift).
 
-## 6. When something looks wrong
+## 6. The rock on Slack -- a report every time you stop playing
+
+WoW addons cannot reach the internet, so the rock speaks from outside the game: `forge watch` (section 4) notices every
+save WoW makes (logout, `/reload`, quitting) and the rock posts a short report to a Slack channel. It **remembers** what it
+told you last time, so each report says only what changed: who levelled, who gained or lost a gold or more, whose bags
+are filling up, and the account's needs (urgent first), each with who on the account can fill it. Things already reported
+are not marked new again.
+
+**Set it up once:**
+
+1. In Slack, make an incoming webhook for the channel you want: <https://api.slack.com/messaging/webhooks> -- create an
+   app, turn on *Incoming Webhooks*, *Add New Webhook to Workspace*, pick the channel, copy the URL
+   (`https://hooks.slack.com/services/...`). **Treat that URL like a password:** anyone with it can post to the channel.
+2. Put it in your environment, never in a file inside a repository. In Git Bash or MSYS2:
+   `export FORGE_SLACK_WEBHOOK='https://hooks.slack.com/services/...'` (add the line to `~/.bashrc` to keep it). Or for
+   every new window on Windows: `setx FORGE_SLACK_WEBHOOK "https://hooks.slack.com/services/..."`, then open a new terminal.
+3. Leave the watcher running while you play: `scripts/forge.sh watch`. After each logout or `/reload` it prints
+   `rock: reported to Slack`.
+
+**Try it without Slack:** `scripts/forge.sh rockreport --dry` prints what the rock would say now and changes nothing.
+`scripts/forge.sh rockreport` says it and remembers (the memory is `rock_memory.lua` in your `FORGE_DIR`; delete it and
+the next report starts fresh).
+
+Limits: the post uses `curl` (built into Windows 10 and 11, Git Bash and MSYS2); it is a stopgap until PARENA has its own
+HTTPS client. Tested against a simulated WoW save and a captured message, not yet against a real Slack workspace.
+
+## 7. When something looks wrong
 
 | You see | Why, and what to do |
 |---|---|

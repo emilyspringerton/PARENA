@@ -182,6 +182,40 @@ check "board.tsv: the header" "$T" "$(printf 'SHANKPIT_GEAR_BOARD\t1\t')"
 check "board.tsv: a character" "$T" "$(printf 'C\tEmily-Forever\tPALADIN\t42\tstrength\t1300000\tIronforge\t\t2\t46\t3\t4\t38\t50')"
 check "board.tsv: gear" "$T" "$(printf 'G\tEmily-Forever\t1\tHead\tLionheart Helm')"
 check "board.tsv: a need" "$T" "$(printf 'N\t1000\tAsh-Forever\tbags full\tbag space\t0 of 80 slots free\tMooncloth Bag (16 slots) -- your mail')"
+# the rock's report (founder 2026-11-15: "the plugins talk to me via slack" / "the rock speaks and remembers"):
+# the first report tells everything; the rock then remembers and reports only what changed
+rm -f "$FORGE_DIR/rock_memory.lua"
+o="$(f rockreport --dry)"
+check "rock: speaks first, alarmed by full bags" "$o" "Stop what you are doing: somebody is out of bag space"
+check "rock: says it is the first report" "$o" "First report: from now on I only tell you what changed."
+check "rock: the most urgent need, with who can fill it" "$o" "- *Ash-Forever* bags full: bag space (0 of 80 slots free). From: Mooncloth Bag (16 slots) -- your mail"
+check "rock: an empty bag slot, and the spare bag that fills it" "$o" "- *Emily-Forever* empty bag slot: a bag (1 of 4 bag slots empty). From: Mooncloth Bag (16 slots) -- Ash-Forever mail"
+check "rock: the account's gold" "$o" "Account gold: 1030g 0s 0c across 2 characters."
+[ -e "$FORGE_DIR/rock_memory.lua" ] && bad "rock: --dry must not remember" || ok
+o="$(f rockreport)"; check "rock: a real report is remembered" "$(cat "$FORGE_DIR/rock_memory.lua")" '["reports"] = 1'
+o="$(f rockreport)"
+case "$o" in *"(new)"*) bad "rock: nothing new on a second report [$o]" ;; *) ok ;; esac
+case "$o" in *"Since we last spoke"*) bad "rock: nothing changed, so nothing under 'since' [$o]" ;; *) ok ;; esac
+# Emily levels up and earns 15 gold; a new request appears
+sed -i 's/\["level"\] = 42, \["xp"\] = 500/["level"] = 43, ["xp"] = 10/; s/\["Emily-Forever"\] = { \["gold"\] = 1300000/["Emily-Forever"] = { ["gold"] = 1450000/' \
+  "$acct/SavedVariables/CharacterBoard.lua" "$acct/SavedVariables/FafnirsBed.lua"
+f request emily bag >/dev/null
+o="$(f rockreport)"
+check "rock: the level-up" "$o" "*Emily-Forever*: level 42 -> 43"
+check "rock: the gold, signed" "$o" "+15g 0s 0c gold"
+check "rock: the new request is marked new" "$o" "*Emily-Forever* request: a bag x1 _(new)_"
+case "$(printf '%s\n' "$o" | grep -F 'Ash-Forever* bags full')" in *"(new)"*) bad "rock: an old need marked new [$o]" ;; *) ok ;; esac
+o="$(f rockreport --slack --dry)"; check "rock --slack: Slack's message JSON" "$o" '{"text":"Hrungnir here.'
+f done emily 2 >/dev/null
+# watch: after a save, the rock's message goes to Slack (captured here, never sent)
+rm -f "$work/slack.json"
+o="$(FORGE_SLACK_POST="cat > '$work/slack.json'" FORGE_WATCH_ONCE=1 FORGE_WATCH_SECONDS=0.2 timeout 20 bash scripts/forge.sh watch "$work/watched2.csv" 2>&1)"
+check "watch: says the rock reported" "$o" "rock: reported"
+check "watch: posts the rock's message as Slack JSON" "$(cat "$work/slack.json" 2>/dev/null)" '{"text":"Hrungnir here.'
+o="$(FORGE_WATCH_ONCE=1 FORGE_WATCH_SECONDS=0.2 timeout 20 bash scripts/forge.sh watch "$work/watched3.csv" 2>&1)"
+case "$o" in *"rock:"*) bad "watch: no webhook, no Slack [$o]" ;; *) ok ;; esac
+cp "$work/board.bak" "$acct/SavedVariables/CharacterBoard.lua" 2>/dev/null || true
+
 cp "$work/fafnir.bak" "$acct/SavedVariables/FafnirsBed.lua"
 
 # action bars: a macro pinned to a slot
