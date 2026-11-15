@@ -166,8 +166,9 @@ is logged in.
 FirstAid, MacroSync leaves it alone and says so -- rename yours to get this one.
 
 Limits: it knows the classic bandages (Linen to Heavy Runecloth) and healing potions (Minor to Major) by their classic
-item ids, not battleground bandages; it cannot tell whether you are still *Recently Bandaged*, so a second press within a
-minute is refused by the game (use shift for a potion then).
+item ids, not battleground bandages. While you are *Recently Bandaged*, a press still bandages a friend and on yourself
+drinks the potion -- but only once the fight is over (in combat the macro cannot change, so a second press on yourself
+within that minute is refused; use shift).
 
 ## 6. When something looks wrong
 
