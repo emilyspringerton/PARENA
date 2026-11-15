@@ -8,6 +8,13 @@
 ;; A line whose alternatives are all unknown makes the macro DORMANT until the spell is learned.
 ;; The modifiers used ([@mouseover], [help], [harm], [nodead], [mod:shift]) are retail-lineage conditionals.
 ;;
+;; BUFFS (founder, 2026-11-15: "basic buff macros for all the classes mark of the wild arcane intellect pwshield all of
+;; it"): every class's set carries its buffs. A buff press goes on your mouseover friend, else your friendly target,
+;; else you; shift is the group version (Gift of the Wild, Arcane Brilliance, Prayer of ...) or the class's second
+;; buff, as each macro says. A group version with [mod:shift] alone falls to the client's self-cast when you have no
+;; friendly target. Every set is at most 18 macros, the classic per-character limit.
+;; {item:N|item:M} is the item form of a choice: the first of these items you CARRY (the rogue's poisons).
+;;
 ;; PALADIN -- a levelling and duo set (the Warlock and Paladin duo of the founder's guides; the guides themselves
 ;; are not on this machine, so the set follows the class's core kit rather than a guide's list):
 ;;   PalJudge     open with a judgement and start swinging
@@ -18,8 +25,8 @@
 ;;   PalBubHearth bubble, then hearth -- the classic exit
 ;;   PalStun      stun your mouseover enemy, else your target
 ;;   PalLoH       lay on hands, friendly targeting
-;;   PalBless     the first blessing you know, friendly targeting
-;;   PalBoP       protection blessing, friendly targeting
+;;   PalBless     Blessing of Might; shift Wisdom; ctrl Kings (talent) -- friendly targeting
+;;   PalBoP       protection blessing, friendly targeting; shift Blessing of Salvation
 ;;   PalFreedom   freedom, yourself unless you mouse over a friend
 ;;   PalCleanse   cleanse, friendly targeting
 ;;   PalAura      devotion aura; shift for retribution
@@ -30,7 +37,7 @@
 (module collection/macros)
 (export macro-set macro-classes)
 
-(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST" "MAGE" "SHAMAN" "DRUID" "WARRIOR" "ROGUE" "HUNTER"))
+(defn macro-classes [] : Any (lua/array "PALADIN" "PRIEST" "MAGE" "SHAMAN" "DRUID" "WARRIOR" "ROGUE" "HUNTER" "WARLOCK"))
 
 (defn macro-paladin [] : Any
   (lua/array
@@ -42,8 +49,8 @@
     (lua/array "PalBubHearth" "#showtooltip {Divine Shield|Divine Protection}\n/cast {Divine Shield|Divine Protection}\n/use Hearthstone")
     (lua/array "PalStun" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Hammer of Justice}")
     (lua/array "PalLoH" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Lay on Hands}")
-    (lua/array "PalBless" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Blessing of Might|Blessing of Kings|Blessing of Wisdom}")
-    (lua/array "PalBoP" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Blessing of Protection|Hand of Protection}")
+    (lua/array "PalBless" "#showtooltip\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Blessing of Kings|Blessing of Might}; [mod:shift,@mouseover,help,nodead][mod:shift] {Blessing of Wisdom|Blessing of Might}; [@mouseover,help,nodead][] {Blessing of Might}")
+    (lua/array "PalBoP" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Blessing of Salvation|Hand of Salvation}; [@mouseover,help,nodead][help,nodead][@player] {Blessing of Protection|Hand of Protection}")
     (lua/array "PalFreedom" "#showtooltip\n/cast [@mouseover,help,nodead][@player] {Blessing of Freedom|Hand of Freedom}")
     (lua/array "PalCleanse" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Cleanse|Purify}")
     (lua/array "PalAura" "#showtooltip\n/cast [mod:shift] {Retribution Aura}; {Devotion Aura}")
@@ -54,7 +61,8 @@
 ;; PRIEST -- a levelling and support set (the class's core kit; no priest guide is on this machine either):
 ;;   PriShield    the shield: mouseover friend, else friendly target, else yourself
 ;;   PriHeal      quick heal, same targeting      PriBigHeal  the big heal you know, same targeting
-;;   PriRenew     renew, same targeting           PriFort     fortitude, same targeting
+;;   PriRenew     renew, same targeting           PriFort     fortitude (shift Prayer of Fortitude)
+;;   PriSpirit    Divine Spirit (shift Prayer)    PriShadowProt  Shadow Protection (shift Prayer)
 ;;   PriDispel    dispel, same targeting          PriRez      resurrect your dead mouseover, else your target
 ;;   PriSWP       pain on your mouseover enemy, else your target      PriMindBlast  likewise
 ;;   PriSmite     smite                           PriFlay     mind flay
@@ -67,7 +75,7 @@
     (lua/array "PriHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Flash Heal|Lesser Heal|Heal}")
     (lua/array "PriBigHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Greater Heal|Heal|Lesser Heal}")
     (lua/array "PriRenew" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Renew}")
-    (lua/array "PriFort" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Power Word: Fortitude}")
+    (lua/array "PriFort" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Prayer of Fortitude|Power Word: Fortitude}; [@mouseover,help,nodead][help,nodead][@player] {Power Word: Fortitude}")
     (lua/array "PriDispel" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Dispel Magic|Purify}")
     (lua/array "PriRez" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Resurrection}")
     (lua/array "PriSWP" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Shadow Word: Pain}")
@@ -78,7 +86,10 @@
     (lua/array "PriFear" "#showtooltip\n/cast {Psychic Scream}")
     (lua/array "PriFade" "#showtooltip\n/cast {Fade}")
     (lua/array "PriInnerFire" "#showtooltip\n/cast {Inner Fire}")
-    (lua/array "PriNova" "#showtooltip\n/cast {Holy Nova}")))
+    (lua/array "PriNova" "#showtooltip\n/cast {Holy Nova}")
+    ;; buffs: Divine Spirit (talent; shift Prayer of Spirit) and Shadow Protection (shift Prayer of Shadow Protection)
+    (lua/array "PriSpirit" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Prayer of Spirit|Divine Spirit}; [@mouseover,help,nodead][help,nodead][@player] {Divine Spirit}")
+    (lua/array "PriShadowProt" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Prayer of Shadow Protection|Shadow Protection}; [@mouseover,help,nodead][help,nodead][@player] {Shadow Protection}")))
 
 ;; MAGE -- damage, control and utility (core kit; no mage guide on this machine). Harmful spells take your
 ;; mouseover enemy first, then your target; buffs and decurse take a friend the usual way. Where a choice lists
@@ -96,7 +107,10 @@
     (lua/array "MagBlink" "#showtooltip\n/cast {Blink}")
     (lua/array "MagIceBlock" "#showtooltip\n/cast {Ice Block|Ice Barrier}")
     (lua/array "MagArmor" "#showtooltip\n/cast {Molten Armor|Mage Armor|Ice Armor|Frost Armor}")
-    (lua/array "MagIntellect" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Arcane Brilliance|Arcane Intellect}")
+    (lua/array "MagIntellect" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Arcane Brilliance|Arcane Intellect}; [@mouseover,help,nodead][help,nodead][@player] {Arcane Intellect}")
+    ;; Amplify Magic; shift Dampen Magic -- and the self wards: Fire Ward, shift Frost Ward, ctrl Mana Shield
+    (lua/array "MagAmplify" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Dampen Magic}; [@mouseover,help,nodead][help,nodead][@player] {Amplify Magic}")
+    (lua/array "MagWard" "#showtooltip\n/cast [mod:ctrl] {Mana Shield}; [mod:shift] {Frost Ward}; {Fire Ward}")
     (lua/array "MagDecurse" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Curse|Remove Lesser Curse}")
     (lua/array "MagWater" "#showtooltip\n/cast {Conjure Refreshment|Conjure Water}")
     (lua/array "MagFood" "#showtooltip\n/cast {Conjure Refreshment|Conjure Food}")
@@ -125,6 +139,8 @@
     ;; the panic button (founder, 2026-11-14: "a panic cast rotation stomp heal macro"): mash it -- War Stomp stuns
     ;; everything around you, then two quick heals on yourself while they are stunned; it starts over out of combat
     ;; or after 15 s. A shaman who is not a Tauren has no War Stomp, so the first press is a heal for them.
+    ;; the water buffs: Water Breathing; shift Water Walking
+    (lua/array "ShaWater" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Water Walking}; [@mouseover,help,nodead][help,nodead][@player] {Water Breathing}")
     (lua/array "ShaPanic" "#showtooltip\n/castsequence [@player] reset=combat/15 {War Stomp|Lesser Healing Wave|Healing Wave}, {Lesser Healing Wave|Healing Wave}, {Lesser Healing Wave|Healing Wave}")))
 
 ;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
@@ -141,7 +157,7 @@
     (lua/array "DruSwift" "#showtooltip Healing Touch\n/cancelform [form]\n/cast {Nature's Swiftness}\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch}")
     (lua/array "DruRegrowth" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Regrowth}")
     (lua/array "DruRejuv" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
-    (lua/array "DruMark" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
+    (lua/array "DruMark" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Gift of the Wild|Mark of the Wild}; [@mouseover,help,nodead][help,nodead][@player] {Mark of the Wild}")
     (lua/array "DruThorns" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Thorns}")
     (lua/array "DruCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse|Abolish Poison|Cure Poison}")
     (lua/array "DruInnervate" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
@@ -149,7 +165,8 @@
     (lua/array "DruBear" "#showtooltip\n/cast {Dire Bear Form|Bear Form}")
     (lua/array "DruCat" "#showtooltip\n/cast {Cat Form}")
     (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")
-    (lua/array "DruCaster" "/cancelform")))
+    (lua/array "DruCaster" "/cancelform")
+    (lua/array "DruOmen" "#showtooltip\n/cast {Omen of Clarity}")))
 
 ;; WARRIOR -- stance-aware (classic stances: 1 Battle, 2 Defensive, 3 Berserker). Most warrior abilities only work in
 ;; one stance, so those macros "stance-dance": the first press puts you in the right stance, the second fires
@@ -172,7 +189,7 @@
     (lua/array "WarRevenge" "#showtooltip Revenge\n/startattack\n/cast [nostance:2] {Defensive Stance}; {Revenge}")
     (lua/array "WarSunder" "#showtooltip\n/startattack\n/cast [@mouseover,harm,nodead][] {Devastate|Sunder Armor}")
     (lua/array "WarThunder" "#showtooltip Thunder Clap\n/cast [nostance:1] {Battle Stance}; {Thunder Clap}")
-    (lua/array "WarShout" "#showtooltip\n/cast [mod:shift] {Demoralizing Shout}; {Battle Shout}")
+    (lua/array "WarShout" "#showtooltip\n/cast [mod:ctrl] {Commanding Shout|Battle Shout}; [mod:shift] {Demoralizing Shout}; {Battle Shout}")
     ;; Taunt (into Defensive first); shift Challenging Shout for everything at once
     (lua/array "WarTaunt" "#showtooltip\n/cast [mod:shift] {Challenging Shout}; [nostance:2] {Defensive Stance}; [@mouseover,harm,nodead][] {Taunt}")
     ;; interrupt: Pummel in Berserker, else Shield Bash; shift Disarm (into Defensive first)
@@ -206,7 +223,12 @@
     (lua/array "RogEvasion" "#showtooltip\n/cast {Evasion}")
     (lua/array "RogSprint" "#showtooltip\n/cast {Sprint}")
     (lua/array "RogVanish" "#showtooltip\n/cast {Vanish}")
-    (lua/array "RogPickPocket" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Pick Pocket}")))
+    (lua/array "RogPickPocket" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Pick Pocket}")
+    ;; the poisons, the rogue's buffs: the best one you carry onto the main hand (Instant; shift Deadly) and the off hand
+    ;; (Deadly; shift Crippling); the popup asking to replace the old poison is accepted. Picked at /ascend: run it
+    ;; again after buying a better rank. Classic item ids (Instant I-VI, Deadly I-V, Crippling I-II).
+    (lua/array "RogPoisonMH" "#showtooltip\n/use [mod:shift] {item:20844|item:8985|item:8984|item:2893|item:2892}; {item:8928|item:8927|item:8926|item:6950|item:6949|item:6947}\n/use 16\n/click StaticPopup1Button1")
+    (lua/array "RogPoisonOH" "#showtooltip\n/use [mod:shift] {item:3776|item:3775}; {item:20844|item:8985|item:8984|item:2893|item:2892}\n/use 17\n/click StaticPopup1Button1")))
 
 ;; HUNTER -- shots on your mouseover enemy else your target, Auto Shot that never toggles off (!), melee, traps,
 ;; aspects, tracking, and the pet: one button revives it when dead, calls it when missing, else mends it.
@@ -227,7 +249,34 @@
     (lua/array "HunAspect" "#showtooltip\n/cast [mod:shift] {Aspect of the Cheetah}; {Aspect of the Hawk|Aspect of the Monkey}")
     (lua/array "HunTrack" "#showtooltip\n/cast [mod:shift] {Track Humanoids}; {Track Beasts}")
     (lua/array "HunPet" "#showtooltip\n/cast [@pet,dead] {Revive Pet}; [nopet] {Call Pet}; {Mend Pet}")
-    (lua/array "HunPetAttack" "/petattack [@mouseover,harm,nodead][]")))
+    (lua/array "HunPetAttack" "/petattack [@mouseover,harm,nodead][]")
+    ;; the group buffs: Trueshot Aura (talent), and Aspect of the Pack (shift Aspect of the Wild)
+    (lua/array "HunTrueshot" "#showtooltip\n/cast {Trueshot Aura}")
+    (lua/array "HunPack" "#showtooltip\n/cast [mod:shift] {Aspect of the Wild}; {Aspect of the Pack}")))
+
+;; WARLOCK -- the other half of the founder's Warlock and Paladin duo: bolts, DoTs and curses on your mouseover enemy
+;; else your target, drains, fear, the demon, the stones, and the buffs (armor; Unending Breath, shift Detect
+;; Invisibility -- friendly targeting).
+(defn macro-warlock [] : Any
+  (lua/array
+    (lua/array "WlkBolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Shadow Bolt}")
+    (lua/array "WlkCorrupt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Corruption}")
+    (lua/array "WlkCurse" "#showtooltip\n/cast [mod:ctrl,@mouseover,harm,nodead][mod:ctrl] {Curse of Tongues|Curse of Recklessness}; [mod:shift,@mouseover,harm,nodead][mod:shift] {Curse of Weakness}; [@mouseover,harm,nodead][] {Curse of Agony}")
+    (lua/array "WlkImmolate" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Immolate}")
+    (lua/array "WlkDrain" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Drain Soul}; [@mouseover,harm,nodead][] {Drain Life}")
+    (lua/array "WlkFear" "#showtooltip\n/cast [mod:shift] {Howl of Terror|Fear}; [@mouseover,harm,nodead][] {Fear}")
+    (lua/array "WlkCoil" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Death Coil}")
+    (lua/array "WlkBurn" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Shadowburn|Searing Pain}")
+    (lua/array "WlkTap" "#showtooltip\n/cast {Life Tap}")
+    (lua/array "WlkArmor" "#showtooltip\n/cast {Fel Armor|Demon Armor|Demon Skin}")
+    (lua/array "WlkBreath" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Detect Greater Invisibility|Detect Invisibility|Detect Lesser Invisibility}; [@mouseover,help,nodead][help,nodead][@player] {Unending Breath}")
+    (lua/array "WlkHealth" "#showtooltip\n/cast {Create Healthstone (Major)|Create Healthstone (Greater)|Create Healthstone|Create Healthstone (Lesser)|Create Healthstone (Minor)}")
+    (lua/array "WlkSoulstone" "#showtooltip\n/cast {Create Soulstone (Major)|Create Soulstone (Greater)|Create Soulstone|Create Soulstone (Lesser)|Create Soulstone (Minor)}")
+    (lua/array "WlkPet" "#showtooltip\n/cast [mod:ctrl] {Summon Succubus}; [mod:shift] {Summon Felhunter}; {Summon Voidwalker|Summon Imp}")
+    (lua/array "WlkPetAttack" "/petattack [@mouseover,harm,nodead][]")
+    (lua/array "WlkBanish" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Enslave Demon}; [@mouseover,harm,nodead][] {Banish}")
+    (lua/array "WlkWand" "#showtooltip\n/cast !{Shoot}")
+    (lua/array "WlkMount" "#showtooltip\n/cast {Summon Dreadsteed|Summon Felsteed}")))
 
 ;; The set for a class file name; an empty array for a class without one yet.
 (defn macro-set [(class : String)] : Any
@@ -238,4 +287,5 @@
           (if (= class "DRUID") (macro-druid)
             (if (= class "WARRIOR") (macro-warrior)
               (if (= class "ROGUE") (macro-rogue)
-                (if (= class "HUNTER") (macro-hunter) (lua/array))))))))))
+                (if (= class "HUNTER") (macro-hunter)
+                  (if (= class "WARLOCK") (macro-warlock) (lua/array)))))))))))

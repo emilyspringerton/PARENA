@@ -184,7 +184,7 @@ s = session(t)
 out = s.ascend()
 has(out, "the client shortened: PalJudge", "a body the client cut is caught by reading it back")
 
-local k = world("WARLOCK", { "Shadow Bolt" })
+local k = world("DEATHKNIGHT", { "Death Strike" })
 s = session(k)
 out = s.ascend()
 has(out, "the Flame holds no words for you", "a class with no set yet is told so")
@@ -221,7 +221,7 @@ do
             local name, body = m[1], m[2]
             local heals_someone = false
             for _, h in ipairs(heals) do if body:find(h, 1, true) then heals_someone = true end end
-            if heals_someone and name ~= "ShaPanic" and not name:find("Totem", 1, true) then
+            if heals_someone and name ~= "ShaPanic" and name ~= "WlkHealth" and not name:find("Totem", 1, true) then
                 checked = checked + 1
                 eq(body:find("[@mouseover,help", 1, true) ~= nil, true, class .. " " .. name .. " casts on the mouseover")
             end
@@ -241,18 +241,18 @@ end
 local pr = world("PRIEST", { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" })
 s = session(pr)
 out = s.ascend()
-eq(#pr.char, 16, "a level-1 priest gets all sixteen, learned or not")
+eq(#pr.char, 18, "a level-1 priest gets all eighteen, learned or not")
 eq(find(pr.char, "PriHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "the quick heal falls back to Lesser Heal")
 eq(find(pr.char, "PriBigHeal").body:find("Lesser Heal", 1, true) ~= nil, true, "so does the big heal, until a bigger one is known")
 eq(find(pr.char, "PriWand").body, "#showtooltip\n/cast !Shoot", "the wand keeps its no-toggle !")
-has(out, "16 written, 0 pruned; 11 use spells you have not learned yet", "and is told which wait on learning")
+has(out, "18 written, 0 pruned; 13 use spells you have not learned yet", "and is told which wait on learning")
 eq(find(pr.char, "PriShield").body:find("Power Word: Shield", 1, true) ~= nil, true, "the shield macro is there before the shield is learned")
 pr.known["Greater Heal"], pr.known["Power Word: Shield"] = true, true
 pr.saved.MacroSyncDB = s.env.MacroSyncDB
 s = session(pr)
 s.ascend()
 eq(find(pr.char, "PriBigHeal").body:find("Greater Heal", 1, true) ~= nil, true, "learning Greater Heal upgrades the big heal")
-eq(#pr.char, 16, "and nothing is duplicated")
+eq(#pr.char, 18, "and nothing is duplicated")
 
 -- ===== mage, shaman, druid: every set is complete on a fresh character, and choices pick the best known ======
 for _, case in ipairs({
@@ -266,7 +266,7 @@ for _, case in ipairs({
     local cw = world(case[1], case[2])
     s = session(cw)
     out = s.ascend()
-    local want = (case[1] == "WARRIOR" and 18) or ((case[1] == "SHAMAN" or case[1] == "DRUID") and 17) or 16   -- warrior: the full 18
+    local want = 18   -- every set but the paladin's fills the classic 18 character slots
     eq(#cw.char, want, case[1] .. ": the whole set written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
@@ -293,10 +293,61 @@ eq(find(hu.char, "HunAuto").body, "#showtooltip\n/cast !Auto Shot", "Auto Shot k
 eq(find(hu.char, "HunPet").body, "#showtooltip\n/cast [@pet,dead] Revive Pet; [nopet] Call Pet; Mend Pet", "one pet button: revive, call, mend")
 eq(find(hu.char, "HunPetAttack").body, "/petattack [@mouseover,harm,nodead][]", "pet attack has no spell choice")
 
+
+-- ===== buffs: every class carries its own, on the mouseover, with the group version on shift ===============
+-- (founder, 2026-11-15: "basic buff macros for all the classes mark of the wild arcane intellect pwshield all of it")
+do
+    local function body(class, known, name, items)
+        local w = world(class, known)
+        if items then w.items = items end
+        local ss = session(w); ss.ascend()
+        local m = find(w.char, name)
+        return m and m.body
+    end
+    local ON = "[@mouseover,help,nodead][help,nodead][@player]"
+    eq(body("DRUID", { "Mark of the Wild", "Gift of the Wild" }, "DruMark"),
+       "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] Gift of the Wild; " .. ON .. " Mark of the Wild",
+       "druid: Mark of the Wild on a press, Gift of the Wild on shift")
+    eq(body("DRUID", { "Mark of the Wild" }, "DruMark"),
+       "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] Mark of the Wild; " .. ON .. " Mark of the Wild",
+       "druid: before Gift, shift is the Mark too")
+    eq(body("MAGE", { "Arcane Intellect", "Arcane Brilliance" }, "MagIntellect"),
+       "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] Arcane Brilliance; " .. ON .. " Arcane Intellect",
+       "mage: a press is Arcane Intellect even once Brilliance is known (no reagent spent on one friend)")
+    eq(body("PRIEST", { "Power Word: Fortitude" }, "PriFort"):find(ON .. " Power Word: Fortitude", 1, true) ~= nil, true,
+       "priest: fortitude on the mouseover")
+    eq(body("PRIEST", { "Power Word: Shield" }, "PriShield"), "#showtooltip\n/cast " .. ON .. " Power Word: Shield",
+       "priest: the shield on the mouseover")
+    eq(body("PRIEST", { "Shadow Protection", "Prayer of Shadow Protection" }, "PriShadowProt"),
+       "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] Prayer of Shadow Protection; " .. ON .. " Shadow Protection",
+       "priest: shadow protection, the prayer on shift")
+    eq(body("PALADIN", { "Blessing of Might", "Blessing of Wisdom" }, "PalBless"),
+       "#showtooltip\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] Blessing of Might; [mod:shift,@mouseover,help,nodead][mod:shift] Blessing of Wisdom; [@mouseover,help,nodead][] Blessing of Might",
+       "paladin: Might, Wisdom on shift; ctrl falls back to Might until Kings is learned")
+    eq(body("WARRIOR", { "Battle Shout" }, "WarShout"),
+       "#showtooltip\n/cast [mod:ctrl] Battle Shout; [mod:shift] Demoralizing Shout; Battle Shout", "warrior: the shouts")
+    eq(body("WARLOCK", { "Demon Skin", "Unending Breath" }, "WlkArmor"), "#showtooltip\n/cast Demon Skin", "warlock: the armor it knows")
+    eq(body("WARLOCK", { "Demon Skin", "Demon Armor" }, "WlkArmor"), "#showtooltip\n/cast Demon Armor", "warlock: the better armor once learned")
+    eq(body("WARLOCK", { "Unending Breath" }, "WlkBreath"):find(ON .. " Unending Breath", 1, true) ~= nil, true,
+       "warlock: Unending Breath on the mouseover")
+    eq(body("HUNTER", { "Aspect of the Pack" }, "HunPack"), "#showtooltip\n/cast [mod:shift] Aspect of the Wild; Aspect of the Pack", "hunter: the pack")
+    eq(body("SHAMAN", { "Water Breathing" }, "ShaWater"):find(ON .. " Water Breathing", 1, true) ~= nil, true, "shaman: water breathing")
+    -- rogue: poisons are items, the best one CARRIED
+    eq(body("ROGUE", {}, "RogPoisonMH", { [8926] = 5, [6947] = 20, [2893] = 3 }),
+       "#showtooltip\n/use [mod:shift] item:2893; item:8926\n/use 16\n/click StaticPopup1Button1",
+       "rogue: Instant Poison IV (the best carried) on the main hand, Deadly II on shift")
+    eq(body("ROGUE", {}, "RogPoisonOH", { [2892] = 1, [3775] = 2 }),
+       "#showtooltip\n/use [mod:shift] item:3775; item:2892\n/use 17\n/click StaticPopup1Button1",
+       "rogue: Deadly on the off hand, Crippling on shift")
+    local w = world("ROGUE", {})
+    local ss = session(w); local o = ss.ascend()
+    has(o, "RogPoisonMH (item:20844, item:8928)", "carrying no poison: the macro waits, and says which")
+end
+
 -- ===== every class's set is built in, and fits the client ==================================================
 local SETS = s.env.RefluxCore.modules["collection/macros"]
 local classes = SETS.macroClasses()
-eq(table.concat(classes, ","), "PALADIN,PRIEST,MAGE,SHAMAN,DRUID,WARRIOR,ROGUE,HUNTER", "eight classes have a set")
+eq(table.concat(classes, ","), "PALADIN,PRIEST,MAGE,SHAMAN,DRUID,WARRIOR,ROGUE,HUNTER,WARLOCK", "nine classes have a set")
 for _, class in ipairs(classes) do
     local set, names_ok, tag_ok, len_ok, uniq = SETS.macroSet(class), true, true, true, {}
     local tag = set[1] and set[1][1]:sub(1, 3)
@@ -312,8 +363,7 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    eq(#set, (class == "WARRIOR" and 18) or ((class == "SHAMAN" or class == "DRUID") and 17) or 16,
-       class .. ": the set's size (shaman: sixteen and the panic button; druid: and the Swiftness heal)")
+    eq(#set, class == "PALADIN" and 16 or 18, class .. ": the set's size (the paladin keeps two slots free)")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
     eq(len_ok, true, class .. ": every body fits 255 characters")

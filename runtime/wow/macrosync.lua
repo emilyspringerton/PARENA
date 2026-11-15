@@ -73,6 +73,19 @@ local function spell_known(name)
     return false
 end
 
+local function item_count(id)
+    if C_Item and C_Item.GetItemCount then return C_Item.GetItemCount(id) or 0 end
+    if GetItemCount then return GetItemCount(id) or 0 end
+    return 0
+end
+
+-- An item choice (item:N) is "known" when the character carries one.
+local function choice_ok(alt)
+    local id = alt:match("^item:(%d+)$")
+    if id then return item_count(tonumber(id)) > 0 end
+    return spell_known(alt)
+end
+
 -- Resolve {A|B} choices: the first spell this character knows, else the FIRST name listed -- every macro is
 -- written either way, because the client looks a macro's spell up when it is pressed, so a macro for a spell not
 -- learned yet simply starts working the day it is learned. Returns the body and the choices nobody knew.
@@ -82,7 +95,7 @@ local function resolve(template)
         local first = nil
         for alt in alts:gmatch("[^|]+") do
             first = first or alt
-            if spell_known(alt) then return alt end
+            if choice_ok(alt) then return alt end
         end
         unlearned[#unlearned + 1] = first
         return first or ""
@@ -114,12 +127,6 @@ local function fa_is_ours(name)
     if not (FA and name == FA.faMacroName() and GetMacroBody) then return false end
     local idx = GetMacroIndexByName and GetMacroIndexByName(name) or 0
     return idx > 0 and FA.faOurs(GetMacroBody(idx)) == 1
-end
-
-local function item_count(id)
-    if C_Item and C_Item.GetItemCount then return C_Item.GetItemCount(id) or 0 end
-    if GetItemCount then return GetItemCount(id) or 0 end
-    return 0
 end
 
 -- The First Aid rank: the skill line named First Aid in any client language; 0 when the character has not learned it;

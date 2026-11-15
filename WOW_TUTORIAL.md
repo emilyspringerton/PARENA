@@ -171,6 +171,27 @@ item ids, not battleground bandages. While you are *Recently Bandaged*, a press 
 drinks the potion -- but only once the fight is over (in combat the macro cannot change, so a second press on yourself
 within that minute is refused; use shift).
 
+## 5b. Buffs -- every class's set carries them
+
+`/ascend` writes each class's buff macros with the rest of its set. A press buffs the friend under your mouse, else your
+friendly target, else you; **shift** is the group version or the second buff.
+
+| Class | Macro | Press | Shift | Ctrl |
+|---|---|---|---|---|
+| Druid | DruMark / DruThorns / DruOmen | Mark of the Wild / Thorns / Omen of Clarity | Gift of the Wild | |
+| Mage | MagIntellect / MagAmplify / MagWard | Arcane Intellect / Amplify Magic / Fire Ward | Arcane Brilliance / Dampen Magic / Frost Ward | Mana Shield (MagWard) |
+| Priest | PriShield / PriFort / PriSpirit / PriShadowProt / PriInnerFire | Power Word: Shield / Fortitude / Divine Spirit / Shadow Protection / Inner Fire | the Prayer of each | |
+| Paladin | PalBless / PalBoP / PalAura | Might / Protection / Devotion | Wisdom / Salvation / Retribution | Kings |
+| Warrior | WarShout | Battle Shout | Demoralizing Shout | Commanding Shout |
+| Shaman | ShaShield / ShaWeapon / ShaWater | Lightning Shield / weapon / Water Breathing | Water Shield / Flametongue / Water Walking | |
+| Hunter | HunAspect / HunPack / HunTrueshot | Hawk or Monkey / Pack / Trueshot Aura | Cheetah / Wild | |
+| Warlock | WlkArmor / WlkBreath | Demon Armor (or Skin) / Unending Breath | Detect Invisibility | |
+| Rogue | RogPoisonMH / RogPoisonOH | best Instant onto the main hand / best Deadly onto the off hand | Deadly / Crippling | |
+
+A spell you have not learned is written anyway and starts working the day you learn it. The rogue's poisons are the best
+rank you **carry** when you run `/ascend`: run it again after buying a better one. Warlocks now have a full set of 18.
+Not in yet: Greater Blessings (the paladin's two free slots are left for your own macros).
+
 ## 6. The rock on Slack -- a report every time you stop playing
 
 WoW addons cannot reach the internet, so the rock speaks from outside the game: `forge watch` (section 4) notices every
