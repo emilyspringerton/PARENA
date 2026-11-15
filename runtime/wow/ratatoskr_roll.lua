@@ -55,6 +55,23 @@ local function announce_award()
     if w then print(string.format(L("AWARD"), L("NAME"), w[1], w[2])) end
 end
 
+-- ---- the rumour carrier (REFLUX tips API, runtime/wow/reflux_tips.lua) --------------------------------------
+-- Ratatoskr runs gossip up and down the World Tree, so it voices /rumor: a true tip about ANOTHER installed
+-- Collection addon in its words (RUMOR_n), the plain tip beside it. /census rumor asks directly; /rumor is Loki's
+-- Lies' command when that is installed (its rumour, then this), and Ratatoskr's own when nobody else claimed it.
+-- The rotation is kept in db.rumor, so it carries over between sessions and characters.
+if RefluxTips then RefluxTips.publish({ addon = ADDON, spec = 65, catalogue = ns.catalogue }) end
+
+local function voice(name, own)
+    if own then return string.format(L("RUMOR_SELF"), L("NAME")) end
+    return string.format(L("RUMOR_" .. RefluxTips.line(tonumber(L("RUMOR_COUNT")) or 0)), L("NAME"), name)
+end
+
+local function rumor()
+    if not RefluxTips then print(string.format(L("NO_TIPS"), L("NAME"))); return end
+    for _, line in ipairs(RefluxTips.rumor(ADDON)) do print(line) end
+end
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_LOGIN")
@@ -63,6 +80,11 @@ f:SetScript("OnEvent", function(_, event, arg1)
         if arg1 == ADDON then
             _G[VAR] = C.censusInit(_G[VAR] or {})
             db = _G[VAR]
+            db.rumor = type(db.rumor) == "table" and db.rumor or {}
+            if RefluxTips then
+                RefluxTips.carrier({ addon = ADDON, state = db.rumor, voice = voice,
+                                     alone = function() return string.format(L("RUMOR_ALONE"), L("NAME")) end })
+            end
         end
     elseif event == "PLAYER_LOGIN" and db then
         if not hooked and hooksecurefunc and DoEmote then
@@ -70,13 +92,18 @@ f:SetScript("OnEvent", function(_, event, arg1)
             hooked = true
         end
         announce_award()
+        -- every addon has loaded by now, so this sees Loki's Lies' /rumor whatever the load order
+        if RefluxTips and not SlashCmdList["RATATOSKRRUMOR"] then
+            RefluxTips.claim_slash("RATATOSKRRUMOR", { "/rumor", "/rumour" }, rumor)
+        end
     end
 end)
 
 SLASH_RATATOSKRROLL1 = "/census"
 SLASH_RATATOSKRROLL2 = "/ratatoskr"
-SlashCmdList["RATATOSKRROLL"] = function()
+SlashCmdList["RATATOSKRROLL"] = function(msg)
     if not db then print(ADDON .. ": not loaded yet."); return end
+    if (msg or ""):match("^%s*rumou?r") then rumor(); return end
     if not hooked then print(string.format(L("NO_HOOK"), L("NAME"))) end
     local top = C.censusTop(db, C.censusWeek(time()), 3)
     if #top == 0 then

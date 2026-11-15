@@ -1,6 +1,9 @@
 -- runtime/wow/lokis_lies.lua -- Loki's Lies' host glue (spec addon 68, rumour mill). Rules: stdlib/collection/loki.prn.
 -- A rumour at every login and on /rumour, made up from this character's own Collection Journal (the REFLUX rows
 -- every Collection addon writes). /rumour share says it to the group instead of only to you.
+-- /rumor also tells a TRUE tip about another installed Collection addon (the founder: "can we have /rumor also tell
+-- you a tip for one of the other plugins installed?"), through the REFLUX tips API (runtime/wow/reflux_tips.lua),
+-- in Ratatoskr's voice when Ratatoskr Roll is installed. Never one of Loki's own: those are told by the others.
 local ADDON, VAR = "@ADDON@", "@VAR@"
 local JOURNAL_VAR = "@JOURNAL_VAR@"
 local _, ns = ...
@@ -8,6 +11,7 @@ local K = ns.kit
 local G = RefluxCore and RefluxCore.modules and RefluxCore.modules["collection/loki"]
 if not G then print(ADDON .. ": RefluxCore's collection/loki module is missing.") return end
 K.saved(VAR, function(db) db.told = db.told or 0; db.v = 1; return db end)
+if RefluxTips then RefluxTips.publish({ addon = ADDON, spec = 68, catalogue = ns.catalogue }) end
 
 local function class_name()
     local c = UnitClass and UnitClass("player")
@@ -44,6 +48,8 @@ SLASH_LOKISLIES1 = "/rumour"
 SLASH_LOKISLIES2 = "/rumor"
 SlashCmdList["LOKISLIES"] = function(msg)
     if not K.db then return end
-    local line = K.f("HEADLINE", K.L("NAME"), rumour())
-    if (msg or ""):match("share") then K.say(line) else print(line) end
+    local lines = { K.f("HEADLINE", K.L("NAME"), rumour()) }
+    if RefluxTips then for _, l in ipairs(RefluxTips.rumor(ADDON)) do lines[#lines + 1] = l end end
+    local share = (msg or ""):match("share")
+    for _, l in ipairs(lines) do if share then K.say(l) else print(l) end end
 end

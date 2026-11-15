@@ -236,5 +236,159 @@ eq(TIPS.claim_slash("TESTRUMOR", { "/rumor", "/rumour" }, function() end), true,
 eq(env.SLASH_TESTRUMOR1 == "/rumor" and env.SLASH_TESTRUMOR2 == "/rumour" and type(env.SlashCmdList.TESTRUMOR) == "function",
    true, "both spellings, one handler")
 
+-- ===== Part 2: /rumor in stubbed clients ====================================================================
+-- A client close enough for every Collection addon to load and log in: frames answer any method, the group is a
+-- party of four, chat to the group is recorded.
+local function client_env(w)
+    local env = bare(w)
+    local frames = {}
+    local noop = function() end
+    env.CreateFrame = function(_, name)
+        local f = setmetatable({ events = {}, scripts = {} }, { __index = function() return noop end })
+        f.RegisterEvent = function(self, e) self.events[e] = true end
+        f.SetScript = function(self, k, fn) self.scripts[k] = fn end
+        f.GetScript = function(self, k) return self.scripts[k] end
+        f.CreateFontString = function() return setmetatable({}, { __index = function() return noop end }) end
+        frames[#frames + 1] = f
+        if name then env[name] = f end
+        return f
+    end
+    env.UIParent = {}
+    env.UnitName = function(u)
+        if u == "player" then return "Emily" end
+        local i = u and tonumber(u:match("^party(%d)$"))
+        if i and i <= 3 then return ({ "Brokkr", "Sindri", "Eitri" })[i] end
+    end
+    env.UnitClass = function() return "Mage", "MAGE" end
+    env.UnitRace = function() return "Gnome", "Gnome" end
+    env.UnitLevel = function() return 20 end
+    env.UnitExists = function(u) return u == "player" end
+    env.UnitIsPlayer = function(u) return u == "player" end
+    env.GetRealmName = function() return "Forever" end
+    env.GetMoney = function() return 123456 end
+    env.GetTime = function() return w.now end
+    env.IsInRaid = function() return false end
+    env.IsInGroup = function() return w.grouped end
+    env.GetNumGroupMembers = function() return w.grouped and 4 or 0 end
+    env.SendChatMessage = function(text, chan) w.said[#w.said + 1] = chan .. ": " .. text end
+    env.C_Map = { GetBestMapForUnit = function() return 1420 end,
+                  GetPlayerMapPosition = function() return { GetXY = function() return 0.5, 0.5 end } end }
+    env.NUM_BAG_SLOTS = 4
+    env.C_Container = { GetContainerNumSlots = function() return 16 end, GetContainerItemInfo = function() return nil end }
+    env.DoEmote = noop
+    env.JumpOrAscendStart = noop
+    env.GetInboxText = noop
+    env.hooksecurefunc = function(name, fn)
+        local orig = env[name]
+        if orig then env[name] = function(...) local r = { orig(...) }; fn(...); return unpack(r) end end
+    end
+    local s = { env = env }
+    function s.fire(event, ...)
+        for _, f in ipairs(frames) do if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end end
+    end
+    function s.login(addons, before_each)
+        for _, a in ipairs(addons) do
+            if before_each then before_each(a) end
+            load_addon(env, a)
+        end
+        for _, a in ipairs(addons) do s.fire("ADDON_LOADED", a) end
+        s.fire("PLAYER_LOGIN")
+    end
+    function s.slash(key, msg) w.out = {}; env.SlashCmdList[key](msg or ""); return w.out end
+    return s
+end
+
+local function tip_of(lines)
+    for _, l in ipairs(lines) do local name = l:match("^  Tip %((.-)%): ") if name then return name end end
+end
+local function all_filled(lines)
+    for _, l in ipairs(lines) do if l:find("%%[sd]") then return false end end
+    return true
+end
+
+-- the Collection with Loki's Lies: /rumor is Loki's, and also tells a tip in Ratatoskr's voice, never Loki's own
+local cw = { out = {}, said = {}, now = 1762732800 + 3600, locale = "enUS", grouped = false }
+local c1 = client_env(cw)
+c1.login({ "RefluxCore", "CollectionJournal", "FafnirsBed", "CharacterBoard", "MacroSync", "Hrungnir", "RatatoskrRoll",
+           "Volva", "SagaOfFools", "LokisLies", "MjolnirPass" })
+local CT = c1.env.RefluxTips
+eq(c1.env.SlashCmdList.RATATOSKRRUMOR, nil, "Ratatoskr leaves /rumor to Loki's Lies, which already has it")
+local tipped, from_loki, voiced_ok, filled, rows_ok = {}, 0, true, true, true
+for _ = 1, 40 do
+    cw.now = cw.now + 11
+    local out = c1.slash("LOKISLIES")
+    has(out[1], "Loki's Lies: ", "/rumor still tells Loki's rumour first")
+    local name = tip_of(out)
+    if not name then rows_ok = false end
+    if name == "Loki's Lies" then from_loki = from_loki + 1 end
+    if name then tipped[name] = (tipped[name] or 0) + 1 end
+    if not (out[2] and out[2]:find("^Ratatoskr Roll: ")) then voiced_ok = false end
+    if not all_filled(out) then filled = false end
+end
+eq(rows_ok, true, "every /rumor carries a plain tip line")
+eq(from_loki, 0, "/rumor never tells one of Loki's own tips")
+eq(voiced_ok, true, "Ratatoskr voices every tip /rumor tells")
+eq(filled, true, "every /rumor line is filled in")
+local kinds = 0
+for _ in pairs(tipped) do kinds = kinds + 1 end
+eq(kinds >= 6, true, "40 rumours cover many addons (" .. kinds .. ")")
+
+-- /census rumor: Ratatoskr asks, so never Ratatoskr's own tip, and never the self line
+local from_self, self_voice = 0, 0
+for _ = 1, 40 do
+    cw.now = cw.now + 13
+    local out = c1.slash("RATATOSKRROLL", "rumor")
+    if tip_of(out) == "Ratatoskr Roll" then from_self = from_self + 1 end
+    if out[1] and out[1]:find("For once the gossip is about me", 1, true) then self_voice = self_voice + 1 end
+    if not (out[1] and out[1]:find("^Ratatoskr Roll: ") and tip_of(out)) then voiced_ok = false end
+end
+eq(from_self, 0, "/census rumor never tells one of Ratatoskr's own tips while others exist")
+eq(self_voice, 0, "so it never gossips about itself")
+eq(voiced_ok, true, "and always voices a tip from another addon")
+eq(c1.env.RatatoskrRollDB.rumor.told, 80, "the rotation is kept in Ratatoskr Roll's saved table")
+
+-- /rumor share in a party: the rumour and the tip go to the group
+cw.grouped, cw.said = true, {}
+c1.slash("LOKISLIES", "share")
+local shared_tip = false
+for _, l in ipairs(cw.said) do if l:find("^PARTY:   Tip %(") then shared_tip = true end end
+eq(#cw.said >= 3 and shared_tip, true, "/rumor share says the rumour, the voice and the tip to the party")
+cw.grouped = false
+
+-- Ratatoskr Roll without Loki's Lies: it claims /rumor and /rumour itself
+local rw = { out = {}, said = {}, now = 1762732800 + 3600, locale = "enUS", grouped = false }
+local c2 = client_env(rw)
+c2.login({ "RefluxCore", "RatatoskrRoll" })
+eq(c2.env.SLASH_RATATOSKRRUMOR1 == "/rumor" and c2.env.SLASH_RATATOSKRRUMOR2 == "/rumour", true,
+   "without Loki's Lies, Ratatoskr Roll registers /rumor and /rumour")
+local out = c2.slash("RATATOSKRRUMOR")
+eq(#out, 2, "its /rumor: a voiced line and a tip")
+eq(tip_of(out), "REFLUX Core", "about the only other addon, REFLUX Core")
+
+-- Ratatoskr Roll as the only addon with tips: the alone line, nothing made up
+local aw = { out = {}, said = {}, now = 1762732800 + 3600, locale = "enUS", grouped = false }
+local c3 = client_env(aw)
+c3.login({ "RefluxCore", "RatatoskrRoll" }, function(a) if a == "RatatoskrRoll" then c3.env.RefluxTips.reset() end end)
+eq(c3.env.RefluxTips.count(), 1, "only Ratatoskr Roll published")
+out = c3.slash("RATATOSKRROLL", "rumor")
+eq(#out, 1, "alone: one line")
+has(out[1], "found no other Collection addon to gossip about", "Ratatoskr says it found nobody else")
+out = c3.slash("RATATOSKRRUMOR")
+eq(#out == 1 and tip_of(out) == nil, true, "and /rumor tells no tip either")
+
+-- Loki asking with only Ratatoskr Roll beside it: Ratatoskr's own tip, in its self voice
+local lw = { out = {}, said = {}, now = 1762732800 + 3600, locale = "enUS", grouped = false }
+local c4 = client_env(lw)
+c4.login({ "RefluxCore", "RatatoskrRoll", "LokisLies" }, function(a) if a == "RatatoskrRoll" then c4.env.RefluxTips.reset() end end)
+out = c4.slash("LOKISLIES")
+eq(tip_of(out), "Ratatoskr Roll", "asked by Loki, Ratatoskr Roll is one of the other addons")
+has(out[2], "For once the gossip is about me", "and Ratatoskr says so in its own voice")
+
+-- the voice follows the locale rules: an enGB client reads enGB, a deDE one falls back to enUS
+cw.locale = "deDE"
+out = c1.slash("RATATOSKRROLL", "rumor")
+eq(out[1] ~= nil and out[1]:find("^Ratatoskr Roll: ") ~= nil and tip_of(out) ~= nil, true, "a deDE client falls back to the enUS lines")
+cw.locale = "enUS"
+
 print(string.format("tips: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

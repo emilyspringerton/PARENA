@@ -28,6 +28,12 @@ local enUS = {
     R2710_2 = "Fortune cookie futures soar after %s cracks another.",
     R2591_1 = "%s finishes a race in place %d and demands a recount.",
     R2591_2 = "Sleipnir himself impressed by %s's place-%d finish. Allegedly.",
+    -- tips (REFLUX tips API, TIP_1..n): true tips about this addon, told when another addon asks for a rumour
+    TIP_1 = "Every time you log in, Loki's Lies makes up a headline from your own adventures: gold, deaths, critters, achievements, races and more.",
+    TIP_2 = "/rumour share (or /rumor share) tells the rumour to your party or raid instead of only to you.",
+    TIP_3 = "Loki reads this character's Collection Journal for news, so without Collection Journal installed every day is a slow news day.",
+    TIP_4 = "The stories are lies, but the numbers in them are yours: the gold, the death count and the item numbers come from your journal.",
+    TIP_5 = "/rumor also passes on a true tip about one of your other Collection addons, right after the lie.",
 }
 local enGB = {}
 for k, v in pairs(enUS) do enGB[k] = v end
