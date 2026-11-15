@@ -132,21 +132,37 @@
     (lua/array "ShaWater" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem|Healing Stream Totem}; [mod:ctrl] {Poison Cleansing Totem|Healing Stream Totem}; {Healing Stream Totem}")
     (lua/array "ShaAir" "#showtooltip\n/cast [mod:ctrl,nocombat] {Ghost Wolf}; [mod:shift] {Grounding Totem|Windfury Totem}; {Windfury Totem|Grace of Air Totem|Ghost Wolf}")))
 
-;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
+;; DRUID -- healer first (the founder: "include healing druid macros"), then damage and the forms. Every heal and
+;; cure drops cat/bear/travel form first, so it casts from any form. Friendly spells go to your mouseover friend,
+;; else your friendly target, else yourself; enemy spells to your mouseover enemy, else your target.
+;;   DruHeal      Regrowth (the quick heal; Healing Touch before it is learned); shift: Healing Touch, the big one;
+;;                ctrl: Swiftmend
+;;   DruRejuv     Rejuvenation; shift: Lifebloom; ctrl: Wild Growth (each falls back to Rejuvenation)
+;;   DruNSHeal    the emergency button: Nature's Swiftness, then an instant Healing Touch
+;;   DruTranq     Tranquility (the group heal); shift: Barkskin on yourself
+;;   DruCure      remove a curse; shift: cure poison (newer clients: their one cleanse)
+;;   DruInnervate Innervate your friend, else yourself
+;;   DruRebirth   battle-rez your dead mouseover/target; out of combat: Revive where it exists
+;;   DruMark      Mark/Gift of the Wild; shift: Thorns
+;;   DruWrath     Wrath; shift: Starfire
+;;   DruMoonfire  Moonfire; shift: Insect Swarm
+;;   DruRoots     Entangling Roots; shift: Hibernate (beasts and dragonkin)
+;;   DruClaw      Mangle, else Claw, starting the fight
+;;   DruBear      Bear Form (Dire once learned); DruCat Cat Form; DruTravel Travel Form; DruCaster back to caster
 (defn macro-druid [] : Any
   (lua/array
-    (lua/array "DruWrath" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Wrath}")
-    (lua/array "DruMoonfire" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Moonfire}")
-    (lua/array "DruRoots" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Entangling Roots}")
+    (lua/array "DruHeal" "#showtooltip\n/cancelform [form]\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Swiftmend|Regrowth|Healing Touch}; [mod:shift,@mouseover,help,nodead][mod:shift] {Healing Touch}; [@mouseover,help,nodead][help,nodead][@player] {Regrowth|Healing Touch}")
+    (lua/array "DruRejuv" "#showtooltip\n/cancelform [form]\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Wild Growth|Rejuvenation}; [mod:shift,@mouseover,help,nodead][mod:shift] {Lifebloom|Rejuvenation}; [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
+    (lua/array "DruNSHeal" "#showtooltip {Healing Touch}\n/cancelform [form]\n/cast {Nature's Swiftness|Healing Touch}\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch}")
+    (lua/array "DruTranq" "#showtooltip\n/cast [mod:shift] {Barkskin|Tranquility}; {Tranquility}")
+    (lua/array "DruCure" "#showtooltip\n/cancelform [form]\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Abolish Poison|Cure Poison|Remove Corruption}; [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse}")
+    (lua/array "DruInnervate" "#showtooltip\n/cancelform [form]\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
+    (lua/array "DruRebirth" "#showtooltip\n/cancelform [form]\n/cast [nocombat,@mouseover,help,dead][nocombat,help,dead] {Revive|Rebirth}; [@mouseover,help,dead][help,dead] {Rebirth}")
+    (lua/array "DruMark" "#showtooltip\n/cancelform [form]\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Thorns}; [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
+    (lua/array "DruWrath" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Starfire|Wrath}; [@mouseover,harm,nodead][] {Wrath}")
+    (lua/array "DruMoonfire" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Insect Swarm|Moonfire}; [@mouseover,harm,nodead][] {Moonfire}")
+    (lua/array "DruRoots" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Hibernate|Entangling Roots}; [@mouseover,harm,nodead][] {Entangling Roots}")
     (lua/array "DruClaw" "#showtooltip\n/startattack\n/cast {Mangle|Claw}")
-    (lua/array "DruHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch|Regrowth}")
-    (lua/array "DruRegrowth" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Regrowth}")
-    (lua/array "DruRejuv" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
-    (lua/array "DruMark" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
-    (lua/array "DruThorns" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Thorns}")
-    (lua/array "DruCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse|Abolish Poison|Cure Poison}")
-    (lua/array "DruInnervate" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
-    (lua/array "DruRebirth" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Rebirth}")
     (lua/array "DruBear" "#showtooltip\n/cast {Dire Bear Form|Bear Form}")
     (lua/array "DruCat" "#showtooltip\n/cast {Cat Form}")
     (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")

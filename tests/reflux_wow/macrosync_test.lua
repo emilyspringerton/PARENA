@@ -209,6 +209,19 @@ for _, m in ipairs(sh.char) do if #m.body > 255 then fit = false end end
 eq(fit, true, "every shaman macro fits the client's 255-character body")
 eq(find(sh.char, "ShaShock").body:find("[mod:shift,@mouseover,harm,nodead][mod:shift] Earth Shock", 1, true) ~= nil, true,
    "a shock not learned yet falls back to Earth Shock")
+-- DRUID=8: the healer's eight come first; a fresh druid's heal falls back to Healing Touch, and every heal leaves form
+local hd = world("DRUID", { "Healing Touch", "Rejuvenation", "Mark of the Wild", "Wrath" })
+hd.hidemax, hd.limit, hd.classlimits = true, 4, "SHAMAN=12,DRUID=8"
+s = session(hd)
+s.ascend()
+eq(names(hd.char), "DruHeal,DruRejuv,DruNSHeal,DruTranq,DruCure,DruInnervate,DruRebirth,DruMark", "a healing druid's eight, heals first")
+local dh = find(hd.char, "DruHeal").body
+eq(dh:find("[@mouseover,help,nodead][help,nodead][@player] Healing Touch", 1, true) ~= nil, true, "the quick heal is Healing Touch until Regrowth is learned")
+eq(dh:find("/cancelform [form]", 1, true) ~= nil, true, "and it leaves cat or bear form to cast")
+local dfit = true
+for _, m in ipairs(hd.char) do if #m.body > 255 then dfit = false end end
+eq(dfit, true, "every druid macro fits 255 characters")
+
 local pl = world("PALADIN", { "Judgement" })
 pl.hidemax, pl.limit, pl.classlimits = true, 4, "SHAMAN=12"
 s = session(pl)
