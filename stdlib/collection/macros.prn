@@ -147,8 +147,16 @@
 ;;   DruWrath     Wrath; shift: Starfire
 ;;   DruMoonfire  Moonfire; shift: Insect Swarm
 ;;   DruRoots     Entangling Roots; shift: Hibernate (beasts and dragonkin)
-;;   DruClaw      Mangle, else Claw, starting the fight
-;;   DruBear      Bear Form (Dire once learned); DruCat Cat Form; DruTravel Travel Form; DruCaster back to caster
+;;   DruClaw      the cat builder: Cat Form when not a cat; stealthed: Pounce (Ravage once learned); shift: Shred;
+;;                else Mangle (Cat), or Claw before it
+;;   DruRake      Rake; shift: Tiger's Fury.   DruFinish  Ferocious Bite; shift: Rip
+;;   DruProwl     Cat Form when not a cat; Prowl; shift: Dash
+;;   DruMaul      the bear: Bear Form (Dire once learned) when not a bear; shift: Swipe; else Mangle (Bear), or Maul
+;;   DruBash      Bash; shift: Demoralizing Roar; ctrl: Frenzied Regeneration (Enrage before it)
+;;   DruTravel    Travel Form; shift: back to caster
+;;   DruGrowl     Growl; shift: Challenging Roar; ctrl: Feral Charge
+;;   DruFaerie    Faerie Fire (the feral one in cat or bear); shift: Hurricane. The offense was added 2026-11-15 (the
+;;                founder: "offensive druid macros"); the two least needed come last, in case a client caps at 18 slots.
 (defn macro-druid [] : Any
   (lua/array
     (lua/array "DruHeal" "#showtooltip\n/cancelform [form]\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Swiftmend|Regrowth|Healing Touch}; [mod:shift,@mouseover,help,nodead][mod:shift] {Healing Touch}; [@mouseover,help,nodead][help,nodead][@player] {Regrowth|Healing Touch}")
@@ -162,11 +170,15 @@
     (lua/array "DruWrath" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Starfire|Wrath}; [@mouseover,harm,nodead][] {Wrath}")
     (lua/array "DruMoonfire" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Insect Swarm|Moonfire}; [@mouseover,harm,nodead][] {Moonfire}")
     (lua/array "DruRoots" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Hibernate|Entangling Roots}; [@mouseover,harm,nodead][] {Entangling Roots}")
-    (lua/array "DruClaw" "#showtooltip\n/startattack\n/cast {Mangle|Claw}")
-    (lua/array "DruBear" "#showtooltip\n/cast {Dire Bear Form|Bear Form}")
-    (lua/array "DruCat" "#showtooltip\n/cast {Cat Form}")
-    (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")
-    (lua/array "DruCaster" "/cancelform")))
+    (lua/array "DruClaw" "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] {Cat Form}; [stealth] {Ravage|Pounce|Claw}; [mod:shift] {Shred|Claw}; {Mangle (Cat)|Claw}")
+    (lua/array "DruRake" "#showtooltip\n/startattack\n/cast [mod:shift] {Tiger's Fury|Rake}; [@mouseover,harm,nodead][] {Rake}")
+    (lua/array "DruFinish" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Rip|Ferocious Bite}; [@mouseover,harm,nodead][] {Ferocious Bite|Rip}")
+    (lua/array "DruProwl" "#showtooltip\n/cast [nostance:3] {Cat Form}; [mod:shift] {Dash|Prowl}; {Prowl}")
+    (lua/array "DruMaul" "#showtooltip\n/startattack [stance:1]\n/cast [nostance:1] {Dire Bear Form|Bear Form}; [mod:shift] {Swipe|Maul}; {Mangle (Bear)|Maul}")
+    (lua/array "DruBash" "#showtooltip\n/cast [mod:ctrl] {Frenzied Regeneration|Enrage|Bash}; [mod:shift] {Demoralizing Roar|Bash}; [@mouseover,harm,nodead][] {Bash}")
+    (lua/array "DruTravel" "#showtooltip\n/cancelform [mod:shift]\n/cast [nomod:shift] {Travel Form}")
+    (lua/array "DruGrowl" "#showtooltip\n/cast [mod:ctrl,@mouseover,harm,nodead][mod:ctrl] {Feral Charge|Growl}; [mod:shift] {Challenging Roar|Growl}; [@mouseover,harm,nodead][] {Growl}")
+    (lua/array "DruFaerie" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Hurricane|Faerie Fire}; [stance:1/3,@mouseover,harm,nodead][stance:1/3] {Faerie Fire (Feral)|Faerie Fire}; [@mouseover,harm,nodead][] {Faerie Fire}")))
 
 ;; WARRIOR -- stance-aware (classic stances: 1 Battle, 2 Defensive, 3 Berserker). The main strike is whichever
 ;; talent strike the character has, falling back to Heroic Strike; shift and ctrl pick the other stances.

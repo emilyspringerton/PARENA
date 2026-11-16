@@ -261,12 +261,13 @@ eq(#pr.char, 16, "and nothing is duplicated")
 for _, case in ipairs({
     { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor", 16 },
     { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon", 12 },
-    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild", 16 },
+    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild", 20 },
     { "WARRIOR", { "Heroic Strike", "Battle Stance", "Battle Shout", "Charge" }, "WarStrike", "Heroic Strike", 16 },
     { "ROGUE", { "Sinister Strike", "Stealth", "Eviscerate" }, "RogSinister", "Sinister Strike", 16 },
     { "HUNTER", { "Auto Shot", "Raptor Strike", "Aspect of the Monkey", "Track Beasts" }, "HunAspect", "Aspect of the Monkey", 16 },
 }) do
     local cw = world(case[1], case[2])
+    cw.max = 24   -- room for the druid's twenty; the 18-slot client is checked on its own below
     s = session(cw)
     out = s.ascend()
     eq(#cw.char, case[5], case[1] .. ": the whole set (" .. case[5] .. ") written on a fresh character")
@@ -275,10 +276,21 @@ for _, case in ipairs({
     for _, m in ipairs(cw.char) do if #m.name > 16 then named = false end end
     eq(named, true, case[1] .. ": every name fits the macro frame's 16 characters")
 end
-local dr = world("DRUID", {})
+-- a client with 18 character slots: the druid gets 18 of the 20, and the two least needed are the ones left out
+local d18 = world("DRUID", { "Claw", "Cat Form" })
+s = session(d18)
+out = s.ascend()
+eq(#d18.char, 18, "on a client with 18 character slots a druid gets 18 of the 20")
+has(out, "no slot free for: DruGrowl, DruFaerie", "and Growl and Faerie Fire, last in the set, are the two reported full")
+local dr = world("DRUID", { "Claw", "Cat Form", "Travel Form" })
 s = session(dr)
 s.ascend()
-eq(find(dr.char, "DruCaster").body, "/cancelform", "a macro with no spell choice is written as is")
+eq(find(dr.char, "DruClaw").body, "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] Cat Form; [stealth] Claw; [mod:shift] Claw; Claw", "a fresh cat: Claw is the builder, the opener and the shift strike until better is learned")
+eq(find(dr.char, "DruTravel").body, "#showtooltip\n/cancelform [mod:shift]\n/cast [nomod:shift] Travel Form", "Travel Form, and shift drops back to caster")
+local fc = world("DRUID", { "Claw", "Cat Form", "Pounce", "Shred", "Bear Form", "Maul", "Swipe", "Growl" })
+s = session(fc); s.ascend()
+eq(find(fc.char, "DruClaw").body, "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] Cat Form; [stealth] Pounce; [mod:shift] Shred; Claw", "once Pounce and Shred are learned the builder uses them")
+eq(find(fc.char, "DruMaul").body, "#showtooltip\n/startattack [stance:1]\n/cast [nostance:1] Bear Form; [mod:shift] Swipe; Maul", "the bear button: Bear Form, Swipe, Maul before Dire Bear and Mangle")
 
 -- ===== warrior, rogue, hunter: the class-specific conditionals survive resolution ==========================
 local wa = world("WARRIOR", { "Bloodthirst", "Heroic Strike", "Charge", "Battle Stance" })
@@ -314,7 +326,7 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    local want = class == "SHAMAN" and 12 or 16   -- the founder's twelve heavier shaman macros
+    local want = class == "SHAMAN" and 12 or class == "DRUID" and 20 or 16   -- the founder's twelve heavier shaman macros
     eq(#set, want, class .. ": " .. want .. " macros")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
