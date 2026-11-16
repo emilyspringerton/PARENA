@@ -102,45 +102,83 @@
     (lua/array "MagFood" "#showtooltip\n/cast {Conjure Refreshment|Conjure Food}")
     (lua/array "MagEvocate" "#showtooltip\n/cast {Evocation}")))
 
-;; SHAMAN -- shocks, heals, weapons, shields and one macro per totem element (shift picks the other totem).
+;; SHAMAN -- twelve, every one doing several jobs through modifiers (shift, ctrl), so the whole kit fits in twelve
+;; buttons (the founder: "extensive sham macros like 12 of em"). Enemy spells go to your mouseover, else your target;
+;; heals and cures to your mouseover friend, else your friendly target, else yourself.
+;;   ShaBolt      Lightning Bolt (starts the fight); shift: Chain Lightning
+;;   ShaShock     Earth Shock; shift: Frost Shock (slow a runner); ctrl: Flame Shock (the burn)
+;;   ShaKick      stop your cast and interrupt: Wind Shear where it exists, else Earth Shock
+;;   ShaPurge     Purge your mouseover enemy, else your target; shift: always your target
+;;   ShaHeal      the quick heal; shift: the big Healing Wave; ctrl: Chain Heal
+;;   ShaCure      cure poison; shift: cure disease (newer clients: their one cleanse)
+;;   ShaWeapon    the weapon imbue (Windfury, else Rockbiter); shift: Flametongue; ctrl: Frostbrand
+;;   ShaShield    Lightning Shield; shift: Water Shield where it exists
+;;   ShaEarth     the earth totem (Stoneskin, else Strength of Earth); shift: Earthbind; ctrl: Tremor
+;;   ShaFire      Searing Totem; shift: Fire Nova Totem; ctrl: Magma Totem
+;;   ShaWater     Healing Stream Totem; shift: Mana Spring Totem; ctrl: Poison Cleansing Totem
+;;   ShaAir       Windfury/Grace of Air Totem; shift: Grounding Totem; ctrl: Ghost Wolf (out of the fight: travel)
 (defn macro-shaman [] : Any
   (lua/array
-    (lua/array "ShaBolt" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Lightning Bolt}")
-    (lua/array "ShaChain" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Chain Lightning}")
-    (lua/array "ShaShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Earth Shock}")
-    (lua/array "ShaFrostShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Frost Shock}")
-    (lua/array "ShaFlameShock" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Flame Shock}")
-    (lua/array "ShaPurge" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Purge}")
-    (lua/array "ShaHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Wave}")
-    (lua/array "ShaQuickHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
-    (lua/array "ShaChainHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Chain Heal}")
-    (lua/array "ShaCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Purify Spirit|Cleanse Spirit|Cure Poison}")
-    (lua/array "ShaWeapon" "#showtooltip\n/cast [mod:shift] {Flametongue Weapon}; {Windfury Weapon|Rockbiter Weapon}")
+    (lua/array "ShaBolt" "#showtooltip\n/startattack [@mouseover,harm,nodead][harm,nodead]\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Chain Lightning|Lightning Bolt}; [@mouseover,harm,nodead][] {Lightning Bolt}")
+    (lua/array "ShaShock" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Frost Shock|Earth Shock}; [mod:ctrl,@mouseover,harm,nodead][mod:ctrl] {Flame Shock|Earth Shock}; [@mouseover,harm,nodead][] {Earth Shock}")
+    (lua/array "ShaKick" "#showtooltip\n/stopcasting\n/cast [@mouseover,harm,nodead][] {Wind Shear|Earth Shock}")
+    (lua/array "ShaPurge" "#showtooltip\n/cast [mod:shift,harm,nodead] {Purge}; [@mouseover,harm,nodead][] {Purge}")
+    (lua/array "ShaHeal" "#showtooltip\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Chain Heal|Healing Wave}; [mod:shift,@mouseover,help,nodead][mod:shift] {Healing Wave};[@mouseover,help,nodead][help,nodead][@player] {Healing Surge|Lesser Healing Wave|Healing Wave}")
+    (lua/array "ShaCure" "#showtooltip\n/cast [mod:shift,@mouseover,help,nodead][mod:shift,help,nodead][mod:shift,@player] {Cure Disease|Cleanse Spirit|Purify Spirit}; [@mouseover,help,nodead][help,nodead][@player] {Cure Poison|Cleanse Spirit|Purify Spirit}")
+    (lua/array "ShaWeapon" "#showtooltip\n/cast [mod:shift] {Flametongue Weapon|Rockbiter Weapon}; [mod:ctrl] {Frostbrand Weapon|Rockbiter Weapon}; {Windfury Weapon|Rockbiter Weapon}")
     (lua/array "ShaShield" "#showtooltip\n/cast [mod:shift] {Water Shield|Lightning Shield}; {Lightning Shield}")
-    (lua/array "ShaGhost" "#showtooltip\n/cast {Ghost Wolf}")
-    (lua/array "ShaEarthTotem" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
-    (lua/array "ShaFireTotem" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem}; {Searing Totem}")
-    (lua/array "ShaWaterTotem" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem}; {Healing Stream Totem}")))
+    (lua/array "ShaEarth" "#showtooltip\n/cast [mod:shift] {Earthbind Totem}; [mod:ctrl] {Tremor Totem|Earthbind Totem}; {Stoneskin Totem|Strength of Earth Totem}")
+    (lua/array "ShaFire" "#showtooltip\n/cast [mod:shift] {Fire Nova Totem|Searing Totem}; [mod:ctrl] {Magma Totem|Searing Totem}; {Searing Totem}")
+    (lua/array "ShaWater" "#showtooltip\n/cast [mod:shift] {Mana Spring Totem|Healing Stream Totem}; [mod:ctrl] {Poison Cleansing Totem|Healing Stream Totem}; {Healing Stream Totem}")
+    (lua/array "ShaAir" "#showtooltip\n/cast [mod:ctrl,nocombat] {Ghost Wolf}; [mod:shift] {Grounding Totem|Windfury Totem}; {Windfury Totem|Grace of Air Totem|Ghost Wolf}")))
 
-;; DRUID -- caster damage, roots, heals, buffs, cure, the forms, and a way back to caster form.
+;; DRUID -- healer first (the founder: "include healing druid macros"), then damage and the forms. Every heal and
+;; cure drops cat/bear/travel form first, so it casts from any form. Friendly spells go to your mouseover friend,
+;; else your friendly target, else yourself; enemy spells to your mouseover enemy, else your target.
+;;   DruHeal      Regrowth (the quick heal; Healing Touch before it is learned); shift: Healing Touch, the big one;
+;;                ctrl: Swiftmend
+;;   DruRejuv     Rejuvenation; shift: Lifebloom; ctrl: Wild Growth (each falls back to Rejuvenation)
+;;   DruNSHeal    the emergency button: Nature's Swiftness, then an instant Healing Touch
+;;   DruTranq     Tranquility (the group heal); shift: Barkskin on yourself
+;;   DruCure      remove a curse; shift: cure poison (newer clients: their one cleanse)
+;;   DruInnervate Innervate your friend, else yourself
+;;   DruRebirth   battle-rez your dead mouseover/target; out of combat: Revive where it exists
+;;   DruMark      Mark/Gift of the Wild; shift: Thorns
+;;   DruWrath     Wrath; shift: Starfire
+;;   DruMoonfire  Moonfire; shift: Insect Swarm
+;;   DruRoots     Entangling Roots; shift: Hibernate (beasts and dragonkin)
+;;   DruClaw      the cat builder: Cat Form when not a cat; stealthed: Pounce (Ravage once learned); shift: Shred;
+;;                else Mangle (Cat), or Claw before it
+;;   DruRake      Rake; shift: Tiger's Fury.   DruFinish  Ferocious Bite; shift: Rip
+;;   DruProwl     Cat Form when not a cat; Prowl; shift: Dash
+;;   DruMaul      the bear: Bear Form (Dire once learned) when not a bear; shift: Swipe; else Mangle (Bear), or Maul
+;;   DruBash      Bash; shift: Demoralizing Roar; ctrl: Frenzied Regeneration (Enrage before it)
+;;   DruTravel    Travel Form; shift: back to caster
+;;   DruGrowl     Growl; shift: Challenging Roar; ctrl: Feral Charge
+;;   DruFaerie    Faerie Fire (the feral one in cat or bear); shift: Hurricane. The offense was added 2026-11-15 (the
+;;                founder: "offensive druid macros"); the two least needed come last, in case a client caps at 18 slots.
 (defn macro-druid [] : Any
   (lua/array
-    (lua/array "DruWrath" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Wrath}")
-    (lua/array "DruMoonfire" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Moonfire}")
-    (lua/array "DruRoots" "#showtooltip\n/cast [@mouseover,harm,nodead][] {Entangling Roots}")
-    (lua/array "DruClaw" "#showtooltip\n/startattack\n/cast {Mangle|Claw}")
-    (lua/array "DruHeal" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch|Regrowth}")
-    (lua/array "DruRegrowth" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Regrowth}")
-    (lua/array "DruRejuv" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
-    (lua/array "DruMark" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
-    (lua/array "DruThorns" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Thorns}")
-    (lua/array "DruCure" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse|Abolish Poison|Cure Poison}")
-    (lua/array "DruInnervate" "#showtooltip\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
-    (lua/array "DruRebirth" "#showtooltip\n/cast [@mouseover,help,dead][help,dead] {Rebirth}")
-    (lua/array "DruBear" "#showtooltip\n/cast {Dire Bear Form|Bear Form}")
-    (lua/array "DruCat" "#showtooltip\n/cast {Cat Form}")
-    (lua/array "DruTravel" "#showtooltip\n/cast {Travel Form}")
-    (lua/array "DruCaster" "/cancelform")))
+    (lua/array "DruHeal" "#showtooltip\n/cancelform [form]\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Swiftmend|Regrowth|Healing Touch}; [mod:shift,@mouseover,help,nodead][mod:shift] {Healing Touch}; [@mouseover,help,nodead][help,nodead][@player] {Regrowth|Healing Touch}")
+    (lua/array "DruRejuv" "#showtooltip\n/cancelform [form]\n/cast [mod:ctrl,@mouseover,help,nodead][mod:ctrl] {Wild Growth|Rejuvenation}; [mod:shift,@mouseover,help,nodead][mod:shift] {Lifebloom|Rejuvenation}; [@mouseover,help,nodead][help,nodead][@player] {Rejuvenation}")
+    (lua/array "DruNSHeal" "#showtooltip {Healing Touch}\n/cancelform [form]\n/cast {Nature's Swiftness|Healing Touch}\n/cast [@mouseover,help,nodead][help,nodead][@player] {Healing Touch}")
+    (lua/array "DruTranq" "#showtooltip\n/cast [mod:shift] {Barkskin|Tranquility}; {Tranquility}")
+    (lua/array "DruCure" "#showtooltip\n/cancelform [form]\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Abolish Poison|Cure Poison|Remove Corruption}; [@mouseover,help,nodead][help,nodead][@player] {Remove Corruption|Remove Curse}")
+    (lua/array "DruInnervate" "#showtooltip\n/cancelform [form]\n/cast [@mouseover,help,nodead][help,nodead][@player] {Innervate}")
+    (lua/array "DruRebirth" "#showtooltip\n/cancelform [form]\n/cast [nocombat,@mouseover,help,dead][nocombat,help,dead] {Revive|Rebirth}; [@mouseover,help,dead][help,dead] {Rebirth}")
+    (lua/array "DruMark" "#showtooltip\n/cancelform [form]\n/cast [mod:shift,@mouseover,help,nodead][mod:shift] {Thorns}; [@mouseover,help,nodead][help,nodead][@player] {Gift of the Wild|Mark of the Wild}")
+    (lua/array "DruWrath" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Starfire|Wrath}; [@mouseover,harm,nodead][] {Wrath}")
+    (lua/array "DruMoonfire" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Insect Swarm|Moonfire}; [@mouseover,harm,nodead][] {Moonfire}")
+    (lua/array "DruRoots" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Hibernate|Entangling Roots}; [@mouseover,harm,nodead][] {Entangling Roots}")
+    (lua/array "DruClaw" "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] {Cat Form}; [stealth] {Ravage|Pounce|Claw}; [mod:shift] {Shred|Claw}; {Mangle (Cat)|Claw}")
+    (lua/array "DruRake" "#showtooltip\n/startattack\n/cast [mod:shift] {Tiger's Fury|Rake}; [@mouseover,harm,nodead][] {Rake}")
+    (lua/array "DruFinish" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Rip|Ferocious Bite}; [@mouseover,harm,nodead][] {Ferocious Bite|Rip}")
+    (lua/array "DruProwl" "#showtooltip\n/cast [nostance:3] {Cat Form}; [mod:shift] {Dash|Prowl}; {Prowl}")
+    (lua/array "DruMaul" "#showtooltip\n/startattack [stance:1]\n/cast [nostance:1] {Dire Bear Form|Bear Form}; [mod:shift] {Swipe|Maul}; {Mangle (Bear)|Maul}")
+    (lua/array "DruBash" "#showtooltip\n/cast [mod:ctrl] {Frenzied Regeneration|Enrage|Bash}; [mod:shift] {Demoralizing Roar|Bash}; [@mouseover,harm,nodead][] {Bash}")
+    (lua/array "DruTravel" "#showtooltip\n/cancelform [mod:shift]\n/cast [nomod:shift] {Travel Form}")
+    (lua/array "DruGrowl" "#showtooltip\n/cast [mod:ctrl,@mouseover,harm,nodead][mod:ctrl] {Feral Charge|Growl}; [mod:shift] {Challenging Roar|Growl}; [@mouseover,harm,nodead][] {Growl}")
+    (lua/array "DruFaerie" "#showtooltip\n/cast [mod:shift,@mouseover,harm,nodead][mod:shift] {Hurricane|Faerie Fire}; [stance:1/3,@mouseover,harm,nodead][stance:1/3] {Faerie Fire (Feral)|Faerie Fire}; [@mouseover,harm,nodead][] {Faerie Fire}")))
 
 ;; WARRIOR -- stance-aware (classic stances: 1 Battle, 2 Defensive, 3 Berserker). The main strike is whichever
 ;; talent strike the character has, falling back to Heroic Strike; shift and ctrl pick the other stances.

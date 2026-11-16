@@ -41,7 +41,7 @@ local function session(w)
     env.GetRealmName = function() return "Forever" end
     env.UnitClass = function() return w.class:sub(1, 1) .. w.class:sub(2):lower(), w.class end
     env.InCombatLockdown = function() return w.combat end
-    env.MAX_CHARACTER_MACROS = w.max
+    if not w.hidemax then env.MAX_CHARACTER_MACROS = w.max end   -- WoW Forever: the global is absent
     env.C_Spell = { GetSpellInfo = function(name) if w.known[name] then return { name = name } end end }
     local function all() local t = {}; for _, m in ipairs(w.account) do t[#t + 1] = m end; for _, m in ipairs(w.char) do t[#t + 1] = m end; return t end
     env.GetNumMacros = function() return #w.account, #w.char end
@@ -72,7 +72,20 @@ local function session(w)
         local dir = client .. "/AddOns/" .. addon
         local ns = {}
         for _, file in ipairs(toc_files(dir, addon)) do
-            local chunk = assert(loadfile(dir .. "/" .. file)); setfenv(chunk, env); chunk(addon, ns)
+            local chunk
+            if w.limit and file == "macrosync.lua" then   -- stand in for a build packaged with MACROSYNC_LIMIT
+                local fh = assert(io.open(dir .. "/" .. file, "rb")); local src = fh:read("*a"); fh:close()
+                local n; src, n = src:gsub('tonumber%("%d+"%)', 'tonumber("' .. w.limit .. '")', 1)
+                assert(n == 1, "the packaged limit placeholder was not found")
+                if w.classlimits then   -- and MACROSYNC_CLASS_LIMITS
+                    src, n = src:gsub('%(""%):gmatch', '("' .. w.classlimits .. '"):gmatch', 1)
+                    assert(n == 1, "the packaged class-limits placeholder was not found")
+                end
+                chunk = assert(loadstring(src, "=macrosync.lua"))
+            else
+                chunk = assert(loadfile(dir .. "/" .. file))
+            end
+            setfenv(chunk, env); chunk(addon, ns)
         end
     end
     function s.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end end end
@@ -153,6 +166,68 @@ out = s.ascend()
 eq(#f.char, 18, "only the one free slot is used")
 has(out, "no slot free for: ", "the rest are reported, never forced")
 
+-- WoW Forever: no MAX_CHARACTER_MACROS. Nothing is assumed; the client's own CreateMacro decides.
+local fv = world("PALADIN", { "Judgement", "Holy Light" })
+fv.hidemax = true
+s = session(fv)
+out = s.ascend()
+eq(#fv.char > 0, true, "with no slot-limit global, macros are still written (the bug: none were)")
+eq(out:find("no slot free for: ", 1, true), nil, "and nothing is falsely reported full")
+local fvn = #fv.char
+
+local ff = world("PALADIN", { "Judgement", "Holy Light", "Devotion Aura" })
+ff.hidemax = true
+for i = 1, 17 do ff.char[i] = { name = "Mine" .. i, body = "/wave" } end
+s = session(ff)
+out = s.ascend()
+eq(#ff.char, 18, "with no global, the client's refusal stops it at the real limit")
+has(out, "no slot free for: ", "and only the client's refusal counts as full")
+eq(ff.char[1].name, "Mine1", "the player's own macros are untouched")
+
+-- MACROSYNC_LIMIT=4: only the first four of the set are written, and nothing else.
+local l4 = world("PALADIN", { "Judgement", "Holy Light" })
+l4.hidemax, l4.limit = true, 4
+s = session(l4)
+out = s.ascend()
+eq(names(l4.char), "PalJudge,PalSeal,PalHeal,PalBigHeal", "a limit of 4 writes exactly the first four")
+has(out, "4 written", "and says so")
+l4.limit = 2
+l4.saved.MacroSyncDB = s.env.MacroSyncDB          -- the saved list of macros MacroSync wrote
+s = session(l4)
+s.ascend()
+eq(names(l4.char), "PalJudge,PalSeal", "lowering the limit prunes the ones MacroSync wrote past it")
+
+-- MACROSYNC_LIMIT=4 with MACROSYNC_CLASS_LIMITS=SHAMAN=12: shamans get all twelve, everyone else stays at four.
+local sh = world("SHAMAN", { "Lightning Bolt", "Earth Shock", "Healing Wave", "Rockbiter Weapon" })
+sh.hidemax, sh.limit, sh.classlimits = true, 4, "SHAMAN=12"
+s = session(sh)
+out = s.ascend()
+eq(#sh.char, 12, "a shaman gets all twelve under SHAMAN=12")
+eq(names(sh.char), "ShaBolt,ShaShock,ShaKick,ShaPurge,ShaHeal,ShaCure,ShaWeapon,ShaShield,ShaEarth,ShaFire,ShaWater,ShaAir", "in the set's order")
+local fit = true
+for _, m in ipairs(sh.char) do if #m.body > 255 then fit = false end end
+eq(fit, true, "every shaman macro fits the client's 255-character body")
+eq(find(sh.char, "ShaShock").body:find("[mod:shift,@mouseover,harm,nodead][mod:shift] Earth Shock", 1, true) ~= nil, true,
+   "a shock not learned yet falls back to Earth Shock")
+-- DRUID=8: the healer's eight come first; a fresh druid's heal falls back to Healing Touch, and every heal leaves form
+local hd = world("DRUID", { "Healing Touch", "Rejuvenation", "Mark of the Wild", "Wrath" })
+hd.hidemax, hd.limit, hd.classlimits = true, 4, "SHAMAN=12,DRUID=8"
+s = session(hd)
+s.ascend()
+eq(names(hd.char), "DruHeal,DruRejuv,DruNSHeal,DruTranq,DruCure,DruInnervate,DruRebirth,DruMark", "a healing druid's eight, heals first")
+local dh = find(hd.char, "DruHeal").body
+eq(dh:find("[@mouseover,help,nodead][help,nodead][@player] Healing Touch", 1, true) ~= nil, true, "the quick heal is Healing Touch until Regrowth is learned")
+eq(dh:find("/cancelform [form]", 1, true) ~= nil, true, "and it leaves cat or bear form to cast")
+local dfit = true
+for _, m in ipairs(hd.char) do if #m.body > 255 then dfit = false end end
+eq(dfit, true, "every druid macro fits 255 characters")
+
+local pl = world("PALADIN", { "Judgement" })
+pl.hidemax, pl.limit, pl.classlimits = true, 4, "SHAMAN=12"
+s = session(pl)
+s.ascend()
+eq(#pl.char, 4, "a paladin stays at four")
+
 local t = world("PALADIN", { "Judgement" })
 t.cut = 20
 s = session(t)
@@ -184,26 +259,38 @@ eq(#pr.char, 16, "and nothing is duplicated")
 
 -- ===== mage, shaman, druid: every set is complete on a fresh character, and choices pick the best known ======
 for _, case in ipairs({
-    { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor" },
-    { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon" },
-    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild" },
-    { "WARRIOR", { "Heroic Strike", "Battle Stance", "Battle Shout", "Charge" }, "WarStrike", "Heroic Strike" },
-    { "ROGUE", { "Sinister Strike", "Stealth", "Eviscerate" }, "RogSinister", "Sinister Strike" },
-    { "HUNTER", { "Auto Shot", "Raptor Strike", "Aspect of the Monkey", "Track Beasts" }, "HunAspect", "Aspect of the Monkey" },
+    { "MAGE", { "Fireball", "Frost Armor" }, "MagArmor", "Frost Armor", 16 },
+    { "SHAMAN", { "Lightning Bolt", "Rockbiter Weapon", "Healing Wave" }, "ShaWeapon", "Rockbiter Weapon", 12 },
+    { "DRUID", { "Wrath", "Healing Touch", "Mark of the Wild" }, "DruMark", "Mark of the Wild", 20 },
+    { "WARRIOR", { "Heroic Strike", "Battle Stance", "Battle Shout", "Charge" }, "WarStrike", "Heroic Strike", 16 },
+    { "ROGUE", { "Sinister Strike", "Stealth", "Eviscerate" }, "RogSinister", "Sinister Strike", 16 },
+    { "HUNTER", { "Auto Shot", "Raptor Strike", "Aspect of the Monkey", "Track Beasts" }, "HunAspect", "Aspect of the Monkey", 16 },
 }) do
     local cw = world(case[1], case[2])
+    cw.max = 24   -- room for the druid's twenty; the 18-slot client is checked on its own below
     s = session(cw)
     out = s.ascend()
-    eq(#cw.char, 16, case[1] .. ": all sixteen written on a fresh character")
+    eq(#cw.char, case[5], case[1] .. ": the whole set (" .. case[5] .. ") written on a fresh character")
     eq(find(cw.char, case[3]).body:find(case[4], 1, true) ~= nil, true, case[1] .. ": " .. case[3] .. " uses the known " .. case[4])
     local named = true
     for _, m in ipairs(cw.char) do if #m.name > 16 then named = false end end
     eq(named, true, case[1] .. ": every name fits the macro frame's 16 characters")
 end
-local dr = world("DRUID", {})
+-- a client with 18 character slots: the druid gets 18 of the 20, and the two least needed are the ones left out
+local d18 = world("DRUID", { "Claw", "Cat Form" })
+s = session(d18)
+out = s.ascend()
+eq(#d18.char, 18, "on a client with 18 character slots a druid gets 18 of the 20")
+has(out, "no slot free for: DruGrowl, DruFaerie", "and Growl and Faerie Fire, last in the set, are the two reported full")
+local dr = world("DRUID", { "Claw", "Cat Form", "Travel Form" })
 s = session(dr)
 s.ascend()
-eq(find(dr.char, "DruCaster").body, "/cancelform", "a macro with no spell choice is written as is")
+eq(find(dr.char, "DruClaw").body, "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] Cat Form; [stealth] Claw; [mod:shift] Claw; Claw", "a fresh cat: Claw is the builder, the opener and the shift strike until better is learned")
+eq(find(dr.char, "DruTravel").body, "#showtooltip\n/cancelform [mod:shift]\n/cast [nomod:shift] Travel Form", "Travel Form, and shift drops back to caster")
+local fc = world("DRUID", { "Claw", "Cat Form", "Pounce", "Shred", "Bear Form", "Maul", "Swipe", "Growl" })
+s = session(fc); s.ascend()
+eq(find(fc.char, "DruClaw").body, "#showtooltip\n/startattack [stance:3]\n/cast [nostance:3] Cat Form; [stealth] Pounce; [mod:shift] Shred; Claw", "once Pounce and Shred are learned the builder uses them")
+eq(find(fc.char, "DruMaul").body, "#showtooltip\n/startattack [stance:1]\n/cast [nostance:1] Bear Form; [mod:shift] Swipe; Maul", "the bear button: Bear Form, Swipe, Maul before Dire Bear and Mangle")
 
 -- ===== warrior, rogue, hunter: the class-specific conditionals survive resolution ==========================
 local wa = world("WARRIOR", { "Bloodthirst", "Heroic Strike", "Charge", "Battle Stance" })
@@ -239,7 +326,8 @@ for _, class in ipairs(classes) do
         end)
         if #longest > 255 then len_ok = false end
     end
-    eq(#set, 16, class .. ": sixteen macros")
+    local want = class == "SHAMAN" and 12 or class == "DRUID" and 20 or 16   -- the founder's twelve heavier shaman macros
+    eq(#set, want, class .. ": " .. want .. " macros")
     eq(names_ok, true, class .. ": names unique and at most 16 characters")
     eq(tag_ok, true, class .. ": every name carries the class tag " .. tostring(tag))
     eq(len_ok, true, class .. ": every body fits 255 characters")
