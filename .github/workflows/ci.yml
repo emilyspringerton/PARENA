@@ -964,8 +964,15 @@ jobs:
           # superseded by this later, explicit direction.
           assets=(dist/parena editor-demo-linux-x86_64.tar.gz editor-demo-windows-x86_64.zip)
           # The Collection client, when collection_client packaged it (see that job's WOW_INTERFACE note).
+          # Each one also goes up under the fixed name CollectionOfValue.zip, so a teammate always has one URL:
+          #   https://github.com/emilyspringerton/PARENA/releases/latest/download/CollectionOfValue.zip
+          # (docs/COLLECTION_SHARING.md; scripts/install-collection.ps1 downloads from it).
           for z in dist-collection/CollectionOfValue-*.zip; do
-            if [ -f "$z" ]; then assets+=("$z"); fi
+            if [ -f "$z" ]; then
+              assets+=("$z")
+              cp "$z" dist-collection/CollectionOfValue.zip
+              assets+=(dist-collection/CollectionOfValue.zip)
+            fi
           done
           gh release create "$NEXT_VERSION" \
             "${assets[@]}" \
