@@ -1,0 +1,216 @@
+;; tools/hoard/hoard.prn -- the Hoard's local web server, in PARENA: one page that shows every character's gear,
+;; bags, bank and mail, served from this machine at http://127.0.0.1:<HOARD_PORT>/ (default 8765). It needs no login
+;; and no public host. Founder, 2026-11-17: "web hosting still blocked, lets get self hosting working ... we want a
+;; gui web interface too", and "all mods first parena first dev".
+;;
+;; Routes:
+;;   GET /               tools/hoard/page.html (read from HOARD_LIB on every request)
+;;   GET /api/hoard      the ledger as JSON  } both computed fresh on every request by the PARENA ledger
+;;   GET /api/hoard.csv  the ledger as CSV   } (stdlib/collection/ledger.prn), run under Lua 5.1
+;;
+;; Why the ledger runs as a child process: it reads Fafnir's Bed's SavedVariables, which are Lua tables, and the
+;; ledger is a Lua-target PARENA module run through the journal reader's sandboxed loader (the same path the
+;; Collection's other readers take). This server is a C-target PARENA program; it composes the command, runs it with
+;; process/run-capture and answers with what comes back.
+;;
+;; It binds 127.0.0.1 only (net/tcp's tcp-listen-local): this is your play data, so the LAN never sees it and
+;; Windows asks no firewall question.
+;;
+;; Host boundary (hoard_host.c/.h): only what a PARENA program cannot do yet. That is arenas, env, reading a file,
+;; listing Account/*/SavedVariables/<addon>.lua with the newest modification time, and shell-quoting for the
+;; platform's popen. Routing, configuration, the command and every response are PARENA below.
+;;
+;; Env: WOW_WTF_DIR (required), HOARD_LIB (required: folder holding page.html, ledger.lua, ledger_export.lua and
+;; journal_reader.lua; scripts/hoard.sh fills it), HOARD_LUA (required: a Lua 5.1 interpreter),
+;; FAFNIR_ADDON / FAFNIR_VAR (FafnirsBed / FafnirsBedDB), HOARD_PORT (8765).
+
+(module hoard)
+(import string)
+(import net/tcp)
+(import net/http_server)
+(import process)
+
+(export hoard-run)
+
+;; ---- configuration (set once in setup, allocated in the never-reset state arena) --------------------------------
+(def wtf-dir "")
+(def lib-dir "")
+(def lua-bin "")
+(def addon "")
+(def sv-var "")
+
+;; ---- host boundary -----------------------------------------------------------------------------------------------
+(defn host-env [(key : String @ Region) (fallback : String @ Region) (dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "hd_env(key, fallback, dest)")})
+
+(defn state-arena [] : Arena @ Region
+  #target
+  {:c (inline-c "hd_state_arena()")})
+
+(defn request-arena [] : Arena @ Region
+  #target
+  {:c (inline-c "hd_request_arena()")})
+
+(defn request-reset [] : I32
+  #target
+  {:c (inline-c "hd_request_reset()")})
+
+(defn host-read [(path : String @ Region) (dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "hd_read_file(path, dest)")})
+
+;; "account\tpath\n" per Account/<account>/SavedVariables/<addon>.lua that exists.
+(defn host-sv-list [(wtf : String @ Region) (name : String @ Region) (dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "hd_sv_list(wtf, name, dest)")})
+
+;; The newest of those files' modification times, unix seconds (0 when there are none).
+(defn host-sv-saved-at [(wtf : String @ Region) (name : String @ Region)] : I32
+  #target
+  {:c (inline-c "hd_sv_saved_at(wtf, name)")})
+
+;; The whole command as the platform's popen needs it (Windows' cmd /c strips one outer pair of quotes).
+(defn host-shell-wrap [(cmd : String @ Region) (dest : Arena @ Region)] : String @ Region
+  #target
+  {:c (inline-c "hd_shell_wrap(cmd, dest)")})
+
+;; ---- small helpers -----------------------------------------------------------------------------------------------
+(defn cat3 [(a : String @ Region) (b : String @ Region) (c : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (string/concat (string/concat a b dest) c dest))
+
+(defn quoted [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (cat3 "\"" s "\"" dest))
+
+(defn digit? [(c : I32)] : Bool
+  (and (>= c 48) (<= c 57)))
+
+(defn read-int [(s : String @ Region) (i : I32) (acc : I32)] : I32
+  (if (>= i (string/length s))
+    acc
+    (if (digit? (string/char-at s i))
+      (read-int s (+ i 1) (+ (* acc 10) (- (string/char-at s i) 48)))
+      acc)))
+
+(defn port-of [(s : String @ Region)] : I32
+  (let [n (read-int s 0 0)]
+    (if (and (> n 0) (< n 65536)) n 8765)))
+
+;; ---- the ledger command ------------------------------------------------------------------------------------------
+;; One "account\tpath\n" line per file -> ` "account" "path"` per file, appended to `acc`.
+(defn sv-args [(listing : String @ Region) (from : I32) (acc : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [nl (http_server/find-sub listing "\n" from dest)]
+    (if (< nl 0)
+      acc
+      (let [line (string/substring listing from nl dest)
+            tab (http_server/find-sub line "\t" 0 dest)]
+        (if (< tab 0)
+          (sv-args listing (+ nl 1) acc dest)
+          (sv-args listing (+ nl 1)
+                   (string/concat acc
+                     (cat3 " " (quoted (string/substring line 0 tab dest) dest)
+                           (string/concat " " (quoted (string/substring line (+ tab 1) (string/length line) dest) dest) dest)
+                           dest)
+                     dest)
+                   dest))))))
+
+(defn lib-file [(name : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (quoted (cat3 lib-dir "/" name dest) dest))
+
+;; lua5.1 ledger_export.lua journal_reader.lua ledger.lua <mode> <var> <savedAt> ["account" "file"]...
+(defn ledger-cmd [(mode : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [files (sv-args (host-sv-list wtf-dir addon dest) 0 "" dest)
+        saved (string/i32-to-string (host-sv-saved-at wtf-dir addon) dest)]
+    (host-shell-wrap
+      (string/concat
+        (cat3 (quoted lua-bin dest) " " (lib-file "ledger_export.lua" dest) dest)
+        (string/concat
+          (cat3 " " (lib-file "journal_reader.lua" dest) " " dest)
+          (string/concat
+            (cat3 (lib-file "ledger.lua" dest) " " mode dest)
+            (string/concat (cat3 " " (quoted sv-var dest) " " dest) (string/concat saved files dest) dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+(defn ledger-response [(mode : String @ Region) (content-type : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [out (process/run-capture (ledger-cmd mode dest) dest)
+        code (process/run-capture-exit-code)]
+    (if (= code 0)
+      (http_server/response 200 content-type out dest)
+      (do
+        (println (string/concat "hoard: the ledger failed: " out dest))
+        (http_server/json-response 500
+          (cat3 "{\"error\":\"the ledger exited with " (string/i32-to-string code dest)
+                "; see the server window\"}" dest)
+          dest)))))
+
+(defn page-response [(dest : Arena @ Region)] : String @ Region
+  (let [path (cat3 lib-dir "/" "page.html" dest)
+        html (host-read path dest)]
+    (if (string/str-eq? html "")
+      (http_server/text-response 500 (string/concat "hoard: cannot read " path dest) dest)
+      (http_server/html-response 200 html dest))))
+
+;; ---- routing -----------------------------------------------------------------------------------------------------
+(defn route [(method : String @ Region) (path : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (not (string/str-eq? method "GET"))
+    (http_server/text-response 405 "read-only: GET only" dest)
+    (if (string/str-eq? path "/")
+      (page-response dest)
+      (if (string/str-eq? path "/api/hoard")
+        (ledger-response "json" "application/json; charset=utf-8" dest)
+        (if (string/str-eq? path "/api/hoard.csv")
+          (ledger-response "csv" "text/csv; charset=utf-8" dest)
+          (http_server/text-response 404 "not found" dest))))))
+
+(defn handle [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (route (http_server/parse-method raw dest) (http_server/parse-path raw dest) dest))
+
+(defn serve-one [(!stream : &mut TcpStream) (dest : Arena @ Region)] : I32
+  (let [raw (match (net/tcp/tcp-read !stream dest) ((Ok !text) !text) ((Err _) ""))]
+    (do
+      (net/tcp/tcp-write !stream (handle raw (request-arena)) dest)
+      (net/tcp/tcp-close !stream dest)
+      (request-reset)
+      0)))
+
+(defn serve-loop [(!listener : &mut TcpListener) (served : I32) (dest : Arena @ Region)] : I32
+  (match (net/tcp/tcp-accept !listener dest)
+    ((Ok !stream)
+      (do
+        (serve-one &mut !stream dest)
+        (serve-loop !listener (+ served 1) dest)))
+    ((Err _) (do (println "hoard: accept failed") 1))))
+
+;; Every required setting is checked before listening: a missing one is named, not guessed.
+(defn missing [] : String @ Region
+  (if (string/str-eq? wtf-dir "") "WOW_WTF_DIR"
+    (if (string/str-eq? lib-dir "") "HOARD_LIB"
+      (if (string/str-eq? lua-bin "") "HOARD_LUA" ""))))
+
+(defn setup [] : I32
+  (let [state (state-arena)]
+    (do
+      (set! wtf-dir (host-env "WOW_WTF_DIR" "" state))
+      (set! lib-dir (host-env "HOARD_LIB" "" state))
+      (set! lua-bin (host-env "HOARD_LUA" "" state))
+      (set! addon (host-env "FAFNIR_ADDON" "FafnirsBed" state))
+      (set! sv-var (host-env "FAFNIR_VAR" "FafnirsBedDB" state))
+      0)))
+
+(defn hoard-run [(dest : Arena @ Region)] : I32
+  (do
+    (setup)
+    (if (not (string/str-eq? (missing) ""))
+      (do (println (cat3 "hoard: " (missing) " is not set (scripts/hoard.sh sets it from collection-env.sh)" dest)) 2)
+      (let [port (port-of (host-env "HOARD_PORT" "8765" dest))]
+        (match (net/tcp/tcp-listen-local port dest)
+          ((Ok !listener)
+            (do
+              (println (cat3 "hoard: http://127.0.0.1:" (string/i32-to-string port dest)
+                             "/  (WoW saves on /reload and logout; the page follows)" dest))
+              (println (string/concat "hoard: reading " (string/concat wtf-dir (cat3 "/Account/*/SavedVariables/" addon ".lua" dest) dest) dest))
+              (serve-loop &!listener 0 dest)))
+          ((Err _) (do (println (cat3 "hoard: cannot listen on 127.0.0.1:" (string/i32-to-string port dest) " (already running?)" dest)) 1)))))))

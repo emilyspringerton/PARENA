@@ -1633,7 +1633,9 @@ static inline int tcp_connect_impl(const char *host, int port) {
     return fd;
 }
 
-static inline int tcp_listen_impl(int port) {
+/* tcp_listen_addr_impl -- loopback != 0 binds 127.0.0.1 only (tcp-listen-local: a tool serving the
+ * founder's own data must not be reachable from the LAN); 0 binds every interface (tcp-listen). */
+static inline int tcp_listen_addr_impl(int port, int loopback) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int opt = 1;
@@ -1641,12 +1643,14 @@ static inline int tcp_listen_impl(int port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = loopback ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
     addr.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
     if (listen(fd, 16) < 0) { close(fd); return -1; }
     return fd;
 }
+static inline int tcp_listen_impl(int port) { return tcp_listen_addr_impl(port, 0); }
+static inline int tcp_listen_local_impl(int port) { return tcp_listen_addr_impl(port, 1); }
 
 /* ---- stdlib/net/udp.prn real host glue (2026-09-11) -------------------
  * Real BSD UDP sockets -- closes the same real "FFI declared, host
@@ -3453,7 +3457,9 @@ static inline int tcp_connect_impl(const char *host, int port) {
     return (s == INVALID_SOCKET) ? -1 : (int)s;
 }
 
-static inline int tcp_listen_impl(int port) {
+/* tcp_listen_addr_impl -- loopback != 0 binds 127.0.0.1 only (tcp-listen-local: a tool serving the
+ * founder's own data must not be reachable from the LAN); 0 binds every interface (tcp-listen). */
+static inline int tcp_listen_addr_impl(int port, int loopback) {
     SOCKET s;
     int opt = 1;
     struct sockaddr_in addr;
@@ -3463,12 +3469,14 @@ static inline int tcp_listen_impl(int port) {
     (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, (int)sizeof opt);
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = loopback ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
     addr.sin_port = htons((u_short)port);
     if (bind(s, (const struct sockaddr *)&addr, (int)sizeof addr) != 0) { closesocket(s); return -1; }
     if (listen(s, 16) != 0) { closesocket(s); return -1; }
     return (int)s;
 }
+static inline int tcp_listen_impl(int port) { return tcp_listen_addr_impl(port, 0); }
+static inline int tcp_listen_local_impl(int port) { return tcp_listen_addr_impl(port, 1); }
 
 static inline int tcp_accept_impl(int listener_fd) {
     SOCKET a;

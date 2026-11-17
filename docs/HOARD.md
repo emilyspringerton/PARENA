@@ -4,18 +4,28 @@ One page, and one CSV, showing what every character holds: what they wear (slot 
 and mail, plus mail in flight between your characters. It runs on your PC at `http://127.0.0.1:8765/`. There's
 no login and no public host; it only reads the files WoW already writes.
 
-How it works: **Fafnir's Bed** (a Collection REFLUX mod) writes each character's gear into
-`WTF/Account/<account>/SavedVariables/FafnirsBed.lua`. `tools/hoard` reads that file for every account under
-`WOW_WTF_DIR`.
+How it works (all PARENA, "all mods first, PARENA first"):
+
+| piece | what | where |
+|---|---|---|
+| recorder | **Fafnir's Bed**, a Collection REFLUX mod. It writes each character's gear, bags, bank and mail into `WTF/Account/<account>/SavedVariables/FafnirsBed.lua`. | `stdlib/collection/inventory.prn` + `runtime/wow/fafnirs_bed.lua` |
+| ledger | Turns every account's file into one view, and that view into JSON or CSV. Built to Lua and run under Lua 5.1 with the journal reader's sandboxed loader. | `stdlib/collection/ledger.prn` + `runtime/wow/ledger_export.lua` |
+| server | Serves the page, `/api/hoard` (JSON) and `/api/hoard.csv`, bound to **127.0.0.1 only** (`net/tcp`'s `tcp-listen-local`). Built to C. | `tools/hoard/hoard.prn` + `hoard_host.c` (arenas, env, file listing only) |
+| page | Search and filter in the browser. | `tools/hoard/page.html` |
 
 ## Settings (env, from `MONOREPO/scripts/collection-env.sh`)
 
 | var | meaning |
 |---|---|
-| `WOW_WTF_DIR` | the client's `WTF` folder (**required**, no default in the tool) |
+| `WOW_WTF_DIR` | the client's `WTF` folder (**required**, no default in the tools) |
 | `WOW_ADDONS_DIR` | the client's `Interface/AddOns` folder (for `--install`) |
 | `FAFNIR_ADDON` / `FAFNIR_VAR` | addon folder / SavedVariables global (`FafnirsBed` / `FafnirsBedDB`) |
-| `HOARD_ADDR` | listen address, default `127.0.0.1:8765`; non-loopback refused unless `HOARD_ALLOW_LAN=1` |
+| `LUA51` | a Lua 5.1 interpreter (MSYS2 `mingw-w64-ucrt-x86_64-lua51`) |
+| `COLLECTION_TMP` | where `scripts/hoard.sh` builds the ledger and the server (outside the repo) |
+| `HOARD_PORT` | listen port, default `8765`. The server listens on 127.0.0.1 only, never the LAN. |
+
+`scripts/hoard.sh` also needs `gcc` (MSYS2 UCRT64) and the bootstrap compiler `.parena-bootstrap`, the same
+toolchain the rest of the Collection builds with.
 
 ## 1. Install the addon (once, and after each update)
 

@@ -39,7 +39,7 @@
 
 (module net/tcp)
 (import string)
-(export tcp-listen tcp-accept tcp-connect tcp-read tcp-write tcp-close TcpListener TcpStream NetError)
+(export tcp-listen tcp-listen-local tcp-accept tcp-connect tcp-read tcp-write tcp-close TcpListener TcpStream NetError)
 
 (defstruct TcpListener
   (fd : I32))
@@ -66,6 +66,11 @@
   : I32
   #target
   {:c (inline-c "tcp_listen_impl(port)")})
+
+(defn raw-listen-local [(port : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_listen_local_impl(port)")})
 
 (defn raw-accept [(listener-fd : I32)]
   : I32
@@ -104,6 +109,15 @@
 (defn tcp-listen [(port : I32) (dest : Arena @ Region)]
   : (Result TcpListener NetError) @ Region
   (let [fd (raw-listen port)]
+    (if (< fd 0)
+      (Err AddressInUse)
+      (Ok {:fd fd}))))
+
+;; tcp-listen-local -- tcp-listen bound to 127.0.0.1 only. For a tool that serves the user's own data
+;; (tools/hoard): reachable from this machine's browser, never from the LAN, and no firewall prompt.
+(defn tcp-listen-local [(port : I32) (dest : Arena @ Region)]
+  : (Result TcpListener NetError) @ Region
+  (let [fd (raw-listen-local port)]
     (if (< fd 0)
       (Err AddressInUse)
       (Ok {:fd fd}))))
