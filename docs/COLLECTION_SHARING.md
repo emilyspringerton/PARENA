@@ -51,7 +51,21 @@ powershell -ExecutionPolicy Bypass -File .\install-collection.ps1
 ```
 
 It downloads the latest `CollectionOfValue.zip`, replaces only the Collection's own addon folders, and leaves
-other addons alone. Two optional variables change that:
+other addons alone.
+
+The same script also installs the SHANKPIT client when `SHANKPIT_DIR` is set (on its own, or together with
+`WOW_ADDONS_DIR`). It reads SHANKPIT's latest release from GitHub's public API, downloads the Windows client
+(`ShankPit_Client_build_<n>_<sha>.zip`, about 55 MB), and unpacks it into `SHANKPIT_DIR\ShankPit-<tag>`. Then it
+prints the path to `shank_lobby.exe`:
+
+```powershell
+$env:SHANKPIT_DIR = 'D:\Games\SHANKPIT'
+powershell -ExecutionPolicy Bypass -File .\install-collection.ps1
+```
+
+`SHANKPIT_RELEASE=v0.298.0` pins a release. `SHANKPIT_ZIP=<path>` installs a zip already on disk.
+
+Two optional variables change the addon part:
 
 * `COLLECTION_RELEASE=v0.397.0` pins a release.
 * `COLLECTION_ZIP=<path>` installs a zip already on disk, without downloading.
