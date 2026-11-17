@@ -1,0 +1,83 @@
+;; stdlib/collection/catalog.prn -- the plugin store's decisions, shared by every surface that shows the catalog
+;; (founder, 2026-11-17: "we need a plugin marketplace just like CURSE" / "it needs to be just like steam" / "some
+;; plugins will be available and some will be early release and some will be wish list before release").
+;; docs/PLUGIN_STORE_NORTHSTAR.md is the design; catalog/plugins.tsv is the data; this file decides what a row means.
+;;
+;; Integers only, no host calls, so the same rules emit to Lua (the in-game hub, the catalog generator), C (the
+;; SHANKPIT client's APPS page, Construct data window, minigame hub and stream overlay) and TypeScript (WOTAN's store).
+;; A host maps the codes to words in its own locale table; no label text lives here.
+
+(module collection/catalog)
+(export cat-wishlist cat-early cat-available cat-channel-valid cat-channel-rank cat-downloadable cat-needs-confirm
+        cat-kind-wow cat-kind-shankpit cat-kind-valid cat-needs-core
+        cat-act-none cat-act-wish cat-act-unwish cat-act-install cat-act-update cat-act-play cat-act-remove
+        cat-action cat-tab-library cat-tab-store cat-tab-coming cat-tab cat-badge)
+
+;; --- channels: where a plugin is in its life ---------------------------------------------------------------------
+;; wishlist: named and planned, nothing to download; players can wishlist it.
+;; early: built and downloadable, still changing (Steam's Early Access); installing asks first.
+;; available: released.
+(defn cat-wishlist [] : I32 0)
+(defn cat-early [] : I32 1)
+(defn cat-available [] : I32 2)
+
+(defn cat-channel-valid [(c : I32)] : I32
+  (if (< c (cat-wishlist)) 0 (if (> c (cat-available)) 0 1)))
+
+;; Sort key for a store list: released first, then early access, then the wish list; a bad channel sorts last.
+(defn cat-channel-rank [(c : I32)] : I32
+  (if (= (cat-channel-valid c) 0) 9 (- (cat-available) c)))
+
+(defn cat-downloadable [(c : I32)] : I32
+  (if (= (cat-channel-valid c) 0) 0 (if (>= c (cat-early)) 1 0)))
+
+;; Early access installs only after the player confirms they want an unfinished plugin.
+(defn cat-needs-confirm [(c : I32)] : I32
+  (if (= c (cat-early)) 1 0))
+
+;; --- kinds: what runs it ---------------------------------------------------------------------------------------
+;; wow: a WoW Forever addon (a REFLUX mod in Lua). shankpit: a SHANKPIT level-as-mod (wasm, talks only through REFLUX).
+(defn cat-kind-wow [] : I32 1)
+(defn cat-kind-shankpit [] : I32 2)
+
+(defn cat-kind-valid [(k : I32)] : I32
+  (if (= k (cat-kind-wow)) 1 (if (= k (cat-kind-shankpit)) 1 0)))
+
+;; Every WoW addon except RefluxCore itself needs RefluxCore installed (the REFLUX-first rule). SHANKPIT levels get
+;; REFLUX from the client, so they need nothing extra.
+(defn cat-needs-core [(k : I32) (is-core : I32)] : I32
+  (if (= k (cat-kind-wow)) (if (= is-core 0) 1 0) 0))
+
+;; --- the button on a plugin's row ------------------------------------------------------------------------------
+;; installed: the catalog build the player has installed (0 = not installed). latest: the catalog's build for it.
+;; wished: 1 when the player has it on their wish list.
+(defn cat-act-none [] : I32 0)
+(defn cat-act-wish [] : I32 1)
+(defn cat-act-unwish [] : I32 2)
+(defn cat-act-install [] : I32 3)
+(defn cat-act-update [] : I32 4)
+(defn cat-act-play [] : I32 5)
+(defn cat-act-remove [] : I32 6)
+
+(defn cat-action [(c : I32) (installed : I32) (latest : I32) (wished : I32)] : I32
+  (if (= (cat-channel-valid c) 0)
+      (if (> installed 0) (cat-act-remove) (cat-act-none))
+      (if (= (cat-downloadable c) 0)
+          ;; Something installed that the catalog no longer ships can only be removed.
+          (if (> installed 0) (cat-act-remove) (if (= wished 0) (cat-act-wish) (cat-act-unwish)))
+          (if (= installed 0) (cat-act-install)
+              (if (< installed latest) (cat-act-update) (cat-act-play))))))
+
+;; --- which tab a plugin shows under (Library / Store / Coming soon) ---------------------------------------------
+(defn cat-tab-library [] : I32 1)
+(defn cat-tab-store [] : I32 2)
+(defn cat-tab-coming [] : I32 3)
+
+(defn cat-tab [(c : I32) (installed : I32)] : I32
+  (if (> installed 0) (cat-tab-library)
+      (if (= (cat-downloadable c) 1) (cat-tab-store)
+          (if (= (cat-channel-valid c) 1) (cat-tab-coming) 0))))
+
+;; The badge on a card: 0 none (released), 1 EARLY ACCESS, 2 COMING SOON.
+(defn cat-badge [(c : I32)] : I32
+  (if (= c (cat-early)) 1 (if (= c (cat-wishlist)) 2 0)))
