@@ -67,6 +67,10 @@ input[type=search] { min-height: 48px; padding: 8px 12px; border: 1.25px solid v
   font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); }
 .tabs button + button { border-left: 0.75px solid var(--parchment-600); }
 .tabs button[aria-pressed=true] { background: var(--sea-700); color: var(--parchment-100); }
+.csv { display: inline-flex; align-items: center; min-height: 48px; padding: 0 18px; border: 1.25px solid var(--ink-900);
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); text-decoration: none; }
+.csv:hover { background: var(--sea-700); color: var(--parchment-100); }
+.slot { font: 400 11px/1.3 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-700); margin-right: 4px; }
 
 .watch { display: flex; align-items: center; gap: 10px; font: 400 13px/1.4 var(--font-mono); color: var(--ink-700); }
 .lamp { width: 10px; height: 10px; border-radius: 50%; background: var(--brass-500); flex: none; }
@@ -124,7 +128,7 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
 <main class="page">
   <p class="eyebrow"><span>Fafnir's Bed · Unified inventory</span><span id="eyebrow-right">Reading the hoard…</span></p>
   <h1>The Hoard</h1>
-  <p class="lede">Every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
+  <p class="lede">Every piece of gear worn, and every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
     only on <b>/reload</b> or logout: type <b>/reload</b> in game and this page follows within a few seconds.</p>
   <hr class="rule2">
 
@@ -142,6 +146,7 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
       <button type="button" id="v-items" aria-pressed="true">By item</button>
       <button type="button" id="v-chars" aria-pressed="false">By character</button>
     </div>
+    <a class="csv" href="/api/hoard.csv" download="hoard.csv">Download CSV</a>
   </div>
   <p class="watch" id="watch" role="status"><span class="lamp" aria-hidden="true"></span><span id="watch-text">Watching the saved file…</span></p>
   <div id="problems"></div>
@@ -211,9 +216,18 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
     return `<h3>${title}</h3>${body}`;
   }
 
+  function gear(c, q) {
+    let body;
+    if (!c.gearRead) body = `<p class="empty">Not seen since Fafnir's Bed learned to read gear: log this character in once.</p>`;
+    else if (!c.gear.length) body = `<p class="empty">Wearing nothing.</p>`;
+    else body = `<ul>${c.gear.filter((g) => matches(q, g.name, g.id, g.slotName)).map((g) =>
+      `<li><span><span class="slot">${esc(g.slotName)}</span> ${esc(itemName(g))}</span><span class="n">#${g.id}</span></li>`).join("")}</ul>`;
+    return `<h3>Equipped</h3>${body}`;
+  }
+
   function renderChars(q) {
     const chars = data.characters.filter((c) => matches(q, c.name, c.realm) ||
-      [...c.bags, ...c.bank, ...c.mail].some((s) => matches(q, s.name, s.id)));
+      [...c.equipped, ...c.bags, ...c.bank, ...c.mail].some((s) => matches(q, s.name, s.id)));
     if (!chars.length) return `<div class="plate soft"><div class="in"><p class="empty">No character matches “${esc(q)}”.</p></div></div>`;
     const qForItems = chars.some((c) => matches(q, c.name, c.realm)) ? "" : q;
     return `<div class="grid">${chars.map((c) => `<article class="plate char"><div class="in">
@@ -221,6 +235,7 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
       <div class="row"><span>Purse</span><b>${coin(c.copper)}</b></div>
       <div class="row"><span>Items</span><b>${fmt(c.items)} · ${fmt(c.distinct)} kinds</b></div>
       <div class="row"><span>Last saved</span><b>${c.seen ? `${clock(c.seen)} · ${ago(c.seen)}` : "never"}</b></div>
+      ${gear(c, qForItems)}
       ${list("Bags", c.bags, true, qForItems)}
       ${list("Bank", c.bank, c.bankRead && c.bank.length > 0 || c.bankRead, qForItems)}
       ${c.mail.length ? list("Mail", c.mail, c.mailRead, qForItems) : ""}

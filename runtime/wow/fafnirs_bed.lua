@@ -11,6 +11,7 @@
 --   Bag/bank ids: NUM_BAG_SLOTS, NUM_REAGENTBAG_SLOTS, BANK_CONTAINER, NUM_BANKBAGSLOTS, REAGENTBANK_CONTAINER --
 --     read from the client's own globals, never hard-coded. A location whose globals are missing is not read
 --     (and /fafnir says so) rather than read with guessed ids.
+--   Equipped: GetInventoryItemID/GetInventoryItemLink over INVSLOT_FIRST_EQUIPPED..INVSLOT_LAST_EQUIPPED.
 --   Mail: GetInboxNumItems/GetInboxItem, ATTACHMENTS_MAX_RECEIVE -- only while the mailbox is open.
 -- None of the bag/bank/mail forms above is confirmed on WoW Forever yet; that is what the in-game probe and
 -- the first real run settle.
@@ -185,6 +186,36 @@ if hooksecurefunc and SendMail then
     hooksecurefunc("SendMail", function(to) parcel = read_parcel(to) end)
 end
 
+-- What the character wears. Slot range from the client's own INVSLOT_FIRST_EQUIPPED / INVSLOT_LAST_EQUIPPED
+-- (never hard-coded); the item from GetInventoryItemID, else parsed out of GetInventoryItemLink. Counts go in as
+-- the "equipped" location, the slot map as chars[who].slots. Right after login the client can report every slot
+-- empty before it has loaded the gear, so an all-empty read only counts when `trust_empty` (an equipment change).
+local function scan_equipped(trust_empty)
+    local first, last = INVSLOT_FIRST_EQUIPPED, INVSLOT_LAST_EQUIPPED
+    if type(first) ~= "number" or type(last) ~= "number" then
+        unreadable.equipped = "INVSLOT_FIRST_EQUIPPED / INVSLOT_LAST_EQUIPPED are missing"; return
+    end
+    if not (GetInventoryItemID or GetInventoryItemLink) then
+        unreadable.equipped = "no GetInventoryItemID / GetInventoryItemLink"; return
+    end
+    local snap, slots, any = {}, {}, false
+    for slot = first, last do
+        local id = GetInventoryItemID and GetInventoryItemID("player", slot)
+        local link = GetInventoryItemLink and GetInventoryItemLink("player", slot)
+        if type(id) ~= "number" and type(link) == "string" then id = tonumber(link:match("item:(%d+)")) end
+        if type(id) == "number" then
+            snap[id] = (snap[id] or 0) + 1
+            slots[slot] = id
+            any = true
+            I.invRememberName(db, id, name_of(link))
+        end
+    end
+    if not any and not trust_empty then return end
+    local who = character()
+    apply("equipped", snap)
+    if db and who then I.invSetSlots(db, who, slots, time()) end
+end
+
 local function scan_gold()
     local who = character()
     if db and who and GetMoney then I.invSetGold(db, who, GetMoney(), time()) end
@@ -195,6 +226,7 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("BAG_UPDATE_DELAYED")
 frame:RegisterEvent("PLAYER_MONEY")
+frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 frame:RegisterEvent("BANKFRAME_OPENED")
 frame:RegisterEvent("BANKFRAME_CLOSED")          -- the bank is only readable while it is open
 frame:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
@@ -210,13 +242,15 @@ frame:SetScript("OnEvent", function(_, event, arg1)
             db = _G[VAR]
         end
     elseif event == "PLAYER_LOGIN" then
-        scan_bags(); scan_gold()
+        scan_bags(); scan_gold(); scan_equipped(false)
         -- the bags are often not loaded at login yet; look again once the world is up
-        if C_Timer and C_Timer.After then C_Timer.After(3, function() scan_bags(); scan_gold() end) end
+        if C_Timer and C_Timer.After then C_Timer.After(3, function() scan_bags(); scan_gold(); scan_equipped(false) end) end
     elseif event == "BAG_UPDATE_DELAYED" then
         scan_bags(); if bank_open then scan_bank() end
     elseif event == "PLAYER_MONEY" then
         scan_gold()
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+        scan_equipped(true)
     elseif event == "BANKFRAME_OPENED" then
         bank_open = true; scan_bank()
     elseif event == "BANKFRAME_CLOSED" then
@@ -258,7 +292,7 @@ SlashCmdList["FAFNIRSBED"] = function(msg)
     if not db then print(ADDON .. ": not loaded yet."); return end
     msg = (msg or ""):match("^%s*(.-)%s*$")
     if msg == "" then
-        scan_bags(); scan_gold()
+        scan_bags(); scan_gold(); scan_equipped(false)
         local t = I.invTotals(db)
         print(string.format("%s: net inventory -- %d characters, %d distinct items, %d items, %s across the account.",
             ADDON, t[1], t[2], t[3], money(t[4])))
@@ -274,4 +308,4 @@ SlashCmdList["FAFNIRSBED"] = function(msg)
     if #hits > 10 then print(string.format("  ...and %d more", #hits - 10)) end
 end
 
-FafnirsBed = { scan_bags = scan_bags, scan_bank = scan_bank, scan_mail = scan_mail, scan_gold = scan_gold }
+FafnirsBed = { scan_bags = scan_bags, scan_equipped = scan_equipped, scan_bank = scan_bank, scan_mail = scan_mail, scan_gold = scan_gold }

@@ -1,5 +1,8 @@
-// hoard -- a small read-only web page over Fafnir's Bed: every character's bags, bank and mail, and every item
-// across the account (who holds it, how many), in the Valhöll day style (WOTAN plates III, IV, VIII).
+// hoard -- a small read-only web page over Fafnir's Bed: every character's equipped gear, bags, bank and mail, and
+// every item across the account (who holds it, how many), in the Valhöll day style (WOTAN plates III, IV, VIII).
+//
+//	hoard              serve the page (and /api/hoard.csv) on HOARD_ADDR
+//	hoard -csv FILE    write the CSV (csv.go) to FILE, or to stdout for "-", and exit
 //
 // WoW writes SavedVariables only on /reload and logout, so the page can never be fresher than the last /reload.
 // It re-reads the file on every request; the page checks every few seconds and redraws when the file changes.
@@ -17,7 +20,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -54,8 +59,36 @@ type Character struct {
 	Mail     []Stack `json:"mail"`
 	BankRead bool    `json:"bankRead"`
 	MailRead bool    `json:"mailRead"`
-	Items    int     `json:"items"`
-	Distinct int     `json:"distinct"`
+	Equipped []Stack `json:"equipped"`
+	// Gear is what is worn, slot by slot (from chars[key].slots). GearRead is false for characters not seen
+	// since the addon learned to read equipment: their gear is unknown, not empty.
+	Gear     []Worn `json:"gear"`
+	GearRead bool   `json:"gearRead"`
+	Items    int    `json:"items"`
+	Distinct int    `json:"distinct"`
+}
+
+// Worn is one equipped slot.
+type Worn struct {
+	Slot     int    `json:"slot"`
+	SlotName string `json:"slotName"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+}
+
+// slotNames are WoW's inventory slot ids (the INVSLOT_* globals of every 1.x-era client). An id outside this
+// table is shown as "slot N" rather than guessed.
+var slotNames = map[int]string{
+	0: "Ammo", 1: "Head", 2: "Neck", 3: "Shoulder", 4: "Shirt", 5: "Chest", 6: "Waist", 7: "Legs", 8: "Feet",
+	9: "Wrist", 10: "Hands", 11: "Finger 1", 12: "Finger 2", 13: "Trinket 1", 14: "Trinket 2", 15: "Back",
+	16: "Main hand", 17: "Off hand", 18: "Ranged", 19: "Tabard",
+}
+
+func slotName(slot int) string {
+	if n, ok := slotNames[slot]; ok {
+		return n
+	}
+	return "slot " + strconv.Itoa(slot)
 }
 
 type Holder struct {
@@ -194,12 +227,28 @@ func Load(c Config) (*Hoard, error) {
 				ch.Name, ch.Realm = key[:i], key[i+1:]
 			}
 			loc := ct.Sub("loc")
-			ch.Bags = stacks(loc.Sub("bags"))
+			// never nil: a location never read is [] (with BankRead/MailRead false), not JSON null
+			ch.Bags, ch.Bank, ch.Mail = stacks(loc.Sub("bags")), []Stack{}, []Stack{}
 			if b := loc.Sub("bank"); b != nil {
 				ch.Bank, ch.BankRead = stacks(b), true
 			}
 			if m := loc.Sub("mail"); m != nil {
 				ch.Mail, ch.MailRead = stacks(m), true
+			}
+			ch.Equipped = stacks(loc.Sub("equipped"))
+			ch.Gear = []Worn{}
+			if st := ct.Sub("slots"); st != nil {
+				ch.GearRead = true
+				for _, k := range st.Keys {
+					slot, err := strconv.Atoi(k)
+					if err != nil {
+						continue
+					}
+					if id, ok := st.Field[k].(float64); ok && id > 0 {
+						ch.Gear = append(ch.Gear, Worn{Slot: slot, SlotName: slotName(slot), ID: int(id)})
+					}
+				}
+				sort.Slice(ch.Gear, func(a, b int) bool { return ch.Gear[a].Slot < ch.Gear[b].Slot })
 			}
 			h.Characters = append(h.Characters, ch)
 		}
@@ -211,7 +260,7 @@ func Load(c Config) (*Hoard, error) {
 		for _, part := range []struct {
 			where string
 			list  []Stack
-		}{{"bags", ch.Bags}, {"bank", ch.Bank}, {"mail", ch.Mail}} {
+		}{{"equipped", ch.Equipped}, {"bags", ch.Bags}, {"bank", ch.Bank}, {"mail", ch.Mail}} {
 			for si := range part.list {
 				s := &part.list[si]
 				s.Name = names[s.ID]
@@ -228,6 +277,10 @@ func Load(c Config) (*Hoard, error) {
 		}
 		ch.Distinct = len(seen)
 		h.Copper += ch.Copper
+		for gi := range ch.Gear {
+			ch.Gear[gi].Name = names[ch.Gear[gi].ID]
+		}
+		sortStacks(ch.Equipped)
 		sortStacks(ch.Bags)
 		sortStacks(ch.Bank)
 		sortStacks(ch.Mail)
@@ -323,6 +376,17 @@ func handler(c Config) http.Handler {
 		}
 		json.NewEncoder(w).Encode(h)
 	})
+	mux.HandleFunc("/api/hoard.csv", func(w http.ResponseWriter, r *http.Request) {
+		h, err := Load(c)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="hoard.csv"`)
+		w.Header().Set("Cache-Control", "no-store")
+		WriteCSV(w, h)
+	})
 	return mux
 }
 
@@ -339,9 +403,31 @@ func loopback(addr string) bool {
 }
 
 func main() {
+	csvOut := flag.String("csv", "", `write the hoard as CSV to this file ("-" for stdout) and exit`)
+	flag.Parse()
 	c, err := configFromEnv()
 	if err != nil {
 		log.Fatal("hoard: ", err)
+	}
+	if *csvOut != "" {
+		h, err := Load(c)
+		if err != nil {
+			log.Fatal("hoard: ", err)
+		}
+		w := io.Writer(os.Stdout)
+		if *csvOut != "-" {
+			f, err := os.Create(*csvOut)
+			if err != nil {
+				log.Fatal("hoard: ", err)
+			}
+			defer f.Close()
+			w = f
+		}
+		if err := WriteCSV(w, h); err != nil {
+			log.Fatal("hoard: ", err)
+		}
+		log.Printf("hoard: %d rows for %d characters -> %s", len(Rows(h)), len(h.Characters), *csvOut)
+		return
 	}
 	addr := os.Getenv("HOARD_ADDR")
 	if addr == "" {
