@@ -1,0 +1,29 @@
+;; stdlib/iduna/discover_native.prn -- one native IDUNA probe: GET <base>/health with net/http_probe.prn, judged by the
+;; shared rules in iduna/discover.prn. tools/iduna_discover_host.c walks the candidates with it.
+;;
+;; IDUNA's health answer is Go's compact JSON, {"ok":true,"service":"iduna","time":"..."}
+;; (IDUNA internal/http/handlers/health.go). Both fields must be there: a server that happens to answer 200 on
+;; localhost:8080 (BOOTSTRAP.md met one) is not IDUNA.
+;;
+;; Build (C target): parena build stdlib/string.prn stdlib/net/http_probe.prn stdlib/iduna/discover.prn
+;;                                 stdlib/iduna/discover_native.prn -o <gen.c>
+
+(module iduna/discover-native)
+(import string)
+(import net/http-probe)
+(import iduna/discover)
+(export says-iduna probe-iduna-at)
+
+;; 1 when a health body is IDUNA's, 0 otherwise.
+(defn says-iduna [(body : String @ Region)] : I32
+  (if (contains-ci? body "\"service\":\"iduna\"")
+    (if (contains-ci? body "\"ok\":true") 1 0)
+    0))
+
+;; Probe http://host:port<path> and return its verdict (iduna/discover.prn: 0 IDUNA, 1 not IDUNA, 2 no response,
+;; 3 timed out). path is the base's own path plus "/health".
+(defn probe-iduna-at [(host : String @ Region) (port : I32) (path : String @ Region) (timeout-ms : I32)
+                      (scratch : Arena @ Region)] : I32
+  (let [status (probe-get host port path timeout-ms)
+        body (probe-body scratch)]
+    (probe-verdict status (says-iduna body) (probe-timed-out))))

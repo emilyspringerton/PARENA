@@ -1,0 +1,105 @@
+;; stdlib/iduna/discover.prn -- where an IDUNA client finds IDUNA: a local IDUNA first, the cloud one only when no local
+;; one answers. Founder, 2026-11-17: "we need a local iduna to test against it needs to work so that it checks to see if
+;; there is a local iduna and connects to that and if not it attempts to use cloud iduna".
+;;
+;; These are the RULES only: plain I32 functions with one expression each, the same portable shape as
+;; noobtopia/ambient_life.prn. So this one file compiles to C (native tools, with net/http_probe.prn), to Lua and to
+;; JavaScript (the WOTAN pages, with iduna/discover_web.prn), and no client keeps its own copy of the probe order, the
+;; verdicts, the timeouts or the cache rule. stdlib/iduna/discover_parity.txt is the shared fixture every target's
+;; test asserts.
+;;
+;; A probe is one GET <base>/health (IDUNA internal/http/handlers/health.go answers {"ok":true,"service":"iduna",...}).
+;; The host does the I/O and hands these rules three facts:
+;;   status      the HTTP status; 0 when no response came back (refused, DNS, TLS, CORS, aborted)
+;;   says-iduna  1 when the body says "service":"iduna" and "ok":true
+;;   timed-out   1 when the probe was cut off by its timeout
+;; A 200 that is not IDUNA's health is NOT IDUNA: BOOTSTRAP.md records a box where localhost:8080 was another server.
+;;
+;; Candidates, probed in this order:
+;;   0 same-origin  the page's own origin (a browser page served by IDUNA, or by nginx sending /api/ to IDUNA)
+;;   1 local        IDUNA_LOCAL_URL (default http://localhost:8080: IDUNA's own IDUNA_ADDR and BASE_URL defaults)
+;;   2 cloud        IDUNA_CLOUD_URL (default https://iam.okemily.com: EMILY gitops 92-iduna-routes.yaml)
+;;   3 done         nothing left. The client then ATTEMPTS the cloud anyway (source 2, unverified) and reports why.
+
+(module iduna/discover)
+(export verdict-iduna verdict-not-iduna verdict-unreachable verdict-timeout
+        cand-same-origin cand-local cand-cloud cand-done
+        page-native page-loopback page-file page-other
+        opt-default opt-local-on opt-local-off
+        probe-verdict verdict-usable next-candidate should-try-local should-try-same-origin
+        probe-timeout-ms cache-fresh fallback-source)
+
+;; ---- names for the codes ---------------------------------------------------------------------------------------------
+(defn verdict-iduna [] : I32 0)        ; HTTP 200 and the body is IDUNA's health
+(defn verdict-not-iduna [] : I32 1)    ; something answered, but not as IDUNA (wrong status or wrong body)
+(defn verdict-unreachable [] : I32 2)  ; no response: refused, no route, DNS, TLS or CORS failure
+(defn verdict-timeout [] : I32 3)      ; no response within the probe's timeout
+
+(defn cand-same-origin [] : I32 0)
+(defn cand-local [] : I32 1)
+(defn cand-cloud [] : I32 2)
+(defn cand-done [] : I32 3)
+
+;; Where the client runs. Only a native tool, a loopback page or a file:// page probes the local IDUNA by default. A page
+;; served from anywhere else (the LAN, okemily.com) asking for the visitor's localhost would make the browser ask the
+;; visitor for local-network access, and a stranger's localhost is not this deployment's IDUNA.
+(defn page-native [] : I32 0)
+(defn page-loopback [] : I32 1)        ; localhost, 127.0.0.0/8, [::1], *.localhost
+(defn page-file [] : I32 2)            ; file:// (origin "null")
+(defn page-other [] : I32 3)
+
+;; The developer's override (env IDUNA_LOCAL_FIRST=1|0 natively; localStorage iduna_local_first in a browser).
+(defn opt-default [] : I32 0)
+(defn opt-local-on [] : I32 1)
+(defn opt-local-off [] : I32 2)
+
+;; ---- verdicts ----------------------------------------------------------------------------------------------------------
+(defn probe-verdict [(status : I32) (says-iduna : I32) (timed-out : I32)] : I32
+  (if (> status 0)
+    (if (= status 200)
+      (if (= says-iduna 1) 0 1)
+      1)
+    (if (= timed-out 1) 3 2)))
+
+(defn verdict-usable [(verdict : I32)] : I32
+  (if (= verdict 0) 1 0))
+
+;; ---- order -------------------------------------------------------------------------------------------------------------
+;; The next candidate to probe after `after` (-1 to start). try-same / try-local are 1 or 0. Cloud always comes last.
+(defn next-candidate [(after : I32) (try-same : I32) (try-local : I32)] : I32
+  (if (< after 0)
+    (if (= try-same 1) 0 (if (= try-local 1) 1 2))
+    (if (= after 0)
+      (if (= try-local 1) 1 2)
+      (if (= after 1) 2 3))))
+
+(defn should-try-local [(page-kind : I32) (opt : I32)] : I32
+  (if (= opt 2) 0
+    (if (= opt 1) 1
+      (if (<= page-kind 2) (if (>= page-kind 0) 1 0) 0))))
+
+;; Only an http(s) page has an origin of its own that could be IDUNA.
+(defn should-try-same-origin [(page-kind : I32)] : I32
+  (if (= page-kind 1) 1 (if (= page-kind 3) 1 0)))
+
+;; ---- timeouts ----------------------------------------------------------------------------------------------------------
+;; configured > 0 (env IDUNA_PROBE_TIMEOUT_MS) wins for every candidate, clamped to [100, 30000] ms. Otherwise: a local
+;; IDUNA answers in a few ms (1000 leaves room for Windows, which retries a refused loopback connect for about a
+;; second), the page's own origin gets 1500, and the cloud, over the internet, 4000.
+(defn probe-timeout-ms [(cand : I32) (configured : I32)] : I32
+  (if (> configured 0)
+    (if (< configured 100) 100 (if (> configured 30000) 30000 configured))
+    (if (= cand 1) 1000 (if (= cand 0) 1500 4000))))
+
+;; ---- the session cache -------------------------------------------------------------------------------------------------
+;; A verified choice is reused for ttl-ms. An unverified one (nothing answered, so the cloud is merely attempted) is
+;; re-checked after at most 15 s, so an IDUNA started a moment later is found on the next page. A negative age (the
+;; clock moved back) is never fresh.
+(defn cache-fresh [(age-ms : I32) (ttl-ms : I32) (verified : I32)] : I32
+  (if (< age-ms 0) 0
+    (if (= verified 1)
+      (if (< age-ms ttl-ms) 1 0)
+      (if (< age-ms (if (< ttl-ms 15000) ttl-ms 15000)) 1 0))))
+
+;; When nothing answered: attempt the cloud.
+(defn fallback-source [] : I32 2)

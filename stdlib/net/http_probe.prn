@@ -1,0 +1,39 @@
+;; stdlib/net/http_probe.prn -- one bounded HTTP GET: is anything answering at host:port, and what does it say?
+;;
+;; Added 2026-11-17 for stdlib/iduna/discover.prn (local IDUNA first, cloud IDUNA when no local one answers). A probe
+;; has to fail FAST when nothing is there: net/tcp's connect blocks (about 21 s against an address that drops packets)
+;; and its read waits 30 s on an idle peer, both right for the programs they serve and wrong for "is it up?". The host
+;; glue (runtime/parena_runtime.h, "net/http_probe.prn host glue") puts the connect and every read under one deadline,
+;; on POSIX and Windows alike, and splits that deadline across a name's addresses ("localhost" is ::1 and 127.0.0.1).
+;;
+;; probe-get       GET <path> on host:port with HTTP/1.0 (never chunked). The HTTP status, or 0 when no HTTP response
+;;                 came back: no such host, refused, reset, cut off by the deadline, or not HTTP at all.
+;; probe-status    the last probe's status again (what probe-get returned).
+;; probe-timed-out 1 when the last probe ran out of time, 0 otherwise.
+;; probe-body      the last response's body (at most 4096 bytes), copied into dest.
+;;
+;; Plain HTTP only: there is no TLS on this path (net/http.prn's note), so an https URL is the caller's to handle. The
+;; result is process-wide, so probes run one after another, which is all discovery needs.
+
+(module net/http-probe)
+(export probe-get probe-status probe-timed-out probe-body)
+
+(defn probe-get [(host : String @ Region) (port : I32) (path : String @ Region) (timeout-ms : I32)]
+  : I32
+  #target
+  {:c (inline-c "http_probe_impl(host, port, path, timeout_ms)")})
+
+(defn probe-timed-out []
+  : I32
+  #target
+  {:c (inline-c "http_probe_timed_out_impl()")})
+
+(defn probe-body [(dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "http_probe_body_impl(dest)")})
+
+(defn probe-status []
+  : I32
+  #target
+  {:c (inline-c "http_probe_status_impl()")})
